@@ -3816,6 +3816,67 @@ cpuref::CaptureWriter Core2WriteBesideDrawnCapture(uint32_t frames, bool readFir
     return capture;
 }
 
+// IN-509 (GT4's Z target at BP 0 on George V Paris): page 22 is drawn as FBW 1 every frame and, after that, as FBW 2 every
+// second frame, where it is also read as a T8 texture on the GPU. So the FBW 1 draw finds the FBW 2 target two VBlanks old,
+// with pixels only the GPU read. The picture samples both targets inside this frame's sprites.
+cpuref::CaptureWriter Core2WidthEverySecondVblankCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kSource = 16, kRender = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page, uint64_t fbw) { return page | (fbw << 16); };  // CT32
+    auto blit = [](uint64_t dbp, uint64_t dbw, uint64_t dpsm) { return (dbp << 32) | (dbw << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    auto tex0 = [](uint64_t blocks, uint64_t tbw, uint64_t psm, uint64_t log2, uint64_t tfx) {
+        return blocks | (tbw << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) | (tfx << 35);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    ad({blit(14 * 32, 1, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> entries;
+        for (uint32_t i = 0; i < 128; ++i) {
+            const uint32_t a = 2 * i, b = 2 * i + 1;
+            entries.push_back(uint64_t{0x80000000u | (a * 0x010101u)} | (uint64_t{0x80000000u | (b * 0x010101u)} << 32));
+        }
+        image(entries);
+    }
+    ad({blit(kSource * 32, 1, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    image(std::vector<uint64_t>(128, uint64_t{0x80808080u} * 0x100000001ull));
+    const uint64_t source = tex0(kSource * 32, 1, 0x00, 4, 0);
+    const uint64_t readRender = tex0(kRender * 32, 1, 0x13, 5, 0) | (uint64_t{14 * 32} << 37) | (uint64_t{1} << 61);
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        const uint32_t narrow = 0x80000000u | ((frame + 1u) * 0x00203010u), wide = 0x80000000u | ((frame + 1u) * 0x00102030u);
+        // A cleared, then the FBW 1 target drawn in the page's lower half and sampled inside that sprite
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            frameReg(kA, 1), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05,
+            frameReg(kRender, 1), 0x4C, source, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(narrow), 0x01, uv(0, 0), 0x03,
+            xyz(0, 16), 0x05, uv(16, 16), 0x03, xyz(64, 32), 0x05, frameReg(kA, 1), 0x4C, tex0(kRender * 32, 1, 0x00, 6, 1),
+            0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(8, 20), 0x03, xyz(0, 48), 0x05, uv(24, 28), 0x03,
+            xyz(16, 56), 0x05});
+        if (frame % 2 == 1) {
+            // The FBW 2 target drawn in the page's upper half, read as T8 on the GPU, and sampled inside its sprite.
+            ad({frameReg(kRender, 2), 0x4C, source, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(wide), 0x01, uv(0, 0), 0x03,
+                xyz(0, 0), 0x05, uv(16, 16), 0x03, xyz(64, 16), 0x05, frameReg(kA, 1), 0x4C, readRender, 0x06,
+                kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(32, 16), 0x03,
+                xyz(32, 16), 0x05, tex0(kRender * 32, 2, 0x00, 7, 1), 0x06, kSprite | kTme | kFst, 0x00,
+                rgbaq(0x80808080u), 0x01, uv(8, 4), 0x03, xyz(32, 48), 0x05, uv(24, 12), 0x03, xyz(48, 56), 0x05});
+        }
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
 // IN-417 (GT4's palettes in the memory of its night render): page 22 holds a CT32 target (a colour sprite over the
 // palette's 16 x 16) and a Z24 target (a depth-only sprite over half of it), both drawn on the GPU; then a T8 texture
 // loads its CSM1 palette from page 22 and is drawn. The CLUT load overlaps two drawn targets, one of them depth.
@@ -4965,6 +5026,33 @@ int TestCore2DrawnPageTest(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_width_grace (IN-509): GT4_CORE2_WIDTH_GRACE_LONG on a target of another width drawn every second VBlank: it is
+// neither dropped nor stored each time, with the same picture and memory, at 1x and scaled.
+int TestCore2WidthGrace(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    constexpr uint32_t kFrames = 8;
+    for (uint32_t scale : {1u, 2u}) {
+        failures += CheckCore2Ab(handles, scale == 1 ? "width every second VBlank at 1x" : "width every second VBlank at 2x",
+                                 Core2WidthEverySecondVblankCapture(kFrames), kFrames, "GT4_CORE2_WIDTH_GRACE_LONG", true,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  GPU-read keeps %llu / %llu, targets replaced %llu / %llu, created %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.gpuReadKeeps),
+                                                 static_cast<unsigned long long>(on.stats.gpuReadKeeps),
+                                                 static_cast<unsigned long long>(off.stats.targetsReplaced),
+                                                 static_cast<unsigned long long>(on.stats.targetsReplaced),
+                                                 static_cast<unsigned long long>(off.stats.targetsCreated),
+                                                 static_cast<unsigned long long>(on.stats.targetsCreated));
+                                     return off.stats.gpuReadKeeps >= 2 && on.stats.gpuReadKeeps == 0 &&
+                                                    on.stats.targetsCreated < off.stats.targetsCreated
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+    }
+    std::printf("hw_core2_width_grace: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -5796,6 +5884,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_drawn_page_test") return TestCore2DrawnPageTest(handles);
+    if (name == "hw_core2_width_grace") return TestCore2WidthGrace(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);

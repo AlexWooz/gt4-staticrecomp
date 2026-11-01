@@ -609,7 +609,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool clutFromTargetPending_ = false;
     std::uint64_t lastWaitNs_ = 0;
     // S1: per-VBlank spike log. A VBlank whose GS thread time or wall time passes GT4_CORE2_SPIKE_MS (default 20;
-    // 0 = off) prints what it did, at most 40 lines per 600 VBlanks.
+    // 0 = off) prints what it did, at most GT4_CORE2_SPIKE_LINES (default 40) lines per 600 VBlanks.
     struct SpikeMark {
         std::chrono::steady_clock::time_point at{};
         double gif = 0, upload = 0, texture = 0, readback = 0, translate = 0, draw = 0, targets = 0, clut = 0, patch = 0;
@@ -623,6 +623,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::getenv("GT4_CORE2_GPU_PROFILE_AT") ? std::atoll(std::getenv("GT4_CORE2_GPU_PROFILE_AT")) : -1;
     std::uint32_t spikeLines_ = 0;
     const double spikeMs_ = std::getenv("GT4_CORE2_SPIKE_MS") ? std::atof(std::getenv("GT4_CORE2_SPIKE_MS")) : 20.0;
+    const std::uint32_t spikeLineLimit_ = std::getenv("GT4_CORE2_SPIKE_LINES") ? static_cast<std::uint32_t>(std::atoi(std::getenv("GT4_CORE2_SPIKE_LINES"))) : 40u;
     SpikeMark TakeSpikeMark() const {
         SpikeMark m;
         m.at = std::chrono::steady_clock::now();
@@ -656,7 +657,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
     void NoteSpike() {
         const SpikeMark now = TakeSpikeMark();
-        if (spikeMs_ > 0.0 && spikeMark_.at.time_since_epoch().count() != 0 && spikeLines_ < 40) {
+        if (spikeMs_ > 0.0 && spikeMark_.at.time_since_epoch().count() != 0 && spikeLines_ < spikeLineLimit_) {
             const SpikeMark &b = spikeMark_;
             const double wall = std::chrono::duration<double, std::milli>(now.at - b.at).count();
             const double gs = (now.gif - b.gif) / 1000.0;
@@ -1580,6 +1581,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // reads of that memory (GT4's title backdrop after a GT Mode visit) must still see it.
     void KeepGpuReadContent(Target &t) {
         if (!t.alive || !t.readOnGpu || t.drawn.Empty()) return;
+        static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
+        if (trace) {
+            std::fprintf(stderr, "[core2] keep vblank=%llu target bp=%u bw=%u psm=%u size=%ux%u drawn=%d,%d,%d,%d last_draw_vblank=%llu unused=%u\n",
+                         static_cast<unsigned long long>(vblanks_), t.view.basePointer, t.view.bufferWidth,
+                         static_cast<unsigned>(t.view.psm), t.width, t.height, t.drawn.x0, t.drawn.y0, t.drawn.x1, t.drawn.y1,
+                         static_cast<unsigned long long>(t.lastDrawVblank), t.unusedFrames);
+        }
         readbackReason_ = "keep";
         Readback(TargetSpan(t, t.drawn));
         readbackReason_ = "other";
@@ -1692,18 +1700,27 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return slot;
     }
 
+    // IN-509: on George V Paris GT4 draws a 256 x 256 Z target at BP 0 every second VBlank, after drawing the same memory
+    // at other widths. One VBlank of grace made it old each time, so it was dropped and its memory kept: six readbacks,
+    // four of 640 x 448 targets, every second VBlank, a frametime that swings like a wave. Two VBlanks of grace keep it
+    // beside the others. GT4_CORE2_WIDTH_GRACE_LONG=0 gives one VBlank (A/B).
+    const std::uint64_t widthGraceVblanks_ = std::getenv("GT4_CORE2_WIDTH_GRACE_LONG") != nullptr &&
+                                                     std::strcmp(std::getenv("GT4_CORE2_WIDTH_GRACE_LONG"), "0") == 0
+                                                 ? 1u
+                                                 : 2u;
+
     // 2.1, 2.2, 2.4: the target a draw writes (`view` from FRAME or ZBUF).
     Target *DrawTarget(const BufferView &view, const PixelRect &rect) {
         const FormatClass cls = ClassOf(view.psm);
         if (cls == FormatClass::None) return nullptr;
         // 2.1: the target of this base, class and width. One of another width is discarded when it is old (not drawn
-        // in this frame or the last one); a recent one stays beside the new target (GT4 draws its frame memory
+        // in this frame or the last two, IN-509); a recent one stays beside the new target (GT4 draws its frame memory
         // as 640 and as 128 pixels wide in the same frame).
         Target *found = nullptr;
         for (Target &t : targets_) {
             if (!t.alive || t.cls != cls || t.view.basePointer != view.basePointer) continue;
             if (t.view.bufferWidth != view.bufferWidth) {
-                if (vblanks_ > t.lastDrawVblank + 1) {
+                if (vblanks_ > t.lastDrawVblank + widthGraceVblanks_) {
                     KeepGpuReadContent(t);
                     DestroyTarget(t);
                     stats.targetsReplaced++;
