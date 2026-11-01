@@ -82,7 +82,8 @@ The state of `main` of this work is in STATUS and the perf ledger. What the next
 
 - **Which display a run used:** `[hw] presentation: ... last_rect`. The owner's game stream gives a 1920 x 1080, 60 Hz virtual display; without a client, the real 3440 x 1440, 144 Hz monitor at 21.5:9, 15% more GS work. Pass `GT4_DISPLAY_ASPECT=16:9` to compare runs.
 - **The first thing to read after an owner test on the stream:** `frametime.csv` in the session folder, through `scripts/coregs2_bench/frametime_plot.py out.png name=<csv>`, and the showroom's `not_readback` in `game.log`: about 11 ms means IN-516 did not help.
-- **If the second queue does not help:** the stall comes from the driver's present on that display, and the options are a present thread, or "no vsync" on a display the desktop composes anyway (immediate does not tear there; detecting that display is the hard part).
+- **The stall goes with 60 Hz, not with the virtual display** (the same display at 144 Hz: 0.79 ms against 10.96 ms). It may reach any player on a real 60 Hz monitor, which was not tested. Check `[window]`, `Win32_VideoController.CurrentRefreshRate` for the rate of a run.
+- **If the second queue does not help at 60 Hz:** the options are a present thread, or keeping the pacer's release away from the flip.
 - **Next step:** the GS thread still waits for the GPU at the flare read (2-3 ms per VBlank, 12 ms on heavy GPU stretches). Issue the reduction with `ReduceLater` and let the EE wait on its fence with the IN-514 limit.
 - **Owner decision pending:** whether normal mode keeps IN-514's late flares.
 

@@ -257,6 +257,8 @@ The frametime log costs nothing measurable (final build without it: GS 6.77 ms, 
 
 **Virtual 60 Hz display, 16:9 (fullscreen, the owner's display while streaming), candidate 372's paths; a real monitor at 60 Hz was not tested:** FIFO showroom GS 13.77 ms, waits 10.96 ms, 132 of 400 over 17 ms; latest ready 13.81 / 11.04 / 130; immediate (no vsync, mailbox falls back) 5.93 / 0.87 / 2. **The second queue has no run on that display.**
 
+**The same virtual display at 144 Hz (set by the owner), 16:9, candidate 373's build:** old path, 8 slots: showroom waits 0.79 ms, GS 5.60 ms, race over 17.5 ms 26, longest 18.4 ms. Old path, 16 slots: 0.01 ms, 4.62 ms, 19, 18.4 ms. Second queue, 16 slots: 0.01 ms, 4.65 ms, 9, 18.7 ms. So the showroom stall goes with the 60 Hz, not with the virtual display.
+
 **21.5:9 (the owner's monitor):** without a limit, race over 20 ms 126 of 3,700; with one (`pqA`) 3; final 0, longest 18.6 ms, late flares 1,681.
 
 **Dropped or left off:** latest ready (IN-515: no gain); 4 swapchain images (worse: race over 17 ms 633 against 182); `GT4_CORE2_SUBMIT_EVERY` 16 (GS 10.47 ms) and 64 (GS 7.35 ms, more late flares); 24 slots (nothing over 16); limit allowance 2 ms (over 17.5: 35).
