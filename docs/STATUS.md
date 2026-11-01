@@ -2,7 +2,7 @@
 
 ## TASK-027 CoreGS 2.0 candidate 373: frame pacing, from the owner's five F8 reports on 372 (2026-11-01)
 
-Candidate 373 (pins `docs/inputs/slice373-pcsx2.json`, `35a11ca7...`, and `docs/inputs/slice373-spec2.json`, `abe87b24...`), installed on the owner's desktop through the installer's update mode. Not uploaded.
+Candidate 373 (pins `docs/inputs/slice373-pcsx2.json`, `35a11ca7...`, and `docs/inputs/slice373-spec2.json`, `abe87b24...`), installed on the owner's desktop through the installer's update mode. Output `private/release-130-rc8k-out` in the main checkout: installer `c21f0f85...`, portable zip `bbbaf160...`. Installed game folder (20 files) and launcher equal the build. Of 16,446 files of settings, saves, replays, disc copies and textures one changed: `config/game.ini`, which the launcher reopened by the installer rewrites with the active monitor (`DISPLAY1`, no stream connected). Not uploaded.
 
 - **The owner's report on 372:** showroom frametime strange only in the first opening, in Performance Mode; normal mode 100% there. A one-off drop to about 50 FPS at the end of George V Paris's main straight, only with a car ahead (about 58 with a time trial ghost); no drop without one. Small spikes in the graph that cannot be felt.
 - **Findings:**
