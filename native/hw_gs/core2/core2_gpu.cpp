@@ -3893,7 +3893,7 @@ bool Gpu::Patch(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, s
   }
   const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
   const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
-  if (x0 < 0 || y0 < 0 || x1 < x0 || y1 < y0 || words.size() != static_cast<std::size_t>(width) * height) {
+  if (x0 < 0 || y0 < 0 || x1 < x0 || y1 < y0 || words.size() != static_cast<std::size_t>(width) * height * (mask == 0u ? 2u : 1u)) {
     error = "CORE2 patch rectangle and words do not match";
     return false;
   }

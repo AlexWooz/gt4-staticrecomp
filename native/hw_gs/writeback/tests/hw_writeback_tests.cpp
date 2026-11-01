@@ -3877,6 +3877,73 @@ cpuref::CaptureWriter Core2WidthEverySecondVblankCapture(uint32_t frames) {
     return capture;
 }
 
+// IN-513 (GT4's textures over its small targets): a CT32 target drawn on the GPU and read as a T8 texture in several batches of
+// one frame: the same read twice (reusable), after a new draw over it, after an EE write over its memory, and after a draw
+// elsewhere in the same frame. Each change must show in the picture.
+cpuref::CaptureWriter Core2TextureOverTargetCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kSource = 16, kOther = 30, kRender = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    auto blit = [](uint64_t dbp, uint64_t dpsm) { return (dbp << 32) | (uint64_t{1} << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    auto tex0 = [](uint64_t blocks, uint64_t psm, uint64_t log2, uint64_t tfx) {
+        return blocks | (uint64_t{1} << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) | (tfx << 35);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    ad({blit(14 * 32, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> entries;
+        for (uint32_t i = 0; i < 128; ++i) {
+            const uint32_t a = 2 * i, b = 2 * i + 1;
+            entries.push_back(uint64_t{0x80000000u | (a * 0x010101u)} | (uint64_t{0x80000000u | (b * 0x010101u)} << 32));
+        }
+        image(entries);
+    }
+    ad({blit(kSource * 32, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    image(std::vector<uint64_t>(128, uint64_t{0x80808080u} * 0x100000001ull));
+    const uint64_t readRender = tex0(kRender * 32, 0x13, 5, 0) | (uint64_t{14 * 32} << 37);
+    auto read = [&](uint32_t x, uint32_t y, uint32_t colour) {
+        ad({frameReg(kA), 0x4C, readRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(colour), 0x01, uv(0, 0), 0x03, xyz(x, y), 0x05,
+            uv(16, 16), 0x03, xyz(x + 16, y + 16), 0x05});
+    };
+    auto draw = [&](uint64_t page, uint32_t colour, uint32_t x0, uint32_t x1) {
+        ad({frameReg(page), 0x4C, tex0(kSource * 32, 0x00, 4, 0), 0x06, kSprite | kTme | kFst, 0x00, rgbaq(colour), 0x01, uv(0, 0), 0x03,
+            xyz(x0, 0), 0x05, uv(16, 16), 0x03, xyz(x1, 32), 0x05});
+    };
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            frameReg(kA), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05});
+        draw(kRender, 0x80000000u | ((frame + 1u) * 0x00102030u), 0, 32);
+        read(0, 0, 0x80808080u);
+        read(16, 0, 0x80606060u);  // nothing changed: the same decode
+        draw(kOther, 0x80204060u, 0, 16);  // a draw elsewhere changes nothing for it
+        read(32, 0, 0x80404040u);
+        draw(kRender, 0x80000000u | ((frame + 5u) * 0x00030201u), 4, 12);  // a new draw over it
+        read(48, 0, 0x80808080u);
+        ad({blit(kRender * 32, 0x00), 0x50, 0, 0x51, uint64_t{4} | (uint64_t{4} << 32), 0x52, 0, 0x53});  // an EE write over it
+        std::vector<uint64_t> words;
+        for (uint32_t i = 0; i < 8; ++i) words.push_back(uint64_t{0x80F0A050u + (frame + 1u) * i * 0x00010305u} * 0x100000001ull);
+        image(words);
+        read(0, 16, 0x80808080u);
+        read(16, 16, 0x80606060u);
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
 // IN-417 (GT4's palettes in the memory of its night render): page 22 holds a CT32 target (a colour sprite over the
 // palette's 16 x 16) and a Z24 target (a depth-only sprite over half of it), both drawn on the GPU; then a T8 texture
 // loads its CSM1 palette from page 22 and is drawn. The CLUT load overlaps two drawn targets, one of them depth.
@@ -4992,6 +5059,7 @@ int TestCore2Mipmaps(const gpu::VulkanHandles& handles) {
 // come back old, and the picture and memory would differ.
 int TestCore2DrawnPageTest(const gpu::VulkanHandles& handles) {
     int failures = 0;
+    _putenv_s("GT4_CORE2_PATCH_BITS", "0");  // this test counts the stores of the write over the drawn page
     constexpr uint32_t kFrames = 5;
     for (uint32_t scale : {1u, 2u}) {
         failures += CheckCore2Ab(handles, scale == 1 ? "write beside the drawn pages at 1x" : "write beside the drawn pages at 2x",
@@ -5045,6 +5113,7 @@ int TestCore2DrawnPageTest(const gpu::VulkanHandles& handles) {
                     static_cast<unsigned long long>(wrong));
         if (on ? wrong != 0 : wrong == 0) ++failures;
     }
+    _putenv_s("GT4_CORE2_PATCH_BITS", "");
     std::printf("hw_core2_drawn_page_test: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
@@ -5104,6 +5173,112 @@ int TestCore2GlmMemo(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_patch_bits (IN-512): GT4_CORE2_PATCH_BITS on small writes in another format over a drawn page: GT4's T4 pattern
+// and T4, T8 and CT16 writes over a GPU-read render: no store for them, with the same picture and memory.
+int TestCore2PatchBits(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    constexpr uint32_t kFrames = 5;
+    for (uint32_t scale : {1u, 2u}) {
+        failures += CheckCore2Ab(handles, scale == 1 ? "T4 over the drawn page at 1x" : "T4 over the drawn page at 2x",
+                                 Core2WriteBesideDrawnCapture(kFrames, true), kFrames, "GT4_CORE2_PATCH_BITS", true,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  stores before write %llu / %llu, bit patches %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(on.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(off.stats.bitPatches),
+                                                 static_cast<unsigned long long>(on.stats.bitPatches));
+                                     return off.stats.storesBeforeWrite > 0 && on.stats.storesBeforeWrite == 0 &&
+                                                    off.stats.bitPatches == 0 && on.stats.bitPatches > 0
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+    }
+    failures += CheckCore2Ab(handles, "stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6, "GT4_CORE2_PATCH_BITS", true,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  stream over a render: stores before write %llu / %llu, bit patches %llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.storesBeforeWrite),
+                                             static_cast<unsigned long long>(on.stats.storesBeforeWrite),
+                                             static_cast<unsigned long long>(off.stats.bitPatches),
+                                             static_cast<unsigned long long>(on.stats.bitPatches));
+                                 return on.stats.storesBeforeWrite < off.stats.storesBeforeWrite ? 0 : 1;
+                             });
+    // The cache stream draws one target over pages that other writes touch in other formats: the page patches of the run
+    // without the switch take this stream further from the reference (about 1,900 words at 1x, about 270 with it), so here
+    // the check is that memory never moves further from the reference, frame by frame, and at 1x gains no new deviation.
+    const cpuref::CaptureWriter stream = CacheFixtureCapture();
+    std::vector<std::vector<uint8_t>> reference;
+    {
+        cpuref::CpuRenderer renderer;
+        cpuref::ReplaySummary summary;
+        std::string error;
+        if (!cpuref::ReplayCapture(stream.Bytes(), renderer, summary,
+                                   [&](uint64_t, const cpuref::FrameImage&) {
+                                       const auto& bytes = renderer.Memory().Local().bytes();
+                                       reference.emplace_back(bytes.begin(), bytes.begin() + kGsMemoryBytes);
+                                   },
+                                   error)) {
+            std::printf("  cache stream: reference failed: %s\n", error.c_str());
+            ++failures;
+        }
+    }
+    for (uint32_t scale : {1u, 2u}) {
+        Core2AbRun off, on;
+        std::string error;
+        if (!ReplayCore2Ab(handles, stream, "GT4_CORE2_PATCH_BITS", false, off, error, 0, scale) ||
+            !ReplayCore2Ab(handles, stream, "GT4_CORE2_PATCH_BITS", true, on, error, 0, scale) ||
+            off.memory.size() != kCacheFixtureFrames || on.memory.size() != kCacheFixtureFrames ||
+            reference.size() != kCacheFixtureFrames) {
+            std::printf("  cache stream at %ux: replay failed: %s\n", scale, error.c_str());
+            ++failures;
+            continue;
+        }
+        for (uint32_t frame = 0; frame < kCacheFixtureFrames; ++frame) {
+            uint64_t offWrong = 0, onWrong = 0, newWrong = 0;
+            for (size_t at = 0; at < kGsMemoryBytes; at += 4) {
+                const bool a = std::memcmp(off.memory[frame].data() + at, reference[frame].data() + at, 4) == 0;
+                const bool b = std::memcmp(on.memory[frame].data() + at, reference[frame].data() + at, 4) == 0;
+                offWrong += a ? 0u : 1u;
+                onWrong += b ? 0u : 1u;
+                newWrong += a && !b ? 1u : 0u;
+            }
+            std::printf("  cache stream at %ux frame %u: words off the reference %llu / %llu, new %llu\n", scale, frame,
+                        static_cast<unsigned long long>(offWrong), static_cast<unsigned long long>(onWrong),
+                        static_cast<unsigned long long>(newWrong));
+            if (onWrong > offWrong || (scale == 1 && newWrong != 0)) ++failures;
+        }
+    }
+    std::printf("hw_core2_patch_bits: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// hw_core2_over_target_memo (IN-513): GT4_CORE2_OVER_TARGET_MEMO: a decode over a drawn target is reused in its VBlank only while
+// nothing under it changed, with the same picture and memory, at 1x and scaled.
+int TestCore2OverTargetMemo(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    constexpr uint32_t kFrames = 4;
+    for (uint32_t scale : {1u, 2u}) {
+        failures += CheckCore2Ab(handles, scale == 1 ? "texture over a target at 1x" : "texture over a target at 2x",
+                                 Core2TextureOverTargetCapture(kFrames), kFrames, "GT4_CORE2_OVER_TARGET_MEMO", true,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  decodes over targets %llu / %llu, reuses %llu / %llu, GLM writes %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.decodesOverTargets),
+                                                 static_cast<unsigned long long>(on.stats.decodesOverTargets),
+                                                 static_cast<unsigned long long>(off.stats.overTargetReuses),
+                                                 static_cast<unsigned long long>(on.stats.overTargetReuses),
+                                                 static_cast<unsigned long long>(off.stats.materializations),
+                                                 static_cast<unsigned long long>(on.stats.materializations));
+                                     return off.stats.overTargetReuses == 0 && on.stats.overTargetReuses > 0 &&
+                                                    on.stats.decodesOverTargets < off.stats.decodesOverTargets
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+    }
+    std::printf("hw_core2_over_target_memo: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -5143,6 +5318,7 @@ int TestCore2CpuSprites(const gpu::VulkanHandles& handles) {
 // and the T4 load from memory is mirrored into it (the last T8 sprite mixes both loads).
 int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
     const char* kSwitch = "GT4_CORE2_GPU_CLUT";
+    _putenv_s("GT4_CORE2_PATCH_BITS", "0");  // some cases count the stores of a small write over a drawn page
     int failures = CheckCore2Ab(handles, "GPU palettes", Core2GpuPaletteCapture(4), 4, kSwitch, false,
                                 [](const Core2AbRun& off, const Core2AbRun& on) {
                                     std::printf("  GPU palettes: CLUT readbacks %llu / %llu, GPU CLUT loads %llu / %llu, "
@@ -5300,6 +5476,7 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                                  },
                                  false, scale);
     }
+    _putenv_s("GT4_CORE2_PATCH_BITS", "");
     std::printf("hw_core2_gpu_clut: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
@@ -5937,6 +6114,8 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_drawn_page_test") return TestCore2DrawnPageTest(handles);
     if (name == "hw_core2_width_grace") return TestCore2WidthGrace(handles);
     if (name == "hw_core2_glm_memo") return TestCore2GlmMemo(handles);
+    if (name == "hw_core2_patch_bits") return TestCore2PatchBits(handles);
+    if (name == "hw_core2_over_target_memo") return TestCore2OverTargetMemo(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);
