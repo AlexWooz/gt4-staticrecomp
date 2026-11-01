@@ -48,7 +48,7 @@ The GS thread figures are different measures, and the stretches of track differ 
 
 ## Next step: the readback before a write on George V Paris (done: IN-508, candidate 370; the owner's F8 is pending)
 
-Kept as written for the record. The results are in `docs/STATUS.md` and the perf ledger. "Latest build" above is now candidate 371, which also removes the frametime wave the owner found on 370 (IN-509). The page-aligned test proposed below was not enough: small textures at a base inside page 382 needed block cells too.
+Kept as written for the record. The results are in `docs/STATUS.md` and the perf ledger. "Latest build" above is now candidate 372, which also removes the frametime wave the owner found on 370 (IN-509), the race start drop and the showroom wave (IN-510 to IN-513). The page-aligned test proposed below was not enough: small textures at a base inside page 382 needed block cells too.
 
 No code was changed for this. `scripts/coregs2_bench/readback_trace.py` summarises a trace run:
 

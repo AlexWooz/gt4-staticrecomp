@@ -204,3 +204,26 @@ Frames against candidate 369: 78 of 78 identical. The largest cost on this scene
 Headless, unpaced, Spec II, RX 9060 XT, one executable with `GT4_CORE2_WIDTH_GRACE_LONG=0` and without it, three interleaved rounds, VBlanks 20400 to 21300 for the per-VBlank rows. The Performance Mode columns use rounds 2 and 3: round 1 with the change on had one 261 ms VBlank (20462) in which every phase slowed by the same factor of about 8, with no readback: External interference (High confidence), not seen in the other five Performance Mode runs. Evidence: `build/evidence/in509.log` (ignored by git).
 
 Frames against candidate 370: 117 of 117 identical. **Lesson:** averages hid this. The mean GS time was below 16.67 ms and the machine held 60 FPS, while every second VBlank went over it. Look at the VBlank-by-VBlank line (`GT4_CORE2_SPIKE_MS=0.01 GT4_CORE2_SPIKE_LINES=1000`) and at the change from one VBlank to the next. Not yet the owner's F8 on this build.
+
+## Race start, vsync and showroom (IN-510 to IN-513, candidate 372)
+
+| Window, Spec II George V Paris at 6x, vsync on, ms per VBlank | 371 normal | 372 normal | 371 Performance | 372 Performance |
+|---|---|---|---|---|
+| Showroom: GS thread, even / odd VBlanks | 6.1 / 9.9 | 6.0 / 6.0 | 5.7 / 9.5 | 5.7 / 5.7 |
+| Showroom: GPU waits | 4.25 | 1.40 | 3.79 | 1.04 |
+| Pre-race: GS thread mean / max | 8.82 / 26.7 | 8.05 / 18.3 | 8.07 / 23.5 | 7.36 / 11.4 |
+| Pre-race: wall p95 | 18.4 | 17.1 | 16.8 | 16.8 |
+| Rolling start and race: wall mean | 18.13 | 16.79 | 16.67 | 16.67 |
+| Rolling start and race: wall p95 / p99 | 19.9 / 20.2 | 17.6 / 18.0 | 16.8 / 16.9 | 16.8 / 16.9 |
+| Rolling start and race: VBlanks over 20 ms, of 1000 | 29 | 1 | 0 | 0 |
+| Rolling start and race: GS thread | 13.22 | 11.18 | 11.90 | 10.17 |
+| Rolling start and race: GPU waits | 3.76 | 2.44 | 1.11 | 0.18 |
+
+Scripted runs in a real fullscreen window, paced, one run each, on the desktop's active display (a 1920 x 1080, 60 Hz virtual display, DISPLAY22, the same one as the owner's sessions). VBlanks 17800-18200 (showroom), 19000-20300 (pre-race), 20300-21300 (rolling start and race). Evidence: `build/evidence/final.log` (ignored by git).
+
+- **Race start of the v2.00 Arcade path at 6x, headless, VBlanks 8800-8999, three interleaved rounds (IN-510 set memo against none):** VBlanks over 16.67 ms 16 to 0 in each round; p95 19.7 to 13.0 ms; worst 25.2 to 16.4 ms. In the burst itself, VBlank 8826: 37 to 12 ms, GLM writes 2,257 to 25, GPU busy 21.9 to 9.5 ms.
+- **Three swapchain images (IN-511), window, the same Arcade race start, two rounds each:** GS thread 8.47 to 6.47 ms, GPU waits 6.52 to 4.18 ms, equal to no vsync (the "mailbox" request fell back to immediate on this display).
+- **Showroom, headless (IN-512, one run each):** stores about 1 to 0 per VBlank, GPU waits 1.44 to 0.10 ms, GS thread 4.1 / 6.9 to 6.0 / 5.9 ms on even and odd VBlanks: the same work spread evenly, slightly more on average in a bench with no display (5.51 to 5.96 ms).
+- **George V Paris, whole run to VBlank 21000, headless (IN-513 and the per-row IN-510):** decodes 413,167 to 133,392, GLM writes 716,978 to 137,362; race GS thread 11.09 to 10.66 ms and GPU busy 8.69 to 8.23 ms for IN-513 alone.
+
+**Frames against 371:** 1x 37/37, 3x 10/10, Arcade 27/27, Spec II 49/49; 12x 30/31 (2 pixels, at most 8 of 255, IN-512). **Measured and dropped:** an exact page test for textures over targets (no gain). **Lessons:** the headless bench understates GPU waits by up to ten times, so a window run is worth its 6 minutes; before optimising a repeated cost, count how many of the repeats are distinct. Not yet the owner's F8.
