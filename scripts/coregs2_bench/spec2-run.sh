@@ -1,6 +1,7 @@
 #!/bin/bash
 # Headless Spec II 1.10 run on CoreGS 2.0, Arcade from a card without game data (the boot order of docs/BUILD.md, S7b).
-# usage: spec2-run.sh <night|day|george> <name> <exe> [ENV=VAL ...]   (env SCALE=3 EVERY=1000 FROM=1000 FRAMES=22000)
+# usage: spec2-run.sh <night|day|george> <name> <exe> [ENV=VAL ...]   (env SCALE=3 EVERY=1000 FROM=1000 FRAMES=22000 WINDOW=1)
+# WINDOW=1 opens the game's window and paces it at 60 VBlanks/s, so 21400 VBlanks take 6 min. Never over an owner session.
 # Writes $GT4_BENCH_OUT/spec2-<scene>-<name>/. Needs the derived private/slice272-spec2-elf/SCUS_974.36 and a Spec II disc
 # image (GT4_SPEC2_ISO; the PT-BR image has the same program). The card is copied per run, never written.
 # night: C.S. Route 5 (Clubman, night), the race starts near 20000. day: Costa di Amalfi, the race starts near 21000 (FRAMES=24000).
@@ -36,5 +37,5 @@ args=(); for p in $P; do args+=(--press "$p"); done
 env GT4_RENDERER=hw GT4_HW_CORE=2 GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1 GT4_HW_SCALE=${SCALE:-3} GT4_HW_DUMP_SOURCE=upscaled \
   GT4_HW_DUMP_DIR="$(cygpath -w "$OUT/frames")" GT4_HW_DUMP_EVERY=${EVERY:-1000} GT4_HW_DUMP_FROM=${FROM:-1000} "$@" "$exe" \
   "$(cygpath -w "$GT4_ASSETS/private/slice272-spec2-elf/SCUS_974.36")" --ntsc --disc "$(cygpath -w "$GT4_SPEC2_ISO")" \
-  --frames ${FRAMES:-22000} --memcard "$(cygpath -w "$OUT/card.ps2")" "${args[@]}" > "$OUT/log.txt" 2>&1
+  --frames ${FRAMES:-22000} --memcard "$(cygpath -w "$OUT/card.ps2")" ${WINDOW:+--window} "${args[@]}" > "$OUT/log.txt" 2>&1
 echo "exit $?"

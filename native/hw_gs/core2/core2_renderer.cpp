@@ -972,6 +972,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                     }
                     gpuClutMirror_ = true;
                 }
+                static const bool multiTrace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;  // diagnostics only
+                if (multiTrace) {
+                    std::fprintf(stderr, "[core2] multi clut vblank=%llu cbp=%u psm=%u cpsm=%u csm=%u csa=%u\n",
+                                 static_cast<unsigned long long>(vblanks_), write.cbp, write.psm, write.cpsm, write.csm, write.csa);
+                }
                 bool any = false;
                 if (!FlushClutMirror() || !MakeGlmCurrent(span) || !MaterializeTargets(span, any)) return;
                 const Target *bound = nullptr;  // any live image fills the target binding, which is not read
@@ -1195,6 +1200,49 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // reader then sees what a readback would have stored. 32-bit colour targets are written this way, and 32-bit
     // depth targets too (IN-417); any other drawn target over the span is read back as before. Returns whether a
     // target was written (`any`).
+    // IN-510: at a race start GT4 loads 8 palettes from one small colour and depth pair over 1,000 times per VBlank, and
+    // each load wrote both targets into the GLM again (about 2,240 writes, about 20 ms of CPU and GPU, with nothing drawn
+    // in between): the drop the owner saw while the cars roll to the line. The writes are left out when the last call
+    // wrote the same targets, in the same order and areas, with no draw or patch since and no GLM write over them since.
+    // GT4_CORE2_GLM_MEMO=0 always writes (A/B).
+    const bool glmMemo_ = std::getenv("GT4_CORE2_GLM_MEMO") == nullptr || std::strcmp(std::getenv("GT4_CORE2_GLM_MEMO"), "0") != 0;
+    struct GlmWrite {
+        ImageId image = kNoImage;
+        std::uint64_t lastDraw = 0;
+        PixelRect area;
+        BlockSpan span;
+        Target *target = nullptr;
+    };
+    std::uint64_t glmWriteSequence_ = 0;
+    std::array<std::uint64_t, memory::kPagesTotal> glmPageWritten_{};
+    std::vector<GlmWrite> glmWrites_, lastGlmWrites_;
+    std::uint64_t lastGlmWritesEnd_ = 0;
+    template <typename Visit>
+    static void ForEachPageOfSpan(const BlockSpan &span, Visit visit) {
+        if (span.count == 0) return;
+        if (span.count >= kAllBlocks) {
+            for (std::uint32_t page = 0; page < memory::kPagesTotal; ++page) visit(page);
+            return;
+        }
+        const std::uint32_t firstPage = span.begin / memory::kBlocksPerPage;
+        const std::uint32_t lastPage = (span.begin + span.count - 1u) / memory::kBlocksPerPage;
+        for (std::uint32_t page = firstPage; page <= lastPage; ++page) visit(page % memory::kPagesTotal);
+    }
+    bool GlmHoldsLastWrites() const {
+        if (!glmMemo_ || glmWrites_.empty() || glmWrites_.size() != lastGlmWrites_.size()) return false;
+        for (std::size_t i = 0; i < glmWrites_.size(); ++i) {
+            const GlmWrite &a = glmWrites_[i], &b = lastGlmWrites_[i];
+            if (a.image != b.image || a.lastDraw != b.lastDraw || a.area.x0 != b.area.x0 || a.area.y0 != b.area.y0 ||
+                a.area.x1 != b.area.x1 || a.area.y1 != b.area.y1) {
+                return false;
+            }
+            bool unchanged = true;
+            ForEachPageOfSpan(a.span, [&](std::uint32_t page) { unchanged = unchanged && glmPageWritten_[page] <= lastGlmWritesEnd_; });
+            if (!unchanged) return false;
+        }
+        return true;
+    }
+
     bool MaterializeTargets(const BlockSpan &span, bool &any) {
         any = false;
         for (const Target &t : targets_) {
@@ -1207,8 +1255,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) order.push_back(&t);
         }
         std::sort(order.begin(), order.end(), [](const Target *a, const Target *b) { return a->lastDraw < b->lastDraw; });
+        glmWrites_.clear();
         for (Target *target : order) {
             Target &t = *target;
+            if (!t.dirty.empty()) lastGlmWrites_.clear();  // its patches change the image
             if (!ApplyDirty(t)) return false;
             // The target's page rows inside the span, within its drawn area.
             const memory::PsmInfo &info = memory::psmInfo(t.cls == FormatClass::Colour16 ? t.view.psm : Psm::Ct32);
@@ -1224,6 +1274,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             const PixelRect area = Intersect(rows, t.drawn);
             if (area.Empty()) continue;
+            glmWrites_.push_back(GlmWrite{t.image, t.lastDraw, area, SpanOfRect(t.view, area), &t});
+        }
+        if (GlmHoldsLastWrites()) {
+            for (const GlmWrite &w : glmWrites_) w.target->readOnGpu = true;
+            any = true;
+            stats.materializationsLeftOut += glmWrites_.size();
+            return true;
+        }
+        for (const GlmWrite &w : glmWrites_) {
+            Target &t = *w.target;
+            const PixelRect &area = w.area;
             std::string error;
             const std::uint32_t layout = t.cls == FormatClass::Depth32    ? static_cast<std::uint32_t>(Psm::Z32)
                                          : t.cls == FormatClass::Colour16 ? static_cast<std::uint32_t>(t.view.psm)
@@ -1235,6 +1296,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             // Not a use for 6.2 ageing: a readback was not one either, and a target kept alive by reads of its memory
             // later wins texture lookups over newer memory (GT4's title video after GT Mode).
+            ++glmWriteSequence_;
+            ForEachPageOfSpan(w.span, [&](std::uint32_t page) { glmPageWritten_[page] = glmWriteSequence_; });
             t.readOnGpu = true;
             any = true;
             stats.materializations++;
@@ -1245,6 +1308,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                              t.height, area.x0, area.y0, area.x1, area.y1, span.begin, span.count);
             }
         }
+        lastGlmWrites_ = glmWrites_;
+        lastGlmWritesEnd_ = glmWriteSequence_;
         return true;
     }
 
@@ -1275,7 +1340,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         std::string error;
-        if (!ranges.empty()) times_.glmCalls += 1;
+        if (!ranges.empty()) {
+            times_.glmCalls += 1;
+            ++glmWriteSequence_;
+            for (const auto &range : ranges) {
+                for (std::uint32_t offset = 0; offset < range.second; offset += memory::kPageBytes) {
+                    glmPageWritten_[(range.first + offset) / memory::kPageBytes] = glmWriteSequence_;
+                }
+            }
+        }
         if (!gpu_.UploadGlm(memory_.Local().bytes().data(), ranges, error)) {
             Fail(error);
             return false;

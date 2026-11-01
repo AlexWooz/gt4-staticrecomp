@@ -531,7 +531,11 @@ struct Backend::Impl {
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     choose_present_mode(mode);
 
-    std::uint32_t wanted_images = mode == VK_PRESENT_MODE_MAILBOX_KHR ? 3 : 2;
+    // IN-511: vsync with two images: the present's submission waits for the image on screen to be released, so all the
+    // renderer's GPU work queued after it waits for the display too (a window at 6x: GS thread 8.47 ms against 6.47 with
+    // three, the same as no vsync). GT4_HW_SWAPCHAIN_IMAGES=2 is the A/B.
+    std::uint32_t wanted_images = mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? 2 : 3;
+    if (const char *forced = std::getenv("GT4_HW_SWAPCHAIN_IMAGES")) wanted_images = static_cast<std::uint32_t>(std::atoi(forced));
     if (caps.maxImageCount != 0) wanted_images = std::min(wanted_images, caps.maxImageCount);
     wanted_images = std::max(wanted_images, caps.minImageCount);
     if (wanted_images > max_swapchain_images) wanted_images = max_swapchain_images;
@@ -564,6 +568,8 @@ struct Backend::Impl {
     std::uint32_t fetched = image_count;
     vkGetSwapchainImagesKHR(device, swapchain, &fetched, all_images);
     image_count = fetched;
+    std::fprintf(stderr, "[hw] swapchain: %u images (asked for %u, surface minimum %u), present mode %d\n", image_count,
+                 wanted_images, caps.minImageCount, static_cast<int>(mode));
     for (std::uint32_t i = 0; i < image_count; ++i) {
       images[i] = all_images[i];
       image_layouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;

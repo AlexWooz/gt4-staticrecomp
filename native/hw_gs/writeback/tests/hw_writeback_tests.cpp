@@ -3880,7 +3880,9 @@ cpuref::CaptureWriter Core2WidthEverySecondVblankCapture(uint32_t frames) {
 // IN-417 (GT4's palettes in the memory of its night render): page 22 holds a CT32 target (a colour sprite over the
 // palette's 16 x 16) and a Z24 target (a depth-only sprite over half of it), both drawn on the GPU; then a T8 texture
 // loads its CSM1 palette from page 22 and is drawn. The CLUT load overlaps two drawn targets, one of them depth.
-cpuref::CaptureWriter Core2MultiTargetClutCapture(uint32_t frames) {
+// `repeated` (IN-510): palettes of the same page, in turn as GT4 does, are then loaded again with nothing changed (the GLM
+// writes can be left out), after an EE upload over them, and after a new draw over them: those two must show in the picture.
+cpuref::CaptureWriter Core2MultiTargetClutCapture(uint32_t frames, bool repeated = false) {
     cpuref::CaptureWriter capture;
     constexpr uint64_t kA = 0, kT8 = 18, kShared = 22;  // pages
     auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
@@ -3931,6 +3933,27 @@ cpuref::CaptureWriter Core2MultiTargetClutCapture(uint32_t frames) {
                 (uint64_t{1} << 61),
             0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(32, 0), 0x05,
             uv(16, 16), 0x03, xyz(48, 16), 0x05});
+        if (repeated) {
+            auto sprite = [&](uint32_t x, uint32_t y, uint64_t paletteBlock) {
+                const uint64_t load = uint64_t{kT8 * 32} | (uint64_t{2} << 14) | (uint64_t{0x13} << 20) | (uint64_t{4} << 26) |
+                                      (uint64_t{4} << 30) | (uint64_t{1} << 34) | (uint64_t{1} << 35) |
+                                      ((kShared * 32 + paletteBlock) << 37) | (uint64_t{1} << 61);
+                ad({load, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(x, y), 0x05,
+                    uv(16, 16), 0x03, xyz(x + 16, y + 16), 0x05});
+            };
+            sprite(48, 0, 4);
+            sprite(0, 32, 0);
+            sprite(16, 32, 4);
+            sprite(32, 32, 0);
+            ad({(uint64_t{kShared * 32} << 32) | (uint64_t{1} << 48), 0x50, 0, 0x51, uint64_t{4} | (uint64_t{4} << 32), 0x52, 0, 0x53});
+            std::vector<uint64_t> words;
+            for (uint32_t i = 0; i < 8; ++i) words.push_back(uint64_t{0x80F0A050u + (frame + 1u) * i * 0x00010305u} * 0x100000001ull);
+            image(words);
+            sprite(32, 16, 4);
+            ad({frameReg(kShared), 0x4C, kSprite, 0x00, rgbaq(0x80205080u + frame * 0x00070503u), 0x01, xyz(4, 4), 0x05, xyz(12, 12), 0x05,
+                frameReg(kA), 0x4C});
+            sprite(48, 16, 0);
+        }
         capture.FrameEnd(frame);
     }
     return capture;
@@ -5053,6 +5076,34 @@ int TestCore2WidthGrace(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_glm_memo (IN-510): GT4_CORE2_GLM_MEMO on a palette loaded again and again from a colour and depth pair: GLM writes
+// are left out only while nothing changed, with the same picture and memory, at 1x and scaled.
+int TestCore2GlmMemo(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    constexpr uint32_t kFrames = 3;
+    for (uint32_t scale : {1u, 2u}) {
+        failures += CheckCore2Ab(handles, scale == 1 ? "repeated palette loads at 1x" : "repeated palette loads at 2x",
+                                 Core2MultiTargetClutCapture(kFrames, true), kFrames, "GT4_CORE2_GLM_MEMO", false,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  GLM writes %llu / %llu, left out %llu / %llu, multi-target loads %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.materializations),
+                                                 static_cast<unsigned long long>(on.stats.materializations),
+                                                 static_cast<unsigned long long>(off.stats.materializationsLeftOut),
+                                                 static_cast<unsigned long long>(on.stats.materializationsLeftOut),
+                                                 static_cast<unsigned long long>(off.stats.clutMultiTargetLoads),
+                                                 static_cast<unsigned long long>(on.stats.clutMultiTargetLoads));
+                                     return off.stats.materializationsLeftOut == 0 && on.stats.materializationsLeftOut > 0 &&
+                                                    on.stats.materializations < off.stats.materializations &&
+                                                    on.stats.clutMultiTargetLoads == off.stats.clutMultiTargetLoads
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+    }
+    std::printf("hw_core2_glm_memo: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -5885,6 +5936,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_drawn_page_test") return TestCore2DrawnPageTest(handles);
     if (name == "hw_core2_width_grace") return TestCore2WidthGrace(handles);
+    if (name == "hw_core2_glm_memo") return TestCore2GlmMemo(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);
