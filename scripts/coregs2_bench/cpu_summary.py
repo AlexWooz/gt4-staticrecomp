@@ -1,14 +1,16 @@
 """Race-window averages of the report lines of night runs (VBlank intervals ending in [LO, HI]).
 
-usage: cpu_summary.py <tag> ...   (the tags of night-run.sh or series.sh, under GT4_BENCH_OUT). It averages the
-600-VBlank reports, so a run needs GT4_MTVU_REPORT_EVERY=600 GT4_HW_PROFILE_EVERY=600 (series.sh sets them).
+usage: cpu_summary.py <tag> ...   (the tags of night-run.sh or series.sh, or a run's folder name such as spec2-george-a1,
+under GT4_BENCH_OUT). It averages the reports, so a run needs GT4_MTVU_REPORT_EVERY and GT4_HW_PROFILE_EVERY (series.sh
+sets them to 600; the [core2] lines are always per 600 VBlanks). SUMMARY_LO and SUMMARY_HI set the window (default the
+night race, 7800 to 11400); George V Paris races from 20400 to about 21300 (spec2-run.sh).
 """
 import os
 import re
 import sys
 from pathlib import Path
 
-LO, HI = 7800, 11400
+LO, HI = int(os.environ.get('SUMMARY_LO', 7800)), int(os.environ.get('SUMMARY_HI', 11400))
 ROOT = Path(os.environ.get('GT4_BENCH_OUT', Path(__file__).resolve().parents[2] / 'build' / 'evidence'))
 
 
@@ -17,7 +19,8 @@ def num(s):
 
 
 def summarise(name):
-    t = (ROOT / f'night-{name}' / 'log.txt').read_text(encoding='utf-8', errors='replace')
+    folder = ROOT / f'night-{name}'
+    t = ((folder if folder.exists() else ROOT / name) / 'log.txt').read_text(encoding='utf-8', errors='replace')
     out = {}
 
     def avg(key, values):
@@ -72,6 +75,16 @@ def summarise(name):
                 gb.append(num(b.group(1)))
                 gd.append(num(b.group(2)))
     avg('gpu_wait', gw)
+    reasons = {}
+    for m in re.finditer(r'core2\] vblank=(\d+) ', t):
+        if LO <= int(m.group(1)) <= HI:
+            line = re.search(r'gpu_wait ms/vblank by readback reason \(readbacks/vblank\):(.*?)\n', t[m.end():m.end() + 20000])
+            if line:
+                for reason, wait, count in re.findall(r' ([a-z ]+?)=([\d.]+) \(([\d.]+)\)', line.group(1)):
+                    reasons.setdefault('wait_' + reason.replace(' ', '_'), []).append(num(wait))
+                    reasons.setdefault('readbacks_' + reason.replace(' ', '_'), []).append(num(count))
+    for k, v in reasons.items():
+        avg(k, v)
     avg('gpu_busy', gb)
     avg('gpu_draw_passes', gd)
     avg('mtvu_worker_busy', [num(v) for v in re.findall(r'worker ms/frame: vu1_program=[\d.]+ output_path12=[\d.]+ busy=([\d.]+)', tail)])

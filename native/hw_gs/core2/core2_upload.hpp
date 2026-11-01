@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 
@@ -33,5 +34,15 @@ bool FastHostToLocal(std::uint8_t *memoryBytes, const memory::BufferView &view, 
 // IN-456: the block (0..16383) holding pixel (x, y) of `view` (x, y < 2048), from the same in-page tables: equal to
 // memory::pixelSlot(view, x, y).byteOffset / 256 for every PSM and base pointer, a table read instead of the divisions.
 std::uint32_t BlockOfPixel(const memory::BufferView &view, std::uint32_t x, std::uint32_t y);
+
+// IN-508: the pages of GS memory (modulo 512) holding the rectangle (x0, y0)-(x1, y1), corners included, of `view`, in
+// that format's page size. A page-aligned base keeps every block of a format's page in one memory page, so whole pages
+// of the format are walked; any other base spreads a format's page over two, so the rectangle's block cells are walked
+// (at most 1024 of them). Returns false, with `pages` undefined, when the answer would not be exact or would take
+// longer: a buffer width that is not whole pages, a rectangle outside the buffer's width or the 2048 range, or too many
+// cells. An empty rectangle holds no page.
+using PageSet = std::bitset<memory::kPagesTotal>;
+bool PagesOfRect(const memory::BufferView &view, std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1,
+                 PageSet &pages);
 
 }  // namespace hwgs::core2

@@ -1859,11 +1859,58 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         t.dirty.push_back(d);
     }
 
-    void AddUploadDirty(Target &t, const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
+    // IN-508 (4.1 says "the overlapped pages"): whether a write shares no page with a target's drawn rectangle, so it
+    // changes none of its drawn pixels. SpanOfRect counts whole page rows, so a target drawn narrower than its buffer
+    // looks overlapped by what follows its last row: on George V Paris GT4 streams a CT32 texture from page 382 about
+    // once per VBlank, the page right after the 192 pixels of the last row its Z32 target at page 351 (BW 4) draws.
+    // Smaller textures land in that page too, from block 12225 on. Both the store (StoreDrawnBeforeWrite) and the patch
+    // of those drawn rows (AddTouchedPagesDirty) go together: without the store memory is older than the drawn pixels,
+    // so a patch over them would bring old pixels back. The target's base must be page aligned for its pages to be the
+    // same rectangles in memory. GT4_CORE2_DRAWN_PAGE_TEST=0 stores and patches whole page rows (A/B).
+    const bool drawnPageTest_ = std::getenv("GT4_CORE2_DRAWN_PAGE_TEST") == nullptr ||
+                                std::strcmp(std::getenv("GT4_CORE2_DRAWN_PAGE_TEST"), "0") != 0;
+    bool WriteMissesDrawnPages(const Target &t, const BufferView &view, const PixelRect &rect) const {
+        if (!drawnPageTest_ || t.drawn.Empty() || t.view.basePointer % memory::kBlocksPerPage != 0) return false;
+        PageSet written, drawn;
+        if (!PagesOfRect(view, rect.x0, rect.y0, rect.x1, rect.y1, written) ||
+            !PagesOfRect(t.view, t.drawn.x0, t.drawn.y0, t.drawn.x1, t.drawn.y1, drawn)) {
+            return false;
+        }
+        return (written & drawn).none();
+    }
+
+    // IN-508: the dirty rectangles of a write that misses the drawn pages: the target's pages the write touches, whole
+    // and in the target's format, as 4.1 asks for another layout. They hold no drawn pixel, so memory is the newest
+    // content for all of them. Neighbours in one page row are merged.
+    void AddTouchedPagesDirty(Target &t, const BufferView &view, const PixelRect &rect) {
+        PageSet written;
+        if (!PagesOfRect(view, rect.x0, rect.y0, rect.x1, rect.y1, written)) return;
+        const memory::PsmInfo &info = memory::psmInfo(t.view.psm);
+        const std::int32_t pw = info.pageWidth, ph = info.pageHeight;
+        const std::size_t first = t.dirty.size();
+        for (std::int32_t y = 0; y < static_cast<std::int32_t>(t.height); y += ph) {
+            for (std::int32_t x = 0; x < static_cast<std::int32_t>(t.width); x += pw) {
+                const std::uint32_t page = BlockOfPixel(t.view, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y)) /
+                                           memory::kBlocksPerPage;
+                if (!written[page]) continue;
+                if (t.dirty.size() > first) {
+                    PixelRect &last = t.dirty.back().rect;
+                    if (last.y0 == y && last.x1 + 1 == x) {
+                        last.x1 = x + pw - 1;
+                        continue;
+                    }
+                }
+                PushDirty(t, Dirty{PixelRect{x, y, x + pw - 1, y + ph - 1}, t.view.psm});
+            }
+        }
+    }
+
+    // Returns whether the write kept the target's drawn pixels apart (IN-508): such a target is never replaced by it.
+    bool AddUploadDirty(Target &t, const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
         const FormatClass cls = ClassOf(view.psm);
         if (view.basePointer == t.view.basePointer && view.bufferWidth == t.view.bufferWidth && cls == t.cls) {
             PushDirty(t, Dirty{rect, view.psm});
-            return;
+            return false;
         }
         // IN-416: page for page when the layouts agree, unless the write replaces the whole target (whole page rows
         // then, so that 4.1 deletes it below).
@@ -1871,7 +1918,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1, static_cast<std::int32_t>(t.height) - 1});
         if (PageExact(t, view, rect) && !SpanContains(WholePagesWritten(view, rect), whole)) {
             AddPageExactDirty(t, view, rect);
-            return;
+            return false;
+        }
+        if (WriteMissesDrawnPages(t, view, rect)) {
+            AddTouchedPagesDirty(t, view, rect);
+            return true;
         }
         // Another base, width or format: the target's page rows the write touches, read in the target's format.
         const memory::PsmInfo &info = memory::psmInfo(t.view.psm);
@@ -1887,6 +1938,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                          static_cast<std::int32_t>((row + 1) * info.pageHeight) - 1});
         }
         if (!rows.Empty()) PushDirty(t, Dirty{rows, t.view.psm});
+        return false;
     }
 
     void OnMemoryWritten(const BufferView &view, const PixelRect &rect, bool remember, WriteKind kind = kWriteUpload,
@@ -1899,7 +1951,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1,
                                                             static_cast<std::int32_t>(t.height) - 1});
             if (!SpansOverlap(whole, span)) continue;
-            AddUploadDirty(t, view, rect, span);
+            const bool drawnKeptApart = AddUploadDirty(t, view, rect, span);
             static const long long traceAt = std::getenv("GT4_CORE2_BATCH_TRACE_AT")
                                                  ? std::atoll(std::getenv("GT4_CORE2_BATCH_TRACE_AT"))
                                                  : -1;  // diagnostics only
@@ -1914,8 +1966,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             // 4.1: a target the write covers entirely is deleted, drawn or not: memory now holds newer content for
             // all of it (GT4 streams textures over the memory of its small effect targets; a kept target would later
             // write its old pixels back over the new texture).
-            if (!t.dirty.empty() && t.dirty.back().psm == t.view.psm && Contains(t.dirty.back().rect, t.valid) &&
-                !t.valid.Empty()) {
+            if (!drawnKeptApart && !t.dirty.empty() && t.dirty.back().psm == t.view.psm &&
+                Contains(t.dirty.back().rect, t.valid) && !t.valid.Empty()) {
                 DestroyTarget(t);
                 stats.targetsReplaced++;
             }
@@ -2141,6 +2193,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             if (wholePages.count != 0 && SpanContains(wholePages, TargetSpan(t, t.drawn))) {
                 storesSkipped_++;
+                continue;
+            }
+            if (WriteMissesDrawnPages(t, view, rect)) {  // IN-508: no drawn pixel can be patched
+                storesSkipped_++;
+                stats.drawnPagesMissed++;
                 continue;
             }
             static const bool trace = std::getenv("GT4_CORE2_STORE_TRACE") != nullptr;  // diagnostics only

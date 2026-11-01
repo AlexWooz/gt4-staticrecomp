@@ -3741,6 +3741,81 @@ cpuref::CaptureWriter Core2StreamOverRenderCapture(uint32_t frames) {
     return capture;
 }
 
+// IN-508 (GT4's Z32 target and the stream after it on George V Paris): a CT32 target over pages 22 and 23 (FBW 2), drawn
+// only inside page 22 and read as a T8 texture on the GPU, then an EE write in another layout:
+//   frame % 2 == 0: 128 x 64 T8 in page 23, in the target's page row but sharing no page with its drawn area;
+//   frame % 2 == 1: 64 x 16 T4 in page 22, over the drawn page: the drawn pixels are stored (IN-411).
+// The target is then sampled in both pages, so both a lost drawn pixel and a lost write show in the picture. The drawn
+// sprite has one colour per frame, so the picture does not depend on the scale. `readFirst` draws a small sprite between
+// the T8 read and the write, which sends the read's batch first; without it the T8 write in page 23 overtakes that
+// batch, so it finds a drawn target that nothing has read yet.
+cpuref::CaptureWriter Core2WriteBesideDrawnCapture(uint32_t frames, bool readFirst) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kSource = 16, kRender = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page, uint64_t fbw) { return page | (fbw << 16); };  // CT32
+    auto blit = [](uint64_t dbp, uint64_t dbw, uint64_t dpsm) { return (dbp << 32) | (dbw << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    auto tex0 = [](uint64_t blocks, uint64_t tbw, uint64_t psm, uint64_t log2, uint64_t tfx) {
+        return blocks | (tbw << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) | (tfx << 35);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    // A grey ramp palette at page 14, and a source texture of one colour (TFX modulate then gives the vertex colour).
+    ad({blit(14 * 32, 1, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> entries;
+        for (uint32_t i = 0; i < 128; ++i) {
+            const uint32_t a = 2 * i, b = 2 * i + 1;
+            entries.push_back(uint64_t{0x80000000u | (a * 0x010101u)} | (uint64_t{0x80000000u | (b * 0x010101u)} << 32));
+        }
+        image(entries);
+    }
+    ad({blit(kSource * 32, 1, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    image(std::vector<uint64_t>(128, uint64_t{0x80808080u} * 0x100000001ull));
+    const uint64_t readRender = tex0(kRender * 32, 1, 0x13, 5, 0) | (uint64_t{14 * 32} << 37) | (uint64_t{1} << 61);
+    const uint64_t sampleRender = tex0(kRender * 32, 2, 0x00, 7, 1);
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        // page 22 drawn on the GPU, then A cleared and page 22 read as a T8 texture
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            frameReg(kRender, 2), 0x4C, tex0(kSource * 32, 1, 0x00, 4, 0), 0x06, kSprite | kTme | kFst, 0x00,
+            rgbaq(0x80000000u | ((frame + 1u) * 0x00102030u)), 0x01, uv(0, 0), 0x03, xyz(frame, 0), 0x05, uv(16, 16), 0x03,
+            xyz(32 + frame, 32), 0x05, frameReg(kA, 1), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05,
+            xyz(64, 64), 0x05, readRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03,
+            xyz(0, 0), 0x05, uv(32, 32), 0x03, xyz(32, 32), 0x05});
+        if (readFirst) {
+            ad({sampleRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(8, 8), 0x03, xyz(0, 60), 0x05,
+                uv(12, 12), 0x03, xyz(4, 64), 0x05});
+        }
+        std::vector<uint64_t> words;
+        if (frame % 2 == 0) {
+            ad({blit((kRender + 1) * 32, 2, 0x13), 0x50, 0, 0x51, uint64_t{128} | (uint64_t{64} << 32), 0x52, 0, 0x53});
+            for (uint32_t i = 0; i < 128 * 64 / 8; ++i) words.push_back((uint64_t{i + frame} * 0x0102030405060708ull) ^ 0x8040201008040201ull);
+        } else {
+            ad({blit(kRender * 32, 2, 0x14), 0x50, uint64_t{8} << 48, 0x51, uint64_t{64} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+            for (uint32_t i = 0; i < 64 * 16 / 16; ++i) words.push_back(uint64_t{0x0123456789ABCDEFull} * (i + 3 + frame));
+        }
+        image(words);
+        // the target sampled in the drawn page and in the page next to it (inside the sprite: at scale a target's undrawn
+        // first sub-pixel row and column hold earlier content, which the whole-row patch of the run without the test hides)
+        ad({sampleRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(8, 8), 0x03, xyz(32, 0), 0x05,
+            uv(24, 24), 0x03, xyz(48, 16), 0x05, uv(64, 0), 0x03, xyz(32, 32), 0x05, uv(96, 32), 0x03, xyz(64, 64), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
 // IN-417 (GT4's palettes in the memory of its night render): page 22 holds a CT32 target (a colour sprite over the
 // palette's 16 x 16) and a Z24 target (a depth-only sprite over half of it), both drawn on the GPU; then a T8 texture
 // loads its CSM1 palette from page 22 and is drawn. The CLUT load overlaps two drawn targets, one of them depth.
@@ -4827,6 +4902,69 @@ int TestCore2Mipmaps(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_drawn_page_test (IN-508): GT4_CORE2_DRAWN_PAGE_TEST on a write in a drawn target's page row that shares no page
+// with its drawn area: no store for it, the picture and memory equal to the run that stores, at 1x and scaled. Without
+// the dirty side of the test (whole rows patched from a memory that was not stored) the drawn pixels of that row would
+// come back old, and the picture and memory would differ.
+int TestCore2DrawnPageTest(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    constexpr uint32_t kFrames = 5;
+    for (uint32_t scale : {1u, 2u}) {
+        failures += CheckCore2Ab(handles, scale == 1 ? "write beside the drawn pages at 1x" : "write beside the drawn pages at 2x",
+                                 Core2WriteBesideDrawnCapture(kFrames, true), kFrames, "GT4_CORE2_DRAWN_PAGE_TEST", true,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  stores before write %llu / %llu, missed %llu / %llu, patched pixels %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(on.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(off.stats.drawnPagesMissed),
+                                                 static_cast<unsigned long long>(on.stats.drawnPagesMissed),
+                                                 static_cast<unsigned long long>(off.stats.dirtyPatchPixels),
+                                                 static_cast<unsigned long long>(on.stats.dirtyPatchPixels));
+                                     return off.stats.storesBeforeWrite == kFrames && on.stats.storesBeforeWrite == 2 &&
+                                                    off.stats.drawnPagesMissed == 0 && on.stats.drawnPagesMissed == 3 &&
+                                                    on.stats.dirtyPatchPixels < off.stats.dirtyPatchPixels
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+    }
+    // A drawn target nothing has read yet is not stored either way, so whole rows lost its drawn pixels (and could delete
+    // the target): with the test on, memory equals the reference, and with it off it does not.
+    const cpuref::CaptureWriter unread = Core2WriteBesideDrawnCapture(kFrames, false);
+    std::vector<uint8_t> reference;
+    {
+        cpuref::CpuRenderer renderer;
+        cpuref::ReplaySummary summary;
+        std::string error;
+        if (!cpuref::ReplayCapture(unread.Bytes(), renderer, summary,
+                                   [&](uint64_t, const cpuref::FrameImage&) {
+                                       const auto& bytes = renderer.Memory().Local().bytes();
+                                       reference.assign(bytes.begin(), bytes.begin() + kGsMemoryBytes);
+                                   },
+                                   error)) {
+            std::printf("  unread target: reference failed: %s\n", error.c_str());
+            ++failures;
+        }
+    }
+    for (const bool on : {false, true}) {
+        Core2AbRun run;
+        std::string error;
+        if (!ReplayCore2Ab(handles, unread, "GT4_CORE2_DRAWN_PAGE_TEST", on, run, error, kFrames - 1, 1) ||
+            run.memory.size() != kFrames || reference.size() != kGsMemoryBytes) {
+            std::printf("  unread target: replay failed: %s\n", error.c_str());
+            ++failures;
+            continue;
+        }
+        uint64_t wrong = 0;
+        for (size_t at = 0; at < kGsMemoryBytes; ++at) wrong += run.memory.back()[at] != reference[at];
+        std::printf("  unread target, test %s: memory bytes off the reference %llu\n", on ? "on" : "off",
+                    static_cast<unsigned long long>(wrong));
+        if (on ? wrong != 0 : wrong == 0) ++failures;
+    }
+    std::printf("hw_core2_drawn_page_test: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_cpu_sprites (IN-407): GT4_CORE2_CPU_SPRITES (small untextured sprites drawn by the CPU reference into GS
 // memory) on the hw_cache_equals_writeback stream (palettes behind a depth test, T8/T4 textures, uploads, moves, a
 // readback) and on GT4's palette-sprite pattern, whose memory must equal the reference exactly and whose CLUT loads
@@ -5657,6 +5795,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_interlaced_present") return TestCore2InterlacedPresent(handles);
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
+    if (name == "hw_core2_drawn_page_test") return TestCore2DrawnPageTest(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);

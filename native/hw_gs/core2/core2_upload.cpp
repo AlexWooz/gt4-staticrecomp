@@ -274,6 +274,28 @@ std::uint32_t BlockOfPixel(const BufferView &view, std::uint32_t x, std::uint32_
     return block & (memory::kBlocksTotal - 1u);
 }
 
+bool PagesOfRect(const BufferView &view, std::int32_t x0, std::int32_t y0, std::int32_t x1, std::int32_t y1, PageSet &pages) {
+    pages.reset();
+    const memory::PsmInfo &info = memory::psmInfo(view.psm);
+    const std::int32_t pageWidth = static_cast<std::int32_t>(info.pageWidth), pageHeight = static_cast<std::int32_t>(info.pageHeight);
+    const std::int32_t bufferWidth = static_cast<std::int32_t>(view.bufferWidth) * 64;
+    if (pageWidth == 0 || pageHeight == 0 || bufferWidth == 0 || bufferWidth % pageWidth != 0) return false;
+    if (x1 < x0 || y1 < y0) return true;
+    if (x0 < 0 || y0 < 0 || x1 >= bufferWidth || x1 >= 2048 || y1 >= 2048) return false;
+    const bool pageAligned = view.basePointer % memory::kBlocksPerPage == 0;
+    const std::int32_t stepX = pageAligned ? pageWidth : static_cast<std::int32_t>(info.blockWidth);
+    const std::int32_t stepY = pageAligned ? pageHeight : static_cast<std::int32_t>(info.blockHeight);
+    const std::int64_t cells = static_cast<std::int64_t>(x1 / stepX - x0 / stepX + 1) * (y1 / stepY - y0 / stepY + 1);
+    if (!pageAligned && cells > 1024) return false;
+    for (std::int32_t row = y0 / stepY; row <= y1 / stepY; ++row) {
+        for (std::int32_t column = x0 / stepX; column <= x1 / stepX; ++column) {
+            pages.set(BlockOfPixel(view, static_cast<std::uint32_t>(column * stepX), static_cast<std::uint32_t>(row * stepY)) /
+                      memory::kBlocksPerPage);
+        }
+    }
+    return true;
+}
+
 bool FastHostToLocal(std::uint8_t *memoryBytes, const BufferView &view, std::uint32_t x0, std::uint32_t y0,
                      std::uint32_t width, std::uint32_t height, const std::uint8_t *data, std::size_t byteCount,
                      UploadSwizzle swizzle, bool *changed, std::uint64_t *changedBlocks) {

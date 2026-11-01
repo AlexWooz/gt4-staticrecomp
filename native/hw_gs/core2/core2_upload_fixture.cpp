@@ -21,6 +21,8 @@ namespace {
 
 using hwgs::core2::BlockOfPixel;
 using hwgs::core2::FastHostToLocal;
+using hwgs::core2::PageSet;
+using hwgs::core2::PagesOfRect;
 using hwgs::core2::UploadSwizzle;
 using namespace hwgs::memory;
 
@@ -164,6 +166,81 @@ int main(int argc, char **argv) {
             }
         }
         ++cases;
+    }
+    // IN-508: PagesOfRect agrees with pixelSlot for every pixel of the rectangle, for every PSM, and refuses what it cannot
+    // answer exactly.
+    for (const Psm psm : psms) {
+        const PsmInfo &info = psmInfo(psm);
+        const std::uint32_t bufferWidth = (info.pageWidth > 64u ? 2u : 1u) * (1u + static_cast<std::uint32_t>(NextRandom(state) % 4u));
+        for (int i = 0; i < 40; ++i) {
+            const std::uint32_t basePage = static_cast<std::uint32_t>(NextRandom(state) % kPagesTotal);
+            // Half of the bases inside a page; those rectangles stay small enough to be answered.
+            const std::uint32_t inPage = i % 2 == 0 ? 0u : static_cast<std::uint32_t>(NextRandom(state) % kBlocksPerPage);
+            const BufferView view{basePage * kBlocksPerPage + inPage, bufferWidth, psm};
+            const std::int32_t width = static_cast<std::int32_t>(bufferWidth * 64u);
+            const std::int32_t x0 = static_cast<std::int32_t>(NextRandom(state) % static_cast<std::uint32_t>(width));
+            const std::int32_t x1 = x0 + static_cast<std::int32_t>(NextRandom(state) % static_cast<std::uint32_t>(width - x0));
+            const std::int32_t y0 = static_cast<std::int32_t>(NextRandom(state) % 512u);
+            const std::int32_t y1 = y0 + static_cast<std::int32_t>(NextRandom(state) % 64u);
+            PageSet expected, got;
+            for (std::int32_t y = y0; y <= y1; ++y) {
+                for (std::int32_t x = x0; x <= x1; ++x) {
+                    expected.set(pixelSlot(view, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y)).byteOffset / kBlockBytes / kBlocksPerPage);
+                }
+            }
+            if (!PagesOfRect(view, x0, y0, x1, y1, got) || got != expected) {
+                ++failures;
+                std::fprintf(stderr, "FAIL: PagesOfRect %s bp=%u bw=%u (%d,%d)-(%d,%d)\n", info.name, view.basePointer, bufferWidth, x0, y0, x1, y1);
+                break;
+            }
+        }
+        ++cases;
+    }
+    {
+        // GT4 on George V Paris: the Z32 target at BP 11232, BW 4, drawn 192 x 256, holds pages 351-381 without 354, 358,
+        // ... 378; the streamed CT32 texture at BP 12224, BW 1, starts right after, at page 382. The whole target has 382.
+        const BufferView depth{11232, 4, Psm::Z32}, stream{12224, 1, Psm::Ct32};
+        PageSet drawn, whole, written;
+        const bool answered = PagesOfRect(depth, 0, 0, 191, 255, drawn) && PagesOfRect(depth, 0, 0, 255, 255, whole) &&
+                              PagesOfRect(stream, 0, 0, 63, 1439, written);
+        ++cases;
+        if (!answered || drawn.count() != 24 || !drawn[351] || !drawn[381] || drawn[354] || whole.count() != 32 ||
+            written.count() != 45 || !written[382] || !written[426] || (drawn & written).any() || !(whole & written)[382]) {
+            ++failures;
+            std::fprintf(stderr, "FAIL: PagesOfRect on GT4's target and stream\n");
+        }
+        // The end of memory wraps: 2 pages per row from page 511.
+        PageSet wrapped;
+        ++cases;
+        if (!PagesOfRect(BufferView{511u * kBlocksPerPage, 2, Psm::Ct32}, 0, 0, 127, 31, wrapped) || wrapped.count() != 2 ||
+            !wrapped[511] || !wrapped[0]) {
+            ++failures;
+            std::fprintf(stderr, "FAIL: PagesOfRect does not wrap at 512 pages\n");
+        }
+        // Formats with other page sizes, on the same memory: T8 128 x 64 per page, T4 128 x 128, CT16 64 x 64.
+        PageSet t8, t4, ct16;
+        ++cases;
+        if (!PagesOfRect(BufferView{32, 2, Psm::T8}, 0, 0, 127, 63, t8) || t8.count() != 1 || !t8[1] ||
+            !PagesOfRect(BufferView{32, 2, Psm::T4}, 0, 0, 127, 127, t4) || t4.count() != 1 || !t4[1] ||
+            !PagesOfRect(BufferView{32, 1, Psm::Ct16}, 0, 64, 63, 127, ct16) || ct16.count() != 1 || !ct16[2]) {
+            ++failures;
+            std::fprintf(stderr, "FAIL: PagesOfRect ignores a format's page size\n");
+        }
+        // GT4's small textures at a base inside page 382: only that page, and so none of the drawn pages.
+        PageSet small;
+        ++cases;
+        if (!PagesOfRect(BufferView{12232, 1, Psm::Ct32}, 0, 0, 7, 7, small) || small.count() != 1 || !small[382] || (drawn & small).any()) {
+            ++failures;
+            std::fprintf(stderr, "FAIL: PagesOfRect on GT4's small texture inside page 382\n");
+        }
+        // What it must refuse: too many block cells from a base inside a page, a width of half a page, past the width, past 2048.
+        PageSet refused;
+        ++cases;
+        if (PagesOfRect(BufferView{8, 1, Psm::Ct32}, 0, 0, 63, 2047, refused) || PagesOfRect(BufferView{0, 1, Psm::T8}, 0, 0, 7, 7, refused) ||
+            PagesOfRect(BufferView{0, 1, Psm::Ct32}, 0, 0, 64, 7, refused) || PagesOfRect(BufferView{0, 1, Psm::Ct32}, 0, 0, 7, 2048, refused)) {
+            ++failures;
+            std::fprintf(stderr, "FAIL: PagesOfRect answered a case it cannot answer exactly\n");
+        }
     }
     // Too little data: nothing written, the caller takes the generic path.
     std::vector<std::uint8_t> memory(kLocalMemoryBytes, 0xA5);

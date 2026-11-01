@@ -92,6 +92,7 @@ struct Core2Counters {
     std::uint64_t mipTextures = 0;        // IN-428: memory textures decoded with their mip levels
     std::uint64_t mipLevelsDecoded = 0;   // IN-428: mip levels (1..MXL) decoded
     std::uint64_t pageExactDirties = 0;        // IN-416: writes turned into page-exact dirty rectangles
+    std::uint64_t drawnPagesMissed = 0;        // IN-508: stores left out because the write shares no page with the drawn area
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path
     std::uint64_t uploadCheckMismatches = 0;   // ... of which differed (also printed per upload)
 };
