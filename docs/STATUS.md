@@ -6,7 +6,8 @@ Candidate 369 (pins `docs/inputs/slice369-pcsx2.json`, `1aa79cf0...`, and `docs/
 
 - **What it adds:** IN-507: under CoreGS 2.0 Play checks the shader cache and shows "Compiling shaders" only when it must compile. GSdx is unchanged.
 - **Checks:** v2.00 frames against candidate 367 10/10 and 14/14; `ctest` 147 of 147 passed (one skipped); launcher `cargo test --workspace` 599; focus pages en-US 211 of 223 and pt-BR 218 of 230, the same 12 known failures, the 6 new checks pass; a run with the prepared cache had no uber batches.
-- **Not checked:** the window in the real launcher with a real compile (the page was checked with the dev mock); the HD 620 (laptop off).
+- **Real compile:** the owner's first Play on 369 compiled 300 variants through the launcher (`shaders: compiled`, 00:59); the next session found them. **Not checked:** the HD 620 (laptop off).
+- **Against GSdx at 6x on George V Paris:** GSdx 57.50 VBlanks/s, 60.00 in Performance Mode (no late frame in 5871), against 49.60 and 57.73 here; p99 19.64 ms against 27.74 ms in Performance Mode. Table in the journal of 2026-11-01. GSdx wins this scene.
 - **Owner's F8, George V Paris at 6x on Spec II, RX 9060 XT (candidate 368):** without Performance Mode 49.6 VBlanks/s, median 19.9 ms, p99 28.9 ms; with it 57.7 VBlanks/s, median 16.8 ms, p99 27.7 ms. GS thread 17.1 and 16.0 ms per VBlank, GPU busy 12.2 and 10.4 ms: the GS thread is the limit, not the GPU. Readbacks are the largest cost, 7.7 and 7.2 ms, of which 5.5 and 5.0 ms wait for the GPU; "before write" is the largest reason (3.0 and 3.6 ms). The worst spike was 40.2 ms, 24.7 of them waiting for the GPU. Shaders did not limit these intervals.
 
 ## TASK-027 CoreGS 2.0 candidate 368: Spec II too, installed on the owner's desktop (2026-11-01)
