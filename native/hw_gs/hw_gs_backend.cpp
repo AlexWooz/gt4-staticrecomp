@@ -1007,7 +1007,7 @@ struct Backend::Impl {
   // IN-516: on the virtual display of a game stream, with vsync, a presentation holds its queue until the display takes the
   // frame (with VK_PRESENT_MODE_FIFO_LATEST_READY_KHR too), and everything submitted after it waits on that queue: GS thread
   // waits of about 11 ms per VBlank in the showroom on the owner's desktop, with waits of one or two whole refreshes (17.7 and
-  // 33 ms) in races, the spikes in the frametime graph; without vsync 0.9 ms. A real monitor showed none of this.
+  // 33 ms) in races, the spikes in the frametime graph; without vsync 0.9 ms. The real monitor at 144 Hz showed none of this.
   // So the rendering queue draws the frame into a window-sized picture, and a second queue of the
   // family waits for the display, copies the picture and presents. Nothing here waits for the display: when the second
   // queue is two presentations behind, or no swapchain image is free, this frame is not shown. A device with one queue

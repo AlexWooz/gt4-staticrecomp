@@ -242,9 +242,20 @@ Window, fullscreen, Spec II George V Paris at 6x, 16:9, real 144 Hz monitor unle
 | + allowance 0.7 ms (`z0`, final) | 6.79 | 3.44 | 5 | 18.8 | 291 |
 | Performance Mode, 372 / final | 8.49 / 7.52 | 0.90 / 0.46 | 0 / 1 | 17.5 / 17.6 | - |
 
+**The "GS ms" column leaves out the flare read,** which runs outside the GIF stage, so it flatters normal mode: with 16 slots the wait moved into that read. All stages (`[core2] exclusive` total, race, last six reports):
+
+| | All stages ms | Flare and other reads ms | GPU waits ms | CPU ms (all less waits) | EE at the read ms |
+|---|---|---|---|---|---|
+| 372 normal | 11.00 | 1.43 | 3.07 | 7.94 | 8.55 |
+| 373 normal | 10.73 | 3.80 | 3.42 | 7.31 | 8.58 |
+| 372 Performance | 8.70 | 0.24 | 0.92 | 7.78 | - |
+| 373 Performance | 7.72 | 0.57 | 0.49 | 7.24 | - |
+
+So 373 costs about 8% less CPU in normal mode and 7% in Performance Mode, and Performance Mode is lighter than normal mode, as expected. The flatter frametime in normal mode comes from IN-514.
+
 The frametime log costs nothing measurable (final build without it: GS 6.77 ms, 255 late flares). The run-to-run spread here is large (GPU waits 3.4 or 4.2 ms on identical builds, bimodal, Unknown cause, possibly the GPU's clock). Treat single runs as direction.
 
-**Virtual display, 16:9 (fullscreen, the owner's display while streaming), candidate 372's paths:** FIFO showroom GS 13.77 ms, waits 10.96 ms, 132 of 400 over 17 ms; latest ready 13.81 / 11.04 / 130; immediate (no vsync, mailbox falls back) 5.93 / 0.87 / 2. **The second queue has no run on that display.**
+**Virtual 60 Hz display, 16:9 (fullscreen, the owner's display while streaming), candidate 372's paths; a real monitor at 60 Hz was not tested:** FIFO showroom GS 13.77 ms, waits 10.96 ms, 132 of 400 over 17 ms; latest ready 13.81 / 11.04 / 130; immediate (no vsync, mailbox falls back) 5.93 / 0.87 / 2. **The second queue has no run on that display.**
 
 **21.5:9 (the owner's monitor):** without a limit, race over 20 ms 126 of 3,700; with one (`pqA`) 3; final 0, longest 18.6 ms, late flares 1,681.
 

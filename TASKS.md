@@ -1688,7 +1688,7 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
-**State 2026-11-01:** 🧪 candidate 373 (not uploaded) is installed on the owner's desktop for their test, adding to 372 the frame pacing work IN-514 to IN-519 (race on George V Paris at 6x without Performance Mode: GS 9.42 to 6.79 ms, frames over 17.5 ms 40 to 5 of 3,700; frames identical 154 of 154; the second presentation queue is not yet confirmed on the owner's virtual display; the owner decides on the late flares of IN-514). Candidate 372 before it: Spec II on CoreGS 2.0
+**State 2026-11-01:** 🧪 candidate 373 (not uploaded) is installed on the owner's desktop for their test, adding to 372 the frame pacing work IN-514 to IN-519 (race on George V Paris at 6x without Performance Mode: GS CPU 7.94 to 7.31 ms, frames over 17.5 ms 40 to 5 of 3,700; frames identical 154 of 154; the second presentation queue is not yet confirmed on the owner's virtual display; the owner decides on the late flares of IN-514). Candidate 372 before it: Spec II on CoreGS 2.0
 (IN-506), shaders compiled before Play (IN-507), no readback for a write beside a drawn area (IN-508: George V Paris at 6x,
 headless, GS thread -19%), no frametime wave from a target drawn every second VBlank (IN-509), and IN-510 to IN-513: the race start
 drop, three swapchain images under vsync, the showroom wave and reused decodes (window, race without Performance Mode: VBlanks over
