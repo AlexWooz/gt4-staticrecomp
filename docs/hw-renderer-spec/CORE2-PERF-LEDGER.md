@@ -227,3 +227,29 @@ Scripted runs in a real fullscreen window, paced, one run each, on the desktop's
 - **George V Paris, whole run to VBlank 21000, headless (IN-513 and the per-row IN-510):** decodes 413,167 to 133,392, GLM writes 716,978 to 137,362; race GS thread 11.09 to 10.66 ms and GPU busy 8.69 to 8.23 ms for IN-513 alone.
 
 **Frames against 371:** 1x 37/37, 3x 10/10, Arcade 27/27, Spec II 49/49; 12x 30/31 (2 pixels, at most 8 of 255, IN-512). **Measured and dropped:** an exact page test for textures over targets (no gain). **Lessons:** the headless bench understates GPU waits by up to ten times, so a window run is worth its 6 minutes; before optimising a repeated cost, count how many of the repeats are distinct. Not yet the owner's F8.
+
+## Frame pacing from the owner's reports (IN-514 to IN-519, candidate 373)
+
+Window, fullscreen, Spec II George V Paris at 6x, 16:9, real 144 Hz monitor unless noted, vsync on, normal mode, one run each; race VBlanks 20300-24000. "Over 17.5" and "longest" are the intervals between presentations, what RivaTuner draws.
+
+| Build | GS ms | GPU waits ms | Over 17.5 | Longest ms | Late flares |
+|---|---|---|---|---|---|
+| 372 | 9.42 | 3.08 | 40 | 19.6 | - |
+| + second queue, fixed 12 ms limit, 8 slots (`slots8`) | 10.15 | 3.37 | 283 | 20.5 | 1,124 |
+| + 16 slots (`slots16`) | 7.84 | 2.56 | 84 | 19.8 | 385 |
+| + adaptive limit (`ad32`) | 7.75 | 2.67 | 19 | 18.7 | 1,099 |
+| + fresh PGO, FIFO (`f0`) | 6.79 | 3.49 | 4 | 18.6 | 481 |
+| + allowance 0.7 ms (`z0`, final) | 6.79 | 3.44 | 5 | 18.8 | 291 |
+| Performance Mode, 372 / final | 8.49 / 7.52 | 0.90 / 0.46 | 0 / 1 | 17.5 / 17.6 | - |
+
+The frametime log costs nothing measurable (final build without it: GS 6.77 ms, 255 late flares). The run-to-run spread here is large (GPU waits 3.4 or 4.2 ms on identical builds, bimodal, Unknown cause, possibly the GPU's clock). Treat single runs as direction.
+
+**Virtual display, 16:9 (fullscreen, the owner's display while streaming), candidate 372's paths:** FIFO showroom GS 13.77 ms, waits 10.96 ms, 132 of 400 over 17 ms; latest ready 13.81 / 11.04 / 130; immediate (no vsync, mailbox falls back) 5.93 / 0.87 / 2. **The second queue has no run on that display.**
+
+**21.5:9 (the owner's monitor):** without a limit, race over 20 ms 126 of 3,700; with one (`pqA`) 3; final 0, longest 18.6 ms, late flares 1,681.
+
+**Dropped or left off:** latest ready (IN-515: no gain); 4 swapchain images (worse: race over 17 ms 633 against 182); `GT4_CORE2_SUBMIT_EVERY` 16 (GS 10.47 ms) and 64 (GS 7.35 ms, more late flares); 24 slots (nothing over 16); limit allowance 2 ms (over 17.5: 35).
+
+**CPU sampler, 6x race (`scripts/cpu_sampler_report.py`, before the fresh PGO):** after IN-518 the GS worker's profile is flat: `GpuVertex` construction 0.33 ms, stage timers 0.13 ms, submission 0.55 ms inclusive, the driver about 1.2 ms. No single large item is left.
+
+**v2.00 Arcade race start at 6x (window, 16:9):** presented p99 21.4 to 19.9 ms and intervals under 12 ms 16 to 9 of 1,200 with IN-519. About 1 s has GPU busy 15-18 ms, and the GS thread waits for it at the flare read (11.8 ms): the next step.

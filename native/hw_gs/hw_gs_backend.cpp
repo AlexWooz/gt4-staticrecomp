@@ -620,7 +620,7 @@ struct Backend::Impl {
     if (pixel_interlock) v12.pNext = &interlock;
     std::vector<const char *> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     if (pixel_interlock) extensions.push_back(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
-    // IN-515: the present mode that keeps no old frames in the queue, where the device has it (choose_present_mode).
+    // IN-515: the present mode that keeps no old frames in the queue, on request (choose_present_mode).
     std::uint32_t extension_count = 0;
     vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, nullptr);
     std::vector<VkExtensionProperties> available(extension_count);
@@ -631,7 +631,7 @@ struct Backend::Impl {
                                         ? VK_EXT_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME
                                         : nullptr;
     const char *latest_ready_switch = std::getenv("GT4_HW_FIFO_LATEST_READY");
-    if (latest_ready_switch != nullptr && std::strcmp(latest_ready_switch, "0") == 0) latest_ready_name = nullptr;
+    if (latest_ready_switch == nullptr || std::strcmp(latest_ready_switch, "1") != 0) latest_ready_name = nullptr;
     VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR latest_ready{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR};
     if (latest_ready_name != nullptr) {
@@ -721,12 +721,10 @@ struct Backend::Impl {
     chosen = available == gt4::pacing::PresentMode::mailbox     ? VK_PRESENT_MODE_MAILBOX_KHR
              : available == gt4::pacing::PresentMode::immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR
                                                                 : VK_PRESENT_MODE_FIFO_KHR;
-    // IN-515: FIFO queues every frame. After a burst (a load, a catch-up frame) it stays full, since one frame goes in and one
-    // comes out per refresh, and then each presentation waits for the next flip with its acquire semaphore, which holds the
-    // queue with all the rendering behind it: GS thread waits of about 11 ms per VBlank in the showroom, and single
-    // waits of one or two whole refreshes in a race. This mode shows the newest ready frame at each flip and drops the older
-    // ones, so the queue empties by itself; an older frame is dropped only when two finish within one refresh.
-    // GT4_HW_FIFO_LATEST_READY=0: plain FIFO (A/B).
+    // IN-515 (not the default): this mode shows the newest ready frame at each flip and drops the older ones, so the queue
+    // empties by itself. It did not remove the waits of IN-516 on the virtual display (11.04 against 10.96 ms in the showroom),
+    // and with presentations near the flip it would skip and repeat frames where FIFO keeps them all, so plain FIFO stays.
+    // GT4_HW_FIFO_LATEST_READY=1 asks for it (A/B).
     if (chosen == VK_PRESENT_MODE_FIFO_KHR && fifo_latest_ready && has(VK_PRESENT_MODE_FIFO_LATEST_READY_KHR)) {
       chosen = VK_PRESENT_MODE_FIFO_LATEST_READY_KHR;
     }
@@ -1006,11 +1004,11 @@ struct Backend::Impl {
     draw_layouts[index] = draw_final_layout;
   }
 
-  // IN-516: with vsync, a presentation holds its queue until the display takes the frame (on this driver with the mode's
-  // queue empty too: VK_PRESENT_MODE_FIFO_LATEST_READY_KHR changed nothing), and everything submitted after it waits on that
-  // queue. The GS thread then ran out of submission slots and waited with it: about 11 ms per VBlank in the showroom on the
-  // owner's desktop, with waits of one or two whole refreshes (17.7 and 33 ms) in races, the spikes in the frametime graph;
-  // without vsync 0.9 ms. So the rendering queue draws the frame into a window-sized picture, and a second queue of the
+  // IN-516: on the virtual display of a game stream, with vsync, a presentation holds its queue until the display takes the
+  // frame (with VK_PRESENT_MODE_FIFO_LATEST_READY_KHR too), and everything submitted after it waits on that queue: GS thread
+  // waits of about 11 ms per VBlank in the showroom on the owner's desktop, with waits of one or two whole refreshes (17.7 and
+  // 33 ms) in races, the spikes in the frametime graph; without vsync 0.9 ms. A real monitor showed none of this.
+  // So the rendering queue draws the frame into a window-sized picture, and a second queue of the
   // family waits for the display, copies the picture and presents. Nothing here waits for the display: when the second
   // queue is two presentations behind, or no swapchain image is free, this frame is not shown. A device with one queue
   // keeps the path below. GT4_HW_PRESENT_QUEUE=0: that path (A/B).

@@ -18,19 +18,22 @@ namespace gt4::hw {
 // How long after the VBlank the answer may come. What the EE does after the read changes with the scene (about 4 ms on an easy
 // stretch, over 6 ms with a car ahead), so the limit follows it: the answer's time plus what the frame had left at its
 // end is the latest answer that would still have kept the frame on time. It comes down fast and goes back up slowly.
+// kAllowanceMs on top: a frame this little behind the pacer's grid catches up by itself and keeps its interval, and many frames
+// pass the limit by less than that (6x race, late answers 13% to 9%, frames over 17.5 ms 4 against 6 of 3,700).
 class FlareDeadline {
 public:
-  static constexpr double kStartMs = 12.0, kLowestMs = 7.0, kHighestMs = 14.0, kMarginMs = 0.3;
+  static constexpr double kStartMs = 12.0, kLowestMs = 7.0, kHighestMs = 14.0, kAllowanceMs = 0.7;
 
   void frame(double answerMs, double slackMs) {
     const double latest = answerMs + slackMs;
     limitMs_ += (latest - limitMs_) * (latest < limitMs_ ? 0.35 : 0.03);
-    limitMs_ = limitMs_ < kLowestMs + kMarginMs ? kLowestMs + kMarginMs : limitMs_ > kHighestMs + kMarginMs ? kHighestMs + kMarginMs : limitMs_;
+    const double lowest = kLowestMs - kAllowanceMs, highest = kHighestMs - kAllowanceMs;
+    limitMs_ = limitMs_ < lowest ? lowest : limitMs_ > highest ? highest : limitMs_;
   }
-  double ms() const { return limitMs_ - kMarginMs; }
+  double ms() const { return limitMs_ + kAllowanceMs; }
 
 private:
-  double limitMs_ = kStartMs + kMarginMs;
+  double limitMs_ = kStartMs - kAllowanceMs;
 };
 
 class FlareTableReads {

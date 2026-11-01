@@ -86,11 +86,11 @@ int main() {
     gt4::hw::FlareDeadline deadline;
     check(deadline.ms() == gt4::hw::FlareDeadline::kStartMs, "the limit does not start at its start");
     for (int i = 0; i < 20; ++i) deadline.frame(11.0, -1.0);  // answered at 11 ms, 1 ms late: 10 ms was the latest
-    check(deadline.ms() > 9.6 && deadline.ms() < 9.8, "the limit did not come down to the latest answer less the margin");
+    check(deadline.ms() > 10.6 && deadline.ms() < 10.8, "the limit did not come down to the latest answer plus the allowance");
     const double low = deadline.ms();
     deadline.frame(9.0, 7.0);
     check(deadline.ms() > low && deadline.ms() < low + 0.3, "the limit went up too fast");
-    for (int i = 0; i < 2000; ++i) deadline.frame(9.0, 7.67);
+    for (int i = 0; i < 2000; ++i) deadline.frame(16.0, 7.67);
     check(deadline.ms() == gt4::hw::FlareDeadline::kHighestMs, "the limit passed its highest value");
     for (int i = 0; i < 100; ++i) deadline.frame(9.0, -8.0);
     check(deadline.ms() == gt4::hw::FlareDeadline::kLowestMs, "the limit passed its lowest value");

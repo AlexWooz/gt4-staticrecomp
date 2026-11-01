@@ -2164,6 +2164,14 @@ Gpu::~Gpu() {
   if (s.timestamps) gt4_hwd_vkDestroyQueryPool(s.device, s.timestamps, nullptr);
   if (s.statistics) gt4_hwd_vkDestroyQueryPool(s.device, s.statistics, nullptr);
   for (Impl::MemoryBlock &block : s.imageBlocks) gt4_hwd_vkFreeMemory(s.device, block.memory, nullptr);
+  // IN-517: the rings and the descriptor pools, the largest objects, go with the renderer: a fixture makes dozens on one device.
+  for (Buffer *buffer : {&s.staging, &s.vertices, &s.uniforms, &s.readback, &s.later, &s.glmTables}) {
+    if (buffer->buffer) gt4_hwd_vkDestroyBuffer(s.device, buffer->buffer, nullptr);
+    if (buffer->memory) gt4_hwd_vkFreeMemory(s.device, buffer->memory, nullptr);
+  }
+  for (Impl::Slot &slot : s.slots) {
+    if (slot.pool) gt4_hwd_vkDestroyDescriptorPool(s.device, slot.pool, nullptr);
+  }
   // The remaining objects live as long as the device (the renderer is destroyed with the backend).
 }
 

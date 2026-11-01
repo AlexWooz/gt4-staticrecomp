@@ -1,5 +1,22 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 373: frame pacing, from the owner's five F8 reports on 372 (2026-11-01)
+
+Candidate 373 (pins `docs/inputs/slice373-pcsx2.json`, `35a11ca7...`, and `docs/inputs/slice373-spec2.json`, `abe87b24...`), installed on the owner's desktop through the installer's update mode. Not uploaded.
+
+- **The owner's report on 372:** showroom frametime strange only in the first opening, in Performance Mode; normal mode 100% there. A one-off drop to about 50 FPS at the end of George V Paris's main straight, only with a car ahead (about 58 with a time trial ghost); no drop without one. Small spikes in the graph that cannot be felt.
+- **Findings:**
+  - The owner plays on a 1920 x 1080, 60 Hz virtual display (a game stream's). It exists only while a client is connected; when the owner left, the runs moved to the real 3440 x 1440, 144 Hz monitor at 21.5:9.
+  - **Virtual display (Confirmed in both the owner's logs and ours):** with vsync the GS thread waits about 11 ms per VBlank in the showroom, and one or two whole refreshes (17.7, 33 ms) in races. A real monitor and a plain window show none of it, and neither does no vsync.
+  - **The drop:** without Performance Mode the EE waits for the GS at the flare table every frame. Frames of GS 17 ms make wall 20-22 ms; Performance Mode does not wait and held 60 FPS.
+- **What it adds:** IN-514 the flare read with a limit (normal mode, window only); IN-516 the presentation on its own queue; IN-517 16 submission slots; IN-518 no block walks for targets that need no readback; IN-519 no bursts when the pacer catches up; a fresh PGO profile; IN-515 measured and left off; `frametime.csv` in every CoreGS 2.0 session and `scripts/coregs2_bench/frametime_plot.py`.
+- **Measured, window, Spec II George V Paris at 6x, 16:9, real monitor, 372 against 373, one run each, 3,700 race VBlanks:** normal mode GS 9.42 to 6.79 ms, frames over 17.5 ms 40 to 5, longest 19.6 to 18.8 ms; Performance Mode GS 8.49 to 7.52 ms, longest 17.5 to 17.6 ms. Showroom GS 6.06 to 4.65 ms. Measured before IN-519, which does not touch these frames' pacing unless the game is behind.
+- **The cost of IN-514:** late flare answers on about 8% of the frames of that race (291 of 3,700; 8% to 32% across runs, 1,681 at 21.5:9). In those frames a flare is one or two frames late. **The owner decides whether normal mode keeps it;** `GT4_HW_FLARE_DEADLINE_MS=0` removes it.
+- **Frames against 372, headless:** 154 of 154 identical: 1x 37/37, 3x 10/10, 12x 31/31, Arcade 27/27, Spec II George V Paris at 6x 20/20 in each mode, C.S. Route 5 4/4, Costa di Amalfi 5/5. Taken before IN-519 and the teardown fix, which change no pixel path. Headless runs always wait for the flare table, so they do not exercise a late answer.
+- **Checks:** `ctest -R "^hw_|native_ipu_fast|standalone|native_pacing"` 154 passed, one skipped, with the new `hw_flare_table`. `hw_core2_gpu_clut`, last night's unexplained single failure, is explained and fixed: the fixture makes dozens of renderers on one device and each kept its rings and descriptor pools, so memory ran out; they now go with the renderer. Launcher `cargo test --workspace` passed. Window resize and minimise: 8 swapchains in one run, clean exit.
+- **Not verified:** IN-516 on the virtual display, the very case it is for: that display needs a stream client. The car ahead on the owner's save (the bench's heaviest stretches, up to 48 submissions per VBlank, stand in for it). The laptop (off). Focus pages (see 372).
+- **Left:** the v2.00 Arcade race start has about 1 s where the GPU needs 15-18 ms at its low clock and the GS thread waits for it at the flare read (window: presented p99 19.9 ms, longest 32.5 ms at the camera cut). Next step: the GS thread does not wait at the flare read (the reduction goes through `ReduceLater`, and the EE waits on its fence with the same limit).
+
 ## TASK-027 CoreGS 2.0 candidate 372: final 1.3.0-rc8 of the night, race start, vsync and showroom (2026-11-01)
 
 Candidate 372 (pins `docs/inputs/slice372-pcsx2.json`, `ec4d3bd8...`, and `docs/inputs/slice372-spec2.json`, `7ccf3a68...`), installed on the owner's desktop through the installer's update mode (`private/release-130-rc8j-out`, installer `5115b8bd...`, zip `45ab8ba9...`). **Not uploaded: the owner said no GitHub yet.** **The owner's F8 on this build is pending.**

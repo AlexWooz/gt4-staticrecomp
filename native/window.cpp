@@ -307,6 +307,8 @@ bool pump_messages() {
 // Releases the guest frame. Paced mode waits on the wall-clock grid first, so
 // each VBlank comes at the donor's 60 Hz rate and audio never sets the pace.
 // The interval histogram is recorded in both modes.
+std::int64_t last_release = 0;
+
 void release_frame() {
   if (pacing_mode == gt4::pacing::Mode::paced) {
     if (!frame_pacer->anchored())
@@ -317,9 +319,22 @@ void release_frame() {
     static const bool no_wait = std::getenv("GT4_PACING_NO_WAIT") != nullptr;
     gt4::pacing::ee_slack_us = static_cast<std::int32_t>(std::clamp<std::int64_t>(
         (frame_pacer->deadline() - frame_clock->now()) * 1000000 / static_cast<std::int64_t>(frame_clock->frequency()), -100000, 100000));
-    if (!no_wait) frame_clock->wait_until(frame_pacer->deadline());
+    // IN-519: behind the grid, frames were released at once until it caught up: bursts of 9 ms intervals after a slow stretch,
+    // a zigzag in the frametime for no gain. A frame now waits at least this long after the last one, so the lost time comes
+    // back at about 1 ms per frame; past a whole period behind, the pacer restarts its grid as before.
+    // GT4_PACING_MIN_INTERVAL_US=0 releases at once (A/B).
+    static const std::int64_t min_interval = [] {
+      const char *text = std::getenv("GT4_PACING_MIN_INTERVAL_US");
+      const std::int64_t microseconds = text != nullptr ? std::atoll(text) : 15700;
+      return microseconds * static_cast<std::int64_t>(frame_clock->frequency()) / 1000000;
+    }();
+    if (!no_wait) {
+      const std::int64_t earliest = last_release != 0 ? last_release + min_interval : 0;
+      frame_clock->wait_until(std::max(frame_pacer->deadline(), earliest));
+    }
   }
   const std::int64_t released = frame_clock->now();
+  last_release = released;
   if (pacing_mode == gt4::pacing::Mode::paced)
     frame_pacer->release(released);
   pacing_diagnostics.record_release(released, frame_clock->frequency());

@@ -76,6 +76,16 @@ It cuts no effect, so it belongs in normal mode. Keep an A/B switch (`GT4_CORE2_
 
 George V Paris headless is an Arcade rally against one car with no B-Spec icon, so the car hits a wall after about 17 s of race. Measure VBlanks 19500 to 21300, or find steering presses for a longer stretch.
 
+## Candidate 373 (frame pacing, IN-514 to IN-519)
+
+The state of `main` of this work is in STATUS and the perf ledger. What the next agent needs:
+
+- **Which display a run used:** `[hw] presentation: ... last_rect`. The owner's game stream gives a 1920 x 1080, 60 Hz virtual display; without a client, the real 3440 x 1440, 144 Hz monitor at 21.5:9, 15% more GS work. Pass `GT4_DISPLAY_ASPECT=16:9` to compare runs.
+- **The first thing to read after an owner test on the stream:** `frametime.csv` in the session folder, through `scripts/coregs2_bench/frametime_plot.py out.png name=<csv>`, and the showroom's `not_readback` in `game.log`: about 11 ms means IN-516 did not help.
+- **If the second queue does not help:** the stall comes from the driver's present on that display, and the options are a present thread, or "no vsync" on a display the desktop composes anyway (immediate does not tear there; detecting that display is the hard part).
+- **Next step:** the GS thread still waits for the GPU at the flare read (2-3 ms per VBlank, 12 ms on heavy GPU stretches). Issue the reduction with `ReduceLater` and let the EE wait on its fence with the IN-514 limit.
+- **Owner decision pending:** whether normal mode keeps IN-514's late flares.
+
 ## Open items and owner decisions
 
 - **GSdx stuttering is not fixed.** A proposed session card "GSdx: compile shaders before Play in gt4-gs" (task_b82479c6) exists; it needs a PCSX2-tainted agent, never you.
