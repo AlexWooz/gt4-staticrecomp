@@ -20,7 +20,12 @@
 #include <atomic>
 #include <chrono>
 #include <array>
+#include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <memory>
 #include <cstring>
 #include <stdexcept>
@@ -96,22 +101,137 @@ struct Backend::Impl {
   VkPhysicalDevice physical = VK_NULL_HANDLE;
   VkDevice device = VK_NULL_HANDLE;
   VkQueue queue = VK_NULL_HANDLE;
+  VkQueue present_queue = VK_NULL_HANDLE;  // IN-516: a second queue of the family, where it has one
   std::uint32_t queue_family = 0;
+  VkImage images[max_swapchain_images] = {};
+  VkImageLayout image_layouts[max_swapchain_images] = {};
   VkCommandPool command_pool = VK_NULL_HANDLE;
   VkCommandBuffer command_buffers[frame_slots] = {};
   VkFence fences[frame_slots] = {};
   VkSemaphore acquire_semaphores[frame_slots] = {};
   std::uint64_t submissions = 0;
+  // IN-516: per slot, the picture drawn on the main queue and what the second queue needs to show it.
+  VkCommandBuffer show_commands[frame_slots] = {};
+  VkFence draw_fences[frame_slots] = {};
+  VkSemaphore picture_ready[frame_slots] = {};
+  VkImage pictures[frame_slots] = {};
+  VkDeviceMemory picture_memory[frame_slots] = {};
+  VkImageLayout picture_layouts[frame_slots] = {};
+  std::uint64_t presents_dropped = 0, presents_dropped_reported = 0;
+  // What record_frame and record_black draw into: the swapchain images, or the pictures of IN-516.
+  VkImage *draw_images = images;
+  VkImageLayout *draw_layouts = image_layouts;
+  VkImageLayout draw_final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
   gt4::pacing::PresentMode present_mode = gt4::pacing::PresentMode::fifo;
+  bool fifo_latest_ready = false;  // IN-515: the device has VK_PRESENT_MODE_FIFO_LATEST_READY_KHR and it is enabled
+
+  // GT4_HW_FRAMETIME_LOG=<csv path> (diagnostic, off by default): one line per presentation, the source of the frametime
+  // graphs (scripts/coregs2_bench/frametime_plot.py). `present_ms` is when vkQueuePresentKHR was called, what an overlay
+  // like RivaTuner draws; `shown_ms` is when the display took the frame (VK_KHR_present_wait2, on a thread of its own, 0
+  // where the device lacks it). A frame dropped by the mode gets the time of the frame shown in its place.
+  struct FrametimeEntry {
+    std::uint64_t id, call;
+    double presentMs, callMs;
+    VkSwapchainKHR swapchain;
+  };
+  const char *frametime_path = std::getenv("GT4_HW_FRAMETIME_LOG");
+  std::FILE *frametime_file = nullptr;
+  bool frametime_shown_possible = false;  // the instance has VK_KHR_get_surface_capabilities2
+  bool present_wait_enabled = false;
+  PFN_vkWaitForPresent2KHR wait_for_present = nullptr;
+  std::thread frametime_thread;
+  std::mutex frametime_mutex;
+  std::condition_variable frametime_changed;
+  std::deque<FrametimeEntry> frametime_queue;
+  bool frametime_stop = false, frametime_waiting = false;
+  std::uint64_t present_calls = 0, present_ids = 0;
+  const std::chrono::steady_clock::time_point frametime_start = std::chrono::steady_clock::now();
+
+  double frametime_now_ms() const {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frametime_start).count();
+  }
+
+  void frametime_worker() {
+    for (;;) {
+      FrametimeEntry entry{};
+      {
+        std::unique_lock<std::mutex> lock(frametime_mutex);
+        frametime_waiting = false;
+        frametime_changed.notify_all();
+        frametime_changed.wait(lock, [&] { return frametime_stop || !frametime_queue.empty(); });
+        if (frametime_queue.empty()) return;
+        entry = frametime_queue.front();
+        frametime_queue.pop_front();
+        frametime_waiting = true;
+      }
+      double shownMs = 0.0;
+      if (wait_for_present != nullptr) {
+        VkPresentWait2InfoKHR info{VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR};
+        info.presentId = entry.id;
+        info.timeout = 500000000;
+        if (wait_for_present(device, entry.swapchain, &info) == VK_SUCCESS) shownMs = frametime_now_ms();
+      }
+      std::fprintf(frametime_file, "%llu,%llu,%.3f,%.3f,%.3f\n", static_cast<unsigned long long>(entry.id),
+                   static_cast<unsigned long long>(entry.call), entry.presentMs, entry.callMs, shownMs);
+      if (entry.id % 300 == 0) std::fflush(frametime_file);
+    }
+  }
+
+  // Before the swapchain goes: nothing may still wait on it.
+  void frametime_drain() {
+    if (!frametime_file) return;
+    std::unique_lock<std::mutex> lock(frametime_mutex);
+    frametime_changed.wait(lock, [&] { return frametime_queue.empty() && !frametime_waiting; });
+  }
+
+  void frametime_close() {
+    if (!frametime_file) return;
+    {
+      const std::lock_guard<std::mutex> lock(frametime_mutex);
+      frametime_stop = true;
+    }
+    frametime_changed.notify_all();
+    if (frametime_thread.joinable()) frametime_thread.join();
+    std::fclose(frametime_file);
+    frametime_file = nullptr;
+  }
+
+  // vkQueuePresentKHR with the log's id and times.
+  VkResult queue_present(VkQueue on, VkPresentInfoKHR &present) {
+    if (!frametime_path) return vkQueuePresentKHR(on, &present);
+    if (!frametime_file) {
+      frametime_file = std::fopen(frametime_path, "w");
+      if (!frametime_file) {
+        std::fprintf(stderr, "[hw] GT4_HW_FRAMETIME_LOG: cannot open %s\n", frametime_path);
+        frametime_path = nullptr;
+        return vkQueuePresentKHR(on, &present);
+      }
+      std::fprintf(frametime_file, "id,vblank,present_ms,call_ms,shown_ms\n");
+      frametime_thread = std::thread([this] { frametime_worker(); });
+    }
+    const std::uint64_t id = ++present_ids;
+    VkPresentId2KHR presentId{VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR};
+    presentId.swapchainCount = 1;
+    presentId.pPresentIds = &id;
+    if (present_wait_enabled) present.pNext = &presentId;
+    const double start = frametime_now_ms();
+    const VkResult result = vkQueuePresentKHR(on, &present);
+    const double end = frametime_now_ms();
+    {
+      const std::lock_guard<std::mutex> lock(frametime_mutex);
+      frametime_queue.push_back(FrametimeEntry{id, present_calls, start, end - start, swapchain});
+    }
+    frametime_changed.notify_all();
+    return result;
+  }
+
   bool independent_blend = false;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
   VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
   VkExtent2D extent{};
   std::uint32_t image_count = 0;
-  VkImage images[max_swapchain_images] = {};
-  VkImageLayout image_layouts[max_swapchain_images] = {};
   VkSemaphore render_finished[max_swapchain_images] = {};
   HWND window = nullptr;
   bool resize_pending = false;
@@ -154,6 +274,7 @@ struct Backend::Impl {
 
   void shutdown() {
     if (device) vkDeviceWaitIdle(device);
+    frametime_close();
     destroy_upload();
     renderer.reset();  // GPU drawer resources are released before the device
     destroy_swapchain();
@@ -161,8 +282,12 @@ struct Backend::Impl {
       for (std::uint32_t i = 0; i < frame_slots; ++i) {
         if (fences[i]) vkDestroyFence(device, fences[i], nullptr);
         if (acquire_semaphores[i]) vkDestroySemaphore(device, acquire_semaphores[i], nullptr);
+        if (draw_fences[i]) vkDestroyFence(device, draw_fences[i], nullptr);
+        if (picture_ready[i]) vkDestroySemaphore(device, picture_ready[i], nullptr);
         fences[i] = VK_NULL_HANDLE;
         acquire_semaphores[i] = VK_NULL_HANDLE;
+        draw_fences[i] = VK_NULL_HANDLE;
+        picture_ready[i] = VK_NULL_HANDLE;
       }
       if (command_pool) vkDestroyCommandPool(device, command_pool, nullptr);
       vkDestroyDevice(device, nullptr);
@@ -254,6 +379,7 @@ struct Backend::Impl {
 
   void destroy_swapchain() {
     if (!swapchain) return;
+    frametime_drain();
     for (std::uint32_t i = 0; i < image_count; ++i) {
       if (render_finished[i]) vkDestroySemaphore(device, render_finished[i], nullptr);
       render_finished[i] = VK_NULL_HANDLE;
@@ -261,18 +387,70 @@ struct Backend::Impl {
     vkDestroySwapchainKHR(device, swapchain, nullptr);
     swapchain = VK_NULL_HANDLE;
     image_count = 0;
+    destroy_pictures();
+  }
+
+  void destroy_pictures() {
+    for (std::uint32_t i = 0; i < frame_slots; ++i) {
+      if (pictures[i]) gt4_hwd_vkDestroyImage(device, pictures[i], nullptr);
+      if (picture_memory[i]) gt4_hwd_vkFreeMemory(device, picture_memory[i], nullptr);
+      pictures[i] = VK_NULL_HANDLE;
+      picture_memory[i] = VK_NULL_HANDLE;
+    }
+  }
+
+  // IN-516: one window-sized picture per slot, in the swapchain's format.
+  bool create_pictures() {
+    for (std::uint32_t i = 0; i < frame_slots; ++i) {
+      VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+      image.imageType = VK_IMAGE_TYPE_2D;
+      image.format = swapchain_format;
+      image.extent = {extent.width, extent.height, 1};
+      image.mipLevels = 1;
+      image.arrayLayers = 1;
+      image.samples = VK_SAMPLE_COUNT_1_BIT;
+      image.tiling = VK_IMAGE_TILING_OPTIMAL;
+      image.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      if (gt4_hwd_vkCreateImage(device, &image, nullptr, &pictures[i]) != VK_SUCCESS) return false;
+      VkMemoryRequirements req{};
+      gt4_hwd_vkGetImageMemoryRequirements(device, pictures[i], &req);
+      std::uint32_t type = 0;
+      if (!memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, type)) return false;
+      VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      alloc.allocationSize = req.size;
+      alloc.memoryTypeIndex = type;
+      if (gt4_hwd_vkAllocateMemory(device, &alloc, nullptr, &picture_memory[i]) != VK_SUCCESS) return false;
+      gt4_hwd_vkBindImageMemory(device, pictures[i], picture_memory[i], 0);
+      picture_layouts[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    return true;
   }
 
   // Feature report and device choice (chapter 12.6). Returns false with `error` set when no device qualifies.
   bool create_instance(std::string &error) {
     if (!vulkan_loader::load_loader(error)) return false;
-    const char *extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+    const char *extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+                                VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME};
+    // The frametime log's shown times need the third one (the log goes on without them).
+    const auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+        vulkan_loader::instance_proc(nullptr, "vkEnumerateInstanceExtensionProperties"));
+    bool surface_capabilities2 = false;
+    if (frametime_path != nullptr && enumerate != nullptr) {
+      std::uint32_t count = 0;
+      enumerate(nullptr, &count, nullptr);
+      std::vector<VkExtensionProperties> available(count);
+      enumerate(nullptr, &count, available.data());
+      surface_capabilities2 = has_extension(available, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    }
+    frametime_shown_possible = surface_capabilities2;
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "GT4Recomp HWR";
     app.apiVersion = VK_API_VERSION_1_2;
     VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     info.pApplicationInfo = &app;
-    info.enabledExtensionCount = 2;
+    info.enabledExtensionCount = surface_capabilities2 ? 3u : 2u;
     info.ppEnabledExtensionNames = extensions;
     const VkResult result = vkCreateInstance(&info, nullptr, &instance);
     if (result != VK_SUCCESS) {
@@ -403,11 +581,18 @@ struct Backend::Impl {
   }
 
   bool create_device(std::string &error) {
-    const float priority = 1.0f;
+    const float priorities[2] = {1.0f, 1.0f};
+    std::uint32_t family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, families.data());
+    const char *present_queue_switch = std::getenv("GT4_HW_PRESENT_QUEUE");
+    const bool own_present_queue = families[queue_family].queueCount >= 2 &&
+                                   !(present_queue_switch != nullptr && std::strcmp(present_queue_switch, "0") == 0);
     VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queue_info.queueFamilyIndex = queue_family;
-    queue_info.queueCount = 1;
-    queue_info.pQueuePriorities = &priority;
+    queue_info.queueCount = own_present_queue ? 2u : 1u;
+    queue_info.pQueuePriorities = priorities;
 
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.timelineSemaphore = VK_TRUE;
@@ -433,19 +618,64 @@ struct Backend::Impl {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
     interlock.fragmentShaderPixelInterlock = VK_TRUE;
     if (pixel_interlock) v12.pNext = &interlock;
-    const char *extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME};
+    std::vector<const char *> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    if (pixel_interlock) extensions.push_back(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
+    // IN-515: the present mode that keeps no old frames in the queue, where the device has it (choose_present_mode).
+    std::uint32_t extension_count = 0;
+    vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> available(extension_count);
+    vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, available.data());
+    const char *latest_ready_name = has_extension(available, VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME)
+                                        ? VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME
+                                    : has_extension(available, VK_EXT_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME)
+                                        ? VK_EXT_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME
+                                        : nullptr;
+    const char *latest_ready_switch = std::getenv("GT4_HW_FIFO_LATEST_READY");
+    if (latest_ready_switch != nullptr && std::strcmp(latest_ready_switch, "0") == 0) latest_ready_name = nullptr;
+    VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR latest_ready{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR};
+    if (latest_ready_name != nullptr) {
+      VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+      query.pNext = &latest_ready;
+      vkGetPhysicalDeviceFeatures2(physical, &query);
+      fifo_latest_ready = latest_ready.presentModeFifoLatestReady == VK_TRUE;
+    }
+    if (fifo_latest_ready) {
+      extensions.push_back(latest_ready_name);
+      latest_ready.pNext = features2.pNext;
+      features2.pNext = &latest_ready;
+    }
+    VkPhysicalDevicePresentId2FeaturesKHR present_id2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR};
+    VkPhysicalDevicePresentWait2FeaturesKHR present_wait2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR};
+    if (frametime_path != nullptr && frametime_shown_possible && has_extension(available, VK_KHR_PRESENT_ID_2_EXTENSION_NAME) &&
+        has_extension(available, VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME)) {
+      present_id2.presentId2 = VK_TRUE;
+      present_wait2.presentWait2 = VK_TRUE;
+      present_id2.pNext = &present_wait2;
+      present_wait2.pNext = features2.pNext;
+      features2.pNext = &present_id2;
+      extensions.push_back(VK_KHR_PRESENT_ID_2_EXTENSION_NAME);
+      extensions.push_back(VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME);
+      present_wait_enabled = true;
+    }
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     info.pNext = &features2;
     info.queueCreateInfoCount = 1;
     info.pQueueCreateInfos = &queue_info;
-    info.enabledExtensionCount = pixel_interlock ? 2u : 1u;
-    info.ppEnabledExtensionNames = extensions;
+    info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
+    info.ppEnabledExtensionNames = extensions.data();
     const VkResult result = vkCreateDevice(physical, &info, nullptr, &device);
     if (result != VK_SUCCESS) {
       error = std::string("vkCreateDevice failed: ") + vk_result_text(result);
       return false;
     }
+    if (present_wait_enabled) {
+      wait_for_present = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
+          vulkan_loader::instance_proc(instance, "vkWaitForPresent2KHR"));
+    }
     vkGetDeviceQueue(device, queue_family, 0, &queue);
+    if (own_present_queue) vkGetDeviceQueue(device, queue_family, 1, &present_queue);
+    std::fprintf(stderr, "[hw] presentation queue: %s\n", own_present_queue ? "its own (IN-516)" : "the rendering queue");
 
     VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -457,6 +687,7 @@ struct Backend::Impl {
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = frame_slots;
     vkAllocateCommandBuffers(device, &alloc, command_buffers);
+    if (present_queue) vkAllocateCommandBuffers(device, &alloc, show_commands);
 
     for (std::uint32_t i = 0; i < frame_slots; ++i) {
       VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -464,6 +695,10 @@ struct Backend::Impl {
       vkCreateFence(device, &fence_info, nullptr, &fences[i]);
       VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
       vkCreateSemaphore(device, &semaphore_info, nullptr, &acquire_semaphores[i]);
+      if (present_queue) {
+        vkCreateFence(device, &fence_info, nullptr, &draw_fences[i]);
+        vkCreateSemaphore(device, &semaphore_info, nullptr, &picture_ready[i]);
+      }
     }
     return true;
   }
@@ -486,6 +721,15 @@ struct Backend::Impl {
     chosen = available == gt4::pacing::PresentMode::mailbox     ? VK_PRESENT_MODE_MAILBOX_KHR
              : available == gt4::pacing::PresentMode::immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR
                                                                 : VK_PRESENT_MODE_FIFO_KHR;
+    // IN-515: FIFO queues every frame. After a burst (a load, a catch-up frame) it stays full, since one frame goes in and one
+    // comes out per refresh, and then each presentation waits for the next flip with its acquire semaphore, which holds the
+    // queue with all the rendering behind it: GS thread waits of about 11 ms per VBlank in the showroom, and single
+    // waits of one or two whole refreshes in a race. This mode shows the newest ready frame at each flip and drops the older
+    // ones, so the queue empties by itself; an older frame is dropped only when two finish within one refresh.
+    // GT4_HW_FIFO_LATEST_READY=0: plain FIFO (A/B).
+    if (chosen == VK_PRESENT_MODE_FIFO_KHR && fifo_latest_ready && has(VK_PRESENT_MODE_FIFO_LATEST_READY_KHR)) {
+      chosen = VK_PRESENT_MODE_FIFO_LATEST_READY_KHR;
+    }
     return true;
   }
 
@@ -554,6 +798,26 @@ struct Backend::Impl {
                               ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                               : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     info.presentMode = mode;
+    if (present_wait_enabled) {
+      // The device has the extensions; the surface must take them too.
+      const auto capabilities2 = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(
+          vulkan_loader::instance_proc(instance, "vkGetPhysicalDeviceSurfaceCapabilities2KHR"));
+      VkSurfaceCapabilitiesPresentWait2KHR wait2{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR};
+      VkSurfaceCapabilitiesPresentId2KHR id2{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR};
+      id2.pNext = &wait2;
+      VkSurfaceCapabilities2KHR queried{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+      queried.pNext = &id2;
+      VkPhysicalDeviceSurfaceInfo2KHR surface_info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR};
+      surface_info.surface = surface;
+      if (capabilities2 == nullptr || capabilities2(physical, &surface_info, &queried) != VK_SUCCESS || !id2.presentId2Supported ||
+          !wait2.presentWait2Supported) {
+        present_wait_enabled = false;
+        wait_for_present = nullptr;
+      }
+    }
+    if (present_wait_enabled) {
+      info.flags |= VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR | VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR;
+    }
     info.clipped = VK_TRUE;
     info.oldSwapchain = VK_NULL_HANDLE;  // RDNA4 rule (chapter 13.6): never pass the old swapchain
 
@@ -576,6 +840,10 @@ struct Backend::Impl {
       VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
       vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished[i]);
     }
+    if (present_queue && !create_pictures()) {
+      error = "could not create the presentation pictures";
+      return false;
+    }
     resize_pending = false;
     return true;
   }
@@ -590,27 +858,27 @@ struct Backend::Impl {
 
   void record_black(VkCommandBuffer cmd, std::uint32_t index) {
     VkImageMemoryBarrier to_clear{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    to_clear.oldLayout = image_layouts[index];
+    to_clear.oldLayout = draw_layouts[index];
     to_clear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_clear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_clear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_clear.image = images[index];
+    to_clear.image = draw_images[index];
     to_clear.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     to_clear.srcAccessMask = 0;
     to_clear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                          0, nullptr, 0, nullptr, 1, &to_clear);
     VkClearColorValue black{};
-    vkCmdClearColorImage(cmd, images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
+    vkCmdClearColorImage(cmd, draw_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
                          &to_clear.subresourceRange);
     VkImageMemoryBarrier to_present = to_clear;
     to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    to_present.newLayout = draw_final_layout;
     to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     to_present.dstAccessMask = 0;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
                          0, nullptr, 0, nullptr, 1, &to_present);
-    image_layouts[index] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    draw_layouts[index] = draw_final_layout;
   }
 
   // Records one presentation: the swapchain image is cleared to black, then the composed display frame
@@ -706,7 +974,7 @@ struct Backend::Impl {
       blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       blit.dstOffsets[0] = {left, top, 0};
       blit.dstOffsets[1] = {left + static_cast<std::int32_t>(dw), top + static_cast<std::int32_t>(dh), 1};
-      gt4_hwd_vkCmdBlitImage(cmd, upload.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[index],
+      gt4_hwd_vkCmdBlitImage(cmd, upload.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, draw_images[index],
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     });
   }
@@ -714,33 +982,155 @@ struct Backend::Impl {
   // Transition to TRANSFER_DST, clear to black, run `body`, transition to PRESENT_SRC.
   template <typename Body> void record_black_then(VkCommandBuffer cmd, std::uint32_t index, Body body) {
     VkImageMemoryBarrier to_clear{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    to_clear.oldLayout = image_layouts[index];
+    to_clear.oldLayout = draw_layouts[index];
     to_clear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_clear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_clear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_clear.image = images[index];
+    to_clear.image = draw_images[index];
     to_clear.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     to_clear.srcAccessMask = 0;
     to_clear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                          0, nullptr, 0, nullptr, 1, &to_clear);
     VkClearColorValue black{};
-    vkCmdClearColorImage(cmd, images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
+    vkCmdClearColorImage(cmd, draw_images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1,
                          &to_clear.subresourceRange);
     body();
     VkImageMemoryBarrier to_present = to_clear;
     to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    to_present.newLayout = draw_final_layout;
     to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     to_present.dstAccessMask = 0;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
                          0, nullptr, 0, nullptr, 1, &to_present);
-    image_layouts[index] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    draw_layouts[index] = draw_final_layout;
+  }
+
+  // IN-516: with vsync, a presentation holds its queue until the display takes the frame (on this driver with the mode's
+  // queue empty too: VK_PRESENT_MODE_FIFO_LATEST_READY_KHR changed nothing), and everything submitted after it waits on that
+  // queue. The GS thread then ran out of submission slots and waited with it: about 11 ms per VBlank in the showroom on the
+  // owner's desktop, with waits of one or two whole refreshes (17.7 and 33 ms) in races, the spikes in the frametime graph;
+  // without vsync 0.9 ms. So the rendering queue draws the frame into a window-sized picture, and a second queue of the
+  // family waits for the display, copies the picture and presents. Nothing here waits for the display: when the second
+  // queue is two presentations behind, or no swapchain image is free, this frame is not shown. A device with one queue
+  // keeps the path below. GT4_HW_PRESENT_QUEUE=0: that path (A/B).
+  void present_on_own_queue(const hwgs::writeback::FrameOutput *frame) {
+    const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
+    if (submissions >= presents_in_flight) {
+      const std::uint32_t older = static_cast<std::uint32_t>((submissions - presents_in_flight) % frame_slots);
+      if (vkWaitForFences(device, 1, &fences[older], VK_TRUE, 0) != VK_SUCCESS) {
+        ++presents_dropped;
+        return;
+      }
+    }
+    vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);  // older than `older`: already done
+    std::uint32_t index = 0;
+    const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, 0, acquire_semaphores[slot], VK_NULL_HANDLE, &index);
+    if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_SUBOPTIMAL_KHR) {
+      resize_pending = true;
+      return;
+    }
+    if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT) {
+      ++presents_dropped;
+      return;
+    }
+    if (acquired != VK_SUCCESS) return;
+    vkResetFences(device, 1, &fences[slot]);
+    vkWaitForFences(device, 1, &draw_fences[slot], VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &draw_fences[slot]);
+
+    // The rendering queue: the picture.
+    VkCommandBuffer cmd = command_buffers[slot];
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin);
+    draw_images = pictures;
+    draw_layouts = picture_layouts;
+    draw_final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    const auto upload_start = std::chrono::steady_clock::now();
+    if (frame && frame->valid && ensure_upload(frame->width, frame->height)) {
+      if (!shownOnGpu) {
+        // The staging buffer is reused across presents: the previous picture's copy finishes first.
+        const std::uint32_t previous = (slot + frame_slots - 1u) % frame_slots;
+        vkWaitForFences(device, 1, &draw_fences[previous], VK_TRUE, UINT64_MAX);
+        std::memcpy(upload.mapped, frame->pixels.data(), frame->pixels.size() * sizeof(std::uint32_t));
+      }
+      record_frame(cmd, slot, *frame);
+    } else {
+      record_black(cmd, slot);
+    }
+    uploadUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - upload_start).count();
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo draw{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    draw.commandBufferCount = 1;
+    draw.pCommandBuffers = &cmd;
+    draw.signalSemaphoreCount = 1;
+    draw.pSignalSemaphores = &picture_ready[slot];
+    vkQueueSubmit(queue, 1, &draw, draw_fences[slot]);
+
+    // The second queue: waits for the swapchain image, copies the picture, presents.
+    VkCommandBuffer show = show_commands[slot];
+    vkResetCommandBuffer(show, 0);
+    vkBeginCommandBuffer(show, &begin);
+    VkImageMemoryBarrier to_copy{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    to_copy.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_copy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_copy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_copy.image = images[index];
+    to_copy.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    to_copy.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(show, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_copy);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {extent.width, extent.height, 1};
+    gt4_hwd_vkCmdCopyImage(show, pictures[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[index],
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    VkImageMemoryBarrier to_present = to_copy;
+    to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_present.dstAccessMask = 0;
+    vkCmdPipelineBarrier(show, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_present);
+    vkEndCommandBuffer(show);
+    const VkSemaphore waits[2] = {acquire_semaphores[slot], picture_ready[slot]};
+    const VkPipelineStageFlags wait_stages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.waitSemaphoreCount = 2;
+    submit.pWaitSemaphores = waits;
+    submit.pWaitDstStageMask = wait_stages;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &show;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &render_finished[index];
+    vkQueueSubmit(present_queue, 1, &submit, fences[slot]);
+    ++submissions;
+    if (submissions % 600 == 0 && presents_dropped != presents_dropped_reported) {
+      std::fprintf(stderr, "[hw] presentations not shown (the display was behind): %llu\n", static_cast<unsigned long long>(presents_dropped));
+      presents_dropped_reported = presents_dropped;
+    }
+
+    VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    present.waitSemaphoreCount = 1;
+    present.pWaitSemaphores = &render_finished[index];
+    present.swapchainCount = 1;
+    present.pSwapchains = &swapchain;
+    present.pImageIndices = &index;
+    const VkResult result = queue_present(present_queue, present);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) resize_pending = true;
+    if (frame == nullptr) stats.black_presents++;  // presented without a composed image (chapter 12.4)
   }
 
   // One presentation per guest VBlank: the composed display frame, or black without one (chapter 12.5).
   void present_frame(const hwgs::writeback::FrameOutput *frame) {
     if (!swapchain) return;
+    ++present_calls;
+    if (present_queue) {
+      present_on_own_queue(frame);
+      return;
+    }
     const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
     // At most presents_in_flight submissions outstanding: wait for the one issued two ago.
     if (submissions >= presents_in_flight) {
@@ -801,7 +1191,7 @@ struct Backend::Impl {
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain;
     present.pImageIndices = &index;
-    const VkResult result = vkQueuePresentKHR(queue, &present);
+    const VkResult result = queue_present(queue, present);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) resize_pending = true;
     if (frame == nullptr) stats.black_presents++;  // presented without a composed image (chapter 12.4)
   }

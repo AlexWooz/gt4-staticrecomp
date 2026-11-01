@@ -119,4 +119,7 @@ bool load_headless_entry_points(VkInstance instance, std::vector<std::string> &m
 // order the read-modify-write of overlapping fragments in primitive order inside one draw.
 bool pixel_interlock_supported(VkPhysicalDevice physical);
 
+// An entry point outside the tables above (diagnostics), null when it does not resolve.
+PFN_vkVoidFunction instance_proc(VkInstance instance, const char *name);
+
 } // namespace gt4::hw::vulkan_loader

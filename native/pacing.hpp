@@ -15,6 +15,11 @@
 
 namespace gt4::pacing {
 
+// IN-514: how long before the VBlank's deadline the EE finished its last frame, in microseconds, negative when late, and
+// kNoSlack before the first paced frame. Written and read on the EE thread only.
+inline constexpr std::int32_t kNoSlack = INT32_MIN;
+inline std::int32_t ee_slack_us = kNoSlack;
+
 // Audio latency target: 60 ms of stereo 48 kHz frames.
 inline constexpr std::size_t target_latency_frames = 2880;
 inline constexpr std::size_t sample_rate_hz = 48000;

@@ -3370,13 +3370,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 const PixelRect rect{0, 0, static_cast<std::int32_t>(width) - 1,
                                      static_cast<std::int32_t>(height) - 1};
                 const BlockSpan span = SpanOfRect(view, rect);
-                const BlockSpan exact = WriteSpan(view, rect);
+                std::optional<BlockSpan> exact;
+                static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;
                 for (const Target &target : targets_) {
+                    // IN-518: a target that needs no readback costs no block walk (0.45 ms per 6x race VBlank, once per
+                    // texture for every target).
+                    if (gpuTextures_ && MaterializableClass(target.cls) && !trace) continue;
+                    if (!target.alive || target.drawn.Empty() || !SpansOverlap(TargetSpan(target, target.drawn), span)) continue;
                     // The page-row test first (cheap), then exact blocks: a conservative overlap alone would read back
                     // targets the texture does not touch.
-                    if (target.alive && !target.drawn.Empty() && SpansOverlap(TargetSpan(target, target.drawn), span) &&
-                        SpansOverlap(WriteSpan(target.view, target.drawn), exact)) {
-                        static const bool trace = std::getenv("GT4_CORE2_READBACK_TRACE") != nullptr;
+                    if (!exact) exact = WriteSpan(view, rect);
+                    if (SpansOverlap(WriteSpan(target.view, target.drawn), *exact)) {
                         if (trace) {
                             std::fprintf(stderr, "[core2] texture over target vblank=%llu tex bp=%u bw=%u psm=%u %ux%u\n",
                                          static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth,

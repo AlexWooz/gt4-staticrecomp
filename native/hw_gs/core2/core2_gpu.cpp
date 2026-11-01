@@ -201,16 +201,18 @@ struct Gpu::Impl {
     std::vector<Image> doomed;  // released once this slot's submission is complete
     std::uint64_t serial = 0;   // IN-439: the number of the submission this slot carries (1, 2, ...)
   };
-  // S4: up to kMaxSlots submissions in flight (GT4_CORE2_SLOTS, default 8, 2 to 8). With two, the CPU could run only
+  // S4: up to kMaxSlots submissions in flight (GT4_CORE2_SLOTS, 2 to 24; IN-517: default 16 on a discrete GPU, 8 on an
+  // integrated one, set at Init, since a race VBlank at 6x has 25-45 submissions and 8 kept the GS thread within a third of a
+  // frame of the GPU, waiting for it on every heavy stretch). With two, the CPU could run only
   // one submission ahead of the GPU: with the GPU at a low clock and full of small dependent commands, the GS thread
   // waited for it in the middle of frames (draw stage waits of 12-30 ms in the owner's menus and the Arcade race
   // start), and submitting more often made it worse.
-  static constexpr std::uint32_t kMaxSlots = 8;
+  static constexpr std::uint32_t kMaxSlots = 24;
   Slot slots[kMaxSlots];
   std::uint32_t slotCount = [] {
     const char *text = std::getenv("GT4_CORE2_SLOTS");
-    const long value = text ? std::strtol(text, nullptr, 10) : 8;
-    return static_cast<std::uint32_t>(std::clamp<long>(value, 2, static_cast<long>(kMaxSlots)));
+    if (!text) return std::uint32_t{0};  // decided at Init
+    return static_cast<std::uint32_t>(std::clamp<long>(std::strtol(text, nullptr, 10), 2, static_cast<long>(kMaxSlots)));
   }();
   // B4: per slot, the start and end of its command buffer, then up to kPassTimestampPairs draw passes (start, end);
   // read when the slot's fence has signalled.
@@ -2304,6 +2306,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     if (!check(gt4_hw_vkCreateFence(s.device, &fenceInfo, nullptr, &slot.fence), "vkCreateFence", error)) return false;
   }
+  if (s.slotCount == 0) s.slotCount = s.integrated ? 8u : 16u;  // IN-517
   s.lastSubmitted = s.slotCount - 1u;  // S4: the first recording takes slot 0
   if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
     VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -2341,9 +2344,11 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
   const VkMemoryPropertyFlags uploadMemory =
       (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
-  if (!s.make_buffer(s.staging, kStagingBytes, stagingUsage, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.vertices, kVertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.uniforms, kUniformBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
+  // IN-517: the sizes are for 8 slots; a recording's share stays the same with more.
+  const VkDeviceSize ringScale = std::max<std::uint32_t>(s.slotCount, 8u);
+  if (!s.make_buffer(s.staging, kStagingBytes / 8u * ringScale, stagingUsage, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.vertices, kVertexBytes / 8u * ringScale, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.uniforms, kUniformBytes / 8u * ringScale, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
   {
     std::string types;
     for (std::uint32_t i = 0; i < s.memoryProperties.memoryTypeCount; ++i) {
@@ -2410,7 +2415,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     info.maxSets = kTransientSets;
     info.poolSizeCount = 3;
     info.pPoolSizes = sizes;
-    for (Impl::Slot &slot : s.slots) {
+    for (std::uint32_t i = 0; i < s.slotCount; ++i) {
+      Impl::Slot &slot = s.slots[i];
       if (!check(gt4_hwd_vkCreateDescriptorPool(s.device, &info, nullptr, &slot.pool), "vkCreateDescriptorPool", error)) {
         return false;
       }

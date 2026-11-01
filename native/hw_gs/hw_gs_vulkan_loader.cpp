@@ -20,6 +20,8 @@ void resolve(Pointer &slot, VkInstance instance, const char *name, std::vector<s
 
 } // namespace
 
+PFN_vkVoidFunction instance_proc(VkInstance instance, const char *name) { return get_instance_proc(instance, name); }
+
 bool load_loader(std::string &error) {
   if (get_instance_proc) return true;
   HMODULE library = LoadLibraryExW(L"vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);

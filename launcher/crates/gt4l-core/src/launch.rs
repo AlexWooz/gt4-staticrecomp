@@ -203,6 +203,8 @@ pub fn coregs20_environment(
     if settings.gs_value("performance_mode") == "no-readbacks" {
         variables.insert("GT4_CORE2_PERFORMANCE", "1".to_string());
     }
+    // The session's frametime log, beside its game.log (the working directory is the session folder).
+    variables.insert("GT4_HW_FRAMETIME_LOG", "frametime.csv".to_string());
     if settings.gs_value("texture_load") == "true" {
         variables.insert("GT4_HW_TEXTURES", textures.display().to_string());
     }

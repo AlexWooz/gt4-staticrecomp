@@ -315,6 +315,8 @@ void release_frame() {
     GT4_PERF_SCOPE(gt4::perf::Category::pacing_wait);
     // Bench switch: GT4_PACING_NO_WAIT=1 runs as fast as it can with a window, to compare with a run with no window.
     static const bool no_wait = std::getenv("GT4_PACING_NO_WAIT") != nullptr;
+    gt4::pacing::ee_slack_us = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+        (frame_pacer->deadline() - frame_clock->now()) * 1000000 / static_cast<std::int64_t>(frame_clock->frequency()), -100000, 100000));
     if (!no_wait) frame_clock->wait_until(frame_pacer->deadline());
   }
   const std::int64_t released = frame_clock->now();

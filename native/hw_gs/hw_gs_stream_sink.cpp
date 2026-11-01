@@ -12,6 +12,8 @@
 
 #include "thread_placement.hpp"
 #include "hw_cpu_sampler.hpp"
+#include "hw_flare_table.hpp"
+#include "../pacing.hpp"
 #include "hw_gs_backend.hpp"
 #include "hw_gs_options.hpp"
 #include "mtvu_ring.hpp"
@@ -22,6 +24,7 @@
 #include <intrin.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -119,6 +122,7 @@ struct TransportCounters {
   std::atomic<std::uint64_t> vsync_wait_ticks{0}, vsync_waits{0};  // back-pressure (kFramesAhead)
   std::atomic<std::uint64_t> drain_wait_ticks{0}, drains{0};       // read_fifo / window calls waiting for the worker
   std::atomic<std::uint64_t> read_fifo_ticks{0}, read_fifos{0};    // read_fifo including its drain
+  std::atomic<std::uint64_t> flare_reads{0}, flare_late{0}, flare_start_us{0}, flare_answer_us{0};  // IN-514
   std::atomic<std::uint64_t> wake_pushes{0};       // pushes that found the worker waiting for work
   // Worker (GS worker thread).
   std::atomic<std::uint64_t> busy_ticks[5] = {};   // per GsCommand::Kind: Gif, Privileged, Vsync, GsReset, GifReset
@@ -181,6 +185,27 @@ void read_fifo_now(std::uint8_t *data, std::uint32_t qwords) {
 // Once per guest VBlank: submit the recorded work, then present (window) or close the frame (headless).
 // GT4_HW_PROFILE_EVERY=<n>: every n VBlanks, one stderr line with the interval's per-frame averages (CPU ms per
 // pass and work counts), so heavy scenes (3D cars, races) can be profiled from a headless run (M9 work).
+
+double flare_deadline_ms();
+
+// IN-514: when the EE reaches the flare table and gets its answer, after the VBlank, and how many answers were late.
+void print_flare_table() {
+  const TransportCounters &t = g_transport;
+  static std::uint64_t lastFlareReads = 0, lastFlareLate = 0, lastFlareStart = 0, lastFlareAnswer = 0;
+  const std::uint64_t flareReads = t.flare_reads.load(), flareLate = t.flare_late.load();
+  const std::uint64_t flareStart = t.flare_start_us.load(), flareAnswer = t.flare_answer_us.load();
+  if (flareReads != lastFlareReads) {
+    const double reads = static_cast<double>(flareReads - lastFlareReads);
+    std::fprintf(stderr, "[hw] flare table: reads=%.0f late=%llu (total %llu) reached at %.2f ms, answered at %.2f ms after the VBlank, limit %.2f ms\n", reads,
+                 static_cast<unsigned long long>(flareLate - lastFlareLate), static_cast<unsigned long long>(flareLate),
+                 static_cast<double>(flareStart - lastFlareStart) / reads / 1000.0,
+                 static_cast<double>(flareAnswer - lastFlareAnswer) / reads / 1000.0, flare_deadline_ms());
+  }
+  lastFlareReads = flareReads;
+  lastFlareLate = flareLate;
+  lastFlareStart = flareStart;
+  lastFlareAnswer = flareAnswer;
+}
 
 // TASK-027 CPU survey: one [hw] transport line per profile interval (per-VBlank averages).
 void print_transport(double n) {
@@ -356,7 +381,7 @@ void gif_reset_now() { backend().reset_gif_paths(); }
 // record that would cross the end). Waking is conditional: the EE rings the work bell after a push, which wakes the
 // worker only when it sleeps; the worker rings the progress bell only when what the EE waits for has happened (free
 // space, a VBlank done, the ring empty).
-enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36, MtvuJob = 37, SkippedRead = 38 };
+enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36, MtvuJob = 37, SkippedRead = 38, FlareRead = 39 };
 
 class StreamRing {
 public:
@@ -483,6 +508,13 @@ public:
   // IN-477: a read the EE does not wait for, at its place in the stream.
   void post_skipped_read(std::uint32_t qwords) { push(SinkRecord::SkippedRead, 0, qwords, nullptr, 0); }
 
+  // IN-514 (EE thread): the flare table read at its place in the stream, answered by `deadline` (hw_flare_table.hpp).
+  bool read_flare_table(std::uint8_t *data, std::uint64_t vblank, FlareTableReads::Clock::time_point deadline) {
+    const std::uint64_t ticket = flareReads_.post(vblank);
+    push(SinkRecord::FlareRead, 0, FlareTableReads::kQwords, nullptr, 0);
+    return flareReads_.answer(ticket, vblank, deadline, data);
+  }
+
   // Waits until every queued record has executed; the caller then runs with the backend lock held.
   std::unique_lock<std::mutex> drain() {
     const std::uint64_t start = __rdtsc();
@@ -495,6 +527,7 @@ public:
 
 private:
   std::vector<std::uint8_t> skippedRead_;  // IN-477: worker only
+  FlareTableReads flareReads_;  // IN-514
 
   // Producer side: sleeps on the progress bell until `ready()` holds. `want` tells the worker when to ring: the free
   // bytes needed, kWantEmpty, or kWantNothing (a VBlank done always rings). The want/snapshot/re-check/wait order
@@ -569,6 +602,12 @@ private:
             std::vector<std::uint8_t> &scratch = skippedRead_;
             scratch.resize(static_cast<std::size_t>(header.job) * 16u);
             read_fifo_now(scratch.data(), static_cast<std::uint32_t>(header.job));
+            break;
+          }
+          case SinkRecord::FlareRead: {  // IN-514
+            FlareTableReads::Table table;
+            read_fifo_now(table.data(), FlareTableReads::kQwords);
+            flareReads_.finish(table);
             break;
           }
         }
@@ -690,7 +729,6 @@ void privileged(std::uint32_t address, std::uint64_t value) {
 // answers it with zeros (IN-441). Waiting for the GS worker to reach that read only served to take the zeros: the EE was
 // blocked for most of the GS work of every frame (10-16 ms per VBlank on the i5-7200U). The same rule as the GSdx path's
 // (`local_readback`, gs_stream_client.cpp). GT4_HW_FLARE_NO_WAIT=0 waits as before (A/B).
-constexpr std::uint32_t kFlareTableQwords = 128;
 bool flare_table_answered_at_once() {
   static const bool on = [] {
     const char *hide = std::getenv("GT4_GS_HIDE_FLARES");
@@ -702,12 +740,50 @@ bool flare_table_answered_at_once() {
   return on;
 }
 
+// IN-514 (normal mode, with a window): the EE waits for the flare table only until this long after the VBlank, the time
+// that still leaves it room for the rest of its frame. In GT4 the EE waits at this read for most of the GS work of the
+// frame, so a heavy stretch (a car ahead on George V Paris at 6x: GS 17 ms) cost the frame rate, while Performance mode, which
+// does not wait, stayed at 60 FPS. A late answer is the last finished table: a flare is one or two frames late in such a frame
+// only (gotchas/flare-readback-one-frame-lag), and the VU1 alone reads the table. Headless runs always wait, so frames stay
+// comparable. GT4_HW_FLARE_DEADLINE_MS=<ms> fixes the limit, 0 always waits (A/B).
+std::atomic<bool> g_window_attached{false};
+FlareDeadline g_flare_deadline;  // EE only
+double g_flare_answer_ms = -1.0;  // EE only: this frame's read, -1 without one
+std::uint64_t g_ee_vblanks = 0;  // EE only
+std::chrono::steady_clock::time_point g_ee_last_vblank;  // EE only
+double flare_deadline_ms() {
+  static const double fixed = [] {
+    const char *text = std::getenv("GT4_HW_FLARE_DEADLINE_MS");
+    return text != nullptr ? std::atof(text) : -1.0;
+  }();
+  return fixed >= 0.0 ? fixed : g_flare_deadline.ms();
+}
+
 void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
   if (!g_worker) {
     read_fifo_now(data, qwords);
     return;
   }
-  if (qwords == kFlareTableQwords && flare_table_answered_at_once()) {
+  if (qwords == FlareTableReads::kQwords && flare_deadline_ms() > 0.0 && g_window_attached.load(std::memory_order_relaxed) &&
+      g_ee_vblanks != 0) {
+    const std::uint64_t start = __rdtsc();
+    const auto startTime = std::chrono::steady_clock::now();
+    const auto deadline = g_ee_last_vblank + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                 std::chrono::duration<double, std::milli>(flare_deadline_ms()));
+    const bool late = g_worker->read_flare_table(data, g_ee_vblanks, deadline);
+    const auto endTime = std::chrono::steady_clock::now();
+    add(g_transport.read_fifo_ticks, __rdtsc() - start);
+    add(g_transport.read_fifos, 1);
+    add(g_transport.flare_reads, 1);
+    if (late) add(g_transport.flare_late, 1);
+    add(g_transport.flare_start_us, static_cast<std::uint64_t>(
+                                        std::chrono::duration_cast<std::chrono::microseconds>(startTime - g_ee_last_vblank).count()));
+    add(g_transport.flare_answer_us, static_cast<std::uint64_t>(
+                                         std::chrono::duration_cast<std::chrono::microseconds>(endTime - g_ee_last_vblank).count()));
+    g_flare_answer_ms = std::chrono::duration<double, std::milli>(endTime - g_ee_last_vblank).count();
+    return;
+  }
+  if (qwords == FlareTableReads::kQwords && flare_table_answered_at_once()) {
     std::memset(data, 0, static_cast<std::size_t>(qwords) * 16u);
     g_worker->post_skipped_read(qwords);
     add(g_transport.read_fifos, 1);
@@ -728,6 +804,13 @@ void vsync(bool odd_field) {
     return;
   }
   g_worker->push(SinkRecord::Vsync, 0, odd_field ? 1 : 0, nullptr, 0);
+  if (g_flare_answer_ms >= 0.0 && gt4::pacing::ee_slack_us != gt4::pacing::kNoSlack) {
+    g_flare_deadline.frame(g_flare_answer_ms, gt4::pacing::ee_slack_us / 1000.0);
+  }
+  g_flare_answer_ms = -1.0;
+  ++g_ee_vblanks;
+  g_ee_last_vblank = std::chrono::steady_clock::now();
+  if (g_ee_vblanks % 600 == 0) print_flare_table();
   add(g_transport.vsync_commands, 1);
 }
 
@@ -756,6 +839,7 @@ bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t heig
     return false;
   }
   backend().resize_window(width, height);
+  g_window_attached.store(true, std::memory_order_relaxed);
   std::fprintf(stderr, "[hw] window output through the HWR swapchain\n");
   return true;
 }
