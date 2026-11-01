@@ -1688,9 +1688,10 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
-**State 2026-11-01:** 🧪 candidate 370 (not uploaded) is installed on the owner's desktop for their test: Spec II on CoreGS 2.0
-(IN-506), shaders compiled before Play (IN-507) and no readback for a write beside a drawn area (IN-508: George V Paris at 6x,
-headless, GS thread -19%, frames identical to 369; the owner's F8 is pending). The owner's F8 at 6x on George V Paris: 49.6 VBlanks/s, 57.7 in
+**State 2026-11-01:** 🧪 candidate 371 (not uploaded) is installed on the owner's desktop for their test: Spec II on CoreGS 2.0
+(IN-506), shaders compiled before Play (IN-507), no readback for a write beside a drawn area (IN-508: George V Paris at 6x,
+headless, GS thread -19%) and no frametime wave from a target drawn every second VBlank (IN-509: change between VBlanks 4.38 to
+0.44 ms); frames identical to the build before each. The owner's F8 on 371 is pending. The owner's F8 at 6x on George V Paris: 49.6 VBlanks/s, 57.7 in
 Performance Mode; the GS thread's waits for GPU readbacks are the largest cost. Open: GSdx's F8 for comparison.
 
 **State 2026-10-31:** 🧪 candidate 367 (not uploaded) waits for the owner's test on the laptop: on the HD 620 at 2x GPU

@@ -176,3 +176,31 @@ wall time of the whole emulator.
 Headless, unpaced, Spec II, RX 9060 XT, one executable with `GT4_CORE2_DRAWN_PAGE_TEST=0` and without it, three interleaved rounds. "Off" and "On" are without Performance Mode; the other two columns are with it. The `[core2]` lines cover VBlanks 20400 to 21000, the `[hw] cost` lines 20700 to 21300. Candidate 369 in the same rounds gave `x_total` 17.37 and 14.91, the same as the switch off. Evidence: `build/evidence/in508-ab.log` (ignored by git).
 
 Frames against candidate 369: 78 of 78 identical. The largest cost on this scene was a store for a write that touched no drawn pixel. What is left of the readback phase is "keep" and the flare download. Not yet the owner's F8.
+
+## The frametime wave (IN-509, candidate 371)
+
+| Owner's F8 on candidate 370, George V Paris at 6x | No Performance Mode | Performance Mode |
+|---|---|---|
+| Session | session-1793511403 | session-1793511564 |
+| VBlanks/s | 59.20 | 59.45 |
+| Frame median / p95 / p99 / max | 16.68 / 21.59 / 23.27 / 41.15 | 16.63 / 23.30 / 24.21 / 42.96 |
+| Intervals under 15 ms | 1684 of 5657 | 878 of 6088 |
+| Intervals of 20 ms and more | 1148 of 5657 | 704 of 6088 |
+
+| Race on George V Paris, 6x, ms per VBlank | Off | On | Performance off | Performance on |
+|---|---|---|---|---|
+| Wall per VBlank, mean | 16.63 | 13.33 | 13.09 | 11.12 |
+| Wall per VBlank, p95 | 21.87 | 15.13 | 17.35 | 12.75 |
+| Wall per VBlank, p99 | 22.83 | 15.77 | 18.15 | 13.45 |
+| Wall per VBlank, max | 23.87 | 18.10 | 20.20 | 15.05 |
+| Change from one VBlank to the next | 4.38 | 0.44 | 3.87 | 0.40 |
+| GS thread, even / odd VBlanks | 15.22 / 11.17 | 10.24 / 10.26 | 14.30 / 10.55 | 10.85 / 10.71 |
+| GS thread, all its work (`x_total`) | 14.07 | 11.05 | 12.36 | 10.60 |
+| Readback phase | 2.79 | 0.59 | 1.80 | 0.00 |
+| GPU waits | 2.05 | 0.51 | 0.39 | 0.03 |
+| GPU busy | 10.25 | 8.72 | 8.16 | 7.33 |
+| EE critical path | 16.72 | 13.22 | 13.33 | 11.02 |
+
+Headless, unpaced, Spec II, RX 9060 XT, one executable with `GT4_CORE2_WIDTH_GRACE_LONG=0` and without it, three interleaved rounds, VBlanks 20400 to 21300 for the per-VBlank rows. The Performance Mode columns use rounds 2 and 3: round 1 with the change on had one 261 ms VBlank (20462) in which every phase slowed by the same factor of about 8, with no readback: External interference (High confidence), not seen in the other five Performance Mode runs. Evidence: `build/evidence/in509.log` (ignored by git).
+
+Frames against candidate 370: 117 of 117 identical. **Lesson:** averages hid this. The mean GS time was below 16.67 ms and the machine held 60 FPS, while every second VBlank went over it. Look at the VBlank-by-VBlank line (`GT4_CORE2_SPIKE_MS=0.01 GT4_CORE2_SPIKE_LINES=1000`) and at the change from one VBlank to the next. Not yet the owner's F8 on this build.

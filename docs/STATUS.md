@@ -1,5 +1,18 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 371: the frametime wave on George V Paris removed (2026-11-01)
+
+Candidate 371 (pins `docs/inputs/slice371-pcsx2.json`, `0c509aa3...`, and `docs/inputs/slice371-spec2.json`, `011ecb9f...`), installed on the owner's desktop through the installer's update mode (`private/release-130-rc8i-out`, installer `8ce07302...`, zip `ace931e9...`). **Not uploaded until the owner says so.** **The owner's F8 on George V Paris at 6x, with and without Performance Mode, is pending.**
+
+- **The owner's report on candidate 370:** much faster (59.20 and 59.45 VBlanks/s, from 49.60 and 57.73) but a bad frame pacing in both modes: at 60 FPS the frametime looks like an audio waveform, 10-12 ms beside more than 20 ms. The owner says it was there before 370.
+- **Cause (Confirmed, reproduced headless):** IN-509: GT4 draws a 256 x 256 Z target at BP 0 every second VBlank. One VBlank of grace for a target of another width dropped it each time and kept its memory: six readbacks every second VBlank, four of 640 x 448 targets. In the owner's windowed session that readback waited 7 to 11 ms for the GPU.
+- **What it adds:** two VBlanks of grace. It cuts no effect, so it is in normal mode. `GT4_CORE2_WIDTH_GRACE_LONG=0` is the A/B switch.
+- **Measured (headless race, three interleaved rounds):** change from one VBlank to the next 4.38 to 0.44 ms without Performance Mode and 3.87 to 0.40 with it; wall p95 21.87 to 15.13 and 17.35 to 12.75. Table in `docs/hw-renderer-spec/CORE2-PERF-LEDGER.md`.
+- **Frames against candidate 370:** 117 of 117 identical: v2.00 10/10 at 3x, 27/27 Arcade, 31/31 at 12x; Spec II George V Paris at 6x 20/20 and 20/20, C.S. Route 5 4/4 and Costa di Amalfi 5/5 at 3x.
+- **Checks:** `ctest -R "^hw_|native_ipu_fast|standalone"` 149 of 149 passed (one skipped), with the new `hw_core2_width_grace`. Installed game folder equal to the distribution; 16,427 files of settings, saves, replays, disc copies and textures unchanged.
+- **Not fixed, seen in the owner's sessions:** the race start's camera cut (27 readbacks, about 42 ms, once; IN-429 reduced it before), and rare GPU waits of 26 to 30 ms inside a draw with no readback. In the window, GPU waits outside readbacks run at 0.5 to 7 ms per VBlank against about 0.03 to 0.5 headless: cause Unknown; Hypothesis: the swapchain's vsync. A headless run cannot show it, so the owner's F8 decides.
+- **Not run on this build:** a window, the launcher's `cargo test` and focus pages (its code and locales are unchanged since 369; only its notes changed), the laptop (off), the full installer comparison required before any upload.
+
 ## TASK-027 CoreGS 2.0 candidate 370: the readback before a write on George V Paris removed (2026-11-01)
 
 Candidate 370 (pins `docs/inputs/slice370-pcsx2.json`, `361d3310...`, and `docs/inputs/slice370-spec2.json`, `a2262c2e...`), installed on the owner's desktop through the installer's update mode (`private/release-130-rc8h-out`, installer `74c8a0a6...`, zip `66221cde...`). **Not uploaded until the owner says so**; the GitHub draft still holds candidate 354. **The owner's F8 on George V Paris at 6x, with and without Performance Mode, is pending.**
