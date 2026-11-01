@@ -74,7 +74,7 @@ pub struct SettingDef {
 
 /// The PCSX2 GS in its own process (downloaded, default when installed). Decision 0070.
 pub const PCSX2_GS: &str = "pcsx2";
-/// Our own hardware renderer, inside the game executable (beta, GT4 only: Spec II keeps GSdx).
+/// Our own hardware renderer, inside the game executable (beta).
 pub const CORE_GS_20: &str = "coregs20";
 
 const RENDERER_CHOICES: &[Choice] = &[
@@ -137,7 +137,7 @@ pub const SETTINGS: &[SettingDef] = &[
         group: "Renderer",
         title: "Renderer",
         info: "GSdx draws the game on your GPU in its own process; it is the default renderer. CoreGS 2.0 is our own \
-               renderer, in beta: it uses much less processor. Gran Turismo 4 Spec II keeps GSdx.",
+               renderer, in beta: it uses much less processor.",
         kind: Kind::Choice(RENDERER_CHOICES),
         default: PCSX2_GS,
         connected: true,

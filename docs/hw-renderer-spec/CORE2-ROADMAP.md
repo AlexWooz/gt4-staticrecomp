@@ -251,8 +251,7 @@ proves otherwise.
 - **B5. A second GS worker** (only if B1-B4 leave the GS thread over budget): parse and translate on one thread,
   record and submit on another, in stream order.
 - **B6. Spec II as the stress scene** (owner proposal, after B1):
-  - Spec II already boots and races on gt4-gs (TASK-100 S7c, branch `task/100-spec2`, not merged).
-  - A test build combines its game library with this branch's renderer.
+  - Spec II runs on this renderer since candidate 368 (IN-506).
   - George V Paris (the heaviest track; it does not reach full speed in GSdx at 6x) then becomes the 6x target.
   - The v2.00 game stays the fidelity reference.
 

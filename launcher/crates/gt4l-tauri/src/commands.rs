@@ -400,7 +400,7 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
         // original-game hash or enabled RA options. Native target guard stays intact.
         extra.push(("GT4_RA_ENABLED".into(), "0".into()));
     }
-    // GSdx runs the game (decision 0070) unless the player chose CoreGS 2.0 (GT4 only, in the game executable): without a
+    // GSdx runs the game (decision 0070) unless the player chose CoreGS 2.0 (in the game executable): without a
     // verified GSdx such a session stops here with the error.
     // TASK-108 (release 1.3.0): the graphics card and API of this run (automatic unless the player chose them). The
     // stored choices stay as they are; the run uses the resolved API, card and Adapter.
@@ -414,7 +414,7 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     let card_name = graphics.card.as_ref().and_then(gt4l_core::gpu::GpuDevice::name).unwrap_or("none");
     let adapter = if graphics.adapter.is_empty() { "system default" } else { graphics.adapter.as_str() };
     state::log(&dirs, &format!("graphics: card {card_name}, API {}, Adapter {adapter}", graphics.api));
-    let coregs20 = launch::uses_coregs20(&settings, game);
+    let coregs20 = launch::uses_coregs20(&settings);
     let pcsx2 = if coregs20 {
         state::log(&dirs, "graphics: renderer CoreGS 2.0 (Vulkan)");
         None

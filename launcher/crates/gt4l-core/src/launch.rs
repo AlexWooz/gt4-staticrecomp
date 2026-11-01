@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::display::{self, DisplayTarget};
-use crate::games::{self, Game};
+use crate::games::Game;
 use crate::gs_release::Installed;
 use crate::gs_table;
 use crate::settings::{self, Settings};
@@ -180,10 +180,9 @@ pub fn pcsx2_environment(settings: &Settings, paths: &Pcsx2Paths) -> Vec<(String
     variables.into_iter().map(|(name, value)| (name.to_string(), value)).collect()
 }
 
-/// Whether this session of `game` runs CoreGS 2.0: the player chose it and the game is GT4 (TASK-027, the beta is not
-/// tested on Spec II, which keeps GSdx).
-pub fn uses_coregs20(settings: &Settings, game: &Game) -> bool {
-    settings.get("renderer") == settings::CORE_GS_20 && game.id == games::GT4.id
+/// Whether this session runs CoreGS 2.0: the player chose it (TASK-027; both games, the choice is shared).
+pub fn uses_coregs20(settings: &Settings) -> bool {
+    settings.get("renderer") == settings::CORE_GS_20
 }
 
 /// The variables of a CoreGS 2.0 session (TASK-027). The renderer lives in the game executable, so no process, pin or
@@ -363,7 +362,7 @@ pub const STANDALONE_GS_INI_FILE: &str = "gt4-gs.ini";
 /// `fullscreen`, `present_mode`, `monitor`, `output_size` (only when a monitor is known), `async_gs`, `performance_report`
 /// and `check_vu_code`. Each key stands for the variable [`add_common`] and [`display_environment`] set (the mapping is
 /// tested against them). Anything the game defaults itself (GSdx, 480p, 16:9, automatic ultrawide) is not written.
-/// With CoreGS 2.0 chosen, [`coregs20_section`] adds its keys (the game applies them to GT4 only).
+/// With CoreGS 2.0 chosen, [`coregs20_section`] adds its keys.
 pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarget>) -> String {
     let present = match settings.get("vsync") {
         "fast" => "mailbox",
@@ -394,7 +393,7 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
 
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
 /// `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
-/// `hw_present_mode=fifo` over a stored "Fast" vsync (GT4 only, so Spec II under GSdx keeps its `present_mode`).
+/// `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps its `present_mode`).
 pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &Path) -> String {
     let mut text = String::from("renderer=coregs20\n");
     if settings.get("vsync") == "fast" {

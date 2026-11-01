@@ -1,5 +1,13 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 368: Spec II too, installed on the owner's desktop (2026-11-01)
+
+Candidate 368 (pins `docs/inputs/slice368-pcsx2.json`, `4ac5b8a8...`, and `docs/inputs/slice368-spec2.json`, `bfa80aa4...`), the current 1.3.0-rc8, is installed in the owner's `C:\Program Files\GT4Recomp` through the installer's update mode (`private/release-130-rc8f-out`, installer `22013da9...`, zip `d197f05a...`). Saves, replays and renderer data are unchanged; only `setup.log` changed. **Not uploaded until the owner says so**; the GitHub draft still holds candidate 354.
+
+- **What changed:** CoreGS 2.0 is no longer limited to GT4 (IN-506). v2.00's program differs from candidate 367 only in `standalone.cpp`.
+- **Checks:** Spec II headless at 3x, C.S. Route 5 and Costa di Amalfi in both Performance Mode settings, two night runs 22/22 identical, 2x and 12x ran, beside GSdx at 3x by eye. `standalone_fixture`, `spec2_hooks`, `game_target`, `spec2_iop`, launcher `launch_contract` 22 and `multi_game` 5 pass; locale keys equal.
+- **Not run (the owner cancelled the tests and tests by hand):** George V Paris at 4x and 6x with and without Performance Mode (it ran at 2x and 3x); candidate 368's v2.00 frame gates; focus pages; the full launcher suite; a window; GT Mode on Spec II.
+
 ## TASK-027 CoreGS 2.0 candidate 367: GPU work for weak graphics cards (2026-10-31)
 
 Candidate 367 (pin `docs/inputs/slice367-pcsx2.json`), the current game of 1.3.0-rc8, is on the owner's laptop only, **not uploaded until the owner says so**. Against candidate 362 on the HD 620 at 2x, no window, shaders warm, GPU busy per VBlank: day 25.84 to 18.85 ms in normal mode (-27%), 25.74 to 16.75 in Performance Mode (-35%); night 32.9 to 25.4 (-23%), 33.0 to 22.7 (-31%). RX 9060 XT, 12x night: 20.7 to 19.1 ms (-8%). No owner test of this build yet.

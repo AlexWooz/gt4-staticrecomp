@@ -1,0 +1,40 @@
+#!/bin/bash
+# Headless Spec II 1.10 run on CoreGS 2.0, Arcade from a card without game data (the boot order of docs/BUILD.md, S7b).
+# usage: spec2-run.sh <night|day|george> <name> <exe> [ENV=VAL ...]   (env SCALE=3 EVERY=1000 FROM=1000 FRAMES=22000)
+# Writes $GT4_BENCH_OUT/spec2-<scene>-<name>/. Needs the derived private/slice272-spec2-elf/SCUS_974.36 and a Spec II disc
+# image (GT4_SPEC2_ISO; the PT-BR image has the same program). The card is copied per run, never written.
+# night: C.S. Route 5 (Clubman, night), the race starts near 20000. day: Costa di Amalfi, the race starts near 21000 (FRAMES=24000).
+# george: George V Paris, the heaviest track, a rally against one car with no B-Spec icon, so the presses steer: the race starts near 20300 (FRAMES=27000).
+source "$(dirname "$0")/common.sh"
+GT4_SPEC2_ISO=${GT4_SPEC2_ISO:-$GT4_ASSETS/Gran Turismo 4 Spec II v1.10 (PTBR).iso}
+scene=$1; name=$2; exe=$3; shift 3
+OUT=$GT4_BENCH_OUT/spec2-$scene-$name
+mkdir -p "$OUT/frames"
+cp "$GT4_ARCADE_CARD" "$OUT/card.ps2"
+boot="600:start:30 900:cross:30 1500:left:10 1600:cross:30 2200:right:10 2300:cross:30 6200:start:30 8000:start:30 9200:cross:30 10000:cross:30"
+case "$scene" in
+  night)
+    P="$boot 10600:down:10 10800:cross:30"
+    for frame in 11200 11400 11600 11800 12000 12200 12400 12600 12800; do P="$P $frame:right:10"; done
+    P="$P 13000:cross:30 13800:cross:30 14400:cross:30 15000:cross:30"
+    for frame in 15600 15800 16000 16200 16400; do P="$P $frame:right:10"; done
+    P="$P 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:2600"
+    ;;
+  day)
+    P="$boot 11000:down:10 11200:down:10 11400:cross:30 12200:cross:30 13000:cross:30 14400:cross:30"
+    for frame in 15000 15200 15400 15600 15800; do P="$P $frame:right:10"; done
+    P="$P 16400:cross:30 17200:cross:30 18000:cross:30 18800:cross:30 19600:cross:30 20400:cross:4000"
+    ;;
+  george)
+    P="$boot 10600:down:10 10800:cross:30 11200:right:10 13000:cross:30 13800:cross:30 14400:cross:30 15000:cross:30"
+    for frame in 15600 15800 16000 16200 16400; do P="$P $frame:right:10"; done
+    P="$P 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:30 20200:cross:30 21000:cross:7000 21050:left:200"
+    ;;
+  *) echo "unknown scene $scene"; exit 2 ;;
+esac
+args=(); for p in $P; do args+=(--press "$p"); done
+env GT4_RENDERER=hw GT4_HW_CORE=2 GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1 GT4_HW_SCALE=${SCALE:-3} GT4_HW_DUMP_SOURCE=upscaled \
+  GT4_HW_DUMP_DIR="$(cygpath -w "$OUT/frames")" GT4_HW_DUMP_EVERY=${EVERY:-1000} GT4_HW_DUMP_FROM=${FROM:-1000} "$@" "$exe" \
+  "$(cygpath -w "$GT4_ASSETS/private/slice272-spec2-elf/SCUS_974.36")" --ntsc --disc "$(cygpath -w "$GT4_SPEC2_ISO")" \
+  --frames ${FRAMES:-22000} --memcard "$(cygpath -w "$OUT/card.ps2")" "${args[@]}" > "$OUT/log.txt" 2>&1
+echo "exit $?"

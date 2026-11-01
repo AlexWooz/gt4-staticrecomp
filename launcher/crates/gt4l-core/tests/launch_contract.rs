@@ -202,10 +202,9 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     use gt4l_core::games;
     let textures = Path::new(r"D:\data\Textures");
     let mut settings = Settings::default();
-    assert!(!launch::uses_coregs20(&settings, &games::GT4), "GSdx by default");
+    assert!(!launch::uses_coregs20(&settings), "GSdx by default");
     settings.set("renderer", "coregs20").unwrap();
-    assert!(launch::uses_coregs20(&settings, &games::GT4));
-    assert!(!launch::uses_coregs20(&settings, &games::SPEC2), "Spec II keeps GSdx in the beta");
+    assert!(launch::uses_coregs20(&settings), "the choice is shared by both games");
 
     let display = display_target(r"\\.\DISPLAY1", 1920, 1080);
     let on = env_map(&launch::coregs20_environment(&settings, Some(&display), false, textures));

@@ -159,7 +159,7 @@
   "choice.language.en-US": "English",
   "choice.language.pt-BR": "Português (Brasil)",
   "setting.renderer.label": "Renderer",
-  "setting.renderer.help": "GSdx draws the game on your GPU in its own process; it is the default renderer. CoreGS 2.0 is our own renderer, in beta: it uses much less processor. Gran Turismo 4 Spec II keeps GSdx.",
+  "setting.renderer.help": "GSdx draws the game on your GPU in its own process; it is the default renderer. CoreGS 2.0 is our own renderer, in beta: it uses much less processor.",
   "choice.renderer.coregs20": "CoreGS 2.0 (beta)",
   "setting.vsync.help_coregs20": "On keeps motion smooth with no tearing. Off lowers latency and may tear.",
   "setting.coregs_sharpening.label": "Sharpening (FSR1)",

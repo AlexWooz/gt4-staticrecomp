@@ -362,7 +362,7 @@ void check_resolve() {
   check(lacks(resolved.set, "GT4_FULLSCREEN") && lacks(resolved.set, "GT4_FORCE_480P"), "a variable that is set is never overwritten");
   check(has(resolved.set, "GT4_PRESENT_MODE", "fifo"), "an empty variable counts as unset");
 
-  // CoreGS 2.0 chosen in game.ini: GT4 runs it with its variables, no GSdx files; a renderer named by hand still wins.
+  // CoreGS 2.0 chosen in game.ini: the game runs it with its variables, no GSdx files; a renderer named by hand still wins.
   {
     World chosen = ready_world();
     sa::Inputs choice = inputs_for(*layout, nullptr);
@@ -384,6 +384,15 @@ void check_resolve() {
     World named = ready_world();
     named.environment["GT4_RENDERER"] = "pcsx2";
     check(sa::renderer_needed(choice, named.access()), "GT4_RENDERER in the environment wins over game.ini");
+    World spec2_world = ready_world("spec2", "SCUS_974.36");
+    spec2_world.file(kInstall / "game" / "gt4vulkan-spec2.exe", "game");
+    const auto spec2_layout = sa::find_layout(kInstall / "game" / "gt4vulkan-spec2.exe", "", "", spec2_world.access(), why);
+    check(spec2_layout.has_value(), "the Spec II layout is found");
+    sa::Inputs spec2_choice = inputs_for(*spec2_layout, nullptr);
+    spec2_choice.config = choice.config;
+    const sa::Resolved spec2_coregs = sa::resolve(spec2_choice, spec2_world.access());
+    check(!spec2_coregs.needs_renderer && has(spec2_coregs.set, "GT4_RENDERER", "hw") && has(spec2_coregs.set, "GT4_HW_SCALE", "4"),
+          "Spec II runs CoreGS 2.0 from the same choice");
   }
 
   // Another renderer, or a GS process given by hand: the installed one is not needed.

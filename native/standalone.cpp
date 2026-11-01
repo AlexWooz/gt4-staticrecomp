@@ -426,10 +426,10 @@ Environment default_environment() {
   };
 }
 
-// TASK-027: game.ini says CoreGS 2.0 (renderer=coregs20; the launcher wrote it), the game is GT4 (Spec II keeps GSdx in
-// the beta) and the process environment names no renderer.
+// TASK-027: game.ini says CoreGS 2.0 (renderer=coregs20; the launcher wrote it) and the process environment names no
+// renderer.
 bool coregs20_chosen(const Inputs &inputs, const Access &access) {
-  if (!inputs.config || std::string_view(inputs.layout->game.id) != "gt4" || !value_of(access, "GT4_RENDERER").empty()) return false;
+  if (!inputs.config || !value_of(access, "GT4_RENDERER").empty()) return false;
   const auto it = inputs.config->values.find("renderer");
   return it != inputs.config->values.end() && it->second == "coregs20";
 }
