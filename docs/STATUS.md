@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 370: the readback before a write on George V Paris removed (2026-11-01)
+
+Candidate 370 (pins `docs/inputs/slice370-pcsx2.json`, `361d3310...`, and `docs/inputs/slice370-spec2.json`, `a2262c2e...`), installed on the owner's desktop through the installer's update mode (`private/release-130-rc8h-out`, installer `74c8a0a6...`, zip `66221cde...`). **Not uploaded until the owner says so**; the GitHub draft still holds candidate 354. **The owner's F8 on George V Paris at 6x, with and without Performance Mode, is pending.**
+
+- **What it adds:** IN-508: a write that shares no page with a target's drawn rectangle neither stores nor patches that rectangle. It cuts no effect, so it is in normal mode. `GT4_CORE2_DRAWN_PAGE_TEST=0` is the A/B switch.
+- **Frames against candidate 369:** 78 of 78 identical: v2.00 10/10 at 3x, 14/14 Arcade, 31/31 at 12x; Spec II George V Paris at 6x 7/7 without and 7/7 with Performance Mode, C.S. Route 5 4/4 and Costa di Amalfi 5/5 at 3x.
+- **Measured (headless race, three interleaved rounds):** GS thread 17.41 to 14.04 ms per VBlank without Performance Mode (-19%), 14.95 to 12.25 with it (-18%); GPU waits 4.86 to 2.08 and 2.44 to 0.39; frame median 20.03 to 16.54 and 16.15 to 12.97. Table in `docs/hw-renderer-spec/CORE2-PERF-LEDGER.md`.
+- **Checks:** `ctest -R "^hw_|native_ipu_fast|standalone"` 148 of 148 passed (one skipped), with the new `hw_core2_drawn_page_test` and new cases in `hw_core2_upload_swizzle`. With the dirty side turned off on purpose the new test fails, 9 failures. Installed game folder equal to the distribution; 16,424 files of settings, saves, replays, disc copies and textures unchanged.
+- **Not run on this build:** a window, the launcher's `cargo test` and focus pages (the launcher's code and locales are unchanged since 369; only its notes changed), the laptop (off), the full installer comparison required before any upload.
+
 ## TASK-027 CoreGS 2.0 candidate 369: shaders compiled before Play (2026-11-01)
 
 Candidate 369 (pins `docs/inputs/slice369-pcsx2.json`, `1aa79cf0...`, and `docs/inputs/slice369-spec2.json`, `d3380f68...`), installed on the owner's desktop through the installer's update mode (`private/release-130-rc8g-out`, installer `59dd9a42...`, zip `372f141d...`). **Not uploaded until the owner says so.**

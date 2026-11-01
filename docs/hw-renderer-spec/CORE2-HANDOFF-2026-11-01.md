@@ -46,7 +46,9 @@ Read `AGENTS.md` first; it is canonical. The ones that matter most here:
 
 The GS thread figures are different measures, and the stretches of track differ (GSdx 98 s, CoreGS about 50 s). CoreGS 2.0 is limited by its GS thread, not by the GPU (GPU busy 12.2 and 10.4 ms). Readbacks are its largest cost: 7.7 and 7.2 ms, of which 5.5 and 5.0 ms wait for the GPU. Sessions: `C:\Program Files\GT4Recomp\data\sessions\session-1793503160`, `-1793503281` (CoreGS 2.0), `-1793505683`, `-1793505864` (GSdx).
 
-## Next step: the readback before a write on George V Paris (not started)
+## Next step: the readback before a write on George V Paris (done: IN-508, candidate 370; the owner's F8 is pending)
+
+Kept as written for the record. The results are in `docs/STATUS.md` and the perf ledger. "Latest build" above is now candidate 370. The page-aligned test proposed below was not enough: small textures at a base inside page 382 needed block cells too.
 
 No code was changed for this. `scripts/coregs2_bench/readback_trace.py` summarises a trace run:
 

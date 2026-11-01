@@ -156,3 +156,23 @@ wall time of the whole emulator.
   caught it, and the bad run looked faster.
 - **Timestamps:** with deferred draws, compute recorded before a pass overlaps the pass's timestamps, so
   `gpu_draw_passes` overstates drawing.
+
+## The readback before a write (IN-508, candidate 370)
+
+| Race on George V Paris, 6x, ms per VBlank | Off | On | Performance off | Performance on |
+|---|---|---|---|---|
+| GS thread, all its work (`x_total`) | 17.41 | 14.04 (-19%) | 14.95 | 12.25 (-18%) |
+| Readback phase | 6.91 | 2.76 (-60%) | 4.50 | 1.78 (-60%) |
+| GPU waits | 4.86 | 2.08 (-57%) | 2.44 | 0.39 (-84%) |
+| GPU waits, "before write" | 3.28 | 0.00 | 2.08 | 0.00 |
+| Readbacks "before write" per VBlank | 3.00 | 0.00 | 3.00 | 0.00 |
+| GPU busy | 12.00 | 10.29 (-14%) | 9.39 | 8.11 (-14%) |
+| EE critical path | 19.97 | 16.70 (-16%) | 16.20 | 13.21 (-18%) |
+| Frame median | 20.03 | 16.54 (-17%) | 16.15 | 12.97 (-20%) |
+| Frame p95 | 23.41 | 20.88 (-11%) | 20.21 | 17.11 (-15%) |
+| GS thread CPU | 12.31 | 11.81 (-4%) | 13.18 | 12.64 (-4%) |
+| Process CPU | 24.92 | 24.37 (-2%) | 26.83 | 26.07 (-3%) |
+
+Headless, unpaced, Spec II, RX 9060 XT, one executable with `GT4_CORE2_DRAWN_PAGE_TEST=0` and without it, three interleaved rounds. "Off" and "On" are without Performance Mode; the other two columns are with it. The `[core2]` lines cover VBlanks 20400 to 21000, the `[hw] cost` lines 20700 to 21300. Candidate 369 in the same rounds gave `x_total` 17.37 and 14.91, the same as the switch off. Evidence: `build/evidence/in508-ab.log` (ignored by git).
+
+Frames against candidate 369: 78 of 78 identical. The largest cost on this scene was a store for a write that touched no drawn pixel. What is left of the readback phase is "keep" and the flare download. Not yet the owner's F8.
