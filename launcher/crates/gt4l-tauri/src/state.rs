@@ -64,6 +64,9 @@ pub struct AppState {
     pub setup_outcome: SetupOutcome,
     /// The running game's child process (shared with the watcher thread and Stop).
     pub game_child: Option<Arc<Mutex<Option<Child>>>>,
+    /// IN-507: the shader compile before Play, and whether its window's Cancel stopped it.
+    pub shaders_child: Arc<Mutex<Option<Child>>>,
+    pub shaders_cancelled: Arc<AtomicBool>,
     /// Control name while a rebind waits for a press from the pad service (`pad_service`).
     pub capturing: Option<String>,
     /// Message shown on Home, e.g. why the last start failed.
@@ -261,6 +264,8 @@ impl AppState {
             setup_run: SetupRun::default(),
             setup_outcome: SetupOutcome::None,
             game_child: None,
+            shaders_child: Arc::new(Mutex::new(None)),
+            shaders_cancelled: Arc::new(AtomicBool::new(false)),
             capturing: None,
             home_message: String::new(),
             controls_status: String::new(),

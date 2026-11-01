@@ -3787,6 +3787,10 @@ void Renderer::SetScale(std::uint32_t scale, float shift) {
 
 std::uint32_t Renderer::Scale() const { return impl_->scale_; }
 
+bool Renderer::PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error) {
+    return impl_->gpu_.PrepareShaders(progress, error);
+}
+
 bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
     if (!impl_->gpu_.Init(handles, impl_->scale_, impl_->shift_, error)) return false;
     const char *textureMb = std::getenv("GT4_CORE2_TEXTURE_MB");

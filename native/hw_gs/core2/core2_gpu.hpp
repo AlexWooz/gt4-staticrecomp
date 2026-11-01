@@ -10,7 +10,9 @@
 // needs a result. The public header stays Vulkan-free.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -142,6 +144,11 @@ public:
     // `scale` is the internal scale s; `shift` the 06.3 half-pixel shift factor of the vertex stage.
     bool Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shift, std::string &error);
     bool Ready() const;
+    // IN-507: compiles what the shader cache (GT4_HW_SHADER_CACHE) lacks. Returns at once when it is ready for these shaders,
+    // this card and this driver, without calling `progress`; otherwise `progress` gets (done, total), starting at 0. False
+    // when there is no cache to prepare.
+    using ShaderProgress = std::function<void(std::size_t done, std::size_t total)>;
+    bool PrepareShaders(const ShaderProgress &progress, std::string &error);
     // IN-431: true on an integrated GPU (its images live in system memory shared with the game); the image budgets
     // are smaller there.
     bool Integrated() const;

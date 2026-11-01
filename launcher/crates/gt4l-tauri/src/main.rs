@@ -223,6 +223,8 @@ fn main() {
             setup::setup_choose_disc,
             setup::setup_start,
             setup::setup_cancel,
+            commands::prepare_shaders,
+            commands::cancel_shader_prepare,
             commands::play,
             commands::stop_game,
             commands::saves_list,

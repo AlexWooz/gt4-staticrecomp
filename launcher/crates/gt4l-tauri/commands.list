@@ -10,6 +10,8 @@ setup_start
 setup_cancel
 play
 stop_game
+prepare_shaders
+cancel_shader_prepare
 saves_list
 saves_import
 saves_activate

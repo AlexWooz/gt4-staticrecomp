@@ -1,5 +1,8 @@
 {
   "common.cancel": "Cancel",
+  "shaders.title": "Compiling shaders",
+  "shaders.text": "This runs once, and again after an update or a new graphics driver. The game starts when it ends.",
+  "shaders.count": "{done} of {total}",
   "common.back": "Back",
   "common.reset": "Reset",
   "common.remove": "Remove",

@@ -709,6 +709,10 @@
         setup.state = "failed";
         setup.problem = "Setup was cancelled. Nothing was changed.";
         return null;
+      case "prepare_shaders":
+        return true;
+      case "cancel_shader_prepare":
+        return null;
       case "play":
         if (!gameById(selectedGame).installed) {
           throw new Error("Set up the game first.");

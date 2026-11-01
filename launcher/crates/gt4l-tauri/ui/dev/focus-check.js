@@ -111,6 +111,25 @@
   }
 
   // Rendering each tab through its route never moves focus off the tab list.
+  // IN-507: the "Compiling shaders" window opens on the first progress, counts, holds on Back and closes when Play goes on.
+  async function shaderWindowChecks() {
+    await setHash("#/");
+    await wait(100);
+    check("no shader window before a compile", !document.querySelector(".shader-bar"), "open");
+    GT4_MOCK.emit("shaders-progress", { done: 0, total: 200 });
+    GT4_MOCK.emit("shaders-progress", { done: 50, total: 200 });
+    await wait(50);
+    var bar = document.querySelector(".shader-bar-fill");
+    check("the window shows the title and the count", !!bar && document.querySelector(".modal h3").textContent === T("shaders.title") &&
+      document.querySelector(".shader-count").textContent === T("shaders.count", { done: 50, total: 200 }), bar ? bar.style.width : "none");
+    check("the bar follows the count", !!bar && bar.style.width === "25%", bar ? bar.style.width : "none");
+    check("Cancel has the focus", document.activeElement && document.activeElement.textContent === T("common.cancel"), document.activeElement && document.activeElement.textContent);
+    document.querySelector(".modal").__dialog.back();
+    check("Back does not close it", !!document.querySelector(".shader-bar"), "closed");
+    GT4.closeShaderWindow();
+    check("it closes when Play goes on", !document.querySelector(".shader-bar"), "still open");
+  }
+
   async function routeChecks() {
     for (var i = 0; i < TABS.length; i++) {
       await setHash("#/settings/" + TABS[i]);
@@ -1258,6 +1277,7 @@
       await controlsChecks();
       await gamesChecks();
       await achievementsChecks();
+      await shaderWindowChecks();
       await setupChecks();
       await introChecks();
       await versionChecks();

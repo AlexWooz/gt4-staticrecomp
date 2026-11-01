@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -155,6 +156,9 @@ public:
   // Creates instance, device, queues, allocator-free persistent state. Never presents.
   // On failure `error` names the missing requirement and the function returns false.
   bool init(const Options &options, std::string &error);
+
+  // IN-507: compiles what the CoreGS 2.0 shader cache lacks (`progress` gets done and total, only when there is work).
+  bool prepare_shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error);
 
   void set_stream_event_handler(StreamEventHandler handler, void *context);
 

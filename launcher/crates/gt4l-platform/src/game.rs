@@ -2,6 +2,7 @@
 //! `gt4l_core::launch`; this module only runs it and turns the result into a classified outcome.
 
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,7 @@ use gt4l_core::display::DisplayTarget;
 use gt4l_core::exit::{self, Outcome};
 use gt4l_core::gs_release::Installed;
 use gt4l_core::gs_table;
-use gt4l_core::launch::{self, LaunchInputs, LaunchPlan, Pcsx2Paths};
+use gt4l_core::launch::{self, LaunchInputs, LaunchPlan, Pcsx2Paths, ShaderPrepareLine};
 use gt4l_core::lock::GameLock;
 use gt4l_core::paths::DataDirs;
 use gt4l_core::Settings;
@@ -29,6 +30,57 @@ pub struct Running {
     /// Held for the whole session so that a second launch cannot share the card (dropped with `Running`).
     #[allow(dead_code)]
     pub lock: GameLock,
+}
+
+/// Compiles what the CoreGS 2.0 shader cache lacks with the game program (IN-507), on the card of the session: `child` holds
+/// the process so that Cancel can stop it, and `progress` gets (done, total) only when there is work. Returns whether the
+/// program finished with the cache ready; its stderr goes to `logs\\shaders.log`.
+pub fn prepare_shaders(
+    dirs: &DataDirs,
+    game_executable: &Path,
+    settings: &Settings,
+    display: Option<&DisplayTarget>,
+    textures: &Path,
+    child: &Mutex<Option<Child>>,
+    progress: &mut dyn FnMut(u32, u32),
+) -> Result<bool, String> {
+    let logs = dirs.logs();
+    fs::create_dir_all(&logs).map_err(|error| format!("logs folder: {error}"))?;
+    let log = File::create(logs.join("shaders.log")).map_err(|error| format!("shaders.log: {error}"))?;
+    let inherited: Vec<String> = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()).collect();
+    // Only the program and the environment of this plan are used: nothing here reads the disc or the card.
+    let inputs = LaunchInputs { game_executable, elf: game_executable, disc: game_executable, card: game_executable, session_dir: &logs };
+    let integrated = crate::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
+    let plan = launch::plan_coregs20_launch(&inputs, settings, display, integrated, textures, &inherited);
+    let mut command = Command::new(&plan.program);
+    command.arg(launch::PREPARE_SHADERS_ARGUMENT).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::from(log));
+    if let Some(folder) = game_executable.parent() {
+        command.current_dir(folder);
+    }
+    for name in &plan.removed_inherited {
+        command.env_remove(name);
+    }
+    for (name, value) in &plan.environment {
+        command.env(name, value);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut process = command.spawn().map_err(|error| format!("could not start {}: {error}", plan.program.display()))?;
+    let stdout = process.stdout.take();
+    *child.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(process);
+    if let Some(stdout) = stdout {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(ShaderPrepareLine::Progress { done, total }) = launch::parse_shader_prepare_line(&line) {
+                progress(done, total);
+            }
+        }
+    }
+    let process = child.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+    let status = process.map(|mut process| process.wait()).transpose().map_err(|error| error.to_string())?;
+    Ok(status.is_some_and(|status| status.success()))
 }
 
 /// Starts a session. The disc and the prepared ELF must already be verified by the caller.

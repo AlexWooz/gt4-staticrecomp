@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -105,6 +106,7 @@ public:
     void SetScale(std::uint32_t scale, float shift);
     std::uint32_t Scale() const;
     bool Init(const gpu::VulkanHandles &handles, std::string &error);
+    bool PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error);  // IN-507
 
     bool GifTransfer(std::uint32_t path, const std::uint8_t *bytes, std::size_t byteCount);
     bool GifBusy(std::uint32_t path) const;

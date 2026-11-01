@@ -904,6 +904,10 @@ void Backend::set_stream_event_handler(StreamEventHandler handler, void *context
   impl_->stream_context = context;
 }
 
+bool Backend::prepare_shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error) {
+  return impl_->renderer->PrepareCore2Shaders(progress, error);
+}
+
 bool Backend::gif_transfer(int path, const std::uint8_t *bytes, std::size_t byte_count) {
   if (path < 1 || path > 3) return false;
   impl_->stats.gif_bytes += byte_count;

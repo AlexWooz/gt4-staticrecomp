@@ -1,5 +1,8 @@
 {
   "common.cancel": "Cancelar",
+  "shaders.title": "Compilando shaders",
+  "shaders.text": "Isso roda uma vez, e de novo depois de uma atualização ou de um novo driver de vídeo. O jogo abre quando terminar.",
+  "shaders.count": "{done} de {total}",
   "common.back": "Voltar",
   "common.reset": "Redefinir",
   "common.remove": "Remover",

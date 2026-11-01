@@ -81,7 +81,7 @@ foreach(hw_writeback_test IN ITEMS hw_flat_provoking hw_sprite_corners hw_presen
         hw_gpu_equivalence_scissor hw_gpu_raster_blend hw_gpu_raster_pabe hw_gpu_raster_atest
         hw_gpu_raster_date hw_gpu_raster_frame hw_gpu_gouraud_report
         hw_gpu_writeback_aliased_depth hw_readback_pending_draw hw_replay_parity_double_buffer
-        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present hw_core2_interlaced_present hw_core2_cpu_sprites hw_core2_gpu_clut hw_core2_mipmaps hw_core2_present_scale hw_core2_forced_bilinear hw_core2_specialised hw_core2_upload_memo hw_core2_shader_cache hw_core2_whole_clears hw_core2_rop hw_core2_road_sheen hw_core2_delayed_downloads hw_core2_compute_fills hw_core2_self_texture hw_core2_texture_replacement hw_core2_overlap_order
+        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present hw_core2_interlaced_present hw_core2_cpu_sprites hw_core2_gpu_clut hw_core2_mipmaps hw_core2_present_scale hw_core2_forced_bilinear hw_core2_specialised hw_core2_upload_memo hw_core2_shader_cache hw_core2_prepare_shaders hw_core2_whole_clears hw_core2_rop hw_core2_road_sheen hw_core2_delayed_downloads hw_core2_compute_fills hw_core2_self_texture hw_core2_texture_replacement hw_core2_overlap_order
         hw_scale_target_extent
         hw_tone_hle_exact
         hw_glm_decode hw_glm_swizzle hw_glm_clut hw_glm_unswizzle hw_glm_upload_merge
@@ -135,7 +135,7 @@ add_subdirectory(shaders)
 # TASK-027 hookup on main's GS stream seam (task/027-coregs2): GT4_RENDERER=hw sends the stream hooks to the
 # backend in process (native/gs_stream/gs_stream_sink.hpp). Linked into gt4_gs_stream_client by native/CMakeLists.txt.
 # hw_cpu_sampler.cpp: the TASK-027 CPU survey sampler (GT4_CPU_SAMPLER, diagnostic, off by default).
-add_library(gt4_hw_stream_sink STATIC hw_gs_stream_sink.cpp hw_cpu_sampler.cpp)
+add_library(gt4_hw_stream_sink STATIC hw_gs_stream_sink.cpp hw_gs_prepare.cpp hw_cpu_sampler.cpp)
 target_include_directories(gt4_hw_stream_sink PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(gt4_hw_stream_sink PUBLIC gt4_hw_backend)
 target_compile_options(gt4_hw_stream_sink PRIVATE /W4)

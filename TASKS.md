@@ -1688,8 +1688,9 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
-**State 2026-11-01:** 🧪 candidate 368 (not uploaded) adds Spec II on CoreGS 2.0 (IN-506) and is installed on the owner's
-desktop for their test; George V Paris at 4x and 6x was cancelled by the owner, who tests it by hand.
+**State 2026-11-01:** 🧪 candidate 369 (not uploaded) is installed on the owner's desktop for their test: Spec II on CoreGS 2.0
+(IN-506) and shaders compiled before Play (IN-507). The owner's F8 at 6x on George V Paris: 49.6 VBlanks/s, 57.7 in
+Performance Mode; the GS thread's waits for GPU readbacks are the largest cost. Open: GSdx's F8 for comparison.
 
 **State 2026-10-31:** 🧪 candidate 367 (not uploaded) waits for the owner's test on the laptop: on the HD 620 at 2x GPU
 busy 27% less by day and 23% at night against candidate 362 in normal mode, 35% and 31% in Performance Mode (IN-485 to

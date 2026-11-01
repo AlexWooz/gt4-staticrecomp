@@ -172,6 +172,11 @@ constexpr VkDeviceSize kRecycledImageBytesIntegrated = static_cast<VkDeviceSize>
 
 }  // namespace
 
+// IN-507: the variants the game's scenes ask for, kept in the cache before the first race (scripts/coregs2_bench/known_variants.py).
+static constexpr std::uint32_t kKnownVariantWords[] = {
+#include "core2_known_variants.inc"
+};
+
 struct Gpu::Impl {
   VkInstance instance = VK_NULL_HANDLE;
   VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -401,6 +406,7 @@ struct Gpu::Impl {
   const bool clearWhole = clearWholeSetting != 0;
   bool clearTopZero = clearWholeSetting == 2;
   std::chrono::steady_clock::time_point specLastSave{};
+  VkPhysicalDeviceProperties deviceProperties{};  // IN-507
 
   VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout computeLayout = VK_NULL_HANDLE;
@@ -1087,6 +1093,8 @@ struct Gpu::Impl {
   // After every pipeline the game may need exists: the variants of the last sessions go to the worker before any draw.
   void queue_known_variants() {
     if (shaderCacheFolder.empty() || specMode != SpecMode::async) return;
+    const char *preparing = std::getenv("GT4_HW_SHADER_PREPARE");  // IN-507: PrepareShaders compiles them itself
+    if (preparing && *preparing) return;
     const std::vector<std::uint8_t> bytes = read_whole_file(shaderCacheFolder / "variants.bin");
     VariantFileHeader header;
     const VariantFileHeader wanted;
@@ -1109,6 +1117,76 @@ struct Gpu::Impl {
     specKnownFromFile = specKnown.size();
     std::fprintf(stderr, "[core2] shader cache: %zu variants of the last sessions to prepare\n", specKnownFromFile);
     if (!specQueue.empty()) specThread = std::thread([this] { spec_worker(); });
+  }
+
+  // IN-507: what PrepareShaders last finished for. The shaders, the list and everything that decides the variants of this
+  // card must match, so an update, a new driver or another card asks for a new compile.
+  struct PreparedStamp {
+    char magic[8] = {'G', 'T', '4', 'P', 'R', 'E', 'P', '1'};
+    std::uint64_t shaderSet = 0;
+    std::uint64_t list = 0;
+    std::uint32_t vendorId = 0;
+    std::uint32_t deviceId = 0;
+    std::uint32_t driverVersion = 0;
+    std::uint32_t paths = 0;
+    std::uint8_t cacheUuid[VK_UUID_SIZE] = {};
+  };
+
+  PreparedStamp prepared_stamp() const {
+    PreparedStamp stamp;
+    stamp.shaderSet = shaderSetHash;
+    stamp.list = hash_shader_words(1469598103934665603ull, kKnownVariantWords, std::size(kKnownVariantWords));
+    stamp.vendorId = deviceProperties.vendorID;
+    stamp.deviceId = deviceProperties.deviceID;
+    stamp.driverVersion = deviceProperties.driverVersion;
+    stamp.paths = (ropOn ? 1u : 0u) | (plainDisjoint ? 2u : 0u) | (interlock ? 4u : 0u) | (earlyOut ? 8u : 0u) | (earlyZ ? 16u : 0u) |
+                  (ropBlendModule ? 32u : 0u) | (sheenEarly ? 64u : 0u);
+    std::memcpy(stamp.cacheUuid, deviceProperties.pipelineCacheUUID, VK_UUID_SIZE);
+    return stamp;
+  }
+
+  bool prepared_for(const PreparedStamp &wanted) const {
+    const std::vector<std::uint8_t> stored = read_whole_file(shaderCacheFolder / "prepared.bin");
+    if (stored.size() != sizeof wanted || std::memcmp(stored.data(), &wanted, sizeof wanted) != 0) return false;
+    // The file the game keeps adding to: gone or written for another card, the driver would start empty.
+    const std::vector<std::uint8_t> compiled = read_whole_file(shaderCacheFolder / "pipelines.bin");
+    VkPipelineCacheHeaderVersionOne header{};
+    if (compiled.size() < sizeof header) return false;
+    std::memcpy(&header, compiled.data(), sizeof header);
+    return header.vendorID == wanted.vendorId && header.deviceID == wanted.deviceId &&
+           std::memcmp(header.pipelineCacheUUID, wanted.cacheUuid, VK_UUID_SIZE) == 0 &&
+           std::filesystem::exists(shaderCacheFolder / "variants.bin");
+  }
+
+  // The shipped list and the sessions' own, without what this card never asks for.
+  std::vector<SpecKey> variants_to_prepare() const {
+    std::vector<SpecKey> keys;
+    std::unordered_set<SpecKey, SpecKeyHash> seen;
+    const auto add = [&](const std::uint32_t *words) {
+      SpecKey key;
+      std::memcpy(key.data(), words, sizeof(SpecKey));
+      const std::uint32_t word = key[kSpecFieldCount + 2];
+      const bool plain = word == kPlainWord || word == kPlainSheenWord;
+      if (plain ? !plainDisjoint : word != 0 && (!ropOn || (rop_blend_mode(word) && ropBlendModule == VK_NULL_HANDLE))) return;
+      if (keys.size() < kMaxSpecPipelines && seen.insert(key).second) keys.push_back(key);
+    };
+    constexpr std::size_t kKeyWords = std::tuple_size_v<SpecKey>;
+    for (std::size_t i = 0; i + kKeyWords <= std::size(kKnownVariantWords); i += kKeyWords) add(kKnownVariantWords + i);
+    const std::vector<std::uint8_t> bytes = read_whole_file(shaderCacheFolder / "variants.bin");
+    VariantFileHeader header;
+    const VariantFileHeader expected;
+    if (bytes.size() >= sizeof header) {
+      std::memcpy(&header, bytes.data(), sizeof header);
+      if (std::memcmp(header.magic, expected.magic, sizeof header.magic) == 0 && header.shaderSet == shaderSetHash &&
+          header.keyWords == expected.keyWords && bytes.size() == sizeof header + std::size_t{header.count} * sizeof(SpecKey)) {
+        for (std::uint32_t i = 0; i < header.count; ++i) {
+          std::uint32_t words[kKeyWords];
+          std::memcpy(words, bytes.data() + sizeof header + i * sizeof(SpecKey), sizeof words);
+          add(words);
+        }
+      }
+    }
+    return keys;
   }
 
   // Worker thread, or the GS thread once the worker has stopped.
@@ -2090,6 +2168,71 @@ Gpu::~Gpu() {
 bool Gpu::Ready() const { return impl_->ready; }
 
 bool Gpu::Integrated() const { return impl_->integrated; }
+
+bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
+  Impl &s = *impl_;
+  if (s.shaderCacheFolder.empty() || s.specMode != Impl::SpecMode::async || !s.pipelineCache) {
+    error = "no shader cache to prepare (GT4_HW_SHADER_CACHE)";
+    return false;
+  }
+  const Impl::PreparedStamp wanted = s.prepared_stamp();
+  if (s.prepared_for(wanted)) return true;
+  const std::vector<Impl::SpecKey> keys = s.variants_to_prepare();
+  progress(0, keys.size());
+  {
+    std::lock_guard<std::mutex> lock(s.specMutex);
+    s.specKnown = keys;
+    s.specKnownFromFile = keys.size();
+  }
+  std::atomic<std::size_t> next{0}, done{0}, failures{0};
+  const unsigned threadCount = std::max(1u, std::thread::hardware_concurrency() > 1u ? std::thread::hardware_concurrency() - 1u : 1u);
+  std::vector<std::thread> workers;
+  for (unsigned i = 0; i < threadCount; ++i) {
+    workers.emplace_back([&] {
+#ifdef _WIN32
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);  // the launcher's window stays smooth
+#endif
+      for (std::size_t index = next.fetch_add(1); index < keys.size(); index = next.fetch_add(1)) {
+        std::string compileError;
+        const VkPipeline pipeline = s.make_specialised(keys[index], compileError);
+        if (pipeline) {
+          gt4_hwd_vkDestroyPipeline(s.device, pipeline, nullptr);  // what counts is what the driver keeps in the cache
+        } else if (failures.fetch_add(1) == 0) {
+          std::fprintf(stderr, "[core2] a variant did not compile (%s); its draws keep the uber pipeline\n", compileError.c_str());
+        }
+        done.fetch_add(1);
+      }
+    });
+  }
+  // A closed launcher or a cut power loses at most half a minute: the next Play finds the rest in the cache.
+  auto lastSave = std::chrono::steady_clock::now();
+  std::size_t reported = 0;
+  while (done.load() < keys.size()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (const std::size_t now = done.load(); now != reported && now < keys.size()) {
+      reported = now;
+      progress(now, keys.size());
+    }
+    if (std::chrono::steady_clock::now() - lastSave > std::chrono::seconds(30)) {
+      {
+        std::lock_guard<std::mutex> lock(s.specMutex);
+        s.specKnownChanged = true;
+      }
+      s.save_shader_cache();
+      lastSave = std::chrono::steady_clock::now();
+    }
+  }
+  for (std::thread &worker : workers) worker.join();
+  {
+    std::lock_guard<std::mutex> lock(s.specMutex);
+    s.specKnownChanged = true;
+  }
+  s.save_shader_cache();
+  Impl::write_whole_file(s.shaderCacheFolder / "prepared.bin", &wanted, sizeof wanted, nullptr, 0);
+  progress(keys.size(), keys.size());
+  std::fprintf(stderr, "[core2] shader cache prepared: %zu variants, %zu failed, %u threads\n", keys.size(), failures.load(), threadCount);
+  return true;
+}
 std::uint32_t Gpu::Scale() const { return impl_->scale; }
 
 std::uint32_t Gpu::MaxNativeSide() const {
@@ -2136,6 +2279,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   gt4_hw_vkGetPhysicalDeviceProperties(s.physical, &properties);
   s.limits = properties.limits;
   s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+  s.deviceProperties = properties;  // IN-507
   {
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
     const char *plainSwitch = std::getenv("GT4_CORE2_PLAIN_DISJOINT");  // IN-496

@@ -23,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include "../../core2/core2_gpu.hpp"
 #include "../../core2/core2_renderer.hpp"
 #include "../../cpuref/cpuref_draw.hpp"
 #include "../../cpuref/cpuref_memory.hpp"
@@ -4662,6 +4663,51 @@ int TestCore2UploadMemo(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_prepare_shaders (IN-507): the launcher's compile before a session: work on a new cache, none when it is ready,
+// work again when the stamp or the compiled file is damaged or gone.
+int TestCore2PrepareShaders(const gpu::VulkanHandles& handles) {
+    namespace fs = std::filesystem;
+    const fs::path folder = fs::temp_directory_path() / ("gt4_prepare_shaders_test_" + std::to_string(_getpid()));
+    std::error_code ignored;
+    fs::remove_all(folder, ignored);
+    _putenv_s("GT4_HW_SHADER_CACHE", folder.string().c_str());
+    _putenv_s("GT4_HW_SHADER_PREPARE", "1");
+    int failures = 0;
+    std::size_t total = 0;
+    auto prepare = [&](const char* what, bool expectWork) {
+        core2::Gpu renderer;
+        std::string error;
+        if (!renderer.Init(handles, 1, 1.0f, error)) {
+            std::printf("  %s: init failed: %s\n", what, error.c_str());
+            ++failures;
+            return;
+        }
+        bool worked = false;
+        std::size_t last = 0;
+        const bool ready = renderer.PrepareShaders([&](std::size_t done, std::size_t all) { worked = true; last = done; total = all; }, error);
+        std::printf("  %s: ready %d, worked %d, %zu of %zu\n", what, ready ? 1 : 0, worked ? 1 : 0, last, total);
+        if (!ready || worked != expectWork || (worked && last != total)) ++failures;
+    };
+    prepare("a new cache", true);
+    if (total == 0 || !fs::exists(folder / "prepared.bin", ignored)) ++failures;
+    prepare("ready", false);
+    fs::resize_file(folder / "prepared.bin", 3u, ignored);
+    prepare("a cut stamp", true);
+    {
+        std::ofstream garbage(folder / "pipelines.bin", std::ios::binary | std::ios::trunc);
+        garbage << "this is no pipeline cache of any driver";
+    }
+    prepare("a damaged cache", true);
+    fs::remove(folder / "variants.bin", ignored);
+    prepare("no list", true);
+    prepare("ready again", false);
+    _putenv_s("GT4_HW_SHADER_CACHE", "");
+    _putenv_s("GT4_HW_SHADER_PREPARE", "");
+    fs::remove_all(folder, ignored);
+    std::printf("hw_core2_prepare_shaders: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_shader_cache (IN-489): GT4_HW_SHADER_CACHE keeps the variants between sessions: a second session finds them,
 // the pictures do not change, and damaged files only cost the time to compile again.
 int TestCore2ShaderCache(const gpu::VulkanHandles& handles) {
@@ -5618,6 +5664,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_rop") return TestCore2Rop(handles);
     if (name == "hw_core2_road_sheen") return TestCore2RoadSheen(handles);
     if (name == "hw_core2_shader_cache") return TestCore2ShaderCache(handles);
+    if (name == "hw_core2_prepare_shaders") return TestCore2PrepareShaders(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);

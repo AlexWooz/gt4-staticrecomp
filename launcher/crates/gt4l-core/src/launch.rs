@@ -437,6 +437,30 @@ pub fn is_scrubbed(name: &str) -> bool {
         && SCRUBBED_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
 
+/// The argument that makes the game program compile the CoreGS 2.0 shader cache and leave (IN-507).
+pub const PREPARE_SHADERS_ARGUMENT: &str = "--prepare-shaders";
+
+/// One line of `--prepare-shaders` on stdout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderPrepareLine {
+    Progress { done: u32, total: u32 },
+    Ready,
+}
+
+/// Reads a line of `--prepare-shaders`; anything else is `None`.
+pub fn parse_shader_prepare_line(line: &str) -> Option<ShaderPrepareLine> {
+    let mut words = line.split_whitespace();
+    if words.next()? != "shaders" {
+        return None;
+    }
+    let line = match words.next()? {
+        "ready" => ShaderPrepareLine::Ready,
+        "progress" => ShaderPrepareLine::Progress { done: words.next()?.parse().ok()?, total: words.next()?.parse().ok()? },
+        _ => return None,
+    };
+    words.next().is_none().then_some(line)
+}
+
 /// Plans one CoreGS 2.0 launch. Pure.
 pub fn plan_coregs20_launch(
     inputs: &LaunchInputs<'_>,

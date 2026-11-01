@@ -396,6 +396,8 @@ public:
 
     // CORE2 (the core rewrite, CORE2-DESIGN.md): true when GT4_HW_CORE=2 selected it at construction.
     bool Core2() const { return core2_ != nullptr; }
+    // IN-507: false without CORE2 or without a shader cache.
+    bool PrepareCore2Shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error);
     // CORE2's own session counters (nullptr with the old core).
     const core2::Core2Counters *Core2Stats() const;
 

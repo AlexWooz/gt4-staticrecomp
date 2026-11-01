@@ -839,6 +839,9 @@ body.input-pad .info:focus .tip { display: block; }
 .modal-box.is-wide { width: 680px; }
 .modal-box h3 { font: 300 24px/30px var(--text); color: var(--white); margin-bottom: 8px; }
 .modal-text { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+.shader-bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; margin-bottom: 8px; }
+.shader-bar-fill { height: 100%; width: 0; background: var(--silver); transition: width 0.15s linear; }
+.shader-count { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 .option-list {
   border-top: 1px solid var(--hair); margin-bottom: 8px; max-height: 340px; overflow-y: auto;

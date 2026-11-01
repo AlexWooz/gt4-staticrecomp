@@ -111,6 +111,7 @@ wall time of the whole emulator.
 | IN-485..487 | Palette memo, upload memo, block lookup | GS thread on the HD 620 at 1x by day 13.70 -> 11.91 ms for the palettes, -0.45 for the uploads. Frames 10/10, 14/14 | yes | 366 |
 | IN-488 | Fixing threads to cores | No gain | no | - |
 | IN-489 | Shader cache between sessions | HD 620 GPU 13.7 -> 8 ms in the first sessions of a new executable | yes | 366 |
+| IN-507 | Shaders compiled before Play | RX 9060 XT, George V Paris at 6x, prepared cache: 0 of 5.9 M batches on the uber pipeline | yes | 369 |
 | IN-490, IN-491 | Video decoder with the same results | i5-7200U, track selection video: 265-280 of about 297 intervals at 16-17 ms, was 123-134 at 20-25 ms in part | yes | 366 |
 | IN-492, IN-498 | Depth and alpha fail before the interlock | HD 620 2x by day 25.65 -> 23.9 ms for the depth test; -7% and more with both | yes | 366 |
 | IN-494, IN-495 | Whole clears, no self copy when no lane changes | HD 620 2x by day 23.7 -> 22.35 ms | yes | 366 |

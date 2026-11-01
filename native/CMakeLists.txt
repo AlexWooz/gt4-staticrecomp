@@ -887,6 +887,10 @@ if(GT4_TARGET STREQUAL "spec2")
 endif()
 target_include_directories(gt4vulkan PRIVATE "${PORT}")
 target_compile_definitions(gt4vulkan PRIVATE PS2_WINDOW)
+if(GT4_HW_GS)
+    target_compile_definitions(gt4vulkan PRIVATE GT4_HW_SHADER_PREPARE)  # IN-507: --prepare-shaders
+    target_link_libraries(gt4vulkan PRIVATE gt4_hw_stream_sink)
+endif()
 target_include_directories(gt4vulkan PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 if(GT4_MEMCARD_FLUSH_ENABLED)
     # window.cpp calls the capsule's flush_cards_now() on exit (TASK-025 Part A / TASK-058).

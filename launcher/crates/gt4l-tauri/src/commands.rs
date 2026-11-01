@@ -6,6 +6,7 @@ use gt4l_core::messages;
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gt4controls::{self as controls_file, default_bindings};
@@ -621,6 +622,62 @@ fn read_settled_log(path: &Path) -> String {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Before Play (IN-507): under CoreGS 2.0 the game program compiles what the shader cache lacks, and `shaders-progress` opens
+/// the window only when there is work. Another renderer, or a problem here, goes straight to Play: the game then compiles
+/// on its own as it plays. False: the player cancelled, so no game starts.
+#[tauri::command(async)]
+pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool, String> {
+    let shared: Shared = shared.inner().clone();
+    let (settings, game, dirs, textures, executable, slot, language) = {
+        let state = lock(&shared);
+        if state.game_child.is_some() || !launch::uses_coregs20(&state.config.settings) {
+            return Ok(true);
+        }
+        state.shaders_cancelled.store(false, Ordering::SeqCst);
+        let game = state.selected;
+        let game_dir = paths::game_directory(&program_directory(), state.config.dev_game_dir.as_deref());
+        (state.config.settings.clone(), game, state.game_dirs(game), state.dirs.textures(), launch::game_program(game, &game_dir), state.shaders_child.clone(), state::language_of(&state))
+    };
+    if !executable.exists() {
+        return Ok(true);
+    }
+    let (settings, _, cards) = gt4l_platform::gpu::run_settings_with_cards(&settings, language, gt4l_platform::gpu::refresh_gpus());
+    if cards.is_empty() {
+        return Ok(true);
+    }
+    let monitors = gt4l_platform::display::monitors();
+    let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
+    let mut worked = false;
+    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &mut |done, total| {
+        worked = true;
+        let _ = app.emit("shaders-progress", json!({ "done": done, "total": total }));
+    });
+    let state = lock(&shared);
+    if state.shaders_cancelled.load(Ordering::SeqCst) {
+        state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
+        return Ok(false);
+    }
+    match result {
+        Ok(true) if worked => state::log(&state.dirs, "shaders: compiled"),
+        Ok(true) => {}
+        Ok(false) => state::log_error(&state.dirs, "shaders: the compile did not finish; the game compiles as it plays (logs\\shaders.log)"),
+        Err(message) => state::log_error(&state.dirs, &format!("shaders: {message}")),
+    }
+    Ok(true)
+}
+
+/// Cancel in the "Compiling shaders" window. What was compiled stays in the cache for the next Play.
+#[tauri::command]
+pub fn cancel_shader_prepare(shared: State<'_, Shared>) -> Result<(), String> {
+    let state = lock(shared.inner());
+    state.shaders_cancelled.store(true, Ordering::SeqCst);
+    let mut guard = state.shaders_child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(process) = guard.as_mut() {
+        process.kill().map_err(|error| format!("could not stop the shader compile: {error}"))?;
+    }
+    Ok(())
 }
 
 /// Stops the game process. The card is harvested by the watcher thread after the exit.

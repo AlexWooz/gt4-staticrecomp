@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 369: shaders compiled before Play (2026-11-01)
+
+Candidate 369 (pins `docs/inputs/slice369-pcsx2.json`, `1aa79cf0...`, and `docs/inputs/slice369-spec2.json`, `d3380f68...`), installed on the owner's desktop through the installer's update mode (`private/release-130-rc8g-out`, installer `59dd9a42...`, zip `372f141d...`). **Not uploaded until the owner says so.**
+
+- **What it adds:** IN-507: under CoreGS 2.0 Play checks the shader cache and shows "Compiling shaders" only when it must compile. GSdx is unchanged.
+- **Checks:** v2.00 frames against candidate 367 10/10 and 14/14; `ctest` 147 of 147 passed (one skipped); launcher `cargo test --workspace` 599; focus pages en-US 211 of 223 and pt-BR 218 of 230, the same 12 known failures, the 6 new checks pass; a run with the prepared cache had no uber batches.
+- **Not checked:** the window in the real launcher with a real compile (the page was checked with the dev mock); the HD 620 (laptop off).
+- **Owner's F8, George V Paris at 6x on Spec II, RX 9060 XT (candidate 368):** without Performance Mode 49.6 VBlanks/s, median 19.9 ms, p99 28.9 ms; with it 57.7 VBlanks/s, median 16.8 ms, p99 27.7 ms. GS thread 17.1 and 16.0 ms per VBlank, GPU busy 12.2 and 10.4 ms: the GS thread is the limit, not the GPU. Readbacks are the largest cost, 7.7 and 7.2 ms, of which 5.5 and 5.0 ms wait for the GPU; "before write" is the largest reason (3.0 and 3.6 ms). The worst spike was 40.2 ms, 24.7 of them waiting for the GPU. Shaders did not limit these intervals.
+
 ## TASK-027 CoreGS 2.0 candidate 368: Spec II too, installed on the owner's desktop (2026-11-01)
 
 Candidate 368 (pins `docs/inputs/slice368-pcsx2.json`, `4ac5b8a8...`, and `docs/inputs/slice368-spec2.json`, `bfa80aa4...`), the current 1.3.0-rc8, is installed in the owner's `C:\Program Files\GT4Recomp` through the installer's update mode (`private/release-130-rc8f-out`, installer `22013da9...`, zip `d197f05a...`). Saves, replays and renderer data are unchanged; only `setup.log` changed. **Not uploaded until the owner says so**; the GitHub draft still holds candidate 354.

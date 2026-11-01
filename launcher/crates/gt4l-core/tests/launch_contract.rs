@@ -198,6 +198,17 @@ fn the_coregs11_rows_are_gone_and_retired_so_their_stored_values_are_ignored() {
 }
 
 #[test]
+fn the_lines_of_the_shader_compile_are_read_and_anything_else_is_ignored() {
+    use launch::{parse_shader_prepare_line as parse, ShaderPrepareLine as Line};
+    assert_eq!(parse("shaders ready"), Some(Line::Ready));
+    assert_eq!(parse("shaders progress 0 353"), Some(Line::Progress { done: 0, total: 353 }));
+    assert_eq!(parse("shaders progress 12 353\r"), Some(Line::Progress { done: 12, total: 353 }));
+    for other in ["", "shaders", "shaders progress", "shaders progress 1", "shaders progress a b", "shaders ready now", "[core2] ready"] {
+        assert_eq!(parse(other), None, "{other}");
+    }
+}
+
+#[test]
 fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     use gt4l_core::games;
     let textures = Path::new(r"D:\data\Textures");
