@@ -1,10 +1,10 @@
 /*
- * Settings > Games (TASK-101): the two games, installed or not, the disc each was set up from and the size on disk.
+ * Settings > Games (TASK-101): the two games, installed or not, the disc image each reads, its size and where it is.
  * Commands (js/games.js): games_list, setup_choose_disc + setup_start (Install, Update), games_remove.
  *   - Install: opens the disc picker for that game and runs its setup (the Setup page shows the progress).
- *   - Update: the same with a new disc image; the new copy is checked again and replaces the old one only when
- *     it is complete.
- *   - Remove: deletes the disc copy and the prepared files of that game, after asking. Its saves and replays are kept.
+ *   - Update: the same with a new disc image; it is checked and replaces the old link only when it passes.
+ *   - Remove: deletes the prepared files of that game (and the launcher's own copy of the image, in an older install), after
+ *     asking. An image the player keeps elsewhere is never touched, and its saves and replays are kept.
  */
 (function (root) {
   "use strict";
@@ -45,9 +45,9 @@
     }
 
     function card(game) {
-      // The detail: the status, what tells this copy apart (region and version, or the Spec II image) and the size.
+      // The detail: the status, what tells this image apart (region and version, or the Spec II image) and its size.
       var status = game.installed
-        ? [GT4.t("games.installed"), game.variant || "", game.size_bytes ? GT4.games.size(game.size_bytes) : ""]
+        ? [GT4.t("games.installed"), game.variant || "", game.image_bytes ? GT4.games.size(game.image_bytes) : ""]
           .filter(Boolean).join(" · ")
         : (game.damaged ? GT4.t("games.missing_reason", { reason: game.reason }) : GT4.t("games.not_installed"));
       var buttons = [];
@@ -75,7 +75,10 @@
       return h("div", { class: "row game-row", data: { gameId: game.id } }, [
         h("div", { class: "k" }, [
           h("span", { text: game.title || game.name }),
-          h("span", { class: "val", text: status })
+          h("span", { class: "val", text: status }),
+          game.image_path
+            ? h("span", { class: "game-image", title: game.image_path, text: GT4.t("games.image_at", { path: game.image_path }) })
+            : null
         ]),
         h("div", { class: "ctl" }, buttons)
       ]);

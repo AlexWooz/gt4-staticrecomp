@@ -88,14 +88,17 @@ fn game_files_folder(state: &AppState, game: &'static Game) -> PathBuf {
     }
 }
 
-/// One row of the game list: `{id, name, title, variant, installed, linked, selected, state, disc_name, folder, size_bytes}`.
+/// One row of the game list: `{id, name, title, variant, installed, linked, selected, state, disc_name, folder, size_bytes,
+/// image_path, image_bytes}`. `size_bytes` is what removing the game frees; `image_path` and `image_bytes` are the disc image the game
+/// reads, wherever it is.
 fn game_row(state: &AppState, game: &'static Game) -> Value {
     let installed = state.installed_of(game);
     let dirs = state.game_dirs(game);
-    let (ready, version) = match &installed {
-        Installed::Ready { version, .. } => (true, version.clone()),
-        _ => (false, String::new()),
+    let (ready, version, image_path) = match &installed {
+        Installed::Ready { version, image, .. } => (true, version.clone(), Some(image.clone())),
+        _ => (false, String::new(), None),
     };
+    let image_bytes = image_path.as_ref().and_then(|image| fs::metadata(image).ok()).map_or(0, |metadata| metadata.len());
     let reason = missing_reason(&installed, state::language_of(state)).unwrap_or_default();
     let linked = disc_setup::read_receipt(&dirs.prepared()).and_then(|receipt| receipt.image).is_some_and(|image| image.linked_path.is_some());
     let image_name = if ready { installed_image_name(state, game) } else { String::new() };
@@ -115,6 +118,8 @@ fn game_row(state: &AppState, game: &'static Game) -> Value {
         "disc_name": disc_name,
         "folder": dirs.game_files_root().display().to_string(),
         "size_bytes": size_bytes,
+        "image_path": image_path.map(|image| image.display().to_string()).unwrap_or_default(),
+        "image_bytes": image_bytes,
     })
 }
 

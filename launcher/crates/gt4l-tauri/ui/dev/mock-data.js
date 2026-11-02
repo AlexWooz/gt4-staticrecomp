@@ -35,9 +35,9 @@
   var gamesParam = query.get("games") || "gt4";
   var GAME_TABLE = [
     { id: "gt4", name: "Gran Turismo 4", title: "Gran Turismo 4", variant: "USA v2.00", installed: gamesParam === "gt4" || gamesParam === "both",
-      disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 5314478080 + 18000000 },
+      disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 18000000, image_bytes: 5314478080 },
     { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10", variant: "", installed: gamesParam === "spec2" || gamesParam === "both",
-      disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 3683418112 + 6520944 }
+      disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 6520944, image_bytes: 3683418112 }
   ];
   var selectedGame = query.get("selected") ||
     (GAME_TABLE.filter(function (game) { return game.installed; })[0] || GAME_TABLE[0]).id;
@@ -54,6 +54,9 @@
           installed: game.installed, damaged: false, reason: "",
           selected: game.id === selectedGame, disc_name: game.installed ? game.disc_name : "",
           folder: "C:\\Program Files\\GT4Recomp\\data\\games\\" + game.id,
+          linked: game.installed,
+          image_path: game.installed ? "D:\\ISOs\\" + game.disc_name + ".iso" : "",
+          image_bytes: game.installed ? game.image_bytes : 0,
           size_bytes: game.installed ? game.size_bytes : 0 };
       })
     };

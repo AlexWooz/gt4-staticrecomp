@@ -476,6 +476,11 @@ fn a_portable_folder_carried_with_its_image_stays_installed_and_one_outside_keep
     let carried = launch(&DataDirs::new(second.join("data")), &pins);
     assert_eq!(setup_state(&carried), "done", "the folder moved with its image");
     assert!(matches!(lock(&carried).installed(), disc_setup::Installed::Ready { image, .. } if image == second.join("ISOs").join("gt4.iso")));
+    // The Games page names the image and its size, not what the launcher itself keeps.
+    let row = &screen(&carried)["games"][0];
+    assert_eq!(row["image_path"], json!(second.join("ISOs").join("gt4.iso").display().to_string()), "{row}");
+    assert_eq!(row["image_bytes"], json!(image.len()), "{row}");
+    assert!(row["size_bytes"].as_u64().unwrap() < image.len() as u64, "removing the game frees only the launcher's files: {row}");
     let _ = fs::remove_dir_all(&root);
 }
 

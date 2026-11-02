@@ -780,6 +780,10 @@
     var rows = document.querySelectorAll(".game-row");
     check("Settings > Games lists both games", rows.length === 2, String(rows.length));
     var labels = Array.prototype.map.call(rows[0].querySelectorAll("button"), function (b) { return b.textContent; });
+    var imageLine = rows[0] && rows[0].querySelector(".game-image");
+    check("an installed game names its disc image and where it is", !!imageLine && imageLine.textContent === T("games.image_at", { path: "D:\\ISOs\\Gran Turismo 4 (USA v2.00).iso" }), imageLine ? imageLine.textContent : "no line");
+    check("the size shown is the disc image's, not 0.0 GB", !!rows[0] && rows[0].querySelector(".val").textContent.indexOf(GT4.games.size(5314478080)) >= 0, rows[0] ? rows[0].querySelector(".val").textContent : "no row");
+    check("a small size reads in megabytes", GT4.games.size(8100000) === T("common.mb", { size: (8).toLocaleString(GT4.i18n.intlLocale()) }), GT4.games.size(8100000));
     check("an installed game offers Update and Remove", labels.join("|") === T("games.update") + "|" + T("common.remove"), labels.join("|"));
     var installedDetail = rows[0].querySelector(".val").textContent;
     check("an installed game names its copy: status, USA v2.00 and size, not the title again",
@@ -791,7 +795,7 @@
     rows[0].querySelectorAll("button")[1].click();
     await wait(200);
     var dialog = document.querySelector(".modal");
-    check("Remove asks first and says the saves are kept", !!dialog && /saves and replays are kept|Seus saves e replays são mantidos/i.test(dialog.textContent), dialog ? dialog.textContent : "no dialog");
+    check("Remove asks first and says the saves are kept", !!dialog && /saves and replays are kept|saves e replays são mantidos/i.test(dialog.textContent), dialog ? dialog.textContent : "no dialog");
     if (dialog) {
       GT4.ui.topDialog().close();
     }

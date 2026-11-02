@@ -58,7 +58,7 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `reset_all_bindings` | none | the `get_controls` view; every button, trigger and stick setting back to the built-in mapping |
 | `saves_list` | none | `{items: [{id, name, modified, active}]}` |
 | `saves_import` | `{game}` | `{items, game, gameName, status, folder}` of the page's game, or `null` when the picker is cancelled. `game` is required: a save file does not say which game it is from (`gt4saves::game_of_save` finds no rule), so the page asks first and a call without it is refused |
-| `games_list` | none | `{selected, any_installed, games: [{id, name, installed, damaged, reason, selected, disc_name, folder, size_bytes}]}` (TASK-101) |
+| `games_list` | none | `{selected, any_installed, games: [{id, name, installed, damaged, reason, selected, disc_name, folder, size_bytes, image_path, image_bytes}]}` (TASK-101) |
 | `select_game` | `{id}` | the `games_list` view; the page's choice (home, Saves, Play); the stored choice changes when a game starts |
 | `games_remove` | `{id}` | the `games_list` view; deletes the disc copy and the prepared files of that game only, never its saves or replays (the page asks first) |
 | `saves_activate` | `{id}` | `{items}` |
