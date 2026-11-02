@@ -7,7 +7,7 @@
 // refresh just then looks like that too, so a level clearly over the lowest seen gets a second try.
 //
 // A run can also land with its presentations just before the flip (the pacer's grid has no relation to the display's), and some
-// then miss it by a little: the frame comes a refresh late and the next one with it, 13 times in a lap in one run. The second
+// then miss it by a little: the frame comes a refresh late and the next one with it, 12 times in a lap in one run. The second
 // such miss within 15 s moves the grid earlier by kEdgeStepMs, away from that edge, for a few ms more to the display.
 //
 // The shown times come from VK_KHR_present_wait2; without it nothing here runs.

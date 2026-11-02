@@ -11,7 +11,7 @@ Candidate 374 (pins `docs/inputs/slice374-pcsx2.json`, `36044156...`, and `docs/
 - **Frames:** against 373, headless: 122 of 122 identical on the PGO build before the last change (night 1x and 3x and 12x, Arcade 3x, George V Paris 6x in both modes, Spec II night 3x), and 47 of 47 after it (Arcade 3x, George V Paris 6x). The lap at 3x, EE waiting against not waiting: 18 of 20 identical, with the same 2 frames differing between two runs of the same mode; EE cycles equal.
 - **Checks:** `ctest -R "^hw_|native_ipu_fast|standalone|native_pacing|native_input|native_mtvu"` 162 passed, one skipped; after the last change `hw_present_latency` and `native_pacing` again; launcher `cargo test --workspace` passed. Locale files unchanged since 373. Launcher notes changed in both languages with the same bullets.
 - **Not verified:**
-  - The flip edge step (`note_flip_miss`) has only its fixture: it was written after one lap of the final build showed 13 pairs of a late frame and a frame right behind it, and the three laps after it never landed there.
+  - The flip edge step (`note_flip_miss`) has only its fixture: it was written after one lap of the final build showed 12 pairs of a late frame and a frame right behind it, and the three laps after it never landed there.
   - The owner's own session, a real 60 Hz monitor, the laptop.
 
 **To reproduce:** `scripts/coregs2_bench/lap-run.sh <run> [ENV=VAL ...]`. A/B switches: `GT4_HW_LATENCY_CONTROL=0`, `GT4_HW_FLARE_DEFER=0`.
