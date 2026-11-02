@@ -1,5 +1,15 @@
 # Current Status
 
+## 1.3.0-rc7 and 1.3.0-rc8 for publication; the laptop test passed by the owner (2026-11-02)
+
+**The owner's test on the i5-7200U / HD 620 closes the beta gate:** "2x 720p locked at 30 FPS was a really nice experience". A player on this card chooses 1x at 60 FPS or 2x at 30 FPS. Full speed at 2x and 60 FPS is no longer the gate. Sessions on the notebook, Spec II, candidate 382, table in `docs/release-notes/1.3.0-rc8.md`; every interval is the owner's own F7/F8, so the stretches differ.
+
+- **At 2x and 60 FPS the limit in this report is the game's own frame (Confirmed), and the cause is a Hypothesis:** critical path 20.28 ms, with the VU1 program at 12.42 ms per frame against 7.07-8.03 ms at 1x on the same kind of work, GS waits for the GPU 0.91 ms. The processor seems slower when the graphics part is busy, since the two share power and memory on this chip. Not measured apart.
+- **Known issue, left as it is (owner):** at 2x on the HD 620, the showroom runs at about 30 FPS with the card at 100%, because menus stay at 60 and the 30 FPS choice applies to races only.
+- **The notes:** the "about half the processor of GSdx" claim is removed, since nothing measured it for the whole process. Discord Rich Presence, on by default since rc7, is now named in the notes: automated tests only, not validated with the real Discord client.
+- **Later (owner), no work now:** an experimental unlocked frame rate up to 60 that skips frames when it falls (`docs/TASK-082-UNLOCKED-FPS-STATE.md`).
+- **Next (owner):** rc9 is the CPU optimisation (TASK-134), on the branch that receives this work.
+
 ## TASK-138: a portable folder carries its image, accented paths, the GSdx fallback; candidate 382 (2026-11-02)
 
 Branch `task/138-relative-image-link`, on top of TASK-137. Decision 0075. Not merged, not uploaded. Pins `docs/inputs/slice382-pcsx2.json`, `slice382-spec2.json` (capsule of 376); game `private/slice382-rc8-game`, distribution `private/slice382-dist-130-rc8`, package `private/release-130-rc8u-out`.

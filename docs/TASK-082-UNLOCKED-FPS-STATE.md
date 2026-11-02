@@ -59,6 +59,10 @@ The owner asked for 30 FPS everywhere, showroom included, on weak PCs. Two ways 
 
 **So the launcher's choice applies to races.** What is left for the showroom is lighter drawing itself, or finding what in the menus depends on drawing. The code of these two tests is not kept; it is in this file's commit message history only as this description: a gate open everywhere in `Controller::decide`, and `write_word(flipCycle, inRace ? 1 : 2)`.
 
+## The owner's next test (2026-11-02), no work now
+
+After the laptop test (2x locked at 30 FPS is good; at 2x it holds 45-50 FPS on some stretches), the owner wants an experimental mode later: unlocked up to 60, skipping frames when it falls.
+
 ## Traps, already paid for
 
 - A drawing list runs a frame after it is built: the frame after a frame left out is the one that must not flip (IN-524).

@@ -165,6 +165,19 @@ Gain on the GS worker: about -11% with ThinLTO, GIF front end -28%, frames ident
 - Latent, unreachable today: in `Gpu::Draw` the uniform ring could submit after the vertex ring reserved, leaving the
   vertex offset in the previous slot's share (2 MiB of uniforms per slot, a submission every 32 batches).
 
+## The laptop on candidate 382 (owner, 2026-11-02)
+
+The owner's F7/F8 on the i5-7200U / HD 620, Spec II, in a window; each is their own stretch:
+
+| Scale, mode | Choice | VBlanks/s | Critical path | VU1 program | Thread CPU |
+|---|---|---|---|---|---|
+| 1x, Performance | 60 | 60.00 | 9.40 ms | 7.07 ms | 8.88 ms |
+| 1x, normal | 60 | 59.89 | 11.69 ms | 8.03 ms | 10.36 ms |
+| 2x, Performance | 60 | 49.22 | 20.28 ms | 12.42 ms | 15.68 ms |
+| 2x, Performance | 30 in races | 60.00 | 6.99 ms | 4.23 ms | 6.62 ms |
+
+The VU1 program does the same work at 1x and 2x, so its 12.42 ms suggests the processor slows when the graphics part is busy (Hypothesis, shared power and memory; not measured apart). Sessions: `\\100.78.47.2\GT4Recomp\data\sessions\session-1793647975`, `-1793648174`, `-1793648322`, `-1793648442`. The owner's rc9 target is this CPU work.
+
 ## Gotchas that cost time
 
 - **Line endings are mixed by file.** `sed -i` in git bash and naive scripts convert CRLF to LF. After an edit compare
