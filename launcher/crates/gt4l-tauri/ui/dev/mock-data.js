@@ -65,9 +65,9 @@
     setup.step = step;
     setup.progress = progress;
     // As the Rust thread reports: the steps after the copy keep the finished copy's size (done == total).
-    setup.bytes_total = step === "renderer" ? 48000000 : IMAGE_BYTES;
+    setup.bytes_total = step === "renderer" ? 353 : IMAGE_BYTES;
     setup.bytes_done = step === "copying" || step === "renderer" ? Math.round(setup.bytes_total * progress) : IMAGE_BYTES;
-    setup.renderer_step = step === "renderer" ? "downloading" : "";
+    setup.renderer_step = step === "renderer" ? "compiling" : "";
   }
   if (setupStart === "wrong") {
     setup.state = "wrong_disc";
@@ -105,6 +105,7 @@
         clearInterval(setupTimer);
         setup.state = "done";
         setup.renderer_step = "done";
+        setup.renderer_choice = "coregs20";
         var installedGame = gameById(setupGame || selectedGame);
         if (installedGame) {
           installedGame.installed = true;
@@ -135,7 +136,7 @@
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "pcsx2", label: "GSdx" },
-        { value: "coregs20", label: "CoreGS 2.0 (beta)" }
+        { value: "coregs20", label: "CoreGS 2.0 (recommended)" }
       ],
       default: "pcsx2", current: "pcsx2" },
     // TASK-103: the GSdx Graphics API (the table row graphics_api; the Renderer row above is the engine). Vulkan is the

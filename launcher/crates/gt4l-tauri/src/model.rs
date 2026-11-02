@@ -988,7 +988,7 @@ mod table_tests {
         assert_eq!(values.len(), 2, "GSdx and CoreGS 2.0 only; CoreGS 1.1 is gone (TASK-096)");
         assert_eq!(values[1]["value"], "coregs20");
         assert_eq!(values[1]["disabled"], false);
-        assert_eq!(values[1]["label"], "CoreGS 2.0 (beta)");
+        assert_eq!(values[1]["label"], "CoreGS 2.0 (recommended)");
         for shared in CORE_GS_20_TABLE_ROWS {
             assert!(row(&table, shared).get("visible_when").is_none(), "{shared} works under both renderers");
         }

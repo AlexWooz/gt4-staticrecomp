@@ -109,8 +109,11 @@ pub struct SetupRun {
     /// Bytes done and total of a copy or a download (0 when not known).
     pub bytes_done: u64,
     pub bytes_total: u64,
-    /// The renderer sub-step: `listing`, `downloading`, `installing`, `done` or `failed`.
+    /// The renderer sub-step: `checking`, `compiling` (bytes hold the shaders done and total), `listing`, `downloading`,
+    /// `installing`, `done` or `failed`.
     pub renderer_step: String,
+    /// What setup decided: `coregs20`, `gsdx_fallback` (this PC cannot run CoreGS 2.0), or empty (GSdx stayed the renderer).
+    pub renderer_choice: String,
 }
 
 /// The result of the last disc pick or setup run.

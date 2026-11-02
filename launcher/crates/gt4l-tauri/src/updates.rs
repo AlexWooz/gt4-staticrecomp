@@ -213,9 +213,9 @@ pub fn ensure_version_file(dirs: &DataDirs) {
     }
 }
 
-/// The startup repair applies only to a prepared game using the external renderer.
-fn needs_renderer_install(dirs: &DataDirs, set_up: bool) -> bool {
-    set_up && gs_release::needs_install(&renderer_root(dirs))
+/// The startup repair applies only to a prepared game using the external renderer: under CoreGS 2.0, GSdx is not needed.
+fn needs_renderer_install(dirs: &DataDirs, set_up: bool, uses_gsdx: bool) -> bool {
+    set_up && uses_gsdx && gs_release::needs_install(&renderer_root(dirs))
 }
 
 /// The background work at every launch: version file, the selected external renderer install when none exists or
@@ -229,7 +229,7 @@ pub fn check_on_launch(app: AppHandle, shared: Shared) {
     ensure_version_file(&dirs);
     // Before the first setup the renderer is installed by setup itself, with its progress on the setup page. Here it
     // is the retry after a setup that was offline, or the update of a version below the minimum.
-    if needs_renderer_install(&dirs, set_up) {
+    if needs_renderer_install(&dirs, set_up, !gt4l_core::launch::uses_coregs20(&config.settings)) {
         let progress_app = app.clone();
         match install_renderer(&dirs, &mut |step| emit_step(&progress_app, step)) {
             Ok(_) => emit_progress(&app, "done"),
@@ -658,8 +658,9 @@ mod tests {
     fn gsdx_startup_repairs_missing_packages_and_checks_both_streams() {
         let root = std::env::temp_dir().join(format!("gt4l-gsdx-check-{}", std::process::id()));
         let dirs = DataDirs::new(&root);
-        assert!(!needs_renderer_install(&dirs, false), "setup owns the first install");
-        assert!(needs_renderer_install(&dirs, true), "a prepared game repairs its missing package");
+        assert!(!needs_renderer_install(&dirs, false, true), "setup owns the first install");
+        assert!(!needs_renderer_install(&dirs, true, false), "CoreGS 2.0 does not need GSdx");
+        assert!(needs_renderer_install(&dirs, true, true), "a prepared game repairs its missing package");
         let mut requested = Vec::new();
         let result = check_with(&dirs, UpdateChannel::Stable, None, None, true, |stream| {
             requested.push(stream);

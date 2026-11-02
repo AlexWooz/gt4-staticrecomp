@@ -1272,6 +1272,22 @@
       var copyBar = scratch.querySelector(".steps li .bar i");
       check("the copy step ends at a full bar after the page moved on to checking",
         !!copyBar && copyBar.style.width === "100%" && copyBar.style.transition === "none", copyBar ? copyBar.style.width + " " + copyBar.style.transition : "no bar");
+      // Owner, 2026-11-02: setup checks the graphics card and prepares CoreGS 2.0; GSdx only when the card needs it.
+      var lastStep = function () {
+        var rows = scratch.querySelectorAll(".steps li");
+        return rows[rows.length - 1].textContent;
+      };
+      current = { state: "checking", step: "renderer", progress: 0.5, bytes_done: 100, bytes_total: 200, renderer_step: "compiling", renderer_choice: "",
+        disc_name: "Gran Turismo 4 Spec II v1.10", problem: "", note: "", game: { id: "spec2", name: "Gran Turismo 4 Spec II" } };
+      await wait(900);
+      check("the last step counts the shaders while it prepares CoreGS 2.0",
+        lastStep().indexOf(T("setup.renderer_compiling")) >= 0 && lastStep().indexOf(T("setup.renderer_count", { done: 100, total: 200 })) >= 0, lastStep());
+      current = Object.assign({}, current, { state: "done", renderer_step: "done", renderer_choice: "coregs20" });
+      await wait(900);
+      check("the last step says CoreGS 2.0 is ready, with nothing about GSdx", lastStep().indexOf(T("setup.renderer_ready_coregs20")) >= 0 && lastStep().indexOf("GSdx") < 0, lastStep());
+      current = Object.assign({}, current, { renderer_choice: "gsdx_fallback" });
+      await wait(900);
+      check("the last step says why GSdx was needed", lastStep().indexOf(T("setup.renderer_ready_gsdx")) >= 0, lastStep());
     } finally {
       if (handle) {
         handle.destroy();

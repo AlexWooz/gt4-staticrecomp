@@ -165,6 +165,7 @@ pub fn app_state_of(state: &AppState) -> Value {
             "bytes_done": run.bytes_done,
             "bytes_total": run.bytes_total,
             "renderer_step": run.renderer_step,
+            "renderer_choice": run.renderer_choice,
             "disc_name": disc_name,
             "problem": problem,
             "note": note,
@@ -696,7 +697,7 @@ pub fn stop_game(shared: State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 
-fn program_directory() -> PathBuf {
+pub(crate) fn program_directory() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))

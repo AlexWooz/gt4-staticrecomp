@@ -79,7 +79,7 @@ pub const CORE_GS_20: &str = "coregs20";
 
 const RENDERER_CHOICES: &[Choice] = &[
     Choice { value: PCSX2_GS, label: "GSdx", selectable: true },
-    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (beta)", selectable: true },
+    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (recommended)", selectable: true },
 ];
 
 /// The strength of CoreGS 2.0's FSR1 sharpening (GSdx has CAS instead).
@@ -141,8 +141,8 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Renderer",
         title: "Renderer",
-        info: "GSdx draws the game on your GPU in its own process; it is the default renderer. CoreGS 2.0 is our own \
-               renderer, in beta: it uses much less processor.",
+        info: "CoreGS 2.0 is our own renderer and the recommended one: it is part of the game and uses much less processor. \
+               GSdx is optional: it is downloaded when you choose it.",
         kind: Kind::Choice(RENDERER_CHOICES),
         default: PCSX2_GS,
         connected: true,

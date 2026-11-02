@@ -1,4 +1,4 @@
-//! Choosing GSdx in Settings (TASK-089 extension, release 1.2.0; GSdx is the only renderer since TASK-096, 1.2.3).
+//! Choosing GSdx in Settings (TASK-089 extension, release 1.2.0). GSdx is optional: CoreGS 2.0 is inside the game.
 //! Choosing it installs GSdx at once when it is missing, with the progress of the renderer install
 //! (`renderer-progress`). A failed install is reported, and Play does not start the game until GSdx is there
 //! (`launch::choose_renderer`). Setup installs GSdx itself (`setup.rs`), so a choice made during setup does not start

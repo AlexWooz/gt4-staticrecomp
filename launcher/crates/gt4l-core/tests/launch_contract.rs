@@ -290,6 +290,22 @@ fn the_performance_hud_is_off_by_default_and_on_only_when_chosen() {
 }
 
 #[test]
+fn setup_tries_coregs20_only_on_a_new_install_with_no_choice_and_no_gsdx() {
+    use launch::{setup_renderer, SetupRenderer};
+    let settings = Settings::default();
+    assert_eq!(setup_renderer(&settings, true, true), SetupRenderer::TryCoregs20, "a new install");
+    assert_eq!(setup_renderer(&settings, true, false), SetupRenderer::Gsdx, "GSdx is already there: it stays");
+    assert_eq!(setup_renderer(&settings, false, true), SetupRenderer::Gsdx, "a second game of a player on GSdx");
+    let mut chose_gsdx = Settings::default();
+    chose_gsdx.set_by_user("renderer", "pcsx2").unwrap();
+    assert_eq!(setup_renderer(&chose_gsdx, true, true), SetupRenderer::Gsdx, "the player's choice wins");
+    let mut chose_coregs = Settings::default();
+    chose_coregs.set_by_user("renderer", "coregs20").unwrap();
+    assert_eq!(setup_renderer(&chose_coregs, true, true), SetupRenderer::Coregs20, "nothing to install or to try");
+    assert_eq!(setup_renderer(&chose_coregs, false, true), SetupRenderer::Coregs20);
+}
+
+#[test]
 fn gsdx_is_the_default_renderer_and_a_gsdx_session_needs_it_installed() {
     let mut settings = Settings::default();
     assert_eq!(settings.get("renderer"), "pcsx2", "GSdx is the default");

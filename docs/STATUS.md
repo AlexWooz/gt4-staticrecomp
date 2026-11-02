@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-136: simple onboarding, GSdx optional (2026-11-02)
+
+Branch `task/136-simple-onboarding`, on top of TASK-135. Launcher only, game exes unchanged (candidate 378). Not merged, not uploaded, not built into a package yet. Decision 0074.
+
+- **New install:** setup checks the card (Vulkan 1.2, then the game starts CoreGS 2.0 with `--prepare-shaders`). It passes: CoreGS 2.0, nothing downloaded. It fails: GSdx is downloaded and the page says why.
+- **No change** for a player who chose a renderer or already has GSdx. The launch-time repair no longer downloads GSdx under CoreGS 2.0.
+- **Checks:** launcher `cargo test` passed, with two new flow tests and the rule's test; two ignored tests with the real check on this PC passed, CoreGS 2.0 with `gt4.exe`, GSdx with the program missing; `--prepare-shaders` from an empty cache: 15 s here, 3 min 40 s on the notebook, exit 0 on both; `dev/focus-check.html` in both languages.
+- **Not verified:** a whole setup with a real disc through the page, a real card refused by the renderer (the fallback was exercised with the program missing), a PC without Vulkan.
+
 ## TASK-135: performance HUD on CoreGS 2.0, candidate 378 (2026-11-02)
 
 Branch `task/135-coregs2-performance-hud`, on top of `task/082-coregs2-frame-skip`. Not merged, not uploaded. Candidate 378 is 377 with the launcher's icon on both game executables (owner): 10 of 10 icon images in each, 30 of 30 frames equal to 377. Pins `docs/inputs/slice378-pcsx2.json`, `slice378-spec2.json` (capsule of 376); game `private/slice378-rc8-game`, distribution `private/slice378-dist-130-rc8`, portable zip in `private/release-130-rc8r-out` (`bb4538cc...`). No installer was built.

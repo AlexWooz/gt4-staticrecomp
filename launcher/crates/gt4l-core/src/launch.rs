@@ -146,6 +146,29 @@ pub fn choose_renderer<'a>(installed: Option<&'a Installed>, log_folder: &Path) 
     installed.ok_or_else(|| gsdx_unavailable_message(GSDX_NOT_INSTALLED, log_folder))
 }
 
+/// What setup does about the renderer (owner, 2026-11-02): GSdx is a download, so a new install starts with CoreGS 2.0, which is
+/// inside the game, when the PC can run it. Nothing changes for a player who chose a renderer or already plays with GSdx.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupRenderer {
+    /// CoreGS 2.0 is the stored renderer: there is nothing to install.
+    Coregs20,
+    /// The first game of a new install: try CoreGS 2.0 on this PC, and fall back to GSdx.
+    TryCoregs20,
+    /// GSdx stays the renderer: installed now if it is missing or too old.
+    Gsdx,
+}
+
+/// `first_game`: no game was set up before this one. `gsdx_missing`: GSdx is not installed, or is below the minimum.
+pub fn setup_renderer(settings: &Settings, first_game: bool, gsdx_missing: bool) -> SetupRenderer {
+    if uses_coregs20(settings) {
+        SetupRenderer::Coregs20
+    } else if first_game && gsdx_missing && !settings.was_chosen("renderer") {
+        SetupRenderer::TryCoregs20
+    } else {
+        SetupRenderer::Gsdx
+    }
+}
+
 /// The message of a session GSdx cannot run: the reason, what to do, and the log folder. Shown on the home page and in
 /// the tray, so the player is never left without a reason.
 pub fn gsdx_unavailable_message(reason: &str, log_folder: &Path) -> String {

@@ -63,7 +63,7 @@ fn setup_state(shared: &Shared) -> String {
 
 /// `setup_start`, then wait like the page's poll until the thread ends. Returns the states seen while polling.
 fn run_setup(shared: &Shared, recorder: &Recorder, renderer: RendererInstaller) -> Vec<String> {
-    let handle = setup::start_with(shared, recorder.notify(), renderer).expect("setup starts");
+    let handle = setup::start_with(shared, recorder.notify(), renderer, no_coregs20()).expect("setup starts");
     let mut seen = Vec::new();
     while !handle.is_finished() {
         let view = screen(shared);
@@ -75,6 +75,20 @@ fn run_setup(shared: &Shared, recorder: &Recorder, renderer: RendererInstaller) 
     }
     handle.join().unwrap();
     seen
+}
+
+/// A PC where CoreGS 2.0 does not run.
+fn no_coregs20() -> setup::Coregs20Check {
+    Arc::new(|_: &Shared, _: &'static gt4l_core::games::Game, _: &mut dyn FnMut(u32, u32)| false)
+}
+
+/// A PC where CoreGS 2.0 runs, compiling two shaders on the way.
+fn coregs20_works() -> setup::Coregs20Check {
+    Arc::new(|_: &Shared, _: &'static gt4l_core::games::Game, progress: &mut dyn FnMut(u32, u32)| {
+        progress(0, 2);
+        progress(2, 2);
+        true
+    })
 }
 
 fn fake_renderer() -> RendererInstaller {
@@ -227,7 +241,7 @@ fn synthetic_flow_end_to_end() {
     assert!(message.starts_with("This disc is not supported yet."), "{message}");
     assert_eq!(screen(&shared)["setup"]["problem"], json!(message));
     // Setup cannot start before a disc was accepted.
-    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).map(|_| ()).unwrap_err();
+    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).map(|_| ()).unwrap_err();
     assert_eq!(refused, "Choose your disc image first.");
 
     // Accept the good disc; the page then calls setup_start.
@@ -295,7 +309,7 @@ fn synthetic_flow_end_to_end() {
     let shared = launch(&dirs, &pins);
     setup::choose_disc_path(&shared, &picked_again).unwrap();
     // start_with clears the flag; Cancel is pressed right after the start, as the page's Cancel button would.
-    let handle = setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).unwrap();
+    let handle = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).unwrap();
     setup::cancel_with(&shared);
     handle.join().unwrap();
     let state = setup_state(&shared);
@@ -370,6 +384,92 @@ fn a_settings_change_writes_the_files_a_direct_start_of_the_game_reads() {
     assert!(ini.contains("[EmuCore/GS]"), "{ini}");
     assert!(ini.contains(&dirs.root().join("gs").join("cache").display().to_string()), "the cache folder of the data folder: {ini}");
     assert_eq!(fs::read_to_string(&game_ini).unwrap(), text, "game.ini does not change with the renderer");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A launcher with no game set up and a synthetic disc accepted.
+fn new_install(name: &str) -> (PathBuf, DataDirs, Pins, Shared) {
+    let root = scratch(name);
+    let dirs = DataDirs::new(root.join("data"));
+    let game = synthetic_game(0x0010_0000, 0x0010_0008, b"synthetic guest code, not game data, 0123456789abcdef");
+    let image = build_iso(
+        "GT4 USA",
+        &[
+            ("SYSTEM.CNF;1", system_cnf("SCUS_973.28", "2.00", "NTSC")),
+            ("CORE.GT4;1", game.core.clone()),
+            ("SCUS_973.28;1", vec![0xA5; 3000]),
+        ],
+    );
+    let pins = pins_for(&image, &game, "SCUS-97328", "2.00");
+    let picked = root.join("disc.iso");
+    fs::write(&picked, image).unwrap();
+    let shared = launch(&dirs, &pins);
+    setup::choose_disc_path(&shared, &picked).unwrap();
+    (root, dirs, pins, shared)
+}
+
+#[test]
+fn a_new_install_uses_coregs20_when_the_pc_runs_it_and_downloads_nothing() {
+    let (root, dirs, pins, shared) = new_install("coregs20-first");
+    let recorder = Recorder::default();
+    let downloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = downloads.clone();
+    let renderer: RendererInstaller = Arc::new(move |_: &DataDirs, _: &mut dyn FnMut(gt4l_core::gs_release::Step)| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok("1.0.1".to_string())
+    });
+    let handle = setup::start_with(&shared, recorder.notify(), renderer, coregs20_works()).expect("setup starts");
+    handle.join().unwrap();
+    assert_eq!(downloads.load(std::sync::atomic::Ordering::SeqCst), 0, "GSdx is not downloaded");
+    assert!(recorder.names("renderer-progress").is_empty());
+    let view = screen(&shared);
+    assert_eq!(view["setup"]["state"], "done", "{view}");
+    assert_eq!(view["setup"]["note"], "");
+    assert_eq!(view["setup"]["renderer_choice"], "coregs20");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "coregs20");
+    // The choice is stored: the next launch has it, and Play needs no GSdx.
+    let again = launch(&dirs, &pins);
+    assert_eq!(lock(&again).config.settings.get("renderer"), "coregs20");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_new_install_downloads_gsdx_when_coregs20_does_not_run_and_says_why() {
+    let (root, _dirs, _pins, shared) = new_install("coregs20-fallback");
+    let recorder = Recorder::default();
+    run_setup(&shared, &recorder, fake_renderer());
+    assert!(recorder.names("renderer-progress").iter().any(|event| event["step"] == "done"), "GSdx is installed");
+    let view = screen(&shared);
+    assert_eq!(view["setup"]["renderer_choice"], "gsdx_fallback", "{view}");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The real check on this PC, with a synthetic disc: GT4_SETUP_GAME_DIR is a game folder (`gt4.exe`, a distribution folder).
+#[test]
+#[ignore = "this PC's graphics card and a real game program; set GT4_SETUP_GAME_DIR"]
+fn the_real_check_starts_coregs20_with_the_game_program() {
+    let (root, dirs, _pins, shared) = new_install("coregs20-real");
+    lock(&shared).config.dev_game_dir = Some(PathBuf::from(std::env::var("GT4_SETUP_GAME_DIR").expect("GT4_SETUP_GAME_DIR")));
+    let handle = setup::start_with(&shared, Recorder::default().notify(), offline_renderer(), setup::coregs20_on_this_pc()).expect("setup starts");
+    handle.join().unwrap();
+    assert_eq!(screen(&shared)["setup"]["renderer_choice"], "coregs20", "{}", fs::read_to_string(dirs.logs().join("shaders.log")).unwrap_or_default());
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "coregs20");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A game program that cannot start CoreGS 2.0 sends setup to GSdx, on any PC.
+#[test]
+#[ignore = "probes this PC's graphics cards"]
+fn the_real_check_falls_back_when_the_game_program_is_missing() {
+    let (root, _dirs, _pins, shared) = new_install("coregs20-missing");
+    lock(&shared).config.dev_game_dir = Some(root.join("no-such-folder"));
+    let handle = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), setup::coregs20_on_this_pc()).expect("setup starts");
+    handle.join().unwrap();
+    let view = screen(&shared);
+    assert_eq!(view["setup"]["renderer_choice"], "gsdx_fallback", "{view}");
+    assert_eq!(view["setup"]["note"], "", "GSdx was installed");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -726,13 +826,13 @@ fn the_disc_is_identified_before_any_byte_is_copied_and_decides_the_game() {
     // An unsupported image is refused in place: nothing exists in the data folder, and setup cannot start from it.
     assert!(setup::choose_disc_path(&shared, &unknown_disc).is_err());
     assert!(!data.join("games").exists(), "a refused image copies nothing");
-    assert!(setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).is_err());
+    assert!(setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).is_err());
     assert!(!data.join("games").exists());
 
     // The image is identified again when setup starts: a stale choice cannot send a refused file to the copy.
     setup::choose_disc_path(&shared, &spec2_disc).unwrap();
     lock(&shared).config.disc_path = Some(unknown_disc.clone());
-    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).map(|_| ()).unwrap_err();
+    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).map(|_| ()).unwrap_err();
     assert!(refused.contains("not supported"), "{refused}");
     assert!(!data.join("games").exists(), "setup start copied nothing for a refused image");
 
