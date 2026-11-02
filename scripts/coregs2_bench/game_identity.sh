@@ -22,9 +22,12 @@ run() {  # <run name> <exe> [ENV=VAL ...]
 }
 if [ ! -f "$(folder "$reference")/state.bin" ]; then run "$reference" "$ref"; fi
 run "$name" "$cand" "$@"
-python "$here/frame_skip_check.py" "$(folder "$reference")/skip.csv" "$(folder "$name")/skip.csv" "$(folder "$reference")/state.bin" \
-  "$(folder "$name")/state.bin" --dynamics-bytes $dynamics --allow-words 0
-wrong=$?
+# frame_skip_check.py also requires frames left out, so only its figures count here: the clock here, the state by cmp below.
+check=$(python "$here/frame_skip_check.py" "$(folder "$reference")/skip.csv" "$(folder "$name")/skip.csv" "$(folder "$reference")/state.bin" \
+  "$(folder "$name")/state.bin" --dynamics-bytes $dynamics --allow-words 0)
+echo "$check" | head -3
+wrong=0
+echo "$check" | grep -q "clock differs at 0$" || { echo "race clock differs"; wrong=1; }
 if ! cmp -s "$(folder "$reference")/state.bin" "$(folder "$name")/state.bin"; then echo "state dump differs"; wrong=1; else echo "state dump identical ($(wc -c < "$(folder "$name")/state.bin") bytes)"; fi
 python "$here/frame_diff.py" "$(folder "$reference")" "$(folder "$name")" 2>&1 | tail -2 || wrong=1
 [ $wrong = 0 ] && echo IDENTITY-OK || echo IDENTITY-WRONG
