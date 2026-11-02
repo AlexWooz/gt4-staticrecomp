@@ -440,6 +440,30 @@ void check_tiny_ring_deadlock(std::size_t wake_bytes, bool direct = false) {
   for (std::size_t i = 0; i < expected.size(); ++i) require(events[i] == expected[i], "tiny ring order");
 }
 
+// IN-522: a worker about to wait for something other than input wakes a reader asleep behind its quiet publishes. Without the
+// wake this never finishes (CTest TIMEOUT): the reader may be what that wait depends on.
+void check_wake_before_waiting() {
+  Doorbell input_bell, output_bell;
+  SpscByteRing input(4096, input_bell);
+  SpscByteRing output(4096, output_bell);
+  WorkerEnd worker(input, output, input_bell, output_bell, 1024);
+  std::thread reader([&] {
+    RecordHeader record;
+    const std::uint8_t *bytes = nullptr;
+    for (;;) {
+      const std::uint32_t seen = output_bell.snapshot();
+      if (output.try_peek(record, bytes)) return;
+      bool slept = false;
+      output_bell.wait_changed(seen, slept);
+    }
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const std::uint8_t data[16] = {};
+  worker.emit_gif(0, 1, data, sizeof data);
+  worker.wake_before_waiting();
+  reader.join();
+}
+
 void check_blocking_drain_waits_for_worker() {
   Doorbell input_bell, output_bell;
   SpscByteRing input(4096, input_bell);
@@ -529,6 +553,7 @@ int main() {
     if (trace) std::fprintf(stderr, "tiny ring, direct\n");
     check_tiny_ring_deadlock(0, true);   // IN-461: direct GS intake, both wake modes
     check_tiny_ring_deadlock(64, true);
+    check_wake_before_waiting();
     if (trace) std::fprintf(stderr, "blocking drain\n");
     check_blocking_drain_waits_for_worker();
     if (trace) std::fprintf(stderr, "shutdown\n");
