@@ -902,6 +902,7 @@ Done in the working tree (branch `task/101-multi-game`, release 1.3.0, 2026-10-2
    `O:\gt4recomp-scratch\slice295-shots\general-pt-BR.png` and `graphics-pt-BR.png`. Owner test pending.
 
 ### TASK-115 — Game recognition (Windows, GPU drivers, Discord) and Discord Rich Presence
+State (2026-11-02): Discord Rich Presence is in 1.3.0-rc7 and rc8, on by default. The owner tested it with the real Discord client: it works.
 Planned (owner, 2026-10-24) as a future plan (maybe 1.3.1, maybe later; the owner decides when). Goal: Windows, the AMD and NVIDIA drivers and Discord treat GT4Recomp
 as a game, so Game Mode, AMD Instant Replay / NVIDIA ShadowPlay and Discord's "Playing" status work out of the box.
 Facts to start from (main agent, to verify): the picture is drawn by `gt4-gs.exe` (GSdx) into a child window of
