@@ -9,6 +9,7 @@ The owner asked for frame skipping after the optimisations, with a frame by fram
 - **Physics:** race clock equal at every VBlank, state after a whole lap equal except for 22 wheel floats on Spec II, 0 words on v2.00.
 - **Numbers (the ledger has the table):** George V Paris at 12x on the RX 9060 XT: 100.02% speed at 38.5 frames per second, against 76.85% at 46.1 without it.
 - **Spec II works too:** the first attempt was v2.00 only.
+- **Pause and leaving a race:** checked frame by frame, 383 of 383 and 483 of 483 frames ok; frames are left out again a second after the race goes on.
 - **Off, nothing changes:** 108 of 108 frames equal to candidate 374.
 - **Decisions of mine, the owner can change:** off by default; floor of 20 frames per second; it engages at 33 ms behind.
 - **Tests:** ctest 166 passed, one skipped, with `native_frame_skip`; `test_frame_sheet.py` 8 passed; launcher `cargo test` passed; locale keys equal.

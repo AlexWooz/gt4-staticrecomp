@@ -328,4 +328,6 @@ A drawn frame costs more when frames are left out: 12x, wall about 26 against 21
 | Every frame of 353, 1 in 3 | 353 ok, age 0, 1 or 2 | 353 ok on the build before the last PGO |
 | Differing pixels | at most 256 of 286,720: the speed number | at most 249 |
 
+**Pause, in the same drive with Start added (`george-pausa`, a copy with two Start presses, 1 in 2 left out, 1x):** the gate closes 2 frames after the press, every frame drawn while paused, reopens a second after the race goes on, and the pattern comes back; 383 of 383 frames ok. Leaving the race from the pause menu to the pre-race screen: 483 of 483.
+
 **Frame sheets:** `build/evidence/fs30/sheet-2/sheet.png` and `frames.csv`. With frame skip off, 108 of 108 frames equal to candidate 374 (night 3x and 12x, Arcade, George V Paris at 6x in both modes).
