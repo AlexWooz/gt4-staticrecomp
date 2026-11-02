@@ -1690,7 +1690,9 @@ TASK-027 starts after approval and the answers to Q-01 to Q-03.
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
 **Next:** the owner's test of candidate 374. D1 is measured and not built (IN-523); the waits and the input lag are in 374 (IN-521, IN-522). The darker road in Performance Mode stays. Open items are listed at the top of `docs/STATUS.md`.
 
-**State 2026-11-02, later:** 🧪 candidate 375 (not uploaded), branch `task/082-coregs2-frame-skip`: candidate 374 plus TASK-082, frame skipping on CoreGS 2.0, off by default (IN-524): 12x on George V Paris 100% speed at 38.5 frames per second, against 77% at 46; the frame shown is always the last one drawn; race clock equal on both games. Waiting for the owner's test, above all on the laptop.
+**State 2026-11-02, end:** 🧪 candidate 376 (not uploaded), branch `task/082-coregs2-frame-skip`: a fixed 30 FPS mode replaces the option of 375 (IN-525), off by default: 12x 100% speed at 30 frames per second, intervals 33.0-33.7 ms. Unlocked FPS paused, `docs/TASK-082-UNLOCKED-FPS-STATE.md`. Next: CPU optimisation with another agent (TASK-134).
+
+**State 2026-11-02, later:** candidate 375 (not uploaded), branch `task/082-coregs2-frame-skip`: candidate 374 plus TASK-082, frame skipping on CoreGS 2.0, off by default (IN-524): 12x on George V Paris 100% speed at 38.5 frames per second, against 77% at 46; the frame shown is always the last one drawn; race clock equal on both games. Waiting for the owner's test, above all on the laptop.
 
 **State 2026-11-02:** 🧪 candidate 374 (not uploaded), the base of 375: input lag at 60 Hz 53 to 31-39.5 ms, the EE's wait at the flare read 9.5 ms to 0, flares exact, frames identical to 373 (122 of 122, then 47 of 47).
 

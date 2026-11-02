@@ -203,8 +203,9 @@ pub fn coregs20_environment(
     if settings.gs_value("performance_mode") == "no-readbacks" {
         variables.insert("GT4_CORE2_PERFORMANCE", "1".to_string());
     }
-    if settings.is_on("skip_frames_when_slow") {
-        variables.insert("GT4_FRAME_SKIP", "1".to_string());
+    // TASK-082: one frame drawn in two, in a running race. The physics stay at 60 Hz.
+    if settings.is_on("thirty_fps_mode") {
+        variables.insert("GT4_FRAME_SKIP_FORCE", "2".to_string());
     }
     // The session's frametime log, beside its game.log (the working directory is the session folder).
     variables.insert("GT4_HW_FRAMETIME_LOG", "frametime.csv".to_string());
@@ -408,7 +409,7 @@ pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, in
         let key = match name.as_str() {
             "GT4_HW_SCALE" => "hw_scale",
             "GT4_CORE2_PERFORMANCE" => "hw_performance",
-            "GT4_FRAME_SKIP" => "hw_frame_skip",
+            "GT4_FRAME_SKIP_FORCE" => "hw_frame_skip",
             "GT4_HW_TEXTURES" => "hw_textures",
             "GT4_HW_POSTFX" => "hw_postfx",
             "GT4_CORE2_FSR_SHARPNESS" => "hw_sharpening",

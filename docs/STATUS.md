@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-082: the 30 FPS mode, candidate 376; unlocked FPS paused (2026-11-02)
+
+**The owner's decision:** any framerate needs interpolation to be smooth, so for now the option is a fixed **30 FPS mode**. The study of unlocked FPS paused and is saved in `docs/TASK-082-UNLOCKED-FPS-STATE.md`. The owner goes on with CPU optimisation with another agent. This replaces the Skip frames when slow of candidate 375, which was never released.
+
+Candidate 376 (pins `docs/inputs/slice376-pcsx2.json`, `slice376-spec2.json`, capsule `slice376-frame-render-license-guard-runtime`), installed on the owner's desktop. **Not uploaded.** Branch `task/082-coregs2-frame-skip`, on top of `task/027-coregs2`, not merged.
+
+- **The option:** Settings > Graphics > 30 FPS mode, under CoreGS 2.0 only, off by default. Races only; menus stay at 60.
+- **Numbers (the ledger has the table):** 12x: 100% speed at 30 frames per second, intervals 33.0 to 33.7 ms, against 77% speed at 46 without it.
+- **Checks:** ctest 167 passed, one skipped; `test_frame_sheet.py` passed; launcher `cargo test` passed; locale keys equal. Frames with it off: 77 of 77 equal to 375.
+- **Not verified:** the owner's session with the mode, the laptop, a one-queue device, split screen, a real 60 Hz monitor.
+
 ## TASK-082 frame skipping on CoreGS 2.0, candidate 375 (2026-11-02)
 
 The owner asked for frame skipping after the optimisations, with a frame by frame sheet, because the first attempt (Gemini, `task/082-render-skip`, PR moesuito/gt4-staticrecomp#113) showed old frames between new ones. Branch `task/082-coregs2-frame-skip`, on top of `task/027-coregs2`. Candidate 375 (pins `docs/inputs/slice375-pcsx2.json`, `slice375-spec2.json`, capsule `slice375-frame-skip-license-guard-runtime`), installed on the owner's desktop, **not uploaded**.

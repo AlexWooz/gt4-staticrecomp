@@ -156,6 +156,8 @@ bool Controller::on_functor(std::uint32_t pc, std::uint32_t object, std::uint8_t
 }
 
 bool g_enabled = false;
+bool g_render_time_forced = false;
+std::uint32_t g_render_time_bits = 0;
 
 Controller &controller() {
   static Controller instance;
@@ -183,6 +185,11 @@ void start_from_environment() {
   if (hooks.frame_render_functor == 0) {
     std::fprintf(stderr, "[frame-skip] this target has no addresses for it: off\n");
     return;
+  }
+  if (const char *time = std::getenv("GT4_FRAME_RENDER_T")) {
+    const float value = static_cast<float>(std::atof(time));
+    std::memcpy(&g_render_time_bits, &value, sizeof value);
+    g_render_time_forced = true;
   }
   if (const char *path = std::getenv("GT4_FRAME_SKIP_LOG")) {
     g_log = std::fopen(path, "w");

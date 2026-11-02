@@ -16,7 +16,9 @@
 // inverts them back, and DISPFB gets the page it already had. Any other frame flips as always, drawn or not, and shows the list that
 // just ran.
 //
-// Off by default: GT4_FRAME_SKIP=1 skips when behind, GT4_FRAME_SKIP_FORCE=2|3 keeps 1 frame in 2 or 3 (tests). Only in a running
+// Off by default. GT4_FRAME_SKIP_FORCE=2 keeps 1 frame in 2: the launcher's 30 FPS mode (3 keeps 1 in 3, 1 keeps all and logs).
+// GT4_FRAME_SKIP=1 leaves frames out when behind, for any framerate: not offered yet, its motion steps between the game's 16.7 ms
+// (docs/TASK-082-UNLOCKED-FPS-STATE.md). Only in a running
 // race: the race clock must rise by one step per frame for a second; pause, menus and accelerated time close that gate at once. And
 // only in 480p.
 // GT4_FRAME_SKIP_LOG=<csv>: one row per frame, for scripts/coregs2_bench/frame_sheet.py.
@@ -188,10 +190,20 @@ void start_from_environment();
 void print_report(std::FILE *stream);
 void finish();
 
-inline bool on_dispatch(std::uint32_t pc, std::uint32_t object, std::uint8_t *ram, std::size_t ramSize) {
+// A study of render time (docs/TASK-082-UNLOCKED-FPS-STATE.md): GT4_FRAME_RENDER_T=<t> passes this t to render_world, in $f12. Off:
+// the game's own value goes through.
+extern bool g_render_time_forced;
+extern std::uint32_t g_render_time_bits;
+
+template <typename Cpu>
+inline bool on_dispatch(Cpu &c, std::uint32_t pc, std::uint8_t *ram, std::size_t ramSize) {
   const auto &hooks = ::gt4::target::active().hooks;
+  if (pc == hooks.frame_render_world) {
+    if (g_render_time_forced) c.f[12] = g_render_time_bits;
+    return false;
+  }
   if (pc != hooks.frame_update_functor && pc != hooks.frame_render_functor && pc != hooks.frame_idle_functor) return false;
-  return controller().on_functor(pc, object, ram, ramSize);
+  return controller().on_functor(pc, c.r[4].w[0], ram, ramSize);
 }
 
 }  // namespace gt4::frame_skip

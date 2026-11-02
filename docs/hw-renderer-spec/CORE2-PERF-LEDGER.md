@@ -331,3 +331,15 @@ A drawn frame costs more when frames are left out: 12x, wall about 26 against 21
 **Pause, in the same drive with Start added (`george-pausa`, a copy with two Start presses, 1 in 2 left out, 1x):** the gate closes 2 frames after the press, every frame drawn while paused, reopens a second after the race goes on, and the pattern comes back; 383 of 383 frames ok. Leaving the race from the pause menu to the pre-race screen: 483 of 483.
 
 **Frame sheets:** `build/evidence/fs30/sheet-2/sheet.png` and `frames.csv`. With frame skip off, 108 of 108 frames equal to candidate 374 (night 3x and 12x, Arcade, George V Paris at 6x in both modes).
+
+## The 30 FPS mode (IN-525, candidate 376)
+
+George V Paris, normal mode, the owner's lap in real time, 16:9 on a 3440 x 1440 display at 144 Hz (the virtual one of a stream), one run each, the presentation intervals from presentation 1,500 on.
+
+| Run | Game speed | Frames drawn per second | Change between frames | Interval p1 / p50 / p99 / longest | GPU busy per VBlank |
+|---|---|---|---|---|---|
+| 6x, off | 100.03% | 60.0 | 0.24 ms | 15.9 / 16.7 / 17.1 / 20.8 | 9.88 |
+| **6x, 30 FPS mode** | 100.00% | 30.0 | 0.16 ms | 33.1 / 33.3 / 33.6 / 33.9 | 6.47 |
+| **12x, 30 FPS mode** | 100.00% | 30.0 | 0.21 ms | 33.0 / 33.3 / 33.7 / 34.0 | 12.52 |
+
+Frames with it off: 77 of 77 equal to candidate 375 (night 3x, Arcade 3x, George V Paris at 6x in both modes). The suite with 1 frame in 2 on the final exes, both games: race clock equal, 353 of 353 frames ok, at most 284 differing pixels of 286,720. The evidence: `build/evidence/g376`, `fs60`, `fs61`.

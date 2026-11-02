@@ -97,6 +97,7 @@ struct HookAddresses {
   std::uint32_t frame_race_flare_offset = 0;
   std::uint32_t frame_flare_track_count_offset = 0;
   std::uint32_t frame_flare_car_count_offset = 0;
+  std::uint32_t frame_render_world = 0;  // RacePS2Base::render_world, reached through a vtable
 };
 
 struct Profile {
@@ -160,6 +161,7 @@ inline constexpr HookAddresses kV200Hooks = {
     /* frame_race_flare_offset */ 0xDA0u,
     /* frame_flare_track_count_offset */ 0x1848u,
     /* frame_flare_car_count_offset */ 0xA34u,
+    /* frame_render_world */ 0x0033DEA8u,
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of
@@ -247,6 +249,7 @@ inline constexpr HookAddresses kSpec2Hooks = {
     /* frame_race_flare_offset */ 0xE60u,
     /* frame_flare_track_count_offset */ 0x1848u,
     /* frame_flare_car_count_offset */ 0xA34u,
+    /* frame_render_world */ 0x001EA240u,
 };
 
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};
