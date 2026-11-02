@@ -13,6 +13,7 @@
 #include "thread_placement.hpp"
 #include "hw_cpu_sampler.hpp"
 #include "hw_flare_table.hpp"
+#include "hw_present_spacing.hpp"
 #include "../pacing.hpp"
 #include "hw_gs_backend.hpp"
 #include "hw_gs_options.hpp"
@@ -175,7 +176,7 @@ Backend &backend() {
 void gif_now(int path, const std::uint8_t *data, std::size_t bytes) { backend().gif_transfer(path, data, bytes); }
 
 bool g_display_page_changed = true;  // TASK-082, GS worker: a DISPFB write with a new value since the last VBlank
-std::chrono::steady_clock::time_point g_last_present;
+gt4::hw::PresentSpacing g_one_queue_spacing{216};
 std::chrono::steady_clock::time_point g_gs_cost_start;
 std::chrono::steady_clock::duration g_gs_idle{};
 std::int64_t g_gs_cost_us = 0;
@@ -384,15 +385,14 @@ void vsync_now(bool odd_field) {
   hw.flush();
   hw.next_frame();  // one guest frame per VBlank, windowed or headless (the session line's `frames`)
   if (hw.has_window() && !hold) {
-    // With frames left out the GS worker catches up after a late frame, and without this the next one comes right behind it: two
-    // frames together, then a long wait. Not more than this: waiting for the whole time of the VBlanks since the last frame kept the
-    // GS worker behind, and it locked at 20 frames per second.
-    if (gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) && g_last_present.time_since_epoch().count() != 0) {
+    // A device with one queue has no thread to show pictures from (hw_gs_backend.cpp, present_paced): the wait is here, and holds up
+    // the next picture. So it leaves room, or waiting would raise the mean interval it waits for: it locked at 20 frames per second.
+    if (gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) && !hw.has_own_present_queue()) {
       const auto before = std::chrono::steady_clock::now();
-      std::this_thread::sleep_until(g_last_present + std::chrono::microseconds(14500));
+      const auto arrival = std::chrono::duration_cast<std::chrono::microseconds>(before.time_since_epoch()).count();
+      std::this_thread::sleep_until(std::chrono::steady_clock::time_point(std::chrono::microseconds(g_one_queue_spacing.when(arrival))));
       waited = std::chrono::steady_clock::now() - before;
     }
-    g_last_present = std::chrono::steady_clock::now();
     hw.present(odd_field ? PresentPhase::field_odd : PresentPhase::field_even);
   }
   const auto finished = std::chrono::steady_clock::now();
@@ -401,7 +401,7 @@ void vsync_now(bool odd_field) {
   if (!hold) {
     if (g_gs_cost_start.time_since_epoch().count() != 0) {
       const std::int64_t cost = std::chrono::duration_cast<std::chrono::microseconds>(finished - g_gs_cost_start - g_gs_idle).count();
-      g_gs_cost_us += (cost - g_gs_cost_us) / 8;
+      g_gs_cost_us += (cost - g_gs_cost_us) / 16;
       gt4::pacing::gs_cost_us.store(static_cast<std::int32_t>(g_gs_cost_us), std::memory_order_relaxed);
     }
     g_gs_cost_start = finished;

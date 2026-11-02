@@ -11,6 +11,7 @@
 #include "../pacing.hpp"
 #include "hw_gs_present_rect.hpp"
 #include "hw_present_latency.hpp"
+#include "hw_present_spacing.hpp"
 
 #include "hw_gs_vulkan_loader.hpp" // Vulkan names renamed to gt4_hw_*; pointers loaded at run time
 #include "writeback/hw_gs_vulkan_device_table.hpp"
@@ -250,7 +251,7 @@ struct Backend::Impl {
   std::uint32_t image_count = 0;
   VkSemaphore render_finished[max_swapchain_images] = {};
   HWND window = nullptr;
-  bool resize_pending = false;
+  std::atomic<bool> resize_pending{false};  // also set by the presentation thread of TASK-082
   bool initialised = false;
   // TASK-080: the race view's display-aspect fill request (pack_display_aspect), set from the EE thread.
   std::atomic<std::uint64_t> display_aspect{0};
@@ -289,6 +290,7 @@ struct Backend::Impl {
   ~Impl() { shutdown(); }
 
   void shutdown() {
+    pacer_close();
     if (device) vkDeviceWaitIdle(device);
     frametime_close();
     destroy_upload();
@@ -864,6 +866,7 @@ struct Backend::Impl {
 
   // Waits for the old swapchain's presents, destroys it, creates the new one (chapter 13.6).
   bool recreate_swapchain(std::string &error) {
+    pacer_drain();
     vkDeviceWaitIdle(device);
     destroy_swapchain();
     stats.swapchain_recreations++;
@@ -1020,6 +1023,37 @@ struct Backend::Impl {
     draw_layouts[index] = draw_final_layout;
   }
 
+  // The commands of the second queue for one presentation: the swapchain image takes the picture.
+  void record_show(std::uint32_t slot, std::uint32_t index) {
+    VkCommandBuffer show = show_commands[slot];
+    vkResetCommandBuffer(show, 0);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(show, &begin);
+    VkImageMemoryBarrier to_copy{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    to_copy.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_copy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_copy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_copy.image = images[index];
+    to_copy.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    to_copy.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(show, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_copy);
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.extent = {extent.width, extent.height, 1};
+    gt4_hwd_vkCmdCopyImage(show, pictures[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[index],
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    VkImageMemoryBarrier to_present = to_copy;
+    to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_present.dstAccessMask = 0;
+    vkCmdPipelineBarrier(show, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_present);
+    vkEndCommandBuffer(show);
+  }
+
   // IN-516: on the virtual display of a game stream, with vsync, a presentation holds its queue until the display takes the
   // frame (with VK_PRESENT_MODE_FIFO_LATEST_READY_KHR too), and everything submitted after it waits on that queue: GS thread
   // waits of about 11 ms per VBlank in the showroom on the owner's desktop, with waits of one or two whole refreshes (17.7 and
@@ -1084,31 +1118,8 @@ struct Backend::Impl {
     vkQueueSubmit(queue, 1, &draw, draw_fences[slot]);
 
     // The second queue: waits for the swapchain image, copies the picture, presents.
+    record_show(slot, index);
     VkCommandBuffer show = show_commands[slot];
-    vkResetCommandBuffer(show, 0);
-    vkBeginCommandBuffer(show, &begin);
-    VkImageMemoryBarrier to_copy{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    to_copy.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_copy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_copy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_copy.image = images[index];
-    to_copy.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    to_copy.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(show, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_copy);
-    VkImageCopy region{};
-    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.extent = {extent.width, extent.height, 1};
-    gt4_hwd_vkCmdCopyImage(show, pictures[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[index],
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    VkImageMemoryBarrier to_present = to_copy;
-    to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    to_present.dstAccessMask = 0;
-    vkCmdPipelineBarrier(show, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_present);
-    vkEndCommandBuffer(show);
     const VkSemaphore waits[2] = {acquire_semaphores[slot], picture_ready[slot]};
     const VkPipelineStageFlags wait_stages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -1137,6 +1148,149 @@ struct Backend::Impl {
     if (frame == nullptr) stats.black_presents++;  // presented without a composed image (chapter 12.4)
   }
 
+  // TASK-082: with frames being left out, pictures arrive at uneven times, and showing them from the GS thread would hold up the
+  // next one. So the GS thread only draws the picture, and this thread shows it at its place (hw_present_spacing.hpp), on the second
+  // queue of the family. Only then: at 60 frames per second the path above stays as it is.
+  struct PacedPicture {
+    std::uint32_t slot;
+    std::chrono::steady_clock::time_point arrival;
+  };
+  std::thread pacer_thread;
+  std::mutex pacer_mutex;
+  std::condition_variable pacer_changed;
+  std::deque<PacedPicture> pacer_queue;
+  bool pacer_busy = false, pacer_stop = false;
+  gt4::hw::PresentSpacing pacer_spacing;
+  static constexpr std::size_t kPacedPictures = 2;
+
+  void pacer_worker() {
+    for (;;) {
+      PacedPicture picture{};
+      std::int64_t whenUs = 0;
+      {
+        std::unique_lock<std::mutex> lock(pacer_mutex);
+        pacer_busy = false;
+        pacer_changed.notify_all();
+        pacer_changed.wait(lock, [&] { return pacer_stop || !pacer_queue.empty(); });
+        if (pacer_queue.empty()) return;
+        picture = pacer_queue.front();
+        pacer_queue.pop_front();
+        pacer_busy = true;
+        whenUs = pacer_spacing.place(std::chrono::duration_cast<std::chrono::microseconds>(picture.arrival.time_since_epoch()).count(),
+                                     !pacer_queue.empty());
+      }
+      const auto when = std::chrono::steady_clock::time_point(std::chrono::microseconds(whenUs));
+      // The system's sleep is too coarse for this: the last stretch spins.
+      std::this_thread::sleep_until(when - std::chrono::milliseconds(2));
+      while (std::chrono::steady_clock::now() < when) std::this_thread::yield();
+      show_paced_picture(picture.slot);
+    }
+  }
+
+  // Nothing may be on its way while the swapchain changes, or when the other path takes over.
+  void pacer_drain() {
+    if (!pacer_thread.joinable()) return;
+    std::unique_lock<std::mutex> lock(pacer_mutex);
+    pacer_changed.wait(lock, [&] { return pacer_queue.empty() && !pacer_busy; });
+  }
+
+  void pacer_close() {
+    if (!pacer_thread.joinable()) return;
+    {
+      const std::lock_guard<std::mutex> lock(pacer_mutex);
+      pacer_stop = true;
+    }
+    pacer_changed.notify_all();
+    pacer_thread.join();
+  }
+
+  // On the presentation thread: waits for a swapchain image and shows the picture of `slot`. Its semaphore was signalled by the
+  // drawing, so it is waited on even when nothing can be shown.
+  void show_paced_picture(std::uint32_t slot) {
+    vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &fences[slot]);
+    std::uint32_t index = 0;
+    const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, 100000000, acquire_semaphores[slot], VK_NULL_HANDLE, &index);
+    if (acquired != VK_SUCCESS) {
+      if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_SUBOPTIMAL_KHR) resize_pending = true;
+      const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+      VkSubmitInfo release{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+      release.waitSemaphoreCount = 1;
+      release.pWaitSemaphores = &picture_ready[slot];
+      release.pWaitDstStageMask = &stage;
+      vkQueueSubmit(present_queue, 1, &release, fences[slot]);
+      return;
+    }
+    record_show(slot, index);
+    const VkSemaphore waits[2] = {acquire_semaphores[slot], picture_ready[slot]};
+    const VkPipelineStageFlags wait_stages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.waitSemaphoreCount = 2;
+    submit.pWaitSemaphores = waits;
+    submit.pWaitDstStageMask = wait_stages;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &show_commands[slot];
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &render_finished[index];
+    vkQueueSubmit(present_queue, 1, &submit, fences[slot]);
+    VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    present.waitSemaphoreCount = 1;
+    present.pWaitSemaphores = &render_finished[index];
+    present.swapchainCount = 1;
+    present.pSwapchains = &swapchain;
+    present.pImageIndices = &index;
+    const VkResult result = queue_present(present_queue, present);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) resize_pending = true;
+  }
+
+  // On the GS thread: draws the picture and hands it over. The display being behind costs a picture here, before any drawing.
+  void present_paced(const hwgs::writeback::FrameOutput *frame) {
+    if (!pacer_thread.joinable()) pacer_thread = std::thread([this] { pacer_worker(); });
+    {
+      const std::lock_guard<std::mutex> lock(pacer_mutex);
+      pacer_spacing.note_arrival(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+      if (pacer_queue.size() >= kPacedPictures) {
+        ++presents_dropped;
+        return;
+      }
+    }
+    const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
+    vkWaitForFences(device, 1, &draw_fences[slot], VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &draw_fences[slot]);
+    VkCommandBuffer cmd = command_buffers[slot];
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin);
+    draw_images = pictures;
+    draw_layouts = picture_layouts;
+    draw_final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    if (frame && frame->valid && ensure_upload(frame->width, frame->height)) {
+      if (!shownOnGpu) {
+        const std::uint32_t previous = (slot + frame_slots - 1u) % frame_slots;
+        vkWaitForFences(device, 1, &draw_fences[previous], VK_TRUE, UINT64_MAX);
+        std::memcpy(upload.mapped, frame->pixels.data(), frame->pixels.size() * sizeof(std::uint32_t));
+      }
+      record_frame(cmd, slot, *frame);
+    } else {
+      record_black(cmd, slot);
+    }
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo draw{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    draw.commandBufferCount = 1;
+    draw.pCommandBuffers = &cmd;
+    draw.signalSemaphoreCount = 1;
+    draw.pSignalSemaphores = &picture_ready[slot];
+    vkQueueSubmit(queue, 1, &draw, draw_fences[slot]);
+    ++submissions;
+    {
+      const std::lock_guard<std::mutex> lock(pacer_mutex);
+      pacer_queue.push_back(PacedPicture{slot, std::chrono::steady_clock::now()});
+    }
+    pacer_changed.notify_all();
+    if (frame == nullptr) stats.black_presents++;
+  }
+
   // One presentation per guest VBlank: the composed display frame, or black without one (chapter 12.5).
   void present_frame(const hwgs::writeback::FrameOutput *frame) {
     if (!swapchain) return;
@@ -1156,6 +1310,11 @@ struct Backend::Impl {
                    latency_control.last_lag_ms(), latency_control.target_ms());
       return;
     }
+    if (present_queue && frames_left_out) {
+      present_paced(frame);
+      return;
+    }
+    pacer_drain();
     if (present_queue) {
       present_on_own_queue(frame);
       return;
@@ -1397,6 +1556,8 @@ void Backend::set_display_field(bool odd) {
   if (impl_->renderer) impl_->renderer->SetDisplayField(odd);
 }
 
+bool Backend::has_own_present_queue() const { return impl_->present_queue != VK_NULL_HANDLE; }
+
 void Backend::set_age_targets(bool age) {
   if (impl_->renderer) impl_->renderer->SetAgeTargets(age);
 }
@@ -1477,6 +1638,7 @@ void Backend::detach_window() {
   Impl &s = *impl_;
   if (!s.device) return;
   if (s.renderer) s.renderer->SetAsyncPresentation(false);
+  s.pacer_drain();
   vkDeviceWaitIdle(s.device);
   s.destroy_swapchain();
   if (s.surface) vkDestroySurfaceKHR(s.instance, s.surface, nullptr);

@@ -35,8 +35,9 @@ namespace gt4::frame_skip {
 // Reacting to how late the last frame was overshoots: the GS worker is still on the frames before a frame left out when the next
 // decision comes, and it swung between too many left out and too late. So once the host has fallen behind, this works from what a
 // drawn frame costs, and spends the time that goes by on the frames it can pay for: at 21 ms a frame, three drawn and one left out,
-// evenly. Without a lasting shortfall it does nothing: a few frames over budget come back by themselves, and at 60 frames per second
-// a frame left out shows more than a frame a little late.
+// evenly, any framerate down to the floor, with the presenter evening out the intervals (hw_present_spacing.hpp). Without a lasting
+// shortfall it does nothing: a few frames over budget come back by themselves, and at 60 frames per second a frame left out shows
+// more than a frame a little late.
 class Policy {
 public:
   static constexpr std::int32_t kLateUs = 33000;   // behind by this much: the shortfall is real
@@ -66,8 +67,9 @@ public:
     } else {
       calm_ = 0;
     }
-    // Being behind by more than a frame is paid back over the next frames: the game must keep its speed.
-    const std::int64_t price = std::int64_t{costUs} + std::clamp<std::int64_t>(behind - kFrameUs, 0, 3 * kFrameUs) / 3;
+    // A little over the cost keeps some room, or the GS worker never gets back on time. Being behind by more than two frames is paid
+    // back over the next frames: the game must keep its speed. Gently: a stronger pull made the pattern swing, and that shows.
+    const std::int64_t price = std::int64_t{costUs} * 33 / 32 + std::clamp<std::int64_t>(behind - 2 * kFrameUs, 0, 3 * kFrameUs) / 8;
     credit_ += kFrameUs;
     if (credit_ < price && run_ < kMaxRun) {
       ++run_;
