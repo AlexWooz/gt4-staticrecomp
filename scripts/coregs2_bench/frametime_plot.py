@@ -67,6 +67,9 @@ def main():
             f = figures([v for _, v in shown])
             print(describe(name, 'shown', f))
             axis.plot([x for x, _ in shown], [v for _, v in shown], linewidth=0.7, color='#2471a3', alpha=0.8, label='shown (display) p99 %.1f max %.1f' % (f['p99'], f['max']))
+        lag = sorted(float(r['shown_ms']) - float(r['present_ms']) for r in rows if float(r['shown_ms']) > 0)
+        if lag:
+            print('%-12s present to shown: mean %.1f ms, p1 %.1f, p99 %.1f' % (name, statistics.mean(lag), lag[len(lag) // 100], lag[len(lag) * 99 // 100]))
         axis.axhline(REFRESH_MS, color='#555555', linewidth=0.5)
         axis.set_ylim(0, 45)
         axis.set_ylabel('ms')
