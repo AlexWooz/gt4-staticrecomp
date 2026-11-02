@@ -1690,7 +1690,9 @@ TASK-027 starts after approval and the answers to Q-01 to Q-03.
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
 **Next:** the owner's test of candidate 374. D1 is measured and not built (IN-523); the waits and the input lag are in 374 (IN-521, IN-522). The darker road in Performance Mode stays. Open items are listed at the top of `docs/STATUS.md`.
 
-**State 2026-11-02:** 🧪 candidate 374 (not uploaded) is installed on the owner's desktop for their test: input lag at 60 Hz 53 to 31-39.5 ms, the EE's wait at the flare read 9.5 ms to 0, flares exact, frames identical to 373 (122 of 122, then 47 of 47).
+**State 2026-11-02, later:** 🧪 candidate 375 (not uploaded), branch `task/082-coregs2-frame-skip`: candidate 374 plus TASK-082, frame skipping on CoreGS 2.0, off by default (IN-524): 12x on George V Paris 100% speed at 38.5 frames per second, against 77% at 46; the frame shown is always the last one drawn; race clock equal on both games. Waiting for the owner's test, above all on the laptop.
+
+**State 2026-11-02:** 🧪 candidate 374 (not uploaded), the base of 375: input lag at 60 Hz 53 to 31-39.5 ms, the EE's wait at the flare read 9.5 ms to 0, flares exact, frames identical to 373 (122 of 122, then 47 of 47).
 
 **State 2026-11-01:** 🧪 candidate 373 (not uploaded), adding to 372 the frame pacing work IN-514 to IN-519 (race on George V Paris at 6x without Performance Mode: GS CPU 7.94 to 7.31 ms, frames over 17.5 ms 40 to 5 of 3,700; frames identical 154 of 154; the second presentation queue is not yet confirmed on the owner's virtual display; the owner decides on the late flares of IN-514). Candidate 372 before it: Spec II on CoreGS 2.0
 (IN-506), shaders compiled before Play (IN-507), no readback for a write beside a drawn area (IN-508: George V Paris at 6x,

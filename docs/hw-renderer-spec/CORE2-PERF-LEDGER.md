@@ -302,3 +302,30 @@ For scale: no vsync 24.9 ms on the same display, the phase walk (dropped) 35.4 m
 **12x (`d1probe`):** normal mode does not hold 60 FPS on this track: presented mean 21.3 ms, GPU busy 19.73, GS 21.00, reads 10.34. With `GT4_CORE2_ROP=1` 23.0 ms, GPU busy 21.37. Area and reading in IN-523.
 
 **Evidence:** `build/evidence/in522`, `in522-frames`, `d1probe`.
+
+## Frame skipping (IN-524, candidate 375)
+
+Spec II, George V Paris, normal mode, the owner's lap replayed in real time, 16:9 on the real 3440 x 1440 monitor at 144 Hz, one run each, VBlanks from 2400. Game speed from the wall clock at each VBlank's frame (`frame_skip_speed.py`).
+
+| Run | Game speed | Frames drawn per second | Presented p99 / longest | GPU busy per VBlank |
+|---|---|---|---|---|
+| 6x, off | 99.57% | 59.8 | 20.1 / 22.4 | 11.22 |
+| 6x, on | 100.00% | 59.1 (82 left out) | 21.8 / 44.1 | 11.87 |
+| 12x, off | 76.85% | 46.1 | 28.2 / 48.1 | 19.90 |
+| **12x, on** | **100.02%** | **38.5** | 47.9 / 58.3 | 13.33 |
+| 12x, on, Performance Mode | 100.00% | 59.1 | 27.1 / 45.1 | 14.63 |
+| 6x, always 1 in 2 | 100.00% | 30.0 | 33.6 / 33.9 | 5.67 |
+
+A drawn frame costs more when frames are left out: 12x, wall about 26 against 21.7 ms and GPU busy about 21 against 19.1 ms, so it gives fewer frames than the 46 possible. The GPU's clock under a lighter load is the likely reason (Hypothesis). At 6x on this display it takes frames out in the heaviest stretches for a speed that was already 99.6%: an option for PCs that need it.
+
+**The suite (`frame-skip-suite.sh`, `frame-skip-suite-v200.sh`), headless, final exes, 1x:**
+
+| | Spec II, George V Paris, a whole lap, 2 cars | v2.00, Hong Kong Reverse, 6 cars |
+|---|---|---|
+| Race clock against nothing left out | equal at 5,874 VBlanks, 1 in 2 and 1 in 3 | equal at 4,186 VBlanks |
+| State after the drive | 22 of 36,864 words differ, the wheel floats drawing writes | 0 of 16,384 |
+| Every frame of 353, 1 in 2 | 353 ok, shows age 0 or 1 | 353 ok, age 0 or 1 |
+| Every frame of 353, 1 in 3 | 353 ok, age 0, 1 or 2 | 353 ok on the build before the last PGO |
+| Differing pixels | at most 256 of 286,720: the speed number | at most 249 |
+
+**Frame sheets:** `build/evidence/fs30/sheet-2/sheet.png` and `frames.csv`. With frame skip off, 108 of 108 frames equal to candidate 374 (night 3x and 12x, Arcade, George V Paris at 6x in both modes).

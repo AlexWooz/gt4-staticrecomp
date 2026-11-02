@@ -48,3 +48,9 @@ caller. The build needs line tables (`/Z7 -gline-tables-only`, `/DEBUG`). Readin
 `replay-run.sh <name> <run> <exe> [ENV=VAL ...]` replays it from a fresh copy of the same card up to its last VBlank, into `$GT4_BENCH_OUT/replay-<name>-<run>/`. `WINDOW=1` opens a window and writes `frametime.csv`; `PACED_FROM=<VBlank>` skips the waiting before that VBlank (use the VBlank where the measured stretch starts). Frame dumps slow a window run: leave `EVERY` unset when measuring.
 
 Pass `GT4_HW_FLARE_DEADLINE_MS=0` when comparing frames from window runs: a late flare answer depends on real time.
+
+## Frame skipping (TASK-082)
+
+`frame-skip-suite.sh <Spec II exe>` and `frame-skip-suite-v200.sh <v2.00 exe>`: headless. The simulation over the whole drive against nothing left out (`frame_skip_check.py`), then every frame of a stretch (`frame_sheet.py`): `sheet-<pattern>/sheet.png`, `frames.csv`, `summary.txt`. Exit code 1 on a wrong result.
+
+`lap-run.sh <run> GT4_FRAME_SKIP=1 GT4_FRAME_SKIP_LOG=<csv>`, then `frame_skip_speed.py <csv> <frametime.csv>`: game speed and frames drawn in real time. `GT4_FRAME_SKIP_FORCE=1` logs with nothing left out; `2` and `3` keep 1 frame in 2 or 3.

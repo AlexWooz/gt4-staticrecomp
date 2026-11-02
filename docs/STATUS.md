@@ -1,5 +1,21 @@
 # Current Status
 
+## TASK-082 frame skipping on CoreGS 2.0, candidate 375 (2026-11-02)
+
+The owner asked for frame skipping after the optimisations, with a frame by frame sheet, because the first attempt (Gemini, `task/082-render-skip`, PR moesuito/gt4-staticrecomp#113) showed old frames between new ones. Branch `task/082-coregs2-frame-skip`, on top of `task/027-coregs2`. Candidate 375 (pins `docs/inputs/slice375-pcsx2.json`, `slice375-spec2.json`, capsule `slice375-frame-skip-license-guard-runtime`), installed on the owner's desktop, **not uploaded**.
+
+- **New option:** Settings > Graphics > Skip frames when slow, under CoreGS 2.0 only, **off by default**.
+- **The stale image is explained and gone (IN-524):** Confirmed by the sheet: on both games, the frame shown is always the last one drawn. The old report's hypothesis had the right flip and the wrong timing: a drawing list runs a frame after it is built. Its proposed fix (undo the toggle on skipped frames) would have shown each frame a frame later: the first version here did that, and the sheet showed it (age 1 and 2 where 0 and 1 are possible).
+- **Physics:** race clock equal at every VBlank, state after a whole lap equal except for 22 wheel floats on Spec II, 0 words on v2.00.
+- **Numbers (the ledger has the table):** George V Paris at 12x on the RX 9060 XT: 100.02% speed at 38.5 frames per second, against 76.85% at 46.1 without it.
+- **Spec II works too:** the first attempt was v2.00 only.
+- **Off, nothing changes:** 108 of 108 frames equal to candidate 374.
+- **Decisions of mine, the owner can change:** off by default; floor of 20 frames per second; it engages at 33 ms behind.
+- **Tests:** ctest 166 passed, one skipped, with `native_frame_skip`; `test_frame_sheet.py` 8 passed; launcher `cargo test` passed; locale keys equal.
+- **Known:** the speed number on the race display reads up to about 3 mph differently while skipping (smoothed per frame drawn). 480p only, which the launcher always uses.
+- **Not verified:** the owner's own session, the laptop (the reason for this feature), split screen, a long race with pit stops, a 60 Hz display.
+- **An optimisation note for later:** 30.7% of a race's area at 12x is constant-colour blended layers (IN-523).
+
 ## TASK-027 CoreGS 2.0 candidate 374: input lag and the EE's wait (2026-11-02)
 
 Candidate 374 (pins `docs/inputs/slice374-pcsx2.json`, `36044156...`, and `docs/inputs/slice374-spec2.json`, `647d7585...`), installed on the owner's desktop through the installer's update mode. Output `private/release-130-rc8l-out`: installer `14d4cf5c...`, portable zip `f20efb45...`. **Not uploaded.**
@@ -32,7 +48,7 @@ Candidate 374 (pins `docs/inputs/slice374-pcsx2.json`, `36044156...`, and `docs/
 - **For 2.0.0:** fractional scales (requirement, large refactor); GPU use and power measured beside GSdx.
 - **Optimisation, later unless named above:** the race start's camera cut (about 30 ms, once per race).
 - **Unknown:** a few pixels (1-30, at most 88 of 255, at the right edge of the picture) differ at VBlanks 21300 and 21400 between two runs of the same exe and the same `--press` list at 3x on George V Paris. The 6x gates did not show it.
-- **Out of scope for now:** frame skipping; GSdx stutter (a PCSX2-tainted task).
+- **Out of scope for now:** GSdx stutter (a PCSX2-tainted task).
 
 **IN-520, the input recorder:** `GT4_INPUT_RECORD=<file>` writes the pad state the game receives, one line per change, keyed by guest VBlank, so it does not depend on the key map or the frame rate. F9 ends it and closes the game; Alt+F4 also leaves a complete file. `GT4_INPUT_REPLAY=<file>` gives the game those states, with or without a window. `GT4_PACING_FROM_VBLANK=<n>` does not wait before that VBlank. `scripts/coregs2_bench/record-input.sh` and `replay-run.sh`. New CTest `native_input_recording`.
 - **Verified:** the old George V Paris `--press` list converted to a recording, 3x, headless: 18 of 20 frames identical to the `--press` run, and the other 2 differ as two `--press` runs differ between them. F9: file complete, game closed, exit 0. Window replay with fast menus: 1 min 27 s against about 6 min.
