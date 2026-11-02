@@ -204,7 +204,7 @@ pub fn coregs20_environment(
         variables.insert("GT4_CORE2_PERFORMANCE", "1".to_string());
     }
     // TASK-082: one frame drawn in two, in a running race. The physics stay at 60 Hz.
-    if settings.is_on("thirty_fps_mode") {
+    if settings.get("frame_rate") == "30" {
         variables.insert("GT4_FRAME_SKIP_FORCE", "2".to_string());
     }
     // The session's frametime log, beside its game.log (the working directory is the session folder).

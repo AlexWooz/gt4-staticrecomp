@@ -248,7 +248,7 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     settings.set_gs("texture_load", "false").unwrap();
     settings.set_gs("fxaa", "true").unwrap();
     settings.set("coregs_sharpening", "medium").unwrap();
-    settings.set("thirty_fps_mode", "on").unwrap();
+    settings.set("frame_rate", "30").unwrap();
     let tuned = env_map(&launch::coregs20_environment(&settings, None, true, textures));
     assert_eq!(tuned["GT4_CORE2_PERFORMANCE"], "1");
     assert_eq!(tuned["GT4_FRAME_SKIP_FORCE"], "2");

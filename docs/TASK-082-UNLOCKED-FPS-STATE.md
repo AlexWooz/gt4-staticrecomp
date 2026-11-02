@@ -50,6 +50,15 @@ George V Paris, the owner's lap, 144 Hz, candidate before the 30 FPS mode, one r
 
 **Not tried:** the image route, TASK-045 and FSR 3 style frame generation. CoreGS 2.0 has no motion vectors.
 
+## Why the menus stay at 60 (measured, candidate 376's code)
+
+The owner asked for 30 FPS everywhere, showroom included, on weak PCs. Two ways were tried on the owner's drive and neither works. The menus run in 480i.
+
+- **Leaving out the drawing, as in races (`build/evidence/menu30`):** the menus keep state in their drawing. A dialog came out wrong (a dark panel at its right, the text shifted), animations ran slower, and the frames were up to 8 VBlanks or more behind the reference (`sheet-f`, `sheet-g`: of 293 frames, 96 and 9 ok). The recorded drive reached its race, and the race clock differed from VBlank 2170 on, so a menu's timing changed what came next.
+- **The game's own 30 Hz mode, the flip cycle of movies (`build/evidence/menu30b`):** writing 2 to `D_006186E4` outside races, from the start of the game: 1,701 of 1,701 dumped frames black up to VBlank 4000. Not looked into. It writes it during the boot too, which may be why. Even working, the whole menu would run at half speed, since menu timers count frames.
+
+**So the launcher's choice applies to races.** What is left for the showroom is lighter drawing itself, or finding what in the menus depends on drawing. The code of these two tests is not kept; it is in this file's commit message history only as this description: a gate open everywhere in `Controller::decide`, and `write_word(flipCycle, inRace ? 1 : 2)`.
+
 ## Traps, already paid for
 
 - A drawing list runs a frame after it is built: the frame after a frame left out is the one that must not flip (IN-524).

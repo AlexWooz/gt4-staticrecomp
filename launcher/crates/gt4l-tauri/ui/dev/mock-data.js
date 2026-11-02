@@ -189,7 +189,7 @@
       page: "advanced", control: "toggle", values: null, default: false, current: false },
     { id: "performance_report", label: "Performance report", help: "Records frame timing while you play for bug reports.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
-    { visible_when: { id: "renderer", equals: "coregs20" }, id: "thirty_fps_mode", label: "30 FPS mode", help: "Locks races at 30 frames per second, with an even frametime, for PCs that cannot hold 60. The game keeps its full speed and the physics do not change. Menus stay at 60.", page: "basic", group: null, control: "toggle", default: false, current: false, connected: true },
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "frame_rate", label: "Frame rate", help: "How many frames per second races draw. 30 gives an even frametime on PCs that cannot hold 60: the game keeps its full speed and the physics do not change. Menus stay at 60.", page: "basic", group: null, control: "dropdown", values: [{ value: "60", label: "60 FPS" }, { value: "30", label: "30 FPS" }], default: "60", current: "60", connected: true },
     { visible_when: { id: "renderer", equals: "coregs20" }, id: "coregs_sharpening", label: "Sharpening (FSR1)",
       help: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
       page: "basic", group: "graphics", control: "dropdown",

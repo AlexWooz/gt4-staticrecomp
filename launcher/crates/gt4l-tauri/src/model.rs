@@ -166,8 +166,8 @@ pub fn settings_table_with_monitors(
         }
         // TASK-108: the Graphics card row sits after the Graphics API row and the FSR1 row after CAS (added with the table
         // rows below).
-        // TASK-082: the 30 FPS mode sits after Performance Mode, under the renderer that has it.
-        if definition.id == "graphics_card" || definition.id == "coregs_sharpening" || definition.id == "thirty_fps_mode" {
+        // TASK-082: the frame rate sits after Performance Mode, under the renderer that has it.
+        if definition.id == "graphics_card" || definition.id == "coregs_sharpening" || definition.id == "frame_rate" {
             continue;
         }
         let mut row = launcher_row(definition, settings);
@@ -195,7 +195,7 @@ pub fn settings_table_with_monitors(
         }
         if row.id == "performance_mode" {
             rows.push(out);
-            if let Some(definition) = gt4l_core::settings::definition("thirty_fps_mode") {
+            if let Some(definition) = gt4l_core::settings::definition("frame_rate") {
                 let mut skip = launcher_row(definition, settings);
                 skip["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
                 rows.push(skip);
@@ -939,17 +939,18 @@ mod table_tests {
     }
 
     #[test]
-    fn thirty_fps_mode_is_a_coregs_toggle_off_by_default_after_performance_mode() {
+    fn frame_rate_is_a_coregs_choice_of_60_by_default_after_performance_mode() {
         let table = settings_table(&Settings::default(), &Controls::default());
-        let skip = row(&table, "thirty_fps_mode");
-        assert_eq!(skip["control"], "toggle");
+        let skip = row(&table, "frame_rate");
+        assert_eq!(skip["control"], "dropdown");
+        assert_eq!(skip["values"].as_array().unwrap().len(), 2);
         assert_eq!(skip["page"], "basic", "the main Graphics section, not Advanced");
-        assert_eq!(skip["default"], json!(false));
-        assert_eq!(skip["current"], json!(false));
+        assert_eq!(skip["default"], "60");
+        assert_eq!(skip["current"], "60");
         assert_eq!(skip["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
         let order = ids(&table);
         let mode = order.iter().position(|id| id == "performance_mode").unwrap();
-        assert_eq!(order[mode + 1], "thirty_fps_mode");
+        assert_eq!(order[mode + 1], "frame_rate");
     }
 
     #[test]

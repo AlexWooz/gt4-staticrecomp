@@ -83,6 +83,11 @@ const RENDERER_CHOICES: &[Choice] = &[
 ];
 
 /// The strength of CoreGS 2.0's FSR1 sharpening (GSdx has CAS instead).
+const FRAME_RATE_CHOICES: &[Choice] = &[
+    Choice { value: "60", label: "60 FPS", selectable: true },
+    Choice { value: "30", label: "30 FPS", selectable: true },
+];
+
 const COREGS_SHARPENING_CHOICES: &[Choice] = &[
     Choice { value: "off", label: "Off", selectable: true },
     Choice { value: "mild", label: "Mild", selectable: true },
@@ -157,13 +162,13 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
-        id: "thirty_fps_mode",
+        id: "frame_rate",
         page: Page::Graphics,
         group: "Performance",
-        title: "30 FPS mode",
-        info: "Locks races at 30 frames per second, with an even frametime, for PCs that cannot hold 60. The game keeps its full speed and the physics do not change. Menus stay at 60.",
-        kind: TOGGLE,
-        default: "off",
+        title: "Frame rate",
+        info: "How many frames per second races draw. 30 gives an even frametime on PCs that cannot hold 60: the game keeps its full speed and the physics do not change. Menus stay at 60.",
+        kind: Kind::Choice(FRAME_RATE_CHOICES),
+        default: "60",
         connected: true,
     },
     SettingDef {

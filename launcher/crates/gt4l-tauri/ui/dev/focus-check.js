@@ -340,13 +340,13 @@
     await setHash("#/settings/graphics");
     await wait(200);
     var gsdx = shown();
-    check("GSdx shows its rows and no FSR1", holds(gsdx, both) && holds(gsdx, gsdxOnly) && lacks(gsdx, ["thirty_fps_mode", "coregs_sharpening"]), gsdx.join("|"));
+    check("GSdx shows its rows and no FSR1", holds(gsdx, both) && holds(gsdx, gsdxOnly) && lacks(gsdx, ["frame_rate", "coregs_sharpening"]), gsdx.join("|"));
     await GT4.backend.call("set_setting", { id: "renderer", value: "coregs20" });
     await setHash("#/settings/about");
     await setHash("#/settings/graphics");
     await wait(200);
     var coregs = shown();
-    check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, ["thirty_fps_mode", "coregs_sharpening"]) && lacks(coregs, gsdxOnly), coregs.join("|"));
+    check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, ["frame_rate", "coregs_sharpening"]) && lacks(coregs, gsdxOnly), coregs.join("|"));
     await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
     await setHash("#/settings/about");
     await setHash("#/settings/graphics");
