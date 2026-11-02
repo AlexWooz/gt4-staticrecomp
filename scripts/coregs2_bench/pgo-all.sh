@@ -3,7 +3,7 @@
 # libraries (IN-468), from one fresh profile per target. Run it as the last step of a candidate: it builds twice and trains on full
 # scenes. The profile holds only hashes and counts, but of code translated from the game: it stays outside git.
 # usage: pgo-all.sh <spec2|v200> <output dir> [ENV=VAL for the training runs ...]
-# Needs: EE_GENERATED=<translated units of this target> and CONFIGURE=<script configuring a build dir: name target extra args>.
+# Needs: EE_GENERATED=<translated units of this target>, and for Spec II the VU0 programs (game/configure.cmd).
 # Leaves: <output dir>/{gt4vulkan*.exe,.pdb,SDL3.dll,ps2game.lib,game.profdata,receipt.txt}.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -11,7 +11,7 @@ source "$here/common.sh"
 target=$1; out=$2; shift 2
 work=$GT4_BENCH_ROOT/build/pgo-all-$target
 llvm="/c/Program Files/LLVM/bin"
-tools=$GT4_BENCH_ROOT/private/task134-tools
+tools=$here/game
 win() { cygpath -m "$1"; }
 mkdir -p "$work/raw" "$out"
 rm -f "$work"/raw/*.profraw
