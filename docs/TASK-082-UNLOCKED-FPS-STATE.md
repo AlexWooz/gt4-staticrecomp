@@ -9,7 +9,7 @@ Branch `task/082-coregs2-frame-skip`, on top of `task/027-coregs2`.
 | Piece | Where | State |
 |---|---|---|
 | A frame drawn or left out, with the right flip | `native/frame_skip.{hpp,cpp}`, IN-524 | Done, both games |
-| 30 FPS mode | launcher `thirty_fps_mode`, `GT4_FRAME_SKIP_FORCE=2` | Shipped, off by default |
+| 30 FPS in races | launcher `frame_rate`, Frame rate (experimental), `GT4_FRAME_SKIP_FORCE=2` | Shipped, off by default |
 | Any framerate below 60 | `GT4_FRAME_SKIP=1`, `Policy` | Works, not offered |
 | Presentation thread with even spacing | `present_paced`, `hw_present_spacing.hpp`, IN-525 | Used by both |
 | Render time forced, for the study | `GT4_FRAME_RENDER_T`, capsule `slice376-frame-render-license-guard-runtime` | Off by default |
