@@ -1,5 +1,21 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0 candidate 374: input lag and the EE's wait (2026-11-02)
+
+Candidate 374 (pins `docs/inputs/slice374-pcsx2.json`, `36044156...`, and `docs/inputs/slice374-spec2.json`, `647d7585...`), installed on the owner's desktop through the installer's update mode. Output `private/release-130-rc8l-out`: installer `14d4cf5c...`, portable zip `f20efb45...`. **Not uploaded.**
+
+- **Input lag (IN-521):** presentation to display on the 60 Hz virtual display, whole lap of the owner's recording at 6x: 53.0 ms on 373's behaviour, 31 to 39.5 ms now, depending on the run (the phase of the presentation against the flip). The owner considers 30-35 ms the normal range for 60 Hz with vsync and finds this great against the 50 ms before. Input to presentation is not in these figures.
+- **The waits (IN-522):** the EE no longer waits for the flare table: 9.5 ms per VBlank to 0.00 at 6x. The flares stay exact: this replaces the late flares of IN-514, and the owner's decision on them is no longer needed.
+- **A bug of mine in candidate 373, fixed:** from IN-514 on, with a window, Performance Mode went through the read with a limit before its own answer at once. So on 373 it waited for the read and took the real table. Confirmed by reading the code; the effect was not measured apart, and the owner's Performance Mode reports on 373 include it. It may be why the GS looked slow in that mode.
+- **D1 (IN-523): measured, not built.** The attachment path that exists is worse on this GPU at 12x (GPU busy 19.73 to 21.37 ms). 43% of a race's area has no depth test, 26% tests with alpha test and a depth write, where an early write is wrong, and 18% could reject early, where the shader already rejects before texturing. High confidence the gain is below 10% of GPU time, not worth the rewrite now. The owner can overrule. At 12x normal mode does not hold 60 FPS on George V Paris (presented mean 21.3 ms, GPU busy 19.73): the larger target is the 30.7% of area in constant-colour blended layers.
+- **Frames:** against 373, headless: 122 of 122 identical on the PGO build before the last change (night 1x and 3x and 12x, Arcade 3x, George V Paris 6x in both modes, Spec II night 3x), and 47 of 47 after it (Arcade 3x, George V Paris 6x). The lap at 3x, EE waiting against not waiting: 18 of 20 identical, with the same 2 frames differing between two runs of the same mode; EE cycles equal.
+- **Checks:** `ctest -R "^hw_|native_ipu_fast|standalone|native_pacing|native_input|native_mtvu"` 162 passed, one skipped; after the last change `hw_present_latency` and `native_pacing` again; launcher `cargo test --workspace` passed. Locale files unchanged since 373. Launcher notes changed in both languages with the same bullets.
+- **Not verified:**
+  - The flip edge step (`note_flip_miss`) has only its fixture: it was written after one lap of the final build showed 13 pairs of a late frame and a frame right behind it, and the three laps after it never landed there.
+  - The owner's own session, a real 60 Hz monitor, the laptop.
+
+**To reproduce:** `scripts/coregs2_bench/lap-run.sh <run> [ENV=VAL ...]`. A/B switches: `GT4_HW_LATENCY_CONTROL=0`, `GT4_HW_FLARE_DEFER=0`.
+
 ## TASK-027 CoreGS 2.0: owner's direction after candidate 373, open items and the input recorder (2026-11-01)
 
 **The owner's view and decisions:**
@@ -8,13 +24,13 @@
 - **The next two optimisations, both inside CoreGS 2.0:** hardware depth (D1), and reducing the waits. Waits are what to reduce from now on. Other optimisations stay for later.
 - First, the input recorder below, to make the tests easier.
 
-**Issue, to fix within CoreGS 2.0 (owner, 2026-11-01): the input lag.** The owner finds it very bad on candidate 373, about 50 ms by their estimate over a remote link that alone adds about 10 ms, and says it was not like this before. Measured, from `vkQueuePresentKHR` to the display taking the frame, at 60 Hz on the virtual display: 3 images and the second queue (373) 51-55 ms, and 42 ms in the replay of the owner's drive; 3 images, old path 49-51 ms; 2 images, old path 35-39 ms; 2 images, second queue 44 ms. At 144 Hz 13-20 ms. Input to presentation, at least one more frame, is not in these figures. High confidence that IN-511 (three images, candidate 372) added about a refresh and IN-516 2-6 ms; nothing was measured on 371, which predates the log. The same build gave 42 and 51-55 ms depending on what came before it (fast menus or not), which points to how full the display queue stays. A fix must not bring back the stall IN-516 removed.
+**Issue, improved in candidate 374 above (owner, 2026-11-01): the input lag.** The owner finds it very bad on candidate 373, about 50 ms by their estimate over a remote link that alone adds about 10 ms, and says it was not like this before. Measured, from `vkQueuePresentKHR` to the display taking the frame, at 60 Hz on the virtual display: 3 images and the second queue (373) 51-55 ms, and 42 ms in the replay of the owner's drive; 3 images, old path 49-51 ms; 2 images, old path 35-39 ms; 2 images, second queue 44 ms. At 144 Hz 13-20 ms. Input to presentation, at least one more frame, is not in these figures. High confidence that IN-511 (three images, candidate 372) added about a refresh and IN-516 2-6 ms; nothing was measured on 371, which predates the log. The same build gave 42 and 51-55 ms depending on what came before it (fast menus or not), which points to how full the display queue stays. A fix must not bring back the stall IN-516 removed.
 
 **Open items, none started:**
-- **Before publishing rc8:** the owner's own session on 373 at 60 Hz (showroom, a car ahead, a night race); the late flares of IN-514 (keep or not); a real monitor at 60 Hz; the laptop (still on 367, the beta gate is the HD 620 at 2x); a new build with the corrected notes (the installed launcher still says "about 28%"); the note's "about half the processor of GSdx", which needs a GSdx F8 to compare; en-US focus pages varying with unchanged code; the installer against its sources; replacing the old rc8 draft (candidate 354). Publishing and the PR into `task/134` need the owner's word, and TASK-134's P0/P1 wait for the owner's "CoreGS 2.0 build done".
+- **Before publishing rc8:** the owner's own session on 373 at 60 Hz (showroom, a car ahead, a night race); a real monitor at 60 Hz; the laptop (still on 367, the beta gate is the HD 620 at 2x); the note's "about half the processor of GSdx", which needs a GSdx F8 to compare; en-US focus pages varying with unchanged code; the installer against its sources; replacing the old rc8 draft (candidate 354). Publishing and the PR into `task/134` need the owner's word, and TASK-134's P0/P1 wait for the owner's "CoreGS 2.0 build done".
 - **Owner decisions left:** the colour filter cut (IN-505) in Performance Mode.
 - **For 2.0.0:** fractional scales (requirement, large refactor); GPU use and power measured beside GSdx.
-- **Optimisation, later unless named above:** about 50 ms from presentation to display at 60 Hz (13-20 ms at 144 Hz); the race start's camera cut (about 30 ms, once per race).
+- **Optimisation, later unless named above:** the race start's camera cut (about 30 ms, once per race).
 - **Unknown:** a few pixels (1-30, at most 88 of 255, at the right edge of the picture) differ at VBlanks 21300 and 21400 between two runs of the same exe and the same `--press` list at 3x on George V Paris. The 6x gates did not show it.
 - **Out of scope for now:** frame skipping; GSdx stutter (a PCSX2-tainted task).
 

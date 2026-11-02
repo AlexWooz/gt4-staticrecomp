@@ -295,6 +295,8 @@ Spec II, George V Paris, normal mode, the owner's lap `george-volta2` replayed w
 
 For scale: no vsync 24.9 ms on the same display, the phase walk (dropped) 35.4 ms with 18 repeats of a frame per lap. The level, 31 or about 39 ms, comes from the phase of the presentation against the flip and changes between runs.
 
+**The final build (`g1`, `g2`, `g3`):** 38.8, 31.0, 35.7 ms, p1 to p99 about 1 ms apart except `g2` (a frame left out at VBlank 2131, p99 47.3), shown over 25 ms 1 per lap. `f374`, before the flip edge step: 34.7 ms with 13 misses of the flip in the lap, which the step is there for.
+
 **Frames:** the whole lap headless at 3x, EE waiting against not waiting: 18 of 20 identical. The other 2 (VBlanks 4500, 4800, at most 1,216 pixels at the right edge) differ the same way between two runs of the EE waiting: the noise the owner put down to the crowd's flashes. EE cycles equal, 39,478,966,503. 269,534 VIF packets got their words in the lap, about 47 per frame.
 
 **12x (`d1probe`):** normal mode does not hold 60 FPS on this track: presented mean 21.3 ms, GPU busy 19.73, GS 21.00, reads 10.34. With `GT4_CORE2_ROP=1` 23.0 ms, GPU busy 21.37. Area and reading in IN-523.

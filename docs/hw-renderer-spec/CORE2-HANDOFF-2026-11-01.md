@@ -85,8 +85,8 @@ The state of `main` of this work is in STATUS and the perf ledger. What the next
 - **The stall goes with 60 Hz, not with the virtual display** (the same display at 144 Hz: 0.79 ms against 10.96 ms). It may reach any player on a real 60 Hz monitor, which was not tested. `Win32_VideoController.CurrentRefreshRate` gives the rate of a run. The second queue removes it at 60 Hz (table in the ledger).
 - **Open at 60 Hz:** about 50 ms from presentation to display, against 13-20 ms at 144 Hz. Two images save about 10 ms and lose frames; latest ready is worse.
 - **Next step:** the GS thread still waits for the GPU at the flare read (2-3 ms per VBlank, 12 ms on heavy GPU stretches). Issue the reduction with `ReduceLater` and let the EE wait on its fence with the IN-514 limit.
-- **Owner decision pending:** whether normal mode keeps IN-514's late flares.
-- **Next, the owner's order:** the input recorder (IN-520), then hardware depth (D1) and reducing the waits. The open items are at the top of STATUS.
+- **Closed by candidate 374:** IN-514's late flares are gone (IN-522).
+- **Candidate 374:** IN-521 (display queue), IN-522 (the EE does not wait for the flare table; the VU1 worker does), IN-523 (D1 measured, not built). The GS thread still waits for the GPU at the read (4.3 ms per VBlank at 6x, 10 ms at 12x), which no longer holds the EE. Next GPU target at 12x: the constant-colour blended layers, 30.7% of a race's area. The open items are at the top of STATUS.
 
 ## Open items and owner decisions
 
