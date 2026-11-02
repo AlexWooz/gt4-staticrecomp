@@ -22,6 +22,7 @@
 #include <bcrypt.h>
 #include <io.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -128,6 +129,20 @@ sa::Access real_access() {
     return text;
   };
   access.sha256_file = sha256_of_file;
+  // The game takes the disc path in the ANSI code page. Accents fit it on a Western Windows and go as they are; a path with other
+  // characters goes by its short name.
+  access.openable_path = [](const std::filesystem::path &path) {
+    const std::wstring &wide = path.native();
+    if (std::all_of(wide.begin(), wide.end(), [](wchar_t c) { return c < 128; }) || GetACP() == CP_UTF8) return path;
+    BOOL lost = FALSE;
+    const int fits = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide.c_str(), static_cast<int>(wide.size()), nullptr, 0, nullptr, &lost);
+    if (fits > 0 && !lost) return path;
+    std::wstring shorter(GetShortPathNameW(wide.c_str(), nullptr, 0), L'\0');
+    const DWORD written = shorter.empty() ? 0 : GetShortPathNameW(wide.c_str(), shorter.data(), static_cast<DWORD>(shorter.size()));
+    if (written == 0 || written >= shorter.size()) return path;
+    shorter.resize(written);
+    return std::filesystem::path(shorter);
+  };
   access.environment = [](const std::string &name) -> std::optional<std::string> {
     char *value = nullptr;
     std::size_t length = 0;

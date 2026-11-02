@@ -32,10 +32,6 @@ impl Fixture {
     fn disc_folder(&self) -> PathBuf {
         self.path("disc")
     }
-
-    fn imported(&self) -> PathBuf {
-        self.disc_folder().join("SCUS-97328.iso")
-    }
 }
 
 impl Drop for Fixture {
@@ -72,29 +68,16 @@ fn good_pins_and_image(volume: &str) -> (Pins, Vec<u8>) {
     (pins, image)
 }
 
-fn plenty(_: &Path) -> Option<u64> {
-    Some(u64::MAX / 2)
-}
-
-fn run_with(
-    fixture: &Fixture,
-    disc: &Path,
-    pins: &Pins,
-    cancel: &AtomicBool,
-    free_space: &dyn Fn(&Path) -> Option<u64>,
-) -> Result<setup::Receipt, SetupError> {
+fn run_setup(fixture: &Fixture, disc: &Path, pins: &Pins, cancel: &AtomicBool) -> Result<setup::Receipt, SetupError> {
     let prepared = fixture.path("prepared");
     let staging = fixture.path("prepared.tmp");
-    let disc_folder = fixture.disc_folder();
     let request = SetupRequest {
         disc,
-        disc_folder: &disc_folder,
         prepared: &prepared,
         staging: &staging,
         pins,
         launcher_version: "test",
         cancel,
-        free_space,
     };
     let mut seen: Vec<(Stage, f32)> = Vec::new();
     let result = setup::run(&request, &mut |stage, fraction| seen.push((stage, fraction)));
@@ -106,44 +89,40 @@ fn run_with(
     result
 }
 
-fn run_setup(fixture: &Fixture, disc: &Path, pins: &Pins, cancel: &AtomicBool) -> Result<setup::Receipt, SetupError> {
-    run_with(fixture, disc, pins, cancel, &plenty)
-}
-
-/// Nothing half-written: no temporary image, no staging folder, no prepared folder.
+/// Nothing half-written: no staging folder, no prepared folder, no copy of the image.
 fn assert_nothing_written(fixture: &Fixture) {
     assert!(!fixture.path("prepared.tmp").exists(), "staging folder left behind");
     assert!(!fixture.path("prepared").exists(), "prepared folder written");
-    assert!(!fixture.disc_folder().join("SCUS-97328.iso.tmp").exists(), "temporary image left behind");
-    assert!(!fixture.imported().exists(), "image imported");
+    assert!(!fixture.disc_folder().exists(), "setup never writes a copy of the image");
 }
 
 #[test]
-fn good_disc_is_copied_and_the_original_is_no_longer_needed() {
+fn good_disc_is_linked_where_it_is_and_nothing_is_copied() {
     let fixture = Fixture::new("good");
     let (pins, image) = good_pins_and_image("GT4 USA");
     let disc = fixture.path("game.iso");
     fs::write(&disc, &image).unwrap();
+    let modified = fs::metadata(&disc).unwrap().modified().unwrap();
     let cancel = AtomicBool::new(false);
     let receipt = run_setup(&fixture, &disc, &pins, &cancel).expect("setup succeeds");
-    assert_eq!(receipt.schema_version, 2);
+    assert_eq!(receipt.schema_version, 3);
     assert_eq!(receipt.disc.serial, "SCUS-97328");
     assert_eq!(receipt.disc.volume_identifier, "GT4 USA");
     assert!(receipt.qualified_dump);
+    assert_eq!(receipt.image.as_ref().unwrap().linked_path.as_deref(), Some(disc.to_str().unwrap()));
     let prepared = fixture.path("prepared");
     assert_eq!(fs::read(prepared.join("SCUS_973.28")).unwrap(), game().elf);
     assert!(prepared.join("CORE.GT4").exists());
     assert!(!fixture.path("prepared.tmp").exists(), "staging folder is renamed away");
-    assert_eq!(fs::read(fixture.imported()).unwrap(), image, "the copy is byte-identical");
+    assert!(!fixture.disc_folder().exists(), "no copy of the image");
+    assert_eq!(fs::read(&disc).unwrap(), image, "the player's image is only read");
+    assert_eq!(fs::metadata(&disc).unwrap().modified().unwrap(), modified);
     let receipt_text = fs::read_to_string(prepared.join("prepare.json")).unwrap();
     assert!(receipt_text.contains("\"payload\": \"bundled\""));
     assert!(receipt_text.contains("\"modified_unix_nanos\""));
-
-    // The original may now be deleted: the next launch only looks at the copy.
-    fs::remove_file(&disc).unwrap();
     match setup::check_installed(&prepared, &fixture.disc_folder(), &pins) {
         Installed::Ready { image, serial, version } => {
-            assert_eq!(image, fixture.imported());
+            assert_eq!(image, disc, "the game reads the image where it is");
             assert_eq!(serial, "SCUS-97328");
             assert_eq!(version, "2.00");
         }
@@ -152,16 +131,56 @@ fn good_disc_is_copied_and_the_original_is_no_longer_needed() {
 }
 
 #[test]
-fn the_copy_is_an_independent_file_not_a_link() {
-    let fixture = Fixture::new("independent");
+fn an_image_that_moved_or_changed_asks_to_be_chosen_again_and_linking_it_is_all_it_takes() {
+    let fixture = Fixture::new("moved");
     let (pins, image) = good_pins_and_image("GT4 USA");
     let disc = fixture.path("game.iso");
     fs::write(&disc, &image).unwrap();
     let cancel = AtomicBool::new(false);
     run_setup(&fixture, &disc, &pins, &cancel).unwrap();
-    // Changing the original must not change the copy (a hard link would).
-    fs::write(&disc, vec![0u8; image.len()]).unwrap();
-    assert_eq!(fs::read(fixture.imported()).unwrap(), image);
+    let prepared = fixture.path("prepared");
+
+    let moved = fixture.path("elsewhere.iso");
+    fs::rename(&disc, &moved).unwrap();
+    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &pins), Installed::LinkBroken { image: disc.clone() });
+
+    // Another file at the same path is not the image that was checked.
+    fs::write(&disc, &image[..image.len() - 2048]).unwrap();
+    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &pins), Installed::LinkBroken { image: disc.clone() });
+    fs::remove_file(&disc).unwrap();
+
+    run_setup(&fixture, &moved, &pins, &cancel).expect("the image is linked again");
+    assert!(matches!(
+        setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
+        Installed::Ready { image, .. } if image == moved
+    ));
+}
+
+/// Turns the prepared folder into what a launcher from before decision 0075 left: the image copied, no link in the receipt.
+fn make_it_an_old_install(fixture: &Fixture, disc: &Path, name: &str) {
+    fs::create_dir_all(fixture.disc_folder()).unwrap();
+    fs::rename(disc, fixture.disc_folder().join(name)).unwrap();
+    let receipt_path = fixture.path("prepared").join("prepare.json");
+    let mut receipt: serde_json::Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt["schema_version"] = 2.into();
+    receipt["image"]["file"] = name.into();
+    receipt["image"].as_object_mut().unwrap().remove("linked_path");
+    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+}
+
+#[test]
+fn an_install_from_before_the_link_keeps_working_with_its_copy() {
+    let fixture = Fixture::new("old-install");
+    let (pins, image) = good_pins_and_image("GT4 USA");
+    let disc = fixture.path("game.iso");
+    fs::write(&disc, &image).unwrap();
+    let cancel = AtomicBool::new(false);
+    run_setup(&fixture, &disc, &pins, &cancel).unwrap();
+    make_it_an_old_install(&fixture, &disc, "SCUS-97328.iso");
+    match setup::check_installed(&fixture.path("prepared"), &fixture.disc_folder(), &pins) {
+        Installed::Ready { image, .. } => assert_eq!(image, fixture.disc_folder().join("SCUS-97328.iso")),
+        other => panic!("an old install must stay installed: {other:?}"),
+    }
 }
 
 #[test]
@@ -267,7 +286,7 @@ fn truncated_copy_is_incomplete_and_a_changed_core_is_a_different_dump() {
     assert!(matches!(error, SetupError::IncompleteOrModified), "{error:?}");
     assert_eq!(error.user_message(), "This copy is incomplete or modified. Please re-dump your disc.");
 
-    // Flip one byte inside the CORE file's data (same size, different hash): refused before any copy.
+    // Flip one byte inside the CORE file's data (same size, different hash): refused before the full hash.
     let core_offset = find_bytes(&image, &game().core).expect("CORE data present in image");
     let mut changed = image.clone();
     changed[core_offset + 100] ^= 0xFF;
@@ -279,11 +298,11 @@ fn truncated_copy_is_incomplete_and_a_changed_core_is_a_different_dump() {
 }
 
 #[test]
-fn a_hash_mismatch_after_the_copy_leaves_nothing_behind() {
+fn a_hash_mismatch_leaves_nothing_behind() {
     let fixture = Fixture::new("mismatch");
     let cancel = AtomicBool::new(false);
     let (pins, image) = good_pins_and_image("GT4 USA");
-    // Same size, same CORE, one changed byte in another file: only the full hash of the copy can see it.
+    // Same size, same CORE, one changed byte in another file: only the full hash can see it.
     let trailer_offset = image.len() - 10;
     let mut changed = image.clone();
     changed[trailer_offset] ^= 0xFF;
@@ -291,27 +310,6 @@ fn a_hash_mismatch_after_the_copy_leaves_nothing_behind() {
     fs::write(&disc, &changed).unwrap();
     let error = run_setup(&fixture, &disc, &pins, &cancel).unwrap_err();
     assert!(matches!(error, SetupError::DiffersFromKnownGood), "{error:?}");
-    assert_nothing_written(&fixture);
-}
-
-#[test]
-fn low_free_space_is_refused_before_copying() {
-    let fixture = Fixture::new("space");
-    let cancel = AtomicBool::new(false);
-    let (pins, image) = good_pins_and_image("GT4 USA");
-    let disc = fixture.path("game.iso");
-    fs::write(&disc, &image).unwrap();
-    let small = |_: &Path| Some(image.len() as u64);
-    let error = run_with(&fixture, &disc, &pins, &cancel, &small).unwrap_err();
-    match &error {
-        SetupError::NotEnoughSpace { needed, available } => {
-            assert_eq!(*needed, image.len() as u64 + setup::COPY_MARGIN_BYTES);
-            assert_eq!(*available, image.len() as u64);
-        }
-        other => panic!("expected NotEnoughSpace, got {other:?}"),
-    }
-    assert!(error.user_message().starts_with("Not enough free space to copy the game files"));
-    assert!(!error.is_disc_refusal());
     assert_nothing_written(&fixture);
 }
 
@@ -373,17 +371,19 @@ fn later_launches_see_a_missing_or_changed_image_and_old_receipts() {
     fs::write(&disc, &image).unwrap();
     let cancel = AtomicBool::new(false);
     run_setup(&fixture, &disc, &pins, &cancel).unwrap();
+    make_it_an_old_install(&fixture, &disc, "SCUS-97328.iso");
+    let imported = fixture.disc_folder().join("SCUS-97328.iso");
 
-    // The player cleaned the data folder: the copy is gone.
-    let kept = fs::read(fixture.imported()).unwrap();
-    fs::remove_file(fixture.imported()).unwrap();
+    // An install from before the link. The player cleaned the data folder: the copy is gone.
+    let kept = fs::read(&imported).unwrap();
+    fs::remove_file(&imported).unwrap();
     assert!(matches!(
         setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
         Installed::Missing { reason } if reason.contains("missing")
     ));
 
     // A different file of another size in its place.
-    fs::write(fixture.imported(), &kept[..kept.len() - 2048]).unwrap();
+    fs::write(&imported, &kept[..kept.len() - 2048]).unwrap();
     assert!(matches!(
         setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
         Installed::Missing { reason } if reason.contains("changed")

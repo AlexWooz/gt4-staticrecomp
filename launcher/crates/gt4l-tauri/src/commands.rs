@@ -66,15 +66,38 @@ fn installed_disc_name(state: &AppState, game: &'static Game, version: &str) -> 
     setup::game_disc_name(game, version, &installed_image_name(state, game))
 }
 
-/// One row of the game list: `{id, name, title, variant, installed, selected, state, disc_name, folder, size_bytes}`.
+/// Why a game set up once cannot start now, for the player: a broken link says where the image was. `None`: it was never set up,
+/// or it is ready.
+fn missing_reason(installed: &Installed, language: gt4l_core::language::Language) -> Option<String> {
+    match installed {
+        Installed::Missing { reason } => Some(reason.clone()),
+        Installed::LinkBroken { image } => {
+            Some(messages::render("setup.image_gone_reason", language, &[("path", &image.display().to_string())]))
+        }
+        Installed::NotSetUp | Installed::Ready { .. } => None,
+    }
+}
+
+/// The folder that holds a game's disc image: where the player keeps it, or the launcher's own copy of an older install.
+fn game_files_folder(state: &AppState, game: &'static Game) -> PathBuf {
+    match state.installed_of(game) {
+        Installed::Ready { image, .. } | Installed::LinkBroken { image } => {
+            image.parent().map(Path::to_path_buf).unwrap_or_else(|| state.game_dirs(game).disc_folder())
+        }
+        _ => state.game_dirs(game).disc_folder(),
+    }
+}
+
+/// One row of the game list: `{id, name, title, variant, installed, linked, selected, state, disc_name, folder, size_bytes}`.
 fn game_row(state: &AppState, game: &'static Game) -> Value {
     let installed = state.installed_of(game);
     let dirs = state.game_dirs(game);
-    let (ready, version, reason) = match &installed {
-        Installed::Ready { version, .. } => (true, version.clone(), String::new()),
-        Installed::Missing { reason } => (false, String::new(), reason.clone()),
-        Installed::NotSetUp => (false, String::new(), String::new()),
+    let (ready, version) = match &installed {
+        Installed::Ready { version, .. } => (true, version.clone()),
+        _ => (false, String::new()),
     };
+    let reason = missing_reason(&installed, state::language_of(state)).unwrap_or_default();
+    let linked = disc_setup::read_receipt(&dirs.prepared()).and_then(|receipt| receipt.image).is_some_and(|image| image.linked_path.is_some());
     let image_name = if ready { installed_image_name(state, game) } else { String::new() };
     let disc_name = if ready { setup::game_disc_name(game, &version, &image_name) } else { String::new() };
     let variant = if ready { setup::game_variant(game, &version, &image_name) } else { String::new() };
@@ -85,6 +108,7 @@ fn game_row(state: &AppState, game: &'static Game) -> Value {
         "title": setup::game_title(game),
         "variant": variant,
         "installed": ready,
+        "linked": linked,
         "damaged": !ready && !reason.is_empty(),
         "reason": reason,
         "selected": game == state.selected,
@@ -134,13 +158,13 @@ pub fn app_state_of(state: &AppState) -> Value {
                 messages::text("setup.game_files_missing", language).to_string(),
                 chosen_name,
             ),
-            SetupOutcome::None => match &installed {
-                Installed::Missing { reason } => (
+            SetupOutcome::None => match missing_reason(&installed, language) {
+                Some(reason) => (
                     "files_missing",
-                    messages::render("setup.game_files_missing_reason", language, &[("reason", reason)]),
+                    messages::render("setup.game_files_missing_reason", language, &[("reason", &reason)]),
                     chosen_name,
                 ),
-                _ => ("needed", String::new(), chosen_name),
+                None => ("needed", String::new(), chosen_name),
             },
         }
     };
@@ -152,7 +176,7 @@ pub fn app_state_of(state: &AppState) -> Value {
     // The page names a game when one is already installed, when the disc picked is identified (`setup_game`), or when this
     // game's files are damaged. A setup with nothing installed and no disc identified yet has no target: the disc decides
     // (rc5 laptop test: a stored choice of Spec II made the first-run page say "Install Spec II").
-    let target = if installed_games.is_empty() && state.setup_game.is_none() && !matches!(installed, Installed::Missing { .. }) {
+    let target = if installed_games.is_empty() && state.setup_game.is_none() && !matches!(installed, Installed::Missing { .. } | Installed::LinkBroken { .. }) {
         Value::Null
     } else {
         json!({ "id": subject.id, "name": subject.display_name })
@@ -172,7 +196,7 @@ pub fn app_state_of(state: &AppState) -> Value {
             "game": target,
         },
         "game_running": state.game_child.is_some(),
-        "game_files": state.game_dirs(state.selected).disc_folder().display().to_string(),
+        "game_files": game_files_folder(state, state.selected).display().to_string(),
         "selected_game": state.selected.id,
         "any_installed": !installed_games.is_empty(),
         "language": state.config.settings.get("language"),
@@ -374,11 +398,15 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
         return Err(messages::text("setup.migrating", language).into());
     }
     let disc = match state.installed() {
-        Installed::Ready { image, .. } => image,
-        Installed::Missing { reason } => {
+        Installed::Ready { image, .. } => match gt4l_platform::disk::game_readable_path(&image) {
+            Some(readable) => readable,
+            None => return Err(messages::text("setup.path_not_readable", language).into()),
+        },
+        Installed::NotSetUp => return Err(messages::text("game.set_up_first", language).into()),
+        other => {
+            let reason = missing_reason(&other, language).unwrap_or_default();
             return Err(messages::render("setup.game_files_missing_reason", language, &[("reason", &reason)]));
         }
-        Installed::NotSetUp => return Err(messages::text("game.set_up_first", language).into()),
     };
     let game = state.selected;
     let dirs = state.game_dirs(game);
@@ -1205,8 +1233,8 @@ pub fn select_game_of(id: String, shared: &Shared) -> Result<Value, String> {
 /// Never the save library, the replays, the runtime card or any shared folder.
 pub const REMOVED_FOLDERS: &[&str] = &["disc", "prepared", "prepared.tmp"];
 
-/// `games_remove({id})`: deletes the disc copy and the prepared files of a game (the page asks first). Its saves and replays
-/// stay. Refused while the game runs or setup works. Returns the new `games_list`.
+/// `games_remove({id})`: deletes the prepared files of a game, and the launcher's own copy of the disc image of an older install
+/// (the page asks first). An image the player keeps elsewhere is never touched, and its saves and replays stay. Refused while the game runs or setup works. Returns the new `games_list`.
 #[tauri::command]
 pub fn games_remove(id: String, shared: State<'_, Shared>) -> Result<Value, String> {
     games_remove_of(id, shared.inner())
@@ -1226,8 +1254,16 @@ pub fn games_remove_of(id: String, shared: &Shared) -> Result<Value, String> {
         let dirs = state.game_dirs(game);
         let mut removed = Vec::new();
         for place in dirs.write_places() {
+            // The player may have linked an image that sits in this folder: that file is theirs.
+            let linked = disc_setup::read_receipt(&place.join("prepared"))
+                .and_then(|receipt| receipt.image)
+                .and_then(|image| image.linked_path)
+                .map(PathBuf::from);
             for name in REMOVED_FOLDERS {
                 let folder = place.join(name);
+                if linked.as_ref().is_some_and(|image| image.starts_with(&folder)) {
+                    continue;
+                }
                 if folder.exists() {
                     fs::remove_dir_all(&folder).map_err(|error| format!("{} was not removed: {error}", folder.display()))?;
                     removed.push(folder.display().to_string());
@@ -1394,7 +1430,7 @@ pub fn about_info_of(shared: &Shared) -> Result<AboutInfo, String> {
         version: LAUNCHER_VERSION.to_string(),
         gt4recomp: LAUNCHER_VERSION.to_string(),
         gt4gs: renderer,
-        game_files: state.game_dirs(state.selected).disc_folder().display().to_string(),
+        game_files: game_files_folder(&state, state.selected).display().to_string(),
         data_folder: state.dirs.root().display().to_string(),
         saves_folder: state.user_dirs.root().display().to_string(),
         game_name: state.selected.display_name.to_string(),
@@ -1499,12 +1535,12 @@ pub fn open_export_folder(path: String) -> Result<(), String> {
     }
 }
 
-/// Opens the game files folder (the copy of the disc image) in Explorer. The path is fixed by the launcher.
+/// Opens the folder of the game's disc image in Explorer.
 #[tauri::command]
 pub fn open_game_files_folder(shared: State<'_, Shared>) -> Result<(), String> {
     let folder = {
         let state = lock(shared.inner());
-        state.game_dirs(state.selected).disc_folder()
+        game_files_folder(&state, state.selected)
     };
     open_folder(&folder)
 }

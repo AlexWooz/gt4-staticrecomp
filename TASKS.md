@@ -146,6 +146,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🔄 Study done and owner decisions recorded (2026-10-28) · next: P0 baselines when the owner frees the desktop |
 | TASK‑135 | Performance HUD for CoreGS 2.0, in the spirit of the macOS Metal HUD: FPS, frame time, CPU and GPU of the game, memory and a live frame time graph | 🧪 Built, waits for the owner's test (branch `task/135-coregs2-performance-hud`, candidate 378, on the notebook, 2026-11-02) |
 | TASK‑136 | Simple onboarding: a new install uses CoreGS 2.0 when the PC runs it, GSdx becomes optional and is downloaded only when the card needs it | 🧪 Built, waits for the owner's test (branch `task/136-simple-onboarding`, 2026-11-02) |
+| TASK‑137 | The launcher links the disc image and no longer copies it; an image that moved asks to be chosen again; installs with a copy keep working | 🧪 Built, waits for the owner's test (branch `task/137-link-disc-image`, candidate 381, 2026-11-02) |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -2648,3 +2649,6 @@ State (2026-11-02): candidate 378, off by default; 26.6 us per presentation, no 
 
 ### TASK-136 — Simple onboarding, GSdx optional
 Decision 0074. Owner, 2026-11-02: no GSdx download on a first install when the PC runs CoreGS 2.0; automatic, nothing to choose. Acceptance: a new install on a capable PC ends on CoreGS 2.0 with no download; a PC that cannot run it ends on GSdx, downloaded, and is told why; a player on GSdx or with a stored choice sees no change; owner test.
+
+### TASK-137 — Link the disc image
+Decision 0075. Owner, 2026-11-02, asked for by players and needed for Android: one image for this and an emulator. Acceptance: setup writes no copy of the image; an image that moved or changed asks to be chosen again, and choosing it is all it takes; an install with a copy stays installed; accented paths work; owner test.

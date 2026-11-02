@@ -177,7 +177,7 @@ fn walk_pages(shared: &Shared, card: &Path) -> Vec<String> {
     log.push(format!("controls: {} inputs, cross reset, swap with l1, stick deadzone, reset all", controls["controls"].as_array().unwrap().len()));
 
     let about = commands::about_info_of(shared).expect("about");
-    assert!(about.game_files.ends_with("disc"), "{}", about.game_files);
+    assert!(Path::new(&about.game_files).is_dir(), "{}", about.game_files);
     log.push(format!("about: GT4Recomp {} gt4-gs {} files {}", about.gt4recomp, about.gt4gs, about.game_files));
     log
 }
@@ -264,11 +264,10 @@ fn synthetic_flow_end_to_end() {
     assert!(renderer.iter().any(|event| event["step"] == "downloading" && event["percent"] == 50), "{renderer:?}");
     assert!(renderer.iter().any(|event| event["step"] == "done"));
     assert_eq!(recorder.names("setup-finished"), vec![json!({ "ok": true, "message": "" })]);
-    assert!(data.join("games").join("gt4").join("disc").join("SCUS-97328.iso").exists());
+    assert!(!data.join("games").join("gt4").join("disc").exists(), "the image is not copied");
+    assert!(picked.is_file(), "the image stays where it is");
 
-    // The picked file may go away: the next launch goes straight to Home, with no hash (well under the time a hash
-    // of a real image takes).
-    fs::remove_file(&picked).unwrap();
+    // The next launch goes straight to Home, with no hash (well under the time a hash of a real image takes).
     let started = Instant::now();
     let second = launch(&dirs, &pins);
     assert_eq!(setup_state(&second), "done");
@@ -287,12 +286,16 @@ fn synthetic_flow_end_to_end() {
     assert!(refusal.starts_with("GSdx could not run the game: GSdx is not installed yet"), "{refusal}");
     assert!(refusal.contains("log folder"), "{refusal}");
 
-    // The player cleaned the data folder: Home is not shown, Play refuses, Setup offers to choose the disc again.
-    fs::remove_file(data.join("games").join("gt4").join("disc").join("SCUS-97328.iso")).unwrap();
+    // The player moved the image: Home is not shown, Play refuses, Setup offers to choose the disc again and says where it was.
+    let moved = root.join("moved.iso");
+    fs::rename(&picked, &moved).unwrap();
     let third = launch(&dirs, &pins);
     let view = screen(&third);
     assert_eq!(view["setup"]["state"], "files_missing", "{view}");
-    assert!(view["setup"]["problem"].as_str().unwrap().contains("Choose your disc image again"));
+    let problem = view["setup"]["problem"].as_str().unwrap();
+    assert!(problem.contains("Choose your disc image again") && problem.contains(&picked.display().to_string()), "{problem}");
+    assert_eq!(view["games"][0]["damaged"], true, "{view}");
+    assert_eq!(view["games"][0]["linked"], true, "{view}");
     assert!(play_plan(&third, &program).unwrap_err().contains("Game files missing"));
 
     // Offline renderer: setup still finishes, with the note; Play then refuses until GSdx is installed.
@@ -314,7 +317,7 @@ fn synthetic_flow_end_to_end() {
     handle.join().unwrap();
     let state = setup_state(&shared);
     assert!(state == "failed" || state == "done", "{state}");
-    assert!(!data.join("games").join("gt4").join("disc").join("SCUS-97328.iso.tmp").exists());
+    assert!(!data.join("games").join("gt4").join("disc").exists());
     assert!(!data.join("games").join("gt4").join("prepared.tmp").exists());
     let _ = fs::remove_dir_all(&root);
 }
@@ -385,6 +388,60 @@ fn a_settings_change_writes_the_files_a_direct_start_of_the_game_reads() {
     assert!(ini.contains(&dirs.root().join("gs").join("cache").display().to_string()), "the cache folder of the data folder: {ini}");
     assert_eq!(fs::read_to_string(&game_ini).unwrap(), text, "game.ini does not change with the renderer");
     let _ = fs::remove_dir_all(root);
+}
+
+/// Turns a game's folder into what a launcher from before decision 0075 left: the image copied in `disc`, no link in the receipt.
+fn make_it_an_install_with_a_copy(game_folder: &Path, image: &Path, name: &str) {
+    fs::create_dir_all(game_folder.join("disc")).unwrap();
+    fs::rename(image, game_folder.join("disc").join(name)).unwrap();
+    let receipt_path = game_folder.join("prepared").join("prepare.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt["schema_version"] = 2.into();
+    receipt["image"]["file"] = name.into();
+    receipt["image"].as_object_mut().unwrap().remove("linked_path");
+    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+}
+
+#[test]
+fn an_install_with_a_copy_stays_installed_and_removing_it_never_touches_a_linked_image() {
+    // The safety rule of decision 0075: updating the launcher does not uninstall anyone.
+    let (root, dirs, pins, shared) = new_install("copy-stays");
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    let game_folder = dirs.root().join("games").join("gt4");
+    make_it_an_install_with_a_copy(&game_folder, &root.join("disc.iso"), "SCUS-97328.iso");
+    let updated = launch(&dirs, &pins);
+    let view = screen(&updated);
+    assert_eq!(view["setup"]["state"], "done", "{view}");
+    assert_eq!(view["games"][0]["installed"], true, "{view}");
+    assert_eq!(view["games"][0]["linked"], false, "{view}");
+    let copy = game_folder.join("disc").join("SCUS-97328.iso");
+    assert!(copy.is_file());
+
+    // Choosing the image again links it. The launcher's old copy stays until the player removes the game.
+    let elsewhere = root.join("my-isos");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let linked = elsewhere.join("gt4.iso");
+    fs::copy(&copy, &linked).unwrap();
+    setup::choose_disc_path(&updated, &linked).unwrap();
+    run_setup(&updated, &Recorder::default(), fake_renderer());
+    assert_eq!(screen(&updated)["games"][0]["linked"], true);
+    assert!(copy.is_file());
+
+    // Removing the game deletes what is the launcher's, and never the player's image.
+    commands::games_remove_of("gt4".into(), &updated).unwrap();
+    assert!(linked.is_file(), "the player's image is not touched");
+    assert!(!copy.exists() && !game_folder.join("prepared").exists());
+
+    // An image the player linked from inside the old copy's folder is theirs too.
+    fs::create_dir_all(game_folder.join("disc")).unwrap();
+    let inside = game_folder.join("disc").join("SCUS-97328.iso");
+    fs::rename(&linked, &inside).unwrap();
+    setup::choose_disc_path(&updated, &inside).unwrap();
+    run_setup(&updated, &Recorder::default(), fake_renderer());
+    commands::games_remove_of("gt4".into(), &updated).unwrap();
+    assert!(inside.is_file(), "a linked image inside the folder is kept");
+    assert!(!game_folder.join("prepared").exists());
+    let _ = fs::remove_dir_all(&root);
 }
 
 /// A launcher with no game set up and a synthetic disc accepted.
@@ -706,7 +763,7 @@ fn two_games_install_side_by_side_and_never_mix() {
     assert_eq!(view["selected_game"], "spec2");
     assert_eq!(lock(&shared).config.selected_game.as_deref(), Some("spec2"));
     assert!(data.join("games/spec2/prepared/SCUS_974.36").is_file());
-    assert!(data.join("games/spec2/disc/SCUS-97436.iso").is_file());
+    assert!(data.join("games/spec2/prepared/prepare.json").is_file());
     assert!(!data.join("games/gt4").exists(), "Gran Turismo 4 is untouched");
     let games_view = commands::games_list_of(&shared).unwrap();
     assert_eq!(games_view["games"][0]["installed"], json!(false));
@@ -730,8 +787,8 @@ fn two_games_install_side_by_side_and_never_mix() {
     println!("SPEC2 SETUP SEEN: {:?}", seen);
     println!("SPEC2 SETUP VIEW: {:?}", s["setup"]);
     assert_eq!(s["setup"]["state"], "done");
-    assert!(data.join("games/gt4/disc/SCUS-97328.iso").is_file());
-    assert!(data.join("games/spec2/disc/SCUS-97436.iso").is_file(), "installing one game leaves the other alone");
+    assert!(data.join("games/gt4/prepared/prepare.json").is_file());
+    assert!(data.join("games/spec2/prepared/prepare.json").is_file(), "installing one game leaves the other alone");
     assert_eq!(lock(&shared).config.selected_game.as_deref(), Some("spec2"));
     assert_eq!(lock(&shared).selected.id, "gt4", "the page stays on the game just set up");
 
@@ -783,7 +840,7 @@ fn two_games_install_side_by_side_and_never_mix() {
     assert_eq!(after["games"][1]["installed"], json!(false));
     assert_eq!(after["games"][0]["installed"], json!(true));
     assert!(!data.join("games/spec2/disc").exists() && !data.join("games/spec2/prepared").exists());
-    assert!(data.join("games/gt4/disc/SCUS-97328.iso").is_file());
+    assert!(data.join("games/gt4/prepared/prepare.json").is_file());
     commands::select_game_of("spec2".into(), &second).unwrap();
     assert_eq!(commands::saves_list_of(&second).unwrap().items.len(), 2, "both games' saves are in the one list");
     let _ = fs::remove_dir_all(&root);
@@ -841,7 +898,7 @@ fn the_disc_is_identified_before_any_byte_is_copied_and_decides_the_game() {
     assert!(info.mismatch && info.game == "spec2");
     lock(&shared).setup_game = Some(&gt4l_core::games::GT4);
     run_setup(&shared, &Recorder::default(), fake_renderer());
-    assert!(data.join("games/spec2/disc/SCUS-97436.iso").is_file());
+    assert!(data.join("games/spec2/prepared/prepare.json").is_file());
     assert!(!data.join("games/gt4").exists(), "the page asked for Gran Turismo 4 but the image is Spec II");
     let _ = fs::remove_dir_all(&root);
 }
@@ -867,6 +924,7 @@ fn a_1_2_x_install_moves_into_games_gt4_at_the_first_start() {
     setup::choose_disc_path(&shared, &picked).unwrap();
     run_setup(&shared, &Recorder::default(), fake_renderer());
     drop(shared);
+    make_it_an_install_with_a_copy(&data.join("games/gt4"), &picked, "SCUS-97328.iso");
 
     // Put the files back where 1.2.x kept them: <data>\disc, <data>\prepared, <data>\runtime.
     fs::create_dir_all(data.join("runtime")).unwrap();

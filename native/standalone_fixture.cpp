@@ -200,6 +200,36 @@ void check_receipt() {
         "an escape a plain file name never has is refused");
 }
 
+void check_linked_image() {
+  // Decision 0075: the receipt names the image where the player keeps it; backslashes come escaped.
+  const std::string json =
+      "{\"image\":{\"file\":\"gt4.iso\",\"linked_path\":\"D:\\\\ISOs\\\\gt4.iso\",\"size_bytes\":7,\"modified_unix_nanos\":9},\"elf\":{\"size_bytes\":3}}";
+  const auto linked = sa::parse_receipt(json);
+  check(linked && linked->image_linked_path == "D:\\ISOs\\gt4.iso", "the receipt's link is read");
+  const auto copied = sa::parse_receipt(read_sample("prepare.json"));
+  check(copied && copied->image_linked_path.empty(), "a receipt from before the link has none, and uses its copy");
+
+  World world = ready_world();
+  const auto game_root = kInstall / "data" / "games" / "gt4";
+  world.file(game_root / "prepared" / "prepare.json", json);
+  world.file(game_root / "prepared" / "SCUS_973.28", "elf");
+  sa::Check why;
+  const auto layout = sa::find_layout(kInstall / "game" / "gt4vulkan.exe", "C:/Users/p/AppData/Local", "C:/Users/p/AppData/Roaming", world.access(), why);
+  check(layout.has_value(), "a layout for the linked image");
+  if (!layout) return;
+  fs::path disc, elf;
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "an image that is not there is reported");
+  check(disc == fs::path("D:\\ISOs\\gt4.iso"), "the game looks for it where the player keeps it");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 9);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None, "the linked image passes");
+  sa::Access with_short_names = world.access();
+  with_short_names.openable_path = [](const fs::path &) { return fs::path("D:\\ISOS~1\\GT4~1.ISO"); };
+  check(sa::check_game_files(*layout, with_short_names, disc, elf).problem == sa::Problem::None && disc == fs::path("D:\\ISOS~1\\GT4~1.ISO"),
+        "the game is given the name it can open");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 8, 9);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "a changed image does not");
+}
+
 void check_game_files() {
   World world = ready_world();
   sa::Check why;
@@ -446,6 +476,7 @@ int main() {
   check_game_ids_and_mode();
   check_layout();
   check_receipt();
+  check_linked_image();
   check_game_files();
   check_renderer();
   check_config();

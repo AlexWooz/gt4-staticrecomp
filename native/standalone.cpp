@@ -262,6 +262,7 @@ std::optional<Receipt> parse_receipt(std::string_view json) {
   if (!size || !modified || !elf_bytes) return std::nullopt;
   Receipt receipt;
   receipt.image_file = *file;
+  receipt.image_linked_path = field_value(*image, "linked_path", true).value_or("");
   receipt.image_size = *size;
   receipt.image_modified_unix_nanos = *modified;
   receipt.elf_size = *elf_bytes;
@@ -279,12 +280,19 @@ Check check_game_files(const Layout &layout, const Access &access, std::filesyst
   if (!elf_info) return fail(Problem::GameFilesChanged, std::string(layout.game.elf_name) + " is missing");
   if (elf_info->size_bytes != receipt->elf_size)
     return fail(Problem::GameFilesChanged, std::string(layout.game.elf_name) + " has changed");
-  if (!plain_file_name(receipt->image_file)) return fail(Problem::GameFilesChanged, "the setup record names an invalid disc copy");
-  disc = layout.disc_folder / receipt->image_file;
+  if (!receipt->image_linked_path.empty()) {
+    // Decision 0075: the image stays where the player keeps it.
+    const std::string &linked = receipt->image_linked_path;
+    disc = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(linked.data()), linked.size()));
+  } else {
+    if (!plain_file_name(receipt->image_file)) return fail(Problem::GameFilesChanged, "the setup record names an invalid disc copy");
+    disc = layout.disc_folder / receipt->image_file;
+  }
   const std::optional<FileInfo> disc_info = access.stat_file ? access.stat_file(disc) : std::nullopt;
   if (!disc_info) return fail(Problem::GameFilesChanged, receipt->image_file + " is missing");
   if (disc_info->size_bytes != receipt->image_size || disc_info->modified_unix_nanos != receipt->image_modified_unix_nanos)
     return fail(Problem::GameFilesChanged, receipt->image_file + " has changed");
+  if (!receipt->image_linked_path.empty() && access.openable_path) disc = access.openable_path(disc);
   return Check{};
 }
 

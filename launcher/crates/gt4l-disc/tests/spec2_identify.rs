@@ -93,10 +93,6 @@ fn gt4_pins_and_image() -> (Pins, Vec<u8>) {
     (pins_for(&image, &game, "SCUS-97328", "2.00"), image)
 }
 
-fn plenty(_: &Path) -> Option<u64> {
-    Some(u64::MAX / 2)
-}
-
 #[test]
 fn a_disc_is_recognised_as_the_game_it_is() {
     let dir = scratch("identify");
@@ -168,18 +164,15 @@ impl SetupDirs {
 
 fn run_spec2(dirs: &SetupDirs, disc: &Path, pins: &Spec2Pins) -> Result<setup::Receipt, SetupError> {
     let cancel = AtomicBool::new(false);
-    let disc_folder = dirs.disc();
     let prepared = dirs.prepared();
     let staging = dirs.staging();
     let request = Spec2Request {
         disc,
-        disc_folder: &disc_folder,
         prepared: &prepared,
         staging: &staging,
         pins,
         launcher_version: "test",
         cancel: &cancel,
-        free_space: &plenty,
     };
     let mut last = None;
     let result = spec2::run(&request, &mut |stage, fraction| last = Some((stage, fraction)));
@@ -208,11 +201,12 @@ fn spec2_setup_copies_the_image_and_prepares_the_derived_elf_with_no_core_step()
     assert_eq!(receipt.original.as_ref().unwrap().sha256, pins.executable.sha256);
     assert!(dirs.prepared().join("SCUS_974.36").is_file());
     assert!(!dirs.prepared().join("CORE.GT4").exists());
-    assert_eq!(fs::read(dirs.disc().join("SCUS-97436.iso")).unwrap(), image, "the image is copied, not linked");
+    assert!(!dirs.disc().exists(), "the image is linked, not copied");
+    assert_eq!(fs::read(&disc).unwrap(), image, "and only read");
     assert!(!dirs.staging().exists());
     match spec2::check_installed(&dirs.prepared(), &dirs.disc(), &pins) {
         Installed::Ready { image, serial, .. } => {
-            assert_eq!(image, dirs.disc().join("SCUS-97436.iso"));
+            assert_eq!(image, disc, "the game reads the image where it is");
             assert_eq!(serial, "SCUS-97436");
         }
         other => panic!("{other:?}"),
@@ -259,18 +253,15 @@ fn a_refused_disc_and_a_cancelled_setup_leave_nothing_behind() {
     let good = root.join("good.iso");
     fs::write(&good, spec2_image(&executable, "SCUS_974.36", "GRANTURISMO4", 1)).unwrap();
     let cancel = AtomicBool::new(true);
-    let disc_folder = dirs.disc();
     let prepared = dirs.prepared();
     let staging = dirs.staging();
     let request = Spec2Request {
         disc: &good,
-        disc_folder: &disc_folder,
         prepared: &prepared,
         staging: &staging,
         pins: &pins,
         launcher_version: "test",
         cancel: &cancel,
-        free_space: &plenty,
     };
     assert!(matches!(spec2::run(&request, &mut |_, _| {}), Err(SetupError::Cancelled)));
     assert!(!dirs.prepared().exists() && !dirs.staging().exists());

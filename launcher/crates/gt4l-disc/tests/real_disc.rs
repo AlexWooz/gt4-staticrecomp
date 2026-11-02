@@ -56,3 +56,31 @@ fn real_discs_pass_or_fail_the_precheck() {
         assert!(matches!(error, SetupError::Unsupported(Unsupported::OtherGame { .. })), "{error:?}");
     }
 }
+
+/// The whole setup on the real image (decision 0075): nothing beside the prepared folder is written, and the image is untouched.
+#[test]
+#[ignore = "needs the owner's disc image; see the module comment"]
+fn real_setup_links_the_image_and_leaves_it_untouched() {
+    use std::sync::atomic::AtomicBool;
+
+    use gt4l_disc::setup::{self, Installed, SetupRequest};
+    let path = PathBuf::from(std::env::var("GT4_REAL_ISO").expect("set GT4_REAL_ISO to the ISO path"));
+    let pins = Pins::embedded().expect("pins parse");
+    let root = std::env::temp_dir().join(format!("gt4l-real-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let (prepared, staging) = (root.join("prepared"), root.join("prepared.tmp"));
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let cancel = AtomicBool::new(false);
+    let request = SetupRequest { disc: &path, prepared: &prepared, staging: &staging, pins: &pins, launcher_version: "test", cancel: &cancel };
+    let started = std::time::Instant::now();
+    let receipt = setup::run(&request, &mut |_, _| {}).expect("the real image sets up");
+    println!("setup took {:.1} s", started.elapsed().as_secs_f32());
+    assert!(receipt.qualified_dump);
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before, "the image is only read");
+    let written: u64 = std::fs::read_dir(&prepared).unwrap().map(|entry| entry.unwrap().metadata().unwrap().len()).sum();
+    println!("prepared folder: {:.1} MB", written as f64 / 1e6);
+    assert!(written < 64 * 1024 * 1024, "no copy of the image: {written} bytes");
+    assert!(matches!(setup::check_installed(&prepared, &root.join("disc"), &pins), Installed::Ready { image, .. } if image == path));
+    let _ = std::fs::remove_dir_all(&root);
+}

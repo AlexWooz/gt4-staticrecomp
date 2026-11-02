@@ -24,7 +24,7 @@
       var size = GT4.games.size(game.size_bytes);
       GT4.ui.openDialog({
         title: GT4.t("games.remove_title", { game: game.name }),
-        text: GT4.t("games.remove_text", { size: size ? " (" + size + ")" : "" }),
+        text: GT4.t(game.linked ? "games.remove_text_linked" : "games.remove_text", { size: size ? " (" + size + ")" : "" }),
         buttons: [
           { label: GT4.t("common.cancel") },
           {

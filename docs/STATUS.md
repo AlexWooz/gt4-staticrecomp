@@ -1,5 +1,17 @@
 # Current Status
 
+## TASK-137: the launcher links the disc image, candidate 381 (2026-11-02)
+
+Branch `task/137-link-disc-image`, on top of TASK-136. Decision 0075. Not merged, not uploaded. Pins `docs/inputs/slice381-pcsx2.json`, `slice381-spec2.json` (capsule of 376); game `private/slice381-rc8-game`, distribution `private/slice381-dist-130-rc8`, package `private/release-130-rc8t-out`.
+
+- **What changes:** setup no longer copies the image; the receipt records where it is. An image that moved or changed asks to be chosen again. The game's direct start reads the same receipt.
+- **Safety:** an install with a copy keeps working with it; removing a game never touches a linked image.
+- **Checks:** ctest and launcher `cargo test` passed; `dev/focus-check.html` in both languages; setup on the real 5.3 GB image took 1 min 59 s, wrote 8.1 MB and left the image untouched; frames 30 of 30 equal to 378; a session with the game, card and logs under `Usuários\\João`, with the image in an accented folder and in a Japanese one (by its short name).
+- **Found by that test:** a path outside the ANSI code page reached the game as `???`, and it went on with no disc. It now goes by its short name, or setup refuses it.
+- **Not verified:** the owner's onboarding with the real page, an emulator holding the image open, another code page.
+
+**The owner's desktop was reset for the onboarding (2026-11-02), nothing deleted:** `%APPDATA%\\GT4Recomp`, `%LOCALAPPDATA%\\GT4Recomp`, `%LOCALAPPDATA%\\io.github.moesuito.gt4recomp` and `<install>\\data` were set aside as `*.before-onboarding-20261102` (`data.before-onboarding-20261102`; the saves are there). `data\\Textures` stayed in place.
+
 ## TASK-136: simple onboarding, GSdx optional (2026-11-02)
 
 Branch `task/136-simple-onboarding`, on top of TASK-135. Launcher only, game exes unchanged (candidate 378). Not merged, not uploaded, not built into a package yet. Decision 0074.

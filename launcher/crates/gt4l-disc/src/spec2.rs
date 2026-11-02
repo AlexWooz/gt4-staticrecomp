@@ -6,8 +6,8 @@
 //! and logged (translations such as the Brazilian Portuguese one only replace language data). Any other SCUS-97436
 //! program, including the unmodified GT4 Online Public Beta, is refused: it would need its own patch map.
 //!
-//! Setup copies the image to `games\spec2\disc` and writes the derived ELF (`spec2_elf::derive`) to `games\spec2\prepared`.
-//! There is no CORE step: Spec II is one plain ELF.
+//! Setup checks the image where it is (decision 0075; see `setup`) and writes the derived ELF (`spec2_elf::derive`) to
+//! `games\spec2\prepared`. There is no CORE step: Spec II is one plain ELF.
 
 use std::fs;
 use std::path::Path;
@@ -93,13 +93,11 @@ pub(crate) fn precheck_opened(mut iso: Iso, config: cnf::SystemConfig, pins: &Sp
 /// Inputs of one Spec II setup run (the folders are the `games\spec2` ones).
 pub struct Spec2Request<'a> {
     pub disc: &'a Path,
-    pub disc_folder: &'a Path,
     pub prepared: &'a Path,
     pub staging: &'a Path,
     pub pins: &'a Spec2Pins,
     pub launcher_version: &'a str,
     pub cancel: &'a AtomicBool,
-    pub free_space: &'a dyn Fn(&Path) -> Option<u64>,
 }
 
 /// The name an image of Spec II is shown and logged under: a known name, or the variant text.
@@ -107,24 +105,14 @@ pub fn image_name(pins: &Spec2Pins, identity: &Identity) -> String {
     pins.known_image(identity).map(str::to_string).unwrap_or_else(|| VARIANT_NAME.to_string())
 }
 
-/// Runs the whole Spec II setup. On success the image is copied and the prepared folder holds the receipt and the
-/// derived ELF. Cancel or failure removes the temporary image and the staging folder.
+/// Runs the whole Spec II setup. On success the prepared folder holds the receipt and the derived ELF, and the image is where
+/// it was. Cancel or failure removes the staging folder.
 pub fn run(request: &Spec2Request<'_>, progress: &mut dyn FnMut(Stage, f32)) -> Result<Receipt, SetupError> {
     let summary = precheck(request.disc, request.pins)?;
-    let final_path = setup::imported_image_path(request.disc_folder, &summary.serial);
-    let temporary = final_path.with_extension("iso.tmp");
-    let result = setup::copy_image_of(
-        request.disc,
-        request.disc_folder,
-        request.cancel,
-        request.free_space,
-        summary.size_bytes,
-        &temporary,
-        progress,
-    )
-    .and_then(|identity| finish(request, &summary, &identity, &temporary, &final_path, progress));
+    progress(Stage::Copying, 0.0);
+    let result = setup::hash_image_as(request.disc, Stage::Copying, request.cancel, progress)
+        .and_then(|identity| finish(request, &summary, &identity, progress));
     if result.is_err() {
-        let _ = fs::remove_file(&temporary);
         let _ = fs::remove_dir_all(request.staging);
     }
     result
@@ -134,8 +122,6 @@ fn finish(
     request: &Spec2Request<'_>,
     summary: &DiscSummary,
     identity: &Identity,
-    temporary: &Path,
-    final_path: &Path,
     progress: &mut dyn FnMut(Stage, f32),
 ) -> Result<Receipt, SetupError> {
     let pins = request.pins;
@@ -150,7 +136,7 @@ fn finish(
     }
 
     progress(Stage::Preparing, 0.0);
-    let (original, derived) = extract_and_derive(temporary, pins)?;
+    let (original, derived) = extract_and_derive(request.disc, pins)?;
     progress(Stage::Preparing, 0.5);
     if request.staging.exists() {
         fs::remove_dir_all(request.staging)?;
@@ -158,7 +144,7 @@ fn finish(
     fs::create_dir_all(request.staging)?;
     setup::write_synced(&request.staging.join(ELF_FILE), &derived)?;
 
-    let metadata = fs::metadata(temporary)?;
+    let metadata = fs::metadata(request.disc)?;
     let receipt = Receipt {
         schema_version: RECEIPT_SCHEMA,
         launcher_version: request.launcher_version.to_string(),
@@ -173,7 +159,8 @@ fn finish(
             volume_identifier: summary.volume_identifier.clone(),
         },
         image: Some(ImageReceipt {
-            file: final_path.file_name().map(|file| file.to_string_lossy().into_owned()).unwrap_or_default(),
+            file: setup::image_file_name(request.disc),
+            linked_path: Some(setup::linked_path(request.disc)?),
             size_bytes: metadata.len(),
             modified_unix_nanos: setup::modified_nanos(&metadata),
             sha256: identity.sha256.clone(),
@@ -190,13 +177,12 @@ fn finish(
     if request.cancel.load(Ordering::Relaxed) {
         return Err(SetupError::Cancelled);
     }
-    fs::rename(temporary, final_path)?;
     setup::swap_into_place(request.staging, request.prepared)?;
     progress(Stage::Preparing, 1.0);
     Ok(receipt)
 }
 
-/// Reads `SCUS_974.36` from the copied image, checks it against the pin, derives the ELF and checks that too.
+/// Reads `SCUS_974.36` from the image, checks it against the pin, derives the ELF and checks that too.
 fn extract_and_derive(image: &Path, pins: &Spec2Pins) -> Result<(Vec<u8>, Vec<u8>), SetupError> {
     let mut iso = Iso::open(image).map_err(|error| SetupError::Io(error.to_string()))?;
     let entry = iso.find(BOOT_FILE).map_err(|error| SetupError::Internal(error.to_string()))?;
@@ -222,7 +208,7 @@ pub fn verify_prepared(prepared: &Path, pins: &Spec2Pins) -> Result<(), String> 
     Ok(())
 }
 
-/// The cheap check of every Spec II launch (receipt, prepared size, copied image size and time; no hash).
+/// The cheap check of every Spec II launch (receipt, prepared size, image size and time; no hash).
 pub fn check_installed(prepared: &Path, disc_folder: &Path, pins: &Spec2Pins) -> setup::Installed {
     setup::check_installed_with(prepared, disc_folder, &|folder| verify_prepared(folder, pins))
 }

@@ -212,6 +212,13 @@ pub fn choose_disc_path_for(shared: &Shared, path: &Path, requested: Option<&str
             };
             let summary = found.summary;
             let mut state = lock(shared);
+            // The image stays here, and the game must be able to open it here (decision 0075).
+            if gt4l_platform::disk::game_readable_path(path).is_none() {
+                let message: String = messages::text("setup.path_not_readable", state::current_language()).into();
+                state::log_warn(&state.dirs, &format!("disc refused, the game cannot open its path: {}", path.display()));
+                state.setup_outcome = SetupOutcome::Refused(message.clone());
+                return Err(message);
+            }
             state.config.disc_path = Some(path.to_path_buf());
             state.setup_outcome = SetupOutcome::None;
             state.setup_game = Some(game);
@@ -324,7 +331,6 @@ pub fn start_with(
         // Setup always writes the data folder's root, even when older game files are read from another folder.
         let prepared = dirs.setup_prepared();
         let staging = dirs.prepared_staging();
-        let disc_folder = dirs.setup_disc_folder();
         let total_bytes = std::fs::metadata(&disc).map(|meta| meta.len()).unwrap_or(0);
         let mut last: (Stage, i32) = (Stage::Copying, -1);
         let progress_shared = shared.clone();
@@ -363,26 +369,22 @@ pub fn start_with(
             Some(DiscGame::Spec2) => disc_spec2::run(
                 &Spec2Request {
                     disc: &disc,
-                    disc_folder: &disc_folder,
                     prepared: &prepared,
                     staging: &staging,
                     pins: &spec2_pins,
                     launcher_version: LAUNCHER_VERSION,
                     cancel: &cancel,
-                    free_space: &gt4l_platform::disk::free_space,
                 },
                 &mut report,
             ),
             _ => disc_setup::run(
                 &SetupRequest {
                     disc: &disc,
-                    disc_folder: &disc_folder,
                     prepared: &prepared,
                     staging: &staging,
                     pins: &pins,
                     launcher_version: LAUNCHER_VERSION,
                     cancel: &cancel,
-                    free_space: &gt4l_platform::disk::free_space,
                 },
                 &mut report,
             ),

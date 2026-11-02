@@ -53,6 +53,8 @@ struct Access {
   std::function<std::optional<std::string>(const std::filesystem::path &)> read_text; // whole small file
   std::function<std::optional<std::string>(const std::filesystem::path &)> sha256_file; // 64 lowercase hex digits
   std::function<std::optional<std::string>(const std::string &)> environment;           // empty value counts as unset
+  // The name the game can open a linked image by (its short name for a path outside the ANSI code page); unset: the path itself.
+  std::function<std::filesystem::path(const std::filesystem::path &)> openable_path;
 };
 
 // ---- Folders ------------------------------------------------------------------------------------------------------------
@@ -96,12 +98,13 @@ std::optional<Layout> find_layout(const std::filesystem::path &executable, const
 
 struct Receipt {
   std::string image_file;
+  std::string image_linked_path;  // UTF-8; where the player keeps the image (decision 0075). Empty: a copy under `disc`
   std::uint64_t image_size = 0;
   std::uint64_t image_modified_unix_nanos = 0;
   std::uint64_t elf_size = 0;
 };
 
-// Reads `image.file`, `image.size_bytes`, `image.modified_unix_nanos` and `elf.size_bytes`. Empty when any is missing
+// Reads `image.file`, `image.linked_path` (optional), `image.size_bytes`, `image.modified_unix_nanos` and `elf.size_bytes`. Empty when any other is missing
 // (a receipt of schema 1 has no image and is reported as changed).
 std::optional<Receipt> parse_receipt(std::string_view json);
 
