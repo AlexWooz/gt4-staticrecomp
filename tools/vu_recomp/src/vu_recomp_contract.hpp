@@ -33,6 +33,9 @@
 #include "ps2/vu_ops.hpp"
 
 #include <cstdint>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace gt4::vugen {
 
@@ -73,7 +76,7 @@ inline std::uint32_t clip_result(std::uint32_t previous_clip, const ps2::Reg128 
 // donor flags() in vu_ops.hpp: lane bit 3 - i is zero, bit 7 - i is sign, bit 15 - i
 // is overflow-clamped. The emitted code uses it when a MAC value is kept without the
 // status update.
-inline std::uint32_t mac_of_result(const ps2::Reg128 &value, unsigned dest) {
+inline std::uint32_t mac_of_result_scalar(const ps2::Reg128 &value, unsigned dest) {
     std::uint32_t mac = 0;
     for (int i = 0; i < 4; ++i) {
         if (!(dest & (8u >> i))) continue;
@@ -85,6 +88,21 @@ inline std::uint32_t mac_of_result(const ps2::Reg128 &value, unsigned dest) {
     }
     return mac;
 }
+
+// TASK-134: the same bits without a branch per lane (native_vu_fast_ops compares it with the scalar form). The lanes are
+// reversed first, because lane i owns bit 3 - i, which is also how `dest` numbers them.
+#if defined(__SSE2__)
+inline std::uint32_t mac_of_result(const ps2::Reg128 &value, unsigned dest) {
+    const __m128i lanes = _mm_shuffle_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i *>(&value)), 0x1B);
+    const auto mask_of = [](__m128i x) { return static_cast<std::uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(x))); };
+    const std::uint32_t zero = mask_of(_mm_cmpeq_epi32(_mm_and_si128(lanes, _mm_set1_epi32(0x7F800000)), _mm_setzero_si128()));
+    const std::uint32_t sign = mask_of(lanes);
+    const std::uint32_t over = mask_of(_mm_cmpeq_epi32(_mm_and_si128(lanes, _mm_set1_epi32(0x7FFFFFFF)), _mm_set1_epi32(0x7FFFFFFF)));
+    return (zero | (sign << 4) | (over << 12)) & (dest * 0x1011u);
+}
+#else
+inline std::uint32_t mac_of_result(const ps2::Reg128 &value, unsigned dest) { return mac_of_result_scalar(value, dest); }
+#endif
 
 struct ProgramEntry {
     std::uint64_t key;

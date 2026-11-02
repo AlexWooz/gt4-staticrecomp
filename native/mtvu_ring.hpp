@@ -71,11 +71,11 @@ class Doorbell {
   // store-then-load (Dekker) pattern. Only sequential consistency rules out a lost wakeup on weakly ordered CPUs
   // (ARM, Android); x86 locked RMWs already order it. Keep every operation of the handshake seq_cst.
   void ring() {
-    rings_.fetch_add(1, std::memory_order_relaxed);
+    count(rings_);
     value_.fetch_add(1, std::memory_order_seq_cst);
     // Only wake a peer that is asleep; while it runs, the next snapshot/re-check sees the new value anyway.
     if (sleepers_.load(std::memory_order_seq_cst) > 0) {
-      notifies_.fetch_add(1, std::memory_order_relaxed);
+      count(notifies_);
       value_.notify_all();
     }
   }
@@ -83,14 +83,14 @@ class Doorbell {
   // IN-459: advances the counter without waking a sleeper. A peer that is awake sees the change at its next snapshot or
   // re-check; one that sleeps stays asleep until a ring() it needs (the caller decides which events those are).
   void ring_quiet() {
-    rings_.fetch_add(1, std::memory_order_relaxed);
+    count(rings_);
     value_.fetch_add(1, std::memory_order_seq_cst);
   }
 
   // Returns once the counter differs from `seen`, or at once when it already changed. `slept` reports whether the
   // call really blocked. Callers re-check their condition in a loop.
   bool wait_changed(std::uint32_t seen, bool &slept) {
-    waits_.fetch_add(1, std::memory_order_relaxed);
+    count(waits_);
     sleepers_.fetch_add(1, std::memory_order_seq_cst);
     if (value_.load(std::memory_order_seq_cst) != seen) {
       sleepers_.fetch_sub(1, std::memory_order_acq_rel);
@@ -99,7 +99,7 @@ class Doorbell {
     }
     value_.wait(seen, std::memory_order_acquire);
     sleepers_.fetch_sub(1, std::memory_order_acq_rel);
-    wakeups_.fetch_add(1, std::memory_order_relaxed);
+    count(wakeups_);
     slept = true;
     return true;
   }
@@ -110,9 +110,16 @@ class Doorbell {
   }
 
  private:
-  std::atomic<std::uint32_t> value_{0};
+  // TASK-134 P1b: statistics only, so a plain read and write instead of a locked add per ring (two rings per record): two
+  // threads ringing one bell at the same moment can lose a count, which no decision reads. On their own cache line, so
+  // the peer polling value_ does not pay for them.
+  static void count(std::atomic<std::uint64_t> &counter) {
+    counter.store(counter.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+  }
+
+  alignas(64) std::atomic<std::uint32_t> value_{0};
   std::atomic<int> sleepers_{0};  // callers currently inside wait_changed (a count: two callers may share one bell)
-  std::atomic<std::uint64_t> rings_{0}, waits_{0}, wakeups_{0}, notifies_{0};
+  alignas(64) std::atomic<std::uint64_t> rings_{0}, waits_{0}, wakeups_{0}, notifies_{0};
 };
 
 class SpscByteRing {

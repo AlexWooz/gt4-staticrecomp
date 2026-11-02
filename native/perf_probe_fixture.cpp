@@ -1,4 +1,5 @@
 #include "perf_probe.hpp"
+#include "perf_clock.hpp"
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -193,6 +194,32 @@ void check_split_vu_report(std::FILE *stream) {
 }
 }
 
+namespace {
+// TASK-134 P1d: the TSC scale gives microseconds within 1 us per second, and the clock never steps back.
+void check_scope_clock() {
+  using namespace gt4::perf;
+  const std::uint64_t scale = tsc_scale_from(3'000'000'000ull, 10'000'000ull, 10'000'000ull);  // 3 GHz, measured 1 s
+  require(scale != 0, "scale from a 3 GHz TSC");
+  const std::uint64_t one_second = wall_us_from_ticks(3'000'000'000ull, scale);
+  require(one_second >= 999'999 && one_second <= 1'000'001, "3e9 ticks are one second");
+  const std::uint64_t one_day = wall_us_from_ticks(3'000'000'000ull * 86400ull, scale);
+  require(one_day >= 86'399'990'000ull && one_day <= 86'400'010'000ull, "no overflow over a day of ticks");
+  require(tsc_scale_from(0, 1, 1) == 0 && tsc_scale_from(1, 0, 1) == 0 && tsc_scale_from(1, 1, 0) == 0, "no scale from an empty interval");
+  require(tsc_scale_from(1, 1, 1) == 0, "a TSC below 1 MHz gives no scale");
+  std::uint64_t last = scope_wall_us();
+  for (int read = 0; read < 100000; ++read) {
+    const std::uint64_t now = scope_wall_us();
+    require(now >= last, "the scope clock does not step back");
+    last = now;
+  }
+  const auto steady_start = steady_wall_us();
+  const auto scope_start = scope_wall_us();
+  while (steady_wall_us() - steady_start < 20000) {}
+  const auto scope_elapsed = scope_wall_us() - scope_start;
+  require(scope_elapsed >= 19000 && scope_elapsed <= 21000, "the scope clock follows the steady clock");
+}
+}
+
 int main() {
   std::FILE *stream = nullptr;
   if (tmpfile_s(&stream) != 0 || !stream) return 1;
@@ -203,6 +230,7 @@ int main() {
     check_report_and_pause_coalescing(stream);
     check_frame_only_report(stream);
     check_split_vu_report(stream);
+    check_scope_clock();
     std::fclose(stream);
     std::fputs("PASS: controlled-clock performance adapter\n", stderr);
     return 0;

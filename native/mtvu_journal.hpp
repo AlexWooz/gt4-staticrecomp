@@ -68,6 +68,7 @@ class WorkerEnd {
   std::size_t wake_output_bytes_ = 0;
   // IN-459: a quiet publish since the last loud one; the worker rings loudly before it sleeps for input or stops.
   bool quiet_pending_ = false;
+  std::vector<std::uint8_t> chunk_;  // receive(): kept between records, so a record does not allocate its buffer
 
   void progress(bool wake);  // rings the output bell, loudly (wakes a sleeper) or quietly
 };

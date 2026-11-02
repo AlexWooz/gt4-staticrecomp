@@ -63,6 +63,14 @@ def summarise(name):
     avg('ee_gs_drain', [num(v) for v in re.findall(r'EE gs_drain ms/frame=([\d.]+)', tail)])
     avg('ee_mtvu_wait_download', [num(v) for v in re.findall(r'EE wait ms/frame: vblank=[\d.]+ download=([\d.]+)', tail)])
     avg('ee_critical_path', [num(v) for v in re.findall(r'critical path=([\d.]+)', tail)])
+    avg('ee_thread_cpu', [num(v) for v in re.findall(r'measured_thread_cpu_ms/frame=([\d.]+)', tail)])
+    ee = {}
+    for line in re.findall(r'perf\] exclusive wall ms/frame[^:]*: (.*)', tail):
+        for k, v in re.findall(r'(\w+)=([\d.]+)', line):
+            if k in ('ee_dispatch', 'iop_run', 'vif_gif', 'vu0_aot', 'run_due_events', 'kernel_service', 'host_vblank', 'syscall_dispatch'):
+                ee.setdefault(k, []).append(num(v))
+    for k, v in ee.items():
+        avg('xe_' + k, v)
     avg('frame_p50', [num(a) for a, b in re.findall(r'frame ms: median ([\d.]+) p95 ([\d.]+)', tail)])
     avg('frame_p95', [num(b) for a, b in re.findall(r'frame ms: median ([\d.]+) p95 ([\d.]+)', tail)])
     gw, gb, gd = [], [], []
@@ -88,6 +96,7 @@ def summarise(name):
     avg('gpu_busy', gb)
     avg('gpu_draw_passes', gd)
     avg('mtvu_worker_busy', [num(v) for v in re.findall(r'worker ms/frame: vu1_program=[\d.]+ output_path12=[\d.]+ busy=([\d.]+)', tail)])
+    avg('mtvu_worker_cpu', [num(v) for v in re.findall(r'worker thread cpu ms/frame=([\d.]+)', tail)])
     avg('mtvu_vu1_program', [num(v) for v in re.findall(r'worker ms/frame: vu1_program=([\d.]+)', tail)])
     avg('mtvu_output_path12', [num(v) for v in re.findall(r'worker ms/frame: vu1_program=[\d.]+ output_path12=([\d.]+)', tail)])
     avg('w2ee_wakeups', [num(v) for v in re.findall(r'worker_to_ee rings=[\d.]+ waits=[\d.]+ wakeups=([\d.]+)', tail)])

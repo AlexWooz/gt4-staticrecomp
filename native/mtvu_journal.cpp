@@ -27,12 +27,11 @@ void WorkerEnd::progress(bool wake) {
 
 void WorkerEnd::receive(RecordHeader &header, std::vector<std::uint8_t> &payload) {
   payload.clear();
-  std::vector<std::uint8_t> chunk;
   for (;;) {
     RecordHeader part;
     for (;;) {
       const std::uint32_t seen = input_bell_.snapshot();
-      if (input_.try_pop(part, chunk)) {
+      if (input_.try_pop(part, chunk_)) {
         // TASK-084 step 1: a pop frees input space, which an EE blocked in send_chunks must hear. The EE waits for
         // "worker progress" on the output bell, so one bell covers output data and freed input space.
         // IN-459: only an EE that waits for input space needs to wake for it.
@@ -44,7 +43,12 @@ void WorkerEnd::receive(RecordHeader &header, std::vector<std::uint8_t> &payload
       bool slept = false;
       input_bell_.wait_changed(seen, slept);
     }
-    payload.insert(payload.end(), chunk.begin(), chunk.end());
+    // TASK-134 P1c: a one-chunk record (nearly all of them) changes buffers instead of being copied a second time.
+    if (payload.empty()) {
+      payload.swap(chunk_);
+    } else {
+      payload.insert(payload.end(), chunk_.begin(), chunk_.end());
+    }
     if ((part.flags & kFlagMore) == 0) {
       header = part;
       header.flags = 0;

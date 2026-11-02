@@ -10,6 +10,7 @@
 #include "race_widescreen.hpp"
 #include "display_aspect.hpp"
 #include "flare_limits.hpp"
+#include "perf_clock.hpp"
 #include "perf_probe.hpp"
 
 #include <algorithm>
@@ -103,10 +104,7 @@ struct WorkerTotals {
   Doorbell::Stats input_bell{}, output_bell{};
 };
 
-std::uint64_t wall_us() {
-  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count());
-}
+std::uint64_t wall_us() { return gt4::perf::scope_wall_us(); }
 
 void after_vblank_output();  // defined below; also called from the journal drain (TASK-084 step 3)
 
@@ -189,6 +187,7 @@ struct Runtime {
   std::atomic<std::uint64_t> published_idle_us{0}, published_vu1_us{0}, published_output_us{0}, published_jobs{0};
   std::uint64_t worker_idle_us = 0, worker_jobs = 0;  // worker thread only
   WorkerTotals baseline;                              // EE thread only: totals at the last interval reset
+  std::uint64_t baseline_worker_cpu_us = 0;           // EE thread only: the worker's CPU time at the last interval reset
 };
 
 Runtime &rt() {
@@ -356,6 +355,19 @@ WorkerTotals published_totals(const Runtime &r) {
   return totals;
 }
 
+std::uint64_t worker_thread_cpu_us(Runtime &r) {
+#ifdef _WIN32
+  FILETIME created{}, exited{}, kernel{}, user{};
+  if (r.worker.joinable() && GetThreadTimes(r.worker.native_handle(), &created, &exited, &kernel, &user)) {
+    const auto ticks = [](FILETIME value) { return (std::uint64_t(value.dwHighDateTime) << 32) | value.dwLowDateTime; };
+    return (ticks(kernel) + ticks(user)) / 10;
+  }
+#else
+  (void)r;
+#endif
+  return 0;
+}
+
 // Installed as the probe's [mtvu] section (EE thread, at each report). The EE categories come from the probe's own
 // interval; the worker totals are the difference since the last interval reset. Times are ms per VBlank.
 void report_interval(std::FILE *file, const gt4::perf::IntervalTime &ee, std::uint64_t frames) {
@@ -389,6 +401,9 @@ void report_interval(std::FILE *file, const gt4::perf::IntervalTime &ee, std::ui
                ee_ms(gt4::perf::Category::gs_drain));
   std::fprintf(file, "[mtvu] worker ms/frame: vu1_program=%.3f output_path12=%.3f busy=%.3f idle=%.3f jobs/frame=%.1f\n",
                vu1, output, busy, idle, (now.jobs - r.baseline.jobs) / static_cast<double>(frames));
+  // TASK-134: the worker's real CPU, since busy above is wall time of its scopes.
+  std::fprintf(file, "[mtvu] worker thread cpu ms/frame=%.3f\n",
+               (worker_thread_cpu_us(r) - r.baseline_worker_cpu_us) / scale);
   std::fprintf(file, "[mtvu] overlap achieved ms/frame=%.3f (worker busy %.3f minus EE wait for the worker %.3f)\n",
                overlap, busy, wait_total);
   // TASK-084 step 0: the job shape and the doorbell traffic, so the cost of one job per packet (or per chain) and of
@@ -425,6 +440,7 @@ void report_interval(std::FILE *file, const gt4::perf::IntervalTime &ee, std::ui
 void reset_worker_baseline() {
   Runtime &r = rt();
   r.baseline = published_totals(r);
+  r.baseline_worker_cpu_us = worker_thread_cpu_us(r);
 }
 
 // IN-459: the worker wakes a sleeping EE for its output only every GT4_MTVU_WAKE_KB KiB of output (default 64), at its
