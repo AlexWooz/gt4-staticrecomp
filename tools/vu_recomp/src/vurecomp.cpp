@@ -927,7 +927,11 @@ private:
         if (in_.count(prev)) {
             const Lower &previous = lowers_[prev];
             const std::uint32_t previous_hi = hi(prev);
-            if (previous_hi & kEndBit) o += std::format("    if (ending) {{ VUGEN_SYNC; r.tpc = {}u; return RunStatus::Completed; }}\n", (pc + 8u) & mask_);
+            // TASK-134: an E-bit instruction that is also a branch (Spec II VU0, 0x3B0) stops at the branch target, as the interpreter.
+            if (previous_hi & kEndBit) {
+                if (previous.branch) o += std::format("    if (ending) {{ VUGEN_SYNC; r.tpc = pend ? {}u : {}u; return RunStatus::Completed; }}\n", previous.target, (pc + 8u) & mask_);
+                else o += std::format("    if (ending) {{ VUGEN_SYNC; r.tpc = {}u; return RunStatus::Completed; }}\n", (pc + 8u) & mask_);
+            }
             if (previous.branch) {
                 const std::uint32_t target = previous.target;
                 o += "    if (pend) { pend = false; ";

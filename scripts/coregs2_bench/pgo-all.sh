@@ -48,6 +48,8 @@ fi
 profile=$(win "$work/game.profdata")
 
 echo "== optimised build"
+# A build folder from an earlier profile would keep objects of the old profile, which ThinLTO refuses to link together.
+rm -rf "$GT4_BENCH_ROOT/build/t134-ee-$target-use" "$GT4_BENCH_ROOT/build/t134-$target-use"
 hash=$(library t134-ee-$target-use "/clang:-fprofile-use=$profile /clang:-Wno-profile-instr-out-of-date /clang:-Wno-profile-instr-unprofiled /clang:-Wno-backend-plugin")
 game t134-$target-use t134-ee-$target-use "$hash" -DGT4_HW_PGO=use "-DGT4_HW_PGO_PROFILE=$profile" -DGT4_HW_THINLTO=ON
 cp "$GT4_BENCH_ROOT/build/t134-$target-use/$exe_name" "$GT4_BENCH_ROOT/build/t134-$target-use/${exe_name%.exe}.pdb" \
