@@ -40,3 +40,11 @@ caller. The build needs line tables (`/Z7 -gline-tables-only`, `/DEBUG`). Readin
 
 - a sample takes the cycles since the previous visit, so time in `ZwWaitForAlertByThreadId` is mostly work done before the thread slept;
 - `VCRUNTIME140.dll!__NLG_Return2` is memcpy (nearest export), not exceptions.
+
+## Recording a drive and replaying it (IN-520)
+
+`record-input.sh <name>` opens Spec II from the bench's card without game data and records every pad change by guest VBlank, into `private/coregs2-bench/inputs/<name>.txt` in the main checkout (never overwritten). F9 ends the recording and closes the game. Keep the game focused: without focus the keyboard reads as released, and that is recorded too.
+
+`replay-run.sh <name> <run> <exe> [ENV=VAL ...]` replays it from a fresh copy of the same card up to its last VBlank, into `$GT4_BENCH_OUT/replay-<name>-<run>/`. `WINDOW=1` opens a window and writes `frametime.csv`; `PACED_FROM=<VBlank>` skips the waiting before that VBlank (use the VBlank where the measured stretch starts). Frame dumps slow a window run: leave `EVERY` unset when measuring.
+
+Pass `GT4_HW_FLARE_DEADLINE_MS=0` when comparing frames from window runs: a late flare answer depends on real time.

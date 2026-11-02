@@ -1,5 +1,26 @@
 # Current Status
 
+## TASK-027 CoreGS 2.0: owner's direction after candidate 373, open items and the input recorder (2026-11-01)
+
+**The owner's view and decisions:**
+- CoreGS 2.0 is already better than GSdx in the owner's opinion: GSdx without Performance Mode loses frame rate on George V Paris at 6x, and CoreGS 2.0 does not.
+- **The darker road in Performance Mode stays:** it is not a problem.
+- **The next two optimisations, both inside CoreGS 2.0:** hardware depth (D1), and reducing the waits. Waits are what to reduce from now on. Other optimisations stay for later.
+- First, the input recorder below, to make the tests easier.
+
+**Open items, none started:**
+- **Before publishing rc8:** the owner's own session on 373 at 60 Hz (showroom, a car ahead, a night race); the late flares of IN-514 (keep or not); a real monitor at 60 Hz; the laptop (still on 367, the beta gate is the HD 620 at 2x); a new build with the corrected notes (the installed launcher still says "about 28%"); the note's "about half the processor of GSdx", which needs a GSdx F8 to compare; en-US focus pages varying with unchanged code; the installer against its sources; replacing the old rc8 draft (candidate 354). Publishing and the PR into `task/134` need the owner's word, and TASK-134's P0/P1 wait for the owner's "CoreGS 2.0 build done".
+- **Owner decisions left:** the colour filter cut (IN-505) in Performance Mode.
+- **For 2.0.0:** fractional scales (requirement, large refactor); GPU use and power measured beside GSdx.
+- **Optimisation, later unless named above:** about 50 ms from presentation to display at 60 Hz (13-20 ms at 144 Hz); the race start's camera cut (about 30 ms, once per race).
+- **Unknown:** a few pixels (1-30, at most 88 of 255, at the right edge of the picture) differ at VBlanks 21300 and 21400 between two runs of the same exe and the same `--press` list at 3x on George V Paris. The 6x gates did not show it.
+- **Out of scope for now:** frame skipping; GSdx stutter (a PCSX2-tainted task).
+
+**IN-520, the input recorder:** `GT4_INPUT_RECORD=<file>` writes the pad state the game receives, one line per change, keyed by guest VBlank, so it does not depend on the key map or the frame rate. F9 ends it and closes the game; Alt+F4 also leaves a complete file. `GT4_INPUT_REPLAY=<file>` gives the game those states, with or without a window. `GT4_PACING_FROM_VBLANK=<n>` does not wait before that VBlank. `scripts/coregs2_bench/record-input.sh` and `replay-run.sh`. New CTest `native_input_recording`.
+- **Verified:** the old George V Paris `--press` list converted to a recording, 3x, headless: 18 of 20 frames identical to the `--press` run, and the other 2 differ as two `--press` runs differ between them. F9: file complete, game closed, exit 0. Window replay with fast menus: 1 min 27 s against about 6 min.
+- **A bug found in testing:** with the fast menus the pacer's grid ran ahead of the clock, and the first paced frame slept for about 4 minutes, which Windows showed as "not responding" on the owner's screen. Fixed: the grid is re-anchored while not waiting. It never reached an installed build.
+- **Not verified:** a real recorded drive; that follows the owner's recording.
+
 ## TASK-027 CoreGS 2.0 candidate 373: frame pacing, from the owner's five F8 reports on 372 (2026-11-01)
 
 Candidate 373 (pins `docs/inputs/slice373-pcsx2.json`, `35a11ca7...`, and `docs/inputs/slice373-spec2.json`, `abe87b24...`), installed on the owner's desktop through the installer's update mode. Output `private/release-130-rc8k-out` in the main checkout: installer `c21f0f85...`, portable zip `bbbaf160...`. Installed game folder (20 files) and launcher equal the build. Of 16,446 files of settings, saves, replays, disc copies and textures one changed: `config/game.ini`, which the launcher reopened by the installer rewrites with the active monitor (`DISPLAY1`, no stream connected). Not uploaded.

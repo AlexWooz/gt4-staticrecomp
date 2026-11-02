@@ -86,6 +86,7 @@ The state of `main` of this work is in STATUS and the perf ledger. What the next
 - **Open at 60 Hz:** about 50 ms from presentation to display, against 13-20 ms at 144 Hz. Two images save about 10 ms and lose frames; latest ready is worse.
 - **Next step:** the GS thread still waits for the GPU at the flare read (2-3 ms per VBlank, 12 ms on heavy GPU stretches). Issue the reduction with `ReduceLater` and let the EE wait on its fence with the IN-514 limit.
 - **Owner decision pending:** whether normal mode keeps IN-514's late flares.
+- **Next, the owner's order:** the input recorder (IN-520), then hardware depth (D1) and reducing the waits. The open items are at the top of STATUS.
 
 ## Open items and owner decisions
 

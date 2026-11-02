@@ -14,6 +14,7 @@
 #include "window_mode.hpp"
 #include "cursor_autohide.hpp"
 #include "achievements.hpp"
+#include "input_recording.hpp"
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
 #endif
@@ -133,6 +134,18 @@ void declare_dpi_awareness() {
   std::fprintf(stderr, "[window] DPI awareness %s\n", aware ? "per-monitor v2" : "system");
 }
 
+// IN-520: GT4_INPUT_RECORD=<file> writes the pad state the game receives per VBlank, and F9 ends the recording and closes the
+// game. GT4_INPUT_REPLAY=<file> gives the game those states at the same VBlanks instead of reading any input.
+gt4::input_recording::Recorder input_recorder;
+std::unique_ptr<gt4::input_recording::Player> input_player;
+std::uint64_t input_vblank = 0;
+// GT4_PACING_FROM_VBLANK=<n>: no waiting before this VBlank, then paced: a bench reaches a race in less time, with the same
+// presses, since they count VBlanks.
+const std::uint64_t paced_from_vblank = [] {
+  const char *text = std::getenv("GT4_PACING_FROM_VBLANK");
+  return text != nullptr ? std::strtoull(text, nullptr, 10) : 0ull;
+}();
+
 void apply_pad(const PadState &pad) {
   ps2::set_pad_buttons(pad.buttons);
   for (int axis = 0; axis < 4; ++axis)
@@ -193,6 +206,13 @@ void set_fullscreen(bool enabled) {
 
 LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
                                   LPARAM second) {
+  if (input_recorder.active() && message == WM_KEYDOWN && first == VK_F9) {
+    const std::uint64_t changes = input_recorder.finish(input_vblank);
+    std::fprintf(stderr, "[input] recording ended by F9 at VBlank %llu, %llu changes; closing the game\n",
+                 static_cast<unsigned long long>(input_vblank), static_cast<unsigned long long>(changes));
+    PostMessageW(window, WM_CLOSE, 0, 0);
+    return 0;
+  }
 #ifdef GT4_PERF_PROBE
   if (message == WM_KEYDOWN && (first == VK_F7 || first == VK_F8 || first == VK_F9)) {
     if (first == VK_F7) {
@@ -217,6 +237,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   }
 #endif
   if (message == WM_CLOSE) {
+    input_recorder.finish(input_vblank);  // Alt+F4 or the window's X also leave a complete recording
 #ifdef GT4_GS_STREAM_CLIENT
     // TASK-038: with GT4_RENDERER=pcsx2 the GS process draws into a child of this window, and DestroyWindow waits for
     // that process's window thread (a stalled GS window thread would freeze the close). Halt the guest instead; the
@@ -261,7 +282,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   }
   if (message == WM_KILLFOCUS && controller) {
     controller->stop();
-    if (ps2::g_options.presses.empty())
+    if (ps2::g_options.presses.empty() && !input_player)
       apply_pad({});
   }
   if (message == WM_MOVE || message == WM_SIZE)
@@ -328,7 +349,9 @@ void release_frame() {
       const std::int64_t microseconds = text != nullptr ? std::atoll(text) : 15700;
       return microseconds * static_cast<std::int64_t>(frame_clock->frequency()) / 1000000;
     }();
-    if (!no_wait) {
+    // Not waiting, the grid must not run ahead of the clock, or the first paced frame would sleep until the grid came back.
+    if (input_vblank + 1 < paced_from_vblank) frame_pacer->anchor(frame_clock->now());
+    if (!no_wait && input_vblank + 1 >= paced_from_vblank) {
       const std::int64_t earliest = last_release != 0 ? last_release + min_interval : 0;
       frame_clock->wait_until(std::max(frame_pacer->deadline(), earliest));
     }
@@ -346,6 +369,7 @@ void on_vblank() {
       {ps2::now(), ps2::primitives_drawn(), ps2::vu1_interpreted_calls()});
 #endif
   release_frame();
+  ++input_vblank;
   GT4_PERF_SCOPE(gt4::perf::Category::host_vblank);
   if (!pump_messages())
     return;
@@ -369,8 +393,12 @@ void on_vblank() {
         buttons |= binding.button_mask;
     }
   }
-  if (ps2::g_options.presses.empty()) {
-    apply_pad(controller->poll(focused, buttons));
+  if (input_player) {
+    apply_pad(input_player->at(input_vblank));
+  } else if (ps2::g_options.presses.empty()) {
+    const PadState pad = controller->poll(focused, buttons);
+    apply_pad(pad);
+    input_recorder.vblank(input_vblank, pad);
     if (focused)
       controller->rumble(ps2::pad_rumble());
   }
@@ -386,7 +414,45 @@ void on_vblank() {
 }
 } // namespace
 
+// IN-520: the recording and replay files; false stops the start, since a bench must not run with half its input.
+bool open_input_files() {
+  const char *record = std::getenv("GT4_INPUT_RECORD");
+  const char *replay = std::getenv("GT4_INPUT_REPLAY");
+  std::string error;
+  if (record != nullptr && replay != nullptr) {
+    std::fprintf(stderr, "[input] GT4_INPUT_RECORD and GT4_INPUT_REPLAY together, game not started\n");
+    return false;
+  }
+  if (record != nullptr && !input_recorder.open(record, error)) {
+    std::fprintf(stderr, "[input] %s, game not started\n", error.c_str());
+    return false;
+  }
+  if (record != nullptr) std::fprintf(stderr, "[input] recording to %s; F9 ends it and closes the game\n", record);
+  if (replay != nullptr) {
+    input_player = std::make_unique<gt4::input_recording::Player>();
+    if (!input_player->load(replay, error)) {
+      std::fprintf(stderr, "[input] %s: %s, game not started\n", replay, error.c_str());
+      return false;
+    }
+    std::fprintf(stderr, "[input] replaying %s: %zu changes up to VBlank %llu\n", replay, input_player->changes(),
+                 static_cast<unsigned long long>(input_player->end()));
+  }
+  return true;
+}
+
+bool install_input_replay_without_window() {
+  if (std::getenv("GT4_INPUT_RECORD") != nullptr) {
+    std::fprintf(stderr, "[input] GT4_INPUT_RECORD needs --window, game not started\n");
+    return false;
+  }
+  if (std::getenv("GT4_INPUT_REPLAY") == nullptr) return true;
+  if (!open_input_files()) return false;
+  ps2::g_options.on_vblank = [] { apply_pad(input_player->at(++input_vblank)); };
+  return true;
+}
+
 bool open_window(bool fullscreen) {
+  if (!open_input_files()) return false;
   // The launcher passes GT4_FULLSCREEN (its Display setting, on by default). An invalid value stops the start.
   bool start_fullscreen = fullscreen;
   try {
@@ -503,6 +569,7 @@ int run_window(const std::function<int()> &emulate) {
   ControllerInput input(active_controls, input_backend);
   controller = &input;
   const auto cleanup = [&]() {
+    input_recorder.finish(input_vblank);
     gt4::achievements::shutdown();
 #ifdef GT4_PERF_PROBE
     gt4::perf::Probe::shared().set_report_section({});

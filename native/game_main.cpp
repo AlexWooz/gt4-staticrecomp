@@ -9,6 +9,7 @@
 //     launcher would have built. Rules and tests: standalone.hpp / standalone_fixture.cpp.
 
 #include "standalone.hpp"
+#include "window.hpp"
 
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
@@ -22,6 +23,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iterator>
@@ -262,6 +264,14 @@ int main(int argc, char **argv) {
   // GT4_GS_READBACK_LOG lines (native/gs_stream/gs_readback_probe.hpp). Nothing happens when the switch is unset.
   gt4::gs_stream::set_guest_ram(ps2::g_ram, ps2::kRamSize);
 #endif
-  if (!sa::is_standalone_start(argc, argv)) return gt4_donor_main(argc, argv);
+  if (!sa::is_standalone_start(argc, argv)) {
+    // IN-520: the window sets up the recording and replay files itself; a headless run replays here.
+    bool window = false;
+    for (int i = 1; i < argc; ++i) {
+      window = window || std::strcmp(argv[i], "--window") == 0 || std::strcmp(argv[i], "--fullscreen") == 0;
+    }
+    if (!window && !install_input_replay_without_window()) return 1;
+    return gt4_donor_main(argc, argv);
+  }
   return run_standalone(argc, argv);
 }
