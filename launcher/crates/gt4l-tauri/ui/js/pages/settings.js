@@ -820,9 +820,13 @@
         section(ctx, "display", GT4.t("settings.section_display"), basic.filter(function (row) {
           return row.group === "display";
         }));
-        var graphics = section(ctx, "graphics", GT4.t("settings.section_graphics"), basic.filter(function (row) {
+        var graphicsRows = basic.filter(function (row) {
           return (row.group || "graphics") === "graphics";
-        }));
+        });
+        // Owner, 2026-11-02: the menus and the scale on top, the switches below, each in the order they come in.
+        graphicsRows = graphicsRows.filter(function (row) { return row.control !== "toggle"; })
+          .concat(graphicsRows.filter(function (row) { return row.control === "toggle"; }));
+        var graphics = section(ctx, "graphics", GT4.t("settings.section_graphics"), graphicsRows);
         // TASK-088: opens <install>\data\Textures (TASK-091; made first, TASK-093: no replacements subfolder). Next to the texture options.
         if (graphics) {
           // Inline progress of a switch to GSdx (renderer-progress events; app.js sets the text).

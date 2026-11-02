@@ -340,12 +340,19 @@
     await setHash("#/settings/graphics");
     await wait(200);
     var gsdx = shown();
+    function menusAbove(list, menus, switches) {
+      return menus.every(function (menu) {
+        return switches.every(function (item) { return list.indexOf(menu) < list.indexOf(item); });
+      });
+    }
+    check("GSdx shows its Graphics menus above its switches", menusAbove(gsdx, ["renderer", "render_scale", "graphics_api", "cas_mode"], ["performance_mode", "fxaa"]), gsdx.join("|"));
     check("GSdx shows its rows and no FSR1", holds(gsdx, both) && holds(gsdx, gsdxOnly) && lacks(gsdx, ["frame_rate", "coregs_sharpening"]), gsdx.join("|"));
     await GT4.backend.call("set_setting", { id: "renderer", value: "coregs20" });
     await setHash("#/settings/about");
     await setHash("#/settings/graphics");
     await wait(200);
     var coregs = shown();
+    check("CoreGS 2.0 shows its Graphics menus above its switches", menusAbove(coregs, ["renderer", "render_scale", "frame_rate", "coregs_sharpening"], ["performance_mode", "fxaa"]), coregs.join("|"));
     check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, ["frame_rate", "coregs_sharpening"]) && lacks(coregs, gsdxOnly), coregs.join("|"));
     await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
     await setHash("#/settings/about");
