@@ -233,16 +233,6 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
-        id: "async_gs",
-        page: Page::Advanced,
-        group: "Performance",
-        title: "Asynchronous GS",
-        info: "Sends graphics work to the GPU without waiting. Needed for full speed; turn off only to compare.",
-        kind: TOGGLE,
-        default: "on",
-        connected: true,
-    },
-    SettingDef {
         id: "performance_report",
         page: Page::Advanced,
         group: "Diagnostics",
@@ -279,6 +269,7 @@ pub const SETTINGS: &[SettingDef] = &[
 /// needed because the launcher no longer reads them. The game always gets the fixed value (`launch.rs`).
 pub const RETIRED_SETTINGS: &[(&str, &str)] = &[
     ("input_resolution", "the game always runs at 480p (GT4_FORCE_480P=1)"),
+    ("async_gs", "graphics work always goes to the GPU without waiting; GT4_GS_SYNC stays a developer switch of the game"),
     ("widescreen", "the game's own 16:9 is always on (GT4_FORCE_WIDESCREEN=1); the Resolution sets the screen shape"),
     ("aspect_ratio", "the aspect is always the Resolution's shape (TASK-080 addendum)"),
     ("aspect_custom", "the aspect is always the Resolution's shape (TASK-080 addendum)"),

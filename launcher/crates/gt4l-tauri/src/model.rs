@@ -20,8 +20,6 @@ pub const MAX_UPSCALE_DEFAULT: u32 = 12;
 const DERIVED_TABLE_IDS: &[&str] = &["vsync", "mailbox", "upscale"];
 
 /// The rows of the PCSX2 GS table the UI may show: offered, not mods (release 1.1.0), not derived.
-/// Launcher rows TASK-118 removed from the page: GS async is always on (it was a debugging A/B switch).
-const HIDDEN_LAUNCHER_ROWS: &[&str] = &["async_gs"];
 /// Launcher rows only release-candidate builds ship (the F7/F8 release report and the VU code check).
 const RC_ONLY_ROWS: &[&str] = &["performance_report", "check_vu_code"];
 /// The renderer defines the graphics options (owner, 2026-10-30): the table rows are GSdx's, and of them only these exist
@@ -157,10 +155,6 @@ pub fn settings_table_with_monitors(
     // not ship them, so their rows do not exist there either.
     let release_candidate = gt4l_core::LAUNCHER_VERSION.contains("-rc");
     for definition in SETTINGS {
-        // TASK-118: rows the owner removed outright (always on, or done by the preset/launcher).
-        if HIDDEN_LAUNCHER_ROWS.contains(&definition.id) {
-            continue;
-        }
         if !release_candidate && RC_ONLY_ROWS.contains(&definition.id) {
             continue;
         }

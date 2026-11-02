@@ -144,6 +144,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑094 | Desktop shortcut: finish-page checkbox (on by default), all-users desktop `Gran Turismo 4.lnk`, choice kept in HKLM `DesktopShortcut`, silent updates create it for older installs and restore it when chosen | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🔄 Study done and owner decisions recorded (2026-10-28) · next: P0 baselines when the owner frees the desktop |
+| TASK‑135 | Performance HUD for CoreGS 2.0, in the spirit of the macOS Metal HUD: FPS, frame time, CPU and GPU of the game, memory and a live frame time graph | 📋 Planned (owner, 2026-11-02) |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -2632,3 +2633,13 @@ portable folder over the network, logs collected the same way.
 2026-10-29: branch synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934, program files identical); the
 RetroAchievements per-frame hook added to the study (section 3.8, P1g). Next: P0 (measurement) and P1 (host quick wins) on this branch once the desktop is free; each later step gets its own
 task or branch as it starts.
+
+### TASK-135 — Performance HUD for CoreGS 2.0
+Repos: this one. Clean room: a TASK-027 agent, not PCSX2-tainted.
+Goal (owner, 2026-11-02): CoreGS 2.0 has no in-game overlay today. The overlay of TASK-062 is drawn inside `gt4-gs.exe` with the
+PCSX2 OSD, so it exists only under GSdx and its code cannot be ported: this one is our own, MIT, in the game executable. It
+shows what a player understands, CPU and GPU instead of EE and GS: graphics card, output resolution, render scale and refresh
+rate; FPS with its minimum and maximum; frame time; CPU and GPU use of the game; memory; a live frame time graph. The owner's
+reference is the look of the macOS Metal HUD (screenshots only).
+Acceptance: off by default, launcher rows under CoreGS 2.0, overhead measured, the identity gates unchanged with it off, owner
+test. Updating the GSdx overlay to match is separate work in the fork, for a PCSX2-tainted agent.

@@ -119,13 +119,11 @@ fn inherited_gt4_and_ps2_variables_are_scrubbed_and_others_kept() {
 fn settings_map_to_their_variables() {
     let mut settings = Settings::default();
     settings.set("vsync", "fast").unwrap();
-    settings.set("async_gs", "off").unwrap();
     settings.set("performance_report", "on").unwrap();
     settings.set("check_vu_code", "1000").unwrap();
     let environment = env_map(&game_environment(&settings));
     assert_eq!(environment["GT4_FORCE_480P"], "1", "480p is fixed whatever the other settings");
     assert_eq!(environment["GT4_PRESENT_MODE"], "mailbox");
-    assert_eq!(environment["GT4_GS_SYNC"], "1");
     assert_eq!(environment["GT4_PERF"], "1");
     assert_eq!(environment["GT4_VU1_VERIFY"], "1000");
     assert_eq!(environment["GT4_VU0_VERIFY"], "1000");
@@ -182,6 +180,16 @@ fn removed_parallel_gs_renderer_and_its_options_are_refused() {
     assert!(settings::definition("super_sampling").is_none());
     assert!(settings::definition("high_resolution_output").is_none());
     assert!(!env_map(&game_environment(&settings)).keys().any(|name| name.starts_with("GT4_PGS_")));
+}
+
+#[test]
+fn asynchronous_gs_is_always_on_whatever_an_old_file_holds() {
+    let mut settings = Settings::default();
+    assert!(settings::definition("async_gs").is_none(), "async_gs is not a setting");
+    assert!(settings::retired("async_gs").is_some(), "async_gs is listed as retired");
+    assert!(settings.set("async_gs", "off").is_err(), "async_gs cannot be set");
+    assert!(!env_map(&game_environment(&settings)).contains_key("GT4_GS_SYNC"));
+    assert!(!launch::standalone_config_text(&settings, None).contains("async_gs"));
 }
 
 #[test]
@@ -501,11 +509,6 @@ fn variables_of_game_ini(text: &str) -> std::collections::BTreeMap<String, Strin
             "output_size" => {
                 variables.insert("GT4_OUTPUT_SIZE".to_string(), value.to_string());
             }
-            "async_gs" => {
-                if value == "0" {
-                    variables.insert("GT4_GS_SYNC".to_string(), "1".to_string());
-                }
-            }
             "performance_report" => {
                 if value == "1" {
                     variables.insert("GT4_PERF".to_string(), "1".to_string());
@@ -529,7 +532,7 @@ fn every_game_ini_key_stands_for_the_variable_the_launcher_sets_at_play() {
         vec![],
         vec![("fullscreen", "off")],
         vec![("vsync", "fast")],
-        vec![("vsync", "off"), ("async_gs", "off")],
+        vec![("vsync", "off")],
         vec![("performance_report", "on"), ("check_vu_code", "100")],
         vec![("check_vu_code", "1000"), ("fullscreen", "off"), ("vsync", "on")],
     ];

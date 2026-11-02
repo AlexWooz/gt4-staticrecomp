@@ -355,7 +355,7 @@ fn a_settings_change_writes_the_files_a_direct_start_of_the_game_reads() {
     let text = fs::read_to_string(&game_ini).expect("game.ini is written with the settings");
     assert!(text.contains("present_mode=mailbox"), "{text}");
     assert!(text.contains("fullscreen=0"), "{text}");
-    assert!(text.contains("async_gs=1"), "{text}");
+    assert!(!text.contains("async_gs"), "{text}");
     assert!(!gs_ini.exists(), "no gt4-gs.ini without an installed GSdx");
 
     // An installed GSdx (stand-in files with the recorded hash) gives the game its ini too.

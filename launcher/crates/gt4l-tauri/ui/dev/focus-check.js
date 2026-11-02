@@ -376,7 +376,7 @@
     check("every Graphics row sits in a section", looseRows === 0, looseRows + " loose rows");
     var firstAdvanced = document.querySelector("[data-section=\"advanced\"] [data-setting]");
     var firstId = firstAdvanced ? firstAdvanced.getAttribute("data-setting") : null;
-    check("the Advanced section holds the advanced rows", firstId === "async_gs", "first " + firstId);
+    check("the Advanced section holds the advanced rows", firstId === "performance_report", "first " + firstId);
     press("ArrowRight");
     await wait(200);
     // Without a remembered row, A enters on the first control of the tab (settings.js focusRow): Monitor, at the top of
