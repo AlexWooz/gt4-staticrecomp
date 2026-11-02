@@ -145,6 +145,7 @@ struct Backend::Impl {
   }();
   bool want_shown_times() const { return frametime_path != nullptr || latency_control_on; }
   gt4::hw::PresentLatencyControl latency_control;
+  double frametime_last_shown = 0.0;
   bool frametime_shown_possible = false;  // the instance has VK_KHR_get_surface_capabilities2
   bool present_wait_enabled = false;
   PFN_vkWaitForPresent2KHR wait_for_present = nullptr;
@@ -180,7 +181,10 @@ struct Backend::Impl {
         info.timeout = 500000000;
         if (wait_for_present(device, entry.swapchain, &info) == VK_SUCCESS) shownMs = frametime_now_ms();
       }
-      if (shownMs > 0.0 && latency_control_on) latency_control.shown(shownMs - entry.presentMs);
+      if (shownMs > 0.0 && latency_control_on) {
+        if (frametime_last_shown > 0.0) latency_control.shown(shownMs - entry.presentMs, shownMs - frametime_last_shown);
+        frametime_last_shown = shownMs;
+      }
       if (frametime_file) {
         std::fprintf(frametime_file, "%llu,%llu,%.3f,%.3f,%.3f\n", static_cast<unsigned long long>(entry.id),
                      static_cast<unsigned long long>(entry.call), entry.presentMs, entry.callMs, shownMs);
@@ -1137,6 +1141,13 @@ struct Backend::Impl {
   void present_frame(const hwgs::writeback::FrameOutput *frame) {
     if (!swapchain) return;
     ++present_calls;
+    if (latency_control_on) {
+      if (const std::int32_t shift = latency_control.take_grid_shift_us()) {
+        gt4::pacing::grid_shift_us.fetch_add(shift, std::memory_order_relaxed);
+        std::fprintf(stderr, "[hw] latency control: frames miss the flip, grid %+.1f ms at call %llu\n", shift / 1000.0,
+                     static_cast<unsigned long long>(present_calls));
+      }
+    }
     if (latency_control_on && latency_control.leave_out()) {
       std::fprintf(stderr, "[hw] latency control: a presentation left out at call %llu (%llu so far), %.1f ms to the display, target %.1f ms\n",
                    static_cast<unsigned long long>(present_calls), static_cast<unsigned long long>(latency_control.left_out()),

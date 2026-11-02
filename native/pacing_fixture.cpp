@@ -70,6 +70,17 @@ void test_period_accuracy_no_drift() {
   require(pacer.late_frames() == 0 && pacer.resyncs() == 0, "clean run has no late frames");
 }
 
+// IN-521: a shift moves every later deadline by the same amount.
+void test_grid_shift() {
+  FramePacer pacer(frequency, 60);
+  pacer.anchor(1000);
+  const std::int64_t before = pacer.deadline();
+  pacer.shift(1234);
+  require(pacer.deadline() == before + 1234, "a shift moves the deadline later");
+  pacer.shift(-1234);
+  require(pacer.deadline() == before, "a shift back returns to the grid");
+}
+
 void test_remaining_and_late_frames() {
   FramePacer pacer(frequency, 60);
   pacer.anchor(0);
@@ -311,6 +322,7 @@ int main() {
   try {
     test_parsers();
     test_period_accuracy_no_drift();
+    test_grid_shift();
     test_remaining_and_late_frames();
     test_stall_restarts_grid_without_burst();
     test_resampler_unity_is_passthrough();

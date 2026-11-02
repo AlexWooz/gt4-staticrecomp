@@ -334,6 +334,9 @@ void release_frame() {
   if (pacing_mode == gt4::pacing::Mode::paced) {
     if (!frame_pacer->anchored())
       frame_pacer->anchor(frame_clock->now());
+    if (const std::int32_t shift = gt4::pacing::grid_shift_us.exchange(0, std::memory_order_relaxed)) {
+      frame_pacer->shift(static_cast<std::int64_t>(shift) * static_cast<std::int64_t>(frame_clock->frequency()) / 1000000);
+    }
     // TASK-084 step 0: the sleep is its own category, so F8 ee_dispatch and unattributed mean work, not sleep.
     GT4_PERF_SCOPE(gt4::perf::Category::pacing_wait);
     // Bench switch: GT4_PACING_NO_WAIT=1 runs as fast as it can with a window, to compare with a run with no window.

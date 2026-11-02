@@ -8,6 +8,7 @@
 // blocks the emulation thread; instead the produced stream is resampled by a
 // ratio within +-0.5 % so the device queue stays at its latency target.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -19,6 +20,9 @@ namespace gt4::pacing {
 // kNoSlack before the first paced frame. Written and read on the EE thread only.
 inline constexpr std::int32_t kNoSlack = INT32_MIN;
 inline std::int32_t ee_slack_us = kNoSlack;
+
+// IN-521: how much later the release grid should run, in microseconds, set by the presentation's latency control.
+inline std::atomic<std::int32_t> grid_shift_us{0};
 
 // Audio latency target: 60 ms of stereo 48 kHz frames.
 inline constexpr std::size_t target_latency_frames = 2880;
@@ -55,6 +59,8 @@ public:
 
   // Starts the grid: the first frame is due at `now`.
   void anchor(std::int64_t now);
+  // IN-521: moves the grid by this many ticks; positive is later.
+  void shift(std::int64_t ticks);
   bool anchored() const { return anchored_; }
   // Deadline of the next release, in clock ticks (floor of the scaled value).
   std::int64_t deadline() const;

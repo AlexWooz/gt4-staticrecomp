@@ -69,6 +69,10 @@ void FramePacer::anchor(std::int64_t now) {
   anchored_ = true;
 }
 
+void FramePacer::shift(std::int64_t ticks) {
+  scaled_deadline_ += ticks * static_cast<std::int64_t>(rate_);
+}
+
 std::int64_t FramePacer::deadline() const {
   return scaled_deadline_ / static_cast<std::int64_t>(rate_);
 }

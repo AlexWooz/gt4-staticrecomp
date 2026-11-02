@@ -280,3 +280,23 @@ The jagged sent graph of the old path did not reach the display: its shown inter
 **CPU sampler, 6x race (`scripts/cpu_sampler_report.py`, before the fresh PGO):** after IN-518 the GS worker's profile is flat: `GpuVertex` construction 0.33 ms, stage timers 0.13 ms, submission 0.55 ms inclusive, the driver about 1.2 ms. No single large item is left.
 
 **v2.00 Arcade race start at 6x (window, 16:9):** presented p99 21.4 to 19.9 ms and intervals under 12 ms 16 to 9 of 1,200 with IN-519. About 1 s has GPU busy 15-18 ms, and the GS thread waits for it at the flare read (11.8 ms): the next step.
+
+## The waits and the display queue (IN-521, IN-522, IN-523, candidate 374)
+
+Spec II, George V Paris, normal mode, the owner's lap `george-volta2` replayed with `lap-run.sh`, VBlanks 2040-8032, 16:9, 60 Hz virtual display, one run each.
+
+| 6x | Presentation to display, mean (p1 / p99) | Presented over 17.5 / longest | Shown over 25 | EE at the flare read | GS all stages |
+|---|---|---|---|---|---|
+| 373's behaviour (no queue control, EE waits) | 53.0 (37 / 55.3) | - | - | 9.5 | - |
+| Queue control only, EE waits (`d0`) | 37.2 (36.6 / 37.8) | 17 / 33.1 | 2 | 9.5 | 11.54 |
+| No EE wait, first queue control (`d1`, stuck at the longer level) | 41.8 (30.9 / 48.3) | 9 / 33.4 | 2 | 0.00 | 11.12 |
+| **Final (`e1`)** | **39.5 (39.1 / 40.1)** | 7 / **21.0** | 1 | **0.00** | 11.38 |
+| Final, Performance Mode (`p1`) | 39.8 (39.3 / 40.3) | 8 / 33.6 | 2 | 0.00 | 7.11 |
+
+For scale: no vsync 24.9 ms on the same display, the phase walk (dropped) 35.4 ms with 18 repeats of a frame per lap. The level, 31 or about 39 ms, comes from the phase of the presentation against the flip and changes between runs.
+
+**Frames:** the whole lap headless at 3x, EE waiting against not waiting: 18 of 20 identical. The other 2 (VBlanks 4500, 4800, at most 1,216 pixels at the right edge) differ the same way between two runs of the EE waiting: the noise the owner put down to the crowd's flashes. EE cycles equal, 39,478,966,503. 269,534 VIF packets got their words in the lap, about 47 per frame.
+
+**12x (`d1probe`):** normal mode does not hold 60 FPS on this track: presented mean 21.3 ms, GPU busy 19.73, GS 21.00, reads 10.34. With `GT4_CORE2_ROP=1` 23.0 ms, GPU busy 21.37. Area and reading in IN-523.
+
+**Evidence:** `build/evidence/in522`, `in522-frames`, `d1probe`.

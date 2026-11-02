@@ -16,9 +16,15 @@ void check(bool condition, const char *what) {
 
 constexpr int kWindow = PresentLatencyControl::kWindow;
 constexpr int kSettle = PresentLatencyControl::kSettle;
+constexpr double kFrame = PresentLatencyControl::kFrameMs;
 
 void feed(PresentLatencyControl &control, int frames, double lag) {
-  for (int i = 0; i < frames; ++i) control.shown(lag);
+  for (int i = 0; i < frames; ++i) control.shown(lag, kFrame);
+}
+
+void flip_miss(PresentLatencyControl &control, double lag) {
+  control.shown(lag + kFrame, kFrame * 2.0);
+  control.shown(lag, 0.0);
 }
 
 }  // namespace
@@ -44,7 +50,7 @@ int main() {
   }
   {  // One low sample in a window: not a long queue, the window takes the lowest.
     PresentLatencyControl control;
-    for (int i = 0; i < kWindow; ++i) control.shown(i == 10 ? 25.0 : 60.0);
+    for (int i = 0; i < kWindow; ++i) control.shown(i == 10 ? 25.0 : 60.0, kFrame);
     check(!control.leave_out(), "a window with one low sample left a frame out");
   }
   {  // The shortest queue this display takes: a frame out does not help; stay there.
@@ -91,6 +97,41 @@ int main() {
     check(!control.leave_out() && control.left_out() == 2, "kept trying at the shortest queue");
     check(control.target_ms() > 37.0, "the target did not rise over the time it settled at");
   }
-  std::puts("hw_present_latency: ok (short queue, long queue, single sample, shortest queue, grown queue, skipped refresh, menus)");
+  {  // At the flip's edge: the second miss within the window moves the grid earlier, once, and the next two count anew.
+    PresentLatencyControl control;
+    feed(control, 300, 25.0);
+    flip_miss(control, 25.0);
+    check(control.take_grid_shift_us() == 0, "one miss moved the grid");
+    feed(control, 300, 25.0);
+    flip_miss(control, 25.0);
+    check(control.take_grid_shift_us() == -4000, "two misses did not move the grid earlier by the step");
+    check(control.take_grid_shift_us() == 0, "the same move was taken twice");
+    feed(control, 100, 29.0);
+    flip_miss(control, 29.0);
+    check(control.take_grid_shift_us() == 0, "the first miss after a move moved the grid");
+    feed(control, 100, 29.0);
+    flip_miss(control, 29.0);
+    check(control.take_grid_shift_us() == -4000 && control.edge_steps() == 2, "the second one after a move did not");
+  }
+  {  // Misses far apart are not an edge, and a display that skips a refresh (no frame right behind) is not a miss.
+    PresentLatencyControl control;
+    for (int i = 0; i < 5; ++i) {
+      flip_miss(control, 25.0);
+      feed(control, PresentLatencyControl::kEdgeWindow + 10, 25.0);
+    }
+    check(control.take_grid_shift_us() == 0, "misses far apart moved the grid");
+    for (int i = 0; i < 20; ++i) {
+      control.shown(25.0, kFrame * 2.0);
+      feed(control, 30, 25.0);
+    }
+    check(control.take_grid_shift_us() == 0, "skipped refreshes moved the grid");
+  }
+  {  // A limit on the moves.
+    PresentLatencyControl control;
+    for (int i = 0; i < 100; ++i) flip_miss(control, 25.0);
+    check(control.edge_steps() == PresentLatencyControl::kMaxEdgeSteps, "no limit on the moves");
+    check(control.take_grid_shift_us() == -4000 * PresentLatencyControl::kMaxEdgeSteps, "the moves were not added up");
+  }
+  std::puts("hw_present_latency: ok (short queue, long queue, single sample, shortest queue, grown queue, skipped refresh, menus, flip edge)");
   return 0;
 }
