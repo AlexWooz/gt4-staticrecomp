@@ -259,6 +259,20 @@ The frametime log costs nothing measurable (final build without it: GS 6.77 ms, 
 
 **The same virtual display at 144 Hz (set by the owner), 16:9, candidate 373's build:** old path, 8 slots: showroom waits 0.79 ms, GS 5.60 ms, race over 17.5 ms 26, longest 18.4 ms. Old path, 16 slots: 0.01 ms, 4.62 ms, 19, 18.4 ms. Second queue, 16 slots: 0.01 ms, 4.65 ms, 9, 18.7 ms. So the showroom stall goes with the 60 Hz, not with the virtual display.
 
+**The virtual display back at 60 Hz, candidate 373's build, same scene, normal mode.** "Sent" is what RivaTuner draws, "shown" is when the display took the frame:
+
+| Path | Showroom waits ms | Sent over 20 ms, showroom + race | Longest sent ms | Shown over 18 ms, race | Latency ms | Not shown, session |
+|---|---|---|---|---|---|---|
+| Old, 8 slots | 11.42 | 1 (134 over 18) | 20.1 | 0 | 45-49 | 0 |
+| Old, 16 slots, two runs | 0.47, 1.61 | 2, 4 | 25.4, 33.1 | 0, 1 | 49-51 | 0 |
+| Old, 24 slots | 0.06 | 3 | 25.1 | 2 | 50-51 | 0 |
+| Old, 16 slots, 2 images | 1.40 | 45 | 36.1 | 24 | 35-39 | 0 (late flares 96%) |
+| **Second queue, 16 slots, two runs** | 0.01, 0.01 | 0, 0 | 18.2, 17.9 | 59, 25 | 51-55 | 1, 1 |
+| Second queue, latest ready | 0.01 | 0 | 17.8 | 4 | 63 | 1 (3 lost in the race) |
+| Second queue, 2 images | 0.01 | 1 | 33.4 | 19 | 44 | 11 |
+
+The jagged sent graph of the old path did not reach the display: its shown intervals stay even. Latency near 3 refreshes at 60 Hz (about 50 ms) and at 144 Hz (13-20 ms). Default kept: second queue, 3 images, FIFO.
+
 **21.5:9 (the owner's monitor):** without a limit, race over 20 ms 126 of 3,700; with one (`pqA`) 3; final 0, longest 18.6 ms, late flares 1,681.
 
 **Dropped or left off:** latest ready (IN-515: no gain); 4 swapchain images (worse: race over 17 ms 633 against 182); `GT4_CORE2_SUBMIT_EVERY` 16 (GS 10.47 ms) and 64 (GS 7.35 ms, more late flares); 24 slots (nothing over 16); limit allowance 2 ms (over 17.5: 35).
