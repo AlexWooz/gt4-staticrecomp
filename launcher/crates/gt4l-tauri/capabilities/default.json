@@ -9,6 +9,8 @@
     "allow-get-settings-table",
     "allow-set-setting",
     "allow-reset-gs-settings-to-defaults",
+    "allow-gsdx-download-needed",
+    "allow-download-gsdx",
     "allow-setup-choose-disc",
     "allow-setup-start",
     "allow-setup-cancel",

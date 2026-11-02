@@ -47,6 +47,8 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `get_settings_table` | none | `{max_upscale: int, rows: [row]}` |
 | `set_setting` | `{id, value}` | none (`Result<(), String>`); after a success the UI sets the row's value and reads the table again, since other rows can depend on it (`visible_when`, `disabled`) |
 | `reset_gs_settings_to_defaults` | none | `{max_upscale, rows}` |
+| `gsdx_download_needed` | none | bool: choosing GSdx now needs a download (false before setup, which installs it) |
+| `download_gsdx` | none | installs GSdx with `gsdx-download` events; an error is the notice to show |
 | `get_controls` | none | `{controls: [{id, name, binding, sources, xinput, key, is_default}], triggers: [row], locked}`; `id` is the input of the controls file (`cross`, `dpad_up`, `l2`...), `sources` the raw sources (`xinput:A`, `key:Z`), `xinput`/`key` the first of each family or null; `triggers` holds the analog rows (below); `locked` is true when the file comes from a newer launcher and is kept read-only |
 | `capture_binding` | `{control}` | `{control, source}`: the next newly pressed control of the active pad, read through SDL3 (a control held at the start does not count; the source is in the controls-file names, SOUTH is `xinput:A`). It binds nothing; the page checks for a conflict and calls `assign_binding`. `cancel_capture` ends it with an error |
 | `pad_status` | none | the last `pad-status` payload: `{available, connected, name, kind, player_index, count, error}` (`kind` is SDL's gamepad type, e.g. `xbox360`, `ps5`; `count` is the number of pads; the named pad is "controller 1 of N") |
@@ -138,6 +140,7 @@ Other Tauri events from Rust (listened to in `js/app.js`, popup code in `js/upda
 | `setup-progress` | `{step, percent, bytesDone, bytesTotal}` | Setup progress (also in `app_state`, which the page polls). |
 | `setup-finished` | `{ok, message}` | The end of a setup run. |
 | `renderer-progress` | `{step}`: `listing`, `downloading` (with `percent`, `bytesDone`, `bytesTotal` during setup), `installing`, `downloading-launcher`, `done`, `failed` | Progress of a gt4-gs install (setup, the retry at launch, or an update). The setup page draws it; elsewhere `done` and `failed` are toasts. |
+| `gsdx-download` | `{step}`: `listing`, `downloading` (with `bytesDone`, `bytesTotal`), `installing`, during `download_gsdx` |
 | `update-finished` | `{stream, ok, message}` | The end of an `apply_update`. |
 | `game-state` | `{running, message}` | The game ended (`running: false`); a non-empty message is shown and Home is opened. |
 | `close-confirm` | `{message}` | The window close button was pressed while the game runs. The page asks "Close the launcher anyway?". |

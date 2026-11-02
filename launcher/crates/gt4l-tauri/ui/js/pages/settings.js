@@ -444,6 +444,106 @@
     return { node: [selector], selector: true };
   }
 
+  // Owner, 2026-11-02: GSdx is an optional download. Choosing it when it is missing asks first: the dialog shows the download and
+  // closes by itself, and only then the choice is stored. Declining, or a failed download, goes back to the renderer stored.
+  var gsdxDownloadHandler = null;
+  var gsdxDownloadListening = false;
+
+  function backToStoredRenderer(ctx) {
+    // The value slides back, the way it came.
+    lastStep = lastStep && { id: lastStep.id, direction: -lastStep.direction, time: Date.now(), fromText: GT4.t("app.gsdx_name") };
+    ctx.refresh("renderer", true);
+  }
+
+  function gsdxDownloadDialog(ctx) {
+    if (!gsdxDownloadListening) {
+      gsdxDownloadListening = true;
+      GT4.backend.listen("gsdx-download", function (payload) {
+        if (gsdxDownloadHandler) {
+          gsdxDownloadHandler(payload || {});
+        }
+      });
+    }
+    var installed = false;
+    var status = h("p", { class: "gsdx-status", role: "status", text: "" });
+    var fill = h("i");
+    var bar = h("span", { class: "bar" }, [fill]);
+    var figures = h("p", { class: "gsdx-figures", text: "" });
+    var progress = h("div", { class: "gsdx-progress", hidden: true }, [status, bar, figures]);
+    var megabytes = function (bytes) {
+      return (bytes / 1e6).toFixed(1) + " MB";
+    };
+    var options = {
+      title: GT4.t("settings.gsdx_title"),
+      text: GT4.t("settings.gsdx_text"),
+      body: [progress],
+      buttons: [
+        { label: GT4.t("settings.gsdx_download"), primary: true, closes: false, run: function () { startDownload(); } },
+        { label: GT4.t("common.cancel") }
+      ],
+      onClose: function () {
+        gsdxDownloadHandler = null;
+        if (!installed) {
+          backToStoredRenderer(ctx);
+        }
+      }
+    };
+    var dialog = GT4.ui.openDialog(options);
+    var actions = dialog.el.querySelector(".modal-actions");
+    var buttons = actions.querySelectorAll("button");
+    var message = dialog.el.querySelector(".modal-text");
+
+    gsdxDownloadHandler = function (event) {
+      var names = { listing: "app.gsdx_listing", downloading: "app.gsdx_downloading", installing: "app.gsdx_installing" };
+      if (names[event.step]) {
+        status.textContent = GT4.t(names[event.step]);
+      }
+      if (event.step === "downloading" && event.bytesTotal) {
+        fill.style.width = Math.min(100, (event.bytesDone * 100) / event.bytesTotal) + "%";
+        figures.textContent = GT4.t("setup.renderer_count", { done: megabytes(event.bytesDone), total: megabytes(event.bytesTotal) });
+      } else if (event.step === "installing") {
+        fill.style.width = "100%";
+      }
+    };
+
+    function startDownload() {
+      // No way out while it runs: the install cannot be stopped halfway.
+      options.dismissable = false;
+      dialog.el.querySelector("h3").textContent = GT4.t("app.gsdx_name");
+      actions.style.display = "none";
+      message.hidden = true;
+      progress.hidden = false;
+      status.textContent = GT4.t("app.gsdx_listing");
+      call("download_gsdx").then(function () {
+        installed = true;
+        fill.style.width = "100%";
+        dialog.close();
+        commit(ctx, "renderer", "pcsx2", true);
+      }, function (err) {
+        options.dismissable = true;
+        progress.hidden = true;
+        message.hidden = false;
+        message.textContent = errorText(err);
+        buttons[0].style.display = "none";
+        buttons[1].textContent = GT4.t("settings.gsdx_close");
+        actions.style.display = "";
+        buttons[1].focus({ preventScroll: true });
+      });
+    }
+  }
+
+  function chooseGsdx(ctx) {
+    call("gsdx_download_needed").then(function (needed) {
+      if (needed) {
+        gsdxDownloadDialog(ctx);
+      } else {
+        commit(ctx, "renderer", "pcsx2", true);
+      }
+    }, function () {
+      commit(ctx, "renderer", "pcsx2", true);
+    });
+  }
+
   function dropdownControl(ctx, row) {
     var selector = optionSelector({
       id: row.id,
@@ -454,6 +554,10 @@
       current: row.current,
       disabled: !!row.disabled,
       onChange: function (value) {
+        if (row.id === "renderer" && value === "pcsx2") {
+          chooseGsdx(ctx);
+          return;
+        }
         commit(ctx, row.id, value, true);
       }
     });

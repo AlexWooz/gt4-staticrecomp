@@ -4,6 +4,7 @@
  * pages render in a plain browser. Values are sample values, not game data.
  *
  * Query options (ui/dev/index.html?...):
+ *   gsdx=missing|offline                            (GSdx is not installed: the download works, or fails)
  *   setup=done|needed|wrong|copying|checking|preparing|renderer|failed|missing|offline   (default done)
  *   pick=spec                                       (setup: the picker returns an unsupported image, refused)
  *   pick=other                                      (setup: the picker returns the other game's disc, a mismatch)
@@ -724,6 +725,25 @@
         return null;
       case "get_settings_table":
         return tableView();
+      case "gsdx_download_needed":
+        return query.get("gsdx") === "missing" || query.get("gsdx") === "offline";
+      case "download_gsdx":
+        return new Promise(function (resolve, reject) {
+          emit("gsdx-download", { step: "listing" });
+          var done = 0;
+          var timer = setInterval(function () {
+            done += 12000000;
+            emit("gsdx-download", { step: "downloading", bytesDone: done, bytesTotal: 48000000 });
+            if (query.get("gsdx") === "offline") {
+              clearInterval(timer);
+              reject(new Error("GSdx could not be downloaded: no internet connection. Check your connection and try again."));
+            } else if (done >= 48000000) {
+              clearInterval(timer);
+              emit("gsdx-download", { step: "installing" });
+              setTimeout(resolve, 500);
+            }
+          }, 500);
+        });
       case "set_setting": {
         if (args.id === "language") {
           mockLanguage = args.value;

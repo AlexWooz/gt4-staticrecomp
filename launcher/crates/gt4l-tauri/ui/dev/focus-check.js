@@ -944,6 +944,89 @@
     await setHash("#/settings/graphics");
   }
 
+  // Owner, 2026-11-02: choosing GSdx when it is missing asks first. The dialog shows the download and closes by itself; declining,
+  // or a failed download, goes back to CoreGS 2.0, and the choice is stored only after the install.
+  async function gsdxDialogChecks() {
+    var real = GT4.backend.call;
+    var needed = true;
+    var download = null;
+    GT4.backend.call = function (command, args) {
+      if (command === "gsdx_download_needed") {
+        return Promise.resolve(needed);
+      }
+      if (command === "download_gsdx") {
+        return new Promise(function (resolve, reject) { download = { resolve: resolve, reject: reject }; });
+      }
+      return real(command, args);
+    };
+    var storedRenderer = async function () {
+      return GT4.settingsModel.findRow(await real("get_settings_table"), "renderer").current;
+    };
+    var openFromCoregs = async function () {
+      await real("set_setting", { id: "renderer", value: "coregs20" });
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+      await stepSelector("renderer", 1);
+      await wait(150);
+    };
+    var modal = function () { return document.querySelector(".modal"); };
+    var buttons = function () { return modal().querySelectorAll(".modal-actions button"); };
+    var before = await storedRenderer();
+    try {
+      await openFromCoregs();
+      check("choosing GSdx when it is missing opens the dialog", !!modal() && modal().textContent.indexOf(T("settings.gsdx_title")) >= 0, "no dialog");
+      check("nothing is stored while the dialog asks", (await storedRenderer()) === "coregs20", await storedRenderer());
+      if (!modal()) {
+        return;
+      }
+      buttons()[1].click();
+      await wait(450);
+      check("cancelling closes the dialog", !modal(), "still open");
+      check("cancelling goes back to CoreGS 2.0", selectorText("renderer") === T("choice.renderer.coregs20") && (await storedRenderer()) === "coregs20", selectorText("renderer"));
+      check("after cancelling the focus is on the renderer", document.activeElement === selectorNode("renderer"), "focus elsewhere");
+
+      await openFromCoregs();
+      GT4.ui.topDialog().back();
+      await wait(450);
+      check("Back also cancels", !modal() && selectorText("renderer") === T("choice.renderer.coregs20"), selectorText("renderer"));
+
+      await openFromCoregs();
+      buttons()[0].click();
+      await wait(100);
+      check("accepting shows the progress in the dialog", !!modal() && !modal().querySelector(".gsdx-progress").hidden && modal().querySelector(".gsdx-status").textContent !== "", "no progress");
+      root.GT4_MOCK.emit("gsdx-download", { step: "downloading", bytesDone: 24000000, bytesTotal: 48000000 });
+      await wait(50);
+      check("the dialog shows the download's figures", modal().querySelector(".gsdx-figures").textContent === T("setup.renderer_count", { done: "24.0 MB", total: "48.0 MB" }) && modal().querySelector(".bar i").style.width === "50%", modal().querySelector(".gsdx-figures").textContent);
+      GT4.ui.topDialog().back();
+      check("the download cannot be dismissed", !!modal(), "closed");
+      check("the choice waits for the install", (await storedRenderer()) === "coregs20", await storedRenderer());
+      download.resolve(null);
+      await wait(450);
+      check("the dialog closes by itself after the install", !modal(), "still open");
+      check("after the install GSdx is stored and shown", (await storedRenderer()) === "pcsx2" && selectorText("renderer") === T("app.gsdx_name"), selectorText("renderer"));
+
+      await openFromCoregs();
+      buttons()[0].click();
+      await wait(100);
+      download.reject("no internet");
+      await wait(150);
+      check("a failed download says so in the dialog", !!modal() && modal().querySelector(".modal-text").textContent.indexOf("no internet") >= 0, modal() ? modal().textContent : "closed");
+      buttons()[1].click();
+      await wait(450);
+      check("after a failed download CoreGS 2.0 stays", !modal() && selectorText("renderer") === T("choice.renderer.coregs20") && (await storedRenderer()) === "coregs20", selectorText("renderer"));
+
+      needed = false;
+      await openFromCoregs();
+      check("with GSdx installed there is no dialog, and the choice is stored", !modal() && (await storedRenderer()) === "pcsx2", "dialog or not stored");
+    } finally {
+      GT4.backend.call = real;
+      GT4.ui.topDialog() && GT4.ui.topDialog().close();
+      await real("set_setting", { id: "renderer", value: before });
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+    }
+  }
+
   // The live switch (Settings > General > Language): the whole UI changes at once, in both directions.
   async function languageSwitchChecks() {
     var before = GT4.i18n.current();
@@ -1353,6 +1436,7 @@
       await libraryActionChecks();
       await valueChecks();
       await rendererRowChecks();
+      await gsdxDialogChecks();
       await advancedSectionChecks();
       await controlsChecks();
       await gamesChecks();

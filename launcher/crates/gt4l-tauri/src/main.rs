@@ -220,6 +220,8 @@ fn main() {
             commands::get_settings_table,
             commands::set_setting,
             commands::reset_gs_settings_to_defaults,
+            renderer_switch::gsdx_download_needed,
+            renderer_switch::download_gsdx,
             setup::setup_choose_disc,
             setup::setup_start,
             setup::setup_cancel,

@@ -1,13 +1,16 @@
 //! Choosing GSdx in Settings (TASK-089 extension, release 1.2.0). GSdx is optional: CoreGS 2.0 is inside the game.
+//! When GSdx is missing the page asks first and shows the download in its dialog (`gsdx_download_needed`, `download_gsdx`), and
+//! stores the choice only after the install; `start` stays as the guard of a choice stored any other way.
 //! Choosing it installs GSdx at once when it is missing, with the progress of the renderer install
 //! (`renderer-progress`). A failed install is reported, and Play does not start the game until GSdx is there
 //! (`launch::choose_renderer`). Setup installs GSdx itself (`setup.rs`), so a choice made during setup does not start
 //! a second install.
 
+use gt4l_core::gs_release::Step;
 use gt4l_core::messages;
 use gt4l_core::settings;
-use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::state::{lock, Shared};
 use crate::{state, updates};
@@ -43,6 +46,35 @@ pub fn run(home_ready: bool, installed: bool, install: &mut dyn FnMut() -> Resul
         Ok(()) => Outcome::Installed,
         Err(message) => Outcome::Failed(message),
     }
+}
+
+/// `gsdx_download_needed()`: whether choosing GSdx now needs a download. Before setup it does not: setup installs it.
+#[tauri::command]
+pub fn gsdx_download_needed(shared: State<'_, Shared>) -> bool {
+    let state = lock(shared.inner());
+    needs_install(state.home_ready(), !gt4l_core::gs_release::needs_install(&state.dirs.renderer_root()))
+}
+
+/// What the dialog hears about a step of the download.
+pub fn download_event(step: Step) -> Value {
+    match step {
+        Step::Transfer { done, total } => json!({ "step": "downloading", "bytesDone": done, "bytesTotal": total }),
+        other => json!({ "step": updates::step_name(other) }),
+    }
+}
+
+/// `download_gsdx()`: installs GSdx, with `gsdx-download` events for the dialog. An error is the notice the dialog shows.
+#[tauri::command(async)]
+pub fn download_gsdx(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
+    let dirs = lock(shared.inner()).dirs.clone();
+    updates::install_renderer(&dirs, &mut |step| {
+        let _ = app.emit("gsdx-download", download_event(step));
+    })
+    .map(|_| ())
+    .map_err(|message| {
+        state::log_warn(&dirs, &format!("GSdx not installed from the dialog in Settings: {message}"));
+        failure_notice(&message)
+    })
 }
 
 /// Starts the switch on a worker thread after a `renderer` setting was saved; Settings is never blocked.
@@ -81,6 +113,16 @@ pub fn start(app: AppHandle, shared: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_dialog_hears_each_step_and_the_bytes_of_the_download() {
+        assert_eq!(download_event(Step::Listing), json!({ "step": "listing" }));
+        assert_eq!(
+            download_event(Step::Transfer { done: 5, total: Some(10) }),
+            json!({ "step": "downloading", "bytesDone": 5, "bytesTotal": 10 })
+        );
+        assert_eq!(download_event(Step::Installing), json!({ "step": "installing" }));
+    }
 
     #[test]
     fn choosing_gsdx_triggers_exactly_one_install_when_it_is_missing() {

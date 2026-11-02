@@ -5,6 +5,7 @@
 Branch `task/136-simple-onboarding`, on top of TASK-135. Launcher only, game exes unchanged (candidate 378). Not merged, not uploaded, not built into a package yet. Decision 0074.
 
 - **New install:** setup checks the card (Vulkan 1.2, then the game starts CoreGS 2.0 with `--prepare-shaders`). It passes: CoreGS 2.0, nothing downloaded. It fails: GSdx is downloaded and the page says why.
+- **Settings:** choosing GSdx when it is missing asks in a dialog, which shows the download and closes by itself; declining or a failure goes back to CoreGS 2.0.
 - **No change** for a player who chose a renderer or already has GSdx. The launch-time repair no longer downloads GSdx under CoreGS 2.0.
 - **Checks:** launcher `cargo test` passed, with two new flow tests and the rule's test; two ignored tests with the real check on this PC passed, CoreGS 2.0 with `gt4.exe`, GSdx with the program missing; `--prepare-shaders` from an empty cache: 15 s here, 3 min 40 s on the notebook, exit 0 on both; `dev/focus-check.html` in both languages.
 - **Not verified:** a whole setup with a real disc through the page, a real card refused by the renderer (the fallback was exercised with the program missing), a PC without Vulkan.

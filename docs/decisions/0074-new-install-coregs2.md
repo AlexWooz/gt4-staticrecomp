@@ -9,7 +9,7 @@ Setup no longer downloads GSdx as a matter of course. On the first game of a new
 1. the graphics card a run would use reports Vulkan 1.2 with its own driver;
 2. the game program starts CoreGS 2.0 on that card without a window and compiles the shader cache (`--prepare-shaders`, IN-507).
 
-Both pass: CoreGS 2.0 is stored as the renderer and nothing is downloaded. Otherwise GSdx is the renderer and is downloaded, and the setup page says why. GSdx stays one choice away in Settings, and choosing it downloads it.
+Both pass: CoreGS 2.0 is stored as the renderer and nothing is downloaded. Otherwise GSdx is the renderer and is downloaded, and the setup page says why. GSdx stays one choice away in Settings: when it is missing, a dialog asks before the download and shows it; declining keeps the renderer stored.
 
 ## Why step 2
 

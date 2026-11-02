@@ -543,6 +543,11 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 .selector-value.enter-from-left { animation: version-enter-left 320ms cubic-bezier(0.25, 0.8, 0.25, 1) both; }
 .selector-value.leave-to-left { animation: version-leave-left 320ms cubic-bezier(0.25, 0.8, 0.25, 1) both; }
 .selector-value.leave-to-right { animation: version-leave-right 320ms cubic-bezier(0.25, 0.8, 0.25, 1) both; }
+/* The GSdx download in its dialog (settings.js). */
+.gsdx-progress { margin-top: 12px; }
+.gsdx-progress[hidden] { display: none; }
+.gsdx-status, .gsdx-figures { font-size: 12.5px; color: var(--dim); min-height: 18px; }
+.gsdx-figures { margin-top: 8px; }
 /* A row going out after a step changed the tab's rows (settings.js). */
 .row-departing { position: absolute; margin: 0; pointer-events: none; }
 
