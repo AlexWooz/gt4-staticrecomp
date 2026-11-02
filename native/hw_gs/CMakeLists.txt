@@ -128,6 +128,11 @@ add_executable(hw_flare_table_fixture hw_flare_table_fixture.cpp)
 target_compile_options(hw_flare_table_fixture PRIVATE /W4)
 add_test(NAME hw_flare_table COMMAND hw_flare_table_fixture)
 
+# IN-521: the display queue control (CPU only).
+add_executable(hw_present_latency_fixture hw_present_latency_fixture.cpp)
+target_compile_options(hw_present_latency_fixture PRIVATE /W4)
+add_test(NAME hw_present_latency COMMAND hw_present_latency_fixture)
+
 add_executable(hw_gs_smoke hw_gs_smoke.cpp)
 target_include_directories(hw_gs_smoke PRIVATE "${GT4_HW_VULKAN_SDK}/Include")
 target_link_libraries(hw_gs_smoke PRIVATE gt4_hw_backend user32)

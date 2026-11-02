@@ -10,6 +10,7 @@
 
 #include "../pacing.hpp"
 #include "hw_gs_present_rect.hpp"
+#include "hw_present_latency.hpp"
 
 #include "hw_gs_vulkan_loader.hpp" // Vulkan names renamed to gt4_hw_*; pointers loaded at run time
 #include "writeback/hw_gs_vulkan_device_table.hpp"
@@ -137,6 +138,14 @@ struct Backend::Impl {
   };
   const char *frametime_path = std::getenv("GT4_HW_FRAMETIME_LOG");
   std::FILE *frametime_file = nullptr;
+  // IN-521: the display queue control; it needs the shown times as well. GT4_HW_LATENCY_CONTROL=0: off (A/B).
+  const bool latency_control_on = [] {
+    const char *text = std::getenv("GT4_HW_LATENCY_CONTROL");
+    return text == nullptr || std::strcmp(text, "0") != 0;
+  }();
+  bool want_shown_times() const { return frametime_path != nullptr || latency_control_on; }
+  gt4::hw::PresentLatencyControl latency_control;
+  double frametime_last_shown = 0.0;
   bool frametime_shown_possible = false;  // the instance has VK_KHR_get_surface_capabilities2
   bool present_wait_enabled = false;
   PFN_vkWaitForPresent2KHR wait_for_present = nullptr;
@@ -172,44 +181,51 @@ struct Backend::Impl {
         info.timeout = 500000000;
         if (wait_for_present(device, entry.swapchain, &info) == VK_SUCCESS) shownMs = frametime_now_ms();
       }
-      std::fprintf(frametime_file, "%llu,%llu,%.3f,%.3f,%.3f\n", static_cast<unsigned long long>(entry.id),
-                   static_cast<unsigned long long>(entry.call), entry.presentMs, entry.callMs, shownMs);
-      if (entry.id % 300 == 0) std::fflush(frametime_file);
+      if (shownMs > 0.0 && latency_control_on) {
+        if (frametime_last_shown > 0.0) latency_control.shown(shownMs - entry.presentMs, shownMs - frametime_last_shown);
+        frametime_last_shown = shownMs;
+      }
+      if (frametime_file) {
+        std::fprintf(frametime_file, "%llu,%llu,%.3f,%.3f,%.3f\n", static_cast<unsigned long long>(entry.id),
+                     static_cast<unsigned long long>(entry.call), entry.presentMs, entry.callMs, shownMs);
+        if (entry.id % 300 == 0) std::fflush(frametime_file);
+      }
     }
   }
 
   // Before the swapchain goes: nothing may still wait on it.
   void frametime_drain() {
-    if (!frametime_file) return;
+    if (!frametime_thread.joinable()) return;
     std::unique_lock<std::mutex> lock(frametime_mutex);
     frametime_changed.wait(lock, [&] { return frametime_queue.empty() && !frametime_waiting; });
   }
 
   void frametime_close() {
-    if (!frametime_file) return;
+    if (!frametime_thread.joinable()) return;
     {
       const std::lock_guard<std::mutex> lock(frametime_mutex);
       frametime_stop = true;
     }
     frametime_changed.notify_all();
-    if (frametime_thread.joinable()) frametime_thread.join();
-    std::fclose(frametime_file);
+    frametime_thread.join();
+    if (frametime_file) std::fclose(frametime_file);
     frametime_file = nullptr;
   }
 
   // vkQueuePresentKHR with the log's id and times.
   VkResult queue_present(VkQueue on, VkPresentInfoKHR &present) {
-    if (!frametime_path) return vkQueuePresentKHR(on, &present);
-    if (!frametime_file) {
+    if (!frametime_path && !present_wait_enabled) return vkQueuePresentKHR(on, &present);
+    if (frametime_path && !frametime_file) {
       frametime_file = std::fopen(frametime_path, "w");
-      if (!frametime_file) {
+      if (frametime_file) {
+        std::fprintf(frametime_file, "id,vblank,present_ms,call_ms,shown_ms\n");
+      } else {
         std::fprintf(stderr, "[hw] GT4_HW_FRAMETIME_LOG: cannot open %s\n", frametime_path);
         frametime_path = nullptr;
-        return vkQueuePresentKHR(on, &present);
+        if (!present_wait_enabled) return vkQueuePresentKHR(on, &present);
       }
-      std::fprintf(frametime_file, "id,vblank,present_ms,call_ms,shown_ms\n");
-      frametime_thread = std::thread([this] { frametime_worker(); });
     }
+    if (!frametime_thread.joinable()) frametime_thread = std::thread([this] { frametime_worker(); });
     const std::uint64_t id = ++present_ids;
     VkPresentId2KHR presentId{VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR};
     presentId.swapchainCount = 1;
@@ -437,7 +453,7 @@ struct Backend::Impl {
     const auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
         vulkan_loader::instance_proc(nullptr, "vkEnumerateInstanceExtensionProperties"));
     bool surface_capabilities2 = false;
-    if (frametime_path != nullptr && enumerate != nullptr) {
+    if (want_shown_times() && enumerate != nullptr) {
       std::uint32_t count = 0;
       enumerate(nullptr, &count, nullptr);
       std::vector<VkExtensionProperties> available(count);
@@ -647,7 +663,7 @@ struct Backend::Impl {
     }
     VkPhysicalDevicePresentId2FeaturesKHR present_id2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR};
     VkPhysicalDevicePresentWait2FeaturesKHR present_wait2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR};
-    if (frametime_path != nullptr && frametime_shown_possible && has_extension(available, VK_KHR_PRESENT_ID_2_EXTENSION_NAME) &&
+    if (want_shown_times() && frametime_shown_possible && has_extension(available, VK_KHR_PRESENT_ID_2_EXTENSION_NAME) &&
         has_extension(available, VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME)) {
       present_id2.presentId2 = VK_TRUE;
       present_wait2.presentWait2 = VK_TRUE;
@@ -1125,6 +1141,12 @@ struct Backend::Impl {
   void present_frame(const hwgs::writeback::FrameOutput *frame) {
     if (!swapchain) return;
     ++present_calls;
+    if (latency_control_on && latency_control.leave_out()) {
+      std::fprintf(stderr, "[hw] latency control: a presentation left out at call %llu (%llu so far), %.1f ms to the display, target %.1f ms\n",
+                   static_cast<unsigned long long>(present_calls), static_cast<unsigned long long>(latency_control.left_out()),
+                   latency_control.last_lag_ms(), latency_control.target_ms());
+      return;
+    }
     if (present_queue) {
       present_on_own_queue(frame);
       return;

@@ -8,6 +8,7 @@
 #include "vu_micro.hpp"
 
 #ifdef GT4_GS_STREAM_CLIENT
+#include "gs_stream/gs_stream_sink.hpp"
 #include "gs_stream/gs_stream_client.hpp"
 #endif
 
