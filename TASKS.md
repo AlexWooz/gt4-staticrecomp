@@ -144,7 +144,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑094 | Desktop shortcut: finish-page checkbox (on by default), all-users desktop `Gran Turismo 4.lnk`, choice kept in HKLM `DesktopShortcut`, silent updates create it for older installs and restore it when chosen | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🔄 Study done and owner decisions recorded (2026-10-28) · next: P0 baselines when the owner frees the desktop |
-| TASK‑135 | Performance HUD for CoreGS 2.0, in the spirit of the macOS Metal HUD: FPS, frame time, CPU and GPU of the game, memory and a live frame time graph | 🧪 Built, waits for the owner's test (branch `task/135-coregs2-performance-hud`, candidate 377, 2026-11-02) |
+| TASK‑135 | Performance HUD for CoreGS 2.0, in the spirit of the macOS Metal HUD: FPS, frame time, CPU and GPU of the game, memory and a live frame time graph | 🧪 Built, waits for the owner's test (branch `task/135-coregs2-performance-hud`, candidate 378, on the notebook, 2026-11-02) |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -2643,4 +2643,4 @@ rate; FPS with its minimum and maximum; frame time; CPU and GPU use of the game;
 reference is the look of the macOS Metal HUD (screenshots only).
 Acceptance: off by default, launcher rows under CoreGS 2.0, overhead measured, the identity gates unchanged with it off, owner
 test. Updating the GSdx overlay to match is separate work in the fork, for a PCSX2-tainted agent.
-State (2026-11-02): candidate 377, off by default; 26.6 us per presentation, no measurable cost on the graphics thread (IN-526, ledger). Waits for the owner's test.
+State (2026-11-02): candidate 378, off by default; 26.6 us per presentation, no measurable cost on the graphics thread (IN-526, ledger). Waits for the owner's test.

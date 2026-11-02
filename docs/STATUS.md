@@ -1,8 +1,10 @@
 # Current Status
 
-## TASK-135: performance HUD on CoreGS 2.0, candidate 377 (2026-11-02)
+## TASK-135: performance HUD on CoreGS 2.0, candidate 378 (2026-11-02)
 
-Branch `task/135-coregs2-performance-hud`, on top of `task/082-coregs2-frame-skip`. Not merged, not uploaded, **not installed**: the installed game and launcher are still candidate 376, without the option selector and without the HUD. Exes in `build/candidates/coregs2-candidate-377`; `docs/inputs` pins and the distribution folder are made when it is built for install.
+Branch `task/135-coregs2-performance-hud`, on top of `task/082-coregs2-frame-skip`. Not merged, not uploaded. Candidate 378 is 377 with the launcher's icon on both game executables (owner): 10 of 10 icon images in each, 30 of 30 frames equal to 377. Pins `docs/inputs/slice378-pcsx2.json`, `slice378-spec2.json` (capsule of 376); game `private/slice378-rc8-game`, distribution `private/slice378-dist-130-rc8`, portable zip in `private/release-130-rc8r-out` (`bb4538cc...`). No installer was built.
+
+**Where it is:** the owner's notebook (portable copy, 25 program files replaced over SMB, each checked by hash; 639 files of `user` and `data` unchanged). It was not started there. The owner's desktop is still candidate 376, without the option selector and without the HUD.
 
 - **The option:** Settings > Graphics > Advanced > Performance HUD, under CoreGS 2.0 only, off by default. A panel in the top right corner of the window: graphics card, output size, render scale, refresh rate, FPS, frame time, CPU and GPU of the game, memory, video memory, and a live frame time graph.
 - **Cost:** none measurable on the graphics thread; 26.6 us per presentation by its own counter (the ledger has the table).
