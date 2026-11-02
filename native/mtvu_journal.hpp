@@ -32,12 +32,21 @@ class GsSink {
   // TASK-116 step 1: a READ_FIFO that must be posted at this journal position, without waiting for the reply (the GS
   // stream, pcsx2 mode, Performance mode).
   virtual void readback(std::uint32_t qwords) = 0;
+  // IN-461 (direct GS intake): job `job`'s output belongs at this point of the GS stream; the GS consumer reads it from
+  // the output ring itself. Only a sink that supports it is used with EeJournal::set_direct (the default throws).
+  virtual void direct_job(std::uint64_t job);
 };
 
 // Worker side: receives whole logical input records and emits outputs. Single thread only.
 class WorkerEnd {
  public:
-  WorkerEnd(SpscByteRing &input, SpscByteRing &output, Doorbell &input_bell, Doorbell &output_bell);
+  // IN-459: with `wake_output_bytes` > 0 the worker wakes a sleeping EE only when the EE has something worth waking
+  // for: the output ring holds at least that many bytes (a quarter of the ring at most), the worker goes idle or stops
+  // with quiet publishes behind it (an EE waiting for every job can go on), or the output ring is full (before the
+  // worker waits for space); a pop wakes it only while it waits for input space. Other publishes advance the bell
+  // quietly, and an EE that is awake sees them at its next snapshot. 0: every record and every pop wake a sleeping EE.
+  WorkerEnd(SpscByteRing &input, SpscByteRing &output, Doorbell &input_bell, Doorbell &output_bell,
+            std::size_t wake_output_bytes = 0);
 
   // Blocks until one whole logical record arrived (chunks are reassembled).
   void receive(RecordHeader &header, std::vector<std::uint8_t> &payload);
@@ -45,11 +54,22 @@ class WorkerEnd {
   void emit_gif(std::uint8_t path, std::uint64_t job, const std::uint8_t *data, std::size_t bytes);
   void emit_job_done(std::uint64_t job);
 
+  // IN-522: the worker is about to wait for something other than input. Who reads the output may sleep behind quiet publishes,
+  // and may be what that wait depends on (the GS worker on its way to a read), so it wakes first.
+  void wake_before_waiting() {
+    if (quiet_pending_) progress(true);
+  }
+
  private:
   SpscByteRing &input_;
   SpscByteRing &output_;
   Doorbell &input_bell_;   // the worker sleeps here; the EE rings it when it posts input
   Doorbell &output_bell_;  // worker progress: output data and freed input space; the EE waits here
+  std::size_t wake_output_bytes_ = 0;
+  // IN-459: a quiet publish since the last loud one; the worker rings loudly before it sleeps for input or stops.
+  bool quiet_pending_ = false;
+
+  void progress(bool wake);  // rings the output bell, loudly (wakes a sleeper) or quietly
 };
 
 // EE side. Not thread safe: one EE thread calls every method.
@@ -84,6 +104,13 @@ class EeJournal {
 
   // Sends the Stop record (no placeholder). The caller drains first; the worker then exits.
   void send_stop();
+
+  // IN-461 (CPU survey T3, direct GS intake): the GS consumer reads every job's output from the output ring itself.
+  // post_job runs the queued EE entries, then marks the job's place in the GS stream (GsSink::direct_job) instead of
+  // queuing a placeholder, and the EE never reads the output ring (the GS consumer is its one reader, which also keeps
+  // a worker blocked on a full output ring moving while the EE waits for input space). Set before the first job.
+  void set_direct(bool direct);
+  bool direct() const { return direct_; }
 
   std::uint64_t jobs_posted() const { return jobs_posted_; }
   std::uint64_t outputs_executed() const { return outputs_executed_; }
@@ -124,6 +151,7 @@ class EeJournal {
   std::uint8_t partial_path_ = 0;
   std::uint64_t partial_job_ = 0;
   std::uint64_t jobs_posted_ = 0;
+  bool direct_ = false;
   std::uint64_t outputs_executed_ = 0;
   std::uint64_t executed_bytes_ = 0;
 };

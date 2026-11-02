@@ -39,6 +39,13 @@ void test_parsers() {
   require(parse_present_mode(nullptr) == PresentMode::fifo, "default present mode");
   require(parse_present_mode("mailbox") == PresentMode::mailbox, "mailbox token");
   require(parse_present_mode("immediate") == PresentMode::immediate, "immediate token");
+  require(available_present_mode(PresentMode::mailbox, true, true) == PresentMode::mailbox, "mailbox when it exists");
+  require(available_present_mode(PresentMode::mailbox, false, true) == PresentMode::immediate, "no mailbox: immediate (HD 620)");
+  require(available_present_mode(PresentMode::mailbox, false, false) == PresentMode::fifo, "no mailbox or immediate: FIFO");
+  require(available_present_mode(PresentMode::immediate, true, true) == PresentMode::immediate, "immediate when it exists");
+  require(available_present_mode(PresentMode::immediate, true, false) == PresentMode::mailbox, "no immediate: mailbox");
+  require(available_present_mode(PresentMode::immediate, false, false) == PresentMode::fifo, "no immediate or mailbox: FIFO");
+  require(available_present_mode(PresentMode::fifo, true, true) == PresentMode::fifo, "FIFO stays FIFO");
   refused = false;
   try {
     parse_present_mode("vsync");
@@ -61,6 +68,32 @@ void test_period_accuracy_no_drift() {
   require(pacer.deadline() == 1000 + static_cast<std::int64_t>(10000 * frequency / 60),
           "no drift after 10,000 frames");
   require(pacer.late_frames() == 0 && pacer.resyncs() == 0, "clean run has no late frames");
+}
+
+// TASK-082: with frames left out, a heavy frame keeps its place on the grid up to the limit.
+void test_resync_periods() {
+  FramePacer pacer(frequency, 60);
+  const std::int64_t period = static_cast<std::int64_t>(frequency) / 60;
+  pacer.anchor(0);
+  pacer.set_resync_periods(4);
+  pacer.release(0);
+  pacer.release(period * 3);
+  require(pacer.resyncs() == 0, "three periods behind must not restart a grid that allows four");
+  require(pacer.deadline() == static_cast<std::int64_t>(2 * frequency / 60), "the grid must keep its place");
+  pacer.release(period * 8);
+  require(pacer.resyncs() == 1, "past the limit the grid restarts");
+  require(pacer.deadline() == period * 8 + static_cast<std::int64_t>(frequency / 60), "a restart is one period after now");
+}
+
+// IN-521: a shift moves every later deadline by the same amount.
+void test_grid_shift() {
+  FramePacer pacer(frequency, 60);
+  pacer.anchor(1000);
+  const std::int64_t before = pacer.deadline();
+  pacer.shift(1234);
+  require(pacer.deadline() == before + 1234, "a shift moves the deadline later");
+  pacer.shift(-1234);
+  require(pacer.deadline() == before, "a shift back returns to the grid");
 }
 
 void test_remaining_and_late_frames() {
@@ -304,6 +337,8 @@ int main() {
   try {
     test_parsers();
     test_period_accuracy_no_drift();
+    test_grid_shift();
+    test_resync_periods();
     test_remaining_and_late_frames();
     test_stall_restarts_grid_without_burst();
     test_resampler_unity_is_passthrough();

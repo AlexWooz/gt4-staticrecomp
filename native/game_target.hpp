@@ -82,6 +82,22 @@ struct HookAddresses {
   std::uint32_t shape_call_pc = 0;
   std::uint32_t shape_target_pc = 0;
   std::uint32_t shape_return_pc = 0;
+
+  // TASK-082 frame skipping (native/frame_skip.hpp): the main loop's functors, the two words the flip inverts, and the race.
+  std::uint32_t frame_update_functor = 0;
+  std::uint32_t frame_render_functor = 0;
+  std::uint32_t frame_idle_functor = 0;
+  std::uint32_t frame_display_page = 0;
+  std::uint32_t frame_display_page_second = 0;
+  std::uint32_t frame_race_vtable_first = 0;
+  std::uint32_t frame_race_vtable_last = 0;
+  std::uint32_t frame_race_dynamics_offset = 0;
+  std::uint32_t frame_dynamics_clock_offset = 0;
+  std::uint32_t frame_dynamics_bytes = 0;
+  std::uint32_t frame_race_flare_offset = 0;
+  std::uint32_t frame_flare_track_count_offset = 0;
+  std::uint32_t frame_flare_car_count_offset = 0;
+  std::uint32_t frame_render_world = 0;  // RacePS2Base::render_world, reached through a vtable
 };
 
 struct Profile {
@@ -132,6 +148,20 @@ inline constexpr HookAddresses kV200Hooks = {
     /* shape_call_pc */ 0x455A5Cu,
     /* shape_target_pc */ 0x49D308u,
     /* shape_return_pc */ 0x455A64u,
+    /* frame_update_functor */ 0x00100EE0u,
+    /* frame_render_functor */ 0x00100F50u,
+    /* frame_idle_functor */ 0x00100FC0u,
+    /* frame_display_page */ 0x00618584u,
+    /* frame_display_page_second */ 0x00618600u,
+    /* frame_race_vtable_first */ 0x00676000u,
+    /* frame_race_vtable_last */ 0x00686000u,
+    /* frame_race_dynamics_offset */ 0x70u,
+    /* frame_dynamics_clock_offset */ 0xF898u,
+    /* frame_dynamics_bytes */ 0x10000u,
+    /* frame_race_flare_offset */ 0xDA0u,
+    /* frame_flare_track_count_offset */ 0x1848u,
+    /* frame_flare_car_count_offset */ 0xA34u,
+    /* frame_render_world */ 0x0033DEA8u,
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of
@@ -206,6 +236,20 @@ inline constexpr HookAddresses kSpec2Hooks = {
     /* shape_call_pc */ 0u,
     /* shape_target_pc */ 0u,
     /* shape_return_pc */ 0u,
+    /* frame_update_functor */ 0x001007D8u,
+    /* frame_render_functor */ 0x00100848u,
+    /* frame_idle_functor */ 0x001008B8u,
+    /* frame_display_page */ 0x00665634u,
+    /* frame_display_page_second */ 0x006656B0u,
+    /* frame_race_vtable_first */ 0x006AE000u,
+    /* frame_race_vtable_last */ 0x006BF000u,
+    /* frame_race_dynamics_offset */ 0x70u,
+    /* frame_dynamics_clock_offset */ 0x23960u,
+    /* frame_dynamics_bytes */ 0x24000u,
+    /* frame_race_flare_offset */ 0xE60u,
+    /* frame_flare_track_count_offset */ 0x1848u,
+    /* frame_flare_car_count_offset */ 0xA34u,
+    /* frame_render_world */ 0x001EA240u,
 };
 
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};

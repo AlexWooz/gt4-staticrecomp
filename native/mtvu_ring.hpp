@@ -62,6 +62,7 @@ class Doorbell {
     std::uint64_t rings = 0;    // ring() calls (every publish or release)
     std::uint64_t waits = 0;    // wait_changed() calls
     std::uint64_t wakeups = 0;  // wait_changed() calls that actually slept
+    std::uint64_t notifies = 0;  // ring() calls that woke a sleeper (IN-459)
   };
 
   std::uint32_t snapshot() const { return value_.load(std::memory_order_acquire); }
@@ -73,7 +74,17 @@ class Doorbell {
     rings_.fetch_add(1, std::memory_order_relaxed);
     value_.fetch_add(1, std::memory_order_seq_cst);
     // Only wake a peer that is asleep; while it runs, the next snapshot/re-check sees the new value anyway.
-    if (sleepers_.load(std::memory_order_seq_cst) > 0) value_.notify_all();
+    if (sleepers_.load(std::memory_order_seq_cst) > 0) {
+      notifies_.fetch_add(1, std::memory_order_relaxed);
+      value_.notify_all();
+    }
+  }
+
+  // IN-459: advances the counter without waking a sleeper. A peer that is awake sees the change at its next snapshot or
+  // re-check; one that sleeps stays asleep until a ring() it needs (the caller decides which events those are).
+  void ring_quiet() {
+    rings_.fetch_add(1, std::memory_order_relaxed);
+    value_.fetch_add(1, std::memory_order_seq_cst);
   }
 
   // Returns once the counter differs from `seen`, or at once when it already changed. `slept` reports whether the
@@ -95,13 +106,13 @@ class Doorbell {
 
   Stats stats() const {
     return Stats{rings_.load(std::memory_order_relaxed), waits_.load(std::memory_order_relaxed),
-                 wakeups_.load(std::memory_order_relaxed)};
+                 wakeups_.load(std::memory_order_relaxed), notifies_.load(std::memory_order_relaxed)};
   }
 
  private:
   std::atomic<std::uint32_t> value_{0};
   std::atomic<int> sleepers_{0};  // callers currently inside wait_changed (a count: two callers may share one bell)
-  std::atomic<std::uint64_t> rings_{0}, waits_{0}, wakeups_{0};
+  std::atomic<std::uint64_t> rings_{0}, waits_{0}, wakeups_{0}, notifies_{0};
 };
 
 class SpscByteRing {
@@ -131,8 +142,15 @@ class SpscByteRing {
 
   bool empty() const { return used() == 0; }
 
+  // IN-459: the producer sets this while it waits for space, so the consumer knows a freed slot must wake it. Set it
+  // before the snapshot of the bell it waits on (seq_cst on both sides: a consumer that reads false published its
+  // release before the producer's snapshot, so the producer sees the space or the changed bell).
+  void set_producer_waiting(bool waiting) { producer_waiting_.store(waiting, std::memory_order_seq_cst); }
+  bool producer_waiting() const { return producer_waiting_.load(std::memory_order_seq_cst); }
+
   // Producer only. Returns false when the record does not fit right now. Throws when the payload can never fit.
-  bool try_push(RecordHeader header, const std::uint8_t *payload) {
+  // `wake` false publishes with ring_quiet() (IN-459: the producer decides when a sleeping consumer must wake).
+  bool try_push(RecordHeader header, const std::uint8_t *payload, bool wake = true) {
     if (header.bytes > max_payload()) throw std::logic_error("mtvu ring record larger than max_payload");
     const std::size_t total = record_bytes(header.bytes);
     const std::uint64_t head = head_.load(std::memory_order_relaxed);
@@ -154,7 +172,11 @@ class SpscByteRing {
     std::memcpy(storage_.data() + write_offset, &header, kRecordHeaderBytes);
     if (header.bytes != 0) std::memcpy(storage_.data() + write_offset + kRecordHeaderBytes, payload, header.bytes);
     head_.store(position + total, std::memory_order_release);
-    bell_.ring();
+    if (wake) {
+      bell_.ring();
+    } else {
+      bell_.ring_quiet();
+    }
     return true;
   }
 
@@ -218,6 +240,7 @@ class SpscByteRing {
   std::vector<std::uint8_t> storage_;
   alignas(64) std::atomic<std::uint64_t> head_{0};
   alignas(64) std::atomic<std::uint64_t> tail_{0};
+  std::atomic<bool> producer_waiting_{false};
   std::size_t peeked_bytes_ = 0;  // consumer only: bytes of the record lent by try_peek
 };
 

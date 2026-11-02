@@ -6,6 +6,7 @@ use gt4l_core::messages;
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gt4controls::{self as controls_file, default_bindings};
@@ -65,15 +66,41 @@ fn installed_disc_name(state: &AppState, game: &'static Game, version: &str) -> 
     setup::game_disc_name(game, version, &installed_image_name(state, game))
 }
 
-/// One row of the game list: `{id, name, title, variant, installed, selected, state, disc_name, folder, size_bytes}`.
+/// Why a game set up once cannot start now, for the player: a broken link says where the image was. `None`: it was never set up,
+/// or it is ready.
+fn missing_reason(installed: &Installed, language: gt4l_core::language::Language) -> Option<String> {
+    match installed {
+        Installed::Missing { reason } => Some(reason.clone()),
+        Installed::LinkBroken { image } => {
+            Some(messages::render("setup.image_gone_reason", language, &[("path", &image.display().to_string())]))
+        }
+        Installed::NotSetUp | Installed::Ready { .. } => None,
+    }
+}
+
+/// The folder that holds a game's disc image: where the player keeps it, or the launcher's own copy of an older install.
+fn game_files_folder(state: &AppState, game: &'static Game) -> PathBuf {
+    match state.installed_of(game) {
+        Installed::Ready { image, .. } | Installed::LinkBroken { image } => {
+            image.parent().map(Path::to_path_buf).unwrap_or_else(|| state.game_dirs(game).disc_folder())
+        }
+        _ => state.game_dirs(game).disc_folder(),
+    }
+}
+
+/// One row of the game list: `{id, name, title, variant, installed, linked, selected, state, disc_name, folder, size_bytes,
+/// image_path, image_bytes}`. `size_bytes` is what removing the game frees; `image_path` and `image_bytes` are the disc image the game
+/// reads, wherever it is.
 fn game_row(state: &AppState, game: &'static Game) -> Value {
     let installed = state.installed_of(game);
     let dirs = state.game_dirs(game);
-    let (ready, version, reason) = match &installed {
-        Installed::Ready { version, .. } => (true, version.clone(), String::new()),
-        Installed::Missing { reason } => (false, String::new(), reason.clone()),
-        Installed::NotSetUp => (false, String::new(), String::new()),
+    let (ready, version, image_path) = match &installed {
+        Installed::Ready { version, image, .. } => (true, version.clone(), Some(image.clone())),
+        _ => (false, String::new(), None),
     };
+    let image_bytes = image_path.as_ref().and_then(|image| fs::metadata(image).ok()).map_or(0, |metadata| metadata.len());
+    let reason = missing_reason(&installed, state::language_of(state)).unwrap_or_default();
+    let linked = disc_setup::read_receipt(&dirs.prepared()).and_then(|receipt| receipt.image).is_some_and(|image| image.linked_path.is_some());
     let image_name = if ready { installed_image_name(state, game) } else { String::new() };
     let disc_name = if ready { setup::game_disc_name(game, &version, &image_name) } else { String::new() };
     let variant = if ready { setup::game_variant(game, &version, &image_name) } else { String::new() };
@@ -84,12 +111,15 @@ fn game_row(state: &AppState, game: &'static Game) -> Value {
         "title": setup::game_title(game),
         "variant": variant,
         "installed": ready,
+        "linked": linked,
         "damaged": !ready && !reason.is_empty(),
         "reason": reason,
         "selected": game == state.selected,
         "disc_name": disc_name,
         "folder": dirs.game_files_root().display().to_string(),
         "size_bytes": size_bytes,
+        "image_path": image_path.map(|image| image.display().to_string()).unwrap_or_default(),
+        "image_bytes": image_bytes,
     })
 }
 
@@ -133,13 +163,13 @@ pub fn app_state_of(state: &AppState) -> Value {
                 messages::text("setup.game_files_missing", language).to_string(),
                 chosen_name,
             ),
-            SetupOutcome::None => match &installed {
-                Installed::Missing { reason } => (
+            SetupOutcome::None => match missing_reason(&installed, language) {
+                Some(reason) => (
                     "files_missing",
-                    messages::render("setup.game_files_missing_reason", language, &[("reason", reason)]),
+                    messages::render("setup.game_files_missing_reason", language, &[("reason", &reason)]),
                     chosen_name,
                 ),
-                _ => ("needed", String::new(), chosen_name),
+                None => ("needed", String::new(), chosen_name),
             },
         }
     };
@@ -151,7 +181,7 @@ pub fn app_state_of(state: &AppState) -> Value {
     // The page names a game when one is already installed, when the disc picked is identified (`setup_game`), or when this
     // game's files are damaged. A setup with nothing installed and no disc identified yet has no target: the disc decides
     // (rc5 laptop test: a stored choice of Spec II made the first-run page say "Install Spec II").
-    let target = if installed_games.is_empty() && state.setup_game.is_none() && !matches!(installed, Installed::Missing { .. }) {
+    let target = if installed_games.is_empty() && state.setup_game.is_none() && !matches!(installed, Installed::Missing { .. } | Installed::LinkBroken { .. }) {
         Value::Null
     } else {
         json!({ "id": subject.id, "name": subject.display_name })
@@ -164,13 +194,14 @@ pub fn app_state_of(state: &AppState) -> Value {
             "bytes_done": run.bytes_done,
             "bytes_total": run.bytes_total,
             "renderer_step": run.renderer_step,
+            "renderer_choice": run.renderer_choice,
             "disc_name": disc_name,
             "problem": problem,
             "note": note,
             "game": target,
         },
         "game_running": state.game_child.is_some(),
-        "game_files": state.game_dirs(state.selected).disc_folder().display().to_string(),
+        "game_files": game_files_folder(state, state.selected).display().to_string(),
         "selected_game": state.selected.id,
         "any_installed": !installed_games.is_empty(),
         "language": state.config.settings.get("language"),
@@ -349,8 +380,8 @@ pub struct PlayInputs {
     pub elf: PathBuf,
     pub executable: PathBuf,
     pub settings: Settings,
-    /// The installed GSdx (the only renderer, TASK-096); Play does not start without it.
-    pub pcsx2: gs_release::Installed,
+    /// The installed GSdx; a session that uses it does not start without it. `None`: this is a CoreGS 2.0 session.
+    pub pcsx2: Option<gs_release::Installed>,
     /// The resolved Monitor and Resolution (TASK-080 addendum); `None` when no monitor could be read.
     pub display: Option<DisplayTarget>,
     pub extra: Vec<(String, String)>,
@@ -372,11 +403,15 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
         return Err(messages::text("setup.migrating", language).into());
     }
     let disc = match state.installed() {
-        Installed::Ready { image, .. } => image,
-        Installed::Missing { reason } => {
+        Installed::Ready { image, .. } => match gt4l_platform::disk::game_readable_path(&image) {
+            Some(readable) => readable,
+            None => return Err(messages::text("setup.path_not_readable", language).into()),
+        },
+        Installed::NotSetUp => return Err(messages::text("game.set_up_first", language).into()),
+        other => {
+            let reason = missing_reason(&other, language).unwrap_or_default();
             return Err(messages::render("setup.game_files_missing_reason", language, &[("reason", &reason)]));
         }
-        Installed::NotSetUp => return Err(messages::text("game.set_up_first", language).into()),
     };
     let game = state.selected;
     let dirs = state.game_dirs(game);
@@ -400,7 +435,8 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
         // original-game hash or enabled RA options. Native target guard stays intact.
         extra.push(("GT4_RA_ENABLED".into(), "0".into()));
     }
-    // Only GSdx runs the game (decision 0070, TASK-096): without a verified GSdx, Play stops here with the error.
+    // GSdx runs the game (decision 0070) unless the player chose CoreGS 2.0 (in the game executable): without a
+    // verified GSdx such a session stops here with the error.
     // TASK-108 (release 1.3.0): the graphics card and API of this run (automatic unless the player chose them). The
     // stored choices stay as they are; the run uses the resolved API, card and Adapter.
     // TASK-114 rc5: Play probes the cards once, so the run sees the hardware of this moment; the rest of Play reads that list.
@@ -413,8 +449,14 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     let card_name = graphics.card.as_ref().and_then(gt4l_core::gpu::GpuDevice::name).unwrap_or("none");
     let adapter = if graphics.adapter.is_empty() { "system default" } else { graphics.adapter.as_str() };
     state::log(&dirs, &format!("graphics: card {card_name}, API {}, Adapter {adapter}", graphics.api));
-    let installed = gs_release::installed(&dirs.renderer_root());
-    let pcsx2 = launch::choose_renderer(installed.as_ref(), &dirs.logs())?.clone();
+    let coregs20 = launch::uses_coregs20(&settings);
+    let pcsx2 = if coregs20 {
+        state::log(&dirs, "graphics: renderer CoreGS 2.0 (Vulkan)");
+        None
+    } else {
+        let installed = gs_release::installed(&dirs.renderer_root());
+        Some(launch::choose_renderer(installed.as_ref(), &dirs.logs())?.clone())
+    };
     // TASK-080 addendum: the stored Monitor and Resolution against the monitors connected now.
     let monitors = gt4l_platform::display::monitors();
     let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
@@ -463,7 +505,8 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
         settings,
         pcsx2,
         extra,
-        graphics_notice: graphics.notice,
+        // The Direct3D 11 fallback note is about GSdx; CoreGS 2.0 always draws with Vulkan.
+        graphics_notice: if coregs20 { None } else { graphics.notice },
         api: graphics.api,
     })
 }
@@ -486,14 +529,15 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         lock(&shared).home_message = message.clone();
     })?;
     let PlayInputs { game, dirs, disc, elf, executable, settings, pcsx2, display, extra, graphics_notice, api } = inputs;
-    let run_api = api.clone();
+    // A lost device under CoreGS 2.0 says nothing about the API GSdx should use next time.
+    let run_api = if pcsx2.is_some() { api.clone() } else { "coregs20".to_string() };
     // TASK-097: a direct start of the game reads these files; they follow the monitors connected now.
     lock(&shared).write_standalone_files(&settings);
     let card = dirs.runtime_card();
     saves::prepare_card(lock(&shared).library_of(game), &card)?;
     let textures = lock(&shared).dirs.textures();
     paths::ensure_texture_folders(&textures).map_err(|error| format!("texture folder: {error}"))?;
-    let running = game::start(&dirs, &executable, &elf, &disc, &settings, &pcsx2, display.as_ref(), &textures, &extra)?;
+    let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let mut state = lock(&shared);
@@ -531,7 +575,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
 
     std::thread::spawn(move || {
         let outcome = game::wait_for_exit(&running);
-        // TASK-096: a GSdx restart request ends the session with the GSdx error. CoreGS 1.1 is never started.
+        // GSdx failed and the player chose CoreGS 2.0 in the game's message (`use_coregs20_after_gsdx_failure`).
         // The game writes its last line as it exits; wait for it before classifying, so a normal close is never read
         // mid-write (owner, 2026-10-26: three normal closes were reported as crashes).
         let log_text = read_settled_log(&running.log_path);
@@ -547,6 +591,11 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         drop(running);
         lock(&shared).discord.on_game_end();
         lock(&shared).game_child = None;
+        let renderer_changed = gsdx_error.is_some() && {
+            let stored = lock(&shared).config.settings.clone();
+            let (_, graphics, _) = gt4l_platform::gpu::run_settings(&stored, state::current_language());
+            use_coregs20_after_gsdx_failure(&shared, graphics.card.as_ref().is_some_and(gt4l_core::gpu::GpuDevice::has_vulkan))
+        };
         // Owner (2026-10-26): Vulkan loses the device on the Intel HD 620 (issue #89). Remember it for this machine so
         // the next Play starts on Direct3D 11 instead of losing the device again.
         let switched = if gpu_lost.is_some() && run_api == "vulkan" {
@@ -583,8 +632,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
                 }
                 text
             }
+            (None, Some(_), _) if renderer_changed => messages::text("game.gsdx_switched", state::current_language()).to_string(),
             (None, Some(error), _) => {
-                state::log_warn(&dirs, "GSdx asked for a restart; the launcher does not start CoreGS 1.1");
+                state::log_warn(&dirs, "GSdx failed and this PC has no graphics card for CoreGS 2.0; the renderer stays");
                 error
             }
             (None, None, Outcome::NormalClose) => String::new(),
@@ -614,6 +664,82 @@ fn read_settled_log(path: &Path) -> String {
     }
 }
 
+/// GSdx could not run and the player chose CoreGS 2.0 in the game's message: it is stored as the renderer, when this PC's card can
+/// run it. Returns whether the renderer changed.
+pub fn use_coregs20_after_gsdx_failure(shared: &Shared, card_has_vulkan: bool) -> bool {
+    if !card_has_vulkan {
+        return false;
+    }
+    let mut state = lock(shared);
+    match state.config.settings.set_by_user("renderer", settings::CORE_GS_20) {
+        Ok(()) => {
+            state.save_config();
+            state::log(&state.dirs, "GSdx could not run; the player chose CoreGS 2.0, now the renderer");
+            true
+        }
+        Err(error) => {
+            state::log_error(&state.dirs, &format!("could not store CoreGS 2.0 after GSdx failed: {error}"));
+            false
+        }
+    }
+}
+
+/// Before Play (IN-507): under CoreGS 2.0 the game program compiles what the shader cache lacks, and `shaders-progress` opens
+/// the window only when there is work. Another renderer, or a problem here, goes straight to Play: the game then compiles
+/// on its own as it plays. False: the player cancelled, so no game starts.
+#[tauri::command(async)]
+pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool, String> {
+    let shared: Shared = shared.inner().clone();
+    let (settings, game, dirs, textures, executable, slot, language) = {
+        let state = lock(&shared);
+        if state.game_child.is_some() || !launch::uses_coregs20(&state.config.settings) {
+            return Ok(true);
+        }
+        state.shaders_cancelled.store(false, Ordering::SeqCst);
+        let game = state.selected;
+        let game_dir = paths::game_directory(&program_directory(), state.config.dev_game_dir.as_deref());
+        (state.config.settings.clone(), game, state.game_dirs(game), state.dirs.textures(), launch::game_program(game, &game_dir), state.shaders_child.clone(), state::language_of(&state))
+    };
+    if !executable.exists() {
+        return Ok(true);
+    }
+    let (settings, _, cards) = gt4l_platform::gpu::run_settings_with_cards(&settings, language, gt4l_platform::gpu::refresh_gpus());
+    if cards.is_empty() {
+        return Ok(true);
+    }
+    let monitors = gt4l_platform::display::monitors();
+    let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
+    let mut worked = false;
+    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &mut |done, total| {
+        worked = true;
+        let _ = app.emit("shaders-progress", json!({ "done": done, "total": total }));
+    });
+    let state = lock(&shared);
+    if state.shaders_cancelled.load(Ordering::SeqCst) {
+        state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
+        return Ok(false);
+    }
+    match result {
+        Ok(true) if worked => state::log(&state.dirs, "shaders: compiled"),
+        Ok(true) => {}
+        Ok(false) => state::log_error(&state.dirs, "shaders: the compile did not finish; the game compiles as it plays (logs\\shaders.log)"),
+        Err(message) => state::log_error(&state.dirs, &format!("shaders: {message}")),
+    }
+    Ok(true)
+}
+
+/// Cancel in the "Compiling shaders" window. What was compiled stays in the cache for the next Play.
+#[tauri::command]
+pub fn cancel_shader_prepare(shared: State<'_, Shared>) -> Result<(), String> {
+    let state = lock(shared.inner());
+    state.shaders_cancelled.store(true, Ordering::SeqCst);
+    let mut guard = state.shaders_child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(process) = guard.as_mut() {
+        process.kill().map_err(|error| format!("could not stop the shader compile: {error}"))?;
+    }
+    Ok(())
+}
+
 /// Stops the game process. The card is harvested by the watcher thread after the exit.
 #[tauri::command]
 pub fn stop_game(shared: State<'_, Shared>) -> Result<(), String> {
@@ -630,7 +756,7 @@ pub fn stop_game(shared: State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 
-fn program_directory() -> PathBuf {
+pub(crate) fn program_directory() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -1138,8 +1264,8 @@ pub fn select_game_of(id: String, shared: &Shared) -> Result<Value, String> {
 /// Never the save library, the replays, the runtime card or any shared folder.
 pub const REMOVED_FOLDERS: &[&str] = &["disc", "prepared", "prepared.tmp"];
 
-/// `games_remove({id})`: deletes the disc copy and the prepared files of a game (the page asks first). Its saves and replays
-/// stay. Refused while the game runs or setup works. Returns the new `games_list`.
+/// `games_remove({id})`: deletes the prepared files of a game, and the launcher's own copy of the disc image of an older install
+/// (the page asks first). An image the player keeps elsewhere is never touched, and its saves and replays stay. Refused while the game runs or setup works. Returns the new `games_list`.
 #[tauri::command]
 pub fn games_remove(id: String, shared: State<'_, Shared>) -> Result<Value, String> {
     games_remove_of(id, shared.inner())
@@ -1159,8 +1285,15 @@ pub fn games_remove_of(id: String, shared: &Shared) -> Result<Value, String> {
         let dirs = state.game_dirs(game);
         let mut removed = Vec::new();
         for place in dirs.write_places() {
+            // The player may have linked an image that sits in this folder: that file is theirs.
+            let linked = disc_setup::read_receipt(&place.join("prepared"))
+                .and_then(|receipt| receipt.image)
+                .and_then(|image| disc_setup::linked_image(&image, &state.install_dir));
             for name in REMOVED_FOLDERS {
                 let folder = place.join(name);
+                if linked.as_ref().is_some_and(|image| image.starts_with(&folder)) {
+                    continue;
+                }
                 if folder.exists() {
                     fs::remove_dir_all(&folder).map_err(|error| format!("{} was not removed: {error}", folder.display()))?;
                     removed.push(folder.display().to_string());
@@ -1327,7 +1460,7 @@ pub fn about_info_of(shared: &Shared) -> Result<AboutInfo, String> {
         version: LAUNCHER_VERSION.to_string(),
         gt4recomp: LAUNCHER_VERSION.to_string(),
         gt4gs: renderer,
-        game_files: state.game_dirs(state.selected).disc_folder().display().to_string(),
+        game_files: game_files_folder(&state, state.selected).display().to_string(),
         data_folder: state.dirs.root().display().to_string(),
         saves_folder: state.user_dirs.root().display().to_string(),
         game_name: state.selected.display_name.to_string(),
@@ -1432,12 +1565,12 @@ pub fn open_export_folder(path: String) -> Result<(), String> {
     }
 }
 
-/// Opens the game files folder (the copy of the disc image) in Explorer. The path is fixed by the launcher.
+/// Opens the folder of the game's disc image in Explorer.
 #[tauri::command]
 pub fn open_game_files_folder(shared: State<'_, Shared>) -> Result<(), String> {
     let folder = {
         let state = lock(shared.inner());
-        state.game_dirs(state.selected).disc_folder()
+        game_files_folder(&state, state.selected)
     };
     open_folder(&folder)
 }

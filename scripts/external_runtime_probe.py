@@ -340,7 +340,7 @@ GS_DEFAULT_READBACK = 'accurate'
 GS_SHADER_CACHE = 'private/slice193-gt4gs-cache'
 GS_DATA_ROOT = 'private/slice193-gt4gs-data'
 # Printed by the game when the player chose "restart with the built-in renderer" after a GS process failure.
-GS_RESTART_MARKER = '[gs-ipc] restart requested: renderer donor (CoreGS 1.1)'
+GS_RESTART_MARKER = '[gs-ipc] renderer change requested: CoreGS 2.0'
 # Headless runs write a PNG every N vsyncs (the table's DumpEvery row).
 GS_HEADLESS_DUMP_EVERY = 100
 # Owner-launched VU1 recording reuses the vu-split binary; only this manifest may record.

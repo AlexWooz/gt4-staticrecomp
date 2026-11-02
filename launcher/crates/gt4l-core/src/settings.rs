@@ -74,12 +74,25 @@ pub struct SettingDef {
 
 /// The PCSX2 GS in its own process (downloaded, default when installed). Decision 0070.
 pub const PCSX2_GS: &str = "pcsx2";
-/// Our own hardware renderer, not built yet ("coming soon"). It cannot be selected.
+/// Our own hardware renderer, inside the game executable (beta).
 pub const CORE_GS_20: &str = "coregs20";
 
 const RENDERER_CHOICES: &[Choice] = &[
     Choice { value: PCSX2_GS, label: "GSdx", selectable: true },
-    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (coming soon)", selectable: false },
+    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (recommended)", selectable: true },
+];
+
+/// The strength of CoreGS 2.0's FSR1 sharpening (GSdx has CAS instead).
+const FRAME_RATE_CHOICES: &[Choice] = &[
+    Choice { value: "60", label: "60 FPS", selectable: true },
+    Choice { value: "30", label: "30 FPS", selectable: true },
+];
+
+const COREGS_SHARPENING_CHOICES: &[Choice] = &[
+    Choice { value: "off", label: "Off", selectable: true },
+    Choice { value: "mild", label: "Mild", selectable: true },
+    Choice { value: "medium", label: "Medium", selectable: true },
+    Choice { value: "strong", label: "Strong", selectable: true },
 ];
 
 const CHANNEL_CHOICES: &[Choice] = &[
@@ -128,8 +141,8 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Renderer",
         title: "Renderer",
-        info: "GSdx draws the game on your GPU in its own process; it is the renderer GT4Recomp uses. CoreGS 2.0, \
-               our own renderer, is in development.",
+        info: "CoreGS 2.0 is our own renderer and the recommended one: it is part of the game and uses much less processor. \
+               GSdx is optional: it is downloaded when you choose it.",
         kind: Kind::Choice(RENDERER_CHOICES),
         default: PCSX2_GS,
         connected: true,
@@ -146,6 +159,26 @@ pub const SETTINGS: &[SettingDef] = &[
             step: crate::display::RENDER_SCALE_STEP,
         },
         default: "100",
+        connected: true,
+    },
+    SettingDef {
+        id: "frame_rate",
+        page: Page::Graphics,
+        group: "Performance",
+        title: "Frame rate (experimental)",
+        info: "60 FPS is the default. The 30 FPS mode is for weaker PCs and is still experimental: races draw 30 frames per second, with the game at full speed and the same physics. Menus stay at 60.",
+        kind: Kind::Choice(FRAME_RATE_CHOICES),
+        default: "60",
+        connected: true,
+    },
+    SettingDef {
+        id: "coregs_sharpening",
+        page: Page::Graphics,
+        group: "Image",
+        title: "Sharpening (FSR1)",
+        info: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
+        kind: Kind::Choice(COREGS_SHARPENING_CHOICES),
+        default: "off",
         connected: true,
     },
     SettingDef {
@@ -200,13 +233,14 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
-        id: "async_gs",
+        id: "performance_hud",
         page: Page::Advanced,
         group: "Performance",
-        title: "Asynchronous GS",
-        info: "Sends graphics work to the GPU without waiting. Needed for full speed; turn off only to compare.",
+        title: "Performance HUD",
+        info: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the \
+               processor, the graphics card and memory.",
         kind: TOGGLE,
-        default: "on",
+        default: "off",
         connected: true,
     },
     SettingDef {
@@ -246,6 +280,7 @@ pub const SETTINGS: &[SettingDef] = &[
 /// needed because the launcher no longer reads them. The game always gets the fixed value (`launch.rs`).
 pub const RETIRED_SETTINGS: &[(&str, &str)] = &[
     ("input_resolution", "the game always runs at 480p (GT4_FORCE_480P=1)"),
+    ("async_gs", "graphics work always goes to the GPU without waiting; GT4_GS_SYNC stays a developer switch of the game"),
     ("widescreen", "the game's own 16:9 is always on (GT4_FORCE_WIDESCREEN=1); the Resolution sets the screen shape"),
     ("aspect_ratio", "the aspect is always the Resolution's shape (TASK-080 addendum)"),
     ("aspect_custom", "the aspect is always the Resolution's shape (TASK-080 addendum)"),

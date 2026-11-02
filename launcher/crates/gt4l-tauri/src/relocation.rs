@@ -175,7 +175,7 @@ pub fn clean_old_install_as(portable: bool, exe_dir: &Path) -> Vec<String> {
 /// pinned one for a qualified dump).
 pub fn check_moved_game_files(folder: &Path, hashes: &BTreeMap<PathBuf, String>, pins: &Pins, source_ready: bool) -> Result<(), String> {
     let prepared = folder.join("prepared");
-    match disc_setup::check_installed(&prepared, &folder.join("disc"), pins) {
+    match disc_setup::check_installed(&prepared, &folder.join("disc"), folder, pins) {
         Installed::Ready { image, .. } => {
             if hashes.is_empty() {
                 return Ok(());
@@ -317,7 +317,7 @@ pub fn move_large_data(shared: &Shared, legacy: &LegacyLocations) {
 fn move_games_layout(shared: &Shared, dirs: &DataDirs, pins: &Pins) -> (String, bool) {
     let flat = dirs.flat_gt4_root().to_path_buf();
     let source_ready = matches!(
-        disc_setup::check_installed(&flat.join("prepared"), &flat.join("disc"), pins),
+        disc_setup::check_installed(&flat.join("prepared"), &flat.join("disc"), &flat, pins),
         Installed::Ready { .. }
     );
     let check = |folder: &Path, hashes: &BTreeMap<PathBuf, String>| check_moved_game_files(folder, hashes, pins, source_ready);
@@ -353,7 +353,7 @@ fn move_games_layout(shared: &Shared, dirs: &DataDirs, pins: &Pins) -> (String, 
 fn move_source(shared: &Shared, dirs: &DataDirs, pins: &Pins, source: &LargeSource) -> (String, bool) {
     let local = &source.local;
     let source_ready = matches!(
-        disc_setup::check_installed(&local.join("prepared"), &local.join("disc"), pins),
+        disc_setup::check_installed(&local.join("prepared"), &local.join("disc"), &local, pins),
         Installed::Ready { .. }
     );
     let check = |folder: &Path, hashes: &BTreeMap<PathBuf, String>| check_moved_game_files(folder, hashes, pins, source_ready);

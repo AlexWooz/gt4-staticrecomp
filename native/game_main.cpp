@@ -8,7 +8,9 @@
 //     reads the launcher's config file, applies the built-in defaults and calls the donor main with the command line the
 //     launcher would have built. Rules and tests: standalone.hpp / standalone_fixture.cpp.
 
+#include "frame_skip.hpp"
 #include "standalone.hpp"
+#include "window.hpp"
 
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
@@ -20,8 +22,10 @@
 #include <bcrypt.h>
 #include <io.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iterator>
@@ -30,6 +34,12 @@
 #include <vector>
 
 int gt4_donor_main(int argc, char **argv);
+
+#ifdef GT4_HW_SHADER_PREPARE
+namespace gt4::hw {
+int prepare_shaders_main();  // IN-507: hw_gs/hw_gs_prepare.cpp
+}
+#endif
 
 namespace {
 
@@ -119,6 +129,20 @@ sa::Access real_access() {
     return text;
   };
   access.sha256_file = sha256_of_file;
+  // The game takes the disc path in the ANSI code page. Accents fit it on a Western Windows and go as they are; a path with other
+  // characters goes by its short name.
+  access.openable_path = [](const std::filesystem::path &path) {
+    const std::wstring &wide = path.native();
+    if (std::all_of(wide.begin(), wide.end(), [](wchar_t c) { return c < 128; }) || GetACP() == CP_UTF8) return path;
+    BOOL lost = FALSE;
+    const int fits = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide.c_str(), static_cast<int>(wide.size()), nullptr, 0, nullptr, &lost);
+    if (fits > 0 && !lost) return path;
+    std::wstring shorter(GetShortPathNameW(wide.c_str(), nullptr, 0), L'\0');
+    const DWORD written = shorter.empty() ? 0 : GetShortPathNameW(wide.c_str(), shorter.data(), static_cast<DWORD>(shorter.size()));
+    if (written == 0 || written >= shorter.size()) return path;
+    shorter.resize(written);
+    return std::filesystem::path(shorter);
+  };
   access.environment = [](const std::string &name) -> std::optional<std::string> {
     char *value = nullptr;
     std::size_t length = 0;
@@ -176,6 +200,7 @@ void prune_sessions(const std::filesystem::path &sessions) {
 }
 
 int run_standalone(int argc, char **argv) {
+  _putenv_s("GT4_DIRECT_START", "1");  // the GS client's message says where the renderer is chosen: no launcher will store it
   const sa::Access access = real_access();
   wchar_t module[32768];
   const DWORD length = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));
@@ -192,9 +217,17 @@ int run_standalone(int argc, char **argv) {
 
   sa::Inputs inputs;
   inputs.layout = &*layout;
+  std::vector<std::string> config_notes;
+  if (const std::optional<std::string> text = access.read_text(layout->config_dir / sa::kConfigFileName)) {
+    sa::Config config = sa::parse_config(*text);
+    config_notes = config.warnings;
+    inputs.config = std::move(config);
+  } else {
+    config_notes.push_back(std::string("no ") + sa::kConfigFileName + " in " + layout->config_dir.string() + ": built-in defaults");
+  }
   sa::Check check = sa::check_game_files(*layout, access, inputs.disc, inputs.elf);
   sa::Renderer renderer;
-  if (check.problem == sa::Problem::None && sa::renderer_needed(access)) {
+  if (check.problem == sa::Problem::None && sa::renderer_needed(inputs, access)) {
     check = sa::find_renderer(*layout, access, renderer);
     if (check.problem == sa::Problem::None) inputs.renderer = &renderer;
   }
@@ -207,14 +240,6 @@ int run_standalone(int argc, char **argv) {
     return kExitAlreadyRunning;
   }
 
-  std::vector<std::string> config_notes;
-  if (const std::optional<std::string> text = access.read_text(layout->config_dir / sa::kConfigFileName)) {
-    sa::Config config = sa::parse_config(*text);
-    config_notes = config.warnings;
-    inputs.config = std::move(config);
-  } else {
-    config_notes.push_back(std::string("no ") + sa::kConfigFileName + " in " + layout->config_dir.string() + ": built-in defaults");
-  }
   inputs.gs_ini_exists = access.stat_file(layout->config_dir / sa::kGsConfigFileName).has_value();
   inputs.controls_exists = access.stat_file(layout->user_root / "controls.toml").has_value();
   for (int i = 1; i < argc; ++i) inputs.user_arguments.emplace_back(argv[i]);
@@ -248,11 +273,23 @@ int run_standalone(int argc, char **argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+#ifdef GT4_HW_SHADER_PREPARE
+  if (argc == 2 && std::string(argv[1]) == "--prepare-shaders") return gt4::hw::prepare_shaders_main();
+#endif
 #ifdef GT4_GS_STREAM_CLIENT
   // TASK-116 step 0 (P0 gate): the guest RAM window that turns a READ_FIFO host pointer into an EE address in the
   // GT4_GS_READBACK_LOG lines (native/gs_stream/gs_readback_probe.hpp). Nothing happens when the switch is unset.
   gt4::gs_stream::set_guest_ram(ps2::g_ram, ps2::kRamSize);
 #endif
-  if (!sa::is_standalone_start(argc, argv)) return gt4_donor_main(argc, argv);
+  if (!sa::is_standalone_start(argc, argv)) {
+    // IN-520: the window sets up the recording and replay files itself; a headless run replays here.
+    bool window = false;
+    for (int i = 1; i < argc; ++i) {
+      window = window || std::strcmp(argv[i], "--window") == 0 || std::strcmp(argv[i], "--fullscreen") == 0;
+    }
+    gt4::frame_skip::start_from_environment();
+    if (!window && !install_input_replay_without_window()) return 1;
+    return gt4_donor_main(argc, argv);
+  }
   return run_standalone(argc, argv);
 }

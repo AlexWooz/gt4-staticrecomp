@@ -8,10 +8,14 @@
 // Only the EE thread calls the EE entry points; the worker calls worker_gif() and the Donor worker callbacks.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
 namespace gt4::mtvu {
+
+class SpscByteRing;
+class Doorbell;
 
 struct Settings {
   bool enabled = true;  // GT4_MTVU: worker thread and shadow VIF1 (default on; 0 restores the single-thread path)
@@ -102,6 +106,12 @@ struct Donor {
   // Returns false when no VSYNC was held. Called from the journal drain, so the record lands after the frame's GIF
   // output in stream order.
   bool (*post_vsync)() = nullptr;
+  // IN-461 (CPU survey T3, direct GS intake; hw renderer only): true when a GS consumer in this process can read the
+  // worker's output ring itself. Asked once, at start.
+  bool (*direct_gs_available)() = nullptr;
+  // IN-461: puts job `job` at this point of the GS stream; the consumer then reads that job's records from `output`
+  // (waiting on `bell`) up to its JobDone. EE thread, at the job's program position.
+  void (*post_gs_job)(std::uint64_t job, SpscByteRing &output, Doorbell &bell) = nullptr;
 };
 
 // Starts the worker when settings.enabled (EE thread, before emulation). Verify hashing works either way.
@@ -120,6 +130,13 @@ std::uint64_t worker_busy_us();
 
 // EE entry points (no-ops when not enabled, except gif_transfer which renders directly).
 void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc);
+// IN-522: the guest memory of a table the GS worker will write (`ticket` in the GS stream). A VIF packet copied from it gets the
+// fresh words on the VU1 worker, before it runs. `wait_copy` waits for that read and copies part of its table.
+void note_deferred_table(const std::uint8_t *dest, std::size_t bytes, std::uint64_t ticket);
+using DeferredTableCopy = void (*)(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out);
+void set_deferred_table_copy(DeferredTableCopy copy);
+std::uint64_t deferred_table_patches();  // VIF packets given fresh words so far
+bool direct_gs_intake();  // VU1 jobs run on the worker and the GS worker reads their output itself
 // TASK-084 step 1: closes the pending VIF1 batch and posts it as one job. Called by the DMA chain end, a VIF1 stall,
 // and before any other journal or sync operation; a no-op when nothing is batched or GT4_MTVU_CHAIN=0.
 void flush_vif_chain();

@@ -11,6 +11,7 @@
  *                      labels?: {value: readout} (TASK-080 Render scale: "100% · 4x · 2560x1792")}
  *   dropdown values = [{value, label, disabled?, note?}]
  *   toggle values   = null (current is true/false)
+ *   Both are drawn by optionSelector: the value between two arrows, in an endless loop (owner, 2026-11-02).
  */
 (function (root) {
   "use strict";
@@ -131,19 +132,33 @@
     return model.rowVisible(table, row, !!GT4.features.mods);
   }
 
+  var rowToFocusAfterRedraw = null;
+
   // ctx = {table, content, refresh(focusId)}
   // A successful write updates the row model, then the table is read again: other rows may depend on this one
   // (visible_when, disabled), so the whole tab is drawn from the new table, with focus kept on the same row.
-  function commit(ctx, id, value) {
+  // `keepDrawn`: the control already shows the value, and the tab is drawn again only if the change moved something else (a redraw
+  // would cut the control's slide): ctx.selfDrawn lists the rows whose value on screen is newer than the last draw.
+  function commit(ctx, id, value, keepDrawn) {
     return call("set_setting", { id: id, value: value }).then(
       function () {
+        model.applyChange(ctx.table, id, value);
+        if (keepDrawn) {
+          ctx.selfDrawn[id] = true;
+        }
         if (id === "language") {
-          // TASK-102: the whole launcher changes language at once (app.js re-draws the page).
+          // TASK-102: the whole launcher changes language at once (app.js re-draws the page, unless the language stays the same).
+          // The focus comes back to this row, so the pad can keep stepping.
+          var languageBefore = GT4.i18n.current();
+          rowToFocusAfterRedraw = ctx.content.contains(document.activeElement) ? id : null;
           GT4.i18n.setSetting(value);
+          if (GT4.i18n.current() === languageBefore) {
+            rowToFocusAfterRedraw = null;
+          }
           return;
         }
-        model.applyChange(ctx.table, id, value);
-        ctx.refresh(id, true);
+        // The Version row under the update channel reads the channel's list when it is drawn.
+        ctx.refresh(id, !keepDrawn || id === "update_channel");
       },
       function (err) {
         GT4.ui.toast(errorText(err), true);
@@ -164,7 +179,7 @@
     if (/stick_deadzone$/.test(row.id)) {
       return "setting.stick_deadzone.help";
     }
-    return "setting." + row.id + ".help";
+    return row.help_key || "setting." + row.id + ".help";
   }
 
   function languageParams() {
@@ -296,107 +311,257 @@
     return { node: nodes, limited: spec.max < spec.fullMax ? spec.max + spec.unit : null, wide: !!spec.labels };
   }
 
-  function toggleControl(ctx, row) {
-    var button = h("button", {
-      class: "toggle" + (row.current ? " on" : ""),
-      role: "switch",
-      "aria-checked": String(!!row.current),
-      "aria-label": rowLabel(row),
-      disabled: !!row.disabled,
-      data: { setting: row.id },
-      on: {
-        click: function () {
-          var next = !button.classList.contains("on");
-          button.classList.toggle("on", next);
-          button.setAttribute("aria-checked", String(next));
-          commit(ctx, row.id, next);
-        }
-      }
-    });
-    return { node: [button] };
+  function chevronIcon(direction) {
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.8");
+    svg.setAttribute("aria-hidden", "true");
+    var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", direction < 0 ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6");
+    svg.appendChild(path);
+    return svg;
   }
 
-  function enabledOptions(options) {
-    return options.filter(function (option) {
+  // A redraw during a slide (the step changed other rows) draws the slide at the point it had reached, so it never restarts or stops.
+  var SELECTOR_SLIDE_MS = 320;  // the .selector-value animations in app.css
+  var lastStep = null;
+
+  // The option control (owner, 2026-11-02), as the version switch on the home page: the value between two arrows, in an endless loop,
+  // and the new value slides in from the side of the arrow used. It is one focus stop: left and right on the keyboard or the pad step
+  // it, A or a click on the value goes to the next one. Options that cannot be chosen are left out of the loop.
+  // spec = {id, label, options: [{value, text, disabled?}], current, disabled, onChange(value)}
+  function optionSelector(spec) {
+    var loop = spec.options.filter(function (option) {
       return !option.disabled;
+    });
+    function indexOf(value) {
+      return loop.findIndex(function (option) {
+        return String(option.value) === String(value);
+      });
+    }
+    function textOf(value) {
+      var match = spec.options.filter(function (option) {
+        return String(option.value) === String(value);
+      })[0];
+      return match ? match.text : String(value);
+    }
+    var at = indexOf(spec.current);
+    function valueNode(text, slideClass, elapsed) {
+      var node = h("span", { class: "selector-value" + (slideClass ? " " + slideClass : ""), text: text, title: text });
+      if (elapsed) {
+        node.style.animationDelay = -elapsed + "ms";
+      }
+      return node;
+    }
+    function removeAfterSlide(node) {
+      var done = function () { node.remove(); };
+      node.addEventListener("animationend", done, { once: true });
+      setTimeout(done, SELECTOR_SLIDE_MS * 2);  // reduced motion: no animationend
+    }
+    var elapsed = lastStep && lastStep.id === spec.id ? Date.now() - lastStep.time : SELECTOR_SLIDE_MS;
+    var sliding = elapsed < SELECTOR_SLIDE_MS;
+    var shown = valueNode(textOf(spec.current), sliding ? (lastStep.direction > 0 ? "enter-from-right" : "enter-from-left") : "", sliding ? elapsed : 0);
+    var valueWindow = h("span", { class: "selector-window" }, [shown]);
+    if (sliding) {
+      var stillLeaving = valueNode(lastStep.fromText, "is-leaving " + (lastStep.direction > 0 ? "leave-to-left" : "leave-to-right"), elapsed);
+      valueWindow.insertBefore(stillLeaving, shown);
+      removeAfterSlide(stillLeaving);
+    }
+    var stuck = !!spec.disabled || loop.length < 2;
+    var attributes = {
+      class: "selector" + (stuck ? " is-stuck" : ""),
+      role: "spinbutton",
+      "aria-label": spec.label,
+      "aria-valuetext": textOf(spec.current),
+      data: { setting: spec.id, adjust: "1", focusable: "1" }
+    };
+    if (spec.disabled) {
+      attributes["aria-disabled"] = "true";
+    } else {
+      attributes.tabindex = "0";
+    }
+
+    function slideTo(text, direction) {
+      valueWindow.querySelectorAll(".is-leaving").forEach(function (old) { old.remove(); });
+      var leaving = shown;
+      shown = valueNode(text, direction > 0 ? "enter-from-right" : "enter-from-left");
+      leaving.classList.remove("enter-from-left", "enter-from-right");
+      leaving.style.animationDelay = "";
+      leaving.classList.add("is-leaving", direction > 0 ? "leave-to-left" : "leave-to-right");
+      valueWindow.appendChild(shown);
+      removeAfterSlide(leaving);
+    }
+
+    function step(direction) {
+      if (stuck) {
+        return;
+      }
+      at = at < 0 ? (direction > 0 ? 0 : loop.length - 1) : (at + direction + loop.length) % loop.length;
+      var option = loop[at];
+      lastStep = { id: spec.id, direction: direction, time: Date.now(), fromText: shown.textContent };
+      slideTo(textOf(option.value), direction);
+      root.setAttribute("aria-valuetext", textOf(option.value));
+      spec.onChange(option.value);
+    }
+
+    function arrow(direction) {
+      return h("span", {
+        class: "selector-arrow",
+        on: {
+          click: function (event) {
+            event.stopPropagation();
+            step(direction);
+          }
+        }
+      }, [chevronIcon(direction)]);
+    }
+
+    var root = h("div", attributes, [arrow(-1), valueWindow, arrow(1)]);
+    root.addEventListener("click", function () { step(1); });
+    root.addEventListener("gt4-adjust", function (event) { step(event.detail.delta > 0 ? 1 : -1); });
+    return root;
+  }
+  GT4.optionSelector = optionSelector;
+
+  function toggleControl(ctx, row) {
+    var selector = optionSelector({
+      id: row.id,
+      label: rowLabel(row),
+      options: [
+        { value: false, text: GT4.t("settings.off") },
+        { value: true, text: GT4.t("settings.on") }
+      ],
+      current: !!row.current,
+      disabled: !!row.disabled,
+      onChange: function (value) {
+        commit(ctx, row.id, value, true);
+      }
+    });
+    return { node: [selector], selector: true };
+  }
+
+  // Owner, 2026-11-02: GSdx is an optional download. Choosing it when it is missing asks first: the dialog shows the download and
+  // closes by itself, and only then the choice is stored. Declining, or a failed download, goes back to the renderer stored.
+  var gsdxDownloadHandler = null;
+  var gsdxDownloadListening = false;
+
+  function backToStoredRenderer(ctx) {
+    // The value slides back, the way it came.
+    lastStep = lastStep && { id: lastStep.id, direction: -lastStep.direction, time: Date.now(), fromText: GT4.t("app.gsdx_name") };
+    ctx.refresh("renderer", true);
+  }
+
+  function gsdxDownloadDialog(ctx) {
+    if (!gsdxDownloadListening) {
+      gsdxDownloadListening = true;
+      GT4.backend.listen("gsdx-download", function (payload) {
+        if (gsdxDownloadHandler) {
+          gsdxDownloadHandler(payload || {});
+        }
+      });
+    }
+    var installed = false;
+    var status = h("p", { class: "gsdx-status", role: "status", text: "" });
+    var fill = h("i");
+    var bar = h("span", { class: "bar" }, [fill]);
+    var figures = h("p", { class: "gsdx-figures", text: "" });
+    var progress = h("div", { class: "gsdx-progress", hidden: true }, [status, bar, figures]);
+    var megabytes = function (bytes) {
+      return (bytes / 1e6).toFixed(1) + " MB";
+    };
+    var options = {
+      title: GT4.t("settings.gsdx_title"),
+      text: GT4.t("settings.gsdx_text"),
+      body: [progress],
+      buttons: [
+        { label: GT4.t("settings.gsdx_download"), primary: true, closes: false, run: function () { startDownload(); } },
+        { label: GT4.t("common.cancel") }
+      ],
+      onClose: function () {
+        gsdxDownloadHandler = null;
+        if (!installed) {
+          backToStoredRenderer(ctx);
+        }
+      }
+    };
+    var dialog = GT4.ui.openDialog(options);
+    var actions = dialog.el.querySelector(".modal-actions");
+    var buttons = actions.querySelectorAll("button");
+    var message = dialog.el.querySelector(".modal-text");
+
+    gsdxDownloadHandler = function (event) {
+      var names = { listing: "app.gsdx_listing", downloading: "app.gsdx_downloading", installing: "app.gsdx_installing" };
+      if (names[event.step]) {
+        status.textContent = GT4.t(names[event.step]);
+      }
+      if (event.step === "downloading" && event.bytesTotal) {
+        fill.style.width = Math.min(100, (event.bytesDone * 100) / event.bytesTotal) + "%";
+        figures.textContent = GT4.t("setup.renderer_count", { done: megabytes(event.bytesDone), total: megabytes(event.bytesTotal) });
+      } else if (event.step === "installing") {
+        fill.style.width = "100%";
+      }
+    };
+
+    function startDownload() {
+      // No way out while it runs: the install cannot be stopped halfway.
+      options.dismissable = false;
+      dialog.el.querySelector("h3").textContent = GT4.t("app.gsdx_name");
+      actions.style.display = "none";
+      message.hidden = true;
+      progress.hidden = false;
+      status.textContent = GT4.t("app.gsdx_listing");
+      call("download_gsdx").then(function () {
+        installed = true;
+        fill.style.width = "100%";
+        dialog.close();
+        commit(ctx, "renderer", "pcsx2", true);
+      }, function (err) {
+        options.dismissable = true;
+        progress.hidden = true;
+        message.hidden = false;
+        message.textContent = errorText(err);
+        buttons[0].style.display = "none";
+        buttons[1].textContent = GT4.t("settings.gsdx_close");
+        actions.style.display = "";
+        buttons[1].focus({ preventScroll: true });
+      });
+    }
+  }
+
+  function chooseGsdx(ctx) {
+    call("gsdx_download_needed").then(function (needed) {
+      if (needed) {
+        gsdxDownloadDialog(ctx);
+      } else {
+        commit(ctx, "renderer", "pcsx2", true);
+      }
+    }, function () {
+      commit(ctx, "renderer", "pcsx2", true);
     });
   }
 
   function dropdownControl(ctx, row) {
-    var options = row.values || [];
-    var currentText = String(row.current);
-    options.forEach(function (option) {
-      if (String(option.value) === String(row.current)) {
-        currentText = choiceLabel(row, option);
-      }
-    });
-    var button = h("button", {
-      class: "select",
-      type: "button",
-      "aria-haspopup": "listbox",
-      "aria-label": rowLabel(row),
+    var selector = optionSelector({
+      id: row.id,
+      label: rowLabel(row),
+      options: (row.values || []).map(function (option) {
+        return { value: option.value, text: choiceLabel(row, option), disabled: !!option.disabled };
+      }),
+      current: row.current,
       disabled: !!row.disabled,
-      data: { setting: row.id, adjust: "1" }
-    }, [h("span", { text: currentText, title: currentText }), h("span", { class: "chev" })]);
-    var label = button.querySelector("span");
-
-    // A chosen value shows its own label at once; the table is read again after the write.
-    function choose(value, text) {
-      row.current = value;
-      currentText = text;
-      label.textContent = text;
-      label.title = text;
-      commit(ctx, row.id, value);
-    }
-
-    // Left/right cycle through enabled values without opening the list.
-    button.addEventListener("gt4-adjust", function (event) {
-      var enabled = enabledOptions(options);
-      if (!enabled.length) {
-        return;
+      onChange: function (value) {
+        if (row.id === "renderer" && value === "pcsx2") {
+          chooseGsdx(ctx);
+          return;
+        }
+        commit(ctx, row.id, value, true);
       }
-      var index = enabled.findIndex(function (option) {
-        return String(option.value) === String(row.current);
-      });
-      var next = enabled[(index + event.detail.delta + enabled.length) % enabled.length];
-      row.current = next.value;
-      currentText = choiceLabel(row, next);
-      label.textContent = currentText;
-      label.title = currentText;
-      commit(ctx, row.id, next.value);
     });
-
-    // A (click) opens the full list, so greyed options and their notes are visible.
-    button.addEventListener("click", function () {
-      var dialog = null;
-      var list = h("div", { class: "option-list", role: "listbox" }, options.map(function (option) {
-        var selected = String(option.value) === String(row.current);
-        return h("button", {
-          class: "option",
-          role: "option",
-          "aria-selected": String(selected),
-          disabled: !!option.disabled,
-          data: selected ? { default: "1" } : {},
-          on: {
-            click: function () {
-              dialog.close();
-              choose(option.value, option.label);
-            }
-          }
-        }, [
-          h("span", { text: choiceLabel(row, option) }),
-          option.disabled
-            ? h("span", { class: "tag", text: option.note || GT4.t("settings.coming_soon") })
-            : (selected ? h("span", { class: "tick", text: GT4.t("settings.current") }) : null)
-        ]);
-      }));
-      dialog = GT4.ui.openDialog({
-        title: rowLabel(row),
-        body: list,
-        buttons: [{ label: GT4.t("common.cancel") }]
-      });
-    });
-    return { node: [button] };
+    return { node: [selector], selector: true };
   }
 
   function infoButton(row) {
@@ -472,13 +637,96 @@
     }
   }
 
+  // What a table puts on screen, without the values the selectors in `selfDrawn` already show. Rows that are hidden count by id only.
+  function drawnShape(table, selfDrawn) {
+    return Object.assign({}, table, {
+      rows: table.rows.map(function (row) {
+        if (!rowVisible(table, row)) {
+          return row.id;
+        }
+        return selfDrawn[row.id] ? Object.assign({}, row, { current: null }) : row;
+      })
+    });
+  }
+
+  // A step that changes which rows the tab shows (the renderer, owner 2026-11-02): rows that stay glide to their new place, new rows
+  // come in from the right and fade in, and rows that go out leave to the left and fade out.
+  var ROW_MOTION_MS = 260;
+  var ROW_MOTION_EASING = "cubic-bezier(0.25, 0.8, 0.25, 1)";
+
+  function rowPlaces(content) {
+    var places = {};
+    Array.prototype.forEach.call(content.querySelectorAll(".section-head, .row[data-row], .advanced-foot"), function (item) {
+      var action = item.querySelector("[data-action]");
+      var key = item.getAttribute("data-row") || item.id || (action && action.getAttribute("data-action"));
+      if (key) {
+        places[key] = { node: item, rect: item.getBoundingClientRect() };
+      }
+    });
+    return places;
+  }
+
+  // The old node, drawn over the page where it was while it goes out; nothing can find it or focus it.
+  function departingRow(content, place) {
+    var ghost = place.node;
+    [ghost].concat(Array.prototype.slice.call(ghost.querySelectorAll("*"))).forEach(function (node) {
+      ["data-row", "data-setting", "data-focusable", "data-adjust", "tabindex", "id"].forEach(function (name) {
+        node.removeAttribute(name);
+      });
+    });
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.classList.add("row-departing");
+    var box = content.getBoundingClientRect();
+    ghost.style.left = place.rect.left - box.left + content.scrollLeft + "px";
+    ghost.style.top = place.rect.top - box.top + content.scrollTop + "px";
+    ghost.style.width = place.rect.width + "px";
+    content.appendChild(ghost);
+    ghost.animate([
+      { opacity: 1, transform: "none" },
+      { opacity: 0, transform: "translateX(-18px)" }
+    ], { duration: ROW_MOTION_MS * 0.7, easing: ROW_MOTION_EASING, fill: "forwards" });
+    setTimeout(function () { ghost.remove(); }, ROW_MOTION_MS * 0.7);
+  }
+
+  function animateRowChanges(content, before) {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    var after = rowPlaces(content);
+    Object.keys(after).forEach(function (key) {
+      var place = after[key];
+      if (!before[key]) {
+        place.node.animate([
+          { opacity: 0, transform: "translateX(18px)" },
+          { opacity: 1, transform: "none" }
+        ], { duration: ROW_MOTION_MS, delay: ROW_MOTION_MS * 0.25, easing: ROW_MOTION_EASING, fill: "backwards" });
+        return;
+      }
+      var moved = before[key].rect.top - place.rect.top;
+      if (Math.abs(moved) >= 1) {
+        place.node.animate([
+          { transform: "translateY(" + moved + "px)" },
+          { transform: "none" }
+        ], { duration: ROW_MOTION_MS, easing: ROW_MOTION_EASING });
+      }
+    });
+    Object.keys(before).forEach(function (key) {
+      if (!after[key]) {
+        departingRow(content, before[key]);
+      }
+    });
+  }
+
   // Generic settings tab: loads the table, filters rows, renders them.
   // spec = {title, note, filter(row, table), extra(ctx), hooks(ctx)}
   function settingsTab(content, host, spec) {
     // entering: the next draw is the tab's first, so its items get the entrance animation (once per tab).
-    var ctx = { content: content, table: null, refresh: null, entering: true };
+    var ctx = { content: content, table: null, refresh: null, entering: true, selfDrawn: {}, paintedTable: null };
 
     function paint(focusId) {
+      var placesBefore = Object.keys(ctx.selfDrawn).length ? rowPlaces(content) : null;
+      ctx.selfDrawn = {};
+      ctx.paintedTable = JSON.parse(JSON.stringify(ctx.table));
       GT4.ui.clear(content);
       content.appendChild(h("h1", { text: spec.title }));
       content.appendChild(h("p", { class: "note", text: spec.note || GT4.t("settings.note_default") }));
@@ -490,6 +738,9 @@
         spec.extra(ctx, host);
       }
       restoreFocus(ctx, focusId);
+      if (placesBefore) {
+        animateRowChanges(content, placesBefore);
+      }
       if (ctx.entering) {
         ctx.entering = false;
         enterAnimation(content);
@@ -505,14 +756,16 @@
         if (!reads.isLatest(ticket)) {
           return;
         }
-        var changed = force || !ctx.table || !sameData(ctx.table, table);
+        var changed = force || !ctx.paintedTable ||
+          !sameData(drawnShape(ctx.paintedTable, ctx.selfDrawn), drawnShape(table, ctx.selfDrawn));
         cache.table = table;
         ctx.table = table;
         if (!changed) {
           return;
         }
         // Focus moves back to the row only while it is still inside this tab (the user may have moved to the tab list).
-        paint(content.contains(document.activeElement) ? focusId : undefined);
+        var inside = content.contains(document.activeElement);
+        paint(inside ? focusId || document.activeElement.getAttribute("data-setting") : undefined);
       }, function (err) {
         GT4.ui.toast(errorText(err), true);
       });
@@ -820,9 +1073,13 @@
         section(ctx, "display", GT4.t("settings.section_display"), basic.filter(function (row) {
           return row.group === "display";
         }));
-        var graphics = section(ctx, "graphics", GT4.t("settings.section_graphics"), basic.filter(function (row) {
+        var graphicsRows = basic.filter(function (row) {
           return (row.group || "graphics") === "graphics";
-        }));
+        });
+        // Owner, 2026-11-02: the menus and the scale on top, the switches below, each in the order they come in.
+        graphicsRows = graphicsRows.filter(function (row) { return row.control !== "toggle"; })
+          .concat(graphicsRows.filter(function (row) { return row.control === "toggle"; }));
+        var graphics = section(ctx, "graphics", GT4.t("settings.section_graphics"), graphicsRows);
         // TASK-088: opens <install>\data\Textures (TASK-091; made first, TASK-093: no replacements subfolder). Next to the texture options.
         if (graphics) {
           // Inline progress of a switch to GSdx (renderer-progress events; app.js sets the text).
@@ -1301,7 +1558,7 @@
           swipe = null;
           return;
         }
-        if (event.target.closest && event.target.closest("input, .select, .option-list, .info, .toggle")) {
+        if (event.target.closest && event.target.closest("input, .select, .selector, .option-list, .info")) {
           swipe = null;
           return;
         }
@@ -1339,15 +1596,23 @@
       window.requestAnimationFrame(placePill);
       showTab(requested).then(function () {
         placePill();
-        if (dev === "content" || dev === "row" || dev === "slider" || dev === "dropdown") {
+        if (rowToFocusAfterRedraw) {
+          var rowId = rowToFocusAfterRedraw;
+          rowToFocusAfterRedraw = null;
+          enterContent();
+          ready.then(function () {
+            var control = content.querySelector("[data-setting=\"" + rowId + "\"]");
+            if (control) { control.focus({ preventScroll: true }); }
+          });
+        } else if (dev === "content" || dev === "row" || dev === "slider" || dev === "dropdown") {
           enterContent();
           ready.then(function () {
             if (dev === "slider") {
               var slider = content.querySelector("input[type=range]");
               if (slider) { slider.focus({ preventScroll: true }); }
             } else if (dev === "dropdown") {
-              var select = content.querySelector(".select");
-              if (select) { select.focus({ preventScroll: true }); select.click(); }
+              var select = content.querySelector(".selector");
+              if (select) { select.focus({ preventScroll: true }); }
             }
           });
         } else {

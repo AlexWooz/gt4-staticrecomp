@@ -91,6 +91,23 @@ void check_scanner() {
   sixteen.scan(skipped_data.data(), static_cast<std::uint32_t>(with_sixteen.size()), skipped_counts);
   require(skipped_counts.signal == 0 && skipped_counts.finish == 0, "REGLIST and IMAGE skipped");
   require(skipped_counts.label == 1 && skipped_counts.tags == 3 && !sixteen.inside_packet(), "NREG 0 means 16");
+
+  // IN-469: a PACKED tag without A+D (STQ, RGBA, XYZF2) is skipped whole, also across transfers, even when its data
+  // looks like A+D, and the next tag is read where it ends. A descriptor past NREG does not count as A+D.
+  const std::vector<Qword> strip = {tag(2, 0, 3, 0xE412), address_data(kGsSignal, 0), address_data(kGsSignal, 0),
+                                    address_data(kGsSignal, 0), address_data(kGsFinish, 0), address_data(kGsFinish, 0),
+                                    address_data(kGsFinish, 0), tag(1, 0, 1, 0xE), address_data(kGsLabel, 0)};
+  const auto strip_data = bytes(strip);
+  for (std::uint32_t cut = 1; cut < strip.size(); ++cut) {
+    GifScanner parts;
+    PathCounts strip_counts;
+    parts.scan(strip_data.data(), cut, strip_counts);
+    parts.scan(strip_data.data() + static_cast<std::size_t>(cut) * 16, static_cast<std::uint32_t>(strip.size()) - cut,
+               strip_counts);
+    require(strip_counts.signal == 0 && strip_counts.finish == 0 && strip_counts.label == 1 &&
+                strip_counts.tags == 2 && strip_counts.qwords == strip.size() && !parts.inside_packet(),
+            "PACKED tag without A+D skipped");
+  }
 }
 
 bool near(double a, double b) { return std::fabs(a - b) < 1e-6; }

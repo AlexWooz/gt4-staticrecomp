@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 
 use crate::commands::{self, Kind};
 use crate::setup::{self, Notify, RendererInstaller};
+use gt4l_disc::setup as disc_setup;
 use crate::state::{lock, AppState, Shared};
 
 /// Every event the page would have received, in order.
@@ -63,7 +64,7 @@ fn setup_state(shared: &Shared) -> String {
 
 /// `setup_start`, then wait like the page's poll until the thread ends. Returns the states seen while polling.
 fn run_setup(shared: &Shared, recorder: &Recorder, renderer: RendererInstaller) -> Vec<String> {
-    let handle = setup::start_with(shared, recorder.notify(), renderer).expect("setup starts");
+    let handle = setup::start_with(shared, recorder.notify(), renderer, no_coregs20()).expect("setup starts");
     let mut seen = Vec::new();
     while !handle.is_finished() {
         let view = screen(shared);
@@ -75,6 +76,20 @@ fn run_setup(shared: &Shared, recorder: &Recorder, renderer: RendererInstaller) 
     }
     handle.join().unwrap();
     seen
+}
+
+/// A PC where CoreGS 2.0 does not run.
+fn no_coregs20() -> setup::Coregs20Check {
+    Arc::new(|_: &Shared, _: &'static gt4l_core::games::Game, _: &mut dyn FnMut(u32, u32)| false)
+}
+
+/// A PC where CoreGS 2.0 runs, compiling two shaders on the way.
+fn coregs20_works() -> setup::Coregs20Check {
+    Arc::new(|_: &Shared, _: &'static gt4l_core::games::Game, progress: &mut dyn FnMut(u32, u32)| {
+        progress(0, 2);
+        progress(2, 2);
+        true
+    })
 }
 
 fn fake_renderer() -> RendererInstaller {
@@ -163,7 +178,7 @@ fn walk_pages(shared: &Shared, card: &Path) -> Vec<String> {
     log.push(format!("controls: {} inputs, cross reset, swap with l1, stick deadzone, reset all", controls["controls"].as_array().unwrap().len()));
 
     let about = commands::about_info_of(shared).expect("about");
-    assert!(about.game_files.ends_with("disc"), "{}", about.game_files);
+    assert!(Path::new(&about.game_files).is_dir(), "{}", about.game_files);
     log.push(format!("about: GT4Recomp {} gt4-gs {} files {}", about.gt4recomp, about.gt4gs, about.game_files));
     log
 }
@@ -182,7 +197,7 @@ fn play_plan(shared: &Shared, program_dir: &Path) -> Result<launch::LaunchPlan, 
     };
     let inherited: Vec<String> = std::env::vars().map(|(name, _)| name).collect();
     let textures = crate::state::lock(shared).dirs.textures();
-    let paths = launch::Pcsx2Paths::for_session(&inputs.pcsx2, &inputs.dirs.root().join("gs"), &session, &textures);
+    let paths = launch::Pcsx2Paths::for_session(inputs.pcsx2.as_ref().expect("a GSdx session"), &inputs.dirs.root().join("gs"), &session, &textures);
     Ok(launch::plan_pcsx2_launch(&launch_inputs, &inputs.settings, &paths, inputs.display.as_ref(), &inherited))
 }
 
@@ -227,7 +242,7 @@ fn synthetic_flow_end_to_end() {
     assert!(message.starts_with("This disc is not supported yet."), "{message}");
     assert_eq!(screen(&shared)["setup"]["problem"], json!(message));
     // Setup cannot start before a disc was accepted.
-    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).map(|_| ()).unwrap_err();
+    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).map(|_| ()).unwrap_err();
     assert_eq!(refused, "Choose your disc image first.");
 
     // Accept the good disc; the page then calls setup_start.
@@ -250,11 +265,10 @@ fn synthetic_flow_end_to_end() {
     assert!(renderer.iter().any(|event| event["step"] == "downloading" && event["percent"] == 50), "{renderer:?}");
     assert!(renderer.iter().any(|event| event["step"] == "done"));
     assert_eq!(recorder.names("setup-finished"), vec![json!({ "ok": true, "message": "" })]);
-    assert!(data.join("games").join("gt4").join("disc").join("SCUS-97328.iso").exists());
+    assert!(!data.join("games").join("gt4").join("disc").exists(), "the image is not copied");
+    assert!(picked.is_file(), "the image stays where it is");
 
-    // The picked file may go away: the next launch goes straight to Home, with no hash (well under the time a hash
-    // of a real image takes).
-    fs::remove_file(&picked).unwrap();
+    // The next launch goes straight to Home, with no hash (well under the time a hash of a real image takes).
     let started = Instant::now();
     let second = launch(&dirs, &pins);
     assert_eq!(setup_state(&second), "done");
@@ -273,12 +287,16 @@ fn synthetic_flow_end_to_end() {
     assert!(refusal.starts_with("GSdx could not run the game: GSdx is not installed yet"), "{refusal}");
     assert!(refusal.contains("log folder"), "{refusal}");
 
-    // The player cleaned the data folder: Home is not shown, Play refuses, Setup offers to choose the disc again.
-    fs::remove_file(data.join("games").join("gt4").join("disc").join("SCUS-97328.iso")).unwrap();
+    // The player moved the image: Home is not shown, Play refuses, Setup offers to choose the disc again and says where it was.
+    let moved = root.join("moved.iso");
+    fs::rename(&picked, &moved).unwrap();
     let third = launch(&dirs, &pins);
     let view = screen(&third);
     assert_eq!(view["setup"]["state"], "files_missing", "{view}");
-    assert!(view["setup"]["problem"].as_str().unwrap().contains("Choose your disc image again"));
+    let problem = view["setup"]["problem"].as_str().unwrap();
+    assert!(problem.contains("Choose your disc image again") && problem.contains(&picked.display().to_string()), "{problem}");
+    assert_eq!(view["games"][0]["damaged"], true, "{view}");
+    assert_eq!(view["games"][0]["linked"], true, "{view}");
     assert!(play_plan(&third, &program).unwrap_err().contains("Game files missing"));
 
     // Offline renderer: setup still finishes, with the note; Play then refuses until GSdx is installed.
@@ -295,12 +313,12 @@ fn synthetic_flow_end_to_end() {
     let shared = launch(&dirs, &pins);
     setup::choose_disc_path(&shared, &picked_again).unwrap();
     // start_with clears the flag; Cancel is pressed right after the start, as the page's Cancel button would.
-    let handle = setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).unwrap();
+    let handle = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).unwrap();
     setup::cancel_with(&shared);
     handle.join().unwrap();
     let state = setup_state(&shared);
     assert!(state == "failed" || state == "done", "{state}");
-    assert!(!data.join("games").join("gt4").join("disc").join("SCUS-97328.iso.tmp").exists());
+    assert!(!data.join("games").join("gt4").join("disc").exists());
     assert!(!data.join("games").join("gt4").join("prepared.tmp").exists());
     let _ = fs::remove_dir_all(&root);
 }
@@ -355,7 +373,7 @@ fn a_settings_change_writes_the_files_a_direct_start_of_the_game_reads() {
     let text = fs::read_to_string(&game_ini).expect("game.ini is written with the settings");
     assert!(text.contains("present_mode=mailbox"), "{text}");
     assert!(text.contains("fullscreen=0"), "{text}");
-    assert!(text.contains("async_gs=1"), "{text}");
+    assert!(!text.contains("async_gs"), "{text}");
     assert!(!gs_ini.exists(), "no gt4-gs.ini without an installed GSdx");
 
     // An installed GSdx (stand-in files with the recorded hash) gives the game its ini too.
@@ -370,6 +388,226 @@ fn a_settings_change_writes_the_files_a_direct_start_of_the_game_reads() {
     assert!(ini.contains("[EmuCore/GS]"), "{ini}");
     assert!(ini.contains(&dirs.root().join("gs").join("cache").display().to_string()), "the cache folder of the data folder: {ini}");
     assert_eq!(fs::read_to_string(&game_ini).unwrap(), text, "game.ini does not change with the renderer");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Turns a game's folder into what a launcher from before decision 0075 left: the image copied in `disc`, no link in the receipt.
+fn make_it_an_install_with_a_copy(game_folder: &Path, image: &Path, name: &str) {
+    fs::create_dir_all(game_folder.join("disc")).unwrap();
+    fs::rename(image, game_folder.join("disc").join(name)).unwrap();
+    let receipt_path = game_folder.join("prepared").join("prepare.json");
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt["schema_version"] = 2.into();
+    receipt["image"]["file"] = name.into();
+    receipt["image"].as_object_mut().unwrap().remove("linked_path");
+    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+}
+
+#[test]
+fn an_install_with_a_copy_stays_installed_and_removing_it_never_touches_a_linked_image() {
+    // The safety rule of decision 0075: updating the launcher does not uninstall anyone.
+    let (root, dirs, pins, shared) = new_install("copy-stays");
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    let game_folder = dirs.root().join("games").join("gt4");
+    make_it_an_install_with_a_copy(&game_folder, &root.join("disc.iso"), "SCUS-97328.iso");
+    let updated = launch(&dirs, &pins);
+    let view = screen(&updated);
+    assert_eq!(view["setup"]["state"], "done", "{view}");
+    assert_eq!(view["games"][0]["installed"], true, "{view}");
+    assert_eq!(view["games"][0]["linked"], false, "{view}");
+    let copy = game_folder.join("disc").join("SCUS-97328.iso");
+    assert!(copy.is_file());
+
+    // Choosing the image again links it. The launcher's old copy stays until the player removes the game.
+    let elsewhere = root.join("my-isos");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let linked = elsewhere.join("gt4.iso");
+    fs::copy(&copy, &linked).unwrap();
+    setup::choose_disc_path(&updated, &linked).unwrap();
+    run_setup(&updated, &Recorder::default(), fake_renderer());
+    assert_eq!(screen(&updated)["games"][0]["linked"], true);
+    assert!(copy.is_file());
+
+    // Removing the game deletes what is the launcher's, and never the player's image.
+    commands::games_remove_of("gt4".into(), &updated).unwrap();
+    assert!(linked.is_file(), "the player's image is not touched");
+    assert!(!copy.exists() && !game_folder.join("prepared").exists());
+
+    // An image the player linked from inside the old copy's folder is theirs too.
+    fs::create_dir_all(game_folder.join("disc")).unwrap();
+    let inside = game_folder.join("disc").join("SCUS-97328.iso");
+    fs::rename(&linked, &inside).unwrap();
+    setup::choose_disc_path(&updated, &inside).unwrap();
+    run_setup(&updated, &Recorder::default(), fake_renderer());
+    commands::games_remove_of("gt4".into(), &updated).unwrap();
+    assert!(inside.is_file(), "a linked image inside the folder is kept");
+    assert!(!game_folder.join("prepared").exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_portable_folder_carried_with_its_image_stays_installed_and_one_outside_keeps_its_place() {
+    // `launch` takes the data folder's parent as the launcher's folder.
+    let root = scratch("portable-carried");
+    let first = root.join("first-place");
+    fs::create_dir_all(first.join("ISOs")).unwrap();
+    let game = synthetic_game(0x0010_0000, 0x0010_0008, b"synthetic guest code, not game data, 0123456789abcdef");
+    let image = build_iso(
+        "GT4 USA",
+        &[
+            ("SYSTEM.CNF;1", system_cnf("SCUS_973.28", "2.00", "NTSC")),
+            ("CORE.GT4;1", game.core.clone()),
+            ("SCUS_973.28;1", vec![0xA5; 3000]),
+        ],
+    );
+    let pins = pins_for(&image, &game, "SCUS-97328", "2.00");
+    let inside = first.join("ISOs").join("gt4.iso");
+    fs::write(&inside, &image).unwrap();
+    let dirs = DataDirs::new(first.join("data"));
+    let shared = launch(&dirs, &pins);
+    setup::choose_disc_path(&shared, &inside).unwrap();
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    drop(shared);
+    let receipt = disc_setup::read_receipt(&first.join("data/games/gt4/prepared")).unwrap();
+    assert_eq!(receipt.image.unwrap().linked_path.as_deref(), Some(Path::new("ISOs").join("gt4.iso").to_str().unwrap()));
+
+    let second = root.join("another-drive");
+    fs::rename(&first, &second).unwrap();
+    let carried = launch(&DataDirs::new(second.join("data")), &pins);
+    assert_eq!(setup_state(&carried), "done", "the folder moved with its image");
+    assert!(matches!(lock(&carried).installed(), disc_setup::Installed::Ready { image, .. } if image == second.join("ISOs").join("gt4.iso")));
+    // The Games page names the image and its size, not what the launcher itself keeps.
+    let row = &screen(&carried)["games"][0];
+    assert_eq!(row["image_path"], json!(second.join("ISOs").join("gt4.iso").display().to_string()), "{row}");
+    assert_eq!(row["image_bytes"], json!(image.len()), "{row}");
+    assert!(row["size_bytes"].as_u64().unwrap() < image.len() as u64, "removing the game frees only the launcher's files: {row}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_image_in_the_folder_updates_replace_is_refused_with_the_reason() {
+    let (root, dirs, _pins, shared) = new_install("image-in-game-folder");
+    let install = dirs.root().parent().unwrap().to_path_buf();
+    fs::create_dir_all(install.join("game")).unwrap();
+    let there = install.join("game").join("gt4.iso");
+    fs::copy(root.join("disc.iso"), &there).unwrap();
+    let message = setup::choose_disc_path(&shared, &there).unwrap_err();
+    assert!(message.contains("Updates replace"), "{message}");
+    assert_eq!(screen(&shared)["setup"]["state"], "wrong_disc");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The real setup in a real folder, for a test that then moves the folder and starts the game from it. GT4_E2E_PORTABLE is the
+/// folder; its `ISOs\spec2.iso` is the image.
+#[test]
+#[ignore = "a real disc image; set GT4_E2E_PORTABLE"]
+fn real_setup_in_a_portable_folder() {
+    let folder = PathBuf::from(std::env::var("GT4_E2E_PORTABLE").expect("GT4_E2E_PORTABLE"));
+    let dirs = DataDirs::new(folder.join("data"));
+    let pins = gt4l_disc::Pins::embedded().unwrap();
+    let shared = launch(&dirs, &pins);
+    setup::choose_disc_path(&shared, &folder.join("ISOs").join("spec2.iso")).unwrap();
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    let receipt = disc_setup::read_receipt(&folder.join("data/games/spec2/prepared")).unwrap();
+    println!("linked_path = {:?}", receipt.image.as_ref().unwrap().linked_path);
+    assert!(Path::new(receipt.image.unwrap().linked_path.as_deref().unwrap()).is_relative());
+}
+
+#[test]
+fn choosing_coregs20_after_gsdx_failed_stores_it_when_the_card_can_run_it() {
+    let (root, dirs, pins, shared) = new_install("gsdx-fallback");
+    lock(&shared).config.settings.set_by_user("renderer", "pcsx2").unwrap();
+    assert!(!commands::use_coregs20_after_gsdx_failure(&shared, false), "a card without Vulkan 1.2 keeps GSdx");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2");
+    assert!(commands::use_coregs20_after_gsdx_failure(&shared, true));
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "coregs20");
+    assert_eq!(lock(&launch(&dirs, &pins)).config.settings.get("renderer"), "coregs20", "and it stays at the next start");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A launcher with no game set up and a synthetic disc accepted.
+fn new_install(name: &str) -> (PathBuf, DataDirs, Pins, Shared) {
+    let root = scratch(name);
+    let dirs = DataDirs::new(root.join("data"));
+    let game = synthetic_game(0x0010_0000, 0x0010_0008, b"synthetic guest code, not game data, 0123456789abcdef");
+    let image = build_iso(
+        "GT4 USA",
+        &[
+            ("SYSTEM.CNF;1", system_cnf("SCUS_973.28", "2.00", "NTSC")),
+            ("CORE.GT4;1", game.core.clone()),
+            ("SCUS_973.28;1", vec![0xA5; 3000]),
+        ],
+    );
+    let pins = pins_for(&image, &game, "SCUS-97328", "2.00");
+    let picked = root.join("disc.iso");
+    fs::write(&picked, image).unwrap();
+    let shared = launch(&dirs, &pins);
+    setup::choose_disc_path(&shared, &picked).unwrap();
+    (root, dirs, pins, shared)
+}
+
+#[test]
+fn a_new_install_uses_coregs20_when_the_pc_runs_it_and_downloads_nothing() {
+    let (root, dirs, pins, shared) = new_install("coregs20-first");
+    let recorder = Recorder::default();
+    let downloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = downloads.clone();
+    let renderer: RendererInstaller = Arc::new(move |_: &DataDirs, _: &mut dyn FnMut(gt4l_core::gs_release::Step)| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok("1.0.1".to_string())
+    });
+    let handle = setup::start_with(&shared, recorder.notify(), renderer, coregs20_works()).expect("setup starts");
+    handle.join().unwrap();
+    assert_eq!(downloads.load(std::sync::atomic::Ordering::SeqCst), 0, "GSdx is not downloaded");
+    assert!(recorder.names("renderer-progress").is_empty());
+    let view = screen(&shared);
+    assert_eq!(view["setup"]["state"], "done", "{view}");
+    assert_eq!(view["setup"]["note"], "");
+    assert_eq!(view["setup"]["renderer_choice"], "coregs20");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "coregs20");
+    // The choice is stored: the next launch has it, and Play needs no GSdx.
+    let again = launch(&dirs, &pins);
+    assert_eq!(lock(&again).config.settings.get("renderer"), "coregs20");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_new_install_downloads_gsdx_when_coregs20_does_not_run_and_says_why() {
+    let (root, _dirs, _pins, shared) = new_install("coregs20-fallback");
+    let recorder = Recorder::default();
+    run_setup(&shared, &recorder, fake_renderer());
+    assert!(recorder.names("renderer-progress").iter().any(|event| event["step"] == "done"), "GSdx is installed");
+    let view = screen(&shared);
+    assert_eq!(view["setup"]["renderer_choice"], "gsdx_fallback", "{view}");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The real check on this PC, with a synthetic disc: GT4_SETUP_GAME_DIR is a game folder (`gt4.exe`, a distribution folder).
+#[test]
+#[ignore = "this PC's graphics card and a real game program; set GT4_SETUP_GAME_DIR"]
+fn the_real_check_starts_coregs20_with_the_game_program() {
+    let (root, dirs, _pins, shared) = new_install("coregs20-real");
+    lock(&shared).config.dev_game_dir = Some(PathBuf::from(std::env::var("GT4_SETUP_GAME_DIR").expect("GT4_SETUP_GAME_DIR")));
+    let handle = setup::start_with(&shared, Recorder::default().notify(), offline_renderer(), setup::coregs20_on_this_pc()).expect("setup starts");
+    handle.join().unwrap();
+    assert_eq!(screen(&shared)["setup"]["renderer_choice"], "coregs20", "{}", fs::read_to_string(dirs.logs().join("shaders.log")).unwrap_or_default());
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "coregs20");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A game program that cannot start CoreGS 2.0 sends setup to GSdx, on any PC.
+#[test]
+#[ignore = "probes this PC's graphics cards"]
+fn the_real_check_falls_back_when_the_game_program_is_missing() {
+    let (root, _dirs, _pins, shared) = new_install("coregs20-missing");
+    lock(&shared).config.dev_game_dir = Some(root.join("no-such-folder"));
+    let handle = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), setup::coregs20_on_this_pc()).expect("setup starts");
+    handle.join().unwrap();
+    let view = screen(&shared);
+    assert_eq!(view["setup"]["renderer_choice"], "gsdx_fallback", "{view}");
+    assert_eq!(view["setup"]["note"], "", "GSdx was installed");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -606,7 +844,7 @@ fn two_games_install_side_by_side_and_never_mix() {
     assert_eq!(view["selected_game"], "spec2");
     assert_eq!(lock(&shared).config.selected_game.as_deref(), Some("spec2"));
     assert!(data.join("games/spec2/prepared/SCUS_974.36").is_file());
-    assert!(data.join("games/spec2/disc/SCUS-97436.iso").is_file());
+    assert!(data.join("games/spec2/prepared/prepare.json").is_file());
     assert!(!data.join("games/gt4").exists(), "Gran Turismo 4 is untouched");
     let games_view = commands::games_list_of(&shared).unwrap();
     assert_eq!(games_view["games"][0]["installed"], json!(false));
@@ -630,8 +868,8 @@ fn two_games_install_side_by_side_and_never_mix() {
     println!("SPEC2 SETUP SEEN: {:?}", seen);
     println!("SPEC2 SETUP VIEW: {:?}", s["setup"]);
     assert_eq!(s["setup"]["state"], "done");
-    assert!(data.join("games/gt4/disc/SCUS-97328.iso").is_file());
-    assert!(data.join("games/spec2/disc/SCUS-97436.iso").is_file(), "installing one game leaves the other alone");
+    assert!(data.join("games/gt4/prepared/prepare.json").is_file());
+    assert!(data.join("games/spec2/prepared/prepare.json").is_file(), "installing one game leaves the other alone");
     assert_eq!(lock(&shared).config.selected_game.as_deref(), Some("spec2"));
     assert_eq!(lock(&shared).selected.id, "gt4", "the page stays on the game just set up");
 
@@ -683,7 +921,7 @@ fn two_games_install_side_by_side_and_never_mix() {
     assert_eq!(after["games"][1]["installed"], json!(false));
     assert_eq!(after["games"][0]["installed"], json!(true));
     assert!(!data.join("games/spec2/disc").exists() && !data.join("games/spec2/prepared").exists());
-    assert!(data.join("games/gt4/disc/SCUS-97328.iso").is_file());
+    assert!(data.join("games/gt4/prepared/prepare.json").is_file());
     commands::select_game_of("spec2".into(), &second).unwrap();
     assert_eq!(commands::saves_list_of(&second).unwrap().items.len(), 2, "both games' saves are in the one list");
     let _ = fs::remove_dir_all(&root);
@@ -726,13 +964,13 @@ fn the_disc_is_identified_before_any_byte_is_copied_and_decides_the_game() {
     // An unsupported image is refused in place: nothing exists in the data folder, and setup cannot start from it.
     assert!(setup::choose_disc_path(&shared, &unknown_disc).is_err());
     assert!(!data.join("games").exists(), "a refused image copies nothing");
-    assert!(setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).is_err());
+    assert!(setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).is_err());
     assert!(!data.join("games").exists());
 
     // The image is identified again when setup starts: a stale choice cannot send a refused file to the copy.
     setup::choose_disc_path(&shared, &spec2_disc).unwrap();
     lock(&shared).config.disc_path = Some(unknown_disc.clone());
-    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer()).map(|_| ()).unwrap_err();
+    let refused = setup::start_with(&shared, Recorder::default().notify(), fake_renderer(), no_coregs20()).map(|_| ()).unwrap_err();
     assert!(refused.contains("not supported"), "{refused}");
     assert!(!data.join("games").exists(), "setup start copied nothing for a refused image");
 
@@ -741,7 +979,7 @@ fn the_disc_is_identified_before_any_byte_is_copied_and_decides_the_game() {
     assert!(info.mismatch && info.game == "spec2");
     lock(&shared).setup_game = Some(&gt4l_core::games::GT4);
     run_setup(&shared, &Recorder::default(), fake_renderer());
-    assert!(data.join("games/spec2/disc/SCUS-97436.iso").is_file());
+    assert!(data.join("games/spec2/prepared/prepare.json").is_file());
     assert!(!data.join("games/gt4").exists(), "the page asked for Gran Turismo 4 but the image is Spec II");
     let _ = fs::remove_dir_all(&root);
 }
@@ -767,6 +1005,7 @@ fn a_1_2_x_install_moves_into_games_gt4_at_the_first_start() {
     setup::choose_disc_path(&shared, &picked).unwrap();
     run_setup(&shared, &Recorder::default(), fake_renderer());
     drop(shared);
+    make_it_an_install_with_a_copy(&data.join("games/gt4"), &picked, "SCUS-97328.iso");
 
     // Put the files back where 1.2.x kept them: <data>\disc, <data>\prepared, <data>\runtime.
     fs::create_dir_all(data.join("runtime")).unwrap();
@@ -913,7 +1152,7 @@ fn retroachievements_options_and_launch_environment() {
         session_dir: &session_gt4,
     };
     let textures = lock(&shared).dirs.textures();
-    let paths_gt4 = launch::Pcsx2Paths::for_session(&play_gt4.pcsx2, &dirs.root().join("gs"), &session_gt4, &textures);
+    let paths_gt4 = launch::Pcsx2Paths::for_session(play_gt4.pcsx2.as_ref().expect("a GSdx session"), &dirs.root().join("gs"), &session_gt4, &textures);
     let mut plan_gt4 = launch::plan_pcsx2_launch(&launch_inputs_gt4, &play_gt4.settings, &paths_gt4, play_gt4.display.as_ref(), &hostile_inherited);
     plan_gt4.environment.extend(play_gt4.extra);
 
@@ -941,7 +1180,7 @@ fn retroachievements_options_and_launch_environment() {
         card: &card_spec2,
         session_dir: &session_spec2,
     };
-    let paths_spec2 = launch::Pcsx2Paths::for_session(&play_spec2.pcsx2, &dirs.root().join("gs"), &session_spec2, &textures);
+    let paths_spec2 = launch::Pcsx2Paths::for_session(play_spec2.pcsx2.as_ref().expect("a GSdx session"), &dirs.root().join("gs"), &session_spec2, &textures);
     let mut plan_spec2 = launch::plan_pcsx2_launch(&launch_inputs_spec2, &play_spec2.settings, &paths_spec2, play_spec2.display.as_ref(), &hostile_inherited);
     plan_spec2.environment.extend(play_spec2.extra);
 

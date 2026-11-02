@@ -7,8 +7,9 @@
  *   state: "needed" | "wrong_disc" | "checking" | "failed" | "files_missing" | "done",
  *   step: "copying" | "checking" | "preparing" | "renderer",   (while checking)
  *   progress: 0..1,                     (of the current step)
- *   bytes_done, bytes_total,            (copying, and the renderer download)
- *   renderer_step: "listing" | "downloading" | "installing" | "done" | "failed",
+ *   bytes_done, bytes_total,            (copying, the renderer download, the shaders compiled)
+ *   renderer_step: "checking" | "compiling" | "listing" | "downloading" | "installing" | "done" | "failed",
+ *   renderer_choice: "coregs20" | "gsdx_fallback" | "",  (what setup decided for this PC)
  *   disc_name, problem, note            (note: GSdx could not be downloaded; the game cannot start yet)
  * }
  * Two games (TASK-101): a disc of the other game than the one asked for offers to install it as that game (js/games.js).
@@ -30,6 +31,8 @@
     { id: "renderer", label: "setup.step_renderer", detail: "setup.step_renderer_detail" }
   ];
   var RENDERER_KEYS = {
+    checking: "setup.renderer_checking",
+    compiling: "setup.renderer_compiling",
     listing: "setup.renderer_listing",
     downloading: "setup.renderer_downloading",
     installing: "setup.renderer_installing",
@@ -89,7 +92,7 @@
 
   // Signature decides whether the page has to be rebuilt.
   function signature(setup) {
-    return [setup.state, setup.step, Math.round((setup.progress || 0) * 100), setup.renderer_step || "",
+    return [setup.state, setup.step, Math.round((setup.progress || 0) * 100), setup.renderer_step || "", setup.renderer_choice || "",
       Math.round((setup.bytes_done || 0) / 1e6), setup.problem || "", setup.note || "", setup.disc_name || ""].join("|");
   }
 
@@ -173,15 +176,23 @@
           }
           if (step.id === "renderer") {
             detail = RENDERER_KEYS[setup.renderer_step] ? GT4.t(RENDERER_KEYS[setup.renderer_step]) : detail;
-            if (setup.renderer_step !== "downloading") {
+            if (setup.renderer_step === "compiling") {
+              bytesText = GT4.t("setup.renderer_count", { done: setup.bytes_done || 0, total: setup.bytes_total || 0 });
+            } else if (setup.renderer_step !== "downloading") {
               pct = null;
             } else if (setup.bytes_total) {
               bytesText = megabytes(setup.bytes_done || 0) + " of " + megabytes(setup.bytes_total);
             }
           }
         }
-        if (done && step.id === "renderer" && setup.note) {
-          detail = GT4.t("setup.renderer_failed");
+        if (done && step.id === "renderer") {
+          if (setup.note) {
+            detail = GT4.t("setup.renderer_failed");
+          } else if (setup.renderer_choice === "coregs20") {
+            detail = GT4.t("setup.renderer_ready_coregs20");
+          } else if (setup.renderer_choice === "gsdx_fallback") {
+            detail = GT4.t("setup.renderer_ready_gsdx");
+          }
         }
         steps.push(row("0" + (index + 2), GT4.t(step.label), detail, status, pct, bytesText));
       });

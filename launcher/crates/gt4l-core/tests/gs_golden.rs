@@ -29,7 +29,7 @@ fn default_session_ini_matches_the_python_writer_byte_for_byte() {
     let text = gs_table::render_ini(&settings, &launcher).expect("render");
     assert_eq!(
         gs_table::ini_file_bytes(&text),
-        include_bytes!("fixtures/gs/default-session.ini").to_vec(),
+        gs_table::ini_file_bytes(include_str!("fixtures/gs/default-session.ini")),  // the fixture has LF line ends
     );
 }
 

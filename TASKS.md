@@ -62,7 +62,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑020 | Decomp names in generated EE code (waits for more decompilation progress) | 📋 Planned |
 | TASK‑025 | Save manager: memory card slots, import/export | ✅ Code done, merged into `task/019-launcher`; ships with the launcher (owner test pending) |
 | TASK‑026 | CoreGS 2.0, part 1: clean-room specification of the PCSX2 hardware renderer | ✅ Done (docs/hw-renderer-spec, PR #17) |
-| TASK‑027 | CoreGS 2.0, part 2: MIT implementation from the specification (3x-6x, texture packs) | ⏸️ Paused (unchanged) · pure libraries done on `task/027-hw-renderer` |
+| TASK‑027 | CoreGS 2.0, part 2: MIT implementation from the specification (3x-6x, texture packs) | 🧪 Candidate 332 on `task/027-coregs2` (2026-10-30): CPU survey and fronts (process CPU -28%, wall -15% at 3x against 313), direct GS intake (P6); specialised pipelines, performance mode started (decision 0073); 1.3.0-rc7 merged in as the base (CoreGS 2.0 is not part of 1.3.0); fine-tuning, then a PR to the EE optimisation branch |
 | TASK‑028 | CoreGS 1.1: upscaling, interlaced-only deinterlace, FXAA-class AA, FSR 1.0 | ⏸️ Paused by the owner: 3x shows native-size aliasing on 3D models; stays the built-in fallback renderer (`task/028-donor-upscale`, latest slice186) |
 | TASK‑029 | Controller and keyboard mapping (binding table, XInput LT/RT as L2/R2 pressure, controls file for the launcher) | ✅ Done (2026-10-21) · merged with the launcher; owner tested remapping in game |
 | TASK‑030 | Night-race readback wait (CoreGS 1.1) | ⏸️ Paused: owner test 59.07 FPS, wait unchanged at 4.3 ms because the page is drawn the same frame (`task/030-night-readback`) |
@@ -144,6 +144,10 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑094 | Desktop shortcut: finish-page checkbox (on by default), all-users desktop `Gran Turismo 4.lnk`, choice kept in HKLM `DesktopShortcut`, silent updates create it for older installs and restore it when chosen | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🔄 Study done and owner decisions recorded (2026-10-28) · next: P0 baselines when the owner frees the desktop |
+| TASK‑135 | Performance HUD for CoreGS 2.0, in the spirit of the macOS Metal HUD: FPS, frame time, CPU and GPU of the game, memory and a live frame time graph | 🧪 Built, waits for the owner's test (branch `task/135-coregs2-performance-hud`, candidate 378, on the notebook, 2026-11-02) |
+| TASK‑136 | Simple onboarding: a new install uses CoreGS 2.0 when the PC runs it, GSdx becomes optional and is downloaded only when the card needs it | 🧪 Built, waits for the owner's test (branch `task/136-simple-onboarding`, 2026-11-02) |
+| TASK‑137 | The launcher links the disc image and no longer copies it; an image that moved asks to be chosen again; installs with a copy keep working | 🧪 Built, waits for the owner's test (branch `task/137-link-disc-image`, candidate 381, 2026-11-02) |
+| TASK‑138 | A portable folder carries its disc image (relative link); accented paths on CoreGS 2.0; the GSdx fallback goes to CoreGS 2.0; a release can be started directly | 🧪 Built, waits for the owner's test (branch `task/138-relative-image-link`, candidate 382, 2026-11-02); GSdx in an accented folder not confirmed |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -1688,6 +1692,70 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
+**State 2026-11-02, published:** 🧪 in the 1.3.0-rc8 pre-release (candidate 382). The owner's laptop test closes the beta gate: on the HD 620, 1x at 60 FPS or 2x at 30 FPS in races; the showroom at 2x (about 30 FPS) is a known issue. D1 is measured and not built (IN-523). The colour filter stays in Performance Mode (IN-505 left out). For 2.0.0: fractional scales, GPU use and power beside GSdx. Next (owner): CPU optimisation, TASK-134, for rc9.
+
+**State 2026-11-02, end:** 🧪 candidate 376 (not uploaded), branch `task/082-coregs2-frame-skip`: a frame rate choice, 60 or 30 in races, replaces the option of 375 (IN-525), 60 by default: 12x 100% speed at 30 frames per second, intervals 33.0-33.7 ms. Unlocked FPS paused, `docs/TASK-082-UNLOCKED-FPS-STATE.md`. Next: CPU optimisation with another agent (TASK-134).
+
+**State 2026-11-02, later:** candidate 375 (not uploaded), branch `task/082-coregs2-frame-skip`: candidate 374 plus TASK-082, frame skipping on CoreGS 2.0, off by default (IN-524): 12x on George V Paris 100% speed at 38.5 frames per second, against 77% at 46; the frame shown is always the last one drawn; race clock equal on both games. Waiting for the owner's test, above all on the laptop.
+
+**State 2026-11-02:** 🧪 candidate 374 (not uploaded), the base of 375: input lag at 60 Hz 53 to 31-39.5 ms, the EE's wait at the flare read 9.5 ms to 0, flares exact, frames identical to 373 (122 of 122, then 47 of 47).
+
+**State 2026-11-01:** 🧪 candidate 373 (not uploaded), adding to 372 the frame pacing work IN-514 to IN-519 (race on George V Paris at 6x without Performance Mode: GS CPU 7.94 to 7.31 ms, frames over 17.5 ms 40 to 5 of 3,700; frames identical 154 of 154; the second presentation queue is not yet confirmed on the owner's virtual display; the owner decides on the late flares of IN-514). Candidate 372 before it: Spec II on CoreGS 2.0
+(IN-506), shaders compiled before Play (IN-507), no readback for a write beside a drawn area (IN-508: George V Paris at 6x,
+headless, GS thread -19%), no frametime wave from a target drawn every second VBlank (IN-509), and IN-510 to IN-513: the race start
+drop, three swapchain images under vsync, the showroom wave and reused decodes (window, race without Performance Mode: VBlanks over
+20 ms 29 to 1 of 1000). Frames identical at 1x, 3x and 6x; at 12x 2 pixels of one frame. The owner's F8 on 372 is pending. The owner's F8 at 6x on George V Paris: 49.6 VBlanks/s, 57.7 in
+Performance Mode; the GS thread's waits for GPU readbacks are the largest cost. Open: GSdx's F8 for comparison.
+
+**State 2026-10-31:** 🧪 candidate 367 (not uploaded) waits for the owner's test on the laptop: on the HD 620 at 2x GPU
+busy 27% less by day and 23% at night against candidate 362 in normal mode, 35% and 31% in Performance Mode (IN-485 to
+IN-504, `docs/hw-renderer-spec/CORE2-GPU-PLAN.md`). In the launcher as a beta in 1.3.0-rc8 (GSdx stays the
+default): texture replacement (IN-470), GPUs without interlock (IN-471), PGO in the release game (IN-473), options by
+renderer (IN-474). Open: the owner's test, then the upload of rc8 and the PR into
+`task/134-game-code-optimization-study` on their word; fractional scales, a screen that prepares shaders, frame skipping.
+
+**Resumed on 2026-10-21 (owner decision)** on branch `task/027-coregs2` (worktree
+`C:\Antigravity\gt4-wt-027-coregs2`): `main` at release 1.0.0 (slice214) merged with
+`task/027-hw-renderer` and the `task/027-cpuref` docs checkpoint. paraLLEl-GS code, pins and launcher modes
+were left out (decision 0070); `GT4_RENDERER=hw` now runs through main's GS stream seam into the in-process
+HWR backend (`GT4_HW_GS=ON` builds only; black output). `task/027-m4-gpuref` (e31fcc4, GPU write-back WIP)
+is not merged. Implementation continues with the external agent **GPT 6.1 Sol** as the only writer of the
+branch, clean room from `docs/hw-renderer-spec` (brief `AGENT-BRIEF-COREGS2.md`, progress in
+`docs/hw-renderer-spec/PROGRESS.md` and ai-memory `decisions/coregs2-implementation`). No pins until a
+candidate is offered to the owner. Warm-up complete (2026-10-21): shader TEXA/AEM follows 07.5 / IN-07; slice217 builds and all three GPU exactness fixtures pass. Native v2 replay is implemented (slice219: 69/69 CPU-library tests; 1,101/1,101 identical menu PPMs across legacy, converted v2 and fresh v2). VRAM diagnostic added (local221:75/75 tests, deterministic1,096-image replay; original scanout unchanged). Correct pairing resolves the IN-315 comparison offset; the separate A+D kick fix (IN-326, local222: 76/76 tests) closes IN-316: the garage defect was the dropped A+D kicks, exactly frames 811..916 change, and 11/11 aligned samples now sit inside the chapter 14.4 2D thresholds (garage 0.2051%, 45.992 dB) while 990/1,096 VRAM and 995/1,101 scanout images stay unchanged. The M4 GPU write-back path of `task/027-m4-gpuref` is then ported, built and wired into the backend (local223, IN-329): eleven fixtures pass (03.3 coverage vectors and seven GPU/CPU equivalence cases), the default renderer stays 42/42 vs slice214 and `GT4_RENDERER=hw` runs 600 headless frames with 0 faults, still without frame dumps. IN-328 fixed the CPU reference's constant-attribute truncation. M5 then wired the whole pixel pipeline into the same draw stage (blend unit over 81 modes, COLCLAMP, PABE, alpha test, DATE, FBA, FBMASK, dither; five new raster fixtures at zero mismatches); `GT4_RENDERER=hw` stays clean at about 62 ms per headless frame. M6 then started with the presentation interfaces (IN-331): a present scheduler decoupled from the VBlank (hold/re-present, newest-wins backlog, late-input hook), auxiliary frames that restore guest memory and refuse readbacks, and per-pass CPU timers; default 42/42 parity unchanged. HWR frame dumps then landed (IN-332): the 4,200-frame headless run writes the same 42-frame schedule with 0 faults and measures 42/42 frames outside the 2D gate, with two visible draw-loss defects (boot text line, garage list). The HWR replay tool then landed (IN-333): on the same records the GPU path is pixel-identical on every even frame and loses content on odd frames (boot text line, garage 10.6%), so field-parity draw loss is the open defect. The cause was found and fixed (IN-335, local slice228): the write-back stored stale depth words over a frame buffer sharing pages with the unused depth buffer. The 42-dump headless run is now 42/42 inside the 2D gate against the donor (before 0/42). The window now follows the VBlank field (13.3 offset, 13.4 deinterlace; IN-337/IN-338, local slice229). Next: owner test 1 (windowed look at 1x), then M7. History of the pause follows.
+
+**2026-10-21, Claude (clean-room writer after GPT 6.1 Sol):** M6 output finished (odd-frame fix, field phase,
+deinterlace; owner tests 1 and 2), then the 3D speed work: resident target slots, pixel-interlock batching and runs,
+the GLM with GPU CLUT, GLM-owned pages and GPU uploads, CPU front-end savings, double-buffered submission and an
+asynchronous presentation source (IN-340..IN-355). Every step keeps per-frame memory identical to the write-back
+mode on the menu, car and race captures and the 42 menu dumps byte-identical. Headless race 300 -> 17-18.6 ms per
+frame. Waiting for owner test 3 (local slice239, `build/hwr-play.ps1`). Next: GPU compose of the display, fewer
+barriers around CLUT loads, the GIF front end, M8 readbacks per the readback study.
+
+**2026-10-22, Claude:** owner tests 3-5 (60 FPS in 3D races, flares, 16:9 480p; test 5 approved a flat 60 FPS frametime on local slice247). `main` 1.2.2 merged into the branch (local slice248/249; hw output identical to slice247, default renderer 42/42 after fixing the 1.2.2 donor-mode crash in `mtvu::Donor`). M12 upscaling (2x-8x) and FXAA in local slice250 (IN-371..IN-376; memory and readbacks identical to 1x at every scale), waiting for owner test 6. Next: owner verdict vs GSdx, 480i menus at scale, then GS-thread CPU cost.
+
+**2026-10-23, Claude:** `main` 1.2.3 merged. Owner test 6 failed (race shown at 1x on every second frame at 4x; ultrawide race squeezed into 16:9); both fixed in local slice270 (IN-377 display shadows checked per pixel against memory, IN-378 display-aspect fill in the HWR presenter) with new controls (`hw_scale_display_shadow`, `hw_smoke_window_aspect_*`, `hw_stream_sink_display_aspect`, replay `--check-presented`). Owner test 7: ultrawide confirmed, race still 1x; fixed in local slice271 (IN-379 tone carry for GT4's T8 tone curve, IN-380 texture footprint for full-screen copies; fixture `hw_scale_fullscreen_passes`; `--check-presented` counts low-detail frames). Owner test 8 passed (races at real resolution, beta minimum met in races); new owner requirement: GSdx-level performance at the same scale. Local slice272: 480i menus at scale (IN-381, fixture `hw_scale_interlaced_present`), no scaled repetition of the tone sequence (IN-382), timing split into 1x/scaled/refresh, scene sweep findings and a ranked parity plan in PROGRESS. Waiting for owner test 9.
+
+**2026-10-23, OpenCode (parity work after the hand-over, `PARITY-PLAN.md`):** owner decisions: item 1 (fast scaled
+raster) approved with a tolerance only on the presentation-only scaled image, item 2 (tone-sequence HLE at 1x)
+approved as memory-exact, item 5 (skipping the 1x redraw) rejected. Item 2's first step landed (IN-383): the eight
+strip batches of one 64 x 32 page run as one GLM dispatch (`hw_tone_strips.comp`), 135,399 -> 16,940 dispatches on the
+480p race capture, with 118,580 of its palette loads held (GPU CLUT loads 200,467 -> 98,827); all five memory captures
+byte-identical, `hw_tone_hle_exact` 0 of 2 frames different, replay CPU GS stream 9.95 -> 8.14 ms per frame; in the game the GS thread drops 13.4-15.6 -> 10.6-11.6 ms and the
+render passes 341-347 -> 198-204. Item 1 (fast scaled raster) is designed but not implemented, see PARITY-PLAN. Switches
+`GT4_HW_TONE_HLE` and `GT4_HW_VERIFY_SHUFFLE` (replay `--no-tone-hle`/`--tone-verify`). No PR, no merge, no pins;
+owner test 10 pending.
+
+**2026-10-23, OpenCode (parity Plan A):** the presentation-only scaled images are no longer fixed 1024 x 1024 squares:
+each covers its slot's real extent (FBW * 64 wide, loaded/drawn rows), is created lazily and grows on demand with the
+old content copied, and a texture copy only takes the batch's sampled footprint (IN-380). Scaled image device memory
+on the 480p race capture: 184.5 -> 64.1 MB at 2x, 738.2 -> 243.1 MB at 4x, 1,660.9 -> 541.4 MB at 6x. New fixture
+`hw_scale_target_extent` (growth, a second FBW); CTest 245/245 both interlock modes, five memory captures
+byte-identical, scaled memory = 1x and 0 low-detail frames at 2x/4x/6x. GPU time unchanged (memory win, not a time
+win). Next: the fast scaled raster (early-Z second pass) itself, then owner test 11.
+
+**2026-10-27..30, Claude:** CORE2 (one image per target at scale), owner tests through candidate 299 (60 FPS, flat frametime, fidelity perfect), the beta list (IN-427..IN-435: 1x, mipmapping, spike cuts, memory budget, FSR1/Lanczos presentation, filters, 12x), specialised pipelines (IN-437: 12x GPU 33.3 -> 21.4 ms) and the first performance mode item (IN-439, decision 0073). 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934) merged into the branch as its base on 2026-10-30; CoreGS 2.0 stays out of 1.3.0. Details in STATUS, the journals and `docs/hw-renderer-spec/CORE2-PERF-LEDGER.md`. CPU survey of the GS pipeline and transport (IN-445, 2026-10-30): instruments (process sampler, transport line, exclusive stage times), the list of CPU fronts and a proposed task order in `docs/hw-renderer-spec/CORE2-CPU-SURVEY.md`; SSE4.1 adopted (`GT4_SSE41` ON, -3.8% wall time), AVX2 measured with no further gain (candidate 313). CPU and transport fronts the same night (IN-446..IN-461, candidate 332): lock-free GS stream ring, allocation-free draw path, unchanged uploads keep page versions, speculative early-Z, CT32 column swizzle, texture cache by block identity, CLUT loads by table, quiet VU1 output wakes, and direct GS intake (`GT4_MTVU_DIRECT=1`, TASK-134's P6: the GS worker reads the VU1 output ring itself); against 313 at 3x process CPU -28%, wall -15%, frames identical. Afternoon of 2026-10-30 (candidates 333-337): direct intake on by default (IN-462); the 12x run-to-run differences traced to batches that sample the target they draw into and fixed with spec 8.8's copy (IN-463, CTest `hw_core2_self_texture`; also removes the 3x run-to-run pixels the ledger listed); `task/134-game-code-optimization-study` merged into the branch (documents). Then (candidates 338-347, IN-464..IN-469): GLM hazards by page, statistics query opt-in, disjoint primitives without waits, strip run skip, PGO and ThinLTO of the GS libraries (option, not yet in the release build), VU1 output scan; against 313 at 3x process CPU -37%, frame p50 -29%, frames identical to 337. Handover to TASK-134 in `docs/hw-renderer-spec/CORE2-HANDOVER-TASK134.md`.
+
 **Paused by the owner on 2026-10-15** to focus on release 1.0.0. State on the
 integration branch `task/027-hw-renderer`: CPU-verified pure libraries for GS
 memory/swizzle (M2), GIF front end and CLUT (M3), exact pixel arithmetic (M5),
@@ -2566,5 +2634,26 @@ Test method: one fixed headless Arcade night race on the desktop (Clubman Stage 
 replay for the varied cameras; B-Spec exists only in GT Mode, which the owner ruled out); laptop runs by the owner with F7/F8 on builds the agent copies to the laptop's
 portable folder over the network, logs collected the same way.
 2026-10-29: branch synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934, program files identical); the
+**Owner, 2026-11-02:** CoreGS 2.0 is done for this step: rc8 is published and this branch receives it, so P0 and P1 can start. They are rc9. Laptop numbers on candidate 382: `docs/hw-renderer-spec/CORE2-HANDOVER-TASK134.md`.
 RetroAchievements per-frame hook added to the study (section 3.8, P1g). Next: P0 (measurement) and P1 (host quick wins) on this branch once the desktop is free; each later step gets its own
 task or branch as it starts.
+
+### TASK-135 — Performance HUD for CoreGS 2.0
+Repos: this one. Clean room: a TASK-027 agent, not PCSX2-tainted.
+Goal (owner, 2026-11-02): CoreGS 2.0 has no in-game overlay today. The overlay of TASK-062 is drawn inside `gt4-gs.exe` with the
+PCSX2 OSD, so it exists only under GSdx and its code cannot be ported: this one is our own, MIT, in the game executable. It
+shows what a player understands, CPU and GPU instead of EE and GS: graphics card, output resolution, render scale and refresh
+rate; FPS with its minimum and maximum; frame time; CPU and GPU use of the game; memory; a live frame time graph. The owner's
+reference is the look of the macOS Metal HUD (screenshots only).
+Acceptance: off by default, launcher rows under CoreGS 2.0, overhead measured, the identity gates unchanged with it off, owner
+test. Updating the GSdx overlay to match is separate work in the fork, for a PCSX2-tainted agent.
+State (2026-11-02): candidate 378, off by default; 26.6 us per presentation, no measurable cost on the graphics thread (IN-526, ledger). Published in 1.3.0-rc8.
+
+### TASK-136 — Simple onboarding, GSdx optional
+Decision 0074. Owner, 2026-11-02: no GSdx download on a first install when the PC runs CoreGS 2.0; automatic, nothing to choose. Acceptance: a new install on a capable PC ends on CoreGS 2.0 with no download; a PC that cannot run it ends on GSdx, downloaded, and is told why; a player on GSdx or with a stored choice sees no change; owner test.
+
+State (2026-11-02): published in 1.3.0-rc8. A whole setup on a capable PC passed in the owner's onboarding; a PC without Vulkan is not verified.
+
+### TASK-137 — Link the disc image
+Decision 0075. Owner, 2026-11-02, asked for by players and needed for Android: one image for this and an emulator. Acceptance: setup writes no copy of the image; an image that moved or changed asks to be chosen again, and choosing it is all it takes; an install with a copy stays installed; accented paths work; owner test.
+State (2026-11-02): TASK-137 and TASK-138 (a portable folder carries its image, accented paths, the GSdx fallback; decision 0075) are published in 1.3.0-rc8. Settings > Games shows the image's size and location.

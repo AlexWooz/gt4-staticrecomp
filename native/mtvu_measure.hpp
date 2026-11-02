@@ -57,6 +57,7 @@ private:
   std::uint64_t regs_ = 0;
   std::uint64_t left_ = 0;      // qwords (PACKED, IMAGE) or registers (REGLIST) still to skip
   std::uint32_t packed_reg_ = 0;  // next PACKED descriptor index
+  bool packed_has_ad_ = false;    // IN-469: the current tag has an A+D descriptor
 };
 
 struct OverlapTotals {

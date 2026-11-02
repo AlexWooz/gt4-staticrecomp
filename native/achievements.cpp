@@ -862,7 +862,8 @@ Config parse_config(const std::function<std::string(const char*)>& get_env) {
     const std::string custom_hash = get_env("GT4_RA_HASH");
     cfg.game_hash = (custom_hash.size() == 32) ? custom_hash : std::string(kGt4NtscUHash);
     cfg.host = get_env("GT4_RA_HOST");
-    cfg.cache_dir = utf8_to_wide(get_env("GT4_RA_CACHE_DIR"));
+    // Read as Windows holds it: in the narrow form an accented folder is in the ANSI code page, not UTF-8.
+    if (const wchar_t* cache_dir = _wgetenv(L"GT4_RA_CACHE_DIR")) cfg.cache_dir = cache_dir;
     cfg.disc_path = get_env("GT4_DISC_PATH");
     cfg.language = resolve_language(get_env("GT4_RA_LANGUAGE"));
     return cfg;

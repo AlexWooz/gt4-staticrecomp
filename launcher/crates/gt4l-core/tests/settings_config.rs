@@ -17,13 +17,11 @@ fn every_definition_id_is_unique_and_has_a_valid_default() {
 }
 
 #[test]
-fn renderer_is_gsdx_and_neither_coregs_build_can_be_selected() {
+fn renderer_defaults_to_gsdx_and_coregs20_can_be_selected() {
     let mut settings = Settings::default();
     assert_eq!(settings.get("renderer"), "pcsx2");
-    assert_eq!(
-        settings.set("renderer", "coregs20"),
-        Err(SettingError::InvalidValue { id: "renderer".into(), value: "coregs20".into() })
-    );
+    settings.set("renderer", "coregs20").expect("CoreGS 2.0 is a beta choice");
+    settings.set("renderer", "pcsx2").unwrap();
     assert_eq!(
         settings.set("renderer", "coregs11"),
         Err(SettingError::InvalidValue { id: "renderer".into(), value: "coregs11".into() }),

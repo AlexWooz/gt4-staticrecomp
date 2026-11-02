@@ -119,13 +119,11 @@ fn inherited_gt4_and_ps2_variables_are_scrubbed_and_others_kept() {
 fn settings_map_to_their_variables() {
     let mut settings = Settings::default();
     settings.set("vsync", "fast").unwrap();
-    settings.set("async_gs", "off").unwrap();
     settings.set("performance_report", "on").unwrap();
     settings.set("check_vu_code", "1000").unwrap();
     let environment = env_map(&game_environment(&settings));
     assert_eq!(environment["GT4_FORCE_480P"], "1", "480p is fixed whatever the other settings");
     assert_eq!(environment["GT4_PRESENT_MODE"], "mailbox");
-    assert_eq!(environment["GT4_GS_SYNC"], "1");
     assert_eq!(environment["GT4_PERF"], "1");
     assert_eq!(environment["GT4_VU1_VERIFY"], "1000");
     assert_eq!(environment["GT4_VU0_VERIFY"], "1000");
@@ -185,6 +183,16 @@ fn removed_parallel_gs_renderer_and_its_options_are_refused() {
 }
 
 #[test]
+fn asynchronous_gs_is_always_on_whatever_an_old_file_holds() {
+    let mut settings = Settings::default();
+    assert!(settings::definition("async_gs").is_none(), "async_gs is not a setting");
+    assert!(settings::retired("async_gs").is_some(), "async_gs is listed as retired");
+    assert!(settings.set("async_gs", "off").is_err(), "async_gs cannot be set");
+    assert!(!env_map(&game_environment(&settings)).contains_key("GT4_GS_SYNC"));
+    assert!(!launch::standalone_config_text(&settings, None).contains("async_gs"));
+}
+
+#[test]
 fn the_coregs11_rows_are_gone_and_retired_so_their_stored_values_are_ignored() {
     let mut settings = Settings::default();
     for id in ["internal_scale", "present_filter", "fsr_sharpness", "deinterlacing", "anti_aliasing"] {
@@ -198,11 +206,111 @@ fn the_coregs11_rows_are_gone_and_retired_so_their_stored_values_are_ignored() {
 }
 
 #[test]
-fn gsdx_is_the_only_renderer_and_play_needs_it_installed() {
+fn the_lines_of_the_shader_compile_are_read_and_anything_else_is_ignored() {
+    use launch::{parse_shader_prepare_line as parse, ShaderPrepareLine as Line};
+    assert_eq!(parse("shaders ready"), Some(Line::Ready));
+    assert_eq!(parse("shaders progress 0 353"), Some(Line::Progress { done: 0, total: 353 }));
+    assert_eq!(parse("shaders progress 12 353\r"), Some(Line::Progress { done: 12, total: 353 }));
+    for other in ["", "shaders", "shaders progress", "shaders progress 1", "shaders progress a b", "shaders ready now", "[core2] ready"] {
+        assert_eq!(parse(other), None, "{other}");
+    }
+}
+
+#[test]
+fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
+    use gt4l_core::games;
+    let textures = Path::new(r"D:\data\Textures");
+    let mut settings = Settings::default();
+    assert!(!launch::uses_coregs20(&settings), "GSdx by default");
+    settings.set("renderer", "coregs20").unwrap();
+    assert!(launch::uses_coregs20(&settings), "the choice is shared by both games");
+
+    let display = display_target(r"\\.\DISPLAY1", 1920, 1080);
+    let on = env_map(&launch::coregs20_environment(&settings, Some(&display), false, textures));
+    assert_eq!(on["GT4_RENDERER"], "hw");
+    assert_eq!(on["GT4_HW_CORE"], "2");
+    assert_eq!(on["GT4_HW_SCALE"], "3", "the session plan's multiplier");
+    assert_eq!(on["GT4_HW_TEXTURES"], r"D:\data\Textures", "custom textures are on by default");
+    assert_eq!(on["GT4_FORCE_480P"], "1");
+    assert_eq!(on["GT4_FORCE_WIDESCREEN"], "1");
+    for gsdx_only in ["GT4_GS_PROCESS", "GT4_GS_PROCESS_SHA256", "GT4_GS_CONFIG", "PS2_GS"] {
+        assert!(!on.contains_key(gsdx_only), "{gsdx_only} belongs to GSdx");
+    }
+    assert!(!on.contains_key("GT4_CORE2_PERFORMANCE"), "full precision unless Performance Mode is on");
+    assert!(!on.contains_key("GT4_FRAME_SKIP_FORCE"), "every frame drawn unless the player asks for 30 FPS");
+    assert!(!on.contains_key("GT4_CORE2_FSR_SHARPNESS"), "no sharpening by default");
+    assert_eq!(on["GT4_PRESENT_MODE"], "fifo", "vsync On");
+
+    // "Fast" is not a CoreGS 2.0 choice: a value stored for GSdx draws as On, and only there.
+    settings.set("vsync", "fast").unwrap();
+    let stored_fast = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert_eq!(stored_fast["GT4_PRESENT_MODE"], "fifo");
+    assert!(launch::coregs20_section(&settings, None, false, textures).contains("hw_present_mode=fifo\n"));
+    settings.set("vsync", "off").unwrap();
+    let vsync_off = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert_eq!(vsync_off["GT4_PRESENT_MODE"], "immediate", "Off stays a choice");
+    assert!(!launch::coregs20_section(&settings, None, false, textures).contains("hw_present_mode"));
+    settings.set("vsync", "on").unwrap();
+
+    settings.set_gs("performance_mode", "no-readbacks").unwrap();
+    settings.set_gs("texture_load", "false").unwrap();
+    settings.set_gs("fxaa", "true").unwrap();
+    settings.set("coregs_sharpening", "medium").unwrap();
+    settings.set("frame_rate", "30").unwrap();
+    let tuned = env_map(&launch::coregs20_environment(&settings, None, true, textures));
+    assert_eq!(tuned["GT4_CORE2_PERFORMANCE"], "1");
+    assert_eq!(tuned["GT4_FRAME_SKIP_FORCE"], "2");
+    assert!(!tuned.contains_key("GT4_HW_TEXTURES"));
+    assert_eq!(tuned["GT4_HW_POSTFX"], "fxaa");
+    assert_eq!(tuned["GT4_CORE2_FSR_SHARPNESS"], "0.2");
+    assert_eq!(tuned["GT4_HW_SCALE"], "1", "the integrated GPU default of the session plan");
+
+    let section = launch::coregs20_section(&settings, Some(&display), false, textures);
+    assert!(section.starts_with("renderer=coregs20\n"));
+    assert!(section.contains("hw_scale=3\n") && section.contains("hw_performance=1\n") && section.contains("hw_postfx=fxaa\n"));
+    assert!(section.contains("hw_sharpening=0.2\n"));
+    assert!(section.contains("hw_frame_skip=2\n"));
+    assert!(!section.contains("hw_textures"));
+}
+
+#[test]
+fn the_performance_hud_is_off_by_default_and_on_only_when_chosen() {
+    let textures = Path::new("T");
+    let mut settings = Settings::default();
+    assert!(!settings.is_on("performance_hud"));
+    let off = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert!(!off.contains_key("GT4_HW_HUD"));
+    assert!(!launch::coregs20_section(&settings, None, false, textures).contains("hw_hud"));
+    settings.set("performance_hud", "on").unwrap();
+    let on = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert_eq!(on["GT4_HW_HUD"], "1");
+    assert!(launch::coregs20_section(&settings, None, false, textures).contains("hw_hud=1\n"));
+    // It is CoreGS 2.0's own: GSdx has its overlay.
+    assert!(!env_map(&game_environment(&settings)).contains_key("GT4_HW_HUD"));
+}
+
+#[test]
+fn setup_tries_coregs20_only_on_a_new_install_with_no_choice_and_no_gsdx() {
+    use launch::{setup_renderer, SetupRenderer};
+    let settings = Settings::default();
+    assert_eq!(setup_renderer(&settings, true, true), SetupRenderer::TryCoregs20, "a new install");
+    assert_eq!(setup_renderer(&settings, true, false), SetupRenderer::Gsdx, "GSdx is already there: it stays");
+    assert_eq!(setup_renderer(&settings, false, true), SetupRenderer::Gsdx, "a second game of a player on GSdx");
+    let mut chose_gsdx = Settings::default();
+    chose_gsdx.set_by_user("renderer", "pcsx2").unwrap();
+    assert_eq!(setup_renderer(&chose_gsdx, true, true), SetupRenderer::Gsdx, "the player's choice wins");
+    let mut chose_coregs = Settings::default();
+    chose_coregs.set_by_user("renderer", "coregs20").unwrap();
+    assert_eq!(setup_renderer(&chose_coregs, true, true), SetupRenderer::Coregs20, "nothing to install or to try");
+    assert_eq!(setup_renderer(&chose_coregs, false, true), SetupRenderer::Coregs20);
+}
+
+#[test]
+fn gsdx_is_the_default_renderer_and_a_gsdx_session_needs_it_installed() {
     let mut settings = Settings::default();
     assert_eq!(settings.get("renderer"), "pcsx2", "GSdx is the default");
     assert!(settings.set("renderer", "coregs11").is_err(), "CoreGS 1.1 is not a choice (TASK-096)");
-    assert!(settings.set("renderer", "coregs20").is_err(), "coming soon is not selectable");
+    settings.set("renderer", "coregs20").expect("CoreGS 2.0 is a beta choice");
     settings.set("renderer", "pcsx2").unwrap();
 
     let installed = installed_fixture();
@@ -244,7 +352,7 @@ fn session_ini_matches_the_python_writer_for_the_default_settings() {
     let paths = pcsx2_paths();
     let text = launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap();
     let bytes = gt4l_core::gs_table::ini_file_bytes(&text);
-    let expected = include_bytes!("fixtures/gs/default-session.ini");
+    let expected = gt4l_core::gs_table::ini_file_bytes(include_str!("fixtures/gs/default-session.ini"));  // LF in the file
     assert_eq!(bytes.as_slice(), expected.as_slice(), "Rust gt4-gs.ini differs from scripts/gs_settings.py");
     // A 1920x1080 output at 100% is the same 3x: the default INI did not change with the display plan.
     let full_hd = display_target(r"\\.\DISPLAY1", 1920, 1080);
@@ -433,11 +541,6 @@ fn variables_of_game_ini(text: &str) -> std::collections::BTreeMap<String, Strin
             "output_size" => {
                 variables.insert("GT4_OUTPUT_SIZE".to_string(), value.to_string());
             }
-            "async_gs" => {
-                if value == "0" {
-                    variables.insert("GT4_GS_SYNC".to_string(), "1".to_string());
-                }
-            }
             "performance_report" => {
                 if value == "1" {
                     variables.insert("GT4_PERF".to_string(), "1".to_string());
@@ -461,7 +564,7 @@ fn every_game_ini_key_stands_for_the_variable_the_launcher_sets_at_play() {
         vec![],
         vec![("fullscreen", "off")],
         vec![("vsync", "fast")],
-        vec![("vsync", "off"), ("async_gs", "off")],
+        vec![("vsync", "off")],
         vec![("performance_report", "on"), ("check_vu_code", "100")],
         vec![("check_vu_code", "1000"), ("fullscreen", "off"), ("vsync", "on")],
     ];

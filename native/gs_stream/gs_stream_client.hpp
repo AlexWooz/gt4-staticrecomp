@@ -5,6 +5,9 @@
 //   unset or "donor"  the donor GS front end and the native Vulkan renderer (unchanged; every hook returns at once)
 //   "pcsx2"           the GS stream: no donor Vulkan device; GIF, privileged writes, VSYNC and readbacks go to a GS
 //                     process (GT4_GS_PROCESS=<executable>) over shared memory (gs_stream_ipc.hpp)
+//   "hw"              TASK-027 development builds only (CMake GT4_HW_GS=ON, compile definition GT4_GS_STREAM_HW): no
+//                     donor Vulkan device and no GS process; the same hooks feed the in-process HWR backend
+//                     (gs_stream_sink.hpp). GT4_GS_CAPTURE is refused in this mode. Other builds refuse "hw".
 // Any other value stops the process before the game starts.
 //
 // TASK-036 (slice193), pcsx2 mode: GT4_GS_PROCESS_SHA256=<hex> refuses a GS process whose SHA-256 differs (the launcher
@@ -13,7 +16,7 @@
 //
 // TASK-037/038 (slice194): F8 prints the readback wait distribution; a GS process death lets the guest run
 // GT4_GS_LOST_GRACE_FRAMES (default 180) more VSYNCs so the runtime flushes a changed memory card, then halts; with a
-// window, a message box offers a restart with the built-in renderer (the launcher reads the restart line from the log);
+// window, a message box offers CoreGS 2.0 (the launcher reads the restart line from the log);
 // GT4_GS_HANDSHAKE_TIMEOUT_MS (default 20000) bounds the handshake; 0x0 resizes (minimized window) are not sent.
 //
 // GT4_GS_CAPTURE=<file> writes the same records to a .gscap version 2 file in either renderer mode (the donor output is
@@ -29,13 +32,19 @@
 
 #include "gs_stream/gs_stream_protocol.h"
 
+namespace gt4::mtvu {
+class SpscByteRing;
+class Doorbell;
+}  // namespace gt4::mtvu
+
 namespace gt4::gs_stream {
 
-enum class Renderer { donor, pcsx2 };
+enum class Renderer { donor, pcsx2, hw };
 
 // Parsed once from GT4_RENDERER. An unknown value prints a message and exits with EXIT_FAILURE.
 Renderer renderer();
-// True when GT4_RENDERER=pcsx2: the donor GS front end and Vulkan renderer are not used.
+// True when GT4_RENDERER=pcsx2 (or hw in a GT4_GS_STREAM_HW build): the donor GS front end and Vulkan renderer are
+// not used.
 bool stream_renderer();
 
 // --- hooks (EE thread) ---
@@ -103,6 +112,12 @@ void on_vsync(bool odd_field);
 // so the GS process sees the frame complete before its VSYNC. Without deferral both calls behave as before.
 void set_vsync_deferral(bool defer);
 bool post_pending_vsync();
+// IN-461 (CPU survey T3, direct GS intake): with GT4_RENDERER=hw the in-process GS worker can read the VU1 worker's
+// output ring itself. mtvu_direct_available() says whether it can (asked once by the MTVU runtime at start);
+// on_mtvu_job() puts VU1 job `job` at this point of the GS stream (EE thread, the job's program position): the GS worker
+// then executes that job's GIF records straight from `output`, waiting on `bell`, up to its JobDone.
+bool mtvu_direct_available();
+void on_mtvu_job(std::uint64_t job, gt4::mtvu::SpscByteRing &output, gt4::mtvu::Doorbell &bell);
 // GS hard reset (donor render_reset) and GIF path reset.
 void on_gs_reset();
 void on_gif_reset();

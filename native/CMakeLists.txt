@@ -38,7 +38,8 @@ get_filename_component(GT4_PRIVATE_BASE "${GT4_ASSETS_ROOT}" ABSOLUTE)
 # its own manifest docs/inputs/<capsule name>.json; the license guard capsule of the same profile pins
 # docs/inputs/<its name>.json. Only the Spec II build selects a slice27x guard capsule (slice277, TASK-100 S8b: the
 # per-target Manager add/body shift for the Spec II demo loaders); v2.00 keeps its slice262 capsule.
-set(GT4_TASK084_GUARD_RE "^private/slice2[67][0-9]-[a-z0-9-]*license-guard-runtime$")
+# And TASK-082 (slice375 on): the same guard plus the frame skip hook.
+set(GT4_TASK084_GUARD_RE "^private/slice(2[67]|3[789])[0-9]-[a-z0-9-]*license-guard-runtime$")
 # TASK-100 S7b (slice276): the TASK-084 frame-cost profile plus the Spec II IOP reboot rule (sif.cpp), so the frame-cost
 # capsule family spans slice260..slice279. Only the Spec II executable selects a slice27x capsule; v2.00 keeps its
 # slice262 capsule. It shares the TASK-084 file list and pin rules.
@@ -218,6 +219,26 @@ if(GT4_MEMCARD_RUNTIME_SOURCE)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${memcard_capsule}/sio2.cpp")
     set(GT4_MEMCARD_FLUSH_ENABLED ON)
 endif()
+# TASK-027 IN-490: faster IPU video decoder, exactly the donor's results. A capsule (scripts/prepare_ipu_fast.py) replaces the
+# donor ipu/ipu.cpp with the derived source; the manifest pins the derived file's SHA-256.
+set(GT4_IPU_RUNTIME_SOURCE "" CACHE PATH "Verified IPU capsule: derived ipu.cpp and runtime.json")
+if(GT4_IPU_RUNTIME_SOURCE)
+    get_filename_component(ipu_capsule "${GT4_IPU_RUNTIME_SOURCE}" ABSOLUTE)
+    if(NOT EXISTS "${ipu_capsule}/ipu.cpp" OR NOT EXISTS "${ipu_capsule}/runtime.json")
+        message(FATAL_ERROR "The IPU capsule needs ipu.cpp and runtime.json")
+    endif()
+    file(READ "${ipu_capsule}/runtime.json" ipu_manifest)
+    string(JSON ipu_expected GET "${ipu_manifest}" ipu_sha256)
+    file(SHA256 "${ipu_capsule}/ipu.cpp" ipu_actual)
+    if(NOT ipu_actual STREQUAL ipu_expected)
+        message(FATAL_ERROR "IPU ipu.cpp differs from its runtime.json pin")
+    endif()
+    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/ipu/ipu\\.cpp$")
+    list(APPEND RUNTIME_FILES "${ipu_capsule}/ipu.cpp")
+    # The derived file includes native/ipu_fast.hpp and the donor's files by their runtime/src paths.
+    set_source_files_properties("${ipu_capsule}/ipu.cpp" PROPERTIES INCLUDE_DIRECTORIES "${DONOR}/runtime/src;${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ipu_capsule}/ipu.cpp")
+endif()
 # TASK-017 (slice205 v1, slice206 v2): license demo guard capsule (scripts/prepare_license_guard.py). Replaces the donor
 # dispatch.cpp (guard at both license loaders' demo-input calls, native/license_guard.*), kernel.cpp (halt
 # dump, off unless GT4_HALT_DUMP=1) and iop/cdvdfsv.cpp (FSV read trace, off unless GT4_FSV_TRACE=1). Every derived
@@ -281,7 +302,7 @@ target_compile_options(gt4_pacing PRIVATE /W4)
 # Pure window-mode state and the GT4_FORCE_480P race display index (slice164).
 # TASK-060: cursor auto-hide rule (cursor_autohide.cpp) shared by the window.
 # TASK-080: display aspect (GT4_DISPLAY_ASPECT parse, Hor+/Vert+ matrix scale, scene policy, runtime glue).
-add_library(gt4_quickfix STATIC window_mode.cpp race_display.cpp race_widescreen.cpp cursor_autohide.cpp display_aspect.cpp
+add_library(gt4_quickfix STATIC frame_skip.cpp window_mode.cpp race_display.cpp race_widescreen.cpp cursor_autohide.cpp display_aspect.cpp
     flare_limits.cpp)
 target_compile_options(gt4_quickfix PRIVATE /W4)
 # TASK-100 S7b: the v2.00 hook fixtures assert the v2.00 guest chains, but gt4_quickfix carries the active target's table
@@ -391,6 +412,15 @@ target_compile_definitions(gt4_gs_stream_client PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(gt4_gs_stream_client PRIVATE /W4)
 # TASK-038: users of the client (window.cpp through ps2runtime_vulkan) see GT4_GS_STREAM_CLIENT.
 target_compile_definitions(gt4_gs_stream_client INTERFACE GT4_GS_STREAM_CLIENT)
+# TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
+# and lets the GS stream seam accept GT4_RENDERER=hw. In that mode the same hooks that feed gt4-gs.exe in pcsx2 mode
+# feed the in-process HWR backend (native/hw_gs/hw_gs_stream_sink.cpp); no GS process is started. With GT4_HW_GS=OFF
+# (the default and every release build) the client still refuses any value other than donor or pcsx2.
+if(GT4_HW_GS)
+    add_subdirectory(hw_gs)
+    target_link_libraries(gt4_gs_stream_client PUBLIC gt4_hw_stream_sink)
+    target_compile_definitions(gt4_gs_stream_client PRIVATE GT4_GS_STREAM_HW)
+endif()
 add_executable(gs_stream_ipc_fixture gs_stream/gs_stream_ipc_fixture.cpp)
 target_link_libraries(gs_stream_ipc_fixture PRIVATE gt4_gs_stream)
 target_compile_options(gs_stream_ipc_fixture PRIVATE /W4)
@@ -792,7 +822,7 @@ string(JSON GT4_SDL3_LICENSE GET "${sdl3_manifest}" files license path)
 add_library(gt4_sdl3 INTERFACE)
 target_include_directories(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/devel/SDL3-3.4.18/include")
 target_link_libraries(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/${GT4_SDL3_IMPORT_LIB}")
-add_library(gt4_pad_mapping STATIC pad_mapping.cpp)
+add_library(gt4_pad_mapping STATIC pad_mapping.cpp input_recording.cpp)
 target_compile_options(gt4_pad_mapping PRIVATE /W4)
 add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp)
 target_link_libraries(native_host_io PUBLIC gt4_pad_mapping)
@@ -843,7 +873,8 @@ set(GT4_VERSION "1.0.0")
 set(GT4_RC_VERSION_COMMA "1,0,0,0")
 if(WIN32)
   enable_language(RC)
-  set(GT4_GAME_ICON "${GT4_BRANDING_DIR}/game.ico")
+  # Owner, 2026-11-02: the game has the launcher's icon.
+  set(GT4_GAME_ICON "${GT4_BRANDING_DIR}/launcher.ico")
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/gt4vulkan.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/gt4vulkan.rc" @ONLY)
   set(GT4VULKAN_RESOURCES "${CMAKE_CURRENT_BINARY_DIR}/gt4vulkan.rc")
 endif()
@@ -858,6 +889,10 @@ if(GT4_TARGET STREQUAL "spec2")
 endif()
 target_include_directories(gt4vulkan PRIVATE "${PORT}")
 target_compile_definitions(gt4vulkan PRIVATE PS2_WINDOW)
+if(GT4_HW_GS)
+    target_compile_definitions(gt4vulkan PRIVATE GT4_HW_SHADER_PREPARE)  # IN-507: --prepare-shaders
+    target_link_libraries(gt4vulkan PRIVATE gt4_hw_stream_sink)
+endif()
 target_include_directories(gt4vulkan PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 if(GT4_MEMCARD_FLUSH_ENABLED)
     # window.cpp calls the capsule's flush_cards_now() on exit (TASK-025 Part A / TASK-058).
@@ -888,6 +923,13 @@ target_include_directories(vulkan_fixture PRIVATE "${PORT}")
 target_link_libraries(vulkan_fixture PRIVATE ps2runtime_vulkan user32)
 target_compile_options(gt4vulkan PRIVATE /W4)
 target_compile_options(vulkan_fixture PRIVATE /W4)
+add_executable(ipu_fast_fixture ipu_fast_fixture.cpp)
+target_compile_options(ipu_fast_fixture PRIVATE /W4)
+add_test(NAME native_ipu_fast COMMAND ipu_fast_fixture)
+add_executable(frame_skip_fixture frame_skip_fixture.cpp frame_skip.cpp)
+target_link_libraries(frame_skip_fixture PRIVATE gt4_pacing)
+target_compile_options(frame_skip_fixture PRIVATE /W4)
+add_test(NAME native_frame_skip COMMAND frame_skip_fixture)
 add_executable(pacing_fixture pacing_fixture.cpp)
 target_link_libraries(pacing_fixture PRIVATE gt4_pacing)
 target_compile_options(pacing_fixture PRIVATE /W4)
@@ -906,6 +948,11 @@ target_compile_options(achievements_http_fixture PRIVATE /W4)
 add_executable(controls_fixture controls_fixture.cpp controls.cpp)
 target_compile_options(controls_fixture PRIVATE /W4)
 target_compile_definitions(controls_fixture PRIVATE GT4_CONTROLS_EXAMPLES_DIR="${GT4_ROOT}/docs/controls")
+add_executable(input_recording_fixture input_recording_fixture.cpp)
+target_link_libraries(input_recording_fixture PRIVATE gt4_pad_mapping)
+target_compile_options(input_recording_fixture PRIVATE /W4)
+add_test(NAME native_input_recording COMMAND input_recording_fixture native_input_recording.txt)
+
 add_executable(pad_mapping_fixture pad_mapping_fixture.cpp controls.cpp)
 target_link_libraries(pad_mapping_fixture PRIVATE gt4_pad_mapping)
 target_compile_options(pad_mapping_fixture PRIVATE /W4)

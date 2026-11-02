@@ -53,6 +53,8 @@ struct Access {
   std::function<std::optional<std::string>(const std::filesystem::path &)> read_text; // whole small file
   std::function<std::optional<std::string>(const std::filesystem::path &)> sha256_file; // 64 lowercase hex digits
   std::function<std::optional<std::string>(const std::string &)> environment;           // empty value counts as unset
+  // The name the game can open a linked image by (its short name for a path outside the ANSI code page); unset: the path itself.
+  std::function<std::filesystem::path(const std::filesystem::path &)> openable_path;
 };
 
 // ---- Folders ------------------------------------------------------------------------------------------------------------
@@ -96,12 +98,14 @@ std::optional<Layout> find_layout(const std::filesystem::path &executable, const
 
 struct Receipt {
   std::string image_file;
+  std::string image_linked_path;  // UTF-8; where the player keeps the image (decision 0075), relative to the install folder when
+                                  // it lies inside it. Empty: a copy under `disc`
   std::uint64_t image_size = 0;
   std::uint64_t image_modified_unix_nanos = 0;
   std::uint64_t elf_size = 0;
 };
 
-// Reads `image.file`, `image.size_bytes`, `image.modified_unix_nanos` and `elf.size_bytes`. Empty when any is missing
+// Reads `image.file`, `image.linked_path` (optional), `image.size_bytes`, `image.modified_unix_nanos` and `elf.size_bytes`. Empty when any other is missing
 // (a receipt of schema 1 has no image and is reported as changed).
 std::optional<Receipt> parse_receipt(std::string_view json);
 
@@ -167,8 +171,9 @@ struct Inputs {
 // appended unchanged. `--no-window` (not a donor option) leaves out the window flag: a headless standalone run for tests.
 Resolved resolve(const Inputs &inputs, const Access &access);
 
-// Whether the renderer files are needed: GT4_RENDERER is unset or "pcsx2", and GT4_GS_PROCESS is not given.
-bool renderer_needed(const Access &access);
+// Whether the renderer files are needed: GT4_RENDERER is unset or "pcsx2", GT4_GS_PROCESS is not given and game.ini does
+// not choose CoreGS 2.0 for GT4 (`inputs.layout` and `inputs.config` are read).
+bool renderer_needed(const Inputs &inputs, const Access &access);
 
 // ---- Session folder, messages -------------------------------------------------------------------------------------------
 

@@ -245,6 +245,7 @@
         });
       }
 
+      var preparingShaders = false;
       function play() {
         if (isRunning) {
           return;
@@ -253,8 +254,25 @@
           install();
           return;
         }
+        if (preparingShaders) {
+          return;
+        }
         paint(true);
-        call("play").then(function () {
+        // IN-507: asks whether the shaders are compiled; the window opens by itself when they are not (js/app.js).
+        preparingShaders = true;
+        call("prepare_shaders").then(function (goOn) {
+          preparingShaders = false;
+          GT4.closeShaderWindow();
+          if (!goOn) {
+            paint(false);
+            return null;
+          }
+          return call("play");
+        }, function () {
+          preparingShaders = false;
+          GT4.closeShaderWindow();
+          return call("play");
+        }).then(function () {
           // Follow the next poll for the real state.
         }, function (err) {
           paint(false);

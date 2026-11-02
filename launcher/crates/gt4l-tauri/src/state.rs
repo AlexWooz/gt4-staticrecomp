@@ -64,6 +64,9 @@ pub struct AppState {
     pub setup_outcome: SetupOutcome,
     /// The running game's child process (shared with the watcher thread and Stop).
     pub game_child: Option<Arc<Mutex<Option<Child>>>>,
+    /// IN-507: the shader compile before Play, and whether its window's Cancel stopped it.
+    pub shaders_child: Arc<Mutex<Option<Child>>>,
+    pub shaders_cancelled: Arc<AtomicBool>,
     /// Control name while a rebind waits for a press from the pad service (`pad_service`).
     pub capturing: Option<String>,
     /// Message shown on Home, e.g. why the last start failed.
@@ -106,8 +109,11 @@ pub struct SetupRun {
     /// Bytes done and total of a copy or a download (0 when not known).
     pub bytes_done: u64,
     pub bytes_total: u64,
-    /// The renderer sub-step: `listing`, `downloading`, `installing`, `done` or `failed`.
+    /// The renderer sub-step: `checking`, `compiling` (bytes hold the shaders done and total), `listing`, `downloading`,
+    /// `installing`, `done` or `failed`.
     pub renderer_step: String,
+    /// What setup decided: `coregs20`, `gsdx_fallback` (this PC cannot run CoreGS 2.0), or empty (GSdx stayed the renderer).
+    pub renderer_choice: String,
 }
 
 /// The result of the last disc pick or setup run.
@@ -261,6 +267,8 @@ impl AppState {
             setup_run: SetupRun::default(),
             setup_outcome: SetupOutcome::None,
             game_child: None,
+            shaders_child: Arc::new(Mutex::new(None)),
+            shaders_cancelled: Arc::new(AtomicBool::new(false)),
             capturing: None,
             home_message: String::new(),
             controls_status: String::new(),
@@ -319,8 +327,8 @@ impl AppState {
     pub fn installed_of(&self, game: &'static Game) -> disc_setup::Installed {
         let dirs = self.game_dirs(game);
         match DiscGame::from_id(game.id) {
-            Some(DiscGame::Spec2) => disc_spec2::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.spec2_pins),
-            _ => disc_setup::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.pins),
+            Some(DiscGame::Spec2) => disc_spec2::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.spec2_pins),
+            _ => disc_setup::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.pins),
         }
     }
 
@@ -369,7 +377,11 @@ impl AppState {
         let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
         let config_dir = self.user_dirs.config_dir().to_path_buf();
         let game_ini = config_dir.join(launch::STANDALONE_CONFIG_FILE);
-        let text = launch::standalone_config_text(settings, display.as_ref());
+        let mut text = launch::standalone_config_text(settings, display.as_ref());
+        if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
+            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
+            text.push_str(&launch::coregs20_section(settings, display.as_ref(), integrated, &self.dirs.textures()));
+        }
         if let Err(error) = fs::create_dir_all(&config_dir).and_then(|()| write_text_atomic(&game_ini, &text)) {
             log_error(&self.dirs, &format!("{} not written: {error}", game_ini.display()));
         }

@@ -397,6 +397,12 @@ body.is-idle .migration-bar.indeterminate .migration-fill { animation-play-state
 
 /* Settings > Games, and the game name on the Saves and Replays titles. */
 .game-row .k .val { display: block; }
+.game-row { padding: 10px 0; }
+.game-row .k { flex-wrap: wrap; row-gap: 2px; }
+/* The image's folder is the player's: cut with an ellipsis when long, the whole path in its title. */
+.game-image {
+  flex: 0 0 100%; min-width: 0; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .game-row .ctl { gap: 8px; display: flex; }
 .game-row .ctl .btn { white-space: nowrap; }
 .game-tag {
@@ -448,7 +454,7 @@ body.input-pad nav.side .ring-on { box-shadow: none; }
 .side-version { margin-top: auto; font-size: 12px; color: var(--faint); }
 
 .content {
-  overflow-y: auto; padding: 28px 48px 24px 40px; scrollbar-width: thin; scrollbar-color: var(--faint) transparent;
+  position: relative; overflow-y: auto; padding: 28px 48px 24px 40px; scrollbar-width: thin; scrollbar-color: var(--faint) transparent;
   overscroll-behavior: contain; touch-action: pan-y;
 }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
@@ -463,7 +469,7 @@ body.input-pad nav.side .ring-on { box-shadow: none; }
 .row .k { flex: 1; color: var(--white); display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* Every control column is 220 px and right-aligned, so controls in one column line up
    (spatial focus depends on it). */
-.row .ctl { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: none; width: 190px; }
+.row .ctl { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: none; width: 240px; }
 .row .ctl .slider { flex: 1; width: auto; min-width: 0; }
 /* TASK-080 Render scale: the readout names the resulting resolution ("100% · 4x · 2560x1792"). */
 .row .ctl.wide { width: min(340px, 58%); }
@@ -503,20 +509,6 @@ body.input-pad nav.side .ring-on { box-shadow: none; }
 body.input-keys .info:focus .tip,
 body.input-pad .info:focus .tip { display: block; }
 
-/* toggle: paper track when on */
-.toggle {
-  width: 36px; height: 20px; border-radius: 10px; background: var(--graphite);
-  border: 1px solid var(--hair); position: relative; flex: none; transition: background 150ms ease;
-}
-.toggle::before { content: ""; position: absolute; inset: -14px -6px; }
-.toggle::after {
-  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
-  background: var(--faint); transition: left 150ms ease;
-}
-.toggle.on { background: var(--paper); border-color: var(--paper); }
-.toggle.on::after { left: 18px; background: var(--paper-ink); }
-.toggle:disabled { opacity: 0.4; }
-
 /* dropdown: a button that shows the value; A opens the list, left/right cycle */
 .select {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -532,6 +524,38 @@ body.input-pad .info:focus .tip { display: block; }
 }
 /* A wide dropdown row (Language) fills its wide control column. */
 .row .ctl.wide .select { width: 100%; }
+
+/* The option control (owner, 2026-11-02), as the version switch on the home page: the value between two arrows, in an endless
+   loop; the new value slides in from the side of the arrow used. One focus stop: left and right step it. */
+.selector {
+  display: flex; align-items: center; width: 100%; height: 30px; font-size: 12.5px; color: var(--white); cursor: pointer;
+  border-radius: 3px;
+}
+.selector-arrow {
+  flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 3px; color: var(--dim);
+  border: 1px solid transparent; transition: color 150ms ease, border-color 150ms ease;
+}
+.selector-arrow:hover { color: var(--white); border-color: rgba(255, 255, 255, 0.3); }
+body.input-keys .selector:focus .selector-arrow,
+body.input-pad .selector:focus .selector-arrow { color: var(--white); }
+.selector.is-stuck { cursor: default; }
+.selector.is-stuck .selector-arrow { opacity: 0.3; pointer-events: none; }
+/* The value never wraps; one too long is cut with an ellipsis, the whole text in its title. */
+.selector-window { position: relative; flex: 1 1 auto; min-width: 0; height: 18px; overflow: hidden; }
+.selector-value {
+  position: absolute; inset: 0; line-height: 18px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.selector-value.enter-from-right { animation: version-enter-right 320ms cubic-bezier(0.25, 0.8, 0.25, 1) both; }
+.selector-value.enter-from-left { animation: version-enter-left 320ms cubic-bezier(0.25, 0.8, 0.25, 1) both; }
+.selector-value.leave-to-left { animation: version-leave-left 320ms cubic-bezier(0.25, 0.8, 0.25, 1) both; }
+.selector-value.leave-to-right { animation: version-leave-right 320ms cubic-bezier(0.25, 0.8, 0.25, 1) both; }
+/* The GSdx download in its dialog (settings.js). */
+.gsdx-progress { margin-top: 12px; }
+.gsdx-progress[hidden] { display: none; }
+.gsdx-status, .gsdx-figures { font-size: 12.5px; color: var(--dim); min-height: 18px; }
+.gsdx-figures { margin-top: 8px; }
+/* A row going out after a step changed the tab's rows (settings.js). */
+.row-departing { position: absolute; margin: 0; pointer-events: none; }
 
 /* slider: thin bar, paper fill to the value */
 /* 30 px tall; the 2 px track sits in the middle (margin 14 px, so the thumb is centred on it). touch-action pan-y lets a
@@ -794,7 +818,6 @@ body.input-pad .info:focus .tip { display: block; }
 .cx-panel .row .k { font-size: 13px; color: var(--silver); }
 .cx-panel .row .ctl { width: 64%; }
 .cx-panel .row .ctl .val { min-width: 40px; }
-.cx-panel .select { width: 100%; }
 .cx-reset-all { flex: none; width: 100%; margin-top: auto; }
 
 /* Rebind overlay. */
@@ -839,6 +862,9 @@ body.input-pad .info:focus .tip { display: block; }
 .modal-box.is-wide { width: 680px; }
 .modal-box h3 { font: 300 24px/30px var(--text); color: var(--white); margin-bottom: 8px; }
 .modal-text { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+.shader-bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; margin-bottom: 8px; }
+.shader-bar-fill { height: 100%; width: 0; background: var(--silver); transition: width 0.15s linear; }
+.shader-count { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 .option-list {
   border-top: 1px solid var(--hair); margin-bottom: 8px; max-height: 340px; overflow-y: auto;
@@ -860,6 +886,8 @@ body.input-pad .info:focus .tip { display: block; }
 @media (pointer: coarse) {
   .row { min-height: 56px; gap: 28px; }
   .option { height: 56px; }
+  .selector-arrow { position: relative; }
+  .selector-arrow::before { content: ""; position: absolute; inset: -12px; }
   .tab { min-height: 52px; line-height: 52px; }
   .hint { min-height: 52px; }
   .btn { height: 52px; }

@@ -8,6 +8,7 @@
 #include "vu_micro.hpp"
 
 #ifdef GT4_GS_STREAM_CLIENT
+#include "gs_stream/gs_stream_sink.hpp"
 #include "gs_stream/gs_stream_client.hpp"
 #endif
 
@@ -48,6 +49,9 @@ void post_readback(std::uint32_t qwords) { gt4::gs_stream::post_read_fifo_nowait
 
 }  // namespace
 
+// The donor-mode crash of release 1.2.2 (an indeterminate post_vsync pointer): every callback must start null.
+static_assert(Donor{}.post_vsync == nullptr && Donor{}.render_gs == nullptr, "Donor callbacks start null");
+
 void start_with_donor(const Settings &settings) {
   Donor donor;
   donor.worker_vif_packet = worker_vif_packet;
@@ -70,9 +74,20 @@ void start_with_donor(const Settings &settings) {
     // TASK-116 step 1: the local flare readback (Performance mode) and the journal services it needs.
     gt4::mtvu::set_download_ordering({&defer_download, &post_readback});
     gt4::gs_stream::set_readback_journal({&gt4::mtvu::queue_readback, &gt4::mtvu::drain_download});
+    // IN-461: the hw renderer's GS worker can read the VU1 output ring itself (GT4_MTVU_DIRECT).
+    donor.direct_gs_available = &gt4::gs_stream::mtvu_direct_available;
+    donor.post_gs_job = &gt4::gs_stream::on_mtvu_job;
   }
 #endif
   start(settings, donor);
+#ifdef GT4_GS_STREAM_CLIENT
+  // IN-522: the flare table's read without the EE waiting, only with VU1 jobs on the worker and direct GS intake.
+  if (gt4::mtvu::direct_gs_intake() && gt4::gs_stream::g_deferred_table.wait_copy != nullptr) {
+    gt4::mtvu::set_deferred_table_copy(gt4::gs_stream::g_deferred_table.wait_copy);
+    gt4::gs_stream::g_deferred_table.patches = &gt4::mtvu::deferred_table_patches;
+    gt4::gs_stream::g_deferred_table.note = &gt4::mtvu::note_deferred_table;
+  }
+#endif
 }
 
 }  // namespace gt4::mtvu

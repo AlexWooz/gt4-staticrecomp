@@ -76,7 +76,8 @@ Status: launcher TASK-019 / TASK-043, 2026-10-20. Code: `launcher/crates/gt4l-co
 2. **Game executable, release build** (TASK-081): a fresh `private/sliceNNN-*` build with `-DGT4_RELEASE_DISTRIBUTION=ON`
    (no build-time shader folder in the executable; slice214 is the 1.0.0 recipe, `private/slice214-scripts/build-game-214.bat`;
    slice218 is the 1.1.0 game, the same recipe plus the TASK-080 work, `docs/inputs/slice218-pcsx2.json`).
-   CTest, the Python suite with `GT4_NATIVE_BUILD` on it, the headless frame comparison, a new `docs/inputs/sliceNNN-pcsx2.json`
+   The GS libraries are built with PGO and ThinLTO (IN-473): `scripts/coregs2_bench/pgo-build.sh <build> <out>` as the last
+   step, on the final code. CTest, the Python suite with `GT4_NATIVE_BUILD` on it, the headless frame comparison, a new `docs/inputs/sliceNNN-pcsx2.json`
    pin, then the distribution folder: `python scripts\make_distribution.py private\sliceNNN-dist --assets-root <main checkout>
    --exe <build>\gt4vulkan.exe --runtime-manifest docs\inputs\sliceNNN-pcsx2.json`. Scan the executable's ASCII and UTF-16
    strings: no absolute path and no user name (`tests/python/test_portable_install.py` does this for release builds).

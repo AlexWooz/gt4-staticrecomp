@@ -11,8 +11,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use gt4l_core::games::{self, Game, GT4, SPEC2};
+use gt4l_core::gpu::GpuDevice;
 use gt4l_core::gs_release::Step;
-use gt4l_core::paths::DataDirs;
+use gt4l_core::launch::{self, SetupRenderer};
+use gt4l_core::paths::{self, DataDirs};
+use gt4l_core::{display, settings};
 use gt4l_core::LAUNCHER_VERSION;
 use gt4l_disc::identify::{identify, DiscGame};
 use gt4l_disc::setup::{self as disc_setup, SetupError, SetupRequest, Stage};
@@ -31,6 +34,9 @@ pub type Notify = Arc<dyn Fn(&str, Value) + Send + Sync>;
 /// Installs the newest gt4-gs, reporting steps; returns the installed version text.
 pub type RendererInstaller = Arc<dyn Fn(&DataDirs, &mut dyn FnMut(Step)) -> Result<String, String> + Send + Sync>;
 
+/// Whether CoreGS 2.0 runs on this PC, reporting (done, total) of the shaders it compiles on the way.
+pub type Coregs20Check = Arc<dyn Fn(&Shared, &'static Game, &mut dyn FnMut(u32, u32)) -> bool + Send + Sync>;
+
 /// The page's event sink for an app handle.
 pub fn notifier(app: &AppHandle) -> Notify {
     let app = app.clone();
@@ -43,6 +49,45 @@ pub fn notifier(app: &AppHandle) -> Notify {
 pub fn github_renderer() -> RendererInstaller {
     Arc::new(|dirs: &DataDirs, progress: &mut dyn FnMut(Step)| {
         updates::install_renderer(dirs, progress).map(|outcome| outcome.installed().version.text())
+    })
+}
+
+/// The real check of a new install: a graphics card with Vulkan 1.2, and then the game program itself starting CoreGS 2.0 on that
+/// card without a window (`--prepare-shaders`, IN-507), which refuses a card that lacks what the renderer needs. It also leaves the
+/// shaders compiled, so the first Play has nothing to wait for.
+pub fn coregs20_on_this_pc() -> Coregs20Check {
+    Arc::new(|shared: &Shared, game: &'static Game, progress: &mut dyn FnMut(u32, u32)| {
+        let (settings, dirs, textures, executable, slot, language) = {
+            let state = lock(shared);
+            let game_dir = paths::game_directory(&crate::commands::program_directory(), state.config.dev_game_dir.as_deref());
+            (
+                state.config.settings.clone(),
+                state.game_dirs(game),
+                state.dirs.textures(),
+                launch::game_program(game, &game_dir),
+                state.shaders_child.clone(),
+                state::language_of(&state),
+            )
+        };
+        let (settings, graphics, cards) = gt4l_platform::gpu::run_settings_with_cards(&settings, language, gt4l_platform::gpu::refresh_gpus());
+        state::log(&dirs, &format!("setup: cards [{}]", gt4l_platform::gpu::card_list(&cards)));
+        if !graphics.card.as_ref().is_some_and(GpuDevice::has_vulkan) {
+            state::log(&dirs, "setup: no graphics card with Vulkan 1.2 for CoreGS 2.0");
+            return false;
+        }
+        let monitors = gt4l_platform::display::monitors();
+        let display = display::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
+        match gt4l_platform::game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, progress) {
+            Ok(true) => true,
+            Ok(false) => {
+                state::log_warn(&dirs, "setup: CoreGS 2.0 did not start on this card (logs\\shaders.log)");
+                false
+            }
+            Err(message) => {
+                state::log_warn(&dirs, &format!("setup: CoreGS 2.0 could not be checked: {message}"));
+                false
+            }
+        }
     })
 }
 
@@ -167,6 +212,20 @@ pub fn choose_disc_path_for(shared: &Shared, path: &Path, requested: Option<&str
             };
             let summary = found.summary;
             let mut state = lock(shared);
+            // The image stays here, and the game must be able to open it here (decision 0075).
+            if gt4l_platform::disk::game_readable_path(path).is_none() {
+                let message: String = messages::text("setup.path_not_readable", state::current_language()).into();
+                state::log_warn(&state.dirs, &format!("disc refused, the game cannot open its path: {}", path.display()));
+                state.setup_outcome = SetupOutcome::Refused(message.clone());
+                return Err(message);
+            }
+            // Updates replace the `game` folder: an image there would go with them.
+            if paths::is_within(path, &state.install_dir.join("game")) {
+                let message: String = messages::text("setup.image_in_game_folder", state::current_language()).into();
+                state::log_warn(&state.dirs, &format!("disc refused, it is in the folder updates replace: {}", path.display()));
+                state.setup_outcome = SetupOutcome::Refused(message.clone());
+                return Err(message);
+            }
             state.config.disc_path = Some(path.to_path_buf());
             state.setup_outcome = SetupOutcome::None;
             state.setup_game = Some(game);
@@ -205,11 +264,11 @@ pub fn choose_disc_path_for(shared: &Shared, path: &Path, requested: Option<&str
 #[tauri::command]
 pub fn setup_start(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     refuse_unsupported_system(shared.inner())?;
-    start_with(shared.inner(), notifier(&app), github_renderer()).map(|_| ())
+    start_with(shared.inner(), notifier(&app), github_renderer(), coregs20_on_this_pc()).map(|_| ())
 }
 
-/// TASK-081: the processor check before setup (`gt4l_core::system_check`). Setup needs no GPU, so there is no Vulkan
-/// check here (TASK-108). A problem is shown on the setup page as a failed setup with its message, and logged.
+/// TASK-081: the processor check before setup (`gt4l_core::system_check`). The graphics card decides the renderer, not whether
+/// setup goes on (`prepare_renderer`). A problem is shown on the setup page as a failed setup with its message, and logged.
 fn refuse_unsupported_system(shared: &Shared) -> Result<(), String> {
     let language = state::language_of(&lock(shared));
     let Some(problem) = gt4l_platform::system::processor_problem(language) else {
@@ -226,6 +285,7 @@ pub fn start_with(
     shared: &Shared,
     notify: Notify,
     renderer: RendererInstaller,
+    coregs20: Coregs20Check,
 ) -> Result<std::thread::JoinHandle<()>, String> {
     let shared: Shared = shared.clone();
     // The image is identified in place again before anything is copied: a file that changed since it was picked, or one
@@ -252,7 +312,7 @@ pub fn start_with(
         },
         None => None,
     };
-    let (disc, pins, spec2_pins, game, installed_before, dirs, cancel) = {
+    let (disc, pins, spec2_pins, game, installed_before, dirs, cancel, install_dir) = {
         let mut state = lock(&shared);
         if state.setup_busy {
             return Err(messages::text("setup.already_running", state::current_language()).into());
@@ -272,13 +332,12 @@ pub fn start_with(
         state.setup_outcome = SetupOutcome::None;
         state.setup_run = SetupRun { step: "copying".into(), ..SetupRun::default() };
         state.setup_cancel.store(false, Ordering::Relaxed);
-        (disc, state.pins.clone(), state.spec2_pins.clone(), game, installed_before, state.game_dirs(game), state.setup_cancel.clone())
+        (disc, state.pins.clone(), state.spec2_pins.clone(), game, installed_before, state.game_dirs(game), state.setup_cancel.clone(), state.install_dir.clone())
     };
     let handle = std::thread::spawn(move || {
         // Setup always writes the data folder's root, even when older game files are read from another folder.
         let prepared = dirs.setup_prepared();
         let staging = dirs.prepared_staging();
-        let disc_folder = dirs.setup_disc_folder();
         let total_bytes = std::fs::metadata(&disc).map(|meta| meta.len()).unwrap_or(0);
         let mut last: (Stage, i32) = (Stage::Copying, -1);
         let progress_shared = shared.clone();
@@ -317,26 +376,24 @@ pub fn start_with(
             Some(DiscGame::Spec2) => disc_spec2::run(
                 &Spec2Request {
                     disc: &disc,
-                    disc_folder: &disc_folder,
                     prepared: &prepared,
                     staging: &staging,
+                    install_dir: &install_dir,
                     pins: &spec2_pins,
                     launcher_version: LAUNCHER_VERSION,
                     cancel: &cancel,
-                    free_space: &gt4l_platform::disk::free_space,
                 },
                 &mut report,
             ),
             _ => disc_setup::run(
                 &SetupRequest {
                     disc: &disc,
-                    disc_folder: &disc_folder,
                     prepared: &prepared,
                     staging: &staging,
+                    install_dir: &install_dir,
                     pins: &pins,
                     launcher_version: LAUNCHER_VERSION,
                     cancel: &cancel,
-                    free_space: &gt4l_platform::disk::free_space,
                 },
                 &mut report,
             ),
@@ -375,7 +432,7 @@ pub fn start_with(
             state::log(&dirs, "disc is accepted as a Spec II 1.10 variant: its executable is the known one but the image hash is not pinned");
         }
 
-        let renderer_note = prepare_renderer(&shared, &dirs, &notify, &renderer);
+        let renderer_note = prepare_renderer(&shared, &dirs, &notify, &renderer, &coregs20, game, installed_before.is_empty());
         {
             let mut state = lock(&shared);
             state.setup_busy = false;
@@ -392,18 +449,59 @@ pub fn start_with(
     Ok(handle)
 }
 
-/// Installs GSdx, the only renderer (TASK-096), unless it is already there. The returned text is the setup note (empty
-/// when there is nothing to report).
-fn prepare_renderer(shared: &Shared, dirs: &DataDirs, notify: &Notify, renderer: &RendererInstaller) -> String {
+/// The renderer of this install (`launch::setup_renderer`): CoreGS 2.0 when this PC runs it, else GSdx, installed unless it is
+/// already there. The returned text is the setup note (empty when there is nothing to report).
+fn prepare_renderer(
+    shared: &Shared,
+    dirs: &DataDirs,
+    notify: &Notify,
+    renderer: &RendererInstaller,
+    coregs20: &Coregs20Check,
+    game: &'static Game,
+    first_game: bool,
+) -> String {
+    let gsdx_missing = gt4l_core::gs_release::needs_install(&dirs.renderer_root());
+    let plan = launch::setup_renderer(&lock(shared).config.settings, first_game, gsdx_missing);
+    let mut choice = String::new();
+    match plan {
+        SetupRenderer::Coregs20 => {
+            lock(shared).setup_run.renderer_choice = settings::CORE_GS_20.into();
+            state::log(dirs, "setup: CoreGS 2.0 is the renderer; nothing to install");
+            return String::new();
+        }
+        SetupRenderer::TryCoregs20 => {
+            lock(shared).setup_run = SetupRun { step: "renderer".into(), renderer_step: "checking".into(), ..SetupRun::default() };
+            let progress_shared = shared.clone();
+            let works = coregs20(shared, game, &mut |done, total| {
+                let mut state = lock(&progress_shared);
+                state.setup_run.renderer_step = "compiling".into();
+                state.setup_run.bytes_done = u64::from(done);
+                state.setup_run.bytes_total = u64::from(total);
+                state.setup_run.fraction = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+            });
+            if works {
+                let mut state = lock(shared);
+                state.setup_run.renderer_choice = settings::CORE_GS_20.into();
+                match state.config.settings.set_by_user("renderer", settings::CORE_GS_20) {
+                    Ok(()) => state::log(dirs, "setup: CoreGS 2.0 runs on this PC; it is the renderer, and GSdx is not downloaded"),
+                    Err(error) => state::log_error(dirs, &format!("setup: could not store CoreGS 2.0: {error}")),
+                }
+                return String::new();
+            }
+            state::log(dirs, "setup: CoreGS 2.0 does not run on this PC; GSdx is the renderer");
+            choice = "gsdx_fallback".into();
+        }
+        SetupRenderer::Gsdx => {}
+    }
     // TASK-088 (1.2.0): a GSdx that is installed and meets the minimum (for example a local package) is kept, with no
     // download attempt and no misleading note.
-    if !gt4l_core::gs_release::needs_install(&dirs.renderer_root()) {
+    if !gsdx_missing {
         state::log(dirs, "GSdx already installed; setup keeps it");
         return String::new();
     }
     {
         let mut state = lock(shared);
-        state.setup_run = SetupRun { step: "renderer".into(), renderer_step: "listing".into(), ..SetupRun::default() };
+        state.setup_run = SetupRun { step: "renderer".into(), renderer_step: "listing".into(), renderer_choice: choice, ..SetupRun::default() };
     }
     let renderer_shared = shared.clone();
     let renderer_notify = notify.clone();

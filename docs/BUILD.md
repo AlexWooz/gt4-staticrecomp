@@ -2542,6 +2542,371 @@ A/B in the same scene, if wanted: `$env:GT4_MTVU_CHAIN="0"`, `$env:GT4_GIF_FASTP
   closing). Frame dumps and the session hash of full runs are unaffected.
 - The mode-3 (interlaced) and 3x cases are not re-measured here; the switches do not depend on the resolution.
 
+## Slice 216 - TASK-027 CoreGS 2.0 development build (`task/027-coregs2`, no pins)
+
+Check build of the merge that resumes TASK-027 (worktree `C:\Antigravity\gt4-wt-027-coregs2`): `main` 1.0.0 plus the
+TASK-027 work, without paraLLEl-GS. Not offered to the owner; no pin, no launcher mode, `--mode pcsx2` unchanged.
+Recipe = slice214 (`private/slice216-scripts/build-game-216.bat`) plus `-DGT4_HW_GS=ON` and
+`-DCMAKE_C_COMPILER=clang-cl` (the HWR `replace/` library compiles C). Vulkan SDK 1.4.341.1 (`VULKAN_SDK`), pinned
+glslangValidator 16.2.0.
+
+- `GT4_HW_GS=ON` builds `native/hw_gs` (backend, options, smoke, shaders, cpuref with memory/clut/frontend/pixel/
+  display, cache, decide, lod, replace) and links the in-process sink into `gt4_gs_stream_client`
+  (`GT4_GS_STREAM_HW`): `GT4_RENDERER=hw` then feeds the GS stream hooks to the HWR backend (no GS process, no donor
+  Vulkan renderer); `GT4_GS_CAPTURE` is refused in that mode. With the option OFF the client refuses `hw` as before.
+- Executable `private/slice216-coregs2-build/build/gt4vulkan.exe`, 97,291,264 bytes, sha256 `c89ba26d7ae334c673165823df35276f40ca4e5cd7996b47935a8a95af17cd81`.
+
+Checks (2026-10-21):
+- CTest 179 tests: 176 passed, 1 skipped (`hw_replace_q07_pcsx2_dumps`, pending Q-07), 2 failed
+  (`private/slice216-scripts/ctest-216.log`):
+  - `hw_gpu_pixel_directed`: 8 of 1,048,576 TEXA sweep cases differ (GPU alpha 0, CPU 0x20/0x80). The CPU pixel
+    reference took the IN-07 AEM rule (A bit first) in 2434e1d after the GPU shader was verified; the shader still has
+    the old rule. Pre-existing on `task/027-hw-renderer` (High confidence, from the commit history; not rerun there).
+  - `python_native_contracts`: one error, `test_make_distribution` refuses the executable because it differs from the
+    slice214 release pin. Expected for an unpinned development build.
+- Python with `GT4_NATIVE_BUILD` = slice216: 627 run, 44 skipped, the same single error (`python-216.log`).
+- Headless, the slice214 arguments on a copy of the widescreen seed card (`run-headless-216.sh`):
+  - default renderer (`GT4_RENDERER` unset): exit 0, 42/42 frame dumps identical to slice214 `h214-default`
+    (`private/slice216-smoke/h216-default`, `sha-h216-default.txt`); no `no translated code`; card copy unchanged.
+  - `GT4_RENDERER=hw`: exit 0 after 4,200 frames; `[hw] session: vsyncs=4200 frames=4200 gif_bytes=2546704448
+    privileged=20987 unmirrored_privileged=0 faults=0`; 0 frame dumps (the donor display path is off in a non-donor
+    mode; HWR frame dumps are M6 work) (`private/slice216-smoke/h216-hw`).
+
+## Slice 217 - TASK-027 GPU TEXA/AEM warm-up (07.5, IN-07)
+
+Fresh full build using the slice216 recipe and unchanged asset pins, with the shader following the resolved IN-07 A-bit priority rule. To honor the owner's instruction to write only inside the worktree, build output is `C:\Antigravity\gt4-wt-027-coregs2\build\slice217-coregs2\build`; recipe and build log are in its parent. No main-checkout output was created. No launcher mode or distribution pin.
+
+- Confirmed: full build passed with clang-cl and pinned glslangValidator 16.2.0 / Vulkan SDK 1.4.341.1.
+- Executable: 97,291,264 bytes, SHA-256 `3fa40ea106b09816b52f1b0da5a7c7f3350f97ce77e953f5fce91e25fcd5b458`.
+- Confirmed: `ctest -R "^hw_gpu_" --output-on-failure`: 3/3 passed, including directed TEXA and random pixel fixtures (8.59 s). Full suite and default-renderer headless check are recorded with the next replay checkpoint.
+
+## Slice 219 - TASK-027 native v2 CPU replay (02, 10.2, 14.3)
+
+Standalone composed CPU libraries, fresh `build/slice219-cpuref` inside the worktree, Release/clang-cl in VS x64. Configure `cmake -S native/hw_gs/cpuref -B build/slice219-cpuref -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe"`; build with `--parallel 4`, then serial CTest. No main-checkout output, candidate pin or launcher-mode change.
+
+- Confirmed: 69/69 tests pass (3.36 s), including `cpuref_capture_v2_parity`, `_resets`, `_fifo`, `_malformed` and all existing CPU/memory/front-end/pixel/display fixtures. Initial slice218 fixtures exposed the separate A+D kick gap (IN-326); the final fixtures use a real REGLIST triangle and check cleared reset output against the specified background behavior.
+- `hw_cpuref_replay.exe` SHA-256 `d7529881d1195dad64ea00d3ba16d3415ac09ec9e69b95bace3f4ddf7dc47f5b`. Logs/recipes: worktree `build/slice217-coregs2/`.
+- Slice217 full native CTest (Python excluded and run separately): 178 selected, 177 passed, Q-07 skipped, zero failed (184.53 s). Python with `GT4_NATIVE_BUILD` pointing at the slice217 full game build: 627 tests, 44 skips, one expected pre-existing `test_make_distribution` error (unpublished development exe does not match the slice214 pin); no check was relaxed. Replay/frontend changes are confined to pure HWR libraries; those are rebuilt and retested in slice219. The game backend still does not consume them.
+- Fresh donor headless from the slice217 full game: 4,200 frames, 12 presses, 37.0 s, exit0, no Win32 presentations, copied seed card unchanged; 42/42 dump hashes equal slice214. Evidence: worktree `private/slice217-coregs2-evidence/`, `default-parity.json`, `headless-report.json`. Existing scripts/outputs/cards in the main checkout were not changed.
+- Fresh `GT4_GS_CAPTURE_FRAMES=0:1100` capture `menu-v2.gscap`: 530,261,664 bytes; SHA-256 `7abb51cfeb610fe71fd4855937dea88b6e691bb281895ad3e3abd849387a74a7`. Replay: 488,557 records, 3 resets, 481,961 GIF packets / 514,627,776 GIF bytes, 5,492 privileged writes, 1,101 frames/images, zero rejected GIF/skipped textures/FIFO faults.
+- Original legacy capture SHA-256 `c72a2f0c52dd6b529a0ee804f78608ae19be5b2e90a4430b81f27503a634a0ee`; same-record envelope conversion to v2 SHA-256 `ba5c301ddfdb5e47c962fb3748af314ffaf4d11b34cf42dcd4754c5412085345`. Both replay 488,553 records / 1,101 frames. **All 1,101 PPMs are byte-identical across legacy, converted v2 and fresh donor v2**, including every frame ID0..1100. Replays took59.85/59.81/60.81 s. Evidence: worktree `private/slice218-replay-evidence/`, `replay-results.json`, `fresh-legacy-parity.json` and replay logs.
+- Menu comparison rerun: `fresh-menu-comparison-diagnostic.json` records 11 donor frames100..1100 against capture frames99..1099. It is explicitly diagnostic only: the CPU output is composed and the donor output is VRAM-decoded (IN-325). Ten samples have pct_bad <=0.038%; garage frame900 remains29.5487%, PSNR8.7427 dB. No chapter14 qualification or IN-315/IN-316 closure is claimed.
+- S-01/S-02 are covered. S-03..S-11 are owner gameplay scenes (chapter14.5) and were not recorded or claimed here. No windowed game was launched.
+
+## Local slice221 - CPU VRAM diagnostic output (12.9,14.2-14.4)
+
+Fresh standalone build inside the CoreGS worktree: `build/slice221-cpuref`. Local build names are not main
+checkout slice reservations or release pins. Main checkout remains read-only. Configure/build/test in VS x64:
+
+```text
+cmake -S native/hw_gs/cpuref -B build/slice221-cpuref -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe"
+cmake --build build/slice221-cpuref --parallel 4
+ctest --test-dir build/slice221-cpuref --output-on-failure
+```
+
+- Confirmed:75/75 pass (3.82s), including6 new `cpuref_vram_dump_*` fixtures. Initial local220 had one incorrect
+  NTSC test geometry;221 corrects the fixture magnification, leaving the diagnostic implementation unchanged.
+- CLI: `hw_cpuref_replay <capture> <out-dir> [--dump-source vram|scanout]`. Default vram, explicit scanout
+  preserves prior output; EndFrame/ReplayCapture API defaults stay unchanged. `frames.jsonl` contains all IDs,
+  no-image reasons and lossless raw register metadata. No automatic renumbering or image shifts.
+- Binary SHA-256 `5a411d1887bb5439c8ce3c2a98fb73c77636a737fa68b45aa35a0953d6eb8f21`.
+- Python command from worktree, with `GT4_NATIVE_BUILD`=full-game local217 and `GT4_HW_REPLAY_EXE`=local221
+  replay executable: `python -m unittest discover -s tests/python`:629 run,44 skipped, only the expected
+  pre-existing distribution-pin error. The2 new external CLI tests ran, including metadata and invalid options.
+- Reused fresh donor capture from local217 (`menu-v2.gscap`, SHA7abb51cf...; full digest in slice219 section).
+  Raw explicit/default replays take65.62/64.40s, each1,096 PPMs and1,101 metadata rows. All PPMs identical.
+  Five omitted images are precisely frames0..4 with no enabled circuit. Explicit scanout takes63.62s and all
+  1,101 PPMs equal prior local219 output. Exit0 for all; no unsupported PSM/dimension refusals in real menu data.
+- Evidence: `private/slice221-vram-evidence/validation.json`, metadata/replay logs,
+  `frame-mapping.json`, `menu-vram-comparison.json`, `vertical-pairing.json`. Harness/build/Python logs:
+  `build/coregs2-next-validation/`. Aligned sample folders rename copied files only, preserving pixel bytes
+  and recording their original capture IDs/hashes. Donor frameN+1 corresponds to capture frameN.
+- Valid VRAM-to-VRAM2D report now has10/11 samples under the thresholds; donor900/capture899 still29.5487%
+  bad, PSNR8.7427dB. Correctly paired800/1000/1100 need no vertical shift (see IN-315/325/327). No entire-scene
+  parity, real scanout phase, GPU write-back or playable HWR is claimed. No game launch was needed.
+
+## Local slice222 - A+D XYZ kicks (01.1, 02.1, 02.3, IN-326)
+
+Standalone composed CPU libraries again, fresh `build/slice222-cpuref` inside the worktree, same recipe as
+slice221. No main-checkout output, no candidate pin and no launcher-mode change.
+
+```text
+cmake -S native/hw_gs/cpuref -B build/slice222-cpuref -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe"
+cmake --build build/slice222-cpuref --parallel 4
+ctest --test-dir build/slice222-cpuref --output-on-failure
+```
+
+- Confirmed: 76/76 tests pass (4.31s), including the new `m3_hw_gif_ad_xyz`. PACKED descriptor 0xE now decodes
+  XYZF2/XYZ2/XYZF3/XYZ3 as vertex kicks in the canonical register layout; bits 72..127 of the A+D qword, bit 111
+  ADC included, are ignored (01.1/02.1). REGLIST and PACKED descriptor behaviour is unchanged.
+- Confirmed cause of IN-316: with the same donor v2 menu capture (`menu-v2.gscap`, SHA-7abb51cf...) exactly
+  frames 811..916 change. 990/1,096 VRAM images and 995/1,101 scanout PPMs remain byte-identical to slice221.
+- Confirmed: aligned donor samples (capture N = donor N+1) now 11/11 inside the chapter14.4 2D thresholds; the
+  garage sample donor900/capture899 went from pct_bad29.5487%/PSNR8.7427dB to0.2051%/45.992dB. Report only:
+  full scene qualification is M8.
+- Confirmed: the game executable is byte-identical to slice217 (97,291,264 bytes, SHA-3fa40ea106b0...). The HWR
+  front end is linked only into the CPU reference, not into `gt4_hw_stream_sink`, so the default renderer path
+  and the recorded 42/42 headless parity keep holding. Slice217 full native CTest after the change: 188 passed,
+  Q-07 skipped, only the expected `python_native_contracts` distribution-pin failure. Python: 629 tests, 44
+  skips, same single expected error.
+- Evidence: `private/slice222-in326-evidence/` (`vram`, `scanout`, `aligned-candidate`,
+  `menu-vram-comparison.json`, logs). No game launch was needed; no windowed run.
+
+## Local slice223 - M4 GPU write-back port (03, 12.3, 12.9, IN-328/IN-329)
+
+Fresh full build of the worktree with the slice217 recipe (`build/scripts-222/build-game-223.bat`, same input pins, `GT4_HW_GS=ON`, `GT4_RELEASE_DISTRIBUTION=ON`), output in `build/slice223-coregs2/build`. No main-checkout output, no candidate pin, no launcher mode.
+
+- Confirmed: full native CTest 200 pass, Q-07 skipped, only the expected `python_native_contracts` distribution-pin failure (202 selected, 214 s). The new fixtures are listed in IN-329.
+- Confirmed: default renderer headless, 4,200 frames, 32.5 s, exit0, copied seed card unchanged, 42/42 dump hashes equal slice214 (`private/slice222-in326-evidence/default-parity/`). Python 629 tests, 44 skips, same single expected error.
+- Confirmed: `GT4_RENDERER=hw` headless 600 frames: 600 vsyncs, 600 frames, 205,791,616 GIF bytes, 2,987 privileged writes, 0 unmirrored, 0 faults, 33.2 s, card unchanged (`.../hw-run/`). HWR game output still has no frame dump, so this proves the renderer runs in process, not that the picture is right.
+- Confirmed: the CPU reference fix of IN-328 changes no other fixture; `cpuref_constant_attributes` is the control, and the GPU TFX/fog equivalence went from 16 mismatches to 0.
+
+## Local slice224 - M5 pixel pipeline in the raster path (08, IN-330)
+
+Fresh full build of the worktree with the slice217 recipe (`build/scripts-222/build-game-224.bat`, same input pins, `GT4_HW_GS=ON`, `GT4_RELEASE_DISTRIBUTION=ON`), output in `build/slice224-coregs2/build`. No main-checkout output, no candidate pin, no launcher mode.
+
+- Confirmed: full native CTest 205 pass, Q-07 skipped, only the expected `python_native_contracts` distribution-pin failure (207 selected, 230 s). The five new raster fixtures are listed in IN-330.
+- Confirmed on the same source (incremental rebuild before this fresh build): default renderer headless 4,200 frames, 34.2 s, exit0, copied seed card unchanged, 42/42 dump hashes equal slice214; `GT4_RENDERER=hw` headless 600 frames with blending enabled, 0 faults, 37.0 s (about 62 ms per frame, +7% over the 33.2 s without blending). Evidence: `private/slice222-in326-evidence/default-parity-m5/` and `.../hw-run-m5/`.
+- Deferred: re-running those two headless checks against the slice224 executable itself. An owner game session (`gt4vulkan` from the main checkout's `private/slice218-build`) was running, and the launch guard refused, as it must. Nothing was launched while that session was open.
+
+## Local slice225 - M6 presentation interfaces (12.5, IN-331)
+
+Fresh full build of the worktree with the slice217 recipe (`build/scripts-222/build-game-225.bat`, same input pins, `GT4_HW_GS=ON`, `GT4_RELEASE_DISTRIBUTION=ON`), output in `build/slice225-coregs2/build`; incrementally rebuilt once after the last source edit so it matches the committed tree. No main-checkout output, no candidate pin, no launcher mode.
+
+- Confirmed: full native CTest 212 selected, 210 pass, Q-07 skipped, only the expected `python_native_contracts` distribution-pin failure. One earlier run of that Python test reported a timeout while this build ran in parallel; the isolated re-run finished in 76 s and failed only on the pin (629 tests, 46 skips: two external CLI tests skip without `GT4_HW_REPLAY_EXE`).
+- Confirmed: the new fixtures `hw_present_scheduler`, `hw_present_scheduler_hold`, `hw_present_scheduler_rate`, `hw_aux_frame_guest_untouched` and `hw_pass_timings` pass, and every M4/M5 fixture still passes unchanged.
+- Confirmed on the same source (incremental rebuild before the fresh build): default renderer headless 4,200 frames, 42/42 dump hashes equal slice214, copied seed card unchanged (`private/slice222-in326-evidence/default-parity-m6/`). The windowed path is behaviourally identical: the default scheduler policy presents every VBlank.
+- Confirmed: `GT4_RENDERER=hw` headless 600 frames, 0 faults, 33.7 s. Per-frame CPU averages from the new timers: translate 16.1 ms, execute 34.8 ms, compose 0 (no window), upload/present 0 (no window). That split is the baseline the optimisation milestones attack (`private/slice222-in326-evidence/hw-run-m6g/`).
+
+## Local slice226 - HWR frame dumps (12.9, IN-332)
+
+Incremental rebuild of the slice225 tree (same recipe and pins, `build/slice225-coregs2/build`) with the sink dump path and the renderer counter report. No new slice directory, no main-checkout output, no pin or launcher change.
+
+- Confirmed: `GT4_RENDERER=hw` headless 4,200 frames, 0 faults, **42 dumps written**, card copy unchanged (`private/slice226-hwr-dumps/`).
+- Confirmed: `hw_compare.py --gate donor_2d_1x --report-only` against the donor dumps of the same schedule: 42/42 frames outside the gate (boot 1.53% / 19.7 dB; garage and later menus 42-49% / 6-14 dB). Report only: this is the first parity measurement of the GPU path, not a qualified scene.
+- Confirmed: rendering stops being correct exactly where the garage list is drawn; the CPU reference handles the same recorded frames inside the gate. Diagnosis continues with the HWR replay tool.
+
+## Local slice227 - HWR replay tool (14.3, IN-333)
+
+Incremental rebuild of the slice225 tree with `hw_writeback_replay` and the `black_presents` fix. No new slice directory, no pin or launcher change.
+
+- Confirmed: `hw_writeback_replay private/slice217-coregs2-evidence/menu-v2.gscap <out>` replays 1,101 frames in 100 s with 133,637 primitives, 0 skipped textures, 0 rejected GIF packets.
+- Confirmed by A/B against `hw_cpuref_replay` on the same capture: even frames 0.000% bad, odd frames 1.533% early and 10.579% at garage frame 900; the odd-frame difference is the first boot text line.
+- Confirmed: 174 HWR-related CTests still pass (backend, cpuref, frontend, pixel, display, writeback).
+
+## Local slice228 - M6 write-back aliasing fix (12.9, 14.3, 14.4, IN-335/IN-336)
+
+Fresh full build of the worktree (`build/slice228-coregs2/build-228.bat`, the slice217 recipe and input pins,
+`GT4_HW_GS=ON`, `GT4_RELEASE_DISTRIBUTION=ON`), output in `build/slice228-coregs2/build`. No main-checkout output,
+no candidate pin, no launcher mode. The headless scripts take the ELF from `private/reconstructed/SCUS_973.28.elf`
+(same SHA-256 prefix 10f82e22 as the earlier evidence copies).
+
+- Confirmed: CTest 215 selected, 212 pass, Q-07 skipped; failures: the expected `python_native_contracts`
+  distribution-pin error (629 Python tests, 46 skips) and `hw_smoke_window`, whose expectation was still the
+  pre-IN-333 counter (`black_presents=120`); its real output `frames=120 presents=120 black_presents=0 ...
+  faults=0` is now the expectation.
+- Confirmed: new fixtures `hw_gpu_writeback_aliased_depth`, `hw_replay_parity_double_buffer`,
+  `hw_readback_pending_draw` pass; the first two fail with the previous write-back.
+- Confirmed: default renderer headless 4,200 frames, 42/42 dump hashes equal slice214, card copy unchanged
+  (`private/slice228-evidence/default-parity/`).
+- Confirmed: `GT4_RENDERER=hw` headless 4,200 frames, 0 faults, 42 dumps, card copy unchanged, 416 s; against the
+  donor dumps 42/42 inside the 2D gate (`private/slice228-evidence/compare-vs-donor.json`).
+- Confirmed: replay of `menu-v2.gscap` through both tools with `--slm-hashes`: 678/1,101 frames byte-identical,
+  672/1,101 identical in memory, max pct_bad 0.154% (`private/slice228-replay/`).
+
+## Local slice229 - M6 output stage: field offset and deinterlace (13.3, 13.4, 12.9, IN-337/IN-338)
+
+Incremental rebuild of the slice228 tree (`build/slice228-coregs2/build-228.bat`, same recipe and pins). No
+main-checkout output, no pin, no launcher mode.
+
+- Confirmed: 178 HWR and CPU-library CTests pass (Q-07 skipped), including the new `hw_presentation_field_phase`
+  and the extended `display_hw_deint_adaptive` (fails with the IN-39 rule).
+- Confirmed: `GT4_RENDERER=hw` headless 4,200 frames with the default `vram` dump source: 42 dumps byte-identical
+  to slice228, card copy unchanged (`private/slice229-evidence/hwr-dumps-vram/`).
+- Confirmed: `hw_writeback_replay --compose presentation` on `menu-v2.gscap`: static screens show 0.000% change
+  between consecutive frames (`private/slice229-replay/presentation/`). Before the IN-337 correction the headless
+  scanout dumps of the boot screen changed 2.04% between consecutive frames (`private/slice229-evidence/`).
+
+## Local slice230 - menu field phase (13.3, 13.4, IN-339)
+
+Incremental rebuild of the slice228 tree. No pin or launcher change.
+
+- Confirmed: 178 HWR/CPU-library CTests pass (Q-07 skipped); `test_hw_presentation_capture.py` passes with
+  `GT4_HW_WRITEBACK_REPLAY_EXE` and `GT4_HW_MENU_CAPTURE` set (2 tests, 119 s).
+- Confirmed: `GT4_RENDERER=hw` headless 1,200 frames with `GT4_HW_DUMP_SOURCE=scanout`, 0 faults, card copy
+  unchanged; garage menu combing 2.08, static screens identical between VBlanks outside the edge rows
+  (`private/slice230-evidence/hwr-scanout-1200/`). Phase study: `private/slice230-deint/`.
+
+## Local slice231 - M7 resident targets and decoded-texture cache (05, 04, 12.8, IN-340/IN-341)
+
+Incremental rebuild of the slice228 tree. No pin or launcher change.
+
+- Confirmed: new fixture `hw_cache_equals_writeback` passes (5 frames, identical images and memory hashes in both
+  sync modes; resident 30, fallback 5, loads 25, write-backs 30); `hw_replay_parity_double_buffer`,
+  `hw_readback_pending_draw` pass.
+- Confirmed: `hw_writeback_replay --sync-mode writeback|cache --slm-hashes` on `menu-v2.gscap`: both modes give the
+  slice228 memory hash on all 1,101 frames. Per frame with deferred submission (IN-342): writeback 12.7 + 20.9 ms,
+  cache 15.3 + 5.5 ms (translate + execute); textures cached 7,504 / 14,364.
+- Confirmed: `GT4_RENDERER=hw` headless 4,200 frames (cache mode, the default): 0 faults, 151.5 s (slice228: 416 s),
+  42 dumps byte-identical to slice228, card copy unchanged (`private/slice231-evidence/hwr-dumps-cache/`).
+- Confirmed: 179 HWR/CPU-library CTests pass (Q-07 skipped); Python 631 tests, 46 skips, only the expected
+  distribution-pin error.
+
+## Local slice232 - memory addressing performance (02.7, 13.2, IN-343)
+
+Incremental rebuild of the slice228 tree. No pin or launcher change.
+
+- Confirmed: new `memory_hw_rect_matches_pixels` passes; 180 HWR/CPU-library CTests pass (Q-07 skipped).
+- Confirmed: `GT4_RENDERER=hw` headless 4,200 frames (cache mode): 0 faults, 75.8 s, 42 dumps byte-identical to
+  slice228, card copy unchanged (`private/slice232-evidence/hwr-dumps-cache/`). Default renderer 42/42 = slice214
+  (`private/slice232-evidence/default-parity/`).
+- Confirmed: menu capture memory hashes per frame unchanged (cache mode); per frame translate 5.5 ms, execute 2.7 ms.
+
+## Local slice234 - target slots, pixel interlock, textures from targets (05, 08.8, 09, IN-344..IN-346)
+
+Incremental rebuild of the slice228 tree. No pin or launcher change.
+
+- Confirmed: 180 HWR/CPU-library CTests pass (Q-07 skip); the GPU fixtures also pass with
+  `GT4_HW_TEST_NO_INTERLOCK=1` (26/26).
+- Confirmed: memory hash per frame identical between cache + interlock + target textures and write-back +
+  per-primitive on `menu-v2.gscap` (1,101 frames, also = slice228), the car capture (121) and the race capture (121)
+  (`private/slice233-capture/`, recorded with `GT4_GS_CAPTURE` from the donor renderer, never staged).
+- Confirmed: headless `GT4_RENDERER=hw` menu schedule 42/42 dumps byte-identical to slice228; race schedule (10,500
+  frames) 42/42 inside the 3D gate vs the donor; default renderer 42/42 = slice214; card copies unchanged.
+- Measured (headless, per frame): car menu 100 ms, race 113 ms (slice232: 255 / 300 ms).
+
+## Local slice235..slice237 - GLM, GPU CLUT, GLM-owned pages, uploads on the GPU (04.9, 07.7, IN-347..IN-351)
+
+Incremental rebuilds of the slice228 tree. No pin or launcher change. Evidence in `private/slice235-*`,
+`private/slice236-*`, `private/slice237-evidence/` (never staged).
+
+- Confirmed: 223/224 CTests pass; `python_native_contracts` fails only because the rebuilt `gt4vulkan.exe` differs
+  from its pin (pins are not changed on this branch). All non-Python tests also pass with
+  `GT4_HW_TEST_NO_INTERLOCK=1` (223/223). New fixtures: `hw_glm_decode`, `hw_glm_swizzle`, `hw_glm_unswizzle`,
+  `hw_glm_clut`, `hw_glm_upload_merge`, `hw_glm_host_upload`; `hw_cache_equals_writeback` extended.
+- Confirmed: per-frame memory hashes identical to the write-back mode on `menu-v2.gscap` (1,101, = slice228), the car
+  capture and the race capture (121 each).
+- Confirmed: headless `GT4_RENDERER=hw` menu schedule 42/42 dumps byte-identical to slice228; race schedule 42/42
+  identical to slice235 and inside the 3D gate vs the donor; default renderer 42/42 = slice214; card copies unchanged.
+- Measured: headless race 65 -> 38 ms per vsync (`GT4_HW_PROFILE_EVERY=250`); race replay GS stream 45 -> 17 ms per
+  frame. Replay A/B switches: `--no-glm`, `--no-gpu-clut`, `--no-cpu-sprites`, `--no-glm-park`, `--no-gpu-uploads`.
+
+## Local slice238 - runs and CPU front-end savings (IN-352/IN-353)
+
+Incremental rebuild of the slice228 tree. No pin or launcher change. Evidence in `private/slice238-*` (never staged).
+A local profiling build (`build/slice238-prof`, RelWithDebInfo with a fixed image base, never shipped) and a sampling
+helper (`build/prof/sampler.exe`) were used to find the CPU costs; neither is part of the repository.
+
+- Confirmed: 224/224 non-Python CTests, also with `GT4_HW_TEST_NO_INTERLOCK=1` (new `m3_hw_clut_copy_free`).
+- Confirmed: per-frame memory hashes identical to the write-back mode on the menu (1,101, = slice228), car and race
+  captures.
+- Confirmed: headless menu 42/42 dumps byte-identical to slice228; race schedule 42/42 identical to slice235 and inside
+  the 3D gate vs the donor; default renderer 42/42 = slice214; card copies unchanged.
+- Measured: headless race 25-26 ms per vsync (slice237: 38 ms). Replay switch `--no-runs`.
+
+## Local slice239 - double-buffered submission and asynchronous presentation (IN-354/IN-355)
+
+Incremental rebuild of the slice228 tree. No pin or launcher change. Evidence in `private/slice239-*` (never staged).
+The owner test script `build/hwr-play.ps1` (local, ignored) now runs this build from `private/hwr-play-239` with
+`GT4_HW_PROFILE_EVERY=600`; `-SyncPresent` sets `GT4_HW_ASYNC_PRESENT=0`.
+
+- Confirmed: 224/224 non-Python CTests, also with `GT4_HW_TEST_NO_INTERLOCK=1`; the asynchronous presentation check
+  in `hw_cache_equals_writeback`.
+- Confirmed: per-frame memory hashes identical to the write-back mode on the menu (1,101, = slice228), car and race
+  captures.
+- Confirmed: headless menu 42/42 dumps byte-identical to slice228; race schedule 42/42 identical to slice235 and inside
+  the 3D gate vs the donor; default renderer 42/42 = slice214; card copies unchanged.
+- Measured: headless race 17-18.6 ms per vsync without dumps (slice238: 25-26 ms). Not measured windowed.
+
+Note (2026-10-22): for disk space the evidence folders of local slices 229, 230, 232, 234, 237 and 238 named above
+were deleted; their results are recorded here and in PROGRESS.md, and the gate references they were compared with
+remain.
+
+## Local slice240 - aspect, FIFO-read coherence, mid-frame submissions, GPU timing (IN-356..IN-359)
+
+Incremental rebuild of the slice228 tree. No pin or launcher change. Evidence in `private/slice240-*` (never staged).
+The local run script gained the `night` schedule (FRAME-COST-STUDY Clubman Stage Route 5).
+
+- Confirmed: 224/224 non-Python CTests, also with `GT4_HW_TEST_NO_INTERLOCK=1`; `hw_smoke_window` checks the 16:9
+  present rectangle.
+- Confirmed: memory hashes identical to the write-back mode on the menu (1,101, = slice228), car, race and night
+  captures; the night capture's 121 flare replies (`fifo_hash`) identical in every mode.
+- Confirmed: headless menu 42/42 dumps byte-identical to slice228; race schedule 42/42 identical to slice235 and inside
+  the 3D gate vs the donor; default renderer 42/42 = slice214; card copies unchanged.
+- Measured: headless night race 11-19 ms per vsync (slice239: 20-28 ms); GPU busy 8.2-9.4 ms per frame.
+
+## Local slice241 - CPU front-end savings part 2 (IN-360)
+
+Incremental rebuild. Confirmed: 225/225 non-Python CTests (new `m3_hw_block_ranges_overlap`), also without interlock;
+memory hashes identical on the menu, car, race and night captures, night `fifo_hash` unchanged; headless menu 42/42
+dumps byte-identical to slice228; race schedule identical to slice235; default renderer 42/42 = slice214. Measured
+headless (no dumps): night race 10.4-17.2 ms, day race 15.2-16.7 ms per vsync.
+
+## Local slice242 - compose speed, headless 480p hold, video-mode counter (IN-361)
+
+Incremental rebuild. Confirmed: 225/225 non-Python CTests; memory hashes identical on the four captures; headless menu
+42/42 dumps byte-identical to slice228; race schedule identical to slice235; default renderer 42/42 = slice214 (also
+after the headless 480p hold, which is environment-gated). New capture `private/slice242-capture/race480p-10000.gscap`
+(480p El Capitan race, write-back hashes `race480p-10000-wb.txt`).
+
+## Local slice243 - fewer Vulkan calls, GS stream worker thread (IN-362/IN-363)
+
+Incremental rebuild. Confirmed: 225/225 non-Python CTests, also without interlock; memory hashes identical to the
+write-back mode on the menu (= slice228), car, race, night and 480p race captures; headless menu 42/42 dumps
+byte-identical to slice228; race schedule identical to slice235 and inside the 3D gate; default renderer 42/42 =
+slice214. Measured headless with the launcher's holds (`GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1`): 480p race
+14.4-14.8 ms per vsync, 480p night race (flare read every frame) 8.7-13.6 ms.
+
+## Local slice244 - GPU presentation compose, fewer per-chunk copies (IN-364/IN-365)
+
+Incremental rebuild. Gates in the commit message of this slice: 226/226 non-Python CTests (new
+`hw_smoke_window_gpu_compose`), also without interlock; memory hashes identical on the five captures; replay
+`--gpu-compose-check` 121/121 identical on four progressive captures; headless menu 42/42 dumps byte-identical to
+slice228; race schedule identical to slice235; default renderer 42/42 = slice214.
+
+## Local slice245..slice247 - strip decoder, cost line, barriers, decode reuse, deferred CLUT (IN-366..IN-370)
+
+Incremental rebuilds of `build/slice228-coregs2`. New A/B switches: `GT4_HW_DECODE_REUSE=0` (replay
+`--no-decode-reuse`), `GT4_HW_CLUT_DEFER=0` (replay `--no-clut-defer`). Gates per slice: 227/227 non-Python CTests,
+also without interlock; memory hashes identical on the five captures (night `fifo_hash=3a2fe617a174e7e7`); headless
+menu 42/42 dumps byte-identical to slice228; race schedule 42/42 identical to slice235; default renderer 42/42 =
+slice214. Local helpers (ignored): `build/gates-hash.sh <tag>` and `build/gates-full.sh <tag>` write only under
+`private/gates/<tag>` and `private/<tag>-evidence`. Note: the replay's `--slm-hashes <file>` WRITES that file; never
+pass a reference file to it. Measure CPU without `GT4_HW_GPU_TIMING=1` (timestamps roughly double the GS thread cost).
+
+## Local slice248/slice249 - merge of main 1.2.2 into task/027-coregs2
+
+Fresh build trees on `O:` (C: is short of space), recipe script `build/slice248-coregs2/build.bat <build dir>
+<EE profile> <runtime capsule> <guard capsule>` (the slice247 configure line with those three as arguments, plus
+`-DGT4_HW_GS=ON`):
+
+- slice248: `O:\gt4recomp-scratch\coregs2-slice248-mergeuild coverage slice191-gs-stream-runtime
+  slice206-license-guard-runtime` (the slice247 recipe: identity against the slice247 references);
+- slice249: `O:\gt4recomp-scratch\coregs2-slice249-r122uild aspect slice262-frame-cost-runtime
+  slice262-license-guard-runtime` (the release 1.2.2 recipe).
+
+Gates (`build/gates2/gates.sh <tag> <build dir>`, outputs under `O:\gt4recomp-scratch\coregs2-evidence` and
+`coregs2-gates`): CTest 230/230 non-Python with and without interlock (new `hw_stream_sink_deferred_vsync`); Python
+673 tests, only the expected distribution-pin error (`test_portable_install` failed once inside CTest with empty
+output and passed on every rerun); memory hashes identical on the five captures; menu dumps 42/42 = slice228; race
+frames 42/42 = slice235; default renderer 42/42 = slice214 after the `mtvu::Donor` fix (before it, donor mode crashed
+at the first VBlank, as main's slice262 build does).
+
+## Local slice250 - TASK-027 M12 upscaling and FXAA (IN-371..IN-376)
+
+Fresh build tree `O:\gt4recomp-scratch\coregs2-slice250-scale\build` with the release 1.2.2 recipe
+(`build/slice248-coregs2/build.bat <dir> aspect slice262-frame-cost-runtime slice262-license-guard-runtime`),
+incremental rebuilds during the step. Owner candidate frozen in `O:\gt4recomp-scratch\coregs2-candidate-250`
+(`gt4vulkan.exe` SHA-256 `363d11a7347ffa0c182618f80f5789abd909d15e7a1a832159a058d5918d7f06` plus `SDL3.dll`; no pin, no
+launcher mode); test script `build\hwr-play-scale.ps1 -Scale N [-AA] [-DumpEvery N]` (local, ignored).
+
+Gates (`build/gates2/gates.sh`): CTest 233/233 non-Python with and without interlock (new `hw_scale_exact`,
+`hw_postfx_fxaa`, `hw_smoke_window_scaled`, the scale-3 block of `hw_cache_equals_writeback`); Python 677 tests, only the
+expected distribution-pin error (new `test_hw_frame_tools.py`); at 1x and with `--scale 6` the memory hashes of the five
+captures are identical to the references (night `fifo_hash=3a2fe617a174e7e7`); headless game at 1x and at
+`GT4_HW_SCALE=6 GT4_HW_POSTFX=fxaa`: menu dumps 42/42 = slice228, race frames 42/42 = slice235; default renderer 42/42 =
+slice214. Replay tool: `--scale N`, `--upscaled-dir D`, `--fxaa`; `scripts/hw_frame_tools.py boxpsnr`.
+
 ## Spec II S3 - target-aware host hooks (TASK-100, v2.00 byte-identical)
 
 Second target: [decision 0072](decisions/0072-spec2-second-target.md), plan [SPEC2-PLAN](SPEC2-PLAN.md). This slice

@@ -51,7 +51,7 @@ registered command is called by a page (27 commands).
 
 | File | Written by | When |
 |---|---|---|
-| `disc\SCUS-97328.iso` (`.iso.tmp` while copying) | setup | once; the game reads only this copy |
+| `disc\SCUS-97328.iso` | setup of a launcher before decision 0075 | once; an install from then reads this copy. Setup now writes none and records where the image is |
 | `prepared\CORE.GT4`, `prepared\SCUS_973.28`, `prepared\prepare.json` (`prepared.tmp` while staging) | setup | once; the receipt is the commit point |
 | `gs\<version>\...`, `gs\current.txt` (`gs\.staging-<v>` while unpacking) | setup, launch retry, update | first install and updates |
 | `version.json` | launcher | next to `GT4Recomp.exe` (or the data folder when that is read-only) |

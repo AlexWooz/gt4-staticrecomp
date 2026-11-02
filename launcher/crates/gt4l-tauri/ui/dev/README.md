@@ -47,6 +47,8 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `get_settings_table` | none | `{max_upscale: int, rows: [row]}` |
 | `set_setting` | `{id, value}` | none (`Result<(), String>`); after a success the UI sets the row's value and reads the table again, since other rows can depend on it (`visible_when`, `disabled`) |
 | `reset_gs_settings_to_defaults` | none | `{max_upscale, rows}` |
+| `gsdx_download_needed` | none | bool: choosing GSdx now needs a download (false before setup, which installs it) |
+| `download_gsdx` | none | installs GSdx with `gsdx-download` events; an error is the notice to show |
 | `get_controls` | none | `{controls: [{id, name, binding, sources, xinput, key, is_default}], triggers: [row], locked}`; `id` is the input of the controls file (`cross`, `dpad_up`, `l2`...), `sources` the raw sources (`xinput:A`, `key:Z`), `xinput`/`key` the first of each family or null; `triggers` holds the analog rows (below); `locked` is true when the file comes from a newer launcher and is kept read-only |
 | `capture_binding` | `{control}` | `{control, source}`: the next newly pressed control of the active pad, read through SDL3 (a control held at the start does not count; the source is in the controls-file names, SOUTH is `xinput:A`). It binds nothing; the page checks for a conflict and calls `assign_binding`. `cancel_capture` ends it with an error |
 | `pad_status` | none | the last `pad-status` payload: `{available, connected, name, kind, player_index, count, error}` (`kind` is SDL's gamepad type, e.g. `xbox360`, `ps5`; `count` is the number of pads; the named pad is "controller 1 of N") |
@@ -56,7 +58,7 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `reset_all_bindings` | none | the `get_controls` view; every button, trigger and stick setting back to the built-in mapping |
 | `saves_list` | none | `{items: [{id, name, modified, active}]}` |
 | `saves_import` | `{game}` | `{items, game, gameName, status, folder}` of the page's game, or `null` when the picker is cancelled. `game` is required: a save file does not say which game it is from (`gt4saves::game_of_save` finds no rule), so the page asks first and a call without it is refused |
-| `games_list` | none | `{selected, any_installed, games: [{id, name, installed, damaged, reason, selected, disc_name, folder, size_bytes}]}` (TASK-101) |
+| `games_list` | none | `{selected, any_installed, games: [{id, name, installed, damaged, reason, selected, disc_name, folder, size_bytes, image_path, image_bytes}]}` (TASK-101) |
 | `select_game` | `{id}` | the `games_list` view; the page's choice (home, Saves, Play); the stored choice changes when a game starts |
 | `games_remove` | `{id}` | the `games_list` view; deletes the disc copy and the prepared files of that game only, never its saves or replays (the page asks first) |
 | `saves_activate` | `{id}` | `{items}` |
@@ -117,6 +119,7 @@ Settings row (`rows[]` in the table):
   (`233` reads "2.33:1").
 - dropdown values: `[{value, label, disabled?, note?}]`; disabled entries are greyed and not selectable.
 - toggle values: `null`; `current` is a bool.
+- The UI draws both as the same option selector (owner, 2026-11-02; `optionSelector` in `js/pages/settings.js`): the value between two arrows, in an endless loop. Only the General tab's Version row keeps its list dialog.
 - The Controls analog rows use the same row shape (`group: "controls"`). Their ids are `l2_deadzone`, `l2_curve`, `r2_deadzone`, `r2_curve`, `lstick_deadzone` and `rstick_deadzone` (percent of travel, 0-95), and they are written with `set_setting`. A trigger row tunes the trigger source of that button (`deadzone=`/`curve=` options); a stick row writes `deadzone=` on both axis sources of the stick.
 
 Pad events (from the Rust pad service, `src/pad_service.rs`, SDL3; read in `js/nav.js` and `js/pages/controls.js`):
@@ -137,6 +140,7 @@ Other Tauri events from Rust (listened to in `js/app.js`, popup code in `js/upda
 | `setup-progress` | `{step, percent, bytesDone, bytesTotal}` | Setup progress (also in `app_state`, which the page polls). |
 | `setup-finished` | `{ok, message}` | The end of a setup run. |
 | `renderer-progress` | `{step}`: `listing`, `downloading` (with `percent`, `bytesDone`, `bytesTotal` during setup), `installing`, `downloading-launcher`, `done`, `failed` | Progress of a gt4-gs install (setup, the retry at launch, or an update). The setup page draws it; elsewhere `done` and `failed` are toasts. |
+| `gsdx-download` | `{step}`: `listing`, `downloading` (with `bytesDone`, `bytesTotal`), `installing`, during `download_gsdx` |
 | `update-finished` | `{stream, ok, message}` | The end of an `apply_update`. |
 | `game-state` | `{running, message}` | The game ended (`running: false`); a non-empty message is shown and Home is opened. |
 | `close-confirm` | `{message}` | The window close button was pressed while the game runs. The page asks "Close the launcher anyway?". |
@@ -154,8 +158,8 @@ Focus moves spatially (nearest element in the pressed direction; sideways offset
 |---|---|---|---|---|---|---|---|
 | Setup | primary button (Choose disc image / Choose another file / Play) | Cancel while copying or checking; Home when done | none | none | none | none | none |
 | Home | Play | none | none | Settings | Play | none | none |
-| Settings: Graphics (with its Advanced section) | activate (dropdown opens its list) | Back to Home (closes a tip or a dialog first) | none | Reset to defaults (confirm) | none | previous / next tab | adjust slider or dropdown |
-| Settings: Display | activate (dropdown opens its list) | Back to Home (closes a tip or a dialog first) | none | none | none | previous / next tab | adjust slider or dropdown |
+| Settings: Graphics (with its Advanced section) | activate (an option selector goes to its next value) | Back to Home (closes a tip or a dialog first) | none | Reset to defaults (confirm) | none | previous / next tab | adjust slider or dropdown |
+| Settings: Display | activate (an option selector goes to its next value) | Back to Home (closes a tip or a dialog first) | none | none | none | previous / next tab | adjust slider or dropdown |
 | Settings: About | activate (log folder) | Back to Home | none | none | none | tabs | none |
 | Saves | select / make active | Back | Import | Make active | none | tabs | none |
 | Replays | none | Back | Import | Delete (confirm) | none | tabs | none |

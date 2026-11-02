@@ -1,4 +1,4 @@
-// Game executable resources (configured by CMake). Icon: launcher/assets/brand/game.ico.
+// Game executable resources (configured by CMake). Icon: launcher/assets/brand/launcher.ico.
 1 ICON "@GT4_GAME_ICON@"
 
 1 VERSIONINFO

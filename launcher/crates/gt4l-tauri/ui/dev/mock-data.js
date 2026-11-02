@@ -4,6 +4,7 @@
  * pages render in a plain browser. Values are sample values, not game data.
  *
  * Query options (ui/dev/index.html?...):
+ *   gsdx=missing|offline                            (GSdx is not installed: the download works, or fails)
  *   setup=done|needed|wrong|copying|checking|preparing|renderer|failed|missing|offline   (default done)
  *   pick=spec                                       (setup: the picker returns an unsupported image, refused)
  *   pick=other                                      (setup: the picker returns the other game's disc, a mismatch)
@@ -34,9 +35,9 @@
   var gamesParam = query.get("games") || "gt4";
   var GAME_TABLE = [
     { id: "gt4", name: "Gran Turismo 4", title: "Gran Turismo 4", variant: "USA v2.00", installed: gamesParam === "gt4" || gamesParam === "both",
-      disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 5314478080 + 18000000 },
+      disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 18000000, image_bytes: 5314478080 },
     { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10", variant: "", installed: gamesParam === "spec2" || gamesParam === "both",
-      disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 3683418112 + 6520944 }
+      disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 6520944, image_bytes: 3683418112 }
   ];
   var selectedGame = query.get("selected") ||
     (GAME_TABLE.filter(function (game) { return game.installed; })[0] || GAME_TABLE[0]).id;
@@ -53,6 +54,9 @@
           installed: game.installed, damaged: false, reason: "",
           selected: game.id === selectedGame, disc_name: game.installed ? game.disc_name : "",
           folder: "C:\\Program Files\\GT4Recomp\\data\\games\\" + game.id,
+          linked: game.installed,
+          image_path: game.installed ? "D:\\ISOs\\" + game.disc_name + ".iso" : "",
+          image_bytes: game.installed ? game.image_bytes : 0,
           size_bytes: game.installed ? game.size_bytes : 0 };
       })
     };
@@ -65,9 +69,9 @@
     setup.step = step;
     setup.progress = progress;
     // As the Rust thread reports: the steps after the copy keep the finished copy's size (done == total).
-    setup.bytes_total = step === "renderer" ? 48000000 : IMAGE_BYTES;
+    setup.bytes_total = step === "renderer" ? 353 : IMAGE_BYTES;
     setup.bytes_done = step === "copying" || step === "renderer" ? Math.round(setup.bytes_total * progress) : IMAGE_BYTES;
-    setup.renderer_step = step === "renderer" ? "downloading" : "";
+    setup.renderer_step = step === "renderer" ? "compiling" : "";
   }
   if (setupStart === "wrong") {
     setup.state = "wrong_disc";
@@ -105,6 +109,7 @@
         clearInterval(setupTimer);
         setup.state = "done";
         setup.renderer_step = "done";
+        setup.renderer_choice = "coregs20";
         var installedGame = gameById(setupGame || selectedGame);
         if (installedGame) {
           installedGame.installed = true;
@@ -135,12 +140,12 @@
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "pcsx2", label: "GSdx" },
-        { value: "coregs-2.0", label: "CoreGS 2.0 (coming soon)", disabled: true }
+        { value: "coregs20", label: "CoreGS 2.0 (recommended)" }
       ],
       default: "pcsx2", current: "pcsx2" },
     // TASK-103: the GSdx Graphics API (the table row graphics_api; the Renderer row above is the engine). Vulkan is the
     // default; Vulkan and Direct3D 12 are recommended, Direct3D 11 is for older PCs. OpenGL is not offered yet.
-    { id: "graphics_api", label: "Graphics API (GSdx)", help: "Vulkan is the default and the best tested; try Direct3D 11 on older graphics cards.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "graphics_api", label: "Graphics API (GSdx)", help: "Vulkan is the default and the best tested; try Direct3D 11 on older graphics cards.",
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "vulkan", label: "Vulkan (recommended)" },
@@ -158,7 +163,7 @@
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
     { id: "performance_mode", label: "Performance Mode", help: "Faster on weaker PCs. Some effects that read the image back are skipped, such as headlight and sun flares and the car icons next to the gap time. Applies the next time you play.",
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
-    { id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "off", label: "Off" },
@@ -166,7 +171,7 @@
         { value: "sharpen-and-resize", label: "Sharpen and resize" }
       ],
       default: "off", current: "off" },
-    { id: "cas_sharpness", label: "Sharpening amount", help: "How strong the CAS sharpening is. Used when CAS is on.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "cas_sharpness", label: "Sharpening amount", help: "How strong the CAS sharpening is. Used when CAS is on.",
       page: "basic", group: "graphics", control: "slider",
       values: { min: 0, max: 100, step: 1, unit: "%" },
       default: 50, current: 50 },
@@ -183,15 +188,24 @@
         { value: "off", label: "Off" }
       ],
       default: "on", current: "on" },
-    { id: "async_gs", label: "Asynchronous GS", help: "Sends graphics work to the GPU without waiting. Needed for full speed; turn off only to compare.",
-      page: "advanced", control: "toggle", values: null, default: true, current: true },
-    { id: "unsynced_readbacks", label: "Unsynced readbacks", help: "Faster, but effects that read the screen will be wrong.",
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "performance_hud", label: "Performance HUD", help: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the processor, the graphics card and memory.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
     { id: "performance_report", label: "Performance report", help: "Records frame timing while you play for bug reports.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
-    { id: "perf_overlay", label: "Performance overlay", help: "Shows GT4Recomp's own overlay while you play (FPS, frame time, CPU and GPU use).",
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "frame_rate", label: "Frame rate (experimental)", help: "60 FPS is the default. The 30 FPS mode is for weaker PCs and is still experimental: races draw 30 frames per second, with the game at full speed and the same physics. Menus stay at 60.", page: "basic", group: null, control: "dropdown", values: [{ value: "60", label: "60 FPS" }, { value: "30", label: "30 FPS" }], default: "60", current: "60", connected: true },
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "coregs_sharpening", label: "Sharpening (FSR1)",
+      help: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
+      page: "basic", group: "graphics", control: "dropdown",
+      values: [
+        { value: "off", label: "Off" },
+        { value: "mild", label: "Mild" },
+        { value: "medium", label: "Medium" },
+        { value: "strong", label: "Strong" }
+      ],
+      default: "off", current: "off" },
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "perf_overlay", label: "Performance overlay", help: "Shows GT4Recomp's own overlay while you play (FPS, frame time, CPU and GPU use).",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
-    { id: "perf_overlay_fps", label: "Overlay: FPS", help: "Shows the frame rate in the performance overlay.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "perf_overlay_fps", label: "Overlay: FPS", help: "Shows the frame rate in the performance overlay.",
       page: "advanced", control: "toggle", values: null, default: true, current: true },
     { id: "debug_internal", label: "Internal debug", help: "Not shown to users.",
       page: "hidden", control: "toggle", values: null, default: false, current: true },
@@ -699,6 +713,10 @@
         setup.state = "failed";
         setup.problem = "Setup was cancelled. Nothing was changed.";
         return null;
+      case "prepare_shaders":
+        return true;
+      case "cancel_shader_prepare":
+        return null;
       case "play":
         if (!gameById(selectedGame).installed) {
           throw new Error("Set up the game first.");
@@ -710,6 +728,25 @@
         return null;
       case "get_settings_table":
         return tableView();
+      case "gsdx_download_needed":
+        return query.get("gsdx") === "missing" || query.get("gsdx") === "offline";
+      case "download_gsdx":
+        return new Promise(function (resolve, reject) {
+          emit("gsdx-download", { step: "listing" });
+          var done = 0;
+          var timer = setInterval(function () {
+            done += 12000000;
+            emit("gsdx-download", { step: "downloading", bytesDone: done, bytesTotal: 48000000 });
+            if (query.get("gsdx") === "offline") {
+              clearInterval(timer);
+              reject(new Error("GSdx could not be downloaded: no internet connection. Check your connection and try again."));
+            } else if (done >= 48000000) {
+              clearInterval(timer);
+              emit("gsdx-download", { step: "installing" });
+              setTimeout(resolve, 500);
+            }
+          }, 500);
+        });
       case "set_setting": {
         if (args.id === "language") {
           mockLanguage = args.value;

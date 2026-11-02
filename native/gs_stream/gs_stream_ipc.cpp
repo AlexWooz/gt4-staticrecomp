@@ -61,9 +61,15 @@ std::string random_hex128() {
 
 std::wstring widen(const std::string &text) {
   if (text.empty()) return {};
-  const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  // A path from the environment is in the ANSI code page (C:\\Users\\Jo\u00e3o), which is usually not valid UTF-8: that decides which it is.
+  UINT code_page = CP_UTF8;
+  int count = MultiByteToWideChar(code_page, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  if (count == 0) {
+    code_page = CP_ACP;
+    count = MultiByteToWideChar(code_page, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  }
   std::wstring wide(static_cast<std::size_t>(count), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), count);
+  MultiByteToWideChar(code_page, 0, text.data(), static_cast<int>(text.size()), wide.data(), count);
   return wide;
 }
 

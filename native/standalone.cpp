@@ -178,8 +178,9 @@ Check fail(Problem problem, std::string detail) { return Check{problem, std::mov
 
 std::optional<GameId> game_for_executable(std::string_view file_name) {
   const std::string name = lower(file_name);
-  if (name == "gt4vulkan.exe") return GameId{"gt4", "SCUS_973.28"};
-  if (name == "gt4vulkan-spec2.exe") return GameId{"spec2", "SCUS_974.36"};
+  // The names of the build, and of a release (scripts/make_distribution.py): a direct start of a release was refused without them.
+  if (name == "gt4vulkan.exe" || name == "gt4.exe") return GameId{"gt4", "SCUS_973.28"};
+  if (name == "gt4vulkan-spec2.exe" || name == "gt4-spec2.exe") return GameId{"spec2", "SCUS_974.36"};
   return std::nullopt;
 }
 
@@ -262,6 +263,7 @@ std::optional<Receipt> parse_receipt(std::string_view json) {
   if (!size || !modified || !elf_bytes) return std::nullopt;
   Receipt receipt;
   receipt.image_file = *file;
+  receipt.image_linked_path = field_value(*image, "linked_path", true).value_or("");
   receipt.image_size = *size;
   receipt.image_modified_unix_nanos = *modified;
   receipt.elf_size = *elf_bytes;
@@ -279,12 +281,23 @@ Check check_game_files(const Layout &layout, const Access &access, std::filesyst
   if (!elf_info) return fail(Problem::GameFilesChanged, std::string(layout.game.elf_name) + " is missing");
   if (elf_info->size_bytes != receipt->elf_size)
     return fail(Problem::GameFilesChanged, std::string(layout.game.elf_name) + " has changed");
-  if (!plain_file_name(receipt->image_file)) return fail(Problem::GameFilesChanged, "the setup record names an invalid disc copy");
-  disc = layout.disc_folder / receipt->image_file;
+  if (!receipt->image_linked_path.empty()) {
+    // Decision 0075: the image stays where the player keeps it.
+    const std::string &linked = receipt->image_linked_path;
+    disc = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(linked.data()), linked.size()));
+    if (disc.is_relative()) disc = layout.install_root / disc;
+  } else {
+    if (!plain_file_name(receipt->image_file)) return fail(Problem::GameFilesChanged, "the setup record names an invalid disc copy");
+    disc = layout.disc_folder / receipt->image_file;
+  }
   const std::optional<FileInfo> disc_info = access.stat_file ? access.stat_file(disc) : std::nullopt;
   if (!disc_info) return fail(Problem::GameFilesChanged, receipt->image_file + " is missing");
-  if (disc_info->size_bytes != receipt->image_size || disc_info->modified_unix_nanos != receipt->image_modified_unix_nanos)
+  // A linked image may have been carried to a file system that rounds the time (launcher: LINKED_TIME_TOLERANCE_NANOS).
+  const std::uint64_t tolerance = receipt->image_linked_path.empty() ? 0 : 2000000000ull;
+  const std::uint64_t recorded = receipt->image_modified_unix_nanos, found = disc_info->modified_unix_nanos;
+  if (disc_info->size_bytes != receipt->image_size || (found > recorded ? found - recorded : recorded - found) > tolerance)
     return fail(Problem::GameFilesChanged, receipt->image_file + " has changed");
+  if (!receipt->image_linked_path.empty() && access.openable_path) disc = access.openable_path(disc);
   return Check{};
 }
 
@@ -341,6 +354,24 @@ Config parse_config(std::string_view text) {
               std::all_of(value.begin() + static_cast<std::ptrdiff_t>(x) + 1, value.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
     } else if (key == "check_vu_code") {
       valid = value == "0" || value == "100" || value == "1000";
+    } else if (key == "renderer") {
+      valid = value == "coregs20";  // TASK-027: GSdx, the default, is not written
+    } else if (key == "hw_scale") {
+      valid = (value.size() == 1 && value[0] >= '1' && value[0] <= '9') || value == "10" || value == "11" || value == "12";
+    } else if (key == "hw_performance") {
+      valid = value == "1";
+    } else if (key == "hw_frame_skip") {
+      valid = value == "2";  // the 30 FPS mode: one frame drawn in two
+    } else if (key == "hw_hud") {
+      valid = value == "1";  // TASK-135: the performance HUD
+    } else if (key == "hw_postfx") {
+      valid = value == "fxaa";
+    } else if (key == "hw_present_mode") {
+      valid = value == "fifo";  // CoreGS 2.0 draws a stored "Fast" vsync as On
+    } else if (key == "hw_sharpening") {
+      valid = value == "0" || value == "0.2" || value == "2";
+    } else if (key == "hw_textures" || key == "hw_adapter") {
+      valid = !value.empty();  // a folder or a card name: any text the launcher wrote
     } else {
       config.warnings.push_back("game.ini: unknown key '" + key + "' ignored");
       continue;
@@ -412,21 +443,54 @@ Environment default_environment() {
   };
 }
 
-bool renderer_needed(const Access &access) {
+// TASK-027: game.ini says CoreGS 2.0 (renderer=coregs20; the launcher wrote it) and the process environment names no
+// renderer.
+bool coregs20_chosen(const Inputs &inputs, const Access &access) {
+  if (!inputs.config || !value_of(access, "GT4_RENDERER").empty()) return false;
+  const auto it = inputs.config->values.find("renderer");
+  return it != inputs.config->values.end() && it->second == "coregs20";
+}
+
+// The variables the launcher sets for a CoreGS 2.0 session (launch.rs coregs20_environment).
+Environment coregs20_environment(const Config &config) {
+  Environment out = {{"GT4_RENDERER", "hw"}, {"GT4_HW_CORE", "2"}};
+  for (const auto &[key, name] : {std::pair<const char *, const char *>{"hw_scale", "GT4_HW_SCALE"},
+                                  {"hw_performance", "GT4_CORE2_PERFORMANCE"},
+                                  {"hw_frame_skip", "GT4_FRAME_SKIP_FORCE"},
+                                  {"hw_hud", "GT4_HW_HUD"},
+                                  {"hw_textures", "GT4_HW_TEXTURES"},
+                                  {"hw_postfx", "GT4_HW_POSTFX"},
+                                  {"hw_sharpening", "GT4_CORE2_FSR_SHARPNESS"},
+                                  {"hw_present_mode", "GT4_PRESENT_MODE"},
+                                  {"hw_adapter", "GT4_HW_ADAPTER"}}) {
+    const auto it = config.values.find(key);
+    if (it != config.values.end()) out.emplace_back(name, it->second);
+  }
+  return out;
+}
+
+bool renderer_needed(const Inputs &inputs, const Access &access) {
   const std::string renderer = value_of(access, "GT4_RENDERER");
-  return (renderer.empty() || renderer == "pcsx2") && !is_set(access, "GT4_GS_PROCESS");
+  return (renderer.empty() || renderer == "pcsx2") && !is_set(access, "GT4_GS_PROCESS") && !coregs20_chosen(inputs, access);
 }
 
 Resolved resolve(const Inputs &inputs, const Access &access) {
   Resolved out;
   const Layout &layout = *inputs.layout;
-  out.needs_renderer = renderer_needed(access);
+  out.needs_renderer = renderer_needed(inputs, access);
   const std::string renderer = value_of(access, "GT4_RENDERER");
-  const bool pcsx2 = renderer.empty() || renderer == "pcsx2";
+  const bool coregs20 = coregs20_chosen(inputs, access);
+  const bool pcsx2 = (renderer.empty() || renderer == "pcsx2") && !coregs20;
 
   // Layers, highest first. A name already set in the process environment, or by a higher layer, is left alone.
   Environment layers;
   if (inputs.config) {
+    // CoreGS 2.0's keys first: hw_present_mode wins over present_mode.
+    if (coregs20) {
+      Environment from_choice = coregs20_environment(*inputs.config);
+      from_choice.emplace_back("GT4_HW_SHADER_CACHE", (layout.user_root / "shader-cache").string());  // IN-489
+      layers.insert(layers.end(), from_choice.begin(), from_choice.end());
+    }
     const Environment from_config = config_environment(*inputs.config);
     layers.insert(layers.end(), from_config.begin(), from_config.end());
   }
@@ -443,7 +507,9 @@ Resolved resolve(const Inputs &inputs, const Access &access) {
   }
   if (inputs.controls_exists) layers.emplace_back("GT4_CONTROLS_FILE", (layout.user_root / "controls.toml").string());
   const Environment defaults = default_environment();
-  layers.insert(layers.end(), defaults.begin(), defaults.end());
+  for (const auto &entry : defaults) {
+    if (!(coregs20 && entry.first == "PS2_GS")) layers.push_back(entry);  // it goes with GSdx
+  }
   for (const auto &[name, value] : layers) {
     if (is_set(access, name)) continue;
     const bool known = std::any_of(out.set.begin(), out.set.end(), [&](const auto &entry) { return entry.first == name; });

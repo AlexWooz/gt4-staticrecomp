@@ -2,7 +2,7 @@
  * Games (TASK-101, release 1.3.0): the launcher runs Gran Turismo 4 and Gran Turismo 4 Spec II side by side.
  * Shared page helpers over the game commands:
  *   games_list           -> {selected, any_installed, games: [{id, name, installed, damaged, reason, selected,
- *                            disc_name, folder, size_bytes}]}
+ *                            disc_name, folder, size_bytes, image_path, image_bytes}]}
  *   select_game({id})    -> the same list; the page's choice, not stored until a game starts
  *   games_remove({id})   -> the same list; deletes the disc copy and prepared files only (the page asks first)
  *   setup_choose_disc({game}) -> {path, serial, version, name, game, gameName, mismatch, requested} | null
@@ -107,6 +107,10 @@
   function size(bytes) {
     if (!bytes) {
       return "";
+    }
+    // What removing a linked game frees is a few megabytes: it must not read as 0.0 GB.
+    if (bytes < 1e9) {
+      return GT4.t("common.mb", { size: Math.max(1, Math.round(bytes / 1e6)).toLocaleString(GT4.i18n.intlLocale()) });
     }
     return GT4.t("common.gb", { size: (bytes / 1e9).toLocaleString(GT4.i18n.intlLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
   }

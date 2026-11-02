@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Game-side GS stream backend; see gs_stream_client.hpp and docs/GS-STREAM-PROTOCOL.md section 7.
 #include "gs_stream_client.hpp"
+#include "gs_stream_sink.hpp"
 
 #include "gs_readback_probe.hpp"
 #include "gs_stream_file.hpp"
@@ -51,8 +52,8 @@ constexpr std::uint32_t kHandshakeTimeoutMinMs = 1000, kHandshakeTimeoutMaxMs = 
 // zeros) before it halts: the runtime writes a changed memory card after 50 quiet VSYNCs, so a save in progress is
 // finished and flushed first (TASK-038). GT4_GS_LOST_GRACE_FRAMES (tests): 0..600.
 constexpr std::uint32_t kLostGraceFrames = 180, kLostGraceMaxFrames = 600;
-// Printed when the player asked for a restart with the built-in renderer; the launcher looks for this line.
-constexpr const char *kRestartMarker = "[gs-ipc] restart requested: renderer donor (CoreGS 1.1)";
+// Printed when the player chose CoreGS 2.0 after GSdx failed; the launcher looks for this line and stores the choice.
+constexpr const char *kRestartMarker = "[gs-ipc] renderer change requested: CoreGS 2.0";
 constexpr std::uint32_t kShutdownTimeoutMs = 3000;
 // GIF data per record and qwords per READ_FIFO: fixed by the default region sizes, so the in-process capture and a
 // recorder process split the same chunks the same way (byte-identical files).
@@ -144,12 +145,19 @@ HWND visible_game_window() {
   return search.found;
 }
 
-std::wstring wide_text(const std::string &text) { return std::wstring(text.begin(), text.end()); }
+std::wstring wide_text(const std::string &text) { return ipc::widen(text); }
 
-// Asks the player whether to restart with the built-in renderer; prints the launcher marker on yes.
+// Offers CoreGS 2.0 when GSdx failed. Under the launcher, yes prints the marker and the launcher stores the choice. A game started
+// directly has no launcher to do that, so it only says where the choice is.
 void offer_restart(HWND window, const std::wstring &what) {
-  const std::wstring text = what + L"\n\nDetails are in the game log.\n\nRestart the game with the built-in renderer "
-                                   L"(CoreGS 1.1)?";
+  if (std::getenv("GT4_DIRECT_START") != nullptr) {
+    const std::wstring direct = what + L"\n\nDetails are in the game log.\n\nOpen GT4Recomp and choose CoreGS 2.0 in Settings > Graphics: it is part of the game "
+                                       L"and needs no download.";
+    MessageBoxW(window, direct.c_str(), L"GT4Recomp: GS renderer", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    return;
+  }
+  const std::wstring text = what + L"\n\nDetails are in the game log.\n\nUse CoreGS 2.0 from now on? It is part of the game and needs no download. You can "
+                                   L"change this in Settings > Graphics.";
   const int answer = MessageBoxW(window, text.c_str(), L"GT4Recomp: GS renderer", MB_YESNO | MB_ICONERROR | MB_SETFOREGROUND);
   if (answer == IDYES) {
     std::fprintf(stderr, "%s\n", kRestartMarker);
@@ -1086,7 +1094,12 @@ Renderer parse_renderer() {
   const char *value = std::getenv("GT4_RENDERER");
   if (!value || std::strcmp(value, "donor") == 0) return Renderer::donor;
   if (std::strcmp(value, "pcsx2") == 0) return Renderer::pcsx2;
+#ifdef GT4_GS_STREAM_HW
+  if (std::strcmp(value, "hw") == 0) return Renderer::hw;
+  refuse(std::string("GT4_RENDERER=\"") + value + "\" is not donor, pcsx2 or hw");
+#else
   refuse(std::string("GT4_RENDERER=\"") + value + "\" is not donor or pcsx2");
+#endif
 }
 
 // Created on first use; null when the donor renderer runs without a capture (every hook then returns at once).
@@ -1094,6 +1107,7 @@ Renderer parse_renderer() {
 Client *client() {
   static Client *const instance = []() -> Client * {
     const Renderer mode = parse_renderer();
+    if (mode == Renderer::hw) return nullptr;  // TASK-027: the in-process sink (hw_sink()) takes every hook
     const char *capture = std::getenv("GT4_GS_CAPTURE");
     if (mode == Renderer::donor && !(capture && *capture)) return nullptr;
     auto *created = new Client(mode);
@@ -1233,9 +1247,60 @@ Renderer renderer() {
   return mode;
 }
 
-bool stream_renderer() { return renderer() == Renderer::pcsx2; }
+bool stream_renderer() { return renderer() != Renderer::donor; }
+
+namespace {
+
+#ifdef GT4_GS_STREAM_HW
+// TASK-027: GT4_RENDERER=hw. Started on first use (EE thread); a failed start refuses the game like a failed GS process.
+const InProcessSink *hw_sink() {
+  static const InProcessSink *const sink = []() -> const InProcessSink * {
+    if (renderer() != Renderer::hw) return nullptr;
+    const char *capture = std::getenv("GT4_GS_CAPTURE");
+    if (capture && *capture) refuse("GT4_GS_CAPTURE is not supported with GT4_RENDERER=hw yet");
+    const InProcessSink &chosen = hw_in_process_sink();
+    std::string error;
+    if (!chosen.start(error)) refuse("GT4_RENDERER=hw: the HWR backend could not start: " + error);
+    return &chosen;
+  }();
+  return sink;
+}
+#else
+const InProcessSink *hw_sink() { return nullptr; }
+#endif
+
+// The hw form of Client::privileged: same address filter and the same MTVU ordering (TASK-041), no stream record.
+void hw_privileged(const InProcessSink &sink, std::uint32_t address, std::uint64_t value) {
+  if (address < proto::kPrivilegedBase || address >= proto::kPrivilegedBase + proto::kPrivilegedBytes) return;
+  if (g_privileged_ordering.take_wait_us) g_privileged_ordering.take_wait_us();
+  if (g_privileged_ordering.queue && g_privileged_ordering.queue(address, value)) return;
+  sink.privileged(address, value);
+}
+
+}  // namespace
+
+bool mtvu_direct_available() {
+#ifdef GT4_GS_STREAM_HW
+  // The GS worker thread reads the ring; GT4_HW_GS_THREAD=0 runs the stream on the EE thread, which cannot.
+  const char *thread = std::getenv("GT4_HW_GS_THREAD");
+  const bool gsThread = !(thread && std::strcmp(thread, "0") == 0);
+  return renderer() == Renderer::hw && hw_in_process_sink().mtvu_job != nullptr && gsThread;
+#else
+  return false;
+#endif
+}
+
+void on_mtvu_job(std::uint64_t job, gt4::mtvu::SpscByteRing &output, gt4::mtvu::Doorbell &bell) {
+  const InProcessSink *sink = hw_sink();
+  if (!sink || !sink->mtvu_job) refuse("IN-461 direct GS intake without the hw GS worker");
+  sink->mtvu_job(job, output, bell);
+}
 
 bool on_gif_render(int path, const std::uint8_t *data, std::uint32_t qwc) {
+  if (const InProcessSink *sink = hw_sink()) {
+    if (qwc) sink->gif(path, data, qwc);
+    return true;
+  }
   Client *c = client();
   if (!c) return false;
   if (qwc) c->gif(path, data, qwc);
@@ -1243,12 +1308,14 @@ bool on_gif_render(int path, const std::uint8_t *data, std::uint32_t qwc) {
 }
 
 void on_privileged_write(std::uint32_t address, std::uint64_t value) {
+  if (const InProcessSink *sink = hw_sink()) return hw_privileged(*sink, address, value);
   if (Client *c = client()) c->privileged(address, value);
 }
 
 void set_privileged_ordering(const PrivilegedOrdering &ordering) { g_privileged_ordering = ordering; }
 
 void post_privileged_now(std::uint32_t address, std::uint64_t value) {
+  if (const InProcessSink *sink = hw_sink()) return sink->privileged(address, value);
   if (Client *c = client()) c->post_privileged(address, value);
 }
 
@@ -1297,6 +1364,10 @@ std::string format_frame_summary(const FrameCosts &costs) {
 }
 
 bool read_fifo(std::uint8_t *data, std::uint32_t qwords) {
+  if (const InProcessSink *sink = hw_sink()) {
+    sink->read_fifo(data, qwords);
+    return true;
+  }
   Client *c = client();
   return c ? c->read_fifo(data, qwords) : false;
 }
@@ -1318,11 +1389,14 @@ void post_read_fifo_nowait(std::uint32_t qwords) {
 }
 
 void on_vsync(bool odd_field) {
+  // TASK-084 step 3 holds the VSYNC until the frame's VU1 output is in stream order; this applies to the in-process
+  // hw sink as well (TASK-027), whose VSYNC flushes and presents the frame.
   if (g_defer_vsync) {
     g_pending_vsync = odd_field;
     g_has_pending_vsync = true;
     return;
   }
+  if (const InProcessSink *sink = hw_sink()) return sink->vsync(odd_field);
   if (Client *c = client()) c->vsync(odd_field);
 }
 
@@ -1332,34 +1406,46 @@ bool post_pending_vsync() {
   if (!g_has_pending_vsync) return false;
   g_has_pending_vsync = false;
   const bool field = g_pending_vsync;
+  if (const InProcessSink *sink = hw_sink()) {
+    sink->vsync(field);
+    return true;
+  }
   if (Client *c = client()) c->vsync(field);
   return true;
 }
 
 void on_gs_reset() {
+  if (const InProcessSink *sink = hw_sink()) return sink->gs_reset();
   if (Client *c = client()) c->reset(::gs_stream::ResetKind::gs_hard, 0);
 }
 
 void on_gif_reset() {
+  if (const InProcessSink *sink = hw_sink()) return sink->gif_reset();
   if (Client *c = client()) c->reset(::gs_stream::ResetKind::gif_paths, 0xEu);
 }
 
 void on_set_gs_crt(std::uint32_t interlace, std::uint32_t mode, std::uint32_t field) {
+  const InProcessSink *sink = hw_sink();
   Client *c = client();
-  if (!c) return;
+  if (!c && !sink) return;
   std::uint64_t smode1 = 0, smode2 = 0;
   if (!map_set_gs_crt(interlace, mode, field, smode1, smode2)) {
     std::fprintf(stderr, "[gs-ipc] SetGsCrt interlace %u mode 0x%X field %u not mapped; no SMODE writes posted\n",
                  interlace, mode, field);
     return;
   }
-  c->privileged(0x12000010u, smode1);
+  const auto post = [&](std::uint32_t address, std::uint64_t value) {
+    if (sink) hw_privileged(*sink, address, value);
+    else c->privileged(address, value);
+  };
+  post(0x12000010u, smode1);
   std::uint64_t syncv = 0;
-  if (map_set_gs_crt_syncv(mode, syncv)) c->privileged(0x12000060u, syncv);
-  c->privileged(0x12000020u, smode2);
+  if (map_set_gs_crt_syncv(mode, syncv)) post(0x12000060u, syncv);
+  post(0x12000020u, smode2);
 }
 
 bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t height) {
+  if (const InProcessSink *sink = hw_sink()) return sink->attach_window(window, width, height);
   Client *c = client();
   if (!c || !c->stream()) return false;
   c->attach(window, width, height);
@@ -1367,6 +1453,7 @@ bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t heig
 }
 
 void resize_window(std::uint32_t width, std::uint32_t height) {
+  if (const InProcessSink *sink = hw_sink()) return sink->resize_window(width, height);
   Client *c = client();
   if (c && c->stream()) c->request_resize(width, height);
 }
@@ -1379,6 +1466,10 @@ void set_cursor_policy(bool auto_hide, std::uint32_t hide_delay_ms) {
 void set_display_aspect_mode(DisplayAspectMode mode, std::uint32_t fill_aspect_millionths) {
   const std::uint32_t target = mode == DisplayAspectMode::fill ? fill_aspect_millionths : 0;
   g_display_aspect_wanted.store(static_cast<std::uint64_t>(mode) | (static_cast<std::uint64_t>(target) << 32));
+  // TASK-027: GT4_RENDERER=hw has no GS process to post CONTROL display_aspect to; the in-process presenter takes the
+  // same request directly (owner test 6: without it the widened ultrawide race stayed in the 16:9 pillarbox).
+  if (const InProcessSink *sink = hw_sink(); sink && sink->display_aspect)
+    sink->display_aspect(mode == DisplayAspectMode::fill, target);
 }
 
 std::uint32_t aspect_millionths(double ratio) {
@@ -1439,6 +1530,7 @@ void set_halt_handler(void (*halt)(const char *reason)) {
 }
 
 void finish(std::FILE *output) {
+  if (const InProcessSink *sink = hw_sink()) return sink->finish(output);
   if (Client *c = client()) c->finish(output);
 }
 

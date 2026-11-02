@@ -14,7 +14,7 @@
  *   ?scenario=render    only sets the state for docs/launcher/shots/graphics-sections.png (pad focus on Render scale,
  *                       the Graphics section in view)
  *   ?scenario=general, ?scenario=graphics  only open that Settings tab (screenshots at 1280x720; no checks run)
- *   Dropdown values (rc6): no .row .select value on General or Graphics wraps, in every language
+ *   Option values (rc6): no value of a .row selector or dropdown on General or Graphics wraps, in every language
  */
 (function (root) {
   "use strict";
@@ -111,6 +111,25 @@
   }
 
   // Rendering each tab through its route never moves focus off the tab list.
+  // IN-507: the "Compiling shaders" window opens on the first progress, counts, holds on Back and closes when Play goes on.
+  async function shaderWindowChecks() {
+    await setHash("#/");
+    await wait(100);
+    check("no shader window before a compile", !document.querySelector(".shader-bar"), "open");
+    GT4_MOCK.emit("shaders-progress", { done: 0, total: 200 });
+    GT4_MOCK.emit("shaders-progress", { done: 50, total: 200 });
+    await wait(50);
+    var bar = document.querySelector(".shader-bar-fill");
+    check("the window shows the title and the count", !!bar && document.querySelector(".modal h3").textContent === T("shaders.title") &&
+      document.querySelector(".shader-count").textContent === T("shaders.count", { done: 50, total: 200 }), bar ? bar.style.width : "none");
+    check("the bar follows the count", !!bar && bar.style.width === "25%", bar ? bar.style.width : "none");
+    check("Cancel has the focus", document.activeElement && document.activeElement.textContent === T("common.cancel"), document.activeElement && document.activeElement.textContent);
+    document.querySelector(".modal").__dialog.back();
+    check("Back does not close it", !!document.querySelector(".shader-bar"), "closed");
+    GT4.closeShaderWindow();
+    check("it closes when Play goes on", !document.querySelector(".shader-bar"), "still open");
+  }
+
   async function routeChecks() {
     for (var i = 0; i < TABS.length; i++) {
       await setHash("#/settings/" + TABS[i]);
@@ -238,26 +257,17 @@
     }
 
     await setHash("#/settings/graphics");
-    var select = document.querySelector("[data-section=\"display\"] button.select[data-setting=\"resolution\"]");
+    var select = document.querySelector("[data-section=\"display\"] .selector[data-setting=\"resolution\"]");
     check("resolution is in the Display section of Graphics", !!select, "no control");
     check("monitor is in the Display section of Graphics",
-      !!document.querySelector("[data-section=\"display\"] button.select[data-setting=\"monitor\"]"), "no control");
+      !!document.querySelector("[data-section=\"display\"] .selector[data-setting=\"monitor\"]"), "no control");
     if (!select) {
       return;
     }
-    // A pad A (or a click) comes with focus on the control, as in the app.
-    select.focus({ preventScroll: true });
-    select.click();
-    await wait(150);
-    var option = Array.prototype.filter.call(document.querySelectorAll(".modal .option"), function (item) {
-      return item.textContent.indexOf("1280x720") === 0;
-    })[0];
-    check("the resolution list offers the monitor's modes", !!option, "no 1280x720 option");
-    if (option) {
-      option.click();
-      await wait(300);
-    }
-    var label = document.querySelector("button.select[data-setting=\"resolution\"] span");
+    var reached = await stepSelectorUntil("resolution", function () { return selectorText("resolution") === "1280x720"; });
+    check("the resolution selector goes through the monitor's modes", reached, selectorText("resolution"));
+    await wait(300);
+    var label = document.querySelector(".selector[data-setting=\"resolution\"] .selector-value:not(.is-leaving)");
     check("the resolution row shows 1280x720 after the change", !!label && label.textContent === "1280x720", label ? label.textContent : "none");
     var table = await GT4.backend.call("get_settings_table");
     var row = GT4.settingsModel.findRow(table, "resolution");
@@ -270,16 +280,16 @@
     await GT4.backend.call("set_setting", { id: "resolution", value: "1920x1080" });
     await setHash("#/settings/graphics");
 
-    var toggle = document.querySelector("button.toggle[data-setting=\"fxaa\"]");
-    check("anti-aliasing is a toggle on Graphics", !!toggle, "no control");
+    var toggle = selectorNode("fxaa");
+    check("anti-aliasing is an Off and On selector on Graphics", !!toggle, "no control");
     if (toggle) {
       toggle.click();
       await wait(300);
-      var on = document.querySelector("button.toggle[data-setting=\"fxaa\"]");
-      check("the toggle shows on after the change", !!on && on.getAttribute("aria-checked") === "true", on ? on.getAttribute("aria-checked") : "none");
+      check("the selector shows On after the change", selectorText("fxaa") === T("settings.on"), selectorText("fxaa"));
       var fxaa = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "fxaa");
-      check("the table holds the toggle value", !!fxaa && fxaa.current === true, fxaa ? String(fxaa.current) : "no row");
+      check("the table holds the selector's value", !!fxaa && fxaa.current === true, fxaa ? String(fxaa.current) : "no row");
     }
+    await selectorLoopChecks();
 
     var slider = document.querySelector("input[type=range][data-setting=\"cas_sharpness\"]");
     check("sharpening amount is a slider on Graphics", !!slider, "no control");
@@ -300,6 +310,45 @@
   function focusedSetting() {
     var active = document.activeElement;
     return active && active.getAttribute ? active.getAttribute("data-setting") || active.getAttribute("data-action") : null;
+  }
+
+  // The renderer defines the graphics options (owner, 2026-10-30): what each renderer's Graphics tab shows.
+  async function rendererRowChecks() {
+    function shown() {
+      return Array.prototype.map.call(document.querySelectorAll(".content .row[data-row]"), function (item) {
+        return item.getAttribute("data-row");
+      });
+    }
+    function holds(list, ids) {
+      return ids.every(function (id) { return list.indexOf(id) >= 0; });
+    }
+    function lacks(list, ids) {
+      return ids.every(function (id) { return list.indexOf(id) < 0; });
+    }
+    var both = ["renderer", "render_scale", "monitor", "resolution", "fullscreen", "vsync", "fxaa", "performance_mode"];
+    var gsdxOnly = ["graphics_api", "cas_mode", "cas_sharpness", "perf_overlay"];
+    await setHash("#/settings/about");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    var gsdx = shown();
+    function menusAbove(list, menus, switches) {
+      return menus.every(function (menu) {
+        return switches.every(function (item) { return list.indexOf(menu) < list.indexOf(item); });
+      });
+    }
+    check("GSdx shows its Graphics menus above its switches", menusAbove(gsdx, ["renderer", "render_scale", "graphics_api", "cas_mode"], ["performance_mode", "fxaa"]), gsdx.join("|"));
+    check("GSdx shows its rows and no FSR1", holds(gsdx, both) && holds(gsdx, gsdxOnly) && lacks(gsdx, ["frame_rate", "coregs_sharpening"]), gsdx.join("|"));
+    await GT4.backend.call("set_setting", { id: "renderer", value: "coregs20" });
+    await setHash("#/settings/about");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    var coregs = shown();
+    check("CoreGS 2.0 shows its Graphics menus above its switches", menusAbove(coregs, ["renderer", "render_scale", "frame_rate", "coregs_sharpening"], ["performance_mode", "fxaa"]), coregs.join("|"));
+    check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, ["frame_rate", "coregs_sharpening"]) && lacks(coregs, gsdxOnly), coregs.join("|"));
+    await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
+    await setHash("#/settings/about");
+    await setHash("#/settings/graphics");
+    await wait(200);
   }
 
   async function advancedSectionChecks() {
@@ -327,7 +376,7 @@
     check("every Graphics row sits in a section", looseRows === 0, looseRows + " loose rows");
     var firstAdvanced = document.querySelector("[data-section=\"advanced\"] [data-setting]");
     var firstId = firstAdvanced ? firstAdvanced.getAttribute("data-setting") : null;
-    check("the Advanced section holds the advanced rows", firstId === "async_gs", "first " + firstId);
+    check("the Advanced section holds the advanced rows", firstId === "performance_report", "first " + firstId);
     press("ArrowRight");
     await wait(200);
     // Without a remembered row, A enters on the first control of the tab (settings.js focusRow): Monitor, at the top of
@@ -588,7 +637,7 @@
     page = document.querySelector(".ra-page");
     check("Achievements paints the signed-in account", page.textContent.indexOf("TestDriver") >= 0, "no account name");
     check("Achievements paints the synthetic progress list", page.querySelectorAll(".ra-ach-row").length === 3, "missing sample rows");
-    var hcBtn = page.querySelector("button[aria-label=\"" + T("ra.opt_hardcore") + "\"]");
+    var hcBtn = page.querySelector(".selector[aria-label=\"" + T("ra.opt_hardcore") + "\"]");
     if (hcBtn) {
       hcBtn.click();
       await wait(100);
@@ -731,6 +780,10 @@
     var rows = document.querySelectorAll(".game-row");
     check("Settings > Games lists both games", rows.length === 2, String(rows.length));
     var labels = Array.prototype.map.call(rows[0].querySelectorAll("button"), function (b) { return b.textContent; });
+    var imageLine = rows[0] && rows[0].querySelector(".game-image");
+    check("an installed game names its disc image and where it is", !!imageLine && imageLine.textContent === T("games.image_at", { path: "D:\\ISOs\\Gran Turismo 4 (USA v2.00).iso" }), imageLine ? imageLine.textContent : "no line");
+    check("the size shown is the disc image's, not 0.0 GB", !!rows[0] && rows[0].querySelector(".val").textContent.indexOf(GT4.games.size(5314478080)) >= 0, rows[0] ? rows[0].querySelector(".val").textContent : "no row");
+    check("a small size reads in megabytes", GT4.games.size(8100000) === T("common.mb", { size: (8).toLocaleString(GT4.i18n.intlLocale()) }), GT4.games.size(8100000));
     check("an installed game offers Update and Remove", labels.join("|") === T("games.update") + "|" + T("common.remove"), labels.join("|"));
     var installedDetail = rows[0].querySelector(".val").textContent;
     check("an installed game names its copy: status, USA v2.00 and size, not the title again",
@@ -742,7 +795,7 @@
     rows[0].querySelectorAll("button")[1].click();
     await wait(200);
     var dialog = document.querySelector(".modal");
-    check("Remove asks first and says the saves are kept", !!dialog && /saves and replays are kept|Seus saves e replays são mantidos/i.test(dialog.textContent), dialog ? dialog.textContent : "no dialog");
+    check("Remove asks first and says the saves are kept", !!dialog && /saves and replays are kept|saves e replays são mantidos/i.test(dialog.textContent), dialog ? dialog.textContent : "no dialog");
     if (dialog) {
       GT4.ui.topDialog().close();
     }
@@ -814,6 +867,170 @@
       GT4.i18n.resolve("pt-BR", "en-US") === "pt-BR", "rule");
   }
 
+  // The option selector (owner, 2026-11-02): no start or end, the arrows step both ways, and a step that changes the tab's rows
+  // animates them and does not stop the value's slide.
+  function selectorNode(id) {
+    return document.querySelector(".selector[data-setting=\"" + id + "\"]");
+  }
+
+  function selectorText(id) {
+    var node = selectorNode(id);
+    return node ? node.getAttribute("aria-valuetext") : null;
+  }
+
+  async function stepSelector(id, direction) {
+    var node = selectorNode(id);
+    node.focus({ preventScroll: true });
+    node.dispatchEvent(new CustomEvent("gt4-adjust", { detail: { delta: direction } }));
+    await wait(150);
+  }
+
+  async function stepSelectorUntil(id, reached) {
+    for (var count = 0; count < 24; count++) {
+      if (reached()) {
+        return true;
+      }
+      if (!selectorNode(id)) {
+        return false;
+      }
+      await stepSelector(id, 1);
+    }
+    return reached();
+  }
+
+  async function selectorLoopChecks() {
+    var vsync = selectorNode("vsync");
+    vsync.click();
+    await wait(200);
+    check("a step that moves nothing else keeps the control on screen", selectorNode("vsync") === vsync, "the tab was drawn again");
+    vsync.click();
+    await wait(200);
+
+    var api = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "graphics_api");
+    var choices = api.values.filter(function (option) { return !option.disabled; }).length;
+    var first = selectorText("graphics_api");
+    for (var count = 0; count < choices; count++) {
+      await stepSelector("graphics_api", 1);
+    }
+    check("going right through every option comes back to the first", choices > 1 && selectorText("graphics_api") === first,
+      selectorText("graphics_api") + " after " + choices + " steps");
+    await stepSelector("graphics_api", -1);
+    var last = selectorText("graphics_api");
+    check("going left from the first option reaches the last", last !== first, last);
+    selectorNode("graphics_api").querySelectorAll(".selector-arrow")[1].click();
+    await wait(150);
+    check("the right arrow steps the selector", selectorText("graphics_api") === first, selectorText("graphics_api"));
+    selectorNode("graphics_api").querySelectorAll(".selector-arrow")[0].click();
+    await wait(150);
+    check("the left arrow steps the selector", selectorText("graphics_api") === last, selectorText("graphics_api"));
+    selectorNode("graphics_api").querySelectorAll(".selector-arrow")[1].click();
+    await wait(150);
+
+    var renderer = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "renderer").current;
+    await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+    selectorNode("renderer").focus({ preventScroll: true });
+    selectorNode("renderer").dispatchEvent(new CustomEvent("gt4-adjust", { detail: { delta: 1 } }));
+    await wait(120);
+    var drawn = selectorNode("renderer");
+    check("a renderer step draws its own rows", !!selectorNode("frame_rate") && !selectorNode("graphics_api"), "rows not changed");
+    check("a renderer step keeps the value's slide going", !!drawn && drawn.querySelectorAll(".selector-value.is-leaving").length === 1,
+      drawn ? drawn.innerHTML.slice(0, 120) : "no control");
+    var newRow = document.querySelector("[data-row=\"frame_rate\"]");
+    check("a new row comes in with an animation", !!newRow && newRow.getAnimations().length > 0, "no animation");
+    check("a row going out fades over the page", document.querySelectorAll(".row-departing").length > 0, "no departing row");
+    check("the focus stays on the renderer through the redraw", document.activeElement === drawn, "focus elsewhere");
+    await wait(500);
+    check("the rows that went out are gone after the animation", document.querySelectorAll(".row-departing").length === 0, "left behind");
+    await GT4.backend.call("set_setting", { id: "renderer", value: renderer });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+  }
+
+  // Owner, 2026-11-02: choosing GSdx when it is missing asks first. The dialog shows the download and closes by itself; declining,
+  // or a failed download, goes back to CoreGS 2.0, and the choice is stored only after the install.
+  async function gsdxDialogChecks() {
+    var real = GT4.backend.call;
+    var needed = true;
+    var download = null;
+    GT4.backend.call = function (command, args) {
+      if (command === "gsdx_download_needed") {
+        return Promise.resolve(needed);
+      }
+      if (command === "download_gsdx") {
+        return new Promise(function (resolve, reject) { download = { resolve: resolve, reject: reject }; });
+      }
+      return real(command, args);
+    };
+    var storedRenderer = async function () {
+      return GT4.settingsModel.findRow(await real("get_settings_table"), "renderer").current;
+    };
+    var openFromCoregs = async function () {
+      await real("set_setting", { id: "renderer", value: "coregs20" });
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+      await stepSelector("renderer", 1);
+      await wait(150);
+    };
+    var modal = function () { return document.querySelector(".modal"); };
+    var buttons = function () { return modal().querySelectorAll(".modal-actions button"); };
+    var before = await storedRenderer();
+    try {
+      await openFromCoregs();
+      check("choosing GSdx when it is missing opens the dialog", !!modal() && modal().textContent.indexOf(T("settings.gsdx_title")) >= 0, "no dialog");
+      check("nothing is stored while the dialog asks", (await storedRenderer()) === "coregs20", await storedRenderer());
+      if (!modal()) {
+        return;
+      }
+      buttons()[1].click();
+      await wait(450);
+      check("cancelling closes the dialog", !modal(), "still open");
+      check("cancelling goes back to CoreGS 2.0", selectorText("renderer") === T("choice.renderer.coregs20") && (await storedRenderer()) === "coregs20", selectorText("renderer"));
+      check("after cancelling the focus is on the renderer", document.activeElement === selectorNode("renderer"), "focus elsewhere");
+
+      await openFromCoregs();
+      GT4.ui.topDialog().back();
+      await wait(450);
+      check("Back also cancels", !modal() && selectorText("renderer") === T("choice.renderer.coregs20"), selectorText("renderer"));
+
+      await openFromCoregs();
+      buttons()[0].click();
+      await wait(100);
+      check("accepting shows the progress in the dialog", !!modal() && !modal().querySelector(".gsdx-progress").hidden && modal().querySelector(".gsdx-status").textContent !== "", "no progress");
+      root.GT4_MOCK.emit("gsdx-download", { step: "downloading", bytesDone: 24000000, bytesTotal: 48000000 });
+      await wait(50);
+      check("the dialog shows the download's figures", modal().querySelector(".gsdx-figures").textContent === T("setup.renderer_count", { done: "24.0 MB", total: "48.0 MB" }) && modal().querySelector(".bar i").style.width === "50%", modal().querySelector(".gsdx-figures").textContent);
+      GT4.ui.topDialog().back();
+      check("the download cannot be dismissed", !!modal(), "closed");
+      check("the choice waits for the install", (await storedRenderer()) === "coregs20", await storedRenderer());
+      download.resolve(null);
+      await wait(450);
+      check("the dialog closes by itself after the install", !modal(), "still open");
+      check("after the install GSdx is stored and shown", (await storedRenderer()) === "pcsx2" && selectorText("renderer") === T("app.gsdx_name"), selectorText("renderer"));
+
+      await openFromCoregs();
+      buttons()[0].click();
+      await wait(100);
+      download.reject("no internet");
+      await wait(150);
+      check("a failed download says so in the dialog", !!modal() && modal().querySelector(".modal-text").textContent.indexOf("no internet") >= 0, modal() ? modal().textContent : "closed");
+      buttons()[1].click();
+      await wait(450);
+      check("after a failed download CoreGS 2.0 stays", !modal() && selectorText("renderer") === T("choice.renderer.coregs20") && (await storedRenderer()) === "coregs20", selectorText("renderer"));
+
+      needed = false;
+      await openFromCoregs();
+      check("with GSdx installed there is no dialog, and the choice is stored", !modal() && (await storedRenderer()) === "pcsx2", "dialog or not stored");
+    } finally {
+      GT4.backend.call = real;
+      GT4.ui.topDialog() && GT4.ui.topDialog().close();
+      await real("set_setting", { id: "renderer", value: before });
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+    }
+  }
+
   // The live switch (Settings > General > Language): the whole UI changes at once, in both directions.
   async function languageSwitchChecks() {
     var before = GT4.i18n.current();
@@ -826,17 +1043,11 @@
     if (!select) {
       return;
     }
-    select.focus({ preventScroll: true });
-    select.click();
-    await wait(300);
-    var option = Array.prototype.filter.call(document.querySelectorAll(".option-list .option"), function (button) {
-      return button.textContent.indexOf(other === "pt-BR" ? "Portugu" : "English") >= 0;
-    })[0];
-    check("the Language list offers " + other, !!option, "no option");
-    if (option) {
-      option.click();
-      await wait(900);
-    }
+    var reached = await stepSelectorUntil("language", function () { return GT4.i18n.setting() === other; });
+    check("the Language selector offers " + other, reached, GT4.i18n.setting());
+    await wait(900);
+    var languageFocus = document.activeElement && document.activeElement.getAttribute("data-setting");
+    check("the focus stays on the Language selector after the switch", languageFocus === "language", "focus " + languageFocus);
     check("the page is in " + other + " after the choice (no restart)", GT4.i18n.current() === other &&
       document.documentElement.getAttribute("lang") === other, GT4.i18n.current());
     var sideGeneral = document.querySelector("nav.side [data-tab=\"general\"]");
@@ -921,19 +1132,10 @@
   }
 
   async function chooseChannel(value) {
-    var select = document.querySelector("[data-setting=\"update_channel\"]");
-    select.focus({ preventScroll: true });
-    select.click();
-    await wait(150);
     var wanted = T("choice.update_channel." + value);
-    var option = Array.prototype.filter.call(document.querySelectorAll(".modal .option-list .option"), function (button) {
-      return button.textContent.indexOf(wanted) === 0;
-    })[0];
-    if (option) {
-      option.click();
-    }
+    var reached = await stepSelectorUntil("update_channel", function () { return selectorText("update_channel") === wanted; });
     await wait(600);
-    return !!option;
+    return reached;
   }
 
   async function versionChecks() {
@@ -1067,11 +1269,11 @@
     await GT4.backend.call("set_setting", { id: "update_channel", value: "stable" });
   }
 
-  // TASK-114 rc6 (pt-BR owner screenshot): no dropdown value on General or Graphics wraps. A value is one line when it
-  // is nowrap and its box is no taller than its line height (app.css fixes the line height at 16 px). The Language
+  // TASK-114 rc6 (pt-BR owner screenshot): no option value on General or Graphics wraps. A value is one line when it
+  // is nowrap and its box is no taller than its line height (app.css fixes the line height). The Language
   // value is also measured with the longest text it can show, "Automático (Português (Brasil))", in place of its own.
   function selectValueInfo(select) {
-    var value = select.firstElementChild;
+    var value = select.querySelector(".selector-value") || select.firstElementChild;
     var style = getComputedStyle(value);
     return {
       text: value.textContent,
@@ -1097,14 +1299,14 @@
     for (var i = 0; i < tabs.length; i++) {
       await setHash("#/settings/" + tabs[i]);
       await wait(300);
-      var selects = Array.prototype.slice.call(document.querySelectorAll(".row .select"));
+      var selects = Array.prototype.slice.call(document.querySelectorAll(".row .select, .row .selector"));
       var problems = oneLineProblems(selects);
-      check(tabs[i] + " tab: every dropdown value is one line (" + selects.length + " dropdowns)",
-        selects.length > 0 && problems.length === 0, problems.join("; ") || "no dropdowns");
+      check(tabs[i] + " tab: every option value is one line (" + selects.length + " controls)",
+        selects.length > 0 && problems.length === 0, problems.join("; ") || "no controls");
       if (tabs[i] === "general") {
-        var language = document.querySelector(".row .select[data-setting=\"language\"]");
+        var language = document.querySelector(".row .selector[data-setting=\"language\"]");
         if (language) {
-          var span = language.firstElementChild;
+          var span = language.querySelector(".selector-value");
           var saved = span.textContent;
           span.textContent = T("choice.language.auto", { language: T("choice.language.pt-BR") });
           await wait(50);
@@ -1157,6 +1359,22 @@
       var copyBar = scratch.querySelector(".steps li .bar i");
       check("the copy step ends at a full bar after the page moved on to checking",
         !!copyBar && copyBar.style.width === "100%" && copyBar.style.transition === "none", copyBar ? copyBar.style.width + " " + copyBar.style.transition : "no bar");
+      // Owner, 2026-11-02: setup checks the graphics card and prepares CoreGS 2.0; GSdx only when the card needs it.
+      var lastStep = function () {
+        var rows = scratch.querySelectorAll(".steps li");
+        return rows[rows.length - 1].textContent;
+      };
+      current = { state: "checking", step: "renderer", progress: 0.5, bytes_done: 100, bytes_total: 200, renderer_step: "compiling", renderer_choice: "",
+        disc_name: "Gran Turismo 4 Spec II v1.10", problem: "", note: "", game: { id: "spec2", name: "Gran Turismo 4 Spec II" } };
+      await wait(900);
+      check("the last step counts the shaders while it prepares CoreGS 2.0",
+        lastStep().indexOf(T("setup.renderer_compiling")) >= 0 && lastStep().indexOf(T("setup.renderer_count", { done: 100, total: 200 })) >= 0, lastStep());
+      current = Object.assign({}, current, { state: "done", renderer_step: "done", renderer_choice: "coregs20" });
+      await wait(900);
+      check("the last step says CoreGS 2.0 is ready, with nothing about GSdx", lastStep().indexOf(T("setup.renderer_ready_coregs20")) >= 0 && lastStep().indexOf("GSdx") < 0, lastStep());
+      current = Object.assign({}, current, { renderer_choice: "gsdx_fallback" });
+      await wait(900);
+      check("the last step says why GSdx was needed", lastStep().indexOf(T("setup.renderer_ready_gsdx")) >= 0, lastStep());
     } finally {
       if (handle) {
         handle.destroy();
@@ -1221,10 +1439,13 @@
       await importEntryCheck();
       await libraryActionChecks();
       await valueChecks();
+      await rendererRowChecks();
+      await gsdxDialogChecks();
       await advancedSectionChecks();
       await controlsChecks();
       await gamesChecks();
       await achievementsChecks();
+      await shaderWindowChecks();
       await setupChecks();
       await introChecks();
       await versionChecks();

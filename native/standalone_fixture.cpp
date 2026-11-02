@@ -120,6 +120,8 @@ void check_game_ids_and_mode() {
   check(sa::game_for_executable("gt4vulkan.exe") && std::string(sa::game_for_executable("gt4vulkan.exe")->id) == "gt4", "gt4vulkan.exe is gt4");
   check(sa::game_for_executable("GT4Vulkan-Spec2.EXE") && std::string(sa::game_for_executable("GT4Vulkan-Spec2.EXE")->elf_name) == "SCUS_974.36",
         "gt4vulkan-spec2.exe is spec2, any case");
+  check(sa::game_for_executable("gt4.exe") && std::string(sa::game_for_executable("gt4.exe")->id) == "gt4", "a release's name of the game");
+  check(sa::game_for_executable("GT4-Spec2.exe") && std::string(sa::game_for_executable("GT4-Spec2.exe")->id) == "spec2", "a release's name of Spec II");
   check(!sa::game_for_executable("gt4vulkan_fixture.exe") && !sa::game_for_executable("gt4vulkan"), "other names are no game");
 
   const char *none[] = {"gt4vulkan.exe"};
@@ -198,6 +200,47 @@ void check_receipt() {
   check(parsed && parsed->image_file == "a b.iso" && parsed->image_size == 7 && parsed->elf_size == 3, "strings with keys and braces are skipped");
   check(!sa::parse_receipt("{\"image\":{\"file\":\"a\\u00e9.iso\",\"size_bytes\":1,\"modified_unix_nanos\":1},\"elf\":{\"size_bytes\":1}}"),
         "an escape a plain file name never has is refused");
+}
+
+void check_linked_image() {
+  // Decision 0075: the receipt names the image where the player keeps it; backslashes come escaped.
+  const std::string json =
+      "{\"image\":{\"file\":\"gt4.iso\",\"linked_path\":\"D:\\\\ISOs\\\\gt4.iso\",\"size_bytes\":7,\"modified_unix_nanos\":9},\"elf\":{\"size_bytes\":3}}";
+  const auto linked = sa::parse_receipt(json);
+  check(linked && linked->image_linked_path == "D:\\ISOs\\gt4.iso", "the receipt's link is read");
+  const auto copied = sa::parse_receipt(read_sample("prepare.json"));
+  check(copied && copied->image_linked_path.empty(), "a receipt from before the link has none, and uses its copy");
+
+  World world = ready_world();
+  const auto game_root = kInstall / "data" / "games" / "gt4";
+  world.file(game_root / "prepared" / "prepare.json", json);
+  world.file(game_root / "prepared" / "SCUS_973.28", "elf");
+  sa::Check why;
+  const auto layout = sa::find_layout(kInstall / "game" / "gt4vulkan.exe", "C:/Users/p/AppData/Local", "C:/Users/p/AppData/Roaming", world.access(), why);
+  check(layout.has_value(), "a layout for the linked image");
+  if (!layout) return;
+  fs::path disc, elf;
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "an image that is not there is reported");
+  check(disc == fs::path("D:\\ISOs\\gt4.iso"), "the game looks for it where the player keeps it");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 9);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None, "the linked image passes");
+  sa::Access with_short_names = world.access();
+  with_short_names.openable_path = [](const fs::path &) { return fs::path("D:\\ISOS~1\\GT4~1.ISO"); };
+  check(sa::check_game_files(*layout, with_short_names, disc, elf).problem == sa::Problem::None && disc == fs::path("D:\\ISOS~1\\GT4~1.ISO"),
+        "the game is given the name it can open");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 8, 9);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "a changed image does not");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 1500000009ull);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None, "a time a file system rounded is not a change");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 9000000009ull);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "a later time is");
+
+  // An image inside the launcher's folder is saved relative to it, so a portable folder can move with it.
+  world.file(game_root / "prepared" / "prepare.json",
+             "{\"image\":{\"file\":\"gt4.iso\",\"linked_path\":\"ISOs\\\\gt4.iso\",\"size_bytes\":7,\"modified_unix_nanos\":9},\"elf\":{\"size_bytes\":3}}");
+  world.file(kInstall / "ISOs" / "gt4.iso", "iso", 7, 9);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None && disc == kInstall / "ISOs\\gt4.iso",
+        "a relative link is found inside the install folder");
 }
 
 void check_game_files() {
@@ -280,7 +323,7 @@ void check_renderer() {
 void check_config() {
   const sa::Config sample = sa::parse_config(read_sample("game.ini"));
   check(sample.warnings.empty(), "the launcher's sample has no warning");
-  check(sample.values.size() == 7, "seven keys in the sample");
+  check(sample.values.size() == 6, "six keys in the sample");
   const sa::Environment environment = sa::config_environment(sample);
   check(has(environment, "GT4_FULLSCREEN", "1") && has(environment, "GT4_PRESENT_MODE", "fifo"), "fullscreen and present mode");
   check(has(environment, "GT4_MONITOR", "\\\\.\\DISPLAY2") && has(environment, "GT4_OUTPUT_SIZE", "3440x1440"), "monitor and output size");
@@ -362,6 +405,39 @@ void check_resolve() {
   check(lacks(resolved.set, "GT4_FULLSCREEN") && lacks(resolved.set, "GT4_FORCE_480P"), "a variable that is set is never overwritten");
   check(has(resolved.set, "GT4_PRESENT_MODE", "fifo"), "an empty variable counts as unset");
 
+  // CoreGS 2.0 chosen in game.ini: the game runs it with its variables, no GSdx files; a renderer named by hand still wins.
+  {
+    World chosen = ready_world();
+    sa::Inputs choice = inputs_for(*layout, nullptr);
+    choice.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_scale=4\nhw_performance=1\nhw_frame_skip=2\nhw_hud=1\nhw_textures=D:/T\nhw_adapter=Card\n");
+    check(choice.config->warnings.empty(), "the launcher's CoreGS 2.0 keys are accepted");
+    check(!sa::parse_config("renderer=donor\nhw_scale=13\nhw_performance=0\n").warnings.empty(), "other values are refused");
+    check(!sa::renderer_needed(choice, chosen.access()), "CoreGS 2.0 needs no GSdx files");
+    const sa::Resolved coregs = sa::resolve(choice, chosen.access());
+    check(!coregs.needs_renderer && has(coregs.set, "GT4_RENDERER", "hw") && has(coregs.set, "GT4_HW_CORE", "2") &&
+              has(coregs.set, "GT4_HW_SCALE", "4") && has(coregs.set, "GT4_CORE2_PERFORMANCE", "1") && has(coregs.set, "GT4_FRAME_SKIP_FORCE", "2") &&
+              has(coregs.set, "GT4_HW_HUD", "1") && has(coregs.set, "GT4_HW_TEXTURES", "D:/T") && has(coregs.set, "GT4_HW_ADAPTER", "Card"),
+          "game.ini's CoreGS 2.0 keys become its variables");
+    check(lacks(coregs.set, "PS2_GS") && lacks(coregs.set, "GT4_GS_PROCESS") && lacks(coregs.set, "GT4_GS_CONFIG"),
+          "nothing of GSdx goes with it");
+    check(has(coregs.set, "GT4_FORCE_480P", "1") && has(coregs.set, "GT4_FORCE_WIDESCREEN", "1"), "the fixed holds stay");
+    sa::Inputs fast = inputs_for(*layout, nullptr);
+    fast.config = sa::parse_config(std::string("present_mode=mailbox") + char(10) + "renderer=coregs20" + char(10) + "hw_present_mode=fifo" + char(10));
+    check(has(sa::resolve(fast, chosen.access()).set, "GT4_PRESENT_MODE", "fifo"), "a stored Fast vsync draws as On under CoreGS 2.0");
+    World named = ready_world();
+    named.environment["GT4_RENDERER"] = "pcsx2";
+    check(sa::renderer_needed(choice, named.access()), "GT4_RENDERER in the environment wins over game.ini");
+    World spec2_world = ready_world("spec2", "SCUS_974.36");
+    spec2_world.file(kInstall / "game" / "gt4vulkan-spec2.exe", "game");
+    const auto spec2_layout = sa::find_layout(kInstall / "game" / "gt4vulkan-spec2.exe", "", "", spec2_world.access(), why);
+    check(spec2_layout.has_value(), "the Spec II layout is found");
+    sa::Inputs spec2_choice = inputs_for(*spec2_layout, nullptr);
+    spec2_choice.config = choice.config;
+    const sa::Resolved spec2_coregs = sa::resolve(spec2_choice, spec2_world.access());
+    check(!spec2_coregs.needs_renderer && has(spec2_coregs.set, "GT4_RENDERER", "hw") && has(spec2_coregs.set, "GT4_HW_SCALE", "4"),
+          "Spec II runs CoreGS 2.0 from the same choice");
+  }
+
   // Another renderer, or a GS process given by hand: the installed one is not needed.
   World donor = ready_world();
   donor.environment["GT4_RENDERER"] = "donor";
@@ -413,6 +489,7 @@ int main() {
   check_game_ids_and_mode();
   check_layout();
   check_receipt();
+  check_linked_image();
   check_game_files();
   check_renderer();
   check_config();

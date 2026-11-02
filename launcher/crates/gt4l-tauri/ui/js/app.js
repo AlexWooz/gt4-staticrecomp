@@ -72,6 +72,39 @@
   GT4.backend.listen("update-finished", function (payload) {
     GT4.ui.toast(payload && payload.message ? payload.message : GT4.t("app.update_finished"), !(payload && payload.ok));
   });
+  // IN-507: Play found shaders to compile. The window stays until Play goes on (GT4.closeShaderWindow, js/pages/home.js).
+  var shaderWindow = null;
+  var shaderBar = null;
+  var shaderCount = null;
+  GT4.closeShaderWindow = function () {
+    if (shaderWindow) {
+      shaderWindow.close();
+      shaderWindow = null;
+    }
+  };
+  GT4.backend.listen("shaders-progress", function (payload) {
+    var done = (payload && payload.done) || 0;
+    var total = (payload && payload.total) || 0;
+    if (!shaderWindow) {
+      shaderBar = GT4.ui.h("div", { class: "shader-bar-fill" });
+      shaderCount = GT4.ui.h("p", { class: "shader-count" });
+      shaderWindow = GT4.ui.openDialog({
+        title: GT4.t("shaders.title"),
+        text: GT4.t("shaders.text"),
+        body: GT4.ui.h("div", {}, [GT4.ui.h("div", { class: "shader-bar" }, [shaderBar]), shaderCount]),
+        dismissable: false,
+        buttons: [{
+          label: GT4.t("common.cancel"),
+          closes: false,
+          run: function () {
+            GT4.backend.call("cancel_shader_prepare").then(null, function () {});
+          }
+        }]
+      });
+    }
+    shaderBar.style.width = (total > 0 ? Math.round(done * 100 / total) : 0) + "%";
+    shaderCount.textContent = GT4.t("shaders.count", { done: done, total: total });
+  });
   GT4.backend.listen("renderer-progress", function (payload) {
     // The setup page draws its own renderer row; these toasts are for the retry at a later launch and updates.
     if (parseRoute().name === "setup") {

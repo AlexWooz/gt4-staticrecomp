@@ -53,6 +53,9 @@ void GifScanner::scan(const std::uint8_t *data, std::uint32_t qwc, PathCounts &c
       if (!nreg_) nreg_ = 16;
       regs_ = load64(qword + 8);
       packed_reg_ = 0;
+      // IN-469: only A+D descriptors are looked at, so the data of a tag without one is skipped in one step.
+      packed_has_ad_ = false;
+      for (std::uint32_t r = 0; r < nreg_; ++r) packed_has_ad_ = packed_has_ad_ || ((regs_ >> (r * 4u)) & 0xFu) == 0xEu;
       ++index;
       if (!nloop) continue;
       ++counts.tags;
@@ -61,7 +64,13 @@ void GifScanner::scan(const std::uint8_t *data, std::uint32_t qwc, PathCounts &c
       active_ = true;
       continue;
     }
-    if (flg_ == 0) {
+    if (flg_ == 0 && !packed_has_ad_) {
+      const std::uint64_t take = std::min<std::uint64_t>(left_, qwc - index);
+      index += static_cast<std::uint32_t>(take);
+      left_ -= take;
+      packed_reg_ = static_cast<std::uint32_t>((packed_reg_ + take) % nreg_);
+      if (!left_) active_ = false;
+    } else if (flg_ == 0) {
       const std::uint32_t descriptor = static_cast<std::uint32_t>(regs_ >> (packed_reg_ * 4u)) & 0xFu;
       if (descriptor == 0xEu) {
         const std::uint8_t address = qword[8] & 0x7Fu;
