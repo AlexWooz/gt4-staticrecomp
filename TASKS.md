@@ -1692,7 +1692,7 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
-**Next:** the owner's test of candidate 374. D1 is measured and not built (IN-523); the waits and the input lag are in 374 (IN-521, IN-522). The darker road in Performance Mode stays. Open items are listed at the top of `docs/STATUS.md`.
+**State 2026-11-02, published:** 🧪 in the 1.3.0-rc8 pre-release (candidate 382). The owner's laptop test closes the beta gate: on the HD 620, 1x at 60 FPS or 2x at 30 FPS in races; the showroom at 2x (about 30 FPS) is a known issue. D1 is measured and not built (IN-523). The colour filter stays in Performance Mode (IN-505 left out). For 2.0.0: fractional scales, GPU use and power beside GSdx. Next (owner): CPU optimisation, TASK-134, for rc9.
 
 **State 2026-11-02, end:** 🧪 candidate 376 (not uploaded), branch `task/082-coregs2-frame-skip`: a frame rate choice, 60 or 30 in races, replaces the option of 375 (IN-525), 60 by default: 12x 100% speed at 30 frames per second, intervals 33.0-33.7 ms. Unlocked FPS paused, `docs/TASK-082-UNLOCKED-FPS-STATE.md`. Next: CPU optimisation with another agent (TASK-134).
 
@@ -2634,6 +2634,7 @@ Test method: one fixed headless Arcade night race on the desktop (Clubman Stage 
 replay for the varied cameras; B-Spec exists only in GT Mode, which the owner ruled out); laptop runs by the owner with F7/F8 on builds the agent copies to the laptop's
 portable folder over the network, logs collected the same way.
 2026-10-29: branch synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934, program files identical); the
+**Owner, 2026-11-02:** CoreGS 2.0 is done for this step: rc8 is published and this branch receives it, so P0 and P1 can start. They are rc9. Laptop numbers on candidate 382: `docs/hw-renderer-spec/CORE2-HANDOVER-TASK134.md`.
 RetroAchievements per-frame hook added to the study (section 3.8, P1g). Next: P0 (measurement) and P1 (host quick wins) on this branch once the desktop is free; each later step gets its own
 task or branch as it starts.
 
@@ -2646,10 +2647,13 @@ rate; FPS with its minimum and maximum; frame time; CPU and GPU use of the game;
 reference is the look of the macOS Metal HUD (screenshots only).
 Acceptance: off by default, launcher rows under CoreGS 2.0, overhead measured, the identity gates unchanged with it off, owner
 test. Updating the GSdx overlay to match is separate work in the fork, for a PCSX2-tainted agent.
-State (2026-11-02): candidate 378, off by default; 26.6 us per presentation, no measurable cost on the graphics thread (IN-526, ledger). Waits for the owner's test.
+State (2026-11-02): candidate 378, off by default; 26.6 us per presentation, no measurable cost on the graphics thread (IN-526, ledger). Published in 1.3.0-rc8.
 
 ### TASK-136 — Simple onboarding, GSdx optional
 Decision 0074. Owner, 2026-11-02: no GSdx download on a first install when the PC runs CoreGS 2.0; automatic, nothing to choose. Acceptance: a new install on a capable PC ends on CoreGS 2.0 with no download; a PC that cannot run it ends on GSdx, downloaded, and is told why; a player on GSdx or with a stored choice sees no change; owner test.
 
+State (2026-11-02): published in 1.3.0-rc8. A whole setup on a capable PC passed in the owner's onboarding; a PC without Vulkan is not verified.
+
 ### TASK-137 — Link the disc image
 Decision 0075. Owner, 2026-11-02, asked for by players and needed for Android: one image for this and an emulator. Acceptance: setup writes no copy of the image; an image that moved or changed asks to be chosen again, and choosing it is all it takes; an install with a copy stays installed; accented paths work; owner test.
+State (2026-11-02): TASK-137 and TASK-138 (a portable folder carries its image, accented paths, the GSdx fallback; decision 0075) are published in 1.3.0-rc8. Settings > Games shows the image's size and location.

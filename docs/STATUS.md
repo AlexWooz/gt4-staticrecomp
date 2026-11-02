@@ -1,6 +1,6 @@
 # Current Status
 
-## 1.3.0-rc7 and 1.3.0-rc8 for publication; the laptop test passed by the owner (2026-11-02)
+## 1.3.0-rc7 and 1.3.0-rc8 published as pre-releases; the laptop test passed by the owner (2026-11-02)
 
 **The owner's test on the i5-7200U / HD 620 closes the beta gate:** "2x 720p locked at 30 FPS was a really nice experience". A player on this card chooses 1x at 60 FPS or 2x at 30 FPS. Full speed at 2x and 60 FPS is no longer the gate. Sessions on the notebook, Spec II, candidate 382, table in `docs/release-notes/1.3.0-rc8.md`; every interval is the owner's own F7/F8, so the stretches differ.
 
@@ -8,6 +8,12 @@
 - **Known issue, left as it is (owner):** at 2x on the HD 620, the showroom runs at about 30 FPS with the card at 100%, because menus stay at 60 and the 30 FPS choice applies to races only.
 - **The notes:** the "about half the processor of GSdx" claim is removed, since nothing measured it for the whole process. Discord Rich Presence, on by default since rc7, is now named in the notes: automated tests only, not validated with the real Discord client.
 - **Later (owner), no work now:** an experimental unlocked frame rate up to 60 that skips frames when it falls (`docs/TASK-082-UNLOCKED-FPS-STATE.md`).
+- **Published on the owner's word:**
+  - `v1.3.0-rc7` at `c21e934c`, launcher rebuilt from that commit with the game of `private/slice337-dist-130-rc7` (pins 335 and 336), output `private/release-130-rc7-out`: installer `94cffac0...`, zip `b1f8ca47...`.
+  - `v1.3.0-rc8` at `31753907`, candidate 382 with the final notes, output `private/release-130-rc8w-out`: installer `189ab428...`, zip `73deb5e9...`. It replaces the old draft of candidate 354. The owner's desktop and notebook have this launcher's previous build, which differs only in the notes.
+  - `v1.2.5` stays Latest.
+- **Checks before each:** installer and zip against their sources by hash; locale keys and placeholders equal; `dev/focus-check.html` in both languages with no failure (rc7 215 and 222 passed; rc8 258 and 265); launcher `cargo test`. On rc7, a clean checkout fails `gs_golden` and `launch_contract` because `tests/fixtures/gs` is stored with LF and the tests compare CRLF; with those fixtures in CRLF both pass, and the file is not in the program. This branch's tests normalise both sides.
+- **Not verified:** rc7 and rc8 installed from the published assets; rc7's launcher in a real session (its game files are the ones of the earlier kit); Discord Rich Presence with the real client; GSdx in an accented folder.
 - **Next (owner):** rc9 is the CPU optimisation (TASK-134), on the branch that receives this work.
 
 ## TASK-138: a portable folder carries its image, accented paths, the GSdx fallback; candidate 382 (2026-11-02)
