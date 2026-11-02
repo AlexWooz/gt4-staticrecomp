@@ -13,7 +13,7 @@ Branch `task/138-relative-image-link`, on top of TASK-137. Decision 0075. Not me
 - **Checks:** ctest 173 passed; launcher `cargo test` passed; `dev/focus-check.html` in both languages; frames 30 of 30 equal to 381; real setup, then the folder renamed and moved, then a direct start: plain name, and `Usu\u00e1rios\\Jo\u00e3o\\Pendrive` with the shader cache and textures, on CoreGS 2.0.
 - **Not verified, open:** GSdx in a portable folder started directly exits with code 2 during the handshake, with a plain name and with an accent, and the game of rc7 does the same there, so this work did not cause it. A TASK-027 agent may not read `gt4-gs` logs or the fork. So GSdx in an accented folder is **not confirmed**, and needs the owner's test through the launcher, or a PCSX2-tainted agent.
 - **Installed (owner's word, 2026-11-02):** the owner's desktop through the installer's update mode and the notebook's portable copy, both candidate 382. On the desktop the owner's onboarding had set up Spec II on the earlier candidate 381: no copy of the image and no GSdx download, with CoreGS 2.0 as the renderer, and its absolute link stays valid. The notebook keeps its copies of the images and its setup.
-- **Settings > Games:** names the disc image's size and location; a launcher-only change on top of candidate 382, same game executables (package `private/release-130-rc8v-out`).
+- **Settings > Games:** names the disc image's size and location; a launcher-only change on top of candidate 382, same game executables (package `private/release-130-rc8v-out`). Installed on the owner's desktop and the notebook's portable copy (owner's word, 2026-11-02).
 
 ## TASK-137: the launcher links the disc image, candidate 381 (2026-11-02)
 
