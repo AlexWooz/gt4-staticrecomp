@@ -302,6 +302,7 @@
       var context = {
         table: { rows: state.analog },
         content: panel,
+        selfDrawn: {},
         refresh: function (id) { return load(id); }
       };
       [["l2", ["l2_deadzone", "l2_curve"]], ["r2", ["r2_deadzone", "r2_curve"]], ["lstick", ["lstick_deadzone"]],

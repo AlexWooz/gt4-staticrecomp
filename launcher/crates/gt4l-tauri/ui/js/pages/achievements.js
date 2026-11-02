@@ -43,19 +43,18 @@
   }
 
   function optionToggleRow(label, helpText, checked, disabled, onToggle) {
-    var toggleBtn = h("button", {
-      class: "toggle" + (checked ? " on" : "") + (disabled ? " disabled" : ""),
-      type: "button",
-      role: "switch",
-      "aria-checked": String(!!checked),
-      "aria-label": label,
+    // The option control of the settings pages (settings.js): the value between two arrows, in an endless loop.
+    var toggleBtn = GT4.optionSelector({
+      id: "achievements-" + label,
+      label: label,
+      options: [
+        { value: false, text: GT4.t("settings.off") },
+        { value: true, text: GT4.t("settings.on") }
+      ],
+      current: !!checked,
       disabled: !!disabled,
-      on: {
-        click: function () {
-          if (!disabled) {
-            onToggle(!checked);
-          }
-        }
+      onChange: function (value) {
+        onToggle(value);
       }
     });
     return {

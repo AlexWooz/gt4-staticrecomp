@@ -14,7 +14,7 @@
  *   ?scenario=render    only sets the state for docs/launcher/shots/graphics-sections.png (pad focus on Render scale,
  *                       the Graphics section in view)
  *   ?scenario=general, ?scenario=graphics  only open that Settings tab (screenshots at 1280x720; no checks run)
- *   Dropdown values (rc6): no .row .select value on General or Graphics wraps, in every language
+ *   Option values (rc6): no value of a .row selector or dropdown on General or Graphics wraps, in every language
  */
 (function (root) {
   "use strict";
@@ -257,26 +257,17 @@
     }
 
     await setHash("#/settings/graphics");
-    var select = document.querySelector("[data-section=\"display\"] button.select[data-setting=\"resolution\"]");
+    var select = document.querySelector("[data-section=\"display\"] .selector[data-setting=\"resolution\"]");
     check("resolution is in the Display section of Graphics", !!select, "no control");
     check("monitor is in the Display section of Graphics",
-      !!document.querySelector("[data-section=\"display\"] button.select[data-setting=\"monitor\"]"), "no control");
+      !!document.querySelector("[data-section=\"display\"] .selector[data-setting=\"monitor\"]"), "no control");
     if (!select) {
       return;
     }
-    // A pad A (or a click) comes with focus on the control, as in the app.
-    select.focus({ preventScroll: true });
-    select.click();
-    await wait(150);
-    var option = Array.prototype.filter.call(document.querySelectorAll(".modal .option"), function (item) {
-      return item.textContent.indexOf("1280x720") === 0;
-    })[0];
-    check("the resolution list offers the monitor's modes", !!option, "no 1280x720 option");
-    if (option) {
-      option.click();
-      await wait(300);
-    }
-    var label = document.querySelector("button.select[data-setting=\"resolution\"] span");
+    var reached = await stepSelectorUntil("resolution", function () { return selectorText("resolution") === "1280x720"; });
+    check("the resolution selector goes through the monitor's modes", reached, selectorText("resolution"));
+    await wait(300);
+    var label = document.querySelector(".selector[data-setting=\"resolution\"] .selector-value:not(.is-leaving)");
     check("the resolution row shows 1280x720 after the change", !!label && label.textContent === "1280x720", label ? label.textContent : "none");
     var table = await GT4.backend.call("get_settings_table");
     var row = GT4.settingsModel.findRow(table, "resolution");
@@ -289,16 +280,16 @@
     await GT4.backend.call("set_setting", { id: "resolution", value: "1920x1080" });
     await setHash("#/settings/graphics");
 
-    var toggle = document.querySelector("button.toggle[data-setting=\"fxaa\"]");
-    check("anti-aliasing is a toggle on Graphics", !!toggle, "no control");
+    var toggle = selectorNode("fxaa");
+    check("anti-aliasing is an Off and On selector on Graphics", !!toggle, "no control");
     if (toggle) {
       toggle.click();
       await wait(300);
-      var on = document.querySelector("button.toggle[data-setting=\"fxaa\"]");
-      check("the toggle shows on after the change", !!on && on.getAttribute("aria-checked") === "true", on ? on.getAttribute("aria-checked") : "none");
+      check("the selector shows On after the change", selectorText("fxaa") === T("settings.on"), selectorText("fxaa"));
       var fxaa = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "fxaa");
-      check("the table holds the toggle value", !!fxaa && fxaa.current === true, fxaa ? String(fxaa.current) : "no row");
+      check("the table holds the selector's value", !!fxaa && fxaa.current === true, fxaa ? String(fxaa.current) : "no row");
     }
+    await selectorLoopChecks();
 
     var slider = document.querySelector("input[type=range][data-setting=\"cas_sharpness\"]");
     check("sharpening amount is a slider on Graphics", !!slider, "no control");
@@ -646,7 +637,7 @@
     page = document.querySelector(".ra-page");
     check("Achievements paints the signed-in account", page.textContent.indexOf("TestDriver") >= 0, "no account name");
     check("Achievements paints the synthetic progress list", page.querySelectorAll(".ra-ach-row").length === 3, "missing sample rows");
-    var hcBtn = page.querySelector("button[aria-label=\"" + T("ra.opt_hardcore") + "\"]");
+    var hcBtn = page.querySelector(".selector[aria-label=\"" + T("ra.opt_hardcore") + "\"]");
     if (hcBtn) {
       hcBtn.click();
       await wait(100);
@@ -872,6 +863,87 @@
       GT4.i18n.resolve("pt-BR", "en-US") === "pt-BR", "rule");
   }
 
+  // The option selector (owner, 2026-11-02): no start or end, the arrows step both ways, and a step that changes the tab's rows
+  // animates them and does not stop the value's slide.
+  function selectorNode(id) {
+    return document.querySelector(".selector[data-setting=\"" + id + "\"]");
+  }
+
+  function selectorText(id) {
+    var node = selectorNode(id);
+    return node ? node.getAttribute("aria-valuetext") : null;
+  }
+
+  async function stepSelector(id, direction) {
+    var node = selectorNode(id);
+    node.focus({ preventScroll: true });
+    node.dispatchEvent(new CustomEvent("gt4-adjust", { detail: { delta: direction } }));
+    await wait(150);
+  }
+
+  async function stepSelectorUntil(id, reached) {
+    for (var count = 0; count < 24; count++) {
+      if (reached()) {
+        return true;
+      }
+      if (!selectorNode(id)) {
+        return false;
+      }
+      await stepSelector(id, 1);
+    }
+    return reached();
+  }
+
+  async function selectorLoopChecks() {
+    var vsync = selectorNode("vsync");
+    vsync.click();
+    await wait(200);
+    check("a step that moves nothing else keeps the control on screen", selectorNode("vsync") === vsync, "the tab was drawn again");
+    vsync.click();
+    await wait(200);
+
+    var api = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "graphics_api");
+    var choices = api.values.filter(function (option) { return !option.disabled; }).length;
+    var first = selectorText("graphics_api");
+    for (var count = 0; count < choices; count++) {
+      await stepSelector("graphics_api", 1);
+    }
+    check("going right through every option comes back to the first", choices > 1 && selectorText("graphics_api") === first,
+      selectorText("graphics_api") + " after " + choices + " steps");
+    await stepSelector("graphics_api", -1);
+    var last = selectorText("graphics_api");
+    check("going left from the first option reaches the last", last !== first, last);
+    selectorNode("graphics_api").querySelectorAll(".selector-arrow")[1].click();
+    await wait(150);
+    check("the right arrow steps the selector", selectorText("graphics_api") === first, selectorText("graphics_api"));
+    selectorNode("graphics_api").querySelectorAll(".selector-arrow")[0].click();
+    await wait(150);
+    check("the left arrow steps the selector", selectorText("graphics_api") === last, selectorText("graphics_api"));
+    selectorNode("graphics_api").querySelectorAll(".selector-arrow")[1].click();
+    await wait(150);
+
+    var renderer = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "renderer").current;
+    await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+    selectorNode("renderer").focus({ preventScroll: true });
+    selectorNode("renderer").dispatchEvent(new CustomEvent("gt4-adjust", { detail: { delta: 1 } }));
+    await wait(120);
+    var drawn = selectorNode("renderer");
+    check("a renderer step draws its own rows", !!selectorNode("frame_rate") && !selectorNode("graphics_api"), "rows not changed");
+    check("a renderer step keeps the value's slide going", !!drawn && drawn.querySelectorAll(".selector-value.is-leaving").length === 1,
+      drawn ? drawn.innerHTML.slice(0, 120) : "no control");
+    var newRow = document.querySelector("[data-row=\"frame_rate\"]");
+    check("a new row comes in with an animation", !!newRow && newRow.getAnimations().length > 0, "no animation");
+    check("a row going out fades over the page", document.querySelectorAll(".row-departing").length > 0, "no departing row");
+    check("the focus stays on the renderer through the redraw", document.activeElement === drawn, "focus elsewhere");
+    await wait(500);
+    check("the rows that went out are gone after the animation", document.querySelectorAll(".row-departing").length === 0, "left behind");
+    await GT4.backend.call("set_setting", { id: "renderer", value: renderer });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+  }
+
   // The live switch (Settings > General > Language): the whole UI changes at once, in both directions.
   async function languageSwitchChecks() {
     var before = GT4.i18n.current();
@@ -884,17 +956,11 @@
     if (!select) {
       return;
     }
-    select.focus({ preventScroll: true });
-    select.click();
-    await wait(300);
-    var option = Array.prototype.filter.call(document.querySelectorAll(".option-list .option"), function (button) {
-      return button.textContent.indexOf(other === "pt-BR" ? "Portugu" : "English") >= 0;
-    })[0];
-    check("the Language list offers " + other, !!option, "no option");
-    if (option) {
-      option.click();
-      await wait(900);
-    }
+    var reached = await stepSelectorUntil("language", function () { return GT4.i18n.setting() === other; });
+    check("the Language selector offers " + other, reached, GT4.i18n.setting());
+    await wait(900);
+    var languageFocus = document.activeElement && document.activeElement.getAttribute("data-setting");
+    check("the focus stays on the Language selector after the switch", languageFocus === "language", "focus " + languageFocus);
     check("the page is in " + other + " after the choice (no restart)", GT4.i18n.current() === other &&
       document.documentElement.getAttribute("lang") === other, GT4.i18n.current());
     var sideGeneral = document.querySelector("nav.side [data-tab=\"general\"]");
@@ -979,19 +1045,10 @@
   }
 
   async function chooseChannel(value) {
-    var select = document.querySelector("[data-setting=\"update_channel\"]");
-    select.focus({ preventScroll: true });
-    select.click();
-    await wait(150);
     var wanted = T("choice.update_channel." + value);
-    var option = Array.prototype.filter.call(document.querySelectorAll(".modal .option-list .option"), function (button) {
-      return button.textContent.indexOf(wanted) === 0;
-    })[0];
-    if (option) {
-      option.click();
-    }
+    var reached = await stepSelectorUntil("update_channel", function () { return selectorText("update_channel") === wanted; });
     await wait(600);
-    return !!option;
+    return reached;
   }
 
   async function versionChecks() {
@@ -1125,11 +1182,11 @@
     await GT4.backend.call("set_setting", { id: "update_channel", value: "stable" });
   }
 
-  // TASK-114 rc6 (pt-BR owner screenshot): no dropdown value on General or Graphics wraps. A value is one line when it
-  // is nowrap and its box is no taller than its line height (app.css fixes the line height at 16 px). The Language
+  // TASK-114 rc6 (pt-BR owner screenshot): no option value on General or Graphics wraps. A value is one line when it
+  // is nowrap and its box is no taller than its line height (app.css fixes the line height). The Language
   // value is also measured with the longest text it can show, "Automático (Português (Brasil))", in place of its own.
   function selectValueInfo(select) {
-    var value = select.firstElementChild;
+    var value = select.querySelector(".selector-value") || select.firstElementChild;
     var style = getComputedStyle(value);
     return {
       text: value.textContent,
@@ -1155,14 +1212,14 @@
     for (var i = 0; i < tabs.length; i++) {
       await setHash("#/settings/" + tabs[i]);
       await wait(300);
-      var selects = Array.prototype.slice.call(document.querySelectorAll(".row .select"));
+      var selects = Array.prototype.slice.call(document.querySelectorAll(".row .select, .row .selector"));
       var problems = oneLineProblems(selects);
-      check(tabs[i] + " tab: every dropdown value is one line (" + selects.length + " dropdowns)",
-        selects.length > 0 && problems.length === 0, problems.join("; ") || "no dropdowns");
+      check(tabs[i] + " tab: every option value is one line (" + selects.length + " controls)",
+        selects.length > 0 && problems.length === 0, problems.join("; ") || "no controls");
       if (tabs[i] === "general") {
-        var language = document.querySelector(".row .select[data-setting=\"language\"]");
+        var language = document.querySelector(".row .selector[data-setting=\"language\"]");
         if (language) {
-          var span = language.firstElementChild;
+          var span = language.querySelector(".selector-value");
           var saved = span.textContent;
           span.textContent = T("choice.language.auto", { language: T("choice.language.pt-BR") });
           await wait(50);

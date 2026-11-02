@@ -165,6 +165,8 @@
   "setting.renderer.help": "O GSdx desenha o jogo na sua placa de vídeo, em processo próprio; é o renderizador padrão. O CoreGS 2.0 é o nosso próprio renderizador, em beta: usa bem menos processador.",
   "choice.renderer.coregs20": "CoreGS 2.0 (beta)",
   "setting.vsync.help_coregs20": "Ligado mantém o movimento suave, sem rasgos na imagem. Desligado reduz a latência e pode rasgar a imagem.",
+  "settings.off": "Desligado",
+  "settings.on": "Ligado",
   "setting.frame_rate.label": "Taxa de quadros (experimental)",
   "setting.frame_rate.help": "O padrão é 60 FPS. O modo 30 FPS é para máquinas mais fracas e ainda é experimental: as corridas desenham 30 quadros por segundo, com o jogo em velocidade total e a mesma física. Os menus continuam a 60.",
   "choice.frame_rate.60": "60 FPS",

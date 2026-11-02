@@ -165,6 +165,8 @@
   "setting.renderer.help": "GSdx draws the game on your GPU in its own process; it is the default renderer. CoreGS 2.0 is our own renderer, in beta: it uses much less processor.",
   "choice.renderer.coregs20": "CoreGS 2.0 (beta)",
   "setting.vsync.help_coregs20": "On keeps motion smooth with no tearing. Off lowers latency and may tear.",
+  "settings.off": "Off",
+  "settings.on": "On",
   "setting.frame_rate.label": "Frame rate (experimental)",
   "setting.frame_rate.help": "60 FPS is the default. The 30 FPS mode is for weaker PCs and is still experimental: races draw 30 frames per second, with the game at full speed and the same physics. Menus stay at 60.",
   "choice.frame_rate.60": "60 FPS",

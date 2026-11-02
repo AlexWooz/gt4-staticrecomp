@@ -117,6 +117,7 @@ Settings row (`rows[]` in the table):
   (`233` reads "2.33:1").
 - dropdown values: `[{value, label, disabled?, note?}]`; disabled entries are greyed and not selectable.
 - toggle values: `null`; `current` is a bool.
+- The UI draws both as the same option selector (owner, 2026-11-02; `optionSelector` in `js/pages/settings.js`): the value between two arrows, in an endless loop. Only the General tab's Version row keeps its list dialog.
 - The Controls analog rows use the same row shape (`group: "controls"`). Their ids are `l2_deadzone`, `l2_curve`, `r2_deadzone`, `r2_curve`, `lstick_deadzone` and `rstick_deadzone` (percent of travel, 0-95), and they are written with `set_setting`. A trigger row tunes the trigger source of that button (`deadzone=`/`curve=` options); a stick row writes `deadzone=` on both axis sources of the stick.
 
 Pad events (from the Rust pad service, `src/pad_service.rs`, SDL3; read in `js/nav.js` and `js/pages/controls.js`):
@@ -154,8 +155,8 @@ Focus moves spatially (nearest element in the pressed direction; sideways offset
 |---|---|---|---|---|---|---|---|
 | Setup | primary button (Choose disc image / Choose another file / Play) | Cancel while copying or checking; Home when done | none | none | none | none | none |
 | Home | Play | none | none | Settings | Play | none | none |
-| Settings: Graphics (with its Advanced section) | activate (dropdown opens its list) | Back to Home (closes a tip or a dialog first) | none | Reset to defaults (confirm) | none | previous / next tab | adjust slider or dropdown |
-| Settings: Display | activate (dropdown opens its list) | Back to Home (closes a tip or a dialog first) | none | none | none | previous / next tab | adjust slider or dropdown |
+| Settings: Graphics (with its Advanced section) | activate (an option selector goes to its next value) | Back to Home (closes a tip or a dialog first) | none | Reset to defaults (confirm) | none | previous / next tab | adjust slider or dropdown |
+| Settings: Display | activate (an option selector goes to its next value) | Back to Home (closes a tip or a dialog first) | none | none | none | previous / next tab | adjust slider or dropdown |
 | Settings: About | activate (log folder) | Back to Home | none | none | none | tabs | none |
 | Saves | select / make active | Back | Import | Make active | none | tabs | none |
 | Replays | none | Back | Import | Delete (confirm) | none | tabs | none |
