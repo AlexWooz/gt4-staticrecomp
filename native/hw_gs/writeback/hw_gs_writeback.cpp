@@ -3276,6 +3276,10 @@ FrameOutput Renderer::Compose(ComposeKind kind) {
     return out;
 }
 
+void Renderer::SetAgeTargets(bool age) {
+    if (core2_) core2_->SetAgeTargets(age);
+}
+
 void Renderer::SetDisplayField(bool odd) {
     if (core2_) core2_->SetDisplayField(odd);
     impl_->oddField_ = odd;

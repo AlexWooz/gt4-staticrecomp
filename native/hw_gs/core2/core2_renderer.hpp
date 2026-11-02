@@ -125,6 +125,7 @@ public:
     bool ReadGpuFrame(const writeback::GpuFrame &frame, std::vector<std::uint32_t> &pixels);
     void ComposeFrame(writeback::FrameOutput &out);
     void SetDisplayField(bool odd);
+    void SetAgeTargets(bool age);
     bool DisplayField() const;
     void SetOutputSettings(const writeback::OutputSettings &settings);
     void SetFxaa(bool enabled);  // IN-405: 13.5 FXAA of the presented frame

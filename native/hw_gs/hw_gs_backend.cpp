@@ -1397,6 +1397,10 @@ void Backend::set_display_field(bool odd) {
   if (impl_->renderer) impl_->renderer->SetDisplayField(odd);
 }
 
+void Backend::set_age_targets(bool age) {
+  if (impl_->renderer) impl_->renderer->SetAgeTargets(age);
+}
+
 void Backend::wait_idle() {
   if (impl_->device) vkDeviceWaitIdle(impl_->device);
 }

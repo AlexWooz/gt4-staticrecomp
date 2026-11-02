@@ -20,6 +20,7 @@
 // race: the race clock must rise by one step per frame for a second; pause, menus and accelerated time close that gate at once.
 // GT4_FRAME_SKIP_LOG=<csv>: one row per frame, for scripts/coregs2_bench/frame_sheet.py.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -28,24 +29,62 @@
 
 namespace gt4::frame_skip {
 
-// Whether to leave out the next frame's drawing, from how far behind the host is. Pure, so the fixture can drive it.
+// Whether to leave out the next frame's drawing. Pure, so the fixture can drive it.
+//
+// Reacting to how late the last frame was overshoots: the GS worker is still on the frames before a frame left out when the next
+// decision comes, and it swung between too many left out and too late. So once the host has fallen behind, this works from what a
+// drawn frame costs, and spends the time that goes by on the frames it can pay for: at 21 ms a frame, three drawn and one left out,
+// evenly. Without a lasting shortfall it does nothing: a few frames over budget come back by themselves, and at 60 frames per second
+// a frame left out shows more than a frame a little late.
 class Policy {
 public:
-  static constexpr std::int32_t kLateUs = 12000;  // behind the pacer's grid by this much after the last frame
-  static constexpr std::size_t kQueuedFrames = 2;  // the GS worker this many VBlanks behind: the GPU is what is late
+  static constexpr std::int32_t kLateUs = 33000;   // behind by this much: the shortfall is real
+  static constexpr std::int32_t kCalmUs = 4000;    // back on time, and
+  static constexpr int kCalmFrames = 120;          // for this long with frames within budget: the shortfall is over
+  static constexpr std::int32_t kFrameUs = 16667;
   static constexpr int kMaxRun = 2;  // at least 20 frames per second; below that the game slows down instead
   static constexpr std::int32_t kNoSlack = INT32_MIN;
 
-  // `slackUs`: time left before the VBlank was due (negative: late), kNoSlack without a pacer.
-  bool decide(std::int32_t slackUs, std::size_t gsVsyncsQueued) {
-    const bool late = slackUs != kNoSlack && slackUs < -kLateUs;
-    const bool skip = (late || gsVsyncsQueued >= kQueuedFrames) && run_ < kMaxRun;
-    run_ = skip ? run_ + 1 : 0;
-    return skip;
+  // `slackUs`: time the EE had left before the VBlank was due (negative: late), kNoSlack without a pacer. `gsLateUs`: how long after
+  // the next VBlank was due the GS worker finished the last. They add up: when the GS worker is behind enough, the EE waits for it,
+  // and a frame that waited starts late. `costUs`: what a drawn frame takes, on the slowest thread.
+  bool decide(std::int32_t slackUs, std::int32_t gsLateUs, std::int32_t costUs) {
+    if (slackUs == kNoSlack) return false;
+    const std::int64_t behind = std::int64_t{slackUs < 0 ? -slackUs : 0} + (gsLateUs > 0 ? gsLateUs : 0);
+    if (!short_) {
+      if (behind <= kLateUs) return false;
+      short_ = true;
+      credit_ = 0;
+      calm_ = 0;
+    } else if (behind < kCalmUs && costUs < kFrameUs) {
+      if (++calm_ >= kCalmFrames) {
+        short_ = false;
+        run_ = 0;
+        return false;
+      }
+    } else {
+      calm_ = 0;
+    }
+    // Being behind by more than a frame is paid back over the next frames: the game must keep its speed.
+    const std::int64_t price = std::int64_t{costUs} + std::clamp<std::int64_t>(behind - kFrameUs, 0, 3 * kFrameUs) / 3;
+    credit_ += kFrameUs;
+    if (credit_ < price && run_ < kMaxRun) {
+      ++run_;
+      return true;
+    }
+    credit_ = std::min<std::int64_t>(credit_ - price, kFrameUs);
+    credit_ = std::max<std::int64_t>(credit_, -kFrameUs);
+    run_ = 0;
+    return false;
   }
 
+  bool in_shortfall() const { return short_; }
+
 private:
+  bool short_ = false;
+  int calm_ = 0;
   int run_ = 0;
+  std::int64_t credit_ = 0;
 };
 
 struct Stats {
@@ -84,10 +123,13 @@ public:
   bool on_functor(std::uint32_t pc, std::uint32_t object, std::uint8_t *ram, std::size_t ramSize);
 
   // Inputs of the policy, set by the host at each VBlank.
-  void note_vblank(std::uint64_t vblank, std::int32_t slackUs, std::size_t gsVsyncsQueued) {
+  // `eeFrameUs`: the EE's own time for the last frame, without waits for the pacer or the GS worker.
+  void note_vblank(std::uint64_t vblank, std::int32_t slackUs, std::int32_t gsLateUs, std::int32_t gsCostUs, std::int32_t eeFrameUs) {
     vblank_ = vblank;
     slackUs_ = slackUs;
-    gsVsyncsQueued_ = gsVsyncsQueued;
+    gsLateUs_ = gsLateUs;
+    gsCostUs_ = gsCostUs;
+    if (previousDrew_) eeCostUs_ += (eeFrameUs - eeCostUs_) / 8;
   }
 
   bool gate_open() const { return gateOpen_; }
@@ -128,7 +170,9 @@ private:
 
   std::uint64_t vblank_ = 0;
   std::int32_t slackUs_ = Policy::kNoSlack;
-  std::size_t gsVsyncsQueued_ = 0;
+  std::int32_t gsLateUs_ = 0;
+  std::int32_t gsCostUs_ = 0;
+  std::int32_t eeCostUs_ = 0;
   Stats stats_{};
 };
 

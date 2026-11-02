@@ -4030,6 +4030,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     // ---- VBlank ---------------------------------------------------------------------------------------------
+    bool ageTargets_ = true;  // TASK-082: off for a VBlank where the game drew nothing on purpose (frame skipping)
     void Age() {
         for (Target &t : targets_) {
             if (!t.alive) continue;
@@ -4290,7 +4291,15 @@ void Renderer::Flush() {
     } else {
         ++s.counters.vblanksProgressive;
     }
-    s.Age();
+    if (s.ageTargets_) {
+        s.Age();
+    } else {
+        // TASK-082: a VBlank with no drawing on purpose does not count as time for a target either (IN-509's grace is in VBlanks: a
+        // Z target drawn every second frame went over it, and six readbacks came back with each one).
+        for (Target &t : s.targets_) {
+            if (t.alive) ++t.lastDrawVblank;
+        }
+    }
     s.TrimTexturePool();
     s.NoteSpike();
     // S3: GT4_CORE2_GPU_PROFILE_AT=<vblank> maps the GPU cost of the next VBlank's commands.
@@ -4425,6 +4434,7 @@ void Renderer::ComposeFrame(writeback::FrameOutput &out) {
 }
 
 void Renderer::SetDisplayField(bool odd) { impl_->oddField_ = odd; }
+void Renderer::SetAgeTargets(bool age) { impl_->ageTargets_ = age; }
 bool Renderer::DisplayField() const { return impl_->oddField_; }
 
 void Renderer::SetOutputSettings(const writeback::OutputSettings &settings) {

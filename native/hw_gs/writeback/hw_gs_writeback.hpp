@@ -316,6 +316,7 @@ public:
 
     // Display field of the VBlank being closed (CSR.FIELD from the VSYNC record, 12.4, 13.3, 13.4).
     void SetDisplayField(bool odd);
+    void SetAgeTargets(bool age);  // TASK-082: core 2 only
     bool DisplayField() const;
     void SetOutputSettings(const OutputSettings &settings);
     const OutputSettings &GetOutputSettings() const;

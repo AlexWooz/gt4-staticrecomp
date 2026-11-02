@@ -2,6 +2,7 @@
 #include "frame_skip.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 
@@ -78,7 +79,7 @@ void Controller::evaluate_gate(std::uint32_t clock) {
 
 bool Controller::should_skip() {
   if (forcePattern_ >= 1) return forceCounter_++ % static_cast<std::uint64_t>(forcePattern_) != 0;
-  return adaptive_ && policy_.decide(slackUs_, gsVsyncsQueued_);
+  return adaptive_ && policy_.decide(slackUs_, gsLateUs_, std::max(gsCostUs_, eeCostUs_));
 }
 
 // Once per frame, at its first render functor, with the frame's update done.
@@ -124,23 +125,14 @@ void Controller::decide(std::uint8_t *ram, std::size_t ramSize) {
   }
   if (log_ != nullptr) {
     const std::uint64_t digest = dynamics != 0 ? fnv1a(ram + dynamics, guest_.dynamicsBytes) : 0;
-    std::fprintf(log_, "%llu,%d,%u,%d,%zu,%d,%016llx\n", static_cast<unsigned long long>(vblank_), skippingFrame_ ? 0 : 1, clock,
-                 slackUs_ == Policy::kNoSlack ? 0 : slackUs_, gsVsyncsQueued_, gateOpen_ ? 1 : 0,
-                 static_cast<unsigned long long>(digest));
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    std::fprintf(log_, "%llu,%d,%u,%d,%d,%d,%016llx,%lld,%d,%d\n", static_cast<unsigned long long>(vblank_), skippingFrame_ ? 0 : 1, clock,
+                 slackUs_ == Policy::kNoSlack ? 0 : slackUs_, gsLateUs_, gateOpen_ ? 1 : 0, static_cast<unsigned long long>(digest),
+                 static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(now).count()), gsCostUs_, eeCostUs_);
   }
 }
 
 bool Controller::on_functor(std::uint32_t pc, std::uint32_t object, std::uint8_t *ram, std::size_t ramSize) {
-  static const bool trace = std::getenv("GT4_FRAME_SKIP_TRACE") != nullptr;
-  if (trace && pc == guest_.updateFunctor && vblank_ % 300 == 0 && object != 0 && object < ramSize) {
-    const std::uint32_t dyn = read_word(ram, ramSize, object + 0x70u);
-    std::fprintf(stderr, "[frame-skip] trace vblank=%llu object=%08x vtable=%08x +70=%08x clock=%u page=%u/%u flare=%u/%u\n",
-                 static_cast<unsigned long long>(vblank_), object, read_word(ram, ramSize, object + 0x64u), dyn,
-                 dyn != 0 && dyn < ramSize ? read_word(ram, ramSize, dyn + guest_.dynamicsClockOffset) : 0,
-                 read_word(ram, ramSize, guest_.displayPage), read_word(ram, ramSize, guest_.displayPageSecond),
-                 read_word(ram, ramSize, object + guest_.raceFlareOffset + guest_.flareTrackCountOffset),
-                 read_word(ram, ramSize, object + guest_.raceFlareOffset + guest_.flareCarCountOffset));
-  }
   if (pc == guest_.updateFunctor) {
     if (phase_ != Phase::update) new_frame(ram, ramSize);
     phase_ = Phase::update;
@@ -187,7 +179,7 @@ void start_from_environment() {
   }
   if (const char *path = std::getenv("GT4_FRAME_SKIP_LOG")) {
     g_log = std::fopen(path, "w");
-    if (g_log != nullptr) std::fputs("vblank,rendered,clock,slack_us,gs_queued,gate,digest\n", g_log);
+    if (g_log != nullptr) std::fputs("vblank,rendered,clock,slack_us,gs_late_us,gate,digest,wall_us,gs_cost_us,ee_cost_us\n", g_log);
   }
   Guest guest;
   guest.updateFunctor = hooks.frame_update_functor;

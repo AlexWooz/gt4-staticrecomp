@@ -330,12 +330,19 @@ bool pump_messages() {
 // each VBlank comes at the donor's 60 Hz rate and audio never sets the pace.
 // The interval histogram is recorded in both modes.
 std::int64_t last_release = 0;
+std::int64_t ee_frame_ticks = 0;  // from the last release to this VBlank, before any wait for the pacer
+std::int64_t last_gs_wait = 0;
 
 // TASK-082: what the frame skip decides from, and what the presenter and the pacer get from it.
 void note_frame_skip_vblank() {
   if (!gt4::frame_skip::g_enabled) return;
   gt4::frame_skip::Controller &skip = gt4::frame_skip::controller();
-  skip.note_vblank(input_vblank, gt4::pacing::ee_slack_us, gt4::pacing::gs_vsyncs_queued.load(std::memory_order_relaxed));
+  const std::int64_t gs_wait = gt4::pacing::ee_gs_wait_us.load(std::memory_order_relaxed);
+  const std::int32_t ee_frame = static_cast<std::int32_t>(std::max<std::int64_t>(ee_frame_ticks * 1000000 / static_cast<std::int64_t>(frame_clock ? frame_clock->frequency() : 1) -
+                                                                                     (gs_wait - last_gs_wait), 0));
+  last_gs_wait = gs_wait;
+  skip.note_vblank(input_vblank, gt4::pacing::ee_slack_us, gt4::pacing::gs_late_us.load(std::memory_order_relaxed),
+                   gt4::pacing::gs_cost_us.load(std::memory_order_relaxed), ee_frame);
   gt4::pacing::frame_skip_engaged.store(skip.gate_open(), std::memory_order_relaxed);
   gt4::pacing::frame_skip_recent.store(skip.skipping_recently(), std::memory_order_relaxed);
   if (input_vblank % 600 == 0) gt4::frame_skip::print_report(stderr);
@@ -352,6 +359,7 @@ void release_frame() {
     GT4_PERF_SCOPE(gt4::perf::Category::pacing_wait);
     // Bench switch: GT4_PACING_NO_WAIT=1 runs as fast as it can with a window, to compare with a run with no window.
     static const bool no_wait = std::getenv("GT4_PACING_NO_WAIT") != nullptr;
+    ee_frame_ticks = last_release != 0 ? frame_clock->now() - last_release : 0;
     gt4::pacing::ee_slack_us = static_cast<std::int32_t>(std::clamp<std::int64_t>(
         (frame_pacer->deadline() - frame_clock->now()) * 1000000 / static_cast<std::int64_t>(frame_clock->frequency()), -100000, 100000));
     // IN-519: behind the grid, frames were released at once until it caught up: bursts of 9 ms intervals after a slow stretch,

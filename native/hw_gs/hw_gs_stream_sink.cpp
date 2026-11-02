@@ -175,6 +175,14 @@ Backend &backend() {
 void gif_now(int path, const std::uint8_t *data, std::size_t bytes) { backend().gif_transfer(path, data, bytes); }
 
 bool g_display_page_changed = true;  // TASK-082, GS worker: a DISPFB write with a new value since the last VBlank
+std::chrono::steady_clock::time_point g_last_present;
+std::chrono::steady_clock::time_point g_gs_cost_start;
+std::chrono::steady_clock::duration g_gs_idle{};
+std::int64_t g_gs_cost_us = 0;
+// When the EE reached each VBlank, for the GS worker to tell how late it is. Indexed by the count of VBlanks, which is at most
+// kFramesAhead ahead on the EE.
+std::array<std::atomic<std::chrono::steady_clock::time_point>, 8> g_vsync_pushed{};
+std::uint64_t g_ee_vsyncs_pushed = 0;  // EE only
 std::uint64_t g_last_dispfb[2] = {};
 
 void privileged_now(std::uint32_t address, std::uint64_t value) {
@@ -364,14 +372,45 @@ void vsync_now(bool odd_field) {
   g_odd_field = odd_field;
   ++g_vsyncs;
   sampler::note_vblank(g_vsyncs);
+  std::chrono::steady_clock::duration waited{};
   hw.set_display_field(odd_field);
-  hw.flush();
-  hw.next_frame();  // one guest frame per VBlank, windowed or headless (the session line's `frames`)
   // TASK-082: in a running race with frame skipping, the game draws into the page not shown, so the display page unchanged means
-  // nothing new to show. No presentation then, so a frame counter counts what was drawn and the frame takes no time of its own.
+  // nothing new to show. No presentation then, so a frame counter counts what was drawn and the frame takes no time of its own. Nor
+  // a frame for the renderer: targets age by frames, and a VBlank with no drawing aged them into being dropped and read back (a
+  // drawn frame at 12x cost 29 ms against 22 ms, most of it six readbacks in place of one).
   const bool hold = gt4::pacing::frame_skip_engaged.load(std::memory_order_relaxed) && !g_display_page_changed;
   g_display_page_changed = false;
-  if (hw.has_window() && !hold) hw.present(odd_field ? PresentPhase::field_odd : PresentPhase::field_even);
+  hw.set_age_targets(!hold);
+  hw.flush();
+  hw.next_frame();  // one guest frame per VBlank, windowed or headless (the session line's `frames`)
+  if (hw.has_window() && !hold) {
+    // With frames left out the GS worker catches up after a late frame, and without this the next one comes right behind it: two
+    // frames together, then a long wait. Not more than this: waiting for the whole time of the VBlanks since the last frame kept the
+    // GS worker behind, and it locked at 20 frames per second.
+    if (gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) && g_last_present.time_since_epoch().count() != 0) {
+      const auto before = std::chrono::steady_clock::now();
+      std::this_thread::sleep_until(g_last_present + std::chrono::microseconds(14500));
+      waited = std::chrono::steady_clock::now() - before;
+    }
+    g_last_present = std::chrono::steady_clock::now();
+    hw.present(odd_field ? PresentPhase::field_odd : PresentPhase::field_even);
+  }
+  const auto finished = std::chrono::steady_clock::now();
+  // What a drawn frame took: from the last frame drawn, without the time with nothing to do or spent waiting above.
+  g_gs_idle += waited;
+  if (!hold) {
+    if (g_gs_cost_start.time_since_epoch().count() != 0) {
+      const std::int64_t cost = std::chrono::duration_cast<std::chrono::microseconds>(finished - g_gs_cost_start - g_gs_idle).count();
+      g_gs_cost_us += (cost - g_gs_cost_us) / 8;
+      gt4::pacing::gs_cost_us.store(static_cast<std::int32_t>(g_gs_cost_us), std::memory_order_relaxed);
+    }
+    g_gs_cost_start = finished;
+    g_gs_idle = {};
+  }
+  const auto pushed = g_vsync_pushed[g_vsyncs % g_vsync_pushed.size()].load(std::memory_order_acquire);
+  gt4::pacing::gs_late_us.store(static_cast<std::int32_t>(std::clamp<std::int64_t>(
+                                    std::chrono::duration_cast<std::chrono::microseconds>(finished - pushed).count() - 16667, -100000, 1000000)),
+                                std::memory_order_relaxed);
   maybe_dump(hw);
   maybe_profile(hw);
 }
@@ -484,7 +523,10 @@ public:
     if (kind == SinkRecord::Vsync) {
       if (queuedVsyncs_.load(std::memory_order_seq_cst) >= kFramesAhead) {
         const std::uint64_t start = __rdtsc();
+        const auto waitStart = std::chrono::steady_clock::now();
         wait_for([this] { return queuedVsyncs_.load(std::memory_order_seq_cst) < kFramesAhead; }, kWantNothing);
+        gt4::pacing::ee_gs_wait_us.fetch_add(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - waitStart).count(), std::memory_order_relaxed);
         add(g_transport.vsync_wait_ticks, __rdtsc() - start);
         add(g_transport.vsync_waits, 1);
       }
@@ -595,10 +637,12 @@ private:
         const std::uint32_t seen = work_.snapshot();
         if (!ring_.try_peek(header, payload)) {
           const std::uint64_t start = __rdtsc();
+          const auto idleStart = std::chrono::steady_clock::now();
           sleeping_.store(true, std::memory_order_relaxed);
           bool slept = false;
           work_.wait_changed(seen, slept);
           sleeping_.store(false, std::memory_order_relaxed);
+          g_gs_idle += std::chrono::steady_clock::now() - idleStart;
           add(g_transport.idle_ticks, __rdtsc() - start);
           if (slept) add(g_transport.wakeups, 1);
           continue;
@@ -858,6 +902,7 @@ void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
 }
 
 void vsync(bool odd_field) {
+  g_vsync_pushed[++g_ee_vsyncs_pushed % g_vsync_pushed.size()].store(std::chrono::steady_clock::now(), std::memory_order_release);
   if (!g_worker) {
     vsync_now(odd_field);
     return;

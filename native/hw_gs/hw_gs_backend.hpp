@@ -186,6 +186,7 @@ public:
   // Field of the VBlank being closed (CSR.FIELD from the VSYNC record; chapters 12.4, 13.3, 13.4). Set before
   // present() and before a scanout dump so the field offset and the deinterlacer use this VBlank's field.
   void set_display_field(bool odd);
+  void set_age_targets(bool age);  // TASK-082, core 2: off for a VBlank with no drawing on purpose
   void wait_idle();
 
   // Builds the display image as present would. M0: no image, returns false (black).

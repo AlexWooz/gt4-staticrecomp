@@ -27,6 +27,11 @@ inline std::atomic<std::int32_t> grid_shift_us{0};
 // TASK-082: guest VBlanks queued in the GS worker, and what the frame skip tells the presenter: a running race where a frame may
 // have no drawing (hold the display when it did not change), and frames left out lately (the display queue control waits).
 inline std::atomic<std::uint32_t> gs_vsyncs_queued{0};
+// How long after the next VBlank was due the GS worker finished the last one, in microseconds; negative: in time.
+inline std::atomic<std::int32_t> gs_late_us{0};
+// What a drawn frame takes on the GS worker (mean of the last ones), and how long the EE has waited for it so far, in microseconds.
+inline std::atomic<std::int32_t> gs_cost_us{0};
+inline std::atomic<std::int64_t> ee_gs_wait_us{0};
 inline std::atomic<bool> frame_skip_engaged{false};
 inline std::atomic<bool> frame_skip_recent{false};
 
