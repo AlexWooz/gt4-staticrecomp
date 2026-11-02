@@ -120,6 +120,8 @@ void check_game_ids_and_mode() {
   check(sa::game_for_executable("gt4vulkan.exe") && std::string(sa::game_for_executable("gt4vulkan.exe")->id) == "gt4", "gt4vulkan.exe is gt4");
   check(sa::game_for_executable("GT4Vulkan-Spec2.EXE") && std::string(sa::game_for_executable("GT4Vulkan-Spec2.EXE")->elf_name) == "SCUS_974.36",
         "gt4vulkan-spec2.exe is spec2, any case");
+  check(sa::game_for_executable("gt4.exe") && std::string(sa::game_for_executable("gt4.exe")->id) == "gt4", "a release's name of the game");
+  check(sa::game_for_executable("GT4-Spec2.exe") && std::string(sa::game_for_executable("GT4-Spec2.exe")->id) == "spec2", "a release's name of Spec II");
   check(!sa::game_for_executable("gt4vulkan_fixture.exe") && !sa::game_for_executable("gt4vulkan"), "other names are no game");
 
   const char *none[] = {"gt4vulkan.exe"};
@@ -228,6 +230,17 @@ void check_linked_image() {
         "the game is given the name it can open");
   world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 8, 9);
   check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "a changed image does not");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 1500000009ull);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None, "a time a file system rounded is not a change");
+  world.file(fs::path("D:\\ISOs\\gt4.iso"), "iso", 7, 9000000009ull);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::GameFilesChanged, "a later time is");
+
+  // An image inside the launcher's folder is saved relative to it, so a portable folder can move with it.
+  world.file(game_root / "prepared" / "prepare.json",
+             "{\"image\":{\"file\":\"gt4.iso\",\"linked_path\":\"ISOs\\\\gt4.iso\",\"size_bytes\":7,\"modified_unix_nanos\":9},\"elf\":{\"size_bytes\":3}}");
+  world.file(kInstall / "ISOs" / "gt4.iso", "iso", 7, 9);
+  check(sa::check_game_files(*layout, world.access(), disc, elf).problem == sa::Problem::None && disc == kInstall / "ISOs\\gt4.iso",
+        "a relative link is found inside the install folder");
 }
 
 void check_game_files() {

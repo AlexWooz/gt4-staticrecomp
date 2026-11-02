@@ -98,7 +98,8 @@ std::optional<Layout> find_layout(const std::filesystem::path &executable, const
 
 struct Receipt {
   std::string image_file;
-  std::string image_linked_path;  // UTF-8; where the player keeps the image (decision 0075). Empty: a copy under `disc`
+  std::string image_linked_path;  // UTF-8; where the player keeps the image (decision 0075), relative to the install folder when
+                                  // it lies inside it. Empty: a copy under `disc`
   std::uint64_t image_size = 0;
   std::uint64_t image_modified_unix_nanos = 0;
   std::uint64_t elf_size = 0;

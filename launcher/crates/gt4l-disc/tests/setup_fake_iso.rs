@@ -71,10 +71,12 @@ fn good_pins_and_image(volume: &str) -> (Pins, Vec<u8>) {
 fn run_setup(fixture: &Fixture, disc: &Path, pins: &Pins, cancel: &AtomicBool) -> Result<setup::Receipt, SetupError> {
     let prepared = fixture.path("prepared");
     let staging = fixture.path("prepared.tmp");
+    let install_dir = fixture.path("launcher");
     let request = SetupRequest {
         disc,
         prepared: &prepared,
         staging: &staging,
+        install_dir: &install_dir,
         pins,
         launcher_version: "test",
         cancel,
@@ -120,7 +122,7 @@ fn good_disc_is_linked_where_it_is_and_nothing_is_copied() {
     let receipt_text = fs::read_to_string(prepared.join("prepare.json")).unwrap();
     assert!(receipt_text.contains("\"payload\": \"bundled\""));
     assert!(receipt_text.contains("\"modified_unix_nanos\""));
-    match setup::check_installed(&prepared, &fixture.disc_folder(), &pins) {
+    match setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins) {
         Installed::Ready { image, serial, version } => {
             assert_eq!(image, disc, "the game reads the image where it is");
             assert_eq!(serial, "SCUS-97328");
@@ -142,18 +144,76 @@ fn an_image_that_moved_or_changed_asks_to_be_chosen_again_and_linking_it_is_all_
 
     let moved = fixture.path("elsewhere.iso");
     fs::rename(&disc, &moved).unwrap();
-    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &pins), Installed::LinkBroken { image: disc.clone() });
+    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins), Installed::LinkBroken { image: disc.clone() });
 
     // Another file at the same path is not the image that was checked.
     fs::write(&disc, &image[..image.len() - 2048]).unwrap();
-    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &pins), Installed::LinkBroken { image: disc.clone() });
+    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins), Installed::LinkBroken { image: disc.clone() });
     fs::remove_file(&disc).unwrap();
 
     run_setup(&fixture, &moved, &pins, &cancel).expect("the image is linked again");
     assert!(matches!(
-        setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
+        setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins),
         Installed::Ready { image, .. } if image == moved
     ));
+}
+
+#[test]
+fn an_image_inside_the_launcher_folder_is_saved_relative_and_moves_with_the_folder() {
+    let fixture = Fixture::new("portable");
+    let (pins, image) = good_pins_and_image("GT4 USA");
+    let install = fixture.path("launcher");
+    fs::create_dir_all(install.join("ISOs")).unwrap();
+    let disc = install.join("ISOs").join("game.iso");
+    fs::write(&disc, &image).unwrap();
+    let prepared = install.join("data").join("prepared");
+    let staging = install.join("data").join("prepared.tmp");
+    fs::create_dir_all(install.join("data")).unwrap();
+    let cancel = AtomicBool::new(false);
+    let request = SetupRequest { disc: &disc, prepared: &prepared, staging: &staging, install_dir: &install, pins: &pins, launcher_version: "test", cancel: &cancel };
+    let receipt = setup::run(&request, &mut |_, _| {}).expect("setup succeeds");
+    assert_eq!(receipt.image.unwrap().linked_path.as_deref(), Some(Path::new("ISOs").join("game.iso").to_str().unwrap()), "relative to the folder");
+
+    // The whole folder goes to another place, or another drive letter.
+    let carried = fixture.path("on-the-usb-stick");
+    fs::rename(&install, &carried).unwrap();
+    let prepared = carried.join("data").join("prepared");
+    match setup::check_installed(&prepared, &carried.join("data").join("disc"), &carried, &pins) {
+        Installed::Ready { image, .. } => assert_eq!(image, carried.join("ISOs").join("game.iso")),
+        other => panic!("the folder moved with its image: {other:?}"),
+    }
+}
+
+#[test]
+fn an_image_outside_the_launcher_folder_stays_absolute_when_the_folder_moves() {
+    let fixture = Fixture::new("outside");
+    let (pins, image) = good_pins_and_image("GT4 USA");
+    let disc = fixture.path("game.iso");
+    fs::write(&disc, &image).unwrap();
+    let cancel = AtomicBool::new(false);
+    let receipt = run_setup(&fixture, &disc, &pins, &cancel).unwrap();
+    assert!(Path::new(receipt.image.unwrap().linked_path.as_deref().unwrap()).is_absolute());
+    match setup::check_installed(&fixture.path("prepared"), &fixture.disc_folder(), &fixture.path("another-place"), &pins) {
+        Installed::Ready { image, .. } => assert_eq!(image, disc),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_file_system_that_rounds_the_time_is_not_a_changed_image() {
+    let fixture = Fixture::new("rounded");
+    let (pins, image) = good_pins_and_image("GT4 USA");
+    let disc = fixture.path("game.iso");
+    fs::write(&disc, &image).unwrap();
+    let cancel = AtomicBool::new(false);
+    run_setup(&fixture, &disc, &pins, &cancel).unwrap();
+    let prepared = fixture.path("prepared");
+    let recorded = fs::metadata(&disc).unwrap().modified().unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&disc).unwrap();
+    file.set_modified(recorded + std::time::Duration::from_millis(1500)).unwrap();
+    assert!(matches!(setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins), Installed::Ready { .. }), "a rounded time");
+    file.set_modified(recorded + std::time::Duration::from_secs(10)).unwrap();
+    assert!(matches!(setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins), Installed::LinkBroken { .. }), "a real change");
 }
 
 /// Turns the prepared folder into what a launcher from before decision 0075 left: the image copied, no link in the receipt.
@@ -177,7 +237,7 @@ fn an_install_from_before_the_link_keeps_working_with_its_copy() {
     let cancel = AtomicBool::new(false);
     run_setup(&fixture, &disc, &pins, &cancel).unwrap();
     make_it_an_old_install(&fixture, &disc, "SCUS-97328.iso");
-    match setup::check_installed(&fixture.path("prepared"), &fixture.disc_folder(), &pins) {
+    match setup::check_installed(&fixture.path("prepared"), &fixture.disc_folder(), &fixture.path("launcher"), &pins) {
         Installed::Ready { image, .. } => assert_eq!(image, fixture.disc_folder().join("SCUS-97328.iso")),
         other => panic!("an old install must stay installed: {other:?}"),
     }
@@ -201,7 +261,7 @@ fn a_second_run_replaces_the_prepared_folder_and_the_image() {
         .collect();
     assert!(leftovers.is_empty(), "old folder removed: {leftovers:?}");
     assert!(matches!(
-        setup::check_installed(&fixture.path("prepared"), &fixture.disc_folder(), &pins),
+        setup::check_installed(&fixture.path("prepared"), &fixture.disc_folder(), &fixture.path("launcher"), &pins),
         Installed::Ready { .. }
     ));
 }
@@ -365,7 +425,7 @@ fn later_launches_see_a_missing_or_changed_image_and_old_receipts() {
     let fixture = Fixture::new("later");
     let (pins, image) = good_pins_and_image("GT4 USA");
     let prepared = fixture.path("prepared");
-    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &pins), Installed::NotSetUp);
+    assert_eq!(setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins), Installed::NotSetUp);
 
     let disc = fixture.path("game.iso");
     fs::write(&disc, &image).unwrap();
@@ -378,14 +438,14 @@ fn later_launches_see_a_missing_or_changed_image_and_old_receipts() {
     let kept = fs::read(&imported).unwrap();
     fs::remove_file(&imported).unwrap();
     assert!(matches!(
-        setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
+        setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins),
         Installed::Missing { reason } if reason.contains("missing")
     ));
 
     // A different file of another size in its place.
     fs::write(&imported, &kept[..kept.len() - 2048]).unwrap();
     assert!(matches!(
-        setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
+        setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins),
         Installed::Missing { reason } if reason.contains("changed")
     ));
 
@@ -396,14 +456,14 @@ fn later_launches_see_a_missing_or_changed_image_and_old_receipts() {
     receipt.as_object_mut().unwrap().remove("image");
     fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
     assert!(matches!(
-        setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
+        setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins),
         Installed::Missing { .. }
     ));
 
     // A damaged receipt.
     fs::write(&receipt_path, b"{ not json").unwrap();
     assert!(matches!(
-        setup::check_installed(&prepared, &fixture.disc_folder(), &pins),
+        setup::check_installed(&prepared, &fixture.disc_folder(), &fixture.path("launcher"), &pins),
         Installed::Missing { reason } if reason.contains("damaged")
     ));
 }

@@ -327,8 +327,8 @@ impl AppState {
     pub fn installed_of(&self, game: &'static Game) -> disc_setup::Installed {
         let dirs = self.game_dirs(game);
         match DiscGame::from_id(game.id) {
-            Some(DiscGame::Spec2) => disc_spec2::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.spec2_pins),
-            _ => disc_setup::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.pins),
+            Some(DiscGame::Spec2) => disc_spec2::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.spec2_pins),
+            _ => disc_setup::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.pins),
         }
     }
 

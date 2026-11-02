@@ -178,8 +178,9 @@ Check fail(Problem problem, std::string detail) { return Check{problem, std::mov
 
 std::optional<GameId> game_for_executable(std::string_view file_name) {
   const std::string name = lower(file_name);
-  if (name == "gt4vulkan.exe") return GameId{"gt4", "SCUS_973.28"};
-  if (name == "gt4vulkan-spec2.exe") return GameId{"spec2", "SCUS_974.36"};
+  // The names of the build, and of a release (scripts/make_distribution.py): a direct start of a release was refused without them.
+  if (name == "gt4vulkan.exe" || name == "gt4.exe") return GameId{"gt4", "SCUS_973.28"};
+  if (name == "gt4vulkan-spec2.exe" || name == "gt4-spec2.exe") return GameId{"spec2", "SCUS_974.36"};
   return std::nullopt;
 }
 
@@ -284,13 +285,17 @@ Check check_game_files(const Layout &layout, const Access &access, std::filesyst
     // Decision 0075: the image stays where the player keeps it.
     const std::string &linked = receipt->image_linked_path;
     disc = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(linked.data()), linked.size()));
+    if (disc.is_relative()) disc = layout.install_root / disc;
   } else {
     if (!plain_file_name(receipt->image_file)) return fail(Problem::GameFilesChanged, "the setup record names an invalid disc copy");
     disc = layout.disc_folder / receipt->image_file;
   }
   const std::optional<FileInfo> disc_info = access.stat_file ? access.stat_file(disc) : std::nullopt;
   if (!disc_info) return fail(Problem::GameFilesChanged, receipt->image_file + " is missing");
-  if (disc_info->size_bytes != receipt->image_size || disc_info->modified_unix_nanos != receipt->image_modified_unix_nanos)
+  // A linked image may have been carried to a file system that rounds the time (launcher: LINKED_TIME_TOLERANCE_NANOS).
+  const std::uint64_t tolerance = receipt->image_linked_path.empty() ? 0 : 2000000000ull;
+  const std::uint64_t recorded = receipt->image_modified_unix_nanos, found = disc_info->modified_unix_nanos;
+  if (disc_info->size_bytes != receipt->image_size || (found > recorded ? found - recorded : recorded - found) > tolerance)
     return fail(Problem::GameFilesChanged, receipt->image_file + " has changed");
   if (!receipt->image_linked_path.empty() && access.openable_path) disc = access.openable_path(disc);
   return Check{};

@@ -200,6 +200,7 @@ void prune_sessions(const std::filesystem::path &sessions) {
 }
 
 int run_standalone(int argc, char **argv) {
+  _putenv_s("GT4_DIRECT_START", "1");  // the GS client's message says where the renderer is chosen: no launcher will store it
   const sa::Access access = real_access();
   wchar_t module[32768];
   const DWORD length = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));

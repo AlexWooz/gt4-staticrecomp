@@ -3041,7 +3041,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::deque<ReplacementLoader::Loaded> replacementArrivals_;
 
     void StartTextureReplacement() {
-        const char *root = std::getenv("GT4_HW_TEXTURES");
+        // Read as Windows holds them: in the narrow form an accented folder is in the ANSI code page, not UTF-8.
+        const wchar_t *root = _wgetenv(L"GT4_HW_TEXTURES");
         const char *dump = std::getenv("GT4_HW_DUMP_TEXTURES");
         textureDumps_ = dump != nullptr && std::strcmp(dump, "0") != 0;
         replacementSync_ = std::getenv("GT4_HW_TEXTURES_SYNC") != nullptr;
@@ -3050,7 +3051,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                               ? static_cast<std::uint64_t>(std::atoll(megabytes)) << 20
                               : static_cast<std::uint64_t>(gpu_.Integrated() ? 512 : 1536) << 20;
         const std::filesystem::path folder =
-            root != nullptr && *root != 0 ? std::filesystem::u8path(root) : std::filesystem::path{};
+            root != nullptr && *root != 0 ? std::filesystem::path(root) : std::filesystem::path{};
         if (!folder.empty()) {
             hw_gs_replace::UnsupportedArchiveReader archives;
             const hw_gs_replace::ScanReport report = replacementIndex_.ScanFormatPFolder(folder, archives);
@@ -3059,8 +3060,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             stats.replacementFiles = report.filesRegistered;
         }
         if (textureDumps_) {
-            const char *dumpDir = std::getenv("GT4_HW_TEXTURE_DUMP_DIR");
-            textureDumpDir_ = dumpDir != nullptr ? std::filesystem::u8path(dumpDir)
+            const wchar_t *dumpDir = _wgetenv(L"GT4_HW_TEXTURE_DUMP_DIR");
+            textureDumpDir_ = dumpDir != nullptr ? std::filesystem::path(dumpDir)
                                                  : (folder.empty() ? std::filesystem::path("TextureDumps")
                                                                    : folder.parent_path() / "TextureDumps");
         }

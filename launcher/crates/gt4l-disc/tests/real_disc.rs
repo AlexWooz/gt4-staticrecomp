@@ -72,7 +72,7 @@ fn real_setup_links_the_image_and_leaves_it_untouched() {
     let (prepared, staging) = (root.join("prepared"), root.join("prepared.tmp"));
     let before = std::fs::metadata(&path).unwrap().modified().unwrap();
     let cancel = AtomicBool::new(false);
-    let request = SetupRequest { disc: &path, prepared: &prepared, staging: &staging, pins: &pins, launcher_version: "test", cancel: &cancel };
+    let request = SetupRequest { disc: &path, prepared: &prepared, staging: &staging, install_dir: &root, pins: &pins, launcher_version: "test", cancel: &cancel };
     let started = std::time::Instant::now();
     let receipt = setup::run(&request, &mut |_, _| {}).expect("the real image sets up");
     println!("setup took {:.1} s", started.elapsed().as_secs_f32());
@@ -81,6 +81,6 @@ fn real_setup_links_the_image_and_leaves_it_untouched() {
     let written: u64 = std::fs::read_dir(&prepared).unwrap().map(|entry| entry.unwrap().metadata().unwrap().len()).sum();
     println!("prepared folder: {:.1} MB", written as f64 / 1e6);
     assert!(written < 64 * 1024 * 1024, "no copy of the image: {written} bytes");
-    assert!(matches!(setup::check_installed(&prepared, &root.join("disc"), &pins), Installed::Ready { image, .. } if image == path));
+    assert!(matches!(setup::check_installed(&prepared, &root.join("disc"), &root, &pins), Installed::Ready { image, .. } if image == path));
     let _ = std::fs::remove_dir_all(&root);
 }

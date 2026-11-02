@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-138: a portable folder carries its image, accented paths, the GSdx fallback; candidate 382 (2026-11-02)
+
+Branch `task/138-relative-image-link`, on top of TASK-137. Decision 0075. Not merged, not uploaded. Pins `docs/inputs/slice382-pcsx2.json`, `slice382-spec2.json` (capsule of 376); game `private/slice382-rc8-game`, distribution `private/slice382-dist-130-rc8`, package `private/release-130-rc8u-out`.
+
+- **Relative link:** an image inside the launcher's folder is saved relative to it, one outside by its absolute path. The folder can move with the image. A time within 2 s is not a change (exFAT and FAT round it). The `game` folder is refused for the image, because updates replace it.
+- **Bugs found by testing it for real:**
+  - A direct start of a release was always refused: the game knew only the build's names (`gt4vulkan.exe`), not `gt4.exe` and `gt4-spec2.exe`.
+  - CoreGS 2.0 closed at once in an accented folder: `u8path` on the shader cache and textures folders, which are in the ANSI code page. Now `_wgetenv`; `test_paths_from_environment.py` guards it.
+  - The GSdx path and config, and the achievements cache folder, were decoded as UTF-8 too; the message box drew bytes as characters.
+- **Fallback:** when GSdx fails, the game offers CoreGS 2.0 (not CoreGS 1.1). Yes stores it, when the card has Vulkan 1.2. A direct start says where to choose it.
+- **Checks:** ctest 173 passed; launcher `cargo test` passed; `dev/focus-check.html` in both languages; frames 30 of 30 equal to 381; real setup, then the folder renamed and moved, then a direct start: plain name, and `Usu\u00e1rios\\Jo\u00e3o\\Pendrive` with the shader cache and textures, on CoreGS 2.0.
+- **Not verified, open:** GSdx in a portable folder started directly exits with code 2 during the handshake, with a plain name and with an accent, and the game of rc7 does the same there, so this work did not cause it. A TASK-027 agent may not read `gt4-gs` logs or the fork. So GSdx in an accented folder is **not confirmed**, and needs the owner's test through the launcher, or a PCSX2-tainted agent.
+- **Not installed on the owner's desktop or notebook yet:** both have candidate 381.
+
 ## TASK-137: the launcher links the disc image, candidate 381 (2026-11-02)
 
 Branch `task/137-link-disc-image`, on top of TASK-136. Decision 0075. Not merged, not uploaded. Pins `docs/inputs/slice381-pcsx2.json`, `slice381-spec2.json` (capsule of 376); game `private/slice381-rc8-game`, distribution `private/slice381-dist-130-rc8`, package `private/release-130-rc8t-out`.

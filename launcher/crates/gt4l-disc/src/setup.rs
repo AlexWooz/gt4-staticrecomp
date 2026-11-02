@@ -28,6 +28,7 @@ use sha2::{Digest, Sha256};
 
 use gt4l_core::language::Language;
 use gt4l_core::messages;
+use gt4l_core::paths;
 
 use crate::cnf;
 use crate::elf;
@@ -49,6 +50,9 @@ pub const DISC_FOLDER: &str = "disc";
 pub const UNSUPPORTED_MESSAGE: &str =
     "This disc is not supported yet. GT4Recomp supports Gran Turismo 4 (USA, SCUS-97328) and Gran Turismo 4 Spec II v1.10 (SCUS-97436).";
 const HASH_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+/// A file system can round a linked image's modified time when the image is carried to it (exFAT keeps 10 ms, FAT 2 s): that is not
+/// a change. native/standalone.cpp has the same number.
+const LINKED_TIME_TOLERANCE_NANOS: u64 = 2_000_000_000;
 pub(crate) const MAX_SYSTEM_CNF_BYTES: u64 = 4096;
 const MAX_CORE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -223,7 +227,8 @@ pub struct DiscReceipt {
 pub struct ImageReceipt {
     /// The image's file name (inside `<data>\disc\` when `linked_path` is absent).
     pub file: String,
-    /// Where the player keeps the image. Absent: an install from before decision 0075, with its copy in `<data>\disc\`.
+    /// Where the player keeps the image: relative to the launcher's folder when it lies inside it, so the folder can move with the
+    /// image (a portable copy), otherwise absolute. Absent: an install from before decision 0075, with its copy in `<data>\disc\`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_path: Option<String>,
     pub size_bytes: u64,
@@ -251,14 +256,21 @@ pub struct SetupRequest<'a> {
     pub prepared: &'a Path,
     /// `%LOCALAPPDATA%\GT4Recomp\prepared.tmp`.
     pub staging: &'a Path,
+    /// The launcher's folder (see [`ImageReceipt::linked_path`]).
+    pub install_dir: &'a Path,
     pub pins: &'a Pins,
     pub launcher_version: &'a str,
     pub cancel: &'a AtomicBool,
 }
 
-/// The path a receipt records for the image: absolute, so it means the same whatever folder the launcher starts from.
-pub(crate) fn linked_path(disc: &Path) -> Result<String, SetupError> {
-    Ok(std::path::absolute(disc)?.display().to_string())
+/// The path a receipt records for the image (see [`ImageReceipt::linked_path`]).
+pub(crate) fn linked_path(disc: &Path, install_dir: &Path) -> Result<String, SetupError> {
+    Ok(paths::portable_path(&std::path::absolute(disc)?, install_dir).display().to_string())
+}
+
+/// The image a receipt links to, when it links to one.
+pub fn linked_image(image: &ImageReceipt, install_dir: &Path) -> Option<PathBuf> {
+    image.linked_path.as_ref().map(|stored| paths::resolve_portable(Path::new(stored), install_dir))
 }
 
 /// The file name a receipt records for the image.
@@ -421,7 +433,7 @@ fn finish(
         },
         image: Some(ImageReceipt {
             file: image_file_name(request.disc),
-            linked_path: Some(linked_path(request.disc)?),
+            linked_path: Some(linked_path(request.disc, request.install_dir)?),
             size_bytes: metadata.len(),
             modified_unix_nanos: modified_nanos(&metadata),
             sha256: identity.sha256.clone(),
@@ -545,12 +557,12 @@ pub enum Installed {
 
 /// The cheap check of every launch: the receipt, the prepared sizes, and the image's size and modified time as recorded
 /// at setup. No hash runs here.
-pub fn check_installed(prepared: &Path, disc_folder: &Path, pins: &Pins) -> Installed {
-    check_installed_with(prepared, disc_folder, &|folder| verify_prepared(folder, pins))
+pub fn check_installed(prepared: &Path, disc_folder: &Path, install_dir: &Path, pins: &Pins) -> Installed {
+    check_installed_with(prepared, disc_folder, install_dir, &|folder| verify_prepared(folder, pins))
 }
 
 /// [`check_installed`] with the game's own check of the prepared files (sizes of its ELF and, for Gran Turismo 4, CORE).
-pub fn check_installed_with(prepared: &Path, disc_folder: &Path, verify: &dyn Fn(&Path) -> Result<(), String>) -> Installed {
+pub fn check_installed_with(prepared: &Path, disc_folder: &Path, install_dir: &Path, verify: &dyn Fn(&Path) -> Result<(), String>) -> Installed {
     if !prepared.join(RECEIPT_FILE).exists() {
         if prepared.exists() || disc_folder.exists() {
             return Installed::Missing { reason: "the game files are incomplete".into() };
@@ -566,10 +578,9 @@ pub fn check_installed_with(prepared: &Path, disc_folder: &Path, verify: &dyn Fn
     if let Err(reason) = verify(prepared) {
         return Installed::Missing { reason };
     }
-    if let Some(linked) = &image.linked_path {
-        let path = PathBuf::from(linked);
+    if let Some(path) = linked_image(image, install_dir) {
         return match fs::metadata(&path) {
-            Ok(metadata) if metadata.len() == image.size_bytes && modified_nanos(&metadata) == image.modified_unix_nanos => {
+            Ok(metadata) if metadata.len() == image.size_bytes && modified_nanos(&metadata).abs_diff(image.modified_unix_nanos) <= LINKED_TIME_TOLERANCE_NANOS => {
                 Installed::Ready { image: path, serial: receipt.disc.serial, version: receipt.disc.version }
             }
             _ => Installed::LinkBroken { image: path },

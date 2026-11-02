@@ -219,6 +219,13 @@ pub fn choose_disc_path_for(shared: &Shared, path: &Path, requested: Option<&str
                 state.setup_outcome = SetupOutcome::Refused(message.clone());
                 return Err(message);
             }
+            // Updates replace the `game` folder: an image there would go with them.
+            if paths::is_within(path, &state.install_dir.join("game")) {
+                let message: String = messages::text("setup.image_in_game_folder", state::current_language()).into();
+                state::log_warn(&state.dirs, &format!("disc refused, it is in the folder updates replace: {}", path.display()));
+                state.setup_outcome = SetupOutcome::Refused(message.clone());
+                return Err(message);
+            }
             state.config.disc_path = Some(path.to_path_buf());
             state.setup_outcome = SetupOutcome::None;
             state.setup_game = Some(game);
@@ -305,7 +312,7 @@ pub fn start_with(
         },
         None => None,
     };
-    let (disc, pins, spec2_pins, game, installed_before, dirs, cancel) = {
+    let (disc, pins, spec2_pins, game, installed_before, dirs, cancel, install_dir) = {
         let mut state = lock(&shared);
         if state.setup_busy {
             return Err(messages::text("setup.already_running", state::current_language()).into());
@@ -325,7 +332,7 @@ pub fn start_with(
         state.setup_outcome = SetupOutcome::None;
         state.setup_run = SetupRun { step: "copying".into(), ..SetupRun::default() };
         state.setup_cancel.store(false, Ordering::Relaxed);
-        (disc, state.pins.clone(), state.spec2_pins.clone(), game, installed_before, state.game_dirs(game), state.setup_cancel.clone())
+        (disc, state.pins.clone(), state.spec2_pins.clone(), game, installed_before, state.game_dirs(game), state.setup_cancel.clone(), state.install_dir.clone())
     };
     let handle = std::thread::spawn(move || {
         // Setup always writes the data folder's root, even when older game files are read from another folder.
@@ -371,6 +378,7 @@ pub fn start_with(
                     disc: &disc,
                     prepared: &prepared,
                     staging: &staging,
+                    install_dir: &install_dir,
                     pins: &spec2_pins,
                     launcher_version: LAUNCHER_VERSION,
                     cancel: &cancel,
@@ -382,6 +390,7 @@ pub fn start_with(
                     disc: &disc,
                     prepared: &prepared,
                     staging: &staging,
+                    install_dir: &install_dir,
                     pins: &pins,
                     launcher_version: LAUNCHER_VERSION,
                     cancel: &cancel,

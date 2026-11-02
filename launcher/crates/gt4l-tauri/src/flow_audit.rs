@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 
 use crate::commands::{self, Kind};
 use crate::setup::{self, Notify, RendererInstaller};
+use gt4l_disc::setup as disc_setup;
 use crate::state::{lock, AppState, Shared};
 
 /// Every event the page would have received, in order.
@@ -441,6 +442,81 @@ fn an_install_with_a_copy_stays_installed_and_removing_it_never_touches_a_linked
     commands::games_remove_of("gt4".into(), &updated).unwrap();
     assert!(inside.is_file(), "a linked image inside the folder is kept");
     assert!(!game_folder.join("prepared").exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_portable_folder_carried_with_its_image_stays_installed_and_one_outside_keeps_its_place() {
+    // `launch` takes the data folder's parent as the launcher's folder.
+    let root = scratch("portable-carried");
+    let first = root.join("first-place");
+    fs::create_dir_all(first.join("ISOs")).unwrap();
+    let game = synthetic_game(0x0010_0000, 0x0010_0008, b"synthetic guest code, not game data, 0123456789abcdef");
+    let image = build_iso(
+        "GT4 USA",
+        &[
+            ("SYSTEM.CNF;1", system_cnf("SCUS_973.28", "2.00", "NTSC")),
+            ("CORE.GT4;1", game.core.clone()),
+            ("SCUS_973.28;1", vec![0xA5; 3000]),
+        ],
+    );
+    let pins = pins_for(&image, &game, "SCUS-97328", "2.00");
+    let inside = first.join("ISOs").join("gt4.iso");
+    fs::write(&inside, &image).unwrap();
+    let dirs = DataDirs::new(first.join("data"));
+    let shared = launch(&dirs, &pins);
+    setup::choose_disc_path(&shared, &inside).unwrap();
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    drop(shared);
+    let receipt = disc_setup::read_receipt(&first.join("data/games/gt4/prepared")).unwrap();
+    assert_eq!(receipt.image.unwrap().linked_path.as_deref(), Some(Path::new("ISOs").join("gt4.iso").to_str().unwrap()));
+
+    let second = root.join("another-drive");
+    fs::rename(&first, &second).unwrap();
+    let carried = launch(&DataDirs::new(second.join("data")), &pins);
+    assert_eq!(setup_state(&carried), "done", "the folder moved with its image");
+    assert!(matches!(lock(&carried).installed(), disc_setup::Installed::Ready { image, .. } if image == second.join("ISOs").join("gt4.iso")));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_image_in_the_folder_updates_replace_is_refused_with_the_reason() {
+    let (root, dirs, _pins, shared) = new_install("image-in-game-folder");
+    let install = dirs.root().parent().unwrap().to_path_buf();
+    fs::create_dir_all(install.join("game")).unwrap();
+    let there = install.join("game").join("gt4.iso");
+    fs::copy(root.join("disc.iso"), &there).unwrap();
+    let message = setup::choose_disc_path(&shared, &there).unwrap_err();
+    assert!(message.contains("Updates replace"), "{message}");
+    assert_eq!(screen(&shared)["setup"]["state"], "wrong_disc");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The real setup in a real folder, for a test that then moves the folder and starts the game from it. GT4_E2E_PORTABLE is the
+/// folder; its `ISOs\spec2.iso` is the image.
+#[test]
+#[ignore = "a real disc image; set GT4_E2E_PORTABLE"]
+fn real_setup_in_a_portable_folder() {
+    let folder = PathBuf::from(std::env::var("GT4_E2E_PORTABLE").expect("GT4_E2E_PORTABLE"));
+    let dirs = DataDirs::new(folder.join("data"));
+    let pins = gt4l_disc::Pins::embedded().unwrap();
+    let shared = launch(&dirs, &pins);
+    setup::choose_disc_path(&shared, &folder.join("ISOs").join("spec2.iso")).unwrap();
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    let receipt = disc_setup::read_receipt(&folder.join("data/games/spec2/prepared")).unwrap();
+    println!("linked_path = {:?}", receipt.image.as_ref().unwrap().linked_path);
+    assert!(Path::new(receipt.image.unwrap().linked_path.as_deref().unwrap()).is_relative());
+}
+
+#[test]
+fn choosing_coregs20_after_gsdx_failed_stores_it_when_the_card_can_run_it() {
+    let (root, dirs, pins, shared) = new_install("gsdx-fallback");
+    lock(&shared).config.settings.set_by_user("renderer", "pcsx2").unwrap();
+    assert!(!commands::use_coregs20_after_gsdx_failure(&shared, false), "a card without Vulkan 1.2 keeps GSdx");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2");
+    assert!(commands::use_coregs20_after_gsdx_failure(&shared, true));
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "coregs20");
+    assert_eq!(lock(&launch(&dirs, &pins)).config.settings.get("renderer"), "coregs20", "and it stays at the next start");
     let _ = fs::remove_dir_all(&root);
 }
 

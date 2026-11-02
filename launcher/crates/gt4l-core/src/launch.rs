@@ -28,7 +28,7 @@ pub const SCRUBBED_PREFIXES: &[&str] = &["GT4_", "PS2_"];
 
 /// Printed by the game when the player asked for "restart with the built-in renderer" after a GS process failure.
 /// The launcher no longer starts CoreGS 1.1 (TASK-096): it ends the session and shows the GSdx error instead.
-pub const GS_RESTART_MARKER: &str = "[gs-ipc] restart requested: renderer donor (CoreGS 1.1)";
+pub const GS_RESTART_MARKER: &str = "[gs-ipc] renderer change requested: CoreGS 2.0";
 
 /// The reason shown when the PCSX2 GS (GSdx) is not installed or its files fail verification.
 pub const GSDX_NOT_INSTALLED: &str = "GSdx is not installed yet";

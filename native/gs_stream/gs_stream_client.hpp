@@ -16,7 +16,7 @@
 //
 // TASK-037/038 (slice194): F8 prints the readback wait distribution; a GS process death lets the guest run
 // GT4_GS_LOST_GRACE_FRAMES (default 180) more VSYNCs so the runtime flushes a changed memory card, then halts; with a
-// window, a message box offers a restart with the built-in renderer (the launcher reads the restart line from the log);
+// window, a message box offers CoreGS 2.0 (the launcher reads the restart line from the log);
 // GT4_GS_HANDSHAKE_TIMEOUT_MS (default 20000) bounds the handshake; 0x0 resizes (minimized window) are not sent.
 //
 // GT4_GS_CAPTURE=<file> writes the same records to a .gscap version 2 file in either renderer mode (the donor output is

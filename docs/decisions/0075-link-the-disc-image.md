@@ -25,4 +25,4 @@ The game takes the disc path in the ANSI code page, a limit of the frozen donor 
 
 ## Limits
 
-The path is absolute, so a portable folder carried to another PC asks for the image once. Tested by the fixtures and the replay; an emulator holding the same image open at the same time was not tested.
+An image outside the launcher's folder is saved by its absolute path, so on another PC it asks to be chosen once. An image inside the folder is saved relative to it (owner, 2026-11-02), so a portable folder carries it along. The `game` folder is refused as a place for the image, because updates replace it. A linked image's time may differ by 2 seconds: a file system can round it when the image is carried there (exFAT, FAT). An emulator holding the same image open at the same time was not tested.

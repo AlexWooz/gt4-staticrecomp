@@ -95,6 +95,7 @@ pub struct Spec2Request<'a> {
     pub disc: &'a Path,
     pub prepared: &'a Path,
     pub staging: &'a Path,
+    pub install_dir: &'a Path,
     pub pins: &'a Spec2Pins,
     pub launcher_version: &'a str,
     pub cancel: &'a AtomicBool,
@@ -160,7 +161,7 @@ fn finish(
         },
         image: Some(ImageReceipt {
             file: setup::image_file_name(request.disc),
-            linked_path: Some(setup::linked_path(request.disc)?),
+            linked_path: Some(setup::linked_path(request.disc, request.install_dir)?),
             size_bytes: metadata.len(),
             modified_unix_nanos: setup::modified_nanos(&metadata),
             sha256: identity.sha256.clone(),
@@ -209,6 +210,6 @@ pub fn verify_prepared(prepared: &Path, pins: &Spec2Pins) -> Result<(), String> 
 }
 
 /// The cheap check of every Spec II launch (receipt, prepared size, image size and time; no hash).
-pub fn check_installed(prepared: &Path, disc_folder: &Path, pins: &Spec2Pins) -> setup::Installed {
-    setup::check_installed_with(prepared, disc_folder, &|folder| verify_prepared(folder, pins))
+pub fn check_installed(prepared: &Path, disc_folder: &Path, install_dir: &Path, pins: &Spec2Pins) -> setup::Installed {
+    setup::check_installed_with(prepared, disc_folder, install_dir, &|folder| verify_prepared(folder, pins))
 }

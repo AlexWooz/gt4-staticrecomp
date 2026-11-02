@@ -166,10 +166,12 @@ fn run_spec2(dirs: &SetupDirs, disc: &Path, pins: &Spec2Pins) -> Result<setup::R
     let cancel = AtomicBool::new(false);
     let prepared = dirs.prepared();
     let staging = dirs.staging();
+    let install_dir = dirs.root.join("launcher");
     let request = Spec2Request {
         disc,
         prepared: &prepared,
         staging: &staging,
+        install_dir: &install_dir,
         pins,
         launcher_version: "test",
         cancel: &cancel,
@@ -204,7 +206,7 @@ fn spec2_setup_copies_the_image_and_prepares_the_derived_elf_with_no_core_step()
     assert!(!dirs.disc().exists(), "the image is linked, not copied");
     assert_eq!(fs::read(&disc).unwrap(), image, "and only read");
     assert!(!dirs.staging().exists());
-    match spec2::check_installed(&dirs.prepared(), &dirs.disc(), &pins) {
+    match spec2::check_installed(&dirs.prepared(), &dirs.disc(), &dirs.root.join("launcher"), &pins) {
         Installed::Ready { image, serial, .. } => {
             assert_eq!(image, disc, "the game reads the image where it is");
             assert_eq!(serial, "SCUS-97436");
@@ -255,10 +257,12 @@ fn a_refused_disc_and_a_cancelled_setup_leave_nothing_behind() {
     let cancel = AtomicBool::new(true);
     let prepared = dirs.prepared();
     let staging = dirs.staging();
+    let install_dir = dirs.root.join("launcher");
     let request = Spec2Request {
         disc: &good,
         prepared: &prepared,
         staging: &staging,
+        install_dir: &install_dir,
         pins: &pins,
         launcher_version: "test",
         cancel: &cancel,

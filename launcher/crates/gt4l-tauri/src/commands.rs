@@ -570,7 +570,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
 
     std::thread::spawn(move || {
         let outcome = game::wait_for_exit(&running);
-        // TASK-096: a GSdx restart request ends the session with the GSdx error. CoreGS 1.1 is never started.
+        // GSdx failed and the player chose CoreGS 2.0 in the game's message (`use_coregs20_after_gsdx_failure`).
         // The game writes its last line as it exits; wait for it before classifying, so a normal close is never read
         // mid-write (owner, 2026-10-26: three normal closes were reported as crashes).
         let log_text = read_settled_log(&running.log_path);
@@ -586,6 +586,11 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         drop(running);
         lock(&shared).discord.on_game_end();
         lock(&shared).game_child = None;
+        let renderer_changed = gsdx_error.is_some() && {
+            let stored = lock(&shared).config.settings.clone();
+            let (_, graphics, _) = gt4l_platform::gpu::run_settings(&stored, state::current_language());
+            use_coregs20_after_gsdx_failure(&shared, graphics.card.as_ref().is_some_and(gt4l_core::gpu::GpuDevice::has_vulkan))
+        };
         // Owner (2026-10-26): Vulkan loses the device on the Intel HD 620 (issue #89). Remember it for this machine so
         // the next Play starts on Direct3D 11 instead of losing the device again.
         let switched = if gpu_lost.is_some() && run_api == "vulkan" {
@@ -622,8 +627,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
                 }
                 text
             }
+            (None, Some(_), _) if renderer_changed => messages::text("game.gsdx_switched", state::current_language()).to_string(),
             (None, Some(error), _) => {
-                state::log_warn(&dirs, "GSdx asked for a restart; the launcher does not start CoreGS 1.1");
+                state::log_warn(&dirs, "GSdx failed and this PC has no graphics card for CoreGS 2.0; the renderer stays");
                 error
             }
             (None, None, Outcome::NormalClose) => String::new(),
@@ -650,6 +656,26 @@ fn read_settled_log(path: &Path) -> String {
             return text;
         }
         std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// GSdx could not run and the player chose CoreGS 2.0 in the game's message: it is stored as the renderer, when this PC's card can
+/// run it. Returns whether the renderer changed.
+pub fn use_coregs20_after_gsdx_failure(shared: &Shared, card_has_vulkan: bool) -> bool {
+    if !card_has_vulkan {
+        return false;
+    }
+    let mut state = lock(shared);
+    match state.config.settings.set_by_user("renderer", settings::CORE_GS_20) {
+        Ok(()) => {
+            state.save_config();
+            state::log(&state.dirs, "GSdx could not run; the player chose CoreGS 2.0, now the renderer");
+            true
+        }
+        Err(error) => {
+            state::log_error(&state.dirs, &format!("could not store CoreGS 2.0 after GSdx failed: {error}"));
+            false
+        }
     }
 }
 
@@ -1257,8 +1283,7 @@ pub fn games_remove_of(id: String, shared: &Shared) -> Result<Value, String> {
             // The player may have linked an image that sits in this folder: that file is theirs.
             let linked = disc_setup::read_receipt(&place.join("prepared"))
                 .and_then(|receipt| receipt.image)
-                .and_then(|image| image.linked_path)
-                .map(PathBuf::from);
+                .and_then(|image| disc_setup::linked_image(&image, &state.install_dir));
             for name in REMOVED_FOLDERS {
                 let folder = place.join(name);
                 if linked.as_ref().is_some_and(|image| image.starts_with(&folder)) {

@@ -52,8 +52,8 @@ constexpr std::uint32_t kHandshakeTimeoutMinMs = 1000, kHandshakeTimeoutMaxMs = 
 // zeros) before it halts: the runtime writes a changed memory card after 50 quiet VSYNCs, so a save in progress is
 // finished and flushed first (TASK-038). GT4_GS_LOST_GRACE_FRAMES (tests): 0..600.
 constexpr std::uint32_t kLostGraceFrames = 180, kLostGraceMaxFrames = 600;
-// Printed when the player asked for a restart with the built-in renderer; the launcher looks for this line.
-constexpr const char *kRestartMarker = "[gs-ipc] restart requested: renderer donor (CoreGS 1.1)";
+// Printed when the player chose CoreGS 2.0 after GSdx failed; the launcher looks for this line and stores the choice.
+constexpr const char *kRestartMarker = "[gs-ipc] renderer change requested: CoreGS 2.0";
 constexpr std::uint32_t kShutdownTimeoutMs = 3000;
 // GIF data per record and qwords per READ_FIFO: fixed by the default region sizes, so the in-process capture and a
 // recorder process split the same chunks the same way (byte-identical files).
@@ -145,12 +145,19 @@ HWND visible_game_window() {
   return search.found;
 }
 
-std::wstring wide_text(const std::string &text) { return std::wstring(text.begin(), text.end()); }
+std::wstring wide_text(const std::string &text) { return ipc::widen(text); }
 
-// Asks the player whether to restart with the built-in renderer; prints the launcher marker on yes.
+// Offers CoreGS 2.0 when GSdx failed. Under the launcher, yes prints the marker and the launcher stores the choice. A game started
+// directly has no launcher to do that, so it only says where the choice is.
 void offer_restart(HWND window, const std::wstring &what) {
-  const std::wstring text = what + L"\n\nDetails are in the game log.\n\nRestart the game with the built-in renderer "
-                                   L"(CoreGS 1.1)?";
+  if (std::getenv("GT4_DIRECT_START") != nullptr) {
+    const std::wstring direct = what + L"\n\nDetails are in the game log.\n\nOpen GT4Recomp and choose CoreGS 2.0 in Settings > Graphics: it is part of the game "
+                                       L"and needs no download.";
+    MessageBoxW(window, direct.c_str(), L"GT4Recomp: GS renderer", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    return;
+  }
+  const std::wstring text = what + L"\n\nDetails are in the game log.\n\nUse CoreGS 2.0 from now on? It is part of the game and needs no download. You can "
+                                   L"change this in Settings > Graphics.";
   const int answer = MessageBoxW(window, text.c_str(), L"GT4Recomp: GS renderer", MB_YESNO | MB_ICONERROR | MB_SETFOREGROUND);
   if (answer == IDYES) {
     std::fprintf(stderr, "%s\n", kRestartMarker);
