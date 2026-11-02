@@ -233,6 +233,17 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
+        id: "performance_hud",
+        page: Page::Advanced,
+        group: "Performance",
+        title: "Performance HUD",
+        info: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the \
+               processor, the graphics card and memory.",
+        kind: TOGGLE,
+        default: "off",
+        connected: true,
+    },
+    SettingDef {
         id: "performance_report",
         page: Page::Advanced,
         group: "Diagnostics",

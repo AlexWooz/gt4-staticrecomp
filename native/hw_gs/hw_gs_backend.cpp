@@ -14,6 +14,7 @@
 #include "hw_present_spacing.hpp"
 
 #include "hw_gs_vulkan_loader.hpp" // Vulkan names renamed to gt4_hw_*; pointers loaded at run time
+#include "hud/hw_hud_layer.hpp"
 #include "writeback/hw_gs_vulkan_device_table.hpp"
 #include "writeback/hw_gs_present_scheduler.hpp"
 #include "writeback/hw_gs_writeback.hpp"
@@ -213,8 +214,16 @@ struct Backend::Impl {
     frametime_file = nullptr;
   }
 
+  // TASK-135: the performance HUD (GT4_HW_HUD=1); null when off.
+  const bool hud_wanted = [] {
+    const char *text = std::getenv("GT4_HW_HUD");
+    return text != nullptr && std::strcmp(text, "1") == 0;
+  }();
+  std::unique_ptr<gt4::hw::hud::Layer> hud_layer;
+
   // vkQueuePresentKHR with the log's id and times.
   VkResult queue_present(VkQueue on, VkPresentInfoKHR &present) {
+    if (hud_layer) hud_layer->note_present();
     if (!frametime_path && !present_wait_enabled) return vkQueuePresentKHR(on, &present);
     if (frametime_path && !frametime_file) {
       frametime_file = std::fopen(frametime_path, "w");
@@ -293,6 +302,7 @@ struct Backend::Impl {
     pacer_close();
     if (device) vkDeviceWaitIdle(device);
     frametime_close();
+    hud_layer.reset();
     destroy_upload();
     renderer.reset();  // GPU drawer resources are released before the device
     destroy_swapchain();
@@ -398,6 +408,7 @@ struct Backend::Impl {
   void destroy_swapchain() {
     if (!swapchain) return;
     frametime_drain();
+    if (hud_layer) hud_layer->targets_gone();
     for (std::uint32_t i = 0; i < image_count; ++i) {
       if (render_finished[i]) vkDestroySemaphore(device, render_finished[i], nullptr);
       render_finished[i] = VK_NULL_HANDLE;
@@ -428,7 +439,8 @@ struct Backend::Impl {
       image.arrayLayers = 1;
       image.samples = VK_SAMPLE_COUNT_1_BIT;
       image.tiling = VK_IMAGE_TILING_OPTIMAL;
-      image.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      image.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                    (hud_wanted ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VkImageUsageFlags{0});
       image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
       if (gt4_hwd_vkCreateImage(device, &image, nullptr, &pictures[i]) != VK_SUCCESS) return false;
@@ -860,6 +872,10 @@ struct Backend::Impl {
       error = "could not create the presentation pictures";
       return false;
     }
+    if (hud_wanted && !hud_layer) {
+      const char *scale = std::getenv("GT4_HW_SCALE");
+      hud_layer = std::make_unique<gt4::hw::hud::Layer>(physical, device, frame_slots, window, report.device_name, scale != nullptr ? scale : "");
+    }
     resize_pending = false;
     return true;
   }
@@ -993,6 +1009,9 @@ struct Backend::Impl {
       blit.dstOffsets[1] = {left + static_cast<std::int32_t>(dw), top + static_cast<std::int32_t>(dh), 1};
       gt4_hwd_vkCmdBlitImage(cmd, upload.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, draw_images[index],
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+      if (hud_layer) {
+        hud_layer->record(cmd, static_cast<std::uint32_t>(submissions % frame_slots), draw_images[index], swapchain_format, extent);
+      }
     });
   }
 

@@ -68,6 +68,12 @@ extern const std::uint32_t core2_compose_words[];
 extern const std::size_t core2_compose_word_count;
 extern const std::uint32_t core2_present_scale_words[];
 extern const std::size_t core2_present_scale_word_count;
+
+// TASK-135: the performance HUD's panel.
+extern const std::uint32_t hw_hud_vertex_words[];
+extern const std::size_t hw_hud_vertex_word_count;
+extern const std::uint32_t hw_hud_fragment_words[];
+extern const std::size_t hw_hud_fragment_word_count;
 extern const std::uint32_t core2_fill_words[];
 extern const std::size_t core2_fill_word_count;
 extern const std::uint32_t hw_pixel_uber_core2_words[];

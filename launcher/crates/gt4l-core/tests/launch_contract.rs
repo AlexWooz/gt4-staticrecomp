@@ -274,6 +274,22 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
 }
 
 #[test]
+fn the_performance_hud_is_off_by_default_and_on_only_when_chosen() {
+    let textures = Path::new("T");
+    let mut settings = Settings::default();
+    assert!(!settings.is_on("performance_hud"));
+    let off = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert!(!off.contains_key("GT4_HW_HUD"));
+    assert!(!launch::coregs20_section(&settings, None, false, textures).contains("hw_hud"));
+    settings.set("performance_hud", "on").unwrap();
+    let on = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    assert_eq!(on["GT4_HW_HUD"], "1");
+    assert!(launch::coregs20_section(&settings, None, false, textures).contains("hw_hud=1\n"));
+    // It is CoreGS 2.0's own: GSdx has its overlay.
+    assert!(!env_map(&game_environment(&settings)).contains_key("GT4_HW_HUD"));
+}
+
+#[test]
 fn gsdx_is_the_default_renderer_and_a_gsdx_session_needs_it_installed() {
     let mut settings = Settings::default();
     assert_eq!(settings.get("renderer"), "pcsx2", "GSdx is the default");

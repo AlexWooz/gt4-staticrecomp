@@ -343,3 +343,17 @@ George V Paris, normal mode, the owner's lap in real time, 16:9 on a 3440 x 1440
 | **12x, 30 FPS mode** | 100.00% | 30.0 | 0.21 ms | 33.0 / 33.3 / 33.7 / 34.0 | 12.52 |
 
 Frames with it off: 77 of 77 equal to candidate 375 (night 3x, Arcade 3x, George V Paris at 6x in both modes). The suite with 1 frame in 2 on the final exes, both games: race clock equal, 353 of 353 frames ok, at most 284 differing pixels of 286,720. The evidence: `build/evidence/g376`, `fs60`, `fs61`.
+
+## Performance HUD, candidate 377 (TASK-135, 2026-11-02)
+
+Spec II, George V Paris at 3x in a window on a 144 Hz display, the same recording, off and on in turns, build without PGO. The graphics thread's work over the race, and the last 2,800 presentation intervals:
+
+| Run | All stages | Processor | Graphics card busy | Interval mean | 1st / 99th percentile |
+|---|---|---|---|---|---|
+| Off, first | 8.94 ms | 7.59 ms | 6.41 ms | 16.667 ms | 16.30 / 17.00 ms |
+| On, first | 8.90 ms | 7.52 ms | 6.38 ms | 16.667 ms | 16.30 / 17.05 ms |
+| Off, second | 8.95 ms | 7.57 ms | 6.41 ms | 16.667 ms | 16.14 / 17.21 ms |
+| On, second | 8.90 ms | 7.51 ms | 6.38 ms | 16.667 ms | 16.31 / 17.09 ms |
+
+The difference is inside the noise, and the on runs came out lower, so this measures no cost rather than a gain. Its own counters on candidate 377 (PGO): 26.6 us of processor per presentation for the panel; 14.06 ms of processor per reading, twice a second, on its own thread (8 ms in the runs above), about 2.8% of one thread. Frames: 30 of 30 equal between 376 and 377 with it off, and 30 of 30 equal off and on (the dump is taken before the panel is drawn).
+

@@ -98,9 +98,19 @@ target_compile_options(gt4_hw_vulkan_loader PRIVATE /W4)
 target_compile_definitions(gt4_hw_vulkan_loader PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 # Backend, dispatch front end and device code. Vulkan is linked from the SDK import library.
-add_library(gt4_hw_backend STATIC hw_gs_backend.cpp hw_gs_dispatch.cpp)
+# TASK-135: the performance HUD. The numbers, the text and the panel (no Vulkan), and what Windows gives them.
+add_library(gt4_hw_hud STATIC hud/hw_hud.cpp hud/hw_hud_system.cpp)
+target_link_libraries(gt4_hw_hud PUBLIC gdi32 user32)
+target_compile_options(gt4_hw_hud PRIVATE /W4)
+target_compile_definitions(gt4_hw_hud PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_executable(hw_hud_fixture hud/hw_hud_fixture.cpp)
+target_link_libraries(hw_hud_fixture PRIVATE gt4_hw_hud)
+target_compile_options(hw_hud_fixture PRIVATE /W4)
+add_test(NAME hw_hud COMMAND hw_hud_fixture)
+
+add_library(gt4_hw_backend STATIC hw_gs_backend.cpp hw_gs_dispatch.cpp hud/hw_hud_layer.cpp)
 target_include_directories(gt4_hw_backend PRIVATE "${GT4_HW_VULKAN_SDK}/Include")
-target_link_libraries(gt4_hw_backend PUBLIC gt4_hw_options gt4_pacing gt4_hw_writeback gt4_hw_vulkan_loader "${GT4_HW_VULKAN_SDK}/Lib/vulkan-1.lib")
+target_link_libraries(gt4_hw_backend PUBLIC gt4_hw_hud gt4_hw_options gt4_pacing gt4_hw_writeback gt4_hw_vulkan_loader "${GT4_HW_VULKAN_SDK}/Lib/vulkan-1.lib")
 target_compile_options(gt4_hw_backend PRIVATE /W4)
 target_compile_definitions(gt4_hw_backend PRIVATE _CRT_SECURE_NO_WARNINGS)
 

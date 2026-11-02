@@ -65,6 +65,8 @@ bool load_device_entry_points(VkInstance instance, std::vector<std::string> &mis
   resolve(gt4_hwd_vkCreateImageView, proc, instance, "vkCreateImageView", missing);
   resolve(gt4_hwd_vkCreatePipelineLayout, proc, instance, "vkCreatePipelineLayout", missing);
   resolve(gt4_hwd_vkCreateRenderPass, proc, instance, "vkCreateRenderPass", missing);
+  resolve(gt4_hwd_vkCreateSampler, proc, instance, "vkCreateSampler", missing);
+  resolve(gt4_hwd_vkDestroySampler, proc, instance, "vkDestroySampler", missing);
   resolve(gt4_hwd_vkCreateShaderModule, proc, instance, "vkCreateShaderModule", missing);
   resolve(gt4_hwd_vkDestroyBuffer, proc, instance, "vkDestroyBuffer", missing);
   resolve(gt4_hwd_vkDestroyDescriptorPool, proc, instance, "vkDestroyDescriptorPool", missing);

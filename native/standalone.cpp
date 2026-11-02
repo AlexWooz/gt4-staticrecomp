@@ -349,6 +349,8 @@ Config parse_config(std::string_view text) {
       valid = value == "1";
     } else if (key == "hw_frame_skip") {
       valid = value == "2";  // the 30 FPS mode: one frame drawn in two
+    } else if (key == "hw_hud") {
+      valid = value == "1";  // TASK-135: the performance HUD
     } else if (key == "hw_postfx") {
       valid = value == "fxaa";
     } else if (key == "hw_present_mode") {
@@ -442,6 +444,7 @@ Environment coregs20_environment(const Config &config) {
   for (const auto &[key, name] : {std::pair<const char *, const char *>{"hw_scale", "GT4_HW_SCALE"},
                                   {"hw_performance", "GT4_CORE2_PERFORMANCE"},
                                   {"hw_frame_skip", "GT4_FRAME_SKIP_FORCE"},
+                                  {"hw_hud", "GT4_HW_HUD"},
                                   {"hw_textures", "GT4_HW_TEXTURES"},
                                   {"hw_postfx", "GT4_HW_POSTFX"},
                                   {"hw_sharpening", "GT4_CORE2_FSR_SHARPNESS"},

@@ -45,6 +45,8 @@
 #define vkCreateImageView gt4_hwd_vkCreateImageView
 #define vkCreatePipelineLayout gt4_hwd_vkCreatePipelineLayout
 #define vkCreateRenderPass gt4_hwd_vkCreateRenderPass
+#define vkCreateSampler gt4_hwd_vkCreateSampler
+#define vkDestroySampler gt4_hwd_vkDestroySampler
 #define vkCreateShaderModule gt4_hwd_vkCreateShaderModule
 #define vkDestroyBuffer gt4_hwd_vkDestroyBuffer
 #define vkDestroyDescriptorPool gt4_hwd_vkDestroyDescriptorPool
@@ -77,6 +79,8 @@ inline PFN_vkAllocateMemory gt4_hwd_vkAllocateMemory = nullptr;
 inline PFN_vkBindBufferMemory gt4_hwd_vkBindBufferMemory = nullptr;
 inline PFN_vkBindImageMemory gt4_hwd_vkBindImageMemory = nullptr;
 inline PFN_vkCmdBeginRenderPass gt4_hwd_vkCmdBeginRenderPass = nullptr;
+inline PFN_vkCreateSampler gt4_hwd_vkCreateSampler = nullptr;
+inline PFN_vkDestroySampler gt4_hwd_vkDestroySampler = nullptr;
 inline PFN_vkCmdBindDescriptorSets gt4_hwd_vkCmdBindDescriptorSets = nullptr;
 inline PFN_vkCmdBindPipeline gt4_hwd_vkCmdBindPipeline = nullptr;
 inline PFN_vkCmdBindVertexBuffers gt4_hwd_vkCmdBindVertexBuffers = nullptr;

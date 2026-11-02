@@ -174,6 +174,8 @@ pub fn settings_table_with_monitors(
             "resolution" => fill_resolution_row(&mut row, settings, monitors),
             "render_scale" => fill_render_scale_row(&mut row, settings, monitors, integrated_gpu),
             "vsync" if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 => without_fast_vsync(&mut row),
+            // TASK-135: CoreGS 2.0's own; GSdx has its overlay rows.
+            "performance_hud" => row["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 }),
             _ => {}
         }
         rows.push(row);
@@ -945,6 +947,16 @@ mod table_tests {
         let order = ids(&table);
         let mode = order.iter().position(|id| id == "performance_mode").unwrap();
         assert_eq!(order[mode + 1], "frame_rate");
+    }
+
+    #[test]
+    fn the_performance_hud_is_a_coregs_switch_in_advanced_off_by_default() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let hud = row(&table, "performance_hud");
+        assert_eq!(hud["control"], "toggle");
+        assert_eq!(hud["page"], "advanced");
+        assert_eq!(hud["current"], false);
+        assert_eq!(hud["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
     }
 
     #[test]

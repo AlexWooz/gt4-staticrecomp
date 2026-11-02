@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-135: performance HUD on CoreGS 2.0, candidate 377 (2026-11-02)
+
+Branch `task/135-coregs2-performance-hud`, on top of `task/082-coregs2-frame-skip`. Not merged, not uploaded, **not installed**: the installed game and launcher are still candidate 376, without the option selector and without the HUD. Exes in `build/candidates/coregs2-candidate-377`; `docs/inputs` pins and the distribution folder are made when it is built for install.
+
+- **The option:** Settings > Graphics > Advanced > Performance HUD, under CoreGS 2.0 only, off by default. A panel in the top right corner of the window: graphics card, output size, render scale, refresh rate, FPS, frame time, CPU and GPU of the game, memory, video memory, and a live frame time graph.
+- **Cost:** none measurable on the graphics thread; 26.6 us per presentation by its own counter (the ledger has the table).
+- **Checks:** ctest 168 passed, one skipped, with `hw_hud`; launcher `cargo test` passed; `dev/focus-check.html` in both languages; frames 30 of 30 equal to 376 and equal with it on; validation layer on the own-queue, one-queue and 30 FPS paths adds no message over a run with it off; a window resize works.
+- **Not verified:** the owner's session, fullscreen at the owner's resolution, the laptop, other graphics cards (the GPU and video memory lines read counters of Windows, and show dashes where those are missing).
+- **Known:** the panel covers what is behind it at 63% opacity (the owner did not ask to change it). The GSdx overlay is unchanged: changing it is fork work, for a PCSX2-tainted agent.
+
 ## TASK-082: the 30 FPS mode, candidate 376; unlocked FPS paused (2026-11-02)
 
 **The owner's decision:** any framerate needs interpolation to be smooth, so for now the option is a fixed **30 FPS mode**. The study of unlocked FPS paused and is saved in `docs/TASK-082-UNLOCKED-FPS-STATE.md`. The owner goes on with CPU optimisation with another agent. This replaces the Skip frames when slow of candidate 375, which was never released.
