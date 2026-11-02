@@ -536,7 +536,7 @@ bool open_window(bool fullscreen) {
   // TASK-088: a black background, not none. With no brush Windows shows the new window white until the first frame
   // (the start before the Sony logo); the game paints every frame, so only the first frames show it.
   window_class.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-  // Icon from the executable resource (gt4vulkan.rc, IDI 1 = game.ico from launcher/assets/brand).
+  // Icon from the executable resource (gt4vulkan.rc, IDI 1 = launcher.ico from launcher/assets/brand).
   window_class.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
   arrow_cursor = window_class.hCursor;
   if (!RegisterClassW(&window_class))
