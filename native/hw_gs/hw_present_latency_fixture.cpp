@@ -14,12 +14,11 @@ void check(bool condition, const char *what) {
   std::exit(1);
 }
 
-constexpr double kFrame = PresentLatencyControl::kFrameMs;
 constexpr int kWindow = PresentLatencyControl::kWindow;
 constexpr int kSettle = PresentLatencyControl::kSettle;
 
-void feed(PresentLatencyControl &control, int frames, double lag, double interval = kFrame) {
-  for (int i = 0; i < frames; ++i) control.shown(lag, interval);
+void feed(PresentLatencyControl &control, int frames, double lag) {
+  for (int i = 0; i < frames; ++i) control.shown(lag);
 }
 
 }  // namespace
@@ -45,34 +44,53 @@ int main() {
   }
   {  // One low sample in a window: not a long queue, the window takes the lowest.
     PresentLatencyControl control;
-    for (int i = 0; i < kWindow; ++i) control.shown(i == 10 ? 25.0 : 60.0, kFrame);
+    for (int i = 0; i < kWindow; ++i) control.shown(i == 10 ? 25.0 : 60.0);
     check(!control.leave_out(), "a window with one low sample left a frame out");
   }
-  {  // The display repeated a frame after one left out: as short as it goes; stay.
+  {  // The shortest queue this display takes: a frame out does not help; stay there.
     PresentLatencyControl control;
     feed(control, kWindow, 38.0);
     check(control.leave_out(), "did not try at 38 ms");
-    control.shown(38.0, kFrame * 2.0);
     feed(control, 600, 38.0);
-    check(!control.leave_out() && control.left_out() == 1, "tried again after the display repeated a frame");
+    check(!control.leave_out() && control.left_out() == 1, "tried again at the shortest queue");
     check(control.target_ms() > 38.0, "the target did not rise over the time it settled at");
   }
-  {  // No gain from a frame out (a slow display path): no endless hitches.
-    PresentLatencyControl control;
-    feed(control, kWindow, 60.0);
-    check(control.leave_out(), "did not try at 60 ms");
-    feed(control, 600, 60.0);
-    check(!control.leave_out() && control.left_out() == 1, "kept trying with no gain");
-  }
-  {  // A queue grown by a hiccup later on is still seen after the target rose.
+  {  // A queue grown by a skipped refresh later on is still seen after the target rose, and goes back down.
     PresentLatencyControl control;
     feed(control, kWindow, 38.0);
     check(control.leave_out(), "did not try at 38 ms");
-    control.shown(38.0, kFrame * 2.0);
-    feed(control, kSettle + kWindow - 1, 38.0);
+    feed(control, kSettle + kWindow, 38.0);
     feed(control, kWindow, 55.0);
     check(control.leave_out(), "a grown queue was not seen after the target rose");
+    feed(control, kSettle + kWindow, 38.0);
+    feed(control, 600, 38.0);
+    check(!control.leave_out() && control.left_out() == 2, "kept trying back at the shortest queue");
   }
-  std::puts("hw_present_latency: ok (short queue, long queue, single sample, display repeat, no gain, grown queue)");
+  {  // The display skips a refresh just as a frame goes out: no gain at a level clearly over the lowest seen. Not the shortest
+     // queue: a second try reaches it, and the target did not rise.
+    PresentLatencyControl control;
+    feed(control, kWindow, 31.0);
+    feed(control, kWindow, 48.0);
+    check(control.leave_out(), "did not try at 48 ms");
+    feed(control, kSettle + kWindow, 48.0);
+    check(control.leave_out(), "no second try over the lowest seen");
+    feed(control, kSettle + kWindow, 31.0);
+    feed(control, 600, 31.0);
+    check(!control.leave_out() && control.left_out() == 2, "kept trying after the second try helped");
+    check(control.target_ms() == PresentLatencyControl::kStartTargetMs, "the target rose with a queue that could shorten");
+  }
+  {  // A lower time in the menus does not make a race's shortest queue an endless series of hitches: two tries, then it stays.
+    PresentLatencyControl control;
+    feed(control, kWindow, 17.0);
+    feed(control, kWindow, 37.0);
+    check(control.leave_out(), "did not try at 37 ms");
+    feed(control, kSettle + kWindow, 37.0);
+    check(control.leave_out(), "no second try over the lowest seen");
+    feed(control, kSettle + kWindow, 37.0);
+    feed(control, 600, 37.0);
+    check(!control.leave_out() && control.left_out() == 2, "kept trying at the shortest queue");
+    check(control.target_ms() > 37.0, "the target did not rise over the time it settled at");
+  }
+  std::puts("hw_present_latency: ok (short queue, long queue, single sample, shortest queue, grown queue, skipped refresh, menus)");
   return 0;
 }
