@@ -157,6 +157,16 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
+        id: "skip_frames_when_slow",
+        page: Page::Graphics,
+        group: "Performance",
+        title: "Skip frames when slow",
+        info: "When your PC cannot keep up in a race, draws fewer frames, down to 20 per second, so the game keeps its full speed. The physics do not change. Off: the game slows down instead.",
+        kind: TOGGLE,
+        default: "off",
+        connected: true,
+    },
+    SettingDef {
         id: "coregs_sharpening",
         page: Page::Graphics,
         group: "Image",

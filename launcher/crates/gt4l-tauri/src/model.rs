@@ -166,7 +166,8 @@ pub fn settings_table_with_monitors(
         }
         // TASK-108: the Graphics card row sits after the Graphics API row and the FSR1 row after CAS (added with the table
         // rows below).
-        if definition.id == "graphics_card" || definition.id == "coregs_sharpening" {
+        // TASK-082: Skip frames when slow sits after Performance Mode, under the renderer that has it.
+        if definition.id == "graphics_card" || definition.id == "coregs_sharpening" || definition.id == "skip_frames_when_slow" {
             continue;
         }
         let mut row = launcher_row(definition, settings);
@@ -191,6 +192,15 @@ pub fn settings_table_with_monitors(
         // What Performance Mode does depends on the renderer.
         if row.id == "performance_mode" && settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
             out["help_key"] = json!("setting.performance_mode.help_coregs20");
+        }
+        if row.id == "performance_mode" {
+            rows.push(out);
+            if let Some(definition) = gt4l_core::settings::definition("skip_frames_when_slow") {
+                let mut skip = launcher_row(definition, settings);
+                skip["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
+                rows.push(skip);
+            }
+            continue;
         }
         if row.id == "cas_sharpness" {
             rows.push(out);
@@ -926,6 +936,20 @@ mod table_tests {
         assert_eq!(mode["current"], json!(false));
         assert!(mode.get("disabled").is_none(), "a stored renderer never disables it");
         assert!(mode.get("visible_when").is_none(), "shown under both renderers");
+    }
+
+    #[test]
+    fn skip_frames_when_slow_is_a_coregs_toggle_off_by_default_after_performance_mode() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let skip = row(&table, "skip_frames_when_slow");
+        assert_eq!(skip["control"], "toggle");
+        assert_eq!(skip["page"], "basic", "the main Graphics section, not Advanced");
+        assert_eq!(skip["default"], json!(false));
+        assert_eq!(skip["current"], json!(false));
+        assert_eq!(skip["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
+        let order = ids(&table);
+        let mode = order.iter().position(|id| id == "performance_mode").unwrap();
+        assert_eq!(order[mode + 1], "skip_frames_when_slow");
     }
 
     #[test]

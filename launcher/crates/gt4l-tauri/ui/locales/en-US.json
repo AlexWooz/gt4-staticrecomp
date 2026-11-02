@@ -165,6 +165,8 @@
   "setting.renderer.help": "GSdx draws the game on your GPU in its own process; it is the default renderer. CoreGS 2.0 is our own renderer, in beta: it uses much less processor.",
   "choice.renderer.coregs20": "CoreGS 2.0 (beta)",
   "setting.vsync.help_coregs20": "On keeps motion smooth with no tearing. Off lowers latency and may tear.",
+  "setting.skip_frames_when_slow.label": "Skip frames when slow",
+  "setting.skip_frames_when_slow.help": "When your PC cannot keep up in a race, draws fewer frames, down to 20 per second, so the game keeps its full speed. The physics do not change. Off: the game slows down instead.",
   "setting.coregs_sharpening.label": "Sharpening (FSR1)",
   "setting.coregs_sharpening.help": "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
   "choice.coregs_sharpening.off": "Off",

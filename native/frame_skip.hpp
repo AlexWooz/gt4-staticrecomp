@@ -17,7 +17,8 @@
 // just ran.
 //
 // Off by default: GT4_FRAME_SKIP=1 skips when behind, GT4_FRAME_SKIP_FORCE=2|3 keeps 1 frame in 2 or 3 (tests). Only in a running
-// race: the race clock must rise by one step per frame for a second; pause, menus and accelerated time close that gate at once.
+// race: the race clock must rise by one step per frame for a second; pause, menus and accelerated time close that gate at once. And
+// only in 480p.
 // GT4_FRAME_SKIP_LOG=<csv>: one row per frame, for scripts/coregs2_bench/frame_sheet.py.
 
 #include <algorithm>

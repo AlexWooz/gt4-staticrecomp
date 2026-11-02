@@ -172,6 +172,13 @@ void start_from_environment() {
   const int force = forceText != nullptr ? std::atoi(forceText) : 0;
   const bool adaptive = onText != nullptr && std::strcmp(onText, "1") == 0;
   if (force < 1 && !adaptive) return;  // 1 leaves nothing out: the reference run of the log
+  // The checks hold for 480p, which the launcher always asks for. In the game's own 480i every picture weaves two fields, and that is
+  // not tested: the display is frame by frame unlike the same drive with nothing left out.
+  const char *progressive = std::getenv("GT4_FORCE_480P");
+  if (progressive == nullptr || std::strcmp(progressive, "1") != 0) {
+    std::fprintf(stderr, "[frame-skip] needs GT4_FORCE_480P=1: off\n");
+    return;
+  }
   const auto &hooks = ::gt4::target::active().hooks;
   if (hooks.frame_render_functor == 0) {
     std::fprintf(stderr, "[frame-skip] this target has no addresses for it: off\n");

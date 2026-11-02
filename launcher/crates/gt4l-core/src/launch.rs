@@ -203,6 +203,9 @@ pub fn coregs20_environment(
     if settings.gs_value("performance_mode") == "no-readbacks" {
         variables.insert("GT4_CORE2_PERFORMANCE", "1".to_string());
     }
+    if settings.is_on("skip_frames_when_slow") {
+        variables.insert("GT4_FRAME_SKIP", "1".to_string());
+    }
     // The session's frametime log, beside its game.log (the working directory is the session folder).
     variables.insert("GT4_HW_FRAMETIME_LOG", "frametime.csv".to_string());
     if settings.gs_value("texture_load") == "true" {
@@ -394,7 +397,7 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
 }
 
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
-/// `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
+/// `hw_frame_skip`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
 /// `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps its `present_mode`).
 pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &Path) -> String {
     let mut text = String::from("renderer=coregs20\n");
@@ -405,6 +408,7 @@ pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, in
         let key = match name.as_str() {
             "GT4_HW_SCALE" => "hw_scale",
             "GT4_CORE2_PERFORMANCE" => "hw_performance",
+            "GT4_FRAME_SKIP" => "hw_frame_skip",
             "GT4_HW_TEXTURES" => "hw_textures",
             "GT4_HW_POSTFX" => "hw_postfx",
             "GT4_CORE2_FSR_SHARPNESS" => "hw_sharpening",

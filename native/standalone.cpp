@@ -345,7 +345,7 @@ Config parse_config(std::string_view text) {
       valid = value == "coregs20";  // TASK-027: GSdx, the default, is not written
     } else if (key == "hw_scale") {
       valid = (value.size() == 1 && value[0] >= '1' && value[0] <= '9') || value == "10" || value == "11" || value == "12";
-    } else if (key == "hw_performance") {
+    } else if (key == "hw_performance" || key == "hw_frame_skip") {
       valid = value == "1";
     } else if (key == "hw_postfx") {
       valid = value == "fxaa";
@@ -439,6 +439,7 @@ Environment coregs20_environment(const Config &config) {
   Environment out = {{"GT4_RENDERER", "hw"}, {"GT4_HW_CORE", "2"}};
   for (const auto &[key, name] : {std::pair<const char *, const char *>{"hw_scale", "GT4_HW_SCALE"},
                                   {"hw_performance", "GT4_CORE2_PERFORMANCE"},
+                                  {"hw_frame_skip", "GT4_FRAME_SKIP"},
                                   {"hw_textures", "GT4_HW_TEXTURES"},
                                   {"hw_postfx", "GT4_HW_POSTFX"},
                                   {"hw_sharpening", "GT4_CORE2_FSR_SHARPNESS"},
