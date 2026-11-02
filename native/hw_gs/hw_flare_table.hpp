@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -44,11 +45,27 @@ public:
   using Table = std::array<std::uint8_t, kBytes>;
   using Clock = std::chrono::steady_clock;
 
-  // EE: a read of this VBlank is about to enter the stream.
-  std::uint64_t post(std::uint64_t vblank) {
+  // EE: a read of this VBlank is about to enter the stream. `dest`: where the worker leaves the words, for a read the EE
+  // does not wait for (IN-522).
+  std::uint64_t post(std::uint64_t vblank, std::uint8_t *dest = nullptr) {
     const std::uint64_t ticket = ++posted_;
     postedVblank_[ticket % postedVblank_.size()] = vblank;
+    postedDest_[ticket % postedDest_.size()].store(dest, std::memory_order_relaxed);
     return ticket;
+  }
+
+  // Worker: where the next read to finish leaves its words, null when the EE takes them itself.
+  std::uint8_t *next_dest() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return postedDest_[(done_ + 1u) % postedDest_.size()].load(std::memory_order_relaxed);
+  }
+
+  // Any thread (IN-522, the VU1 worker): waits for this read and copies part of its table. A VU1 job that uses a read comes
+  // after it in the GS stream, so a later read cannot finish first, and the table is still this read's.
+  void wait_copy(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    doneChanged_.wait(lock, [&] { return done_ >= ticket; });
+    std::copy_n(table_.begin() + static_cast<std::ptrdiff_t>(offset), bytes, out);
   }
 
   // EE: copies the answer of `ticket` to `data`; returns whether it is a late one (an earlier read's table).
@@ -71,7 +88,7 @@ public:
       table_ = table;
       ++done_;
     }
-    doneChanged_.notify_one();
+    doneChanged_.notify_all();
   }
 
 private:
@@ -82,6 +99,7 @@ private:
 
   std::uint64_t posted_ = 0;                        // EE only
   std::array<std::uint64_t, 16> postedVblank_{};    // written by the EE, read by the EE
+  std::array<std::atomic<std::uint8_t *>, 16> postedDest_{};
   std::mutex mutex_;
   std::condition_variable doneChanged_;
   std::uint64_t done_ = 0;

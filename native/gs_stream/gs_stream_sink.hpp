@@ -10,6 +10,7 @@
 // (native/hw_gs/hw_gs_stream_sink.cpp) provides it. This header is Vulkan-free and Win32-free.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -20,6 +21,16 @@ class Doorbell;
 }  // namespace gt4::mtvu
 
 namespace gt4::gs_stream {
+
+// IN-522: the flare table's read without the EE waiting. The sink posts the read and leaves the table's guest memory to the GS
+// worker; `note` tells the VU1 transport which memory that is, so a VIF packet copied from it gets the fresh words before
+// it runs, through `wait_copy` on the VU1 worker. Both stay null without direct GS intake, and the read then waits as before.
+struct DeferredTable {
+  void (*note)(const std::uint8_t *dest, std::size_t bytes, std::uint64_t ticket) = nullptr;   // set by the VU1 transport
+  void (*wait_copy)(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out) = nullptr;  // set by the sink
+  std::uint64_t (*patches)() = nullptr;  // set by the VU1 transport: VIF packets given fresh words so far
+};
+inline DeferredTable g_deferred_table;
 
 struct InProcessSink {
   // Called once, when GT4_RENDERER=hw is parsed (before the first frame). False: `error` says why; the client refuses

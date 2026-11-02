@@ -12,17 +12,21 @@
 #include "flare_limits.hpp"
 #include "perf_probe.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string_view>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace ps2 {
 extern std::uint8_t g_ram[]; // ps2/memory.hpp (guest RAM, 32 MB)
@@ -129,6 +133,22 @@ struct Runtime {
   // TASK-084 step 1: the pending VIF1 batch (EE thread only); walk_vif_batch replays it on the worker.
   VifBatch vif_batch;
 
+  // IN-522: the table the GS worker will write (EE thread only), the parts of the pending batch copied from it, and the parts
+  // of posted jobs, for the worker. Empty nearly always, and `job_patches_posted` keeps the worker off the lock then.
+  struct TablePatch {
+    std::uint64_t job = 0, ticket = 0;
+    std::size_t payload_offset = 0, table_offset = 0, bytes = 0;
+  };
+  const std::uint8_t *table_dest = nullptr;
+  std::size_t table_bytes = 0;
+  std::uint64_t table_ticket = 0;
+  std::vector<TablePatch> batch_patches;
+  std::mutex job_patches_mutex;
+  std::deque<TablePatch> job_patches;
+  std::atomic<std::uint64_t> job_patches_posted{0};
+  std::uint64_t job_patches_applied = 0;  // worker thread only
+  DeferredTableCopy table_copy = nullptr;
+
   std::atomic<bool> worker_failed{false};
   std::exception_ptr worker_error;  // written by the worker before worker_failed is released
   std::uint64_t worker_job = 0;     // worker thread only
@@ -196,6 +216,23 @@ void rethrow_worker_error() {
   if (r.worker_failed.load(std::memory_order_acquire)) std::rethrow_exception(r.worker_error);
 }
 
+// IN-522, on the worker: the parts of this job's payload copied from a table the GS worker was going to write.
+void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t> &payload) {
+  if (r.job_patches_posted.load(std::memory_order_acquire) == r.job_patches_applied) return;
+  for (;;) {
+    Runtime::TablePatch patch;
+    {
+      const std::lock_guard<std::mutex> lock(r.job_patches_mutex);
+      if (r.job_patches.empty() || r.job_patches.front().job != job) return;
+      patch = r.job_patches.front();
+      r.job_patches.pop_front();
+    }
+    r.worker_end->wake_before_waiting();
+    r.table_copy(patch.ticket, patch.table_offset, patch.bytes, payload.data() + patch.payload_offset);
+    ++r.job_patches_applied;
+  }
+}
+
 void run_job(Runtime &r, RecordKind kind, const std::vector<std::uint8_t> &payload) {
   switch (kind) {
     case RecordKind::VifPacket:
@@ -256,6 +293,7 @@ void worker_main() {
     // After a failure the worker only acknowledges jobs, so the EE never waits forever; it rethrows at the next sync.
     if (!r.worker_failed.load(std::memory_order_acquire)) {
       try {
+        apply_table_patches(r, header.job, payload);
         run_job(r, kind, payload);
       } catch (...) {
         r.worker_error = std::current_exception();
@@ -512,6 +550,48 @@ void drain_download() {
 
 bool on_worker() { return t_on_worker; }
 
+namespace {
+
+// IN-522, on the EE: the part of a VIF packet at `data` that comes from the pending table, at this offset of its payload.
+void note_table_copy(Runtime &r, const std::uint8_t *data, std::size_t bytes, std::size_t payload_offset,
+                     std::vector<Runtime::TablePatch> &out) {
+  if (r.table_dest == nullptr) return;
+  const std::uintptr_t begin = reinterpret_cast<std::uintptr_t>(data), end = begin + bytes;
+  const std::uintptr_t table = reinterpret_cast<std::uintptr_t>(r.table_dest), table_end = table + r.table_bytes;
+  if (end <= table || begin >= table_end) return;
+  const std::uintptr_t from = std::max(begin, table), to = std::min(end, table_end);
+  out.push_back({0, r.table_ticket, payload_offset + (from - begin), static_cast<std::size_t>(from - table),
+                 static_cast<std::size_t>(to - from)});
+}
+
+void post_table_patches(Runtime &r, std::uint64_t job, std::vector<Runtime::TablePatch> &patches) {
+  if (patches.empty()) return;
+  {
+    const std::lock_guard<std::mutex> lock(r.job_patches_mutex);
+    for (Runtime::TablePatch &patch : patches) {
+      patch.job = job;
+      r.job_patches.push_back(patch);
+    }
+  }
+  r.job_patches_posted.fetch_add(patches.size(), std::memory_order_release);
+  patches.clear();
+}
+
+}  // namespace
+
+void note_deferred_table(const std::uint8_t *dest, std::size_t bytes, std::uint64_t ticket) {
+  Runtime &r = rt();
+  r.table_dest = dest;
+  r.table_bytes = bytes;
+  r.table_ticket = ticket;
+}
+
+void set_deferred_table_copy(DeferredTableCopy copy) { rt().table_copy = copy; }
+
+std::uint64_t deferred_table_patches() { return rt().job_patches_posted.load(std::memory_order_relaxed); }
+
+bool direct_gs_intake() { return enabled() && rt().direct; }
+
 void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc) {
   Runtime &r = rt();
   if (!enabled()) return;
@@ -524,6 +604,8 @@ void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc) {
     r.vif_job_bytes += 4 + bytes;
     gt4::perf::frame_counters().vif_jobs += 1;
     gt4::perf::frame_counters().vif_job_bytes += 4 + bytes;
+    note_table_copy(r, data, bytes, 0, r.batch_patches);
+    post_table_patches(r, job, r.batch_patches);
     r.journal->post_job(RecordKind::VifPacket, job, data, bytes);
     r.journal->drain(false);
     rethrow_worker_error();
@@ -532,6 +614,7 @@ void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc) {
   // TASK-084 step 1: append to the chain's batch. A batch above the size bound is posted as its own job, still far
   // below one job per packet; the journal placeholder keeps its position in the stream.
   if (!r.vif_batch.empty() && r.vif_batch.size() + 4 + bytes > kVifBatchBytes) flush_vif_chain();
+  note_table_copy(r, data, bytes, r.vif_batch.size() + 4, r.batch_patches);
   r.vif_batch.append(data, qwc);
 }
 
@@ -543,6 +626,7 @@ void flush_vif_chain() {
   r.vif_job_bytes += r.vif_batch.size();
   gt4::perf::frame_counters().vif_jobs += 1;
   gt4::perf::frame_counters().vif_job_bytes += r.vif_batch.size();
+  post_table_patches(r, job, r.batch_patches);
   r.journal->post_job(RecordKind::VifBatch, job, r.vif_batch.payload(), r.vif_batch.size());
   r.vif_batch.reset();
   r.journal->drain(false);

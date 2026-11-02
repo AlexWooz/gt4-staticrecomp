@@ -123,6 +123,7 @@ struct TransportCounters {
   std::atomic<std::uint64_t> drain_wait_ticks{0}, drains{0};       // read_fifo / window calls waiting for the worker
   std::atomic<std::uint64_t> read_fifo_ticks{0}, read_fifos{0};    // read_fifo including its drain
   std::atomic<std::uint64_t> flare_reads{0}, flare_late{0}, flare_start_us{0}, flare_answer_us{0};  // IN-514
+  std::atomic<std::uint64_t> flare_deferred{0};  // IN-522
   std::atomic<std::uint64_t> wake_pushes{0};       // pushes that found the worker waiting for work
   // Worker (GS worker thread).
   std::atomic<std::uint64_t> busy_ticks[5] = {};   // per GsCommand::Kind: Gif, Privileged, Vsync, GsReset, GifReset
@@ -205,6 +206,11 @@ void print_flare_table() {
   lastFlareLate = flareLate;
   lastFlareStart = flareStart;
   lastFlareAnswer = flareAnswer;
+  if (const std::uint64_t deferred = t.flare_deferred.load()) {
+    const auto patches = gt4::gs_stream::g_deferred_table.patches;
+    std::fprintf(stderr, "[hw] flare table: %llu reads without the EE waiting, %llu VIF packets given their words\n",
+                 static_cast<unsigned long long>(deferred), static_cast<unsigned long long>(patches != nullptr ? patches() : 0));
+  }
 }
 
 // TASK-027 CPU survey: one [hw] transport line per profile interval (per-VBlank averages).
@@ -508,6 +514,16 @@ public:
   // IN-477: a read the EE does not wait for, at its place in the stream.
   void post_skipped_read(std::uint32_t qwords) { push(SinkRecord::SkippedRead, 0, qwords, nullptr, 0); }
 
+  // IN-522 (EE thread): the flare table read at its place in the stream, not waited for: the worker writes `dest`.
+  std::uint64_t post_flare_table(std::uint8_t *dest, std::uint64_t vblank) {
+    const std::uint64_t ticket = flareReads_.post(vblank, dest);
+    push(SinkRecord::FlareRead, 0, FlareTableReads::kQwords, nullptr, 0);
+    return ticket;
+  }
+  void wait_copy_flare_table(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out) {
+    flareReads_.wait_copy(ticket, offset, bytes, out);
+  }
+
   // IN-514 (EE thread): the flare table read at its place in the stream, answered by `deadline` (hw_flare_table.hpp).
   bool read_flare_table(std::uint8_t *data, std::uint64_t vblank, FlareTableReads::Clock::time_point deadline) {
     const std::uint64_t ticket = flareReads_.post(vblank);
@@ -604,9 +620,10 @@ private:
             read_fifo_now(scratch.data(), static_cast<std::uint32_t>(header.job));
             break;
           }
-          case SinkRecord::FlareRead: {  // IN-514
+          case SinkRecord::FlareRead: {  // IN-514, IN-522
             FlareTableReads::Table table;
             read_fifo_now(table.data(), FlareTableReads::kQwords);
+            if (std::uint8_t *dest = flareReads_.next_dest()) std::memcpy(dest, table.data(), table.size());
             flareReads_.finish(table);
             break;
           }
@@ -759,9 +776,39 @@ double flare_deadline_ms() {
   return fixed >= 0.0 ? fixed : g_flare_deadline.ms();
 }
 
+// IN-522 (normal mode): the EE does not wait for the flare table at all. It waited for most of the GS work of the frame there,
+// 8.5 ms per VBlank at 6x, though it never reads the table: only the VU1 does, from a VIF packet after it in the stream, and
+// that packet now waits for the words on the VU1 worker. So the flares are exact and no answer is late. Needs direct GS intake
+// (the VU1 transport sets g_deferred_table.note). GT4_HW_FLARE_DEFER=0: the read waits, with the limit of IN-514 (A/B).
+bool flare_table_deferred() {
+  static const bool on = [] {
+    const char *text = std::getenv("GT4_HW_FLARE_DEFER");
+    return text == nullptr || std::strcmp(text, "0") != 0;
+  }();
+  return on && gt4::gs_stream::g_deferred_table.note != nullptr;
+}
+
+// The VU1 worker, for a VIF packet that uses a deferred read: the worker exists, the read was posted through it.
+void wait_copy_flare_table(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out) {
+  g_worker->wait_copy_flare_table(ticket, offset, bytes, out);
+}
+
 void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
   if (!g_worker) {
     read_fifo_now(data, qwords);
+    return;
+  }
+  if (qwords == FlareTableReads::kQwords && flare_table_answered_at_once()) {
+    std::memset(data, 0, static_cast<std::size_t>(qwords) * 16u);
+    g_worker->post_skipped_read(qwords);
+    add(g_transport.read_fifos, 1);
+    return;
+  }
+  if (qwords == FlareTableReads::kQwords && flare_table_deferred()) {
+    const std::uint64_t ticket = g_worker->post_flare_table(data, g_ee_vblanks);
+    gt4::gs_stream::g_deferred_table.note(data, FlareTableReads::kBytes, ticket);
+    add(g_transport.read_fifos, 1);
+    add(g_transport.flare_deferred, 1);
     return;
   }
   if (qwords == FlareTableReads::kQwords && flare_deadline_ms() > 0.0 && g_window_attached.load(std::memory_order_relaxed) &&
@@ -781,12 +828,6 @@ void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
     add(g_transport.flare_answer_us, static_cast<std::uint64_t>(
                                          std::chrono::duration_cast<std::chrono::microseconds>(endTime - g_ee_last_vblank).count()));
     g_flare_answer_ms = std::chrono::duration<double, std::milli>(endTime - g_ee_last_vblank).count();
-    return;
-  }
-  if (qwords == FlareTableReads::kQwords && flare_table_answered_at_once()) {
-    std::memset(data, 0, static_cast<std::size_t>(qwords) * 16u);
-    g_worker->post_skipped_read(qwords);
-    add(g_transport.read_fifos, 1);
     return;
   }
   const std::uint64_t start = __rdtsc();
@@ -967,6 +1008,7 @@ const InProcessSink &hw_in_process_sink() {
     s.gif = &gt4::hw::gif;
     s.privileged = &gt4::hw::privileged;
     s.read_fifo = &gt4::hw::read_fifo;
+    g_deferred_table.wait_copy = &gt4::hw::wait_copy_flare_table;
     s.vsync = &gt4::hw::vsync;
     s.gs_reset = &gt4::hw::gs_reset;
     s.gif_reset = &gt4::hw::gif_reset;

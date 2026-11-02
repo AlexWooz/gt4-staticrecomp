@@ -80,6 +80,14 @@ void start_with_donor(const Settings &settings) {
   }
 #endif
   start(settings, donor);
+#ifdef GT4_GS_STREAM_CLIENT
+  // IN-522: the flare table's read without the EE waiting, only with VU1 jobs on the worker and direct GS intake.
+  if (gt4::mtvu::direct_gs_intake() && gt4::gs_stream::g_deferred_table.wait_copy != nullptr) {
+    gt4::mtvu::set_deferred_table_copy(gt4::gs_stream::g_deferred_table.wait_copy);
+    gt4::gs_stream::g_deferred_table.patches = &gt4::mtvu::deferred_table_patches;
+    gt4::gs_stream::g_deferred_table.note = &gt4::mtvu::note_deferred_table;
+  }
+#endif
 }
 
 }  // namespace gt4::mtvu

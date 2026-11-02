@@ -82,6 +82,24 @@ int main() {
     check(reads.answer(later, 10 + FlareTableReads::kVblanksBehind, Clock::now() + 1ms, out.data()), "a recent table was refused");
     check(out[0] == 7, "a recent table was not copied");
   }
+  {  // IN-522: a read the EE does not wait for: the VU1 worker waits for its words, and the worker has their memory.
+    FlareTableReads reads;
+    std::uint8_t guest[FlareTableReads::kBytes] = {};
+    const std::uint64_t ticket = reads.post(10, guest);
+    check(reads.next_dest() == guest, "the worker does not know where the words go");
+    std::thread worker([&] {
+      std::this_thread::sleep_for(20ms);
+      reads.finish(table_of(8));
+    });
+    std::uint8_t part[16] = {};
+    reads.wait_copy(ticket, 32, sizeof part, part);
+    check(part[0] == 8 && part[15] == 8, "the VU1 worker did not get the read's words");
+    worker.join();
+    const std::uint64_t waited = reads.post(11);
+    check(reads.next_dest() == nullptr, "a read the EE waits for has a destination");
+    reads.finish(table_of(9));
+    check(!reads.answer(waited, 11, Clock::now() + 1h, out.data()) && out[0] == 9, "the waited read is wrong");
+  }
   {  // The limit follows what the frame had left, down fast, up slowly, within its bounds.
     gt4::hw::FlareDeadline deadline;
     check(deadline.ms() == gt4::hw::FlareDeadline::kStartMs, "the limit does not start at its start");

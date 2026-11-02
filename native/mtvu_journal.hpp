@@ -54,6 +54,12 @@ class WorkerEnd {
   void emit_gif(std::uint8_t path, std::uint64_t job, const std::uint8_t *data, std::size_t bytes);
   void emit_job_done(std::uint64_t job);
 
+  // IN-522: the worker is about to wait for something other than input. Who reads the output may sleep behind quiet publishes,
+  // and may be what that wait depends on (the GS worker on its way to a read), so it wakes first.
+  void wake_before_waiting() {
+    if (quiet_pending_) progress(true);
+  }
+
  private:
   SpscByteRing &input_;
   SpscByteRing &output_;

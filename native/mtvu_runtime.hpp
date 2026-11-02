@@ -8,6 +8,7 @@
 // Only the EE thread calls the EE entry points; the worker calls worker_gif() and the Donor worker callbacks.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
@@ -129,6 +130,13 @@ std::uint64_t worker_busy_us();
 
 // EE entry points (no-ops when not enabled, except gif_transfer which renders directly).
 void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc);
+// IN-522: the guest memory of a table the GS worker will write (`ticket` in the GS stream). A VIF packet copied from it gets the
+// fresh words on the VU1 worker, before it runs. `wait_copy` waits for that read and copies part of its table.
+void note_deferred_table(const std::uint8_t *dest, std::size_t bytes, std::uint64_t ticket);
+using DeferredTableCopy = void (*)(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out);
+void set_deferred_table_copy(DeferredTableCopy copy);
+std::uint64_t deferred_table_patches();  // VIF packets given fresh words so far
+bool direct_gs_intake();  // VU1 jobs run on the worker and the GS worker reads their output itself
 // TASK-084 step 1: closes the pending VIF1 batch and posts it as one job. Called by the DMA chain end, a VIF1 stall,
 // and before any other journal or sync operation; a no-op when nothing is batched or GT4_MTVU_CHAIN=0.
 void flush_vif_chain();
