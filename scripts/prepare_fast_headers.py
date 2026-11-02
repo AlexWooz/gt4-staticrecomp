@@ -7,6 +7,8 @@ input (native/vu_fast_ops_fixture.cpp):
   - fp::add and fp::mul, the exact soft float behind the EE FPU and the VU0 macro operations, without the branches a processor
     cannot predict: which operand is larger, whether the signs differ, whether the product carries. They are a fifth of the EE
     thread's CPU in a race, and that is physics code, so only the form may change.
+  - the VU0 macro operations built on them (add, sub, mul and the madd and msub families, with their accumulator forms) compute the
+    four lanes at once with native/fp4.hpp.
   - vuops::vfix decides "normal" with an integer compare instead of a float compare of the same bits. It runs for every VU1 result.
 
 Donor text that is not found exactly once stops the build: a change in the donor must be looked at.
@@ -15,6 +17,7 @@ usage: prepare_fast_headers.py <donor root> <output folder>
 """
 
 import hashlib
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -86,6 +89,39 @@ def replace_once(text, old, new, name):
     return text.replace(old, new.replace('\n', newline))
 
 
+# One macro operation per line: apply(v, dest, fd, [&](int i) { return <fp::add, sub, mul over the lanes>; });
+MACRO_LINE = re.compile(r'^    apply(_acc)?\(v, dest, (?:fd, )?\[&\]\(int i\) \{ return (fp::(?:add|sub|mul)\(.*\)); \}\);\s*$')
+
+
+def macro_expression(text):
+    text = re.sub(r'v\.vf\[(fs|ft)\]\.w\[i\]', r'fp4::load(v.vf[\1])', text)
+    text = text.replace('v.acc.w[i]', 'fp4::load(v.acc)')
+    text = re.sub(r'\bt\)', 'fp4::splat(t))', text)
+    text = re.sub(r'fp::(add|sub|mul)\(', r'fp4::\1(', text)
+    if '.w[' in text or 'fp::' in text:
+        raise SystemExit(f'vu.hpp: cannot rewrite the macro operation: {text}')
+    return text
+
+
+def rewrite_macro_operations(text):
+    newline = '\r\n' if '\r\n' in text else '\n'
+    lines = text.split(newline)
+    count = 0
+    for index, line in enumerate(lines):
+        match = MACRO_LINE.match(line)
+        if not match:
+            continue
+        expression = macro_expression(match.group(2))
+        if match.group(1):
+            lines[index] = f'    fp4::store_lanes(v.acc, dest, {expression});'
+        else:
+            lines[index] = f'    const fp4::V value = {expression};{newline}    if (fd) fp4::store_lanes(v.vf[fd], dest, value);'
+        count += 1
+    if count != 20:
+        raise SystemExit(f'vu.hpp: {count} macro operations found, 20 expected')
+    return newline.join(lines)
+
+
 def main():
     donor = Path(sys.argv[1]) / 'runtime' / 'include' / 'ps2'
     output = Path(sys.argv[2]) / 'ps2'
@@ -98,6 +134,13 @@ def main():
     text = replace_once(text, FP_FLUSH, FP_FLUSH_FAST, 'fpu.hpp flush')
     text = replace_once(text, FP_ADD, FP_ADD_FAST, 'fpu.hpp add')
     text = replace_once(text, FP_MUL, FP_MUL_FAST, 'fpu.hpp mul')
+    path.write_bytes(text.encode('utf-8'))
+
+    shutil.copyfile(Path(__file__).resolve().parents[1] / 'native' / 'fp4.hpp', output / 'fp4.hpp')
+    path = output / 'vu.hpp'
+    text = path.read_bytes().decode('utf-8')
+    text = rewrite_macro_operations(text)
+    text = replace_once(text, '#include "fpu.hpp"\n', '#include "fpu.hpp"\n#include "fp4.hpp"\n', 'vu.hpp includes')
     path.write_bytes(text.encode('utf-8'))
 
     path = output / 'vu_ops.hpp'

@@ -4,7 +4,9 @@
 //    lane positions, and random values.
 //  - fp::add, fp::sub and fp::mul (scripts/prepare_fast_headers.py) against copies of the donor's: every pair of exponents with
 //    mantissas at the edges, near-equal operands (the long normalisations), and random pairs.
+//  - fp4 (four lanes at once) against the same copies, on the same inputs; the VU0 macro operations against their definition.
 #include "vu_recomp_contract.hpp"
+#include "ps2/vu.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -87,6 +89,42 @@ std::uint32_t donor_mul(std::uint32_t a, std::uint32_t b) {
     return pack(sign, e, static_cast<std::uint32_t>(m));
 }
 
+// Four pairs at a time through fp4, each lane against the donor's scalar operation.
+struct Fp4Batch {
+    std::uint32_t a[4] = {}, b[4] = {};
+    int count = 0;
+
+    bool check() {
+        ps2::Reg128 ra{}, rb{}, sum{}, difference{}, product{};
+        for (int lane = 0; lane < 4; ++lane) {
+            ra.w[lane] = a[lane];
+            rb.w[lane] = b[lane];
+        }
+        const ps2::fp4::V va = ps2::fp4::load(ra), vb = ps2::fp4::load(rb);
+        ps2::fp4::store_lanes(sum, 15u, ps2::fp4::add(va, vb));
+        ps2::fp4::store_lanes(difference, 15u, ps2::fp4::sub(va, vb));
+        ps2::fp4::store_lanes(product, 15u, ps2::fp4::mul(va, vb));
+        for (int lane = 0; lane < 4; ++lane) {
+            if (sum.w[lane] != donor_add(a[lane], b[lane]) || difference.w[lane] != donor_add(a[lane], b[lane] ^ ps2::fp::kSign) ||
+                product.w[lane] != donor_mul(a[lane], b[lane])) {
+                std::fprintf(stderr, "fp4 differs: lane %d %08x %08x: add %08x %08x, sub %08x %08x, mul %08x %08x\n", lane, a[lane], b[lane],
+                             sum.w[lane], donor_add(a[lane], b[lane]), difference.w[lane], donor_add(a[lane], b[lane] ^ ps2::fp::kSign),
+                             product.w[lane], donor_mul(a[lane], b[lane]));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool add(std::uint32_t x, std::uint32_t y) {
+        a[count] = x;
+        b[count] = y;
+        if (++count < 4) return true;
+        count = 0;
+        return check();
+    }
+};
+
 bool same_fp(std::uint32_t a, std::uint32_t b) {
     const bool same = ps2::fp::add(a, b) == donor_add(a, b) && ps2::fp::sub(a, b) == donor_add(a, b ^ ps2::fp::kSign) &&
                       ps2::fp::mul(a, b) == donor_mul(a, b) && ps2::fp::flush(a) == donor_flush(a);
@@ -95,6 +133,7 @@ bool same_fp(std::uint32_t a, std::uint32_t b) {
 }
 
 bool check_fp() {
+    Fp4Batch batch;
     const std::uint32_t mantissas[] = {0u, 1u, 2u, 0x3FFFFFu, 0x400000u, 0x400001u, 0x555555u, 0x7FFFFEu, 0x7FFFFFu};
     for (std::uint32_t ea = 0; ea < 256; ++ea)
         for (std::uint32_t eb = 0; eb < 256; ++eb)
@@ -102,7 +141,7 @@ bool check_fp() {
                 for (const std::uint32_t mb : mantissas)
                     for (const std::uint32_t signs : {0u, 1u, 2u, 3u}) {
                         const std::uint32_t a = ((signs & 1u) << 31) | (ea << 23) | ma, b = ((signs & 2u) << 30) | (eb << 23) | mb;
-                        if (!same_fp(a, b)) return false;
+                        if (!same_fp(a, b) || !batch.add(a, b)) return false;
                     }
     std::mt19937 random(134);
     for (std::uint64_t round = 0; round < 400000000ull; ++round) {
@@ -111,7 +150,88 @@ bool check_fp() {
         std::uint32_t b = random();
         if (round % 3 == 1) b = (b & 0x807FFFFFu) | (((((a >> 23) & 0xFFu) + (b >> 28)) & 0xFFu) << 23);
         if (round % 3 == 2) b = (a ^ (b & 0x80000000u)) + ((b >> 8) & 0xFFu) - 128u;
-        if (!same_fp(a, b)) return false;
+        if (!same_fp(a, b) || !batch.add(a, b)) return false;
+    }
+    return true;
+}
+
+// The macro operations against their definition: each selected lane by the scalar operation, the others untouched, vf0 never written.
+bool check_macro() {
+    using namespace ps2;
+    std::mt19937 random(1340);
+    const auto word = [&random]() -> std::uint32_t {
+        const std::uint32_t kind = random() % 8;
+        const std::uint32_t bits = random();
+        if (kind == 0) return bits & 0x807FFFFFu;           // zero or a denormal
+        if (kind == 1) return bits | 0x7F800000u;           // the largest exponent
+        return (bits & 0x807FFFFFu) | ((110u + random() % 40u) << 23);  // ordinary numbers that interact
+    };
+    enum Op { Add, Sub, Mul, Madd, Msub };
+    const auto scalar = [](Op op, std::uint32_t acc, std::uint32_t s, std::uint32_t t) {
+        switch (op) {
+            case Add: return donor_add(s, t);
+            case Sub: return donor_add(s, t ^ fp::kSign);
+            case Mul: return donor_mul(s, t);
+            case Madd: return donor_add(acc, donor_mul(s, t));
+            default: return donor_add(acc, donor_mul(s, t) ^ fp::kSign);
+        }
+    };
+    for (int round = 0; round < 2000000; ++round) {
+        Vu0Regs v{};
+        for (int reg = 0; reg < 4; ++reg)
+            for (int lane = 0; lane < 4; ++lane) v.vf[reg].w[lane] = word();
+        for (int lane = 0; lane < 4; ++lane) v.acc.w[lane] = word();
+        const unsigned dest = random() % 16u, fd = random() % 4u, fs = 1u + random() % 3u, ft = 1u + random() % 3u;
+        const std::uint32_t bc = word();
+        const int op = static_cast<int>(random() % 15u);
+        const Vu0Regs before = v;
+        Reg128 expected = op >= 10 ? before.acc : before.vf[fd];
+        const Op kinds[] = {Add, Sub, Mul, Madd, Msub};
+        const Op kind = kinds[op % 5];
+        for (int lane = 0; lane < 4; ++lane)
+            if (dest & (8u >> lane)) expected.w[lane] = scalar(kind, before.acc.w[lane], before.vf[fs].w[lane], op >= 5 && op < 10 ? bc : before.vf[ft].w[lane]);
+        switch (op) {
+            case 0: vu::add(v, dest, fd, fs, ft); break;
+            case 1: vu::sub(v, dest, fd, fs, ft); break;
+            case 2: vu::mul(v, dest, fd, fs, ft); break;
+            case 3: vu::madd(v, dest, fd, fs, ft); break;
+            case 4: vu::msub(v, dest, fd, fs, ft); break;
+            case 5: vu::addbc(v, dest, fd, fs, bc); break;
+            case 6: vu::subbc(v, dest, fd, fs, bc); break;
+            case 7: vu::mulbc(v, dest, fd, fs, bc); break;
+            case 8: vu::maddbc(v, dest, fd, fs, bc); break;
+            case 9: vu::msubbc(v, dest, fd, fs, bc); break;
+            case 10: vu::adda(v, dest, fs, ft); break;
+            case 11: vu::suba(v, dest, fs, ft); break;
+            case 12: vu::mula(v, dest, fs, ft); break;
+            case 13: vu::madda(v, dest, fs, ft); break;
+            default: vu::msuba(v, dest, fs, ft); break;
+        }
+        const Reg128 &got = op >= 10 ? v.acc : v.vf[fd];
+        const bool written_zero = op < 10 && fd == 0;
+        const Reg128 &wanted = written_zero ? before.vf[0] : expected;
+        if (std::memcmp(&got, &wanted, sizeof got) != 0) {
+            std::fprintf(stderr, "macro operation %d differs (dest %u fd %u fs %u ft %u)\n", op, dest, fd, fs, ft);
+            return false;
+        }
+        // The accumulator forms with a broadcast share their lines with the forms above.
+        Vu0Regs w = before, x = before;
+        Reg128 from_bc{};
+        for (int lane = 0; lane < 4; ++lane) from_bc.w[lane] = bc;
+        x.vf[ft] = from_bc;
+        if (fs != ft) {
+            switch (op % 5) {
+                case 0: vu::addabc(w, dest, fs, bc); vu::adda(x, dest, fs, ft); break;
+                case 1: vu::subabc(w, dest, fs, bc); vu::suba(x, dest, fs, ft); break;
+                case 2: vu::mulabc(w, dest, fs, bc); vu::mula(x, dest, fs, ft); break;
+                case 3: vu::maddabc(w, dest, fs, bc); vu::madda(x, dest, fs, ft); break;
+                default: vu::msubabc(w, dest, fs, bc); vu::msuba(x, dest, fs, ft); break;
+            }
+            if (std::memcmp(&w.acc, &x.acc, sizeof w.acc) != 0) {
+                std::fprintf(stderr, "broadcast accumulator operation %d differs\n", op % 5);
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -149,7 +269,7 @@ bool check_mac() {
 } // namespace
 
 int main() {
-    if (!check_mac() || !check_vfix() || !check_fp()) return 1;
-    std::puts("native_vu_fast_ops ok: vfix equals the donor's over 2^32 values; mac_of_result equals the scalar form; fp::add, sub and mul equal the donor's");
+    if (!check_mac() || !check_vfix() || !check_fp() || !check_macro()) return 1;
+    std::puts("native_vu_fast_ops ok: vfix equals the donor's over 2^32 values; mac_of_result equals the scalar form; fp::add, sub and mul and fp4 equal the donor's; the macro operations equal their definition");
     return 0;
 }
