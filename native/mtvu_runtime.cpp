@@ -283,9 +283,11 @@ void worker_main() {
   RecordHeader header;
   std::vector<std::uint8_t> payload;
   for (;;) {
-    const std::uint64_t idle_start = wall_us();
+    // TASK-134: no clock read without the performance report, as in gt4::perf::Scope.
+    const bool timed = r.worker_accounting.enabled();
+    const std::uint64_t idle_start = timed ? wall_us() : 0;
     r.worker_end->receive(header, payload);
-    r.worker_idle_us += wall_us() - idle_start;
+    if (timed) r.worker_idle_us += wall_us() - idle_start;
     const auto kind = static_cast<RecordKind>(header.kind);
     if (kind == RecordKind::Stop) return;
     r.worker_job = header.job;

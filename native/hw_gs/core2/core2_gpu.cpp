@@ -217,9 +217,11 @@ struct Gpu::Impl {
   // B4: per slot, the start and end of its command buffer, then up to kPassTimestampPairs draw passes (start, end);
   // read when the slot's fence has signalled.
   static constexpr std::uint32_t kPassTimestampPairs = 64;
-  // IN-465 A/B: GT4_CORE2_PASS_TIMESTAMPS=0 leaves out the draw pass timestamps (gpu_draw_passes reads 0).
-  const bool passTimestampsOn = std::getenv("GT4_CORE2_PASS_TIMESTAMPS") == nullptr ||
-                                std::strcmp(std::getenv("GT4_CORE2_PASS_TIMESTAMPS"), "0") != 0;
+  // IN-465 A/B: GT4_CORE2_PASS_TIMESTAMPS=0 leaves out the draw pass timestamps (gpu_draw_passes reads 0). TASK-134: only a report
+  // reads them, and leaving them out took 2-5% off a player's frame on the George V Paris lap, so they need the report or this switch.
+  const bool passTimestampsOn = std::getenv("GT4_CORE2_PASS_TIMESTAMPS")
+                                    ? std::strcmp(std::getenv("GT4_CORE2_PASS_TIMESTAMPS"), "0") != 0
+                                    : std::getenv("GT4_PERF") || std::getenv("GT4_HW_PROFILE_EVERY") || std::getenv("GT4_MTVU_REPORT_EVERY");
   static constexpr std::uint32_t kTimestampsPerSlot = 2u + 2u * kPassTimestampPairs;
   VkQueryPool timestamps = VK_NULL_HANDLE;
   // IN-422: the window of the next texture decode (SetDecodeWindow).

@@ -403,10 +403,19 @@ double MicrosecondsPerTick() {
     return value;
 }
 
+// TASK-134: the stages are timed only when a report will show them (the launcher's performance report, or a bench): a player's
+// session pays for no clock reads, about 4% of this thread's CPU in a race. The [core2] lines then read 0 for the stage times.
+bool PhaseTimingOn() {
+    static const bool on = std::getenv("GT4_PERF") || std::getenv("GT4_HW_PROFILE_EVERY") || std::getenv("GT4_MTVU_REPORT_EVERY");
+    return on;
+}
+
 class ScopedUs {
 public:
     ScopedUs(PhaseClock &clock, double PhaseTimes::*field)
-        : clock_(clock), field_(field), parent_(clock.open), start_(__rdtsc()) {
+        : clock_(clock), field_(field), parent_(clock.open), start_(0), stopped_(!PhaseTimingOn()) {
+        if (stopped_) return;
+        start_ = __rdtsc();
         clock.open = this;
     }
     ~ScopedUs() { Stop(); }
@@ -429,7 +438,7 @@ private:
     ScopedUs *parent_;
     std::uint64_t start_;
     double children_ = 0;
-    bool stopped_ = false;
+    bool stopped_;
 };
 
 }  // namespace

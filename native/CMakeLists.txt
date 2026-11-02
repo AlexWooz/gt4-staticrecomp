@@ -785,27 +785,19 @@ if(GT4_VU0_GENERATED_DIR)
 elseif(GT4_PERF_RUNTIME_SOURCE AND GT4_PERF_RUNTIME_SOURCE MATCHES "slice160-vu0-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$|slice27[0-9]-[a-z0-9-]+-runtime$")
     message(FATAL_ERROR "The VU0 AOT capsule requires GT4_VU0_GENERATED_DIR")
 endif()
-# TASK-134: vfix decides "normal" with an integer compare instead of a float compare of the same bits (exact, proved over
-# all 2^32 values by native_vu_fast_ops), so the frozen donor header is patched into the build tree. It runs for every
-# VU1 result; a failed replace stops the configure, because a donor change must be looked at.
-option(GT4_VU_FAST_OPS "Build VU code with the exact integer form of vfix" ON)
-if(GT4_VU_FAST_OPS)
-    file(READ "${DONOR}/runtime/include/ps2/vu_ops.hpp" gt4_vu_ops_text)
-    set(gt4_vfix_donor "const v4i normal = (v4f)clamped >= (v4f)(v4i){0x00800000, 0x00800000, 0x00800000, 0x00800000};")
-    string(FIND "${gt4_vu_ops_text}" "${gt4_vfix_donor}" gt4_vfix_at)
-    if(gt4_vfix_at EQUAL -1)
-        message(FATAL_ERROR "vu_ops.hpp no longer has the vfix line GT4_VU_FAST_OPS replaces")
+# TASK-134: the donor's runtime headers with exact faster forms of fp::add, fp::mul and vfix (scripts/prepare_fast_headers.py). The
+# EE library takes the same folder (tools/ee_producer). native_vu_fast_ops compares each form with the donor's.
+option(GT4_FAST_HEADERS "Build game code with the exact faster donor headers" ON)
+if(GT4_FAST_HEADERS)
+    set(GT4_FAST_HEADERS_DIR "${CMAKE_CURRENT_BINARY_DIR}/fast_headers")
+    execute_process(COMMAND "${GT4_PYTHON}" -I "${GT4_ROOT}/scripts/prepare_fast_headers.py" "${DONOR}" "${GT4_FAST_HEADERS_DIR}" RESULT_VARIABLE fast_headers_result)
+    if(NOT fast_headers_result EQUAL 0)
+        message(FATAL_ERROR "scripts/prepare_fast_headers.py failed")
     endif()
-    string(REPLACE "${gt4_vfix_donor}" "const v4i normal = clamped > (v4i){0x007FFFFF, 0x007FFFFF, 0x007FFFFF, 0x007FFFFF};"
-           gt4_vu_ops_text "${gt4_vu_ops_text}")
-    string(REPLACE "#include \"cpu.hpp\"" "#include \"ps2/cpu.hpp\"" gt4_vu_ops_text "${gt4_vu_ops_text}")
-    string(REPLACE "#include \"fpu.hpp\"" "#include \"ps2/fpu.hpp\"" gt4_vu_ops_text "${gt4_vu_ops_text}")
-    string(REPLACE "#include \"vu.hpp\"" "#include \"ps2/vu.hpp\"" gt4_vu_ops_text "${gt4_vu_ops_text}")
-    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vu_fast_ops/ps2/vu_ops.hpp" CONTENT "${gt4_vu_ops_text}" @ONLY)
-    target_include_directories(ps2runtime_vulkan BEFORE PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/vu_fast_ops")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GT4_ROOT}/scripts/prepare_fast_headers.py")
+    target_include_directories(ps2runtime_vulkan BEFORE PUBLIC "${GT4_FAST_HEADERS_DIR}")
     add_executable(vu_fast_ops_fixture vu_fast_ops_fixture.cpp)
-    target_include_directories(vu_fast_ops_fixture PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vu_fast_ops" "${GT4_ROOT}/tools/vu_recomp/src"
-                               "${DONOR}/runtime/include")
+    target_include_directories(vu_fast_ops_fixture PRIVATE "${GT4_FAST_HEADERS_DIR}" "${GT4_ROOT}/tools/vu_recomp/src")
     add_test(NAME native_vu_fast_ops COMMAND $<TARGET_FILE:vu_fast_ops_fixture>)
 endif()
 target_include_directories(ps2runtime_vulkan PUBLIC "${DONOR}/runtime/include" "${DONOR}/runtime/src"

@@ -85,8 +85,8 @@ FrameCounters &frame_counters() noexcept { return g_frame_counters; }
 void reset_frame_counters() noexcept { g_frame_counters = FrameCounters{}; }
 
 SyscallScope::SyscallScope(std::uint32_t number) noexcept
-    : start_us_(counters_enabled() ? wall_us() : 0), number_(number & 0x7Fu) {
-  if (counters_enabled()) ++g_frame_counters.syscalls;
+    : start_us_(counters_enabled() && Probe::shared().enabled() ? wall_us() : 0), number_(number & 0x7Fu) {
+  if (start_us_ != 0) ++g_frame_counters.syscalls;
 }
 
 SyscallScope::~SyscallScope() {

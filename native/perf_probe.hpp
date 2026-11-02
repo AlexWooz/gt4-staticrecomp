@@ -146,12 +146,17 @@ void bind_worker(Accounting *accounting, std::uint64_t (*wall_us)()) noexcept;
 
 class Scope {
 public:
+  // TASK-134: with the performance report off (a player's normal session) a scope reads no clock and keeps no stack: on the
+  // VU1 worker and in the VIF path that is thousands of scopes per VBlank.
   explicit Scope(Category category) noexcept : worker_(t_worker_binding.accounting) {
-    if (worker_)
-      token_ = worker_->enter(category, t_worker_binding.wall_us());
-    else {
-      probe_ = &Probe::shared();
-      token_ = probe_->enter(category);
+    if (worker_) {
+      if (worker_->enabled()) token_ = worker_->enter(category, t_worker_binding.wall_us());
+    } else {
+      Probe &probe = Probe::shared();
+      if (probe.enabled()) {
+        probe_ = &probe;
+        token_ = probe.enter(category);
+      }
     }
   }
   ~Scope() {
