@@ -19,6 +19,6 @@ env GT4_RENDERER=hw GT4_HW_CORE=2 GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1 GT4_DI
   GT4_HW_DUMP_DIR="$(cygpath -w "$OUT/frames")" GT4_HW_DUMP_EVERY=${EVERY:-100000} GT4_HW_DUMP_FROM=${FROM:-999999} \
   GT4_INPUT_REPLAY="$(cygpath -w "$recording")" "${extra[@]}" "$@" "$exe" \
   "$(cygpath -w "$GT4_ASSETS/private/slice272-spec2-elf/SCUS_974.36")" --ntsc --disc "$(cygpath -w "$GT4_SPEC2_ISO")" \
-  --frames "$last" --memcard "$(cygpath -w "$OUT/card.ps2")" ${WINDOW:+--window} > "$OUT/log.txt" 2>&1
+  --frames "${LAST:-$last}" --memcard "$(cygpath -w "$OUT/card.ps2")" ${WINDOW:+--window} > "$OUT/log.txt" 2>&1
 echo "exit $?"
 rm -f "$OUT/card.ps2"

@@ -10,6 +10,7 @@
 #include "ps2/system.hpp"
 #include "perf_probe.hpp"
 #include "frame_clock.hpp"
+#include "frame_skip.hpp"
 #include "pacing.hpp"
 #include "window_mode.hpp"
 #include "cursor_autohide.hpp"
@@ -330,6 +331,16 @@ bool pump_messages() {
 // The interval histogram is recorded in both modes.
 std::int64_t last_release = 0;
 
+// TASK-082: what the frame skip decides from, and what the presenter and the pacer get from it.
+void note_frame_skip_vblank() {
+  if (!gt4::frame_skip::g_enabled) return;
+  gt4::frame_skip::Controller &skip = gt4::frame_skip::controller();
+  skip.note_vblank(input_vblank, gt4::pacing::ee_slack_us, gt4::pacing::gs_vsyncs_queued.load(std::memory_order_relaxed));
+  gt4::pacing::frame_skip_engaged.store(skip.gate_open(), std::memory_order_relaxed);
+  gt4::pacing::frame_skip_recent.store(skip.skipping_recently(), std::memory_order_relaxed);
+  if (input_vblank % 600 == 0) gt4::frame_skip::print_report(stderr);
+}
+
 void release_frame() {
   if (pacing_mode == gt4::pacing::Mode::paced) {
     if (!frame_pacer->anchored())
@@ -355,7 +366,10 @@ void release_frame() {
     // Not waiting, the grid must not run ahead of the clock, or the first paced frame would sleep until the grid came back.
     if (input_vblank + 1 < paced_from_vblank) frame_pacer->anchor(frame_clock->now());
     if (!no_wait && input_vblank + 1 >= paced_from_vblank) {
-      const std::int64_t earliest = last_release != 0 ? last_release + min_interval : 0;
+      // TASK-082: with frames being left out the lost time comes back at once: that is what they are for.
+      frame_pacer->set_resync_periods(gt4::pacing::frame_skip_engaged.load(std::memory_order_relaxed) ? 6 : 1);
+      const std::int64_t earliest =
+          last_release != 0 && !gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) ? last_release + min_interval : 0;
       frame_clock->wait_until(std::max(frame_pacer->deadline(), earliest));
     }
   }
@@ -373,6 +387,7 @@ void on_vblank() {
 #endif
   release_frame();
   ++input_vblank;
+  note_frame_skip_vblank();
   GT4_PERF_SCOPE(gt4::perf::Category::host_vblank);
   if (!pump_messages())
     return;
@@ -448,9 +463,20 @@ bool install_input_replay_without_window() {
     std::fprintf(stderr, "[input] GT4_INPUT_RECORD needs --window, game not started\n");
     return false;
   }
-  if (std::getenv("GT4_INPUT_REPLAY") == nullptr) return true;
+  if (std::getenv("GT4_INPUT_REPLAY") == nullptr) {
+    if (gt4::frame_skip::g_enabled) {
+      ps2::g_options.on_vblank = [] {
+        ++input_vblank;
+        note_frame_skip_vblank();
+      };
+    }
+    return true;
+  }
   if (!open_input_files()) return false;
-  ps2::g_options.on_vblank = [] { apply_pad(input_player->at(++input_vblank)); };
+  ps2::g_options.on_vblank = [] {
+    apply_pad(input_player->at(++input_vblank));
+    note_frame_skip_vblank();
+  };
   return true;
 }
 

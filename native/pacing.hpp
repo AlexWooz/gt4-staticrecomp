@@ -24,6 +24,12 @@ inline std::int32_t ee_slack_us = kNoSlack;
 // IN-521: how much later the release grid should run, in microseconds, set by the presentation's latency control.
 inline std::atomic<std::int32_t> grid_shift_us{0};
 
+// TASK-082: guest VBlanks queued in the GS worker, and what the frame skip tells the presenter: a running race where a frame may
+// have no drawing (hold the display when it did not change), and frames left out lately (the display queue control waits).
+inline std::atomic<std::uint32_t> gs_vsyncs_queued{0};
+inline std::atomic<bool> frame_skip_engaged{false};
+inline std::atomic<bool> frame_skip_recent{false};
+
 // Audio latency target: 60 ms of stereo 48 kHz frames.
 inline constexpr std::size_t target_latency_frames = 2880;
 inline constexpr std::size_t sample_rate_hz = 48000;
@@ -61,6 +67,9 @@ public:
   void anchor(std::int64_t now);
   // IN-521: moves the grid by this many ticks; positive is later.
   void shift(std::int64_t ticks);
+  // TASK-082: behind by this many periods before the grid restarts (default 1). With frames left out the host catches up, so a
+  // heavy frame must not lose its time for good: the game keeps its speed.
+  void set_resync_periods(std::uint32_t periods) { resync_periods_ = periods; }
   bool anchored() const { return anchored_; }
   // Deadline of the next release, in clock ticks (floor of the scaled value).
   std::int64_t deadline() const;
@@ -83,6 +92,7 @@ private:
   std::int64_t scaled_deadline_ = 0;
   std::uint64_t late_frames_ = 0;
   std::uint64_t resyncs_ = 0;
+  std::uint32_t resync_periods_ = 1;
 };
 
 // Linear resampler for interleaved stereo int16 frames. `ratio` is output

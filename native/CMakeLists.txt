@@ -38,7 +38,8 @@ get_filename_component(GT4_PRIVATE_BASE "${GT4_ASSETS_ROOT}" ABSOLUTE)
 # its own manifest docs/inputs/<capsule name>.json; the license guard capsule of the same profile pins
 # docs/inputs/<its name>.json. Only the Spec II build selects a slice27x guard capsule (slice277, TASK-100 S8b: the
 # per-target Manager add/body shift for the Spec II demo loaders); v2.00 keeps its slice262 capsule.
-set(GT4_TASK084_GUARD_RE "^private/slice2[67][0-9]-[a-z0-9-]*license-guard-runtime$")
+# And TASK-082 (slice375 on): the same guard plus the frame skip hook.
+set(GT4_TASK084_GUARD_RE "^private/slice(2[67]|3[789])[0-9]-[a-z0-9-]*license-guard-runtime$")
 # TASK-100 S7b (slice276): the TASK-084 frame-cost profile plus the Spec II IOP reboot rule (sif.cpp), so the frame-cost
 # capsule family spans slice260..slice279. Only the Spec II executable selects a slice27x capsule; v2.00 keeps its
 # slice262 capsule. It shares the TASK-084 file list and pin rules.
@@ -301,7 +302,7 @@ target_compile_options(gt4_pacing PRIVATE /W4)
 # Pure window-mode state and the GT4_FORCE_480P race display index (slice164).
 # TASK-060: cursor auto-hide rule (cursor_autohide.cpp) shared by the window.
 # TASK-080: display aspect (GT4_DISPLAY_ASPECT parse, Hor+/Vert+ matrix scale, scene policy, runtime glue).
-add_library(gt4_quickfix STATIC window_mode.cpp race_display.cpp race_widescreen.cpp cursor_autohide.cpp display_aspect.cpp
+add_library(gt4_quickfix STATIC frame_skip.cpp window_mode.cpp race_display.cpp race_widescreen.cpp cursor_autohide.cpp display_aspect.cpp
     flare_limits.cpp)
 target_compile_options(gt4_quickfix PRIVATE /W4)
 # TASK-100 S7b: the v2.00 hook fixtures assert the v2.00 guest chains, but gt4_quickfix carries the active target's table
@@ -924,6 +925,10 @@ target_compile_options(vulkan_fixture PRIVATE /W4)
 add_executable(ipu_fast_fixture ipu_fast_fixture.cpp)
 target_compile_options(ipu_fast_fixture PRIVATE /W4)
 add_test(NAME native_ipu_fast COMMAND ipu_fast_fixture)
+add_executable(frame_skip_fixture frame_skip_fixture.cpp frame_skip.cpp)
+target_link_libraries(frame_skip_fixture PRIVATE gt4_pacing)
+target_compile_options(frame_skip_fixture PRIVATE /W4)
+add_test(NAME native_frame_skip COMMAND frame_skip_fixture)
 add_executable(pacing_fixture pacing_fixture.cpp)
 target_link_libraries(pacing_fixture PRIVATE gt4_pacing)
 target_compile_options(pacing_fixture PRIVATE /W4)

@@ -1148,7 +1148,9 @@ struct Backend::Impl {
                      static_cast<unsigned long long>(present_calls));
       }
     }
-    if (latency_control_on && latency_control.leave_out()) {
+    // TASK-082: with frames being left out the queue does not grow: one frame in, at most one out.
+    const bool frames_left_out = gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed);
+    if (latency_control_on && latency_control.leave_out() && !frames_left_out) {
       std::fprintf(stderr, "[hw] latency control: a presentation left out at call %llu (%llu so far), %.1f ms to the display, target %.1f ms\n",
                    static_cast<unsigned long long>(present_calls), static_cast<unsigned long long>(latency_control.left_out()),
                    latency_control.last_lag_ms(), latency_control.target_ms());

@@ -70,6 +70,21 @@ void test_period_accuracy_no_drift() {
   require(pacer.late_frames() == 0 && pacer.resyncs() == 0, "clean run has no late frames");
 }
 
+// TASK-082: with frames left out, a heavy frame keeps its place on the grid up to the limit.
+void test_resync_periods() {
+  FramePacer pacer(frequency, 60);
+  const std::int64_t period = static_cast<std::int64_t>(frequency) / 60;
+  pacer.anchor(0);
+  pacer.set_resync_periods(4);
+  pacer.release(0);
+  pacer.release(period * 3);
+  require(pacer.resyncs() == 0, "three periods behind must not restart a grid that allows four");
+  require(pacer.deadline() == static_cast<std::int64_t>(2 * frequency / 60), "the grid must keep its place");
+  pacer.release(period * 8);
+  require(pacer.resyncs() == 1, "past the limit the grid restarts");
+  require(pacer.deadline() == period * 8 + static_cast<std::int64_t>(frequency / 60), "a restart is one period after now");
+}
+
 // IN-521: a shift moves every later deadline by the same amount.
 void test_grid_shift() {
   FramePacer pacer(frequency, 60);
@@ -323,6 +338,7 @@ int main() {
     test_parsers();
     test_period_accuracy_no_drift();
     test_grid_shift();
+    test_resync_periods();
     test_remaining_and_late_frames();
     test_stall_restarts_grid_without_burst();
     test_resampler_unity_is_passthrough();

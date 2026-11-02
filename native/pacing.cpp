@@ -90,7 +90,9 @@ bool FramePacer::release(std::int64_t now) {
     ++late_frames_;
   // One period in scaled units is exactly frequency_ (period = frequency / rate).
   scaled_deadline_ += static_cast<std::int64_t>(frequency_);
-  if (now > deadline()) {
+  const std::int64_t allowed = (scaled_deadline_ + static_cast<std::int64_t>(frequency_) * (resync_periods_ - 1)) /
+                               static_cast<std::int64_t>(rate_);
+  if (now > allowed) {
     // Behind by a full period: restart the grid one period after now.
     scaled_deadline_ = now * static_cast<std::int64_t>(rate_) +
                        static_cast<std::int64_t>(frequency_);

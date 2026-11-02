@@ -8,6 +8,7 @@
 //     reads the launcher's config file, applies the built-in defaults and calls the donor main with the command line the
 //     launcher would have built. Rules and tests: standalone.hpp / standalone_fixture.cpp.
 
+#include "frame_skip.hpp"
 #include "standalone.hpp"
 #include "window.hpp"
 
@@ -270,6 +271,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
       window = window || std::strcmp(argv[i], "--window") == 0 || std::strcmp(argv[i], "--fullscreen") == 0;
     }
+    gt4::frame_skip::start_from_environment();
     if (!window && !install_input_replay_without_window()) return 1;
     return gt4_donor_main(argc, argv);
   }

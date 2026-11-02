@@ -174,8 +174,18 @@ Backend &backend() {
 
 void gif_now(int path, const std::uint8_t *data, std::size_t bytes) { backend().gif_transfer(path, data, bytes); }
 
+bool g_display_page_changed = true;  // TASK-082, GS worker: a DISPFB write with a new value since the last VBlank
+std::uint64_t g_last_dispfb[2] = {};
+
 void privileged_now(std::uint32_t address, std::uint64_t value) {
   if (!backend().write_privileged(address, value)) ++g_unmirrored_privileged;
+  // DISPFB1 and DISPFB2, in any of the addresses the stream carries them.
+  const std::uint32_t low = address & 0xFFFFu;
+  if (low == 0x70u || low == 0x90u) {
+    std::uint64_t &last = g_last_dispfb[low == 0x90u ? 1 : 0];
+    if (last != value) g_display_page_changed = true;
+    last = value;
+  }
 }
 
 void read_fifo_now(std::uint8_t *data, std::uint32_t qwords) {
@@ -357,7 +367,11 @@ void vsync_now(bool odd_field) {
   hw.set_display_field(odd_field);
   hw.flush();
   hw.next_frame();  // one guest frame per VBlank, windowed or headless (the session line's `frames`)
-  if (hw.has_window()) hw.present(odd_field ? PresentPhase::field_odd : PresentPhase::field_even);
+  // TASK-082: in a running race with frame skipping, the game draws into the page not shown, so the display page unchanged means
+  // nothing new to show. No presentation then, so a frame counter counts what was drawn and the frame takes no time of its own.
+  const bool hold = gt4::pacing::frame_skip_engaged.load(std::memory_order_relaxed) && !g_display_page_changed;
+  g_display_page_changed = false;
+  if (hw.has_window() && !hold) hw.present(odd_field ? PresentPhase::field_odd : PresentPhase::field_even);
   maybe_dump(hw);
   maybe_profile(hw);
 }
@@ -474,7 +488,8 @@ public:
         add(g_transport.vsync_wait_ticks, __rdtsc() - start);
         add(g_transport.vsync_waits, 1);
       }
-      queuedVsyncs_.fetch_add(1, std::memory_order_seq_cst);
+      gt4::pacing::gs_vsyncs_queued.store(static_cast<std::uint32_t>(queuedVsyncs_.fetch_add(1, std::memory_order_seq_cst) + 1),
+                                          std::memory_order_relaxed);
     }
     const std::size_t limit = ring_.max_payload() & ~std::size_t{15};
     do {
@@ -633,7 +648,10 @@ private:
       add(g_transport.busy_ticks[slot], __rdtsc() - busyStart);
       ring_.release();
       const bool vsyncDone = kind == SinkRecord::Vsync;
-      if (vsyncDone) queuedVsyncs_.fetch_sub(1, std::memory_order_seq_cst);
+      if (vsyncDone) {
+        gt4::pacing::gs_vsyncs_queued.store(static_cast<std::uint32_t>(queuedVsyncs_.fetch_sub(1, std::memory_order_seq_cst) - 1),
+                                            std::memory_order_relaxed);
+      }
       notify_progress(vsyncDone);
     }
   }

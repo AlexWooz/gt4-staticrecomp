@@ -44,6 +44,13 @@ ASPECT_OVERLAY_ANCHORS = {
     'helpers': ('before', 'void dispatch(Cpu &c, std::uint32_t, std::uint32_t depth) {\n'),
     'hook': ('after', '    if (gt4::license_guard::loader_for_return(c.r[31].w[0])) [[unlikely]] license_demo_guard(c);\n'),
 }
+FRAME_SKIP_OVERLAY_PATH = ROOT / 'scripts/frame_skip_overlay.inc'
+# Anchors on the aspect output.
+FRAME_SKIP_OVERLAY_ANCHORS = {
+    'includes': ('after', '#include "display_aspect.hpp"\n'),
+    'helpers': ('before', 'void dispatch(Cpu &c, std::uint32_t, std::uint32_t depth) {\n'),
+    'hook': ('after', '    if (pc == gt4::display_aspect::kRaceDisplayRender) [[unlikely]] gt4::display_aspect::on_race_display_render(g_ram, kRamSize, c.r[4].w[0]);\n'),
+}
 GUARD_PROFILE = 'task017-guard-v2'
 # v1 = slice212c (camera hook and race-view marker); v2 = slice217 (P2: the marker also runs the HUD canvas hook).
 ASPECT_PROFILE = 'task017-guard-v2+task080-aspect-v2'
@@ -61,6 +68,11 @@ def apply_display_aspect(source):
     return perf.apply_overlay(source, ASPECT_OVERLAY_PATH, ASPECT_OVERLAY_ANCHORS, 'display aspect')
 
 
+def apply_frame_skip(source):
+    """TASK-082 frame skip overlay on the aspect output; checks that removing it restores the input."""
+    return perf.apply_overlay(source, FRAME_SKIP_OVERLAY_PATH, FRAME_SKIP_OVERLAY_ANCHORS, 'frame skip')
+
+
 def read_pinned(donor, name, expected):
     data = (donor / name).read_bytes()
     if hashlib.sha256(data).hexdigest() != expected:
@@ -72,7 +84,7 @@ def overlay_sha256(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 
-def derive_sources(assets_root=None, display_aspect=False, frame_counters=False):
+def derive_sources(assets_root=None, display_aspect=False, frame_counters=False, frame_skip=False):
     """Returns {capsule file name: derived text (LF)}."""
     donor = Path(assets_root or ROOT) / 'private/references/ps2-web-recomp/runtime/src'
     (dispatch_name, dispatch_sha), = DISPATCH_PIN.items()
@@ -81,6 +93,8 @@ def derive_sources(assets_root=None, display_aspect=False, frame_counters=False)
     dispatch = apply_license_guard(read_pinned(donor, dispatch_name, dispatch_sha))
     if display_aspect:
         dispatch = apply_display_aspect(dispatch)
+    if frame_skip:
+        dispatch = apply_frame_skip(dispatch)
     kernel = perf.apply_halt_dump(read_pinned(donor, halt_name, halt_sha))
     if frame_counters:
         kernel = perf.apply_kernel_frame_counters(kernel)
@@ -91,14 +105,16 @@ def derive_sources(assets_root=None, display_aspect=False, frame_counters=False)
     }
 
 
-def prepare(output, assets_root=None, display_aspect=False, frame_counters=False):
+def prepare(output, assets_root=None, display_aspect=False, frame_counters=False, frame_skip=False):
     output = Path(output).absolute()
     private = (Path(assets_root or ROOT) / 'private').resolve()
     if output != output.resolve() or output.parent != private:
         raise ValueError('License guard capsule must be an ordinary immediate private child')
     if output.exists():
         raise ValueError('Preserve existing output; choose a fresh license guard capsule')
-    sources = derive_sources(assets_root, display_aspect, frame_counters)
+    if frame_skip and not display_aspect:
+        raise ValueError('The frame skip overlay anchors on the display aspect output')
+    sources = derive_sources(assets_root, display_aspect, frame_counters, frame_skip)
     output.mkdir()
     receipt = {
         'schema_version': 1,
@@ -115,6 +131,8 @@ def prepare(output, assets_root=None, display_aspect=False, frame_counters=False
     if frame_counters:
         # TASK-084 step 0: the kernel counters (syscalls by number, thread switches) on top of the halt dump.
         receipt['frame_counters_profile'] = 'task084-frame-counters-v1'
+    if frame_skip:
+        receipt['frame_skip_overlay_sha256'] = overlay_sha256(FRAME_SKIP_OVERLAY_PATH)
     for name in CAPSULE_FILES:
         path = output / name
         path.write_text(sources[name], encoding='utf-8', newline='\n')
@@ -131,6 +149,8 @@ if __name__ == '__main__':
                         help='also apply the TASK-080 aspect hooks (current overlay: v2, slice217 capsule)')
     parser.add_argument('--frame-counters', action='store_true',
                         help='also apply the TASK-084 kernel counters (syscalls by number, thread switches)')
+    parser.add_argument('--frame-skip', action='store_true', help='also apply the TASK-082 frame skip hook (needs --display-aspect)')
     options = parser.parse_args()
-    print(json.dumps(prepare(options.output, options.assets_root, options.display_aspect, options.frame_counters),
+    print(json.dumps(prepare(options.output, options.assets_root, options.display_aspect, options.frame_counters,
+                             options.frame_skip),
                      indent=2))
