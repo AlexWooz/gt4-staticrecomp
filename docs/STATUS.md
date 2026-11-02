@@ -105,7 +105,7 @@ Candidate 374 (pins `docs/inputs/slice374-pcsx2.json`, `36044156...`, and `docs/
 
 **Open items, none started:**
 - **Before publishing rc8:** the owner's own session on 373 at 60 Hz (showroom, a car ahead, a night race); a real monitor at 60 Hz; the laptop (still on 367, the beta gate is the HD 620 at 2x); the note's "about half the processor of GSdx", which needs a GSdx F8 to compare; en-US focus pages varying with unchanged code; the installer against its sources; replacing the old rc8 draft (candidate 354). Publishing and the PR into `task/134` need the owner's word, and TASK-134's P0/P1 wait for the owner's "CoreGS 2.0 build done".
-- **Owner decisions left:** the colour filter cut (IN-505) in Performance Mode.
+- **Decided (owner, 2026-11-02):** the colour filter stays in Performance Mode too. IN-505's cut is not built: -4.4% of GPU work on the HD 620 at 2x by day, against a change to the game's whole look.
 - **For 2.0.0:** fractional scales (requirement, large refactor); GPU use and power measured beside GSdx.
 - **Optimisation, later unless named above:** the race start's camera cut (about 30 ms, once per race).
 - **Unknown:** a few pixels (1-30, at most 88 of 255, at the right edge of the picture) differ at VBlanks 21300 and 21400 between two runs of the same exe and the same `--press` list at 3x on George V Paris. The 6x gates did not show it.
