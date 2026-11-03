@@ -21,6 +21,9 @@ bytes `7e90395f...`, portable zip 80,742,596 bytes `fea09567...`; game `private/
 - **Tests:** CTest 292 of 293 (`python_native_contracts`, known); Python 766, the 13 known failures; launcher `cargo test` 630
   with `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start` failing under heavy disk load (also on unmodified rc9
   sources) and passing 3 of 3 on a quiet machine; locale keys 655 equal; focus checks en-US 275, pt-BR 282, nav-test 209.
+- **Installed on the owner's desktop** (owner's word, 2026-11-03): the rc10 installer in its update mode (`/S /UPDATE`, elevated);
+  `version.json` reads 1.3.0-rc10, the launcher is the installer build (`e0208c96...`), the 19 game files match `MANIFEST.json`.
+  The rc9 program files are backed up in `private/_program-backups/rc9-before-rc10-20261103T174300Z`.
 - **Open:** the owner's test (a car wash or oil change in GT Auto; a Spec II replay saved, the game closed, the replay found again;
   a launcher on GSdx without it installed). The notebook still has the first rc9.
 
