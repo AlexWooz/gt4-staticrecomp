@@ -1,6 +1,6 @@
 #!/bin/bash
 # IN-520: replays a recording on the reference renderer (gt4-gs.exe, black box), headless, from the same card, up to its last VBlank.
-# usage: replay-gsdx.sh <recording name> <run name> <exe> [ENV=VAL ...]   (env SCALE=6 EVERY=1000 GS_EXE=<gt4-gs.exe> LAST=<VBlank>)
+# usage: replay-gsdx.sh <recording name> <run name> <exe> [ENV=VAL ...]   (env KEEP="A-B C-D" SCALE=6 EVERY=1000 GS_EXE=<gt4-gs.exe> LAST=<VBlank>)
 # Writes $GT4_BENCH_OUT/replay-<recording>-<run>/: gs-frames/ with the final frames every EVERY frames, and log.txt.
 # Clean room: TASK-027 agents use the final frames only. log.txt also holds the GS process's own output, so read only the game's lines.
 source "$(dirname "$0")/common.sh"
@@ -35,9 +35,11 @@ Surfaceless = true
 DumpDir = $(cygpath -w "$OUT/gs-frames")
 DumpEvery = ${EVERY:-1000}
 EOF
-env GT4_RENDERER=pcsx2 PS2_GS=gpu GT4_GS_PROCESS="$(cygpath -w "$gs_exe")" GT4_GS_CONFIG="$(cygpath -w "$OUT/gt4-gs.ini")" GT4_FLARE_LIMITS=1 \
+start_keeping_frames "$OUT/gs-frames"
+env GT4_RENDERER=pcsx2 PS2_GS=gpu GT4_GS_PROCESS="$(cygpath -w "$gs_exe")" GT4_GS_CONFIG="$(cygpath -w "$OUT/gt4-gs.ini")" \
   GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1 GT4_DISPLAY_ASPECT=16:9 GT4_INPUT_REPLAY="$(cygpath -w "$recording")" "$@" "$exe" \
   "$(cygpath -w "$GT4_ASSETS/private/slice272-spec2-elf/SCUS_974.36")" --ntsc --disc "$(cygpath -w "$GT4_SPEC2_ISO")" \
   --frames "${LAST:-$last}" --memcard "$(cygpath -w "$OUT/card.ps2")" > "$OUT/log.txt" 2>&1
 echo "exit $?"
+stop_keeping_frames
 rm -f "$OUT/card.ps2"

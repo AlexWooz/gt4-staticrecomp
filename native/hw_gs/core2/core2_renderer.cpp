@@ -1087,6 +1087,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (span.count == 0) return;
         ++writeSequence_;
         if (kind != kWriteUpload) FreshBlockIds(span);  // IN-453 (uploads call SetUploadIds with their exact blocks)
+        if (kind == kWriteReadback) AuditIds("after fresh readback");
+        if (kind == kWriteDelayed) AuditIds("after fresh delayed");
+        if (kind == kWriteMove) AuditIds("after fresh move");
+        if (kind == kWriteWhole) AuditIds("after fresh whole");
         if (span.count >= kAllBlocks) {
             pageWrites_.fill(writeSequence_);
             pageWriter_.fill(kind);
@@ -2604,7 +2608,29 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         uploadMemo_.emplace(key, std::move(memo));
     }
 
+    // Diagnostics: GT4_CORE2_ID_AUDIT=1 compares every block whose identity is a hash of its bytes with those bytes.
+    void AuditIds(const char *where) {
+        static const bool on = std::getenv("GT4_CORE2_ID_AUDIT") != nullptr;
+        static int reports = 0;
+        if (!on || reports >= 40) return;
+        const std::uint8_t *local = memory_.Local().bytes().data();
+        for (std::uint32_t b = 0; b < kAllBlocks && reports < 40; ++b) {
+            if (blockIds_[b] < 0x0001000000000000ull) continue;
+            if (HashBlock(local + std::size_t{b} * memory::kBlockBytes) != blockIds_[b]) {
+                std::fprintf(stderr, "[core2] id audit %s vblank=%llu block=%u writer=%u\n", where,
+                             static_cast<unsigned long long>(vblanks_), b,
+                             static_cast<unsigned>(pageWriter_[b / memory::kBlocksPerPage % memory::kPagesTotal]));
+                ++reports;
+            }
+        }
+    }
+
     void CommitUpload(const UploadCommit &c, const std::uint8_t *bytes, std::size_t byteCount) override {
+        struct AuditOnExit {
+            Impl *self;
+            ~AuditOnExit() { self->AuditIds("after upload"); }
+        } auditOnExit{this};
+        AuditIds("before upload");
         ScopedUs uploadTimer(clock_, &PhaseTimes::upload);
         times_.uploads += 1;
         const auto psm = memory::decodePsm(c.dpsm);
@@ -2686,8 +2712,26 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 stats.uploadChecks++;
                 if (!same) {
                     stats.uploadCheckMismatches++;
-                    std::fprintf(stderr, "[core2] upload check mismatch bp=%u bw=%u psm=%02x rect=%u,%u %ux%u\n", c.dbp,
-                                 c.dbw, c.dpsm, c.dsax, c.dsay, c.rrw, c.rrh);
+                    std::size_t blocksOff = 0, idStale = 0;
+                    std::uint64_t firstBlock = 0;
+                    if (replayed) {
+                        const UploadMemo &memo = uploadMemo_.at(memoKey);
+                        const std::uint8_t *local = memory_.Local().bytes().data();
+                        for (std::size_t i = 0; i < memo.blocks.size(); ++i) {
+                            const std::uint32_t block = memo.blocks[i];
+                            if (std::memcmp(local + std::size_t{block} * memory::kBlockBytes,
+                                            memo.bytes.data() + i * memory::kBlockBytes, memory::kBlockBytes) != 0) {
+                                if (blocksOff++ == 0) firstBlock = block;
+                                if (blockIds_[block] == memo.ids[i]) idStale++;
+                            }
+                        }
+                    }
+                    std::fprintf(stderr,
+                                 "[core2] upload check mismatch vblank=%llu bp=%u bw=%u psm=%02x rect=%u,%u %ux%u replayed=%d "
+                                 "blocks_off=%zu id_stale=%zu first=%llu writer=%u\n",
+                                 static_cast<unsigned long long>(vblanks_), c.dbp, c.dbw, c.dpsm, c.dsax, c.dsay, c.rrw, c.rrh,
+                                 replayed ? 1 : 0, blocksOff, idStale, static_cast<unsigned long long>(firstBlock),
+                                 static_cast<unsigned>(pageWriter_[firstBlock / memory::kBlocksPerPage % memory::kPagesTotal]));
                 }
             }
         }
@@ -2740,6 +2784,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                 std::strcmp(std::getenv("GT4_CORE2_KEEP_UNCHANGED"), "0") != 0;
 
     void LocalToLocalMove(const LocalMoveCommit &move) override {
+        AuditIds("before move");
         const auto spsm = memory::decodePsm(move.spsm);
         const auto dpsm = memory::decodePsm(move.dpsm);
         if (spsm && move.rrw != 0 && move.rrh != 0) {
@@ -3335,10 +3380,53 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return result;
     }
 
+    // IN-529: GT4 clears the depth buffer it is drawing with through a pair of views of its memory: untextured black sprites of z 0
+    // on the even page columns, with FRAME at the depth buffer's base as CT24 and ZBUF one page after it. The FRAME write lands on
+    // the even columns of the depth memory and the ZBUF write on the odd ones, so all of it reads 0 (it splits the scene in two depth
+    // ranges). Depth and colour targets of different bases do not meet here, so the clear is drawn as what it is: a write of 0 to
+    // the existing depth target over both columns, keeping every lane of the frame the scene is using.
+    // GT4_CORE2_DEPTH_CLEAR=0 draws it as written (A/B).
+    const bool depthClearOn_ = std::getenv("GT4_CORE2_DEPTH_CLEAR") == nullptr ||
+                               std::strcmp(std::getenv("GT4_CORE2_DEPTH_CLEAR"), "0") != 0;
+    std::uint64_t lastSceneFrame_ = 0;
+
+    bool RewriteDepthClear(Batch &batch) {
+        constexpr std::int32_t kPageWidth = 64;
+        const std::uint64_t frameRegister = batch.state.ctx.frame, zbufRegister = batch.state.ctx.zbuf, testRegister = batch.state.ctx.test;
+        if (!depthClearOn_ || batch.prims.empty() || lastSceneFrame_ == 0) return false;
+        if ((batch.state.effectivePrim & ((1u << primbit::kTme) | (1u << primbit::kAbe))) != 0) return false;
+        if (test::Ate(testRegister) != 0 || test::Date(testRegister) != 0 || test::Zte(testRegister) != 1 || test::Ztst(testRegister) != 1u) return false;
+        if (frame::Psm(frameRegister) != static_cast<std::uint32_t>(memory::Psm::Ct24) || frame::Fbmsk(frameRegister) != 0) return false;
+        if (zbuf::Zmsk(zbufRegister) != 0 || zbuf::Zbp(zbufRegister) != frame::Fbp(frameRegister) + 1u) return false;
+        for (const PrimRecord &record : batch.prims) {
+            if (record.type != PrimType::Sprite || record.rect.x0 % (2 * kPageWidth) != 0 || record.rect.x1 - record.rect.x0 + 1 != kPageWidth) return false;
+        }
+        for (const Vertex &v : batch.vertices) {
+            if (v.z != 0 || v.r != 0 || v.g != 0 || v.b != 0) return false;
+        }
+        const std::uint32_t base = memory::blockOfPage(frame::Fbp(frameRegister));
+        const std::uint32_t width = frame::Fbw(frameRegister);
+        const bool haveDepth = std::any_of(targets_.begin(), targets_.end(), [&](const Target &t) {
+            return t.alive && IsDepthClass(t.cls) && t.view.basePointer == base && t.view.bufferWidth == width;
+        });
+        if (!haveDepth) return false;
+        batch.state.ctx.zbuf = (zbufRegister & ~std::uint64_t{0x1FF}) | frame::Fbp(frameRegister);
+        batch.state.ctx.frame = lastSceneFrame_ | (std::uint64_t{0xFFFFFFFFu} << 32);
+        for (PrimRecord &record : batch.prims) {
+            batch.vertices[record.first + record.count - 1].x4 += kPageWidth * 16;
+            record.rect.x1 += kPageWidth;
+        }
+        batch.drawRect.x1 += kPageWidth;
+        batch.trace.xMax += kPageWidth;
+        stats.depthClears++;
+        return true;
+    }
+
     void OnBatch(Batch &&batch) override {
         ScopedUs batchTimer(clock_, &PhaseTimes::batch);
         if (failed_) return;
         counters.batches++;
+        if (!RewriteDepthClear(batch) && frame::Fbmsk(batch.state.ctx.frame) != 0xFFFFFFFFu) lastSceneFrame_ = batch.state.ctx.frame;
         {
             ScopedUs timer(clock_, &PhaseTimes::hook);
             if (ToneHook(batch)) return;
@@ -3462,8 +3550,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs timer(clock_, &PhaseTimes::cpuSprites);
             cpuref::DrawStats drawStats;
             cpuref::DrawBatch(batch, memory_.Local(), frontEnd_.Clut(), drawStats);
-            OnMemoryWritten(t.frameView, t.rect, true);
-            if (t.state.fields[gpu::gpufield::Zmsk] == 0) OnMemoryWritten(t.zView, t.rect, true);
+            // Not an upload: SetUploadIds does not run, so the written blocks need fresh identities. Otherwise a later replay
+            // of an upload (IN-486) takes the old identity for the old bytes, and skips restoring them (IN-528).
+            OnMemoryWritten(t.frameView, t.rect, true, kWriteWhole);
+            if (t.state.fields[gpu::gpufield::Zmsk] == 0) OnMemoryWritten(t.zView, t.rect, true, kWriteWhole);
             stats.cpuSpriteBatches++;
             return;
         }
@@ -3522,8 +3612,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             namespace gf = gpu::gpufield;
             const auto &fields = t.state.fields;
             draw.constantFill = !t.hasTexture && batch.cls == PrimClass::Sprite && fields[gf::BlendOn] == 0 &&
-                                fields[gf::FogOn] == 0 && fields[gf::DateOn] == 0;
+                                fields[gf::FogOn] == 0 && fields[gf::DateOn] == 0 && (batch.state.env.scanmsk & 2u) == 0;
         }
+        draw.scanmsk = static_cast<std::uint32_t>(batch.state.env.scanmsk);
         if (draw.forceLinear && t.hasTexture) stats.forcedBilinearBatches++;
         const std::uint32_t zFormat = t.state.fields[gpu::gpufield::Zformat];
         draw.zMax = zFormat == 1 ? 0xFFFFFFu : zFormat == 2 ? 0xFFFFu : 0xFFFFFFFFu;
@@ -3713,7 +3804,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const std::uint64_t tex0 = batch.state.ctx.tex0;
             std::fprintf(stderr,
                          "[core2] batch frame=%u/%u/%02x z=%u tex=%u/%u/%02x from=%s rect=%d,%d,%d,%d prims=%zu "
-                         "fbmsk=%08x prim=%llx test=%llx zbuf=%llx alpha=%llx verts=%zu tex1=%llx\n",
+                         "fbmsk=%08x prim=%llx test=%llx zbuf=%llx alpha=%llx verts=%zu tex1=%llx tex0=%llx\n",
                          t.frameView.basePointer, t.frameView.bufferWidth, static_cast<unsigned>(t.frameView.psm),
                          depthTarget ? t.zView.basePointer : 0u, t.hasTexture ? tex0::Tbp0(tex0) : 0u,
                          t.hasTexture ? tex0::Tbw(tex0) : 0u, t.hasTexture ? tex0::Psm(tex0) : 0u,
@@ -3723,7 +3814,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                          static_cast<unsigned long long>(batch.state.ctx.test),
                          static_cast<unsigned long long>(batch.state.ctx.zbuf),
                          static_cast<unsigned long long>(batch.state.ctx.alpha), batch.vertices.size(),
-                         static_cast<unsigned long long>(batch.state.ctx.tex1));
+                         static_cast<unsigned long long>(batch.state.ctx.tex1), static_cast<unsigned long long>(tex0));
             static const long long vertsAbove = std::getenv("GT4_CORE2_TRACE_VERTS")
                                                     ? std::atoll(std::getenv("GT4_CORE2_TRACE_VERTS"))
                                                     : -1;  // diagnostics: vertices of batches with this many prims
@@ -3947,6 +4038,32 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const display::PmodeFields pmode = display::decode_pmode(displayRegs_.pmode);
         const display::MergePlan plan =
             display::plan_merge(pmode, layout.circuits[0], layout.circuits[1], available[0], available[1]);
+        // Diagnostics: GT4_CORE2_DISPLAY_TRACE=<first>-<last> prints the display registers and the colour targets per VBlank.
+        {
+            static long long traceFirst = -2, traceLast = -1;
+            if (traceFirst == -2) {
+                traceFirst = -1;
+                if (const char *text = std::getenv("GT4_CORE2_DISPLAY_TRACE")) std::sscanf(text, "%lld-%lld", &traceFirst, &traceLast);
+            }
+            if (traceFirst >= 0 && static_cast<long long>(vblanks_) >= traceFirst && static_cast<long long>(vblanks_) <= traceLast) {
+                std::fprintf(stderr, "[core2] display vblank=%llu pmode=%llx bg=%02x%02x%02x outcome=%d",
+                             static_cast<unsigned long long>(vblanks_), static_cast<unsigned long long>(displayRegs_.pmode),
+                             background_[0], background_[1], background_[2], static_cast<int>(plan.outcome));
+                for (std::size_t i = 0; i < 2; ++i) {
+                    const display::CircuitRect &c = layout.circuits[i];
+                    std::fprintf(stderr, " rc%zu[en=%d use=%d fbp=%u fbw=%u psm=%02x db=%d,%d read=%ux%u]", i + 1, c.enabled ? 1 : 0,
+                                 (i == 0 ? plan.use_rc1 : plan.use_rc2) ? 1 : 0, c.fbp, c.fbw, c.psm, c.dbx, c.dby, c.read_width, c.read_height);
+                }
+                std::fprintf(stderr, " interlaced=%d\n", layout.really_interlaced ? 1 : 0);
+                for (const Target &t : targets_) {
+                    if (!t.alive || IsDepthClass(t.cls)) continue;
+                    std::fprintf(stderr, "[core2]   target bp=%u bw=%u psm=%02x size=%ux%u drawn=%d,%d,%d,%d valid=%d,%d,%d,%d last=%llu\n",
+                                 t.view.basePointer, t.view.bufferWidth, static_cast<unsigned>(t.view.psm), t.width, t.height, t.drawn.x0,
+                                 t.drawn.y0, t.drawn.x1, t.drawn.y1, t.valid.x0, t.valid.y0, t.valid.x1, t.valid.y1,
+                                 static_cast<unsigned long long>(t.lastDraw));
+                }
+            }
+        }
         if (plan.outcome == display::MergeOutcome::KeepPrevious) return false;
         // 13.3 and 13.4 as in the old core (IN-381, IN-405): a progressive frame has no field offset and no
         // deinterlace; an interlaced one gets the step 3 offset of one native row in the field's phase and the GPU
