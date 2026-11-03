@@ -3113,7 +3113,8 @@ Checks:
 
 - `native_spec2_hooks` (`native/spec2_hooks_fixture.cpp`, always built with `GT4_TARGET_SPEC2`) asserts every table
   value and the write rules in synthetic 32 MiB RAM: the wide record is copied from `0x664E50`, the flag and
-  `0x6655A0` are set, the 480p hold writes 1 on the normal index and keeps 1080i.
+  `0x6655A0` are set, the 480p hold writes 1 on the normal index and keeps 1080i (from 1.3.0-rc10 it writes 1 on the 1080i
+  index too, TASK-078).
 - Headless GSdx race (21,000 frames, Costa di Amalfi) at `GT4_DISPLAY_ASPECT=21:9`: the log shows the camera matrix
   scaled (`x 0.761905`), `first RaceDisplay::render`, the HUD canvas (`left -240 right 880`) and the fill policy. The
   16:9 hold logs the settled owner `0x009BD690`; it writes nothing because the game itself boots 16:9. The 480p hold

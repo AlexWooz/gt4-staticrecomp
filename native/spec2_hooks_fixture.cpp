@@ -175,10 +175,11 @@ void check_480p_hold() {
   expect(gt4::display::force_race_480p_at_vblank(ram.data(), static_cast<std::uint32_t>(ram.size()), state),
          "480p hold wrote on the normal index");
   expect(get32(ram, index) == kSpec2Hooks.race_display_index_480p, "480p index forced");
+  // TASK-078: a 1080i save races at 480p too.
   put32(ram, index, kSpec2Hooks.race_display_index_1080i);
-  expect(!gt4::display::force_race_480p_at_vblank(ram.data(), static_cast<std::uint32_t>(ram.size()), state),
-         "480p hold leaves 1080i alone");
-  expect(get32(ram, index) == kSpec2Hooks.race_display_index_1080i, "1080i kept");
+  expect(gt4::display::force_race_480p_at_vblank(ram.data(), static_cast<std::uint32_t>(ram.size()), state),
+         "480p hold wrote on the 1080i index");
+  expect(get32(ram, index) == kSpec2Hooks.race_display_index_480p, "1080i index forced to 480p");
 }
 
 }  // namespace

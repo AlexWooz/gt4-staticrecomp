@@ -10,8 +10,9 @@
 // func_00436640 reads the index at race start and selects the 480p setting for index 1.
 // The game stores 0 at 0x16B0 in func_004363A0 (setDefault).
 //
-// The host writes 1 at guest VBlank only when the index is 0. Index 1 and 2 are never changed,
-// so a user who picks 1080i keeps it. The write is a guest RAM store, not a SetGsCrt rewrite.
+// The host writes 1 at guest VBlank when the index is 0 (normal) or 2 (1080i); index 1 is left as it is.
+// TASK-078 (owner, 2026-11-03; idea from PR #174): the launcher always asks for 480p, and a save or an imported card that
+// holds 1080i raced at 1080i. The write is a guest RAM store, not a SetGsCrt rewrite.
 
 #include <cstdint>
 
@@ -35,7 +36,7 @@ bool parse_force_480p(const char *value);
 // index word is not inside guest RAM of `ram_size` bytes. Pure.
 std::uint32_t race_display_index_address(std::uint32_t owner_pointer, std::uint32_t ram_size);
 
-// True when the index word should be forced to 480p: only the normal value is changed. Pure.
+// True when the index word should be forced to 480p: the normal and the 1080i values. Pure.
 bool should_force_480p_index(std::uint32_t index_value);
 
 struct Force480pState {
