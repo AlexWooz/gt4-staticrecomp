@@ -245,6 +245,26 @@ Upper upper(std::uint32_t hi, const FlagUse &use, bool donor_exact = false) {
         u.mask = d;
         u.normalized = vector && arithmetic;
     }
+    if ((kind == Opmula || kind == Opmsub) && !donor_exact) {
+        // TASK-134: the outer product over x, y and z at once, fs.yzx times ft.zxy (lane w is computed, never written). Each
+        // lane equals the scalar mul and msub below: vmul and vmsub fix their operands and their result as fin and fout do.
+        const std::string fs_yzx = std::format("__builtin_shufflevector({0}, {0}, 1, 2, 0, 3)", vreg(fs));
+        const std::string ft_zxy = std::format("__builtin_shufflevector({0}, {0}, 2, 0, 1, 3)", vreg(ft));
+        if (kind == Opmula) u.pre += std::format("const v4u uv = vmul({}, {}); ", fs_yzx, ft_zxy);
+        else u.pre += std::format("const v4u uv = vmsub(vload(r.acc), {}, {}); ", fs_yzx, ft_zxy);
+        if (target == 0) {
+            const std::string mac = mac_update("uf", d, use);
+            if (mac.empty()) u.pre.clear();  // VF0 is not written and no MAC is observed: nothing to compute
+            else u.post = std::format("{{ Reg128 uf; vstore(uf, uv); {}}} ", mac);
+            u.sets_flags = true;
+            return u;
+        }
+        u.normalized = true;
+        u.post += std::format("vstore({0}, vsel(vload({0}), uv, {1})); ", dst, lane_mask(d));
+        u.sets_flags = flags;
+        if (flags) u.post += mac_update(dst, d, use);
+        return u;
+    }
     if (arithmetic && !donor_exact) {
         const auto operand = [&](unsigned reg) -> std::string {
             if (!reg) return vreg(0);

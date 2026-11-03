@@ -33,6 +33,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 #include <unordered_map>
 
 namespace hwgs::core2 {
@@ -1662,7 +1663,8 @@ struct Gpu::Impl {
   bool profiling = false, profileOpen = false;
   std::uint32_t profileNext = 0;
   std::vector<std::string> profileLabels;  // label of query pair (2i, 2i + 1)
-  void prof_begin(const std::string &label) {
+  // TASK-134: a view, so the commands' labels (touch passes a C string) build no std::string while nothing profiles.
+  void prof_begin(std::string_view label) {
     if (!profiling || profileOpen || profileNext + 2u > kProfileQueries) return;
     if (renderPassOpen) {
       fragment_barrier();
@@ -1670,7 +1672,7 @@ struct Gpu::Impl {
       full_barrier();
     }
     gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, profilePool, profileNext);
-    profileLabels.push_back(label);
+    profileLabels.emplace_back(label);
     profileOpen = true;
   }
   void prof_end() {
