@@ -250,6 +250,27 @@ if(GT4_IPU_RUNTIME_SOURCE)
     set_source_files_properties("${ipu_capsule}/ipu.cpp" PROPERTIES INCLUDE_DIRECTORIES "${DONOR}/runtime/src;${CMAKE_CURRENT_SOURCE_DIR}")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ipu_capsule}/ipu.cpp")
 endif()
+# TASK-125 (issue #104): SPU2 capsule (scripts/prepare_spu2_runtime.py). Replaces the donor iop/spu2.cpp with the derived
+# source whose exponential envelope decrease reaches silence (native/spu2_envelope.hpp); the manifest pins its SHA-256.
+set(GT4_SPU2_RUNTIME_SOURCE "" CACHE PATH "Verified SPU2 capsule: derived spu2.cpp and runtime.json")
+if(GT4_SPU2_RUNTIME_SOURCE)
+    get_filename_component(spu2_capsule "${GT4_SPU2_RUNTIME_SOURCE}" ABSOLUTE)
+    if(NOT EXISTS "${spu2_capsule}/spu2.cpp" OR NOT EXISTS "${spu2_capsule}/runtime.json")
+        message(FATAL_ERROR "The SPU2 capsule needs spu2.cpp and runtime.json")
+    endif()
+    file(READ "${spu2_capsule}/runtime.json" spu2_manifest)
+    string(JSON spu2_expected GET "${spu2_manifest}" spu2_sha256)
+    file(SHA256 "${spu2_capsule}/spu2.cpp" spu2_actual)
+    if(NOT spu2_actual STREQUAL spu2_expected)
+        message(FATAL_ERROR "SPU2 spu2.cpp differs from its runtime.json pin")
+    endif()
+    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/iop/spu2\\.cpp$")
+    list(APPEND RUNTIME_FILES "${spu2_capsule}/spu2.cpp")
+    # The derived file includes the donor's iop headers by name (spu2.hpp, hw.hpp, ...) and native/spu2_envelope.hpp.
+    set_source_files_properties("${spu2_capsule}/spu2.cpp" PROPERTIES
+        INCLUDE_DIRECTORIES "${DONOR}/runtime/src/iop;${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${spu2_capsule}/spu2.cpp")
+endif()
 # TASK-017 (slice205 v1, slice206 v2): license demo guard capsule (scripts/prepare_license_guard.py). Replaces the donor
 # dispatch.cpp (guard at both license loaders' demo-input calls, native/license_guard.*), kernel.cpp (halt
 # dump, off unless GT4_HALT_DUMP=1) and iop/cdvdfsv.cpp (FSV read trace, off unless GT4_FSV_TRACE=1). Every derived
@@ -949,6 +970,9 @@ target_include_directories(vulkan_fixture PRIVATE "${PORT}")
 target_link_libraries(vulkan_fixture PRIVATE ps2runtime_vulkan user32)
 target_compile_options(gt4vulkan PRIVATE /W4)
 target_compile_options(vulkan_fixture PRIVATE /W4)
+add_executable(spu2_envelope_fixture spu2_envelope_fixture.cpp)
+target_compile_options(spu2_envelope_fixture PRIVATE /W4)
+add_test(NAME native_spu2_envelope COMMAND spu2_envelope_fixture)
 add_executable(ipu_fast_fixture ipu_fast_fixture.cpp)
 target_compile_options(ipu_fast_fixture PRIVATE /W4)
 add_test(NAME native_ipu_fast COMMAND ipu_fast_fixture)

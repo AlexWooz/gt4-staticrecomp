@@ -32,6 +32,7 @@ cmake -S "%WT%" -B "%WT%\build\%DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release ^
  -DGT4_LICENSE_GUARD_SOURCE=%A%/private/slice376-frame-render-license-guard-runtime ^
  -DGT4_MEMCARD_RUNTIME_SOURCE=%A%/private/slice200-memcard-runtime ^
  -DGT4_PERF_RUNTIME_SOURCE=%RUNTIME% ^
+ -DGT4_SPU2_RUNTIME_SOURCE=%A%/private/slice396-spu2-runtime ^
  -DGT4_PORT_DIR=%A%/private/slice200-port ^
  -DGT4_PYTHON=%A%/private/tooling-venv/Scripts/python.exe ^
  -DGT4_RELEASE_DISTRIBUTION=ON ^
