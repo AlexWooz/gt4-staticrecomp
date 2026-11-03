@@ -2740,3 +2740,17 @@ behind another car, where the transparency of a car's glass is drawn, the 3D of 
 Unknown (Hypothesis: the order or the depth of the transparent glass batches against the other car, or a target read while it
 is being drawn). Next: record a drive close behind a car (`record.cmd`), replay it on CoreGS 2.0 and GSdx and compare frame by
 frame. Planned for rc11 (owner).
+
+The owner added (2026-11-03): only behind the Skyline R34s (4th and 5th at the start), never behind the Supras or the NSX, and
+what shows is the car in front, not the R34's interior. Recording `private/coregs2-bench/inputs/r34-glass.txt` (the owner's replay
+opened on a copy of their Spec II card, `r34-glass-card.ps2`).
+
+State (2026-11-03): fixed on `task/134-game-code-optimization-study` (IN-535). Cause (Confirmed by reading back the stored words
+after each draw): GT4 clears its environment map with two 64-wide sprites whose depth buffer lies one page into the map's own
+memory, so half of the map gets its alpha (0x80) from the depth write; CoreGS 2.0 kept that depth in its own image, the map kept
+alpha 0 there, a car's reflection pass that read it left alpha 0 on the car, and the R34's glass reflection (scaled by the alpha
+behind the glass) then left the car in front sharp and dark. A depth fill now writes the colour target whose memory it covers.
+R34 recording at 6x: the car in front misted behind the glass as on GSdx; 8 of 13 frames change, 7 closer to GSdx and 1 equal.
+Tokyo R246: 17 of 43 frames change by at most 127 pixels, all closer to GSdx; El Capitan: 6 of 43, at most 133 pixels, equal to
+GSdx. The owner looked at the R34 frames: fixed.
+Acceptance: CTest (`hw_core2_depth_alias`), the other recordings changed only where a reflection reads that alpha, owner test.

@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-142 fixed for rc11: the car in front through a Skyline R34's rear glass (2026-11-03)
+
+On `task/134-game-code-optimization-study`, not in a build yet. GT4 clears its environment map with two sprites whose depth buffer
+lies in the map's own memory; CoreGS 2.0 kept that depth apart, half of the map kept alpha 0, and the R34's glass reflection (scaled
+by the alpha a car's reflection left behind the glass) vanished over the car in front, which stayed sharp and dark. A depth fill
+now writes the colour target whose memory it covers (IN-535, `hw_core2_depth_alias`). On the owner's recording at 6x the glass is
+misted as on GSdx (8 of 13 frames change, 7 closer to GSdx, 1 equal); Tokyo R246 (17 of 43 frames, all closer to GSdx) and El
+Capitan (6 of 43, equal) change only on car glass, by at most 133 pixels. The owner saw the frames: fixed. New diagnostics: `GT4_CORE2_PROBE_DRAWS`/`_RECT`, `GT4_CORE2_SKIP_DRAWS`,
+`GT4_CORE2_DEPTH_ALIAS_TRACE`, depth range, tests and TEX0 in the frame trace.
+
 ## 1.3.0-rc10 published as a pre-release (2026-11-03)
 
 On the owner's word after their tests ("tudo certo nos meus testes"): `v1.3.0-rc10` at `63bd3321` (no code after `079601ac`, the

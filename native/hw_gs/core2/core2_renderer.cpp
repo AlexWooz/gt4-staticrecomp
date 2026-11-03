@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "core2_depth_alias.hpp"
 #include "core2_gpu.hpp"
 #include "core2_replace.hpp"
 #include "core2_upload.hpp"
@@ -3741,13 +3742,23 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             static_cast<long long>(vblanks_) <= frameTrace.second) {
             const std::uint64_t tex0 = batch.state.ctx.tex0;
             std::int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
-            std::uint32_t u0 = UINT32_MAX, v0 = UINT32_MAX, u1 = 0, v1 = 0;
+            std::uint32_t u0 = UINT32_MAX, v0 = UINT32_MAX, u1 = 0, v1 = 0, z0 = UINT32_MAX, z1 = 0;
             for (const Vertex &v : batch.vertices) {
                 x0 = std::min(x0, v.x4 >> 4), y0 = std::min(y0, v.y4 >> 4), x1 = std::max(x1, v.x4 >> 4), y1 = std::max(y1, v.y4 >> 4);
                 u0 = std::min(u0, v.u >> 4), v0 = std::min(v0, v.v >> 4), u1 = std::max(u1, v.u >> 4), v1 = std::max(v1, v.v >> 4);
+                z0 = std::min(z0, v.z), z1 = std::max(z1, v.z);
             }
+            std::fprintf(stderr, "[core2] frame-trace z=%08x..%08x\n", z0, z1);
             const std::string file = replaced ? replaced->entry.basename.substr(0, 16)
                                      : t.hasTexture && draw.texture == kNoImage ? " key " + lastLookupName_ : std::string();
+            namespace gf = gpu::gpufield;
+            const auto &f = t.state.fields;
+            std::fprintf(stderr, "[core2] frame-trace tests ate=%u atst=%u aref=%u afail=%u zte=%u ztst=%u zmsk=%u blend=%u,%u,%u,%u "
+                                 "fix=%u pabe=%u fba=%u tfx=%u tcc=%u fbmsk=%08x zbuf=%u/%02x tex0=%u/%u/%02x\n",
+                         f[gf::Ate], f[gf::Atst], f[gf::Aref], f[gf::Afail], f[gf::Ztest], f[gf::Ztst], f[gf::Zmsk], f[gf::BlendA],
+                         f[gf::BlendB], f[gf::BlendC], f[gf::BlendD], f[gf::Fix], f[gf::Pabe], f[gf::Fba], f[gf::Tfx], f[gf::Tcc],
+                         f[gf::Fbmsk], t.zView.basePointer, static_cast<unsigned>(t.zView.psm), tex0::Tbp0(tex0), tex0::Tbw(tex0),
+                         static_cast<unsigned>(tex0::Psm(tex0)));
             std::fprintf(stderr,
                          "[core2] frame-trace vblank=%llu draw=%llu frame=%u/%u/%02x tex=%u/%u/%02x %ux%u src=%s%s xy=%d,%d..%d,%d "
                          "uv=%u,%u..%u,%u blend=%u alpha=%u verts=%zu\n",
@@ -3759,6 +3770,21 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                          !t.hasTexture ? "none" : draw.texture != kNoImage ? "target" : replaced ? "replaced:" : "memory",
                          file.c_str(), x0, y0, x1, y1, u0, v0, u1, v1, t.state.fields[gpu::gpufield::BlendOn],
                          batch.vertices.empty() ? 0u : batch.vertices.front().a, batch.vertices.size());
+        }
+        // Diagnostics: GT4_CORE2_SKIP_DRAWS=<first draw>-<last draw> leaves those batches (numbers from the frame trace) out.
+        static const std::pair<long long, long long> skipDraws = [] {
+            std::pair<long long, long long> range{-1, -1};
+            if (const char *text = std::getenv("GT4_CORE2_SKIP_DRAWS")) {  // diagnostics only
+                char *end = nullptr;
+                range.first = range.second = std::strtoll(text, &end, 10);
+                if (end && *end == '-') range.second = std::strtoll(end + 1, nullptr, 10);
+            }
+            return range;
+        }();
+        if (skipDraws.first >= 0 && static_cast<long long>(drawCounter_) >= skipDraws.first &&
+            static_cast<long long>(drawCounter_) <= skipDraws.second) {
+            ++drawCounter_;  // the next batch keeps the number the trace gave it
+            return;
         }
         if (replaced) {  // IN-470: chapter 11, a replacement instead of the decode
             draw.memoryTexture = replaced->image;
@@ -4009,7 +4035,157 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 depthTarget->lastDraw = number;
                 depthTarget->lastDrawVblank = vblanks_;
                 if (t.zView.psm == Psm::Z32) depthTarget->fullWordWritten = true;
+                if (depthIntoColour_) CarryDepthFillIntoColour(t, *frameTarget, number, draw.constantFill);
             }
+        }
+        ProbeAfterDraw(number, *frameTarget, depthTarget);
+    }
+
+    // Diagnostics only: GT4_CORE2_PROBE_DRAWS=<n>[,<n>...] (draw numbers as the depth trace counts them, the frame
+    // trace's plus 1) and GT4_CORE2_PROBE_RECT=<x0>,<y0>,<x1>,<y1> (native, inclusive): after each listed draw, the
+    // frame target's stored words over the rectangle (and its depth target's) are read back and printed.
+    void ProbeAfterDraw(std::uint64_t number, Target &frameTarget, Target *depthTarget) {
+        static const std::vector<std::uint64_t> draws = [] {
+            std::vector<std::uint64_t> list;
+            if (const char *text = std::getenv("GT4_CORE2_PROBE_DRAWS")) {
+                for (const char *at = text; *at;) {
+                    char *end = nullptr;
+                    const unsigned long long value = std::strtoull(at, &end, 10);
+                    if (end == at) break;
+                    list.push_back(value);
+                    at = *end == ',' ? end + 1 : end;
+                }
+            }
+            return list;
+        }();
+        if (draws.empty() || std::find(draws.begin(), draws.end(), number) == draws.end()) return;
+        static const PixelRect rect = [] {
+            PixelRect r{0, 0, 7, 7};
+            if (const char *text = std::getenv("GT4_CORE2_PROBE_RECT")) {
+                std::sscanf(text, "%d,%d,%d,%d", &r.x0, &r.y0, &r.x1, &r.y1);
+            }
+            return r;
+        }();
+        for (Target *target : {&frameTarget, depthTarget}) {
+            if (!target) continue;
+            std::vector<std::uint32_t> words;
+            std::string error;
+            if (!gpu_.Reduce(target->image, rect.x0, rect.y0, rect.x1, rect.y1, words, error)) {
+                std::fprintf(stderr, "[core2] probe failed: %s\n", error.c_str());
+                return;
+            }
+            std::fprintf(stderr, "[core2] probe draw=%llu target=%u/%u/%02x rect=%d,%d..%d,%d\n",
+                         static_cast<unsigned long long>(number), target->view.basePointer, target->view.bufferWidth,
+                         static_cast<unsigned>(target->view.psm), rect.x0, rect.y0, rect.x1, rect.y1);
+            const std::int32_t width = rect.x1 - rect.x0 + 1;
+            for (std::int32_t y = rect.y0; y <= rect.y1; ++y) {
+                std::string line;
+                for (std::int32_t x = rect.x0; x <= rect.x1; ++x) {
+                    char cell[12];
+                    std::snprintf(cell, sizeof cell, " %08x", words[static_cast<std::size_t>((y - rect.y0) * width + (x - rect.x0))]);
+                    line += cell;
+                }
+                std::fprintf(stderr, "[core2]   y=%d%s\n", y, line.c_str());
+            }
+        }
+    }
+
+    // IN-535: a depth fill (constant Z, every sprite pixel written: depth test ALWAYS, no alpha test that drops the depth)
+    // whose depth buffer lies in the memory of a 32-bit colour target at another base pointer: the depth words replace
+    // the colour words there, as on the GS, block by block (core2_depth_alias.hpp). The batch's own colour write wins
+    // where both land (it reaches memory later). GT4 clears its 256-wide environment map this way, columns 64-127 and
+    // 192-255 through the depth write (alpha 0x80); without them a car's reflection pass that read them wrote alpha 0,
+    // and the reflection on a Skyline R34's rear glass, scaled by the alpha behind it, left the car in front sharp
+    // through the glass (TASK-142).
+    // GT4_CORE2_DEPTH_INTO_COLOUR=0 leaves the colour targets alone (A/B).
+    const bool depthIntoColour_ = std::getenv("GT4_CORE2_DEPTH_INTO_COLOUR") == nullptr ||
+                                  std::strcmp(std::getenv("GT4_CORE2_DEPTH_INTO_COLOUR"), "0") != 0;
+    void CarryDepthFillIntoColour(const writeback::BatchTranslation &t, Target &frameTarget, std::uint64_t number,
+                                  bool constantFill) {
+        namespace gf = gpu::gpufield;
+        const auto &f = t.state.fields;
+        const bool depthAlways = f[gf::Ztest] != 0 && f[gf::Ztst] == 1u;
+        const bool onlyDepth = f[gf::Ate] != 0 && f[gf::Atst] == 0u && f[gf::Afail] == 2u;  // NEVER, ZB_ONLY
+        if (!depthAlways) return;
+        static const bool trace = std::getenv("GT4_CORE2_DEPTH_ALIAS_TRACE") != nullptr;  // diagnostics only
+        if (trace) {
+            std::fprintf(stderr, "[core2] depth fill vblank=%llu draw=%llu z=%u/%u/%02x rect=%d,%d..%d,%d constant=%d draws=%zu verts=%zu\n",
+                         static_cast<unsigned long long>(vblanks_), static_cast<unsigned long long>(number), t.zView.basePointer,
+                         t.zView.bufferWidth, static_cast<unsigned>(t.zView.psm), t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1,
+                         constantFill ? 1 : 0, t.draws.size(), t.vertices.size());
+        }
+        if (!constantFill || (f[gf::Ate] != 0 && f[gf::Atst] != 1u && !onlyDepth)) return;
+        if (t.zView.psm != Psm::Z32 && t.zView.psm != Psm::Z24) return;
+        const BlockSpan depthSpan = SpanOfRect(t.zView, t.rect);
+        bool overlaps = false;
+        for (const Target &c : targets_) {
+            overlaps = overlaps || (c.alive && c.cls == FormatClass::Colour32 && c.view.basePointer != t.zView.basePointer &&
+                                    SpansOverlap(SpanOfRect(c.view, PixelRect{0, 0, static_cast<std::int32_t>(c.width) - 1,
+                                                                              static_cast<std::int32_t>(c.height) - 1}),
+                                                 depthSpan));
+        }
+        if (trace) std::fprintf(stderr, "[core2]   over a colour target: %d\n", overlaps ? 1 : 0);
+        if (!overlaps || t.vertices.empty()) return;
+        // The sprites' pixels, as the constant fill draws them (two triangles per rectangle, one Z for every vertex).
+        const std::uint32_t z = t.vertices.front().z;
+        std::vector<PixelRect> sprites;
+        for (const gpu::GpuDraw &d : t.draws) {
+            if (d.topology != gpu::GpuTopology::Triangles || d.count == 0 || d.first + d.count > t.vertices.size()) return;
+            std::int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
+            for (std::uint32_t i = d.first; i < d.first + d.count; ++i) {
+                const gpu::GpuVertex &v = t.vertices[i];
+                if (v.z != z) return;
+                x0 = std::min<std::int32_t>(x0, static_cast<std::int16_t>(v.x));
+                y0 = std::min<std::int32_t>(y0, static_cast<std::int16_t>(v.y));
+                x1 = std::max<std::int32_t>(x1, static_cast<std::int16_t>(v.x));
+                y1 = std::max<std::int32_t>(y1, static_cast<std::int16_t>(v.y));
+            }
+            for (std::uint32_t i = d.first; i < d.first + d.count; ++i) {  // corners only
+                const std::int32_t x = static_cast<std::int16_t>(t.vertices[i].x), y = static_cast<std::int16_t>(t.vertices[i].y);
+                if ((x != x0 && x != x1) || (y != y0 && y != y1)) return;
+            }
+            const PixelRect covered = SpritePixels(x0, y0, x1, y1, PixelRect{d.x0, d.y0, d.x1, d.y1});
+            if (!covered.Empty()) sprites.push_back(covered);
+        }
+        if (trace) {
+            for (const PixelRect &r : sprites) std::fprintf(stderr, "[core2]   sprite %d,%d..%d,%d\n", r.x0, r.y0, r.x1, r.y1);
+        }
+        const bool colourWrites = f[gf::Fbmsk] != 0xFFFFFFFFu && !onlyDepth;
+        const std::vector<PixelRect> noKeep;
+        const std::uint32_t value = std::min(z, t.zView.psm == Psm::Z24 ? 0xFFFFFFu : 0xFFFFFFFFu);
+        const std::uint32_t mask = t.zView.psm == Psm::Z24 ? 0x00FFFFFFu : 0xFFFFFFFFu;
+        for (Target &c : targets_) {
+            if (!c.alive || c.cls != FormatClass::Colour32 || c.view.basePointer == t.zView.basePointer) continue;
+            const std::vector<PixelRect> &keep = &c == &frameTarget && colourWrites ? sprites : noKeep;
+            std::vector<PixelRect> rects;
+            for (const PixelRect &sprite : sprites) {
+                for (const PixelRect &r : DepthBlocksInColour(t.zView, sprite, c.view, c.width, c.height, keep)) rects.push_back(r);
+            }
+            for (const PixelRect &r : rects) {
+                std::string error;
+                const std::vector<std::uint32_t> words(static_cast<std::size_t>(r.x1 - r.x0 + 1) * static_cast<std::size_t>(r.y1 - r.y0 + 1),
+                                                       value);
+                if (!gpu_.Patch(c.image, r.x0, r.y0, r.x1, r.y1, words, mask, error)) {
+                    Fail(error);
+                    return;
+                }
+                c.valid = Union(c.valid, r);
+                c.drawn = Union(c.drawn, r);
+                stats.depthIntoColourPixels += static_cast<std::uint64_t>(r.x1 - r.x0 + 1) * static_cast<std::uint64_t>(r.y1 - r.y0 + 1);
+            }
+            if (trace) {
+                std::fprintf(stderr, "[core2] depth-into-colour vblank=%llu draw=%llu z=%u/%u/%02x colour=%u/%u/%02x sprites=%zu rects=%zu value=%08x\n",
+                             static_cast<unsigned long long>(vblanks_), static_cast<unsigned long long>(number), t.zView.basePointer,
+                             t.zView.bufferWidth, static_cast<unsigned>(t.zView.psm), c.view.basePointer, c.view.bufferWidth,
+                             static_cast<unsigned>(c.view.psm), sprites.size(), rects.size(), value);
+                for (const PixelRect &r : rects) std::fprintf(stderr, "[core2]   rect %d,%d..%d,%d\n", r.x0, r.y0, r.x1, r.y1);
+            }
+            if (rects.empty()) continue;
+            c.lastDraw = number;
+            c.lastDrawVblank = vblanks_;
+            c.imageChanges++;
+            if (t.zView.psm == Psm::Z32 && c.view.psm == Psm::Ct32) c.fullWordWritten = true;
+            stats.depthIntoColourFills++;
         }
     }
 
@@ -4439,7 +4615,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
                  "compile_max_ms=%.1f failures=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
                  "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
-                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu plain_batches=%llu road_sheens_skipped=%llu sheens_early=%llu\n",
+                 "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu plain_batches=%llu road_sheens_skipped=%llu sheens_early=%llu "
+                 "depth_into_colour=%llu (%.1f Mpx)\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
@@ -4450,7 +4627,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.staleBy[3], (unsigned long long)c.staleBy[4], (unsigned long long)c.contentHits,
                  (unsigned long long)clut.DataMemoHits(), (unsigned long long)clut.DataMemoReads(),
                  (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0,
-                 (unsigned long long)g.wholeClears, (unsigned long long)g.plainBatches, (unsigned long long)g.roadSheensSkipped, (unsigned long long)g.sheensEarly);
+                 (unsigned long long)g.wholeClears, (unsigned long long)g.plainBatches, (unsigned long long)g.roadSheensSkipped, (unsigned long long)g.sheensEarly,
+                 (unsigned long long)c.depthIntoColourFills, static_cast<double>(c.depthIntoColourPixels) / 1.0e6);
 }
 
 }  // namespace
