@@ -245,6 +245,35 @@
         });
       }
 
+      // Issues #139 and #179: GSdx is the stored renderer but is not installed (its download failed, or GitHub is blocked), and
+      // this PC's card runs CoreGS 2.0. Play asks instead of stopping with an error. Resolves true when Play may go on:
+      // CoreGS 2.0 is now the renderer ("Use CoreGS 2.0"), or GSdx was downloaded here ("Download GSdx", the dialog of Settings >
+      // Renderer, js/pages/settings.js). Resolves false when the player closed the dialog or the switch failed (a toast says why).
+      function offerCoregs20() {
+        return new Promise(function (resolve) {
+          GT4.gsdxDownloadDialog({
+            title: GT4.t("home.gsdx_missing_title"),
+            text: GT4.t("home.gsdx_missing_text"),
+            downloadLabel: GT4.t("home.gsdx_missing_download"),
+            alternative: {
+              label: GT4.t("home.gsdx_missing_use"),
+              run: function () {
+                call("use_coregs20").then(function () {
+                  // Settings must read the renderer again.
+                  GT4.cache.table = null;
+                  resolve(true);
+                }, function (err) {
+                  GT4.ui.toast(GT4.errorText(err), true);
+                  resolve(false);
+                });
+              }
+            },
+            onInstalled: function () { resolve(true); },
+            onDeclined: function () { resolve(false); }
+          });
+        });
+      }
+
       var preparingShaders = false;
       function play() {
         if (isRunning) {
@@ -257,9 +286,25 @@
         if (preparingShaders) {
           return;
         }
+        // Held from the first question to the start, so a second press cannot open a second dialog or a second game.
+        preparingShaders = true;
+        call("coregs20_offer").then(function (offered) {
+          return offered ? offerCoregs20() : true;
+        }, function () {
+          // The check itself failed: Play goes on and reports whatever it finds.
+          return true;
+        }).then(function (goOn) {
+          if (goOn) {
+            startGame();
+          } else {
+            preparingShaders = false;
+          }
+        });
+      }
+
+      function startGame() {
         paint(true);
         // IN-507: asks whether the shaders are compiled; the window opens by itself when they are not (js/app.js).
-        preparingShaders = true;
         call("prepare_shaders").then(function (goOn) {
           preparingShaders = false;
           GT4.closeShaderWindow();

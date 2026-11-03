@@ -684,6 +684,16 @@ pub fn use_coregs20_after_gsdx_failure(shared: &Shared, card_has_vulkan: bool) -
     }
 }
 
+/// The player accepted Play's offer of CoreGS 2.0 (issues #139 and #179: GSdx is stored but not installed): it becomes the
+/// stored renderer when this PC's card can run it, with the same rule as after a GSdx failure. The error is the text to show.
+pub fn use_coregs20_for_play(shared: &Shared, card_has_vulkan: bool) -> Result<(), String> {
+    if use_coregs20_after_gsdx_failure(shared, card_has_vulkan) {
+        Ok(())
+    } else {
+        Err(messages::text("game.coregs20_not_selected", state::language_of(&lock(shared))).to_string())
+    }
+}
+
 /// Before Play (IN-507): under CoreGS 2.0 the game program compiles what the shader cache lacks, and `shaders-progress` opens
 /// the window only when there is work. Another renderer, or a problem here, goes straight to Play: the game then compiles
 /// on its own as it plays. False: the player cancelled, so no game starts.

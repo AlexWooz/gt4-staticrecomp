@@ -525,6 +525,25 @@ fn choosing_coregs20_after_gsdx_failed_stores_it_when_the_card_can_run_it() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn accepting_plays_coregs20_offer_stores_it_and_a_card_without_vulkan_keeps_gsdx_with_a_reason() {
+    // Issues #139 and #179: GSdx is the stored renderer but is not installed, and its download cannot be reached.
+    let (root, dirs, pins, shared) = new_install("play-offer");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2", "GSdx is the default renderer");
+    assert!(gt4l_core::gs_release::installed(&lock(&shared).dirs.renderer_root()).is_none(), "GSdx is not installed here");
+    let refused = commands::use_coregs20_for_play(&shared, false).unwrap_err();
+    assert_eq!(refused, "CoreGS 2.0 could not be selected. Choose it in Settings > Graphics > Renderer.");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "pcsx2", "a refused switch changes nothing");
+    commands::use_coregs20_for_play(&shared, true).expect("a card with Vulkan 1.2 can run CoreGS 2.0");
+    assert_eq!(lock(&shared).config.settings.get("renderer"), "coregs20");
+    assert_eq!(lock(&launch(&dirs, &pins)).config.settings.get("renderer"), "coregs20", "and it stays at the next start");
+    assert!(
+        !gt4l_core::launch::offers_coregs20(&lock(&shared).config.settings, false, true),
+        "with CoreGS 2.0 stored, Play has nothing to offer"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 /// A launcher with no game set up and a synthetic disc accepted.
 fn new_install(name: &str) -> (PathBuf, DataDirs, Pins, Shared) {
     let root = scratch(name);

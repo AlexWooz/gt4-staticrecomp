@@ -324,6 +324,22 @@ fn gsdx_is_the_default_renderer_and_a_gsdx_session_needs_it_installed() {
 }
 
 #[test]
+fn play_offers_coregs20_only_when_gsdx_is_the_renderer_missing_and_the_card_has_vulkan() {
+    // Issues #139 and #179: GSdx could not be downloaded (GitHub unreachable), and Play had no way out.
+    let gsdx = Settings::default();
+    assert_eq!(gsdx.get("renderer"), "pcsx2");
+    assert!(launch::offers_coregs20(&gsdx, false, true), "GSdx missing, a card with Vulkan 1.2: offer CoreGS 2.0");
+    assert!(!launch::offers_coregs20(&gsdx, false, false), "no Vulkan 1.2: the plain GSdx message stays");
+    assert!(!launch::offers_coregs20(&gsdx, true, true), "GSdx is installed: Play just starts");
+    assert!(!launch::offers_coregs20(&gsdx, true, false));
+    let mut coregs = Settings::default();
+    coregs.set_by_user("renderer", "coregs20").unwrap();
+    assert!(!launch::offers_coregs20(&coregs, false, true), "CoreGS 2.0 is already the renderer: nothing to offer");
+    // With no GSdx and no Vulkan card the refusal is still the old one, word for word.
+    assert!(launch::choose_renderer(None, Path::new("logs")).unwrap_err().contains("GSdx is not installed yet"));
+}
+
+#[test]
 fn pcsx2_environment_carries_the_process_pin_config_and_480p() {
     let paths = pcsx2_paths();
     let environment = env_map(&launch::pcsx2_environment(&Settings::default(), &paths));

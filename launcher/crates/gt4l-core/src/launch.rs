@@ -146,6 +146,14 @@ pub fn choose_renderer<'a>(installed: Option<&'a Installed>, log_folder: &Path) 
     installed.ok_or_else(|| gsdx_unavailable_message(GSDX_NOT_INSTALLED, log_folder))
 }
 
+/// Whether Play offers CoreGS 2.0 instead of stopping with "GSdx is not installed yet" (issues #139 and #179): GSdx is the
+/// stored renderer, it is not installed (its download failed, for example with GitHub unreachable), and the card this PC
+/// would use has Vulkan 1.2, which is all CoreGS 2.0 needs (it is inside the game). On a PC without such a card the plain
+/// GSdx message stays, since CoreGS 2.0 could not start either. Nothing is offered when CoreGS 2.0 is already the renderer.
+pub fn offers_coregs20(settings: &Settings, gsdx_installed: bool, card_has_vulkan: bool) -> bool {
+    !uses_coregs20(settings) && !gsdx_installed && card_has_vulkan
+}
+
 /// What setup does about the renderer (owner, 2026-11-02): GSdx is a download, so a new install starts with CoreGS 2.0, which is
 /// inside the game, when the PC can run it. Nothing changes for a player who chose a renderer or already plays with GSdx.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

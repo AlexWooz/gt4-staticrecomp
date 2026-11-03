@@ -1031,6 +1031,137 @@
     }
   }
 
+  // Issues #139 and #179: Play with GSdx stored but not installed, on a card with Vulkan 1.2, offers CoreGS 2.0 before anything
+  // starts. "Use CoreGS 2.0" stores it and goes on; "Download GSdx" runs the Settings download dialog's download inside the same
+  // dialog; Cancel and Back start nothing. The commands are stubbed; `calls` is what Play asked of Rust, in order.
+  async function playOfferChecks() {
+    var real = GT4.backend.call;
+    var calls = [];
+    var offer = true;
+    var useWorks = true;
+    var download = null;
+    GT4.backend.call = function (command, args) {
+      if (command === "coregs20_offer") {
+        calls.push(command);
+        return offer === "fail" ? Promise.reject(new Error("the probe failed")) : Promise.resolve(offer);
+      }
+      if (command === "use_coregs20") {
+        calls.push(command);
+        return useWorks ? Promise.resolve(null) : Promise.reject(new Error("could not select CoreGS 2.0"));
+      }
+      if (command === "download_gsdx") {
+        calls.push(command);
+        return new Promise(function (resolve, reject) { download = { resolve: resolve, reject: reject }; });
+      }
+      if (command === "prepare_shaders" || command === "play") {
+        calls.push(command);
+        return Promise.resolve(command === "prepare_shaders" ? true : null);
+      }
+      return real(command, args);
+    };
+    var modal = function () { return document.querySelector(".modal"); };
+    var buttons = function () { return modal().querySelectorAll(".modal-actions button"); };
+    var started = function () { return document.querySelector(".stage.home").classList.contains("is-running"); };
+    var freshHome = async function () {
+      await setHash("#/settings/general");
+      await setHash("#/home");
+      await wait(300);
+      calls.length = 0;
+    };
+    var clickPlay = async function () {
+      document.querySelector(".play").click();
+      await wait(150);
+    };
+    var offerLabels = [T("home.gsdx_missing_use"), T("home.gsdx_missing_download"), T("common.cancel")].join("|");
+    try {
+      check("the dev mock offers nothing without ?gsdx=missing", (await real("coregs20_offer")) === false, "offered");
+
+      offer = false;
+      await freshHome();
+      await clickPlay();
+      check("with nothing to offer, Play prepares the shaders and starts at once", !modal() && calls.join(",") === "coregs20_offer,prepare_shaders,play", calls.join(","));
+
+      offer = "fail";
+      await freshHome();
+      await clickPlay();
+      check("when the offer check itself fails, Play goes on", !modal() && calls.join(",") === "coregs20_offer,prepare_shaders,play", calls.join(","));
+
+      offer = true;
+      await freshHome();
+      await clickPlay();
+      var labels = modal() ? Array.prototype.map.call(buttons(), function (button) { return button.textContent; }).join("|") : "no dialog";
+      check("a missing GSdx opens the offer before anything starts", !!modal() && modal().querySelector("h3").textContent === T("home.gsdx_missing_title") &&
+        calls.join(",") === "coregs20_offer" && !started(), calls.join(","));
+      check("it offers CoreGS 2.0 (the default), the GSdx download and Cancel", labels === offerLabels && document.activeElement === buttons()[0], labels);
+      check("its text names CoreGS 2.0 and GSdx", modal().querySelector(".modal-text").textContent === T("home.gsdx_missing_text"), "");
+      buttons()[2].click();
+      await wait(450);
+      check("Cancel closes the offer and starts nothing", !modal() && calls.join(",") === "coregs20_offer" && !started(), calls.join(","));
+      await clickPlay();
+      check("after Cancel, Play offers again", !!modal() && calls.join(",") === "coregs20_offer,coregs20_offer", calls.join(","));
+      GT4.ui.topDialog().back();
+      await wait(450);
+      check("Back also cancels the offer", !modal() && !started() && calls.indexOf("play") < 0, calls.join(","));
+
+      await freshHome();
+      await clickPlay();
+      buttons()[0].click();
+      await wait(300);
+      check("Use CoreGS 2.0 stores it, then prepares the shaders and starts", !modal() && calls.join(",") === "coregs20_offer,use_coregs20,prepare_shaders,play", calls.join(","));
+
+      useWorks = false;
+      await freshHome();
+      await clickPlay();
+      buttons()[0].click();
+      await wait(300);
+      var toast = document.getElementById("toast");
+      check("a refused switch starts nothing and says why", !modal() && !started() && calls.join(",") === "coregs20_offer,use_coregs20" &&
+        toast.classList.contains("is-shown") && toast.textContent.indexOf("could not select CoreGS 2.0") >= 0, calls.join(",") + " / " + toast.textContent);
+      useWorks = true;
+
+      await freshHome();
+      await clickPlay();
+      buttons()[1].click();
+      await wait(100);
+      check("Download GSdx shows the download inside the same dialog", !!modal() && !modal().querySelector(".gsdx-progress").hidden &&
+        modal().querySelector("h3").textContent === T("app.gsdx_name") && modal().querySelector(".gsdx-status").textContent !== "", "no progress");
+      GT4.ui.topDialog().back();
+      check("the download cannot be dismissed", !!modal(), "closed");
+      download.resolve(null);
+      await wait(450);
+      check("after the download the dialog closes and Play starts with GSdx, no switch", !modal() && calls.join(",") === "coregs20_offer,download_gsdx,prepare_shaders,play", calls.join(","));
+
+      await freshHome();
+      await clickPlay();
+      buttons()[1].click();
+      await wait(100);
+      download.reject("no internet");
+      await wait(150);
+      var visible = function (index) { return buttons()[index].style.display !== "none"; };
+      check("a failed download says so and keeps CoreGS 2.0 on offer", !!modal() && modal().querySelector(".modal-text").textContent.indexOf("no internet") >= 0 &&
+        visible(0) && !visible(1) && visible(2) && buttons()[2].textContent === T("settings.gsdx_close") && document.activeElement === buttons()[0],
+        modal() ? modal().textContent : "closed");
+      buttons()[0].click();
+      await wait(300);
+      check("CoreGS 2.0 from there stores it and starts", !modal() && calls.join(",") === "coregs20_offer,download_gsdx,use_coregs20,prepare_shaders,play", calls.join(","));
+
+      await freshHome();
+      await clickPlay();
+      buttons()[1].click();
+      await wait(100);
+      download.reject("no internet");
+      await wait(150);
+      buttons()[2].click();
+      await wait(450);
+      check("Close after a failed download starts nothing", !modal() && !started() && calls.indexOf("play") < 0, calls.join(","));
+    } finally {
+      GT4.backend.call = real;
+      GT4.ui.topDialog() && GT4.ui.topDialog().close();
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+    }
+  }
+
   // The live switch (Settings > General > Language): the whole UI changes at once, in both directions.
   async function languageSwitchChecks() {
     var before = GT4.i18n.current();
@@ -1441,6 +1572,7 @@
       await valueChecks();
       await rendererRowChecks();
       await gsdxDialogChecks();
+      await playOfferChecks();
       await advancedSectionChecks();
       await controlsChecks();
       await gamesChecks();

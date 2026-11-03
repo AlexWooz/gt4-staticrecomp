@@ -49,6 +49,8 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `reset_gs_settings_to_defaults` | none | `{max_upscale, rows}` |
 | `gsdx_download_needed` | none | bool: choosing GSdx now needs a download (false before setup, which installs it) |
 | `download_gsdx` | none | installs GSdx with `gsdx-download` events; an error is the notice to show |
+| `coregs20_offer` | none | bool: Play should offer CoreGS 2.0 first (issues #139 and #179): GSdx is the stored renderer, it is not installed, and the card this PC would use has Vulkan 1.2. False in every other case, so the plain "GSdx is not installed yet" message stays on a PC without Vulkan 1.2 |
+| `use_coregs20` | none | none; CoreGS 2.0 becomes the stored renderer (the same rule as after a GSdx failure); an error is the text to show |
 | `get_controls` | none | `{controls: [{id, name, binding, sources, xinput, key, is_default}], triggers: [row], locked}`; `id` is the input of the controls file (`cross`, `dpad_up`, `l2`...), `sources` the raw sources (`xinput:A`, `key:Z`), `xinput`/`key` the first of each family or null; `triggers` holds the analog rows (below); `locked` is true when the file comes from a newer launcher and is kept read-only |
 | `capture_binding` | `{control}` | `{control, source}`: the next newly pressed control of the active pad, read through SDL3 (a control held at the start does not count; the source is in the controls-file names, SOUTH is `xinput:A`). It binds nothing; the page checks for a conflict and calls `assign_binding`. `cancel_capture` ends it with an error |
 | `pad_status` | none | the last `pad-status` payload: `{available, connected, name, kind, player_index, count, error}` (`kind` is SDL's gamepad type, e.g. `xbox360`, `ps5`; `count` is the number of pads; the named pad is "controller 1 of N") |
@@ -213,6 +215,10 @@ Mouse use hides the focus ring. A pad or key press brings it back.
 
 The locale files load over HTTP (not `file://`): serve `ui/` with any static server and open `dev/index.html`, for example
 `python -m http.server 8765` in `launcher/crates/gt4l-tauri/ui`, then `http://127.0.0.1:8765/dev/index.html#/home`.
+
+GSdx missing (`?gsdx=missing|offline`): choosing GSdx in Settings opens the download dialog, and Play offers CoreGS 2.0 first
+(the same dialog with the extra "Use CoreGS 2.0" button, `GT4.gsdxDownloadDialog` in `js/pages/settings.js`, opened from
+`js/pages/home.js`); `&vulkan=no` is a card without Vulkan 1.2, where Play offers nothing and the old message stays.
 
 Language (TASK-102): `?lang=pt-BR` or `?lang=en-US` sets the language (and the Settings value); `?os=pt-BR` sets only the OS language, so Auto follows it. Without either, Auto follows the browser. Query options: `?setup=done|needed|wrong|copying|preparing|renderer|failed|missing|offline` (default `done`), `&pick=spec` (the mock picker returns a refused Spec II image), `&running=1`, `&focus=play` (home only: focus the Play button, for screenshots), `&focus=content` (Settings: enter the tab).
 
