@@ -22,6 +22,8 @@ pub enum FolderError {
     Card(CardError),
     /// A folder does not have the expected layout.
     Layout(String),
+    /// A file of an item could not be read (issue #160: a bare "os error 2" named nothing). `path` is the file.
+    Unreadable { path: PathBuf, error: io::Error },
 }
 
 impl From<io::Error> for FolderError {
@@ -42,6 +44,7 @@ impl std::fmt::Display for FolderError {
             FolderError::Io(error) => write!(f, "{error}"),
             FolderError::Card(error) => write!(f, "{error}"),
             FolderError::Layout(what) => write!(f, "folder layout: {what}"),
+            FolderError::Unreadable { path, error } => write!(f, "{}: {error}", path.display()),
         }
     }
 }
@@ -110,11 +113,22 @@ fn write_contents(folder: &Path, item: &Node) -> Result<(), FolderError> {
     Ok(())
 }
 
-/// Reads a folder written by `export_item`.
+/// `fs::read_to_string` whose error names the file.
+fn read_text(path: &Path) -> Result<String, FolderError> {
+    fs::read_to_string(path).map_err(|error| FolderError::Unreadable { path: path.to_path_buf(), error })
+}
+
+/// `fs::read` whose error names the file.
+fn read_bytes(path: &Path) -> Result<Vec<u8>, FolderError> {
+    fs::read(path).map_err(|error| FolderError::Unreadable { path: path.to_path_buf(), error })
+}
+
+/// Reads a folder written by `export_item`. A file that cannot be read is reported with its path
+/// ([`FolderError::Unreadable`]).
 pub fn import_item(folder: &Path) -> Result<Node, FolderError> {
-    let item_hex = fs::read_to_string(folder.join(ITEM_FILE))?;
+    let item_hex = read_text(&folder.join(ITEM_FILE))?;
     let entry = DirEntry::from_raw(&from_hex(item_hex.trim())?)?;
-    let listing = fs::read_to_string(folder.join(CHILDREN_FILE))?;
+    let listing = read_text(&folder.join(CHILDREN_FILE))?;
     let mut children = Vec::new();
     for line in listing.lines().filter(|l| !l.is_empty()) {
         let mut fields = line.split('\t');
@@ -126,7 +140,7 @@ pub fn import_item(folder: &Path) -> Result<Node, FolderError> {
         let path = folder.join(name);
         let child = match kind {
             "dir" => import_item(&path)?,
-            "file" => Node::file(child_entry, fs::read(&path)?),
+            "file" => Node::file(child_entry, read_bytes(&path)?),
             other => return Err(FolderError::Layout(format!("unknown child kind {other:?}"))),
         };
         children.push(child);

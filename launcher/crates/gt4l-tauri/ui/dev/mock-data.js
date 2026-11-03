@@ -5,6 +5,7 @@
  *
  * Query options (ui/dev/index.html?...):
  *   gsdx=missing|offline                            (GSdx is not installed: the download works, or fails)
+ *   vulkan=no                                       (the card has no Vulkan 1.2: Play does not offer CoreGS 2.0 for a missing GSdx)
  *   setup=done|needed|wrong|copying|checking|preparing|renderer|failed|missing|offline   (default done)
  *   pick=spec                                       (setup: the picker returns an unsupported image, refused)
  *   pick=other                                      (setup: the picker returns the other game's disc, a mismatch)
@@ -730,6 +731,16 @@
         return tableView();
       case "gsdx_download_needed":
         return query.get("gsdx") === "missing" || query.get("gsdx") === "offline";
+      case "coregs20_offer":
+        // As launch::offers_coregs20: GSdx stored, not installed, and a card with Vulkan 1.2.
+        return (query.get("gsdx") === "missing" || query.get("gsdx") === "offline") &&
+          findRow("renderer").current === "pcsx2" && query.get("vulkan") !== "no";
+      case "use_coregs20":
+        if (query.get("vulkan") === "no") {
+          throw new Error("CoreGS 2.0 could not be selected. Choose it in Settings > Graphics > Renderer.");
+        }
+        findRow("renderer").current = "coregs20";
+        return null;
       case "download_gsdx":
         return new Promise(function (resolve, reject) {
           emit("gsdx-download", { step: "listing" });

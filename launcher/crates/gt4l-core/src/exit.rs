@@ -67,21 +67,52 @@ pub fn gpu_lost_message_in(language: Language) -> String {
     messages::text("game.gpu_lost", language).to_string()
 }
 
+/// `STATUS_DLL_NOT_FOUND`: the Windows loader could not find a DLL the game program imports, so the process ended before
+/// it ran any code and `game.log` stayed empty (issues #107 and #99). Shown by tools as -1073741515 or 3221225781.
+pub const STATUS_DLL_NOT_FOUND: u32 = 0xC000_0135;
+
+/// `STATUS_APPLICATION_HANG`: the code Windows gives an application it closed because it stopped answering.
+pub const STATUS_APPLICATION_HANG: u32 = 0xCFFF_FFFF;
+
+/// The high bit of a 32-bit status: Windows error statuses (NTSTATUS) have it set, and a signed exit code shows them negative.
+const STATUS_ERROR_BIT: u32 = 0x8000_0000;
+
+/// The exit code as Windows defines it: the same 32 bits read as unsigned (defined two's-complement wrapping).
+fn status_of(exit_code: i32) -> u32 {
+    exit_code as u32
+}
+
+/// An exit code for a message: the decimal number, and for an NTSTATUS-like value (high bit set) also the hex form that
+/// Windows tools and web searches use, for example `-1073741819 (0xC0000005)`.
+pub fn exit_code_text(exit_code: i32) -> String {
+    let status = status_of(exit_code);
+    if status & STATUS_ERROR_BIT != 0 {
+        format!("{exit_code} (0x{status:08X})")
+    } else {
+        exit_code.to_string()
+    }
+}
+
 /// One plain sentence for the crash dialog, in English. Technical detail stays in the log.
 pub fn user_message(outcome: &Outcome) -> String {
     user_message_in(outcome, Language::fallback())
 }
 
-/// [`user_message`] in `language`.
+/// [`user_message`] in `language`. Two Windows statuses get their own plain sentence (a missing file, a hung window); any
+/// other exit code is named in the generic sentence.
 pub fn user_message_in(outcome: &Outcome, language: Language) -> String {
     match outcome {
         Outcome::NormalClose => String::new(),
         Outcome::Crashed { reason: Some(reason), .. } => {
             messages::render("game.stopped_unexpectedly_reason", language, &[("reason", reason)])
         }
-        Outcome::Crashed { reason: None, exit_code: Some(code) } => {
-            messages::render("game.stopped_unexpectedly_code", language, &[("code", &code.to_string())])
-        }
+        Outcome::Crashed { reason: None, exit_code: Some(code) } => match status_of(*code) {
+            STATUS_DLL_NOT_FOUND => messages::render("game.missing_file", language, &[("code", &format!("0x{STATUS_DLL_NOT_FOUND:08X}"))]),
+            STATUS_APPLICATION_HANG => {
+                messages::render("game.not_responding", language, &[("code", &format!("0x{STATUS_APPLICATION_HANG:08X}"))])
+            }
+            _ => messages::render("game.stopped_unexpectedly_code", language, &[("code", &exit_code_text(*code))]),
+        },
         Outcome::Crashed { reason: None, exit_code: None } => messages::text("game.stopped_unexpectedly", language).to_string(),
     }
 }
@@ -132,6 +163,67 @@ mod tests {
     #[test]
     fn user_message_names_the_reason_in_one_sentence() {
         let outcome = Outcome::Crashed { reason: Some("no translated code".into()), exit_code: Some(1) };
+        assert!(user_message(&outcome).starts_with("Gran Turismo 4 stopped unexpectedly (no translated code)"));
+    }
+
+    fn pt_br() -> Language {
+        Language::from_tag("pt-BR").expect("pt-BR is listed")
+    }
+
+    fn crashed_with(code: i32) -> Outcome {
+        Outcome::Crashed { reason: None, exit_code: Some(code) }
+    }
+
+    #[test]
+    fn a_missing_dll_is_a_plain_message_about_a_file_missing_from_the_game_folder() {
+        // Issue #107: exit code -1073741515 (0xC0000135), an empty game.log. The same 32 bits read as unsigned are 3221225781.
+        assert_eq!(STATUS_DLL_NOT_FOUND, 3_221_225_781);
+        let english = user_message_in(&crashed_with(-1_073_741_515), Language::fallback());
+        assert!(english.starts_with("Gran Turismo 4 could not start because a file it needs is missing"), "{english}");
+        assert!(english.contains("0xC0000135"), "{english}");
+        assert!(english.contains("Reinstall GT4Recomp") && english.contains("antivirus"), "{english}");
+        assert!(!english.contains("Redistributable") && !english.contains("Visual C++"), "the missing file is not known: {english}");
+        let portuguese = user_message_in(&crashed_with(-1_073_741_515), pt_br());
+        assert!(portuguese.starts_with("O Gran Turismo 4 não conseguiu iniciar porque falta um arquivo"), "{portuguese}");
+        assert!(portuguese.contains("0xC0000135") && portuguese.contains("antivírus"), "{portuguese}");
+    }
+
+    #[test]
+    fn a_window_windows_closed_as_not_responding_asks_for_the_logs() {
+        // Issue #99: exit code -805306369 (0xCFFFFFFF).
+        assert_eq!(STATUS_APPLICATION_HANG, 3_489_660_927);
+        let english = user_message_in(&crashed_with(-805_306_369), Language::fallback());
+        assert!(english.starts_with("Gran Turismo 4 stopped responding and Windows closed it"), "{english}");
+        assert!(english.contains("0xCFFFFFFF") && english.contains("Export logs"), "{english}");
+        let portuguese = user_message_in(&crashed_with(-805_306_369), pt_br());
+        assert!(portuguese.starts_with("O Gran Turismo 4 parou de responder e o Windows o fechou"), "{portuguese}");
+        assert!(portuguese.contains("0xCFFFFFFF") && portuguese.contains("Exportar logs"), "{portuguese}");
+    }
+
+    #[test]
+    fn another_windows_status_is_named_in_hex_and_in_decimal() {
+        // 0xC0000005 is an access violation: not explained, but named the way Windows tools name it.
+        assert_eq!(exit_code_text(-1_073_741_819), "-1073741819 (0xC0000005)");
+        let english = user_message_in(&crashed_with(-1_073_741_819), Language::fallback());
+        assert_eq!(english, "Gran Turismo 4 stopped unexpectedly (exit code -1073741819 (0xC0000005)). The session folder has the details.");
+        let portuguese = user_message_in(&crashed_with(-1_073_741_819), pt_br());
+        assert!(portuguese.contains("código de saída -1073741819 (0xC0000005)"), "{portuguese}");
+    }
+
+    #[test]
+    fn an_ordinary_exit_code_stays_a_plain_number() {
+        assert_eq!(exit_code_text(1), "1");
+        assert_eq!(exit_code_text(0), "0");
+        assert_eq!(exit_code_text(i32::MAX), "2147483647");
+        assert_eq!(exit_code_text(i32::MIN), "-2147483648 (0x80000000)", "the high bit alone is a status");
+        let english = user_message_in(&crashed_with(3), Language::fallback());
+        assert_eq!(english, "Gran Turismo 4 stopped unexpectedly (exit code 3). The session folder has the details.");
+    }
+
+    #[test]
+    fn a_reason_from_the_game_log_wins_over_the_exit_code() {
+        // The game wrote its own stop line, so that reason is the detail; the status codes above are for the silent ends.
+        let outcome = Outcome::Crashed { reason: Some("no translated code".into()), exit_code: Some(-1_073_741_515) };
         assert!(user_message(&outcome).starts_with("Gran Turismo 4 stopped unexpectedly (no translated code)"));
     }
 

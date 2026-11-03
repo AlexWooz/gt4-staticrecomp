@@ -11,6 +11,8 @@
     "allow-reset-gs-settings-to-defaults",
     "allow-gsdx-download-needed",
     "allow-download-gsdx",
+    "allow-coregs20-offer",
+    "allow-use-coregs20",
     "allow-setup-choose-disc",
     "allow-setup-start",
     "allow-setup-cancel",

@@ -222,6 +222,8 @@ fn main() {
             commands::reset_gs_settings_to_defaults,
             renderer_switch::gsdx_download_needed,
             renderer_switch::download_gsdx,
+            renderer_switch::coregs20_offer,
+            renderer_switch::use_coregs20,
             setup::setup_choose_disc,
             setup::setup_start,
             setup::setup_cancel,

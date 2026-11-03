@@ -534,7 +534,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     // TASK-097: a direct start of the game reads these files; they follow the monitors connected now.
     lock(&shared).write_standalone_files(&settings);
     let card = dirs.runtime_card();
-    saves::prepare_card(lock(&shared).library_of(game), &card)?;
+    saves::prepare_card(lock(&shared).library_of(game), &card, language)?;
     let textures = lock(&shared).dirs.textures();
     paths::ensure_texture_folders(&textures).map_err(|error| format!("texture folder: {error}"))?;
     let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
@@ -681,6 +681,16 @@ pub fn use_coregs20_after_gsdx_failure(shared: &Shared, card_has_vulkan: bool) -
             state::log_error(&state.dirs, &format!("could not store CoreGS 2.0 after GSdx failed: {error}"));
             false
         }
+    }
+}
+
+/// The player accepted Play's offer of CoreGS 2.0 (issues #139 and #179: GSdx is stored but not installed): it becomes the
+/// stored renderer when this PC's card can run it, with the same rule as after a GSdx failure. The error is the text to show.
+pub fn use_coregs20_for_play(shared: &Shared, card_has_vulkan: bool) -> Result<(), String> {
+    if use_coregs20_after_gsdx_failure(shared, card_has_vulkan) {
+        Ok(())
+    } else {
+        Err(messages::text("game.coregs20_not_selected", state::language_of(&lock(shared))).to_string())
     }
 }
 

@@ -446,6 +446,8 @@
 
   // Owner, 2026-11-02: GSdx is an optional download. Choosing it when it is missing asks first: the dialog shows the download and
   // closes by itself, and only then the choice is stored. Declining, or a failed download, goes back to the renderer stored.
+  // Play uses the same dialog when GSdx is stored but missing (issues #139 and #179, js/pages/home.js), with the extra
+  // `alternative` button that takes CoreGS 2.0 instead.
   var gsdxDownloadHandler = null;
   var gsdxDownloadListening = false;
 
@@ -455,7 +457,12 @@
     ctx.refresh("renderer", true);
   }
 
-  function gsdxDownloadDialog(ctx) {
+  // config: {title?, text?, downloadLabel?, alternative?: {label, run}, onInstalled, onDeclined}. The download runs inside the
+  // dialog. onInstalled runs once GSdx is installed (the dialog has closed); onDeclined when the dialog closes without an
+  // install and without the alternative. The alternative button comes first and is the default; its run takes the other way out.
+  function gsdxDownloadDialog(config) {
+    var alternative = config.alternative || null;
+    var finished = false;
     if (!gsdxDownloadListening) {
       gsdxDownloadListening = true;
       GT4.backend.listen("gsdx-download", function (payload) {
@@ -464,7 +471,6 @@
         }
       });
     }
-    var installed = false;
     var status = h("p", { class: "gsdx-status", role: "status", text: "" });
     var fill = h("i");
     var bar = h("span", { class: "bar" }, [fill]);
@@ -473,24 +479,30 @@
     var megabytes = function (bytes) {
       return (bytes / 1e6).toFixed(1) + " MB";
     };
+    var buttonList = [
+      { label: config.downloadLabel || GT4.t("settings.gsdx_download"), primary: !alternative, closes: false, run: function () { startDownload(); } },
+      { label: GT4.t("common.cancel") }
+    ];
+    if (alternative) {
+      buttonList.unshift({ label: alternative.label, primary: true, run: function () { finished = true; alternative.run(); } });
+    }
     var options = {
-      title: GT4.t("settings.gsdx_title"),
-      text: GT4.t("settings.gsdx_text"),
+      title: config.title || GT4.t("settings.gsdx_title"),
+      text: config.text || GT4.t("settings.gsdx_text"),
       body: [progress],
-      buttons: [
-        { label: GT4.t("settings.gsdx_download"), primary: true, closes: false, run: function () { startDownload(); } },
-        { label: GT4.t("common.cancel") }
-      ],
+      buttons: buttonList,
       onClose: function () {
         gsdxDownloadHandler = null;
-        if (!installed) {
-          backToStoredRenderer(ctx);
+        if (!finished) {
+          config.onDeclined();
         }
       }
     };
     var dialog = GT4.ui.openDialog(options);
     var actions = dialog.el.querySelector(".modal-actions");
     var buttons = actions.querySelectorAll("button");
+    var downloadButton = buttons[alternative ? 1 : 0];
+    var closeButton = buttons[buttons.length - 1];
     var message = dialog.el.querySelector(".modal-text");
 
     gsdxDownloadHandler = function (event) {
@@ -515,27 +527,32 @@
       progress.hidden = false;
       status.textContent = GT4.t("app.gsdx_listing");
       call("download_gsdx").then(function () {
-        installed = true;
+        finished = true;
         fill.style.width = "100%";
         dialog.close();
-        commit(ctx, "renderer", "pcsx2", true);
+        config.onInstalled();
       }, function (err) {
         options.dismissable = true;
         progress.hidden = true;
         message.hidden = false;
         message.textContent = errorText(err);
-        buttons[0].style.display = "none";
-        buttons[1].textContent = GT4.t("settings.gsdx_close");
+        downloadButton.style.display = "none";
+        closeButton.textContent = GT4.t("settings.gsdx_close");
         actions.style.display = "";
-        buttons[1].focus({ preventScroll: true });
+        // With the alternative still offered, it is the default; otherwise Close is the only button left.
+        (alternative ? buttons[0] : closeButton).focus({ preventScroll: true });
       });
     }
   }
+  GT4.gsdxDownloadDialog = gsdxDownloadDialog;
 
   function chooseGsdx(ctx) {
     call("gsdx_download_needed").then(function (needed) {
       if (needed) {
-        gsdxDownloadDialog(ctx);
+        gsdxDownloadDialog({
+          onInstalled: function () { commit(ctx, "renderer", "pcsx2", true); },
+          onDeclined: function () { backToStoredRenderer(ctx); }
+        });
       } else {
         commit(ctx, "renderer", "pcsx2", true);
       }

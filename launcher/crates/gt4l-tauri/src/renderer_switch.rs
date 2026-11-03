@@ -5,15 +5,21 @@
 //! (`renderer-progress`). A failed install is reported, and Play does not start the game until GSdx is there
 //! (`launch::choose_renderer`). Setup installs GSdx itself (`setup.rs`), so a choice made during setup does not start
 //! a second install.
+//! The other way in is Play with GSdx stored but not installed (its download failed, for example with GitHub blocked;
+//! issues #139 and #179): when this PC's card has Vulkan 1.2, Play asks first (`coregs20_offer`) and the player can switch
+//! to CoreGS 2.0 (`use_coregs20`), which is inside the game, instead of being left with an error.
 
-use gt4l_core::gs_release::Step;
+use gt4l_core::gpu::GpuDevice;
+use gt4l_core::gs_release::{self, Step};
+use gt4l_core::language::Language;
+use gt4l_core::launch;
 use gt4l_core::messages;
-use gt4l_core::settings;
+use gt4l_core::settings::{self, Settings};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::state::{lock, Shared};
-use crate::{state, updates};
+use crate::{commands, state, updates};
 
 /// Shown after a successful switch.
 pub const INSTALLED_NOTICE_ID: &str = "renderer.installed";
@@ -75,6 +81,36 @@ pub fn download_gsdx(app: AppHandle, shared: State<'_, Shared>) -> Result<(), St
         state::log_warn(&dirs, &format!("GSdx not installed from the dialog in Settings: {message}"));
         failure_notice(&message)
     })
+}
+
+/// Whether the card a run would use has Vulkan 1.2, so CoreGS 2.0 can run on it (the card list is the cached one).
+fn card_runs_coregs20(settings: &Settings, language: Language) -> bool {
+    let (_, graphics, _) = gt4l_platform::gpu::run_settings(settings, language);
+    graphics.card.as_ref().is_some_and(GpuDevice::has_vulkan)
+}
+
+/// `coregs20_offer()`: whether Play should offer CoreGS 2.0 before it starts (`launch::offers_coregs20`): GSdx is the stored
+/// renderer, it is not installed, and this PC's card has Vulkan 1.2. False when Play can just go on (GSdx installed, CoreGS
+/// 2.0 already chosen), and when there is no such card: the plain "GSdx is not installed yet" message then stays.
+#[tauri::command(async)]
+pub fn coregs20_offer(shared: State<'_, Shared>) -> bool {
+    let (settings, renderer_root, language) = {
+        let state = lock(shared.inner());
+        (state.config.settings.clone(), state.dirs.renderer_root(), state::language_of(&state))
+    };
+    let gsdx_installed = gs_release::installed(&renderer_root).is_some();
+    launch::offers_coregs20(&settings, gsdx_installed, card_runs_coregs20(&settings, language))
+}
+
+/// `use_coregs20()`: the player accepted Play's offer. CoreGS 2.0 becomes the stored renderer (the page then goes on with
+/// the shader preparation and Play). An error is the text to show.
+#[tauri::command(async)]
+pub fn use_coregs20(shared: State<'_, Shared>) -> Result<(), String> {
+    let (settings, language) = {
+        let state = lock(shared.inner());
+        (state.config.settings.clone(), state::language_of(&state))
+    };
+    commands::use_coregs20_for_play(shared.inner(), card_runs_coregs20(&settings, language))
 }
 
 /// Starts the switch on a worker thread after a `renderer` setting was saved; Settings is never blocked.
