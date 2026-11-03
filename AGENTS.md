@@ -194,6 +194,11 @@ github.com/Kaezzey/gt4-staticrecomp is read-only.
 - **Release steps:**
   - Bump the version in `launcher/Cargo.toml`, `Cargo.lock` (workspace crates only), `tauri.conf.json` and the
     installer default.
+  - **PGO only for published game builds** (owner, 2026-11-03):
+    - profile-guided optimization (PGO, with ThinLTO) adds about 30 minutes for both games, so only a build meant to
+      be published gets it: an rc (uploaded as a draft, a pre-release on the owner's word) or a final release;
+    - a build made only to test a change (internal, on the owner's desktop or laptop) is a plain Release build; tell
+      the owner it is plain, since it is a little heavier on the processor.
   - Pin new game builds in new `docs/inputs` files.
   - Build the launcher with `launcher/tools/build-release.ps1` and the installer with makensis.
   - Check the installer contents against their sources.
