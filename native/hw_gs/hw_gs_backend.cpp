@@ -261,6 +261,22 @@ struct Backend::Impl {
   VkSemaphore render_finished[max_swapchain_images] = {};
   HWND window = nullptr;
   std::atomic<bool> resize_pending{false};  // also set by the presentation thread of TASK-082
+  // TASK-145: why the swapchain is rebuilt (logged with each rebuild), and a VK_SUBOPTIMAL_KHR seen since the last frame
+  // end. A suboptimal swapchain still presents; it is rebuilt only when the surface size changed, since every rebuild
+  // makes the compositor show what lies behind the window for a frame.
+  enum class Rebuild : int { none, window_size, acquire_out_of_date, present_out_of_date, suboptimal_size };
+  std::atomic<int> rebuild_reason{static_cast<int>(Rebuild::none)};
+  std::atomic<bool> suboptimal_seen{false};
+  std::uint64_t suboptimal_kept = 0;
+  void request_rebuild(Rebuild reason) {
+    rebuild_reason = static_cast<int>(reason);
+    resize_pending = true;
+  }
+  // An acquire or present result: out of date asks for a rebuild, suboptimal is noted for the frame end.
+  void note_present_result(VkResult result, Rebuild if_out_of_date) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) request_rebuild(if_out_of_date);
+    if (result == VK_SUBOPTIMAL_KHR) suboptimal_seen = true;
+  }
   bool initialised = false;
   // TASK-080: the race view's display-aspect fill request (pack_display_aspect), set from the EE thread.
   std::atomic<std::uint64_t> display_aspect{0};
@@ -1093,15 +1109,13 @@ struct Backend::Impl {
     vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);  // older than `older`: already done
     std::uint32_t index = 0;
     const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, 0, acquire_semaphores[slot], VK_NULL_HANDLE, &index);
-    if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_SUBOPTIMAL_KHR) {
-      resize_pending = true;
-      return;
-    }
+    note_present_result(acquired, Rebuild::acquire_out_of_date);
+    if (acquired == VK_ERROR_OUT_OF_DATE_KHR) return;
     if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT) {
       ++presents_dropped;
       return;
     }
-    if (acquired != VK_SUCCESS) return;
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) return;  // suboptimal: the image is acquired (TASK-145)
     vkResetFences(device, 1, &fences[slot]);
     vkWaitForFences(device, 1, &draw_fences[slot], VK_TRUE, UINT64_MAX);
     vkResetFences(device, 1, &draw_fences[slot]);
@@ -1163,7 +1177,7 @@ struct Backend::Impl {
     present.pSwapchains = &swapchain;
     present.pImageIndices = &index;
     const VkResult result = queue_present(present_queue, present);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) resize_pending = true;
+    note_present_result(result, Rebuild::present_out_of_date);
     if (frame == nullptr) stats.black_presents++;  // presented without a composed image (chapter 12.4)
   }
 
@@ -1230,8 +1244,8 @@ struct Backend::Impl {
     vkResetFences(device, 1, &fences[slot]);
     std::uint32_t index = 0;
     const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, 100000000, acquire_semaphores[slot], VK_NULL_HANDLE, &index);
-    if (acquired != VK_SUCCESS) {
-      if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_SUBOPTIMAL_KHR) resize_pending = true;
+    note_present_result(acquired, Rebuild::acquire_out_of_date);
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {  // suboptimal: the image is acquired (TASK-145)
       const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
       VkSubmitInfo release{VK_STRUCTURE_TYPE_SUBMIT_INFO};
       release.waitSemaphoreCount = 1;
@@ -1259,7 +1273,7 @@ struct Backend::Impl {
     present.pSwapchains = &swapchain;
     present.pImageIndices = &index;
     const VkResult result = queue_present(present_queue, present);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) resize_pending = true;
+    note_present_result(result, Rebuild::present_out_of_date);
   }
 
   // On the GS thread: draws the picture and hands it over. The display being behind costs a picture here, before any drawing.
@@ -1349,12 +1363,10 @@ struct Backend::Impl {
     std::uint32_t index = 0;
     const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, acquire_semaphores[slot],
                                                     VK_NULL_HANDLE, &index);
-    if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_SUBOPTIMAL_KHR) {
-      // Nothing was submitted, so the slot fence stays signalled and the slot stays reusable.
-      resize_pending = true;
-      return;
-    }
-    if (acquired != VK_SUCCESS) return;
+    note_present_result(acquired, Rebuild::acquire_out_of_date);
+    // Out of date: nothing was submitted, so the slot fence stays signalled and the slot stays reusable. Suboptimal: the
+    // image is acquired and still presentable (TASK-145).
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) return;
     vkResetFences(device, 1, &fences[slot]);
 
     VkCommandBuffer cmd = command_buffers[slot];
@@ -1399,7 +1411,7 @@ struct Backend::Impl {
     present.pSwapchains = &swapchain;
     present.pImageIndices = &index;
     const VkResult result = queue_present(queue, present);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) resize_pending = true;
+    note_present_result(result, Rebuild::present_out_of_date);
     if (frame == nullptr) stats.black_presents++;  // presented without a composed image (chapter 12.4)
   }
 };
@@ -1666,9 +1678,11 @@ void Backend::detach_window() {
 }
 
 void Backend::resize_window(std::uint32_t width, std::uint32_t height) {
+  // The window procedure passes a size message on only when the client size changed (TASK-145); the new swapchain
+  // takes the size from the surface.
   (void)width;
   (void)height;
-  impl_->resize_pending = true;
+  impl_->request_rebuild(Impl::Rebuild::window_size);
 }
 
 void Backend::present(PresentPhase phase) {
@@ -1680,7 +1694,28 @@ bool Backend::end_frame(PresentPhase phase) {
   Impl &s = *impl_;
   s.stats.presents++;
   if (!s.window) return false; // headless: counted, nothing displayed
+  // TASK-145: a suboptimal swapchain is rebuilt only when the surface size differs from it.
+  if (!s.resize_pending && s.swapchain && s.suboptimal_seen.exchange(false)) {
+    VkSurfaceCapabilitiesKHR caps{};
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s.physical, s.surface, &caps);
+    const bool size_changed = caps.currentExtent.width != 0xFFFFFFFFu &&
+                              (caps.currentExtent.width != s.extent.width || caps.currentExtent.height != s.extent.height);
+    if (size_changed) {
+      s.request_rebuild(Impl::Rebuild::suboptimal_size);
+    } else if (++s.suboptimal_kept <= 3 || s.suboptimal_kept % 100 == 0) {
+      std::fprintf(stderr, "[hw] swapchain suboptimal at the same size %ux%u, kept (%llu so far)\n", s.extent.width,
+                   s.extent.height, static_cast<unsigned long long>(s.suboptimal_kept));
+    }
+  }
   if (s.resize_pending || !s.swapchain) {
+    static constexpr const char *kReasons[] = {"first or after a minimised window", "window size changed",
+                                               "acquire out of date", "present out of date",
+                                               "suboptimal at a new surface size"};
+    const int reason = s.rebuild_reason.exchange(static_cast<int>(Impl::Rebuild::none));
+    if (s.swapchain) {
+      std::fprintf(stderr, "[hw] swapchain rebuilt: %s (was %ux%u)\n", kReasons[std::clamp(reason, 0, 4)], s.extent.width,
+                   s.extent.height);
+    }
     std::string error;
     if (!s.recreate_swapchain(error)) {
       s.resize_pending = false;

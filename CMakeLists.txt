@@ -87,6 +87,9 @@ add_test(NAME native_race_widescreen COMMAND $<TARGET_FILE:race_widescreen_fixtu
 # TASK-080: GT4_DISPLAY_ASPECT parse, Hor+/Vert+ factors, matrix scale, scene policy.
 add_test(NAME native_display_aspect COMMAND $<TARGET_FILE:display_aspect_fixture>)
 add_test(NAME native_cursor_autohide COMMAND $<TARGET_FILE:cursor_autohide_fixture>)
+# TASK-145: the window responsiveness timer arrives through the game's PeekMessage loop (decision 0076).
+add_test(NAME native_window_heartbeat COMMAND $<TARGET_FILE:window_heartbeat_fixture>)
+set_tests_properties(native_window_heartbeat PROPERTIES TIMEOUT 30)
 add_test(NAME native_shape_observer COMMAND $<TARGET_FILE:shape_observer_fixture>)
 add_test(NAME native_performance_accounting COMMAND $<TARGET_FILE:perf_accounting_fixture>)
 add_test(NAME native_performance_probe COMMAND $<TARGET_FILE:perf_probe_fixture>)

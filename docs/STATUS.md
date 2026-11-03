@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-145 fixed for rc12: the desktop flash every 6 seconds in fullscreen on NVIDIA RTX (2026-11-03, night)
+
+On `task/134-game-code-optimization-study`, not built as an rc yet (the owner has more for rc12). In borderless fullscreen with a
+gamepad the game window's message queue stays empty, and a PeekMessage on an empty queue does not count as a read, so Windows
+declared the window "not responding" every few seconds; on RTX PCs the shell and `dwm.exe` then flashed another window or a white
+Ghost window in front of the game for a frame (CoreGS 2.0 and GSdx alike), and after Alt+Tab the game could come back white. The
+game window now keeps a one-second timer (`native/window_heartbeat.hpp`, decision 0076: keep it, and why). Owner test on the
+laptop: a full lap with no hang (before: one every 360 VBlanks), Alt+Tab and GSdx fine. CTest `native_window_heartbeat`, Python
+`test_window_heartbeat.py`.
+
 ## 1.3.0-rc11 published as a pre-release (2026-11-03, night)
 
 On the owner's word after their test ("tá tudo certo"): `v1.3.0-rc11` at `52645c6b` (the build's source), pre-release, not

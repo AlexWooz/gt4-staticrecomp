@@ -13,6 +13,7 @@
 #include "frame_skip.hpp"
 #include "pacing.hpp"
 #include "window_mode.hpp"
+#include "window_heartbeat.hpp"
 #include "cursor_autohide.hpp"
 #include "achievements.hpp"
 #include "input_recording.hpp"
@@ -28,12 +29,16 @@
 #include <array>
 #endif
 
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -41,6 +46,176 @@ constexpr wchar_t window_title[] = L"Gran Turismo 4";
 HWND game_window = nullptr;
 bool surface_attached = false;
 bool closing = false;
+std::uint64_t input_vblank = 0;  // guest VBlanks so far (input recording, pacing, diagnostics)
+// TASK-145: the client size the renderer last got (from attach_window or a WM_SIZE). A size message with an unchanged
+// size (a style or z-order change, a display re-detected) is not passed on: each one rebuilt the renderer's swapchain,
+// and while a flip-model swapchain is rebuilt the compositor shows what lies behind the window for a frame.
+std::uint32_t renderer_client_width = 0, renderer_client_height = 0;
+std::uint64_t unchanged_size_messages = 0;
+std::uint64_t position_changes = 0;
+
+// TASK-145 diagnostics: the module and offset of a code address, for the window watch's stack.
+std::string module_of_address(const void *address) {
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          static_cast<LPCWSTR>(address), &module))
+    return "unknown";
+  wchar_t path[MAX_PATH] = L"";
+  GetModuleFileNameW(module, path, MAX_PATH);
+  const wchar_t *name = std::wcsrchr(path, L'\\');
+  char text[260] = "";
+  WideCharToMultiByte(CP_UTF8, 0, name != nullptr ? name + 1 : path, -1, text, sizeof text, nullptr, nullptr);
+  return std::string(text) + "+0x" + [&] {
+    char offset[24];
+    std::snprintf(offset, sizeof offset, "%llx",
+                  static_cast<unsigned long long>(static_cast<const char *>(address) - reinterpret_cast<const char *>(module)));
+    return std::string(offset);
+  }();
+}
+// TASK-145 diagnostics: the program and window class behind a window handle, for the position-change log.
+std::string window_owner(HWND handle) {
+  if (handle == nullptr) return "none";
+  DWORD pid = 0;
+  GetWindowThreadProcessId(handle, &pid);
+  auto utf8 = [](const wchar_t *text) {
+    char out[512] = "";
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, out, sizeof out, nullptr, nullptr);
+    return std::string(out);
+  };
+  std::string program = "pid " + std::to_string(pid);
+  if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+    wchar_t path[MAX_PATH] = L"";
+    DWORD size = MAX_PATH;
+    if (QueryFullProcessImageNameW(process, 0, path, &size)) {
+      const wchar_t *name = std::wcsrchr(path, L'\\');
+      program = utf8(name != nullptr ? name + 1 : path);
+    }
+    CloseHandle(process);
+  }
+  wchar_t class_name[128] = L"";
+  GetClassNameW(handle, class_name, 128);
+  return program + " (" + utf8(class_name) + ")";
+}
+
+// TASK-145 diagnostics: the visible top-level windows Windows takes as not responding (it replaces them by a "Ghost"
+// window of dwm.exe after about 5 seconds, which re-stacks a fullscreen window in front of it).
+std::string hung_windows() {
+  std::string list;
+  EnumWindows(
+      [](HWND handle, LPARAM out) -> BOOL {
+        if (IsWindowVisible(handle) && IsHungAppWindow(handle)) {
+          auto &text = *reinterpret_cast<std::string *>(out);
+          if (!text.empty()) text += ", ";
+          text += window_owner(handle);
+        }
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&list));
+  return list.empty() ? "none" : list;
+}
+
+// TASK-145 diagnostics: GT4_WINDOW_WATCH=1 starts a thread that asks Windows every 50 ms whether it takes the game
+// window as not responding (IsHungAppWindow; after about 5 seconds dwm.exe covers such a window with a white "Ghost"
+// window) and whether a Ghost window exists. It logs each change with the time since the game thread last read its
+// messages, and the game thread's call stack whenever that time passes one second. The launcher does not pass our
+// environment on, so a diagnostic build for the owner sets GT4_TEST_WINDOW_WATCH=1 at compile time instead.
+#ifndef GT4_TEST_WINDOW_WATCH
+#define GT4_TEST_WINDOW_WATCH 0
+#endif
+std::atomic<std::uint64_t> last_pump_ms{0};
+std::atomic<std::uint64_t> watched_vblank{0};
+std::atomic<bool> watch_stop{false};
+std::thread window_watch;
+bool window_watch_wanted() {
+  static const bool on = [] {
+    const char *text = std::getenv("GT4_WINDOW_WATCH");
+    return text != nullptr ? std::strcmp(text, "1") == 0 : GT4_TEST_WINDOW_WATCH != 0;
+  }();
+  return on;
+}
+// The return addresses on the stack of `thread` (suspended while it is read), innermost first.
+std::vector<std::uint64_t> stack_of(HANDLE thread) {
+  std::array<std::uint64_t, 32> frames{};
+  std::size_t count = 0;
+  if (SuspendThread(thread) == static_cast<DWORD>(-1)) return {};
+  CONTEXT context{};
+  context.ContextFlags = CONTEXT_FULL;
+  if (GetThreadContext(thread, &context)) {
+    while (count < frames.size() && context.Rip != 0) {
+      frames[count++] = context.Rip;
+      DWORD64 image_base = 0;
+      PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+      if (function == nullptr) {  // a leaf function: the return address is on top of the stack
+        context.Rip = *reinterpret_cast<const DWORD64 *>(context.Rsp);
+        context.Rsp += 8;
+      } else {
+        void *handler_data = nullptr;
+        DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context, &handler_data, &establisher,
+                         nullptr);
+      }
+    }
+  }
+  ResumeThread(thread);
+  return std::vector<std::uint64_t>(frames.begin(), frames.begin() + count);
+}
+void start_window_watch() {
+  if (!window_watch_wanted() || window_watch.joinable()) return;
+  HANDLE game_thread = nullptr;
+  DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &game_thread,
+                  THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
+  std::fprintf(stderr, "[window] watch: on (window thread %lu, message thread %lu)\n",
+               GetWindowThreadProcessId(game_window, nullptr), GetCurrentThreadId());
+  last_pump_ms.store(GetTickCount64(), std::memory_order_relaxed);
+  window_watch = std::thread([game_thread, window = game_window] {
+    bool hung = false, ghost = false, stack_logged = false;
+    std::uint64_t hung_since = 0, ghost_since = 0;
+    while (!watch_stop.load(std::memory_order_relaxed) && IsWindow(window)) {
+      Sleep(50);
+      const std::uint64_t now = GetTickCount64();
+      const std::uint64_t quiet = now - last_pump_ms.load(std::memory_order_relaxed);
+      const unsigned long long vblank = watched_vblank.load(std::memory_order_relaxed);
+      const bool now_hung = IsHungAppWindow(window) != FALSE;
+      HWND ghost_window = FindWindowW(L"Ghost", nullptr);
+      const bool now_ghost = ghost_window != nullptr && IsWindowVisible(ghost_window);
+      if (now_hung != hung) {
+        if (now_hung) hung_since = now;
+        std::fprintf(stderr, "[window] watch: %s at VBlank %llu; messages last read %llu ms ago%s\n",
+                     now_hung ? "Windows takes the game window as NOT RESPONDING" : "the game window responds again",
+                     vblank, static_cast<unsigned long long>(quiet),
+                     now_hung ? "" : (" (after " + std::to_string(now - hung_since) + " ms)").c_str());
+        hung = now_hung;
+      }
+      if (now_ghost && !ghost) {
+        ghost_since = now;
+        RECT area{};
+        GetWindowRect(ghost_window, &area);
+        std::fprintf(stderr, "[window] watch: Ghost window shown at VBlank %llu: %s, %ld,%ld %ldx%ld\n", vblank,
+                     window_owner(ghost_window).c_str(), area.left, area.top, area.right - area.left,
+                     area.bottom - area.top);
+      } else if (!now_ghost && ghost) {
+        std::fprintf(stderr, "[window] watch: Ghost window gone at VBlank %llu after %llu ms\n", vblank,
+                     static_cast<unsigned long long>(now - ghost_since));
+      }
+      ghost = now_ghost;
+      if (quiet >= 1000 && !stack_logged && game_thread != nullptr) {
+        const std::vector<std::uint64_t> frames = stack_of(game_thread);
+        std::string text;
+        for (const std::uint64_t frame : frames)
+          text += "\n    " + module_of_address(reinterpret_cast<const void *>(frame));
+        std::fprintf(stderr, "[window] watch: messages not read for %llu ms at VBlank %llu; game thread stack:%s\n",
+                     static_cast<unsigned long long>(quiet), vblank, text.c_str());
+        stack_logged = true;
+      }
+      if (quiet < 1000) stack_logged = false;
+    }
+    if (game_thread != nullptr) CloseHandle(game_thread);
+  });
+}
+void stop_window_watch() {
+  watch_stop.store(true, std::memory_order_relaxed);
+  if (window_watch.joinable()) window_watch.join();
+}
 ControllerInput *controller = nullptr;
 gt4::window_mode::ToggleState fullscreen_state;
 #ifdef GT4_SHAPE_CAPTURE
@@ -140,7 +315,6 @@ void declare_dpi_awareness() {
 // game. GT4_INPUT_REPLAY=<file> gives the game those states at the same VBlanks instead of reading any input.
 gt4::input_recording::Recorder input_recorder;
 std::unique_ptr<gt4::input_recording::Player> input_player;
-std::uint64_t input_vblank = 0;
 // GT4_PACING_FROM_VBLANK=<n>: no waiting before this VBlank, then paced: a bench reaches a race in less time, with the same
 // presses, since they count VBlanks.
 const std::uint64_t paced_from_vblank = [] {
@@ -266,6 +440,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
     PostQuitMessage(0);
     return 0;
   }
+  // TASK-145: the responsiveness timer (window_heartbeat.hpp). Reading it from the queue is its whole job.
+  if (gt4::window_heartbeat::is_heartbeat(message, first)) return 0;
 #ifdef GT4_GS_STREAM_CLIENT
   // TASK-038 (slice195): with GT4_RENDERER=pcsx2 the picture is a child window of another process. Whenever this
   // window is activated (also when gt4-gs.exe gives the foreground back after a click on the picture), the keyboard
@@ -289,13 +465,85 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   }
   if (message == WM_MOVE || message == WM_SIZE)
     gt4::achievements::on_window_pos_changed(window);
+  // TASK-145 diagnostics (GT4_WINDOW_WATCH=1): the game window losing or getting the activation, and which program's
+  // window takes it (the first ten and then every 25th of each).
+  if ((message == WM_ACTIVATEAPP || message == WM_ACTIVATE) && surface_attached && window_watch_wanted()) {
+    static std::uint64_t activations[2] = {0, 0};
+    const bool app = message == WM_ACTIVATEAPP;
+    const std::uint64_t count = ++activations[app ? 1 : 0];
+    if (count <= 10 || count % 25 == 0) {
+      std::string other = "none";
+      if (app) {
+        // lParam: the thread of the application being activated or deactivated.
+        if (HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(second))) {
+          const DWORD pid = GetProcessIdOfThread(thread);
+          CloseHandle(thread);
+          other = "pid " + std::to_string(pid);
+          if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+            wchar_t path[MAX_PATH] = L"";
+            DWORD size = MAX_PATH;
+            if (QueryFullProcessImageNameW(process, 0, path, &size)) {
+              const wchar_t *name = std::wcsrchr(path, L'\\');
+              char text[260] = "";
+              WideCharToMultiByte(CP_UTF8, 0, name != nullptr ? name + 1 : path, -1, text, sizeof text, nullptr, nullptr);
+              other = text;
+            }
+            CloseHandle(process);
+          }
+        }
+      } else {
+        other = window_owner(reinterpret_cast<HWND>(second));  // lParam: the window being activated or deactivated
+      }
+      const bool active = app ? first != 0 : LOWORD(first) != WA_INACTIVE;
+      std::fprintf(stderr, "[window] %s %s at VBlank %llu (%llu so far); the other side: %s\n", app ? "application" : "window",
+                   active ? "activated" : "deactivated", static_cast<unsigned long long>(input_vblank),
+                   static_cast<unsigned long long>(count), other.c_str());
+    }
+  }
+  // TASK-145 diagnostics (GT4_WINDOW_WATCH=1): who moves or re-stacks the game window, the first ten and then every
+  // 25th.
+  if (message == WM_WINDOWPOSCHANGED && surface_attached && window_watch_wanted()) {
+    ++position_changes;
+    if (position_changes <= 10 || position_changes % 25 == 0) {
+      const auto *position = reinterpret_cast<const WINDOWPOS *>(second);
+      std::fprintf(stderr, "[window] position change %llu at VBlank %llu: flags 0x%04x, %d,%d %dx%d; above: %s; foreground: %s; "
+                           "not responding: %s\n",
+                   static_cast<unsigned long long>(position_changes), static_cast<unsigned long long>(input_vblank),
+                   position->flags, position->x, position->y, position->cx, position->cy,
+                   window_owner(GetWindow(window, GW_HWNDPREV)).c_str(), window_owner(GetForegroundWindow()).c_str(),
+                   hung_windows().c_str());
+    }
+  }
   // TASK-080: GT4_DISPLAY_ASPECT=auto follows the client area (windowed, fullscreen, Alt+Enter, resize).
   if (message == WM_SIZE)
     gt4::display_aspect::set_window_client_size(LOWORD(second), HIWORD(second));
   if (message == WM_SIZE && surface_attached) {
-    ps2::gs::resize_window(LOWORD(second), HIWORD(second));
+    const std::uint32_t width = LOWORD(second), height = HIWORD(second);
+    if (width == renderer_client_width && height == renderer_client_height) {
+      // TASK-145: nothing to resize. The first ones and then every 50th are logged, to see how often Windows sends them.
+      ++unchanged_size_messages;
+      if (unchanged_size_messages <= 5 || unchanged_size_messages % 50 == 0)
+        std::fprintf(stderr, "[window] size message with the same client size %ux%u at VBlank %llu, not passed on (%llu so far)\n",
+                     width, height, static_cast<unsigned long long>(input_vblank),
+                     static_cast<unsigned long long>(unchanged_size_messages));
+      return 0;
+    }
+    static std::uint64_t size_changes = 0;  // a drag of the window border sends one per mouse step: log a few
+    if (++size_changes <= 10 || size_changes % 100 == 0)
+      std::fprintf(stderr, "[window] client size %ux%u -> %ux%u at VBlank %llu\n", renderer_client_width,
+                   renderer_client_height, width, height, static_cast<unsigned long long>(input_vblank));
+    renderer_client_width = width;
+    renderer_client_height = height;
+    ps2::gs::resize_window(width, height);
     return 0;
   }
+  // TASK-145 diagnostics: display and DPI changes, which bring size messages with them.
+  if (message == WM_DISPLAYCHANGE)
+    std::fprintf(stderr, "[window] display change: %ux%u at %u bits, VBlank %llu\n", LOWORD(second), HIWORD(second),
+                 static_cast<unsigned>(first), static_cast<unsigned long long>(input_vblank));
+  if (message == WM_DPICHANGED)
+    std::fprintf(stderr, "[window] DPI change to %u at VBlank %llu\n", static_cast<unsigned>(LOWORD(first)),
+                 static_cast<unsigned long long>(input_vblank));
   return DefWindowProcW(window, message, first, second);
 }
 
@@ -314,6 +562,8 @@ void present_race_view(bool fill, double ratio) {
 }
 
 bool pump_messages() {
+  last_pump_ms.store(GetTickCount64(), std::memory_order_relaxed);
+  watched_vblank.store(input_vblank, std::memory_order_relaxed);
   MSG message{};
   while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
     if (message.message == WM_QUIT) {
@@ -396,6 +646,7 @@ void on_vblank() {
 #endif
   release_frame();
   ++input_vblank;
+  if (input_vblank == 1) start_window_watch();  // TASK-145 diagnostics, GT4_WINDOW_WATCH=1 only
   note_frame_skip_vblank();
   GT4_PERF_SCOPE(gt4::perf::Category::host_vblank);
   if (!pump_messages())
@@ -580,6 +831,15 @@ bool open_window(bool fullscreen) {
       window_class.hInstance, nullptr);
   if (!game_window)
     throw std::runtime_error("Cannot create native game window");
+  // TASK-145: without this timer Windows takes the game window as not responding after 5 seconds without input, and
+  // in fullscreen the desktop flashes every 6 seconds (window_heartbeat.hpp, decision 0076). Keep it.
+  if (gt4::window_heartbeat::wanted(std::getenv("GT4_WINDOW_HEARTBEAT"))) {
+    const bool started = gt4::window_heartbeat::start(game_window);
+    std::fprintf(stderr, "[window] responsiveness timer %s (GT4_WINDOW_HEARTBEAT; a message every %u ms)\n",
+                 started ? "on" : "could not start", gt4::window_heartbeat::interval_ms);
+  } else {
+    std::fprintf(stderr, "[window] responsiveness timer off (GT4_WINDOW_HEARTBEAT=0): expect \"Not responding\"\n");
+  }
   // Start in borderless fullscreen on the window's monitor: the same path as Alt+Enter and F11.
   if (start_fullscreen)
     set_fullscreen(true);
@@ -607,6 +867,7 @@ int run_window(const std::function<int()> &emulate) {
   ControllerInput input(active_controls, input_backend);
   controller = &input;
   const auto cleanup = [&]() {
+    stop_window_watch();
     input_recorder.finish(input_vblank);
     gt4::achievements::shutdown();
 #ifdef GT4_PERF_PROBE
@@ -684,6 +945,8 @@ int run_window(const std::function<int()> &emulate) {
                                 nullptr, nullptr, bounds.right, bounds.bottom))
       throw std::runtime_error("Native Vulkan presentation refused window");
     surface_attached = true;
+    renderer_client_width = static_cast<std::uint32_t>(bounds.right);
+    renderer_client_height = static_cast<std::uint32_t>(bounds.bottom);
     // The presentation is 16:9 pillarbox; TASK-080 fills the screen in the race view at other ratios.
     ps2::gs::gpu::set_widescreen(true);
     gt4::display_aspect::set_presentation_sink(present_race_view);

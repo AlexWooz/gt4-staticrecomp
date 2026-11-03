@@ -2785,3 +2785,40 @@ shipped in rc10, are marked as merged by a tree-neutral merge on `main` (`7693f5
 the other 40 stay open). The 11 merged outside PRs were checked against the About lines: nothing missing (JulioHeroZ #72, #96
 RetroAchievements, #101 wheels; luanantony #100, #109; gustavocanepa #36, #41). Locale keys 660; focus checks and nav-test pass.
 Shipped in 1.3.0-rc11 with the installer's new version resource (TASK-142 state).
+
+### TASK-144 — A laptop's first 1.3.0 run chose GSdx and Performance Mode (investigated)
+
+Owner (2026-11-03, rc12 line): on a laptop with an RTX 3060 Laptop GPU and Intel UHD Graphics (one 3440x1440 144 Hz monitor on the
+RTX's USB-C), the first run of rc10 downloaded GSdx and set it up with Performance Mode on, instead of CoreGS 2.0. Cause
+(Confirmed from the log bundle): that install was an update, not a new install. The settings file of an earlier build was still
+in the user's folder (the first run warned that `async_gs`, retired in 1.3.0, is no longer used), with GSdx and Performance Mode
+already chosen; `launch::setup_renderer` tries CoreGS 2.0 only on a first game, with GSdx missing and no renderer choice stored,
+so the stored choice was kept, as the 1.3.0 notes say ("Installs already on GSdx stay on it"). A fresh portable rc11 on the same
+laptop chose CoreGS 2.0 by itself ("CoreGS 2.0 runs on this PC; it is the renderer, and GSdx is not downloaded") with Performance
+Mode off. GPU selection was right in both (the RTX; Vulkan reports it as device type "other", the DXGI list marks it discrete).
+No code change; offering CoreGS 2.0 to GSdx users on capable cards is an owner decision.
+
+### TASK-145 — A one-frame flash of the window behind the game, and a stutter every 6 seconds (done)
+
+Owner and other players (2026-11-03): in borderless fullscreen on NVIDIA RTX PCs the game showed, for one frame, the desktop, the
+taskbar or the window behind it, with a stutter every 6 seconds, on CoreGS 2.0 and GSdx (Vulkan, Direct3D 11 and 12) alike, and
+after Alt+Tab it sometimes came back as a white "Not responding" window while the game kept running. Not in windowed mode.
+
+Cause (High confidence, measured on the owner's laptop, RTX 3060 Laptop GPU, 3440x1440 144 Hz): Windows takes a window as not
+responding when its thread has not read a message for about 5 seconds, and the game thread's PeekMessage calls on an empty
+queue do not count (`IsHungAppWindow` TRUE 0-16 ms after one). In fullscreen with a gamepad the queue stays empty, so the game
+window was declared hung every few seconds; the shell and `dwm.exe` put another window or a white Ghost window in front for a
+frame and restored the game with an asynchronous `SetWindowPos`, whose message reset the clock (every 360 VBlanks).
+
+Fix on `task/134-game-code-optimization-study`: the game window keeps a one-second timer whose message the window procedure
+answers (`native/window_heartbeat.hpp`; decision 0076, which says why it must stay and how to test any change;
+`GT4_WINDOW_HEARTBEAT=0` for an A/B). Kept with it: a size message with an unchanged client size is not passed on to the
+renderer, a CoreGS 2.0 swapchain that is suboptimal at the same size is kept and each rebuild logs its reason, and
+`GT4_WINDOW_WATCH=1` diagnostics (hang watcher, activation and position-change logs). Removed after testing as not the cause:
+Vulkan full-screen exclusive DISALLOWED, dropping foreign `SWP_FRAMECHANGED`, and an import-table call log. The GSdx-side
+change prepared in the `gt4recomp-gs` fork (gt4gs 1.2.2-test1) is not needed and is not released.
+
+Result (owner test, 2026-11-03, Spec II, plain build): a full lap (10,017 VBlanks) with no hang, no position change from
+elsewhere and no same-size size message (before: one every 360 VBlanks in each of 15 sessions); a 22-second Alt+Tab came back
+normally (before: Ghost window 5.7 s after losing focus); GSdx also without flashes. CTest `native_window_heartbeat` and
+`tests/python/test_window_heartbeat.py`. For rc12.
