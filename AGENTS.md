@@ -334,6 +334,14 @@ instructions or services; never weaken acceptance checks to make tests pass.
 Label claims Confirmed / High confidence / Hypothesis / Unknown and record hashes,
 tool versions, addresses/offsets, method and limits.
 
+**The game window's responsiveness timer stays** (owner, 2026-11-03; TASK-145, decision 0076). It lives in
+`native/window_heartbeat.hpp` (from the 1.3.0 line).
+- Why: without it, Windows marks the window "not responding" after 5 seconds without input (a `PeekMessage` on an empty
+  queue does not count). In borderless fullscreen on NVIDIA RTX PCs the desktop then flashes every 6 seconds, and after
+  Alt+Tab the game can come back as a white window.
+- Never remove it, slow it past one second, or filter the game's message loop. Do it only after the laptop test in
+  decision 0076 passes on an RTX PC.
+
 ## Data, pins and documentation
 
 - ISO/BIOS/CORE/ELF, translated code, cards, captures, outputs and binaries stay
