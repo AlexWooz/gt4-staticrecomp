@@ -1,5 +1,29 @@
 # Current Status
 
+## 1.3.0-rc10 built for the owner's test, not uploaded (2026-11-03)
+
+TASK-140 (the player fixes the owner chose from the triage of 47 open PRs and the open issues; ai-memory
+`notes/pr-issue-triage-2026-11-03`) and one more TASK-134 step, on `task/134-game-code-optimization-study`. **Owner: do not
+publish yet, not even a draft.** Package `private/release-130-rc10-out`: installer `GT4Recomp-Setup-1.3.0-rc10.exe` 51,814,328
+bytes `7e90395f...`, portable zip 80,742,596 bytes `fea09567...`; game `private/slice398-dist-130-rc10`, pins `slice398-*.json`
+(exe `9b71df8b...` v2.00, `531eeccb...` Spec II).
+
+- **Fixes:** Spec II replays kept (its names are `BASCUS-97436R` plus seven letters and digits; the launcher kept only four digits,
+  issue #185); no audio device runs silent (#93, #115); the SPU2 exponential release reaches silence, so GT Auto's bubbles stop
+  (#104, capsule `private/slice396-spu2-runtime`); card backups limited to the newest 10 card images, 5 before a New save, 10
+  active-save copies (owner: 74 images, about 600 MB, in two weeks); plain exit messages (#107, #99); Play offers CoreGS 2.0 when
+  GSdx is not installed (#139, #179); the card error names the file (#160); the 480p hold covers a 1080i save. Ideas of PRs #118,
+  #119, #154 and #174 by luanantony, re-done with him as co-author; items 3, 5 and 7 by a Sonnet agent on a merged branch.
+- **CPU:** VU1 products with VF0.w emitted as copies (table `private/slice397-vu1-gen`, 20,530 lines, every one that rewrite): VU1
+  program -3.4%; whole process in a player's session rc9 9.31 -> rc10 9.26 ms per VBlank (-0.6%, inside the spread).
+- **Gates against rc9, all equal:** clock, state and 24/35/35 frames on the three recorded laps; v2.00 night 3x 10/10 and state;
+  Arcade 14/14; 6x 12/12; VU1 verify 236,448 and 355,388 samples, MTVU 8,032 frames, 0 differences.
+- **Tests:** CTest 292 of 293 (`python_native_contracts`, known); Python 766, the 13 known failures; launcher `cargo test` 630
+  with `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start` failing under heavy disk load (also on unmodified rc9
+  sources) and passing 3 of 3 on a quiet machine; locale keys 655 equal; focus checks en-US 275, pt-BR 282, nav-test 209.
+- **Open:** the owner's test (a car wash or oil change in GT Auto; a Spec II replay saved, the game closed, the replay found again;
+  a launcher on GSdx without it installed). The notebook still has the first rc9.
+
 ## 1.3.0-rc9 published as a pre-release (2026-11-03)
 
 The owner approved rc9 (slice395, installed on their desktop) and asked to publish it as a pre-release at once, because
