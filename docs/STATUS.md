@@ -19,7 +19,8 @@ Branch `task/139-coregs2-picture-bugs`, from `task/134-game-code-optimization-st
 - **v2.00:** the night race against rc9: 3 of 10 frames identical, the rest differ only on the wheels, which now spin with their blur as on GSdx (rc9 showed still spokes).
 - **Installed for the owner's test (2026-11-03):** game files only, `private/slice392-dist-t139` (pins `docs/inputs/slice392-pcsx2.json` exe `27cbf602...`, `slice392-spec2.json` exe `72eea060...`; slice391 was the same without IN-532), into `C:\Program Files\GT4Recomp\game`; every file checked by hash. The rc9 game files are kept in `private/_program-backups/rc9-before-t139-20261103T025446Z`. Built by `scripts/coregs2_bench/game/use-build.sh` with slice390's EE libraries and profiles (no new training); its George V Paris frames are equal to the debug build's, 8 of 8, and the debug build's to the one before IN-532. Launcher, saves and settings untouched. The first Play compiles shaders again.
 - **CTest on the debug build:** 291 of 292, `python_native_contracts` the known failure (its GS settings and VU options cases).
-- **Not verified:** a window run and the owner's own test; the custom texture pack the player uses; the notebook (off). Not uploaded.
+- **With the owner's texture pack** (`data\Textures`, an HD HUD and UI pack, 15,423 files): Tokyo VBlanks 7700 and 8000 show the black blocks on rc9 and none on the installed build. The player's own pack was not available.
+- **Not verified:** a window run and the owner's own test; the notebook (off). Not uploaded.
 
 ## TASK-134: 1.3.0-rc9, the CPU optimisation, installed for the owner's test (2026-11-02)
 
