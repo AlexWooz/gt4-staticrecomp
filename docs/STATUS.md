@@ -1,5 +1,24 @@
 # Current Status
 
+## 1.3.0-rc9 published as a pre-release (2026-11-03)
+
+The owner approved rc9 (slice395, installed on their desktop) and asked to publish it as a pre-release at once, because
+rc8 has the CoreGS 2.0 picture bugs that TASK-139 fixed. `v1.3.0-rc9` at `39320b99` on `task/134-game-code-optimization-study`
+(the branch is not merged into `main`); pre-release, not Latest; `v1.2.5` stays Latest and `v1.3.0-rc8` stays published.
+
+- **Game:** slice395 (`private/slice395-dist-t134r2`, pins `slice395-pcsx2.json` and `slice395-spec2.json`), the files installed
+  on the owner's desktop.
+- **Assets** (`private/release-130-rc9b-out`, launchers labelled rc9 from the same commit): installer
+  `GT4Recomp-Setup-1.3.0-rc9.exe` 52,620,178 bytes `4f2c54bc...`, portable zip 81,746,509 bytes `fdb54662...`, `SHA256SUMS`.
+  The GitHub digests of all three equal the local files.
+- **Checks:** installer (7-Zip extraction) and zip against the game folder, 0 differences, no game data, no build paths in the game
+  programs; both launchers carry the rc9 label and the updated 1.3.0 notes in both languages; locale keys and placeholders equal
+  (645); focus checks en-US 258 of 258, pt-BR 265 of 265; nav-test 209 of 209; launcher `cargo test` 0 failures.
+- **Notes:** `docs/release-notes/1.3.0-rc9.md` (the GitHub body) rewritten with highlights, the picture fixes first and the
+  measured numbers; the short notes in en-US and pt-BR have the same 10 bullets.
+- **Not done:** the notebook still has the first rc9 build (slice390) under the same version label, so its launcher does not offer
+  this one; it needs a manual update when the notebook is on.
+
 ## TASK-134, second round: rc9 with the picture fixes uses about 10% less processor (2026-11-03)
 
 The owner resumed the CPU work after TASK-139 and asked for every optimisation overnight, one at a time, measured, kept even when

@@ -3312,6 +3312,11 @@ images and entry lists as before:
 - **Game build:** `scripts/coregs2_bench/pgo-all.sh` as for rc9, training with a warm shader cache (`GT4_HW_SHADER_CACHE=<folder>` as an extra argument), outputs `build/t134-cand/f3-spec2` and `f3-v200` in the worktree.
 - **Bench:** `ab.sh`, `quiet_cpu.ps1` and `laptop/lap.ps1` give each executable its own shader cache; without one a headless lap compiles CoreGS 2.0's pipelines while it runs.
 - **Pins:** `scripts/pin_task134_build.py` (from the slice392 pins: executable, EE library and both VU tables).
+- **Published as `v1.3.0-rc9`** (2026-11-03): distribution `private/slice395-dist-t134r2`; launchers with `-Label rc9` from
+  `39320b99` (`CARGO_TARGET_DIR=<worktree>\build\cargo-release`, `-Portable` adds `-portable`); makensis `/DVERSION=1.3.0
+  /DLABEL=rc9` with the SDL3 DLL of `devel\SDL3-3.4.18\lib\x64` and the WebView2 bootstrapper of `private/release-100-webview2`;
+  `scripts/make_portable_zip.py --version 1.3.0-rc9`. Output `private/release-130-rc9b-out`: installer 52,620,178 bytes
+  `4f2c54bc...`, portable zip 81,746,509 bytes `fdb54662...`.
 
 Checks: the 21 VU tests (`vu_recomp_corpus`, `vu0_aot_differential` against the interpreter), `native_vu_fast_ops`,
 `game_identity.sh` per step and the final gates (`private/task134-tools/gates2.sh`, against slice392).
