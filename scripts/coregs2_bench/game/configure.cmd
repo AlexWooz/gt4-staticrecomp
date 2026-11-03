@@ -7,18 +7,21 @@ set "A=C:/Antigravity/gt4-staticrecomp"
 set "DIR=%~1"
 set "TARGET=%~2"
 set "EXTRA=%T134_ARGS%"
-if "%VU1GEN%"=="" set "VU1GEN=%A%/private/slice157-vu1-all-gen"
+rem VU1GEN and VU0GEN override the VU tables (slice394: the TASK-134 emitter of 2026-11-03; rc9 had slice157 and slice390/slice160).
+if "%VU1GEN%"=="" set "VU1GEN=%A%/private/slice394-vu1-gen"
+set "VU0GEN_GIVEN=%VU0GEN%"
 if /i "%TARGET%"=="spec2" (
   set "PROFILE=spec2"
   set "RUNTIME=%A%/private/slice276-spec2-iop-runtime"
-  set "VU0GEN=%WT:\=/%/private/ee-spec2/vu0-gen"
-  set "VU0IMG=%WT:\=/%/private/ee-spec2/vu0-image/vu0_image.bin"
+  set "VU0GEN=%A%/private/slice394-spec2-vu0-gen"
+  set "VU0IMG=%A%/private/slice390-spec2-vu0-image/vu0_image.bin"
 ) else (
   set "PROFILE=aspect"
   set "RUNTIME=%A%/private/slice262-frame-cost-runtime"
-  set "VU0GEN=%A%/private/slice160-vu0-gen-r3"
+  set "VU0GEN=%A%/private/slice394-v200-vu0-gen"
   set "VU0IMG=%A%/private/slice160-vu0-image/vu0_image.bin"
 )
+if not "%VU0GEN_GIVEN%"=="" set "VU0GEN=%VU0GEN_GIVEN%"
 cmake -S "%WT%" -B "%WT%\build\%DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release ^
  -DCMAKE_C_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" ^
  "-DCMAKE_CXX_FLAGS_RELEASE=/O2 /Ob2 /DNDEBUG /Z7 -gline-tables-only" "-DCMAKE_C_FLAGS_RELEASE=/O2 /Ob2 /DNDEBUG /Z7 -gline-tables-only" ^

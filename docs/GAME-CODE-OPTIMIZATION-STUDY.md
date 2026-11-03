@@ -622,3 +622,35 @@ Result, rc8 against rc9 (slice382, slice390), interleaved, in a player's session
 - **A rendering race, on rc8 as well:** on the lap at VBlank 3750 a block of about 16 x 7 pixels of a track sign is sometimes dark for one frame, 2 runs of 12 on rc8 and 2 of 12 on rc9, also at 4500 in other runs. The simulation state stays identical. This is probably what ai-memory `procedures/coregs2-replay-bench` calls differences at picture edges; it is not crowd flashes (Confirmed by looking at the frame; cause Unknown).
 - **A bug in the VU emitter, caught by the differential test:** an E-bit instruction that is also a branch must leave TPC at the branch target. Only Spec II's VU0 has it (0x3B0, entries 0x258 and 0x268). Fixed; the v2.00 VU0 table comes out byte-identical. The guest never reads TPC there, so no game behaviour depended on it.
 - A build folder reused with a new profile fails to link under ThinLTO (`ProfileSummary` conflict): `pgo-all.sh` now starts clean.
+
+### Second round (2026-11-03, on top of the TASK-139 picture fixes)
+
+**The bench first.** The headless runs had no shader cache, so every lap compiled CoreGS 2.0's 93 specialised pipelines while it
+ran (3.6 ms of driver CPU per VBlank in the sampler window) and drew with the uber pipeline meanwhile. A player's session reads
+them from the launcher's cache. The bench tools now give each executable its own warm cache. With it, rc9 uses 10.70 ms of process
+CPU per VBlank on the 5700X (10.14 measured without it on 2026-11-02; the difference against rc8 holds, since both compiled).
+
+What each step did, against the step before (plain builds, the lap at 1x, 3 interleaved rounds; physics, state and frames identical
+for every kept step; details in `docs/journal/2026-11-03.md`):
+
+| Step | Thread | Effect |
+|---|---|---|
+| CoreGS 2.0 submits every 64 batches on a discrete GPU (was 32; an integrated GPU keeps 32 until measured) | GS | CPU -5% at 1x, -4% at 3x; frame -3% at 1x, the same at 3x |
+| VU1 CLIP flags over the lanes (SSE2, proved over every 32-bit value) | VU1 | VU1 program -2.6% |
+| VU1 outer product (OPMULA, OPMSUB) as one vector operation, VU1 table regenerated | VU1 | -8.5% |
+| VU0 programs over two or more lanes with fp4, VU0 tables regenerated | EE | VU0 -24% |
+| GPU vertices of a primitive inserted at once | GS | -3.1%, frame -3.2% |
+| Partial VU loads and stores, MOVE and MR32 written as whole qwords (no store-forwarding stall), tables regenerated | VU1, EE | VU1 -2.8%, VU0 -2.6% |
+
+Over the round the VU1 program went from 3.26 to 2.75 ms per VBlank (-16%) on the plain builds. Dropped: the VIF wrap mask and a
+per-format generic VIF unpack (both exact, no measurable change). Kept as they are: specialised pipelines (2% more CPU, 5% faster
+frame).
+
+**Final build (PGO and ThinLTO again, slice395), player's session with a warm shader cache, the lap at 1x, 3 interleaved rounds:**
+process CPU per VBlank rc8 12.96 ms, rc9 10.48, slice392 10.59, slice395 9.57 (-9.7% against slice392, -26% against rc8); El
+Capitan -8.5%, Tokyo R246 -6.6%. Gates against slice392 all equal (three recordings, v2.00 night and Arcade, 6x, VU and MTVU
+verify). The notebook was off: not measured.
+
+**Left, cheapest first:** the SPU2 envelope, about 0.05 ms on the desktop; a CoreGS 2.0 submission thread (about 0.3 ms off the GS thread's critical path, but presentation
+submits on the same queue, so every submission must go through one ordered queue); a deferred flare readback on the GS thread (it
+waits about 0.5 ms per VBlank for the GPU); P8.

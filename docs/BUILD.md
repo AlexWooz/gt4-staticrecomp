@@ -3298,3 +3298,20 @@ Everything is driven by `scripts/coregs2_bench/pgo-all.sh <spec2|v200> <output d
 - **Distribution:** `private/slice390-dist-130-rc9`; launchers with `-Label rc9`; output `private/release-130-rc9-out`: installer `dee0a271...` (53,750,076 bytes), portable zip `174db683...` (84,649,604 bytes).
 
 Checks: `game_identity.sh` and the gates of the release notes; CTest on both builds with `python_native_contracts` the only failure (its known GS settings cases; `native_performance_probe` failed once under load before its clock test retried); Python 763 tests, the 13 known failures, 56 skipped; focus pages en-US 258 of 258, pt-BR 265 of 265; locale keys and placeholders equal.
+
+
+## TASK-134, second round (2026-11-03): regenerated VU tables, slice395
+
+On top of rc9 with the TASK-139 picture fixes (slice392). The emitter `tools/vu_recomp` writes the VU1 outer product as one
+vector operation, the VU0 lanes with fp4 and partial VU loads and stores as whole qwords; the generated tables come from the same
+images and entry lists as before:
+
+- **VU1:** `gt4_vu_recomp --programs-per-file 16 --entry-policy all --image private\slice155-vu1-image\vu1_image.bin --entries private\slice157-vu1-all-entries\entries-all.txt private\slice394-vu1-gen` (2,048 programs; the table file is byte-identical to slice157's, the parts differ only in those instructions).
+- **VU0:** `gt4_vu_recomp --unit 0 --namespace gt4::vugen::vu0 --entry-policy vcallms --image <image> --entries <list> <fresh dir>`, with `private\slice390-spec2-vu0-image` into `private\slice394-spec2-vu0-gen` and `private\slice160-vu0-image` into `private\slice394-v200-vu0-gen`. The tables include `ps2/fp4.hpp`, so they need `GT4_FAST_HEADERS` (on by default).
+- **Configure:** `scripts/coregs2_bench/game/configure.cmd` now defaults to these three folders (`VU1GEN` and `VU0GEN` override them).
+- **Game build:** `scripts/coregs2_bench/pgo-all.sh` as for rc9, training with a warm shader cache (`GT4_HW_SHADER_CACHE=<folder>` as an extra argument), outputs `build/t134-cand/f3-spec2` and `f3-v200` in the worktree.
+- **Bench:** `ab.sh`, `quiet_cpu.ps1` and `laptop/lap.ps1` give each executable its own shader cache; without one a headless lap compiles CoreGS 2.0's pipelines while it runs.
+- **Pins:** `scripts/pin_task134_build.py` (from the slice392 pins: executable, EE library and both VU tables).
+
+Checks: the 21 VU tests (`vu_recomp_corpus`, `vu0_aot_differential` against the interpreter), `native_vu_fast_ops`,
+`game_identity.sh` per step and the final gates (`private/task134-tools/gates2.sh`, against slice392).
