@@ -43,11 +43,13 @@ caller. The build needs line tables (`/Z7 -gline-tables-only`, `/DEBUG`). Readin
 
 ## Recording a drive and replaying it (IN-520)
 
-`record-input.sh <name>` opens Spec II from the bench's card without game data and records every pad change by guest VBlank, into `private/coregs2-bench/inputs/<name>.txt` in the main checkout (never overwritten). F9 ends the recording and closes the game. Keep the game focused: without focus the keyboard reads as released, and that is recorded too.
+`record-input.sh <name>` (or `record.cmd <name>` from PowerShell) opens Spec II from the bench's card without game data and records every pad change by guest VBlank, into `private/coregs2-bench/inputs/<name>.txt` in the main checkout (never overwritten). It runs the rc9 package unless `EXE` is set. F9 ends the recording and closes the game. Keep the game focused: without focus the keyboard reads as released, and that is recorded too.
 
 `replay-run.sh <name> <run> <exe> [ENV=VAL ...]` replays it from a fresh copy of the same card up to its last VBlank, into `$GT4_BENCH_OUT/replay-<name>-<run>/`. `WINDOW=1` opens a window and writes `frametime.csv`; `PACED_FROM=<VBlank>` skips the waiting before that VBlank (use the VBlank where the measured stretch starts). Frame dumps slow a window run: leave `EVERY` unset when measuring.
 
 Pass `GT4_HW_FLARE_DEADLINE_MS=0` when comparing frames from window runs: a late flare answer depends on real time.
+
+`replay-gsdx.sh <name> <run> <exe> [ENV=VAL ...]` replays it headless on the reference renderer (`EVERY`, `SCALE`, `GS_EXE`), with the final frames in `gs-frames/`. Clean room: its `log.txt` also holds the GS process's output, so read only the game's lines. On the Ford GT lap both renderers stay in sync to the end, and the reference's `live_frameN` is one frame ahead of our `frame_N`. A Time Trial is the safe recording: with AI cars the rival list has differed between the two (IN-506).
 
 ## Frame skipping (TASK-082)
 

@@ -2660,3 +2660,7 @@ State (2026-11-02): published in 1.3.0-rc8. A whole setup on a capable PC passed
 ### TASK-137 — Link the disc image
 Decision 0075. Owner, 2026-11-02, asked for by players and needed for Android: one image for this and an emulator. Acceptance: setup writes no copy of the image; an image that moved or changed asks to be chosen again, and choosing it is all it takes; an install with a copy stays installed; accented paths work; owner test.
 State (2026-11-02): TASK-137 and TASK-138 (a portable folder carries its image, accented paths, the GSdx fallback; decision 0075) are published in 1.3.0-rc8. Settings > Games shows the image's size and location.
+
+### TASK-139 — CoreGS 2.0 picture bugs from recorded drives
+
+State (2026-11-02): started on `task/139-coregs2-picture-bugs`, on top of rc9. Waiting for the owner's recordings (Tokyo R246, El Capitan, possibly a third track). Each one is replayed on CoreGS 2.0 and on the reference renderer, and the differences the owner reports get fixed in `native/hw_gs/`. Acceptance: the owner's test on the same scenes.

@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-139: CoreGS 2.0 picture bugs, started on rc9 (2026-11-02)
+
+Branch `task/139-coregs2-picture-bugs`, from `task/134-game-code-optimization-study` at `56f90c96`. The owner saw graphic bugs and records drives for us to replay on both renderers.
+
+- **Tools:** `scripts/coregs2_bench/record.cmd <name>` records on the rc9 package; `replay-run.sh` replays on CoreGS 2.0 and the new `replay-gsdx.sh` on the reference renderer, final frames only.
+- **Checked:** a short recording through `record.cmd` ended with a complete file. The owner's Ford GT lap replayed headless on the rc9 package on both renderers at 3x reaches the same race, with the same lap of 1'23.394. The reference's dump numbering is one frame ahead of ours (0.016 s on the race clock).
+- **Not verified:** that Tokyo R246 is listed in Arcade on the bench's card; replay in sync on the reference renderer with AI cars (IN-506 saw a different rival list between the two), so a Time Trial is the safe recording.
+- **Waiting for:** the owner's recordings of Tokyo R246, El Capitan and possibly a third track.
+
 ## TASK-134: 1.3.0-rc9, the CPU optimisation, installed for the owner's test (2026-11-02)
 
 Branch `task/134-game-code-optimization-study`, on top of rc8. **Not published and not uploaded, on the owner's word:** the owner has CoreGS 2.0 picture bugs to fix first. Details: `docs/GAME-CODE-OPTIMIZATION-STUDY.md` section 8, `docs/release-notes/1.3.0-rc9.md`, `docs/BUILD.md`.
