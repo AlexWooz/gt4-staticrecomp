@@ -29,9 +29,23 @@ $environment = @{
 if ($Performance) { $environment['GT4_CORE2_PERFORMANCE'] = '1' }
 foreach ($key in $environment.Keys) { Set-Item "env:$key" $environment[$key] }
 
+# A player's session reads its pipelines from the launcher's shader cache; without one every run compiled CoreGS 2.0's
+# specialised pipelines during the lap (2026-11-03). Each candidate gets its own cache, filled by --prepare-shaders and one
+# unmeasured lap the first time (a candidate folder replaced with a new build needs its cache folder removed).
+function Get-ShaderCache([string]$tag) { Join-Path $PSScriptRoot "shader-cache\$tag" }
 foreach ($tag in $Tags) {
     $exe = Join-Path $PSScriptRoot "$tag\gt4vulkan-spec2.exe"
+    $env:GT4_HW_SHADER_CACHE = Get-ShaderCache $tag
+    if (Test-Path (Join-Path $env:GT4_HW_SHADER_CACHE 'variants.bin')) { continue }
+    New-Item -ItemType Directory -Force $env:GT4_HW_SHADER_CACHE | Out-Null
     Start-Process -FilePath $exe -ArgumentList "--prepare-shaders" -NoNewWindow -Wait -RedirectStandardOutput (Join-Path $env:TEMP 'gt4-prep.out') -RedirectStandardError (Join-Path $env:TEMP 'gt4-prep.err')
+    $warmCard = Join-Path $env:TEMP 'gt4-warm.ps2'
+    Copy-Item -LiteralPath $card $warmCard -Force
+    $arguments = @($elf, '--ntsc', '--disc', $iso, '--frames', "$Last", '--memcard', $warmCard)
+    Start-Process -FilePath $exe -ArgumentList ($arguments | ForEach-Object { '"' + $_ + '"' }) -NoNewWindow -Wait `
+        -RedirectStandardOutput (Join-Path $env:TEMP 'gt4-warm.out') -RedirectStandardError (Join-Path $env:TEMP 'gt4-warm.err') | Out-Null
+    Remove-Item $warmCard -Force
+    Write-Output "warmed the shader cache of $tag"
 }
 foreach ($round in 1..$Rounds) {
     foreach ($tag in $Tags) {
@@ -41,6 +55,7 @@ foreach ($round in 1..$Rounds) {
         $runCard = Join-Path $out 'card.ps2'
         Copy-Item -LiteralPath $card $runCard -Force
         $exe = Join-Path $PSScriptRoot "$tag\gt4vulkan-spec2.exe"
+        $env:GT4_HW_SHADER_CACHE = Get-ShaderCache $tag
         if ($Sampler -eq $tag -and $round -eq 1) {
             $env:GT4_CPU_SAMPLER = Join-Path $out 'sampler.bin'; $env:GT4_CPU_SAMPLER_FROM = '2400'; $env:GT4_CPU_SAMPLER_TO = '6000'
         } else {

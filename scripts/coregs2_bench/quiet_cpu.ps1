@@ -22,22 +22,43 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $pairs = @($Exes | ForEach-Object { $_ -split ',' })
 $env:GT4_RENDERER = 'hw'; $env:GT4_HW_CORE = '2'; $env:GT4_FORCE_480P = '1'; $env:GT4_FORCE_WIDESCREEN = '1'; $env:GT4_DISPLAY_ASPECT = '16:9'
 $env:GT4_HW_SCALE = "$Scale"; $env:GT4_INPUT_REPLAY = $Recording
-foreach ($pair in $pairs) { Start-Process -FilePath $pair.Split("=", 2)[1] -ArgumentList "--prepare-shaders" -NoNewWindow -Wait -RedirectStandardOutput (Join-Path $Out 'prep.out') -RedirectStandardError (Join-Path $Out 'prep.err') }
+# A player's session reads its pipelines from the launcher's shader cache; without one every run compiled CoreGS 2.0's
+# specialised pipelines during the lap (2026-11-03). Each executable gets its own cache, filled by --prepare-shaders and one
+# unmeasured lap the first time.
+function Get-ShaderCache([string]$exe) { Join-Path $Out ('shader-cache\' + (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.Substring(0, 16).ToLower()) }
+function Start-Lap([string]$exe, [string]$tag) {
+    $runCard = Join-Path $Out "$tag.ps2"
+    Copy-Item -LiteralPath $Card $runCard -Force
+    $arguments = @($Elf, '--ntsc', '--disc', $Iso, '--frames', "$Last", '--memcard', $runCard) | ForEach-Object { '"' + $_ + '"' }
+    $process = Start-Process -FilePath $exe -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $Out "$tag.out.txt") -RedirectStandardError (Join-Path $Out "$tag.err.txt")
+    $null = $process.Handle  # keeps the handle, so the times can be read after the exit
+    return $process
+}
+foreach ($pair in $pairs) {
+    $tag, $exe = $pair.Split('=', 2)
+    $env:GT4_HW_SHADER_CACHE = Get-ShaderCache $exe
+    if (!(Test-Path (Join-Path $env:GT4_HW_SHADER_CACHE 'variants.bin'))) {
+        New-Item -ItemType Directory -Force $env:GT4_HW_SHADER_CACHE | Out-Null
+        Start-Process -FilePath $exe -ArgumentList "--prepare-shaders" -NoNewWindow -Wait -RedirectStandardOutput (Join-Path $Out 'prep.out') -RedirectStandardError (Join-Path $Out 'prep.err')
+        $warm = Start-Lap $exe "$tag-warm"
+        $warm.WaitForExit()
+        Remove-Item (Join-Path $Out "$tag-warm.ps2") -Force
+    }
+}
 $totals = @{}
 foreach ($round in 1..$Rounds) {
     foreach ($pair in $pairs) {
         $tag, $exe = $pair.Split('=', 2)
-        $runCard = Join-Path $Out "$tag.ps2"
-        Copy-Item -LiteralPath $Card $runCard -Force
-        $arguments = @($Elf, '--ntsc', '--disc', $Iso, '--frames', "$Last", '--memcard', $runCard) | ForEach-Object { '"' + $_ + '"' }
+        $env:GT4_HW_SHADER_CACHE = Get-ShaderCache $exe
         $watch = [Diagnostics.Stopwatch]::StartNew()
-        $process = Start-Process -FilePath $exe -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $Out "$tag.out.txt") -RedirectStandardError (Join-Path $Out "$tag.err.txt")
-        $null = $process.Handle  # keeps the handle, so the times can be read after the exit
+        $process = Start-Lap $exe $tag
         $process.WaitForExit()
         $watch.Stop()
         $cpu = $process.TotalProcessorTime.TotalMilliseconds / $Last
         $wall = $watch.Elapsed.TotalMilliseconds / $Last
-        Write-Output ('{0} round {1}: process CPU {2:N3} ms/VBlank, wall {3:N3} ms/VBlank, exit {4}' -f $tag, $round, $cpu, $wall, $process.ExitCode)
-        Remove-Item $runCard -Force
+        $compiled = Select-String -LiteralPath (Join-Path $Out "$tag.err.txt") -Pattern 'compile_ms=[0-9.]*' -AllMatches | Select-Object -Last 1
+        $compiled = if ($compiled) { $compiled.Matches[-1].Value } else { 'compile_ms=?' }
+        Write-Output ('{0} round {1}: process CPU {2:N3} ms/VBlank, wall {3:N3} ms/VBlank, exit {4}, {5}' -f $tag, $round, $cpu, $wall, $process.ExitCode, $compiled)
+        Remove-Item (Join-Path $Out "$tag.ps2") -Force
     }
 }

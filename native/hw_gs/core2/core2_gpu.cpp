@@ -208,6 +208,7 @@ struct Gpu::Impl {
   // waited for it in the middle of frames (draw stage waits of 12-30 ms in the owner's menus and the Arcade race
   // start), and submitting more often made it worse.
   static constexpr std::uint32_t kMaxSlots = 24;
+  static constexpr std::uint32_t kSubmitEveryAtInit = 0xFFFFFFFFu;  // submitEvery not set by the switch: decided at Init
   Slot slots[kMaxSlots];
   std::uint32_t slotCount = [] {
     const char *text = std::getenv("GT4_CORE2_SLOTS");
@@ -266,10 +267,12 @@ struct Gpu::Impl {
   // IN-410: the recording is submitted every `submitEvery` draw batches, so the GPU draws while the CPU records the
   // rest of the frame and a readback in mid-frame (GT4's flare reads) waits only for the work after the last
   // submission. GT4_CORE2_SUBMIT_EVERY=<batches>, 0 = only when the CPU needs a result or at the end of the frame.
-  // S4: 32 since more submissions can be in flight (was 96 with two slots).
+  // S4: 32 since more submissions can be in flight (was 96 with two slots). TASK-134: 64 on a discrete GPU, set at Init (George V
+  // Paris lap on the RX 9060 XT: GS thread CPU -5% at 1x and -4% at 3x, frame -3% at 1x and the same at 3x; 128 made the 3x
+  // frame 5% slower, the GPU starting later). An integrated GPU keeps 32 until it is measured.
   std::uint32_t submitEvery = [] {
     const char *text = std::getenv("GT4_CORE2_SUBMIT_EVERY");
-    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : 32u;
+    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : kSubmitEveryAtInit;
   }();
   std::uint32_t batchesSinceSubmit = 0;
   // IN-451: speculative depth rejection before texturing in the pixel shader (exact); GT4_CORE2_EARLY_Z=0 turns it
@@ -2318,6 +2321,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     if (!check(gt4_hw_vkCreateFence(s.device, &fenceInfo, nullptr, &slot.fence), "vkCreateFence", error)) return false;
   }
   if (s.slotCount == 0) s.slotCount = s.integrated ? 8u : 16u;  // IN-517
+  if (s.submitEvery == Impl::kSubmitEveryAtInit) s.submitEvery = s.integrated ? 32u : 64u;  // TASK-134
   s.lastSubmitted = s.slotCount - 1u;  // S4: the first recording takes slot 0
   if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
     VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
