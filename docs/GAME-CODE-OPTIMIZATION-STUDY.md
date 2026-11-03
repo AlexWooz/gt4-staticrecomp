@@ -570,3 +570,55 @@ inferred (section 2.4).
 Test method (owner, 2026-10-28): headless runs on one fixed race in Arcade Mode (same car, same track, at night; the
 owner prefers B-Spec, which Arcade lacks, so the race's replay supplies the varied cameras) on the desktop; the laptop
 only with a finished build, tested by hand by the owner with F7/F8, logs collected over the network.
+
+## 8. Results of the rc9 work (2026-11-02)
+
+The owner freed the desktop on 2026-11-02 with CoreGS 2.0 merged into this branch. The owner also changed the baseline: **the recorded lap on George V Paris, Spec II** (`scripts/coregs2_bench/replay-run.sh george-volta2`, a Ford GT in time trial, the heaviest track), replacing the Arcade night race of section 5; the v2.00 night race with 5 AI cars (`night-run.sh`) is the second parameter. Tools: `scripts/coregs2_bench/game/ab.sh` (interleaved A/B with report lines), `quiet_cpu.ps1` (whole process with no report on), `game_identity.sh` (physics and frames), `laptop/lap.ps1` (the same lap on the notebook over SSH).
+
+### What the profile said (Confirmed, sampler on rc8-based builds, ms per VBlank, 1x)
+
+| Thread | Desktop | Notebook | Largest items |
+|---|---|---|---|
+| GS worker | 7.2 | 17.5 | driver 1.4 / 2.7, flat otherwise |
+| VU1 worker | 3.3 + waits | 12.6 | `vfix` and the operations around it, VIF unpack 13%, clock 11% before the change |
+| EE | 2.5 + waits | 10.5 | translated code 21-30%, exact FPU 20-25%, SPU2 5%, clock 6% before the change |
+
+Answers to open measurements: M3 is this profile. M7 (the probe) was large: 11% of the worker and 6% of the EE. M9 was answered by TASK-027. M10: `kernel_service` is guest handler code; the delivery overhead shows at 0.02 ms, so **P2 is not worth doing**. M12 is unanswered: a noalias `Cpu &` is P8, not attempted.
+
+### What was kept
+
+Every step leaves the race clock, the simulation state and the frames identical to rc8.
+
+| Step | Where | Effect (desktop unless noted) |
+|---|---|---|
+| Scopes read the TSC, not `steady_clock` (`native/perf_clock.*`) | P1d | EE thread about -10% with the report on |
+| No clock read, scope stack, stage timer or pass timestamp without a report | P1d | process -2.6% for the scopes and timers; 2-5% of the frame for the pass timestamps |
+| Doorbell statistics without a locked add; `receive()` keeps its buffer | P1b, P1c | small, inside the A/A spread |
+| `vfix` integer compare (all 2^32 values) and `mac_of_result` without branches | P7, no regeneration | VU1 program 3.50 -> 3.23 ms, -8% |
+| EE library rebuilt with this executable's compiler and SSE4.1 | P4a, P4b | no change by itself, physics identical |
+| **Spec II VU0 programs compiled** (it had none: 3.1 million interpreted calls in a lap) | not in the plan | found by the profile; 0 interpreted calls |
+| **PGO and ThinLTO of the whole game** (`scripts/coregs2_bench/pgo-all.sh`) | P4a | `ee_dispatch` -28%, VIF path -38%, VU1 -9% |
+| `fp::add`, `fp::mul` without unpredictable branches | not in the plan | -1% on the notebook, no change on the desktop; kept because exact and free |
+| **VU0 macro operations over four lanes** (`native/fp4.hpp`) | not in the plan | `ee_dispatch` a further -16% before PGO |
+
+Result, rc8 against rc9 (slice382, slice390), interleaved, in a player's session (no report): i5-7200U **33.87 -> 27.64 ms of process CPU per VBlank (-18%)**, wall 15.77 -> 14.48; Ryzen 7 5700X **12.59 -> 10.14 (-19%)**, wall 5.88 -> 5.43. The study's Hypothesis of 28-31 ms for the threads on the notebook is met at 27.6 in a scene heavier than its reference, on CoreGS 2.0.
+
+### What was tried and dropped
+
+- `__restrict` on the VU registers in the generated VU1 code: -2.5% of the VU1 program, not worth a promise the runtime's global accesses could break.
+- Fixing threads to cores: already measured by TASK-027 (IN-488), no gain.
+
+### Left for later, cheapest first
+
+- VU0 AOT lanes through `fp4` (Spec II 0.5 ms of the notebook's EE, emitter change plus the differential tests).
+- The worker reading VIF batches in place (P1c, about 2% of the worker), the EE building them in the ring (P5).
+- Masked VIF unpack without the per-element loop; the SPU2 mixer (0.75 ms on the notebook, exact output required).
+- `Cpu & __restrict` and one host function per guest function (P8): the largest remaining lever on the translated code, and the riskiest for the physics. A wrong assumption in a slow path changes timing, which the identity gates would catch only on the scenes they run.
+- The pacing tail spin (P1e) and the RetroAchievements toast (P1g): need window runs, not touched. The owner was using the desktop remotely.
+- The GS worker is now the largest thread on both machines.
+
+### Found on the way
+
+- **A rendering race, on rc8 as well:** on the lap at VBlank 3750 a block of about 16 x 7 pixels of a track sign is sometimes dark for one frame, 2 runs of 12 on rc8 and 2 of 12 on rc9, also at 4500 in other runs. The simulation state stays identical. This is probably what ai-memory `procedures/coregs2-replay-bench` calls differences at picture edges; it is not crowd flashes (Confirmed by looking at the frame; cause Unknown).
+- **A bug in the VU emitter, caught by the differential test:** an E-bit instruction that is also a branch must leave TPC at the branch target. Only Spec II's VU0 has it (0x3B0, entries 0x258 and 0x268). Fixed; the v2.00 VU0 table comes out byte-identical. The guest never reads TPC there, so no game behaviour depended on it.
+- A build folder reused with a new profile fails to link under ThinLTO (`ProfileSummary` conflict): `pgo-all.sh` now starts clean.

@@ -3283,3 +3283,18 @@ pins by hash, so the files are byte-identical and no pin changes. The installer 
 portable zip (`scripts/make_portable_zip.py`) ship the new names; the installer deletes the 1.2.x names
 (`game\gt4vulkan.exe`, `game\gt4vulkan-spec2.exe`) on install and update. The launcher starts `gt4.exe` and
 `gt4-spec2.exe` and detects both old and new names as running games.
+
+
+## 1.3.0-rc9 (TASK-134): the game built with a profile (slice390)
+
+Pins `docs/inputs/slice390-pcsx2.json` (exe `7dff6546...`, library `a15082dc...`) and `slice390-spec2.json` (exe `bf43375a...`, library `8ac2bfbd...`), written by `scripts/pin_release_rc9.py`.
+
+Everything is driven by `scripts/coregs2_bench/pgo-all.sh <spec2|v200> <output dir>` with `EE_GENERATED` set: it builds the EE library and the game instrumented (`GT4_HW_PGO=generate`), trains on full scenes, merges the profile, then builds both again (`GT4_HW_PGO=use`, `GT4_HW_THINLTO=ON`, `GT4_EE_LIBRARY` and `GT4_EE_LIBRARY_SHA256`). The configure lines are in `scripts/coregs2_bench/game/`. About 15 minutes per game.
+
+- **EE units:** v2.00, `private/slice217-ee-aspect-producer/generated`. Spec II, generated again and equal to its pin (`inventory_sha256 2d8c92a4...`): `scripts/spec2_ee_generate.py --elf private/slice272-spec2-elf/SCUS_974.36 --output <fresh> --entries private/slice278-spec2-ee-producer/entry-seeds.txt`.
+- **EE library:** `tools/ee_producer` with clang-cl 22.1.3 (not the qualified 23.1.2, so that one compiler reads one profile), `-DGT4_FAST_HEADERS=ON`, `/clang:-msse4.1`. Kept in `private/slice390-ee-spec2` and `private/slice390-ee-v200` with their profiles.
+- **Derived headers:** `scripts/prepare_fast_headers.py` copies the donor's `runtime/include/ps2` into the build tree with the exact faster forms; `native_vu_fast_ops` compares them with the donor's.
+- **Spec II VU0 programs:** image = the pinned upload of `docs/inputs/spec2-vu.json` padded to 4096 bytes (sha256 `e5ea672f...`), entries 0058 0078 00B8 00F8 0258 0268 0490 05C0 0648 07A0 07B0 0848 0850 08B0 (the VCALLMS and CMSAR0 values of the translated code), then `gt4_vu_recomp --unit 0 --namespace gt4::vugen::vu0 --entry-policy vcallms --image <image> --entries <list> <fresh dir>`. Kept in `private/slice390-spec2-vu0-gen` and `-vu0-image`. The v2.00 table is unchanged.
+- **Distribution:** `private/slice390-dist-130-rc9`; launchers with `-Label rc9`; output `private/release-130-rc9-out`: installer `dee0a271...` (53,750,076 bytes), portable zip `174db683...` (84,649,604 bytes).
+
+Checks: `game_identity.sh` and the gates of the release notes; CTest on both builds with `python_native_contracts` the only failure (its known GS settings cases; `native_performance_probe` failed once under load before its clock test retried); Python 763 tests, the 13 known failures, 56 skipped; focus pages en-US 258 of 258, pt-BR 265 of 265; locale keys and placeholders equal.

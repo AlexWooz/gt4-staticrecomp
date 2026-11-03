@@ -1,5 +1,17 @@
 # Current Status
 
+## TASK-134: 1.3.0-rc9, the CPU optimisation, installed for the owner's test (2026-11-02)
+
+Branch `task/134-game-code-optimization-study`, on top of rc8. **Not published and not uploaded, on the owner's word:** the owner has CoreGS 2.0 picture bugs to fix first. Details: `docs/GAME-CODE-OPTIMIZATION-STUDY.md` section 8, `docs/release-notes/1.3.0-rc9.md`, `docs/BUILD.md`.
+
+- **Result, process CPU per VBlank in a player's session, recorded lap on George V Paris, Spec II, 1x, headless, interleaved:** i5-7200U 33.87 -> 27.64 ms (-18%); Ryzen 7 5700X 12.59 -> 10.14 ms (-19%). Wall 15.77 -> 14.48 and 5.88 -> 5.43.
+- **What did it:** PGO and ThinLTO of the whole game with the EE library rebuilt; Spec II's VU0 programs compiled; the VU0 macro operations over four lanes; no measuring without a report.
+- **Same game:** race clock and simulation state byte-identical to rc8 on the lap and on the v2.00 night race; 36 of 36 frames at 3x and 6x; VU1, VU0 and MTVU verify at 0 differences.
+- **Baseline from now on (owner):** the recorded lap, `scripts/coregs2_bench/game/ab.sh`.
+- **Without the performance report,** the stage times in `[core2]` read 0; F7/F8 needs that report on, as before.
+- **Open:** the owner's own test on both machines; everything above is headless. A dark block on a track sign at VBlank 3750 in about 1 run in 6, on rc8 too, cause Unknown. The GS worker is now the largest thread.
+- **Installed:** the owner's desktop and the notebook's portable copy (backup `_program-backups/rc8-before-rc9-20261102T235701Z`). Pins slice390; output `private/release-130-rc9-out`.
+
 ## 1.3.0-rc7 and 1.3.0-rc8 published as pre-releases; the laptop test passed by the owner (2026-11-02)
 
 **The owner's test on the i5-7200U / HD 620 closes the beta gate:** "2x 720p locked at 30 FPS was a really nice experience". A player on this card chooses 1x at 60 FPS or 2x at 30 FPS. Full speed at 2x and 60 FPS is no longer the gate. Sessions on the notebook, Spec II, candidate 382, table in `docs/release-notes/1.3.0-rc8.md`; every interval is the owner's own F7/F8, so the stretches differ.

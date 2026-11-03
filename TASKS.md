@@ -143,7 +143,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑096 | Remove CoreGS 1.1 from the launcher (owner, 2026-10-22): GSdx only, CoreGS 2.0 shown as "Coming soon" (disabled), a stored CoreGS 1.1 choice migrates to GSdx, a GSdx failure shows a clear error instead of falling back; CoreGS 1.1 stays in the game executable, unused by the launcher. For launcher release 1.2.3 | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑094 | Desktop shortcut: finish-page checkbox (on by default), all-users desktop `Gran Turismo 4.lnk`, choice kept in HKLM `DesktopShortcut`, silent updates create it for older installs and restore it when chosen | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
-| TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🔄 Study done and owner decisions recorded (2026-10-28) · next: P0 baselines when the owner frees the desktop |
+| TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🧪 rc9 (slice390) installed on the desktop and notebook for the owner's test; not published (2026-11-02): process CPU -18% on the i5-7200U, -19% on the 5700X, physics identical to rc8 |
 | TASK‑135 | Performance HUD for CoreGS 2.0, in the spirit of the macOS Metal HUD: FPS, frame time, CPU and GPU of the game, memory and a live frame time graph | 🧪 Built, waits for the owner's test (branch `task/135-coregs2-performance-hud`, candidate 378, on the notebook, 2026-11-02) |
 | TASK‑136 | Simple onboarding: a new install uses CoreGS 2.0 when the PC runs it, GSdx becomes optional and is downloaded only when the card needs it | 🧪 Built, waits for the owner's test (branch `task/136-simple-onboarding`, 2026-11-02) |
 | TASK‑137 | The launcher links the disc image and no longer copies it; an image that moved asks to be chosen again; installs with a copy keep working | 🧪 Built, waits for the owner's test (branch `task/137-link-disc-image`, candidate 381, 2026-11-02) |
@@ -2612,6 +2612,8 @@ installer+portable verification. New builds go to draft; owner gameplay/review b
 publication. No code, builds, running agents or public rc7 authorized by this mapping step.
 
 ### TASK-134 — Game-code optimization study (research and plan)
+
+**State 2026-11-02:** 🧪 1.3.0-rc9, slice390, on branch `task/134-game-code-optimization-study`, installed on the owner's desktop and notebook, not published or uploaded (owner: CoreGS 2.0 picture bugs first). Player's session on the recorded George V Paris lap, 1x: i5-7200U 33.87 -> 27.64 ms of process CPU per VBlank (-18%), Ryzen 7 5700X 12.59 -> 10.14 (-19%). Race clock, simulation state and frames identical to rc8. Done: P0, P1a-d, P4a-b, P7 in part, and two steps the profile found (Spec II VU0 compiled, VU0 macro operations over four lanes). Dropped with evidence: P2. Left, cheapest first: study section 8. Waiting for: the owner's test.
 
 State: study done; owner decisions recorded (2026-10-28); P0 waits for the owner's signal that the desktop is free. Branch `task/134-game-code-optimization-study`, worktree
 `C:/Antigravity/gt4-wt-134-game-code-study`, from main 795cdc0. Research and documents only: no code, build, benchmark,
