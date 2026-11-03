@@ -2,6 +2,7 @@
 //  - vfix (patched vu_ops.hpp) against the donor's expression: every 32-bit value.
 //  - mac_of_result against mac_of_result_scalar: every destination mask over values at the edges of each flag, in all
 //    lane positions, and random values.
+//  - clip_result against clip_result_scalar: every 32-bit value in each compared lane, against limits at the edges, and random.
 //  - fp::add, fp::sub and fp::mul (scripts/prepare_fast_headers.py) against copies of the donor's: every pair of exponents with
 //    mantissas at the edges, near-equal operands (the long normalisations), and random pairs.
 //  - fp4 (four lanes at once) against the same copies, on the same inputs; the VU0 macro operations against their definition.
@@ -12,6 +13,7 @@
 #include <cstdio>
 #include <bit>
 #include <cstring>
+#include <iterator>
 #include <random>
 #include <utility>
 
@@ -266,10 +268,43 @@ bool check_mac() {
     return true;
 }
 
+bool same_clip(std::uint32_t previous, const ps2::Reg128 &value, std::uint32_t w) {
+    if (gt4::vugen::clip_result(previous, value, w) == gt4::vugen::clip_result_scalar(previous, value, w)) return true;
+    std::fprintf(stderr, "clip differs: %08x %08x %08x w %08x\n", value.w[0], value.w[1], value.w[2], w);
+    return false;
+}
+
+// Every 32-bit value in each of x, y and z against a limit that changes with the value (all of the limit edges in turn), then
+// random values against limits at the edges and random limits.
+bool check_clip() {
+    const std::uint32_t limits[] = {0u, 0x00000001u, 0x007FFFFFu, 0x00800000u, 0x3F800000u, 0x7F7FFFFFu, 0x7F800000u, 0x7FFFFFFFu,
+                                    0x80000000u, 0x807FFFFFu, 0xBF800000u, 0xFFFFFFFFu};
+    std::uint32_t previous = 0x123456u;
+    for (std::uint64_t base = 0; base < (1ull << 32); ++base) {
+        ps2::Reg128 value{};
+        const auto x = static_cast<std::uint32_t>(base);
+        value.w[0] = x;
+        value.w[1] = x ^ 0x80000000u;
+        value.w[2] = ~x;
+        value.w[3] = x * 2654435761u;
+        const std::uint32_t w = limits[base % std::size(limits)] ^ (static_cast<std::uint32_t>(base >> 8) & 0x00000F0Fu);
+        if (!same_clip(previous, value, w)) return false;
+        previous = previous * 1664525u + 1013904223u;
+    }
+    std::mt19937 random(1341);
+    for (int round = 0; round < 20000000; ++round) {
+        ps2::Reg128 value{};
+        for (int lane = 0; lane < 4; ++lane) value.w[lane] = random();
+        const std::uint32_t w = round % 2 ? random() : limits[random() % std::size(limits)];
+        if (!same_clip(random(), value, w)) return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
-    if (!check_mac() || !check_vfix() || !check_fp() || !check_macro()) return 1;
-    std::puts("native_vu_fast_ops ok: vfix equals the donor's over 2^32 values; mac_of_result equals the scalar form; fp::add, sub and mul and fp4 equal the donor's; the macro operations equal their definition");
+    if (!check_mac() || !check_clip() || !check_vfix() || !check_fp() || !check_macro()) return 1;
+    std::puts("native_vu_fast_ops ok: vfix equals the donor's over 2^32 values; mac_of_result and clip_result equal their scalar forms; fp::add, sub and mul and fp4 equal the donor's; the macro operations equal their definition");
     return 0;
 }
