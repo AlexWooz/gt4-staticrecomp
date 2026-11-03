@@ -279,7 +279,7 @@ constexpr std::size_t paced_frames_per_buffer = 256;
 constexpr std::size_t paced_buffer_count = 16;
 } // namespace
 
-AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode mode)
+AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode mode, AudioDevice requested)
     : mode_(mode), pump_messages_(std::move(pump_messages)) {
   const bool paced = mode_ == gt4::pacing::Mode::paced;
   frames_per_buffer_ = paced ? paced_frames_per_buffer : blocking_frames_per_buffer;
@@ -295,10 +295,23 @@ AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode 
     format.wBitsPerSample = 16;
     format.nBlockAlign = 4;
     format.nAvgBytesPerSec = 192000;
-    check_audio(waveOutOpen(&device_, WAVE_MAPPER, &format,
-                            reinterpret_cast<DWORD_PTR>(event_), 0,
-                            CALLBACK_EVENT),
-                "waveOutOpen stereo16/48000");
+    // TASK-129: no device (a PC without speakers or with every output disabled answers MMSYSERR_BADDEVICEID), or any
+    // failure to open it, leaves the game without sound but running. Failures after a successful open still stop it.
+    const UINT devices = waveOutGetNumDevs();
+    MMRESULT opened = MMSYSERR_BADDEVICEID;
+    if (requested == AudioDevice::system && devices != 0)
+      opened = waveOutOpen(&device_, WAVE_MAPPER, &format, reinterpret_cast<DWORD_PTR>(event_), 0, CALLBACK_EVENT);
+    if (opened != MMSYSERR_NOERROR) {
+      char description[MAXERRORLENGTH]{};
+      if (requested == AudioDevice::system)
+        waveOutGetErrorTextA(opened, description, MAXERRORLENGTH);
+      device_ = nullptr;
+      silent_ = true;
+      std::fprintf(stderr, "[audio] no sound: %s (%u output devices, result %u); the game runs without audio\n",
+                   requested == AudioDevice::none ? "GT4_AUDIO=none" : description, devices,
+                   static_cast<unsigned>(opened));
+      return;
+    }
     for (std::size_t index = 0; index < buffer_count_; ++index) {
       auto &buffer = buffers_[index];
       buffer.header.lpData = reinterpret_cast<LPSTR>(buffer.samples.data());
@@ -435,9 +448,11 @@ bool AudioOutput::push_paced(const std::int16_t *samples, std::size_t frames) {
 
 bool AudioOutput::push(const std::int16_t *samples, std::size_t frames) {
   GT4_PERF_SCOPE(gt4::perf::Category::audio_push);
-  if (!device_ || (frames && !samples))
+  if (closed_ || (!device_ && !silent_) || (frames && !samples))
     throw std::runtime_error("Invalid audio sink input/lifetime");
   received_ += frames;
+  if (silent_)
+    return true;
 #if defined(GT4_PERF_PROBE) && !defined(GT4_PERF_FRAME_ONLY)
   gt4::perf::Probe::shared().audio(frames, 0);
 #endif
@@ -522,6 +537,10 @@ void AudioOutput::close(bool drain) {
                    static_cast<unsigned long long>(overflow_frames_),
                    ring_.size(), resampler_.ratio());
   }
+  if (silent_ && !closed_)
+    std::fprintf(stderr, "[audio] silent: received=%llu frames dropped\n",
+                 static_cast<unsigned long long>(received_));
+  closed_ = true;
   if (event_) {
     CloseHandle(event_);
     event_ = nullptr;

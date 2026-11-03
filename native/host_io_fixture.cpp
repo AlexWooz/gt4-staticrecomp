@@ -240,6 +240,27 @@ int main() {
     require(rejected, "closed sink refuses new samples");
     std::fprintf(stderr, "PASS: real Windows audio completion, ring wrap, "
                          "partial drain and cancel\n");
+    // TASK-129: without an output device the sink is silent: it accepts and drops samples in both modes, queues
+    // nothing, never waits, and still refuses samples once closed.
+    for (const auto mode : {gt4::pacing::Mode::audio, gt4::pacing::Mode::paced}) {
+      AudioOutput silent(nullptr, mode, AudioDevice::none);
+      require(silent.silent(), "no device gives a silent sink");
+      for (int block = 0; block < 600; ++block)
+        require(silent.push(samples.data(), 32), "silent sink accepts samples");
+      silent.pump();
+      require(silent.received_frames() == 19200 && silent.queued_frames() == 0 && silent.completed_frames() == 0,
+              "silent sink counts and queues nothing");
+      silent.close(true);
+      bool silent_rejected = false;
+      try {
+        silent.push(samples.data(), 32);
+      } catch (const std::runtime_error &) {
+        silent_rejected = true;
+      }
+      require(silent_rejected, "closed silent sink refuses new samples");
+    }
+    require(!audio.silent(), "the system device opens on this machine");
+    std::fprintf(stderr, "PASS: silent sink without an output device (audio and paced modes)\n");
     // Paced mode on the real device: three seconds at 60 Hz, one 800-frame
     // block per guest frame. Pushes never wait; the queue stays bounded; the
     // device consumes at wall-clock rate; the resample ratio stays in bounds.

@@ -65,12 +65,18 @@ private:
   std::uint16_t motors_ = 0;
 };
 
+// The output the game asks for: the Windows default device, or none (GT4_AUDIO=none, and the fixture).
+enum class AudioDevice { system, none };
+
 class AudioOutput {
 public:
   // `mode` selects the blocking WinMM path (audio) or the non-blocking paced
   // ring with rate control (paced); see pacing.hpp.
+  // TASK-129 (issues #93, #115): when Windows has no output device, or opening it fails, the output is silent instead of
+  // stopping the game: push() accepts and drops the samples, and silent() is true.
   explicit AudioOutput(std::function<bool()> pump_messages = {},
-                       gt4::pacing::Mode mode = gt4::pacing::Mode::audio);
+                       gt4::pacing::Mode mode = gt4::pacing::Mode::audio,
+                       AudioDevice requested = AudioDevice::system);
   ~AudioOutput();
   AudioOutput(const AudioOutput &) = delete;
   AudioOutput &operator=(const AudioOutput &) = delete;
@@ -84,6 +90,7 @@ public:
   // Frames queued on the device plus the ring (paced) or pending (audio).
   std::uint64_t queued_frames();
   gt4::pacing::Mode mode() const { return mode_; }
+  bool silent() const { return silent_; }
   double resampler_ratio() const { return resampler_.ratio(); }
   std::uint64_t underruns() const { return underruns_; }
   std::uint64_t overflow_frames() const { return overflow_frames_; }
@@ -108,6 +115,8 @@ private:
   std::size_t buffer_count_ = 4;
   std::size_t next_buffer_ = 0;
   gt4::pacing::Mode mode_ = gt4::pacing::Mode::audio;
+  bool silent_ = false;
+  bool closed_ = false;
   bool started_ = false;
   gt4::pacing::FrameRing ring_{gt4::pacing::paced_ring_frames};
   gt4::pacing::LinearResampler resampler_;

@@ -30,6 +30,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -691,7 +692,15 @@ int run_window(const std::function<int()> &emulate) {
     // shortcut: one thread and FIFO presentation, qualify pipelining later.
     ps2::g_options.on_vblank = on_vblank;
     gt4::achievements::initialize(game_window, ps2::g_ram, ps2::kRamSize, ps2::g_spr, ps2::kScratchpadSize);
-    AudioOutput audio(pump_messages, pacing_mode);
+    const char *audio_choice = std::getenv("GT4_AUDIO");
+    AudioOutput audio(pump_messages, pacing_mode,
+                      audio_choice != nullptr && std::strcmp(audio_choice, "none") == 0 ? AudioDevice::none
+                                                                                       : AudioDevice::system);
+    // TASK-129: without sound the blocking audio path has nothing to wait on, so the frame clock paces the game.
+    if (audio.silent() && pacing_mode == gt4::pacing::Mode::audio) {
+      pacing_mode = gt4::pacing::Mode::paced;
+      std::fprintf(stderr, "[pacing] mode=paced: no audio output to pace on\n");
+    }
     audio_output = &audio;
 #ifdef GT4_PERF_PROBE
     gt4::perf::Probe::shared().set_report_section([](std::FILE *output) {
