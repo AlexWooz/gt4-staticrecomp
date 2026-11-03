@@ -2664,3 +2664,11 @@ State (2026-11-02): TASK-137 and TASK-138 (a portable folder carries its image, 
 ### TASK-139 — CoreGS 2.0 picture bugs from recorded drives
 
 State (2026-11-02): started on `task/139-coregs2-picture-bugs`, on top of rc9. Waiting for the owner's recordings (Tokyo R246, El Capitan, possibly a third track). Each one is replayed on CoreGS 2.0 and on the reference renderer, and the differences the owner reports get fixed in `native/hw_gs/`. Acceptance: the owner's test on the same scenes.
+
+Bugs reported by the owner (2026-11-02):
+
+1. **Time trial ghost drawn solid.** On a real PS2 (the owner's video capture) and on GSdx the ghost lets the scene through; on CoreGS 2.0 it looks like an opponent's car. Confirmed on the replayed Ford GT lap at 3x, frame 8000: the reference draws the ghost in alternating dark rows, as the PS2 capture also shows, and CoreGS 2.0 draws it solid. So it is a row pattern rather than plain 50% blending. Cause Unknown. Reproduces with `george-volta2`.
+2. **Asphalt texture on Tokyo R246.** Sent by a player on Discord, reproduced by the owner without custom textures. The player's picture has large black areas over the buildings as well; the owner's Hypothesis is that more places break for them because they use a high resolution texture mod. Needs the owner's recording.
+3. **Glitch when a race returns to the menus (480p to 480i).** A random frame or green squares for a moment, not predictable; not seen on GSdx. The launcher always forces 480p in races, and the recording scripts do too, so a replay passes through this switch if the drive leaves the race before F9. Not reproduced by us yet.
+
+The owner's pictures and the ghost comparison are in `private/coregs2-bench/reports/` (not in git).
