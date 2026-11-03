@@ -5,9 +5,9 @@
 The owner resumed the CPU work after TASK-139 and asked for every optimisation overnight, one at a time, measured, kept even when
 small, on the desktop only (the notebook was off). Final build `build/t134-cand/f3-spec2` and `f3-v200` in the worktree (PGO and
 ThinLTO again, exe `6ad2e34b...` and `b3989168...`), pins `docs/inputs/slice395-spec2.json` and `slice395-pcsx2.json`, game files
-in `private/slice395-dist-t134r2`. **Not installed:** writing `C:\Program Files\GT4Recomp\game` needs elevation, which waits for the
-owner; the desktop keeps slice392 (its files are also backed up in `private/_program-backups/t139-before-t134r2-20261103T072312Z`).
-Not uploaded; rc9 is still not published.
+in `private/slice395-dist-t134r2`. **Installed on the owner's desktop** (owner's word, 2026-11-03, elevated copy into
+`C:\Program Files\GT4Recomp\game`; the 19 files match `MANIFEST.json` by hash). The slice392 files it replaced are backed up in
+`private/_program-backups/t139-before-t134r2-20261103T072312Z`; the notebook keeps rc9. Not uploaded; rc9 is still not published.
 - **El Capitan and Tokyo R246** (same session kind, 2 rounds, slice392 -> this build): process CPU 7.76 -> 7.10 ms (-8.5%) and
   7.43 -> 6.94 ms (-6.6%); wall -10% on both.
 
