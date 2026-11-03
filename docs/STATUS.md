@@ -1,6 +1,8 @@
 # Current Status
 
-## TASK-139: CoreGS 2.0 picture bugs, started on rc9 (2026-11-02)
+## TASK-139: CoreGS 2.0 picture bugs, fixed on rc9 and merged into the CPU branch (2026-11-03)
+
+**Done:** the owner tested slice392 in the game ("everything fine so far") and approved the merge into `task/134-game-code-optimization-study`, where the TASK-134 agent continues. Not uploaded.
 
 Branch `task/139-coregs2-picture-bugs`, from `task/134-game-code-optimization-study` at `56f90c96`. The owner saw graphic bugs and records drives for us to replay on both renderers.
 
