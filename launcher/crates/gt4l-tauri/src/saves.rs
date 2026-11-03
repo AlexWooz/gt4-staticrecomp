@@ -351,7 +351,11 @@ fn file_unreadable_text(library: &Library, path: &Path, error: &std::io::Error, 
 fn library_relative_path(library: &Library, path: &Path) -> String {
     let paths = library.paths();
     for base in [&paths.saves, &paths.replays] {
-        if let Some(relative) = base.parent().and_then(|parent| path.strip_prefix(parent).ok()).filter(|_| path.starts_with(base)) {
+        if !path.starts_with(base) {
+            continue;
+        }
+        // `Saves` and `Replays` stay in the text; what is above them (the user's folders) does not.
+        if let Some(relative) = base.parent().and_then(|parent| path.strip_prefix(parent).ok()) {
             return relative.display().to_string();
         }
     }
