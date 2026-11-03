@@ -13,7 +13,7 @@ library=$from/ps2game.lib
 hash=$(sha256sum "$library" | cut -d' ' -f1)
 extra="-DGT4_EE_LIBRARY=$(win "$library") -DGT4_EE_LIBRARY_SHA256=$hash -DGT4_HW_PGO=use -DGT4_HW_PGO_PROFILE=$(win "$from/game.profdata") -DGT4_HW_THINLTO=ON -DGT4_FAST_HEADERS=ON -DGT4_VU_FAST_OPS=ON -DGT4_SSE41=ON"
 if [ "$target" = spec2 ]; then
-  extra="$extra -DGT4_VU0_GENERATED_DIR=${VU0GEN:-$GT4_ASSETS/private/slice390-spec2-vu0-gen} -DGT4_VU0_IMAGE_FILE=${VU0IMG:-$GT4_ASSETS/private/slice390-spec2-vu0-image/vu0_image.bin}"
+  extra="$extra -DGT4_VU0_GENERATED_DIR=$(win "${VU0GEN:-$GT4_ASSETS/private/slice390-spec2-vu0-gen}") -DGT4_VU0_IMAGE_FILE=$(win "${VU0IMG:-$GT4_ASSETS/private/slice390-spec2-vu0-image/vu0_image.bin}")"
 fi
 rm -rf "$GT4_BENCH_ROOT/build/$dir"
 T134_ARGS="$extra" cmd //c "$(cygpath -w "$here/configure.cmd")" "$dir" "$target" > "$GT4_BENCH_ROOT/build/$dir.configure.log" 2>&1

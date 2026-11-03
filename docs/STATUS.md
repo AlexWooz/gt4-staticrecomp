@@ -15,7 +15,10 @@ Branch `task/139-coregs2-picture-bugs`, from `task/134-game-code-optimization-st
   - IN-530, the solid time trial ghost: SCANMSK was not drawn at all; now on output rows, like GSdx.
   - IN-531, green screens and junk when a race returns to the menus: the display showed GS memory no buffer was written to.
 - **Checks:** Tokyo VBlanks 10750-10780 against GSdx: median difference 0.00 (was green); the fade frames and frame 8000 look like GSdx; George V Paris lap: the car's rear glass now shows the interior, as on GSdx. New tests `hw_core2_depth_clear`, `hw_core2_scanmsk`, `hw_core2_display_memory`, and a CPU sprite case in `hw_core2_upload_memo`; each fails with its A/B switch.
-- **Not verified:** a window run and the owner's own test; the custom texture pack the player uses; v2.00 (same renderer code, not replayed).
+- **v2.00:** the night race against rc9: 3 of 10 frames identical, the rest differ only on the wheels, which now spin with their blur as on GSdx (rc9 showed still spokes).
+- **Installed for the owner's test (2026-11-03):** game files only, `private/slice391-dist-t139` (pins `docs/inputs/slice391-pcsx2.json` exe `0c2d3bd5...`, `slice391-spec2.json` exe `ae9ef77d...`), into `C:\Program Files\GT4Recomp\game`; every file checked by hash. The rc9 game files are kept in `private/_program-backups/rc9-before-t139-20261103T025446Z`. Built by `scripts/coregs2_bench/game/use-build.sh` with slice390's EE libraries and profiles (no new training); its George V Paris frames are equal to the debug build's, 8 of 8. Launcher, saves and settings untouched. The first Play compiles shaders again.
+- **CTest on the debug build:** 291 of 292, `python_native_contracts` the known failure (its GS settings and VU options cases).
+- **Not verified:** a window run and the owner's own test; the custom texture pack the player uses; the notebook (off). Not uploaded.
 
 ## TASK-134: 1.3.0-rc9, the CPU optimisation, installed for the owner's test (2026-11-02)
 
