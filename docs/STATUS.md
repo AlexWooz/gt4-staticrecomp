@@ -11,6 +11,7 @@ Branch `task/134-game-code-optimization-study`, on top of rc8. **Not published a
 - **Without the performance report,** the stage times in `[core2]` read 0; F7/F8 needs that report on, as before.
 - **Open:** the owner's own test on both machines; everything above is headless. A dark block on a track sign at VBlank 3750 in about 1 run in 6, on rc8 too, cause Unknown. The GS worker is now the largest thread.
 - **Installed:** the owner's desktop and the notebook's portable copy (backup `_program-backups/rc8-before-rc9-20261102T235701Z`). Pins slice390; output `private/release-130-rc9-out`.
+- **On hold (owner, 2026-11-02):** the CPU work stops here for now and rc9 is not finished. The owner goes back to CoreGS 2.0 for the picture: textures that break and graphic glitches. Those fixes build on this branch, and the slice390 package will need rebuilding with them.
 
 ## 1.3.0-rc7 and 1.3.0-rc8 published as pre-releases; the laptop test passed by the owner (2026-11-02)
 
