@@ -3,9 +3,10 @@
 //! ```text
 //! <saves>/Active/<game save>      the active game save (the one the next Play uses)
 //! <saves>/Save NN/<game save>     inactive game saves, one slot per folder (ids only grow)
-//! <saves>/.backup/                copies of the active save before a harvest replaces it
+//! <saves>/.backup/                copies of the active save before a harvest replaces it (the newest 10)
 //! <replays>/<replay>              every replay the library keeps
-//! <backups>/                      card images written before they are replaced
+//! <backups>/                      card images written before they are replaced (the newest 10, and the newest 5
+//!                                 taken before a New save)
 //! ```
 //!
 //! The launcher puts `<saves>` and `<replays>` in `Documents\Gran Turismo 4\Saves` and `...\Replays`
@@ -13,7 +14,8 @@
 //! three under one root (tests and tools).
 //!
 //! Rules: an import never overwrites (it adds a slot or skips an identical item); a harvest
-//! never deletes; the card built for Play holds exactly one game save and the chosen replays.
+//! never deletes a save or a replay (only backup copies beyond the limits of [`Library::prune_backups`]); the card built
+//! for Play holds exactly one game save and the chosen replays.
 //! Every item is written to a staging folder and renamed into place (`folder::export_item`).
 
 use crate::card::{self, Card, CardError, Node};
@@ -497,6 +499,8 @@ impl Library {
                     let copy_dir = backup.join(format!("{name}-{stamp}"));
                     fs::create_dir_all(&copy_dir)?;
                     folder::export_item(&copy_dir, &before)?;
+                    // The oldest copies beyond KEPT_ACTIVE_COPIES go; a copy that cannot be removed now is tried again later.
+                    let _ = self.prune_backups();
                     report.replaced_active = true;
                 }
                 folder::export_item(&self.active_dir(), &item)?;
@@ -521,8 +525,90 @@ impl Library {
         let temporary = path.with_extension("tmp");
         fs::write(&temporary, bytes)?;
         fs::rename(&temporary, path)?;
+        // An old backup that cannot be removed (open in another program, say) must not stop the game from starting: it is
+        // tried again at the next Play.
+        let _ = self.prune_backups();
         Ok(())
     }
+
+    /// Keeps the newest backups of each kind and deletes the older ones (owner, 2026-11-03: every Play added a card image of
+    /// about 8 MB to `<backups>` and nothing removed them, 74 images in two weeks on the owner's PC). The kinds, by name:
+    /// card images `<timestamp>-<card file>.ps2` ([`KEPT_CARD_BACKUPS`]), images taken before a New save
+    /// `<timestamp>-before-new-save.ps2` ([`KEPT_NEW_SAVE_BACKUPS`]), and copies of the active save
+    /// `<saves>/.backup/<game save>-<timestamp>` ([`KEPT_ACTIVE_COPIES`]). A name of any other form is never touched.
+    /// Returns how many were deleted.
+    pub fn prune_backups(&self) -> Result<usize, LibraryError> {
+        let mut deleted = 0;
+        let backups = &self.paths.backups;
+        if backups.is_dir() {
+            deleted += keep_newest(backups, KEPT_CARD_BACKUPS, |name| is_card_backup(name), |path| fs::remove_file(path))?;
+            deleted += keep_newest(backups, KEPT_NEW_SAVE_BACKUPS, |name| is_new_save_backup(name), |path| fs::remove_file(path))?;
+        }
+        let copies = self.active_backup_dir();
+        if copies.is_dir() {
+            let game_save = self.names.game_save;
+            deleted += keep_newest(&copies, KEPT_ACTIVE_COPIES, |name| is_active_copy(name, game_save), |path| fs::remove_dir_all(path))?;
+        }
+        Ok(deleted)
+    }
+}
+
+/// Card images kept in `<backups>` (about 8 MB each).
+pub const KEPT_CARD_BACKUPS: usize = 10;
+/// Card images taken before a New save, kept in `<backups>`.
+pub const KEPT_NEW_SAVE_BACKUPS: usize = 5;
+/// Copies of the active save kept in `<saves>/.backup`.
+pub const KEPT_ACTIVE_COPIES: usize = 10;
+/// The end of the name of a card image taken before a New save (the launcher's `new_save`).
+pub const NEW_SAVE_BACKUP_SUFFIX: &str = "-before-new-save.ps2";
+
+/// True for `YYYYMMDD-HHMMSS`, the form of [`crate::timestamp`].
+fn is_timestamp(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 15 && bytes.iter().enumerate().all(|(index, byte)| if index == 8 { *byte == b'-' } else { byte.is_ascii_digit() })
+}
+
+/// `<timestamp>-<card file>.ps2`, not taken before a New save.
+fn is_card_backup(name: &str) -> bool {
+    name.get(..15).is_some_and(is_timestamp)
+        && name.get(15..16) == Some("-")
+        && name.len() > 20
+        && name.ends_with(".ps2")
+        && !name.ends_with(NEW_SAVE_BACKUP_SUFFIX)
+}
+
+/// `<timestamp>-before-new-save.ps2`.
+fn is_new_save_backup(name: &str) -> bool {
+    name.strip_suffix(NEW_SAVE_BACKUP_SUFFIX).is_some_and(is_timestamp)
+}
+
+/// `<game save>-<timestamp>`.
+fn is_active_copy(name: &str, game_save: &str) -> bool {
+    name.strip_prefix(game_save).and_then(|rest| rest.strip_prefix('-')).is_some_and(is_timestamp)
+}
+
+/// Deletes all but the `keep` newest entries of `dir` whose names `kind` accepts, and returns how many it deleted. Every kind
+/// has a fixed part and a timestamp in the same place, so name order is age order.
+fn keep_newest(
+    dir: &Path,
+    keep: usize,
+    kind: impl Fn(&str) -> bool,
+    remove: impl Fn(&Path) -> io::Result<()>,
+) -> Result<usize, LibraryError> {
+    let mut names: Vec<String> = fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| kind(name))
+        .collect();
+    if names.len() <= keep {
+        return Ok(0);
+    }
+    names.sort();
+    let excess = names.len() - keep;
+    for name in &names[..excess] {
+        remove(&dir.join(name))?;
+    }
+    Ok(excess)
 }
 
 /// The items of a card image (`.ps2`, `.mcd`, `.bin`, with or without spare bytes), whichever game they belong to.

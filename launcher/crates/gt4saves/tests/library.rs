@@ -115,6 +115,71 @@ fn harvest_replaces_a_changed_save_and_never_deletes() {
     assert!(lib.replays_dir().join(REPLAY).is_dir(), "a replay missing from the card is kept, not deleted");
 }
 
+// Owner, 2026-11-03: the backups had no limit (74 card images, about 600 MB, in two weeks). Only the newest of each kind
+// stay, and names of any other form are left alone.
+#[test]
+fn backups_keep_only_the_newest_of_each_kind() {
+    use gt4saves::library::{KEPT_ACTIVE_COPIES, KEPT_CARD_BACKUPS, KEPT_NEW_SAVE_BACKUPS};
+    let root = scratch("prune");
+    let lib = Library::open(&root, GT4).unwrap();
+    let backups = lib.paths().backups.clone();
+    fs::create_dir_all(&backups).unwrap();
+    let stamp = |minute: usize| format!("20261103-12{minute:02}00");
+    for minute in 0..14 {
+        fs::write(backups.join(format!("{}-card.ps2", stamp(minute))), b"card").unwrap();
+    }
+    for minute in 20..27 {
+        fs::write(backups.join(format!("{}-before-new-save.ps2", stamp(minute))), b"card").unwrap();
+    }
+    for other in ["notes.txt", "2026-card.ps2", "my card.ps2"] {
+        fs::write(backups.join(other), b"user").unwrap();
+    }
+    let copies = lib.active_backup_dir();
+    for minute in 30..43 {
+        fs::create_dir_all(copies.join(format!("{GT4_GAME_SAVE}-{}", stamp(minute)))).unwrap();
+    }
+    fs::create_dir_all(copies.join("kept by hand")).unwrap();
+
+    let deleted = lib.prune_backups().unwrap();
+    assert_eq!(deleted, (14 - KEPT_CARD_BACKUPS) + (7 - KEPT_NEW_SAVE_BACKUPS) + (13 - KEPT_ACTIVE_COPIES));
+    let names = |dir: &PathBuf| -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    };
+    let left = names(&backups);
+    assert!(!left.contains(&format!("{}-card.ps2", stamp(3))), "the oldest card images go");
+    assert!(left.contains(&format!("{}-card.ps2", stamp(4))) && left.contains(&format!("{}-card.ps2", stamp(13))));
+    assert!(!left.contains(&format!("{}-before-new-save.ps2", stamp(21))));
+    assert!(left.contains(&format!("{}-before-new-save.ps2", stamp(22))));
+    for other in ["notes.txt", "2026-card.ps2", "my card.ps2"] {
+        assert!(left.contains(&other.to_string()), "{other} is not a backup and stays");
+    }
+    let copies_left = names(&copies);
+    assert_eq!(copies_left.len(), KEPT_ACTIVE_COPIES + 1);
+    assert!(copies_left.contains(&"kept by hand".to_string()));
+    assert!(!copies_left.contains(&format!("{GT4_GAME_SAVE}-{}", stamp(32))));
+    assert_eq!(lib.prune_backups().unwrap(), 0, "a second pass deletes nothing");
+}
+
+#[test]
+fn writing_a_card_image_prunes_old_backups() {
+    use gt4saves::library::KEPT_CARD_BACKUPS;
+    let root = scratch("prune-on-write");
+    let lib = Library::open(&root, GT4).unwrap();
+    let backups = lib.paths().backups.clone();
+    fs::create_dir_all(&backups).unwrap();
+    for minute in 0..KEPT_CARD_BACKUPS + 3 {
+        fs::write(backups.join(format!("20200101-00{minute:02}00-card.ps2")), b"old").unwrap();
+    }
+    let card = root.join("card.ps2");
+    fs::write(&card, b"previous").unwrap();
+    lib.write_card_image(&card, b"next").unwrap();
+    let count = fs::read_dir(&backups).unwrap().count();
+    assert_eq!(count, KEPT_CARD_BACKUPS, "the new backup is kept and the oldest go");
+    assert_eq!(fs::read(&card).unwrap(), b"next");
+}
+
 #[test]
 fn import_dedupes_identical_saves_and_skips_other_games() {
     let lib = Library::open(&scratch("dedupe"), GT4).unwrap();
