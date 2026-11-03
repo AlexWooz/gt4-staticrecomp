@@ -41,6 +41,7 @@ struct Core2Counters {
     std::uint64_t toneAlphaOnlyUnsupported = 0;  // 7.2 alpha-only variant: drawn normally (not implemented yet)
     std::uint64_t displayFromTargets = 0;
     std::uint64_t displayFromMemory = 0;
+    std::uint64_t displayStaleTargets = 0;     // IN-532: displays left black because a newer target of another format drew over
     std::uint64_t indexedFromTargetReadbacks = 0;  // interim 3.5: a T8/T4 texture over a drawn target
     std::uint64_t directFromTargetReadbacks = 0;   // a 16/24/32-bit memory texture over a drawn target (not a hit)
     std::uint64_t clutReadbacks = 0;
@@ -62,6 +63,7 @@ struct Core2Counters {
     std::uint64_t replacementHits = 0;         // batches drawn with a replacement
     std::uint64_t replacementBytes = 0;        // replacement images on the GPU now
     std::uint64_t replacementDumps = 0;        // textures dumped
+    std::uint64_t depthClears = 0;             // IN-529: depth clears through FRAME and ZBUF drawn as a depth write
     std::uint64_t uploadsReplayed = 0;         // IN-486: uploads recognised and copied instead of swizzled
     std::uint64_t uploadBytesReplayed = 0;
     std::uint64_t unchangedUploads = 0;        // IN-450: uploads that changed no byte and kept the page versions

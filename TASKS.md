@@ -2660,3 +2660,19 @@ State (2026-11-02): published in 1.3.0-rc8. A whole setup on a capable PC passed
 ### TASK-137 — Link the disc image
 Decision 0075. Owner, 2026-11-02, asked for by players and needed for Android: one image for this and an emulator. Acceptance: setup writes no copy of the image; an image that moved or changed asks to be chosen again, and choosing it is all it takes; an install with a copy stays installed; accented paths work; owner test.
 State (2026-11-02): TASK-137 and TASK-138 (a portable folder carries its image, accented paths, the GSdx fallback; decision 0075) are published in 1.3.0-rc8. Settings > Games shows the image's size and location.
+
+### TASK-139 — CoreGS 2.0 picture bugs from recorded drives
+
+State (2026-11-02): started on `task/139-coregs2-picture-bugs`, on top of rc9. Waiting for the owner's recordings (Tokyo R246, El Capitan, possibly a third track). Each one is replayed on CoreGS 2.0 and on the reference renderer, and the differences the owner reports get fixed in `native/hw_gs/`. Acceptance: the owner's test on the same scenes.
+
+Bugs reported by the owner (2026-11-02):
+
+1. **Time trial ghost drawn solid.** On a real PS2 (the owner's video capture) and on GSdx the ghost lets the scene through; on CoreGS 2.0 it looks like an opponent's car. Confirmed on the replayed Ford GT lap at 3x, frame 8000: the reference draws the ghost in alternating dark rows, as the PS2 capture also shows, and CoreGS 2.0 draws it solid. So it is a row pattern rather than plain 50% blending. Cause Unknown. Reproduces with `george-volta2`.
+2. **Asphalt texture on Tokyo R246.** Sent by a player on Discord, reproduced by the owner without custom textures. The player's picture has large black areas over the buildings as well; the owner's Hypothesis is that more places break for them because they use a high resolution texture mod. Needs the owner's recording.
+3. **Glitch when a race returns to the menus (480p to 480i).** A random frame or green squares for a moment, not predictable; not seen on GSdx. The launcher always forces 480p in races, and the recording scripts do too, so a replay passes through this switch if the drive leaves the race before F9. Not reproduced by us yet.
+
+The owner's pictures and the ghost comparison are in `private/coregs2-bench/reports/` (not in git).
+
+State (2026-11-03): the owner recorded Tokyo R246 and El Capitan and reported two more bugs on them: a wrong frame as the race opens (bug 4) and a glitch in the fade when leaving the race (bug 5). All five are fixed and match GSdx on the replays (IN-528 to IN-532): bug 1 IN-530, bug 2 IN-528, bug 3 IN-531 and IN-532, bugs 4 and 5 IN-529. Installed on the owner's desktop (slice392).
+
+State (2026-11-03): ✅ done. The owner tested slice392 in the game ("everything fine so far") and approved the merge into `task/134-game-code-optimization-study`, where the CPU work continues. Not uploaded. The replay tools stay for later bugs: `scripts/coregs2_bench/README.md`, section "Recording a drive and replaying it".

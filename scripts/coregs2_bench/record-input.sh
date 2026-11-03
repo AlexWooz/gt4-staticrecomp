@@ -14,8 +14,14 @@ OUT=$GT4_BENCH_OUT/record-$name
 mkdir -p "$OUT"
 cp "$GT4_ARCADE_CARD" "$OUT/card.ps2"
 GT4_SPEC2_ISO=${GT4_SPEC2_ISO:-$GT4_ASSETS/Gran Turismo 4 Spec II v1.10 (PTBR).iso}
-GT4_CONTROLS_FILE=${GT4_CONTROLS_FILE:-$APPDATA/GT4Recomp/controls.toml}
-exe=${EXE:-$GT4_BENCH_ROOT/build/spec2-core2-build/gt4vulkan-spec2.exe}
+# The launcher writes this file only after a change of controls; empty means the game's default controls.
+if [ -z "$GT4_CONTROLS_FILE" ]; then
+  for controls in "$APPDATA/GT4Recomp/controls.toml" "$APPDATA/GT4Recomp.before-onboarding-20261102/controls.toml"; do
+    if [ -e "$controls" ]; then GT4_CONTROLS_FILE=$controls; break; fi
+  done
+fi
+echo "Controls: ${GT4_CONTROLS_FILE:-game defaults}"
+exe=${EXE:-$GT4_ASSETS/private/slice390-dist-130-rc9/gt4-spec2.exe}
 echo "Recording to $recording. Press F9 at the end: it stops the recording and closes the game."
 env GT4_RENDERER=hw GT4_HW_CORE=2 GT4_FORCE_480P=1 GT4_FORCE_WIDESCREEN=1 GT4_DISPLAY_ASPECT=16:9 GT4_HW_SCALE=${SCALE:-6} GT4_FULLSCREEN=1 \
   GT4_CONTROLS_FILE="$GT4_CONTROLS_FILE" GT4_INPUT_RECORD="$(cygpath -w "$recording")" "$exe" \

@@ -528,12 +528,16 @@ ivec4 fogged(ivec4 colour) {
 
 void main() {
     ivec2 pixel = ivec2(floor(gl_FragCoord.xy));
+    // IN-530: SCANMSK (bits 20-21 of the push word): 2 leaves out even rows, 3 odd rows. GT4 draws the time trial ghost this way.
+    // The rows are output rows, as on the reference renderer at scale: native rows make the ghost look shredded.
+    const uint scan_mask = (PUSH_WORD >> 20) & 3u;
+    if (scan_mask >= 2u && (uint(pixel.y) & 1u) == (scan_mask & 1u)) discard;
     // IN-384 follow-up: the top bit of the tex_scale push word requests the forced linear filter for 1x textures.
     g_force_linear = (PUSH_WORD & 0x80000000u) != 0u;
     g_dither_fine = (PUSH_WORD & 0x40000000u) != 0u;
     // IN-388: bit 29 is the vertex stage's native-alignment snap, not part of the scale; IN-392: bit 28 asks for the
     // position depth below.
-    g_tex_scale = PUSH_WORD & 0x003FFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
+    g_tex_scale = PUSH_WORD & 0x000FFFFFu;  // bits 27/26/25: GT4_HW_SCALED_DIAG=noalpha/notex/noz (diagnostic)
     g_texture_from_target = (PUSH_WORD & 0x01000000u) != 0u;
     g_mip = (PUSH_WORD & 0x00800000u) != 0u;
     if (g_mip) {

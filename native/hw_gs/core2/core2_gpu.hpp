@@ -42,6 +42,7 @@ struct DrawBatch {
     // IN-428: the mip parameters of memoryTexture (0: level 0 only), packed as hw_pixel_uber.frag g_mip describes.
     std::uint32_t mipInfo = 0;
     bool forceLinear = false;  // IN-433: bilinear where the game asks for nearest (push word bit 31)
+    std::uint32_t scanmsk = 0;  // IN-530: SCANMSK, 2 leaves out even native rows, 3 odd ones (push word bits 20-21)
     // IN-442: an untextured sprite batch with no blend, fog or DATE: drawn by core2_fill.comp when its sprites turn out
     // to be one constant fragment over disjoint pixel rectangles (Gpu::Draw checks the geometry).
     bool constantFill = false;

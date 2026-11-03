@@ -4688,7 +4688,7 @@ int TestCore2Specialised(const gpu::VulkanHandles& handles) {
 
 // What GT4 does every VBlank: textures A and C (CT32, whole blocks), B over part of A, then A again, a T8 texture with whole
 // blocks and one that ends inside a block (never remembered); sprites show them and memory is compared.
-cpuref::CaptureWriter Core2UploadMemoCapture(uint32_t frames) {
+cpuref::CaptureWriter Core2UploadMemoCapture(uint32_t frames, bool spriteOverA = false) {
     cpuref::CaptureWriter capture;
     constexpr uint64_t kA = 0, kTexA = 16, kTexC = 17, kTexT8 = 18, kClut = 19;  // pages
     auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
@@ -4713,6 +4713,12 @@ cpuref::CaptureWriter Core2UploadMemoCapture(uint32_t frames) {
         capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
     };
     for (uint32_t frame = 0; frame < frames; ++frame) {
+        if (spriteOverA) {
+            // IN-528: a small untextured sprite into A's memory outside B (drawn by the CPU into GS memory, IN-407); the next
+            // frame's uploads of A, replays from the second frame on, must put A's bytes back.
+            ad({kTexA | (uint64_t{1} << 16), 0x4C, kSprite, 0x00, uint64_t{0x80102030u} | (uint64_t{0x3F800000u} << 32), 0x01,
+                xyz(40, 16), 0x05, xyz(56, 24), 0x05});
+        }
         upload(kTexA, 0x00, 64, 32, 1);
         upload(kTexC, 0x00, 32, 16, 2);
         upload(kTexA, 0x00, 32, 16, 3);  // B over part of A
@@ -4872,6 +4878,35 @@ int TestCore2WholeClears(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// Words of GS memory that differ from the CPU reference after the last frame of `capture` (a CoreGS 2.0 run with `abSwitch`
+// set to `value`, "" for its default).
+uint64_t Core2DeviationsFromReference(const gpu::VulkanHandles& handles, const cpuref::CaptureWriter& capture, uint32_t frames,
+                                      const char* abSwitch, const char* value, uint32_t scale, Core2AbRun& run) {
+    std::string error;
+    if (!ReplayCore2Ab(handles, capture, abSwitch, true, run, error, frames - 1, scale, {}, value)) {
+        std::printf("  replay failed: %s\n", error.c_str());
+        return ~uint64_t{0};
+    }
+    std::vector<uint8_t> reference;
+    cpuref::CpuRenderer renderer;
+    cpuref::ReplaySummary summary;
+    if (!cpuref::ReplayCapture(capture.Bytes(), renderer, summary,
+                               [&](uint64_t, const cpuref::FrameImage&) {
+                                   const auto& bytes = renderer.Memory().Local().bytes();
+                                   reference.assign(bytes.begin(), bytes.begin() + kGsMemoryBytes);
+                               },
+                               error) ||
+        run.memory.empty() || run.memory.back().size() != kGsMemoryBytes) {
+        std::printf("  reference replay failed: %s\n", error.c_str());
+        return ~uint64_t{0};
+    }
+    uint64_t deviations = 0;
+    for (size_t at = 0; at < kGsMemoryBytes; at += 4) {
+        if (std::memcmp(run.memory.back().data() + at, reference.data() + at, 4) != 0) ++deviations;
+    }
+    return deviations;
+}
+
 // hw_core2_upload_memo (IN-486): uploads recognised and copied instead of swizzled: identical images and GS memory, equal
 // to the CPU reference where the stream is exact, and the uploads really replayed.
 int TestCore2UploadMemo(const gpu::VulkanHandles& handles) {
@@ -4883,9 +4918,201 @@ int TestCore2UploadMemo(const gpu::VulkanHandles& handles) {
     };
     const char* kSwitch = "GT4_CORE2_UPLOAD_MEMO";
     failures += CheckCore2Ab(handles, "uploads over each other", Core2UploadMemoCapture(6), 6, kSwitch, true, ran);
+    failures += CheckCore2Ab(handles, "a CPU sprite over a remembered upload (IN-528)", Core2UploadMemoCapture(6, true), 6, kSwitch,
+                             true, ran);
+    {  // IN-528: with the sprite's old identities the replay leaves the sprite's pixels in A
+        Core2AbRun oldIds;
+        _putenv_s("GT4_CORE2_SPRITE_IDS", "0");
+        const uint64_t deviations = Core2DeviationsFromReference(handles, Core2UploadMemoCapture(6, true), 6, kSwitch, "", 2, oldIds);
+        _putenv_s("GT4_CORE2_SPRITE_IDS", "");
+        std::printf("  old sprite identities: words off the reference %llu, CPU sprites %llu\n",
+                    static_cast<unsigned long long>(deviations), static_cast<unsigned long long>(oldIds.stats.cpuSpriteBatches));
+        if (deviations == 0 || oldIds.stats.cpuSpriteBatches == 0) ++failures;
+    }
     std::printf("  uploads replayed: %llu\n", static_cast<unsigned long long>(replayed));
     if (replayed == 0) ++failures;
     std::printf("hw_core2_upload_memo: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// GT4's depth clear (IN-529): a scene drawn with its depth far away, then black sprites of z 0 with FRAME at the depth buffer's
+// base as CT24 and ZBUF one page after it, then a sprite with a GEQUAL test that must pass everywhere.
+cpuref::CaptureWriter Core2DepthClearCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kScene = 0, kDepth = 8;  // pages, both 128 pixels wide (FBW 2)
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y, uint32_t z) {
+        return uint64_t{x * 16} | (uint64_t{y * 16} << 16) | (uint64_t{z} << 32);
+    };
+    const uint64_t kSprite = 6;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kScene * 32} | (uint64_t{2} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{127} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    const uint64_t always = (uint64_t{1} << 16) | (uint64_t{1} << 17), gequal = (uint64_t{1} << 16) | (uint64_t{2} << 17);
+    const uint64_t z24 = uint64_t{1} << 24;
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        ad({(uint64_t{127} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18,
+            // the scene, red, with its depth far away
+            kScene | (uint64_t{2} << 16), 0x4C, kDepth | z24, 0x4E, always, 0x47, kSprite, 0x00, rgbaq(0x800000FFu), 0x01,
+            xyz(0, 0, 0x100000), 0x05, xyz(128, 64, 0x100000), 0x05,
+            // the clear: CT24 over the depth's even page columns, Z24 one page later
+            kDepth | (uint64_t{2} << 16) | (uint64_t{1} << 24), 0x4C, (kDepth + 1) | z24, 0x4E, kSprite, 0x00, rgbaq(0), 0x01,
+            xyz(0, 0, 0), 0x05, xyz(64, 64, 0), 0x05,
+            // green where the depth test passes
+            kScene | (uint64_t{2} << 16), 0x4C, kDepth | z24, 0x4E, gequal, 0x47, kSprite, 0x00, rgbaq(0x8000FF00u), 0x01,
+            xyz(0, 0, 0x10), 0x05, xyz(128, 64, 0x10), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
+// hw_core2_depth_clear (IN-529): with the rewrite, GS memory equals the CPU reference at 1x and 2x (the depth reads 0 and the
+// green sprite covers the scene); drawn as written, the depth target keeps the far depth.
+int TestCore2DepthClear(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    for (uint32_t scale : {1u, 2u}) {
+        Core2AbRun on, off;
+        const uint64_t onDeviations =
+            Core2DeviationsFromReference(handles, Core2DepthClearCapture(2), 2, "GT4_CORE2_DEPTH_CLEAR", "", scale, on);
+        const uint64_t offDeviations =
+            Core2DeviationsFromReference(handles, Core2DepthClearCapture(2), 2, "GT4_CORE2_DEPTH_CLEAR", "0", scale, off);
+        std::printf("  %ux: words off the reference: rewritten %llu, as written %llu; depth clears %llu / %llu\n", scale,
+                    static_cast<unsigned long long>(onDeviations), static_cast<unsigned long long>(offDeviations),
+                    static_cast<unsigned long long>(on.stats.depthClears), static_cast<unsigned long long>(off.stats.depthClears));
+        if (onDeviations != 0 || offDeviations == 0 || on.stats.depthClears == 0 || off.stats.depthClears != 0) ++failures;
+    }
+    std::printf("hw_core2_depth_clear: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// A black clear, then a white sprite with SCANMSK 2 (even rows left out) and one with SCANMSK 3 (odd rows) beside it.
+cpuref::CaptureWriter Core2ScanmskCapture() {
+    cpuref::CaptureWriter capture;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    const uint64_t kSprite = 6;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+        uint64_t{1} << 16, 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05, xyz(64, 64), 0x05,
+        2, 0x22, kSprite, 0x00, rgbaq(0x80FFFFFFu), 0x01, xyz(0, 0), 0x05, xyz(32, 64), 0x05,
+        3, 0x22, kSprite, 0x00, rgbaq(0x80FFFFFFu), 0x01, xyz(32, 0), 0x05, xyz(64, 64), 0x05, 0, 0x22});
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_scanmsk (IN-530): SCANMSK leaves out the rows it names; GS memory equals the CPU reference at 1x.
+int TestCore2Scanmsk(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    Core2AbRun run;
+    const uint64_t deviations = Core2DeviationsFromReference(handles, Core2ScanmskCapture(), 1, "GT4_CORE2_NONE", "", 1, run);
+    std::printf("  1x: words off the reference %llu\n", static_cast<unsigned long long>(deviations));
+    if (deviations != 0) ++failures;
+    std::printf("hw_core2_scanmsk: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// A 64 x 64 CT32 display at page 20 over memory written by an upload `bufferWidthUnits` x 64 pixels wide (1: the display's own
+// width; 2: another width).
+cpuref::CaptureWriter Core2DisplayMemoryCapture(uint32_t bufferWidthUnits) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kShown = 20;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, kShown | (uint64_t{1} << 9));  // DISPFB1: FBP in pages
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    const uint32_t width = 64 * bufferWidthUnits, height = 64 / bufferWidthUnits;
+    ad({(kShown * 32) << 32 | (uint64_t{bufferWidthUnits} << 48), 0x50, 0, 0x51, uint64_t{width} | (uint64_t{height} << 32), 0x52,
+        0, 0x53});
+    std::vector<uint64_t> data(width * height / 2);
+    uint64_t state = 7;
+    for (uint64_t& word : data) word = state = state * 6364136223846793005ull + 1442695040888963407ull;
+    capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// IN-532: a white CT32 target at page 20, shown; with `overdraw`, a CT16 target drawn over the same memory afterwards.
+cpuref::CaptureWriter Core2DisplayStaleCapture(bool overdraw) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kShown = 20;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    const uint64_t kSprite = 6;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, kShown | (uint64_t{2} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    std::vector<uint64_t> words = {(uint64_t{127} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47,
+                                   uint64_t{1} << 32, 0x4E, kShown | (uint64_t{2} << 16), 0x4C, kSprite, 0x00,
+                                   rgbaq(0x80FFFFFFu), 0x01, xyz(0, 0), 0x05, xyz(128, 64), 0x05};
+    if (overdraw) {
+        for (uint64_t w : {kShown | (uint64_t{2} << 16) | (uint64_t{2} << 24), uint64_t{0x4C}, kSprite, uint64_t{0x00},
+                           rgbaq(0x800000FFu), uint64_t{0x01}, xyz(0, 0), uint64_t{0x05}, xyz(128, 64), uint64_t{0x05}}) {
+            words.push_back(w);
+        }
+    }
+    ad(words);
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_display_memory (IN-531): a display with no target shows GS memory only when it was written as that buffer
+// (GT4_CORE2_DISPLAY_MEMORY=1 shows it anyway).
+int TestCore2DisplayMemory(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    auto shown = [&](const cpuref::CaptureWriter& capture, const char* value) {
+        Core2AbRun run;
+        std::string error;
+        if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_DISPLAY_MEMORY", true, run, error, 0, 1, {}, value) || run.images.empty()) {
+            std::printf("  replay failed: %s\n", error.c_str());
+            ++failures;
+            return std::ptrdiff_t{-1};
+        }
+        return std::count_if(run.images.back().begin(), run.images.back().end(), [](uint8_t v) { return v != 0; });
+    };
+    const std::ptrdiff_t ownWidth = shown(Core2DisplayMemoryCapture(1), "0");
+    const std::ptrdiff_t otherWidth = shown(Core2DisplayMemoryCapture(2), "0");
+    const std::ptrdiff_t otherWidthShown = shown(Core2DisplayMemoryCapture(2), "1");
+    std::printf("  lit bytes: written as the buffer %lld, at another width %lld, the same with the switch %lld\n",
+                static_cast<long long>(ownWidth), static_cast<long long>(otherWidth), static_cast<long long>(otherWidthShown));
+    if (ownWidth <= 0 || otherWidth != 0 || otherWidthShown <= 0) ++failures;
+    // IN-532: a target is shown only while no target of another format drew over it later.
+    auto shownTarget = [&](bool overdraw, const char* value) {
+        Core2AbRun run;
+        std::string error;
+        if (!ReplayCore2Ab(handles, Core2DisplayStaleCapture(overdraw), "GT4_CORE2_DISPLAY_NEWEST", true, run, error, 0, 1, {}, value) ||
+            run.images.empty()) {
+            std::printf("  replay failed: %s\n", error.c_str());
+            ++failures;
+            return std::ptrdiff_t{-1};
+        }
+        return std::count_if(run.images.back().begin(), run.images.back().end(), [](uint8_t v) { return v != 0; });
+    };
+    const std::ptrdiff_t alone = shownTarget(false, ""), overdrawn = shownTarget(true, ""), overdrawnShown = shownTarget(true, "0");
+    std::printf("  lit bytes: a target alone %lld, drawn over later by a CT16 target %lld, the same with the switch at 0 %lld\n",
+                static_cast<long long>(alone), static_cast<long long>(overdrawn), static_cast<long long>(overdrawnShown));
+    if (alone <= 0 || overdrawn != 0 || overdrawnShown <= 0) ++failures;
+    std::printf("hw_core2_display_memory: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
 
@@ -6119,6 +6346,9 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
     if (name == "hw_core2_upload_memo") return TestCore2UploadMemo(handles);
+    if (name == "hw_core2_depth_clear") return TestCore2DepthClear(handles);
+    if (name == "hw_core2_scanmsk") return TestCore2Scanmsk(handles);
+    if (name == "hw_core2_display_memory") return TestCore2DisplayMemory(handles);
     if (name == "hw_core2_whole_clears") return TestCore2WholeClears(handles);
     if (name == "hw_core2_rop") return TestCore2Rop(handles);
     if (name == "hw_core2_road_sheen") return TestCore2RoadSheen(handles);

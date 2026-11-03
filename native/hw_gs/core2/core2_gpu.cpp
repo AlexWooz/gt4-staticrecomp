@@ -989,7 +989,7 @@ struct Gpu::Impl {
     std::uint32_t push = pushWord & ~0x20000000u;
     if (f[g::TexOn] == 0) {
       f[g::Tfx] = f[g::Tcc] = f[g::TexelKind] = f[g::Aem] = f[g::TexFst] = f[g::TexLinear] = f[g::WrapS] = f[g::WrapT] = 0;
-      push = (push & ~(0x007FFFFFu | 0x01000000u | 0x00800000u | 0x04000000u | 0x80000000u)) | 1u;
+      push = (push & ~(0x004FFFFFu | 0x01000000u | 0x00800000u | 0x04000000u | 0x80000000u)) | 1u;  // not SCANMSK
     }
     if (f[g::BlendOn] == 0) f[g::Pabe] = f[g::BlendA] = f[g::BlendB] = f[g::BlendC] = f[g::BlendD] = 0;
     if (f[g::Ate] == 0) f[g::Atst] = f[g::Afail] = 0;
@@ -2937,10 +2937,11 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
                                      (frame->scale > 1 ? (0x40000000u | 0x10000000u) : 0u) |
                                      (batch.mipInfo != 0 ? 0x00800000u : 0u) |  // IN-428: tex_origin_x holds the mip parameters
                                      (batch.replacedWidth != 0 ? 0x00400000u : 0u) |  // IN-470: a replacement image
-                                     (batch.forceLinear ? 0x80000000u : 0u);          // IN-433: forced bilinear
+                                     (batch.forceLinear ? 0x80000000u : 0u) |         // IN-433: forced bilinear
+                                     ((batch.scanmsk & 3u) << 20);                    // IN-530: SCANMSK
   VkPipeline ropPipeline = VK_NULL_HANDLE;
   std::uint32_t ropWord = 0;
-  if (s.ropOn && frame->width <= s.framebufferWidth && frame->height <= s.framebufferHeight) {
+  if (s.ropOn && (batch.scanmsk & 2u) == 0 && frame->width <= s.framebufferWidth && frame->height <= s.framebufferHeight) {
     bool triangles = true;
     for (const gpu::GpuDraw &draw : *batch.draws) triangles = triangles && draw.topology == gpu::GpuTopology::Triangles;
     ropWord = triangles ? Impl::rop_word(state.fields, s.ropBlend && s.dualSourceBlend) : 0u;

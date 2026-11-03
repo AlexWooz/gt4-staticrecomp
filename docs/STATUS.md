@@ -1,5 +1,29 @@
 # Current Status
 
+## TASK-139: CoreGS 2.0 picture bugs, fixed on rc9 and merged into the CPU branch (2026-11-03)
+
+**Done:** the owner tested slice392 in the game ("everything fine so far") and approved the merge into `task/134-game-code-optimization-study`, where the TASK-134 agent continues. Not uploaded.
+
+Branch `task/139-coregs2-picture-bugs`, from `task/134-game-code-optimization-study` at `56f90c96`. The owner saw graphic bugs and records drives for us to replay on both renderers.
+
+- **Tools:** `scripts/coregs2_bench/record.cmd <name>` records on the rc9 package; `replay-run.sh` replays on CoreGS 2.0 and the new `replay-gsdx.sh` on the reference renderer, final frames only.
+- **Checked:** a short recording through `record.cmd` ended with a complete file. The owner's Ford GT lap replayed headless on the rc9 package on both renderers at 3x reaches the same race, with the same lap of 1'23.394. The reference's dump numbering is one frame ahead of ours (0.016 s on the race clock).
+- **Not verified:** that Tokyo R246 is listed in Arcade on the bench's card; replay in sync on the reference renderer with AI cars (IN-506 saw a different rival list between the two), so a Time Trial is the safe recording.
+- **Bugs registered (TASK-139 in `TASKS.md`):** the time trial ghost drawn solid (Confirmed: the reference and a real PS2 draw it in alternating rows); the Tokyo R246 asphalt texture (owner and a player); a glitch when a race returns to the menus at the 480p to 480i switch (owner, random, not on GSdx).
+- **The owner's recordings:** Tokyo R246 and El Capitan (Time Trial, Spec II), replayed headless at 3x on both renderers. The reference stays in sync with the recordings.
+- **Fixed, all four found on those replays (IMPLEMENTATION-NOTES IN-528 to IN-531):**
+  - IN-528, black blocks and broken textures on Tokyo R246: a CPU sprite left its blocks' identities stale, so the upload memo skipped restoring them. Upload check to VBlank 8000: 4,276 mismatches -> 0.
+  - IN-529, the wrong frame as a race opens and in the fade out (signs missing, white trees), and El Capitan's grey road at VBlank 2700: GT4 clears its depth through FRAME and ZBUF at once; drawn now as a depth write.
+  - IN-530, the solid time trial ghost: SCANMSK was not drawn at all; now on output rows, like GSdx.
+  - IN-531, green screens and junk when a race returns to the menus: the display showed GS memory no buffer was written to.
+  - IN-532, El Capitan's exit: the language menu of the game's start shown for 13 VBlanks: memory or a target that the race's draws had replaced.
+- **Checks:** Tokyo VBlanks 10750-10780 against GSdx: median difference 0.00 (was green); the fade frames and frame 8000 look like GSdx; George V Paris lap: the car's rear glass now shows the interior, as on GSdx. New tests `hw_core2_depth_clear`, `hw_core2_scanmsk`, `hw_core2_display_memory`, and a CPU sprite case in `hw_core2_upload_memo`; each fails with its A/B switch.
+- **v2.00:** the night race against rc9: 3 of 10 frames identical, the rest differ only on the wheels, which now spin with their blur as on GSdx (rc9 showed still spokes).
+- **Installed for the owner's test (2026-11-03):** game files only, `private/slice392-dist-t139` (pins `docs/inputs/slice392-pcsx2.json` exe `27cbf602...`, `slice392-spec2.json` exe `72eea060...`; slice391 was the same without IN-532), into `C:\Program Files\GT4Recomp\game`; every file checked by hash. The rc9 game files are kept in `private/_program-backups/rc9-before-t139-20261103T025446Z`. Built by `scripts/coregs2_bench/game/use-build.sh` with slice390's EE libraries and profiles (no new training); its George V Paris frames are equal to the debug build's, 8 of 8, and the debug build's to the one before IN-532. Launcher, saves and settings untouched. The first Play compiles shaders again.
+- **CTest on the debug build:** 291 of 292, `python_native_contracts` the known failure (its GS settings and VU options cases).
+- **With the owner's texture pack** (`data\Textures`, an HD HUD and UI pack, 15,423 files): Tokyo VBlanks 7700 and 8000 show the black blocks on rc9 and none on the installed build. The player's own pack was not available.
+- **Not verified:** a window run and the owner's own test; the notebook (off). Not uploaded.
+
 ## TASK-134: 1.3.0-rc9, the CPU optimisation, installed for the owner's test (2026-11-02)
 
 Branch `task/134-game-code-optimization-study`, on top of rc8. **Not published and not uploaded, on the owner's word:** the owner has CoreGS 2.0 picture bugs to fix first. Details: `docs/GAME-CODE-OPTIMIZATION-STUDY.md` section 8, `docs/release-notes/1.3.0-rc9.md`, `docs/BUILD.md`.
