@@ -2673,4 +2673,4 @@ Bugs reported by the owner (2026-11-02):
 
 The owner's pictures and the ghost comparison are in `private/coregs2-bench/reports/` (not in git).
 
-State (2026-11-03): the owner recorded Tokyo R246 and El Capitan and reported two more bugs on them: a wrong frame as the race opens (bug 4) and a glitch in the fade when leaving the race (bug 5). All five are fixed and match GSdx on the replays (IN-528 to IN-531): bug 1 IN-530, bug 2 IN-528, bugs 3 IN-531, bugs 4 and 5 IN-529. Waiting for the owner's test.
+State (2026-11-03): the owner recorded Tokyo R246 and El Capitan and reported two more bugs on them: a wrong frame as the race opens (bug 4) and a glitch in the fade when leaving the race (bug 5). All five are fixed and match GSdx on the replays (IN-528 to IN-532): bug 1 IN-530, bug 2 IN-528, bug 3 IN-531 and IN-532, bugs 4 and 5 IN-529. Installed on the owner's desktop (slice392). Waiting for the owner's test.

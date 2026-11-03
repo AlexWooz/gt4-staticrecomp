@@ -41,6 +41,7 @@ struct Core2Counters {
     std::uint64_t toneAlphaOnlyUnsupported = 0;  // 7.2 alpha-only variant: drawn normally (not implemented yet)
     std::uint64_t displayFromTargets = 0;
     std::uint64_t displayFromMemory = 0;
+    std::uint64_t displayStaleTargets = 0;     // IN-532: displays left black because a newer target of another format drew over
     std::uint64_t indexedFromTargetReadbacks = 0;  // interim 3.5: a T8/T4 texture over a drawn target
     std::uint64_t directFromTargetReadbacks = 0;   // a 16/24/32-bit memory texture over a drawn target (not a hit)
     std::uint64_t clutReadbacks = 0;

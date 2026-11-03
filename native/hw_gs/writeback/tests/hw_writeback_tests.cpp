@@ -5047,6 +5047,35 @@ cpuref::CaptureWriter Core2DisplayMemoryCapture(uint32_t bufferWidthUnits) {
     return capture;
 }
 
+// IN-532: a white CT32 target at page 20, shown; with `overdraw`, a CT16 target drawn over the same memory afterwards.
+cpuref::CaptureWriter Core2DisplayStaleCapture(bool overdraw) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kShown = 20;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    const uint64_t kSprite = 6;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, kShown | (uint64_t{2} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    std::vector<uint64_t> words = {(uint64_t{127} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47,
+                                   uint64_t{1} << 32, 0x4E, kShown | (uint64_t{2} << 16), 0x4C, kSprite, 0x00,
+                                   rgbaq(0x80FFFFFFu), 0x01, xyz(0, 0), 0x05, xyz(128, 64), 0x05};
+    if (overdraw) {
+        for (uint64_t w : {kShown | (uint64_t{2} << 16) | (uint64_t{2} << 24), uint64_t{0x4C}, kSprite, uint64_t{0x00},
+                           rgbaq(0x800000FFu), uint64_t{0x01}, xyz(0, 0), uint64_t{0x05}, xyz(128, 64), uint64_t{0x05}}) {
+            words.push_back(w);
+        }
+    }
+    ad(words);
+    capture.FrameEnd(0);
+    return capture;
+}
+
 // hw_core2_display_memory (IN-531): a display with no target shows GS memory only when it was written as that buffer
 // (GT4_CORE2_DISPLAY_MEMORY=1 shows it anyway).
 int TestCore2DisplayMemory(const gpu::VulkanHandles& handles) {
@@ -5067,6 +5096,22 @@ int TestCore2DisplayMemory(const gpu::VulkanHandles& handles) {
     std::printf("  lit bytes: written as the buffer %lld, at another width %lld, the same with the switch %lld\n",
                 static_cast<long long>(ownWidth), static_cast<long long>(otherWidth), static_cast<long long>(otherWidthShown));
     if (ownWidth <= 0 || otherWidth != 0 || otherWidthShown <= 0) ++failures;
+    // IN-532: a target is shown only while no target of another format drew over it later.
+    auto shownTarget = [&](bool overdraw, const char* value) {
+        Core2AbRun run;
+        std::string error;
+        if (!ReplayCore2Ab(handles, Core2DisplayStaleCapture(overdraw), "GT4_CORE2_DISPLAY_NEWEST", true, run, error, 0, 1, {}, value) ||
+            run.images.empty()) {
+            std::printf("  replay failed: %s\n", error.c_str());
+            ++failures;
+            return std::ptrdiff_t{-1};
+        }
+        return std::count_if(run.images.back().begin(), run.images.back().end(), [](uint8_t v) { return v != 0; });
+    };
+    const std::ptrdiff_t alone = shownTarget(false, ""), overdrawn = shownTarget(true, ""), overdrawnShown = shownTarget(true, "0");
+    std::printf("  lit bytes: a target alone %lld, drawn over later by a CT16 target %lld, the same with the switch at 0 %lld\n",
+                static_cast<long long>(alone), static_cast<long long>(overdrawn), static_cast<long long>(overdrawnShown));
+    if (alone <= 0 || overdrawn != 0 || overdrawnShown <= 0) ++failures;
     std::printf("hw_core2_display_memory: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

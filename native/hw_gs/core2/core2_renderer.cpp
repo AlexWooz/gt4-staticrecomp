@@ -1734,6 +1734,16 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     void DestroyTarget(Target &t) {
         if (!t.alive) return;
+        const PixelRect held = Union(t.valid, t.drawn);
+        if (!held.Empty()) {  // IN-532
+            const BlockSpan span = TargetSpan(t, held);
+            const std::uint32_t firstPage = span.begin / memory::kBlocksPerPage;
+            const std::uint32_t lastBlock = span.begin + std::min<std::uint32_t>(span.count, kAllBlocks) - 1u;
+            for (std::uint32_t page = firstPage; span.count != 0 && page <= lastBlock / memory::kBlocksPerPage; ++page) {
+                std::uint64_t &lost = pageLostDraws_[page % memory::kPagesTotal];
+                lost = std::max(lost, t.lastDraw);
+            }
+        }
         gpu_.DestroyImage(t.image);
         t = Target{};
     }
@@ -2351,7 +2361,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             memory_.Local().writeRect(out, static_cast<std::uint32_t>(area.x0), static_cast<std::uint32_t>(area.y0), w, h,
                                       words.data());
             MarkWritten(SpanOfRect(out, area), kWriteReadback);
-            baseWrites_[BaseWriteKey(out.basePointer, out.bufferWidth, static_cast<std::uint32_t>(out.psm))] = writeSequence_;
+            baseWrites_[BaseWriteKey(out.basePointer, out.bufferWidth, static_cast<std::uint32_t>(out.psm))] = BaseWrite{writeSequence_, drawCounter_};
             if (Contains(area, t->drawn)) {
                 t->drawn = PixelRect{};
                 t->readOnGpu = false;
@@ -2423,7 +2433,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                       static_cast<std::uint32_t>(rect.x1 - rect.x0 + 1),
                                       static_cast<std::uint32_t>(rect.y1 - rect.y0 + 1), d.words.data());
             MarkWritten(SpanOfRect(out, rect), kWriteDelayed);
-            baseWrites_[BaseWriteKey(out.basePointer, out.bufferWidth, static_cast<std::uint32_t>(out.psm))] = writeSequence_;
+            baseWrites_[BaseWriteKey(out.basePointer, out.bufferWidth, static_cast<std::uint32_t>(out.psm))] = BaseWrite{writeSequence_, drawCounter_};
             stats.delayedDownloads++;
             answered = true;
         }
@@ -3560,6 +3570,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             // Not an upload: SetUploadIds does not run, so the written blocks need fresh identities. Otherwise a later replay
             // of an upload (IN-486) takes the old identity for the old bytes, and skips restoring them (IN-528).
             const WriteKind spriteWrite = spriteFreshIds_ ? kWriteWhole : kWriteUpload;
+            NoteBaseWrite noteBaseWrite{*this, BaseWriteKey(t.frameView.basePointer, t.frameView.bufferWidth,
+                                                             static_cast<std::uint32_t>(t.frameView.psm))};  // IN-531: a buffer written in memory
             OnMemoryWritten(t.frameView, t.rect, true, spriteWrite);
             if (t.state.fields[gpu::gpufield::Zmsk] == 0) OnMemoryWritten(t.zView, t.rect, true, spriteWrite);
             stats.cpuSpriteBatches++;
@@ -3891,14 +3903,38 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const auto psm = memory::decodePsm(psmCode);
         return (std::uint64_t{basePointer} << 16) | (std::uint64_t{bufferWidth} << 8) | static_cast<std::uint64_t>(psm ? ClassOf(*psm) : FormatClass::None);
     }
-    std::unordered_map<std::uint64_t, std::uint64_t> baseWrites_;  // the write sequence just after the write
+    struct BaseWrite {
+        std::uint64_t sequence = 0;  // the write sequence just after the write
+        std::uint64_t draws = 0;     // the draw counter then
+    };
+    std::unordered_map<std::uint64_t, BaseWrite> baseWrites_;
+    // IN-532: GT4_CORE2_DISPLAY_NEWEST=0 shows a target even when a target of another format drew over it later (A/B).
+    const bool displayNewestOnly_ = std::getenv("GT4_CORE2_DISPLAY_NEWEST") == nullptr ||
+                                    std::strcmp(std::getenv("GT4_CORE2_DISPLAY_NEWEST"), "0") != 0;
     const bool showAnyDisplayMemory_ = std::getenv("GT4_CORE2_DISPLAY_MEMORY") != nullptr &&
                                        std::strcmp(std::getenv("GT4_CORE2_DISPLAY_MEMORY"), "1") == 0;
     struct NoteBaseWrite {
         Impl &self;
         std::uint64_t key;
-        ~NoteBaseWrite() { self.baseWrites_[key] = self.writeSequence_; }
+        ~NoteBaseWrite() { self.baseWrites_[key] = BaseWrite{self.writeSequence_, self.drawCounter_}; }
     };
+    // IN-532: per page, the last draw of a target that went away (its pixels may be nowhere in GS memory).
+    std::array<std::uint64_t, memory::kPagesTotal> pageLostDraws_{};
+    // Whether a target drew over `span` after draw number `draws`: an alive one, or one that went away.
+    bool DrawnSince(const BlockSpan &span, std::uint64_t draws) const {
+        for (const Target &t : targets_) {
+            if (!t.alive || t.lastDraw <= draws) continue;
+            const PixelRect held = Union(t.valid, t.drawn);
+            if (!held.Empty() && SpansOverlap(TargetSpan(t, held), span)) return true;
+        }
+        if (span.count == 0) return false;
+        const std::uint32_t firstPage = span.begin / memory::kBlocksPerPage;
+        const std::uint32_t lastBlock = span.begin + std::min<std::uint32_t>(span.count, kAllBlocks) - 1u;
+        for (std::uint32_t page = firstPage; page <= lastBlock / memory::kBlocksPerPage; ++page) {
+            if (pageLostDraws_[page % memory::kPagesTotal] > draws) return true;
+        }
+        return false;
+    }
 
     bool CircuitSource(const display::CircuitRect &circuit, ImageId &image, std::uint32_t &sourceScale,
                        std::uint32_t &readX, std::uint32_t &readY) {
@@ -3913,6 +3949,22 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (!found || t.lastDraw > found->lastDraw) found = &t;
         }
         const std::int32_t dbx = circuit.dbx, dby = circuit.dby;
+        // IN-532: a target is only shown while it is the newest picture of its memory. When a colour target of another format
+        // drew over the shown pages after it (GT4's race buffers over the language menu's target, as a race returns to the menus),
+        // its pixels are gone from GS memory: the circuit reads as having no source, as on the reference renderer.
+        if (found && displayNewestOnly_ && dbx >= 0 && dby >= 0) {
+            const PixelRect shown{dbx, dby, dbx + static_cast<std::int32_t>(circuit.read_width) - 1,
+                                  dby + static_cast<std::int32_t>(circuit.read_height) - 1};
+            const BlockSpan shownSpan = TargetSpan(*found, shown);
+            for (const Target &t : targets_) {
+                if (&t == found || !t.alive || IsDepthClass(t.cls) || t.cls == found->cls || t.lastDraw <= found->lastDraw) continue;
+                const PixelRect held = Union(t.valid, t.drawn);
+                if (!held.Empty() && SpansOverlap(TargetSpan(t, held), shownSpan)) {
+                    stats.displayStaleTargets++;
+                    return false;
+                }
+            }
+        }
         if (found && dbx >= 0 && dby >= 0) {
             if (!Grow(*found, static_cast<std::uint32_t>(dbx) + circuit.read_width,
                       static_cast<std::uint32_t>(dby) + circuit.read_height) ||
@@ -3935,7 +3987,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // Nothing else wrote the displayed pages since (uploads of other textures over them make it junk again).
         const auto baseWrite = baseWrites_.find(BaseWriteKey(view.basePointer, view.bufferWidth, circuit.psm));
         const PixelRect displayed{dbx, dby, dbx + static_cast<std::int32_t>(circuit.read_width) - 1, dby + static_cast<std::int32_t>(circuit.read_height) - 1};
-        const bool writtenAsBuffer = baseWrite != baseWrites_.end() && UnchangedSince(WriteSpan(view, displayed), baseWrite->second);
+        const BlockSpan displayedSpan = WriteSpan(view, displayed);
+        const bool writtenAsBuffer = baseWrite != baseWrites_.end() && UnchangedSince(displayedSpan, baseWrite->second.sequence) &&
+                                     !(displayNewestOnly_ && DrawnSince(displayedSpan, baseWrite->second.draws));
         static const bool traceMemory = std::getenv("GT4_CORE2_DISPLAY_TRACE") != nullptr;
         if (traceMemory) {
             std::fprintf(stderr, "[core2] display from memory vblank=%llu bp=%u bw=%u psm=%02x written_as_buffer=%d\n",
