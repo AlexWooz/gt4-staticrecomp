@@ -1210,6 +1210,13 @@
         h("p", { text: GT4.t("about.disclaimer") }),
         h("p", { text: GT4.t("about.trademarks") })
       ]));
+      // GT4Recomp's outside contributors: everyone with a merged or open pull request on GitHub, by GitHub name (owner
+      // 2026-11-03). Add a key to both locales for a new contributor.
+      var contributorLines = [h("p", { text: GT4.t("about.contributors") })];
+      ["about.contributor_gustavocanepa", "about.contributor_julioheroz", "about.contributor_luanantony"].forEach(function (key) {
+        contributorLines.push(h("p", { class: "note", text: GT4.t(key) }));
+      });
+      content.appendChild(h("div", { class: "about-notice about-credits" }, contributorLines));
       // The people behind Gran Turismo 4 Spec II: one localized line and the full credit list (owner 2026-10-23).
       var spec2Credit = GT4.t("about.spec2_credit");
       var creditText = GT4.t("rust.about.credits") || info.credits;

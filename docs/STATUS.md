@@ -10,6 +10,10 @@ misted as on GSdx (8 of 13 frames change, 7 closer to GSdx, 1 equal); Tokyo R246
 Capitan (6 of 43, equal) change only on car glass, by at most 133 pixels. The owner saw the frames: fixed. New diagnostics: `GT4_CORE2_PROBE_DRAWS`/`_RECT`, `GT4_CORE2_SKIP_DRAWS`,
 `GT4_CORE2_DEPTH_ALIAS_TRACE`, depth range, tests and TEX0 in the frame trace.
 
+TASK-143 (owner): the launcher's About page credits the GitHub contributors with a merged or open pull request (gustavocanepa,
+JulioHeroZ, luanantony), en-US and pt-BR; focus checks, nav-test and launcher tests pass. Release launcher built with label rc11,
+not installed and not packaged.
+
 ## 1.3.0-rc10 published as a pre-release (2026-11-03)
 
 On the owner's word after their tests ("tudo certo nos meus testes"): `v1.3.0-rc10` at `63bd3321` (no code after `079601ac`, the

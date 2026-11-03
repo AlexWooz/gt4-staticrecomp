@@ -410,6 +410,7 @@ body.is-idle .migration-bar.indeterminate .migration-fill { animation-play-state
   color: var(--dim); vertical-align: middle;
 }
 .about-credits { border-left: 2px solid var(--hair); padding-left: 14px; margin-top: 8px; }
+.about-credits .note + .note { margin-top: 0; } /* one paragraph per contributor, kept apart */
 
 /* ---------- settings shell ---------- */
 .settings { position: absolute; inset: 0; display: grid; grid-template-columns: 240px 1fr; }

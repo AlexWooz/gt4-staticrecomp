@@ -2754,3 +2754,16 @@ R34 recording at 6x: the car in front misted behind the glass as on GSdx; 8 of 1
 Tokyo R246: 17 of 43 frames change by at most 127 pixels, all closer to GSdx; El Capitan: 6 of 43, at most 133 pixels, equal to
 GSdx. The owner looked at the R34 frames: fixed.
 Acceptance: CTest (`hw_core2_depth_alias`), the other recordings changed only where a reflection reads that alpha, owner test.
+
+### TASK-143 — Launcher About: credits for GitHub contributors
+
+Owner (2026-11-03): the About page credits everyone outside the project who has a merged or open pull request on
+`moesuito/gt4-staticrecomp`, by GitHub name. Mapped with `gh pr list --state all` (142 PRs): gustavocanepa (Wise; #36, #41
+merged), JulioHeroZ (Julio Vitor Rufino; #72, #96, #101 merged) and luanantony (Luan Antony; #100, #109 merged, 44 open). Left
+out by that rule: Wackyhcky (#117, closed without a merge). A new contributor gets a key in both locales and in the list in
+`ui/js/pages/settings.js`.
+
+State (2026-11-03): done on `task/134-game-code-optimization-study`, in a block of its own above the Spec II credits, one paragraph
+per contributor, en-US and pt-BR. Checks: locale keys 659 in both with the same placeholders, focus checks en-US 275 and pt-BR
+282 and nav-test 209 all passed, launcher cargo test 630 passed; release launcher built with label rc11 (not installed, not in a
+package yet).
