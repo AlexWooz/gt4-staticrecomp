@@ -445,6 +445,8 @@
   "rust.game.stopped_unexpectedly_reason": "Gran Turismo 4 stopped unexpectedly ({reason}). The session folder has the details.",
   "rust.game.stopped_unexpectedly_code": "Gran Turismo 4 stopped unexpectedly (exit code {code}). The session folder has the details.",
   "rust.game.stopped_unexpectedly": "Gran Turismo 4 stopped unexpectedly. The session folder has the details.",
+  "rust.game.missing_file": "Gran Turismo 4 could not start because a file it needs is missing from its folder (code {code}). Reinstall GT4Recomp, and check that your antivirus did not remove files from the game folder.",
+  "rust.game.not_responding": "Gran Turismo 4 stopped responding and Windows closed it (code {code}). If it keeps happening, open Settings > About, choose Export logs and send the logs when you report it.",
   "rust.game.gpu_lost": "Your graphics card stopped responding. Try a lower resolution (Graphics > Render scale) or switch Graphics API to Direct3D 11.",
   "rust.game.gpu_lost_switched": "Direct3D 11 will be used from now on.",
   "rust.game.running_blocks_move": "Gran Turismo 4 is running",

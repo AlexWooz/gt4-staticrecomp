@@ -445,6 +445,8 @@
   "rust.game.stopped_unexpectedly_reason": "O Gran Turismo 4 parou inesperadamente ({reason}). A pasta da sessão tem os detalhes.",
   "rust.game.stopped_unexpectedly_code": "O Gran Turismo 4 parou inesperadamente (código de saída {code}). A pasta da sessão tem os detalhes.",
   "rust.game.stopped_unexpectedly": "O Gran Turismo 4 parou inesperadamente. A pasta da sessão tem os detalhes.",
+  "rust.game.missing_file": "O Gran Turismo 4 não conseguiu iniciar porque falta um arquivo de que ele precisa na pasta do jogo (código {code}). Reinstale o GT4Recomp e confira se o antivírus não removeu arquivos da pasta do jogo.",
+  "rust.game.not_responding": "O Gran Turismo 4 parou de responder e o Windows o fechou (código {code}). Se acontecer de novo, abra Configurações > Sobre, escolha Exportar logs e envie os logs ao relatar o problema.",
   "rust.game.gpu_lost": "Sua placa de vídeo parou de responder. Tente uma resolução menor (Gráficos > Escala de renderização) ou mude a API gráfica para Direct3D 11.",
   "rust.game.gpu_lost_switched": "O Direct3D 11 será usado a partir de agora.",
   "rust.game.running_blocks_move": "O Gran Turismo 4 está em execução",
