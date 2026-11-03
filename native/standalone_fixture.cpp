@@ -421,6 +421,14 @@ void check_resolve() {
     check(lacks(coregs.set, "PS2_GS") && lacks(coregs.set, "GT4_GS_PROCESS") && lacks(coregs.set, "GT4_GS_CONFIG"),
           "nothing of GSdx goes with it");
     check(has(coregs.set, "GT4_FORCE_480P", "1") && has(coregs.set, "GT4_FORCE_WIDESCREEN", "1"), "the fixed holds stay");
+    // TASK-146: the 60 FPS mode's frame skipping when behind, and nothing else for it.
+    sa::Inputs sixty = inputs_for(*layout, nullptr);
+    sixty.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_frame_skip_adaptive=1\n");
+    check(sixty.config->warnings.empty(), "the 60 FPS mode's key is accepted");
+    check(!sa::parse_config("hw_frame_skip_adaptive=2\n").warnings.empty(), "only 1 turns it on");
+    const sa::Resolved adaptive = sa::resolve(sixty, chosen.access());
+    check(has(adaptive.set, "GT4_FRAME_SKIP", "1") && lacks(adaptive.set, "GT4_FRAME_SKIP_FORCE"),
+          "game.ini's 60 FPS mode becomes GT4_FRAME_SKIP=1 without a fixed pattern");
     sa::Inputs fast = inputs_for(*layout, nullptr);
     fast.config = sa::parse_config(std::string("present_mode=mailbox") + char(10) + "renderer=coregs20" + char(10) + "hw_present_mode=fifo" + char(10));
     check(has(sa::resolve(fast, chosen.access()).set, "GT4_PRESENT_MODE", "fifo"), "a stored Fast vsync draws as On under CoreGS 2.0");

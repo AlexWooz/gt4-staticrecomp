@@ -1,5 +1,12 @@
 # Current Status
 
+## TASK-146 for the owner's test: 60 FPS lets a race drop frames instead of slowing (2026-11-03, night)
+
+On the owner's word, experimental in the rc12 line: the launcher's Frame rate "60 FPS" (CoreGS 2.0, the default) now passes
+`GT4_FRAME_SKIP=1` (`game.ini` `hw_frame_skip_adaptive=1`), TASK-082's frame skipping when behind. With time to spare nothing
+is left out; when the PC falls behind in a running race, frames are left out and the game keeps its full speed and 60 Hz
+physics. 30 FPS is unchanged; menus never skip. Plain test builds for the owner's laptop; owner test pending.
+
 ## TASK-145 fixed for rc12: the desktop flash every 6 seconds in fullscreen on NVIDIA RTX (2026-11-03, night)
 
 On `task/134-game-code-optimization-study`, not built as an rc yet (the owner has more for rc12). In borderless fullscreen with a

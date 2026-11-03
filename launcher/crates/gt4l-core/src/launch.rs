@@ -235,8 +235,12 @@ pub fn coregs20_environment(
         variables.insert("GT4_CORE2_PERFORMANCE", "1".to_string());
     }
     // TASK-082: one frame drawn in two, in a running race. The physics stay at 60 Hz.
+    // TASK-146 (rc12, experimental): 60 FPS lets the framerate drop in a running race when the PC falls behind, leaving
+    // frames out so the game keeps its full speed; with time to spare every frame is drawn.
     if settings.get("frame_rate") == "30" {
         variables.insert("GT4_FRAME_SKIP_FORCE", "2".to_string());
+    } else {
+        variables.insert("GT4_FRAME_SKIP", "1".to_string());
     }
     // TASK-135: the performance HUD.
     if settings.is_on("performance_hud") {
@@ -429,7 +433,7 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
 }
 
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
-/// `hw_frame_skip`, `hw_hud`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
+/// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
 /// `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps its `present_mode`).
 pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &Path) -> String {
     let mut text = String::from("renderer=coregs20\n");
@@ -441,6 +445,7 @@ pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, in
             "GT4_HW_SCALE" => "hw_scale",
             "GT4_CORE2_PERFORMANCE" => "hw_performance",
             "GT4_FRAME_SKIP_FORCE" => "hw_frame_skip",
+            "GT4_FRAME_SKIP" => "hw_frame_skip_adaptive",
             "GT4_HW_HUD" => "hw_hud",
             "GT4_HW_TEXTURES" => "hw_textures",
             "GT4_HW_POSTFX" => "hw_postfx",

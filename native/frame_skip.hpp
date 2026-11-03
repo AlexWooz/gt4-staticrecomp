@@ -17,8 +17,9 @@
 // just ran.
 //
 // Off by default. GT4_FRAME_SKIP_FORCE=2 keeps 1 frame in 2: the launcher's 30 FPS mode (3 keeps 1 in 3, 1 keeps all and logs).
-// GT4_FRAME_SKIP=1 leaves frames out when behind, for any framerate: not offered yet, its motion steps between the game's 16.7 ms
-// (docs/TASK-082-UNLOCKED-FPS-STATE.md). Only in a running
+// GT4_FRAME_SKIP=1 leaves frames out when behind, for any framerate below 60: the launcher's 60 FPS mode since 1.3.0-rc12
+// (TASK-146, experimental; game.ini hw_frame_skip_adaptive=1). Without a lasting shortfall it leaves nothing out; its motion
+// steps between the game's 16.7 ms when it does (docs/TASK-082-UNLOCKED-FPS-STATE.md). Only in a running
 // race: the race clock must rise by one step per frame for a second; pause, menus and accelerated time close that gate at once. And
 // only in 480p.
 // GT4_FRAME_SKIP_LOG=<csv>: one row per frame, for scripts/coregs2_bench/frame_sheet.py.

@@ -2822,3 +2822,20 @@ Result (owner test, 2026-11-03, Spec II, plain build): a full lap (10,017 VBlank
 elsewhere and no same-size size message (before: one every 360 VBlanks in each of 15 sessions); a 22-second Alt+Tab came back
 normally (before: Ghost window 5.7 s after losing focus); GSdx also without flashes. CTest `native_window_heartbeat` and
 `tests/python/test_window_heartbeat.py`. For rc12.
+
+### TASK-146 — 60 FPS lets the frame rate drop in a race instead of slowing the game (experimental, rc12)
+
+Owner (2026-11-03): the 60 FPS mode should let the frame rate fall when the PC cannot keep up, skipping frames, with the
+simulation and the game speed staying at 60 Hz; under ideal conditions it stays at 60; the 30 FPS mode stays. The policy
+exists since TASK-082 (`GT4_FRAME_SKIP=1`, `frame_skip::Policy`: nothing is left out until the host is behind by 33 ms, then
+drawn frames are paid for from the time that goes by, at least 20 drawn per second; even presentation, IN-525), measured then at
+100% game speed (George V Paris 12x: 42 frames drawn per second), but never offered, because the motion steps between the
+game's 16.7 ms states.
+
+Change on `task/134-game-code-optimization-study`: the launcher's Frame rate "60 FPS" (CoreGS 2.0, the default) now passes
+`GT4_FRAME_SKIP=1` (`game.ini` `hw_frame_skip_adaptive=1`; the game accepts that key); "30 FPS" stays `GT4_FRAME_SKIP_FORCE=2`.
+As before, only in a running race and in 480p; menus never skip. Help text in both languages. Checks: launch contract
+(`GT4_FRAME_SKIP` with 60, not with 30), `standalone_fixture` (the key and its variable).
+
+Acceptance: owner test on the laptop (plain build, rc12 line): no frame left out where 60 holds, full game speed where it does
+not, no picture fault; then the owner decides whether it stays the default.

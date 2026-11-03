@@ -184,7 +184,7 @@
   "settings.off": "Desligado",
   "settings.on": "Ligado",
   "setting.frame_rate.label": "Taxa de quadros (experimental)",
-  "setting.frame_rate.help": "O padrão é 60 FPS. O modo 30 FPS é para máquinas mais fracas e ainda é experimental: as corridas desenham 30 quadros por segundo, com o jogo em velocidade total e a mesma física. Os menus continuam a 60.",
+  "setting.frame_rate.help": "O padrão é 60 FPS: numa corrida, quando o PC não acompanha, a taxa de quadros cai em vez de o jogo ficar lento, com a mesma física. O modo 30 FPS é para PCs mais fracos: as corridas desenham 30 quadros por segundo. Os dois são experimentais; os menus continuam a 60.",
   "choice.frame_rate.60": "60 FPS",
   "choice.frame_rate.30": "30 FPS",
   "setting.coregs_sharpening.label": "Nitidez (FSR1)",

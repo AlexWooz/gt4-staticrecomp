@@ -166,7 +166,7 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Performance",
         title: "Frame rate (experimental)",
-        info: "60 FPS is the default. The 30 FPS mode is for weaker PCs and is still experimental: races draw 30 frames per second, with the game at full speed and the same physics. Menus stay at 60.",
+        info: "60 FPS is the default: in a race, when the PC cannot keep up, the frame rate drops instead of the game slowing down, with the same physics. The 30 FPS mode is for weaker PCs: races draw 30 frames per second. Both are experimental; menus stay at 60.",
         kind: Kind::Choice(FRAME_RATE_CHOICES),
         default: "60",
         connected: true,

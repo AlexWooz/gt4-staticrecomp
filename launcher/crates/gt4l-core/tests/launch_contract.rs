@@ -237,7 +237,9 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
         assert!(!on.contains_key(gsdx_only), "{gsdx_only} belongs to GSdx");
     }
     assert!(!on.contains_key("GT4_CORE2_PERFORMANCE"), "full precision unless Performance Mode is on");
-    assert!(!on.contains_key("GT4_FRAME_SKIP_FORCE"), "every frame drawn unless the player asks for 30 FPS");
+    assert!(!on.contains_key("GT4_FRAME_SKIP_FORCE"), "no fixed pattern unless the player asks for 30 FPS");
+    assert_eq!(on["GT4_FRAME_SKIP"], "1", "TASK-146: 60 FPS leaves frames out in a race only when the PC falls behind");
+    assert!(launch::coregs20_section(&settings, Some(&display), false, textures).contains("hw_frame_skip_adaptive=1\n"));
     assert!(!on.contains_key("GT4_CORE2_FSR_SHARPNESS"), "no sharpening by default");
     assert_eq!(on["GT4_PRESENT_MODE"], "fifo", "vsync On");
 
@@ -260,6 +262,7 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     let tuned = env_map(&launch::coregs20_environment(&settings, None, true, textures));
     assert_eq!(tuned["GT4_CORE2_PERFORMANCE"], "1");
     assert_eq!(tuned["GT4_FRAME_SKIP_FORCE"], "2");
+    assert!(!tuned.contains_key("GT4_FRAME_SKIP"), "30 FPS is the fixed pattern alone");
     assert!(!tuned.contains_key("GT4_HW_TEXTURES"));
     assert_eq!(tuned["GT4_HW_POSTFX"], "fxaa");
     assert_eq!(tuned["GT4_CORE2_FSR_SHARPNESS"], "0.2");
@@ -270,6 +273,7 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     assert!(section.contains("hw_scale=3\n") && section.contains("hw_performance=1\n") && section.contains("hw_postfx=fxaa\n"));
     assert!(section.contains("hw_sharpening=0.2\n"));
     assert!(section.contains("hw_frame_skip=2\n"));
+    assert!(!section.contains("hw_frame_skip_adaptive"));
     assert!(!section.contains("hw_textures"));
 }
 
