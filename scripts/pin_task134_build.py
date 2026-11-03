@@ -7,8 +7,8 @@ base pin names stay verified by the Python tests against the files on disk.
 The output file must not exist: a new slice always gets a new pin file (docs/inputs are history, never edited).
 
 usage: pin_task134_build.py <slice> --base <slice> --target gt4|spec2 --exe <path under assets> --library <path under assets>
-       [--vu1-dir <path under assets>] [--vu0-dir <path under assets>] --classification <text> --status <text>
-       [--assets-root <folder>] [--date 2026-11-03]
+       [--vu1-dir <path under assets>] [--vu0-dir <path under assets>] [--spu2-capsule <path under assets>]
+       --classification <text> --status <text> [--purpose <text>] [--assets-root <folder>] [--date 2026-11-03]
 """
 
 import argparse
@@ -33,8 +33,10 @@ def main():
     parser.add_argument('--library', required=True)
     parser.add_argument('--vu1-dir')
     parser.add_argument('--vu0-dir')
+    parser.add_argument('--spu2-capsule', help='the SPU2 capsule of TASK-125 (scripts/prepare_spu2_runtime.py)')
     parser.add_argument('--classification', required=True)
     parser.add_argument('--status', required=True)
+    parser.add_argument('--purpose', default='TASK-134: the CPU optimisation, second round.')
     parser.add_argument('--assets-root', type=Path, default=Path('C:/Antigravity/gt4-staticrecomp'))
     parser.add_argument('--date', default='2026-11-03')
     options = parser.parse_args()
@@ -67,12 +69,16 @@ def main():
         vu0['emitter'] = 'tools/vu_recomp of TASK-134 (2026-11-03), same image and entry list'
         vu0.pop('vu1_table', None)
         pin['vu0_aot'] = vu0
+    if options.spu2_capsule:
+        # The capsule's runtime.json pins its derived spu2.cpp; CMake checks that pin when it builds.
+        pin['spu2_capsule'] = options.spu2_capsule
+        pin['spu2_capsule_sha256'] = identity(assets / options.spu2_capsule / 'runtime.json')[1]
     pin['slice'] = options.slice
     pin['date'] = options.date
     pin['branch'] = 'task/134-game-code-optimization-study'
     pin['baseline_commit'] = f'slice{options.base}-{name}'
     pin['classification'] = options.classification
-    pin['purpose'] = 'TASK-134: the CPU optimisation, second round.'
+    pin['purpose'] = options.purpose
     pin['status'] = options.status
     output.write_text(json.dumps(pin, indent=2) + '\n', encoding='utf-8', newline='\n')
     print(f'{output.name}: exe {pin["runtime"]["sha256"][:16]} library {library["sha256"][:16]}')

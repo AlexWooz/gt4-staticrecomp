@@ -2695,6 +2695,12 @@ ideas are re-done by hand on this branch, with the contributor (luanantony) cred
 6. **Spec II replays lost (issue #185):** Spec II names its replays `BASCUS-97436R` plus seven letters and digits (two replays
    on the owner's PCSX2 card), and the launcher only kept four digits.
 7. **The memory card error names the file (issue #160).**
+8. **Card backups have a limit (owner, 2026-11-03):** every Play kept a copy of the card (about 8 MB) and none was ever
+   removed (74 copies, about 600 MB, in two weeks on the owner's PC). The newest 10 card images, 5 taken before a New save and
+   10 copies of the active save stay.
+
+State (2026-11-03): items 1-8 done on `task/134-game-code-optimization-study` (items 3, 5 and 7 by a Sonnet agent on
+`task/rc10-launcher`, merged). CPU work of TASK-134 for rc10: VU1 products with VF0.w emitted as copies (VU1 program -3.4%).
 
 Acceptance: CTest, Python and launcher tests; identity gates against rc9 (the 480p hold and the SPU2 change are the only
 intended differences, and neither shows in the gated scenes); language gate; owner test, including a car wash in GT Auto and a
