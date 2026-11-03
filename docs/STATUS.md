@@ -1,5 +1,14 @@
 # Current Status
 
+## 1.3.0-rc10 published as a pre-release (2026-11-03)
+
+On the owner's word after their tests ("tudo certo nos meus testes"): `v1.3.0-rc10` at `63bd3321` (no code after `079601ac`, the
+build's source), pre-release, not Latest; v1.2.5 stays Latest. Assets from `private/release-130-rc10b-out` (installer `b07b7097...`,
+zip `2eef869d...`, SHA256SUMS), uploaded as a draft, the three GitHub digests compared with the local files, then made a
+pre-release. Known issue added to the notes and to TASKS (TASK-142, rc11): on CoreGS 2.0 close behind another car, a car's
+transparent glass shows parts of the car in front (owner, 6x). Launcher language checks as for the first rc10 build (the UI did
+not change since).
+
 ## 1.3.0-rc10 rebuilt with the CoreGS 2.0 custom texture fixes (TASK-141), installed, not uploaded (2026-11-03, night)
 
 The owner's test of the first rc10 found two glitches with the HD HUD & UI pack on CoreGS 2.0 (a player saw a third): HUD digits
