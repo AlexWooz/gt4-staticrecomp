@@ -7,8 +7,9 @@ set "A=C:/Antigravity/gt4-staticrecomp"
 set "DIR=%~1"
 set "TARGET=%~2"
 set "EXTRA=%T134_ARGS%"
-rem VU1GEN and VU0GEN override the VU tables (slice394: the TASK-134 emitter of 2026-11-03; rc9 had slice157 and slice390/slice160).
-if "%VU1GEN%"=="" set "VU1GEN=%A%/private/slice394-vu1-gen"
+rem VU1GEN and VU0GEN override the VU tables (VU1 slice397: rc10, a product with VF0.w is a copy; VU0 slice394: the second
+rem rc9 round; the first rc9 had slice157 and slice390/slice160).
+if "%VU1GEN%"=="" set "VU1GEN=%A%/private/slice397-vu1-gen"
 set "VU0GEN_GIVEN=%VU0GEN%"
 if /i "%TARGET%"=="spec2" (
   set "PROFILE=spec2"

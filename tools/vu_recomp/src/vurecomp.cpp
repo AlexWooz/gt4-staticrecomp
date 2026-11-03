@@ -284,12 +284,25 @@ Upper upper(std::uint32_t hi, const FlagUse &use, bool donor_exact = false) {
         }
         const std::string ns = operand(fs);
         if (kind == Madd || kind == Msub) u.shadow_reads.push_back(kAcc);
+        // TASK-134: a product with VF0.w (1.0) is the other operand itself: a fixed value (normal, signed zero or at most
+        // 0x7F7FFFFF) times 1.0f is exact and vout leaves it as it is. MULbc, MADDbc and MSUBbc by vf0w (the w row of a
+        // vertex transform) become a copy, an add and a subtract with the same bits.
+        const bool times_one = src == Bc && ft == 0 && bc == 3;
         switch (kind) {
         case Add: u.pre += std::format("const v4u uv = vaddn({}, {}); ", ns, nb); break;
         case Sub: u.pre += std::format("const v4u uv = vsubn({}, {}); ", ns, nb); break;
-        case Mul: u.pre += std::format("const v4u uv = vmuln({}, {}); ", ns, nb); break;
-        case Madd: u.pre += std::format("const v4u uv = vmaddn(nacc, {}, {}); ", ns, nb); break;
-        default: u.pre += std::format("const v4u uv = vmsubn(nacc, {}, {}); ", ns, nb); break;
+        case Mul:
+            if (times_one) u.pre += std::format("const v4u uv = {}; ", ns);
+            else u.pre += std::format("const v4u uv = vmuln({}, {}); ", ns, nb);
+            break;
+        case Madd:
+            if (times_one) u.pre += std::format("const v4u uv = vaddn(nacc, {}); ", ns);
+            else u.pre += std::format("const v4u uv = vmaddn(nacc, {}, {}); ", ns, nb);
+            break;
+        default:
+            if (times_one) u.pre += std::format("const v4u uv = vsubn(nacc, {}); ", ns);
+            else u.pre += std::format("const v4u uv = vmsubn(nacc, {}, {}); ", ns, nb);
+            break;
         }
     }
     if (vector) {
