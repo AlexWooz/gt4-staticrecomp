@@ -24,8 +24,8 @@ pub struct Game {
     pub logo_asset: &'static str,
     /// The game data folder on the memory card: `BASCUS-97328GAMEDATA` (GT4), `BASCUS-97436GAMEDATA` (Spec II).
     pub save_folder: &'static str,
-    /// The prefix of the game's replays (the serial): `BASCUS-97328` (GT4); `BASCUS-97436` for Spec II, not verified
-    /// with a real Spec II replay yet.
+    /// The prefix of the game's replays (the serial): `BASCUS-97328` (GT4); `BASCUS-97436` for Spec II, confirmed with two
+    /// Spec II replays on a PCSX2 card (2026-11-03), whose tags are seven characters (`gt4saves::names`).
     pub replay_prefix: &'static str,
 }
 

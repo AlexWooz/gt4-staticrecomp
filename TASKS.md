@@ -2678,3 +2678,24 @@ The owner's pictures and the ghost comparison are in `private/coregs2-bench/repo
 State (2026-11-03): the owner recorded Tokyo R246 and El Capitan and reported two more bugs on them: a wrong frame as the race opens (bug 4) and a glitch in the fade when leaving the race (bug 5). All five are fixed and match GSdx on the replays (IN-528 to IN-532): bug 1 IN-530, bug 2 IN-528, bug 3 IN-531 and IN-532, bugs 4 and 5 IN-529. Installed on the owner's desktop (slice392).
 
 State (2026-11-03): ✅ done. The owner tested slice392 in the game ("everything fine so far") and approved the merge into `task/134-game-code-optimization-study`, where the CPU work continues. Not uploaded. The replay tools stay for later bugs: `scripts/coregs2_bench/README.md`, section "Recording a drive and replaying it".
+
+### TASK-140 — 1.3.0-rc10: player fixes from the open issues and external PRs
+
+Owner, 2026-11-03: after the triage of the 47 open PRs and the open issues (ai-memory `notes/pr-issue-triage-2026-11-03`), the
+owner chose these items for rc10, next to the CPU work of TASK-134. The external PRs were written against 1.2.4/1.2.5; their
+ideas are re-done by hand on this branch, with the contributor (luanantony) credited as co-author, and no branch is merged.
+
+1. **No audio output device (TASK-129, issues #93 and #115; PR #119):** the game runs silent instead of exiting.
+2. **GT Auto bubbles that never stop (TASK-125, issue #104; PR #118):** the SPU2 exponential envelope decrease truncated a
+   small step to 0, so a released voice never reached silence. Capsule `scripts/prepare_spu2_runtime.py`.
+3. **Plain exit messages (TASK-124 and TASK-127, issues #107 and #99; PR #154):** a missing DLL, a game closed as not
+   responding, and other Windows codes in hex, in both languages.
+4. **480p hold for 1080i saves (TASK-078; PR #174):** a save or imported card that holds 1080i races at 480p too.
+5. **GSdx missing or unreachable (issues #139, #179):** Play offers CoreGS 2.0 when the card can run it.
+6. **Spec II replays lost (issue #185):** Spec II names its replays `BASCUS-97436R` plus seven letters and digits (two replays
+   on the owner's PCSX2 card), and the launcher only kept four digits.
+7. **The memory card error names the file (issue #160).**
+
+Acceptance: CTest, Python and launcher tests; identity gates against rc9 (the 480p hold and the SPU2 change are the only
+intended differences, and neither shows in the gated scenes); language gate; owner test, including a car wash in GT Auto and a
+Spec II replay saved, then found again after a restart.

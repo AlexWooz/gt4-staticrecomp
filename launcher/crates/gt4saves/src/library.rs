@@ -266,7 +266,9 @@ impl Library {
         Ok(false)
     }
 
-    /// First unused replay name `BASCUS-97328Rnnnn` in the replays folder (letter R, four digits).
+    /// First unused replay name `BASCUS-97328Rnnnn` in the replays folder (letter R, four digits). Used only when two
+    /// different replays share a name; Spec II's own names are seven characters, and whether Spec II lists a replay named
+    /// this way is not verified.
     fn next_free_replay_name(&self) -> Result<String, LibraryError> {
         for number in 1..=9999 {
             let name = self.names.full_replay_name(number);
