@@ -2351,6 +2351,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             memory_.Local().writeRect(out, static_cast<std::uint32_t>(area.x0), static_cast<std::uint32_t>(area.y0), w, h,
                                       words.data());
             MarkWritten(SpanOfRect(out, area), kWriteReadback);
+            baseWrites_[BaseWriteKey(out.basePointer, out.bufferWidth, static_cast<std::uint32_t>(out.psm))] = writeSequence_;
             if (Contains(area, t->drawn)) {
                 t->drawn = PixelRect{};
                 t->readOnGpu = false;
@@ -2422,6 +2423,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                       static_cast<std::uint32_t>(rect.x1 - rect.x0 + 1),
                                       static_cast<std::uint32_t>(rect.y1 - rect.y0 + 1), d.words.data());
             MarkWritten(SpanOfRect(out, rect), kWriteDelayed);
+            baseWrites_[BaseWriteKey(out.basePointer, out.bufferWidth, static_cast<std::uint32_t>(out.psm))] = writeSequence_;
             stats.delayedDownloads++;
             answered = true;
         }
@@ -2632,6 +2634,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         } auditOnExit{this};
         AuditIds("before upload");
         ScopedUs uploadTimer(clock_, &PhaseTimes::upload);
+        NoteBaseWrite noteBaseWrite{*this, BaseWriteKey(c.dbp, c.dbw, c.dpsm)};
         times_.uploads += 1;
         const auto psm = memory::decodePsm(c.dpsm);
         BlockSpan writtenSpan{};  // IN-487: one walk over the block cells per upload
@@ -2785,6 +2788,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     void LocalToLocalMove(const LocalMoveCommit &move) override {
         AuditIds("before move");
+        NoteBaseWrite noteBaseWrite{*this, BaseWriteKey(move.dbp, move.dbw, move.dpsm)};
         const auto spsm = memory::decodePsm(move.spsm);
         const auto dpsm = memory::decodePsm(move.dpsm);
         if (spsm && move.rrw != 0 && move.rrh != 0) {
@@ -2940,6 +2944,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // sprite on a resident target (a HUD box on the frame buffer) stays a GPU draw at scale. The write is remembered
     // like an upload (2.4b), so a target created over that memory later starts from these pixels.
     // GT4_CORE2_CPU_SPRITES=0 turns it off (A/B).
+    // IN-528: GT4_CORE2_SPRITE_IDS=0 keeps the blocks' old identities after a CPU sprite (A/B, to show the fault).
+    const bool spriteFreshIds_ = std::getenv("GT4_CORE2_SPRITE_IDS") == nullptr ||
+                                 std::strcmp(std::getenv("GT4_CORE2_SPRITE_IDS"), "0") != 0;
     const bool cpuSprites_ = std::getenv("GT4_CORE2_CPU_SPRITES") == nullptr ||
                              std::strcmp(std::getenv("GT4_CORE2_CPU_SPRITES"), "0") != 0;
     bool CpuSmallSprites(const Batch &batch, const writeback::BatchTranslation &t, bool depthUsed) const {
@@ -3552,8 +3559,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             cpuref::DrawBatch(batch, memory_.Local(), frontEnd_.Clut(), drawStats);
             // Not an upload: SetUploadIds does not run, so the written blocks need fresh identities. Otherwise a later replay
             // of an upload (IN-486) takes the old identity for the old bytes, and skips restoring them (IN-528).
-            OnMemoryWritten(t.frameView, t.rect, true, kWriteWhole);
-            if (t.state.fields[gpu::gpufield::Zmsk] == 0) OnMemoryWritten(t.zView, t.rect, true, kWriteWhole);
+            const WriteKind spriteWrite = spriteFreshIds_ ? kWriteWhole : kWriteUpload;
+            OnMemoryWritten(t.frameView, t.rect, true, spriteWrite);
+            if (t.state.fields[gpu::gpufield::Zmsk] == 0) OnMemoryWritten(t.zView, t.rect, true, spriteWrite);
             stats.cpuSpriteBatches++;
             return;
         }
@@ -3878,6 +3886,20 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     ImageId memoryImage_ = kNoImage;
     std::uint32_t memoryImageWidth_ = 0, memoryImageHeight_ = 0;
 
+    // IN-531: the bases, widths and format classes written as a buffer by something other than a draw (an upload, a store, a move).
+    static std::uint64_t BaseWriteKey(std::uint32_t basePointer, std::uint32_t bufferWidth, std::uint32_t psmCode) {
+        const auto psm = memory::decodePsm(psmCode);
+        return (std::uint64_t{basePointer} << 16) | (std::uint64_t{bufferWidth} << 8) | static_cast<std::uint64_t>(psm ? ClassOf(*psm) : FormatClass::None);
+    }
+    std::unordered_map<std::uint64_t, std::uint64_t> baseWrites_;  // the write sequence just after the write
+    const bool showAnyDisplayMemory_ = std::getenv("GT4_CORE2_DISPLAY_MEMORY") != nullptr &&
+                                       std::strcmp(std::getenv("GT4_CORE2_DISPLAY_MEMORY"), "1") == 0;
+    struct NoteBaseWrite {
+        Impl &self;
+        std::uint64_t key;
+        ~NoteBaseWrite() { self.baseWrites_[key] = self.writeSequence_; }
+    };
+
     bool CircuitSource(const display::CircuitRect &circuit, ImageId &image, std::uint32_t &sourceScale,
                        std::uint32_t &readX, std::uint32_t &readY) {
         const auto psm = memory::decodePsm(circuit.psm);
@@ -3906,6 +3928,20 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             return true;
         }
         // 5.2: no target holds the buffer (FMVs, loading screens the EE uploaded): GS memory at 1x.
+        // IN-531: only when something wrote this buffer as a buffer of this base and width. GT4 turns the display on at the race's
+        // return to the menus (480i) some VBlanks before it draws: that memory holds textures of other widths and old depth, which
+        // the reference renderer does not show. It reads black, like a circuit with no source. GT4_CORE2_DISPLAY_MEMORY=1 shows it.
+        const bool showAnyMemory = showAnyDisplayMemory_;
+        // Nothing else wrote the displayed pages since (uploads of other textures over them make it junk again).
+        const auto baseWrite = baseWrites_.find(BaseWriteKey(view.basePointer, view.bufferWidth, circuit.psm));
+        const PixelRect displayed{dbx, dby, dbx + static_cast<std::int32_t>(circuit.read_width) - 1, dby + static_cast<std::int32_t>(circuit.read_height) - 1};
+        const bool writtenAsBuffer = baseWrite != baseWrites_.end() && UnchangedSince(WriteSpan(view, displayed), baseWrite->second);
+        static const bool traceMemory = std::getenv("GT4_CORE2_DISPLAY_TRACE") != nullptr;
+        if (traceMemory) {
+            std::fprintf(stderr, "[core2] display from memory vblank=%llu bp=%u bw=%u psm=%02x written_as_buffer=%d\n",
+                         static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth, static_cast<unsigned>(view.psm), writtenAsBuffer ? 1 : 0);
+        }
+        if (!writtenAsBuffer && !showAnyMemory) return false;
         const std::uint32_t w = circuit.read_width, h = circuit.read_height;
         if (w == 0 || h == 0 || w > 2048 || h > 2048) return false;
         std::string error;

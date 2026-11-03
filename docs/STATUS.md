@@ -8,7 +8,14 @@ Branch `task/139-coregs2-picture-bugs`, from `task/134-game-code-optimization-st
 - **Checked:** a short recording through `record.cmd` ended with a complete file. The owner's Ford GT lap replayed headless on the rc9 package on both renderers at 3x reaches the same race, with the same lap of 1'23.394. The reference's dump numbering is one frame ahead of ours (0.016 s on the race clock).
 - **Not verified:** that Tokyo R246 is listed in Arcade on the bench's card; replay in sync on the reference renderer with AI cars (IN-506 saw a different rival list between the two), so a Time Trial is the safe recording.
 - **Bugs registered (TASK-139 in `TASKS.md`):** the time trial ghost drawn solid (Confirmed: the reference and a real PS2 draw it in alternating rows); the Tokyo R246 asphalt texture (owner and a player); a glitch when a race returns to the menus at the 480p to 480i switch (owner, random, not on GSdx).
-- **Waiting for:** the owner's recordings of Tokyo R246, El Capitan and possibly a third track.
+- **The owner's recordings:** Tokyo R246 and El Capitan (Time Trial, Spec II), replayed headless at 3x on both renderers. The reference stays in sync with the recordings.
+- **Fixed, all four found on those replays (IMPLEMENTATION-NOTES IN-528 to IN-531):**
+  - IN-528, black blocks and broken textures on Tokyo R246: a CPU sprite left its blocks' identities stale, so the upload memo skipped restoring them. Upload check to VBlank 8000: 4,276 mismatches -> 0.
+  - IN-529, the wrong frame as a race opens and in the fade out (signs missing, white trees), and El Capitan's grey road at VBlank 2700: GT4 clears its depth through FRAME and ZBUF at once; drawn now as a depth write.
+  - IN-530, the solid time trial ghost: SCANMSK was not drawn at all; now on output rows, like GSdx.
+  - IN-531, green screens and junk when a race returns to the menus: the display showed GS memory no buffer was written to.
+- **Checks:** Tokyo VBlanks 10750-10780 against GSdx: median difference 0.00 (was green); the fade frames and frame 8000 look like GSdx; George V Paris lap: the car's rear glass now shows the interior, as on GSdx. New tests `hw_core2_depth_clear`, `hw_core2_scanmsk`, `hw_core2_display_memory`, and a CPU sprite case in `hw_core2_upload_memo`; each fails with its A/B switch.
+- **Not verified:** a window run and the owner's own test; the custom texture pack the player uses; v2.00 (same renderer code, not replayed).
 
 ## TASK-134: 1.3.0-rc9, the CPU optimisation, installed for the owner's test (2026-11-02)
 

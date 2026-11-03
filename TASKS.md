@@ -2672,3 +2672,5 @@ Bugs reported by the owner (2026-11-02):
 3. **Glitch when a race returns to the menus (480p to 480i).** A random frame or green squares for a moment, not predictable; not seen on GSdx. The launcher always forces 480p in races, and the recording scripts do too, so a replay passes through this switch if the drive leaves the race before F9. Not reproduced by us yet.
 
 The owner's pictures and the ghost comparison are in `private/coregs2-bench/reports/` (not in git).
+
+State (2026-11-03): the owner recorded Tokyo R246 and El Capitan and reported two more bugs on them: a wrong frame as the race opens (bug 4) and a glitch in the fade when leaving the race (bug 5). All five are fixed and match GSdx on the replays (IN-528 to IN-531): bug 1 IN-530, bug 2 IN-528, bugs 3 IN-531, bugs 4 and 5 IN-529. Waiting for the owner's test.
