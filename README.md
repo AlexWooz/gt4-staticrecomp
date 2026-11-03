@@ -169,8 +169,15 @@ possible.
 
 ## Credits
 
+**Contributors on GitHub:** Wise ([gustavocanepa](https://github.com/gustavocanepa)), the author of gt4-decomp, for the
+game's function names and a check on GS settings; Julio Vitor Rufino ([JulioHeroZ](https://github.com/JulioHeroZ)), for
+racing wheel support, RetroAchievements and the renderer choice kept on updates; Luan Antony
+([luanantony](https://github.com/luanantony)), for the racing wheel integration, DualSense trigger curves and many fixes
+and studies. Thank you!
+
 | Project | Author | What it gives this project |
 |---|---|---|
+| gt4-staticrecomp, the original project | [Kaezzey](https://github.com/Kaezzey) (Niket Shah) | Where GT4Recomp started: this repository is a fork of his project, with its first setup and tools. |
 | [ps2-web-recomp](https://github.com/snuri00/ps2-web-recomp) (MIT) | snuri00 | The runtime foundation: EE-to-C++ translator, PS2 hardware models, the GS compute renderer and the original VU1 compiler. |
 | [gt4-decomp](https://github.com/gustavocanepa/gt4-decomp) (MIT) | gustavocanepa | GT4's decompilation: function names, class layouts and engine notes ([identity](docs/DECOMP-IDENTITY.md)). |
 | [Nenkai's GT research](https://github.com/Nenkai) | Nenkai | File formats and the VU1 microcode encryption scheme ([details](docs/VU1-MICROCODE-SOURCE.md)). |
