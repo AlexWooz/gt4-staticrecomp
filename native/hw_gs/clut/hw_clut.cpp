@@ -465,6 +465,37 @@ void ClutUnit::Copy(const Tex0Write& write, const uint8_t* localMemory) {
     last_ = write;
 }
 
+void ClutUnit::PeekLoad(const Tex0Write& write, const uint8_t* localMemory, uint16_t* out) const {
+    std::copy(std::begin(halfwords_), std::end(halfwords_), out);
+    if (!IsCpsmValid(write.cpsm)) return;
+    const bool eightBit = (write.psm & 7u) == 3u;
+    const uint32_t entryCount = eightBit ? 256u : 16u;
+    const bool is32 = write.cpsm == psm::kCt32;
+    // The same entries and places as Copy and PlaceEntries, read straight from memory.
+    for (uint32_t e = 0; e < entryCount; ++e) {
+        uint32_t x = 0, y = 0, width = 1;
+        if (write.csm == 0u) {
+            CsmEntryPosition(e, eightBit, x, y);
+        } else {
+            x = write.texclutCou * 16u + e;
+            y = write.texclutCov;
+            width = write.texclutCbw;
+        }
+        PixelLocation location;
+        if (!LocatePixel(write.cpsm, write.cbp, width, x, y, location)) continue;
+        const uint8_t* source = localMemory + location.PhysicalByte();
+        if (is32) {
+            const uint32_t group = (e >> 4) + (write.csa & 15u);
+            if (group > 15u) continue;
+            const uint32_t raw = ReadLittle(source, 4);
+            out[16u * group + (e & 15u)] = static_cast<uint16_t>(raw & 0xFFFFu);
+            out[16u * group + (e & 15u) + 256u] = static_cast<uint16_t>(raw >> 16);
+        } else {
+            out[(16u * write.csa + e) & 511u] = static_cast<uint16_t>(ReadLittle(source, 2));
+        }
+    }
+}
+
 void ClutUnit::SetHalfwords(const uint16_t* halfwords) {
     std::copy(halfwords, halfwords + 512, std::begin(halfwords_));
     ++generation_;

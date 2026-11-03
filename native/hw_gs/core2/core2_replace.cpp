@@ -41,6 +41,16 @@ bool ReplacementLoader::Take(Loaded &out, bool wait) {
     return true;
 }
 
+bool ReplacementLoader::TakeWithin(Loaded &out, std::chrono::microseconds limit) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    finished_.wait_for(lock, limit, [this] { return !done_.empty() || outstanding_ == 0; });
+    if (done_.empty()) return false;
+    out = std::move(done_.front());
+    done_.pop_front();
+    --outstanding_;
+    return true;
+}
+
 void ReplacementLoader::Dump(std::filesystem::path file, std::uint32_t width, std::uint32_t height,
                              std::vector<std::uint8_t> rgba) {
     {

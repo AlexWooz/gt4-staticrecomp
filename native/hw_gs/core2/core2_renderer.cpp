@@ -1688,6 +1688,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // Images in the pool past the budget are released (the pool only saves allocations).
     void TrimTexturePool() {
         PumpReplacements(replacementSync_);
+        replacementWaitedUs_ = 0;
         for (const auto &[image, size] : uncachedTextures_) texturePool_[size].push_back(image);
         uncachedTextures_.clear();
         overMemo_.clear();
@@ -3072,7 +3073,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::uint64_t sequence = 0;
         std::uint64_t id = 0;      // 0: no replacement
         bool triedUpload = false;  // the hash ran with an upload extent (chapter 04.6)
+        std::string name;          // the Format P name the key gives (GT4_CORE2_FRAME_TRACE_AT shows it)
     };
+    std::string lastLookupName_;  // the name of the last batch's lookup, for the frame trace
     class SlmTexels final : public hw_gs_replace::TexelSource {
     public:
         explicit SlmTexels(const memory::LocalMemory &local) : local_(local) {}
@@ -3110,6 +3113,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::uint64_t replacedBudget_ = 0;
     std::uint64_t replacementUses_ = 0;
     std::deque<ReplacementLoader::Loaded> replacementArrivals_;
+    // IN-533: a replacement needed by a batch and not on the GPU used to draw the game's texture until it arrived at a later
+    // VBlank, so content that changes (the lap and position digits of the race HUD) showed the game's own texture for a
+    // frame or two each time. The GS worker now waits for such an image, at most this long per VBlank
+    // (GT4_HW_TEXTURES_WAIT_US, default 6000; 0 is the earlier behaviour). GT4_HW_TEXTURES_TRACE=1 logs every request and
+    // every batch still drawn without its replacement.
+    std::uint64_t replacementWaitBudgetUs_ = 6000;
+    std::uint64_t replacementWaitedUs_ = 0;  // this VBlank
+    bool replacementTrace_ = false;
 
     void StartTextureReplacement() {
         // Read as Windows holds them: in the narrow form an accented folder is in the ANSI code page, not UTF-8.
@@ -3117,6 +3128,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const char *dump = std::getenv("GT4_HW_DUMP_TEXTURES");
         textureDumps_ = dump != nullptr && std::strcmp(dump, "0") != 0;
         replacementSync_ = std::getenv("GT4_HW_TEXTURES_SYNC") != nullptr;
+        replacementTrace_ = std::getenv("GT4_HW_TEXTURES_TRACE") != nullptr;
+        if (const char *wait = std::getenv("GT4_HW_TEXTURES_WAIT_US")) replacementWaitBudgetUs_ = std::strtoull(wait, nullptr, 10);
         const char *megabytes = std::getenv("GT4_HW_TEXTURES_MB");
         replacedBudget_ = megabytes != nullptr && std::atoll(megabytes) > 0
                               ? static_cast<std::uint64_t>(std::atoll(megabytes)) << 20
@@ -3249,12 +3262,42 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // The batch's replacement image, or null: none, not eligible, or still loading (the native decode draws).
     const ReplacedTexture *FindReplacement(const Batch &batch, const writeback::BatchTranslation &t) {
         namespace rp = hw_gs_replace;
-        if (!replacementLoader_ || !t.glmTexture) return nullptr;
+        lastLookupName_.clear();
+        if (!replacementLoader_ || !t.glmTexture) {
+            lastLookupName_ = "(not a memory texture)";
+            return nullptr;
+        }
         ScopedUs timer(clock_, &PhaseTimes::texture);
         const std::uint64_t tex0 = batch.state.ctx.tex0, texa = batch.state.env.texa, clamp = batch.state.ctx.clamp;
         const std::uint64_t tex1 = batch.state.ctx.tex1;
-        // Chapter 11.1: memory sources only. A palette written on the GPU is unknown here, so it cannot be hashed.
-        if (t.glmIndexed && GpuPaletteKey(t.glmPsm, tex0::Cpsm(tex0), tex0::Csa(tex0)) != 0) return nullptr;
+        // Chapter 11.1: memory sources only; the palette is the CLUT buffer the CPU unit holds. IN-534: a palette loaded on
+        // the GPU (its memory lies under a drawn target) is not in that buffer. GT4 keeps some palettes in the memory of its
+        // display buffers, so the same texture's palette was read on the GPU in every other frame and the batch drew the
+        // game's texture there (the GT Auto logo, doubled when the two buffers held different versions). Such a palette is
+        // read from GS memory for the key, as a memory source reads it: a palette the GPU drew does not match a pack name.
+        std::array<std::uint16_t, 512> memoryClut{};
+        const std::uint16_t *clutWords = frontEnd_.Clut().Halfwords();
+        std::uint64_t paletteKey = t.glmIndexed ? writeback::HashPaletteWords(t.palette) : 0;
+        if (t.glmIndexed && GpuPaletteKey(t.glmPsm, tex0::Cpsm(tex0), tex0::Csa(tex0)) != 0) {
+            clut::Tex0Write write;
+            write.psm = tex0::Psm(tex0);
+            write.cbp = tex0::Cbp(tex0);
+            write.cpsm = tex0::Cpsm(tex0);
+            write.csm = tex0::Csm(tex0);
+            write.csa = tex0::Csa(tex0);
+            const std::uint64_t texclut = batch.state.env.texclut;
+            write.texclutCbw = static_cast<std::uint32_t>(texclut & 0x3Fu);
+            write.texclutCou = static_cast<std::uint32_t>((texclut >> 6) & 0x3Fu);
+            write.texclutCov = static_cast<std::uint32_t>((texclut >> 12) & 0x3FFu);
+            frontEnd_.Clut().PeekLoad(write, memory_.Local().bytes().data(), memoryClut.data());
+            clutWords = memoryClut.data();
+            paletteKey = 1;
+            for (std::size_t i = 0; i < memoryClut.size(); i += 4) {
+                paletteKey = MixWords(paletteKey, std::uint64_t{memoryClut[i]} | (std::uint64_t{memoryClut[i + 1]} << 16) |
+                                                      (std::uint64_t{memoryClut[i + 2]} << 32) | (std::uint64_t{memoryClut[i + 3]} << 48));
+            }
+            stats.replacementMemoryPalettes++;
+        }
         const auto texturePsm = memory::decodePsm(t.glmPsm);
         if (!texturePsm) return nullptr;
         namespace gf = gpu::gpufield;
@@ -3271,12 +3314,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         key = MixWords(MixWords(key, tex1), batch.state.ctx.miptbp1);
         key = MixWords(MixWords(key, batch.state.ctx.miptbp2), texa);
         key = MixWords(key, (std::uint64_t{readWidth} << 32) | readHeight);
-        if (t.glmIndexed) key = MixWords(key, writeback::HashPaletteWords(t.palette));
+        if (t.glmIndexed) key = MixWords(key, paletteKey);
 
         std::uint64_t id = 0;
         auto lookup = replacementLookups_.find(key);
         if (lookup != replacementLookups_.end() && UnchangedSince(lookup->second.span, lookup->second.sequence)) {
             id = lookup->second.id;
+            lastLookupName_ = lookup->second.name;
         } else {
             const MipPlan mip = PlanMips(t, tex1, batch.state.ctx.miptbp1, batch.state.ctx.miptbp2);
             writeback::TextureKey address;
@@ -3310,14 +3354,20 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             if (known != replacementByContent_.end() && (known->second.id != 0 || known->second.triedUpload || !upload)) {
                 result = known->second;
             } else {
-                result = HashAndFind(t, tex0, texa, wrapU, wrapV, tw, th, mip, upload, readWidth, readHeight);
+                result = HashAndFind(t, tex0, texa, wrapU, wrapV, tw, th, mip, upload, readWidth, readHeight, clutWords);
                 replacementByContent_[content] = result;
             }
             result.span = span;
             result.sequence = writeSequence_;
             replacementLookups_[key] = result;
             id = result.id;
+            lastLookupName_ = result.name;
         }
+        return ReplacementImage(id);
+    }
+
+    // The replacement image `id` (0: none) on the GPU, or null while it loads (the native decode draws meanwhile).
+    const ReplacedTexture *ReplacementImage(std::uint64_t id) {
         if (id == 0) return nullptr;
         ReplacedTexture &texture = replacedTextures_[id];
         if (texture.image == kNoImage) {
@@ -3325,23 +3375,57 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 texture.loading = true;
                 replacementLoader_->Request(id, texture.entry);
                 stats.replacementRequests++;
+                if (replacementTrace_) {
+                    std::fprintf(stderr, "[core2] replacement request vblank=%llu id=%llu %s\n",
+                                 static_cast<unsigned long long>(vblanks_), static_cast<unsigned long long>(id),
+                                 texture.entry.basename.c_str());
+                }
             }
             if (replacementSync_ && texture.loading) {
                 ReplacementLoader::Loaded loaded;
                 if (replacementLoader_->Take(loaded, true)) replacementArrivals_.push_back(std::move(loaded));
                 PumpReplacements(true);
             }
-            if (texture.image == kNoImage) return nullptr;
+            if (texture.loading) WaitForReplacement(texture);
+            if (texture.image == kNoImage) {
+                if (texture.loading) {
+                    stats.replacementLate++;
+                    if (replacementTrace_) {
+                        std::fprintf(stderr, "[core2] replacement late vblank=%llu id=%llu %s\n",
+                                     static_cast<unsigned long long>(vblanks_), static_cast<unsigned long long>(id),
+                                     texture.entry.basename.c_str());
+                    }
+                }
+                return nullptr;
+            }
         }
         texture.lastUse = ++replacementUses_;
         return &texture;
+    }
+
+    // IN-533: waits for `texture` to arrive from the loader, within what is left of this VBlank's wait budget. Images that
+    // arrive meanwhile go on the GPU at once (the other ones were asked for earlier, so they are needed too).
+    void WaitForReplacement(const ReplacedTexture &texture) {
+        while (texture.loading && replacementWaitedUs_ < replacementWaitBudgetUs_) {
+            const auto start = std::chrono::steady_clock::now();
+            ReplacementLoader::Loaded loaded;
+            const bool arrived =
+                replacementLoader_->TakeWithin(loaded, std::chrono::microseconds(replacementWaitBudgetUs_ - replacementWaitedUs_));
+            const auto waited = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+            replacementWaitedUs_ += waited;
+            stats.replacementWaitUs += waited;
+            if (!arrived) return;
+            replacementArrivals_.push_back(std::move(loaded));
+            PumpReplacements(true);
+        }
     }
 
     // Format P key over GS memory, then the pack index.
     ReplacementLookup HashAndFind(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa,
                                   const hw_gs_replace::WrapAxis &wrapU, const hw_gs_replace::WrapAxis &wrapV, std::uint32_t tw,
                                   std::uint32_t th, const MipPlan &mip, const std::optional<hw_gs_replace::UploadExtent> &upload,
-                                  std::uint32_t readWidth, std::uint32_t readHeight) {
+                                  std::uint32_t readWidth, std::uint32_t readHeight, const std::uint16_t *clutWords) {
         namespace rp = hw_gs_replace;
         ReplacementLookup result;
         result.triedUpload = upload.has_value();
@@ -3350,7 +3434,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if ((tw > 10u && !regionX.present) || (th > 10u && !regionY.present)) return result;
         if (!rp::IsKnownPsmCode(t.glmPsm) || !rp::IsKnownPsmCode(tex0::Cpsm(tex0))) return result;
         rp::ClutBuffer clut;
-        std::memcpy(clut.halfwords.data(), frontEnd_.Clut().Halfwords(), sizeof clut.halfwords);
+        std::memcpy(clut.halfwords.data(), clutWords, sizeof clut.halfwords);
         rp::TextureDescription desc;
         desc.psm = rp::PsmFromCode(t.glmPsm);
         desc.texa = rp::TexaState{static_cast<std::uint8_t>(texa & 0xFFu), ((texa >> 15) & 1u) != 0,
@@ -3373,6 +3457,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const SlmTexels source(memory_.Local());
         const rp::FormatPKeys keys = rp::ComputeFormatPKeys(source, desc);
         stats.replacementKeys++;
+        result.name = rp::FormatPDumpName(keys.fullChain, rp::ImageExtension::Png);
+        if (upload) result.name += " upload=" + std::to_string(upload->width) + "x" + std::to_string(upload->height);
         std::optional<rp::PackEntry> entry = replacementIndex_.FindFormatP(keys.fullChain);
         if (!entry && keys.baseOnly) entry = replacementIndex_.FindFormatP(*keys.baseOnly);
         if (!entry) {
@@ -3640,6 +3726,40 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         draw.zMax = zFormat == 1 ? 0xFFFFFFu : zFormat == 2 ? 0xFFFFu : 0xFFFFFFFFu;
         const ReplacedTexture *replaced =
             t.hasTexture && draw.texture == kNoImage ? FindReplacement(batch, t) : nullptr;
+        // Diagnostics: GT4_CORE2_FRAME_TRACE_AT=<VBlank>[-<last VBlank>] lists every batch of those VBlanks: its frame, its
+        // texture and where the texture came from (a target, a replacement or GS memory), the drawn rectangle and the blend.
+        static const auto frameTrace = [] {
+            std::pair<long long, long long> range{-1, -1};
+            if (const char *text = std::getenv("GT4_CORE2_FRAME_TRACE_AT")) {  // diagnostics only
+                char *end = nullptr;
+                range.first = range.second = std::strtoll(text, &end, 10);
+                if (end && *end == '-') range.second = std::strtoll(end + 1, nullptr, 10);
+            }
+            return range;
+        }();
+        if (frameTrace.first >= 0 && static_cast<long long>(vblanks_) >= frameTrace.first &&
+            static_cast<long long>(vblanks_) <= frameTrace.second) {
+            const std::uint64_t tex0 = batch.state.ctx.tex0;
+            std::int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
+            std::uint32_t u0 = UINT32_MAX, v0 = UINT32_MAX, u1 = 0, v1 = 0;
+            for (const Vertex &v : batch.vertices) {
+                x0 = std::min(x0, v.x4 >> 4), y0 = std::min(y0, v.y4 >> 4), x1 = std::max(x1, v.x4 >> 4), y1 = std::max(y1, v.y4 >> 4);
+                u0 = std::min(u0, v.u >> 4), v0 = std::min(v0, v.v >> 4), u1 = std::max(u1, v.u >> 4), v1 = std::max(v1, v.v >> 4);
+            }
+            const std::string file = replaced ? replaced->entry.basename.substr(0, 16)
+                                     : t.hasTexture && draw.texture == kNoImage ? " key " + lastLookupName_ : std::string();
+            std::fprintf(stderr,
+                         "[core2] frame-trace vblank=%llu draw=%llu frame=%u/%u/%02x tex=%u/%u/%02x %ux%u src=%s%s xy=%d,%d..%d,%d "
+                         "uv=%u,%u..%u,%u blend=%u alpha=%u verts=%zu\n",
+                         static_cast<unsigned long long>(vblanks_), static_cast<unsigned long long>(drawCounter_),
+                         t.frameView.basePointer, t.frameView.bufferWidth,
+                         static_cast<unsigned>(t.frameView.psm), t.hasTexture ? t.glmBp : 0u, t.hasTexture ? t.glmBw : 0u,
+                         t.hasTexture ? t.glmPsm : 0u, t.hasTexture ? 1u << tex0::Tw(tex0) : 0u,
+                         t.hasTexture ? 1u << tex0::Th(tex0) : 0u,
+                         !t.hasTexture ? "none" : draw.texture != kNoImage ? "target" : replaced ? "replaced:" : "memory",
+                         file.c_str(), x0, y0, x1, y1, u0, v0, u1, v1, t.state.fields[gpu::gpufield::BlendOn],
+                         batch.vertices.empty() ? 0u : batch.vertices.front().a, batch.vertices.size());
+        }
         if (replaced) {  // IN-470: chapter 11, a replacement instead of the decode
             draw.memoryTexture = replaced->image;
             draw.replacedWidth = replaced->width;
@@ -4307,10 +4427,11 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     if (c.replacementFiles != 0 || c.replacementDumps != 0) {
         std::fprintf(stderr,
                      "[core2] texture replacement files=%llu keys=%llu requests=%llu loads=%llu failed=%llu hits=%llu "
-                     "mb=%.1f dumps=%llu\n",
+                     "late=%llu memory_palettes=%llu wait_ms=%.1f mb=%.1f dumps=%llu\n",
                      (unsigned long long)c.replacementFiles, (unsigned long long)c.replacementKeys,
                      (unsigned long long)c.replacementRequests, (unsigned long long)c.replacementLoads,
                      (unsigned long long)c.replacementFailed, (unsigned long long)c.replacementHits,
+                     (unsigned long long)c.replacementLate, (unsigned long long)c.replacementMemoryPalettes, static_cast<double>(c.replacementWaitUs) / 1000.0,
                      static_cast<double>(c.replacementBytes) / (1024.0 * 1024.0), (unsigned long long)c.replacementDumps);
     }
     // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).

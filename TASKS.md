@@ -2705,3 +2705,27 @@ State (2026-11-03): items 1-8 done on `task/134-game-code-optimization-study` (i
 Acceptance: CTest, Python and launcher tests; identity gates against rc9 (the 480p hold and the SPU2 change are the only
 intended differences, and neither shows in the gated scenes); language gate; owner test, including a car wash in GT Auto and a
 Spec II replay saved, then found again after a restart.
+
+Owner test of rc10 (2026-11-03): the GT Auto oil change sound stops (item 2 confirmed).
+
+### TASK-141 — CoreGS 2.0 custom textures: a frame of the game's texture, and doubled logos in GT Auto
+
+Clean room: a TASK-027 agent, not PCSX2-tainted. Reported 2026-11-03, CoreGS 2.0 with the owner's HD HUD & UI pack
+(`data\Textures`, 15,973 files):
+
+1. **A player:** when a lap ends on Tokyo R246, the lap and position digits show the game's own texture for about a frame, then
+   the pack's again. Cause (Confirmed in the code): a replacement needed by a batch and not on the GPU is loaded on the worker
+   thread and only taken at a later VBlank; until then the batch draws the game's texture (IN-470). New content (a new digit)
+   or an image evicted past the budget does this every time.
+2. **The owner:** in GT Auto (Spec II), the GT Auto logo and the Oil Change title look doubled, with a shifted copy; without the
+   pack they are right. Cause Unknown; needs a recording of that menu and a comparison with GSdx and the same pack.
+
+Acceptance: no batch drawn without its replacement in the recorded scenes (`late=0` in the `[core2] texture replacement` line),
+GT Auto as on GSdx with the pack, the identity gates without a pack unchanged, owner test.
+
+State (2026-11-03): both fixed on `task/134-game-code-optimization-study` (IN-533, IN-534). Item 2's cause: the logo's palette
+lives in a display buffer's memory and was loaded on the GPU in every other frame, which skipped the replacement there; it is
+now read from GS memory for the key, as GSdx does. Recording `private/coregs2-bench/inputs/gtauto-oil.txt` on a copy of the
+owner's Spec II card (`gtauto-card.ps2`): from the GT mode home to GT Auto and the Oil Change. A third report (lap time digits not
+in HD in a race with opponents) is not reproduced on the Time Trial recording, where they are HD; the palette fix may cover it
+(16,000 more HUD batches replaced on Tokyo R246). Owner test next.

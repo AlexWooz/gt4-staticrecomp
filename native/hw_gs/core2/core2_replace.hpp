@@ -6,6 +6,7 @@
 // VBlank; until then the batch draws with the texture decoded from GS memory.
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -36,6 +37,8 @@ public:
     void Request(std::uint64_t id, hw_gs_replace::PackEntry entry);
     // One finished image, without waiting. With `wait` it waits until a requested image is finished.
     bool Take(Loaded &out, bool wait = false);
+    // IN-533: one finished image, waiting at most `limit` for one when none is finished yet.
+    bool TakeWithin(Loaded &out, std::chrono::microseconds limit);
     // Writes an RGBA8 PNG (chapter 11.6), keeping an existing file.
     void Dump(std::filesystem::path file, std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t> rgba);
     // Waits until every queued dump is written (fixtures).

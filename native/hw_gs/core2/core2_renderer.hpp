@@ -61,6 +61,9 @@ struct Core2Counters {
     std::uint64_t replacementLoads = 0;        // images put on the GPU
     std::uint64_t replacementFailed = 0;       // files refused
     std::uint64_t replacementHits = 0;         // batches drawn with a replacement
+    std::uint64_t replacementLate = 0;         // IN-533: batches drawn with the game's texture while their replacement loaded
+    std::uint64_t replacementMemoryPalettes = 0;  // IN-534: lookups that read a palette loaded on the GPU from GS memory
+    std::uint64_t replacementWaitUs = 0;       // IN-533: time the GS worker waited for replacements it needed now
     std::uint64_t replacementBytes = 0;        // replacement images on the GPU now
     std::uint64_t replacementDumps = 0;        // textures dumped
     std::uint64_t depthClears = 0;             // IN-529: depth clears through FRAME and ZBUF drawn as a depth write

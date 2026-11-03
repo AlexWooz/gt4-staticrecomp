@@ -1429,6 +1429,7 @@ void TestClutCopyFree() {
         CounterSet countersM, countersN;
         clut::ClutUnit remembering(countersM), reading(countersN);
         reading.SetDataMemo(false);
+        int peekedLoads = 0;
         const auto changeBlocks = [&](uint32_t begin, uint32_t count) {
             for (uint32_t i = 0; i < count; ++i) {
                 uint8_t *block = memory.data() + static_cast<size_t>((begin + i) % 16384u) * 256u;
@@ -1458,11 +1459,19 @@ void TestClutCopyFree() {
             w.texclutCbw = 1u + next() % 4u;
             w.texclutCou = next() % 4u;
             w.texclutCov = next() % 8u;
+            // IN-534: PeekLoad reads the buffer a load from memory gives, without loading.
+            uint16_t peeked[512];
+            reading.PeekLoad(w, memory.data(), peeked);
             const bool loadM = remembering.ProcessWrite(w, memory.data(), {});
             const bool loadN = reading.ProcessWrite(w, memory.data(), {});
             CHECK_EQ(loadM, loadN);
             for (uint32_t i = 0; i < 512; ++i) CHECK_EQ(remembering.Halfwords()[i], reading.Halfwords()[i]);
+            if (loadN) {
+                for (uint32_t i = 0; i < 512; ++i) CHECK_EQ(peeked[i], reading.Halfwords()[i]);
+                ++peekedLoads;
+            }
         }
+        CHECK(peekedLoads > 1000);
         CHECK(remembering.DataMemoHits() > 500u);
         CHECK(remembering.DataMemoReads() > 100u);
     }

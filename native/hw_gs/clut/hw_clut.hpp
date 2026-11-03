@@ -114,6 +114,9 @@ public:
     uint32_t Cbp0() const { return cbp0_; }
     uint32_t Cbp1() const { return cbp1_; }
     const uint16_t* Halfwords() const { return halfwords_; }
+    // IN-534: the 512 halfwords the CLUT buffer would hold if `write` loaded from `localMemory` now, starting from this
+    // buffer; the unit itself is not changed. Texture replacement hashes a palette loaded on the GPU from GS memory this way.
+    void PeekLoad(const Tex0Write& write, const uint8_t* localMemory, uint16_t* out) const;
 
     // A/B switch GT4_HW_CLUT_ALWAYS_LOAD=1 disables the redundancy filter.
     void SetAlwaysLoad(bool alwaysLoad) { alwaysLoad_ = alwaysLoad; }
