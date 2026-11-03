@@ -2729,3 +2729,14 @@ now read from GS memory for the key, as GSdx does. Recording `private/coregs2-be
 owner's Spec II card (`gtauto-card.ps2`): from the GT mode home to GT Auto and the Oil Change. A third report (lap time digits not
 in HD in a race with opponents) is not reproduced on the Time Trial recording, where they are HD; the palette fix may cover it
 (16,000 more HUD batches replaced on Tokyo R246). Owner test next.
+
+State (2026-11-03, night): rc10 rebuilt with these fixes (slice399) and installed; the owner's tests passed and rc10 is published
+as a pre-release on the owner's word.
+
+### TASK-142 — CoreGS 2.0: a car's glass shows parts of the car in front when close behind it
+
+Clean room: a TASK-027 agent, not PCSX2-tainted. Reported by the owner on rc10 (2026-11-03), CoreGS 2.0 at 6x: driving close
+behind another car, where the transparency of a car's glass is drawn, the 3D of the car in front shows through in places. Cause
+Unknown (Hypothesis: the order or the depth of the transparent glass batches against the other car, or a target read while it
+is being drawn). Next: record a drive close behind a car (`record.cmd`), replay it on CoreGS 2.0 and GSdx and compare frame by
+frame. Planned for rc11 (owner).
