@@ -1,5 +1,16 @@
 # Current Status
 
+## 1.3.0-rc10 rebuilt with the CoreGS 2.0 custom texture fixes (TASK-141), installed, not uploaded (2026-11-03, night)
+
+The owner's test of the first rc10 found two glitches with the HD HUD & UI pack on CoreGS 2.0 (a player saw a third): HUD digits
+showing the game's texture for a frame on Tokyo R246, and the GT Auto logo and Oil Change title doubled. Fixed (IN-533, IN-534,
+commit `079601ac`; TASK-141) and rc10 rebuilt under the same label: game slice399 (exe `0f0a4b3d...` v2.00, `289396db...` Spec II,
+pins `docs/inputs/slice399-*.json`, distribution `private/slice399-dist-130-rc10`), package `private/release-130-rc10b-out`
+(installer `b07b7097...` 51,818,176 bytes, zip `2eef869d...` 80,744,000 bytes), checked against its sources. Gates against rc9
+all equal (the same set as below). GT Auto recording at 4x and 6x with the pack: the logo and title drawn from the pack in every
+frame, no doubled copy. Installed on the owner's desktop through the installer's update mode (files match the manifest); the
+first rc10's program files are in `private/_program-backups/rc10a-before-rc10b-20261103T190658Z`. Not uploaded (owner).
+
 ## 1.3.0-rc10 built for the owner's test, not uploaded (2026-11-03)
 
 TASK-140 (the player fixes the owner chose from the triage of 47 open PRs and the open issues; ai-memory
