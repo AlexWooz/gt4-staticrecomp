@@ -410,20 +410,18 @@ Upper upper(std::uint32_t hi, const FlagUse &use, bool donor_exact = false) {
     return u;
 }
 
+// TASK-134: a partial destination is written as a whole qword with the other lanes kept (vsel), not lane by lane. The register (or
+// memory qword) is read back as 16 bytes soon after, and a 16-byte read of four separate 4-byte stores cannot be forwarded from the
+// store buffer: the processor waits for the stores to reach the cache. The bytes written are the same. A qword is always inside
+// VU memory (qword() masks the index).
 std::string lanes_copy(unsigned dest, const std::string &to, const std::string &from_qword) {
     if (dest == 0xF) return std::format("std::memcpy(&{}, {}, 16); ", to, from_qword);
-    std::string s;
-    for (int i = 0; i < 4; ++i)
-        if (lane(dest, i)) s += std::format("std::memcpy(&{}.w[{}], {} + {}, 4); ", to, i, from_qword, i * 4);
-    return s;
+    return std::format("vstore({0}, vsel(vload({0}), vload_bytes({1}), {2})); ", to, from_qword, lane_mask(dest));
 }
 
 std::string lanes_store(unsigned dest, const std::string &qword_expr, const std::string &from) {
     if (dest == 0xF) return std::format("std::memcpy({}, &{}, 16); ", qword_expr, from);
-    std::string s;
-    for (int i = 0; i < 4; ++i)
-        if (lane(dest, i)) s += std::format("std::memcpy({} + {}, &{}.w[{}], 4); ", qword_expr, i * 4, from, i);
-    return s;
+    return std::format("vstore_bytes({0}, vsel(vload_bytes({0}), vload({1}), {2})); ", qword_expr, from, lane_mask(dest));
 }
 
 struct Lower {
@@ -460,14 +458,15 @@ Lower lower(std::uint32_t w, std::uint32_t pc, std::uint32_t mask) {
         switch (index) {
         case 0x30:
             if (ft) l.writes = static_cast<int>(ft);
-            if (ft) for (int i = 0; i < 4; ++i) if (lane(dest, i)) c += std::format("r.vf[{}].w[{}] = r.vf[{}].w[{}]; ", ft, i, fs, i);
+            // TASK-134: the lanes as one qword (see lanes_copy).
+            if (ft && dest) c += std::format("vstore(r.vf[{0}], vsel(vload(r.vf[{0}]), vload(r.vf[{1}]), {2})); ", ft, fs, lane_mask(dest));
             break;
         case 0x31:
             if (ft) l.writes = static_cast<int>(ft);
-            if (ft) {
-                c = std::format("{{ const Reg128 m = r.vf[{}]; ", fs);
-                for (int i = 0; i < 4; ++i) if (lane(dest, i)) c += std::format("r.vf[{}].w[{}] = m.w[{}]; ", ft, i, (i + 1) & 3);
-                c += "} ";
+            if (ft && dest) {
+                // MR32: lane i takes fs lane i + 1 (w takes x), as one qword.
+                c = std::format("{{ const v4u m = vload(r.vf[{0}]); vstore(r.vf[{1}], vsel(vload(r.vf[{1}]), __builtin_shufflevector(m, m, 1, 2, 3, 0), {2})); }} ",
+                                fs, ft, lane_mask(dest));
             }
             break;
         case 0x34:

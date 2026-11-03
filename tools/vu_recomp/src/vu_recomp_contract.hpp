@@ -33,6 +33,7 @@
 #include "ps2/vu_ops.hpp"
 
 #include <cstdint>
+#include <cstring>
 #if defined(__SSE2__)
 #include <emmintrin.h>
 #endif
@@ -54,6 +55,14 @@ struct RunContext {
 
 // VU0 data memory is 4 KiB: qword index masked to 256 qwords (donor unit_of(0): data_qwords - 1).
 inline std::uint8_t *qword_vu0(std::uint8_t *memory, std::uint32_t index) { return memory + (index & 255u) * 16u; }
+
+// TASK-134: one VU memory qword as a vector, for the partial loads and stores the emitter writes as whole qwords.
+inline ps2::vuops::v4u vload_bytes(const std::uint8_t *qword) {
+    ps2::vuops::v4u value;
+    std::memcpy(&value, qword, 16);
+    return value;
+}
+inline void vstore_bytes(std::uint8_t *qword, ps2::vuops::v4u value) { std::memcpy(qword, &value, 16); }
 
 using ProgramFunction = RunStatus (*)(ps2::Vu0Regs &regs, std::uint8_t *vu_memory, RunContext &context);
 
