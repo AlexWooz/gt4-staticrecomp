@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <optional>
 #include <unordered_map>
 
@@ -574,8 +575,8 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
                     a.r = b.r; a.g = b.g; a.b = b.b; a.a = b.a;  // last vertex (de-index, IN-212)
                     counters.flatDeindexedPrimitives++;
                 }
-                out.vertices.push_back(ToGpuVertex(a));
-                out.vertices.push_back(ToGpuVertex(b));
+                const gpu::GpuVertex line[2] = {ToGpuVertex(a), ToGpuVertex(b)};
+                out.vertices.insert(out.vertices.end(), std::begin(line), std::end(line));
                 draw.topology = gpu::GpuTopology::Lines;
                 draw.count = 2;
                 break;
@@ -591,9 +592,10 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
                     b.r = c.r; b.g = c.g; b.b = c.b; b.a = c.a;
                     counters.flatDeindexedPrimitives++;
                 }
-                out.vertices.push_back(ToGpuVertex(a));
-                out.vertices.push_back(ToGpuVertex(b));
-                out.vertices.push_back(ToGpuVertex(c));
+                // TASK-134: the primitive's vertices go in with one insert (one capacity check and one copy), not one
+                // push_back each.
+                const gpu::GpuVertex triangle[3] = {ToGpuVertex(a), ToGpuVertex(b), ToGpuVertex(c)};
+                out.vertices.insert(out.vertices.end(), std::begin(triangle), std::end(triangle));
                 draw.topology = gpu::GpuTopology::Triangles;
                 draw.count = 3;
                 break;
@@ -616,8 +618,10 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
                     q.v = vertical.v;
                     corner[c] = q;
                 }
-                const int order[6] = {0, 1, 2, 1, 2, 3};
-                for (int index : order) out.vertices.push_back(ToGpuVertex(corner[index]));
+                const gpu::GpuVertex corners[4] = {ToGpuVertex(corner[0]), ToGpuVertex(corner[1]), ToGpuVertex(corner[2]),
+                                                   ToGpuVertex(corner[3])};
+                const gpu::GpuVertex sprite[6] = {corners[0], corners[1], corners[2], corners[1], corners[2], corners[3]};
+                out.vertices.insert(out.vertices.end(), std::begin(sprite), std::end(sprite));
                 draw.topology = gpu::GpuTopology::Triangles;
                 draw.count = 6;
                 counters.spritesExpanded++;
