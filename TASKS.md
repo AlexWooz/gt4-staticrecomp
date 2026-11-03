@@ -2755,6 +2755,15 @@ Tokyo R246: 17 of 43 frames change by at most 127 pixels, all closer to GSdx; El
 GSdx. The owner looked at the R34 frames: fixed.
 Acceptance: CTest (`hw_core2_depth_alias`), the other recordings changed only where a reflection reads that alpha, owner test.
 
+State (2026-11-03, night): 1.3.0-rc11 built on the owner's word and installed on the desktop, not uploaded: games slice400 (PGO
+and ThinLTO; pins `docs/inputs/slice400-*.json`; distribution `private/slice400-dist-130-rc11`), package
+`private/release-130-rc11-out` (installer `afb176ef...`, zip `fbdd4abb...`). Gates against rc9: race clock and simulation state
+identical on the three laps and the v2.00 night race; v2.00 frames identical (10/10, 14/14); Spec II frames differ only on car
+glass by a few pixels (with `GT4_CORE2_DEPTH_INTO_COLOUR=0` El Capitan is 35/35 identical); VU1 236,448 and 355,388 samples and
+MTVU 8,032 frames with 0 differences. The installer now carries a version resource (product, publisher, version, copyright) and
+the launcher names its publisher (it said "github"): a laptop's Defender had flagged the rc10 installer by machine learning
+(Program:Win32/Contebrew.A!ml); local scans of rc9, rc10 and rc11 find nothing. Owner test next.
+
 ### TASK-143 — Launcher About: credits for GitHub contributors
 
 Owner (2026-11-03): the About page credits everyone outside the project who has a merged or open pull request on
@@ -2767,3 +2776,11 @@ State (2026-11-03): done on `task/134-game-code-optimization-study`, in a block 
 per contributor, en-US and pt-BR. Checks: locale keys 659 in both with the same placeholders, focus checks en-US 275 and pt-BR
 282 and nav-test 209 all passed, launcher cargo test 630 passed; release launcher built with label rc11 (not installed, not in a
 package yet).
+
+State (2026-11-03, later, owner): Kaezzey (Niket Shah), who started gt4-staticrecomp (this repository is its fork; the upstream
+repository no longer resolves), heads the list; Wise's line names him as the author of gt4-decomp (WiseBR3000's commits are his,
+same author name and e-mail). The README credits them on `main` (`11fcc44a`). Luan's #118, #119, #154 and #174, whose ideas
+shipped in rc10, are marked as merged by a tree-neutral merge on `main` (`7693f5c4`, strategy "ours": no file of `main` changed;
+the other 40 stay open). The 11 merged outside PRs were checked against the About lines: nothing missing (JulioHeroZ #72, #96
+RetroAchievements, #101 wheels; luanantony #100, #109; gustavocanepa #36, #41). Locale keys 660; focus checks and nav-test pass.
+Shipped in 1.3.0-rc11 with the installer's new version resource (TASK-142 state).

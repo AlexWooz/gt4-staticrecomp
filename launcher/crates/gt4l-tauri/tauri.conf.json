@@ -28,6 +28,8 @@
   },
   "bundle": {
     "active": false,
+    "publisher": "GT4Recomp contributors",
+    "copyright": "Copyright (c) 2026 GT4Recomp contributors. MIT License.",
     "icon": [
       "../../assets/brand/launcher.ico"
     ],

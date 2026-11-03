@@ -77,6 +77,17 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
 BrandingText "${APP_NAME} ${FULL_VERSION}"
+; The installer's own version resource (Explorer's Details tab and the antivirus file reputation read it; it had none
+; up to 1.3.0-rc10, when a laptop's Defender flagged that installer by machine learning). VIProductVersion needs four
+; numbers, so the release candidate label is only in the text fields.
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey /LANG=0 "ProductName" "GT4Recomp"
+VIAddVersionKey /LANG=0 "CompanyName" "GT4Recomp contributors"
+VIAddVersionKey /LANG=0 "FileDescription" "GT4Recomp setup"
+VIAddVersionKey /LANG=0 "FileVersion" "${FULL_VERSION}"
+VIAddVersionKey /LANG=0 "ProductVersion" "${FULL_VERSION}"
+VIAddVersionKey /LANG=0 "LegalCopyright" "Copyright (c) 2026 GT4Recomp contributors. MIT License."
+VIAddVersionKey /LANG=0 "OriginalFilename" "GT4Recomp-Setup-${FULL_VERSION}.exe"
 
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"

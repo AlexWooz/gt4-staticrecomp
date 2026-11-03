@@ -1,8 +1,22 @@
 # Current Status
 
+## 1.3.0-rc11 built and installed for the owner's test, not uploaded (2026-11-03, night)
+
+On the owner's word: TASK-142 (IN-535, the R34 rear glass) and TASK-143 (GitHub contributors in About, with Kaezzey; README
+credits on `main`; Luan's #118, #119, #154, #174 marked merged by a tree-neutral merge). Games slice400 (exe `7a4c51f1...` v2.00,
+`10fd1b88...` Spec II; pins `docs/inputs/slice400-*.json`; distribution `private/slice400-dist-130-rc11`), package
+`private/release-130-rc11-out` (installer `afb176ef...` 51,842,164 bytes, zip `fbdd4abb...` 80,762,662 bytes), checked against
+its sources. Gates against rc9: clock and state identical everywhere, v2.00 frames identical, Spec II frames differ only on car
+glass (identical with the fix switched off); VU1 and MTVU checks 0 differences. CTest 293/294 (python_native_contracts, known),
+launcher cargo test 630, locale keys 660 in both, focus checks 275/282, nav-test 209. The installer now has a version resource
+and the launcher names its publisher (a laptop's Defender flagged the rc10 installer by machine learning; local scans are clean).
+Installed through the installer's update mode; rc10's program files in
+`private/_program-backups/rc10b-before-rc11-20261103T213036Z`. Not uploaded. When it is, the tag must point at a commit dated
+2026-11-04 (UTC) or later: GitHub lists releases of the same day by tag text, so an rc11 from 2026-11-03 would sort below rc9.
+
 ## TASK-142 fixed for rc11: the car in front through a Skyline R34's rear glass (2026-11-03)
 
-On `task/134-game-code-optimization-study`, not in a build yet. GT4 clears its environment map with two sprites whose depth buffer
+On `task/134-game-code-optimization-study`; in 1.3.0-rc11 (above). GT4 clears its environment map with two sprites whose depth buffer
 lies in the map's own memory; CoreGS 2.0 kept that depth apart, half of the map kept alpha 0, and the R34's glass reflection (scaled
 by the alpha a car's reflection left behind the glass) vanished over the car in front, which stayed sharp and dark. A depth fill
 now writes the colour target whose memory it covers (IN-535, `hw_core2_depth_alias`). On the owner's recording at 6x the glass is
