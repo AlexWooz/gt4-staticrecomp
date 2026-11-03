@@ -534,7 +534,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     // TASK-097: a direct start of the game reads these files; they follow the monitors connected now.
     lock(&shared).write_standalone_files(&settings);
     let card = dirs.runtime_card();
-    saves::prepare_card(lock(&shared).library_of(game), &card)?;
+    saves::prepare_card(lock(&shared).library_of(game), &card, language)?;
     let textures = lock(&shared).dirs.textures();
     paths::ensure_texture_folders(&textures).map_err(|error| format!("texture folder: {error}"))?;
     let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;

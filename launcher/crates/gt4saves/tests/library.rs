@@ -185,6 +185,34 @@ fn folder_export_and_import_keep_nested_directories() {
 }
 
 #[test]
+fn a_file_missing_from_an_item_folder_is_named_in_the_error() {
+    // Issue #160: the error was only "(os error 2)". Now it carries the path of the file that could not be read.
+    let root = scratch("unreadable");
+    let item = directory(REPLAY, vec![file("a.bin", pattern(3000, 6)), directory("sub", vec![file("b.bin", pattern(5, 7))])]);
+    let exported = folder::export_item(&root, &item).unwrap();
+    for (missing, relative) in [
+        (exported.join("sub").join("b.bin"), PathBuf::from("sub").join("b.bin")),
+        (exported.join("a.bin"), PathBuf::from("a.bin")),
+        (exported.join("_children.txt"), PathBuf::from("_children.txt")),
+        (exported.join("_item.hex"), PathBuf::from("_item.hex")),
+    ] {
+        let kept = fs::read(&missing).unwrap();
+        fs::remove_file(&missing).unwrap();
+        match folder::import_item(&exported) {
+            Err(folder::FolderError::Unreadable { path, error }) => {
+                assert_eq!(path, missing, "the error names {}", relative.display());
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("{} was removed: {other:?}", relative.display()),
+        }
+        let text = folder::import_item(&exported).unwrap_err().to_string();
+        assert!(text.starts_with(&missing.display().to_string()), "{text}");
+        fs::write(&missing, kept).unwrap();
+        folder::import_item(&exported).expect("the item reads again once the file is back");
+    }
+}
+
+#[test]
 fn slot_names_and_timestamps() {
     assert_eq!(slot_name(1), "Save 01");
     assert_eq!(slot_name(12), "Save 12");

@@ -15,6 +15,7 @@ use gt4l_core::language::Language;
 use gt4l_core::messages;
 use gt4l_core::paths::{DataDirs, UserDirs, UserRootSource};
 use gt4saves::card::Node;
+use gt4saves::folder::FolderError;
 use gt4saves::library::{items_of_card_image, items_of_folder_card, items_of_psu, Library, LibraryError, LibraryPaths, Report, SLOT_PREFIX};
 use gt4saves::migration::{self, LegacySources, Outcome, Targets};
 use gt4saves::{CardError, SaveNames};
@@ -304,24 +305,57 @@ pub fn activate(library: &Library, slot: &str) -> Result<(), String> {
 /// Writes the card for the next start: the active save and every replay, read back before it is
 /// written. A card the game left behind is harvested first, so nothing it wrote is lost; the old file
 /// is also kept under `backups` by `write_card_image`.
-pub fn prepare_card(library: &Library, runtime_card: &Path) -> Result<(), String> {
+pub fn prepare_card(library: &Library, runtime_card: &Path, language: Language) -> Result<(), String> {
     if runtime_card.is_file() {
         if let Ok(bytes) = fs::read(runtime_card) {
             // An unreadable card is not an error here: its bytes are backed up when it is replaced.
             let _ = library.harvest(&bytes);
         }
     }
-    let replay_names: Vec<String> = library.replays().map_err(|error| error.to_string())?;
-    let image = library.build_card(&replay_names).map_err(|error| match error {
-        gt4saves::library::LibraryError::Card(gt4saves::CardError::Full) => {
-            "The memory card is full. Delete some replays on the Replays page.".to_string()
-        }
-        other => format!("the memory card could not be built: {other}"),
+    let replay_names: Vec<String> = library.replays().map_err(|error| match error {
+        // The listing of the Replays folder failed, so that folder is the one to name.
+        LibraryError::Io(io_error) => file_unreadable_text(library, &library.replays_dir(), &io_error, language),
+        other => card_build_problem(library, &other, language),
     })?;
+    let image = library.build_card(&replay_names).map_err(|error| card_build_problem(library, &error, language))?;
     if let Some(parent) = runtime_card.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("runtime folder: {error}"))?;
     }
     library.write_card_image(runtime_card, &image).map_err(|error| error.to_string())
+}
+
+/// What Play says when the card for the next start could not be built. A card that is full says so; a file of a save or a replay
+/// that cannot be read, or a replay folder that went missing, is named (issue #160: the text was only "(os error 2)", so the
+/// player could not tell what to restore); anything else keeps its reason.
+fn card_build_problem(library: &Library, error: &LibraryError, language: Language) -> String {
+    match error {
+        LibraryError::Card(CardError::Full) => messages::text("saves.memory_full", language).to_string(),
+        LibraryError::Folder(FolderError::Unreadable { path, error }) => file_unreadable_text(library, path, error, language),
+        LibraryError::NotFound(item) => messages::render("saves.card_item_missing", language, &[("item", item)]),
+        other => messages::render("saves.card_not_built", language, &[("reason", &other.to_string())]),
+    }
+}
+
+/// "This file could not be read: Saves\Active\...\_item.hex (reason)", with the path from the library's own folder.
+fn file_unreadable_text(library: &Library, path: &Path, error: &std::io::Error, language: Language) -> String {
+    messages::render(
+        "saves.card_file_unreadable",
+        language,
+        &[("file", &library_relative_path(library, path)), ("reason", &error.to_string())],
+    )
+}
+
+/// A file of the library as the player reads it: relative to the folder that holds `Saves` and `Replays` (the game's data
+/// folder), for example `Replays\Replay 05\_item.hex`, so the text holds no user name. A file outside both folders shows its
+/// name only.
+fn library_relative_path(library: &Library, path: &Path) -> String {
+    let paths = library.paths();
+    for base in [&paths.saves, &paths.replays] {
+        if let Some(relative) = base.parent().and_then(|parent| path.strip_prefix(parent).ok()).filter(|_| path.starts_with(base)) {
+            return relative.display().to_string();
+        }
+    }
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
 /// Copies the card the game wrote back into the library. A missing card means nothing was saved.
@@ -459,7 +493,7 @@ mod tests {
         assert_eq!(names(&replays(&library).unwrap()), vec![REPLAY.to_string()]);
 
         fs::remove_file(&runtime_card).unwrap();
-        prepare_card(&library, &runtime_card).unwrap();
+        prepare_card(&library, &runtime_card, Language::fallback()).unwrap();
         let built = Card::from_image(&fs::read(&runtime_card).unwrap()).unwrap().root().unwrap();
         let built_names: Vec<String> = built.iter().map(|node| node.name()).collect();
         assert_eq!(built_names, vec![GT4.save_folder.to_string(), REPLAY.to_string()]);
@@ -510,7 +544,82 @@ mod tests {
         activate(&library, "Save 01").unwrap();
         let after = names(&saves(&library).unwrap());
         assert_eq!(after, vec![GT4.save_folder.to_string(), "Save 02".to_string()]);
-        prepare_card(&library, &runtime_card).unwrap();
+        prepare_card(&library, &runtime_card, Language::fallback()).unwrap();
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    /// A library with the active save and one replay, harvested from a card the way a Play leaves it.
+    fn library_with_a_save_and_a_replay(name: &str) -> (PathBuf, Library) {
+        let data = scratch(name);
+        let (_, library) = open_scratch(&data);
+        let card = data.join("harvest.ps2");
+        fs::write(&card, card_with(&[game_save(1), replay()])).unwrap();
+        harvest_card(&library, &card).unwrap();
+        (data, library)
+    }
+
+    #[test]
+    fn a_file_missing_from_a_replay_is_named_relative_to_the_library_not_the_user_folder() {
+        // Issue #160: "the memory card could not be built: ... (os error 2)" named nothing.
+        let (data, library) = library_with_a_save_and_a_replay("missing-replay-file");
+        let runtime_card = data.join("runtime").join("card.ps2");
+        fs::remove_file(library.replays_dir().join(REPLAY).join("replay.rep")).unwrap();
+
+        let relative = Path::new("Replays").join(REPLAY).join("replay.rep").display().to_string();
+        let english = prepare_card(&library, &runtime_card, Language::fallback()).unwrap_err();
+        assert!(
+            english.starts_with(&format!("The memory card could not be built because this file could not be read: {relative} (")),
+            "{english}"
+        );
+        assert!(english.ends_with("Put the file back, or remove the save or replay it belongs to on the Saves or Replays page, then press Play again."), "{english}");
+        assert!(!english.contains(&data.display().to_string()), "no folder above the library, so no user name: {english}");
+        assert!(!runtime_card.exists(), "no card was written");
+
+        let portuguese = prepare_card(&library, &runtime_card, Language::from_tag("pt-BR").expect("pt-BR is listed")).unwrap_err();
+        assert!(
+            portuguese.starts_with(&format!("Não foi possível montar o cartão de memória porque este arquivo não pôde ser lido: {relative} (")),
+            "{portuguese}"
+        );
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_file_missing_from_the_active_save_is_named_under_saves() {
+        let (data, library) = library_with_a_save_and_a_replay("missing-save-file");
+        fs::remove_file(library.active_dir().join(GT4.save_folder).join("garage")).unwrap();
+        let relative = Path::new("Saves").join("Active").join(GT4.save_folder).join("garage").display().to_string();
+        let message = prepare_card(&library, &data.join("runtime").join("card.ps2"), Language::fallback()).unwrap_err();
+        assert!(message.contains(&format!("this file could not be read: {relative} (")), "{message}");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_missing_replays_folder_names_the_folder() {
+        let (data, library) = library_with_a_save_and_a_replay("missing-replays-folder");
+        fs::remove_dir_all(library.replays_dir()).unwrap();
+        let message = prepare_card(&library, &data.join("runtime").join("card.ps2"), Language::fallback()).unwrap_err();
+        assert!(message.contains("this file could not be read: Replays ("), "{message}");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn the_other_card_problems_keep_their_texts() {
+        let (data, library) = library_with_a_save_and_a_replay("card-problems");
+        let english = Language::fallback();
+        assert_eq!(
+            card_build_problem(&library, &LibraryError::Card(CardError::Full), english),
+            "The memory card is full. Delete some replays on the Replays page."
+        );
+        assert_eq!(
+            card_build_problem(&library, &LibraryError::NotFound("BASCUS-97328R0009".into()), english),
+            "The memory card could not be built because the folder of BASCUS-97328R0009 is missing from your replays. Remove it on the Replays page, then press Play again."
+        );
+        assert_eq!(
+            card_build_problem(&library, &LibraryError::Card(CardError::Corrupt("bad page".into())), english),
+            "The memory card could not be built: corrupt card: bad page"
+        );
+        // A path outside the two library folders shows its file name only.
+        assert_eq!(library_relative_path(&library, Path::new("elsewhere").join("deep").join("file.bin").as_path()), "file.bin");
         let _ = fs::remove_dir_all(&data);
     }
 
@@ -567,7 +676,7 @@ mod migration_tests {
         assert_eq!(saves(&opened.library).unwrap()[0].label, "Active save");
         // Play builds the card from the moved save.
         let card = dirs.runtime_card();
-        prepare_card(&opened.library, &card).unwrap();
+        prepare_card(&opened.library, &card, Language::fallback()).unwrap();
         let built = Card::from_image(&fs::read(&card).unwrap()).unwrap().root().unwrap();
         assert!(gt4saves::card::same_contents(&built, std::slice::from_ref(&save)));
         let parked: Vec<_> = fs::read_dir(&data).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("library.migrated-")).collect();
