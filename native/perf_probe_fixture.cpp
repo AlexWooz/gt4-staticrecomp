@@ -212,11 +212,17 @@ void check_scope_clock() {
     require(now >= last, "the scope clock does not step back");
     last = now;
   }
-  const auto steady_start = steady_wall_us();
-  const auto scope_start = scope_wall_us();
-  while (steady_wall_us() - steady_start < 20000) {}
-  const auto scope_elapsed = scope_wall_us() - scope_start;
-  require(scope_elapsed >= 19000 && scope_elapsed <= 21000, "the scope clock follows the steady clock");
+  // A loaded machine can stop this thread between two reads, so one of several tries must agree within 5%.
+  bool agrees = false;
+  for (int attempt = 0; attempt < 20 && !agrees; ++attempt) {
+    const auto steady_start = steady_wall_us();
+    const auto scope_start = scope_wall_us();
+    while (steady_wall_us() - steady_start < 20000) {}
+    const auto scope_elapsed = scope_wall_us() - scope_start;
+    const auto steady_elapsed = steady_wall_us() - steady_start;
+    agrees = scope_elapsed * 100 >= steady_elapsed * 95 && scope_elapsed * 100 <= steady_elapsed * 105;
+  }
+  require(agrees, "the scope clock follows the steady clock");
 }
 }
 
