@@ -1,6 +1,14 @@
 # Current Status
 
-## 1.3.0-rc11 built and installed for the owner's test, not uploaded (2026-11-03, night)
+## 1.3.0-rc11 published as a pre-release (2026-11-03, night)
+
+On the owner's word after their test ("tá tudo certo"): `v1.3.0-rc11` at `52645c6b` (the build's source), pre-release, not
+Latest; v1.2.5 stays Latest; rc10, rc9 and rc8 stay published. Assets from `private/release-130-rc11-out` (installer
+`afb176ef...`, zip `fbdd4abb...`, SHA256SUMS), uploaded as a draft, the three GitHub digests compared with the local files, then
+made a pre-release. The owner chose not to wait for a 2026-11-04 tag: on the releases page rc11 sorts by tag text among the
+2026-11-03 releases (the launcher compares numerically, so Beta players are offered rc11).
+
+## 1.3.0-rc11 built and installed for the owner's test (2026-11-03, night)
 
 On the owner's word: TASK-142 (IN-535, the R34 rear glass) and TASK-143 (GitHub contributors in About, with Kaezzey; README
 credits on `main`; Luan's #118, #119, #154, #174 marked merged by a tree-neutral merge). Games slice400 (exe `7a4c51f1...` v2.00,

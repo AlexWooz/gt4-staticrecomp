@@ -2762,7 +2762,8 @@ identical on the three laps and the v2.00 night race; v2.00 frames identical (10
 glass by a few pixels (with `GT4_CORE2_DEPTH_INTO_COLOUR=0` El Capitan is 35/35 identical); VU1 236,448 and 355,388 samples and
 MTVU 8,032 frames with 0 differences. The installer now carries a version resource (product, publisher, version, copyright) and
 the launcher names its publisher (it said "github"): a laptop's Defender had flagged the rc10 installer by machine learning
-(Program:Win32/Contebrew.A!ml); local scans of rc9, rc10 and rc11 find nothing. Owner test next.
+(Program:Win32/Contebrew.A!ml); local scans of rc9, rc10 and rc11 find nothing. Owner test passed; published as a pre-release on the owner's
+word (`v1.3.0-rc11` at `52645c6b`, 2026-11-03).
 
 ### TASK-143 — Launcher About: credits for GitHub contributors
 
