@@ -1814,6 +1814,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     Target *CreateTarget(const BufferView &view, FormatClass cls, const PixelRect &rect) {
+        static const bool traceCreate = std::getenv("GT4_CORE2_TARGET_TRACE") != nullptr;  // diagnostics only
+        if (traceCreate) {
+            std::fprintf(stderr, "[core2] target created vblank=%llu draw=%llu bp=%u bw=%u psm=%02x rect=%d,%d,%d,%d\n",
+                         static_cast<unsigned long long>(vblanks_), static_cast<unsigned long long>(drawCounter_),
+                         view.basePointer, view.bufferWidth, static_cast<unsigned>(view.psm), rect.x0, rect.y0, rect.x1,
+                         rect.y1);
+        }
         const std::uint32_t maxSide = gpu_.MaxNativeSide();
         const std::uint32_t width = std::min(std::max<std::uint32_t>(view.bufferWidth, 1u) * 64u, maxSide);
         const std::uint32_t pageRows = memory::psmInfo(view.psm).pageHeight;  // see Grow
@@ -4261,11 +4268,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (!psm) return false;
         const BufferView view{memory::blockOfPage(circuit.fbp), circuit.fbw, *psm};
         const FormatClass cls = ClassOf(*psm);
+        // TASK-151: the target of the circuit's base, class and width first; another width only when there is none. GT4's
+        // photo mode shows two 640-wide buffers in turn, and one of them shares base 0 with a 1024-wide target of a whole
+        // memory draw: shown by the newest-of-any-width rule, that target was used every frame (never aged out) and showed
+        // black on every other picture.
         Target *found = nullptr;
-        for (Target &t : targets_) {
-            if (!t.alive || IsDepthClass(t.cls) || t.view.basePointer != view.basePointer) continue;
-            if (t.cls != cls) continue;
-            if (!found || t.lastDraw > found->lastDraw) found = &t;
+        for (int pass = 0; pass < 2 && found == nullptr; ++pass) {
+            for (Target &t : targets_) {
+                if (!t.alive || IsDepthClass(t.cls) || t.view.basePointer != view.basePointer) continue;
+                if (t.cls != cls) continue;
+                if (pass == 0 && t.view.bufferWidth != view.bufferWidth) continue;
+                if (!found || t.lastDraw > found->lastDraw) found = &t;
+            }
         }
         const std::int32_t dbx = circuit.dbx, dby = circuit.dby;
         // IN-532: a target is only shown while it is the newest picture of its memory. When a colour target of another format

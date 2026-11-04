@@ -2967,7 +2967,7 @@ frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `ave
 the laptop), the showroom left on the turning car. Measure with a window run (`WINDOW=1`, `PACED_FROM`), then attack the
 largest cost in the `[core2]` accounting. State: recorded (1,684 VBlanks; the CR-X SiR turning from about VBlank 900).
 
-### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13)
+### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed)
 
 Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
 and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording: `photo-mode` (v2.00, card
@@ -2976,6 +2976,16 @@ and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording:
 Owner (same day): the flicker shows on NVIDIA and AMD alike; the RTX 3060 also drops FPS, the RX 9060 XT holds 60 FPS with very
 uneven frame times. Headless at 2x, every composed frame of VBlanks 1480-1539 is the right picture (same brightness, no black
 frame), so the black frames come from the presentation path of a window run, not from the drawn picture (Hypothesis).
+
+Cause (Confirmed, 2026-11-04): photo mode shows two 640 x 448 CT24 buffers in turn (FBP 0 and FBP 140, 480i, two VBlanks
+each). A whole-memory draw at VBlank 873 leaves a 1024-wide CT32 target at block 0, the same base and format class as the
+first buffer. `CircuitSource` showed the newest target of that base and class whatever its width, so the 1024-wide target
+(nothing drawn) was shown, black, on every other picture; being shown marked it used every frame, so it never aged out. In a
+headless run without frame dumps nothing is composed, the target aged out, and every frame was right (a headless run with
+dumps from VBlank 1440 started after it was gone). A window run reproduces it every time: VBlanks 1440-1451 black, black,
+right, right. Not the deferred downloads nor IN-532 (A/B). Fix: the target of the circuit's base, class and width first,
+another width only when there is none. Window run: 12 of 12 frames right. Diagnostics: `GT4_CORE2_TARGET_TRACE=1` logs every
+target created. Still open: the uneven frame times (measure on an idle machine and on the laptop's RTX 3060).
 
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 
