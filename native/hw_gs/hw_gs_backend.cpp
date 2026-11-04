@@ -114,6 +114,12 @@ struct Backend::Impl {
   VkSemaphore acquire_semaphores[frame_slots] = {};
   std::uint64_t submissions = 0;
   // IN-516: per slot, the picture drawn on the main queue and what the second queue needs to show it.
+  // TASK-146: the show commands have their own pool. With frames left out, the presentation thread records them while the GS
+  // thread records `command_buffers`, and a command pool may be used by one thread at a time (Vulkan external
+  // synchronization): sharing `command_pool` corrupted it on NVIDIA, and a later vkQueueSubmit on the second queue read freed
+  // driver memory (owner's laptop, access violation in nvoglv64.dll, 2026-11-03). Only one thread at a time uses this pool:
+  // the presentation thread while frames are left out, the GS thread otherwise, with pacer_drain() between them.
+  VkCommandPool show_pool = VK_NULL_HANDLE;
   VkCommandBuffer show_commands[frame_slots] = {};
   VkFence draw_fences[frame_slots] = {};
   VkSemaphore picture_ready[frame_slots] = {};
@@ -163,7 +169,53 @@ struct Backend::Impl {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frametime_start).count();
   }
 
+  // TASK-146: vkAcquireNextImageKHR, vkQueuePresentKHR and vkWaitForPresent2KHR each need the swapchain to themselves
+  // (externsync in the specification). The frametime thread's wait used to block on the swapchain for up to a refresh
+  // while the presenting thread acquired and presented on it (the validation layer's thread check: 10 overlaps in 1,000
+  // frames of a replay, in every mode). So every call on the swapchain holds this mutex, and the frametime thread asks
+  // without waiting (timeout 0) every half millisecond instead of blocking: a present is never held up for more than one
+  // such call.
+  std::mutex swapchain_mutex;
+  static constexpr std::int64_t kShownPollUs = 500;
+
+  VkResult acquire_image(std::uint64_t timeout_ns, VkSemaphore semaphore, std::uint32_t &index) {
+    const std::lock_guard<std::mutex> lock(swapchain_mutex);
+    return vkAcquireNextImageKHR(device, swapchain, timeout_ns, semaphore, VK_NULL_HANDLE, &index);
+  }
+
+  VkResult present_locked(VkQueue on, const VkPresentInfoKHR &present) {
+    const std::lock_guard<std::mutex> lock(swapchain_mutex);
+    return vkQueuePresentKHR(on, &present);
+  }
+
+  // On the frametime thread: when the presentation `id` reached the display, in the log's milliseconds; 0 when it did not
+  // within half a second.
+  double wait_until_shown(VkSwapchainKHR on, std::uint64_t id, HANDLE timer) {
+    VkPresentWait2InfoKHR info{VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR};
+    info.presentId = id;
+    info.timeout = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    for (;;) {
+      VkResult result;
+      {
+        const std::lock_guard<std::mutex> lock(swapchain_mutex);
+        result = wait_for_present(device, on, &info);
+      }
+      if (result == VK_SUCCESS) return frametime_now_ms();
+      if (result != VK_TIMEOUT || std::chrono::steady_clock::now() >= deadline) return 0.0;
+      if (timer != nullptr) {
+        LARGE_INTEGER due{};
+        due.QuadPart = -kShownPollUs * 10;  // relative, in 100 ns units
+        if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+      } else {
+        std::this_thread::yield();
+      }
+    }
+  }
+
   void frametime_worker() {
+    // A high-resolution timer for the half-millisecond polls (a plain Sleep rounds to the system tick).
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     for (;;) {
       FrametimeEntry entry{};
       {
@@ -171,18 +223,15 @@ struct Backend::Impl {
         frametime_waiting = false;
         frametime_changed.notify_all();
         frametime_changed.wait(lock, [&] { return frametime_stop || !frametime_queue.empty(); });
-        if (frametime_queue.empty()) return;
+        if (frametime_queue.empty()) {
+          if (timer != nullptr) CloseHandle(timer);
+          return;
+        }
         entry = frametime_queue.front();
         frametime_queue.pop_front();
         frametime_waiting = true;
       }
-      double shownMs = 0.0;
-      if (wait_for_present != nullptr) {
-        VkPresentWait2InfoKHR info{VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR};
-        info.presentId = entry.id;
-        info.timeout = 500000000;
-        if (wait_for_present(device, entry.swapchain, &info) == VK_SUCCESS) shownMs = frametime_now_ms();
-      }
+      const double shownMs = wait_for_present != nullptr ? wait_until_shown(entry.swapchain, entry.id, timer) : 0.0;
       if (shownMs > 0.0 && latency_control_on) {
         if (frametime_last_shown > 0.0) latency_control.shown(shownMs - entry.presentMs, shownMs - frametime_last_shown);
         frametime_last_shown = shownMs;
@@ -224,7 +273,7 @@ struct Backend::Impl {
   // vkQueuePresentKHR with the log's id and times.
   VkResult queue_present(VkQueue on, VkPresentInfoKHR &present) {
     if (hud_layer) hud_layer->note_present();
-    if (!frametime_path && !present_wait_enabled) return vkQueuePresentKHR(on, &present);
+    if (!frametime_path && !present_wait_enabled) return present_locked(on, present);
     if (frametime_path && !frametime_file) {
       frametime_file = std::fopen(frametime_path, "w");
       if (frametime_file) {
@@ -232,7 +281,7 @@ struct Backend::Impl {
       } else {
         std::fprintf(stderr, "[hw] GT4_HW_FRAMETIME_LOG: cannot open %s\n", frametime_path);
         frametime_path = nullptr;
-        if (!present_wait_enabled) return vkQueuePresentKHR(on, &present);
+        if (!present_wait_enabled) return present_locked(on, present);
       }
     }
     if (!frametime_thread.joinable()) frametime_thread = std::thread([this] { frametime_worker(); });
@@ -242,7 +291,7 @@ struct Backend::Impl {
     presentId.pPresentIds = &id;
     if (present_wait_enabled) present.pNext = &presentId;
     const double start = frametime_now_ms();
-    const VkResult result = vkQueuePresentKHR(on, &present);
+    const VkResult result = present_locked(on, present);
     const double end = frametime_now_ms();
     {
       const std::lock_guard<std::mutex> lock(frametime_mutex);
@@ -334,11 +383,13 @@ struct Backend::Impl {
         picture_ready[i] = VK_NULL_HANDLE;
       }
       if (command_pool) vkDestroyCommandPool(device, command_pool, nullptr);
+      if (show_pool) vkDestroyCommandPool(device, show_pool, nullptr);
       vkDestroyDevice(device, nullptr);
     }
     if (surface && instance) vkDestroySurfaceKHR(instance, surface, nullptr);
     if (instance) vkDestroyInstance(instance, nullptr);
     command_pool = VK_NULL_HANDLE;
+    show_pool = VK_NULL_HANDLE;
     device = VK_NULL_HANDLE;
     instance = VK_NULL_HANDLE;
     surface = VK_NULL_HANDLE;
@@ -733,7 +784,11 @@ struct Backend::Impl {
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = frame_slots;
     vkAllocateCommandBuffers(device, &alloc, command_buffers);
-    if (present_queue) vkAllocateCommandBuffers(device, &alloc, show_commands);
+    if (present_queue) {
+      vkCreateCommandPool(device, &pool_info, nullptr, &show_pool);  // TASK-146: never the GS thread's pool
+      alloc.commandPool = show_pool;
+      vkAllocateCommandBuffers(device, &alloc, show_commands);
+    }
 
     for (std::uint32_t i = 0; i < frame_slots; ++i) {
       VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -1108,7 +1163,7 @@ struct Backend::Impl {
     }
     vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);  // older than `older`: already done
     std::uint32_t index = 0;
-    const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, 0, acquire_semaphores[slot], VK_NULL_HANDLE, &index);
+    const VkResult acquired = acquire_image(0, acquire_semaphores[slot], index);
     note_present_result(acquired, Rebuild::acquire_out_of_date);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) return;
     if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT) {
@@ -1243,7 +1298,7 @@ struct Backend::Impl {
     vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);
     vkResetFences(device, 1, &fences[slot]);
     std::uint32_t index = 0;
-    const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, 100000000, acquire_semaphores[slot], VK_NULL_HANDLE, &index);
+    const VkResult acquired = acquire_image(100000000, acquire_semaphores[slot], index);
     note_present_result(acquired, Rebuild::acquire_out_of_date);
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {  // suboptimal: the image is acquired (TASK-145)
       const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -1361,8 +1416,7 @@ struct Backend::Impl {
     vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);
 
     std::uint32_t index = 0;
-    const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, acquire_semaphores[slot],
-                                                    VK_NULL_HANDLE, &index);
+    const VkResult acquired = acquire_image(UINT64_MAX, acquire_semaphores[slot], index);
     note_present_result(acquired, Rebuild::acquire_out_of_date);
     // Out of date: nothing was submitted, so the slot fence stays signalled and the slot stays reusable. Suboptimal: the
     // image is acquired and still presentable (TASK-145).

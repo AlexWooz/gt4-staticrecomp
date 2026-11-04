@@ -5,7 +5,10 @@
 On the owner's word, experimental in the rc12 line: the launcher's Frame rate "60 FPS" (CoreGS 2.0, the default) now passes
 `GT4_FRAME_SKIP=1` (`game.ini` `hw_frame_skip_adaptive=1`), TASK-082's frame skipping when behind. With time to spare nothing
 is left out; when the PC falls behind in a running race, frames are left out and the game keeps its full speed and 60 Hz
-physics. 30 FPS is unchanged; menus never skip. Plain test builds for the owner's laptop; owner test pending.
+physics. 30 FPS is unchanged; menus never skip. The first laptop test crashed at a race's end inside the NVIDIA driver: the
+paced presentation path (frames left out, the 30 FPS mode too) shared the GS thread's command pool, and the frametime
+thread's present wait overlapped the swapchain's acquires and presents in every mode. Both fixed (IN-536; the validation
+layer's thread checks: 10 overlaps before, 0 after). New plain builds on the laptop; owner retest pending.
 
 ## TASK-145 fixed for rc12: the desktop flash every 6 seconds in fullscreen on NVIDIA RTX (2026-11-03, night)
 

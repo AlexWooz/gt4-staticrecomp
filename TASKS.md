@@ -2839,3 +2839,12 @@ As before, only in a running race and in 480p; menus never skip. Help text in bo
 
 Acceptance: owner test on the laptop (plain build, rc12 line): no frame left out where 60 holds, full game speed where it does
 not, no picture fault; then the owner decides whether it stays the default.
+
+First laptop test (2026-11-03): it worked, then the game crashed at the end of a race (access violation in nvoglv64.dll inside
+`vkQueueSubmit` on the presentation thread, from the crash dump read on the laptop). Cause (High confidence): the paced
+presentation path that frames left out use (since TASK-082, also the 30 FPS mode) broke Vulkan's external synchronization: the
+presentation thread recorded its show commands from the GS thread's command pool, and the frametime thread's present wait
+overlapped acquires and presents on the swapchain (that one in every mode). Fixed (IN-536): the show commands have their own
+pool, and every acquire, present and present wait holds a swapchain mutex, the wait polled every 0.5 ms. The validation
+layer's thread checks on a replay: 10 overlaps before at 30 and 60 FPS, 0 after; frames left out unchanged. New plain builds
+on the laptop; owner retest pending.
