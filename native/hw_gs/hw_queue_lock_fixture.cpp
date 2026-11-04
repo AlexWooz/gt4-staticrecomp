@@ -4,10 +4,13 @@
 // 1. QueueLock keeps every call on a fake queue to one thread at a time (Vulkan external synchronization), with several threads
 //    calling at once, and charges the time a caller waited for the lock to that caller.
 // 2. hand_over_verdict, case by case.
-// 3. A model of the shared-queue presentation of hw_gs_backend.cpp (present_on_shared_queue, pacer_worker, show_paced_picture) on
-//    the fake queue, with a fake GPU and display, for thousands of frames with frames left out on and off: the GS thread never
-//    draws over a picture the presentation thread still has to copy, every drawn picture's semaphore is waited on exactly once
-//    (shown or released), every presentation ends as shown, not shown or failed, and the GS thread never waits for the display.
+// 3. A model of the presentation of hw_gs_backend.cpp (present_on_shared_queue and present_paced, pacer_worker,
+//    show_paced_picture) on fake queues, with a fake GPU and display, with the GS thread's rule of hw_shared_present.hpp: on the
+//    shared queue with frames left out on and off, and on IN-516's second queue with frames left out. The GS thread never draws
+//    over a picture whose copy is still to be submitted or still to run on the GPU, every drawn picture's semaphore is waited on
+//    exactly once (shown or released), every presentation ends as shown, not shown or failed, and the GS thread never waits for the
+//    display. The same model with the rule present_paced had before the TASK-174 review must see pictures drawn over before their
+//    copy ran.
 #include "hw_queue_lock.hpp"
 #include "hw_shared_present.hpp"
 
@@ -144,7 +147,22 @@ void test_verdicts() {
   check(verdict(0, false, 0b001u, 0, false) == HandOverVerdict::slot_held, "a held slot is never drawn");
   check(verdict(0, true, 0b100u, 2, true) == HandOverVerdict::slot_held, "a held slot is never drawn, spaced either");
   check(verdict(1, true, 0b011u, 2, true) == HandOverVerdict::draw, "the oldest slot is free with two held");
-  std::printf("verdicts: 10 cases\n");
+  // hand_over_decision: the fence last, and never on a held slot or when the presentation thread is behind.
+  int fence_asked = 0;
+  const auto decision = [&](std::size_t queued, bool busy, std::uint32_t held, std::uint32_t slot, bool spaced, bool copy_done) {
+    return gt4::hw::hand_over_decision(PresenterLoad{queued, busy, held}, slot, spaced, kSpacedQueue, kInFlight, [&] {
+      ++fence_asked;
+      return copy_done;
+    });
+  };
+  check(decision(0, false, 0u, 0, true, true) == HandOverVerdict::draw && fence_asked == 1, "a free slot whose copy ran is drawn");
+  check(decision(1, true, 0b110u, 0, true, false) == HandOverVerdict::copy_pending && fence_asked == 2,
+        "the presentation thread busy with n + 1, n + 2 queued: n + 3 waits for the copy of n");
+  check(decision(0, false, 0b001u, 0, true, true) == HandOverVerdict::slot_held && fence_asked == 2,
+        "the fence of a held slot is never asked");
+  check(decision(2, false, 0b110u, 0, true, true) == HandOverVerdict::presenter_behind && fence_asked == 2,
+        "the fence is not asked when the presentation thread is behind");
+  std::printf("verdicts: 14 cases\n");
 }
 
 // The model. One slot holds a picture, a fence (the copy of the picture into the swapchain image ran on the GPU) and the picture's
@@ -159,13 +177,37 @@ struct ModelSlot {
   std::atomic<bool> semaphore_signalled{false};
 };
 
+// Which path the model runs.
+struct ModelSetup {
+  const char *name;
+  bool one_queue;               // true: the shared queue under the lock (TASK-174); false: IN-516's second queue, no lock
+  bool always_spaced;           // every picture shown at its place (present_paced, frames left out); else 150 in every 400
+  bool check_copy;              // the rule since the TASK-174 review (hand_over_decision); false: the rule present_paced had before
+  std::uint32_t copy_delay_us;  // at most this long after its submission the GPU runs a copy (on the second queue it waits for the
+                                // swapchain image the display gives back)
+  std::uint64_t frames;
+};
+
 struct Model {
+  explicit Model(const ModelSetup &chosen) : setup(chosen) {}
+  const ModelSetup setup;
   QueueLock lock;
-  FakeQueue queue;
+  FakeQueue render_queue;
+  FakeQueue second_queue;  // IN-516's presentation queue; unused on one queue
   std::array<ModelSlot, kSlots> slots;
   const Clock::time_point start = Clock::now();
   std::int64_t now_us() const {
     return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count();
+  }
+
+  // One queue call: on the shared queue under the lock, as submit_to and present_locked; on two queues each has one thread.
+  void queue_call(bool presentation, std::uint32_t busy_us) {
+    if (!setup.one_queue) {
+      (presentation ? second_queue : render_queue).call(std::chrono::microseconds(busy_us));
+      return;
+    }
+    lock.run(presentation ? QueueLock::Caller::presentation_thread : QueueLock::Caller::gs_thread,
+             [&] { return render_queue.call(std::chrono::microseconds(busy_us)); });
   }
 
   // The presentation thread's queue, as in hw_gs_backend.cpp.
@@ -180,7 +222,10 @@ struct Model {
   bool pacer_busy = false, pacer_stop = false;
   std::uint32_t pacer_slots_held = 0;
 
-  std::atomic<std::uint64_t> shown{0}, not_shown{0}, failed{0}, overwritten{0}, semaphore_errors{0};
+  std::atomic<std::uint64_t> shown{0}, not_shown{0}, failed{0}, semaphore_errors{0};
+  std::atomic<std::uint64_t> overwritten_before_submit{0};  // drawn over before the presentation thread submitted its copy
+  std::uint64_t overwritten_before_copy = 0;                // drawn over while the GPU had still to run the copy (GS thread)
+  std::uint64_t copy_pending_drops = 0;                     // frames not shown because of that (GS thread)
   std::uint64_t requests = 0, submissions = 0;
   double gs_longest_call_ms = 0;
 
@@ -207,42 +252,43 @@ struct Model {
       if (picture.spaced) pause_us(random.below(8000));
       pause_us(random.below(random.below(8) == 0 ? 40000 : 16000));
       const std::uint32_t outcome = random.below(100);  // 3 in 100 no image in time, 1 in 100 out of date
-      if (slot.picture.load() != picture.frame) overwritten.fetch_add(1);
+      if (slot.picture.load() != picture.frame) overwritten_before_submit.fetch_add(1);
       if (!slot.semaphore_signalled.exchange(false)) semaphore_errors.fetch_add(1);  // the copy or release waits on it
       if (outcome < 4) {
-        lock.run(QueueLock::Caller::presentation_thread, [&] { return queue.call(std::chrono::microseconds(10)); });  // release
+        queue_call(true, 10);  // the release
         slot.copy_done_us = now_us();
         (outcome < 3 ? not_shown : failed).fetch_add(1);
         continue;
       }
-      lock.run(QueueLock::Caller::presentation_thread, [&] { return queue.call(std::chrono::microseconds(30)); });  // copy
-      slot.copy_done_us = now_us() + random.below(3000);  // the GPU runs the copy a little later
-      // The present; now and then a driver holds the queue in it for a while.
-      lock.run(QueueLock::Caller::presentation_thread,
-               [&] { return queue.call(std::chrono::microseconds(random.below(10) == 0 ? 2000 : 20)); });
+      queue_call(true, 30);  // the copy
+      slot.copy_done_us = now_us() + random.below(setup.copy_delay_us);
+      queue_call(true, random.below(10) == 0 ? 2000 : 20);  // the present; now and then a driver holds the queue in it
       shown.fetch_add(1);
     }
   }
 
-  // present_on_shared_queue, on the GS thread.
+  // present_on_shared_queue or present_paced, on the GS thread.
   void present(std::uint64_t frame, bool spaced) {
     ++requests;
     const auto call_start = Clock::now();
     const std::uint32_t slot_index = static_cast<std::uint32_t>(submissions % kSlots);
     ModelSlot &slot = slots[slot_index];
-    bool draw = true;
+    HandOverVerdict verdict = HandOverVerdict::draw;
     {
       const std::lock_guard<std::mutex> guard(pacer_mutex);
       const PresenterLoad load{pacer_queue.size(), pacer_busy, pacer_slots_held};
-      draw = gt4::hw::hand_over_verdict(load, slot_index, spaced, kPacedPictures, kPresentsInFlight) == HandOverVerdict::draw;
+      const auto copy_done = [&] { return slot.copy_done_us.load() <= now_us(); };  // the fence, with timeout 0
+      verdict = setup.check_copy ? gt4::hw::hand_over_decision(load, slot_index, spaced, kPacedPictures, kPresentsInFlight, copy_done)
+                                 : gt4::hw::hand_over_verdict(load, slot_index, spaced, kPacedPictures, kPresentsInFlight);
     }
-    if (draw && slot.copy_done_us.load() > now_us()) draw = false;  // the fence, with timeout 0
-    if (!draw) {
+    if (verdict == HandOverVerdict::copy_pending) ++copy_pending_drops;
+    if (verdict != HandOverVerdict::draw) {
       not_shown.fetch_add(1);
     } else {
+      if (slot.copy_done_us.load() > now_us()) ++overwritten_before_copy;
       slot.picture = frame;  // drawing overwrites the picture
       if (slot.semaphore_signalled.exchange(true)) semaphore_errors.fetch_add(1);  // signalled twice without a wait
-      lock.run(QueueLock::Caller::gs_thread, [&] { return queue.call(std::chrono::microseconds(15)); });
+      queue_call(false, 15);
       ++submissions;
       {
         const std::lock_guard<std::mutex> guard(pacer_mutex);
@@ -265,37 +311,61 @@ struct Model {
   }
 };
 
-void test_model() {
-  Model model;
+// Runs one model and prints what it saw.
+void run_model(Model &model) {
   std::thread presenter([&] { model.presenter(); });
   Random random{0x51ED270Bu};
-  constexpr std::uint64_t kFrames = 1500;
-  for (std::uint64_t frame = 1; frame <= kFrames; ++frame) {
-    const bool spaced = frame % 400 < 150;  // frames left out for 150 frames in every 400
-    // The renderer's own submissions between presentations, on the same queue.
-    for (std::uint32_t i = random.below(4); i > 0; --i) {
-      model.lock.run(QueueLock::Caller::gs_thread, [&] { return model.queue.call(std::chrono::microseconds(10)); });
-    }
+  for (std::uint64_t frame = 1; frame <= model.setup.frames; ++frame) {
+    const bool spaced = model.setup.always_spaced || frame % 400 < 150;  // frames left out for 150 frames in every 400
+    // The renderer's own submissions between presentations, on the rendering queue.
+    for (std::uint32_t i = random.below(4); i > 0; --i) model.queue_call(false, 10);
     pause_us(1000 + random.below(9000));  // 1 to 10 ms of drawing
     model.present(frame, spaced);
   }
   model.drain_and_stop();
   presenter.join();
-  const std::uint64_t ended = model.shown.load() + model.not_shown.load() + model.failed.load();
   const QueueLock::Totals gs = model.lock.totals(QueueLock::Caller::gs_thread);
-  std::printf("model: %llu presentations, shown %llu, not shown %llu, failed %llu; gs lock wait %.2f ms in total, longest "
-              "presentation call %.3f ms; overlaps %llu\n",
-              static_cast<unsigned long long>(model.requests), static_cast<unsigned long long>(model.shown.load()),
-              static_cast<unsigned long long>(model.not_shown.load()), static_cast<unsigned long long>(model.failed.load()),
-              gs.wait_ns / 1e6, model.gs_longest_call_ms, static_cast<unsigned long long>(model.queue.overlaps.load()));
-  check(model.queue.overlaps.load() == 0, "model: two threads inside the queue at once");
-  check(model.overwritten.load() == 0, "model: the GS thread drew over a picture before its copy");
+  std::printf("model %s: %llu presentations, shown %llu, not shown %llu (copy pending %llu), failed %llu; drawn over before the "
+              "copy %llu; gs lock wait %.2f ms in total, longest presentation call %.3f ms; overlaps %llu\n",
+              model.setup.name, static_cast<unsigned long long>(model.requests), static_cast<unsigned long long>(model.shown.load()),
+              static_cast<unsigned long long>(model.not_shown.load()), static_cast<unsigned long long>(model.copy_pending_drops),
+              static_cast<unsigned long long>(model.failed.load()), static_cast<unsigned long long>(model.overwritten_before_copy),
+              gs.wait_ns / 1e6, model.gs_longest_call_ms,
+              static_cast<unsigned long long>(model.render_queue.overlaps.load() + model.second_queue.overlaps.load()));
+}
+
+// The checks every path with the rule of hand_over_decision must pass.
+void check_model(const Model &model) {
+  const std::uint64_t ended = model.shown.load() + model.not_shown.load() + model.failed.load();
+  check(model.render_queue.overlaps.load() == 0 && model.second_queue.overlaps.load() == 0,
+        "model: two threads inside a queue at once");
+  check(model.overwritten_before_submit.load() == 0, "model: a picture was drawn over before its copy was submitted");
+  check(model.overwritten_before_copy == 0, "model: a picture was drawn over before the GPU ran its copy");
   check(model.semaphore_errors.load() == 0, "model: a picture semaphore was signalled twice or waited on unsignalled");
   check(ended == model.requests, "model: a presentation is not accounted for");
-  check(model.shown.load() > kFrames / 4, "model: too few presentations shown");
+  check(model.shown.load() > model.setup.frames / 5, "model: too few presentations shown");
   check(model.not_shown.load() > 0, "model: the display never fell behind (the test did not test that)");
-  // The display waits (up to 40 ms) are the presentation thread's; the GS thread only meets a present holding the queue (2 ms).
+  // The display waits (up to 40 ms) are the presentation thread's; on one queue the GS thread only meets a present holding the
+  // queue (2 ms).
   check(model.gs_longest_call_ms < 15.0, "model: the GS thread waited for the display");
+}
+
+void test_models() {
+  // TASK-174: the shared queue, frames left out on and off.
+  Model shared(ModelSetup{"shared queue", true, false, true, 3000, 1500});
+  run_model(shared);
+  check_model(shared);
+  // IN-516's second queue with frames left out (present_paced), with the rule since the TASK-174 review: the copy waits for its
+  // swapchain image on the second queue, up to 12 ms after its submission. The case must have come up and been handled.
+  Model paced(ModelSetup{"second queue, frames left out", false, true, true, 12000, 1000});
+  run_model(paced);
+  check_model(paced);
+  check(paced.copy_pending_drops > 0, "model: no frame met a copy still to run (the test did not test that)");
+  // The same with the rule present_paced had before: the model must see pictures drawn over before their copy ran, or it could
+  // not have caught that.
+  Model before(ModelSetup{"second queue, frames left out, rule before the review", false, true, false, 12000, 600});
+  run_model(before);
+  check(before.overwritten_before_copy > 0, "model: the rule before the review drew over no picture (the model misses the case)");
 }
 
 }  // namespace
@@ -304,7 +374,7 @@ int main() {
   test_exclusion();
   test_accounting();
   test_verdicts();
-  test_model();
+  test_models();
   std::printf("hw_queue_lock: all checks passed\n");
   return 0;
 }

@@ -1549,19 +1549,31 @@ struct Backend::Impl {
     }
   }
 
+  // Under pacer_mutex, on the GS thread: may the picture of `slot` be drawn and handed over (hw_shared_present.hpp)? The slot's
+  // fence is asked with timeout 0, and only when the presentation thread no longer holds the slot.
+  bool may_hand_over(std::uint32_t slot, bool spaced) {
+    const gt4::hw::PresenterLoad load{pacer_queue.size(), pacer_busy, pacer_slots_held};
+    const auto copy_done = [&] {
+      return gs_waits([&] { return vkWaitForFences(device, 1, &fences[slot], VK_TRUE, 0); }) == VK_SUCCESS;
+    };
+    return gt4::hw::hand_over_decision(load, slot, spaced, kPacedPictures, presents_in_flight, copy_done) ==
+           gt4::hw::HandOverVerdict::draw;
+  }
+
   // On the GS thread, second queue (TASK-082): draws the picture and hands it over. The display being behind costs a picture here,
-  // before any drawing.
+  // before any drawing: two pictures waiting for their place, or (TASK-174 review) the copy of the slot's last picture, on the
+  // second queue, not run yet. Before that check the drawing could overwrite a picture the second queue had still to copy.
   void present_paced(const hwgs::writeback::FrameOutput *frame) {
     if (!pacer_thread.joinable()) pacer_thread = std::thread([this] { pacer_worker(); });
+    const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
     {
       const std::lock_guard<std::mutex> lock(pacer_mutex);
       pacer_spacing.note_arrival(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-      if (pacer_queue.size() >= kPacedPictures) {
+      if (!may_hand_over(slot, true)) {
         ++presents_dropped;
         return;
       }
     }
-    const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
     draw_picture(slot, frame);
     ++submissions;
     hand_over(slot, true);
@@ -1573,7 +1585,7 @@ struct Backend::Impl {
   // pushed drawn frames past 16.7 ms. Now the GS thread draws the frame into the slot's picture on the rendering queue and hands it
   // to the presentation thread, which waits for a swapchain image, copies the picture into it and presents (show_paced_picture), on
   // the same queue: every queue call of both threads, the renderer's submissions included, holds queue_lock. Nothing here waits for
-  // the display: when the presentation thread already holds its pictures (hand_over_verdict), or the copy of the slot's last picture
+  // the display: when the presentation thread already holds its pictures (hand_over_decision), or the copy of the slot's last picture
   // has not run on the GPU yet, this frame is not shown, and counted. `spaced`: frames left out (TASK-082), shown at their place.
   void present_on_shared_queue(const hwgs::writeback::FrameOutput *frame, bool spaced) {
     if (!pacer_thread.joinable()) pacer_thread = std::thread([this] { pacer_worker(); });
@@ -1584,17 +1596,12 @@ struct Backend::Impl {
         pacer_spacing.note_arrival(
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
       }
-      const gt4::hw::PresenterLoad load{pacer_queue.size(), pacer_busy, pacer_slots_held};
-      if (gt4::hw::hand_over_verdict(load, slot, spaced, kPacedPictures, presents_in_flight) != gt4::hw::HandOverVerdict::draw) {
+      // The slot's fence is signalled once the copy of its last picture ran (and, on one queue, everything submitted before it, the
+      // slot's last drawing included).
+      if (!may_hand_over(slot, spaced)) {
         ++presents_dropped;
         return;
       }
-    }
-    // The slot is no longer held, so the presentation thread is done with its fence: signalled once the copy of the slot's last
-    // picture ran (and, on one queue, everything submitted before it, the slot's last drawing included).
-    if (gs_waits([&] { return vkWaitForFences(device, 1, &fences[slot], VK_TRUE, 0); }) != VK_SUCCESS) {
-      ++presents_dropped;
-      return;
     }
     draw_picture(slot, frame);
     ++submissions;
