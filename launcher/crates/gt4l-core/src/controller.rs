@@ -1,7 +1,9 @@
 //! TASK-148: the controller the player chose on the Controls page (the `controller` setting). The launcher's pad service
 //! and the game (`GT4_PAD`, `native/pad_mapping.cpp`) read the same text and pick the same controller.
 
-/// TASK-148: the `controller` setting when no controller is chosen: the game reads controller 1 (`active_pad`).
+/// TASK-148: the `controller` setting before the launcher has stored a controller (a fresh install): the game reads
+/// controller 1 (`active_pad`). The launcher never offers it: once a pad is connected it stores that pad instead
+/// (`pad_service`), so the Controls page always shows a real controller.
 pub const AUTO_CONTROLLER: &str = "auto";
 
 /// TASK-148: the controller the player chose on the Controls page. Stored as `<guid>` or `<guid>/<serial>`: the GUID SDL3
@@ -36,7 +38,7 @@ impl PadChoice {
     }
 }
 
-/// `auto` or a well-formed choice.
+/// `auto` (nothing stored yet) or a well-formed choice.
 pub fn is_controller_setting(value: &str) -> bool {
     value == AUTO_CONTROLLER || PadChoice::parse(value).is_some()
 }

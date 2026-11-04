@@ -436,7 +436,7 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
     text
 }
 
-/// TASK-148: the `GT4_PAD` value of the chosen controller (`controller::PadChoice` text), `None` for Automatic.
+/// TASK-148: the `GT4_PAD` value of the chosen controller (`controller::PadChoice` text), `None` while none is stored.
 pub fn controller_environment(settings: &Settings) -> Option<String> {
     let value = settings.get("controller");
     crate::controller::PadChoice::parse(value).map(|_| value.to_string())

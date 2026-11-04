@@ -6,6 +6,10 @@
 //!   Controls page when it is connected, else "controller 1 of N" (`pad::chosen_pad`, TASK-148). `pads` lists the readable
 //!   pads with the `controller` setting value of each (`key`), `unrecognized` the joysticks SDL3 has no mapping for,
 //!   `choice` is the setting and `chosen` says whether the chosen controller is the one being read.
+//! - The `controller` setting always names a connected pad (owner, 2026-11-04: no "Automatic" entry). When the stored
+//!   controller is not the one being read (nothing stored yet, or that pad is unplugged) for `CHOICE_SETTLE`, the pad
+//!   being read is stored in its place (`choice_to_store`). So at every launcher start the pads are mapped again: the
+//!   controller chosen last time stays selected when it is connected, and otherwise the first one connected is.
 //! - `pad-live` `{sources, sticks}`: about 60 times a second while a pad is connected and the window is shown.
 //!   `sources` holds the pressure (0..1) of each controls-file source (`xinput:A`, `xinput:LT`...); the page maps
 //!   them to the DS2 buttons through the controls file. `sticks.left|right` are -1..1, y positive down.
@@ -29,6 +33,9 @@ use crate::state::{self, Shared};
 
 /// About 60 readings a second.
 const TICK: Duration = Duration::from_millis(16);
+/// How long the stored controller may be missing before the pad being read replaces it. SDL3 reports some pads a moment
+/// after it starts (and a wireless pad can drop out briefly): the controller chosen last time keeps its place until then.
+const CHOICE_SETTLE: Duration = Duration::from_secs(2);
 /// The error a capture returns when it is cancelled (the page looks for "cancel" in it).
 pub const CAPTURE_CANCELLED: &str = "capture cancelled";
 
@@ -140,6 +147,27 @@ fn controller_setting(app: &AppHandle) -> String {
     state.config.settings.get("controller").to_string()
 }
 
+/// The `controller` value to store in place of `stored`: the key of the pad being read when it differs (nothing stored
+/// yet, or the stored pad is not connected), `None` when `stored` already names it or no pad is connected.
+pub fn choice_to_store(stored: &str, active: Option<&PadInfo>) -> Option<String> {
+    let active = active?;
+    let key = PadChoice::key(&active.guid, &active.serial);
+    (key != stored).then_some(key)
+}
+
+/// Stores `key` as the `controller` setting (the pad being read, `choice_to_store`) and saves the settings.
+fn store_controller(app: &AppHandle, key: &str, name: &str) {
+    let shared = app.state::<Shared>();
+    let mut state = state::lock(shared.inner());
+    let previous = state.config.settings.get("controller").to_string();
+    if let Err(error) = state.config.settings.set_by_user("controller", key) {
+        state::log(&state.dirs, &format!("controller input: {name} not stored as the controller: {error}"));
+        return;
+    }
+    state.save_config();
+    state::log(&state.dirs, &format!("controller input: {name} selected ({key}); the stored controller was {previous}"));
+}
+
 /// The `pad-live` payload: the mapped sources and the sticks of one reading.
 pub fn live_json(sample: &PadSample) -> Value {
     let sources: Map<String, Value> = sample
@@ -211,6 +239,8 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
     let mut capture: Option<PendingCapture> = None;
     let mut last_status = Value::Null;
     let mut was_active = true;
+    // Since when the stored controller has not been the pad being read (`CHOICE_SETTLE`).
+    let mut unsettled_since: Option<Instant> = None;
 
     loop {
         std::thread::sleep(TICK);
@@ -234,6 +264,7 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
             if was_active {
                 was_active = false;
                 navigator = Navigator::default();
+                unsettled_since = None;
                 if let Some(pending) = capture.take() {
                     let _ = pending.reply.send(Err("controller input is paused while the game runs".to_string()));
                 }
@@ -251,6 +282,17 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
             infos.iter().map(|pad| PadIdentity { id: pad.id, guid: &pad.guid, serial: &pad.serial }).collect();
         let active_id = pad::chosen_pad(&identities, choice.as_ref());
         let active_info = active_id.and_then(|id| infos.iter().find(|pad| pad.id == id));
+        match choice_to_store(&choice_text, active_info) {
+            Some(key) => {
+                let since = *unsettled_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= CHOICE_SETTLE {
+                    let name = active_info.map(|pad| pad.name.as_str()).unwrap_or_default();
+                    store_controller(&app, &key, name);
+                    unsettled_since = None;
+                }
+            }
+            None => unsettled_since = None,
+        }
         let status = status_json(true, &infos, &unrecognized, active_info, &choice_text, "");
         if status != last_status {
             publish(Some(&app), &handle, status.clone());
@@ -340,7 +382,7 @@ mod tests {
         assert_eq!(status["pads"][0]["key"], json!(format!("{DUALSENSE}/a0:ab")), "the setting value of each pad");
         assert_eq!(status["pads"][1]["key"], json!(XBOX));
         assert_eq!(status["pads"][0]["active"], json!(true));
-        assert_eq!(status["chosen"], json!(false), "Automatic chooses nothing");
+        assert_eq!(status["chosen"], json!(false), "nothing stored yet: controller 1 is read");
         let none = status_json(true, &[], &[], None, "auto", "");
         assert_eq!(none["connected"], json!(false));
         assert_eq!(none["name"], json!(""));
@@ -358,6 +400,19 @@ mod tests {
         old.mapped = false;
         let with_unknown = status_json(true, &pads, &[old], Some(&pads[0]), "auto", "");
         assert_eq!(with_unknown["unrecognized"][0]["name"], json!("Old USB Joystick"));
+    }
+
+    #[test]
+    fn the_pad_being_read_replaces_a_stored_controller_that_is_not_connected() {
+        let pads = [info(3, "DualSense Wireless Controller", DUALSENSE, "a0:ab"), info(5, "Xbox 360 Controller", XBOX, "")];
+        let dualsense = format!("{DUALSENSE}/a0:ab");
+        assert_eq!(choice_to_store("auto", Some(&pads[0])), Some(dualsense.clone()), "a fresh install stores controller 1");
+        assert_eq!(choice_to_store(XBOX, Some(&pads[0])), Some(dualsense.clone()), "the Xbox pad is unplugged");
+        assert_eq!(choice_to_store(&dualsense, Some(&pads[0])), None, "the stored pad is the one read");
+        assert_eq!(choice_to_store(XBOX, Some(&pads[1])), None);
+        assert_eq!(choice_to_store(XBOX, None), None, "no pad: the stored controller is kept");
+        let other_unit = format!("{DUALSENSE}/ff:ff");
+        assert_eq!(choice_to_store(&other_unit, Some(&pads[0])), Some(dualsense), "another DualSense is read: it is stored");
     }
 
     #[test]

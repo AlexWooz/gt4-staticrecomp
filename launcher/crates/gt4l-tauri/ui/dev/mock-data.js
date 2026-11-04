@@ -958,7 +958,8 @@
     return root.GT4.controlsModel.padSummary(pads);
   }
   // TASK-148: the dev pads with made-up GUIDs (the first an Xbox pad, the next DualSense pads with serials), and with
-  // ?unmapped=1 an old joystick SDL3 has no mapping for.
+  // ?unmapped=1 an old joystick SDL3 has no mapping for. Like the pad service, a stored controller that is not connected
+  // gives way to the pad read (controller 1), which is then stored.
   var mockController = "auto";
   var DEV_GUIDS = ["030000005e0400008e02000014010000", "050000004c050000e60c000000810000", "050000004c050000e60c000000810000"];
   var DEV_NAMES = ["Xbox Wireless Controller", "DualSense Wireless Controller", "DualSense Wireless Controller"];
@@ -967,19 +968,26 @@
     var pads = [];
     for (var i = 0; i < summary.count; i++) {
       var guid = DEV_GUIDS[i % DEV_GUIDS.length];
-      pads.push({ name: DEV_NAMES[i % DEV_NAMES.length], kind: i === 0 ? "xbox360" : "ps5",
+      // Controller 1 keeps the dev pad's own name (focus-check's "Test Pad").
+      pads.push({ name: i === 0 && summary.name ? summary.name : DEV_NAMES[i % DEV_NAMES.length], kind: i === 0 ? "xbox360" : "ps5",
         key: i === 0 ? guid : guid + "/a0:ab:51:00:00:0" + i, active: false });
     }
-    var activeIndex = 0;
-    pads.forEach(function (pad, index) {
-      if (mockController !== "auto" && pad.key.split("/")[0] === mockController.split("/")[0] && activeIndex === 0 && index > 0) {
-        activeIndex = index;
-      }
-    });
+    // The pad read: the stored unit, else one of its model, else controller 1 (`pad::chosen_pad`).
+    var activeIndex = pads.map(function (pad) { return pad.key; }).indexOf(mockController);
+    if (activeIndex < 0) {
+      activeIndex = pads.map(function (pad) { return pad.key.split("/")[0]; }).indexOf(mockController.split("/")[0]);
+    }
+    if (activeIndex < 0) {
+      activeIndex = 0;
+    }
     if (pads.length) {
       pads[activeIndex].active = true;
     }
     var chosen = mockController !== "auto" && pads.length > 0 && pads[activeIndex].key.split("/")[0] === mockController.split("/")[0];
+    if (pads.length && !chosen) {
+      mockController = pads[activeIndex].key;
+      chosen = true;
+    }
     return { available: true, connected: summary.connected, name: summary.connected ? pads[activeIndex].name : "",
       kind: summary.connected ? pads[activeIndex].kind : "", player_index: summary.connected ? 0 : null, count: summary.count,
       error: "", pads: pads, unrecognized: query.get("unmapped") === "1" ? [{ name: "USB Gamepad (old)", guid: "03000000aaaa0000bbbb000000000000" }] : [],

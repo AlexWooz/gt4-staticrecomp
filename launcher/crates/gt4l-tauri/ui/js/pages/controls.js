@@ -385,30 +385,25 @@
         statusSub.textContent = unavailable ? (summary.error || GT4.t("controls.sdl_not_started")) : GT4.t("controls.connect_hint");
       }
     }
-    // TASK-148: the controller dropdown. Automatic, then the connected pads by name (their `controller` value is the
-    // pad's `key`), then the joysticks SDL3 has no mapping for, greyed out with the reason below the row.
+    // TASK-148: the controller dropdown: the connected pads by name (their `controller` value is the pad's `key`), the one
+    // the game reads selected, then the joysticks SDL3 has no mapping for, greyed out with the reason below the row. There
+    // is no "Automatic" entry (owner, 2026-11-04): the pad service stores the pad it reads when the stored one is not
+    // connected, so at every start a connected controller is selected. With no pad the row says so and is disabled.
     var lastPick = "";
     function paintPick(summary) {
       var pads = summary.pads || [];
       var unknown = summary.unrecognized || [];
-      var choice = summary.choice || "auto";
-      var key = JSON.stringify([pads, unknown, choice, summary.chosen, state.locked]);
+      var active = pads.filter(function (one) { return one.active; })[0] || pads[0];
+      var key = JSON.stringify([pads, unknown, state.locked]);
       if (key === lastPick) {
         return;
       }
       lastPick = key;
-      var values = [{ value: "auto", label: GT4.t("choice.controller.auto") }];
-      pads.forEach(function (one) {
-        values.push({ value: one.key, label: one.name });
+      var values = pads.map(function (one) {
+        return { value: one.key, label: one.name };
       });
-      var listed = choice === "auto" || pads.some(function (one) { return one.key === choice; });
-      if (!listed) {
-        // The chosen unit is gone; another pad of its model may be the one read (`chosen`), or none is.
-        var active = pads.filter(function (one) { return one.active; })[0];
-        values.push({
-          value: choice,
-          label: summary.chosen && active ? active.name : GT4.t("controls.controller_missing")
-        });
+      if (!values.length) {
+        values.push({ value: "none", label: GT4.t("controls.no_controller"), disabled: true });
       }
       unknown.forEach(function (one, index) {
         values.push({ value: "unmapped-" + index, label: GT4.t("controls.controller_unmapped", { name: one.name }), disabled: true });
@@ -418,9 +413,9 @@
         control: "dropdown",
         label: GT4.t("setting.controller.label"),
         values: values,
-        current: choice,
-        default: "auto",
-        disabled: state.locked
+        current: active ? active.key : "none",
+        default: active ? active.key : "none",
+        disabled: state.locked || !pads.length
       };
       var context = { table: { rows: [row] }, content: content, selfDrawn: {}, refresh: function () { return Promise.resolve(); } };
       var hadFocus = pickBox.contains(document.activeElement);
@@ -436,9 +431,6 @@
         }
       }
       var notes = [];
-      if (choice !== "auto" && !summary.chosen) {
-        notes.push(GT4.t("controls.controller_not_here"));
-      }
       if (unknown.length) {
         notes.push(GT4.t("controls.controller_unmapped_note", { names: unknown.map(function (one) { return one.name; }).join(", ") }));
       }

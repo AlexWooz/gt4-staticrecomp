@@ -125,7 +125,7 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::General,
         group: "Controls",
         title: "Controller",
-        info: "The controller the game reads when several are connected. Automatic uses the first one connected.",
+        info: "The controller the game reads. At every start the launcher selects a connected controller: the one chosen last time, or else the first one connected.",
         kind: Kind::Controller,
         default: crate::controller::AUTO_CONTROLLER,
         connected: true,

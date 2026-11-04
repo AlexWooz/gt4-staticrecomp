@@ -2910,3 +2910,11 @@ launcher read "controller 1", the lowest SDL instance id. Change on `task/134-ga
   (`SDL_GAMECONTROLLERCONFIG_FILE`). A manual mapping wizard for such controllers is not built.
 Checks: launcher tests (choice parsing, chosen pad, status payload, launch contract), pad mapping and standalone fixtures,
 the dev page with mock pads (chosen, unplugged, unrecognized). Texts in en-US and pt-BR. Owner test pending.
+
+Owner change (2026-11-04): no "Automatic" entry. The dropdown lists only the connected controllers, with the one the game
+reads selected, and is disabled with "No controller" when none is connected. The pad service stores the pad it reads as the
+`controller` setting whenever the stored one is not that pad for 2 seconds (`CHOICE_SETTLE`, `choice_to_store`): at every
+launcher start the pads are mapped again, the controller chosen last time stays selected when it is connected, otherwise
+the first one connected is selected and stored (also when the chosen one is unplugged while the launcher is open). `auto`
+stays only as the value before anything is stored (a fresh install). Checks: launcher tests 636, focus checks en-US 275 and
+pt-BR 282, nav-test 209 (headless Edge), locale keys 664 in both.

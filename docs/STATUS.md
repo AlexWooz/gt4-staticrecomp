@@ -7,7 +7,9 @@ throttle range and L2 its 0..84 brake range (the game scales the pressure byte a
 the owner approved them. Sticks: a 10% dead zone, and the bytes step over GT4's own 29% stick dead zone, so steering is
 proportional from the first step (it was dead up to about 46% of the travel, then too steep). Controller choice: a dropdown
 on the Controls page (`controller` setting, `GT4_PAD`); the game reads the chosen pad, else one of its model, else
-controller 1. Owner test of the sticks and the choice pending.
+controller 1. Owner change (2026-11-04): no "Automatic" entry; the dropdown lists only the connected controllers and the
+launcher stores the one it reads when the stored one is not connected (checked again at every launcher start). Owner test of
+the sticks and the choice pending.
 
 Test installer (2026-11-04 UTC): the same plain builds pinned as slice 401 (`docs/inputs/slice401-pcsx2.json`, gt4.exe
 `eac9918f`; `slice401-spec2.json`, gt4-spec2.exe `2b1f3202`), distribution `private/slice401-dist-130-rc12-test`, launcher
@@ -15,6 +17,9 @@ labelled rc12 (`89164318`), `private/slice401-installer-130-rc12-test/GT4Recomp-
 on the owner's desktop through the installer's update mode over rc11 (silent, result ok; installed game files, launcher and
 SDL3 match their sources); rc11 program files backed up in
 `private/_program-backups/rc11-before-rc12test-20261104T023355Z`. Not uploaded; the rc12 release build (PGO) comes later.
+Then the launcher without the "Automatic" controller entry (TASK-148 owner change; launcher `4e0a7e50`, same games):
+`private/slice401-installer-130-rc12-test2/GT4Recomp-Setup-1.3.0-rc12.exe` (`cf90c041`), installed the same way (result ok,
+files match); the first test install is in `private/_program-backups/rc12test-before-rc12test2-20261104T031129Z`.
 
 ## TASK-146 for the owner's test: 60 FPS lets a race drop frames instead of slowing (2026-11-03, night)
 
