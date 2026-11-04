@@ -3020,11 +3020,19 @@ game starts a new profile. Refused while the game runs. Text for the active save
 the runtime card is parked and the next card has no game save; refused while the game runs), focus checks 275/282, nav-test
 209. Not run in game. PR #116 recorded as merged (tree-neutral), issue #98 answered and closed.
 
-### TASK-154 — The ReShade Home key with GSdx (rc13; PR #121, issue #102)
+### TASK-154 — The ReShade Home key with GSdx (rc13; PR #121, issue #102; done, owner test)
 
 Contributor: luanantony (PR #121). With GSdx the picture is a child window of gt4-gs, so keys pressed in the game window do not
 reach ReShade inside gt4-gs. Re-do the forwarding in `native/window.cpp` next to the TASK-145 heartbeat (decision 0076).
 Acceptance: fixtures; the game's own keys unchanged; owner test with ReShade.
+
+Done (2026-11-04): the game window keeps the keyboard focus with GSdx (TASK-038), so gt4-gs never received ReShade's Home. The
+window now posts to the gt4-gs picture window only the key presses and releases of Home, End, Insert, Delete, Page Up, Page
+Down and Scroll Lock (`native/key_forward.hpp`), never Alt or character messages, and still handles them itself; the game
+reads its keys with GetAsyncKeyState, so driving is unchanged, and none of these keys is a default control. The PR's version
+passed every key and Alt message on. The heartbeat (decision 0076) is untouched. Test `native_key_forward`, with
+`native_window_heartbeat`. Whether ReShade inside gt4-gs acts on posted messages is a Hypothesis until the owner's test with
+ReShade. PR #121 recorded as merged (tree-neutral), issue #102 answered and closed.
 
 ### TASK-155 — GSdx starts when the install is inside OneDrive (rc13; PR #136, issue #131)
 
