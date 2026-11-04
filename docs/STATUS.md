@@ -8,8 +8,14 @@ the owner approved them. Sticks: a 10% dead zone, and the bytes step over GT4's 
 proportional from the first step (it was dead up to about 46% of the travel, then too steep). Controller choice: a dropdown
 on the Controls page (`controller` setting, `GT4_PAD`); the game reads the chosen pad, else one of its model, else
 controller 1. Owner change (2026-11-04): no "Automatic" entry; the dropdown lists only the connected controllers and the
-launcher stores the one it reads when the stored one is not connected (checked again at every launcher start). Owner test of
-the sticks and the choice pending.
+launcher stores the one it reads when the stored one is not connected (checked again at every launcher start). TASK-147 is
+done (owner, 2026-11-04: control precision solved); issues #183, #134 and #178 are closed as fixed for rc12.
+
+GitHub issues (2026-11-04, owner's request to close what is fixed): 11 closed with a note each. For rc12: #183, #134, #178.
+Fixed in published pre-releases: #191 (GT Auto bubbles, rc10), #185 (Spec II replays, rc10), #139 and #179 (GSdx missing:
+Play offers CoreGS 2.0, rc10), #115 (no sound device, rc10), #123 (toggles with a controller, rc8), #132 (portable build,
+rc7), #89 (integrated GPU start, rc5; the reporter races on rc6 in #112). Left open: #99 (flashing window then a hang exit,
+the TASK-145 fix) until rc12 is public; the others have no confirmed fix or are feature requests. 25 issues stay open.
 
 Test installer (2026-11-04 UTC): the same plain builds pinned as slice 401 (`docs/inputs/slice401-pcsx2.json`, gt4.exe
 `eac9918f`; `slice401-spec2.json`, gt4-spec2.exe `2b1f3202`), distribution `private/slice401-dist-130-rc12-test`, launcher

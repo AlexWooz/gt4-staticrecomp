@@ -2866,7 +2866,7 @@ simulation state identical over the whole race (2,478 left out); `frame-skip-sui
 words; 60 FPS at 12x on the desktop's RX 9060 XT: game speed 100.00%, 40.3 frames drawn per second. New laptop builds write
 `frameskip.csv` beside game.log (compile-time switch, test builds only); owner test pending.
 
-### TASK-147 — Triggers and sticks: GT4's 100% came at a third of the trigger (rc12)
+### TASK-147 — Triggers and sticks: GT4's 100% came at a third of the trigger (rc12, done)
 
 Owner and players (2026-11-03): the throttle reaches 100% with the trigger 30-40% pressed, and a small stick push steers
 more than it should. Our host path is linear (trigger byte to pressure byte, stick to the PS2 byte after the XInput dead
@@ -2894,7 +2894,11 @@ becomes 165 + round(90 steps / 127) or 90 - round(90 steps / 128), so the game s
 first step, within one of its own steps (90 bytes for 127 steps); option `game_deadzone=skip|keep` (skip by default), the
 launcher accepts it and its stick dead zone defaults are 10%. The right stick on throttle or brake (curve 37..127 of its
 one-sided magnitude) starts from the same bytes. Checks: controls fixture over all 65,536 raw values against the game's own
-formula, SDL fixture. Owner test pending.
+formula, SDL fixture.
+
+State (2026-11-04, owner): done. "Control precision is solved": triggers and sticks approved after the owner's tests; ships in
+1.3.0-rc12. GitHub issues closed as fixed for rc12: moesuito/gt4-staticrecomp#183 (triggers full too early), #134 (full range
+triggers) and #178 (stick dead zone). Later, not scheduled: a game-side patch for finer trigger steps.
 
 ### TASK-148 — Choose the controller the game reads (rc12)
 
