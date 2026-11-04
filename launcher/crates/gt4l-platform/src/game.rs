@@ -124,6 +124,13 @@ pub fn start(
     let integrated = crate::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
     let mut plan = match pcsx2 {
         Some(pcsx2) => {
+            // TASK-155: an install made before the marker existed gets it here (best effort: gt4-gs still starts without it
+            // where Documents is local).
+            if let Some(folder) = pcsx2.executable.parent() {
+                if let Err(error) = gt4l_core::gs_release::ensure_portable_marker(folder) {
+                    eprintln!("gt4-gs: {} not written: {error}", gt4l_core::gs_release::PORTABLE_MARKER);
+                }
+            }
             let paths = Pcsx2Paths::for_session(pcsx2, &dirs.root().join("gs"), &session_dir, &textures.folder);
             let text = launch::gs_config_text(settings, &paths, display, integrated)?;
             gs_table::write_ini_atomic(&paths.config, &text).map_err(|error| format!("gt4-gs.ini: {error}"))?;

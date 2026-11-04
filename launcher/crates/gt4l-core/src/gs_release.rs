@@ -32,6 +32,19 @@ pub const CHECKSUM_ASSET: &str = releases::CHECKSUM_ASSET;
 pub const EXECUTABLE_NAME: &str = "gt4-gs.exe";
 /// Name of the state file in the renderer root: the version in use.
 pub const CURRENT_FILE: &str = "current.txt";
+/// TASK-155 (issue #131; re-done from Luan Antony's PR #136): an empty `portable.ini` beside gt4-gs.exe makes gt4-gs keep its
+/// own settings beside it instead of looking up the Documents folder first; a Documents folder moved into OneDrive stopped
+/// it at start ("Failed to initialize config") before it read `--config`. Written at install and before each GSdx start.
+pub const PORTABLE_MARKER: &str = "portable.ini";
+
+/// Creates [`PORTABLE_MARKER`] in `folder` when it is missing; an existing file is left as it is.
+pub fn ensure_portable_marker(folder: &Path) -> std::io::Result<()> {
+    let marker = folder.join(PORTABLE_MARKER);
+    if marker.is_file() {
+        return Ok(());
+    }
+    fs::write(marker, b"")
+}
 /// Largest package the launcher accepts (bytes). Protects memory on a bad or hostile response.
 pub const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -210,6 +223,7 @@ fn stage_and_publish(
         }
     }
     fs::write(staging.join("sha256.txt"), format!("{actual}\n")).map_err(|error| error.to_string())?;
+    ensure_portable_marker(staging).map_err(|error| format!("{PORTABLE_MARKER}: {error}"))?;
 
     let target = version_directory(root, version);
     guard::check_write(root, &target)?;

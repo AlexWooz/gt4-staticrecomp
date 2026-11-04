@@ -3044,17 +3044,30 @@ passed every key and Alt message on. The heartbeat (decision 0076) is untouched.
 `native_window_heartbeat`. Whether ReShade inside gt4-gs acts on posted messages is a Hypothesis until the owner's test with
 ReShade. PR #121 recorded as merged (tree-neutral), issue #102 answered and closed.
 
-### TASK-155 — GSdx starts when the install is inside OneDrive (rc13; PR #136, issue #131)
+### TASK-155 — GSdx starts when the install is inside OneDrive (rc13; PR #136, issue #131; done)
 
 Contributor: luanantony (PR #136). gt4-gs found its data root under OneDrive and closed at start. Re-do the PR's
 `portable.ini` beside gt4-gs (launcher `gs_release.rs`, the game's `gs_stream_client.cpp`). Clean room: from the PR and the
 issue only. Acceptance: launcher tests, a GSdx start from a folder under OneDrive.
 
-### TASK-156 — Audio crackling on Proton and SteamOS (rc13 if the A/B holds; PR #141, issue #129)
+Done (2026-11-04): an empty `portable.ini` is written beside gt4-gs.exe when GSdx is installed and, for installs made before,
+before each GSdx start (best effort, logged on failure), so gt4-gs keeps its settings beside it instead of looking up a
+Documents folder that OneDrive had moved. The game side (`gs_stream_client.cpp`) needed no change: the launcher installs
+gt4-gs. Tests: gs_release (marker after install; added once, an existing one kept). The OneDrive start itself is not
+reproduced here. PR #136 recorded as merged (tree-neutral), issue #131 answered and closed.
+
+### TASK-156 — Audio crackling on Proton and SteamOS (rc13; PR #141, issue #129; done)
 
 Contributor: luanantony (PR #141). Re-do the audio buffer change in `native/host_io.cpp` only where it does not change Windows'
 behaviour unless needed, with an A/B of underruns (F8) on the desktop and the laptop. Acceptance: no new underruns on Windows,
 fixtures; Proton is untested here.
+
+Done (2026-11-04): Windows keeps exactly its paced audio (sixteen 256-frame buffers under 60 ms; the fixture checks the default
+profile is the old constants, so no Windows A/B is needed). Under Wine (ntdll exports `wine_get_version`) twenty-four
+512-frame buffers under 100 ms; `GT4_AUDIO_LATENCY_MS=20..500` sets only the target and passes the launcher's scrub (a
+Steam launch option); other values keep the default with a log line. The PR also passed `GT4_PACING` through; not taken
+(a stray variable would change Windows pacing). Tests: `native_audio_input` (profiles), `native_pacing`, launch contract.
+Proton is not tested here. PR #141 and the study #164 recorded as merged (tree-neutral), issue #129 answered and closed.
 
 ### TASK-157 — Choose the custom textures folder (rc13; PR #145, study #155, issue #95; done)
 

@@ -81,6 +81,8 @@ fn stable_release_is_verified_and_installed_with_its_hash_recorded() {
     assert_eq!(fs::read(&installed.executable).unwrap(), exe);
     assert_eq!(gs_release::installed(&install), Some(installed.clone()));
     assert_eq!(fs::read_to_string(install.join("current.txt")).unwrap().trim(), "1.2.1");
+    // TASK-155: gt4-gs keeps its settings beside it (no Documents lookup, which failed inside OneDrive).
+    assert!(install.join("1.2.1").join(gs_release::PORTABLE_MARKER).is_file());
 
     // Asking again with the same release is an up-to-date result, not a second install.
     assert!(matches!(gs_release::install_latest(&source(&server), &install), Ok(Outcome::UpToDate(_))));
@@ -310,4 +312,17 @@ fn a_failed_update_from_1_0_1_keeps_the_old_version() {
     assert!(error.contains("1.2.1"), "{error}");
     assert_eq!(gs_release::installed(&install).unwrap().version, Version(1, 0, 1), "the old version still works");
     assert!(gs_release::needs_install(&install), "the next launch tries again");
+}
+
+#[test]
+fn the_portable_marker_is_added_once_and_an_existing_one_is_kept() {
+    let folder = scratch("portable-marker");
+    fs::create_dir_all(&folder).unwrap();
+    gs_release::ensure_portable_marker(&folder).unwrap();
+    let marker = folder.join(gs_release::PORTABLE_MARKER);
+    assert_eq!(fs::read(&marker).unwrap(), b"", "an install made before TASK-155 gets an empty marker");
+    fs::write(&marker, b"kept").unwrap();
+    gs_release::ensure_portable_marker(&folder).unwrap();
+    assert_eq!(fs::read(&marker).unwrap(), b"kept", "an existing marker is left as it is");
+    let _ = fs::remove_dir_all(&folder);
 }
