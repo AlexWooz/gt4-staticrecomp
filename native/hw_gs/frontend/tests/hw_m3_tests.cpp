@@ -50,9 +50,17 @@ void AppendNumber(std::string& out, unsigned long long value) {
     out += buffer;
 }
 
+std::string SerializeBatchBody(const Batch& batch);
+
 std::string SerializeBatch(const Batch& batch) {
     std::string out = "B";
     AppendNumber(out, static_cast<unsigned long long>(batch.reason));
+    return out + SerializeBatchBody(batch);
+}
+
+// Everything of a batch but its flush reason (TASK-168 compares a segment with the batch a CLUT-load flush made).
+std::string SerializeBatchBody(const Batch& batch) {
+    std::string out;
     AppendNumber(out, batch.state.effectivePrim);
     AppendNumber(out, batch.state.contextIndex);
     AppendNumber(out, batch.state.ctx.tex0);
@@ -79,6 +87,18 @@ std::string SerializeBatch(const Batch& batch) {
         AppendNumber(out, FloatToBits(v.t));
         AppendNumber(out, v.u);
         AppendNumber(out, v.v);
+    }
+    // TASK-168: palette segments (none for a batch with one palette).
+    AppendNumber(out, batch.paletteSegments.size());
+    for (const PaletteSegment& segment : batch.paletteSegments) {
+        AppendNumber(out, segment.firstPrim);
+        AppendNumber(out, segment.firstVertex);
+        AppendNumber(out, segment.clutGeneration);
+        unsigned long long hash = 1469598103934665603ull;
+        for (uint16_t halfword : segment.clut) {
+            hash = (hash ^ halfword) * 1099511628211ull;
+        }
+        AppendNumber(out, hash);
     }
     out += "\n";
     return out;
@@ -1592,6 +1612,450 @@ void TestFastPaths() {
                 static_cast<unsigned long long>(fastVertices));
 }
 
+// ---- TASK-168: palette segments ------------------------------------------------------------------------------
+
+// The pieces of the segment fixtures: a T8 16 x 16 texture at block 0x2000 and CT32 CSM1 palettes from block 0x3000, both
+// away from the frame (FBP 0, FBW 10) and the depth buffer (page 0x80, never used: ZMSK = 1, no depth test).
+constexpr uint32_t kSegmentTexture = 0x2000;
+constexpr uint32_t kSegmentPalettes[3] = {0x3000, 0x3020, 0x3040};
+
+uint64_t SegmentTex0(uint32_t cbp, uint32_t cld, uint32_t tbp = kSegmentTexture, uint32_t csm = 0) {
+    return tbp | (uint64_t{1} << 14) | (uint64_t{0x13} << 20) | (uint64_t{4} << 26) | (uint64_t{4} << 30) |
+           (uint64_t{cbp} << 37) | (uint64_t{csm} << 55) | (uint64_t{cld} << 61);
+}
+
+uint32_t PaletteC(uint32_t i) { return 0x80000000u | (i << 8) | (255u - i); }
+
+void AppendSegmentBaseline(std::vector<Qword>& stream, uint64_t prim) {
+    const uint64_t scissor = (uint64_t{639} << 16) | (uint64_t{447} << 48);
+    const uint64_t frame = uint64_t{10} << 16;
+    const uint64_t zbuf = 0x80u | (uint64_t{1} << 32);
+    AppendAd(stream, {{reg::kScissorOne, scissor}, {reg::kFrameOne, frame}, {reg::kZbufOne, zbuf},
+                      {reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 0)}, {reg::kXyoffsetOne, 0},
+                      {reg::kPrim, prim}});
+}
+
+constexpr uint64_t kSegmentSpritePrim = 6u | (1u << primbit::kTme) | (1u << primbit::kFst);
+constexpr uint64_t kSegmentTrianglePrim = 3u | (1u << primbit::kTme);
+
+// One FST sprite (RGBAQ, UV, XYZ2 per vertex) 8 pixels wide at (x, y).
+void AppendSegmentSprite(std::vector<Qword>& stream, uint32_t x, uint32_t y) {
+    stream.push_back(Tag(2, true, false, 0, kPacked, 3, {0x1, 0x3, 0x5}));
+    for (uint32_t v = 0; v < 2; ++v) {
+        Qword rgba;
+        rgba.lo = 0x80u | (uint64_t{0x80} << 32);
+        rgba.hi = 0x80u | (uint64_t{0x80} << 32);
+        Qword uv;
+        uv.lo = static_cast<uint64_t>(v * 16u * 16u) | (static_cast<uint64_t>(v * 16u * 16u) << 32);
+        Qword xyz;
+        xyz.lo = static_cast<uint64_t>((x + 8u * v) * 16u) | (static_cast<uint64_t>((y + 8u * v) * 16u) << 32);
+        xyz.hi = uint64_t{0x100} << 4;
+        stream.push_back(rgba);
+        stream.push_back(uv);
+        stream.push_back(xyz);
+    }
+}
+
+// One STQ triangle (ST, RGBAQ, XYZ2 per vertex) at (x, y) with depth z; S and T have low mantissa bits for 02.4 to clear.
+void AppendSegmentTriangle(std::vector<Qword>& stream, uint32_t x, uint32_t y, uint32_t z) {
+    const uint32_t xs[3] = {x, x + 20, x};
+    const uint32_t ys[3] = {y, y, y + 20};
+    stream.push_back(Tag(3, true, false, 0, kPacked, 3, {0x2, 0x1, 0x5}));
+    for (uint32_t v = 0; v < 3; ++v) {
+        Qword st;
+        st.lo = uint64_t{FloatToBits(0.1234567f + 0.01f * static_cast<float>(v))} |
+                (uint64_t{FloatToBits(0.7654321f - 0.01f * static_cast<float>(v))} << 32);
+        st.hi = FloatToBits(1.0f + 0.03125f * static_cast<float>(v));
+        Qword rgba;
+        rgba.lo = 0x80u | (uint64_t{0x80} << 32);
+        rgba.hi = 0x80u | (uint64_t{0x80} << 32);
+        Qword xyz;
+        xyz.lo = static_cast<uint64_t>(xs[v] * 16u) | (static_cast<uint64_t>(ys[v] * 16u) << 32);
+        xyz.hi = static_cast<uint64_t>(z) << 4;
+        stream.push_back(st);
+        stream.push_back(rgba);
+        stream.push_back(xyz);
+    }
+}
+
+// A front end over a memory image holding the three palettes, whose sink also keeps the palette the CLUT unit decodes for
+// each batch when it arrives (what a renderer reading the live CLUT unit would draw with).
+struct SegmentWorld {
+    explicit SegmentWorld(bool segments, FrontEndOptions options = FrontEndOptions{})
+        : slm(kLocalMemoryBytes, 0), world(options) {
+        WritePaletteCsm1(slm, kSegmentPalettes[0], PaletteA);
+        WritePaletteCsm1(slm, kSegmentPalettes[1], PaletteB);
+        WritePaletteCsm1(slm, kSegmentPalettes[2], PaletteC);
+        world.fe.SetLocalMemory(slm.data());
+        if (segments) {
+            world.fe.SetPaletteSegmentHook([this](const clut::Tex0Write&, const Batch&) {
+                ++hookQuestions;
+                return hookAnswer;
+            });
+        }
+    }
+    std::vector<uint8_t> slm;
+    World world;
+    bool hookAnswer = true;
+    uint32_t hookQuestions = 0;
+};
+
+// The batches of a run without segments next to one with them: each segment, as PaletteSegmentBatch gives it, must be
+// the batch the CLUT-load flush made, with the palette the CLUT unit held for that batch. All is compared but the flush
+// reason and the TEX0 fields that only steer CLUT loads (CBP, CSM, CLD): the merged batch keeps its first primitive's
+// TEX0 snapshot, as any batch does over a TEX0 write that changes only those (chapter 02.5 rule 8 masks).
+// `mergedPalette` is the palette the CLUT unit held when the merged batch arrived (for a batch without segments).
+void CheckSegmentsMatchFlushes(const std::vector<Batch>& flushed, const std::vector<clut::Palette>& flushedPalettes,
+                               const Batch& merged, const clut::Palette& mergedPalette, uint32_t firstFlushed = 0) {
+    constexpr uint64_t kClutLoadFields = ((uint64_t{1} << 14) - 1u) << 37 | uint64_t{1} << 55 | uint64_t{7} << 61;
+    CounterSet counters;
+    clut::ClutUnit unused(counters);
+    const uint32_t segments = PaletteSegmentCount(merged);
+    CHECK(firstFlushed + segments <= flushed.size());
+    for (uint32_t s = 0; s < segments && firstFlushed + s < flushed.size(); ++s) {
+        Batch actual = PaletteSegmentBatch(merged, s);
+        Batch expected = flushed[firstFlushed + s];
+        CHECK_EQ(actual.state.clutGeneration, expected.state.clutGeneration);
+        for (Batch* batch : {&actual, &expected}) {
+            batch->paletteSegments.clear();
+            batch->state.ctx.tex0 &= ~kClutLoadFields;
+        }
+        const std::string a = SerializeBatchBody(actual);
+        const std::string e = SerializeBatchBody(expected);
+        CHECK(a == e);
+        if (a != e) std::fprintf(stderr, "  segment %u: %s  expected %s", s, a.substr(0, 160).c_str(), e.substr(0, 160).c_str());
+        const clut::Palette palette = merged.paletteSegments.empty() ? mergedPalette : DecodeSegmentPalette(merged, s, unused);
+        CHECK(std::memcmp(palette.entries, flushedPalettes[firstFlushed + s].entries, sizeof palette.entries) == 0);
+    }
+}
+
+// A sink that decodes the live CLUT unit's palette for every batch it receives.
+struct PaletteRecorder : BatchSink {
+    const FrontEnd* fe = nullptr;
+    std::vector<Batch> batches;
+    std::vector<clut::Palette> palettes;
+    void OnBatch(Batch&& batch) override {
+        const uint64_t tex0 = batch.state.ctx.tex0;
+        palettes.push_back(fe->Clut().Decode(tex0::Psm(tex0), tex0::Cpsm(tex0), tex0::Csa(tex0), batch.state.env.texa));
+        batches.push_back(std::move(batch));
+    }
+};
+
+struct NoSync : SyncSink {
+    bool OnSync(SyncKind, uint32_t, uint32_t) override { return false; }
+};
+
+struct NoMemory : TransferSink {
+    void InvalidateDestination(const UploadCommit&) override {}
+    void CommitUpload(const UploadCommit&, const uint8_t*, size_t) override {}
+    void LocalToLocalMove(const LocalMoveCommit&) override {}
+    void BeginLocalToHost(const LocalToHostSetup&) override {}
+};
+
+// Runs `stream` with and without palette segments; returns the batches and live palettes of each.
+struct SegmentRun {
+    std::vector<Batch> batches;
+    std::vector<clut::Palette> palettes;
+    uint64_t kept = 0;
+    uint64_t clutFlushes = 0;
+    uint32_t hookQuestions = 0;
+    std::vector<uint8_t> clutAtEnd;
+};
+
+SegmentRun RunSegments(const std::vector<Qword>& stream, bool segments, bool hookAnswer = true,
+                       FrontEndOptions options = FrontEndOptions{}) {
+    std::vector<uint8_t> slm(kLocalMemoryBytes, 0);
+    WritePaletteCsm1(slm, kSegmentPalettes[0], PaletteA);
+    WritePaletteCsm1(slm, kSegmentPalettes[1], PaletteB);
+    WritePaletteCsm1(slm, kSegmentPalettes[2], PaletteC);
+    PaletteRecorder recorder;
+    NoSync sync;
+    NoMemory memory;
+    FrontEnd fe(options, recorder, sync, memory);
+    recorder.fe = &fe;
+    fe.SetLocalMemory(slm.data());
+    SegmentRun run;
+    if (segments) {
+        fe.SetPaletteSegmentHook([&](const clut::Tex0Write&, const Batch&) {
+            ++run.hookQuestions;
+            return hookAnswer;
+        });
+    }
+    fe.GifTransfer(1, stream.data(), stream.size());
+    fe.FlushBatch(FlushReason::Sync);
+    run.batches = std::move(recorder.batches);
+    run.palettes = std::move(recorder.palettes);
+    run.kept = fe.ClutLoadsKept();
+    run.clutFlushes = fe.FlushReasonCount(FlushReason::ClutLoad);
+    run.clutAtEnd.assign(reinterpret_cast<const uint8_t*>(fe.Clut().Halfwords()),
+                         reinterpret_cast<const uint8_t*>(fe.Clut().Halfwords() + clut::kClutHalfwords));
+    return run;
+}
+
+// The segment basics: loads of palettes A, B, then C and A back to back keep one batch with three segments (the second
+// load in a row replaces the palette of the segment it opened); each segment equals the batch its flush made.
+void TestPaletteSegments() {
+    std::vector<Qword> s;
+    AppendSegmentBaseline(s, kSegmentSpritePrim);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1)}});
+    AppendSegmentSprite(s, 0, 0);
+    AppendSegmentSprite(s, 16, 0);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[1], 1)}});
+    AppendSegmentSprite(s, 32, 0);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[2], 1)}});
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1)}});
+    AppendSegmentSprite(s, 48, 0);
+    AppendSegmentSprite(s, 64, 0);
+
+    const SegmentRun flushed = RunSegments(s, false);
+    const SegmentRun merged = RunSegments(s, true);
+    CHECK_EQ(flushed.batches.size(), 3u);
+    CHECK_EQ(flushed.clutFlushes, 2u);
+    CHECK_EQ(flushed.kept, 0u);
+    CHECK_EQ(merged.batches.size(), 1u);
+    CHECK_EQ(merged.clutFlushes, 0u);
+    CHECK_EQ(merged.kept, 3u);
+    CHECK(merged.clutAtEnd == flushed.clutAtEnd);
+    if (merged.batches.size() != 1u || flushed.batches.size() != 3u) return;
+    const Batch& batch = merged.batches[0];
+    CHECK_EQ(batch.paletteSegments.size(), 3u);
+    CHECK_EQ(batch.prims.size(), 5u);
+    if (batch.paletteSegments.size() == 3u) {
+        CHECK_EQ(batch.paletteSegments[0].firstPrim, 0u);
+        CHECK_EQ(batch.paletteSegments[1].firstPrim, 2u);
+        CHECK_EQ(batch.paletteSegments[1].firstVertex, 4u);
+        CHECK_EQ(batch.paletteSegments[2].firstPrim, 3u);
+        CHECK_EQ(batch.paletteSegments[2].firstVertex, 6u);
+        CHECK_EQ(batch.state.clutGeneration, batch.paletteSegments[0].clutGeneration);
+    }
+    // The palettes A, B and A, decoded from the copies (the CLUT unit given is not read).
+    CounterSet counters;
+    clut::ClutUnit unused(counters);
+    CHECK_EQ(DecodeSegmentPalette(batch, 0, unused).entries[7], PaletteA(7));
+    CHECK_EQ(DecodeSegmentPalette(batch, 1, unused).entries[7], PaletteB(7));
+    CHECK_EQ(DecodeSegmentPalette(batch, 2, unused).entries[200], PaletteA(200));
+    CHECK_EQ(PaletteSegmentEndPrim(batch, 0), 2u);
+    CHECK_EQ(PaletteSegmentEndPrim(batch, 2), 5u);
+    CheckSegmentsMatchFlushes(flushed.batches, flushed.palettes, batch, merged.palettes[0]);
+}
+
+// Chapter 02.4 per segment: triangles of constant Z in each segment, a different Z per segment. The batches of the
+// flushes round S, T and Q (constant Z); so must the merged batch, segment by segment.
+void TestPaletteSegmentRounding() {
+    std::vector<Qword> s;
+    AppendSegmentBaseline(s, kSegmentTrianglePrim);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1)}});
+    AppendSegmentTriangle(s, 0, 0, 0x100);
+    AppendSegmentTriangle(s, 40, 0, 0x100);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[1], 1)}});
+    AppendSegmentTriangle(s, 80, 0, 0x200);
+    AppendSegmentTriangle(s, 120, 0, 0x200);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[2], 1)}});
+    AppendSegmentTriangle(s, 160, 0, 0x300);
+    AppendSegmentTriangle(s, 200, 0, 0x301);  // not constant: no rounding in this segment
+    const SegmentRun flushed = RunSegments(s, false);
+    const SegmentRun merged = RunSegments(s, true);
+    CHECK_EQ(flushed.batches.size(), 3u);
+    CHECK_EQ(merged.batches.size(), 1u);
+    if (merged.batches.size() != 1u || flushed.batches.size() != 3u) return;
+    CHECK_EQ(merged.batches[0].paletteSegments.size(), 3u);
+    CheckSegmentsMatchFlushes(flushed.batches, flushed.palettes, merged.batches[0], merged.palettes[0]);
+    // The rounding really ran in the first segment (constant Z) and not in the last (Z 0x300 and 0x301), as the
+    // per-batch rule of the flushes decided: the whole merged batch has no constant Z.
+    CHECK(merged.batches[0].vertices[0].s != 0.1234567f);
+    CHECK(merged.batches[0].vertices[12].s == 0.1234567f);
+    CHECK(flushed.batches[2].vertices[0].s == 0.1234567f);
+}
+
+// The loads that must still end the batch: a texture change, CSM2, a palette in the frame's memory, a texture inside
+// the frame, the other context, the renderer's refusal, and the segment limit.
+void TestPaletteSegmentsStillFlush() {
+    auto twoSprites = [](uint64_t secondTex0, uint8_t tex0Register = reg::kTex0One, uint32_t firstTbp = kSegmentTexture) {
+        std::vector<Qword> s;
+        AppendSegmentBaseline(s, kSegmentSpritePrim);
+        AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1, firstTbp)}});
+        AppendSegmentSprite(s, 0, 0);
+        AppendAd(s, {{tex0Register, secondTex0}});
+        AppendSegmentSprite(s, 16, 0);
+        return s;
+    };
+    struct Case {
+        const char* name;
+        std::vector<Qword> stream;
+        bool hookAnswer;
+        uint64_t batches;
+    };
+    const Case cases[] = {
+        {"same texture (kept)", twoSprites(SegmentTex0(kSegmentPalettes[1], 1)), true, 1},
+        {"texture base changes", twoSprites(SegmentTex0(kSegmentPalettes[1], 1, kSegmentTexture + 0x20)), true, 2},
+        {"CSM2", twoSprites(SegmentTex0(kSegmentPalettes[1], 1, kSegmentTexture, 1)), true, 2},
+        {"palette in the frame", twoSprites(SegmentTex0(0x40, 1)), true, 2},
+        {"texture in the frame", twoSprites(SegmentTex0(kSegmentPalettes[1], 1, 0x40), reg::kTex0One, 0x40), true, 2},
+        {"other context", twoSprites(SegmentTex0(kSegmentPalettes[1], 1), reg::kTex0Two), true, 2},
+        {"renderer refuses", twoSprites(SegmentTex0(kSegmentPalettes[1], 1)), false, 2},
+    };
+    for (const Case& c : cases) {
+        const SegmentRun run = RunSegments(c.stream, true, c.hookAnswer);
+        if (run.batches.size() != c.batches) std::fprintf(stderr, "  case '%s'\n", c.name);
+        CHECK_EQ(run.batches.size(), c.batches);
+        // Whatever happened, the batches equal those of the run without segments, segment by segment.
+        const SegmentRun reference = RunSegments(c.stream, false);
+        uint32_t next = 0;
+        for (size_t b = 0; b < run.batches.size(); ++b) {
+            CheckSegmentsMatchFlushes(reference.batches, reference.palettes, run.batches[b], run.palettes[b], next);
+            next += PaletteSegmentCount(run.batches[b]);
+        }
+        CHECK_EQ(next, reference.batches.size());
+    }
+
+    // The limit: a load and a sprite, again and again. A batch holds kMaxPaletteSegments segments; the next load ends it.
+    std::vector<Qword> s;
+    AppendSegmentBaseline(s, kSegmentSpritePrim);
+    const uint32_t loads = kMaxPaletteSegments + 10u;
+    for (uint32_t i = 0; i < loads; ++i) {
+        AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[i % 3u], 1)}});
+        AppendSegmentSprite(s, (i * 8u) % 600u, ((i * 8u) / 600u) * 8u);
+    }
+    const SegmentRun limited = RunSegments(s, true);
+    const SegmentRun reference = RunSegments(s, false);
+    CHECK_EQ(reference.batches.size(), loads);
+    CHECK_EQ(limited.batches.size(), 2u);
+    if (limited.batches.size() == 2u) {
+        CHECK_EQ(limited.batches[0].paletteSegments.size(), kMaxPaletteSegments);
+        CHECK_EQ(limited.batches[1].paletteSegments.size(), 10u);
+        CHECK(limited.batches[0].reason == FlushReason::ClutLoad);
+    }
+    uint32_t next = 0;
+    for (size_t b = 0; b < limited.batches.size(); ++b) {
+        CheckSegmentsMatchFlushes(reference.batches, reference.palettes, limited.batches[b], limited.palettes[b], next);
+        next += PaletteSegmentCount(limited.batches[b]);
+    }
+    CHECK_EQ(next, loads);
+}
+
+// The capacity limit counts from the last segment's start, where the flush would have started a batch: 10 sprites, a
+// load, then 16400 sprites. The flushes give batches of 10, 16383 (32766 vertices, the sprite limit) and 17 sprites; the
+// merged run gives the same three batches.
+void TestPaletteSegmentCapacity() {
+    std::vector<Qword> s;
+    AppendSegmentBaseline(s, kSegmentSpritePrim);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1)}});
+    for (uint32_t i = 0; i < 10u; ++i) AppendSegmentSprite(s, 8u * i, 0);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[1], 1)}});
+    for (uint32_t i = 0; i < 16400u; ++i) AppendSegmentSprite(s, (8u * i) % 600u, 16u + ((8u * i) / 600u) % 400u);
+    const SegmentRun flushed = RunSegments(s, false);
+    const SegmentRun merged = RunSegments(s, true);
+    CHECK_EQ(flushed.batches.size(), 3u);
+    CHECK_EQ(merged.batches.size(), 3u);
+    if (flushed.batches.size() != 3u || merged.batches.size() != 3u) return;
+    CHECK_EQ(flushed.batches[1].prims.size(), 16383u);
+    for (uint32_t i = 0; i < 3u; ++i) {
+        CHECK_EQ(PaletteSegmentCount(merged.batches[i]), 1u);
+        CheckSegmentsMatchFlushes(flushed.batches, flushed.palettes, merged.batches[i], merged.palettes[i], i);
+    }
+    CHECK(merged.batches[0].reason == FlushReason::Capacity);
+    CHECK(merged.batches[1].reason == FlushReason::Capacity);
+}
+
+// A segment's copy is the palette its load produced, whatever the palette memory holds later (07.3 snapshot, IN-353).
+void TestPaletteSegmentSnapshot() {
+    SegmentWorld world(true);
+    std::vector<Qword> s;
+    AppendSegmentBaseline(s, kSegmentSpritePrim);
+    AppendAd(s, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1)}});
+    AppendSegmentSprite(s, 0, 0);
+    Feed(world.world, s);
+    const uint32_t generationA = world.world.fe.Clut().Generation();
+    std::vector<Qword> second;
+    AppendAd(second, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[1], 1)}});
+    AppendSegmentSprite(second, 16, 0);
+    Feed(world.world, second);
+    const uint32_t generationB = world.world.fe.Clut().Generation();
+    CHECK(generationB != generationA);
+    // The palette memory changes under the pending batch; the copies do not.
+    WritePaletteCsm1(world.slm, kSegmentPalettes[0], PaletteC);
+    WritePaletteCsm1(world.slm, kSegmentPalettes[1], PaletteC);
+    world.world.fe.FlushBatch(FlushReason::Sync);
+    CHECK_EQ(world.world.batches.emitted.size(), 1u);
+    CHECK(world.hookQuestions == 1u);
+    if (world.world.batches.emitted.size() != 1u) return;
+    const Batch& batch = world.world.batches.emitted[0];
+    CHECK_EQ(batch.paletteSegments.size(), 2u);
+    if (batch.paletteSegments.size() != 2u) return;
+    CHECK_EQ(batch.paletteSegments[0].clutGeneration, generationA);
+    CHECK_EQ(batch.paletteSegments[1].clutGeneration, generationB);
+    CHECK_EQ(DecodeSegmentPalette(batch, 0, world.world.fe.Clut()).entries[9], PaletteA(9));
+    CHECK_EQ(DecodeSegmentPalette(batch, 1, world.world.fe.Clut()).entries[9], PaletteB(9));
+    // A batch without segments reads the CLUT unit's buffer.
+    Batch plain = PaletteSegmentBatch(batch, 1);
+    plain.paletteSegments.clear();
+    CHECK_EQ(DecodeSegmentPalette(plain, 0, world.world.fe.Clut()).entries[9], PaletteB(9));
+}
+
+// The IN-366 fast paths with palette segments: random strips, sprites and palette loads (the same texture or another one)
+// through both front ends with the hook on give byte-identical batches, segments included.
+void TestFastPathsPaletteSegments() {
+    int segmented = 0;
+    for (uint32_t seed = 1; seed <= 20; ++seed) {
+        std::mt19937_64 rng(seed * 104729u);
+        std::vector<Qword> stream;
+        AppendSegmentBaseline(stream, kSegmentTrianglePrim | (1u << 3));
+        for (int packet = 0; packet < 160; ++packet) {
+            const uint32_t kind = static_cast<uint32_t>(rng() % 10u);
+            if (kind < 4u) {
+                const uint32_t nloop = 1u + static_cast<uint32_t>(rng() % 40u);
+                const uint32_t primType = rng() % 3u == 0u ? 3u : 4u;
+                stream.push_back(Tag(nloop, (rng() & 1u) != 0u, true, primType | (1u << 3) | (1u << primbit::kTme),
+                                     kPacked, 3, {0x2, 0x1, 0x4}));
+                for (uint32_t v = 0; v < nloop; ++v) {
+                    Qword stq;
+                    stq.lo = (uint64_t{0x3F000000u + static_cast<uint32_t>(rng() % 0x800000u)}) |
+                             (uint64_t{0x3E800000u + static_cast<uint32_t>(rng() % 0x800000u)} << 32);
+                    stq.hi = 0x3F800000u + static_cast<uint32_t>(rng() % 0x100000u);
+                    Qword rgba;
+                    rgba.lo = (rng() & 0xFFu) | ((rng() & 0xFFu) << 32);
+                    rgba.hi = (rng() & 0xFFu) | ((rng() & 0xFFu) << 32);
+                    Qword xyz;
+                    xyz.lo = static_cast<uint64_t>(rng() % 9000u) | (static_cast<uint64_t>(rng() % 6000u) << 32);
+                    xyz.hi = (static_cast<uint64_t>(rng() % 4u) << 4) | ((rng() % 4u == 0u) ? (uint64_t{1} << 47) : 0u);
+                    stream.push_back(stq);
+                    stream.push_back(rgba);
+                    stream.push_back(xyz);
+                }
+            } else if (kind < 8u) {  // a palette load, mostly for the same texture
+                const uint32_t tbp = rng() % 6u == 0u ? kSegmentTexture + 0x20u : kSegmentTexture;
+                AppendAd(stream, {{reg::kTex0One, SegmentTex0(kSegmentPalettes[rng() % 3u], 1, tbp)}});
+            } else {  // sprites
+                AppendAd(stream, {{reg::kPrim, kSegmentSpritePrim}});
+                for (uint32_t i = 0; i < 1u + rng() % 5u; ++i) {
+                    AppendSegmentSprite(stream, static_cast<uint32_t>(rng() % 600u), static_cast<uint32_t>(rng() % 400u));
+                }
+                AppendAd(stream, {{reg::kPrim, kSegmentTrianglePrim | (1u << 3)}});
+            }
+        }
+        FrontEndOptions slowOptions;
+        slowOptions.fastPaths = false;
+        SegmentWorld fast(true);
+        SegmentWorld slow(true, slowOptions);
+        size_t offset = 0;
+        while (offset < stream.size()) {
+            const size_t take = std::min<size_t>(stream.size() - offset, 1u + static_cast<size_t>(rng() % 2000u));
+            fast.world.fe.GifTransfer(1, stream.data() + offset, take);
+            slow.world.fe.GifTransfer(1, stream.data() + offset, take);
+            offset += take;
+        }
+        fast.world.fe.VBlank(nullptr, 0);
+        slow.world.fe.VBlank(nullptr, 0);
+        fast.world.fe.FlushBatch(FlushReason::Sync);
+        slow.world.fe.FlushBatch(FlushReason::Sync);
+        CHECK(fast.world.log == slow.world.log);
+        CHECK_EQ(fast.world.fe.ClutLoadsKept(), slow.world.fe.ClutLoadsKept());
+        for (const Batch& batch : fast.world.batches.emitted) segmented += batch.paletteSegments.empty() ? 0 : 1;
+    }
+    CHECK(segmented > 20);
+    std::printf("hw_front_end_fast_paths: %d batches with palette segments\n", segmented);
+}
+
 int main(int argc, char** argv) {
     const std::string name = argc > 1 ? argv[1] : "";
     struct Entry {
@@ -1606,9 +2070,16 @@ int main(int argc, char** argv) {
         {"hw_vertex_trace", [] { TestVertexTrace(); }},
         {"hw_st_rounding", [] { TestStRounding(); }},
         {"hw_clut_load", [] { TestClutLoad(); }},
-        {"hw_clut_snapshot", [] { TestClutSnapshot(); }},
+        {"hw_clut_snapshot", [] { TestClutSnapshot(); TestPaletteSegmentSnapshot(); }},
         {"hw_clut_copy_free", [] { TestClutCopyFree(); }},
-        {"hw_front_end_fast_paths", [] { TestFastPaths(); }},
+        {"hw_front_end_fast_paths", [] { TestFastPaths(); TestFastPathsPaletteSegments(); }},
+        // TASK-168.
+        {"hw_palette_segments", [] {
+             TestPaletteSegments();
+             TestPaletteSegmentRounding();
+             TestPaletteSegmentsStillFlush();
+             TestPaletteSegmentCapacity();
+         }},
         {"hw_block_ranges_overlap", [] { TestBlockRangesOverlap(); }},
         {"hw_transfers", [] { TestTransfers(); TestMipLevelTransferFlush(); }},
         {"hw_counters", [] { TestCounters(); }},

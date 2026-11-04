@@ -710,6 +710,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
     std::array<std::uint64_t, static_cast<std::size_t>(FlushReason::Count)> lastFlushCounts_{};  // CPU survey R9
     std::uint64_t lastClutSameTexture_ = 0;
+    std::uint64_t lastClutKept_ = 0, lastSegmentedBatches_ = 0, lastPaletteSegments_ = 0;  // TASK-168
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
     // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
@@ -722,14 +723,32 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::vector<std::uint64_t> paletteRowKey_;
     std::uint32_t nextPaletteRow_ = 0;
 
+    // TASK-168: a CLUT load that only changes the palette of the pending batch's indexed texture starts a palette segment
+    // of the batch instead of ending it (FrontEnd::SetPaletteSegmentHook, PaletteSegmentAllowed below), when every palette
+    // of the batch is a CPU one; each segment's primitives look their colours up in a palette row of their own
+    // (GpuVertex::paletteRow). Needs the palette rows. GT4_CORE2_PALETTE_SEGMENTS=0 ends the batch at every such load,
+    // as before (A/B).
+    const bool paletteSegments_ = paletteRows_ && (std::getenv("GT4_CORE2_PALETTE_SEGMENTS") == nullptr ||
+                                                   std::strcmp(std::getenv("GT4_CORE2_PALETTE_SEGMENTS"), "0") != 0);
+    std::vector<std::uint32_t> pinnedPaletteRows_;   // rows the batch being prepared names: not taken for another palette
+    std::vector<std::int32_t> segmentPaletteRows_;  // the batch's segment rows (DrawBatch::segmentPaletteRows)
+
     // The palette row of an indexed texture's palette (TEX0 CPSM and CSA, TEXA), filled on first use; -1 on failure.
     std::int32_t PaletteRow(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa) {
         const std::uint32_t cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
         const std::uint32_t csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
         const std::uint64_t gpuKey = GpuPaletteKey(t.glmPsm, cpsm, csa);
-        const std::uint64_t entries = (t.glmPsm & 7u) == 3u ? 256u : 16u;
-        std::uint64_t key = gpuKey != 0 ? gpuKey : writeback::HashPaletteWords(t.palette);
-        const std::uint64_t parts[] = {entries, gpuKey != 0 ? cpsm : 0u, gpuKey != 0 ? csa : 0u,
+        return PaletteRowOf(t.glmPsm, t.palette.data(), t.palette.size(), gpuKey, cpsm, csa, texa);
+    }
+
+    // The palette row of the CPU palette `entries` (`count` entries as BatchTranslation::palette holds them, gpuKey 0) or of
+    // the GPU CLUT's palette (gpuKey from GpuPaletteKey, with CPSM, CSA and TEXA) for a texture of format `psm`, filled on
+    // first use; -1 on failure. A row in pinnedPaletteRows_ is never given to another palette (TASK-168).
+    std::int32_t PaletteRowOf(std::uint32_t psm, const std::uint32_t *entries, std::size_t count, std::uint64_t gpuKey,
+                              std::uint32_t cpsm, std::uint32_t csa, std::uint64_t texa) {
+        const std::uint64_t indices = (psm & 7u) == 3u ? 256u : 16u;
+        std::uint64_t key = gpuKey != 0 ? gpuKey : writeback::HashPaletteWords(entries, count);
+        const std::uint64_t parts[] = {indices, gpuKey != 0 ? cpsm : 0u, gpuKey != 0 ? csa : 0u,
                                        gpuKey != 0 ? (texa & 0xFF000080FFull) : 0u};
         for (std::uint64_t part : parts) key = (key ^ part) * 1099511628211ull;
         if (auto found = paletteRowOf_.find(key); found != paletteRowOf_.end()) {
@@ -745,8 +764,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             paletteRowKey_.assign(kPaletteRows, 0);
         }
-        const std::uint32_t row = nextPaletteRow_;
-        nextPaletteRow_ = (nextPaletteRow_ + 1u) % kPaletteRows;
+        std::uint32_t row = nextPaletteRow_;
+        while (std::find(pinnedPaletteRows_.begin(), pinnedPaletteRows_.end(), row) != pinnedPaletteRows_.end()) {
+            row = (row + 1u) % kPaletteRows;  // TASK-168: at most kMaxPaletteSegments rows are pinned, of 1024
+        }
+        nextPaletteRow_ = (row + 1u) % kPaletteRows;
         if (paletteRowKey_[row] != 0) paletteRowOf_.erase(paletteRowKey_[row]);
         paletteRowKey_[row] = key;
         paletteRowOf_[key] = row;
@@ -757,9 +779,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             palette.cpsm = cpsm;
             palette.csa = csa;
             palette.texa = texa;
-            ok = gpu_.PaletteRowFromGpuClut(paletteImage_, row, t.glmPsm, palette, error);
+            ok = gpu_.PaletteRowFromGpuClut(paletteImage_, row, psm, palette, error);
         } else {
-            std::vector<std::uint32_t> words(t.palette.begin(), t.palette.end());
+            std::vector<std::uint32_t> words(entries, entries + count);
             words.resize(256, 0u);
             ok = gpu_.Patch(paletteImage_, 0, static_cast<std::int32_t>(row), 255, static_cast<std::int32_t>(row), words,
                             0xFFFFFFFFu, error);
@@ -771,6 +793,79 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         stats.paletteRowsWritten++;
         return static_cast<std::int32_t>(row);
     }  // B0: GPU fence wait time at the last timing line
+
+    // TASK-168: the front end's question for a CLUT load under a pending indexed batch (FrontEnd::PaletteSegmentHook). Yes
+    // only while every palette of the batch is a CPU one, drawn through palette rows keyed by content: the batch's palette
+    // so far uses no halfword a GPU load wrote (the load about to happen writes every halfword the same CPSM and CSA read,
+    // from memory), and the load reads GS memory alone, under no drawn target (no readback and no GPU load, IN-408 and
+    // IN-417, which keep one GPU CLUT state). Texture replacement looks a texture up by its one palette: no segments.
+    bool PaletteSegmentAllowed(const clut::Tex0Write &write, const Batch &pending) const {
+        if (!paletteSegments_ || replacementLoader_) return false;
+        const std::uint64_t tex0 = pending.state.ctx.tex0;
+        if (GpuPaletteKey(static_cast<std::uint32_t>(tex0::Psm(tex0)), static_cast<std::uint32_t>(tex0::Cpsm(tex0)),
+                          static_cast<std::uint32_t>(tex0::Csa(tex0))) != 0) {
+            return false;
+        }
+        const BlockSpan span{write.cbp & ~31u, 64u};  // the range SetBeforeLocalRead reports for a CSM1 load
+        for (const Target &t : targets_) {
+            if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) return false;
+        }
+        return true;
+    }
+
+    // TASK-168: the consumers that take one palette per batch get a batch's segments one by one, as the CLUT-load flushes
+    // gave them: texture replacement (chapter 11 keys a texture by its palette) and GT4's tone sequence (7.2: ToneHook
+    // decides per batch, from its palette, and keeps a run across batches). ToneHook leaves a batch to the normal path,
+    // without reading its palette, unless it is a T8 sprite batch over a 32-bit target (ShuffleSource) or a run is going on.
+    bool PaletteSegmentsNeedSplit(const Batch &batch) {
+        if (replacementLoader_) return true;
+        const bool textured = ((batch.state.effectivePrim >> primbit::kTme) & 1u) != 0;
+        const bool toneShape = textured && batch.cls == PrimClass::Sprite && tex0::Psm(batch.state.ctx.tex0) == 0x13u;
+        return toneShape && (toneActive_ || ShuffleSource(batch) != nullptr);
+    }
+
+    // TASK-168: the palette rows of a batch with several palette segments. Segment 0 has the batch's row (draw.paletteRow,
+    // already taken); every later segment gets the row of its own palette, and the vertices of its draws name it
+    // (GpuVertex::paletteRow = row + 1). The rows stay pinned while they are taken, so a later segment never takes the row
+    // an earlier one of the same batch got; the GPU orders the draw after their writes (DrawBatch::segmentPaletteRows).
+    bool AssignSegmentPaletteRows(writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa, DrawBatch &draw) {
+        const std::uint32_t cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
+        const std::uint32_t csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
+        if (GpuPaletteKey(t.glmPsm, cpsm, csa) != 0) {
+            Fail("TASK-168: a batch with palette segments reads a palette loaded on the GPU");
+            return false;
+        }
+        const std::size_t segments = t.segmentPalettes.size() / 256u;
+        if (segments < 2 || t.drawSegments.size() != t.draws.size()) {
+            Fail("TASK-168: palette segments without a palette or a segment per draw");
+            return false;
+        }
+        segmentPaletteRows_.assign(segments, draw.paletteRow);
+        pinnedPaletteRows_.assign(1, static_cast<std::uint32_t>(draw.paletteRow));
+        for (std::size_t segment = 1; segment < segments; ++segment) {
+            const std::int32_t row = PaletteRowOf(t.glmPsm, t.segmentPalettes.data() + 256u * segment, 256u, 0, cpsm, csa, texa);
+            if (row < 0) {
+                pinnedPaletteRows_.clear();
+                return false;
+            }
+            segmentPaletteRows_[segment] = row;
+            pinnedPaletteRows_.push_back(static_cast<std::uint32_t>(row));
+        }
+        pinnedPaletteRows_.clear();
+        for (std::size_t d = 0; d < t.draws.size(); ++d) {
+            const std::uint32_t segment = t.drawSegments[d];
+            if (segment == 0 || segment >= segments) continue;
+            const std::uint16_t value = static_cast<std::uint16_t>(segmentPaletteRows_[segment] + 1);
+            const gpu::GpuDraw &one = t.draws[d];
+            for (std::uint32_t v = one.first; v < one.first + one.count && v < t.vertices.size(); ++v) {
+                t.vertices[v].paletteRow = value;
+            }
+        }
+        draw.segmentPaletteRows = &segmentPaletteRows_;
+        stats.paletteSegmentBatches++;
+        stats.paletteSegmentsDrawn += segments;
+        return true;
+    }
 
     std::vector<gpu::GpuVertex> vertexScratch_;
     std::vector<Qword> gifScratch_;
@@ -811,6 +906,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs clutTimer(clock_, &PhaseTimes::clut);
             OnClutLoaded(write);
         });
+        if (paletteSegments_) {  // TASK-168
+            frontEnd_.SetPaletteSegmentHook([this](const clut::Tex0Write &write, const Batch &pending) {
+                return PaletteSegmentAllowed(write, pending);
+            });
+        }
     }
 
     // IN-408: the drawn target a CSM1 palette over `span` must be read from on the GPU: exactly one drawn target
@@ -3301,8 +3401,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                            static_cast<std::uint32_t>(tex0::Csa(tex0)))) {
             return true;
         }
-        const clut::Palette palette =
-            frontEnd_.Clut().Decode(tex0::Psm(tex0), tex0::Cpsm(tex0), tex0::Csa(tex0), batch.state.env.texa);
+        // TASK-168: the batch's own palette (its one segment's copy for a batch split from a segmented one).
+        const clut::Palette palette = DecodeSegmentPalette(batch, 0, frontEnd_.Clut());
         if (!ApplyDirty(*target)) return true;
         const PixelRect extent = Union(target->valid, target->drawn);
         if (!extent.Empty()) {
@@ -3423,22 +3523,28 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // Empties a translation for the next batch, keeping the capacity of its vectors.
     static void ResetTranslation(writeback::BatchTranslation &t) {
-        std::vector<std::uint32_t> palette, texels;
+        std::vector<std::uint32_t> palette, texels, segmentPalettes, drawSegments;
         std::vector<gpu::GpuVertex> vertices;
         std::vector<gpu::GpuDraw> draws;
         palette.swap(t.palette);
         texels.swap(t.texels);
         vertices.swap(t.vertices);
         draws.swap(t.draws);
+        segmentPalettes.swap(t.segmentPalettes);
+        drawSegments.swap(t.drawSegments);
         t = writeback::BatchTranslation{};
         palette.clear();
         texels.clear();
         vertices.clear();
         draws.clear();
+        segmentPalettes.clear();
+        drawSegments.clear();
         t.palette.swap(palette);
         t.texels.swap(texels);
         t.vertices.swap(vertices);
         t.draws.swap(draws);
+        t.segmentPalettes.swap(segmentPalettes);
+        t.drawSegments.swap(drawSegments);
     }
 
     // ---- Texture replacement and dumping (chapter 11, Format P: the names of existing packs) --------------------
@@ -3666,7 +3772,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // game's texture there (the GT Auto logo, doubled when the two buffers held different versions). Such a palette is
         // read from GS memory for the key, as a memory source reads it: a palette the GPU drew does not match a pack name.
         std::array<std::uint16_t, 512> memoryClut{};
-        const std::uint16_t *clutWords = frontEnd_.Clut().Halfwords();
+        const std::uint16_t *clutWords = PaletteSegmentClut(batch, 0, frontEnd_.Clut());  // TASK-168: the batch's own
         std::uint64_t paletteKey = t.glmIndexed ? writeback::HashPaletteWords(t.palette) : 0;
         if (t.glmIndexed && GpuPaletteKey(t.glmPsm, tex0::Cpsm(tex0), tex0::Csa(tex0)) != 0) {
             clut::Tex0Write write;
@@ -3916,6 +4022,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     void OnBatch(Batch &&batch) override {
+        // TASK-168: a consumer that takes one palette per batch gets the segments one by one.
+        if (batch.paletteSegments.size() > 1u && !failed_ && PaletteSegmentsNeedSplit(batch)) {
+            stats.paletteSegmentSplits++;
+            const std::uint32_t segments = PaletteSegmentCount(batch);
+            for (std::uint32_t segment = 0; segment < segments && !failed_; ++segment) {
+                OnBatch(PaletteSegmentBatch(batch, segment));
+            }
+            return;
+        }
         ScopedUs batchTimer(clock_, &PhaseTimes::batch);
         if (failed_) return;
         counters.batches++;
@@ -3994,6 +4109,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs timer(clock_, &PhaseTimes::translate);
             writeback::TranslateBatchHooked(batch, memory_.Local(), frontEnd_.Clut(), t, counters, {}, this, fromTarget,
                                             fromGlm);
+        }
+        if (t.paletteSegmentsUnsupported) {  // TASK-168: every memory texture of this core goes through the GLM
+            Fail("TASK-168: a batch with palette segments reached a texture path with one palette");
+            return;
         }
         if (t.skippedTexture) {
             counters.batchesSkippedTexture++;
@@ -4193,6 +4312,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 draw.paletteRow = PaletteRow(t, batch.state.ctx.tex0, batch.state.env.texa);
                 if (draw.paletteRow < 0) return;
                 draw.palettes = paletteImage_;
+                // TASK-168: the later palette segments' rows, named by their vertices.
+                if (!t.segmentPalettes.empty() &&
+                    !AssignSegmentPaletteRows(t, batch.state.ctx.tex0, batch.state.env.texa, draw)) {
+                    return;
+                }
             }
             stats.texturesFromMemory++;
             // Diagnostics: GT4_CORE2_DUMP_TEX=<texture base block>:<folder> writes that texture as this core decoded
@@ -4999,6 +5123,11 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
                  (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0), (unsigned long long)g.selfTextureBatches, (unsigned long long)g.selfCopies,
                  static_cast<double>(g.selfCopyPixels) / 1.0e6);
+    // TASK-168: batches drawn with several palette segments, their segments, and segmented batches split for a consumer
+    // that takes one palette.
+    std::fprintf(stderr, "[core2] palette segments batches=%llu segments=%llu splits=%llu\n",
+                 (unsigned long long)c.paletteSegmentBatches, (unsigned long long)c.paletteSegmentsDrawn,
+                 (unsigned long long)c.paletteSegmentSplits);
     // Diagnostics: GT4_CORE2_BARRIER_TRACE=1 adds the cumulative full barriers by command and hazard.
     static const bool barrierTrace = std::getenv("GT4_CORE2_BARRIER_TRACE") != nullptr;
     if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n", barrierReport.c_str());
@@ -5065,6 +5194,7 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
         std::fprintf(stderr, "[core2] performance mode (decision 0073): delayed downloads %s, flares hidden %s\n",
                      impl_->delayedDownloads_ ? "on" : "off", impl_->hideFlares_ ? "on" : "off");
     }
+    std::fprintf(stderr, "[core2] palette segments (TASK-168) %s\n", impl_->paletteSegments_ ? "on" : "off");
     std::fprintf(stderr, "[core2] texture cache budget %llu MiB (%s GPU)\n",
                  static_cast<unsigned long long>(impl_->textureBudget_ >> 20),
                  impl_->gpu_.Integrated() ? "integrated" : "discrete");
@@ -5293,9 +5423,23 @@ void Renderer::Flush() {
                 s.lastFlushCounts_[r] = count;
             }
             const std::uint64_t sameTexture = s.frontEnd_.ClutFlushesSameTexture();
-            std::fprintf(stderr, "[core2] batch flushes/vblank%s clut_same_texture=%.1f\n", reasons.c_str(),
-                         static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0);
+            // TASK-168: CLUT loads that kept their batch as a new palette segment, batches emitted with segments, and
+            // their segments per batch.
+            const std::uint64_t kept = s.frontEnd_.ClutLoadsKept();
+            const std::uint64_t segmented = s.frontEnd_.SegmentedBatches();
+            const std::uint64_t segments = s.frontEnd_.PaletteSegmentsEmitted();
+            const std::uint64_t newSegmented = segmented - s.lastSegmentedBatches_;
+            std::fprintf(stderr,
+                         "[core2] batch flushes/vblank%s clut_same_texture=%.1f clut_kept=%.1f segmented_batches=%.1f "
+                         "segments_per_segmented_batch=%.2f\n",
+                         reasons.c_str(), static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0,
+                         static_cast<double>(kept - s.lastClutKept_) / 600.0, static_cast<double>(newSegmented) / 600.0,
+                         newSegmented != 0 ? static_cast<double>(segments - s.lastPaletteSegments_) / static_cast<double>(newSegmented)
+                                           : 0.0);
             s.lastClutSameTexture_ = sameTexture;
+            s.lastClutKept_ = kept;
+            s.lastSegmentedBatches_ = segmented;
+            s.lastPaletteSegments_ = segments;
         }
         s.lastPrimitives_ = s.gpu_.Stats().primitives;
         s.lastFragments_ = s.gpu_.Stats().fragments;

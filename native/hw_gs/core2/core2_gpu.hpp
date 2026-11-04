@@ -39,6 +39,9 @@ struct DrawBatch {
     // IN-409: memoryTexture holds CLUT indices; their colours are row `paletteRow` of image `palettes` (-1: none).
     ImageId palettes = kNoImage;
     std::int32_t paletteRow = -1;
+    // TASK-168: every row of `palettes` the vertices name (GpuVertex::paletteRow - 1) when the batch has several palette
+    // segments, so the draw is ordered after their writes and before any rewrite of them; nullptr: `paletteRow` alone.
+    const std::vector<std::int32_t> *segmentPaletteRows = nullptr;
     // IN-428: the mip parameters of memoryTexture (0: level 0 only), packed as hw_pixel_uber.frag g_mip describes.
     std::uint32_t mipInfo = 0;
     bool forceLinear = false;  // IN-433: bilinear where the game asks for nearest (push word bit 31)

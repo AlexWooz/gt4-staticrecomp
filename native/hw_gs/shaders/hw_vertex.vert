@@ -8,7 +8,8 @@
 // Position: P = (X - OFX) / 16 in native pixels, with X the 12.4 coordinate that already
 // includes XYOFFSET. gpu = scale * P + 0.5 * scale_offset - 1/320 (the up-left bias of 03.3).
 // W = 1, so the GPU's linear interpolation equals the GS screen-linear interpolation.
-// Built twice: smooth colour (default) and flat colour (-DHWR_FLAT_COLOUR=1, IIP = 0).
+// Built twice: smooth colour (default) and flat colour (-DHWR_FLAT_COLOUR=1, IIP = 0); core 2 builds a third with the
+// per-vertex palette row (-DHWR_PALETTE_ROW=1, TASK-168).
 
 #version 450
 
@@ -19,6 +20,15 @@ layout(location = 3) in uvec2 in_xy;     // record offset 16: X, Y (uint16, 12.4
 layout(location = 4) in uint in_z;       // record offset 20: Z (uint32)
 layout(location = 5) in uvec2 in_uv;     // record offset 24: U, V (uint16, 12.4 texels)
 layout(location = 6) in float in_fog;    // record offset 28: F (unorm8 in byte 0)
+// TASK-168 (core 2, -DHWR_PALETTE_ROW=1): record offset 30, the palette row of the vertex's primitive plus one (0: the
+// batch's row), passed flat to the pixel stage.
+#ifndef HWR_PALETTE_ROW
+#define HWR_PALETTE_ROW 0
+#endif
+#if HWR_PALETTE_ROW
+layout(location = 7) in uint in_palette_row;
+layout(location = 6) flat out uint out_palette_row;
+#endif
 
 layout(push_constant) uniform VertexPush {
     vec2 viewport_size;  // scaled target size in GPU pixels
@@ -72,4 +82,7 @@ void main() {
     out_fog = in_fog * 255.0;
     out_uv = vec2(in_uv);
     out_z = clipped_z;
+#if HWR_PALETTE_ROW
+    out_palette_row = in_palette_row;
+#endif
 }

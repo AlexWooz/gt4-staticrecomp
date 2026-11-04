@@ -4237,6 +4237,321 @@ cpuref::CaptureWriter Core2OverlapCapture() {
     return capture;
 }
 
+// ---- TASK-168: palette segments ------------------------------------------------------------------------------------
+// The shared pieces of the palette segment captures: a 64 x 64 CT32 display at page 0, GS register words through A+D.
+struct SegmentCapture {
+    cpuref::CaptureWriter capture;
+    static uint64_t Rgbaq(uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); }
+    static uint64_t Xyz(uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); }
+    static uint64_t Uv(uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); }
+    static uint64_t Frame(uint64_t page, uint32_t fbmsk = 0) { return page | (uint64_t{1} << 16) | (uint64_t{fbmsk} << 32); }
+    static uint64_t Blit(uint64_t dbp, uint64_t dpsm) { return (dbp << 32) | (uint64_t{1} << 48) | (dpsm << 56); }
+    // TEX0: base (blocks), TBW 1, PSM, TW = TH = log2, TCC, TFX, CBP (blocks), CPSM CT32, CSM1, CSA 0, CLD 1 when `load`.
+    static uint64_t Tex0(uint64_t blocks, uint64_t psm, uint64_t log2, uint64_t tfx, uint64_t cbpBlocks, bool load) {
+        return blocks | (uint64_t{1} << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) | (tfx << 35) |
+               (cbpBlocks << 37) | (uint64_t{load ? 1u : 0u} << 61);
+    }
+    static constexpr uint64_t kSprite = 6, kTme = 1u << 4, kAbe = 1u << 6, kFst = 1u << 8;
+
+    SegmentCapture() {
+        capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+        capture.Privileged(0x12000010u, uint64_t{2} << 13);
+        capture.Privileged(0x12000070u, uint64_t{1} << 9);  // DISPFB1: page 0, FBW 1, CT32
+        capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    }
+    void Ad(const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    }
+    // A width x height upload of 32-bit words `pixel(x, y)` at block `dbp` (TBW 1), or 8-bit texels (T8) when `t8`.
+    void Upload(uint64_t dbp, uint32_t width, uint32_t height, bool t8, const std::function<uint32_t(uint32_t, uint32_t)>& pixel) {
+        Ad({Blit(dbp, t8 ? 0x13 : 0x00), 0x50, 0, 0x51, uint64_t{width} | (uint64_t{height} << 32), 0x52, 0, 0x53});
+        std::vector<uint64_t> data;
+        const uint32_t perWord = t8 ? 8u : 2u;
+        for (uint32_t i = 0; i < width * height / perWord; ++i) {
+            uint64_t word = 0;
+            for (uint32_t n = 0; n < perWord; ++n) {
+                const uint32_t p = i * perWord + n;
+                const uint64_t value = pixel(p % width, p / width);
+                word |= t8 ? (value & 0xFFu) << (8 * n) : (value & 0xFFFFFFFFu) << (32 * n);
+            }
+            data.push_back(word);
+        }
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    }
+    // The T8 indices every capture samples: index = (x + 5y) & 255, 64 x 64 at page 12.
+    static constexpr uint64_t kT8 = 12;
+    void UploadT8() {
+        Upload(kT8 * 32, 64, 64, true, [](uint32_t x, uint32_t y) { return (x + 5u * y) & 255u; });
+    }
+    // A 16 x 16 CT32 palette (CSM1) at block `cbp`, its colours from `seed`.
+    void UploadPalette(uint64_t cbp, uint32_t seed) {
+        Upload(cbp, 16, 16, false, [seed](uint32_t x, uint32_t y) {
+            const uint32_t e = x + 16u * y;
+            return ((0x40u + ((e + seed) & 0x3Fu)) << 24) | ((e * 0x030201u + seed * 0x0A0B0Cu) & 0xFFFFFFu);
+        });
+    }
+    // Scissor 64 x 64, no XYOFFSET, depth test ALWAYS and no depth writes, FRAME at `page`, blending (Cs - Cd) As + Cd.
+    static std::vector<uint64_t> Setup(uint64_t page) {
+        return {(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18, (uint64_t{1} << 16) | (uint64_t{1} << 17), 0x47,
+                uint64_t{1} << 32, 0x4E, Frame(page), 0x4C, (uint64_t{1} << 2) | (uint64_t{1} << 6), 0x42};
+    }
+    // A T8 sprite through the palette at `cbp` (loaded first when `load`): (x, y) to (x + w, y + h), texels from (u, v).
+    static void T8Sprite(std::vector<uint64_t>& words, uint64_t cbp, bool load, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                         uint32_t u, uint32_t v, bool blend) {
+        const std::vector<uint64_t> part = {Tex0(kT8 * 32, 0x13, 6, 0, cbp, load), 0x06, kSprite | kTme | kFst | (blend ? kAbe : 0u),
+                                            0x00, Rgbaq(0x80808080u), 0x01, Uv(u, v), 0x03, Xyz(x, y), 0x05,
+                                            Uv(u + w, v + h), 0x03, Xyz(x + w, y + h), 0x05};
+        words.insert(words.end(), part.begin(), part.end());
+    }
+};
+
+// TASK-168: GT4's player view: one T8 texture drawn again and again, a CLUT load before each sprite that only changes its
+// palette (CT32, CSM1, from GS memory). `palettes` palettes, eight per page from page 40 (four blocks each), uploaded with
+// new colours every frame; the 12 x 12 sprites blend over each other, so their order matters. Each frame starts with an
+// uploaded 16 x 16 texture stretched over the whole 64 x 64 frame (a GPU draw, so the target covers the frame from the
+// first draw on: a target grown under later batches differs from one made for their union in the first frame).
+cpuref::CaptureWriter Core2PaletteSegmentsCapture(uint32_t frames, uint32_t palettes) {
+    SegmentCapture c;
+    constexpr uint64_t kPalettePage = 40, kBackground = 16;
+    auto paletteBlock = [](uint32_t k) { return kPalettePage * 32 + 32u * (k / 8u) + 4u * (k % 8u); };
+    c.UploadT8();
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        c.Upload(kBackground * 32, 16, 16, false, [frame](uint32_t x, uint32_t y) {
+            return 0x80000000u | (((x + 16u * y) * 0x020406u + frame * 0x090807u) & 0xFFFFFFu);
+        });
+        for (uint32_t k = 0; k < palettes; ++k) c.UploadPalette(paletteBlock(k), 7u * k + 131u * frame);
+        std::vector<uint64_t> words = SegmentCapture::Setup(0);
+        const std::vector<uint64_t> clear = {
+            SegmentCapture::Tex0(kBackground * 32, 0x00, 4, 1, 0, false), 0x06,
+            SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u), 0x01,
+            SegmentCapture::Uv(0, 0), 0x03, SegmentCapture::Xyz(0, 0), 0x05, SegmentCapture::Uv(16, 16), 0x03,
+            SegmentCapture::Xyz(64, 64), 0x05};
+        words.insert(words.end(), clear.begin(), clear.end());
+        for (uint32_t k = 0; k < palettes; ++k) {
+            SegmentCapture::T8Sprite(words, paletteBlock(k), true, (k * 7u) % 52u, (k * 11u + frame) % 52u, 12, 12,
+                                     (k * 3u) % 48u, (k * 5u) % 48u, true);
+        }
+        // The first palette again (a load: the last one was another), and one more sprite.
+        SegmentCapture::T8Sprite(words, paletteBlock(0), true, 20, 20, 24, 24, 8, 8, true);
+        c.Ad(words);
+        c.capture.FrameEnd(frame);
+    }
+    return c.capture;
+}
+
+// TASK-168: a row the batch already names is never taken by its next segment. Frame 0 fills the whole row ring (1024 new
+// palettes); frame 1 starts with frame 0's second palette (its row, 1, still holds it), then new palettes: the ring's
+// next row is 0, then 1, which the first segment names and must keep.
+cpuref::CaptureWriter Core2PaletteRowPinCapture() {
+    SegmentCapture c;
+    constexpr uint64_t kPalettePage = 40, kBackground = 16;
+    auto paletteBlock = [](uint32_t k) { return kPalettePage * 32 + 32u * (k / 8u) + 4u * (k % 8u); };
+    c.UploadT8();
+    const std::vector<std::vector<uint32_t>> seeds = {
+        [] {
+            std::vector<uint32_t> all;
+            for (uint32_t k = 0; k < 1024u; ++k) all.push_back(1000u + k);
+            return all;
+        }(),
+        {1001u, 5000u, 5001u, 5002u, 5003u, 5004u, 5005u}};
+    for (uint32_t frame = 0; frame < seeds.size(); ++frame) {
+        c.Upload(kBackground * 32, 16, 16, false, [frame](uint32_t x, uint32_t y) {
+            return 0x80000000u | (((x + 16u * y) * 0x020406u + frame * 0x090807u) & 0xFFFFFFu);
+        });
+        for (uint32_t k = 0; k < seeds[frame].size(); ++k) c.UploadPalette(paletteBlock(k), seeds[frame][k]);
+        std::vector<uint64_t> words = SegmentCapture::Setup(0);
+        const std::vector<uint64_t> clear = {
+            SegmentCapture::Tex0(kBackground * 32, 0x00, 4, 1, 0, false), 0x06,
+            SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u), 0x01,
+            SegmentCapture::Uv(0, 0), 0x03, SegmentCapture::Xyz(0, 0), 0x05, SegmentCapture::Uv(16, 16), 0x03,
+            SegmentCapture::Xyz(64, 64), 0x05};
+        words.insert(words.end(), clear.begin(), clear.end());
+        for (uint32_t k = 0; k < seeds[frame].size(); ++k) {
+            // Frame 1's first sprite is large, so a wrong row for it shows.
+            const uint32_t size = frame == 1 && k == 0 ? 40u : 12u;
+            SegmentCapture::T8Sprite(words, paletteBlock(k), true, frame == 1 && k == 0 ? 0u : (k * 7u) % 52u,
+                                     frame == 1 && k == 0 ? 0u : (k * 11u) % 52u, size, size, 0, 0, frame == 0);
+        }
+        c.Ad(words);
+        c.capture.FrameEnd(frame);
+    }
+    return c.capture;
+}
+
+// TASK-168: the loads that must keep ending the batch in core 2. A palette drawn on the GPU (a decal copy of an uploaded
+// texture into page 18, IN-408) is loaded under a pending T8 batch: the load reads a drawn target, so the batch ends; the
+// next load from memory finds the batch's palette loaded on the GPU, so it ends that batch too; the last load from memory,
+// after a palette from memory, keeps its batch (two segments).
+cpuref::CaptureWriter Core2PaletteSegmentsGpuCapture(uint32_t frames) {
+    SegmentCapture c;
+    constexpr uint64_t kSource = 16, kClutGpu = 18, kClutMemory = 40, kClutMemory2 = 41;  // pages
+    c.UploadT8();
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        c.Upload(kSource * 32, 16, 16, false, [frame](uint32_t x, uint32_t y) {
+            return 0x80000000u | (((x + 16u * y) * 0x050301u + frame * 0x101010u) & 0xFFFFFFu);
+        });
+        c.UploadPalette(kClutMemory * 32, 11u + frame);
+        c.UploadPalette(kClutMemory2 * 32, 57u + 3u * frame);
+        std::vector<uint64_t> words = SegmentCapture::Setup(kClutGpu);
+        const std::vector<uint64_t> gpuPalette = {
+            SegmentCapture::Tex0(kSource * 32, 0x00, 4, 1, 0, false), 0x06,
+            SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u), 0x01,
+            SegmentCapture::Uv(0, 0), 0x03, SegmentCapture::Xyz(0, 0), 0x05, SegmentCapture::Uv(16, 16), 0x03,
+            SegmentCapture::Xyz(16, 16), 0x05,
+            SegmentCapture::Frame(0), 0x4C, SegmentCapture::kSprite, 0x00, SegmentCapture::Rgbaq(0x80000000u), 0x01,
+            SegmentCapture::Xyz(0, 0), 0x05, SegmentCapture::Xyz(64, 64), 0x05};
+        words.insert(words.end(), gpuPalette.begin(), gpuPalette.end());
+        SegmentCapture::T8Sprite(words, kClutMemory * 32, true, 0, 0, 24, 24, 0, 0, false);
+        SegmentCapture::T8Sprite(words, kClutGpu * 32, true, 24, 0, 24, 24, 8, 0, false);
+        SegmentCapture::T8Sprite(words, kClutMemory2 * 32, true, 0, 24, 24, 24, 16, 8, false);
+        SegmentCapture::T8Sprite(words, kClutMemory * 32, true, 24, 24, 24, 24, 4, 20, false);
+        c.Ad(words);
+        c.capture.FrameEnd(frame);
+    }
+    return c.capture;
+}
+
+// TASK-168: a T8 sprite batch over a drawn 32-bit target (GT4's tone sequence, CORE2-SPEC 7.2) whose palette changes between
+// its sprites: ToneHook takes one palette per batch, so core 2 hands it the segments one by one. The 32 x 32 target at
+// page 0 (the display) is drawn on the GPU from an uploaded texture; the 8-wide sprites read it as T8 into page 4.
+cpuref::CaptureWriter Core2PaletteSegmentsToneCapture(uint32_t frames) {
+    SegmentCapture c;
+    constexpr uint64_t kSource = 16, kDraw = 4, kClutA = 40, kClutB = 41;  // pages
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        c.Upload(kSource * 32, 16, 16, false, [frame](uint32_t x, uint32_t y) {
+            return 0x80000000u | (((x + 16u * y) * 0x030507u + frame * 0x0F0F0Fu) & 0xFFFFFFu);
+        });
+        c.UploadPalette(kClutA * 32, 5u + frame);
+        c.UploadPalette(kClutB * 32, 77u + frame);
+        std::vector<uint64_t> words = SegmentCapture::Setup(0);
+        const std::vector<uint64_t> target = {
+            SegmentCapture::Tex0(kSource * 32, 0x00, 4, 1, 0, false), 0x06,
+            SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u), 0x01,
+            SegmentCapture::Uv(0, 0), 0x03, SegmentCapture::Xyz(0, 0), 0x05, SegmentCapture::Uv(16, 16), 0x03,
+            SegmentCapture::Xyz(32, 32), 0x05,
+            SegmentCapture::Frame(kDraw), 0x4C};
+        words.insert(words.end(), target.begin(), target.end());
+        const auto t8OverTarget = [&](uint64_t cbp, uint32_t x) {
+            const std::vector<uint64_t> part = {
+                SegmentCapture::Tex0(0, 0x13, 5, 0, cbp, true), 0x06,
+                SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u),
+                0x01, SegmentCapture::Uv(x, 0), 0x03, SegmentCapture::Xyz(x, 0), 0x05, SegmentCapture::Uv(x + 8, 32), 0x03,
+                SegmentCapture::Xyz(x + 8, 32), 0x05};
+            words.insert(words.end(), part.begin(), part.end());
+        };
+        t8OverTarget(kClutA * 32, 0);
+        t8OverTarget(kClutB * 32, 8);
+        t8OverTarget(kClutA * 32, 16);
+        c.Ad(words);
+        c.capture.FrameEnd(frame);
+    }
+    return c.capture;
+}
+
+// hw_core2_palette_segments (TASK-168): GT4_CORE2_PALETTE_SEGMENTS on CLUT loads that only change the palette of the pending
+// batch's T8 texture. The same images and GS memory with the switch off and on, at 1x and 2x; with it on, one batch per
+// run of loads (its sprites drawn with a palette row each); loads from a drawn target, or after a GPU palette, still end
+// the batch; a T8 batch over a 32-bit target goes to the tone hook segment by segment.
+int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
+    const char* kSwitch = "GT4_CORE2_PALETTE_SEGMENTS";
+    int failures = 0;
+    constexpr uint32_t kFrames = 3;
+    for (uint32_t scale : {1u, 2u}) {
+        const std::string tag = scale == 1 ? " at 1x" : " at 2x";
+        failures += CheckCore2Ab(handles, ("four palettes" + tag).c_str(), Core2PaletteSegmentsCapture(kFrames, 3), kFrames,
+                                 kSwitch, true,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  segmented batches %llu / %llu, segments %llu / %llu, rows written %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentsDrawn),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentsDrawn),
+                                                 static_cast<unsigned long long>(off.stats.paletteRowsWritten),
+                                                 static_cast<unsigned long long>(on.stats.paletteRowsWritten));
+                                     return off.stats.paletteSegmentBatches == 0 && on.stats.paletteSegmentBatches == kFrames &&
+                                                    on.stats.paletteSegmentsDrawn == 4u * kFrames
+                                                ? 0
+                                                : 1;
+                                 },
+                                 false, scale);
+        // Many palettes (the row ring): 1100 a frame, new every frame. Batches of 256 segments (the most a batch holds),
+        // five a frame, and more palettes in a frame than the 1024 rows: rows are taken again while earlier batches of
+        // the frame that name them may still wait to be recorded.
+        constexpr uint32_t kRingFrames = 2, kPalettes = 1100, kBatchesPerFrame = 5;
+        failures += CheckCore2Ab(handles, ("the palette row ring" + tag).c_str(), Core2PaletteSegmentsCapture(kRingFrames, kPalettes),
+                                 kRingFrames, kSwitch, true,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  segmented batches %llu / %llu, segments %llu / %llu, rows written %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentsDrawn),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentsDrawn),
+                                                 static_cast<unsigned long long>(off.stats.paletteRowsWritten),
+                                                 static_cast<unsigned long long>(on.stats.paletteRowsWritten));
+                                     return off.stats.paletteSegmentBatches == 0 &&
+                                                    on.stats.paletteSegmentBatches == kBatchesPerFrame * kRingFrames &&
+                                                    on.stats.paletteSegmentsDrawn == (kPalettes + 1u) * kRingFrames &&
+                                                    on.stats.paletteRowsWritten > 1024u
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+        failures += CheckCore2Ab(handles, ("a row named by an earlier segment" + tag).c_str(), Core2PaletteRowPinCapture(), 2,
+                                 kSwitch, true,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  segmented batches %llu / %llu, rows written %llu / %llu, row hits %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(off.stats.paletteRowsWritten),
+                                                 static_cast<unsigned long long>(on.stats.paletteRowsWritten),
+                                                 static_cast<unsigned long long>(off.stats.paletteRowHits),
+                                                 static_cast<unsigned long long>(on.stats.paletteRowHits));
+                                     return off.stats.paletteSegmentBatches == 0 && on.stats.paletteSegmentBatches == 5u &&
+                                                    on.stats.paletteRowsWritten == 1024u + 6u && on.stats.paletteRowHits == 1u
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+        failures += CheckCore2Ab(handles, ("loads from a GPU palette" + tag).c_str(), Core2PaletteSegmentsGpuCapture(kFrames),
+                                 kFrames, kSwitch, false,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  segmented batches %llu / %llu, segments %llu / %llu, GPU CLUT loads %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentsDrawn),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentsDrawn),
+                                                 static_cast<unsigned long long>(off.stats.clutTargetLoads),
+                                                 static_cast<unsigned long long>(on.stats.clutTargetLoads));
+                                     return off.stats.paletteSegmentBatches == 0 && on.stats.paletteSegmentBatches == kFrames &&
+                                                    on.stats.paletteSegmentsDrawn == 2u * kFrames && off.stats.clutTargetLoads > 0 &&
+                                                    on.stats.clutTargetLoads == off.stats.clutTargetLoads
+                                                ? 0
+                                                : 1;
+                                 },
+                                 false, scale);
+        failures += CheckCore2Ab(handles, ("T8 over a 32-bit target" + tag).c_str(), Core2PaletteSegmentsToneCapture(kFrames),
+                                 kFrames, kSwitch, false,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  split batches %llu / %llu, tone runs %llu / %llu, tone draws skipped %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentSplits),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentSplits),
+                                                 static_cast<unsigned long long>(off.stats.toneRuns),
+                                                 static_cast<unsigned long long>(on.stats.toneRuns),
+                                                 static_cast<unsigned long long>(off.stats.toneDrawsSkipped),
+                                                 static_cast<unsigned long long>(on.stats.toneDrawsSkipped));
+                                     return off.stats.paletteSegmentSplits == 0 && on.stats.paletteSegmentSplits == kFrames &&
+                                                    on.stats.toneRuns == off.stats.toneRuns && off.stats.toneRuns > 0 &&
+                                                    on.stats.toneDrawsSkipped == off.stats.toneDrawsSkipped
+                                                ? 0
+                                                : 1;
+                                 },
+                                 false, scale);
+    }
+    std::printf("hw_core2_palette_segments: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 int TestCore2OverlapOrder(const gpu::VulkanHandles& handles) {
     const int failures = CheckCore2Ab(handles, "overlapping strips and sprites", Core2OverlapCapture(), 1,
                                       "GT4_CORE2_GROUP_DISJOINT", false,
@@ -6622,6 +6937,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_interlaced_present") return TestCore2InterlacedPresent(handles);
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
+    if (name == "hw_core2_palette_segments") return TestCore2PaletteSegments(handles);
     if (name == "hw_core2_drawn_page_test") return TestCore2DrawnPageTest(handles);
     if (name == "hw_core2_width_grace") return TestCore2WidthGrace(handles);
     if (name == "hw_core2_glm_memo") return TestCore2GlmMemo(handles);

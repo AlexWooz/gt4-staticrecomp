@@ -16,6 +16,8 @@ extern const std::uint32_t hw_vertex_smooth_words[];
 extern const std::size_t hw_vertex_smooth_word_count;
 extern const std::uint32_t hw_vertex_flat_words[];
 extern const std::size_t hw_vertex_flat_word_count;
+extern const std::uint32_t hw_vertex_core2_words[];
+extern const std::size_t hw_vertex_core2_word_count;
 
 // Uber pixel fragment stage, smooth and flat variants (must match the vertex stage).
 extern const std::uint32_t hw_pixel_uber_smooth_words[];

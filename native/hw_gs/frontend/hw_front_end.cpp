@@ -369,7 +369,12 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
     write.texclutCou = static_cast<uint32_t>(BitRange(env.texclut, 6, 11));
     write.texclutCov = static_cast<uint32_t>(BitRange(env.texclut, 12, 21));
 
-    const bool loaded = clut_.ProcessWrite(write, localMemory_, [this, write, contextIndex]() {
+    // TASK-168: a load that keeps the batch as a new palette segment. The buffer before the load is copied into
+    // clutBeforeLoad_ (it is the palette of the primitives so far) and becomes the first segment once the load is done
+    // and the batch is still pending (a transfer committed below may still end it).
+    bool keepAsSegment = false;
+    uint32_t generationBefore = 0;
+    const bool loaded = clut_.ProcessWrite(write, localMemory_, [&]() {
         // Chapter 07.3 step 1: an indexed textured batch, or one that writes the
         // CLUT source, renders with the old palette, so it is flushed first.
         bool flush = false;
@@ -381,6 +386,14 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
             if (BatchTouches(write.cbp, 4, false)) {
                 flush = true;
             }
+        }
+        // TASK-168: instead, the batch goes on with the new palette for the primitives after the load, when the
+        // indexed texture is the only reason (PaletteSegmentAllowed) and the renderer allows it.
+        if (flush && PaletteSegmentAllowed(write, contextIndex)) {
+            flush = false;
+            keepAsSegment = true;
+            std::copy(clut_.Halfwords(), clut_.Halfwords() + clut::kClutHalfwords, clutBeforeLoad_.begin());
+            generationBefore = clut_.Generation();
         }
         if (flush) {
             // TASK-027 CPU survey R9: how many of these flushes keep the batch's texture (only the palette changes).
@@ -398,7 +411,120 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
             transfers_.CommitPending(TransferReason::ClutLoad);
         }
     });
+    if (keepAsSegment && loaded && !batch_.Empty()) {
+        ++clutLoadsKept_;
+        if (clut_.Generation() != generationBefore) {
+            if (batch_.paletteSegments.empty()) {
+                PaletteSegment first;
+                first.clutGeneration = generationBefore;
+                first.clut = clutBeforeLoad_;
+                batch_.paletteSegments.push_back(first);
+            }
+            BeginPaletteSegment();
+        }
+    }
     if (loaded && clutLoaded_) clutLoaded_(write);
+}
+
+// TASK-168: the primitives from now on see the CLUT buffer as it is now. A segment that got no primitive since the load
+// that opened it takes the new buffer instead (two loads in a row).
+void FrontEnd::BeginPaletteSegment() {
+    PaletteSegment& last = batch_.paletteSegments.back();
+    if (last.firstPrim == batch_.prims.size()) {
+        last.clutGeneration = clut_.Generation();
+        std::copy(clut_.Halfwords(), clut_.Halfwords() + clut::kClutHalfwords, last.clut.begin());
+        return;
+    }
+    PaletteSegment next;
+    next.firstPrim = static_cast<uint32_t>(batch_.prims.size());
+    next.firstVertex = static_cast<uint32_t>(batch_.vertices.size());
+    next.clutGeneration = clut_.Generation();
+    std::copy(clut_.Halfwords(), clut_.Halfwords() + clut::kClutHalfwords, next.clut.begin());
+    batch_.paletteSegments.push_back(next);
+}
+
+// TASK-168: whether a CLUT load that would end the pending batch may start a palette segment instead. Each condition
+// keeps the merged batch equal to the batches the chapter 07.3 flushes would have made:
+//  - the flush is due to the indexed texture alone, which stays the same (TEX0 base and indexed fields, the batch's
+//    context): only the CLUT buffer changes, and the segment keeps a copy of it;
+//  - the batch's frame and depth buffers do not meet the memory the palette is read from (a CSM1 page, as
+//    SetBeforeLocalRead reports it; CSM2 rows can be anywhere), so the load reads the bytes it would have read after
+//    the earlier primitives were drawn, and a renderer finds no target of this batch's over that page;
+//  - the batch's texture does not meet its frame or depth buffer, so no primitive samples what an earlier one drew;
+//  - no auto-flush (chapter 02.6) can split the batch, so no split point depends on the earlier segments;
+//  - the CLUT unit copies its entries (the copy is meaningful), the segment count stays bounded, and the renderer agrees.
+bool FrontEnd::PaletteSegmentAllowed(const clut::Tex0Write& write, uint32_t contextIndex) const {
+    if (!paletteSegmentHook_ || batch_.Empty() || !clut_.CopiesData()) {
+        return false;
+    }
+    const ContextRegs& snapCtx = batch_.state.ctx;
+    if (contextIndex != batch_.state.contextIndex || !Tme(batch_.state.effectivePrim) ||
+        !IsIndexedPsm(tex0::Psm(snapCtx.tex0))) {
+        return false;
+    }
+    if (Dirty(registers_.Context(contextIndex).tex0, snapCtx.tex0, kTex0BaseMask | kTex0IndexedMask)) {
+        return false;
+    }
+    if (write.csm != 0u) {
+        return false;
+    }
+    // The frame and depth footprints below assume rows no wider than the buffer.
+    const uint32_t frameWidth = 64u * std::max<uint32_t>(frame::Fbw(snapCtx.frame), 1u);
+    if (batch_.drawRect.x1 >= static_cast<int32_t>(frameWidth)) {
+        return false;
+    }
+    if (BatchBuffersMeet(write.cbp & ~31u, 64u)) {
+        return false;
+    }
+    if (TextureMeetsBatchBuffers()) {
+        return false;
+    }
+    const bool autoflushByClass = options_.autoflush == AutoflushMode::All ||
+                                  (options_.autoflush == AutoflushMode::Sprites &&
+                                   (batch_.cls == PrimClass::Sprite || batch_.cls == PrimClass::Point));
+    if (autoflushByClass && AutoflushStateAllows()) {
+        return false;
+    }
+    const size_t segmentsAfter = batch_.paletteSegments.empty() ? 2u : batch_.paletteSegments.size() + 1u;
+    if (segmentsAfter > kMaxPaletteSegments) {
+        return false;
+    }
+    return paletteSegmentHook_(write, batch_);
+}
+
+// TASK-168: the frame buffer rows the batch draws (whatever FBMSK says: a renderer keeps a target there) and its depth
+// buffer rows when it tests or writes depth, as whole page rows like BatchTouches, meet blocks [begin, begin + count).
+bool FrontEnd::BatchBuffersMeet(uint32_t begin, uint32_t count) const {
+    const ContextRegs& ctx = batch_.state.ctx;
+    const uint32_t rows = batch_.drawRect.y1 >= 0 ? static_cast<uint32_t>(batch_.drawRect.y1) + 1u : 1u;
+    const uint32_t blocks = FootprintBlocks(frame::Fbw(ctx.frame), rows);
+    if (BlockRangesOverlap(frame::Fbp(ctx.frame) * kBlocksPerPage, blocks, begin, count)) {
+        return true;
+    }
+    const bool depthTested = test::Zte(ctx.test) != 0u && test::Ztst(ctx.test) != kZtstAlways;
+    const bool depthUsed = zbuf::Zmsk(ctx.zbuf) == 0u || depthTested;
+    return depthUsed && BlockRangesOverlap(zbuf::Zbp(ctx.zbuf) * kBlocksPerPage, blocks, begin, count);
+}
+
+// TASK-168: the batch's texture (level 0 or a mip level, BatchTouches' footprints) meets its frame or depth buffer
+// (BatchBuffersMeet). A texture wider than its buffer row reads further rows: counted as a meeting.
+bool FrontEnd::TextureMeetsBatchBuffers() const {
+    const ContextRegs& ctx = batch_.state.ctx;
+    if ((1u << tex0::Tw(ctx.tex0)) > 64u * std::max<uint32_t>(tex0::Tbw(ctx.tex0), 1u)) {
+        return true;
+    }
+    const uint32_t texBlocks = FootprintBlocks(tex0::Tbw(ctx.tex0), 1u << tex0::Th(ctx.tex0));
+    if (BatchBuffersMeet(tex0::Tbp0(ctx.tex0), texBlocks)) {
+        return true;
+    }
+    const uint32_t rows = batch_.drawRect.y1 >= 0 ? static_cast<uint32_t>(batch_.drawRect.y1) + 1u : 1u;
+    const uint32_t blocks = FootprintBlocks(frame::Fbw(ctx.frame), rows);
+    if (MipLevelsTouch(ctx, texBlocks, frame::Fbp(ctx.frame) * kBlocksPerPage, blocks)) {
+        return true;
+    }
+    const bool depthTested = test::Zte(ctx.test) != 0u && test::Ztst(ctx.test) != kZtstAlways;
+    const bool depthUsed = zbuf::Zmsk(ctx.zbuf) == 0u || depthTested;
+    return depthUsed && MipLevelsTouch(ctx, texBlocks, zbuf::Zbp(ctx.zbuf) * kBlocksPerPage, blocks);
 }
 
 void FrontEnd::Kick(const GifKick& kick) {
@@ -469,7 +595,14 @@ void FrontEnd::Kick(const GifKick& kick) {
                                : batch_.cls == PrimClass::Triangle ? kLimitTriangle
                                                                    : kLimitPointLine;
         if (batch_.vertices.size() >= limit) {
-            FlushBatch(FlushReason::Capacity);
+            // TASK-168: with palette segments the limit counts from the last segment's start, where the CLUT-load
+            // flush would have started a batch: what came before it is emitted, and only a full segment flushes.
+            if (batch_.paletteSegments.size() > 1u) {
+                FlushSegmentsBeforeLast(FlushReason::Capacity);
+            }
+            if (batch_.vertices.size() >= limit) {
+                FlushBatch(FlushReason::Capacity);
+            }
         }
     } else {
         counters_.Add(Counter::PrimsSkipped);
@@ -790,9 +923,9 @@ bool FrontEnd::MipLevelsTouch(const ContextRegs& ctx, uint32_t levelZeroBlocks, 
     return false;
 }
 
-void FrontEnd::NoteBatchWritesToClut() {
-    const ContextRegs& ctx = batch_.state.ctx;
-    const uint32_t rows = batch_.drawRect.y1 >= 0 ? static_cast<uint32_t>(batch_.drawRect.y1) + 1u : 1u;
+void FrontEnd::NoteBatchWritesToClut(const Batch& batch) {
+    const ContextRegs& ctx = batch.state.ctx;
+    const uint32_t rows = batch.drawRect.y1 >= 0 ? static_cast<uint32_t>(batch.drawRect.y1) + 1u : 1u;
     if (FrameWritesColour(ctx)) {
         clut_.NoteBlocksWritten(frame::Fbp(ctx.frame) * kBlocksPerPage,
                                 FootprintBlocks(frame::Fbw(ctx.frame), rows));
@@ -864,7 +997,45 @@ bool FrontEnd::AutoflushWanted(const Candidate& candidate, PrimType type) const 
         return false;
     }
     // Cond. 3 (recognised shuffles) is not implemented yet; see the journal entry.
+    if (!AutoflushStateAllows()) {
+        return false;  // cond. 2, 4 and 5
+    }
 
+    // Cond. 6: texel rectangle against the batch's draw rectangle.
+    const TexelRect texel = ComputeTexelRect(candidate);
+    if (!texel.valid || batch_.drawRect.Empty() || !RectsOverlap(texel.rect, batch_.drawRect)) {
+        return false;
+    }
+    if (texflushPending_) {
+        return true;
+    }
+    // Different texture page than the previous primitive's last texel
+    // (64 x 32 texel pages, an approximation noted in the journal).
+    const PrimRecord& previous = batch_.prims.back();
+    const Vertex& lastVertex = batch_.vertices[previous.first + previous.count - 1u];
+    float prevU = 0.0f;
+    float prevV = 0.0f;
+    if (!TexelCoordinates(lastVertex, Fst(prim), tex0::Tw(ctx.tex0), tex0::Th(ctx.tex0), prevU, prevV)) {
+        return true;
+    }
+    const int32_t prevPageX = static_cast<int32_t>(std::floor(prevU)) >> 6;
+    const int32_t prevPageY = static_cast<int32_t>(std::floor(prevV)) >> 5;
+    if (texel.rect.x0 >> 6 == prevPageX && texel.rect.y0 >> 5 == prevPageY) {
+        return false;
+    }
+    for (const PrimRecord& earlier : batch_.prims) {
+        if (earlier.type == PrimType::Sprite && RectsOverlap(earlier.rect, texel.rect)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Chapter 02.6 conditions 2, 4 and 5 of the auto-flush, which depend on the batch's registers alone: the texture shares
+// written channels with the frame, and a candidate level's base is the frame or the depth buffer, not as a co-resident
+// pair. False means no primitive can auto-flush this batch.
+bool FrontEnd::AutoflushStateAllows() const {
+    const ContextRegs& ctx = batch_.state.ctx;
     const uint32_t texFormat = tex0::Psm(ctx.tex0);
     const uint32_t frameFormat = frame::Psm(ctx.frame);
     const uint32_t zFormat = zbuf::Psm(ctx.zbuf);
@@ -916,38 +1087,7 @@ bool FrontEnd::AutoflushWanted(const Candidate& candidate, PrimType type) const 
     if (allowedZ && PsmCoResident(texFormat, zFormat)) {
         allowedZ = false;
     }
-    if (!allowedFrame && !allowedZ) {
-        return false;
-    }
-
-    // Cond. 6: texel rectangle against the batch's draw rectangle.
-    const TexelRect texel = ComputeTexelRect(candidate);
-    if (!texel.valid || batch_.drawRect.Empty() || !RectsOverlap(texel.rect, batch_.drawRect)) {
-        return false;
-    }
-    if (texflushPending_) {
-        return true;
-    }
-    // Different texture page than the previous primitive's last texel
-    // (64 x 32 texel pages, an approximation noted in the journal).
-    const PrimRecord& previous = batch_.prims.back();
-    const Vertex& lastVertex = batch_.vertices[previous.first + previous.count - 1u];
-    float prevU = 0.0f;
-    float prevV = 0.0f;
-    if (!TexelCoordinates(lastVertex, Fst(prim), tex0::Tw(ctx.tex0), tex0::Th(ctx.tex0), prevU, prevV)) {
-        return true;
-    }
-    const int32_t prevPageX = static_cast<int32_t>(std::floor(prevU)) >> 6;
-    const int32_t prevPageY = static_cast<int32_t>(std::floor(prevV)) >> 5;
-    if (texel.rect.x0 >> 6 == prevPageX && texel.rect.y0 >> 5 == prevPageY) {
-        return false;
-    }
-    for (const PrimRecord& earlier : batch_.prims) {
-        if (earlier.type == PrimType::Sprite && RectsOverlap(earlier.rect, texel.rect)) {
-            return true;
-        }
-    }
-    return false;
+    return allowedFrame || allowedZ;
 }
 
 void FrontEnd::FlushBatch(FlushReason reason) {
@@ -956,47 +1096,8 @@ void FrontEnd::FlushBatch(FlushReason reason) {
     }
     flushing_ = true;
     if (!batch_.Empty()) {
-        const uint64_t prim = batch_.state.effectivePrim;
-        const ContextRegs& ctx = batch_.state.ctx;
-        const bool textured = Tme(prim);
-        const bool discard = test::Zte(ctx.test) != 0u && test::Ztst(ctx.test) == kZtstNever;
-        if (discard) {
-            counters_.Add(Counter::BatchesDiscarded);
-        } else {
-            bool constantZ = true;
-            for (const Vertex& vertex : batch_.vertices) {
-                if (vertex.z != batch_.vertices.front().z) {
-                    constantZ = false;
-                    break;
-                }
-            }
-            ApplyStRounding(batch_, constantZ);
-
-            if (options_.vertexTrace) {
-                clut::Palette palette;
-                const clut::Palette* palettePtr = nullptr;
-                if (textured && IsIndexedPsm(tex0::Psm(ctx.tex0))) {
-                    palette = clut_.Decode(tex0::Psm(ctx.tex0), tex0::Cpsm(ctx.tex0), tex0::Csa(ctx.tex0),
-                                           batch_.state.env.texa);
-                    palettePtr = &palette;
-                }
-                batch_.trace = ComputeVertexTrace(batch_, palettePtr);
-            }
-            NoteBatchWritesToClut();
-
-            batch_.reason = reason;
-            flushCounts_[static_cast<size_t>(reason)]++;
-            counters_.Add(Counter::BatchesEmitted);
-            Batch out = std::move(batch_);
-            batch_ = Batch{};
-            batches_.OnBatch(std::move(out));
-            // IN-360: a sink that did not keep the batch leaves its storage here; the next batch reuses it
-            // (cleared, capacity kept) instead of growing new vectors.
-            out.vertices.clear();
-            out.prims.clear();
-            batch_.vertices.swap(out.vertices);
-            batch_.prims.swap(out.prims);
-        }
+        const bool textured = Tme(batch_.state.effectivePrim);
+        EmitBatch(batch_, reason);
         if (textured) {
             texflushPending_ = false;  // a textured batch flushed clears the flag
         }
@@ -1005,6 +1106,112 @@ void FrontEnd::FlushBatch(FlushReason reason) {
     if (!inTransferHook_) {
         transfers_.CommitPending(TransferReason::BatchFlush);
     }
+    flushing_ = false;
+}
+
+// The end of a batch (chapter 02.4, 02.9, 07.2): dropped when its depth test never passes, else rounded, traced and
+// handed to the sink. `batch` keeps (or gets back) vector storage for reuse; the caller clears it.
+void FrontEnd::EmitBatch(Batch& batch, FlushReason reason) {
+    const ContextRegs& ctx = batch.state.ctx;
+    const bool textured = Tme(batch.state.effectivePrim);
+    const bool discard = test::Zte(ctx.test) != 0u && test::Ztst(ctx.test) == kZtstNever;
+    if (discard) {
+        counters_.Add(Counter::BatchesDiscarded);
+        return;
+    }
+    // TASK-168: a segment opened by a load after the last primitive has no primitive: dropped.
+    if (!batch.paletteSegments.empty() && batch.paletteSegments.back().firstPrim >= batch.prims.size()) {
+        batch.paletteSegments.pop_back();
+    }
+    // Chapter 02.4 decides per batch (sprites, or constant Z): per palette segment here, each being the batch a
+    // CLUT-load flush would have ended (TASK-168).
+    const uint32_t segments = PaletteSegmentCount(batch);
+    for (uint32_t segment = 0; segment < segments; ++segment) {
+        const uint32_t firstPrim = batch.paletteSegments.empty() ? 0u : batch.paletteSegments[segment].firstPrim;
+        const uint32_t endPrim = PaletteSegmentEndPrim(batch, segment);
+        const uint32_t firstVertex = batch.paletteSegments.empty() ? 0u : batch.paletteSegments[segment].firstVertex;
+        const uint32_t endVertex = segment + 1u < batch.paletteSegments.size()
+                                       ? batch.paletteSegments[segment + 1u].firstVertex
+                                       : static_cast<uint32_t>(batch.vertices.size());
+        bool constantZ = true;
+        for (uint32_t index = firstVertex; index < endVertex; ++index) {
+            if (batch.vertices[index].z != batch.vertices[firstVertex].z) {
+                constantZ = false;
+                break;
+            }
+        }
+        ApplyStRoundingToPrims(batch, constantZ, firstPrim, endPrim);
+    }
+
+    if (options_.vertexTrace) {
+        clut::Palette palette;
+        const clut::Palette* palettePtr = nullptr;
+        if (textured && IsIndexedPsm(tex0::Psm(ctx.tex0))) {
+            // The alpha range over every palette of the batch (one without segments).
+            palette = DecodeSegmentPalette(batch, 0, clut_);
+            for (uint32_t segment = 1; segment < segments; ++segment) {
+                const clut::Palette other = DecodeSegmentPalette(batch, segment, clut_);
+                palette.minAlpha = std::min(palette.minAlpha, other.minAlpha);
+                palette.maxAlpha = std::max(palette.maxAlpha, other.maxAlpha);
+            }
+            palettePtr = &palette;
+        }
+        batch.trace = ComputeVertexTrace(batch, palettePtr);
+    }
+    NoteBatchWritesToClut(batch);
+
+    batch.reason = reason;
+    flushCounts_[static_cast<size_t>(reason)]++;
+    counters_.Add(Counter::BatchesEmitted);
+    if (!batch.paletteSegments.empty()) {
+        ++segmentedBatches_;
+        paletteSegmentsEmitted_ += batch.paletteSegments.size();
+    }
+    Batch out = std::move(batch);
+    batch = Batch{};
+    batches_.OnBatch(std::move(out));
+    // IN-360: a sink that did not keep the batch leaves its storage here; the next batch reuses it
+    // (cleared, capacity kept) instead of growing new vectors.
+    out.vertices.clear();
+    out.prims.clear();
+    out.paletteSegments.clear();
+    batch.vertices.swap(out.vertices);
+    batch.prims.swap(out.prims);
+    batch.paletteSegments.swap(out.paletteSegments);
+}
+
+// TASK-168: the capacity limit reached by a batch with palette segments. The CLUT-load flushes would have started a
+// batch at the last segment, so the limit counts from there: the primitives before it are emitted now (with their
+// segments) and the last segment's stay pending as a batch of their own, whose palette is the CLUT unit's buffer (the
+// load that opened that segment was the last one). Nothing else happens here that a flush does (no transfer commit, the
+// TEXFLUSH flag stays), as no flush happened at this point before.
+void FrontEnd::FlushSegmentsBeforeLast(FlushReason reason) {
+    if (flushing_ || batch_.paletteSegments.size() < 2u) {
+        return;
+    }
+    flushing_ = true;
+    const PaletteSegment last = batch_.paletteSegments.back();
+    Batch head;
+    head.state = batch_.state;
+    head.cls = batch_.cls;
+    head.vertices.assign(batch_.vertices.begin(), batch_.vertices.begin() + last.firstVertex);
+    head.prims.assign(batch_.prims.begin(), batch_.prims.begin() + last.firstPrim);
+    head.paletteSegments.assign(batch_.paletteSegments.begin(), batch_.paletteSegments.end() - 1);
+    for (const PrimRecord& record : head.prims) {
+        head.drawRect = UnionRects(head.drawRect, record.rect);
+    }
+
+    batch_.vertices.erase(batch_.vertices.begin(), batch_.vertices.begin() + last.firstVertex);
+    batch_.prims.erase(batch_.prims.begin(), batch_.prims.begin() + last.firstPrim);
+    batch_.drawRect = PixelRect{};
+    for (PrimRecord& record : batch_.prims) {
+        record.first -= last.firstVertex;
+        batch_.drawRect = UnionRects(batch_.drawRect, record.rect);
+    }
+    batch_.paletteSegments.clear();
+    batch_.state.clutGeneration = last.clutGeneration;
+
+    EmitBatch(head, reason);
     flushing_ = false;
 }
 

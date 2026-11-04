@@ -183,6 +183,14 @@ struct BatchTranslation {
     uint32_t glmBp = 0, glmBw = 0, glmPsm = 0;
     bool glmIndexed = false;
     std::vector<uint32_t> palette;
+    // TASK-168: a batch with several palette segments (Batch::paletteSegments): `palette` is segment 0's,
+    // `segmentPalettes` holds every segment's 256 entries in order (segment s from 256 * s) and drawSegments[d] is the
+    // segment of draws[d]. Both stay empty for a batch with one palette.
+    std::vector<uint32_t> segmentPalettes;
+    std::vector<uint32_t> drawSegments;
+    // The batch has several palettes but its texture path takes one (the CPU decode or the GPU CLUT expansion of
+    // IN-349): it is not translated (skippedTexture), and the caller must draw its segments one by one.
+    bool paletteSegmentsUnsupported = false;
     bool glmGpuClut = false;  // IN-349: indexed texels expanded from the GPU CLUT (fields below)
     uint32_t glmCpsm = 0, glmCsa = 0, glmTa0 = 0, glmTa1 = 0, glmAem = 0;
     gpu::GpuPixelState state;
@@ -237,13 +245,16 @@ using TextureFromGlmHook =
     std::function<bool(const memory::BufferView&, uint32_t width, uint32_t height, bool indexed, bool& gpuClut)>;
 
 // FNV-1a of a 256-entry palette as BatchTranslation::palette holds it (texture cache keys).
-inline uint64_t HashPaletteWords(const std::vector<uint32_t> &palette) {
+inline uint64_t HashPaletteWords(const uint32_t *entries, size_t count) {
     uint64_t hash = 1469598103934665603ull;
-    for (uint32_t entry : palette) {
-        hash ^= entry;
+    for (size_t i = 0; i < count; ++i) {
+        hash ^= entries[i];
         hash *= 1099511628211ull;
     }
     return hash;
+}
+inline uint64_t HashPaletteWords(const std::vector<uint32_t> &palette) {
+    return HashPaletteWords(palette.data(), palette.size());
 }
 
 // TranslateBatch with the hooks the cache renderers use (CORE2, decision coregs2-scale-only-rendering): a texture

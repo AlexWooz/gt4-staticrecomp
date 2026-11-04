@@ -38,7 +38,7 @@ set_target_properties(hw_gs_m3_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAK
 
 foreach(hw_m3_test IN ITEMS
         hw_gif_split hw_gif_ad_xyz hw_flush_rules hw_autoflush hw_vertex_trace hw_st_rounding
-        hw_clut_load hw_clut_snapshot hw_clut_copy_free hw_transfers hw_counters)
+        hw_clut_load hw_clut_snapshot hw_clut_copy_free hw_transfers hw_counters hw_palette_segments)
     add_test(NAME ${hw_m3_test} COMMAND hw_gs_m3_tests ${hw_m3_test})
     set_tests_properties(${hw_m3_test} PROPERTIES TIMEOUT 120)
 endforeach()
