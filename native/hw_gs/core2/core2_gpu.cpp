@@ -415,6 +415,34 @@ struct Gpu::Impl {
   bool clearTopZero = clearWholeSetting == 2;
   std::chrono::steady_clock::time_point specLastSave{};
   VkPhysicalDeviceProperties deviceProperties{};  // IN-507
+  // TASK-170 (issues #187-#190 and an RX 6700 XT report on 1.3.0-rc13): some drivers end the process inside
+  // vkCreateGraphicsPipelines, and a variant that does so would end every session that compiles it. Around each variant
+  // compile the keys in flight are kept in <cache>/compiling.bin; a process that dies leaves the file, and the next start of
+  // the renderer reads it (open_compile_guard): several keys in flight (a parallel prepare) make the next prepares compile
+  // one variant at a time; one key in flight is quarantined (quarantine.bin). A quarantined variant is never compiled again on
+  // this card and driver: its draws keep the uber pipeline, which draws the same pixels. Another driver or card starts with
+  // an empty guard (the files name the card, the driver and the shaders they were written for).
+  struct GuardFileHeader {
+    char magic[8] = {'G', 'T', '4', 'G', 'R', 'D', '1', '\0'};
+    std::uint64_t shaderSet = 0;
+    std::uint32_t vendorId = 0, deviceId = 0, driverVersion = 0;
+    std::uint32_t keyWords = kSpecFieldCount + 3;
+    std::uint32_t flags = 0;  // kGuardSerial: PrepareShaders compiles one variant at a time
+    std::uint32_t count = 0;
+  };
+  static constexpr std::uint32_t kGuardSerial = 1u;
+  std::mutex compilingMutex;
+  std::vector<SpecKey> compiling;                        // compilingMutex: the keys inside vkCreateGraphicsPipelines now
+  std::unordered_set<SpecKey, SpecKeyHash> quarantined;  // read at start, never compiled
+  bool serialPrepare = false;
+  // Tests only (GT4_CORE2_TEST_COMPILE_ABANDON=<n>): the n-th variant compile of this renderer leaves the guard files as a
+  // process that died inside it would, and PrepareShaders stops.
+  const unsigned long testAbandonAt = [] {
+    const char *text = std::getenv("GT4_CORE2_TEST_COMPILE_ABANDON");
+    return text && *text ? std::strtoul(text, nullptr, 10) : 0ul;
+  }();
+  std::atomic<unsigned long> compileStarts{0};
+  std::atomic<bool> abandoned{false};
 
   VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout computeLayout = VK_NULL_HANDLE;
@@ -1097,6 +1125,7 @@ struct Gpu::Impl {
       if (gt4_hwd_vkCreatePipelineCache(device, &info, nullptr, &pipelineCache) != VK_SUCCESS) pipelineCache = VK_NULL_HANDLE;
     }
     std::fprintf(stderr, "[core2] shader cache: %zu KiB of compiled pipelines\n", compiled.size() / 1024u);
+    open_compile_guard();  // TASK-170
   }
 
   // After every pipeline the game may need exists: the variants of the last sessions go to the worker before any draw.
@@ -1177,6 +1206,7 @@ struct Gpu::Impl {
       const std::uint32_t word = key[kSpecFieldCount + 2];
       const bool plain = word == kPlainWord || word == kPlainSheenWord;
       if (plain ? !plainDisjoint : word != 0 && (!ropOn || (rop_blend_mode(word) && ropBlendModule == VK_NULL_HANDLE))) return;
+      if (quarantined.count(key) != 0) return;  // TASK-170
       if (keys.size() < kMaxSpecPipelines && seen.insert(key).second) keys.push_back(key);
     };
     constexpr std::size_t kKeyWords = std::tuple_size_v<SpecKey>;
@@ -1229,6 +1259,102 @@ struct Gpu::Impl {
     specCompileMaxNs = std::max(specCompileMaxNs, ns);
   }
 
+  // TASK-170: the guard files' header for these shaders, this card and this driver.
+  GuardFileHeader guard_header(std::uint32_t flags, std::size_t count) const {
+    GuardFileHeader header;
+    header.shaderSet = shaderSetHash;
+    header.vendorId = deviceProperties.vendorID;
+    header.deviceId = deviceProperties.deviceID;
+    header.driverVersion = deviceProperties.driverVersion;
+    header.flags = flags;
+    header.count = static_cast<std::uint32_t>(count);
+    return header;
+  }
+
+  // The keys and flags of a guard file written for these shaders, card and driver; false when absent, damaged or not theirs.
+  bool read_guard_file(const std::filesystem::path &path, std::vector<SpecKey> &keys, std::uint32_t &flags) const {
+    const std::vector<std::uint8_t> bytes = read_whole_file(path);
+    GuardFileHeader header;
+    const GuardFileHeader wanted = guard_header(0, 0);
+    if (bytes.size() < sizeof header) return false;
+    std::memcpy(&header, bytes.data(), sizeof header);
+    if (std::memcmp(header.magic, wanted.magic, sizeof header.magic) != 0 || header.shaderSet != wanted.shaderSet ||
+        header.vendorId != wanted.vendorId || header.deviceId != wanted.deviceId ||
+        header.driverVersion != wanted.driverVersion || header.keyWords != wanted.keyWords ||
+        bytes.size() != sizeof header + std::size_t{header.count} * sizeof(SpecKey)) {
+      return false;
+    }
+    keys.resize(header.count);
+    if (header.count != 0) std::memcpy(keys.data(), bytes.data() + sizeof header, std::size_t{header.count} * sizeof(SpecKey));
+    flags = header.flags;
+    return true;
+  }
+
+  void write_guard_file(const std::filesystem::path &path, const std::vector<SpecKey> &keys, std::uint32_t flags) const {
+    const GuardFileHeader header = guard_header(flags, keys.size());
+    write_whole_file(path, &header, sizeof header, keys.data(), keys.size() * sizeof(SpecKey));
+  }
+
+  // TASK-170, at the renderer's start (open_shader_cache): what a run that died while compiling left, then the quarantine.
+  // Quarantined keys go into specSeen, so specialised_pipeline never asks for them (their draws keep the uber pipeline) and
+  // queue_known_variants skips them; variants_to_prepare leaves them out.
+  void open_compile_guard() {
+    std::vector<SpecKey> list;
+    std::uint32_t flags = 0;
+    read_guard_file(shaderCacheFolder / "quarantine.bin", list, flags);
+    std::vector<SpecKey> inFlight;
+    std::uint32_t inFlightFlags = 0;
+    if (read_guard_file(shaderCacheFolder / "compiling.bin", inFlight, inFlightFlags) && !inFlight.empty()) {
+      flags |= kGuardSerial;
+      if (inFlight.size() == 1) {
+        if (std::find(list.begin(), list.end(), inFlight[0]) == list.end()) list.push_back(inFlight[0]);
+        std::fprintf(stderr, "[core2] shader guard: the last run stopped while compiling one variant: it is quarantined on "
+                     "this card and driver (its draws keep the uber pipeline, the same pixels)\n");
+      } else {
+        std::fprintf(stderr, "[core2] shader guard: the last run stopped while compiling %zu variants at once: the next "
+                     "prepares compile one variant at a time\n", inFlight.size());
+      }
+      write_guard_file(shaderCacheFolder / "quarantine.bin", list, flags);
+    }
+    std::error_code ignored;
+    std::filesystem::remove(shaderCacheFolder / "compiling.bin", ignored);
+    serialPrepare = (flags & kGuardSerial) != 0;
+    quarantined.insert(list.begin(), list.end());
+    for (const SpecKey &key : list) specSeen.insert(key);
+    if (!list.empty() || serialPrepare) {
+      std::fprintf(stderr, "[core2] shader guard: %zu variants quarantined, prepares compile %s\n", list.size(),
+                   serialPrepare ? "one variant at a time" : "in parallel");
+    }
+  }
+
+  // TASK-170: the guard file around one variant compile (any thread). False: do not compile (tests: the run "died").
+  bool begin_compile(const SpecKey &key) {
+    if (shaderCacheFolder.empty()) return true;
+    std::lock_guard<std::mutex> lock(compilingMutex);
+    if (abandoned.load()) return false;
+    compiling.push_back(key);
+    write_guard_file(shaderCacheFolder / "compiling.bin", compiling, 0);
+    if (testAbandonAt != 0 && compileStarts.fetch_add(1) + 1 == testAbandonAt) {
+      abandoned = true;  // tests: as if the process ended inside this compile
+      return false;
+    }
+    return true;
+  }
+
+  void end_compile(const SpecKey &key) {
+    if (shaderCacheFolder.empty()) return;
+    std::lock_guard<std::mutex> lock(compilingMutex);
+    if (abandoned.load()) return;  // tests: a dead process removes nothing
+    const auto found = std::find(compiling.begin(), compiling.end(), key);
+    if (found != compiling.end()) compiling.erase(found);
+    if (compiling.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove(shaderCacheFolder / "compiling.bin", ignored);
+    } else {
+      write_guard_file(shaderCacheFolder / "compiling.bin", compiling, 0);
+    }
+  }
+
   void spec_worker() {
 #ifdef _WIN32
     // IN-476: a variant can take seconds on some drivers (2.2 s on the HD 620); on two cores it must not take time from
@@ -1257,7 +1383,9 @@ struct Gpu::Impl {
       }
       const auto start = std::chrono::steady_clock::now();
       std::string error;
-      VkPipeline pipeline = make_specialised(key, error);
+      const bool compile = begin_compile(key);  // TASK-170
+      VkPipeline pipeline = compile ? make_specialised(key, error) : VK_NULL_HANDLE;
+      if (compile) end_compile(key);
       const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
       {
         std::lock_guard<std::mutex> lock(specMutex);
@@ -1335,7 +1463,9 @@ struct Gpu::Impl {
       if (specMode == SpecMode::sync) {
         const auto start = std::chrono::steady_clock::now();
         std::string error;
-        VkPipeline pipeline = make_specialised(key, error);
+        const bool compile = begin_compile(key);  // TASK-170
+        VkPipeline pipeline = compile ? make_specialised(key, error) : VK_NULL_HANDLE;
+        if (compile) end_compile(key);
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
         std::lock_guard<std::mutex> lock(specMutex);
         note_compile(static_cast<std::uint64_t>(ns.count()));
@@ -2203,7 +2333,9 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
     s.specKnownFromFile = keys.size();
   }
   std::atomic<std::size_t> next{0}, done{0}, failures{0};
-  const unsigned threadCount = std::max(1u, std::thread::hardware_concurrency() > 1u ? std::thread::hardware_concurrency() - 1u : 1u);
+  // TASK-170: one variant at a time on a card where a parallel prepare died.
+  const unsigned threadCount = s.serialPrepare ? 1u
+                               : std::max(1u, std::thread::hardware_concurrency() > 1u ? std::thread::hardware_concurrency() - 1u : 1u);
   std::vector<std::thread> workers;
   for (unsigned i = 0; i < threadCount; ++i) {
     workers.emplace_back([&] {
@@ -2212,7 +2344,9 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
 #endif
       for (std::size_t index = next.fetch_add(1); index < keys.size(); index = next.fetch_add(1)) {
         std::string compileError;
+        if (!s.begin_compile(keys[index])) return;  // TASK-170 (tests: the run ends here)
         const VkPipeline pipeline = s.make_specialised(keys[index], compileError);
+        s.end_compile(keys[index]);
         if (pipeline) {
           gt4_hwd_vkDestroyPipeline(s.device, pipeline, nullptr);  // what counts is what the driver keeps in the cache
         } else if (failures.fetch_add(1) == 0) {
@@ -2225,7 +2359,7 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
   // A closed launcher or a cut power loses at most half a minute: the next Play finds the rest in the cache.
   auto lastSave = std::chrono::steady_clock::now();
   std::size_t reported = 0;
-  while (done.load() < keys.size()) {
+  while (done.load() < keys.size() && !s.abandoned.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     if (const std::size_t now = done.load(); now != reported && now < keys.size()) {
       reported = now;
@@ -2241,6 +2375,10 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
     }
   }
   for (std::thread &worker : workers) worker.join();
+  if (s.abandoned.load()) {
+    error = "the prepare stopped inside a compile (GT4_CORE2_TEST_COMPILE_ABANDON)";
+    return false;
+  }
   {
     std::lock_guard<std::mutex> lock(s.specMutex);
     s.specKnownChanged = true;
@@ -2248,8 +2386,16 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
   s.save_shader_cache();
   Impl::write_whole_file(s.shaderCacheFolder / "prepared.bin", &wanted, sizeof wanted, nullptr, 0);
   progress(keys.size(), keys.size());
-  std::fprintf(stderr, "[core2] shader cache prepared: %zu variants, %zu failed, %u threads\n", keys.size(), failures.load(), threadCount);
+  std::fprintf(stderr, "[core2] shader cache prepared: %zu variants, %zu failed, %u threads, %zu quarantined\n", keys.size(),
+               failures.load(), threadCount, s.quarantined.size());
   return true;
+}
+
+Gpu::ShaderGuardState Gpu::ShaderGuard() const {
+  ShaderGuardState state;
+  state.quarantined = impl_->quarantined.size();
+  state.serial = impl_->serialPrepare;
+  return state;
 }
 std::uint32_t Gpu::Scale() const { return impl_->scale; }
 

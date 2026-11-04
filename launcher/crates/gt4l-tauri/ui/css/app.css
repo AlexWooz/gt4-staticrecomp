@@ -397,6 +397,12 @@ body.is-idle .migration-bar.indeterminate .migration-fill { animation-play-state
 
 /* Settings > Games, and the game name on the Saves and Replays titles. */
 .game-row .k .val { display: block; }
+/* TASK-173: whether the installed disc image is one we tested (a known hash) or only has the supported game code. */
+.tested-badge { display: inline-block; margin-left: 8px; padding: 1px 8px; border: 1px solid; border-radius: 999px;
+  font: 500 11px var(--label); letter-spacing: 0.03em; line-height: 16px; vertical-align: middle; white-space: nowrap; }
+.tested-badge.is-tested { background: rgba(47, 168, 102, 0.14); border-color: var(--ok); color: #7ee2a8; }
+.tested-badge.is-untested { background: rgba(227, 179, 65, 0.14); border-color: #e3b341; color: #f6d365; }
+.step .tested-badge { margin: 4px 0 0; }
 .game-row { padding: 10px 0; }
 .game-row .k { flex-wrap: wrap; row-gap: 2px; }
 /* The image's folder is the player's: cut with an ellipsis when long, the whole path in its title. */
@@ -811,7 +817,10 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 .cx-meter .dz { background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.14) 0 3px, transparent 3px 6px); }
 .cx-meter .raw { background: rgba(255, 255, 255, 0.2); }
 .cx-meter .out { top: 2px; bottom: 2px; border-radius: 2px; background: linear-gradient(90deg, #2c6bed, #9cc0ff); box-shadow: 0 0 8px rgba(44, 107, 237, 0.7); }
-.cx-meter-v { font: 500 12px var(--label); color: var(--dim); min-width: 36px; text-align: right; }
+/* The number keeps one width (js/pages/controls.js sets it from the widest text) and equal-width digits, so the bar beside it
+   never grows or shrinks while a trigger moves (owner, 2026-11-04). */
+.cx-meter-v { font: 500 12px var(--label); color: var(--dim); min-width: 36px; text-align: right; flex: none; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
 .cx-scope { width: 56px; height: 56px; flex: none; }
 .cx-scope .ring { fill: rgba(255, 255, 255, 0.03); stroke: rgba(255, 255, 255, 0.2); stroke-width: 2; }
 .cx-scope .axis { stroke: rgba(255, 255, 255, 0.08); stroke-width: 1.5; }

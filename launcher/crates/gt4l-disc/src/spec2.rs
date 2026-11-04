@@ -80,6 +80,17 @@ pub(crate) fn precheck_opened(mut iso: Iso, config: cnf::SystemConfig, pins: &Sp
     if sha256 != pins.executable.sha256 || program.len() as u64 != pins.executable.size_bytes {
         return Err(SetupError::Unsupported(Unsupported::Spec2Executable { beta: sha256 == pins.beta_boot_sha256 }));
     }
+    // TASK-173: the IOP modules are code too; an image is Spec II 1.10 only with 1.10's modules (any data may differ).
+    for module in &pins.iop_modules {
+        let found = iso
+            .find_path(&module.path)
+            .ok()
+            .filter(|entry| entry.size_bytes == module.identity.size_bytes)
+            .and_then(|entry| iso.read(&entry, module.identity.size_bytes).ok());
+        if found.is_none_or(|bytes| elf::sha256_hex(&bytes) != module.identity.sha256) {
+            return Err(SetupError::Unsupported(Unsupported::Spec2Executable { beta: false }));
+        }
+    }
     Ok(DiscSummary {
         serial: config.serial,
         version: VERSION.to_string(),

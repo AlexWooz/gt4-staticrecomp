@@ -75,6 +75,7 @@
       return h("div", { class: "row game-row", data: { gameId: game.id } }, [
         h("div", { class: "k" }, [
           h("span", { text: game.title || game.name }),
+          game.installed ? GT4.games.testedBadge(game.tested) : null,
           h("span", { class: "val", text: status }),
           game.image_path
             ? h("span", { class: "game-image", title: game.image_path, text: GT4.t("games.image_at", { path: game.image_path }) })

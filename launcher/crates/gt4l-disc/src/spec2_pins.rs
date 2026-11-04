@@ -25,6 +25,13 @@ pub struct Spec2Patch {
     pub new: u64,
 }
 
+/// One file of Spec II 1.10's code besides the executable, by its path on the disc (`IRX/CDVDMAN.IRX;1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeFile {
+    pub path: String,
+    pub identity: Identity,
+}
+
 /// A disc image of Spec II whose executable is the pinned one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnownImage {
@@ -44,8 +51,11 @@ pub struct Spec2Pins {
     pub executable: Identity,
     /// The program after the injector words and the data-segment split: what the translator reads.
     pub derived: Identity,
-    /// Known full images, by name. Another image with the pinned executable is a "Spec II 1.10 variant".
+    /// Known full images, by name (tested). Another image with 1.10's code is a "Spec II 1.10 variant" (not tested).
     pub known_images: Vec<KnownImage>,
+    /// The IOP modules of 1.10 (TASK-173): with the executable they are the game's code, so an image is Spec II 1.10 only
+    /// when each of them is on it with this identity.
+    pub iop_modules: Vec<CodeFile>,
     /// SHA-256 of the unmodified GT4 Online Public Beta's boot file (same serial, a loader), to name it in a refusal.
     pub beta_boot_sha256: String,
     pub patches: Vec<Spec2Patch>,
@@ -91,6 +101,14 @@ struct BetaIsoJson {
 struct VariantsJson {
     executable: IdentityJson,
     images: Vec<NamedImageJson>,
+    iop_modules: Vec<CodeFileJson>,
+}
+
+#[derive(Deserialize)]
+struct CodeFileJson {
+    path: String,
+    size_bytes: u64,
+    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -141,6 +159,9 @@ impl Spec2Pins {
                 Spec2Patch { address: patch.addr, size: patch.size, old: patch.old as u64 & mask, new: patch.new as u64 & mask }
             })
             .collect();
+        if variants.iop_modules.is_empty() {
+            return Err("spec2-variants.json lists no IOP modules".to_string());
+        }
         if patches.len() != elf.patches_applied {
             return Err(format!(
                 "spec2-patches.json has {} injector words, spec2-elf.json says {}",
@@ -160,6 +181,14 @@ impl Spec2Pins {
                 .map(|image| KnownImage {
                     name: image.name,
                     identity: Identity { size_bytes: image.size_bytes, sha256: image.sha256 },
+                })
+                .collect(),
+            iop_modules: variants
+                .iop_modules
+                .into_iter()
+                .map(|module| CodeFile {
+                    path: module.path,
+                    identity: Identity { size_bytes: module.size_bytes, sha256: module.sha256 },
                 })
                 .collect(),
             beta_boot_sha256: beta.iso.boot_file_sha256,
@@ -186,6 +215,10 @@ mod tests {
         assert_eq!(pins.derived.sha256, "36f60b1a989b343e98ca55b1f07f051aa83a3fa1a4fcb4acb409adb148afc640");
         assert_eq!(pins.patches.len(), 35);
         assert_eq!(pins.known_images.len(), 3);
+        // TASK-173: the 30 IOP modules, all in the IRX folder.
+        assert_eq!(pins.iop_modules.len(), 30);
+        assert!(pins.iop_modules.iter().all(|module| module.path.starts_with("IRX/") && module.path.ends_with(";1")));
+        assert!(pins.iop_modules.iter().any(|module| module.path == "IRX/PADMAN.IRX;1"));
         let ten = pins.known_image(&Identity {
             size_bytes: 3_683_418_112,
             sha256: "6a3484b9672c10a92154ecee6faa5bbcfd4ed8cd538d8283e429c3fe6e1704b2".into(),

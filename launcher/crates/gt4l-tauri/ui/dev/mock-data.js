@@ -12,6 +12,7 @@
  *   pick=other                                      (setup: the picker returns the other game's disc, a mismatch)
  *   pick=spec2                                      (setup: the picker returns a Spec II disc)
  *   games=gt4|spec2|both|none                       (which games are installed; default gt4: Spec II shows Install)
+ *   spec2image=other                                (the installed Spec II image is not a known one: "Not tested")
  *   selected=spec2                                  (the game the home screen starts on)
  *   running=1                                       (game running at start)
  *   focus=play                                      (home: focus the Play button, for screenshots)
@@ -37,8 +38,10 @@
   var gamesParam = query.get("games") || "gt4";
   var GAME_TABLE = [
     { id: "gt4", name: "Gran Turismo 4", title: "Gran Turismo 4", variant: "USA v2.00", installed: gamesParam === "gt4" || gamesParam === "both",
-      disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 18000000, image_bytes: 5314478080 },
-    { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10", variant: "", installed: gamesParam === "spec2" || gamesParam === "both",
+      tested: true, disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 18000000, image_bytes: 5314478080 },
+    { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10",
+      variant: query.get("spec2image") === "other" ? "other image" : "", tested: query.get("spec2image") !== "other",
+      installed: gamesParam === "spec2" || gamesParam === "both",
       disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 6520944, image_bytes: 3683418112 }
   ];
   // TASK-157: the textures folder choice of the mock (empty: the default folder).
@@ -63,6 +66,7 @@
       any_installed: GAME_TABLE.some(function (game) { return game.installed; }),
       games: GAME_TABLE.map(function (game) {
         return { id: game.id, name: game.name, title: game.title, variant: game.installed ? game.variant : "",
+          tested: game.installed && game.tested,
           installed: game.installed, damaged: false, reason: "",
           selected: game.id === selectedGame, disc_name: game.installed ? game.disc_name : "",
           folder: "C:\\Program Files\\GT4Recomp\\data\\games\\" + game.id,
@@ -425,10 +429,10 @@
       return { id: id, label: label, help: "How the pressure grows with the trigger travel.", page: "basic",
         group: "controls", control: "dropdown", values: values || curve, default: (values || curve)[0].value, current: (values || curve)[0].value };
     }
-    // TASK-161: the full trigger range toggle, first of the Controls page's analog rows (model.rs), off by default.
-    var fullRange = { id: "trigger_full_range", label: "Full trigger range (experimental)",
+    // TASK-161: the full trigger range toggle, first of the Controls page's analog rows (model.rs), on by default.
+    var fullRange = { id: "trigger_full_range", label: "Full trigger range",
       help: "Throttle and brake follow the whole travel of the triggers in finer steps.", page: "basic", group: "controls",
-      control: "toggle", values: null, default: false, current: query.get("fullrange") === "1" };
+      control: "toggle", values: null, default: true, current: query.get("fullrange") !== "0" };
     return [fullRange, slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve", curve),
       slider("r2_deadzone", "R2 deadzone", 11.8), dropdown("r2_curve", "R2 curve", curve),
       slider("lstick_deadzone", "Left stick deadzone", 24), slider("rstick_deadzone", "Right stick deadzone", 26.5)];

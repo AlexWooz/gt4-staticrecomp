@@ -58,8 +58,9 @@ fn default_settings_send_the_main_profile_variables_plus_the_launcher_defaults()
     for gone in ["PS2_SCALE", "GT4_DEINTERLACE", "GT4_AA", "GT4_PRESENT_FILTER"] {
         assert!(!environment.contains_key(gone), "{gone} is a CoreGS 1.1 variable");
     }
-    // TASK-161: the full trigger range is always stated, off by default (the game reads it for both of its sides).
-    assert_eq!(environment["GT4_TRIGGER_FULL_RANGE"], "0");
+    // TASK-161: the full trigger range is always stated, on by default since rc14 (owner, 2026-11-04; the game reads it
+    // for both of its sides).
+    assert_eq!(environment["GT4_TRIGGER_FULL_RANGE"], "1");
     assert_eq!(environment.len(), 11, "the GSdx variables: renderer, process pin, config, PS2_GS and the common holds");
 }
 

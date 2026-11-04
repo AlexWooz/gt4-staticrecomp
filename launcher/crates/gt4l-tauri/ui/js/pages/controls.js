@@ -164,6 +164,9 @@
       var out = h("i", { class: "out" });
       var dz = h("b", { class: "dz" });
       var value = h("span", { class: "cx-meter-v", text: "0%" });
+      // Reserve the widest text the meter can show (100%, the whole byte) plus a margin, so the bar keeps its size.
+      var widest = GT4.t("controls.meter_value", { percent: 100, pressure: 255, full: 255 });
+      value.style.minWidth = (widest.length + 1) + "ch";
       meters[id] = { raw: raw, out: out, dz: dz, value: value };
       analogRows[id] = h("div", { class: "cx-rows" });
       return h("div", { class: "cx-block" }, [

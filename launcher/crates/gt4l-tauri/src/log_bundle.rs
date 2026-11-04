@@ -27,13 +27,18 @@ pub fn export(state: &AppState, folder: &Path, user_name: &str) -> Result<PathBu
 }
 
 /// The entries of the bundle before masking.
-fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
+pub(crate) fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
     let dirs = &state.dirs;
     let logs_dir = dirs.logs();
     let mut entries = Vec::new();
 
     if let Ok(text) = fs::read_to_string(crate::session_log::latest_path(dirs)) {
         entries.push(Entry { path: logs::LATEST_NAME.to_string(), text });
+    }
+
+    // TASK-170: the last shader prepare step (gt4.exe --prepare-shaders writes its stderr there): where a compile stopped.
+    if let Ok(text) = fs::read_to_string(logs_dir.join("shaders.log")) {
+        entries.push(Entry { path: "logs/shaders.log".to_string(), text });
     }
 
     // The newest launcher session logs (the legacy 1.2.x file counts as one of them).

@@ -3127,6 +3127,80 @@ batch through the renderer and the graphics driver; together they are the larges
 read from GPU targets (IN-417) kept exact. Large: the vertex format, the shaders, the CLUT upload path and the texture cache
 change, so it waits until after 1.3.0 and the owner's word. Gates: every identity gate, plus the owner's picture tests.
 
+### TASK-170 — CoreGS 2.0: a shader compile that ends the process no longer stops every start (rc14, done)
+
+A Discord player's rc13 log (RX 6700 XT, RDNA2; issues #187-#190 look the same): the launcher's shader prepare stops at about
+131 of 300 variants, then the game on CoreGS 2.0 stalls 6.3 s and 3.1 s at boot and ends with 0xC0000005, every start; GSdx
+sessions on the same PC run fine. Hypothesis (High confidence, not reproduced here): one pipeline compile ends the process inside
+AMD's RDNA1/2 driver; the parallel prepare (several compiles at once) may matter. The bundle did not carry `logs\shaders.log`.
+
+- Guard (`native/hw_gs/core2/core2_gpu.cpp`): every variant compile (the prepare's workers, the specialised worker and the
+  synchronous path) is written to `compiling.bin` in the shader cache folder before it starts and removed when it ends. A start
+  that finds keys left there knows a compile ended the process: several keys (a parallel prepare) → the prepare runs one compile
+  at a time from then on; one key → that variant is quarantined (`quarantine.bin`) and drawn with the general pipeline instead
+  of its own. Both files carry a header (magic, shader set, GPU vendor, device and driver, key size), so a driver update or a
+  new shader set starts clean and a damaged file is ignored. The prepare's log line names the quarantined count.
+- Log bundle: `logs/shaders.log` (the last prepare step) is now in the exported bundle.
+- Acceptance: CTest `hw_core2_shader_guard` (a simulated end inside the 4th compile → serial; a serial end inside the 2nd →
+  exactly one quarantined, the rest compiled; the quarantine stays; a damaged file is ignored), with `hw_core2_prepare_shaders`,
+  `hw_core2_shader_cache` and the specialised tests; flow audit test for the bundle; every identity gate unchanged.
+- State (2026-11-04): in rc14. Player retest pending (a quarantined variant only changes speed, never the picture).
+
+### TASK-171 — CoreGS 2.0: per-primitive front end for big scenes (the first license; rc15)
+
+Owner report (2026-11-04): the first license (B-1, Test Course, v2.00) runs below 60 FPS on the laptop (i7-11800H, RTX 3060
+laptop) while menus and races are fine: 77-138 late frames per 300 VBlanks in the owner's session. Recording
+`private/coregs2-bench/inputs/licenca-b1.txt` (+ `.setup`). Measured headless on the laptop (Confirmed by counters): about
+26,000-27,000 primitives and 1,930 batches per VBlank while driving, against 13,000-21,000 on the George V lap; GS thread about
+19-20 ms per VBlank, VU1 worker about 15 ms, EE about 13 ms, GPU busy 7-10 ms; rc13 PGO about 21.2 ms against rc14 plain about
+23.0 ms. Desktop: 60 FPS paced. Not a doubled pass or a bug: the GS thread's profile is flat over the per-primitive front end
+(ShouldDraw, AppendPrimitive, Kick, StripVertices, GIF parsing).
+
+- Plan: cheapest first, one change per candidate; measure on the laptop (headless replay of the license) against the rc14 PGO
+  build. Candidates: the per-primitive draw checks and vertex append (fewer branches and copies per primitive), the strip
+  path, the GIF packet parse; then batching (TASK-168) if the batch count is the cost.
+- Acceptance: every identity gate and the overlay check unchanged; the license replay faster on the laptop with the George V
+  lap no slower; the owner's test on the laptop.
+- State (2026-11-04): planned for rc15 (owner).
+
+### TASK-172 — An earlier Spec II release ("Gran Turismo 4 Spec 2.iso", owner, 2026-11-04)
+
+The owner's image (3,681,452,032 bytes; SYSTEM.CNF `BOOT2 = cdrom0:\SCUS_974.36;1`, `VER = 1.00`) is **not the Spec II 1.10
+program** (Confirmed, compared with the PT-BR 1.10 image): its SCUS_974.36 is 6,518,884 bytes, SHA-256
+`0c9db7c5939b352855e760d649d1053a5c9e6379755608f94a9345cf7db0f3b4` (1.10: 6,520,944, `db08421b...`). The game's text and data
+segments are identical except the boot hook at `0x001001E8` (`jal 0x0068A760` instead of `0x0068A768`); the plugin segment at
+`0x0068A480` is another build (0x24C0 bytes instead of 0x2CCC; 2,284 words differ). Its injector (`scripts/spec2_patches.py
+--elf`) writes 34 words instead of 35: the same 30 in the game, four `jal` hooks into the plugin at other targets, and no hook at
+`0x00132E60`. The plugin has none of 1.10's `getPerformanceIndex`, `makeNew`, odometer and engine life, `overrideLaps` and
+`toggleMultiCategoryAI` strings, so it is an earlier Spec II release (number unknown). GT4.VOL is 3,433,562,112 bytes. The
+launcher refuses it today with "a different game program than Spec II v1.10".
+
+- Support means a third game program: its own patch table and derived ELF, its own translation and VU1/IOP checks, the TASK-166
+  aspect points and the camera hooks (same game addresses), its own executable, pins and launcher target. About the size of one
+  Spec II build plus tests; the image's own assets need their own checks.
+- State (2026-11-04): recorded; not in rc14. The owner decides if and when (players can also update their image to 1.10).
+
+### TASK-173 — Spec II: any image with 1.10's code installs, marked Tested or Not tested (owner, 2026-11-04; done in rc14)
+
+Owner request: support the Spec II 1.10 images people make (translations, car packs) without naming each one, refuse anything
+that is not 1.10, and show which images we tested. Compared on 2026-11-04 (coordinator, three images: PT-BR 1.10, PT-BR + CPSP,
+the earlier release of TASK-172): only `SCUS_974.36` and `GT4.VOL` differ between them; the 30 IOP modules (`IRX`), `SYSTEM.CNF`,
+`NET`, `EPSON` and `DNAS310.IMG` are byte-identical. The executable holds the whole Spec II plugin, so the executable and the
+IOP modules are the game's code; an image is Spec II 1.10 exactly when both match the pins, and only its data can differ.
+
+- Rule (`launcher/crates/gt4l-disc/src/spec2.rs`): the precheck keeps the executable check and now also reads every module in
+  `docs/inputs/spec2-variants.json` `iop_modules` (path, size, SHA-256; read from the PT-BR image) and refuses the image when one
+  is missing or differs (the same "different game program than Spec II v1.10" message). An accepted image with a pinned full
+  hash is **Tested** (`qualified_dump`); any other is **Not tested** ("Spec II 1.10 variant" in the log).
+- Launcher: a badge after the game's title on Settings > Games and under the disc step when a setup is done, green "Tested" or
+  amber "Not tested", with a help text (both languages). Gran Turismo 4 v2.00 installs only from the pinned dump, so it is
+  always Tested.
+- ISO reader: `Iso::find_path` finds files inside a folder (`IRX/PADMAN.IRX;1`); the synthetic test ISO takes one folder level.
+- Acceptance: `gt4l-disc` tests (a changed, missing or shorter module is refused; the same module passes; files found by path;
+  the real PT-BR and PT-BR + CPSP images pass with `GT4_FULL_HASH=1`, the earlier release is refused with
+  `GT4_SPEC2_EARLIER_ISO`); the launcher's tests; focus checks in both languages (the badge on the Games page and in setup).
+- State (2026-11-04): done in rc14.
+
 ### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
 
 1.3.0-rc13 is published (2026-11-04). rc14 starts after the owner compacts the session's context. Steps:
@@ -3151,8 +3225,12 @@ change, so it waits until after 1.3.0 and the owner's word. Gates: every identit
    the owner when it is ready. No PGO build until the owner asks; then a draft, and a pre-release only on the owner's word.
    Done (2026-11-04): slice407 on the desktop and the laptop's portable copy, gates against rc13 identical.
 
+5. **Close rc14** (owner, 2026-11-04): the full trigger range on by default with the fixed-width meter (TASK-161), the shader
+   compile guard and `shaders.log` in the bundle (TASK-170), then the PGO build of both games, the gates against rc13 and the
+   GitHub pre-release `v1.3.0-rc14` (the owner's word given). The license front end is TASK-171 for rc15.
+
 Waiting on players (issues answered 2026-11-04, `docs/ISSUE-TRIAGE.md`): the AMD crash reports #187-#190 retest on rc13; a new
-task if they still crash.
+task if they still crash (TASK-170 is the rc14 answer to the Discord report).
 
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 
@@ -3313,7 +3391,7 @@ Owner request (2026-11-04): built in, on by default in both games. Idea from the
   back, and only what the camera draws changes in the state (light flares, view lists, Spec II's drawing-written car words).
   The game ignores the combinations in races (both games). Owner test in game pending.
 
-### TASK-161 — Full trigger range for the throttle and the brake (study, then both games; off by default)
+### TASK-161 — Full trigger range for the throttle and the brake (study, then both games; on by default from rc14)
 
 Owner request (2026-11-04): throttle and brake precision is low. Idea from the "Full Trigger Sensitivity" PCSX2 patch by Silent
 & Aero_; references only. Branch `task/161-trigger-sensitivity` (from `task/160-fov-adjustment`). Study and design:
@@ -3332,4 +3410,7 @@ Owner request (2026-11-04): throttle and brake precision is low. Idea from the "
   checks in both languages and nav-test; headless sweeps: off identical to the reference, on 254 throttle and 254 brake levels
   with 100% at p = 254, race clock identical at every VBlank. Owner test in game decides the default.
 - State (2026-11-04): done on both games and checked headless; launcher toggle, Rust tests, nav-test and focus checks in
-  en-US and pt-BR pass. Owner test in game pending.
+  en-US and pt-BR pass. Owner test in game passed; **on by default from rc14** (owner, 2026-11-04): `GT4_TRIGGER_FULL_RANGE`
+  unset means on, `0` turns it off; `game.ini` and the launcher default are on. The Controls page meter keeps the width of its
+  widest text (100% and the whole byte, plus a margin) with equal-width digits, so the bar no longer changes size while a
+  trigger moves (owner, 2026-11-04; focus check in both languages).

@@ -1,5 +1,5 @@
 // CTest native_trigger_range: the TASK-161 full trigger range rules (native/trigger_range.hpp), host only.
-//   - GT4_TRIGGER_FULL_RANGE: unset, empty and 0 are off (the default until the owner's test), 1 is on, anything else refused;
+//   - GT4_TRIGGER_FULL_RANGE: unset, empty and 1 are on (the default since the owner's rc14 test), 0 is off, anything else refused;
 //   - off: the replacements give the original statements' values (2p, the game's divisor) and the game's own scale (100%
 //     throttle from p = 45, brake from 84; 46 and 85 levels);
 //   - on: no doubling and the divisor 99: 100% from p = 254 for both, a different level for every p up to 254.
@@ -24,8 +24,8 @@ void check(bool condition, const char *what) {
 }
 
 void check_switch() {
-  check(!parse_switch(nullptr) && !parse_switch("") && !parse_switch("0"), "unset, empty and 0 are off (the default)");
-  check(parse_switch("1"), "1 is on");
+  check(parse_switch(nullptr) && parse_switch("") && parse_switch("1"), "unset, empty and 1 are on (the default)");
+  check(!parse_switch("0"), "0 is off");
   for (const char *value : {"2", "on", "true", "-1", "01", " 1"}) {
     bool refused = false;
     try {

@@ -328,7 +328,7 @@ void check_config() {
   check(has(environment, "GT4_FULLSCREEN", "1") && has(environment, "GT4_PRESENT_MODE", "fifo"), "fullscreen and present mode");
   check(has(environment, "GT4_MONITOR", "\\\\.\\DISPLAY2") && has(environment, "GT4_OUTPUT_SIZE", "3440x1440"), "monitor and output size");
   check(lacks(environment, "GT4_GS_SYNC") && lacks(environment, "GT4_PERF") && lacks(environment, "GT4_VU1_VERIFY"), "the default switches add nothing");
-  check(has(environment, "GT4_TRIGGER_FULL_RANGE", "0"), "TASK-161: the launcher states the full trigger range off");
+  check(has(environment, "GT4_TRIGGER_FULL_RANGE", "1"), "TASK-161: the launcher states the full trigger range (on by default)");
 
   const sa::Config changed = sa::parse_config("fullscreen=0\npresent_mode=mailbox\nasync_gs=0\nperformance_report=1\ncheck_vu_code=100\n");
   const sa::Environment changed_environment = sa::config_environment(changed);

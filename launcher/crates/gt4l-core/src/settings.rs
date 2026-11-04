@@ -134,12 +134,13 @@ pub const SETTINGS: &[SettingDef] = &[
         id: "trigger_full_range",
         page: Page::General,
         group: "Controls",
-        title: "Full trigger range (experimental)",
+        title: "Full trigger range",
         info: "Throttle and brake follow the whole travel of the triggers in finer steps: about 255 levels instead of the game's \
                own 46 for the throttle and 85 for the brake, still 100% at the end of the travel. Off is the game as it was \
                made.",
         kind: TOGGLE,
-        default: "off",
+        // On by default since the owner's rc14 test (2026-11-04).
+        default: "on",
         connected: true,
     },
     SettingDef {

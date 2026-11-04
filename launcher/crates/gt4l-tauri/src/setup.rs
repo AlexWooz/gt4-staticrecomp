@@ -429,7 +429,7 @@ pub fn start_with(
             ),
         );
         if game.id == SPEC2.id && !receipt.qualified_dump {
-            state::log(&dirs, "disc is accepted as a Spec II 1.10 variant: its executable is the known one but the image hash is not pinned");
+            state::log(&dirs, "disc is accepted as a Spec II 1.10 variant (not tested): its game code (executable and IOP modules) is 1.10's but the image hash is not pinned");
         }
 
         let renderer_note = prepare_renderer(&shared, &dirs, &notify, &renderer, &coregs20, game, installed_before.is_empty());

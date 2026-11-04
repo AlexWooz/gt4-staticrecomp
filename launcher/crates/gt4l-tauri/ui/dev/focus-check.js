@@ -571,22 +571,33 @@
     check("the left stick moves to its real position", !!capL && capL.getAttribute("transform") === "translate(24 0)", capL ? capL.getAttribute("transform") : "none");
     check("the status names the controller", /Test Pad/.test((document.querySelector(".cx-status") || {}).textContent || ""), "status");
     check("live input never moves focus", focusedControl() === "square", "focus " + focusedControl());
-    // TASK-161: the full trigger range toggle sits above L2 and R2, off; the L2 trigger meter shows the game's scale (84).
+    // TASK-161: the full trigger range toggle sits above L2 and R2, on by default; the L2 trigger meter shows the whole byte.
     var fullRange = document.querySelector(".cx-analog .selector[data-setting=\"trigger_full_range\"]");
-    check("the full trigger range toggle is on the Controls page, Off", !!fullRange && selectorText("trigger_full_range") === T("settings.off"),
+    check("the full trigger range toggle is on the Controls page, On", !!fullRange && selectorText("trigger_full_range") === T("settings.on"),
       fullRange ? selectorText("trigger_full_range") : "none");
     var meterL2 = document.querySelectorAll(".cx-meter-v")[0];
-    check("the L2 trigger meter shows the game scale (of 84)", !!meterL2 && /\/84\)$/.test(meterL2.textContent), meterL2 ? meterL2.textContent : "none");
+    var barL2 = document.querySelectorAll(".cx-meter")[0];
+    if (meterL2 && barL2) {
+      // The bar keeps its width whatever the number says (the widest text is reserved).
+      var shown = meterL2.textContent;
+      meterL2.textContent = T("controls.meter_value", { percent: 0, pressure: 0, full: 255 });
+      var narrow = barL2.getBoundingClientRect().width;
+      meterL2.textContent = T("controls.meter_value", { percent: 100, pressure: 255, full: 255 });
+      var wide = barL2.getBoundingClientRect().width;
+      meterL2.textContent = shown;
+      check("the trigger bar keeps its width from 0% to 100%", narrow > 0 && Math.abs(narrow - wide) < 0.5, narrow + " / " + wide);
+    }
+    check("the L2 trigger meter shows the whole byte (of 255)", !!meterL2 && /\/255\)$/.test(meterL2.textContent), meterL2 ? meterL2.textContent : "none");
     if (fullRange) {
       fullRange.click();
       await wait(400);
-      check("the full trigger range toggle turns On", selectorText("trigger_full_range") === T("settings.on"), selectorText("trigger_full_range"));
+      check("the full trigger range toggle turns Off", selectorText("trigger_full_range") === T("settings.off"), selectorText("trigger_full_range"));
       meterL2 = document.querySelectorAll(".cx-meter-v")[0];
-      check("with the full trigger range the L2 trigger meter shows the whole byte (of 255)", !!meterL2 && /\/255\)$/.test(meterL2.textContent),
+      check("without the full trigger range the L2 trigger meter shows the game scale (of 84)", !!meterL2 && /\/84\)$/.test(meterL2.textContent),
         meterL2 ? meterL2.textContent : "none");
       selectorNode("trigger_full_range").click();
       await wait(400);
-      check("the full trigger range toggle turns back Off", selectorText("trigger_full_range") === T("settings.off"), selectorText("trigger_full_range"));
+      check("the full trigger range toggle turns back On", selectorText("trigger_full_range") === T("settings.on"), selectorText("trigger_full_range"));
       // Back to Square on the drawing, where the checks below expect the selection.
       var squareNode = document.querySelector(".pad-ctl[data-control=\"square\"]");
       if (squareNode) {
@@ -813,6 +824,14 @@
       installedDetail.indexOf(T("games.installed") + " · USA v2.00 · ") === 0 && installedDetail.indexOf("Gran Turismo") < 0, installedDetail);
     check("Spec II is titled with its supported version", rows[1].querySelector(".k span").textContent === "Gran Turismo 4 Spec II v1.10",
       rows[1].querySelector(".k span").textContent);
+    // TASK-173: an installed known image says Tested; a game that is not installed has no badge.
+    var testedBadge = rows[0].querySelector(".tested-badge");
+    check("an installed known image shows the Tested badge", !!testedBadge && testedBadge.textContent === T("games.tested") &&
+      testedBadge.classList.contains("is-tested") && testedBadge.title === T("games.tested_help"), testedBadge ? testedBadge.textContent : "no badge");
+    check("a game that is not installed has no tested badge", !rows[1].querySelector(".tested-badge"), "badge on a game that is not installed");
+    var untested = GT4.games.testedBadge(false);
+    check("an image with the supported code but not a known hash shows Not tested", untested.textContent === T("games.not_tested") &&
+      untested.classList.contains("is-untested") && untested.title === T("games.not_tested_help"), untested.textContent);
     var other = Array.prototype.map.call(rows[1].querySelectorAll("button"), function (b) { return b.textContent; });
     check("a game that is not installed offers Install", other.join("|") === T("common.install"), other.join("|"));
     rows[0].querySelectorAll("button")[1].click();
@@ -1656,6 +1675,17 @@
       current = Object.assign({}, current, { renderer_choice: "gsdx_fallback" });
       await wait(900);
       check("the last step says why GSdx was needed", lastStep().indexOf(T("setup.renderer_ready_gsdx")) >= 0, lastStep());
+      // TASK-173: when the setup is done, the disc step says whether the image is one we tested.
+      current = Object.assign({}, current, { tested: false });
+      await wait(900);
+      var stepBadge = scratch.querySelector(".steps li .tested-badge");
+      check("a finished setup of an unknown image with the supported code says Not tested",
+        !!stepBadge && stepBadge.textContent === T("games.not_tested"), stepBadge ? stepBadge.textContent : "no badge");
+      current = Object.assign({}, current, { tested: true });
+      await wait(900);
+      stepBadge = scratch.querySelector(".steps li .tested-badge");
+      check("a finished setup of a known image says Tested", !!stepBadge && stepBadge.textContent === T("games.tested"),
+        stepBadge ? stepBadge.textContent : "no badge");
     } finally {
       if (handle) {
         handle.destroy();

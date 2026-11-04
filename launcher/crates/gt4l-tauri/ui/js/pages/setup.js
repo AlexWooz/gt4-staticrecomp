@@ -64,7 +64,7 @@
   }
 
   // One row: number, label (+ detail, bytes line, bar), value on the right.
-  function row(number, label, detail, status, pct, bytesText) {
+  function row(number, label, detail, status, pct, bytesText, extra) {
     var value = "";
     var valueClass = "v";
     if (status === "ok") {
@@ -83,6 +83,7 @@
       h("span", null, [
         h("span", { class: "t", text: label }),
         detail ? h("span", { class: "d", text: detail }) : null,
+        extra || null,
         bytesText ? h("span", { class: "bytes", text: bytesText }) : null,
         (status === "active" || status === "ok") && pct !== null ? barNode(pct) : null
       ]),
@@ -93,7 +94,8 @@
   // Signature decides whether the page has to be rebuilt.
   function signature(setup) {
     return [setup.state, setup.step, Math.round((setup.progress || 0) * 100), setup.renderer_step || "", setup.renderer_choice || "",
-      Math.round((setup.bytes_done || 0) / 1e6), setup.problem || "", setup.note || "", setup.disc_name || ""].join("|");
+      Math.round((setup.bytes_done || 0) / 1e6), setup.problem || "", setup.note || "", setup.disc_name || "",
+      String(setup.tested)].join("|");
   }
 
   function gameName(setup) {
@@ -142,7 +144,9 @@
     if (state === "wrong_disc") {
       steps.push(row("01", GT4.t("setup.step_disc"), discName || null, "bad", null, null));
     } else if (running || done) {
-      steps.push(row("01", GT4.t("setup.step_disc"), recognised, "ok", null, null));
+      // TASK-173: once installed, the disc step says whether this image is one we tested.
+      var badge = done && typeof setup.tested === "boolean" ? GT4.games.testedBadge(setup.tested) : null;
+      steps.push(row("01", GT4.t("setup.step_disc"), recognised, "ok", null, null, badge));
     } else {
       // Not chosen yet ("..." waits for the pick), or the file of a stopped run (no mark).
       steps.push(discName && state === "failed"

@@ -802,6 +802,8 @@ mod gt4_disc_spec2 {
             executable: Identity { size_bytes: image.len() as u64, sha256: sha256_hex(&image) },
             derived: Identity { size_bytes: derived.len() as u64, sha256: sha256_hex(&derived) },
             known_images: Vec::new(),
+            // No module check for these synthetic images (the disc crate's tests cover it).
+            iop_modules: Vec::new(),
             beta_boot_sha256: sha256_hex(b"beta"),
             patches,
         };
@@ -1846,5 +1848,18 @@ fn play_names_the_first_start_keys_until_the_game_has_a_save() {
         fs::write(active.join("icon.sys"), b"synthetic save, not game data").unwrap();
     }
     assert!(commands::first_start_hint_of(&shared).is_null());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_log_bundle_carries_the_shader_prepare_log() {
+    // TASK-170: a compile that stops (a driver that ends the process) is named in logs/shaders.log; bug reports need it.
+    let (root, dirs, _pins, shared) = new_install("bundle-shaders-log");
+    fs::create_dir_all(dirs.logs()).unwrap();
+    fs::write(dirs.logs().join("shaders.log"), "[core2] shader guard: 1 variants quarantined\n").unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let shaders = entries.iter().find(|entry| entry.path == "logs/shaders.log").expect("logs/shaders.log in the bundle");
+    assert!(shaders.text.contains("shader guard"));
+    assert!(entries.iter().all(|entry| !gt4l_core::log_export::is_forbidden(&entry.path)));
     let _ = fs::remove_dir_all(&root);
 }

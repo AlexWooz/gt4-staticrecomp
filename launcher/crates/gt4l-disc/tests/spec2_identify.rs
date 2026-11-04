@@ -11,11 +11,17 @@ use gt4l_disc::identify::{identify, DiscGame};
 use gt4l_disc::setup::{self, Installed, SetupError, Stage, Unsupported};
 use gt4l_disc::spec2::{self, Spec2Request};
 use gt4l_disc::spec2_elf;
-use gt4l_disc::spec2_pins::{KnownImage, Spec2Patch};
+use gt4l_disc::spec2_pins::{CodeFile, KnownImage, Spec2Patch};
 use gt4l_disc::testing::{build_iso, pins_for, synthetic_game, system_cnf};
 use gt4l_disc::{Identity, Pins, Spec2Pins};
 
 const PLUGIN_VA: u32 = 0x68A480;
+/// The synthetic IOP module every synthetic Spec II image carries (TASK-173), and its path on the disc.
+const MODULE_PATH: &str = "IRX/CDVDMAN.IRX;1";
+
+fn synthetic_module() -> Vec<u8> {
+    b"a synthetic IOP module".repeat(40)
+}
 
 /// A small ELF32 with a text segment, a data segment that covers the plugin address and the plugin segment.
 fn synthetic_spec2_executable(seed: u8) -> Vec<u8> {
@@ -42,14 +48,19 @@ fn synthetic_spec2_executable(seed: u8) -> Vec<u8> {
 }
 
 fn spec2_image(executable: &[u8], boot_name: &str, volume: &str, filler: u8) -> Vec<u8> {
-    build_iso(
-        volume,
-        &[
-            ("SYSTEM.CNF;1", system_cnf(boot_name, "1.00", "NTSC")),
-            ("SCUS_974.36;1", executable.to_vec()),
-            ("EXTRA.DAT;1", vec![filler; 5000]),
-        ],
-    )
+    spec2_image_with_module(executable, boot_name, volume, filler, Some(synthetic_module()))
+}
+
+fn spec2_image_with_module(executable: &[u8], boot_name: &str, volume: &str, filler: u8, module: Option<Vec<u8>>) -> Vec<u8> {
+    let mut files = vec![
+        ("SYSTEM.CNF;1", system_cnf(boot_name, "1.00", "NTSC")),
+        ("SCUS_974.36;1", executable.to_vec()),
+        ("EXTRA.DAT;1", vec![filler; 5000]),
+    ];
+    if let Some(module) = module {
+        files.push((MODULE_PATH, module));
+    }
+    build_iso(volume, &files)
 }
 
 fn synthetic_pins(executable: &[u8], known: &[(&str, &[u8])]) -> Spec2Pins {
@@ -68,6 +79,10 @@ fn synthetic_pins(executable: &[u8], known: &[(&str, &[u8])]) -> Spec2Pins {
                 identity: Identity { size_bytes: image.len() as u64, sha256: sha256_hex(image) },
             })
             .collect(),
+        iop_modules: vec![CodeFile {
+            path: MODULE_PATH.into(),
+            identity: Identity { size_bytes: synthetic_module().len() as u64, sha256: sha256_hex(&synthetic_module()) },
+        }],
         beta_boot_sha256: sha256_hex(b"the beta loader"),
         patches,
     }
@@ -242,6 +257,46 @@ fn an_unknown_image_with_the_known_executable_is_accepted_as_a_variant() {
 }
 
 #[test]
+fn an_image_with_other_iop_modules_is_refused() {
+    // TASK-173: the executable alone is not enough; 1.10's IOP modules are its code too.
+    let root = scratch("modules");
+    let executable = synthetic_spec2_executable(0);
+    let pins = synthetic_pins(&executable, &[]);
+    let changed = synthetic_module().into_iter().map(|byte| byte ^ 1).collect::<Vec<u8>>();
+    for (name, module) in [("changed", Some(changed)), ("missing", None), ("shorter", Some(b"short".to_vec()))] {
+        let disc = root.join(format!("{name}.iso"));
+        fs::write(&disc, spec2_image_with_module(&executable, "SCUS_974.36", "GRANTURISMO4", 1, module)).unwrap();
+        match spec2::precheck(&disc, &pins) {
+            Err(SetupError::Unsupported(Unsupported::Spec2Executable { beta: false })) => {}
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+    // The same module in its folder passes.
+    let good = root.join("good.iso");
+    fs::write(&good, spec2_image(&executable, "SCUS_974.36", "GRANTURISMO4", 1)).unwrap();
+    assert!(spec2::precheck(&good, &pins).is_ok());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn files_inside_a_folder_are_found_by_path() {
+    let root = scratch("find-path");
+    let image = build_iso("PATHS", &[("A.BIN;1", vec![1; 10]), ("IRX/B.IRX;1", vec![2; 3000]), ("IRX/C.IRX;1", vec![3; 7])]);
+    let disc = root.join("paths.iso");
+    fs::write(&disc, &image).unwrap();
+    let mut iso = gt4l_disc::iso::Iso::open(&disc).unwrap();
+    let b = iso.find_path("IRX/B.IRX;1").unwrap();
+    assert_eq!(iso.read(&b, 1 << 20).unwrap(), vec![2; 3000]);
+    let c = iso.find_path("/irx/c.irx;1").unwrap();
+    assert_eq!(iso.read(&c, 1 << 20).unwrap(), vec![3; 7]);
+    let a = iso.find_path("A.BIN;1").unwrap();
+    assert_eq!(iso.read(&a, 1 << 20).unwrap(), vec![1; 10]);
+    assert!(iso.find_path("IRX/D.IRX;1").is_err());
+    assert!(iso.find_path("NET/B.IRX;1").is_err());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn a_refused_disc_and_a_cancelled_setup_leave_nothing_behind() {
     let root = scratch("clean");
     let dirs = SetupDirs { root: root.clone() };
@@ -297,6 +352,7 @@ fn real_spec2_discs_are_identified_by_their_executable() {
     for (variable, name) in [
         ("GT4_SPEC2_ISO", "Gran Turismo 4 Spec II v1.10.iso"),
         ("GT4_SPEC2_PTBR_ISO", "Gran Turismo 4 Spec II v1.10 (PTBR).iso"),
+        ("GT4_SPEC2_CPSP_ISO", "GT4 Spec II PTBR + CPSP.iso"),
     ] {
         let Some(path) = owner_file(variable, name) else {
             eprintln!("skipped: {name} is not here");
@@ -312,6 +368,13 @@ fn real_spec2_discs_are_identified_by_their_executable() {
             let shown = spec2::image_name(&pins, &identity);
             assert!(shown.starts_with("Spec II 1.10"), "{name}: {shown}");
             assert_ne!(shown, spec2::VARIANT_NAME, "{name} is a known image");
+        }
+    }
+    // TASK-172/173: an earlier Spec II release (another SCUS_974.36: an older plugin) is refused at the precheck.
+    if let Some(path) = std::env::var_os("GT4_SPEC2_EARLIER_ISO").map(PathBuf::from).filter(|path| path.is_file()) {
+        match spec2::precheck(&path, &pins) {
+            Err(SetupError::Unsupported(Unsupported::Spec2Executable { beta: false })) => {}
+            other => panic!("the earlier release: {other:?}"),
         }
     }
     let _ = (gt4_pins, ran);

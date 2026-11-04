@@ -5161,6 +5161,82 @@ int TestCore2PrepareShaders(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_shader_guard (TASK-170): a prepare that ends inside a variant compile (a driver that ends the process there,
+// simulated with GT4_CORE2_TEST_COMPILE_ABANDON) leaves the guard; the next prepare compiles one variant at a time (a
+// parallel run left several keys in flight) or quarantines the one key in flight, and a later prepare finishes without the
+// quarantined variants.
+int TestCore2ShaderGuard(const gpu::VulkanHandles& handles) {
+    namespace fs = std::filesystem;
+    const fs::path folder = fs::temp_directory_path() / ("gt4_shader_guard_test_" + std::to_string(_getpid()));
+    std::error_code ignored;
+    fs::remove_all(folder, ignored);
+    _putenv_s("GT4_HW_SHADER_CACHE", folder.string().c_str());
+    _putenv_s("GT4_HW_SHADER_PREPARE", "1");
+    int failures = 0;
+    struct Run {
+        bool ready = false;
+        std::size_t total = 0;
+        core2::Gpu::ShaderGuardState guard;
+    };
+    auto prepare = [&](const char* what, const char* abandonAt) {
+        _putenv_s("GT4_CORE2_TEST_COMPILE_ABANDON", abandonAt);
+        Run run;
+        core2::Gpu renderer;
+        std::string error;
+        if (!renderer.Init(handles, 1, 1.0f, error)) {
+            std::printf("  %s: init failed: %s\n", what, error.c_str());
+            ++failures;
+            return run;
+        }
+        run.guard = renderer.ShaderGuard();
+        run.ready = renderer.PrepareShaders([&](std::size_t, std::size_t all) { run.total = all; }, error);
+        std::printf("  %s: ready %d, %zu variants, %zu quarantined, serial %d\n", what, run.ready ? 1 : 0, run.total,
+                    run.guard.quarantined, run.guard.serial ? 1 : 0);
+        return run;
+    };
+    const Run clean = prepare("a clean prepare", "");
+    if (!clean.ready || clean.total < 4 || clean.guard.quarantined != 0 || clean.guard.serial) ++failures;
+    fs::remove_all(folder, ignored);
+
+    // A run that ends inside its 4th compile leaves compiling.bin.
+    const Run died = prepare("ends inside a compile", "4");
+    if (died.ready || !fs::exists(folder / "compiling.bin", ignored)) ++failures;
+    // The next start reads it: one prepare at a time from now on, one quarantined variant if one key was in flight.
+    const Run after = prepare("after it", "");
+    if (!after.ready || !after.guard.serial || after.guard.quarantined > 1 || fs::exists(folder / "compiling.bin", ignored)) {
+        ++failures;
+    }
+    if (after.total + after.guard.quarantined != clean.total) ++failures;
+
+    // A one-at-a-time run that ends inside its 2nd compile: exactly that variant is quarantined.
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run diedSerial = prepare("one at a time, ends inside a compile", "2");
+    if (diedSerial.ready || !fs::exists(folder / "compiling.bin", ignored)) ++failures;
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run quarantinedRun = prepare("after it", "");
+    if (!quarantinedRun.ready || !quarantinedRun.guard.serial || quarantinedRun.guard.quarantined != after.guard.quarantined + 1 ||
+        quarantinedRun.total + quarantinedRun.guard.quarantined != clean.total || !fs::exists(folder / "quarantine.bin", ignored)) {
+        ++failures;
+    }
+    // The quarantine stays for the next starts; a damaged guard file is ignored.
+    const Run again = prepare("the next start", "");
+    if (again.guard.quarantined != quarantinedRun.guard.quarantined || !again.guard.serial) ++failures;
+    {
+        std::ofstream garbage(folder / "quarantine.bin", std::ios::binary | std::ios::trunc);
+        garbage << "not a guard file";
+    }
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run damaged = prepare("a damaged guard file", "");
+    if (!damaged.ready || damaged.guard.quarantined != 0 || damaged.guard.serial || damaged.total != clean.total) ++failures;
+
+    _putenv_s("GT4_CORE2_TEST_COMPILE_ABANDON", "");
+    _putenv_s("GT4_HW_SHADER_CACHE", "");
+    _putenv_s("GT4_HW_SHADER_PREPARE", "");
+    fs::remove_all(folder, ignored);
+    std::printf("hw_core2_shader_guard: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_shader_cache (IN-489): GT4_HW_SHADER_CACHE keeps the variants between sessions: a second session finds them,
 // the pictures do not change, and damaged files only cost the time to compile again.
 int TestCore2ShaderCache(const gpu::VulkanHandles& handles) {
@@ -6563,6 +6639,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_road_sheen") return TestCore2RoadSheen(handles);
     if (name == "hw_core2_shader_cache") return TestCore2ShaderCache(handles);
     if (name == "hw_core2_prepare_shaders") return TestCore2PrepareShaders(handles);
+    if (name == "hw_core2_shader_guard") return TestCore2ShaderGuard(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);

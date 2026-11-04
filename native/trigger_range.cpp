@@ -18,8 +18,9 @@ std::uint32_t g_last_level[2] = {~0u, ~0u};  // per pedal: throttle, brake
 }  // namespace
 
 bool parse_switch(const char *value) {
-  if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) return false;  // off by default (owner)
-  if (std::strcmp(value, "1") == 0) return true;
+  // On by default (owner, 2026-11-04, after the rc14 test); 0 keeps the game's own scale.
+  if (value == nullptr || value[0] == '\0' || std::strcmp(value, "1") == 0) return true;
+  if (std::strcmp(value, "0") == 0) return false;
   throw std::invalid_argument("GT4_TRIGGER_FULL_RANGE must be 0 or 1");
 }
 

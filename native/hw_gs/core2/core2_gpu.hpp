@@ -150,6 +150,13 @@ public:
     // when there is no cache to prepare.
     using ShaderProgress = std::function<void(std::size_t done, std::size_t total)>;
     bool PrepareShaders(const ShaderProgress &progress, std::string &error);
+    // TASK-170: what the compile guard read at the start (variants quarantined on this card and driver after a run died
+    // inside their compile; prepares one variant at a time after a parallel prepare died).
+    struct ShaderGuardState {
+      std::size_t quarantined = 0;
+      bool serial = false;
+    };
+    ShaderGuardState ShaderGuard() const;
     // IN-431: true on an integrated GPU (its images live in system memory shared with the game); the image budgets
     // are smaller there.
     bool Integrated() const;

@@ -3,6 +3,7 @@
 //! One zip, `GT4Recomp-logs-YYYYMMDD-HHMMSS.zip`, written to a folder the player picks. It holds only text:
 //! - `latest.log` (see [`crate::logs`]);
 //! - the newest [`KEPT_FOR_EXPORT`] launcher session logs;
+//! - `logs/shaders.log`, the last shader prepare step (TASK-170: it names where a compile stopped);
 //! - the newest [`KEPT_FOR_EXPORT`] game session folders' `game.log` and `gt4-gs.ini`;
 //! - the settings file;
 //! - `system.txt` (see [`system_text`]).

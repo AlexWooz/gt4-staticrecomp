@@ -14,8 +14,8 @@
 // The host's trigger default ranges follow the same switch (native/controls.cpp): R2 0..45 and L2 0..84 with it off (the stock
 // game's 100%, TASK-147), the whole byte with it on, so the end of the trigger's travel is the game's 100% either way.
 //
-// GT4_TRIGGER_FULL_RANGE: unset, empty or 0 = off (the default until the owner's in-game test); 1 = on; anything else refuses
-// the start. game.ini key trigger_full_range (the launcher's toggle).
+// GT4_TRIGGER_FULL_RANGE: unset, empty or 1 = on (the default since the owner's rc14 test, 2026-11-04); 0 = off, the game's own
+// scale; anything else refuses the start. game.ini key trigger_full_range (the launcher's toggle).
 
 #include <cstdint>
 

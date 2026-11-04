@@ -61,6 +61,13 @@ fn installed_image_name(state: &AppState, game: &'static Game) -> String {
     disc_setup::read_receipt(&dirs.prepared()).map(|receipt| receipt.image_name).unwrap_or_default()
 }
 
+/// Whether the disc a game was set up from is a known (tested) image, from its receipt (TASK-173): the pinned v2.00 dump, or a
+/// named Spec II 1.10 image. `false` when there is no receipt, or for a Spec II image that only has 1.10's code.
+fn installed_image_tested(state: &AppState, game: &'static Game) -> bool {
+    let dirs = state.game_dirs(game);
+    disc_setup::read_receipt(&dirs.prepared()).is_some_and(|receipt| receipt.qualified_dump)
+}
+
 /// The display name of the disc a game was set up from, as the receipt records it.
 fn installed_disc_name(state: &AppState, game: &'static Game, version: &str) -> String {
     setup::game_disc_name(game, version, &installed_image_name(state, game))
@@ -88,8 +95,8 @@ fn game_files_folder(state: &AppState, game: &'static Game) -> PathBuf {
     }
 }
 
-/// One row of the game list: `{id, name, title, variant, installed, linked, selected, state, disc_name, folder, size_bytes,
-/// image_path, image_bytes}`. `size_bytes` is what removing the game frees; `image_path` and `image_bytes` are the disc image the game
+/// One row of the game list: `{id, name, title, variant, tested, installed, linked, selected, state, disc_name, folder,
+/// size_bytes, image_path, image_bytes}`. `tested` (installed games only) says the image is a known one (TASK-173). `size_bytes` is what removing the game frees; `image_path` and `image_bytes` are the disc image the game
 /// reads, wherever it is.
 fn game_row(state: &AppState, game: &'static Game) -> Value {
     let installed = state.installed_of(game);
@@ -110,6 +117,7 @@ fn game_row(state: &AppState, game: &'static Game) -> Value {
         "name": game.display_name,
         "title": setup::game_title(game),
         "variant": variant,
+        "tested": ready && installed_image_tested(state, game),
         "installed": ready,
         "linked": linked,
         "damaged": !ready && !reason.is_empty(),
@@ -148,6 +156,11 @@ pub fn app_state_of(state: &AppState) -> Value {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let run = &state.setup_run;
+    // TASK-173: whether the installed image is a known (tested) one; `null` until the game is installed.
+    let tested = match &installed {
+        Installed::Ready { .. } if !state.setup_busy => json!(installed_image_tested(state, subject)),
+        _ => Value::Null,
+    };
     let (screen, problem, disc_name) = if visual_ready() {
         ("done", String::new(), setup::game_disc_name(&GT4, "2.00", ""))
     } else if state.setup_busy {
@@ -196,6 +209,7 @@ pub fn app_state_of(state: &AppState) -> Value {
             "renderer_step": run.renderer_step,
             "renderer_choice": run.renderer_choice,
             "disc_name": disc_name,
+            "tested": tested,
             "problem": problem,
             "note": note,
             "game": target,

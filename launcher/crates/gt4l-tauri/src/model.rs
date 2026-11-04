@@ -1121,12 +1121,12 @@ mod table_tests {
             analog,
             ["trigger_full_range", "l2_deadzone", "l2_curve", "r2_deadzone", "r2_curve", "lstick_deadzone", "rstick_deadzone"]
         );
-        // TASK-161: the full trigger range toggle, off by default.
+        // TASK-161: the full trigger range toggle, on by default since the owner's rc14 test.
         let full = &view["triggers"][0];
-        assert_eq!((full["control"].as_str(), full["default"].as_bool(), full["current"].as_bool()), (Some("toggle"), Some(false), Some(false)));
+        assert_eq!((full["control"].as_str(), full["default"].as_bool(), full["current"].as_bool()), (Some("toggle"), Some(true), Some(true)));
         let mut settings = Settings::default();
-        settings.set("trigger_full_range", "on").unwrap();
-        assert_eq!(controls_view(&settings, &controls, false)["triggers"][0]["current"], true);
+        settings.set("trigger_full_range", "off").unwrap();
+        assert_eq!(controls_view(&settings, &controls, false)["triggers"][0]["current"], false);
         assert_eq!(view["locked"], false);
         assert_eq!(stick_setting("rstick_deadzone"), Some(Stick::Right));
         assert_eq!(stick_setting("l2_deadzone"), None);
