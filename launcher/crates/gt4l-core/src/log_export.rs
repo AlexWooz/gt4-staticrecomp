@@ -185,6 +185,9 @@ pub struct PowerFact {
 /// be read stays `None` or empty and the report says "unknown".
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MachineFacts {
+    /// The processor's brand string ("AMD Ryzen 7 5700X 8-Core Processor"), already cleaned by [`clean_cpu_brand`];
+    /// empty when it could not be read.
+    pub cpu_model: String,
     pub cpu_cores: Option<u32>,
     pub cpu_threads: Option<u32>,
     pub sse4_1: Option<bool>,
@@ -236,6 +239,14 @@ pub fn vendor_name(vendor_id: u32) -> String {
         0 => "unknown".to_string(),
         other => format!("0x{other:04X}"),
     }
+}
+
+/// The CPUID brand string (48 bytes from leaves 0x80000002-4, or a registry value) as one clean line: cut at the first NUL,
+/// control characters dropped, runs of spaces made one, trimmed. Old processors pad the string with spaces on the left.
+pub fn clean_cpu_brand(raw: &[u8]) -> String {
+    let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
+    let text: String = String::from_utf8_lossy(&raw[..end]).chars().filter(|c| !c.is_control()).collect();
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// A size in GB (2^30 bytes) with one decimal.
@@ -292,6 +303,7 @@ fn number_or_unknown(value: Option<u32>) -> String {
 /// The lines about the processor and memory.
 fn machine_lines(machine: &MachineFacts) -> Vec<String> {
     vec![
+        format!("cpu model: {}", or_unknown(&machine.cpu_model)),
         format!(
             "cpu cores: {} physical, {} threads",
             number_or_unknown(machine.cpu_cores),
@@ -592,6 +604,7 @@ mod tests {
             windows: "Windows 11 24H2 (build 26100)".into(),
             cpu: "AMD64 Family 25 Model 33".into(),
             machine: MachineFacts {
+                cpu_model: "AMD Ryzen 7 5700X 8-Core Processor".into(),
                 cpu_cores: Some(8),
                 cpu_threads: Some(16),
                 sse4_1: Some(true),
@@ -658,6 +671,7 @@ mod tests {
             ..SystemFacts::default()
         });
         for expected in [
+            "cpu model: unknown",
             "cpu cores: unknown physical, unknown threads",
             "cpu features: SSE4.1 unknown, AVX2 unknown",
             "memory: total unknown GB, available unknown GB",
@@ -692,6 +706,24 @@ mod tests {
         let text = system_text(&facts);
         assert!(text.contains("graphics card 1 vulkan: api 1.3.274, driver radv (id 3), driver info Mesa 24.0.5, driver version 24.0.5, windows driver unknown"), "{text}");
         assert!(text.contains("graphics queues 1)"), "{text}");
+    }
+
+    #[test]
+    fn the_cpu_brand_is_cut_at_the_nul_and_trimmed_and_the_line_says_unknown_without_it() {
+        let mut raw = b"  AMD Ryzen 7 5700X  8-Core Processor            ".to_vec();
+        raw.push(0);
+        raw.extend_from_slice(b"garbage after the end");
+        assert_eq!(clean_cpu_brand(&raw), "AMD Ryzen 7 5700X 8-Core Processor");
+        assert_eq!(clean_cpu_brand(b"Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz\r\n"), "Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz");
+        assert_eq!(clean_cpu_brand(b""), "");
+        assert_eq!(clean_cpu_brand(&[0, b'x']), "");
+        let mut facts = full_facts();
+        facts.machine.cpu_model = clean_cpu_brand(&raw);
+        let text = system_text(&facts);
+        assert!(text.lines().any(|line| line == "cpu model: AMD Ryzen 7 5700X 8-Core Processor"), "{text}");
+        assert!(text.lines().any(|line| line == "cpu: AMD64 Family 25 Model 33"), "the cpu line stays");
+        facts.machine.cpu_model = String::new();
+        assert!(system_text(&facts).lines().any(|line| line == "cpu model: unknown"));
     }
 
     #[test]

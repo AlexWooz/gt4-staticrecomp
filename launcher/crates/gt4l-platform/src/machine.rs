@@ -17,6 +17,7 @@ pub fn read(data_folder: &Path) -> MachineFacts {
         machine.sse4_1 = Some(std::arch::is_x86_feature_detected!("sse4.1"));
         machine.avx2 = Some(std::arch::is_x86_feature_detected!("avx2"));
     }
+    machine.cpu_model = cpu_model();
     machine.cpu_threads = threads();
     #[cfg(windows)]
     {
@@ -27,6 +28,39 @@ pub fn read(data_folder: &Path) -> MachineFacts {
         let _ = data_folder;
     }
     machine
+}
+
+/// The brand string from CPUID leaves 0x80000002-4 (the registry's `ProcessorNameString` when the leaves are missing).
+fn cpu_model() -> String {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::__cpuid;
+        // SAFETY: CPUID is always present on x86-64; leaves above the maximum are checked first.
+        let brand = unsafe {
+            if __cpuid(0x8000_0000).eax >= 0x8000_0004 {
+                let mut bytes = Vec::with_capacity(48);
+                for leaf in 0x8000_0002u32..=0x8000_0004 {
+                    let registers = __cpuid(leaf);
+                    for value in [registers.eax, registers.ebx, registers.ecx, registers.edx] {
+                        bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                gt4l_core::log_export::clean_cpu_brand(&bytes)
+            } else {
+                String::new()
+            }
+        };
+        if !brand.is_empty() {
+            return brand;
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(name) = crate::system::registry_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString") {
+            return gt4l_core::log_export::clean_cpu_brand(name.as_bytes());
+        }
+    }
+    String::new()
 }
 
 fn threads() -> Option<u32> {
@@ -178,6 +212,7 @@ mod tests {
         let machine = read(Path::new("C:\\"));
         println!("{machine:#?}");
         assert!(machine.cpu_threads.is_some_and(|threads| threads >= 1));
+        assert!(machine.cpu_model.is_empty() || machine.cpu_model == machine.cpu_model.trim());
         if let (Some(cores), Some(threads)) = (machine.cpu_cores, machine.cpu_threads) {
             assert!(cores >= 1 && cores <= threads, "{cores} cores, {threads} threads");
         }
