@@ -2967,6 +2967,17 @@ frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `ave
 the laptop), the showroom left on the turning car. Measure with a window run (`WINDOW=1`, `PACED_FROM`), then attack the
 largest cost in the `[core2]` accounting. State: recorded (1,684 VBlanks; the CR-X SiR turning from about VBlank 900).
 
+Analysis (2026-11-04, plain rc13 test build, RX 9060 XT, 6x; a peer session ran games on the PC, so no frame-time figures):
+the GPU work is moderate (4.3 ms of isolated GPU time per frame by `GT4_CORE2_GPU_PROFILE_AT=1400`: full-screen effect draws
+and fills lead; `gpu_busy` 8.9 ms on average with the frame's waits). The uneven frames come from a GS readback every other
+frame: GT4 uploads the studio backdrop, a 640 x 438 PSMT8 image, over the memory of the 640 x 224 CT32 frame target at block
+6720 (`GT4_CORE2_STORE_TRACE`), and `StoreDrawnBeforeWrite` reads the whole drawn target back (2,240 blocks) so the 8-bit
+write merges with its pixels in memory. Each readback makes the GS thread wait for all the GPU work so far, which a slower GPU
+at a higher resolution (the owner's RTX 3060 at 3440 x 1440) turns into frames of 20-27 ms. Reading back fewer blocks does not
+remove the wait (the last page row of the write is partial). Way forward (design needed, not done): merge such a write on
+the GPU (targets into the GLM, the upload over it) and track the CPU memory those pages leave stale, reading it back only if
+something reads it (an EE download, a CPU-side decode).
+
 ### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed)
 
 Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
@@ -2986,6 +2997,11 @@ dumps from VBlank 1440 started after it was gone). A window run reproduces it ev
 right, right. Not the deferred downloads nor IN-532 (A/B). Fix: the target of the circuit's base, class and width first,
 another width only when there is none. Window run: 12 of 12 frames right. Diagnostics: `GT4_CORE2_TARGET_TRACE=1` logs every
 target created. Still open: the uneven frame times (measure on an idle machine and on the laptop's RTX 3060).
+Frame times (analysis, 2026-11-04, 6x): two readbacks every frame (`GT4_CORE2_READBACK_TRACE`): an EE download of an
+8 x 4-pixel rectangle at block 10048 (a PSMZ target, likely the viewfinder's light reading) and a CLUT loaded from a Z-format
+target at block 11520; plus about 38 texture decodes per frame. Each readback waits for the GPU. Performance Mode already
+answers such downloads with the previous result (IN-439, one frame late, decision 0073); normal mode stays exact, so changing
+that there is the owner's call. The CLUT one could go through the GPU palette path (IN-408) if it covers Z formats (to check).
 
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 
