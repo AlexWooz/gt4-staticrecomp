@@ -3144,3 +3144,20 @@ it off; a launcher toggle is a later step. Design, decoded patches, addresses an
   (harness) that still works with the camera on.
 - State (2026-11-04): v2.00 and Spec II done and checked headless (Arcade race on v2.00, the owner's Tokyo R246 Time Trial
   on Spec II), on by default; owner test in game pending; the coordinator opens the PR into task/134 after review.
+
+### TASK-160 — Field of view adjustment on R3 + D-pad (both games, on by default)
+
+Owner request (2026-11-04): built in, on by default in both games. Idea from the "FoV Adjustment" PCSX2 patch by Duchi/Vyerq
+(v2.00) and Blitznoz (Spec II); references only. Branch `task/160-fov-adjustment` (from `task/159b-camera-pedal-scope`).
+`GT4_FOV_ADJUST=0` or `fov_adjust=0` in `game.ini` turns it off. Design, decoded patch, addresses and checks:
+`docs/FOV-ADJUST.md`.
+
+- The race cameras' projection function (v2.00 `func_0037A170`, Spec II `0x0023E7E0`) stores the scales 1, 1 and 1 / tan(fov/2);
+  the patch rewrote that 1.0 immediate in guest code. Our version: `scripts/camera360_units.py` adds a host call before the
+  store call (`0x0037A1BC`, Spec II `0x0023E82C`) that gives the scales k, k and k / t; k = 1 + n/128, 0.5 to 2.0, stepped once
+  per guest VBlank from the port 0 button halfword the game keeps (`0x0064C794`, Spec II `0x00681344`): R3 + up, R3 + down,
+  L3 + R3 resets; other buttons may be held; no wrap.
+- Acceptance: CTest `native_fov_adjust` (switch, steps and clamp, factor); headless replays: switch off and nothing pressed
+  identical to the reference; with the combinations the race clock is identical at every VBlank, the view zooms and comes
+  back, and only what the camera draws changes in the state (light flares, view lists, Spec II's drawing-written car words).
+  The game ignores the combinations in races (both games). Owner test in game pending.

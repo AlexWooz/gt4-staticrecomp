@@ -9,6 +9,7 @@
 //     and HUD canvas                          (display_aspect.*, scripts/display_aspect_overlay.inc)
 //   - TASK-017 license demo guard             (license_guard.*, scripts/license_guard_overlay.inc)
 //   - TASK-159 360-degree chase camera        (camera_360.*, scripts/camera360_units.py)
+//   - TASK-160 field of view adjustment       (fov_adjust.*, scripts/camera360_units.py)
 //
 // Those addresses are properties of one target. Writing a v2.00 address in another target corrupts guest RAM, so no
 // module keeps a private copy any more: the numbers live in this header, once, and every hook reads them here.
@@ -111,6 +112,11 @@ struct HookAddresses {
   std::uint32_t camera_analog_loop_return = 0;
   std::uint32_t camera_analog_channel_table = 0;
   std::uint32_t camera_analog_slot_bias = 0;
+
+  // TASK-160 field of view adjustment (native/fov_adjust.hpp): the projection function's store call gets the zoom factor
+  // (its return label) and the port 0 button halfword the game keeps, read at guest VBlank (active low).
+  std::uint32_t fov_projection_call_return = 0;
+  std::uint32_t fov_pad_buttons = 0;
 };
 
 struct Profile {
@@ -180,6 +186,8 @@ inline constexpr HookAddresses kV200Hooks = {
     /* camera_analog_loop_return */ 0x0043BE74u,    // func_0043BBC0: jal 0x004386F0 at 0x0043BE6C (a2 function, a3 value)
     /* camera_analog_channel_table */ 0x006A64C0u,  // the loop's fp: 02 03 00 01 14 15 16 17 10 11 12 13
     /* camera_analog_slot_bias */ 0u,               // s0 is the slot
+    /* fov_projection_call_return */ 0x0037A1C4u,  // func_0037A170: jal 0x00378F18 at 0x0037A1BC (f12, f13, f14 = scales)
+    /* fov_pad_buttons */ 0x0064C794u,             // port 0 pad object 0x0064C728 + 0x6C (buttons, then RX RY LX LY)
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of
@@ -273,6 +281,8 @@ inline constexpr HookAddresses kSpec2Hooks = {
     /* camera_analog_loop_return */ 0x003190F4u,    // the same loop: jal 0x00314870 at 0x003190EC (a2 function, a3 value)
     /* camera_analog_channel_table */ 0x006F9D10u,  // the loop's s7, the same 12 ids as v2.00
     /* camera_analog_slot_bias */ 1u,               // s0 was already incremented in the loop (0x003190B8)
+    /* fov_projection_call_return */ 0x0023E834u,  // projection 0x0023E7E0: jal 0x0023D558 at 0x0023E82C
+    /* fov_pad_buttons */ 0x00681344u,             // the same pad object layout (RAM peek: buttons, RX RY LX LY)
 };
 
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};

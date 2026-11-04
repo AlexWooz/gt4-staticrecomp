@@ -446,6 +446,15 @@ void check_resolve() {
           "camera_360 takes only 0 or 1");
     check(lacks(sa::resolve(inputs_for(*layout, nullptr), chosen.access()).set, "GT4_CAMERA_360"),
           "no key, no variable: the game's default, on");
+    // TASK-160: the field of view adjustment, the same rule.
+    sa::Inputs fov = inputs_for(*layout, nullptr);
+    fov.config = sa::parse_config("version=1\nfov_adjust=0\n");
+    check(fov.config->warnings.empty(), "the field of view key is accepted");
+    check(has(sa::resolve(fov, chosen.access()).set, "GT4_FOV_ADJUST", "0"), "game.ini's fov_adjust becomes GT4_FOV_ADJUST");
+    check(!sa::parse_config("fov_adjust=2\n").warnings.empty() && !sa::parse_config("fov_adjust=yes\n").warnings.empty(),
+          "fov_adjust takes only 0 or 1");
+    check(lacks(sa::resolve(inputs_for(*layout, nullptr), chosen.access()).set, "GT4_FOV_ADJUST"),
+          "no key, no variable: the game's default, on");
     sa::Inputs fast = inputs_for(*layout, nullptr);
     fast.config = sa::parse_config(std::string("present_mode=mailbox") + char(10) + "renderer=coregs20" + char(10) + "hw_present_mode=fifo" + char(10));
     check(has(sa::resolve(fast, chosen.access()).set, "GT4_PRESENT_MODE", "fifo"), "a stored Fast vsync draws as On under CoreGS 2.0");

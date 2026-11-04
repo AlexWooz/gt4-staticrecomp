@@ -1,4 +1,5 @@
-"""TASK-159: translated EE units with the 360-degree chase camera calls (native/camera_360.hpp, docs/CAMERA-360.md).
+"""TASK-159, TASK-160: translated EE units with the camera calls (native/camera_360.hpp, native/fov_adjust.hpp,
+docs/CAMERA-360.md, docs/FOV-ADJUST.md).
 
 The calls the camera needs are direct `jal`s, and the translator turns a direct `jal` into a direct C++ call into the callee's
 unit: no dispatch hook and no VBlank write can reach them. This script copies one target's translated units into a fresh folder
@@ -11,7 +12,9 @@ point where the reference patch acts), plus a declaration of that function after
   * the race input's DualShock analog loop hands each analog channel, with the function the controller setup assigns to it, to
     the channel handler: `before_pad_analog_channel_call` hands a right stick Y channel assigned to the accelerator or the
     brake over as 0, so the handler's own zero test skips it (no analog throttle or brake from the camera stick while the
-    camera is on; TASK-159b narrowed it from the handler's cases to this loop and these channels).
+    camera is on; TASK-159b narrowed it from the handler's cases to this loop and these channels);
+  * TASK-160: the race cameras' projection function stores its scales through a call: `before_projection_scale_call` gives
+    them the zoom factor of the field of view adjustment (gt4::fov_adjust).
 
 It refuses a unit whose hash is not the pinned translation, a call line that is missing or appears twice, an output folder that
 exists, and any result from which removing the insertions does not give the input back byte for byte. Every other file is
@@ -32,14 +35,15 @@ from pathlib import Path
 
 INCLUDE_LINE = '#include "units.hpp"\n'
 CALL_MARK = '  if (depth < kMaxDepth)'
-YAW_HOOK = 'before_chase_yaw_call'
-CHANNEL_HOOK = 'before_pad_analog_channel_call'
+YAW_HOOK = 'gt4::camera360::before_chase_yaw_call'
+CHANNEL_HOOK = 'gt4::camera360::before_pad_analog_channel_call'
+PROJECTION_HOOK = 'gt4::fov_adjust::before_projection_scale_call'
 
 
 @dataclasses.dataclass(frozen=True)
 class CallSite:
     """One translated `jal` that gets a host call."""
-    hook: str            # host function in namespace gt4::camera360
+    hook: str            # qualified host function (namespace::name)
     call_site: int       # guest address of the `jal`
     return_label: int    # call_site + 8; native/game_target.hpp holds it for the host check
     callee: int
@@ -62,14 +66,19 @@ def call_line(return_label, slot, unit, entry, callee):
 
 
 def hook_call(site):
-    return f'::gt4::camera360::{site.hook}(c);'
+    return f'::{site.hook}(c);'
 
 
 def declaration(unit):
-    hooks = sorted({site.hook for site in unit.sites})
-    names = ' '.join(f'void {hook}(ps2::Cpu &c);' for hook in hooks)
-    return ('\n// TASK-159: the 360-degree chase camera (native/camera_360.hpp), added by scripts/camera360_units.py.\n'
-            f'namespace gt4::camera360 {{ {names} }}\n')
+    """One `namespace <ns> { void <name>(ps2::Cpu &c); ... }` line per namespace of the unit's hooks, sorted."""
+    namespaces = {}
+    for site in unit.sites:
+        namespace, _, name = site.hook.rpartition('::')
+        namespaces.setdefault(namespace, set()).add(name)
+    lines = ''.join(f'namespace {namespace} {{ {" ".join(f"void {name}(ps2::Cpu &c);" for name in sorted(names))} }}\n'
+                    for namespace, names in sorted(namespaces.items()))
+    return ('\n// TASK-159: the camera calls (native/camera_360.hpp, native/fov_adjust.hpp), added by scripts/camera360_units.py.\n'
+            + lines)
 
 
 # The DualShock analog loop's call to the channel handler (v2.00 func_0043BBC0 calls func_004386F0, Spec II 0x00319xxx calls
@@ -83,6 +92,10 @@ TARGETS = {
         Unit('unit_0091.cpp', 'ebfeb6c44925658acad222f8495875acba0ae0cf66478d664d84a8028c4ce280', (
             CallSite(YAW_HOOK, 0x003456D0, 0x003456D8, 0x0036CC40,
                      call_line(0x003456D8, 'c.f[13] = ld32((c.r[16].w[0]));', 'unit_009B', 40, 0x0036CC40)),)),
+        # func_0037A170 (race camera projection): jal 0x00378F18 at 0x0037A1BC, delay slot mov.s $f13,$f12.
+        Unit('unit_009E.cpp', 'b098efefef5b4572b2c8cac6f04c53232499db9e960963c6803e8c2ecdf6a525', (
+            CallSite(PROJECTION_HOOK, 0x0037A1BC, 0x0037A1C4, 0x00378F18,
+                     call_line(0x0037A1C4, 'c.f[13] = c.f[12];', 'unit_009E', 117, 0x00378F18)),)),
         # func_0043BBC0 (DualShock analog loop): jal 0x004386F0 at 0x0043BE6C, delay slot addiu a1,zero,2.
         Unit('unit_00CE.cpp', '43eeeea1c396a34ecb0c9818023cf2566f1ad2de0bddd5bde7d6431087c4e2b0', (
             CallSite(CHANNEL_HOOK, 0x0043BE6C, 0x0043BE74, 0x004386F0,
@@ -95,6 +108,10 @@ TARGETS = {
         Unit('unit_0041.cpp', '888fac97a864904dc0e0af0b7200467577b836e980ec6a64673e340a81c326a1', (
             CallSite(YAW_HOOK, 0x00206488, 0x00206490, 0x00230F00,
                      call_line(0x00206490, 'c.f[12] = c.f[3];', 'unit_004C', 57, 0x00230F00)),)),
+        # 0x0023E7E0 (the same projection function): jal 0x0023D558 at 0x0023E82C, delay slot mov.s $f13,$f12.
+        Unit('unit_004F.cpp', '1ae48aed3b77b2fea9a8cacbd9679989ca3478791b0403f8076883602c8aa26e', (
+            CallSite(PROJECTION_HOOK, 0x0023E82C, 0x0023E834, 0x0023D558,
+                     call_line(0x0023E834, 'c.f[13] = c.f[12];', 'unit_004F', 167, 0x0023D558)),)),
         # The same DualShock analog loop: jal 0x00314870 at 0x003190EC, delay slot daddu a3,t0,zero (the value).
         Unit('unit_0086.cpp', '8e721d41de7bcea54f0a9f8005bc3723b2e106c2d78482e4b889b37a3cd71223', (
             CallSite(CHANNEL_HOOK, 0x003190EC, 0x003190F4, 0x00314870,
@@ -117,7 +134,7 @@ def hook_unit_text(text, unit):
     """The unit with the declaration and its calls added. Refuses anything but one include line and one line per site."""
     if text.count(INCLUDE_LINE) != 1 or not text.startswith(INCLUDE_LINE):
         raise ValueError(f'{unit.name}: expected one leading {INCLUDE_LINE.strip()}')
-    if '::gt4::camera360::' in text or 'namespace gt4::camera360' in text:
+    if any(f'::{site.hook}(' in text for site in unit.sites) or '// TASK-159: the camera calls' in text:
         raise ValueError(f'{unit.name}: already holds camera calls')
     result = text.replace(INCLUDE_LINE, INCLUDE_LINE + declaration(unit), 1)
     for site in unit.sites:
@@ -129,7 +146,7 @@ def hook_unit_text(text, unit):
 
 def unhook_unit_text(text, unit):
     """Removes exactly what hook_unit_text added."""
-    if text.count(declaration(unit)) != 1 or text.count('::gt4::camera360::') != len(unit.sites):
+    if text.count(declaration(unit)) != 1 or sum(text.count(hook_call(site)) for site in unit.sites) != len(unit.sites):
         raise ValueError(f'{unit.name}: not a unit hooked by this script')
     result = text.replace(declaration(unit), '', 1)
     for site in unit.sites:

@@ -49,6 +49,9 @@ bool spec2_target_has_the_s8_hooks() {
       h.camera_analog_loop_return != 0x003190F4u || h.camera_analog_channel_table != 0x006F9D10u ||
       h.camera_analog_slot_bias != 1u)
     return false;
+  // TASK-160: the projection function at 0x0023E7E0 and the port 0 button halfword.
+  if (h.fov_projection_call_return != 0x0023E834u || h.fov_pad_buttons != 0x00681344u)
+    return false;
   // Not mapped yet: the request struct and the shape observer stay disabled.
   return h.display_request_state == 0 && h.shape_call_pc == 0 && h.shape_target_pc == 0 && h.shape_return_pc == 0;
 }

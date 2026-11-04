@@ -54,11 +54,23 @@ class HookTextTests(unittest.TestCase):
         self.assertIn('set32(c.r[5], 0u + 2u); ::gt4::camera360::before_pad_analog_channel_call(c); if (depth < kMaxDepth) '
                       'unit_0001(', hooked)
         self.assertTrue(hooked.startswith(units.INCLUDE_LINE + units.declaration(UNIT)))
-        self.assertIn('void before_chase_yaw_call(ps2::Cpu &c); void before_pad_analog_channel_call(ps2::Cpu &c);', hooked)
+        self.assertIn('namespace gt4::camera360 { void before_chase_yaw_call(ps2::Cpu &c); '
+                      'void before_pad_analog_channel_call(ps2::Cpu &c); }', hooked)
         self.assertLess(hooked.index('namespace gt4::camera360'), hooked.index('namespace gen {'))
         self.assertEqual(hooked.count('::gt4::camera360::'), 2)
         self.assertEqual(units.unhook_unit_text(hooked, UNIT), TEXT)
         units.qualify_unit(TEXT, hooked, UNIT)
+
+    def test_hooks_of_two_namespaces_get_one_declaration_line_each(self):
+        projection = units.CallSite(units.PROJECTION_HOOK, 0x00100050, 0x00100058, 0x00100300,
+                                    units.call_line(0x00100058, 'c.f[13] = c.f[12];', 'unit_0001', 11, 0x00100300))
+        text = TEXT.replace('}\n\n}\n', projection.line + '}\n\n}\n')
+        unit = units.Unit('unit_0001.cpp', units.sha256(text.encode()), (YAW, PEDAL, projection))
+        hooked = units.hook_unit_text(text, unit)
+        self.assertIn('namespace gt4::fov_adjust { void before_projection_scale_call(ps2::Cpu &c); }\n', hooked)
+        self.assertIn('c.f[13] = c.f[12]; ::gt4::fov_adjust::before_projection_scale_call(c); if (depth', hooked)
+        self.assertEqual(units.unhook_unit_text(hooked, unit), text)
+        units.qualify_unit(text, hooked, unit)
 
     def test_refusals(self):
         hooked = units.hook_unit_text(TEXT, UNIT)
@@ -114,11 +126,12 @@ class TargetTableTests(unittest.TestCase):
             sites = [site for unit in units.TARGETS[target] for site in unit.sites]
             yaw = [site.return_label for site in sites if site.hook == units.YAW_HOOK]
             loops = [site.return_label for site in sites if site.hook == units.CHANNEL_HOOK]
-            host = (game_target_value('camera_yaw_call_return', table), game_target_value('camera_analog_loop_return', table))
+            projection = [site.return_label for site in sites if site.hook == units.PROJECTION_HOOK]
+            host = (game_target_value('camera_yaw_call_return', table), game_target_value('camera_analog_loop_return', table),
+                    game_target_value('fov_projection_call_return', table))
             with self.subTest(target=target):
-                self.assertEqual(len(yaw), 1)
-                self.assertEqual(len(loops), 1)
-                self.assertEqual(host, (yaw[0], loops[0]))
+                self.assertEqual((len(yaw), len(loops), len(projection)), (1, 1, 1))
+                self.assertEqual(host, (yaw[0], loops[0], projection[0]))
         self.assertEqual(game_target_value('camera_pad_stick_x', 'kV200Hooks'), 0x0086F99E)
 
 
