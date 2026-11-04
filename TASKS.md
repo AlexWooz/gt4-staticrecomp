@@ -3172,7 +3172,7 @@ Tests: launcher 659 pass (8 new archive cases), focus checks 278/285 (Try again,
 check's dialog buttons are the shown ones), nav-test 209, locale keys 687 in both languages. Not run against a real release.
 PR #143 recorded as merged (tree-neutral); issue #139 (closed with rc10) answered.
 
-### TASK-159 — 360-degree chase camera on the right stick (v2.00, then Spec II)
+### TASK-159 — 360-degree chase camera on the right stick (v2.00, then Spec II; done, in 1.3.0-rc13)
 
 Owner request (2026-11-04). The right stick X turns the chase camera round the car, as the community "360 Degree Chase Camera"
 PCSX2 patches do (idea and call site from the patch by Vyerq/unko_ for v2.00 and Nenkai's port from Duchi/Vyerq for Spec II;
