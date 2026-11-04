@@ -2963,3 +2963,61 @@ and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording:
 Owner (same day): the flicker shows on NVIDIA and AMD alike; the RTX 3060 also drops FPS, the RX 9060 XT holds 60 FPS with very
 uneven frame times. Headless at 2x, every composed frame of VBlanks 1480-1539 is the right picture (same brightness, no black
 frame), so the black frames come from the presentation path of a window run, not from the drawn picture (Hypothesis).
+
+### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
+
+The owner wants every open pull request settled so 1.3.0 can leave the release candidates. For rc13, on
+`task/134-game-code-optimization-study`: the CoreGS 2.0 fixes TASK-149 to TASK-151, and the contributor pull requests below,
+each re-done by hand on the current code (they were written against 1.2.4/1.2.5), with the contributor credited as co-author,
+tests added, then the pull request marked merged by a tree-neutral merge on `main` (strategy "ours", no file of `main` changes,
+as for #118, #119, #154 and #174) and its issue answered and closed for the owner. Build: plain (no PGO or ThinLTO), installed on
+the owner's desktop and the laptop's portable copy for the owner's test suite; the pre-release only after that test.
+
+Already shipped by us, credit merge only: #138 (gamepad toggles in Settings, issue #123; rc8), #140 and its study #156 (full
+trigger travel, issue #134; rc12). Duplicates of what existed before them, closed with thanks: #150 (integrated GPUs at 1x,
+TASK-105, rc5), #175 (GSdx graphics API, TASK-103), #122 (`vcruntime140_1.dll`: the game executable does not import it; the
+missing-DLL message came with #154). Later, not rc13: #173, #170, #172, #176, #177, #146; study-only pull requests stay open as
+references until their topic is implemented. Our own #110 and #113 are superseded by #130.
+
+### TASK-152 — PCSX2 card import: allocation chains up to the card's real capacity (rc13; PR #120, issue #86)
+
+Contributor: luanantony (PR #120). A player's PCSX2 `Mcd001.ps2` is refused with "The memory card is damaged (chain entry 7937
+outside the allocation area)" while PCSX2 reads it. Re-do the card reader change on `launcher/crates/gt4saves` with the PR's
+hostile-card tests. Acceptance: cargo tests, an 8 MB card with chains past the default allocation area imports, damaged cards are
+still refused.
+
+### TASK-153 — Delete the active save without it coming back (rc13; PR #116, issue #98)
+
+Contributor: luanantony (PR #116). Deleting the save (in the launcher, or its files) brought it back at the next Play. Re-do
+the PR's change on the current Saves page and save library. Acceptance: launcher tests; deleting the active save leaves the
+game to start a new one, and no older card copy restores it.
+
+### TASK-154 — The ReShade Home key with GSdx (rc13; PR #121, issue #102)
+
+Contributor: luanantony (PR #121). With GSdx the picture is a child window of gt4-gs, so keys pressed in the game window do not
+reach ReShade inside gt4-gs. Re-do the forwarding in `native/window.cpp` next to the TASK-145 heartbeat (decision 0076).
+Acceptance: fixtures; the game's own keys unchanged; owner test with ReShade.
+
+### TASK-155 — GSdx starts when the install is inside OneDrive (rc13; PR #136, issue #131)
+
+Contributor: luanantony (PR #136). gt4-gs found its data root under OneDrive and closed at start. Re-do the PR's
+`portable.ini` beside gt4-gs (launcher `gs_release.rs`, the game's `gs_stream_client.cpp`). Clean room: from the PR and the
+issue only. Acceptance: launcher tests, a GSdx start from a folder under OneDrive.
+
+### TASK-156 — Audio crackling on Proton and SteamOS (rc13 if the A/B holds; PR #141, issue #129)
+
+Contributor: luanantony (PR #141). Re-do the audio buffer change in `native/host_io.cpp` only where it does not change Windows'
+behaviour unless needed, with an A/B of underruns (F8) on the desktop and the laptop. Acceptance: no new underruns on Windows,
+fixtures; Proton is untested here.
+
+### TASK-157 — Choose the custom textures folder (rc13; PR #145, study #155, issue #95)
+
+Contributor: luanantony (PR #145, study #155). Let the player point GT4Recomp at an existing texture folder (a PCSX2 one)
+instead of copying it. Re-do in the launcher settings and paths, passed to both renderers. Acceptance: launcher tests, texture
+pack loads from the chosen folder on CoreGS 2.0 and GSdx, both languages.
+
+### TASK-158 — Download GSdx again, or install it from an archive by hand (rc13; PR #143, issue #139)
+
+Contributor: luanantony (PR #143). When the GSdx download fails, offer a retry and installing the release archive by hand,
+checked against the same pin. Re-do on the current launcher (the CoreGS 2.0 offer of rc10 stays). Acceptance: launcher tests,
+focus checks and nav-test in both languages.
