@@ -8,9 +8,10 @@ point where the reference patch acts), plus a declaration of that function after
 
   * the chase camera's yaw spring calls the angle-difference function with the camera's current yaw in f13:
     `before_chase_yaw_call` adds the right stick angle to f13;
-  * the race input's analog channel handler scales an accelerator or brake channel (cases 3 and 4) before storing it:
-    `before_analog_pedal_call` sets the value to 0 so the game's own zero test skips it (no analog throttle or brake from the
-    camera stick while the camera is on).
+  * the race input's DualShock analog loop hands each analog channel, with the function the controller setup assigns to it, to
+    the channel handler: `before_pad_analog_channel_call` hands a right stick Y channel assigned to the accelerator or the
+    brake over as 0, so the handler's own zero test skips it (no analog throttle or brake from the camera stick while the
+    camera is on; TASK-159b narrowed it from the handler's cases to this loop and these channels).
 
 It refuses a unit whose hash is not the pinned translation, a call line that is missing or appears twice, an output folder that
 exists, and any result from which removing the insertions does not give the input back byte for byte. Every other file is
@@ -32,7 +33,7 @@ from pathlib import Path
 INCLUDE_LINE = '#include "units.hpp"\n'
 CALL_MARK = '  if (depth < kMaxDepth)'
 YAW_HOOK = 'before_chase_yaw_call'
-PEDAL_HOOK = 'before_analog_pedal_call'
+CHANNEL_HOOK = 'before_pad_analog_channel_call'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -71,10 +72,9 @@ def declaration(unit):
             f'namespace gt4::camera360 {{ {names} }}\n')
 
 
-# The analog channel handler's value scaler (v2.00 func_004386C8, Spec II 0x00314848), called with the channel value in a0 from
-# its delay slot `daddu a0,a3,zero`: case 3 stores the accelerator at +8, case 4 the brake at +10, each only when the scaled
-# value is not 0 (`beql a3,zero,<epilogue>`).
-PEDAL_SLOT = 'c.r[4].d[0] = c.r[7].d[0] + 0ull;'
+# The DualShock analog loop's call to the channel handler (v2.00 func_0043BBC0 calls func_004386F0, Spec II 0x00319xxx calls
+# 0x00314870) with a1 = 2, a2 = the slot's function and a3 = the channel value; the handler's case 3 stores the accelerator at
+# +8 and case 4 the brake at +10, each only when the scaled value is not 0 (`beql a3,zero,<epilogue>`).
 
 TARGETS = {
     # v2.00. Units: private/slice217-ee-aspect-producer/generated (the units of the rc12 EE library).
@@ -83,11 +83,10 @@ TARGETS = {
         Unit('unit_0091.cpp', 'ebfeb6c44925658acad222f8495875acba0ae0cf66478d664d84a8028c4ce280', (
             CallSite(YAW_HOOK, 0x003456D0, 0x003456D8, 0x0036CC40,
                      call_line(0x003456D8, 'c.f[13] = ld32((c.r[16].w[0]));', 'unit_009B', 40, 0x0036CC40)),)),
-        # func_004386F0 (analog channel handler): jal 0x004386C8 at 0x004387C0 (case 3) and 0x004387E8 (case 4).
+        # func_0043BBC0 (DualShock analog loop): jal 0x004386F0 at 0x0043BE6C, delay slot addiu a1,zero,2.
         Unit('unit_00CE.cpp', '43eeeea1c396a34ecb0c9818023cf2566f1ad2de0bddd5bde7d6431087c4e2b0', (
-            CallSite(PEDAL_HOOK, 0x004387C0, 0x004387C8, 0x004386C8, call_line(0x004387C8, PEDAL_SLOT, 'unit_00CE', 48, 0x004386C8)),
-            CallSite(PEDAL_HOOK, 0x004387E8, 0x004387F0, 0x004386C8, call_line(0x004387F0, PEDAL_SLOT, 'unit_00CE', 48, 0x004386C8)),
-        )),
+            CallSite(CHANNEL_HOOK, 0x0043BE6C, 0x0043BE74, 0x004386F0,
+                     call_line(0x0043BE74, 'set32(c.r[5], 0u + 2u);', 'unit_00CE', 49, 0x004386F0)),)),
     ),
     # Spec II. Units: the Spec II translation pinned by docs/inputs/spec2-ee-generated.json.
     'spec2': (
@@ -96,11 +95,10 @@ TARGETS = {
         Unit('unit_0041.cpp', '888fac97a864904dc0e0af0b7200467577b836e980ec6a64673e340a81c326a1', (
             CallSite(YAW_HOOK, 0x00206488, 0x00206490, 0x00230F00,
                      call_line(0x00206490, 'c.f[12] = c.f[3];', 'unit_004C', 57, 0x00230F00)),)),
-        # 0x00314870 (the analog channel handler, ten cases in Spec II): jal 0x00314848 at 0x00314940 and 0x00314968.
-        Unit('unit_0085.cpp', 'c1fcc339f5ff7e6aab30565ef96651cb3e8e9334007f2b9d6a2748c5eca24e7d', (
-            CallSite(PEDAL_HOOK, 0x00314940, 0x00314948, 0x00314848, call_line(0x00314948, PEDAL_SLOT, 'unit_0085', 57, 0x00314848)),
-            CallSite(PEDAL_HOOK, 0x00314968, 0x00314970, 0x00314848, call_line(0x00314970, PEDAL_SLOT, 'unit_0085', 57, 0x00314848)),
-        )),
+        # The same DualShock analog loop: jal 0x00314870 at 0x003190EC, delay slot daddu a3,t0,zero (the value).
+        Unit('unit_0086.cpp', '8e721d41de7bcea54f0a9f8005bc3723b2e106c2d78482e4b889b37a3cd71223', (
+            CallSite(CHANNEL_HOOK, 0x003190EC, 0x003190F4, 0x00314870,
+                     call_line(0x003190F4, 'c.r[7].d[0] = c.r[8].d[0] + 0ull;', 'unit_0085', 58, 0x00314870)),)),
     ),
 }
 

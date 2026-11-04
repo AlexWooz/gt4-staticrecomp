@@ -30,8 +30,8 @@ UNIT_FOLDERS = {
 
 YAW = units.CallSite(units.YAW_HOOK, 0x00100010, 0x00100018, 0x00100100,
                      units.call_line(0x00100018, 'c.f[13] = ld32((c.r[16].w[0]));', 'unit_0002', 7, 0x00100100))
-PEDAL = units.CallSite(units.PEDAL_HOOK, 0x00100030, 0x00100038, 0x00100200,
-                       units.call_line(0x00100038, units.PEDAL_SLOT, 'unit_0001', 9, 0x00100200))
+PEDAL = units.CallSite(units.CHANNEL_HOOK, 0x00100030, 0x00100038, 0x00100200,
+                       units.call_line(0x00100038, 'set32(c.r[5], 0u + 2u);', 'unit_0001', 9, 0x00100200))
 TEXT = (units.INCLUDE_LINE + '\nnamespace gen {\n\nusing namespace ps2;\n\nvoid unit_0001(Cpu &c, std::uint32_t entry, '
         'std::uint32_t depth) {\nL_00100010:\n' + YAW.line + 'L_00100018:\n    c.budget -= 1;\n' + PEDAL.line +
         'L_00100038:\n    c.budget -= 1;\n}\n\n}\n')
@@ -51,10 +51,10 @@ class HookTextTests(unittest.TestCase):
         hooked = units.hook_unit_text(TEXT, UNIT)
         self.assertIn('c.f[13] = ld32((c.r[16].w[0])); ::gt4::camera360::before_chase_yaw_call(c); if (depth < kMaxDepth) '
                       'unit_0002(', hooked)
-        self.assertIn('c.r[4].d[0] = c.r[7].d[0] + 0ull; ::gt4::camera360::before_analog_pedal_call(c); if (depth < kMaxDepth) '
+        self.assertIn('set32(c.r[5], 0u + 2u); ::gt4::camera360::before_pad_analog_channel_call(c); if (depth < kMaxDepth) '
                       'unit_0001(', hooked)
         self.assertTrue(hooked.startswith(units.INCLUDE_LINE + units.declaration(UNIT)))
-        self.assertIn('void before_analog_pedal_call(ps2::Cpu &c); void before_chase_yaw_call(ps2::Cpu &c);', hooked)
+        self.assertIn('void before_chase_yaw_call(ps2::Cpu &c); void before_pad_analog_channel_call(ps2::Cpu &c);', hooked)
         self.assertLess(hooked.index('namespace gt4::camera360'), hooked.index('namespace gen {'))
         self.assertEqual(hooked.count('::gt4::camera360::'), 2)
         self.assertEqual(units.unhook_unit_text(hooked, UNIT), TEXT)
@@ -106,22 +106,19 @@ class TargetTableTests(unittest.TestCase):
                         self.assertEqual(len(unit.sha256), 64)
                         # The unit holds the 16 KiB window of the call site (units start at 0x00100000).
                         self.assertEqual(unit.name, f'unit_{(site.call_site - 0x00100000) >> 14:04X}.cpp')
-                        if site.hook == units.PEDAL_HOOK:
-                            self.assertIn(units.PEDAL_SLOT, site.line)
+                        if site.hook == units.CHANNEL_HOOK:
+                            self.assertEqual(site.callee, {'v200': 0x004386F0, 'spec2': 0x00314870}[name])
 
     def test_host_table_agrees(self):
         for target, table in (('v200', 'kV200Hooks'), ('spec2', 'kSpec2Hooks')):
             sites = [site for unit in units.TARGETS[target] for site in unit.sites]
             yaw = [site.return_label for site in sites if site.hook == units.YAW_HOOK]
-            pedals = [site.return_label for site in sites if site.hook == units.PEDAL_HOOK]
-            host = (game_target_value('camera_yaw_call_return', table),
-                    game_target_value('camera_accelerator_scale_return', table),
-                    game_target_value('camera_brake_scale_return', table))
+            loops = [site.return_label for site in sites if site.hook == units.CHANNEL_HOOK]
+            host = (game_target_value('camera_yaw_call_return', table), game_target_value('camera_analog_loop_return', table))
             with self.subTest(target=target):
                 self.assertEqual(len(yaw), 1)
-                self.assertEqual(len(pedals), 2)
-                # All 0 means the target's camera is not filled in yet (the host then keeps it off).
-                self.assertIn(host, ((0, 0, 0), (yaw[0], pedals[0], pedals[1])))
+                self.assertEqual(len(loops), 1)
+                self.assertEqual(host, (yaw[0], loops[0]))
         self.assertEqual(game_target_value('camera_pad_stick_x', 'kV200Hooks'), 0x0086F99E)
 
 

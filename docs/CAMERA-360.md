@@ -73,11 +73,9 @@ TASK-134 builds it.
 | Target | Unit | Call (`jal`) | Return label | Host function |
 |---|---|---|---|---|
 | v2.00 | `unit_0091` | `0x003456D0` → `0x0036CC40` | `0x003456D8` | `before_chase_yaw_call` |
-| v2.00 | `unit_00CE` | `0x004387C0` → `0x004386C8` (case 3) | `0x004387C8` | `before_analog_pedal_call` |
-| v2.00 | `unit_00CE` | `0x004387E8` → `0x004386C8` (case 4) | `0x004387F0` | `before_analog_pedal_call` |
+| v2.00 | `unit_00CE` | `0x0043BE6C` → `0x004386F0` (DualShock analog loop) | `0x0043BE74` | `before_pad_analog_channel_call` |
 | Spec II | `unit_0041` | `0x00206488` → `0x00230F00` | `0x00206490` | `before_chase_yaw_call` |
-| Spec II | `unit_0085` | `0x00314940` → `0x00314848` (case 3) | `0x00314948` | `before_analog_pedal_call` |
-| Spec II | `unit_0085` | `0x00314968` → `0x00314848` (case 4) | `0x00314970` | `before_analog_pedal_call` |
+| Spec II | `unit_0086` | `0x003190EC` → `0x00314870` (DualShock analog loop) | `0x003190F4` | `before_pad_analog_channel_call` |
 
 The return labels and the stick byte are in `native/game_target.hpp` (`camera_*` fields); each host function returns at once
 when the switch is off, and otherwise acts only when `ra` holds one of its own return labels (a unit of another target can
@@ -88,13 +86,59 @@ with the guest FPU add (`ps2::fp::add`, the add the translated `add.s` uses). Un
 at 128 turns the camera by 0.0245 rad, 1.4 degrees, and the right end stops at 3.1407), rest is exactly no change (`f13` is not
 touched at all), and both ends are a half turn. Direction as the patch: a higher byte adds a positive angle.
 
-**Throttle and brake.** While the camera is on, `before_analog_pedal_call` sets the channel value `a0` to 0 just before the
-scale call of the accelerator and brake cases; the scale of 0 is 0, and the handler's own `beql a3,zero` then stores nothing:
-the outcome of the "Disable right analog throttle/brake" patch (which forces that branch), for both targets, only while the
-camera is on (so by default; `GT4_CAMERA_360=0` gives the right stick Y back to the pedals). The pressure buttons still
-accelerate and brake, and steering, the menus and photo mode never pass
-through these two cases. A host-side alternative (holding the guest right stick Y at rest) was not taken: it would also
+**Throttle and brake (TASK-159b, narrowed).** While the camera is on, `before_pad_analog_channel_call` hands a right stick Y
+channel assigned to the accelerator or the brake to the channel handler with the value 0; the handler's scale of 0 is 0, and
+its own `beql a3,zero` then stores nothing: the outcome of the "Disable right analog throttle/brake" patch for the camera
+stick only, on both targets, only while the camera is on (so by default; `GT4_CAMERA_360=0` gives the right stick Y back to
+the pedals). Every other analog axis, the wheel path and the pressure buttons keep the pedals; steering, the menus and photo
+mode never pass through here. A host-side alternative (holding the guest right stick Y at rest) was not taken: it would also
 take the stick from the menus and photo mode, and it would change what recordings hold.
+
+**Who reaches the handler's pedal cases (TASK-159b, 2026-11-04; gt4-decomp 3b1f2ae5b names; Confirmed in both ELFs).** The
+first version zeroed cases 3 and 4 of the handler for every caller. The handler has two callers:
+
+- the DualShock analog loop of `func_0043BBC0` (`jal 0x004386F0` at `0x0043BE6C`; Spec II `0x003190EC`). It runs over the pad
+  record's analog channels (at most 12) with the slot table at `0x006A64C0` (Spec II `0x006F9D10`, the same bytes):
+  `02 03 00 01 14 15 16 17 10 11 12 13`, and hands each slot's value and the function the controller setup assigns to it
+  (`a2`). A trace of the v2.00 Arcade race (default setup) saw slot 0 = channel `0x02` steering (left stick X), slots 1-9
+  unassigned (-1), slot 10 = channel `0x12` the accelerator (3) with the value 32767 while the right stick was up, slot 11 =
+  channel `0x13` the brake (4). The whole axes are `0x00`-`0x03` (right X, right Y, left X, left Y: the pad's byte order, read
+  in guest RAM: the record held the raw right stick Y byte 0 at channel `0x01` while the stick was up) and their halves
+  `0x10`-`0x17` in the same order (High confidence; the trace confirmed `0x12`/`0x13` as the right stick Y up and down). So a
+  left stick Y assigned to the pedals in the controller setup (channels `0x03`, `0x16`, `0x17`) reaches the same cases;
+- the wheel path `func_0043C260` (`jal 0x004386F0` at `0x0043C2D4`; Spec II `0x0031A4FC`), reached from the device switch of
+  `func_0043CF90` for the wheel types (low nibble 1, 2, 3 of the device word: `func_0043C4D0`, `func_0043C768`, `func_0043CA78`,
+  modes 4 and 6), three channels: steering and two pedal channels. A Driving Force Pro's pedals reach cases 3 and 4 there.
+- **Player 2:** the loop runs per player with that player's pad record (`s4`, a heap record built each frame; the run seen
+  used `0x01C08464` for player 1). In GT4Recomp only pad port 0 exists (the SIO2 capsule `slice200-memcard-runtime`
+  connects `g_pads[0]` only) and there is no network, so no second record reaches the loop today. The record holds no port
+  field we could read (Unknown where the game keeps it); if a second pad or LAN play is ever added, the rule needs the port.
+
+So the first version also took the pedals from a left stick and from a wheel. The fix moves the zeroing to the DualShock
+loop and to the right stick Y channels (`0x01`, `0x12`, `0x13`, read from the game's own slot table by the slot counter),
+assigned to the accelerator or the brake.
+
+**Checks of the narrowed version (TASK-159b, plain test builds `gt4vulkan.exe` `c96b8ed8...`, `gt4vulkan-spec2.exe`
+`0c2dfade...`, against the same references as above):**
+
+| Check | Result |
+|---|---|
+| v2.00 stick drive, switch `0` | identical to the reference: race clock (2186 racing VBlanks), 128 KiB state at 10450, 61 frames |
+| v2.00 stick drive, on (default) | race clock identical; the same 30 camera words and 24 changed frames as the first version |
+| v2.00 stick at rest, on | identical: clock, state at 11900, 60 frames from boot to the race |
+| v2.00 right stick Y up and down, on | identical to coasting on the reference: clock, 128 KiB state, 16 frames |
+| v2.00 left stick up as the accelerator, on | the car accelerates: 2464 simulation words differ from coasting at 10900, 14 of 16 frames |
+| ... the same, camera off (`0`) | identical to the camera-on run: 0 simulation and 0 race object words, 16 of 16 frames |
+| ... right stick Y moved in the same setup, on | identical to coasting in the same setup: 0 simulation words, 16 frames; race object identical in two of three runs (the third had 12 words of the light flare list, `0xEC0..0xEF0`, while another game ran on the GPU: flare readback timing, not input) |
+| Spec II stick copy, `0` | identical: clock (6087 racing VBlanks), 208 KiB state at 7420, 35 frames |
+| Spec II stick copy, on | race clock identical; the same 21 words as the first version |
+| Spec II original drive, on | identical: clock, state at 8900, 12 frames |
+| Spec II right stick Y copy, on | identical to the original drive: clock, state, 12 frames |
+
+The left stick rows use a scratch harness build (not committed): the in-game setup that puts the accelerator on the left stick
+was not driven through the menus; the harness hands the left stick's up half (channel `0x16`) to the handler as the
+accelerator, which is what the handler receives from that setup (the loop computes the value the same way for any assigned
+function). It shows that the camera leaves that channel alone.
 
 **The switch.** `GT4_CAMERA_360`: unset, empty or `1` = on (the default, owner 2026-11-04), `0` = off, anything else refuses
 the start (like `GT4_FORCE_WIDESCREEN`). Read at start in both start paths (`native/game_main.cpp`), which log
@@ -199,8 +243,10 @@ identical a thousand VBlanks after the stick returned.
 - Pad port 0 only: in split screen both chase cameras follow player 1's stick (the patch does the same).
 - The angle follows the stick position, not a speed: the stick held at one side holds the camera there; released, the game's
   spring brings it back. Full left and full right are the same view (from the front).
-- With the camera on (the default), the right stick Y no longer accelerates or brakes in races, whatever the controller setup
-  assigns to it (cases 3 and 4 of the handler, as the patch). A player who drives with the right stick Y turns the camera off
-  (`GT4_CAMERA_360=0`, `camera_360=0`; a launcher toggle comes later).
+- With the camera on (the default), the right stick Y no longer accelerates or brakes in races when the controller setup
+  assigns it to them (the DualShock loop's right stick Y channels). A player who drives with the right stick Y turns the camera
+  off (`GT4_CAMERA_360=0`, `camera_360=0`; a launcher toggle comes later). Any other axis, a wheel and the pressure buttons keep
+  the pedals.
+- The narrowing has no port test (only port 0 exists today, see above).
 - A recording replays the camera only on a build with the hook and the same switch: the camera is presentation, so the race
   is the same either way.

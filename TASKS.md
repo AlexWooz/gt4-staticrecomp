@@ -3138,5 +3138,9 @@ it off; a launcher toggle is a later step. Design, decoded patches, addresses an
   clock and state equal the build without the hook; with it on and the stick moved, the race clock equals it at every VBlank,
   the simulation differs only in the camera's own words while the stick is off rest and not at all once it is released, and
   the camera turns and comes back; owner test in game.
+- TASK-159b (branch `task/159b-camera-pedal-scope`): the pedal zeroing reached any analog axis assigned to the pedals and a
+  wheel's pedals (the handler has two callers); it now acts only in the DualShock analog loop on the right stick Y
+  channels assigned to the accelerator or the brake. Checks as for TASK-159, both games, plus a left stick accelerator
+  (harness) that still works with the camera on.
 - State (2026-11-04): v2.00 and Spec II done and checked headless (Arcade race on v2.00, the owner's Tokyo R246 Time Trial
   on Spec II), on by default; owner test in game pending; the coordinator opens the PR into task/134 after review.
