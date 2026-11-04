@@ -2936,18 +2936,30 @@ State (2026-11-04, owner): done; the controller choice works on the owner's PCs.
 Owner (2026-11-04): on CoreGS 2.0 the fence textures along the Nordschleife do not load properly. Reference: GSdx (final frames
 only, clean room). Recording: `nordschleife-fences` (Spec II, card `spec2-replays-20261104`: this PC's Spec II save and the five
 Spec II replays of both PCs), a saved race replay played through the fences. Method: the TASK-139 bug hunt
-(`procedures/coregs2-replay-bench` in ai-memory). State: recording pending (owner), then investigation.
+(`procedures/coregs2-replay-bench` in ai-memory). State: recorded (2,919 VBlanks; the replay on the track from about VBlank
+1800), investigation next.
+First look (2026-11-04, slice401 Spec II, 2x, final frames of GSdx at the same VBlanks, in sync): at VBlank 1900 the far
+stretch of the catch fence on the right bank is an opaque dark band on CoreGS 2.0 where GSdx draws see-through mesh with posts;
+the near fence, the walls and the guard rails match. The same with `GT4_HW_MIPMAP=off`, `basic` and `full`, so not our mipmap
+mode (`GT4_HW_MIPMAP` is not read by CoreGS 2.0). With `GT4_CORE2_MIPMAP=0` (level 0 only) the far fence is see-through mesh
+again, close to GSdx: the fault is in CoreGS 2.0's mip levels 1..MXL (Confirmed). The batch of VBlank 1898 (trace) is TBP0 13488,
+TBW 2, PSMT4 128 x 128, CLUT CT32 at 13688, TCC 1, alpha test GREATER 32 (fail KEEP), TEX1 MXL 2, MMIN 2 (nearest mip, nearest),
+MTBA 0, LCM 0, K -3.3125: levels 1 and 2 (64 x 64 and 32 x 32) come from MIPTBP1. An opaque dark result fits levels read at the
+wrong place or not decoded (palette index 0) (Hypothesis). Next: MIPTBP1 in the trace, and the decoded levels.
 
 ### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13)
 
 Owner (2026-11-04, NVIDIA RTX at 3440x1440, CoreGS 2.0 6x): the used-car showroom (the car turning) runs at about 55 FPS with
 frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `avell-gt4-20261104`, the owner's GT4 save from
 the laptop), the showroom left on the turning car. Measure with a window run (`WINDOW=1`, `PACED_FROM`), then attack the
-largest cost in the `[core2]` accounting. State: recording pending (owner).
+largest cost in the `[core2]` accounting. State: recorded (1,684 VBlanks; the CR-X SiR turning from about VBlank 900).
 
 ### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13)
 
 Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
 and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording: `photo-mode` (v2.00, card
 `avell-gt4-20261104`), a Photo Travel location with the camera screen open. Check on both renderers frame by frame
-(`frame_compare.py`); the flicker may depend on the GPU (seen on NVIDIA; this PC has AMD). State: recording pending (owner).
+(`frame_compare.py`). State: recorded (1,539 VBlanks; the Beacon Hill camera screen from about VBlank 1000).
+Owner (same day): the flicker shows on NVIDIA and AMD alike; the RTX 3060 also drops FPS, the RX 9060 XT holds 60 FPS with very
+uneven frame times. Headless at 2x, every composed frame of VBlanks 1480-1539 is the right picture (same brightness, no black
+frame), so the black frames come from the presentation path of a window run, not from the drawn picture (Hypothesis).
