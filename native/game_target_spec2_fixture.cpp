@@ -43,8 +43,10 @@ bool spec2_target_has_the_s8_hooks() {
       h.license_replay_loader_return != 0x10CCE4u || h.license_crc_table != 0x731DB0u ||
       h.license_manager_add != 0x1A24u || h.license_body_shift != 0x80u)
     return false;
-  // Not mapped yet: the request struct and the shape observer stay disabled.
-  return h.display_request_state == 0 && h.shape_call_pc == 0 && h.shape_target_pc == 0 && h.shape_return_pc == 0;
+  // Not mapped yet: the request struct and the shape observer stay disabled; TASK-159's camera comes with its Spec II step.
+  return h.display_request_state == 0 && h.shape_call_pc == 0 && h.shape_target_pc == 0 && h.shape_return_pc == 0 &&
+         h.camera_yaw_call_return == 0 && h.camera_pad_stick_x == 0 && h.camera_accelerator_scale_return == 0 &&
+         h.camera_brake_scale_return == 0;
 }
 
 bool spec2_match_addresses_never_match() {

@@ -3034,3 +3034,26 @@ pack loads from the chosen folder on CoreGS 2.0 and GSdx, both languages.
 Contributor: luanantony (PR #143). When the GSdx download fails, offer a retry and installing the release archive by hand,
 checked against the same pin. Re-do on the current launcher (the CoreGS 2.0 offer of rc10 stays). Acceptance: launcher tests,
 focus checks and nav-test in both languages.
+
+### TASK-159 — 360-degree chase camera on the right stick (v2.00, then Spec II)
+
+Owner request (2026-11-04). The right stick X turns the chase camera round the car, as the community "360 Degree Chase Camera"
+PCSX2 patches do (idea and call site from the patch by Vyerq/unko_ for v2.00 and Nenkai's port from Duchi/Vyerq for Spec II;
+references only, no patch words used). Branch `task/159-360-chase-camera` (from task/134 at ad457090). Off by default:
+`GT4_CAMERA_360=1`, or `camera_360=1` in `game.ini` for a direct start; a launcher toggle is a later step. Design, decoded
+patches, addresses and checks: `docs/CAMERA-360.md`.
+
+- Mechanism: the chase camera's yaw spring calls the angle-difference function with a direct `jal`, which the translator turns
+  into a direct C++ call, so `scripts/camera360_units.py` adds one host call per call site to the translated units (proved to
+  be the pinned units plus the insertions only) and the EE library is built from them. `native/camera_360*` adds the stick
+  angle (pi * (stick - 128) / 127, exactly nothing at rest) to f13; the right stick X byte is the game's own pad buffer byte
+  (v2.00 `0x0086F99E`, Confirmed by a RAM peek). The right stick Y is the game's default analog throttle and brake
+  (Confirmed); while the camera is on, the analog channel handler's accelerator and brake cases get a 0 value, the effect of
+  the community "Disable right analog throttle/brake" patch, whose addresses are v2.00 ones (the Spec II equivalents are at
+  `0x0031494C`/`0x00314974`).
+- Acceptance: fixtures (CTest `native_camera_360`, `native_game_target`, `native_standalone`; Python
+  `test_camera360_units.py`); headless replays (`scripts/coregs2_bench/camera360-check.sh`): with the switch off, frames, race
+  clock and state equal the build without the hook; with it on and the stick moved, the race clock equals it at every VBlank,
+  the simulation differs only in the camera's own words while the stick is off rest and not at all once it is released, and
+  the camera turns and comes back; owner test in game.
+- State (2026-11-04): v2.00 done and checked headless, owner test pending; Spec II next.

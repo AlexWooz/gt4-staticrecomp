@@ -1,0 +1,221 @@
+"""TASK-159: translated EE units with the 360-degree chase camera calls (native/camera_360.hpp, docs/CAMERA-360.md).
+
+The calls the camera needs are direct `jal`s, and the translator turns a direct `jal` into a direct C++ call into the callee's
+unit: no dispatch hook and no VBlank write can reach them. This script copies one target's translated units into a fresh folder
+and adds, at each call site of the target's table, one call to a host function between the call's delay slot and the call (the
+point where the reference patch acts), plus a declaration of that function after `#include "units.hpp"` (outside
+`namespace gen`):
+
+  * the chase camera's yaw spring calls the angle-difference function with the camera's current yaw in f13:
+    `before_chase_yaw_call` adds the right stick angle to f13;
+  * the race input's analog channel handler scales an accelerator or brake channel (cases 3 and 4) before storing it:
+    `before_analog_pedal_call` sets the value to 0 so the game's own zero test skips it (no analog throttle or brake from the
+    camera stick while the camera is on).
+
+It refuses a unit whose hash is not the pinned translation, a call line that is missing or appears twice, an output folder that
+exists, and any result from which removing the insertions does not give the input back byte for byte. Every other file is
+copied unchanged and compared. A receipt (<output>.camera360-units.json, next to the folder) records the inventories.
+
+Idea and call site from the 360 Degree Chase Camera patch by Vyerq/unko_ (v2.00) and Nenkai's port from Duchi/Vyerq (Spec II).
+No patch words are used: the call sites and callees were read from the reconstructed ELFs (docs/CAMERA-360.md).
+
+usage: camera360_units.py <v200|spec2> <translated units folder> <fresh output folder>
+"""
+import argparse
+import dataclasses
+import hashlib
+import json
+import shutil
+import sys
+from pathlib import Path
+
+INCLUDE_LINE = '#include "units.hpp"\n'
+CALL_MARK = '  if (depth < kMaxDepth)'
+YAW_HOOK = 'before_chase_yaw_call'
+PEDAL_HOOK = 'before_analog_pedal_call'
+
+
+@dataclasses.dataclass(frozen=True)
+class CallSite:
+    """One translated `jal` that gets a host call."""
+    hook: str            # host function in namespace gt4::camera360
+    call_site: int       # guest address of the `jal`
+    return_label: int    # call_site + 8; native/game_target.hpp holds it for the host check
+    callee: int
+    line: str            # the translated line of the call, exactly (with its indent and newline)
+
+
+@dataclasses.dataclass(frozen=True)
+class Unit:
+    """One translated unit and the sites in it."""
+    name: str            # file name
+    sha256: str          # the file as translated (the pinned units of the target's EE library)
+    sites: tuple
+
+
+def call_line(return_label, slot, unit, entry, callee):
+    """The translator's line for `jal callee` with this delay slot (donor recomp/codegen.cpp control(), Jal case)."""
+    return (f'    {{ c.r[31].sd[0] = static_cast<std::int32_t>(0x{return_label:08X}u); {slot}  '
+            f'if (depth < kMaxDepth) {unit}(c, {entry}u, depth + 1u); else {{ c.pc = 0x{callee:08X}u; return; }} '
+            f'if (c.pc != 0x{return_label:08X}u) [[unlikely]] return; }}\n')
+
+
+def hook_call(site):
+    return f'::gt4::camera360::{site.hook}(c);'
+
+
+def declaration(unit):
+    hooks = sorted({site.hook for site in unit.sites})
+    names = ' '.join(f'void {hook}(ps2::Cpu &c);' for hook in hooks)
+    return ('\n// TASK-159: the 360-degree chase camera (native/camera_360.hpp), added by scripts/camera360_units.py.\n'
+            f'namespace gt4::camera360 {{ {names} }}\n')
+
+
+# The analog channel handler's value scaler (v2.00 func_004386C8, Spec II 0x00314848), called with the channel value in a0 from
+# its delay slot `daddu a0,a3,zero`: case 3 stores the accelerator at +8, case 4 the brake at +10, each only when the scaled
+# value is not 0 (`beql a3,zero,<epilogue>`).
+PEDAL_SLOT = 'c.r[4].d[0] = c.r[7].d[0] + 0ull;'
+
+TARGETS = {
+    # v2.00. Units: private/slice217-ee-aspect-producer/generated (the units of the rc12 EE library).
+    'v200': (
+        # func_00345658 (chase camera spring): jal 0x0036CC40 at 0x003456D0, delay slot lwc1 $f13,0($s0).
+        Unit('unit_0091.cpp', 'ebfeb6c44925658acad222f8495875acba0ae0cf66478d664d84a8028c4ce280', (
+            CallSite(YAW_HOOK, 0x003456D0, 0x003456D8, 0x0036CC40,
+                     call_line(0x003456D8, 'c.f[13] = ld32((c.r[16].w[0]));', 'unit_009B', 40, 0x0036CC40)),)),
+        # func_004386F0 (analog channel handler): jal 0x004386C8 at 0x004387C0 (case 3) and 0x004387E8 (case 4).
+        Unit('unit_00CE.cpp', '43eeeea1c396a34ecb0c9818023cf2566f1ad2de0bddd5bde7d6431087c4e2b0', (
+            CallSite(PEDAL_HOOK, 0x004387C0, 0x004387C8, 0x004386C8, call_line(0x004387C8, PEDAL_SLOT, 'unit_00CE', 48, 0x004386C8)),
+            CallSite(PEDAL_HOOK, 0x004387E8, 0x004387F0, 0x004386C8, call_line(0x004387F0, PEDAL_SLOT, 'unit_00CE', 48, 0x004386C8)),
+        )),
+    ),
+    # Spec II. Units: the Spec II translation pinned by docs/inputs/spec2-ee-generated.json.
+    'spec2': (
+        # 0x002063D8 (the same spring, Public Beta lineage): jal 0x00230F00 at 0x00206488, delay slot mov.s $f12,$f3; f13 is loaded
+        # at 0x00206484, or in the delay slot of the bc1fl at 0x00206470 that branches to the call.
+        Unit('unit_0041.cpp', '888fac97a864904dc0e0af0b7200467577b836e980ec6a64673e340a81c326a1', (
+            CallSite(YAW_HOOK, 0x00206488, 0x00206490, 0x00230F00,
+                     call_line(0x00206490, 'c.f[12] = c.f[3];', 'unit_004C', 57, 0x00230F00)),)),
+        # 0x00314870 (the analog channel handler, ten cases in Spec II): jal 0x00314848 at 0x00314940 and 0x00314968.
+        Unit('unit_0085.cpp', 'c1fcc339f5ff7e6aab30565ef96651cb3e8e9334007f2b9d6a2748c5eca24e7d', (
+            CallSite(PEDAL_HOOK, 0x00314940, 0x00314948, 0x00314848, call_line(0x00314948, PEDAL_SLOT, 'unit_0085', 57, 0x00314848)),
+            CallSite(PEDAL_HOOK, 0x00314968, 0x00314970, 0x00314848, call_line(0x00314970, PEDAL_SLOT, 'unit_0085', 57, 0x00314848)),
+        )),
+    ),
+}
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def hooked_line(site):
+    if site.line.count(CALL_MARK) != 1:
+        raise ValueError('the call line must hold the call exactly once')
+    return site.line.replace(CALL_MARK, f' {hook_call(site)} if (depth < kMaxDepth)')
+
+
+def hook_unit_text(text, unit):
+    """The unit with the declaration and its calls added. Refuses anything but one include line and one line per site."""
+    if text.count(INCLUDE_LINE) != 1 or not text.startswith(INCLUDE_LINE):
+        raise ValueError(f'{unit.name}: expected one leading {INCLUDE_LINE.strip()}')
+    if '::gt4::camera360::' in text or 'namespace gt4::camera360' in text:
+        raise ValueError(f'{unit.name}: already holds camera calls')
+    result = text.replace(INCLUDE_LINE, INCLUDE_LINE + declaration(unit), 1)
+    for site in unit.sites:
+        if text.count(site.line) != 1:
+            raise ValueError(f'{unit.name}: the call line of 0x{site.call_site:08X} occurs {text.count(site.line)} times, expected once')
+        result = result.replace(site.line, hooked_line(site), 1)
+    return result
+
+
+def unhook_unit_text(text, unit):
+    """Removes exactly what hook_unit_text added."""
+    if text.count(declaration(unit)) != 1 or text.count('::gt4::camera360::') != len(unit.sites):
+        raise ValueError(f'{unit.name}: not a unit hooked by this script')
+    result = text.replace(declaration(unit), '', 1)
+    for site in unit.sites:
+        if result.count(hooked_line(site)) != 1:
+            raise ValueError(f'{unit.name}: the hooked line of 0x{site.call_site:08X} is missing')
+        result = result.replace(hooked_line(site), site.line, 1)
+    return result
+
+
+def qualify_unit(original, hooked, unit):
+    """Raises unless `hooked` is `original` plus exactly the insertions."""
+    if hook_unit_text(original, unit) != hooked or unhook_unit_text(hooked, unit) != original:
+        raise ValueError(f'{unit.name}: the hooked unit differs from its input beyond the insertions')
+
+
+def inventory(folder):
+    files = sorted(path for path in folder.iterdir())
+    for path in files:
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f'unexpected entry in a units folder: {path}')
+    return [{'path': path.name, 'size_bytes': path.stat().st_size, 'sha256': sha256(path.read_bytes())} for path in files]
+
+
+def inventory_digest(records):
+    return sha256(json.dumps(records, sort_keys=True).encode())
+
+
+def make_units(target, source, output, targets=TARGETS):
+    units = {unit.name: unit for unit in targets[target]}
+    source, output = Path(source), Path(output)
+    if output.exists():
+        raise ValueError(f'{output} exists; choose a fresh folder')
+    originals, hooked = {}, {}
+    for name, unit in units.items():
+        data = (source / name).read_bytes()
+        if sha256(data) != unit.sha256:
+            raise ValueError(f'{source / name} is not the pinned translation ({sha256(data)})')
+        originals[name] = data.decode('ascii')
+        hooked[name] = hook_unit_text(originals[name], unit)
+        qualify_unit(originals[name], hooked[name], unit)
+    before = inventory(source)
+    output.mkdir(parents=True)
+    for row in before:
+        if row['path'] in units:
+            (output / row['path']).write_bytes(hooked[row['path']].encode('ascii'))
+        else:
+            shutil.copyfile(source / row['path'], output / row['path'])
+    after = inventory(output)
+    changed = sorted(b['path'] for a, b in zip(before, after) if a != b)
+    if [a['path'] for a in before] != [b['path'] for b in after] or changed != sorted(units):
+        raise ValueError(f'unexpected output inventory: changed {changed}')
+    for name, unit in units.items():
+        qualify_unit(originals[name], (output / name).read_bytes().decode('ascii'), unit)
+    if inventory(source) != before:
+        raise ValueError('the input units changed while copying')
+    receipt = {
+        'schema': 'camera360-units/2',
+        'task': 'TASK-159',
+        'target': target,
+        'source': str(source),
+        'units': [{
+            'unit': name,
+            'sha256_before': unit.sha256,
+            'sha256_after': sha256((output / name).read_bytes()),
+            'sites': [{'hook': site.hook, 'call_site': f'0x{site.call_site:08X}', 'return_label': f'0x{site.return_label:08X}',
+                       'callee': f'0x{site.callee:08X}'} for site in unit.sites],
+        } for name, unit in units.items()],
+        'files': len(after),
+        'source_inventory_sha256': inventory_digest(before),
+        'output_inventory_sha256': inventory_digest(after),
+    }
+    (output.parent / f'{output.name}.camera360-units.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+    return receipt
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('target', choices=sorted(TARGETS))
+    parser.add_argument('source', type=Path)
+    parser.add_argument('output', type=Path)
+    options = parser.parse_args(argv)
+    print(json.dumps(make_units(options.target, options.source, options.output), indent=2))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

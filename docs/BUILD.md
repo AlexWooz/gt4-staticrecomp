@@ -3321,3 +3321,11 @@ images and entry lists as before:
 
 Checks: the 21 VU tests (`vu_recomp_corpus`, `vu0_aot_differential` against the interpreter), `native_vu_fast_ops`,
 `game_identity.sh` per step and the final gates (`private/task134-tools/gates2.sh`, against slice392).
+
+## TASK-159: the 360-degree chase camera (translated units with host calls)
+
+The camera needs a host call inside two direct `jal`s per target, so its EE library is built from a copy of the target's
+translated units changed by `scripts/camera360_units.py <v200|spec2> <units> <fresh folder>` (it checks the pinned unit hashes
+and that removing its insertions gives the units back), then `scripts/coregs2_bench/game/ee_configure.cmd`/`ee_build.cmd` and
+`configure.cmd` with `GT4_EE_LIBRARY` as for TASK-134. The executable always has the host side (`native/camera_360_hook.cpp`);
+an EE library from the plain units leaves it unused. Recipe and checks: `docs/CAMERA-360.md`.
