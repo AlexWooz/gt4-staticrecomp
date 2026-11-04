@@ -334,14 +334,16 @@ target_compile_options(gt4_pacing PRIVATE /W4)
 # Pure window-mode state and the GT4_FORCE_480P race display index (slice164).
 # TASK-060: cursor auto-hide rule (cursor_autohide.cpp) shared by the window.
 # TASK-080: display aspect (GT4_DISPLAY_ASPECT parse, Hor+/Vert+ matrix scale, scene policy, runtime glue).
+# TASK-159: the 360-degree chase camera switch, stick table and per-target addresses (camera_360.cpp; the guest hook itself is
+# camera_360_hook.cpp in gt4vulkan).
 add_library(gt4_quickfix STATIC frame_skip.cpp window_mode.cpp race_display.cpp race_widescreen.cpp cursor_autohide.cpp display_aspect.cpp
-    flare_limits.cpp)
+    flare_limits.cpp camera_360.cpp)
 target_compile_options(gt4_quickfix PRIVATE /W4)
 # TASK-100 S7b: the v2.00 hook fixtures assert the v2.00 guest chains, but gt4_quickfix carries the active target's table
 # (Spec II in a Spec II build). A Spec II build therefore compiles a second copy of the three hook modules pinned to
 # v2.00 for the fixtures only; the game keeps the target table.
 if(GT4_TARGET STREQUAL "spec2")
-    add_library(gt4_quickfix_v200_fixture STATIC race_display.cpp race_widescreen.cpp display_aspect.cpp flare_limits.cpp)
+    add_library(gt4_quickfix_v200_fixture STATIC race_display.cpp race_widescreen.cpp display_aspect.cpp flare_limits.cpp camera_360.cpp)
     target_compile_definitions(gt4_quickfix_v200_fixture PUBLIC GT4_TARGET_FIXTURE_V200)
     target_compile_options(gt4_quickfix_v200_fixture PRIVATE /W4)
     set(GT4_HOOK_FIXTURE_LIB gt4_quickfix_v200_fixture)
@@ -931,6 +933,9 @@ endif()
 # after the standalone rules of standalone.cpp built the command line and environment the launcher would have passed.
 set_source_files_properties("${PORT}/main.cpp" PROPERTIES COMPILE_DEFINITIONS "main=gt4_donor_main")
 add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.cpp ${GT4VULKAN_RESOURCES})
+# TASK-159: the host side of the call that scripts/camera360_units.py adds to the translated chase camera. An EE library built
+# from those units needs it; one built from the plain units leaves it unused.
+target_sources(gt4vulkan PRIVATE camera_360_hook.cpp)
 if(GT4_TARGET STREQUAL "spec2")
     # TASK-100 S4: the second target links its own library, so it gets its own executable and never replaces v2.00.
     set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-spec2)
@@ -1024,6 +1029,11 @@ add_executable(race_widescreen_fixture race_widescreen_fixture.cpp)
 target_link_libraries(race_widescreen_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
 target_compile_options(race_widescreen_fixture PRIVATE /W4)
 add_executable(display_aspect_fixture display_aspect_fixture.cpp)
+# TASK-159: the 360-degree chase camera rules (native/camera_360.hpp): switch, stick table, yaw argument, v2.00 addresses.
+add_executable(camera_360_fixture camera_360_fixture.cpp)
+target_link_libraries(camera_360_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
+target_compile_options(camera_360_fixture PRIVATE /W4)
+add_test(NAME native_camera_360 COMMAND $<TARGET_FILE:camera_360_fixture>)
 # TASK-117: the flare-limits parameter block (native/flare_limits.hpp); no game addresses, so no v2.00 pin needed.
 add_executable(flare_limits_fixture flare_limits_fixture.cpp)
 target_link_libraries(flare_limits_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})

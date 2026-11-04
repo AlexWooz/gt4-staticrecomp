@@ -18,6 +18,18 @@ simulation state and every compared frame identical, VU1/VU0 and MTVU checks 0 d
 `avell-rc12test-before-rc13test-20261104T064859Z`). Still open for rc13: TASK-150 (showroom frame times) and TASK-151's frame
 times: both scenes read GS memory back (the showroom every other frame, photo mode every frame) and wait for the GPU.
 
+## TASK-159: 360-degree chase camera on the right stick, both games checked headless, on by default (2026-11-04)
+
+On `task/159-360-chase-camera` (from task/134 at `ad457090`). On by default in v2.00 and Spec II (owner, 2026-11-04; in rc13):
+`GT4_CAMERA_360=0` or `camera_360=0` in `game.ini` turns it off.
+The right stick X turns the chase camera round the car through the game's own camera spring (a host call that
+`scripts/camera360_units.py` adds to the translated yaw call), and the right stick Y stops being the analog throttle and brake
+while it is on. Headless v2.00 Arcade race (plain test build): switch off identical to the build without the hook (frames,
+race clock, state); switch on: race clock identical at every VBlank, simulation identical once the stick is released (only the
+camera's own words differ while it is held), the view turns and comes back; with the stick at rest, identical. Spec II, the
+owner's Tokyo R246 Time Trial with the stick moved: the same results (the simulation words that differ after release are the
+camera's and the ones drawing writes). Owner test in game pending. `docs/CAMERA-360.md`.
+
 ## 1.3.0-rc12 built with PGO and published as a pre-release (2026-11-04, night)
 
 On the owner's word ("a rc12 atual assim que buildar, vc já sobe como pre-release"): TASK-145 to TASK-148 on top of rc11. Games

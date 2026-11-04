@@ -6,7 +6,7 @@
 # Clean room: TASK-027 agents use the final frames only. log.txt also holds the GS process's own output, so read only the game's lines.
 source "$(dirname "$0")/common.sh"
 name=$1; run=$2; exe=$3; shift 3
-recording=$GT4_ASSETS/private/coregs2-bench/inputs/$name.txt
+recording=$GT4_BENCH_INPUTS/$name.txt
 last=$(grep '^end ' "$recording" | cut -d' ' -f2)
 if [ -z "$last" ]; then echo "no finished recording at $recording"; exit 2; fi
 recording_setup "$name" || exit 2

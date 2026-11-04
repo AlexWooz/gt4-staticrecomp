@@ -8,6 +8,7 @@
 //   - TASK-080 display aspect, race camera
 //     and HUD canvas                          (display_aspect.*, scripts/display_aspect_overlay.inc)
 //   - TASK-017 license demo guard             (license_guard.*, scripts/license_guard_overlay.inc)
+//   - TASK-159 360-degree chase camera        (camera_360.*, scripts/camera360_units.py)
 //
 // Those addresses are properties of one target. Writing a v2.00 address in another target corrupts guest RAM, so no
 // module keeps a private copy any more: the numbers live in this header, once, and every hook reads them here.
@@ -98,6 +99,16 @@ struct HookAddresses {
   std::uint32_t frame_flare_track_count_offset = 0;
   std::uint32_t frame_flare_car_count_offset = 0;
   std::uint32_t frame_render_world = 0;  // RacePS2Base::render_world, reached through a vtable
+
+  // TASK-159 360-degree chase camera (native/camera_360.hpp). The translated yaw call of the chase camera's spring calls
+  // the host before it (scripts/camera360_units.py names the unit); the host checks ra against this return label and
+  // adds the angle of the right stick X byte below to f13.
+  std::uint32_t camera_yaw_call_return = 0;  // return label of `jal <angle difference>` in the chase camera spring
+  std::uint32_t camera_pad_stick_x = 0;      // right stick X byte of pad port 0 in the game's pad buffer (+0x1E)
+  // While the camera is on, the analog channel handler's accelerator and brake cases get a 0 value (the scale call's return
+  // labels): the camera stick's Y axis is the default analog throttle and brake.
+  std::uint32_t camera_accelerator_scale_return = 0;
+  std::uint32_t camera_brake_scale_return = 0;
 };
 
 struct Profile {
@@ -162,6 +173,10 @@ inline constexpr HookAddresses kV200Hooks = {
     /* frame_flare_track_count_offset */ 0x1848u,
     /* frame_flare_car_count_offset */ 0xA34u,
     /* frame_render_world */ 0x0033DEA8u,
+    /* camera_yaw_call_return */ 0x003456D8u,  // func_00345658: jal 0x0036CC40 at 0x003456D0, f13 loaded in its slot
+    /* camera_pad_stick_x */ 0x0086F99Eu,      // pad buffer 0x0086F980 (func_00551810) + 0x1E
+    /* camera_accelerator_scale_return */ 0x004387C8u,  // func_004386F0 case 3: jal 0x004386C8 at 0x004387C0
+    /* camera_brake_scale_return */ 0x004387F0u,        // func_004386F0 case 4: jal 0x004386C8 at 0x004387E8
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of
@@ -250,6 +265,10 @@ inline constexpr HookAddresses kSpec2Hooks = {
     /* frame_flare_track_count_offset */ 0x1848u,
     /* frame_flare_car_count_offset */ 0xA34u,
     /* frame_render_world */ 0x001EA240u,
+    /* camera_yaw_call_return */ 0x00206490u,  // spring at 0x002063D8: jal 0x00230F00 at 0x00206488
+    /* camera_pad_stick_x */ 0x0089B0DEu,      // pad buffer 0x0089B0C0 (set up at 0x0051BF18) + 0x1E
+    /* camera_accelerator_scale_return */ 0x00314948u,  // handler 0x00314870 case 3: jal 0x00314848 at 0x00314940
+    /* camera_brake_scale_return */ 0x00314970u,        // handler 0x00314870 case 4: jal 0x00314848 at 0x00314968
 };
 
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};

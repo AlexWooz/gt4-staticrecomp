@@ -8,6 +8,7 @@
 //     reads the launcher's config file, applies the built-in defaults and calls the donor main with the command line the
 //     launcher would have built. Rules and tests: standalone.hpp / standalone_fixture.cpp.
 
+#include "camera_360.hpp"
 #include "frame_skip.hpp"
 #include "standalone.hpp"
 #include "window.hpp"
@@ -267,6 +268,7 @@ int run_standalone(int argc, char **argv) {
   std::vector<char *> pointers;
   for (std::string &argument : storage) pointers.push_back(argument.data());
   pointers.push_back(nullptr);
+  gt4::camera360::configure_from_environment();  // TASK-159: game.ini camera_360 arrives here as GT4_CAMERA_360
   return gt4_donor_main(static_cast<int>(storage.size()), pointers.data());
 }
 
@@ -288,6 +290,7 @@ int main(int argc, char **argv) {
       window = window || std::strcmp(argv[i], "--window") == 0 || std::strcmp(argv[i], "--fullscreen") == 0;
     }
     gt4::frame_skip::start_from_environment();
+    gt4::camera360::configure_from_environment();  // TASK-159: an invalid GT4_CAMERA_360 stops the start here
     if (!window && !install_input_replay_without_window()) return 1;
     return gt4_donor_main(argc, argv);
   }

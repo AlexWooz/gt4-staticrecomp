@@ -72,6 +72,11 @@ void check_v200_values() {
   check(h.shape_call_pc == 0x455A5Cu, "shape call pc");
   check(h.shape_target_pc == 0x49D308u, "shape target pc");
   check(h.shape_return_pc == 0x455A64u, "shape return pc");
+  // TASK-159 360-degree chase camera.
+  check(h.camera_yaw_call_return == 0x3456D8u, "chase camera yaw call return label");
+  check(h.camera_pad_stick_x == 0x86F99Eu, "right stick X byte of pad port 0");
+  check(h.camera_accelerator_scale_return == 0x4387C8u, "analog accelerator scale return label");
+  check(h.camera_brake_scale_return == 0x4387F0u, "analog brake scale return label");
   // Both v2.00 tables (the release one and the one the modules compile against) agree.
   check(kV200Hooks.widescreen_owner_pointer == h.widescreen_owner_pointer, "kV200Hooks is the active table");
 }
