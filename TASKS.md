@@ -2629,7 +2629,8 @@ publication. No code, builds, running agents or public rc7 authorized by this ma
 rounds: rc9 (process CPU per VBlank -18% on the i5-7200U, -19% on the 5700X against rc8), the second round (slice395, -26%
 against rc8 on the desktop) and a third, measured round during rc14 that kept nothing: a CLUT same-palette probe (about 5% of the
 CLUT flushes keep their palette), the VU1 `vfix` census (what is left is needed), the SPU2 envelope (about 0.03 ms) and CoreGS 2.0
-batches per submission from 16 to 256 on the Avell at 1x, 2x, 3x and 6x (no measurable effect). Every kept step, every dropped
+batches per submission from 32 to 256 on the Avell at 1x and 6x (64, the default, is the best balance: larger submissions save
+GS CPU and lose frame time). Every kept step, every dropped
 idea with its numbers, and what limits the Avell at 6x (the game's one GS download per frame) are in
 `docs/GAME-CODE-OPTIMIZATION-STUDY.md` sections 8 and 9. What is left is large and gets its own task if it is ever started:
 TASK-168 (several palettes in one batch), P8 (the translator: `Cpu & __restrict`, one host function per guest function) and a

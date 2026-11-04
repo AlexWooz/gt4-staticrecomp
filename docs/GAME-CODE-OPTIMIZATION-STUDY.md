@@ -680,7 +680,7 @@ ADPCM decoding).
 | Fewer `vfix` in the generated VU1 code | the emitter already keeps fixed shadows and uses the `n` operations; of the 94,223 `vfix` left in the VU1 table (slice397), 70,534 fix a register once at program entry or after a load, 20,124 fix Q, 2,298 fix I, 1,267 the accumulator | dropped: what is left is needed |
 | SPU2 envelope constants taken once per phase instead of per sample | the whole mixer is 0.17 ms; this part of it about 0.03 ms (estimate from the profile) | dropped: below any A/B's noise, a new runtime capsule for it |
 | Deferred flare readback in the normal mode | Performance Mode already answers the flare table one download late (IN-439) | not for the normal mode: a late answer changes what the game draws |
-| CoreGS 2.0 batches per submission (`GT4_CORE2_SUBMIT_EVERY`; discrete default 64 since round 2) | Avell, the lap headless, 3 rounds per value: 1x 16, 32, 48, 64, 128, 256; 2x and 3x 64, 128, 256 with the order rotated; 6x 16, 32, 48, 64, 128, 256. Every value within 11.5-11.7 ms (1x), 12.3-12.7 ms (2x), 13.1-13.5 ms (3x) and 17.1-17.4 ms (6x) of wall per VBlank once the laptop is warm, outliers either way at single positions (one 2x run at 35 ms of process CPU); the first run of each series is the fastest whatever its value, and the value run first in every round looked slower (an order effect, gone once the order was rotated). Frames and state identical at 16 (6x) and 256 (1x) | dropped: no measurable effect on this machine; the default stays |
+| CoreGS 2.0 batches per submission (`GT4_CORE2_SUBMIT_EVERY`; discrete default 64 since round 2) | Avell, the lap headless, 3 rounds per value with the order rotated, the switch checked in each log (submissions per VBlank: 64 gives 9.0-13.1, 128 5.2-7.1). 6x, wall / GS thread CPU per VBlank: 32 17.26 / 13.3 ms, **64 17.26 / 12.5**, 128 17.58 / 11.6, 256 18.66 / 11.3. 1x: 64 11.6 / 9.9 (rounds 2 and 3), 256 12.1 / 9.4. Larger submissions save GS CPU but start the GPU later, and the frame waits for it at the per-frame download; smaller ones cost CPU for nothing. (A first set of Avell batches passed the switch unquoted to cmd, which splits `NAME=VALUE` at the `=`: every variant ran the default, and its apparent differences were run order and heat. Those runs are discarded.) Frames and state identical at 16 (6x) and 256 (1x) on the desktop | kept as it is: 64 is the best balance on this machine at both scales |
 
 ### What limits the Avell at 6x (Confirmed, logs of the runs above)
 
@@ -689,3 +689,17 @@ to 5.5 ms per VBlank for the GPU at the game's one EE download per VBlank (`down
 table). The EE waits for that answer, so the GPU idles while the game computes the next frame: in the faithful mode the CPU and
 the GPU take turns once per frame. At 1x the same wait is 1.3 ms. Performance Mode already answers the table one download late
 (IN-439, decision 0073) and removes the turn.
+
+Measured on the Avell at 6x (the same lap, order rotated, the switch checked in the log): with `GT4_CORE2_DELAYED_DOWNLOADS=1`
+alone (Performance Mode's one-download-late answer, `delayed downloads on, flares hidden off`, 5,713 answers delayed), the wait at
+the download is 0 and the wall falls from 15.9-17.1 to 14.6-14.7 ms per VBlank (frame p50 17.1-17.9 -> 15.5-15.6 ms), with the GPU
+busy 14.1 ms. Process CPU per VBlank rises (23.7-25.3 -> 29.3-31.7 ms headless) because nothing waits any more. In the faithful
+mode the answer stays exact: the flare table reaches the game in the same frame. Whether the one-frame-late flare answer counts as
+an imperceptible change (decision 0073's rule for the normal mode) is the owner's decision, not this task's.
+
+### Close
+
+TASK-134 is closed. Kept over the three rounds: everything in sections 8 (rc9) and the second round (slice395). Measured and
+dropped: the table above and section 8's list. Left, each its own task if it is ever started: TASK-168 (several palettes in one
+batch, the largest lever on the GS thread), P8 (the translator), a CoreGS 2.0 submission thread, and the owner's decision on the
+per-frame download in the normal mode. Performance numbers come from the Avell from now on (owner, 2026-11-04).
