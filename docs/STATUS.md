@@ -9,6 +9,13 @@ proportional from the first step (it was dead up to about 46% of the travel, the
 on the Controls page (`controller` setting, `GT4_PAD`); the game reads the chosen pad, else one of its model, else
 controller 1. Owner test of the sticks and the choice pending.
 
+Test installer (2026-11-04 UTC): the same plain builds pinned as slice 401 (`docs/inputs/slice401-pcsx2.json`, gt4.exe
+`eac9918f`; `slice401-spec2.json`, gt4-spec2.exe `2b1f3202`), distribution `private/slice401-dist-130-rc12-test`, launcher
+labelled rc12 (`89164318`), `private/slice401-installer-130-rc12-test/GT4Recomp-Setup-1.3.0-rc12.exe` (`63fcdb23`). Installed
+on the owner's desktop through the installer's update mode over rc11 (silent, result ok; installed game files, launcher and
+SDL3 match their sources); rc11 program files backed up in
+`private/_program-backups/rc11-before-rc12test-20261104T023355Z`. Not uploaded; the rc12 release build (PGO) comes later.
+
 ## TASK-146 for the owner's test: 60 FPS lets a race drop frames instead of slowing (2026-11-03, night)
 
 On the owner's word, experimental in the rc12 line: the launcher's Frame rate "60 FPS" (CoreGS 2.0, the default) now passes
