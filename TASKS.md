@@ -3005,11 +3005,20 @@ card. The chain error now names the layout. Tests (gt4saves 62 pass): a chain at
 `alloc_end` 7978 card, a chain equal to the usable count still refused, `alloc_end` 0 refused. Not checked on the reporter's
 own card. PR #120 recorded as merged (tree-neutral), issue #86 answered and closed.
 
-### TASK-153 — Delete the active save without it coming back (rc13; PR #116, issue #98)
+### TASK-153 — Delete the active save without it coming back (rc13; PR #116, issue #98; done)
 
 Contributor: luanantony (PR #116). Deleting the save (in the launcher, or its files) brought it back at the next Play. Re-do
 the PR's change on the current Saves page and save library. Acceptance: launcher tests; deleting the active save leaves the
 game to start a new one, and no older card copy restores it.
+
+Done (2026-11-04): the cause was the runtime card (`data/games/<game>/runtime/card.ps2`): each Play harvests it into the
+library first, so a save removed from the library came back from it. Deleting the active save on the Saves page now harvests
+that card (no unharvested progress is lost), parks it in `backups/<timestamp>-before-delete.ps2` (kept with the New save
+images), sends the save to the Recycle Bin and clears its display name; the next Play builds a card without a game save and the
+game starts a new profile. Refused while the game runs. Text for the active save's confirmation in both languages; the unused
+`rust.saves.active_not_deletable` key is gone (665 keys each). Tests: launcher 641 pass (deleting the active save clears it;
+the runtime card is parked and the next card has no game save; refused while the game runs), focus checks 275/282, nav-test
+209. Not run in game. PR #116 recorded as merged (tree-neutral), issue #98 answered and closed.
 
 ### TASK-154 — The ReShade Home key with GSdx (rc13; PR #121, issue #102)
 

@@ -1212,7 +1212,12 @@ fn delete_item(id: &str, shared: &Shared, kind: Kind) -> Result<LibraryView, Str
         .into_iter()
         .find(|item| item.name == name)
         .ok_or_else(|| messages::text("saves.item_not_in_library", language).to_string())?;
-    let result = saves::delete(library, &item);
+    if item.active && state.game_child.is_some() {
+        return Err(messages::text("saves.delete_game_running", language).to_string());
+    }
+    let card = state.game_dirs(game).runtime_card();
+    let library = state.library_of(game);
+    let result = saves::delete(library, &item, &card);
     let status = match result {
         Ok(()) => format!("{} moved to the Recycle Bin.", item.label),
         Err(message) => message,
