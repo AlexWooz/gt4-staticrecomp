@@ -1,5 +1,10 @@
 # Current Status
 
+## TASK-095: 2D overlays over the race view at ultrawide ratios, both games (2026-11-04)
+
+Branch `task/095-ultrawide-menu-canvas` (re-does PR #177, Luan Antony co-author); `docs/ULTRAWIDE-OVERLAYS.md`. Pre-race screens,
+pause, pit menu and results keep their 16:9 shape, centred, at 21:9 and 32:9; 16:9 identical. Owner test pending.
+
 ## 1.3.0-rc14 test build on the owner's desktop and laptop (2026-11-04, morning)
 
 For the owner's test before any pre-release (no PGO until the owner asks). Contents: TASK-159b, TASK-160 and TASK-161 (PR #197:

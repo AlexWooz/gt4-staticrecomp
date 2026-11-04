@@ -1454,16 +1454,26 @@ Result (slice 278, 2026-10-23; recipe and numbers in docs/BUILD.md "Slice 278"):
   does it at the next Play (`prepare_card`).
 
 ### TASK-095 — Ultrawide: undistorted pre-race menu overlay
-Planned (owner, 2026-10-22), idea to study later. At ratios wider than 16:9 (owner screenshot at 3440x1440, Time Trial
-on Trial Mountain) the pre-race menu (race lobby: car name, CV/kg/tires table, Session Record, the icon row, the
-car spec line) is a 2D overlay drawn over the live 3D track. The 3D background is already correct (the TASK-080
-race camera hook widens the projection), but the overlay is stretched horizontally with the screen. In the race
-itself the HUD is right, because TASK-080 P2 draws it as an undistorted, centred layer (RaceDisplay canvas, ELF
-constants). Idea: apply the same inverse horizontal scale to the pre-race menu overlay, centred, keeping the 3D
-stretched. Study first: which code draws this overlay (it is not the race HUD path), whether the P2 canvas hook or
-a per-scene display control covers it, and how the other race menus (pause, results, replay menu) behave. Same
-guard rails as TASK-080 (decision 0071): 16:9 frames stay byte-identical, no save-data writes, hooks listed with
-tests.
+Planned (owner, 2026-10-22): at ratios wider than 16:9 (owner screenshot at 3440x1440, Time Trial on Trial Mountain) the
+pre-race menu over the race (car name, CV/kg/tires table, Session Record, the icon row) is stretched with the screen, and so
+are the other 2D screens over the race (pause, results). Same guard rails as TASK-080 (decision 0071). Re-does PR #177 (Luan
+Antony), whose canvas maths had no call site. Branch `task/095-ultrawide-menu-canvas` (from
+`task/134-game-code-optimization-study` at `bb4c7ed7`); `docs/ULTRAWIDE-OVERLAYS.md`, decision 0071.
+
+- Found (both games): the pre-race screens are drawn by the menu context (v2.00 `mUpdateContextPS2` render `0x00214FB0`,
+  Spec II `0x0036D278`), the pause menu, pit menu and results by the strobe overlay renderer (v2.00 `func_003EC0B0`, Spec II
+  `0x001FDCC8`); each sets a 0..640 x 480..0 canvas through a direct call of the ortho function (`0x004A5A90`, Spec II
+  `0x005A2600`). The strobe text is sized by the text style parser (`0x00490290`, Spec II `0x0033AF90`), not by the canvas.
+- Change: `scripts/camera360_units.py` adds host calls before those ortho calls and after the strobe draw, and routes the
+  parser's four scale stores through the host. While the presentation fills the screen at R, the canvas is widened by
+  R / (16/9) around its centre (taller for R < 16:9) and the strobe text narrowed by the same factor; at 16:9 and in the 16:9
+  pillarbox nothing changes. The host writes no guest RAM. The race monitor is left as the game draws it.
+- Acceptance: CTest `native_display_aspect` (`test_overlay_canvas`) and `native_game_target`; Python `test_camera360_units.py`;
+  `scripts/coregs2_bench/overlay-aspect-check.sh` on both games: 16:9 identical to the reference (clock, state, frames); at
+  21:9 and 32:9 the race identical and the overlay frames the reference's narrowed by 1/s, centred.
+- State (2026-11-04): done on both games and checked headless (v2.00 Arcade pre-race screen and pause, Spec II Time Trial lobby
+  and pause): 16:9 identical in clock, state and every frame; at 21:9 and 32:9 only the overlay frames differ, each the
+  16:9 look narrowed and centred, pause text inside its buttons. Owner test in game pending.
 
 ### TASK-091 — Release 1.2.1: per-machine install, data beside the program, user data in AppData
 ✅ **Done (2026-10-22): owner tested and approved; released as v1.2.1.** Branch `task/091-install-layout-121`. Owner decisions 2026-10-22:

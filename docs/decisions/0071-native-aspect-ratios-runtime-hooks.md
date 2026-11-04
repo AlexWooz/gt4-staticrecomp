@@ -74,6 +74,17 @@ are byte-identical to the pinned Spec II translation (`docs/inputs/spec2-ee-gene
 `unit_003A`, one line each. The host already fills the block for both targets at every guest VBlank, with the original
 constants at 16:9.
 
+**2D overlays over the race view (TASK-095, 2026-11-04; `docs/ULTRAWIDE-OVERLAYS.md`).** The pre-race screens (the menu
+context) and the pause menu, pit menu and results (strobe movies, one renderer) are drawn over the race; each sets its
+0..640 x 480..0 canvas through a direct call of the ortho function, and the strobe text is sized by the text style parser.
+Re-does PR #177 (Luan Antony), whose canvas maths had no call site. The race monitor is left as the game draws it.
+
+| Item | Where | Reads | Writes | Test |
+|---|---|---|---|---|
+| Overlay canvas hook | translated-call hook (`scripts/camera360_units.py`) between the delay slot and `jal <ortho>`: v2.00 returns 0x002151A8 (menu context, `mUpdateContextPS2` render 0x00214FB0) and 0x003EC200 (strobe renderer `func_003EC0B0`), ortho 0x004A5A90; Spec II 0x0036D4D8 and 0x001FDE18, ortho 0x005A2600 | f12..f15 (left, right, bottom, top), ra, the renderer's caller at sp + 0x60 (the race monitor's call, v2.00 return 0x003DA294 / Spec II 0x001F2FD4, is left alone), the presented state and ratio | f12..f15 only, only while the presentation fills the screen at R != 16:9 and only for the game's canvas (left 0, top 0, bottom 480, right 640): the x extent times R / (16/9) around its centre (R > 16:9) or the y extent times (16/9) / R (R < 16:9) | `native_display_aspect` (`test_overlay_canvas`), `native_game_target`, `tests/python/test_camera360_units.py`, `scripts/coregs2_bench/overlay-aspect-check.sh` |
+| Strobe text window | opened by the hook above when it widened the strobe renderer's canvas; closed by a translated-call hook before the renderer's first call after its draw (v2.00 return 0x003EC248, Spec II 0x001FDE60) | nothing | nothing (host state) | same |
+| Text style parser stores | translated statements (`scripts/camera360_units.py`): the parser's four stores of the text x and y scale (v2.00 0x004902C8, 0x004902CC, 0x0049038C, 0x00490390 into context + 0x24/+0x28; Spec II 0x0033AFC8, 0x0033AFCC, 0x0033B08C, 0x0033B090 into + 0x3C/+0x40) go through `overlay_text_scale_x` / `_y` | the stored value | the game's own store of that value, times the inverse canvas factor on the same axis while the window is open, unchanged otherwise | same |
+
 Not changed in P2 (and why): the ±96 edge offsets (`RaceDisplayUtil::wideOffset`, they keep the HUD a centred 16:9
 block, the owner's default); the race monitor bar width 854 (`func_003D8518`, centred in the canvas); the menu/PGL text
 cave and the loading-screen orthos (menus, loading screens, FMVs and photo mode stay pillarboxed 16:9);

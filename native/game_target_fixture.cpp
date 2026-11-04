@@ -80,6 +80,12 @@ void check_v200_values() {
   // TASK-160 field of view adjustment.
   check(h.fov_projection_call_return == 0x37A1C4u, "projection store call return label");
   check(h.fov_pad_buttons == 0x64C794u, "port 0 button halfword");
+  // TASK-095 2D overlays over the race view.
+  check(h.menu_ortho_call_return == 0x2151A8u, "menu context ortho return label");
+  check(h.overlay_ortho_call_return == 0x3EC200u, "strobe overlay renderer ortho return label");
+  check(h.overlay_draw_end_return == 0x3EC248u, "strobe overlay renderer end-of-draw return label");
+  check(h.overlay_caller_slot == 0x60u, "strobe overlay renderer saved ra slot");
+  check(h.monitor_overlay_call_return == 0x3DA294u, "race monitor's call of the strobe renderer");
   // Both v2.00 tables (the release one and the one the modules compile against) agree.
   check(kV200Hooks.widescreen_owner_pointer == h.widescreen_owner_pointer, "kV200Hooks is the active table");
 }

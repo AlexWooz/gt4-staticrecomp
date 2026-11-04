@@ -937,6 +937,8 @@ add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.
 # TASK-159: the host side of the call that scripts/camera360_units.py adds to the translated chase camera. An EE library built
 # from those units needs it; one built from the plain units leaves it unused.
 target_sources(gt4vulkan PRIVATE camera_360_hook.cpp fov_adjust_hook.cpp)
+# TASK-095: the same for the 2D overlay ortho calls and the strobe text (native/display_aspect.hpp).
+target_sources(gt4vulkan PRIVATE display_aspect_hook.cpp)
 if(GT4_TARGET STREQUAL "spec2")
     # TASK-100 S4: the second target links its own library, so it gets its own executable and never replaces v2.00.
     set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-spec2)
