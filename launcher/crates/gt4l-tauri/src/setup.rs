@@ -63,7 +63,7 @@ pub fn coregs20_on_this_pc() -> Coregs20Check {
             (
                 state.config.settings.clone(),
                 state.game_dirs(game),
-                state.dirs.textures(),
+                state.texture_location().0,
                 launch::game_program(game, &game_dir),
                 state.shaders_child.clone(),
                 state::language_of(&state),

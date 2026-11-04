@@ -1109,7 +1109,39 @@
             data: { action: "open-textures-folder" },
             on: { click: function () { call("open_textures_folder").catch(function (err) { GT4.ui.toast(errorText(err), true); }); } }
           }, GT4.t("settings.open_textures"));
-          graphics.appendChild(h("div", { class: "advanced-foot" }, [textures]));
+          // TASK-157: an existing textures folder (for example PCSX2's) can be read in place instead of the default one.
+          var texturesPath = h("p", { class: "note textures-path", data: { action: "textures-path" }, text: "" });
+          var texturesMissing = h("p", { class: "note textures-missing", role: "status", data: { action: "textures-missing" }, text: "", hidden: true });
+          var chooseTextures = h("button", {
+            class: "btn",
+            type: "button",
+            data: { action: "choose-textures-folder" },
+            on: { click: function () {
+              call("choose_textures_folder").then(function (state) {
+                if (state) { showTextures(state); }
+              }).catch(function (err) { GT4.ui.toast(errorText(err), true); });
+            } }
+          }, GT4.t("settings.textures_choose"));
+          var defaultTextures = h("button", {
+            class: "btn",
+            type: "button",
+            data: { action: "reset-textures-folder" },
+            hidden: true,
+            on: { click: function () {
+              call("reset_textures_folder").then(showTextures).catch(function (err) { GT4.ui.toast(errorText(err), true); });
+            } }
+          }, GT4.t("settings.textures_default"));
+          var showTextures = function (state) {
+            var shown = state && state.custom ? state.path : (state && state.default) || "";
+            texturesPath.textContent = shown ? GT4.t("settings.textures_current", { path: shown }) : "";
+            defaultTextures.hidden = !(state && state.custom);
+            texturesMissing.hidden = !(state && state.custom && !state.valid);
+            texturesMissing.textContent = texturesMissing.hidden ? "" : GT4.t("settings.textures_missing", { path: state.path });
+          };
+          call("textures_state").then(showTextures).catch(function () {});
+          graphics.appendChild(texturesPath);
+          graphics.appendChild(texturesMissing);
+          graphics.appendChild(h("div", { class: "advanced-foot" }, [textures, chooseTextures, defaultTextures]));
         }
         section(ctx, "advanced", GT4.t("settings.section_advanced"), ctx.table.rows.filter(function (row) {
           return row.page === "advanced" && row.group !== "rc";

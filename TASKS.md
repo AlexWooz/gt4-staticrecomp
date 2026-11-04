@@ -3056,11 +3056,21 @@ Contributor: luanantony (PR #141). Re-do the audio buffer change in `native/host
 behaviour unless needed, with an A/B of underruns (F8) on the desktop and the laptop. Acceptance: no new underruns on Windows,
 fixtures; Proton is untested here.
 
-### TASK-157 — Choose the custom textures folder (rc13; PR #145, study #155, issue #95)
+### TASK-157 — Choose the custom textures folder (rc13; PR #145, study #155, issue #95; done)
 
 Contributor: luanantony (PR #145, study #155). Let the player point GT4Recomp at an existing texture folder (a PCSX2 one)
 instead of copying it. Re-do in the launcher settings and paths, passed to both renderers. Acceptance: launcher tests, texture
 pack loads from the chosen folder on CoreGS 2.0 and GSdx, both languages.
+
+Done (2026-11-04): `[install] textures_path` in settings.toml; Settings > Graphics shows the textures folder with Choose folder…
+and Use default folder beside Open textures folder, and a hint when the chosen folder is missing. The choice is checked
+(absolute, exists, a folder, not the data folder, not inside the renderer folder) and wins at Play over the default and over
+a folder not moved yet; a missing or unusable one falls back to the default with a log line and stays stored. The launcher
+never writes into a chosen folder (no folders created, nothing flattened), and CoreGS 2.0's shader cache goes to the data
+folder for a chosen folder (beside the default one as before). GSdx (`[Folders] Textures`), CoreGS 2.0 (`GT4_HW_TEXTURES`) and
+game.ini (`hw_textures`) all take the resolved folder. Commands `textures_state`, `choose_textures_folder`,
+`reset_textures_folder`. Locale keys 675 in both languages. Tests: launcher (7 new), focus checks 275/282, nav-test 209. Not run
+with a real pack yet. PR #145 and its study #155 recorded as merged (tree-neutral), issue #95 answered and closed.
 
 ### TASK-158 — Download GSdx again, or install it from an archive by hand (rc13; PR #143, issue #139)
 

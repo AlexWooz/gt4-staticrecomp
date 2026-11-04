@@ -45,6 +45,9 @@ open_player_folder
 open_saves_folder
 open_replays_folder
 open_textures_folder
+textures_state
+choose_textures_folder
+reset_textures_folder
 games_list
 select_game
 games_remove

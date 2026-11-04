@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use gt4l_core::display::{DisplayTarget, Size};
 use gt4l_core::launch::{self, LaunchInputs};
 use gt4l_core::settings::{self, Settings};
+use gt4l_core::textures::TextureLocation;
 
 fn env_map(pairs: &[(String, String)]) -> std::collections::BTreeMap<String, String> {
     pairs.iter().cloned().collect()
@@ -219,14 +220,14 @@ fn the_lines_of_the_shader_compile_are_read_and_anything_else_is_ignored() {
 #[test]
 fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     use gt4l_core::games;
-    let textures = Path::new(r"D:\data\Textures");
+    let textures = TextureLocation::default_folder(Path::new(r"D:\data\Textures"));
     let mut settings = Settings::default();
     assert!(!launch::uses_coregs20(&settings), "GSdx by default");
     settings.set("renderer", "coregs20").unwrap();
     assert!(launch::uses_coregs20(&settings), "the choice is shared by both games");
 
     let display = display_target(r"\\.\DISPLAY1", 1920, 1080);
-    let on = env_map(&launch::coregs20_environment(&settings, Some(&display), false, textures));
+    let on = env_map(&launch::coregs20_environment(&settings, Some(&display), false, &textures));
     assert_eq!(on["GT4_RENDERER"], "hw");
     assert_eq!(on["GT4_HW_CORE"], "2");
     assert_eq!(on["GT4_HW_SCALE"], "3", "the session plan's multiplier");
@@ -240,19 +241,19 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     assert!(!on.contains_key("GT4_HW_FRAMETIME_LOG"), "no frametime.csv in the session folder (owner, 2026-11-03)");
     assert!(!on.contains_key("GT4_FRAME_SKIP_FORCE"), "no fixed pattern unless the player asks for 30 FPS");
     assert_eq!(on["GT4_FRAME_SKIP"], "1", "TASK-146: 60 FPS leaves frames out in a race only when the PC falls behind");
-    assert!(launch::coregs20_section(&settings, Some(&display), false, textures).contains("hw_frame_skip_adaptive=1\n"));
+    assert!(launch::coregs20_section(&settings, Some(&display), false, &textures).contains("hw_frame_skip_adaptive=1\n"));
     assert!(!on.contains_key("GT4_CORE2_FSR_SHARPNESS"), "no sharpening by default");
     assert_eq!(on["GT4_PRESENT_MODE"], "fifo", "vsync On");
 
     // "Fast" is not a CoreGS 2.0 choice: a value stored for GSdx draws as On, and only there.
     settings.set("vsync", "fast").unwrap();
-    let stored_fast = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    let stored_fast = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
     assert_eq!(stored_fast["GT4_PRESENT_MODE"], "fifo");
-    assert!(launch::coregs20_section(&settings, None, false, textures).contains("hw_present_mode=fifo\n"));
+    assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_present_mode=fifo\n"));
     settings.set("vsync", "off").unwrap();
-    let vsync_off = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    let vsync_off = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
     assert_eq!(vsync_off["GT4_PRESENT_MODE"], "immediate", "Off stays a choice");
-    assert!(!launch::coregs20_section(&settings, None, false, textures).contains("hw_present_mode"));
+    assert!(!launch::coregs20_section(&settings, None, false, &textures).contains("hw_present_mode"));
     settings.set("vsync", "on").unwrap();
 
     settings.set_gs("performance_mode", "no-readbacks").unwrap();
@@ -260,7 +261,7 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     settings.set_gs("fxaa", "true").unwrap();
     settings.set("coregs_sharpening", "medium").unwrap();
     settings.set("frame_rate", "30").unwrap();
-    let tuned = env_map(&launch::coregs20_environment(&settings, None, true, textures));
+    let tuned = env_map(&launch::coregs20_environment(&settings, None, true, &textures));
     assert_eq!(tuned["GT4_CORE2_PERFORMANCE"], "1");
     assert_eq!(tuned["GT4_FRAME_SKIP_FORCE"], "2");
     assert!(!tuned.contains_key("GT4_FRAME_SKIP"), "30 FPS is the fixed pattern alone");
@@ -269,7 +270,7 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     assert_eq!(tuned["GT4_CORE2_FSR_SHARPNESS"], "0.2");
     assert_eq!(tuned["GT4_HW_SCALE"], "1", "the integrated GPU default of the session plan");
 
-    let section = launch::coregs20_section(&settings, Some(&display), false, textures);
+    let section = launch::coregs20_section(&settings, Some(&display), false, &textures);
     assert!(section.starts_with("renderer=coregs20\n"));
     assert!(section.contains("hw_scale=3\n") && section.contains("hw_performance=1\n") && section.contains("hw_postfx=fxaa\n"));
     assert!(section.contains("hw_sharpening=0.2\n"));
@@ -280,16 +281,16 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
 
 #[test]
 fn the_performance_hud_is_off_by_default_and_on_only_when_chosen() {
-    let textures = Path::new("T");
+    let textures = TextureLocation::default_folder(Path::new("T"));
     let mut settings = Settings::default();
     assert!(!settings.is_on("performance_hud"));
-    let off = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    let off = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
     assert!(!off.contains_key("GT4_HW_HUD"));
-    assert!(!launch::coregs20_section(&settings, None, false, textures).contains("hw_hud"));
+    assert!(!launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud"));
     settings.set("performance_hud", "on").unwrap();
-    let on = env_map(&launch::coregs20_environment(&settings, None, false, textures));
+    let on = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
     assert_eq!(on["GT4_HW_HUD"], "1");
-    assert!(launch::coregs20_section(&settings, None, false, textures).contains("hw_hud=1\n"));
+    assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud=1\n"));
     // It is CoreGS 2.0's own: GSdx has its overlay.
     assert!(!env_map(&game_environment(&settings)).contains_key("GT4_HW_HUD"));
 }
@@ -644,4 +645,31 @@ fn the_chosen_controller_reaches_the_game_as_gt4_pad_and_in_game_ini() {
     assert!(settings.set("controller", "not a controller").is_err());
     settings.set("controller", "auto").unwrap();
     assert_eq!(launch::controller_environment(&settings), None);
+}
+
+/// TASK-157: a folder the player chose reaches CoreGS 2.0 (`GT4_HW_TEXTURES`, `hw_textures`) and GSdx
+/// (`[Folders] Textures`), and the shader cache never goes beside it.
+#[test]
+fn a_chosen_textures_folder_reaches_the_renderers_and_the_shader_cache_stays_in_the_data_folder() {
+    let data = Path::new(r"D:\GT4Recomp\data");
+    let chosen = TextureLocation::custom_folder(Path::new(r"E:\Emulators\PCSX2\textures"), data);
+    let mut settings = Settings::default();
+    settings.set("renderer", "coregs20").unwrap();
+
+    let environment = env_map(&launch::coregs20_environment(&settings, None, false, &chosen));
+    assert_eq!(environment["GT4_HW_TEXTURES"], r"E:\Emulators\PCSX2\textures");
+    let cache = PathBuf::from(&environment["GT4_HW_SHADER_CACHE"]);
+    assert_eq!(cache, data.join("shader-cache"), "the cache comes from the data folder");
+    assert!(!cache.starts_with(r"E:\Emulators"), "nothing is written beside the player's folder");
+    assert!(launch::coregs20_section(&settings, None, false, &chosen).contains(&format!("hw_textures={}\n", chosen.folder.display())));
+
+    // The default folder keeps its cache where earlier versions put it, so existing caches stay valid.
+    let default = TextureLocation::default_folder(Path::new(r"D:\GT4Recomp\data\Textures"));
+    let environment = env_map(&launch::coregs20_environment(&settings, None, false, &default));
+    assert_eq!(PathBuf::from(&environment["GT4_HW_SHADER_CACHE"]), Path::new(r"D:\GT4Recomp\data").join("shader-cache"));
+
+    // GSdx: the same folder in `[Folders] Textures`.
+    let paths = launch::Pcsx2Paths { textures: chosen.folder.clone(), ..pcsx2_paths() };
+    let text = launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap();
+    assert!(text.contains(r"E:\Emulators\PCSX2\textures"), "{text}");
 }

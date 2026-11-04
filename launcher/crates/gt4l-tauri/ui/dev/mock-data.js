@@ -40,6 +40,16 @@
     { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10", variant: "", installed: gamesParam === "spec2" || gamesParam === "both",
       disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 6520944, image_bytes: 3683418112 }
   ];
+  // TASK-157: the textures folder choice of the mock (empty: the default folder).
+  var texturesChoice = "";
+  function texturesState() {
+    return {
+      path: texturesChoice,
+      default: "C:\\Program Files\\GT4Recomp\\data\\Textures",
+      custom: texturesChoice !== "",
+      valid: !/Missing/.test(texturesChoice)
+    };
+  }
   var selectedGame = query.get("selected") ||
     (GAME_TABLE.filter(function (game) { return game.installed; })[0] || GAME_TABLE[0]).id;
   var setupGame = null; // the game of the setup that runs (set by setup_choose_disc)
@@ -911,6 +921,15 @@
       case "open_latest_log":
       case "open_export_folder":
         return null;
+      case "textures_state":
+        return texturesState();
+      case "choose_textures_folder":
+        // The mock "picks" a folder, as the folder picker would. ?textures=missing shows the missing-folder hint.
+        texturesChoice = query.get("textures") === "missing" ? "D:\\Missing\\textures" : "D:\\PCSX2\\textures";
+        return texturesState();
+      case "reset_textures_folder":
+        texturesChoice = "";
+        return texturesState();
       case "export_logs":
         // The mock does not write a bundle: the player "cancelled" the folder choice.
         return null;

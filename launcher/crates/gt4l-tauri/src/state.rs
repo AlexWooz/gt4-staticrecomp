@@ -21,6 +21,7 @@ use gt4l_core::gs_table;
 use gt4l_core::launch;
 use gt4l_core::games::{self, Game, GT4};
 use gt4l_core::paths::{self, DataDirs, UserDirs};
+use gt4l_core::textures::{self, TextureLocation};
 use gt4l_disc::setup as disc_setup;
 use gt4l_disc::spec2 as disc_spec2;
 use gt4l_disc::{DiscGame, Pins, Spec2Pins};
@@ -380,7 +381,7 @@ impl AppState {
         let mut text = launch::standalone_config_text(settings, display.as_ref());
         if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
             let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
-            text.push_str(&launch::coregs20_section(settings, display.as_ref(), integrated, &self.dirs.textures()));
+            text.push_str(&launch::coregs20_section(settings, display.as_ref(), integrated, &self.texture_location().0));
         }
         if let Err(error) = fs::create_dir_all(&config_dir).and_then(|()| write_text_atomic(&game_ini, &text)) {
             log_error(&self.dirs, &format!("{} not written: {error}", game_ini.display()));
@@ -388,7 +389,7 @@ impl AppState {
         // gt4-gs.ini needs the installed GSdx only for its folders; without it the previous file stays.
         let renderer_root = self.dirs.renderer_root();
         if let Some(installed) = gs_release::installed(&renderer_root) {
-            let paths = launch::Pcsx2Paths::for_session(&installed, &self.dirs.renderer_install_root(), &config_dir, &self.dirs.textures());
+            let paths = launch::Pcsx2Paths::for_session(&installed, &self.dirs.renderer_install_root(), &config_dir, &self.texture_location().0.folder);
             let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
             match launch::gs_config_text(settings, &paths, display.as_ref(), integrated) {
                 Ok(text) => {
@@ -409,6 +410,12 @@ impl AppState {
 
     pub fn disc_path(&self) -> Option<&Path> {
         self.config.disc_path.as_deref()
+    }
+
+    /// Where the renderers read custom textures (TASK-157): the folder the player chose when it is usable, else the
+    /// default `Textures` folder. The second value is the log line for a choice that cannot be used (it stays stored).
+    pub fn texture_location(&self) -> (TextureLocation, Option<String>) {
+        textures::resolve_location(&self.dirs.textures(), self.config.textures_path.as_deref(), self.dirs.root())
     }
 }
 

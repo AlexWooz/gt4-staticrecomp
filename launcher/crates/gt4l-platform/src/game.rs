@@ -14,6 +14,7 @@ use gt4l_core::gs_release::Installed;
 use gt4l_core::gs_table;
 use gt4l_core::launch::{self, LaunchInputs, LaunchPlan, Pcsx2Paths, ShaderPrepareLine};
 use gt4l_core::lock::GameLock;
+use gt4l_core::textures::TextureLocation;
 use gt4l_core::paths::DataDirs;
 use gt4l_core::Settings;
 
@@ -40,7 +41,7 @@ pub fn prepare_shaders(
     game_executable: &Path,
     settings: &Settings,
     display: Option<&DisplayTarget>,
-    textures: &Path,
+    textures: &TextureLocation,
     child: &Mutex<Option<Child>>,
     progress: &mut dyn FnMut(u32, u32),
 ) -> Result<bool, String> {
@@ -97,7 +98,7 @@ pub fn start(
     settings: &Settings,
     pcsx2: Option<&Installed>,
     display: Option<&DisplayTarget>,
-    textures: &Path,
+    textures: &TextureLocation,
     extra_environment: &[(String, String)],
 ) -> Result<Running, String> {
     let lock = GameLock::acquire(&dirs.runtime_card().with_file_name("launcher.lock"))
@@ -123,7 +124,7 @@ pub fn start(
     let integrated = crate::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
     let mut plan = match pcsx2 {
         Some(pcsx2) => {
-            let paths = Pcsx2Paths::for_session(pcsx2, &dirs.root().join("gs"), &session_dir, textures);
+            let paths = Pcsx2Paths::for_session(pcsx2, &dirs.root().join("gs"), &session_dir, &textures.folder);
             let text = launch::gs_config_text(settings, &paths, display, integrated)?;
             gs_table::write_ini_atomic(&paths.config, &text).map_err(|error| format!("gt4-gs.ini: {error}"))?;
             launch::plan_pcsx2_launch(&inputs, settings, &paths, display, &inherited)
