@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use gt4l_core::games;
 use gt4l_core::log_export::{self, Entry, GpuFact, SystemFacts, KEPT_FOR_EXPORT};
 use gt4l_core::logs;
+use gt4l_core::shader_prepare;
 
 use crate::state::AppState;
 
@@ -39,6 +40,12 @@ pub(crate) fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
     // TASK-170: the last shader prepare step (gt4.exe --prepare-shaders writes its stderr there): where a compile stopped.
     if let Ok(text) = fs::read_to_string(logs_dir.join("shaders.log")) {
         entries.push(Entry { path: "logs/shaders.log".to_string(), text });
+    }
+
+    // TASK-170b: the shader guard files of the shader cache (variants quarantined, variants in flight when a run stopped),
+    // as a readable listing. Nothing else from the cache folder goes in.
+    if let Some(text) = shader_guard_listing(state.texture_location().0.shader_cache.as_deref()) {
+        entries.push(Entry { path: "logs/shader-guard.txt".to_string(), text });
     }
 
     // The newest launcher session logs (the legacy 1.2.x file counts as one of them).
@@ -79,6 +86,14 @@ pub(crate) fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
 
     entries.push(Entry { path: "system.txt".to_string(), text: log_export::system_text(&system_facts(state)) });
     Ok(entries)
+}
+
+/// The readable listing of `quarantine.bin` and `compiling.bin` in the shader cache `folder`, if either exists.
+pub(crate) fn shader_guard_listing(folder: Option<&Path>) -> Option<String> {
+    let folder = folder?;
+    let quarantine = fs::read(folder.join(shader_prepare::QUARANTINE_FILE)).ok();
+    let compiling = fs::read(folder.join(shader_prepare::COMPILING_FILE)).ok();
+    shader_prepare::guard_listing(quarantine.as_deref(), compiling.as_deref())
 }
 
 /// The facts of `system.txt`, read now.

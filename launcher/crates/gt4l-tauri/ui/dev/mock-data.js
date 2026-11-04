@@ -730,6 +730,13 @@
         setup.problem = "Setup was cancelled. Nothing was changed.";
         return null;
       case "prepare_shaders":
+        // Demo: ?shaders=retry counts a prepare that stops twice (TASK-170b): attempts 1 and 2 end at 40 and 90 of 200.
+        if (query.get("shaders") === "retry") {
+          [[40, 1], [90, 2], [0, 3]].forEach(function (step, index) {
+            setTimeout(function () { emit("shaders-progress", { done: step[0], total: 200, attempt: step[1] }); }, 400 * (index + 1));
+          });
+          return new Promise(function (resolve) { setTimeout(function () { resolve(true); }, 1800); });
+        }
         return true;
       case "cancel_shader_prepare":
         return null;

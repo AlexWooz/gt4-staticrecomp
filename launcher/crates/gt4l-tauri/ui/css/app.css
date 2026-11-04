@@ -872,6 +872,9 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 .shader-bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; margin-bottom: 8px; }
 .shader-bar-fill { height: 100%; width: 0; background: var(--silver); transition: width 0.15s linear; }
 .shader-count { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+/* TASK-170b: "attempt N" under the count while the prepare runs again; nothing on the first attempt. */
+.shader-retry { color: var(--dim); font-size: 13px; margin: -10px 0 18px; }
+.shader-retry:empty { display: none; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 .option-list {
   border-top: 1px solid var(--hair); margin-bottom: 8px; max-height: 340px; overflow-y: auto;

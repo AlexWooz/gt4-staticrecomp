@@ -17,6 +17,7 @@ use gt4l_core::gs_release;
 use gt4l_core::launch;
 use gt4l_core::paths::{self, DataDirs};
 use gt4l_core::settings;
+use gt4l_core::shader_prepare::{GaveUp, PrepareOutcome};
 use gt4l_core::{Settings, LAUNCHER_VERSION};
 use gt4l_disc::setup::{self as disc_setup, Installed};
 use gt4l_platform::game;
@@ -734,22 +735,38 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
     let monitors = gt4l_platform::display::monitors();
     let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
     let mut worked = false;
-    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &mut |done, total| {
+    let cancelled = { lock(&shared).shaders_cancelled.clone() };
+    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &mut |progress| {
         worked = true;
-        let _ = app.emit("shaders-progress", json!({ "done": done, "total": total }));
+        let _ = app.emit("shaders-progress", json!({ "done": progress.done, "total": progress.total, "attempt": progress.attempt }));
     });
     let state = lock(&shared);
     if state.shaders_cancelled.load(Ordering::SeqCst) {
         state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
         return Ok(false);
     }
-    match result {
-        Ok(true) if worked => state::log(&state.dirs, "shaders: compiled"),
-        Ok(true) => {}
-        Ok(false) => state::log_error(&state.dirs, "shaders: the compile did not finish; the game compiles as it plays (logs\\shaders.log)"),
-        Err(message) => state::log_error(&state.dirs, &format!("shaders: {message}")),
-    }
+    log_prepare_outcome(&state.dirs, &result, worked);
     Ok(true)
+}
+
+/// What the log says about a prepare (TASK-170b): a finished one, a retried one, or the reason the game starts without it
+/// (it then compiles as it plays).
+fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<PrepareOutcome, String>, worked: bool) {
+    match result {
+        Ok(PrepareOutcome::Finished { attempts }) if *attempts > 1 => {
+            state::log(dirs, &format!("shaders: compiled after {attempts} attempts (logs\\shaders.log)"));
+        }
+        Ok(PrepareOutcome::Finished { .. }) if worked => state::log(dirs, "shaders: compiled"),
+        Ok(PrepareOutcome::Finished { .. }) | Ok(PrepareOutcome::Cancelled { .. }) => {}
+        Ok(PrepareOutcome::GaveUp { attempts, why }) => {
+            let reason = match why {
+                GaveUp::NoProgress => "the last attempt got no further",
+                GaveUp::LimitReached => "the attempt limit was reached",
+            };
+            state::log_error(dirs, &format!("shaders: the compile did not finish after {attempts} attempts, {reason}; the game compiles as it plays (logs\\shaders.log)"));
+        }
+        Ok(PrepareOutcome::Failed { message, .. }) | Err(message) => state::log_error(dirs, &format!("shaders: {message}")),
+    }
 }
 
 /// Cancel in the "Compiling shaders" window. What was compiled stays in the cache for the next Play.

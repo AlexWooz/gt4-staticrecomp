@@ -1851,6 +1851,57 @@ fn play_names_the_first_start_keys_until_the_game_has_a_save() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A guard file as the renderer writes it (`GuardFileHeader` in core2_gpu.cpp) with 3-word keys.
+fn synthetic_guard_file(flags: u32, keys: &[[u32; 3]]) -> Vec<u8> {
+    let mut bytes = b"GT4GRD1\0".to_vec();
+    bytes.extend_from_slice(&0xA1B2_C3D4_E5F6_0718u64.to_le_bytes());
+    for value in [0x1002u32, 0x73df, 0x0003_0002, 3, flags, keys.len() as u32] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    for word in keys.iter().flatten() {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn the_log_bundle_lists_the_shader_guard_files_and_nothing_else_of_the_cache() {
+    // TASK-170b: quarantine.bin and compiling.bin of the shader cache become logs/shader-guard.txt (header fields, keys as hex);
+    // the binary files and the rest of the cache folder never go in.
+    let (root, dirs, _pins, shared) = new_install("bundle-shader-guard");
+    let cache = lock(&shared).texture_location().0.shader_cache.expect("a shader cache folder");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("quarantine.bin"), synthetic_guard_file(1, &[[0x11, 0x22, 0x33], [0xcafe, 0, 1]])).unwrap();
+    fs::write(cache.join("compiling.bin"), synthetic_guard_file(0, &[[7, 8, 9]])).unwrap();
+    fs::write(cache.join("variants.bin"), b"pipeline cache bytes").unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let guard = entries.iter().find(|entry| entry.path == "logs/shader-guard.txt").expect("logs/shader-guard.txt in the bundle");
+    assert!(guard.text.contains("quarantine.bin") && guard.text.contains("compiling.bin"));
+    assert!(guard.text.contains("a1b2c3d4e5f60718") && guard.text.contains("vendor 1002, device 73df"));
+    assert!(guard.text.contains("00000011 00000022 00000033") && guard.text.contains("0000cafe 00000000 00000001"));
+    assert!(guard.text.contains("00000007 00000008 00000009"));
+    assert!(entries.iter().all(|entry| !gt4l_core::log_export::is_forbidden(&entry.path)), "listing is text, not a .bin");
+    assert!(entries.iter().all(|entry| !entry.text.contains("pipeline cache bytes")), "nothing else of the cache");
+    drop(dirs);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_log_bundle_names_a_damaged_guard_file_and_has_no_listing_without_files() {
+    let (root, _dirs, _pins, shared) = new_install("bundle-shader-guard-damaged");
+    let none = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    assert!(none.iter().all(|entry| entry.path != "logs/shader-guard.txt"));
+    let cache = lock(&shared).texture_location().0.shader_cache.expect("a shader cache folder");
+    fs::create_dir_all(&cache).unwrap();
+    let mut damaged = synthetic_guard_file(0, &[[1, 2, 3]]);
+    damaged.truncate(damaged.len() - 2);
+    fs::write(cache.join("quarantine.bin"), damaged).unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let guard = entries.iter().find(|entry| entry.path == "logs/shader-guard.txt").expect("a damaged file is still named");
+    assert!(guard.text.contains("quarantine.bin") && guard.text.contains("damaged"));
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn the_log_bundle_carries_the_shader_prepare_log() {
     // TASK-170: a compile that stops (a driver that ends the process) is named in logs/shaders.log; bug reports need it.

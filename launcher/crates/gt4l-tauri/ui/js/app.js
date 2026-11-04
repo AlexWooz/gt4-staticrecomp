@@ -73,9 +73,11 @@
     GT4.ui.toast(payload && payload.message ? payload.message : GT4.t("app.update_finished"), !(payload && payload.ok));
   });
   // IN-507: Play found shaders to compile. The window stays until Play goes on (GT4.closeShaderWindow, js/pages/home.js).
+  // The payload is {done, total, attempt}; `attempt` above 1 is a retry after the game program stopped (TASK-170b).
   var shaderWindow = null;
   var shaderBar = null;
   var shaderCount = null;
+  var shaderRetry = null;
   GT4.closeShaderWindow = function () {
     if (shaderWindow) {
       shaderWindow.close();
@@ -88,10 +90,11 @@
     if (!shaderWindow) {
       shaderBar = GT4.ui.h("div", { class: "shader-bar-fill" });
       shaderCount = GT4.ui.h("p", { class: "shader-count" });
+      shaderRetry = GT4.ui.h("p", { class: "shader-retry" });
       shaderWindow = GT4.ui.openDialog({
         title: GT4.t("shaders.title"),
         text: GT4.t("shaders.text"),
-        body: GT4.ui.h("div", {}, [GT4.ui.h("div", { class: "shader-bar" }, [shaderBar]), shaderCount]),
+        body: GT4.ui.h("div", {}, [GT4.ui.h("div", { class: "shader-bar" }, [shaderBar]), shaderCount, shaderRetry]),
         dismissable: false,
         buttons: [{
           label: GT4.t("common.cancel"),
@@ -104,6 +107,9 @@
     }
     shaderBar.style.width = (total > 0 ? Math.round(done * 100 / total) : 0) + "%";
     shaderCount.textContent = GT4.t("shaders.count", { done: done, total: total });
+    // TASK-170b: the game program stopped inside a compile and the launcher runs it again; attempt 1 is the plain first run.
+    var attempt = (payload && payload.attempt) || 1;
+    shaderRetry.textContent = attempt > 1 ? GT4.t("shaders.retry", { attempt: attempt }) : "";
   });
   GT4.backend.listen("renderer-progress", function (payload) {
     // The setup page draws its own renderer row; these toasts are for the retry at a later launch and updates.

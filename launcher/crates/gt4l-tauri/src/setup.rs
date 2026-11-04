@@ -15,6 +15,7 @@ use gt4l_core::gpu::GpuDevice;
 use gt4l_core::gs_release::Step;
 use gt4l_core::launch::{self, SetupRenderer};
 use gt4l_core::paths::{self, DataDirs};
+use gt4l_core::shader_prepare::PrepareOutcome;
 use gt4l_core::{display, settings};
 use gt4l_core::LAUNCHER_VERSION;
 use gt4l_disc::identify::{identify, DiscGame};
@@ -77,9 +78,13 @@ pub fn coregs20_on_this_pc() -> Coregs20Check {
         }
         let monitors = gt4l_platform::display::monitors();
         let display = display::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
-        match gt4l_platform::game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, progress) {
-            Ok(true) => true,
-            Ok(false) => {
+        let cancelled = lock(shared).shaders_cancelled.clone();
+        cancelled.store(false, Ordering::SeqCst);
+        // The setup page counts the shaders; a retry (TASK-170b) simply counts again.
+        let mut count = |step: gt4l_platform::game::PrepareProgress| progress(step.done, step.total);
+        match gt4l_platform::game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &mut count) {
+            Ok(PrepareOutcome::Finished { .. }) => true,
+            Ok(_) => {
                 state::log_warn(&dirs, "setup: CoreGS 2.0 did not start on this card (logs\\shaders.log)");
                 false
             }
