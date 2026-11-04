@@ -2930,3 +2930,24 @@ stays only as the value before anything is stored (a fresh install). Checks: lau
 pt-BR 282, nav-test 209 (headless Edge), locale keys 664 in both.
 
 State (2026-11-04, owner): done; the controller choice works on the owner's PCs. Ships in 1.3.0-rc12.
+
+### TASK-149 — CoreGS 2.0: the Nordschleife fences do not load their textures properly (rc13)
+
+Owner (2026-11-04): on CoreGS 2.0 the fence textures along the Nordschleife do not load properly. Reference: GSdx (final frames
+only, clean room). Recording: `nordschleife-fences` (Spec II, card `spec2-replays-20261104`: this PC's Spec II save and the five
+Spec II replays of both PCs), a saved race replay played through the fences. Method: the TASK-139 bug hunt
+(`procedures/coregs2-replay-bench` in ai-memory). State: recording pending (owner), then investigation.
+
+### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13)
+
+Owner (2026-11-04, NVIDIA RTX at 3440x1440, CoreGS 2.0 6x): the used-car showroom (the car turning) runs at about 55 FPS with
+frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `avell-gt4-20261104`, the owner's GT4 save from
+the laptop), the showroom left on the turning car. Measure with a window run (`WINDOW=1`, `PACED_FROM`), then attack the
+largest cost in the `[core2]` accounting. State: recording pending (owner).
+
+### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13)
+
+Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
+and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording: `photo-mode` (v2.00, card
+`avell-gt4-20261104`), a Photo Travel location with the camera screen open. Check on both renderers frame by frame
+(`frame_compare.py`); the flicker may depend on the GPU (seen on NVIDIA; this PC has AMD). State: recording pending (owner).
