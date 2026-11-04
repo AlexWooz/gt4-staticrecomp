@@ -694,12 +694,13 @@ Measured on the Avell at 6x (the same lap, order rotated, the switch checked in 
 alone (Performance Mode's one-download-late answer, `delayed downloads on, flares hidden off`, 5,713 answers delayed), the wait at
 the download is 0 and the wall falls from 15.9-17.1 to 14.6-14.7 ms per VBlank (frame p50 17.1-17.9 -> 15.5-15.6 ms), with the GPU
 busy 14.1 ms. Process CPU per VBlank rises (23.7-25.3 -> 29.3-31.7 ms headless) because nothing waits any more. In the faithful
-mode the answer stays exact: the flare table reaches the game in the same frame. Whether the one-frame-late flare answer counts as
-an imperceptible change (decision 0073's rule for the normal mode) is the owner's decision, not this task's.
+mode the answer stays exact: the flare table reaches the game in the same frame. **Owner decision (2026-11-04): no.** The normal mode keeps the
+exact answer: a late flare answer was tried during the CoreGS 2.0 work and did not look right; players who want the speed have
+Performance Mode, which hides the flares.
 
 ### Close
 
 TASK-134 is closed. Kept over the three rounds: everything in sections 8 (rc9) and the second round (slice395). Measured and
 dropped: the table above and section 8's list. Left, each its own task if it is ever started: TASK-168 (several palettes in one
 batch, the largest lever on the GS thread), P8 (the translator), a CoreGS 2.0 submission thread, and the owner's decision on the
-per-frame download in the normal mode. Performance numbers come from the Avell from now on (owner, 2026-11-04).
+per-frame download in the normal mode (decided: it stays exact). Performance numbers come from the Avell from now on (owner, 2026-11-04).
