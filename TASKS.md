@@ -3180,10 +3180,11 @@ launcher refuses it today with "a different game program than Spec II v1.10".
   Spec II build plus tests; the image's own assets need their own checks.
 - State (2026-11-04): recorded; not in rc14. The owner decides if and when (players can also update their image to 1.10).
 
-### TASK-173 — Spec II: any image with 1.10's code installs, marked Tested or Not tested (owner, 2026-11-04; done in rc14)
+### TASK-173 — Spec II: any image with 1.10's code installs (owner, 2026-11-04; done in rc14)
 
-Owner request: support the Spec II 1.10 images people make (translations, car packs) without naming each one, refuse anything
-that is not 1.10, and show which images we tested. Compared on 2026-11-04 (coordinator, three images: PT-BR 1.10, PT-BR + CPSP,
+Owner request: support the Spec II 1.10 images people make (translations, car packs) without naming each one, and refuse
+anything that is not 1.10. A Tested / Not tested badge was tried and dropped the same day (owner: a compatible image works, an
+incompatible one is refused, so there is nothing more to say). Compared on 2026-11-04 (coordinator, three images: PT-BR 1.10, PT-BR + CPSP,
 the earlier release of TASK-172): only `SCUS_974.36` and `GT4.VOL` differ between them; the 30 IOP modules (`IRX`), `SYSTEM.CNF`,
 `NET`, `EPSON` and `DNAS310.IMG` are byte-identical. The executable holds the whole Spec II plugin, so the executable and the
 IOP modules are the game's code; an image is Spec II 1.10 exactly when both match the pins, and only its data can differ.
@@ -3191,14 +3192,11 @@ IOP modules are the game's code; an image is Spec II 1.10 exactly when both matc
 - Rule (`launcher/crates/gt4l-disc/src/spec2.rs`): the precheck keeps the executable check and now also reads every module in
   `docs/inputs/spec2-variants.json` `iop_modules` (path, size, SHA-256; read from the PT-BR image) and refuses the image when one
   is missing or differs (the same "different game program than Spec II v1.10" message). An accepted image with a pinned full
-  hash is **Tested** (`qualified_dump`); any other is **Not tested** ("Spec II 1.10 variant" in the log).
-- Launcher: a badge after the game's title on Settings > Games and under the disc step when a setup is done, green "Tested" or
-  amber "Not tested", with a help text (both languages). Gran Turismo 4 v2.00 installs only from the pinned dump, so it is
-  always Tested.
+  hash keeps its name; any other is a "Spec II 1.10 variant" (log and receipt), shown as "other image" as before.
 - ISO reader: `Iso::find_path` finds files inside a folder (`IRX/PADMAN.IRX;1`); the synthetic test ISO takes one folder level.
 - Acceptance: `gt4l-disc` tests (a changed, missing or shorter module is refused; the same module passes; files found by path;
   the real PT-BR and PT-BR + CPSP images pass with `GT4_FULL_HASH=1`, the earlier release is refused with
-  `GT4_SPEC2_EARLIER_ISO`); the launcher's tests; focus checks in both languages (the badge on the Games page and in setup).
+  `GT4_SPEC2_EARLIER_ISO`); the launcher's tests; focus checks in both languages.
 - State (2026-11-04): done in rc14.
 
 ### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word

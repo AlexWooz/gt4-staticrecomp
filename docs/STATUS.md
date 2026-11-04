@@ -3,8 +3,7 @@
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader
-compile guard and `shaders.log` in the log bundle (TASK-170), and Spec II images accepted by their code with a Tested or Not
-tested badge (TASK-173). PGO build of both games from `build/cam360/*-units-rc14b`, gates against rc13, then the pre-release
+compile guard and `shaders.log` in the log bundle (TASK-170), and Spec II images accepted by their code (TASK-173). PGO build of both games from `build/cam360/*-units-rc14b`, gates against rc13, then the pre-release
 `v1.3.0-rc14` (the owner's word given). Next: TASK-171 (the first license on laptops) for rc15. Recorded: TASK-172 (an earlier
 Spec II release needs its own build).
 

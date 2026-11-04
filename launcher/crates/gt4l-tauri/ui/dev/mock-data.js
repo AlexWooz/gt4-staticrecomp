@@ -12,7 +12,6 @@
  *   pick=other                                      (setup: the picker returns the other game's disc, a mismatch)
  *   pick=spec2                                      (setup: the picker returns a Spec II disc)
  *   games=gt4|spec2|both|none                       (which games are installed; default gt4: Spec II shows Install)
- *   spec2image=other                                (the installed Spec II image is not a known one: "Not tested")
  *   selected=spec2                                  (the game the home screen starts on)
  *   running=1                                       (game running at start)
  *   focus=play                                      (home: focus the Play button, for screenshots)
@@ -38,10 +37,8 @@
   var gamesParam = query.get("games") || "gt4";
   var GAME_TABLE = [
     { id: "gt4", name: "Gran Turismo 4", title: "Gran Turismo 4", variant: "USA v2.00", installed: gamesParam === "gt4" || gamesParam === "both",
-      tested: true, disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 18000000, image_bytes: 5314478080 },
-    { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10",
-      variant: query.get("spec2image") === "other" ? "other image" : "", tested: query.get("spec2image") !== "other",
-      installed: gamesParam === "spec2" || gamesParam === "both",
+      disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 18000000, image_bytes: 5314478080 },
+    { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10", variant: "", installed: gamesParam === "spec2" || gamesParam === "both",
       disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 6520944, image_bytes: 3683418112 }
   ];
   // TASK-157: the textures folder choice of the mock (empty: the default folder).
@@ -66,7 +63,6 @@
       any_installed: GAME_TABLE.some(function (game) { return game.installed; }),
       games: GAME_TABLE.map(function (game) {
         return { id: game.id, name: game.name, title: game.title, variant: game.installed ? game.variant : "",
-          tested: game.installed && game.tested,
           installed: game.installed, damaged: false, reason: "",
           selected: game.id === selectedGame, disc_name: game.installed ? game.disc_name : "",
           folder: "C:\\Program Files\\GT4Recomp\\data\\games\\" + game.id,

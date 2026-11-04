@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "schema": "spec2-variants/1",
-  "purpose": "Spec II 1.10's code and the known disc images of it (TASK-101, TASK-173, docs/MULTI-GAME-LAUNCHER-PLAN.md). An image is Spec II 1.10 when its SCUS_974.36 is the pinned executable (spec2-iso.json, spec2-elf.json; it holds the whole mod plugin) and every file in iop_modules has the pinned identity: then the game runs 1.10's code and only the data (GT4.VOL) can differ. The launcher installs such an image; the named images are shown as tested, any other as not tested. Anything else is refused.",
+  "purpose": "Spec II 1.10's code and the known disc images of it (TASK-101, TASK-173, docs/MULTI-GAME-LAUNCHER-PLAN.md). An image is Spec II 1.10 when its SCUS_974.36 is the pinned executable (spec2-iso.json, spec2-elf.json; it holds the whole mod plugin) and every file in iop_modules has the pinned identity: then the game runs 1.10's code and only the data (GT4.VOL) can differ. The launcher installs such an image (a named one by its name, any other as a \"Spec II 1.10 variant\"); anything else is refused.",
   "executable": {
     "name": "SCUS_974.36",
     "size_bytes": 6520944,

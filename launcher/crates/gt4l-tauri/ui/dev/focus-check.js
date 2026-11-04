@@ -824,14 +824,6 @@
       installedDetail.indexOf(T("games.installed") + " · USA v2.00 · ") === 0 && installedDetail.indexOf("Gran Turismo") < 0, installedDetail);
     check("Spec II is titled with its supported version", rows[1].querySelector(".k span").textContent === "Gran Turismo 4 Spec II v1.10",
       rows[1].querySelector(".k span").textContent);
-    // TASK-173: an installed known image says Tested; a game that is not installed has no badge.
-    var testedBadge = rows[0].querySelector(".tested-badge");
-    check("an installed known image shows the Tested badge", !!testedBadge && testedBadge.textContent === T("games.tested") &&
-      testedBadge.classList.contains("is-tested") && testedBadge.title === T("games.tested_help"), testedBadge ? testedBadge.textContent : "no badge");
-    check("a game that is not installed has no tested badge", !rows[1].querySelector(".tested-badge"), "badge on a game that is not installed");
-    var untested = GT4.games.testedBadge(false);
-    check("an image with the supported code but not a known hash shows Not tested", untested.textContent === T("games.not_tested") &&
-      untested.classList.contains("is-untested") && untested.title === T("games.not_tested_help"), untested.textContent);
     var other = Array.prototype.map.call(rows[1].querySelectorAll("button"), function (b) { return b.textContent; });
     check("a game that is not installed offers Install", other.join("|") === T("common.install"), other.join("|"));
     rows[0].querySelectorAll("button")[1].click();
@@ -1675,17 +1667,6 @@
       current = Object.assign({}, current, { renderer_choice: "gsdx_fallback" });
       await wait(900);
       check("the last step says why GSdx was needed", lastStep().indexOf(T("setup.renderer_ready_gsdx")) >= 0, lastStep());
-      // TASK-173: when the setup is done, the disc step says whether the image is one we tested.
-      current = Object.assign({}, current, { tested: false });
-      await wait(900);
-      var stepBadge = scratch.querySelector(".steps li .tested-badge");
-      check("a finished setup of an unknown image with the supported code says Not tested",
-        !!stepBadge && stepBadge.textContent === T("games.not_tested"), stepBadge ? stepBadge.textContent : "no badge");
-      current = Object.assign({}, current, { tested: true });
-      await wait(900);
-      stepBadge = scratch.querySelector(".steps li .tested-badge");
-      check("a finished setup of a known image says Tested", !!stepBadge && stepBadge.textContent === T("games.tested"),
-        stepBadge ? stepBadge.textContent : "no badge");
     } finally {
       if (handle) {
         handle.destroy();

@@ -51,7 +51,7 @@ pub struct Spec2Pins {
     pub executable: Identity,
     /// The program after the injector words and the data-segment split: what the translator reads.
     pub derived: Identity,
-    /// Known full images, by name (tested). Another image with 1.10's code is a "Spec II 1.10 variant" (not tested).
+    /// Known full images, by name. Another image with 1.10's code is a "Spec II 1.10 variant".
     pub known_images: Vec<KnownImage>,
     /// The IOP modules of 1.10 (TASK-173): with the executable they are the game's code, so an image is Spec II 1.10 only
     /// when each of them is on it with this identity.
