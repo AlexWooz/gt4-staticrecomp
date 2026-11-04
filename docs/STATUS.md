@@ -1,5 +1,23 @@
 # Current Status
 
+## 1.3.0-rc13 test build on the owner's desktop and laptop (2026-11-04, night)
+
+For the owner's test suite before any pre-release. Contents: TASK-149 (an upload over a mip level draws the pending batch
+first: the Nordschleife's far fences), TASK-151 (the display prefers the circuit's width: photo mode no longer black every
+other picture), and the contributor pull requests re-done by hand with Luan Antony as co-author: TASK-152 (#120 PCSX2 cards),
+TASK-153 (#116 delete the active save), TASK-154 (#121 ReShade's Home key with GSdx), TASK-155 (#136 portable.ini beside
+gt4-gs), TASK-156 (#141 Wine audio profile, `GT4_AUDIO_LATENCY_MS`), TASK-157 (#145 custom textures folder), TASK-158 (#143
+GSdx retry and install from a file). Each PR recorded as merged on `main` (tree-neutral) and its issue answered.
+
+Games slice403, plain (pins `docs/inputs/slice403-*.json`, exe `b2f12a10...` v2.00, `d16acc88...` Spec II; distribution
+`private/slice403-dist-130-rc13-test`), launchers labelled rc13 (`private/slice403-launchers-rc13-test`), installer
+`private/slice403-installer-130-rc13-test/GT4Recomp-Setup-1.3.0-rc13.exe`. Gates against rc12 (`gates4.sh`): race clock,
+simulation state and every compared frame identical, VU1/VU0 and MTVU checks 0 differences. Launcher tests 659, focus checks
+278/285, nav-test 209, locale keys 687 in both. Desktop updated through the installer's update mode (rc12 test files in
+`private/_program-backups/rc12test-before-rc13test-20261104T064835Z`); the laptop's portable copy updated in place (backup
+`avell-rc12test-before-rc13test-20261104T064859Z`). Still open for rc13: TASK-150 (showroom frame times) and TASK-151's frame
+times: both scenes read GS memory back (the showroom every other frame, photo mode every frame) and wait for the GPU.
+
 ## 1.3.0-rc12 built with PGO and published as a pre-release (2026-11-04, night)
 
 On the owner's word ("a rc12 atual assim que buildar, vc já sobe como pre-release"): TASK-145 to TASK-148 on top of rc11. Games
