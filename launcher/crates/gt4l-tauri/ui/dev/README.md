@@ -49,6 +49,7 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `reset_gs_settings_to_defaults` | none | `{max_upscale, rows}` |
 | `gsdx_download_needed` | none | bool: choosing GSdx now needs a download (false before setup, which installs it) |
 | `download_gsdx` | none | installs GSdx with `gsdx-download` events; an error is the notice to show |
+| `install_gsdx_archive` | none | the download failed: opens a `.zip` picker and installs the package named `gt4-gs-<version>-windows-x64.zip` after checking it against the `SHA256SUMS` of its release (fetched online); `null` when the picker was cancelled, an error is the text to show; same `gsdx-download` events |
 | `coregs20_offer` | none | bool: Play should offer CoreGS 2.0 first (issues #139 and #179): GSdx is the stored renderer, it is not installed, and the card this PC would use has Vulkan 1.2. False in every other case, so the plain "GSdx is not installed yet" message stays on a PC without Vulkan 1.2 |
 | `use_coregs20` | none | none; CoreGS 2.0 becomes the stored renderer (the same rule as after a GSdx failure); an error is the text to show |
 | `get_controls` | none | `{controls: [{id, name, binding, sources, xinput, key, is_default}], triggers: [row], locked}`; `id` is the input of the controls file (`cross`, `dpad_up`, `l2`...), `sources` the raw sources (`xinput:A`, `key:Z`), `xinput`/`key` the first of each family or null; `triggers` holds the analog rows (below); `locked` is true when the file comes from a newer launcher and is kept read-only |

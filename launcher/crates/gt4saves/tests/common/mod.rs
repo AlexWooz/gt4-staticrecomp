@@ -41,10 +41,11 @@ pub fn replay(number: u32) -> Node {
     dir(&format!("BASCUS-97328R{number:04}"), vec![file("replay.rep", pattern(3000, number as u8))])
 }
 
-/// A data-only image of a card with `clusters` clusters. The allocation area runs from `alloc_offset` to `alloc_end`
-/// (physical clusters). The FAT lives at physical clusters 9 and up, so `alloc_offset` must lie after it.
+/// A data-only image of a card with `clusters` clusters. The allocation area starts at physical cluster `alloc_offset`
+/// and holds `alloc_end` relative clusters (capped by the room on the card). The FAT lives at physical clusters 9 and up,
+/// so `alloc_offset` must lie after it.
 pub fn synth(clusters: u32, alloc_offset: u32, alloc_end: u32, items: &[Node]) -> Vec<u8> {
-    let usable = alloc_end - alloc_offset;
+    let usable = alloc_end.min(clusters - alloc_offset);
     let fat_clusters = usable.div_ceil(256);
     assert!(fat_clusters <= 256 && 9 + fat_clusters <= alloc_offset, "layout does not fit the synthetic card");
     let mut image = vec![0xFFu8; clusters as usize * CLUSTER];

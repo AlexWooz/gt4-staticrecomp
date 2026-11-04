@@ -543,8 +543,14 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     lock(&shared).write_standalone_files(&settings);
     let card = dirs.runtime_card();
     saves::prepare_card(lock(&shared).library_of(game), &card, language)?;
-    let textures = lock(&shared).dirs.textures();
-    paths::ensure_texture_folders(&textures).map_err(|error| format!("texture folder: {error}"))?;
+    let (textures, textures_note) = lock(&shared).texture_location();
+    if let Some(note) = &textures_note {
+        state::log_warn(&dirs, note);
+    }
+    // TASK-157: a folder the player chose is read in place, never created or written to.
+    if !textures.custom {
+        paths::ensure_texture_folders(&textures.folder).map_err(|error| format!("texture folder: {error}"))?;
+    }
     let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
@@ -716,7 +722,7 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
         state.shaders_cancelled.store(false, Ordering::SeqCst);
         let game = state.selected;
         let game_dir = paths::game_directory(&program_directory(), state.config.dev_game_dir.as_deref());
-        (state.config.settings.clone(), game, state.game_dirs(game), state.dirs.textures(), launch::game_program(game, &game_dir), state.shaders_child.clone(), state::language_of(&state))
+        (state.config.settings.clone(), game, state.game_dirs(game), state.texture_location().0, launch::game_program(game, &game_dir), state.shaders_child.clone(), state::language_of(&state))
     };
     if !executable.exists() {
         return Ok(true);
@@ -1212,7 +1218,12 @@ fn delete_item(id: &str, shared: &Shared, kind: Kind) -> Result<LibraryView, Str
         .into_iter()
         .find(|item| item.name == name)
         .ok_or_else(|| messages::text("saves.item_not_in_library", language).to_string())?;
-    let result = saves::delete(library, &item);
+    if item.active && state.game_child.is_some() {
+        return Err(messages::text("saves.delete_game_running", language).to_string());
+    }
+    let card = state.game_dirs(game).runtime_card();
+    let library = state.library_of(game);
+    let result = saves::delete(library, &item, &card);
     let status = match result {
         Ok(()) => format!("{} moved to the Recycle Bin.", item.label),
         Err(message) => message,
@@ -1624,9 +1635,82 @@ pub fn open_replays_folder(shared: State<'_, Shared>) -> Result<(), String> {
 /// drop a pack in (TASK-088; TASK-093: the pack goes straight in, no replacements subfolder).
 #[tauri::command]
 pub fn open_textures_folder(shared: State<'_, Shared>) -> Result<(), String> {
-    let folder = lock(shared.inner()).dirs.textures();
-    paths::ensure_texture_folders(&folder).map_err(|error| error.to_string())?;
-    open_folder(&folder)
+    let (location, _) = lock(shared.inner()).texture_location();
+    // TASK-157: a folder the player chose is opened as it is, never created.
+    if !location.custom {
+        paths::ensure_texture_folders(&location.folder).map_err(|error| error.to_string())?;
+    }
+    open_folder(&location.folder)
+}
+
+/// What the page shows of the textures folder choice (TASK-157): `path` is the stored choice (empty for the default),
+/// `default` the default folder, `valid` whether the choice can be used now (a missing folder falls back to the default).
+fn textures_state_of(state: &AppState) -> Value {
+    let chosen = state.config.textures_path.as_deref();
+    let valid = chosen.is_none_or(|path| gt4l_core::textures::check_textures_path(path, state.dirs.root()).is_ok());
+    json!({
+        "path": chosen.map(|path| path.display().to_string()).unwrap_or_default(),
+        "default": state.dirs.textures().display().to_string(),
+        "custom": chosen.is_some(),
+        "valid": valid,
+    })
+}
+
+/// `textures_state()`: the textures folder choice, for the Settings page.
+#[tauri::command]
+pub fn textures_state(shared: State<'_, Shared>) -> Value {
+    textures_state_of(&lock(shared.inner()))
+}
+
+/// `choose_textures_folder()`: the player picks an existing textures folder (for example the `textures` folder of PCSX2)
+/// to be read in place (TASK-157). The folder is checked, stored and the direct-start files are rewritten; nothing is
+/// copied or written into it. Returns the new state, or `None` when the player cancels.
+#[tauri::command]
+pub async fn choose_textures_folder(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<Value>, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (language, start) = {
+            let state = lock(&shared);
+            let start = state
+                .config
+                .textures_path
+                .clone()
+                .filter(|path| path.is_dir())
+                .or_else(gt4l_platform::known_folder::documents)
+                .unwrap_or_else(|| state.dirs.root().to_path_buf());
+            (state::language_of(&state), start)
+        };
+        let picked = app
+            .dialog()
+            .file()
+            .set_title(messages::text("textures.pick_title", language))
+            .set_directory(&start)
+            .blocking_pick_folder();
+        let Some(picked) = picked else {
+            return Ok(None);
+        };
+        let folder = picked.into_path().map_err(|error| error.to_string())?;
+        let mut state = lock(&shared);
+        let checked = gt4l_core::textures::check_textures_path(&folder, state.dirs.root())
+            .map_err(|error| messages::text(error.message_id(), language).to_string())?;
+        state::log(&state.dirs, &format!("textures: folder chosen: {}", checked.display()));
+        state.config.textures_path = Some(checked);
+        state.save_config();
+        Ok(Some(textures_state_of(&state)))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// `reset_textures_folder()`: back to the default `Textures` folder. The chosen folder is left as it is.
+#[tauri::command]
+pub fn reset_textures_folder(shared: State<'_, Shared>) -> Value {
+    let mut state = lock(shared.inner());
+    if state.config.textures_path.take().is_some() {
+        state::log(&state.dirs, "textures: back to the default folder");
+        state.save_config();
+    }
+    textures_state_of(&state)
 }
 
 fn open_folder(folder: &Path) -> Result<(), String> {

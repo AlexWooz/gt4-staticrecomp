@@ -22,6 +22,7 @@ use crate::games::Game;
 use crate::gs_release::Installed;
 use crate::gs_table;
 use crate::settings::{self, Settings};
+use crate::textures::TextureLocation;
 
 /// Inherited variables with these prefixes are removed before the game starts.
 pub const SCRUBBED_PREFIXES: &[&str] = &["GT4_", "PS2_"];
@@ -225,7 +226,7 @@ pub fn coregs20_environment(
     settings: &Settings,
     display: Option<&DisplayTarget>,
     integrated_gpu: bool,
-    textures: &Path,
+    textures: &TextureLocation,
 ) -> Vec<(String, String)> {
     let mut variables: BTreeMap<&'static str, String> = BTreeMap::new();
     variables.insert("GT4_RENDERER", "hw".to_string());
@@ -249,7 +250,7 @@ pub fn coregs20_environment(
     // No frametime.csv in the session folder any more (owner, 2026-11-03: not needed). GT4_HW_FRAMETIME_LOG=<csv> by hand
     // still writes it for a bench (scripts/coregs2_bench/frametime_plot.py).
     if settings.gs_value("texture_load") == "true" {
-        variables.insert("GT4_HW_TEXTURES", textures.display().to_string());
+        variables.insert("GT4_HW_TEXTURES", textures.folder.display().to_string());
     }
     if settings.gs_value("fxaa") == "true" {
         variables.insert("GT4_HW_POSTFX", "fxaa".to_string());
@@ -265,9 +266,10 @@ pub fn coregs20_environment(
     if !card.is_empty() && card != crate::gpu::AUTOMATIC {
         variables.insert("GT4_HW_ADAPTER", card.to_string());
     }
-    // The renderer's compiled shaders, beside the Textures folder (the game finds its own place when it starts alone).
-    if let Some(user) = textures.parent() {
-        variables.insert("GT4_HW_SHADER_CACHE", user.join("shader-cache").display().to_string());
+    // The renderer's compiled shaders: beside the default Textures folder, or in the data folder when the player chose a
+    // folder of their own (TASK-157; never beside it). The game finds its own place when it starts alone.
+    if let Some(cache) = &textures.shader_cache {
+        variables.insert("GT4_HW_SHADER_CACHE", cache.display().to_string());
     }
     add_common(&mut variables, settings);
     // "Fast" vsync is not offered under CoreGS 2.0 (owner, 2026-10-30): a stored one, kept for GSdx, draws as On here.
@@ -449,7 +451,7 @@ pub const GAMEPAD_MAPPINGS_FILE: &str = "gamecontrollerdb.txt";
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
 /// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
 /// `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps its `present_mode`).
-pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &Path) -> String {
+pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &TextureLocation) -> String {
     let mut text = String::from("renderer=coregs20\n");
     if settings.get("vsync") == "fast" {
         text.push_str("hw_present_mode=fifo\n");
@@ -486,7 +488,9 @@ fn flag(on: bool) -> String {
 /// hidden owner test knob that the game validates itself (an invalid value refuses the start):
 /// - `GT4_ASPECT_FOV_EXTRA` (TASK-080 owner test T1, 0.5..3.0, default 1.0): an extra horizontal FOV factor on top of
 ///   the geometry-correct Hor+ widening, to compare roundness. It is not a setting and no row writes it.
-pub const PASSED_THROUGH: &[&str] = &["GT4_ASPECT_FOV_EXTRA"];
+/// - `GT4_AUDIO_LATENCY_MS` (TASK-156, 20..500): the audio queue target, for Proton and SteamOS players whose sound
+///   crackles (Steam launch options); the game keeps its default and says so for any other value.
+pub const PASSED_THROUGH: &[&str] = &["GT4_ASPECT_FOV_EXTRA", "GT4_AUDIO_LATENCY_MS"];
 
 /// Whether an inherited variable must be removed for the game process.
 pub fn is_scrubbed(name: &str) -> bool {
@@ -525,7 +529,7 @@ pub fn plan_coregs20_launch(
     settings: &Settings,
     display: Option<&DisplayTarget>,
     integrated_gpu: bool,
-    textures: &Path,
+    textures: &TextureLocation,
     inherited_names: &[String],
 ) -> LaunchPlan {
     let environment = coregs20_environment(settings, display, integrated_gpu, textures);

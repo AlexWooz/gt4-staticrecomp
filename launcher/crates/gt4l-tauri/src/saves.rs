@@ -409,10 +409,18 @@ fn report_text(report: &Report, language: Language) -> String {
     parts.join(" ")
 }
 
-/// Sends a library item to the Recycle Bin. Only inactive slots and replays can be deleted here.
-pub fn delete(library: &Library, item: &Item) -> Result<(), String> {
+/// Sends a library item to the Recycle Bin. Deleting the active save also parks the runtime card: what the last run left on
+/// it is harvested first (so unharvested progress is not lost), then the card moves to `backups` as
+/// `<timestamp>-before-delete.ps2`. Without that, the next Play would harvest the deleted save back from the stale card. The
+/// caller refuses this while the game runs.
+pub fn delete(library: &Library, item: &Item, runtime_card: &Path) -> Result<(), String> {
+    delete_with(library, item, runtime_card, &recycle::move_to_recycle_bin)
+}
+
+/// [`delete`] with the removal of the item's folder given (the Recycle Bin for the launcher, a plain removal in tests).
+fn delete_with(library: &Library, item: &Item, runtime_card: &Path, remove: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
     if item.active {
-        return Err("The active save cannot be deleted. Activate another save first.".to_string());
+        return delete_active(library, runtime_card, remove);
     }
     let path = if item.name.starts_with(SLOT_PREFIX) {
         library.slot_dir(&item.name)
@@ -422,7 +430,25 @@ pub fn delete(library: &Library, item: &Item) -> Result<(), String> {
     if !path.is_dir() {
         return Err(format!("{} is not in the library any more", item.label));
     }
-    recycle::move_to_recycle_bin(&path)
+    remove(&path)
+}
+
+/// Deletes the active save: harvest the runtime card, park it in `backups`, move the save to the Recycle Bin and clear its
+/// display name. The next Play builds a card without a game save, so the game starts a new profile.
+fn delete_active(library: &Library, runtime_card: &Path, remove: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+    harvest_card(library, runtime_card)?;
+    let path = library.active_save_dir();
+    if !path.is_dir() {
+        return Err("The active save is not in the library any more".to_string());
+    }
+    if runtime_card.is_file() {
+        let backups = library.paths().backups.clone();
+        fs::create_dir_all(&backups).map_err(|error| format!("{}: {error}", backups.display()))?;
+        let target = backups.join(format!("{}{}", gt4saves::timestamp(), gt4saves::library::DELETE_BACKUP_SUFFIX));
+        fs::rename(runtime_card, &target).map_err(|error| format!("{}: {error}", runtime_card.display()))?;
+    }
+    remove(&path)?;
+    library.clear_active_name().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -627,16 +653,55 @@ mod tests {
         let _ = fs::remove_dir_all(&data);
     }
 
+    fn active_item() -> Item {
+        Item { name: GT4.save_folder.into(), label: "Active save".into(), active: true, modified: String::new(), renamed: false, game: String::new() }
+    }
+
+    // The tests remove the folder instead of sending it to the Recycle Bin.
+    fn remove_folder(path: &Path) -> Result<(), String> {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    }
+
     #[test]
-    fn the_active_save_cannot_be_deleted() {
+    fn deleting_the_active_save_clears_it() {
         let data = scratch("delete");
         let (_, library) = open_scratch(&data);
         let card = data.join("card.ps2");
         fs::write(&card, card_with(&[game_save(5), replay()])).unwrap();
         harvest_card(&library, &card).unwrap();
-        let active = Item { name: GT4.save_folder.into(), label: "Active save".into(), active: true, modified: String::new(), renamed: false, game: String::new() };
-        assert!(delete(&library, &active).is_err());
-        assert!(library.active_dir().join(GT4.save_folder).is_dir(), "refused delete leaves the save");
+        library.rename_save(GT4.save_folder, "My career").unwrap();
+        assert!(library.active_dir().join(gt4saves::library::NAME_FILE).is_file());
+        delete_with(&library, &active_item(), &data.join("no-runtime-card.ps2"), &remove_folder).unwrap();
+        assert!(!library.active_dir().join(GT4.save_folder).exists(), "the save left the library");
+        assert!(!library.active_dir().join(gt4saves::library::NAME_FILE).exists(), "its display name is gone");
+        assert!(!names(&saves(&library).unwrap()).contains(&GT4.save_folder.to_string()));
+        assert_eq!(replays(&library).unwrap().len(), 1, "replays are untouched");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn deleting_the_active_save_parks_the_runtime_card_and_the_next_play_starts_clean() {
+        let data = scratch("delete-card");
+        let (_, library) = open_scratch(&data);
+        let runtime_card = data.join("runtime").join("card.ps2");
+        fs::create_dir_all(runtime_card.parent().unwrap()).unwrap();
+        fs::write(&runtime_card, card_with(&[game_save(5), replay()])).unwrap();
+        harvest_card(&library, &runtime_card).unwrap();
+        delete_with(&library, &active_item(), &runtime_card, &remove_folder).unwrap();
+        assert!(!runtime_card.exists(), "the stale runtime card is moved away");
+        let parked: Vec<String> = fs::read_dir(&library.paths().backups)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with("-before-delete.ps2"))
+            .collect();
+        assert_eq!(parked.len(), 1, "{parked:?}");
+
+        prepare_card(&library, &runtime_card, Language::fallback()).unwrap();
+        let rebuilt = Card::from_image(&fs::read(&runtime_card).unwrap()).unwrap().root().unwrap();
+        let root: Vec<String> = rebuilt.iter().map(|node| node.name()).collect();
+        assert!(!root.iter().any(|name| name == GT4.save_folder), "no game save on the next card: {root:?}");
+        assert!(root.iter().any(|name| name == REPLAY), "the replay is still there: {root:?}");
+        assert!(!library.active_dir().join(GT4.save_folder).exists(), "and Play did not bring the save back");
         let _ = fs::remove_dir_all(&data);
     }
 }

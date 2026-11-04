@@ -404,10 +404,7 @@ impl Library {
         let target = self.active_dir().join(self.names.game_save);
         if !target.is_dir() {
             // Nothing to park; a name left behind by a removed save must not stick to the next one.
-            let stale = self.active_dir().join(NAME_FILE);
-            if stale.is_file() {
-                fs::remove_file(stale)?;
-            }
+            self.clear_active_name()?;
             return Ok(None);
         }
         let parked = self.next_slot_name()?;
@@ -416,6 +413,21 @@ impl Library {
         fs::rename(&target, parked_dir.join(self.names.game_save))?;
         move_name_file(&self.active_dir(), &parked_dir)?;
         Ok(Some(parked))
+    }
+
+    /// Folder of the active game save (`Active/<game save>`); it may not exist.
+    pub fn active_save_dir(&self) -> PathBuf {
+        self.active_dir().join(self.names.game_save)
+    }
+
+    /// Removes the display name of the active save, so a name left behind by a removed save does not stick to the next one.
+    /// The launcher calls it after moving the active save to the Recycle Bin. Nothing to do when there is no name.
+    pub fn clear_active_name(&self) -> Result<(), LibraryError> {
+        let stale = self.active_dir().join(NAME_FILE);
+        if stale.is_file() {
+            fs::remove_file(stale)?;
+        }
+        Ok(())
     }
 
     /// `.psu` bytes of a library item (`Active` for the active save, a slot name such as "Save 02", or a replay name).
@@ -533,8 +545,8 @@ impl Library {
 
     /// Keeps the newest backups of each kind and deletes the older ones (owner, 2026-11-03: every Play added a card image of
     /// about 8 MB to `<backups>` and nothing removed them, 74 images in two weeks on the owner's PC). The kinds, by name:
-    /// card images `<timestamp>-<card file>.ps2` ([`KEPT_CARD_BACKUPS`]), images taken before a New save
-    /// `<timestamp>-before-new-save.ps2` ([`KEPT_NEW_SAVE_BACKUPS`]), and copies of the active save
+    /// card images `<timestamp>-<card file>.ps2` ([`KEPT_CARD_BACKUPS`]), images taken before a New save or before the active save is deleted
+    /// `<timestamp>-before-new-save.ps2`, `<timestamp>-before-delete.ps2` ([`KEPT_NEW_SAVE_BACKUPS`]), and copies of the active save
     /// `<saves>/.backup/<game save>-<timestamp>` ([`KEPT_ACTIVE_COPIES`]). A name of any other form is never touched.
     /// Returns how many were deleted.
     pub fn prune_backups(&self) -> Result<usize, LibraryError> {
@@ -561,6 +573,8 @@ pub const KEPT_NEW_SAVE_BACKUPS: usize = 5;
 pub const KEPT_ACTIVE_COPIES: usize = 10;
 /// The end of the name of a card image taken before a New save (the launcher's `new_save`).
 pub const NEW_SAVE_BACKUP_SUFFIX: &str = "-before-new-save.ps2";
+/// The end of the name of a card image taken before the active save is deleted (kept with the New save images).
+pub const DELETE_BACKUP_SUFFIX: &str = "-before-delete.ps2";
 
 /// True for `YYYYMMDD-HHMMSS`, the form of [`crate::timestamp`].
 fn is_timestamp(text: &str) -> bool {
@@ -575,11 +589,12 @@ fn is_card_backup(name: &str) -> bool {
         && name.len() > 20
         && name.ends_with(".ps2")
         && !name.ends_with(NEW_SAVE_BACKUP_SUFFIX)
+        && !name.ends_with(DELETE_BACKUP_SUFFIX)
 }
 
-/// `<timestamp>-before-new-save.ps2`.
+/// `<timestamp>-before-new-save.ps2` or `<timestamp>-before-delete.ps2`.
 fn is_new_save_backup(name: &str) -> bool {
-    name.strip_suffix(NEW_SAVE_BACKUP_SUFFIX).is_some_and(is_timestamp)
+    name.strip_suffix(NEW_SAVE_BACKUP_SUFFIX).or_else(|| name.strip_suffix(DELETE_BACKUP_SUFFIX)).is_some_and(is_timestamp)
 }
 
 /// `<game save>-<timestamp>`.

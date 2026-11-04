@@ -1810,3 +1810,21 @@ hardcore = false
     let _ = server_thread.join();
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn the_active_save_cannot_be_deleted_while_the_game_runs() {
+    let (root, _dirs, _pins, shared) = new_install("delete-active-game-running");
+    let library_save = {
+        let state = lock(&shared);
+        let active = state.library_of(state.selected).active_save_dir();
+        fs::create_dir_all(&active).unwrap();
+        fs::write(active.join("icon.sys"), b"synthetic save, not game data").unwrap();
+        active
+    };
+    lock(&shared).game_child = Some(Arc::new(std::sync::Mutex::new(None)));
+    let id = gt4l_core::games::GT4.save_folder;
+    let error = commands::saves_delete_of(id.to_string(), &shared).unwrap_err();
+    assert_eq!(error, "Close the game before you delete the active save.");
+    assert!(library_save.is_dir(), "the save is still there");
+    let _ = fs::remove_dir_all(&root);
+}

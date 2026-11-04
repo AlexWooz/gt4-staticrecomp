@@ -90,6 +90,8 @@ add_test(NAME native_cursor_autohide COMMAND $<TARGET_FILE:cursor_autohide_fixtu
 # TASK-145: the window responsiveness timer arrives through the game's PeekMessage loop (decision 0076).
 add_test(NAME native_window_heartbeat COMMAND $<TARGET_FILE:window_heartbeat_fixture>)
 set_tests_properties(native_window_heartbeat PROPERTIES TIMEOUT 30)
+# TASK-154: overlay keys (ReShade) passed on to the GSdx picture window, nothing else.
+add_test(NAME native_key_forward COMMAND $<TARGET_FILE:key_forward_fixture>)
 add_test(NAME native_shape_observer COMMAND $<TARGET_FILE:shape_observer_fixture>)
 add_test(NAME native_performance_accounting COMMAND $<TARGET_FILE:perf_accounting_fixture>)
 add_test(NAME native_performance_probe COMMAND $<TARGET_FILE:perf_probe_fixture>)

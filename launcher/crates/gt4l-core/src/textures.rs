@@ -15,7 +15,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::guard;
 use crate::version::Version;
@@ -181,6 +181,119 @@ pub fn flatten_replacements(textures: &Path, renderer_root: &Path, data_root: &P
         }
     }
     FlattenOutcome::Ran { moved, kept, removed_folder, error }
+}
+
+/// Name of the shader cache folder the renderer keeps (`GT4_HW_SHADER_CACHE`), beside the default `Textures` folder.
+pub const SHADER_CACHE_FOLDER_NAME: &str = "shader-cache";
+
+/// Why a folder the player chose cannot be the textures folder (TASK-157). `message_id` names the launcher text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TexturesPathError {
+    NotAbsolute,
+    NotFound,
+    NotAFolder,
+    /// The data folder itself: its other contents would be taken for textures.
+    DataRoot,
+    /// Inside the renderer folder (`<data>\gs`), which the launcher replaces on updates.
+    InsideRenderer,
+}
+
+impl TexturesPathError {
+    /// The id of the text in the locale files (`rust.<id>`).
+    pub fn message_id(self) -> &'static str {
+        match self {
+            TexturesPathError::NotAbsolute => "textures.invalid_not_absolute",
+            TexturesPathError::NotFound => "textures.invalid_not_found",
+            TexturesPathError::NotAFolder => "textures.invalid_not_folder",
+            TexturesPathError::DataRoot => "textures.invalid_data_root",
+            TexturesPathError::InsideRenderer => "textures.invalid_renderer",
+        }
+    }
+}
+
+/// `path` with its separators tidied (a trailing one dropped, `.` removed), or the reason it cannot be the textures
+/// folder. Nothing is created and nothing is written.
+pub fn check_textures_path(path: &Path, data_root: &Path) -> Result<PathBuf, TexturesPathError> {
+    if !path.is_absolute() {
+        return Err(TexturesPathError::NotAbsolute);
+    }
+    let tidy: PathBuf = path.components().collect();
+    let metadata = fs::metadata(&tidy).map_err(|_| TexturesPathError::NotFound)?;
+    if !metadata.is_dir() {
+        return Err(TexturesPathError::NotAFolder);
+    }
+    // Compare resolved paths (`..`, links and case), so a roundabout spelling cannot slip past.
+    let resolved = fs::canonicalize(&tidy).unwrap_or_else(|_| tidy.clone());
+    let data = fs::canonicalize(data_root).unwrap_or_else(|_| data_root.to_path_buf());
+    if same_folder(&resolved, &data) {
+        return Err(TexturesPathError::DataRoot);
+    }
+    if is_inside(&resolved, &data.join("gs")) {
+        return Err(TexturesPathError::InsideRenderer);
+    }
+    Ok(tidy)
+}
+
+fn lowered(path: &Path) -> PathBuf {
+    path.to_string_lossy().to_lowercase().into()
+}
+
+fn same_folder(a: &Path, b: &Path) -> bool {
+    lowered(a) == lowered(b)
+}
+
+/// Whether `path` is `folder` or below it.
+fn is_inside(path: &Path, folder: &Path) -> bool {
+    lowered(path).starts_with(lowered(folder))
+}
+
+/// The folder the renderers read custom textures from in one session, and where the CoreGS 2.0 shader cache goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureLocation {
+    pub folder: PathBuf,
+    /// `GT4_HW_SHADER_CACHE`. `None`: the default folder has no parent, so the renderer finds its own place.
+    pub shader_cache: Option<PathBuf>,
+    /// The player's own folder (never written to by the launcher).
+    pub custom: bool,
+}
+
+impl TextureLocation {
+    /// The default folder: the shader cache stays beside it, where the caches of earlier versions are.
+    pub fn default_folder(folder: &Path) -> TextureLocation {
+        TextureLocation {
+            folder: folder.to_path_buf(),
+            shader_cache: folder.parent().map(|user| user.join(SHADER_CACHE_FOLDER_NAME)),
+            custom: false,
+        }
+    }
+
+    /// A folder the player chose: the shader cache goes into the data folder, never beside the player's folder.
+    pub fn custom_folder(folder: &Path, data_root: &Path) -> TextureLocation {
+        TextureLocation {
+            folder: folder.to_path_buf(),
+            shader_cache: Some(data_root.join(SHADER_CACHE_FOLDER_NAME)),
+            custom: true,
+        }
+    }
+}
+
+/// Where this session reads textures: the chosen folder when it is usable, else `default_folder`. The second value is
+/// the launcher log line when the choice could not be used (the choice itself stays stored).
+pub fn resolve_location(default_folder: &Path, chosen: Option<&Path>, data_root: &Path) -> (TextureLocation, Option<String>) {
+    let Some(chosen) = chosen else {
+        return (TextureLocation::default_folder(default_folder), None);
+    };
+    match check_textures_path(chosen, data_root) {
+        Ok(folder) => (TextureLocation::custom_folder(&folder, data_root), None),
+        Err(TexturesPathError::NotFound) => (
+            TextureLocation::default_folder(default_folder),
+            Some(format!("textures: {} not found; using {}", chosen.display(), default_folder.display())),
+        ),
+        Err(error) => (
+            TextureLocation::default_folder(default_folder),
+            Some(format!("textures: {} cannot be used ({}); using {}", chosen.display(), error.message_id(), default_folder.display())),
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@
  *
  * Query options (ui/dev/index.html?...):
  *   gsdx=missing|offline                            (GSdx is not installed: the download works, or fails)
+ *   gsdxfile=ok|cancel|bad                          (with gsdx=offline, "Install from a file": works, picker cancelled, or refused; default bad)
  *   vulkan=no                                       (the card has no Vulkan 1.2: Play does not offer CoreGS 2.0 for a missing GSdx)
  *   setup=done|needed|wrong|copying|checking|preparing|renderer|failed|missing|offline   (default done)
  *   pick=spec                                       (setup: the picker returns an unsupported image, refused)
@@ -40,6 +41,16 @@
     { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10", variant: "", installed: gamesParam === "spec2" || gamesParam === "both",
       disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 6520944, image_bytes: 3683418112 }
   ];
+  // TASK-157: the textures folder choice of the mock (empty: the default folder).
+  var texturesChoice = "";
+  function texturesState() {
+    return {
+      path: texturesChoice,
+      default: "C:\\Program Files\\GT4Recomp\\data\\Textures",
+      custom: texturesChoice !== "",
+      valid: !/Missing/.test(texturesChoice)
+    };
+  }
   var selectedGame = query.get("selected") ||
     (GAME_TABLE.filter(function (game) { return game.installed; })[0] || GAME_TABLE[0]).id;
   var setupGame = null; // the game of the setup that runs (set by setup_choose_disc)
@@ -758,6 +769,23 @@
             }
           }, 500);
         });
+      case "install_gsdx_archive":
+        // TASK-158: the file picker and the install; `gsdxfile` chooses the result (default: refused).
+        return new Promise(function (resolve, reject) {
+          var choice = query.get("gsdxfile") || "bad";
+          if (choice === "cancel") {
+            resolve(null);
+            return;
+          }
+          emit("gsdx-download", { step: "installing" });
+          setTimeout(function () {
+            if (choice === "ok") {
+              resolve(true);
+            } else {
+              reject(new Error("gt4-gs-1.2.3-windows-x64.zip does not match the checksum published with its release, so it was not installed. The file may be damaged or changed: download it again."));
+            }
+          }, 500);
+        });
       case "set_setting": {
         if (args.id === "controller") {
           mockController = args.value; // TASK-148: the Controls page's controller row
@@ -911,6 +939,15 @@
       case "open_latest_log":
       case "open_export_folder":
         return null;
+      case "textures_state":
+        return texturesState();
+      case "choose_textures_folder":
+        // The mock "picks" a folder, as the folder picker would. ?textures=missing shows the missing-folder hint.
+        texturesChoice = query.get("textures") === "missing" ? "D:\\Missing\\textures" : "D:\\PCSX2\\textures";
+        return texturesState();
+      case "reset_textures_folder":
+        texturesChoice = "";
+        return texturesState();
       case "export_logs":
         // The mock does not write a bundle: the player "cancelled" the folder choice.
         return null;

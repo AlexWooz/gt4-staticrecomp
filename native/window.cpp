@@ -14,6 +14,7 @@
 #include "pacing.hpp"
 #include "window_mode.hpp"
 #include "window_heartbeat.hpp"
+#include "key_forward.hpp"
 #include "cursor_autohide.hpp"
 #include "achievements.hpp"
 #include "input_recording.hpp"
@@ -449,6 +450,13 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   if (message == WM_ACTIVATE && LOWORD(first) != WA_INACTIVE && gt4::gs_stream::stream_renderer()) {
     SetFocus(window);
     return 0;
+  }
+  // TASK-154 (key_forward.hpp): the overlay keys also reach the picture's window in gt4-gs (ReShade's Home); this window
+  // still handles them as before.
+  if (gt4::key_forward::should_forward(message, first) && gt4::gs_stream::stream_renderer()) {
+    for (HWND child = GetWindow(window, GW_CHILD); child != nullptr; child = GetWindow(child, GW_HWNDNEXT)) {
+      PostMessageW(child, message, first, second);
+    }
   }
 #endif
   // TASK-060: over the client area the cursor follows the auto-hide state; elsewhere (frame, title bar) the default.

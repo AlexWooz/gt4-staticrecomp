@@ -7,6 +7,7 @@ set_setting
 reset_gs_settings_to_defaults
 gsdx_download_needed
 download_gsdx
+install_gsdx_archive
 coregs20_offer
 use_coregs20
 setup_choose_disc
@@ -45,6 +46,9 @@ open_player_folder
 open_saves_folder
 open_replays_folder
 open_textures_folder
+textures_state
+choose_textures_folder
+reset_textures_folder
 games_list
 select_game
 games_remove

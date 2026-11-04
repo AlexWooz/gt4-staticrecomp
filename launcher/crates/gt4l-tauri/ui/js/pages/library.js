@@ -189,9 +189,12 @@
     }
 
     function removeItem(id) {
+      var target = items.filter(function (item) { return item.id === id; })[0];
+      // The active save goes to the Recycle Bin too, and the next Play starts a new profile: say so.
+      var text = target && target.active && kindName === "saves" ? GT4.t("library.delete_active_save_text") : kind.removeText;
       GT4.ui.openDialog({
         title: kind.removeTitle,
-        text: kind.removeText,
+        text: text,
         buttons: [
           { label: GT4.t("common.cancel") },
           {

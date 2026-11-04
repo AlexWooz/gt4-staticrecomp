@@ -17,6 +17,7 @@ use gt4l_core::messages;
 use gt4l_core::settings::{self, Settings};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::state::{lock, Shared};
 use crate::{commands, state, updates};
@@ -81,6 +82,40 @@ pub fn download_gsdx(app: AppHandle, shared: State<'_, Shared>) -> Result<(), St
         state::log_warn(&dirs, &format!("GSdx not installed from the dialog in Settings: {message}"));
         failure_notice(&message)
     })
+}
+
+/// `install_gsdx_archive()`: the download failed (blocked network, proxy), so the player picks the release package by hand
+/// (TASK-158). The file must be named `gt4-gs-<version>-windows-x64.zip`; it is checked against the `SHA256SUMS` of that
+/// release, fetched online, exactly like the download, and refused when they cannot be fetched or do not match. `None` means
+/// the picker was cancelled; an error is the text the dialog shows. Emits the same `gsdx-download` steps.
+#[tauri::command]
+pub async fn install_gsdx_archive(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<()>, String> {
+    let (dirs, language) = {
+        let state = lock(shared.inner());
+        (state.dirs.clone(), state::language_of(&state))
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .set_title(messages::text("renderer.archive_picker_title", language))
+            .add_filter(messages::text("renderer.archive_picker_filter", language), &["zip"])
+            .blocking_pick_file();
+        let Some(picked) = picked else {
+            return Ok(None);
+        };
+        let path = picked.into_path().map_err(|error| error.to_string())?;
+        updates::install_renderer_archive(&dirs, &path, language, &mut |step| {
+            let _ = app.emit("gsdx-download", download_event(step));
+        })
+        .map(|_| Some(()))
+        .map_err(|message| {
+            state::log_warn(&dirs, &format!("GSdx not installed from {}: {message}", path.display()));
+            message
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Whether the card a run would use has Vulkan 1.2, so CoreGS 2.0 can run on it (the card list is the cached one).

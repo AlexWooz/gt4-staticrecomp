@@ -476,11 +476,15 @@
     var bar = h("span", { class: "bar" }, [fill]);
     var figures = h("p", { class: "gsdx-figures", text: "" });
     var progress = h("div", { class: "gsdx-progress", hidden: true }, [status, bar, figures]);
+    // Shown with the failure (TASK-158): how to get the package on another network.
+    var hint = h("p", { class: "gsdx-figures gsdx-hint", hidden: true, text: GT4.t("settings.gsdx_file_hint") });
     var megabytes = function (bytes) {
       return (bytes / 1e6).toFixed(1) + " MB";
     };
     var buttonList = [
       { label: config.downloadLabel || GT4.t("settings.gsdx_download"), primary: !alternative, closes: false, run: function () { startDownload(); } },
+      // TASK-158: shown only after a failure, next to "Try again".
+      { label: GT4.t("settings.gsdx_from_file"), closes: false, run: function () { startDownload("install_gsdx_archive"); } },
       { label: GT4.t("common.cancel") }
     ];
     if (alternative) {
@@ -489,7 +493,7 @@
     var options = {
       title: config.title || GT4.t("settings.gsdx_title"),
       text: config.text || GT4.t("settings.gsdx_text"),
-      body: [progress],
+      body: [progress, hint],
       buttons: buttonList,
       onClose: function () {
         gsdxDownloadHandler = null;
@@ -502,8 +506,10 @@
     var actions = dialog.el.querySelector(".modal-actions");
     var buttons = actions.querySelectorAll("button");
     var downloadButton = buttons[alternative ? 1 : 0];
+    var fromFileButton = buttons[alternative ? 2 : 1];
     var closeButton = buttons[buttons.length - 1];
     var message = dialog.el.querySelector(".modal-text");
+    fromFileButton.style.display = "none";
 
     gsdxDownloadHandler = function (event) {
       var names = { listing: "app.gsdx_listing", downloading: "app.gsdx_downloading", installing: "app.gsdx_installing" };
@@ -518,29 +524,45 @@
       }
     };
 
-    function startDownload() {
+    // The failure view: the reason, Try again, Install from a file, the alternative when there is one, and Close.
+    function showFailure() {
+      options.dismissable = true;
+      progress.hidden = true;
+      message.hidden = false;
+      downloadButton.textContent = GT4.t("settings.gsdx_retry");
+      downloadButton.style.display = "";
+      fromFileButton.style.display = "";
+      closeButton.textContent = GT4.t("settings.gsdx_close");
+      actions.style.display = "";
+      // With the alternative still offered, it is the default; otherwise Try again is.
+      (alternative ? buttons[0] : downloadButton).focus({ preventScroll: true });
+    }
+
+    // command: "download_gsdx" (default) or "install_gsdx_archive" (a package picked by hand; null = picker cancelled).
+    function startDownload(command) {
+      command = command || "download_gsdx";
       // No way out while it runs: the install cannot be stopped halfway.
       options.dismissable = false;
       dialog.el.querySelector("h3").textContent = GT4.t("app.gsdx_name");
       actions.style.display = "none";
       message.hidden = true;
       progress.hidden = false;
-      status.textContent = GT4.t("app.gsdx_listing");
-      call("download_gsdx").then(function () {
+      fill.style.width = "0%";
+      figures.textContent = "";
+      status.textContent = GT4.t(command === "download_gsdx" ? "app.gsdx_listing" : "app.gsdx_installing");
+      (command === "download_gsdx" ? call("download_gsdx") : call("install_gsdx_archive")).then(function (result) {
+        if (command !== "download_gsdx" && result === null) {
+          showFailure(); // picker cancelled: back to the failure view
+          return;
+        }
         finished = true;
         fill.style.width = "100%";
         dialog.close();
         config.onInstalled();
       }, function (err) {
-        options.dismissable = true;
-        progress.hidden = true;
-        message.hidden = false;
         message.textContent = errorText(err);
-        downloadButton.style.display = "none";
-        closeButton.textContent = GT4.t("settings.gsdx_close");
-        actions.style.display = "";
-        // With the alternative still offered, it is the default; otherwise Close is the only button left.
-        (alternative ? buttons[0] : closeButton).focus({ preventScroll: true });
+        hint.hidden = false;
+        showFailure();
       });
     }
   }
@@ -1109,7 +1131,39 @@
             data: { action: "open-textures-folder" },
             on: { click: function () { call("open_textures_folder").catch(function (err) { GT4.ui.toast(errorText(err), true); }); } }
           }, GT4.t("settings.open_textures"));
-          graphics.appendChild(h("div", { class: "advanced-foot" }, [textures]));
+          // TASK-157: an existing textures folder (for example PCSX2's) can be read in place instead of the default one.
+          var texturesPath = h("p", { class: "note textures-path", data: { action: "textures-path" }, text: "" });
+          var texturesMissing = h("p", { class: "note textures-missing", role: "status", data: { action: "textures-missing" }, text: "", hidden: true });
+          var chooseTextures = h("button", {
+            class: "btn",
+            type: "button",
+            data: { action: "choose-textures-folder" },
+            on: { click: function () {
+              call("choose_textures_folder").then(function (state) {
+                if (state) { showTextures(state); }
+              }).catch(function (err) { GT4.ui.toast(errorText(err), true); });
+            } }
+          }, GT4.t("settings.textures_choose"));
+          var defaultTextures = h("button", {
+            class: "btn",
+            type: "button",
+            data: { action: "reset-textures-folder" },
+            hidden: true,
+            on: { click: function () {
+              call("reset_textures_folder").then(showTextures).catch(function (err) { GT4.ui.toast(errorText(err), true); });
+            } }
+          }, GT4.t("settings.textures_default"));
+          var showTextures = function (state) {
+            var shown = state && state.custom ? state.path : (state && state.default) || "";
+            texturesPath.textContent = shown ? GT4.t("settings.textures_current", { path: shown }) : "";
+            defaultTextures.hidden = !(state && state.custom);
+            texturesMissing.hidden = !(state && state.custom && !state.valid);
+            texturesMissing.textContent = texturesMissing.hidden ? "" : GT4.t("settings.textures_missing", { path: state.path });
+          };
+          call("textures_state").then(showTextures).catch(function () {});
+          graphics.appendChild(texturesPath);
+          graphics.appendChild(texturesMissing);
+          graphics.appendChild(h("div", { class: "advanced-foot" }, [textures, chooseTextures, defaultTextures]));
         }
         section(ctx, "advanced", GT4.t("settings.section_advanced"), ctx.table.rows.filter(function (row) {
           return row.page === "advanced" && row.group !== "rc";

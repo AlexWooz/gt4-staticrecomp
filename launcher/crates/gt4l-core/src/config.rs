@@ -19,6 +19,9 @@ pub const SCHEMA_VERSION: u32 = 8;
 pub struct ConfigFile {
     pub settings: Settings,
     pub disc_path: Option<PathBuf>,
+    /// An existing texture folder the player chose (`[install] textures_path`, TASK-157), read in place instead of
+    /// `<data>\Textures`. Launcher-only; the launcher never writes into it. `None`: the default folder.
+    pub textures_path: Option<PathBuf>,
     pub dev_game_dir: Option<PathBuf>,
     /// "Skip this version" choices of the update popup: no offer again for exactly this version.
     pub skipped_launcher: Option<ReleaseVersion>,
@@ -33,6 +36,7 @@ impl Default for ConfigFile {
         ConfigFile {
             settings: Settings::default(),
             disc_path: None,
+            textures_path: None,
             dev_game_dir: None,
             skipped_launcher: None,
             skipped_renderer: None,
@@ -126,6 +130,13 @@ pub fn parse(text: &str) -> Result<(ConfigFile, Vec<String>), ConfigError> {
         .and_then(|value| value.as_str())
         .filter(|text| !text.is_empty())
         .map(PathBuf::from);
+    config.textures_path = table
+        .get("install")
+        .and_then(|value| value.as_table())
+        .and_then(|section| section.get("textures_path"))
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
+        .map(PathBuf::from);
     config.dev_game_dir = table
         .get("dev")
         .and_then(|value| value.as_table())
@@ -192,6 +203,9 @@ pub fn render(config: &ConfigFile) -> String {
     text.push_str("\n[install]\n");
     if let Some(path) = &config.disc_path {
         text.push_str(&format!("disc_path = {}\n", quote(&path.to_string_lossy())));
+    }
+    if let Some(path) = &config.textures_path {
+        text.push_str(&format!("textures_path = {}\n", quote(&path.to_string_lossy())));
     }
     if let Some(path) = &config.dev_game_dir {
         text.push_str("\n[dev]\n");

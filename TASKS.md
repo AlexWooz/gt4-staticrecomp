@@ -2967,7 +2967,18 @@ frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `ave
 the laptop), the showroom left on the turning car. Measure with a window run (`WINDOW=1`, `PACED_FROM`), then attack the
 largest cost in the `[core2]` accounting. State: recorded (1,684 VBlanks; the CR-X SiR turning from about VBlank 900).
 
-### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13)
+Analysis (2026-11-04, plain rc13 test build, RX 9060 XT, 6x; a peer session ran games on the PC, so no frame-time figures):
+the GPU work is moderate (4.3 ms of isolated GPU time per frame by `GT4_CORE2_GPU_PROFILE_AT=1400`: full-screen effect draws
+and fills lead; `gpu_busy` 8.9 ms on average with the frame's waits). The uneven frames come from a GS readback every other
+frame: GT4 uploads the studio backdrop, a 640 x 438 PSMT8 image, over the memory of the 640 x 224 CT32 frame target at block
+6720 (`GT4_CORE2_STORE_TRACE`), and `StoreDrawnBeforeWrite` reads the whole drawn target back (2,240 blocks) so the 8-bit
+write merges with its pixels in memory. Each readback makes the GS thread wait for all the GPU work so far, which a slower GPU
+at a higher resolution (the owner's RTX 3060 at 3440 x 1440) turns into frames of 20-27 ms. Reading back fewer blocks does not
+remove the wait (the last page row of the write is partial). Way forward (design needed, not done): merge such a write on
+the GPU (targets into the GLM, the upload over it) and track the CPU memory those pages leave stale, reading it back only if
+something reads it (an EE download, a CPU-side decode).
+
+### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed)
 
 Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
 and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording: `photo-mode` (v2.00, card
@@ -2976,6 +2987,21 @@ and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording:
 Owner (same day): the flicker shows on NVIDIA and AMD alike; the RTX 3060 also drops FPS, the RX 9060 XT holds 60 FPS with very
 uneven frame times. Headless at 2x, every composed frame of VBlanks 1480-1539 is the right picture (same brightness, no black
 frame), so the black frames come from the presentation path of a window run, not from the drawn picture (Hypothesis).
+
+Cause (Confirmed, 2026-11-04): photo mode shows two 640 x 448 CT24 buffers in turn (FBP 0 and FBP 140, 480i, two VBlanks
+each). A whole-memory draw at VBlank 873 leaves a 1024-wide CT32 target at block 0, the same base and format class as the
+first buffer. `CircuitSource` showed the newest target of that base and class whatever its width, so the 1024-wide target
+(nothing drawn) was shown, black, on every other picture; being shown marked it used every frame, so it never aged out. In a
+headless run without frame dumps nothing is composed, the target aged out, and every frame was right (a headless run with
+dumps from VBlank 1440 started after it was gone). A window run reproduces it every time: VBlanks 1440-1451 black, black,
+right, right. Not the deferred downloads nor IN-532 (A/B). Fix: the target of the circuit's base, class and width first,
+another width only when there is none. Window run: 12 of 12 frames right. Diagnostics: `GT4_CORE2_TARGET_TRACE=1` logs every
+target created. Still open: the uneven frame times (measure on an idle machine and on the laptop's RTX 3060).
+Frame times (analysis, 2026-11-04, 6x): two readbacks every frame (`GT4_CORE2_READBACK_TRACE`): an EE download of an
+8 x 4-pixel rectangle at block 10048 (a PSMZ target, likely the viewfinder's light reading) and a CLUT loaded from a Z-format
+target at block 11520; plus about 38 texture decodes per frame. Each readback waits for the GPU. Performance Mode already
+answers such downloads with the previous result (IN-439, one frame late, decision 0073); normal mode stays exact, so changing
+that there is the owner's call. The CLUT one could go through the GPU palette path (IN-408) if it covers Z formats (to check).
 
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 
@@ -2992,48 +3018,104 @@ TASK-105, rc5), #175 (GSdx graphics API, TASK-103), #122 (`vcruntime140_1.dll`: 
 missing-DLL message came with #154). Later, not rc13: #173, #170, #172, #176, #177, #146; study-only pull requests stay open as
 references until their topic is implemented. Our own #110 and #113 are superseded by #130.
 
-### TASK-152 — PCSX2 card import: allocation chains up to the card's real capacity (rc13; PR #120, issue #86)
+### TASK-152 — PCSX2 card import: allocation chains up to the card's real capacity (rc13; PR #120, issue #86; done)
 
 Contributor: luanantony (PR #120). A player's PCSX2 `Mcd001.ps2` is refused with "The memory card is damaged (chain entry 7937
 outside the allocation area)" while PCSX2 reads it. Re-do the card reader change on `launcher/crates/gt4saves` with the PR's
 hostile-card tests. Acceptance: cargo tests, an 8 MB card with chains past the default allocation area imports, damaged cards are
 still refused.
 
-### TASK-153 — Delete the active save without it coming back (rc13; PR #116, issue #98)
+Done (2026-11-04): the superblock's `alloc_end` is a count relative to `alloc_offset` (8 MB: 41 + 8135 + 16 backup clusters =
+8192), capped by the room on the card; the old reading lost 41 clusters and refused chains near the end, as on the reporter's
+card. The chain error now names the layout. Tests (gt4saves 62 pass): a chain at relative 8100, relative 7937 on an
+`alloc_end` 7978 card, a chain equal to the usable count still refused, `alloc_end` 0 refused. Not checked on the reporter's
+own card. PR #120 recorded as merged (tree-neutral), issue #86 answered and closed.
+
+### TASK-153 — Delete the active save without it coming back (rc13; PR #116, issue #98; done)
 
 Contributor: luanantony (PR #116). Deleting the save (in the launcher, or its files) brought it back at the next Play. Re-do
 the PR's change on the current Saves page and save library. Acceptance: launcher tests; deleting the active save leaves the
 game to start a new one, and no older card copy restores it.
 
-### TASK-154 — The ReShade Home key with GSdx (rc13; PR #121, issue #102)
+Done (2026-11-04): the cause was the runtime card (`data/games/<game>/runtime/card.ps2`): each Play harvests it into the
+library first, so a save removed from the library came back from it. Deleting the active save on the Saves page now harvests
+that card (no unharvested progress is lost), parks it in `backups/<timestamp>-before-delete.ps2` (kept with the New save
+images), sends the save to the Recycle Bin and clears its display name; the next Play builds a card without a game save and the
+game starts a new profile. Refused while the game runs. Text for the active save's confirmation in both languages; the unused
+`rust.saves.active_not_deletable` key is gone (665 keys each). Tests: launcher 641 pass (deleting the active save clears it;
+the runtime card is parked and the next card has no game save; refused while the game runs), focus checks 275/282, nav-test
+209. Not run in game. PR #116 recorded as merged (tree-neutral), issue #98 answered and closed.
+
+### TASK-154 — The ReShade Home key with GSdx (rc13; PR #121, issue #102; done, owner test)
 
 Contributor: luanantony (PR #121). With GSdx the picture is a child window of gt4-gs, so keys pressed in the game window do not
 reach ReShade inside gt4-gs. Re-do the forwarding in `native/window.cpp` next to the TASK-145 heartbeat (decision 0076).
 Acceptance: fixtures; the game's own keys unchanged; owner test with ReShade.
 
-### TASK-155 — GSdx starts when the install is inside OneDrive (rc13; PR #136, issue #131)
+Done (2026-11-04): the game window keeps the keyboard focus with GSdx (TASK-038), so gt4-gs never received ReShade's Home. The
+window now posts to the gt4-gs picture window only the key presses and releases of Home, End, Insert, Delete, Page Up, Page
+Down and Scroll Lock (`native/key_forward.hpp`), never Alt or character messages, and still handles them itself; the game
+reads its keys with GetAsyncKeyState, so driving is unchanged, and none of these keys is a default control. The PR's version
+passed every key and Alt message on. The heartbeat (decision 0076) is untouched. Test `native_key_forward`, with
+`native_window_heartbeat`. Whether ReShade inside gt4-gs acts on posted messages is a Hypothesis until the owner's test with
+ReShade. PR #121 recorded as merged (tree-neutral), issue #102 answered and closed.
+
+### TASK-155 — GSdx starts when the install is inside OneDrive (rc13; PR #136, issue #131; done)
 
 Contributor: luanantony (PR #136). gt4-gs found its data root under OneDrive and closed at start. Re-do the PR's
 `portable.ini` beside gt4-gs (launcher `gs_release.rs`, the game's `gs_stream_client.cpp`). Clean room: from the PR and the
 issue only. Acceptance: launcher tests, a GSdx start from a folder under OneDrive.
 
-### TASK-156 — Audio crackling on Proton and SteamOS (rc13 if the A/B holds; PR #141, issue #129)
+Done (2026-11-04): an empty `portable.ini` is written beside gt4-gs.exe when GSdx is installed and, for installs made before,
+before each GSdx start (best effort, logged on failure), so gt4-gs keeps its settings beside it instead of looking up a
+Documents folder that OneDrive had moved. The game side (`gs_stream_client.cpp`) needed no change: the launcher installs
+gt4-gs. Tests: gs_release (marker after install; added once, an existing one kept). The OneDrive start itself is not
+reproduced here. PR #136 recorded as merged (tree-neutral), issue #131 answered and closed.
+
+### TASK-156 — Audio crackling on Proton and SteamOS (rc13; PR #141, issue #129; done)
 
 Contributor: luanantony (PR #141). Re-do the audio buffer change in `native/host_io.cpp` only where it does not change Windows'
 behaviour unless needed, with an A/B of underruns (F8) on the desktop and the laptop. Acceptance: no new underruns on Windows,
 fixtures; Proton is untested here.
 
-### TASK-157 — Choose the custom textures folder (rc13; PR #145, study #155, issue #95)
+Done (2026-11-04): Windows keeps exactly its paced audio (sixteen 256-frame buffers under 60 ms; the fixture checks the default
+profile is the old constants, so no Windows A/B is needed). Under Wine (ntdll exports `wine_get_version`) twenty-four
+512-frame buffers under 100 ms; `GT4_AUDIO_LATENCY_MS=20..500` sets only the target and passes the launcher's scrub (a
+Steam launch option); other values keep the default with a log line. The PR also passed `GT4_PACING` through; not taken
+(a stray variable would change Windows pacing). Tests: `native_audio_input` (profiles), `native_pacing`, launch contract.
+Proton is not tested here. PR #141 and the study #164 recorded as merged (tree-neutral), issue #129 answered and closed.
+
+### TASK-157 — Choose the custom textures folder (rc13; PR #145, study #155, issue #95; done)
 
 Contributor: luanantony (PR #145, study #155). Let the player point GT4Recomp at an existing texture folder (a PCSX2 one)
 instead of copying it. Re-do in the launcher settings and paths, passed to both renderers. Acceptance: launcher tests, texture
 pack loads from the chosen folder on CoreGS 2.0 and GSdx, both languages.
 
-### TASK-158 — Download GSdx again, or install it from an archive by hand (rc13; PR #143, issue #139)
+Done (2026-11-04): `[install] textures_path` in settings.toml; Settings > Graphics shows the textures folder with Choose folder…
+and Use default folder beside Open textures folder, and a hint when the chosen folder is missing. The choice is checked
+(absolute, exists, a folder, not the data folder, not inside the renderer folder) and wins at Play over the default and over
+a folder not moved yet; a missing or unusable one falls back to the default with a log line and stays stored. The launcher
+never writes into a chosen folder (no folders created, nothing flattened), and CoreGS 2.0's shader cache goes to the data
+folder for a chosen folder (beside the default one as before). GSdx (`[Folders] Textures`), CoreGS 2.0 (`GT4_HW_TEXTURES`) and
+game.ini (`hw_textures`) all take the resolved folder. Commands `textures_state`, `choose_textures_folder`,
+`reset_textures_folder`. Locale keys 675 in both languages. Tests: launcher (7 new), focus checks 275/282, nav-test 209. Not run
+with a real pack yet. PR #145 and its study #155 recorded as merged (tree-neutral), issue #95 answered and closed.
+
+### TASK-158 — Download GSdx again, or install it from an archive by hand (rc13; PR #143, issue #139; done)
 
 Contributor: luanantony (PR #143). When the GSdx download fails, offer a retry and installing the release archive by hand,
 checked against the same pin. Re-do on the current launcher (the CoreGS 2.0 offer of rc10 stays). Acceptance: launcher tests,
 focus checks and nav-test in both languages.
+
+Done (2026-11-04): after a failed GSdx download the dialog offers Try again, Install from a file… (a .zip picker) and Close,
+with the CoreGS 2.0 alternative kept where it was, and a hint naming github.com/moesuito/gt4recomp-gs/releases. The archive
+must be named exactly `gt4-gs-<version>-windows-x64.zip`, at least the minimum version, within the size limit, and match the
+SHA-256 line of that release's SHA256SUMS fetched online; with no SHA256SUMS nothing is installed. Both paths share
+`gs_release::install_package` (size, hash, minimum version, unpack, check, publish, portable.ini), so the download behaves as
+before. Command `install_gsdx_archive`. The PR guessed the version from the name or the zip and checked no hash: not taken.
+Tests: launcher 659 pass (8 new archive cases), focus checks 278/285 (Try again, Install from a file, a cancelled picker; the
+check's dialog buttons are the shown ones), nav-test 209, locale keys 687 in both languages. Not run against a real release.
+PR #143 recorded as merged (tree-neutral); issue #139 (closed with rc10) answered.
 
 ### TASK-159 — 360-degree chase camera on the right stick (v2.00, then Spec II)
 
