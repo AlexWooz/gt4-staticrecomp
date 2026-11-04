@@ -29,18 +29,31 @@
 - The chosen path is on the existing line, for example
   `[hw] presentation queue: the rendering queue, shared with the presentation thread (TASK-174) (graphics family 0 with 1 queue)`.
 
+## Which devices take the shared path
+
+Rule: any device whose graphics family has one queue, unless a switch above says otherwise.
+
+- [C] RADV (the Steam Deck; AMD GPUs on Linux and under Proton): one queue, shown by the log of issue #204.
+- [H] Intel GPUs on Windows and Linux may also have one graphics queue. Not checked here (IN-516's note in
+  `hw-renderer-spec/IMPLEMENTATION-NOTES.md` lists the HD 620 as one queue, without a log). If so, the owner's notebook (HD 620)
+  takes the shared path by default from this change. The `[hw] presentation queue` line now prints the family's queue count,
+  which settles it on the first run.
+- [C] AMD on Windows (this desktop's RX 9060 XT: graphics family 0 with 8 queues) keeps `own_queue`.
+- [C] NVIDIA (the owner's RTX 3060 laptop) has 2 or more and keeps `own_queue`: the TASK-146 crash there was in a submission on
+  IN-516's second queue (hw_gs_backend.cpp, the `show_pool` note). Other NVIDIA GPUs: [H], the same.
+
 ## Design of the shared path
 
 GS thread (`present_on_shared_queue`), per presentation:
 
-1. Under the pacer mutex, `hand_over_verdict` decides whether the picture can be drawn. It is not drawn, and counted as not
-   shown, when the presentation thread is behind:
+1. Under the pacer mutex, `hand_over_decision` (`hw_shared_present.hpp`) decides whether the picture can be drawn. It is not
+   drawn, and counted as not shown, when the presentation thread is behind:
    - not spaced: it holds 2 pictures (queued plus busy), IN-516's two presentations;
    - spaced (frames left out, TASK-082): 2 pictures wait for their place, as on the second queue;
    - or the slot is still held by it.
-2. The slot's fence (the copy of its last picture into a swapchain image) is checked with timeout 0. If the copy has not run on
-   the GPU yet, the frame is not shown. The fence is only checked on a slot the presentation thread no longer holds, so the two
-   threads never use one fence at the same time.
+2. Last, the slot's fence (the copy of its last picture into a swapchain image) is checked with timeout 0. If the copy has not
+   run on the GPU yet, the frame is not shown. The fence is only checked on a slot the presentation thread no longer holds, so
+   the two threads never use one fence at the same time.
 3. The GS thread draws the frame into the slot's window-sized picture on the rendering queue (`draw_picture`; it signals
    `picture_ready`) and hands the slot over.
 
@@ -59,6 +72,13 @@ Presentation thread (`pacer_worker`, `show_paced_picture`, shared with TASK-082)
 
 Frames left out (TASK-082/146): on the shared path the spacing runs on the presentation thread, as on the second queue, so
 `has_presentation_thread()` is true and the stream sink no longer sleeps on the GS thread for it.
+
+`present_paced` (the second queue with frames left out) now uses the same `hand_over_decision` (TASK-174 review). [C] Before, it
+waited only for the slot's last drawing (`draw_fences`) and drew over the picture even when the copy of the slot's last frame, on
+the second queue, had not run yet. Example: the presentation thread busy with frame n + 1, n + 2 queued, so n + 3 was accepted
+and reused the slot of n. In the protocol model of `hw_queue_lock` that rule drew over 144 pictures before their copy in 600
+frames; with the fence check, none. In `hw_gs_smoke` on this desktop the shown count did not change (591 of 600 with frames left
+out 37 in every 60, before and after). `present_on_own_queue` (60 frames per second) is unchanged.
 
 ## The lock rule
 
@@ -131,8 +151,8 @@ where the waits fall, not in-game frame times.
     second. It stays off until measured on a real 60 Hz display.
 - [H] One queue also serializes the GPU work. A copy waiting for its swapchain image holds back what the GS thread submits
   after it (the IN-516 finding on a virtual display). The CPU-side fix cannot remove that; the GS frame time shows it.
-- [C] `hw_smoke_resize` on this desktop takes 30 to 600 ms per toggle on every path, including the default one. Its regular
-  expression does not check the smoke's exit code, so the 100 ms limit is not enforced. `hw_smoke_resize_shared_queue` does
+- [C] `hw_smoke_resize`: its PASS_REGULAR_EXPRESSION hides the exit code, so its 100 ms limit was never enforced, and resize
+  toggles take 30 to 600 ms on every path on this desktop, the default one included. Recorded; the test is unchanged. `hw_smoke_resize_shared_queue` does
   the same and checks the accounting.
 
 ## Tests
@@ -140,10 +160,13 @@ where the waits fall, not in-game frame times.
 - `hw_queue_lock` (CPU only):
   - the lock keeps 3 threads out of a fake queue at once;
   - the wait is charged to the waiting caller;
-  - `hand_over_verdict`, case by case;
-  - a 1,500-frame model of the protocol on a fake queue and display, with frames left out on and off. It checks that no
-    picture is drawn over before its copy, that each semaphore is signalled and waited once, that every presentation is
-    accounted for, and that the GS thread never waits for the display.
+  - `hand_over_verdict` and `hand_over_decision`, case by case (the fence asked last, never on a held slot);
+  - a model of the protocol on fake queues and a fake display: 1,500 frames on the shared queue with frames left out on and
+    off, and 1,000 frames on the second queue with frames left out (`present_paced`). It checks that no picture is drawn over
+    before its copy is submitted or before the GPU runs it, that each semaphore is signalled and waited once, that every
+    presentation is accounted for, and that the GS thread never waits for the display;
+  - the same second-queue model with the rule before the review must draw pictures over before their copy (144 in 600 frames),
+    which shows the model catches that case.
 - `hw_smoke_window_shared_queue`: real swapchain on a hidden window, 300 presentations.
 - `hw_smoke_window_shared_queue_frames_left_out`: 600 presentations, frames left out switching on and off, uneven arrivals,
   4x.
