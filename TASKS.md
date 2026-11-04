@@ -2882,4 +2882,5 @@ Trigger fix on `task/134-game-code-optimization-study` (owner's choice, host sid
 spans 0..45 and one on L2 0..84 over its travel past the dead zone, the game's own 100% at the end, rounded to the nearest
 step; the controls option `range` (1..255) changes it per binding, and the launcher accepts and keeps it. A game-side
 patch for finer steps (like Silent's, about 230 instead of 46 and 85) is for later. Checks: controls, pad mapping and SDL
-fixtures; launcher controls tests. Stick study in progress.
+fixtures; launcher controls tests. Owner test on the laptop (2026-11-03, LT brake and RT throttle in the game's
+options): the triggers are right, approved. Stick study in progress.
