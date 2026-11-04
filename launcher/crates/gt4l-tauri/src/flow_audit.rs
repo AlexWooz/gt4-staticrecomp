@@ -1852,12 +1852,54 @@ fn play_names_the_first_start_keys_until_the_game_has_a_save() {
 }
 
 #[test]
+fn the_log_bundle_system_report_has_the_machine_facts_and_no_personal_value() {
+    // The owner's system report: processor, memory, system, drivers, displays, storage, power and pads. A fact that cannot be
+    // read says "unknown" and never fails the bundle. `--nocapture` prints the report this machine makes.
+    let (root, _dirs, _pins, shared) = new_install("bundle-system-facts");
+    let pads = vec!["Xbox Wireless Controller".to_string()];
+    let entries = crate::log_bundle::collect(&lock(&shared), &pads).unwrap();
+    let system = entries.iter().find(|entry| entry.path == "system.txt").expect("system.txt in the bundle");
+    println!("{}", system.text);
+    for key in [
+        "cpu cores: ", "cpu features: ", "memory: ", "windows edition: ", "wine: ", "storage: ", "power: ", "controller 1: Xbox Wireless Controller",
+    ] {
+        assert!(system.text.lines().any(|line| line.starts_with(key)), "missing {key:?} in\n{}", system.text);
+    }
+    // The existing lines keep their meaning.
+    for key in ["launcher: GT4Recomp ", "install: ", "windows: ", "cpu: ", "chosen card: ", "selected game: "] {
+        assert!(system.text.lines().any(|line| line.starts_with(key)), "missing {key:?}");
+    }
+    // The storage line names the drive letter and nothing else of the path.
+    let storage = system.text.lines().find(|line| line.starts_with("storage: ")).unwrap();
+    assert!(!storage.contains('\\') && !storage.contains(root.to_string_lossy().as_ref()), "{storage}");
+    // No computer name and no user name.
+    if let Ok(computer) = std::env::var("COMPUTERNAME") {
+        assert!(!system.text.to_lowercase().contains(&computer.to_lowercase()), "the computer name is in the report");
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_pad_names_of_the_log_bundle_come_from_the_pad_status_without_serials() {
+    let status = serde_json::json!({
+        "pads": [
+            { "name": "Xbox Wireless Controller", "kind": "xbox", "key": "guid:serial-123", "active": true },
+            { "name": "  ", "kind": "x", "key": "k", "active": false },
+            { "name": "DualSense Wireless Controller", "kind": "ps5", "key": "guid2:serial-456", "active": false }
+        ]
+    });
+    let names = crate::log_bundle::controller_names(&status);
+    assert_eq!(names, vec!["Xbox Wireless Controller".to_string(), "DualSense Wireless Controller".to_string()]);
+    assert!(crate::log_bundle::controller_names(&serde_json::Value::Null).is_empty());
+}
+
+#[test]
 fn the_log_bundle_carries_the_shader_prepare_log() {
     // TASK-170: a compile that stops (a driver that ends the process) is named in logs/shaders.log; bug reports need it.
     let (root, dirs, _pins, shared) = new_install("bundle-shaders-log");
     fs::create_dir_all(dirs.logs()).unwrap();
     fs::write(dirs.logs().join("shaders.log"), "[core2] shader guard: 1 variants quarantined\n").unwrap();
-    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
     let shaders = entries.iter().find(|entry| entry.path == "logs/shaders.log").expect("logs/shaders.log in the bundle");
     assert!(shaders.text.contains("shader guard"));
     assert!(entries.iter().all(|entry| !gt4l_core::log_export::is_forbidden(&entry.path)));

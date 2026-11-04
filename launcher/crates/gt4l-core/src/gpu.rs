@@ -47,6 +47,8 @@ pub struct VulkanGpu {
     pub driver_version: u32,
     /// The queue count of the graphics queue family the game would use (`system_check::graphics_queue_count`).
     pub graphics_queues: Option<u32>,
+    /// The driver's own description (name, id, info, api patch).
+    pub driver: crate::system_check::DriverFacts,
 }
 
 /// A hardware adapter as DXGI reports it.
@@ -60,6 +62,8 @@ pub struct DxgiGpu {
     pub vendor_id: u32,
     pub device_id: u32,
     pub luid: Option<u64>,
+    /// The Windows driver version (`CheckInterfaceSupport`, four 16-bit parts); `None` when it cannot be read.
+    pub windows_driver: Option<u64>,
 }
 
 /// One graphics card: the Vulkan device and the DXGI adapter that are the same hardware (matched by name).
@@ -76,6 +80,8 @@ pub struct GpuDevice {
     pub driver_version: u32,
     /// The queue count of the graphics queue family the game would use (`None` when unknown, or no Vulkan driver).
     pub graphics_queues: Option<u32>,
+    /// The Vulkan driver's description and the Windows driver version of the matching DXGI adapter.
+    pub driver: crate::system_check::DriverFacts,
 }
 
 /// Whether the one-queue presentation path (TASK-174) applies to the card the game will use: it does on a card with ONE
@@ -169,6 +175,8 @@ pub fn merge(vulkan: &[VulkanGpu], dxgi: &[DxgiGpu]) -> Vec<GpuDevice> {
             Some(index) => (Some(dxgi[index].name.clone()), dxgi[index].dedicated_video_memory),
             None => (None, 0),
         };
+        let mut driver = gpu.driver.clone();
+        driver.windows_driver = partners[slot].and_then(|index| dxgi[index].windows_driver);
         cards.push(GpuDevice {
             vulkan_name: Some(gpu.name.clone()),
             vulkan_api: gpu.api,
@@ -178,6 +186,7 @@ pub fn merge(vulkan: &[VulkanGpu], dxgi: &[DxgiGpu]) -> Vec<GpuDevice> {
             vendor_id: gpu.vendor_id,
             driver_version: gpu.driver_version,
             graphics_queues: gpu.graphics_queues,
+            driver,
         });
     }
     // DXGI can list one physical card several times with different LUIDs (rc4: this machine's single RX 9060 XT shows up
@@ -218,6 +227,7 @@ pub fn merge(vulkan: &[VulkanGpu], dxgi: &[DxgiGpu]) -> Vec<GpuDevice> {
                 vendor_id: adapter.vendor_id,
                 driver_version: 0,
                 graphics_queues: None,
+                driver: crate::system_check::DriverFacts { windows_driver: adapter.windows_driver, ..Default::default() },
             });
         }
     }
@@ -400,20 +410,20 @@ mod tests {
     use super::*;
 
     fn vulkan(name: &str, api: (u32, u32), integrated: bool) -> VulkanGpu {
-        VulkanGpu { name: name.into(), api, integrated, vendor_id: 0, device_id: 0, luid: None, driver_version: 0, graphics_queues: None }
+        VulkanGpu { name: name.into(), api, integrated, vendor_id: 0, device_id: 0, luid: None, driver_version: 0, graphics_queues: None, driver: Default::default() }
     }
 
     fn dxgi(name: &str, memory: u64) -> DxgiGpu {
-        DxgiGpu { name: name.into(), dedicated_video_memory: memory, software: false, vendor_id: 0, device_id: 0, luid: None }
+        DxgiGpu { name: name.into(), dedicated_video_memory: memory, software: false, vendor_id: 0, device_id: 0, luid: None, windows_driver: None }
     }
 
     /// A card with its PCI ids and LUID, as both APIs report it.
     fn card_vulkan(name: &str, vendor: u32, device: u32, luid: u64) -> VulkanGpu {
-        VulkanGpu { name: name.into(), api: (1, 3), integrated: false, vendor_id: vendor, device_id: device, luid: Some(luid), driver_version: 0, graphics_queues: None }
+        VulkanGpu { name: name.into(), api: (1, 3), integrated: false, vendor_id: vendor, device_id: device, luid: Some(luid), driver_version: 0, graphics_queues: None, driver: Default::default() }
     }
 
     fn card_dxgi(name: &str, vendor: u32, device: u32, luid: u64, memory: u64) -> DxgiGpu {
-        DxgiGpu { name: name.into(), dedicated_video_memory: memory, software: false, vendor_id: vendor, device_id: device, luid: Some(luid) }
+        DxgiGpu { name: name.into(), dedicated_video_memory: memory, software: false, vendor_id: vendor, device_id: device, luid: Some(luid), windows_driver: None }
     }
 
     const GIB: u64 = 1024 * 1024 * 1024;
@@ -435,6 +445,18 @@ mod tests {
         assert_eq!(cards[1].graphics_queues, Some(16));
         assert!(describe_vulkan(&deck).contains("graphics queues 1 "), "{}", describe_vulkan(&deck));
         assert!(describe_vulkan(&vulkan("x", (1, 3), false)).contains("graphics queues - "));
+    }
+
+    #[test]
+    fn the_driver_facts_of_vulkan_and_the_windows_driver_of_dxgi_land_on_the_same_card() {
+        let facts = crate::system_check::DriverFacts { id: Some(1), name: "AMD proprietary driver".into(), ..Default::default() };
+        let vk = VulkanGpu { driver: facts, ..card_vulkan("Radeon RX 9060 XT", 0x1002, 0x7590, 7) };
+        let dx = DxgiGpu { windows_driver: Some(32u64 << 48), ..card_dxgi("Radeon RX 9060 XT", 0x1002, 0x7590, 7, 16 * GIB) };
+        let cards = merge(&[vk], &[dx]);
+        assert_eq!(cards[0].driver.name, "AMD proprietary driver");
+        assert_eq!(cards[0].driver.windows_driver, Some(32u64 << 48));
+        let dx_only = merge(&[], &[DxgiGpu { windows_driver: Some(1), ..card_dxgi("Old Card", 0x10de, 1, 9, 2 * GIB) }]);
+        assert_eq!(dx_only[0].driver.windows_driver, Some(1));
     }
 
     #[test]
@@ -508,7 +530,7 @@ mod tests {
         let cards = merge(
             &[vulkan("llvmpipe (LLVM 19.1)", (1, 3), true)],
             &[
-                DxgiGpu { name: "Microsoft Basic Render Driver".into(), dedicated_video_memory: 0, software: true, vendor_id: 0x1414, device_id: 0x8c, luid: None },
+                DxgiGpu { name: "Microsoft Basic Render Driver".into(), dedicated_video_memory: 0, software: true, vendor_id: 0x1414, device_id: 0x8c, luid: None, windows_driver: None },
                 dxgi("Intel UHD", 128 * 1024 * 1024),
             ],
         );

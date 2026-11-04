@@ -95,6 +95,55 @@ pub struct VulkanDevice {
     /// The queue count of the graphics queue family the game would use (see [`graphics_queue_count`]); `None` when the
     /// driver could not be asked.
     pub graphics_queues: Option<u32>,
+    /// The driver as `VkPhysicalDeviceDriverProperties` and the apiVersion's patch number describe it.
+    pub driver: DriverFacts,
+}
+
+/// What the Vulkan driver says about itself, for the system report. All parts are optional: an old driver answers nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DriverFacts {
+    /// The patch number of `apiVersion` (1.3.**280**); 0 when unknown.
+    pub api_patch: u32,
+    /// `VkDriverId` (1 AMD proprietary, 3 Mesa RADV, 4 NVIDIA, 5 Intel proprietary Windows, 6 Intel Mesa ANV, ...).
+    pub id: Option<u32>,
+    /// `driverName` ("AMD proprietary driver", "radv"); empty when unknown.
+    pub name: String,
+    /// `driverInfo` ("Mesa 24.0.5", "24.10.1"); empty when unknown.
+    pub info: String,
+    /// The Windows driver version DXGI reports (the user-mode driver, four 16-bit parts); `None` off Windows or when unread.
+    pub windows_driver: Option<u64>,
+}
+
+pub const DRIVER_ID_INTEL_PROPRIETARY_WINDOWS: u32 = 5;
+
+/// A readable form of `driverVersion`, or `None` when the layout is not known for sure (the report then shows the raw value
+/// only). Rules:
+/// - NVIDIA packs 10.8.8.6 bits: `major.minor.patch.build` (581.15.0.0 is 0x9140_0000 + ...);
+/// - Intel's Windows driver packs 18.14 bits: `major.minor` (101.5762); Intel drivers with another id (Mesa ANV) and every
+///   other vendor, AMD and Mesa included, use the standard Vulkan layout `major.minor.patch`;
+/// - an Intel driver whose id is not known gives `None`, since the Windows layout cannot be told from the standard one;
+/// - zero is "not reported".
+pub fn decode_driver_version(vendor_id: u32, driver_id: Option<u32>, raw: u32) -> Option<String> {
+    const NVIDIA: u32 = 0x10DE;
+    const INTEL: u32 = 0x8086;
+    if raw == 0 {
+        return None;
+    }
+    let standard = || format!("{}.{}.{}", raw >> 22, (raw >> 12) & 0x3FF, raw & 0xFFF);
+    match vendor_id {
+        NVIDIA => Some(format!("{}.{}.{}.{}", raw >> 22, (raw >> 14) & 0xFF, (raw >> 6) & 0xFF, raw & 0x3F)),
+        INTEL => match driver_id {
+            Some(DRIVER_ID_INTEL_PROPRIETARY_WINDOWS) => Some(format!("{}.{}", raw >> 14, raw & 0x3FFF)),
+            Some(_) => Some(standard()),
+            None => None,
+        },
+        _ => Some(standard()),
+    }
+}
+
+/// The Windows driver version of DXGI's `CheckInterfaceSupport` (a 64-bit value of four 16-bit parts): `32.0.15.6094`.
+pub fn windows_driver_text(raw: u64) -> String {
+    format!("{}.{}.{}.{}", (raw >> 48) & 0xFFFF, (raw >> 32) & 0xFFFF, (raw >> 16) & 0xFFFF, raw & 0xFFFF)
 }
 
 /// VK_QUEUE_GRAPHICS_BIT.
@@ -251,12 +300,35 @@ mod tests {
         assert_eq!(graphics_queue_count(&[]), None);
     }
 
+    #[test]
+    fn driver_versions_are_decoded_by_the_layout_of_each_vendor() {
+        // NVIDIA 10.8.8.6: 581.15.0.0 -> (581 << 22) | (15 << 14)
+        assert_eq!(decode_driver_version(0x10DE, Some(4), (581 << 22) | (15 << 14)).as_deref(), Some("581.15.0.0"));
+        assert_eq!(decode_driver_version(0x10DE, None, (551 << 22) | (23 << 14) | (3 << 6) | 2).as_deref(), Some("551.23.3.2"));
+        // AMD proprietary and Mesa RADV: the standard layout.
+        assert_eq!(decode_driver_version(0x1002, Some(1), (2 << 22) | 301).as_deref(), Some("2.0.301"));
+        assert_eq!(decode_driver_version(0x1002, Some(3), (24 << 22) | (0 << 12) | 5).as_deref(), Some("24.0.5"));
+        // Intel on Windows: 18.14 bits; the same number from Mesa ANV is the standard layout; an unknown id is not guessed.
+        assert_eq!(decode_driver_version(0x8086, Some(5), (101 << 14) | 5762).as_deref(), Some("101.5762"));
+        assert_eq!(decode_driver_version(0x8086, Some(6), (24 << 22) | (2 << 12) | 1).as_deref(), Some("24.2.1"));
+        assert_eq!(decode_driver_version(0x8086, None, (101 << 14) | 5762), None);
+        // Unknown vendors use the standard layout; zero is "not reported".
+        assert_eq!(decode_driver_version(0x1234, None, (1 << 22) | (2 << 12) | 3).as_deref(), Some("1.2.3"));
+        assert_eq!(decode_driver_version(0x10DE, None, 0), None);
+    }
+
+    #[test]
+    fn the_windows_driver_version_is_four_sixteen_bit_parts() {
+        assert_eq!(windows_driver_text((32u64 << 48) | (15u64 << 16) | 6094), "32.0.15.6094");
+        assert_eq!(windows_driver_text(0), "0.0.0.0");
+    }
+
     fn required_extensions() -> Vec<String> {
         GAME_INSTANCE_EXTENSIONS.iter().map(|name| name.to_string()).collect()
     }
 
     fn device(name: &str, major: u32, minor: u32) -> VulkanDevice {
-        VulkanDevice { name: name.into(), api_major: major, api_minor: minor, vendor_id: 0x1002, device_type: 2, device_id: 0, driver_version: 0, luid: None, graphics_queues: None }
+        VulkanDevice { name: name.into(), api_major: major, api_minor: minor, vendor_id: 0x1002, device_type: 2, device_id: 0, driver_version: 0, luid: None, graphics_queues: None, driver: DriverFacts::default() }
     }
 
     #[test]
@@ -309,9 +381,10 @@ mod tests {
             driver_version: 0,
             luid: None,
             graphics_queues: None,
+            driver: DriverFacts::default(),
         };
         let llvmpipe =
-            VulkanDevice { name: "llvmpipe".into(), api_major: 1, api_minor: 3, vendor_id: 0x10005, device_type: 4, device_id: 0, driver_version: 0, luid: None, graphics_queues: None };
+            VulkanDevice { name: "llvmpipe".into(), api_major: 1, api_minor: 3, vendor_id: 0x10005, device_type: 4, device_id: 0, driver_version: 0, luid: None, graphics_queues: None, driver: DriverFacts::default() };
         assert!(!is_gpu_driver(&dozen) && !is_gpu_driver(&llvmpipe));
         let only_layers =
             VulkanProbe::Ready { instance_extensions: required_extensions(), devices: vec![dozen.clone(), llvmpipe] };

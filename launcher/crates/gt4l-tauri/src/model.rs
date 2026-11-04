@@ -988,6 +988,7 @@ mod table_tests {
             luid: None,
             driver_version: 0,
             graphics_queues: queues,
+            driver: Default::default(),
         };
         gt4l_core::gpu::merge(&[gpu], &[]).remove(0)
     }

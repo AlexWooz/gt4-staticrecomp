@@ -7,7 +7,7 @@
 //!   instance. It opens no window and allocates no GPU memory. A loaded driver stays in the launcher process until it
 //!   exits. The graphics cards are listed by `gpu::probe_gpus`, which uses this probe.
 
-use gt4l_core::system_check::{CpuFeatures, VulkanDevice, VulkanProbe};
+use gt4l_core::system_check::{CpuFeatures, DriverFacts, VulkanDevice, VulkanProbe};
 
 /// The Windows user language as a locale name (`pt-BR`, `en-US`), from `GetUserDefaultLocaleName`. Empty when it cannot
 /// be read or off Windows; `gt4l_core::language` then uses English.
@@ -75,7 +75,7 @@ mod vulkan_ffi {
     use windows::Win32::Foundation::FreeLibrary;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
 
-    use super::{VulkanDevice, VulkanProbe};
+    use super::{DriverFacts, VulkanDevice, VulkanProbe};
 
     type VkInstance = *mut c_void;
     type VkPhysicalDevice = *mut c_void;
@@ -180,6 +180,44 @@ mod vulkan_ffi {
         device_luid: [u8; 8],
         device_node_mask: u32,
         device_luid_valid: u32,
+    }
+
+    const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES: u32 = 1_000_196_000;
+
+    /// VkPhysicalDeviceDriverProperties (Vulkan 1.2 / VK_KHR_driver_properties), chained through pNext.
+    #[repr(C)]
+    struct DriverPropertiesChain {
+        s_type: u32,
+        p_next: *mut c_void,
+        driver_id: u32,
+        driver_name: [c_char; 256],
+        driver_info: [c_char; 256],
+        conformance_version: [u8; 4],
+    }
+
+    /// The driver's own description, when it answers (the struct stays zeroed otherwise, and the fields come back empty).
+    unsafe fn driver_facts(handle: VkPhysicalDevice, properties2_of: Option<GetPhysicalDeviceProperties2>, api_patch: u32) -> DriverFacts {
+        let mut facts = DriverFacts { api_patch, ..DriverFacts::default() };
+        let Some(properties2_of) = properties2_of else {
+            return facts;
+        };
+        let mut chain = DriverPropertiesChain {
+            s_type: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+            p_next: ptr::null_mut(),
+            driver_id: 0,
+            driver_name: [0; 256],
+            driver_info: [0; 256],
+            conformance_version: [0; 4],
+        };
+        let mut buffer = vec![0u64; PROPERTIES_BUFFER / 8];
+        let bytes = buffer.as_mut_ptr().cast::<u8>();
+        bytes.cast::<u32>().write(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2);
+        bytes.add(8).cast::<*mut c_void>().write(&mut chain as *mut DriverPropertiesChain as *mut c_void);
+        properties2_of(handle, buffer.as_mut_ptr().cast());
+        facts.name = text(&chain.driver_name);
+        facts.info = text(&chain.driver_info);
+        facts.id = if chain.driver_id != 0 { Some(chain.driver_id) } else { None };
+        facts
     }
 
     fn text(raw: &[c_char]) -> String {
@@ -313,6 +351,7 @@ mod vulkan_ffi {
                             driver_version: prefix.driver_version,
                             luid,
                             graphics_queues: graphics_queues(handle, families_of),
+                            driver: driver_facts(handle, properties2_of, prefix.api_version & 0xFFF),
                         });
                     }
                 }
@@ -400,7 +439,7 @@ pub fn windows_version() -> String {
 
 /// A REG_SZ value under HKEY_LOCAL_MACHINE (64-bit view).
 #[cfg(windows)]
-fn registry_string(key: &str, value: &str) -> Option<String> {
+pub(crate) fn registry_string(key: &str, value: &str) -> Option<String> {
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
     let (key, value) = (HSTRING::from(key), HSTRING::from(value));

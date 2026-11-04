@@ -25,6 +25,37 @@ pub fn monitors() -> Vec<Monitor> {
     Vec::new()
 }
 
+/// The refresh rate (Hz) and the scale factor (percent, from the effective DPI) of each monitor, by GDI device name, for the
+/// system report. Either is `None` when the system does not say.
+#[cfg(windows)]
+pub fn details() -> Vec<(String, Option<u32>, Option<u32>)> {
+    windows_impl::details()
+}
+
+#[cfg(not(windows))]
+pub fn details() -> Vec<(String, Option<u32>, Option<u32>)> {
+    Vec::new()
+}
+
+/// The effective DPI as a scale factor in percent (96 DPI is 100%), rounded.
+pub fn scale_percent_of(dpi: u32) -> Option<u32> {
+    (dpi > 0).then(|| (dpi * 100 + 48) / 96)
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::scale_percent_of;
+
+    #[test]
+    fn dpi_becomes_a_scale_percent() {
+        assert_eq!(scale_percent_of(96), Some(100));
+        assert_eq!(scale_percent_of(120), Some(125));
+        assert_eq!(scale_percent_of(144), Some(150));
+        assert_eq!(scale_percent_of(192), Some(200));
+        assert_eq!(scale_percent_of(0), None);
+    }
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use std::collections::HashMap;
@@ -37,6 +68,7 @@ mod windows_impl {
         DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
     };
     use windows::Win32::Foundation::{ERROR_SUCCESS, LPARAM, RECT};
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
     use windows::Win32::Graphics::Gdi::{
         EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, DEVMODEW, DISPLAY_DEVICEW,
         ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
@@ -129,6 +161,40 @@ mod windows_impl {
         } else {
             String::new()
         }
+    }
+
+    pub fn details() -> Vec<(String, Option<u32>, Option<u32>)> {
+        let mut handles: Vec<HMONITOR> = Vec::new();
+        // SAFETY: the callback only pushes into `handles`, which outlives the call.
+        let enumerated = unsafe {
+            EnumDisplayMonitors(None, None, Some(collect), LPARAM(&mut handles as *mut Vec<HMONITOR> as isize))
+        };
+        if !enumerated.as_bool() {
+            return Vec::new();
+        }
+        let mut details = Vec::new();
+        for handle in handles {
+            let mut info = MONITORINFOEXW::default();
+            info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            // SAFETY: MONITORINFOEXW starts with MONITORINFO and cbSize says which one it is.
+            if !unsafe { GetMonitorInfoW(handle, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO) }.as_bool() {
+                continue;
+            }
+            let device = wide_to_string(&info.szDevice);
+            let device_wide = wide_null(&device);
+            let mut current = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+            // SAFETY: `device_wide` is null-terminated; `current` is a valid DEVMODEW with dmSize set.
+            let read = unsafe { EnumDisplaySettingsW(PCWSTR(device_wide.as_ptr()), ENUM_CURRENT_SETTINGS, &mut current) };
+            // 0 and 1 mean "the hardware default" in dmDisplayFrequency, not a rate.
+            let hertz = read.as_bool().then_some(current.dmDisplayFrequency).filter(|hertz| *hertz > 1);
+            let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+            // SAFETY: plain out-parameters on a monitor handle the enumeration just gave.
+            let scale = unsafe { GetDpiForMonitor(handle, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }
+                .ok()
+                .and_then(|()| super::scale_percent_of(dpi_x));
+            details.push((device, hertz, scale));
+        }
+        details
     }
 
     pub fn monitors() -> Vec<Monitor> {

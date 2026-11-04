@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use gt4l_core::games;
-use gt4l_core::log_export::{self, Entry, GpuFact, SystemFacts, KEPT_FOR_EXPORT};
+use gt4l_core::log_export::{self, DisplayExtra, Entry, GpuFact, SystemFacts, KEPT_FOR_EXPORT};
 use gt4l_core::logs;
 
 use crate::state::AppState;
@@ -17,17 +17,17 @@ fn changed(path: &Path) -> SystemTime {
 }
 
 /// Writes the bundle into `folder` and returns its path. `user_name` is the Windows user name to mask.
-pub fn export(state: &AppState, folder: &Path, user_name: &str) -> Result<PathBuf, String> {
+pub fn export(state: &AppState, folder: &Path, user_name: &str, controllers: &[String]) -> Result<PathBuf, String> {
     let now = gt4l_platform::system::local_time();
     let path = folder.join(log_export::zip_name(&now));
-    let entries = collect(state)?;
+    let entries = collect(state, controllers)?;
     let masked = log_export::masked(&entries, user_name);
     log_export::write_zip(&path, &masked).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(path)
 }
 
 /// The entries of the bundle before masking.
-pub(crate) fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
+pub(crate) fn collect(state: &AppState, controllers: &[String]) -> Result<Vec<Entry>, String> {
     let dirs = &state.dirs;
     let logs_dir = dirs.logs();
     let mut entries = Vec::new();
@@ -77,12 +77,20 @@ pub(crate) fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
         entries.push(Entry { path: "settings.toml".to_string(), text });
     }
 
-    entries.push(Entry { path: "system.txt".to_string(), text: log_export::system_text(&system_facts(state)) });
+    entries.push(Entry { path: "system.txt".to_string(), text: log_export::system_text(&system_facts(state, controllers)) });
     Ok(entries)
 }
 
+/// The names of the connected pads in a `pad_status` payload (`pads[].name`), without anything that identifies a unit.
+pub fn controller_names(status: &serde_json::Value) -> Vec<String> {
+    status["pads"]
+        .as_array()
+        .map(|pads| pads.iter().filter_map(|pad| pad["name"].as_str()).map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// The facts of `system.txt`, read now.
-fn system_facts(state: &AppState) -> SystemFacts {
+fn system_facts(state: &AppState, controllers: &[String]) -> SystemFacts {
     let language = crate::state::language_of(state);
     let (_, plan, cards) = gt4l_platform::gpu::run_settings(&state.config.settings, language);
     let installed = state.installed_games();
@@ -93,9 +101,21 @@ fn system_facts(state: &AppState) -> SystemFacts {
             (name, monitor.desktop.width, monitor.desktop.height, monitor.primary)
         })
         .collect();
+    let details = gt4l_platform::display::details();
+    let display_extras = gt4l_platform::display::monitors()
+        .iter()
+        .map(|monitor| {
+            let found = details.iter().find(|(device, _, _)| *device == monitor.device);
+            DisplayExtra { refresh_hz: found.and_then(|(_, hertz, _)| *hertz), scale_percent: found.and_then(|(_, _, scale)| *scale) }
+        })
+        .collect();
+    let mut machine = gt4l_platform::machine::read(state.dirs.root());
+    machine.controllers = controllers.to_vec();
     SystemFacts {
         windows: gt4l_platform::system::windows_version(),
         cpu: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default(),
+        machine,
+        display_extras,
         gpus: cards
             .iter()
             .map(|card| GpuFact {
@@ -104,6 +124,8 @@ fn system_facts(state: &AppState) -> SystemFacts {
                 driver_version: card.driver_version,
                 video_memory: card.dedicated_video_memory,
                 graphics_queues: card.graphics_queues,
+                api: card.vulkan_name.as_ref().map(|_| (card.vulkan_api.0, card.vulkan_api.1, card.driver.api_patch)),
+                driver: card.driver.clone(),
             })
             .collect(),
         chosen: (plan.card.as_ref().and_then(|card| card.name()).unwrap_or_default().to_string(), plan.api.clone()),

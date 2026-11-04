@@ -10,6 +10,7 @@ pub mod gpu;
 pub mod install_record;
 pub mod known_folder;
 pub mod legacy_install;
+pub mod machine;
 pub mod pad;
 pub mod process;
 pub mod recycle;
