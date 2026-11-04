@@ -2230,6 +2230,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                          const BlockSpan *knownSpan = nullptr) {
         ScopedUs writtenTimer(clock_, &PhaseTimes::written);
         const BlockSpan span = knownSpan ? *knownSpan : WriteSpan(view, rect);
+        static const long long writeTraceAt = std::getenv("GT4_CORE2_BATCH_TRACE_AT")
+                                                  ? std::atoll(std::getenv("GT4_CORE2_BATCH_TRACE_AT"))
+                                                  : -1;  // diagnostics only: the memory writes between the traced batches
+        if (writeTraceAt >= 0 && static_cast<long long>(vblanks_) == writeTraceAt) {
+            std::fprintf(stderr, "[core2] write kind=%d bp=%u bw=%u psm=%02x rect=%d,%d,%d,%d span=%u+%u\n",
+                         static_cast<int>(kind), view.basePointer, view.bufferWidth, static_cast<unsigned>(view.psm),
+                         rect.x0, rect.y0, rect.x1, rect.y1, span.begin, span.count);
+        }
         MarkWritten(span, kind);
         if (bitPatchWrite_) {  // IN-512
             bitPatchWrite_ = false;
@@ -2649,6 +2657,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         NoteBaseWrite noteBaseWrite{*this, BaseWriteKey(c.dbp, c.dbw, c.dpsm)};
         times_.uploads += 1;
         const auto psm = memory::decodePsm(c.dpsm);
+        static const long long uploadTraceAt = std::getenv("GT4_CORE2_BATCH_TRACE_AT")
+                                                   ? std::atoll(std::getenv("GT4_CORE2_BATCH_TRACE_AT"))
+                                                   : -1;  // diagnostics only: the bytes an upload brought
+        if (uploadTraceAt >= 0 && static_cast<long long>(vblanks_) == uploadTraceAt) {
+            const std::uint64_t needed =
+                psm ? (static_cast<std::uint64_t>(c.rrw) * c.rrh * memory::psmInfo(*psm).transferBpp + 7u) / 8u : 0u;
+            std::fprintf(stderr, "[core2] upload bp=%u bw=%u psm=%02x at=%u,%u size=%ux%u bytes=%zu needed=%llu\n", c.dbp,
+                         c.dbw, c.dpsm, c.dsax, c.dsay, c.rrw, c.rrh, byteCount, static_cast<unsigned long long>(needed));
+        }
         BlockSpan writtenSpan{};  // IN-487: one walk over the block cells per upload
         const bool spanKnown = psm && c.rrw != 0 && c.rrh != 0 && c.dsax + c.rrw <= 2048u && c.dsay + c.rrh <= 2048u;
         if (psm && c.rrw != 0 && c.rrh != 0) {
@@ -3807,7 +3824,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             stats.texturesFromMemory++;
             // Diagnostics: GT4_CORE2_DUMP_TEX=<texture base block>:<folder> writes that texture as this core decoded
-            // it (RGB as PPM, alpha as PGM) once, with its TEX0 and CLAMP.
+            // it (RGB as PPM, alpha as PGM) once, with its TEX0 and CLAMP; a mipmapped texture with its levels 1..MXL
+            // right of level 0 (IN-428).
             static long long dumpTex = -2;
             static std::string dumpDir;
             if (dumpTex == -2) {
@@ -3823,10 +3841,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 dumpTex = -1;
                 std::vector<std::uint32_t> words;
                 std::string error;
-                if (gpu_.ReadImage(draw.memoryTexture, t.texWidth, t.texHeight, words, error)) {
+                const std::uint32_t dumpWidth = (draw.mipInfo & 7u) != 0 ? t.texWidth + std::max(1u, t.texWidth >> 1) : t.texWidth;
+                if (gpu_.ReadImage(draw.memoryTexture, dumpWidth, t.texHeight, words, error)) {
                     const std::string rgb = dumpDir + "\\texture.ppm", alpha = dumpDir + "\\texture-alpha.pgm";
                     if (std::FILE *f = std::fopen(rgb.c_str(), "wb")) {
-                        std::fprintf(f, "P6\n%u %u\n255\n", t.texWidth, t.texHeight);
+                        std::fprintf(f, "P6\n%u %u\n255\n", dumpWidth, t.texHeight);
                         for (std::uint32_t w : words) {
                             const unsigned char px[3] = {static_cast<unsigned char>(w), static_cast<unsigned char>(w >> 8),
                                                          static_cast<unsigned char>(w >> 16)};
@@ -3835,7 +3854,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         std::fclose(f);
                     }
                     if (std::FILE *f = std::fopen(alpha.c_str(), "wb")) {
-                        std::fprintf(f, "P5\n%u %u\n255\n", t.texWidth, t.texHeight);
+                        std::fprintf(f, "P5\n%u %u\n255\n", dumpWidth, t.texHeight);
                         for (std::uint32_t w : words) {
                             const unsigned char a = static_cast<unsigned char>(w >> 24);
                             std::fwrite(&a, 1, 1, f);
@@ -3843,7 +3862,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         std::fclose(f);
                     }
                     std::fprintf(stderr, "[core2] texture %u dumped: %ux%u tex0=%llx clamp=%llx texa=%llx\n", t.glmBp,
-                                 t.texWidth, t.texHeight, static_cast<unsigned long long>(batch.state.ctx.tex0),
+                                 dumpWidth, t.texHeight, static_cast<unsigned long long>(batch.state.ctx.tex0),
                                  static_cast<unsigned long long>(batch.state.ctx.clamp),
                                  static_cast<unsigned long long>(batch.state.env.texa));
                 }
@@ -3970,7 +3989,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const std::uint64_t tex0 = batch.state.ctx.tex0;
             std::fprintf(stderr,
                          "[core2] batch frame=%u/%u/%02x z=%u tex=%u/%u/%02x from=%s rect=%d,%d,%d,%d prims=%zu "
-                         "fbmsk=%08x prim=%llx test=%llx zbuf=%llx alpha=%llx verts=%zu tex1=%llx tex0=%llx\n",
+                         "fbmsk=%08x prim=%llx test=%llx zbuf=%llx alpha=%llx verts=%zu tex1=%llx tex0=%llx miptbp1=%llx "
+                         "miptbp2=%llx texa=%llx\n",
                          t.frameView.basePointer, t.frameView.bufferWidth, static_cast<unsigned>(t.frameView.psm),
                          depthTarget ? t.zView.basePointer : 0u, t.hasTexture ? tex0::Tbp0(tex0) : 0u,
                          t.hasTexture ? tex0::Tbw(tex0) : 0u, t.hasTexture ? tex0::Psm(tex0) : 0u,
@@ -3980,7 +4000,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                          static_cast<unsigned long long>(batch.state.ctx.test),
                          static_cast<unsigned long long>(batch.state.ctx.zbuf),
                          static_cast<unsigned long long>(batch.state.ctx.alpha), batch.vertices.size(),
-                         static_cast<unsigned long long>(batch.state.ctx.tex1), static_cast<unsigned long long>(tex0));
+                         static_cast<unsigned long long>(batch.state.ctx.tex1), static_cast<unsigned long long>(tex0),
+                         static_cast<unsigned long long>(batch.state.ctx.miptbp1),
+                         static_cast<unsigned long long>(batch.state.ctx.miptbp2),
+                         static_cast<unsigned long long>(batch.state.env.texa));
             static const long long vertsAbove = std::getenv("GT4_CORE2_TRACE_VERTS")
                                                     ? std::atoll(std::getenv("GT4_CORE2_TRACE_VERTS"))
                                                     : -1;  // diagnostics: vertices of batches with this many prims
@@ -4674,6 +4697,12 @@ bool Renderer::GifTransfer(std::uint32_t path, const std::uint8_t *bytes, std::s
     Impl &s = *impl_;
     ScopedUs gifTimer(s.clock_, &PhaseTimes::gif);
     const std::size_t count = byteCount / 16;
+    static const long long gifTraceAt = std::getenv("GT4_CORE2_BATCH_TRACE_AT")
+                                            ? std::atoll(std::getenv("GT4_CORE2_BATCH_TRACE_AT"))
+                                            : -1;  // diagnostics only: which GIF path brought each transfer
+    if (gifTraceAt >= 0 && static_cast<long long>(s.vblanks_) == gifTraceAt) {
+        std::fprintf(stderr, "[core2] gif path=%u qwords=%zu\n", path, count);
+    }
     if constexpr (std::endian::native == std::endian::little && sizeof(Qword) == 16) {
         if (reinterpret_cast<std::uintptr_t>(bytes) % alignof(Qword) == 0) {
             s.frontEnd_.GifTransfer(path, reinterpret_cast<const Qword *>(bytes), count);

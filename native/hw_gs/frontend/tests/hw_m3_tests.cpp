@@ -1270,6 +1270,33 @@ void TestTransfers() {
     CHECK_EQ(HostToLocalByteCount(4096, 4096, 32), kTransferCapBytes);
 }
 
+// TASK-149: an upload over a mip level (1..MXL) of the pending batch's texture draws the batch first, as one over level 0
+// does; an upload elsewhere, or over the same blocks while the draw does not use mip levels, does not.
+uint32_t MipUploadFlushes(uint64_t tex1, uint32_t uploadBlock) {
+    World world;
+    std::vector<Qword> s;
+    AppendBaseline(s);
+    const uint64_t miptbp1 = uint64_t{0x2000} | (uint64_t{2} << 14) | (uint64_t{0x2400} << 20) | (uint64_t{2} << 34);
+    AppendAd(s, {{reg::kTex1One, tex1}, {reg::kMiptbp1One, miptbp1}, {reg::kPrim, 3 | (1u << primbit::kTme)}});
+    AppendTriangle(s, 0, 0);
+    const uint64_t bitbltbuf = (uint64_t{uploadBlock} << 32) | (uint64_t{1} << 48);
+    AppendAd(s, {{reg::kBitbltbuf, bitbltbuf}, {reg::kTrxpos, 0}, {reg::kTrxreg, uint64_t{16} | (uint64_t{4} << 32)},
+                 {reg::kTrxdir, 0}});
+    s.push_back(Tag(16, true, false, 0, kImage, 0, {}));
+    for (int i = 0; i < 16; ++i) s.push_back(Qword{});
+    Feed(world, s);
+    return world.fe.FlushReasonCount(FlushReason::Transfer);
+}
+
+void TestMipLevelTransferFlush() {
+    const uint64_t mipmapped = (uint64_t{2} << 2) | (uint64_t{2} << 6);  // MXL 2, MMIN 2 (nearest mip level)
+    CHECK_EQ(MipUploadFlushes(mipmapped, 0x2400), 1u);                   // level 2
+    CHECK_EQ(MipUploadFlushes(mipmapped, 0x2000), 1u);                   // level 1
+    CHECK_EQ(MipUploadFlushes(mipmapped, 0x3000), 0u);                   // no level there
+    CHECK_EQ(MipUploadFlushes(uint64_t{1} << 6, 0x2400), 0u);            // MMIN 1: level 0 only
+    CHECK_EQ(MipUploadFlushes(uint64_t{2} << 6, 0x2400), 0u);            // MXL 0
+}
+
 // ---- counters and register normalisation -----------------------------------
 
 void TestCounters() {
@@ -1583,7 +1610,7 @@ int main(int argc, char** argv) {
         {"hw_clut_copy_free", [] { TestClutCopyFree(); }},
         {"hw_front_end_fast_paths", [] { TestFastPaths(); }},
         {"hw_block_ranges_overlap", [] { TestBlockRangesOverlap(); }},
-        {"hw_transfers", [] { TestTransfers(); }},
+        {"hw_transfers", [] { TestTransfers(); TestMipLevelTransferFlush(); }},
         {"hw_counters", [] { TestCounters(); }},
     };
     bool ran = false;

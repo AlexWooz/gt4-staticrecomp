@@ -2931,7 +2931,7 @@ pt-BR 282, nav-test 209 (headless Edge), locale keys 664 in both.
 
 State (2026-11-04, owner): done; the controller choice works on the owner's PCs. Ships in 1.3.0-rc12.
 
-### TASK-149 — CoreGS 2.0: the Nordschleife fences do not load their textures properly (rc13)
+### TASK-149 — CoreGS 2.0: the Nordschleife fences do not load their textures properly (rc13, fixed)
 
 Owner (2026-11-04): on CoreGS 2.0 the fence textures along the Nordschleife do not load properly. Reference: GSdx (final frames
 only, clean room). Recording: `nordschleife-fences` (Spec II, card `spec2-replays-20261104`: this PC's Spec II save and the five
@@ -2946,6 +2946,19 @@ again, close to GSdx: the fault is in CoreGS 2.0's mip levels 1..MXL (Confirmed)
 TBW 2, PSMT4 128 x 128, CLUT CT32 at 13688, TCC 1, alpha test GREATER 32 (fail KEEP), TEX1 MXL 2, MMIN 2 (nearest mip, nearest),
 MTBA 0, LCM 0, K -3.3125: levels 1 and 2 (64 x 64 and 32 x 32) come from MIPTBP1. An opaque dark result fits levels read at the
 wrong place or not decoded (palette index 0) (Hypothesis). Next: MIPTBP1 in the trace, and the decoded levels.
+
+Cause (Confirmed, 2026-11-04): MIPTBP1 puts level 1 at block 13680 and level 2 at block 13018 (TBW 2). The decoded texture
+(`GT4_CORE2_DUMP_TEX`, now with the levels) had level 0 and 1 as mesh and level 2 as another texture's pixels, fully opaque.
+GT4 sends the fences by PATH1 and then, before CoreGS 2.0 drew their batch, a 64 x 1024 CT32 upload by PATH3 at block 12224
+(262,144 bytes, all of it sent) over 12224..13247, level 2 included. The front end draws a pending batch before an upload
+that touches its frame, depth or texture, but it checked only level 0 (`FrontEnd::BatchTouches`), so the batch was drawn
+after the upload, with the new pixels in level 2. Not the palette path, the GPU palette, the texture cache, the upload paths
+or MTVU (each A/B unchanged).
+Fix: `FrontEnd::MipLevelsTouch` adds levels 1..MXL (MIPTBP1/MIPTBP2, or the next level-0 footprint with MTBA) when the draw
+uses mip levels (MXL > 0, MMIN 2-5). Test `m3_hw_transfers` (an upload over level 1 or 2 flushes; elsewhere, MMIN 1 or MXL 0
+does not). Replay at VBlank 1900: the far fence is see-through mesh, as on GSdx. Diagnostics added: the batch trace prints
+MIPTBP1/MIPTBP2/TEXA, and with `GT4_CORE2_BATCH_TRACE_AT` the traced VBlank also lists each GIF transfer's path, each upload
+with its bytes, and each memory write. State: fixed on `task/134-game-code-optimization-study`, for rc13 (owner test).
 
 ### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13)
 

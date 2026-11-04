@@ -144,6 +144,7 @@ private:
     bool AutoflushWanted(const Candidate& candidate, PrimType type) const;
     TexelRect ComputeTexelRect(const Candidate& candidate) const;
     bool BatchTouches(uint32_t begin, uint32_t count, bool asDestination) const;
+    bool MipLevelsTouch(const ContextRegs& ctx, uint32_t levelZeroBlocks, uint32_t begin, uint32_t count) const;
     bool FrameWritesColour(const ContextRegs& ctx) const;
     bool ZbufWritten(const ContextRegs& ctx) const;
     bool ZbufUsed(const ContextRegs& ctx) const;

@@ -756,6 +756,36 @@ bool FrontEnd::BatchTouches(uint32_t begin, uint32_t count, bool asDestination) 
         if (BlockRangesOverlap(tex0::Tbp0(ctx.tex0), texBlocks, begin, count)) {
             return true;
         }
+        if (MipLevelsTouch(ctx, texBlocks, begin, count)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// TASK-149: a mipmapped draw also reads its levels 1..MXL, at MIPTBP1 (levels 1-3) and MIPTBP2 (levels 4-6), or with MTBA
+// packed after level 0. An upload over any level must draw the pending batch first: GT4 streams textures by PATH3 over the
+// Nordschleife fences' level 2 right after sending the fences, which then showed another texture's pixels. The level
+// footprints are as conservative as level 0's (whole page rows); MTBA counts the next level-0 footprint.
+bool FrontEnd::MipLevelsTouch(const ContextRegs& ctx, uint32_t levelZeroBlocks, uint32_t begin, uint32_t count) const {
+    const uint32_t mxl = std::min<uint32_t>(tex1::Mxl(ctx.tex1), 6u);
+    const uint32_t mmin = tex1::Mmin(ctx.tex1);
+    if (mxl == 0u || mmin < 2u || mmin > 5u) {
+        return false;
+    }
+    if (tex1::Mtba(ctx.tex1) != 0u &&
+        BlockRangesOverlap((tex0::Tbp0(ctx.tex0) + levelZeroBlocks) % kBlocksTotal, levelZeroBlocks, begin, count)) {
+        return true;
+    }
+    const uint32_t height = 1u << tex0::Th(ctx.tex0);
+    for (uint32_t level = 1; level <= mxl; ++level) {
+        const uint64_t miptbp = level <= 3u ? ctx.miptbp1 : ctx.miptbp2;
+        const uint32_t shift = 20u * ((level - 1u) % 3u);
+        const uint32_t tbp = static_cast<uint32_t>((miptbp >> shift) & 0x3FFFu);
+        const uint32_t tbw = static_cast<uint32_t>((miptbp >> (shift + 14u)) & 0x3Fu);
+        if (BlockRangesOverlap(tbp, FootprintBlocks(tbw, std::max(1u, height >> level)), begin, count)) {
+            return true;
+        }
     }
     return false;
 }
