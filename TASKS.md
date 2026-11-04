@@ -3129,6 +3129,16 @@ change, so it waited until after 1.3.0 and the owner's word. **Owner, 2026-11-04
 at (the palette flushes are the largest batch cause on every track in the player's view). Gates: every identity gate, plus the
 owner's picture tests.
 
+- Done on `task/168-palettes-per-batch` (e655a630, 2026-11-04): a CLUT load that only changes the palette of the pending batch's
+  indexed texture starts a palette segment instead of a flush (each segment keeps a copy of its CLUT buffer; core 2 gives each
+  later segment's vertices their own palette row, `GpuVertex` bytes 30-31 as `R16_UINT`). Loads from drawn targets or after a
+  GPU palette, CSM2, palette or texture memory under the batch's buffers, possible auto-flushes and texture replacement still
+  flush. `GT4_CORE2_PALETTE_SEGMENTS=0` keeps the old rule. Design: `docs/hw-renderer-spec/TASK-168-PALETTE-SEGMENTS.md`
+  (its known limit: a target grown by later small batches does not take CPU-written memory, so a merged batch can match the
+  CPU reference where the flushes did not).
+- Checks: CTest 303/303 on both games (rerun by the coordinator); gates against the rc14 PGO builds and the A-Spec track-map A/B
+  in progress.
+
 ### TASK-170 — CoreGS 2.0: a shader compile that ends the process no longer stops every start (rc14, done)
 
 A Discord player's rc13 log (RX 6700 XT, RDNA2; issues #187-#190 look the same): the launcher's shader prepare stops at about
@@ -3157,6 +3167,13 @@ AMD's RDNA1/2 driver; the parallel prepare (several compiles at once) may matter
   finished or stopped making progress, so the player never sees the game end; (2) the prepare and the game log the
   quarantined variants with their decoded fields, and the log bundle carries them, so the variants that end AMD's driver can
   be identified (root cause); (3) asked: the player's `data\shader-cache\quarantine.bin`.
+- rc15 state (2026-11-04): (1) and (2) are **TASK-170b**, done on `task/170b-prepare-retry` (0e4e6d9e): the launcher repeats
+  the prepare up to 12 attempts while each one gets further (guard files changed or more variants done), `shaders.log` keeps
+  every attempt under a header, the window says "attempt N" (`shaders.retry`, both languages), and the log bundle gets
+  `logs/shader-guard.txt` (both files' headers and keys in hex). Reviewed: launcher 681 tests, focus checks 297/297 en-US and
+  304/304 pt-BR. (3) arrived: 7 quarantined keys with no field in common (an intermittent driver crash is suspected, not
+  confirmed). **TASK-170c** (planned, after TASK-168): quarantine a key only after it ended two runs, and make the launcher's
+  progress rule see that state (today it compares the files' key counts; it should compare their bytes).
 
 ### TASK-171 — CoreGS 2.0: per-primitive front end for big scenes (the first license; rc15)
 
@@ -3186,7 +3203,8 @@ laptop) while menus and races are fine: 77-138 late frames per 300 VBlanks in th
   - So the shared cause is batches, not primitives (GS time follows batches; about 3 us per batch in the player's view at 1x
     on the desktop), and the largest share of the batches comes from palette changes: TASK-168.
 - State (2026-11-04): planned for rc15 (owner): TASK-168 is the main change; the track map is the before/after check of every
-  track at once (plus the laptop for the owner's real settings).
+  track at once (plus the laptop for the owner's real settings). The map itself is done (scripts `private/task134-tools/t171-*`,
+  survey folders `build/evidence/press-*`); the rc15 A/B reruns it with TASK-168 on and off.
 
 ### TASK-172 — An earlier Spec II release ("Gran Turismo 4 Spec 2.iso", owner, 2026-11-04)
 
@@ -3223,6 +3241,69 @@ IOP modules are the game's code; an image is Spec II 1.10 exactly when both matc
   the real PT-BR and PT-BR + CPSP images pass with `GT4_FULL_HASH=1`, the earlier release is refused with
   `GT4_SPEC2_EARLIER_ISO`); the launcher's tests; focus checks in both languages.
 - State (2026-11-04): done in rc14.
+
+### TASK-174 — CoreGS 2.0: presentation off the GS thread on a GPU with one queue (issue #204, Steam Deck; rc15)
+
+Issue #204 (a Steam Deck player, Proton): stutter in CoreGS 2.0. His log says `[hw] presentation queue: the rendering queue`:
+RADV gives the graphics family one queue, so IN-516's second queue is not there and the GS thread acquired the swapchain image
+(an unbounded wait) and presented itself, so the display's waits fell on it. The GS thread was also CPU-bound at about 12.8 ms
+per VBlank on the Deck (gif_parse 3.6, draw 3.2, translate 1.67), which TASK-168 helps.
+
+- Change (branch `task/174-single-queue-present`, 34516dfe, 02afc12d, dcbbe4d9): on a GPU whose graphics family has one queue
+  the GS thread draws the frame into the IN-516 picture and hands it to the presentation thread of TASK-082, which acquires,
+  copies and presents on the same queue; every queue call of both threads, the renderer's and write-back submissions included,
+  holds one lock (`hw_queue_lock.hpp`). Nothing on the GS thread waits for the display: a frame the presentation side cannot
+  take is not shown and counted. `present_paced` (second queue, frames left out) got the same slot rule: before, it could draw
+  over a picture whose copy had not run. Switches: `GT4_HW_PRESENT_SHARED_QUEUE=0` (old path), `GT4_HW_PRESENT_FORCE_ONE_QUEUE=1`
+  (a desktop runs the Deck path), `GT4_HW_PRESENT_SHARED_WAIT=<n>` (diagnostic). New `[hw] presentation` line. Design and
+  limits: `docs/PRESENTATION-ONE-QUEUE.md`.
+- Which GPUs: one graphics queue on RADV (Confirmed, #204 log) and maybe Intel (Hypothesis); AMD Windows (8 queues here) and
+  NVIDIA keep their own queue and are unaffected.
+- Checks: CTest 309/309 (rerun by the coordinator). Windowed desktop test (forced one queue, v2.00 night race 2x, 144 Hz,
+  indicative): the GS thread's presentation step 0.04 ms against about 0.5 ms (old and own-queue paths) in the race, every race
+  frame shown, frames left out, resize, minimise and fullscreen clean, 0 validation and thread-check errors; one 86 ms hitch in
+  one of two runs (a present blocked 73 ms under the queue lock, AMD Windows FIFO; the repeat run had none).
+- **Launcher option (owner, 2026-11-04; branch `task/174b-launcher-option`):** a Graphics row, on by default, with an (i) note;
+  the launcher reads the graphics family's queue count and shows the row as already active (disabled) on GPUs with two or more;
+  off passes `GT4_HW_PRESENT_SHARED_QUEUE=0`. The same branch makes `system.txt` richer (owner): CPU cores and SSE4.1/AVX2, RAM,
+  the Windows build and Wine/Proton, a readable GPU driver, refresh and scale, free disk space, power, controllers; no names or
+  serial numbers.
+- Still to test: the Deck player's `[hw] presentation` line with and without `GT4_HW_PRESENT_SHARED_QUEUE=0`; the laptop with
+  HD 620 when the owner frees it ("not now" on 2026-11-04).
+- State (2026-11-04): game side reviewed and tested on the desktop; launcher side in progress.
+
+### TASK-175 — CoreGS 2.0 performance HUD: full names, the report state, two modes (owner, 2026-11-04; rc15)
+
+The owner's photo of the HUD on the RTX 3060 laptop: the GPU name is cut ("NVIDIA GeForce RTX 3.."). Asked:
+1. the GPU name never cut; the CPU model on its own line;
+2. the performance report's state: "Recording" during an F7 interval, "Saved" for a few seconds after F8, then "Idle"; the
+   line is not drawn when the report is off in the launcher;
+3. launcher choice Off / FPS only / Full (FPS only draws just the FPS; Full everything); an old "on" becomes Full.
+- Branch `task/175-performance-hud`; tests: HUD fixture (fit rule, CPU line, report state machine, FPS-only layout), launcher
+  mapping and compatibility, focus checks in both languages; the coordinator checks it in a game run.
+- State (2026-11-04): in progress.
+
+### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
+
+The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
+owner's word (busy on 2026-11-04). Each task is built by a subagent in its own worktree and branch; the coordinator reviews
+(diff, tests, gates) and integrates on `release/1.3.0-rc15` (this branch, from `task/171-license-front-end`).
+
+| Task | What | Branch | State (2026-11-04) |
+|---|---|---|---|
+| TASK-171 | Track map of every Spec II track (A-Spec, B-Spec) headless on the desktop; batches/VBlank, flush reasons | `task/171-license-front-end` | ✅ Done: palette flushes are the largest batch cause in the player's view on every track |
+| TASK-168 | Several palettes in one batch (palette segments, `GT4_CORE2_PALETTE_SEGMENTS=0` A/B) | `task/168-palettes-per-batch` (e655a630) | 🔄 CTest 303/303 both games; gates against rc14 PGO and the track-map A/B running |
+| TASK-170b | The launcher runs the shader prepare again (up to 12 attempts while each gets further); `logs/shader-guard.txt` | `task/170b-prepare-retry` (0e4e6d9e) | ✅ Reviewed: launcher 681 tests, focus checks 297/297 and 304/304 |
+| TASK-170c | Quarantine a variant only after two crashes of the same key; the launcher's progress rule follows (a first crash counts as progress; compare the guard files' bytes, not counts) | not started | 📋 After TASK-168 |
+| TASK-174 | Presentation off the GS thread on one-queue GPUs (Steam Deck, issue #204) | `task/174-single-queue-present` | 🔄 Game side reviewed and desktop-tested; launcher option `task/174b-launcher-option` in progress |
+| TASK-174b | Launcher: the TASK-174 option with queue detection, and a richer `system.txt` | `task/174b-launcher-option` | 🔄 In progress |
+| TASK-175 | Performance HUD: full names, report state, Off / FPS only / Full | `task/175-performance-hud` | 🔄 In progress |
+
+Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
+174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
+against the rc14 PGO builds (`private/task134-tools/gates6.sh`), the A-Spec track map before/after, the rc15 notes in both
+languages, plain test builds of both games and the launcher, install on the desktop, Telegram the owner. PGO and the GitHub
+draft and pre-release only on the owner's word.
 
 ### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
 
