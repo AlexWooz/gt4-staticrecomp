@@ -55,6 +55,22 @@ claim zero emulation or full PS2 fidelity.
   physics timing and remaster features will be a separate project, possibly a fork.
   This repository's goal is the original game running natively, optimized and as
   faithful as possible.
+- **Game patches: improvements that leave gameplay and progression alone are in scope**
+  (owner, 2026-11-04). The original game stays, with built-in options on top.
+  - **In scope.** Examples:
+    - the 360-degree chase camera on the right stick (TASK-159);
+    - real-time FoV adjustment (TASK-160);
+    - ultrawide and other screen ratios (TASK-079, TASK-080);
+    - control comfort such as the full trigger range (TASK-161).
+  - **Out of scope:** anything that changes how the game plays or what it rewards. That covers physics, AI, race timing,
+    car data, progression and saves.
+  - **How a patch is made.** Community PCSX2 patches and the owner's own ideas are rebuilt as our own hooks in the translated
+    code (decisions/game-patches-scope in ai-memory). Third-party patch code is a reference only, never copied.
+  - **What each patch needs.** A switch, CTest fixtures and identity evidence:
+    - with the switch off, the game is identical to the reference;
+    - with it on, the race clock is identical and the simulation differs only by the patch's own state;
+    - a control patch changes only how input becomes the car's controls.
+  - The owner decides each patch's default.
 - **Modern render pipeline is in scope as an option** (owner, 2026-10-22): the render
   pipeline is modernised in stages. CoreGS 2.0 optimises as far as possible inside the
   VU1 + GS model. **CoreGS 3.0** then moves the VU1 work onto the GPU and renders
@@ -197,6 +213,11 @@ github.com/Kaezzey/gt4-staticrecomp is read-only.
 - **Release steps:**
   - Bump the version in `launcher/Cargo.toml`, `Cargo.lock` (workspace crates only), `tauri.conf.json` and the
     installer default.
+  - **PGO only for published game builds** (owner, 2026-11-03):
+    - profile-guided optimization (PGO, with ThinLTO) adds about 30 minutes for both games, so only a build meant to
+      be published gets it: an rc (uploaded as a draft, a pre-release on the owner's word) or a final release;
+    - a build made only to test a change (internal, on the owner's desktop or laptop) is a plain Release build; tell
+      the owner it is plain, since it is a little heavier on the processor.
   - Pin new game builds in new `docs/inputs` files.
   - Build the launcher with `launcher/tools/build-release.ps1` and the installer with makensis.
   - Check the installer contents against their sources.
@@ -331,6 +352,14 @@ controls in CTest and Python fixtures. Never silently accept unsupported
 instructions or services; never weaken acceptance checks to make tests pass.
 Label claims Confirmed / High confidence / Hypothesis / Unknown and record hashes,
 tool versions, addresses/offsets, method and limits.
+
+**The game window's responsiveness timer stays** (owner, 2026-11-03; TASK-145, decision 0076). It lives in
+`native/window_heartbeat.hpp` (from the 1.3.0 line).
+- Why: without it, Windows marks the window "not responding" after 5 seconds without input (a `PeekMessage` on an empty
+  queue does not count). In borderless fullscreen on NVIDIA RTX PCs the desktop then flashes every 6 seconds, and after
+  Alt+Tab the game can come back as a white window.
+- Never remove it, slow it past one second, or filter the game's message loop. Do it only after the laptop test in
+  decision 0076 passes on an RTX PC.
 
 ## Data, pins and documentation
 

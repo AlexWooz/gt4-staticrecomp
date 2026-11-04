@@ -3433,3 +3433,15 @@ Owner request (2026-11-04): throttle and brake precision is low. Idea from the "
   unset means on, `0` turns it off; `game.ini` and the launcher default are on. The Controls page meter keeps the width of its
   widest text (100% and the whole byte, plus a margin) with equal-width digits, so the bar no longer changes size while a
   trigger moves (owner, 2026-11-04; focus check in both languages).
+
+### TASK-169 — Save states for endurance races (study accepted; planned after 1.3.0)
+
+Owner (2026-11-04): PR #192's study is accepted and kept here as a planned task; it does not enter rc14 or 1.3.0. Goal: close the
+game during a long endurance race and resume it later on the same build. Study: `docs/SAVE-STATE-FEASIBILITY.md` (read-only
+inspection of the donor runtime and the 1.3.0-rc line at `232b1437`; no build, capture or restore was run). Findings: the MIT
+donor has a machine-state mechanism (CPU, RAM, IOP, timers), but today's stream renderers refuse it and a safe round trip in the
+shipping configuration is unproven. Steps it proposes, each with its own gate: an inventory of every mutable state owner and a
+compatibility pin (executable, target, disc, renderer, settings); a disposable donor proof of concept on a test card compared with
+an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
+in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
+or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
