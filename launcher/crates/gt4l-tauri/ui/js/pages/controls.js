@@ -193,6 +193,7 @@
       card,
       h("section", { class: "cx-analog" }, [
         h("h2", null, [GT4.t("controls.triggers"), h("small", { text: GT4.t("controls.game_reads") })]),
+        analogRows.triggers = h("div", { class: "cx-rows" }),
         triggerBlock("l2", "L2"),
         triggerBlock("r2", "R2"),
         h("h2", { text: GT4.t("controls.sticks") }),
@@ -309,8 +310,8 @@
         selfDrawn: {},
         refresh: function (id) { return load(id); }
       };
-      [["l2", ["l2_deadzone", "l2_curve"]], ["r2", ["r2_deadzone", "r2_curve"]], ["lstick", ["lstick_deadzone"]],
-        ["rstick", ["rstick_deadzone"]]].forEach(function (pair) {
+      [["triggers", ["trigger_full_range"]], ["l2", ["l2_deadzone", "l2_curve"]], ["r2", ["r2_deadzone", "r2_curve"]],
+        ["lstick", ["lstick_deadzone"]], ["rstick", ["rstick_deadzone"]]].forEach(function (pair) {
         var box = analogRows[pair[0]];
         GT4.ui.clear(box);
         pair[1].forEach(function (rowId) {
@@ -318,8 +319,10 @@
           if (!row) {
             return;
           }
+          var label = rowId === "trigger_full_range" ? GT4.t("setting.trigger_full_range.label")
+            : rowId.indexOf("curve") > 0 ? GT4.t("controls.curve") : GT4.t("controls.deadzone");
           var node = GT4.settingsRows.rowNode(context, Object.assign({}, row, {
-            label: rowId.indexOf("curve") > 0 ? GT4.t("controls.curve") : GT4.t("controls.deadzone"),
+            label: label,
             disabled: state.locked || !!row.disabled
           }));
           if (node) {
@@ -333,6 +336,11 @@
           target.focus({ preventScroll: true });
         }
       }
+    }
+
+    function analogFlag(id) {
+      var row = state.analog.filter(function (candidate) { return candidate.id === id; })[0];
+      return !!row && (row.current === true || row.current === "on");
     }
 
     function analogValue(id, fallback) {
@@ -466,7 +474,15 @@
         meter.raw.style.setProperty("--w", (reading.value * 100).toFixed(1) + "%");
         meter.out.style.setProperty("--w", (reading.output * 100).toFixed(1) + "%");
         meter.dz.style.setProperty("--w", (analogValue(id + "_deadzone", M.TRIGGER_DEFAULT_DEADZONE) * 100).toFixed(1) + "%");
-        meter.value.textContent = Math.round(reading.output * 100) + "%";
+        // TASK-161: the percentage of the game's 100%, and the pressure byte over that 100% (45 or 84 on the game's own
+        // scale, 255 with the full trigger range), so the scale the game uses shows.
+        var control = findControl(id);
+        var full = M.triggerFull(id, control ? control.sources : [], analogFlag("trigger_full_range"));
+        meter.value.textContent = GT4.t("controls.meter_value", {
+          percent: Math.round(reading.output * 100),
+          pressure: Math.round(reading.output * full),
+          full: full
+        });
       });
       [["lstick", live.sticks.left, 0.1], ["rstick", live.sticks.right, 0.1]].forEach(function (triple) {
         var meter = meters[triple[0]];

@@ -105,11 +105,63 @@ class HookTextTests(unittest.TestCase):
                 units.make_units('t', source, Path(folder) / 'out2', {'t': (wrong,)})  # not the pinned translation
 
 
+class StatementSiteTests(unittest.TestCase):
+    """TASK-161: statements replaced inside their labelled block."""
+    BLOCKS = ('L_00100100:\n    c.r[3].d[0] = c.r[4].d[0] & 255ull;\n    set32(c.r[3], c.r[3].w[0] << 1);\n'
+              '    set32(c.r[2], c.r[3].w[0] << 1);\n    c.budget -= 3;\n'
+              'L_00100120:\n    mmi::div(c, 0, c.r[2].w[0], c.r[7].w[0]);\n    c.budget -= 1;\n'
+              'L_00100140:\n    set32(c.r[3], c.r[3].w[0] << 1);\n    mmi::div(c, 0, c.r[2].w[0], c.r[7].w[0]);\n')
+    TEXT = (units.INCLUDE_LINE + '\nnamespace gen {\n\nusing namespace ps2;\n\nvoid unit_0001(Cpu &c, std::uint32_t entry, '
+            'std::uint32_t depth) {\n' + BLOCKS + '}\n\n}\n')
+    SITES = (units.doubling_site(0x00100108, 'L_00100100'), units.divide_site(0x00100120, 'L_00100120', 7))
+
+    def unit(self, sites=SITES, text=TEXT):
+        return units.Unit('unit_0001.cpp', units.sha256(text.encode()), sites)
+
+    def test_only_the_statements_of_their_blocks_change(self):
+        hooked = units.hook_unit_text(self.TEXT, self.unit())
+        self.assertIn('namespace gt4::trigger_range { std::uint32_t pedal_divisor(std::uint32_t value); '
+                      'std::uint32_t pedal_pressure(std::uint32_t value); }\n', hooked)
+        first = hooked[hooked.index('L_00100100:'):hooked.index('L_00100120:')]
+        self.assertIn('set32(c.r[3], ::gt4::trigger_range::pedal_pressure(c.r[3].w[0]));', first)
+        self.assertIn('set32(c.r[2], c.r[3].w[0] << 1);', first)  # the other doubling of the case stays
+        self.assertIn('mmi::div(c, 0, c.r[2].w[0], ::gt4::trigger_range::pedal_divisor(c.r[7].w[0]));', hooked)
+        third = hooked[hooked.index('L_00100140:'):]
+        self.assertIn('set32(c.r[3], c.r[3].w[0] << 1);', third)  # the same statement in another block stays
+        self.assertIn('mmi::div(c, 0, c.r[2].w[0], c.r[7].w[0]);', third)
+        self.assertEqual(units.unhook_unit_text(hooked, self.unit()), self.TEXT)
+        units.qualify_unit(self.TEXT, hooked, self.unit())
+
+    def test_refusals(self):
+        with self.assertRaises(ValueError):  # the label is missing
+            units.hook_unit_text(self.TEXT, self.unit((units.doubling_site(0x00100208, 'L_00100200'),)))
+        with self.assertRaises(ValueError):  # the statement is not in its block
+            units.hook_unit_text(self.TEXT, self.unit((units.divide_site(0x00100108, 'L_00100100', 7),)))
+        twice = self.TEXT.replace('    c.budget -= 3;\n', '    set32(c.r[3], c.r[3].w[0] << 1);\n    c.budget -= 3;\n')
+        with self.assertRaises(ValueError):  # twice in its block
+            units.hook_unit_text(twice, self.unit(text=twice))
+        hooked = units.hook_unit_text(self.TEXT, self.unit())
+        with self.assertRaises(ValueError):  # an extra change
+            units.qualify_unit(self.TEXT, hooked.replace('c.budget -= 1;', 'c.budget -= 2;'), self.unit())
+        with self.assertRaises(ValueError):  # already hooked
+            units.hook_unit_text(hooked, self.unit())
+
+    def test_pedal_cases_in_the_tables(self):
+        for name, target in units.TARGETS.items():
+            statements = [site for unit in target for site in unit.sites if isinstance(site, units.StatementSite)]
+            with self.subTest(target=name):
+                self.assertEqual(sorted(site.hook for site in statements), sorted([units.PRESSURE_HOOK, units.DIVISOR_HOOK] * 2))
+                for site in statements:
+                    self.assertTrue(site.label.startswith('L_') and int(site.label[2:], 16) <= site.address)
+
+
 class TargetTableTests(unittest.TestCase):
     def test_call_lines_name_their_call_sites(self):
         for name, target in units.TARGETS.items():
             for unit in target:
                 for site in unit.sites:
+                    if isinstance(site, units.StatementSite):
+                        continue
                     with self.subTest(target=name, site=hex(site.call_site)):
                         self.assertEqual(site.return_label, site.call_site + 8)
                         self.assertIn(f'static_cast<std::int32_t>(0x{site.return_label:08X}u)', site.line)
@@ -147,7 +199,11 @@ class RealUnitTests(unittest.TestCase):
                     self.assertEqual(units.sha256(original), unit.sha256)
                     text = original.decode('ascii')
                     for site in unit.sites:
-                        self.assertEqual(text.count(site.line), 1)
+                        if isinstance(site, units.StatementSite):
+                            start, end = units.block_span(text, site.label)
+                            self.assertEqual(text[start:end].count(site.original), 1)
+                        else:
+                            self.assertEqual(text.count(site.line), 1)
                     units.qualify_unit(text, units.hook_unit_text(text, unit), unit)
 
 

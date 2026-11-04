@@ -323,11 +323,12 @@ void check_renderer() {
 void check_config() {
   const sa::Config sample = sa::parse_config(read_sample("game.ini"));
   check(sample.warnings.empty(), "the launcher's sample has no warning");
-  check(sample.values.size() == 6, "six keys in the sample");
+  check(sample.values.size() == 7, "seven keys in the sample");
   const sa::Environment environment = sa::config_environment(sample);
   check(has(environment, "GT4_FULLSCREEN", "1") && has(environment, "GT4_PRESENT_MODE", "fifo"), "fullscreen and present mode");
   check(has(environment, "GT4_MONITOR", "\\\\.\\DISPLAY2") && has(environment, "GT4_OUTPUT_SIZE", "3440x1440"), "monitor and output size");
   check(lacks(environment, "GT4_GS_SYNC") && lacks(environment, "GT4_PERF") && lacks(environment, "GT4_VU1_VERIFY"), "the default switches add nothing");
+  check(has(environment, "GT4_TRIGGER_FULL_RANGE", "0"), "TASK-161: the launcher states the full trigger range off");
 
   const sa::Config changed = sa::parse_config("fullscreen=0\npresent_mode=mailbox\nasync_gs=0\nperformance_report=1\ncheck_vu_code=100\n");
   const sa::Environment changed_environment = sa::config_environment(changed);
@@ -455,6 +456,13 @@ void check_resolve() {
           "fov_adjust takes only 0 or 1");
     check(lacks(sa::resolve(inputs_for(*layout, nullptr), chosen.access()).set, "GT4_FOV_ADJUST"),
           "no key, no variable: the game's default, on");
+    // TASK-161: the full trigger range, the same rule (the game's default is off).
+    sa::Inputs triggers = inputs_for(*layout, nullptr);
+    triggers.config = sa::parse_config("version=1\ntrigger_full_range=1\n");
+    check(triggers.config->warnings.empty(), "the full trigger range key is accepted");
+    check(has(sa::resolve(triggers, chosen.access()).set, "GT4_TRIGGER_FULL_RANGE", "1"),
+          "game.ini's trigger_full_range becomes GT4_TRIGGER_FULL_RANGE");
+    check(!sa::parse_config("trigger_full_range=on\n").warnings.empty(), "trigger_full_range takes only 0 or 1");
     sa::Inputs fast = inputs_for(*layout, nullptr);
     fast.config = sa::parse_config(std::string("present_mode=mailbox") + char(10) + "renderer=coregs20" + char(10) + "hw_present_mode=fifo" + char(10));
     check(has(sa::resolve(fast, chosen.access()).set, "GT4_PRESENT_MODE", "fifo"), "a stored Fast vsync draws as On under CoreGS 2.0");

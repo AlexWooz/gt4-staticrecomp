@@ -101,7 +101,8 @@ Options follow the source after a `|`, separated by spaces: `"xinput:LT | deadzo
 | `curve` | triggers, sticks | `linear`, `quadratic`, `cubic`, `s_curve`, `smooth_power`, `sublinear`, `logarithmic` | `linear` |
 | `invert` | sticks only | `true` or `false` | `false` |
 | `game_deadzone` | sticks only | `skip` or `keep` | `skip` |
-| `range` | triggers only | whole number 1 to 255; the pressure byte at full travel | 45 on R2, 84 on L2, 255 on any other input |
+| `range` | triggers only | whole number 1 to 255; the pressure byte at full travel, on the game's own scale | 45 on R2, 84 on L2, 255 on any other input |
+| `range_full` | triggers only | whole number 1 to 255; the same with the full trigger range on (TASK-161) | 255 |
 
 Digital sources (`xinput:A` etc. and `key:` sources) take no options.
 
@@ -113,6 +114,17 @@ about 27% of its travel and 100% brake at about 40%. R2 (the throttle in the usu
 spread the game's own range over the whole travel. If the game's controller options put the brake on R2 or the throttle
 on L2, set `range=84` on R2 or `range=45` on L2; `range=255` restores the whole byte.
 
+**Full trigger range (TASK-161, experimental, off by default).** The launcher's "Full trigger range" toggle (Controls page,
+above L2 and R2) passes `GT4_TRIGGER_FULL_RANGE=1` (`game.ini` `trigger_full_range=1` for a direct start). The game then
+reads the throttle and the brake from the whole pressure byte, `min(100p / 99, 256)`, 100% from `p = 254`: about 255 levels
+instead of 46 and 85 (`docs/research/TRIGGER-SENSITIVITY.md`). The same switch, read once by the game at start, sets the
+triggers' default ranges: the whole byte (255) on every trigger with it on, 45 and 84 with it off, so the end of the travel is
+100% either way and the launcher and a direct start cannot disagree. A binding's `range` applies only to the game's own scale
+and `range_full` only to the full one: a `range=45` saved for TASK-147 never caps the throttle at 18% with the full range on,
+and a `range_full` never changes the game's own scale. With the full range on, the brake on R2 or the throttle on L2 need no
+option (both pedals use the same scale). The Controls page's trigger meters show the percentage of the game's 100% and the
+pressure over that 100% (`28/45`, or `158/255` with the full range).
+
 SDL3 Gamepad triggers already use 0 released through 32767 pressed for Xbox and DualSense alike.
 The adapter reduces that standardized value to a pressure byte; raw joystick/HID signed ranges are
 not read here. No device-name range override or `mode` source option is supported.
@@ -121,7 +133,8 @@ Reading rules, as implemented in `native/controls.cpp`:
 
 - **Trigger:** raw value `v`, deadzone `d` (raw units, rounded). Digital bit set when `v > d`. With
   linear and scale 1: `pressure = (v - d) * 255 / (255 - d)`, integer division (the slice 157 formula).
-  Otherwise `pressure = floor(min(1, curve(n) * scale) * 255)`, where `n = (v - d) / (255 - d)`. With a `range` `r`
+  Otherwise `pressure = floor(min(1, curve(n) * scale) * 255)`, where `n = (v - d) / (255 - d)`. With a `range` `r` (or,
+  with the full trigger range on, a `range_full` `r`)
   below 255: `pressure = round(min(1, curve(n) * scale) * r)`, to the nearest step so a trigger a hair short of its end
   still gives `r`.
 - **Stick:** the sign of the raw value sets the travel range (32768 below zero, 32767 above), as

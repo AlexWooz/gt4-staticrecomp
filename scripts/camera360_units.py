@@ -1,5 +1,5 @@
-"""TASK-159, TASK-160: translated EE units with the camera calls (native/camera_360.hpp, native/fov_adjust.hpp,
-docs/CAMERA-360.md, docs/FOV-ADJUST.md).
+"""TASK-159, TASK-160, TASK-161: translated EE units with the camera calls and the pedal statements (native/camera_360.hpp,
+native/fov_adjust.hpp, native/trigger_range.hpp; docs/CAMERA-360.md, docs/FOV-ADJUST.md, docs/research/TRIGGER-SENSITIVITY.md).
 
 The calls the camera needs are direct `jal`s, and the translator turns a direct `jal` into a direct C++ call into the callee's
 unit: no dispatch hook and no VBlank write can reach them. This script copies one target's translated units into a fresh folder
@@ -15,6 +15,12 @@ point where the reference patch acts), plus a declaration of that function after
     camera is on; TASK-159b narrowed it from the handler's cases to this loop and these channels);
   * TASK-160: the race cameras' projection function stores its scales through a call: `before_projection_scale_call` gives
     them the zoom factor of the field of view adjustment (gt4::fov_adjust).
+
+TASK-161 also replaces statements (no call there): in the throttle and brake cases of the pressure-button switch, the
+doubling `set32(c.r[3], c.r[3].w[0] << 1);` becomes `set32(c.r[3], ::gt4::trigger_range::pedal_pressure(c.r[3].w[0]));`
+and the divide's divisor operand `X` becomes `::gt4::trigger_range::pedal_divisor(X)`; each statement is found in its own
+labelled block (the label of the case or of the code after its divide check), exactly once. With the full range off both
+functions return what the original statements computed.
 
 It refuses a unit whose hash is not the pinned translation, a call line that is missing or appears twice, an output folder that
 exists, and any result from which removing the insertions does not give the input back byte for byte. Every other file is
@@ -38,6 +44,8 @@ CALL_MARK = '  if (depth < kMaxDepth)'
 YAW_HOOK = 'gt4::camera360::before_chase_yaw_call'
 CHANNEL_HOOK = 'gt4::camera360::before_pad_analog_channel_call'
 PROJECTION_HOOK = 'gt4::fov_adjust::before_projection_scale_call'
+PRESSURE_HOOK = 'gt4::trigger_range::pedal_pressure'
+DIVISOR_HOOK = 'gt4::trigger_range::pedal_divisor'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -48,6 +56,42 @@ class CallSite:
     return_label: int    # call_site + 8; native/game_target.hpp holds it for the host check
     callee: int
     line: str            # the translated line of the call, exactly (with its indent and newline)
+
+    def declares(self, name):
+        return f'void {name}(ps2::Cpu &c);'
+
+    @property
+    def place(self):
+        return f'0x{self.call_site:08X}'
+
+
+@dataclasses.dataclass(frozen=True)
+class StatementSite:
+    """One translated statement whose value goes through a host function (TASK-161)."""
+    hook: str            # qualified host function std::uint32_t name(std::uint32_t)
+    address: int         # guest address of the instruction
+    label: str           # the labelled block that holds it (`L_0043BEE8`)
+    original: str        # the statement line exactly (indent and newline)
+    replacement: str     # the same statement through the host function
+
+    def declares(self, name):
+        return f'std::uint32_t {name}(std::uint32_t value);'
+
+    @property
+    def place(self):
+        return f'0x{self.address:08X}'
+
+
+def doubling_site(address, label):
+    """`sll v1,v1,1` of a pedal case: v1 = p becomes pedal_pressure(p) (2p with the full range off)."""
+    return StatementSite(PRESSURE_HOOK, address, label, '    set32(c.r[3], c.r[3].w[0] << 1);\n',
+                         f'    set32(c.r[3], ::{PRESSURE_HOOK}(c.r[3].w[0]));\n')
+
+
+def divide_site(address, label, register):
+    """`div zero,v0,<divisor>` of a pedal case: the divisor becomes pedal_divisor(divisor) (itself with the full range off)."""
+    return StatementSite(DIVISOR_HOOK, address, label, f'    mmi::div(c, 0, c.r[2].w[0], c.r[{register}].w[0]);\n',
+                         f'    mmi::div(c, 0, c.r[2].w[0], ::{DIVISOR_HOOK}(c.r[{register}].w[0]));\n')
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,16 +113,39 @@ def hook_call(site):
     return f'::{site.hook}(c);'
 
 
+def marker(hook):
+    return f'::{hook}('
+
+
 def declaration(unit):
-    """One `namespace <ns> { void <name>(ps2::Cpu &c); ... }` line per namespace of the unit's hooks, sorted."""
+    """One `namespace <ns> { <declaration> ... }` line per namespace of the unit's hooks, sorted."""
     namespaces = {}
     for site in unit.sites:
         namespace, _, name = site.hook.rpartition('::')
-        namespaces.setdefault(namespace, set()).add(name)
-    lines = ''.join(f'namespace {namespace} {{ {" ".join(f"void {name}(ps2::Cpu &c);" for name in sorted(names))} }}\n'
+        namespaces.setdefault(namespace, {})[name] = site.declares(name)
+    lines = ''.join(f'namespace {namespace} {{ {" ".join(names[name] for name in sorted(names))} }}\n'
                     for namespace, names in sorted(namespaces.items()))
-    return ('\n// TASK-159: the camera calls (native/camera_360.hpp, native/fov_adjust.hpp), added by scripts/camera360_units.py.\n'
+    return ('\n// TASK-159..161: host calls (native/camera_360.hpp, fov_adjust.hpp, trigger_range.hpp), added by scripts/camera360_units.py.\n'
             + lines)
+
+
+def block_span(text, label):
+    """The text range of a labelled block: from its label line to the next label line (or the end of the function)."""
+    start = text.find(f'\n{label}:\n')
+    if start < 0 or text.count(f'\n{label}:\n') != 1:
+        raise ValueError(f'label {label} missing or repeated')
+    start += len(label) + 3
+    following = text.find('\nL_', start)
+    end = text.find('\n}\n', start) if following < 0 else following
+    return start, end + 1
+
+
+def replace_in_block(text, label, old, new, place):
+    start, end = block_span(text, label)
+    block = text[start:end]
+    if block.count(old) != 1:
+        raise ValueError(f'the statement of {place} occurs {block.count(old)} times in its block {label}, expected once')
+    return text[:start] + block.replace(old, new, 1) + text[end:]
 
 
 # The DualShock analog loop's call to the channel handler (v2.00 func_0043BBC0 calls func_004386F0, Spec II 0x00319xxx calls
@@ -96,10 +163,15 @@ TARGETS = {
         Unit('unit_009E.cpp', 'b098efefef5b4572b2c8cac6f04c53232499db9e960963c6803e8c2ecdf6a525', (
             CallSite(PROJECTION_HOOK, 0x0037A1BC, 0x0037A1C4, 0x00378F18,
                      call_line(0x0037A1C4, 'c.f[13] = c.f[12];', 'unit_009E', 117, 0x00378F18)),)),
-        # func_0043BBC0 (DualShock analog loop): jal 0x004386F0 at 0x0043BE6C, delay slot addiu a1,zero,2.
+        # func_0043BBC0 (DualShock analog loop): jal 0x004386F0 at 0x0043BE6C, delay slot addiu a1,zero,2. TASK-161: its
+        # pressure switch's throttle case (0x0043BEE8: sll at 0x0043BEF0, div by a3 = 35 at 0x0043BF2C) and brake case
+        # (0x0043BF48: sll at 0x0043BF50, div by a3 = 65 at 0x0043BF8C).
         Unit('unit_00CE.cpp', '43eeeea1c396a34ecb0c9818023cf2566f1ad2de0bddd5bde7d6431087c4e2b0', (
             CallSite(CHANNEL_HOOK, 0x0043BE6C, 0x0043BE74, 0x004386F0,
-                     call_line(0x0043BE74, 'set32(c.r[5], 0u + 2u);', 'unit_00CE', 49, 0x004386F0)),)),
+                     call_line(0x0043BE74, 'set32(c.r[5], 0u + 2u);', 'unit_00CE', 49, 0x004386F0)),
+            doubling_site(0x0043BEF0, 'L_0043BEE8'), divide_site(0x0043BF2C, 'L_0043BF24', 7),
+            doubling_site(0x0043BF50, 'L_0043BF48'), divide_site(0x0043BF8C, 'L_0043BF84', 7),
+        )),
     ),
     # Spec II. Units: the Spec II translation pinned by docs/inputs/spec2-ee-generated.json.
     'spec2': (
@@ -112,10 +184,15 @@ TARGETS = {
         Unit('unit_004F.cpp', '1ae48aed3b77b2fea9a8cacbd9679989ca3478791b0403f8076883602c8aa26e', (
             CallSite(PROJECTION_HOOK, 0x0023E82C, 0x0023E834, 0x0023D558,
                      call_line(0x0023E834, 'c.f[13] = c.f[12];', 'unit_004F', 167, 0x0023D558)),)),
-        # The same DualShock analog loop: jal 0x00314870 at 0x003190EC, delay slot daddu a3,t0,zero (the value).
+        # The same DualShock analog loop: jal 0x00314870 at 0x003190EC, delay slot daddu a3,t0,zero (the value). TASK-161: the
+        # throttle (sll at 0x00319194, div by s1 = 35 at 0x003191C8) and brake (sll at 0x003191F0, div by s6 = 65 at
+        # 0x00319224); s1 is also the reverse case's divisor, so the divide is replaced, not s1's load.
         Unit('unit_0086.cpp', '8e721d41de7bcea54f0a9f8005bc3723b2e106c2d78482e4b889b37a3cd71223', (
             CallSite(CHANNEL_HOOK, 0x003190EC, 0x003190F4, 0x00314870,
-                     call_line(0x003190F4, 'c.r[7].d[0] = c.r[8].d[0] + 0ull;', 'unit_0085', 58, 0x00314870)),)),
+                     call_line(0x003190F4, 'c.r[7].d[0] = c.r[8].d[0] + 0ull;', 'unit_0085', 58, 0x00314870)),
+            doubling_site(0x00319194, 'L_00319194'), divide_site(0x003191C8, 'L_003191B8', 17),
+            doubling_site(0x003191F0, 'L_003191F0'), divide_site(0x00319224, 'L_00319214', 22),
+        )),
     ),
 }
 
@@ -134,24 +211,32 @@ def hook_unit_text(text, unit):
     """The unit with the declaration and its calls added. Refuses anything but one include line and one line per site."""
     if text.count(INCLUDE_LINE) != 1 or not text.startswith(INCLUDE_LINE):
         raise ValueError(f'{unit.name}: expected one leading {INCLUDE_LINE.strip()}')
-    if any(f'::{site.hook}(' in text for site in unit.sites) or '// TASK-159: the camera calls' in text:
+    if any(marker(site.hook) in text for site in unit.sites) or '// TASK-159..161: host calls' in text:
         raise ValueError(f'{unit.name}: already holds camera calls')
     result = text.replace(INCLUDE_LINE, INCLUDE_LINE + declaration(unit), 1)
     for site in unit.sites:
+        if isinstance(site, StatementSite):
+            result = replace_in_block(result, site.label, site.original, site.replacement, site.place)
+            continue
         if text.count(site.line) != 1:
-            raise ValueError(f'{unit.name}: the call line of 0x{site.call_site:08X} occurs {text.count(site.line)} times, expected once')
+            raise ValueError(f'{unit.name}: the call line of {site.place} occurs {text.count(site.line)} times, expected once')
         result = result.replace(site.line, hooked_line(site), 1)
     return result
 
 
 def unhook_unit_text(text, unit):
     """Removes exactly what hook_unit_text added."""
-    if text.count(declaration(unit)) != 1 or sum(text.count(hook_call(site)) for site in unit.sites) != len(unit.sites):
+    hooks = {site.hook for site in unit.sites}
+    if text.count(declaration(unit)) != 1 or any(
+            text.count(marker(hook)) != sum(site.hook == hook for site in unit.sites) for hook in hooks):
         raise ValueError(f'{unit.name}: not a unit hooked by this script')
     result = text.replace(declaration(unit), '', 1)
     for site in unit.sites:
+        if isinstance(site, StatementSite):
+            result = replace_in_block(result, site.label, site.replacement, site.original, site.place)
+            continue
         if result.count(hooked_line(site)) != 1:
-            raise ValueError(f'{unit.name}: the hooked line of 0x{site.call_site:08X} is missing')
+            raise ValueError(f'{unit.name}: the hooked line of {site.place} is missing')
         result = result.replace(hooked_line(site), site.line, 1)
     return result
 
@@ -211,7 +296,8 @@ def make_units(target, source, output, targets=TARGETS):
             'unit': name,
             'sha256_before': unit.sha256,
             'sha256_after': sha256((output / name).read_bytes()),
-            'sites': [{'hook': site.hook, 'call_site': f'0x{site.call_site:08X}', 'return_label': f'0x{site.return_label:08X}',
+            'sites': [{'hook': site.hook, 'statement': site.place, 'block': site.label} if isinstance(site, StatementSite) else
+                      {'hook': site.hook, 'call_site': site.place, 'return_label': f'0x{site.return_label:08X}',
                        'callee': f'0x{site.callee:08X}'} for site in unit.sites],
         } for name, unit in units.items()],
         'files': len(after),

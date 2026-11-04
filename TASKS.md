@@ -3161,3 +3161,24 @@ Owner request (2026-11-04): built in, on by default in both games. Idea from the
   identical to the reference; with the combinations the race clock is identical at every VBlank, the view zooms and comes
   back, and only what the camera draws changes in the state (light flares, view lists, Spec II's drawing-written car words).
   The game ignores the combinations in races (both games). Owner test in game pending.
+
+### TASK-161 — Full trigger range for the throttle and the brake (study, then both games; off by default)
+
+Owner request (2026-11-04): throttle and brake precision is low. Idea from the "Full Trigger Sensitivity" PCSX2 patch by Silent
+& Aero_; references only. Branch `task/161-trigger-sensitivity` (from `task/160-fov-adjustment`). Study and design:
+`docs/research/TRIGGER-SENSITIVITY.md`; controls: `docs/CONTROLS.md`.
+
+- Study: the game turns a pressure byte p into min(100 * min(2p, 256) / d, 256) with d = 35 (throttle) and 65 (brake): 100%
+  from p = 45 and 84, 46 and 85 levels (both games, Confirmed). The host already gives every level (TASK-147 maps the trigger
+  travel onto 0..45 and 0..84), so the loss is in the game, not on our side. The reference patch's v2.00 reverse line hits the
+  wrong instruction (`0x0043C018` is `slti`, the divisor is at `0x0043C01C`).
+- Change: `GT4_TRIGGER_FULL_RANGE=1` (`game.ini` `trigger_full_range`, launcher toggle "Full trigger range (experimental)" on the
+  Controls page; off by default until the owner's test): `scripts/camera360_units.py` replaces the doubling and the divisor of
+  the throttle and brake cases with host functions (2p and d when off; p and 99 when on: 100% from p = 254, about 255 levels),
+  and the same switch moves the triggers' default ranges to the whole byte; `range` applies to the game's scale, the new
+  `range_full` to the full one.
+- Acceptance: CTest `native_trigger_range` and `native_controls` (every range combination), Rust and launcher tests, focus
+  checks in both languages and nav-test; headless sweeps: off identical to the reference, on 254 throttle and 254 brake levels
+  with 100% at p = 254, race clock identical at every VBlank. Owner test in game decides the default.
+- State (2026-11-04): done on both games and checked headless; launcher toggle, Rust tests, nav-test and focus checks in
+  en-US and pt-BR pass. Owner test in game pending.
