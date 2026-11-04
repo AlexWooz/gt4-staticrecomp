@@ -1540,6 +1540,9 @@ Owner decisions (2026-10-21). Release 1.2.0 of both the game/launcher and gt4-gs
   until the owner approves it.
 
 ### TASK-018 — Racing wheels
+
+Study (2026-11-04): Luan Antony's wheel, DFP and force feedback roadmap (`docs/studies/WHEEL-FFB-ROADMAP.md`, PR #151, issue
+#88) is kept as a reference beside the owner's plan (`docs/WHEEL-DFP-PLAN.md`, PR #193).
 High-level emulation at the PDIUSB boundary with SDL3 wheels and force feedback
 (docs/MENUS-AND-WHEEL.md). Builds on the TASK-075 SDL3 input layer.
 Planned for 1.3.1 (owner update, 2026-10-26; previously 1.4.0): the game must recognise the connected wheel as a Logitech Driving Force Pro (DFP)
@@ -2434,6 +2437,9 @@ This reservation prevents reusing TASK-122 while its release branch is open.
 
 ### TASK-123 — Native DFP wheel research and implementation plan
 
+Study (2026-11-04): Luan Antony's wheel, DFP and force feedback roadmap (`docs/studies/WHEEL-FFB-ROADMAP.md`, PR #151, issue
+#88) is kept as a reference beside the owner's plan (`docs/WHEEL-DFP-PLAN.md`, PR #193).
+
 State 2026-10-26: research brief ready for an owner-run OpenCode agent; research not started.
 Parent TASK-018, planned release 1.3.1. The virtual guest target is Logitech Driving Force Pro
 (DFP), 900-degree steering, original game-generated force feedback translated to SDL3.
@@ -3028,6 +3034,29 @@ the camera's focus), 3-4 ms of GPU waiting together on the laptop at 6x; the GS 
 top. Ways: let the GLM hold pages as the newest copy of memory, so a target read on the GPU needs one store per round of reads
 (then IN-537 and IN-539 can be on); or answer that small depth download one frame late, a named relaxation for normal mode that
 needs the owner's word (decision 0073 keeps it to Performance Mode). Measure on the laptop only (owner).
+
+### TASK-163 — Bonnet camera wind volume, and 480p colour (issue #135; study #171)
+
+Owner (2026-11-04): taken in as a planned task, after 1.3.0. Issue #135 (shadowcla02-cloud) asks for an option to lower the wind
+sound in the bonnet camera and for the full colour range in 480p. Luan Antony's study (`docs/studies/BONNET-WIND-480P-COLOR.md`,
+PR #171) finds the wind in the race car sound (a looped voice scaled by speed and a camera factor) and proposes a volume
+setting that leaves the engine and every other sound alone; it reads the 480p colour difference as the game's own 16-bit frame
+buffers in progressive mode. A sound option changes no gameplay; a colour change would alter the original picture, so it needs
+the owner's word first. Check both in the game before building.
+
+### TASK-164 — First save creation: tell keyboard players which key confirms (issue #160; study #167)
+
+Owner (2026-11-04): planned. On a new card GT4 asks whether to create its game data and answers only Cross (`Z` on the default
+keyboard map); players who press Enter or Space think it froze (issue #160, rinegan33). Luan Antony's study
+(`docs/studies/FIRST-SAVE-CREATION.md`, PR #167) proposes a first-boot reminder in the launcher, among other options. Smallest
+step first: a clear hint before the first Play with an empty card, in both languages.
+
+### TASK-165 — Xbox and Switch button prompts in the game (issue #161; study #166)
+
+Owner (2026-11-04): planned. Issue #161 asks for Xbox or Switch button prompts instead of the PlayStation ones. Luan Antony's
+study (`docs/studies/BUTTON-PROMPTS.md`, PR #166) designs it through texture replacement of the button glyphs plus a launcher
+setting (PlayStation, Xbox, Switch). Needs the glyph textures drawn (own or CC0 art) and the replacement path on both
+renderers (CoreGS 2.0 and GSdx). No change to the game code.
 
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 
