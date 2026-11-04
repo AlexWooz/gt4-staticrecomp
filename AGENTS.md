@@ -55,6 +55,22 @@ claim zero emulation or full PS2 fidelity.
   physics timing and remaster features will be a separate project, possibly a fork.
   This repository's goal is the original game running natively, optimized and as
   faithful as possible.
+- **Game patches: improvements that leave gameplay and progression alone are in scope**
+  (owner, 2026-11-04). The original game stays, with built-in options on top.
+  - **In scope.** Examples:
+    - the 360-degree chase camera on the right stick (TASK-159);
+    - real-time FoV adjustment (TASK-160);
+    - ultrawide and other screen ratios (TASK-079, TASK-080);
+    - control comfort such as the full trigger range (TASK-161).
+  - **Out of scope:** anything that changes how the game plays or what it rewards. That covers physics, AI, race timing,
+    car data, progression and saves.
+  - **How a patch is made.** Community PCSX2 patches and the owner's own ideas are rebuilt as our own hooks in the translated
+    code (decisions/game-patches-scope in ai-memory). Third-party patch code is a reference only, never copied.
+  - **What each patch needs.** A switch, CTest fixtures and identity evidence:
+    - with the switch off, the game is identical to the reference;
+    - with it on, the race clock is identical and the simulation differs only by the patch's own state;
+    - a control patch changes only how input becomes the car's controls.
+  - The owner decides each patch's default.
 - **Modern render pipeline is in scope as an option** (owner, 2026-10-22): the render
   pipeline is modernised in stages. CoreGS 2.0 optimises as far as possible inside the
   VU1 + GS model. **CoreGS 3.0** then moves the VU1 work onto the GPU and renders
