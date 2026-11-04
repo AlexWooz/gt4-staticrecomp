@@ -16,6 +16,8 @@ Fixed in published pre-releases: #191 (GT Auto bubbles, rc10), #185 (Spec II rep
 Play offers CoreGS 2.0, rc10), #115 (no sound device, rc10), #123 (toggles with a controller, rc8), #132 (portable build,
 rc7), #89 (integrated GPU start, rc5; the reporter races on rc6 in #112). Left open: #99 (flashing window then a hang exit,
 the TASK-145 fix) until rc12 is public; the others have no confirmed fix or are feature requests. 25 issues stay open.
+Later the same day (owner): TASK-148 done too, #99 closed (rc12 goes out today), and #161, #88 and #128 answered; 24 issues
+stay open (`docs/ISSUE-TRIAGE.md`).
 
 Test installer (2026-11-04 UTC): the same plain builds pinned as slice 401 (`docs/inputs/slice401-pcsx2.json`, gt4.exe
 `eac9918f`; `slice401-spec2.json`, gt4-spec2.exe `2b1f3202`), distribution `private/slice401-dist-130-rc12-test`, launcher

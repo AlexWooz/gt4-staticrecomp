@@ -2463,6 +2463,10 @@ Existing tasks reused; do not allocate replacements:
 - #92 -> TASK-080/TASK-079 for 4:3, TASK-130 for split-screen display.
 - #87 -> existing TASK-057 mod-scope disposition and the owner's not-planned cheat policy.
   This is not approval or scheduling of a cheat feature.
+- #161 -> request recorded 2026-11-04, not planned: a built-in option for Xbox button icons in the game (the icons are game
+  artwork; a texture pack can replace them). Contributor design notes in PR #166.
+- #128 -> request recorded 2026-11-04, not planned: the European release SCES-51719, which would be a third target
+  executable next to v2.00 and Spec II.
 
 TASK-104/105 exist in frozen rc6 commit 58322229c0bd63a0652b0550c5ad2154bd907039.
 The CPU-parity TASK-119 is recorded in commit 9226927 on task/116-117-flare-perf, distinct
@@ -2500,6 +2504,8 @@ Issue: https://github.com/moesuito/gt4-staticrecomp/issues/99
 Report: repeated flashing and random crashes in 1.2.2, 1.2.3 and rc5, for both games; logs attached.
 Priority: high, candidate for an upcoming 1.3.0 rc before final.
 Related: TASK-105 and TASK-124 remain separate until evidence confirms the same cause.
+State (2026-11-04): fixed by TASK-145 (the window heartbeat: Windows took the fullscreen game for not responding, showed the
+window behind it and closed it as hung, 0xCFFFFFFF), in 1.3.0-rc12; issue #99 closed at the owner's word.
 
 ### TASK-128 — Optional use of an existing disc image (issue #95)
 
@@ -2900,7 +2906,7 @@ State (2026-11-04, owner): done. "Control precision is solved": triggers and sti
 1.3.0-rc12. GitHub issues closed as fixed for rc12: moesuito/gt4-staticrecomp#183 (triggers full too early), #134 (full range
 triggers) and #178 (stick dead zone). Later, not scheduled: a game-side patch for finer trigger steps.
 
-### TASK-148 — Choose the controller the game reads (rc12)
+### TASK-148 — Choose the controller the game reads (rc12, done)
 
 A player (2026-11-03, via the owner): with several controllers connected the game takes one at random. The game and the
 launcher read "controller 1", the lowest SDL instance id. Change on `task/134-game-code-optimization-study`:
@@ -2922,3 +2928,5 @@ launcher start the pads are mapped again, the controller chosen last time stays 
 the first one connected is selected and stored (also when the chosen one is unplugged while the launcher is open). `auto`
 stays only as the value before anything is stored (a fresh install). Checks: launcher tests 636, focus checks en-US 275 and
 pt-BR 282, nav-test 209 (headless Edge), locale keys 664 in both.
+
+State (2026-11-04, owner): done; the controller choice works on the owner's PCs. Ships in 1.3.0-rc12.

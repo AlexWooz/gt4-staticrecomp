@@ -86,3 +86,16 @@ version/reproduction details. No fix, completion date, closure or release was pr
 All five bodies and authors were reread after publication. A fresh open-issue query returned
 no issue without a moesuito comment. Follow-up reports on previously answered issues remain
 separate work; this does not mean every new comment has received another response.
+
+## Update 2026-11-04 (owner: close what is fixed, answer the control and feature requests)
+
+Closed as fixed, each with a note in the reporter's language:
+
+- For 1.3.0-rc12: #183 and #134 (trigger range, TASK-147), #178 (stick dead zone, TASK-147), #99 (flashing window and hang
+  exit, TASK-145 via TASK-127).
+- In published pre-releases: #191 (GT Auto bubbles, rc10, as #104), #185 (Spec II replays, rc10), #139 and #179 (GSdx missing,
+  Play offers CoreGS 2.0, rc10), #115 (no sound device, rc10), #123 (toggles with a controller, rc8), #132 (portable build,
+  rc7), #89 (integrated GPU start, rc5; the reporter races on rc6 in #112).
+
+Answered and left open: #161 (Xbox button icons: not planned, a texture pack can replace them), #88 (wheel and force
+feedback: planned after 1.3.0, no date), #128 (European release: not planned). 24 issues stay open.
