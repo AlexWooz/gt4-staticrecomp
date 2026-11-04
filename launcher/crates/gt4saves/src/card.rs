@@ -71,7 +71,7 @@ pub struct Layout {
     pub clusters: u32,
     /// Physical cluster of relative cluster 0 (the root directory).
     pub alloc_offset: u32,
-    /// One past the last physical cluster of the allocation area.
+    /// Relative clusters of the allocation area, counted from `alloc_offset` (on 8 MB: 41 + 8135 + 16 backup = 8192).
     pub alloc_end: u32,
 }
 
@@ -80,8 +80,12 @@ impl Layout {
     pub const EIGHT_MB: Layout = Layout { clusters: 8192, alloc_offset: ALLOC_OFFSET, alloc_end: ALLOC_END };
 
     /// Relative clusters of the allocation area (the FAT has one entry for each).
+    ///
+    /// `alloc_end` is a count relative to `alloc_offset`, not a physical cluster: on an 8 MB card 41 + 8135 + 16
+    /// backup clusters = 8192. It is capped by the room left on the card after `alloc_offset`. Cards from other
+    /// formatters (PCSX2, issue #86) hold chains past the value the old absolute reading allowed.
     fn usable(&self) -> u32 {
-        self.alloc_end - self.alloc_offset
+        self.alloc_end.min(self.clusters.saturating_sub(self.alloc_offset))
     }
 }
 
@@ -341,7 +345,7 @@ impl Card {
         }
         let alloc_offset = self.read_u32(0, SB_ALLOC_OFFSET);
         let alloc_end = self.read_u32(0, SB_ALLOC_END);
-        if alloc_offset >= alloc_end || alloc_end > clusters {
+        if alloc_offset >= clusters || alloc_end == 0 {
             return Err(CardError::Corrupt(format!("allocation area {alloc_offset}..{alloc_end} outside {clusters} clusters")));
         }
         let layout = Layout { clusters, alloc_offset, alloc_end };
@@ -466,7 +470,10 @@ impl Card {
         let mut current = start;
         loop {
             if current >= usable {
-                return Err(CardError::Corrupt(format!("chain entry {current} outside the allocation area")));
+                return Err(CardError::Corrupt(format!(
+                    "chain entry {current} outside the allocation area (alloc_offset {}, alloc_end {}, clusters {})",
+                    self.layout.alloc_offset, self.layout.alloc_end, self.layout.clusters
+                )));
             }
             if clusters.len() >= usable as usize {
                 return Err(CardError::Corrupt("chain loops".into()));

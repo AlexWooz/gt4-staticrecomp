@@ -191,9 +191,14 @@ fn wrong_sizes_and_damaged_superblocks_get_clear_errors() {
     bad_page[0x28..0x2A].copy_from_slice(&1024u16.to_le_bytes());
     assert!(matches!(Card::from_image(&bad_page), Err(CardError::Unsupported(_))));
 
-    let mut alloc_end = base.clone();
-    put_u32(&mut alloc_end, 0x38, 9000);
-    expect_corrupt(Card::from_image(&alloc_end));
+    // `alloc_end` counts clusters from `alloc_offset`: 9000 is capped by the room on the card (8192 - 41).
+    let mut alloc_end_large = base.clone();
+    put_u32(&mut alloc_end_large, 0x38, 9000);
+    assert!(Card::from_image(&alloc_end_large).is_ok());
+
+    let mut alloc_end_zero = base.clone();
+    put_u32(&mut alloc_end_zero, 0x38, 0);
+    expect_corrupt(Card::from_image(&alloc_end_zero));
 
     let mut alloc_order = base.clone();
     put_u32(&mut alloc_order, 0x34, 9000);
@@ -206,4 +211,48 @@ fn wrong_sizes_and_damaged_superblocks_get_clear_errors() {
     let mut no_magic = base.clone();
     no_magic[..MAGIC.len()].fill(0);
     assert_eq!(Card::from_image(&no_magic).unwrap_err(), CardError::NotACard);
+}
+
+/// Moves the only file of a one-file card to a one-cluster chain at `relative` and returns the image.
+fn file_moved_to(clusters: u32, alloc_offset: u32, alloc_end: u32, relative: u32, data: &[u8]) -> Vec<u8> {
+    let base = synth(clusters, alloc_offset, alloc_end, &[file("F", data.to_vec())]);
+    let mut image = base.clone();
+    // The file is root entry 2 (after "." and ".."); point it at `relative` and end the chain there.
+    let at = root_byte(&base, 2 * 512);
+    put_u32(&mut image, at + 0x10, relative);
+    put_u32(&mut image, fat_entry_byte(relative), 0xFFFF_FFFF);
+    let physical = (alloc_offset + relative) as usize * CLUSTER;
+    image[physical..physical + data.len()].copy_from_slice(data);
+    image
+}
+
+#[test]
+fn a_chain_entry_past_the_old_absolute_bound_but_inside_the_relative_area_is_read() {
+    let data = pattern(500, 7);
+    let image = file_moved_to(8192, 41, 8135, 8100, &data);
+    let root = Card::from_image(&image).unwrap().root().unwrap();
+    assert_eq!(root[0].data, data);
+}
+
+#[test]
+fn relative_cluster_7937_reads_on_a_card_with_alloc_end_7978() {
+    let data = pattern(500, 9);
+    let image = file_moved_to(8192, 41, 7978, 7937, &data);
+    let card = Card::from_image(&image).unwrap();
+    assert_eq!(card.layout().alloc_end, 7978);
+    assert_eq!(card.root().unwrap()[0].data, data);
+}
+
+#[test]
+fn a_chain_entry_equal_to_the_usable_clusters_is_still_corrupt() {
+    for (alloc_end, usable) in [(8135u32, 8135u32), (7978, 7978)] {
+        let image = file_moved_to(8192, 41, alloc_end, 100, &pattern(10, 1));
+        let mut broken = image.clone();
+        let base = synth(8192, 41, alloc_end, &[file("F", pattern(10, 1))]);
+        put_u32(&mut broken, root_byte(&base, 2 * 512) + 0x10, usable);
+        match Card::from_image(&broken).unwrap().root() {
+            Err(CardError::Corrupt(what)) => assert!(what.contains("outside the allocation area"), "{what}"),
+            other => panic!("expected a chain error, got {other:?}"),
+        }
+    }
 }

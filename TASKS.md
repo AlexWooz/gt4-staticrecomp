@@ -2992,12 +2992,18 @@ TASK-105, rc5), #175 (GSdx graphics API, TASK-103), #122 (`vcruntime140_1.dll`: 
 missing-DLL message came with #154). Later, not rc13: #173, #170, #172, #176, #177, #146; study-only pull requests stay open as
 references until their topic is implemented. Our own #110 and #113 are superseded by #130.
 
-### TASK-152 — PCSX2 card import: allocation chains up to the card's real capacity (rc13; PR #120, issue #86)
+### TASK-152 — PCSX2 card import: allocation chains up to the card's real capacity (rc13; PR #120, issue #86; done)
 
 Contributor: luanantony (PR #120). A player's PCSX2 `Mcd001.ps2` is refused with "The memory card is damaged (chain entry 7937
 outside the allocation area)" while PCSX2 reads it. Re-do the card reader change on `launcher/crates/gt4saves` with the PR's
 hostile-card tests. Acceptance: cargo tests, an 8 MB card with chains past the default allocation area imports, damaged cards are
 still refused.
+
+Done (2026-11-04): the superblock's `alloc_end` is a count relative to `alloc_offset` (8 MB: 41 + 8135 + 16 backup clusters =
+8192), capped by the room on the card; the old reading lost 41 clusters and refused chains near the end, as on the reporter's
+card. The chain error now names the layout. Tests (gt4saves 62 pass): a chain at relative 8100, relative 7937 on an
+`alloc_end` 7978 card, a chain equal to the usable count still refused, `alloc_end` 0 refused. Not checked on the reporter's
+own card. PR #120 recorded as merged (tree-neutral), issue #86 answered and closed.
 
 ### TASK-153 — Delete the active save without it coming back (rc13; PR #116, issue #98)
 
