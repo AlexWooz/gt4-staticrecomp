@@ -1,5 +1,17 @@
 # Current Status
 
+## 1.3.0-rc13 published as a pre-release (2026-11-04)
+
+Tag `v1.3.0-rc13`. Contents: TASK-149 (Nordschleife fences), TASK-150 (showroom: large writes merged on the GPU, IN-538),
+TASK-151 (photo mode flicker), TASK-152 to TASK-158 (contributor pull requests re-done, Luan Antony co-author) and TASK-159 (360
+chase camera on the right stick, on by default, PR #194). Games slice404 (PGO and ThinLTO from the camera's hooked units; pins
+`docs/inputs/slice404-*.json`, exe `901f997e...` v2.00, `10cb28b5...` Spec II; distribution `private/slice404-dist-130-rc13`);
+launchers labelled rc13 (`private/slice404-launchers-rc13`); installer `e96ca3e1...`, portable zip `742ac156...`
+(`private/release-130-rc13-out`). Gates against rc12 (`gates4.sh`): race clock and simulation state identical on three Spec II
+laps and the v2.00 night race, every compared frame identical, VU1/VU0 and MTVU checks 0 differences. Launcher: locale keys 687 in
+both languages, focus checks 278/278 and 285/285, nav-test 209/209. Laptop (RTX 3060, 6x): showroom 60.0 FPS, photo mode
+59.4-60.0 FPS. Not in it, off by default after measurement: IN-537 and IN-539 (photo mode frame times, TASK-162).
+
 ## 1.3.0-rc13 test build on the owner's desktop and laptop (2026-11-04, night)
 
 For the owner's test suite before any pre-release. Contents: TASK-149 (an upload over a mip level draws the pending batch
@@ -28,7 +40,7 @@ Branch `task/160-fov-adjustment`; `docs/FOV-ADJUST.md`. Owner test pending.
 
 ## TASK-159: 360-degree chase camera on the right stick, both games checked headless, on by default (2026-11-04)
 
-On `task/159-360-chase-camera` (from task/134 at `ad457090`). On by default in v2.00 and Spec II (owner, 2026-11-04; for rc14):
+On `task/159-360-chase-camera` (from task/134 at `ad457090`). On by default in v2.00 and Spec II (owner, 2026-11-04; in rc13):
 `GT4_CAMERA_360=0` or `camera_360=0` in `game.ini` turns it off.
 The right stick X turns the chase camera round the car through the game's own camera spring (a host call that
 `scripts/camera360_units.py` adds to the translated yaw call), and the right stick Y stops being the analog throttle and brake

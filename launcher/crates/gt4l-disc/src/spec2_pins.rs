@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(pins.executable.size_bytes, 6_520_944);
         assert_eq!(pins.derived.sha256, "36f60b1a989b343e98ca55b1f07f051aa83a3fa1a4fcb4acb409adb148afc640");
         assert_eq!(pins.patches.len(), 35);
-        assert_eq!(pins.known_images.len(), 2);
+        assert_eq!(pins.known_images.len(), 3);
         let ten = pins.known_image(&Identity {
             size_bytes: 3_683_418_112,
             sha256: "6a3484b9672c10a92154ecee6faa5bbcfd4ed8cd538d8283e429c3fe6e1704b2".into(),
@@ -196,6 +196,12 @@ mod tests {
             sha256: "fe8b51cf3008620260ff8945ac75d9b6fed4ab06813fa91ae5c9866529bf3352".into(),
         });
         assert_eq!(pt_br, Some("Spec II 1.10 (PT-BR)"));
+        // TASK-167: the PT-BR image with Gran Turismo PSP cars (only GT4.VOL differs).
+        let cpsp = pins.known_image(&Identity {
+            size_bytes: 4_202_430_464,
+            sha256: "96557472b44068e6926b51cc657ff997696c0314db11ec2ab3b8ab147f5954ed".into(),
+        });
+        assert_eq!(cpsp, Some("Spec II 1.10 (PT-BR + CPSP)"));
         assert_eq!(pins.known_image(&Identity { size_bytes: 1, sha256: "00".into() }), None);
     }
 }

@@ -1828,3 +1828,23 @@ fn the_active_save_cannot_be_deleted_while_the_game_runs() {
     assert!(library_save.is_dir(), "the save is still there");
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn play_names_the_first_start_keys_until_the_game_has_a_save() {
+    // TASK-164 (issue #160): a new install has no save, so Play first says which keys answer the game's first-start questions,
+    // from the default controls; once the library holds the active save, the note is gone.
+    let (root, _dirs, _pins, shared) = new_install("first-start-hint");
+    let hint = commands::first_start_hint_of(&shared);
+    assert_eq!(hint["game"], gt4l_core::games::GT4.display_name);
+    assert_eq!(hint["confirm"], "W / Enter", "{hint}");
+    assert_eq!(hint["pad"], "A", "{hint}");
+    assert_eq!(hint["right"], "Right", "{hint}");
+    {
+        let state = lock(&shared);
+        let active = state.library_of(state.selected).active_save_dir();
+        fs::create_dir_all(&active).unwrap();
+        fs::write(active.join("icon.sys"), b"synthetic save, not game data").unwrap();
+    }
+    assert!(commands::first_start_hint_of(&shared).is_null());
+    let _ = fs::remove_dir_all(&root);
+}

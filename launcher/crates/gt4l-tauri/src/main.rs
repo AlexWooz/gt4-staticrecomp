@@ -231,6 +231,7 @@ fn main() {
             commands::prepare_shaders,
             commands::cancel_shader_prepare,
             commands::play,
+            commands::first_start_hint,
             commands::stop_game,
             commands::saves_list,
             commands::saves_import,

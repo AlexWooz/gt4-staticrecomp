@@ -739,6 +739,9 @@
         }
         gameRunning = true;
         return null;
+      case "first_start_hint":
+        // TASK-164: ?firstStart=1 shows the first-start note on Play (no save yet).
+        return query.get("firstStart") === "1" ? { game: "Gran Turismo 4", confirm: "W / Enter", pad: "A", right: "Right" } : null;
       case "stop_game":
         gameRunning = false;
         return null;

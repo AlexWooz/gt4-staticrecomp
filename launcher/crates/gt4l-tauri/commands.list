@@ -14,6 +14,7 @@ setup_choose_disc
 setup_start
 setup_cancel
 play
+first_start_hint
 stop_game
 prepare_shaders
 cancel_shader_prepare

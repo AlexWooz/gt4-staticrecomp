@@ -1,7 +1,7 @@
 # 360-degree chase camera on the right stick (TASK-159)
 
 2026-11-04. Branch `task/159-360-chase-camera`. Both games, v2.00 and Spec II. **On by default** (owner, 2026-11-04; it ships in
-rc14): `GT4_CAMERA_360=0` (or `camera_360=0` in `game.ini` for a direct start) turns it off. The launcher has no toggle yet (a
+rc13): `GT4_CAMERA_360=0` (or `camera_360=0` in `game.ini` for a direct start) turns it off. The launcher has no toggle yet (a
 later step).
 
 **Credits.** Idea and call site from the 360 Degree Chase Camera patch by Vyerq/unko_ (v2.00) and Nenkai's port from

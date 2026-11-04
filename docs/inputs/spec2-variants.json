@@ -19,6 +19,12 @@
       "size_bytes": 3695083520,
       "sha256": "fe8b51cf3008620260ff8945ac75d9b6fed4ab06813fa91ae5c9866529bf3352",
       "note": "Brazilian Portuguese translation of 1.10 (replaces the Spanish language data). Its SCUS_974.36 is byte-identical to 1.10 (owner image, verified by the coordinator 2026-10-23)."
+    },
+    {
+      "name": "Spec II 1.10 (PT-BR + CPSP)",
+      "size_bytes": 4202430464,
+      "sha256": "96557472b44068e6926b51cc657ff997696c0314db11ec2ab3b8ab147f5954ed",
+      "note": "The PT-BR translation with some cars replaced by Gran Turismo PSP cars (owner, 2026-11-04, TASK-167). Only GT4.VOL differs from the PT-BR image (3,447,201,792 -> 3,954,532,352 bytes); SCUS_974.36, SYSTEM.CNF and every file under IRX, NET and EPSON are byte-identical (compared by the coordinator 2026-11-04)."
     }
   ]
 }

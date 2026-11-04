@@ -764,6 +764,39 @@ pub fn cancel_shader_prepare(shared: State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 
+/// TASK-164 (issue #160): `first_start_hint()` is `null`, or `{game, confirm, pad, right}` when the next start of the selected
+/// game meets its first-start questions (no save yet, [`saves::first_start_expected`]). Play then says which keys answer them,
+/// from the current controls: `confirm` the keyboard keys of Cross (`W / Enter`), `pad` the controller button of Cross
+/// (`A`, empty when none), `right` the keyboard key of D-pad right (the format question starts on Cancel).
+#[tauri::command]
+pub fn first_start_hint(shared: State<'_, Shared>) -> Value {
+    first_start_hint_of(shared.inner())
+}
+
+pub fn first_start_hint_of(shared: &Shared) -> Value {
+    let state = lock(shared);
+    let game = state.selected;
+    if !saves::first_start_expected(state.library_of(game), &state.game_dirs(game).runtime_card()) {
+        return Value::Null;
+    }
+    let names_of = |input: &str, family: &str| -> Vec<String> {
+        state
+            .controls
+            .sources(input)
+            .unwrap_or_default()
+            .iter()
+            .filter(|source| controls_file::source_family(source) == family)
+            .filter_map(|source| controls_file::source_base(source).split_once(':').map(|(_, name)| name.to_string()))
+            .collect()
+    };
+    json!({
+        "game": game.display_name,
+        "confirm": names_of("cross", "key").join(" / "),
+        "pad": names_of("cross", "xinput").first().cloned().unwrap_or_default(),
+        "right": names_of("dpad_right", "key").last().cloned().unwrap_or_default(),
+    })
+}
+
 /// Stops the game process. The card is harvested by the watcher thread after the exit.
 #[tauri::command]
 pub fn stop_game(shared: State<'_, Shared>) -> Result<(), String> {

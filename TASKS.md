@@ -1540,6 +1540,9 @@ Owner decisions (2026-10-21). Release 1.2.0 of both the game/launcher and gt4-gs
   until the owner approves it.
 
 ### TASK-018 — Racing wheels
+
+Study (2026-11-04): Luan Antony's wheel, DFP and force feedback roadmap (`docs/studies/WHEEL-FFB-ROADMAP.md`, PR #151, issue
+#88) is kept as a reference beside the owner's plan (`docs/WHEEL-DFP-PLAN.md`, PR #193).
 High-level emulation at the PDIUSB boundary with SDL3 wheels and force feedback
 (docs/MENUS-AND-WHEEL.md). Builds on the TASK-075 SDL3 input layer.
 Planned for 1.3.1 (owner update, 2026-10-26; previously 1.4.0): the game must recognise the connected wheel as a Logitech Driving Force Pro (DFP)
@@ -2434,6 +2437,9 @@ This reservation prevents reusing TASK-122 while its release branch is open.
 
 ### TASK-123 — Native DFP wheel research and implementation plan
 
+Study (2026-11-04): Luan Antony's wheel, DFP and force feedback roadmap (`docs/studies/WHEEL-FFB-ROADMAP.md`, PR #151, issue
+#88) is kept as a reference beside the owner's plan (`docs/WHEEL-DFP-PLAN.md`, PR #193).
+
 State 2026-10-26: research brief ready for an owner-run OpenCode agent; research not started.
 Parent TASK-018, planned release 1.3.1. The virtual guest target is Logitech Driving Force Pro
 (DFP), 900-degree steering, original game-generated force feedback translated to SDL3.
@@ -2960,7 +2966,7 @@ does not). Replay at VBlank 1900: the far fence is see-through mesh, as on GSdx.
 MIPTBP1/MIPTBP2/TEXA, and with `GT4_CORE2_BATCH_TRACE_AT` the traced VBlank also lists each GIF transfer's path, each upload
 with its bytes, and each memory write. State: fixed on `task/134-game-code-optimization-study`, for rc13 (owner test).
 
-### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13)
+### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13; done)
 
 Owner (2026-11-04, NVIDIA RTX at 3440x1440, CoreGS 2.0 6x): the used-car showroom (the car turning) runs at about 55 FPS with
 frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `avell-gt4-20261104`, the owner's GT4 save from
@@ -2978,7 +2984,17 @@ remove the wait (the last page row of the write is partial). Way forward (design
 the GPU (targets into the GLM, the upload over it) and track the CPU memory those pages leave stale, reading it back only if
 something reads it (an EE download, a CPU-side decode).
 
-### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed)
+Done (2026-11-04, IN-538): such a write is now merged on the GPU block by block. A block it fills in every bit is taken by the
+target from the GLM; a block it writes in part (the backdrop's last 6 rows, 40 blocks) goes through IN-512's bit merge; the
+blocks it does not touch keep the drawn pixels. No readback. Frames identical to the store (showroom 32 of 32 and photo mode
+26 of 26 at 6x, George V Paris 49 of 49 at 2x). Laptop (RTX 3060 Laptop GPU, 3440 x 1440, CoreGS 2.0 6x, the launcher's
+settings, three interleaved runs each): 60 FPS in every run of both builds that day (frame time 16.67 ms, deviation 0.12-0.19
+ms); GPU waiting 1.61-1.67 to 0.03 ms per VBlank and stores before writes 0.34 to 0 per VBlank, for about 1 ms more GPU work per
+VBlank (9.6-9.8 to 10.7 ms busy). Earlier that night the same laptop showed the owner's stalls with the old build (26 frames
+over 20 ms in 680, each with a 4-6 ms GPU wait in the store); the new build removes that wait. `GT4_CORE2_PATCH_BLOCKS=0` (A/B);
+test `hw_core2_patch_blocks`.
+
+### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed; frame times in TASK-162)
 
 Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
 and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording: `photo-mode` (v2.00, card
@@ -3002,6 +3018,104 @@ Frame times (analysis, 2026-11-04, 6x): two readbacks every frame (`GT4_CORE2_RE
 target at block 11520; plus about 38 texture decodes per frame. Each readback waits for the GPU. Performance Mode already
 answers such downloads with the previous result (IN-439, one frame late, decision 0073); normal mode stays exact, so changing
 that there is the owner's call. The CLUT one could go through the GPU palette path (IN-408) if it covers Z formats (to check).
+Tried (2026-11-04, kept off by default): the CLUT readback comes from photo mode's 640 x 448 Z16S depth buffer, and 16-bit depth
+targets can go into the GLM (IN-537); the buffer then counts as read on the GPU, so about 24 uploads per frame over its memory
+each need a store first, on the CPU or on the GPU (IN-539). Laptop at 6x: 57.2-58.2 FPS with them against 59.6-60.1 without, so
+both are off (`GT4_CORE2_GPU_Z16=1`, `GT4_CORE2_WHOLE_BLOCK_WRITES=1` turn them on). With the flicker fix photo mode holds
+59.2-60 FPS on the laptop at 6x (launcher settings, four runs); the rest of its frame times moves to TASK-162 (owner, 2026-11-04:
+not a priority; close rc13 with the flicker fixed).
+
+### TASK-162 — CoreGS 2.0: photo mode frame times (after rc13)
+
+Owner (2026-11-04): photo mode is not a priority; rc13 ships with its flicker fixed (TASK-151) and these frame times are left
+for later. What is known (TASK-151, IN-537, IN-539): each game frame (every second VBlank) reads back a CLUT loaded from the
+640 x 448 Z16S depth buffer at BP 11520 and an 8 x 4 rectangle of the 320 x 192 Z24 target at BP 10048 (an EE download, likely
+the camera's focus), 3-4 ms of GPU waiting together on the laptop at 6x; the GS thread spends about 10 ms per game frame on
+top. Ways: let the GLM hold pages as the newest copy of memory, so a target read on the GPU needs one store per round of reads
+(then IN-537 and IN-539 can be on); or answer that small depth download one frame late, a named relaxation for normal mode that
+needs the owner's word (decision 0073 keeps it to Performance Mode). Measure on the laptop only (owner).
+
+### TASK-163 — Bonnet camera wind volume, and 480p colour (issue #135; study #171)
+
+Owner (2026-11-04): taken in as a planned task, after 1.3.0. Issue #135 (shadowcla02-cloud) asks for an option to lower the wind
+sound in the bonnet camera and for the full colour range in 480p. Luan Antony's study (`docs/studies/BONNET-WIND-480P-COLOR.md`,
+PR #171) finds the wind in the race car sound (a looped voice scaled by speed and a camera factor) and proposes a volume
+setting that leaves the engine and every other sound alone; it reads the 480p colour difference as the game's own 16-bit frame
+buffers in progressive mode. A sound option changes no gameplay; a colour change would alter the original picture, so it needs
+the owner's word first. Check both in the game before building.
+
+### TASK-164 — First save creation: tell keyboard players which key confirms (issue #160; study #167; done in rc14)
+
+Owner (2026-11-04): planned. On a new card GT4 asks whether to create its game data and answers only Cross; players who press
+another key think it froze (issue #160, rinegan33). Luan Antony's study (`docs/studies/FIRST-SAVE-CREATION.md`, PR #167)
+proposes a first-boot reminder in the launcher, among other options. Smallest step first: a clear hint before the first Play
+with an empty card, in both languages.
+
+Done (2026-11-04, rc14): Play shows a note after the shader step and before the start whenever the selected game's library has
+no active save and the card the game left behind holds none (`saves::first_start_expected`; command `first_start_hint`). It
+names the keys from the player's current controls (default: Cross = `W / Enter`, controller `A`, D-pad right = `Right`) and
+says that a question starting on Cancel or No needs Right first (the slice110 pilot: the format question starts on Cancel).
+Play starts, Cancel and Back start nothing, a failed check starts at once. Tests: `saves` unit test, flow audit
+`play_names_the_first_start_keys_until_the_game_has_a_save`, focus checks (six cases) in both languages; locale keys
+`home.first_start_*` in en-US and pt-BR.
+
+### TASK-165 — Xbox and Switch button prompts in the game (issue #161; study #166)
+
+Owner (2026-11-04): planned. Issue #161 asks for Xbox or Switch button prompts instead of the PlayStation ones. Luan Antony's
+study (`docs/studies/BUTTON-PROMPTS.md`, PR #166) designs it through texture replacement of the button glyphs plus a launcher
+setting (PlayStation, Xbox, Switch). Needs the glyph textures drawn (own or CC0 art) and the replacement path on both
+renderers (CoreGS 2.0 and GSdx). No change to the game code.
+
+### TASK-166 — Spec II ultrawide: race-font text and mirror stretched (owner, 2026-11-04; done in rc14)
+
+Owner (2026-11-04): on Spec II, at ratios wider than 16:9, the digital speedometer and the odometer (clearest in the bumper
+camera's gauges) look distorted; v2.00 is fine. Cause (Confirmed): TASK-080 P2 patched two immediates of v2.00 into loads from
+the host-filled HUD parameter block (`scripts/aspect_elf_patch.py`, decision 0071): the race font x scale (`lui at,0x3F40`, 0.75)
+and the rear-view mirror divisor (`addiu t0,zero,640`). The Spec II port (TASK-100 S8) mapped the HUD canvas hook but not these
+two words, so every glyph of the race font (lap timer, speed, lap times, gauges) and the mirror kept 16:9 widths in frame
+pixels and were stretched with the frame.
+
+Done (2026-11-04): `scripts/spec2_aspect_patch.py` patches the same two instructions of the Spec II derived ELF (0x001C519C in
+`RaceDisplay::render` 0x001C5040, 0x001EB65C in the mirror placement) to the same words and block; the pinned translator and
+seeds give units byte-identical to the pinned Spec II translation except `unit_0031` and `unit_003A`, one line each
+(`private/slice405-spec2-aspect-producer`, receipt `spec2-aspect-generation.json`). The 360 camera hooks apply on top unchanged.
+Checks: `tests/python/test_spec2_aspect_patch.py`; George V lap replayed at 21:9 and 16:9 on rc13 and on the patched build:
+at 21:9 the timer and the speed keep their 16:9 shape (rc13 stretched them by 21/16); at 16:9 every compared frame is
+identical to rc13.
+
+### TASK-167 — Spec II PT-BR + CPSP disc image (owner, 2026-11-04; done in rc14)
+
+Owner (2026-11-04): support the "GT4 Spec II PTBR + CPSP" image: the Spec II 1.10 PT-BR translation with some cars replaced by
+Gran Turismo PSP cars, on the same 1.10 base. Checked (Confirmed): its `SCUS_974.36` and `SYSTEM.CNF` are the pinned ones, and
+every file under the root, `IRX`, `NET` and `EPSON` is byte-identical to the PT-BR image; only `GT4.VOL` differs (3,447,201,792
+-> 3,954,532,352 bytes). The launcher already accepts any image with the pinned executable as a "Spec II 1.10 variant"; the
+image is now named `Spec II 1.10 (PT-BR + CPSP)` in `docs/inputs/spec2-variants.json` (sha256 `96557472...`, 4,202,430,464
+bytes; `spec2_pins` test). The George V lap recording replayed on it (rc14a Spec II build) boots, races and finishes the lap
+with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself stays outside git (`*.iso`).
+
+### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
+
+1.3.0-rc13 is published (2026-11-04). rc14 starts after the owner compacts the session's context. Steps:
+
+1. **The camera session's pull request** (one PR into `task/134-game-code-optimization-study`, not merged by that session):
+   TASK-159b (the pedal zeroing reaches only pad 0's right stick Y), TASK-160 (field of view in real time, on by default) and
+   TASK-161 (trigger range 0-251, off by default, with a launcher switch and locale keys in both languages; it changes
+   TASK-147's 45/84 ranges when on). Review, rebuild the hooked units (`scripts/camera360_units.py` and the new hooks), check
+   that the race clock, state and frames stay identical with the new options at their defaults, merge.
+2. **PR #177** (Luan Antony, TASK-095, ultrawide 2D menu canvas): the camera agent finds where the pause, results, replay and
+   pre-race screens set their projection in v2.00 and Spec II and adds the hook; it comes as its own PR. Same checks; 16:9 must
+   stay identical.
+3. **TASK-164** (issue #160): a launcher hint, before the first Play with an empty card, that Cross confirms GT4's question
+   about creating its game data. Both languages. Done.
+3b. **TASK-166** (owner): Spec II ultrawide race-font text and mirror (the TASK-080 P2 patch table for Spec II). Done.
+3c. **TASK-167** (owner): the Spec II PT-BR + CPSP image named as a known variant. Done.
+4. **Build and install:** plain test builds of both games (everything enabled), launchers labelled rc14, installed on the
+   owner's desktop (installer update mode) and the laptop's portable copy; gates against rc13 with
+   `private/task134-tools/gates5.sh` (references `build/evidence/*r13pgo*`); performance measured on the laptop only. Telegram
+   the owner when it is ready. No PGO build until the owner asks; then a draft, and a pre-release only on the owner's word.
+
+Waiting on players (issues answered 2026-11-04, `docs/ISSUE-TRIAGE.md`): the AMD crash reports #187-#190 retest on rc13; a new
+task if they still crash.
 
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 
@@ -3117,12 +3231,12 @@ Tests: launcher 659 pass (8 new archive cases), focus checks 278/285 (Try again,
 check's dialog buttons are the shown ones), nav-test 209, locale keys 687 in both languages. Not run against a real release.
 PR #143 recorded as merged (tree-neutral); issue #139 (closed with rc10) answered.
 
-### TASK-159 — 360-degree chase camera on the right stick (v2.00, then Spec II)
+### TASK-159 — 360-degree chase camera on the right stick (v2.00, then Spec II; done, in 1.3.0-rc13)
 
 Owner request (2026-11-04). The right stick X turns the chase camera round the car, as the community "360 Degree Chase Camera"
 PCSX2 patches do (idea and call site from the patch by Vyerq/unko_ for v2.00 and Nenkai's port from Duchi/Vyerq for Spec II;
 references only, no patch words used). Branch `task/159-360-chase-camera` (from task/134 at ad457090). **On by default in
-both games** (owner, 2026-11-04; ships in rc14): `GT4_CAMERA_360=0`, or `camera_360=0` in `game.ini` for a direct start, turns
+both games** (owner, 2026-11-04; ships in rc13): `GT4_CAMERA_360=0`, or `camera_360=0` in `game.ini` for a direct start, turns
 it off; a launcher toggle is a later step. Design, decoded patches, addresses and checks: `docs/CAMERA-360.md`.
 
 - Mechanism: the chase camera's yaw spring calls the angle-difference function with a direct `jal`, which the translator turns
