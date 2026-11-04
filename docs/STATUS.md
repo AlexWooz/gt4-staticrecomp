@@ -1,5 +1,17 @@
 # Current Status
 
+## 1.3.0-rc12 built with PGO and published as a pre-release (2026-11-04, night)
+
+On the owner's word ("a rc12 atual assim que buildar, vc já sobe como pre-release"): TASK-145 to TASK-148 on top of rc11. Games
+slice402 (PGO and ThinLTO, `private/task134-tools/final12.sh`; exe `3c8f870c...` v2.00, `9b3c4d38...` Spec II; pins
+`docs/inputs/slice402-*.json`; distribution `private/slice402-dist-130-rc12`), launchers labelled rc12 from `e562048f`
+(`private/release-130-rc12-launchers`), package `private/release-130-rc12-out` (installer `28b6776b...` 51,870,003 bytes, portable
+zip `0932edb7...` 80,813,207 bytes, SHA256SUMS), checked against its sources by extraction. Gates against rc11
+(`private/task134-tools/gates3.sh`): race clock and simulation state identical on three Spec II laps and the v2.00 night race,
+every compared frame identical, VU1/VU0 and MTVU checks 0 differences. Locale keys 664 in both languages, focus checks 275/282
+and nav-test 209 on this launcher's UI. Tag `v1.3.0-rc12` at `e562048f` (the launcher's source; the game sources are those of
+the build).
+
 ## TASK-147 and TASK-148 for rc12: triggers, sticks and the controller choice (2026-11-03, night)
 
 On `task/134-game-code-optimization-study`, plain test builds on the owner's laptop. Triggers: R2 spans GT4's own 0..45
