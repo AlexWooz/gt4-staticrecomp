@@ -3283,6 +3283,32 @@ The owner's photo of the HUD on the RTX 3060 laptop: the GPU name is cut ("NVIDI
   mapping and compatibility, focus checks in both languages; the coordinator checks it in a game run.
 - State (2026-11-04): in progress.
 
+### TASK-176 — Experimental 120 FPS races with the simulation at 120 Hz (study; not in any rc; owner, 2026-11-04)
+
+The owner found a Japanese PCSX2 cheat page (Vyerq, "make the race screen 120 FPS, simplified", last updated 2024-09-10;
+the site is offline) and sent a research summary and an English copy of the page's code archive. They are kept as
+**references only** in `private/references/vyerq-gt4-patches-2026-11-04/` (git-ignored; third-party patches are never
+copied into the repository, AGENTS.md). The patch writes 64 bytes in v2.00 (two `byte,19` writes at 0x357F78 and 0x357FBC,
+62 `byte,8` writes from 0x10110C to 0x57B038) and 68 in the Online Public Beta (not checked against Spec II 1.10), and then
+runs PCSX2 at 200 % speed on a 120 Hz screen: the game is made to step its race at half the time per frame while the
+emulator doubles the frame rate.
+
+- Different from TASK-082 (`docs/NATIVE-VARIABLE-FPS-STUDY.md`: real frames with the 1/60 s simulation untouched) and from
+  TASK-045: here the race simulation itself steps at 120 Hz. That changes game logic (physics steps, AI, lap timers,
+  replays and ghosts are tied to 1/60 s steps), which the mission keeps out of the faithful build ("game logic never
+  changes"; physics timing changes belong to a separate project or fork). So this is an experimental branch only, never a
+  default, and any release use is the owner's decision.
+- Plan when the owner starts it:
+  1. Map every v2.00 location to its instruction, original bytes and function (gt4-decomp names): float 1/60 constants,
+     integer step counts or other values, and what each one drives.
+  2. Find the Spec II 1.10 equivalents from the code, not from the Public Beta offsets.
+  3. Design our own hook (no patch bytes copied): a switch for a 120 Hz race step plus the runtime's VBlank and pacing at
+     120 per second.
+  4. Measure against the 60 Hz baseline on the replayed laps: race clock, positions and speed at fixed real times, the
+     simulation state, AI, sound, replays and ghosts, menus.
+  5. Report what holds and what breaks.
+- State (2026-11-04): recorded, not scheduled; rc15 stays the focus (owner).
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
