@@ -246,8 +246,8 @@ pub fn coregs20_environment(
     if settings.is_on("performance_hud") {
         variables.insert("GT4_HW_HUD", "1".to_string());
     }
-    // The session's frametime log, beside its game.log (the working directory is the session folder).
-    variables.insert("GT4_HW_FRAMETIME_LOG", "frametime.csv".to_string());
+    // No frametime.csv in the session folder any more (owner, 2026-11-03: not needed). GT4_HW_FRAMETIME_LOG=<csv> by hand
+    // still writes it for a bench (scripts/coregs2_bench/frametime_plot.py).
     if settings.gs_value("texture_load") == "true" {
         variables.insert("GT4_HW_TEXTURES", textures.display().to_string());
     }

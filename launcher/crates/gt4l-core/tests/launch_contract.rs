@@ -237,6 +237,7 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
         assert!(!on.contains_key(gsdx_only), "{gsdx_only} belongs to GSdx");
     }
     assert!(!on.contains_key("GT4_CORE2_PERFORMANCE"), "full precision unless Performance Mode is on");
+    assert!(!on.contains_key("GT4_HW_FRAMETIME_LOG"), "no frametime.csv in the session folder (owner, 2026-11-03)");
     assert!(!on.contains_key("GT4_FRAME_SKIP_FORCE"), "no fixed pattern unless the player asks for 30 FPS");
     assert_eq!(on["GT4_FRAME_SKIP"], "1", "TASK-146: 60 FPS leaves frames out in a race only when the PC falls behind");
     assert!(launch::coregs20_section(&settings, Some(&display), false, textures).contains("hw_frame_skip_adaptive=1\n"));
