@@ -3146,7 +3146,17 @@ AMD's RDNA1/2 driver; the parallel prepare (several compiles at once) may matter
 - Acceptance: CTest `hw_core2_shader_guard` (a simulated end inside the 4th compile → serial; a serial end inside the 2nd →
   exactly one quarantined, the rest compiled; the quarantine stays; a damaged file is ignored), with `hw_core2_prepare_shaders`,
   `hw_core2_shader_cache` and the specialised tests; flow audit test for the bundle; every identity gate unchanged.
-- State (2026-11-04): in rc14. Player retest pending (a quarantined variant only changes speed, never the picture).
+- State (2026-11-04): in rc14. Player retest (rc14, the same RX 6700 XT, driver 2.0.353; log bundle 2026-11-04 21:49):
+  the guard works, but slowly for the player: each Play ran a prepare that ended inside a compile ("the compile did not
+  finish"), then the game started anyway and ended (0xC0000005) about 11 s later compiling the same kind of variant; each end
+  quarantined one variant, and after 7 the prepare finished (299/299) and the game runs at 7x (an 18-minute session and later
+  ones). Scale is not the cause: a 7x session also ran once enough variants were quarantined. On that PC one specialised
+  pipeline takes up to 580-790 ms to compile (`compile_max_ms`). The player also uses a texture pack of about 100,000 files.
+- **rc15 follow-up:** (1) the launcher runs the prepare again by itself when it ends inside a compile (each run quarantines
+  the variant in flight), up to a bounded number of attempts with progress shown, and starts the game only when the prepare
+  finished or stopped making progress, so the player never sees the game end; (2) the prepare and the game log the
+  quarantined variants with their decoded fields, and the log bundle carries them, so the variants that end AMD's driver can
+  be identified (root cause); (3) asked: the player's `data\shader-cache\quarantine.bin`.
 
 ### TASK-171 — CoreGS 2.0: per-primitive front end for big scenes (the first license; rc15)
 
