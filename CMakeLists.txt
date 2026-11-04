@@ -197,6 +197,51 @@ if(GT4_HW_GS)
     # Fullscreen-style toggles on the hidden window: resize flag, swapchain rebuild, every present under 100 ms.
     add_test(NAME hw_smoke_resize COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 1 --resize-toggles 5)
     set_tests_properties(hw_smoke_resize PROPERTIES ENVIRONMENT "GT4_RENDERER=hw" PASS_REGULAR_EXPRESSION "resize_toggles=5")
+    # TASK-174 (issue #204, the Steam Deck's RADV has one queue in its graphics family): GT4_HW_PRESENT_FORCE_ONE_QUEUE=1 makes this
+    # device take the shared-queue path, where the presentation thread acquires, copies the picture and presents on the rendering
+    # queue. Every presentation must end as shown, not shown or failed (accounted=1), with none failed on the hidden window.
+    add_test(NAME hw_smoke_window_shared_queue COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 300 --window --display)
+    set_tests_properties(hw_smoke_window_shared_queue PROPERTIES ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_PRESENT_FORCE_ONE_QUEUE=1"
+        PASS_REGULAR_EXPRESSION "frames=300 presents=300 black_presents=0 gif_bytes=0 swapchain_recreations=0 faults=0\ngpu_composed=300\npresent_rect=[0-9]+,[0-9]+ [0-9]+x[0-9]+ present_16x9=1.*presentation path=shared_queue requests=300 shown=[1-9][0-9]* not_shown=[0-9]+ failed=0 left_out=[0-9]+ accounted=1")
+    # The same with frames left out (TASK-082's spacing on the presentation thread) switching on and off, uneven arrivals, and the
+    # 4x presentation with its downscale steps.
+    add_test(NAME hw_smoke_window_shared_queue_frames_left_out COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 600 --window --display-640
+        --frames-left-out 37 23 --jitter-ms 24)
+    set_tests_properties(hw_smoke_window_shared_queue_frames_left_out PROPERTIES
+        ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_SCALE=4;GT4_HW_PRESENT_FORCE_ONE_QUEUE=1"
+        PASS_REGULAR_EXPRESSION "frames=600 presents=600 black_presents=0 gif_bytes=0 swapchain_recreations=0 faults=0.*presentation path=shared_queue requests=600 shown=[1-9][0-9]* not_shown=[0-9]+ failed=0 left_out=[0-9]+ accounted=1")
+    # The Vulkan validation layer's thread checks (TASK-146 procedure) on the shared queue: no two threads in a queue, swapchain or
+    # command pool call at once. Without the layer installed (the Vulkan SDK's), the loader skips it and this checks the accounting
+    # only. Without queue_lock the same run reported 4 VkQueue THREADING ERRORs in 600 frames on the RX 9060 XT.
+    add_test(NAME hw_smoke_shared_queue_thread_check COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 600 --window --display-640
+        --frames-left-out 37 23 --jitter-ms 24)
+    set_tests_properties(hw_smoke_shared_queue_thread_check PROPERTIES
+        ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_SCALE=2;GT4_HW_PRESENT_FORCE_ONE_QUEUE=1;VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation;VK_LAYER_VALIDATE_CORE=false;VK_LAYER_THREAD_SAFETY=true"
+        FAIL_REGULAR_EXPRESSION "THREADING ERROR"
+        PASS_REGULAR_EXPRESSION "presentation path=shared_queue requests=600 shown=[1-9][0-9]* not_shown=[0-9]+ failed=0 left_out=[0-9]+ accounted=1")
+    # The same checks on the device's own path (IN-516's second queue where the family has one, as on this desktop), which the
+    # presentation thread of TASK-082 shares with the GS thread while frames are left out (the TASK-146 fixes).
+    add_test(NAME hw_smoke_present_thread_check COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 600 --window --display-640
+        --frames-left-out 37 23 --jitter-ms 24)
+    set_tests_properties(hw_smoke_present_thread_check PROPERTIES
+        ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_SCALE=2;VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation;VK_LAYER_VALIDATE_CORE=false;VK_LAYER_THREAD_SAFETY=true"
+        FAIL_REGULAR_EXPRESSION "THREADING ERROR"
+        PASS_REGULAR_EXPRESSION "presentation path=[a-z_]+ requests=600 shown=[1-9][0-9]* not_shown=[0-9]+ failed=0 left_out=[0-9]+ accounted=1")
+    # Swapchain rebuilds with the presentation thread (pacer_drain before each one). The 100 ms limit is not enforced here, as in
+    # hw_smoke_resize (this desktop's toggles take 30 to 600 ms on every path); every presentation must still be accounted for.
+    add_test(NAME hw_smoke_resize_shared_queue COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 30 --resize-toggles 8 --display
+        --frames-left-out 5 5)
+    set_tests_properties(hw_smoke_resize_shared_queue PROPERTIES ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_PRESENT_FORCE_ONE_QUEUE=1"
+        PASS_REGULAR_EXPRESSION "resize_toggles=8 max_toggle_ms=[0-9.]+ swapchain_recreations=[0-9]+.*presentation path=shared_queue requests=38 shown=[1-9][0-9]* not_shown=[0-9]+ failed=[0-9]+ left_out=[0-9]+ accounted=1")
+    # GT4_HW_PRESENT_SHARED_QUEUE=0 keeps the path of before TASK-174 on one queue: the GS thread waits for every swapchain image.
+    add_test(NAME hw_smoke_window_shared_queue_off COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 120 --window --display)
+    set_tests_properties(hw_smoke_window_shared_queue_off PROPERTIES
+        ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_PRESENT_FORCE_ONE_QUEUE=1;GT4_HW_PRESENT_SHARED_QUEUE=0"
+        PASS_REGULAR_EXPRESSION "presentation path=rendering_queue requests=120 shown=[0-9]+ not_shown=0 failed=0 left_out=[0-9]+ accounted=1")
+    # GT4_HW_PRESENT_QUEUE=0 means the rendering queue path on any device, as before.
+    add_test(NAME hw_smoke_window_present_queue_off COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 60 --window --display)
+    set_tests_properties(hw_smoke_window_present_queue_off PROPERTIES ENVIRONMENT "GT4_RENDERER=hw;GT4_HW_PRESENT_QUEUE=0"
+        PASS_REGULAR_EXPRESSION "presentation path=rendering_queue requests=60 shown=[0-9]+ not_shown=0 failed=0 left_out=[0-9]+ accounted=1")
     add_test(NAME hw_smoke_parallel_refused COMMAND $<TARGET_FILE:hw_gs_smoke> --frames 1)
     set_tests_properties(hw_smoke_parallel_refused PROPERTIES ENVIRONMENT "GT4_RENDERER=parallel" WILL_FAIL TRUE)
     # task/027-coregs2: GT4_RENDERER=hw through main's GS stream seam, in process (native/gs_stream/gs_stream_sink.hpp).
@@ -223,5 +268,8 @@ if(GT4_HW_GS)
         hw_smoke_parallel_refused hw_smoke_unknown_renderer_refused hw_stream_sink hw_stream_sink_capture_refused hw_stream_sink_deferred_vsync hw_smoke_window_scaled
         hw_smoke_window_aspect_169 hw_smoke_window_aspect_ultrawide hw_smoke_window_aspect_219 hw_smoke_window_aspect_329
         hw_smoke_window_aspect_219_in_169 hw_stream_sink_display_aspect
+        hw_smoke_window_shared_queue hw_smoke_window_shared_queue_frames_left_out hw_smoke_resize_shared_queue
+        hw_smoke_window_shared_queue_off hw_smoke_window_present_queue_off hw_smoke_shared_queue_thread_check
+        hw_smoke_present_thread_check
         PROPERTIES RUN_SERIAL TRUE TIMEOUT 300 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()

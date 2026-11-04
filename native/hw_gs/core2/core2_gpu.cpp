@@ -8,6 +8,7 @@
 #include "core2_gpu.hpp"
 
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
+#include "../hw_queue_lock.hpp"
 #include "../shaders/hw_shader_blobs.hpp"
 #include "../memory/hw_memory.hpp"
 
@@ -183,6 +184,7 @@ struct Gpu::Impl {
   VkPhysicalDevice physical = VK_NULL_HANDLE;
   VkDevice device = VK_NULL_HANDLE;
   VkQueue queue = VK_NULL_HANDLE;
+  gt4::hw::QueueLock *queueLock = nullptr;  // TASK-174: the presentation thread shares `queue` (VulkanHandles::queueLock)
   VkPhysicalDeviceMemoryProperties memoryProperties{};
   VkPhysicalDeviceLimits limits{};
   std::uint32_t scale = 1;
@@ -2201,7 +2203,9 @@ struct Gpu::Impl {
     VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     info.commandBufferCount = 1;
     info.pCommandBuffers = &cmd;
-    if (!check(gt4_hw_vkQueueSubmit(queue, 1, &info, fence), "vkQueueSubmit", error)) return false;
+    const auto submitCall = [&] { return gt4_hw_vkQueueSubmit(queue, 1, &info, fence); };
+    const VkResult submitted = queueLock ? queueLock->run(gt4::hw::QueueLock::Caller::gs_thread, submitCall) : submitCall();
+    if (!check(submitted, "vkQueueSubmit", error)) return false;
     stats.submissions++;
     batchesSinceSubmit = 0;
     slots[slot].inFlight = true;
@@ -2426,6 +2430,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.physical = static_cast<VkPhysicalDevice>(handles.physical);
   s.device = static_cast<VkDevice>(handles.device);
   s.queue = static_cast<VkQueue>(handles.queue);
+  s.queueLock = handles.queueLock;
   s.scale = std::max<std::uint32_t>(scale, 1u);
   s.shift = shift;
   if (!s.instance || !s.physical || !s.device || !s.queue) {

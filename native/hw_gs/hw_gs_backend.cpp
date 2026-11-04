@@ -12,6 +12,8 @@
 #include "hw_gs_present_rect.hpp"
 #include "hw_present_latency.hpp"
 #include "hw_present_spacing.hpp"
+#include "hw_queue_lock.hpp"
+#include "hw_shared_present.hpp"
 
 #include "hw_gs_vulkan_loader.hpp" // Vulkan names renamed to gt4_hw_*; pointers loaded at run time
 #include "hud/hw_hud_layer.hpp"
@@ -32,6 +34,7 @@
 #include <memory>
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 namespace gt4::hw {
 namespace {
@@ -54,6 +57,12 @@ const char *vk_result_text(VkResult result) {
   case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
   default: return "VkResult";
   }
+}
+
+// True when the environment variable `name` is set to exactly `value`.
+bool environment_is(const char *name, const char *value) {
+  const char *text = std::getenv(name);
+  return text != nullptr && std::strcmp(text, value) == 0;
 }
 
 bool has_extension(const std::vector<VkExtensionProperties> &available, const char *name) {
@@ -104,8 +113,67 @@ struct Backend::Impl {
   VkPhysicalDevice physical = VK_NULL_HANDLE;
   VkDevice device = VK_NULL_HANDLE;
   VkQueue queue = VK_NULL_HANDLE;
-  VkQueue present_queue = VK_NULL_HANDLE;  // IN-516: a second queue of the family, where it has one
+  // IN-516: a second queue of the family, where it has one; TASK-174: `queue` itself on the shared path.
+  VkQueue present_queue = VK_NULL_HANDLE;
   std::uint32_t queue_family = 0;
+
+  // How frames reach the display (chosen in create_device, logged on the "[hw] presentation queue" line):
+  // - rendering_queue: the GS thread acquires the swapchain image, draws into it and presents, all on the rendering queue (a device
+  //   with one queue in its graphics family before TASK-174; GT4_HW_PRESENT_QUEUE=0 and GT4_HW_PRESENT_SHARED_QUEUE=0 keep it).
+  // - own_queue (IN-516): the GS thread draws a picture on the rendering queue, a second queue of the family copies it into the
+  //   swapchain image and presents; with frames left out the presentation thread of TASK-082 does that part.
+  // - shared_queue (TASK-174): the same pictures, with the copy and the present always on the presentation thread, but on the
+  //   rendering queue, the family's only one. Every queue call on it holds `queue_lock`, the renderer's submissions included.
+  enum class PresentPath { rendering_queue, own_queue, shared_queue };
+  PresentPath present_path = PresentPath::rendering_queue;
+  bool uses_pictures() const { return present_path != PresentPath::rendering_queue; }
+  bool shares_queue() const { return present_path == PresentPath::shared_queue; }
+  static const char *present_path_name(PresentPath path) {
+    switch (path) {
+    case PresentPath::rendering_queue: return "rendering_queue";
+    case PresentPath::own_queue: return "own_queue";
+    case PresentPath::shared_queue: return "shared_queue";
+    }
+    return "unknown";
+  }
+  gt4::hw::QueueLock queue_lock;
+  using QueueCaller = gt4::hw::QueueLock::Caller;
+
+  // TASK-174: every vkQueueSubmit and vkDeviceWaitIdle of this file goes through these two (vkQueuePresentKHR through
+  // present_locked). On the shared queue they hold `queue_lock`; on the other paths each queue is used by one thread at a time and
+  // they call Vulkan directly, as before.
+  VkResult submit_to(VkQueue on, const VkSubmitInfo &submit, VkFence fence, QueueCaller caller) {
+    if (!shares_queue()) return vkQueueSubmit(on, 1, &submit, fence);
+    return queue_lock.run(caller, [&] { return vkQueueSubmit(on, 1, &submit, fence); });
+  }
+  // Callers make sure the presentation thread has nothing on its way first (pacer_drain or pacer_close).
+  void device_wait_idle() {
+    if (!device) return;
+    if (!shares_queue()) {
+      vkDeviceWaitIdle(device);
+      return;
+    }
+    queue_lock.run(QueueCaller::device_idle, [&] { return vkDeviceWaitIdle(device); });
+  }
+
+  // TASK-174 counters for the presentation report, on every path. `present_requests` counts the presentations asked of the path
+  // (present_frame with a swapchain); each ends as shown (vkQueuePresentKHR returned VK_SUCCESS or VK_SUBOPTIMAL_KHR), not shown
+  // because the presentation side was behind (`presents_dropped`: no free slot, picture or swapchain image in time), failed (an
+  // acquire or present error: out of date, surface lost), or left out by the latency control of IN-521.
+  std::uint64_t present_requests = 0;  // GS thread
+  std::atomic<std::uint64_t> presents_shown{0};
+  std::atomic<std::uint64_t> presents_failed{0};
+  std::uint64_t presents_left_out = 0;  // GS thread
+  // The GS thread's time in the presentation step (present_frame, whole) and inside its calls that can wait: fence waits, acquire,
+  // vkQueueSubmit and vkQueuePresentKHR, the shared queue's lock included. Microseconds, session totals, GS thread only.
+  double gs_present_step_us = 0;
+  double gs_present_wait_us = 0;
+  template <typename Call> auto gs_waits(Call &&call) -> decltype(call()) {
+    const auto start = std::chrono::steady_clock::now();
+    auto result = std::forward<Call>(call)();
+    gs_present_wait_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+    return result;
+  }
   VkImage images[max_swapchain_images] = {};
   VkImageLayout image_layouts[max_swapchain_images] = {};
   VkCommandPool command_pool = VK_NULL_HANDLE;
@@ -126,7 +194,8 @@ struct Backend::Impl {
   VkImage pictures[frame_slots] = {};
   VkDeviceMemory picture_memory[frame_slots] = {};
   VkImageLayout picture_layouts[frame_slots] = {};
-  std::uint64_t presents_dropped = 0, presents_dropped_reported = 0;
+  std::atomic<std::uint64_t> presents_dropped{0};  // GS thread and presentation thread
+  std::uint64_t presents_dropped_reported = 0;
   // What record_frame and record_black draw into: the swapchain images, or the pictures of IN-516.
   VkImage *draw_images = images;
   VkImageLayout *draw_layouts = image_layouts;
@@ -162,6 +231,7 @@ struct Backend::Impl {
   std::condition_variable frametime_changed;
   std::deque<FrametimeEntry> frametime_queue;
   bool frametime_stop = false, frametime_waiting = false;
+  std::uint64_t frametime_done_id = 0;  // TASK-174: the last presentation id this thread is done with (shown, or given up on)
   std::uint64_t present_calls = 0, present_ids = 0;
   const std::chrono::steady_clock::time_point frametime_start = std::chrono::steady_clock::now();
 
@@ -183,7 +253,15 @@ struct Backend::Impl {
     return vkAcquireNextImageKHR(device, swapchain, timeout_ns, semaphore, VK_NULL_HANDLE, &index);
   }
 
+  // TASK-174: on the shared queue the present also needs the queue to itself (queue_lock first, then the swapchain mutex). Only the
+  // presentation thread presents there.
   VkResult present_locked(VkQueue on, const VkPresentInfoKHR &present) {
+    if (shares_queue()) {
+      return queue_lock.run(QueueCaller::presentation_thread, [&] {
+        const std::lock_guard<std::mutex> lock(swapchain_mutex);
+        return vkQueuePresentKHR(on, &present);
+      });
+    }
     const std::lock_guard<std::mutex> lock(swapchain_mutex);
     return vkQueuePresentKHR(on, &present);
   }
@@ -216,11 +294,13 @@ struct Backend::Impl {
   void frametime_worker() {
     // A high-resolution timer for the half-millisecond polls (a plain Sleep rounds to the system tick).
     HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    std::uint64_t finished_id = 0;
     for (;;) {
       FrametimeEntry entry{};
       {
         std::unique_lock<std::mutex> lock(frametime_mutex);
         frametime_waiting = false;
+        if (finished_id != 0) frametime_done_id = finished_id;  // wakes wait_for_previous_shown too
         frametime_changed.notify_all();
         frametime_changed.wait(lock, [&] { return frametime_stop || !frametime_queue.empty(); });
         if (frametime_queue.empty()) {
@@ -232,6 +312,7 @@ struct Backend::Impl {
         frametime_waiting = true;
       }
       const double shownMs = wait_for_present != nullptr ? wait_until_shown(entry.swapchain, entry.id, timer) : 0.0;
+      finished_id = entry.id;
       if (shownMs > 0.0 && latency_control_on) {
         if (frametime_last_shown > 0.0) latency_control.shown(shownMs - entry.presentMs, shownMs - frametime_last_shown);
         frametime_last_shown = shownMs;
@@ -270,8 +351,18 @@ struct Backend::Impl {
   }();
   std::unique_ptr<gt4::hw::hud::Layer> hud_layer;
 
-  // vkQueuePresentKHR with the log's id and times.
+  // vkQueuePresentKHR with the log's id and times, counted as shown or failed (TASK-174).
   VkResult queue_present(VkQueue on, VkPresentInfoKHR &present) {
+    const VkResult result = queue_present_timed(on, present);
+    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+      ++presents_shown;
+    } else {
+      ++presents_failed;
+    }
+    return result;
+  }
+
+  VkResult queue_present_timed(VkQueue on, VkPresentInfoKHR &present) {
     if (hud_layer) hud_layer->note_present();
     if (!frametime_path && !present_wait_enabled) return present_locked(on, present);
     if (frametime_path && !frametime_file) {
@@ -364,8 +455,8 @@ struct Backend::Impl {
   ~Impl() { shutdown(); }
 
   void shutdown() {
-    pacer_close();
-    if (device) vkDeviceWaitIdle(device);
+    pacer_close();  // the presentation thread is joined before anything it uses goes
+    device_wait_idle();
     frametime_close();
     hud_layer.reset();
     destroy_upload();
@@ -683,12 +774,21 @@ struct Backend::Impl {
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
     std::vector<VkQueueFamilyProperties> families(family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, families.data());
-    const char *present_queue_switch = std::getenv("GT4_HW_PRESENT_QUEUE");
-    const bool own_present_queue = families[queue_family].queueCount >= 2 &&
-                                   !(present_queue_switch != nullptr && std::strcmp(present_queue_switch, "0") == 0);
+    // TASK-174: the presentation path (PresentPath). GT4_HW_PRESENT_QUEUE=0: the rendering queue path on any device (A/B of IN-516).
+    // GT4_HW_PRESENT_FORCE_ONE_QUEUE=1 (diagnostic): the family is taken to have one queue, so a desktop can run the path of the
+    // Steam Deck. On one queue, GT4_HW_PRESENT_SHARED_QUEUE=0 keeps the rendering queue path of before TASK-174.
+    const std::uint32_t family_queues = families[queue_family].queueCount;
+    const bool forced_one_queue = environment_is("GT4_HW_PRESENT_FORCE_ONE_QUEUE", "1");
+    const std::uint32_t usable_queues = forced_one_queue ? 1u : family_queues;
+    const bool present_queue_off = environment_is("GT4_HW_PRESENT_QUEUE", "0");
+    const bool shared_queue_off = environment_is("GT4_HW_PRESENT_SHARED_QUEUE", "0");
+    present_path = present_queue_off   ? PresentPath::rendering_queue
+                   : usable_queues >= 2 ? PresentPath::own_queue
+                   : shared_queue_off   ? PresentPath::rendering_queue
+                                        : PresentPath::shared_queue;
     VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queue_info.queueFamilyIndex = queue_family;
-    queue_info.queueCount = own_present_queue ? 2u : 1u;
+    queue_info.queueCount = present_path == PresentPath::own_queue ? 2u : 1u;
     queue_info.pQueuePriorities = priorities;
 
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
@@ -771,8 +871,18 @@ struct Backend::Impl {
           vulkan_loader::instance_proc(instance, "vkWaitForPresent2KHR"));
     }
     vkGetDeviceQueue(device, queue_family, 0, &queue);
-    if (own_present_queue) vkGetDeviceQueue(device, queue_family, 1, &present_queue);
-    std::fprintf(stderr, "[hw] presentation queue: %s\n", own_present_queue ? "its own (IN-516)" : "the rendering queue");
+    if (present_path == PresentPath::own_queue) vkGetDeviceQueue(device, queue_family, 1, &present_queue);
+    if (present_path == PresentPath::shared_queue) present_queue = queue;
+    const char *path_text = present_path == PresentPath::own_queue ? "its own (IN-516)"
+                            : present_path == PresentPath::shared_queue
+                                ? "the rendering queue, shared with the presentation thread (TASK-174)"
+                                : "the rendering queue";
+    const char *reason = present_queue_off  ? ", GT4_HW_PRESENT_QUEUE=0"
+                         : forced_one_queue ? ", one queue forced by GT4_HW_PRESENT_FORCE_ONE_QUEUE=1"
+                         : shared_queue_off && present_path == PresentPath::rendering_queue ? ", GT4_HW_PRESENT_SHARED_QUEUE=0"
+                                                                                             : "";
+    std::fprintf(stderr, "[hw] presentation queue: %s (graphics family %u with %u queue%s%s)\n", path_text, queue_family,
+                 family_queues, family_queues == 1 ? "" : "s", reason);
 
     VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -784,7 +894,7 @@ struct Backend::Impl {
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = frame_slots;
     vkAllocateCommandBuffers(device, &alloc, command_buffers);
-    if (present_queue) {
+    if (uses_pictures()) {
       vkCreateCommandPool(device, &pool_info, nullptr, &show_pool);  // TASK-146: never the GS thread's pool
       alloc.commandPool = show_pool;
       vkAllocateCommandBuffers(device, &alloc, show_commands);
@@ -796,7 +906,7 @@ struct Backend::Impl {
       vkCreateFence(device, &fence_info, nullptr, &fences[i]);
       VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
       vkCreateSemaphore(device, &semaphore_info, nullptr, &acquire_semaphores[i]);
-      if (present_queue) {
+      if (uses_pictures()) {
         vkCreateFence(device, &fence_info, nullptr, &draw_fences[i]);
         vkCreateSemaphore(device, &semaphore_info, nullptr, &picture_ready[i]);
       }
@@ -939,7 +1049,7 @@ struct Backend::Impl {
       VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
       vkCreateSemaphore(device, &semaphore_info, nullptr, &render_finished[i]);
     }
-    if (present_queue && !create_pictures()) {
+    if (uses_pictures() && !create_pictures()) {
       error = "could not create the presentation pictures";
       return false;
     }
@@ -954,7 +1064,7 @@ struct Backend::Impl {
   // Waits for the old swapchain's presents, destroys it, creates the new one (chapter 13.6).
   bool recreate_swapchain(std::string &error) {
     pacer_drain();
-    vkDeviceWaitIdle(device);
+    device_wait_idle();
     destroy_swapchain();
     stats.swapchain_recreations++;
     return create_swapchain(error);
@@ -1156,23 +1266,29 @@ struct Backend::Impl {
     const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
     if (submissions >= presents_in_flight) {
       const std::uint32_t older = static_cast<std::uint32_t>((submissions - presents_in_flight) % frame_slots);
-      if (vkWaitForFences(device, 1, &fences[older], VK_TRUE, 0) != VK_SUCCESS) {
+      if (gs_waits([&] { return vkWaitForFences(device, 1, &fences[older], VK_TRUE, 0); }) != VK_SUCCESS) {
         ++presents_dropped;
         return;
       }
     }
-    vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);  // older than `older`: already done
+    gs_waits([&] { return vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX); });  // older than `older`: already done
     std::uint32_t index = 0;
-    const VkResult acquired = acquire_image(0, acquire_semaphores[slot], index);
+    const VkResult acquired = gs_waits([&] { return acquire_image(0, acquire_semaphores[slot], index); });
     note_present_result(acquired, Rebuild::acquire_out_of_date);
-    if (acquired == VK_ERROR_OUT_OF_DATE_KHR) return;
+    if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
+      ++presents_failed;
+      return;
+    }
     if (acquired == VK_NOT_READY || acquired == VK_TIMEOUT) {
       ++presents_dropped;
       return;
     }
-    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) return;  // suboptimal: the image is acquired (TASK-145)
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {  // suboptimal: the image is acquired (TASK-145)
+      ++presents_failed;
+      return;
+    }
     vkResetFences(device, 1, &fences[slot]);
-    vkWaitForFences(device, 1, &draw_fences[slot], VK_TRUE, UINT64_MAX);
+    gs_waits([&] { return vkWaitForFences(device, 1, &draw_fences[slot], VK_TRUE, UINT64_MAX); });
     vkResetFences(device, 1, &draw_fences[slot]);
 
     // The rendering queue: the picture.
@@ -1189,7 +1305,7 @@ struct Backend::Impl {
       if (!shownOnGpu) {
         // The staging buffer is reused across presents: the previous picture's copy finishes first.
         const std::uint32_t previous = (slot + frame_slots - 1u) % frame_slots;
-        vkWaitForFences(device, 1, &draw_fences[previous], VK_TRUE, UINT64_MAX);
+        gs_waits([&] { return vkWaitForFences(device, 1, &draw_fences[previous], VK_TRUE, UINT64_MAX); });
         std::memcpy(upload.mapped, frame->pixels.data(), frame->pixels.size() * sizeof(std::uint32_t));
       }
       record_frame(cmd, slot, *frame);
@@ -1203,7 +1319,7 @@ struct Backend::Impl {
     draw.pCommandBuffers = &cmd;
     draw.signalSemaphoreCount = 1;
     draw.pSignalSemaphores = &picture_ready[slot];
-    vkQueueSubmit(queue, 1, &draw, draw_fences[slot]);
+    gs_waits([&] { return submit_to(queue, draw, draw_fences[slot], QueueCaller::gs_thread); });
 
     // The second queue: waits for the swapchain image, copies the picture, presents.
     record_show(slot, index);
@@ -1218,7 +1334,7 @@ struct Backend::Impl {
     submit.pCommandBuffers = &show;
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &render_finished[index];
-    vkQueueSubmit(present_queue, 1, &submit, fences[slot]);
+    gs_waits([&] { return submit_to(present_queue, submit, fences[slot], QueueCaller::gs_thread); });
     ++submissions;
     if (submissions % 600 == 0 && presents_dropped != presents_dropped_reported) {
       std::fprintf(stderr, "[hw] presentations not shown (the display was behind): %llu\n", static_cast<unsigned long long>(presents_dropped));
@@ -1231,7 +1347,7 @@ struct Backend::Impl {
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain;
     present.pImageIndices = &index;
-    const VkResult result = queue_present(present_queue, present);
+    const VkResult result = gs_waits([&] { return queue_present(present_queue, present); });
     note_present_result(result, Rebuild::present_out_of_date);
     if (frame == nullptr) stats.black_presents++;  // presented without a composed image (chapter 12.4)
   }
@@ -1239,38 +1355,77 @@ struct Backend::Impl {
   // TASK-082: with frames being left out, pictures arrive at uneven times, and showing them from the GS thread would hold up the
   // next one. So the GS thread only draws the picture, and this thread shows it at its place (hw_present_spacing.hpp), on the second
   // queue of the family. Only then: at 60 frames per second the path above stays as it is.
+  // TASK-174: on the shared queue this thread shows every picture: at once (`spaced` false), or at its place with frames left out.
   struct PacedPicture {
     std::uint32_t slot;
     std::chrono::steady_clock::time_point arrival;
+    bool spaced;
   };
   std::thread pacer_thread;
   std::mutex pacer_mutex;
   std::condition_variable pacer_changed;
   std::deque<PacedPicture> pacer_queue;
   bool pacer_busy = false, pacer_stop = false;
+  std::uint32_t pacer_slots_held = 0;  // TASK-174: one bit per slot handed over and not finished (hw_shared_present.hpp)
   gt4::hw::PresentSpacing pacer_spacing;
   static constexpr std::size_t kPacedPictures = 2;
+  static constexpr std::uint32_t kNoSlot = UINT32_MAX;
+
+  // TASK-174: on the shared queue a present that finds the display's queue full blocks inside vkQueuePresentKHR while it holds
+  // queue_lock, and the GS thread's next submission waits as long: 6 to 22 ms per present on the RX 9060 XT's Windows driver in
+  // FIFO, in hw_gs_smoke with frames coming faster than the display takes them (Hypothesis, to check on the Steam Deck: Mesa's X11
+  // swapchain presents from a thread of its own in FIFO and waits in the acquire, which the presentation thread takes, so its
+  // present does not block). The presentation report shows it (gs_lock_longest_ms, presenter_longest_ms).
+  // GT4_HW_PRESENT_SHARED_WAIT=<n> (diagnostic, off by default) has the presentation thread first wait, outside the lock, until no
+  // more than n - 1 of its presentations are still on their way to the display (shown times of VK_KHR_present_wait2, from the
+  // frametime thread; at most kShownWaitLimit, so a lost shown time never stops the pictures). Not the default: a presentation took
+  // 12 to 14 ms to be shown in a window at 144 Hz (two refreshes), so n = 1 halved the frames shown when the display was the limit
+  // (589 against 1,056 of 1,200 at 144 frames per second) and n = 2 cost a quarter, while they bounded the GS thread's longest wait
+  // for the lock at 1.2 and 2.8 ms (20 ms without). At 60 Hz with two refreshes to the display, n = 1 would hold 30 frames a second.
+  const std::uint64_t shared_presents_on_the_way = [] {
+    const char *text = std::getenv("GT4_HW_PRESENT_SHARED_WAIT");
+    return text == nullptr ? std::uint64_t{0} : static_cast<std::uint64_t>(std::strtoull(text, nullptr, 10));
+  }();
+  static constexpr auto kShownWaitLimit = std::chrono::milliseconds(50);
+  std::atomic<std::uint64_t> presenter_display_wait_ns{0};  // presentation thread: this wait and the acquire, session total
+
+  void wait_for_previous_shown() {
+    if (!shares_queue() || shared_presents_on_the_way == 0 || !present_wait_enabled || wait_for_present == nullptr) return;
+    if (!frametime_thread.joinable()) return;  // no presentation with an id yet
+    // Ids are given in queue_present_timed, on this thread here.
+    if (present_ids < shared_presents_on_the_way) return;
+    const std::uint64_t previous = present_ids - (shared_presents_on_the_way - 1);
+    std::unique_lock<std::mutex> lock(frametime_mutex);
+    frametime_changed.wait_for(lock, kShownWaitLimit, [&] { return frametime_done_id >= previous || frametime_stop; });
+  }
 
   void pacer_worker() {
+    std::uint32_t finished_slot = kNoSlot;
     for (;;) {
       PacedPicture picture{};
       std::int64_t whenUs = 0;
       {
         std::unique_lock<std::mutex> lock(pacer_mutex);
         pacer_busy = false;
+        if (finished_slot != kNoSlot) pacer_slots_held &= ~(1u << finished_slot);  // its last queue call returned
         pacer_changed.notify_all();
         pacer_changed.wait(lock, [&] { return pacer_stop || !pacer_queue.empty(); });
         if (pacer_queue.empty()) return;
         picture = pacer_queue.front();
         pacer_queue.pop_front();
         pacer_busy = true;
-        whenUs = pacer_spacing.place(std::chrono::duration_cast<std::chrono::microseconds>(picture.arrival.time_since_epoch()).count(),
-                                     !pacer_queue.empty());
+        finished_slot = picture.slot;
+        if (picture.spaced) {
+          whenUs = pacer_spacing.place(std::chrono::duration_cast<std::chrono::microseconds>(picture.arrival.time_since_epoch()).count(),
+                                       !pacer_queue.empty());
+        }
       }
-      const auto when = std::chrono::steady_clock::time_point(std::chrono::microseconds(whenUs));
-      // The system's sleep is too coarse for this: the last stretch spins.
-      std::this_thread::sleep_until(when - std::chrono::milliseconds(2));
-      while (std::chrono::steady_clock::now() < when) std::this_thread::yield();
+      if (picture.spaced) {
+        const auto when = std::chrono::steady_clock::time_point(std::chrono::microseconds(whenUs));
+        // The system's sleep is too coarse for this: the last stretch spins.
+        std::this_thread::sleep_until(when - std::chrono::milliseconds(2));
+        while (std::chrono::steady_clock::now() < when) std::this_thread::yield();
+      }
       show_paced_picture(picture.slot);
     }
   }
@@ -1282,6 +1437,7 @@ struct Backend::Impl {
     pacer_changed.wait(lock, [&] { return pacer_queue.empty() && !pacer_busy; });
   }
 
+  // Shows what is still queued, then ends the thread.
   void pacer_close() {
     if (!pacer_thread.joinable()) return;
     {
@@ -1293,20 +1449,30 @@ struct Backend::Impl {
   }
 
   // On the presentation thread: waits for a swapchain image and shows the picture of `slot`. Its semaphore was signalled by the
-  // drawing, so it is waited on even when nothing can be shown.
+  // drawing, so it is waited on even when nothing can be shown. On the shared queue every queue call here holds queue_lock
+  // (submit_to, present_locked); the acquire does not, so the GS thread's submissions go on while this thread waits for the display.
   void show_paced_picture(std::uint32_t slot) {
     vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);
     vkResetFences(device, 1, &fences[slot]);
+    const auto display_wait_start = std::chrono::steady_clock::now();
+    wait_for_previous_shown();
     std::uint32_t index = 0;
     const VkResult acquired = acquire_image(100000000, acquire_semaphores[slot], index);
+    presenter_display_wait_ns += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - display_wait_start).count());
     note_present_result(acquired, Rebuild::acquire_out_of_date);
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {  // suboptimal: the image is acquired (TASK-145)
+      if (acquired == VK_TIMEOUT || acquired == VK_NOT_READY) {
+        ++presents_dropped;  // no swapchain image within 100 ms: the display was behind
+      } else {
+        ++presents_failed;
+      }
       const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
       VkSubmitInfo release{VK_STRUCTURE_TYPE_SUBMIT_INFO};
       release.waitSemaphoreCount = 1;
       release.pWaitSemaphores = &picture_ready[slot];
       release.pWaitDstStageMask = &stage;
-      vkQueueSubmit(present_queue, 1, &release, fences[slot]);
+      submit_to(present_queue, release, fences[slot], QueueCaller::presentation_thread);
       return;
     }
     record_show(slot, index);
@@ -1320,7 +1486,7 @@ struct Backend::Impl {
     submit.pCommandBuffers = &show_commands[slot];
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &render_finished[index];
-    vkQueueSubmit(present_queue, 1, &submit, fences[slot]);
+    submit_to(present_queue, submit, fences[slot], QueueCaller::presentation_thread);
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present.waitSemaphoreCount = 1;
     present.pWaitSemaphores = &render_finished[index];
@@ -1331,7 +1497,60 @@ struct Backend::Impl {
     note_present_result(result, Rebuild::present_out_of_date);
   }
 
-  // On the GS thread: draws the picture and hands it over. The display being behind costs a picture here, before any drawing.
+  // On the GS thread: draws the frame into the picture of `slot` on the rendering queue (signals the slot's picture_ready and
+  // draw_fences). The caller made sure nothing still reads that picture.
+  void draw_picture(std::uint32_t slot, const hwgs::writeback::FrameOutput *frame) {
+    gs_waits([&] { return vkWaitForFences(device, 1, &draw_fences[slot], VK_TRUE, UINT64_MAX); });
+    vkResetFences(device, 1, &draw_fences[slot]);
+    VkCommandBuffer cmd = command_buffers[slot];
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin);
+    draw_images = pictures;
+    draw_layouts = picture_layouts;
+    draw_final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    const auto upload_start = std::chrono::steady_clock::now();
+    if (frame && frame->valid && ensure_upload(frame->width, frame->height)) {
+      if (!shownOnGpu) {
+        // The staging buffer is reused across presents: the previous picture's copy finishes first.
+        const std::uint32_t previous = (slot + frame_slots - 1u) % frame_slots;
+        gs_waits([&] { return vkWaitForFences(device, 1, &draw_fences[previous], VK_TRUE, UINT64_MAX); });
+        std::memcpy(upload.mapped, frame->pixels.data(), frame->pixels.size() * sizeof(std::uint32_t));
+      }
+      record_frame(cmd, slot, *frame);
+    } else {
+      record_black(cmd, slot);
+    }
+    uploadUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - upload_start).count();
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo draw{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    draw.commandBufferCount = 1;
+    draw.pCommandBuffers = &cmd;
+    draw.signalSemaphoreCount = 1;
+    draw.pSignalSemaphores = &picture_ready[slot];
+    gs_waits([&] { return submit_to(queue, draw, draw_fences[slot], QueueCaller::gs_thread); });
+  }
+
+  // On the GS thread: the drawn picture of `slot` goes to the presentation thread.
+  void hand_over(std::uint32_t slot, bool spaced) {
+    {
+      const std::lock_guard<std::mutex> lock(pacer_mutex);
+      pacer_queue.push_back(PacedPicture{slot, std::chrono::steady_clock::now(), spaced});
+      pacer_slots_held |= 1u << slot;
+    }
+    pacer_changed.notify_all();
+  }
+
+  void report_presents_dropped() {
+    if (submissions % 600 == 0 && presents_dropped != presents_dropped_reported) {
+      std::fprintf(stderr, "[hw] presentations not shown (the display was behind): %llu\n", static_cast<unsigned long long>(presents_dropped));
+      presents_dropped_reported = presents_dropped;
+    }
+  }
+
+  // On the GS thread, second queue (TASK-082): draws the picture and hands it over. The display being behind costs a picture here,
+  // before any drawing.
   void present_paced(const hwgs::writeback::FrameOutput *frame) {
     if (!pacer_thread.joinable()) pacer_thread = std::thread([this] { pacer_worker(); });
     {
@@ -1343,39 +1562,44 @@ struct Backend::Impl {
       }
     }
     const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
-    vkWaitForFences(device, 1, &draw_fences[slot], VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, &draw_fences[slot]);
-    VkCommandBuffer cmd = command_buffers[slot];
-    vkResetCommandBuffer(cmd, 0);
-    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &begin);
-    draw_images = pictures;
-    draw_layouts = picture_layouts;
-    draw_final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    if (frame && frame->valid && ensure_upload(frame->width, frame->height)) {
-      if (!shownOnGpu) {
-        const std::uint32_t previous = (slot + frame_slots - 1u) % frame_slots;
-        vkWaitForFences(device, 1, &draw_fences[previous], VK_TRUE, UINT64_MAX);
-        std::memcpy(upload.mapped, frame->pixels.data(), frame->pixels.size() * sizeof(std::uint32_t));
-      }
-      record_frame(cmd, slot, *frame);
-    } else {
-      record_black(cmd, slot);
-    }
-    vkEndCommandBuffer(cmd);
-    VkSubmitInfo draw{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    draw.commandBufferCount = 1;
-    draw.pCommandBuffers = &cmd;
-    draw.signalSemaphoreCount = 1;
-    draw.pSignalSemaphores = &picture_ready[slot];
-    vkQueueSubmit(queue, 1, &draw, draw_fences[slot]);
+    draw_picture(slot, frame);
     ++submissions;
+    hand_over(slot, true);
+    if (frame == nullptr) stats.black_presents++;
+  }
+
+  // TASK-174: the path of IN-516 on a device with one queue in its graphics family (RADV on the Steam Deck, GitHub issue #204).
+  // There the GS thread used to acquire the swapchain image (waiting as long as the display needed) and present, and those waits
+  // pushed drawn frames past 16.7 ms. Now the GS thread draws the frame into the slot's picture on the rendering queue and hands it
+  // to the presentation thread, which waits for a swapchain image, copies the picture into it and presents (show_paced_picture), on
+  // the same queue: every queue call of both threads, the renderer's submissions included, holds queue_lock. Nothing here waits for
+  // the display: when the presentation thread already holds its pictures (hand_over_verdict), or the copy of the slot's last picture
+  // has not run on the GPU yet, this frame is not shown, and counted. `spaced`: frames left out (TASK-082), shown at their place.
+  void present_on_shared_queue(const hwgs::writeback::FrameOutput *frame, bool spaced) {
+    if (!pacer_thread.joinable()) pacer_thread = std::thread([this] { pacer_worker(); });
+    const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
     {
       const std::lock_guard<std::mutex> lock(pacer_mutex);
-      pacer_queue.push_back(PacedPicture{slot, std::chrono::steady_clock::now()});
+      if (spaced) {
+        pacer_spacing.note_arrival(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+      }
+      const gt4::hw::PresenterLoad load{pacer_queue.size(), pacer_busy, pacer_slots_held};
+      if (gt4::hw::hand_over_verdict(load, slot, spaced, kPacedPictures, presents_in_flight) != gt4::hw::HandOverVerdict::draw) {
+        ++presents_dropped;
+        return;
+      }
     }
-    pacer_changed.notify_all();
+    // The slot is no longer held, so the presentation thread is done with its fence: signalled once the copy of the slot's last
+    // picture ran (and, on one queue, everything submitted before it, the slot's last drawing included).
+    if (gs_waits([&] { return vkWaitForFences(device, 1, &fences[slot], VK_TRUE, 0); }) != VK_SUCCESS) {
+      ++presents_dropped;
+      return;
+    }
+    draw_picture(slot, frame);
+    ++submissions;
+    hand_over(slot, spaced);
+    report_presents_dropped();
     if (frame == nullptr) stats.black_presents++;
   }
 
@@ -1396,6 +1620,19 @@ struct Backend::Impl {
       std::fprintf(stderr, "[hw] latency control: a presentation left out at call %llu (%llu so far), %.1f ms to the display, target %.1f ms\n",
                    static_cast<unsigned long long>(present_calls), static_cast<unsigned long long>(latency_control.left_out()),
                    latency_control.last_lag_ms(), latency_control.target_ms());
+      ++present_requests;
+      ++presents_left_out;
+      return;
+    }
+    ++present_requests;
+    const auto step_start = std::chrono::steady_clock::now();
+    present_on_path(frame, frames_left_out);
+    gs_present_step_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - step_start).count();
+  }
+
+  void present_on_path(const hwgs::writeback::FrameOutput *frame, bool frames_left_out) {
+    if (shares_queue()) {
+      present_on_shared_queue(frame, frames_left_out);
       return;
     }
     if (present_queue && frames_left_out) {
@@ -1407,20 +1644,29 @@ struct Backend::Impl {
       present_on_own_queue(frame);
       return;
     }
+    present_on_rendering_queue(frame);
+  }
+
+  // The path of a device with one queue before TASK-174 (GT4_HW_PRESENT_SHARED_QUEUE=0, GT4_HW_PRESENT_QUEUE=0): the GS thread
+  // waits for a swapchain image, draws into it and presents, on the rendering queue.
+  void present_on_rendering_queue(const hwgs::writeback::FrameOutput *frame) {
     const std::uint32_t slot = static_cast<std::uint32_t>(submissions % frame_slots);
     // At most presents_in_flight submissions outstanding: wait for the one issued two ago.
     if (submissions >= presents_in_flight) {
       const std::uint32_t older = static_cast<std::uint32_t>((submissions - presents_in_flight) % frame_slots);
-      vkWaitForFences(device, 1, &fences[older], VK_TRUE, UINT64_MAX);
+      gs_waits([&] { return vkWaitForFences(device, 1, &fences[older], VK_TRUE, UINT64_MAX); });
     }
-    vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX);
+    gs_waits([&] { return vkWaitForFences(device, 1, &fences[slot], VK_TRUE, UINT64_MAX); });
 
     std::uint32_t index = 0;
-    const VkResult acquired = acquire_image(UINT64_MAX, acquire_semaphores[slot], index);
+    const VkResult acquired = gs_waits([&] { return acquire_image(UINT64_MAX, acquire_semaphores[slot], index); });
     note_present_result(acquired, Rebuild::acquire_out_of_date);
     // Out of date: nothing was submitted, so the slot fence stays signalled and the slot stays reusable. Suboptimal: the
     // image is acquired and still presentable (TASK-145).
-    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) return;
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+      ++presents_failed;
+      return;
+    }
     vkResetFences(device, 1, &fences[slot]);
 
     VkCommandBuffer cmd = command_buffers[slot];
@@ -1435,7 +1681,7 @@ struct Backend::Impl {
         // IN-355: not the whole device, which would also wait for the frame the renderer just submitted).
         if (submissions > 0) {
           const std::uint32_t previous = static_cast<std::uint32_t>((submissions - 1) % frame_slots);
-          vkWaitForFences(device, 1, &fences[previous], VK_TRUE, UINT64_MAX);
+          gs_waits([&] { return vkWaitForFences(device, 1, &fences[previous], VK_TRUE, UINT64_MAX); });
         }
         std::memcpy(upload.mapped, frame->pixels.data(), frame->pixels.size() * sizeof(std::uint32_t));
       }
@@ -1455,7 +1701,7 @@ struct Backend::Impl {
     submit.pCommandBuffers = &cmd;
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &render_finished[index];
-    vkQueueSubmit(queue, 1, &submit, fences[slot]);
+    gs_waits([&] { return submit_to(queue, submit, fences[slot], QueueCaller::gs_thread); });
     ++submissions;
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -1464,7 +1710,7 @@ struct Backend::Impl {
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain;
     present.pImageIndices = &index;
-    const VkResult result = queue_present(queue, present);
+    const VkResult result = gs_waits([&] { return queue_present(queue, present); });
     note_present_result(result, Rebuild::present_out_of_date);
     if (frame == nullptr) stats.black_presents++;  // presented without a composed image (chapter 12.4)
   }
@@ -1508,6 +1754,7 @@ bool Backend::init(const Options &options, std::string &error) {
   handles.pixelInterlock = s.pixel_interlock;
   handles.independentBlend = s.independent_blend;
   handles.dualSourceBlend = true;  // a required feature of this backend
+  handles.queueLock = s.shares_queue() ? &s.queue_lock : nullptr;  // TASK-174: the renderer's submissions share the queue
   {
     // M12 (06.1, IN-371): GT4_HW_SCALE clamped to the device ceiling s_max = max(1, floor(maxImageDimension2D /
     // 1280)); the 06.3 half-pixel mode sets the vertex shift factor (native: s, normal: m, off: 1).
@@ -1641,14 +1888,16 @@ void Backend::set_display_field(bool odd) {
   if (impl_->renderer) impl_->renderer->SetDisplayField(odd);
 }
 
-bool Backend::has_own_present_queue() const { return impl_->present_queue != VK_NULL_HANDLE; }
+bool Backend::has_presentation_thread() const { return impl_->uses_pictures(); }
 
 void Backend::set_age_targets(bool age) {
   if (impl_->renderer) impl_->renderer->SetAgeTargets(age);
 }
 
 void Backend::wait_idle() {
-  if (impl_->device) vkDeviceWaitIdle(impl_->device);
+  // The presentation thread first: vkDeviceWaitIdle uses every queue of the device, the one it presents on included.
+  impl_->pacer_drain();
+  impl_->device_wait_idle();
 }
 
 bool Backend::scanout(ScanoutRequest &request) {
@@ -1724,7 +1973,7 @@ void Backend::detach_window() {
   if (!s.device) return;
   if (s.renderer) s.renderer->SetAsyncPresentation(false);
   s.pacer_drain();
-  vkDeviceWaitIdle(s.device);
+  s.device_wait_idle();
   s.destroy_swapchain();
   if (s.surface) vkDestroySurfaceKHR(s.instance, s.surface, nullptr);
   s.surface = VK_NULL_HANDLE;
@@ -1931,6 +2180,25 @@ Stats Backend::stats() const {
   out.dropped_frames = impl_->scheduler.dropped();
   out.upload_us = impl_->uploadUs;
   out.present_us = impl_->presentUs;
+  // TASK-174.
+  const Impl &s = *impl_;
+  out.present_path = Impl::present_path_name(s.present_path);
+  out.present_requests = s.present_requests;
+  out.presents_shown = s.presents_shown.load(std::memory_order_relaxed);
+  out.presents_not_shown = s.presents_dropped.load(std::memory_order_relaxed);
+  out.presents_failed = s.presents_failed.load(std::memory_order_relaxed);
+  out.presents_left_out = s.presents_left_out;
+  out.gs_present_step_us = s.gs_present_step_us;
+  out.gs_present_wait_us = s.gs_present_wait_us;
+  const gt4::hw::QueueLock::Totals gsLock = s.queue_lock.totals(Impl::QueueCaller::gs_thread);
+  const gt4::hw::QueueLock::Totals presenterLock = s.queue_lock.totals(Impl::QueueCaller::presentation_thread);
+  out.gs_queue_lock_wait_us = static_cast<double>(gsLock.wait_ns) / 1000.0;
+  out.gs_queue_lock_longest_wait_us = static_cast<double>(gsLock.longest_wait_ns) / 1000.0;
+  out.gs_queue_calls = gsLock.calls;
+  out.presenter_queue_lock_wait_us = static_cast<double>(presenterLock.wait_ns) / 1000.0;
+  out.presenter_queue_call_us = static_cast<double>(presenterLock.call_ns) / 1000.0;
+  out.presenter_queue_longest_call_us = static_cast<double>(presenterLock.longest_call_ns) / 1000.0;
+  out.presenter_display_wait_us = static_cast<double>(s.presenter_display_wait_ns.load(std::memory_order_relaxed)) / 1000.0;
   return out;
 }
 

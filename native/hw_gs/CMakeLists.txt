@@ -153,6 +153,12 @@ add_test(NAME hw_present_latency COMMAND hw_present_latency_fixture)
 add_executable(hw_present_spacing_fixture hw_present_spacing_fixture.cpp)
 target_compile_options(hw_present_spacing_fixture PRIVATE /W4)
 add_test(NAME hw_present_spacing COMMAND hw_present_spacing_fixture)
+# TASK-174: the lock of a queue shared by the GS thread and the presentation thread, and a model of that presentation (CPU only).
+add_executable(hw_queue_lock_fixture hw_queue_lock_fixture.cpp)
+target_compile_options(hw_queue_lock_fixture PRIVATE /W4)
+add_test(NAME hw_queue_lock COMMAND hw_queue_lock_fixture)
+set_tests_properties(hw_queue_lock PROPERTIES RUN_SERIAL TRUE TIMEOUT 120
+    PASS_REGULAR_EXPRESSION "hw_queue_lock: all checks passed")
 
 add_executable(hw_gs_smoke hw_gs_smoke.cpp)
 target_include_directories(hw_gs_smoke PRIVATE "${GT4_HW_VULKAN_SDK}/Include")

@@ -270,6 +270,34 @@ void print_transport(double n) {
   lastQpc = qpc;
 }
 
+// TASK-174: the presentation path, what became of the presentations, and what they cost the GS thread, as totals over `requests`
+// presentations (per presentation for the averages). gs_present_ms is the whole presentation step on the GS thread, gs_wait_ms the
+// part inside calls that can wait (fences, acquire, queue submit and present), gs_lock_wait_ms the GS thread's wait for the shared
+// queue's lock (all its submissions, the renderer's included), presenter_lock_wait_ms and presenter_queue_ms the presentation
+// thread's wait for that lock and its time in the copy and present calls, presenter_display_wait_ms its waits for the display
+// (acquire, previous presentation shown) that no longer fall on the GS thread; the two longest_ms are session maxima (the GS thread's
+// longest wait for the lock, the presentation thread's longest call holding it).
+void print_presentation(std::FILE *output, const char *label, const Stats &now, const Stats &was) {
+  const std::uint64_t requests = now.present_requests - was.present_requests;
+  if (requests == 0) return;
+  const double per = static_cast<double>(requests) * 1000.0;  // microsecond totals to milliseconds per presentation
+  std::fprintf(output,
+               "[hw] presentation %s path=%s requests=%llu shown=%llu not_shown=%llu failed=%llu left_out=%llu gs_present_ms=%.3f "
+               "gs_wait_ms=%.3f gs_lock_wait_ms=%.3f gs_lock_longest_ms=%.3f gs_queue_calls=%.2f presenter_lock_wait_ms=%.3f "
+               "presenter_queue_ms=%.3f presenter_longest_ms=%.3f presenter_display_wait_ms=%.3f\n",
+               label, now.present_path, static_cast<unsigned long long>(requests),
+               static_cast<unsigned long long>(now.presents_shown - was.presents_shown),
+               static_cast<unsigned long long>(now.presents_not_shown - was.presents_not_shown),
+               static_cast<unsigned long long>(now.presents_failed - was.presents_failed),
+               static_cast<unsigned long long>(now.presents_left_out - was.presents_left_out),
+               (now.gs_present_step_us - was.gs_present_step_us) / per, (now.gs_present_wait_us - was.gs_present_wait_us) / per,
+               (now.gs_queue_lock_wait_us - was.gs_queue_lock_wait_us) / per, now.gs_queue_lock_longest_wait_us / 1000.0,
+               static_cast<double>(now.gs_queue_calls - was.gs_queue_calls) / static_cast<double>(requests),
+               (now.presenter_queue_lock_wait_us - was.presenter_queue_lock_wait_us) / per,
+               (now.presenter_queue_call_us - was.presenter_queue_call_us) / per, now.presenter_queue_longest_call_us / 1000.0,
+               (now.presenter_display_wait_us - was.presenter_display_wait_us) / per);
+}
+
 void maybe_profile(Backend &hw) {
   if (g_profile_every == 0 || g_vsyncs % g_profile_every != 0) return;
   const RenderCounters now = hw.render_counters();
@@ -363,6 +391,14 @@ void maybe_profile(Backend &hw) {
     lastThreadMs = threadMs;
     lastProcessMs = processMs;
   }
+  {
+    static Stats lastPresentation;
+    const Stats presentation = hw.stats();
+    char label[32];
+    std::snprintf(label, sizeof label, "vsync=%llu", static_cast<unsigned long long>(g_vsyncs));
+    print_presentation(stderr, label, presentation, lastPresentation);
+    lastPresentation = presentation;
+  }
   print_transport(n);
   g_profile_last = now;
   g_profile_wall = wall;
@@ -385,9 +421,9 @@ void vsync_now(bool odd_field) {
   hw.flush();
   hw.next_frame();  // one guest frame per VBlank, windowed or headless (the session line's `frames`)
   if (hw.has_window() && !hold) {
-    // A device with one queue has no thread to show pictures from (hw_gs_backend.cpp, present_paced): the wait is here, and holds up
-    // the next picture. So it leaves room, or waiting would raise the mean interval it waits for: it locked at 20 frames per second.
-    if (gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) && !hw.has_own_present_queue()) {
+    // Without a thread to show pictures from (hw_gs_backend.cpp, present_paced; the rendering queue path) the wait is here, and holds
+    // up the next picture. So it leaves room, or waiting would raise the mean interval it waits for: it locked at 20 frames per second.
+    if (gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) && !hw.has_presentation_thread()) {
       const auto before = std::chrono::steady_clock::now();
       const auto arrival = std::chrono::duration_cast<std::chrono::microseconds>(before.time_since_epoch()).count();
       std::this_thread::sleep_until(std::chrono::steady_clock::time_point(std::chrono::microseconds(g_one_queue_spacing.when(arrival))));
@@ -998,6 +1034,7 @@ void finish(std::FILE *output) {
   std::fprintf(output, "[hw] presentation: aspect_changes=%llu last_rect=%u,%u %ux%u fill=%u\n",
                static_cast<unsigned long long>(g_display_aspect_changes), stats.present_left, stats.present_top,
                stats.present_width, stats.present_height, stats.present_fill);
+  print_presentation(output, "session", stats, Stats{});  // TASK-174
   const RenderCounters counters = stats_counters();
   std::fprintf(output,
                "[hw] counters: batches=%llu primitives=%llu primitives_skipped_texture=%llu batches_empty=%llu "
