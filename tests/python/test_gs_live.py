@@ -43,7 +43,7 @@ class ConfigTests(unittest.TestCase):
             '[EmuCore/GS]', 'Renderer = 14', 'upscale_multiplier = 3', 'accurate_blending_unit = 3',
             'deinterlace_mode = 0', 'AspectRatio = 16:9', 'VsyncEnable = true', 'DisableMailboxPresentation = true',
             'HWDownloadMode = 0', 'OsdShowFPS = false', 'OsdShowGPU = false', 'OsdShowResolution = false',
-            'LoadTextureReplacements = true', '', '[GT4GS]',
+            'LoadTextureReplacements = true', 'LoadTextureReplacementsAsync = true', '', '[GT4GS]',
             'ProhibitDynamicCode = false'])  # slice194 (TASK-037): readback mode accurate by default; TASK-064: ACG off
 
     def test_scale_present_mode_and_aspect(self):

@@ -12,8 +12,7 @@ launchers labelled rc14 (`private/slice406-launchers-rc14-test`), installer
 `private/slice406-installer-130-rc14-test/GT4Recomp-Setup-1.3.0-rc14.exe`. Gates against rc13 (`gates5.sh`, wrong=0): race clock,
 simulation state and every compared frame identical on three Spec II laps, the v2.00 night race and Arcade path, Spec II at 6x;
 VU1/VU0 and MTVU checks 0 differences. Launcher tests 661, focus checks 293/293 and 300/300, nav-test 217/217, locale keys 695 in
-both. CTest 299/300 in both builds and the Python suite 785 tests, 13 failures (56 skipped): the 13 failures are `test_gs_settings`/`test_gs_live`
-expecting the GSdx defaults without `LoadTextureReplacementsAsync`, added on 2026-10-27 (TASK-133), not from rc14. Desktop updated
+both. CTest 299/300 in both builds: the one failure (13 Python tests of test_gs_settings/test_gs_live) expected the GSdx rows as they were before TASK-118 (2026-10-26: background textures always written, the Advanced page cut); the tests now check that layout and the Python suite passes 785/785 (56 skipped). Desktop updated
 through the installer's update mode (rc13 test files in `private/_program-backups/rc13test-before-rc14test-20261104T120226Z`).
 
 ## 1.3.0-rc13 published as a pre-release (2026-11-04)
