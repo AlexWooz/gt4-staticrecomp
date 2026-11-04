@@ -1,5 +1,14 @@
 # Current Status
 
+## TASK-147 and TASK-148 for rc12: triggers, sticks and the controller choice (2026-11-03, night)
+
+On `task/134-game-code-optimization-study`, plain test builds on the owner's laptop. Triggers: R2 spans GT4's own 0..45
+throttle range and L2 its 0..84 brake range (the game scales the pressure byte and reached 100% at a third of the travel);
+the owner approved them. Sticks: a 10% dead zone, and the bytes step over GT4's own 29% stick dead zone, so steering is
+proportional from the first step (it was dead up to about 46% of the travel, then too steep). Controller choice: a dropdown
+on the Controls page (`controller` setting, `GT4_PAD`); the game reads the chosen pad, else one of its model, else
+controller 1. Owner test of the sticks and the choice pending.
+
 ## TASK-146 for the owner's test: 60 FPS lets a race drop frames instead of slowing (2026-11-03, night)
 
 On the owner's word, experimental in the rc12 line: the launcher's Frame rate "60 FPS" (CoreGS 2.0, the default) now passes

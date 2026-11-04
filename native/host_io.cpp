@@ -82,6 +82,12 @@ ControllerInput::ControllerInput(ControlMap map, gt4::pad::Backend backend)
     if (!SDL_Init(SDL_INIT_GAMEPAD))
       throw std::runtime_error(std::string("SDL_Init(SDL_INIT_GAMEPAD) failed: ") + SDL_GetError());
     sdl_initialized_ = true;
+    // TASK-148: the controller chosen on the launcher's Controls page. SDL itself reads SDL_GAMECONTROLLERCONFIG_FILE (the
+    // player's own mappings) at SDL_Init.
+    has_pad_choice_ = gt4::pad::parse_pad_choice(std::getenv("GT4_PAD"), pad_choice_);
+    if (has_pad_choice_)
+      std::fprintf(stderr, "[input] controller chosen in the launcher: %s%s%s\n", pad_choice_.guid.c_str(),
+                   pad_choice_.serial.empty() ? "" : " serial ", pad_choice_.serial.c_str());
   }
 }
 
@@ -192,17 +198,51 @@ PadState ControllerInput::poll_sdl(bool focused) {
     motors_ = 0;
     sdl_next_scan_ = 0;
   }
-  if (!sdl_pad_ && GetTickCount64() >= sdl_next_scan_) {
+  // Scan when no pad is open, and (TASK-148) while a pad stands in for the chosen one.
+  if ((!sdl_pad_ || (has_pad_choice_ && !reading_choice_)) && GetTickCount64() >= sdl_next_scan_) {
     sdl_next_scan_ = GetTickCount64() + 2000;
     int count = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&count);
-    std::uint32_t player_one = 0;
-    if (ids && gt4::pad::first_pad(ids, static_cast<std::size_t>(count), player_one)) {
-      sdl_pad_ = SDL_OpenGamepad(player_one);
+    std::vector<gt4::pad::PadCandidate> candidates;
+    for (int index = 0; ids && index < count; ++index) {
+      gt4::pad::PadCandidate candidate;
+      candidate.instance = ids[index];
+      char guid[33] = {};
+      SDL_GUIDToString(SDL_GetGamepadGUIDForID(ids[index]), guid, sizeof guid);
+      candidate.guid = guid;
+      // The serial is read only to tell one of two pads of the chosen model apart (it needs the pad open).
+      if (has_pad_choice_ && !pad_choice_.serial.empty()) {
+        gt4::pad::PadChoice model;
+        if (gt4::pad::parse_pad_choice(guid, model) && model.guid == pad_choice_.guid) {
+          if (SDL_Gamepad *probe = SDL_OpenGamepad(ids[index])) {
+            const char *serial = SDL_GetGamepadSerial(probe);
+            candidate.serial = serial ? serial : "";
+            SDL_CloseGamepad(probe);
+          }
+        }
+      }
+      candidates.push_back(candidate);
+    }
+    std::uint32_t chosen = 0;
+    if (gt4::pad::choose_pad(candidates, has_pad_choice_ ? &pad_choice_ : nullptr, chosen) &&
+        (!sdl_pad_ || SDL_GetGamepadID(sdl_pad_) != chosen)) {
+      close_sdl_pad();
+      motors_ = 0;
+      sdl_pad_ = SDL_OpenGamepad(chosen);
       if (sdl_pad_) {
         const char *name = SDL_GetGamepadName(sdl_pad_);
-        std::fprintf(stderr, "[input] SDL gamepad \"%s\" is controller 1 of %d\n",
-                     name ? name : "unnamed", count);
+        gt4::pad::PadChoice model;
+        char guid[33] = {};
+        SDL_GUIDToString(SDL_GetGamepadGUIDForID(chosen), guid, sizeof guid);
+        reading_choice_ = has_pad_choice_ && gt4::pad::parse_pad_choice(guid, model) && model.guid == pad_choice_.guid;
+        if (reading_choice_)
+          std::fprintf(stderr, "[input] SDL gamepad \"%s\" is the controller chosen in the launcher (%d connected)\n",
+                       name ? name : "unnamed", count);
+        else if (has_pad_choice_)
+          std::fprintf(stderr, "[input] the chosen controller is not connected: SDL gamepad \"%s\" is controller 1 of %d\n",
+                       name ? name : "unnamed", count);
+        else
+          std::fprintf(stderr, "[input] SDL gamepad \"%s\" is controller 1 of %d\n", name ? name : "unnamed", count);
       }
     }
     SDL_free(ids);

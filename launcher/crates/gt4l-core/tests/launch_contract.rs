@@ -629,3 +629,19 @@ fn the_game_defaults_are_the_values_the_launcher_sets_for_default_settings() {
         assert_eq!(at_play[name], value, "{name}");
     }
 }
+
+#[test]
+fn the_chosen_controller_reaches_the_game_as_gt4_pad_and_in_game_ini() {
+    // TASK-148: Automatic sends nothing; a chosen controller is GT4_PAD (commands.rs) and `pad=` for a direct start.
+    let mut settings = Settings::default();
+    assert_eq!(settings.get("controller"), "auto");
+    assert_eq!(launch::controller_environment(&settings), None);
+    assert!(!launch::standalone_config_text(&settings, None).contains("pad="));
+    settings.set("controller", "050000004C050000E60C000000810000/a0:ab:51:12:34:56").unwrap();
+    assert_eq!(settings.get("controller"), "050000004c050000e60c000000810000/a0:ab:51:12:34:56", "the GUID is stored lowercase");
+    assert_eq!(launch::controller_environment(&settings).as_deref(), Some("050000004c050000e60c000000810000/a0:ab:51:12:34:56"));
+    assert!(launch::standalone_config_text(&settings, None).contains("pad=050000004c050000e60c000000810000/a0:ab:51:12:34:56\n"));
+    assert!(settings.set("controller", "not a controller").is_err());
+    settings.set("controller", "auto").unwrap();
+    assert_eq!(launch::controller_environment(&settings), None);
+}

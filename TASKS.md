@@ -2883,4 +2883,30 @@ spans 0..45 and one on L2 0..84 over its travel past the dead zone, the game's o
 step; the controls option `range` (1..255) changes it per binding, and the launcher accepts and keeps it. A game-side
 patch for finer steps (like Silent's, about 230 instead of 46 and 85) is for later. Checks: controls, pad mapping and SDL
 fixtures; launcher controls tests. Owner test on the laptop (2026-11-03, LT brake and RT throttle in the game's
-options): the triggers are right, approved. Stick study in progress.
+options): the triggers are right, approved.
+
+Sticks (same day; disassembly study of the pad path, both games): GT4's remapper maps a stick byte b to (128b + 45) / 90
+below 90, to 128 from 90 to 165 and to 128 + (127(b - 165) + 45) / 90 above 165 (knot table v2.00 0x0064C4D8, Spec II
+0x00681088, byte for byte the same; Confirmed), a 29% dead zone per half, and steering is -32 (out - 128). Stacked on our
+XInput dead zones (24% left, 26.5% right) nothing happened up to about 46% of the travel, then the rest steered 1.9 times too
+steeply ("a small push steers too much"). Fix: both sticks have a 10% dead zone, and past it a reading `steps` away from rest
+becomes 165 + round(90 steps / 127) or 90 - round(90 steps / 128), so the game steers in proportion to the travel from the
+first step, within one of its own steps (90 bytes for 127 steps); option `game_deadzone=skip|keep` (skip by default), the
+launcher accepts it and its stick dead zone defaults are 10%. The right stick on throttle or brake (curve 37..127 of its
+one-sided magnitude) starts from the same bytes. Checks: controls fixture over all 65,536 raw values against the game's own
+formula, SDL fixture. Owner test pending.
+
+### TASK-148 — Choose the controller the game reads (rc12)
+
+A player (2026-11-03, via the owner): with several controllers connected the game takes one at random. The game and the
+launcher read "controller 1", the lowest SDL instance id. Change on `task/134-game-code-optimization-study`:
+- the launcher setting `controller` (`auto`, or `<guid>` / `<guid>/<serial>`: the GUID SDL3 gives the model and the serial
+  number when the pad reports one), chosen on the Controls page from a dropdown of the connected pads, Automatic first;
+- the game gets it as `GT4_PAD` (and `pad=` in game.ini for a direct start) and reads the same unit, else the first pad of
+  the same model, else controller 1, and keeps looking for the chosen one every two seconds while another stands in; the
+  launcher's pad service (live view, menu navigation) follows the same rule (`pad::chosen_pad`, `pad_mapping` choose_pad);
+- joysticks SDL3 has no gamepad mapping for are listed greyed out with "could not map automatically"; an SDL mapping for
+  them in `gamecontrollerdb.txt` in the user config folder is loaded by the launcher and passed to the game
+  (`SDL_GAMECONTROLLERCONFIG_FILE`). A manual mapping wizard for such controllers is not built.
+Checks: launcher tests (choice parsing, chosen pad, status payload, launch contract), pad mapping and standalone fixtures,
+the dev page with mock pads (chosen, unplugged, unrecognized). Texts in en-US and pt-BR. Owner test pending.

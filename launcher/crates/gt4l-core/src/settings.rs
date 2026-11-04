@@ -54,6 +54,10 @@ pub enum Kind {
     /// The launcher's language (TASK-102): `auto`, or a tag listed in `ui/locales/index.json` (`language::LANGUAGE_TAGS`).
     /// The choices come from that list, not from this table.
     Language,
+    /// The controller the game reads (TASK-148): `auto` (controller 1), or `<guid>` / `<guid>/<serial>` of a controller
+    /// (`controller::PadChoice`). Chosen on the Controls page from the pads connected now; a controller that is gone falls
+    /// back to controller 1 for that run.
+    Controller,
 }
 
 /// One row of a Settings page.
@@ -116,6 +120,16 @@ const TOGGLE: Kind = Kind::Toggle;
 
 /// Every user setting, in display order. Ids are the TOML keys.
 pub const SETTINGS: &[SettingDef] = &[
+    SettingDef {
+        id: "controller",
+        page: Page::General,
+        group: "Controls",
+        title: "Controller",
+        info: "The controller the game reads when several are connected. Automatic uses the first one connected.",
+        kind: Kind::Controller,
+        default: crate::controller::AUTO_CONTROLLER,
+        connected: true,
+    },
     SettingDef {
         id: "language",
         page: Page::General,
@@ -364,6 +378,15 @@ pub fn validate(definition: &SettingDef, value: &str) -> Result<String, SettingE
                 Ok(value.to_string())
             } else {
                 Err(invalid())
+            }
+        }
+        Kind::Controller => {
+            if value == crate::controller::AUTO_CONTROLLER {
+                return Ok(value.to_string());
+            }
+            match crate::controller::PadChoice::parse(value) {
+                Some(choice) => Ok(crate::controller::PadChoice::key(&choice.guid, &choice.serial)),
+                None => Err(invalid()),
             }
         }
         Kind::Language => {

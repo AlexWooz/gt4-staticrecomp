@@ -429,6 +429,14 @@ void check_resolve() {
     const sa::Resolved adaptive = sa::resolve(sixty, chosen.access());
     check(has(adaptive.set, "GT4_FRAME_SKIP", "1") && lacks(adaptive.set, "GT4_FRAME_SKIP_FORCE"),
           "game.ini's 60 FPS mode becomes GT4_FRAME_SKIP=1 without a fixed pattern");
+    // TASK-148: the controller chosen in the launcher, for any renderer.
+    sa::Inputs pad = inputs_for(*layout, nullptr);
+    pad.config = sa::parse_config("version=1\npad=050000004c050000e60c000000810000/a0:ab:51:12:34:56\n");
+    check(pad.config->warnings.empty(), "the chosen controller's key is accepted");
+    check(!sa::parse_config("pad=auto\n").warnings.empty() && !sa::parse_config("pad=1234\n").warnings.empty(),
+          "pad takes a controller, not auto or other text");
+    check(has(sa::resolve(pad, chosen.access()).set, "GT4_PAD", "050000004c050000e60c000000810000/a0:ab:51:12:34:56"),
+          "game.ini's pad becomes GT4_PAD");
     sa::Inputs fast = inputs_for(*layout, nullptr);
     fast.config = sa::parse_config(std::string("present_mode=mailbox") + char(10) + "renderer=coregs20" + char(10) + "hw_present_mode=fifo" + char(10));
     check(has(sa::resolve(fast, chosen.access()).set, "GT4_PRESENT_MODE", "fifo"), "a stored Fast vsync draws as On under CoreGS 2.0");

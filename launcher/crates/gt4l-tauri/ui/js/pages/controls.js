@@ -127,6 +127,10 @@
       ]),
       h("div", { class: "cx-head-right" }, [seg, status])
     ]));
+    // TASK-148: which controller the game reads (the `controller` setting), from the pads the Rust service sees.
+    var pickBox = h("div", { class: "cx-pick" });
+    var pickNote = h("p", { class: "cx-pick-note", hidden: true, text: "" });
+    content.appendChild(h("div", { class: "cx-pick-row" }, [pickBox, pickNote]));
     content.appendChild(lockedNote);
 
     var legend = h("div", { class: "cx-legend" });
@@ -381,6 +385,66 @@
         statusSub.textContent = unavailable ? (summary.error || GT4.t("controls.sdl_not_started")) : GT4.t("controls.connect_hint");
       }
     }
+    // TASK-148: the controller dropdown. Automatic, then the connected pads by name (their `controller` value is the
+    // pad's `key`), then the joysticks SDL3 has no mapping for, greyed out with the reason below the row.
+    var lastPick = "";
+    function paintPick(summary) {
+      var pads = summary.pads || [];
+      var unknown = summary.unrecognized || [];
+      var choice = summary.choice || "auto";
+      var key = JSON.stringify([pads, unknown, choice, summary.chosen, state.locked]);
+      if (key === lastPick) {
+        return;
+      }
+      lastPick = key;
+      var values = [{ value: "auto", label: GT4.t("choice.controller.auto") }];
+      pads.forEach(function (one) {
+        values.push({ value: one.key, label: one.name });
+      });
+      var listed = choice === "auto" || pads.some(function (one) { return one.key === choice; });
+      if (!listed) {
+        // The chosen unit is gone; another pad of its model may be the one read (`chosen`), or none is.
+        var active = pads.filter(function (one) { return one.active; })[0];
+        values.push({
+          value: choice,
+          label: summary.chosen && active ? active.name : GT4.t("controls.controller_missing")
+        });
+      }
+      unknown.forEach(function (one, index) {
+        values.push({ value: "unmapped-" + index, label: GT4.t("controls.controller_unmapped", { name: one.name }), disabled: true });
+      });
+      var row = {
+        id: "controller",
+        control: "dropdown",
+        label: GT4.t("setting.controller.label"),
+        values: values,
+        current: choice,
+        default: "auto",
+        disabled: state.locked
+      };
+      var context = { table: { rows: [row] }, content: content, selfDrawn: {}, refresh: function () { return Promise.resolve(); } };
+      var hadFocus = pickBox.contains(document.activeElement);
+      GT4.ui.clear(pickBox);
+      var node = GT4.settingsRows.rowNode(context, row);
+      if (node) {
+        pickBox.appendChild(node);
+      }
+      if (hadFocus) {
+        var target = pickBox.querySelector("[data-setting=\"controller\"]");
+        if (target) {
+          target.focus({ preventScroll: true });
+        }
+      }
+      var notes = [];
+      if (choice !== "auto" && !summary.chosen) {
+        notes.push(GT4.t("controls.controller_not_here"));
+      }
+      if (unknown.length) {
+        notes.push(GT4.t("controls.controller_unmapped_note", { names: unknown.map(function (one) { return one.name; }).join(", ") }));
+      }
+      pickNote.hidden = notes.length === 0;
+      pickNote.textContent = notes.join(" ");
+    }
     // Pad events from the Rust service. A page that is gone (another route) ignores them.
     GT4.backend.listen("pad-live", function (payload) {
       if (pad.svg.isConnected) {
@@ -394,11 +458,13 @@
           latest.live = null; // no pad: nothing is pressed (pad-live stops)
         }
         paintStatus(payload || {});
+        paintPick(payload || {});
       }
     });
     call("pad_status").then(function (payload) {
       latest.status = payload;
       paintStatus(payload || {});
+      paintPick(payload || {});
     }, function () {});
 
     function paintMeters(live) {
@@ -410,7 +476,7 @@
         meter.dz.style.setProperty("--w", (analogValue(id + "_deadzone", M.TRIGGER_DEFAULT_DEADZONE) * 100).toFixed(1) + "%");
         meter.value.textContent = Math.round(reading.output * 100) + "%";
       });
-      [["lstick", live.sticks.left, 0.24], ["rstick", live.sticks.right, 0.265]].forEach(function (triple) {
+      [["lstick", live.sticks.left, 0.1], ["rstick", live.sticks.right, 0.1]].forEach(function (triple) {
         var meter = meters[triple[0]];
         var dz = analogValue(triple[0] + "_deadzone", triple[2]);
         var half = Math.max(0.5, dz * 44);

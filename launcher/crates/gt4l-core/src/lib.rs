@@ -4,6 +4,7 @@
 
 pub mod build_kind;
 pub mod config;
+pub mod controller;
 pub mod display;
 pub mod exit;
 pub mod guard;

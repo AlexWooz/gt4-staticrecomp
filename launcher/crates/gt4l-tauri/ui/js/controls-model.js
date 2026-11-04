@@ -48,7 +48,7 @@
     "DpadUp", "DpadDown", "DpadLeft", "DpadRight"];
   var TRIGGER_INDEX = { 6: true, 7: true };
 
-  // The game's defaults (docs/CONTROLS.md): trigger 30 of 255, left stick 7849 and right stick 8689 of 32767.
+  // The game's defaults (docs/CONTROLS.md): trigger 30 of 255, both sticks 3277 of 32767 (10%, TASK-147).
   var TRIGGER_DEFAULT_DEADZONE = 30 / 255;
 
   function find(id) {

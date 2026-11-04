@@ -759,6 +759,10 @@
           }, 500);
         });
       case "set_setting": {
+        if (args.id === "controller") {
+          mockController = args.value; // TASK-148: the Controls page's controller row
+          return null;
+        }
         if (args.id === "language") {
           mockLanguage = args.value;
           return null;
@@ -953,10 +957,33 @@
     var pads = root.GT4.devGamepads ? root.GT4.devGamepads() : [];
     return root.GT4.controlsModel.padSummary(pads);
   }
+  // TASK-148: the dev pads with made-up GUIDs (the first an Xbox pad, the next DualSense pads with serials), and with
+  // ?unmapped=1 an old joystick SDL3 has no mapping for.
+  var mockController = "auto";
+  var DEV_GUIDS = ["030000005e0400008e02000014010000", "050000004c050000e60c000000810000", "050000004c050000e60c000000810000"];
+  var DEV_NAMES = ["Xbox Wireless Controller", "DualSense Wireless Controller", "DualSense Wireless Controller"];
   function padStatusPayload() {
     var summary = devSummary();
-    return { available: true, connected: summary.connected, name: summary.connected ? summary.name : "",
-      kind: summary.connected ? "xbox360" : "", player_index: summary.connected ? 0 : null, count: summary.count, error: "" };
+    var pads = [];
+    for (var i = 0; i < summary.count; i++) {
+      var guid = DEV_GUIDS[i % DEV_GUIDS.length];
+      pads.push({ name: DEV_NAMES[i % DEV_NAMES.length], kind: i === 0 ? "xbox360" : "ps5",
+        key: i === 0 ? guid : guid + "/a0:ab:51:00:00:0" + i, active: false });
+    }
+    var activeIndex = 0;
+    pads.forEach(function (pad, index) {
+      if (mockController !== "auto" && pad.key.split("/")[0] === mockController.split("/")[0] && activeIndex === 0 && index > 0) {
+        activeIndex = index;
+      }
+    });
+    if (pads.length) {
+      pads[activeIndex].active = true;
+    }
+    var chosen = mockController !== "auto" && pads.length > 0 && pads[activeIndex].key.split("/")[0] === mockController.split("/")[0];
+    return { available: true, connected: summary.connected, name: summary.connected ? pads[activeIndex].name : "",
+      kind: summary.connected ? pads[activeIndex].kind : "", player_index: summary.connected ? 0 : null, count: summary.count,
+      error: "", pads: pads, unrecognized: query.get("unmapped") === "1" ? [{ name: "USB Gamepad (old)", guid: "03000000aaaa0000bbbb000000000000" }] : [],
+      choice: mockController, chosen: chosen };
   }
   var lastPadStatus = "";
   setInterval(function () {

@@ -130,10 +130,11 @@ pub struct TriggerTuning {
 
 /// Default trigger deadzone: 30 of 255 raw units.
 pub const TRIGGER_DEFAULT_DEADZONE: f32 = 30.0 / 255.0;
-/// Default left stick deadzone: XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE (7849) of 32767 (native/controls.cpp).
-pub const LEFT_STICK_DEFAULT_DEADZONE: f32 = 7849.0 / 32767.0;
-/// Default right stick deadzone: XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE (8689) of 32767 (native/controls.cpp).
-pub const RIGHT_STICK_DEFAULT_DEADZONE: f32 = 8689.0 / 32767.0;
+/// Default left stick deadzone: 3277 of 32767, 10% (native/controls.cpp, TASK-147; the game steps over its own stick dead
+/// zone, so this is the only one. It was the XInput constant 7849).
+pub const LEFT_STICK_DEFAULT_DEADZONE: f32 = 3277.0 / 32767.0;
+/// Default right stick deadzone: 3277 of 32767, 10% (it was the XInput constant 8689).
+pub const RIGHT_STICK_DEFAULT_DEADZONE: f32 = 3277.0 / 32767.0;
 /// Largest deadzone the launcher writes for a trigger or a stick (the file accepts values below 1).
 pub const MAX_DEADZONE: f32 = 0.95;
 
@@ -616,6 +617,15 @@ fn validate_option(line: usize, kind: InputKind, analog: bool, option: &str) -> 
                 return Err(error(line, "curve must be linear, quadratic, cubic, s_curve, smooth_power, sublinear or logarithmic"));
             }
         }
+        // TASK-147: whether a stick steps over GT4's own stick dead zone (the game's default) or keeps it.
+        "game_deadzone" => {
+            if kind != InputKind::Stick {
+                return Err(error(line, "game_deadzone applies to sticks only"));
+            }
+            if !["skip", "keep"].contains(&value) {
+                return Err(error(line, "game_deadzone must be skip or keep"));
+            }
+        }
         // TASK-147: the pressure byte a trigger gives at full travel (the game defaults R2 to 45 and L2 to 84).
         "range" => {
             if !(analog && kind == InputKind::Button) {
@@ -743,10 +753,13 @@ mod tests {
     }
 
     #[test]
-    fn stick_deadzones_default_to_the_xinput_constants_and_round_trip() {
+    fn stick_deadzones_default_to_ten_percent_and_round_trip() {
         let mut controls = Controls::default();
-        assert!((controls.stick_deadzone(Stick::Left) - 7849.0 / 32767.0).abs() < 1e-6);
-        assert!((controls.stick_deadzone(Stick::Right) - 8689.0 / 32767.0).abs() < 1e-6);
+        assert!((controls.stick_deadzone(Stick::Left) - 3277.0 / 32767.0).abs() < 1e-6);
+        assert!((controls.stick_deadzone(Stick::Right) - 3277.0 / 32767.0).abs() < 1e-6);
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | game_deadzone=keep\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | game_deadzone=off\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | game_deadzone=keep\"]\n").is_err());
         controls.set_stick_deadzone(Stick::Left, 0.1).unwrap();
         assert!((controls.stick_deadzone(Stick::Left) - 0.1).abs() < 1e-6);
         let text = controls.render();

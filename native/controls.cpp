@@ -16,8 +16,10 @@ constexpr int trigger_full = 255;
 constexpr int trigger_default_deadzone = 30; // XINPUT_GAMEPAD_TRIGGER_THRESHOLD
 constexpr int stick_positive_full = 32767;
 constexpr int stick_negative_full = 32768;
-constexpr int left_stick_deadzone = 7849; // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
-constexpr int right_stick_deadzone = 8689; // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
+// TASK-147: 10% of the travel on both sticks. They were the XInput constants 7849 and 8689 (24% and 26.5%), which stacked
+// on the game's own stick dead zone (game_stick_byte below): nothing up to about 46% of the travel, then 1.9 times too steep.
+constexpr int left_stick_deadzone = 3277;
+constexpr int right_stick_deadzone = 3277;
 
 // TASK-147: GT4 turns the pressure byte p of the button assigned to a function into min(100 * min(2p, 256) / d, 256),
 // with d = 35 for the throttle and 65 for the brake (v2.00 0x0043BEE8 and 0x0043BF48, Spec II 0x00319194 and 0x003191F0,
@@ -28,6 +30,22 @@ constexpr int right_stick_deadzone = 8689; // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZON
 // (46 for the throttle, 85 for the brake, as many as a DualShock 2 gives). The option `range` changes it per binding.
 constexpr std::uint8_t r2_pressure_full = 45;
 constexpr std::uint8_t l2_pressure_full = 84;
+
+// TASK-147: GT4's remapper turns a stick byte b into out = (128b + 45) / 90 below 90, 128 from 90 to 165, and
+// 128 + (127(b - 165) + 45) / 90 above 165 (integer division; the knot table, 0, 90, 165, 255 to 0, 128, 128, 255, is at
+// v2.00 0x0064C4D8 and Spec II 0x00681088, byte for byte the same; Confirmed): a dead zone of 29% of each half, and steering is
+// -32 (out - 128). A reading `steps` (1..127 to the right, 1..128 to the left) away from rest becomes the byte past that
+// band in the same proportion, 165 + round(90 steps / 127) or 90 - round(90 steps / 128), so the game sees this binding's
+// own linear reading with no second dead zone: from the first step, to the nearest of the game's steps (it has 90 bytes
+// for 127 steps beyond its band, so out - 128 is within one step of `steps`). The right stick as throttle or brake (curve
+// 37..127 of its one-sided magnitude) starts from the same bytes, 89 and 166.
+std::uint8_t game_stick_byte(int steps, bool negative) {
+  if (steps <= 0)
+    return 128;
+  if (!negative)
+    return static_cast<std::uint8_t>(165 + (180 * steps + 127) / 254);
+  return static_cast<std::uint8_t>(90 - (180 * steps + 128) / 256);
+}
 
 std::uint8_t default_pressure_full(std::string_view input_name) {
   if (input_name == "r2")
@@ -308,6 +326,13 @@ Binding parse_source(std::string_view text, const InputInfo &input, const std::s
       if (full < 1.0 || full > 255.0 || full != std::floor(full))
         fail(source, line, "range must be a whole number from 1 to 255");
       binding.pressure_full = static_cast<std::uint8_t>(full);
+    } else if (option == "game_deadzone") {
+      if (binding.kind != SourceKind::xinput_axis)
+        fail(source, line, "game_deadzone applies to stick axes only");
+      const std::string mode = lower(value);
+      if (mode != "skip" && mode != "keep")
+        fail(source, line, "game_deadzone must be skip or keep");
+      binding.skip_game_deadzone = mode == "skip";
     } else if (option == "invert") {
       if (binding.kind != SourceKind::xinput_axis)
         fail(source, line, "invert applies to stick axes only");
@@ -579,6 +604,8 @@ std::uint8_t read_axis(const Binding &binding, std::int16_t raw) {
     const double shaped = std::min(1.0, shape(fraction, binding.curve) * binding.scale);
     steps = static_cast<int>(std::floor(shaped * (negative ? 128.0 : 127.0)));
   }
+  if (binding.skip_game_deadzone)
+    return game_stick_byte(steps, negative);
   return static_cast<std::uint8_t>(negative ? 128 - steps : 128 + steps);
 }
 

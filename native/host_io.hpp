@@ -60,6 +60,11 @@ private:
   ULONGLONG next_scan_ = 0;
   SDL_Gamepad *sdl_pad_ = nullptr;
   ULONGLONG sdl_next_scan_ = 0;
+  // TASK-148: the controller chosen in the launcher (GT4_PAD), and whether the open pad is it. While another pad stands in
+  // for it, the scan keeps looking for it every two seconds.
+  gt4::pad::PadChoice pad_choice_;
+  bool has_pad_choice_ = false;
+  bool reading_choice_ = false;
   ULONGLONG rumble_sent_at_ = 0;
   bool sdl_initialized_ = false;
   std::uint16_t motors_ = 0;

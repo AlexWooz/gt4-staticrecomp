@@ -81,8 +81,8 @@ void check_sticks_and_dead_zones() {
   for (int axis = 0; axis < 4; ++axis)
     require(pad.axes[axis] == 128, "sticks at rest read 128");
 
-  // Inside the left stick dead zone (7849 of 32767) the reading stays at rest.
-  reading.thumb_lx = 7000;
+  // Inside the left stick dead zone (TASK-147: 3277 of 32767, 10%) the reading stays at rest.
+  reading.thumb_lx = 3000;
   require(map_reading(reading, map).axes[2] == 128, "left stick inside its dead zone reads 128");
 
   // Full right on the left stick: LX positive is right (PS2 128..255).
@@ -182,6 +182,32 @@ void check_backend_and_players() {
   std::fprintf(stderr, "PASS: GT4_INPUT selection and first pad as player 1\n");
 }
 
+// TASK-148: the controller chosen in the launcher (GT4_PAD): the same rule as gt4l-platform pad::chosen_pad.
+void check_chosen_pad() {
+  const std::string xbox = "030000005e0400008e02000014010000";
+  const std::string dualsense = "050000004c050000e60c000000810000";
+  PadChoice choice;
+  require(!parse_pad_choice(nullptr, choice) && !parse_pad_choice("", choice) && !parse_pad_choice("auto", choice),
+          "unset, empty and auto choose nothing");
+  require(!parse_pad_choice(xbox.substr(0, 31).c_str(), choice), "a GUID is 32 hex digits");
+  require(!parse_pad_choice((xbox + "/bad serial").c_str(), choice), "a serial has no spaces");
+  require(parse_pad_choice("050000004C050000E60C000000810000/a0:ab:51:00:00:02", choice) && choice.guid == dualsense &&
+              choice.serial == "a0:ab:51:00:00:02",
+          "GUID (lowercased) and serial");
+  const std::vector<PadCandidate> pads = {
+      {3, xbox, ""}, {7, dualsense, "a0:ab:51:00:00:01"}, {9, "050000004C050000E60C000000810000", "a0:ab:51:00:00:02"}};
+  std::uint32_t chosen = 0;
+  require(choose_pad(pads, nullptr, chosen) && chosen == 3, "no choice: controller 1, the lowest id");
+  require(choose_pad(pads, &choice, chosen) && chosen == 9, "the same unit by its serial, whatever the GUID's case");
+  require(parse_pad_choice((dualsense + "/a0:ab:51:00:00:03").c_str(), choice) && choose_pad(pads, &choice, chosen) &&
+              chosen == 7,
+          "the chosen unit is gone: the first pad of its model");
+  require(parse_pad_choice("03000000d620000011a7000000000000", choice) && choose_pad(pads, &choice, chosen) && chosen == 3,
+          "the chosen model is unplugged: controller 1");
+  require(!choose_pad({}, &choice, chosen), "no pad");
+  std::fprintf(stderr, "PASS: controller chosen in the launcher (GT4_PAD)\n");
+}
+
 } // namespace
 
 int main() {
@@ -193,6 +219,7 @@ int main() {
     check_remap();
     check_rumble();
     check_backend_and_players();
+    check_chosen_pad();
     return 0;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "FAIL: %s\n", error.what());

@@ -131,10 +131,13 @@ int main() {
                 std::array<std::uint8_t, 4>{255, 255, 0, 0},
             "signed endpoints and Y inversion");
     gamepad = {};
-    gamepad.sThumbLX = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
-    gamepad.sThumbRY = -XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE;
+    // TASK-147: the stick dead zone is 10% (3277 of 32767); one unit past it the game already steers.
+    gamepad.sThumbLX = 3277;
+    gamepad.sThumbRY = -3277;
     require(map_gamepad(gamepad).axes == PadState{}.axes,
             "axis deadzone boundary");
+    gamepad.sThumbLX = 3277 + 300;
+    require(map_gamepad(gamepad).axes[2] >= 166, "past the dead zone the byte steps over the game's own dead zone");
     int previous = 0;
     for (int value = -32768; value <= 32767; ++value) {
       gamepad.sThumbLX = static_cast<SHORT>(value);

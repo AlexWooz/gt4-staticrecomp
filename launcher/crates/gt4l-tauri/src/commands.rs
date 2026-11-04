@@ -425,6 +425,14 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
     }
+    // TASK-148: the controller chosen on the Controls page, and the player's SDL gamepad mappings when there are any.
+    if let Some(choice) = launch::controller_environment(&state.config.settings) {
+        extra.push(("GT4_PAD".into(), choice));
+    }
+    let mappings = state.user_dirs.config_dir().join(launch::GAMEPAD_MAPPINGS_FILE);
+    if mappings.exists() {
+        extra.push(("SDL_GAMECONTROLLERCONFIG_FILE".into(), mappings.display().to_string()));
+    }
     if game.id == games::GT4.id {
         let ra_cfg = gt4l_core::retroachievements::RaConfig::load(&state.user_dirs.retroachievements_file());
         for (key, value) in ra_cfg.launch_environment(&dirs.retroachievements_cache(), language) {

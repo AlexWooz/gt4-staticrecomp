@@ -429,8 +429,22 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
     }
     text.push_str(&format!("performance_report={}\n", flag(settings.is_on("performance_report"))));
     text.push_str(&format!("check_vu_code={check_vu_code}\n"));
+    // TASK-148: the chosen controller, as GT4_PAD.
+    if let Some(choice) = controller_environment(settings) {
+        text.push_str(&format!("pad={choice}\n"));
+    }
     text
 }
+
+/// TASK-148: the `GT4_PAD` value of the chosen controller (`controller::PadChoice` text), `None` for Automatic.
+pub fn controller_environment(settings: &Settings) -> Option<String> {
+    let value = settings.get("controller");
+    crate::controller::PadChoice::parse(value).map(|_| value.to_string())
+}
+
+/// TASK-148: the SDL gamepad mappings file in the user config folder (`gamecontrollerdb.txt` format). The launcher loads
+/// it and the game gets it as SDL_GAMECONTROLLERCONFIG_FILE: a mapping there makes a controller SDL3 does not know usable.
+pub const GAMEPAD_MAPPINGS_FILE: &str = "gamecontrollerdb.txt";
 
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
 /// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and

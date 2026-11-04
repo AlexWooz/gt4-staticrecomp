@@ -280,22 +280,63 @@ void check_trigger_readings() {
   std::fprintf(stderr, "PASS: trigger readings: slice 157 match, deadzone, curve, scale\n");
 }
 
+// TASK-147: what GT4's remapper makes of a stick byte (knots 0, 90, 165, 255 to 0, 128, 128, 255; integer division).
+int game_stick_out(int byte) {
+  if (byte <= 90)
+    return (128 * byte + 45) / 90;
+  if (byte < 165)
+    return 128;
+  return 128 + (127 * (byte - 165) + 45) / 90;
+}
+
 void check_axis_readings() {
   const auto &map = default_controls();
+  // With the XInput dead zones and game_deadzone=keep a stick reads as slice 157 did.
   const struct {
     const char *name;
+    const char *source;
+    const char *deadzone_text;
     int deadzone;
     bool invert;
-  } sticks[] = {{"rstick_x", 8689, false}, {"rstick_y", 8689, true},
-                {"lstick_x", 7849, false}, {"lstick_y", 7849, true}};
+  } sticks[] = {{"rstick_x", "RX", "0.26517533", 8689, false}, {"rstick_y", "RY", "0.26517533", 8689, true},
+                {"lstick_x", "LX", "0.23953978", 7849, false}, {"lstick_y", "LY", "0.23953978", 7849, true}};
   for (const auto &stick : sticks) {
-    const Binding &binding = only_binding(map, stick.name);
+    const std::string text = std::string("schema = 1\n[bindings]\n") + stick.name + " = [\"xinput:" + stick.source +
+                             " | deadzone=" + stick.deadzone_text + " game_deadzone=keep" +
+                             (stick.invert ? " invert=true" : "") + "\"]\n";
+    const Binding legacy = only_binding(parse_text(text), stick.name);
     for (int raw = -32768; raw <= 32767; ++raw) {
       const auto value = static_cast<std::int16_t>(raw);
-      require(read_axis(binding, value) == legacy_axis(value, stick.deadzone, stick.invert),
-              std::string("default axis equals slice 157: ") + stick.name);
+      require(read_axis(legacy, value) == legacy_axis(value, stick.deadzone, stick.invert),
+              std::string("XInput dead zone with game_deadzone=keep equals slice 157: ") + stick.name);
     }
   }
+  // TASK-147: the defaults: a 10% dead zone (3277 of 32767), and the byte steps over GT4's own dead zone, so the game's
+  // steering is exactly this binding's linear reading, from its first step past the dead zone to full lock.
+  for (const auto &stick : sticks) {
+    const Binding &binding = only_binding(map, stick.name);
+    require(binding.skip_game_deadzone, "sticks skip the game's dead zone by default");
+    int first_step_raw = 0;
+    int prior_game = game_stick_out(read_axis(binding, -32768)) - 128;
+    for (int raw = -32768; raw <= 32767; ++raw) {
+      const auto value = static_cast<std::int16_t>(raw);
+      const int linear = static_cast<int>(legacy_axis(value, 3277, stick.invert)) - 128;
+      const int game = game_stick_out(read_axis(binding, value)) - 128;
+      // The game has 90 bytes for 127 steps past its band: within one step of the linear reading, never dead.
+      require(std::abs(game - linear) <= 1 && (linear == 0) == (game == 0),
+              std::string("the game sees the binding's linear reading, to the nearest step: ") + stick.name);
+      require(stick.invert ? game <= prior_game : game >= prior_game, std::string("the game's steering is monotone: ") + stick.name);
+      prior_game = game;
+      if (raw > 0 && linear != 0 && first_step_raw == 0)
+        first_step_raw = raw;
+    }
+    require(first_step_raw > 3277 && first_step_raw < 3277 + 400, "the game moves from the first step past 10%");
+  }
+  // Without the compensation the game's dead zone stacked: about 46% of the travel did nothing (owner, TASK-147).
+  const Binding keep = only_binding(parse_text("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | deadzone=0.23953978 game_deadzone=keep\"]\n"), "lstick_x");
+  require(game_stick_out(read_axis(keep, static_cast<std::int16_t>(32767 * 45 / 100))) == 128, "the old mapping: dead at 45%");
+  require(game_stick_out(read_axis(only_binding(map, "lstick_x"), static_cast<std::int16_t>(32767 * 45 / 100))) >= 128 + 48,
+          "the new mapping: 45% of the travel steers about 39%");
   // A custom deadzone and an inverted sign keep the rest value at 128 inside the zone.
   const ControlMap custom = parse_text(
       "schema = 1\n[bindings]\nlstick_y = [\"xinput:LY | deadzone=0.5 invert=true\"]\n");
@@ -303,7 +344,7 @@ void check_axis_readings() {
   require(read_axis(custom_y, 16000) == 128 && read_axis(custom_y, 0) == 128,
           "custom stick deadzone holds the rest value");
   require(read_axis(custom_y, 32767) < 128, "inverted stick: full up reads low");
-  std::fprintf(stderr, "PASS: stick readings equal slice 157 for all 65536 raw values\n");
+  std::fprintf(stderr, "PASS: stick readings: slice 157 with game_deadzone=keep, linear game steering by default\n");
 }
 
 void check_stick_curves_and_signed_endpoints() {
@@ -381,7 +422,7 @@ void dump_curve_vectors(const std::string &path) {
       first_entry = false;
 
       std::ostringstream conf;
-      conf << "schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=" << deadzones[d]
+      conf << "schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 deadzone=" << deadzones[d]
            << " curve=" << curves[c].name << "\"]\n";
       const ControlMap map = parse_text(conf.str());
       const Binding &b = only_binding(map, "l2");
@@ -464,6 +505,10 @@ void check_invalid_files() {
   expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=4.5\"]\n", "range must be", 3, "range not whole");
   expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range=45\"]\n", "range applies to triggers only", 3,
                       "range on a stick");
+  expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | game_deadzone=off\"]\n", "game_deadzone must be", 3,
+                      "game_deadzone value");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | game_deadzone=keep\"]\n", "game_deadzone applies to stick axes only", 3,
+                      "game_deadzone on a trigger");
   expect_config_error("schema = 1\n[bindings]\ncross = xinput:A\n",
                       "quoted string or an array", 3, "unquoted value");
   expect_config_error("schema = 1\n[bindings]\ncross = [\"xinput:A\" \"key:Z\"]\n",

@@ -1,5 +1,7 @@
 #include "standalone.hpp"
 
+#include "pad_mapping.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -344,6 +346,9 @@ Config parse_config(std::string_view text) {
       valid = value == "0" || value == "1";
     } else if (key == "present_mode") {
       valid = value == "fifo" || value == "mailbox" || value == "immediate";
+    } else if (key == "pad") {
+      gt4::pad::PadChoice choice;  // TASK-148: the controller chosen in the launcher
+      valid = gt4::pad::parse_pad_choice(value.c_str(), choice);
     } else if (key == "monitor") {
       valid = value.size() >= 5 && value.size() <= 31 && starts_with(value, "\\\\.\\") &&
               std::all_of(value.begin(), value.end(), [](unsigned char c) { return c > 0x20 && c < 0x7F; });
@@ -424,6 +429,7 @@ Environment config_environment(const Config &config) {  Environment out;
   if (const auto *value = get("present_mode")) out.emplace_back("GT4_PRESENT_MODE", *value);
   if (const auto *value = get("monitor")) out.emplace_back("GT4_MONITOR", *value);
   if (const auto *value = get("output_size")) out.emplace_back("GT4_OUTPUT_SIZE", *value);
+  if (const auto *value = get("pad")) out.emplace_back("GT4_PAD", *value);
   if (const auto *value = get("async_gs"); value && *value == "0") out.emplace_back("GT4_GS_SYNC", "1");
   if (const auto *value = get("performance_report"); value && *value == "1") out.emplace_back("GT4_PERF", "1");
   if (const auto *value = get("check_vu_code"); value && *value != "0") {

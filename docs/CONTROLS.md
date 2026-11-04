@@ -96,10 +96,11 @@ Options follow the source after a `|`, separated by spaces: `"xinput:LT | deadzo
 
 | Option | Applies to | Values | Default |
 | --- | --- | --- | --- |
-| `deadzone` | triggers, sticks | 0 up to, not including, 1; fraction of full travel | trigger 30/255 (0.1176); right stick 8689/32767; left stick 7849/32767 |
+| `deadzone` | triggers, sticks | 0 up to, not including, 1; fraction of full travel | trigger 30/255 (0.1176); both sticks 3277/32767 (0.1) |
 | `scale` | triggers, sticks | 0 to 2; multiplies the curve output, clamped to full travel | 1 |
 | `curve` | triggers, sticks | `linear`, `quadratic`, `cubic`, `s_curve`, `smooth_power`, `sublinear`, `logarithmic` | `linear` |
 | `invert` | sticks only | `true` or `false` | `false` |
+| `game_deadzone` | sticks only | `skip` or `keep` | `skip` |
 | `range` | triggers only | whole number 1 to 255; the pressure byte at full travel | 45 on R2, 84 on L2, 255 on any other input |
 
 Digital sources (`xinput:A` etc. and `key:` sources) take no options.
@@ -124,7 +125,16 @@ Reading rules, as implemented in `native/controls.cpp`:
   below 255: `pressure = round(min(1, curve(n) * scale) * r)`, to the nearest step so a trigger a hair short of its end
   still gives `r`.
 - **Stick:** the sign of the raw value sets the travel range (32768 below zero, 32767 above), as
-  before. `invert` flips the direction. Output is the PS2 byte: 128 at rest, 0..255 across travel.
+  before. `invert` flips the direction. Output is the PS2 byte: 128 at rest, 0..255 across travel. With
+  `game_deadzone=keep` the byte is linear, `128 +- steps`. With `skip` (the default) a reading `steps` away from rest
+  becomes `165 + round(90 steps / 127)` or `90 - round(90 steps / 128)`, past GT4's own stick dead zone (below).
+
+**Why the sticks skip the game's dead zone (TASK-147).** GT4 maps a stick byte `b` to `(128b + 45) / 90` below 90, to 128
+from 90 to 165, and to `128 + (127(b - 165) + 45) / 90` above 165 (both games; knot table at v2.00 `0x0064C4D8`, Spec II
+`0x00681088`): a dead zone of 29% of each half, built for the DualShock 2. With the XInput dead zones it was stacked on
+(24% left, 26.5% right), the first 46% or so of the travel did nothing and the rest steered 1.9 times too steeply. The
+sticks now have a 10% dead zone, and past it the game steers in proportion to the travel, to the nearest of its own steps
+(it has 90 bytes for 127 steps). The right stick on throttle or brake uses the same bytes.
 - **Several sources on one input:** buttons OR together, and the highest pressure wins. On a stick,
   the reading furthest from rest wins.
 

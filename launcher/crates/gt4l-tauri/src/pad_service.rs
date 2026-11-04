@@ -1,8 +1,11 @@
 //! The launcher's gamepad service. One thread owns the SDL3 reader (`gt4l_platform::sdl_pads`, the layer the game
 //! uses) and turns it into Tauri events for the page:
 //!
-//! - `pad-status` `{available, connected, name, kind, player_index, count, error}`: on every change. `count` is the
-//!   number of pads, and the named pad is "controller 1 of N", the one the game reads (`pad::active_pad`).
+//! - `pad-status` `{available, connected, name, kind, player_index, count, error, pads, unrecognized, choice, chosen}`: on
+//!   every change. `count` is the number of pads, and the named pad is the one the game reads: the controller chosen on the
+//!   Controls page when it is connected, else "controller 1 of N" (`pad::chosen_pad`, TASK-148). `pads` lists the readable
+//!   pads with the `controller` setting value of each (`key`), `unrecognized` the joysticks SDL3 has no mapping for,
+//!   `choice` is the setting and `chosen` says whether the chosen controller is the one being read.
 //! - `pad-live` `{sources, sticks}`: about 60 times a second while a pad is connected and the window is shown.
 //!   `sources` holds the pressure (0..1) of each controls-file source (`xinput:A`, `xinput:LT`...); the page maps
 //!   them to the DS2 buttons through the controls file. `sticks.left|right` are -1..1, y positive down.
@@ -16,7 +19,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gt4l_platform::pad::{self, PadSample};
+use gt4l_platform::pad::{self, PadChoice, PadIdentity, PadSample};
 use gt4l_platform::sdl_pads::{PadInfo, SdlPads};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -82,7 +85,7 @@ pub fn spawn(app: AppHandle) -> Handle {
     let (commands, receiver) = channel();
     let handle = Handle {
         commands,
-        status: Arc::new(Mutex::new(status_json(false, 0, None, "starting"))),
+        status: Arc::new(Mutex::new(status_json(false, &[], &[], None, pad::AUTO_CONTROLLER, "starting"))),
         active: Arc::new(AtomicBool::new(true)),
     };
     let worker = handle.clone();
@@ -91,22 +94,50 @@ pub fn spawn(app: AppHandle) -> Handle {
         .spawn(move || run(app, receiver, worker));
     if spawned.is_err() {
         // No thread: captures fail at once (the dropped receiver) and the status says so.
-        publish(None, &handle, status_json(false, 0, None, "the gamepad thread could not start"));
+        publish(None, &handle, status_json(false, &[], &[], None, pad::AUTO_CONTROLLER, "the gamepad thread could not start"));
     }
     handle
 }
 
-/// The `pad-status` payload. `available` is false when SDL did not start.
-pub fn status_json(available: bool, count: usize, active: Option<&PadInfo>, error: &str) -> Value {
+/// The `pad-status` payload. `available` is false when SDL did not start. `choice` is the `controller` setting.
+pub fn status_json(
+    available: bool,
+    pads: &[PadInfo],
+    unrecognized: &[PadInfo],
+    active: Option<&PadInfo>,
+    choice: &str,
+    error: &str,
+) -> Value {
+    let key = |pad: &PadInfo| PadChoice::key(&pad.guid, &pad.serial);
+    let chosen = match (PadChoice::parse(choice), active) {
+        (Some(wanted), Some(pad)) => pad.guid.eq_ignore_ascii_case(&wanted.guid),
+        _ => false,
+    };
+    let active_id = active.map(|pad| pad.id);
     json!({
         "available": available,
         "connected": active.is_some(),
         "name": active.map(|pad| pad.name.clone()).unwrap_or_default(),
         "kind": active.map(|pad| pad.kind.clone()).unwrap_or_default(),
         "player_index": active.and_then(|pad| pad.player_index),
-        "count": count,
+        "count": pads.len(),
         "error": error,
+        "pads": pads
+            .iter()
+            .map(|pad| json!({ "name": pad.name, "kind": pad.kind, "key": key(pad), "active": active_id == Some(pad.id) }))
+            .collect::<Vec<_>>(),
+        "unrecognized": unrecognized.iter().map(|pad| json!({ "name": pad.name, "guid": pad.guid })).collect::<Vec<_>>(),
+        "choice": choice,
+        "chosen": chosen,
     })
+}
+
+/// TASK-148: the `controller` setting, read from the launcher's state each tick (a change on the Controls page takes
+/// effect at once).
+fn controller_setting(app: &AppHandle) -> String {
+    let shared = app.state::<Shared>();
+    let state = state::lock(shared.inner());
+    state.config.settings.get("controller").to_string()
 }
 
 /// The `pad-live` payload: the mapped sources and the sticks of one reading.
@@ -152,7 +183,7 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
         Ok(pads) => pads,
         Err(message) => {
             log(&app, &format!("controller input unavailable: {message}"));
-            publish(Some(&app), &handle, status_json(false, 0, None, &message));
+            publish(Some(&app), &handle, status_json(false, &[], &[], None, pad::AUTO_CONTROLLER, &message));
             // Keep answering: a capture fails with the reason instead of waiting for a pad that cannot come.
             while let Ok(command) = commands.recv() {
                 if let Command::Capture(reply) = command {
@@ -163,6 +194,18 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
         }
     };
     log(&app, "controller input: SDL3 gamepad subsystem started");
+    // TASK-148: the player's own SDL gamepad mappings (gamecontrollerdb.txt in the config folder), when there are any.
+    let mappings = {
+        let shared = app.state::<Shared>();
+        let state = state::lock(shared.inner());
+        state.user_dirs.config_dir().join(gt4l_core::launch::GAMEPAD_MAPPINGS_FILE)
+    };
+    if mappings.exists() {
+        match pads.load_mappings(&mappings) {
+            Ok(added) => log(&app, &format!("controller input: {added} gamepad mappings from {}", mappings.display())),
+            Err(message) => log(&app, &format!("controller input: gamepad mappings not loaded: {message}")),
+        }
+    }
 
     let mut navigator = Navigator::default();
     let mut capture: Option<PendingCapture> = None;
@@ -201,15 +244,20 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
 
         pads.pump();
         let infos = pads.connected();
-        let ids: Vec<u32> = infos.iter().map(|pad| pad.id).collect();
-        let active_info = pad::active_pad(&ids).and_then(|id| infos.iter().find(|pad| pad.id == id));
-        let status = status_json(true, infos.len(), active_info, "");
+        let unrecognized = pads.unrecognized();
+        let choice_text = controller_setting(&app);
+        let choice = PadChoice::parse(&choice_text);
+        let identities: Vec<PadIdentity<'_>> =
+            infos.iter().map(|pad| PadIdentity { id: pad.id, guid: &pad.guid, serial: &pad.serial }).collect();
+        let active_id = pad::chosen_pad(&identities, choice.as_ref());
+        let active_info = active_id.and_then(|id| infos.iter().find(|pad| pad.id == id));
+        let status = status_json(true, &infos, &unrecognized, active_info, &choice_text, "");
         if status != last_status {
             publish(Some(&app), &handle, status.clone());
             last_status = status;
         }
 
-        let Some(id) = pad::active_pad(&ids) else {
+        let Some(id) = active_id else {
             navigator = Navigator::default();
             continue;
         };
@@ -266,22 +314,55 @@ mod tests {
         assert!((live["sticks"]["right"]["x"].as_f64().unwrap() - 1.0).abs() < 1e-9);
     }
 
+    fn info(id: u32, name: &str, guid: &str, serial: &str) -> PadInfo {
+        PadInfo {
+            id,
+            name: name.into(),
+            kind: "ps5".into(),
+            player_index: Some(0),
+            guid: guid.into(),
+            serial: serial.into(),
+            mapped: true,
+        }
+    }
+
+    const DUALSENSE: &str = "050000004c050000e60c000000810000";
+    const XBOX: &str = "030000005e0400008e02000014010000";
+
     #[test]
     fn status_names_the_active_pad_and_counts_all_of_them() {
-        let pad = PadInfo { id: 3, name: "DualSense Wireless Controller".into(), kind: "ps5".into(), player_index: Some(0) };
-        let status = status_json(true, 2, Some(&pad), "");
+        let pads = [info(3, "DualSense Wireless Controller", DUALSENSE, "a0:ab"), info(5, "Xbox 360 Controller", XBOX, "")];
+        let status = status_json(true, &pads, &[], Some(&pads[0]), "auto", "");
         assert_eq!(status["connected"], json!(true));
         assert_eq!(status["name"], json!("DualSense Wireless Controller"));
         assert_eq!(status["kind"], json!("ps5"));
         assert_eq!(status["count"], json!(2));
-        let none = status_json(true, 0, None, "");
+        assert_eq!(status["pads"][0]["key"], json!(format!("{DUALSENSE}/a0:ab")), "the setting value of each pad");
+        assert_eq!(status["pads"][1]["key"], json!(XBOX));
+        assert_eq!(status["pads"][0]["active"], json!(true));
+        assert_eq!(status["chosen"], json!(false), "Automatic chooses nothing");
+        let none = status_json(true, &[], &[], None, "auto", "");
         assert_eq!(none["connected"], json!(false));
         assert_eq!(none["name"], json!(""));
     }
 
     #[test]
+    fn status_says_whether_the_chosen_controller_is_read() {
+        let pads = [info(3, "DualSense Wireless Controller", DUALSENSE, ""), info(5, "Xbox 360 Controller", XBOX, "")];
+        let chosen = status_json(true, &pads, &[], Some(&pads[1]), XBOX, "");
+        assert_eq!(chosen["chosen"], json!(true));
+        assert_eq!(chosen["choice"], json!(XBOX));
+        let gone = status_json(true, &pads[..1], &[], Some(&pads[0]), XBOX, "");
+        assert_eq!(gone["chosen"], json!(false), "the chosen pad is unplugged: controller 1 is read");
+        let mut old = info(8, "Old USB Joystick", "03000000aaaa0000bbbb000000000000", "");
+        old.mapped = false;
+        let with_unknown = status_json(true, &pads, &[old], Some(&pads[0]), "auto", "");
+        assert_eq!(with_unknown["unrecognized"][0]["name"], json!("Old USB Joystick"));
+    }
+
+    #[test]
     fn an_unavailable_status_carries_the_reason() {
-        let status = status_json(false, 0, None, "SDL3 did not start: no device");
+        let status = status_json(false, &[], &[], None, "auto", "SDL3 did not start: no device");
         assert_eq!(status["available"], json!(false));
         assert_eq!(status["error"], json!("SDL3 did not start: no device"));
     }

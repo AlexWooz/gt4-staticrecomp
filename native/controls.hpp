@@ -83,6 +83,9 @@ struct Binding {
   // Triggers: the pressure byte at full travel (option `range`). GT4 takes a much smaller byte than 255 as 100% throttle
   // or brake, so R2 and L2 default to the game's own 100% (controls.cpp, TASK-147); other inputs to 255.
   std::uint8_t pressure_full = 255;
+  // Sticks: step over GT4's own stick dead zone (option `game_deadzone=skip|keep`, TASK-147), so the game turns from the
+  // first step past this binding's dead zone and linearly to full lock.
+  bool skip_game_deadzone = true;
 };
 
 struct ControlMap {

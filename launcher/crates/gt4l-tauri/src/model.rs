@@ -161,7 +161,12 @@ pub fn settings_table_with_monitors(
         // TASK-108: the Graphics card row sits after the Graphics API row and the FSR1 row after CAS (added with the table
         // rows below).
         // TASK-082: the frame rate sits after Performance Mode, under the renderer that has it.
-        if definition.id == "graphics_card" || definition.id == "coregs_sharpening" || definition.id == "frame_rate" {
+        // TASK-148: the controller is chosen on the Controls page, from the pads connected now.
+        if definition.id == "graphics_card"
+            || definition.id == "coregs_sharpening"
+            || definition.id == "frame_rate"
+            || definition.id == "controller"
+        {
             continue;
         }
         let mut row = launcher_row(definition, settings);
@@ -288,7 +293,8 @@ fn launcher_row(definition: &SettingDef, settings: &Settings) -> Value {
             json!(definition.default),
             json!(settings.get(definition.id)),
         ),
-        Kind::Monitor | Kind::Resolution | Kind::Gpu => (
+        // TASK-148: the controller has no Settings row (the Controls page lists the connected pads).
+        Kind::Monitor | Kind::Resolution | Kind::Gpu | Kind::Controller => (
             "dropdown",
             Value::Array(Vec::new()),
             json!(definition.default),
@@ -1089,8 +1095,8 @@ mod table_tests {
         assert_eq!(row(&table, "l2_deadzone")["control"], "slider");
         assert_eq!(row(&table, "r2_curve")["control"], "dropdown");
         assert_eq!(row(&table, "l2_deadzone")["default"], json!(11.8), "30 of 255");
-        assert_eq!(row(&table, "lstick_deadzone")["current"], json!(24.0), "7849 of 32767");
-        assert_eq!(row(&table, "rstick_deadzone")["default"], json!(26.5), "8689 of 32767");
+        assert_eq!(row(&table, "lstick_deadzone")["current"], json!(10.0), "3277 of 32767 (TASK-147)");
+        assert_eq!(row(&table, "rstick_deadzone")["default"], json!(10.0), "3277 of 32767 (TASK-147)");
     }
 
     #[test]
