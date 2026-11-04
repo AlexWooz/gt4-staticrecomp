@@ -59,6 +59,21 @@ library is profile `aspect` (`docs/inputs/slice217-ee-libraries.json`): the slic
 translator, clang-cl 23.1.2) on the patched derivative of the pinned ELF; the translator's analysis is unchanged (138,813
 entries) and only `unit_008F` and `unit_00A7` differ from slice208, each by the one patched line.
 
+**Spec II (TASK-166, 2026-11-04).** The Spec II port of the hooks (TASK-100 S8) had the canvas hook but not these two words,
+so at a ratio wider than 16:9 the race-font glyphs (the digital speedometer and odometer of the gauges) and the mirror kept
+their 16:9 width in frame pixels and were stretched with the frame. The same two instructions, patched to the same words
+and the same block (`scripts/spec2_aspect_patch.py`, `tests/python/test_spec2_aspect_patch.py`):
+
+| ELF word (Spec II) | v2.00 twin | Old -> new |
+|---|---|---|
+| 0x001C519C, `RaceDisplay::render` 0x001C5040: the race font x scale in wide mode, multiplied by the font's own x scale at this + 0xB0 and set on the race font 0x00665048 through 0x0031EB78 | 0x0039F554 | 0x3C013F40 `lui at,0x3F40` -> 0x8C017F00 `lw at,0x7F00(zero)` |
+| 0x001EB65C, the mirror placement after the `jal` at 0x001EB634 (the same sequence as v2.00's 0x0033EF78..0x0033EF98) | 0x0033EF98 | 0x24080280 `addiu t0,zero,640` -> 0x8C087F04 `lw t0,0x7F04(zero)` |
+
+Translated with the pinned translator and the pinned S8c entry seeds (`private/slice405-spec2-aspect-producer`), the units
+are byte-identical to the pinned Spec II translation (`docs/inputs/spec2-ee-generated.json`) except `unit_0031` and
+`unit_003A`, one line each. The host already fills the block for both targets at every guest VBlank, with the original
+constants at 16:9.
+
 Not changed in P2 (and why): the ±96 edge offsets (`RaceDisplayUtil::wideOffset`, they keep the HUD a centred 16:9
 block, the owner's default); the race monitor bar width 854 (`func_003D8518`, centred in the canvas); the menu/PGL text
 cave and the loading-screen orthos (menus, loading screens, FMVs and photo mode stay pillarboxed 16:9);
