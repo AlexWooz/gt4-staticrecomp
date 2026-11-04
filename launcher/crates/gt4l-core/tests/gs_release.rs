@@ -326,3 +326,161 @@ fn the_portable_marker_is_added_once_and_an_existing_one_is_kept() {
     assert_eq!(fs::read(&marker).unwrap(), b"kept", "an existing marker is left as it is");
     let _ = fs::remove_dir_all(&folder);
 }
+
+// TASK-158: installing a package the player downloaded by hand.
+
+/// A server with one release 1.2.1 and a download folder holding `saved` under `file_name`.
+fn archive_fixture(name: &str, file_name: &str, saved: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
+    let server = scratch(&format!("{name}-server"));
+    let install = scratch(&format!("{name}-root"));
+    let downloads = scratch(&format!("{name}-downloads"));
+    let good = b"exe good".to_vec();
+    write_list(&server, &[write_release(&server, &FakeRelease { tag: "gt4gs-v1.2.1", prerelease: false, executable: &good, serve: &package(&good) })]);
+    let path = downloads.join(file_name);
+    fs::write(&path, saved).unwrap();
+    (server, install, path)
+}
+
+#[test]
+fn a_good_archive_installs_like_the_download_and_current_points_at_it() {
+    let good = b"exe good".to_vec();
+    let (server, install, path) = archive_fixture("archive-good", "gt4-gs-1.2.1-windows-x64.zip", &package(&good));
+    let mut steps = Vec::new();
+    let outcome = gs_release::install_archive_with_release(&source(&server), &path, &install, &mut |step| steps.push(step)).unwrap();
+    let Outcome::Installed(installed) = outcome else { panic!("installed") };
+    assert_eq!(installed.version, Version(1, 2, 1));
+    assert_eq!(installed.executable_sha256, gs_release::sha256_hex(&good));
+    assert_eq!(fs::read_to_string(install.join("current.txt")).unwrap().trim(), "1.2.1");
+    assert!(install.join("1.2.1").join(gs_release::PORTABLE_MARKER).is_file());
+    assert_eq!(gs_release::installed(&install).unwrap().version, Version(1, 2, 1));
+    assert!(steps.contains(&gs_release::Step::Installing));
+}
+
+#[test]
+fn a_tampered_archive_is_refused_and_the_previous_install_is_untouched() {
+    let good = b"exe good".to_vec();
+    let (server, install, path) = archive_fixture("archive-tampered", "gt4-gs-1.2.1-windows-x64.zip", &package(&good));
+    gs_release::install_archive_with_release(&source(&server), &path, &install, &mut |_| {}).unwrap();
+    let before = fs::read(install.join("1.2.1").join("gt4-gs.exe")).unwrap();
+    let mut tampered = package(b"exe evil");
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0xFF;
+    fs::write(&path, &tampered).unwrap();
+    let problem = gs_release::install_archive_with_release(&source(&server), &path, &install, &mut |_| {}).unwrap_err();
+    assert!(matches!(problem, gs_release::ArchiveProblem::HashMismatch { .. }), "{problem:?}");
+    assert_eq!(fs::read(install.join("1.2.1").join("gt4-gs.exe")).unwrap(), before);
+    assert_eq!(gs_release::installed(&install).unwrap().version, Version(1, 2, 1));
+    assert!(!install.join(".staging-1.2.1").exists());
+}
+
+#[test]
+fn a_tampered_archive_on_a_fresh_pc_installs_nothing() {
+    let (server, install, path) = archive_fixture("archive-fresh", "gt4-gs-1.2.1-windows-x64.zip", b"not the package");
+    let problem = gs_release::install_archive_with_release(&source(&server), &path, &install, &mut |_| {}).unwrap_err();
+    assert!(problem.message(gt4l_core::language::Language::fallback()).contains("checksum"));
+    assert!(gs_release::installed(&install).is_none());
+    assert!(!install.join("1.2.1").exists());
+}
+
+#[test]
+fn only_the_exact_package_file_name_is_accepted() {
+    let good = b"exe good".to_vec();
+    for wrong in [
+        "gt4-gs.zip",
+        "gt4-gs-1.2.1-windows-x64 (1).zip",
+        "GT4-GS-1.2.1-windows-x64.zip",
+        "gt4-gs-1.2-windows-x64.zip",
+        "gt4-gs-01.2.1-windows-x64.zip",
+        "gt4-gs-1.2.1-windows-x64.zip.zip",
+    ] {
+        let (server, install, path) = archive_fixture("archive-name", wrong, &package(&good));
+        let problem = gs_release::install_archive_with_release(&source(&server), &path, &install, &mut |_| {}).unwrap_err();
+        assert!(matches!(problem, gs_release::ArchiveProblem::WrongName { .. }), "{wrong}: {problem:?}");
+        assert!(gs_release::installed(&install).is_none(), "{wrong}");
+    }
+    assert_eq!(gs_release::parse_package_name("gt4-gs-1.2.1-windows-x64.zip"), Some(Version(1, 2, 1)));
+    assert_eq!(gs_release::parse_package_name("gt4-gs-v1.2.1-windows-x64.zip"), None);
+}
+
+#[test]
+fn a_version_below_the_minimum_is_refused() {
+    let good = b"exe good".to_vec();
+    let (server, install, path) = archive_fixture("archive-old", "gt4-gs-1.0.1-windows-x64.zip", &package(&good));
+    let problem = gs_release::install_archive_with_release(&source(&server), &path, &install, &mut |_| {}).unwrap_err();
+    assert!(matches!(problem, gs_release::ArchiveProblem::TooOld { version: Version(1, 0, 1) }), "{problem:?}");
+    // Even with a matching sums line, the pure function refuses it.
+    let sums = gs_release::parse_checksums(&format!("{}  gt4-gs-1.0.1-windows-x64.zip\n", gs_release::sha256_hex(&package(&good))));
+    assert!(gs_release::install_from_archive(&path, &sums, &install).is_err());
+    assert!(gs_release::installed(&install).is_none());
+}
+
+#[test]
+fn an_oversized_file_is_refused_before_it_is_read() {
+    let install = scratch("archive-big-root");
+    let downloads = scratch("archive-big-downloads");
+    let path = downloads.join("gt4-gs-1.2.1-windows-x64.zip");
+    let file = fs::File::create(&path).unwrap();
+    file.set_len(gs_release::MAX_PACKAGE_BYTES + 1).unwrap(); // sparse where supported: the check is on the length
+    drop(file);
+    let sums = gs_release::parse_checksums(&format!("{}  gt4-gs-1.2.1-windows-x64.zip\n", "a".repeat(64)));
+    let problem = gs_release::install_from_archive_checked(&path, &sums, &install).unwrap_err();
+    assert!(matches!(problem, gs_release::ArchiveProblem::TooLarge { .. }), "{problem:?}");
+    assert!(!install.join("1.2.1").exists());
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn an_archive_without_the_program_is_refused_even_with_a_matching_sum() {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer.start_file("readme.txt", zip::write::SimpleFileOptions::default()).unwrap();
+    writer.write_all(b"no program here").unwrap();
+    let archive = writer.finish().unwrap().into_inner();
+    let install = scratch("archive-noexe-root");
+    let downloads = scratch("archive-noexe-downloads");
+    let path = downloads.join("gt4-gs-1.2.1-windows-x64.zip");
+    fs::write(&path, &archive).unwrap();
+    let sums = gs_release::parse_checksums(&format!("{}  gt4-gs-1.2.1-windows-x64.zip\n", gs_release::sha256_hex(&archive)));
+    let error = gs_release::install_from_archive(&path, &sums, &install).unwrap_err();
+    assert!(error.contains("gt4-gs.exe"), "{error}");
+    assert!(gs_release::installed(&install).is_none());
+    assert!(!install.join("1.2.1").exists());
+    assert!(!install.join(".staging-1.2.1").exists());
+}
+
+#[test]
+fn an_archive_without_a_sums_line_is_never_installed() {
+    let good = b"exe good".to_vec();
+    let archive = package(&good);
+    let install = scratch("archive-noline-root");
+    let downloads = scratch("archive-noline-downloads");
+    let path = downloads.join("gt4-gs-1.2.1-windows-x64.zip");
+    fs::write(&path, &archive).unwrap();
+    let empty = gs_release::parse_checksums("");
+    let other = gs_release::parse_checksums(&format!("{}  gt4-gs-1.2.2-windows-x64.zip\n", gs_release::sha256_hex(&archive)));
+    for sums in [&empty, &other] {
+        let problem = gs_release::install_from_archive_checked(&path, sums, &install).unwrap_err();
+        assert!(matches!(problem, gs_release::ArchiveProblem::NoEntry { .. }), "{problem:?}");
+    }
+    // The shared installer refuses it as well.
+    assert!(gs_release::install_package(&archive, Version(1, 2, 1), &empty, &install, &mut |_| {}).is_err());
+    assert!(gs_release::installed(&install).is_none());
+}
+
+#[test]
+fn without_the_release_sums_the_archive_is_refused_with_a_clear_reason() {
+    let good = b"exe good".to_vec();
+    let downloads = scratch("archive-offline-downloads");
+    let install = scratch("archive-offline-root");
+    let path = downloads.join("gt4-gs-1.2.1-windows-x64.zip");
+    fs::write(&path, package(&good)).unwrap();
+    // A server with no release list at all (offline), and one whose release lacks SHA256SUMS.
+    let empty_server = scratch("archive-offline-server");
+    let problem = gs_release::install_archive_with_release(&source(&empty_server), &path, &install, &mut |_| {}).unwrap_err();
+    assert!(matches!(problem, gs_release::ArchiveProblem::SumsUnavailable { .. }), "{problem:?}");
+    let other_server = scratch("archive-nosums-server");
+    write_list(&other_server, &[r#"{"tag_name":"gt4gs-v1.2.1","prerelease":false,"draft":false,"assets":[]}"#.to_string()]);
+    let problem = gs_release::install_archive_with_release(&source(&other_server), &path, &install, &mut |_| {}).unwrap_err();
+    assert!(matches!(problem, gs_release::ArchiveProblem::SumsUnavailable { .. }), "{problem:?}");
+    assert!(problem.message(gt4l_core::language::Language::fallback()).contains("not installed"));
+    assert!(gs_release::installed(&install).is_none());
+}

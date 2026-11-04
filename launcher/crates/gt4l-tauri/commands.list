@@ -7,6 +7,7 @@ set_setting
 reset_gs_settings_to_defaults
 gsdx_download_needed
 download_gsdx
+install_gsdx_archive
 coregs20_offer
 use_coregs20
 setup_choose_disc

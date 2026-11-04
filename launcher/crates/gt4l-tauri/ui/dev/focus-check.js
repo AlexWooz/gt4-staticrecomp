@@ -954,11 +954,17 @@
     var real = GT4.backend.call;
     var needed = true;
     var download = null;
+    var calls = [];
     GT4.backend.call = function (command, args) {
       if (command === "gsdx_download_needed") {
         return Promise.resolve(needed);
       }
       if (command === "download_gsdx") {
+        calls.push(command);
+        return new Promise(function (resolve, reject) { download = { resolve: resolve, reject: reject }; });
+      }
+      if (command === "install_gsdx_archive") {
+        calls.push(command);
         return new Promise(function (resolve, reject) { download = { resolve: resolve, reject: reject }; });
       }
       return real(command, args);
@@ -974,7 +980,9 @@
       await wait(150);
     };
     var modal = function () { return document.querySelector(".modal"); };
-    var buttons = function () { return modal().querySelectorAll(".modal-actions button"); };
+    var buttons = function () {  // the buttons shown (TASK-158 keeps Install from a file hidden until a failure)
+      return Array.prototype.filter.call(modal().querySelectorAll(".modal-actions button"), function (button) { return button.style.display !== "none"; });
+    };
     var before = await storedRenderer();
     try {
       await openFromCoregs();
@@ -1009,13 +1017,30 @@
       check("the dialog closes by itself after the install", !modal(), "still open");
       check("after the install GSdx is stored and shown", (await storedRenderer()) === "pcsx2" && selectorText("renderer") === T("app.gsdx_name"), selectorText("renderer"));
 
+      calls.length = 0;
       await openFromCoregs();
       buttons()[0].click();
       await wait(100);
       download.reject("no internet");
       await wait(150);
       check("a failed download says so in the dialog", !!modal() && modal().querySelector(".modal-text").textContent.indexOf("no internet") >= 0, modal() ? modal().textContent : "closed");
+      var shown = function (index) { return buttons()[index].style.display !== "none"; };
+      check("a failed download offers Try again, Install from a file and Close, with the hint", shown(0) && shown(1) && shown(2) &&
+        buttons()[0].textContent === T("settings.gsdx_retry") && buttons()[1].textContent === T("settings.gsdx_from_file") &&
+        buttons()[2].textContent === T("settings.gsdx_close") && !modal().querySelector(".gsdx-hint").hidden && modal().querySelector(".gsdx-hint").textContent.indexOf("windows-x64.zip") >= 0,
+        modal() ? modal().textContent : "closed");
+      buttons()[0].click();
+      await wait(100);
+      check("Try again runs the download again", calls.join(",") === "download_gsdx,download_gsdx" && !modal().querySelector(".gsdx-progress").hidden, calls.join(","));
+      download.reject("no internet");
+      await wait(150);
       buttons()[1].click();
+      await wait(100);
+      download.resolve(null);
+      await wait(150);
+      check("a cancelled file picker goes back to the failure view", !!modal() && modal().querySelector(".modal-text").textContent.indexOf("no internet") >= 0 &&
+        shown(0) && shown(1) && calls.join(",") === "download_gsdx,download_gsdx,install_gsdx_archive", calls.join(","));
+      buttons()[2].click();
       await wait(450);
       check("after a failed download CoreGS 2.0 stays", !modal() && selectorText("renderer") === T("choice.renderer.coregs20") && (await storedRenderer()) === "coregs20", selectorText("renderer"));
 
@@ -1060,7 +1085,9 @@
       return real(command, args);
     };
     var modal = function () { return document.querySelector(".modal"); };
-    var buttons = function () { return modal().querySelectorAll(".modal-actions button"); };
+    var buttons = function () {  // the buttons shown (TASK-158 keeps Install from a file hidden until a failure)
+      return Array.prototype.filter.call(modal().querySelectorAll(".modal-actions button"), function (button) { return button.style.display !== "none"; });
+    };
     var started = function () { return document.querySelector(".stage.home").classList.contains("is-running"); };
     var freshHome = async function () {
       await setHash("#/settings/general");
@@ -1139,7 +1166,8 @@
       await wait(150);
       var visible = function (index) { return buttons()[index].style.display !== "none"; };
       check("a failed download says so and keeps CoreGS 2.0 on offer", !!modal() && modal().querySelector(".modal-text").textContent.indexOf("no internet") >= 0 &&
-        visible(0) && !visible(1) && visible(2) && buttons()[2].textContent === T("settings.gsdx_close") && document.activeElement === buttons()[0],
+        visible(0) && visible(1) && visible(2) && visible(3) && buttons()[1].textContent === T("settings.gsdx_retry") &&
+        buttons()[3].textContent === T("settings.gsdx_close") && document.activeElement === buttons()[0],
         modal() ? modal().textContent : "closed");
       buttons()[0].click();
       await wait(300);
@@ -1151,7 +1179,7 @@
       await wait(100);
       download.reject("no internet");
       await wait(150);
-      buttons()[2].click();
+      buttons()[3].click();
       await wait(450);
       check("Close after a failed download starts nothing", !modal() && !started() && calls.indexOf("play") < 0, calls.join(","));
     } finally {

@@ -147,6 +147,29 @@ pub fn install_renderer(dirs: &DataDirs, progress: &mut dyn FnMut(Step)) -> Resu
     let root = dirs.renderer_install_root();
     let source = GithubSource::for_stream(Stream::Renderer);
     let outcome = gs_release::install_latest_reporting(&source as &dyn ReleaseSource, &root, progress)?;
+    record_renderer_install(dirs, &outcome);
+    Ok(outcome)
+}
+
+/// TASK-158: installs a gt4-gs package the player picked by hand, verified against the `SHA256SUMS` of its release (fetched
+/// online; without them nothing is installed). Same lock and same records as [`install_renderer`]. The error is the text to show.
+pub fn install_renderer_archive(
+    dirs: &DataDirs,
+    archive: &std::path::Path,
+    language: gt4l_core::language::Language,
+    progress: &mut dyn FnMut(Step),
+) -> Result<Outcome, String> {
+    let _serial = RENDERER_INSTALL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = dirs.renderer_install_root();
+    let source = GithubSource::for_stream(Stream::Renderer);
+    let outcome = gs_release::install_archive_with_release(&source as &dyn ReleaseSource, archive, &root, progress)
+        .map_err(|problem| problem.message(language))?;
+    record_renderer_install(dirs, &outcome);
+    Ok(outcome)
+}
+
+/// Writes the installed gt4-gs version to `version.json` and the log.
+fn record_renderer_install(dirs: &DataDirs, outcome: &Outcome) {
     let location = version_location(dirs);
     if let Err(message) = versions::record_renderer(
         &location.path,
@@ -157,7 +180,6 @@ pub fn install_renderer(dirs: &DataDirs, progress: &mut dyn FnMut(Step)) -> Resu
         state::log_warn(dirs, &format!("version.json not updated: {message}"));
     }
     state::log(dirs, &format!("gt4-gs {} ready", outcome.installed().version.text()));
-    Ok(outcome)
 }
 
 pub fn step_name(step: Step) -> &'static str {

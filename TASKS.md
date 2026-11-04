@@ -3085,8 +3085,18 @@ game.ini (`hw_textures`) all take the resolved folder. Commands `textures_state`
 `reset_textures_folder`. Locale keys 675 in both languages. Tests: launcher (7 new), focus checks 275/282, nav-test 209. Not run
 with a real pack yet. PR #145 and its study #155 recorded as merged (tree-neutral), issue #95 answered and closed.
 
-### TASK-158 — Download GSdx again, or install it from an archive by hand (rc13; PR #143, issue #139)
+### TASK-158 — Download GSdx again, or install it from an archive by hand (rc13; PR #143, issue #139; done)
 
 Contributor: luanantony (PR #143). When the GSdx download fails, offer a retry and installing the release archive by hand,
 checked against the same pin. Re-do on the current launcher (the CoreGS 2.0 offer of rc10 stays). Acceptance: launcher tests,
 focus checks and nav-test in both languages.
+
+Done (2026-11-04): after a failed GSdx download the dialog offers Try again, Install from a file… (a .zip picker) and Close,
+with the CoreGS 2.0 alternative kept where it was, and a hint naming github.com/moesuito/gt4recomp-gs/releases. The archive
+must be named exactly `gt4-gs-<version>-windows-x64.zip`, at least the minimum version, within the size limit, and match the
+SHA-256 line of that release's SHA256SUMS fetched online; with no SHA256SUMS nothing is installed. Both paths share
+`gs_release::install_package` (size, hash, minimum version, unpack, check, publish, portable.ini), so the download behaves as
+before. Command `install_gsdx_archive`. The PR guessed the version from the name or the zip and checked no hash: not taken.
+Tests: launcher 659 pass (8 new archive cases), focus checks 278/285 (Try again, Install from a file, a cancelled picker; the
+check's dialog buttons are the shown ones), nav-test 209, locale keys 687 in both languages. Not run against a real release.
+PR #143 recorded as merged (tree-neutral); issue #139 (closed with rc10) answered.

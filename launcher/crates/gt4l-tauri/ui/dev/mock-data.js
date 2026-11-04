@@ -5,6 +5,7 @@
  *
  * Query options (ui/dev/index.html?...):
  *   gsdx=missing|offline                            (GSdx is not installed: the download works, or fails)
+ *   gsdxfile=ok|cancel|bad                          (with gsdx=offline, "Install from a file": works, picker cancelled, or refused; default bad)
  *   vulkan=no                                       (the card has no Vulkan 1.2: Play does not offer CoreGS 2.0 for a missing GSdx)
  *   setup=done|needed|wrong|copying|checking|preparing|renderer|failed|missing|offline   (default done)
  *   pick=spec                                       (setup: the picker returns an unsupported image, refused)
@@ -765,6 +766,23 @@
               clearInterval(timer);
               emit("gsdx-download", { step: "installing" });
               setTimeout(resolve, 500);
+            }
+          }, 500);
+        });
+      case "install_gsdx_archive":
+        // TASK-158: the file picker and the install; `gsdxfile` chooses the result (default: refused).
+        return new Promise(function (resolve, reject) {
+          var choice = query.get("gsdxfile") || "bad";
+          if (choice === "cancel") {
+            resolve(null);
+            return;
+          }
+          emit("gsdx-download", { step: "installing" });
+          setTimeout(function () {
+            if (choice === "ok") {
+              resolve(true);
+            } else {
+              reject(new Error("gt4-gs-1.2.3-windows-x64.zip does not match the checksum published with its release, so it was not installed. The file may be damaged or changed: download it again."));
             }
           }, 500);
         });
