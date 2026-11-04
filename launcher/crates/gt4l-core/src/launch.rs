@@ -299,6 +299,8 @@ fn add_common(variables: &mut BTreeMap<&'static str, String>, settings: &Setting
     if settings.is_on("performance_report") {
         variables.insert("GT4_PERF", "1".to_string());
     }
+    // TASK-161: the game's full trigger range and the controls' trigger ranges follow this one switch (game_main.cpp).
+    variables.insert("GT4_TRIGGER_FULL_RANGE", flag(settings.is_on("trigger_full_range")));
     match settings.get("check_vu_code") {
         "100" => {
             variables.insert("GT4_VU1_VERIFY", "100".to_string());
@@ -403,8 +405,8 @@ pub const STANDALONE_GS_INI_FILE: &str = "gt4-gs.ini";
 
 /// The `game.ini` text (TASK-097): the player's choices that the launcher turns into variables at Play, so a direct start of
 /// the game (no launcher) honours them. `key=value` lines read by `native/standalone.cpp`:
-/// `fullscreen`, `present_mode`, `monitor`, `output_size` (only when a monitor is known), `performance_report`
-/// and `check_vu_code`. Each key stands for the variable [`add_common`] and [`display_environment`] set (the mapping is
+/// `fullscreen`, `present_mode`, `monitor`, `output_size` (only when a monitor is known), `performance_report`,
+/// `check_vu_code` and `trigger_full_range` (TASK-161). Each key stands for the variable [`add_common`] and [`display_environment`] set (the mapping is
 /// tested against them). Anything the game defaults itself (GSdx, 480p, 16:9, automatic ultrawide) is not written.
 /// With CoreGS 2.0 chosen, [`coregs20_section`] adds its keys.
 pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarget>) -> String {
@@ -431,6 +433,7 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
     }
     text.push_str(&format!("performance_report={}\n", flag(settings.is_on("performance_report"))));
     text.push_str(&format!("check_vu_code={check_vu_code}\n"));
+    text.push_str(&format!("trigger_full_range={}\n", flag(settings.is_on("trigger_full_range"))));
     // TASK-148: the chosen controller, as GT4_PAD.
     if let Some(choice) = controller_environment(settings) {
         text.push_str(&format!("pad={choice}\n"));

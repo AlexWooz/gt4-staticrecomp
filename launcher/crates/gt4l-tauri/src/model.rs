@@ -170,6 +170,10 @@ pub fn settings_table_with_monitors(
             continue;
         }
         let mut row = launcher_row(definition, settings);
+        // TASK-161: the full trigger range sits with the triggers on the Controls page (its analog rows), not on General.
+        if definition.id == "trigger_full_range" {
+            row["group"] = json!("controls");
+        }
         // TASK-118: the release-candidate rows get their own section (RC Settings), drawn only by RC builds.
         if RC_ONLY_ROWS.contains(&definition.id) {
             row["group"] = json!("rc");
@@ -1113,7 +1117,16 @@ mod table_tests {
         let circle = buttons.iter().find(|button| button["id"] == "circle").unwrap();
         assert_eq!(circle["xinput"], "A", "swapped");
         let analog: Vec<&str> = view["triggers"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect();
-        assert_eq!(analog, ["l2_deadzone", "l2_curve", "r2_deadzone", "r2_curve", "lstick_deadzone", "rstick_deadzone"]);
+        assert_eq!(
+            analog,
+            ["trigger_full_range", "l2_deadzone", "l2_curve", "r2_deadzone", "r2_curve", "lstick_deadzone", "rstick_deadzone"]
+        );
+        // TASK-161: the full trigger range toggle, off by default.
+        let full = &view["triggers"][0];
+        assert_eq!((full["control"].as_str(), full["default"].as_bool(), full["current"].as_bool()), (Some("toggle"), Some(false), Some(false)));
+        let mut settings = Settings::default();
+        settings.set("trigger_full_range", "on").unwrap();
+        assert_eq!(controls_view(&settings, &controls, false)["triggers"][0]["current"], true);
         assert_eq!(view["locked"], false);
         assert_eq!(stick_setting("rstick_deadzone"), Some(Stick::Right));
         assert_eq!(stick_setting("l2_deadzone"), None);

@@ -102,6 +102,24 @@
     return options;
   }
 
+  // TASK-161: the pressure byte that is the game's 100% at the end of a trigger's travel (native/controls.cpp
+  // pressure_full_for): with the full trigger range on, the binding's `range_full` or the whole byte (255); off, its `range`
+  // or the game's own 100%, 45 on R2 (throttle) and 84 on L2 (brake), 255 on any other button.
+  function triggerFull(id, sources, fullRange) {
+    var source = (sources || []).filter(function (candidate) {
+      var name = sourceName(candidate);
+      return family(candidate) === "xinput" && (name === "LT" || name === "RT");
+    })[0];
+    var options = source ? sourceOptions(source) : {};
+    if (fullRange) {
+      return options.range_full ? Number(options.range_full) : 255;
+    }
+    if (options.range) {
+      return Number(options.range);
+    }
+    return id === "r2" ? 45 : id === "l2" ? 84 : 255;
+  }
+
   // The pressure the game computes from a trigger reading (native/controls.cpp): raw and deadzone are fractions of
   // full travel (255). Linear: (v - d) * 255 / (255 - d), integer division; otherwise curve(n) with n = (v - d) /
   // (255 - d). Returns 0..1.
@@ -383,6 +401,7 @@
     sourceName: sourceName,
     sourceOptions: sourceOptions,
     triggerOutput: triggerOutput,
+    triggerFull: triggerFull,
     padSources: padSources,
     padLive: padLive,
     liveState: liveState,

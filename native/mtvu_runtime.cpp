@@ -10,6 +10,7 @@
 #include "race_widescreen.hpp"
 #include "display_aspect.hpp"
 #include "flare_limits.hpp"
+#include "fov_adjust.hpp"
 #include "perf_clock.hpp"
 #include "perf_probe.hpp"
 
@@ -879,6 +880,8 @@ void vblank_sync() {
   }
   // TASK-117: the flare-limits block of Performance mode (native/flare_limits.hpp; GT4_FLARE_LIMITS).
   gt4::flare_limits::at_guest_vblank(ps2::g_ram, 32u << 20);
+  // TASK-160: the field of view zoom follows the pad buttons the game keeps (native/fov_adjust.hpp; GT4_FOV_ADJUST).
+  gt4::fov_adjust::at_guest_vblank(ps2::g_ram, 32u << 20);
   Runtime &r = rt();
   if (!r.started) return;
   // TASK-084 step 3: in pcsx2 mode the VSYNC is a journal entry after the frame's VU1 output, so the EE does not

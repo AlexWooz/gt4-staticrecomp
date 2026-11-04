@@ -3,7 +3,7 @@
 //   - the stick byte to yaw offset table: 0 at rest, a half turn at both ends, odd around rest, monotonic, and the
 //     reference patch's direction (right is positive);
 //   - the yaw argument: unchanged at rest (no guest add at all), the guest add otherwise;
-//   - the analog pedal return labels: only the target's two scale calls match;
+//   - the analog channel rule: only a right stick Y channel assigned to the accelerator or the brake is cleared;
 //   - the per-target addresses: v2.00 (the hook compiles against the active table; a Spec II build pins the fixture to v2.00).
 #include "camera_360.hpp"
 #include "game_target.hpp"
@@ -95,20 +95,29 @@ void check_addresses() {
   check(active.yaw_call_return == v200.camera_yaw_call_return && active.pad_stick_x == v200.camera_pad_stick_x,
         "the hook reads the active (v2.00) table");
   check(v200.camera_pad_stick_x < gt4::target::kV200.ram_size, "the stick byte is inside guest RAM");
-  check(v200.camera_accelerator_scale_return == 0x004387C8u, "v2.00 accelerator scale (func_004386F0 case 3, jal at 0x004387C0)");
-  check(v200.camera_brake_scale_return == 0x004387F0u, "v2.00 brake scale (func_004386F0 case 4, jal at 0x004387E8)");
-  check(active.accelerator_scale_return == v200.camera_accelerator_scale_return &&
-            active.brake_scale_return == v200.camera_brake_scale_return && active.complete(),
-        "the pedal hook reads the active (v2.00) table");
+  check(v200.camera_analog_loop_return == 0x0043BE74u, "v2.00 analog loop call (func_0043BBC0, jal 0x004386F0 at 0x0043BE6C)");
+  check(v200.camera_analog_channel_table == 0x006A64C0u && v200.camera_analog_slot_bias == 0u, "v2.00 slot table, slot in s0");
+  check(active.analog_loop_return == v200.camera_analog_loop_return &&
+            active.analog_channel_table == v200.camera_analog_channel_table && active.complete(),
+        "the analog loop hook reads the active (v2.00) table");
 }
 
-void check_pedal_returns() {
-  constexpr Addresses addresses{0x003456D8u, 0x0086F99Eu, 0x004387C8u, 0x004387F0u};
-  static_assert(is_pedal_scale_return(addresses, 0x004387C8u) && is_pedal_scale_return(addresses, 0x004387F0u));
-  check(!is_pedal_scale_return(addresses, 0x00438818u), "case 5 (0x00438810) keeps its value");
-  check(!is_pedal_scale_return(addresses, 0x003456D8u), "the yaw call is not a pedal call");
-  check(!is_pedal_scale_return(Addresses{}, 0u), "an absent target matches nothing, not even ra 0");
-  check(!Addresses{0x003456D8u, 0x0086F99Eu, 0u, 0u}.complete(), "a table without the pedal calls keeps the camera off");
+void check_analog_channels() {
+  // The game's slot table (both targets): LX, LY, RX, RY, then the half axes LX-, LX+, LY-, LY+, RX-, RX+, RY up, RY down.
+  constexpr std::uint8_t slots[12] = {0x02, 0x03, 0x00, 0x01, 0x14, 0x15, 0x16, 0x17, 0x10, 0x11, 0x12, 0x13};
+  static_assert(clears_analog_channel(0x12, kAnalogAccelerator) && clears_analog_channel(0x13, kAnalogBrake));
+  for (std::uint8_t channel : slots) {
+    const bool right_stick_y = channel == 0x01 || channel == 0x12 || channel == 0x13;
+    for (std::int32_t function = -1; function <= 8; ++function) {
+      const bool pedal = function == kAnalogAccelerator || function == kAnalogBrake;
+      check(clears_analog_channel(channel, function) == (right_stick_y && pedal),
+            "only a right stick Y channel assigned to the accelerator or the brake is cleared");
+    }
+  }
+  check(!clears_analog_channel(0x16, kAnalogAccelerator) && !clears_analog_channel(0x17, kAnalogBrake),
+        "the left stick Y halves keep the pedals");
+  check(!clears_analog_channel(0x02, 0), "steering on the left stick X is untouched");
+  check(!Addresses{0x003456D8u, 0x0086F99Eu, 0u, 0u, 0u}.complete(), "a table without the analog loop keeps the camera off");
 }
 
 }  // namespace
@@ -118,7 +127,7 @@ int main() {
   check_offsets();
   check_yaw_argument();
   check_addresses();
-  check_pedal_returns();
+  check_analog_channels();
   if (failures != 0) {
     std::fprintf(stderr, "camera_360_fixture: %d failure(s)\n", failures);
     return 1;

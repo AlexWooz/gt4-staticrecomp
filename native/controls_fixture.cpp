@@ -289,6 +289,56 @@ int game_stick_out(int byte) {
   return 128 + (127 * (byte - 165) + 45) / 90;
 }
 
+// TASK-161: the full trigger range. `range` is the pressure at full travel on the game's own scale, `range_full` on the full
+// one (both games' 100% at 254 of the byte); each applies under its own scale only, so a range made for one scale never
+// caps the other. Every combination: defaults, either option, both, on R2, L2 and another button, under both scales.
+void check_full_range_scale() {
+  using gt4::controls::PressureScale;
+  const struct {
+    const char *text;
+    const char *input;
+    int stock;
+    int full;
+  } cases[] = {
+      {"r2 = [\"xinput:RT\"]", "r2", 45, 255},
+      {"l2 = [\"xinput:LT\"]", "l2", 84, 255},
+      {"cross = [\"xinput:RT\"]", "cross", 255, 255},
+      {"r2 = [\"xinput:RT | range=45\"]", "r2", 45, 255},           // a saved TASK-147 range does not cap the full scale
+      {"r2 = [\"xinput:RT | range=84\"]", "r2", 84, 255},           // the brake on R2 (docs/CONTROLS.md)
+      {"l2 = [\"xinput:LT | range=45\"]", "l2", 45, 255},           // the throttle on L2
+      {"r2 = [\"xinput:RT | range=90\"]", "r2", 90, 255},
+      {"r2 = [\"xinput:RT | range_full=200\"]", "r2", 45, 200},     // only the full scale changes
+      {"l2 = [\"xinput:LT | range=84 range_full=128\"]", "l2", 84, 128},
+      {"cross = [\"xinput:RT | range_full=100\"]", "cross", 255, 100},
+  };
+  for (const auto &item : cases) {
+    const Binding binding = only_binding(parse_text(std::string("schema = 1\n[bindings]\n") + item.text + "\n"), item.input);
+    require(pressure_full_for(binding, PressureScale::stock) == item.stock, std::string("stock full of ") + item.text);
+    require(pressure_full_for(binding, PressureScale::full) == item.full, std::string("full-range full of ") + item.text);
+    require(read_trigger(binding, 255, PressureScale::stock).pressure == item.stock, "full travel gives the stock full");
+    require(read_trigger(binding, 255, PressureScale::full).pressure == item.full, "full travel gives the full-range full");
+    require(read_trigger(binding, 30, PressureScale::full).pressure == 0 && !read_trigger(binding, 30, PressureScale::full).pressed,
+            "the deadzone is the same under both scales");
+    // Over the travel the full scale has every step of its range, in order.
+    int prior = -1;
+    int distinct = 0;
+    for (int raw = 31; raw <= 255; ++raw) {
+      const int pressure = read_trigger(binding, static_cast<std::uint8_t>(raw), PressureScale::full).pressure;
+      require(pressure >= prior, "the full-range reading rises with the travel");
+      distinct += pressure != prior;
+      prior = pressure;
+    }
+    if (item.full == 255) require(distinct == 225, "with the whole byte every raw step past the deadzone is its own pressure");
+  }
+  // The process-wide scale the game sets at start (game_main.cpp) is what read_trigger without a scale uses.
+  const Binding &r2 = only_binding(default_controls(), "r2");
+  require(pressure_scale() == PressureScale::stock && read_trigger(r2, 255).pressure == 45, "the default scale is the stock one");
+  set_pressure_scale(PressureScale::full);
+  require(read_trigger(r2, 255).pressure == 255 && read_trigger(r2, 143).pressure == 128, "full scale: the whole byte");
+  set_pressure_scale(PressureScale::stock);
+  require(read_trigger(r2, 255).pressure == 45, "back to the stock scale");
+}
+
 void check_axis_readings() {
   const auto &map = default_controls();
   // With the XInput dead zones and game_deadzone=keep a stick reads as slice 157 did.
@@ -503,6 +553,14 @@ void check_invalid_files() {
   expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=0\"]\n", "range must be", 3, "range of zero");
   expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=256\"]\n", "range must be", 3, "range over a byte");
   expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=4.5\"]\n", "range must be", 3, "range not whole");
+  // TASK-161: the full-range pressure at full travel, as strict as range.
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=0\"]\n", "range_full must be", 3, "range_full of zero");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=256\"]\n", "range_full must be", 3,
+                      "range_full over a byte");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=4.5\"]\n", "range_full must be", 3,
+                      "range_full not whole");
+  expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range_full=45\"]\n",
+                      "range_full applies to triggers only", 3, "range_full on a stick");
   expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range=45\"]\n", "range applies to triggers only", 3,
                       "range on a stick");
   expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | game_deadzone=off\"]\n", "game_deadzone must be", 3,
@@ -577,6 +635,7 @@ int main(int argc, char **argv) {
     check_default_keyboard_table();
     check_defaults_and_example_files();
     check_trigger_readings();
+    check_full_range_scale();
     check_axis_readings();
     check_stick_curves_and_signed_endpoints();
     check_remaps();

@@ -5,6 +5,22 @@
 Branch `task/095-ultrawide-menu-canvas` (re-does PR #177, Luan Antony co-author); `docs/ULTRAWIDE-OVERLAYS.md`. Pre-race screens,
 pause, pit menu and results keep their 16:9 shape, centred, at 21:9 and 32:9; 16:9 identical. Owner test pending.
 
+## 1.3.0-rc14 test build on the owner's desktop and laptop (2026-11-04, morning)
+
+For the owner's test before any pre-release (no PGO until the owner asks). Contents: TASK-159b, TASK-160 and TASK-161 (PR #197:
+the camera's pedal zeroing only on the right stick Y, FoV zoom on R3 + D-pad on by default, full trigger range off by default
+with a launcher switch), TASK-164 (first-start note on Play, issue #160), TASK-166 (Spec II ultrawide: the race font x scale and
+the mirror divisor patched as on v2.00, `scripts/spec2_aspect_patch.py`, units `private/slice405-spec2-aspect-producer`) and
+TASK-167 (the Spec II PT-BR + CPSP image named). Games slice406, plain (pins `docs/inputs/slice406-*.json`, exe `e1a4e4d0...`
+v2.00, `73167eaf...` Spec II, EE libraries from `build/cam360/*-units-rc14`; distribution `private/slice406-dist-130-rc14-test`),
+launchers labelled rc14 (`private/slice406-launchers-rc14-test`), installer
+`private/slice406-installer-130-rc14-test/GT4Recomp-Setup-1.3.0-rc14.exe`. Gates against rc13 (`gates5.sh`, wrong=0): race clock,
+simulation state and every compared frame identical on three Spec II laps, the v2.00 night race and Arcade path, Spec II at 6x;
+VU1/VU0 and MTVU checks 0 differences. Launcher tests 661, focus checks 293/293 and 300/300, nav-test 217/217, locale keys 695 in
+both. CTest 299/300 in both builds and the Python suite 785 tests, 13 failures (56 skipped): the 13 failures are `test_gs_settings`/`test_gs_live`
+expecting the GSdx defaults without `LoadTextureReplacementsAsync`, added on 2026-10-27 (TASK-133), not from rc14. Desktop updated
+through the installer's update mode (rc13 test files in `private/_program-backups/rc13test-before-rc14test-20261104T120226Z`).
+
 ## 1.3.0-rc13 published as a pre-release (2026-11-04)
 
 Tag `v1.3.0-rc13`. Contents: TASK-149 (Nordschleife fences), TASK-150 (showroom: large writes merged on the GPU, IN-538),
@@ -34,6 +50,14 @@ simulation state and every compared frame identical, VU1/VU0 and MTVU checks 0 d
 `private/_program-backups/rc12test-before-rc13test-20261104T064835Z`); the laptop's portable copy updated in place (backup
 `avell-rc12test-before-rc13test-20261104T064859Z`). Still open for rc13: TASK-150 (showroom frame times) and TASK-151's frame
 times: both scenes read GS memory back (the showroom every other frame, photo mode every frame) and wait for the GPU.
+
+## TASK-161: full trigger range for the throttle and the brake, both games, off by default (2026-11-04)
+
+Branch `task/161-trigger-sensitivity`; `docs/research/TRIGGER-SENSITIVITY.md`. Owner test decides the default.
+
+## TASK-160: field of view zoom on R3 + D-pad, both games, on by default, checked headless (2026-11-04)
+
+Branch `task/160-fov-adjustment`; `docs/FOV-ADJUST.md`. Owner test pending.
 
 ## TASK-159: 360-degree chase camera on the right stick, both games checked headless, on by default (2026-11-04)
 

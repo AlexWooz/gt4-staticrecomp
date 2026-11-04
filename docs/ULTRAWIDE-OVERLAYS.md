@@ -58,7 +58,7 @@ Not touched, on purpose:
 
 ## 3. The hooks
 
-- `scripts/camera360_units.py` (with the camera calls of TASK-159) adds:
+- `scripts/camera360_units.py` (with the calls and statements of TASK-159, 159b, 160 and 161) adds:
   - `::gt4::display_aspect::before_overlay_ortho_call(c);` between the delay slot and the call at the two ortho calls of each
     target (v2.00 `unit_0045`, `unit_00BB`; Spec II `unit_009B`, `unit_003F`);
   - `::gt4::display_aspect::after_overlay_draw(c);` before the strobe renderer's first call after its draw (v2.00 `jal 0x004A5400`
@@ -115,3 +115,10 @@ see photo mode on Spec II, so its panel is widened with the filled picture). Rep
 CTest `native_display_aspect` (`test_overlay_canvas`), `native_game_target`, `native_camera_360`, `native_race_display`,
 `native_race_widescreen`, `native_license_guard`, `native_controls`, `native_standalone` pass in both builds; Python
 `test_camera360_units.py` 11, `test_display_aspect.py` 22, `test_aspect_elf_patch.py` 9, `test_spec2_aspect_patch.py` 5.
+
+After the merge of `task/134-game-code-optimization-study` at `75e329c4` (rc14, slice406: TASK-159b, 160, 161 and 166): the merged
+script's units for TASK-159..161 are byte for byte the rc14 units, and only the six TASK-095 units differ (v2.00 `unit_0045`,
+`unit_00BB`, `unit_00E4`; Spec II `unit_003F`, `unit_008E`, `unit_009B`). Against the tree linked with the rc14 units (every other
+hook in): 16:9 identical on both drives (clock, state, 41 and 37 frames), at 21:9 the race identical and every overlay frame
+narrowed (20 of 20 and 5 of 5). CTest (camera, FoV, trigger range, controls, game target, standalone, Spec II hooks, display
+aspect) passes in both builds; `test_camera360_units.py` 15 tests.

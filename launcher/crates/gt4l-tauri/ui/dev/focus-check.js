@@ -571,6 +571,29 @@
     check("the left stick moves to its real position", !!capL && capL.getAttribute("transform") === "translate(24 0)", capL ? capL.getAttribute("transform") : "none");
     check("the status names the controller", /Test Pad/.test((document.querySelector(".cx-status") || {}).textContent || ""), "status");
     check("live input never moves focus", focusedControl() === "square", "focus " + focusedControl());
+    // TASK-161: the full trigger range toggle sits above L2 and R2, off; the L2 trigger meter shows the game's scale (84).
+    var fullRange = document.querySelector(".cx-analog .selector[data-setting=\"trigger_full_range\"]");
+    check("the full trigger range toggle is on the Controls page, Off", !!fullRange && selectorText("trigger_full_range") === T("settings.off"),
+      fullRange ? selectorText("trigger_full_range") : "none");
+    var meterL2 = document.querySelectorAll(".cx-meter-v")[0];
+    check("the L2 trigger meter shows the game scale (of 84)", !!meterL2 && /\/84\)$/.test(meterL2.textContent), meterL2 ? meterL2.textContent : "none");
+    if (fullRange) {
+      fullRange.click();
+      await wait(400);
+      check("the full trigger range toggle turns On", selectorText("trigger_full_range") === T("settings.on"), selectorText("trigger_full_range"));
+      meterL2 = document.querySelectorAll(".cx-meter-v")[0];
+      check("with the full trigger range the L2 trigger meter shows the whole byte (of 255)", !!meterL2 && /\/255\)$/.test(meterL2.textContent),
+        meterL2 ? meterL2.textContent : "none");
+      selectorNode("trigger_full_range").click();
+      await wait(400);
+      check("the full trigger range toggle turns back Off", selectorText("trigger_full_range") === T("settings.off"), selectorText("trigger_full_range"));
+      // Back to Square on the drawing, where the checks below expect the selection.
+      var squareNode = document.querySelector(".pad-ctl[data-control=\"square\"]");
+      if (squareNode) {
+        squareNode.focus();
+        await wait(100);
+      }
+    }
     GT4.devGamepads = function () { return []; };
     await wait(150);
     check("released buttons go dark", !cross.classList.contains("is-down"), "still down");

@@ -249,8 +249,9 @@ impl Controls {
         tuning
     }
 
-    /// Writes the tuning into the analog trigger source of `input`. The deadzone is clamped to [0, 0.95]. A `range`
-    /// option (TASK-147: the pressure byte at full travel) is kept.
+    /// Writes the tuning into the analog trigger source of `input`. The deadzone is clamped to [0, 0.95]. The `range`
+    /// option (TASK-147: the pressure byte at full travel) and `range_full` (TASK-161: the same with the game's full trigger
+    /// range on) are kept.
     pub fn set_trigger_tuning(&mut self, input: &str, tuning: TriggerTuning) -> Result<(), ControlsError> {
         let current: Vec<String> = self.sources(input).map(|sources| sources.to_vec()).unwrap_or_default();
         let deadzone = tuning.deadzone.clamp(0.0, 0.95);
@@ -260,8 +261,12 @@ impl Controls {
             .map(|source| {
                 if source.starts_with("xinput:LT") || source.starts_with("xinput:RT") {
                     let (base, existing) = split_options(&source);
-                    let range = existing.iter().find(|option| option.starts_with("range=")).map(|option| format!(" {option}"));
-                    format!("{base} | {options}{}", range.unwrap_or_default())
+                    let kept: String = existing
+                        .iter()
+                        .filter(|option| option.starts_with("range=") || option.starts_with("range_full="))
+                        .map(|option| format!(" {option}"))
+                        .collect();
+                    format!("{base} | {options}{kept}")
                 } else {
                     source
                 }
@@ -627,13 +632,14 @@ fn validate_option(line: usize, kind: InputKind, analog: bool, option: &str) -> 
             }
         }
         // TASK-147: the pressure byte a trigger gives at full travel (the game defaults R2 to 45 and L2 to 84).
-        "range" => {
+        // TASK-161: `range_full`, the same with the game's full trigger range on (default 255).
+        "range" | "range_full" => {
             if !(analog && kind == InputKind::Button) {
-                return Err(error(line, "range applies to triggers only"));
+                return Err(error(line, format!("{key} applies to triggers only")));
             }
-            let parsed: u32 = value.parse().map_err(|_| error(line, "range must be a whole number from 1 to 255"))?;
+            let parsed: u32 = value.parse().map_err(|_| error(line, format!("{key} must be a whole number from 1 to 255")))?;
             if !(1..=255).contains(&parsed) {
-                return Err(error(line, "range must be a whole number from 1 to 255"));
+                return Err(error(line, format!("{key} must be a whole number from 1 to 255")));
             }
         }
         "invert" => {
@@ -729,6 +735,18 @@ mod tests {
             controls.sources("circle").unwrap(),
             &["xinput:B".to_string(), "key:Space".to_string()][..]
         );
+    }
+
+    #[test]
+    fn a_full_range_option_is_checked_and_survives_a_tuning_change() {
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=200\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=45 range_full=255\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=0\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=256\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range_full=45\"]\n").is_err());
+        let mut controls = Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=90 range_full=200\"]\n").unwrap();
+        controls.set_trigger_tuning("r2", TriggerTuning { deadzone: 0.05, curve: Curve::Linear }).unwrap();
+        assert!(controls.render().contains("r2 = [\"xinput:RT | deadzone=0.050 curve=linear range=90 range_full=200\"]"));
     }
 
     #[test]

@@ -46,7 +46,11 @@ bool spec2_target_has_the_s8_hooks() {
   // TASK-159: the 360-degree chase camera (the spring at 0x002063D8, the pad buffer 0x0089B0C0 + 0x1E, the analog handler
   // at 0x00314870).
   if (h.camera_yaw_call_return != 0x00206490u || h.camera_pad_stick_x != 0x0089B0DEu ||
-      h.camera_accelerator_scale_return != 0x00314948u || h.camera_brake_scale_return != 0x00314970u)
+      h.camera_analog_loop_return != 0x003190F4u || h.camera_analog_channel_table != 0x006F9D10u ||
+      h.camera_analog_slot_bias != 1u)
+    return false;
+  // TASK-160: the projection function at 0x0023E7E0 and the port 0 button halfword.
+  if (h.fov_projection_call_return != 0x0023E834u || h.fov_pad_buttons != 0x00681344u)
     return false;
   // TASK-095: the 2D overlay ortho calls (the menu context at 0x0036D278, the strobe overlay renderer at 0x001FDCC8, whose
   // call from the race monitor 0x001F2E98 is left alone).

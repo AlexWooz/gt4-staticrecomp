@@ -21,11 +21,14 @@
 // 128 is rest (no change at all); 0 is a half turn one way, 255 the half turn the other way, linear in between.
 //
 // The same stick's Y axis is the game's analog accelerator (up) and brake (down) in its default controller setup, so a
-// sideways push that is not perfectly level would also accelerate or brake. While the camera is on, the race input's analog
-// channel handler (v2.00 func_004386F0, Spec II 0x00314870) gets 0 as the value of its accelerator and brake cases, and its
-// own zero test then stores nothing: the effect of the community "Disable right analog throttle/brake" patch, here only
-// while the camera is on (the default; GT4_CAMERA_360=0 gives the right stick Y back to the pedals). The pressure buttons
-// still accelerate and brake; steering and the menus are untouched.
+// sideways push that is not perfectly level would also accelerate or brake. The DualShock analog loop of the race input
+// (v2.00 func_0043BBC0 at 0x0043BE6C, Spec II 0x003190EC) hands each of its 12 analog channel slots, with the function the
+// controller setup assigns to it, to the channel handler (v2.00 func_004386F0, Spec II 0x00314870). While the camera is on,
+// a right stick Y channel (whole axis 0x01, up half 0x12, down half 0x13, read from the game's own slot table) assigned to
+// the accelerator (3) or the brake (4) is handed over with the value 0, and the handler's own zero test then stores nothing:
+// the effect of the community "Disable right analog throttle/brake" patch, narrowed (TASK-159b) to the camera stick. Any
+// other axis assigned to the pedals, the wheel path (func_0043C260, which feeds the same handler) and the pressure buttons
+// are untouched; GT4_CAMERA_360=0 gives the right stick Y back to the pedals.
 
 #include <array>
 #include <bit>
@@ -67,17 +70,35 @@ inline constexpr std::array<std::uint32_t, 256> kYawOffsetBits = [] {
 }();
 
 // What the hooks need from one game target (native/game_target.hpp): the return labels of the calls (each hook checks that
-// ra holds one of its own, so a unit of another target can never feed it) and the stick byte. Zeros mean "not in this
-// target": the camera then stays off.
+// ra holds its own, so a unit of another target can never feed it), the stick byte, and the analog loop's slot table. Zeros
+// mean "not in this target": the camera then stays off.
 struct Addresses {
   std::uint32_t yaw_call_return = 0;
   std::uint32_t pad_stick_x = 0;
-  std::uint32_t accelerator_scale_return = 0;
-  std::uint32_t brake_scale_return = 0;
+  std::uint32_t analog_loop_return = 0;    // return label of the analog loop's call to the channel handler
+  std::uint32_t analog_channel_table = 0;  // the loop's 12 channel ids, one byte per slot
+  std::uint32_t analog_slot_bias = 0;      // s0 minus the slot at the call (Spec II increments s0 before the call)
   constexpr bool complete() const {
-    return yaw_call_return != 0 && pad_stick_x != 0 && accelerator_scale_return != 0 && brake_scale_return != 0;
+    return yaw_call_return != 0 && pad_stick_x != 0 && analog_loop_return != 0 && analog_channel_table != 0;
   }
 };
+
+// The analog loop's channel ids of the right stick Y (the game's slot table: 02 03 00 01 14 15 16 17 10 11 12 13 on both
+// targets; the trace of TASK-159b saw the right stick up as 0x12 with the accelerator, down as 0x13 with the brake).
+inline constexpr std::uint8_t kRightStickYChannel = 0x01;
+inline constexpr std::uint8_t kRightStickUpChannel = 0x12;
+inline constexpr std::uint8_t kRightStickDownChannel = 0x13;
+inline constexpr std::int32_t kAnalogAccelerator = 3;  // the handler's function numbers (cases 3 and 4)
+inline constexpr std::int32_t kAnalogBrake = 4;
+inline constexpr std::uint32_t kAnalogSlots = 12;
+
+// True when the analog loop must hand this channel over as 0 while the camera is on: a right stick Y channel assigned to
+// the accelerator or the brake. Every other channel and function keeps its value.
+constexpr bool clears_analog_channel(std::uint8_t channel, std::int32_t function) {
+  const bool right_stick_y =
+      channel == kRightStickYChannel || channel == kRightStickUpChannel || channel == kRightStickDownChannel;
+  return right_stick_y && (function == kAnalogAccelerator || function == kAnalogBrake);
+}
 Addresses active_addresses();
 
 // Reads GT4_CAMERA_360 once and prints one line with the state. An invalid value prints the refusal and exits the process
@@ -93,16 +114,10 @@ std::uint32_t offset_yaw_argument(std::uint32_t yaw_bits, std::uint8_t stick_x, 
   return offset == 0 ? yaw_bits : guest_add(yaw_bits, offset);
 }
 
-// True when a call with this return address is the analog accelerator or brake scale of the target.
-constexpr bool is_pedal_scale_return(const Addresses &addresses, std::uint32_t return_address) {
-  return return_address != 0 &&
-         (return_address == addresses.accelerator_scale_return || return_address == addresses.brake_scale_return);
-}
-
 // Called by the translated call sites (scripts/camera360_units.py), after the delay slot and before the call.
 // native/camera_360_hook.cpp; they read guest RAM and registers, so they live with the game executable, not in this pure
 // library.
-void before_chase_yaw_call(ps2::Cpu &c);     // adds the stick angle to f13
-void before_analog_pedal_call(ps2::Cpu &c);  // sets the channel value a0 to 0
+void before_chase_yaw_call(ps2::Cpu &c);           // adds the stick angle to f13
+void before_pad_analog_channel_call(ps2::Cpu &c);  // hands a right stick Y pedal channel over as 0 (a3)
 
 }  // namespace gt4::camera360

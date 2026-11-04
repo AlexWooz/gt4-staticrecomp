@@ -9,6 +9,7 @@
 //     and HUD canvas                          (display_aspect.*, scripts/display_aspect_overlay.inc)
 //   - TASK-017 license demo guard             (license_guard.*, scripts/license_guard_overlay.inc)
 //   - TASK-159 360-degree chase camera        (camera_360.*, scripts/camera360_units.py)
+//   - TASK-160 field of view adjustment       (fov_adjust.*, scripts/camera360_units.py)
 //   - TASK-095 2D overlays over the race view (display_aspect.*, scripts/camera360_units.py)
 //
 // Those addresses are properties of one target. Writing a v2.00 address in another target corrupts guest RAM, so no
@@ -106,10 +107,17 @@ struct HookAddresses {
   // adds the angle of the right stick X byte below to f13.
   std::uint32_t camera_yaw_call_return = 0;  // return label of `jal <angle difference>` in the chase camera spring
   std::uint32_t camera_pad_stick_x = 0;      // right stick X byte of pad port 0 in the game's pad buffer (+0x1E)
-  // While the camera is on, the analog channel handler's accelerator and brake cases get a 0 value (the scale call's return
-  // labels): the camera stick's Y axis is the default analog throttle and brake.
-  std::uint32_t camera_accelerator_scale_return = 0;
-  std::uint32_t camera_brake_scale_return = 0;
+  // While the camera is on, the DualShock analog loop hands a right stick Y channel assigned to the accelerator or the brake
+  // to the channel handler as 0 (TASK-159b): the return label of that call, the loop's slot table of channel ids, and s0
+  // minus the slot at the call.
+  std::uint32_t camera_analog_loop_return = 0;
+  std::uint32_t camera_analog_channel_table = 0;
+  std::uint32_t camera_analog_slot_bias = 0;
+
+  // TASK-160 field of view adjustment (native/fov_adjust.hpp): the projection function's store call gets the zoom factor
+  // (its return label) and the port 0 button halfword the game keeps, read at guest VBlank (active low).
+  std::uint32_t fov_projection_call_return = 0;
+  std::uint32_t fov_pad_buttons = 0;
 
   // TASK-095 2D overlays over the race view (native/display_aspect.hpp). The menu context (the pre-race screens) and the strobe
   // overlay renderer (pause, photo pause, pit menu, results, race monitor) set their 2D canvas through a direct call of the
@@ -188,8 +196,11 @@ inline constexpr HookAddresses kV200Hooks = {
     /* frame_render_world */ 0x0033DEA8u,
     /* camera_yaw_call_return */ 0x003456D8u,  // func_00345658: jal 0x0036CC40 at 0x003456D0, f13 loaded in its slot
     /* camera_pad_stick_x */ 0x0086F99Eu,      // pad buffer 0x0086F980 (func_00551810) + 0x1E
-    /* camera_accelerator_scale_return */ 0x004387C8u,  // func_004386F0 case 3: jal 0x004386C8 at 0x004387C0
-    /* camera_brake_scale_return */ 0x004387F0u,        // func_004386F0 case 4: jal 0x004386C8 at 0x004387E8
+    /* camera_analog_loop_return */ 0x0043BE74u,    // func_0043BBC0: jal 0x004386F0 at 0x0043BE6C (a2 function, a3 value)
+    /* camera_analog_channel_table */ 0x006A64C0u,  // the loop's fp: 02 03 00 01 14 15 16 17 10 11 12 13
+    /* camera_analog_slot_bias */ 0u,               // s0 is the slot
+    /* fov_projection_call_return */ 0x0037A1C4u,  // func_0037A170: jal 0x00378F18 at 0x0037A1BC (f12, f13, f14 = scales)
+    /* fov_pad_buttons */ 0x0064C794u,             // port 0 pad object 0x0064C728 + 0x6C (buttons, then RX RY LX LY)
     /* menu_ortho_call_return */ 0x002151A8u,       // mUpdateContextPS2 render 0x00214FB0: jal 0x004A5A90 at 0x002151A0
     /* overlay_ortho_call_return */ 0x003EC200u,    // func_003EC0B0: jal 0x004A5A90 at 0x003EC1F8
     /* overlay_draw_end_return */ 0x003EC248u,      // func_003EC0B0: jal 0x004A5400 at 0x003EC240, after the draw 0x00475CA0
@@ -285,8 +296,11 @@ inline constexpr HookAddresses kSpec2Hooks = {
     /* frame_render_world */ 0x001EA240u,
     /* camera_yaw_call_return */ 0x00206490u,  // spring at 0x002063D8: jal 0x00230F00 at 0x00206488
     /* camera_pad_stick_x */ 0x0089B0DEu,      // pad buffer 0x0089B0C0 (set up at 0x0051BF18) + 0x1E
-    /* camera_accelerator_scale_return */ 0x00314948u,  // handler 0x00314870 case 3: jal 0x00314848 at 0x00314940
-    /* camera_brake_scale_return */ 0x00314970u,        // handler 0x00314870 case 4: jal 0x00314848 at 0x00314968
+    /* camera_analog_loop_return */ 0x003190F4u,    // the same loop: jal 0x00314870 at 0x003190EC (a2 function, a3 value)
+    /* camera_analog_channel_table */ 0x006F9D10u,  // the loop's s7, the same 12 ids as v2.00
+    /* camera_analog_slot_bias */ 1u,               // s0 was already incremented in the loop (0x003190B8)
+    /* fov_projection_call_return */ 0x0023E834u,  // projection 0x0023E7E0: jal 0x0023D558 at 0x0023E82C
+    /* fov_pad_buttons */ 0x00681344u,             // the same pad object layout (RAM peek: buttons, RX RY LX LY)
     /* menu_ortho_call_return */ 0x0036D4D8u,       // 0x0036D278 (menu context render): jal 0x005A2600 at 0x0036D4D0
     /* overlay_ortho_call_return */ 0x001FDE18u,    // 0x001FDCC8 (strobe overlay renderer): jal 0x005A2600 at 0x001FDE10
     /* overlay_draw_end_return */ 0x001FDE60u,      // 0x001FDCC8: jal 0x005A1E08 at 0x001FDE58, after the draw 0x00341918

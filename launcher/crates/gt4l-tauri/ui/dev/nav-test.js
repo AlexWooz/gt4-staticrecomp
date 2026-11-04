@@ -251,6 +251,16 @@ function startNavTest(root) {
     same("trigger output 0.5 dz full " + c, CM.triggerOutput(1, 0.5, c), 1);
   });
 
+  // TASK-161: the game's 100% at the end of a trigger's travel, on its own scale and with the full trigger range.
+  same("R2's game 100% is 45", CM.triggerFull("r2", ["xinput:RT"], false), 45);
+  same("L2's game 100% is 84", CM.triggerFull("l2", ["xinput:LT | deadzone=0.100 curve=linear"], false), 84);
+  same("a trigger on another button keeps the byte", CM.triggerFull("cross", ["xinput:RT"], false), 255);
+  same("range sets the game scale's full", CM.triggerFull("r2", ["key:R", "xinput:RT | range=84"], false), 84);
+  same("full range: the whole byte", CM.triggerFull("r2", ["xinput:RT | range=45"], true), 255);
+  same("full range: range_full sets it", CM.triggerFull("l2", ["xinput:LT | range=84 range_full=200"], true), 200);
+  same("range_full is ignored on the game scale", CM.triggerFull("l2", ["xinput:LT | range_full=200"], false), 84);
+  same("no trigger source: the defaults", CM.triggerFull("r2", ["key:R"], true), 255);
+
   same("KeyZ is Z", CM.keyFromEvent({ code: "KeyZ", key: "z" }), { name: "Z" });
   same("Digit1 is 1", CM.keyFromEvent({ code: "Digit1", key: "1" }), { name: "1" });
   same("Numpad4 is Num4", CM.keyFromEvent({ code: "Numpad4", key: "4" }), { name: "Num4" });

@@ -425,7 +425,11 @@
       return { id: id, label: label, help: "How the pressure grows with the trigger travel.", page: "basic",
         group: "controls", control: "dropdown", values: values || curve, default: (values || curve)[0].value, current: (values || curve)[0].value };
     }
-    return [slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve", curve),
+    // TASK-161: the full trigger range toggle, first of the Controls page's analog rows (model.rs), off by default.
+    var fullRange = { id: "trigger_full_range", label: "Full trigger range (experimental)",
+      help: "Throttle and brake follow the whole travel of the triggers in finer steps.", page: "basic", group: "controls",
+      control: "toggle", values: null, default: false, current: query.get("fullrange") === "1" };
+    return [fullRange, slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve", curve),
       slider("r2_deadzone", "R2 deadzone", 11.8), dropdown("r2_curve", "R2 curve", curve),
       slider("lstick_deadzone", "Left stick deadzone", 24), slider("rstick_deadzone", "Right stick deadzone", 26.5)];
   }

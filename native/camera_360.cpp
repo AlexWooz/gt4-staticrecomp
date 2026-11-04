@@ -22,8 +22,8 @@ bool parse_switch(const char *value) {
 
 Addresses active_addresses() {
   const target::HookAddresses &hooks = target::active().hooks;
-  return {hooks.camera_yaw_call_return, hooks.camera_pad_stick_x, hooks.camera_accelerator_scale_return,
-          hooks.camera_brake_scale_return};
+  return {hooks.camera_yaw_call_return, hooks.camera_pad_stick_x, hooks.camera_analog_loop_return,
+          hooks.camera_analog_channel_table, hooks.camera_analog_slot_bias};
 }
 
 void configure_from_environment() {
@@ -42,10 +42,10 @@ void configure_from_environment() {
     std::fprintf(stderr, "[camera360] off\n");
   else
     std::fprintf(stderr,
-                 "[camera360] on: right stick X (guest byte 0x%08X) turns the chase camera (call return 0x%08X); analog "
-                 "accelerator and brake off (returns 0x%08X, 0x%08X)\n",
-                 addresses.pad_stick_x, addresses.yaw_call_return, addresses.accelerator_scale_return,
-                 addresses.brake_scale_return);
+                 "[camera360] on: right stick X (guest byte 0x%08X) turns the chase camera (call return 0x%08X); its Y "
+                 "axis no longer accelerates or brakes (analog loop return 0x%08X, slot table 0x%08X)\n",
+                 addresses.pad_stick_x, addresses.yaw_call_return, addresses.analog_loop_return,
+                 addresses.analog_channel_table);
 }
 
 bool enabled() { return g_enabled; }
