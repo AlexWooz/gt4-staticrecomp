@@ -20,6 +20,8 @@ SDL3 match their sources); rc11 program files backed up in
 Then the launcher without the "Automatic" controller entry (TASK-148 owner change; launcher `4e0a7e50`, same games):
 `private/slice401-installer-130-rc12-test2/GT4Recomp-Setup-1.3.0-rc12.exe` (`cf90c041`), installed the same way (result ok,
 files match); the first test install is in `private/_program-backups/rc12test-before-rc12test2-20261104T031129Z`.
+The owner's laptop got the same launcher as a portable build (`7e46a64a`, copied over `Y:\GT4Recomp.exe`; its games already
+were the slice 401 builds); the previous one is in `private/_program-backups/avell-rc12test-before-rc12test2-20261104T041009Z`.
 
 ## TASK-146 for the owner's test: 60 FPS lets a race drop frames instead of slowing (2026-11-03, night)
 
