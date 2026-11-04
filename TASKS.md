@@ -3116,7 +3116,7 @@ image is now named `Spec II 1.10 (PT-BR + CPSP)` in `docs/inputs/spec2-variants.
 bytes; `spec2_pins` test). The George V lap recording replayed on it (rc14a Spec II build) boots, races and finishes the lap
 with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself stays outside git (`*.iso`).
 
-### TASK-168 — CoreGS 2.0: draw primitives with different palettes in one batch (planned, after 1.3.0)
+### TASK-168 — CoreGS 2.0: draw primitives with different palettes in one batch (rc15, with TASK-171; owner, 2026-11-04)
 
 Found by TASK-134's third round (2026-11-04, rc14a Spec II build, the George V lap): a CLUT load forces a batch flush before it
 (the batch would otherwise draw with the new palette). On that lap there are about 1,500-1,630 such flushes per VBlank, 1,013-1,020
@@ -3125,7 +3125,9 @@ batch through the renderer and the graphics driver; together they are the larges
 2.0 ms per VBlank on the desktop's plain build, 1.5 ms of it the flush). Idea: give each primitive the palette it was drawn with
 (a palette slot per draw or per vertex, palettes kept on the GPU) so a palette change no longer ends the batch, with palettes
 read from GPU targets (IN-417) kept exact. Large: the vertex format, the shaders, the CLUT upload path and the texture cache
-change, so it waits until after 1.3.0 and the owner's word. Gates: every identity gate, plus the owner's picture tests.
+change, so it waited until after 1.3.0 and the owner's word. **Owner, 2026-11-04: in rc15**, as the fix TASK-171's track map points
+at (the palette flushes are the largest batch cause on every track in the player's view). Gates: every identity gate, plus the
+owner's picture tests.
 
 ### TASK-170 — CoreGS 2.0: a shader compile that ends the process no longer stops every start (rc14, done)
 
@@ -3161,7 +3163,20 @@ laptop) while menus and races are fine: 77-138 late frames per 300 VBlanks in th
   path, the GIF packet parse; then batching (TASK-168) if the batch count is the cost.
 - Acceptance: every identity gate and the overlay check unchanged; the license replay faster on the laptop with the George V
   lap no slower; the owner's test on the laptop.
-- State (2026-11-04): planned for rc15 (owner).
+- **Track map (owner, 2026-11-04: map every track once instead of optimising track by track).** Spec II Arcade, all 52
+  tracks unlocked, headless on the desktop (counts are exact on any machine; times are the desktop at 1x, indicative only):
+  `private/task134-tools/t171-route.sh` (the menu route to any track), `t171-survey.sh` (one Single Race per track, Ford GT LM
+  Race Car Spec II, or the Focus Rally Car on dirt and snow; B-Spec where the track has it, else A-Spec with the throttle held;
+  [hw] counters every 60 VBlanks over 90 s of race), `t171_survey_table.py` (the table). Findings:
+  - B-Spec (TV cameras, no mirror) gives about 300-460 batches per VBlank; the player's view (A-Spec: HUD and rear-view mirror)
+    gives about 1,700-2,500 on every track measured (Paris George V 2,499 mean, 3,024 max; GS thread 7.4 ms at 1x on the
+    desktop). The first license is not special: it has the player's view (about 1,930).
+  - The largest flush reason in the player's view is a CLUT load: about 1,340-1,730 per VBlank (session averages), about 1,000
+    of them with the same texture (only the palette changes); texture changes about 160-290, PRIM class changes about 185.
+  - So the shared cause is batches, not primitives (GS time follows batches; about 3 us per batch in the player's view at 1x
+    on the desktop), and the largest share of the batches comes from palette changes: TASK-168.
+- State (2026-11-04): planned for rc15 (owner): TASK-168 is the main change; the track map is the before/after check of every
+  track at once (plus the laptop for the owner's real settings).
 
 ### TASK-172 — An earlier Spec II release ("Gran Turismo 4 Spec 2.iso", owner, 2026-11-04)
 
