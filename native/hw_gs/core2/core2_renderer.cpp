@@ -832,9 +832,23 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // IN-483: GT4 loads palettes over 64 x 64 CT16 targets in its races: 16-bit targets too, or each load makes the CPU wait
     // for the GPU (2 ms per VBlank on the HD 620). GT4_CORE2_GPU_CT16=0 reads them back (A/B).
     const bool gpuColour16_ = std::getenv("GT4_CORE2_GPU_CT16") == nullptr || std::strcmp(std::getenv("GT4_CORE2_GPU_CT16"), "0") != 0;
+    // IN-537: photo mode loads a palette every frame from memory inside its 640 x 448 Z16S depth buffer (BP 11520): a
+    // readback each time, 3 to 4 ms of GPU waiting per frame on the laptop's RTX 3060. 16-bit depth targets go into the
+    // GLM like 16-bit colour ones (their image holds the halfword; core2_materialize.comp writes the Z16/Z16S layout,
+    // Z block swap included). Off by default (measured, rc13): the buffer then counts as read on the GPU, so about 24 EE
+    // uploads per photo-mode frame over its memory each need a store first, on the CPU (a wait each) or with IN-539 on the
+    // GPU, which cost more GPU time than the palette readback saved (laptop, 6x: 57-58 FPS against 59.6-60.1).
+    // GT4_CORE2_GPU_Z16=1 turns it on (A/B).
+    const bool gpuDepth16_ = std::getenv("GT4_CORE2_GPU_Z16") != nullptr && std::strcmp(std::getenv("GT4_CORE2_GPU_Z16"), "1") == 0;
     bool MaterializableClass(FormatClass cls) const {
         return cls == FormatClass::Colour32 || (multiTarget_ && cls == FormatClass::Depth32) ||
-               (multiTarget_ && gpuColour16_ && cls == FormatClass::Colour16);
+               (multiTarget_ && gpuColour16_ && cls == FormatClass::Colour16) ||
+               (multiTarget_ && gpuDepth16_ && cls == FormatClass::Depth16);
+    }
+    // The GLM layout a target is written in: its own for 16-bit targets, else the 32-bit layout of its class.
+    static Psm MaterializeLayout(const Target &t) {
+        if (t.cls == FormatClass::Colour16 || t.cls == FormatClass::Depth16) return t.view.psm;
+        return t.cls == FormatClass::Depth32 ? Psm::Z32 : Psm::Ct32;
     }
 
     // IN-417: whether a CLUT load over `span` can be read on the GPU from the GLM after the drawn targets under it are
@@ -1267,7 +1281,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             Target &t = *target;
             if (!ApplyDirty(t)) return false;
             // The target's page rows inside the span, within its drawn area.
-            const memory::PsmInfo &info = memory::psmInfo(t.cls == FormatClass::Colour16 ? t.view.psm : Psm::Ct32);
+            const memory::PsmInfo &info = memory::psmInfo(MaterializeLayout(t));
             const std::uint32_t perRow = std::max<std::uint32_t>(t.view.bufferWidth, 1u);
             PixelRect rows;
             bool anyRow = false;
@@ -1300,9 +1314,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             const PixelRect area = Intersect(rows, t.drawn);
             if (area.Empty()) continue;
             std::string error;
-            const std::uint32_t layout = t.cls == FormatClass::Depth32    ? static_cast<std::uint32_t>(Psm::Z32)
-                                         : t.cls == FormatClass::Colour16 ? static_cast<std::uint32_t>(t.view.psm)
-                                                                          : static_cast<std::uint32_t>(Psm::Ct32);
+            const std::uint32_t layout = static_cast<std::uint32_t>(MaterializeLayout(t));
             if (!gpu_.MaterializeTarget(t.image, layout, t.view.basePointer, t.view.bufferWidth, area.x0, area.y0,
                                         area.x1, area.y1, t.fullWordWritten, error)) {
                 Fail(error);
@@ -2054,6 +2066,159 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return (written & drawn).none();
     }
 
+    // IN-539: the store before a write (4.1, IN-411) done on the GPU, for a write that replaces whole GS blocks (256 bytes)
+    // in every bit: a format whose pixels own whole storage units (not CT24, Z24, T8H, T4HL, T4HH), a rectangle on the
+    // format's block cells, inside the buffer width. Before the write, the drawn targets over the page rows it touches go
+    // into the GLM oldest draw first (what the store's readback leaves in memory); after it, the written blocks go into the
+    // GLM from memory on top (they hold only new words), and every target over the write takes its touched page rows from
+    // the GLM, as 4.1 patches them from memory. The same pixels as the store, without the CPU waiting for the GPU; memory
+    // stays older than the targets for their drawn pixels until those are read back. Taken when every target over the
+    // write is page aligned and can go into the GLM (32-bit and 16-bit colour and depth), and none may lie entirely under
+    // the write (4.1 replaces such a target, as before). Photo mode uploads a 64 x 384 CT32 image and an 8 x 8 one over the
+    // memory of its 640 x 448 Z16S depth buffer, which three more targets share, every frame; once that buffer is read on
+    // the GPU (IN-537) each upload stored four targets (2,240 blocks) first, a GPU wait each time.
+    // Off by default (measured, rc13): a CPU store leaves the target undrawn (memory holds it), so the writes after it need
+    // none; a GPU store cannot, so each later write over the same target makes another one, rows materialized and patched
+    // back each time. George V Paris at 2x: 0.09 ms less waiting per VBlank for 0.43 ms more GPU work, and it grows with
+    // the scale. GT4_CORE2_WHOLE_BLOCK_WRITES=1 turns it on (A/B).
+    const bool wholeBlockWrites_ = std::getenv("GT4_CORE2_WHOLE_BLOCK_WRITES") != nullptr &&
+                                   std::strcmp(std::getenv("GT4_CORE2_WHOLE_BLOCK_WRITES"), "1") == 0;
+    bool gpuStoreWrite_ = false;  // set by StoreDrawnBeforeWrite for the write it was asked about
+    bool WritesOnlyWholeBlocks(const BufferView &view, const PixelRect &rect) const {
+        if (!wholeBlockWrites_ || rect.x0 < 0 || rect.y0 < 0 || rect.x1 >= 2048 || rect.y1 >= 2048 || rect.Empty()) return false;
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        if (info.storageBits != info.transferBpp) return false;
+        if (view.bufferWidth == 0 || static_cast<std::uint32_t>(rect.x1) >= view.bufferWidth * 64u) return false;
+        const std::int32_t bw = info.blockWidth, bh = info.blockHeight;
+        return rect.x0 % bw == 0 && (rect.x1 + 1) % bw == 0 && rect.y0 % bh == 0 && (rect.y1 + 1) % bh == 0;
+    }
+
+    // The page rows of target `t` that 4.1 patches for a write over `span` (AddUploadDirty's rows), as pixels.
+    static PixelRect TouchedPageRows(const Target &t, const BlockSpan &span) {
+        const memory::PsmInfo &info = memory::psmInfo(t.view.psm);
+        const std::uint32_t pagesPerRow = std::max<std::uint32_t>(
+            1u, (std::max<std::uint32_t>(t.view.bufferWidth, 1u) * 64u + info.pageWidth - 1u) / info.pageWidth);
+        const std::uint32_t rowBlocks = pagesPerRow * memory::kBlocksPerPage;
+        PixelRect rows;
+        for (std::uint32_t row = 0; row * info.pageHeight < t.height; ++row) {
+            const BlockSpan rowSpan{(t.view.basePointer + row * rowBlocks) % kAllBlocks, rowBlocks};
+            if (!SpansOverlap(rowSpan, span)) continue;
+            rows = Union(rows, PixelRect{0, static_cast<std::int32_t>(row * info.pageHeight), static_cast<std::int32_t>(t.width) - 1,
+                                         static_cast<std::int32_t>(std::min<std::uint32_t>((row + 1) * info.pageHeight, t.height)) - 1});
+        }
+        return rows;
+    }
+
+    // The blocks a whole-block write fills (sorted, each once).
+    static std::vector<std::uint32_t> WrittenBlocks(const BufferView &view, const PixelRect &rect) {
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        std::vector<std::uint32_t> blocks;
+        for (std::int32_t y = rect.y0; y <= rect.y1; y += info.blockHeight) {
+            for (std::int32_t x = rect.x0; x <= rect.x1; x += info.blockWidth) {
+                blocks.push_back(BlockOfPixel(view, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y)));
+            }
+        }
+        std::sort(blocks.begin(), blocks.end());
+        blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        return blocks;
+    }
+
+    // 4.1 replaces a target the write covers entirely. Here that is certain when the written blocks are one run and hold
+    // the target's whole span (1); possible when only the write's span holds it (-1: the GPU store is not taken); 0: not.
+    static int CoveredByWrite(const BlockSpan &whole, const BlockSpan &span, const std::vector<std::uint32_t> &blocks,
+                              const BlockSpan &writeSpan) {
+        const bool oneRun = !blocks.empty() && blocks.back() - blocks.front() + 1u == blocks.size() && span.begin == blocks.front() &&
+                            span.count == blocks.size();
+        if (oneRun && SpanContains(span, whole)) return 1;
+        return SpanContains(writeSpan, whole) ? -1 : 0;
+    }
+
+    // Whether the write can be stored on the GPU (see above); `rows` gets the blocks of every touched page row.
+    bool CanStoreOnGpu(const BufferView &view, const PixelRect &rect, const BlockSpan &span, BlockSpan &rows) const {
+        if (!WritesOnlyWholeBlocks(view, rect) || span.count == 0 || span.count >= kAllBlocks) return false;
+        const std::vector<std::uint32_t> blocks = WrittenBlocks(view, rect);
+        const BlockSpan writeSpan = WriteSpan(view, rect);
+        std::uint64_t first = UINT64_MAX, end = 0;
+        for (const Target &t : targets_) {
+            if (!t.alive) continue;
+            const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1, static_cast<std::int32_t>(t.height) - 1});
+            if (!SpansOverlap(whole, span)) continue;
+            if (t.view.basePointer % memory::kBlocksPerPage != 0 || t.view.bufferWidth == 0 || !MaterializableClass(t.cls)) return false;
+            if (whole.begin + whole.count > kAllBlocks) return false;
+            const int covered = CoveredByWrite(whole, span, blocks, writeSpan);
+            if (covered < 0) return false;
+            if (covered > 0) continue;  // replaced after the write, like 4.1
+            const PixelRect touched = TouchedPageRows(t, span);
+            if (touched.Empty()) continue;
+            const BlockSpan rowSpan = TargetSpan(t, touched);
+            if (rowSpan.count >= kAllBlocks || rowSpan.begin + rowSpan.count > kAllBlocks) return false;
+            first = std::min<std::uint64_t>(first, rowSpan.begin);
+            end = std::max<std::uint64_t>(end, std::uint64_t{rowSpan.begin} + rowSpan.count);
+        }
+        if (first == UINT64_MAX) return false;
+        rows = BlockSpan{static_cast<std::uint32_t>(first), static_cast<std::uint32_t>(end - first)};
+        return true;
+    }
+
+    // Runs after the write reached CPU memory (the drawn targets went into the GLM before it). Returns false after a
+    // failure.
+    bool FinishGpuStore(const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
+        static const bool trace = std::getenv("GT4_CORE2_STORE_TRACE") != nullptr;  // diagnostics only
+        if (trace) {
+            std::fprintf(stderr, "[core2] gpu store vblank=%llu write bp=%u bw=%u psm=%02x rect=%d,%d,%d,%d span=%u+%u\n",
+                         static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth, static_cast<unsigned>(view.psm),
+                         rect.x0, rect.y0, rect.x1, rect.y1, span.begin, span.count);
+            std::fflush(stderr);
+        }
+        // The written blocks into the GLM, on top of the targets.
+        const std::vector<std::uint32_t> blocks = WrittenBlocks(view, rect);
+        const BlockSpan writeSpan = WriteSpan(view, rect);
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
+        for (const std::uint32_t block : blocks) {
+            const std::uint32_t offset = block * memory::kBlockBytes;
+            if (!ranges.empty() && ranges.back().first + ranges.back().second == offset) {
+                ranges.back().second += memory::kBlockBytes;
+            } else {
+                ranges.push_back({offset, memory::kBlockBytes});
+            }
+        }
+        std::string error;
+        if (!gpu_.UploadGlm(memory_.Local().bytes().data(), ranges, error)) {
+            Fail(error);
+            return false;
+        }
+        // The GLM now holds this write too: its pages need no upload from memory for it (their drawn blocks are newer in
+        // the GLM than in memory), and the targets' rows held there are rewritten when next needed.
+        ++glmWriteSequence_;
+        ForEachPageOfSpan(span, [&](std::uint32_t page) {
+            if (glmUploaded_[page]) glmSequence_[page] = writeSequence_;
+            glmPageWrong_[page] = glmWriteSequence_;
+        });
+        // Every target over the write takes its touched page rows from the GLM.
+        for (Target &t : targets_) {
+            if (!t.alive) continue;
+            const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1, static_cast<std::int32_t>(t.height) - 1});
+            if (!SpansOverlap(whole, span)) continue;
+            if (CoveredByWrite(whole, span, blocks, writeSpan) > 0) {  // 4.1: memory holds newer content for all of it
+                DestroyTarget(t);
+                stats.targetsReplaced++;
+                continue;
+            }
+            const PixelRect rows = TouchedPageRows(t, span);
+            if (rows.Empty()) continue;
+            if (!gpu_.PatchFromGlm(t.image, t.view.basePointer, t.view.bufferWidth, static_cast<std::uint32_t>(t.view.psm), rows.x0,
+                                   rows.y0, rows.x1, rows.y1, WriteMaskOf(t.view.psm), error)) {
+                Fail(error);
+                return false;
+            }
+            t.valid = Union(t.valid, rows);
+            t.imageChanges++;
+            stats.gpuStoreRows++;
+        }
+        stats.gpuStores++;
+        return true;
+    }
+
     // IN-508: the dirty rectangles of a write that misses the drawn pages: the target's pages the write touches, whole
     // and in the target's format, as 4.1 asks for another layout. They hold no drawn pixel, so memory is the newest
     // content for all of them. Neighbours in one page row are merged.
@@ -2114,6 +2279,166 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return sharesDrawnPage;
     }
 
+    // IN-538: a large write over drawn 32-bit pages in another format, beyond IN-512's limits: the car showroom's studio
+    // backdrop, a 640 x 438 PSMT8 image uploaded every second VBlank over the memory of the 640 x 224 CT32 frame target
+    // at BP 6720 (1,120 blocks). 4.1 stored the whole drawn target first (2,240 blocks read back, a GPU wait of 4 to 6 ms
+    // on the laptop's RTX 3060 at 6x, frames of 20 to 30 ms). The write is split by GS block (256 bytes, one 8 x 8 cell of
+    // a CT32 target): a block the write fills in every bit holds only new words in memory, so each target over it takes
+    // the cell from the GLM made current with memory; a block written in part (the image's last 6 rows here, 40 blocks)
+    // goes through IN-512's merge. Blocks the write does not touch keep the targets' pixels, as before. No readback, no
+    // wait; memory stays older than the targets for their untouched drawn pixels until those are read back, as with
+    // IN-512. Taken only for a format whose pixels own whole storage units (not CT24, Z24, T8H, T4HL, T4HH; no Z
+    // format), rows inside the buffer width, at most IN-512's limits for the partly written blocks, and when no target
+    // lies entirely under the filled blocks (4.1 replaces such a target, as before). GT4_CORE2_PATCH_BLOCKS=0 stores
+    // (A/B).
+    const bool patchBlocks_ = std::getenv("GT4_CORE2_PATCH_BLOCKS") == nullptr || std::strcmp(std::getenv("GT4_CORE2_PATCH_BLOCKS"), "0") != 0;
+    bool blockPatchWrite_ = false;               // set by StoreDrawnBeforeWrite for the write it was asked about
+    std::vector<std::uint32_t> filledBlocks_;    // the write's blocks replaced in every bit (sorted)
+    std::vector<std::pair<std::uint32_t, PixelRect>> partBlocks_;  // its blocks written in part, with their pixels
+
+    bool WriteCanPatchBlocks(const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
+        if (!patchBits_ || !patchBlocks_ || rect.x0 < 0 || rect.y0 < 0 || rect.x1 >= 2048 || rect.y1 >= 2048) return false;
+        if (span.count == 0 || span.count >= kAllBlocks) return false;
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        if (info.storageBits != info.transferBpp || info.isDepth) return false;
+        if (view.bufferWidth == 0 || static_cast<std::uint32_t>(rect.x1) >= view.bufferWidth * 64u) return false;
+        const FormatClass cls = ClassOf(view.psm);
+        bool sharesDrawnPage = false;
+        for (const Target &t : targets_) {
+            if (!t.alive) continue;
+            const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1, static_cast<std::int32_t>(t.height) - 1});
+            if (!SpansOverlap(whole, span)) continue;
+            if (t.cls != FormatClass::Colour32 || t.view.basePointer % memory::kBlocksPerPage != 0 || t.view.bufferWidth == 0) {
+                return false;
+            }
+            if (view.basePointer == t.view.basePointer && view.bufferWidth == t.view.bufferWidth && cls == t.cls) return false;
+            if (PageExact(t, view, rect)) return false;
+            if (!t.drawn.Empty() && !WriteMissesDrawnPages(t, view, rect)) sharesDrawnPage = true;
+        }
+        if (!sharesDrawnPage) return false;
+        filledBlocks_.clear();
+        partBlocks_.clear();
+        const std::int32_t bw = info.blockWidth, bh = info.blockHeight;
+        std::int64_t partPixels = 0;
+        for (std::int32_t by = rect.y0 / bh; by <= rect.y1 / bh; ++by) {
+            for (std::int32_t bx = rect.x0 / bw; bx <= rect.x1 / bw; ++bx) {
+                const PixelRect cell{bx * bw, by * bh, bx * bw + bw - 1, by * bh + bh - 1};
+                const std::uint32_t block = BlockOfPixel(view, static_cast<std::uint32_t>(cell.x0), static_cast<std::uint32_t>(cell.y0));
+                if (Contains(rect, cell)) {
+                    filledBlocks_.push_back(block);
+                } else {
+                    const PixelRect part = Intersect(rect, cell);
+                    partPixels += static_cast<std::int64_t>(part.x1 - part.x0 + 1) * (part.y1 - part.y0 + 1);
+                    partBlocks_.push_back({block, part});
+                }
+            }
+        }
+        if (partBlocks_.size() > kMaxBitPatchBlocks || partPixels > kMaxBitPatchPixels) return false;
+        std::sort(filledBlocks_.begin(), filledBlocks_.end());
+        // Every cell of one write is its own block (the write stays inside one pass over memory); refuse otherwise.
+        if (std::adjacent_find(filledBlocks_.begin(), filledBlocks_.end()) != filledBlocks_.end()) return false;
+        for (const auto &part : partBlocks_) {
+            if (std::binary_search(filledBlocks_.begin(), filledBlocks_.end(), part.first)) return false;
+        }
+        // A target entirely under the filled blocks is left to 4.1.
+        for (const Target &t : targets_) {
+            if (!t.alive) continue;
+            const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1, static_cast<std::int32_t>(t.height) - 1});
+            if (!SpansOverlap(whole, span)) continue;
+            if (whole.begin + whole.count > kAllBlocks) return false;
+            const auto first = std::lower_bound(filledBlocks_.begin(), filledBlocks_.end(), whole.begin);
+            const auto last = std::lower_bound(filledBlocks_.begin(), filledBlocks_.end(), whole.begin + whole.count);
+            if (static_cast<std::uint32_t>(last - first) >= whole.count) return false;
+        }
+        return true;
+    }
+
+    // The CT32 cell of target `t` that GS block `block` is (the target's base is page aligned), or false when the cell
+    // lies outside the target's image.
+    static bool CellOfBlock(const Target &t, std::uint32_t block, std::int32_t &cellX, std::int32_t &cellY) {
+        const BlockGrid &grid = BlockGridOf(Psm::Ct32);
+        const std::uint32_t perRow = t.view.bufferWidth;
+        const std::uint32_t basePage = t.view.basePointer / memory::kBlocksPerPage;
+        const std::uint32_t page = (block / memory::kBlocksPerPage + memory::kPagesTotal - basePage) % memory::kPagesTotal;
+        const std::uint32_t cell = grid.cellOfBlock[block % memory::kBlocksPerPage];
+        cellX = static_cast<std::int32_t>((page % perRow) * 64u + (cell % grid.cellsX) * 8u);
+        cellY = static_cast<std::int32_t>((page / perRow) * 32u + (cell / grid.cellsX) * 8u);
+        return cellX + 8 <= static_cast<std::int32_t>(t.width) && cellY + 8 <= static_cast<std::int32_t>(t.height);
+    }
+
+    // Runs after the write reached CPU memory; see IN-538 above. Returns false after a failure.
+    bool PatchWrittenBlocks(const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
+        static const bool trace = std::getenv("GT4_CORE2_STORE_TRACE") != nullptr;  // diagnostics only
+        if (trace) {
+            std::fprintf(stderr, "[core2] block patch vblank=%llu write bp=%u bw=%u psm=%02x rect=%d,%d,%d,%d span=%u+%u filled=%zu part=%zu\n",
+                         static_cast<unsigned long long>(vblanks_), view.basePointer, view.bufferWidth, static_cast<unsigned>(view.psm), rect.x0,
+                         rect.y0, rect.x1, rect.y1, span.begin, span.count, filledBlocks_.size(), partBlocks_.size());
+            std::fflush(stderr);
+        }
+        // The filled blocks first, from the GLM made current with memory (it holds every bit of them).
+        if (!MakeGlmCurrent(span)) return false;
+        std::vector<std::pair<std::int32_t, std::int32_t>> cells;  // (y, x) of the target's filled cells
+        for (Target &t : targets_) {
+            if (!t.alive) continue;
+            const BlockSpan whole = TargetSpan(t, PixelRect{0, 0, static_cast<std::int32_t>(t.width) - 1, static_cast<std::int32_t>(t.height) - 1});
+            if (!SpansOverlap(whole, span)) continue;
+            cells.clear();
+            for (const std::uint32_t block : filledBlocks_) {
+                std::int32_t cellX = 0, cellY = 0;
+                if (CellOfBlock(t, block, cellX, cellY)) cells.push_back({cellY, cellX});
+            }
+            std::sort(cells.begin(), cells.end());
+            // Runs of neighbouring cells in a cell row, then runs of equal rows below one another.
+            std::vector<PixelRect> rects;
+            for (std::size_t at = 0; at < cells.size();) {
+                std::size_t end = at + 1;
+                while (end < cells.size() && cells[end].first == cells[at].first && cells[end].second == cells[end - 1].second + 8) ++end;
+                const PixelRect run{cells[at].second, cells[at].first, cells[end - 1].second + 7, cells[at].first + 7};
+                bool merged = false;
+                for (PixelRect &r : rects) {
+                    if (r.x0 == run.x0 && r.x1 == run.x1 && r.y1 + 1 == run.y0) {
+                        r.y1 = run.y1;
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged) rects.push_back(run);
+                at = end;
+            }
+            const std::uint32_t ownedBits = WriteMaskOf(t.view.psm);
+            for (const PixelRect &r : rects) {
+                std::string error;
+                if (!gpu_.PatchFromGlm(t.image, t.view.basePointer, t.view.bufferWidth, static_cast<std::uint32_t>(t.view.psm), r.x0, r.y0, r.x1,
+                                       r.y1, ownedBits, error)) {
+                    Fail(error);
+                    return false;
+                }
+                t.valid = Union(t.valid, r);
+                t.imageChanges++;
+                stats.blockPatchRects++;
+            }
+        }
+        stats.blockPatchWrites++;
+        if (partBlocks_.empty()) return true;
+        // The blocks written in part: IN-512's merge for their pixels only.
+        bitPatchBits_.clear();
+        std::uint32_t partFirst = kAllBlocks, partLast = 0;
+        for (const auto &part : partBlocks_) {
+            partFirst = std::min(partFirst, part.first);
+            partLast = std::max(partLast, part.first);
+            const PixelRect &r = part.second;
+            for (std::int32_t y = r.y0; y <= r.y1; ++y) {
+                for (std::int32_t x = r.x0; x <= r.x1; ++x) {
+                    const memory::PixelSlot slot = memory::pixelSlot(view, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y));
+                    const std::uint32_t bits = slot.bitWidth >= 32u ? 0xFFFFFFFFu : (1u << slot.bitWidth) - 1u;
+                    bitPatchBits_.push_back({slot.byteOffset / 4u, bits << ((slot.byteOffset % 4u) * 8u + slot.bitShift)});
+                }
+            }
+        }
+        const BlockSpan partSpan = partLast - partFirst < kAllBlocks / 2 ? BlockSpan{partFirst, partLast - partFirst + 1u} : span;
+        return MergeWrittenBits(partSpan);
+    }
+
     // Runs after the write reached CPU memory; see above. Returns false after a failure.
     bool PatchWrittenBits(const BufferView &view, const PixelRect &rect, const BlockSpan &span) {
         static const bool trace = std::getenv("GT4_CORE2_STORE_TRACE") != nullptr;  // diagnostics only
@@ -2130,6 +2455,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 bitPatchBits_.push_back({slot.byteOffset / 4u, bits << ((slot.byteOffset % 4u) * 8u + slot.bitShift)});
             }
         }
+        return MergeWrittenBits(span);
+    }
+
+    // IN-512's merge of the written bits in bitPatchBits_ (word, mask) into every target over `span`.
+    bool MergeWrittenBits(const BlockSpan &span) {
         std::sort(bitPatchBits_.begin(), bitPatchBits_.end());
         std::size_t kept = 0;
         for (std::size_t i = 0; i < bitPatchBits_.size(); ++i) {
@@ -2249,6 +2579,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (bitPatchWrite_) {  // IN-512
             bitPatchWrite_ = false;
             if (!PatchWrittenBits(view, rect, span)) return;
+            if (remember) RememberUpload(view, rect, span);
+            return;
+        }
+        if (blockPatchWrite_) {  // IN-538
+            blockPatchWrite_ = false;
+            if (!PatchWrittenBlocks(view, rect, span)) return;
+            if (remember) RememberUpload(view, rect, span);
+            return;
+        }
+        if (gpuStoreWrite_) {  // IN-539
+            gpuStoreWrite_ = false;
+            if (!FinishGpuStore(view, rect, span)) return;
             if (remember) RememberUpload(view, rect, span);
             return;
         }
@@ -2489,6 +2831,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const BlockSpan span = outOfRange ? BlockSpan{0, kAllBlocks} : knownSpan ? *knownSpan : WriteSpan(view, rect);
         const FormatClass cls = ClassOf(view.psm);
         bitPatchWrite_ = false;
+        blockPatchWrite_ = false;
+        gpuStoreWrite_ = false;
         const std::uint64_t storesBeforeThisWrite = stats.storesBeforeWrite;
         const BlockSpan wholePages = storeSkipWhole_ && !outOfRange ? WholePagesWritten(view, rect) : BlockSpan{};
         for (Target &t : targets_) {
@@ -2510,8 +2854,28 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 stats.drawnPagesMissed++;
                 continue;
             }
-            // IN-512: the first target that really needs a store tries the merge on the GPU instead.
-            if (!outOfRange && stats.storesBeforeWrite == storesBeforeThisWrite && WriteCanPatchBits(view, rect, span)) {
+            // IN-539: a write of whole blocks: the first target that really needs a store has it done on the GPU instead,
+            // for every target over the write.
+            BlockSpan gpuStoreRows;
+            if (!outOfRange && stats.storesBeforeWrite == storesBeforeThisWrite && CanStoreOnGpu(view, rect, span, gpuStoreRows)) {
+                for (Target &dirtyTarget : targets_) {  // older dirty rectangles first, as for IN-512
+                    if (!dirtyTarget.alive || dirtyTarget.dirty.empty()) continue;
+                    const BlockSpan whole = TargetSpan(dirtyTarget, PixelRect{0, 0, static_cast<std::int32_t>(dirtyTarget.width) - 1,
+                                                                             static_cast<std::int32_t>(dirtyTarget.height) - 1});
+                    if (SpansOverlap(whole, gpuStoreRows) && !ApplyDirty(dirtyTarget)) return false;
+                }
+                bool any = false;
+                if (!MakeGlmCurrent(gpuStoreRows) || !MaterializeTargets(gpuStoreRows, any)) return false;
+                gpuStoreWrite_ = true;
+                storesSkipped_++;
+                return true;
+            }
+            // IN-512: the first target that really needs a store tries the merge on the GPU instead (IN-538: by block
+            // for a larger write).
+            const bool smallMerge = !outOfRange && stats.storesBeforeWrite == storesBeforeThisWrite && WriteCanPatchBits(view, rect, span);
+            const bool blockMerge = !smallMerge && !outOfRange && stats.storesBeforeWrite == storesBeforeThisWrite &&
+                                    WriteCanPatchBlocks(view, rect, span);
+            if (smallMerge || blockMerge) {
                 // Older dirty rectangles of these targets go in first: their patches must not see this write's memory.
                 for (Target &dirtyTarget : targets_) {
                     if (!dirtyTarget.alive || dirtyTarget.dirty.empty()) continue;
@@ -2519,7 +2883,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                                                              static_cast<std::int32_t>(dirtyTarget.height) - 1});
                     if (SpansOverlap(whole, span) && !ApplyDirty(dirtyTarget)) return false;
                 }
-                bitPatchWrite_ = true;
+                bitPatchWrite_ = smallMerge;
+                blockPatchWrite_ = blockMerge;
                 storesSkipped_++;
                 return true;
             }
@@ -4951,9 +5316,11 @@ void Renderer::Flush() {
         }
         const std::uint64_t allWaits = s.gpu_.Stats().waitNs - s.lastWaitNs_;
         std::fprintf(stderr, "[core2] gpu_wait ms/vblank by readback reason (readbacks/vblank):%s not_readback=%.2f "
-                     "stores_skipped=%.2f/vblank\n",
+                     "stores_skipped=%.2f/vblank bit_patches=%llu block_merges=%llu (%llu rects) gpu_stores=%llu\n",
                      byReason.c_str(), static_cast<double>(allWaits - std::min(allWaits, attributed)) / 600.0e6,
-                     static_cast<double>(s.storesSkipped_) / 600.0);
+                     static_cast<double>(s.storesSkipped_) / 600.0, static_cast<unsigned long long>(s.stats.bitPatches),
+                     static_cast<unsigned long long>(s.stats.blockPatchWrites), static_cast<unsigned long long>(s.stats.blockPatchRects),
+                     static_cast<unsigned long long>(s.stats.gpuStores));
         s.storesSkipped_ = 0;
         s.lastWaitNs_ = s.gpu_.Stats().waitNs;
         s.times_ = PhaseTimes{};

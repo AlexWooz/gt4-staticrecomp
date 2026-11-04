@@ -101,6 +101,10 @@ struct Core2Counters {
     std::uint64_t pageExactDirties = 0;        // IN-416: writes turned into page-exact dirty rectangles
     std::uint64_t overTargetReuses = 0;        // IN-513: decodes over targets reused in their VBlank
     std::uint64_t bitPatches = 0;              // IN-512: blocks of a small write patched bit by bit, with no store
+    std::uint64_t blockPatchWrites = 0;        // IN-538: large writes merged block by block, with no store
+    std::uint64_t blockPatchRects = 0;         // ... rectangles of filled blocks the targets took from the GLM
+    std::uint64_t gpuStores = 0;               // IN-539: stores before whole-block writes done on the GPU
+    std::uint64_t gpuStoreRows = 0;            // ... target page-row patches from the GLM they made
     std::uint64_t materializationsLeftOut = 0;  // IN-510: GLM writes left out because the GLM already held the target
     std::uint64_t drawnPagesMissed = 0;        // IN-508: stores left out because the write shares no page with the drawn area
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path

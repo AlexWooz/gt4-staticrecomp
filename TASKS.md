@@ -2960,7 +2960,7 @@ does not). Replay at VBlank 1900: the far fence is see-through mesh, as on GSdx.
 MIPTBP1/MIPTBP2/TEXA, and with `GT4_CORE2_BATCH_TRACE_AT` the traced VBlank also lists each GIF transfer's path, each upload
 with its bytes, and each memory write. State: fixed on `task/134-game-code-optimization-study`, for rc13 (owner test).
 
-### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13)
+### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13; done)
 
 Owner (2026-11-04, NVIDIA RTX at 3440x1440, CoreGS 2.0 6x): the used-car showroom (the car turning) runs at about 55 FPS with
 frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `avell-gt4-20261104`, the owner's GT4 save from
@@ -2978,7 +2978,17 @@ remove the wait (the last page row of the write is partial). Way forward (design
 the GPU (targets into the GLM, the upload over it) and track the CPU memory those pages leave stale, reading it back only if
 something reads it (an EE download, a CPU-side decode).
 
-### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed)
+Done (2026-11-04, IN-538): such a write is now merged on the GPU block by block. A block it fills in every bit is taken by the
+target from the GLM; a block it writes in part (the backdrop's last 6 rows, 40 blocks) goes through IN-512's bit merge; the
+blocks it does not touch keep the drawn pixels. No readback. Frames identical to the store (showroom 32 of 32 and photo mode
+26 of 26 at 6x, George V Paris 49 of 49 at 2x). Laptop (RTX 3060 Laptop GPU, 3440 x 1440, CoreGS 2.0 6x, the launcher's
+settings, three interleaved runs each): 60 FPS in every run of both builds that day (frame time 16.67 ms, deviation 0.12-0.19
+ms); GPU waiting 1.61-1.67 to 0.03 ms per VBlank and stores before writes 0.34 to 0 per VBlank, for about 1 ms more GPU work per
+VBlank (9.6-9.8 to 10.7 ms busy). Earlier that night the same laptop showed the owner's stalls with the old build (26 frames
+over 20 ms in 680, each with a 4-6 ms GPU wait in the store); the new build removes that wait. `GT4_CORE2_PATCH_BLOCKS=0` (A/B);
+test `hw_core2_patch_blocks`.
+
+### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed; frame times in TASK-162)
 
 Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
 and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording: `photo-mode` (v2.00, card
@@ -3002,6 +3012,22 @@ Frame times (analysis, 2026-11-04, 6x): two readbacks every frame (`GT4_CORE2_RE
 target at block 11520; plus about 38 texture decodes per frame. Each readback waits for the GPU. Performance Mode already
 answers such downloads with the previous result (IN-439, one frame late, decision 0073); normal mode stays exact, so changing
 that there is the owner's call. The CLUT one could go through the GPU palette path (IN-408) if it covers Z formats (to check).
+Tried (2026-11-04, kept off by default): the CLUT readback comes from photo mode's 640 x 448 Z16S depth buffer, and 16-bit depth
+targets can go into the GLM (IN-537); the buffer then counts as read on the GPU, so about 24 uploads per frame over its memory
+each need a store first, on the CPU or on the GPU (IN-539). Laptop at 6x: 57.2-58.2 FPS with them against 59.6-60.1 without, so
+both are off (`GT4_CORE2_GPU_Z16=1`, `GT4_CORE2_WHOLE_BLOCK_WRITES=1` turn them on). With the flicker fix photo mode holds
+59.2-60 FPS on the laptop at 6x (launcher settings, four runs); the rest of its frame times moves to TASK-162 (owner, 2026-11-04:
+not a priority; close rc13 with the flicker fixed).
+
+### TASK-162 — CoreGS 2.0: photo mode frame times (after rc13)
+
+Owner (2026-11-04): photo mode is not a priority; rc13 ships with its flicker fixed (TASK-151) and these frame times are left
+for later. What is known (TASK-151, IN-537, IN-539): each game frame (every second VBlank) reads back a CLUT loaded from the
+640 x 448 Z16S depth buffer at BP 11520 and an 8 x 4 rectangle of the 320 x 192 Z24 target at BP 10048 (an EE download, likely
+the camera's focus), 3-4 ms of GPU waiting together on the laptop at 6x; the GS thread spends about 10 ms per game frame on
+top. Ways: let the GLM hold pages as the newest copy of memory, so a target read on the GPU needs one store per round of reads
+(then IN-537 and IN-539 can be on); or answer that small depth download one frame late, a named relaxation for normal mode that
+needs the owner's word (decision 0073 keeps it to Performance Mode). Measure on the laptop only (owner).
 
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 

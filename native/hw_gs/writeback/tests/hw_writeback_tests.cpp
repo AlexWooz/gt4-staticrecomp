@@ -5479,6 +5479,200 @@ int TestCore2PatchBits(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// IN-538 (the car showroom's studio backdrop): a CT32 target at page 22 (FBW 2, 128 x 128, pages 22-29) drawn whole on the
+// GPU and read there as a T8 texture, then a large T8 write in the same memory, beyond IN-512's limits:
+//   frame % 2 == 0: 128 x 200 from row 0 (pages 22-25; the last 8 rows fill only part of page 25's first block row);
+//   frame % 2 == 1: 128 x 150 from row 4 (part of the first and the last block rows).
+// The target is then sampled 1:1 in a filled page, in page 25 (the partly written blocks) and in two pages the write never
+// touches, whose drawn pixels must survive.
+cpuref::CaptureWriter Core2LargeWriteOverDrawnCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kSource = 16, kRender = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page, uint64_t fbw) { return page | (fbw << 16); };  // CT32
+    auto blit = [](uint64_t dbp, uint64_t dbw, uint64_t dpsm) { return (dbp << 32) | (dbw << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    auto tex0 = [](uint64_t blocks, uint64_t tbw, uint64_t psm, uint64_t log2, uint64_t tfx) {
+        return blocks | (tbw << 14) | (psm << 20) | (log2 << 26) | (log2 << 30) | (uint64_t{1} << 34) | (tfx << 35);
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    // A grey ramp palette at page 14 and a one-colour source texture at page 16 (TFX modulate gives the vertex colour).
+    ad({blit(14 * 32, 1, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> entries;
+        for (uint32_t i = 0; i < 128; ++i) {
+            const uint32_t a = 2 * i, b = 2 * i + 1;
+            entries.push_back(uint64_t{0x80000000u | (a * 0x010101u)} | (uint64_t{0x80000000u | (b * 0x010101u)} << 32));
+        }
+        image(entries);
+    }
+    ad({blit(kSource * 32, 1, 0x00), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    image(std::vector<uint64_t>(128, uint64_t{0x80808080u} * 0x100000001ull));
+    const uint64_t readRender = tex0(kRender * 32, 1, 0x13, 5, 0) | (uint64_t{14 * 32} << 37) | (uint64_t{1} << 61);
+    const uint64_t sampleRender = tex0(kRender * 32, 2, 0x00, 7, 1);
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        // the whole 128 x 128 target drawn on the GPU, then A cleared and the target read as a T8 texture
+        ad({(uint64_t{127} << 16) | (uint64_t{127} << 48), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+            frameReg(kRender, 2), 0x4C, tex0(kSource * 32, 1, 0x00, 4, 0), 0x06, kSprite | kTme | kFst, 0x00,
+            rgbaq(0x80000000u | ((frame + 1u) * 0x00102030u)), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(16, 16), 0x03,
+            xyz(128, 128), 0x05, frameReg(kA, 1), 0x4C, kSprite, 0x00, rgbaq(0x80000000u), 0x01, xyz(0, 0), 0x05,
+            xyz(64, 64), 0x05, readRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03,
+            xyz(0, 0), 0x05, uv(32, 32), 0x03, xyz(32, 32), 0x05});
+        // a small sprite sends the read's batch before the write
+        ad({sampleRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(8, 8), 0x03, xyz(0, 60), 0x05,
+            uv(12, 12), 0x03, xyz(4, 64), 0x05});
+        const uint32_t top = frame % 2 == 0 ? 0u : 4u, rows = frame % 2 == 0 ? 200u : 150u;
+        ad({blit(kRender * 32, 2, 0x13), 0x50, uint64_t{top} << 48, 0x51, uint64_t{128} | (uint64_t{rows} << 32), 0x52, 0, 0x53});
+        std::vector<uint64_t> words;
+        for (uint32_t i = 0; i < 128 * rows / 8; ++i) words.push_back((uint64_t{i + frame} * 0x0102030405060708ull) ^ 0x8040201008040201ull);
+        image(words);
+        // the target sampled 1:1: a filled page, page 25 (rows 32-63, columns 64-127), and pages 26 and 29 (untouched)
+        ad({sampleRender, 0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(8, 8), 0x03, xyz(0, 0), 0x05,
+            uv(40, 40), 0x03, xyz(32, 32), 0x05, uv(80, 32), 0x03, xyz(32, 0), 0x05, uv(112, 64), 0x03, xyz(64, 32), 0x05,
+            uv(0, 64), 0x03, xyz(0, 32), 0x05, uv(32, 96), 0x03, xyz(32, 64), 0x05, uv(96, 96), 0x03, xyz(32, 32), 0x05,
+            uv(128, 128), 0x03, xyz(64, 64), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
+// IN-539 (photo mode's uploads over its Z16S depth buffer): page 22 holds a Z16S target (a depth-only sprite over the whole
+// page) and a CT32 target (a colour sprite over 32 x 32), both drawn on the GPU; a CSM1 palette loaded from the page reads
+// both on the GPU (IN-417, IN-537). Then whole-block writes land in the page: an 8 x 8 CT32 image five blocks in (frame
+// % 2 == 0) or a 16 x 16 T8 image nine blocks in (frame % 2 == 1); a palette is loaded again from the page and used, and
+// the colour target is sampled as a texture. GS memory is read at the last frame, so a depth buffer that lost the write
+// (or whose other blocks were patched from older memory) shows there.
+cpuref::CaptureWriter Core2WholeBlockWriteCapture(uint32_t frames) {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kA = 0, kT8 = 18, kShared = 22;  // pages
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y, uint32_t z = 0) {
+        return uint64_t{x * 16} | (uint64_t{y * 16} << 16) | (uint64_t{z} << 32);
+    };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto frameReg = [](uint64_t page) { return page | (uint64_t{1} << 16); };  // FBW 1, CT32
+    auto blit = [](uint64_t dbp, uint64_t dbw, uint64_t dpsm) { return (dbp << 32) | (dbw << 48) | (dpsm << 56); };
+    const uint64_t kSprite = 6, kTme = 1u << 4, kFst = 1u << 8;
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{kA * 32} | (uint64_t{1} << 9));
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    auto image = [&](const std::vector<uint64_t>& data) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(data.size() / 2), true, false, 0, 2, {}, data));
+    };
+    // A 16 x 16 T8 texture at page 18: every index once.
+    ad({blit(kT8 * 32, 2, 0x13), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+    {
+        std::vector<uint64_t> texels;
+        for (uint32_t i = 0; i < 32; ++i) {
+            uint64_t word = 0;
+            for (uint32_t b = 0; b < 8; ++b) word |= uint64_t{(i * 8 + b) & 255u} << (8 * b);
+            texels.push_back(word);
+        }
+        image(texels);
+    }
+    const uint64_t zbufMasked = kShared | (uint64_t{1} << 24) | (uint64_t{1} << 32);
+    const uint64_t zbufZ16S = kShared | (uint64_t{0xA} << 24);
+    auto paletteSprite = [&](uint32_t x, uint32_t y, uint64_t paletteBlock) {
+        const uint64_t load = uint64_t{kT8 * 32} | (uint64_t{2} << 14) | (uint64_t{0x13} << 20) | (uint64_t{4} << 26) |
+                              (uint64_t{4} << 30) | (uint64_t{1} << 34) | (uint64_t{1} << 35) |
+                              ((kShared * 32 + paletteBlock) << 37) | (uint64_t{1} << 61);
+        ad({uint64_t{1} << 17, 0x47, zbufMasked, 0x4E, frameReg(kA), 0x4C, load, 0x06, kSprite | kTme | kFst, 0x00,
+            rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(x, y), 0x05, uv(16, 16), 0x03, xyz(x + 16, y + 16), 0x05});
+    };
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        ad({(uint64_t{63} << 16) | (uint64_t{63} << 48), 0x40, 0, 0x18,
+            // the colour target: a sprite over 32 x 32 at page 22
+            uint64_t{1} << 17, 0x47, zbufMasked, 0x4E, frameReg(kShared), 0x4C, kSprite, 0x00,
+            rgbaq(0x80402010u + frame * 0x01030507u), 0x01, xyz(0, 0), 0x05, xyz(32, 32), 0x05,
+            // the depth target: Z16S at page 22, a depth-only sprite (colour into A) over the whole page
+            (uint64_t{1} << 16) | (uint64_t{1} << 17), 0x47, zbufZ16S, 0x4E, frameReg(kA), 0x4C, kSprite, 0x00,
+            rgbaq(0x80000000u), 0x01, xyz(0, 0, 0x1234u + frame * 0x0101u), 0x05, xyz(64, 64, 0x1234u + frame * 0x0101u), 0x05});
+        paletteSprite(32, 0, 0);
+        std::vector<uint64_t> words;
+        if (frame % 2 == 0) {
+            ad({blit(kShared * 32 + 5, 1, 0x00), 0x50, 0, 0x51, uint64_t{8} | (uint64_t{8} << 32), 0x52, 0, 0x53});
+            for (uint32_t i = 0; i < 32; ++i) words.push_back(uint64_t{0x80C06020u + i * 0x00010203u + frame} * 0x100000001ull);
+        } else {
+            ad({blit(kShared * 32 + 9, 2, 0x13), 0x50, 0, 0x51, uint64_t{16} | (uint64_t{16} << 32), 0x52, 0, 0x53});
+            for (uint32_t i = 0; i < 32; ++i) words.push_back((uint64_t{i + frame} * 0x0102030405060708ull) ^ 0x8040201008040201ull);
+        }
+        image(words);
+        paletteSprite(48, 0, 4);
+        paletteSprite(0, 32, 8);
+        // the colour target sampled as a texture
+        ad({uint64_t{kShared * 32} | (uint64_t{1} << 14) | (uint64_t{5} << 26) | (uint64_t{5} << 30) | (uint64_t{1} << 34) |
+                (uint64_t{1} << 35),
+            0x06, kSprite | kTme | kFst, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(16, 32), 0x05, uv(32, 32), 0x03,
+            xyz(48, 64), 0x05});
+        capture.FrameEnd(frame);
+    }
+    return capture;
+}
+
+// hw_core2_patch_blocks (IN-538, IN-539): GT4_CORE2_PATCH_BLOCKS on a large T8 write over a drawn, GPU-read CT32 target,
+// and GT4_CORE2_WHOLE_BLOCK_WRITES on whole-block writes over a GPU-read Z16S target: no store for them, with the same
+// picture and memory.
+int TestCore2PatchBlocks(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    constexpr uint32_t kFrames = 4;
+    for (uint32_t scale : {1u, 2u, 3u}) {
+        const std::string name = "large T8 over a drawn target at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(handles, name.c_str(), Core2LargeWriteOverDrawnCapture(kFrames), kFrames, "GT4_CORE2_PATCH_BLOCKS", false,
+                                 [&](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  %s: stores before write %llu / %llu, block merges %llu / %llu (%llu rectangles)\n",
+                                                 name.c_str(), static_cast<unsigned long long>(off.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(on.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(off.stats.blockPatchWrites),
+                                                 static_cast<unsigned long long>(on.stats.blockPatchWrites),
+                                                 static_cast<unsigned long long>(on.stats.blockPatchRects));
+                                     return off.stats.storesBeforeWrite > 0 && on.stats.storesBeforeWrite == 0 &&
+                                                    off.stats.blockPatchWrites == 0 && on.stats.blockPatchWrites == kFrames
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale);
+    }
+    // IN-539 and IN-537 are off by default (measured): both runs read the Z16S palette on the GPU, the "on" run stores
+    // with IN-539.
+    _putenv_s("GT4_CORE2_GPU_Z16", "1");
+    for (uint32_t scale : {1u, 2u}) {
+        const std::string name = "whole blocks over a Z16S target at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(handles, name.c_str(), Core2WholeBlockWriteCapture(kFrames), kFrames, "GT4_CORE2_WHOLE_BLOCK_WRITES", false,
+                                 [&](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  %s: stores before write %llu / %llu, GPU stores %llu / %llu\n",
+                                                 name.c_str(), static_cast<unsigned long long>(off.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(on.stats.storesBeforeWrite),
+                                                 static_cast<unsigned long long>(off.stats.gpuStores),
+                                                 static_cast<unsigned long long>(on.stats.gpuStores));
+                                     return off.stats.storesBeforeWrite > 0 && on.stats.storesBeforeWrite == 0 &&
+                                                    off.stats.gpuStores == 0 && on.stats.gpuStores > 0
+                                                ? 0
+                                                : 1;
+                                 },
+                                 true, scale, "1");
+    }
+    _putenv_s("GT4_CORE2_GPU_Z16", "");
+    std::printf("hw_core2_patch_blocks: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_over_target_memo (IN-513): GT4_CORE2_OVER_TARGET_MEMO: a decode over a drawn target is reused in its VBlank only while
 // nothing under it changed, with the same picture and memory, at 1x and scaled.
 int TestCore2OverTargetMemo(const gpu::VulkanHandles& handles) {
@@ -5644,6 +5838,20 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                                             ? 0
                                             : 1;
                              });
+    // IN-537: the same over a Z16S depth target (photo mode's palettes in the memory of its depth buffer).
+    failures += CheckCore2Ab(handles, "palette over a Z16S target", Core2WholeBlockWriteCapture(4), 4, "GT4_CORE2_GPU_Z16", false,
+                             [](const Core2AbRun& off, const Core2AbRun& on) {
+                                 std::printf("  palette over a Z16S target: CLUT readbacks %llu / %llu, multi-target GPU loads "
+                                             "%llu / %llu\n",
+                                             static_cast<unsigned long long>(off.stats.clutReadbacks),
+                                             static_cast<unsigned long long>(on.stats.clutReadbacks),
+                                             static_cast<unsigned long long>(off.stats.clutMultiTargetLoads),
+                                             static_cast<unsigned long long>(on.stats.clutMultiTargetLoads));
+                                 return off.stats.clutReadbacks > 0 && on.stats.clutReadbacks == 0 && on.stats.clutMultiTargetLoads > 0
+                                            ? 0
+                                            : 1;
+                             },
+                             false, 2, "1");
     // IN-419/IN-420: barriers only on dependencies and draw batches deferred into one render pass must give the same
     // images and memory as a barrier around every command and each batch recorded at once.
     failures += CheckCore2Ab(handles, "deferred draws, GPU palettes", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_DEFER_DRAWS",
@@ -6342,6 +6550,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_width_grace") return TestCore2WidthGrace(handles);
     if (name == "hw_core2_glm_memo") return TestCore2GlmMemo(handles);
     if (name == "hw_core2_patch_bits") return TestCore2PatchBits(handles);
+    if (name == "hw_core2_patch_blocks") return TestCore2PatchBlocks(handles);
     if (name == "hw_core2_over_target_memo") return TestCore2OverTargetMemo(handles);
     if (name == "hw_core2_mipmaps") return TestCore2Mipmaps(handles);
     if (name == "hw_core2_specialised") return TestCore2Specialised(handles);
