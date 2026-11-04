@@ -8,7 +8,10 @@ is left out; when the PC falls behind in a running race, frames are left out and
 physics. 30 FPS is unchanged; menus never skip. The first laptop test crashed at a race's end inside the NVIDIA driver: the
 paced presentation path (frames left out, the 30 FPS mode too) shared the GS thread's command pool, and the frametime
 thread's present wait overlapped the swapchain's acquires and presents in every mode. Both fixed (IN-536; the validation
-layer's thread checks: 10 overlaps before, 0 after). New plain builds on the laptop; owner retest pending.
+layer's thread checks: 10 overlaps before, 0 after). Second test: no crash, but 99.1% game speed and audio underruns at 6x.
+On the owner's rules (60 Hz simulation always; 30 FPS from the race intro): the gate opens in the intro (race object, clock 0),
+the 60 FPS policy acts at a frame of delay and may leave out up to 8 in a row, the pacer owes up to 12 frames. Both frame
+skip suites pass; 100.00% at 12x on the desktop. Laptop builds write `frameskip.csv`; owner test pending.
 
 ## TASK-145 fixed for rc12: the desktop flash every 6 seconds in fullscreen on NVIDIA RTX (2026-11-03, night)
 

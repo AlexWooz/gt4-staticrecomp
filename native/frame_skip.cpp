@@ -64,11 +64,15 @@ void Controller::new_frame(std::uint8_t *ram, std::size_t ramSize) {
   raceSeenThisFrame_ = false;
 }
 
-void Controller::evaluate_gate(std::uint32_t clock) {
+void Controller::evaluate_gate(std::uint32_t clock, bool race) {
   const bool rose = hasLastClock_ && clock != 0 && clock == lastClock_ + kClockStep;
+  // TASK-146: the intro of a race, from the first race camera to the start, has the race object with its clock still at 0
+  // (v2.00 night race: VBlanks 6486-7313). It draws the race scene with the frame structure of a running race, so it counts
+  // as running (owner: the 30 FPS mode should hold from there). A clock standing still above 0 is a pause, and stays closed.
+  const bool intro = race && clock == 0;
   lastClock_ = clock;
   hasLastClock_ = true;
-  if (rose) {
+  if (rose || intro) {
     if (++goodFrames_ >= kGateFrames) gateOpen_ = true;
     return;
   }
@@ -86,11 +90,12 @@ bool Controller::should_skip() {
 void Controller::decide(std::uint8_t *ram, std::size_t ramSize) {
   std::uint32_t clock = 0;
   std::uint32_t dynamics = 0;
-  if (raceSeenThisFrame_ && is_race(raceObject_, ram, ramSize)) {
+  const bool race = raceSeenThisFrame_ && is_race(raceObject_, ram, ramSize);
+  if (race) {
     dynamics = read_word(ram, ramSize, raceObject_ + guest_.raceDynamicsOffset);
     clock = read_word(ram, ramSize, dynamics + guest_.dynamicsClockOffset);
   }
-  evaluate_gate(clock);
+  evaluate_gate(clock, race);
   const std::uint32_t page = read_word(ram, ramSize, guest_.displayPage);
   const std::uint32_t pageSecond = read_word(ram, ramSize, guest_.displayPageSecond);
   // The words are 0 or 1, or this is not the state this was written for: leave the frame alone.
@@ -126,9 +131,10 @@ void Controller::decide(std::uint8_t *ram, std::size_t ramSize) {
   if (log_ != nullptr) {
     const std::uint64_t digest = dynamics != 0 ? fnv1a(ram + dynamics, guest_.dynamicsBytes) : 0;
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    std::fprintf(log_, "%llu,%d,%u,%d,%d,%d,%016llx,%lld,%d,%d\n", static_cast<unsigned long long>(vblank_), skippingFrame_ ? 0 : 1, clock,
-                 slackUs_ == Policy::kNoSlack ? 0 : slackUs_, gsLateUs_, gateOpen_ ? 1 : 0, static_cast<unsigned long long>(digest),
-                 static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(now).count()), gsCostUs_, eeCostUs_);
+    std::fprintf(log_, "%llu,%d,%u,%d,%d,%d,%016llx,%lld,%d,%d,%d\n", static_cast<unsigned long long>(vblank_), skippingFrame_ ? 0 : 1,
+                 clock, slackUs_ == Policy::kNoSlack ? 0 : slackUs_, gsLateUs_, gateOpen_ ? 1 : 0, static_cast<unsigned long long>(digest),
+                 static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(now).count()), gsCostUs_, eeCostUs_,
+                 race ? 1 : 0);
   }
 }
 
@@ -191,9 +197,15 @@ void start_from_environment() {
     std::memcpy(&g_render_time_bits, &value, sizeof value);
     g_render_time_forced = true;
   }
-  if (const char *path = std::getenv("GT4_FRAME_SKIP_LOG")) {
+  const char *logPath = std::getenv("GT4_FRAME_SKIP_LOG");
+  // A diagnostic build for the owner (the launcher passes no environment on) writes frameskip.csv beside game.log.
+#ifndef GT4_TEST_FRAME_SKIP_LOG
+#define GT4_TEST_FRAME_SKIP_LOG 0
+#endif
+  if (logPath == nullptr && GT4_TEST_FRAME_SKIP_LOG != 0) logPath = "frameskip.csv";
+  if (const char *path = logPath) {
     g_log = std::fopen(path, "w");
-    if (g_log != nullptr) std::fputs("vblank,rendered,clock,slack_us,gs_late_us,gate,digest,wall_us,gs_cost_us,ee_cost_us\n", g_log);
+    if (g_log != nullptr) std::fputs("vblank,rendered,clock,slack_us,gs_late_us,gate,digest,wall_us,gs_cost_us,ee_cost_us,race\n", g_log);
   }
   Guest guest;
   guest.updateFunctor = hooks.frame_update_functor;

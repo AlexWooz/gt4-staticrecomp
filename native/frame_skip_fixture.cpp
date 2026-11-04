@@ -158,11 +158,14 @@ int main() {
       game.control.note_vblank(static_cast<std::uint64_t>(i), (seed >> 16) % 3 == 0 ? -60000 : 1000, -1000, 40000, 5000);
       game.run_frame();
       check(game.displayed >= last, "the display went back in a mix of frames");
-      check(i < 5 || game.frame - game.displayed <= 4, "the display fell behind in a mix of frames");
+      check(i < 5 || game.frame - game.displayed <= static_cast<std::uint32_t>(Policy::kMaxRun) + 2,
+            "the display fell behind in a mix of frames");
       last = game.displayed;
     }
     check(game.drawnIntoShownPage == 0, "a drawing list ran into the page on display in a mix of frames");
-    check(game.control.stats().skipped > 200 && game.control.stats().longestRun == 2, "the mix did not leave frames out");
+    check(game.control.stats().skipped > 200 && game.control.stats().longestRun >= 2 &&
+              game.control.stats().longestRun <= static_cast<std::uint64_t>(Policy::kMaxRun),
+          "the mix did not leave frames out, or left out more in a row than allowed");
   }
   {  // No skipping before the race clock has risen for a second; off in menus and when paused.
     Game game(2);
@@ -179,6 +182,19 @@ int main() {
     for (int i = 0; i < 100; ++i) game.run_frame();
     check(game.control.stats().skipped == skipped, "skipped on a paused race");
     check(game.displayed + 1 == game.frame, "a paused race did not show every frame");
+  }
+  {  // TASK-146: the intro before the start (race object there, clock still 0) skips as a running race, then the race does.
+    Game game(2);
+    game.clock = 0;
+    game.running = false;
+    for (std::uint32_t i = 0; i < Controller::kGateFrames; ++i) game.run_frame();
+    for (int i = 0; i < 20; ++i) game.run_frame();
+    check(game.control.gate_open() && game.control.stats().skipped > 0, "the intro with the clock at 0 did not open the gate");
+    game.running = true;  // the green flag: 0 -> 50 -> 100 ...
+    const std::uint64_t closes = game.control.stats().gateCloses;
+    for (int i = 0; i < 20; ++i) game.run_frame();
+    check(game.control.gate_open() && game.control.stats().gateCloses == closes, "the start of the race closed the gate");
+    check(game.drawnIntoShownPage == 0, "a drawing list ran into the page on display across the start");
   }
   {  // No race object: a menu never skips.
     Game game(2);
@@ -226,17 +242,17 @@ int main() {
         longest = run > longest ? run : longest;
       }
       check(drawn / 10 >= drawnLow && drawn / 10 <= drawnHigh, "the frames drawn do not follow the cost");
-      check(longest <= Policy::kMaxRun, "more than two in a row");
+      check(longest <= Policy::kMaxRun, "more in a row than allowed");
       if (cost == 21700) check(longest == 1, "frames left out are not spread evenly");
     }
   }
-  {  // The floor: more than the game can pay for, and the game slows down at 20 frames per second.
+  {  // The floor: more than the game can pay for, and the game slows down at one frame drawn in kMaxRun + 1.
     Policy policy;
     policy.decide(-Policy::kLateUs - 1000, 0, 90000);
     int run = 0;
     for (int i = 0; i < 300; ++i) {
       run = policy.decide(-30000, 30000, 90000) ? run + 1 : 0;
-      check(run <= Policy::kMaxRun, "under the floor of 20 frames per second");
+      check(run <= Policy::kMaxRun, "under the floor of frames drawn");
     }
   }
   {  // Being behind costs more frames, and the shortfall ends when on time and within budget for two seconds.

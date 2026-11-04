@@ -20,8 +20,8 @@
 // GT4_FRAME_SKIP=1 leaves frames out when behind, for any framerate below 60: the launcher's 60 FPS mode since 1.3.0-rc12
 // (TASK-146, experimental; game.ini hw_frame_skip_adaptive=1). Without a lasting shortfall it leaves nothing out; its motion
 // steps between the game's 16.7 ms when it does (docs/TASK-082-UNLOCKED-FPS-STATE.md). Only in a running
-// race: the race clock must rise by one step per frame for a second; pause, menus and accelerated time close that gate at once. And
-// only in 480p.
+// race: the race clock must rise by one step per frame for a second, or stay at 0 with the race object there (the intro before
+// the start, TASK-146); pause, menus and accelerated time close that gate at once. And only in 480p.
 // GT4_FRAME_SKIP_LOG=<csv>: one row per frame, for scripts/coregs2_bench/frame_sheet.py.
 
 #include <algorithm>
@@ -41,13 +41,17 @@ namespace gt4::frame_skip {
 // evenly, any framerate down to the floor, with the presenter evening out the intervals (hw_present_spacing.hpp). Without a lasting
 // shortfall it does nothing: a few frames over budget come back by themselves, and at 60 frames per second a frame left out shows
 // more than a frame a little late.
+// TASK-146 (owner: the simulation keeps 60 Hz first): a frame of delay is a shortfall, delay past one frame is paid back four
+// times faster than before, and up to eight frames in a row may be left out; the first laptop test lost 0.9% of the game's speed
+// with the gentler rules (33 ms before acting, at most two in a row, an eighth of the delay past two frames per frame).
 class Policy {
 public:
-  static constexpr std::int32_t kLateUs = 33000;   // behind by this much: the shortfall is real
+  static constexpr std::int32_t kLateUs = 17000;   // behind by this much: the shortfall is real
   static constexpr std::int32_t kCalmUs = 4000;    // back on time, and
   static constexpr int kCalmFrames = 120;          // for this long with frames within budget: the shortfall is over
   static constexpr std::int32_t kFrameUs = 16667;
-  static constexpr int kMaxRun = 2;  // at least 20 frames per second; below that the game slows down instead
+  // At least one frame drawn in nine (6.7 per second): below that the game slows down instead, since the picture must not stop.
+  static constexpr int kMaxRun = 8;
   static constexpr std::int32_t kNoSlack = INT32_MIN;
 
   // `slackUs`: time the EE had left before the VBlank was due (negative: late), kNoSlack without a pacer. `gsLateUs`: how long after
@@ -70,9 +74,10 @@ public:
     } else {
       calm_ = 0;
     }
-    // A little over the cost keeps some room, or the GS worker never gets back on time. Being behind by more than two frames is paid
-    // back over the next frames: the game must keep its speed. Gently: a stronger pull made the pattern swing, and that shows.
-    const std::int64_t price = std::int64_t{costUs} * 33 / 32 + std::clamp<std::int64_t>(behind - 2 * kFrameUs, 0, 3 * kFrameUs) / 8;
+    // A little over the cost keeps some room, or the GS worker never gets back on time. Being behind by more than a frame is paid
+    // back over the next frames: the game must keep its speed (a stronger pull swings the pattern more, and the owner prefers that
+    // to a slower game).
+    const std::int64_t price = std::int64_t{costUs} * 33 / 32 + std::clamp<std::int64_t>(behind - kFrameUs, 0, 6 * kFrameUs) / 4;
     credit_ += kFrameUs;
     if (credit_ < price && run_ < kMaxRun) {
       ++run_;
@@ -149,7 +154,7 @@ private:
   bool is_race(std::uint32_t object, const std::uint8_t *ram, std::size_t ramSize) const;
   void new_frame(std::uint8_t *ram, std::size_t ramSize);
   void decide(std::uint8_t *ram, std::size_t ramSize);
-  void evaluate_gate(std::uint32_t clock);
+  void evaluate_gate(std::uint32_t clock, bool race);
   bool should_skip();
   std::uint32_t flare_count(std::uint32_t offset, const std::uint8_t *ram, std::size_t ramSize) const;
 

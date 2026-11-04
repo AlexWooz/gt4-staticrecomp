@@ -2848,3 +2848,20 @@ overlapped acquires and presents on the swapchain (that one in every mode). Fixe
 pool, and every acquire, present and present wait holds a swapchain mutex, the wait polled every 0.5 ms. The validation
 layer's thread checks on a replay: 10 overlaps before at 30 and 60 FPS, 0 after; frames left out unchanged. New plain builds
 on the laptop; owner retest pending.
+
+Second laptop test (2026-11-03): no crash. F8 over 198 s of a Spec II race at 6x: game speed 99.1%, 625 frames left out (never
+two in a row), 10 audio underruns (the crackles: the 60 ms audio buffer ran dry in stalls of up to 77 ms, mostly the GS thread
+waiting for the GPU's readbacks, 7.4 of its 15.6 ms per frame). The owner: pacing is fine at a steady 60 and only bad when it
+drops (interpolation, a large job, stays out of rc12); the simulation must keep 60 Hz always, so leave out as many frames as
+needed; the 30 FPS mode ran steady but only from the moment the camera takes the car, not in the intro before the start or a
+replay's. Changes:
+- the gate also opens when the race object is there with its clock still at 0, the intro from the first race camera to the
+  start (v2.00 night race: 828 VBlanks); pause (clock still above 0), menus (no race object; the pre-race screen has none) and
+  accelerated time stay closed. Frame skip log column `race`.
+- the 60 FPS policy keeps speed first: a frame of delay is a shortfall (was 33 ms), delay past a frame is paid back four times
+  faster, up to 8 frames in a row may be left out (was 2; at least one drawn in nine); the pacer owes up to 12 frames while
+  frames can be left out (was 6).
+Checks: `frame-skip-suite-v200.sh` 30 FPS over VBlanks 6450-7600 (intro and start), 1,143 frames ok, 528 left out, the
+simulation state identical over the whole race (2,478 left out); `frame-skip-suite.sh` (Spec II) ok, 22 of the known drawing
+words; 60 FPS at 12x on the desktop's RX 9060 XT: game speed 100.00%, 40.3 frames drawn per second. New laptop builds write
+`frameskip.csv` beside game.log (compile-time switch, test builds only); owner test pending.

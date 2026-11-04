@@ -625,8 +625,9 @@ void release_frame() {
     // Not waiting, the grid must not run ahead of the clock, or the first paced frame would sleep until the grid came back.
     if (input_vblank + 1 < paced_from_vblank) frame_pacer->anchor(frame_clock->now());
     if (!no_wait && input_vblank + 1 >= paced_from_vblank) {
-      // TASK-082: with frames being left out the lost time comes back at once: that is what they are for.
-      frame_pacer->set_resync_periods(gt4::pacing::frame_skip_engaged.load(std::memory_order_relaxed) ? 6 : 1);
+      // TASK-082: with frames being left out the lost time comes back at once: that is what they are for. TASK-146: up to 12
+      // frames (200 ms) are owed and paid back; the laptop's longest stalls were 70-80 ms on top of a delay already owed.
+      frame_pacer->set_resync_periods(gt4::pacing::frame_skip_engaged.load(std::memory_order_relaxed) ? 12 : 1);
       const std::int64_t earliest =
           last_release != 0 && !gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) ? last_release + min_interval : 0;
       frame_clock->wait_until(std::max(frame_pacer->deadline(), earliest));
