@@ -7,18 +7,23 @@ pause, pit menu and results keep their 16:9 shape, centred, at 21:9 and 32:9; 16
 
 ## 1.3.0-rc14 test build on the owner's desktop and laptop (2026-11-04, morning)
 
-For the owner's test before any pre-release (no PGO until the owner asks). Contents: TASK-159b, TASK-160 and TASK-161 (PR #197:
-the camera's pedal zeroing only on the right stick Y, FoV zoom on R3 + D-pad on by default, full trigger range off by default
-with a launcher switch), TASK-164 (first-start note on Play, issue #160), TASK-166 (Spec II ultrawide: the race font x scale and
-the mirror divisor patched as on v2.00, `scripts/spec2_aspect_patch.py`, units `private/slice405-spec2-aspect-producer`) and
-TASK-167 (the Spec II PT-BR + CPSP image named). Games slice406, plain (pins `docs/inputs/slice406-*.json`, exe `e1a4e4d0...`
-v2.00, `73167eaf...` Spec II, EE libraries from `build/cam360/*-units-rc14`; distribution `private/slice406-dist-130-rc14-test`),
-launchers labelled rc14 (`private/slice406-launchers-rc14-test`), installer
-`private/slice406-installer-130-rc14-test/GT4Recomp-Setup-1.3.0-rc14.exe`. Gates against rc13 (`gates5.sh`, wrong=0): race clock,
+For the owner's test before any pre-release (no PGO until the owner asks). Contents: TASK-095 (PR #200, re-does Luan Antony's
+#177: the 2D overlays over the race view keep their 16:9 shape at 21:9 and 32:9), TASK-159b, TASK-160 and TASK-161 (PR #197: the
+camera's pedal zeroing only on the right stick Y, FoV zoom on R3 + D-pad on by default, full trigger range off by default with a
+launcher switch), TASK-164 (first-start note on Play, issue #160), TASK-166 (Spec II ultrawide: the race font x scale and the
+mirror divisor patched as on v2.00, `scripts/spec2_aspect_patch.py`, units `private/slice405-spec2-aspect-producer`) and TASK-167
+(the Spec II PT-BR + CPSP image named). Games slice407, plain (pins `docs/inputs/slice407-*.json`, exe `4e87eb83...` v2.00,
+`10b7ce52...` Spec II, EE libraries from `build/cam360/*-units-rc14b`; distribution `private/slice407-dist-130-rc14-test`),
+launchers labelled rc14 (`private/slice407-launchers-rc14-test`), installer
+`private/slice407-installer-130-rc14-test/GT4Recomp-Setup-1.3.0-rc14.exe`. Gates against rc13 (`gates5.sh`, wrong=0): race clock,
 simulation state and every compared frame identical on three Spec II laps, the v2.00 night race and Arcade path, Spec II at 6x;
-VU1/VU0 and MTVU checks 0 differences. Launcher tests 661, focus checks 293/293 and 300/300, nav-test 217/217, locale keys 695 in
-both. CTest 299/300 in both builds: the one failure (13 Python tests of test_gs_settings/test_gs_live) expected the GSdx rows as they were before TASK-118 (2026-10-26: background textures always written, the Advanced page cut); the tests now check that layout and the Python suite passes 785/785 (56 skipped). Desktop updated
-through the installer's update mode (rc13 test files in `private/_program-backups/rc13test-before-rc14test-20261104T120226Z`).
+VU1/VU0 and MTVU checks 0 differences. TASK-095 overlay check on Spec II `george-pausa`: 16:9 identical to the build without the
+overlay calls (clock, state, 121 of 121 frames); at 21:9 the race identical and only the lobby and pause frames differ, 5 of 5
+narrowed by 1/1.3125 around the centre. CTest 300/300 in both builds, Python 785/785 (after the TASK-118 test update), launcher
+tests 662, focus checks 293/293 and 300/300, nav-test 217/217, locale keys 695 in both. Desktop updated through the installer's
+update mode (backups `private/_program-backups/rc13test-before-rc14test-20261104T120226Z` and
+`rc14test-before-rc14b-20261104T134327Z`), the laptop's portable copy in place (backups `avell-rc13test-before-rc14test-...`,
+`avell-rc14test-before-rc14b-...`). The slice406 build (the same without TASK-095) was installed first and is superseded.
 
 ## 1.3.0-rc13 published as a pre-release (2026-11-04)
 

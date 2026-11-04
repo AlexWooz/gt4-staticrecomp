@@ -3138,6 +3138,7 @@ change, so it waits until after 1.3.0 and the owner's word. Gates: every identit
 2. **PR #177** (Luan Antony, TASK-095, ultrawide 2D menu canvas): the camera agent finds where the pause, results, replay and
    pre-race screens set their projection in v2.00 and Spec II and adds the hook; it comes as its own PR. Same checks; 16:9 must
    stay identical.
+   Done: PR #200 merged on 2026-11-04 (slice407); #177 recorded as merged on main and thanked.
 3. **TASK-164** (issue #160): a launcher hint, before the first Play with an empty card, that Cross confirms GT4's question
    about creating its game data. Both languages. Done.
 3b. **TASK-166** (owner): Spec II ultrawide race-font text and mirror (the TASK-080 P2 patch table for Spec II). Done.
@@ -3146,7 +3147,7 @@ change, so it waits until after 1.3.0 and the owner's word. Gates: every identit
    owner's desktop (installer update mode) and the laptop's portable copy; gates against rc13 with
    `private/task134-tools/gates5.sh` (references `build/evidence/*r13pgo*`); performance measured on the laptop only. Telegram
    the owner when it is ready. No PGO build until the owner asks; then a draft, and a pre-release only on the owner's word.
-   Done for the desktop (2026-11-04, slice406, gates against rc13 identical); the laptop's portable copy follows.
+   Done (2026-11-04): slice407 on the desktop and the laptop's portable copy, gates against rc13 identical.
 
 Waiting on players (issues answered 2026-11-04, `docs/ISSUE-TRIAGE.md`): the AMD crash reports #187-#190 retest on rc13; a new
 task if they still crash.
