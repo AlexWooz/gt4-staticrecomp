@@ -48,6 +48,12 @@ bool spec2_target_has_the_s8_hooks() {
   if (h.camera_yaw_call_return != 0x00206490u || h.camera_pad_stick_x != 0x0089B0DEu ||
       h.camera_accelerator_scale_return != 0x00314948u || h.camera_brake_scale_return != 0x00314970u)
     return false;
+  // TASK-095: the 2D overlay ortho calls (the menu context at 0x0036D278, the strobe overlay renderer at 0x001FDCC8, whose
+  // call from the race monitor 0x001F2E98 is left alone).
+  if (h.menu_ortho_call_return != 0x0036D4D8u || h.overlay_ortho_call_return != 0x001FDE18u ||
+      h.overlay_draw_end_return != 0x001FDE60u || h.overlay_caller_slot != 0x60u ||
+      h.monitor_overlay_call_return != 0x001F2FD4u)
+    return false;
   // Not mapped yet: the request struct and the shape observer stay disabled.
   return h.display_request_state == 0 && h.shape_call_pc == 0 && h.shape_target_pc == 0 && h.shape_return_pc == 0;
 }

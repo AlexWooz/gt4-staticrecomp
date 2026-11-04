@@ -378,6 +378,56 @@ bool write_hud_parameters(std::uint8_t *ram, std::uint32_t ram_size, const HudPa
   return written;
 }
 
+// --- TASK-095: 2D overlays over the race view -----------------------------------------------------------------------
+
+namespace {
+
+constexpr std::uint32_t kOverlayLeftBits = 0x00000000u;     // 0.0f
+constexpr std::uint32_t kOverlayTopBits = 0x00000000u;      // 0.0f
+constexpr std::uint32_t kOverlayBottomBits = 0x43F00000u;   // 480.0f
+constexpr std::uint32_t kOverlayRightBits = 0x44200000u;    // 640.0f
+
+// One axis widened by `factor` around its centre, in double, stored as f32 bits.
+void widen_axis(std::uint32_t &low, std::uint32_t &high, double factor) {
+  const double a = bits_float(low), b = bits_float(high);
+  const double centre = (a + b) / 2.0;
+  low = float_bits(static_cast<float>(centre + (a - centre) * factor));
+  high = float_bits(static_cast<float>(centre + (b - centre) * factor));
+}
+
+}  // namespace
+
+bool is_game_overlay_canvas(const OrthoCanvas &canvas) {
+  return canvas.left == kOverlayLeftBits && canvas.top == kOverlayTopBits && canvas.bottom == kOverlayBottomBits &&
+         canvas.right == kOverlayRightBits;
+}
+
+OrthoCanvas overlay_canvas(const OrthoCanvas &game, double ratio) {
+  const double r = snap_ratio(ratio);
+  OrthoCanvas canvas = game;
+  if (r > kGameRatio)
+    widen_axis(canvas.left, canvas.right, r / kGameRatio);
+  else if (r < kGameRatio)
+    widen_axis(canvas.bottom, canvas.top, kGameRatio / r);
+  return canvas;
+}
+
+TextFactors overlay_text_factors(double ratio) {
+  const double r = snap_ratio(ratio);
+  TextFactors factors;
+  if (r > kGameRatio)
+    factors.x = kGameRatio / r;
+  else if (r < kGameRatio)
+    factors.y = r / kGameRatio;
+  return factors;
+}
+
+std::uint32_t scale_text_word(std::uint32_t value, double factor) {
+  if (factor == 1.0)
+    return value;
+  return float_bits(static_cast<float>(static_cast<double>(bits_float(value)) * factor));
+}
+
 // --- Runtime glue -------------------------------------------------------------------------------------------------
 
 namespace {
@@ -399,6 +449,27 @@ struct Runtime {
   HudParameters block{};
   std::uint32_t block_refills_logged = 0;
   std::uint64_t split_renders = 0;
+  // TASK-095: the overlay canvas hooks, and per call site the ratio last logged and whether a foreign canvas was logged.
+  struct OverlaySite {
+    std::uint32_t return_label = 0;
+    double logged_ratio = kGameRatio;
+    bool foreign_logged = false;
+  };
+  static constexpr int kOverlaySites = 4;
+  OverlaySite overlay_sites[kOverlaySites]{};
+  std::uint64_t overlay_calls = 0, overlay_widened = 0, overlay_foreign = 0;
+  // The strobe text window: open from a widened strobe overlay's ortho hook to the end of its draw.
+  bool text_active = false;
+  TextFactors text_factors{};
+  std::uint64_t text_windows = 0, text_scaled = 0;
+  OverlaySite &overlay_site(std::uint32_t return_label) {
+    for (OverlaySite &site : overlay_sites)
+      if (site.return_label == return_label || site.return_label == 0) {
+        site.return_label = return_label;
+        return site;
+      }
+    return overlay_sites[kOverlaySites - 1];  // only two labels exist; more would share the last slot's log state
+  }
 };
 
 Runtime &runtime() {
@@ -511,6 +582,67 @@ void on_race_display_render(std::uint8_t *ram, std::uint32_t ram_size, std::uint
   if (r.hud.foreign() != foreign_before && r.hud.foreign() == 1)
     std::fprintf(stderr, "[aspect] RaceDisplay 0x%08X: HUD matrix is not the full-screen 16:9 canvas (4:3 game or "
                  "unknown); left unchanged\n", self);
+}
+
+OrthoCanvas on_overlay_ortho(const OrthoCanvas &game, std::uint32_t return_label) {
+  Runtime &r = runtime();
+  ++r.overlay_calls;
+  // The canvas follows what is on screen: widened only while the presentation stretches the frame to R.
+  if (!r.presented_fill || is_game_ratio(r.presented_ratio))
+    return game;
+  Runtime::OverlaySite &site = r.overlay_site(return_label);
+  if (!is_game_overlay_canvas(game)) {
+    ++r.overlay_foreign;
+    if (!site.foreign_logged) {
+      site.foreign_logged = true;
+      std::fprintf(stderr, "[aspect] overlay ortho call (return 0x%08X) with an unexpected canvas (left 0x%08X right 0x%08X "
+                   "bottom 0x%08X top 0x%08X) at vblank %llu: left unchanged\n", return_label, game.left, game.right,
+                   game.bottom, game.top, static_cast<unsigned long long>(r.vblank));
+    }
+    return game;
+  }
+  const OrthoCanvas canvas = overlay_canvas(game, r.presented_ratio);
+  ++r.overlay_widened;
+  // The strobe overlay's text is sized by the text style parser, not by the canvas: the same factor goes there for the draw.
+  if (return_label == kOverlayOrthoReturn)
+    begin_overlay_text(r.presented_ratio);
+  if (r.presented_ratio != site.logged_ratio) {
+    site.logged_ratio = r.presented_ratio;
+    std::fprintf(stderr, "[aspect] overlay canvas (return 0x%08X) at vblank %llu: R %s, left %.3f right %.3f bottom %.3f "
+                 "top %.3f\n", return_label, static_cast<unsigned long long>(r.vblank),
+                 describe_ratio(r.presented_ratio).c_str(), bits_float(canvas.left), bits_float(canvas.right),
+                 bits_float(canvas.bottom), bits_float(canvas.top));
+  }
+  return canvas;
+}
+
+void begin_overlay_text(double ratio) {
+  Runtime &r = runtime();
+  r.text_active = true;
+  r.text_factors = overlay_text_factors(ratio);
+  if (r.text_windows++ == 0)
+    std::fprintf(stderr, "[aspect] overlay text scale at vblank %llu: x %.6f y %.6f while the strobe overlay is drawn\n",
+                 static_cast<unsigned long long>(r.vblank), r.text_factors.x, r.text_factors.y);
+}
+
+void end_overlay_text() { runtime().text_active = false; }
+
+bool overlay_text_active() { return runtime().text_active; }
+
+std::uint32_t overlay_text_scale_x(std::uint32_t value) {
+  Runtime &r = runtime();
+  if (!r.text_active)
+    return value;
+  ++r.text_scaled;
+  return scale_text_word(value, r.text_factors.x);
+}
+
+std::uint32_t overlay_text_scale_y(std::uint32_t value) {
+  Runtime &r = runtime();
+  if (!r.text_active)
+    return value;
+  ++r.text_scaled;
+  return scale_text_word(value, r.text_factors.y);
 }
 
 void set_presentation_sink(PresentationSink sink) { runtime().sink = sink; }

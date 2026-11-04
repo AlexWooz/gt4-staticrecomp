@@ -9,6 +9,7 @@
 //     and HUD canvas                          (display_aspect.*, scripts/display_aspect_overlay.inc)
 //   - TASK-017 license demo guard             (license_guard.*, scripts/license_guard_overlay.inc)
 //   - TASK-159 360-degree chase camera        (camera_360.*, scripts/camera360_units.py)
+//   - TASK-095 2D overlays over the race view (display_aspect.*, scripts/camera360_units.py)
 //
 // Those addresses are properties of one target. Writing a v2.00 address in another target corrupts guest RAM, so no
 // module keeps a private copy any more: the numbers live in this header, once, and every hook reads them here.
@@ -109,6 +110,18 @@ struct HookAddresses {
   // labels): the camera stick's Y axis is the default analog throttle and brake.
   std::uint32_t camera_accelerator_scale_return = 0;
   std::uint32_t camera_brake_scale_return = 0;
+
+  // TASK-095 2D overlays over the race view (native/display_aspect.hpp). The menu context (the pre-race screens) and the strobe
+  // overlay renderer (pause, photo pause, pit menu, results, race monitor) set their 2D canvas through a direct call of the
+  // ortho function (f12 left, f13 right, f14 bottom, f15 top); scripts/camera360_units.py adds a host call before each, and the
+  // host checks ra against these return labels before it widens the canvas for the presented ratio. The strobe overlays' text
+  // is sized by the text style parser's stores (translated statements, no address here), scaled between the renderer's ortho
+  // call and the call after its draw.
+  std::uint32_t menu_ortho_call_return = 0;       // menu context render: 0..640 x 480..0, near 0, far 100
+  std::uint32_t overlay_ortho_call_return = 0;    // strobe overlay renderer: 0..640 x 480..0
+  std::uint32_t overlay_draw_end_return = 0;      // strobe overlay renderer: return label of the call after the draw
+  std::uint32_t overlay_caller_slot = 0;          // the renderer's frame: sp + this = its caller's return address
+  std::uint32_t monitor_overlay_call_return = 0;  // the race monitor's call of the renderer (left as the game draws it)
 };
 
 struct Profile {
@@ -177,6 +190,11 @@ inline constexpr HookAddresses kV200Hooks = {
     /* camera_pad_stick_x */ 0x0086F99Eu,      // pad buffer 0x0086F980 (func_00551810) + 0x1E
     /* camera_accelerator_scale_return */ 0x004387C8u,  // func_004386F0 case 3: jal 0x004386C8 at 0x004387C0
     /* camera_brake_scale_return */ 0x004387F0u,        // func_004386F0 case 4: jal 0x004386C8 at 0x004387E8
+    /* menu_ortho_call_return */ 0x002151A8u,       // mUpdateContextPS2 render 0x00214FB0: jal 0x004A5A90 at 0x002151A0
+    /* overlay_ortho_call_return */ 0x003EC200u,    // func_003EC0B0: jal 0x004A5A90 at 0x003EC1F8
+    /* overlay_draw_end_return */ 0x003EC248u,      // func_003EC0B0: jal 0x004A5400 at 0x003EC240, after the draw 0x00475CA0
+    /* overlay_caller_slot */ 0x60u,                // func_003EC0B0: sd ra,0x60(sp)
+    /* monitor_overlay_call_return */ 0x003DA294u,  // RaceMonitor render func_003DA150: jal 0x003EC0B0 at 0x003DA28C
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of
@@ -269,6 +287,11 @@ inline constexpr HookAddresses kSpec2Hooks = {
     /* camera_pad_stick_x */ 0x0089B0DEu,      // pad buffer 0x0089B0C0 (set up at 0x0051BF18) + 0x1E
     /* camera_accelerator_scale_return */ 0x00314948u,  // handler 0x00314870 case 3: jal 0x00314848 at 0x00314940
     /* camera_brake_scale_return */ 0x00314970u,        // handler 0x00314870 case 4: jal 0x00314848 at 0x00314968
+    /* menu_ortho_call_return */ 0x0036D4D8u,       // 0x0036D278 (menu context render): jal 0x005A2600 at 0x0036D4D0
+    /* overlay_ortho_call_return */ 0x001FDE18u,    // 0x001FDCC8 (strobe overlay renderer): jal 0x005A2600 at 0x001FDE10
+    /* overlay_draw_end_return */ 0x001FDE60u,      // 0x001FDCC8: jal 0x005A1E08 at 0x001FDE58, after the draw 0x00341918
+    /* overlay_caller_slot */ 0x60u,                // 0x001FDCC8: sd ra,0x60(sp)
+    /* monitor_overlay_call_return */ 0x001F2FD4u,  // race monitor render 0x001F2E98: jal 0x001FDCC8 at 0x001F2FCC
 };
 
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};

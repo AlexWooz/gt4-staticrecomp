@@ -56,6 +56,8 @@ Pass `GT4_HW_FLARE_DEADLINE_MS=0` when comparing frames from window runs: a late
 
 `camera360-check.sh <recording> <reference exe> <candidate exe> <dump VBlank>` (TASK-159, `docs/CAMERA-360.md`) replays a drive on a build without the 360-degree chase camera and on one with it, switch off (`0`) and on (unset, the default): the race clock of every VBlank, the simulation state and race object at the dump VBlank, and frames (`FROM`, `EVERY`, `SCALE`, `DYNAMICS=0x24000` for Spec II). Off must equal the reference in everything; on must keep the race clock and lists the state words and frames the camera changes.
 
+`overlay-aspect-check.sh <recording> <reference exe> <candidate exe> <dump VBlank>` (TASK-095, `docs/ULTRAWIDE-OVERLAYS.md`) replays a drive on a build without the 2D overlay canvas hooks and on one with them, at 16:9 (the replay default) and at each ratio of `RATIOS` (default `21:9 32:9`): the race clock of every VBlank, the state at the dump VBlank, and frames (`FROM`, `EVERY`, `SCALE`, `DYNAMICS`). At 16:9 everything must be identical; at the other ratios the race must be identical and `overlay_geometry.py` checks that each frame that differs is the reference's overlay narrowed by R / (16/9) around the centre.
+
 ## Frame skipping (TASK-082)
 
 `frame-skip-suite.sh <Spec II exe>` and `frame-skip-suite-v200.sh <v2.00 exe>`: headless. The simulation over the whole drive against nothing left out (`frame_skip_check.py`), then every frame of a stretch (`frame_sheet.py`): `sheet-<pattern>/sheet.png`, `frames.csv`, `summary.txt`. Exit code 1 on a wrong result.

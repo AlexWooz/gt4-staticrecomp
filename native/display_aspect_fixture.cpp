@@ -421,6 +421,81 @@ void test_output_size() {
   require(!projection_scale(from_wide.ratio, 1.0).identity(), "3440x1440 output: Hor+ projection");
 }
 
+// TASK-095: the 2D overlay canvas of the menu context and the strobe renderer (the ortho call's f12..f15), and the strobe text.
+OrthoCanvas canvas_of(float left, float right, float bottom, float top) {
+  return {bits_of(left), bits_of(right), bits_of(bottom), bits_of(top)};
+}
+
+// x of a canvas point in normalised device coordinates, the way the ortho function (0x004A5A90) builds its matrix in single
+// precision: m[0] = 2 / (right - left), m[12] = (left + right) / (left - right).
+double ortho_ndc_x(const OrthoCanvas &canvas, float x) {
+  const float left = float_of(canvas.left), right = float_of(canvas.right);
+  return static_cast<double>(x * (2.0f / (right - left)) + (left + right) / (left - right));
+}
+
+double ortho_ndc_y(const OrthoCanvas &canvas, float y) {
+  const float bottom = float_of(canvas.bottom), top = float_of(canvas.top);
+  return static_cast<double>(y * (2.0f / (top - bottom)) + (top + bottom) / (bottom - top));
+}
+
+void test_overlay_canvas() {
+  const OrthoCanvas game = canvas_of(0.0f, 640.0f, 480.0f, 0.0f);  // the menu context and the strobe renderer
+  require(is_game_overlay_canvas(game), "the game's overlay canvas is recognised");
+  require(!is_game_overlay_canvas(canvas_of(-106.666664f, 746.666687f, 480.0f, 0.0f)), "the HUD canvas is not an overlay");
+  require(!is_game_overlay_canvas(canvas_of(0.0f, 640.0f, 240.0f, 0.0f)), "a half-height canvas is not");
+  require(!is_game_overlay_canvas(canvas_of(-320.0f, 320.0f, -224.0f, 224.0f)), "the centred frame canvas is not");
+  require(!is_game_overlay_canvas(OrthoCanvas{0u, 0x44555554u, bits_of(480.0f), 0u}), "the race monitor's own canvas is not");
+
+  // 16:9, and a ratio that snaps to it (1366 x 768), give the same bits back.
+  require(overlay_canvas(game, kGameRatio) == game, "16:9 keeps the canvas");
+  require(overlay_canvas(game, 1366.0 / 768.0) == game, "a ratio that snaps to 16:9 keeps the canvas");
+
+  // 21:9: 0..640 becomes 640 x 21/16 = 840 wide around 320; the height stays.
+  const OrthoCanvas ultra = overlay_canvas(game, 21.0 / 9.0);
+  require(ultra.left == bits_of(-100.0f) && ultra.right == bits_of(740.0f), "21:9 canvas = -100 .. 740");
+  require(ultra.bottom == game.bottom && ultra.top == game.top, "21:9 keeps the height");
+  const double s = (21.0 / 9.0) / kGameRatio;
+  require(near(ortho_ndc_x(ultra, 320.0f), 0.0, 1e-6), "21:9: the centre 320 stays in the middle of the frame");
+  require(near((ortho_ndc_x(ultra, 640.0f) - ortho_ndc_x(ultra, 0.0f)) * s, 2.0, 1e-5),
+          "21:9: 0..640 covers 1/s of the frame, stretched back to the full 16:9 width by the presentation");
+  require(near(ortho_ndc_y(ultra, 0.0f), 1.0, 1e-6) && near(ortho_ndc_y(ultra, 480.0f), -1.0, 1e-6), "21:9: y unchanged");
+
+  // 32:9: twice as wide, centred.
+  const OrthoCanvas super = overlay_canvas(game, 32.0 / 9.0);
+  require(super.left == bits_of(-320.0f) && super.right == bits_of(960.0f), "32:9 canvas = -320 .. 960");
+  require(near(ortho_ndc_x(super, 640.0f) - ortho_ndc_x(super, 0.0f), 1.0, 1e-6), "32:9: 0..640 covers half the frame");
+
+  // R < 16:9 (Vert+): x stays, y is taller around 240.
+  const OrthoCanvas tall = overlay_canvas(game, 1.6);
+  require(tall.left == game.left && tall.right == game.right, "16:10 keeps x");
+  require(near(float_of(tall.bottom) - float_of(tall.top), 480.0 * kGameRatio / 1.6, 1e-3) &&
+              near(float_of(tall.bottom) + float_of(tall.top), 480.0, 1e-3),
+          "16:10 canvas taller, centred on 240");
+  const OrthoCanvas four_three = overlay_canvas(game, 4.0 / 3.0);
+  require(four_three.bottom == bits_of(560.0f) && four_three.top == bits_of(-80.0f), "4:3 canvas = 560 .. -80");
+
+  // The strobe text: the inverse of the canvas factor on the same axis, 1 at 16:9.
+  const TextFactors flat = overlay_text_factors(kGameRatio);
+  require(flat.x == 1.0 && flat.y == 1.0 && overlay_text_factors(1366.0 / 768.0).x == 1.0, "16:9 text factors = 1 and 1");
+  const TextFactors text_ultra = overlay_text_factors(21.0 / 9.0);
+  require(near(text_ultra.x, 16.0 / 21.0) && text_ultra.y == 1.0, "21:9 text x factor = 16/21");
+  require(near(text_ultra.x * s, 1.0, 1e-12), "21:9: the narrowed text is stretched back to its own width");
+  require(overlay_text_factors(32.0 / 9.0).x == 0.5, "32:9 text x factor = 1/2");
+  const TextFactors text_tall = overlay_text_factors(4.0 / 3.0);
+  require(text_tall.x == 1.0 && near(text_tall.y, 0.75), "4:3 text y factor = 3/4");
+  require(scale_text_word(bits_of(0.8f), 1.0) == bits_of(0.8f), "a factor of 1 keeps the word");
+  require(scale_text_word(bits_of(0.8f), 0.5) == bits_of(0.4f), "0.8 at a factor of 1/2 is 0.4");
+
+  // The window: closed, the stores pass the game's value; open (a widened strobe overlay), they are scaled; closed again.
+  require(!overlay_text_active() && overlay_text_scale_x(bits_of(0.97f)) == bits_of(0.97f), "closed: the game's value");
+  begin_overlay_text(32.0 / 9.0);
+  require(overlay_text_active() && overlay_text_scale_x(bits_of(1.0f)) == bits_of(0.5f) &&
+              overlay_text_scale_y(bits_of(0.8f)) == bits_of(0.8f),
+          "open at 32:9: x halved, y kept");
+  end_overlay_text();
+  require(!overlay_text_active() && overlay_text_scale_x(bits_of(1.0f)) == bits_of(1.0f), "closed again: the game's value");
+}
+
 int main() {
   test_parse();
   test_output_size();
@@ -432,6 +507,7 @@ int main() {
   test_scene_policy();
   test_hud_canvas();
   test_hud_parameters();
+  test_overlay_canvas();
   std::puts("display_aspect fixture: all checks passed");
   return 0;
 }
