@@ -1,5 +1,9 @@
 # GT4Recomp Tasks
 
+## Save state feasibility study (2026-11-04)
+
+Documentation study completed on `docs/save-state-feasibility`; implementation is not scheduled or approved. See [save state feasibility](docs/SAVE-STATE-FEASIBILITY.md) for evidence, risks, proposed gates and an unmeasured effort range.
+
 Single ordered task list. Each task has its own branch, automated checks, an
 in-game test by the owner and an explicit owner approval before its PR is merged
 into `main` (workflow rules in [AGENTS.md](AGENTS.md)). Evidence for finished

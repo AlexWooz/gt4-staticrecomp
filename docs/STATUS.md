@@ -1,5 +1,9 @@
 # Current Status
 
+## Save state feasibility study (2026-11-04)
+
+The donor has a machine-state mechanism, but current stream renderers explicitly reject it and a safe current-product round trip is unproven. The [feasibility study](SAVE-STATE-FEASIBILITY.md) documents a staged investigation, renderer and card risks, and a broad unmeasured effort estimate. Documentation only; no implementation or gameplay validation.
+
 ## TASK-147 and TASK-148 for rc12: triggers, sticks and the controller choice (2026-11-03, night)
 
 On `task/134-game-code-optimization-study`, plain test builds on the owner's laptop. Triggers: R2 spans GT4's own 0..45
