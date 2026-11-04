@@ -48,7 +48,7 @@
     "DpadUp", "DpadDown", "DpadLeft", "DpadRight"];
   var TRIGGER_INDEX = { 6: true, 7: true };
 
-  // The game's defaults (docs/CONTROLS.md): trigger 30 of 255, left stick 7849 and right stick 8689 of 32767.
+  // The game's defaults (docs/CONTROLS.md): trigger 30 of 255, both sticks 3277 of 32767 (10%, TASK-147).
   var TRIGGER_DEFAULT_DEADZONE = 30 / 255;
 
   function find(id) {
@@ -100,6 +100,24 @@
       }
     });
     return options;
+  }
+
+  // TASK-161: the pressure byte that is the game's 100% at the end of a trigger's travel (native/controls.cpp
+  // pressure_full_for): with the full trigger range on, the binding's `range_full` or the whole byte (255); off, its `range`
+  // or the game's own 100%, 45 on R2 (throttle) and 84 on L2 (brake), 255 on any other button.
+  function triggerFull(id, sources, fullRange) {
+    var source = (sources || []).filter(function (candidate) {
+      var name = sourceName(candidate);
+      return family(candidate) === "xinput" && (name === "LT" || name === "RT");
+    })[0];
+    var options = source ? sourceOptions(source) : {};
+    if (fullRange) {
+      return options.range_full ? Number(options.range_full) : 255;
+    }
+    if (options.range) {
+      return Number(options.range);
+    }
+    return id === "r2" ? 45 : id === "l2" ? 84 : 255;
   }
 
   // The pressure the game computes from a trigger reading (native/controls.cpp): raw and deadzone are fractions of
@@ -321,22 +339,32 @@
   var KEY_TEXT = { Backspace: "Bksp", Up: "↑", Down: "↓", Left: "←", Right: "→", PageUp: "PgUp",
     PageDown: "PgDn", Delete: "Del", Insert: "Ins" };
 
+  // The player-facing long name in the interface language (locale key controls.source.*); the English text above
+  // is the fallback when the key or GT4.t is missing (the pure tests run without locales).
+  function longText(key, english, params) {
+    if (GT4.t && GT4.i18n && GT4.i18n.has && GT4.i18n.has(key)) {
+      return GT4.t(key, params);
+    }
+    return english;
+  }
+
   // Chip text for a source: {family: "xinput"|"key"|"", kind, text, long, dir?}. Unknown and empty sources read "-".
   function label(source) {
     if (!source) {
-      return { family: "", kind: "none", text: "–", long: "Not bound" };
+      return { family: "", kind: "none", text: "–", long: longText("controls.source.none", "Not bound") };
     }
     var name = sourceName(source);
     if (family(source) === "xinput" && XINPUT_LABELS[name]) {
       var entry = XINPUT_LABELS[name];
-      var out = { family: "xinput", kind: entry[0], text: entry[1], long: entry[2] };
+      var out = { family: "xinput", kind: entry[0], text: entry[1], long: longText("controls.source." + name, entry[2]) };
       if (entry[0] === "dpad") {
         out.dir = name.slice(4).toLowerCase();
       }
       return out;
     }
     if (family(source) === "key") {
-      return { family: "key", kind: "key", text: KEY_TEXT[name] || name, long: name + " key" };
+      return { family: "key", kind: "key", text: KEY_TEXT[name] || name,
+        long: longText("controls.source.key", name + " key", { key: name }) };
     }
     return { family: family(source), kind: "none", text: name || "?", long: sourceBase(source) };
   }
@@ -344,7 +372,7 @@
   // "Xbox 360 Controller (XInput STANDARD GAMEPAD)" -> "Xbox 360 Controller".
   function cleanPadName(id) {
     var text = String(id || "").replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
-    return text || "Controller";
+    return text || longText("controls.view_controller", "Controller");
   }
 
   // Dev mock only: pads = a list of Gamepad-like objects. The first connected one is the one the game reads.
@@ -373,6 +401,7 @@
     sourceName: sourceName,
     sourceOptions: sourceOptions,
     triggerOutput: triggerOutput,
+    triggerFull: triggerFull,
     padSources: padSources,
     padLive: padLive,
     liveState: liveState,

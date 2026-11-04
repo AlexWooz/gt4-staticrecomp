@@ -1,0 +1,53 @@
+// TASK-159: the 360-degree chase camera switch and per-target addresses (native/camera_360.hpp).
+#include "camera_360.hpp"
+
+#include "game_target.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <stdexcept>
+
+namespace gt4::camera360 {
+
+namespace {
+bool g_enabled = false;
+}
+
+bool parse_switch(const char *value) {
+  if (value == nullptr || value[0] == '\0' || std::strcmp(value, "1") == 0) return true;  // on by default
+  if (std::strcmp(value, "0") == 0) return false;
+  throw std::invalid_argument("GT4_CAMERA_360 must be 0 or 1");
+}
+
+Addresses active_addresses() {
+  const target::HookAddresses &hooks = target::active().hooks;
+  return {hooks.camera_yaw_call_return, hooks.camera_pad_stick_x, hooks.camera_analog_loop_return,
+          hooks.camera_analog_channel_table, hooks.camera_analog_slot_bias};
+}
+
+void configure_from_environment() {
+  try {
+    g_enabled = parse_switch(std::getenv(kSwitch));
+  } catch (const std::invalid_argument &error) {
+    std::fprintf(stderr, "[camera360] %s, game not started\n", error.what());
+    std::exit(1);
+  }
+  const Addresses addresses = active_addresses();
+  if (g_enabled && !addresses.complete()) {
+    target::note_hook_unavailable("360-degree chase camera (GT4_CAMERA_360)");
+    g_enabled = false;
+  }
+  if (!g_enabled)
+    std::fprintf(stderr, "[camera360] off\n");
+  else
+    std::fprintf(stderr,
+                 "[camera360] on: right stick X (guest byte 0x%08X) turns the chase camera (call return 0x%08X); its Y "
+                 "axis no longer accelerates or brakes (analog loop return 0x%08X, slot table 0x%08X)\n",
+                 addresses.pad_stick_x, addresses.yaw_call_return, addresses.analog_loop_return,
+                 addresses.analog_channel_table);
+}
+
+bool enabled() { return g_enabled; }
+
+}  // namespace gt4::camera360

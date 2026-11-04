@@ -43,7 +43,9 @@ class Slice201PinTests(unittest.TestCase):
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice201'], (MANIFEST, EXECUTABLE))
         # slice206 (TASK-017) is the mode pcsx2 pin now; slice203 stays as pcsx2-slice203, slice202 as pcsx2-slice202.
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice202'], ('slice202-pcsx2.json', 'private/slice202-build/build/gt4vulkan.exe'))
-        self.assertEqual(probe.PERF_PROFILES['pcsx2'], ('slice1200-pcsx2.json', 'private/slice1200-dualsense-build/build/gt4vulkan.exe'))
+        self.assertEqual(probe.PERF_PROFILES['pcsx2'], ('slice279-pcsx2.json', 'private/slice279-build/build/gt4vulkan.exe'))
+        self.assertEqual(probe.PERF_PROFILES['pcsx2-slice268'], ('slice268-pcsx2.json', 'private/slice268-build/build/gt4vulkan.exe'))
+        self.assertEqual(probe.SPEC2_RELEASE, ('slice280-spec2.json', 'private/slice280-build/build/gt4vulkan-spec2.exe'))
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice215'], ('slice215-pcsx2.json', 'private/slice215-build/build/gt4vulkan.exe'))
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice214'], ('slice214-pcsx2.json', 'private/slice214-build/build/gt4vulkan.exe'))
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice213'], ('slice213-pcsx2.json', 'private/slice213-build/build/gt4vulkan.exe'))

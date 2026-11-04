@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en">
 <head>
+<!-- Development only: resolves the app's relative URLs (locales, assets) against ui/ -->
+<base href="../">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GT4Recomp spatial navigation tests</title>
@@ -13,12 +15,13 @@
   <ul id="results" class="steps"></ul>
   <p id="summary" class="note"></p>
 </main>
+<script src="../js/i18n.js"></script>
 <script src="../js/spatial.js"></script>
 <script src="../js/input-rules.js"></script>
 <script src="../js/focus-levels.js"></script>
 <script src="../js/settings-model.js"></script>
 <script src="../js/controls-model.js"></script>
 <script src="../js/controller-svg.js"></script>
-<script src="nav-test.js"></script>
+<script src="dev/nav-test.js"></script>
 </body>
 </html>

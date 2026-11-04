@@ -40,6 +40,15 @@ PresentMode parse_present_mode(const char *value) {
       "GT4_PRESENT_MODE must be fifo, mailbox or immediate");
 }
 
+PresentMode available_present_mode(PresentMode wanted, bool mailbox_available, bool immediate_available) {
+  if (wanted == PresentMode::fifo) return PresentMode::fifo;
+  const bool wanted_available = wanted == PresentMode::mailbox ? mailbox_available : immediate_available;
+  if (wanted_available) return wanted;
+  if (wanted == PresentMode::mailbox && immediate_available) return PresentMode::immediate;
+  if (wanted == PresentMode::immediate && mailbox_available) return PresentMode::mailbox;
+  return PresentMode::fifo;
+}
+
 const char *present_mode_name(PresentMode mode) {
   switch (mode) {
   case PresentMode::fifo: return "fifo";
@@ -60,6 +69,10 @@ void FramePacer::anchor(std::int64_t now) {
   anchored_ = true;
 }
 
+void FramePacer::shift(std::int64_t ticks) {
+  scaled_deadline_ += ticks * static_cast<std::int64_t>(rate_);
+}
+
 std::int64_t FramePacer::deadline() const {
   return scaled_deadline_ / static_cast<std::int64_t>(rate_);
 }
@@ -77,7 +90,9 @@ bool FramePacer::release(std::int64_t now) {
     ++late_frames_;
   // One period in scaled units is exactly frequency_ (period = frequency / rate).
   scaled_deadline_ += static_cast<std::int64_t>(frequency_);
-  if (now > deadline()) {
+  const std::int64_t allowed = (scaled_deadline_ + static_cast<std::int64_t>(frequency_) * (resync_periods_ - 1)) /
+                               static_cast<std::int64_t>(rate_);
+  if (now > allowed) {
     // Behind by a full period: restart the grid one period after now.
     scaled_deadline_ = now * static_cast<std::int64_t>(rate_) +
                        static_cast<std::int64_t>(frequency_);

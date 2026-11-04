@@ -1,0 +1,435 @@
+{
+  "task": "TASK-100 S7b",
+  "purpose": "The Spec II IOP reboot image (DNAS310.IMG) against retail's IOPRP300.IMG and the runtime HLE surface",
+  "spec2_iso_sha256": "6a3484b9672c10a92154ecee6faa5bbcfd4ed8cd538d8283e429c3fe6e1704b2",
+  "image": {
+    "path": "/DNAS310.IMG;1",
+    "size_bytes": 282545,
+    "sha256": "c860a99d314b4e9e1b19c41988a76fc9ea3aa172c4770dfa05cef5f482d45424",
+    "directory_bytes": 304,
+    "modules": [
+      {
+        "name": "SYSMEM",
+        "extinfo_size": 40,
+        "size": 6041,
+        "offset": 928,
+        "elf": true,
+        "sha256": "4d1edfc36a79f73fbd4d30ad5b0093f902d6c564c9a806937d7a697e98fbeeb0",
+        "hle": [
+          "iop/libs.cpp: sysmem"
+        ],
+        "retail_size": 6041,
+        "retail_sha256": "78951a48a2e1179e41b7141a30812c73991040e716a4d04ef76782166947ec1b",
+        "same_as_retail": false
+      },
+      {
+        "name": "LOADCORE",
+        "extinfo_size": 32,
+        "size": 10433,
+        "offset": 6976,
+        "elf": true,
+        "sha256": "93d205474b13ab152c74a578948351daee2d4ad108745797721816e77ae15f3c",
+        "hle": [
+          "iop/libs.cpp: loadcore"
+        ],
+        "retail_size": 10433,
+        "retail_sha256": "f78836df50893f625746b1bc8ff0ff964c44c29e1019dcb23c0b9d1dc50b2e38",
+        "same_as_retail": false
+      },
+      {
+        "name": "SIFCMD",
+        "extinfo_size": 40,
+        "size": 10529,
+        "offset": 17424,
+        "elf": true,
+        "sha256": "00086ba5a09bad6a898581d1a9616406bc268aa949e26abcefdcd71008932b97",
+        "hle": [
+          "iop/libs.cpp: sifcmd (with sif.cpp send/receive)"
+        ],
+        "retail_size": 10529,
+        "retail_sha256": "7874b008124038a4bfb70d4069c037f4ded2d0a452133233cf67df8b0066cc47",
+        "same_as_retail": false
+      },
+      {
+        "name": "SIFMAN",
+        "extinfo_size": 32,
+        "size": 6193,
+        "offset": 27968,
+        "elf": true,
+        "sha256": "ef87a1e6b08b420f7a03264b31a22a71328096b289ddecf3469e3a1ffce23e38",
+        "hle": [
+          "iop/libs.cpp: sifman"
+        ],
+        "retail_size": 6145,
+        "retail_sha256": "e37e0af7bcce87de48408e7a517a93128c2c2551889c13fb0a50f9e1aea3f4de",
+        "same_as_retail": false
+      },
+      {
+        "name": "THREADMAN",
+        "extinfo_size": 40,
+        "size": 39405,
+        "offset": 34176,
+        "elf": true,
+        "sha256": "5583245fcefa7b38ddb0bc6e441becf5d8b223ad2d11cd0a242109bc7b8a5f8e",
+        "hle": [
+          "iop/libs.cpp: int thrman thbase, thsemap, thevent, thmsgbx, thfpool"
+        ],
+        "retail_size": 39405,
+        "retail_sha256": "d9b5c8c30173338554e637a269680c4d13c8972f6406666e386ad524ca8593d6",
+        "same_as_retail": false
+      },
+      {
+        "name": "IOMAN",
+        "extinfo_size": 32,
+        "size": 12545,
+        "offset": 73584,
+        "elf": true,
+        "sha256": "8c5112992077a714c100c1666936e896d8b15c630421a501cfa0e73e0333a177",
+        "hle": [
+          "iop/libs.cpp: ioman",
+          "iop/io.cpp: file descriptors and rom0:/cdrom0: devices"
+        ],
+        "retail_size": 12545,
+        "retail_sha256": "2194e7d0eaefaea9d4e4c0c3d2e129cec08481c6c990df9e57048607847aa0d1",
+        "same_as_retail": false
+      },
+      {
+        "name": "MODLOAD",
+        "extinfo_size": 36,
+        "size": 18565,
+        "offset": 86144,
+        "elf": true,
+        "sha256": "2812e8c2eb2e2cd6a690567066e8da609585cd218e1b18f2ea05651edda68d44",
+        "hle": [
+          "iop/libs.cpp: modload",
+          "iop/kernel.cpp: load_module_buffer"
+        ],
+        "retail_size": 18565,
+        "retail_sha256": "8a70343332d45654e4995fa6f75b5c309ef3cd37cc58db2d372f488b00e9acde",
+        "same_as_retail": false
+      },
+      {
+        "name": "FILEIO",
+        "extinfo_size": 32,
+        "size": 19661,
+        "offset": 104720,
+        "elf": true,
+        "sha256": "7b5c4c2a9dfac91452eb7643e71deef7dfb6ece7f5ac7eee70319db6179d8730",
+        "hle": [
+          "iop/sif.cpp: server 0x80000001 (asynchronous 3.x path and synchronous fallback)"
+        ],
+        "retail_size": 19661,
+        "retail_sha256": "270c6408794d7817c5e016dc7f0fba6df4e93db6cb31058dec480fd8270cdb42",
+        "same_as_retail": false
+      },
+      {
+        "name": "CDVDMAN",
+        "extinfo_size": 28,
+        "size": 88325,
+        "offset": 124384,
+        "elf": true,
+        "sha256": "a6b2825be32701299fbc56f7d2c9f46fc702758fed7d466068b0a13cfe30c3cc",
+        "hle": [
+          "iop/cdvd.cpp: cdvdman"
+        ],
+        "retail_size": 85165,
+        "retail_sha256": "fc3a1ac2ed8f41498d463a8e2c315e22626a6fa2c0331ae77d6bb267a2dc6503",
+        "same_as_retail": false
+      },
+      {
+        "name": "CDVDFSV",
+        "extinfo_size": 32,
+        "size": 34133,
+        "offset": 212720,
+        "elf": true,
+        "sha256": "b61c1a4d1390c8a63679484993afd34cc3f9802db4454947e8d8deb8052eabfb",
+        "hle": [
+          "iop/cdvdfsv.cpp: servers 0x80000592, 0x80000593, 0x80000595, 0x80000596, 0x80000597, 0x8000059A, 0x8000059C"
+        ],
+        "retail_size": 33429,
+        "retail_sha256": "6706fca2021399e614fd87faf99146be1a5f2d4c9b1aaaa17cfbc5b0e14ddf5a",
+        "same_as_retail": false
+      },
+      {
+        "name": "LOADFILE",
+        "extinfo_size": 32,
+        "size": 10505,
+        "offset": 246864,
+        "elf": true,
+        "sha256": "2f2b2aa0c8cf63c19f0a8ac0d8e861befd87694d166d2418d071589e65a7b8a4",
+        "hle": [
+          "iop/sif.cpp: server 0x80000006"
+        ],
+        "retail_size": 10505,
+        "retail_sha256": "79dbd79942cb241af3116b9ffec425420cdfddf3529b52e8ad3ff3805a32f7a1",
+        "same_as_retail": false
+      },
+      {
+        "name": "TIMEMANI",
+        "extinfo_size": 32,
+        "size": 6085,
+        "offset": 257376,
+        "elf": true,
+        "sha256": "b0210b9cfbd324d34ca47fc0cf462b6d08803f39deda0abf8498fb952f7d15f2",
+        "hle": [
+          "iop/libs.cpp: timrman"
+        ],
+        "retail_size": 6085,
+        "retail_sha256": "603d4f54409682d538b7005e0ce396e4a993feafb04ee58d3fd7444f8fb7b291",
+        "same_as_retail": false
+      },
+      {
+        "name": "ROMDRV",
+        "extinfo_size": 32,
+        "size": 3881,
+        "offset": 263472,
+        "elf": true,
+        "sha256": "e4268d5d66b1b475ac923fe5961d2967926fe7551cb0afb733f4fef5d488cd8e",
+        "hle": [
+          "iop/io.cpp: rom0: device"
+        ],
+        "retail_size": 3881,
+        "retail_sha256": "8518392c81f6c8238bf72cc47559c7b9b4a5699449c10690649ae6dcadcf1b24",
+        "same_as_retail": false
+      },
+      {
+        "name": "EESYNC",
+        "extinfo_size": 24,
+        "size": 1753,
+        "offset": 267360,
+        "elf": true,
+        "sha256": "5ff6c1494336b9f0f7caf0be3226917c70308cc2363e6456c78aa399a6a3ebbc",
+        "hle": [
+          "none"
+        ],
+        "retail_size": 1545,
+        "retail_sha256": "65badfb985e5bba0a0356b5325181137af2d39a7d12c42061b9f19e6cd0f5452",
+        "same_as_retail": false
+      },
+      {
+        "name": "SYSCLIB",
+        "extinfo_size": 32,
+        "size": 10045,
+        "offset": 269120,
+        "elf": true,
+        "sha256": "d6b55f504fc05bb038bfaf3f6742e603f804907767b50e98111314a3080bb108",
+        "hle": [
+          "iop/libs.cpp: sysclib"
+        ],
+        "retail_size": 10045,
+        "retail_sha256": "96e8bf4a2cb888c2d81ea7280588ae3afb17ea34802c5d9de80984715631988c",
+        "same_as_retail": false
+      },
+      {
+        "name": "STDIO",
+        "extinfo_size": 24,
+        "size": 3377,
+        "offset": 279168,
+        "elf": true,
+        "sha256": "edafdf565aa7f0ee79371ababea3f0beb9ab2375fca38aadd64dabd7b9b4d51b",
+        "hle": [
+          "iop/libs.cpp: stdio"
+        ],
+        "retail_size": 3377,
+        "retail_sha256": "fcd9f4edf55578083675940da2e48e7436c19ad32b69e9910c2ed2faaf1f69ff",
+        "same_as_retail": false
+      }
+    ]
+  },
+  "retail_image": {
+    "path": "/IOPRP300.IMG;1",
+    "size_bytes": 278465,
+    "sha256": "782690377b32380f4a44cac19a542fd34c4b071c910d4a02dd8124e5f07e2e5a",
+    "directory_bytes": 304,
+    "modules": [
+      {
+        "name": "SYSMEM",
+        "extinfo_size": 40,
+        "size": 6041,
+        "offset": 976,
+        "elf": true,
+        "sha256": "78951a48a2e1179e41b7141a30812c73991040e716a4d04ef76782166947ec1b",
+        "hle": [
+          "iop/libs.cpp: sysmem"
+        ]
+      },
+      {
+        "name": "LOADCORE",
+        "extinfo_size": 32,
+        "size": 10433,
+        "offset": 7024,
+        "elf": true,
+        "sha256": "f78836df50893f625746b1bc8ff0ff964c44c29e1019dcb23c0b9d1dc50b2e38",
+        "hle": [
+          "iop/libs.cpp: loadcore"
+        ]
+      },
+      {
+        "name": "SIFCMD",
+        "extinfo_size": 40,
+        "size": 10529,
+        "offset": 17472,
+        "elf": true,
+        "sha256": "7874b008124038a4bfb70d4069c037f4ded2d0a452133233cf67df8b0066cc47",
+        "hle": [
+          "iop/libs.cpp: sifcmd (with sif.cpp send/receive)"
+        ]
+      },
+      {
+        "name": "SIFMAN",
+        "extinfo_size": 32,
+        "size": 6145,
+        "offset": 28016,
+        "elf": true,
+        "sha256": "e37e0af7bcce87de48408e7a517a93128c2c2551889c13fb0a50f9e1aea3f4de",
+        "hle": [
+          "iop/libs.cpp: sifman"
+        ]
+      },
+      {
+        "name": "THREADMAN",
+        "extinfo_size": 40,
+        "size": 39405,
+        "offset": 34176,
+        "elf": true,
+        "sha256": "d9b5c8c30173338554e637a269680c4d13c8972f6406666e386ad524ca8593d6",
+        "hle": [
+          "iop/libs.cpp: int thrman thbase, thsemap, thevent, thmsgbx, thfpool"
+        ]
+      },
+      {
+        "name": "IOMAN",
+        "extinfo_size": 32,
+        "size": 12545,
+        "offset": 73584,
+        "elf": true,
+        "sha256": "2194e7d0eaefaea9d4e4c0c3d2e129cec08481c6c990df9e57048607847aa0d1",
+        "hle": [
+          "iop/libs.cpp: ioman",
+          "iop/io.cpp: file descriptors and rom0:/cdrom0: devices"
+        ]
+      },
+      {
+        "name": "MODLOAD",
+        "extinfo_size": 36,
+        "size": 18565,
+        "offset": 86144,
+        "elf": true,
+        "sha256": "8a70343332d45654e4995fa6f75b5c309ef3cd37cc58db2d372f488b00e9acde",
+        "hle": [
+          "iop/libs.cpp: modload",
+          "iop/kernel.cpp: load_module_buffer"
+        ]
+      },
+      {
+        "name": "FILEIO",
+        "extinfo_size": 32,
+        "size": 19661,
+        "offset": 104720,
+        "elf": true,
+        "sha256": "270c6408794d7817c5e016dc7f0fba6df4e93db6cb31058dec480fd8270cdb42",
+        "hle": [
+          "iop/sif.cpp: server 0x80000001 (asynchronous 3.x path and synchronous fallback)"
+        ]
+      },
+      {
+        "name": "CDVDMAN",
+        "extinfo_size": 28,
+        "size": 85165,
+        "offset": 124384,
+        "elf": true,
+        "sha256": "fc3a1ac2ed8f41498d463a8e2c315e22626a6fa2c0331ae77d6bb267a2dc6503",
+        "hle": [
+          "iop/cdvd.cpp: cdvdman"
+        ]
+      },
+      {
+        "name": "CDVDFSV",
+        "extinfo_size": 32,
+        "size": 33429,
+        "offset": 209552,
+        "elf": true,
+        "sha256": "6706fca2021399e614fd87faf99146be1a5f2d4c9b1aaaa17cfbc5b0e14ddf5a",
+        "hle": [
+          "iop/cdvdfsv.cpp: servers 0x80000592, 0x80000593, 0x80000595, 0x80000596, 0x80000597, 0x8000059A, 0x8000059C"
+        ]
+      },
+      {
+        "name": "LOADFILE",
+        "extinfo_size": 32,
+        "size": 10505,
+        "offset": 242992,
+        "elf": true,
+        "sha256": "79dbd79942cb241af3116b9ffec425420cdfddf3529b52e8ad3ff3805a32f7a1",
+        "hle": [
+          "iop/sif.cpp: server 0x80000006"
+        ]
+      },
+      {
+        "name": "TIMEMANI",
+        "extinfo_size": 32,
+        "size": 6085,
+        "offset": 253504,
+        "elf": true,
+        "sha256": "603d4f54409682d538b7005e0ce396e4a993feafb04ee58d3fd7444f8fb7b291",
+        "hle": [
+          "iop/libs.cpp: timrman"
+        ]
+      },
+      {
+        "name": "ROMDRV",
+        "extinfo_size": 32,
+        "size": 3881,
+        "offset": 259600,
+        "elf": true,
+        "sha256": "8518392c81f6c8238bf72cc47559c7b9b4a5699449c10690649ae6dcadcf1b24",
+        "hle": [
+          "iop/io.cpp: rom0: device"
+        ]
+      },
+      {
+        "name": "EESYNC",
+        "extinfo_size": 24,
+        "size": 1545,
+        "offset": 263488,
+        "elf": true,
+        "sha256": "65badfb985e5bba0a0356b5325181137af2d39a7d12c42061b9f19e6cd0f5452",
+        "hle": [
+          "none"
+        ]
+      },
+      {
+        "name": "SYSCLIB",
+        "extinfo_size": 32,
+        "size": 10045,
+        "offset": 265040,
+        "elf": true,
+        "sha256": "96e8bf4a2cb888c2d81ea7280588ae3afb17ea34802c5d9de80984715631988c",
+        "hle": [
+          "iop/libs.cpp: sysclib"
+        ]
+      },
+      {
+        "name": "STDIO",
+        "extinfo_size": 24,
+        "size": 3377,
+        "offset": 275088,
+        "elf": true,
+        "sha256": "fcd9f4edf55578083675940da2e48e7436c19ad32b69e9910c2ed2faaf1f69ff",
+        "hle": [
+          "iop/libs.cpp: stdio"
+        ]
+      }
+    ]
+  },
+  "comparison": {
+    "retail_iso": "the owner's v2.00 ISO (identity pinned in docs/inputs/slice118-volume-catalogue.json; not re-verified here)",
+    "same_module_order": true,
+    "identical_modules": []
+  },
+  "findings": [
+    "Both images are romdir containers with the same 18 system modules in the same order.",
+    "The runtime loads neither image: it answers the reboot RPC with a log line and serves the system libraries as native HLE, so no module of DNAS310.IMG has to be loaded for the HLE set to be complete.",
+    "What the image selects is the FILEIO protocol generation through its own LOADFILE version (IOPRP300 3000, DNAS310 3100); the donor switched the asynchronous FILEIO server on only for a path containing 'IOPRP'."
+  ]
+}

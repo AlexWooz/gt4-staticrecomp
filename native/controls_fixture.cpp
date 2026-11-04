@@ -3,9 +3,12 @@
 
 #include "controls.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -143,13 +146,14 @@ void check_defaults_and_example_files() {
 }
 
 void check_trigger_readings() {
-  const Binding &left = only_binding(default_controls(), "l2");
+  // With the whole byte (range=255) a trigger reads as slice 157 did.
+  const Binding left = only_binding(parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255\"]\n"), "l2");
   std::uint8_t previous = 0;
   for (int raw = 0; raw <= 255; ++raw) {
     const auto reading = read_trigger(left, static_cast<std::uint8_t>(raw));
     const auto expected = legacy_trigger(static_cast<std::uint8_t>(raw));
     require(reading.pressed == expected.pressed && reading.pressure == expected.pressure,
-            "default trigger reading equals slice 157 at every raw value");
+            "a range=255 trigger reading equals slice 157 at every raw value");
     require(reading.pressure >= previous, "trigger pressure is monotone");
     previous = reading.pressure;
   }
@@ -157,25 +161,53 @@ void check_trigger_readings() {
   require(read_trigger(left, 31).pressure == 1, "trigger first step is pressure 1");
   require(read_trigger(left, 255).pressure == 255, "trigger full travel is pressure 255");
 
+  // TASK-147: the default L2 (brake) spans 0..84 and the default R2 (throttle) 0..45 over the travel past the deadzone,
+  // GT4's own 100% (min(100 * min(2p, 256) / d, 256), d = 65 brake, 35 throttle). The digital bit is as before.
+  const struct { const char *input; std::uint8_t full; int game_divisor; } pedals[] = {{"l2", 84, 65}, {"r2", 45, 35}};
+  for (const auto &pedal : pedals) {
+    const Binding &binding = only_binding(default_controls(), pedal.input);
+    require(binding.pressure_full == pedal.full, "the default trigger range is the game's 100%");
+    std::uint8_t prior = 0;
+    for (int raw = 0; raw <= 255; ++raw) {
+      const auto reading = read_trigger(binding, static_cast<std::uint8_t>(raw));
+      require(reading.pressed == legacy_trigger(static_cast<std::uint8_t>(raw)).pressed, "the digital bit is unchanged");
+      const long expected = raw <= 30 ? 0 : std::lround((raw - 30) * static_cast<double>(pedal.full) / 225.0);
+      require(reading.pressure == expected && reading.pressure >= prior, "the range spreads evenly over the travel");
+      prior = reading.pressure;
+      // What the game makes of it: below its 100% until the last few percent of the travel.
+      const int game = std::min(100 * std::min(2 * static_cast<int>(reading.pressure), 256) / pedal.game_divisor, 256);
+      if (raw < 248) require(game < 256, "the game's 100% comes only at the end of the travel");
+    }
+    require(read_trigger(binding, 255).pressure == pedal.full, "full travel is the game's 100%");
+    // Half the travel past the deadzone is about half of the game's value (128 of 256).
+    const int half = read_trigger(binding, 30 + 113).pressure;
+    const int game_half = 100 * 2 * half / pedal.game_divisor;
+    require(game_half >= 118 && game_half <= 138, "half the travel is about half throttle or brake in the game");
+  }
+  const Binding custom = only_binding(parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=90\"]\n"), "r2");
+  require(read_trigger(custom, 255).pressure == 90, "range sets the pressure at full travel");
+  const Binding on_face = only_binding(parse_text("schema = 1\n[bindings]\ncross = [\"xinput:RT\"]\n"), "cross");
+  require(read_trigger(on_face, 255).pressure == 255, "a trigger on another button keeps the whole byte");
+
   // Deadzone 0.5 (raw 128 of 255): rest up to 128, then 255 / 127 per unit.
-  const Binding half = only_binding(parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.5\"]\n"), "l2");
+  const Binding half = only_binding(parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.5 range=255\"]\n"), "l2");
   require(!read_trigger(half, 128).pressed && read_trigger(half, 129).pressure == 2,
           "custom trigger deadzone sets the rest point");
 
   // Quadratic: half travel gives about a quarter of full pressure.
   const Binding quadratic = only_binding(
-      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=quadratic\"]\n"), "l2");
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=quadratic range=255\"]\n"), "l2");
   const auto middle = read_trigger(quadratic, 142).pressure;
   require(middle >= 62 && middle <= 64, "quadratic curve: half travel near quarter pressure");
 
   // S-Curve, smooth power, sublinear and logarithmic curves
   const Binding scurve = only_binding(
-      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=s_curve\"]\n"), "l2");
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=s_curve range=255\"]\n"), "l2");
   const auto scurve_mid = read_trigger(scurve, 142).pressure;
   require(scurve_mid >= 125 && scurve_mid <= 128, "s-curve at half travel is near half pressure");
 
   const Binding sublinear = only_binding(
-      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=sublinear\"]\n"), "l2");
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=sublinear range=255\"]\n"), "l2");
   const auto sublinear_mid = read_trigger(sublinear, 142).pressure;
   require(sublinear_mid >= 175 && sublinear_mid <= 185, "sublinear curve at half travel is near 70% pressure");
 
@@ -184,7 +216,7 @@ void check_trigger_readings() {
       {"linear", 128}, {"quadratic", 64}, {"cubic", 32}, {"s_curve", 128},
       {"smooth_power", 90}, {"sublinear", 180}, {"logarithmic", 189}};
   for (const auto &curve : curves) {
-    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0 curve=") +
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 deadzone=0 curve=") +
                                     curve.name + "\"]\n");
     const auto &binding = only_binding(controls, "l2");
     require(read_trigger(binding, 0).pressure == 0, "every curve rests at zero");
@@ -198,32 +230,163 @@ void check_trigger_readings() {
     }
   }
 
+  // Default deadzone (30/255): endpoints, representative middle vector at raw 142, and monotonicity.
+  const struct { const char *name; std::uint8_t middle; } default_dz_curves[] = {
+      {"linear", 126}, {"quadratic", 63}, {"cubic", 31}, {"s_curve", 126},
+      {"smooth_power", 89}, {"sublinear", 179}, {"logarithmic", 188}};
+  for (const auto &curve : default_dz_curves) {
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 curve=") +
+                                    curve.name + "\"]\n");
+    const auto &binding = only_binding(controls, "l2");
+    require(read_trigger(binding, 0).pressure == 0, "every default-deadzone curve rests at zero");
+    require(read_trigger(binding, 30).pressure == 0, "every default-deadzone curve rests at threshold");
+    require(read_trigger(binding, 142).pressure == curve.middle, "quantized default-deadzone curve middle vector");
+    require(read_trigger(binding, 255).pressure == 255, "every default-deadzone curve reaches full pressure");
+    std::uint8_t prior = 0;
+    for (int raw = 0; raw <= 255; ++raw) {
+      const auto pressure = read_trigger(binding, static_cast<std::uint8_t>(raw)).pressure;
+      require(pressure >= prior, "default-deadzone curve pressure bytes are monotone");
+      prior = pressure;
+    }
+  }
+
+  // Representative half deadzone (0.5): endpoints, middle vector at raw 192, and monotonicity.
+  const struct { const char *name; std::uint8_t middle; } half_dz_curves[] = {
+      {"linear", 128}, {"quadratic", 64}, {"cubic", 32}, {"s_curve", 129},
+      {"smooth_power", 91}, {"sublinear", 181}, {"logarithmic", 189}};
+  for (const auto &curve : half_dz_curves) {
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 deadzone=0.5 curve=") +
+                                    curve.name + "\"]\n");
+    const auto &binding = only_binding(controls, "l2");
+    require(read_trigger(binding, 0).pressure == 0, "half-deadzone curve rests at zero");
+    require(read_trigger(binding, 128).pressure == 0, "half-deadzone curve rests at threshold");
+    require(read_trigger(binding, 192).pressure == curve.middle, "quantized half-deadzone curve middle vector");
+    require(read_trigger(binding, 255).pressure == 255, "half-deadzone curve reaches full pressure");
+    std::uint8_t prior = 0;
+    for (int raw = 0; raw <= 255; ++raw) {
+      const auto pressure = read_trigger(binding, static_cast<std::uint8_t>(raw)).pressure;
+      require(pressure >= prior, "half-deadzone curve pressure bytes are monotone");
+      prior = pressure;
+    }
+  }
+
   // Scale 0.5 halves full travel; scale 2 is clamped at full pressure.
   const Binding half_scale = only_binding(
-      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=0.5\"]\n"), "r2");
+      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=0.5 range=255\"]\n"), "r2");
   require(read_trigger(half_scale, 255).pressure == 127, "scale 0.5 halves full travel");
   const Binding double_scale = only_binding(
-      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=2\"]\n"), "r2");
+      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=2 range=255\"]\n"), "r2");
   require(read_trigger(double_scale, 255).pressure == 255, "scale 2 clamps at full pressure");
   std::fprintf(stderr, "PASS: trigger readings: slice 157 match, deadzone, curve, scale\n");
 }
 
+// TASK-147: what GT4's remapper makes of a stick byte (knots 0, 90, 165, 255 to 0, 128, 128, 255; integer division).
+int game_stick_out(int byte) {
+  if (byte <= 90)
+    return (128 * byte + 45) / 90;
+  if (byte < 165)
+    return 128;
+  return 128 + (127 * (byte - 165) + 45) / 90;
+}
+
+// TASK-161: the full trigger range. `range` is the pressure at full travel on the game's own scale, `range_full` on the full
+// one (both games' 100% at 254 of the byte); each applies under its own scale only, so a range made for one scale never
+// caps the other. Every combination: defaults, either option, both, on R2, L2 and another button, under both scales.
+void check_full_range_scale() {
+  using gt4::controls::PressureScale;
+  const struct {
+    const char *text;
+    const char *input;
+    int stock;
+    int full;
+  } cases[] = {
+      {"r2 = [\"xinput:RT\"]", "r2", 45, 255},
+      {"l2 = [\"xinput:LT\"]", "l2", 84, 255},
+      {"cross = [\"xinput:RT\"]", "cross", 255, 255},
+      {"r2 = [\"xinput:RT | range=45\"]", "r2", 45, 255},           // a saved TASK-147 range does not cap the full scale
+      {"r2 = [\"xinput:RT | range=84\"]", "r2", 84, 255},           // the brake on R2 (docs/CONTROLS.md)
+      {"l2 = [\"xinput:LT | range=45\"]", "l2", 45, 255},           // the throttle on L2
+      {"r2 = [\"xinput:RT | range=90\"]", "r2", 90, 255},
+      {"r2 = [\"xinput:RT | range_full=200\"]", "r2", 45, 200},     // only the full scale changes
+      {"l2 = [\"xinput:LT | range=84 range_full=128\"]", "l2", 84, 128},
+      {"cross = [\"xinput:RT | range_full=100\"]", "cross", 255, 100},
+  };
+  for (const auto &item : cases) {
+    const Binding binding = only_binding(parse_text(std::string("schema = 1\n[bindings]\n") + item.text + "\n"), item.input);
+    require(pressure_full_for(binding, PressureScale::stock) == item.stock, std::string("stock full of ") + item.text);
+    require(pressure_full_for(binding, PressureScale::full) == item.full, std::string("full-range full of ") + item.text);
+    require(read_trigger(binding, 255, PressureScale::stock).pressure == item.stock, "full travel gives the stock full");
+    require(read_trigger(binding, 255, PressureScale::full).pressure == item.full, "full travel gives the full-range full");
+    require(read_trigger(binding, 30, PressureScale::full).pressure == 0 && !read_trigger(binding, 30, PressureScale::full).pressed,
+            "the deadzone is the same under both scales");
+    // Over the travel the full scale has every step of its range, in order.
+    int prior = -1;
+    int distinct = 0;
+    for (int raw = 31; raw <= 255; ++raw) {
+      const int pressure = read_trigger(binding, static_cast<std::uint8_t>(raw), PressureScale::full).pressure;
+      require(pressure >= prior, "the full-range reading rises with the travel");
+      distinct += pressure != prior;
+      prior = pressure;
+    }
+    if (item.full == 255) require(distinct == 225, "with the whole byte every raw step past the deadzone is its own pressure");
+  }
+  // The process-wide scale the game sets at start (game_main.cpp) is what read_trigger without a scale uses.
+  const Binding &r2 = only_binding(default_controls(), "r2");
+  require(pressure_scale() == PressureScale::stock && read_trigger(r2, 255).pressure == 45, "the default scale is the stock one");
+  set_pressure_scale(PressureScale::full);
+  require(read_trigger(r2, 255).pressure == 255 && read_trigger(r2, 143).pressure == 128, "full scale: the whole byte");
+  set_pressure_scale(PressureScale::stock);
+  require(read_trigger(r2, 255).pressure == 45, "back to the stock scale");
+}
+
 void check_axis_readings() {
   const auto &map = default_controls();
+  // With the XInput dead zones and game_deadzone=keep a stick reads as slice 157 did.
   const struct {
     const char *name;
+    const char *source;
+    const char *deadzone_text;
     int deadzone;
     bool invert;
-  } sticks[] = {{"rstick_x", 8689, false}, {"rstick_y", 8689, true},
-                {"lstick_x", 7849, false}, {"lstick_y", 7849, true}};
+  } sticks[] = {{"rstick_x", "RX", "0.26517533", 8689, false}, {"rstick_y", "RY", "0.26517533", 8689, true},
+                {"lstick_x", "LX", "0.23953978", 7849, false}, {"lstick_y", "LY", "0.23953978", 7849, true}};
   for (const auto &stick : sticks) {
-    const Binding &binding = only_binding(map, stick.name);
+    const std::string text = std::string("schema = 1\n[bindings]\n") + stick.name + " = [\"xinput:" + stick.source +
+                             " | deadzone=" + stick.deadzone_text + " game_deadzone=keep" +
+                             (stick.invert ? " invert=true" : "") + "\"]\n";
+    const Binding legacy = only_binding(parse_text(text), stick.name);
     for (int raw = -32768; raw <= 32767; ++raw) {
       const auto value = static_cast<std::int16_t>(raw);
-      require(read_axis(binding, value) == legacy_axis(value, stick.deadzone, stick.invert),
-              std::string("default axis equals slice 157: ") + stick.name);
+      require(read_axis(legacy, value) == legacy_axis(value, stick.deadzone, stick.invert),
+              std::string("XInput dead zone with game_deadzone=keep equals slice 157: ") + stick.name);
     }
   }
+  // TASK-147: the defaults: a 10% dead zone (3277 of 32767), and the byte steps over GT4's own dead zone, so the game's
+  // steering is exactly this binding's linear reading, from its first step past the dead zone to full lock.
+  for (const auto &stick : sticks) {
+    const Binding &binding = only_binding(map, stick.name);
+    require(binding.skip_game_deadzone, "sticks skip the game's dead zone by default");
+    int first_step_raw = 0;
+    int prior_game = game_stick_out(read_axis(binding, -32768)) - 128;
+    for (int raw = -32768; raw <= 32767; ++raw) {
+      const auto value = static_cast<std::int16_t>(raw);
+      const int linear = static_cast<int>(legacy_axis(value, 3277, stick.invert)) - 128;
+      const int game = game_stick_out(read_axis(binding, value)) - 128;
+      // The game has 90 bytes for 127 steps past its band: within one step of the linear reading, never dead.
+      require(std::abs(game - linear) <= 1 && (linear == 0) == (game == 0),
+              std::string("the game sees the binding's linear reading, to the nearest step: ") + stick.name);
+      require(stick.invert ? game <= prior_game : game >= prior_game, std::string("the game's steering is monotone: ") + stick.name);
+      prior_game = game;
+      if (raw > 0 && linear != 0 && first_step_raw == 0)
+        first_step_raw = raw;
+    }
+    require(first_step_raw > 3277 && first_step_raw < 3277 + 400, "the game moves from the first step past 10%");
+  }
+  // Without the compensation the game's dead zone stacked: about 46% of the travel did nothing (owner, TASK-147).
+  const Binding keep = only_binding(parse_text("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | deadzone=0.23953978 game_deadzone=keep\"]\n"), "lstick_x");
+  require(game_stick_out(read_axis(keep, static_cast<std::int16_t>(32767 * 45 / 100))) == 128, "the old mapping: dead at 45%");
+  require(game_stick_out(read_axis(only_binding(map, "lstick_x"), static_cast<std::int16_t>(32767 * 45 / 100))) >= 128 + 48,
+          "the new mapping: 45% of the travel steers about 39%");
   // A custom deadzone and an inverted sign keep the rest value at 128 inside the zone.
   const ControlMap custom = parse_text(
       "schema = 1\n[bindings]\nlstick_y = [\"xinput:LY | deadzone=0.5 invert=true\"]\n");
@@ -231,8 +394,102 @@ void check_axis_readings() {
   require(read_axis(custom_y, 16000) == 128 && read_axis(custom_y, 0) == 128,
           "custom stick deadzone holds the rest value");
   require(read_axis(custom_y, 32767) < 128, "inverted stick: full up reads low");
-  std::fprintf(stderr, "PASS: stick readings equal slice 157 for all 65536 raw values\n");
+  std::fprintf(stderr, "PASS: stick readings: slice 157 with game_deadzone=keep, linear game steering by default\n");
 }
+
+void check_stick_curves_and_signed_endpoints() {
+  const char *curve_names[] = {
+      "linear", "quadratic", "cubic", "s_curve", "smooth_power", "sublinear", "logarithmic"
+  };
+  for (const char *curve_name : curve_names) {
+    for (bool invert : {false, true}) {
+      const std::string text = std::string("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | deadzone=0.2 curve=") +
+                               curve_name + " invert=" + (invert ? "true" : "false") + "\"]\n";
+      const ControlMap map = parse_text(text);
+      const Binding &binding = only_binding(map, "lstick_x");
+
+      // 1. Neutral (raw = 0) is always 128 (PS2 stick center)
+      require(read_axis(binding, 0) == 128, std::string(curve_name) + " stick neutral is 128");
+
+      // 2. Deadzone: deadzone = 0.2 of 32767 is 6553.
+      // Values within [-6553, 6553] must yield exactly 128.
+      require(read_axis(binding, 6553) == 128, std::string(curve_name) + " stick deadzone upper boundary");
+      require(read_axis(binding, -6553) == 128, std::string(curve_name) + " stick deadzone lower boundary");
+      if (!invert) {
+        require(read_axis(binding, 6554) >= 128, std::string(curve_name) + " stick positive step past deadzone");
+        require(read_axis(binding, -6554) <= 128, std::string(curve_name) + " stick negative step past deadzone");
+      } else {
+        require(read_axis(binding, 6554) <= 128, std::string(curve_name) + " stick inverted positive step");
+        require(read_axis(binding, -6554) >= 128, std::string(curve_name) + " stick inverted negative step");
+      }
+
+      // 3. Signed endpoints:
+      // Positive full (32767): non-inverted -> 255, inverted -> 0
+      // Negative full (-32768): non-inverted -> 0, inverted -> 255
+      if (!invert) {
+        require(read_axis(binding, 32767) == 255, std::string(curve_name) + " stick pos endpoint 255");
+        require(read_axis(binding, -32768) == 0, std::string(curve_name) + " stick neg endpoint 0");
+      } else {
+        require(read_axis(binding, 32767) == 0, std::string(curve_name) + " stick pos inverted endpoint 0");
+        require(read_axis(binding, -32768) == 255, std::string(curve_name) + " stick neg inverted endpoint 255");
+      }
+
+      // 4. Monotonicity across all 65536 raw values from -32768 to 32767
+      std::uint8_t prior = read_axis(binding, -32768);
+      for (int raw = -32768; raw <= 32767; ++raw) {
+        std::uint8_t current = read_axis(binding, static_cast<std::int16_t>(raw));
+        if (!invert) {
+          require(current >= prior, std::string(curve_name) + " non-inverted stick monotonic");
+        } else {
+          require(current <= prior, std::string(curve_name) + " inverted stick monotonic");
+        }
+        prior = current;
+      }
+    }
+  }
+  std::fprintf(stderr, "PASS: stick curves: neutral 128, signed endpoints, deadzones, monotonicity\n");
+}
+
+void dump_curve_vectors(const std::string &path) {
+  const struct { const char *name; } curves[] = {
+      {"linear"}, {"quadratic"}, {"cubic"}, {"s_curve"},
+      {"smooth_power"}, {"sublinear"}, {"logarithmic"}};
+  const double deadzones[] = {0.0, 30.0 / 255.0, 0.25, 0.5, 0.75};
+
+  std::ofstream out(path, std::ios::binary);
+  if (!out)
+    throw std::runtime_error("cannot open vector output path: " + path);
+
+  out << "{\n";
+  out << "  \"curves\": [\"linear\", \"quadratic\", \"cubic\", \"s_curve\", \"smooth_power\", \"sublinear\", \"logarithmic\"],\n";
+  out << "  \"deadzones\": [0.0, 0.11764705882352941, 0.25, 0.5, 0.75],\n";
+  out << "  \"vectors\": {\n";
+
+  bool first_entry = true;
+  for (std::size_t c = 0; c < 7; ++c) {
+    for (std::size_t d = 0; d < 5; ++d) {
+      if (!first_entry) out << ",\n";
+      first_entry = false;
+
+      std::ostringstream conf;
+      conf << "schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 deadzone=" << deadzones[d]
+           << " curve=" << curves[c].name << "\"]\n";
+      const ControlMap map = parse_text(conf.str());
+      const Binding &b = only_binding(map, "l2");
+
+      out << "    \"" << curves[c].name << "_dz" << d << "\": [";
+      for (int raw = 0; raw <= 255; ++raw) {
+        if (raw > 0) out << ",";
+        const auto reading = read_trigger(b, static_cast<std::uint8_t>(raw));
+        out << static_cast<int>(reading.pressure);
+      }
+      out << "]";
+    }
+  }
+  out << "\n  }\n}\n";
+  std::fprintf(stderr, "Wrote vector dump to %s\n", path.c_str());
+}
+
 
 void check_remaps() {
   const ControlMap remap = parse_text(
@@ -293,6 +550,23 @@ void check_invalid_files() {
                       "invert must be true or false", 3, "invert not boolean");
   expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | gain=2\"]\n",
                       "unknown option 'gain'", 3, "unknown option");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=0\"]\n", "range must be", 3, "range of zero");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=256\"]\n", "range must be", 3, "range over a byte");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=4.5\"]\n", "range must be", 3, "range not whole");
+  // TASK-161: the full-range pressure at full travel, as strict as range.
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=0\"]\n", "range_full must be", 3, "range_full of zero");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=256\"]\n", "range_full must be", 3,
+                      "range_full over a byte");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=4.5\"]\n", "range_full must be", 3,
+                      "range_full not whole");
+  expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range_full=45\"]\n",
+                      "range_full applies to triggers only", 3, "range_full on a stick");
+  expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range=45\"]\n", "range applies to triggers only", 3,
+                      "range on a stick");
+  expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | game_deadzone=off\"]\n", "game_deadzone must be", 3,
+                      "game_deadzone value");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | game_deadzone=keep\"]\n", "game_deadzone applies to stick axes only", 3,
+                      "game_deadzone on a trigger");
   expect_config_error("schema = 1\n[bindings]\ncross = xinput:A\n",
                       "quoted string or an array", 3, "unquoted value");
   expect_config_error("schema = 1\n[bindings]\ncross = [\"xinput:A\" \"key:Z\"]\n",
@@ -347,12 +621,23 @@ void check_environment_selection() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc >= 3 && std::string(argv[1]) == "--dump-vectors") {
+    try {
+      dump_curve_vectors(argv[2]);
+      return 0;
+    } catch (const std::exception &error) {
+      std::fprintf(stderr, "FAIL: %s\n", error.what());
+      return 1;
+    }
+  }
   try {
     check_default_keyboard_table();
     check_defaults_and_example_files();
     check_trigger_readings();
+    check_full_range_scale();
     check_axis_readings();
+    check_stick_curves_and_signed_endpoints();
     check_remaps();
     check_invalid_files();
     check_environment_selection();

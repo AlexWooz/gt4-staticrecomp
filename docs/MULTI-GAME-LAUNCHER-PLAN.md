@@ -11,12 +11,12 @@ SCUS-97328) and Gran Turismo 4 Spec II 1.10 (SCUS-97436 lineage, TASK-100). This
 | Executables | One per game: `game\gt4vulkan.exe` (v2.00) and `game\gt4vulkan-spec2.exe` (Spec II). The generated code of the two games shares symbol names, so they cannot share one executable (decision 0072). Both ship in every installer and update. |
 | Settings | One shared set for both games: graphics, GSdx options, controls, textures, display. |
 | Per game | The disc copy, the prepared files, the runtime card, the save library and the replays. |
-| Saves | Never shared or converted. Spec II does not accept a v2.00 save and v2.00 does not accept a Spec II save (owner). Spec II writes under the same PS2 folder name as retail, `BASCUS-97328GAMEDATA` (found in both executables), so a shared card would overwrite the other game's save. |
+| Saves | Never shared or converted. Spec II does not accept a v2.00 save and v2.00 does not accept a Spec II save (owner). Each game has its own item names on the card: retail writes `BASCUS-97328GAMEDATA` and replays `BASCUS-97328R` + four digits; Spec II writes `BASCUS-97436GAMEDATA` (confirmed by the owner's log, 2026-10-23) and replays `BASCUS-97436R` + four digits (not verified with a real Spec II replay). Each library only takes its own names, so a Spec II save is never dropped and never reaches the retail library. |
 | Replays | Separate per game. Cross-compatibility is open; test it later. |
 | First install | The player picks an ISO; the launcher recognises the game from it and installs that game. |
 | Selected game | The game installed first is selected at the start; after that, the game played last. |
 | Accepted discs | Spec II 1.10 only for now, plus variants of 1.10 that keep the same executable (for example the Brazilian Portuguese translation of 1.10, which only replaces the Spanish language data). |
-| Logo | With Spec II selected, the home screen shows the Spec II logo instead of the GT4 logo (the authors' logo: the GT4 logo with "Spec II" under it, in the GT4 font). |
+| Logo and selector | The home screen keeps the Gran Turismo 4 logo for both games (owner, 2026-10-23, after the first mock). Under Play, the current version's name (Normal or Spec II) between a left and a right arrow; an arrow switches to the next version in an endless loop, the name sliding in from that side (a version that is not installed is marked). |
 | Shortcuts | One desktop and Start-menu shortcut, always to the launcher (as today). |
 
 ## User flows
@@ -27,8 +27,8 @@ SCUS-97328) and Gran Turismo 4 Spec II 1.10 (SCUS-97436 lineage, TASK-100). This
    - Anything else → the existing "This disc is not supported" message, which names what it found (serial, title).
 
    The installed game becomes the selected game.
-2. **Home screen.** A game selector, "Gran Turismo 4" / "Gran Turismo 4 Spec II", near Play, keyboard and gamepad
-   friendly. Selecting a game swaps the logo.
+2. **Home screen.** Under Play, "‹ Normal ›" / "‹ Spec II ›": the arrows switch versions in an endless loop with a
+   short slide, keyboard and gamepad friendly (LB / RB switch too). The logo does not change.
    - Installed game: **Play**.
    - Game not installed: **Install** in place of Play. It opens the ISO picker and runs the normal setup for that game.
 3. **Wrong disc for the chosen game** (for example the v2.00 ISO under "Install Spec II"): the launcher says which
@@ -102,3 +102,51 @@ SCUS-97328) and Gran Turismo 4 Spec II 1.10 (SCUS-97436 lineage, TASK-100). This
 - UI mock: the selector, Play/Install, the logo swap, Settings > Games.
 - Owner test: a fresh install with each disc first, adding the second game, switching, saves kept apart, and an update
   from 1.2.x with the existing v2.00 data moved.
+
+## Progress (2026-10-23, launcher side on `task/101-multi-game`)
+
+Pieces 1 to 6 are implemented, 7 is noted below, 8 is text. Nothing is merged, released or version-bumped.
+
+1. **Game model** (`gt4l_core::games`): the table (`gt4` "Gran Turismo 4", `spec2` "Gran Turismo 4 Spec II", executables,
+   prepared ELF names, serials, logo asset). `DataDirs::for_game` and `UserDirs::for_game` name each game's folders under
+   `games\<id>`; the renderer, logs, sessions and textures stay shared. Settings schema 8 adds `[game] selected` (first
+   installed, then last played; set when a game starts).
+2. **Identification** (`gt4l_disc::identify`, `spec2`, `spec2_pins`): SCUS-97328 as before; SCUS-97436 by the SHA-256 of its
+   `SCUS_974.36` (the pins `spec2-iso.json`, `spec2-elf.json`). Known images are named from the new pin file
+   `docs/inputs/spec2-variants.json` ("Spec II 1.10", "Spec II 1.10 (PT-BR)", the owner's image, same executable). An image
+   with the known executable and an unknown hash is accepted as "Spec II 1.10 variant" and logged. Any other SCUS-97436
+   executable, the unmodified Public Beta included (named in the message), is refused. `Unsupported::SpecII` is retired.
+3. **Spec II setup**: the ISO is copied to `games\spec2\disc` and the derived ELF to `games\spec2\prepared`; no CORE step.
+   `spec2_elf` is a Rust port of `scripts/spec2_elf_patch.py` (the 35 injector words, the old word checked first with the
+   script's message, the data-segment split around the plugin). With the owner's image, its output is byte-identical to the
+   script's file (`36f60b1a…`).
+4. **Launch**: the plan takes the selected game's executable (`gt4vulkan-spec2.exe`), ELF (argv0 name rule), disc image and
+   runtime card; GSdx and every shared setting are unchanged (test `multi_game.rs`).
+5. **Saves**: one library per game (`gt4saves::LibraryPaths::for_game`), separate harvest and card build; an import names its
+   game (`gt4saves::game_of_save` finds no rule yet, so the page asks and the command refuses a call without a game).
+6. **Migration** (`gt4l_core::games_layout`): see `docs/launcher/MIGRATIONS.md`.
+7. **UI** (done in the mock and headless checks, not seen on a real window): selector, Play or Install, the logo line, Setup
+   for a chosen game with the other-game offer, Settings > Games, the game on the Saves and Replays titles, the About
+   credits placeholder. **Installer**: only the lock check of the second executable was added to `gt4recomp.nsi` (both
+   executables must be in `GAME_DIR`); the uninstaller removing `data\games\*` needs no change (it removes `data`).
+   Not built.
+
+Rules as implemented: the stored selection is the game played last (or the first installed); the page's selection is not
+stored until a game starts. Remove deletes `disc`, `prepared` and `prepared.tmp` of one game, never `runtime`, saves or replays.
+
+Progress note (2026-10-23, slice 278): the portable build (TASK-098) uses this layout unchanged: `<exe dir>\user` holds what
+`%APPDATA%\GT4Recomp` holds in the installer build (`config`, `controls.toml`, `games\<id>\Saves|Replays|backups`) and
+`<exe dir>\data` holds `games\<id>\disc|prepared|runtime`, `gs`, `sessions`, `logs`, `Textures`. A game executable started
+without the launcher (TASK-097) finds `<install>\data\games\<id>` from its own folder (`gt4vulkan.exe` is `gt4`,
+`gt4vulkan-spec2.exe` is `spec2`) and reads `<install>\user\config` (portable) or `%APPDATA%\GT4Recomp\config`.
+
+rc4 (2026-10-23, item 1): the item names are per game (`gt4saves::SaveNames`, from the game table: `save_folder`, `replay_prefix`). Spec II's game data is `BASCUS-97436GAMEDATA`, so its saves were dropped at harvest in rc3; now each library takes only its own items, a mixed card is split by game, and an item no game knows is reported on the Saves page. The Spec II replay prefix `BASCUS-97436` is not verified with a real replay.
+
+rc4 (2026-10-23, items 2 to 5): the Saves page lists both games in one list, each row tagged and carrying its game id; actions go to that game's library. The GPU list merges Vulkan and DXGI per physical card. The copy bar uses the figure's total. Launcher logs and the log bundle (TASK-111, TASK-112) are in `docs/TASKS.md`.
+
+Open for the owner: the look of the selector and the placeholder logo line on a real window; the authors' logo file,
+names and permission (the About text has a marked placeholder); the PT-BR variant hash is pinned (owner image) but only the
+executable identity was checked by a test here, the full-image hash was not recomputed; replays across games stay untested;
+a reinstall into another folder from a 1.3.0 data folder (`PreviousDataDir`) is not moved into the new `games` layout yet
+(it still moves the 1.2.x flat names).
+

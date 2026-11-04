@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "schema": "spec2-ee-libraries/1",
+  "purpose": "The Spec II EE library: 346 units translated from the derived SCUS_974.36 (TASK-100 S4; S8c reseed). Plain translation, no aspect patch; the plugin segment is translated as code.",
+  "profiles": {
+    "spec2": {
+      "path": "private/slice278-spec2-ee-producer/game-build/ps2game.lib",
+      "size_bytes": 80229124,
+      "sha256": "9a94c3ed835a726bc1f82679da02fa50919634a393c175103cd77122e1fbb954",
+      "generated_units": "O:/gt4recomp-scratch/spec2-s8c-generated-clean (346 units, inventory 2d8c92a4..., 1299 entry seeds; see docs/inputs/spec2-ee-generated.json)",
+      "source_elf": "private/slice272-spec2-elf/SCUS_974.36 (36f60b1a...)",
+      "translator": "private/reference-acceleration-study/eerecomp.exe (5aec705e...)",
+      "compiler": "clang-cl 23.1.2 (private/tooling/llvm-23.1.2)",
+      "build": "cmake -S tools/ee_producer -B O:/gt4recomp-scratch/spec2-s8c-lib-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGT4_DONOR=<assets>/private/references/ps2-web-recomp -DGT4_GENERATED=O:/gt4recomp-scratch/spec2-s8c-generated-clean -DGT4_BUILD_TRANSLATOR=OFF; cmake --build ... --target ps2game --parallel 4",
+      "notes": "S8c reseed: scripts/spec2_entry_seeds.py adds the entry classes the translator misses (wide lui/addiu window 64, fallthrough stack-frame openers, literal pointers inside executable segments). The seed file is private/slice278-spec2-ee-producer/entry-seeds.txt, sha256 041c1864..., 1299 seeds. It fixes the Options-menu halt at 0x003CA690 (built at 0x003CC8EC/0x003CC9C0, 53 instructions apart)."
+    }
+  },
+  "target": {
+    "cmake": "-DGT4_TARGET=spec2 -DGT4_EE_PROFILE=spec2",
+    "executable": "gt4vulkan-spec2.exe",
+    "ram_size": 33554432
+  }
+}

@@ -3,6 +3,7 @@
 ;   makensis /DVERSION=1.2.1 /DLAUNCHER_EXE=<path>\GT4Recomp.exe /DGAME_DIR=<path>\game ^
 ;            /DSDL3_DLL=<path>\SDL3.dll /DWEBVIEW2_BOOTSTRAPPER=<path>\MicrosoftEdgeWebview2Setup.exe ^
 ;            /DOUTFILE=<path>\GT4Recomp-Setup-1.2.1.exe <path>\installer\gt4recomp.nsi
+; A test build adds /DLABEL=rc5 (output GT4Recomp-Setup-1.3.0-rc5.exe; VERSION stays numeric).
 ; The default output name GT4Recomp-Setup-<VERSION>.exe is the asset name the launcher's updater looks for
 ; (launcher\crates\gt4l-core\src\releases.rs, docs/RELEASES.md).
 ; WEBVIEW2_BOOTSTRAPPER is Microsoft's Evergreen bootstrapper (https://go.microsoft.com/fwlink/p/?LinkId=2124703),
@@ -10,7 +11,7 @@
 ; window is a WebView2 page: the bootstrapper runs only when the runtime is missing (see WebView2Present below).
 ; SDL3_DLL is SDL3 3.4.18 (runtime\SDL3.dll of SDL3-3.4.18-win32-x64.zip). It ships beside GT4Recomp.exe: the
 ; launcher reads pads through SDL3 (launcher\crates\gt4l-platform\src\sdl_pads.rs).
-; GAME_DIR must hold gt4vulkan.exe, the runtime DLLs, shaders\ and the licence texts. It is not in git.
+; GAME_DIR must hold gt4.exe and (from 1.3.0, TASK-101; renamed TASK-108) gt4-spec2.exe, the runtime DLLs, shaders\ and the licence texts. It is not in git.
 ;
 ; Layout (TASK-091; docs/BUILD.md "Slice 250", docs/release-notes/1.2.1.md):
 ; - Program files in $INSTDIR (default C:\Program Files\GT4Recomp; the directory page lets the player pick any folder).
@@ -31,15 +32,12 @@
 ; appends one line to data\logs\setup.log.
 
 !ifndef VERSION
-  !define VERSION "1.2.5"
+  !define VERSION "1.3.0"
 !endif
-; /DLABEL=rc1 labels this test build. VERSION and version.json stay numeric for the legacy stable-only updater.
+; A test build (TASK-109): /DLABEL=rc5 makes the shown version, version.json and the default output name carry -rc5
+; (GT4Recomp-Setup-1.3.0-rc5.exe). VERSION stays numeric; it must match the launcher's Cargo version.
 !ifdef LABEL
-  !if "${LABEL}" == ""
-    !define FULL_VERSION "${VERSION}"
-  !else
-    !define FULL_VERSION "${VERSION}-${LABEL}"
-  !endif
+  !define FULL_VERSION "${VERSION}-${LABEL}"
 !else
   !define FULL_VERSION "${VERSION}"
 !endif
@@ -47,7 +45,7 @@
   !error "Define LAUNCHER_EXE=<path to GT4Recomp.exe>"
 !endif
 !ifndef GAME_DIR
-  !error "Define GAME_DIR=<folder with gt4vulkan.exe and its runtime files>"
+  !error "Define GAME_DIR=<folder with gt4.exe and its runtime files>"
 !endif
 !ifndef SDL3_DLL
   !error "Define SDL3_DLL=<path to SDL3.dll, SDL 3.4.18>"
@@ -79,6 +77,17 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
 BrandingText "${APP_NAME} ${FULL_VERSION}"
+; The installer's own version resource (Explorer's Details tab and the antivirus file reputation read it; it had none
+; up to 1.3.0-rc10, when a laptop's Defender flagged that installer by machine learning). VIProductVersion needs four
+; numbers, so the release candidate label is only in the text fields.
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey /LANG=0 "ProductName" "GT4Recomp"
+VIAddVersionKey /LANG=0 "CompanyName" "GT4Recomp contributors"
+VIAddVersionKey /LANG=0 "FileDescription" "GT4Recomp setup"
+VIAddVersionKey /LANG=0 "FileVersion" "${FULL_VERSION}"
+VIAddVersionKey /LANG=0 "ProductVersion" "${FULL_VERSION}"
+VIAddVersionKey /LANG=0 "LegalCopyright" "Copyright (c) 2026 GT4Recomp contributors. MIT License."
+VIAddVersionKey /LANG=0 "OriginalFilename" "GT4Recomp-Setup-${FULL_VERSION}.exe"
 
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
@@ -259,7 +268,15 @@ Function FindLockedInstallFile
   Call TestFileFree
   StrCpy $R9 "$INSTDIR\SDL3.dll"
   Call TestFileFree
+  StrCpy $R9 "$INSTDIR\game\gt4.exe"
+  Call TestFileFree
+  ; TASK-101 (1.3.0): the second game's program, shipped beside the first. A missing file counts as free.
+  ; TASK-108 (1.3.0): the program names are gt4.exe and gt4-spec2.exe; a 1.2.x install left gt4vulkan*.exe, checked too.
+  StrCpy $R9 "$INSTDIR\game\gt4-spec2.exe"
+  Call TestFileFree
   StrCpy $R9 "$INSTDIR\game\gt4vulkan.exe"
+  Call TestFileFree
+  StrCpy $R9 "$INSTDIR\game\gt4vulkan-spec2.exe"
   Call TestFileFree
   FindFirst $R0 $R1 "$INSTDIR\game\*.dll"
   ${DoWhile} $R1 != ""
@@ -320,7 +337,7 @@ Function CheckStagedFiles
   ${If} ${Errors}
   ${OrIfNot} ${FileExists} "$INSTDIR\.update-staging\GT4Recomp.exe"
   ${OrIfNot} ${FileExists} "$INSTDIR\.update-staging\SDL3.dll"
-  ${OrIfNot} ${FileExists} "$INSTDIR\.update-staging\game\gt4vulkan.exe"
+  ${OrIfNot} ${FileExists} "$INSTDIR\.update-staging\game\gt4.exe"
     StrCpy $R8 "extract failed"
   ${EndIf}
 FunctionEnd
@@ -716,6 +733,10 @@ Section "Install" SecInstall
   SetOutPath "$INSTDIR"
   RMDir /r "$INSTDIR\.update-staging"
   ClearErrors
+  ; TASK-108 (1.3.0): the game programs are gt4.exe and gt4-spec2.exe. A 1.2.x install left gt4vulkan*.exe in game\;
+  ; the update swaps the whole game folder, and a fresh copy never has them, so they are removed here as well.
+  Delete "$INSTDIR\game\gt4vulkan.exe"
+  Delete "$INSTDIR\game\gt4vulkan-spec2.exe"
   SetOutPath "$INSTDIR\.update-staging"
   File "/oname=GT4Recomp.exe" "${LAUNCHER_EXE}"
   File "/oname=SDL3.dll" "${SDL3_DLL}"
@@ -765,7 +786,7 @@ Section "Install" SecInstall
   ; version.json (docs/RELEASES.md): the installed GT4Recomp version and the settings schema. The launcher cannot write
   ; this program folder, so it keeps its own copy (with the gt4-gs version) in the data folder.
   FileOpen $0 "$INSTDIR\version.json" w
-  FileWrite $0 '{"schema": 1, "gt4recomp": "${VERSION}", "gt4gs": null, "settings_schema": 1}$\r$\n'
+  FileWrite $0 '{"schema": 1, "gt4recomp": "${FULL_VERSION}", "gt4gs": null, "settings_schema": 1}$\r$\n'
   FileClose $0
 
   !insertmacro TimingMark "files"

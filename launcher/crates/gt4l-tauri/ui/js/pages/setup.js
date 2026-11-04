@@ -3,13 +3,17 @@
  * when app_state says "done". The page polls app_state while it is open and draws the state it reports.
  *
  * app_state().setup = {
+ *   game: {id, name} | null,            (the game being set up; null on the very first start: the disc decides)
  *   state: "needed" | "wrong_disc" | "checking" | "failed" | "files_missing" | "done",
  *   step: "copying" | "checking" | "preparing" | "renderer",   (while checking)
  *   progress: 0..1,                     (of the current step)
- *   bytes_done, bytes_total,            (copying, and the renderer download)
- *   renderer_step: "listing" | "downloading" | "installing" | "done" | "failed",
+ *   bytes_done, bytes_total,            (copying, the renderer download, the shaders compiled)
+ *   renderer_step: "checking" | "compiling" | "listing" | "downloading" | "installing" | "done" | "failed",
+ *   renderer_choice: "coregs20" | "gsdx_fallback" | "",  (what setup decided for this PC)
  *   disc_name, problem, note            (note: GSdx could not be downloaded; the game cannot start yet)
  * }
+ * Two games (TASK-101): a disc of the other game than the one asked for offers to install it as that game (js/games.js).
+ * When another game is already installed the page also has "Back" to Home.
  * Flow: "Choose disc image" -> setup_choose_disc (Rust file picker and fast check) -> setup_start (copy, check,
  * prepare, renderer). A refused file shows its reason with "Choose another file". When setup is done the page
  * shows "Finish", which opens Home (it never starts the game). Commands: setup_choose_disc, setup_start, setup_cancel.
@@ -19,18 +23,21 @@
   var GT4 = (root.GT4 = root.GT4 || {});
   var h = GT4.ui.h;
 
+  // The step names are keys: read when the page is drawn, so a language change applies.
   var STEPS = [
-    { id: "copying", label: "Copying game files", detail: "a copy of your disc image for GT4Recomp" },
-    { id: "checking", label: "Checking disc", detail: null },
-    { id: "preparing", label: "Preparing game files", detail: null },
-    { id: "renderer", label: "Graphics renderer", detail: "GSdx (gt4-gs) from GitHub" }
+    { id: "copying", label: "setup.step_copying", detail: "setup.step_copying_detail" },
+    { id: "checking", label: "setup.step_checking", detail: null },
+    { id: "preparing", label: "setup.step_preparing", detail: null },
+    { id: "renderer", label: "setup.step_renderer", detail: "setup.step_renderer_detail" }
   ];
-  var RENDERER_TEXT = {
-    listing: "finding the latest version",
-    downloading: "downloading",
-    installing: "installing",
-    done: "ready",
-    failed: "not installed, the game cannot start yet"
+  var RENDERER_KEYS = {
+    checking: "setup.renderer_checking",
+    compiling: "setup.renderer_compiling",
+    listing: "setup.renderer_listing",
+    downloading: "setup.renderer_downloading",
+    installing: "setup.renderer_installing",
+    done: "setup.renderer_done",
+    failed: "setup.renderer_failed"
   };
   var POLL_MS = 400;
 
@@ -48,6 +55,10 @@
 
   function barNode(pct) {
     var fill = h("i");
+    // A finished step never animates: the bar is placed at once, so no transition is left half-way when the step changes.
+    if (pct >= 100) {
+      fill.style.transition = "none";
+    }
     fill.style.width = pct + "%";
     return h("span", { class: "bar" }, [fill]);
   }
@@ -60,7 +71,7 @@
       value = "✓";
       valueClass += " ok";
     } else if (status === "bad") {
-      value = "Not supported";
+      value = GT4.t("setup.not_supported");
       valueClass += " bad";
     } else if (status === "active" && pct !== null) {
       value = pct + "%";
@@ -73,7 +84,7 @@
         h("span", { class: "t", text: label }),
         detail ? h("span", { class: "d", text: detail }) : null,
         bytesText ? h("span", { class: "bytes", text: bytesText }) : null,
-        status === "active" && pct !== null ? barNode(pct) : null
+        (status === "active" || status === "ok") && pct !== null ? barNode(pct) : null
       ]),
       h("span", { class: valueClass, text: value })
     ]);
@@ -81,26 +92,40 @@
 
   // Signature decides whether the page has to be rebuilt.
   function signature(setup) {
-    return [setup.state, setup.step, Math.round((setup.progress || 0) * 100), setup.renderer_step || "",
+    return [setup.state, setup.step, Math.round((setup.progress || 0) * 100), setup.renderer_step || "", setup.renderer_choice || "",
       Math.round((setup.bytes_done || 0) / 1e6), setup.problem || "", setup.note || "", setup.disc_name || ""].join("|");
   }
 
-  function texts(state) {
+  function gameName(setup) {
+    return setup.game && setup.game.name ? setup.game.name : "";
+  }
+
+  function discHint(setup) {
+    var name = gameName(setup);
+    if (!name) {
+      return GT4.t("setup.disc_hint");
+    }
+    return name === "Gran Turismo 4" ? GT4.t("setup.disc_hint_gt4") : GT4.t("setup.disc_hint_named", { game: name });
+  }
+
+  function texts(state, setup) {
+    var name = gameName(setup);
     switch (state) {
       case "done":
-        return ["Ready", "Press Finish to open GT4Recomp. Next time it opens straight to the home screen. You can move or delete the disc image you chose."];
+        return [name ? GT4.t("setup.done_title_named", { game: name }) : GT4.t("setup.done_title"), GT4.t("setup.done_text")];
       case "files_missing":
-        return ["Game files missing", "Choose your disc image again to copy the game files. Your saves and settings are kept."];
+        return [GT4.t("setup.missing_title"), GT4.t("setup.missing_text")];
       case "checking":
-        return ["Setting up your game", "This only happens once. Keep GT4Recomp open until it finishes."];
+        return [name ? GT4.t("setup.checking_title_named", { game: name }) : GT4.t("setup.checking_title"), GT4.t("setup.checking_text")];
       default:
-        return ["Set up your game", "Choose your Gran Turismo 4 disc image (.iso). This only happens once."];
+        return [name ? GT4.t("setup.set_up_named", { game: name }) : GT4.t("setup.set_up"),
+          name ? GT4.t("setup.choose_named_text", { game: name }) : GT4.t("setup.choose_text")];
     }
   }
 
   function build(setup, parts) {
     var state = setup.state;
-    var heading = texts(state);
+    var heading = texts(state, setup);
     parts.title.textContent = heading[0];
     parts.sub.textContent = heading[1];
 
@@ -111,16 +136,18 @@
     var running = state === "checking";
     var done = state === "done";
     var discName = setup.disc_name || "";
+    // Step 1 says what the disc was recognised as (the title and the variant, from the disc itself).
+    var recognised = discName ? GT4.t("setup.recognised", { name: discName }) : null;
 
     if (state === "wrong_disc") {
-      steps.push(row("01", "Disc", discName || null, "bad", null, null));
+      steps.push(row("01", GT4.t("setup.step_disc"), discName || null, "bad", null, null));
     } else if (running || done) {
-      steps.push(row("01", "Disc", discName || null, "ok", null, null));
+      steps.push(row("01", GT4.t("setup.step_disc"), recognised, "ok", null, null));
     } else {
       // Not chosen yet ("..." waits for the pick), or the file of a stopped run (no mark).
       steps.push(discName && state === "failed"
-        ? row("01", "Disc", discName, "none", null, null)
-        : row("01", "Disc", "your Gran Turismo 4 (USA) disc image", "active", null, null));
+        ? row("01", GT4.t("setup.step_disc"), recognised, "none", null, null)
+        : row("01", GT4.t("setup.step_disc"), discHint(setup), "active", null, null));
     }
     // A refused file, a stopped run and missing game files show the Disc row and the reason only, so the buttons
     // stay on screen at 1280 x 720.
@@ -129,28 +156,45 @@
         var status = "wait";
         var pct = null;
         var bytesText = null;
-        var detail = step.detail;
+        var detail = step.detail ? GT4.t(step.detail) : null;
         if (done || (running && index < order)) {
           status = "ok";
+          if (step.id === "copying" && running && setup.step !== "renderer" && setup.bytes_total) {
+            // The copy ended: its bar is drawn full with the final figure, even when the poll never saw the last
+            // 100% value (rc5 owner report: the Spec II copy bar stopped short).
+            pct = 100;
+            bytesText = gigabytes(setup.bytes_total) + " of " + gigabytes(setup.bytes_total);
+          }
         } else if (running && index === order) {
           status = "active";
           pct = Math.round((setup.progress || 0) * 100);
           if (step.id === "copying" && setup.bytes_total) {
+            // The bar and the figure of the copy use the same total (the size of the disc file being copied), so the bar
+            // reaches 100% when the text says "x of x" (rc3 owner report: the bar stopped at about 85%).
             bytesText = gigabytes(setup.bytes_done || 0) + " of " + gigabytes(setup.bytes_total);
+            pct = Math.min(100, Math.floor(((setup.bytes_done || 0) * 100) / setup.bytes_total));
           }
           if (step.id === "renderer") {
-            detail = RENDERER_TEXT[setup.renderer_step] || detail;
-            if (setup.renderer_step !== "downloading") {
+            detail = RENDERER_KEYS[setup.renderer_step] ? GT4.t(RENDERER_KEYS[setup.renderer_step]) : detail;
+            if (setup.renderer_step === "compiling") {
+              bytesText = GT4.t("setup.renderer_count", { done: setup.bytes_done || 0, total: setup.bytes_total || 0 });
+            } else if (setup.renderer_step !== "downloading") {
               pct = null;
             } else if (setup.bytes_total) {
               bytesText = megabytes(setup.bytes_done || 0) + " of " + megabytes(setup.bytes_total);
             }
           }
         }
-        if (done && step.id === "renderer" && setup.note) {
-          detail = RENDERER_TEXT.failed;
+        if (done && step.id === "renderer") {
+          if (setup.note) {
+            detail = GT4.t("setup.renderer_failed");
+          } else if (setup.renderer_choice === "coregs20") {
+            detail = GT4.t("setup.renderer_ready_coregs20");
+          } else if (setup.renderer_choice === "gsdx_fallback") {
+            detail = GT4.t("setup.renderer_ready_gsdx");
+          }
         }
-        steps.push(row("0" + (index + 2), step.label, detail, status, pct, bytesText));
+        steps.push(row("0" + (index + 2), GT4.t(step.label), detail, status, pct, bytesText));
       });
     }
 
@@ -161,23 +205,29 @@
     parts.notice.hidden = !(done && setup.note);
 
     if (done) {
-      buttons.push({ label: "Finish", primary: true, run: finishSetup });
-      hints.push({ key: "A", label: "Finish", run: finishSetup });
+      buttons.push({ label: GT4.t("setup.finish"), primary: true, run: finishSetup });
+      hints.push({ key: "A", label: GT4.t("hint.finish"), run: finishSetup });
     } else if (running) {
       if (setup.step !== "renderer") {
-        buttons.push({ label: "Cancel", run: cancelSetup });
-        hints.push({ key: "B", label: "Cancel", run: cancelSetup });
+        buttons.push({ label: GT4.t("common.cancel"), run: cancelSetup });
+        hints.push({ key: "B", label: GT4.t("hint.cancel"), run: cancelSetup });
       }
-      buttons.push({ label: "Working…", primary: true, disabled: true });
+      buttons.push({ label: GT4.t("common.working"), primary: true, disabled: true });
     } else if (state === "failed") {
       if (discName) {
-        buttons.push({ label: "Try again", run: startSetup });
+        buttons.push({ label: GT4.t("setup.try_again"), run: startSetup });
       }
-      buttons.push({ label: "Choose another file", primary: true, run: chooseDisc });
-      hints.push({ key: "A", label: "Select" });
+      buttons.push({ label: GT4.t("common.choose_another_file"), primary: true, run: chooseDisc });
+      hints.push({ key: "A", label: GT4.t("hint.select") });
     } else {
-      buttons.push({ label: state === "wrong_disc" ? "Choose another file" : "Choose disc image", primary: true, run: chooseDisc });
-      hints.push({ key: "A", label: "Choose disc image", run: chooseDisc });
+      buttons.push({ label: state === "wrong_disc" ? GT4.t("common.choose_another_file") : GT4.t("games.choose_disc"), primary: true, run: chooseDisc });
+      hints.push({ key: "A", label: GT4.t("hint.choose_disc"), run: chooseDisc });
+    }
+    // Another game is installed: Setup is not a dead end. Back returns to Home (nothing is changed).
+    if (!running && !done && active && active.anyInstalled) {
+      buttons.push({ label: GT4.t("common.back"), run: backHome });
+      hints.push({ key: "B", label: GT4.t("hint.back"), run: backHome });
+      GT4.hooks.back = backHome;
     }
 
     GT4.ui.clear(parts.steps);
@@ -194,7 +244,15 @@
       }, button.label));
     });
     GT4.ui.setHints(hints);
-    GT4.hooks.back = running && setup.step !== "renderer" ? cancelSetup : (done ? finishSetup : null);
+    if (running || done) {
+      GT4.hooks.back = running && setup.step !== "renderer" ? cancelSetup : finishSetup;
+    } else if (!(active && active.anyInstalled)) {
+      GT4.hooks.back = null;
+    }
+  }
+
+  function backHome() {
+    GT4.go("#/home");
   }
 
   var busyChoosing = false;
@@ -206,9 +264,13 @@
       return;
     }
     busyChoosing = true;
-    call("setup_choose_disc").then(function (info) {
+    var target = active && active.game ? active.game : null;
+    call("setup_choose_disc", target ? { game: target } : {}).then(function (info) {
       busyChoosing = false;
-      if (info) {
+      if (info && info.mismatch) {
+        // The disc is the other game: install it as that game, or pick again.
+        GT4.games.offerOtherGame(info, startSetup, chooseDisc);
+      } else if (info) {
         startSetup();
       } else {
         poll();
@@ -252,7 +314,9 @@
         return;
       }
       var setup = appState.setup || { state: "needed" };
-      var sig = signature(setup);
+      active.game = setup.game && setup.game.id ? setup.game.id : null;
+      active.anyInstalled = !!appState.any_installed;
+      var sig = signature(setup) + "|" + (active.game || "") + "|" + active.anyInstalled;
       if (sig === active.last) {
         return;
       }
@@ -299,7 +363,7 @@
         ])
       ]);
       root.appendChild(page);
-      active = { root: page, parts: parts, last: null, lastState: null, lastStep: null };
+      active = { root: page, parts: parts, last: null, lastState: null, lastStep: null, game: null, anyInstalled: false };
       poll();
       var timer = setInterval(poll, POLL_MS);
       return {

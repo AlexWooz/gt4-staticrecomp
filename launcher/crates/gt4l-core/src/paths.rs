@@ -23,6 +23,8 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::games::{Game, GT4, GAMES_FOLDER};
+
 /// Development and tests: replaces `<install>\data` (no read-only layer, no 1.2.0 folders unless given).
 pub const DATA_DIR_OVERRIDE_VAR: &str = "GT4RECOMP_DATA_DIR";
 
@@ -39,6 +41,10 @@ pub const DOCUMENTS_DIR_OVERRIDE_VAR: &str = "GT4RECOMP_DOCUMENTS_DIR";
 /// Name of the large data folder inside the install folder.
 pub const DATA_FOLDER_NAME: &str = "data";
 
+/// Name of the user data folder inside a portable folder (TASK-098). The installer build keeps that data in
+/// `%APPDATA%\GT4Recomp`; the game (TASK-097) reads its settings from `<install>\user\config` when this folder exists.
+pub const PORTABLE_USER_FOLDER: &str = "user";
+
 /// Name of the per-user folders in `%APPDATA%` and `%LOCALAPPDATA%`.
 pub const APP_FOLDER_NAME: &str = "GT4Recomp";
 
@@ -49,7 +55,7 @@ pub const USER_FOLDER_NAME: &str = "Gran Turismo 4";
 pub const MOVED_USER_FOLDER_NAME: &str = "Gran Turismo 4 (moved to AppData)";
 
 /// Name of the game executable inside the game folder.
-pub const GAME_EXECUTABLE: &str = "gt4vulkan.exe";
+pub const GAME_EXECUTABLE: &str = "gt4.exe";
 
 /// Name of the custom texture folder (TASK-088; TASK-093: gt4-gs 1.2.1 reads the folder itself).
 pub const TEXTURES_FOLDER_NAME: &str = "Textures";
@@ -69,11 +75,59 @@ pub struct DataDirs {
     read_layers: Vec<PathBuf>,
     /// The custom textures folder when it could not be moved yet (it stays in use where it is).
     textures_in_place: Option<PathBuf>,
+    /// The game whose files the per-game methods name (`prepared`, `disc_folder`, `runtime_card`, ...). Gran Turismo 4
+    /// unless [`DataDirs::for_game`] says otherwise. Everything else (renderer, logs, sessions, textures) is shared.
+    game: &'static Game,
+    /// Whether the 1.2.x flat game folders (`<data>\disc`, `<data>\prepared`, `<data>\runtime`) are still read for
+    /// Gran Turismo 4 until their move into `games\gt4` has happened (`crate::games_layout`).
+    flat_gt4: bool,
 }
 
 impl DataDirs {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        DataDirs { root: root.into(), read_layers: Vec::new(), textures_in_place: None }
+        DataDirs { root: root.into(), read_layers: Vec::new(), textures_in_place: None, game: &GT4, flat_gt4: true }
+    }
+
+    /// The same folders, naming the files of `game`. Settings, the renderer, logs, sessions and textures are shared.
+    pub fn for_game(&self, game: &'static Game) -> DataDirs {
+        DataDirs { game, ..self.clone() }
+    }
+
+    /// The game the per-game methods name.
+    pub fn game(&self) -> &'static Game {
+        self.game
+    }
+
+    /// `<data>\games\<id>` in `layer`: the files of one game.
+    fn game_folder_in(layer: &Path, game: &Game) -> PathBuf {
+        layer.join(GAMES_FOLDER).join(game.id)
+    }
+
+    /// Where every write of this game goes: `<data>\games\<id>`.
+    pub fn game_root(&self) -> PathBuf {
+        DataDirs::game_folder_in(&self.root, self.game)
+    }
+
+    /// The place of this game's files in `layer`, and the older flat place of Gran Turismo 4 (1.2.x) while it is read.
+    fn game_candidates<'a>(&'a self, layer: &'a PathBuf) -> impl Iterator<Item = PathBuf> + 'a {
+        let flat = (self.game.id == GT4.id && self.flat_gt4).then(|| layer.clone());
+        std::iter::once(DataDirs::game_folder_in(layer, self.game)).chain(flat)
+    }
+
+    /// Every place of this game's files in the write folder: `games\<id>`, and for Gran Turismo 4 the 1.2.x flat
+    /// folder too. "Remove game" clears all of them.
+    pub fn write_places(&self) -> Vec<PathBuf> {
+        self.game_candidates(&self.root).collect()
+    }
+
+    /// Stops reading the 1.2.x flat folders for Gran Turismo 4 (their move into `games\gt4` finished).
+    pub fn set_flat_gt4(&mut self, flat: bool) {
+        self.flat_gt4 = flat;
+    }
+
+    /// The 1.2.x flat folder of Gran Turismo 4's files: `<data>` itself (`disc`, `prepared`, `runtime` inside).
+    pub fn flat_gt4_root(&self) -> &Path {
+        &self.root
     }
 
     /// A data folder with read layers after it. Layers equal to the root (or to each other) are dropped.
@@ -112,14 +166,15 @@ impl DataDirs {
 
     /// The folder whose game files are used: the first with a setup receipt, else the first with any game file
     /// (so a damaged setup is reported), else the root.
-    pub fn game_files_root(&self) -> &Path {
-        if let Some(layer) = self.layers().find(|layer| layer.join("prepared").join(PREPARE_RECEIPT).is_file()) {
-            return layer;
+    pub fn game_files_root(&self) -> PathBuf {
+        let places: Vec<PathBuf> = self.layers().flat_map(|layer| self.game_candidates(layer)).collect();
+        if let Some(place) = places.iter().find(|place| place.join("prepared").join(PREPARE_RECEIPT).is_file()) {
+            return place.clone();
         }
-        if let Some(layer) = self.layers().find(|layer| layer.join("prepared").exists() || layer.join("disc").exists()) {
-            return layer;
+        if let Some(place) = places.iter().find(|place| place.join("prepared").exists() || place.join("disc").exists()) {
+            return place.clone();
         }
-        &self.root
+        self.game_root()
     }
 
     /// Prepared game files in use: `CORE.GT4`, `SCUS_973.28` (the rebuilt ELF) and `prepare.json`.
@@ -132,19 +187,24 @@ impl DataDirs {
         self.game_files_root().join("disc")
     }
 
-    /// Where setup writes the prepared files (always the root).
-    pub fn setup_prepared(&self) -> PathBuf {
-        self.root.join("prepared")
+    /// Where setup writes the prepared files (always the root's `games\<id>`).
+    /// RetroAchievements runtime cache directory under `data/games/gt4/runtime/ra_cache` (TASK-133).
+    pub fn retroachievements_cache(&self) -> PathBuf {
+        DataDirs::game_folder_in(&self.root, &crate::games::GT4).join("runtime").join("ra_cache")
     }
 
-    /// Where setup copies the disc image (always the root).
+    pub fn setup_prepared(&self) -> PathBuf {
+        self.game_root().join("prepared")
+    }
+
+    /// Where setup copies the disc image (always the root's `games\<id>`).
     pub fn setup_disc_folder(&self) -> PathBuf {
-        self.root.join("disc")
+        self.game_root().join("disc")
     }
 
     /// Setup writes here first and renames the folder into place at the end.
     pub fn prepared_staging(&self) -> PathBuf {
-        self.root.join("prepared.tmp")
+        self.game_root().join("prepared.tmp")
     }
 
     /// The installed gt4-gs versions in use: the first folder with a `gs\current.txt`, else the root's `gs`.
@@ -162,12 +222,7 @@ impl DataDirs {
 
     /// The memory card image that the game reads. A missing file is a blank card (see `sio2.cpp`).
     pub fn runtime_card(&self) -> PathBuf {
-        self.root.join("runtime").join("card.ps2")
-    }
-
-    /// Cache folder for downloaded RetroAchievements badge images (`<data>\runtime\ra_cache`).
-    pub fn retroachievements_cache(&self) -> PathBuf {
-        self.root.join("runtime").join("ra_cache")
+        self.game_root().join("runtime").join("card.ps2")
     }
 
     pub fn sessions(&self) -> PathBuf {
@@ -204,16 +259,22 @@ impl DataDirs {
         self.root.join("migration-1.2.1.json")
     }
 
+    /// Marker of the move of the 1.2.x game folders into `games\gt4` (`crate::games_layout`, TASK-101).
+    pub fn games_layout_marker(&self) -> PathBuf {
+        self.root.join("migration-multi-game.json")
+    }
+
     /// Marker of the move of the large data of an earlier install's data folder (`previous`). One marker per source
     /// folder, named from a hash of its path, so the move runs once per folder and a second reinstall elsewhere
     /// gets its own.
     pub fn previous_data_marker(&self, previous: &Path) -> PathBuf {
-        self.root.join(format!("migration-from-{}.json", source_key(previous)))
+        self.root.join(format!("migration-from-{}.json", folder_key(previous)))
     }
 }
 
-/// A short, stable key of a folder: the first 16 hex digits of the SHA-256 of its normalised path.
-fn source_key(folder: &Path) -> String {
+/// A short, stable key of a folder: the first 16 hex digits of the SHA-256 of its normalised path (case, `.`/`..` and
+/// separators do not count). Names the migration markers, and the single-instance lock of a portable folder.
+pub fn folder_key(folder: &Path) -> String {
     let digest = Sha256::digest(normalized(folder).join("\\").as_bytes());
     digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect()
 }
@@ -229,6 +290,8 @@ pub enum UserRootSource {
     Legacy(String),
     /// The save library could not be used where it should be; it is in the data folder. The text says why.
     Fallback(String),
+    /// The portable build: `<exe dir>\user`, beside the program (TASK-098).
+    Portable,
 }
 
 /// The user data: settings, controls, the save library and the card backups. Normally all under
@@ -242,10 +305,17 @@ pub struct UserDirs {
     controls_file: PathBuf,
     card_backups: PathBuf,
     source: UserRootSource,
+    /// The game whose library `saves`, `replays` and `card_backups` name. Gran Turismo 4 unless [`UserDirs::for_game`].
+    game: &'static Game,
+    /// Gran Turismo 4's library is still in the flat 1.2.x place (`saves`, `replays`, `card_backups` as given) until
+    /// its move into `games\gt4` has happened. Any other game always has its own folder under `games`.
+    flat_gt4: bool,
 }
 
 impl UserDirs {
-    /// The standard layout under one folder: `Saves`, `Replays`, `config\settings.toml`, `controls.toml`, `backups`.
+    /// The standard layout under one folder: `config\settings.toml`, `controls.toml`, and one library per game under
+    /// `games\<id>` (`Saves`, `Replays`, `backups`). Gran Turismo 4's 1.2.x library, flat in this folder, is used only
+    /// after [`UserDirs::set_flat_gt4`]`(true)` (its move into `games\gt4` has not happened).
     pub fn new(root: impl Into<PathBuf>, source: UserRootSource) -> Self {
         let root = root.into();
         UserDirs {
@@ -256,7 +326,41 @@ impl UserDirs {
             card_backups: root.join("backups"),
             root,
             source,
+            game: &GT4,
+            flat_gt4: false,
         }
+    }
+
+    /// The same folders, naming the library of `game` (TASK-101): `games\<id>\Saves`, `Replays`, `backups` under the
+    /// folder that holds the library. Gran Turismo 4's flat 1.2.x folders are used until
+    /// [`UserDirs::set_flat_gt4`] says their move happened.
+    pub fn for_game(&self, game: &'static Game) -> UserDirs {
+        UserDirs { game, ..self.clone() }
+    }
+
+    /// The game whose library the methods below name.
+    pub fn game(&self) -> &'static Game {
+        self.game
+    }
+
+    /// Gran Turismo 4's library is still in the flat 1.2.x place.
+    fn in_flat_place(&self) -> bool {
+        self.game.id == GT4.id && self.flat_gt4
+    }
+
+    /// `<library folder>\games\<id>`: where a game's library is once it is in the `games` layout.
+    pub fn game_library(&self) -> PathBuf {
+        self.root.join(GAMES_FOLDER).join(self.game.id)
+    }
+
+    /// Whether Gran Turismo 4's flat library (1.2.x) is in use. The move into `games\gt4` sets this to false.
+    pub fn set_flat_gt4(&mut self, flat: bool) {
+        self.flat_gt4 = flat;
+    }
+
+    /// The flat 1.2.x library folders of Gran Turismo 4: `Saves`, `Replays` and the card backups.
+    pub fn flat_gt4_places(&self) -> [(&'static str, PathBuf); 3] {
+        [("Saves", self.saves.clone()), ("Replays", self.replays.clone()), ("backups", self.card_backups.clone())]
     }
 
     /// The 1.2.0 places: settings, controls and card backups in `local` (`%LOCALAPPDATA%\GT4Recomp`), the save
@@ -270,6 +374,8 @@ impl UserDirs {
             controls_file: local.join(CONTROLS_FILE),
             card_backups: local.join("library").join("backups"),
             source: UserRootSource::Legacy(reason),
+            game: &GT4,
+            flat_gt4: true,
         }
     }
 
@@ -282,6 +388,8 @@ impl UserDirs {
             replays: root.join("Replays"),
             card_backups: root.join("backups"),
             source,
+            // A library folder that already holds a flat Saves folder keeps it; a new one starts in the `games` layout.
+            flat_gt4: root.join("Saves").is_dir(),
             ..self.clone()
         }
     }
@@ -297,24 +405,25 @@ impl UserDirs {
 
     /// `Saves`: the active save (`Active`), inactive slots (`Save NN`) and harvest copies (`.backup`).
     pub fn saves(&self) -> PathBuf {
-        self.saves.clone()
+        if self.in_flat_place() { self.saves.clone() } else { self.game_library().join("Saves") }
     }
 
     /// `Replays`: one folder per replay.
     pub fn replays(&self) -> PathBuf {
-        self.replays.clone()
+        if self.in_flat_place() { self.replays.clone() } else { self.game_library().join("Replays") }
     }
 
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
     }
 
-    pub fn config_file(&self) -> PathBuf {
-        self.config_dir.join("settings.toml")
-    }
-
+    /// RetroAchievements user config file under `config/retroachievements.toml` (TASK-133).
     pub fn retroachievements_file(&self) -> PathBuf {
         self.config_dir.join("retroachievements.toml")
+    }
+
+    pub fn config_file(&self) -> PathBuf {
+        self.config_dir.join("settings.toml")
     }
 
     pub fn controls_file(&self) -> PathBuf {
@@ -323,7 +432,7 @@ impl UserDirs {
 
     /// Card images kept before `runtime\card.ps2` is replaced.
     pub fn card_backups(&self) -> PathBuf {
-        self.card_backups.clone()
+        if self.in_flat_place() { self.card_backups.clone() } else { self.game_library().join("backups") }
     }
 
     /// Marker of the one-time move of the save library from launchers before 1.0.0 (`gt4saves::migration`).
@@ -378,6 +487,8 @@ pub struct LayoutInputs {
     pub known_documents: Option<PathBuf>,
     /// The `PreviousDataDir` the setup recorded (HKLM), read by the caller; ignored under the test overrides.
     pub previous_data: Option<PathBuf>,
+    /// The portable build (TASK-098): `<exe dir>\user` and `<exe dir>\data` only, no read layers, no system folders.
+    pub portable: bool,
 }
 
 impl LayoutInputs {
@@ -393,8 +504,9 @@ impl LayoutInputs {
             documents_override: non_empty(DOCUMENTS_DIR_OVERRIDE_VAR),
             app_data: non_empty("APPDATA").map(PathBuf::from),
             local_app_data: non_empty("LOCALAPPDATA").map(PathBuf::from),
-            known_documents,
+            known_documents: if crate::build_kind::BUILD.is_portable() { None } else { known_documents },
             previous_data: None,
+            portable: crate::build_kind::BUILD.is_portable(),
         }
     }
 }
@@ -421,6 +533,9 @@ impl Layout {
 /// Resolves the folders. `writable` tells whether a folder can be written (it may create the folder; see
 /// [`probe_writable`]). Nothing else is created here. Errors only when no data or user folder can be named at all.
 pub fn resolve_layout(inputs: &LayoutInputs, writable: &dyn Fn(&Path) -> bool) -> Result<Layout, String> {
+    if inputs.portable && inputs.data_override.is_none() {
+        return resolve_portable_layout(inputs, writable);
+    }
     let mut notices = Vec::new();
     let testing = inputs.data_override.is_some();
     // The 1.2.0 places. Under GT4RECOMP_DATA_DIR only the given overrides count, so a test never sees real folders.
@@ -485,6 +600,37 @@ pub fn resolve_layout(inputs: &LayoutInputs, writable: &dyn Fn(&Path) -> bool) -
     Ok(Layout { data, user_root, user_source, legacy, notices })
 }
 
+/// The message of a portable folder that cannot be written (a copy inside Program Files, a read-only drive).
+pub fn portable_not_writable_message(folder: &Path) -> String {
+    format!(
+        "GT4Recomp cannot write to {}. Move the GT4Recomp folder to a place you can write to (another drive, or a folder in your \
+         Documents) and start it again.",
+        folder.display()
+    )
+}
+
+/// The portable build (TASK-098): `UserDirs` in `<exe dir>\user`, `DataDirs` in `<exe dir>\data`, the standard per-game
+/// layout inside both. No read layers, no `%LOCALAPPDATA%` write fallback, no 1.2.0 places, no previous install: a folder
+/// that cannot be written is an error that tells the player to move the folder. `GT4RECOMP_USER_DIR` still replaces the
+/// user folder (tests).
+fn resolve_portable_layout(inputs: &LayoutInputs, writable: &dyn Fn(&Path) -> bool) -> Result<Layout, String> {
+    let data_root = inputs.exe_dir.join(DATA_FOLDER_NAME);
+    if !writable(&data_root) {
+        return Err(portable_not_writable_message(&data_root));
+    }
+    let (user_root, user_source) = match &inputs.user_override {
+        Some(value) => (PathBuf::from(value), UserRootSource::Override),
+        None => (inputs.exe_dir.join(PORTABLE_USER_FOLDER), UserRootSource::Portable),
+    };
+    if user_source == UserRootSource::Portable && !writable(&user_root) {
+        return Err(portable_not_writable_message(&user_root));
+    }
+    let mut data = DataDirs::new(data_root);
+    // A portable folder is new in 1.3.0: it never had the flat 1.2.x game folders.
+    data.set_flat_gt4(false);
+    Ok(Layout { data, user_root, user_source, legacy: LegacyLocations::default(), notices: Vec::new() })
+}
+
 /// Whether `folder` can be written: it is created if missing, then a probe file is written and removed.
 pub fn probe_writable(folder: &Path) -> bool {
     if std::fs::create_dir_all(folder).is_err() {
@@ -502,7 +648,7 @@ pub fn ensure_texture_folders(textures: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(textures)
 }
 
-/// Folder that holds `gt4vulkan.exe`: `<program folder>\game` for an installed copy, or the
+/// Folder that holds `gt4.exe`: `<program folder>\game` for an installed copy, or the
 /// `[dev] game_dir` override from the config file.
 pub fn game_directory(program_directory: &Path, dev_override: Option<&Path>) -> PathBuf {
     match dev_override {
@@ -619,7 +765,12 @@ mod tests {
         let user = layout.user_dirs();
         assert_eq!(user.config_file(), base.join("Roaming").join("GT4Recomp").join("config").join("settings.toml"));
         assert_eq!(user.controls_file(), base.join("Roaming").join("GT4Recomp").join("controls.toml"));
-        assert_eq!(user.saves(), base.join("Roaming").join("GT4Recomp").join("Saves"));
+        // TASK-101: each game has its own library under `games`; the flat 1.2.x place is read only until it moves.
+        assert_eq!(user.saves(), base.join("Roaming").join("GT4Recomp").join("games").join("gt4").join("Saves"));
+        assert_eq!(
+            user.for_game(&crate::games::SPEC2).saves(),
+            base.join("Roaming").join("GT4Recomp").join("games").join("spec2").join("Saves")
+        );
     }
 
     #[test]
@@ -672,8 +823,8 @@ mod tests {
         assert_eq!(layout.data.renderer_root(), installed.join("gs"));
         assert_eq!(layout.data.textures(), installed.join("Textures"));
         assert_eq!(layout.data.logs(), local.join("logs"));
-        assert_eq!(layout.data.runtime_card(), local.join("runtime").join("card.ps2"));
-        assert_eq!(layout.data.setup_prepared(), local.join("prepared"));
+        assert_eq!(layout.data.runtime_card(), local.join("games").join("gt4").join("runtime").join("card.ps2"));
+        assert_eq!(layout.data.setup_prepared(), local.join("games").join("gt4").join("prepared"));
         assert_eq!(layout.data.renderer_install_root(), local.join("gs"));
         // A renderer installed later into the fallback wins over the read-only one.
         std::fs::create_dir_all(local.join("gs")).unwrap();
@@ -728,6 +879,92 @@ mod tests {
         assert_eq!(resolve_portable(elsewhere, install), elsewhere);
         // Case differences still count as inside.
         assert!(portable_path(Path::new("c:/program files/gt4recomp/game"), install).is_relative());
+    }
+
+    fn portable_inputs(exe_dir: &Path, base: &Path) -> LayoutInputs {
+        LayoutInputs {
+            portable: true,
+            // Everything an installed build would read is present, to prove the portable build ignores it.
+            previous_data: Some(base.join("Program Files").join("GT4Recomp").join("data")),
+            known_documents: Some(base.to_path_buf()),
+            ..inputs(exe_dir, base)
+        }
+    }
+
+    #[test]
+    fn the_portable_build_keeps_user_and_data_beside_the_executable() {
+        let base = scratch("portable-layout");
+        let exe_dir = base.join("E").join("GT4Recomp");
+        let layout = resolve_layout(&portable_inputs(&exe_dir, &base), &probe_writable).unwrap();
+        assert_eq!(layout.data.root(), exe_dir.join("data"));
+        assert_eq!(layout.user_root, exe_dir.join("user"));
+        assert_eq!(layout.user_source, UserRootSource::Portable);
+        assert!(layout.data.read_layers().is_empty(), "no read layers");
+        assert_eq!(layout.legacy, LegacyLocations::default(), "no 1.2.0 places, no previous install");
+        assert!(layout.notices.is_empty());
+        // The same per-game layout as the installer build.
+        let user = layout.user_dirs();
+        assert_eq!(user.config_file(), exe_dir.join("user").join("config").join("settings.toml"));
+        assert_eq!(user.controls_file(), exe_dir.join("user").join("controls.toml"));
+        assert_eq!(user.saves(), exe_dir.join("user").join("games").join("gt4").join("Saves"));
+        assert_eq!(
+            user.for_game(&crate::games::SPEC2).card_backups(),
+            exe_dir.join("user").join("games").join("spec2").join("backups")
+        );
+        assert_eq!(layout.data.runtime_card(), exe_dir.join("data").join("games").join("gt4").join("runtime").join("card.ps2"));
+        assert_eq!(layout.data.setup_prepared(), exe_dir.join("data").join("games").join("gt4").join("prepared"));
+        assert_eq!(layout.data.renderer_install_root(), exe_dir.join("data").join("gs"));
+        assert_eq!(layout.data.textures(), exe_dir.join("data").join("Textures"));
+        assert_eq!(layout.data.logs(), exe_dir.join("data").join("logs"));
+        assert!(!layout.data.write_places().contains(&exe_dir.join("data")), "no flat 1.2.x folder in a portable copy");
+        assert!(!base.join("Local").exists() && !base.join("Roaming").exists(), "no system folder is created");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_portable_build_never_falls_back_to_a_system_folder() {
+        let base = scratch("portable-readonly");
+        let exe_dir = base.join("Program Files").join("GT4Recomp");
+        let data = exe_dir.join("data");
+        let user = exe_dir.join("user");
+        let given = portable_inputs(&exe_dir, &base);
+        let data_locked = data.clone();
+        let error = resolve_layout(&given, &move |folder: &Path| !same_path(folder, &data_locked)).unwrap_err();
+        assert!(error.contains("Move the GT4Recomp folder"), "{error}");
+        assert!(error.contains(&data.display().to_string()), "the message names the folder: {error}");
+        let user_locked = user.clone();
+        let error = resolve_layout(&given, &move |folder: &Path| !same_path(folder, &user_locked)).unwrap_err();
+        assert!(error.contains(&user.display().to_string()), "{error}");
+        assert!(!base.join("Local").exists(), "%LOCALAPPDATA% is not used");
+        // The installer build, in the same situation, falls back to %LOCALAPPDATA% (unchanged).
+        let installer = LayoutInputs { portable: false, ..given };
+        let layout = resolve_layout(&installer, &move |folder: &Path| !same_path(folder, &data)).unwrap();
+        assert_eq!(layout.data.root(), base.join("Local").join("GT4Recomp"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_portable_build_still_honours_the_test_overrides() {
+        let base = scratch("portable-overrides");
+        let mut given = portable_inputs(&base.join("exe"), &base);
+        given.data_override = Some(base.join("test-data").into_os_string());
+        let layout = resolve_layout(&given, &|_: &Path| panic!("no probe under the override")).unwrap();
+        assert_eq!(layout.data.root(), base.join("test-data"));
+        assert_eq!(layout.user_root, base.join("test-data").join("user"));
+        assert_eq!(layout.user_source, UserRootSource::Override);
+        given.data_override = None;
+        given.user_override = Some(base.join("test-user").into_os_string());
+        let layout = resolve_layout(&given, &|_: &Path| true).unwrap();
+        assert_eq!(layout.data.root(), base.join("exe").join("data"));
+        assert_eq!(layout.user_root, base.join("test-user"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_environment_inputs_follow_the_compiled_build_kind() {
+        let from_environment = LayoutInputs::from_environment(Path::new("X:/GT4Recomp"), Some(PathBuf::from("X:/Docs")));
+        assert_eq!(from_environment.portable, crate::build_kind::BUILD.is_portable());
+        assert_eq!(from_environment.known_documents.is_none(), crate::build_kind::BUILD.is_portable());
     }
 
     #[test]

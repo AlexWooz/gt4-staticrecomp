@@ -46,10 +46,10 @@ class PortableInstallTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.scratch = Path(tempfile.mkdtemp(prefix='gt4-portable-'))
-        cls.exe = cls.scratch / 'install' / 'gt4vulkan.exe'
+        cls.exe = cls.scratch / 'install' / 'gt4.exe'
         cls.exe.parent.mkdir()
         shutil.copyfile(executable(), cls.exe)
-        # TASK-075: gt4vulkan.exe imports SDL3.dll; the installed folder carries it, as make_distribution writes it.
+        # TASK-075: gt4.exe (the build's gt4vulkan.exe) imports SDL3.dll; the installed folder carries it, as make_distribution writes it.
         shutil.copyfile(ASSETS / 'private/tooling/sdl3-3.4.18/runtime/SDL3.dll', cls.exe.parent / 'SDL3.dll')
         # A missing DLL must fail a child quietly, never open a system error dialog.
         if os.name == 'nt':

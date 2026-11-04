@@ -1,0 +1,613 @@
+{
+  "schema_version": 1,
+  "target": "gran-turismo-4-spec-ii-v1.10",
+  "elf": {
+    "name": "SCUS_974.36",
+    "size_bytes": 6520944,
+    "sha256": "db08421bc26bdc0298e80cb02a8f2067ddf640f0575af5dfe0548f1fd73ac39d"
+  },
+  "entry": {
+    "call_address": 1049064,
+    "thunk": 6858600,
+    "init": 6857856
+  },
+  "injector": {
+    "executed_instructions": 356,
+    "steps": 838,
+    "external_calls": [
+      {
+        "pc": 6857880,
+        "target": 6175400
+      },
+      {
+        "pc": 6866952,
+        "target": 5122368
+      }
+    ]
+  },
+  "patches": [
+    {
+      "addr": 1187160,
+      "size": 4,
+      "old": 202620672,
+      "new": 203041911,
+      "count": 1,
+      "pcs": [
+        6858700
+      ],
+      "region": "text",
+      "target": 6861276,
+      "kind": "jal_into_payload",
+      "note": "hook: jal 0x004EFC00 -> payload 0x68B1DC (calls the original, then a two-entry callback table at 0x68D090)",
+      "source": "injector",
+      "confidence": "High confidence"
+    },
+    {
+      "addr": 1257056,
+      "size": 4,
+      "old": 202621332,
+      "new": 203041997,
+      "count": 1,
+      "pcs": [
+        6858700
+      ],
+      "region": "text",
+      "target": 6861620,
+      "kind": "jal_into_payload",
+      "note": "hook: jal 0x004F0650 -> payload 0x68B334",
+      "source": "injector",
+      "confidence": "High confidence"
+    },
+    {
+      "addr": 1371248,
+      "size": 4,
+      "old": 202621636,
+      "new": 203042257,
+      "count": 1,
+      "pcs": [
+        6858700
+      ],
+      "region": "text",
+      "target": 6862660,
+      "kind": "jal_into_payload",
+      "note": "hook: jal 0x004F0B10 -> payload 0x68B744",
+      "source": "injector",
+      "confidence": "High confidence"
+    },
+    {
+      "addr": 2143636,
+      "size": 4,
+      "old": 666763216,
+      "new": 65011720,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "jr_ra",
+      "note": "prologue rewrite: function at 0x0020B590 returns immediately (addiu sp -> jr ra); the delay slot stays lbu v0,0x1E60(v1)",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2144068,
+      "size": 4,
+      "old": 1413480454,
+      "new": 335544326,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "branch",
+      "note": "Bnel -> bnez (0x54400006 -> 0x14000006): the delay slot now always runs",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2174312,
+      "size": 4,
+      "old": 1346371593,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "zero",
+      "note": "remove beql v0,zero (early-out) -> nop",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2174320,
+      "size": 4,
+      "old": 3321890076,
+      "new": 1174411206,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "instruction:op11",
+      "note": "lwc1 f0,0x51C(s0) -> mov.s f31,f2 (f31 used as a spare across the block)",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2174324,
+      "size": 4,
+      "old": 1175715892,
+      "new": 1174474804,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "instruction:op11",
+      "note": "c.olt.s f0,f20 -> c.olt.s f2,f1 (compare the gear-ratio pair instead)",
+      "source": "injector",
+      "confidence": "Hypothesis"
+    },
+    {
+      "addr": 2174332,
+      "size": 4,
+      "old": 3322021136,
+      "new": 3323921680,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "instruction:lwc1",
+      "note": "lwc1 f2,0x510(s0) -> lwc1 f31,0x510(s0)",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2174336,
+      "size": 4,
+      "old": 2717910560,
+      "new": 1174433734,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "instruction:op11",
+      "note": "sb zero,0x620(s0) -> mov.s f31,f13",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2174340,
+      "size": 4,
+      "old": 268435560,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "zero",
+      "note": "b 0x212F28 -> nop (fall through instead of jumping)",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2174368,
+      "size": 4,
+      "old": 1174452358,
+      "new": 1174454214,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "instruction:op11",
+      "note": "mov.s f2,f23 -> mov.s f31,f23",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2174400,
+      "size": 4,
+      "old": 1175852289,
+      "new": 1175911681,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "instruction:op11",
+      "note": "sub.s f20,f11,f22 -> sub.s f20,f31,f22",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2356280,
+      "size": 4,
+      "old": 201915612,
+      "new": 203041521,
+      "count": 1,
+      "pcs": [
+        6858700
+      ],
+      "region": "text",
+      "target": 6859716,
+      "kind": "jal_into_payload",
+      "note": "hook: jal 0x0023F370 -> payload 0x68ABC4 (6-entry table lookup at 0x68D020, returns the index or -1)",
+      "source": "injector",
+      "confidence": "High confidence"
+    },
+    {
+      "addr": 2356292,
+      "size": 4,
+      "old": 201915628,
+      "new": 203041645,
+      "count": 1,
+      "pcs": [
+        6858700
+      ],
+      "region": "text",
+      "target": 6860212,
+      "kind": "jal_into_payload",
+      "note": "hook: jal 0x0023F3B0 -> payload 0x68ADB4",
+      "source": "injector",
+      "confidence": "High confidence"
+    },
+    {
+      "addr": 2359892,
+      "size": 4,
+      "old": 306184199,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "zero",
+      "note": "beq s2,zero,0x240274 (0x12400007) -> nop",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 2616024,
+      "size": 4,
+      "old": 604307460,
+      "new": 604307467,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "instruction:addiu",
+      "note": "addiu a1,zero,4 -> addiu a1,zero,11 (0x24050004 -> 0x2405000B)",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 5383664,
+      "size": 4,
+      "old": 202856358,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "text",
+      "kind": "zero",
+      "note": "jal 0x005D5E98 (0x0C1757A6) -> nop",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 6686196,
+      "size": 4,
+      "old": 3,
+      "new": 1,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "u32 flag 3 -> 1 (no reader found in a text scan)",
+      "source": "injector",
+      "confidence": "Unknown"
+    },
+    {
+      "addr": 7275184,
+      "size": 4,
+      "old": 1836216174,
+      "new": 812152933,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: normal0..normal3 -> exh0..exh3",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275188,
+      "size": 4,
+      "old": 3173473,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'al0\\0' -> 0 (8-byte entries)",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275192,
+      "size": 4,
+      "old": 1836216174,
+      "new": 828930149,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: normal1 -> exh1",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275196,
+      "size": 4,
+      "old": 3239009,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'al1\\0' -> 0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275200,
+      "size": 4,
+      "old": 1836216174,
+      "new": 845707365,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: normal2 -> exh2",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275204,
+      "size": 4,
+      "old": 3304545,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'al2\\0' -> 0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275208,
+      "size": 4,
+      "old": 1836216174,
+      "new": 862484581,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: normal3 -> exh3",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275212,
+      "size": 4,
+      "old": 3370081,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'al3\\0' -> 0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275216,
+      "size": 4,
+      "old": 1651668340,
+      "new": 812152933,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: turbo0 -> exh0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275220,
+      "size": 4,
+      "old": 12399,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'o0\\0' -> 0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275224,
+      "size": 4,
+      "old": 1651668340,
+      "new": 828930149,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: turbo1 -> exh1",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275228,
+      "size": 4,
+      "old": 12655,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'o1\\0' -> 0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275232,
+      "size": 4,
+      "old": 1651668340,
+      "new": 845707365,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: turbo2 -> exh2",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275236,
+      "size": 4,
+      "old": 12911,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'o2\\0' -> 0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275240,
+      "size": 4,
+      "old": 1651668340,
+      "new": 862484581,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "string",
+      "note": "sound bank name table: turbo3 -> exh3",
+      "source": "injector",
+      "confidence": "Confirmed"
+    },
+    {
+      "addr": 7275244,
+      "size": 4,
+      "old": 13167,
+      "new": 0,
+      "count": 1,
+      "pcs": [
+        6858748
+      ],
+      "region": "data",
+      "kind": "data_word",
+      "note": "sound bank name table tail: 'o3\\0' -> 0",
+      "source": "injector",
+      "confidence": "Confirmed"
+    }
+  ],
+  "counts": {
+    "total": 35,
+    "text": 18,
+    "data": 17,
+    "payload": 0
+  },
+  "beta": {
+    "container_sha256": "1f0c8789175919e46bf4f21ed0206b454f1e87bc21da9c7add6b680ea21dd76a",
+    "entry": 1048584,
+    "headers": [
+      {
+        "size_bytes": 128,
+        "sha256": "987d146d749d0501b07e126394f4fd8fdd8cbef71ed24982b9929e2f6ed16861"
+      },
+      {
+        "size_bytes": 128,
+        "sha256": "725a0bc23ba3a89bfbcd3263cb77fa3cacd519268068c60c90988341b39afb3a"
+      }
+    ],
+    "records": [
+      {
+        "address": 6683556,
+        "size": 24,
+        "sha256": "c98bed839d0a695497d7c613b263f946149bbafb3fedcc7626c463a581a38fff"
+      },
+      {
+        "address": 1048576,
+        "size": 5635004,
+        "sha256": "2394249be73d4437dce46e0bb76a8cef2c0b5c48207621a13696cf88c83c5e3b"
+      },
+      {
+        "address": 6683648,
+        "size": 869884,
+        "sha256": "9b505c4fccf6f650ec5d7472174f23e3ddcec34b968a06634d93dfdee7dcc692"
+      }
+    ]
+  },
+  "static_patches": {
+    "blocks": 1,
+    "words": 1,
+    "detail": [
+      {
+        "address": 1049064,
+        "words": 1,
+        "old_words": [
+          202870442
+        ],
+        "new_words": [
+          203041242
+        ]
+      }
+    ]
+  }
+}

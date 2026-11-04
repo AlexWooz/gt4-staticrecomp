@@ -397,7 +397,8 @@ def allowlist_rule(row):
     if row['type'] == 'bool':
         rule['values'] = ['true', 'false']
     elif row['type'] == 'enum':
-        rule['values'] = [choice['ini'] for choice in row['choices'] if choice.get('ini')]
+        # TASK-108: an INI value shared by two choices (auto and vulkan both write 14) is listed once.
+        rule['values'] = list(dict.fromkeys(choice['ini'] for choice in row['choices'] if choice.get('ini')))
     elif row['type'] in ('int', 'float'):
         if isinstance(row.get('min'), (int, float)) and isinstance(row.get('max'), (int, float)):
             rule['min'] = row['min']

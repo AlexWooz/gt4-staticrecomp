@@ -4,11 +4,17 @@
  * pages render in a plain browser. Values are sample values, not game data.
  *
  * Query options (ui/dev/index.html?...):
+ *   gsdx=missing|offline                            (GSdx is not installed: the download works, or fails)
+ *   gsdxfile=ok|cancel|bad                          (with gsdx=offline, "Install from a file": works, picker cancelled, or refused; default bad)
+ *   vulkan=no                                       (the card has no Vulkan 1.2: Play does not offer CoreGS 2.0 for a missing GSdx)
  *   setup=done|needed|wrong|copying|checking|preparing|renderer|failed|missing|offline   (default done)
- *   pick=spec                                       (setup: the picker returns a Spec II image, refused)
+ *   pick=spec                                       (setup: the picker returns an unsupported image, refused)
+ *   pick=other                                      (setup: the picker returns the other game's disc, a mismatch)
+ *   pick=spec2                                      (setup: the picker returns a Spec II disc)
+ *   games=gt4|spec2|both|none                       (which games are installed; default gt4: Spec II shows Install)
+ *   selected=spec2                                  (the game the home screen starts on)
  *   running=1                                       (game running at start)
  *   focus=play                                      (home: focus the Play button, for screenshots)
- *   ra=signedin                                     (Achievements: synthetic account and progress, no network)
  *   Controls: pad=A,LB,DpadRight lt=0.6 rt=0.2 lx=0.7 ly=-0.45 rx= ry= pads=2 nopad=1 (a still dev controller),
  *             select=circle mode=key capture=hold|conflict remap=1 locked=1
  */
@@ -16,20 +22,68 @@
   "use strict";
 
   var query = new URLSearchParams(root.location.search);
+  // TASK-102: ?lang=pt-BR forces the language (the Settings value and the OS language); ?os=pt-BR sets only the OS
+  // language, so Auto follows it. Without either, Auto follows the browser's language.
+  root.GT4 = root.GT4 || {};
+  var forcedLanguage = query.get("lang") || "";
+  root.GT4.devOsLanguage = query.get("os") || forcedLanguage || "";
+  var mockLanguage = forcedLanguage || "auto";
   var setupStart = query.get("setup") || "done";
   var IMAGE_BYTES = 5314478080;
-  var SPEC_MESSAGE = "This disc is not supported yet. GT4Recomp supports Gran Turismo 4 (USA, SCUS-97328). " +
-    "This looks like Gran Turismo 4 Spec II or GT4 Online (SCUS-97436).";
+  var SPEC_MESSAGE = "This disc is not supported yet. GT4Recomp supports Gran Turismo 4 (USA, SCUS-97328) and " +
+    "Gran Turismo 4 Spec II v1.10 (SCUS-97436). This is the unmodified GT4 Online Public Beta (SCUS-97436), not Gran Turismo 4 Spec II.";
+
+  // Two games (TASK-101). The mock keeps the same shapes as commands::game_row and app_state.
+  var gamesParam = query.get("games") || "gt4";
+  var GAME_TABLE = [
+    { id: "gt4", name: "Gran Turismo 4", title: "Gran Turismo 4", variant: "USA v2.00", installed: gamesParam === "gt4" || gamesParam === "both",
+      disc_name: "Gran Turismo 4 (USA v2.00)", size_bytes: 18000000, image_bytes: 5314478080 },
+    { id: "spec2", name: "Gran Turismo 4 Spec II", title: "Gran Turismo 4 Spec II v1.10", variant: "", installed: gamesParam === "spec2" || gamesParam === "both",
+      disc_name: "Gran Turismo 4 Spec II v1.10", size_bytes: 6520944, image_bytes: 3683418112 }
+  ];
+  // TASK-157: the textures folder choice of the mock (empty: the default folder).
+  var texturesChoice = "";
+  function texturesState() {
+    return {
+      path: texturesChoice,
+      default: "C:\\Program Files\\GT4Recomp\\data\\Textures",
+      custom: texturesChoice !== "",
+      valid: !/Missing/.test(texturesChoice)
+    };
+  }
+  var selectedGame = query.get("selected") ||
+    (GAME_TABLE.filter(function (game) { return game.installed; })[0] || GAME_TABLE[0]).id;
+  var setupGame = null; // the game of the setup that runs (set by setup_choose_disc)
+  function gameById(id) {
+    return GAME_TABLE.filter(function (game) { return game.id === id; })[0] || null;
+  }
+  function gamesView() {
+    return {
+      selected: selectedGame,
+      any_installed: GAME_TABLE.some(function (game) { return game.installed; }),
+      games: GAME_TABLE.map(function (game) {
+        return { id: game.id, name: game.name, title: game.title, variant: game.installed ? game.variant : "",
+          installed: game.installed, damaged: false, reason: "",
+          selected: game.id === selectedGame, disc_name: game.installed ? game.disc_name : "",
+          folder: "C:\\Program Files\\GT4Recomp\\data\\games\\" + game.id,
+          linked: game.installed,
+          image_path: game.installed ? "D:\\ISOs\\" + game.disc_name + ".iso" : "",
+          image_bytes: game.installed ? game.image_bytes : 0,
+          size_bytes: game.installed ? game.size_bytes : 0 };
+      })
+    };
+  }
 
   var setup = { state: "done", step: "copying", progress: 0, bytes_done: 0, bytes_total: 0, renderer_step: "",
-    disc_name: "Gran Turismo 4 \u00b7 USA \u00b7 v2.00", problem: "", note: "" };
+    disc_name: "Gran Turismo 4 (USA v2.00)", problem: "", note: "" };
   function running(step, progress) {
     setup.state = "checking";
     setup.step = step;
     setup.progress = progress;
-    setup.bytes_total = step === "copying" ? IMAGE_BYTES : (step === "renderer" ? 48000000 : 0);
-    setup.bytes_done = Math.round(setup.bytes_total * progress);
-    setup.renderer_step = step === "renderer" ? "downloading" : "";
+    // As the Rust thread reports: the steps after the copy keep the finished copy's size (done == total).
+    setup.bytes_total = step === "renderer" ? 353 : IMAGE_BYTES;
+    setup.bytes_done = step === "copying" || step === "renderer" ? Math.round(setup.bytes_total * progress) : IMAGE_BYTES;
+    setup.renderer_step = step === "renderer" ? "compiling" : "";
   }
   if (setupStart === "wrong") {
     setup.state = "wrong_disc";
@@ -67,6 +121,13 @@
         clearInterval(setupTimer);
         setup.state = "done";
         setup.renderer_step = "done";
+        setup.renderer_choice = "coregs20";
+        var installedGame = gameById(setupGame || selectedGame);
+        if (installedGame) {
+          installedGame.installed = true;
+          selectedGame = installedGame.id;
+          setup.disc_name = installedGame.disc_name;
+        }
         return;
       }
       running(PLAN[index][0], PLAN[index][1]);
@@ -79,6 +140,9 @@
   // Read by pages/home.js: focuses Play on mount. Only the dev harness sets it.
   root.GT4 = root.GT4 || {};
   root.GT4.devFocus = query.get("focus") || "";
+  // ?intro=1 plays the 1.3.0 intro on every load of Home (the real launcher shows it once per version).
+  root.GT4.devIntro = query.get("intro") === "1";
+  root.GT4.devMock = true;
   var maxUpscale = 4;
 
   // Settings rows, the same shape as the Rust table.
@@ -88,9 +152,19 @@
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "pcsx2", label: "GSdx" },
-        { value: "coregs-2.0", label: "CoreGS 2.0 (coming soon)", disabled: true }
+        { value: "coregs20", label: "CoreGS 2.0 (recommended)" }
       ],
       default: "pcsx2", current: "pcsx2" },
+    // TASK-103: the GSdx Graphics API (the table row graphics_api; the Renderer row above is the engine). Vulkan is the
+    // default; Vulkan and Direct3D 12 are recommended, Direct3D 11 is for older PCs. OpenGL is not offered yet.
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "graphics_api", label: "Graphics API (GSdx)", help: "Vulkan is the default and the best tested; try Direct3D 11 on older graphics cards.",
+      page: "basic", group: "graphics", control: "dropdown",
+      values: [
+        { value: "vulkan", label: "Vulkan (recommended)" },
+        { value: "d3d12", label: "Direct3D 12 (recommended)" },
+        { value: "d3d11", label: "Direct3D 11 (older PCs)" }
+      ],
+      default: "vulkan", current: "vulkan" },
     // TASK-080 addendum: no Aspect ratio and no Internal resolution row. Render scale (50% to 200%) with the
     // resulting internal resolution as its readout (labels are filled by tableView from the chosen resolution).
     { id: "render_scale", label: "Render scale", help: "How sharp the picture is drawn. 100% draws it at least at your resolution; 50% is faster and softer, 200% is sharper and needs a much faster GPU.",
@@ -101,7 +175,7 @@
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
     { id: "performance_mode", label: "Performance Mode", help: "Faster on weaker PCs. Some effects that read the image back are skipped, such as headlight and sun flares and the car icons next to the gap time. Applies the next time you play.",
       page: "basic", group: "graphics", control: "toggle", values: null, default: false, current: false },
-    { id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "off", label: "Off" },
@@ -109,7 +183,7 @@
         { value: "sharpen-and-resize", label: "Sharpen and resize" }
       ],
       default: "off", current: "off" },
-    { id: "cas_sharpness", label: "Sharpening amount", help: "How strong the CAS sharpening is. Used when CAS is on.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "cas_sharpness", label: "Sharpening amount", help: "How strong the CAS sharpening is. Used when CAS is on.",
       page: "basic", group: "graphics", control: "slider",
       values: { min: 0, max: 100, step: 1, unit: "%" },
       default: 50, current: 50 },
@@ -126,15 +200,24 @@
         { value: "off", label: "Off" }
       ],
       default: "on", current: "on" },
-    { id: "async_gs", label: "Asynchronous GS", help: "Sends graphics work to the GPU without waiting. Needed for full speed; turn off only to compare.",
-      page: "advanced", control: "toggle", values: null, default: true, current: true },
-    { id: "unsynced_readbacks", label: "Unsynced readbacks", help: "Faster, but effects that read the screen will be wrong.",
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "performance_hud", label: "Performance HUD", help: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the processor, the graphics card and memory.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
     { id: "performance_report", label: "Performance report", help: "Records frame timing while you play for bug reports.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
-    { id: "perf_overlay", label: "Performance overlay", help: "Shows GT4Recomp's own overlay while you play (FPS, frame time, CPU and GPU use).",
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "frame_rate", label: "Frame rate (experimental)", help: "60 FPS is the default. The 30 FPS mode is for weaker PCs and is still experimental: races draw 30 frames per second, with the game at full speed and the same physics. Menus stay at 60.", page: "basic", group: null, control: "dropdown", values: [{ value: "60", label: "60 FPS" }, { value: "30", label: "30 FPS" }], default: "60", current: "60", connected: true },
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "coregs_sharpening", label: "Sharpening (FSR1)",
+      help: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
+      page: "basic", group: "graphics", control: "dropdown",
+      values: [
+        { value: "off", label: "Off" },
+        { value: "mild", label: "Mild" },
+        { value: "medium", label: "Medium" },
+        { value: "strong", label: "Strong" }
+      ],
+      default: "off", current: "off" },
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "perf_overlay", label: "Performance overlay", help: "Shows GT4Recomp's own overlay while you play (FPS, frame time, CPU and GPU use).",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
-    { id: "perf_overlay_fps", label: "Overlay: FPS", help: "Shows the frame rate in the performance overlay.",
+    { visible_when: { id: "renderer", equals: "pcsx2" }, id: "perf_overlay_fps", label: "Overlay: FPS", help: "Shows the frame rate in the performance overlay.",
       page: "advanced", control: "toggle", values: null, default: true, current: true },
     { id: "debug_internal", label: "Internal debug", help: "Not shown to users.",
       page: "hidden", control: "toggle", values: null, default: false, current: true },
@@ -180,13 +263,105 @@
     findRow("render_scale").values.labels = renderLabels(resolutionRow.current);
   }
 
+  // The Settings > General row (TASK-102): the launcher's language, as the table gives it.
+  function languageRow() {
+    return {
+      id: "language", label: "Language", group: "general", page: "basic", control: "dropdown",
+      help: "The language of the launcher.", default: "auto", current: mockLanguage,
+      values: [
+        { value: "auto", label: "Auto" },
+        { value: "en-US", label: "English" },
+        { value: "pt-BR", label: "Português (Brasil)" }
+      ]
+    };
+  }
+
+  // The Settings > General update channel row (TASK-109). The choice is kept in the mock like the real setting.
+  var mockChannel = "stable";
+  function channelRow() {
+    return {
+      id: "update_channel", label: "Channel", group: "general", page: "basic", control: "dropdown",
+      help: "Stable gets the normal releases. Beta also gets the release candidates.", default: "stable", current: mockChannel,
+      values: [{ value: "stable", label: "Stable" }, { value: "beta", label: "Beta" }]
+    };
+  }
+  function discordRow() {
+    return {
+      id: "discord_rich_presence", label: "Discord Rich Presence", group: "general", page: "basic", control: "toggle",
+      help: "Shows that you are playing in your Discord profile while a game runs.", default: true, current: true
+    };
+  }
+
+  // TASK-109 version picker: a fake GitHub release list with stable releases, candidates and drafts that must not show.
+  // The mock applies the same rules as gt4l-core version_list.rs (minimum 1.3.0-rc5, drafts out, dates for candidates,
+  // SemVer for stables, a newer stable on top in Beta). devVersions.installed can be changed by the checks.
+  var devVersions = root.GT4.devVersions = {
+    installed: "1.3.0-rc6",
+    installs: [],
+    failList: false,
+    releases: [
+      { tag: "v1.3.2", published: "2026-10-30T10:00:00Z", draft: false },
+      { tag: "v1.3.1-rc2", published: "2026-10-28T10:00:00Z", draft: false },
+      { tag: "v1.3.1-rc3", published: null, draft: true },
+      { tag: "v1.3.0", published: "2026-10-26T10:00:00Z", draft: false },
+      { tag: "v1.3.0-rc6", published: "2026-10-25T09:00:00Z", draft: false },
+      { tag: "v1.3.0-rc5", published: "2026-10-23T09:00:00Z", draft: false },
+      { tag: "v1.3.0-rc4", published: "2026-10-22T09:00:00Z", draft: false },
+      { tag: "v1.2.3", published: "2026-10-01T09:00:00Z", draft: false }
+    ]
+  };
+  function parseRelease(text) {
+    var match = /^v?(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?$/.exec(text);
+    return match ? { nums: [+match[1], +match[2], +match[3]], rc: match[4] === undefined ? null : +match[4], text: String(text).replace(/^v/, "") } : null;
+  }
+  function compareRelease(a, b) {
+    for (var i = 0; i < 3; i++) {
+      if (a.nums[i] !== b.nums[i]) { return a.nums[i] - b.nums[i]; }
+    }
+    if (a.rc === b.rc) { return 0; }
+    if (a.rc === null) { return 1; }
+    if (b.rc === null) { return -1; }
+    return a.rc - b.rc;
+  }
+  var PICKER_MINIMUM = parseRelease("1.3.0-rc5");
+  function versionList() {
+    var installed = parseRelease(devVersions.installed);
+    var usable = devVersions.releases.filter(function (release) {
+      return !release.draft && compareRelease(parseRelease(release.tag), PICKER_MINIMUM) >= 0;
+    }).map(function (release) {
+      var version = parseRelease(release.tag);
+      return {
+        tag: release.tag, version: version.text, date: (release.published || "").slice(0, 10), candidate: version.rc !== null,
+        installed: compareRelease(version, installed) === 0, downgrade: compareRelease(version, installed) < 0,
+        _v: version, _p: release.published || ""
+      };
+    });
+    var stables = usable.filter(function (entry) { return !entry.candidate; }).sort(function (a, b) { return compareRelease(b._v, a._v); });
+    var entries = stables;
+    if (mockChannel === "beta") {
+      var candidates = usable.filter(function (entry) { return entry.candidate; }).sort(function (a, b) {
+        return a._p < b._p ? 1 : (a._p > b._p ? -1 : compareRelease(b._v, a._v));
+      });
+      var newest = candidates.reduce(function (best, entry) { return !best || compareRelease(entry._v, best) > 0 ? entry._v : best; }, null);
+      entries = stables.filter(function (entry) { return !newest || compareRelease(entry._v, newest) > 0; }).concat(candidates);
+    }
+    var nothingNewer = entries.every(function (entry) { return compareRelease(entry._v, installed) < 0; }) &&
+      !entries.some(function (entry) { return entry.installed; });
+    return {
+      channel: mockChannel, installed: devVersions.installed, nothingNewer: nothingNewer,
+      entries: entries.map(function (entry) {
+        return { tag: entry.tag, version: entry.version, date: entry.date, candidate: entry.candidate, installed: entry.installed, downgrade: entry.downgrade };
+      })
+    };
+  }
+
   function tableView() {
     fillDisplayRows();
     return {
       max_upscale: maxUpscale,
-      rows: rows.map(function (row) {
+      rows: [languageRow(), channelRow(), discordRow()].concat(rows.map(function (row) {
         return JSON.parse(JSON.stringify(row));
-      })
+      }))
     };
   }
 
@@ -201,10 +376,10 @@
 
   // Demo offers for the update popup (?update=1). Notes are sample text, not a real release.
   var DEMO_OFFERS = [
-    { stream: "renderer", installed: "1.1.0", latest: "1.1.1", update: true,
+    { stream: "renderer", installed: "1.2.1", latest: "1.2.2", update: true,
       package: "gt4-gs-1.1.1-windows-x64.zip",
       notes: "## gt4-gs 1.1.1\n\n- **Faster** present on VSync Off.\n- Fixes a crash on exit when the game ends first.\n- Sample text for the launcher preview."},
-    { stream: "launcher", installed: "1.1.0", latest: "1.1.1", update: true,
+    { stream: "launcher", installed: "1.3.0", latest: "1.3.1", update: true,
       package: "GT4Recomp-Setup-1.1.1.exe",
       notes: "GT4Recomp 1.1.1\n\n* Tray: the launcher comes back when the game ends.\n* Sample text for the launcher preview." }
   ];
@@ -250,7 +425,11 @@
       return { id: id, label: label, help: "How the pressure grows with the trigger travel.", page: "basic",
         group: "controls", control: "dropdown", values: values || curve, default: (values || curve)[0].value, current: (values || curve)[0].value };
     }
-    return [slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve", curve),
+    // TASK-161: the full trigger range toggle, first of the Controls page's analog rows (model.rs), on by default.
+    var fullRange = { id: "trigger_full_range", label: "Full trigger range",
+      help: "Throttle and brake follow the whole travel of the triggers in finer steps.", page: "basic", group: "controls",
+      control: "toggle", values: null, default: true, current: query.get("fullrange") !== "0" };
+    return [fullRange, slider("l2_deadzone", "L2 deadzone", 11.8), dropdown("l2_curve", "L2 curve", curve),
       slider("r2_deadzone", "R2 deadzone", 11.8), dropdown("r2_curve", "R2 curve", curve),
       slider("lstick_deadzone", "Left stick deadzone", 24), slider("rstick_deadzone", "Right stick deadzone", 26.5)];
   }
@@ -371,20 +550,68 @@
     });
   }
 
-  var saves = [
-    { id: "01", name: "Save 01", modified: "2026-10-16T06:31:00", active: true },
-    { id: "02", name: "Save 02", modified: "2026-10-12T22:14:00", active: false },
-    { id: "03", name: "Save 03", modified: "2026-09-03T19:02:00", active: false }
-  ];
-  var replays = [
-    { id: "01", name: "Replay 01", modified: "2026-10-16T21:40:00" },
-    { id: "02", name: "Replay 02", modified: "2026-10-16T20:55:00" },
-    { id: "03", name: "Replay 03", modified: "2026-10-12T22:31:00" }
-  ];
+  // One library per game (TASK-101): saves and replays are never shared. A save is listed with its game id: `gt4:Save 01`.
+  var libraries = {
+    gt4: {
+      saves: [
+        { slot: "Save 01", name: "Save 01", modified: "2026-10-16T06:31:00", active: true },
+        { slot: "Save 02", name: "Save 02", modified: "2026-10-12T22:14:00", active: false },
+        { slot: "Save 03", name: "Save 03", modified: "2026-09-03T19:02:00", active: false }
+      ],
+      replays: [
+        { id: "01", name: "Replay 01", modified: "2026-10-16T21:40:00" },
+        { id: "02", name: "Replay 02", modified: "2026-10-16T20:55:00" },
+        { id: "03", name: "Replay 03", modified: "2026-10-12T22:31:00" }
+      ]
+    },
+    spec2: {
+      saves: [
+        { slot: "Save 01", name: "Save 01", modified: "2026-10-22T18:05:00", active: true }
+      ],
+      replays: []
+    }
+  };
+  function libraryOf(id) { return libraries[id || selectedGame]; }
+  // The Saves list of both games, in table order: each row carries its game id (the page shows the tag).
+  function savesList() {
+    var rows = [];
+    ["gt4", "spec2"].forEach(function (gameId) {
+      libraries[gameId].saves.forEach(function (save) {
+        rows.push({ id: gameId + ":" + save.slot, slot: save.slot, name: save.name, modified: save.modified,
+          active: !!save.active, renamed: !!save.renamed, game: gameId });
+      });
+    });
+    return rows;
+  }
+  // "gt4:Save 02" -> { game: "gt4", slot: "Save 02" }.
+  function parseSaveId(id) {
+    var at = String(id).indexOf(":");
+    return { game: String(id).slice(0, at), slot: String(id).slice(at + 1) };
+  }
+  function saveOf(id) {
+    var parts = parseSaveId(id);
+    return libraries[parts.game].saves.filter(function (save) { return save.slot === parts.slot; })[0];
+  }
+  function libraryView(kind) {
+    var game = gameById(selectedGame);
+    var items = kind === "saves" ? savesList() : JSON.parse(JSON.stringify(libraryOf()[kind]));
+    return { items: items, game: game.id, gameName: game.name, status: "",
+      folder: "C:\\Users\\Player\\AppData\\Roaming\\GT4Recomp\\games\\" + game.id + (kind === "saves" ? "\\Saves" : "\\Replays") };
+  }
 
   function appState() {
-    return { setup: JSON.parse(JSON.stringify(setup)), game_running: gameRunning,
-      game_files: "C:\\Program Files\\GT4Recomp\\data\\disc",
+    var view = gamesView();
+    var snapshot = JSON.parse(JSON.stringify(setup));
+    // Without a ?setup= override the setup section describes the selected game (installed: done; else: needed).
+    if (setupStart === "done" && snapshot.state === "done" && !gameById(selectedGame).installed) {
+      snapshot.state = "needed";
+      snapshot.disc_name = "";
+    }
+    var target = setupGame || (view.any_installed ? selectedGame : null);
+    snapshot.game = target ? { id: target, name: gameById(target).name } : null;
+    return { setup: snapshot, game_running: gameRunning, selected_game: view.selected, language: mockLanguage,
+      any_installed: view.any_installed, games: view.games,
+      game_files: "C:\\Program Files\\GT4Recomp\\data\\games\\" + selectedGame + "\\disc",
       migration: { running: false, item: "", bytes_done: 0, bytes_total: 0, notice: "", problem: false } };
   }
 
@@ -401,8 +628,19 @@
         unlocked: false, unlocked_hardcore: false, badge_name: "", type_label: "" }
     ]
   };
-  var raState = { enabled: true, hardcore: false, encore: false, signedIn: query.get("ra") === "signedin",
-    username: "", displayName: "", score: 0, scoreSoftcore: 0, game: null };
+  var raState = {
+    enabled: true,
+    hardcore: false,
+    encore: false,
+    signedIn: query.get("ra") === "signedin",
+    username: "",
+    displayName: "",
+    score: 0,
+    scoreSoftcore: 0,
+    game: null,
+    selectedGame: "gt4",
+    supported: true
+  };
   function raSignIn(username) {
     raState.signedIn = true;
     raState.username = raState.displayName = username;
@@ -412,23 +650,37 @@
   }
   if (raState.signedIn) raSignIn("DemoDriver");
 
+  function raView() {
+    var cur = selectedGame || "gt4";
+    var sup = cur === "gt4";
+    var v = JSON.parse(JSON.stringify(raState));
+    v.selectedGame = cur;
+    v.supported = sup;
+    if (!sup) {
+      v.game = null;
+    }
+    return v;
+  }
+
   function invoke(command, args) {
     args = args || {};
     if (command === "ra_login") {
       if (!args.username || !args.password) throw new Error("Enter a mock username and password.");
       raSignIn(args.username);
+      return raView();
     } else if (command === "ra_logout") {
       raState.signedIn = false;
       raState.username = raState.displayName = "";
       raState.score = raState.scoreSoftcore = 0;
       raState.game = null;
+      return raView();
     } else if (command === "ra_set_options") {
       raState.enabled = !!args.enabled;
       raState.hardcore = !!args.hardcore;
       raState.encore = !!args.encore;
-    }
-    if (command === "ra_status" || command === "ra_login" || command === "ra_logout" || command === "ra_set_options") {
-      return JSON.parse(JSON.stringify(raState));
+      return raView();
+    } else if (command === "ra_status") {
+      return raView();
     }
     switch (command) {
       case "app_state":
@@ -437,31 +689,123 @@
         running("copying", 0);
         startSetup();
         return null;
-      case "setup_choose_disc":
+      case "setup_choose_disc": {
         if (query.get("pick") === "spec") {
           setup.state = "wrong_disc";
-          setup.disc_name = "Gran Turismo 4 Spec II v1.10.iso";
+          setup.disc_name = "Gran Turismo 4 (USA) (Beta).iso";
           setup.problem = SPEC_MESSAGE;
           throw new Error(SPEC_MESSAGE);
         }
-        setup.disc_name = "Gran Turismo 4 (USA) (v2.00).iso";
+        // The disc decides the game; "pick=other" is always the one that was not asked for, "pick=spec2" is Spec II.
+        var asked = args.game || null;
+        var pick = query.get("pick");
+        var discGame = pick === "spec2" ? "spec2" : (pick === "other" && asked ? (asked === "gt4" ? "spec2" : "gt4") : (asked || "gt4"));
+        setupGame = discGame;
+        setup.disc_name = discGame === "spec2" ? "Gran Turismo 4 Spec II v1.10.iso" : "Gran Turismo 4 (USA) (v2.00).iso";
         setup.problem = "";
-        return { path: "D:\\Games\\Gran Turismo 4 (USA) (v2.00).iso", serial: "SCUS-97328", version: "2.00",
-          name: "Gran Turismo 4 \u00b7 USA \u00b7 v2.00" };
+        return { path: "D:\\Games\\" + setup.disc_name, serial: discGame === "spec2" ? "SCUS-97436" : "SCUS-97328",
+          version: discGame === "spec2" ? "1.10" : "2.00", name: gameById(discGame).disc_name, game: discGame,
+          gameName: gameById(discGame).name, mismatch: !!asked && asked !== discGame, requested: asked };
+      }
+      case "games_list":
+        return gamesView();
+      case "select_game":
+        if (!gameById(args.id)) {
+          throw new Error(args.id + " is not a game of this launcher.");
+        }
+        if (gameRunning) {
+          throw new Error("Stop the game before choosing another one.");
+        }
+        selectedGame = args.id;
+        return gamesView();
+      case "games_remove":
+        if (!gameById(args.id)) {
+          throw new Error(args.id + " is not a game of this launcher.");
+        }
+        gameById(args.id).installed = false;
+        return gamesView();
       case "setup_cancel":
         clearInterval(setupTimer);
         setup.state = "failed";
         setup.problem = "Setup was cancelled. Nothing was changed.";
         return null;
+      case "prepare_shaders":
+        return true;
+      case "cancel_shader_prepare":
+        return null;
       case "play":
+        if (!gameById(selectedGame).installed) {
+          throw new Error("Set up the game first.");
+        }
         gameRunning = true;
         return null;
+      case "first_start_hint":
+        // TASK-164: ?firstStart=1 shows the first-start note on Play (no save yet).
+        return query.get("firstStart") === "1" ? { game: "Gran Turismo 4", confirm: "W / Enter", pad: "A", right: "Right" } : null;
       case "stop_game":
         gameRunning = false;
         return null;
       case "get_settings_table":
         return tableView();
+      case "gsdx_download_needed":
+        return query.get("gsdx") === "missing" || query.get("gsdx") === "offline";
+      case "coregs20_offer":
+        // As launch::offers_coregs20: GSdx stored, not installed, and a card with Vulkan 1.2.
+        return (query.get("gsdx") === "missing" || query.get("gsdx") === "offline") &&
+          findRow("renderer").current === "pcsx2" && query.get("vulkan") !== "no";
+      case "use_coregs20":
+        if (query.get("vulkan") === "no") {
+          throw new Error("CoreGS 2.0 could not be selected. Choose it in Settings > Graphics > Renderer.");
+        }
+        findRow("renderer").current = "coregs20";
+        return null;
+      case "download_gsdx":
+        return new Promise(function (resolve, reject) {
+          emit("gsdx-download", { step: "listing" });
+          var done = 0;
+          var timer = setInterval(function () {
+            done += 12000000;
+            emit("gsdx-download", { step: "downloading", bytesDone: done, bytesTotal: 48000000 });
+            if (query.get("gsdx") === "offline") {
+              clearInterval(timer);
+              reject(new Error("GSdx could not be downloaded: no internet connection. Check your connection and try again."));
+            } else if (done >= 48000000) {
+              clearInterval(timer);
+              emit("gsdx-download", { step: "installing" });
+              setTimeout(resolve, 500);
+            }
+          }, 500);
+        });
+      case "install_gsdx_archive":
+        // TASK-158: the file picker and the install; `gsdxfile` chooses the result (default: refused).
+        return new Promise(function (resolve, reject) {
+          var choice = query.get("gsdxfile") || "bad";
+          if (choice === "cancel") {
+            resolve(null);
+            return;
+          }
+          emit("gsdx-download", { step: "installing" });
+          setTimeout(function () {
+            if (choice === "ok") {
+              resolve(true);
+            } else {
+              reject(new Error("gt4-gs-1.2.3-windows-x64.zip does not match the checksum published with its release, so it was not installed. The file may be damaged or changed: download it again."));
+            }
+          }, 500);
+        });
       case "set_setting": {
+        if (args.id === "controller") {
+          mockController = args.value; // TASK-148: the Controls page's controller row
+          return null;
+        }
+        if (args.id === "language") {
+          mockLanguage = args.value;
+          return null;
+        }
+        if (args.id === "update_channel") {
+          mockChannel = args.value;
+          return null;
+        }
         var row = findRow(args.id) || analog.filter(function (item) { return item.id === args.id; })[0];
         if (!row) {
           throw new Error("Unknown setting " + args.id);
@@ -504,37 +848,94 @@
         analog = analogDefaults();
         return controlsView();
       case "saves_list":
-        return { items: JSON.parse(JSON.stringify(saves)), folder: "C:\\Users\\Player\\Documents\\Gran Turismo 4\\Saves" };
+        return libraryView("saves");
       case "saves_import":
-        return null;
-      case "saves_activate":
-        saves.forEach(function (save) {
-          save.active = save.id === args.id;
-        });
-        return { items: JSON.parse(JSON.stringify(saves)) };
-      case "saves_delete":
-        saves = saves.filter(function (save) {
-          return save.id !== args.id;
-        });
-        return { items: JSON.parse(JSON.stringify(saves)) };
-      case "replays_list":
-        return { items: JSON.parse(JSON.stringify(replays)), folder: "C:\\Users\\Player\\Documents\\Gran Turismo 4\\Replays" };
       case "replays_import":
-        return null;
+        // Nothing is asked: each save names its game and goes to that game's library.
+        return libraryView(command === "saves_import" ? "saves" : "replays");
+      case "saves_activate": {
+        var activeParts = parseSaveId(args.id);
+        libraries[activeParts.game].saves.forEach(function (save) {
+          save.active = save.slot === activeParts.slot;
+        });
+        return libraryView("saves");
+      }
+      case "saves_delete": {
+        var deleteParts = parseSaveId(args.id);
+        libraries[deleteParts.game].saves = libraries[deleteParts.game].saves.filter(function (save) {
+          return save.slot !== deleteParts.slot;
+        });
+        return libraryView("saves");
+      }
+      case "saves_new": {
+        // The active save of that game is parked as a slot; its next Play starts a new profile (the real launcher keeps it).
+        var newGame = args.game || selectedGame;
+        libraries[newGame].saves.forEach(function (save) {
+          save.active = false;
+        });
+        var fresh = libraryView("saves");
+        fresh.status = gameById(newGame).name + ": Started a new save. The old one is kept as a slot.";
+        return fresh;
+      }
+      case "saves_rename": {
+        var renamedSave = saveOf(args.id);
+        if (!renamedSave) {
+          throw new Error("That save is not in the library any more.");
+        }
+        // The same cleaning as the launcher: no characters a file name cannot hold, one space between words, 40 at most.
+        var cleaned = String(args.name || "").replace(/[<>:"\/\\|?*\u0000-\u001f]/g, "").replace(/\s+/g, " ").trim().slice(0, 40).trim();
+        if (!cleaned) {
+          throw new Error("Type a name with letters or numbers.");
+        }
+        renamedSave.name = cleaned;
+        renamedSave.renamed = true;
+        var renamedView = libraryView("saves");
+        renamedView.status = "Renamed to " + cleaned + ".";
+        return renamedView;
+      }
+      case "saves_export": {
+        var exported = libraryView("saves");
+        exported.status = "Saved to C:\\Users\\Player\\Desktop\\save.psu.";
+        return exported;
+      }
+      case "replays_list":
+        return libraryView("replays");
       case "replays_delete":
-        replays = replays.filter(function (replay) {
+        libraryOf().replays = libraryOf().replays.filter(function (replay) {
           return replay.id !== args.id;
         });
-        return { items: JSON.parse(JSON.stringify(replays)) };
+        return libraryView("replays");
+      case "release_notes":
+        // 1.3.0 is sample text; the older entries are copies of docs/release-notes/launcher/<version>.md (the real build
+        // embeds every short notes file up to its own version, newest first).
+        return {
+          version: "1.3.0",
+          releases: [
+            { version: "1.3.0", markdown: "# GT4Recomp 1.3.0\n\n**Gran Turismo 4 Spec II comes to GT4Recomp.**\n\n## New\n- **Spec II 1.10** runs next to the normal game, with upscaling and texture packs.\n- Pick the version under **Play**: Normal or Spec II. Each keeps its own saves.\n- A **What's new** panel on the home screen, with every past update.\n- A portable version: carry the whole folder to another PC.\n\n## Good to know\n- Spec II needs your own Spec II 1.10 disc image (the Brazilian Portuguese edition works too).", translations: { "pt-BR": "# GT4Recomp 1.3.0\n\n**Gran Turismo 4 Spec II chega ao GT4Recomp.**\n\n## Novidades\n- **Spec II 1.10** roda ao lado do jogo normal, com upscaling e pacotes de texturas.\n- Escolha a versão em **Jogar**: Normal ou Spec II. Cada uma mantém os próprios saves.\n- Um painel **Novidades** na tela inicial, com todas as atualizações anteriores.\n- Uma versão portátil: leve a pasta inteira para outro PC.\n\n## Bom saber\n- O Spec II precisa da sua própria imagem de disco do Spec II 1.10 (a edição em português do Brasil também funciona)." } },
+            { version: "1.2.3", markdown: "# GT4Recomp 1.2.3\n\n**Quick fixes and a desktop shortcut.**\n\n## Fixes\n- The game no longer crashes at start for players who were not on GSdx.\n\n## New\n- Texture packs can go straight into the Textures folder, with no extra subfolder.\n- The installer can create a **Gran Turismo 4** shortcut on your desktop.\n- GSdx is now the only renderer; our own renderer, CoreGS 2.0, is coming later.\n", translations: { "pt-BR": "# GT4Recomp 1.2.3\n\n**Correções rápidas e um atalho na área de trabalho.**\n\n## Correções\n- O jogo não trava mais ao iniciar para quem não estava usando o GSdx.\n\n## Novidades\n- Pacotes de texturas podem ir direto para a pasta Textures, sem subpasta extra.\n- O instalador pode criar um atalho **Gran Turismo 4** na sua área de trabalho.\n- O GSdx agora é o único renderizador; nosso próprio renderizador, o CoreGS 2.0, chega depois.\n" } },
+            { version: "1.2.2", markdown: "# GT4Recomp 1.2.2\n\n**A lighter game on your processor.**\n\n## Performance\n- **About 15% less processor work** per frame in the heaviest races, so slower PCs keep 60 FPS more easily.\n- The picture is exactly the same as before.\n", translations: { "pt-BR": "# GT4Recomp 1.2.2\n\n**Um jogo mais leve para o seu processador.**\n\n## Desempenho\n- **Cerca de 15% menos trabalho do processador** por quadro nas corridas mais pesadas, então PCs mais lentos mantêm 60 FPS com mais facilidade.\n- A imagem continua exatamente igual à de antes.\n" } },
+            { version: "1.2.1", markdown: "# GT4Recomp 1.2.1\n\n**A cleaner install and updates that just work.**\n\n## New\n- GT4Recomp now installs in Program Files, for every user of the PC, in any folder you pick.\n- Your settings and saves live in your Windows user folder; the big game files sit next to the program.\n- Updates install silently: one confirmation, and the launcher reopens by itself.\n- **Performance Mode** (Settings > Graphics): faster on weaker PCs, by skipping a few light effects.\n- Settings now sits next to Play on the home screen.\n\n## Fixes\n- The launcher no longer opens as a blank white window on some PCs.\n", translations: { "pt-BR": "# GT4Recomp 1.2.1\n\n**Uma instalação mais limpa e atualizações que simplesmente funcionam.**\n\n## Novidades\n- O GT4Recomp agora instala em Arquivos de Programas, para todos os usuários do PC, na pasta que você escolher.\n- Suas configurações e saves ficam na pasta de usuário do Windows; os arquivos grandes do jogo ficam ao lado do programa.\n- As atualizações são instaladas em silêncio: uma confirmação, e o launcher reabre sozinho.\n- **Modo de Desempenho** (Configurações > Gráficos): mais rápido em PCs mais fracos, pulando alguns efeitos leves.\n- Configurações agora fica ao lado de Jogar na tela inicial.\n\n## Correções\n- O launcher não abre mais como uma janela branca em alguns PCs.\n" } },
+            { version: "1.2.0", markdown: "# GT4Recomp 1.2.0\n\n**Custom texture packs arrive.**\n\n## New\n- **HD texture packs**: drop a pack in the Textures folder (Settings > Graphics > Open textures folder) and play.\n- The renderer is now called **GSdx**, and every GSdx picture option is available in Settings.\n- The resolution follows your desktop automatically, and monitors show their real names.\n- The game window starts black instead of white.\n\n## Thanks\n- To **JulioHeroZ** for their contribution to this release.\n", translations: { "pt-BR": "# GT4Recomp 1.2.0\n\n**Chegam os pacotes de texturas HD.**\n\n## Novidades\n- **Pacotes de texturas HD**: coloque um pacote na pasta Textures (Configurações > Gráficos > Abrir pasta de texturas) e jogue.\n- O renderizador agora se chama **GSdx**, e todas as opções de imagem do GSdx estão disponíveis em Configurações.\n- A resolução segue a sua área de trabalho automaticamente, e os monitores mostram seus nomes reais.\n- A janela do jogo abre preta em vez de branca.\n\n## Agradecimentos\n- À **JulioHeroZ** pela contribuição nesta versão.\n" } },
+            { version: "1.1.0", markdown: "# GT4Recomp 1.1.0\n\n**Ultrawide support: the game now fills any screen.**\n\n## New\n- **21:9, 32:9, 16:10 and more**: races fill your screen and show more to the sides, with the HUD kept undistorted.\n- Choose the monitor and resolution the game opens on.\n- The game's sharpness adjusts to your resolution automatically, with a Render scale slider for more speed.\n- All picture settings in one place: Settings > Graphics.\n\n## Fixes\n- Updating from inside the launcher works now.\n\n## Good to know\n- Menus, movies and photo mode stay 16:9.\n", translations: { "pt-BR": "# GT4Recomp 1.1.0\n\n**Suporte a ultrawide: o jogo agora preenche qualquer tela.**\n\n## Novidades\n- **21:9, 32:9, 16:10 e mais**: as corridas preenchem sua tela e mostram mais para os lados, com o HUD sem distorção.\n- Escolha o monitor e a resolução em que o jogo abre.\n- A nitidez do jogo se ajusta sozinha à sua resolução, com o controle Escala de renderização para ganhar velocidade.\n- Todas as configurações de imagem em um só lugar: Configurações > Gráficos.\n\n## Correções\n- Atualizar pelo próprio launcher funciona agora.\n\n## Bom saber\n- Menus, filmes e o modo foto continuam em 16:9.\n" } },
+            { version: "1.0.0", markdown: "# GT4Recomp 1.0.0\n\n**The first release: Gran Turismo 4 running natively on your PC.**\n\n## New\n- One-click installer and a launcher that sets the game up from your own disc image.\n- **60 FPS** at full game speed in every scene we tested.\n- Any controller works out of the box (Xbox, DualShock 4, DualSense, Switch Pro), with button remapping.\n- Widescreen 16:9 and progressive 480p races, always on.\n- Your saves and replays are easy to find and back up, and survive a crash.\n\n## Good to know\n- Racing wheels and ultrawide screens are not supported yet.\n- Some license demos and menu backgrounds do not play.\n", translations: { "pt-BR": "# GT4Recomp 1.0.0\n\n**A primeira versão: Gran Turismo 4 rodando nativamente no seu PC.**\n\n## Novidades\n- Instalador de um clique e um launcher que prepara o jogo a partir da sua própria imagem de disco.\n- **60 FPS** em velocidade total do jogo em todas as cenas testadas.\n- Qualquer controle funciona logo de cara (Xbox, DualShock 4, DualSense, Switch Pro), com remapeamento de botões.\n- Widescreen 16:9 e corridas em 480p progressivo, sempre ativos.\n- Seus saves e replays são fáceis de achar e de fazer backup, e sobrevivem a uma queda do jogo.\n\n## Bom saber\n- Volantes de corrida e telas ultrawide ainda não são suportados.\n- Algumas demos de licença e fundos de menu não rodam.\n" } },
+          ]
+        };
+      case "open_link":
+        if (args.name !== "kofi" && args.name !== "youtube") {
+          throw new Error(args.name + " is not a link of this launcher");
+        }
+        return null;
       case "about_info":
         return {
-          version: "1.1.0",
-          gt4recomp: "1.1.0",
-          gt4gs: "1.1.0",
+          version: "1.3.0",
+          gt4recomp: "1.3.0",
+          gt4gs: "1.2.1",
           disc_path: "D:\\Games\\PS2\\Gran Turismo 4 (USA) (v2.00).iso",
-          game_files: "C:\\Program Files\\GT4Recomp\\data\\disc",
+          game_files: "C:\\Program Files\\GT4Recomp\\data\\games\\" + selectedGame + "\\disc",
           data_folder: "C:\\Program Files\\GT4Recomp\\data",
-          saves_folder: "C:\\Users\\Player\\AppData\\Roaming\\GT4Recomp"
+          saves_folder: "C:\\Users\\Player\\AppData\\Roaming\\GT4Recomp",
+          game_name: gameById(selectedGame).name,
+          credits: "Gran Turismo 4 Spec II is a mod of the GT4 Online Public Beta made by [AUTHORS: names to be filled in by the owner, with their permission and a link]. GT4Recomp prepares it from your own disc image and includes none of its files. The Spec II logo on the home screen is a placeholder until the authors logo and credit are added."
         };
       case "open_log_folder":
       case "open_game_files_folder":
@@ -542,16 +943,39 @@
       case "open_saves_folder":
       case "open_replays_folder":
       case "open_textures_folder":
+      case "open_latest_log":
+      case "open_export_folder":
+        return null;
+      case "textures_state":
+        return texturesState();
+      case "choose_textures_folder":
+        // The mock "picks" a folder, as the folder picker would. ?textures=missing shows the missing-folder hint.
+        texturesChoice = query.get("textures") === "missing" ? "D:\\Missing\\textures" : "D:\\PCSX2\\textures";
+        return texturesState();
+      case "reset_textures_folder":
+        texturesChoice = "";
+        return texturesState();
+      case "export_logs":
+        // The mock does not write a bundle: the player "cancelled" the folder choice.
         return null;
       case "check_updates":
         // Demo: ?update=1 offers both streams; otherwise nothing is new.
         if (query.get("update") === "1") {
           return {
             offers: DEMO_OFFERS.map(function (offer) { return JSON.parse(JSON.stringify(offer)); }),
-            errors: [], upToDate: false, launcher: "1.1.0", renderer: "1.1.0"
+            errors: [], upToDate: false, launcher: "1.3.0", renderer: "1.2.1"
           };
         }
-        return { offers: [], errors: [], upToDate: true, launcher: "1.1.0", renderer: "1.1.0" };
+        return { offers: [], errors: [], upToDate: true, launcher: "1.3.0", renderer: "1.2.1" };
+      case "list_launcher_versions":
+        if (devVersions.failList) {
+          throw new Error("Could not read the version list (no connection). Your current version stays.");
+        }
+        return versionList();
+      case "install_launcher_version":
+        // The real command runs the update path (download, SHA256SUMS check, setup) and the launcher closes.
+        devVersions.installs.push(args.tag);
+        return { ok: true, message: "GT4Recomp setup started." };
       case "apply_update":
         return { ok: true, message: args.stream === "launcher" ? "GT4Recomp setup started." : "gt4-gs 1.1.1 is ready." };
       case "skip_update":
@@ -577,10 +1001,41 @@
     var pads = root.GT4.devGamepads ? root.GT4.devGamepads() : [];
     return root.GT4.controlsModel.padSummary(pads);
   }
+  // TASK-148: the dev pads with made-up GUIDs (the first an Xbox pad, the next DualSense pads with serials), and with
+  // ?unmapped=1 an old joystick SDL3 has no mapping for. Like the pad service, a stored controller that is not connected
+  // gives way to the pad read (controller 1), which is then stored.
+  var mockController = "auto";
+  var DEV_GUIDS = ["030000005e0400008e02000014010000", "050000004c050000e60c000000810000", "050000004c050000e60c000000810000"];
+  var DEV_NAMES = ["Xbox Wireless Controller", "DualSense Wireless Controller", "DualSense Wireless Controller"];
   function padStatusPayload() {
     var summary = devSummary();
-    return { available: true, connected: summary.connected, name: summary.connected ? summary.name : "",
-      kind: summary.connected ? "xbox360" : "", player_index: summary.connected ? 0 : null, count: summary.count, error: "" };
+    var pads = [];
+    for (var i = 0; i < summary.count; i++) {
+      var guid = DEV_GUIDS[i % DEV_GUIDS.length];
+      // Controller 1 keeps the dev pad's own name (focus-check's "Test Pad").
+      pads.push({ name: i === 0 && summary.name ? summary.name : DEV_NAMES[i % DEV_NAMES.length], kind: i === 0 ? "xbox360" : "ps5",
+        key: i === 0 ? guid : guid + "/a0:ab:51:00:00:0" + i, active: false });
+    }
+    // The pad read: the stored unit, else one of its model, else controller 1 (`pad::chosen_pad`).
+    var activeIndex = pads.map(function (pad) { return pad.key; }).indexOf(mockController);
+    if (activeIndex < 0) {
+      activeIndex = pads.map(function (pad) { return pad.key.split("/")[0]; }).indexOf(mockController.split("/")[0]);
+    }
+    if (activeIndex < 0) {
+      activeIndex = 0;
+    }
+    if (pads.length) {
+      pads[activeIndex].active = true;
+    }
+    var chosen = mockController !== "auto" && pads.length > 0 && pads[activeIndex].key.split("/")[0] === mockController.split("/")[0];
+    if (pads.length && !chosen) {
+      mockController = pads[activeIndex].key;
+      chosen = true;
+    }
+    return { available: true, connected: summary.connected, name: summary.connected ? pads[activeIndex].name : "",
+      kind: summary.connected ? pads[activeIndex].kind : "", player_index: summary.connected ? 0 : null, count: summary.count,
+      error: "", pads: pads, unrecognized: query.get("unmapped") === "1" ? [{ name: "USB Gamepad (old)", guid: "03000000aaaa0000bbbb000000000000" }] : [],
+      choice: mockController, chosen: chosen };
   }
   var lastPadStatus = "";
   setInterval(function () {

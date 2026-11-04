@@ -177,6 +177,6 @@ mod tests {
         assert!(check_write(Path::new(DATA), Path::new(&format!("{DATA}/gs/1.0.1/gt4-gs.exe"))).is_ok());
         assert!(check_write(Path::new(DATA), Path::new("C:/Games/Gran Turismo 4 Launcher/version.json")).is_ok());
         // A program folder named after the game is not the player's folder unless Saves or Replays follow.
-        assert!(check_write(Path::new(DATA), Path::new("D:/Games/Gran Turismo 4/game/gt4vulkan.exe")).is_ok());
+        assert!(check_write(Path::new(DATA), Path::new("D:/Games/Gran Turismo 4/game/gt4.exe")).is_ok());
     }
 }

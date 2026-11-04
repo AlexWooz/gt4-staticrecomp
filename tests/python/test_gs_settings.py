@@ -38,7 +38,9 @@ LEGACY_BASE = ('; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-
                'OsdShowGPU = false\n'
                'OsdShowResolution = false\n'
                # TASK-088 (gt4-gs 1.2.0): Load custom textures is on by default and always written.
-               'LoadTextureReplacements = true\n')
+               'LoadTextureReplacements = true\n'
+               # TASK-118 (owner, 2026-10-26): textures load in the background, always on and always written.
+               'LoadTextureReplacementsAsync = true\n')
 # TASK-064: ProhibitDynamicCode is always written; its default is false (overlays work out of the box).
 PROHIBIT_LINE = 'ProhibitDynamicCode = false\n'
 LEGACY_DEFAULT = LEGACY_BASE + '\n[GT4GS]\n' + PROHIBIT_LINE
@@ -109,18 +111,18 @@ class TableSchemaTests(unittest.TestCase):
             'wrong schema': lambda data: data.update(schema_version=2),
             'no defaults profile': lambda data: data.update(profile=[]),
             'duplicate id': duplicate,
-            'bad page': lambda data: row(data, 'renderer').update(page='Graphics'),
+            'bad page': lambda data: row(data, 'graphics_api').update(page='Graphics'),
             'mods row on a page': lambda data: row(data, 'texture_load').update(page='advanced'),
-            'bad type': lambda data: row(data, 'renderer').update(type='double'),
-            'bad status': lambda data: row(data, 'renderer').update(status='maybe'),
+            'bad type': lambda data: row(data, 'graphics_api').update(type='double'),
+            'bad status': lambda data: row(data, 'graphics_api').update(status='maybe'),
             'bad order': lambda data: row(data, 'fxaa').update(order=0),
             'order used twice on a page': lambda data: row(data, 'fxaa').update(order=row(data, 'cas_mode')['order']),
             'bad control': lambda data: row(data, 'fxaa').update(control='knob'),
             'control does not fit the type': lambda data: row(data, 'fxaa').update(control='slider'),
             'launcher row with a control': lambda data: row(data, 'cache_folder').update(control='dropdown'),
-            'settable row without key': lambda data: row(data, 'renderer').update(key=''),
+            'settable row without key': lambda data: row(data, 'graphics_api').update(key=''),
             'duplicate INI key': lambda data: row(data, 'upscale').update(
-                section=row(data, 'renderer')['section'], key=row(data, 'renderer')['key']),
+                section=row(data, 'graphics_api')['section'], key=row(data, 'graphics_api')['key']),
             'int range inverted': lambda data: row(data, 'cas_sharpness').update(min=101, max=100),
             'choice offered flag not a bool': lambda data: row(data, 'upscale')['choices'][0].update(offered='no'),
             'preset height not a number': lambda data: row(data, 'upscale')['choices'][0].update(height='tall'),
@@ -236,9 +238,15 @@ class ValueTests(unittest.TestCase):
                       gs_settings._row_errors(row))
 
     def test_tbd_choices_and_rows_are_refused(self):
-        renderer = by_id()['renderer']
+        renderer = by_id()['graphics_api']
         # TASK-088 (1.2.0): these values are enabled now (the binary accepts them).
         self.assertEqual(gs_settings.parse_value(renderer, 'd3d12'), 'd3d12')
+        # TASK-103: Direct3D 11 and Vulkan are the other two; anything else (OpenGL, a software renderer) is refused.
+        self.assertEqual(gs_settings.parse_value(renderer, 'd3d11'), 'd3d11')
+        self.assertEqual(gs_settings.parse_value(renderer, 'vulkan'), 'vulkan')
+        for refused in ('opengl', 'software', ''):
+            with self.assertRaises(gs_settings.SettingsError, msg=refused):
+                gs_settings.parse_value(renderer, refused)
         self.assertEqual(gs_settings.parse_value(by_id()['filter'], 'bilinear-ps2'), 'bilinear-ps2')
         self.assertEqual(gs_settings.parse_value(by_id()['performance_mode'], 'no-readbacks'), 'no-readbacks')
 
@@ -275,7 +283,8 @@ class IniTests(unittest.TestCase):
             gs_settings.INI_HEADER, '[EmuCore/GS]', 'Renderer = 14', 'upscale_multiplier = 6',
             'accurate_blending_unit = 3', 'deinterlace_mode = 0', 'AspectRatio = 16:9', 'VsyncEnable = true',
             'DisableMailboxPresentation = true', 'HWDownloadMode = 0', 'fxaa = true', 'OsdShowFPS = false',
-            'OsdShowGPU = false', 'OsdShowResolution = false', 'LoadTextureReplacements = true', '', '[GT4GS]',
+            'OsdShowGPU = false', 'OsdShowResolution = false', 'LoadTextureReplacements = true',
+            'LoadTextureReplacementsAsync = true', '', '[GT4GS]',
             'ProhibitDynamicCode = false'])
 
     def test_sections_follow_the_fixed_order(self):
@@ -349,18 +358,22 @@ class AllowListTests(unittest.TestCase):
 class OfferedTests(unittest.TestCase):
     def test_launcher_offers_only_settable_options(self):
         offered = {row['id'] for row in gs_settings.offered(rows())}
-        self.assertTrue({'renderer', 'vsync', 'deinterlace', 'blending', 'fxaa'} <= offered)
+        self.assertTrue({'graphics_api', 'vsync', 'fxaa'} <= offered)
+        # TASK-118 (owner, 2026-10-26): deinterlace and blending were cut from the launcher (hidden rows, defaults written).
+        self.assertFalse({'deinterlace', 'blending'} & offered)
         self.assertNotIn('aspect', offered)
         # TASK-080 addendum: the internal resolution follows the launcher's Resolution and Render scale.
         self.assertNotIn('upscale', offered)
-        self.assertTrue({'texture_load', 'texture_precache'} <= offered)
+        self.assertIn('texture_load', offered)
+        # TASK-118 (owner, 2026-10-26): the precache row was cut from the launcher; the file still accepts it.
+        self.assertNotIn('texture_precache', offered)
         for identifier in ('adapter',
                            'cache_folder', 'headless_dump_dir', 'manual_hacks'):
             self.assertNotIn(identifier, offered, identifier)
         for row in gs_settings.offered(rows()):
             if row['type'] == 'enum':
                 self.assertTrue(gs_settings.offered_choices(row), row['id'])
-        self.assertEqual(gs_settings.offered_choices(by_id()['renderer']), ['vulkan', 'd3d12', 'd3d11'])
+        self.assertEqual(gs_settings.offered_choices(by_id()['graphics_api']), ['auto', 'vulkan', 'd3d12', 'd3d11'])
 
 
 class PlayPerformanceTests(unittest.TestCase):
@@ -461,7 +474,8 @@ class ProbeEnvironmentTests(unittest.TestCase):
 # Value checks for the rows resolved from the PCSX2 v2.8.2 sources (commit fd9d310c; citations in the table notes).
 # Each entry: launcher id -> (INI key, {launcher name: INI value}, default launcher name).
 ENUM_EXPECTED = {
-    'renderer': ('Renderer', {'vulkan': '14', 'd3d12': '15', 'd3d11': '3'}, 'vulkan'),
+    # TASK-108: auto is the default; it writes 14 only if never resolved (the launcher resolves it before every write).
+    'graphics_api': ('Renderer', {'auto': '14', 'vulkan': '14', 'd3d12': '15', 'd3d11': '3'}, 'auto'),
     'filter': ('filter', {'nearest': '0', 'bilinear-forced': '1', 'bilinear-ps2': '2',
                           'bilinear-forced-sprite-excluded': '3'}, 'bilinear-ps2'),
     'trilinear': ('TriFilter', {'automatic': '-1', 'off': '0', 'ps2': '1', 'forced': '2'}, 'automatic'),
@@ -562,7 +576,7 @@ class ResolvedValueTests(unittest.TestCase):
         self.assertEqual(gs_settings.offered_choices(by_id()['deinterlace'])[0], 'automatic')
         self.assertEqual(len(gs_settings.offered_choices(by_id()['deinterlace'])), 10)
         self.assertEqual(gs_settings.offered_choices(by_id()['blending']), ['minimum', 'basic', 'medium', 'high', 'full', 'maximum'])
-        self.assertEqual(gs_settings.offered_choices(by_id()['renderer']), ['vulkan', 'd3d12', 'd3d11'])
+        self.assertEqual(gs_settings.offered_choices(by_id()['graphics_api']), ['auto', 'vulkan', 'd3d12', 'd3d11'])
 
     def test_resolved_values_stay_out_of_the_default_ini(self):
         text = gs_settings.render_ini(rows())
@@ -585,7 +599,7 @@ class ResolvedValueTests(unittest.TestCase):
 class PageLayoutTests(unittest.TestCase):
     def test_graphics_page_is_basic_only(self):
         basic = [row['id'] for row in rows() if row['page'] == 'basic']
-        self.assertEqual(basic, ['gs_engine', 'performance_mode', 'fxaa', 'cas_mode', 'cas_sharpness', 'texture_load'])
+        self.assertEqual(basic, ['gs_engine', 'graphics_api', 'performance_mode', 'fxaa', 'cas_mode', 'cas_sharpness', 'texture_load'])
         upscale = by_id()['upscale']
         self.assertEqual((upscale['control'], upscale['type'], upscale['default']), ('dropdown', 'enum', '1080p'))
         # TASK-080 addendum (owner, 2026-10-21): hidden, always written, set by the launcher from the display plan;
@@ -600,12 +614,11 @@ class PageLayoutTests(unittest.TestCase):
 
     def test_advanced_page_holds_the_rest_of_the_user_options(self):
         advanced = [row for row in rows() if row['page'] == 'advanced']
-        # 45 + prohibit_dynamic_code (TASK-064) - the six PCSX2 OSD rows, hidden since 2026-10-21; + precache (TASK-088);
-        # - the Readbacks row (TASK-091: Performance Mode is a basic row)
-        self.assertEqual(len(advanced), 41)
-        self.assertEqual(sorted(row['order'] for row in advanced), list(range(1, 42)))
-        self.assertTrue({'renderer', 'deinterlace', 'shade_boost', 'linear_present', 'tv_shader', 'perf_overlay',
-                         'filter', 'trilinear', 'anisotropic'} <= {row['id'] for row in advanced})
+        # TASK-118 (owner, 2026-10-26): the Advanced page was cut down to these five rows; the other GS rows are
+        # hidden (the file still accepts them) or basic.
+        self.assertEqual(sorted((row['order'], row['id']) for row in advanced),
+                         [(2, 'adapter'), (3, 'vsync'), (30, 'cursor_autohide'), (31, 'shader_compile_notice'),
+                          (32, 'perf_overlay')])
 
     def test_orders_are_unique_per_page(self):
         seen = set()
@@ -642,7 +655,7 @@ class ResetToDefaultsTests(unittest.TestCase):
     def test_reset_holds_only_settable_user_rows(self):
         settings = gs_settings.reset_to_defaults(rows())
         self.assertEqual(settings['upscale'], '1080p')
-        self.assertEqual(settings['renderer'], 'vulkan')
+        self.assertEqual(settings['graphics_api'], 'auto')
         for identifier in settings:
             row = by_id()[identifier]
             self.assertEqual(row['status'], 'ok', identifier)
@@ -679,14 +692,20 @@ class OsdRowTests(unittest.TestCase):
                'perf_overlay_resolution': ('PerfOverlayResolution', 'true'),
                'perf_overlay_breakdown': ('PerfOverlayBreakdown', 'true')}
 
-    def test_overlay_rows_are_advanced_toggles_off_by_default(self):
+    def test_overlay_rows_are_hidden_toggles_off_by_default(self):
+        # TASK-118 (owner, 2026-10-26): the launcher keeps only the overlay's master switch (Advanced); the items are
+        # hidden rows that the file still accepts.
         offered = {row['id'] for row in gs_settings.offered(rows())}
+        self.assertEqual(by_id()['perf_overlay']['page'], 'advanced')
+        self.assertIn('perf_overlay', offered)
         for identifier, (key, default) in self.OVERLAY.items():
+            if identifier == 'perf_overlay':
+                continue  # the master switch, checked above
             row = by_id()[identifier]
             self.assertEqual((row['page'], row['control'], row['section'], row['key'], row['default'], row['written'],
                               row['status']),
-                             ('advanced', 'toggle', 'GT4GS', key, default, 'when-set', 'ok'), identifier)
-            self.assertIn(identifier, offered)
+                             ('hidden', 'toggle', 'GT4GS', key, default, 'when-set', 'ok'), identifier)
+            self.assertNotIn(identifier, offered)
         # Off by default: the default INI has no overlay line; the master switch alone turns every item on.
         self.assertNotIn('PerfOverlay', gs_settings.render_ini(rows()))
         text = gs_settings.render_ini(rows(), gs_settings.settings_from_assignments(['perf_overlay=true'], rows()))
@@ -699,13 +718,14 @@ class OsdRowTests(unittest.TestCase):
 class ProhibitDynamicCodeTests(unittest.TestCase):
     """TASK-064: Arbitrary Code Guard is off by default so third-party overlays (RTSS) can hook gt4-gs."""
 
-    def test_row_is_an_advanced_always_written_switch_defaulting_to_false(self):
+    def test_row_is_a_hidden_always_written_switch_defaulting_to_false(self):
+        # TASK-118 (owner, 2026-10-26): no longer offered in the launcher; still always written, false.
         row = by_id()['prohibit_dynamic_code']
         self.assertEqual((row['page'], row['order'], row['control'], row['type'], row['section'], row['key'],
                           row['default'], row['written'], row['status']),
-                         ('advanced', 39, 'toggle', 'bool', 'GT4GS', 'ProhibitDynamicCode', 'false', 'always', 'ok'))
+                         ('hidden', 55, 'toggle', 'bool', 'GT4GS', 'ProhibitDynamicCode', 'false', 'always', 'ok'))
         self.assertEqual(row['label'], 'Block third-party overlays (Arbitrary Code Guard)')
-        self.assertIn('prohibit_dynamic_code', {offered_row['id'] for offered_row in gs_settings.offered(rows())})
+        self.assertNotIn('prohibit_dynamic_code', {offered_row['id'] for offered_row in gs_settings.offered(rows())})
 
     def test_default_ini_always_writes_false(self):
         self.assertTrue(gs_settings.render_ini(rows()).endswith('\n[GT4GS]\nProhibitDynamicCode = false\n'))

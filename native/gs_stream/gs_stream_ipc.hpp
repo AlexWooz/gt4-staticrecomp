@@ -166,6 +166,14 @@ class Session {
   void post_vsync(const VsyncPayload &vsync);
   // Posts READ_FIFO and waits for the reply; copies qwords*16 bytes to `out`. Returns the readback status.
   std::uint32_t read_fifo(std::uint32_t qwords, void *out);
+  // TASK-116 step 1: posts READ_FIFO without waiting and returns its request id; the reply is collected later with
+  // readback_reply. The record is identical to the one read_fifo posts (same payload, same id sequence).
+  std::uint64_t post_read_fifo_nowait(std::uint32_t qwords);
+  // Copies the reply of `request_id` (qwords*16 bytes, zero-filled beyond the consumer's reply) when that reply is the
+  // one in the response area; false when it is not (not answered yet, or already replaced by a later request).
+  bool readback_reply(std::uint64_t request_id, void *out, std::uint32_t qwords);
+  // Status of the reply in the response area (kReadback*).
+  std::uint32_t readback_status() const;
   // Waits for an event record; false on timeout. Throws PeerExited when the consumer died first.
   bool wait_event(RecordView &view, std::uint32_t timeout_ms);
 

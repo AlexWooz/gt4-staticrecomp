@@ -6,6 +6,7 @@ pub mod dialog;
 pub mod disk;
 pub mod display;
 pub mod game;
+pub mod gpu;
 pub mod install_record;
 pub mod known_folder;
 pub mod legacy_install;

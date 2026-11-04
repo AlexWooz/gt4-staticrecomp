@@ -5,6 +5,7 @@ synthetic capsules in a temporary folder, so they run everywhere.
 """
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -42,18 +43,15 @@ class SceneScheduleTests(unittest.TestCase):
 
 
 class GsIniTests(unittest.TestCase):
-    def test_renderer_write_paths_are_private_to_each_run(self):
-        first = Path('C:/own-runs/first')
-        second = Path('C:/own-runs/second')
-        one = harness.gs_config_for_run(first, 1)
-        two = harness.gs_config_for_run(second, 1)
-        self.assertIn(f'Cache = {first / "gs-cache"}', one)
-        self.assertIn(f'DataRoot = {first / "gs-data"}', one)
-        self.assertNotIn(str(first), two)
-        self.assertNotIn('slice193-', one)
+    def render(self, dump_lines='', readback=0):
+        return harness.GS_INI.format(scale=1, readback=readback, cache='C:/cache', data='C:/data',
+                                     dump_lines=dump_lines)
 
-    def render(self, dump_lines=''):
-        return harness.GS_INI.format(scale=1, cache='C:/cache', data='C:/data', dump_lines=dump_lines)
+    def test_readback_option_maps_to_the_download_mode(self):
+        # TASK-116 step 0: --readback writes the launcher's HWDownloadMode into the generated ini.
+        self.assertEqual(harness.READBACK_MODES, {'accurate': 0, 'no-readbacks': 2})
+        self.assertIn('HWDownloadMode = 0\n', self.render())
+        self.assertIn('HWDownloadMode = 2\n', self.render(readback=harness.READBACK_MODES['no-readbacks']))
 
     def test_no_dump_keys_when_dumps_are_off(self):
         text = self.render()
@@ -67,6 +65,44 @@ class GsIniTests(unittest.TestCase):
         self.assertIn('DumpDir = C:/run/gs-frames', text)
         # gt4-gs treats DumpEvery = 0 as "every frame"; the harness never writes it.
         self.assertNotIn('DumpEvery = 0', text)
+
+    def test_texture_key_is_added_only_when_a_pack_is_named(self):
+        text = self.render()
+        self.assertNotIn('Textures =', text)
+        textured = harness.with_textures(text, 'C:/pack')
+        self.assertIn('[Folders]\nTextures = C:/pack\n', textured)
+        self.assertEqual(textured.count('[Folders]'), 1)
+        # PCSX2's custom-texture loader switch defaults to off; the launcher always writes it with a pack.
+        self.assertIn('[EmuCore/GS]\nLoadTextureReplacements = true\n', textured)
+        self.assertEqual(textured.count('[EmuCore/GS]'), 1)
+        with self.assertRaises(ValueError):
+            harness.with_textures('no folders section', 'C:/pack')
+
+
+class GameArgumentsTests(unittest.TestCase):
+    def test_spec2_overrides_reach_the_command_line(self):
+        arguments = harness.game_arguments('gt4vulkan-spec2.exe', 'run/SCUS_973.28', 'spec2.iso', 'run/card.ps2',
+                                           4200, ['600:start:30'])
+        self.assertEqual(arguments[0], 'gt4vulkan-spec2.exe')
+        self.assertIn('spec2.iso', arguments)
+        self.assertEqual(arguments[arguments.index('--frames') + 1], '4200')
+        self.assertIn('600:start:30', arguments)
+        # pcsx2 mode never passes the donor dump switches (the GS process dumps with DumpEvery).
+        self.assertNotIn('--frames-dir', arguments)
+
+    def test_donor_mode_keeps_the_frame_dump_switches(self):
+        arguments = harness.game_arguments('gt4vulkan.exe', 'run/SCUS_973.28', 'day.iso', 'run/card.ps2',
+                                           100, [], donor_frames_dir='run/frames', frame_every=50)
+        self.assertIn('--frames-dir', arguments)
+        self.assertEqual(arguments[arguments.index('--frame-every') + 1], '50')
+
+
+class CardOverrideTests(unittest.TestCase):
+    def test_card_option_is_offered_for_owner_card_runs(self):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/frame_cost_headless.py'), '--help'],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--card', result.stdout)
 
 
 class RuntimePinTests(unittest.TestCase):

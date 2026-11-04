@@ -16,8 +16,44 @@ constexpr int trigger_full = 255;
 constexpr int trigger_default_deadzone = 30; // XINPUT_GAMEPAD_TRIGGER_THRESHOLD
 constexpr int stick_positive_full = 32767;
 constexpr int stick_negative_full = 32768;
-constexpr int left_stick_deadzone = 7849; // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
-constexpr int right_stick_deadzone = 8689; // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
+// TASK-147: 10% of the travel on both sticks. They were the XInput constants 7849 and 8689 (24% and 26.5%), which stacked
+// on the game's own stick dead zone (game_stick_byte below): nothing up to about 46% of the travel, then 1.9 times too steep.
+constexpr int left_stick_deadzone = 3277;
+constexpr int right_stick_deadzone = 3277;
+
+// TASK-147: GT4 turns the pressure byte p of the button assigned to a function into min(100 * min(2p, 256) / d, 256),
+// with d = 35 for the throttle and 65 for the brake (v2.00 0x0043BEE8 and 0x0043BF48, Spec II 0x00319194 and 0x003191F0,
+// read in the translated code; Confirmed): 100% throttle from p = 45 and 100% brake from p = 84, made for the DualShock 2's
+// pressure buttons. A trigger that drives the whole byte reached 100% throttle at about 27% of its travel and 100% brake at
+// about 40% (owner and players: "full at a third of the trigger"). A trigger on R2, the throttle in the usual trigger setup,
+// now spans 0..45 over its travel and one on L2, the brake, 0..84: 100% at the end of the travel, with the game's own steps
+// (46 for the throttle, 85 for the brake, as many as a DualShock 2 gives). The option `range` changes it per binding.
+constexpr std::uint8_t r2_pressure_full = 45;
+constexpr std::uint8_t l2_pressure_full = 84;
+
+// TASK-147: GT4's remapper turns a stick byte b into out = (128b + 45) / 90 below 90, 128 from 90 to 165, and
+// 128 + (127(b - 165) + 45) / 90 above 165 (integer division; the knot table, 0, 90, 165, 255 to 0, 128, 128, 255, is at
+// v2.00 0x0064C4D8 and Spec II 0x00681088, byte for byte the same; Confirmed): a dead zone of 29% of each half, and steering is
+// -32 (out - 128). A reading `steps` (1..127 to the right, 1..128 to the left) away from rest becomes the byte past that
+// band in the same proportion, 165 + round(90 steps / 127) or 90 - round(90 steps / 128), so the game sees this binding's
+// own linear reading with no second dead zone: from the first step, to the nearest of the game's steps (it has 90 bytes
+// for 127 steps beyond its band, so out - 128 is within one step of `steps`). The right stick as throttle or brake (curve
+// 37..127 of its one-sided magnitude) starts from the same bytes, 89 and 166.
+std::uint8_t game_stick_byte(int steps, bool negative) {
+  if (steps <= 0)
+    return 128;
+  if (!negative)
+    return static_cast<std::uint8_t>(165 + (180 * steps + 127) / 254);
+  return static_cast<std::uint8_t>(90 - (180 * steps + 128) / 256);
+}
+
+std::uint8_t default_pressure_full(std::string_view input_name) {
+  if (input_name == "r2")
+    return r2_pressure_full;
+  if (input_name == "l2")
+    return l2_pressure_full;
+  return static_cast<std::uint8_t>(trigger_full);
+}
 
 // Virtual-key codes (Win32 VK_*), listed here so this file needs no Windows headers.
 constexpr std::uint8_t vk_back = 0x08, vk_tab = 0x09, vk_return = 0x0D, vk_shift = 0x10,
@@ -244,6 +280,8 @@ Binding parse_source(std::string_view text, const InputInfo &input, const std::s
     return binding;
   }
   binding.deadzone = default_deadzone(binding.kind, binding.source_index);
+  if (binding.kind == SourceKind::xinput_trigger)
+    binding.pressure_full = default_pressure_full(input.name);
 
   std::istringstream tokens(options_text);
   std::string token;
@@ -281,6 +319,28 @@ Binding parse_source(std::string_view text, const InputInfo &input, const std::s
         binding.curve = Curve::logarithmic;
       else
         fail(source, line, "curve must be linear, quadratic, cubic, s_curve, smooth_power, sublinear or logarithmic");
+    } else if (option == "range") {
+      if (binding.kind != SourceKind::xinput_trigger)
+        fail(source, line, "range applies to triggers only");
+      const double full = parse_number(value, source, line, option);
+      if (full < 1.0 || full > 255.0 || full != std::floor(full))
+        fail(source, line, "range must be a whole number from 1 to 255");
+      binding.pressure_full = static_cast<std::uint8_t>(full);
+    } else if (option == "range_full") {
+      // TASK-161: the pressure at full travel when the game's full trigger range is on.
+      if (binding.kind != SourceKind::xinput_trigger)
+        fail(source, line, "range_full applies to triggers only");
+      const double full = parse_number(value, source, line, option);
+      if (full < 1.0 || full > 255.0 || full != std::floor(full))
+        fail(source, line, "range_full must be a whole number from 1 to 255");
+      binding.pressure_full_wide = static_cast<std::uint8_t>(full);
+    } else if (option == "game_deadzone") {
+      if (binding.kind != SourceKind::xinput_axis)
+        fail(source, line, "game_deadzone applies to stick axes only");
+      const std::string mode = lower(value);
+      if (mode != "skip" && mode != "keep")
+        fail(source, line, "game_deadzone must be skip or keep");
+      binding.skip_game_deadzone = mode == "skip";
     } else if (option == "invert") {
       if (binding.kind != SourceKind::xinput_axis)
         fail(source, line, "invert applies to stick axes only");
@@ -302,11 +362,12 @@ Binding button(std::uint16_t mask) {
   return binding;
 }
 
-Binding trigger(std::uint8_t index) {
+Binding trigger(std::uint8_t index, std::string_view input_name) {
   Binding binding;
   binding.kind = SourceKind::xinput_trigger;
   binding.source_index = index;
   binding.deadzone = default_deadzone(SourceKind::xinput_trigger, index);
+  binding.pressure_full = default_pressure_full(input_name);
   return binding;
 }
 
@@ -400,8 +461,8 @@ const ControlMap &default_controls() {
     set("l1", {button(xinput::left_shoulder), key('Q')});
     set("r1", {button(xinput::right_shoulder), key(vk_shift)});
     // Triggers are pressure-sensitive L2/R2, like PCSX2's default XInput map.
-    set("l2", {trigger(0), key('F')});
-    set("r2", {trigger(1), key('R')});
+    set("l2", {trigger(0, "l2"), key('F')});
+    set("r2", {trigger(1, "r2"), key('R')});
     set("l3", {button(xinput::left_thumb)});
     set("r3", {button(xinput::right_thumb)});
     // Select is the camera (C or Tab).
@@ -510,19 +571,41 @@ std::vector<KeyboardBinding> keyboard_bindings(const ControlMap &map) {
   return result;
 }
 
+namespace {
+PressureScale g_pressure_scale = PressureScale::stock;
+}
+
+void set_pressure_scale(PressureScale scale) { g_pressure_scale = scale; }
+
+PressureScale pressure_scale() { return g_pressure_scale; }
+
+std::uint8_t pressure_full_for(const Binding &binding, PressureScale scale) {
+  return scale == PressureScale::full ? binding.pressure_full_wide : binding.pressure_full;
+}
+
 TriggerReading read_trigger(const Binding &binding, std::uint8_t raw) {
+  return read_trigger(binding, raw, g_pressure_scale);
+}
+
+TriggerReading read_trigger(const Binding &binding, std::uint8_t raw, PressureScale scale) {
+  const int full = pressure_full_for(binding, scale);
   const int deadzone = deadzone_raw(binding, trigger_full);
   if (raw <= deadzone)
     return {};
   const int range = trigger_full - deadzone;
   const int distance = raw - deadzone;
   int pressure = 0;
-  if (is_default_shape(binding)) {
+  if (is_default_shape(binding) && full == trigger_full) {
     pressure = distance * trigger_full / range;
   } else {
     const double fraction = std::min(1.0, static_cast<double>(distance) / range);
     const double shaped = std::min(1.0, shape(fraction, binding.curve) * binding.scale);
-    pressure = static_cast<int>(std::floor(shaped * trigger_full));
+    if (full == trigger_full) {
+      pressure = static_cast<int>(std::floor(shaped * trigger_full));
+    } else {
+      // TASK-147: to the nearest of the game's steps, so a trigger a hair short of its end still gives the game's 100%.
+      pressure = static_cast<int>(std::lround(shaped * full));
+    }
   }
   return {true, static_cast<std::uint8_t>(std::clamp(pressure, 0, trigger_full))};
 }
@@ -546,6 +629,8 @@ std::uint8_t read_axis(const Binding &binding, std::int16_t raw) {
     const double shaped = std::min(1.0, shape(fraction, binding.curve) * binding.scale);
     steps = static_cast<int>(std::floor(shaped * (negative ? 128.0 : 127.0)));
   }
+  if (binding.skip_game_deadzone)
+    return game_stick_byte(steps, negative);
   return static_cast<std::uint8_t>(negative ? 128 - steps : 128 + steps);
 }
 

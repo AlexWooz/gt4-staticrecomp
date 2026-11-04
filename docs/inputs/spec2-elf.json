@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "schema": "spec2-elf/1",
+  "iso": {
+    "size_bytes": 3683418112,
+    "sha256": "6a3484b9672c10a92154ecee6faa5bbcfd4ed8cd538d8283e429c3fe6e1704b2"
+  },
+  "original": {
+    "size_bytes": 6520944,
+    "sha256": "db08421bc26bdc0298e80cb02a8f2067ddf640f0575af5dfe0548f1fd73ac39d"
+  },
+  "derived": {
+    "size_bytes": 6520944,
+    "sha256": "36f60b1a989b343e98ca55b1f07f051aa83a3fa1a4fcb4acb409adb148afc640"
+  },
+  "patches_applied": 35,
+  "patches_reverted": 0,
+  "layout": {
+    "text": {
+      "va": 1048576,
+      "size_bytes": 5635004
+    },
+    "data": {
+      "va": 6683648,
+      "size_bytes": 869884
+    },
+    "plugin": {
+      "va": 6857856,
+      "size_bytes": 11468,
+      "note": "kept as translatable code; its five jal hooks and its init are translated"
+    }
+  },
+  "entry_call": {
+    "address": 1049064,
+    "kept": true,
+    "reason": "the beta's own boot initialiser (0x005E3AA8) and one further game call are made from the plugin init, so the call is kept; the runtime stores are redundant"
+  },
+  "tool": "scripts/spec2_elf_patch.py"
+}

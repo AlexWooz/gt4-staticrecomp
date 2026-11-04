@@ -15,6 +15,7 @@ use std::fmt;
 /// have their own pages).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
+    General,
     Graphics,
     Display,
     Advanced,
@@ -44,9 +45,19 @@ pub enum Kind {
     /// (`display::monitor_id`). The list of choices comes from the platform at run time, so any well-formed
     /// identifier is accepted here; a monitor that is gone resolves to the primary one (`display::resolve_monitor`).
     Monitor,
+    /// The graphics card that renders the game (TASK-108): `auto` (Automatic), or the name of a card as the launcher
+    /// lists it. The list comes from the platform at run time; a card that is gone falls back to Automatic for that run.
+    Gpu,
     /// An output resolution (TASK-080 addendum): `desktop` (the monitor's desktop mode) or `<W>x<H>`. A size the
     /// chosen monitor does not support resolves to its desktop mode (`display::resolve_resolution`).
     Resolution,
+    /// The launcher's language (TASK-102): `auto`, or a tag listed in `ui/locales/index.json` (`language::LANGUAGE_TAGS`).
+    /// The choices come from that list, not from this table.
+    Language,
+    /// The controller the game reads (TASK-148): `auto` (controller 1), or `<guid>` / `<guid>/<serial>` of a controller
+    /// (`controller::PadChoice`). Chosen on the Controls page from the pads connected now; a controller that is gone falls
+    /// back to controller 1 for that run.
+    Controller,
 }
 
 /// One row of a Settings page.
@@ -67,12 +78,30 @@ pub struct SettingDef {
 
 /// The PCSX2 GS in its own process (downloaded, default when installed). Decision 0070.
 pub const PCSX2_GS: &str = "pcsx2";
-/// Our own hardware renderer, not built yet ("coming soon"). It cannot be selected.
+/// Our own hardware renderer, inside the game executable (beta).
 pub const CORE_GS_20: &str = "coregs20";
 
 const RENDERER_CHOICES: &[Choice] = &[
     Choice { value: PCSX2_GS, label: "GSdx", selectable: true },
-    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (coming soon)", selectable: false },
+    Choice { value: CORE_GS_20, label: "CoreGS 2.0 (recommended)", selectable: true },
+];
+
+/// The strength of CoreGS 2.0's FSR1 sharpening (GSdx has CAS instead).
+const FRAME_RATE_CHOICES: &[Choice] = &[
+    Choice { value: "60", label: "60 FPS", selectable: true },
+    Choice { value: "30", label: "30 FPS", selectable: true },
+];
+
+const COREGS_SHARPENING_CHOICES: &[Choice] = &[
+    Choice { value: "off", label: "Off", selectable: true },
+    Choice { value: "mild", label: "Mild", selectable: true },
+    Choice { value: "medium", label: "Medium", selectable: true },
+    Choice { value: "strong", label: "Strong", selectable: true },
+];
+
+const CHANNEL_CHOICES: &[Choice] = &[
+    Choice { value: "stable", label: "Stable", selectable: true },
+    Choice { value: "beta", label: "Beta", selectable: true },
 ];
 
 const VSYNC_CHOICES: &[Choice] = &[
@@ -92,12 +121,55 @@ const TOGGLE: Kind = Kind::Toggle;
 /// Every user setting, in display order. Ids are the TOML keys.
 pub const SETTINGS: &[SettingDef] = &[
     SettingDef {
+        id: "controller",
+        page: Page::General,
+        group: "Controls",
+        title: "Controller",
+        info: "The controller the game reads. At every start the launcher selects a connected controller: the one chosen last time, or else the first one connected.",
+        kind: Kind::Controller,
+        default: crate::controller::AUTO_CONTROLLER,
+        connected: true,
+    },
+    SettingDef {
+        id: "trigger_full_range",
+        page: Page::General,
+        group: "Controls",
+        title: "Full trigger range",
+        info: "Throttle and brake follow the whole travel of the triggers in finer steps: about 255 levels instead of the game's \
+               own 46 for the throttle and 85 for the brake, still 100% at the end of the travel. Off is the game as it was \
+               made.",
+        kind: TOGGLE,
+        // On by default since the owner's rc14 test (2026-11-04).
+        default: "on",
+        connected: true,
+    },
+    SettingDef {
+        id: "language",
+        page: Page::General,
+        group: "Language",
+        title: "Language",
+        info: "The language of the launcher. Auto follows your Windows language (Portuguese (Brazil) or English); the other two choices always use that language.",
+        kind: Kind::Language,
+        default: "auto",
+        connected: true,
+    },
+    SettingDef {
+        id: "update_channel",
+        page: Page::General,
+        group: "Language",
+        title: "Channel",
+        info: "Stable gets the normal releases. Beta also gets the release candidates, to test new features early.                Going back to Stable never installs an older version by itself.",
+        kind: Kind::Choice(CHANNEL_CHOICES),
+        default: "stable",
+        connected: true,
+    },
+    SettingDef {
         id: "renderer",
         page: Page::Graphics,
         group: "Renderer",
         title: "Renderer",
-        info: "GSdx draws the game on your GPU in its own process; it is the renderer GT4Recomp uses. CoreGS 2.0, \
-               our own renderer, is in development.",
+        info: "CoreGS 2.0 is our own renderer and the recommended one: it is part of the game and uses much less processor. \
+               GSdx is optional: it is downloaded when you choose it.",
         kind: Kind::Choice(RENDERER_CHOICES),
         default: PCSX2_GS,
         connected: true,
@@ -114,6 +186,36 @@ pub const SETTINGS: &[SettingDef] = &[
             step: crate::display::RENDER_SCALE_STEP,
         },
         default: "100",
+        connected: true,
+    },
+    SettingDef {
+        id: "frame_rate",
+        page: Page::Graphics,
+        group: "Performance",
+        title: "Frame rate (experimental)",
+        info: "60 FPS is the default: in a race, when the PC cannot keep up, the frame rate drops instead of the game slowing down, with the same physics. The 30 FPS mode is for weaker PCs: races draw 30 frames per second. Both are experimental; menus stay at 60.",
+        kind: Kind::Choice(FRAME_RATE_CHOICES),
+        default: "60",
+        connected: true,
+    },
+    SettingDef {
+        id: "coregs_sharpening",
+        page: Page::Graphics,
+        group: "Image",
+        title: "Sharpening (FSR1)",
+        info: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
+        kind: Kind::Choice(COREGS_SHARPENING_CHOICES),
+        default: "off",
+        connected: true,
+    },
+    SettingDef {
+        id: "graphics_card",
+        page: Page::Graphics,
+        group: "Image",
+        title: "Graphics card",
+        info: "The graphics card that draws the game. Automatic picks a dedicated card over integrated graphics, then the one with the most video memory.",
+        kind: Kind::Gpu,
+        default: "auto",
         connected: true,
     },
     SettingDef {
@@ -158,13 +260,14 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
-        id: "async_gs",
+        id: "performance_hud",
         page: Page::Advanced,
         group: "Performance",
-        title: "Asynchronous GS",
-        info: "Sends graphics work to the GPU without waiting. Needed for full speed; turn off only to compare.",
+        title: "Performance HUD",
+        info: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the \
+               processor, the graphics card and memory.",
         kind: TOGGLE,
-        default: "on",
+        default: "off",
         connected: true,
     },
     SettingDef {
@@ -187,6 +290,16 @@ pub const SETTINGS: &[SettingDef] = &[
         default: "off",
         connected: true,
     },
+    SettingDef {
+        id: "discord_rich_presence",
+        page: Page::General,
+        group: "Discord",
+        title: "Discord Rich Presence",
+        info: "Shows that you are playing Gran Turismo 4 or Gran Turismo 4 Spec II in your Discord profile while a game is running. The game name, GT4Recomp and the session time are shown. No mode, track, car, save, account or path is shared. On by default; turn off to keep your play private.",
+        kind: TOGGLE,
+        default: "on",
+        connected: true,
+    },
 ];
 
 /// Settings that earlier launchers stored and that are now fixed (owner, 2026-10-21). A value of one of these in
@@ -194,6 +307,7 @@ pub const SETTINGS: &[SettingDef] = &[
 /// needed because the launcher no longer reads them. The game always gets the fixed value (`launch.rs`).
 pub const RETIRED_SETTINGS: &[(&str, &str)] = &[
     ("input_resolution", "the game always runs at 480p (GT4_FORCE_480P=1)"),
+    ("async_gs", "graphics work always goes to the GPU without waiting; GT4_GS_SYNC stays a developer switch of the game"),
     ("widescreen", "the game's own 16:9 is always on (GT4_FORCE_WIDESCREEN=1); the Resolution sets the screen shape"),
     ("aspect_ratio", "the aspect is always the Resolution's shape (TASK-080 addendum)"),
     ("aspect_custom", "the aspect is always the Resolution's shape (TASK-080 addendum)"),
@@ -264,11 +378,37 @@ pub fn validate(definition: &SettingDef, value: &str) -> Result<String, SettingE
             Ok(number) if (min..=max).contains(&number) && (number - min) % step.max(1) == 0 => Ok(number.to_string()),
             _ => Err(invalid()),
         },
+        Kind::Gpu => {
+            let name = value.trim();
+            if !name.is_empty() && name.len() <= 256 && !name.chars().any(|c| c.is_control()) {
+                Ok(name.to_string())
+            } else {
+                Err(invalid())
+            }
+        }
         Kind::Monitor => {
             if value == crate::display::PRIMARY || crate::display::parse_monitor_id(value).is_some() {
                 Ok(value.to_string())
             } else {
                 Err(invalid())
+            }
+        }
+        Kind::Controller => {
+            if value == crate::controller::AUTO_CONTROLLER {
+                return Ok(value.to_string());
+            }
+            match crate::controller::PadChoice::parse(value) {
+                Some(choice) => Ok(crate::controller::PadChoice::key(&choice.guid, &choice.serial)),
+                None => Err(invalid()),
+            }
+        }
+        Kind::Language => {
+            if value == "auto" {
+                return Ok(value.to_string());
+            }
+            match crate::language::Language::from_tag(value) {
+                Some(language) => Ok(language.tag().to_string()),
+                None => Err(invalid()),
             }
         }
         Kind::Resolution => {
@@ -382,6 +522,19 @@ impl Settings {
         Ok(())
     }
 
+    /// Sets a PCSX2 GS value for one run, without the table's checks: the run's resolved API, card and Adapter
+    /// (TASK-108). `None` removes the value, so the game's own default applies. Never stored in settings.toml.
+    pub fn set_run_gs(&mut self, id: &str, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                self.gs.insert(id.to_string(), value.to_string());
+            }
+            None => {
+                self.gs.remove(id);
+            }
+        }
+    }
+
     /// Drops every PCSX2 GS value the user set, so each table row is back at its default.
     pub fn clear_gs(&mut self) {
         self.gs.clear();
@@ -390,5 +543,25 @@ impl Settings {
     /// The PCSX2 GS values the user has set (only these are stored in `settings.toml`).
     pub fn gs_overrides(&self) -> &BTreeMap<String, String> {
         &self.gs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_language_setting_takes_auto_and_the_listed_languages_only() {
+        let definition = definition("language").expect("the language row");
+        assert_eq!(definition.default, "auto");
+        for value in ["auto", "en-US", "pt-BR"] {
+            assert_eq!(validate(definition, value).as_deref(), Ok(value), "{value}");
+        }
+        // Spelling of a listed tag is normalised to the tag of index.json.
+        assert_eq!(validate(definition, "pt_BR").as_deref(), Ok("pt-BR"));
+        assert_eq!(validate(definition, "pt-br").as_deref(), Ok("pt-BR"));
+        for value in ["fr-FR", "xx", ""] {
+            assert!(validate(definition, value).is_err(), "{value:?} is not a language of the launcher");
+        }
     }
 }

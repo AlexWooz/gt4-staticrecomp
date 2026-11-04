@@ -12,10 +12,12 @@ pub mod ecc;
 pub mod folder;
 pub mod library;
 pub mod migration;
+pub mod names;
 pub mod psu;
 
 pub use card::{Card, CardError, DirEntry, Node};
 pub use library::{Library, LibraryError, LibraryPaths, Report};
+pub use names::SaveNames;
 
 /// Current UTC time as (year, month, day, hour, minute, second).
 fn utc_now() -> (i64, i64, i64, i64, i64, i64) {

@@ -110,7 +110,7 @@ from external_runtime_probe import GS_SETTINGS_ENV, PERF_PROFILES, VU1_RECORD_MA
 import gs_settings
 
 # Modes that run the live PCSX2 GS package and accept the GS options (TASK-017 license-guard is pcsx2 plus the guard).
-PCSX2_MODES = ('pcsx2', 'license-guard', 'pcsx2-coverage')
+PCSX2_MODES = ('pcsx2', 'pcsx2-slice268', 'license-guard', 'pcsx2-coverage')
 
 MODES = tuple(PERF_PROFILES) + ('vu1-record',)
 # TASK-060/061/062 (owner decision 2026-10-16): the internal-resolution presets of the settings table (upscale row),

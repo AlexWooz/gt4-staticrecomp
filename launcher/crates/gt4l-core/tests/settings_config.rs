@@ -17,13 +17,11 @@ fn every_definition_id_is_unique_and_has_a_valid_default() {
 }
 
 #[test]
-fn renderer_is_gsdx_and_neither_coregs_build_can_be_selected() {
+fn renderer_defaults_to_gsdx_and_coregs20_can_be_selected() {
     let mut settings = Settings::default();
     assert_eq!(settings.get("renderer"), "pcsx2");
-    assert_eq!(
-        settings.set("renderer", "coregs20"),
-        Err(SettingError::InvalidValue { id: "renderer".into(), value: "coregs20".into() })
-    );
+    settings.set("renderer", "coregs20").expect("CoreGS 2.0 is a beta choice");
+    settings.set("renderer", "pcsx2").unwrap();
     assert_eq!(
         settings.set("renderer", "coregs11"),
         Err(SettingError::InvalidValue { id: "renderer".into(), value: "coregs11".into() }),
@@ -95,10 +93,29 @@ fn config_round_trip_keeps_values_and_paths() {
     config.settings.set("render_scale", "175").unwrap();
     config.settings.set_gs("performance_mode", "no-readbacks").unwrap();
     config.disc_path = Some(r#"D:\Games\Gran Turismo 4 "quoted" (USA).iso"#.into());
+    config.textures_path = Some(r"E:\Emulators\PCSX2\textures".into());
     config.dev_game_dir = Some(r"C:\Antigravity\build\game".into());
     let text = config::render(&config);
     let (parsed, warnings) = config::parse(&text).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(parsed, config);
+}
+
+#[test]
+fn textures_path_is_optional_and_keeps_windows_backslashes() {
+    // No key, no choice (no schema bump).
+    let (absent, warnings) = config::parse("schema_version = 8\n[install]\ndisc_path = \"D:/gt4.iso\"\n").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(absent.textures_path, None);
+    assert!(!config::render(&absent).contains("textures_path"));
+
+    let mut config = ConfigFile::default();
+    config.textures_path = Some(r"E:\Emulators\PCSX2\textures".into());
+    let text = config::render(&config);
+    assert!(text.contains("[install]\ntextures_path = \"E:\\\\Emulators\\\\PCSX2\\\\textures\"\n"), "{text}");
+    let (parsed, warnings) = config::parse(&text).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(parsed.textures_path.as_deref(), Some(std::path::Path::new(r"E:\Emulators\PCSX2\textures")));
     assert_eq!(parsed, config);
 }
 

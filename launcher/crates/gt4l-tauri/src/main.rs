@@ -5,6 +5,7 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod commands;
+mod discord_presence;
 #[cfg(test)]
 mod contract;
 #[cfg(test)]
@@ -15,6 +16,8 @@ mod pad_service;
 mod relocation;
 mod renderer_switch;
 mod saves;
+mod log_bundle;
+mod session_log;
 mod setup;
 mod state;
 mod tray;
@@ -28,7 +31,7 @@ use std::time::Instant;
 
 use tauri::Manager;
 
-use gt4l_core::LAUNCHER_DISPLAY_VERSION;
+use gt4l_core::LAUNCHER_VERSION;
 
 fn main() {
     // TASK-091 (1.2.1 start-up timings): the time from this point to `ui_ready` is logged, with the steps before the window.
@@ -36,7 +39,16 @@ fn main() {
     // A second launcher brings the first window forward instead of starting. A restart in safe mode (TASK-091) waits
     // for the launcher that is exiting instead.
     let restarted = webview_guard::restart_requested(std::env::args().skip(1));
-    let claimed = if restarted {
+    let portable = gt4l_core::build_kind::BUILD.is_portable();
+    let exe_dir = updates::install_directory();
+    if portable {
+        // TASK-098: the lock belongs to this folder, so two portable copies (or a portable and the installed one) on one PC do
+        // not block each other, and one copy cannot start twice.
+        gt4l_platform::process::set_single_instance_scope(&exe_dir);
+    }
+    // A launcher started by the portable self-update waits for the old one to exit, as a safe-mode restart does.
+    let after_update = std::env::args().skip(1).any(|argument| argument == gt4l_core::portable_update::RESTART_ARGUMENT);
+    let claimed = if restarted || after_update {
         gt4l_platform::process::claim_single_instance_retrying(
             webview_guard::RESTART_CLAIM_TIMEOUT,
             webview_guard::RESTART_CLAIM_STEP,
@@ -49,17 +61,37 @@ fn main() {
     }
     // TASK-091: large data in `<exe dir>\data` (portable), user data in `%APPDATA%\GT4Recomp`. The 1.2.0 user
     // data moves here, before the window; the large data moves in the background below.
-    let exe_dir = updates::install_directory();
     let startup = match relocation::prepare(&exe_dir) {
         Ok(startup) => startup,
         Err(message) => {
             eprintln!("GT4Recomp cannot find its folders: {message}");
+            // No window and no console: a portable folder that cannot be written gets a native message.
+            if portable {
+                gt4l_platform::dialog::error_box_ok("GT4Recomp", &message);
+            }
             return;
         }
     };
     let dirs = startup.layout.data.clone();
     let _ = std::fs::create_dir_all(dirs.root());
-    state::log(&dirs, &format!("GT4Recomp {LAUNCHER_DISPLAY_VERSION} starting from {}", exe_dir.display()));
+    // TASK-112: one log file for this launch, with a header (version, install kind, Windows, date).
+    let header = vec![
+        format!("GT4Recomp {}", gt4l_core::LAUNCHER_VERSION),
+        format!("Install: {}", if portable { "portable" } else { "installer" }),
+        format!("Windows: {}", gt4l_platform::system::windows_version()),
+        format!("Date: {}", gt4l_core::logs::LocalTime::stamp(&gt4l_platform::system::local_time())),
+    ];
+    if let Err(message) = session_log::start(&dirs, &header) {
+        eprintln!("GT4Recomp cannot open its log: {message}");
+    }
+    if portable {
+        // TASK-098: finish or undo the previous update before anything reads the program files.
+        updates::portable_start_cleanup(&dirs, &exe_dir);
+    }
+    state::log(
+        &dirs,
+        &format!("GT4Recomp {LAUNCHER_VERSION} ({} build) starting from {}", gt4l_core::build_kind::BUILD.label(), exe_dir.display()),
+    );
     state::log(&dirs, &format!("start-up: data layout and relocation ready after {} ms", started.elapsed().as_millis()));
     for line in &startup.log {
         state::log(&dirs, line);
@@ -97,7 +129,7 @@ fn main() {
     let mut app_state = match state::AppState::load(dirs.clone(), startup.user.clone(), startup.layout.legacy.local.clone()) {
         Ok(app_state) => app_state,
         Err(message) => {
-            state::log(&dirs, &format!("the launcher could not start: {message}"));
+            state::log_error(&dirs, &format!("the launcher could not start: {message}"));
             return;
         }
     };
@@ -113,10 +145,18 @@ fn main() {
 
     let shared: state::Shared = Arc::new(Mutex::new(app_state));
     let dirs_for_setup = dirs.clone();
+    let shared_for_check = shared.clone();
     let guard_for_setup = guard.clone();
+    let mut context = tauri::generate_context!();
+    if portable {
+        // TASK-098: the web view keeps its profile in `data\launcher-webview`, not in %LOCALAPPDATA%, so a portable copy
+        // leaves nothing in the system folders.
+        context.config_mut().app.app_directories_override =
+            Some(tauri::utils::config::AppDirectoriesOverride::Root(dirs.root().join("launcher-webview")));
+    }
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(shared)
+        .manage(shared.clone())
         .manage(guard.clone())
         .setup(move |app| {
             tray::install(app)?;
@@ -132,6 +172,10 @@ fn main() {
             std::thread::spawn(move || {
                 relocation::move_large_data(&launch_shared, &legacy);
                 relocation::flatten_textures(&launch_shared);
+                // TASK-097: the files a direct start of the game reads (game.ini, gt4-gs.ini) follow the saved settings.
+                let launch_state = state::lock(&launch_shared);
+                launch_state.write_standalone_files(&launch_state.config.settings);
+                drop(launch_state);
                 updates::check_on_launch(launch_app, launch_shared);
             });
             // TASK-091 (1.2.1): the old per-user install clean-up runs in the background, after the window exists.
@@ -143,12 +187,22 @@ fn main() {
                 }
                 state::log(&clean_dirs, &format!("start-up: old install clean-up finished in {} ms", began.elapsed().as_millis()));
             });
-            // TASK-081: probe the processor and Vulkan once in the background, so Play does not wait for the driver
-            // to load; a problem is logged here and shown when the player starts setup or Play.
+            // TASK-081: probe the processor once in the background; a problem is logged here and shown when the player
+            // starts setup or Play. TASK-108: the graphics cards are listed too, so the log shows what Play will choose from.
             let check_dirs = dirs_for_setup.clone();
-            std::thread::spawn(move || match gt4l_platform::system::requirements_problem() {
-                Some(problem) => state::log(&check_dirs, &format!("system requirement not met: {problem}")),
-                None => state::log(&check_dirs, "system requirements: processor and Vulkan OK"),
+            let language = state::language_of(&state::lock(&shared_for_check));
+            std::thread::spawn(move || {
+                match gt4l_platform::system::processor_problem(language) {
+                    Some(problem) => state::log(&check_dirs, &format!("system requirement not met: {problem}")),
+                    None => state::log(&check_dirs, "system requirements: processor OK"),
+                }
+                let (cards, inputs) = gt4l_platform::gpu::probe_gpus_with_inputs();
+                for line in &inputs {
+                    state::log(&check_dirs, line);
+                }
+                state::log(&check_dirs, &format!("graphics: cards [{}]", gt4l_platform::gpu::card_list(&cards)));
+                // TASK-114 rc5: the Settings page, the saves and the log read this list; Play refreshes it.
+                gt4l_platform::gpu::store_gpus(cards);
             });
             Ok(())
         })
@@ -166,19 +220,31 @@ fn main() {
             commands::get_settings_table,
             commands::set_setting,
             commands::reset_gs_settings_to_defaults,
+            renderer_switch::gsdx_download_needed,
+            renderer_switch::download_gsdx,
+            renderer_switch::install_gsdx_archive,
+            renderer_switch::coregs20_offer,
+            renderer_switch::use_coregs20,
             setup::setup_choose_disc,
             setup::setup_start,
             setup::setup_cancel,
+            commands::prepare_shaders,
+            commands::cancel_shader_prepare,
             commands::play,
+            commands::first_start_hint,
             commands::stop_game,
             commands::saves_list,
             commands::saves_import,
             commands::saves_activate,
             commands::saves_delete,
+            commands::saves_new,
+            commands::saves_export,
+            commands::saves_rename,
             commands::replays_list,
             commands::replays_import,
             commands::replays_delete,
             webview_guard::ui_ready,
+            webview_guard::ui_log,
             commands::get_controls,
             commands::pad_status,
             commands::capture_binding,
@@ -187,25 +253,40 @@ fn main() {
             commands::assign_binding,
             commands::reset_all_bindings,
             commands::about_info,
+            commands::release_notes,
+            commands::open_link,
             commands::open_log_folder,
+            commands::open_latest_log,
+            commands::export_logs,
+            commands::open_export_folder,
             commands::open_game_files_folder,
             commands::open_player_folder,
             commands::open_saves_folder,
             commands::open_replays_folder,
             commands::open_textures_folder,
-            updates::check_updates,
-            updates::apply_update,
-            updates::skip_update,
-            tray::confirm_close,
+            commands::textures_state,
+            commands::choose_textures_folder,
+            commands::reset_textures_folder,
+            commands::games_list,
+            commands::select_game,
+            commands::games_remove,
             commands::ra_status,
             commands::ra_login,
             commands::ra_logout,
             commands::ra_set_options,
+            updates::check_updates,
+            updates::list_launcher_versions,
+            updates::install_launcher_version,
+            updates::apply_update,
+            updates::skip_update,
+            tray::confirm_close,
         ])
-        .run(tauri::generate_context!());
+        .run(context);
     // TASK-091: a web view that could not start (WebView2 missing) gets the native message, not a silent exit.
     if let Err(error) = run_result {
-        state::log(&dirs, &format!("WebView2 is missing or could not start: {error}"));
+        state::log_error(&dirs, &format!("WebView2 is missing or could not start: {error}"));
         webview_guard::show_failure(&dirs, webview_guard::Problem::Missing);
     }
+    // Clear Discord presence on launcher exit.
+    state::lock(&shared).discord.on_launcher_exit();
 }

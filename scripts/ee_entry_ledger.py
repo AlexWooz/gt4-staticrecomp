@@ -321,13 +321,13 @@ def confidence_of(sources, prologue, word):
     return 'low'
 
 
-def build_ledger(assets_root, names_path, decomp_root=None):
-    elf_path = assets_root / ELF_RELATIVE
-    generated = assets_root / GENERATED_RELATIVE
+def build_ledger(assets_root, names_path, decomp_root=None, elf_path=None, generated=None):
+    elf_path = elf_path or assets_root / ELF_RELATIVE
+    generated = generated or assets_root / GENERATED_RELATIVE
     image = Image(load_segments(elf_path.read_bytes()))
     flow = scan_control_flow(image)
 
-    decomp_names = read_names_csv(names_path)
+    decomp_names = read_names_csv(names_path) if names_path is not None else {}
     decomp_commit = 'not read (no --decomp clone)'
     decomp_clone_names = {}
     if decomp_root is not None:
@@ -375,9 +375,10 @@ def build_ledger(assets_root, names_path, decomp_root=None):
         'luipair_wide_window_addresses': sorted(wide_luipair),
         'no_frame_after_jump': no_frame_after_jump,
         'decomp_commit': decomp_commit,
-        'inputs': {'elf': {'path': ELF_RELATIVE, 'sha256': file_sha256(elf_path)},
-                   'names_table': {'path': str(names_path), 'sha256': file_sha256(names_path)},
-                   'generated_units_dir': GENERATED_RELATIVE,
+        'inputs': {'elf': {'path': str(elf_path), 'sha256': file_sha256(elf_path)},
+                   'names_table': None if names_path is None else {'path': str(names_path),
+                                                                  'sha256': file_sha256(names_path)},
+                   'generated_units_dir': str(generated),
                    'decomp_clone': None if decomp_root is None else str(decomp_root)},
     }
 
@@ -500,13 +501,18 @@ def main(argv=None):
     parser.add_argument('--assets-root', type=Path, default=ROOT,
                         help='checkout holding private/ (the main repository, not a worktree)')
     parser.add_argument('--names', type=Path, default=ROOT / NAMES_RELATIVE, help='name table CSV')
+    parser.add_argument('--no-names', action='store_true',
+                        help='generic sources only (a second target has no v2.00 decomp names)')
+    parser.add_argument('--elf', type=Path, help='ELF to analyse (default: the pinned v2.00 reconstruction)')
+    parser.add_argument('--generated', type=Path, help='generated unit directory (default: the v2.00 units)')
     parser.add_argument('--decomp', type=Path, help='gt4-decomp clone (config/symbol_addrs.txt, adhoc_methods.txt)')
     parser.add_argument('--output-dir', type=Path, help='fresh private directory for the ledger')
     parser.add_argument('--spot-check', type=int, default=0, help='print N seeded new candidates')
     parser.add_argument('--seed', type=int, default=207)
     args = parser.parse_args(argv)
     try:
-        result = build_ledger(args.assets_root, args.names, args.decomp)
+        result = build_ledger(args.assets_root, None if args.no_names else args.names, args.decomp,
+                              elf_path=args.elf, generated=args.generated)
         summary = summarize(result)
         if args.output_dir is not None:
             write_outputs(args.output_dir, result, summary)

@@ -12,6 +12,7 @@
 //! card from a tree. Repairing damaged cards is out of scope.
 
 use crate::ecc;
+use std::collections::HashSet;
 use std::fmt;
 
 pub const PAGE_DATA_BYTES: usize = 512;
@@ -40,20 +41,63 @@ pub const MODE_SUBDIR: u16 = 0x0020;
 pub const MODE_DIR_DEFAULT: u16 = 0x8427;
 pub const MODE_FILE_DEFAULT: u16 = 0x8497;
 
-/// Physical cluster that lists the FAT clusters (fresh cards and the owner's card).
+/// Physical cluster that lists the FAT clusters on a card the launcher builds (fresh 8 MB cards, the owner's card).
 const IFC_CLUSTER: u32 = 8;
+/// Layout of the 8 MB cards the launcher builds (the owner's card has the same values in its superblock).
 const ALLOC_OFFSET: u32 = 41;
 const ALLOC_END: u32 = 8135;
 const FAT_CLUSTERS: u32 = 32;
 const FAT_ENTRIES_PER_CLUSTER: u32 = (CLUSTER_BYTES / 4) as u32;
 
+/// Clusters per card the reader accepts: 8, 16, 32 and 64 MB (1024-byte clusters).
+pub const SUPPORTED_CLUSTERS: [u32; 4] = [8192, 16384, 32768, 65536];
+/// Deepest directory the reader follows (GT4 saves sit two levels down at most).
+pub const MAX_DIRECTORY_DEPTH: usize = 8;
+/// Entries of the superblock's indirect FAT list (each names a cluster of 256 FAT cluster numbers).
+const INDIRECT_LIST_ENTRIES: usize = 32;
+/// Superblock field offsets (page 0).
+const SB_PAGE_SIZE: usize = 0x28;
+const SB_PAGE_PER_CLUSTER: usize = 0x2A;
+const SB_CLUSTERS: usize = 0x30;
+const SB_ALLOC_OFFSET: usize = 0x34;
+const SB_ALLOC_END: usize = 0x38;
+const SB_INDIRECT_LIST: usize = 0x50;
+
+/// Where the allocation area of a card lies. Read from the superblock; the launcher's own 8 MB cards use
+/// [`Layout::EIGHT_MB`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    /// Clusters on the whole card (page count / 2).
+    pub clusters: u32,
+    /// Physical cluster of relative cluster 0 (the root directory).
+    pub alloc_offset: u32,
+    /// Relative clusters of the allocation area, counted from `alloc_offset` (on 8 MB: 41 + 8135 + 16 backup = 8192).
+    pub alloc_end: u32,
+}
+
+impl Layout {
+    /// The layout of the 8 MB cards the launcher builds.
+    pub const EIGHT_MB: Layout = Layout { clusters: 8192, alloc_offset: ALLOC_OFFSET, alloc_end: ALLOC_END };
+
+    /// Relative clusters of the allocation area (the FAT has one entry for each).
+    ///
+    /// `alloc_end` is a count relative to `alloc_offset`, not a physical cluster: on an 8 MB card 41 + 8135 + 16
+    /// backup clusters = 8192. It is capped by the room left on the card after `alloc_offset`. Cards from other
+    /// formatters (PCSX2, issue #86) hold chains past the value the old absolute reading allowed.
+    fn usable(&self) -> u32 {
+        self.alloc_end.min(self.clusters.saturating_sub(self.alloc_offset))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CardError {
-    /// The image is neither the 8 MB spare-byte form nor the 8 MB data-only form.
+    /// The image length fits no memory card form (not a PS2 memory card file).
     BadSize(usize),
+    /// The image is a card of a size the reader does not support (for example 4 MB or 128 MB).
+    Unsupported(String),
     /// The superblock magic is missing: not a PS2 memory card.
     NotACard,
-    /// A chain, directory or FAT entry points outside the card or loops.
+    /// A chain, directory or FAT entry points outside the card, loops, or a length does not match.
     Corrupt(String),
     /// The tree does not fit the free clusters of an 8 MB card.
     Full,
@@ -65,6 +109,7 @@ impl fmt::Display for CardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CardError::BadSize(size) => write!(f, "not a PS2 card image: {size} bytes"),
+            CardError::Unsupported(what) => write!(f, "unsupported card size: {what}"),
             CardError::NotACard => write!(f, "not a PS2 memory card: superblock magic missing"),
             CardError::Corrupt(what) => write!(f, "corrupt card: {what}"),
             CardError::Full => write!(f, "the save does not fit on an 8 MB card"),
@@ -219,38 +264,100 @@ impl Node {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Card {
     pages: Vec<u8>,
+    layout: Layout,
 }
 
 impl fmt::Debug for Card {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Card({} bytes)", self.pages.len())
+        write!(f, "Card({} bytes, {:?})", self.pages.len(), self.layout)
     }
 }
 
+/// The form of a card image from its length: `(pages, with spare bytes)`. A length fits only one form, because
+/// 528 and 512 share no supported page count (528/512 is 33/32, never a power of two).
+fn page_form(length: usize) -> Option<(usize, bool)> {
+    let supported = |pages: usize| SUPPORTED_CLUSTERS.iter().any(|&clusters| clusters as usize * 2 == pages);
+    if length % PAGE_BYTES == 0 && supported(length / PAGE_BYTES) {
+        return Some((length / PAGE_BYTES, true));
+    }
+    if length % PAGE_DATA_BYTES == 0 && supported(length / PAGE_DATA_BYTES) {
+        return Some((length / PAGE_DATA_BYTES, false));
+    }
+    None
+}
+
 impl Card {
-    /// Opens a card image with spare bytes, or a data-only dump (the spare bytes are then
-    /// computed). Other sizes are refused.
+    /// Opens a card image with spare bytes, or a data-only dump (the spare bytes are then computed). The size and the
+    /// layout come from the superblock and are checked against the image before anything else is read.
     pub fn from_image(bytes: &[u8]) -> Result<Self, CardError> {
-        let card = match bytes.len() {
-            IMAGE_WITH_ECC => Card { pages: bytes.to_vec() },
-            IMAGE_WITHOUT_ECC => {
-                let mut pages = Vec::with_capacity(IMAGE_WITH_ECC);
-                for page in bytes.chunks_exact(PAGE_DATA_BYTES) {
-                    pages.extend_from_slice(page);
-                    if page.iter().all(|&b| b == 0xFF) {
-                        pages.extend_from_slice(&[0xFF; PAGE_SPARE_BYTES]); // erased page
-                    } else {
-                        pages.extend_from_slice(&ecc::page_spare(page));
-                    }
-                }
-                Card { pages }
+        let Some((pages, with_spare)) = page_form(bytes.len()) else {
+            // A card by its magic, of a size the reader does not take: say so; anything else is not a card.
+            if bytes.starts_with(MAGIC) {
+                return Err(CardError::Unsupported(format!("{} bytes", bytes.len())));
             }
-            other => return Err(CardError::BadSize(other)),
+            return Err(CardError::BadSize(bytes.len()));
         };
+        let pages_bytes = if with_spare {
+            bytes.to_vec()
+        } else {
+            let mut pages_bytes = Vec::with_capacity(pages * PAGE_BYTES);
+            for page in bytes.chunks_exact(PAGE_DATA_BYTES) {
+                pages_bytes.extend_from_slice(page);
+                if page.iter().all(|&b| b == 0xFF) {
+                    pages_bytes.extend_from_slice(&[0xFF; PAGE_SPARE_BYTES]); // erased page
+                } else {
+                    pages_bytes.extend_from_slice(&ecc::page_spare(page));
+                }
+            }
+            pages_bytes
+        };
+        let mut card = Card { pages: pages_bytes, layout: Layout::EIGHT_MB };
         if !card.superblock_ok() {
             return Err(CardError::NotACard);
         }
+        card.layout = card.superblock_layout()?;
         Ok(card)
+    }
+
+    /// Size of the card in bytes (its clusters times 1024).
+    fn card_bytes(&self) -> usize {
+        self.layout.clusters as usize * CLUSTER_BYTES
+    }
+
+    /// Reads and checks the superblock's layout against the image size. Every value the reader uses later is either
+    /// checked here or checked where it is used.
+    fn superblock_layout(&self) -> Result<Layout, CardError> {
+        let image_clusters = (self.pages.len() / PAGE_BYTES / 2) as u32;
+        let page_size = self.read_u16(0, SB_PAGE_SIZE);
+        if page_size as usize != PAGE_DATA_BYTES {
+            return Err(CardError::Unsupported(format!("page size {page_size} bytes")));
+        }
+        let pages_per_cluster = self.read_u16(0, SB_PAGE_PER_CLUSTER);
+        if pages_per_cluster != 2 {
+            return Err(CardError::Corrupt(format!("{pages_per_cluster} pages per cluster")));
+        }
+        let clusters = self.read_u32(0, SB_CLUSTERS);
+        if clusters != image_clusters {
+            return Err(CardError::Corrupt(format!("superblock names {clusters} clusters, the image holds {image_clusters}")));
+        }
+        if !SUPPORTED_CLUSTERS.contains(&clusters) {
+            return Err(CardError::Unsupported(format!("{} MB", clusters as u64 * CLUSTER_BYTES as u64 / (1024 * 1024))));
+        }
+        let alloc_offset = self.read_u32(0, SB_ALLOC_OFFSET);
+        let alloc_end = self.read_u32(0, SB_ALLOC_END);
+        if alloc_offset >= clusters || alloc_end == 0 {
+            return Err(CardError::Corrupt(format!("allocation area {alloc_offset}..{alloc_end} outside {clusters} clusters")));
+        }
+        let layout = Layout { clusters, alloc_offset, alloc_end };
+        // Every FAT cluster the allocation area needs must name a cluster on this card.
+        let fat_clusters = layout.usable().div_ceil(FAT_ENTRIES_PER_CLUSTER);
+        for fat_index in 0..fat_clusters {
+            let physical = self.fat_table_cluster_with(layout, fat_index)?;
+            if physical >= clusters {
+                return Err(CardError::Corrupt(format!("FAT cluster {physical} outside the card")));
+            }
+        }
+        Ok(layout)
     }
 
     /// The image with spare bytes, as PCSX2 and the game write it.
@@ -260,11 +367,16 @@ impl Card {
 
     /// The image without spare bytes (data-only dump).
     pub fn to_image_without_ecc(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(IMAGE_WITHOUT_ECC);
+        let mut out = Vec::with_capacity(self.pages.len() / PAGE_BYTES * PAGE_DATA_BYTES);
         for page in self.pages.chunks_exact(PAGE_BYTES) {
             out.extend_from_slice(&page[..PAGE_DATA_BYTES]);
         }
         out
+    }
+
+    /// The card's layout as read from its superblock.
+    pub fn layout(&self) -> Layout {
+        self.layout
     }
 
     /// Returns true when every page's ECC bytes match the data. Erased pages (all 0xFF,
@@ -299,9 +411,13 @@ impl Card {
         u32::from_le_bytes(self.page(page)[offset..offset + 4].try_into().unwrap())
     }
 
+    fn read_u16(&self, page: usize, offset: usize) -> u16 {
+        u16::from_le_bytes(self.page(page)[offset..offset + 2].try_into().unwrap())
+    }
+
     /// Data of a physical cluster (two pages, 1024 bytes).
     fn cluster(&self, physical: u32) -> Result<Vec<u8>, CardError> {
-        if physical as usize >= PAGE_COUNT / 2 {
+        if physical >= self.layout.clusters {
             return Err(CardError::Corrupt(format!("cluster {physical} outside the card")));
         }
         let first = physical as usize * 2;
@@ -318,19 +434,24 @@ impl Card {
         self.set_page(first + 1, &data[PAGE_DATA_BYTES..]);
     }
 
-    /// Physical cluster of the FAT cluster that holds the entries for `relative`.
+    /// Physical cluster of FAT cluster `fat_index` (the FAT cluster number, 256 entries each). The superblock's
+    /// indirect list names one cluster per 256 FAT clusters; each of those lists its FAT clusters.
+    fn fat_table_cluster_with(&self, layout: Layout, fat_index: u32) -> Result<u32, CardError> {
+        let list_slot = (fat_index / FAT_ENTRIES_PER_CLUSTER) as usize;
+        if list_slot >= INDIRECT_LIST_ENTRIES {
+            return Err(CardError::Corrupt("FAT beyond the indirect FAT list".into()));
+        }
+        let indirect = self.read_u32(0, SB_INDIRECT_LIST + list_slot * 4);
+        if indirect >= layout.clusters {
+            return Err(CardError::Corrupt(format!("indirect FAT list names cluster {indirect} outside the card")));
+        }
+        let indirect_data = self.cluster(indirect)?;
+        let offset = (fat_index % FAT_ENTRIES_PER_CLUSTER) as usize * 4;
+        Ok(u32::from_le_bytes(indirect_data[offset..offset + 4].try_into().unwrap()))
+    }
+
     fn fat_table_cluster(&self, fat_index: u32) -> Result<u32, CardError> {
-        // The indirect list is the first entry of the superblock's list at 0x50.
-        let ifc = self.read_u32(0, 0x50);
-        if ifc as usize >= PAGE_COUNT / 2 {
-            return Err(CardError::Corrupt("indirect FAT list outside the card".into()));
-        }
-        let ifc_data = self.cluster(ifc)?;
-        let offset = fat_index as usize * 4;
-        if offset + 4 > ifc_data.len() {
-            return Err(CardError::Corrupt("FAT index beyond the indirect list".into()));
-        }
-        Ok(u32::from_le_bytes(ifc_data[offset..offset + 4].try_into().unwrap()))
+        self.fat_table_cluster_with(self.layout, fat_index)
     }
 
     /// FAT entry for a relative cluster.
@@ -341,15 +462,20 @@ impl Card {
         Ok(u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()))
     }
 
-    /// Follows a chain from `start` and returns its clusters (relative numbers).
+    /// Follows a chain from `start` and returns its clusters (relative numbers). The walk stops at the first entry
+    /// that is not a cluster of the allocation area, and never visits more clusters than the area holds.
     pub fn chain(&self, start: u32) -> Result<Vec<u32>, CardError> {
+        let usable = self.layout.usable();
         let mut clusters = Vec::new();
         let mut current = start;
         loop {
-            if current >= ALLOC_END - ALLOC_OFFSET {
-                return Err(CardError::Corrupt(format!("chain entry {current} outside the allocation area")));
+            if current >= usable {
+                return Err(CardError::Corrupt(format!(
+                    "chain entry {current} outside the allocation area (alloc_offset {}, alloc_end {}, clusters {})",
+                    self.layout.alloc_offset, self.layout.alloc_end, self.layout.clusters
+                )));
             }
-            if clusters.len() > (ALLOC_END - ALLOC_OFFSET) as usize {
+            if clusters.len() >= usable as usize {
                 return Err(CardError::Corrupt("chain loops".into()));
             }
             clusters.push(current);
@@ -364,14 +490,20 @@ impl Card {
         }
     }
 
-    /// Reads `length` bytes of the chain that starts at `start`.
+    /// Reads `length` bytes of the chain that starts at `start`. The length is checked against the chain's clusters
+    /// before anything is allocated, so a corrupt length cannot ask for more memory than the chain holds.
     pub fn read_chain(&self, start: u32, length: usize) -> Result<Vec<u8>, CardError> {
-        let mut out = Vec::with_capacity(length);
-        for relative in self.chain(start)? {
-            out.extend_from_slice(&self.cluster(ALLOC_OFFSET + relative)?);
+        let clusters = self.chain(start)?;
+        let needed = length.div_ceil(CLUSTER_BYTES);
+        if needed > clusters.len() {
+            return Err(CardError::Corrupt(format!(
+                "a {length}-byte item is longer than its {}-cluster chain",
+                clusters.len()
+            )));
         }
-        if out.len() < length {
-            return Err(CardError::Corrupt("chain shorter than its recorded length".into()));
+        let mut out = Vec::with_capacity(needed * CLUSTER_BYTES);
+        for &relative in &clusters[..needed] {
+            out.extend_from_slice(&self.cluster(self.layout.alloc_offset + relative)?);
         }
         out.truncate(length);
         Ok(out)
@@ -381,26 +513,47 @@ impl Card {
     /// The count is the length of the directory's entry in its parent (the root has none:
     /// its own "." entry carries it, see `root`).
     pub fn read_dir(&self, start: u32, count: usize) -> Result<Vec<DirEntry>, CardError> {
+        if count.saturating_mul(DIRENT_BYTES) > self.card_bytes() {
+            return Err(CardError::Corrupt(format!("directory of {count} entries is larger than the card")));
+        }
         let raw = self.read_chain(start, count * DIRENT_BYTES)?;
         raw.chunks_exact(DIRENT_BYTES).map(DirEntry::from_raw).collect()
     }
 
     /// Reads a directory and all its contents. `count` is its entry count from the parent.
     pub fn read_tree(&self, start: u32, count: usize) -> Result<Vec<Node>, CardError> {
+        self.read_tree_below(start, count, 0, &mut HashSet::new())
+    }
+
+    /// Reads a directory at `depth` (the root is 0). Every directory cluster is visited once: a cluster met a second
+    /// time means a loop, and a depth past [`MAX_DIRECTORY_DEPTH`] is refused.
+    fn read_tree_below(
+        &self,
+        start: u32,
+        count: usize,
+        depth: usize,
+        visited: &mut HashSet<u32>,
+    ) -> Result<Vec<Node>, CardError> {
+        if depth > MAX_DIRECTORY_DEPTH {
+            return Err(CardError::Corrupt(format!("directories nested deeper than {MAX_DIRECTORY_DEPTH}")));
+        }
+        if !visited.insert(start) {
+            return Err(CardError::Corrupt(format!("directory loop at cluster {start}")));
+        }
         let mut nodes = Vec::new();
         for entry in self.read_dir(start, count)? {
             if entry.is_dot() || !entry.exists() {
                 continue;
             }
             if entry.is_dir() {
-                let children = self.read_tree(entry.cluster(), entry.length() as usize)?;
+                let children = self.read_tree_below(entry.cluster(), entry.length() as usize, depth + 1, visited)?;
                 nodes.push(Node::dir(entry, children));
             } else {
-                let data = if entry.length() == 0 {
-                    Vec::new()
-                } else {
-                    self.read_chain(entry.cluster(), entry.length() as usize)?
-                };
+                let length = entry.length() as usize;
+                if length > self.card_bytes() {
+                    return Err(CardError::Corrupt(format!("file {} is larger than the card", entry.name())));
+                }
+                let data = if length == 0 { Vec::new() } else { self.read_chain(entry.cluster(), length)? };
                 nodes.push(Node::file(entry, data));
             }
         }
@@ -444,7 +597,7 @@ impl Builder {
     fn new() -> Self {
         let usable = (ALLOC_END - ALLOC_OFFSET) as usize;
         // Erased pages are 0xFF everywhere, spare bytes included (as on the owner's card).
-        let mut card = Card { pages: vec![0xFFu8; IMAGE_WITH_ECC] };
+        let mut card = Card { pages: vec![0xFFu8; IMAGE_WITH_ECC], layout: Layout::EIGHT_MB };
         // Superblock as on the owner's card: unused areas 0xFF, backup blocks at the card's end.
         let mut superblock = vec![0u8; PAGE_DATA_BYTES];
         superblock[..MAGIC.len()].copy_from_slice(MAGIC);
@@ -601,25 +754,6 @@ impl Builder {
             self.card.set_cluster(IFC_CLUSTER + 1 + table, &block);
         }
     }
-}
-
-/// Name of the GT4 game save directory (fixed by the game).
-pub const GAME_SAVE_NAME: &str = "BASCUS-97328GAMEDATA";
-/// Prefix shared by the GT4 save and replay directory names.
-pub const GAME_PREFIX: &str = "BASCUS-97328";
-
-pub fn is_game_save_name(name: &str) -> bool {
-    name == GAME_SAVE_NAME
-}
-
-/// Replay directories: the prefix, a type letter (R full replay, B best lap) and four digits.
-pub fn is_replay_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    let letter = GAME_PREFIX.len();
-    name.len() == letter + 5
-        && name.starts_with(GAME_PREFIX)
-        && matches!(bytes[letter], b'R' | b'B')
-        && bytes[letter + 1..].iter().all(u8::is_ascii_digit)
 }
 
 impl DirEntry {

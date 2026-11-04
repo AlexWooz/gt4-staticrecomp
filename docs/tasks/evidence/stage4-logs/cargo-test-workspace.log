@@ -1,0 +1,947 @@
+Command exited with code 0.
+
+Command output:
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\build_script_build-2i00vj6oajezx\s-hnl1i06u0y-0yxlgmo-working`
+
+warning: `gt4l-core` (build script) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4l_core-0tq3ah4k0agf9\s-hnlhpmk8nj-058jtqi-working`
+
+warning: `gt4l-core` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4saves-35xlq2j2sgr0s\s-hnl1i0izfj-0g1x2ic-working`
+
+warning: `gt4saves` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4l_disc-1ht6a1gby5f6t\s-hnlhpnuxkn-1as106t-working`
+
+warning: `gt4l-disc` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\build_script_build-1m38rjdy872c5\s-hnl1i0imhk-0ye7udp-working`
+
+warning: `gt4l-platform` (build script) generated 1 warning
+   Compiling gt4l-platform v1.3.0 (C:\Antigravity\gt4-wt-133-rc7-ra-controls\launcher\crates\gt4l-platform)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4controls-243npr1gzjgh4\s-hnlhq5u5pb-1522kjz-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\build_script_build-2tj3rkusas472\s-hnl1i0jl20-1j1tm94-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\spec2_identify-3ro3rjahhydbr\s-hnlhq6e9xf-0z0qy89-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\setup_fake_iso-3dk04ivjowloe\s-hnlhq6egkw-161k270-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\elf_rebuild-2pophcu7h80v2\s-hnlhq6dydm-1ki0a90-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\real_disc-0z4x9v9xnvkju\s-hnlhq6eg3i-1eeak21-working`
+
+warning: `gt4controls` (lib) generated 1 warning
+warning: `gt4l-tauri` (build script) generated 1 warning
+warning: `gt4l-disc` (test "spec2_identify") generated 1 warning
+warning: `gt4l-disc` (test "setup_fake_iso") generated 1 warning
+warning: `gt4l-disc` (test "elf_rebuild") generated 1 warning
+warning: `gt4l-disc` (test "real_disc") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\docs_match-2i3ruzu3ryzqd\s-hnlhq9zmbb-1lauz92-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\save_management-2g7yukcne5brf\s-hnlay3k6xh-0axpmdh-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\library-26ccy8fkwqmr2\s-hnlay3k7cq-1wwcsc8-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\migration-34hukvh2nsijc\s-hnlay3l28v-1qnuhga-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\card_owner-2xgct4hhcznhk\s-hnlay3k6z6-0678euc-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\hostile_cards-2vkwg6cdn4dlv\s-hnlay3mvyf-1madxix-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\per_game-3elvgb315li3c\s-hnlay3l1gy-0y022pf-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\release_lists-1vdmrbe12eiyv\s-hnlhq6ghju-0ocdttr-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\settings_config-29xc651t45y4n\s-hnlhqahqmb-0vjt06k-working`
+
+warning: `gt4controls` (test "docs_match") generated 1 warning
+warning: `gt4saves` (test "save_management") generated 1 warning
+warning: `gt4saves` (test "library") generated 1 warning
+warning: `gt4saves` (test "migration") generated 1 warning
+warning: `gt4saves` (test "card_owner") generated 1 warning
+warning: `gt4saves` (test "hostile_cards") generated 1 warning
+warning: `gt4saves` (test "per_game") generated 1 warning
+warning: `gt4l-core` (test "release_lists") generated 1 warning
+warning: `gt4l-core` (test "settings_config") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\enabled_values-1iiqwyumswjyh\s-hnlhq6ghku-00w03qj-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\config_migration-0o5im3ey03oru\s-hnlhq6fbxq-0yn7bv7-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\relocate-2t05m4hr16620\s-hnlhq6friy-04staso-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\textures-1sn1uk4qo6v5n\s-hnlhq6frgg-1viahsl-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gs_release-1c12j7zeio4hm\s-hnlhq6gwzl-0arwn9w-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\launch_contract-1buxp4lpnpfsp\s-hnlhq6fby1-1slkdhv-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\retroachievements_tests-3dya5cxipgj92\s-hnlhq6gw9c-1yuv4z6-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gs_golden-0wn1bu6x2sos0\s-hnlhqahyhz-1vml7s7-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4l_disc-0ctozzzhvl4tw\s-hnlhq6f4b1-1upoj6n-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\multi_game-327fb4cl5dyez\s-hnlhqahhw0-0imswlg-working`
+
+   Compiling gt4l-core v1.3.0 (C:\Antigravity\gt4-wt-133-rc7-ra-controls\launcher\crates\gt4l-core)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4saves-39mvw1z51d7oo\s-hnlay88qcb-02lg8q2-working`
+
+warning: `gt4l-core` (test "enabled_values") generated 1 warning
+warning: `gt4l-core` (test "config_migration") generated 1 warning
+warning: `gt4l-core` (test "relocate") generated 1 warning
+warning: `gt4l-core` (test "textures") generated 1 warning
+warning: `gt4l-core` (test "gs_release") generated 1 warning
+warning: `gt4l-core` (test "launch_contract") generated 1 warning
+warning: `gt4l-core` (test "retroachievements_tests") generated 1 warning
+warning: `gt4l-core` (test "gs_golden") generated 1 warning
+warning: `gt4l-disc` (lib test) generated 1 warning
+warning: `gt4l-core` (test "multi_game") generated 1 warning
+warning: `gt4saves` (lib test) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4controls-0tqu1n6tllqa5\s-hnlhqahypu-0qs1z12-working`
+
+warning: `gt4controls` (lib test) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4l_platform-21tsfquvla313\s-hnlmht8u2g-17u4unp-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4l_platform-1472z4ewgt0kl\s-hnlmht8u20-05jocns-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\gt4l_core-08vanjq9l1cw0\s-hnlmht9pof-0m13v9e-working`
+
+warning: `gt4l-platform` (lib) generated 1 warning
+   Compiling gt4l-tauri v1.3.0 (C:\Antigravity\gt4-wt-133-rc7-ra-controls\launcher\crates\gt4l-tauri)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\job_breakaway-23coefjkxaedk\s-hnlmhvz1qk-0jxnrjk-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\O:\gt4recomp-scratch\task133-cargo-target\debug\incremental\GT4Recomp-2xtokuy4f10ho\s-hnlmhvzden-1xe5b1l-working`
+
+warning: `gt4l-core` (lib test) generated 1 warning
+warning: `gt4l-platform` (lib test) generated 1 warning
+warning: `gt4l-platform` (test "job_breakaway") generated 1 warning
+warning: unused import: `gt4l_core::messages`
+ --> crates\gt4l-tauri\src\renderer_switch.rs:7:5
+  |
+7 | use gt4l_core::messages;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `gt4l_core::messages`
+  --> crates\gt4l-tauri\src\tray.rs:14:5
+   |
+14 | use gt4l_core::messages;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: function `data_dirs_for` is never used
+    --> crates\gt4l-tauri\src\commands.rs:1489:8
+     |
+1489 | pub fn data_dirs_for(root: &Path) -> DataDirs {
+     |        ^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `default_settings` is never used
+    --> crates\gt4l-tauri\src\commands.rs:1494:8
+     |
+1494 | pub fn default_settings() -> Settings {
+     |        ^^^^^^^^^^^^^^^^
+
+warning: function `controls_file_for` is never used
+    --> crates\gt4l-tauri\src\commands.rs:1499:8
+     |
+1499 | pub fn controls_file_for(root: &Path) -> PathBuf {
+     |        ^^^^^^^^^^^^^^^^^
+
+warning: `gt4l-tauri` (bin "GT4Recomp" test) generated 6 warnings (run `cargo fix --bin "GT4Recomp" -p gt4l-tauri --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.44s
+     Running unittests src\lib.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\gt4controls-4fb017a1ab55a619.exe)
+
+running 18 tests
+test tests::default_trigger_tuning_matches_the_game ... ok
+test tests::the_schema_line_is_required_and_must_be_one ... ok
+test tests::assign_replaces_only_the_same_family_and_swaps ... ok
+test tests::assign_moves_a_source_when_the_input_had_none_of_that_family ... ok
+test tests::assign_refuses_a_taken_source_without_swap_and_changes_nothing ... ok
+test tests::reset_all_and_is_default ... ok
+test tests::options_are_range_checked ... ok
+test tests::refusals_name_the_line ... ok
+test tests::duplicates_and_unknown_tables_are_refused ... ok
+test tests::assign_refuses_reserved_keys_sticks_and_unknown_inputs ... ok
+test tests::sticks_and_buttons_accept_only_their_sources ... ok
+test tests::defaults_render_and_parse_back_to_themselves ... ok
+test tests::assign_keeps_trigger_options_and_reports_no_change ... ok
+test tests::stick_deadzones_default_to_the_xinput_constants_and_round_trip ... ok
+test tests::unlisted_inputs_keep_their_defaults_and_an_empty_list_unbinds ... ok
+test tests::all_seven_curves_and_aliases_support_old_configs_and_monotonic_travel ... ok
+test tests::trigger_tuning_round_trips_through_the_source_options ... ok
+test tests::new_curves_round_trip_and_unsupported_raw_modes_are_rejected ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\docs_match.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\docs_match-1a67043c865b5253.exe)
+
+running 4 tests
+test the_default_map_has_the_inputs_of_the_mirror_tables ... ok
+test the_inputs_table_lists_every_input_once ... ok
+test the_default_sources_appear_in_the_inputs_table ... ok
+test the_shipped_example_files_parse_and_default_matches_the_built_in_map ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\lib.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\gt4l_core-7dfb9b5306325432.exe)
+
+running 215 tests
+test build_kind::tests::the_compiled_kind_follows_the_cargo_feature ... ok
+test build_kind::tests::the_labels_are_the_words_of_the_about_page ... ok
+test display::tests::an_integrated_gpu_with_the_default_scale_renders_at_native_1x ... ok
+test display::tests::a_changed_render_scale_climbs_from_the_integrated_baseline ... ok
+test display::tests::a_discrete_gpu_keeps_the_scaled_multiplier_at_the_default_scale ... ok
+test display::tests::aspect_and_the_ultrawide_path ... ok
+test display::tests::invalid_inputs_are_refused ... ok
+test display::tests::integrated_gpu_climbs_from_1x_without_a_jump ... ok
+test display::tests::modes_are_unique_sorted_and_without_tiny_sizes ... ok
+test display::tests::the_integrated_default_applies_only_to_the_default_scale_on_an_integrated_gpu ... ok
+test display::tests::a_stored_mode_the_monitor_lost_falls_back_to_the_desktop ... ok
+test display::tests::monitors_resolve_by_identifier_device_size_then_primary ... ok
+test display::tests::resolutions_resolve_to_a_supported_mode_or_the_desktop ... ok
+test display::tests::a_phone_screen_and_portrait_input_are_safe ... ok
+test display::tests::labels_are_the_friendly_name_with_a_suffix_only_for_duplicates ... ok
+test display::tests::render_scale_moves_one_multiplier_per_step ... ok
+test display::tests::sizes_parse_strictly ... ok
+test display::tests::the_integrated_default_never_exceeds_the_renderer_cap ... ok
+test display::tests::the_owner_k_table ... ok
+test exit::tests::exit_zero_without_a_shutdown_line_is_normal_not_a_crash ... ok
+test exit::tests::last_stop_line_wins ... ok
+test exit::tests::missing_stop_line_and_killed_process_is_a_crash_without_reason ... ok
+test exit::tests::ordinary_crashes_and_other_device_messages_are_not_a_lost_card ... ok
+test exit::tests::the_gsdx_device_lost_text_is_found_in_the_session_log ... ok
+test exit::tests::the_gpu_lost_message_is_plain_and_translated ... ok
+test exit::tests::user_message_names_the_reason_in_one_sentence ... ok
+test exit::tests::window_closed_with_exit_zero_is_normal ... ok
+test exit::tests::window_closed_with_nonzero_exit_is_a_crash ... ok
+test games::tests::the_game_executable_constant_is_the_gt4_one ... ok
+test games::tests::the_first_installed_game_is_selected_then_the_one_played_last ... ok
+test games::tests::the_table_names_two_games_with_their_own_programs ... ok
+test gpu::tests::a_card_without_vulkan_listed_twice_by_dxgi_is_one_card ... ok
+test gpu::tests::a_hybrid_laptop_whose_vulkan_luids_match_no_dxgi_luid_gives_two_cards ... ok
+test gpu::tests::a_dxgi_adapter_joins_at_most_one_vulkan_device ... ok
+test gpu::tests::a_laptop_with_integrated_and_nvidia_picks_the_nvidia_card_on_vulkan ... ok
+test gpu::tests::a_name_mismatch_between_vulkan_and_dxgi_leaves_the_adapter_empty_for_direct3d ... ok
+test gpu::tests::a_stored_card_that_is_gone_falls_back_to_automatic_with_a_log_line ... ok
+test gpu::tests::an_explicit_card_and_api_are_kept ... ok
+test gpu::tests::an_integrated_only_machine_without_vulkan_runs_direct3d_11_on_its_integrated_card ... ok
+test gpu::tests::dxgi_listing_a_small_memory_adapter_twice_with_other_ids_is_one_card ... ok
+test gpu::tests::dxgi_repeats_of_one_card_with_other_luids_are_one_card ... ok
+test gpu::tests::explicit_vulkan_on_a_card_without_vulkan_12_runs_direct3d_11_with_the_note ... ok
+test gpu::tests::explicit_vulkan_with_no_card_at_all_runs_direct3d_11_without_a_card ... ok
+test gpu::tests::identical_entries_without_luids_are_one_card ... ok
+test gpu::tests::software_adapters_are_never_candidates ... ok
+test gpu::tests::the_five_entries_of_the_rc3_log_are_two_cards ... ok
+test gpu::tests::the_input_lines_name_the_api_ids_and_luid ... ok
+test gpu::tests::the_names_of_one_card_match_across_vulkan_and_dxgi ... ok
+test gpu::tests::two_discrete_cards_pick_the_one_with_more_video_memory ... ok
+test gpu::tests::two_identical_cards_with_different_luids_stay_two ... ok
+test gpu::tests::two_identical_discrete_cards_with_different_luids_stay_two_with_equal_ids ... ok
+test gpu::tests::two_identical_integrated_entries_with_different_names_of_ids_only_merge_by_ids ... ok
+test gpu::tests::vulkan_listing_the_integrated_intel_twice_with_different_luids_gives_two_cards_in_total ... ok
+test gs_release::tests::the_minimum_is_1_2_1_with_the_real_asset_name ... ok
+test gs_release::tests::checksum_lines_parse_both_common_forms ... ok
+test gs_release::tests::sha256_matches_the_known_empty_digest ... ok
+test games_layout::tests::nothing_moves_while_the_game_runs_or_when_there_is_nothing ... ok
+test guard::tests::a_registered_player_folder_is_refused_at_any_depth ... ok
+test guard::tests::card_save_and_replay_folders_are_refused_at_any_depth ... ok
+test guard::tests::memory_card_and_save_extensions_are_refused_anywhere_under_the_data_folder ... ok
+test guard::tests::names_are_compared_case_insensitively ... ok
+test gs_table::tests::unknown_or_missing_page_and_control_are_advanced_and_dropdown ... ok
+test gs_table::tests::compiled_table_is_valid_and_has_the_graphics_api_row ... ok
+test gs_table::tests::launcher_rows_are_written_only_when_supplied ... ok
+test guard::tests::parent_segments_are_resolved_before_the_check ... ok
+test gs_table::tests::values_are_checked_like_the_python_writer ... ok
+test gs_table::tests::a_missing_or_unknown_graphics_api_is_automatic ... ok
+test gs_table::tests::each_graphics_api_choice_writes_its_renderer_number ... ok
+test gs_table::tests::forced_rows_are_hidden_written_and_fixed ... ok
+test gs_table::tests::default_ini_has_the_task_036_values_and_no_user_rows ... ok
+test guard::tests::paths_outside_the_data_folder_are_not_user_data_for_this_guard ... ok
+test guard::tests::renderer_and_settings_paths_are_allowed ... ok
+test guard::tests::the_documents_gran_turismo_4_folder_is_refused_wherever_documents_is ... ok
+test guard::tests::the_renderer_and_program_folders_stay_writable ... ok
+test language::tests::a_stored_language_wins_over_the_os_locale ... ok
+test language::tests::an_unknown_stored_tag_follows_the_os_locale ... ok
+test language::tests::auto_follows_the_os_locale ... ok
+test language::tests::every_listed_language_has_a_name ... ok
+test language::tests::other_locales_and_empty_text_resolve_to_english ... ok
+test language::tests::portuguese_locales_resolve_to_brazilian_portuguese ... ok
+test language::tests::tags_are_the_ones_of_the_index ... ok
+test log_export::tests::masking_applies_to_every_entry ... ok
+test log_export::tests::cards_saves_replays_discs_prepared_files_and_programs_are_forbidden ... ok
+test log_export::tests::the_bundle_is_named_by_local_time ... ok
+test language::tests::the_fallback_is_the_first_listed_language_and_english ... ok
+test log_export::tests::the_newest_items_are_chosen_newest_first ... ok
+test log_export::tests::the_user_name_and_the_profile_paths_are_masked ... ok
+test logs::tests::a_line_has_the_time_the_level_and_the_text ... ok
+test log_export::tests::the_system_report_names_every_fact_and_no_user_path ... ok
+test logs::tests::session_names_use_local_time_and_a_counter_for_the_same_second ... ok
+test messages::tests::an_unknown_id_is_returned_as_it_is ... ok
+test messages::tests::every_language_uses_the_placeholders_of_the_fallback ... ok
+test messages::tests::every_language_has_every_message_and_no_empty_text ... ok
+test messages::tests::ids_are_unique_within_a_language ... ok
+test messages::tests::rendering_fills_the_placeholders_in_the_chosen_language ... ok
+test migrate::tests::a_chain_with_a_gap_is_refused_by_the_check ... ok
+test migrate::tests::a_current_document_is_left_alone ... ok
+test migrate::tests::a_document_below_the_first_schema_of_its_chain_is_corrupt ... ok
+test migrate::tests::a_document_one_step_behind_runs_only_the_remaining_step ... ok
+test migrate::tests::a_newer_document_is_reported_and_never_changed ... ok
+test migrate::tests::a_failing_step_stops_the_chain_and_names_the_step ... ok
+test migrate::tests::a_non_accurate_readback_mode_becomes_performance_mode_on_and_the_old_key_goes ... ok
+test migrate::tests::a_schema_that_is_not_a_number_is_corrupt ... ok
+test migrate::tests::a_release_1_0_0_file_drops_the_retired_keys_and_gets_aspect_auto ... ok
+test migrate::tests::a_stored_coregs11_renderer_becomes_gsdx_in_schema_7 ... ok
+test migrate::tests::an_accurate_or_missing_readback_mode_leaves_performance_mode_off ... ok
+test migrate::tests::an_unversioned_document_is_schema_zero_and_migrates_through_every_step ... ok
+test migrate::tests::an_ultrawide_test_build_file_drops_aspect_and_upscale_and_gets_the_display_rows ... ok
+test migrate::tests::backup_names_carry_the_schema_and_the_time ... ok
+test migrate::tests::every_real_chain_has_complete_ordered_steps ... ok
+test migrate::tests::schema_one_fullscreen_off_becomes_on_unless_chosen ... ok
+test migrate::tests::schema_two_step_adds_widescreen_on_and_keeps_a_value_already_written ... ok
+test migrate::tests::settings_schema_zero_reaches_the_current_schema_and_keeps_its_values ... ok
+test logs::tests::latest_collects_only_the_errors_of_the_earlier_sessions_oldest_first ... ok
+test games_layout::tests::an_existing_games_gt4_is_never_overwritten ... ok
+test paths::tests::stored_paths_inside_the_install_folder_become_relative ... ok
+test log_export::tests::the_zip_holds_exactly_the_entries_and_no_forbidden_file ... ok
+test logs::tests::the_legacy_log_is_renamed_once_and_counts_as_one_kept_log ... ok
+test paths::tests::the_environment_inputs_follow_the_compiled_build_kind ... ok
+test paths::tests::the_legacy_user_dirs_point_at_the_1_2_0_places ... ok
+test logs::tests::the_running_session_is_never_removed ... ok
+test paths::tests::a_previous_install_data_folder_is_a_read_layer_with_its_own_marker ... ok
+test games_layout::tests::a_library_with_files_in_both_places_is_not_merged ... ok
+test paths::tests::the_test_overrides_keep_every_real_folder_out ... ok
+test paths::tests::a_data_folder_that_cannot_be_written_is_read_and_writes_go_to_local_appdata ... ok
+test paths::tests::the_portable_build_never_falls_back_to_a_system_folder ... ok
+test paths::tests::an_empty_appdata_on_a_new_pc_still_sees_the_game_files_in_the_data_folder ... ok
+test paths::tests::the_portable_build_still_honours_the_test_overrides ... ok
+test portable_update::tests::a_leftover_old_folder_that_cannot_go_yet_is_reported_and_kept ... ok
+test games_layout::tests::a_library_move_that_fails_part_way_is_undone_and_the_flat_library_stays ... ok
+test portable_update::tests::a_failed_rollback_keeps_the_marker_and_the_next_start_restores ... ok
+test portable_update::tests::a_package_without_the_launcher_changes_nothing ... ok
+test portable_update::tests::a_zip_that_does_not_match_its_checksum_changes_nothing ... ok
+test portable_update::tests::an_unpack_failure_leaves_the_folder_as_it_was ... ok
+test portable_update::tests::the_download_path_is_inside_the_portable_folder ... ok
+test paths::tests::the_data_folder_is_next_to_the_executable_and_user_data_is_in_roaming_appdata ... ok
+test portable_update::tests::the_next_start_removes_the_old_copy ... ok
+test portable_update::tests::the_release_must_carry_the_portable_zip_and_the_checksum_list ... ok
+test releases::tests::a_candidate_build_carries_its_label_in_the_asset_names_and_the_tag ... ok
+test releases::tests::a_missing_body_gives_empty_notes ... ok
+test portable_update::tests::the_swap_replaces_program_files_and_never_touches_user_or_data ... ok
+test releases::tests::packages_are_verified_against_their_sums_line ... ok
+test releases::tests::selection_takes_the_highest_stable_at_or_above_the_minimum ... ok
+test releases::tests::tags_and_package_names_follow_the_two_streams ... ok
+test releases::tests::release_notes_are_cut_on_a_character_boundary ... ok
+test relocate::tests::only_scanner_and_lock_errors_are_retried ... ok
+test paths::tests::the_1_2_0_folder_serves_game_files_until_they_have_moved ... ok
+test paths::tests::a_portable_copy_finds_its_data_relative_to_the_new_executable ... ok
+test retroachievements::tests::parse_login_and_game_overview_handle_real_dorequest_payloads ... ok
+test settings::tests::the_language_setting_takes_auto_and_the_listed_languages_only ... ok
+test portable_update::tests::a_failed_rename_at_any_step_rolls_everything_back ... ok
+test system_check::tests::a_loader_without_the_win32_surface_is_refused_by_name ... ok
+test system_check::tests::a_vulkan_1_2_gpu_with_only_the_surface_extensions_passes ... ok
+test system_check::tests::an_sse4_1_processor_passes ... ok
+test system_check::tests::conroe_core_2_and_phenom_ii_are_refused ... ok
+test system_check::tests::each_missing_feature_is_refused_with_the_owner_message ... ok
+test system_check::tests::no_loader_no_instance_no_gpu_and_old_gpu_name_the_driver_update ... ok
+test system_check::tests::one_good_gpu_among_old_ones_passes ... ok
+test system_check::tests::nothing_detected_is_the_unsupported_message ... ok
+test system_check::tests::the_d3d12_translation_layer_and_software_rasterizers_do_not_count ... ok
+test system_check::tests::the_required_list_matches_the_game_source ... ok
+test games_layout::tests::same_volume_renames_the_flat_game_files_into_games_gt4 ... ok
+test relocate::tests::unique_names_count_up ... ok
+test paths::tests::the_portable_build_keeps_user_and_data_beside_the_executable ... ok
+test portable_update::tests::a_file_that_is_not_a_zip_is_refused ... ok
+test games_layout::tests::the_flat_library_becomes_the_gt4_library_and_the_settings_stay ... ok
+test retroachievements::tests::config_round_trips_and_clears_credentials_cleanly ... ok
+test update::tests::a_missing_install_is_a_first_install_not_an_update ... ok
+test update::tests::a_newer_stable_release_is_offered_with_its_notes_and_package ... ok
+test update::tests::below_the_minimum_nothing_is_offered ... ok
+test relocate::tests::the_next_free_slot_follows_the_highest_one ... ok
+test update::tests::a_skipped_version_is_not_offered_again_but_a_later_one_is ... ok
+test update::tests::beta_offers_the_newest_candidate_or_stable_and_never_a_draft ... ok
+test update::tests::beta_gets_the_final_release_when_it_ships ... ok
+test update::tests::numeric_comparison_offers_1_10_over_1_9 ... ok
+test update::tests::prereleases_are_never_offered ... ok
+test update::tests::stable_never_offers_a_candidate_and_never_downgrades_from_one ... ok
+test update::tests::the_channel_defaults_to_beta_only_for_a_candidate_build ... ok
+test update::tests::the_renderer_ignores_the_channel ... ok
+test portable_update::tests::a_zip_entry_that_leaves_the_folder_is_refused ... ok
+test version::tests::comparison_is_numeric_not_textual ... ok
+test version::tests::candidates_sort_before_their_final_release_and_by_number ... ok
+test update::tests::the_same_or_an_older_version_gives_no_offer ... ok
+test version_list::tests::a_downgrade_is_semver_only_across_channels ... ok
+test version::tests::release_versions_parse_tags_with_an_optional_candidate_part ... ok
+test version_list::tests::a_list_with_nothing_at_or_above_the_running_build_is_reported ... ok
+test version::tests::refuses_prereleases_metadata_signs_and_missing_parts ... ok
+test version_list::tests::beta_lists_candidates_by_date_with_a_newer_stable_on_top ... ok
+test version::tests::parses_plain_and_v_prefixed_stable_versions ... ok
+test version_list::tests::beta_without_a_newer_stable_is_only_candidates_in_date_order ... ok
+test version_list::tests::only_listed_kinds_of_releases_are_installable ... ok
+test version_list::tests::the_minimum_is_rc5 ... ok
+test version_list::tests::the_running_build_is_marked_installed_and_older_entries_are_downgrades ... ok
+test textures::tests::a_folder_that_is_a_file_is_refused ... ok
+test versions::tests::a_newer_or_damaged_file_is_refused_not_rewritten ... ok
+test textures::tests::a_missing_replacements_folder_is_a_no_op ... ok
+test textures::tests::a_failing_rename_deletes_nothing_and_reports_one_error ... ok
+test version_list::tests::the_dialog_variant_follows_the_downgrade_rule ... ok
+test versions::tests::an_upgrade_to_1_1_0_records_the_new_launcher_and_the_installed_renderer ... ok
+test versions::tests::the_cargo_version_is_authoritative_with_a_warning ... ok
+test versions::tests::an_unwritable_install_folder_falls_back_to_the_data_folder ... ok
+test version_list::tests::stable_lists_stable_releases_by_version_without_drafts_or_old_versions ... ok
+test versions::tests::the_installer_form_has_a_null_renderer_and_the_example_keys ... ok
+test textures::tests::gt4_gs_1_2_0_or_no_current_file_moves_nothing ... ok
+test textures::tests::an_empty_replacements_folder_is_removed_without_moves ... ok
+test versions::tests::a_writable_install_folder_is_used_without_notice ... ok
+test games_layout::tests::a_failed_check_leaves_the_source_and_resumes_at_the_next_start ... ok
+test textures::tests::a_name_collision_keeps_that_child_and_the_folder ... ok
+test games_layout::tests::another_volume_copies_checks_and_only_then_removes_the_source ... ok
+test versions::tests::a_written_file_reads_back_unchanged ... ok
+test textures::tests::children_move_up_and_the_empty_folder_is_removed ... ok
+test logs::tests::the_game_session_folders_are_capped_and_the_running_one_stays ... ok
+test logs::tests::the_oldest_session_logs_go_when_more_than_twenty_exist ... ok
+test versions::tests::recording_the_renderer_keeps_the_launcher_version ... ok
+test portable_update::tests::a_real_zip_is_unpacked_and_swapped_on_the_real_file_system ... ok
+
+test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\config_migration.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\config_migration-e5ce65cdf20d7961.exe)
+
+running 16 tests
+test the_fullscreen_default_is_on_for_new_installs ... ok
+test a_skipped_candidate_and_the_chosen_channel_round_trip ... ok
+test a_corrupt_file_is_kept_as_a_copy_and_defaults_are_used ... ok
+test a_newer_schema_is_used_as_defaults_and_the_file_is_not_touched ... ok
+test a_choice_made_on_the_settings_page_is_saved_and_read_back ... ok
+test skipped_update_versions_round_trip_through_settings ... ok
+test a_damaged_version_file_is_refused_so_the_caller_falls_back_to_the_program_version ... ok
+test a_fullscreen_value_the_user_chose_is_kept_through_the_migration ... ok
+test a_migrated_file_is_not_migrated_or_backed_up_again ... ok
+test schema_one_fullscreen_off_that_was_never_chosen_becomes_on_and_keeps_a_backup ... ok
+test an_unversioned_dev_build_file_is_backed_up_and_migrated_to_schema_one ... ok
+test a_schema_five_resolution_equal_to_the_monitor_desktop_becomes_desktop ... ok
+test a_schema_five_resolution_that_differs_or_has_no_recorded_desktop_is_kept ... ok
+test a_release_1_0_0_schema_3_file_is_backed_up_and_migrated_to_schema_five ... ok
+test a_schema_five_file_keeps_its_values_and_gets_the_texture_defaults_with_a_backup ... ok
+test an_ultrawide_test_schema_4_file_is_backed_up_and_migrated_to_schema_five ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\enabled_values.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\enabled_values-41d09508256d281e.exe)
+
+running 3 tests
+test the_row_helpers_see_the_enabled_values ... ok
+test every_enabled_choice_round_trips_into_the_ini_and_is_allowed ... ok
+test every_enabled_bool_and_int_row_round_trips ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\gs_golden.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\gs_golden-fe23c0e1d5b792f0.exe)
+
+running 5 tests
+test bundled_table_matches_the_table_file_in_the_repository ... ok
+test refused_values_are_the_same_refusals_as_the_python_writer ... ok
+test user_settings_ini_matches_the_python_writer_byte_for_byte ... ok
+test default_session_ini_matches_the_python_writer_byte_for_byte ... ok
+test performance_mode_toggle_round_trips_to_the_gt4gs_ini_readback_key ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\gs_release.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\gs_release-65dd9b1322f2dd7b.exe)
+
+running 11 tests
+test a_release_url_outside_the_fake_server_is_refused ... ok
+test package_without_the_program_is_refused_and_nothing_changes ... ok
+test a_failed_update_from_1_0_1_keeps_the_old_version ... ok
+test the_install_reports_its_steps_and_the_package_bytes ... ok
+test a_package_wrapped_in_one_folder_installs_like_the_real_release ... ok
+test stable_release_is_verified_and_installed_with_its_hash_recorded ... ok
+test a_damaged_installed_program_fails_the_check_so_the_launcher_falls_back ... ok
+test corrupt_download_is_refused_and_the_installed_version_is_kept ... ok
+test prereleases_and_too_old_versions_are_ignored ... ok
+test an_installed_1_0_1_is_below_the_minimum_and_is_replaced_by_1_2_0 ... ok
+test upgrade_keeps_the_previous_version_and_removes_older_ones ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests\launch_contract.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\launch_contract-9b1f79204d3eda97.exe)
+
+running 21 tests
+test restart_marker_is_detected_in_the_game_log ... ok
+test the_coregs11_rows_are_gone_and_retired_so_their_stored_values_are_ignored ... ok
+test input_resolution_and_widescreen_are_retired_and_fixed ... ok
+test argument_list_matches_run_probe_order ... ok
+test inherited_gt4_and_ps2_variables_are_scrubbed_and_others_kept ... ok
+test pcsx2_plan_keeps_the_probe_argument_list_and_scrubs_inherited_names ... ok
+test the_display_target_becomes_gt4_monitor_and_gt4_output_size ... ok
+test check_every_100th_call_maps_as_documented ... ok
+test the_game_defaults_are_the_values_the_launcher_sets_for_default_settings ... ok
+test both_window_modes_pass_window_and_send_gt4_fullscreen_to_the_game_and_the_gs_child ... ok
+test pcsx2_environment_carries_the_process_pin_config_and_480p ... ok
+test default_settings_send_the_main_profile_variables_plus_the_launcher_defaults ... ok
+test removed_parallel_gs_renderer_and_its_options_are_refused ... ok
+test settings_map_to_their_variables ... ok
+test gsdx_is_the_only_renderer_and_play_needs_it_installed ... ok
+test the_game_ini_matches_the_sample_the_game_fixture_reads ... ok
+test every_game_ini_key_stands_for_the_variable_the_launcher_sets_at_play ... ok
+test the_parked_flare_limits_are_never_sent ... ok
+test an_integrated_gpu_plays_the_untouched_default_at_native_resolution ... ok
+test session_ini_matches_the_python_writer_for_the_default_settings ... ok
+test the_internal_resolution_follows_the_output_size_and_the_render_scale ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\multi_game.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\multi_game-181c15a25384842b.exe)
+
+running 5 tests
+test the_user_libraries_are_apart_per_game ... ok
+test each_game_has_its_own_folders_and_shares_the_rest ... ok
+test spec2_never_reads_the_flat_1_2_x_folders ... ok
+test each_game_starts_its_own_program_with_its_own_elf_disc_and_card ... ok
+test the_selected_game_is_stored_and_a_file_of_schema_7_selects_gt4 ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\release_lists.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\release_lists-ae73c30140ebb8eb.exe)
+
+running 5 tests
+test renderer_list_refuses_a_launcher_tag_and_an_old_stable ... ok
+test launcher_list_offers_the_first_stable_release_and_never_the_draft ... ok
+test the_renderer_update_decision_uses_the_real_list ... ok
+test renderer_list_uses_the_real_asset_names_and_skips_drafts_and_prereleases ... ok
+test a_fake_github_list_drives_the_channels_the_picker_and_the_candidate_download ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\relocate.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\relocate-f5e24f721fc5abea.exe)
+
+running 20 tests
+test large_data_crosses_a_real_second_volume_when_one_is_given ... ok
+test nothing_to_move_on_a_new_pc ... ok
+test a_missing_previous_folder_is_skipped_without_a_marker ... ok
+test large_data_is_not_moved_while_the_game_runs ... ok
+test the_1_2_0_data_folder_fallback_library_is_moved_too ... ok
+test user_data_is_not_moved_while_the_game_runs ... ok
+test existing_game_files_in_the_install_folder_are_kept_and_the_old_copy_is_left ... ok
+test game_files_that_fail_their_check_are_put_back ... ok
+test game_files_already_in_the_install_folder_are_kept_and_old_logs_go_beside_them ... ok
+test the_marker_stops_a_second_move_of_the_same_previous_folder ... ok
+test a_previous_data_folder_moves_on_the_same_volume_and_is_emptied ... ok
+test large_data_on_the_same_volume_moves_by_rename ... ok
+test a_previous_data_folder_moves_across_volumes_checked_and_then_removed ... ok
+test a_run_that_stopped_after_placing_some_items_is_resumed ... ok
+test existing_destination_items_are_never_overwritten ... ok
+test a_failed_copy_keeps_the_old_place_and_the_next_start_retries ... ok
+test large_data_on_another_volume_is_copied_checked_and_then_removed ... ok
+test user_data_moves_to_appdata_and_the_documents_folder_is_renamed_with_a_note ... ok
+test a_failed_placement_puts_back_what_this_run_placed_and_the_next_start_moves_everything ... ok
+test an_offline_onedrive_file_keeps_the_old_place_and_the_next_start_finishes_the_move ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.44s
+
+     Running tests\retroachievements_tests.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\retroachievements_tests-e703aa7453837843.exe)
+
+running 10 tests
+test diagnostic_export_forbids_retroachievements_file ... ok
+test launch_environment_includes_language_tag ... ok
+test switching_games_preserves_shared_retroachievements_file ... ok
+test retroachievements_cache_explicitly_resolves_under_gt4_in_modern_layout ... ok
+test diagnostic_export_exclusions_comprehensive ... ok
+test hostile_inherited_retroachievements_environment_is_scrubbed ... ok
+test hostile_inherited_retroachievements_environment_with_case_variations_is_scrubbed_and_redacted ... ok
+test retroachievements_config_125_compatibility_and_malformed_handling ... ok
+test retroachievements_config_roundtrips_in_installed_and_portable_layouts ... ok
+test fake_server_http_login_refresh_and_failure_scenarios ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests\settings_config.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\settings_config-cfb2a32b6e11bb0b.exe)
+
+running 9 tests
+test unknown_ids_and_bad_toggle_values_are_refused ... ok
+test renderer_is_gsdx_and_neither_coregs_build_can_be_selected ... ok
+test every_definition_id_is_unique_and_has_a_valid_default ... ok
+test invalid_values_and_unknown_keys_fall_back_with_warnings ... ok
+test a_stored_coregs11_renderer_loads_as_gsdx ... ok
+test newer_schema_is_refused_and_syntax_errors_are_reported ... ok
+test config_round_trip_keeps_values_and_paths ... ok
+test retired_and_forced_values_of_an_old_file_are_ignored_and_dropped_at_the_next_write ... ok
+test load_of_a_damaged_file_moves_it_aside ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\textures.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\textures-e261be89d3a60d8b.exe)
+
+running 7 tests
+test a_textures_folder_not_moved_yet_stays_in_use ... ok
+test the_textures_folder_is_inside_the_data_folder_with_no_serial_folder ... ok
+test the_launcher_makes_the_textures_folder_on_demand_and_no_replacements_folder ... ok
+test texture_dumping_is_not_offered ... ok
+test the_textures_folder_is_written_only_when_the_launcher_supplies_it ... ok
+test precache_is_hidden_off_by_default_and_written_only_when_on ... ok
+test load_custom_textures_is_on_by_default_and_always_written ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src\lib.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\gt4l_disc-c1b9a97a6e0fd9f9.exe)
+
+running 6 tests
+test spec2_elf::tests::an_image_without_the_plugin_is_refused ... ok
+test spec2_elf::tests::the_data_segment_is_split_around_the_plugin ... ok
+test spec2_elf::tests::a_patch_replaces_the_expected_word_and_refuses_any_other_old_word ... ok
+test cnf::tests::rejects_other_boot_paths_missing_fields_and_duplicates ... ok
+test cnf::tests::parses_the_gt4_boot_line ... ok
+test spec2_pins::tests::the_embedded_pins_agree_with_each_other ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\elf_rebuild.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\elf_rebuild-c368e12c7516f9ed.exe)
+
+running 3 tests
+test truncated_or_bad_stream_is_refused ... ok
+test synthetic_core_rebuilds_to_the_pinned_elf ... ok
+test policy_mismatches_are_refused ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\real_disc.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\real_disc-e00d4736f66217fb.exe)
+
+running 3 tests
+test real_disc_matches_the_pins_and_rebuilds_the_elf ... ignored, needs the owner's disc image; see the module comment
+test real_discs_pass_or_fail_the_precheck ... ignored, needs the owner's disc images; see the module comment
+test embedded_pins_are_self_consistent ... ok
+
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\setup_fake_iso.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\setup_fake_iso-b2f67c97bba740d3.exe)
+
+running 12 tests
+test another_revision_with_different_game_code_is_refused ... ok
+test wrong_file_types_are_refused_before_hashing ... ok
+test low_free_space_is_refused_before_copying ... ok
+test cancel_leaves_nothing_half_written ... ok
+test a_hash_mismatch_after_the_copy_leaves_nothing_behind ... ok
+test truncated_copy_is_incomplete_and_a_changed_core_is_a_different_dump ... ok
+test other_games_regions_and_spec_ii_get_the_not_supported_yet_message ... ok
+test good_disc_is_copied_and_the_original_is_no_longer_needed ... ok
+test the_copy_is_an_independent_file_not_a_link ... ok
+test another_revision_with_the_same_game_code_is_accepted ... ok
+test later_launches_see_a_missing_or_changed_image_and_old_receipts ... ok
+test a_second_run_replaces_the_prepared_folder_and_the_image ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests\spec2_identify.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\spec2_identify-11c65793f9c23f48.exe)
+
+running 8 tests
+test the_unmodified_public_beta_is_refused ... ok
+test the_rust_derived_elf_is_byte_identical_to_the_python_script_output ... ok
+test a_scus_97436_with_another_executable_is_refused_and_the_beta_is_named ... ok
+test a_refused_disc_and_a_cancelled_setup_leave_nothing_behind ... ok
+test a_disc_is_recognised_as_the_game_it_is ... ok
+test spec2_setup_copies_the_image_and_prepares_the_derived_elf_with_no_core_step ... ok
+test an_unknown_image_with_the_known_executable_is_accepted_as_a_variant ... ok
+test real_spec2_discs_are_identified_by_their_executable ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running unittests src\lib.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\gt4l_platform-0c6b8f3a6cc0957c.exe)
+
+running 50 tests
+test gpu::probe_on_this_machine::gpu_inputs_on_this_machine ... ignored
+test gpu::cache_tests::cache_returns_the_stored_list_without_probing ... ok
+test gpu::cache_tests::refresh_replaces_the_stored_list ... ok
+test gpu::cache_tests::store_keeps_a_startup_list_without_probing ... ok
+test gpu::cache_tests::integrated_name_over_a_known_list_probes_nothing ... ok
+test disk::tests::the_temp_folder_has_some_free_space_and_missing_children_use_their_parent ... ok
+test legacy_install::tests::a_registry_entry_without_its_folder_is_removed ... ok
+test pad::tests::a_button_held_before_the_capture_does_not_bind ... ok
+test pad::tests::a_newly_pressed_button_is_captured_by_its_source_name ... ok
+test pad::tests::buttons_are_preferred_over_triggers_when_both_are_new ... ok
+test legacy_install::tests::nothing_is_done_on_a_pc_without_the_old_install ... ok
+test pad::tests::shoulders_sticks_menu_and_dpad_map_to_their_sources ... ok
+test pad::tests::controller_one_of_n_is_the_lowest_id ... ok
+test pad::tests::triggers_scale_to_0_255_and_keep_pressure ... ok
+test pad::tests::sticks_keep_their_raw_axes ... ok
+test process::single_instance_tests::no_window_means_nothing_to_bring_forward ... ok
+test process::tests::a_declined_prompt_is_final ... ok
+test pad::tests::triggers_bind_at_half_travel_and_not_before ... ok
+test process::single_instance_tests::a_shown_window_is_brought_forward ... ok
+test process::single_instance_tests::the_lock_is_one_name_without_a_scope_and_one_per_folder_with_one ... ok
+test pad::tests::south_east_west_north_are_cross_circle_square_triangle_sources ... ok
+test process::single_instance_tests::a_second_claim_of_the_same_folder_fails_and_another_folder_succeeds ... ok
+test process::single_instance_tests::a_hidden_window_is_not_shown_by_a_second_start ... ok
+test process::tests::the_arguments_are_one_command_line_text_not_split_arguments ... ok
+test process::tests::the_arguments_reach_the_elevated_start ... ok
+test process::tests::the_setup_starts_elevated_first ... ok
+test system::tests::vulkan_probe_on_this_machine ... ignored
+test known_folder::tests::windows_reports_an_absolute_documents_folder ... ok
+test system::tests::cpu_reading_is_consistent ... ok
+test process::tests::explorer_starts_without_arguments_and_the_log_says_the_update_is_interactive ... ok
+test process::tests::other_failures_fall_back_to_a_direct_start_then_explorer ... ok
+test webview2::tests::a_normal_version_is_installed ... ok
+test webview2::tests::a_zero_version_is_absent_and_the_next_key_is_tried ... ok
+test webview2::tests::all_keys_missing_means_missing ... ok
+test webview2::tests::an_empty_value_is_absent ... ok
+test webview2::tests::the_test_override_forces_missing ... ok
+test system::tests::local_time_is_a_plausible_clock_reading ... ok
+test webview2::tests::the_client_id_matches_the_installer ... ok
+test webview2::tests::the_wow6432_key_is_read_first ... ok
+test webview2::tests::the_fixed_runtime_folder_skips_the_registry_judgement ... ok
+test webview2::tests::only_hkcu_present_is_installed ... ok
+test webview2::tests::the_fixed_runtime_folder_variable_must_not_be_blank ... ok
+test gpu::cache_tests::run_settings_over_known_cards_probes_nothing ... ok
+test legacy_install::tests::the_folder_of_the_running_launcher_and_a_1_2_1_layout_are_never_removed ... ok
+test legacy_install::tests::unknown_files_in_the_old_folder_are_kept ... ok
+test legacy_install::tests::the_old_per_user_install_is_removed_with_its_shortcuts_and_registry_entries ... ok
+test process::tests::this_test_process_is_seen_and_a_made_up_name_is_not ... ok
+test recycle::tests::a_missing_path_is_refused_and_nothing_is_deleted ... ok
+test pad::tests::all_standardized_gamepads_keep_the_same_trigger_range_and_capture_threshold ... ok
+test system::tests::vulkan_probe_runs_on_this_machine ... ok
+
+test result: ok. 48 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+     Running tests\job_breakaway.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\job_breakaway-46a3dcdcaf829f4c.exe)
+
+running 4 tests
+
+running 1 test
+test after_the_hand_over_release_a_child_in_the_job_survives_the_launcher_exit ... 
+running 1 test
+test after_a_restore_a_child_in_the_job_ends_with_the_launcher ... 
+running 1 test
+test a_process_started_inside_the_job_ends_with_the_launcher ... 
+running 1 test
+test a_process_started_outside_the_job_survives_the_launcher_exit ... test after_the_hand_over_release_a_child_in_the_job_survives_the_launcher_exit ... ok
+test a_process_started_outside_the_job_survives_the_launcher_exit ... ok
+test after_a_restore_a_child_in_the_job_ends_with_the_launcher ... ok
+test a_process_started_inside_the_job_ends_with_the_launcher ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.12s
+
+     Running unittests src\main.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\GT4Recomp-c4b1610f610a8a50.exe)
+
+running 93 tests
+test commands::project_link_tests::only_the_named_project_links_open ... ok
+test contract::tests::build_script_takes_its_permissions_from_the_command_list ... ok
+test flow_audit::real_flow_end_to_end ... ignored, real discs, a real copy of the image and a real download; see the module comment
+test contract::tests::the_command_list_has_no_duplicates ... ok
+test contract::tests::registered_commands_match_the_command_list ... ok
+test contract::tests::capability_allows_exactly_the_listed_commands ... ok
+test model::table_tests::a_stored_coregs11_renderer_is_not_a_choice_any_more ... ok
+test contract::tests::the_page_calls_exactly_the_listed_commands ... ok
+test model::table_tests::an_integrated_gpu_reads_the_default_render_scale_at_1x ... ok
+test model::table_tests::controls_view_lists_buttons_with_both_sources_and_the_analog_rows ... ok
+test model::table_tests::derived_rows_and_the_renderer_api_are_not_offered_as_pcsx2_rows ... ok
+test model::table_tests::graphics_api_dropdown_is_on_the_graphics_page_with_three_apis ... ok
+test model::table_tests::mods_rows_are_never_offered_in_release_1_0_0 ... ok
+test model::table_tests::monitor_and_resolution_list_the_connected_monitors_and_their_modes ... ok
+test contract::tests::every_event_the_page_listens_to_is_emitted_by_rust ... ok
+test commands::settings_table_probe_tests::settings_table_reads_the_cached_cards_without_probing ... ok
+test model::table_tests::pcsx2_rows_are_shown_without_a_renderer_rule ... ok
+test model::table_tests::the_toggle_maps_on_and_off_to_the_two_readback_choices ... ok
+test model::table_tests::renderer_dropdown_offers_gsdx_and_greys_coregs20 ... ok
+test model::table_tests::no_aspect_or_internal_resolution_rows_are_offered ... ok
+test model::table_tests::the_readback_row_is_gone_from_the_table ... ok
+test model::table_tests::value_text_maps_booleans_per_kind ... ok
+test model::tests::about_text_carries_the_trademark_notice_and_the_ui_licenses ... ok
+test model::table_tests::triggers_use_the_row_shape_with_their_ids ... ok
+test model::table_tests::without_monitors_the_rows_fall_back_to_primary_and_desktop ... ok
+test model::table_tests::performance_mode_is_a_graphics_toggle_off_by_default ... ok
+test model::tests::all_seven_curves_parse_and_serialize_in_tauri_model ... ok
+test model::tests::controls_rows_cover_the_sixteen_digital_inputs_with_names_and_bindings ... ok
+test model::tests::trigger_tuning_checks_the_percentage_and_the_curve ... ok
+test model::tests::credits_name_the_spec2_authors_with_their_link_and_credit_list ... ok
+test model::tests::short_labels_and_descriptions_are_readable ... ok
+test model::tests::key_names_follow_the_controls_file ... ok
+test pad_nav::tests::sdl_face_buttons_map_to_the_names_nav_js_routes ... ok
+test pad_nav::tests::a_held_direction_stops_when_released ... ok
+test pad_nav::tests::a_button_fires_once_per_press ... ok
+test pad_nav::tests::the_dpad_fires_at_once_then_repeats_after_420_ms_and_every_110_ms ... ok
+test pad_nav::tests::the_left_stick_is_a_direction_past_half_deflection_only ... ok
+test pad_service::tests::an_unavailable_status_carries_the_reason ... ok
+test pad_service::tests::live_sources_are_the_controls_file_names_with_pressure_0_to_1 ... ok
+test pad_service::tests::status_names_the_active_pad_and_counts_all_of_them ... ok
+test pad_service::tests::sticks_are_in_minus_one_to_one_with_y_down ... ok
+test relocation::tests::the_notice_names_what_the_player_should_know ... ok
+test relocation::tests::only_the_registered_install_takes_the_previous_data_folder ... ok
+test renderer_switch::tests::a_failed_install_is_reported_with_the_reason_and_what_to_do ... ok
+test renderer_switch::tests::choosing_gsdx_triggers_exactly_one_install_when_it_is_missing ... ok
+test relocation::tests::the_portable_build_never_cleans_an_old_install ... ok
+test renderer_switch::tests::no_install_when_gsdx_is_present_or_before_setup_is_done ... ok
+test saves::page_shape_tests::an_item_has_the_fields_the_page_reads ... ok
+test relocation::tests::a_portable_folder_that_cannot_be_written_asks_to_move_it ... ok
+test relocation::tests::until_the_move_the_1_2_0_places_are_used ... ok
+test relocation::tests::the_portable_start_reads_no_registry_and_moves_nothing ... ok
+test flow_audit::retroachievements_stale_response_and_target_switch_races ... ok
+test tray::tests::a_full_session_goes_hidden_then_shown_then_idle ... ok
+test tray::tests::a_normal_close_ends_with_no_message_and_is_shown_on_home ... ok
+test tray::tests::closing_while_idle_ends_the_launcher_and_never_goes_to_the_tray ... ok
+test tray::tests::closing_while_the_game_runs_asks_first ... ok
+test tray::tests::play_hides_the_window_and_the_game_running_disables_quit ... ok
+test tray::tests::quit_is_ignored_while_the_game_runs_and_works_when_idle ... ok
+test tray::tests::show_brings_back_a_hidden_window_without_changing_the_page ... ok
+test tray::tests::the_game_ending_shows_home_with_the_message ... ok
+test updates::tests::a_chosen_version_installs_that_exact_release_even_when_older ... ok
+test updates::tests::a_normal_update_picks_the_newest_of_the_channel_and_refuses_when_up_to_date ... ok
+test updates::tests::a_portable_copy_or_no_registration_stays_interactive ... ok
+test updates::tests::a_registered_install_updates_silently_into_its_own_folder ... ok
+test updates::tests::an_explicit_check_can_still_query_the_optional_renderer ... ok
+test updates::tests::gsdx_startup_repairs_missing_packages_and_checks_both_streams ... ok
+test updates::tests::the_chosen_version_uses_the_asset_names_of_the_build_kind ... ok
+test updates::tests::the_offer_names_the_package_of_this_build ... ok
+test updates::tests::the_offer_view_names_both_versions_and_the_update_flag ... ok
+test updates::tests::the_renderer_folder_lives_under_the_data_folder ... ok
+test updates::tests::the_start_cleanup_removes_the_old_copy_of_a_finished_update ... ok
+test webview_guard::tests::dates_are_utc_calendar_dates ... ok
+test webview_guard::tests::the_flag_file_round_trip ... ok
+test webview_guard::tests::the_gpu_switch_is_appended_once ... ok
+test saves::migration_tests::an_unusable_players_folder_falls_back_to_the_data_folder ... ok
+test webview_guard::tests::the_restart_argument_is_recognised_exactly ... ok
+test webview_guard::tests::the_settings_row_follows_the_flag_and_writes_it ... ok
+test webview_guard::tests::the_page_ready_wait_returns_on_mark_and_times_out ... ok
+test webview_guard::tests::the_watchdog_decisions ... ok
+test saves::tests::the_active_save_cannot_be_deleted ... ok
+test saves::tests::an_import_never_overwrites_and_identical_saves_are_not_repeated ... ok
+test saves::tests::a_game_card_is_harvested_and_the_next_card_is_built_from_the_library ... ok
+test saves::migration_tests::the_first_start_moves_the_old_library_to_the_players_folder ... ok
+test flow_audit::retroachievements_network_race_tests_with_real_tcp_server ... ok
+test flow_audit::settings_store_no_absolute_path_inside_the_install_folder ... ok
+test flow_audit::a_settings_change_writes_the_files_a_direct_start_of_the_game_reads ... ok
+test saves::tests::activating_a_slot_parks_the_previous_save ... ok
+test flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start ... ok
+test flow_audit::the_disc_is_identified_before_any_byte_is_copied_and_decides_the_game ... ok
+test flow_audit::without_gsdx_setup_finishes_and_play_refuses_with_the_log_folder ... ok
+test flow_audit::two_games_install_side_by_side_and_never_mix ... ok
+test flow_audit::retroachievements_options_and_launch_environment ... ok
+test flow_audit::synthetic_flow_end_to_end ... ok
+
+test result: ok. 92 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.93s
+
+     Running unittests src\lib.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\gt4saves-ca0d1d90659eeee6.exe)
+
+running 6 tests
+test ecc::tests::erased_chunk_has_the_known_ecc ... ok
+test ecc::tests::single_bit_flip_changes_the_ecc ... ok
+test ecc::tests::zero_chunk_has_all_parity_bits_set ... ok
+test names::tests::a_new_replay_name_keeps_the_games_prefix ... ok
+test names::tests::each_game_owns_only_its_own_names ... ok
+test names::tests::replay_names_need_a_letter_and_four_digits ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\card_owner.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\card_owner-b390b15600567e79.exe)
+
+running 6 tests
+test built_card_dot_entries_hold_the_directory_index ... ok
+test fresh_superblock_matches_the_owner_card ... ok
+test owner_card_dot_entries_hold_the_directory_index ... ok
+test owner_card_lists_its_saves_and_reads_them ... ok
+test ecc_matches_every_page_of_the_owner_card ... ok
+test owner_card_round_trips_through_build ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+
+     Running tests\hostile_cards.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\hostile_cards-27649fa4f4d8fc65.exe)
+
+running 10 tests
+test an_unformatted_card_is_not_a_card ... ok
+test a_superblock_with_another_alloc_offset_is_followed ... ok
+test a_directory_that_spans_many_clusters_reads_every_entry ... ok
+test a_directory_that_points_back_to_an_ancestor_is_corrupt_not_a_crash ... ok
+test a_fat_chain_that_loops_is_corrupt ... ok
+test directories_nested_past_the_depth_limit_are_refused ... ok
+test a_huge_or_too_long_length_is_refused_before_anything_is_allocated ... ok
+test a_card_with_saves_of_several_games_lists_each_one ... ok
+test wrong_sizes_and_damaged_superblocks_get_clear_errors ... ok
+test sixteen_and_sixty_four_megabyte_cards_read_back_in_every_form ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests\library.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\library-caee05554c60c0e2.exe)
+
+running 12 tests
+test slot_names_and_timestamps ... ok
+test psu_round_trip_keeps_every_file ... ok
+test library_refuses_unknown_names ... ok
+test owner_card_data_only_dump_round_trips ... ok
+test folder_export_and_import_keep_nested_directories ... ok
+test write_card_image_keeps_the_previous_card_as_a_backup ... ok
+test psu_import_into_a_second_library_and_export_again ... ok
+test import_dedupes_identical_saves_and_skips_other_games ... ok
+test owner_card_copy_lists_rebuilds_and_matches_byte_for_byte ... ok
+test harvest_replaces_a_changed_save_and_never_deletes ... ok
+test folder_card_round_trips_through_a_built_card ... ok
+test full_card_is_refused_and_bad_images_are_rejected ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.32s
+
+     Running tests\migration.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\migration-e8c6a49a1f62083c.exe)
+
+running 7 tests
+test a_fresh_install_has_nothing_to_migrate_and_writes_nothing ... ok
+test a_copy_that_differs_from_its_source_is_refused ... ok
+test both_libraries_with_saves_are_never_merged ... ok
+test empty_new_folders_made_by_an_earlier_start_do_not_block_the_move ... ok
+test a_failed_copy_is_rolled_back_and_the_old_library_is_untouched ... ok
+test the_old_library_is_copied_verified_and_parked ... ok
+test a_card_harvested_into_the_documents_library_builds_the_next_card ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
+
+     Running tests\per_game.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\per_game-d4e887b5da3eb275.exe)
+
+running 5 tests
+test the_card_names_of_the_two_games_do_not_overlap ... ok
+test the_libraries_of_two_games_are_different_folders ... ok
+test a_mixed_card_is_split_by_game_and_nothing_is_dropped_silently ... ok
+test a_spec2_save_is_kept_by_the_spec2_library_and_refused_by_the_gt4_one ... ok
+test an_import_or_harvest_of_one_game_never_reaches_the_other ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+
+     Running tests\save_management.rs (O:\gt4recomp-scratch\task133-cargo-target\debug\deps\save_management-c4e0e0d6bd24e595.exe)
+
+running 9 tests
+test clean_name_drops_what_a_file_name_cannot_hold ... ok
+test new_save_with_no_active_save_parks_nothing ... ok
+test an_import_of_a_card_with_no_gt4_item_names_what_it_found ... ok
+test the_active_save_can_be_renamed ... ok
+test export_writes_the_active_save_as_a_psu_file ... ok
+test rename_sets_a_clean_name_and_keeps_the_folder_name ... ok
+test harvest_fills_an_empty_active_save_and_parks_nothing_else ... ok
+test new_save_parks_the_active_save_and_the_next_card_has_no_game_save ... ok
+test a_name_goes_with_its_save_when_saves_are_swapped ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+   Doc-tests gt4controls
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gt4l_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gt4l_disc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gt4l_platform
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gt4saves
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

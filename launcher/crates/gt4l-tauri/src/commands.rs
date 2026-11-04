@@ -2,20 +2,24 @@
 //! Replays, and About. Each command is a thin wrapper over a crate; the rules live in `model`,
 //! `saves` and the `gt4l-*` crates.
 
+use gt4l_core::messages;
 use std::fs;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gt4controls::{self as controls_file, default_bindings};
 use gt4l_core::display::{self as display_rules, DisplayTarget};
 use gt4l_core::exit::{self, Outcome};
+use gt4l_core::games::{self, Game, GT4};
 use gt4l_core::gs_release;
 use gt4l_core::launch;
-use gt4l_core::paths::{self, DataDirs, GAME_EXECUTABLE};
+use gt4l_core::paths::{self, DataDirs};
 use gt4l_core::settings;
-use gt4l_core::{Settings, LAUNCHER_DISPLAY_VERSION};
+use gt4l_core::{Settings, LAUNCHER_VERSION};
 use gt4l_disc::setup::{self as disc_setup, Installed};
 use gt4l_platform::game;
-use gt4saves::library::Report;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -25,6 +29,7 @@ use crate::model;
 use crate::pad_service;
 use crate::setup;
 use crate::saves::{self, Item};
+use gt4saves::Library;
 use crate::state::{self, lock, AppState, SetupOutcome, Shared};
 use crate::webview_guard;
 
@@ -40,8 +45,103 @@ pub fn app_state(shared: State<'_, Shared>) -> Result<Value, String> {
     Ok(app_state_of(&lock(shared.inner())))
 }
 
+/// The game the setup section of `app_state` talks about: the game of a setup that is running or has just ended, else the
+/// game the page shows.
+fn setup_subject(state: &AppState) -> &'static Game {
+    if state.setup_busy || !matches!(state.setup_outcome, SetupOutcome::None) {
+        state.setup_game.unwrap_or(state.selected)
+    } else {
+        state.selected
+    }
+}
+
+/// The image name the disc a game was set up from was checked as, from its receipt (empty when there is none).
+fn installed_image_name(state: &AppState, game: &'static Game) -> String {
+    let dirs = state.game_dirs(game);
+    disc_setup::read_receipt(&dirs.prepared()).map(|receipt| receipt.image_name).unwrap_or_default()
+}
+
+/// The display name of the disc a game was set up from, as the receipt records it.
+fn installed_disc_name(state: &AppState, game: &'static Game, version: &str) -> String {
+    setup::game_disc_name(game, version, &installed_image_name(state, game))
+}
+
+/// Why a game set up once cannot start now, for the player: a broken link says where the image was. `None`: it was never set up,
+/// or it is ready.
+fn missing_reason(installed: &Installed, language: gt4l_core::language::Language) -> Option<String> {
+    match installed {
+        Installed::Missing { reason } => Some(reason.clone()),
+        Installed::LinkBroken { image } => {
+            Some(messages::render("setup.image_gone_reason", language, &[("path", &image.display().to_string())]))
+        }
+        Installed::NotSetUp | Installed::Ready { .. } => None,
+    }
+}
+
+/// The folder that holds a game's disc image: where the player keeps it, or the launcher's own copy of an older install.
+fn game_files_folder(state: &AppState, game: &'static Game) -> PathBuf {
+    match state.installed_of(game) {
+        Installed::Ready { image, .. } | Installed::LinkBroken { image } => {
+            image.parent().map(Path::to_path_buf).unwrap_or_else(|| state.game_dirs(game).disc_folder())
+        }
+        _ => state.game_dirs(game).disc_folder(),
+    }
+}
+
+/// One row of the game list: `{id, name, title, variant, installed, linked, selected, state, disc_name, folder, size_bytes,
+/// image_path, image_bytes}`. `size_bytes` is what removing the game frees; `image_path` and `image_bytes` are the disc image the game
+/// reads, wherever it is.
+fn game_row(state: &AppState, game: &'static Game) -> Value {
+    let installed = state.installed_of(game);
+    let dirs = state.game_dirs(game);
+    let (ready, version, image_path) = match &installed {
+        Installed::Ready { version, image, .. } => (true, version.clone(), Some(image.clone())),
+        _ => (false, String::new(), None),
+    };
+    let image_bytes = image_path.as_ref().and_then(|image| fs::metadata(image).ok()).map_or(0, |metadata| metadata.len());
+    let reason = missing_reason(&installed, state::language_of(state)).unwrap_or_default();
+    let linked = disc_setup::read_receipt(&dirs.prepared()).and_then(|receipt| receipt.image).is_some_and(|image| image.linked_path.is_some());
+    let image_name = if ready { installed_image_name(state, game) } else { String::new() };
+    let disc_name = if ready { setup::game_disc_name(game, &version, &image_name) } else { String::new() };
+    let variant = if ready { setup::game_variant(game, &version, &image_name) } else { String::new() };
+    let size_bytes = if ready { folder_size(&dirs.disc_folder()) + folder_size(&dirs.prepared()) } else { 0 };
+    json!({
+        "id": game.id,
+        "name": game.display_name,
+        "title": setup::game_title(game),
+        "variant": variant,
+        "installed": ready,
+        "linked": linked,
+        "damaged": !ready && !reason.is_empty(),
+        "reason": reason,
+        "selected": game == state.selected,
+        "disc_name": disc_name,
+        "folder": dirs.game_files_root().display().to_string(),
+        "size_bytes": size_bytes,
+        "image_path": image_path.map(|image| image.display().to_string()).unwrap_or_default(),
+        "image_bytes": image_bytes,
+    })
+}
+
+/// Total size of the files directly under or inside `folder` (0 when it is missing).
+fn folder_size(folder: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return 0;
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| match entry.metadata() {
+            Ok(meta) if meta.is_dir() => folder_size(&entry.path()),
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 pub fn app_state_of(state: &AppState) -> Value {
-    let installed = state.installed();
+    let language = state::language_of(state);
+    let subject = setup_subject(state);
+    let installed = state.installed_of(subject);
     let chosen_name = state
         .disc_path()
         .and_then(|path| path.file_name())
@@ -49,33 +149,42 @@ pub fn app_state_of(state: &AppState) -> Value {
         .unwrap_or_default();
     let run = &state.setup_run;
     let (screen, problem, disc_name) = if visual_ready() {
-        ("done", String::new(), setup::disc_display_name("2.00"))
+        ("done", String::new(), setup::game_disc_name(&GT4, "2.00", ""))
     } else if state.setup_busy {
         ("checking", String::new(), chosen_name)
     } else if let Installed::Ready { version, .. } = &installed {
-        ("done", String::new(), setup::disc_display_name(version))
+        ("done", String::new(), installed_disc_name(state, subject, version))
     } else {
         match &state.setup_outcome {
             SetupOutcome::Refused(message) => ("wrong_disc", message.clone(), chosen_name),
             SetupOutcome::Failed(message) => ("failed", message.clone(), chosen_name),
             SetupOutcome::Done { .. } => (
                 "files_missing",
-                "Game files missing. Choose your disc image again.".to_string(),
+                messages::text("setup.game_files_missing", language).to_string(),
                 chosen_name,
             ),
-            SetupOutcome::None => match &installed {
-                Installed::Missing { reason } => (
+            SetupOutcome::None => match missing_reason(&installed, language) {
+                Some(reason) => (
                     "files_missing",
-                    format!("Game files missing ({reason}). Choose your disc image again."),
+                    messages::render("setup.game_files_missing_reason", language, &[("reason", &reason)]),
                     chosen_name,
                 ),
-                _ => ("needed", String::new(), chosen_name),
+                None => ("needed", String::new(), chosen_name),
             },
         }
     };
     let note = match &state.setup_outcome {
         SetupOutcome::Done { renderer_note } => renderer_note.clone(),
         _ => String::new(),
+    };
+    let installed_games = state.installed_games();
+    // The page names a game when one is already installed, when the disc picked is identified (`setup_game`), or when this
+    // game's files are damaged. A setup with nothing installed and no disc identified yet has no target: the disc decides
+    // (rc5 laptop test: a stored choice of Spec II made the first-run page say "Install Spec II").
+    let target = if installed_games.is_empty() && state.setup_game.is_none() && !matches!(installed, Installed::Missing { .. } | Installed::LinkBroken { .. }) {
+        Value::Null
+    } else {
+        json!({ "id": subject.id, "name": subject.display_name })
     };
     json!({
         "setup": {
@@ -85,12 +194,18 @@ pub fn app_state_of(state: &AppState) -> Value {
             "bytes_done": run.bytes_done,
             "bytes_total": run.bytes_total,
             "renderer_step": run.renderer_step,
+            "renderer_choice": run.renderer_choice,
             "disc_name": disc_name,
             "problem": problem,
             "note": note,
+            "game": target,
         },
         "game_running": state.game_child.is_some(),
-        "game_files": state.dirs.disc_folder().display().to_string(),
+        "game_files": game_files_folder(state, state.selected).display().to_string(),
+        "selected_game": state.selected.id,
+        "any_installed": !installed_games.is_empty(),
+        "language": state.config.settings.get("language"),
+        "games": games::GAMES.iter().map(|game| game_row(state, game)).collect::<Vec<_>>(),
         "migration": {
             "running": state.migration.running,
             "item": state.migration.item,
@@ -139,7 +254,10 @@ pub fn get_settings_table_of(shared: &Shared) -> Result<Value, String> {
 
 pub fn get_settings_table_with_monitors(shared: &Shared, monitors: &[display_rules::Monitor]) -> Result<Value, String> {
     let state = lock(shared);
-    let mut table = model::settings_table_with_monitors(&state.config.settings, &state.controls, monitors);
+    // TASK-114 rc5: one card list, read from the cache (no probe here), serves both the rows and the integrated check.
+    let cards = gt4l_platform::gpu::cached_gpus();
+    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
+    let mut table = model::settings_table_with_monitors(&state.config.settings, &state.controls, monitors, &cards, integrated_gpu);
     // TASK-091: the launcher's own row (Graphics > Advanced), not a game setting.
     let safe_mode = webview_guard::safe_mode_on(state.user_dirs.root());
     if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut) {
@@ -173,6 +291,10 @@ pub fn set_setting_of(id: String, value: Value, shared: &Shared) -> Result<(), S
         let text = model::value_text(&value, definition.kind == settings::Kind::Toggle)
             .ok_or_else(|| format!("'{id}' needs a plain value"))?;
         state.config.settings.set_by_user(&id, &text).map_err(|error| error.to_string())?;
+        if id == "language" {
+            // The messages from Rust follow the new language at once (the UI re-draws on its own).
+            state::set_current_language(state::language_of(&state));
+        }
         if id == "monitor" {
             // Another monitor has other modes: the Resolution goes back to that monitor's desktop mode.
             state.config.settings.set("resolution", display_rules::DESKTOP).map_err(|error| error.to_string())?;
@@ -223,6 +345,12 @@ pub fn set_setting_of(id: String, value: Value, shared: &Shared) -> Result<(), S
     } else {
         return Err(format!("unknown setting '{id}'"));
     }
+    if id == "discord_rich_presence" {
+        let enabled = state.config.settings.is_on("discord_rich_presence");
+        if state.game_child.is_some() {
+            state.discord.apply_toggle(enabled);
+        }
+    }
     state.save_config();
     Ok(())
 }
@@ -245,53 +373,98 @@ pub fn reset_gs_settings_to_defaults_of(shared: &Shared) -> Result<Value, String
 /// Everything Play needs, checked: the copied disc image, the prepared ELF, the game program, the settings, the
 /// renderer and the extra environment. The flow test builds the launch plan from this without starting anything.
 pub struct PlayInputs {
+    /// The game that starts (TASK-101): its executable, ELF, disc image and runtime card are the ones below.
+    pub game: &'static Game,
     pub dirs: DataDirs,
     pub disc: PathBuf,
     pub elf: PathBuf,
     pub executable: PathBuf,
     pub settings: Settings,
-    /// The installed GSdx (the only renderer, TASK-096); Play does not start without it.
-    pub pcsx2: gs_release::Installed,
+    /// The installed GSdx; a session that uses it does not start without it. `None`: this is a CoreGS 2.0 session.
+    pub pcsx2: Option<gs_release::Installed>,
     /// The resolved Monitor and Resolution (TASK-080 addendum); `None` when no monitor could be read.
     pub display: Option<DisplayTarget>,
     pub extra: Vec<(String, String)>,
+    /// The note for the player when this run falls back to Direct3D 11 (TASK-108); `None` otherwise.
+    pub graphics_notice: Option<String>,
+    /// The API this run resolved to (`graphics.api`: `vulkan`, `d3d12` or `d3d11`). Used after the run to remember a
+    /// lost Vulkan device so the next Play does not repeat it (owner, 2026-10-26).
+    pub api: String,
 }
 
 /// The checks of Play before anything starts. `program_dir` is the folder of `GT4Recomp.exe`.
 pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, String> {
     let state = lock(shared);
+    let language = state::language_of(&state);
     if state.game_child.is_some() {
-        return Err("The game is already running.".into());
+        return Err(messages::text("game.already_running", language).into());
     }
     if state.migration.running {
-        return Err("GT4Recomp is moving its game files to the install folder. Wait until it has finished.".into());
+        return Err(messages::text("setup.migrating", language).into());
     }
     let disc = match state.installed() {
-        Installed::Ready { image, .. } => image,
-        Installed::Missing { reason } => {
-            return Err(format!("Game files missing ({reason}). Choose your disc image again."));
+        Installed::Ready { image, .. } => match gt4l_platform::disk::game_readable_path(&image) {
+            Some(readable) => readable,
+            None => return Err(messages::text("setup.path_not_readable", language).into()),
+        },
+        Installed::NotSetUp => return Err(messages::text("game.set_up_first", language).into()),
+        other => {
+            let reason = missing_reason(&other, language).unwrap_or_default();
+            return Err(messages::render("setup.game_files_missing_reason", language, &[("reason", &reason)]));
         }
-        Installed::NotSetUp => return Err("Set up the game first.".into()),
     };
-    let dirs = state.dirs.clone();
+    let game = state.selected;
+    let dirs = state.game_dirs(game);
     let game_dir = paths::game_directory(program_dir, state.config.dev_game_dir.as_deref());
-    let executable = game_dir.join(GAME_EXECUTABLE);
+    let executable = launch::game_program(game, &game_dir);
     if !executable.exists() {
-        return Err("The game program is missing. Reinstall GT4Recomp.".into());
+        return Err(messages::render("game.program_missing", language, &[("game", game.display_name)]));
     }
     let mut extra: Vec<(String, String)> = Vec::new();
     let controls_path = state.user_dirs.controls_file();
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
     }
-    let ra_cfg = gt4l_core::retroachievements::RaConfig::load(&state.user_dirs.retroachievements_file());
-    for (key, value) in ra_cfg.launch_environment(&dirs.retroachievements_cache()) {
-        extra.push((key, value.to_string_lossy().into_owned()));
+    // TASK-148: the controller chosen on the Controls page, and the player's SDL gamepad mappings when there are any.
+    if let Some(choice) = launch::controller_environment(&state.config.settings) {
+        extra.push(("GT4_PAD".into(), choice));
     }
-    // Only GSdx runs the game (decision 0070, TASK-096): without a verified GSdx, Play stops here with the error.
-    let settings = state.config.settings.clone();
-    let installed = gs_release::installed(&dirs.renderer_root());
-    let pcsx2 = launch::choose_renderer(installed.as_ref(), &dirs.logs())?.clone();
+    let mappings = state.user_dirs.config_dir().join(launch::GAMEPAD_MAPPINGS_FILE);
+    if mappings.exists() {
+        extra.push(("SDL_GAMECONTROLLERCONFIG_FILE".into(), mappings.display().to_string()));
+    }
+    if game.id == games::GT4.id {
+        let ra_cfg = gt4l_core::retroachievements::RaConfig::load(&state.user_dirs.retroachievements_file());
+        for (key, value) in ra_cfg.launch_environment(&dirs.retroachievements_cache(), language) {
+            extra.push((key, value.to_string_lossy().into_owned()));
+        }
+    } else {
+        // For Spec II force RA off after inherited GT4_RA_* values are removed; do not send its process credentials,
+        // original-game hash or enabled RA options. Native target guard stays intact.
+        extra.push(("GT4_RA_ENABLED".into(), "0".into()));
+    }
+    // GSdx runs the game (decision 0070) unless the player chose CoreGS 2.0 (in the game executable): without a
+    // verified GSdx such a session stops here with the error.
+    // TASK-108 (release 1.3.0): the graphics card and API of this run (automatic unless the player chose them). The
+    // stored choices stay as they are; the run uses the resolved API, card and Adapter.
+    // TASK-114 rc5: Play probes the cards once, so the run sees the hardware of this moment; the rest of Play reads that list.
+    let fresh_cards = gt4l_platform::gpu::refresh_gpus();
+    let (settings, graphics, cards) = gt4l_platform::gpu::run_settings_with_cards(&state.config.settings, language, fresh_cards);
+    state::log(&dirs, &format!("graphics: cards [{}]", gt4l_platform::gpu::card_list(&cards)));
+    for line in &graphics.log {
+        state::log(&dirs, line);
+    }
+    let card_name = graphics.card.as_ref().and_then(gt4l_core::gpu::GpuDevice::name).unwrap_or("none");
+    let adapter = if graphics.adapter.is_empty() { "system default" } else { graphics.adapter.as_str() };
+    state::log(&dirs, &format!("graphics: card {card_name}, API {}, Adapter {adapter}", graphics.api));
+    let coregs20 = launch::uses_coregs20(&settings);
+    let pcsx2 = if coregs20 {
+        state::log(&dirs, "graphics: renderer CoreGS 2.0 (Vulkan)");
+        None
+    } else {
+        let installed = gs_release::installed(&dirs.renderer_root());
+        Some(launch::choose_renderer(installed.as_ref(), &dirs.logs())?.clone())
+    };
     // TASK-080 addendum: the stored Monitor and Resolution against the monitors connected now.
     let monitors = gt4l_platform::display::monitors();
     let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
@@ -309,7 +482,9 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
             );
         }
     }
-    let plan = launch::session_plan(&settings, display.as_ref());
+    // Issue #89: on an integrated GPU the untouched default scale plays at 1x (the GPU the system check reports).
+    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(settings.get("graphics_card"), &cards);
+    let plan = launch::session_plan(&settings, display.as_ref(), integrated_gpu.is_some());
     state::log(
         &dirs,
         &format!(
@@ -325,15 +500,22 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
             if plan.ultrawide_on { ", aspect path on" } else { "" }
         ),
     );
+    if let (true, Some(name)) = (plan.integrated_default, integrated_gpu.as_deref()) {
+        state::log(&dirs, &format!("display: integrated GPU {name}: default internal {}x", plan.multiplier));
+    }
     Ok(PlayInputs {
         display,
-        elf: dirs.prepared().join(disc_setup::ELF_FILE),
+        game,
+        elf: launch::game_elf(game, &dirs.prepared()),
         dirs,
         disc,
         executable,
         settings,
         pcsx2,
         extra,
+        // The Direct3D 11 fallback note is about GSdx; CoreGS 2.0 always draws with Vulkan.
+        graphics_notice: if coregs20 { None } else { graphics.notice },
+        api: graphics.api,
     })
 }
 
@@ -342,57 +524,277 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
 #[tauri::command]
 pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     let shared: Shared = shared.inner().clone();
-    // TASK-081: the processor and Vulkan checks before the game starts (`gt4l_core::system_check`).
-    if let Some(problem) = gt4l_platform::system::requirements_problem() {
+    // TASK-081: the processor check before the game starts (`gt4l_core::system_check`). Vulkan is checked per run in
+    // `prepare_play`, and only when Vulkan is the chosen Graphics API (TASK-108).
+    let language = state::language_of(&lock(&shared));
+    if let Some(problem) = gt4l_platform::system::processor_problem(language) {
         let mut state = lock(&shared);
-        state::log(&state.dirs, &format!("system requirement not met: {problem}"));
+        state::log_error(&state.dirs, &format!("system requirement not met: {problem}"));
         state.home_message = problem.clone();
         return Err(problem);
     }
     let inputs = prepare_play(&shared, &program_directory()).inspect_err(|message| {
         lock(&shared).home_message = message.clone();
     })?;
-    let PlayInputs { dirs, disc, elf, executable, settings, pcsx2, display, extra } = inputs;
+    let PlayInputs { game, dirs, disc, elf, executable, settings, pcsx2, display, extra, graphics_notice, api } = inputs;
+    // A lost device under CoreGS 2.0 says nothing about the API GSdx should use next time.
+    let run_api = if pcsx2.is_some() { api.clone() } else { "coregs20".to_string() };
+    // TASK-097: a direct start of the game reads these files; they follow the monitors connected now.
+    lock(&shared).write_standalone_files(&settings);
     let card = dirs.runtime_card();
-    saves::prepare_card(&lock(&shared).library, &card)?;
-    let textures = lock(&shared).dirs.textures();
-    paths::ensure_texture_folders(&textures).map_err(|error| format!("texture folder: {error}"))?;
-    let running = game::start(&dirs, &executable, &elf, &disc, &settings, &pcsx2, display.as_ref(), &textures, &extra)?;
+    saves::prepare_card(lock(&shared).library_of(game), &card, language)?;
+    let (textures, textures_note) = lock(&shared).texture_location();
+    if let Some(note) = &textures_note {
+        state::log_warn(&dirs, note);
+    }
+    // TASK-157: a folder the player chose is read in place, never created or written to.
+    if !textures.custom {
+        paths::ensure_texture_folders(&textures.folder).map_err(|error| format!("texture folder: {error}"))?;
+    }
+    let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
+    let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let mut state = lock(&shared);
         state.game_child = Some(running.child.clone());
         state.home_message.clear();
+        // TASK-118: the API and the card have no "Automatic" choice any more. Store what this start resolved, so the
+        // page shows the real value from the next start on.
+        if state.config.settings.gs_value("graphics_api") == gt4l_core::gpu::AUTOMATIC {
+            let _ = state.config.settings.set_gs("graphics_api", &api);
+        }
+        let resolved_card = settings.get("graphics_card").to_string();
+        if state.config.settings.get("graphics_card") == gt4l_core::gpu::AUTOMATIC && !resolved_card.is_empty() {
+            let _ = state.config.settings.set("graphics_card", &resolved_card);
+        }
+        // The game played last is the one the next start shows (owner, 2026-10-23).
+        state.config.selected_game = games::after_play(game);
+        state.save_config();
+        // save_config writes the stored choice; a run that fell back to Direct3D 11 keeps its own direct-start file.
+        state.write_standalone_files(&settings);
+        let discord_enabled = state.config.settings.is_on("discord_rich_presence");
+        state.discord.on_game_start(game.display_name, start_unix, discord_enabled);
     }
-    state::log(&dirs, &format!("game started, session {}", running.session_dir.display()));
-    let _ = app.emit("game-state", json!({ "running": true, "message": "" }));
+    state::log(&dirs, &format!("game started ({}), session {}", game.id, running.session_dir.display()));
+    // TASK-112: the last 20 game session folders are kept; the one just started is never removed.
+    match gt4l_core::logs::prune_sessions(&dirs.sessions(), gt4l_core::logs::KEPT_SESSIONS, &running.session_dir) {
+        Ok(removed) if !removed.is_empty() => state::log(&dirs, &format!("old game sessions removed: {}", removed.join(", "))),
+        Ok(_) => {}
+        Err(error) => state::log_warn(&dirs, &format!("game sessions not cleaned up: {error}")),
+    }
+    let _ = app.emit(
+        "game-state",
+        json!({ "running": true, "message": graphics_notice.clone().unwrap_or_default(), "notice": graphics_notice.is_some() }),
+    );
     crate::tray::handle(&app, crate::tray::Event::GameStarted);
 
     std::thread::spawn(move || {
         let outcome = game::wait_for_exit(&running);
-        // TASK-096: a GSdx restart request ends the session with the GSdx error. CoreGS 1.1 is never started.
-        let log_text = fs::read_to_string(&running.log_path).unwrap_or_default();
+        // GSdx failed and the player chose CoreGS 2.0 in the game's message (`use_coregs20_after_gsdx_failure`).
+        // The game writes its last line as it exits; wait for it before classifying, so a normal close is never read
+        // mid-write (owner, 2026-10-26: three normal closes were reported as crashes).
+        let log_text = read_settled_log(&running.log_path);
         let gsdx_error = launch::restart_requested(&log_text)
             .then(|| launch::gsdx_unavailable_message(launch::GSDX_RESTART_REQUESTED, &dirs.logs()));
-        match saves::harvest_card(&lock(&shared).library, &card) {
+        // Issue #89: a lost graphics card is named in plain words, ahead of the restart and the generic crash text.
+        let gpu_lost = matches!(outcome, Outcome::Crashed { .. }).then(|| exit::gpu_lost_line(&log_text)).flatten();
+        match saves::harvest_card(lock(&shared).library_of(game), &card) {
             Ok(report) => state::log(&dirs, &format!("card harvested: {report:?}")),
-            Err(error) => state::log(&dirs, &format!("card not harvested: {error}")),
+            Err(error) => state::log_error(&dirs, &format!("card not harvested: {error}")),
         }
         let log_path = running.log_path.clone();
         drop(running);
+        lock(&shared).discord.on_game_end();
         lock(&shared).game_child = None;
-        state::log(&dirs, &format!("game ended: {outcome:?} (log {})", log_path.display()));
-        let message = match (gsdx_error, &outcome) {
-            (Some(error), _) => {
-                state::log(&dirs, "GSdx asked for a restart; the launcher does not start CoreGS 1.1");
+        let renderer_changed = gsdx_error.is_some() && {
+            let stored = lock(&shared).config.settings.clone();
+            let (_, graphics, _) = gt4l_platform::gpu::run_settings(&stored, state::current_language());
+            use_coregs20_after_gsdx_failure(&shared, graphics.card.as_ref().is_some_and(gt4l_core::gpu::GpuDevice::has_vulkan))
+        };
+        // Owner (2026-10-26): Vulkan loses the device on the Intel HD 620 (issue #89). Remember it for this machine so
+        // the next Play starts on Direct3D 11 instead of losing the device again.
+        let switched = if gpu_lost.is_some() && run_api == "vulkan" {
+            let mut state = lock(&shared);
+            match state.config.settings.set_gs("graphics_api", "d3d11") {
+                Ok(()) => {
+                    state.save_config();
+                    state::log(&dirs, "graphics: Vulkan lost the device; the stored API is now d3d11");
+                    true
+                }
+                Err(error) => {
+                    state::log_warn(&dirs, &format!("graphics: could not store d3d11 after the Vulkan loss: {error}"));
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        let ended = format!("game ended: {outcome:?} (log {})", log_path.display());
+        if matches!(outcome, gt4l_core::exit::Outcome::Crashed { .. }) {
+            state::log_error(&dirs, &ended);
+        } else {
+            state::log(&dirs, &ended);
+        }
+        // TASK-111: a crash or a lost graphics card offers the log bundle (the page asks, see app.js).
+        let offer_logs = gpu_lost.is_some() || matches!(outcome, Outcome::Crashed { .. });
+        let message = match (gpu_lost, gsdx_error, &outcome) {
+            (Some(line), _, _) => {
+                state::log_error(&dirs, &format!("graphics card lost: {line}"));
+                let mut text = exit::gpu_lost_message_in(state::current_language());
+                if switched {
+                    text.push_str("\n\n");
+                    text.push_str(&messages::text("game.gpu_lost_switched", state::current_language()));
+                }
+                text
+            }
+            (None, Some(_), _) if renderer_changed => messages::text("game.gsdx_switched", state::current_language()).to_string(),
+            (None, Some(error), _) => {
+                state::log_warn(&dirs, "GSdx failed and this PC has no graphics card for CoreGS 2.0; the renderer stays");
                 error
             }
-            (None, Outcome::NormalClose) => String::new(),
-            (None, Outcome::Crashed { .. }) => exit::user_message(&outcome),
+            (None, None, Outcome::NormalClose) => String::new(),
+            (None, None, Outcome::Crashed { .. }) => exit::user_message_in(&outcome, state::current_language()),
         };
         lock(&shared).home_message = message.clone();
+        if offer_logs {
+            let _ = app.emit("logs-offer", json!({ "reason": message.clone() }));
+        }
         crate::tray::handle(&app, crate::tray::Event::GameEnded { message });
     });
     Ok(())
+}
+
+/// Reads a finished session's log, waiting for the game's last line: the runtime writes `[ee] stopped after ...` while
+/// the process exits, and the launcher used to read the file in that same instant, so a normal close could be classified
+/// as a crash (owner, 2026-10-26). Waits at most `SETTLE_TIMEOUT`, returning as soon as the line is there.
+fn read_settled_log(path: &Path) -> String {
+    const SETTLE_TIMEOUT: Duration = Duration::from_millis(1500);
+    let deadline = Instant::now() + SETTLE_TIMEOUT;
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if exit::is_settled(&text) || Instant::now() >= deadline {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// GSdx could not run and the player chose CoreGS 2.0 in the game's message: it is stored as the renderer, when this PC's card can
+/// run it. Returns whether the renderer changed.
+pub fn use_coregs20_after_gsdx_failure(shared: &Shared, card_has_vulkan: bool) -> bool {
+    if !card_has_vulkan {
+        return false;
+    }
+    let mut state = lock(shared);
+    match state.config.settings.set_by_user("renderer", settings::CORE_GS_20) {
+        Ok(()) => {
+            state.save_config();
+            state::log(&state.dirs, "GSdx could not run; the player chose CoreGS 2.0, now the renderer");
+            true
+        }
+        Err(error) => {
+            state::log_error(&state.dirs, &format!("could not store CoreGS 2.0 after GSdx failed: {error}"));
+            false
+        }
+    }
+}
+
+/// The player accepted Play's offer of CoreGS 2.0 (issues #139 and #179: GSdx is stored but not installed): it becomes the
+/// stored renderer when this PC's card can run it, with the same rule as after a GSdx failure. The error is the text to show.
+pub fn use_coregs20_for_play(shared: &Shared, card_has_vulkan: bool) -> Result<(), String> {
+    if use_coregs20_after_gsdx_failure(shared, card_has_vulkan) {
+        Ok(())
+    } else {
+        Err(messages::text("game.coregs20_not_selected", state::language_of(&lock(shared))).to_string())
+    }
+}
+
+/// Before Play (IN-507): under CoreGS 2.0 the game program compiles what the shader cache lacks, and `shaders-progress` opens
+/// the window only when there is work. Another renderer, or a problem here, goes straight to Play: the game then compiles
+/// on its own as it plays. False: the player cancelled, so no game starts.
+#[tauri::command(async)]
+pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool, String> {
+    let shared: Shared = shared.inner().clone();
+    let (settings, game, dirs, textures, executable, slot, language) = {
+        let state = lock(&shared);
+        if state.game_child.is_some() || !launch::uses_coregs20(&state.config.settings) {
+            return Ok(true);
+        }
+        state.shaders_cancelled.store(false, Ordering::SeqCst);
+        let game = state.selected;
+        let game_dir = paths::game_directory(&program_directory(), state.config.dev_game_dir.as_deref());
+        (state.config.settings.clone(), game, state.game_dirs(game), state.texture_location().0, launch::game_program(game, &game_dir), state.shaders_child.clone(), state::language_of(&state))
+    };
+    if !executable.exists() {
+        return Ok(true);
+    }
+    let (settings, _, cards) = gt4l_platform::gpu::run_settings_with_cards(&settings, language, gt4l_platform::gpu::refresh_gpus());
+    if cards.is_empty() {
+        return Ok(true);
+    }
+    let monitors = gt4l_platform::display::monitors();
+    let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
+    let mut worked = false;
+    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &mut |done, total| {
+        worked = true;
+        let _ = app.emit("shaders-progress", json!({ "done": done, "total": total }));
+    });
+    let state = lock(&shared);
+    if state.shaders_cancelled.load(Ordering::SeqCst) {
+        state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
+        return Ok(false);
+    }
+    match result {
+        Ok(true) if worked => state::log(&state.dirs, "shaders: compiled"),
+        Ok(true) => {}
+        Ok(false) => state::log_error(&state.dirs, "shaders: the compile did not finish; the game compiles as it plays (logs\\shaders.log)"),
+        Err(message) => state::log_error(&state.dirs, &format!("shaders: {message}")),
+    }
+    Ok(true)
+}
+
+/// Cancel in the "Compiling shaders" window. What was compiled stays in the cache for the next Play.
+#[tauri::command]
+pub fn cancel_shader_prepare(shared: State<'_, Shared>) -> Result<(), String> {
+    let state = lock(shared.inner());
+    state.shaders_cancelled.store(true, Ordering::SeqCst);
+    let mut guard = state.shaders_child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(process) = guard.as_mut() {
+        process.kill().map_err(|error| format!("could not stop the shader compile: {error}"))?;
+    }
+    Ok(())
+}
+
+/// TASK-164 (issue #160): `first_start_hint()` is `null`, or `{game, confirm, pad, right}` when the next start of the selected
+/// game meets its first-start questions (no save yet, [`saves::first_start_expected`]). Play then says which keys answer them,
+/// from the current controls: `confirm` the keyboard keys of Cross (`W / Enter`), `pad` the controller button of Cross
+/// (`A`, empty when none), `right` the keyboard key of D-pad right (the format question starts on Cancel).
+#[tauri::command]
+pub fn first_start_hint(shared: State<'_, Shared>) -> Value {
+    first_start_hint_of(shared.inner())
+}
+
+pub fn first_start_hint_of(shared: &Shared) -> Value {
+    let state = lock(shared);
+    let game = state.selected;
+    if !saves::first_start_expected(state.library_of(game), &state.game_dirs(game).runtime_card()) {
+        return Value::Null;
+    }
+    let names_of = |input: &str, family: &str| -> Vec<String> {
+        state
+            .controls
+            .sources(input)
+            .unwrap_or_default()
+            .iter()
+            .filter(|source| controls_file::source_family(source) == family)
+            .filter_map(|source| controls_file::source_base(source).split_once(':').map(|(_, name)| name.to_string()))
+            .collect()
+    };
+    json!({
+        "game": game.display_name,
+        "confirm": names_of("cross", "key").join(" / "),
+        "pad": names_of("cross", "xinput").first().cloned().unwrap_or_default(),
+        "right": names_of("dpad_right", "key").last().cloned().unwrap_or_default(),
+    })
 }
 
 /// Stops the game process. The card is harvested by the watcher thread after the exit.
@@ -411,7 +813,7 @@ pub fn stop_game(shared: State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 
-fn program_directory() -> PathBuf {
+pub(crate) fn program_directory() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -420,23 +822,20 @@ fn program_directory() -> PathBuf {
 
 // Controls ---------------------------------------------------------------------------------------
 
-/// Shown when the controls file was written by a newer launcher: it is kept as it is.
-const CONTROLS_LOCKED: &str =
-    "The controls file was written by a newer GT4Recomp and is kept as it is. Update the launcher to change controls.";
-
 /// Applies `change` to a copy of the controls, writes the file, and only then keeps the copy. A refused change or a
 /// failed write leaves the controls and the file as they were, and returns the reason.
 fn change_controls<T>(
     state: &mut AppState,
     change: impl FnOnce(&mut controls_file::Controls) -> Result<T, String>,
 ) -> Result<T, String> {
+    let language = state::language_of(state);
     if state.controls_locked {
-        return Err(CONTROLS_LOCKED.to_string());
+        return Err(messages::text("controls.newer_file", language).to_string());
     }
     let mut next = state.controls.clone();
     let result = change(&mut next)?;
     controls_file::save(&state.controls_path(), &next)
-        .map_err(|error| format!("The controls file could not be saved: {error}"))?;
+        .map_err(|error| messages::render("controls.could_not_save", language, &[("error", &error.to_string())]))?;
     state.controls = next;
     Ok(result)
 }
@@ -552,7 +951,8 @@ pub fn reset_all_bindings_of(shared: &Shared) -> Result<Value, String> {
         controls.reset_all();
         Ok(())
     })?;
-    state.controls_status = "Every control is back to its built-in binding.".to_string();
+    let language = state::language_of(&state);
+    state.controls_status = messages::text("controls.defaults_restored", language).to_string();
     Ok(controls_view(&state))
 }
 
@@ -566,21 +966,49 @@ pub struct LibraryView {
     /// The folder that holds the page's files (`Documents\Gran Turismo 4\Saves` or `...\Replays`), shown with an
     /// "Open folder" button so a player can find and back up the files.
     pub folder: String,
+    /// The game these saves or replays belong to (the Saves page names it in its title): `gt4` or `spec2`.
+    pub game: String,
+    pub game_name: String,
 }
 
 fn saves_view(state: &AppState) -> Result<LibraryView, String> {
     Ok(LibraryView {
-        items: saves::saves(&state.library)?,
+        items: saves_items(state)?,
         status: state.saves_status.clone(),
-        folder: state.user_dirs.saves().display().to_string(),
+        folder: state.selected_user().saves().display().to_string(),
+        game: state.selected.id.to_string(),
+        game_name: state.selected.display_name.to_string(),
     })
+}
+
+/// The saves of every game in one list (TASK-101 item 2): each game's saves in slot order, each tagged with its game id.
+fn saves_items(state: &AppState) -> Result<Vec<Item>, String> {
+    let mut items = Vec::new();
+    for &game in games::GAMES {
+        for mut item in saves::saves(state.library_of(game))? {
+            item.game = game.id.to_string();
+            items.push(item);
+        }
+    }
+    Ok(items)
+}
+
+/// The game and the library name of a Saves page item id (`gt4:Save 02`). An id without a known game prefix (a replay,
+/// or an id from an older page) belongs to the game the page shows.
+pub fn item_target(state: &AppState, id: &str) -> (&'static Game, String) {
+    match id.split_once(':').and_then(|(game, name)| games::by_id(game).map(|game| (game, name))) {
+        Some((game, name)) => (game, name.to_string()),
+        None => (state.selected, id.to_string()),
+    }
 }
 
 fn replays_view(state: &AppState) -> Result<LibraryView, String> {
     Ok(LibraryView {
-        items: saves::replays(&state.library)?,
+        items: saves::replays(state.library())?,
         status: state.replays_status.clone(),
-        folder: state.user_dirs.replays().display().to_string(),
+        folder: state.selected_user().replays().display().to_string(),
+        game: state.selected.id.to_string(),
+        game_name: state.selected.display_name.to_string(),
     })
 }
 
@@ -602,15 +1030,22 @@ pub fn replays_list_of(shared: &Shared) -> Result<LibraryView, String> {
     replays_view(&lock(shared))
 }
 
-/// Picks a save file or card image and imports it into the library. Imports never overwrite.
+/// Picks a save file or card image and imports it. Each item goes to the library of the game its name belongs to, so the
+/// page's game (`game`, optional) only decides what the status says when the file is of another game (TASK-101 item 1).
+/// Imports never overwrite.
 #[tauri::command]
-pub async fn saves_import(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<LibraryView>, String> {
-    import_with_picker(app, shared.inner().clone(), Kind::Saves).await
+pub async fn saves_import(app: AppHandle, game: Option<String>, shared: State<'_, Shared>) -> Result<Option<LibraryView>, String> {
+    import_with_picker(app, shared.inner().clone(), Kind::Saves, game).await
 }
 
 #[tauri::command]
-pub async fn replays_import(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<LibraryView>, String> {
-    import_with_picker(app, shared.inner().clone(), Kind::Replays).await
+pub async fn replays_import(app: AppHandle, game: Option<String>, shared: State<'_, Shared>) -> Result<Option<LibraryView>, String> {
+    import_with_picker(app, shared.inner().clone(), Kind::Replays, game).await
+}
+
+/// The game the page shows for an import: the page's answer when it names a game of the launcher, else the selected one.
+pub fn page_game(game: Option<&str>, selected: &'static Game) -> &'static Game {
+    game.and_then(games::by_id).unwrap_or(selected)
 }
 
 #[derive(Clone, Copy)]
@@ -619,30 +1054,58 @@ pub enum Kind {
     Replays,
 }
 
-async fn import_with_picker(app: AppHandle, shared: Shared, kind: Kind) -> Result<Option<LibraryView>, String> {
+async fn import_with_picker(app: AppHandle, shared: Shared, kind: Kind, game: Option<String>) -> Result<Option<LibraryView>, String> {
+    let language = state::language_of(&lock(&shared));
     tauri::async_runtime::spawn_blocking(move || {
         let picked = app
             .dialog()
             .file()
-            .set_title("Import from a memory card or save file")
-            .add_filter("Save or card", &["psu", "ps2", "mcd", "bin", "card"])
+            .set_title(messages::text("saves.import_title", language))
+            .add_filter(messages::text("saves.import_filter", language), &["psu", "ps2", "mcd", "bin", "card"])
             .blocking_pick_file();
         let Some(picked) = picked else {
             return Ok(None);
         };
         let path = picked.into_path().map_err(|error| error.to_string())?;
-        import_into(&shared, &path, kind).map(Some)
+        let page = page_game(game.as_deref(), lock(&shared).selected);
+        import_into_game(&shared, &path, kind, page).map(Some)
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
-/// The import behind `saves_import` and `replays_import` for a picked path. Imports never overwrite.
+/// The import into the libraries of every game, for a picked path (tests and the flow audit). The answer is the page's
+/// own list: the game the page shows.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn import_into(shared: &Shared, path: &Path, kind: Kind) -> Result<LibraryView, String> {
+    let selected = lock(shared).selected;
+    import_into_game(shared, path, kind, selected)
+}
+
+/// The import behind `saves_import` and `replays_import` for a picked path. Each item goes to its own game's library.
+/// The status names the game of an item when that game is not the page's one.
+pub fn import_into_game(shared: &Shared, path: &Path, kind: Kind, page: &'static Game) -> Result<LibraryView, String> {
     let mut state = lock(shared);
-    let summary = match saves::import_path(&state.library, path) {
-        Ok(report) => summary_of(&report),
-        Err(message) => message,
+    let language = state::language_of(&state);
+    // A panic in the import must never close the launcher (issue #86): it becomes a message, and the log names the file.
+    let file_name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let size = fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
+    let libraries: Vec<(&'static Game, &Library)> = games::GAMES.iter().map(|game| (*game, state.library_of(game))).collect();
+    let attempt = panic::catch_unwind(AssertUnwindSafe(|| saves::import_path(&libraries, path, language)));
+    let summary = match attempt {
+        Ok(Ok(outcome)) => {
+            let summary = saves::import_summary(&outcome, page, language);
+            state::log(&state.dirs, &format!("import of {file_name} ({size} bytes): {summary}"));
+            summary
+        }
+        Ok(Err(message)) => {
+            state::log_error(&state.dirs, &format!("import of {file_name} ({size} bytes) refused: {message}"));
+            message
+        }
+        Err(_) => {
+            state::log_error(&state.dirs, &format!("import of {file_name} ({size} bytes) stopped by an internal error"));
+            messages::text("saves.import_crashed", language).to_string()
+        }
     };
     match kind {
         Kind::Saves => {
@@ -656,10 +1119,6 @@ pub fn import_into(shared: &Shared, path: &Path, kind: Kind) -> Result<LibraryVi
     }
 }
 
-fn summary_of(report: &Report) -> String {
-    saves::import_summary(report)
-}
-
 /// Makes a save the one the next start uses. The save that was active moves to a new slot.
 #[tauri::command]
 pub fn saves_activate(id: String, shared: State<'_, Shared>) -> Result<LibraryView, String> {
@@ -667,18 +1126,92 @@ pub fn saves_activate(id: String, shared: State<'_, Shared>) -> Result<LibraryVi
 }
 
 pub fn saves_activate_of(id: String, shared: &Shared) -> Result<LibraryView, String> {
-    let name = id;
     let mut state = lock(shared);
-    let slot = saves::saves(&state.library)?
+    let language = state::language_of(&state);
+    let (game, name) = item_target(&state, &id);
+    let library = state.library_of(game);
+    let item = saves::saves(library)?
         .into_iter()
         .find(|item| item.name == name)
-        .map(|item| item.label)
-        .ok_or_else(|| "That save is not in the library any more.".to_string())?;
-    if slot == "Active save" {
+        .ok_or_else(|| messages::text("saves.not_in_library", language).to_string())?;
+    if item.active {
         return saves_view(&state);
     }
-    saves::activate(&state.library, &name)?;
+    saves::activate(library, &name)?;
     state.saves_status = format!("{} will be used the next time you play.", name);
+    saves_view(&state)
+}
+
+/// `saves_new({game})`: starts a new save for `game` (the page's game when it names none). The active save of that game is
+/// kept as a new `Save NN`; the next Play of that game starts a new profile. Refused while a game runs. The page asks first,
+/// and asks which game when two are installed.
+#[tauri::command]
+pub fn saves_new(game: Option<String>, shared: State<'_, Shared>) -> Result<LibraryView, String> {
+    saves_new_of(game, shared.inner())
+}
+
+pub fn saves_new_of(game: Option<String>, shared: &Shared) -> Result<LibraryView, String> {
+    let mut state = lock(shared);
+    let language = state::language_of(&state);
+    if state.game_child.is_some() {
+        return Err(messages::text("saves.game_running", language).to_string());
+    }
+    let game = page_game(game.as_deref(), state.selected);
+    let card = state.game_dirs(game).runtime_card();
+    let parked = saves::new_save(state.library_of(game), &card)?;
+    let text = match parked {
+        Some(slot) => messages::render("saves.new_kept", language, &[("slot", &slot)]),
+        None => messages::text("saves.new_started", language).to_string(),
+    };
+    state.saves_status = format!("{}: {text}", game.display_name);
+    saves_view(&state)
+}
+
+/// `saves_export({id})`: writes a save (the active one or a slot) as a `.psu` file the player picks. Cancelling changes
+/// nothing.
+#[tauri::command]
+pub async fn saves_export(app: AppHandle, id: String, shared: State<'_, Shared>) -> Result<Option<LibraryView>, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (bytes, suggested, language) = {
+            let state = lock(&shared);
+            let language = state::language_of(&state);
+            let (game, name) = item_target(&state, &id);
+            let (bytes, suggested) = saves::export(state.library_of(game), &name)?;
+            (bytes, suggested, language)
+        };
+        let picked = app
+            .dialog()
+            .file()
+            .set_title(messages::text("saves.export_title", language))
+            .set_file_name(&suggested)
+            .add_filter(messages::text("saves.export_filter", language), &["psu"])
+            .blocking_save_file();
+        let Some(picked) = picked else {
+            return Ok(None);
+        };
+        let path = picked.into_path().map_err(|error| error.to_string())?;
+        fs::write(&path, &bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+        let mut state = lock(&shared);
+        state.saves_status = messages::render("saves.exported", language, &[("path", &path.display().to_string())]);
+        saves_view(&state).map(Some)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// `saves_rename({id, name})`: gives a save a display name (at most 40 characters). The folder name stays.
+#[tauri::command]
+pub fn saves_rename(id: String, name: String, shared: State<'_, Shared>) -> Result<LibraryView, String> {
+    saves_rename_of(id, name, shared.inner())
+}
+
+pub fn saves_rename_of(id: String, name: String, shared: &Shared) -> Result<LibraryView, String> {
+    let mut state = lock(shared);
+    let language = state::language_of(&state);
+    let (game, library_name) = item_target(&state, &id);
+    let stored = saves::rename(state.library_of(game), &library_name, &name, language)?;
+    state.saves_status = messages::render("saves.renamed", language, &[("name", &stored)]);
     saves_view(&state)
 }
 
@@ -689,8 +1222,7 @@ pub fn saves_delete(id: String, shared: State<'_, Shared>) -> Result<LibraryView
 }
 
 pub fn saves_delete_of(id: String, shared: &Shared) -> Result<LibraryView, String> {
-    let name = id;
-    delete_item(&name, shared, Kind::Saves)
+    delete_item(&id, shared, Kind::Saves)
 }
 
 #[tauri::command]
@@ -699,18 +1231,32 @@ pub fn replays_delete(id: String, shared: State<'_, Shared>) -> Result<LibraryVi
 }
 
 pub fn replays_delete_of(id: String, shared: &Shared) -> Result<LibraryView, String> {
-    let name = id;
-    delete_item(&name, shared, Kind::Replays)
+    delete_item(&id, shared, Kind::Replays)
 }
 
-fn delete_item(name: &str, shared: &Shared, kind: Kind) -> Result<LibraryView, String> {
+/// Deletes one save (of the game its id names) or one replay (of the game the page shows).
+fn delete_item(id: &str, shared: &Shared, kind: Kind) -> Result<LibraryView, String> {
     let mut state = lock(shared);
-    let items = saves::saves(&state.library)?.into_iter().chain(saves::replays(&state.library)?);
+    let language = state::language_of(&state);
+    let (game, name) = match kind {
+        Kind::Saves => item_target(&state, id),
+        Kind::Replays => (state.selected, id.to_string()),
+    };
+    let library = state.library_of(game);
+    let items = match kind {
+        Kind::Saves => saves::saves(library)?,
+        Kind::Replays => saves::replays(library)?,
+    };
     let item = items
         .into_iter()
         .find(|item| item.name == name)
-        .ok_or_else(|| "That item is not in the library any more.".to_string())?;
-    let result = saves::delete(&state.library, &item);
+        .ok_or_else(|| messages::text("saves.item_not_in_library", language).to_string())?;
+    if item.active && state.game_child.is_some() {
+        return Err(messages::text("saves.delete_game_running", language).to_string());
+    }
+    let card = state.game_dirs(game).runtime_card();
+    let library = state.library_of(game);
+    let result = saves::delete(library, &item, &card);
     let status = match result {
         Ok(()) => format!("{} moved to the Recycle Bin.", item.label),
         Err(message) => message,
@@ -725,6 +1271,114 @@ fn delete_item(name: &str, shared: &Shared, kind: Kind) -> Result<LibraryView, S
             replays_view(&state)
         }
     }
+}
+
+// Games -----------------------------------------------------------------------------------------
+
+/// `games_list()`: `{selected, any_installed, games: [{id, name, title, variant, installed, damaged, reason, selected,
+/// disc_name, folder, size_bytes}]}` (Settings > Games and the home selector). `title` is the name shown in Settings
+/// (Spec II names its version); `variant` is what tells this copy apart (`USA v2.00`, `PT-BR`), empty when none.
+#[tauri::command]
+pub fn games_list(shared: State<'_, Shared>) -> Result<Value, String> {
+    games_list_of(shared.inner())
+}
+
+pub fn games_list_of(shared: &Shared) -> Result<Value, String> {
+    let state = lock(shared);
+    Ok(json!({
+        "selected": state.selected.id,
+        "any_installed": !state.installed_games().is_empty(),
+        "games": games::GAMES.iter().map(|game| game_row(&state, game)).collect::<Vec<_>>(),
+    }))
+}
+
+/// `select_game({id})`: the game the home screen, the Saves page and Play use. It is only the page's choice; the stored
+/// choice (the game played last) changes when a game starts. Not while the game runs.
+#[tauri::command]
+pub fn select_game(id: String, shared: State<'_, Shared>) -> Result<Value, String> {
+    select_game_of(id, shared.inner())
+}
+
+pub fn select_game_of(id: String, shared: &Shared) -> Result<Value, String> {
+    let game = games::by_id(&id).ok_or_else(|| format!("{id} is not a game of this launcher."))?;
+    {
+        let mut state = lock(shared);
+        let language = state::language_of(&state);
+        if state.game_child.is_some() {
+            return Err(messages::text("game.stop_before_choosing", language).to_string());
+        }
+        if state.selected != game {
+            state.selected = game;
+            state.ra_revision = state.ra_revision.wrapping_add(1);
+            state.saves_status.clear();
+            state.replays_status.clear();
+            state.home_message.clear();
+            // A finished setup of another game is not this game's result.
+            if state.setup_game != Some(game) && !state.setup_busy {
+                state.setup_outcome = SetupOutcome::None;
+            }
+        }
+    }
+    games_list_of(shared)
+}
+
+/// What "Remove" deletes of a game: the copy of the disc image and the prepared files, in the data folder's write places.
+/// Never the save library, the replays, the runtime card or any shared folder.
+pub const REMOVED_FOLDERS: &[&str] = &["disc", "prepared", "prepared.tmp"];
+
+/// `games_remove({id})`: deletes the prepared files of a game, and the launcher's own copy of the disc image of an older install
+/// (the page asks first). An image the player keeps elsewhere is never touched, and its saves and replays stay. Refused while the game runs or setup works. Returns the new `games_list`.
+#[tauri::command]
+pub fn games_remove(id: String, shared: State<'_, Shared>) -> Result<Value, String> {
+    games_remove_of(id, shared.inner())
+}
+
+pub fn games_remove_of(id: String, shared: &Shared) -> Result<Value, String> {
+    let game = games::by_id(&id).ok_or_else(|| format!("{id} is not a game of this launcher."))?;
+    {
+        let state = lock(shared);
+        let language = state::language_of(&state);
+        if state.game_child.is_some() {
+            return Err(messages::text("game.stop_before_removing", language).to_string());
+        }
+        if state.setup_busy || state.migration.running {
+            return Err(messages::text("game.wait_for_setup", language).to_string());
+        }
+        let dirs = state.game_dirs(game);
+        let mut removed = Vec::new();
+        for place in dirs.write_places() {
+            // The player may have linked an image that sits in this folder: that file is theirs.
+            let linked = disc_setup::read_receipt(&place.join("prepared"))
+                .and_then(|receipt| receipt.image)
+                .and_then(|image| disc_setup::linked_image(&image, &state.install_dir));
+            for name in REMOVED_FOLDERS {
+                let folder = place.join(name);
+                if linked.as_ref().is_some_and(|image| image.starts_with(&folder)) {
+                    continue;
+                }
+                if folder.exists() {
+                    fs::remove_dir_all(&folder).map_err(|error| format!("{} was not removed: {error}", folder.display()))?;
+                    removed.push(folder.display().to_string());
+                }
+            }
+            // Leftovers of an interrupted preparation (`prepared.old-<time>`).
+            if let Ok(entries) = fs::read_dir(&place) {
+                for entry in entries.filter_map(|entry| entry.ok()) {
+                    if entry.file_name().to_string_lossy().starts_with("prepared.old-") {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+        }
+        state::log(&state.dirs, &format!("game removed ({}): {}; the saves and replays are kept", game.id, removed.join(", ")));
+    }
+    {
+        let mut state = lock(shared);
+        if state.setup_game == Some(game) {
+            state.setup_outcome = SetupOutcome::None;
+        }
+    }
+    games_list_of(shared)
 }
 
 // About -----------------------------------------------------------------------------------------
@@ -747,6 +1401,108 @@ pub struct AboutInfo {
     pub data_folder: String,
     /// The user data folder with the settings, saves and replays (`%APPDATA%\GT4Recomp`).
     pub saves_folder: String,
+    /// The game the page shows (game files and the Saves folder below belong to it).
+    pub game_name: String,
+    /// Credits of the people behind the games GT4Recomp runs (the Spec II authors; see `model::credits_text`).
+    pub credits: String,
+    /// The build kind: `Installer` or `Portable` (TASK-098). Settings > About shows it.
+    pub build: String,
+}
+
+// TASK-099: `RELEASE_NOTES`, every short `docs/release-notes/launcher/<version>.md` up to this launcher version, newest
+// first, embedded by build.rs (a version without its own short notes does not build). The home page renders the
+// Markdown itself and shows no raw HTML; its arrows step through the older notes.
+include!(concat!(env!("OUT_DIR"), "/release_notes.rs"));
+
+/// The links the home screen may open (owner, 2026-10-23), by name: the page never passes an address.
+/// `kofi`: "Support the project" (top right); `youtube`: "Moesuito" in the version line (bottom right).
+pub const PROJECT_LINKS: &[(&str, &str)] =
+    &[
+        ("kofi", "https://ko-fi.com/moesuito"),
+        ("youtube", "https://www.youtube.com/@Moesuito"),
+        ("report_problem", "https://github.com/moesuito/gt4-staticrecomp/issues/new"),
+    ];
+
+/// The address of a named project link, or None for any other name.
+pub fn project_link(name: &str) -> Option<&'static str> {
+    PROJECT_LINKS.iter().find(|(key, _)| *key == name).map(|(_, url)| *url)
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseNotes {
+    /// This launcher's version (the first entry of `releases`).
+    pub version: String,
+    /// Every embedded release, newest first.
+    pub releases: Vec<ReleaseNote>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseNote {
+    pub version: String,
+    /// The en-US text: the fallback when the page's language has no note for this version.
+    pub markdown: String,
+    /// The other languages of this release: language tag (`pt-BR`) -> Markdown.
+    pub translations: std::collections::BTreeMap<String, String>,
+}
+
+/// The embedded notes grouped by version, newest first (TASK-102: en-US plus every translated folder).
+#[tauri::command]
+pub fn release_notes() -> ReleaseNotes {
+    let mut releases: Vec<ReleaseNote> = Vec::new();
+    for (tag, version, markdown) in RELEASE_NOTES {
+        let index = match releases.iter().position(|note| note.version == *version) {
+            Some(index) => index,
+            None => {
+                releases.push(ReleaseNote {
+                    version: version.to_string(),
+                    markdown: String::new(),
+                    translations: std::collections::BTreeMap::new(),
+                });
+                releases.len() - 1
+            }
+        };
+        if *tag == "en-US" {
+            releases[index].markdown = markdown.to_string();
+        } else {
+            releases[index].translations.insert(tag.to_string(), markdown.to_string());
+        }
+    }
+    // A translation whose version has no en-US note is not shown (the build keeps the en-US note of this version).
+    releases.retain(|note| !note.markdown.is_empty());
+    ReleaseNotes { version: env!("CARGO_PKG_VERSION").to_string(), releases }
+}
+
+/// Opens one of the `PROJECT_LINKS` in the default browser. Any other name is refused.
+#[tauri::command]
+pub fn open_link(name: String) -> Result<(), String> {
+    let url = project_link(&name).ok_or_else(|| format!("{name} is not a link of this launcher"))?;
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("could not open {url}: {error}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Err(format!("open {url} in a browser"))
+    }
+}
+
+#[cfg(test)]
+mod project_link_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_named_project_links_open() {
+        assert_eq!(project_link("kofi"), Some("https://ko-fi.com/moesuito"));
+        assert_eq!(project_link("youtube"), Some("https://www.youtube.com/@Moesuito"));
+        assert_eq!(project_link("https://example.com"), None);
+        assert_eq!(project_link(""), None);
+    }
 }
 
 #[tauri::command]
@@ -760,15 +1516,18 @@ pub fn about_info_of(shared: &Shared) -> Result<AboutInfo, String> {
         .map(|installed| installed.version.text())
         .unwrap_or_else(|| "not installed".to_string());
     Ok(AboutInfo {
-        text: model::about_text(LAUNCHER_DISPLAY_VERSION),
+        text: gt4l_core::messages::render("about.text", state::current_language(), &[("version", LAUNCHER_VERSION)]),
         licenses: model::licenses_text().to_string(),
         disc_path: state.disc_path().map(|path| path.display().to_string()).unwrap_or_default(),
-        version: LAUNCHER_DISPLAY_VERSION.to_string(),
-        gt4recomp: LAUNCHER_DISPLAY_VERSION.to_string(),
+        version: LAUNCHER_VERSION.to_string(),
+        gt4recomp: LAUNCHER_VERSION.to_string(),
         gt4gs: renderer,
-        game_files: state.dirs.disc_folder().display().to_string(),
+        game_files: game_files_folder(&state, state.selected).display().to_string(),
         data_folder: state.dirs.root().display().to_string(),
         saves_folder: state.user_dirs.root().display().to_string(),
+        game_name: state.selected.display_name.to_string(),
+        credits: model::credits_text().to_string(),
+        build: gt4l_core::build_kind::BUILD.label().to_string(),
     })
 }
 
@@ -779,10 +1538,102 @@ pub fn open_log_folder(shared: State<'_, Shared>) -> Result<(), String> {
     open_folder(&logs)
 }
 
-/// Opens the game files folder (the copy of the disc image) in Explorer. The path is fixed by the launcher.
+/// Selects `logs\latest.log` in Explorer: the file a player attaches to an issue (TASK-112). The path is fixed by the
+/// launcher. Before the file exists the log folder opens.
+#[tauri::command]
+pub fn open_latest_log(shared: State<'_, Shared>) -> Result<(), String> {
+    let (latest, logs) = {
+        let state = lock(shared.inner());
+        (crate::session_log::latest_path(&state.dirs), state.dirs.logs())
+    };
+    if !latest.is_file() {
+        return open_folder(&logs);
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", latest.display()))
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("could not open {}: {error}", latest.display()))
+    }
+    #[cfg(not(windows))]
+    {
+        open_folder(&logs)
+    }
+}
+
+/// `export_logs()`: writes the log bundle (TASK-111) into a folder the player picks (Desktop by default). Returns the zip's
+/// path, or `None` when the player cancels. Nothing is written before the folder is picked.
+#[tauri::command]
+pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<String>, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (language, start) = {
+            let state = lock(&shared);
+            let start = gt4l_platform::known_folder::desktop()
+                .or_else(gt4l_platform::known_folder::documents)
+                .unwrap_or_else(|| state.dirs.root().to_path_buf());
+            (state::language_of(&state), start)
+        };
+        let picked = app
+            .dialog()
+            .file()
+            .set_title(messages::text("logs.export_title", language))
+            .set_directory(&start)
+            .blocking_pick_folder();
+        let Some(picked) = picked else {
+            return Ok(None);
+        };
+        let folder = picked.into_path().map_err(|error| error.to_string())?;
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        let state = lock(&shared);
+        match crate::log_bundle::export(&state, &folder, &user) {
+            Ok(path) => {
+                state::log(&state.dirs, &format!("logs exported to {}", path.display()));
+                Ok(Some(path.display().to_string()))
+            }
+            Err(error) => {
+                state::log_error(&state.dirs, &format!("logs not exported: {error}"));
+                Err(messages::render("logs.export_failed", language, &[("error", &error)]))
+            }
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// `open_export_folder({path})`: selects a log bundle in Explorer. Only a `GT4Recomp-logs-*.zip` file that exists is
+/// accepted, whatever the page sends.
+#[tauri::command]
+pub fn open_export_folder(path: String) -> Result<(), String> {
+    let file = std::path::Path::new(&path);
+    let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    if !(name.starts_with("GT4Recomp-logs-") && name.ends_with(".zip") && file.is_file()) {
+        return Err(format!("{name} is not a log bundle of this launcher"));
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", file.display()))
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("could not open {}: {error}", file.display()))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = file;
+        Err("open the folder of the log bundle".to_string())
+    }
+}
+
+/// Opens the folder of the game's disc image in Explorer.
 #[tauri::command]
 pub fn open_game_files_folder(shared: State<'_, Shared>) -> Result<(), String> {
-    let folder = lock(shared.inner()).dirs.disc_folder();
+    let folder = {
+        let state = lock(shared.inner());
+        game_files_folder(&state, state.selected)
+    };
     open_folder(&folder)
 }
 
@@ -796,14 +1647,20 @@ pub fn open_player_folder(shared: State<'_, Shared>) -> Result<(), String> {
 /// Opens the Saves folder of the user data folder (`%APPDATA%\GT4Recomp\Saves`) in Explorer.
 #[tauri::command]
 pub fn open_saves_folder(shared: State<'_, Shared>) -> Result<(), String> {
-    let folder = lock(shared.inner()).user_dirs.saves();
+    let folder = {
+        let state = lock(shared.inner());
+        state.selected_user().saves()
+    };
     open_folder(&folder)
 }
 
 /// Opens the Replays folder of the user data folder (`%APPDATA%\GT4Recomp\Replays`) in Explorer.
 #[tauri::command]
 pub fn open_replays_folder(shared: State<'_, Shared>) -> Result<(), String> {
-    let folder = lock(shared.inner()).user_dirs.replays();
+    let folder = {
+        let state = lock(shared.inner());
+        state.selected_user().replays()
+    };
     open_folder(&folder)
 }
 
@@ -811,9 +1668,82 @@ pub fn open_replays_folder(shared: State<'_, Shared>) -> Result<(), String> {
 /// drop a pack in (TASK-088; TASK-093: the pack goes straight in, no replacements subfolder).
 #[tauri::command]
 pub fn open_textures_folder(shared: State<'_, Shared>) -> Result<(), String> {
-    let folder = lock(shared.inner()).dirs.textures();
-    paths::ensure_texture_folders(&folder).map_err(|error| error.to_string())?;
-    open_folder(&folder)
+    let (location, _) = lock(shared.inner()).texture_location();
+    // TASK-157: a folder the player chose is opened as it is, never created.
+    if !location.custom {
+        paths::ensure_texture_folders(&location.folder).map_err(|error| error.to_string())?;
+    }
+    open_folder(&location.folder)
+}
+
+/// What the page shows of the textures folder choice (TASK-157): `path` is the stored choice (empty for the default),
+/// `default` the default folder, `valid` whether the choice can be used now (a missing folder falls back to the default).
+fn textures_state_of(state: &AppState) -> Value {
+    let chosen = state.config.textures_path.as_deref();
+    let valid = chosen.is_none_or(|path| gt4l_core::textures::check_textures_path(path, state.dirs.root()).is_ok());
+    json!({
+        "path": chosen.map(|path| path.display().to_string()).unwrap_or_default(),
+        "default": state.dirs.textures().display().to_string(),
+        "custom": chosen.is_some(),
+        "valid": valid,
+    })
+}
+
+/// `textures_state()`: the textures folder choice, for the Settings page.
+#[tauri::command]
+pub fn textures_state(shared: State<'_, Shared>) -> Value {
+    textures_state_of(&lock(shared.inner()))
+}
+
+/// `choose_textures_folder()`: the player picks an existing textures folder (for example the `textures` folder of PCSX2)
+/// to be read in place (TASK-157). The folder is checked, stored and the direct-start files are rewritten; nothing is
+/// copied or written into it. Returns the new state, or `None` when the player cancels.
+#[tauri::command]
+pub async fn choose_textures_folder(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<Value>, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (language, start) = {
+            let state = lock(&shared);
+            let start = state
+                .config
+                .textures_path
+                .clone()
+                .filter(|path| path.is_dir())
+                .or_else(gt4l_platform::known_folder::documents)
+                .unwrap_or_else(|| state.dirs.root().to_path_buf());
+            (state::language_of(&state), start)
+        };
+        let picked = app
+            .dialog()
+            .file()
+            .set_title(messages::text("textures.pick_title", language))
+            .set_directory(&start)
+            .blocking_pick_folder();
+        let Some(picked) = picked else {
+            return Ok(None);
+        };
+        let folder = picked.into_path().map_err(|error| error.to_string())?;
+        let mut state = lock(&shared);
+        let checked = gt4l_core::textures::check_textures_path(&folder, state.dirs.root())
+            .map_err(|error| messages::text(error.message_id(), language).to_string())?;
+        state::log(&state.dirs, &format!("textures: folder chosen: {}", checked.display()));
+        state.config.textures_path = Some(checked);
+        state.save_config();
+        Ok(Some(textures_state_of(&state)))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// `reset_textures_folder()`: back to the default `Textures` folder. The chosen folder is left as it is.
+#[tauri::command]
+pub fn reset_textures_folder(shared: State<'_, Shared>) -> Value {
+    let mut state = lock(shared.inner());
+    if state.config.textures_path.take().is_some() {
+        state::log(&state.dirs, "textures: back to the default folder");
+        state.save_config();
+    }
+    textures_state_of(&state)
 }
 
 fn open_folder(folder: &Path) -> Result<(), String> {
@@ -848,9 +1778,41 @@ pub fn controls_file_for(root: &Path) -> PathBuf {
     root.join(controls_file::CONTROLS_FILE_NAME)
 }
 
+#[cfg(test)]
+mod settings_table_probe_tests {
+    use super::*;
+    use gt4l_core::paths::{DataDirs, UserDirs, UserRootSource, USER_FOLDER_NAME};
+    use gt4l_disc::Pins;
+    use std::sync::{Arc, Mutex};
+
+    fn shared_in(root: &Path) -> Shared {
+        let dirs = DataDirs::new(root.join("data"));
+        let user = UserDirs::new(root.join("appdata").join(USER_FOLDER_NAME), UserRootSource::Override);
+        let state = AppState::load_with(dirs, Pins::embedded().expect("embedded pins"), user, None, root.to_path_buf())
+            .expect("state loads");
+        Arc::new(Mutex::new(state))
+    }
+
+    /// TASK-114 rc5: with the cards cached, opening the Settings table probes nothing (the old path probed twice).
+    #[test]
+    fn settings_table_reads_the_cached_cards_without_probing() {
+        let root = std::env::temp_dir().join(format!("gt4l-table-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let shared = shared_in(&root);
+        gt4l_platform::gpu::store_gpus(Vec::new());
+        let before = gt4l_platform::gpu::probe_count();
+        let table = get_settings_table_with_monitors(&shared, &[]).expect("table");
+        assert!(table.get("rows").and_then(Value::as_array).is_some_and(|rows| !rows.is_empty()));
+        assert_eq!(gt4l_platform::gpu::probe_count(), before, "the settings table must read the cache");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+
 // RetroAchievements -----------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RaStatusView {
     pub enabled: bool,
@@ -862,19 +1824,35 @@ pub struct RaStatusView {
     pub score: u32,
     pub score_softcore: u32,
     pub game: Option<gt4l_core::retroachievements::RaGameOverview>,
+    pub selected_game: String,
+    pub supported: bool,
+    pub relogin_required: bool,
+    pub token_error_kind: Option<gt4l_core::retroachievements::TokenErrorKind>,
 }
 
 fn ra_base_url() -> String {
     std::env::var("GT4_RA_HOST")
         .ok()
-        .filter(|val| !val.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| gt4l_core::retroachievements::DEFAULT_RA_BASE_URL.to_string())
 }
 
 fn build_ra_status_view(
     cfg: &gt4l_core::retroachievements::RaConfig,
     game: Option<gt4l_core::retroachievements::RaGameOverview>,
+    selected: &games::Game,
 ) -> RaStatusView {
+    let supported = selected.id == games::GT4.id;
+    let relogin_required = cfg.token_error.is_some()
+        || (!cfg.username.is_empty() && cfg.token.is_empty() && cfg.token_protected.is_some());
+    let token_error_kind = cfg.token_error.or_else(|| {
+        if !cfg.username.is_empty() && cfg.token.is_empty() && cfg.token_protected.is_some() {
+            Some(gt4l_core::retroachievements::TokenErrorKind::Inaccessible)
+        } else {
+            None
+        }
+    });
     RaStatusView {
         enabled: cfg.enabled,
         hardcore: cfg.hardcore,
@@ -888,7 +1866,11 @@ fn build_ra_status_view(
         },
         score: cfg.score,
         score_softcore: cfg.score_softcore,
-        game,
+        game: if supported { game } else { None },
+        selected_game: selected.id.to_string(),
+        supported,
+        relogin_required,
+        token_error_kind,
     }
 }
 
@@ -898,49 +1880,79 @@ pub async fn ra_status(shared: State<'_, Shared>) -> Result<RaStatusView, String
     let shared_clone = shared.inner().clone();
     tauri::async_runtime::spawn_blocking(move || ra_status_of(&shared_clone))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("RetroAchievements status task failed: {e}"))?
 }
 
 pub fn ra_status_of(shared: &Shared) -> Result<RaStatusView, String> {
-    ra_status_with(shared, |cfg| {
-        let base_url = ra_base_url();
-        let session = gt4l_core::retroachievements::login_with_token(&base_url, &cfg.username, &cfg.token).ok();
-        let game = gt4l_core::retroachievements::fetch_game_overview(&base_url, &cfg.username, &cfg.token).ok();
+    ra_status_at(&ra_base_url(), shared)
+}
+
+pub fn ra_status_at(base_url: &str, shared: &Shared) -> Result<RaStatusView, String> {
+    ra_status_at_with(base_url, shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_status_at_with(
+    base_url: &str,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
+    ra_status_with_protector(shared, protector, |cfg, game_id| {
+        let session = gt4l_core::retroachievements::login_with_token(base_url, &cfg.username, &cfg.token).ok();
+        let game = if game_id == games::GT4.id {
+            gt4l_core::retroachievements::fetch_game_overview(base_url, &cfg.username, &cfg.token).ok()
+        } else {
+            None
+        };
         (session, game)
     })
 }
 
-/// The refresh callback runs without the state lock. Tests can interleave a real logout/options command here.
 pub(crate) fn ra_status_with(
     shared: &Shared,
-    refresh: impl FnOnce(&gt4l_core::retroachievements::RaConfig) -> (
+    refresh: impl FnOnce(&gt4l_core::retroachievements::RaConfig, &'static str) -> (
         Option<gt4l_core::retroachievements::RaAccountSession>,
         Option<gt4l_core::retroachievements::RaGameOverview>,
     ),
 ) -> Result<RaStatusView, String> {
-    let (snapshot, revision) = {
+    ra_status_with_protector(shared, &gt4l_core::secret::default_protector(), refresh)
+}
+
+pub(crate) fn ra_status_with_protector(
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+    refresh: impl FnOnce(&gt4l_core::retroachievements::RaConfig, &'static str) -> (
+        Option<gt4l_core::retroachievements::RaAccountSession>,
+        Option<gt4l_core::retroachievements::RaGameOverview>,
+    ),
+) -> Result<RaStatusView, String> {
+    let (snapshot, revision, selected) = {
         let state = lock(shared);
-        let cfg = gt4l_core::retroachievements::RaConfig::load(&state.user_dirs.retroachievements_file());
-        (cfg, state.ra_revision)
+        let cfg = gt4l_core::retroachievements::RaConfig::load_with(&state.user_dirs.retroachievements_file(), protector);
+        (cfg, state.ra_revision, state.selected)
     };
+
     if !snapshot.is_signed_in() {
-        return Ok(build_ra_status_view(&snapshot, None));
+        return Ok(build_ra_status_view(&snapshot, None, selected));
     }
-    let (session, game) = refresh(&snapshot);
+
+    let (session, game) = refresh(&snapshot, selected.id);
+
     let state = lock(shared);
     let path = state.user_dirs.retroachievements_file();
-    let mut current = gt4l_core::retroachievements::RaConfig::load(&path);
-    // A refresh may update scores, but may never restore an old account or overwrite newer options.
-    if state.ra_revision != revision || current.username != snapshot.username || current.token != snapshot.token {
-        return Ok(build_ra_status_view(&current, None));
+    let mut current = gt4l_core::retroachievements::RaConfig::load_with(&path, protector);
+
+    if state.ra_revision != revision || state.selected.id != selected.id || current.username != snapshot.username || current.token != snapshot.token {
+        return Ok(build_ra_status_view(&current, None, state.selected));
     }
-    if let Some(session) = session {
-        current.display_name = session.display_name;
-        current.score = session.score;
-        current.score_softcore = session.score_softcore;
-        current.save(&path)?;
+
+    if let Some(sess) = session {
+        current.display_name = sess.display_name;
+        current.score = sess.score;
+        current.score_softcore = sess.score_softcore;
+        let _ = current.save_with(&path, protector);
     }
-    Ok(build_ra_status_view(&current, game))
+
+    Ok(build_ra_status_view(&current, game, state.selected))
 }
 
 /// Signs in to RetroAchievements with username and password, storing the API token in `retroachievements.toml`.
@@ -949,38 +1961,65 @@ pub async fn ra_login(username: String, password: String, shared: State<'_, Shar
     let shared_clone = shared.inner().clone();
     tauri::async_runtime::spawn_blocking(move || ra_login_of(&username, &password, &shared_clone))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("RetroAchievements login task failed: {e}"))?
 }
 
 pub fn ra_login_of(username: &str, password: &str, shared: &Shared) -> Result<RaStatusView, String> {
-    let revision = {
+    ra_login_at(&ra_base_url(), username, password, shared)
+}
+
+pub fn ra_login_at(base_url: &str, username: &str, password: &str, shared: &Shared) -> Result<RaStatusView, String> {
+    ra_login_at_with(base_url, username, password, shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_login_at_with(
+    base_url: &str,
+    username: &str,
+    password: &str,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
+    let (revision, selected) = {
         let mut state = lock(shared);
         state.ra_revision = state.ra_revision.wrapping_add(1);
-        state.ra_revision
+        (state.ra_revision, state.selected)
     };
-    let base_url = ra_base_url();
-    let session = gt4l_core::retroachievements::login_with_password(&base_url, username, password)?;
-    let (cfg, dirs) = {
+
+    let session = gt4l_core::retroachievements::login_with_password(base_url, username, password)?;
+
+    let (ra_path, dirs) = {
         let state = lock(shared);
         let ra_path = state.user_dirs.retroachievements_file();
-        let mut cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+        let mut cfg = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, protector);
         if state.ra_revision != revision {
-            return Ok(build_ra_status_view(&cfg, None));
+            return Ok(build_ra_status_view(&cfg, None, state.selected));
         }
         cfg.username = session.username;
-        cfg.display_name = session.display_name;
         cfg.token = session.token;
+        cfg.display_name = session.display_name;
         cfg.score = session.score;
         cfg.score_softcore = session.score_softcore;
-        cfg.enabled = true;
-        cfg.save(&ra_path)?;
-        (cfg, state.dirs.clone())
+        cfg.save_with(&ra_path, protector)?;
+        (ra_path, state.dirs.clone())
     };
-    state::log(&dirs, &format!("retroachievements: signed in as {}", cfg.display_name));
-    let game = gt4l_core::retroachievements::fetch_game_overview(&base_url, &cfg.username, &cfg.token).ok();
+
+    state::log(&dirs, &format!("retroachievements: signed in as {}", username.trim()));
+
+    let game = if selected.id == games::GT4.id {
+        let cfg = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, protector);
+        gt4l_core::retroachievements::fetch_game_overview(&base_url, &cfg.username, &cfg.token).ok()
+    } else {
+        None
+    };
+
     let state = lock(shared);
-    let current = gt4l_core::retroachievements::RaConfig::load(&state.user_dirs.retroachievements_file());
-    Ok(build_ra_status_view(&current, if state.ra_revision == revision { game } else { None }))
+    let current = gt4l_core::retroachievements::RaConfig::load_with(&state.user_dirs.retroachievements_file(), protector);
+    let valid_game = if state.ra_revision == revision && state.selected.id == selected.id {
+        game
+    } else {
+        None
+    };
+    Ok(build_ra_status_view(&current, valid_game, state.selected))
 }
 
 /// Signs out of RetroAchievements and removes the stored API token from `retroachievements.toml`.
@@ -990,14 +2029,21 @@ pub fn ra_logout(shared: State<'_, Shared>) -> Result<RaStatusView, String> {
 }
 
 pub fn ra_logout_of(shared: &Shared) -> Result<RaStatusView, String> {
+    ra_logout_with(shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_logout_with(
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
     let mut state = lock(shared);
     let ra_path = state.user_dirs.retroachievements_file();
-    let mut cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    let mut cfg = gt4l_core::retroachievements::RaConfig::load_with(&ra_path, protector);
     cfg.clear_credentials();
-    cfg.save(&ra_path)?;
+    cfg.save_with(&ra_path, protector)?;
     state.ra_revision = state.ra_revision.wrapping_add(1);
     state::log(&state.dirs, "retroachievements: signed out");
-    Ok(build_ra_status_view(&cfg, None))
+    Ok(build_ra_status_view(&cfg, None, state.selected))
 }
 
 /// Updates RetroAchievements mode options (`enabled`, `hardcore`, `encore`).
@@ -1017,14 +2063,34 @@ pub fn ra_set_options_of(
     encore: bool,
     shared: &Shared,
 ) -> Result<RaStatusView, String> {
+    ra_set_options_with(enabled, hardcore, encore, shared, &gt4l_core::secret::default_protector())
+}
+
+pub fn ra_set_options_with(
+    enabled: bool,
+    hardcore: bool,
+    encore: bool,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+) -> Result<RaStatusView, String> {
+    ra_set_options_with_custom(enabled, hardcore, encore, shared, protector, &gt4l_core::retroachievements::StdAtomicFileOps)
+}
+
+pub fn ra_set_options_with_custom(
+    enabled: bool,
+    hardcore: bool,
+    encore: bool,
+    shared: &Shared,
+    protector: &dyn gt4l_core::secret::SecretProtector,
+    ops: &dyn gt4l_core::retroachievements::AtomicFileOps,
+) -> Result<RaStatusView, String> {
     let mut state = lock(shared);
     let ra_path = state.user_dirs.retroachievements_file();
-    let mut cfg = gt4l_core::retroachievements::RaConfig::load(&ra_path);
+    let mut cfg = gt4l_core::retroachievements::RaConfig::load_with_custom(&ra_path, protector, ops);
     cfg.enabled = enabled;
     cfg.hardcore = hardcore;
     cfg.encore = encore;
-    cfg.save(&ra_path)?;
+    cfg.save_with_custom(&ra_path, protector, ops)?;
     state.ra_revision = state.ra_revision.wrapping_add(1);
-    Ok(build_ra_status_view(&cfg, None))
+    Ok(build_ra_status_view(&cfg, None, state.selected))
 }
-

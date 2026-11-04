@@ -110,6 +110,9 @@ claim zero emulation or full PS2 fidelity.
   **CoreGS 3.0** (TASK-090, the modern pipeline above). Linux and Android use
   **CoreGS 2.0** (the ARMSX2 GS pipeline is no longer the mobile plan). See
   `docs/GS-RENDERER-OPTIONS.md` and `docs/GSDX-PLAN.md`.
+- **New installs (owner, 2026-11-02; decision 0074):** setup checks the PC and uses CoreGS 2.0 when it runs it, with no download;
+  GSdx is optional, downloaded when chosen or when the card cannot run CoreGS 2.0. A player already on GSdx stays on it.
+- **Disc images (owner, 2026-11-02; decision 0075):** the launcher links the image where the player keeps it and never copies it; an install from before keeps its copy.
 - **No GPL code in the release executable** (it contains game code): the game
   executable never contains or links GPL code; the PCSX2 GS lives only in the
   separate `gt4-gs.exe` (decision 0070, which limits 0066, 0067 and 0069). PCSX2 is

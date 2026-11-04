@@ -33,14 +33,14 @@ fn an_unversioned_dev_build_file_is_backed_up_and_migrated_to_schema_one() {
     let (loaded, notes) = config::load(&path);
     assert_eq!(loaded.settings.get("vsync"), "fast", "the values survive the migration");
     assert_eq!(loaded.disc_path.as_deref(), Some(Path::new("D:/gt4.iso")));
-    assert!(notes.iter().any(|note| note.contains("migrated from schema 0 to 7")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("migrated from schema 0 to 8")), "{notes:?}");
 
     let copies = backups(&directory, "settings.toml.bak-schema0-");
     assert_eq!(copies.len(), 1, "exactly one backup");
     assert_eq!(fs::read_to_string(&copies[0]).unwrap(), original, "the backup is the untouched original");
 
     let rewritten = fs::read_to_string(&path).unwrap();
-    assert!(rewritten.contains("schema_version = 7"), "{rewritten}");
+    assert!(rewritten.contains("schema_version = 8"), "{rewritten}");
     assert!(!rewritten.contains("widescreen"), "{rewritten}");
     assert!(!rewritten.contains("aspect_"), "{rewritten}");
     assert!(rewritten.contains("render_scale = \"100\""), "{rewritten}");
@@ -87,11 +87,11 @@ fn skipped_update_versions_round_trip_through_settings() {
     let path = directory.join("settings.toml");
     let mut config = ConfigFile::default();
     config.skipped_renderer = Some(Version(1, 0, 2));
-    config.skipped_launcher = Some(Version(1, 0, 1));
+    config.skipped_launcher = Some(Version(1, 0, 1).into());
     config::save(&path, &config).unwrap();
     let (loaded, _) = config::load(&path);
     assert_eq!(loaded.skipped_renderer, Some(Version(1, 0, 2)));
-    assert_eq!(loaded.skipped_launcher, Some(Version(1, 0, 1)));
+    assert_eq!(loaded.skipped_launcher, Some(Version(1, 0, 1).into()));
 }
 
 #[test]
@@ -129,7 +129,7 @@ vsync = \"fast\"
     let (loaded, notes) = config::load(&path);
     assert_eq!(loaded.settings.get("fullscreen"), "on", "the old windowed default is replaced");
     assert_eq!(loaded.settings.get("vsync"), "fast", "other values survive");
-    assert!(notes.iter().any(|note| note.contains("migrated from schema 1 to 7")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("migrated from schema 1 to 8")), "{notes:?}");
 
     let copies = backups(&directory, "settings.toml.bak-schema1-");
     assert_eq!(copies.len(), 1, "exactly one backup of the schema 1 file");
@@ -186,7 +186,7 @@ fn a_release_1_0_0_schema_3_file_is_backed_up_and_migrated_to_schema_five() {
     fs::write(&path, original).unwrap();
 
     let (loaded, notes) = config::load(&path);
-    assert!(notes.iter().any(|note| note.contains("migrated from schema 3 to 7")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("migrated from schema 3 to 8")), "{notes:?}");
     assert!(!notes.iter().any(|note| note.contains("no longer used")), "the steps already dropped them: {notes:?}");
     assert_eq!(loaded.settings.get("vsync"), "fast");
     assert_eq!(loaded.settings.get("monitor"), "primary");
@@ -200,7 +200,7 @@ fn a_release_1_0_0_schema_3_file_is_backed_up_and_migrated_to_schema_five() {
     assert_eq!(copies.len(), 1, "exactly one backup");
     assert_eq!(fs::read_to_string(&copies[0]).unwrap(), original);
     let rewritten = fs::read_to_string(&path).unwrap();
-    assert!(rewritten.contains("schema_version = 7"), "{rewritten}");
+    assert!(rewritten.contains("schema_version = 8"), "{rewritten}");
     for retired in ["input_resolution", "widescreen", "aspect = ", "aspect_"] {
         assert!(!rewritten.contains(retired), "{retired} in {rewritten}");
     }
@@ -221,7 +221,7 @@ fn an_ultrawide_test_schema_4_file_is_backed_up_and_migrated_to_schema_five() {
     fs::write(&path, original).unwrap();
 
     let (loaded, notes) = config::load(&path);
-    assert!(notes.iter().any(|note| note.contains("migrated from schema 4 to 7")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("migrated from schema 4 to 8")), "{notes:?}");
     assert!(!notes.iter().any(|note| note.contains("no longer used") || note.contains("set by the launcher")), "{notes:?}");
     assert_eq!(loaded.settings.get("vsync"), "fast");
     assert!(loaded.settings.was_chosen("vsync"));
@@ -233,7 +233,7 @@ fn an_ultrawide_test_schema_4_file_is_backed_up_and_migrated_to_schema_five() {
     assert_eq!(copies.len(), 1, "exactly one backup");
     assert_eq!(fs::read_to_string(&copies[0]).unwrap(), original);
     let rewritten = fs::read_to_string(&path).unwrap();
-    assert!(rewritten.contains("schema_version = 7"), "{rewritten}");
+    assert!(rewritten.contains("schema_version = 8"), "{rewritten}");
     for gone in ["aspect_", "upscale"] {
         assert!(!rewritten.contains(gone), "{gone} in {rewritten}");
     }
@@ -257,7 +257,7 @@ fn a_schema_five_file_keeps_its_values_and_gets_the_texture_defaults_with_a_back
     fs::write(&path, original).unwrap();
 
     let (loaded, notes) = config::load(&path);
-    assert!(notes.iter().any(|note| note.contains("migrated from schema 5 to 7")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("migrated from schema 5 to 8")), "{notes:?}");
     assert_eq!(loaded.settings.get("vsync"), "fast");
     assert_eq!(loaded.settings.gs_value("fxaa"), "true");
     assert!(!loaded.settings.gs_overrides().contains_key("texture_precache"), "absent key: table default");
@@ -266,7 +266,7 @@ fn a_schema_five_file_keeps_its_values_and_gets_the_texture_defaults_with_a_back
     assert_eq!(copies.len(), 1, "exactly one backup");
     assert_eq!(fs::read_to_string(&copies[0]).unwrap(), original);
     let rewritten = fs::read_to_string(&path).unwrap();
-    assert!(rewritten.contains("schema_version = 7"), "{rewritten}");
+    assert!(rewritten.contains("schema_version = 8"), "{rewritten}");
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn a_schema_five_resolution_equal_to_the_monitor_desktop_becomes_desktop() {
     );
     fs::write(&path, original).unwrap();
     let (loaded, notes) = config::load(&path);
-    assert!(notes.iter().any(|note| note.contains("migrated from schema 5 to 7")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("migrated from schema 5 to 8")), "{notes:?}");
     assert_eq!(loaded.settings.get("resolution"), "desktop");
     assert_eq!(loaded.settings.get("monitor"), r"\\.\DISPLAY2@3440x1440", "the identifier is kept");
     let copies = backups(&directory, "settings.toml.bak-schema5-");
@@ -306,4 +306,16 @@ fn a_schema_five_resolution_that_differs_or_has_no_recorded_desktop_is_kept() {
     fs::write(&primary, "schema_version = 5\n\n[settings]\nmonitor = \"primary\"\nresolution = \"3440x1440\"\n").unwrap();
     let (loaded, _) = config::load(&primary);
     assert_eq!(loaded.settings.get("resolution"), "3440x1440", "no desktop size is recorded for primary");
+}
+
+#[test]
+fn a_skipped_candidate_and_the_chosen_channel_round_trip() {
+    use gt4l_core::ReleaseVersion;
+    let mut config = ConfigFile::default();
+    config.skipped_launcher = ReleaseVersion::parse("1.3.0-rc5");
+    config.settings.set_by_user("update_channel", "beta").unwrap();
+    let (loaded, _) = gt4l_core::config::parse(&gt4l_core::config::render(&config)).unwrap();
+    assert_eq!(loaded.skipped_launcher, ReleaseVersion::parse("1.3.0-rc5"));
+    assert_eq!(loaded.settings.get("update_channel"), "beta");
+    assert!(loaded.settings.was_chosen("update_channel"));
 }

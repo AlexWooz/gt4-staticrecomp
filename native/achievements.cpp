@@ -1,6 +1,7 @@
 #include "achievements.hpp"
 #include "achievements_overlay.hpp"
 #include "achievements_http.hpp"
+#include "game_target.hpp"
 
 #include "rc_api_request.h"
 #include "rc_api_runtime.h"
@@ -96,6 +97,11 @@ public:
     void init(HWND game_window, const uint8_t* ram, size_t ram_size, const uint8_t* spr, size_t spr_size) {
         shutdown();
 
+        if (::gt4::target::active().id != ::gt4::target::Id::v200) {
+            std::fputs("[RA] Disabled: RetroAchievements is not supported on this game target.\n", stderr);
+            return;
+        }
+
         cfg_ = config_from_environment();
         if (!cfg_.enabled) {
             return;
@@ -141,7 +147,7 @@ public:
 
         char ua_clause[64]{};
         rc_client_get_user_agent_clause(client_, ua_clause, sizeof(ua_clause));
-        std::string ua = std::string("GT4Recomp/1.2.4 ") + ua_clause;
+        std::string ua = std::string("GT4Recomp/1.3.0 ") + ua_clause;
         user_agent_ = utf8_to_wide(ua);
 
         transport_.reset();
@@ -175,6 +181,7 @@ public:
 
     void tick(HWND game_window, const uint8_t* ram, size_t ram_size, const uint8_t* spr, size_t spr_size) {
         if (!active_.load(std::memory_order_relaxed) || !client_) return;
+        if (::gt4::target::active().id != ::gt4::target::Id::v200) return;
         ram_ = ram;
         ram_size_ = ram_size;
         spr_ = spr;
@@ -298,8 +305,8 @@ private:
             OverlayToast toast;
             toast.kind = ToastKind::Warning;
             toast.header = "RETROACHIEVEMENTS";
-            toast.title = "Sign-in failed";
-            toast.subtitle = error_message ? error_message : "Check your account credentials in the launcher.";
+            toast.title = toast_sign_in_failed_title(cfg_.language);
+            toast.subtitle = error_message ? error_message : toast_sign_in_failed_fallback_sub(cfg_.language);
             toast.duration_sec = 5.5;
             overlay_.enqueue_toast(std::move(toast));
             return;
@@ -320,7 +327,7 @@ private:
             OverlayToast toast;
             toast.kind = ToastKind::Login;
             toast.header = cfg_.hardcore ? "RETROACHIEVEMENTS · HARDCORE" : "RETROACHIEVEMENTS · SOFTCORE";
-            toast.title = "Signed in";
+            toast.title = toast_signed_in_title(cfg_.language);
             toast.subtitle = sub.str();
             toast.badge_path = avatar_path;
             toast.hardcore = cfg_.hardcore;
@@ -339,8 +346,8 @@ private:
             OverlayToast toast;
             toast.kind = ToastKind::Warning;
             toast.header = "RETROACHIEVEMENTS";
-            toast.title = "Could not load achievement set";
-            toast.subtitle = error_message ? error_message : "Failed to load Gran Turismo 4 achievements.";
+            toast.title = toast_load_game_failed_title(cfg_.language);
+            toast.subtitle = error_message ? error_message : toast_load_game_failed_fallback_sub(cfg_.language);
             toast.duration_sec = 5.5;
             overlay_.enqueue_toast(std::move(toast));
             return;
@@ -365,15 +372,18 @@ private:
         // Pre-cache active/unlocked achievement badges so unlock popups render with the icon immediately.
         prefetch_achievement_badges();
 
-        std::ostringstream sub;
-        sub << "Unlocked " << summary.num_unlocked_achievements << " of " << summary.num_promoted_achievements
-            << " (" << summary.points_unlocked << "/" << summary.points_available << " pts)";
+        std::string sub = toast_game_loaded_summary(
+            cfg_.language,
+            summary.num_unlocked_achievements,
+            summary.num_promoted_achievements,
+            summary.points_unlocked,
+            summary.points_available);
 
         OverlayToast toast;
         toast.kind = ToastKind::GameLoaded;
         toast.header = cfg_.hardcore ? "GRAN TURISMO 4 · HARDCORE" : "GRAN TURISMO 4 · SOFTCORE";
         toast.title = (game && game->title && *game->title) ? game->title : "Gran Turismo 4";
-        toast.subtitle = sub.str();
+        toast.subtitle = sub;
         toast.badge_path = game_badge_path;
         toast.hardcore = cfg_.hardcore;
         toast.duration_sec = 4.5;
@@ -449,11 +459,11 @@ private:
             const rc_client_achievement_t* ach = event->achievement;
             if (!ach) break;
             std::ostringstream title;
-            title << (ach->title ? ach->title : "Achievement") << " (" << ach->points << " pts)";
+            title << (ach->title ? ach->title : toast_achievement_fallback_title(cfg_.language)) << " (" << ach->points << " pts)";
 
             OverlayToast toast;
             toast.kind = ToastKind::AchievementUnlocked;
-            toast.header = hardcore ? "HARDCORE ACHIEVEMENT UNLOCKED" : "ACHIEVEMENT UNLOCKED";
+            toast.header = toast_achievement_unlocked_header(cfg_.language, hardcore);
             toast.title = title.str();
             toast.subtitle = ach->description ? ach->description : "";
             toast.badge_path = badge_path_for_achievement(ach, RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED);
@@ -467,14 +477,13 @@ private:
             const rc_client_game_t* game = rc_client_get_game_info(client_);
             rc_client_user_game_summary_t summary{};
             rc_client_get_user_game_summary(client_, &summary);
-            std::ostringstream sub;
-            sub << "All " << summary.num_promoted_achievements << " achievements unlocked (" << summary.points_available << " pts)!";
+            std::string sub = toast_game_mastered_summary(cfg_.language, summary.num_promoted_achievements, summary.points_available);
 
             OverlayToast toast;
             toast.kind = ToastKind::Mastery;
-            toast.header = hardcore ? "GAME MASTERED · HARDCORE" : "GAME COMPLETED · SOFTCORE";
+            toast.header = toast_game_mastered_header(cfg_.language, hardcore);
             toast.title = (game && game->title) ? game->title : "Gran Turismo 4";
-            toast.subtitle = sub.str();
+            toast.subtitle = sub;
             toast.hardcore = hardcore;
             toast.duration_sec = 7.0;
             overlay_.enqueue_toast(std::move(toast));
@@ -488,7 +497,7 @@ private:
             ProgressIndicatorState st;
             st.visible = true;
             st.id = ach->id;
-            st.title = ach->title ? ach->title : "Achievement Progress";
+            st.title = ach->title ? ach->title : toast_progress_indicator_fallback_title(cfg_.language);
             st.progress_text = ach->measured_progress ? ach->measured_progress : "";
             st.badge_path = badge_path_for_achievement(ach, RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED);
             overlay_.set_progress_indicator(st);
@@ -525,8 +534,8 @@ private:
             if (!lb) break;
             OverlayToast toast;
             toast.kind = ToastKind::Leaderboard;
-            toast.header = "LEADERBOARD STARTED";
-            toast.title = lb->title ? lb->title : "Leaderboard";
+            toast.header = toast_leaderboard_started_header(cfg_.language);
+            toast.title = lb->title ? lb->title : toast_leaderboard_fallback_title(cfg_.language);
             toast.subtitle = lb->description ? lb->description : "";
             toast.hardcore = hardcore;
             toast.duration_sec = 3.5;
@@ -537,13 +546,13 @@ private:
         case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED: {
             const rc_client_leaderboard_t* lb = event->leaderboard;
             if (!lb) break;
-            std::string title = lb->title ? lb->title : "Leaderboard";
+            std::string title = lb->title ? lb->title : toast_leaderboard_fallback_title(cfg_.language);
             if (lb->tracker_value && *lb->tracker_value) {
                 title += std::string(" · ") + lb->tracker_value;
             }
             OverlayToast toast;
             toast.kind = ToastKind::Leaderboard;
-            toast.header = "LEADERBOARD SUBMITTED";
+            toast.header = toast_leaderboard_submitted_header(cfg_.language);
             toast.title = title;
             toast.subtitle = lb->description ? lb->description : "";
             toast.hardcore = hardcore;
@@ -557,9 +566,9 @@ private:
             if (!lb) break;
             OverlayToast toast;
             toast.kind = ToastKind::Info;
-            toast.header = "LEADERBOARD CANCELED";
-            toast.title = lb->title ? lb->title : "Leaderboard";
-            toast.subtitle = "Attempt canceled.";
+            toast.header = toast_leaderboard_canceled_header(cfg_.language);
+            toast.title = lb->title ? lb->title : toast_leaderboard_fallback_title(cfg_.language);
+            toast.subtitle = toast_leaderboard_canceled_subtitle(cfg_.language);
             toast.duration_sec = 3.0;
             overlay_.enqueue_toast(std::move(toast));
             break;
@@ -587,8 +596,8 @@ private:
             OverlayToast toast;
             toast.kind = ToastKind::Warning;
             toast.header = "RETROACHIEVEMENTS";
-            toast.title = "Server connection interrupted";
-            toast.subtitle = "Pending unlocks will be retried automatically.";
+            toast.title = toast_disconnected_title(cfg_.language);
+            toast.subtitle = toast_disconnected_subtitle(cfg_.language);
             toast.duration_sec = 4.5;
             overlay_.enqueue_toast(std::move(toast));
             break;
@@ -598,8 +607,8 @@ private:
             OverlayToast toast;
             toast.kind = ToastKind::Info;
             toast.header = "RETROACHIEVEMENTS";
-            toast.title = "Reconnected to server";
-            toast.subtitle = "All pending unlocks have been synced.";
+            toast.title = toast_reconnected_title(cfg_.language);
+            toast.subtitle = toast_reconnected_subtitle(cfg_.language);
             toast.duration_sec = 3.5;
             overlay_.enqueue_toast(std::move(toast));
             break;
@@ -722,6 +731,126 @@ private:
 
 } // namespace
 
+
+Language resolve_language(std::string_view lang_str) {
+    if (lang_str == "pt-BR") {
+        return Language::PtBr;
+    }
+    return Language::EnUs;
+}
+
+const char* language_tag(Language lang) {
+    switch (lang) {
+        case Language::PtBr: return "pt-BR";
+        case Language::EnUs:
+        default: return "en-US";
+    }
+}
+
+const char* toast_sign_in_failed_title(Language lang) {
+    return (lang == Language::PtBr) ? "Falha ao iniciar sessão" : "Sign-in failed";
+}
+
+const char* toast_sign_in_failed_fallback_sub(Language lang) {
+    return (lang == Language::PtBr) ? "Verifique as credenciais da sua conta no inicializador."
+                                    : "Check your account credentials in the launcher.";
+}
+
+const char* toast_signed_in_title(Language lang) {
+    return (lang == Language::PtBr) ? "Sessão iniciada" : "Signed in";
+}
+
+const char* toast_load_game_failed_title(Language lang) {
+    return (lang == Language::PtBr) ? "Não foi possível carregar as conquistas"
+                                    : "Could not load achievement set";
+}
+
+const char* toast_load_game_failed_fallback_sub(Language lang) {
+    return (lang == Language::PtBr) ? "Falha ao carregar as conquistas de Gran Turismo 4."
+                                    : "Failed to load Gran Turismo 4 achievements.";
+}
+
+std::string toast_game_loaded_summary(Language lang, uint32_t unlocked, uint32_t total, uint32_t pts_unlocked, uint32_t pts_total) {
+    std::ostringstream oss;
+    if (lang == Language::PtBr) {
+        oss << unlocked << " de " << total << " desbloqueadas (" << pts_unlocked << "/" << pts_total << " pts)";
+    } else {
+        oss << "Unlocked " << unlocked << " of " << total << " (" << pts_unlocked << "/" << pts_total << " pts)";
+    }
+    return oss.str();
+}
+
+const char* toast_achievement_unlocked_header(Language lang, bool hardcore) {
+    if (lang == Language::PtBr) {
+        return hardcore ? "CONQUISTA HARDCORE DESBLOQUEADA" : "CONQUISTA DESBLOQUEADA";
+    }
+    return hardcore ? "HARDCORE ACHIEVEMENT UNLOCKED" : "ACHIEVEMENT UNLOCKED";
+}
+
+const char* toast_achievement_fallback_title(Language lang) {
+    return (lang == Language::PtBr) ? "Conquista" : "Achievement";
+}
+
+const char* toast_game_mastered_header(Language lang, bool hardcore) {
+    if (lang == Language::PtBr) {
+        return hardcore ? "JOGO DOMINADO · HARDCORE" : "JOGO CONCLUÍDO · SOFTCORE";
+    }
+    return hardcore ? "GAME MASTERED · HARDCORE" : "GAME COMPLETED · SOFTCORE";
+}
+
+std::string toast_game_mastered_summary(Language lang, uint32_t total, uint32_t pts) {
+    std::ostringstream oss;
+    if (lang == Language::PtBr) {
+        oss << "Todas as " << total << " conquistas desbloqueadas (" << pts << " pts)!";
+    } else {
+        oss << "All " << total << " achievements unlocked (" << pts << " pts)!";
+    }
+    return oss.str();
+}
+
+const char* toast_progress_indicator_fallback_title(Language lang) {
+    return (lang == Language::PtBr) ? "Progresso da conquista" : "Achievement Progress";
+}
+
+const char* toast_leaderboard_started_header(Language lang) {
+    return (lang == Language::PtBr) ? "PLACAR INICIADO" : "LEADERBOARD STARTED";
+}
+
+const char* toast_leaderboard_submitted_header(Language lang) {
+    return (lang == Language::PtBr) ? "PLACAR ENVIADO" : "LEADERBOARD SUBMITTED";
+}
+
+const char* toast_leaderboard_canceled_header(Language lang) {
+    return (lang == Language::PtBr) ? "PLACAR CANCELADO" : "LEADERBOARD CANCELED";
+}
+
+const char* toast_leaderboard_canceled_subtitle(Language lang) {
+    return (lang == Language::PtBr) ? "Tentativa cancelada." : "Attempt canceled.";
+}
+
+const char* toast_leaderboard_fallback_title(Language lang) {
+    return (lang == Language::PtBr) ? "Placar" : "Leaderboard";
+}
+
+const char* toast_disconnected_title(Language lang) {
+    return (lang == Language::PtBr) ? "Conexão com o servidor interrompida"
+                                    : "Server connection interrupted";
+}
+
+const char* toast_disconnected_subtitle(Language lang) {
+    return (lang == Language::PtBr) ? "Desbloqueios pendentes serão reenviados automaticamente."
+                                    : "Pending unlocks will be retried automatically.";
+}
+
+const char* toast_reconnected_title(Language lang) {
+    return (lang == Language::PtBr) ? "Reconectado ao servidor" : "Reconnected to server";
+}
+
+const char* toast_reconnected_subtitle(Language lang) {
+    return (lang == Language::PtBr) ? "Todos os desbloqueios pendentes foram sincronizados."
+                                    : "All pending unlocks have been synced.";
+}
+
 Config parse_config(const std::function<std::string(const char*)>& get_env) {
     Config cfg;
     cfg.enabled = parse_bool_str(get_env("GT4_RA_ENABLED"), false);
@@ -733,8 +862,10 @@ Config parse_config(const std::function<std::string(const char*)>& get_env) {
     const std::string custom_hash = get_env("GT4_RA_HASH");
     cfg.game_hash = (custom_hash.size() == 32) ? custom_hash : std::string(kGt4NtscUHash);
     cfg.host = get_env("GT4_RA_HOST");
-    cfg.cache_dir = utf8_to_wide(get_env("GT4_RA_CACHE_DIR"));
+    // Read as Windows holds it: in the narrow form an accented folder is in the ANSI code page, not UTF-8.
+    if (const wchar_t* cache_dir = _wgetenv(L"GT4_RA_CACHE_DIR")) cfg.cache_dir = cache_dir;
     cfg.disc_path = get_env("GT4_DISC_PATH");
+    cfg.language = resolve_language(get_env("GT4_RA_LANGUAGE"));
     return cfg;
 }
 
@@ -757,6 +888,13 @@ uint32_t read_ps2_memory(
     size_t ram_size,
     const uint8_t* spr,
     size_t spr_size) {
+    if (::gt4::target::active().id != ::gt4::target::Id::v200) {
+        if (buffer && num_bytes > 0) {
+            std::memset(buffer, 0, num_bytes);
+        }
+        return 0;
+    }
+
     if (!buffer || num_bytes == 0) return 0;
 
     // 1. Hardware PS2 Scratchpad address space (0x70000000..0x70003FFF).

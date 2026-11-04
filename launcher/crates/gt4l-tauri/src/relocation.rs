@@ -10,10 +10,12 @@
 //!
 //! The rules of both moves are in `gt4l_core::relocate`.
 
+use gt4l_core::messages;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use gt4l_core::games_layout::{self, UserLayoutOutcome};
 use gt4l_core::paths::{self, DataDirs, Layout, LayoutInputs, LegacyLocations, UserDirs, TEXTURES_FOLDER_NAME};
 use gt4l_core::relocate::{self, FsOps, LargeMove, LargeOutcome, UnitResult, UserMove};
 use gt4l_core::textures::{self as texture_folder, FlattenOps};
@@ -67,14 +69,32 @@ fn previous_data_for(
     read_previous()
 }
 
-/// Step 1. `Err` only when no data or user folder can be named at all.
+/// Step 1. `Err` only when no data or user folder can be named at all (or, in the portable build, cannot be written).
 pub fn prepare(exe_dir: &Path) -> Result<Startup, String> {
-    let mut inputs = LayoutInputs::from_environment(exe_dir, gt4l_platform::known_folder::documents());
-    // The data folder of an earlier install in another folder, as the setup recorded it (TASK-091). Only the
-    // registered install takes it: a portable copy started on the same PC must never move the installed data.
-    inputs.previous_data = previous_data_for(exe_dir, &gt4l_platform::install_record::registered_install_folder, &|| {
-        gt4l_platform::install_record::previous_data_dir()
-    });
+    prepare_as(
+        exe_dir,
+        gt4l_core::build_kind::BUILD.is_portable(),
+        &gt4l_platform::install_record::registered_install_folder,
+        &gt4l_platform::install_record::previous_data_dir,
+    )
+}
+
+/// [`prepare`] for a given build kind, with the two registry reads injected (the portable build never calls them).
+pub fn prepare_as(
+    exe_dir: &Path,
+    portable: bool,
+    read_registered: &dyn Fn() -> Option<String>,
+    read_previous: &dyn Fn() -> Option<PathBuf>,
+) -> Result<Startup, String> {
+    // The portable build (TASK-098) reads no registry value and no system folder: no Documents lookup, no recorded
+    // install, no 1.2.0 places.
+    let mut inputs = LayoutInputs::from_environment(exe_dir, if portable { None } else { gt4l_platform::known_folder::documents() });
+    inputs.portable = portable;
+    if !portable {
+        // The data folder of an earlier install in another folder, as the setup recorded it (TASK-091). Only the
+        // registered install takes it: a portable copy started on the same PC must never move the installed data.
+        inputs.previous_data = previous_data_for(exe_dir, read_registered, read_previous);
+    }
     let layout = paths::resolve_layout(&inputs, &paths::probe_writable)?;
     let mut log = layout.notices.clone();
     log.push(format!(
@@ -84,6 +104,12 @@ pub fn prepare(exe_dir: &Path) -> Result<Startup, String> {
         layout.user_root.display()
     ));
     let new_user = layout.user_dirs();
+    if portable {
+        // A portable folder starts in the 1.3.0 layout: there is nothing to move from 1.2.0 or 1.2.x, so none of the
+        // migrations below run.
+        log.push("portable build: no 1.2.0 migration, no registry".to_string());
+        return Ok(Startup { layout, user: new_user, log, notice: None });
+    }
     let outcome = relocate::migrate_user_data(
         &UserMove {
             legacy: &layout.legacy,
@@ -96,17 +122,36 @@ pub fn prepare(exe_dir: &Path) -> Result<Startup, String> {
     );
     log.extend(outcome.log_lines(&new_user));
     let notice = outcome.notice(&new_user).map(|text| (text, !outcome.uses_new_place()));
-    let user = if outcome.uses_new_place() {
+    let mut user = if outcome.uses_new_place() {
         new_user
     } else {
         legacy_user_dirs(&layout, format!("{outcome:?}"))
     };
+    // TASK-101: Gran Turismo 4's library moves into `games\gt4` (the 1.3.0 layout). It is small and the move is a rename,
+    // so it is done here, before the window. Until it has happened the flat 1.2.x folders stay in use.
+    if outcome.uses_new_place() {
+        let moved = games_layout::migrate_user_library(&user, game_running(), &FsOps::real());
+        log.extend(moved.log_lines());
+        user.set_flat_gt4(!moved.uses_new_place());
+        if let UserLayoutOutcome::Failed(_) = moved {
+            log.push("library: the saves are used where they are".to_string());
+        }
+    }
     Ok(Startup { layout, user, log, notice })
 }
 
 /// Step 2: the per-user install of 1.0.0 to 1.2.0 (program files, Start-menu shortcuts, `HKCU` entries). Skipped
 /// under the development overrides, so a test run never touches a real install.
 pub fn clean_old_install(exe_dir: &Path) -> Vec<String> {
+    clean_old_install_as(gt4l_core::build_kind::BUILD.is_portable(), exe_dir)
+}
+
+/// [`clean_old_install`] for a given build kind. The portable build never touches the registry, Start menu or program
+/// folders of an install.
+pub fn clean_old_install_as(portable: bool, exe_dir: &Path) -> Vec<String> {
+    if portable {
+        return Vec::new();
+    }
     if std::env::var_os(paths::DATA_DIR_OVERRIDE_VAR).is_some() || std::env::var_os(paths::USER_DIR_OVERRIDE_VAR).is_some() {
         return Vec::new();
     }
@@ -130,7 +175,7 @@ pub fn clean_old_install(exe_dir: &Path) -> Vec<String> {
 /// pinned one for a qualified dump).
 pub fn check_moved_game_files(folder: &Path, hashes: &BTreeMap<PathBuf, String>, pins: &Pins, source_ready: bool) -> Result<(), String> {
     let prepared = folder.join("prepared");
-    match disc_setup::check_installed(&prepared, &folder.join("disc"), pins) {
+    match disc_setup::check_installed(&prepared, &folder.join("disc"), folder, pins) {
         Installed::Ready { image, .. } => {
             if hashes.is_empty() {
                 return Ok(());
@@ -237,7 +282,9 @@ pub fn move_large_data(shared: &Shared, legacy: &LegacyLocations) {
         (state.dirs.clone(), state.pins.clone())
     };
     let sources = large_sources(legacy, &dirs);
-    if sources.is_empty() {
+    // The 1.2.0 sources move first (into the flat 1.2.x names), then the flat names move into `games\gt4` (TASK-101).
+    if sources.is_empty() && !games_layout::flat_data_pending(&dirs) {
+        lock(shared).dirs.set_flat_gt4(false);
         return;
     }
     lock(shared).migration.running = true;
@@ -250,6 +297,11 @@ pub fn move_large_data(shared: &Shared, legacy: &LegacyLocations) {
         }
         problem |= failed;
     }
+    let (layout_notice, layout_failed) = move_games_layout(shared, &dirs, &pins);
+    if !layout_notice.is_empty() {
+        notices.push(layout_notice);
+    }
+    problem |= layout_failed;
     let mut state = lock(shared);
     state.migration = crate::state::MigrationRun {
         running: false,
@@ -259,11 +311,49 @@ pub fn move_large_data(shared: &Shared, legacy: &LegacyLocations) {
     };
 }
 
+/// The move of the flat 1.2.x game folders into `games\gt4` (TASK-101, `gt4l_core::games_layout`). Returns the page sentence
+/// (empty when nothing needs saying) and whether it reports a problem. After a move that did not fail, the flat folders are
+/// no longer read.
+fn move_games_layout(shared: &Shared, dirs: &DataDirs, pins: &Pins) -> (String, bool) {
+    let flat = dirs.flat_gt4_root().to_path_buf();
+    let source_ready = matches!(
+        disc_setup::check_installed(&flat.join("prepared"), &flat.join("disc"), &flat, pins),
+        Installed::Ready { .. }
+    );
+    let check = |folder: &Path, hashes: &BTreeMap<PathBuf, String>| check_moved_game_files(folder, hashes, pins, source_ready);
+    let mut last_permille = u64::MAX;
+    let outcome = games_layout::migrate_data(dirs, game_running(), &gt4saves::timestamp(), &check, &FsOps::real(), &mut |progress| {
+        let permille = if progress.bytes_total == 0 { 0 } else { progress.bytes_done * 1000 / progress.bytes_total };
+        if permille == last_permille {
+            return;
+        }
+        last_permille = permille;
+        let mut state = lock(shared);
+        state.migration.item = progress.item.clone();
+        state.migration.bytes_done = progress.bytes_done;
+        state.migration.bytes_total = progress.bytes_total;
+    });
+    for line in outcome.log_lines() {
+        state::log(dirs, &line);
+    }
+    match &outcome {
+        LargeOutcome::Deferred(_) => (messages::text("move.organise_close", state::current_language()).to_string(), true),
+        _ if outcome.failed() => (
+            messages::text("move.organise_later", state::current_language()).to_string(),
+            true,
+        ),
+        _ => {
+            lock(shared).dirs.set_flat_gt4(false);
+            (String::new(), false)
+        }
+    }
+}
+
 /// Moves one source. Returns the page sentence (empty when nothing happened) and whether it reports a problem.
 fn move_source(shared: &Shared, dirs: &DataDirs, pins: &Pins, source: &LargeSource) -> (String, bool) {
     let local = &source.local;
     let source_ready = matches!(
-        disc_setup::check_installed(&local.join("prepared"), &local.join("disc"), pins),
+        disc_setup::check_installed(&local.join("prepared"), &local.join("disc"), &local, pins),
         Installed::Ready { .. }
     );
     let check = |folder: &Path, hashes: &BTreeMap<PathBuf, String>| check_moved_game_files(folder, hashes, pins, source_ready);
@@ -317,7 +407,7 @@ fn move_source(shared: &Shared, dirs: &DataDirs, pins: &Pins, source: &LargeSour
     if source.is_previous_install && !outcome.failed() {
         match relocate::remove_empty_folder(local) {
             Ok(()) => {}
-            Err(error) => state::log(dirs, &format!("the old data folder {} is kept: {error}", local.display())),
+            Err(error) => state::log_warn(dirs, &format!("the old data folder {} is kept: {error}", local.display())),
         }
     }
     let (notice, problem) = large_notice(&outcome, local, dirs.root());
@@ -347,25 +437,24 @@ pub fn flatten_textures(shared: &Shared) {
 /// The sentence for the page after the large-data move (empty when nothing happened).
 pub fn large_notice(outcome: &LargeOutcome, local: &Path, data_root: &Path) -> (String, bool) {
     match outcome {
-        LargeOutcome::Deferred(_) => ("Close Gran Turismo 4 and restart GT4Recomp to finish moving the game files.".to_string(), true),
+        LargeOutcome::Deferred(_) => (messages::text("move.game_close", state::current_language()).to_string(), true),
         LargeOutcome::AlreadyMoved => (String::new(), false),
         LargeOutcome::Ran(units) => {
             if outcome.failed() {
                 return (
-                    "Some game files could not be moved to the install folder yet. They are used where they are, and GT4Recomp tries again at the next start."
-                        .to_string(),
+                    messages::text("move.game_later", state::current_language()).to_string(),
                     true,
                 );
             }
             let kept_game_files = units.iter().any(|(name, result)| name == "game files" && matches!(result, UnitResult::Kept(_)));
             if kept_game_files {
                 return (
-                    format!("An older copy of the game files is still in {}. It is no longer used; you may delete it to free space.", local.display()),
+                    messages::render("move.old_copy", state::current_language(), &[("path", &local.display().to_string())]),
                     false,
                 );
             }
             if outcome.moved() {
-                return (format!("Game files moved to {}.", data_root.display()), false);
+                return (messages::render("move.game_moved", state::current_language(), &[("path", &data_root.display().to_string())]), false);
             }
             (String::new(), false)
         }
@@ -388,6 +477,54 @@ mod tests {
 
     use super::*;
     use gt4l_core::paths::{DataDirs, UserRootSource};
+
+    fn portable_scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("gt4l-portable-start-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_portable_start_reads_no_registry_and_moves_nothing() {
+        let exe_dir = portable_scratch("start").join("GT4Recomp");
+        let no_registry = || -> Option<String> { panic!("the portable build must not read the registry") };
+        let no_previous = || -> Option<PathBuf> { panic!("the portable build must not read PreviousDataDir") };
+        let startup = prepare_as(&exe_dir, true, &no_registry, &no_previous).unwrap();
+        assert_eq!(startup.layout.data.root(), exe_dir.join("data"));
+        assert_eq!(startup.user.root(), exe_dir.join("user"));
+        assert_eq!(startup.layout.user_source, UserRootSource::Portable);
+        assert_eq!(startup.layout.legacy, LegacyLocations::default(), "no 1.2.0 places and no previous install");
+        assert!(startup.layout.data.read_layers().is_empty());
+        assert!(startup.notice.is_none());
+        assert!(exe_dir.join("data").is_dir() && exe_dir.join("user").is_dir(), "the two folders are the whole footprint");
+        let siblings: Vec<_> = std::fs::read_dir(&exe_dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(siblings.len(), 2, "nothing else was created: {siblings:?}");
+        // A second start finds the same folders.
+        let again = prepare_as(&exe_dir, true, &no_registry, &no_previous).unwrap();
+        assert_eq!(again.layout.data.root(), startup.layout.data.root());
+        let _ = std::fs::remove_dir_all(exe_dir.parent().unwrap());
+    }
+
+    #[test]
+    fn a_portable_folder_that_cannot_be_written_asks_to_move_it() {
+        let base = portable_scratch("readonly");
+        // A file where the data folder should be: it can never be created.
+        let exe_dir = base.join("GT4Recomp");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::write(exe_dir.join("data"), b"not a folder").unwrap();
+        let error = match prepare_as(&exe_dir, true, &|| None, &|| None) {
+            Ok(_) => panic!("a data folder that cannot be created must stop the start"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Move the GT4Recomp folder"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_portable_build_never_cleans_an_old_install() {
+        assert!(clean_old_install_as(true, Path::new(r"E:\Portable\GT4Recomp")).is_empty());
+    }
 
     fn layout(base: &Path, documents: bool) -> Layout {
         let local = base.join("Local").join("GT4Recomp");

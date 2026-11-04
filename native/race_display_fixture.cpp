@@ -70,7 +70,8 @@ void test_address_chain() {
 void test_write_decision() {
   require(should_force_480p_index(race_display_index_normal), "normal index is forced");
   require(!should_force_480p_index(race_display_index_480p), "480p index is kept");
-  require(!should_force_480p_index(race_display_index_1080i), "1080i index is kept");
+  require(should_force_480p_index(race_display_index_1080i), "1080i index is forced (TASK-078)");
+  require(!should_force_480p_index(3u), "an unknown index is left alone");
 }
 
 void test_vblank_write() {
@@ -83,12 +84,13 @@ void test_vblank_write() {
   require(state.writes == 1, "no second write for 480p");
 }
 
-void test_user_choice_is_kept() {
+// TASK-078: a save or an imported card that holds 1080i races at 480p too.
+void test_1080i_is_held_at_480p() {
   Force480pState state;
   auto ram = make_ram(owner, race_display_index_1080i);
-  require(!force_race_480p_at_vblank(ram.data(), ram_size, state), "1080i index is not touched");
-  require(load(ram, index_address) == race_display_index_1080i, "1080i value is unchanged");
-  require(state.writes == 0, "no write counted for 1080i");
+  require(force_race_480p_at_vblank(ram.data(), ram_size, state), "1080i index is written at VBlank");
+  require(load(ram, index_address) == race_display_index_480p, "1080i value becomes 480p");
+  require(state.writes == 1, "one write counted for 1080i");
 }
 
 void test_invalid_owner_is_ignored() {
@@ -107,7 +109,7 @@ int main() {
   test_address_chain();
   test_write_decision();
   test_vblank_write();
-  test_user_choice_is_kept();
+  test_1080i_is_held_at_480p();
   test_invalid_owner_is_ignored();
   std::puts("race_display fixture OK");
   return 0;

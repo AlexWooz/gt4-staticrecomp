@@ -1,0 +1,11 @@
+Test project O:/gt4recomp-scratch/slice334-rc7-ra-spec2/build
+    Start 14: native_achievements
+1/3 Test #14: native_achievements ..............   Passed    0.14 sec
+    Start 15: native_achievements_spec2
+2/3 Test #15: native_achievements_spec2 ........   Passed    0.69 sec
+    Start 16: native_achievements_http
+3/3 Test #16: native_achievements_http .........   Passed    0.16 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   1.10 sec

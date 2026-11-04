@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "schema": "spec2-beta-elf/1",
+  "purpose": "Pin the GT4 Online Public Beta game image rebuilt from its CORE.GT4 (TASK-100 S1, S7a). The image is the base the Spec II static patch set is measured against (docs/SPEC2-PATCHES.md).",
+  "iso": {
+    "name": "Gran Turismo 4 (USA) (Beta).iso",
+    "size_bytes": 2654109696,
+    "sha256": "1f49b9d8077801188860b62c3efdbc631ba8af7df979373811ce8c60dcc48ebe",
+    "system_cnf": "BOOT2 = cdrom0:\\SCUS_974.36;1, VER = 1.00, VMODE = NTSC",
+    "boot_file": "/SCUS_974.36;1",
+    "boot_file_size_bytes": 491900,
+    "boot_file_sha256": "8a5fe10a43128f0d362d8e6e62d026f6f1ee30fb9b508167a8a3a775458425d1",
+    "note": "The boot file is a loader; the game itself is the encrypted CORE.GT4."
+  },
+  "core": {
+    "path": "/CORE.GT4;1",
+    "size_bytes": 2269619,
+    "sha256": "0cf52c3ad8e9c1ddba55e7538a35dfed1c02cd0e38e5c348bdf80975046617ff"
+  },
+  "crypto": {
+    "container": "[u64 LE nonce][Salsa20/20 ciphertext][u32 LE CRC-32C of everything before it]",
+    "cipher": "Salsa20/20, 64-byte blocks, 10 double rounds, 16-byte (tau) key variant",
+    "key_ascii": "PolyphonyDigital",
+    "key_storage": "XOR 0x55 with the table at loader VA 0x10724C8 (file 0x734C8)",
+    "nonce": "first 8 bytes of CORE.GT4, little endian (0x0800FAFD86B828ED for this disc)",
+    "counter": "0 at the start of the stream, 64-bit, words 8/9",
+    "crc32c_polynomial": "0x1EDC6F41, MSB-first table at loader VA 0x10720C8, init/xorout 0xFFFFFFFF",
+    "order": "decrypt, then inflate",
+    "confidence": "Confirmed (CRC-32C and inflated size both match; a one-byte key change makes the inflate fail)"
+  },
+  "container": {
+    "format": "[u16 tag 0x0101][u32 LE inflated size][raw deflate -15]; inflated: two u16-length 128-byte header blobs, i32 record count, u32 entry, then {u32 address, u32 size, body}",
+    "inflated_size_bytes": 6505204,
+    "inflated_sha256": "1f0c8789175919e46bf4f21ed0206b454f1e87bc21da9c7add6b680ea21dd76a",
+    "entry_address": 1048584,
+    "header_blobs_sha256": [
+      "987d146d749d0501b07e126394f4fd8fdd8cbef71ed24982b9929e2f6ed16861",
+      "725a0bc23ba3a89bfbcd3263cb77fa3cacd519268068c60c90988341b39afb3a"
+    ],
+    "records": [
+      {"address": 6683556, "size_bytes": 24, "sha256": "c98bed839d0a695497d7c613b263f946149bbafb3fedcc7626c463a581a38fff", "role": ".reginfo image (20 zero bytes then gp 0x0073C1F0)"},
+      {"address": 1048576, "size_bytes": 5635004, "sha256": "2394249be73d4437dce46e0bb76a8cef2c0b5c48207621a13696cf88c83c5e3b", "role": "text"},
+      {"address": 6683648, "size_bytes": 869884, "sha256": "9b505c4fccf6f650ec5d7472174f23e3ddcec34b968a06634d93dfdee7dcc692", "role": "data"}
+    ]
+  },
+  "derived_elf": {
+    "path": "private/slice271-spec2-beta-elf/SCUS_974.36.elf",
+    "size_bytes": 6510076,
+    "sha256": "2e5621ede797ff064eef4c51eff7d4ad01e0cefb82bc9895107ee818192aa039",
+    "layout": "text at file 0x1000 / VA 0x100000 (0x55FBBC), .reginfo at VA 0x65FBBC, data at file 0x560C00 / VA 0x65FC00 (filesz 0xD45FC, memsz +8 MiB), entry 0x00100008",
+    "bss": "data memsz = filesz + 0x800000 (Hypothesis: the same extent as Spec II and v2.00; the CORE container does not carry it)",
+    "reginfo_overlap": "the container's .reginfo record sits at 0x65FBA4, inside the last 24 bytes of the text record; Spec II stores those bytes as text and its .reginfo at 0x65FBBC. The image is the same either way (the text record is applied after the reginfo), so the derived file uses Spec II's non-overlapping layout."
+  },
+  "static_diff_vs_spec2": {
+    "elf": "/SCUS_974.36;1 of the Spec II ISO, sha256 db08421bc26bdc0298e80cb02a8f2067ddf640f0575af5dfe0548f1fd73ac39d",
+    "addresses_outside_the_plugin": [1049064],
+    "plugin_segment": {"address": 6866048, "size_bytes": 11468},
+    "conclusion": "Spec II changes exactly one word of the beta's own code (the trampoline at 0x001001E8) and adds the .plugin segment at 0x0068A480 over zero-filled data. Every other behaviour change is written at boot by the injector (docs/inputs/spec2-patches.json)."
+  },
+  "tool": "scripts/spec2_beta_elf.py",
+  "evidence": "docs/SPEC2-PATCHES.md"
+}

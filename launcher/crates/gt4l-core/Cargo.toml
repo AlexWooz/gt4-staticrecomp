@@ -7,6 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 description = "GT4Recomp launcher core: settings table, config file, paths, launch plan and exit classification"
 
+[features]
+# The portable build (TASK-098): everything beside the executable, no registry or system folders, self-update by zip swap.
+portable = []
+
 [dependencies]
 toml.workspace = true
 serde.workspace = true
@@ -14,3 +18,6 @@ serde_json.workspace = true
 sha2.workspace = true
 ureq = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+serde_json.workspace = true

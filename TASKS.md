@@ -62,7 +62,7 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑020 | Decomp names in generated EE code (waits for more decompilation progress) | 📋 Planned |
 | TASK‑025 | Save manager: memory card slots, import/export | ✅ Code done, merged into `task/019-launcher`; ships with the launcher (owner test pending) |
 | TASK‑026 | CoreGS 2.0, part 1: clean-room specification of the PCSX2 hardware renderer | ✅ Done (docs/hw-renderer-spec, PR #17) |
-| TASK‑027 | CoreGS 2.0, part 2: MIT implementation from the specification (3x-6x, texture packs) | ⏸️ Paused (unchanged) · pure libraries done on `task/027-hw-renderer` |
+| TASK‑027 | CoreGS 2.0, part 2: MIT implementation from the specification (3x-6x, texture packs) | 🧪 Candidate 332 on `task/027-coregs2` (2026-10-30): CPU survey and fronts (process CPU -28%, wall -15% at 3x against 313), direct GS intake (P6); specialised pipelines, performance mode started (decision 0073); 1.3.0-rc7 merged in as the base (CoreGS 2.0 is not part of 1.3.0); fine-tuning, then a PR to the EE optimisation branch |
 | TASK‑028 | CoreGS 1.1: upscaling, interlaced-only deinterlace, FXAA-class AA, FSR 1.0 | ⏸️ Paused by the owner: 3x shows native-size aliasing on 3D models; stays the built-in fallback renderer (`task/028-donor-upscale`, latest slice186) |
 | TASK‑029 | Controller and keyboard mapping (binding table, XInput LT/RT as L2/R2 pressure, controls file for the launcher) | ✅ Done (2026-10-21) · merged with the launcher; owner tested remapping in game |
 | TASK‑030 | Night-race readback wait (CoreGS 1.1) | ⏸️ Paused: owner test 59.07 FPS, wait unchanged at 4.3 ms because the page is drawn the same frame (`task/030-night-readback`) |
@@ -118,16 +118,36 @@ See [GS renderer options](docs/GS-RENDERER-OPTIONS.md) and [GSDX-PLAN](docs/GSDX
 | TASK‑090 | CoreGS 3.0: modern render pipeline (VU1 work on the GPU, native effects restored one by one), opt-in; faithful renderer stays the default | 📋 Planned (owner, 2026-10-22) · after CoreGS 2.0; VU1 study in progress |
 | TASK‑091 | Release 1.2.1: per-machine install with data beside the program, user data in %APPDATA%, portable folder, silent and safe self-update, WebView2 checks (issue #80), Performance Mode, home screen layout | ✅ Done (2026-10-22) · owner approved; released as v1.2.1 |
 | TASK‑095 | Ultrawide: undistorted 2D overlay on the pre-race menu (race lobby), as TASK-080 P2 does for the race HUD | 📋 Planned (owner, 2026-10-22) · study first; idea only |
-| TASK‑097 | Self-sufficient game executable: defaults built in (GSdx, 480p, 16:9 and ultrawide, fullscreen), paths found from the exe folder, settings read from the launcher's config file; environment variables only as test overrides | 📋 Planned (owner, 2026-10-22) · release 1.2.4 |
-| TASK‑098 | Portable build: a second launcher build shipped as a zip, user data in `user\` and large data in `data\` beside the exe, no registry or system folders, self-update by zip swap | 📋 Planned (owner, 2026-10-22) · release 1.2.4 with TASK-097 |
-| TASK‑099 | Launcher home: patch notes panel on the right (glassmorphism card), Markdown release notes of the installed version embedded in the build | 📋 Planned (owner, 2026-10-22) · release 1.2.4 |
-| TASK‑100 | Spec II support: SCUS-97436 as a second target (decision 0072), plugin injector mapped, hooks remapped | 📋 Planned (owner, 2026-10-22) · release 1.3.0 |
-| TASK‑101 | Multi-game launcher: Gran Turismo 4 and Spec II side by side (game selector, Play/Install, per-game disc, card and saves, shared settings, Spec II logo) | 📋 Planned (owner, 2026-10-23) · release 1.3.0 with TASK-100; plan docs/MULTI-GAME-LAUNCHER-PLAN.md |
-| TASK‑103 | Launcher: Graphics API choice for GSdx (Vulkan default, Direct3D 12 and Direct3D 11 for older PCs; OpenGL later), hardware backends only | 📋 Planned (owner, 2026-10-23) · after TASK-102 (i18n) |
+| TASK‑097 | Self-sufficient game executable: defaults built in (GSdx, 480p, 16:9 and ultrawide, fullscreen), paths found from the exe folder, settings read from the launcher's config file; environment variables only as test overrides | 🟡 Done on branch `task/101-multi-game` (2026-10-23), waiting for the owner test · release 1.3.0 (moved from 1.2.4) |
+| TASK‑098 | Portable build: a second launcher build shipped as a zip, user data in `user\` and large data in `data\` beside the exe, no registry or system folders, self-update by zip swap | 🟡 Done on branch `task/101-multi-game` (2026-10-23), waiting for the owner test · release 1.3.0 (moved from 1.2.4) |
+| TASK‑099 | Launcher home: patch notes panel on the right (glassmorphism card), Markdown release notes of the installed version embedded in the build | 🟡 Done on branch `task/101-multi-game` (2026-10-23), waiting for the owner visual check · release 1.3.0 (moved from 1.2.4) |
+| TASK‑100 | Spec II support: SCUS-97436 as a second target (decision 0072); subtasks S1-S9 in docs/SPEC2-PLAN.md | 🟡 Owner test passed (2026-10-23): Spec II menus, Options and license tests; license demo and installer test pending · release 1.3.0 |
+| TASK‑101 | Multi-game launcher: Gran Turismo 4 and Spec II side by side (game selector, Play/Install, per-game disc, card and saves, shared settings, Spec II logo) | 🟡 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 with TASK-100 |
+| TASK‑102 | Launcher language: automatic en-US / pt-BR with a General > Language setting (locale files, Rust messages, release notes) | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 |
+| TASK‑103 | Graphics API choice for GSdx: Vulkan (recommended, default), Direct3D 12 (recommended), Direct3D 11 (older PCs), OpenGL later; hardware backends only, in Settings > Graphics (locale files, same ids kept apart from the engine Renderer) | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner in-game test pending · release 1.3.0 |
+| TASK‑104 | Launcher saves: crash-proof PCSX2 card import (issue #86: superblock layout for 8 to 64 MB, bounded directory walk, import under a panic guard), New save, Export of the active save, Rename (display name, 40 characters) | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 |
+| TASK‑105 | Integrated GPUs: 1x default and a plain GPU-lost message (issue #89) | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 |
+| TASK‑106 | CHD disc images: accept `.chd` at setup and decompress to the launcher's own ISO image (issue #90) | 📋 Planned (owner, 2026-10-23) · release 1.3.1 |
+| TASK‑107 | Automatic graphics setup per GPU: automatic Graphics API, GPU generation table, step down after a lost GPU, game without Vulkan when GSdx draws, OpenGL in gt4-gs | 📋 Planned (owner, 2026-10-23) · release 1.3.1 |
+| TASK‑108 | Launcher: automatic Graphics API (Vulkan, else Direct3D 11) and graphics card (Adapter), no Vulkan requirement; game programs shipped as gt4.exe and gt4-spec2.exe | 🔧 Implemented on `task/101-multi-game` (2026-10-23), owner test pending · release 1.3.0 |
+| TASK‑109 | Launcher update channels: Stable (default) or Test builds (rc pre-releases) | 📋 Planned (owner, 2026-10-23) · release 1.3.1 |
+| TASK‑110 | Controller tuning: stick and trigger deadzone, sensitivity, response curve, saturation, pressure, inversion, vibration, live test view | 📋 Planned (owner, 2026-10-23) · release 1.3.1 |
+| TASK‑111 | Logs for bug reports: one-click "Export logs" zip (latest log, recent launcher and game logs, settings, system summary; user name and paths masked), offered after a crash or a lost card | 🔧 Implemented on `task/101-multi-game` (rc4, 2026-10-23), owner test pending · release 1.3.0 |
+| TASK‑112 | Launcher logs: one file per session with INFO, WARN and ERROR lines, the last 20 kept, `latest.log` with the earlier errors, game session folders capped at 20, Open latest log | 🔧 Implemented on `task/101-multi-game` (rc4, 2026-10-23), owner test pending · release 1.3.0 |
+| TASK‑113 | Spec II race HUD at ultrawide ratios (wider than 16:9): speed figure and odometer digits stretched and spilling past the gauge (known issue in 1.3.0) | 📋 Planned (owner, 2026-10-23) · next update |
+| TASK‑115 | Game recognition and Discord: Windows Game Mode/Game Bar, AMD and NVIDIA capture (Instant Replay, ShadowPlay) and Discord Rich Presence | 📋 Planned (owner, 2026-10-24) · future (1.3.1 or later). Discord Rich Presence portion implemented on branch task/133-rc7-ra-controls (2026-10-27); Game Bar/GPU recognition remains future. |
+| TASK‑116 | George V Paris below 60 FPS: one GS readback per frame makes the game wait for VU1 and GSdx; 1.3.1 = no VU1 drain when the readback returns nothing, plus unsynchronized readbacks in gt4-gs 1.2.2 | 🔧 rc6 step 1 implemented and tested headless (2026-10-25); owner test pending; step 2 stays 1.3.1 |
+| TASK‑117 | Performance mode, part 2: fewer light flares at night (no halo, distance cull, light caps), our own clean implementation in GT4 v2.00, off when Performance mode is off | ⚠ rc6 ELF, library and host block built and tested (2026-10-25), NOT shipped: the switch-off identity gate failed (journal 2026-10-25) |
+| TASK‑118 | Graphics settings simplification: Performance Mode becomes a real preset (blending Basic, trilinear/dithering off, preloading partial), the Advanced page loses the cosmetic rows, RC-only settings move to an RC Settings area, GS async and deinterlace become fixed | 🔧 Planned (2026-10-25, owner), 1.3.0-rc6 |
 | TASK‑093 | Custom textures straight in the Textures folder: gt4-gs 1.2.1 reads the folder itself; the launcher stops creating `replacements` and moves an old `replacements` folder's contents up once gt4-gs 1.2.1 is in use | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑096 | Remove CoreGS 1.1 from the launcher (owner, 2026-10-22): GSdx only, CoreGS 2.0 shown as "Coming soon" (disabled), a stored CoreGS 1.1 choice migrates to GSdx, a GSdx failure shows a clear error instead of falling back; CoreGS 1.1 stays in the game executable, unused by the launcher. For launcher release 1.2.3 | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑092 | MTVU test switches after TASK-084: `GT4_MTVU=0` and `GT4_MTVU_VERIFY=1` in pcsx2 mode, portable doorbell ordering | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
 | TASK‑094 | Desktop shortcut: finish-page checkbox (on by default), all-users desktop `Gran Turismo 4.lnk`, choice kept in HKLM `DesktopShortcut`, silent updates create it for older installs and restore it when chosen | ✅ Done (2026-10-22) · release 1.2.3 (owner tested) |
+| TASK‑134 | Game-code optimization study: CPU time and energy outside the GS renderer, ordered plan for the i5-7200U laptop (docs/GAME-CODE-OPTIMIZATION-STUDY.md) | 🧪 rc9 (slice390) installed on the desktop and notebook for the owner's test; not published (2026-11-02): process CPU -18% on the i5-7200U, -19% on the 5700X, physics identical to rc8 |
+| TASK‑135 | Performance HUD for CoreGS 2.0, in the spirit of the macOS Metal HUD: FPS, frame time, CPU and GPU of the game, memory and a live frame time graph | 🧪 Built, waits for the owner's test (branch `task/135-coregs2-performance-hud`, candidate 378, on the notebook, 2026-11-02) |
+| TASK‑136 | Simple onboarding: a new install uses CoreGS 2.0 when the PC runs it, GSdx becomes optional and is downloaded only when the card needs it | 🧪 Built, waits for the owner's test (branch `task/136-simple-onboarding`, 2026-11-02) |
+| TASK‑137 | The launcher links the disc image and no longer copies it; an image that moved asks to be chosen again; installs with a copy keep working | 🧪 Built, waits for the owner's test (branch `task/137-link-disc-image`, candidate 381, 2026-11-02) |
+| TASK‑138 | A portable folder carries its disc image (relative link); accented paths on CoreGS 2.0; the GSdx fallback goes to CoreGS 2.0; a release can be started directly | 🧪 Built, waits for the owner's test (branch `task/138-relative-image-link`, candidate 382, 2026-11-02); GSdx in an accented folder not confirmed |
 | 🧩 | **gt4-gs 1.0.0, the first stable renderer release** (with TASK‑060/061/062; settings allow-list enforced) | ✅ Published 2026-10-16 (`gt4gs-v1.0.0`, zip sha256 `2e878019...`) |
 | 🚀 | **First stable release (1.0.0) on GitHub** (after TASK‑044, TASK‑043 and the owner's end-to-end test) | 📋 Planned |
 
@@ -605,41 +625,569 @@ the new pins (a slice264 pin set) need an owner decision on the release path. CT
   CTest 40/40; headless menus with `--renderer donor` and `pcsx2` both run (exit 0). The launcher drops CoreGS 1.1 in
   1.2.3 (TASK-096); the fix stays as protection for runs without the launcher and the built-in restart path.
 
-### TASK-103 — Graphics API choice for GSdx (Vulkan, Direct3D 12, Direct3D 11)
-Planned (owner, 2026-10-23), after TASK-102 (the i18n work touches the same Settings pages). Some players ask for other
-graphics APIs, mostly for older PCs. A new option in the launcher's graphics settings, "Graphics API", default Vulkan,
-with the other hardware backends of the GSdx build; software rendering is never offered.
-Labels (owner, 2026-10-23): Vulkan and Direct3D 12 are the recommended choices; OpenGL and Direct3D 11 are marked
-for older PCs. The UI shows that grouping (for example "Recommended" / "Older PCs").
-
-Research (2026-10-23, read-only, PCSX2-tainted Haiku; gt4recomp-gs at 1.2.1, binary 1.2.0):
-- Confirmed: the release gt4-gs.exe already contains Direct3D 11, Direct3D 12 and OpenGL (imports d3d11, d3d12,
-  dxgi, opengl32; Vulkan is loaded at run time). No fork build flag change is needed.
-- Confirmed: the backend is chosen by `[EmuCore/GS] Renderer` in gt4-gs.ini (DX11 = 3, OpenGL = 12, Vulkan = 14,
-  DX12 = 15). In stream mode the command-line `-renderer` is overridden; the ini key works. The settings allow-list
-  accepts 14, 15 and 3 only; `docs/launcher/gs-settings.toml` already has the row `renderer` (choices
-  vulkan/d3d12/d3d11, default vulkan, written always) but does not offer it: the GT4 build is checked on Vulkan only.
-- Confirmed on this PC (RX 9060 XT): D3D11 and D3D12 create their device in a headless replay; no frame was rendered
-  (the offline replay stops after VM init), so no image has been checked on them yet.
-- High confidence: the GT4 additions (display crop, aspect fill, texture replacement, readbacks) are generic code;
-  the deferred swap chain acquire is Vulkan-only (a no-op elsewhere). D3D11 below feature level 11_0 runs degraded.
-- OpenGL (GL 4.1 minimum) needs the allow-list entry 12 in the fork's `3rdparty/gt4recomp-gs-stream` (with
-  SHA256SUMS) and in gs-settings.toml: left for a later step.
-
-Work: offer the row in the Settings UI (the engine setting is also called "renderer" there: keep the ids apart),
-update `gt4l-core/src/gs_table.rs` tests (they assert `Renderer = 14`) and `scripts/gs_settings.py` goldens, translate
-the labels (TASK-102 locale files), default Vulkan, and an existing install keeps Vulkan.
-
-Acceptance: cargo and Python tests; owner in-game test on Direct3D 11 and Direct3D 12 against Vulkan (Nordschleife
-TT 480p, night race, menus, ultrawide crop and fill, texture pack, upscaling, flares/readbacks). A backend that fails
-the owner test is not offered.
-
 ### TASK-101 — Multi-game launcher (Gran Turismo 4 and Spec II)
 Planned (owner, 2026-10-23) for release 1.3.0, the product side of TASK-100 (its S9). Plan and owner decisions:
 [docs/MULTI-GAME-LAUNCHER-PLAN.md](docs/MULTI-GAME-LAUNCHER-PLAN.md). One executable per game, one shared settings set,
 per-game disc, prepared files, card, saves and replays (saves are incompatible both ways and share the PS2 folder
 name), identification by ISO, the selected game is the last played, Spec II 1.10 and same-executable variants, and
 the Spec II logo on the home screen when it is selected.
+Progress (2026-10-23): launcher side implemented on `task/101-multi-game` (pieces 1 to 6 of the plan; the UI in the mock and
+headless checks): game table, per-game folders and libraries, identification by serial and executable hash with named image
+variants (1.10, PT-BR, variant, refusals), Spec II setup with the Rust port of the ELF patch (byte-identical to the script),
+per-game launch, the 1.2.x to `games\gt4` migration, selector, Install, Settings > Games. Owner decision 2026-10-23: no permission from the Spec II authors is needed; credit them by name and ship none of
+their files (full credit list in the release notes, About and README). Open: look on a real window, the authors'
+logo, installer build, `PreviousDataDir` into the games layout.
+
+### TASK-102 — Launcher language: automatic en-US / pt-BR with a General > Language setting
+Implemented on `task/101-multi-game` (owner, 2026-10-23). The launcher follows the Windows language (`auto`): pt-BR, pt_BR
+and pt (and pt-PT, by the base language) give Portuguese; anything else English. Settings > General > Language (Auto,
+English, Português (Brasil)) applies at once, without a restart. The texts are data: `launcher/crates/gt4l-tauri/ui/locales/<tag>.json`
+(one flat file per language, keys with `{placeholders}`, en-US as the fallback), `ui/locales/index.json` (the language list),
+`ui/js/i18n.js` (`GT4.t`), and the launcher's own messages in the same files under `rust.*` keys (`gt4l-core/build.rs`
+generates the table; `gt4l-core/src/messages.rs`). The short release notes are in `docs/release-notes/launcher/<version>.md`
+(en-US) and `docs/release-notes/launcher/<tag>/<version>.md` (pt-BR for 1.0.0 to 1.2.3). A new language is documented in
+[docs/TRANSLATING.md](docs/TRANSLATING.md). Checks: focus-check in en-US (151 of 151) and pt-BR (158 of 158, with the
+locale parity, placeholder and index checks), nav-test 150 of 150, `cargo test --workspace` 450 passed. Screenshots of Home,
+Settings > General and Settings > Graphics in pt-BR at 1440 x 860: `O:\gt4recomp-scratch\slice279-shots`. Not translated yet:
+the PCSX2 GS rows that the table does not list in the UI keys (they show their English text), the XInput names in the
+controller chips, the key names, the Release notes text of 1.3.0 in the sample (dev mock only), and the library's
+`Active save` slot name (a value the code compares). Owner approved the mock in pt-BR (2026-10-23; main-agent review:
+cargo 450 passed, focus-check en-US 151/151 and pt-BR 158/158, nav-test 150/150). Open: the owner test on a real
+window with the 1.3.0 candidate.
+
+### TASK-103 — Graphics API choice for GSdx (Vulkan, Direct3D 12, Direct3D 11)
+Implemented on `task/101-multi-game` (owner, 2026-10-23), release 1.3.0; owner in-game test pending. Settings > Graphics
+shows "Graphics API (GSdx)" (table row `graphics_api`, written as `[EmuCore/GS] Renderer` = 14, 15 or 3): Vulkan
+(recommended, default), Direct3D 12 (recommended), Direct3D 11 (older PCs). The row moved from the Advanced section to the
+Graphics page. The engine setting keeps its id `renderer` (GSdx or CoreGS 2.0) and its label "Renderer"; the new row
+cannot be confused with it in the UI, the settings store or the table. A missing or unknown stored value, and an existing
+install, use Vulkan. No OpenGL and no software renderer (OpenGL later, with a new gt4-gs build and its allow-list entry).
+Research (2026-10-23, read-only): gt4-gs.exe already contains Direct3D 11, Direct3D 12 and OpenGL; the backend follows
+`[EmuCore/GS] Renderer` (DX11 3, OpenGL 12, Vulkan 14, DX12 15). Checks: `cargo test --workspace` 453 passed; Python
+`test_gs_*` 168 tests OK; focus-check en-US 151 of 151 and pt-BR 158 of 158, nav-test 150 of 150; screenshots of
+Settings > Graphics in `O:\gt4recomp-scratch\slice280-shots` (pt-BR and en-US). Open: the owner in-game test on Direct3D 11
+and Direct3D 12 against Vulkan (Nordschleife TT 480p, night race, menus, ultrawide crop and fill, texture pack, upscaling,
+flares and readbacks). A backend that fails the owner test is not offered.
+
+### TASK-104 — Launcher saves: crash-proof card import, New save, Export, Rename
+Planned and implemented (owner, 2026-10-23) for release 1.3.0. GitHub issue moesuito/gt4-staticrecomp#86: importing a PCSX2
+`Mcd001.ps2` closed the launcher with no message. Reproduced on the old reader with synthetic cards: a directory that points
+back to an ancestor overflowed the stack (0xc00000fd), and a 4 GB length aborted on a 2 TB allocation (0xc0000409). Both are
+silent in the launcher. Fix: the reader takes the card size, the allocation area and the indirect FAT list from the
+superblock and accepts 8, 16, 32 and 64 MB cards (with or without spare bytes); every length is checked against the chain
+and the card before allocating; directories nest at most 8 levels and each directory is visited once (a loop is
+`corrupt card`); the import runs under `catch_unwind` and logs the file name and size. Messages: not a PS2 memory card,
+unsupported card size, card damaged (with the reason), no Gran Turismo 4 save on this card (with what it holds).
+Saves page: New save (one confirmation; the current save is kept as a new `Save NN`, the last run's card is harvested and
+moved to `backups` first), Export of the active save or a slot as `.psu`, Rename (name in `name.txt` beside the save,
+sanitised, 40 characters, moved with the save when saves are swapped). Tests: `gt4saves/tests/hostile_cards.rs` (10 synthetic
+card cases, built in `tests/common`), `gt4saves/tests/save_management.rs` (9 library cases). Checks: `cargo test --workspace`
+474 passed, 0 failed, 4 ignored; focus-check en-US 158/158 and pt-BR 165/165, nav-test 150/150. Screenshots:
+`O:\gt4recomp-scratch\slice283-shots\saves-en-US.png` and `saves-pt-BR.png`. Open: the panic guard is not covered by a test
+(no injected panic); the owner test with a real PCSX2 card and in-game New save; gamepad rename needs a keyboard to type.
+
+### TASK-105 — Integrated GPUs: lighter default and GPU-lost message (#89)
+Planned and implemented (owner report, 2026-10-23) for release 1.3.0. GitHub issue moesuito/gt4-staticrecomp#89, reported on
+1.2.3: Intel Core i3-1005G1 with the integrated Intel UHD only, 1440 x 900 screen. The default Render scale gave k 3
+(1920 x 1344 internal); GSdx lost the device ("Host GPU lost too many times, device is probably completely wedged") at 3x and
+at 2x. Fix: `display::integrated_default_applies` and `display_plan_on`: when the GPU the game uses is integrated (Vulkan
+device type 1, `system_check::integrated_gpu_name`; with any discrete card, or none, the default is unchanged) a Render scale
+that is the untouched default (100%) plays at 1x (`INTEGRATED_DEFAULT_MULTIPLIER`, 640 x 448). A changed scale keeps its
+multiplier. The stored value cannot tell an untouched 100% from a chosen one: a chosen 100% on an integrated GPU also plays at
+1x. The decision is logged (`display: integrated GPU <name>: default internal 1x`); the Render scale readout follows the plan.
+The device comes from the same Vulkan probe as the system check (`gt4l_platform::system::integrated_gpu_name`, read once per
+launcher process). GPU lost: a crashed session whose `game.log` holds a GSdx device-lost text (`exit::GPU_LOST_MARKERS`:
+"Host GPU lost", "device is probably completely wedged", `VK_ERROR_DEVICE_LOST`) shows the plain message in en-US and pt-BR
+(`rust.game.gpu_lost`) in place of the generic crash text; the matched line goes to the launcher log. Saves dates use the
+interface locale (`Intl.DateTimeFormat` with `GT4.i18n.intlLocale()`; pt-BR showed English months). Not changed: the default
+Graphics API (Vulkan) and gt4-gs. Checks: `cargo test --workspace` (launcher) 487 passed, 0 failed, 4 ignored (new tests in
+`display.rs`, `system_check.rs`, `exit.rs`, `tests/launch_contract.rs`, `model.rs`); focus-check en-US 158/158 and pt-BR
+165/165, nav-test 150/150. Open: the owner test on the Intel UHD machine (1x default and the message are not yet seen in-game);
+the exact device-lost line in a real `game.log` is not confirmed (the markers come from the GSdx dialog text); a multi-GPU
+laptop keeps the discrete default by design.
+
+### TASK-106 — CHD disc images (issue #90)
+Planned (owner, 2026-10-23) for release 1.3.1. Issue moesuito/gt4-staticrecomp#90 asks for CHD support. The launcher
+already writes its own ISO image of the player's disc at setup, so the game never reads the player's file: accept `.chd`
+(and keep `.iso`) in the disc picker, decompress it to that image with a permissively licensed CHD reader (MIT or
+BSD; check the licence before use; never GPL in the launcher), then run the normal identification (serial and
+executable hash, both games and their variants). Show progress and free-space needs (a full image is about 3.7 GB for
+Spec II). Acceptance: synthetic CHD fixtures in tests (no game data), a CD and a DVD CHD, a damaged CHD refused with a
+plain message, and an owner test with a real CHD of each game.
+
+### TASK-107 — Automatic graphics setup per GPU
+Planned (owner, 2026-10-23) for release 1.3.1, after issue #89 and TASK-105. Owner design:
+1. **Game without Vulkan (check first).** Done by TASK-108 (1.3.0): the game program is not checked for Vulkan
+   when the chosen API is not Vulkan, and Automatic falls back to Direct3D 11. Today `gt4vulkan.exe` itself requires Vulkan 1.2 (`native/native_vulkan.cpp`,
+   `system_check.rs`), so a GPU without Vulkan cannot play even when GSdx draws with Direct3D or OpenGL. Find out
+   whether the game needs its own Vulkan device when `GT4_RENDERER=pcsx2` and, if not, make that path Vulkan-free and
+   relax the launcher check for it. Everything below depends on this.
+   First finding (2026-10-23, High confidence, from the owner's 1.2.3 game.log): in pcsx2 mode the game logs
+   `[gs-ipc] GT4_RENDERER=pcsx2: donor Vulkan renderer not created`, so the game creates no Vulkan device and only
+   gt4-gs renders; the Vulkan 1.2 requirement then comes from the launcher's system check (and gt4-gs on Vulkan). To
+   confirm: no other Vulkan call on that path (the loader is loaded dynamically) and a run on a machine without Vulkan.
+2. **Automatic Graphics API.** Vulkan when the GPU reports Vulkan 1.2 or newer with what GSdx needs; otherwise OpenGL
+   on NVIDIA and Direct3D 11 on Intel and AMD (OpenGL tends to stall on non-NVIDIA GPUs; OpenGL has the same blending
+   precision as Vulkan and Direct3D 12; Direct3D 11 is for weak and old hardware only). A player's own choice always
+   wins; the automatic choice is shown as such.
+3. **OpenGL in gt4-gs.** Allow `Renderer = 12` in a new gt4-gs release (allow-list and SHA256SUMS in the fork) and in
+   `docs/launcher/gs-settings.toml`; offer OpenGL in the Graphics API list ("older PCs" group) after an owner test.
+4. **GPU generation table.** A small table we maintain ourselves (no third-party database copied; check the licence of
+   any source used for reference): vendor ID plus PCI device-ID ranges per GPU generation (for example Intel Gen9, Gen11,
+   Xe; AMD GCN, RDNA1-3; NVIDIA Maxwell to Ada), so every variant of a family (RX 6600, 6600M, 6600 XT, 6650 XT) falls
+   in the right range. Each generation gives a starting profile (internal scale, API). An unknown GPU uses the driver's
+   own facts (integrated or discrete, video memory, Vulkan or Direct3D level) and else the default.
+5. **Step down after a lost GPU.** When a session ends with a GPU-lost line (TASK-105), the next start uses one level
+   less (lower internal scale, then Direct3D 11), told to the player, never below 1x; a successful session keeps it.
+6. **Auto render scale token.** Store the untouched Render scale as `auto` instead of 100 (settings migration), so an
+   automatic choice and a chosen 100% are told apart (TASK-105 limit).
+Acceptance: pure unit tests for every rule (tables, fallbacks, step-down), the migration test, and owner tests on this PC
+plus at least one integrated-GPU machine.
+
+### TASK-108 — Launcher: automatic graphics API and card; game programs renamed gt4.exe and gt4-spec2.exe
+Status: done in the working tree (branch `task/101-multi-game`, release 1.3.0); owner test pending. Owner decisions 2026-10-23.
+Completes step 1 of TASK-107 (the game no longer needs Vulkan to start).
+1. **Automatic Graphics API.** `graphics_api` gets a new first choice, **Automatic** (`auto`), and it is the default for
+   new installs and for installs that never changed the row (no stored value). It is resolved at every launcher start and
+   before each Play: Vulkan when the chosen graphics card reports Vulkan 1.2 or newer, otherwise Direct3D 11. The Settings
+   page shows the resolved API ("Automatic (Vulkan)"). An explicit Vulkan, Direct3D 12 or Direct3D 11 is kept.
+   Explicit Vulkan on a card without Vulkan 1.2 runs with Direct3D 11 for that run, with the note "No Vulkan 1.2 graphics
+   card was found, so the game uses Direct3D 11. You can change this in Settings > Graphics." (pt-BR in the locale file).
+   The Vulkan check is per run, so a driver update brings Vulkan back without a setting change. Setup needs no GPU;
+   the processor check (SSE4.1) is unchanged.
+2. **Graphics card and Adapter.** The launcher lists the cards: Vulkan device names from its Vulkan probe and DXGI
+   adapter descriptions (`IDXGIFactory1::EnumAdapters1`; software adapters skipped). The **Graphics card** row follows the
+   Graphics API row: "Automatic (best)" (default) and every card by name. Automatic picks a discrete card over an
+   integrated one, then the most dedicated video memory. The chosen card's name goes to the game's `Adapter` key: the
+   Vulkan name for Vulkan, the DXGI description for Direct3D 11 and 12. No name for the API means an empty Adapter (system
+   default) with a log line. A stored card that is gone (unplugged eGPU, new PC) falls back to Automatic for that run,
+   with a log line. The `Adapter` line is written under `[EmuCore/GS]` by the launcher (`gs_config_text`), because the
+   table row `adapter` is still `resolved` (not settable from a value; the table and `scripts/gs_settings.py` are unchanged).
+3. **One chosen card.** The Vulkan support decision (point 1) and the integrated-GPU 1x default (TASK-105) use the chosen
+   card instead of "all GPUs integrated".
+4. **Logs.** Every Play logs the card list, the chosen card, the API and the Adapter value.
+5. **Game programs renamed at distribution.** `gt4vulkan.exe` is `gt4.exe` and `gt4vulkan-spec2.exe` is `gt4-spec2.exe`
+   in the installer, the portable zip, the game folder and the launcher (`games.rs`, paths, launch, process detection,
+   update and migration). The build output names are unchanged. The files are byte-identical and pinned by hash, so no
+   game rebuild and no new pins. `scripts/make_distribution.py` copies them under the new names; the installer deletes
+   the 1.2.x names from `game\` on install and update, and checks both sets of names for locks; the uninstaller removes
+   the whole `game` folder. Process detection and the portable swap cover both old and new names.
+   The developer scripts keep `gt4vulkan.exe`, the build output name.
+Acceptance: pure unit tests for each rule in `gt4l-core::gpu` (laptop integrated + NVIDIA, integrated only without
+Vulkan, two discrete cards, explicit choice kept, missing card, software skipped, name mismatch leaves Adapter empty), the
+Vulkan fallback in both languages, `system_check` for the processor, the settings migration of the Automatic default,
+the distribution tests with the new names, `cargo test --workspace`, the touched Python modules, the headless Edge focus
+checks, and an owner test on this PC (NVIDIA + integrated) and on one machine without Vulkan 1.2.
+
+### TASK-109 — Launcher update channels and version picker
+**Implemented for 1.3.0** (owner, 2026-10-23; pulled forward from 1.3.1), on `task/101-multi-game`, owner test pending.
+- Settings > General, below Language: **Channel** (Stable default, or Beta) and **Version** (a dropdown read from GitHub
+  each time the page opens, with a refresh button).
+- Stable offers stable releases. Beta offers the release candidates (`vX.Y.Z-rcN`, GitHub pre-releases) and stable releases
+  together, newest by version; a draft is never offered. A candidate build with no stored choice starts on Beta.
+- Moving back to Stable never downgrades automatically: the launcher waits for a stable release newer than the installed
+  build.
+- The version carries its release candidate part (`gt4l-core::version::ReleaseVersion`): `1.3.0-rc4 < 1.3.0-rc5 < 1.3.0 <
+  1.3.1-rc1 < 1.3.1`. A build gets its label from `launcher/tools/build-release.ps1 -Label rc5` (`GT4_RELEASE_LABEL`, read
+  by `gt4l-core/build.rs`); About, the home credit line, `version.json` and the update decisions use `1.3.0-rc5`. Asset
+  names of a test build: `GT4Recomp-Setup-1.3.0-rc5.exe`, `GT4Recomp-1.3.0-rc5-portable.zip`.
+- The picker lists, per channel, stable releases by version (Stable) or candidates by publication date with a newer stable on
+  top (Beta); drafts and versions below 1.3.0-rc5 are left out (older builds cannot read the multi-game data layout).
+  Installing a chosen version asks first. A target older than the installed version (SemVer, any channel) shows the strong
+  downgrade warning (back up the saves, a saves folder button, an explicit "Install older version" button that is never the
+  default focus); a newer target is always the plain question. Yes runs the normal update path (`install_launcher_version`:
+  download, `SHA256SUMS` check, silent setup or portable zip swap); No restores the dropdown. When a channel lists only
+  versions older than the running build the page says updates resume when a newer release ships.
+- Both languages. Tests: version parsing and ordering, channel default, `decide` per channel, no automatic downgrade, list
+  building and sorting, `is_downgrade` and the dialog variant, asset names, a fake GitHub JSON through `FolderSource`,
+  `make_portable_zip` with a label; headless Edge focus checks (Yes calls the update path, No restores the selection).
+- Not verified here: the real GitHub fetch (the fake JSON follows the REST format), a real install of a chosen version.
+
+### TASK-110 — Controller tuning: stick and trigger deadzone, sensitivity and response
+Planned (owner, 2026-10-23) for release 1.3.1. Players report that the game sometimes reads the stick and triggers
+differently from what the controller sends. No code yet.
+- A per-controller tuning section on the launcher's Controls page, applied by the game's input layer
+  (`native/host_io.cpp`, SDL3) and the controls config the launcher writes. It needs a game rebuild and new pins.
+- Settings (the feature list only, from what PCSX2 offers its players; no PCSX2 code is used, clean room):
+  left and right stick deadzone; stick sensitivity or scale; response curve (linear or curved); outer deadzone or
+  saturation; trigger deadzone and saturation (the analog throttle and brake mapped to GT4's pressure buttons and stick
+  axes); button pressure modifier; stick inversion; vibration strength.
+- A live test view in the launcher showing the raw value and the value the game will see, for each stick and trigger.
+- Defaults reproduce today's behaviour exactly. Unit tests for every curve and deadzone rule.
+
+### TASK-111 — Logs for bug reports
+Implemented (rc4, 2026-10-23, `task/101-multi-game`) for release 1.3.0, together with TASK-112. The owner moved it from
+1.3.1 into rc4 (2026-10-23). Nothing from this entry is left for 1.3.1.
+- **Export logs** (About, and offered by a dialog after a crash or a lost graphics card): one zip
+  `GT4Recomp-logs-YYYYMMDD-HHMMSS.zip` in a folder the player picks (Desktop by default). It holds `latest.log`, the
+  last 3 launcher session logs, the last 3 game session folders' `game.log` and `gt4-gs.ini`, the settings file and
+  `system.txt` (Windows version, CPU, every GPU with vendor, driver version and video memory, the chosen card and API,
+  the displays, launcher version, install or portable, the installed games).
+- The Windows user name and the user profile paths are masked in every text (`C:\Users\<user>`). Cards, saves,
+  replays, disc images, prepared game files and programs are never put in (checked by a unit test).
+- After the export the zip path is shown, with "Open the folder" and "Report a problem on GitHub" (the named link
+  `report_problem`, through `open_link`).
+- Both languages. Unit tests in `gt4l-core/src/log_export.rs`: the path and user masking, the forbidden entries, the
+  zip contents, the newest-first selection and the system report.
+- The size limits are the session scheme of TASK-112 (20 session logs, 20 game session folders), not a size cap.
+
+### TASK-112 — Launcher logs: one file per session, last 20 kept, latest.log
+Implemented (rc4, 2026-10-23, `task/101-multi-game`) for release 1.3.0, with TASK-111. Replaces the single
+`launcher.log` of 1.2.x, which had no size limit.
+- One file per launcher session: `logs\launcher-YYYYMMDD-HHMMSS.log` (local time; a counter when two starts share a
+  second). Each line is `[time] LEVEL text`, with `INFO`, `WARN` or `ERROR`.
+- `ERROR`: a game crash, a lost graphics card, a setup or import failure, a failed harvest, an update failure, a
+  WebView2 problem, a settings file that could not be written. `WARN`: a soft problem (a refused disc, a GSdx
+  not installed during setup, a version file not updated).
+- The last 20 session logs are kept; the oldest go when a session starts. The running session's file is never removed.
+- `logs\latest.log`: a header (version, install kind, Windows, date), the `ERROR` lines of the earlier kept sessions,
+  oldest first and each prefixed with its file name, then the current session's lines as they are written. About >
+  "Open latest log" selects it in Explorer.
+- A 1.2.x `launcher.log` is renamed once to `launcher-legacy-YYYYMMDD.log` and counts as one of the kept logs.
+- Game session folders (`data\sessions\session-*`) are capped at the last 20, never the running one.
+- Both languages. Unit tests in `gt4l-core/src/logs.rs`: names, rotation at 20, the running file kept, the `latest.log`
+  error collection, the legacy migration and the session-folder cap.
+
+### TASK-113 — Spec II race HUD digits at ultrawide ratios
+Known issue of 1.3.0 (owner test on rc4, 2026-10-23, ultrawide 3440 x 1440, GSdx 6x): in Spec II only, the race HUD's
+current-speed figure and the odometer digits are stretched horizontally and spill past their place on the gauges; the
+rest of the HUD (gauges, gear, G meter, labels) is right; at 16:9 and narrower it is all right, and GT4 v2.00 is fine at every ratio. Hypothesis: Spec II draws those digits
+through a path the S8 HUD hook (`RaceDisplay::render` 0x1C5040, HUD matrix at this+0x70) does not cover, or with a
+second matrix or sprite list the widening scales twice. Find where Spec II draws the speed and odometer digits, compare
+with v2.00, and extend the Spec II hook table; headless check at 16:9 and 21:9 with frame dumps. Planned for the next
+update; listed under Known issues in the 1.3.0 notes.
+
+### TASK-114 — rc5 hotfixes (laptop test, RTX 3060 Laptop + Intel UHD 630, Windows 11 25H2)
+Done in the working tree (branch `task/101-multi-game`, release 1.3.0, 2026-10-23); owner test pending. Four items:
+1. **Setup identifies the disc first.** The first-run page is generic ("Install a game") until the picked image is
+   identified; the stored game choice no longer names a game there. The image is identified in place (SYSTEM.CNF serial,
+   executable hash, known-image table) before any copy, both when picked and again when setup starts; a refused or changed
+   file copies nothing. The game installed is the one the image really is, also for an Install button of the other game.
+2. **Copy bar reaches 100%.** The steps after the copy keep the finished copy's size, the copy step is drawn with a full bar
+   and its final figure, without a width transition.
+3. **GPU list.** Two integrated Vulkan devices (or two small-memory DXGI adapters) with the same PCI ids are one card; two
+   identical discrete cards with different LUIDs stay two. The launcher log lists every raw Vulkan and DXGI entry with PCI
+   ids and LUID at start, and the cards line shows source, vendor and kind.
+4. **Black window.** The intro looks up its version without the `-rcN` suffix (an rc never played it before), is never
+   started while the page is hidden, never on the setup page, has a 12 s hard limit, and logs start, end and skip. Cause not
+   confirmed; see the 1.3.0 notes.
+5. **Names and wording (rc5 polish, 2026-10-24).** Settings > Games titles the rows by the game, and Spec II as
+   "Gran Turismo 4 Spec II v1.10" (the only supported version). The detail is the status, what tells the copy apart
+   (`USA v2.00`; Spec II `PT-BR`, or nothing for the plain 1.10 image, `other image` for an unpinned image) and the size.
+   The button "Change disc image" is "Update" (`games.update`). Setup step 1 says `recognised: <title (variant)>`; the Spec
+   II variant is known only after the copy is checked, so step 1 shows the title alone until then. Step 2 is "Copying
+   and checking the image", step 3 "Final check". "Spec II 1.10" became "Spec II v1.10" in the texts that name the version.
+6. **Compact density (2026-10-24).** Every page is denser (body 13 px, 36 px hints and tabs, 38 px rows, 34 px buttons,
+   190 px controls); the existing rules changed, no override file. Checked at 1280x720 and 1440x900 in pt-BR.
+7. **Launcher icon (2026-10-24).** `launcher.ico` is the GT emblem on a white rounded square (corner 22%, emblem 80%,
+   10 sizes), generated by `launcher/tools/make_brand.py` (`write_launcher_ico`). `game.ico` is unchanged.
+
+8. **Settings open at once (rc5, 2026-10-24; Games, Saves and Replays included).** The graphics cards are probed once and kept (`gt4l-platform::gpu`:
+   `cached_gpus`, `store_gpus` from the start-up probe, `refresh_gpus` once at Play); the Settings table, the saves and
+   the log read the kept list. The Settings tabs open from memory (settings table, About info, launcher version list,
+   the Games list, the Saves and Replays lists), prefetched once the home screen is up. A change (import, new save, rename,
+   delete, activate, remove a game) updates the kept list from the command's answer; each tab reads again behind and draws again only when something changed.
+   "Loading settings..." waits 300 ms and shows only with no data. A tab's rows fade in once (180 ms, 18 ms apart, the last
+   starts within 150 ms; off with reduced motion). Probes per action, from the code paths (before, after): start 1, 1;
+   open a Settings tab 2, 0 (1 when the first open comes before the start-up probe ends); save a setting 2, 0; Play 3, 1;
+   export logs 1, 0. Checks: `cargo test --workspace` 556 passed, 0 failed, 5 ignored (6 new: the cache, and a settings
+   table read that probes nothing); focus-check en-US 195/195 and pt-BR 202/202 (one new check: a loaded Saves tab shows its
+   list at once), nav-test 150/150. No locale text added.
+   Owner test pending; no release-notes bullet (rc polish).
+9. **Dropdown values stay on one line (rc5, 2026-10-24; pt-BR owner screenshot).** The value of a dropdown is nowrap and
+   cut with an ellipsis when it is too long, with the full text in its tooltip (`app.css` `.select`, `settings.js`). The
+   Language row is wide, so "Automático (Português (Brasil))" fits. The opened list may wrap its names inside the panel.
+   Focus check: every General and Graphics dropdown value is one line, and the Language value stays one line with its
+   longest text, in both languages (en-US 198/198, pt-BR 205/205, nav-test 150/150). Screenshots at 1280x720:
+   `O:\gt4recomp-scratch\slice295-shots\general-pt-BR.png` and `graphics-pt-BR.png`. Owner test pending.
+
+### TASK-115 — Game recognition (Windows, GPU drivers, Discord) and Discord Rich Presence
+State (2026-11-02): Discord Rich Presence is in 1.3.0-rc7 and rc8, on by default. The owner tested it with the real Discord client: it works.
+Planned (owner, 2026-10-24) as a future plan (maybe 1.3.1, maybe later; the owner decides when). Goal: Windows, the AMD and NVIDIA drivers and Discord treat GT4Recomp
+as a game, so Game Mode, AMD Instant Replay / NVIDIA ShadowPlay and Discord's "Playing" status work out of the box.
+Facts to start from (main agent, to verify): the picture is drawn by `gt4-gs.exe` (GSdx) into a child window of
+`gt4.exe`, so a driver or overlay sees the 3D work in `gt4-gs.exe` and the window in `gt4.exe`; RivaTuner already
+hooks it (owner screenshots). Windows decides "game" from its own list, a fullscreen 3D swap chain, or the player's
+Game Bar choice "Remember this is a game" (stored per user in `HKCU\System\GameConfigStore`); there is no
+manifest flag. AMD Adrenalin and NVIDIA App detect games from their own databases and 3D activity and let players
+add an executable by hand; their Instant Replay can also record the desktop.
+Work:
+1. Identity: version resources on `gt4.exe`, `gt4-spec2.exe` and `gt4-gs.exe` (ProductName "Gran Turismo 4" /
+   "Gran Turismo 4 Spec II", CompanyName "GT4Recomp", FileDescription, icon), window title the game name.
+2. Measure on the owner's machines (AMD Adrenalin, NVIDIA App on the RTX laptop, Windows Game Bar) whether each one
+   detects the game today, in fullscreen and windowed, and what changes it (fullscreen mode, flip-model swap chain in
+   gt4-gs, the identity above). Never write GameConfigStore or driver profiles behind the player's back; if a manual
+   step is needed, a short in-launcher guide ("Add GT4Recomp to AMD Adrenalin / NVIDIA App / Game Bar").
+3. Discord Rich Presence (owner: 1.3.1): the launcher (it stays alive in the tray while the game runs) talks to the
+   local Discord client over its IPC pipe with a permissively licensed crate (MIT/Apache, never GPL), a GT4Recomp
+   Discord application id (owner creates it), and shows "Gran Turismo 4" or "Gran Turismo 4 Spec II", elapsed time
+   and the GT4Recomp logo; a Settings > General switch (on by default), off when Discord is not running, no data
+   sent anywhere else. In-game details (mode, track, car) need guest-memory reads: a later step.
+Acceptance: the owner sees each feature work on his machines; unit tests for the presence payload and the switch.
+
+### TASK-117 — Performance mode, part 2: no light flares at all in Performance Mode (sun included)
+**Done in rc6 as a host change; owner visual test passed, F8 pending (2026-10-25).** Two forms were tried: the derived-ELF guest patch (built, parked below: a runtime-switched guest patch cannot pass its identity gate) and the host-side zero table, which ships. The owner tested v2.00 and Spec II, night and day: flares gone, no other visual difference, and the glows no longer draw over the virtual rear-view mirror (a known GT4/GSdx artefact). Partial success until his F8 on a free machine confirms the frame times. Owner decision (2026-10-25 evening): Performance Mode removes every flare, the sun included, because weaker PCs lose frames on the Nordschleife only when driving into the sun.
+History (2026-10-24): planned for 1.3.0-rc6 together with TASK-116 step 1, because both need a new GT4 v2.00 game
+build (one rebuild, one set of pins).
+Idea source: the owner found https://github.com/nobz226/gt-pcsx2-patches (PCSX2 pnach files for GT4 USA, CRC
+77E61C8A, and GT3 JP). That repository has **no license**, so it is a reference only: we never copy its stub code or
+words; we write our own guest code from our own disassembly and credit the idea in the release notes. Its README
+explains the mechanism: each frame the game fills two flare queues (track lights, car lights; limit 100 each) through
+one shared visibility test; each queued light draws a glow and, when close, a second larger halo.
+Facts checked against our reconstructed ELF (`private/reconstructed/SCUS_973.28.elf`, 2026-10-24, Confirmed):
+- 0x3B7BA8 `slti a2, a2, 0x64` (track-light queue limit 100);
+- visibility test at 0x3B7C98 (prologue `addiu sp,sp,-16`), its `jr ra` at 0x3B7DCC; two callers: `jal` at 0x3B7BE4
+  (track lights) and 0x3B85C0 (car lights);
+- car-light flare draw call `jal 0x498198` at 0x3B8BA0; flare draw routine 0x498198, halo decision near 0x49822C;
+- sun flare draw call `jal 0x4985F8` at 0x3B89E0;
+- zero padding at 0x495580 and 0x495C40..0x495CFF (room for helper code).
+Why it should help George V (hypothesis to measure): with Performance mode (no readbacks) the owner measured
+59.8 VBlanks/s but 9% late frames, the dips to about 55 FPS in the street-lamp section. Fewer and simpler flares mean
+less EE work to queue them, less VU1 work (shorter VU1 drain before the per-frame readback) and fewer GS sprites.
+What Performance mode would change (fixed values, the patch author's tested set; no player tuning in rc6):
+1. No halo: each flare draws its glow only (glow size unchanged).
+2. Distance cull: track lights beyond 60 units and car lights beyond 40 units are not queued.
+3. Light caps: at most 12 track lights and 12 car lights queued per frame (with the distance cull, so no flicker).
+4. Far car-light thinning: cars beyond 50 units draw about half their light pairs, always both lights of a pair.
+Left out: sun flare at half size (tiny gain, visible change) and the "GT3 chase camera" (not performance; it changes
+the camera feel).
+Design:
+- The game executable keeps one code path for both modes. A derived v2.00 ELF (the same mechanism as the Spec II
+  boot patches, `scripts/spec2_patches.py`) places our helper routines in the zero padding and redirects the four
+  sites above to them. Each helper first reads one guest word, the flare-limits switch, which the host writes at boot
+  from Performance mode (new env var from the launcher, for example `GT4_FLARE_LIMITS=1`); with the switch at 0 the
+  helper runs exactly the original instruction, so Performance mode off renders as today.
+- Direct `jal` calls are compiled as direct C++ calls (only virtual calls pass through `ps2::dispatch`), so a host
+  hook cannot catch them; the redirect has to be in the ELF before translation. Confirm this in step 1.
+- Game logic never changes: the flares are presentation only. Confirm that nothing the game reads back for gameplay
+  (physics, AI, timing, saves, replays) depends on the flare queues or the halo (step 1, with gt4-decomp names).
+- Spec II uses different code: these addresses do not apply. Spec II gets the same feature later from its own
+  disassembly (a follow-up step), not in rc6.
+Steps:
+1. Study (read-only): map the visibility test, both queue fills, the flare draw and halo decision, and the car-lamp
+   object field used for pair thinning, with gt4-decomp names; list every reader of the queues; confirm the padding is
+   never written at run time; confirm whether the per-frame 2 KB readback is the flare occlusion test (shared with
+   TASK-116 step 2).
+2. Derived ELF: our helpers and redirects, a pinned patch table, a verify mode (like the Spec II patch tool), Python
+   tests for every word.
+3. Host switch: the guest word written once at boot from `GT4_FLARE_LIMITS`; CTest fixture; the launcher sends it
+   when Performance mode is on (GT4 v2.00 only).
+4. Identity: with the switch off, the headless frame comparison matches today's v2.00 build (Nordschleife TT and a
+   night scene); with it on, no new halts or interpreter fallbacks.
+5. New v2.00 game build (with TASK-116 step 1), new `docs/inputs` pins, launcher manifest.
+6. Owner test: George V Paris night race and another night track, F7/F8 with Performance mode on and off; visual check
+   (far lights appearing, flicker, car lights).
+Acceptance: Performance mode on holds 60 FPS on George V Paris (late frames clearly below 9%, F8 report), no visible
+flicker; Performance mode off is unchanged (identity checks); automated tests for the patch table and the switch.
+
+#### rc6 plan after the step 1 studies (2026-10-24; reports in the main agent's scratchpad, key words re-checked)
+Study facts (C = confirmed in the ELF or code, H = high confidence):
+- Track queue fill 0x3B7B70 (count flare+0x1848, limit `slti` 0x3B7BA8), car queue fill 0x3B8530 (count +0xA34,
+  limit `slti` 0x3B8568 = 0x28620064); flare object at RacePS2Base+0xDA0 (C).
+- Visibility test 0x3B7C98 already takes a per-type maximum view depth in f13 (default 1000.0): the distance cull is
+  only a smaller f13 (C). Only two callers, 0x3B7BE4 (track) and 0x3B85C0 (car) (C).
+- Flare draw 0x498198, called only from 0x3B8BA0 and 0x3B8CE8; the halo flag s5 is set at 0x49823C (0x24150001) when
+  f18 > 0, f19 > 0 and depth > 1.0; zeroing f19 before the call removes only the halo (C).
+- **The per-frame 2 KB readback is the flare occlusion test** (H, matches docs/GS-READBACK-STUDY.md): each queued
+  light renders a small depth-tested sample reduced to one pixel of a 64x8 table, read back to flare+0x104 and fed
+  to VU1 as the glow brightness; the EE never reads it. Culling cuts the sampling, VU1 and GS work but keeps the
+  readback while any light is queued.
+- Free code space: zero run 0x495574..0x495FFF (2,700 bytes, unreferenced, ends at the function at 0x496000) (C/H).
+- Direct `jal` is compiled as a direct C++ call; changed ELF words are translated with no seed change; new entries in
+  the hole renumber `unit_00E5` and regenerate its callers plus 00A4, 00A5, 00AD, 00AE (C). The aspect derived-ELF
+  tool (`aspect_elf_patch.py`) needs a "redirect + code block" row type.
+rc6 scope (fixed values, no player tuning):
+1. TASK-116 step 1 (no VU1 drain on the flare readback in Performance mode), native only, no new ELF:
+   - the game reads HWDownloadMode from the INI named by `GT4_GS_CONFIG` (one source of truth, no launcher change);
+     A/B kill switch `GT4_GS_READBACK_LOCAL=0` (added to `GS_STREAM_NAMES` in external_runtime_probe.py);
+   - only the 128-qword (64x8) flare readback in mode 2 is answered locally (with the previous flare reply, see
+     step 3); car icons, loading picture,
+     thumbnail and photo readbacks keep today's drain and round trip;
+   - the READ_FIFO record is still posted in journal order without waiting (new journal entry kind, no-wait IPC post),
+     so the GS stream hash is unchanged; `sync("download")` becomes lazy (the real drain runs only for non-flare reads);
+   - CTest fixtures for the client, IPC, journal order and the switch; F8 text counter for local answers.
+2. TASK-117 flare limits, derived v2.00 ELF: four `jal` redirects (0x3B7BE4, 0x3B85C0 to our track/car helpers;
+   0x3B8BA0, 0x3B8CE8 to our halo helper) and about 350 bytes of our own helpers at 0x495580; the queue limits of 100
+   stay. Parameters in a host-written guest block next to the HUD block (0x7F10 flags, 0x7F14 track depth 60,
+   0x7F18 car depth 40, 0x7F20 / 0x7F24 caps 12), written at boot and every VBlank from `GT4_FLARE_LIMITS` when
+   Performance mode is on; zero means every helper jumps straight to the original routine.
+   Far car-light pair thinning is left out of rc6: its left/right key needs a lamp-table dump first, and with the
+   car cull at 40 units a thinning start at 50 never acts.
+3. Gate P0 before enabling either: `GT4_GS_READBACK_LOG=1` logs each readback (size, destination, hash of the reply)
+   in Accurate and Performance mode on George V night, a day race, menus, photo and a replay, v2.00 and Spec II.
+   Owner (2026-10-24): in Performance mode the street-light glows show normally on George V, so gt4-gs does NOT
+   answer with zeros there and a local zero answer would hide the flares. Local answer = the previous flare reply:
+   the no-wait READ_FIFO's reply is collected when it completes and copied into the next frame's flare readback
+   (one frame late; the first frame of a race waits as today). P0 shows whether the reply is constant (then the
+   result is byte-identical to rc5) or varies (then one frame late, judged by the owner on screen).
+4. One new v2.00 game build (both changes) and a Spec II build (step 1 only), new `docs/inputs` pins, launcher
+   manifest, rc6 notes in both languages, language gate, draft upload.
+Identity: Performance mode off renders as rc5 (headless frame dumps, Nordschleife TT and a night race, GS stream hash
+equal, MTVU and VU1 verify clean, hole hash unchanged at the first race frame and at exit, no "no translated code").
+Owner test: George V Paris night F7/F8 with Performance mode on (target: mtvu download and readback wait near 0,
+60 FPS without the dips), flare look on and off.
+
+
+
+#### Scope change (owner, 2026-10-25 evening): cut every flare, the sun included
+Performance Mode no longer reduces the flares: it removes them. No track lamps, no car lamps and no sun flare (weak PCs
+lose FPS on the Nordschleife only when driving into the sun). With no light queued the game skips the 2 KiB sample, so
+the per-frame readback, the VU1 drain, the round trip and the one-frame lag all disappear. Perceived on the owner's rc6
+test build. Implementation: redirect the two lamp-queue fills (0x3B7BE4, 0x3B85C0) and the sun sample/draw (inside
+0x3B8400 and `jal 0x4985F8` at 0x3B89E0) to helpers that return "not visible" with the switch on; the flare draw sites
+need nothing because no entry is ever queued. The switch-off path must stay byte-identical to rc5: the derived ELF built
+for the earlier "fewer flares" variant still diverges with the switch off, so the bisect below comes first. Full spec:
+ai-memory `decisions/rc6-performance-mode-cuts-flares`.
+#### rc6 delivery (2026-10-25): built, not shipped
+Derived v2.00 ELF `SCUS_973.28.flare.elf` (sha256 `6c156b5f…`, 6,123,004 bytes) built by
+`scripts/flare_limits_elf_patch.py produce` and pinned by that script (`check`, `verify`, `record-library`): the four
+`jal` redirects (0x3B7BE4 track fill and 0x3B85C0 car fill → 0x4955A0 / 0x495600; 0x3B8BA0 and 0x3B8CE8 halo →
+0x495580) plus our helpers in the zero padding, each ending in `j <original routine>` so `ra` (call + 8) is kept and
+a zero flags word runs the original instruction in effect. Only caller-saved registers are touched (t0-t2, $f0, $f19).
+The generated code calls the helpers from units 00AD (track fill) and 00AE (car fill and both halo sites), with the
+delay slot unchanged; unit_00E5 holds the three helper entries (91-93) and unit_00E6 the flare routine. The accepted
+seed set is unchanged (translator entries 138,815 against 138,813 for the original: the three new entries). Eight
+units differ from the slice208 library: 008E, 008F, 00A6, 00A7 (the TASK-080 rows and the id renumbering), 00AD,
+00AE, 00E5, 00E6. Library pin `docs/inputs/slice299-ee-libraries.json`, profile `flare` (CMake `GT4_EE_PROFILE=flare`).
+Host: `native/flare_limits.*` writes the six-word block at 0x7F10 (flags 7, track depth 60, car depth 40, caps 12/12)
+at every guest VBlank when `GT4_FLARE_LIMITS=1`, a zero block otherwise; CTest `native_flare_limits`. Launcher:
+`launch.rs` sends `GT4_FLARE_LIMITS=1` for GT4 v2.00 (its ELF name) with Performance Mode on, never for Spec II, and
+the direct start reads `HWDownloadMode = 2` from the config `gt4-gs.ini`; `launch_contract` and the standalone
+fixture cover both. Tests: `tests/python/test_flare_limits_elf_patch.py` pins every helper word, the redirects, the
+block offsets against `native/flare_limits.hpp`, the old words against the pinned ELF and the produced derivative.
+
+
+
+#### Final implementation (2026-10-25, in rc6): the host answers the flare table as zeros
+In Performance Mode the gs_stream client already answers the 128-qword (64x8) flare readback from the VU1 journal.
+It now answers **zeros**: the VU1 scales every lamp, every headlight and the sun by its own pixel of that table
+(`docs/GS-READBACK-STUDY.md` 1.1), so an all-zero table draws no flare, halo or sun glare. The READ_FIFO is still
+queued, so the journal keeps deferring `sync("download")` exactly as in TASK-116 step 1; only the bytes the guest
+receives change. Switch: `GT4_GS_HIDE_FLARES` (unset = on with the local answer, `0` = the previous reply). No guest
+code and no launcher wiring, so Performance Mode off stays byte-identical to rc5 by construction; the sun needs no
+separate path. The one-frame occlusion lag also disappears, because no flare is drawn at all.
+
+Measured headless (night, 12,000 frames, 1x, `HWDownloadMode=2`, `GT4_GS_READBACK_LOG=1`): with hiding, 3,763 of 3,763
+tables answered as zeros (probe `nz=0..0`), no readback wait, `mtvu download` 0.000 ms and the EE critical path
+unchanged (5.87-6.52 ms against 6.00-6.44 ms with the previous reply); every dump before the race is byte-identical,
+and the race dumps differ only on the lights and their glows. CTest: new `pcsx2-hidden` scenario; `pcsx2-local` now
+pins `GT4_GS_HIDE_FLARES=0`.
+
+Why the guest patch was dropped: the emulated EE clock is counted in instructions (`system.cpp` `now()` =
+`g_base + (g_given - budget)`; VBlank and alarms are scheduled at guest cycles), so any runtime switch that adds
+instructions moves where the VBlank lands in the guest frame. The derived ELF therefore diverged from rc5 on the
+first frame that drew flares even with every helper taking the original path, and no placement or entry-id fix can
+remove that. The derived ELF (`scripts/flare_limits_elf_patch.py`, the `flare` profile, `native/flare_limits.*`)
+stays on the branch as a documented dead end; only a guest patch removes the GS-side 2 KiB download, which belongs to
+TASK-116 step 2 (async download in gt4-gs, 1.3.1).
+
+Owner test (2026-10-25, night): **visual acceptance passed** in v2.00 and Spec II, night and day: flares gone, no
+other visual difference, and the glows stopped drawing over the virtual rear-view mirror (a known artefact in GT4
+and in PCSX2 GSdx). Performance felt clearly better even with the machine busy compiling; **F8 metrics pending** on
+a free machine. The build he tested stays as delivered until that run, so TASK-118 presets do not mix with its
+numbers. Split screen keeps the headlight glow (constant path, see the study); the sun is hidden there too.
+
+#### In progress (2026-10-26, owner switching agents): the four laptop fixes
+The owner tested rc6 on an i5-7200U / Intel HD 620 and sent the sessions (`Z:` share). Four defects, each measured:
+
+1. **The launcher cost ~20% CPU in the background** (six full-screen 72 s CSS animations kept running after Play;
+   hiding the window does not stop WebView2). F8 proof: the game EE CPU itself went from 6-12 ms to 19.61/19.16 ms
+   on that run. Fix: pause them while hidden/blurred/in game (body.is-idle) and keep WebView2 GPU acceleration on.
+2. **A normal close was reported as a crash**: the launcher read `game.log` in the same instant the game wrote its last
+   line (three sessions: `Crashed { reason: None, exit_code: Some(0) }` with a normal `[ee] stopped ... window closed`).
+   Fix: wait for the shutdown line (25 ms poll, 1.5 s cap) and treat exit 0 without one as a normal close.
+3. **Vulkan loses the device on the HD 620** at the showroom (issue #89; it reports Vulkan 1.3, so the automatic API
+   rule picks it). Direct3D 11 runs fine; Direct3D 12 is clearly slower there. Fix: remember `graphics_api = d3d11`
+   after a Vulkan device loss and say so.
+4. **Render scale jumped 1x -> 4x in one notch** on the integrated GPU (100% = 1x by issue #89, then k x percent).
+   Fix: additive steps, one multiplier per 25% from the 100% plan (integrated 1/2/3/4/5x), clamped 1..12.
+
+Code state when the session ended (all in the worktree, `cargo test -p gt4l-core` green, `cargo check -p gt4l-tauri`
+green with `GT4_SDL3_ROOT` set):
+- `display.rs`: additive mapping + tests; `exit.rs`: `is_settled` + relaxed `classify` + test;
+- `commands.rs`: `read_settled_log`, `PlayInputs.api`, the Vulkan->D3D11 memory; locale key
+  `rust.game.gpu_lost_switched`; `gs-settings.toml`: `blending` hidden; `launch.rs`: preset writes blending
+  Minimum (Performance Mode on) or High (off).
+- **Still missing:** the UI pause (`app.css` body.is-idle + `app.js` game-state/visibilitychange/blur), and the
+  portable launcher rebuild + owner/laptop copies. Full checklist: ai-memory `procedures/task-118-launcher-fixes`.
+
+Performance Mode preset (supersedes the earlier list): `HWDownloadMode 2` + `accurate_blending_unit Minimum` only.
+Trilinear, dithering, preloading, filtering and mipmapping stay at their accurate defaults: measured on the laptop,
+turning them off changed nothing outside the noise and cost picture quality. Details in ai-memory
+`gotchas/weak-laptop-ee-bound` and `decisions/rc6-laptop-launcher-fixes`.
+
+### TASK‑118 — Graphics settings simplification (owner, 2026-10-25, 1.3.0-rc6)
+Owner decision, recorded directly by the implementation session (no orchestrator round trip). The Advanced page of
+Settings > Graphics is too technical and Performance Mode is only a readback switch today.
+
+What changes:
+1. **Performance Mode becomes a preset.** On: `HWDownloadMode` 2 (as today), `accurate_blending_unit` Basic,
+   `TriFilter` off, `dithering_ps2` off, `TexturePreloadingLevel` Partial. Off: exactly today's values (blending
+   High, trilinear automatic, dithering unscaled, preloading full). Blending accuracy leaves the Advanced page.
+2. **Fixed values, rows removed:** deinterlace automatic, present filter smooth, integer scaling off, interlace offset
+   off, anti-blur on, offsets/overscan off, TV shader none, anisotropic off, accurate alpha test off, AA1 off, ROV off,
+   shade boost and its four sliders off, disable shader cache off, texture filtering PS2, mipmapping on.
+3. **GS async leaves the launcher** and is always on (it was a debugging A/B switch and is the default).
+4. **RC Settings area** (only in release-candidate builds, `gt4l_core::build_kind`): Release performance report
+   (`performance_report`) and Verificar código VU compilado (`check_vu_code`). Final builds do not ship them.
+5. **Kept for everyone, default off:** the PCSX2 performance overlay (OSD) and the "compiling shaders" notice.
+6. **Removing a row never stops writing the key**: each removed row keeps a fixed value in `gt4-gs.ini`, otherwise an
+   existing install keeps a stale value.
+
+Rules: gameplay never changes (an icon, loading picture or flare may be lost; physics, timing, AI, saves and replays
+may not). Every preset key needs a headless A/B on the F8 harness before it ships, and the owner tests in game.
+6. **No "Automatic" choice for API or card** (owner, 2026-10-25): the launcher resolves both on the first start and
+   stores the result, so the UI shows "Vulkan" and the player's card name directly; the player can change either one,
+   and a card that disappears falls back to the rule's pick for that run and updates the stored value (never silently
+   back to "Automatic"). Needs a settings migration that materialises a stored "auto".
+7. **Render scale becomes one slider**: 100% by default, 50%..200%, no "6x" text and no resolution text beside it. It
+   snaps to the integer GSdx multipliers 1x..12x and stores the multiplier (the ini keeps integers); the percentage is
+   relative to the automatic plan, which stays the 100% baseline and must keep working from the monitor resolution.
+   **Hard cap at 8K**: 12x is 7680x6144, so an 8K output tops out at 100% (12x).
+8. **AA1 stays disabled by default** (owner, 2026-10-25): it does not join the anti-aliasing row and does not enter the
+   Performance Mode preset unless a headless A/B plus the owner's eyes show a real GT4 gain.
+Acceptance: the Advanced page holds only rows a player can reason about; Performance Mode on/off is the single
+switch; no lost option changes gameplay; tests for the preset layer, the fixed rows and the RC-only gate.
+
+### TASK-116 — George V Paris performance
+Recorded (owner, 2026-10-24) on 1.3.0-rc5, Spec II (Arcade unlocks every track), night race on George V Paris,
+GSdx Vulkan 6x, Performance Mode off, owner PC (Ryzen 7 5700X, RX 9060 XT). The owner calls it the heaviest and least
+optimised track of the game. Measured on screen (RivaTuner): 43-52 FPS in the race (60 on the track-select screen),
+frametime spikes to about 23 ms; GPU only 32-42% busy at about 2.5 GHz, CPU about 33% total, so one thread is the limit,
+not the GPU. Hypotheses (unconfirmed): many street lamps with lens flares cause GS readbacks that make the game wait
+for the GS process each frame (the C.S. Route 5 night capture already had 2,928 readbacks), or the EE / VU1 / GS-stream
+thread is saturated by the scene. Next: the owner records an F7/F8 interval on this track (Graphics > Advanced >
+Performance report), the F8 report lands in that session's `game.log`; compare with Nordschleife TT and a day race.
+Applies to GT4 v2.00 too if the track behaves the same there.
+Diagnosis (two owner F8 intervals, 99 s each, 2026-10-24; details in ai-memory notes/george-v-performance):
+- Accurate readbacks: 55.3 VBlanks/s (92% game speed, 66 audio underruns); EE critical path 17.73 ms of 16.68;
+  about one 2 KB readback per frame, and before it the EE drains the VU1 worker (5.65 ms/frame) and then waits for
+  gt4-gs to render and download (5.28 ms/frame): a serial chain, so the GPU idles at 30-40%.
+- No readbacks (Performance mode): 59.8 VBlanks/s, 99.7% speed, 9% late frames (the dips to ~55 FPS); the game still
+  asks for the readback every frame and the EE still drains the VU1 worker first (5.52 ms/frame) although gt4-gs answers
+  with no data (1.23 ms).
+Plan for 1.3.1 (owner, 2026-10-24):
+1. No VU1 drain when the readback returns nothing: with HWDownloadMode NoReadbacks the game exe answers the readback at
+   once without waiting for the VU1 worker (stream order unchanged). Native change in the game's MTVU / gs_stream client
+   (our MIT code): new v2.00 and Spec II builds, new pins, v2.00 identity checks; expected about 5.5 ms/frame less on
+   George V, enough to hold 60 FPS with Performance mode.
+2. Unsynchronized readbacks: gt4-gs 1.2.2 accepts HWDownloadMode Unsynchronized (fork allow-list and SHA256SUMS; ship
+   with the OpenGL entry of TASK-107); the readback returns the previous frame's data without waiting, so the flares stay
+   and react one frame late, and the game skips the VU1 drain as in step 1. Before shipping, confirm the 2 KB readback is
+   the flare visibility test (game logic must never change) and offer it as a third Readbacks choice after an owner test.
+
+
+#### rc6 delivery of step 1 (2026-10-25)
+Performance mode answers only the 128-qword flare readback locally with the previous reply (one frame old, never a
+zero table): `sync("download")` closes the VIF1 batch and returns (`download_deferred`), the client queues the
+READ_FIFO behind the journal (`EntryKind::Readback`, `Session::post_read_fifo_nowait`) so the record keeps its stream
+position, and the reply is collected one frame later by exact request id. Every other readback (car icons, loading
+picture, thumbnail, photo) drains on demand (`mtvu::drain_download`) and waits, as does the first flare readback of a
+scene. `GT4_GS_READBACK_LOCAL=0` restores the old behaviour; `GT4_GS_READBACK_LOG=1` logs every reply (P0 probe).
+Night race headless 1x: blocking drains 5,026 → 29, readback wait total 4,596.6 / 2,329.1 → 46.1 ms, 4,997 of
+4,998 flare replies from the cache, record counts equal to the pre-rc6 Performance-mode run; the Accurate run still
+hashes `c091716e3cb40d79`. The owner F8 decides the gain: part of the old 5.5 ms "download" was the EE's own ring
+writing (now `EE gs_drain` 2.2-4.2 ms/frame), so the net saving is about 2-3.5 ms/frame in the race stretch.
 
 ### TASK-100 — Spec II support (release 1.3.0)
 Planned (owner, 2026-10-22) for release 1.3.0: Spec II ships before the wheels and before CoreGS 2.0 (owner, 2026-10-23), on GSdx. Scope as decision 0072:
@@ -659,6 +1207,67 @@ working should be much cheaper. Work to map first:
   spec database, `/sound_gt` and `carsound` paths: data the game reads, so they need no translation, but every native
   the scripts call must exist in the translated executable.
 - Launcher: a second game target (disc identity check, setup, saves kept apart from v2.00), chosen per disc image.
+Plan (2026-10-22): [docs/SPEC2-PLAN.md](docs/SPEC2-PLAN.md), subtasks S1 patch set and injector map, S2 derived
+ELF, S3 target-aware host hooks (v2.00 byte-identical), S4 second-target build, S5 VU0/VU1, S6 IOP network modules,
+S7 first boot, S8 re-targeted hooks, S9 launcher and installer. Worktree `C:\Antigravity\gt4-wt-100-spec2`; the
+owner runs the long parts in OpenCode. The unmodified Public Beta ISO is wanted for S1 (exact diff) and S7a.
+Progress (2026-10-22, S1 done): the owner supplied the Public Beta ISO; the community `.xdelta` decodes it to exactly
+the owner's Spec II ISO (byte identity), so the beta is the confirmed base. The beta's encrypted `CORE.GT4` was
+recovered (Salsa20/20, key `PolyphonyDigital`, CRC-32C trailer) and rebuilt into `private/slice271-spec2-beta-elf`
+(ELF `2e5621ed…`). The diff against Spec II's `SCUS_974.36` gives the complete static patch set: **one word**
+(`0x001001E8`, the trampoline into the plugin) plus the `.plugin` segment at `0x0068A480` (0x2CCC bytes) over
+zero-filled data; every other byte is identical. The injector is mapped by executing its init on an EE-RAM image:
+35 word stores (18 text, 17 data), unconditional (no variants; identical under stack/return-value perturbation).
+Report [docs/SPEC2-PATCHES.md](docs/SPEC2-PATCHES.md), pins `docs/inputs/spec2-patches.json` and
+`docs/inputs/spec2-beta.json`, tools `scripts/spec2_patches.py` and `scripts/spec2_beta_elf.py`,
+`tests/python/test_spec2.py`. Open: S3 build/identity, then S5/S6, S2/S4.
+Progress (2026-10-22, S3 done): `native/game_target.hpp` carries every guest address of the host hooks per target
+(v2.00 keeps the release values; an absent address disables the hook and logs once; `GT4_TARGET=v200|spec2`). The
+capsule overlay text is unchanged. CTest 42/42 (new `native_game_target`); Python 653 OK, 42 skipped and the known
+release-pin distribution failure that any rebuilt executable has. Headless identity against the 1.2.3 build (slice268)
+is exact in menus, day and night, dumps and GS stream hashes, on the final code state. Open: the new executable's
+release pin set (release decision), S8 fills the Spec II table.
+Progress (2026-10-22, S5/S6 mapped): VU1 decrypts to the v2.00 image (`ae6b6cb3…`), the AOT table carries over; VU0
+differs (0x920 vs 0xA80, 1,050 bytes) and runs on the counted interpreter fallback. IOP: 35 files pinned with policy
+(`inputs/spec2-iop.json`), 6 new, inherited from the beta lineage. Open: S7b for both (VU0 profile, offline hangs).
+Progress (2026-10-22, S2 done): `scripts/spec2_elf_patch.py` applies the 35 injector stores to `SCUS_974.36` from the
+ISO and writes `private/slice272-spec2-elf` (`10a794df…`, original `db08421b…`), with `--revert` reproducing the
+original exactly. Pins `docs/inputs/spec2-iso.json` and `docs/inputs/spec2-elf.json`; the trampoline at 0x1001E8 stays
+(documented: the init also calls the beta's boot initialiser and one more game function). Tests 21 in
+`tests/python/test_spec2.py`. Open: S4 (plain-ELF translation, own library and executable) and S7b.
+Progress (2026-10-22, S4 translation): `scripts/spec2_ee_generate.py` runs the pinned translator on the derived ELF:
+346 units, 348 files, inventory `13354c95…`; 1,285,650 instructions, 17,080 functions, 148,756 entries, 2 rejected
+seeds. Pin `docs/inputs/spec2-ee-generated.json`; output stays in scratch. Open: the Spec II library and executable
+(own CMake profile) and S7b.
+Progress (2026-10-22, S4 build done): profile `spec2` in CMake (`-DGT4_TARGET=spec2 -DGT4_EE_PROFILE=spec2`, output
+`gt4vulkan-spec2.exe`); library `private/slice274-spec2-ee-producer/game-build/ps2game.lib` 77,369,746 bytes
+(`5e483768…`), pin `docs/inputs/spec2-ee-libraries.json`. v2.00 untouched.
+Progress (2026-10-22, S7b BLOCKED before the menus): the derived image boots headless with **no "no translated code"**
+(600 and 4,200 frames). Two findings fixed on the way: the plugin PT_LOAD sits inside the data PT_LOAD, so the
+translator read zeros for it (the derived ELF now splits the data segment around the plugin, image still identical);
+and the plugin's own pointer tables are inside its executable segment, so 12 entry seeds were added. The game then
+draws nothing (8 primitives against v2.00's 2,524 at the same frame), all EE threads wait, the IOP is idle. The
+original unpatched image behaves identically, so our patches are not the cause. Next: semaphore trace, the DNAS310
+IOP-reboot path, and an IOP module A/B.
+Progress (2026-10-23, S7b unblocked: menus and a race): the stall was the FILEIO protocol generation. The Spec II disc
+reboots the IOP with `DNAS310.IMG` instead of `IOPRP300.IMG`; the donor selected its asynchronous FILEIO server (the
+one that answers `devctl`, method 23, with the SIF packet `0x80000011`) only for a path containing `IOPRP`, so the
+game's fileio thread waited forever on its completion semaphore. The image needs no loading: DNAS310.IMG is the same
+romdir as IOPRP300.IMG, with the same 16 Sony system modules in the same order, all served as HLE (pin
+`docs/inputs/spec2-dnas310.json`, section in docs/IOP-MAP.md). Fix: capsule `private/slice276-spec2-iop-runtime`
+(`scripts/prepare_perf_runtime.py --spec2-iop`, `scripts/spec2_iop_overlay.inc` + `native/spec2_iop.hpp`); v2.00
+keeps its capsule. Headless: 4,200 menu frames (1.8 M primitives), the main menu, Arcade Mode, track and car
+selection, and a 21,000-frame race at Costa di Amalfi (169.7 M primitives, HUD, lap timer), no "no translated code".
+CTest 43/43 in the Spec II build (new `native_spec2_iop`); Python 668 tests: all pass with the Spec II build (51
+skipped), only the expected release-pin failure with the v2.00 build. v2.00 identity against the 1.2.3 build: menus,
+day and night dump and GS stream hashes all equal. Open: S8 (Spec II hook addresses), S9 (launcher, installer,
+credits); the race used a scripted accelerator press, and GT mode still needs game data on the card.
+Progress (2026-10-23, S7c PASS on GSdx): the harness gained target overrides (--exe/--elf/--iso/--press/--textures/--gs-sha256; defaults are the v2.00 gate values and the menus/day/night identity still equals slice268). Spec II runs on the shipping PCSX2 GS process: menus 4,200 frames, Costa di Amalfi race 21,000 frames (12 readbacks), night race at C.S. Route 5 (2,928 readbacks), 3x upscale, and the owner's HD HUD texture pack (with [Folders] Textures + LoadTextureReplacements, needs gt4-gs 1.2.1; the repo pin is 1.0.1). The GT4 display crop is a fixed gt4-gs constant ({0,0,1,2}) and logs for both games; gt4-gs has no SCUS-97436 GameDB entry and the game still announces SCUS-97328 (recorded for S8/S9).
+Progress (2026-10-23, S8 done for the main hooks): `native/game_target.hpp` kSpec2Hooks now carries the Spec II option chain (owner 0x664EDC, option +0x680, flag +0x14, record +0x24 44 bytes at width +0xC/height +0x10, presets 0x664E20/50/80/B0, published wide word 0x6655A0, race display index +0x1718), RaceBase::initMonitor 0x26BDB0 with camera return 0x26BE60, RaceDisplay::render 0x1C5040 and the HUD matrix at +0x70. Found from the v2.00 code shapes in the derived ELF and confirmed with a runtime RAM dump. New fixture native_spec2_hooks asserts every value and the write rules in synthetic RAM; native_game_target asserts the filled table. Headless GSdx race at 21:9 shows the camera matrix scaled, the first RaceDisplay::render, the HUD canvas (left -240 right 880) and the fill policy; the Spec II build now uses the slice262 license guard capsule for the aspect overlay. The 16:9 hold finds the settled owner 0x9BD690 but writes nothing because the game itself boots 16:9; the 480p hold runs in window.cpp's VBlank, so headless runs only cover it through the fixture. Not mapped (rows 0, hook logs once): display request struct (photo mode), license demo guard (feature exists, loaders unmapped), shape observer. CTest 44/44 in the Spec II build; Python 671 tests clean on the Spec II build (51 skipped) and only the expected release-pin failure on v2.00; v2.00 identity against slice268 exact (menus/day/night dumps and stream hashes).
+Progress (2026-10-23, S8b license demo guard mapped): kSpec2Hooks now carries the Spec II license values: loadDemoInputs 0x2012C8 (RaceSolitaire vtable 0x6B3130 +0x510, the same virtual v2.00 has at +0x4D8), loader entries 0x10CA18/0x10CBA8 with return labels 0x10CB54/0x10CCE4 (each loader calls the license/%s helper 0x1A8BE8 and makes one vtable call), Manager::load 0x207AA0, CRC-32 table 0x731DB0, Manager add 0x1A24 and body pointer shift 0x80. The cipher is the same (0x459E90, FT at 0x667048, T8 at 0x731C98); the Spec II volume's 256 replay/license demos are the retail files (171 shared with v2.00, 170 bodies byte-identical) and CRC-confirmed plaintexts keep the single-Recorder stream at body+0x1AA4, so the layout and the CRC rule are unchanged and the code's 0x1A24 add applies to a pointer 0x80 into the body (High confidence; not observed at runtime). Guard: two table fields (license_manager_add, license_body_shift), the overlay evaluates the header body and writes n=0xFFFFFFFF at a1+manager_add, static assert add+shift == 0x1AA4; fresh capsule private/slice277-license-guard-runtime (slice262 profile) and pin docs/inputs/slice277-license-guard-runtime.json, CMake accepts slice27x; v2.00 keeps slice262. Oracle on the Spec II set with our FPU (chop/chop): 0/256 CRC passes, 114 sane layouts, 142 demos guarded (other div models 130-152). Headless license test not reachable (GT mode needs game data; the seed cards have none), owner run remains the gate. CTest 44/44 and Python 675 OK (51 skipped) on the Spec II build, including the overlay harness compiled for GT4_TARGET_SPEC2; v2.00 identity against slice268 exact in menus/day/night (dumps and stream hashes).
+Progress (2026-10-23, S8c Options-menu halt fixed): the owner test halted twice opening Options at 0x3CA690 (ra 0x50D1B0). The callback is built by the Options page (lui s0,0x003D at 0x3CC8EC + addiu s0,s0,-22896 53 instructions later) and stored in the descriptor; the translator's luipair window is 3 instructions and no dataword points at it. New scripts/spec2_entry_seeds.py seeds the missing classes (wide luipair window 64, stack-frame fallthrough, executable-segment literal code entries): 1,299 seed delta, regenerated 346 units, 1,332,727 instructions, 18,597 functions, 153,474 entries (inventory 2d8c92a4.), new library private/slice278-spec2-ee-producer/game-build/ps2game.lib (80,229,124 bytes, 9a94c3ed.), pins spec2-ee-libraries/generated updated, CMake accepts only slice278 for the spec2 profile. Sweep after the reseed: no real missing entries in the luipair/fallthrough/dataword/executable classes (only plugin strings/zeros). Headless: the old exe reproduces the halt after 11,159 frames; the new exe O:\gt4recomp-scratch\spec2-s7d-build\build\gt4vulkan-spec2.exe (104,475,136 bytes, 301bbb4a.) opens Options plus every submenu (Race, Replay, Screen 16:9, Picture Quality, Sound, Arcade Mode, LAN Connection Settings, Photo Lab), Replay Theater, Save Game, Credits, GT Mode and the Arcade menu with no halt; the harness gained --card. A license demo was not reached headless (the mod's Spec II Settings dialog blocks the GT map), so the [license-guard] confirmation stays with the owner. CTest 44/44, Python 678 OK (51 skipped), v2.00 identity against slice268 unchanged.
+Progress (2026-10-23, 1.3.0 integration candidate, not published): merged origin/main db5c559 and origin/task/100-spec2 9206af5 (S8c) into task/101-multi-game (63c110e, b8a6b5f); resolved TASKS/BUILD/journal conflicts keeping the implemented TASK-102/103 rows and CRLF. Version 1.3.0 in launcher/Cargo.toml, Cargo.lock workspace crates, tauri.conf.json and the installer default. Release notes written: docs/release-notes/1.3.0.md, launcher 1.3.0 en-US and pt-BR, with the Spec II credit list (owner decision: no permission needed) and "GT4Recomp ships no Spec II files". New game builds in fresh slices: v2.00 private/slice279-build/build/gt4vulkan.exe (97,377,792; 9dccb5a4.), pin slice279-pcsx2.json; Spec II private/slice280-build/build/gt4vulkan-spec2.exe (104,612,352; 174e7adf.), pin slice280-spec2.json (slice276 IOP + slice277 guard + slice278 library); gt4-gs 1.2.1 package slice281; PERF_PROFILES pcsx2 -> slice279 (slice268 kept as pcsx2-slice268), SPEC2_RELEASE -> slice280. GAME_DIR slice282-dist-130 (both exes); launcher release 69530dfa. and portable a1a0ed0d.; installer GT4Recomp-Setup-1.3.0.exe 51,373,344 / d1569b35. (7-Zip extraction: 24 files match their sources, 0 differences); portable zip 83,032,500 / bfa3a08a. with SHA256SUMS. Checks: CTest 45/45 both builds, Python 694 OK (42/56 skipped), cargo workspace clean, focus en-US 151/151 + pt-BR 158/158 + nav 150/150, Rust Spec II derivation byte-identical to the script, v2.00 identity vs slice268 exact in menus/day/night. Flaky migration test cause: a scanner/indexer can hold a freshly written file, so the rename failed transiently; the real rename now retries 5 times (20-100 ms apart) and the policy has a test. Not done: owner tests, no PR/merge/tag/release.
+S9 recorded (2026-10-23, not started): Spec II ships before CoreGS 2.0 on GSdx with upscaling and texture packs; the launcher keeps ONE shared settings set and only the game executable, the disc and the save folder differ per game; texture packs use the same Textures folder and settings, no new option; the planned release notes are two files (en-US and pt-BR) per AGENTS.md. GT mode needs game data on the card: the first boot creates it (decline -> 'GT mode is not playable'); plan the fresh Spec II card in normal play and keep its save separate from v2.00's. Open: launcher disc identity/prepared layout without CORE.GT4, second exe name, chooser, the Logo (credits are decided: no permission needed, credit by name) and the GS handshake serial decision (still SCUS-97328; gt4-gs has no SCUS-97436 GameDB entry).
 
 ### TASK-099 — Patch notes panel on the launcher home screen
 Planned (owner, 2026-10-22) for release 1.2.4. The home screen keeps the logo, Play and Settings on the left; a new
@@ -687,7 +1296,8 @@ Plan:
   shows the panel with real notes; the owner checks the look.
 
 ### TASK-098 — Portable build (zip) beside the installer
-Planned (owner, 2026-10-22) for release 1.2.4, together with TASK-097. Two launcher builds from one source: the
+**Done on branch `task/101-multi-game` (2026-10-23), waiting for the owner test; release 1.3.0** (moved from 1.2.4 with
+TASK-097, on top of the multi-game layout of TASK-101). Planned by the owner on 2026-10-22. Two launcher builds from one source: the
 installer build (as today) and a portable build shipped as a zip. The portable copy keeps everything in its own
 folder, so it can be carried to another PC as one folder. No path is hardcoded: every folder is found from the
 folder of `GT4Recomp.exe`.
@@ -727,8 +1337,41 @@ Map of the work:
 - Tests: `cargo test --workspace` for both builds (`--features portable`); path resolution, no registry use, the
   portable self-update swap and rollback with an injected file system, the per-folder lock.
 
+Result (slice 278, 2026-10-23): `cargo test --workspace` 431 passed in each build (the installer build and
+`--features portable`), 0 failed. Python: `tests/python/test_make_portable_zip.py` (7 tests, fixtures only).
+What was built, and the decisions behind it:
+- `gt4l_core::build_kind` (`BUILD`, `BuildKind::label`): the Cargo feature `portable` of `gt4l-core`, forwarded by
+  `gt4l-tauri`. Logic takes the kind as a value (`LayoutInputs::portable`, `relocation::prepare_as(portable)`), so both
+  behaviours are tested in either build. Settings > About shows "Build: Portable" (`about_info.build`).
+- Paths: `resolve_layout` with `portable` gives `UserDirs` = `<exe dir>\user` (`UserRootSource::Portable`) and `DataDirs` =
+  `<exe dir>\data`, the per-game layout inside both, no read layers, no `%LOCALAPPDATA%` fallback: an unwritable folder
+  gives "Move the GT4Recomp folder to a place you can write to" (a native message box, because no window exists yet).
+  The test overrides (`GT4RECOMP_DATA_DIR`, `GT4RECOMP_USER_DIR`) still win.
+- Nothing in the registry or system folders: `prepare_as(portable)` reads no `InstallDir`/`PreviousDataDir`, no Documents
+  folder, runs no 1.2.0 or 1.2.x migration; `clean_old_install_as(portable)` does nothing; the launcher creates no
+  shortcut and no uninstall entry (only the NSIS installer does). The WebView2 profile goes to `data\launcher-webview`
+  (`appDirectoriesOverride`, Tauri 2.12) instead of `%LOCALAPPDATA%\io.github.moesuito.gt4recomp`. The only registry read
+  left is the existing read-only WebView2 runtime detection (TASK-091), which the portable zip cannot replace.
+- Self-update (`gt4l_core::portable_update`, injected `UpdateFs`): `GT4Recomp-<version>-portable.zip` + `SHA256SUMS` ->
+  `.update-download\` (SHA-256 checked while downloading) -> extracted into `.update-staging\` (zip-slip, size and entry
+  limits) -> each top-level item except `user\`, `data\` and the update's own folders is renamed into `.update-old\` and the
+  staged item renamed in (the running `GT4Recomp.exe` is renamed aside, which Windows allows) -> the new exe starts with
+  `--after-update` (waits for the old one to exit) and the old one exits. A failed rename undoes every step; a marker
+  `.update-swapping` survives a crash and the next start restores `.update-old\`; a finished update's `.update-old\` is removed
+  at the next start (retried for 20 s in the background while the old launcher exits). No administrator prompt.
+- Single instance: `Local\GT4Recomp.Launcher.<key of the exe folder>` in the portable build, so two copies never block each
+  other and one copy cannot start twice; the installer build keeps `Local\GT4Recomp.Launcher`. Known limit: a second start of
+  the same folder brings forward the window titled "GT4Recomp", which may be another copy's window when both run.
+- `scripts/make_portable_zip.py` makes the zip from the same files the installer stages (`GT4Recomp.exe`, `SDL3.dll`,
+  `NOTICE.md`, `LICENSE.txt`, `game\`) plus empty `user\` and `data\` and a `PORTABLE.txt`, refuses game data in the game
+  folder, is deterministic and appends the zip's line to `SHA256SUMS`. `launcher\tools\build-release.ps1 -Portable` builds
+  the portable launcher into `<target dir>-portable`. No release zip was built (owner rule); the script is tested on fixtures.
+- Not done on purpose: an "import saves from the installed GT4Recomp" button (later); the game executable reading its
+  settings from `<install>\user\config` is part of TASK-097 below.
+
 ### TASK-097 — Self-sufficient game executable
-Planned (owner, 2026-10-22) for release 1.2.4, after the 1.2.3 hotfix. Principle: the game runs on its own with the
+**Done on branch `task/101-multi-game` (2026-10-23), waiting for the owner test; release 1.3.0** (moved from 1.2.4). Planned
+by the owner on 2026-10-22, after the 1.2.3 hotfix. Principle: the game runs on its own with the
 same defaults every time; the launcher is only an easier way to start it and to manage settings. Today a double click
 on gt4vulkan.exe does not start the game: the launcher passes about 14 arguments and variables (ELF, disc, card,
 window; GT4_RENDERER, GT4_GS_PROCESS(_SHA256), GT4_GS_CONFIG; GT4_FORCE_480P, GT4_FORCE_WIDESCREEN,
@@ -743,17 +1386,94 @@ GT4_DISPLAY_ASPECT; GT4_FULLSCREEN, GT4_PRESENT_MODE, GT4_MONITOR, GT4_OUTPUT_SI
 - Missing pieces (no prepared files, no GSdx): a clear message that says to open the launcher once.
 - New game slice with the frame identity checks, launcher changes, tests.
 
+Design (slice 278, 2026-10-23; written before the code, release 1.3.0 on branch `task/101-multi-game`):
+- **Two ways to start the game.** *Explicit mode* is the way the launcher, the harnesses and the pins start it today: the
+  first argument is the ELF. It runs exactly the old code path: no built-in default, no config file, no path search. This is
+  what keeps v2.00 frames byte-identical and what keeps every test and pin working; variables and arguments are the test
+  overrides. *Standalone mode* is a start without an ELF argument (a double click, or only `--` options such as `--frames 600`
+  or `--fullscreen`): the game builds the old command line and environment itself, from the rules below.
+- **Where the code lives.** A new `native/game_main.cpp` provides `main`; the pinned donor `main.cpp` (port `slice200`) is
+  compiled unchanged with `main` renamed to `gt4_donor_main` (a compile definition on that one source), and `game_main`
+  calls it with the argument vector it built. The pure rules (paths, defaults, config parsing, the command line) are in
+  `native/standalone.cpp/.hpp` with no Windows calls, tested by the CTest fixture `native_standalone`.
+- **Order of every value:** explicit argument or environment variable (wins) > the launcher's config file > the built-in
+  default. An empty variable counts as unset.
+- **Built-in defaults:** renderer GSdx (`GT4_RENDERER=pcsx2`, `PS2_GS=gpu`), race display 480p (`GT4_FORCE_480P=1`), 16:9 hold
+  (`GT4_FORCE_WIDESCREEN=1`), automatic ultrawide (`GT4_DISPLAY_ASPECT=auto`), fullscreen (`GT4_FULLSCREEN=1`, `--window`),
+  vsync (`GT4_PRESENT_MODE=fifo`), NTSC, the monitor the window opens on and its desktop size (no `GT4_MONITOR`).
+- **Paths from the executable's own folder:** the game must run from `<install>\game\gt4vulkan*.exe`; the game id follows the file
+  name (`gt4vulkan.exe` -> `gt4`, `gt4vulkan-spec2.exe` -> `spec2`) and the files are
+  `<install>\data\games\<id>\prepared\<ELF>`, the disc copy named by the setup receipt `prepare.json` (`image.file`; its size
+  and modified time must equal the receipt, the same cheap check the launcher makes at every Play, and the prepared ELF size
+  must equal `elf.size_bytes`), and `...\runtime\card.ps2` (a missing card is a blank card, as today). When
+  `<install>\data` has no prepared files, `%LOCALAPPDATA%\GT4Recomp` is tried too (the launcher's write fallback for a
+  read-only data folder). The renderer is `<data>\gs\current.txt` -> `<data>\gs\<version>\gt4-gs.exe`, whose SHA-256 must equal the
+  `sha256.txt` recorded at install (`gs_release::installed`); that recorded hash is passed as `GT4_GS_PROCESS_SHA256`, so the game's
+  existing pin check does the hashing. The game takes the same exclusive lock as the launcher (`launcher.lock` beside the card),
+  so a direct start and a launcher start never share a card.
+- **Session:** `<data>\sessions\standalone-<unix seconds>`; it becomes the working directory, `misses.txt` goes there, and
+  stdout/stderr go to `game.log` there (the console is released). The newest 20 `standalone-*` folders are kept.
+- **Settings:** the launcher writes `game.ini` (key=value) and `gt4-gs.ini` (the session ini it renders today) into the user
+  config folder: `<install>\user\config` when `<install>\user` exists (portable build), else `%APPDATA%\GT4Recomp\config`. It does so
+  at start-up, after every settings change and before every Play. `game.ini` keys: `fullscreen`, `present_mode`, `monitor`,
+  `output_size`, `async_gs`, `performance_report`, `check_vu_code`. Each key becomes the variable the launcher would have set
+  (`GT4_FULLSCREEN`, `GT4_PRESENT_MODE`, `GT4_MONITOR`, `GT4_OUTPUT_SIZE`, `GT4_GS_SYNC`, `GT4_PERF`, `GT4_VU1_VERIFY`/`GT4_VU0_VERIFY`);
+  `gt4-gs.ini` becomes `GT4_GS_CONFIG`; `controls.toml` in the user folder becomes `GT4_CONTROLS_FILE` when it exists. A missing or
+  damaged config file means the built-in defaults, with one line in `game.log`.
+- **Missing pieces:** no prepared files, no disc copy, a changed disc copy, no GSdx or a GSdx that fails its hash, or a game not
+  in an install `game\` folder: a native message box (`MessageBoxW`) says what is missing and to open GT4Recomp once, and the
+  game exits with code 3. Nothing is started.
+- **Launcher side:** `gt4l_core::launch::standalone_config_text` renders `game.ini` from the same settings and display target
+  that build the Play environment (a test compares the two); the Play path is unchanged (explicit arguments and variables), so
+  behaviour when the launcher starts the game does not change.
+- **Tests:** CTest `native_standalone` (layout from the executable path, game ids, the receipt reader, defaults, precedence,
+  command line, config parsing, missing-piece messages); the launcher's cargo tests; the frame identity checks of
+  `scripts/frame_cost_headless.py` against the slice268 build (menus, day, night); a headless standalone run.
+
+Result (slice 278, 2026-10-23; recipe and numbers in docs/BUILD.md "Slice 278"):
+- Built from the slice268 recipe into `O:\gt4recomp-scratch\slice278-build\build`. CTest 43 of 44 pass (new
+  `native_standalone`); the failing test is `python_native_contracts`, whose only error is the release-pin check
+  (`test_make_distribution`), expected for any rebuilt executable. Python with `GT4_NATIVE_BUILD` = slice278: 682 tests,
+  1 error (that one), 42 skipped; new `tests/python/test_standalone_start.py` (7 tests) passes.
+- **Identity with the launcher's arguments (explicit mode), exact:** menus dumps `463d455c3204cb56` / stream
+  `1ccb97c58a6d2945`, day `992f1ac9a6871901` / `0c79dcf5208e5e4d`, night `c57e7d03accbb3aa` / `c091716e3cb40d79`, equal to the
+  slice268 run in each scene (41, 159 and 159 dumps, name and hash lists byte-identical).
+- **Headless standalone start** (a scratch install, no ELF argument, `--no-window`): menus and day give the same dump lists and
+  stream hashes as above, and as the harness run with the defaults passed as explicit variables.
+- `cargo test --workspace`: 436 passed, 4 ignored, 0 failed in each build (installer and `--features portable`); new tests: the
+  `game.ini` text against the sample the game fixture reads and against the variables Play sets, and the files written
+  after a settings change (`flow_audit`).
+- Decisions: the donor `main.cpp` stays untouched (pins): `game_main.cpp` provides `main`. **Standalone mode is a start with no
+  ELF argument**; with an ELF argument the old path runs unchanged, so no harness needed an explicit "off" value and no
+  pin or test changed. The launcher keeps passing its explicit arguments and variables at Play (behaviour unchanged) and
+  writes `game.ini` / `gt4-gs.ini` for the direct start. `controls.toml` is found in the same user folder.
+- Not done or not seen: a real double click (window, fullscreen, the console release and `game.log`), the native message boxes
+  on screen (they are tested through `GT4_STANDALONE_MESSAGE_FILE`), the portable zip on another PC, a direct start before the
+  launcher ever played (the card is then blank). Paths with characters outside the system code page are not handled (the donor
+  main reads its arguments as narrow text). A direct start does not harvest the card into the saves library; the launcher
+  does it at the next Play (`prepare_card`).
+
 ### TASK-095 — Ultrawide: undistorted pre-race menu overlay
-Planned (owner, 2026-10-22), idea to study later. At ratios wider than 16:9 (owner screenshot at 3440x1440, Time Trial
-on Trial Mountain) the pre-race menu (race lobby: car name, CV/kg/tires table, Session Record, the icon row, the
-car spec line) is a 2D overlay drawn over the live 3D track. The 3D background is already correct (the TASK-080
-race camera hook widens the projection), but the overlay is stretched horizontally with the screen. In the race
-itself the HUD is right, because TASK-080 P2 draws it as an undistorted, centred layer (RaceDisplay canvas, ELF
-constants). Idea: apply the same inverse horizontal scale to the pre-race menu overlay, centred, keeping the 3D
-stretched. Study first: which code draws this overlay (it is not the race HUD path), whether the P2 canvas hook or
-a per-scene display control covers it, and how the other race menus (pause, results, replay menu) behave. Same
-guard rails as TASK-080 (decision 0071): 16:9 frames stay byte-identical, no save-data writes, hooks listed with
-tests.
+Planned (owner, 2026-10-22): at ratios wider than 16:9 (owner screenshot at 3440x1440, Time Trial on Trial Mountain) the
+pre-race menu over the race (car name, CV/kg/tires table, Session Record, the icon row) is stretched with the screen, and so
+are the other 2D screens over the race (pause, results). Same guard rails as TASK-080 (decision 0071). Re-does PR #177 (Luan
+Antony), whose canvas maths had no call site. Branch `task/095-ultrawide-menu-canvas` (from
+`task/134-game-code-optimization-study` at `bb4c7ed7`); `docs/ULTRAWIDE-OVERLAYS.md`, decision 0071.
+
+- Found (both games): the pre-race screens are drawn by the menu context (v2.00 `mUpdateContextPS2` render `0x00214FB0`,
+  Spec II `0x0036D278`), the pause menu, pit menu and results by the strobe overlay renderer (v2.00 `func_003EC0B0`, Spec II
+  `0x001FDCC8`); each sets a 0..640 x 480..0 canvas through a direct call of the ortho function (`0x004A5A90`, Spec II
+  `0x005A2600`). The strobe text is sized by the text style parser (`0x00490290`, Spec II `0x0033AF90`), not by the canvas.
+- Change: `scripts/camera360_units.py` adds host calls before those ortho calls and after the strobe draw, and routes the
+  parser's four scale stores through the host. While the presentation fills the screen at R, the canvas is widened by
+  R / (16/9) around its centre (taller for R < 16:9) and the strobe text narrowed by the same factor; at 16:9 and in the 16:9
+  pillarbox nothing changes. The host writes no guest RAM. The race monitor is left as the game draws it.
+- Acceptance: CTest `native_display_aspect` (`test_overlay_canvas`) and `native_game_target`; Python `test_camera360_units.py`;
+  `scripts/coregs2_bench/overlay-aspect-check.sh` on both games: 16:9 identical to the reference (clock, state, frames); at
+  21:9 and 32:9 the race identical and the overlay frames the reference's narrowed by 1/s, centred.
+- State (2026-11-04): done on both games and checked headless (v2.00 Arcade pre-race screen and pause, Spec II Time Trial lobby
+  and pause): 16:9 identical in clock, state and every frame; at 21:9 and 32:9 only the overlay frames differ, each the
+  16:9 look narrowed and centred, pause text inside its buttons. Owner test in game pending.
 
 ### TASK-091 — Release 1.2.1: per-machine install, data beside the program, user data in AppData
 ✅ **Done (2026-10-22): owner tested and approved; released as v1.2.1.** Branch `task/091-install-layout-121`. Owner decisions 2026-10-22:
@@ -830,6 +1550,9 @@ Owner decisions (2026-10-21). Release 1.2.0 of both the game/launcher and gt4-gs
   until the owner approves it.
 
 ### TASK-018 — Racing wheels
+
+Study (2026-11-04): Luan Antony's wheel, DFP and force feedback roadmap (`docs/studies/WHEEL-FFB-ROADMAP.md`, PR #151, issue
+#88) is kept as a reference beside the owner's plan (`docs/WHEEL-DFP-PLAN.md`, PR #193).
 High-level emulation at the PDIUSB boundary with SDL3 wheels and force feedback
 (docs/MENUS-AND-WHEEL.md). Builds on the TASK-075 SDL3 input layer.
 Planned for 1.3.1 (owner update, 2026-10-26; previously 1.4.0): the game must recognise the connected wheel as a Logitech Driving Force Pro (DFP)
@@ -983,6 +1706,70 @@ State (2026-10-15): specification complete in `docs/hw-renderer-spec/`
 TASK-027 starts after approval and the answers to Q-01 to Q-03.
 
 ### TASK-027 — Own hardware renderer (CoreGS 2.0): implementation
+**State 2026-11-02, published:** 🧪 in the 1.3.0-rc8 pre-release (candidate 382). The owner's laptop test closes the beta gate: on the HD 620, 1x at 60 FPS or 2x at 30 FPS in races; the showroom at 2x (about 30 FPS) is a known issue. D1 is measured and not built (IN-523). The colour filter stays in Performance Mode (IN-505 left out). For 2.0.0: fractional scales, GPU use and power beside GSdx. Next (owner): CPU optimisation, TASK-134, for rc9.
+
+**State 2026-11-02, end:** 🧪 candidate 376 (not uploaded), branch `task/082-coregs2-frame-skip`: a frame rate choice, 60 or 30 in races, replaces the option of 375 (IN-525), 60 by default: 12x 100% speed at 30 frames per second, intervals 33.0-33.7 ms. Unlocked FPS paused, `docs/TASK-082-UNLOCKED-FPS-STATE.md`. Next: CPU optimisation with another agent (TASK-134).
+
+**State 2026-11-02, later:** candidate 375 (not uploaded), branch `task/082-coregs2-frame-skip`: candidate 374 plus TASK-082, frame skipping on CoreGS 2.0, off by default (IN-524): 12x on George V Paris 100% speed at 38.5 frames per second, against 77% at 46; the frame shown is always the last one drawn; race clock equal on both games. Waiting for the owner's test, above all on the laptop.
+
+**State 2026-11-02:** 🧪 candidate 374 (not uploaded), the base of 375: input lag at 60 Hz 53 to 31-39.5 ms, the EE's wait at the flare read 9.5 ms to 0, flares exact, frames identical to 373 (122 of 122, then 47 of 47).
+
+**State 2026-11-01:** 🧪 candidate 373 (not uploaded), adding to 372 the frame pacing work IN-514 to IN-519 (race on George V Paris at 6x without Performance Mode: GS CPU 7.94 to 7.31 ms, frames over 17.5 ms 40 to 5 of 3,700; frames identical 154 of 154; the second presentation queue is not yet confirmed on the owner's virtual display; the owner decides on the late flares of IN-514). Candidate 372 before it: Spec II on CoreGS 2.0
+(IN-506), shaders compiled before Play (IN-507), no readback for a write beside a drawn area (IN-508: George V Paris at 6x,
+headless, GS thread -19%), no frametime wave from a target drawn every second VBlank (IN-509), and IN-510 to IN-513: the race start
+drop, three swapchain images under vsync, the showroom wave and reused decodes (window, race without Performance Mode: VBlanks over
+20 ms 29 to 1 of 1000). Frames identical at 1x, 3x and 6x; at 12x 2 pixels of one frame. The owner's F8 on 372 is pending. The owner's F8 at 6x on George V Paris: 49.6 VBlanks/s, 57.7 in
+Performance Mode; the GS thread's waits for GPU readbacks are the largest cost. Open: GSdx's F8 for comparison.
+
+**State 2026-10-31:** 🧪 candidate 367 (not uploaded) waits for the owner's test on the laptop: on the HD 620 at 2x GPU
+busy 27% less by day and 23% at night against candidate 362 in normal mode, 35% and 31% in Performance Mode (IN-485 to
+IN-504, `docs/hw-renderer-spec/CORE2-GPU-PLAN.md`). In the launcher as a beta in 1.3.0-rc8 (GSdx stays the
+default): texture replacement (IN-470), GPUs without interlock (IN-471), PGO in the release game (IN-473), options by
+renderer (IN-474). Open: the owner's test, then the upload of rc8 and the PR into
+`task/134-game-code-optimization-study` on their word; fractional scales, a screen that prepares shaders, frame skipping.
+
+**Resumed on 2026-10-21 (owner decision)** on branch `task/027-coregs2` (worktree
+`C:\Antigravity\gt4-wt-027-coregs2`): `main` at release 1.0.0 (slice214) merged with
+`task/027-hw-renderer` and the `task/027-cpuref` docs checkpoint. paraLLEl-GS code, pins and launcher modes
+were left out (decision 0070); `GT4_RENDERER=hw` now runs through main's GS stream seam into the in-process
+HWR backend (`GT4_HW_GS=ON` builds only; black output). `task/027-m4-gpuref` (e31fcc4, GPU write-back WIP)
+is not merged. Implementation continues with the external agent **GPT 6.1 Sol** as the only writer of the
+branch, clean room from `docs/hw-renderer-spec` (brief `AGENT-BRIEF-COREGS2.md`, progress in
+`docs/hw-renderer-spec/PROGRESS.md` and ai-memory `decisions/coregs2-implementation`). No pins until a
+candidate is offered to the owner. Warm-up complete (2026-10-21): shader TEXA/AEM follows 07.5 / IN-07; slice217 builds and all three GPU exactness fixtures pass. Native v2 replay is implemented (slice219: 69/69 CPU-library tests; 1,101/1,101 identical menu PPMs across legacy, converted v2 and fresh v2). VRAM diagnostic added (local221:75/75 tests, deterministic1,096-image replay; original scanout unchanged). Correct pairing resolves the IN-315 comparison offset; the separate A+D kick fix (IN-326, local222: 76/76 tests) closes IN-316: the garage defect was the dropped A+D kicks, exactly frames 811..916 change, and 11/11 aligned samples now sit inside the chapter 14.4 2D thresholds (garage 0.2051%, 45.992 dB) while 990/1,096 VRAM and 995/1,101 scanout images stay unchanged. The M4 GPU write-back path of `task/027-m4-gpuref` is then ported, built and wired into the backend (local223, IN-329): eleven fixtures pass (03.3 coverage vectors and seven GPU/CPU equivalence cases), the default renderer stays 42/42 vs slice214 and `GT4_RENDERER=hw` runs 600 headless frames with 0 faults, still without frame dumps. IN-328 fixed the CPU reference's constant-attribute truncation. M5 then wired the whole pixel pipeline into the same draw stage (blend unit over 81 modes, COLCLAMP, PABE, alpha test, DATE, FBA, FBMASK, dither; five new raster fixtures at zero mismatches); `GT4_RENDERER=hw` stays clean at about 62 ms per headless frame. M6 then started with the presentation interfaces (IN-331): a present scheduler decoupled from the VBlank (hold/re-present, newest-wins backlog, late-input hook), auxiliary frames that restore guest memory and refuse readbacks, and per-pass CPU timers; default 42/42 parity unchanged. HWR frame dumps then landed (IN-332): the 4,200-frame headless run writes the same 42-frame schedule with 0 faults and measures 42/42 frames outside the 2D gate, with two visible draw-loss defects (boot text line, garage list). The HWR replay tool then landed (IN-333): on the same records the GPU path is pixel-identical on every even frame and loses content on odd frames (boot text line, garage 10.6%), so field-parity draw loss is the open defect. The cause was found and fixed (IN-335, local slice228): the write-back stored stale depth words over a frame buffer sharing pages with the unused depth buffer. The 42-dump headless run is now 42/42 inside the 2D gate against the donor (before 0/42). The window now follows the VBlank field (13.3 offset, 13.4 deinterlace; IN-337/IN-338, local slice229). Next: owner test 1 (windowed look at 1x), then M7. History of the pause follows.
+
+**2026-10-21, Claude (clean-room writer after GPT 6.1 Sol):** M6 output finished (odd-frame fix, field phase,
+deinterlace; owner tests 1 and 2), then the 3D speed work: resident target slots, pixel-interlock batching and runs,
+the GLM with GPU CLUT, GLM-owned pages and GPU uploads, CPU front-end savings, double-buffered submission and an
+asynchronous presentation source (IN-340..IN-355). Every step keeps per-frame memory identical to the write-back
+mode on the menu, car and race captures and the 42 menu dumps byte-identical. Headless race 300 -> 17-18.6 ms per
+frame. Waiting for owner test 3 (local slice239, `build/hwr-play.ps1`). Next: GPU compose of the display, fewer
+barriers around CLUT loads, the GIF front end, M8 readbacks per the readback study.
+
+**2026-10-22, Claude:** owner tests 3-5 (60 FPS in 3D races, flares, 16:9 480p; test 5 approved a flat 60 FPS frametime on local slice247). `main` 1.2.2 merged into the branch (local slice248/249; hw output identical to slice247, default renderer 42/42 after fixing the 1.2.2 donor-mode crash in `mtvu::Donor`). M12 upscaling (2x-8x) and FXAA in local slice250 (IN-371..IN-376; memory and readbacks identical to 1x at every scale), waiting for owner test 6. Next: owner verdict vs GSdx, 480i menus at scale, then GS-thread CPU cost.
+
+**2026-10-23, Claude:** `main` 1.2.3 merged. Owner test 6 failed (race shown at 1x on every second frame at 4x; ultrawide race squeezed into 16:9); both fixed in local slice270 (IN-377 display shadows checked per pixel against memory, IN-378 display-aspect fill in the HWR presenter) with new controls (`hw_scale_display_shadow`, `hw_smoke_window_aspect_*`, `hw_stream_sink_display_aspect`, replay `--check-presented`). Owner test 7: ultrawide confirmed, race still 1x; fixed in local slice271 (IN-379 tone carry for GT4's T8 tone curve, IN-380 texture footprint for full-screen copies; fixture `hw_scale_fullscreen_passes`; `--check-presented` counts low-detail frames). Owner test 8 passed (races at real resolution, beta minimum met in races); new owner requirement: GSdx-level performance at the same scale. Local slice272: 480i menus at scale (IN-381, fixture `hw_scale_interlaced_present`), no scaled repetition of the tone sequence (IN-382), timing split into 1x/scaled/refresh, scene sweep findings and a ranked parity plan in PROGRESS. Waiting for owner test 9.
+
+**2026-10-23, OpenCode (parity work after the hand-over, `PARITY-PLAN.md`):** owner decisions: item 1 (fast scaled
+raster) approved with a tolerance only on the presentation-only scaled image, item 2 (tone-sequence HLE at 1x)
+approved as memory-exact, item 5 (skipping the 1x redraw) rejected. Item 2's first step landed (IN-383): the eight
+strip batches of one 64 x 32 page run as one GLM dispatch (`hw_tone_strips.comp`), 135,399 -> 16,940 dispatches on the
+480p race capture, with 118,580 of its palette loads held (GPU CLUT loads 200,467 -> 98,827); all five memory captures
+byte-identical, `hw_tone_hle_exact` 0 of 2 frames different, replay CPU GS stream 9.95 -> 8.14 ms per frame; in the game the GS thread drops 13.4-15.6 -> 10.6-11.6 ms and the
+render passes 341-347 -> 198-204. Item 1 (fast scaled raster) is designed but not implemented, see PARITY-PLAN. Switches
+`GT4_HW_TONE_HLE` and `GT4_HW_VERIFY_SHUFFLE` (replay `--no-tone-hle`/`--tone-verify`). No PR, no merge, no pins;
+owner test 10 pending.
+
+**2026-10-23, OpenCode (parity Plan A):** the presentation-only scaled images are no longer fixed 1024 x 1024 squares:
+each covers its slot's real extent (FBW * 64 wide, loaded/drawn rows), is created lazily and grows on demand with the
+old content copied, and a texture copy only takes the batch's sampled footprint (IN-380). Scaled image device memory
+on the 480p race capture: 184.5 -> 64.1 MB at 2x, 738.2 -> 243.1 MB at 4x, 1,660.9 -> 541.4 MB at 6x. New fixture
+`hw_scale_target_extent` (growth, a second FBW); CTest 245/245 both interlock modes, five memory captures
+byte-identical, scaled memory = 1x and 0 low-detail frames at 2x/4x/6x. GPU time unchanged (memory win, not a time
+win). Next: the fast scaled raster (early-Z second pass) itself, then owner test 11.
+
+**2026-10-27..30, Claude:** CORE2 (one image per target at scale), owner tests through candidate 299 (60 FPS, flat frametime, fidelity perfect), the beta list (IN-427..IN-435: 1x, mipmapping, spike cuts, memory budget, FSR1/Lanczos presentation, filters, 12x), specialised pipelines (IN-437: 12x GPU 33.3 -> 21.4 ms) and the first performance mode item (IN-439, decision 0073). 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934) merged into the branch as its base on 2026-10-30; CoreGS 2.0 stays out of 1.3.0. Details in STATUS, the journals and `docs/hw-renderer-spec/CORE2-PERF-LEDGER.md`. CPU survey of the GS pipeline and transport (IN-445, 2026-10-30): instruments (process sampler, transport line, exclusive stage times), the list of CPU fronts and a proposed task order in `docs/hw-renderer-spec/CORE2-CPU-SURVEY.md`; SSE4.1 adopted (`GT4_SSE41` ON, -3.8% wall time), AVX2 measured with no further gain (candidate 313). CPU and transport fronts the same night (IN-446..IN-461, candidate 332): lock-free GS stream ring, allocation-free draw path, unchanged uploads keep page versions, speculative early-Z, CT32 column swizzle, texture cache by block identity, CLUT loads by table, quiet VU1 output wakes, and direct GS intake (`GT4_MTVU_DIRECT=1`, TASK-134's P6: the GS worker reads the VU1 output ring itself); against 313 at 3x process CPU -28%, wall -15%, frames identical. Afternoon of 2026-10-30 (candidates 333-337): direct intake on by default (IN-462); the 12x run-to-run differences traced to batches that sample the target they draw into and fixed with spec 8.8's copy (IN-463, CTest `hw_core2_self_texture`; also removes the 3x run-to-run pixels the ledger listed); `task/134-game-code-optimization-study` merged into the branch (documents). Then (candidates 338-347, IN-464..IN-469): GLM hazards by page, statistics query opt-in, disjoint primitives without waits, strip run skip, PGO and ThinLTO of the GS libraries (option, not yet in the release build), VU1 output scan; against 313 at 3x process CPU -37%, frame p50 -29%, frames identical to 337. Handover to TASK-134 in `docs/hw-renderer-spec/CORE2-HANDOVER-TASK134.md`.
+
 **Paused by the owner on 2026-10-15** to focus on release 1.0.0. State on the
 integration branch `task/027-hw-renderer`: CPU-verified pure libraries for GS
 memory/swizzle (M2), GIF front end and CLUT (M3), exact pixel arithmetic (M5),
@@ -1494,6 +2281,20 @@ ARM64 build, iOS host layers, signing/installation on iPhone 15 Pro Max and
 LAN-over-internet and an online lobby launcher (docs/ONLINE-NOTES.md), in-game
 settings menus.
 
+**Two-player split screen (open, not numbered; owner, 2026-10-24).** Make GT4's own two-player split-screen mode
+(Arcade "2P Battle", `RaceSplitBattle`) work properly with two controllers. Not a priority; map it before any work.
+What we know today:
+- Input: the host feeds only player one. `native/host_io.cpp` polls one XInput slot (the first connected) and SDL3
+  opens one gamepad (`gt4::pad::first_pad`); the guest's second pad port gets nothing. Needs a second guest pad
+  (port 2) fed from a second controller, plus launcher Controls support (player 1 / player 2 assignment, a keyboard
+  layout for player 2 or keyboard + pad).
+- Rendering: split screen has its own path (`RacePS2Base::render_world_split` 0x0034028C, `func_0033EAB8` second
+  view; docs/GS-READBACK-STUDY.md, docs/NATIVE-RENDERER-STUDY.md). In split screen the headlight flares use a constant
+  (only the sun uses the GS readback), so its readback cost is lower.
+- Ultrawide: split screen stays pillarboxed 16:9 today (TASK-080 scene policy); a widened split view is a later
+  question.
+- Owner checks wanted: both players drive, both HUDs right, performance at 60 FPS on both renderers, Spec II too.
+
 **Release plan (owner, 2026-10-22):** big features take a minor version, intermediate updates and hotfixes the
 patch number: 1.2.3 hotfix, 1.2.4 (TASK-097, 098, 099), 1.3.0 Spec II (TASK-100, on GSdx), 1.3.1 native DFP wheels (TASK-018; owner update 2026-10-26);
 2.0.0 is CoreGS 2.0 (phase 2).
@@ -1646,6 +2447,9 @@ This reservation prevents reusing TASK-122 while its release branch is open.
 
 ### TASK-123 — Native DFP wheel research and implementation plan
 
+Study (2026-11-04): Luan Antony's wheel, DFP and force feedback roadmap (`docs/studies/WHEEL-FFB-ROADMAP.md`, PR #151, issue
+#88) is kept as a reference beside the owner's plan (`docs/WHEEL-DFP-PLAN.md`, PR #193).
+
 State 2026-10-26: research brief ready for an owner-run OpenCode agent; research not started.
 Parent TASK-018, planned release 1.3.1. The virtual guest target is Logitech Driving Force Pro
 (DFP), 900-degree steering, original game-generated force feedback translated to SDL3.
@@ -1675,6 +2479,10 @@ Existing tasks reused; do not allocate replacements:
 - #92 -> TASK-080/TASK-079 for 4:3, TASK-130 for split-screen display.
 - #87 -> existing TASK-057 mod-scope disposition and the owner's not-planned cheat policy.
   This is not approval or scheduling of a cheat feature.
+- #161 -> request recorded 2026-11-04, not planned: a built-in option for Xbox button icons in the game (the icons are game
+  artwork; a texture pack can replace them). Contributor design notes in PR #166.
+- #128 -> request recorded 2026-11-04, not planned: the European release SCES-51719, which would be a third target
+  executable next to v2.00 and Spec II.
 
 TASK-104/105 exist in frozen rc6 commit 58322229c0bd63a0652b0550c5ad2154bd907039.
 The CPU-parity TASK-119 is recorded in commit 9226927 on task/116-117-flare-perf, distinct
@@ -1712,6 +2520,8 @@ Issue: https://github.com/moesuito/gt4-staticrecomp/issues/99
 Report: repeated flashing and random crashes in 1.2.2, 1.2.3 and rc5, for both games; logs attached.
 Priority: high, candidate for an upcoming 1.3.0 rc before final.
 Related: TASK-105 and TASK-124 remain separate until evidence confirms the same cause.
+State (2026-11-04): fixed by TASK-145 (the window heartbeat: Windows took the fullscreen game for not responding, showed the
+window behind it and closed it as hung, 0xCFFFFFFF), in 1.3.0-rc12; issue #99 closed at the owner's word.
 
 ### TASK-128 — Optional use of an existing disc image (issue #95)
 
@@ -1785,6 +2595,20 @@ public, not a pre-release, Latest; tag points at5d7a669bdecf5e60c0782ca449f48aac
 https://github.com/moesuito/gt4-staticrecomp/releases/tag/v1.2.5
 Installer SHA256556e7725d11146f1f79613814fbf961e1299000bd56df7c8831a324213003a74.
 No new wheel support, Spec II, frame skipping or CoreGS changes are included.
+### TASK‑119 — CPU: reach PCSX2 usage at 1x, then go below it (owner, 2026-10-26)
+Owner decision (pinned in ai-memory `decisions/next-objective-cpu-parity-with-pcsx2`). On the weak laptop (i5-7200U,
+HD 620, 1x, Direct3D 11, blending Minimum, MTVU on, no speed hacks) the same scene (Time Trial Nordschleife, Pitwork Z)
+runs at **~50% CPU on PCSX2 with 60 FPS and the flares on**, against **70-80% and dips** on this port. GPU is the same
+20-30%. A static recompiler must not use more CPU than the JIT: the gap is our overhead.
+
+Order: **first match PCSX2** (about 50% on that laptop, 60 FPS, no dips, correctness unchanged), then go beyond it.
+Where to look, in order: (1) per-instruction `c.budget -= N` / `preempt(c)` / `ld32`-`set32` in the generated code;
+(2) the GS IPC, ~1,670 records per frame to a separate process plus journal ordering and frames-in-flight waits;
+(3) FPU/MMI semantic wrappers per operation; (4) kernel/syscall and idle handling.
+Acceptance: F8 on the laptop with the launcher idle, same scene and settings, EE CPU and EE critical path at or below
+PCSX2's, 60 FPS without dips, identity gates still green. Baseline and measurement plan: ai-memory
+`notes/pcsx2-baseline-weak-laptop`. Another agent is already working on the EE CPU side; coordinate before touching
+the same files.
 
 
 ### TASK-133 — Integrate RetroAchievements and controller-only 1.2.5 into rc7
@@ -1808,6 +2632,792 @@ Acceptance: target isolation, account/logout/HTTP cancellation regressions, cont
 preview consistency, full native/Python/Rust and en-US/pt-BR checks, both target builds/pins,
 installer+portable verification. New builds go to draft; owner gameplay/review before merge or
 publication. No code, builds, running agents or public rc7 authorized by this mapping step.
+
+### TASK-134 — Game-code optimization study (research and plan; closed 2026-11-04)
+
+**State 2026-11-04: ✅ closed** (owner: "fechar a task depois pra não voltar em otimizações que já foram feitas"). Three
+rounds: rc9 (process CPU per VBlank -18% on the i5-7200U, -19% on the 5700X against rc8), the second round (slice395, -26%
+against rc8 on the desktop) and a third, measured round during rc14 that kept nothing: a CLUT same-palette probe (about 5% of the
+CLUT flushes keep their palette), the VU1 `vfix` census (what is left is needed), the SPU2 envelope (about 0.03 ms) and CoreGS 2.0
+batches per submission from 32 to 256 on the Avell at 1x and 6x (64, the default, is the best balance: larger submissions save
+GS CPU and lose frame time). Every kept step, every dropped
+idea with its numbers, and what limits the Avell at 6x (the game's one GS download per frame) are in
+`docs/GAME-CODE-OPTIMIZATION-STUDY.md` sections 8 and 9. What is left is large and gets its own task if it is ever started:
+TASK-168 (several palettes in one batch), P8 (the translator: `Cpu & __restrict`, one host function per guest function) and a
+CoreGS 2.0 submission thread. Performance numbers come from the Avell from now on (owner, 2026-11-04).
+Owner decision (2026-11-04): the per-frame GS download (the light-flare table) stays exact in the normal mode; a one-frame-late
+answer was tried during CoreGS 2.0 and did not look right, and Performance Mode (flares hidden) is the choice for speed.
+
+**State 2026-11-03:** 🧪 second round on top of the TASK-139 picture fixes, final build `build/t134-cand/f3-spec2` and `f3-v200` (pins slice395), packed in `private/slice395-dist-t134r2` and installed on the owner's desktop for their test (2026-11-03, files checked against the manifest; the notebook keeps the first rc9 build). **Published on the owner's word as pre-release `v1.3.0-rc9`** (2026-11-03, tag `39320b99`, installer `4f2c54bc...`, zip `fdb54662...`); the task goes on toward rc10. Player's session with a warm shader cache, George V Paris lap, 1x, 5700X: process CPU 12.96 (rc8) / 10.59 (slice392) -> 9.57 ms per VBlank (-26% / -9.7%). Kept: CoreGS 2.0 submits every 64 batches on a discrete GPU, VU1 CLIP over lanes, VU1 outer product as one vector operation, VU0 over four lanes, GPU vertices inserted per primitive, partial VU loads and stores as whole qwords (VU tables regenerated, `private/slice394-*`). Dropped with a measurement: VIF wrap mask, per-format generic VIF unpack, uber pipelines only. Gates against slice392 all equal (three recorded laps, v2.00 night and Arcade, 6x, VU and MTVU verify). The bench now uses a warm shader cache per executable (rc9's earlier numbers compiled pipelines during the lap). Left: CoreGS 2.0 submission thread, deferred flare readback, SPU2 envelope, P8.
+
+**State 2026-11-02:** 🧪 1.3.0-rc9, slice390, on branch `task/134-game-code-optimization-study`, installed on the owner's desktop and notebook, not published or uploaded (owner: CoreGS 2.0 picture bugs first). Player's session on the recorded George V Paris lap, 1x: i5-7200U 33.87 -> 27.64 ms of process CPU per VBlank (-18%), Ryzen 7 5700X 12.59 -> 10.14 (-19%). Race clock, simulation state and frames identical to rc8. Done: P0, P1a-d, P4a-b, P7 in part, and two steps the profile found (Spec II VU0 compiled, VU0 macro operations over four lanes). Dropped with evidence: P2. Left, cheapest first: study section 8. Waiting for: the owner's test.
+
+State: study done; owner decisions recorded (2026-10-28); P0 waits for the owner's signal that the desktop is free. Branch `task/134-game-code-optimization-study`, worktree
+`C:/Antigravity/gt4-wt-134-game-code-study`, from main 795cdc0. Research and documents only: no code, build, benchmark,
+profiler or game run (a CoreGS 2.0 session was measuring on the desktop). Agent status: not PCSX2-tainted.
+Follows the owner's CPU-parity objective (PCSX2 ~50% vs GT4Recomp 70-80% on the i5-7200U), recorded as "TASK-119" in
+commit 9226927 on `task/116-117-flare-perf` and in ai-memory `decisions/next-objective-cpu-parity-with-pcsx2`.
+
+Deliverable: [docs/GAME-CODE-OPTIMIZATION-STUDY.md](docs/GAME-CODE-OPTIMIZATION-STUDY.md). Evidence: 13 desktop F8
+blocks and the owner's laptop logs (6 race F8 intervals, ~200 periodic reports), copied to the worktree's ignored
+`private/laptop-i5-7200u-f8/` with hashes.
+
+Result: on the laptop race the four busy threads use ~35 ms of CPU per 16.7 ms frame (EE 11.7, VU1 worker 9.3,
+gt4-gs CPU thread 3.4, gt4-gs GS thread ~11); half or more of the EE critical path (12.2 ms) is emulation plumbing, the
+rest translated game code; no large spinning wait exists. Ordered plan P0 (measure) .. P8 (IOP AOT), with gains, effort,
+risk and identity gates per step; GSdx-bridge costs are left to the CoreGS 2.0 intake (section 3.6).
+Owner decisions (2026-10-28, study section 7): measure SSE4.1 first, no AVX2 executable unless a large gain; always
+the easiest and cheapest step first, built and tested right away, the translator (now P8) last; thread priority and
+core placement yes; the WPR profile and the first baselines run when the owner says the current CoreGS 2.0 build is
+done; v2.00 is already on the laptop; no more work on the GSdx bridge, the game-side optimisations ship with CoreGS 2.0.
+Test method: one fixed headless Arcade night race on the desktop (Clubman Stage Route 5, Ford Ka, 5 AI, plus its
+replay for the varied cameras; B-Spec exists only in GT Mode, which the owner ruled out); laptop runs by the owner with F7/F8 on builds the agent copies to the laptop's
+portable folder over the network, logs collected the same way.
+2026-10-29: branch synced with 1.3.0-rc7 (`task/133-rc7-ra-controls` c21e934, program files identical); the
+**Owner, 2026-11-02:** CoreGS 2.0 is done for this step: rc8 is published and this branch receives it, so P0 and P1 can start. They are rc9. Laptop numbers on candidate 382: `docs/hw-renderer-spec/CORE2-HANDOVER-TASK134.md`.
+RetroAchievements per-frame hook added to the study (section 3.8, P1g). Next: P0 (measurement) and P1 (host quick wins) on this branch once the desktop is free; each later step gets its own
+task or branch as it starts.
+
+### TASK-135 — Performance HUD for CoreGS 2.0
+Repos: this one. Clean room: a TASK-027 agent, not PCSX2-tainted.
+Goal (owner, 2026-11-02): CoreGS 2.0 has no in-game overlay today. The overlay of TASK-062 is drawn inside `gt4-gs.exe` with the
+PCSX2 OSD, so it exists only under GSdx and its code cannot be ported: this one is our own, MIT, in the game executable. It
+shows what a player understands, CPU and GPU instead of EE and GS: graphics card, output resolution, render scale and refresh
+rate; FPS with its minimum and maximum; frame time; CPU and GPU use of the game; memory; a live frame time graph. The owner's
+reference is the look of the macOS Metal HUD (screenshots only).
+Acceptance: off by default, launcher rows under CoreGS 2.0, overhead measured, the identity gates unchanged with it off, owner
+test. Updating the GSdx overlay to match is separate work in the fork, for a PCSX2-tainted agent.
+State (2026-11-02): candidate 378, off by default; 26.6 us per presentation, no measurable cost on the graphics thread (IN-526, ledger). Published in 1.3.0-rc8.
+
+### TASK-136 — Simple onboarding, GSdx optional
+Decision 0074. Owner, 2026-11-02: no GSdx download on a first install when the PC runs CoreGS 2.0; automatic, nothing to choose. Acceptance: a new install on a capable PC ends on CoreGS 2.0 with no download; a PC that cannot run it ends on GSdx, downloaded, and is told why; a player on GSdx or with a stored choice sees no change; owner test.
+
+State (2026-11-02): published in 1.3.0-rc8. A whole setup on a capable PC passed in the owner's onboarding; a PC without Vulkan is not verified.
+
+### TASK-137 — Link the disc image
+Decision 0075. Owner, 2026-11-02, asked for by players and needed for Android: one image for this and an emulator. Acceptance: setup writes no copy of the image; an image that moved or changed asks to be chosen again, and choosing it is all it takes; an install with a copy stays installed; accented paths work; owner test.
+State (2026-11-02): TASK-137 and TASK-138 (a portable folder carries its image, accented paths, the GSdx fallback; decision 0075) are published in 1.3.0-rc8. Settings > Games shows the image's size and location.
+
+### TASK-139 — CoreGS 2.0 picture bugs from recorded drives
+
+State (2026-11-02): started on `task/139-coregs2-picture-bugs`, on top of rc9. Waiting for the owner's recordings (Tokyo R246, El Capitan, possibly a third track). Each one is replayed on CoreGS 2.0 and on the reference renderer, and the differences the owner reports get fixed in `native/hw_gs/`. Acceptance: the owner's test on the same scenes.
+
+Bugs reported by the owner (2026-11-02):
+
+1. **Time trial ghost drawn solid.** On a real PS2 (the owner's video capture) and on GSdx the ghost lets the scene through; on CoreGS 2.0 it looks like an opponent's car. Confirmed on the replayed Ford GT lap at 3x, frame 8000: the reference draws the ghost in alternating dark rows, as the PS2 capture also shows, and CoreGS 2.0 draws it solid. So it is a row pattern rather than plain 50% blending. Cause Unknown. Reproduces with `george-volta2`.
+2. **Asphalt texture on Tokyo R246.** Sent by a player on Discord, reproduced by the owner without custom textures. The player's picture has large black areas over the buildings as well; the owner's Hypothesis is that more places break for them because they use a high resolution texture mod. Needs the owner's recording.
+3. **Glitch when a race returns to the menus (480p to 480i).** A random frame or green squares for a moment, not predictable; not seen on GSdx. The launcher always forces 480p in races, and the recording scripts do too, so a replay passes through this switch if the drive leaves the race before F9. Not reproduced by us yet.
+
+The owner's pictures and the ghost comparison are in `private/coregs2-bench/reports/` (not in git).
+
+State (2026-11-03): the owner recorded Tokyo R246 and El Capitan and reported two more bugs on them: a wrong frame as the race opens (bug 4) and a glitch in the fade when leaving the race (bug 5). All five are fixed and match GSdx on the replays (IN-528 to IN-532): bug 1 IN-530, bug 2 IN-528, bug 3 IN-531 and IN-532, bugs 4 and 5 IN-529. Installed on the owner's desktop (slice392).
+
+State (2026-11-03): ✅ done. The owner tested slice392 in the game ("everything fine so far") and approved the merge into `task/134-game-code-optimization-study`, where the CPU work continues. Not uploaded. The replay tools stay for later bugs: `scripts/coregs2_bench/README.md`, section "Recording a drive and replaying it".
+
+### TASK-140 — 1.3.0-rc10: player fixes from the open issues and external PRs
+
+Owner, 2026-11-03: after the triage of the 47 open PRs and the open issues (ai-memory `notes/pr-issue-triage-2026-11-03`), the
+owner chose these items for rc10, next to the CPU work of TASK-134. The external PRs were written against 1.2.4/1.2.5; their
+ideas are re-done by hand on this branch, with the contributor (luanantony) credited as co-author, and no branch is merged.
+
+1. **No audio output device (TASK-129, issues #93 and #115; PR #119):** the game runs silent instead of exiting.
+2. **GT Auto bubbles that never stop (TASK-125, issue #104; PR #118):** the SPU2 exponential envelope decrease truncated a
+   small step to 0, so a released voice never reached silence. Capsule `scripts/prepare_spu2_runtime.py`.
+3. **Plain exit messages (TASK-124 and TASK-127, issues #107 and #99; PR #154):** a missing DLL, a game closed as not
+   responding, and other Windows codes in hex, in both languages.
+4. **480p hold for 1080i saves (TASK-078; PR #174):** a save or imported card that holds 1080i races at 480p too.
+5. **GSdx missing or unreachable (issues #139, #179):** Play offers CoreGS 2.0 when the card can run it.
+6. **Spec II replays lost (issue #185):** Spec II names its replays `BASCUS-97436R` plus seven letters and digits (two replays
+   on the owner's PCSX2 card), and the launcher only kept four digits.
+7. **The memory card error names the file (issue #160).**
+8. **Card backups have a limit (owner, 2026-11-03):** every Play kept a copy of the card (about 8 MB) and none was ever
+   removed (74 copies, about 600 MB, in two weeks on the owner's PC). The newest 10 card images, 5 taken before a New save and
+   10 copies of the active save stay.
+
+State (2026-11-03): items 1-8 done on `task/134-game-code-optimization-study` (items 3, 5 and 7 by a Sonnet agent on
+`task/rc10-launcher`, merged). CPU work of TASK-134 for rc10: VU1 products with VF0.w emitted as copies (VU1 program -3.4%).
+
+Acceptance: CTest, Python and launcher tests; identity gates against rc9 (the 480p hold and the SPU2 change are the only
+intended differences, and neither shows in the gated scenes); language gate; owner test, including a car wash in GT Auto and a
+Spec II replay saved, then found again after a restart.
+
+Owner test of rc10 (2026-11-03): the GT Auto oil change sound stops (item 2 confirmed).
+
+### TASK-141 — CoreGS 2.0 custom textures: a frame of the game's texture, and doubled logos in GT Auto
+
+Clean room: a TASK-027 agent, not PCSX2-tainted. Reported 2026-11-03, CoreGS 2.0 with the owner's HD HUD & UI pack
+(`data\Textures`, 15,973 files):
+
+1. **A player:** when a lap ends on Tokyo R246, the lap and position digits show the game's own texture for about a frame, then
+   the pack's again. Cause (Confirmed in the code): a replacement needed by a batch and not on the GPU is loaded on the worker
+   thread and only taken at a later VBlank; until then the batch draws the game's texture (IN-470). New content (a new digit)
+   or an image evicted past the budget does this every time.
+2. **The owner:** in GT Auto (Spec II), the GT Auto logo and the Oil Change title look doubled, with a shifted copy; without the
+   pack they are right. Cause Unknown; needs a recording of that menu and a comparison with GSdx and the same pack.
+
+Acceptance: no batch drawn without its replacement in the recorded scenes (`late=0` in the `[core2] texture replacement` line),
+GT Auto as on GSdx with the pack, the identity gates without a pack unchanged, owner test.
+
+State (2026-11-03): both fixed on `task/134-game-code-optimization-study` (IN-533, IN-534). Item 2's cause: the logo's palette
+lives in a display buffer's memory and was loaded on the GPU in every other frame, which skipped the replacement there; it is
+now read from GS memory for the key, as GSdx does. Recording `private/coregs2-bench/inputs/gtauto-oil.txt` on a copy of the
+owner's Spec II card (`gtauto-card.ps2`): from the GT mode home to GT Auto and the Oil Change. A third report (lap time digits not
+in HD in a race with opponents) is not reproduced on the Time Trial recording, where they are HD; the palette fix may cover it
+(16,000 more HUD batches replaced on Tokyo R246). Owner test next.
+
+State (2026-11-03, night): rc10 rebuilt with these fixes (slice399) and installed; the owner's tests passed and rc10 is published
+as a pre-release on the owner's word.
+
+### TASK-142 — CoreGS 2.0: a car's glass shows parts of the car in front when close behind it
+
+Clean room: a TASK-027 agent, not PCSX2-tainted. Reported by the owner on rc10 (2026-11-03), CoreGS 2.0 at 6x: driving close
+behind another car, where the transparency of a car's glass is drawn, the 3D of the car in front shows through in places. Cause
+Unknown (Hypothesis: the order or the depth of the transparent glass batches against the other car, or a target read while it
+is being drawn). Next: record a drive close behind a car (`record.cmd`), replay it on CoreGS 2.0 and GSdx and compare frame by
+frame. Planned for rc11 (owner).
+
+The owner added (2026-11-03): only behind the Skyline R34s (4th and 5th at the start), never behind the Supras or the NSX, and
+what shows is the car in front, not the R34's interior. Recording `private/coregs2-bench/inputs/r34-glass.txt` (the owner's replay
+opened on a copy of their Spec II card, `r34-glass-card.ps2`).
+
+State (2026-11-03): fixed on `task/134-game-code-optimization-study` (IN-535). Cause (Confirmed by reading back the stored words
+after each draw): GT4 clears its environment map with two 64-wide sprites whose depth buffer lies one page into the map's own
+memory, so half of the map gets its alpha (0x80) from the depth write; CoreGS 2.0 kept that depth in its own image, the map kept
+alpha 0 there, a car's reflection pass that read it left alpha 0 on the car, and the R34's glass reflection (scaled by the alpha
+behind the glass) then left the car in front sharp and dark. A depth fill now writes the colour target whose memory it covers.
+R34 recording at 6x: the car in front misted behind the glass as on GSdx; 8 of 13 frames change, 7 closer to GSdx and 1 equal.
+Tokyo R246: 17 of 43 frames change by at most 127 pixels, all closer to GSdx; El Capitan: 6 of 43, at most 133 pixels, equal to
+GSdx. The owner looked at the R34 frames: fixed.
+Acceptance: CTest (`hw_core2_depth_alias`), the other recordings changed only where a reflection reads that alpha, owner test.
+
+State (2026-11-03, night): 1.3.0-rc11 built on the owner's word and installed on the desktop, not uploaded: games slice400 (PGO
+and ThinLTO; pins `docs/inputs/slice400-*.json`; distribution `private/slice400-dist-130-rc11`), package
+`private/release-130-rc11-out` (installer `afb176ef...`, zip `fbdd4abb...`). Gates against rc9: race clock and simulation state
+identical on the three laps and the v2.00 night race; v2.00 frames identical (10/10, 14/14); Spec II frames differ only on car
+glass by a few pixels (with `GT4_CORE2_DEPTH_INTO_COLOUR=0` El Capitan is 35/35 identical); VU1 236,448 and 355,388 samples and
+MTVU 8,032 frames with 0 differences. The installer now carries a version resource (product, publisher, version, copyright) and
+the launcher names its publisher (it said "github"): a laptop's Defender had flagged the rc10 installer by machine learning
+(Program:Win32/Contebrew.A!ml); local scans of rc9, rc10 and rc11 find nothing. Owner test passed; published as a pre-release on the owner's
+word (`v1.3.0-rc11` at `52645c6b`, 2026-11-03).
+
+### TASK-143 — Launcher About: credits for GitHub contributors
+
+Owner (2026-11-03): the About page credits everyone outside the project who has a merged or open pull request on
+`moesuito/gt4-staticrecomp`, by GitHub name. Mapped with `gh pr list --state all` (142 PRs): gustavocanepa (Wise; #36, #41
+merged), JulioHeroZ (Julio Vitor Rufino; #72, #96, #101 merged) and luanantony (Luan Antony; #100, #109 merged, 44 open). Left
+out by that rule: Wackyhcky (#117, closed without a merge). A new contributor gets a key in both locales and in the list in
+`ui/js/pages/settings.js`.
+
+State (2026-11-03): done on `task/134-game-code-optimization-study`, in a block of its own above the Spec II credits, one paragraph
+per contributor, en-US and pt-BR. Checks: locale keys 659 in both with the same placeholders, focus checks en-US 275 and pt-BR
+282 and nav-test 209 all passed, launcher cargo test 630 passed; release launcher built with label rc11 (not installed, not in a
+package yet).
+
+State (2026-11-03, later, owner): Kaezzey (Niket Shah), who started gt4-staticrecomp (this repository is its fork; the upstream
+repository no longer resolves), heads the list; Wise's line names him as the author of gt4-decomp (WiseBR3000's commits are his,
+same author name and e-mail). The README credits them on `main` (`11fcc44a`). Luan's #118, #119, #154 and #174, whose ideas
+shipped in rc10, are marked as merged by a tree-neutral merge on `main` (`7693f5c4`, strategy "ours": no file of `main` changed;
+the other 40 stay open). The 11 merged outside PRs were checked against the About lines: nothing missing (JulioHeroZ #72, #96
+RetroAchievements, #101 wheels; luanantony #100, #109; gustavocanepa #36, #41). Locale keys 660; focus checks and nav-test pass.
+Shipped in 1.3.0-rc11 with the installer's new version resource (TASK-142 state).
+
+### TASK-144 — A laptop's first 1.3.0 run chose GSdx and Performance Mode (investigated)
+
+Owner (2026-11-03, rc12 line): on a laptop with an RTX 3060 Laptop GPU and Intel UHD Graphics (one 3440x1440 144 Hz monitor on the
+RTX's USB-C), the first run of rc10 downloaded GSdx and set it up with Performance Mode on, instead of CoreGS 2.0. Cause
+(Confirmed from the log bundle): that install was an update, not a new install. The settings file of an earlier build was still
+in the user's folder (the first run warned that `async_gs`, retired in 1.3.0, is no longer used), with GSdx and Performance Mode
+already chosen; `launch::setup_renderer` tries CoreGS 2.0 only on a first game, with GSdx missing and no renderer choice stored,
+so the stored choice was kept, as the 1.3.0 notes say ("Installs already on GSdx stay on it"). A fresh portable rc11 on the same
+laptop chose CoreGS 2.0 by itself ("CoreGS 2.0 runs on this PC; it is the renderer, and GSdx is not downloaded") with Performance
+Mode off. GPU selection was right in both (the RTX; Vulkan reports it as device type "other", the DXGI list marks it discrete).
+No code change; offering CoreGS 2.0 to GSdx users on capable cards is an owner decision.
+
+### TASK-145 — A one-frame flash of the window behind the game, and a stutter every 6 seconds (done)
+
+Owner and other players (2026-11-03): in borderless fullscreen on NVIDIA RTX PCs the game showed, for one frame, the desktop, the
+taskbar or the window behind it, with a stutter every 6 seconds, on CoreGS 2.0 and GSdx (Vulkan, Direct3D 11 and 12) alike, and
+after Alt+Tab it sometimes came back as a white "Not responding" window while the game kept running. Not in windowed mode.
+
+Cause (High confidence, measured on the owner's laptop, RTX 3060 Laptop GPU, 3440x1440 144 Hz): Windows takes a window as not
+responding when its thread has not read a message for about 5 seconds, and the game thread's PeekMessage calls on an empty
+queue do not count (`IsHungAppWindow` TRUE 0-16 ms after one). In fullscreen with a gamepad the queue stays empty, so the game
+window was declared hung every few seconds; the shell and `dwm.exe` put another window or a white Ghost window in front for a
+frame and restored the game with an asynchronous `SetWindowPos`, whose message reset the clock (every 360 VBlanks).
+
+Fix on `task/134-game-code-optimization-study`: the game window keeps a one-second timer whose message the window procedure
+answers (`native/window_heartbeat.hpp`; decision 0076, which says why it must stay and how to test any change;
+`GT4_WINDOW_HEARTBEAT=0` for an A/B). Kept with it: a size message with an unchanged client size is not passed on to the
+renderer, a CoreGS 2.0 swapchain that is suboptimal at the same size is kept and each rebuild logs its reason, and
+`GT4_WINDOW_WATCH=1` diagnostics (hang watcher, activation and position-change logs). Removed after testing as not the cause:
+Vulkan full-screen exclusive DISALLOWED, dropping foreign `SWP_FRAMECHANGED`, and an import-table call log. The GSdx-side
+change prepared in the `gt4recomp-gs` fork (gt4gs 1.2.2-test1) is not needed and is not released.
+
+Result (owner test, 2026-11-03, Spec II, plain build): a full lap (10,017 VBlanks) with no hang, no position change from
+elsewhere and no same-size size message (before: one every 360 VBlanks in each of 15 sessions); a 22-second Alt+Tab came back
+normally (before: Ghost window 5.7 s after losing focus); GSdx also without flashes. CTest `native_window_heartbeat` and
+`tests/python/test_window_heartbeat.py`. For rc12.
+
+### TASK-146 — 60 FPS lets the frame rate drop in a race instead of slowing the game (experimental, rc12)
+
+Owner (2026-11-03): the 60 FPS mode should let the frame rate fall when the PC cannot keep up, skipping frames, with the
+simulation and the game speed staying at 60 Hz; under ideal conditions it stays at 60; the 30 FPS mode stays. The policy
+exists since TASK-082 (`GT4_FRAME_SKIP=1`, `frame_skip::Policy`: nothing is left out until the host is behind by 33 ms, then
+drawn frames are paid for from the time that goes by, at least 20 drawn per second; even presentation, IN-525), measured then at
+100% game speed (George V Paris 12x: 42 frames drawn per second), but never offered, because the motion steps between the
+game's 16.7 ms states.
+
+Change on `task/134-game-code-optimization-study`: the launcher's Frame rate "60 FPS" (CoreGS 2.0, the default) now passes
+`GT4_FRAME_SKIP=1` (`game.ini` `hw_frame_skip_adaptive=1`; the game accepts that key); "30 FPS" stays `GT4_FRAME_SKIP_FORCE=2`.
+As before, only in a running race and in 480p; menus never skip. Help text in both languages. Checks: launch contract
+(`GT4_FRAME_SKIP` with 60, not with 30), `standalone_fixture` (the key and its variable).
+
+Acceptance: owner test on the laptop (plain build, rc12 line): no frame left out where 60 holds, full game speed where it does
+not, no picture fault; then the owner decides whether it stays the default.
+
+First laptop test (2026-11-03): it worked, then the game crashed at the end of a race (access violation in nvoglv64.dll inside
+`vkQueueSubmit` on the presentation thread, from the crash dump read on the laptop). Cause (High confidence): the paced
+presentation path that frames left out use (since TASK-082, also the 30 FPS mode) broke Vulkan's external synchronization: the
+presentation thread recorded its show commands from the GS thread's command pool, and the frametime thread's present wait
+overlapped acquires and presents on the swapchain (that one in every mode). Fixed (IN-536): the show commands have their own
+pool, and every acquire, present and present wait holds a swapchain mutex, the wait polled every 0.5 ms. The validation
+layer's thread checks on a replay: 10 overlaps before at 30 and 60 FPS, 0 after; frames left out unchanged. New plain builds
+on the laptop; owner retest pending.
+
+Second laptop test (2026-11-03): no crash. F8 over 198 s of a Spec II race at 6x: game speed 99.1%, 625 frames left out (never
+two in a row), 10 audio underruns (the crackles: the 60 ms audio buffer ran dry in stalls of up to 77 ms, mostly the GS thread
+waiting for the GPU's readbacks, 7.4 of its 15.6 ms per frame). The owner: pacing is fine at a steady 60 and only bad when it
+drops (interpolation, a large job, stays out of rc12); the simulation must keep 60 Hz always, so leave out as many frames as
+needed; the 30 FPS mode ran steady but only from the moment the camera takes the car, not in the intro before the start or a
+replay's. Changes:
+- the gate also opens when the race object is there with its clock still at 0, the intro from the first race camera to the
+  start (v2.00 night race: 828 VBlanks); pause (clock still above 0), menus (no race object; the pre-race screen has none) and
+  accelerated time stay closed. Frame skip log column `race`.
+- the 60 FPS policy keeps speed first: a frame of delay is a shortfall (was 33 ms), delay past a frame is paid back four times
+  faster, up to 8 frames in a row may be left out (was 2; at least one drawn in nine); the pacer owes up to 12 frames while
+  frames can be left out (was 6).
+Checks: `frame-skip-suite-v200.sh` 30 FPS over VBlanks 6450-7600 (intro and start), 1,143 frames ok, 528 left out, the
+simulation state identical over the whole race (2,478 left out); `frame-skip-suite.sh` (Spec II) ok, 22 of the known drawing
+words; 60 FPS at 12x on the desktop's RX 9060 XT: game speed 100.00%, 40.3 frames drawn per second. New laptop builds write
+`frameskip.csv` beside game.log (compile-time switch, test builds only); owner test pending.
+
+### TASK-147 — Triggers and sticks: GT4's 100% came at a third of the trigger (rc12, done)
+
+Owner and players (2026-11-03): the throttle reaches 100% with the trigger 30-40% pressed, and a small stick push steers
+more than it should. Our host path is linear (trigger byte to pressure byte, stick to the PS2 byte after the XInput dead
+zone; the emulated pad passes the bytes on unchanged). The game scales it (Confirmed, translated code of both games): the
+pressure byte p of the button assigned to a function becomes min(100 * min(2p, 256) / d, 256), d = 35 throttle (v2.00
+0x0043BEE8, Spec II 0x00319194), 65 brake (0x0043BF48, 0x003191F0), 35 reverse, so 100% throttle from p = 45 and 100%
+brake from p = 84, made for the DualShock 2's pressure buttons: about 27% and 40% of a trigger's travel with our 30/255
+dead zone. Community reference (not copied): Silent and Aero_'s "Adjusted triggers sensitivity" PCSX2 patch changes those
+instructions; Spec II ships a similar patch as an optional PCSX2 extra, not on its disc, so both our games have the stock
+scaling.
+
+Trigger fix on `task/134-game-code-optimization-study` (owner's choice, host side, no game code change): a trigger on R2
+spans 0..45 and one on L2 0..84 over its travel past the dead zone, the game's own 100% at the end, rounded to the nearest
+step; the controls option `range` (1..255) changes it per binding, and the launcher accepts and keeps it. A game-side
+patch for finer steps (like Silent's, about 230 instead of 46 and 85) is for later. Checks: controls, pad mapping and SDL
+fixtures; launcher controls tests. Owner test on the laptop (2026-11-03, LT brake and RT throttle in the game's
+options): the triggers are right, approved.
+
+Sticks (same day; disassembly study of the pad path, both games): GT4's remapper maps a stick byte b to (128b + 45) / 90
+below 90, to 128 from 90 to 165 and to 128 + (127(b - 165) + 45) / 90 above 165 (knot table v2.00 0x0064C4D8, Spec II
+0x00681088, byte for byte the same; Confirmed), a 29% dead zone per half, and steering is -32 (out - 128). Stacked on our
+XInput dead zones (24% left, 26.5% right) nothing happened up to about 46% of the travel, then the rest steered 1.9 times too
+steeply ("a small push steers too much"). Fix: both sticks have a 10% dead zone, and past it a reading `steps` away from rest
+becomes 165 + round(90 steps / 127) or 90 - round(90 steps / 128), so the game steers in proportion to the travel from the
+first step, within one of its own steps (90 bytes for 127 steps); option `game_deadzone=skip|keep` (skip by default), the
+launcher accepts it and its stick dead zone defaults are 10%. The right stick on throttle or brake (curve 37..127 of its
+one-sided magnitude) starts from the same bytes. Checks: controls fixture over all 65,536 raw values against the game's own
+formula, SDL fixture.
+
+State (2026-11-04, owner): done. "Control precision is solved": triggers and sticks approved after the owner's tests; ships in
+1.3.0-rc12. GitHub issues closed as fixed for rc12: moesuito/gt4-staticrecomp#183 (triggers full too early), #134 (full range
+triggers) and #178 (stick dead zone). Later, not scheduled: a game-side patch for finer trigger steps.
+
+### TASK-148 — Choose the controller the game reads (rc12, done)
+
+A player (2026-11-03, via the owner): with several controllers connected the game takes one at random. The game and the
+launcher read "controller 1", the lowest SDL instance id. Change on `task/134-game-code-optimization-study`:
+- the launcher setting `controller` (`auto`, or `<guid>` / `<guid>/<serial>`: the GUID SDL3 gives the model and the serial
+  number when the pad reports one), chosen on the Controls page from a dropdown of the connected pads, Automatic first;
+- the game gets it as `GT4_PAD` (and `pad=` in game.ini for a direct start) and reads the same unit, else the first pad of
+  the same model, else controller 1, and keeps looking for the chosen one every two seconds while another stands in; the
+  launcher's pad service (live view, menu navigation) follows the same rule (`pad::chosen_pad`, `pad_mapping` choose_pad);
+- joysticks SDL3 has no gamepad mapping for are listed greyed out with "could not map automatically"; an SDL mapping for
+  them in `gamecontrollerdb.txt` in the user config folder is loaded by the launcher and passed to the game
+  (`SDL_GAMECONTROLLERCONFIG_FILE`). A manual mapping wizard for such controllers is not built.
+Checks: launcher tests (choice parsing, chosen pad, status payload, launch contract), pad mapping and standalone fixtures,
+the dev page with mock pads (chosen, unplugged, unrecognized). Texts in en-US and pt-BR. Owner test pending.
+
+Owner change (2026-11-04): no "Automatic" entry. The dropdown lists only the connected controllers, with the one the game
+reads selected, and is disabled with "No controller" when none is connected. The pad service stores the pad it reads as the
+`controller` setting whenever the stored one is not that pad for 2 seconds (`CHOICE_SETTLE`, `choice_to_store`): at every
+launcher start the pads are mapped again, the controller chosen last time stays selected when it is connected, otherwise
+the first one connected is selected and stored (also when the chosen one is unplugged while the launcher is open). `auto`
+stays only as the value before anything is stored (a fresh install). Checks: launcher tests 636, focus checks en-US 275 and
+pt-BR 282, nav-test 209 (headless Edge), locale keys 664 in both.
+
+State (2026-11-04, owner): done; the controller choice works on the owner's PCs. Ships in 1.3.0-rc12.
+
+### TASK-149 — CoreGS 2.0: the Nordschleife fences do not load their textures properly (rc13, fixed)
+
+Owner (2026-11-04): on CoreGS 2.0 the fence textures along the Nordschleife do not load properly. Reference: GSdx (final frames
+only, clean room). Recording: `nordschleife-fences` (Spec II, card `spec2-replays-20261104`: this PC's Spec II save and the five
+Spec II replays of both PCs), a saved race replay played through the fences. Method: the TASK-139 bug hunt
+(`procedures/coregs2-replay-bench` in ai-memory). State: recorded (2,919 VBlanks; the replay on the track from about VBlank
+1800), investigation next.
+First look (2026-11-04, slice401 Spec II, 2x, final frames of GSdx at the same VBlanks, in sync): at VBlank 1900 the far
+stretch of the catch fence on the right bank is an opaque dark band on CoreGS 2.0 where GSdx draws see-through mesh with posts;
+the near fence, the walls and the guard rails match. The same with `GT4_HW_MIPMAP=off`, `basic` and `full`, so not our mipmap
+mode (`GT4_HW_MIPMAP` is not read by CoreGS 2.0). With `GT4_CORE2_MIPMAP=0` (level 0 only) the far fence is see-through mesh
+again, close to GSdx: the fault is in CoreGS 2.0's mip levels 1..MXL (Confirmed). The batch of VBlank 1898 (trace) is TBP0 13488,
+TBW 2, PSMT4 128 x 128, CLUT CT32 at 13688, TCC 1, alpha test GREATER 32 (fail KEEP), TEX1 MXL 2, MMIN 2 (nearest mip, nearest),
+MTBA 0, LCM 0, K -3.3125: levels 1 and 2 (64 x 64 and 32 x 32) come from MIPTBP1. An opaque dark result fits levels read at the
+wrong place or not decoded (palette index 0) (Hypothesis). Next: MIPTBP1 in the trace, and the decoded levels.
+
+Cause (Confirmed, 2026-11-04): MIPTBP1 puts level 1 at block 13680 and level 2 at block 13018 (TBW 2). The decoded texture
+(`GT4_CORE2_DUMP_TEX`, now with the levels) had level 0 and 1 as mesh and level 2 as another texture's pixels, fully opaque.
+GT4 sends the fences by PATH1 and then, before CoreGS 2.0 drew their batch, a 64 x 1024 CT32 upload by PATH3 at block 12224
+(262,144 bytes, all of it sent) over 12224..13247, level 2 included. The front end draws a pending batch before an upload
+that touches its frame, depth or texture, but it checked only level 0 (`FrontEnd::BatchTouches`), so the batch was drawn
+after the upload, with the new pixels in level 2. Not the palette path, the GPU palette, the texture cache, the upload paths
+or MTVU (each A/B unchanged).
+Fix: `FrontEnd::MipLevelsTouch` adds levels 1..MXL (MIPTBP1/MIPTBP2, or the next level-0 footprint with MTBA) when the draw
+uses mip levels (MXL > 0, MMIN 2-5). Test `m3_hw_transfers` (an upload over level 1 or 2 flushes; elsewhere, MMIN 1 or MXL 0
+does not). Replay at VBlank 1900: the far fence is see-through mesh, as on GSdx. Diagnostics added: the batch trace prints
+MIPTBP1/MIPTBP2/TEXA, and with `GT4_CORE2_BATCH_TRACE_AT` the traced VBlank also lists each GIF transfer's path, each upload
+with its bytes, and each memory write. State: fixed on `task/134-game-code-optimization-study`, for rc13 (owner test).
+
+### TASK-150 — CoreGS 2.0: uneven frame times in the used-car showroom (rc13; done)
+
+Owner (2026-11-04, NVIDIA RTX at 3440x1440, CoreGS 2.0 6x): the used-car showroom (the car turning) runs at about 55 FPS with
+frame times from 9.6 to 26.6 ms. Recording: `usedcar-showroom` (v2.00, card `avell-gt4-20261104`, the owner's GT4 save from
+the laptop), the showroom left on the turning car. Measure with a window run (`WINDOW=1`, `PACED_FROM`), then attack the
+largest cost in the `[core2]` accounting. State: recorded (1,684 VBlanks; the CR-X SiR turning from about VBlank 900).
+
+Analysis (2026-11-04, plain rc13 test build, RX 9060 XT, 6x; a peer session ran games on the PC, so no frame-time figures):
+the GPU work is moderate (4.3 ms of isolated GPU time per frame by `GT4_CORE2_GPU_PROFILE_AT=1400`: full-screen effect draws
+and fills lead; `gpu_busy` 8.9 ms on average with the frame's waits). The uneven frames come from a GS readback every other
+frame: GT4 uploads the studio backdrop, a 640 x 438 PSMT8 image, over the memory of the 640 x 224 CT32 frame target at block
+6720 (`GT4_CORE2_STORE_TRACE`), and `StoreDrawnBeforeWrite` reads the whole drawn target back (2,240 blocks) so the 8-bit
+write merges with its pixels in memory. Each readback makes the GS thread wait for all the GPU work so far, which a slower GPU
+at a higher resolution (the owner's RTX 3060 at 3440 x 1440) turns into frames of 20-27 ms. Reading back fewer blocks does not
+remove the wait (the last page row of the write is partial). Way forward (design needed, not done): merge such a write on
+the GPU (targets into the GLM, the upload over it) and track the CPU memory those pages leave stale, reading it back only if
+something reads it (an EE download, a CPU-side decode).
+
+Done (2026-11-04, IN-538): such a write is now merged on the GPU block by block. A block it fills in every bit is taken by the
+target from the GLM; a block it writes in part (the backdrop's last 6 rows, 40 blocks) goes through IN-512's bit merge; the
+blocks it does not touch keep the drawn pixels. No readback. Frames identical to the store (showroom 32 of 32 and photo mode
+26 of 26 at 6x, George V Paris 49 of 49 at 2x). Laptop (RTX 3060 Laptop GPU, 3440 x 1440, CoreGS 2.0 6x, the launcher's
+settings, three interleaved runs each): 60 FPS in every run of both builds that day (frame time 16.67 ms, deviation 0.12-0.19
+ms); GPU waiting 1.61-1.67 to 0.03 ms per VBlank and stores before writes 0.34 to 0 per VBlank, for about 1 ms more GPU work per
+VBlank (9.6-9.8 to 10.7 ms busy). Earlier that night the same laptop showed the owner's stalls with the old build (26 frames
+over 20 ms in 680, each with a 4-6 ms GPU wait in the store); the new build removes that wait. `GT4_CORE2_PATCH_BLOCKS=0` (A/B);
+test `hw_core2_patch_blocks`.
+
+### TASK-151 — CoreGS 2.0: photo mode flickers to black every other frame and runs slow (rc13; flicker fixed; frame times in TASK-162)
+
+Owner (2026-11-04, same PC): in photo mode (v2.00 only; Spec II disables it) the picture alternates between the right frame
+and a black frame, at about 40 FPS with frame times from 13 to 48 ms. Recording: `photo-mode` (v2.00, card
+`avell-gt4-20261104`), a Photo Travel location with the camera screen open. Check on both renderers frame by frame
+(`frame_compare.py`). State: recorded (1,539 VBlanks; the Beacon Hill camera screen from about VBlank 1000).
+Owner (same day): the flicker shows on NVIDIA and AMD alike; the RTX 3060 also drops FPS, the RX 9060 XT holds 60 FPS with very
+uneven frame times. Headless at 2x, every composed frame of VBlanks 1480-1539 is the right picture (same brightness, no black
+frame), so the black frames come from the presentation path of a window run, not from the drawn picture (Hypothesis).
+
+Cause (Confirmed, 2026-11-04): photo mode shows two 640 x 448 CT24 buffers in turn (FBP 0 and FBP 140, 480i, two VBlanks
+each). A whole-memory draw at VBlank 873 leaves a 1024-wide CT32 target at block 0, the same base and format class as the
+first buffer. `CircuitSource` showed the newest target of that base and class whatever its width, so the 1024-wide target
+(nothing drawn) was shown, black, on every other picture; being shown marked it used every frame, so it never aged out. In a
+headless run without frame dumps nothing is composed, the target aged out, and every frame was right (a headless run with
+dumps from VBlank 1440 started after it was gone). A window run reproduces it every time: VBlanks 1440-1451 black, black,
+right, right. Not the deferred downloads nor IN-532 (A/B). Fix: the target of the circuit's base, class and width first,
+another width only when there is none. Window run: 12 of 12 frames right. Diagnostics: `GT4_CORE2_TARGET_TRACE=1` logs every
+target created. Still open: the uneven frame times (measure on an idle machine and on the laptop's RTX 3060).
+Frame times (analysis, 2026-11-04, 6x): two readbacks every frame (`GT4_CORE2_READBACK_TRACE`): an EE download of an
+8 x 4-pixel rectangle at block 10048 (a PSMZ target, likely the viewfinder's light reading) and a CLUT loaded from a Z-format
+target at block 11520; plus about 38 texture decodes per frame. Each readback waits for the GPU. Performance Mode already
+answers such downloads with the previous result (IN-439, one frame late, decision 0073); normal mode stays exact, so changing
+that there is the owner's call. The CLUT one could go through the GPU palette path (IN-408) if it covers Z formats (to check).
+Tried (2026-11-04, kept off by default): the CLUT readback comes from photo mode's 640 x 448 Z16S depth buffer, and 16-bit depth
+targets can go into the GLM (IN-537); the buffer then counts as read on the GPU, so about 24 uploads per frame over its memory
+each need a store first, on the CPU or on the GPU (IN-539). Laptop at 6x: 57.2-58.2 FPS with them against 59.6-60.1 without, so
+both are off (`GT4_CORE2_GPU_Z16=1`, `GT4_CORE2_WHOLE_BLOCK_WRITES=1` turn them on). With the flicker fix photo mode holds
+59.2-60 FPS on the laptop at 6x (launcher settings, four runs); the rest of its frame times moves to TASK-162 (owner, 2026-11-04:
+not a priority; close rc13 with the flicker fixed).
+
+### TASK-162 — CoreGS 2.0: photo mode frame times (after rc13)
+
+Owner (2026-11-04): photo mode is not a priority; rc13 ships with its flicker fixed (TASK-151) and these frame times are left
+for later. What is known (TASK-151, IN-537, IN-539): each game frame (every second VBlank) reads back a CLUT loaded from the
+640 x 448 Z16S depth buffer at BP 11520 and an 8 x 4 rectangle of the 320 x 192 Z24 target at BP 10048 (an EE download, likely
+the camera's focus), 3-4 ms of GPU waiting together on the laptop at 6x; the GS thread spends about 10 ms per game frame on
+top. Ways: let the GLM hold pages as the newest copy of memory, so a target read on the GPU needs one store per round of reads
+(then IN-537 and IN-539 can be on); or answer that small depth download one frame late, a named relaxation for normal mode that
+needs the owner's word (decision 0073 keeps it to Performance Mode). Measure on the laptop only (owner).
+
+### TASK-163 — Bonnet camera wind volume, and 480p colour (issue #135; study #171)
+
+Owner (2026-11-04): taken in as a planned task, after 1.3.0. Issue #135 (shadowcla02-cloud) asks for an option to lower the wind
+sound in the bonnet camera and for the full colour range in 480p. Luan Antony's study (`docs/studies/BONNET-WIND-480P-COLOR.md`,
+PR #171) finds the wind in the race car sound (a looped voice scaled by speed and a camera factor) and proposes a volume
+setting that leaves the engine and every other sound alone; it reads the 480p colour difference as the game's own 16-bit frame
+buffers in progressive mode. A sound option changes no gameplay; a colour change would alter the original picture, so it needs
+the owner's word first. Check both in the game before building.
+
+### TASK-164 — First save creation: tell keyboard players which key confirms (issue #160; study #167; done in rc14)
+
+Owner (2026-11-04): planned. On a new card GT4 asks whether to create its game data and answers only Cross; players who press
+another key think it froze (issue #160, rinegan33). Luan Antony's study (`docs/studies/FIRST-SAVE-CREATION.md`, PR #167)
+proposes a first-boot reminder in the launcher, among other options. Smallest step first: a clear hint before the first Play
+with an empty card, in both languages.
+
+Done (2026-11-04, rc14): Play shows a note after the shader step and before the start whenever the selected game's library has
+no active save and the card the game left behind holds none (`saves::first_start_expected`; command `first_start_hint`). It
+names the keys from the player's current controls (default: Cross = `W / Enter`, controller `A`, D-pad right = `Right`) and
+says that a question starting on Cancel or No needs Right first (the slice110 pilot: the format question starts on Cancel).
+Play starts, Cancel and Back start nothing, a failed check starts at once. Tests: `saves` unit test, flow audit
+`play_names_the_first_start_keys_until_the_game_has_a_save`, focus checks (six cases) in both languages; locale keys
+`home.first_start_*` in en-US and pt-BR.
+
+### TASK-165 — Xbox and Switch button prompts in the game (issue #161; study #166)
+
+Owner (2026-11-04): planned. Issue #161 asks for Xbox or Switch button prompts instead of the PlayStation ones. Luan Antony's
+study (`docs/studies/BUTTON-PROMPTS.md`, PR #166) designs it through texture replacement of the button glyphs plus a launcher
+setting (PlayStation, Xbox, Switch). Needs the glyph textures drawn (own or CC0 art) and the replacement path on both
+renderers (CoreGS 2.0 and GSdx). No change to the game code.
+
+### TASK-166 — Spec II ultrawide: race-font text and mirror stretched (owner, 2026-11-04; done in rc14)
+
+Owner (2026-11-04): on Spec II, at ratios wider than 16:9, the digital speedometer and the odometer (clearest in the bumper
+camera's gauges) look distorted; v2.00 is fine. Cause (Confirmed): TASK-080 P2 patched two immediates of v2.00 into loads from
+the host-filled HUD parameter block (`scripts/aspect_elf_patch.py`, decision 0071): the race font x scale (`lui at,0x3F40`, 0.75)
+and the rear-view mirror divisor (`addiu t0,zero,640`). The Spec II port (TASK-100 S8) mapped the HUD canvas hook but not these
+two words, so every glyph of the race font (lap timer, speed, lap times, gauges) and the mirror kept 16:9 widths in frame
+pixels and were stretched with the frame.
+
+Done (2026-11-04): `scripts/spec2_aspect_patch.py` patches the same two instructions of the Spec II derived ELF (0x001C519C in
+`RaceDisplay::render` 0x001C5040, 0x001EB65C in the mirror placement) to the same words and block; the pinned translator and
+seeds give units byte-identical to the pinned Spec II translation except `unit_0031` and `unit_003A`, one line each
+(`private/slice405-spec2-aspect-producer`, receipt `spec2-aspect-generation.json`). The 360 camera hooks apply on top unchanged.
+Checks: `tests/python/test_spec2_aspect_patch.py`; George V lap replayed at 21:9 and 16:9 on rc13 and on the patched build:
+at 21:9 the timer and the speed keep their 16:9 shape (rc13 stretched them by 21/16); at 16:9 every compared frame is
+identical to rc13.
+
+### TASK-167 — Spec II PT-BR + CPSP disc image (owner, 2026-11-04; done in rc14)
+
+Owner (2026-11-04): support the "GT4 Spec II PTBR + CPSP" image: the Spec II 1.10 PT-BR translation with some cars replaced by
+Gran Turismo PSP cars, on the same 1.10 base. Checked (Confirmed): its `SCUS_974.36` and `SYSTEM.CNF` are the pinned ones, and
+every file under the root, `IRX`, `NET` and `EPSON` is byte-identical to the PT-BR image; only `GT4.VOL` differs (3,447,201,792
+-> 3,954,532,352 bytes). The launcher already accepts any image with the pinned executable as a "Spec II 1.10 variant"; the
+image is now named `Spec II 1.10 (PT-BR + CPSP)` in `docs/inputs/spec2-variants.json` (sha256 `96557472...`, 4,202,430,464
+bytes; `spec2_pins` test). The George V lap recording replayed on it (rc14a Spec II build) boots, races and finishes the lap
+with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself stays outside git (`*.iso`).
+
+### TASK-168 — CoreGS 2.0: draw primitives with different palettes in one batch (planned, after 1.3.0)
+
+Found by TASK-134's third round (2026-11-04, rc14a Spec II build, the George V lap): a CLUT load forces a batch flush before it
+(the batch would otherwise draw with the new palette). On that lap there are about 1,500-1,630 such flushes per VBlank, 1,013-1,020
+of them with the same texture, and only 45-105 load an identical palette, so the flushes are real palette changes. Each flush is a
+batch through the renderer and the graphics driver; together they are the largest part of the GS thread (the CLUT path costs
+2.0 ms per VBlank on the desktop's plain build, 1.5 ms of it the flush). Idea: give each primitive the palette it was drawn with
+(a palette slot per draw or per vertex, palettes kept on the GPU) so a palette change no longer ends the batch, with palettes
+read from GPU targets (IN-417) kept exact. Large: the vertex format, the shaders, the CLUT upload path and the texture cache
+change, so it waits until after 1.3.0 and the owner's word. Gates: every identity gate, plus the owner's picture tests.
+
+### TASK-170 — CoreGS 2.0: a shader compile that ends the process no longer stops every start (rc14, done)
+
+A Discord player's rc13 log (RX 6700 XT, RDNA2; issues #187-#190 look the same): the launcher's shader prepare stops at about
+131 of 300 variants, then the game on CoreGS 2.0 stalls 6.3 s and 3.1 s at boot and ends with 0xC0000005, every start; GSdx
+sessions on the same PC run fine. Hypothesis (High confidence, not reproduced here): one pipeline compile ends the process inside
+AMD's RDNA1/2 driver; the parallel prepare (several compiles at once) may matter. The bundle did not carry `logs\shaders.log`.
+
+- Guard (`native/hw_gs/core2/core2_gpu.cpp`): every variant compile (the prepare's workers, the specialised worker and the
+  synchronous path) is written to `compiling.bin` in the shader cache folder before it starts and removed when it ends. A start
+  that finds keys left there knows a compile ended the process: several keys (a parallel prepare) → the prepare runs one compile
+  at a time from then on; one key → that variant is quarantined (`quarantine.bin`) and drawn with the general pipeline instead
+  of its own. Both files carry a header (magic, shader set, GPU vendor, device and driver, key size), so a driver update or a
+  new shader set starts clean and a damaged file is ignored. The prepare's log line names the quarantined count.
+- Log bundle: `logs/shaders.log` (the last prepare step) is now in the exported bundle.
+- Acceptance: CTest `hw_core2_shader_guard` (a simulated end inside the 4th compile → serial; a serial end inside the 2nd →
+  exactly one quarantined, the rest compiled; the quarantine stays; a damaged file is ignored), with `hw_core2_prepare_shaders`,
+  `hw_core2_shader_cache` and the specialised tests; flow audit test for the bundle; every identity gate unchanged.
+- State (2026-11-04): in rc14. Player retest pending (a quarantined variant only changes speed, never the picture).
+
+### TASK-171 — CoreGS 2.0: per-primitive front end for big scenes (the first license; rc15)
+
+Owner report (2026-11-04): the first license (B-1, Test Course, v2.00) runs below 60 FPS on the laptop (i7-11800H, RTX 3060
+laptop) while menus and races are fine: 77-138 late frames per 300 VBlanks in the owner's session. Recording
+`private/coregs2-bench/inputs/licenca-b1.txt` (+ `.setup`). Measured headless on the laptop (Confirmed by counters): about
+26,000-27,000 primitives and 1,930 batches per VBlank while driving, against 13,000-21,000 on the George V lap; GS thread about
+19-20 ms per VBlank, VU1 worker about 15 ms, EE about 13 ms, GPU busy 7-10 ms; rc13 PGO about 21.2 ms against rc14 plain about
+23.0 ms. Desktop: 60 FPS paced. Not a doubled pass or a bug: the GS thread's profile is flat over the per-primitive front end
+(ShouldDraw, AppendPrimitive, Kick, StripVertices, GIF parsing).
+
+- Plan: cheapest first, one change per candidate; measure on the laptop (headless replay of the license) against the rc14 PGO
+  build. Candidates: the per-primitive draw checks and vertex append (fewer branches and copies per primitive), the strip
+  path, the GIF packet parse; then batching (TASK-168) if the batch count is the cost.
+- Acceptance: every identity gate and the overlay check unchanged; the license replay faster on the laptop with the George V
+  lap no slower; the owner's test on the laptop.
+- State (2026-11-04): planned for rc15 (owner).
+
+### TASK-172 — An earlier Spec II release ("Gran Turismo 4 Spec 2.iso", owner, 2026-11-04)
+
+The owner's image (3,681,452,032 bytes; SYSTEM.CNF `BOOT2 = cdrom0:\SCUS_974.36;1`, `VER = 1.00`) is **not the Spec II 1.10
+program** (Confirmed, compared with the PT-BR 1.10 image): its SCUS_974.36 is 6,518,884 bytes, SHA-256
+`0c9db7c5939b352855e760d649d1053a5c9e6379755608f94a9345cf7db0f3b4` (1.10: 6,520,944, `db08421b...`). The game's text and data
+segments are identical except the boot hook at `0x001001E8` (`jal 0x0068A760` instead of `0x0068A768`); the plugin segment at
+`0x0068A480` is another build (0x24C0 bytes instead of 0x2CCC; 2,284 words differ). Its injector (`scripts/spec2_patches.py
+--elf`) writes 34 words instead of 35: the same 30 in the game, four `jal` hooks into the plugin at other targets, and no hook at
+`0x00132E60`. The plugin has none of 1.10's `getPerformanceIndex`, `makeNew`, odometer and engine life, `overrideLaps` and
+`toggleMultiCategoryAI` strings, so it is an earlier Spec II release (number unknown). GT4.VOL is 3,433,562,112 bytes. The
+launcher refuses it today with "a different game program than Spec II v1.10".
+
+- Support means a third game program: its own patch table and derived ELF, its own translation and VU1/IOP checks, the TASK-166
+  aspect points and the camera hooks (same game addresses), its own executable, pins and launcher target. About the size of one
+  Spec II build plus tests; the image's own assets need their own checks.
+- State (2026-11-04): recorded; not in rc14. The owner decides if and when (players can also update their image to 1.10).
+
+### TASK-173 — Spec II: any image with 1.10's code installs (owner, 2026-11-04; done in rc14)
+
+Owner request: support the Spec II 1.10 images people make (translations, car packs) without naming each one, and refuse
+anything that is not 1.10. A Tested / Not tested badge was tried and dropped the same day (owner: a compatible image works, an
+incompatible one is refused, so there is nothing more to say). Compared on 2026-11-04 (coordinator, three images: PT-BR 1.10, PT-BR + CPSP,
+the earlier release of TASK-172): only `SCUS_974.36` and `GT4.VOL` differ between them; the 30 IOP modules (`IRX`), `SYSTEM.CNF`,
+`NET`, `EPSON` and `DNAS310.IMG` are byte-identical. The executable holds the whole Spec II plugin, so the executable and the
+IOP modules are the game's code; an image is Spec II 1.10 exactly when both match the pins, and only its data can differ.
+
+- Rule (`launcher/crates/gt4l-disc/src/spec2.rs`): the precheck keeps the executable check and now also reads every module in
+  `docs/inputs/spec2-variants.json` `iop_modules` (path, size, SHA-256; read from the PT-BR image) and refuses the image when one
+  is missing or differs (the same "different game program than Spec II v1.10" message). An accepted image with a pinned full
+  hash keeps its name; any other is a "Spec II 1.10 variant" (log and receipt), shown as "other image" as before.
+- ISO reader: `Iso::find_path` finds files inside a folder (`IRX/PADMAN.IRX;1`); the synthetic test ISO takes one folder level.
+- Acceptance: `gt4l-disc` tests (a changed, missing or shorter module is refused; the same module passes; files found by path;
+  the real PT-BR and PT-BR + CPSP images pass with `GT4_FULL_HASH=1`, the earlier release is refused with
+  `GT4_SPEC2_EARLIER_ISO`); the launcher's tests; focus checks in both languages.
+- State (2026-11-04): done in rc14.
+
+### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
+
+1.3.0-rc13 is published (2026-11-04). rc14 starts after the owner compacts the session's context. Steps:
+
+1. **The camera session's pull request** (one PR into `task/134-game-code-optimization-study`, not merged by that session):
+   TASK-159b (the pedal zeroing reaches only pad 0's right stick Y), TASK-160 (field of view in real time, on by default) and
+   TASK-161 (trigger range 0-251, off by default, with a launcher switch and locale keys in both languages; it changes
+   TASK-147's 45/84 ranges when on). Review, rebuild the hooked units (`scripts/camera360_units.py` and the new hooks), check
+   that the race clock, state and frames stay identical with the new options at their defaults, merge.
+   Done: PR #197 merged on 2026-11-04 (units `build/cam360/*-units-rc14`, Spec II on the TASK-166 units).
+2. **PR #177** (Luan Antony, TASK-095, ultrawide 2D menu canvas): the camera agent finds where the pause, results, replay and
+   pre-race screens set their projection in v2.00 and Spec II and adds the hook; it comes as its own PR. Same checks; 16:9 must
+   stay identical.
+   Done: PR #200 merged on 2026-11-04 (slice407); #177 recorded as merged on main and thanked.
+3. **TASK-164** (issue #160): a launcher hint, before the first Play with an empty card, that Cross confirms GT4's question
+   about creating its game data. Both languages. Done.
+3b. **TASK-166** (owner): Spec II ultrawide race-font text and mirror (the TASK-080 P2 patch table for Spec II). Done.
+3c. **TASK-167** (owner): the Spec II PT-BR + CPSP image named as a known variant. Done.
+4. **Build and install:** plain test builds of both games (everything enabled), launchers labelled rc14, installed on the
+   owner's desktop (installer update mode) and the laptop's portable copy; gates against rc13 with
+   `private/task134-tools/gates5.sh` (references `build/evidence/*r13pgo*`); performance measured on the laptop only. Telegram
+   the owner when it is ready. No PGO build until the owner asks; then a draft, and a pre-release only on the owner's word.
+   Done (2026-11-04): slice407 on the desktop and the laptop's portable copy, gates against rc13 identical.
+
+5. **Close rc14** (owner, 2026-11-04): the full trigger range on by default with the fixed-width meter (TASK-161), the shader
+   compile guard and `shaders.log` in the bundle (TASK-170), then the PGO build of both games, the gates against rc13 and the
+   GitHub pre-release `v1.3.0-rc14` (the owner's word given). The license front end is TASK-171 for rc15.
+   Done (2026-11-04): games slice408 (PGO and ThinLTO from `build/cam360/*-units-rc14b`; exe `a4e1c742...` v2.00,
+   `e5267b8f...` Spec II; distribution `private/slice408-dist-130-rc14`). Gates against rc13 (`gates5.sh`, wrong=0): race clock
+   and simulation state identical on three Spec II laps and the v2.00 night race, every compared frame identical, VU1/VU0 and
+   MTVU checks 0 differences; overlay check 10/10 at 21:9 and 9/10 at 32:9 (one pause-menu fade frame; 32:9 frames identical to
+   slice407). CTest 301/301 on both games, Python 790, launcher 665, focus checks 294/294 and 301/301, nav-test 217/217.
+   TASK-173's Tested / Not tested badge dropped by the owner the same day.
+
+Waiting on players (issues answered 2026-11-04, `docs/ISSUE-TRIAGE.md`): the AMD crash reports #187-#190 retest on rc13; a new
+task if they still crash (TASK-170 is the rc14 answer to the Discord report).
+
+### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
+
+The owner wants every open pull request settled so 1.3.0 can leave the release candidates. For rc13, on
+`task/134-game-code-optimization-study`: the CoreGS 2.0 fixes TASK-149 to TASK-151, and the contributor pull requests below,
+each re-done by hand on the current code (they were written against 1.2.4/1.2.5), with the contributor credited as co-author,
+tests added, then the pull request marked merged by a tree-neutral merge on `main` (strategy "ours", no file of `main` changes,
+as for #118, #119, #154 and #174) and its issue answered and closed for the owner. Build: plain (no PGO or ThinLTO), installed on
+the owner's desktop and the laptop's portable copy for the owner's test suite; the pre-release only after that test.
+
+Already shipped by us, credit merge only: #138 (gamepad toggles in Settings, issue #123; rc8), #140 and its study #156 (full
+trigger travel, issue #134; rc12). Duplicates of what existed before them, closed with thanks: #150 (integrated GPUs at 1x,
+TASK-105, rc5), #175 (GSdx graphics API, TASK-103), #122 (`vcruntime140_1.dll`: the game executable does not import it; the
+missing-DLL message came with #154). Later, not rc13: #173, #170, #172, #176, #177, #146; study-only pull requests stay open as
+references until their topic is implemented. Our own #110 and #113 are superseded by #130.
+
+### TASK-152 — PCSX2 card import: allocation chains up to the card's real capacity (rc13; PR #120, issue #86; done)
+
+Contributor: luanantony (PR #120). A player's PCSX2 `Mcd001.ps2` is refused with "The memory card is damaged (chain entry 7937
+outside the allocation area)" while PCSX2 reads it. Re-do the card reader change on `launcher/crates/gt4saves` with the PR's
+hostile-card tests. Acceptance: cargo tests, an 8 MB card with chains past the default allocation area imports, damaged cards are
+still refused.
+
+Done (2026-11-04): the superblock's `alloc_end` is a count relative to `alloc_offset` (8 MB: 41 + 8135 + 16 backup clusters =
+8192), capped by the room on the card; the old reading lost 41 clusters and refused chains near the end, as on the reporter's
+card. The chain error now names the layout. Tests (gt4saves 62 pass): a chain at relative 8100, relative 7937 on an
+`alloc_end` 7978 card, a chain equal to the usable count still refused, `alloc_end` 0 refused. Not checked on the reporter's
+own card. PR #120 recorded as merged (tree-neutral), issue #86 answered and closed.
+
+### TASK-153 — Delete the active save without it coming back (rc13; PR #116, issue #98; done)
+
+Contributor: luanantony (PR #116). Deleting the save (in the launcher, or its files) brought it back at the next Play. Re-do
+the PR's change on the current Saves page and save library. Acceptance: launcher tests; deleting the active save leaves the
+game to start a new one, and no older card copy restores it.
+
+Done (2026-11-04): the cause was the runtime card (`data/games/<game>/runtime/card.ps2`): each Play harvests it into the
+library first, so a save removed from the library came back from it. Deleting the active save on the Saves page now harvests
+that card (no unharvested progress is lost), parks it in `backups/<timestamp>-before-delete.ps2` (kept with the New save
+images), sends the save to the Recycle Bin and clears its display name; the next Play builds a card without a game save and the
+game starts a new profile. Refused while the game runs. Text for the active save's confirmation in both languages; the unused
+`rust.saves.active_not_deletable` key is gone (665 keys each). Tests: launcher 641 pass (deleting the active save clears it;
+the runtime card is parked and the next card has no game save; refused while the game runs), focus checks 275/282, nav-test
+209. Not run in game. PR #116 recorded as merged (tree-neutral), issue #98 answered and closed.
+
+### TASK-154 — The ReShade Home key with GSdx (rc13; PR #121, issue #102; done, owner test)
+
+Contributor: luanantony (PR #121). With GSdx the picture is a child window of gt4-gs, so keys pressed in the game window do not
+reach ReShade inside gt4-gs. Re-do the forwarding in `native/window.cpp` next to the TASK-145 heartbeat (decision 0076).
+Acceptance: fixtures; the game's own keys unchanged; owner test with ReShade.
+
+Done (2026-11-04): the game window keeps the keyboard focus with GSdx (TASK-038), so gt4-gs never received ReShade's Home. The
+window now posts to the gt4-gs picture window only the key presses and releases of Home, End, Insert, Delete, Page Up, Page
+Down and Scroll Lock (`native/key_forward.hpp`), never Alt or character messages, and still handles them itself; the game
+reads its keys with GetAsyncKeyState, so driving is unchanged, and none of these keys is a default control. The PR's version
+passed every key and Alt message on. The heartbeat (decision 0076) is untouched. Test `native_key_forward`, with
+`native_window_heartbeat`. Whether ReShade inside gt4-gs acts on posted messages is a Hypothesis until the owner's test with
+ReShade. PR #121 recorded as merged (tree-neutral), issue #102 answered and closed.
+
+### TASK-155 — GSdx starts when the install is inside OneDrive (rc13; PR #136, issue #131; done)
+
+Contributor: luanantony (PR #136). gt4-gs found its data root under OneDrive and closed at start. Re-do the PR's
+`portable.ini` beside gt4-gs (launcher `gs_release.rs`, the game's `gs_stream_client.cpp`). Clean room: from the PR and the
+issue only. Acceptance: launcher tests, a GSdx start from a folder under OneDrive.
+
+Done (2026-11-04): an empty `portable.ini` is written beside gt4-gs.exe when GSdx is installed and, for installs made before,
+before each GSdx start (best effort, logged on failure), so gt4-gs keeps its settings beside it instead of looking up a
+Documents folder that OneDrive had moved. The game side (`gs_stream_client.cpp`) needed no change: the launcher installs
+gt4-gs. Tests: gs_release (marker after install; added once, an existing one kept). The OneDrive start itself is not
+reproduced here. PR #136 recorded as merged (tree-neutral), issue #131 answered and closed.
+
+### TASK-156 — Audio crackling on Proton and SteamOS (rc13; PR #141, issue #129; done)
+
+Contributor: luanantony (PR #141). Re-do the audio buffer change in `native/host_io.cpp` only where it does not change Windows'
+behaviour unless needed, with an A/B of underruns (F8) on the desktop and the laptop. Acceptance: no new underruns on Windows,
+fixtures; Proton is untested here.
+
+Done (2026-11-04): Windows keeps exactly its paced audio (sixteen 256-frame buffers under 60 ms; the fixture checks the default
+profile is the old constants, so no Windows A/B is needed). Under Wine (ntdll exports `wine_get_version`) twenty-four
+512-frame buffers under 100 ms; `GT4_AUDIO_LATENCY_MS=20..500` sets only the target and passes the launcher's scrub (a
+Steam launch option); other values keep the default with a log line. The PR also passed `GT4_PACING` through; not taken
+(a stray variable would change Windows pacing). Tests: `native_audio_input` (profiles), `native_pacing`, launch contract.
+Proton is not tested here. PR #141 and the study #164 recorded as merged (tree-neutral), issue #129 answered and closed.
+
+### TASK-157 — Choose the custom textures folder (rc13; PR #145, study #155, issue #95; done)
+
+Contributor: luanantony (PR #145, study #155). Let the player point GT4Recomp at an existing texture folder (a PCSX2 one)
+instead of copying it. Re-do in the launcher settings and paths, passed to both renderers. Acceptance: launcher tests, texture
+pack loads from the chosen folder on CoreGS 2.0 and GSdx, both languages.
+
+Done (2026-11-04): `[install] textures_path` in settings.toml; Settings > Graphics shows the textures folder with Choose folder…
+and Use default folder beside Open textures folder, and a hint when the chosen folder is missing. The choice is checked
+(absolute, exists, a folder, not the data folder, not inside the renderer folder) and wins at Play over the default and over
+a folder not moved yet; a missing or unusable one falls back to the default with a log line and stays stored. The launcher
+never writes into a chosen folder (no folders created, nothing flattened), and CoreGS 2.0's shader cache goes to the data
+folder for a chosen folder (beside the default one as before). GSdx (`[Folders] Textures`), CoreGS 2.0 (`GT4_HW_TEXTURES`) and
+game.ini (`hw_textures`) all take the resolved folder. Commands `textures_state`, `choose_textures_folder`,
+`reset_textures_folder`. Locale keys 675 in both languages. Tests: launcher (7 new), focus checks 275/282, nav-test 209. Not run
+with a real pack yet. PR #145 and its study #155 recorded as merged (tree-neutral), issue #95 answered and closed.
+
+### TASK-158 — Download GSdx again, or install it from an archive by hand (rc13; PR #143, issue #139; done)
+
+Contributor: luanantony (PR #143). When the GSdx download fails, offer a retry and installing the release archive by hand,
+checked against the same pin. Re-do on the current launcher (the CoreGS 2.0 offer of rc10 stays). Acceptance: launcher tests,
+focus checks and nav-test in both languages.
+
+Done (2026-11-04): after a failed GSdx download the dialog offers Try again, Install from a file… (a .zip picker) and Close,
+with the CoreGS 2.0 alternative kept where it was, and a hint naming github.com/moesuito/gt4recomp-gs/releases. The archive
+must be named exactly `gt4-gs-<version>-windows-x64.zip`, at least the minimum version, within the size limit, and match the
+SHA-256 line of that release's SHA256SUMS fetched online; with no SHA256SUMS nothing is installed. Both paths share
+`gs_release::install_package` (size, hash, minimum version, unpack, check, publish, portable.ini), so the download behaves as
+before. Command `install_gsdx_archive`. The PR guessed the version from the name or the zip and checked no hash: not taken.
+Tests: launcher 659 pass (8 new archive cases), focus checks 278/285 (Try again, Install from a file, a cancelled picker; the
+check's dialog buttons are the shown ones), nav-test 209, locale keys 687 in both languages. Not run against a real release.
+PR #143 recorded as merged (tree-neutral); issue #139 (closed with rc10) answered.
+
+### TASK-159 — 360-degree chase camera on the right stick (v2.00, then Spec II; done, in 1.3.0-rc13)
+
+Owner request (2026-11-04). The right stick X turns the chase camera round the car, as the community "360 Degree Chase Camera"
+PCSX2 patches do (idea and call site from the patch by Vyerq/unko_ for v2.00 and Nenkai's port from Duchi/Vyerq for Spec II;
+references only, no patch words used). Branch `task/159-360-chase-camera` (from task/134 at ad457090). **On by default in
+both games** (owner, 2026-11-04; ships in rc13): `GT4_CAMERA_360=0`, or `camera_360=0` in `game.ini` for a direct start, turns
+it off; a launcher toggle is a later step. Design, decoded patches, addresses and checks: `docs/CAMERA-360.md`.
+
+- Mechanism: the chase camera's yaw spring calls the angle-difference function with a direct `jal`, which the translator turns
+  into a direct C++ call, so `scripts/camera360_units.py` adds one host call per call site to the translated units (proved to
+  be the pinned units plus the insertions only) and the EE library is built from them. `native/camera_360*` adds the stick
+  angle (pi * (stick - 128) / 127, exactly nothing at rest) to f13; the right stick X byte is the game's own pad buffer byte
+  (v2.00 `0x0086F99E`, Spec II `0x0089B0DE`, Confirmed by RAM peeks). The right stick Y is the game's default analog
+  throttle and brake in both games (Confirmed); while the camera is on, the analog channel handler's accelerator and brake
+  cases get a 0 value, the effect of the community "Disable right analog throttle/brake" patch, whose addresses are v2.00 ones
+  (the Spec II equivalents are at `0x0031494C`/`0x00314974`).
+- Acceptance: fixtures (CTest `native_camera_360`, `native_game_target`, `native_standalone`; Python
+  `test_camera360_units.py`); headless replays (`scripts/coregs2_bench/camera360-check.sh`): with the switch off, frames, race
+  clock and state equal the build without the hook; with it on and the stick moved, the race clock equals it at every VBlank,
+  the simulation differs only in the camera's own words while the stick is off rest and not at all once it is released, and
+  the camera turns and comes back; owner test in game.
+- TASK-159b (branch `task/159b-camera-pedal-scope`): the pedal zeroing reached any analog axis assigned to the pedals and a
+  wheel's pedals (the handler has two callers); it now acts only in the DualShock analog loop on the right stick Y
+  channels assigned to the accelerator or the brake. Checks as for TASK-159, both games, plus a left stick accelerator
+  (harness) that still works with the camera on.
+- State (2026-11-04): v2.00 and Spec II done and checked headless (Arcade race on v2.00, the owner's Tokyo R246 Time Trial
+  on Spec II), on by default; owner test in game pending; the coordinator opens the PR into task/134 after review.
+
+### TASK-160 — Field of view adjustment on R3 + D-pad (both games, on by default)
+
+Owner request (2026-11-04): built in, on by default in both games. Idea from the "FoV Adjustment" PCSX2 patch by Duchi/Vyerq
+(v2.00) and Blitznoz (Spec II); references only. Branch `task/160-fov-adjustment` (from `task/159b-camera-pedal-scope`).
+`GT4_FOV_ADJUST=0` or `fov_adjust=0` in `game.ini` turns it off. Design, decoded patch, addresses and checks:
+`docs/FOV-ADJUST.md`.
+
+- The race cameras' projection function (v2.00 `func_0037A170`, Spec II `0x0023E7E0`) stores the scales 1, 1 and 1 / tan(fov/2);
+  the patch rewrote that 1.0 immediate in guest code. Our version: `scripts/camera360_units.py` adds a host call before the
+  store call (`0x0037A1BC`, Spec II `0x0023E82C`) that gives the scales k, k and k / t; k = 1 + n/128, 0.5 to 2.0, stepped once
+  per guest VBlank from the port 0 button halfword the game keeps (`0x0064C794`, Spec II `0x00681344`): R3 + up, R3 + down,
+  L3 + R3 resets; other buttons may be held; no wrap.
+- Acceptance: CTest `native_fov_adjust` (switch, steps and clamp, factor); headless replays: switch off and nothing pressed
+  identical to the reference; with the combinations the race clock is identical at every VBlank, the view zooms and comes
+  back, and only what the camera draws changes in the state (light flares, view lists, Spec II's drawing-written car words).
+  The game ignores the combinations in races (both games). Owner test in game pending.
+
+### TASK-161 — Full trigger range for the throttle and the brake (study, then both games; on by default from rc14)
+
+Owner request (2026-11-04): throttle and brake precision is low. Idea from the "Full Trigger Sensitivity" PCSX2 patch by Silent
+& Aero_; references only. Branch `task/161-trigger-sensitivity` (from `task/160-fov-adjustment`). Study and design:
+`docs/research/TRIGGER-SENSITIVITY.md`; controls: `docs/CONTROLS.md`.
+
+- Study: the game turns a pressure byte p into min(100 * min(2p, 256) / d, 256) with d = 35 (throttle) and 65 (brake): 100%
+  from p = 45 and 84, 46 and 85 levels (both games, Confirmed). The host already gives every level (TASK-147 maps the trigger
+  travel onto 0..45 and 0..84), so the loss is in the game, not on our side. The reference patch's v2.00 reverse line hits the
+  wrong instruction (`0x0043C018` is `slti`, the divisor is at `0x0043C01C`).
+- Change: `GT4_TRIGGER_FULL_RANGE=1` (`game.ini` `trigger_full_range`, launcher toggle "Full trigger range (experimental)" on the
+  Controls page; off by default until the owner's test): `scripts/camera360_units.py` replaces the doubling and the divisor of
+  the throttle and brake cases with host functions (2p and d when off; p and 99 when on: 100% from p = 254, about 255 levels),
+  and the same switch moves the triggers' default ranges to the whole byte; `range` applies to the game's scale, the new
+  `range_full` to the full one.
+- Acceptance: CTest `native_trigger_range` and `native_controls` (every range combination), Rust and launcher tests, focus
+  checks in both languages and nav-test; headless sweeps: off identical to the reference, on 254 throttle and 254 brake levels
+  with 100% at p = 254, race clock identical at every VBlank. Owner test in game decides the default.
+- State (2026-11-04): done on both games and checked headless; launcher toggle, Rust tests, nav-test and focus checks in
+  en-US and pt-BR pass. Owner test in game passed; **on by default from rc14** (owner, 2026-11-04): `GT4_TRIGGER_FULL_RANGE`
+  unset means on, `0` turns it off; `game.ini` and the launcher default are on. The Controls page meter keeps the width of its
+  widest text (100% and the whole byte, plus a margin) with equal-width digits, so the bar no longer changes size while a
+  trigger moves (owner, 2026-11-04; focus check in both languages).
 
 ### TASK-169 — Save states for endurance races (study accepted; planned after 1.3.0)
 

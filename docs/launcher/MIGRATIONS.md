@@ -178,6 +178,26 @@ size, `display::monitor_id`), never an index; it resolves to the same device, th
 then the primary monitor. `resolution` holds `desktop` or `<W>x<H>`; a size the monitor does not support resolves to its
 desktop mode. Choosing another monitor resets `resolution` to `desktop`.
 
+## Schema 7 to 8 and the 1.3.0 folders (TASK-101, owner 2026-10-23)
+
+Release 1.3.0 runs two games (`gt4`, `spec2`; `docs/MULTI-GAME-LAUNCHER-PLAN.md`).
+
+- **Settings, schema 8.** `[game] selected = "<id>"` records the game the home screen shows: the first game installed,
+  then the game played last. The step adds `selected = "gt4"` to a file of schema 7 or older (every such file belongs to a
+  launcher that ran Gran Turismo 4 only) and keeps a value that is already there. A fresh install has no file, so nothing
+  is selected until the first game is set up. An id the launcher does not know is ignored with a warning.
+- **Folders.** The 1.2.x files of Gran Turismo 4 move into `games\gt4`: `<data>\disc`, `prepared`, `runtime` become
+  `<data>\games\gt4\...` (marker `<data>\migration-multi-game.json`), and `Saves`, `Replays`, `backups` in the user data
+  folder become `%APPDATA%\GT4Recomp\games\gt4\...`. `gt4l_core::games_layout` does it with the rules of the 1.2.1
+  move: a rename on the same volume, a verified copy (size, SHA-256 and the pinned disc hash) across volumes, nothing
+  deleted before it is verified, a failed unit keeps its old place in use and runs again at the next start, nothing is
+  overwritten (a library with files in both places is not merged: the flat one stays in use), and no move while the
+  game runs. The library move runs before the window (a rename); the game files move on the background thread after the
+  1.2.0 move, and Play and setup wait for it. Until a move has happened the flat place is read.
+- **Receipt (`prepare.json`).** Schema 2 gains optional fields: `game` (`gt4` when absent), `image_name` (the known image,
+  for Spec II), `original` (the executable as it is on the disc, Spec II) and `core` is empty for a game with no CORE. A
+  1.2.x receipt stays valid.
+
 ## What the migrations do not do
 
 - They do not rewrite memory cards or save slots (the library move copies save folders byte for byte).

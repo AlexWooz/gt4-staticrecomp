@@ -130,10 +130,11 @@ pub struct TriggerTuning {
 
 /// Default trigger deadzone: 30 of 255 raw units.
 pub const TRIGGER_DEFAULT_DEADZONE: f32 = 30.0 / 255.0;
-/// Default left stick deadzone: XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE (7849) of 32767 (native/controls.cpp).
-pub const LEFT_STICK_DEFAULT_DEADZONE: f32 = 7849.0 / 32767.0;
-/// Default right stick deadzone: XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE (8689) of 32767 (native/controls.cpp).
-pub const RIGHT_STICK_DEFAULT_DEADZONE: f32 = 8689.0 / 32767.0;
+/// Default left stick deadzone: 3277 of 32767, 10% (native/controls.cpp, TASK-147; the game steps over its own stick dead
+/// zone, so this is the only one. It was the XInput constant 7849).
+pub const LEFT_STICK_DEFAULT_DEADZONE: f32 = 3277.0 / 32767.0;
+/// Default right stick deadzone: 3277 of 32767, 10% (it was the XInput constant 8689).
+pub const RIGHT_STICK_DEFAULT_DEADZONE: f32 = 3277.0 / 32767.0;
 /// Largest deadzone the launcher writes for a trigger or a stick (the file accepts values below 1).
 pub const MAX_DEADZONE: f32 = 0.95;
 
@@ -248,7 +249,9 @@ impl Controls {
         tuning
     }
 
-    /// Writes the tuning into the analog trigger source of `input`. The deadzone is clamped to [0, 0.95].
+    /// Writes the tuning into the analog trigger source of `input`. The deadzone is clamped to [0, 0.95]. The `range`
+    /// option (TASK-147: the pressure byte at full travel) and `range_full` (TASK-161: the same with the game's full trigger
+    /// range on) are kept.
     pub fn set_trigger_tuning(&mut self, input: &str, tuning: TriggerTuning) -> Result<(), ControlsError> {
         let current: Vec<String> = self.sources(input).map(|sources| sources.to_vec()).unwrap_or_default();
         let deadzone = tuning.deadzone.clamp(0.0, 0.95);
@@ -257,8 +260,13 @@ impl Controls {
             .into_iter()
             .map(|source| {
                 if source.starts_with("xinput:LT") || source.starts_with("xinput:RT") {
-                    let (base, _) = split_options(&source);
-                    format!("{base} | {options}")
+                    let (base, existing) = split_options(&source);
+                    let kept: String = existing
+                        .iter()
+                        .filter(|option| option.starts_with("range=") || option.starts_with("range_full="))
+                        .map(|option| format!(" {option}"))
+                        .collect();
+                    format!("{base} | {options}{kept}")
                 } else {
                     source
                 }
@@ -614,6 +622,26 @@ fn validate_option(line: usize, kind: InputKind, analog: bool, option: &str) -> 
                 return Err(error(line, "curve must be linear, quadratic, cubic, s_curve, smooth_power, sublinear or logarithmic"));
             }
         }
+        // TASK-147: whether a stick steps over GT4's own stick dead zone (the game's default) or keeps it.
+        "game_deadzone" => {
+            if kind != InputKind::Stick {
+                return Err(error(line, "game_deadzone applies to sticks only"));
+            }
+            if !["skip", "keep"].contains(&value) {
+                return Err(error(line, "game_deadzone must be skip or keep"));
+            }
+        }
+        // TASK-147: the pressure byte a trigger gives at full travel (the game defaults R2 to 45 and L2 to 84).
+        // TASK-161: `range_full`, the same with the game's full trigger range on (default 255).
+        "range" | "range_full" => {
+            if !(analog && kind == InputKind::Button) {
+                return Err(error(line, format!("{key} applies to triggers only")));
+            }
+            let parsed: u32 = value.parse().map_err(|_| error(line, format!("{key} must be a whole number from 1 to 255")))?;
+            if !(1..=255).contains(&parsed) {
+                return Err(error(line, format!("{key} must be a whole number from 1 to 255")));
+            }
+        }
         "invert" => {
             if kind != InputKind::Stick {
                 return Err(error(line, "invert applies to sticks only"));
@@ -684,6 +712,12 @@ mod tests {
         assert!(Controls::parse("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=1.5\"]\n").is_err());
         assert!(Controls::parse("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=cubic\"]\n").is_ok());
         assert!(Controls::parse("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=sharp\"]\n").is_err());
+        // TASK-147: the pressure byte at full travel, triggers only, 1..=255.
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=45\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=0\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=256\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=4.5\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range=45\"]\n").is_err());
     }
 
     #[test]
@@ -704,6 +738,25 @@ mod tests {
     }
 
     #[test]
+    fn a_full_range_option_is_checked_and_survives_a_tuning_change() {
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=200\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=45 range_full=255\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=0\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range_full=256\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range_full=45\"]\n").is_err());
+        let mut controls = Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=90 range_full=200\"]\n").unwrap();
+        controls.set_trigger_tuning("r2", TriggerTuning { deadzone: 0.05, curve: Curve::Linear }).unwrap();
+        assert!(controls.render().contains("r2 = [\"xinput:RT | deadzone=0.050 curve=linear range=90 range_full=200\"]"));
+    }
+
+    #[test]
+    fn a_trigger_range_survives_a_tuning_change() {
+        let mut controls = Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=90\"]\n").unwrap();
+        controls.set_trigger_tuning("r2", TriggerTuning { deadzone: 0.05, curve: Curve::Linear }).unwrap();
+        assert!(controls.render().contains("r2 = [\"xinput:RT | deadzone=0.050 curve=linear range=90\"]"));
+    }
+
+    #[test]
     fn trigger_tuning_round_trips_through_the_source_options() {
         let mut controls = Controls::default();
         controls
@@ -718,10 +771,13 @@ mod tests {
     }
 
     #[test]
-    fn stick_deadzones_default_to_the_xinput_constants_and_round_trip() {
+    fn stick_deadzones_default_to_ten_percent_and_round_trip() {
         let mut controls = Controls::default();
-        assert!((controls.stick_deadzone(Stick::Left) - 7849.0 / 32767.0).abs() < 1e-6);
-        assert!((controls.stick_deadzone(Stick::Right) - 8689.0 / 32767.0).abs() < 1e-6);
+        assert!((controls.stick_deadzone(Stick::Left) - 3277.0 / 32767.0).abs() < 1e-6);
+        assert!((controls.stick_deadzone(Stick::Right) - 3277.0 / 32767.0).abs() < 1e-6);
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | game_deadzone=keep\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | game_deadzone=off\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | game_deadzone=keep\"]\n").is_err());
         controls.set_stick_deadzone(Stick::Left, 0.1).unwrap();
         assert!((controls.stick_deadzone(Stick::Left) - 0.1).abs() < 1e-6);
         let text = controls.render();
@@ -796,6 +852,35 @@ mod tests {
         for (input, source) in [("l2", "xinput:LT"), ("lstick_x", "xinput:LX")] {
             let text = format!("schema = 1\n[bindings]\n{input} = [\"{source} | mode=dualsense\"]\n");
             assert!(Controls::parse(&text).unwrap_err().to_string().contains("unknown option 'mode'"));
+        }
+    }
+
+    #[test]
+    fn all_seven_curves_and_aliases_support_old_configs_and_monotonic_travel() {
+        // Old configs without curve option default to Linear.
+        let old_text = "schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.100\"]\n";
+        let old_controls = Controls::parse(old_text).unwrap();
+        assert_eq!(old_controls.trigger_tuning("l2").curve, Curve::Linear);
+
+        // All 7 canonical curves and their accepted aliases.
+        let cases = [
+            ("linear", Curve::Linear),
+            ("quadratic", Curve::Quadratic),
+            ("cubic", Curve::Cubic),
+            ("s_curve", Curve::SCurve),
+            ("scurve", Curve::SCurve),
+            ("s-curve", Curve::SCurve),
+            ("smooth_power", Curve::SmoothPower),
+            ("smooth", Curve::SmoothPower),
+            ("sublinear", Curve::Sublinear),
+            ("root", Curve::Sublinear),
+            ("logarithmic", Curve::Logarithmic),
+            ("log", Curve::Logarithmic),
+        ];
+        for (alias, expected_curve) in cases {
+            let text = format!("schema = 1\n[bindings]\nr2 = [\"xinput:RT | curve={alias}\"]\n");
+            let parsed = Controls::parse(&text).unwrap();
+            assert_eq!(parsed.trigger_tuning("r2").curve, expected_curve);
         }
     }
 

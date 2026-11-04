@@ -82,6 +82,12 @@ ControllerInput::ControllerInput(ControlMap map, gt4::pad::Backend backend)
     if (!SDL_Init(SDL_INIT_GAMEPAD))
       throw std::runtime_error(std::string("SDL_Init(SDL_INIT_GAMEPAD) failed: ") + SDL_GetError());
     sdl_initialized_ = true;
+    // TASK-148: the controller chosen on the launcher's Controls page. SDL itself reads SDL_GAMECONTROLLERCONFIG_FILE (the
+    // player's own mappings) at SDL_Init.
+    has_pad_choice_ = gt4::pad::parse_pad_choice(std::getenv("GT4_PAD"), pad_choice_);
+    if (has_pad_choice_)
+      std::fprintf(stderr, "[input] controller chosen in the launcher: %s%s%s\n", pad_choice_.guid.c_str(),
+                   pad_choice_.serial.empty() ? "" : " serial ", pad_choice_.serial.c_str());
   }
 }
 
@@ -192,17 +198,51 @@ PadState ControllerInput::poll_sdl(bool focused) {
     motors_ = 0;
     sdl_next_scan_ = 0;
   }
-  if (!sdl_pad_ && GetTickCount64() >= sdl_next_scan_) {
+  // Scan when no pad is open, and (TASK-148) while a pad stands in for the chosen one.
+  if ((!sdl_pad_ || (has_pad_choice_ && !reading_choice_)) && GetTickCount64() >= sdl_next_scan_) {
     sdl_next_scan_ = GetTickCount64() + 2000;
     int count = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&count);
-    std::uint32_t player_one = 0;
-    if (ids && gt4::pad::first_pad(ids, static_cast<std::size_t>(count), player_one)) {
-      sdl_pad_ = SDL_OpenGamepad(player_one);
+    std::vector<gt4::pad::PadCandidate> candidates;
+    for (int index = 0; ids && index < count; ++index) {
+      gt4::pad::PadCandidate candidate;
+      candidate.instance = ids[index];
+      char guid[33] = {};
+      SDL_GUIDToString(SDL_GetGamepadGUIDForID(ids[index]), guid, sizeof guid);
+      candidate.guid = guid;
+      // The serial is read only to tell one of two pads of the chosen model apart (it needs the pad open).
+      if (has_pad_choice_ && !pad_choice_.serial.empty()) {
+        gt4::pad::PadChoice model;
+        if (gt4::pad::parse_pad_choice(guid, model) && model.guid == pad_choice_.guid) {
+          if (SDL_Gamepad *probe = SDL_OpenGamepad(ids[index])) {
+            const char *serial = SDL_GetGamepadSerial(probe);
+            candidate.serial = serial ? serial : "";
+            SDL_CloseGamepad(probe);
+          }
+        }
+      }
+      candidates.push_back(candidate);
+    }
+    std::uint32_t chosen = 0;
+    if (gt4::pad::choose_pad(candidates, has_pad_choice_ ? &pad_choice_ : nullptr, chosen) &&
+        (!sdl_pad_ || SDL_GetGamepadID(sdl_pad_) != chosen)) {
+      close_sdl_pad();
+      motors_ = 0;
+      sdl_pad_ = SDL_OpenGamepad(chosen);
       if (sdl_pad_) {
         const char *name = SDL_GetGamepadName(sdl_pad_);
-        std::fprintf(stderr, "[input] SDL gamepad \"%s\" is controller 1 of %d\n",
-                     name ? name : "unnamed", count);
+        gt4::pad::PadChoice model;
+        char guid[33] = {};
+        SDL_GUIDToString(SDL_GetGamepadGUIDForID(chosen), guid, sizeof guid);
+        reading_choice_ = has_pad_choice_ && gt4::pad::parse_pad_choice(guid, model) && model.guid == pad_choice_.guid;
+        if (reading_choice_)
+          std::fprintf(stderr, "[input] SDL gamepad \"%s\" is the controller chosen in the launcher (%d connected)\n",
+                       name ? name : "unnamed", count);
+        else if (has_pad_choice_)
+          std::fprintf(stderr, "[input] the chosen controller is not connected: SDL gamepad \"%s\" is controller 1 of %d\n",
+                       name ? name : "unnamed", count);
+        else
+          std::fprintf(stderr, "[input] SDL gamepad \"%s\" is controller 1 of %d\n", name ? name : "unnamed", count);
       }
     }
     SDL_free(ids);
@@ -277,13 +317,46 @@ constexpr std::size_t blocking_buffer_count = 4;
 // Paced path: sixteen 256-frame buffers (5.3 ms each) under a 60 ms target.
 constexpr std::size_t paced_frames_per_buffer = 256;
 constexpr std::size_t paced_buffer_count = 16;
+// TASK-156: under Wine, twenty-four 512-frame buffers (10.7 ms each) under a 100 ms target.
+constexpr std::size_t wine_frames_per_buffer = 512;
+constexpr std::size_t wine_buffer_count = 24;
+constexpr std::size_t wine_target_frames = 4800;
 } // namespace
 
-AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode mode)
+PacedAudioProfile choose_paced_audio_profile(bool wine, const char *latency_ms) {
+  PacedAudioProfile profile = wine ? PacedAudioProfile{wine_frames_per_buffer, wine_buffer_count, wine_target_frames}
+                                   : PacedAudioProfile{paced_frames_per_buffer, paced_buffer_count,
+                                                       gt4::pacing::target_latency_frames};
+  if (latency_ms != nullptr && *latency_ms != '\0') {
+    char *end = nullptr;
+    const long ms = std::strtol(latency_ms, &end, 10);
+    if (end != latency_ms && *end == '\0' && ms >= 20 && ms <= 500)
+      profile.target_frames = static_cast<std::size_t>(ms) * 48u;  // 48 frames per millisecond at 48 kHz
+    else
+      std::fprintf(stderr, "[audio] GT4_AUDIO_LATENCY_MS=%s is not 20..500: the default target is kept\n", latency_ms);
+  }
+  return profile;
+}
+
+bool running_under_wine() {
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  return ntdll != nullptr && GetProcAddress(ntdll, "wine_get_version") != nullptr;
+}
+
+AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode mode, AudioDevice requested)
     : mode_(mode), pump_messages_(std::move(pump_messages)) {
   const bool paced = mode_ == gt4::pacing::Mode::paced;
-  frames_per_buffer_ = paced ? paced_frames_per_buffer : blocking_frames_per_buffer;
-  buffer_count_ = paced ? paced_buffer_count : blocking_buffer_count;
+  const bool wine = paced && running_under_wine();
+  frames_per_buffer_ = blocking_frames_per_buffer;
+  buffer_count_ = blocking_buffer_count;
+  if (paced) {
+    const PacedAudioProfile profile = choose_paced_audio_profile(wine, std::getenv("GT4_AUDIO_LATENCY_MS"));
+    frames_per_buffer_ = profile.frames_per_buffer;
+    buffer_count_ = profile.buffer_count;
+    target_latency_frames_ = profile.target_frames;
+    controller_ = gt4::pacing::RateController{static_cast<double>(target_latency_frames_),
+                                              1.0 / static_cast<double>(gt4::pacing::guest_vblank_rate)};
+  }
   event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!event_)
     throw std::runtime_error("Cannot create audio completion event");
@@ -295,10 +368,23 @@ AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode 
     format.wBitsPerSample = 16;
     format.nBlockAlign = 4;
     format.nAvgBytesPerSec = 192000;
-    check_audio(waveOutOpen(&device_, WAVE_MAPPER, &format,
-                            reinterpret_cast<DWORD_PTR>(event_), 0,
-                            CALLBACK_EVENT),
-                "waveOutOpen stereo16/48000");
+    // TASK-129: no device (a PC without speakers or with every output disabled answers MMSYSERR_BADDEVICEID), or any
+    // failure to open it, leaves the game without sound but running. Failures after a successful open still stop it.
+    const UINT devices = waveOutGetNumDevs();
+    MMRESULT opened = MMSYSERR_BADDEVICEID;
+    if (requested == AudioDevice::system && devices != 0)
+      opened = waveOutOpen(&device_, WAVE_MAPPER, &format, reinterpret_cast<DWORD_PTR>(event_), 0, CALLBACK_EVENT);
+    if (opened != MMSYSERR_NOERROR) {
+      char description[MAXERRORLENGTH]{};
+      if (requested == AudioDevice::system)
+        waveOutGetErrorTextA(opened, description, MAXERRORLENGTH);
+      device_ = nullptr;
+      silent_ = true;
+      std::fprintf(stderr, "[audio] no sound: %s (%u output devices, result %u); the game runs without audio\n",
+                   requested == AudioDevice::none ? "GT4_AUDIO=none" : description, devices,
+                   static_cast<unsigned>(opened));
+      return;
+    }
     for (std::size_t index = 0; index < buffer_count_; ++index) {
       auto &buffer = buffers_[index];
       buffer.header.lpData = reinterpret_cast<LPSTR>(buffer.samples.data());
@@ -312,8 +398,8 @@ AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode 
     if (paced)
       std::fprintf(stderr,
                    "[audio] Windows PCM stereo16 48000 Hz, paced: %zu x %zu "
-                   "frames, 60 ms target, non-blocking, rate control +-0.5 percent\n",
-                   buffer_count_, frames_per_buffer_);
+                   "frames, %zu ms target%s, non-blocking, rate control +-0.5 percent\n",
+                   buffer_count_, frames_per_buffer_, target_latency_frames_ / 48u, wine ? " (Wine)" : "");
     else
       std::fprintf(stderr,
                    "[audio] Windows PCM stereo16 48000 Hz, 4 x 512 frames\n");
@@ -435,9 +521,11 @@ bool AudioOutput::push_paced(const std::int16_t *samples, std::size_t frames) {
 
 bool AudioOutput::push(const std::int16_t *samples, std::size_t frames) {
   GT4_PERF_SCOPE(gt4::perf::Category::audio_push);
-  if (!device_ || (frames && !samples))
+  if (closed_ || (!device_ && !silent_) || (frames && !samples))
     throw std::runtime_error("Invalid audio sink input/lifetime");
   received_ += frames;
+  if (silent_)
+    return true;
 #if defined(GT4_PERF_PROBE) && !defined(GT4_PERF_FRAME_ONLY)
   gt4::perf::Probe::shared().audio(frames, 0);
 #endif
@@ -459,7 +547,7 @@ void AudioOutput::pump() {
   if (mode_ != gt4::pacing::Mode::paced || !device_)
     return;
   reap();
-  if (!started_ && ring_.size() >= gt4::pacing::target_latency_frames)
+  if (!started_ && ring_.size() >= target_latency_frames_)
     started_ = true;
   if (!started_)
     return;
@@ -471,8 +559,7 @@ void AudioOutput::pump() {
   // Submit only while the device stays within the target: the excess waits in
   // the ring, where the controller can see it.
   while (ring_.size() >= frames_per_buffer_ &&
-         (queued_device_buffers() + 1) * frames_per_buffer_ <=
-             gt4::pacing::target_latency_frames &&
+         (queued_device_buffers() + 1) * frames_per_buffer_ <= target_latency_frames_ &&
          !buffers_[next_buffer_].queued)
     submit_paced_block();
 }
@@ -522,6 +609,10 @@ void AudioOutput::close(bool drain) {
                    static_cast<unsigned long long>(overflow_frames_),
                    ring_.size(), resampler_.ratio());
   }
+  if (silent_ && !closed_)
+    std::fprintf(stderr, "[audio] silent: received=%llu frames dropped\n",
+                 static_cast<unsigned long long>(received_));
+  closed_ = true;
   if (event_) {
     CloseHandle(event_);
     event_ = nullptr;

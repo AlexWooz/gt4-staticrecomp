@@ -1,0 +1,173 @@
+Test project O:/gt4recomp-scratch/slice333-rc7-ra-build/build
+      Start  1: native_vulkan_pixels
+ 1/50 Test  #1: native_vulkan_pixels .................   Passed   18.08 sec
+      Start  2: native_vulkan_pixels_sync
+ 2/50 Test  #2: native_vulkan_pixels_sync ............   Passed    9.46 sec
+      Start  3: native_vulkan_pixels_baseline
+ 3/50 Test  #3: native_vulkan_pixels_baseline ........   Passed   11.24 sec
+      Start  4: native_vulkan_extensions
+ 4/50 Test  #4: native_vulkan_extensions .............   Passed    0.08 sec
+      Start  5: native_gs_submit_ring
+ 5/50 Test  #5: native_gs_submit_ring ................   Passed    0.11 sec
+      Start  6: native_fpu_chop
+ 6/50 Test  #6: native_fpu_chop ......................   Passed    0.46 sec
+      Start  7: native_vulkan_async_stress_async
+ 7/50 Test  #7: native_vulkan_async_stress_async .....   Passed    8.79 sec
+      Start  8: native_vulkan_async_stress_sync
+ 8/50 Test  #8: native_vulkan_async_stress_sync ......   Passed    4.61 sec
+      Start  9: native_vulkan_async_stress_compare
+ 9/50 Test  #9: native_vulkan_async_stress_compare ...   Passed    0.06 sec
+      Start 10: native_audio_input
+10/50 Test #10: native_audio_input ...................***Failed    4.70 sec
+PASS: XInput mapping, pressures, signed axes, digital keyboard, focus, rumble
+[audio] Windows PCM stereo16 48000 Hz, 4 x 512 frames
+[audio] received=2592 submitted=2592 completed=2592 canceled=0 pending=0 peak=4 waits=5 empty_queue=0
+[audio] Windows PCM stereo16 48000 Hz, 4 x 512 frames
+[audio] received=32 submitted=0 completed=0 canceled=0 pending=32 peak=0 waits=0 empty_queue=0
+[audio] Windows PCM stereo16 48000 Hz, 4 x 512 frames
+[audio] received=2048 submitted=2048 completed=0 canceled=2048 pending=0 peak=4 waits=0 empty_queue=0
+PASS: real Windows audio completion, ring wrap, partial drain and cancel
+[audio] Windows PCM stereo16 48000 Hz, paced: 16 x 256 frames, 60 ms target, non-blocking, rate control +-0.5 percent
+[audio] received=144000 submitted=144384 completed=142592 canceled=1792 pending=0 peak=11 waits=0 empty_queue=0
+[audio] paced: underruns=3 ring_overflow_frames=0 ring_left=29 ratio=1.005000
+FAIL: paced audio does not starve
+
+      Start 11: native_controls
+11/50 Test #11: native_controls ......................   Passed    0.11 sec
+      Start 12: native_pad_mapping
+12/50 Test #12: native_pad_mapping ...................   Passed    0.05 sec
+      Start 13: native_pacing
+13/50 Test #13: native_pacing ........................   Passed    0.06 sec
+      Start 14: native_achievements
+14/50 Test #14: native_achievements ..................   Passed    0.07 sec
+      Start 15: native_achievements_spec2
+15/50 Test #15: native_achievements_spec2 ............   Passed    0.05 sec
+      Start 16: native_achievements_http
+16/50 Test #16: native_achievements_http .............   Passed    0.15 sec
+      Start 17: native_quickfix
+17/50 Test #17: native_quickfix ......................   Passed    0.06 sec
+      Start 18: native_race_display
+18/50 Test #18: native_race_display ..................   Passed    0.23 sec
+      Start 19: native_race_widescreen
+19/50 Test #19: native_race_widescreen ...............   Passed    0.23 sec
+      Start 20: native_display_aspect
+20/50 Test #20: native_display_aspect ................   Passed    0.12 sec
+      Start 21: native_cursor_autohide
+21/50 Test #21: native_cursor_autohide ...............   Passed    0.12 sec
+      Start 22: native_shape_observer
+22/50 Test #22: native_shape_observer ................   Passed    0.11 sec
+      Start 23: native_performance_accounting
+23/50 Test #23: native_performance_accounting ........   Passed    0.10 sec
+      Start 24: native_performance_probe
+24/50 Test #24: native_performance_probe .............   Passed    0.08 sec
+      Start 25: native_mtvu_measure
+25/50 Test #25: native_mtvu_measure ..................   Passed    0.05 sec
+      Start 26: native_mtvu_ring
+26/50 Test #26: native_mtvu_ring .....................   Passed   33.56 sec
+      Start 27: native_mtvu_journal
+27/50 Test #27: native_mtvu_journal ..................   Passed   22.53 sec
+      Start 28: native_mtvu_perf
+28/50 Test #28: native_mtvu_perf .....................   Passed    0.07 sec
+      Start 29: native_mtvu_vif_batch
+29/50 Test #29: native_mtvu_vif_batch ................   Passed    0.33 sec
+      Start 30: native_mtvu_switches
+30/50 Test #30: native_mtvu_switches .................   Passed    0.08 sec
+      Start 31: native_gs_stream_ipc
+31/50 Test #31: native_gs_stream_ipc .................   Passed    4.99 sec
+      Start 32: native_gs_stream_client
+32/50 Test #32: native_gs_stream_client ..............   Passed    7.61 sec
+      Start 33: native_gs_readback_probe
+33/50 Test #33: native_gs_readback_probe .............   Passed    0.10 sec
+      Start 34: native_shape_capture_export
+34/50 Test #34: native_shape_capture_export ..........   Passed    0.17 sec
+      Start 35: native_shape_capture_control
+35/50 Test #35: native_shape_capture_control .........   Passed    0.22 sec
+      Start 36: python_native_contracts
+36/50 Test #36: python_native_contracts ..............***Timeout 120.05 sec
+................................................................GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpvamylizq\owner\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpvamylizq\owner\private\manual-play\session-20261027-021908-999244
+.........ss...........................s..........................................................................................s.......s.GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmp6o587udp\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmp6o587udp\private\manual-play\session-20261027-022000-318087
+Measurement mode: gs-async
+Performance test: F7 starts, F8 reports, F9 toggles diagnostics. Owner controls gameplay.
+VU1 verify: every 50th generated call is compared with the interpreter; mismatches go to the session log.
+......FAIL: --vu1-verify and --vu1-interpret-only require --mode vu1-aot, gs-async, pacing, vu1-flags, vu1-full, quickfix, vu1-all, quickfix2, quickfix3, vu0-aot, main or mtvu-measure
+FAIL: --vu1-verify and --vu1-interpret-only require --mode vu1-aot, gs-async, pacing, vu1-flags, vu1-full, quickfix, vu1-all, quickfix2, quickfix3, vu0-aot, main or mtvu-measure
+FAIL: --vu1-verify takes a positive N
+FAIL: --vu1-verify compares against the AOT path; it cannot be combined with --vu1-interpret-only
+.....s..s......F..FAIL: --gs-scale takes 1..12 and requires --mode pcsx2
+FAIL: --gs-scale takes 1..12 and requires --mode pcsx2
+.......s.sss.....s.......s.....s...........FFFFF....FFFF.....FAIL: --gs-resolution requires --mode pcsx2
+FAIL: --gs-resolution and --gs-scale both set the internal resolution
+FAIL: --gs-scale (or --gs-resolution) and --gs-setting upscale=... both set the internal resolution
+...FAIL: --gs-setting requires --mode pcsx2
+FAIL: unknown GS setting 'nope' (ids are in docs/launcher/gs-settings.toml)
+FAIL: upscale must be one of 1080p, 10x, 11x, 1440p, 480p, 4K, 5x, 720p, 7x, 8K, 8x, 9x, got '13'
+FAIL: unknown GS setting 'gt4_readback' (ids are in docs/launcher/gs-settings.toml)
+FAIL: --gs-readback and --gs-setting performance_mode=... both set the readback mode
+FAIL: --gs-scale (or --gs-resolution) and --gs-setting upscale=... both set the internal resolution
+...........F.....F..F...........................s......s.s..s.s..s.....FAIL: --gs-readback requires --mode pcsx2
+....frames 2: adjacent 4.350 alternate 8.577 comb 0.507 flicker mean 0.000 max 0.000
+GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmplw8zht38\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmplw8zht38\private\manual-play\session-20261027-022011-609634
+GS: PCSX2 GS process, readback mode accurate, scale 3x.
+.GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpkm7bf1wv\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpkm7bf1wv\private\manual-play\session-20261027-022011-616783
+GS: PCSX2 GS process, readback mode accurate, scale 3x.
+GS process stopped; restarting with the built-in renderer (CoreGS 1.1). Previous log: C:\Users\Alano\AppData\Local\Temp\tmpkm7bf1wv\private\manual-play\session-20261027-022011-616783
+GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpkm7bf1wv\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpkm7bf1wv\private\manual-play\session-20261027-022011-619379
+Restart with the built-in renderer (CoreGS 1.1) after the GS process stopped.
+
+      Start 37: vu_recomp_core
+37/50 Test #37: vu_recomp_core .......................   Passed    0.67 sec
+      Start 38: vu_recomp_differential
+38/50 Test #38: vu_recomp_differential ...............   Passed    0.22 sec
+      Start 39: vu_recomp_corpus
+39/50 Test #39: vu_recomp_corpus .....................   Passed  344.81 sec
+      Start 40: vu1_aot_registry
+40/50 Test #40: vu1_aot_registry .....................   Passed    0.60 sec
+      Start 41: vu0_emitter
+41/50 Test #41: vu0_emitter ..........................   Passed    0.11 sec
+      Start 42: vu0_aot_registry
+42/50 Test #42: vu0_aot_registry .....................   Passed    0.23 sec
+      Start 43: vu0_aot_differential
+43/50 Test #43: vu0_aot_differential .................   Passed    0.55 sec
+      Start 44: native_memcard_store
+44/50 Test #44: native_memcard_store .................   Passed    1.61 sec
+      Start 45: native_license_guard
+45/50 Test #45: native_license_guard .................   Passed    0.05 sec
+      Start 46: native_standalone
+46/50 Test #46: native_standalone ....................   Passed    0.06 sec
+      Start 47: native_game_target
+47/50 Test #47: native_game_target ...................   Passed    0.05 sec
+      Start 48: native_spec2_iop
+48/50 Test #48: native_spec2_iop .....................   Passed    0.07 sec
+      Start 49: native_spec2_hooks
+49/50 Test #49: native_spec2_hooks ...................   Passed    0.69 sec
+      Start 50: native_flare_limits
+50/50 Test #50: native_flare_limits ..................   Passed    0.08 sec
+
+96% tests passed, 2 tests failed out of 50
+
+Total Test time (real) = 603.60 sec
+
+The following tests FAILED:
+	 10 - native_audio_input (Failed)
+	 36 - python_native_contracts (Timeout)
+Errors while running CTest

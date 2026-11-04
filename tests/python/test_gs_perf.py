@@ -126,6 +126,9 @@ class SwitchTests(unittest.TestCase):
         self.assertIn('GT4_GS_WAKE_BYTES', probe.GS_STREAM_NAMES)
         self.assertIn('GT4_GS_STREAM_HASH', probe.GS_STREAM_NAMES)
         self.assertNotIn('GT4_GS_STREAM_HASH', probe.GS_USER_SETTINGS)
+        # TASK-117: the no-flare answer is a game-side switch, so headless runs keep it and owner runs use the default.
+        self.assertIn('GT4_GS_HIDE_FLARES', probe.GS_STREAM_NAMES)
+        self.assertNotIn('GT4_GS_HIDE_FLARES', probe.GS_USER_SETTINGS)
         environment = {'GT4_GS_WAKE_BYTES': '0', 'GT4_GS_STREAM_HASH': '1', 'GT4_RENDERER': 'donor'}
         evidence = {'gs_stream': {'renderer': 'pcsx2', 'gs_process': 'private/x/gt4-gs.exe'},
                     'runtime_dependencies': [{'path': 'private/x/gt4-gs.exe', 'sha256': '0' * 64}]}

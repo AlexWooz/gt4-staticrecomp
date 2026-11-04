@@ -2,7 +2,7 @@
  * Unit tests for GT4.spatial.pickNext (ui/js/spatial.js). Runs in any browser
  * through nav-test.html; prints PASS/FAIL per case and a summary.
  */
-(function (root) {
+function startNavTest(root) {
   "use strict";
   var pick = root.GT4.spatial.pickNext;
   var cases = [];
@@ -224,15 +224,42 @@
   same("a trigger inside its deadzone fills but does not press", [light.buttons.l2.value > 0, light.buttons.l2.pressed], [true, false]);
   same("R2 options (curve) shape the output", Math.round(CM.liveState(CM.padLive(fakePad([], { RT: 0.5 })), defaults, {}).buttons.r2.output * 100), 25);
 
-  same("trigger output: linear 255 is full", CM.triggerOutput(1, 30 / 255, "linear"), 1);
-  same("trigger output: at the deadzone it is 0", CM.triggerOutput(30 / 255, 30 / 255, "linear"), 0);
-  same("trigger output: the integer formula of native/controls.cpp", CM.triggerOutput(128 / 255, 30 / 255, "linear"), Math.floor((98 * 255) / 225) / 255);
-  same("trigger output: cubic at half travel", Math.round(CM.triggerOutput(0.5, 0, "cubic") * 1000), 125);
-  // Half travel rounds to raw byte 128; native/controls.cpp floors the shaped pressure byte.
-  same("trigger output: s-curve quantized half travel", CM.triggerOutput(0.5, 0, "s_curve"), 128 / 255);
-  same("trigger output: smooth power quantized half travel", CM.triggerOutput(0.5, 0, "smooth_power"), 90 / 255);
-  same("trigger output: sublinear quantized half travel", CM.triggerOutput(0.5, 0, "sublinear"), 180 / 255);
-  same("trigger output: logarithmic quantized half travel", CM.triggerOutput(0.5, 0, "logarithmic"), 189 / 255);
+  // Full parity verification against native C++ controls_fixture vectors across all 7 curves
+  var curves7 = ["linear", "quadratic", "cubic", "s_curve", "smooth_power", "sublinear", "logarithmic"];
+
+  // 1. Zero deadzone: rest at 0, half travel (raw 128) bit-exact to C++ fixture, and full travel at 255
+  var midDz0 = { linear: 128, quadratic: 64, cubic: 32, s_curve: 128, smooth_power: 90, sublinear: 180, logarithmic: 189 };
+  curves7.forEach(function (c) {
+    same("trigger output dz=0 rest " + c, CM.triggerOutput(0, 0, c), 0);
+    same("trigger output dz=0 mid " + c, CM.triggerOutput(128 / 255, 0, c), midDz0[c] / 255);
+    same("trigger output dz=0 full " + c, CM.triggerOutput(1, 0, c), 1);
+  });
+
+  // 2. Default deadzone (30/255): rest at threshold (raw 30), mid travel (raw 142) bit-exact to C++, and full travel
+  var midDzDefault = { linear: 126, quadratic: 63, cubic: 31, s_curve: 126, smooth_power: 89, sublinear: 179, logarithmic: 188 };
+  curves7.forEach(function (c) {
+    same("trigger output default dz rest " + c, CM.triggerOutput(30 / 255, 30 / 255, c), 0);
+    same("trigger output default dz mid " + c, CM.triggerOutput(142 / 255, 30 / 255, c), midDzDefault[c] / 255);
+    same("trigger output default dz full " + c, CM.triggerOutput(1, 30 / 255, c), 1);
+  });
+
+  // 3. Representative half deadzone (0.5): rest at raw 128, mid travel (raw 192) bit-exact to C++, and full travel
+  var midDzHalf = { linear: 128, quadratic: 64, cubic: 32, s_curve: 129, smooth_power: 91, sublinear: 181, logarithmic: 189 };
+  curves7.forEach(function (c) {
+    same("trigger output 0.5 dz rest " + c, CM.triggerOutput(128 / 255, 0.5, c), 0);
+    same("trigger output 0.5 dz mid " + c, CM.triggerOutput(192 / 255, 0.5, c), midDzHalf[c] / 255);
+    same("trigger output 0.5 dz full " + c, CM.triggerOutput(1, 0.5, c), 1);
+  });
+
+  // TASK-161: the game's 100% at the end of a trigger's travel, on its own scale and with the full trigger range.
+  same("R2's game 100% is 45", CM.triggerFull("r2", ["xinput:RT"], false), 45);
+  same("L2's game 100% is 84", CM.triggerFull("l2", ["xinput:LT | deadzone=0.100 curve=linear"], false), 84);
+  same("a trigger on another button keeps the byte", CM.triggerFull("cross", ["xinput:RT"], false), 255);
+  same("range sets the game scale's full", CM.triggerFull("r2", ["key:R", "xinput:RT | range=84"], false), 84);
+  same("full range: the whole byte", CM.triggerFull("r2", ["xinput:RT | range=45"], true), 255);
+  same("full range: range_full sets it", CM.triggerFull("l2", ["xinput:LT | range=84 range_full=200"], true), 200);
+  same("range_full is ignored on the game scale", CM.triggerFull("l2", ["xinput:LT | range_full=200"], false), 84);
+  same("no trigger source: the defaults", CM.triggerFull("r2", ["key:R"], true), 255);
 
   same("KeyZ is Z", CM.keyFromEvent({ code: "KeyZ", key: "z" }), { name: "Z" });
   same("Digit1 is 1", CM.keyFromEvent({ code: "Digit1", key: "1" }), { name: "1" });
@@ -311,4 +338,9 @@
   }
 
   run();
-})(window);
+}
+
+// The footer labels come from the locale files (ui/locales): the cases run once they are loaded.
+window.GT4.i18n.ready.then(function () {
+  startNavTest(window);
+});

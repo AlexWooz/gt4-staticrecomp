@@ -4,10 +4,16 @@
 
 pub mod cnf;
 pub mod elf;
+pub mod identify;
 pub mod iso;
 pub mod pins;
 pub mod setup;
+pub mod spec2;
+pub mod spec2_elf;
+pub mod spec2_pins;
 pub mod testing;
 
+pub use identify::{DiscGame, Identified};
 pub use pins::{Identity, Pins};
+pub use spec2_pins::Spec2Pins;
 pub use setup::{SetupError, SetupRequest, Stage};

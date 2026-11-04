@@ -61,9 +61,15 @@ std::string random_hex128() {
 
 std::wstring widen(const std::string &text) {
   if (text.empty()) return {};
-  const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  // A path from the environment is in the ANSI code page (C:\\Users\\Jo\u00e3o), which is usually not valid UTF-8: that decides which it is.
+  UINT code_page = CP_UTF8;
+  int count = MultiByteToWideChar(code_page, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  if (count == 0) {
+    code_page = CP_ACP;
+    count = MultiByteToWideChar(code_page, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  }
   std::wstring wide(static_cast<std::size_t>(count), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), count);
+  MultiByteToWideChar(code_page, 0, text.data(), static_cast<int>(text.size()), wide.data(), count);
   return wide;
 }
 
@@ -392,20 +398,36 @@ void Session::post_vsync(const VsyncPayload &vsync) {
   }
 }
 
-std::uint32_t Session::read_fifo(std::uint32_t qwords, void *out) {
+std::uint64_t Session::post_read_fifo_nowait(std::uint32_t qwords) {
   ControlBlock &c = *control_;
-  const std::uint64_t bytes = static_cast<std::uint64_t>(qwords) * 16;
-  if (bytes > c.response_capacity) throw IpcError("READ_FIFO larger than the response area");
+  if (static_cast<std::uint64_t>(qwords) * 16 > c.response_capacity) throw IpcError("READ_FIFO larger than the response area");
   const std::uint64_t id = load(c.readback_request, std::memory_order_relaxed) + 1;
   store(c.readback_request, id);
   const ReadFifoPayload request{qwords, 0, id};
   post(RecordType::read_fifo, 0, &request, sizeof request);
-  wait_until([&] { return load(c.readback_done) >= id; }, &c.response_waiter, Wake::response, &waits_.response_wait_us,
-             INFINITE, "a readback reply");
-  if (load(c.readback_done) != id) throw IpcError("GS stream readback reply out of order");
+  return id;
+}
+
+bool Session::readback_reply(std::uint64_t request_id, void *out, std::uint32_t qwords) {
+  ControlBlock &c = *control_;
+  const std::uint64_t bytes = static_cast<std::uint64_t>(qwords) * 16;
+  if (bytes > c.response_capacity) throw IpcError("READ_FIFO larger than the response area");
+  if (load(c.readback_done) != request_id) return false;
   const std::uint64_t reply = std::min(load(c.readback_bytes), bytes);
   std::memcpy(out, response_, static_cast<std::size_t>(reply));
   if (reply < bytes) std::memset(static_cast<std::uint8_t *>(out) + reply, 0, static_cast<std::size_t>(bytes - reply));
+  return true;
+}
+
+std::uint32_t Session::readback_status() const { return load32(control_->readback_status); }
+
+std::uint32_t Session::read_fifo(std::uint32_t qwords, void *out) {
+  ControlBlock &c = *control_;
+  const std::uint64_t id = post_read_fifo_nowait(qwords);
+  wait_until([&] { return load(c.readback_done) >= id; }, &c.response_waiter, Wake::response, &waits_.response_wait_us,
+             INFINITE, "a readback reply");
+  if (load(c.readback_done) != id) throw IpcError("GS stream readback reply out of order");
+  readback_reply(id, out, qwords);
   return load32(c.readback_status);
 }
 

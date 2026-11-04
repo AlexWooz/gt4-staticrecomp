@@ -27,6 +27,11 @@ Options:
               Adds cdvdfsv.cpp to the capsule; without GT4_FSV_TRACE set at run time the game behaves as the donor.
   --halt-dump add the halt forensic dump to kernel.cpp (scripts/halt_dump_overlay.inc, slice 204). Adds kernel.cpp
               to the capsule; without GT4_HALT_DUMP set at run time the game behaves as the donor.
+  --spec2-iop TASK-100 S7b: add the Spec II IOP reboot rule to iop/sif.cpp (scripts/spec2_iop_overlay.inc,
+              native/spec2_iop.hpp). The Spec II disc reboots the IOP with DNAS310.IMG; like IOPRP300.IMG it is a Sony
+              IOP image whose 16 system modules the runtime serves as HLE, and it reports LOADFILE 3100, so the
+              asynchronous FILEIO server (the one the donor selected for "IOPRP") must be selected there too. Adds
+              sif.cpp to the capsule; a game that never asks for DNAS310.IMG behaves as the donor.
 
 Slices 156 and 158 used --gs-crt-override and --display-table-override. Both hooks were removed in slice164
 (the 480p switch is a host-side guest RAM write, native/race_display.*). Their capsules stay pinned in
@@ -71,6 +76,20 @@ HALT_OVERLAY_PATH = ROOT / 'scripts/halt_dump_overlay.inc'
 HALT_OVERLAY_ANCHORS = {
     'helpers': ('before', 'void dump() {\n'),
     'dump_call': ('after', '        if (!s.waiters.empty()) std::fprintf(stderr, "[sema] %d count %d waiters %zu\\n", id, s.count, s.waiters.size());\n'),
+}
+# Spec II IOP reboot rule (TASK-100 S7b): one donor file, runtime/src/iop/sif.cpp. The Spec II disc reboots the IOP
+# with DNAS310.IMG instead of IOPRP300.IMG; both are Sony reboot images with the same 16 HLE system modules, and both
+# report a 3.x LOADFILE version, but the donor enabled the asynchronous FILEIO server only for "IOPRP". The overlay
+# replaces the donor's line with the rule in native/spec2_iop.hpp, and rewrites its local include block to
+# runtime/src-relative paths because the derived file is compiled from the capsule directory.
+SPEC2_IOP_PIN = {'iop/sif.cpp': '182a24218d719a669b3742867f9901b49d2e1043393f2211e93363dc0180dacc'}
+SPEC2_IOP_OVERLAY_PATH = ROOT / 'scripts/spec2_iop_overlay.inc'
+SPEC2_IOP_ANCHORS = {
+    'includes': ('replace',
+                 '#include "sif.hpp"\n\n#include "../hw.hpp"\n#include "iop.hpp"\n#include "io.hpp"\n#include "kernel.hpp"\n'),
+    'reboot': ('replace',
+               '    if (path.find("IOPRP") != std::string::npos) g_fileio_async = true;\n'
+               '    if (const auto space = path.find(\' \'); space != std::string::npos) read_loadfile_version(path.substr(space + 1));\n'),
 }
 OVERLAY_PATH = ROOT / 'scripts/vu1_aot_overlay.inc'
 VU0_OVERLAY_PATH = ROOT / 'scripts/vu0_aot_overlay.inc'
@@ -403,6 +422,11 @@ def apply_halt_dump(source):
     return apply_overlay(source, HALT_OVERLAY_PATH, HALT_OVERLAY_ANCHORS, 'halt dump')
 
 
+def apply_spec2_iop(source):
+    """Spec II IOP reboot rule (slice 276): checks that removing its sections restores the input."""
+    return apply_overlay(source, SPEC2_IOP_OVERLAY_PATH, SPEC2_IOP_ANCHORS, 'Spec II IOP reboot')
+
+
 def apply_mtvu_measure(name, source):
     """Adds the TASK-011 step 0 counting hooks; checks that removing them restores the input."""
     result = source
@@ -572,7 +596,8 @@ def derive(name, source, *, split_vu=False, vu1_aot=False, vu0_aot=False, mtvu_m
 
 
 def prepare(output, assets_root=None, *, split_vu=False, vu1_aot=False, vu0_aot=False, mtvu_measure=False,
-            mtvu=False, gs_stream=False, fsv_trace=False, halt_dump=False, frame_cost=False):
+            mtvu=False, gs_stream=False, fsv_trace=False, halt_dump=False, frame_cost=False,
+            spec2_iop=False):
     if gs_stream:
         mtvu = True
     if frame_cost and not mtvu:
@@ -634,6 +659,15 @@ def prepare(output, assets_root=None, *, split_vu=False, vu1_aot=False, vu0_aot=
             text = data.decode('utf-8').replace('\r\n', '\n')
             halt_sources[Path(name).name] = apply_halt_dump(text)
     sources.update(halt_sources)
+    spec2_sources = {}
+    if spec2_iop:
+        for name, expected in SPEC2_IOP_PIN.items():
+            data = (donor / name).read_bytes()
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise ValueError(f'Qualified donor source differs: {name}')
+            text = data.decode('utf-8').replace('\r\n', '\n')
+            spec2_sources[Path(name).name] = apply_spec2_iop(text)
+    sources.update(spec2_sources)
     output.mkdir()
     receipt = {'donor_revision': '1b4808793a12c45125262fd2d5f50a9ec9f7c020',
                'donor_sha256': dict(PINS), 'source_sha256': {}}
@@ -645,6 +679,11 @@ def prepare(output, assets_root=None, *, split_vu=False, vu1_aot=False, vu0_aot=
         receipt['donor_sha256'].update(HALT_PIN)
         receipt['halt_dump_profile'] = 'overlay-v1'
         receipt['halt_dump_overlay_sha256'] = hashlib.sha256(HALT_OVERLAY_PATH.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+    if spec2_iop:
+        receipt['donor_sha256'].update(SPEC2_IOP_PIN)
+        receipt['spec2_iop_profile'] = 'dnas310-reboot-v1'
+        receipt['spec2_iop_overlay_sha256'] = hashlib.sha256(
+            SPEC2_IOP_OVERLAY_PATH.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
     if split_vu:
         receipt['vu_scope_profile'] = 'unit_split_run_fast_only'
     if vu1_aot:
@@ -686,9 +725,11 @@ if __name__ == '__main__':
     parser.add_argument('--gs-stream', action='store_true')
     parser.add_argument('--fsv-trace', action='store_true')
     parser.add_argument('--halt-dump', action='store_true')
+    parser.add_argument('--spec2-iop', action='store_true',
+                        help='TASK-100 S7b: the Spec II IOP reboot rule (DNAS310.IMG selects the asynchronous FILEIO server)')
     parser.add_argument('--frame-cost', action='store_true',
                         help='TASK-084: also add the frame-cost instrumentation hooks (run loop, VIF1 chain, GIF walk)')
     args = parser.parse_args()
     prepare(args.output, args.assets_root, split_vu=args.split_vu, vu1_aot=args.vu1_aot, vu0_aot=args.vu0_aot,
             mtvu_measure=args.mtvu_measure, mtvu=args.mtvu, gs_stream=args.gs_stream, fsv_trace=args.fsv_trace,
-            halt_dump=args.halt_dump, frame_cost=args.frame_cost)
+            halt_dump=args.halt_dump, frame_cost=args.frame_cost, spec2_iop=args.spec2_iop)

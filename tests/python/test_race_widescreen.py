@@ -92,7 +92,7 @@ class WidescreenProbeTests(unittest.TestCase):
     def test_pcsx2_mode_is_slice217_and_older_builds_are_history(self):
         # TASK-080 (slice215, P2 slice217): the TASK-079 hold is still in it (hardened: settle rule); GT4_FORCE_WIDESCREEN
         # stays.
-        self.assertEqual(probe.PERF_PROFILES['pcsx2'], ('slice1200-pcsx2.json', 'private/slice1200-dualsense-build/build/gt4vulkan.exe'))
+        self.assertEqual(probe.PERF_PROFILES['pcsx2'], ('slice279-pcsx2.json', 'private/slice279-build/build/gt4vulkan.exe'))
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice215'], ('slice215-pcsx2.json', 'private/slice215-build/build/gt4vulkan.exe'))
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice214'], ('slice214-pcsx2.json', 'private/slice214-build/build/gt4vulkan.exe'))
         self.assertEqual(probe.PERF_PROFILES['pcsx2-slice213'], ('slice213-pcsx2.json', 'private/slice213-build/build/gt4vulkan.exe'))

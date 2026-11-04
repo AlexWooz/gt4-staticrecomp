@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "schema": "spec2-iop/1",
+  "purpose": "IOP module map and offline policy for the Spec II target (TASK-100 S6). The game loads these from cdrom0:\\IRX\\; the /NET modules are the online (DNAS) path.",
+  "iso_sha256": "6a3484b9672c10a92154ecee6faa5bbcfd4ed8cd538d8283e429c3fe6e1704b2",
+  "module_load_list_from_text": {
+    "evidence": "lower-case module names in the Spec II SCUS_974.36 image (Confirmed: literal strings)",
+    "names": [
+      "pad2/ds2u_d.irx",
+      "sio2man.irx",
+      "mcman.irx",
+      "mcserv.irx",
+      "sio2d.irx",
+      "dbcman.irx",
+      "libsd.irx",
+      "usbd.irx",
+      "inet.irx",
+      "netcnf.irx",
+      "inetctl.irx",
+      "smap.irx",
+      "ppp.irx",
+      "pppoe.irx",
+      "msifrpc.irx",
+      "libpdi.irx",
+      "pdicdvd.irx",
+      "pdispu2.irx",
+      "pdistr.irx",
+      "pdiusb.irx",
+      "ustorage.irx",
+      "lgdev.irx",
+      "dev9.irx",
+      "powoff.irx",
+      "rtinetb.irx",
+      "eyetoy.irx",
+      "pdinetcnf.irx",
+      "lgaud.irx"
+    ],
+    "note": "Presence in the image means the code can ask for it; the actual load order and conditionals are Unknown until S7b runs the boot."
+  },
+  "modules": [
+    {
+      "path": "/IRX/DBCMAN.IRX",
+      "size_bytes": 15653,
+      "sha256": "a7a0672f1ca28b3218f9b86fe49da9698039b61bde671503def77030dfa46272",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/DEV9.IRX",
+      "size_bytes": 14309,
+      "sha256": "5fa5df843113a4f5a304558549a51e64a73e933fb8650689c75c2de6e723ba2a",
+      "vs_v200": "changed",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/DS2U_D.IRX",
+      "size_bytes": 12149,
+      "sha256": "646dae56586c7ead85d4b8be66e4f23bf16ca620c40cb7edd00626ff08b2694b",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/EYETOY.IRX",
+      "size_bytes": 26765,
+      "sha256": "e70636685f97198f156a52f10d8d53d9f92b8a44445cb4c1e41d8736fb6b49a3",
+      "vs_v200": "changed",
+      "policy": "not_loaded"
+    },
+    {
+      "path": "/IRX/INET.IRX",
+      "size_bytes": 143677,
+      "sha256": "0e2564549213804ef1ef01a1b35a82f16c387abc9711e37828c7362b7b3d6a4a",
+      "vs_v200": "changed",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/INETCTL.IRX",
+      "size_bytes": 24861,
+      "sha256": "d13a7e163e82f22a5ea6d5184c255d54b206356769a42149f58beac26ef42699",
+      "vs_v200": "changed",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/LGAUD.IRX",
+      "size_bytes": 49933,
+      "sha256": "da006f3fb652c7612192a082b073de5a39bdaeac1477ef8473eea421e9cc432a",
+      "vs_v200": "new",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/LGDEV.IRX",
+      "size_bytes": 49517,
+      "sha256": "524a6f1801022de98c475ea4b5872bb9376a0b9c74d31d48db3eff3d5bd36037",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/LIBPDI.IRX",
+      "size_bytes": 14417,
+      "sha256": "db0fa26e88af3897d298cb1b8cb53a9117271b143339f37c346461c31d8f3766",
+      "vs_v200": "same",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/LIBSD.IRX",
+      "size_bytes": 30085,
+      "sha256": "7f22ebd0a7f36458ba1f82b1d26f36266e63372173f8cd72bfc32e5b8a465dd8",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/MCMAN.IRX",
+      "size_bytes": 103677,
+      "sha256": "52b189205f25e914ef5ea913429af14815c773b24d27ee733a4e708c00306e46",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/MCSERV.IRX",
+      "size_bytes": 7713,
+      "sha256": "cc85019b02b2a5b1a87e743085c8140cb8bc8a155576745139a521dc503f1699",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/MSIFRPC.IRX",
+      "size_bytes": 8105,
+      "sha256": "a819296432e465c41ef19270db0a491726bea4e51c0f891a9f78dc1708f7acb7",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/MTAPMAN.IRX",
+      "size_bytes": 10853,
+      "sha256": "101f01bd5145e5a27d2156f909747107b20986d808ea6fe9471f33a063869138",
+      "vs_v200": "changed",
+      "policy": "not_loaded"
+    },
+    {
+      "path": "/IRX/NETCNF.IRX",
+      "size_bytes": 66253,
+      "sha256": "819db87e88d71c06a4b60f35f883aaa1fb0dabafdd4f54959681c78d2ec73c60",
+      "vs_v200": "changed",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/PADMAN.IRX",
+      "size_bytes": 45925,
+      "sha256": "1e3f3673818a5ddbf58de404cf4dda3de41a634687717bc9117331df71d2bcee",
+      "vs_v200": "changed",
+      "policy": "not_loaded"
+    },
+    {
+      "path": "/IRX/PDICDVD.IRX",
+      "size_bytes": 9597,
+      "sha256": "deeeb453a807b91263a9ed588b3deb6717cae210fd150f8a986760a4eb4d345e",
+      "vs_v200": "same",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/PDINETCNF.IRX",
+      "size_bytes": 11557,
+      "sha256": "a2dd29d6f8f8329572af0ea014b8375ee230d0e6bad64391d6fac36bf2695213",
+      "vs_v200": "same",
+      "policy": "not_loaded"
+    },
+    {
+      "path": "/IRX/PDISPU2.IRX",
+      "size_bytes": 19261,
+      "sha256": "8c8934d81ef7a84449b7c324586d3384621194a0c8cc4ced722e11b524d86920",
+      "vs_v200": "same",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/PDISTR.IRX",
+      "size_bytes": 20845,
+      "sha256": "b237e20df657e9c58416dfa6a7a4a13938c80839ab06d9c12fcc093288f8a935",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/PDIUSB.IRX",
+      "size_bytes": 25181,
+      "sha256": "2f23840312e5c7e1474c5ebae69a33c0d47ed1a40f06428c0bf86fec7ede1a76",
+      "vs_v200": "same",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/POWOFF.IRX",
+      "size_bytes": 1673,
+      "sha256": "f1a07ffd59b1dc01b1a4e3e82513788868f5e0b62df5befd4268ffec04e96c6f",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/PPP.IRX",
+      "size_bytes": 102589,
+      "sha256": "b9c82909c8f3ba46d6017f67fa1ecf7e6dd59c55f96feb0672fcafc0e2af0871",
+      "vs_v200": "new",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/PPPOE.IRX",
+      "size_bytes": 17305,
+      "sha256": "244d1c239897cdee28252466450dd5fa5837dc0a4425eb688605c830a1583b6f",
+      "vs_v200": "new",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/RTINETB.IRX",
+      "size_bytes": 32869,
+      "sha256": "69ebf96d81a70cbe5368e4b264a4a842b1a0a8129e3e5065b28921a18f1d4b95",
+      "vs_v200": "changed",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/SIO2D.IRX",
+      "size_bytes": 11289,
+      "sha256": "6db37ec9b3789edd97fec5498c58677e9885e872b3d14b6c6e278664d1d89ca7",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/SIO2MAN.IRX",
+      "size_bytes": 5217,
+      "sha256": "7c5116436fd09cbdb3c64ca4b044b86f1cb4c8864fd3e25ce75fa7e8bf89d842",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/SMAP.IRX",
+      "size_bytes": 17089,
+      "sha256": "293a7792d5be70d566558c2fd39a0dff91532d64dabdf8bec4d1a62c9711e993",
+      "vs_v200": "changed",
+      "policy": "interpreted_no_device"
+    },
+    {
+      "path": "/IRX/USBD.IRX",
+      "size_bytes": 35009,
+      "sha256": "564d684d2e9ac10af7d66bb4ec0cb835816e6b5d3fe2f6c38566ff47dc86bb72",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/IRX/USTORAGE.IRX",
+      "size_bytes": 9685,
+      "sha256": "fc4ec7167a04f9e2a57ca0fb0ce6b76737e51d797cdb1ebbf544aedbbac352c4",
+      "vs_v200": "changed",
+      "policy": "interpreted"
+    },
+    {
+      "path": "/NET/DNAS_MC.ERX",
+      "size_bytes": 897109,
+      "sha256": "df2dd0b696c268799d596ec8a98c8feeb01881d2fd48b85498a0430052cfa45c",
+      "vs_v200": "new",
+      "policy": "not_loaded_offline"
+    },
+    {
+      "path": "/NET/DNAS_NET.ERX",
+      "size_bytes": 1869489,
+      "sha256": "147015a871072c9349976282a78530854c9c9653b34dc69af648f456bf8968e2",
+      "vs_v200": "new",
+      "policy": "not_loaded_offline"
+    },
+    {
+      "path": "/NET/ICON.SYS",
+      "size_bytes": 964,
+      "sha256": "c16b6c289ed4bfe689a946a472b3a6538c728af8b97e89a61e6826429f4ec407",
+      "vs_v200": "same",
+      "policy": "data"
+    },
+    {
+      "path": "/NET/NTG_ISCK.ERX",
+      "size_bytes": 3553,
+      "sha256": "d590e2abf20a523b049ead941643858a7e02276a9af87a315a620fbcf295b996",
+      "vs_v200": "new",
+      "policy": "not_loaded_offline"
+    },
+    {
+      "path": "/NET/SYS_NET.ICO",
+      "size_bytes": 33688,
+      "sha256": "81a1ca7be743bbeea91f0674cde930f8ab956458151d9525ba7dd89ce32a0157",
+      "vs_v200": "same",
+      "policy": "data"
+    }
+  ],
+  "policies": {
+    "interpreted": "Loaded and executed by the donor's IOP interpreter, as every game IRX is today (docs/IOP-MAP.md). No host model needed.",
+    "interpreted_no_device": "Loaded and interpreted, but the module drives DEV9/SMAP/PPP hardware that this runtime does not model. Expected behaviour: the module loads, its device open fails or returns 'no device'. A hang here is a S7b finding; the fallback order is a per-module instruction counter, then an HLE stub that reports 'no network device', then refusal to load.",
+    "not_loaded": "Present on the disc and never requested by v2.00's boot; Spec II lists the name but the offline path is Unknown until S7b. No host action.",
+    "not_loaded_offline": "DNAS authentication modules under /NET. Offline play must not load them; if the game asks for them offline, that is a S7b finding (they need a network and a server).",
+    "data": "Not a module: an icon/config file read by the network UI."
+  },
+  "confidence": {
+    "module_list_and_hashes": "Confirmed (read from the owner's Spec II ISO)",
+    "load_list_names": "Confirmed (literal strings in SCUS_974.36)",
+    "per_module_policy": "Hypothesis until S7b runs the boot; the fallback order is stated above",
+    "v2.00_comparison": "Confirmed (same read from the v2.00 ISO; the beta shares Spec II's /IRX set)"
+  },
+  "total_bytes": 3747861
+}

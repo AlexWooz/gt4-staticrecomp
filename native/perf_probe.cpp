@@ -1,4 +1,5 @@
 #include "perf_probe.hpp"
+#include "perf_clock.hpp"
 
 #ifdef GT4_VU1_AOT
 namespace ps2::vu {
@@ -25,10 +26,7 @@ Probe::MtvuReport g_mtvu_report = nullptr;
 Probe::MtvuReset g_mtvu_reset = nullptr;
 Probe::MtvuReport g_gs_ipc_report = nullptr;
 Probe::MtvuReset g_gs_ipc_reset = nullptr;
-std::uint64_t wall_us() {
-  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count());
-}
+std::uint64_t wall_us() { return scope_wall_us(); }
 std::uint64_t cpu_us() {
   FILETIME created{}, exited{}, kernel{}, user{};
   if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user))
@@ -87,8 +85,8 @@ FrameCounters &frame_counters() noexcept { return g_frame_counters; }
 void reset_frame_counters() noexcept { g_frame_counters = FrameCounters{}; }
 
 SyscallScope::SyscallScope(std::uint32_t number) noexcept
-    : start_us_(counters_enabled() ? wall_us() : 0), number_(number & 0x7Fu) {
-  if (counters_enabled()) ++g_frame_counters.syscalls;
+    : start_us_(counters_enabled() && Probe::shared().enabled() ? wall_us() : 0), number_(number & 0x7Fu) {
+  if (start_us_ != 0) ++g_frame_counters.syscalls;
 }
 
 SyscallScope::~SyscallScope() {

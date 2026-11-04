@@ -201,25 +201,24 @@
     });
   }, true);
 
-  var dateFormat = null;
-  try {
-    dateFormat = new Intl.DateTimeFormat("en-GB", {
-      day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
-    });
-  } catch (err) {
-    dateFormat = null;
-  }
-
-  // Formats an ISO timestamp from Rust; returns the raw text when it cannot parse.
+  // Formats an ISO timestamp from Rust in the interface language (issue #89: the Saves dates followed en-GB, so pt-BR
+  // showed English month names). The formatter is built per call, so a language change applies at once. Returns the
+  // raw text when it cannot parse.
   function formatDate(iso) {
     if (!iso) {
       return "";
     }
     var date = new Date(iso);
-    if (isNaN(date.getTime()) || !dateFormat) {
+    if (isNaN(date.getTime())) {
       return String(iso);
     }
-    return dateFormat.format(date);
+    try {
+      return new Intl.DateTimeFormat(GT4.i18n.intlLocale(), {
+        day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
+      }).format(date);
+    } catch (err) {
+      return String(iso);
+    }
   }
 
   // Keeps the page shell and the app-level hooks in one place.

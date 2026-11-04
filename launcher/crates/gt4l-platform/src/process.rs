@@ -19,14 +19,24 @@ mod windows_impl {
     use std::ffi::c_void;
     use std::mem::size_of;
 
-    use windows::core::{w, PCWSTR};
+    use windows::core::{w, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess};
+    use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
+
+    /// The folder the single-instance lock belongs to (the portable build, TASK-098). Unset: one lock for the PC user.
+    static SCOPE: OnceLock<PathBuf> = OnceLock::new();
+
+    /// Makes the single-instance lock belong to `folder`, so two copies in different folders do not block each other
+    /// but one copy cannot start twice. Call once, before the first claim.
+    pub fn set_single_instance_scope(folder: &Path) {
+        let _ = SCOPE.set(folder.to_path_buf());
+    }
 
     /// The launcher's job handle (as an integer, so it can live in a static). Kept open until the process exits.
     static JOB: OnceLock<isize> = OnceLock::new();
@@ -39,8 +49,15 @@ mod windows_impl {
     /// One attempt at the launcher mutex. `true`: this is the first launcher (the handle is kept until exit). `false`:
     /// another launcher holds it; the handle is closed here, so a later attempt can succeed once that one has exited.
     fn attempt_claim() -> bool {
-        // SAFETY: the name is a static wide string. The handle is kept open until the process exits when it is ours.
-        let created = unsafe { CreateMutexW(None, true, w!("Local\\GT4Recomp.Launcher")) };
+        claim_named(&super::launcher_mutex_name(SCOPE.get().map(PathBuf::as_path)))
+    }
+
+    /// One attempt at the named mutex (see [`attempt_claim`]).
+    pub(super) fn claim_named(name: &str) -> bool {
+        // SAFETY: the name is a wide string that lives through the call. The handle is kept open until the process exits
+        // when it is ours.
+        let name = HSTRING::from(name);
+        let created = unsafe { CreateMutexW(None, true, &name) };
         let Ok(handle) = created else {
             return true; // cannot tell; start anyway
         };
@@ -245,7 +262,7 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub use windows_impl::{
-    claim_single_instance, claim_single_instance_retrying, join_kill_on_close_job, process_running, release_kill_on_close, restore_kill_on_close,
+    set_single_instance_scope, claim_single_instance, claim_single_instance_retrying, join_kill_on_close_job, process_running, release_kill_on_close, restore_kill_on_close,
     shell_run_as_admin,
 };
 
@@ -282,6 +299,15 @@ pub fn command_with_arguments(program: &std::path::Path, arguments: Option<&str>
     command
 }
 
+/// The name of the launcher mutex. Without a scope it is the one name of the installer build (one launcher per Windows
+/// session); with a folder (the portable build) the name carries the folder's key, so the lock is per folder.
+pub fn launcher_mutex_name(scope: Option<&std::path::Path>) -> String {
+    match scope {
+        None => "Local\\GT4Recomp.Launcher".to_string(),
+        Some(folder) => format!("Local\\GT4Recomp.Launcher.{}", gt4l_core::paths::folder_key(folder)),
+    }
+}
+
 /// The decision of a second launcher start: bring the running launcher's window forward only when that window exists
 /// and is already shown. A hidden window (not ready yet) is left to the first launcher, which shows it on `ui_ready`.
 pub fn should_bring_forward(window_found: bool, window_visible: bool) -> bool {
@@ -291,6 +317,32 @@ pub fn should_bring_forward(window_found: bool, window_visible: bool) -> bool {
 #[cfg(test)]
 mod single_instance_tests {
     use super::should_bring_forward;
+
+    #[test]
+    fn the_lock_is_one_name_without_a_scope_and_one_per_folder_with_one() {
+        use super::launcher_mutex_name;
+        use std::path::Path;
+        assert_eq!(launcher_mutex_name(None), "Local\\GT4Recomp.Launcher", "the installer build keeps its name");
+        let first = launcher_mutex_name(Some(Path::new(r"E:\Portable\GT4Recomp")));
+        let second = launcher_mutex_name(Some(Path::new(r"F:\Other\GT4Recomp")));
+        assert_ne!(first, second, "two copies do not block each other");
+        assert_ne!(first, launcher_mutex_name(None), "a portable copy and the installed one do not block each other");
+        assert_eq!(first, launcher_mutex_name(Some(Path::new(r"e:\portable\gt4recomp\"))), "the same folder is the same lock");
+        assert!(first.starts_with("Local\\GT4Recomp.Launcher."));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_second_claim_of_the_same_folder_fails_and_another_folder_succeeds() {
+        use super::launcher_mutex_name;
+        use std::path::Path;
+        let unique = std::process::id();
+        let first = launcher_mutex_name(Some(Path::new(&format!(r"Z:\lock-test-{unique}\one"))));
+        let other = launcher_mutex_name(Some(Path::new(&format!(r"Z:\lock-test-{unique}\two"))));
+        assert!(super::windows_impl::claim_named(&first), "the first claim of a folder succeeds");
+        assert!(!super::windows_impl::claim_named(&first), "the same folder cannot start twice");
+        assert!(super::windows_impl::claim_named(&other), "another folder does not block");
+    }
 
     #[test]
     fn a_shown_window_is_brought_forward() {
@@ -308,6 +360,9 @@ mod single_instance_tests {
         assert!(!should_bring_forward(false, true));
     }
 }
+
+#[cfg(not(windows))]
+pub fn set_single_instance_scope(_folder: &std::path::Path) {}
 
 #[cfg(not(windows))]
 pub fn claim_single_instance() -> bool {
@@ -345,7 +400,9 @@ pub fn shell_run_as_admin(_program: &std::path::Path, _arguments: Option<&str>) 
 }
 
 /// Executable names of the game and its renderer process: neither may run while files move.
-pub const GAME_PROCESS_NAMES: &[&str] = &["gt4vulkan.exe", "gt4-gs.exe"];
+/// The old names (1.2.x and before) are listed too: a 1.2.x game may still run while the update starts.
+pub const GAME_PROCESS_NAMES: &[&str] =
+    &["gt4.exe", "gt4-spec2.exe", "gt4vulkan.exe", "gt4vulkan-spec2.exe", "gt4-gs.exe"];
 
 /// `ERROR_CANCELLED`: the UAC prompt was declined.
 pub const ERROR_CANCELLED: u32 = 1223;

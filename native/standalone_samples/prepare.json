@@ -1,0 +1,32 @@
+{
+  "schema_version": 2,
+  "launcher_version": "1.3.0",
+  "payload": "core+elf",
+  "game": "gt4",
+  "disc": {
+    "path": "D:\\Games\\Gran Turismo 4 (USA) \"v2.00\".iso",
+    "size_bytes": 4294967296,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+    "serial": "SCUS-97328",
+    "version": "2.00",
+    "volume_identifier": "GT4"
+  },
+  "image": {
+    "file": "SCUS-97328.iso",
+    "size_bytes": 4294967296,
+    "modified_unix_nanos": 1761200000123456700,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000001"
+  },
+  "qualified_dump": true,
+  "image_name": "",
+  "core": {
+    "size_bytes": 111111,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000002"
+  },
+  "original": null,
+  "elf": {
+    "size_bytes": 5555555,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000003"
+  },
+  "prepared_unix_seconds": 1761200000
+}

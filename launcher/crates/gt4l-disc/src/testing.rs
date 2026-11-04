@@ -13,19 +13,49 @@ use crate::pins::{Identity, Pins};
 
 const ROOT_DIRECTORY_SECTOR: u32 = 18;
 
-/// Builds a plain ISO image with the given root-level files. Each file starts on its own sector.
+/// Builds a plain ISO image with the given files: root-level names, or one directory level (`IRX/CDVDMAN.IRX;1`). Each
+/// file starts on its own sector; each directory takes one sector.
 pub fn build_iso(volume_identifier: &str, files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    // Directories in first-seen order, one sector each after the root's.
+    let mut directories: Vec<&str> = Vec::new();
+    for (name, _) in files {
+        if let Some((directory, _)) = name.split_once('/') {
+            if !directories.contains(&directory) {
+                directories.push(directory);
+            }
+        }
+    }
+    let directory_sector = |index: usize| ROOT_DIRECTORY_SECTOR + 1 + index as u32;
     let mut records = Vec::new();
     records.extend(directory_record(&[0], ROOT_DIRECTORY_SECTOR, SECTOR_BYTES as u32, true));
     records.extend(directory_record(&[1], ROOT_DIRECTORY_SECTOR, SECTOR_BYTES as u32, true));
-    let mut data_sector = ROOT_DIRECTORY_SECTOR + 1;
+    let mut sub_records: Vec<Vec<u8>> = directories
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let mut own = directory_record(&[0], directory_sector(index), SECTOR_BYTES as u32, true);
+            own.extend(directory_record(&[1], ROOT_DIRECTORY_SECTOR, SECTOR_BYTES as u32, true));
+            own
+        })
+        .collect();
+    let mut data_sector = ROOT_DIRECTORY_SECTOR + 1 + directories.len() as u32;
     let mut placed = Vec::new();
     for (name, bytes) in files {
-        records.extend(directory_record(name.as_bytes(), data_sector, bytes.len() as u32, false));
+        match name.split_once('/') {
+            Some((directory, file)) => {
+                let index = directories.iter().position(|known| *known == directory).unwrap();
+                sub_records[index].extend(directory_record(file.as_bytes(), data_sector, bytes.len() as u32, false));
+            }
+            None => records.extend(directory_record(name.as_bytes(), data_sector, bytes.len() as u32, false)),
+        }
         placed.push((data_sector, bytes));
         data_sector += sectors_for(bytes.len() as u64) as u32;
     }
+    for (index, directory) in directories.iter().enumerate() {
+        records.extend(directory_record(directory.as_bytes(), directory_sector(index), SECTOR_BYTES as u32, true));
+    }
     assert!(records.len() <= SECTOR_BYTES as usize, "test ISO root directory is too large");
+    assert!(sub_records.iter().all(|own| own.len() <= SECTOR_BYTES as usize), "test ISO directory is too large");
 
     let total_sectors = data_sector as usize;
     let mut image = vec![0u8; total_sectors * SECTOR_BYTES as usize];
@@ -50,8 +80,12 @@ pub fn build_iso(volume_identifier: &str, files: &[(&str, Vec<u8>)]) -> Vec<u8> 
     image[17 * 2048 + 1..17 * 2048 + 6].copy_from_slice(b"CD001");
     image[17 * 2048 + 6] = 1;
 
-    // Root directory at sector 18.
+    // Root directory at sector 18, then one sector per directory.
     image[18 * 2048..18 * 2048 + records.len()].copy_from_slice(&records);
+    for (index, own) in sub_records.iter().enumerate() {
+        let start = directory_sector(index) as usize * 2048;
+        image[start..start + own.len()].copy_from_slice(own);
+    }
 
     for (sector, bytes) in placed {
         let start = sector as usize * 2048;

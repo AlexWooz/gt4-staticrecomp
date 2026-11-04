@@ -83,9 +83,9 @@
   // Footer labels for a level. The tab adds its own keys (for example Y Reset, X Rebind) on the content level.
   function footer(level) {
     if (level === CONTENT) {
-      return [{ key: "A", label: "Select" }, { key: "B", label: "Tabs" }];
+      return [{ key: "A", label: GT4.t("hint.select") }, { key: "B", label: GT4.t("hint.tabs") }];
     }
-    return [{ key: "A", label: "Enter" }, { key: "B", label: "Back" }, { key: "LB RB", label: "Tabs" }];
+    return [{ key: "A", label: GT4.t("hint.enter") }, { key: "B", label: GT4.t("hint.back") }, { key: "LB RB", label: GT4.t("hint.tabs") }];
   }
 
   GT4.focusLevels = {

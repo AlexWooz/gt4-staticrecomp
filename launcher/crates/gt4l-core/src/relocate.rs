@@ -24,6 +24,9 @@
 //!   no unit failed.
 //!
 //! Neither move runs while the game runs.
+use crate::language::Language;
+use crate::messages;
+
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -66,8 +69,26 @@ pub struct FsOps<'a> {
     pub open: &'a dyn Fn(&Path) -> io::Result<Box<dyn Read>>,
 }
 
+/// Whether a rename error is the transient kind a scanner, the indexer or Explorer can cause on a freshly written
+/// file (Windows sharing/lock violation, access denied while a scan holds the file). Retried a few times; a real
+/// failure is still reported to the caller, which keeps the old place in use.
+fn transient_rename_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5) | Some(32) | Some(33))
+}
+
 fn real_rename(from: &Path, to: &Path) -> io::Result<()> {
-    fs::rename(from, to)
+    let mut last = None;
+    for attempt in 0..5u32 {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if transient_rename_error(&error) => {
+                last = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt + 1)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.expect("a retryable rename error"))
 }
 
 fn real_open(path: &Path) -> io::Result<Box<dyn Read>> {
@@ -111,7 +132,7 @@ fn files_under(path: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Whether `path` is a file or a folder that holds at least one file. Unreadable counts as holding files (so
 /// nothing is ever placed over it).
-fn has_files(path: &Path) -> bool {
+pub(crate) fn has_files(path: &Path) -> bool {
     match files_under(path) {
         Ok(files) => !files.is_empty(),
         Err(_) => path.exists(),
@@ -246,11 +267,11 @@ fn copy_verified(source: &Path, target: &Path, ops: &FsOps<'_>, progress: &mut d
     Ok(report)
 }
 
-fn stamp_json(stamp: &str) -> serde_json::Value {
+pub(crate) fn stamp_json(stamp: &str) -> serde_json::Value {
     serde_json::Value::String(stamp.to_string())
 }
 
-fn write_marker(marker: &Path, value: &serde_json::Value) -> Result<(), String> {
+pub(crate) fn write_marker(marker: &Path, value: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = marker.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     }
@@ -343,22 +364,25 @@ impl UserOutcome {
         }
     }
 
-    /// A sentence for the launcher window, when there is something to say.
+    /// A sentence for the launcher window, when there is something to say (English).
     pub fn notice(&self, user: &UserDirs) -> Option<String> {
-        let root = user.root().display();
+        self.notice_in(user, Language::fallback())
+    }
+
+    /// [`UserOutcome::notice`] in `language`.
+    pub fn notice_in(&self, user: &UserDirs, language: Language) -> Option<String> {
+        let root = user.root().display().to_string();
         match self {
             UserOutcome::Moved { kept_both, .. } if kept_both.is_empty() => {
-                Some(format!("Your settings, saves and replays moved to {root}."))
+                Some(messages::render("move.done", language, &[("root", &root)]))
             }
-            UserOutcome::Moved { kept_both, .. } => Some(format!(
-                "Your settings, saves and replays moved to {root}. {} item(s) already existed there; both copies were kept.",
-                kept_both.len()
+            UserOutcome::Moved { kept_both, .. } => Some(messages::render(
+                "move.done_kept",
+                language,
+                &[("root", &root), ("count", &kept_both.len().to_string())],
             )),
-            UserOutcome::Deferred(_) => Some("Close Gran Turismo 4 and restart GT4Recomp to finish moving your files.".to_string()),
-            UserOutcome::Failed(_) => Some(
-                "Your saves could not be moved to the new folder yet. They are safe where they were; GT4Recomp tries again at the next start."
-                    .to_string(),
-            ),
+            UserOutcome::Deferred(_) => Some(messages::text("move.close_game", language).to_string()),
+            UserOutcome::Failed(_) => Some(messages::text("move.saves_later", language).to_string()),
             _ => None,
         }
     }
@@ -557,7 +581,8 @@ pub fn migrate_user_data(request: &UserMove<'_>, ops: &FsOps<'_>) -> UserOutcome
         let item = &items[index];
         let destination = user.root().join(&item.target);
         let alternative = match item.kind {
-            ItemKind::SaveSlot => next_free_slot(&user.saves()),
+            // The 1.2.1 move writes the flat 1.2.x places; `games_layout` moves them into `games/gt4` afterwards.
+            ItemKind::SaveSlot => next_free_slot(&user.root().join("Saves")),
             ItemKind::Other => unique_name(&user.root().join(KEPT_FOLDER_NAME).join(&item.target)),
         };
         let staged = staging.join(index.to_string());
@@ -715,7 +740,7 @@ impl LargeOutcome {
 /// Moves `source` to `destination`: one rename on the same volume; across volumes a checked copy into a staging
 /// folder beside `destination`, a rename into place and the removal of `source`. `check` runs on the copy before it
 /// is placed.
-fn move_tree(
+pub(crate) fn move_tree(
     source: &Path,
     destination: &Path,
     ops: &FsOps<'_>,
@@ -768,7 +793,7 @@ fn move_tree(
 }
 
 /// Moves the game files: `disc` and `prepared` together, so the receipt and the image it names never split.
-fn move_game_files(request: &LargeMove<'_>, ops: &FsOps<'_>, progress: &mut dyn FnMut(&LargeProgress)) -> UnitResult {
+pub(crate) fn move_game_files(request: &LargeMove<'_>, ops: &FsOps<'_>, progress: &mut dyn FnMut(&LargeProgress)) -> UnitResult {
     let names = ["disc", "prepared"];
     let sources: Vec<PathBuf> = names.iter().map(|name| request.local.join(name)).collect();
     if !sources.iter().any(|source| has_files(source)) {
@@ -977,5 +1002,16 @@ mod tests {
         assert_eq!(next_free_slot(&base), base.join("Save 05"));
         assert_eq!(next_free_slot(&base.join("missing")), base.join("missing").join("Save 01"));
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn only_scanner_and_lock_errors_are_retried() {
+        // Windows access denied, sharing violation and lock violation: a scanner or the indexer holding the file.
+        for code in [5, 32, 33] {
+            assert!(transient_rename_error(&io::Error::from_raw_os_error(code)), "code {code}");
+        }
+        for error in [io::ErrorKind::NotFound, io::ErrorKind::AlreadyExists, io::ErrorKind::Other] {
+            assert!(!transient_rename_error(&io::Error::from(error)), "{error:?}");
+        }
     }
 }

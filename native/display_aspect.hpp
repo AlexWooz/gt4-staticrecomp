@@ -44,6 +44,8 @@
 #include <cstdint>
 #include <string>
 
+#include "game_target.hpp"
+
 namespace gt4::display_aspect {
 
 inline constexpr double kGameRatio = 16.0 / 9.0;
@@ -55,17 +57,21 @@ inline constexpr double kMinFovExtra = 0.5;
 inline constexpr double kMaxFovExtra = 3.0;
 
 // Guest addresses (Confirmed, docs/ULTRAWIDE-NATIVE-STUDY.md section 3.1 and the slice208 translation unit_00A2.cpp).
-inline constexpr std::uint32_t kInitMonitor = 0x00388A80u;       // RaceBase::initMonitor
-inline constexpr std::uint32_t kCameraCallReturn = 0x00388B38u;  // return label of the camera virtual call (jalr 0x388B30)
+// TASK-100 S3: the numbers live in native/game_target.hpp; a target without the hook gets kNeverMatch, which no guest
+// PC or return address can equal.
+inline constexpr std::uint32_t kInitMonitor = ::gt4::target::active().hooks.init_monitor;
+inline constexpr std::uint32_t kCameraCallReturn =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.camera_call_return);
 inline constexpr std::uint32_t kMatrixBytes = 64u;               // 16 x f32 on the stack at a1 = sp
 // RaceDisplay::render (the race HUD, every race frame), reached only through vtables 0x67E294 / 0x680D1C (study
 // section 2.2; unit_00A7 entry 413 in the slice208 translation, no direct call site).
-inline constexpr std::uint32_t kRaceDisplayRender = 0x0039F498u;
+inline constexpr std::uint32_t kRaceDisplayRender =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.race_display_render);
 // Display request state written by func_001074D0 (docs/INGAME-SETTINGS-STUDY.md section 1.4).
-inline constexpr std::uint32_t kDisplayRequestState = 0x006184D0u;
-inline constexpr std::uint32_t kRequestPendingOffset = 0x24u;
-inline constexpr std::uint32_t kRequestModeOffset = 0x2Cu;
-inline constexpr std::uint32_t kRequestRowOffset = 0x30u;
+inline constexpr std::uint32_t kDisplayRequestState = ::gt4::target::active().hooks.display_request_state;
+inline constexpr std::uint32_t kRequestPendingOffset = ::gt4::target::active().hooks.display_request_pending_offset;
+inline constexpr std::uint32_t kRequestModeOffset = ::gt4::target::active().hooks.display_request_mode_offset;
+inline constexpr std::uint32_t kRequestRowOffset = ::gt4::target::active().hooks.display_request_row_offset;
 
 enum class Source { automatic, fixed, output_size };
 
@@ -185,7 +191,8 @@ bool is_new_request(const DisplayRequest &previous, const DisplayRequest &curren
 //       (scripts/aspect_elf_patch.py, re-translated library profile "aspect") turns each one into a load from the HUD
 //       parameter block below. The host fills the block at every guest VBlank; at 16:9 it holds the original constants,
 //       so the patched code computes exactly what the original did.
-inline constexpr std::uint32_t kHudMatrixOffset = 0x70u;  // RaceDisplay + 0x70: 16 x f32, setProjectionMatrix layout
+inline constexpr std::uint32_t kHudMatrixOffset =
+    ::gt4::target::active().hooks.hud_matrix_offset;  // RaceDisplay + this: 16 x f32, setProjectionMatrix layout
 
 struct HudCanvas {
   double left, right, top, bottom;
@@ -244,6 +251,10 @@ class HudCanvasHook {
 // holds the same table; CTest checks the old words against the pinned ELF.
 inline constexpr std::uint32_t kHudParameterBlock = 0x00007F00u;
 inline constexpr std::uint32_t kHudParameterWords = 2u;
+// TASK-100 S3: our own scratch block, not a game address, so it stays a literal for every target; the v2.00 table
+// documents the same values for the hooks that are game addresses.
+static_assert(kHudParameterBlock == ::gt4::target::kV200Hooks.hud_parameter_block, "HUD block differs from the v2.00 table");
+static_assert(kHudParameterWords == ::gt4::target::kV200Hooks.hud_parameter_words, "HUD word count differs from the v2.00 table");
 // +0x00 f32: race HUD font x scale (RaceDisplay::render 0x0039F554, `lui at,0x3F40` = 0.75 = (4/3) / (16/9)).
 // +0x04 s32: rear-view mirror horizontal divisor (0x0033EF98, `addiu t0,zero,640`): the mirror rectangle is
 //            260 x width / divisor frame pixels wide, centred on the frame; 640 x s keeps its 16:9 shape.
@@ -269,6 +280,68 @@ HudParameters hud_parameters(double ratio);
 
 // Writes the block into guest RAM when it differs. Returns true when words were written.
 bool write_hud_parameters(std::uint8_t *ram, std::uint32_t ram_size, const HudParameters &parameters);
+
+// --- TASK-095: 2D overlays over the race view --------------------------------------------------------------------
+//
+// While the presentation fills the screen (the race view at R != 16:9), everything the game draws into its frame is
+// stretched with it, and so were the 2D screens drawn over the race (docs/ULTRAWIDE-OVERLAYS.md). Each sets its 2D canvas
+// through the ortho function (v2.00 0x004A5A90, Spec II 0x005A2600: f12 left, f13 right, f14 bottom, f15 top, f16 near,
+// f17 far; it builds the matrix on its own stack and multiplies it in) by a direct `jal` with immediate arguments:
+//   menu context render (the pre-race screens: the event's entry list and icon row, the Time Trial lobby with its session
+//     record): v2.00 mUpdateContextPS2 render 0x00214FB0, Spec II 0x0036D278; 0..640 x 480..0;
+//   strobe overlay renderer (the pause menu, the pit menu, the results, photo mode's panel): v2.00 func_003EC0B0 (called by
+//     RacePause::render, PhotoPause::update, PitMenu, ResultArcade::render and the race monitor), Spec II 0x001FDCC8;
+//     0..640 x 480..0.
+// (Names from gt4-decomp 3b1f2ae5b; Spec II matched by code shape.) scripts/camera360_units.py adds a host call between the
+// delay slot and each of those calls (native/display_aspect_hook.cpp), and the host widens the canvas like the HUD's: while
+// the presentation fills the screen at R, the x extent times s = R / (16/9) around its centre for R > 16:9 (21:9: 0..640
+// becomes -100..740), the y extent times (16/9) / R around its centre for R < 16:9. The overlay then keeps its 16:9 shape,
+// centred. While the presentation is the 16:9 pillarbox (menus, photo mode on v2.00), and always at 16:9, the game's own
+// arguments stay. The race monitor (RaceMonitor, drawn by RaceBasic::render_panel) is left as the game draws it: it also
+// draws its own items with the race font, which no hook narrows, so its strobe part is not widened either.
+inline constexpr std::uint32_t kMenuOrthoReturn =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.menu_ortho_call_return);
+inline constexpr std::uint32_t kOverlayOrthoReturn =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.overlay_ortho_call_return);
+// The strobe renderer keeps its caller's return address at sp + this, and the race monitor's call returns here.
+inline constexpr std::uint32_t kOverlayCallerSlot = ::gt4::target::active().hooks.overlay_caller_slot;
+inline constexpr std::uint32_t kMonitorOverlayCallReturn =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.monitor_overlay_call_return);
+
+// The four edges of an ortho call, as the f32 bits of its argument registers.
+struct OrthoCanvas {
+  std::uint32_t left = 0, right = 0, bottom = 0, top = 0;
+  bool operator==(const OrthoCanvas &other) const {
+    return left == other.left && right == other.right && bottom == other.bottom && top == other.top;
+  }
+};
+
+// Whether a canvas is the one the hooks expect from the game: left 0, top 0, bottom 480, right 640. Anything else is left
+// alone.
+bool is_game_overlay_canvas(const OrthoCanvas &canvas);
+
+// The canvas for a presented ratio R (snapped): R > 16:9 widens x by R / (16/9) around the centre, R < 16:9 widens y by
+// (16/9) / R around the centre, 16:9 returns the same bits. Pure.
+OrthoCanvas overlay_canvas(const OrthoCanvas &game, double ratio);
+
+// The strobe overlays' text does not follow the canvas: its glyphs are sized in frame pixels by the text context's x and y
+// scale, which the text style parser (v2.00 0x00490290, Spec II 0x0033AF90) stores for every text: 1.0, then the style's
+// percentages. scripts/camera360_units.py routes those four stores through overlay_text_scale_x / _y; while a widened strobe
+// overlay is being drawn (from its ortho hook to after_overlay_draw, before the renderer's first call after its draw: v2.00
+// return 0x003EC248, Spec II 0x001FDE60) they return the value times the inverse of the canvas factor on the same axis, and
+// the value itself otherwise. Nothing is written to guest RAM by the host; the game stores the scaled value itself.
+inline constexpr std::uint32_t kOverlayDrawEndReturn =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.overlay_draw_end_return);
+
+struct TextFactors {
+  double x = 1.0, y = 1.0;
+};
+
+// The text factors for a presented ratio R (snapped): R > 16:9: x = (16/9) / R; R < 16:9: y = R / (16/9); 16:9: 1 and 1. Pure.
+TextFactors overlay_text_factors(double ratio);
+
+// An f32 word times a factor, as f32 bits; a factor of exactly 1 returns the same bits. Pure.
+std::uint32_t scale_text_word(std::uint32_t value, double factor);
 
 // --- Runtime glue (one process-wide state; EE thread unless noted) ------------------------------------------------
 
@@ -298,6 +371,21 @@ void on_race_display_render();
 // P2 (slice217 capsule): the same marker plus the HUD canvas hook on `self` = a0 (RaceDisplay or a subclass such as
 // RaceLicenseDisplay, vtable 0x680D00). Uses the ratio of the last race camera hook, the ratio the presentation fills.
 void on_race_display_render(std::uint8_t *ram, std::uint32_t ram_size, std::uint32_t self);
+
+// TASK-095: called by the overlay hooks before the ortho call (`return_label` = ra) with the game's canvas. Returns the
+// canvas to draw with: overlay_canvas() at the presented ratio while the presentation fills the screen, otherwise (16:9
+// pillarbox, R = 16:9, an unexpected canvas) the game's own.
+OrthoCanvas on_overlay_ortho(const OrthoCanvas &game, std::uint32_t return_label);
+
+// TASK-095: the strobe text window. begin: the hook widened a strobe overlay's canvas at `ratio`; end: its draw is over.
+void begin_overlay_text(double ratio);
+void end_overlay_text();
+bool overlay_text_active();
+
+// TASK-095: the text style parser's scale stores (translated statements, scripts/camera360_units.py). `value` is the f32 the
+// game is storing; the result is what it stores.
+std::uint32_t overlay_text_scale_x(std::uint32_t value);
+std::uint32_t overlay_text_scale_y(std::uint32_t value);
 
 // Presentation sink: race_view = fill the screen at `ratio`; otherwise pillarbox 16:9. Called on the EE thread only
 // when the presented state or ratio changes (never while R stays 16:9).

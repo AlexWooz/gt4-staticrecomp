@@ -1,16 +1,23 @@
-//! System requirements checked before setup and before Play (TASK-081): the processor and Vulkan.
+//! System requirements checked before setup and before Play (TASK-081, TASK-108): the processor, and Vulkan when it is
+//! the Graphics API of the run.
 //!
 //! This module holds the rules only (pure functions over plain data), so every case is tested without the
 //! hardware. `gt4l-platform::system` reads CPUID and probes the Vulkan loader and fills these structs.
 //!
-//! - **Processor.** SSE4.1 with its prerequisites SSE3 and SSSE3 (owner decision, 2026-10-21). `gt4vulkan.exe` is built
+//! - **Processor.** SSE4.1 with its prerequisites SSE3 and SSSE3 (owner decision, 2026-10-21). the game program (`gt4vulkan.exe` in the build, `gt4.exe` when distributed) is built
 //!   for baseline x86-64 (`GT4_X86_64_V3` is off; its only AVX code is CPU-dispatched Visual C++ library code), and the
 //!   PCSX2 GS (`gt4-gs.exe`) needs SSE4.1, PCSX2's published minimum. SSE state needs no OS opt-in on x64 Windows.
 //!   `MINIMUM_CPU` is the single place to change the level.
-//! - **Vulkan.** The game needs a GPU that reports Vulkan 1.2 or newer and the instance extensions `VK_KHR_surface` and
-//!   `VK_KHR_win32_surface` (`native/native_vulkan.cpp`, `native/vulkan_extensions.cpp`). Swapchain maintenance 1 is
-//!   used when present and is not required (slice214). The PCSX2 GS renders with Vulkan as well
-//!   (`docs/GS-SETTINGS.md`, row `renderer`), so the check applies to both renderers.
+//! - **Vulkan (TASK-108, release 1.3.0).** Checked only when Vulkan is the Graphics API of the run (`graphics_api`,
+//!   the default). The PCSX2 GS (`gt4-gs.exe`) renders with the chosen API and the game program creates no Vulkan
+//!   device in that mode, so a Direct3D 12 or 11 run never asks the Vulkan loader. A Vulkan run needs a GPU that
+//!   reports Vulkan 1.2 or newer and the instance extensions `VK_KHR_surface` and `VK_KHR_win32_surface`
+//!   (`native/native_vulkan.cpp`, `native/vulkan_extensions.cpp`); swapchain maintenance 1 is optional (slice214). When
+//!   no such GPU exists, that run plays with Direct3D 11 and the player is told ([`gpu::plan`]). This is decided
+//!   per run, so a driver update brings Vulkan back without a setting change. Setup needs no GPU.
+
+use crate::language::Language;
+use crate::messages;
 
 /// What the processor reports (CPUID leaf 1, ECX).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,19 +55,24 @@ pub fn missing_cpu_features(features: &CpuFeatures, level: CpuLevel) -> Vec<&'st
     }
 }
 
-/// `None` when the processor can run the release; otherwise the message for the player.
+/// `None` when the processor can run the release; otherwise the message for the player (English).
 pub fn cpu_problem(features: &CpuFeatures) -> Option<String> {
+    cpu_problem_in(features, Language::fallback())
+}
+
+/// [`cpu_problem`] in `language`.
+pub fn cpu_problem_in(features: &CpuFeatures, language: Language) -> Option<String> {
     if missing_cpu_features(features, MINIMUM_CPU).is_empty() {
         None
     } else {
-        Some(CPU_UNSUPPORTED_MESSAGE.to_string())
+        Some(messages::text("system.cpu_unsupported", language).to_string())
     }
 }
 
 /// The lowest Vulkan version the game accepts on its GPU (`native/native_vulkan.cpp`: VK_API_VERSION_1_2).
 pub const MINIMUM_VULKAN: (u32, u32) = (1, 2);
 
-/// The instance extensions `gt4vulkan.exe` requires (`native/vulkan_extensions.cpp`). The swapchain-maintenance ones
+/// The instance extensions the game program requires (`native/vulkan_extensions.cpp`). The swapchain-maintenance ones
 /// are optional since slice214.
 pub const GAME_INSTANCE_EXTENSIONS: [&str; 2] = ["VK_KHR_surface", "VK_KHR_win32_surface"];
 
@@ -74,6 +86,12 @@ pub struct VulkanDevice {
     pub vendor_id: u32,
     /// VkPhysicalDeviceType: 0 other, 1 integrated, 2 discrete, 3 virtual, 4 CPU.
     pub device_type: u32,
+    /// VkPhysicalDeviceProperties::deviceID (0 when unknown).
+    pub device_id: u32,
+    /// VkPhysicalDeviceProperties::driverVersion, as the driver encodes it (vendor-specific; shown raw in the log bundle).
+    pub driver_version: u32,
+    /// VkPhysicalDeviceIDProperties::deviceLUID, when the driver reports it as valid (TASK-101 item 3).
+    pub luid: Option<u64>,
 }
 
 /// Microsoft's vendor id: the "Microsoft Direct3D12 (...)" devices of the Vulkan-on-D3D12 layer (Dozen, part of the
@@ -81,6 +99,8 @@ pub struct VulkanDevice {
 pub const MICROSOFT_VENDOR_ID: u32 = 0x1414;
 /// VK_PHYSICAL_DEVICE_TYPE_CPU: a software rasterizer (llvmpipe, SwiftShader).
 pub const DEVICE_TYPE_CPU: u32 = 4;
+/// VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: a GPU on the processor die (Intel UHD, AMD Radeon graphics).
+pub const DEVICE_TYPE_INTEGRATED: u32 = 1;
 
 /// True for a GPU with its own Vulkan driver: not a software rasterizer and not the D3D12 translation layer.
 pub fn is_gpu_driver(device: &VulkanDevice) -> bool {
@@ -98,46 +118,54 @@ pub enum VulkanProbe {
     Ready { instance_extensions: Vec<String>, devices: Vec<VulkanDevice> },
 }
 
-const DRIVER_ADVICE: &str = "Update your graphics driver from NVIDIA, AMD or Intel, then start GT4Recomp again.";
-
 /// `None` when the game can create its Vulkan instance and a GPU reports at least `MINIMUM_VULKAN`; otherwise the
-/// message for the player.
+/// message for the player (English).
 pub fn vulkan_problem(probe: &VulkanProbe) -> Option<String> {
+    vulkan_problem_in(probe, Language::fallback())
+}
+
+/// [`vulkan_problem`] in `language`.
+pub fn vulkan_problem_in(probe: &VulkanProbe, language: Language) -> Option<String> {
     let (major, minor) = MINIMUM_VULKAN;
+    let advice = messages::text("system.driver_advice", language);
+    let render = |id: &'static str, params: &[(&str, &str)]| Some(messages::render(id, language, params));
     match probe {
-        VulkanProbe::LoaderMissing => Some(format!(
-            "Vulkan is not installed on this PC. GT4Recomp needs a graphics card with Vulkan {major}.{minor} or newer. \
-             {DRIVER_ADVICE}"
-        )),
-        VulkanProbe::InstanceFailed { code } => Some(format!(
-            "Vulkan did not start on this PC (error {code}). GT4Recomp needs a graphics card with Vulkan \
-             {major}.{minor} or newer. {DRIVER_ADVICE}"
-        )),
+        VulkanProbe::LoaderMissing => render(
+            "system.vulkan_missing",
+            &[("major", &major.to_string()), ("minor", &minor.to_string()), ("advice", advice)],
+        ),
+        VulkanProbe::InstanceFailed { code } => render(
+            "system.vulkan_failed",
+            &[("code", &code.to_string()), ("major", &major.to_string()), ("minor", &minor.to_string()), ("advice", advice)],
+        ),
         VulkanProbe::Ready { instance_extensions, devices } => {
             let devices: Vec<&VulkanDevice> = devices.iter().filter(|device| is_gpu_driver(device)).collect();
             if devices.is_empty() {
-                return Some(format!(
-                    "No graphics card with Vulkan was found. GT4Recomp needs a graphics card with Vulkan \
-                     {major}.{minor} or newer. {DRIVER_ADVICE}"
-                ));
+                return render(
+                    "system.vulkan_no_gpu",
+                    &[("major", &major.to_string()), ("minor", &minor.to_string()), ("advice", advice)],
+                );
             }
             if !devices.iter().any(|device| (device.api_major, device.api_minor) >= (major, minor)) {
                 let best = devices
                     .iter()
                     .max_by_key(|device| (device.api_major, device.api_minor))
                     .expect("devices is not empty");
-                return Some(format!(
-                    "Your graphics card ({}) reports Vulkan {}.{}; GT4Recomp needs Vulkan {major}.{minor} or newer. \
-                     {DRIVER_ADVICE}",
-                    best.name, best.api_major, best.api_minor
-                ));
+                let reported = format!("{}.{}", best.api_major, best.api_minor);
+                return render(
+                    "system.vulkan_gpu_too_old",
+                    &[
+                        ("name", &best.name),
+                        ("reported", &reported),
+                        ("major", &major.to_string()),
+                        ("minor", &minor.to_string()),
+                        ("advice", advice),
+                    ],
+                );
             }
             let missing = missing_instance_extensions(instance_extensions);
             if !missing.is_empty() {
-                return Some(format!(
-                    "Your graphics driver is too old for GT4Recomp (missing Vulkan {}). {DRIVER_ADVICE}",
-                    missing.join(", ")
-                ));
+                return render("system.driver_too_old", &[("missing", &missing.join(", ")), ("advice", advice)]);
             }
             None
         }
@@ -197,7 +225,7 @@ mod tests {
     }
 
     fn device(name: &str, major: u32, minor: u32) -> VulkanDevice {
-        VulkanDevice { name: name.into(), api_major: major, api_minor: minor, vendor_id: 0x1002, device_type: 2 }
+        VulkanDevice { name: name.into(), api_major: major, api_minor: minor, vendor_id: 0x1002, device_type: 2, device_id: 0, driver_version: 0, luid: None }
     }
 
     #[test]
@@ -246,9 +274,12 @@ mod tests {
             api_minor: 2,
             vendor_id: MICROSOFT_VENDOR_ID,
             device_type: 1,
+            device_id: 0,
+            driver_version: 0,
+            luid: None,
         };
         let llvmpipe =
-            VulkanDevice { name: "llvmpipe".into(), api_major: 1, api_minor: 3, vendor_id: 0x10005, device_type: 4 };
+            VulkanDevice { name: "llvmpipe".into(), api_major: 1, api_minor: 3, vendor_id: 0x10005, device_type: 4, device_id: 0, driver_version: 0, luid: None };
         assert!(!is_gpu_driver(&dozen) && !is_gpu_driver(&llvmpipe));
         let only_layers =
             VulkanProbe::Ready { instance_extensions: required_extensions(), devices: vec![dozen.clone(), llvmpipe] };

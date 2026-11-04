@@ -278,6 +278,20 @@ Rules:
   value is therefore also the display field of the frame that ends at this VSYNC (section 6.1, version 1.1).
 - READ_FIFO: posted from `gs::read_image` (FIFO read or GIF DMA channel 1 reverse transfer), after the MTVU download
   sync; the EE waits for the reply.
+- TASK-116 step 0 (P0 gate): `GT4_GS_READBACK_LOG=1` (a test switch, off by default) prints one `[gs-readback]` line per
+  READ_FIFO reply (frame, guest destination, qwords, status, EE wait, nonzero bytes, first 16 bytes, FNV-1a 64 of the
+  reply, whether it repeated the previous one) and a per-destination summary at exit; it also prints the
+  `HWDownloadMode` of the ini named by `GT4_GS_CONFIG`. It only reads the reply after the client copied it: no record
+  changes, so the stream hash is unchanged (checked against the release 1.3.0 night hash, 2026-10-25).
+- TASK-116 step 1 (rc6): with Performance mode on (the gt4-gs ini's `HWDownloadMode` 2, read from `GT4_GS_CONFIG`) the
+  128-qword flare readback is answered locally: the client copies the previous reply (one frame old) into the guest
+  buffer and queues the READ_FIFO behind the journal (new `Readback` entry, `GsSink::readback`), so the record still lands
+  at its stream position and the GS process still answers it (one record per readback, ids unchanged; the night record
+  counts equal the pre-rc6 Performance-mode run). `sync("download")` then only closes the VIF1 batch and is counted as
+  `download_deferred`; the blocking drain runs only for readbacks that need accurate data (car icons, loading picture,
+  thumbnail, photo) and for the first flare readback of a scene, through `drain_download`. `GT4_GS_READBACK_LOCAL=0`
+  restores the pre-rc6 behaviour; with the VU1 worker off (MTVU), in donor mode or without the ini the local answer is
+  not used and every readback is served as before. The F8 report prints the local answers per interval.
 - RESET: kind 1 at the donor GS reset, kind 2 (paths 1-3) at a GIF reset.
 - Presentation: none in the game; the consumer presents. CONTROL attach_window and resize carry the game window.
 - Shutdown: at the end of the run the producer posts CONTROL shutdown, waits up to 3 s for the consumer to exit,

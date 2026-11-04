@@ -29,6 +29,9 @@ DONOR_SRC = ASSETS / 'private/references/ps2-web-recomp/runtime/src'
 PIN = json.loads((ROOT / 'docs/inputs/slice217-license-guard-runtime.json').read_text(encoding='utf-8'))
 PIN_212C = json.loads((ROOT / 'docs/inputs/slice212c-license-guard-runtime.json').read_text(encoding='utf-8'))
 PIN_206 = json.loads((ROOT / 'docs/inputs/slice206-license-guard-runtime.json').read_text(encoding='utf-8'))
+# TASK-100 S8b: slice277 pins the current guard overlay (per-target Manager add and body shift); slice217/212c/206
+# keep the earlier overlay text and its aspect profile.
+PIN_S8B = json.loads((ROOT / 'docs/inputs/slice277-license-guard-runtime.json').read_text(encoding='utf-8'))
 DONOR_EXCERPT = (
     '#include "ps2/generated.hpp"\n'
     '#include "ps2/system.hpp"\n'
@@ -64,17 +67,22 @@ class DisplayAspectDerivationTests(unittest.TestCase):
         self.assertLess(derived.index(ASPECT_HOOK), derived.index('const UnitInfo *u = unit_for(pc);'))
         self.assertLess(derived.index('void race_camera_aspect_hook(Cpu &c) {'), derived.index('void dispatch(Cpu &c'))
 
-    def test_without_the_option_the_derivation_is_the_slice206_capsule(self):
+    def test_without_the_option_the_derivation_keeps_the_current_guard(self):
         if not DONOR_SRC.exists():
             self.skipTest('donor checkout not present')
         plain = guard.derive_sources(ASSETS)
         digest = hashlib.sha256(plain['dispatch.cpp'].encode('utf-8')).hexdigest()
-        self.assertEqual(digest, PIN_206['source_sha256']['dispatch.cpp'])
+        self.assertNotIn('display_aspect', plain['dispatch.cpp'])
+        self.assertNotEqual(digest, PIN_206['source_sha256']['dispatch.cpp'])  # S8b moved the guard overlay
+        for name in ('kernel.cpp', 'cdvdfsv.cpp'):
+            self.assertEqual(hashlib.sha256(plain[name].encode('utf-8')).hexdigest(), PIN_206['source_sha256'][name])
 
     def test_pin_profile_and_overlay_hashes(self):
         self.assertEqual(PIN['license_guard_profile'], 'task017-guard-v2+task080-aspect-v2')
         self.assertEqual(PIN['display_aspect_overlay_sha256'], guard.overlay_sha256(guard.ASPECT_OVERLAY_PATH))
-        self.assertEqual(PIN['license_guard_overlay_sha256'], guard.overlay_sha256(guard.GUARD_OVERLAY_PATH))
+        # TASK-100 S8b: the current guard overlay is pinned by slice277; slice217 keeps the older text.
+        self.assertEqual(PIN_S8B['license_guard_overlay_sha256'], guard.overlay_sha256(guard.GUARD_OVERLAY_PATH))
+        self.assertNotEqual(PIN['license_guard_overlay_sha256'], guard.overlay_sha256(guard.GUARD_OVERLAY_PATH))
         self.assertEqual(PIN['capsule'], 'private/slice217-license-guard-runtime')
         # slice212c (P1) stays as history: same guard, kernel and cdvdfsv; only dispatch.cpp (the overlay) changed.
         self.assertEqual(PIN_212C['license_guard_profile'], 'task017-guard-v2+task080-aspect-v1')
@@ -93,9 +101,10 @@ class DisplayAspectDerivationTests(unittest.TestCase):
             for name in ('dispatch.cpp', 'kernel.cpp', 'iop/cdvdfsv.cpp'):
                 (donor / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(DONOR_SRC / name, donor / name)
-            receipt = guard.prepare(root / 'private/slice217-license-guard-runtime', root, display_aspect=True)
-            self.assertEqual(receipt['source_sha256'], PIN['source_sha256'])
-            self.assertEqual(receipt['license_guard_profile'], PIN['license_guard_profile'])
+            receipt = guard.prepare(root / 'private/slice277-license-guard-runtime', root,
+                                    display_aspect=True, frame_counters=True)
+            self.assertEqual(receipt['source_sha256'], PIN_S8B['source_sha256'])
+            self.assertEqual(receipt['license_guard_profile'], PIN_S8B['license_guard_profile'])
 
     def test_capsule_files_match_the_pin_when_present(self):
         capsule = ASSETS / PIN['capsule']

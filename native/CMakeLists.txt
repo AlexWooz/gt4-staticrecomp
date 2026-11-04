@@ -9,7 +9,16 @@ set(GT4_ASSETS_ROOT "${GT4_ROOT}" CACHE PATH "Verified private assets checkout")
 # Accounting layout matches across translation units. Legacy report lines are unchanged (kLegacyCategoryCount).
 add_compile_definitions(GT4_MTVU_RUNTIME)
 set(GT4_EE_PROFILE "production" CACHE STRING "Pinned EE library profile")
-set_property(CACHE GT4_EE_PROFILE PROPERTY STRINGS production baseline recovered observation coverage aspect)
+set_property(CACHE GT4_EE_PROFILE PROPERTY STRINGS production baseline recovered observation coverage aspect flare)
+# TASK-100 S3: the game target whose guest addresses the host hooks use (native/game_target.hpp). v200 is the release
+# target; spec2 is the second target of decision 0072 and has no hooks until S8 fills its table.
+set(GT4_TARGET "v200" CACHE STRING "Game target for the host hooks and the guest image")
+set_property(CACHE GT4_TARGET PROPERTY STRINGS v200 spec2)
+if(GT4_TARGET STREQUAL "spec2")
+    add_compile_definitions(GT4_TARGET_SPEC2)
+elseif(NOT GT4_TARGET STREQUAL "v200")
+    message(FATAL_ERROR "Unknown GT4_TARGET '${GT4_TARGET}'; expected v200 or spec2")
+endif()
 set(GT4_SHAPE_RUNTIME_SOURCE "" CACHE PATH "Verified experimental runtime overlay capsule")
 set(GT4_PERF_RUNTIME_SOURCE "" CACHE PATH "Verified performance-only runtime capsule")
 option(GT4_PERF_FRAME_ONLY "Compile out subsystem hooks for a matched timing control" OFF)
@@ -24,15 +33,23 @@ set(GT4_SHADER_DIR "${SHADERS}" CACHE PATH "Isolated qualified shader directory"
 # Qualified private capsules are named relative to the assets checkout. In the main checkout this is GT4_ROOT;
 # a worktree passes -DGT4_ASSETS_ROOT=<main checkout> and never links the main private/ directory.
 get_filename_component(GT4_PRIVATE_BASE "${GT4_ASSETS_ROOT}" ABSOLUTE)
-# TASK-084 (slice260..269): frame-cost capsules. They keep the slice191 profile (GS stream + MTVU + VU1/VU0 AOT) and
-# add the TASK-084 instrumentation and optimisation switches. Each capsule pins its own manifest
-# docs/inputs/<capsule name>.json; the license guard capsule of the same profile pins docs/inputs/<its name>.json.
-set(GT4_TASK084_CAPSULE_RE "^private/slice26[0-9]-[a-z0-9-]+-runtime$")
-set(GT4_TASK084_GUARD_RE "^private/slice26[0-9]-[a-z0-9-]*license-guard-runtime$")
+# TASK-084 (slice260..269) and TASK-100 S8b (slice277): license guard capsules. They keep the slice191 profile
+# (GS stream + MTVU + VU1/VU0 AOT) and add the TASK-084 instrumentation and optimisation switches. Each capsule pins
+# its own manifest docs/inputs/<capsule name>.json; the license guard capsule of the same profile pins
+# docs/inputs/<its name>.json. Only the Spec II build selects a slice27x guard capsule (slice277, TASK-100 S8b: the
+# per-target Manager add/body shift for the Spec II demo loaders); v2.00 keeps its slice262 capsule.
+# And TASK-082 (slice375 on): the same guard plus the frame skip hook.
+set(GT4_TASK084_GUARD_RE "^private/slice(2[67]|3[789])[0-9]-[a-z0-9-]*license-guard-runtime$")
+# TASK-100 S7b (slice276): the TASK-084 frame-cost profile plus the Spec II IOP reboot rule (sif.cpp), so the frame-cost
+# capsule family spans slice260..slice279. Only the Spec II executable selects a slice27x capsule; v2.00 keeps its
+# slice262 capsule. It shares the TASK-084 file list and pin rules.
+set(GT4_FRAME_CAPSULE_RE "^private/slice2[67][0-9]-[a-z0-9-]+-runtime$")
+set(GT4_SPEC2_CAPSULE_RE "^private/slice27[0-9]-[a-z0-9-]+-runtime$")
 if(GT4_PERF_RUNTIME_SOURCE)
     # TASK-014 slice208: the accepted explicit-seed library (profile coverage) may carry the performance capsule too.
-    if(GT4_SHAPE_RUNTIME_SOURCE OR NOT GT4_EE_PROFILE MATCHES "^(production|coverage|aspect)$")
-        message(FATAL_ERROR "Performance profile requires production or coverage EE and no observation overlay")
+    # TASK-100 S4: the Spec II target uses the same target-independent runtime capsule.
+    if(GT4_SHAPE_RUNTIME_SOURCE OR NOT GT4_EE_PROFILE MATCHES "^(production|coverage|aspect|flare|spec2)$")
+        message(FATAL_ERROR "Performance profile requires production, coverage, aspect or spec2 EE and no observation overlay")
     endif()
     get_filename_component(PORT "${GT4_PORT_DIR}" ABSOLUTE)
     get_filename_component(SHADERS "${GT4_SHADER_DIR}" ABSOLUTE)
@@ -127,8 +144,50 @@ elseif(GT4_EE_PROFILE STREQUAL "aspect")
     endif()
     set(GAME_LIBRARY "${GT4_ASSETS_ROOT}/${library_path}")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GT4_ROOT}/docs/inputs/slice217-ee-libraries.json")
+elseif(GT4_EE_PROFILE STREQUAL "flare")
+    # TASK-117 (rc6): the TASK-080 P2 rows plus the flare-limits redirects and helpers in the zero padding
+    # (scripts/flare_limits_elf_patch.py; native/flare_limits.cpp fills the block). Pinned by
+    # docs/inputs/slice299-ee-libraries.json.
+    file(READ "${GT4_ROOT}/docs/inputs/slice299-ee-libraries.json" flare_manifest)
+    string(JSON library_path GET "${flare_manifest}" profiles flare path)
+    string(JSON expected_game_library_hash GET "${flare_manifest}" profiles flare sha256)
+    if(NOT library_path MATCHES "^private/slice299-ee-flare-producer/game-build/ps2game\.lib$")
+        message(FATAL_ERROR "Flare library must be the slice299 producer library")
+    endif()
+    set(GAME_LIBRARY "${GT4_ASSETS_ROOT}/${library_path}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GT4_ROOT}/docs/inputs/slice299-ee-libraries.json")
+elseif(GT4_EE_PROFILE STREQUAL "spec2")
+    # TASK-100 S4/S8c: the Spec II library, translated from the derived SCUS_974.36 (scripts/spec2_elf_patch.py,
+    # scripts/spec2_ee_generate.py and the S8c seed generator scripts/spec2_entry_seeds.py). Plain translation: no
+    # aspect patch. Pinned by docs/inputs/spec2-ee-libraries.json.
+    file(READ "${GT4_ROOT}/docs/inputs/spec2-ee-libraries.json" spec2_manifest)
+    string(JSON library_path GET "${spec2_manifest}" profiles spec2 path)
+    string(JSON expected_game_library_hash GET "${spec2_manifest}" profiles spec2 sha256)
+    if(NOT library_path MATCHES "^private/slice278-spec2-ee-producer/game-build/ps2game\\.lib$")
+        message(FATAL_ERROR "Spec II library must be the slice278 producer library (S8c reseed)")
+    endif()
+    set(GAME_LIBRARY "${GT4_ASSETS_ROOT}/${library_path}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GT4_ROOT}/docs/inputs/spec2-ee-libraries.json")
 else()
     message(FATAL_ERROR "Unknown GT4_EE_PROFILE; no permissive AOT library selection")
+endif()
+# TASK-100 S4: the target and the library must agree; the Spec II executable is its own build.
+if(GT4_TARGET STREQUAL "spec2" AND NOT GT4_EE_PROFILE STREQUAL "spec2")
+    message(FATAL_ERROR "GT4_TARGET=spec2 needs -DGT4_EE_PROFILE=spec2 (its own translated library)")
+endif()
+if(NOT GT4_TARGET STREQUAL "spec2" AND GT4_EE_PROFILE STREQUAL "spec2")
+    message(FATAL_ERROR "GT4_EE_PROFILE=spec2 is only valid with -DGT4_TARGET=spec2")
+endif()
+# TASK-134: the same translated units, built with this executable's compiler, SSE4.1 and a profile. Same check as the pinned
+# libraries: the configure takes the path and its hash together. docs/inputs/sliceNNN-*.json record the hash of a release.
+set(GT4_EE_LIBRARY "" CACHE FILEPATH "EE library rebuilt from the profile's units (needs GT4_EE_LIBRARY_SHA256)")
+set(GT4_EE_LIBRARY_SHA256 "" CACHE STRING "SHA-256 of GT4_EE_LIBRARY")
+if(GT4_EE_LIBRARY)
+    if(NOT GT4_EE_LIBRARY_SHA256)
+        message(FATAL_ERROR "GT4_EE_LIBRARY needs GT4_EE_LIBRARY_SHA256")
+    endif()
+    set(GAME_LIBRARY "${GT4_EE_LIBRARY}")
+    set(expected_game_library_hash "${GT4_EE_LIBRARY_SHA256}")
 endif()
 if(NOT EXISTS "${GAME_LIBRARY}")
     message(FATAL_ERROR "Missing private AOT game library; see docs/BUILD.md")
@@ -171,6 +230,47 @@ if(GT4_MEMCARD_RUNTIME_SOURCE)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${memcard_capsule}/sio2.cpp")
     set(GT4_MEMCARD_FLUSH_ENABLED ON)
 endif()
+# TASK-027 IN-490: faster IPU video decoder, exactly the donor's results. A capsule (scripts/prepare_ipu_fast.py) replaces the
+# donor ipu/ipu.cpp with the derived source; the manifest pins the derived file's SHA-256.
+set(GT4_IPU_RUNTIME_SOURCE "" CACHE PATH "Verified IPU capsule: derived ipu.cpp and runtime.json")
+if(GT4_IPU_RUNTIME_SOURCE)
+    get_filename_component(ipu_capsule "${GT4_IPU_RUNTIME_SOURCE}" ABSOLUTE)
+    if(NOT EXISTS "${ipu_capsule}/ipu.cpp" OR NOT EXISTS "${ipu_capsule}/runtime.json")
+        message(FATAL_ERROR "The IPU capsule needs ipu.cpp and runtime.json")
+    endif()
+    file(READ "${ipu_capsule}/runtime.json" ipu_manifest)
+    string(JSON ipu_expected GET "${ipu_manifest}" ipu_sha256)
+    file(SHA256 "${ipu_capsule}/ipu.cpp" ipu_actual)
+    if(NOT ipu_actual STREQUAL ipu_expected)
+        message(FATAL_ERROR "IPU ipu.cpp differs from its runtime.json pin")
+    endif()
+    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/ipu/ipu\\.cpp$")
+    list(APPEND RUNTIME_FILES "${ipu_capsule}/ipu.cpp")
+    # The derived file includes native/ipu_fast.hpp and the donor's files by their runtime/src paths.
+    set_source_files_properties("${ipu_capsule}/ipu.cpp" PROPERTIES INCLUDE_DIRECTORIES "${DONOR}/runtime/src;${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ipu_capsule}/ipu.cpp")
+endif()
+# TASK-125 (issue #104): SPU2 capsule (scripts/prepare_spu2_runtime.py). Replaces the donor iop/spu2.cpp with the derived
+# source whose exponential envelope decrease reaches silence (native/spu2_envelope.hpp); the manifest pins its SHA-256.
+set(GT4_SPU2_RUNTIME_SOURCE "" CACHE PATH "Verified SPU2 capsule: derived spu2.cpp and runtime.json")
+if(GT4_SPU2_RUNTIME_SOURCE)
+    get_filename_component(spu2_capsule "${GT4_SPU2_RUNTIME_SOURCE}" ABSOLUTE)
+    if(NOT EXISTS "${spu2_capsule}/spu2.cpp" OR NOT EXISTS "${spu2_capsule}/runtime.json")
+        message(FATAL_ERROR "The SPU2 capsule needs spu2.cpp and runtime.json")
+    endif()
+    file(READ "${spu2_capsule}/runtime.json" spu2_manifest)
+    string(JSON spu2_expected GET "${spu2_manifest}" spu2_sha256)
+    file(SHA256 "${spu2_capsule}/spu2.cpp" spu2_actual)
+    if(NOT spu2_actual STREQUAL spu2_expected)
+        message(FATAL_ERROR "SPU2 spu2.cpp differs from its runtime.json pin")
+    endif()
+    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/iop/spu2\\.cpp$")
+    list(APPEND RUNTIME_FILES "${spu2_capsule}/spu2.cpp")
+    # The derived file includes the donor's iop headers by name (spu2.hpp, hw.hpp, ...) and native/spu2_envelope.hpp.
+    set_source_files_properties("${spu2_capsule}/spu2.cpp" PROPERTIES
+        INCLUDE_DIRECTORIES "${DONOR}/runtime/src/iop;${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${spu2_capsule}/spu2.cpp")
+endif()
 # TASK-017 (slice205 v1, slice206 v2): license demo guard capsule (scripts/prepare_license_guard.py). Replaces the donor
 # dispatch.cpp (guard at both license loaders' demo-input calls, native/license_guard.*), kernel.cpp (halt
 # dump, off unless GT4_HALT_DUMP=1) and iop/cdvdfsv.cpp (FSV read trace, off unless GT4_FSV_TRACE=1). Every derived
@@ -197,12 +297,12 @@ if(GT4_LICENSE_GUARD_SOURCE)
         # TASK-080 P2: as slice212c, and the RaceDisplay::render marker also runs the HUD canvas hook (a0 = this).
         set(guard_pin_path "${GT4_ROOT}/docs/inputs/slice217-license-guard-runtime.json")
     elseif(guard_relative MATCHES "${GT4_TASK084_GUARD_RE}")
-        # TASK-084 (slice260..269): the slice217 guard plus the kernel frame counters (--frame-counters); its pin file
-        # carries the same name as the capsule.
+        # TASK-084 (slice260..269) and TASK-100 S8b (slice277): the slice217 guard plus the kernel frame counters
+        # (--frame-counters); its pin file carries the same name as the capsule.
         get_filename_component(guard_name "${guard_capsule}" NAME)
         set(guard_pin_path "${GT4_ROOT}/docs/inputs/${guard_name}.json")
     else()
-        message(FATAL_ERROR "Unknown license guard capsule; expected private/slice205-, slice206-, slice212c-, slice217- or a slice26x TASK-084 license guard runtime")
+        message(FATAL_ERROR "Unknown license guard capsule; expected private/slice205-, slice206-, slice212c-, slice217- or a slice26x/slice27x license guard runtime")
     endif()
     file(GLOB guard_files RELATIVE "${guard_capsule}" "${guard_capsule}/*")
     list(SORT guard_files)
@@ -234,8 +334,23 @@ target_compile_options(gt4_pacing PRIVATE /W4)
 # Pure window-mode state and the GT4_FORCE_480P race display index (slice164).
 # TASK-060: cursor auto-hide rule (cursor_autohide.cpp) shared by the window.
 # TASK-080: display aspect (GT4_DISPLAY_ASPECT parse, Hor+/Vert+ matrix scale, scene policy, runtime glue).
-add_library(gt4_quickfix STATIC window_mode.cpp race_display.cpp race_widescreen.cpp cursor_autohide.cpp display_aspect.cpp)
+# TASK-159: the 360-degree chase camera switch, stick table and per-target addresses (camera_360.cpp; the guest hook itself is
+# camera_360_hook.cpp in gt4vulkan).
+add_library(gt4_quickfix STATIC frame_skip.cpp window_mode.cpp race_display.cpp race_widescreen.cpp cursor_autohide.cpp display_aspect.cpp
+    flare_limits.cpp camera_360.cpp fov_adjust.cpp trigger_range.cpp)
 target_compile_options(gt4_quickfix PRIVATE /W4)
+# TASK-100 S7b: the v2.00 hook fixtures assert the v2.00 guest chains, but gt4_quickfix carries the active target's table
+# (Spec II in a Spec II build). A Spec II build therefore compiles a second copy of the three hook modules pinned to
+# v2.00 for the fixtures only; the game keeps the target table.
+if(GT4_TARGET STREQUAL "spec2")
+    add_library(gt4_quickfix_v200_fixture STATIC race_display.cpp race_widescreen.cpp display_aspect.cpp flare_limits.cpp camera_360.cpp
+        fov_adjust.cpp trigger_range.cpp)
+    target_compile_definitions(gt4_quickfix_v200_fixture PUBLIC GT4_TARGET_FIXTURE_V200)
+    target_compile_options(gt4_quickfix_v200_fixture PRIVATE /W4)
+    set(GT4_HOOK_FIXTURE_LIB gt4_quickfix_v200_fixture)
+else()
+    set(GT4_HOOK_FIXTURE_LIB gt4_quickfix)
+endif()
 # TASK-081: pure Vulkan extension selection (required surface/swapchain only; swapchain maintenance 1 when present).
 add_library(gt4_vulkan_extensions STATIC vulkan_extensions.cpp)
 target_compile_options(gt4_vulkan_extensions PRIVATE /W4)
@@ -271,7 +386,26 @@ target_link_libraries(license_guard_fixture PRIVATE gt4_license_guard)
 target_compile_options(license_guard_fixture PRIVATE /W4)
 # Sane data kept, insane count with CRC fail guarded, CRC pass kept.
 add_test(NAME native_license_guard COMMAND $<TARGET_FILE:license_guard_fixture>)
-add_library(gt4_perf_probe STATIC perf_probe.cpp)
+# TASK-100 S3: the per-target guest-hook table (v2.00 values and the disabled Spec II default).
+# TASK-097: the standalone start rules (paths from the executable folder, receipt check, defaults, precedence, command line).
+add_executable(standalone_fixture standalone_fixture.cpp standalone.cpp)
+target_compile_options(standalone_fixture PRIVATE /W4)
+target_link_libraries(standalone_fixture PRIVATE gt4_pad_mapping)  # TASK-148: parse_pad_choice for game.ini `pad`
+target_compile_definitions(standalone_fixture PRIVATE GT4_STANDALONE_SAMPLE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/standalone_samples")
+add_test(NAME native_standalone COMMAND $<TARGET_FILE:standalone_fixture>)
+add_executable(game_target_fixture game_target_fixture.cpp game_target_spec2_fixture.cpp)
+target_compile_options(game_target_fixture PRIVATE /W4)
+add_test(NAME native_game_target COMMAND $<TARGET_FILE:game_target_fixture>)
+# TASK-100 S7b: the Spec II IOP reboot image rule (native/spec2_iop.hpp) on the reboot paths the game uses.
+add_executable(spec2_iop_fixture spec2_iop_fixture.cpp)
+target_compile_options(spec2_iop_fixture PRIVATE /W4)
+add_test(NAME native_spec2_iop COMMAND $<TARGET_FILE:spec2_iop_fixture>)
+# TASK-100 S8: the Spec II hook table and its guest-RAM write rules, always compiled against the Spec II table.
+add_executable(spec2_hooks_fixture spec2_hooks_fixture.cpp race_widescreen.cpp race_display.cpp license_guard.cpp)
+target_compile_definitions(spec2_hooks_fixture PRIVATE GT4_TARGET_SPEC2)
+target_compile_options(spec2_hooks_fixture PRIVATE /W4)
+add_test(NAME native_spec2_hooks COMMAND $<TARGET_FILE:spec2_hooks_fixture>)
+add_library(gt4_perf_probe STATIC perf_probe.cpp perf_clock.cpp)
 # TASK-011 step 0 counters (linked into the runtime only with the slice169 capsule).
 add_library(gt4_mtvu_measure STATIC mtvu_measure.cpp)
 target_compile_options(gt4_mtvu_measure PRIVATE /W4)
@@ -303,7 +437,8 @@ target_link_libraries(gt4_mtvu_runtime PUBLIC gt4_mtvu_journal gt4_mtvu_measure 
 target_compile_options(gt4_mtvu_runtime PRIVATE /W4)
 # TASK-035: GS stream protocol, shared-memory transport and .gscap v2 files (MIT, no donor or renderer code), the
 # game-side client (linked into the runtime by the slice191 capsule only) and their host-only controls.
-add_library(gt4_gs_stream STATIC gs_stream/gs_stream_ipc.cpp gs_stream/gs_stream_file.cpp)
+add_library(gt4_gs_stream STATIC gs_stream/gs_stream_ipc.cpp gs_stream/gs_stream_file.cpp
+    gs_stream/gs_readback_probe.cpp)
 target_include_directories(gt4_gs_stream PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/gs_stream")
 target_compile_options(gt4_gs_stream PRIVATE /W4)
 add_library(gt4_gs_stream_client STATIC gs_stream/gs_stream_client.cpp)
@@ -313,6 +448,15 @@ target_compile_definitions(gt4_gs_stream_client PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(gt4_gs_stream_client PRIVATE /W4)
 # TASK-038: users of the client (window.cpp through ps2runtime_vulkan) see GT4_GS_STREAM_CLIENT.
 target_compile_definitions(gt4_gs_stream_client INTERFACE GT4_GS_STREAM_CLIENT)
+# TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
+# and lets the GS stream seam accept GT4_RENDERER=hw. In that mode the same hooks that feed gt4-gs.exe in pcsx2 mode
+# feed the in-process HWR backend (native/hw_gs/hw_gs_stream_sink.cpp); no GS process is started. With GT4_HW_GS=OFF
+# (the default and every release build) the client still refuses any value other than donor or pcsx2.
+if(GT4_HW_GS)
+    add_subdirectory(hw_gs)
+    target_link_libraries(gt4_gs_stream_client PUBLIC gt4_hw_stream_sink)
+    target_compile_definitions(gt4_gs_stream_client PRIVATE GT4_GS_STREAM_HW)
+endif()
 add_executable(gs_stream_ipc_fixture gs_stream/gs_stream_ipc_fixture.cpp)
 target_link_libraries(gs_stream_ipc_fixture PRIVATE gt4_gs_stream)
 target_compile_options(gs_stream_ipc_fixture PRIVATE /W4)
@@ -320,6 +464,11 @@ add_executable(gs_stream_client_fixture gs_stream/gs_stream_client_fixture.cpp)
 target_link_libraries(gs_stream_client_fixture PRIVATE gt4_gs_stream_client)
 target_compile_definitions(gs_stream_client_fixture PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(gs_stream_client_fixture PRIVATE /W4)
+# TASK-116 step 0: the READ_FIFO probe (GT4_GS_READBACK_LOG): HWDownloadMode ini parse, reply hash, aggregation.
+add_executable(gs_readback_probe_fixture gs_stream/gs_readback_probe_fixture.cpp)
+target_link_libraries(gs_readback_probe_fixture PRIVATE gt4_gs_stream)
+target_compile_definitions(gs_readback_probe_fixture PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(gs_readback_probe_fixture PRIVATE /W4)
 if(GT4_PERF_FRAME_ONLY)
     target_compile_definitions(gt4_perf_probe PUBLIC GT4_PERF_FRAME_ONLY)
 endif()
@@ -438,12 +587,12 @@ if(GT4_PERF_RUNTIME_SOURCE)
         message(FATAL_ERROR "The slice191 GS stream runtime requires the slice191 GS stream port")
     endif()
     if(GT4_GS_STREAM_PORT AND NOT perf_relative STREQUAL "private/slice191-gs-stream-runtime" AND
-       NOT perf_relative MATCHES "${GT4_TASK084_CAPSULE_RE}")
+       NOT perf_relative MATCHES "${GT4_FRAME_CAPSULE_RE}")
         message(FATAL_ERROR "The slice191 GS stream port requires the slice191 GS stream runtime")
     endif()
     if(perf_relative STREQUAL "private/slice170-mtvu-runtime" OR perf_relative STREQUAL "private/slice172-mtvu-runtime" OR
        perf_relative STREQUAL "private/slice178-main-runtime" OR perf_relative STREQUAL "private/slice191-gs-stream-runtime" OR
-       perf_relative MATCHES "${GT4_TASK084_CAPSULE_RE}")
+       perf_relative MATCHES "${GT4_FRAME_CAPSULE_RE}")
         if(GT4_PERF_FRAME_ONLY)
             message(FATAL_ERROR "MTVU requires detailed timing, not frame-only")
         endif()
@@ -454,7 +603,7 @@ if(GT4_PERF_RUNTIME_SOURCE)
         elseif(perf_relative STREQUAL "private/slice191-gs-stream-runtime")
             set(perf_manifest_path "${GT4_ROOT}/docs/inputs/slice191-gs-stream-runtime.json")
             target_link_libraries(ps2runtime_vulkan PUBLIC gt4_gs_stream_client)
-        elseif(perf_relative MATCHES "${GT4_TASK084_CAPSULE_RE}")
+        elseif(perf_relative MATCHES "${GT4_FRAME_CAPSULE_RE}")
             # TASK-084: same profile as slice191; the manifest is named after the capsule itself.
             get_filename_component(perf_capsule_name "${perf_source}" NAME)
             set(perf_manifest_path "${GT4_ROOT}/docs/inputs/${perf_capsule_name}.json")
@@ -478,8 +627,8 @@ if(GT4_PERF_RUNTIME_SOURCE)
            NOT perf_relative STREQUAL "private/slice191-gs-stream-runtime" AND
            NOT perf_relative STREQUAL "private/slice181-license-runtime" AND
            NOT perf_relative STREQUAL "private/slice204-halt-runtime" AND
-           NOT perf_relative MATCHES "${GT4_TASK084_CAPSULE_RE}")
-            message(FATAL_ERROR "The GS async adapter requires a VU1 AOT runtime capsule (slice151, slice154, slice155, slice156, slice157, slice158, slice160, slice164, slice169, slice170, slice172, slice178-main, slice191-gs-stream, slice181, slice204 or a slice26x TASK-084 capsule)")
+           NOT perf_relative MATCHES "${GT4_FRAME_CAPSULE_RE}")
+            message(FATAL_ERROR "The GS async adapter requires a VU1 AOT runtime capsule (slice151, slice154, slice155, slice156, slice157, slice158, slice160, slice164, slice169, slice170, slice172, slice178-main, slice191-gs-stream, slice181, slice204 or a slice26x/slice27x frame-cost capsule)")
         endif()
         set(perf_manifest_path "${GT4_ROOT}/docs/inputs/slice152-gs-async-runtime.json")
         if(GT4_PERF_PACING_PORT)
@@ -512,14 +661,14 @@ if(GT4_PERF_RUNTIME_SOURCE)
                 set(perf_manifest_path "${GT4_ROOT}/docs/inputs/slice181-license-runtime.json")
             elseif(perf_relative STREQUAL "private/slice204-halt-runtime")
                 set(perf_manifest_path "${GT4_ROOT}/docs/inputs/slice204-halt-runtime.json")
-            elseif(perf_relative MATCHES "${GT4_TASK084_CAPSULE_RE}")
+            elseif(perf_relative MATCHES "${GT4_FRAME_CAPSULE_RE}")
                 get_filename_component(perf_capsule_name "${perf_source}" NAME)
                 set(perf_manifest_path "${GT4_ROOT}/docs/inputs/${perf_capsule_name}.json")
             endif()
         endif()
     endif()
     # TASK-059 (slice200): the --portable-check port (slice200-port) pins its own main.cpp.
-    if(PORT STREQUAL "${GT4_PRIVATE_BASE}/private/slice200-port" AND NOT perf_relative MATCHES "${GT4_TASK084_CAPSULE_RE}")
+    if(PORT STREQUAL "${GT4_PRIVATE_BASE}/private/slice200-port" AND NOT perf_relative MATCHES "${GT4_FRAME_CAPSULE_RE}")
         set(perf_manifest_path "${GT4_ROOT}/docs/inputs/slice200-gs-stream-runtime.json")
     endif()
     file(READ "${perf_manifest_path}" perf_manifest)
@@ -569,8 +718,12 @@ if(GT4_PERF_RUNTIME_SOURCE)
     endif()
     if(perf_relative STREQUAL "private/slice170-mtvu-runtime" OR perf_relative STREQUAL "private/slice172-mtvu-runtime" OR
        perf_relative STREQUAL "private/slice178-main-runtime" OR perf_relative STREQUAL "private/slice191-gs-stream-runtime" OR
-       perf_relative MATCHES "${GT4_TASK084_CAPSULE_RE}")
+       perf_relative MATCHES "${GT4_FRAME_CAPSULE_RE}")
         list(APPEND perf_sources gif.cpp memory.cpp hw.cpp dmac.cpp)
+    endif()
+    # TASK-100 S7b: the Spec II capsule also carries the IOP reboot rule (donor runtime/src/iop/sif.cpp).
+    if(perf_relative MATCHES "${GT4_SPEC2_CAPSULE_RE}")
+        list(APPEND perf_sources sif.cpp)
     endif()
     set(perf_expected_files runtime.json ${perf_sources})
     list(SORT perf_expected_files)
@@ -594,6 +747,11 @@ if(GT4_PERF_RUNTIME_SOURCE)
         if(source STREQUAL "cdvdfsv.cpp")
             set(perf_donor_path "iop/cdvdfsv.cpp")
         endif()
+        if(source STREQUAL "sif.cpp")
+            # The capsule copy is compiled from the capsule directory; the overlay rewrites the donor's local include
+            # block to runtime/src-relative paths ("iop/sif.hpp", "hw.hpp"), so no extra include directory is needed.
+            set(perf_donor_path "iop/sif.cpp")
+        endif()
         list(REMOVE_ITEM RUNTIME_FILES "${DONOR}/runtime/src/${perf_donor_path}")
         if(source STREQUAL "gif.cpp")
             list(REMOVE_ITEM RUNTIME_FILES "${DONOR}/runtime/src/gs/gif.cpp")
@@ -609,8 +767,8 @@ endif()
 # VU1 AOT: compile the emitted table into the runtime. Only valid with the VU1 AOT capsule.
 set(GT4_VU1_GENERATED_DIR "" CACHE PATH "Fresh tools/vu_recomp generator output (vu1_generated.cpp) for the VU1 AOT capsule")
 if(GT4_VU1_GENERATED_DIR)
-    if(NOT GT4_PERF_RUNTIME_SOURCE OR NOT GT4_PERF_RUNTIME_SOURCE MATCHES "slice151-vu1-aot-runtime$|slice154-vu1-flags-runtime$|slice155-vu1-full-runtime$|slice156-quickfix-runtime$|slice157-vu1-all-runtime$|slice158-quickfix2-runtime$|slice160-vu0-runtime$|slice164-quickfix3-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$")
-        message(FATAL_ERROR "GT4_VU1_GENERATED_DIR requires a VU1 AOT runtime capsule (slice151, 154, 155, 156, 157, 158, 160, 164, 169, 170, 172, 178-main, 191-gs-stream or a slice26x TASK-084 capsule)")
+    if(NOT GT4_PERF_RUNTIME_SOURCE OR NOT GT4_PERF_RUNTIME_SOURCE MATCHES "slice151-vu1-aot-runtime$|slice154-vu1-flags-runtime$|slice155-vu1-full-runtime$|slice156-quickfix-runtime$|slice157-vu1-all-runtime$|slice158-quickfix2-runtime$|slice160-vu0-runtime$|slice164-quickfix3-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$|slice27[0-9]-[a-z0-9-]+-runtime$")
+        message(FATAL_ERROR "GT4_VU1_GENERATED_DIR requires a VU1 AOT runtime capsule (slice151, 154, 155, 156, 157, 158, 160, 164, 169, 170, 172, 178-main, 191-gs-stream or a slice26x/slice27x frame-cost capsule)")
     endif()
     foreach(generated_file IN ITEMS vu1_generated.cpp manifest.json)
         if(NOT EXISTS "${GT4_VU1_GENERATED_DIR}/${generated_file}")
@@ -627,7 +785,7 @@ if(GT4_VU1_GENERATED_DIR)
     # Suppressed for generated sources only, so warnings in hand-written code stay visible.
     set_source_files_properties("${GT4_VU1_GENERATED_DIR}/vu1_generated.cpp" ${vu1_generated_parts}
         PROPERTIES COMPILE_OPTIONS "-Wno-unused-label")
-elseif(GT4_PERF_RUNTIME_SOURCE AND GT4_PERF_RUNTIME_SOURCE MATCHES "slice151-vu1-aot-runtime$|slice154-vu1-flags-runtime$|slice155-vu1-full-runtime$|slice156-quickfix-runtime$|slice157-vu1-all-runtime$|slice158-quickfix2-runtime$|slice160-vu0-runtime$|slice164-quickfix3-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$")
+elseif(GT4_PERF_RUNTIME_SOURCE AND GT4_PERF_RUNTIME_SOURCE MATCHES "slice151-vu1-aot-runtime$|slice154-vu1-flags-runtime$|slice155-vu1-full-runtime$|slice156-quickfix-runtime$|slice157-vu1-all-runtime$|slice158-quickfix2-runtime$|slice160-vu0-runtime$|slice164-quickfix3-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$|slice27[0-9]-[a-z0-9-]+-runtime$")
     message(FATAL_ERROR "The VU1 AOT capsule requires GT4_VU1_GENERATED_DIR")
 endif()
 
@@ -635,8 +793,8 @@ endif()
 # slice160 capsule, which also overlays the VU1 table, so GT4_VU1_GENERATED_DIR is required as well.
 set(GT4_VU0_GENERATED_DIR "" CACHE PATH "Fresh tools/vu_recomp generator output (vu0_generated.cpp) for the VU0 AOT capsule")
 if(GT4_VU0_GENERATED_DIR)
-    if(NOT GT4_PERF_RUNTIME_SOURCE OR NOT GT4_PERF_RUNTIME_SOURCE MATCHES "slice160-vu0-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$")
-        message(FATAL_ERROR "GT4_VU0_GENERATED_DIR requires the VU0 AOT runtime capsule (slice160, 169, 170, 172, 178-main, 191-gs-stream or a slice26x TASK-084 capsule)")
+    if(NOT GT4_PERF_RUNTIME_SOURCE OR NOT GT4_PERF_RUNTIME_SOURCE MATCHES "slice160-vu0-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$|slice27[0-9]-[a-z0-9-]+-runtime$")
+        message(FATAL_ERROR "GT4_VU0_GENERATED_DIR requires the VU0 AOT runtime capsule (slice160, 169, 170, 172, 178-main, 191-gs-stream or a slice26x/slice27x frame-cost capsule)")
     endif()
     if(NOT GT4_VU1_GENERATED_DIR)
         message(FATAL_ERROR "The VU0 AOT capsule also requires GT4_VU1_GENERATED_DIR (it keeps the VU1 table)")
@@ -649,8 +807,23 @@ if(GT4_VU0_GENERATED_DIR)
     file(GLOB vu0_generated_parts CONFIGURE_DEPENDS "${GT4_VU0_GENERATED_DIR}/vu0_generated_*.cpp")
     list(SORT vu0_generated_parts)
     target_sources(ps2runtime_vulkan PRIVATE "${GT4_VU0_GENERATED_DIR}/vu0_generated.cpp" ${vu0_generated_parts})
-elseif(GT4_PERF_RUNTIME_SOURCE AND GT4_PERF_RUNTIME_SOURCE MATCHES "slice160-vu0-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$")
+elseif(GT4_PERF_RUNTIME_SOURCE AND GT4_PERF_RUNTIME_SOURCE MATCHES "slice160-vu0-runtime$|slice169-mtvu-measure-runtime$|slice170-mtvu-runtime$|slice172-mtvu-runtime$|slice178-main-runtime$|slice191-gs-stream-runtime$|slice181-license-runtime$|slice204-halt-runtime$|slice26[0-9]-[a-z0-9-]+-runtime$|slice27[0-9]-[a-z0-9-]+-runtime$")
     message(FATAL_ERROR "The VU0 AOT capsule requires GT4_VU0_GENERATED_DIR")
+endif()
+# TASK-134: the donor's runtime headers with exact faster forms of fp::add, fp::mul and vfix (scripts/prepare_fast_headers.py). The
+# EE library takes the same folder (tools/ee_producer). native_vu_fast_ops compares each form with the donor's.
+option(GT4_FAST_HEADERS "Build game code with the exact faster donor headers" ON)
+if(GT4_FAST_HEADERS)
+    set(GT4_FAST_HEADERS_DIR "${CMAKE_CURRENT_BINARY_DIR}/fast_headers")
+    execute_process(COMMAND "${GT4_PYTHON}" -I "${GT4_ROOT}/scripts/prepare_fast_headers.py" "${DONOR}" "${GT4_FAST_HEADERS_DIR}" RESULT_VARIABLE fast_headers_result)
+    if(NOT fast_headers_result EQUAL 0)
+        message(FATAL_ERROR "scripts/prepare_fast_headers.py failed")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GT4_ROOT}/scripts/prepare_fast_headers.py" "${CMAKE_CURRENT_SOURCE_DIR}/fp4.hpp")
+    target_include_directories(ps2runtime_vulkan BEFORE PUBLIC "${GT4_FAST_HEADERS_DIR}")
+    add_executable(vu_fast_ops_fixture vu_fast_ops_fixture.cpp)
+    target_include_directories(vu_fast_ops_fixture PRIVATE "${GT4_FAST_HEADERS_DIR}" "${GT4_ROOT}/tools/vu_recomp/src")
+    add_test(NAME native_vu_fast_ops COMMAND $<TARGET_FILE:vu_fast_ops_fixture>)
 endif()
 target_include_directories(ps2runtime_vulkan PUBLIC "${DONOR}/runtime/include" "${DONOR}/runtime/src"
                            "${DONOR}/runtime/src/gs" "${CMAKE_CURRENT_SOURCE_DIR}" "${VULKAN_HEADERS}")
@@ -700,7 +873,7 @@ string(JSON GT4_SDL3_LICENSE GET "${sdl3_manifest}" files license path)
 add_library(gt4_sdl3 INTERFACE)
 target_include_directories(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/devel/SDL3-3.4.18/include")
 target_link_libraries(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/${GT4_SDL3_IMPORT_LIB}")
-add_library(gt4_pad_mapping STATIC pad_mapping.cpp)
+add_library(gt4_pad_mapping STATIC pad_mapping.cpp pad_choice.cpp input_recording.cpp)
 target_compile_options(gt4_pad_mapping PRIVATE /W4)
 add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp)
 target_link_libraries(native_host_io PUBLIC gt4_pad_mapping)
@@ -723,19 +896,59 @@ add_library(gt4_achievements STATIC achievements.cpp achievements_overlay.cpp ac
 target_include_directories(gt4_achievements PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(gt4_achievements PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32)
 target_compile_options(gt4_achievements PRIVATE /W4)
+# TASK-133: Test fixture library wiring across game targets.
+# In a Spec II build, gt4_achievements carries the Spec II target guard (which disables RA).
+# A Spec II build therefore compiles a second copy pinned to v2.00 for the positive test fixture,
+# exactly like gt4_quickfix_v200_fixture. Conversely, a v2.00 build compiles a Spec II copy for
+# the negative fixture achievements_spec2_fixture.
+if(GT4_TARGET STREQUAL "spec2")
+    add_library(gt4_achievements_v200_fixture STATIC achievements.cpp achievements_overlay.cpp achievements_http.cpp)
+    target_include_directories(gt4_achievements_v200_fixture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(gt4_achievements_v200_fixture PUBLIC GT4_TARGET_FIXTURE_V200)
+    target_link_libraries(gt4_achievements_v200_fixture PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32 bcrypt)
+    target_compile_options(gt4_achievements_v200_fixture PRIVATE /W4)
+    set(GT4_ACHIEVEMENTS_FIXTURE_LIB gt4_achievements_v200_fixture)
+    set(GT4_ACHIEVEMENTS_SPEC2_LIB gt4_achievements)
+else()
+    add_library(gt4_achievements_spec2_fixture STATIC achievements.cpp achievements_overlay.cpp achievements_http.cpp)
+    target_include_directories(gt4_achievements_spec2_fixture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(gt4_achievements_spec2_fixture PUBLIC GT4_TARGET_SPEC2)
+    target_link_libraries(gt4_achievements_spec2_fixture PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32 bcrypt)
+    target_compile_options(gt4_achievements_spec2_fixture PRIVATE /W4)
+    set(GT4_ACHIEVEMENTS_FIXTURE_LIB gt4_achievements)
+    set(GT4_ACHIEVEMENTS_SPEC2_LIB gt4_achievements_spec2_fixture)
+endif()
 # Windows icon and version resource of the game executable (display name "Gran Turismo 4").
 set(GT4_BRANDING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../launcher/assets/brand" CACHE PATH "Brand assets folder (official or neutral)")
-set(GT4_VERSION "1.2.4")
-set(GT4_RC_VERSION_COMMA "1,2,4,0")
+set(GT4_VERSION "1.0.0")
+set(GT4_RC_VERSION_COMMA "1,0,0,0")
 if(WIN32)
   enable_language(RC)
-  set(GT4_GAME_ICON "${GT4_BRANDING_DIR}/game.ico")
+  # Owner, 2026-11-02: the game has the launcher's icon.
+  set(GT4_GAME_ICON "${GT4_BRANDING_DIR}/launcher.ico")
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/gt4vulkan.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/gt4vulkan.rc" @ONLY)
   set(GT4VULKAN_RESOURCES "${CMAKE_CURRENT_BINARY_DIR}/gt4vulkan.rc")
 endif()
-add_executable(gt4vulkan "${PORT}/main.cpp" window.cpp ${GT4VULKAN_RESOURCES})
+# TASK-097: the entry point is native/game_main.cpp. The pinned donor main.cpp (the port, hashed by the pin checks) is compiled
+# unchanged with `main` renamed, and game_main.cpp calls it: with an ELF argument exactly as before, without one (a double click)
+# after the standalone rules of standalone.cpp built the command line and environment the launcher would have passed.
+set_source_files_properties("${PORT}/main.cpp" PROPERTIES COMPILE_DEFINITIONS "main=gt4_donor_main")
+add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.cpp ${GT4VULKAN_RESOURCES})
+# TASK-159: the host side of the call that scripts/camera360_units.py adds to the translated chase camera. An EE library built
+# from those units needs it; one built from the plain units leaves it unused.
+target_sources(gt4vulkan PRIVATE camera_360_hook.cpp fov_adjust_hook.cpp)
+# TASK-095: the same for the 2D overlay ortho calls and the strobe text (native/display_aspect.hpp).
+target_sources(gt4vulkan PRIVATE display_aspect_hook.cpp)
+if(GT4_TARGET STREQUAL "spec2")
+    # TASK-100 S4: the second target links its own library, so it gets its own executable and never replaces v2.00.
+    set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-spec2)
+endif()
 target_include_directories(gt4vulkan PRIVATE "${PORT}")
 target_compile_definitions(gt4vulkan PRIVATE PS2_WINDOW)
+if(GT4_HW_GS)
+    target_compile_definitions(gt4vulkan PRIVATE GT4_HW_SHADER_PREPARE)  # IN-507: --prepare-shaders
+    target_link_libraries(gt4vulkan PRIVATE gt4_hw_stream_sink)
+endif()
 target_include_directories(gt4vulkan PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 if(GT4_MEMCARD_FLUSH_ENABLED)
     # window.cpp calls the capsule's flush_cards_now() on exit (TASK-025 Part A / TASK-058).
@@ -743,7 +956,7 @@ if(GT4_MEMCARD_FLUSH_ENABLED)
 endif()
 target_link_libraries(gt4vulkan PRIVATE
     "${GAME_LIBRARY}"
-    ps2runtime_vulkan native_host_io gt4_achievements user32)
+    ps2runtime_vulkan native_host_io gt4_achievements user32 bcrypt)
 # TASK-075: SDL3.dll and its licence next to the executables that load it (the build tree; make_distribution ships them).
 add_custom_command(TARGET gt4vulkan POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GT4_SDL3_ROOT}/${GT4_SDL3_RUNTIME_DLL}" "$<TARGET_FILE_DIR:gt4vulkan>/SDL3.dll")
@@ -766,19 +979,39 @@ target_include_directories(vulkan_fixture PRIVATE "${PORT}")
 target_link_libraries(vulkan_fixture PRIVATE ps2runtime_vulkan user32)
 target_compile_options(gt4vulkan PRIVATE /W4)
 target_compile_options(vulkan_fixture PRIVATE /W4)
+add_executable(spu2_envelope_fixture spu2_envelope_fixture.cpp)
+target_compile_options(spu2_envelope_fixture PRIVATE /W4)
+add_test(NAME native_spu2_envelope COMMAND spu2_envelope_fixture)
+add_executable(ipu_fast_fixture ipu_fast_fixture.cpp)
+target_compile_options(ipu_fast_fixture PRIVATE /W4)
+add_test(NAME native_ipu_fast COMMAND ipu_fast_fixture)
+add_executable(frame_skip_fixture frame_skip_fixture.cpp frame_skip.cpp)
+target_link_libraries(frame_skip_fixture PRIVATE gt4_pacing)
+target_compile_options(frame_skip_fixture PRIVATE /W4)
+add_test(NAME native_frame_skip COMMAND frame_skip_fixture)
 add_executable(pacing_fixture pacing_fixture.cpp)
 target_link_libraries(pacing_fixture PRIVATE gt4_pacing)
 target_compile_options(pacing_fixture PRIVATE /W4)
 add_executable(achievements_fixture achievements_fixture.cpp)
-target_link_libraries(achievements_fixture PRIVATE gt4_achievements)
+target_link_libraries(achievements_fixture PRIVATE ${GT4_ACHIEVEMENTS_FIXTURE_LIB})
 target_compile_options(achievements_fixture PRIVATE /W4)
+add_executable(achievements_spec2_fixture achievements_spec2_fixture.cpp)
+target_compile_definitions(achievements_spec2_fixture PRIVATE GT4_TARGET_SPEC2)
+target_include_directories(achievements_spec2_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(achievements_spec2_fixture PRIVATE ${GT4_ACHIEVEMENTS_SPEC2_LIB} winhttp gdiplus gdi32 user32 bcrypt)
+target_compile_options(achievements_spec2_fixture PRIVATE /W4)
 add_executable(achievements_http_fixture achievements_http_fixture.cpp)
-target_link_libraries(achievements_http_fixture PRIVATE gt4_achievements ws2_32)
+target_link_libraries(achievements_http_fixture PRIVATE ${GT4_ACHIEVEMENTS_FIXTURE_LIB} ws2_32)
 target_compile_options(achievements_http_fixture PRIVATE /W4)
 # Input bindings: pure parser and readers (no Windows dependency in controls.cpp).
 add_executable(controls_fixture controls_fixture.cpp controls.cpp)
 target_compile_options(controls_fixture PRIVATE /W4)
 target_compile_definitions(controls_fixture PRIVATE GT4_CONTROLS_EXAMPLES_DIR="${GT4_ROOT}/docs/controls")
+add_executable(input_recording_fixture input_recording_fixture.cpp)
+target_link_libraries(input_recording_fixture PRIVATE gt4_pad_mapping)
+target_compile_options(input_recording_fixture PRIVATE /W4)
+add_test(NAME native_input_recording COMMAND input_recording_fixture native_input_recording.txt)
+
 add_executable(pad_mapping_fixture pad_mapping_fixture.cpp controls.cpp)
 target_link_libraries(pad_mapping_fixture PRIVATE gt4_pad_mapping)
 target_compile_options(pad_mapping_fixture PRIVATE /W4)
@@ -796,15 +1029,43 @@ target_compile_options(fpu_chop_fixture PRIVATE /W4)
 add_executable(quickfix_fixture quickfix_fixture.cpp)
 add_executable(race_display_fixture race_display_fixture.cpp)
 add_executable(race_widescreen_fixture race_widescreen_fixture.cpp)
-target_link_libraries(race_widescreen_fixture PRIVATE gt4_quickfix)
+target_link_libraries(race_widescreen_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
 target_compile_options(race_widescreen_fixture PRIVATE /W4)
 add_executable(display_aspect_fixture display_aspect_fixture.cpp)
-target_link_libraries(display_aspect_fixture PRIVATE gt4_quickfix)
+# TASK-159: the 360-degree chase camera rules (native/camera_360.hpp): switch, stick table, yaw argument, v2.00 addresses.
+add_executable(camera_360_fixture camera_360_fixture.cpp)
+target_link_libraries(camera_360_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
+target_compile_options(camera_360_fixture PRIVATE /W4)
+add_test(NAME native_camera_360 COMMAND $<TARGET_FILE:camera_360_fixture>)
+# TASK-160: the field of view adjustment rules (native/fov_adjust.hpp): switch, steps and clamp, factor, v2.00 addresses.
+add_executable(fov_adjust_fixture fov_adjust_fixture.cpp)
+target_link_libraries(fov_adjust_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
+target_compile_options(fov_adjust_fixture PRIVATE /W4)
+add_test(NAME native_fov_adjust COMMAND $<TARGET_FILE:fov_adjust_fixture>)
+# TASK-161: the full trigger range rules (native/trigger_range.hpp): switch, the game's scale off and on, the replacements.
+add_executable(trigger_range_fixture trigger_range_fixture.cpp)
+target_link_libraries(trigger_range_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
+target_compile_options(trigger_range_fixture PRIVATE /W4)
+add_test(NAME native_trigger_range COMMAND $<TARGET_FILE:trigger_range_fixture>)
+# TASK-117: the flare-limits parameter block (native/flare_limits.hpp); no game addresses, so no v2.00 pin needed.
+add_executable(flare_limits_fixture flare_limits_fixture.cpp)
+target_link_libraries(flare_limits_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
+target_compile_options(flare_limits_fixture PRIVATE /W4)
+add_test(NAME native_flare_limits COMMAND $<TARGET_FILE:flare_limits_fixture>)
+set_tests_properties(native_flare_limits PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
+target_link_libraries(display_aspect_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
 target_compile_options(display_aspect_fixture PRIVATE /W4)
 add_executable(cursor_autohide_fixture cursor_autohide_fixture.cpp)
 target_link_libraries(cursor_autohide_fixture PRIVATE gt4_quickfix)
 target_compile_options(cursor_autohide_fixture PRIVATE /W4)
-target_link_libraries(race_display_fixture PRIVATE gt4_quickfix)
+# TASK-145: the game window's responsiveness timer (window_heartbeat.hpp, decision 0076).
+add_executable(window_heartbeat_fixture window_heartbeat_fixture.cpp)
+target_link_libraries(window_heartbeat_fixture PRIVATE user32)
+target_compile_options(window_heartbeat_fixture PRIVATE /W4)
+# TASK-154: the overlay keys the game window passes on to the gt4-gs picture (key_forward.hpp).
+add_executable(key_forward_fixture key_forward_fixture.cpp)
+target_compile_options(key_forward_fixture PRIVATE /W4)
+target_link_libraries(race_display_fixture PRIVATE ${GT4_HOOK_FIXTURE_LIB})
 target_compile_options(race_display_fixture PRIVATE /W4)
 target_link_libraries(quickfix_fixture PRIVATE gt4_quickfix)
 target_compile_options(quickfix_fixture PRIVATE /W4)
@@ -815,6 +1076,15 @@ add_executable(shape_capture_export_fixture shape_capture_export_fixture.cpp sha
 target_compile_options(shape_capture_export_fixture PRIVATE /W4)
 add_executable(shape_capture_control_fixture shape_capture_control_fixture.cpp shape_capture_control.cpp shape_capture_export.cpp shape_observer.cpp)
 target_compile_options(shape_capture_control_fixture PRIVATE /W4)
+# TASK-100 S7b: these fixtures assert the qualified v2.00 hook chains; in a Spec II build they pin the active table to
+# v2.00 so the same checks still run (the Spec II half of game_target_fixture deliberately does not). Production targets
+# never define GT4_TARGET_FIXTURE_V200.
+foreach(v200_fixture IN ITEMS license_guard_fixture race_display_fixture race_widescreen_fixture display_aspect_fixture
+                               shape_observer_fixture shape_capture_export_fixture shape_capture_control_fixture
+                               achievements_fixture)
+    target_compile_definitions(${v200_fixture} PRIVATE GT4_TARGET_FIXTURE_V200)
+endforeach()
+set_source_files_properties(game_target_fixture.cpp PROPERTIES COMPILE_DEFINITIONS GT4_TARGET_FIXTURE_V200)
 if(GT4_SHAPE_RUNTIME_SOURCE)
     get_filename_component(observation_source "${GT4_SHAPE_RUNTIME_SOURCE}" ABSOLUTE)
     file(RELATIVE_PATH observation_relative "${GT4_ROOT}" "${observation_source}")
@@ -852,4 +1122,27 @@ if(GT4_SHAPE_RUNTIME_SOURCE)
     target_sources(shape_runtime_fixture PRIVATE ${observation_overlays})
     target_compile_definitions(shape_runtime_control PRIVATE GT4_OBSERVER_CONTROL)
     target_link_options(shape_runtime_fixture PRIVATE "/MAP:${CMAKE_BINARY_DIR}/shape-runtime.map" /VERBOSE:LIB)
+endif()
+
+# TASK-134: profile-guided optimisation and ThinLTO of the game side, with the options of the GS libraries
+# (native/hw_gs/CMakeLists.txt, IN-468): the VU AOT code, the runtime overlays, the VU1 worker and the host loop. The EE library is
+# built on its own (tools/ee_producer, scripts/coregs2_bench/pgo-all.sh) with the same profile.
+if(GT4_HW_GS)
+    set(GT4_GAME_PGO_TARGETS ps2runtime_vulkan gt4_mtvu_runtime gt4_mtvu_journal gt4_mtvu_measure gt4_perf_probe gt4_quickfix gt4_pacing)
+    if(GT4_HW_PGO STREQUAL "generate")
+        foreach(game_target IN LISTS GT4_GAME_PGO_TARGETS)
+            target_compile_options(${game_target} PRIVATE "/clang:-fprofile-generate")
+        endforeach()
+    elseif(GT4_HW_PGO STREQUAL "use")
+        foreach(game_target IN LISTS GT4_GAME_PGO_TARGETS)
+            target_compile_options(${game_target} PRIVATE "/clang:-fprofile-use=${GT4_HW_PGO_PROFILE}"
+                                   "/clang:-Wno-profile-instr-out-of-date" "/clang:-Wno-profile-instr-unprofiled"
+                                   "/clang:-Wno-backend-plugin")
+        endforeach()
+    endif()
+    if(GT4_HW_THINLTO)
+        foreach(game_target IN LISTS GT4_GAME_PGO_TARGETS)
+            target_compile_options(${game_target} PRIVATE "/clang:-flto=thin")
+        endforeach()
+    endif()
 endif()

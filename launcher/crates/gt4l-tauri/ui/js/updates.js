@@ -12,10 +12,10 @@
   var h = GT4.ui.h;
   var queue = [];
 
-  var NAMES = {
-    launcher: "GT4Recomp",
-    renderer: "gt4-gs (GSdx renderer)"
-  };
+  // The names of the two streams, in the current language (read when used, so a language change applies).
+  function streamName(stream) {
+    return stream === "renderer" ? GT4.t("updates.name_renderer") : GT4.t("updates.name_launcher");
+  }
 
   function errorText(err) {
     return GT4.errorText ? GT4.errorText(err) : String(err);
@@ -64,13 +64,13 @@
       }
     });
     if (!box.childNodes.length) {
-      box.appendChild(h("p", { text: "No release notes were written for this version." }));
+      box.appendChild(h("p", { text: GT4.t("updates.no_notes") }));
     }
     return box;
   }
 
   function startUpdate(offer) {
-    GT4.ui.toast(offer.stream === "launcher" ? "Starting the GT4Recomp setup..." : "Installing gt4-gs...");
+    GT4.ui.toast(offer.stream === "launcher" ? GT4.t("updates.starting_setup") : GT4.t("updates.installing_renderer"));
     GT4.backend.call("apply_update", { stream: offer.stream }).then(null, function (err) {
       GT4.ui.toast(errorText(err), true);
     });
@@ -78,30 +78,30 @@
 
   function skip(offer) {
     GT4.backend.call("skip_update", { stream: offer.stream, version: offer.latest }).then(function () {
-      GT4.ui.toast("Skipped " + NAMES[offer.stream] + " " + offer.latest + ".");
+      GT4.ui.toast(GT4.t("updates.skipped", { name: streamName(offer.stream), version: offer.latest }));
     }, function (err) {
       GT4.ui.toast(errorText(err), true);
     });
   }
 
   function offerDialog(offer) {
-    var name = NAMES[offer.stream] || offer.stream;
-    var summary = (offer.installed ? "You have " + offer.installed + ". " : "") + "The new version is " + offer.latest + ".";
+    var name = streamName(offer.stream);
+    var summary = (offer.installed ? GT4.t("updates.you_have", { installed: offer.installed }) : "") + GT4.t("updates.new_version", { version: offer.latest });
     var body = h("div", { class: "update-body" }, [
       h("p", { class: "modal-text", text: summary }),
-      h("h4", { class: "notes-title", text: "What's new" }),
+      h("h4", { class: "notes-title", text: GT4.t("updates.whats_new") }),
       renderNotes(offer.notes)
     ]);
     GT4.ui.openDialog({
-      title: name + " " + offer.latest + " is available",
+      title: GT4.t("updates.available", { name: name, version: offer.latest }),
       body: body,
       wide: true,
       dismissable: true,
       onClose: showNext,
       buttons: [
-        { label: "Update", primary: true, run: function () { startUpdate(offer); } },
-        { label: "Not now" },
-        { label: "Skip this version", run: function () { skip(offer); } }
+        { label: GT4.t("updates.update"), primary: true, run: function () { startUpdate(offer); } },
+        { label: GT4.t("updates.not_now") },
+        { label: GT4.t("updates.skip_version"), run: function () { skip(offer); } }
       ]
     });
   }
@@ -132,13 +132,13 @@
       return;
     }
     GT4.ui.openDialog({
-      title: "Close the launcher?",
-      text: message || "The game is running. Close the launcher anyway?",
+      title: GT4.t("updates.close_title"),
+      text: message || GT4.t("updates.close_text"),
       dismissable: true,
       buttons: [
-        { label: "Keep open", primary: true },
+        { label: GT4.t("updates.keep_open"), primary: true },
         {
-          label: "Close launcher",
+          label: GT4.t("updates.close_launcher"),
           danger: true,
           run: function () {
             GT4.backend.call("confirm_close").then(null, function (err) {
@@ -152,14 +152,14 @@
 
   // Settings > About > "Check for updates": same flow as the launch check; says so when nothing is new.
   function checkNow() {
-    GT4.ui.toast("Checking for updates...");
+    GT4.ui.toast(GT4.t("updates.checking"));
     return GT4.backend.call("check_updates").then(function (result) {
       if (result.offers && result.offers.length) {
         offer(result.offers);
       } else if (result.upToDate) {
-        GT4.ui.toast("You're up to date.");
+        GT4.ui.toast(GT4.t("updates.up_to_date"));
       } else {
-        GT4.ui.toast("Could not check for updates: " + (result.errors || []).join("; "), true);
+        GT4.ui.toast(GT4.t("updates.check_failed", { reason: (result.errors || []).join("; ") }), true);
       }
     }, function (err) {
       GT4.ui.toast(errorText(err), true);

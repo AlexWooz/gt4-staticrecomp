@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "runtime_source_commit": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "card_seeds": [
+    {
+      "path": "private/slice113-video/widescreen-seed/card.ps2",
+      "size_bytes": 8650752,
+      "sha256": "b757feff1f6e2fd07ea34276edc1f996d1b7ac72cfc33fea5510502d9e3609e6"
+    },
+    {
+      "path": "private/slice110-menu-pilot/name-control4/card.ps2",
+      "size_bytes": 8650752,
+      "sha256": "bb10a96fd78e45d648023f9962739c09f152ce01ae45c3fea1d998a71d5e3072"
+    },
+    {
+      "path": "private/slice113-video/mode480-save14/card.ps2",
+      "size_bytes": 8650752,
+      "sha256": "239d4c4d9e83e64c30d619af8bacc3b2ddf4d2b70efad8f9996b597de4039574"
+    },
+    {
+      "path": "private/slice113-video/mode1080-save16/card.ps2",
+      "size_bytes": 8650752,
+      "sha256": "492a2d800e638ceb4adcb686f625e3fc854f90889508f4f2e91455e876afe0af"
+    }
+  ],
+  "default_card_seed": {
+    "path": "private/slice113-video/widescreen-seed/card.ps2",
+    "size_bytes": 8650752,
+    "sha256": "b757feff1f6e2fd07ea34276edc1f996d1b7ac72cfc33fea5510502d9e3609e6"
+  },
+  "standard_card_seed": {
+    "path": "private/slice110-menu-pilot/name-control4/card.ps2",
+    "size_bytes": 8650752,
+    "sha256": "bb10a96fd78e45d648023f9962739c09f152ce01ae45c3fea1d998a71d5e3072"
+  },
+  "frozen_game_library": {
+    "path": "private/slice217-ee-aspect-producer/game-build/ps2game.lib",
+    "size_bytes": 70693756,
+    "sha256": "8e671a10667cdb3e20ad70367fe4021763309446cd525fc6c5f8d0dec57c129b"
+  },
+  "profile": "performance",
+  "perf_schema_version": 1,
+  "capture_activation_implemented": false,
+  "environment": {
+    "guest_settings": "scrub inherited PS2_/GT4_PERF_ options; set GT4_PERF=1 PS2_SCALE=1 PS2_GS=gpu",
+    "vulkan": "preserve and record VK_ overrides in session result; other driver/overlay state not controlled",
+    "gs_submission": "GT4_GS_SYNC=0 default (asynchronous); GT4_GS_SYNC=1 restores the fully synchronous path (launcher records the value in the session result)",
+    "pacing": "GT4_PACING unset or paced (default): paced clock. GT4_PACING=audio: blocking WinMM clock as in slice152. GT4_PRESENT_MODE unset or fifo (default); mailbox and immediate are experiments and fail at swapchain creation when the surface lacks them. The launcher refuses other values and records both names in result.json (pacing_environment).",
+    "widescreen": "GT4_FORCE_WIDESCREEN unset or 1 holds 16:9 at guest VBlank; 0 leaves the game setting",
+    "display_aspect": "GT4_DISPLAY_ASPECT unset or auto follows the game window client area (16:9 headless); 16:9, 4:3, W:H or a decimal 0.5..8 fix it; any other value refuses the start. GT4_ASPECT_FOV_EXTRA 0.5..3.0, default 1.0. At 16:9 with 1.0 nothing is written and frames are byte-identical."
+  },
+  "toolchain": {
+    "compiler": "clang-cl 22.1.3 (system, C:/Program Files/LLVM/bin/clang-cl.exe), as slice206-slice210 (the pin text of slice210 said 23.1.2; the executable was built with 22.1.3)",
+    "language": "C++20",
+    "build": "CMake/Ninja VS2022 x64 ABI Windows SDK10.0.26100.0",
+    "cmake": "4.3.3",
+    "ninja": "1.12.1",
+    "serial_builds": true
+  },
+  "slice": 279,
+  "date": "2026-10-23",
+  "baseline_commit": "slice268 (release 1.2.3, main db5c559)",
+  "branch": "task/101-multi-game (release 1.3.0 integration)",
+  "measurement_mode": "pcsx2",
+  "vu_scope_profile": "unit_split_run_fast_only",
+  "classification": "The slice268 1.2.3 recipe on the task/101-multi-game source: same capsules (slice262-frame-cost-runtime, slice262-license-guard-runtime), port (slice200), shaders (slice153), EE library profile aspect (slice217) and VU1/VU0 tables; the executable adds the standalone start rules, the host main and the target-aware hook table, and the release ships gt4-gs 1.2.1.",
+  "runtime": {
+    "path": "private/slice279-build/build/gt4vulkan.exe",
+    "size_bytes": 97377792,
+    "sha256": "9dccb5a4d2648f5f610ac4ae34e9ba81dbe88d72ecc69449b663455e834b068e"
+  },
+  "source_capsule": "private/slice262-frame-cost-runtime",
+  "source_manifest": "slice262-frame-cost-runtime.json",
+  "preserved_inputs": "Port (slice200), memcard capsule, shaders (slice153), VU1/VU0 tables and EE library profile aspect (slice217) as slice268. Changed: the executable, gt4-gs 1.2.1.",
+  "limits": [
+    "Unsynchronized readbacks answer from the PCSX2 GS local memory copy: GPU-drawn pixels are stale (zeros in the gs_live_check sprite test), so the night-race lens flare may change; accurate is the default.",
+    "Deferred swap chain acquire and detached input queues are checked only with hidden windows; the owner checks the visible window (fullscreen, Alt+Tab, minimize).",
+    "Interlaced races (480i held) and the 1080i/PAL modes are not checked; only the 480i menus capture (slice191 stream) was replayed headless.",
+    "Save states are refused in pcsx2 mode.",
+    "The owner night-race numbers (59.97 FPS, 53 late frames) were measured on slice198 with gt4-gs 0.3.2; slice199 on gt4-gs 0.4.0 needs the owner's night race and F8 A/B (GT4_MTVU_PRIV_ASYNC 1 vs 0).",
+    "GT4_MTVU_PRIV_ASYNC is proven equivalent (identical stream bytes, identical frames) on the recorded headless schedules only; race scenes are checked by the owner F8 A/B.",
+    "Crash-safe card: the kill test kills a copy writer (TerminateProcess), not an OS power cut; FlushFileBuffers/_commit is trusted, not measured on a power cut.",
+    "Installed-folder run (<exe>\\shaders, <exe>\\gs) is smoked from private/slice200-dist only; the owner installs nothing.",
+    "Release build (slice213): no build-time shader fallback. The build tree runs from its own shaders copy (CMake POST_BUILD from the pinned slice153 capsule); the runtime_dependencies below are the capsule files that copy is made from.",
+    "Vulkan baseline path (slice214): headless runs create the instance and device on both paths but never present; the presentation half of the baseline path is checked by CTest native_vulkan_pixels_baseline (hidden Win32 window, repeat, zero size, resize) and the owner.",
+    "Headless runs do not reach a save: the menus schedule leaves the card byte-identical to the seed; the exit flush is checked by the build and the fixture, not by a saved headless card.",
+    "The cursor auto-hide, the \"Compiling shaders\" notice and the overlay are checked with a short visible fixture window and hidden-window replays only; the owner checks them in the game (fullscreen and windowed).",
+    "GPU usage comes from the Windows \"GPU Engine\" performance counters (PDH) of the two processes; other GPU vendors and drivers are not checked.",
+    "gt4-gs 1.0.1 (Documents\\PCSX2 fix): the offline replay (--replay-gscap) with a DataRoot config stops after VM initialization (exit -16843010, same stop as the 1.0.0 logs); the folder check is therefore a startup-only check.",
+    "License guard v2: a license demo (either loader) that fails the game CRC and is not the single-Recorder layout gets record count 0xFFFFFFFF (no demo inputs); its demo or background replay does not play. Demos that decrypt sane still have wrong bytes in their header region (FPU not bit-exact; TASK-017 root cause not fixed).",
+    "Seed closure changes 325 of 326 generated units (+3,728 dispatch ids). Known-path equivalence is shown only by the headless frame comparison and owner play; the object comparison confirms only that the unchanged units compile identically with clang-cl 23.1.2.",
+    "The executable was built with clang-cl 22.1.3 (as slice206), so the library is the only changed variable between slice206 and slice208."
+  ],
+  "review": {
+    "status": "pending",
+    "note": "TASK-088 owner test build of 2026-10-21 (installer and portable folder). Not approved for default use."
+  },
+  "owner_launch": {
+    "default": "python scripts\\play_performance.py --assets-root C:\\Antigravity\\gt4-staticrecomp --mode pcsx2",
+    "overlay": "python scripts\\play_performance.py --assets-root C:\\Antigravity\\gt4-staticrecomp --mode pcsx2 --gs-setting perf_overlay=true"
+  },
+  "vu1_aot": {
+    "generated_dir": "private/slice157-vu1-all-gen",
+    "generated_source_sha256": "3eed39d69ffa12520237afb2ff44e248d19afa63995a2dcf6c578585784a2266",
+    "generated_manifest_sha256": "07ae2077817e074e2ef68106592191c1449a0557983c34d05d3643ebb68a18d0",
+    "programs": 2048,
+    "parts": 128,
+    "programs_per_file": 16,
+    "entry_policy": "all: 2048 static entries of the pinned image",
+    "image": "private/slice155-vu1-image/vu1_image.bin",
+    "image_sha256": "9e5bc86098904fa8a4bd82fdea0872d5b1d8220269471014dd4630c46796cdff",
+    "entry_list_sha256": "284330f8d4587af4e4f57db29199f22e01c918a1c6cb259359be2e89f5d6c798",
+    "corpus": "private/slice155-vu1-full-corpus (426 recorded-layout files; the 2,048 corpus is not built into CTest)",
+    "overlay_sha256": "171b07c36fbe54be2579a84f579e06e4796b93648ca9f1d13b429d8abad0cd32",
+    "flag_elision": true
+  },
+  "port_capsule": "private/slice200-port",
+  "shader_capsule": "private/slice153-pacing-shaders",
+  "purpose": "Release 1.3.0 Gran Turismo 4 (v2.00) game build: the 1.2.3 recipe plus TASK-097 (standalone start, game_main), TASK-101 (target-aware hooks) and the release 1.3.0 source state.",
+  "status": "release 1.3.0 candidate; owner test pending",
+  "runtime_dependencies": [
+    {
+      "path": "private/slice153-pacing-shaders/copy_read.spv",
+      "size_bytes": 7872,
+      "sha256": "b7ebe576bb96d554d225c11ce08a84f3b059cadebb71249bd29cd6b07c2dd1d6"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/copy_write.spv",
+      "size_bytes": 8892,
+      "sha256": "00a9f2b3bb3565d5a715a7ae4c78f839703dba1583c138428e4c70931e6cb23c"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/decode.spv",
+      "size_bytes": 13780,
+      "sha256": "df24d5e26904964d2dc1782aba006b125d5b1d4b54c735b0bdda7c03d0c38856"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/display.spv",
+      "size_bytes": 9028,
+      "sha256": "d575ad4e572c7cc47ddb93d0f6980072d972f8048dfb08d544f0e4ec300ff6e2"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/load_clut.spv",
+      "size_bytes": 10416,
+      "sha256": "a24f033fcf886084a3cf36c3c024b86893343761e6fa969b7e6366ba4f91cec9"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/raster.spv",
+      "size_bytes": 50520,
+      "sha256": "1d81e698dabc4102558e4df7b8f41d440c995d0a4f2c5286a2a974b8e4677f20"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/resolve.spv",
+      "size_bytes": 2320,
+      "sha256": "4e68027a902068135e8aef939363c72bb936f0d1bdba51090cd5c44f13be55d3"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/snapshot.spv",
+      "size_bytes": 2328,
+      "sha256": "bfcd7fd98d4999670f82de4cb824079bb021639a6d80dd08e82e2b04d3d0ffe7"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/upload.spv",
+      "size_bytes": 12336,
+      "sha256": "4e0ef1e4aaf00ad6c63e068b33886b56e4cb310df17904b0037e951c2070a72c"
+    },
+    {
+      "path": "private/slice281-gt4gs-121/gt4-gs.exe",
+      "size_bytes": 11347456,
+      "sha256": "887f5bf9f835eda86136aaed6f29c89851aa9de9d352d5783886beaf7909449d"
+    }
+  ],
+  "vu0_aot": {
+    "generated_dir": "private/slice160-vu0-gen-r3",
+    "programs": 14,
+    "entry_policy": "vcallms: 14 entries (docs/VU0-MICROCODE-MAP.md; vu0_image.py entries)",
+    "image": "private/slice160-vu0-image/vu0_image.bin",
+    "image_sha256": "2d7b26535008f1b3402ba70e8365cae749e64079eb32381d6853612abc896d44",
+    "entry_list_sha256": "2f5ac510cda32588c706b550a2ef1181537296d258039709180d7909a251471e",
+    "table_sha256": "ef59e476e957679e9894ce8613302ec3e1b52ebeed2567e17b9470d503de340c",
+    "manifest_sha256": "eb027ffaf69674c1ac171f6982f738dcb80a53d838d22747da8a86377d8390ae",
+    "overlay_sha256": "9e5fee2b08ad87bbeeba08adb426ee927f499df20fce9b44134ae87733bad25b",
+    "vu1_table": "private/slice157-vu1-all-gen (unchanged, regeneration byte-identical)"
+  },
+  "gs_stream": {
+    "renderer": "pcsx2",
+    "gs_process": "private/slice281-gt4gs-121/gt4-gs.exe",
+    "consumer": "gt4-gs.exe (PCSX2 v2.8.2 GS, GPL-3.0+, fork moesuito/gt4recomp-gs) in a separate process; the game checks its SHA-256 (GT4_GS_PROCESS_SHA256) and passes the generated gt4-gs.ini (GT4_GS_CONFIG)",
+    "protocol": "native/gs_stream/gs_stream_protocol.h version 1.2 (CONTROL cursor, OSD_STATS, READY OSD flag; vendored in the fork by hash)",
+    "gs_package": {
+      "directory": "private/slice281-gt4gs-121",
+      "tree_sha256": "62a46966d42abac245a7b1e5f9fc66479c7c901f7b4bf6d723d89601a588242f",
+      "files": 140,
+      "data_root": true,
+      "zip": {
+        "name": "gt4-gs-1.2.1-windows-x64.zip",
+        "size_bytes": 13025171,
+        "sha256": "7eb7e4a3bb42f7b742fe3ac26bf81790e6fa01b0d82c6fcef26eabdc415ad71c"
+      },
+      "release": "https://github.com/moesuito/gt4recomp-gs/releases/tag/gt4gs-v1.2.1",
+      "source": "the published stable release gt4gs-v1.2.1 (fork moesuito/gt4recomp-gs), extracted and checked against its SHA256SUMS: the pinned package is the published one",
+      "no_jit": "GT4GS_ONLY build: no recompilers, no GS software JIT, no executable memory; the no-JIT audit at the end of the stream and at exit reports 0 executable non-image regions"
+    }
+  },
+  "memcard_capsule": "private/slice200-memcard-runtime",
+  "memcard_capsule_sha256": {
+    "sio2.cpp": "8e3bf6673004793f053e15edfa2e59e93cc48f3b96004910e992df84f2d9d86a"
+  },
+  "license_guard_capsule": "private/slice262-license-guard-runtime",
+  "license_guard_receipt_sha256": "3f04efee9e0719dde73bda6ca1daf9aafeb6d5fab87e33586078bd6d42ebf46e",
+  "license_guard_source_sha256": {
+    "cdvdfsv.cpp": "0074d14f838d303314cdc7601450993134702cacd59bef9e288ec74e87ffad1d",
+    "dispatch.cpp": "57412e6a0d060854fecf053c5df626e53122b043d8430440282c6d0d209e85b5",
+    "kernel.cpp": "9384da59e72fb056d6b52363f8d26d7bbf4793e8c47481f41304d741f00e5754"
+  },
+  "ee_library": {
+    "manifest": "docs/inputs/slice217-ee-libraries.json",
+    "profile": "aspect",
+    "seed_set": "accepted",
+    "seed_count": 1105,
+    "seed_sha256": "6cf39fb73a8962fe1594a0f9e15dbf01667e9b07e6ed29ae1877019de200c5bb",
+    "translator_entries": 138813,
+    "patched_elf_sha256": "f10a568fb502471b7cde5a84ceee3632be58514d0b2b622175a4ed9b6124f25a",
+    "parameter_block": "0x00007F00",
+    "changed_objects_vs_slice208": [
+      "unit_008F.cpp.obj",
+      "unit_00A7.cpp.obj"
+    ]
+  },
+  "sdl3_pin": "docs/inputs/slice210-sdl3.json",
+  "keyboard_input_fix": "TASK-076 keyboard table (controls.cpp default_controls, docs/CONTROLS.md keyboard-default); digital only"
+}

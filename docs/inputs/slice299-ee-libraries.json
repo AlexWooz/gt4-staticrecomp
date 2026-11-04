@@ -1,0 +1,397 @@
+{
+  "donor_commit": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "production_pins_modified": false,
+  "profiles": {
+    "flare": {
+      "aspect_patches": [
+        {
+          "address": "0x0039F554",
+          "block_word": "0x00007F00",
+          "function": "RaceDisplay::render (0x0039F498)",
+          "new_word": "0x8C017F00",
+          "old_word": "0x3C013F40",
+          "purpose": "race HUD font x scale in wide mode: lui at,0x3F40 (0.75 = (4/3)/(16/9)) -> lw at,0x7F00(zero); block value (4/3)/R, stored by func_0044E390 into the race font object D_00623838 + 0x18",
+          "value_16_9": "0x3F400000"
+        },
+        {
+          "address": "0x0033EF98",
+          "block_word": "0x00007F04",
+          "function": "rear-view mirror placement (code after the jal at 0x0033EF70, RacePS2Base render path)",
+          "new_word": "0x8C087F04",
+          "old_word": "0x24080280",
+          "purpose": "mirror horizontal divisor: addiu t0,zero,640 -> lw t0,0x7F04(zero); the mirror is 260 x width / divisor frame pixels wide and centred, block value round(640 x R / (16/9)) for R > 16:9",
+          "value_16_9": "0x00000280"
+        }
+      ],
+      "base_library": "private/slice208-ee-entries-producer/game-build/ps2game.lib",
+      "changed_objects_vs_slice208": [
+        "unit_008E.cpp.obj",
+        "unit_008F.cpp.obj",
+        "unit_00A6.cpp.obj",
+        "unit_00A7.cpp.obj",
+        "unit_00AD.cpp.obj",
+        "unit_00AE.cpp.obj",
+        "unit_00E5.cpp.obj",
+        "unit_00E6.cpp.obj"
+      ],
+      "compiler_receipt": {
+        "sha256": "b70e86e69eac4c16c8935c62b29b7a55b748cce9578398b89cef414b5335bf79",
+        "size_bytes": 394
+      },
+      "object_count": 327,
+      "object_inventory_without_timestamps": "46f9ea026c2afb2e929d7b66411e13723ea4342bc4e76ee6a89f0b7399a00b35",
+      "parameter_block": "0x00007F10",
+      "patched_elf_sha256": "6c156b5f04b958df8409921bbbcfee1f74c6c6a96d24bb47bc7412c6455b6b10",
+      "patches": [
+        {
+          "address": "0x003B7BE4",
+          "effect": "track distance cull + track light cap, then the original visibility test",
+          "helper": "track",
+          "kind": "redirect",
+          "new_word": "0x0C125568",
+          "old_word": "0x0C0EDF26",
+          "site": "track-light queue fill 0x003B7B70 (caller loop 0x397BA0)",
+          "target": "0x004955A0"
+        },
+        {
+          "address": "0x003B85C0",
+          "effect": "car distance cull + car light cap, then the original visibility test",
+          "helper": "car",
+          "kind": "redirect",
+          "new_word": "0x0C125580",
+          "old_word": "0x0C0EDF26",
+          "site": "car-light queue fill 0x003B8530 (RaceCarModel::virtual_35 0x3911D0)",
+          "target": "0x00495600"
+        },
+        {
+          "address": "0x003B8BA0",
+          "effect": "no halo: $f19 = 0 before the flare routine, glow untouched",
+          "helper": "halo",
+          "kind": "redirect",
+          "new_word": "0x0C125560",
+          "old_word": "0x0C126066",
+          "site": "car flare draw (queue A walk)",
+          "target": "0x00495580"
+        },
+        {
+          "address": "0x003B8CE8",
+          "effect": "no halo: $f19 = 0 before the flare routine, glow untouched",
+          "helper": "halo",
+          "kind": "redirect",
+          "new_word": "0x0C125560",
+          "old_word": "0x0C126066",
+          "site": "track flare draw (queue B walk)",
+          "target": "0x00495580"
+        },
+        {
+          "address": "0x00495580",
+          "helper": "halo",
+          "kind": "helper",
+          "word": "0x8C087F10"
+        },
+        {
+          "address": "0x00495584",
+          "helper": "halo",
+          "kind": "helper",
+          "word": "0x31080001"
+        },
+        {
+          "address": "0x00495588",
+          "helper": "halo",
+          "kind": "helper",
+          "word": "0x11000002"
+        },
+        {
+          "address": "0x0049558C",
+          "helper": "halo",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x00495590",
+          "helper": "halo",
+          "kind": "helper",
+          "word": "0x44809800"
+        },
+        {
+          "address": "0x00495594",
+          "helper": "halo",
+          "kind": "helper",
+          "word": "0x08126066"
+        },
+        {
+          "address": "0x00495598",
+          "helper": "halo",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x004955A0",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x8C087F10"
+        },
+        {
+          "address": "0x004955A4",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x31090004"
+        },
+        {
+          "address": "0x004955A8",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x11200008"
+        },
+        {
+          "address": "0x004955AC",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x004955B0",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x8C891848"
+        },
+        {
+          "address": "0x004955B4",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x8C0A7F20"
+        },
+        {
+          "address": "0x004955B8",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x012A482A"
+        },
+        {
+          "address": "0x004955BC",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x15200003"
+        },
+        {
+          "address": "0x004955C0",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x004955C4",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x03E00008"
+        },
+        {
+          "address": "0x004955C8",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x00001021"
+        },
+        {
+          "address": "0x004955CC",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x31090002"
+        },
+        {
+          "address": "0x004955D0",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x11200006"
+        },
+        {
+          "address": "0x004955D4",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x004955D8",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0xC4007F14"
+        },
+        {
+          "address": "0x004955DC",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x460D0034"
+        },
+        {
+          "address": "0x004955E0",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x45000002"
+        },
+        {
+          "address": "0x004955E4",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x004955E8",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x46000346"
+        },
+        {
+          "address": "0x004955EC",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x080EDF26"
+        },
+        {
+          "address": "0x004955F0",
+          "helper": "track",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x00495600",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x8C087F10"
+        },
+        {
+          "address": "0x00495604",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x31090004"
+        },
+        {
+          "address": "0x00495608",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x11200008"
+        },
+        {
+          "address": "0x0049560C",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x00495610",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x8C890A34"
+        },
+        {
+          "address": "0x00495614",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x8C0A7F24"
+        },
+        {
+          "address": "0x00495618",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x012A482A"
+        },
+        {
+          "address": "0x0049561C",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x15200003"
+        },
+        {
+          "address": "0x00495620",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x00495624",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x03E00008"
+        },
+        {
+          "address": "0x00495628",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x00001021"
+        },
+        {
+          "address": "0x0049562C",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x31090002"
+        },
+        {
+          "address": "0x00495630",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x11200006"
+        },
+        {
+          "address": "0x00495634",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x00495638",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0xC4007F18"
+        },
+        {
+          "address": "0x0049563C",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x460D0034"
+        },
+        {
+          "address": "0x00495640",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x45000002"
+        },
+        {
+          "address": "0x00495644",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x00000000"
+        },
+        {
+          "address": "0x00495648",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x46000346"
+        },
+        {
+          "address": "0x0049564C",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x080EDF26"
+        },
+        {
+          "address": "0x00495650",
+          "helper": "car",
+          "kind": "helper",
+          "word": "0x00000000"
+        }
+      ],
+      "path": "private/slice299-ee-flare-producer/game-build/ps2game.lib",
+      "qualification": "slice208 coverage library with the TASK-080 P2 rows and the TASK-117 flare limits; owner gameplay pending",
+      "seed_set": "accepted",
+      "seed_sha256": "6cf39fb73a8962fe1594a0f9e15dbf01667e9b07e6ed29ae1877019de200c5bb",
+      "sha256": "d322b0aaa6a217ab8d0275d7447b8a838161d6fb3359478615c963acef616b3a",
+      "size_bytes": 70694640,
+      "source_inventory": {
+        "file_count": 328,
+        "inventory_sha256": "a5a6a41007c9f9fc301d381953e64cde5ab853377a0dbee654c478cd8520d445",
+        "size_bytes": 88423771
+      },
+      "translator_entries": 138815
+    }
+  },
+  "schema_version": 1,
+  "slice": 299
+}

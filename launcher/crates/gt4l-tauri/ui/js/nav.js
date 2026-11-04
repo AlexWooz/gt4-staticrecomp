@@ -244,6 +244,10 @@
 
   // The pad's discrete presses (pad-nav) and its right stick (pad-live). Repeat is done by Rust.
   GT4.backend.listen("pad-nav", function (payload) {
+    // While the 1.3.0 intro plays, a pad button only skips it (js/intro.js); it must not also press Play.
+    if (GT4.intro && GT4.intro.isPlaying()) {
+      return;
+    }
     if (payload && payload.name) {
       padPress(payload.name);
     }

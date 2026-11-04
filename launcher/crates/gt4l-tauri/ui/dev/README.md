@@ -18,6 +18,8 @@ Scripts are classic (not modules) so the pages also open from `file://`.
 | `js/nav.js` | Keyboard, the pad's `pad-nav` and `pad-live` events (SDL3 in Rust), focus ring |
 | `js/controller-svg.js` | GT4Recomp's own DualShock 2 drawing (no Sony artwork): buttons, chips, live state, nearest-button pick |
 | `js/controls-model.js` | Pure Controls rules: live state from the pad-live shape and keys, the fixed keyboard layout, trigger output, key names, conflicts, chip labels (`GT4.controlsModel`). The Gamepad-object helpers (`padLive`, `padSummary`) are for the dev mock only |
+| `js/i18n.js` | Translations (TASK-102): `GT4.t(key, params)`, the language rule (`GT4.i18n.resolve`), `setSetting`, `onChange`. The files are `locales/` |
+| `locales/index.json`, `locales/<tag>.json` | The languages (the Settings list) and their texts; en-US is the fallback. See `docs/TRANSLATING.md` |
 | `js/config.js` | Feature flags (`mods` off for release 1.0.0) |
 | `js/app.js` | Router (`#/setup`, `#/home`, `#/settings/<tab>`) and boot |
 | `js/pages/*.js` | Setup, Home, Settings shell and rows, Saves and Replays, Controls |
@@ -36,8 +38,8 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 
 | Command | Payload | Returns |
 |---|---|---|
-| `app_state` | none | `{setup: {state, step, progress, bytes_done, bytes_total, renderer_step, disc_name, problem, note}, game_running: bool, game_files}`; see "Setup states" below |
-| `setup_choose_disc` | none | `{path, serial, version, name}` when the file is accepted, `null` when the picker was cancelled; a refused file is an error string (the reason), and `app_state` then says `wrong_disc` |
+| `app_state` | none | `{setup: {state, step, progress, bytes_done, bytes_total, renderer_step, disc_name, problem, note, game}, game_running: bool, game_files, selected_game, any_installed, games: [row]}`; see "Setup states" below. `setup` describes the game being set up, else the selected one (`game` is `{id, name}`, or `null` on the very first start: the disc decides); `games` has the rows of `games_list` |
+| `setup_choose_disc` | `{game?}` | `{path, serial, version, name, game, gameName, mismatch, requested}` when the file is accepted, `null` when the picker was cancelled; a refused file is an error string (the reason), and `app_state` then says `wrong_disc`. The disc decides the game (`game`: `gt4` or `spec2`). `game` in the payload is the game the page asked for; when the disc is the other game `mismatch` is true and the page offers to install it as that game (nothing is installed until `setup_start`) |
 | `setup_start` | none | none; called by the page right after `setup_choose_disc` accepted a file (and by "Try again") |
 | `setup_cancel` | none | none; the copy and the staging folder are removed, `app_state` says `failed` with "Setup was cancelled" |
 | `play` | none | none |
@@ -45,6 +47,11 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `get_settings_table` | none | `{max_upscale: int, rows: [row]}` |
 | `set_setting` | `{id, value}` | none (`Result<(), String>`); after a success the UI sets the row's value and reads the table again, since other rows can depend on it (`visible_when`, `disabled`) |
 | `reset_gs_settings_to_defaults` | none | `{max_upscale, rows}` |
+| `gsdx_download_needed` | none | bool: choosing GSdx now needs a download (false before setup, which installs it) |
+| `download_gsdx` | none | installs GSdx with `gsdx-download` events; an error is the notice to show |
+| `install_gsdx_archive` | none | the download failed: opens a `.zip` picker and installs the package named `gt4-gs-<version>-windows-x64.zip` after checking it against the `SHA256SUMS` of its release (fetched online); `null` when the picker was cancelled, an error is the text to show; same `gsdx-download` events |
+| `coregs20_offer` | none | bool: Play should offer CoreGS 2.0 first (issues #139 and #179): GSdx is the stored renderer, it is not installed, and the card this PC would use has Vulkan 1.2. False in every other case, so the plain "GSdx is not installed yet" message stays on a PC without Vulkan 1.2 |
+| `use_coregs20` | none | none; CoreGS 2.0 becomes the stored renderer (the same rule as after a GSdx failure); an error is the text to show |
 | `get_controls` | none | `{controls: [{id, name, binding, sources, xinput, key, is_default}], triggers: [row], locked}`; `id` is the input of the controls file (`cross`, `dpad_up`, `l2`...), `sources` the raw sources (`xinput:A`, `key:Z`), `xinput`/`key` the first of each family or null; `triggers` holds the analog rows (below); `locked` is true when the file comes from a newer launcher and is kept read-only |
 | `capture_binding` | `{control}` | `{control, source}`: the next newly pressed control of the active pad, read through SDL3 (a control held at the start does not count; the source is in the controls-file names, SOUTH is `xinput:A`). It binds nothing; the page checks for a conflict and calls `assign_binding`. `cancel_capture` ends it with an error |
 | `pad_status` | none | the last `pad-status` payload: `{available, connected, name, kind, player_index, count, error}` (`kind` is SDL's gamepad type, e.g. `xbox360`, `ps5`; `count` is the number of pads; the named pad is "controller 1 of N") |
@@ -53,21 +60,37 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `reset_binding` | `{control}` | none; one button back to its built-in sources |
 | `reset_all_bindings` | none | the `get_controls` view; every button, trigger and stick setting back to the built-in mapping |
 | `saves_list` | none | `{items: [{id, name, modified, active}]}` |
-| `saves_import` | none | `{items}` or `null` when the picker is cancelled |
+| `saves_import` | `{game}` | `{items, game, gameName, status, folder}` of the page's game, or `null` when the picker is cancelled. `game` is required: a save file does not say which game it is from (`gt4saves::game_of_save` finds no rule), so the page asks first and a call without it is refused |
+| `games_list` | none | `{selected, any_installed, games: [{id, name, installed, damaged, reason, selected, disc_name, folder, size_bytes, image_path, image_bytes}]}` (TASK-101) |
+| `select_game` | `{id}` | the `games_list` view; the page's choice (home, Saves, Play); the stored choice changes when a game starts |
+| `games_remove` | `{id}` | the `games_list` view; deletes the disc copy and the prepared files of that game only, never its saves or replays (the page asks first) |
 | `saves_activate` | `{id}` | `{items}` |
 | `saves_delete` | `{id}` | `{items}` (the UI confirms first) |
 | `replays_list` | none | `{items: [{id, name, modified}]}` |
-| `replays_import` | none | `{items}` or `null` |
+| `replays_import` | `{game}` | `{items, game, gameName, status, folder}` or `null`; `game` required like `saves_import` |
 | `replays_delete` | `{id}` | `{items}` (the UI confirms first) |
 | `about_info` | none | `{version, gt4recomp, gt4gs, disc_path, game_files, data_folder}`; `gt4gs` is `not installed` until the renderer is there; `game_files` is the folder of the disc image copy |
 | `open_log_folder` | none | none |
 | `open_game_files_folder` | none | none; opens `game_files` in Explorer |
 | `check_updates` | none | `{offers: [offer], errors: [string], upToDate: bool, launcher, renderer}`; offer = `{stream, installed, latest, notes, package, update}` |
+| `list_launcher_versions` | none | `{channel, installed, entries: [{tag, version, date, candidate, installed, downgrade}], nothingNewer}`; read from GitHub each time, for the saved channel (TASK-109); an error string is shown under the Version row |
+| `install_launcher_version` | `{tag}` | `{ok, message}`; the update path for that exact release (the page asks first; an older one gets the downgrade warning); the launcher closes |
 | `apply_update` | `{stream}` (`launcher` or `renderer`) | `{ok, message}`; the renderer installs in place (not while the game runs); the launcher starts its setup and exits |
 | `skip_update` | `{stream, version}` | none; no offer again for exactly that version |
 | `confirm_close` | none | none; the player chose Close launcher in the close confirmation |
 
 `modified` is an ISO 8601 string; the UI formats it.
+
+### Two games (TASK-101)
+
+Home has a game selector (Gran Turismo 4, Gran Turismo 4 Spec II; keyboard, mouse and LB / RB). An installed game shows
+Play; a game that is not installed shows Install, which opens the disc picker for that game and runs its setup on the
+Setup page (Back returns to Home while another game is installed). The Spec II logo is a placeholder: the GT4 logo with
+a "Spec II" line under it (CSS, `.home-logo-spec2`), to be replaced by the authors' logo file with credit. Settings has a
+Games tab (install, change disc image, remove, with a confirmation that says the saves are kept); the Saves and Replays
+titles name the game; an import asks which game the file belongs to. The mock starts with Gran Turismo 4 installed and
+Spec II not: `?games=gt4|spec2|both|none`, `?selected=spec2`, `?pick=other` (the picker returns the other game's disc,
+the mismatch dialog) and `?pick=spec2`. Page helpers: `js/games.js`, `js/pages/games-page.js`.
 
 ### Setup states (`app_state().setup.state`)
 
@@ -99,6 +122,7 @@ Settings row (`rows[]` in the table):
   (`233` reads "2.33:1").
 - dropdown values: `[{value, label, disabled?, note?}]`; disabled entries are greyed and not selectable.
 - toggle values: `null`; `current` is a bool.
+- The UI draws both as the same option selector (owner, 2026-11-02; `optionSelector` in `js/pages/settings.js`): the value between two arrows, in an endless loop. Only the General tab's Version row keeps its list dialog.
 - The Controls analog rows use the same row shape (`group: "controls"`). Their ids are `l2_deadzone`, `l2_curve`, `r2_deadzone`, `r2_curve`, `lstick_deadzone` and `rstick_deadzone` (percent of travel, 0-95), and they are written with `set_setting`. A trigger row tunes the trigger source of that button (`deadzone=`/`curve=` options); a stick row writes `deadzone=` on both axis sources of the stick.
 
 Pad events (from the Rust pad service, `src/pad_service.rs`, SDL3; read in `js/nav.js` and `js/pages/controls.js`):
@@ -119,6 +143,7 @@ Other Tauri events from Rust (listened to in `js/app.js`, popup code in `js/upda
 | `setup-progress` | `{step, percent, bytesDone, bytesTotal}` | Setup progress (also in `app_state`, which the page polls). |
 | `setup-finished` | `{ok, message}` | The end of a setup run. |
 | `renderer-progress` | `{step}`: `listing`, `downloading` (with `percent`, `bytesDone`, `bytesTotal` during setup), `installing`, `downloading-launcher`, `done`, `failed` | Progress of a gt4-gs install (setup, the retry at launch, or an update). The setup page draws it; elsewhere `done` and `failed` are toasts. |
+| `gsdx-download` | `{step}`: `listing`, `downloading` (with `bytesDone`, `bytesTotal`), `installing`, during `download_gsdx` |
 | `update-finished` | `{stream, ok, message}` | The end of an `apply_update`. |
 | `game-state` | `{running, message}` | The game ended (`running: false`); a non-empty message is shown and Home is opened. |
 | `close-confirm` | `{message}` | The window close button was pressed while the game runs. The page asks "Close the launcher anyway?". |
@@ -136,8 +161,8 @@ Focus moves spatially (nearest element in the pressed direction; sideways offset
 |---|---|---|---|---|---|---|---|
 | Setup | primary button (Choose disc image / Choose another file / Play) | Cancel while copying or checking; Home when done | none | none | none | none | none |
 | Home | Play | none | none | Settings | Play | none | none |
-| Settings: Graphics (with its Advanced section) | activate (dropdown opens its list) | Back to Home (closes a tip or a dialog first) | none | Reset to defaults (confirm) | none | previous / next tab | adjust slider or dropdown |
-| Settings: Display | activate (dropdown opens its list) | Back to Home (closes a tip or a dialog first) | none | none | none | previous / next tab | adjust slider or dropdown |
+| Settings: Graphics (with its Advanced section) | activate (an option selector goes to its next value) | Back to Home (closes a tip or a dialog first) | none | Reset to defaults (confirm) | none | previous / next tab | adjust slider or dropdown |
+| Settings: Display | activate (an option selector goes to its next value) | Back to Home (closes a tip or a dialog first) | none | none | none | previous / next tab | adjust slider or dropdown |
 | Settings: About | activate (log folder) | Back to Home | none | none | none | tabs | none |
 | Saves | select / make active | Back | Import | Make active | none | tabs | none |
 | Replays | none | Back | Import | Delete (confirm) | none | tabs | none |
@@ -189,10 +214,14 @@ Mouse use hides the focus ring. A pad or key press brings it back.
 
 ## Mock data and browser preview
 
-Serve `ui/` with any static server and open `dev/index.html`, for example
+The locale files load over HTTP (not `file://`): serve `ui/` with any static server and open `dev/index.html`, for example
 `python -m http.server 8765` in `launcher/crates/gt4l-tauri/ui`, then `http://127.0.0.1:8765/dev/index.html#/home`.
 
-Query options: `?setup=done|needed|wrong|copying|preparing|renderer|failed|missing|offline` (default `done`), `&pick=spec` (the mock picker returns a refused Spec II image), `&running=1`, `&focus=play` (home only: focus the Play button, for screenshots), `&focus=content` (Settings: enter the tab).
+GSdx missing (`?gsdx=missing|offline`): choosing GSdx in Settings opens the download dialog, and Play offers CoreGS 2.0 first
+(the same dialog with the extra "Use CoreGS 2.0" button, `GT4.gsdxDownloadDialog` in `js/pages/settings.js`, opened from
+`js/pages/home.js`); `&vulkan=no` is a card without Vulkan 1.2, where Play offers nothing and the old message stays.
+
+Language (TASK-102): `?lang=pt-BR` or `?lang=en-US` sets the language (and the Settings value); `?os=pt-BR` sets only the OS language, so Auto follows it. Without either, Auto follows the browser. Query options: `?setup=done|needed|wrong|copying|preparing|renderer|failed|missing|offline` (default `done`), `&pick=spec` (the mock picker returns a refused Spec II image), `&running=1`, `&focus=play` (home only: focus the Play button, for screenshots), `&focus=content` (Settings: enter the tab).
 
 Controls (dev only): `&pad=A,LB,DpadRight` (pressed XInput names of a still dev pad; the mock sends them as `pad-live` events, the same shape as the Rust service), `&lt=0.6&rt=0.2` (trigger values), `&lx=0.7&ly=-0.45&rx=&ry=` (stick axes, y down), `&pads=2` (a second pad), `&nopad=1` (no controller), `&select=circle`, `&mode=key` (Keyboard chips), `&remap=1` (a few changed buttons), `&locked=1` (read-only file), `&capture=hold` (the rebind overlay stays open, still countdown) or `&capture=conflict` (the capture returns LB, so the conflict dialog opens). Example, the live-input screenshot: `dev/index.html?focus=content&pad=A,LB,DpadRight,Start&lt=0.6&rt=0.15&lx=0.75&ly=-0.5&rx=-0.45&ry=0.7#/settings/controls`. Screenshots: headless Edge with `--force-prefers-reduced-motion` (`docs/launcher/shots/controls-v2-*.png`).
 

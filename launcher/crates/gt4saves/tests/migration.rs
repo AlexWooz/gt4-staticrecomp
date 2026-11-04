@@ -1,7 +1,14 @@
 // The one-time move of the old AppData library to Documents\Gran Turismo 4 (TASK-081). Every test runs in its own
 // scratch folder under the Cargo target dir; nothing here reads or writes a real user folder.
 
-use gt4saves::card::{DirEntry, Node, GAME_SAVE_NAME, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
+use gt4saves::SaveNames;
+#[allow(dead_code)]
+const GT4: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
+#[allow(dead_code)]
+const SPEC2: SaveNames = SaveNames::new("BASCUS-97436GAMEDATA", "BASCUS-97436");
+#[allow(dead_code)]
+const GT4_GAME_SAVE: &str = "BASCUS-97328GAMEDATA";
+use gt4saves::card::{DirEntry, Node, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
 use gt4saves::library::{Library, LibraryPaths};
 use gt4saves::migration::{self, copy_file, marker_status, LegacySources, Outcome, Targets};
 use gt4saves::{folder, Card};
@@ -34,7 +41,11 @@ impl Fixture {
     }
 
     fn targets(&self) -> Targets {
-        Targets { saves: self.documents_root.join("Saves"), replays: self.documents_root.join("Replays") }
+        Targets {
+            saves: self.documents_root.join("Saves"),
+            replays: self.documents_root.join("Replays"),
+            names: GT4,
+        }
     }
 
     fn marker(&self) -> PathBuf {
@@ -80,7 +91,7 @@ fn directory(name: &str, children: Vec<Node>) -> Node {
 
 fn game_save(seed: u8) -> Node {
     let pattern = |len: usize| (0..len).map(|i| (i as u8).wrapping_mul(13).wrapping_add(seed)).collect();
-    directory(GAME_SAVE_NAME, vec![file("icon.sys", pattern(964)), file("garage", pattern(50_000))])
+    directory(GT4_GAME_SAVE, vec![file("icon.sys", pattern(964)), file("garage", pattern(50_000))])
 }
 
 fn replay() -> Node {
@@ -135,13 +146,13 @@ fn the_old_library_is_copied_verified_and_parked() {
     assert!(fixture.data.join("library").join("backups").join("20261020-000000-card.ps2").is_file());
 
     // The new library reads the moved items.
-    let library = Library::open_paths(&fixture.library_paths()).unwrap();
-    assert_eq!(library.active_save().unwrap(), Some(GAME_SAVE_NAME.to_string()));
+    let library = Library::open_paths(&fixture.library_paths(), GT4).unwrap();
+    assert_eq!(library.active_save().unwrap(), Some(GT4_GAME_SAVE.to_string()));
     assert_eq!(library.slots().unwrap(), vec!["Save 01".to_string()]);
     assert_eq!(library.replays().unwrap(), vec![REPLAY.to_string()]);
-    let active = folder::import_item(&library.active_dir().join(GAME_SAVE_NAME)).unwrap();
+    let active = folder::import_item(&library.active_dir().join(GT4_GAME_SAVE)).unwrap();
     assert!(gt4saves::card::same_contents(std::slice::from_ref(&active), std::slice::from_ref(&game_save(1))));
-    assert!(library.active_backup_dir().join(GAME_SAVE_NAME).is_dir(), "harvest copies moved to Saves\\.backup");
+    assert!(library.active_backup_dir().join(GT4_GAME_SAVE).is_dir(), "harvest copies moved to Saves\\.backup");
 
     // Recorded once; a second run does nothing.
     assert_eq!(marker_status(&fixture.marker()).as_deref(), Some("migrated"));
@@ -159,7 +170,7 @@ fn the_old_library_is_copied_verified_and_parked() {
 fn empty_new_folders_made_by_an_earlier_start_do_not_block_the_move() {
     let fixture = Fixture::new("empty-new");
     fixture.old_library();
-    Library::open_paths(&fixture.library_paths()).unwrap(); // creates empty Saves\Active, Saves\.backup, Replays
+    Library::open_paths(&fixture.library_paths(), GT4).unwrap(); // creates empty Saves\Active, Saves\.backup, Replays
     assert!(matches!(fixture.run(&copy_file), Outcome::Migrated { .. }));
 }
 
@@ -167,7 +178,7 @@ fn empty_new_folders_made_by_an_earlier_start_do_not_block_the_move() {
 fn both_libraries_with_saves_are_never_merged() {
     let fixture = Fixture::new("conflict");
     fixture.old_library();
-    let library = Library::open_paths(&fixture.library_paths()).unwrap();
+    let library = Library::open_paths(&fixture.library_paths(), GT4).unwrap();
     folder::export_item(&library.active_dir(), &game_save(9)).unwrap();
     let new_before = snapshot(&fixture.documents_root);
     let old_before = snapshot(&fixture.data.join("library"));
@@ -231,7 +242,7 @@ fn a_card_harvested_into_the_documents_library_builds_the_next_card() {
     let fixture = Fixture::new("harvest-prepare");
     fixture.old_library();
     assert!(matches!(fixture.run(&copy_file), Outcome::Migrated { .. }));
-    let library = Library::open_paths(&fixture.library_paths()).unwrap();
+    let library = Library::open_paths(&fixture.library_paths(), GT4).unwrap();
 
     // Prepare: the card for Play holds the moved active save and the replay.
     let runtime_card = fixture.data.join("runtime").join("card.ps2");
@@ -239,14 +250,14 @@ fn a_card_harvested_into_the_documents_library_builds_the_next_card() {
     let image = library.build_card(&library.replays().unwrap()).unwrap();
     library.write_card_image(&runtime_card, &image).unwrap();
     let names: Vec<String> = Card::from_image(&fs::read(&runtime_card).unwrap()).unwrap().root().unwrap().iter().map(Node::name).collect();
-    assert_eq!(names, vec![GAME_SAVE_NAME.to_string(), REPLAY.to_string()]);
+    assert_eq!(names, vec![GT4_GAME_SAVE.to_string(), REPLAY.to_string()]);
 
     // Harvest: the game saved new progress; it lands in Documents, the old copy in Saves\.backup.
     let played = Card::build(&[game_save(5), replay()]).unwrap().to_image();
     library.write_card_image(&runtime_card, &played).unwrap();
     let report = library.harvest(&fs::read(&runtime_card).unwrap()).unwrap();
     assert!(report.replaced_active);
-    let active = folder::import_item(&fixture.documents_root.join("Saves").join("Active").join(GAME_SAVE_NAME)).unwrap();
+    let active = folder::import_item(&fixture.documents_root.join("Saves").join("Active").join(GT4_GAME_SAVE)).unwrap();
     assert!(gt4saves::card::same_contents(std::slice::from_ref(&active), std::slice::from_ref(&game_save(5))));
     // The runtime card's previous image went to the AppData backups, never to Documents.
     assert!(fs::read_dir(fixture.data.join("library").join("backups")).unwrap().count() >= 2);

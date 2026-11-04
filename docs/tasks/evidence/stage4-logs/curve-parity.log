@@ -1,0 +1,37 @@
+=== Stage 4 Native vs Web Curve Parity Verification at 2026-10-27T11:09:07.392Z ===
+
+Executing native fixture: O:\gt4recomp-scratch\slice335-rc7-controls-build\build\controls_fixture.exe --dump-vectors O:\gt4recomp-scratch\parity_vectors.json
+Loaded fixture data: 7 curves, 5 deadzones, 35 vectors.
+
+--- Parity Sweep Results ---
+Total Evaluation Points : 8960 (7 curves x 5 deadzones x 256 bytes)
+Exact Bit-Accurate Byte Matches: 8960 (100.0000%)
+Discrepancies / Rounding Diffs : 0
+
+--- Representative Spot Checks Verified ---
+1. Deadzone = 0.0 (boundary):
+   Curve linear        : raw=0 -> 0, raw=128 -> 128 (JS=128), raw=255 -> 255
+   Curve quadratic     : raw=0 -> 0, raw=128 -> 64 (JS=64), raw=255 -> 255
+   Curve cubic         : raw=0 -> 0, raw=128 -> 32 (JS=32), raw=255 -> 255
+   Curve s_curve       : raw=0 -> 0, raw=128 -> 128 (JS=128), raw=255 -> 255
+   Curve smooth_power  : raw=0 -> 0, raw=128 -> 90 (JS=90), raw=255 -> 255
+   Curve sublinear     : raw=0 -> 0, raw=128 -> 180 (JS=180), raw=255 -> 255
+   Curve logarithmic   : raw=0 -> 0, raw=128 -> 189 (JS=189), raw=255 -> 255
+2. Default Deadzone = 30/255 (0.1176):
+   Curve linear        : raw=30 -> 0, raw=142 -> 126 (JS=126), raw=255 -> 255
+   Curve quadratic     : raw=30 -> 0, raw=142 -> 63 (JS=63), raw=255 -> 255
+   Curve cubic         : raw=30 -> 0, raw=142 -> 31 (JS=31), raw=255 -> 255
+   Curve s_curve       : raw=30 -> 0, raw=142 -> 126 (JS=126), raw=255 -> 255
+   Curve smooth_power  : raw=30 -> 0, raw=142 -> 89 (JS=89), raw=255 -> 255
+   Curve sublinear     : raw=30 -> 0, raw=142 -> 179 (JS=179), raw=255 -> 255
+   Curve logarithmic   : raw=30 -> 0, raw=142 -> 188 (JS=188), raw=255 -> 255
+3. Half Deadzone = 0.5 (0.5):
+   Curve linear        : raw=128 -> 0, raw=192 -> 128 (JS=128), raw=255 -> 255
+   Curve quadratic     : raw=128 -> 0, raw=192 -> 64 (JS=64), raw=255 -> 255
+   Curve cubic         : raw=128 -> 0, raw=192 -> 32 (JS=32), raw=255 -> 255
+   Curve s_curve       : raw=128 -> 0, raw=192 -> 129 (JS=129), raw=255 -> 255
+   Curve smooth_power  : raw=128 -> 0, raw=192 -> 91 (JS=91), raw=255 -> 255
+   Curve sublinear     : raw=128 -> 0, raw=192 -> 181 (JS=181), raw=255 -> 255
+   Curve logarithmic   : raw=128 -> 0, raw=192 -> 189 (JS=189), raw=255 -> 255
+
+=== Parity Verification Passed: 100% Exact Match between C++ Native Runtime and JS Preview ===

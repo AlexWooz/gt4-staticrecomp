@@ -29,8 +29,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::card::is_replay_name;
 use crate::library::{ACTIVE_BACKUP_FOLDER, ACTIVE_FOLDER};
+use crate::names::SaveNames;
 
 /// Schema of the marker file.
 pub const MARKER_SCHEMA: u32 = 1;
@@ -73,6 +73,8 @@ impl LegacySources {
 pub struct Targets {
     pub saves: PathBuf,
     pub replays: PathBuf,
+    /// The names of the game the old library belongs to (Gran Turismo 4 before 1.0.0).
+    pub names: SaveNames,
 }
 
 /// What a run did.
@@ -172,7 +174,7 @@ fn count_files(folders: &[PathBuf]) -> io::Result<usize> {
 }
 
 /// The (source file, destination file) pairs, destinations under the staging folders.
-fn plan(sources: &LegacySources, saves_stage: &Path, replays_stage: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+fn plan(sources: &LegacySources, names: SaveNames, saves_stage: &Path, replays_stage: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     fn add_tree(pairs: &mut Vec<(PathBuf, PathBuf)>, from: &Path, to: &Path) -> Result<(), String> {
         for file in files_under(from).map_err(|error| format!("{}: {error}", from.display()))? {
             let relative = file.strip_prefix(from).expect("file under its folder");
@@ -189,7 +191,7 @@ fn plan(sources: &LegacySources, saves_stage: &Path, replays_stage: &Path) -> Re
             let name = entry.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
             let destination = if name == ACTIVE_BACKUP_FOLDER {
                 saves_stage.join(ACTIVE_BACKUP_FOLDER)
-            } else if is_replay_name(&name) {
+            } else if names.is_replay(&name) {
                 replays_stage.join(&name)
             } else {
                 // The game save, and anything else the old folder card held, goes to Active.
@@ -337,7 +339,7 @@ fn copy_and_swap(sources: &LegacySources, targets: &Targets, data_root: &Path, s
         let _ = fs::remove_dir_all(&saves_stage);
         let _ = fs::remove_dir_all(&replays_stage);
     };
-    let pairs = plan(sources, &saves_stage, &replays_stage)?;
+    let pairs = plan(sources, targets.names, &saves_stage, &replays_stage)?;
     let mut bytes = 0u64;
     let copy_all = || -> Result<u64, String> {
         fs::create_dir_all(&saves_stage).map_err(|error| format!("{}: {error}", saves_stage.display()))?;

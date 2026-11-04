@@ -8,30 +8,53 @@
 
 namespace gt4::mtvu {
 
-WorkerEnd::WorkerEnd(SpscByteRing &input, SpscByteRing &output, Doorbell &input_bell, Doorbell &output_bell)
-    : input_(input), output_(output), input_bell_(input_bell), output_bell_(output_bell) {}
+WorkerEnd::WorkerEnd(SpscByteRing &input, SpscByteRing &output, Doorbell &input_bell, Doorbell &output_bell,
+                     std::size_t wake_output_bytes)
+    : input_(input),
+      output_(output),
+      input_bell_(input_bell),
+      output_bell_(output_bell),
+      wake_output_bytes_(std::min(wake_output_bytes, output.capacity() / 4)) {}
+
+void WorkerEnd::progress(bool wake) {
+  if (wake) {
+    output_bell_.ring();
+  } else {
+    output_bell_.ring_quiet();
+  }
+  quiet_pending_ = !wake;
+}
 
 void WorkerEnd::receive(RecordHeader &header, std::vector<std::uint8_t> &payload) {
   payload.clear();
-  std::vector<std::uint8_t> chunk;
   for (;;) {
     RecordHeader part;
     for (;;) {
       const std::uint32_t seen = input_bell_.snapshot();
-      if (input_.try_pop(part, chunk)) {
+      if (input_.try_pop(part, chunk_)) {
         // TASK-084 step 1: a pop frees input space, which an EE blocked in send_chunks must hear. The EE waits for
         // "worker progress" on the output bell, so one bell covers output data and freed input space.
-        output_bell_.ring();
+        // IN-459: only an EE that waits for input space needs to wake for it.
+        progress(wake_output_bytes_ == 0 || input_.producer_waiting());
         break;
       }
+      // IN-459: the worker goes idle. An EE asleep behind quiet publishes (it may wait for every job) wakes first.
+      if (quiet_pending_) progress(true);
       bool slept = false;
       input_bell_.wait_changed(seen, slept);
     }
-    payload.insert(payload.end(), chunk.begin(), chunk.end());
+    // TASK-134 P1c: a one-chunk record (nearly all of them) changes buffers instead of being copied a second time.
+    if (payload.empty()) {
+      payload.swap(chunk_);
+    } else {
+      payload.insert(payload.end(), chunk_.begin(), chunk_.end());
+    }
     if ((part.flags & kFlagMore) == 0) {
       header = part;
       header.flags = 0;
       header.bytes = static_cast<std::uint32_t>(payload.size());
+      // IN-459: the worker stops after this record; the EE wakes for the quiet publishes before it.
+      if (header.kind == static_cast<std::uint16_t>(RecordKind::Stop) && quiet_pending_) progress(true);
       return;
     }
   }
@@ -47,9 +70,20 @@ void WorkerEnd::emit_gif(std::uint8_t path, std::uint64_t job, const std::uint8_
     header.job = job;
     header.bytes = static_cast<std::uint32_t>(chunk);
     header.flags = offset + chunk < bytes ? kFlagMore : 0;
+    bool woke = false;
     for (;;) {
       const std::uint32_t seen = output_bell_.snapshot();
-      if (output_.try_push(header, data + offset)) break;
+      const bool wake = wake_output_bytes_ == 0 || output_.used() + chunk >= wake_output_bytes_;
+      if (output_.try_push(header, data + offset, wake)) {
+        quiet_pending_ = !wake;
+        break;
+      }
+      if (wake_output_bytes_ != 0 && !woke) {
+        // IN-459: the ring is full; an EE asleep behind quiet publishes must wake and drain it. Then look again.
+        progress(true);
+        woke = true;
+        continue;
+      }
       bool slept = false;
       output_bell_.wait_changed(seen, slept);
     }
@@ -61,9 +95,20 @@ void WorkerEnd::emit_job_done(std::uint64_t job) {
   RecordHeader header;
   header.kind = static_cast<std::uint16_t>(RecordKind::JobDone);
   header.job = job;
+  bool woke = false;
   for (;;) {
     const std::uint32_t seen = output_bell_.snapshot();
-    if (output_.try_push(header, nullptr)) return;
+    // IN-459: past the fill threshold only; an EE waiting for this job wakes when the worker goes idle (receive).
+    const bool wake = wake_output_bytes_ == 0 || output_.used() >= wake_output_bytes_;
+    if (output_.try_push(header, nullptr, wake)) {
+      quiet_pending_ = !wake;
+      return;
+    }
+    if (wake_output_bytes_ != 0 && !woke) {
+      progress(true);
+      woke = true;
+      continue;
+    }
     bool slept = false;
     output_bell_.wait_changed(seen, slept);
   }
@@ -79,11 +124,24 @@ std::size_t EeJournal::outstanding_jobs() const {
   }));
 }
 
+void GsSink::direct_job(std::uint64_t) { throw std::logic_error("mtvu GS sink without direct intake"); }
+
+void EeJournal::set_direct(bool direct) {
+  if (jobs_posted_ != 0 && direct != direct_) throw std::logic_error("mtvu direct GS intake switched after jobs");
+  direct_ = direct;
+}
+
 void EeJournal::post_job(RecordKind kind, std::uint64_t job, const std::uint8_t *payload, std::size_t bytes) {
-  JournalEntry placeholder;
-  placeholder.kind = EntryKind::Placeholder;
-  placeholder.job = job;
-  journal_.push_back(std::move(placeholder));
+  if (direct_) {
+    // IN-461: the queued EE entries (never behind a placeholder here) go first, so the job keeps its stream position.
+    execute_ready();
+    sink_.direct_job(job);
+  } else {
+    JournalEntry placeholder;
+    placeholder.kind = EntryKind::Placeholder;
+    placeholder.job = job;
+    journal_.push_back(std::move(placeholder));
+  }
 
   RecordHeader header;
   header.kind = static_cast<std::uint16_t>(kind);
@@ -126,6 +184,13 @@ void EeJournal::append_privileged(std::uint32_t address, std::uint64_t value) {
   journal_.push_back(std::move(entry));
 }
 
+void EeJournal::append_readback(std::uint32_t qwords) {
+  JournalEntry entry;
+  entry.kind = EntryKind::Readback;
+  entry.job = qwords;
+  journal_.push_back(std::move(entry));
+}
+
 bool EeJournal::drain(bool blocking) {
   for (;;) {
     const std::uint32_t seen = output_bell_.snapshot();
@@ -150,17 +215,21 @@ void EeJournal::send_chunks(SpscByteRing &ring, RecordHeader header, const std::
     const std::size_t chunk = std::min(bytes - offset, ring.max_payload());
     header.bytes = static_cast<std::uint32_t>(chunk);
     header.flags = offset + chunk < bytes ? kFlagMore : 0;
+    ring.set_producer_waiting(true);  // IN-459: a pop that frees space wakes this thread only while this is set
     for (;;) {
       // TASK-084 step 1: the producer waits for "worker progress" (output data or a freed input slot) on the
       // output bell, because a worker blocked on a full output ring only frees input space after the EE pumps
       // that ring. The input bell belongs to the worker alone. Both waits are event waits, never spins.
       const std::uint32_t seen = output_bell_.snapshot();
       if (ring.try_push(header, payload + offset)) break;
-      pump_output();
-      if (ring.try_push(header, payload + offset)) break;
+      if (!direct_) {  // IN-461: in direct intake the GS consumer drains the output ring
+        pump_output();
+        if (ring.try_push(header, payload + offset)) break;
+      }
       bool slept = false;
       output_bell_.wait_changed(seen, slept);
     }
+    ring.set_producer_waiting(false);
     offset += chunk;
   } while (offset < bytes);
 }
@@ -225,6 +294,9 @@ bool EeJournal::execute_ready() {
         break;
       case EntryKind::Privileged:
         sink_.privileged_write(entry.address, entry.job);
+        break;
+      case EntryKind::Readback:
+        sink_.readback(static_cast<std::uint32_t>(entry.job));
         break;
       case EntryKind::Placeholder:
         if (!consume_job(entry.job)) return false;

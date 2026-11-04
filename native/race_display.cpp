@@ -34,6 +34,8 @@ bool parse_force_480p(const char *value) {
 }
 
 std::uint32_t race_display_index_address(std::uint32_t owner_pointer, std::uint32_t ram_size) {
+  if (!::gt4::target::available(race_display_index_offset))
+    return 0;
   if (owner_pointer == 0)
     return 0;
   if (!word_in_ram(race_owner_pointer_address, ram_size))
@@ -47,25 +49,32 @@ std::uint32_t race_display_index_address(std::uint32_t owner_pointer, std::uint3
 }
 
 bool should_force_480p_index(std::uint32_t index_value) {
-  return index_value == race_display_index_normal;
+  return index_value == race_display_index_normal || index_value == race_display_index_1080i;
 }
 
 bool force_race_480p_at_vblank(std::uint8_t *ram, std::uint32_t ram_size, Force480pState &state) {
+  if (!::gt4::target::available(race_display_index_offset) ||
+      !::gt4::target::available(race_owner_pointer_address)) {
+    ::gt4::target::note_hook_unavailable("race display 480p (GT4_FORCE_480P)");
+    return false;
+  }
   if (!word_in_ram(race_owner_pointer_address, ram_size))
     return false;
   const std::uint32_t owner_pointer = read_le32(ram + race_owner_pointer_address);
   const std::uint32_t index_address = race_display_index_address(owner_pointer, ram_size);
   if (index_address == 0)
     return false;
-  if (!should_force_480p_index(read_le32(ram + index_address)))
+  const std::uint32_t index_value = read_le32(ram + index_address);
+  if (!should_force_480p_index(index_value))
     return false;
   write_le32(ram + index_address, race_display_index_480p);
   ++state.writes;
   if (!state.logged) {
     state.logged = true;
     std::fprintf(stderr,
-                 "[display] GT4_FORCE_480P: race display index 0 (normal) set to 1 (480p) at guest 0x%08X "
+                 "[display] GT4_FORCE_480P: race display index %u (%s) set to 1 (480p) at guest 0x%08X "
                  "(owner 0x%08X)\n",
+                 static_cast<unsigned>(index_value), index_value == race_display_index_1080i ? "1080i" : "normal",
                  static_cast<unsigned>(index_address), static_cast<unsigned>(owner_pointer));
   }
   return true;

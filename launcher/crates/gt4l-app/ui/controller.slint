@@ -130,12 +130,12 @@ export component TriggerPanel inherits Rectangle {
         current-index: root.curve;
         selected(value) => {
             root.changed(root.trigger, root.deadzone,
-                value == "Quadratic" ? 1 : (
-                value == "Cubic" ? 2 : (
-                value == "S-Curve" ? 3 : (
-                value == "Smooth Power" ? 4 : (
-                value == "Sublinear" ? 5 : (
-                value == "Logarithmic" ? 6 : 0))))));
+                         value == "Quadratic" ? 1 :
+                         (value == "Cubic" ? 2 :
+                         (value == "S-Curve" ? 3 :
+                         (value == "Smooth Power" ? 4 :
+                         (value == "Sublinear" ? 5 :
+                         (value == "Logarithmic" ? 6 : 0))))));
         }
     }
     // Preview: pressure (vertical) against trigger travel (horizontal). Linear is the straight line.
@@ -144,8 +144,7 @@ export component TriggerPanel inherits Rectangle {
         y: 70px;
         width: 90px;
         height: 70px;
-        // 21 samples of the same unit-interval formulas used by native/controls.cpp.
-        commands: root.curve == 1 ? "M 0.00 70.00 L 4.50 69.83 L 9.00 69.30 L 13.50 68.42 L 18.00 67.20 L 22.50 65.62 L 27.00 63.70 L 31.50 61.43 L 36.00 58.80 L 40.50 55.82 L 45.00 52.50 L 49.50 48.83 L 54.00 44.80 L 58.50 40.42 L 63.00 35.70 L 67.50 30.62 L 72.00 25.20 L 76.50 19.43 L 81.00 13.30 L 85.50 6.83 L 90.00 0.00" : (root.curve == 2 ? "M 0.00 70.00 L 4.50 69.99 L 9.00 69.93 L 13.50 69.76 L 18.00 69.44 L 22.50 68.91 L 27.00 68.11 L 31.50 67.00 L 36.00 65.52 L 40.50 63.62 L 45.00 61.25 L 49.50 58.35 L 54.00 54.88 L 58.50 50.78 L 63.00 45.99 L 67.50 40.47 L 72.00 34.16 L 76.50 27.01 L 81.00 18.97 L 85.50 9.98 L 90.00 0.00" : (root.curve == 3 ? "M 0.00 70.00 L 4.50 69.49 L 9.00 68.04 L 13.50 65.75 L 18.00 62.72 L 22.50 59.06 L 27.00 54.88 L 31.50 50.28 L 36.00 45.36 L 40.50 40.23 L 45.00 35.00 L 49.50 29.77 L 54.00 24.64 L 58.50 19.72 L 63.00 15.12 L 67.50 10.94 L 72.00 7.28 L 76.50 4.25 L 81.00 1.96 L 85.50 0.51 L 90.00 0.00" : (root.curve == 4 ? "M 0.00 70.00 L 4.50 69.22 L 9.00 67.79 L 13.50 65.93 L 18.00 63.74 L 22.50 61.25 L 27.00 58.50 L 31.50 55.51 L 36.00 52.29 L 40.50 48.87 L 45.00 45.25 L 49.50 41.45 L 54.00 37.47 L 58.50 33.32 L 63.00 29.00 L 67.50 24.53 L 72.00 19.91 L 76.50 15.14 L 81.00 10.23 L 85.50 5.18 L 90.00 0.00" : (root.curve == 5 ? "M 0.00 70.00 L 4.50 54.35 L 9.00 47.86 L 13.50 42.89 L 18.00 38.70 L 22.50 35.00 L 27.00 31.66 L 31.50 28.59 L 36.00 25.73 L 40.50 23.04 L 45.00 20.50 L 49.50 18.09 L 54.00 15.78 L 58.50 13.56 L 63.00 11.43 L 67.50 9.38 L 72.00 7.39 L 76.50 5.46 L 81.00 3.59 L 85.50 1.77 L 90.00 0.00" : (root.curve == 6 ? "M 0.00 70.00 L 4.50 58.70 L 9.00 50.49 L 13.50 44.03 L 18.00 38.70 L 22.50 34.17 L 27.00 30.23 L 31.50 26.74 L 36.00 23.61 L 40.50 20.77 L 45.00 18.17 L 49.50 15.78 L 54.00 13.57 L 58.50 11.50 L 63.00 9.57 L 67.50 7.75 L 72.00 6.03 L 76.50 4.41 L 81.00 2.87 L 85.50 1.40 L 90.00 0.00" : ("M 0.00 70.00 L 4.50 66.50 L 9.00 63.00 L 13.50 59.50 L 18.00 56.00 L 22.50 52.50 L 27.00 49.00 L 31.50 45.50 L 36.00 42.00 L 40.50 38.50 L 45.00 35.00 L 49.50 31.50 L 54.00 28.00 L 58.50 24.50 L 63.00 21.00 L 67.50 17.50 L 72.00 14.00 L 76.50 10.50 L 81.00 7.00 L 85.50 3.50 L 90.00 0.00"))))));
+        commands: root.curve == 0 ? "M 0 70 L 90 0" : (root.curve == 1 ? "M 0 70 Q 0 0 90 0" : "M 0 70 C 40 70 60 20 90 0");
         stroke: Palette.accent;
         stroke-width: 2px;
         fill: transparent;

@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "schema": "spec2-vu/1",
+  "spec2_elf": {
+    "size_bytes": 6520944,
+    "sha256": "db08421bc26bdc0298e80cb02a8f2067ddf640f0575af5dfe0548f1fd73ac39d"
+  },
+  "vu1": {
+    "file_offset": 5882128,
+    "blob_bytes": 16368,
+    "encrypted_sha256": "2cd8cf163adb440b2e4cba885cdc0c337bd697a49d76d2839b80924d345004f9",
+    "decrypted_sha256": "ae6b6cb3b4406ff3350a9d32b8abc044122c62e3e86f0e295bac54b38d2ac4c1",
+    "decrypted_sha256_prefix": "ae6b6cb3b4406ff3",
+    "expected_prefix": "ae6b6cb3b4406ff3",
+    "prefix_matches": true,
+    "v200_decrypted_sha256": "ae6b6cb3b4406ff3350a9d32b8abc044122c62e3e86f0e295bac54b38d2ac4c1",
+    "identical_to_v200": true,
+    "aot_decision": "the content-addressed VU1 AOT table applies unchanged"
+  },
+  "vu0": {
+    "vaddr": 7541120,
+    "file_offset": 6496640,
+    "upload_bytes": 2336,
+    "sha256": "d0c85d37f729d6f5d9494e4ab026c1c6e628b18213cc7dbca66d1f99a68c9cd0",
+    "v200_upload_bytes": 2688,
+    "v200_sha256": "6ee4bdde81d98d0cf0cfdf65f5bb64697b4fd4bfee408d4d6125e39d8d602690",
+    "differing_bytes_in_the_overlap": 1050,
+    "tail_bytes_beyond_v200": 0,
+    "vcallms_entries": [
+      {
+        "entry": 88,
+        "in_range": true,
+        "first_words_equal": true
+      },
+      {
+        "entry": 120,
+        "in_range": true,
+        "first_words_equal": true
+      },
+      {
+        "entry": 184,
+        "in_range": true,
+        "first_words_equal": true
+      },
+      {
+        "entry": 248,
+        "in_range": true,
+        "first_words_equal": true
+      },
+      {
+        "entry": 744,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 776,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 1120,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 1144,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 1352,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 1656,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 1792,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 2136,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 2304,
+        "in_range": true,
+        "first_words_equal": false
+      },
+      {
+        "entry": 2352,
+        "in_range": false,
+        "first_words_equal": false
+      }
+    ],
+    "aot_decision": "the v2.00 generated programs cannot match this image (key and identity digest), so the exact interpreter runs as the counted fallback; a Spec II table is generated after S7b if the profile shows VU0 cost"
+  },
+  "confidence": {
+    "vu1_blob_is_the_v200_image": "Confirmed",
+    "vu0_image_differs": "Confirmed",
+    "vu0_runtime_fallback": "Confirmed from scripts/vu0_aot_overlay.inc (key + identity digest must match)"
+  }
+}

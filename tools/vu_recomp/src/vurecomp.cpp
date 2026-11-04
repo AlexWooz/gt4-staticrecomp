@@ -20,6 +20,7 @@
 #include "ps2/vu_ops.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -245,6 +246,26 @@ Upper upper(std::uint32_t hi, const FlagUse &use, bool donor_exact = false) {
         u.mask = d;
         u.normalized = vector && arithmetic;
     }
+    if ((kind == Opmula || kind == Opmsub) && !donor_exact) {
+        // TASK-134: the outer product over x, y and z at once, fs.yzx times ft.zxy (lane w is computed, never written). Each
+        // lane equals the scalar mul and msub below: vmul and vmsub fix their operands and their result as fin and fout do.
+        const std::string fs_yzx = std::format("__builtin_shufflevector({0}, {0}, 1, 2, 0, 3)", vreg(fs));
+        const std::string ft_zxy = std::format("__builtin_shufflevector({0}, {0}, 2, 0, 1, 3)", vreg(ft));
+        if (kind == Opmula) u.pre += std::format("const v4u uv = vmul({}, {}); ", fs_yzx, ft_zxy);
+        else u.pre += std::format("const v4u uv = vmsub(vload(r.acc), {}, {}); ", fs_yzx, ft_zxy);
+        if (target == 0) {
+            const std::string mac = mac_update("uf", d, use);
+            if (mac.empty()) u.pre.clear();  // VF0 is not written and no MAC is observed: nothing to compute
+            else u.post = std::format("{{ Reg128 uf; vstore(uf, uv); {}}} ", mac);
+            u.sets_flags = true;
+            return u;
+        }
+        u.normalized = true;
+        u.post += std::format("vstore({0}, vsel(vload({0}), uv, {1})); ", dst, lane_mask(d));
+        u.sets_flags = flags;
+        if (flags) u.post += mac_update(dst, d, use);
+        return u;
+    }
     if (arithmetic && !donor_exact) {
         const auto operand = [&](unsigned reg) -> std::string {
             if (!reg) return vreg(0);
@@ -263,12 +284,25 @@ Upper upper(std::uint32_t hi, const FlagUse &use, bool donor_exact = false) {
         }
         const std::string ns = operand(fs);
         if (kind == Madd || kind == Msub) u.shadow_reads.push_back(kAcc);
+        // TASK-134: a product with VF0.w (1.0) is the other operand itself: a fixed value (normal, signed zero or at most
+        // 0x7F7FFFFF) times 1.0f is exact and vout leaves it as it is. MULbc, MADDbc and MSUBbc by vf0w (the w row of a
+        // vertex transform) become a copy, an add and a subtract with the same bits.
+        const bool times_one = src == Bc && ft == 0 && bc == 3;
         switch (kind) {
         case Add: u.pre += std::format("const v4u uv = vaddn({}, {}); ", ns, nb); break;
         case Sub: u.pre += std::format("const v4u uv = vsubn({}, {}); ", ns, nb); break;
-        case Mul: u.pre += std::format("const v4u uv = vmuln({}, {}); ", ns, nb); break;
-        case Madd: u.pre += std::format("const v4u uv = vmaddn(nacc, {}, {}); ", ns, nb); break;
-        default: u.pre += std::format("const v4u uv = vmsubn(nacc, {}, {}); ", ns, nb); break;
+        case Mul:
+            if (times_one) u.pre += std::format("const v4u uv = {}; ", ns);
+            else u.pre += std::format("const v4u uv = vmuln({}, {}); ", ns, nb);
+            break;
+        case Madd:
+            if (times_one) u.pre += std::format("const v4u uv = vaddn(nacc, {}); ", ns);
+            else u.pre += std::format("const v4u uv = vmaddn(nacc, {}, {}); ", ns, nb);
+            break;
+        default:
+            if (times_one) u.pre += std::format("const v4u uv = vsubn(nacc, {}); ", ns);
+            else u.pre += std::format("const v4u uv = vmsubn(nacc, {}, {}); ", ns, nb);
+            break;
         }
     }
     if (vector) {
@@ -299,6 +333,38 @@ Upper upper(std::uint32_t hi, const FlagUse &use, bool donor_exact = false) {
         }
         if (d == 0xF) u.post += std::format("vstore({}, uv); ", dst);
         else u.post += std::format("vstore({0}, vsel(vload({0}), uv, {1})); ", dst, lane_mask(d));
+        u.sets_flags = flags;
+        if (flags) u.post += mac_update(dst, d, use);
+        return u;
+    }
+    if (donor_exact && arithmetic && std::popcount(d) >= 2 && fs != 0 && !(src == Vec && ft == 0)) {
+        // TASK-134: VU0 (exact): the lanes in one fp4 operation (native/fp4.hpp, the bits of fp:: per lane, native_vu_fast_ops).
+        // A single lane stays scalar, and so does VF0 as a source register (its lanes are constants, not read from r.vf[0]).
+        std::string b4;
+        switch (src) {
+        case Vec: b4 = std::format("fp4::load(r.vf[{}])", ft); break;
+        case Bc: b4 = std::format("fp4::splat({})", vf(ft, static_cast<int>(bc))); break;
+        case Q: b4 = "fp4::splat(r.q)"; break;
+        default: b4 = "fp4::splat(r.i)"; break;
+        }
+        const std::string a4 = std::format("fp4::load(r.vf[{}])", fs);
+        std::string e;
+        switch (kind) {
+        case Add: e = std::format("fp4::add({}, {})", a4, b4); break;
+        case Sub: e = std::format("fp4::sub({}, {})", a4, b4); break;
+        case Mul: e = std::format("fp4::mul({}, {})", a4, b4); break;
+        case Madd: e = std::format("fp4::add(fp4::load(r.acc), fp4::mul({}, {}))", a4, b4); break;
+        default: e = std::format("fp4::sub(fp4::load(r.acc), fp4::mul({}, {}))", a4, b4); break;
+        }
+        u.pre += std::format("const fp4::V u4 = {}; ", e);
+        if (target == 0) {
+            const std::string mac = mac_update("uf", d, use);
+            if (mac.empty()) u.pre.clear();  // VF0 is not written and no MAC is observed: nothing to compute
+            else u.post = std::format("{{ Reg128 uf{{}}; fp4::store_lanes(uf, {}u, u4); {}}} ", d, mac);
+            u.sets_flags = true;
+            return u;
+        }
+        u.post += std::format("fp4::store_lanes({}, {}u, u4); ", dst, d);
         u.sets_flags = flags;
         if (flags) u.post += mac_update(dst, d, use);
         return u;
@@ -357,20 +423,18 @@ Upper upper(std::uint32_t hi, const FlagUse &use, bool donor_exact = false) {
     return u;
 }
 
+// TASK-134: a partial destination is written as a whole qword with the other lanes kept (vsel), not lane by lane. The register (or
+// memory qword) is read back as 16 bytes soon after, and a 16-byte read of four separate 4-byte stores cannot be forwarded from the
+// store buffer: the processor waits for the stores to reach the cache. The bytes written are the same. A qword is always inside
+// VU memory (qword() masks the index).
 std::string lanes_copy(unsigned dest, const std::string &to, const std::string &from_qword) {
     if (dest == 0xF) return std::format("std::memcpy(&{}, {}, 16); ", to, from_qword);
-    std::string s;
-    for (int i = 0; i < 4; ++i)
-        if (lane(dest, i)) s += std::format("std::memcpy(&{}.w[{}], {} + {}, 4); ", to, i, from_qword, i * 4);
-    return s;
+    return std::format("vstore({0}, vsel(vload({0}), vload_bytes({1}), {2})); ", to, from_qword, lane_mask(dest));
 }
 
 std::string lanes_store(unsigned dest, const std::string &qword_expr, const std::string &from) {
     if (dest == 0xF) return std::format("std::memcpy({}, &{}, 16); ", qword_expr, from);
-    std::string s;
-    for (int i = 0; i < 4; ++i)
-        if (lane(dest, i)) s += std::format("std::memcpy({} + {}, &{}.w[{}], 4); ", qword_expr, i * 4, from, i);
-    return s;
+    return std::format("vstore_bytes({0}, vsel(vload_bytes({0}), vload({1}), {2})); ", qword_expr, from, lane_mask(dest));
 }
 
 struct Lower {
@@ -407,14 +471,15 @@ Lower lower(std::uint32_t w, std::uint32_t pc, std::uint32_t mask) {
         switch (index) {
         case 0x30:
             if (ft) l.writes = static_cast<int>(ft);
-            if (ft) for (int i = 0; i < 4; ++i) if (lane(dest, i)) c += std::format("r.vf[{}].w[{}] = r.vf[{}].w[{}]; ", ft, i, fs, i);
+            // TASK-134: the lanes as one qword (see lanes_copy).
+            if (ft && dest) c += std::format("vstore(r.vf[{0}], vsel(vload(r.vf[{0}]), vload(r.vf[{1}]), {2})); ", ft, fs, lane_mask(dest));
             break;
         case 0x31:
             if (ft) l.writes = static_cast<int>(ft);
-            if (ft) {
-                c = std::format("{{ const Reg128 m = r.vf[{}]; ", fs);
-                for (int i = 0; i < 4; ++i) if (lane(dest, i)) c += std::format("r.vf[{}].w[{}] = m.w[{}]; ", ft, i, (i + 1) & 3);
-                c += "} ";
+            if (ft && dest) {
+                // MR32: lane i takes fs lane i + 1 (w takes x), as one qword.
+                c = std::format("{{ const v4u m = vload(r.vf[{0}]); vstore(r.vf[{1}], vsel(vload(r.vf[{1}]), __builtin_shufflevector(m, m, 1, 2, 3, 0), {2})); }} ",
+                                fs, ft, lane_mask(dest));
             }
             break;
         case 0x34:
@@ -927,7 +992,11 @@ private:
         if (in_.count(prev)) {
             const Lower &previous = lowers_[prev];
             const std::uint32_t previous_hi = hi(prev);
-            if (previous_hi & kEndBit) o += std::format("    if (ending) {{ VUGEN_SYNC; r.tpc = {}u; return RunStatus::Completed; }}\n", (pc + 8u) & mask_);
+            // TASK-134: an E-bit instruction that is also a branch (Spec II VU0, 0x3B0) stops at the branch target, as the interpreter.
+            if (previous_hi & kEndBit) {
+                if (previous.branch) o += std::format("    if (ending) {{ VUGEN_SYNC; r.tpc = pend ? {}u : {}u; return RunStatus::Completed; }}\n", previous.target, (pc + 8u) & mask_);
+                else o += std::format("    if (ending) {{ VUGEN_SYNC; r.tpc = {}u; return RunStatus::Completed; }}\n", (pc + 8u) & mask_);
+            }
             if (previous.branch) {
                 const std::uint32_t target = previous.target;
                 o += "    if (pend) { pend = false; ";
@@ -1228,7 +1297,9 @@ std::string emit_generated_source(std::vector<ProgramRecord> &records, const std
         ++emitted;
     }
     std::string source = "// Generated by gt4_vu_recomp. Do not edit.\n";
-    source += "#include \"vu_recomp_contract.hpp\"\n\n";
+    source += "#include \"vu_recomp_contract.hpp\"\n";
+    if (functions.find("fp4::") != std::string::npos) source += "#include \"ps2/fp4.hpp\"\n";  // TASK-134, VU0 lanes
+    source += "\n";
     source += std::format("namespace {} {{\n\nusing namespace ps2;\nusing namespace ps2::vuops;\n\n", name_space);
     for (const ProgramRecord &record : records) {
         if (record.refused) continue;

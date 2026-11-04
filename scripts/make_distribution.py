@@ -1,7 +1,7 @@
 """Assemble a distribution folder of the game executable (TASK-059).
 
 The folder holds what an installed game needs and nothing else:
-  gt4vulkan.exe              the game executable (pinned in the runtime manifest, checked by size and SHA-256)
+  gt4.exe                    the game executable (built as gt4vulkan.exe, renamed at distribution: TASK-108) (pinned in the runtime manifest, checked by size and SHA-256)
   shaders/*.spv              the nine compute shaders next to the executable (pinned, checked)
   <runtime DLLs>             the Visual C++ runtime the executable links to, copied from the local Visual Studio
                              redistributable folder (see --crt-dir)
@@ -97,7 +97,8 @@ def check_pin(path, expected_size, expected_sha, label):
     return actual
 
 
-def assemble(output, assets_root, exe, runtime_manifest, shaders_dir, crt_dir, allow_missing_crt):
+def assemble(output, assets_root, exe, runtime_manifest, shaders_dir, crt_dir, allow_missing_crt,
+             second_exe=None, second_runtime_manifest=None):
     assets_root = Path(assets_root).resolve()
     output = Path(output).resolve()
     private = (assets_root / 'private').resolve()
@@ -121,8 +122,18 @@ def assemble(output, assets_root, exe, runtime_manifest, shaders_dir, crt_dir, a
         manifest_files.append({'path': relative.replace('\\', '/'), 'bytes': target.stat().st_size,
                                'sha256': sha256_of(target)})
 
-    exe_sha = check_pin(exe, runtime['size_bytes'], runtime['sha256'], 'gt4vulkan.exe')
-    record('gt4vulkan.exe', exe)
+    exe_sha = check_pin(exe, runtime['size_bytes'], runtime['sha256'], 'gt4.exe')
+    record('gt4.exe', exe)
+    second_sha = None
+    if second_exe is not None:
+        # TASK-101 (release 1.3.0): the second game's executable, shipped beside the first (its own pin).
+        if second_runtime_manifest is None:
+            raise ValueError('--second-exe needs --second-runtime-manifest')
+        second_manifest = json.loads(Path(second_runtime_manifest).read_text(encoding='utf-8'))
+        second_runtime = second_manifest['runtime']
+        second_path = Path(second_exe).resolve()
+        second_sha = check_pin(second_path, second_runtime['size_bytes'], second_runtime['sha256'], 'gt4-spec2.exe')
+        record('gt4-spec2.exe', second_path)
 
     for name in SHADER_NAMES:
         item = pinned_shaders[name]
@@ -148,7 +159,6 @@ def assemble(output, assets_root, exe, runtime_manifest, shaders_dir, crt_dir, a
     licenses = {
         'licenses/LICENSE-GT4Recomp.txt': ROOT / 'LICENSE',
         'licenses/LICENSE-ps2-web-recomp.txt': assets_root / 'private/references/ps2-web-recomp/LICENSE',
-        'licenses/LICENSE-rcheevos.txt': ROOT / 'native/third_party/rcheevos/LICENSE',
         'licenses/THIRD_PARTY.md': ROOT / 'native/THIRD_PARTY.md',
     }
     for relative, source in licenses.items():
@@ -160,6 +170,8 @@ def assemble(output, assets_root, exe, runtime_manifest, shaders_dir, crt_dir, a
         'schema_version': 1,
         'runtime_manifest': runtime_manifest.name if hasattr(runtime_manifest, 'name') else str(runtime_manifest),
         'executable_sha256': exe_sha,
+        'runtime_manifest_spec2': (Path(second_runtime_manifest).name if second_runtime_manifest else None),
+        'executable_spec2_sha256': second_sha,
         'files': manifest_files,
         'excluded': list(EXCLUDED),
         'crt_directory': str(crt_dir) if crt_dir else None,
@@ -175,6 +187,8 @@ def main():
     parser.add_argument('--assets-root', type=Path, default=ROOT)
     parser.add_argument('--exe', type=Path, required=True)
     parser.add_argument('--runtime-manifest', type=Path, required=True)
+    parser.add_argument('--second-exe', type=Path, help='TASK-101: the second game executable (built as gt4vulkan-spec2.exe; shipped as gt4-spec2.exe)')
+    parser.add_argument('--second-runtime-manifest', type=Path, help='pin of the second executable (slice280-spec2.json)')
     parser.add_argument('--shaders', type=Path, help='folder with the pinned .spv files (default: the manifest shader capsule)')
     parser.add_argument('--crt-dir', type=Path, help='Visual C++ CRT redistributable folder (default: found by vswhere)')
     parser.add_argument('--no-crt', action='store_true', help='do not copy the Visual C++ runtime DLLs')
@@ -182,9 +196,12 @@ def main():
     assets_root = options.assets_root.resolve()
     shaders = options.shaders or (assets_root / json.loads(options.runtime_manifest.read_text(encoding='utf-8'))['shader_capsule'])
     crt = None if options.no_crt else (options.crt_dir or find_crt_directory())
-    manifest = assemble(options.output, assets_root, options.exe, options.runtime_manifest, shaders, crt, options.no_crt)
+    manifest = assemble(options.output, assets_root, options.exe, options.runtime_manifest, shaders, crt, options.no_crt,
+                        second_exe=options.second_exe, second_runtime_manifest=options.second_runtime_manifest)
     print(f'distribution written: {options.output.resolve()} ({len(manifest["files"])} files)')
-    print(f'gt4vulkan.exe sha256 {manifest["executable_sha256"]}')
+    print(f'gt4.exe sha256 {manifest["executable_sha256"]}')
+    if manifest["executable_spec2_sha256"]:
+        print(f'gt4-spec2.exe sha256 {manifest["executable_spec2_sha256"]}')
 
 
 if __name__ == '__main__':

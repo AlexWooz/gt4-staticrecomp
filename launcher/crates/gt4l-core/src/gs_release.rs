@@ -32,6 +32,19 @@ pub const CHECKSUM_ASSET: &str = releases::CHECKSUM_ASSET;
 pub const EXECUTABLE_NAME: &str = "gt4-gs.exe";
 /// Name of the state file in the renderer root: the version in use.
 pub const CURRENT_FILE: &str = "current.txt";
+/// TASK-155 (issue #131; re-done from Luan Antony's PR #136): an empty `portable.ini` beside gt4-gs.exe makes gt4-gs keep its
+/// own settings beside it instead of looking up the Documents folder first; a Documents folder moved into OneDrive stopped
+/// it at start ("Failed to initialize config") before it read `--config`. Written at install and before each GSdx start.
+pub const PORTABLE_MARKER: &str = "portable.ini";
+
+/// Creates [`PORTABLE_MARKER`] in `folder` when it is missing; an existing file is left as it is.
+pub fn ensure_portable_marker(folder: &Path) -> std::io::Result<()> {
+    let marker = folder.join(PORTABLE_MARKER);
+    if marker.is_file() {
+        return Ok(());
+    }
+    fs::write(marker, b"")
+}
 /// Largest package the launcher accepts (bytes). Protects memory on a bad or hostile response.
 pub const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -170,15 +183,35 @@ pub fn install_latest_reporting(
     let sums_text = source.download(&asset(CHECKSUM_ASSET)?.url)?;
     let sums = parse_checksums(&String::from_utf8_lossy(&sums_text));
     let package = package_name(version);
-    let expected = sums.get(&package).ok_or_else(|| format!("{CHECKSUM_ASSET} has no line for {package}"))?;
+    if !sums.contains_key(&package) {
+        return Err(format!("{CHECKSUM_ASSET} has no line for {package}"));
+    }
     let package_bytes = source.download_reporting(&asset(&package)?.url, &mut |done, total| {
         progress(Step::Transfer { done, total })
     })?;
-    if package_bytes.len() as u64 > MAX_PACKAGE_BYTES {
+    install_package(&package_bytes, version, &sums, root, progress)
+}
+
+/// Verifies a package that is already in memory and installs it: size limit, SHA-256 against the package's line in
+/// `sums` (a missing line refuses the package), the minimum version, then unpack, check and publish (see the module
+/// comment). Shared by the download and by an archive the player picked (TASK-158).
+pub fn install_package(
+    bytes: &[u8],
+    version: Version,
+    sums: &BTreeMap<String, String>,
+    root: &Path,
+    progress: &mut dyn FnMut(Step),
+) -> Result<Outcome, String> {
+    let package = package_name(version);
+    if bytes.len() as u64 > MAX_PACKAGE_BYTES {
         return Err(format!("{package} is larger than the limit"));
     }
-    if sha256_hex(&package_bytes) != *expected {
+    let expected = sums.get(&package).ok_or_else(|| format!("{CHECKSUM_ASSET} has no line for {package}"))?;
+    if sha256_hex(bytes) != *expected {
         return Err(format!("{package} does not match its SHA-256 (corrupt or changed download)"));
+    }
+    if version < MINIMUM_VERSION {
+        return Err(format!("{package} is older than the minimum {}", MINIMUM_VERSION.text()));
     }
 
     progress(Step::Installing);
@@ -186,11 +219,119 @@ pub fn install_latest_reporting(
     let staging = root.join(format!(".staging-{}", version.text()));
     guard::check_write(root, &staging)?;
     let _ = fs::remove_dir_all(&staging);
-    let result = stage_and_publish(&package_bytes, &staging, root, version, &sums);
+    let result = stage_and_publish(bytes, &staging, root, version, sums);
     if result.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }
     result
+}
+
+/// The version in a package file name `gt4-gs-<version>-windows-x64.zip`, exactly as the release names it (no extra
+/// text such as a browser's ` (1)`, no other case). `None` for any other name.
+pub fn parse_package_name(name: &str) -> Option<Version> {
+    let middle = name.strip_prefix("gt4-gs-")?.strip_suffix("-windows-x64.zip")?;
+    let version = Version::parse(middle)?;
+    (package_name(version) == name).then_some(version)
+}
+
+/// Why an archive picked by the player was refused (TASK-158). [`ArchiveProblem::message`] is the plain text to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArchiveProblem {
+    /// The file name is not `gt4-gs-<version>-windows-x64.zip`.
+    WrongName { name: String },
+    /// The version is below [`MINIMUM_VERSION`].
+    TooOld { version: Version },
+    /// The file is larger than [`MAX_PACKAGE_BYTES`].
+    TooLarge { name: String },
+    /// `SHA256SUMS` of the release could not be fetched, so nothing can be verified.
+    SumsUnavailable { reason: String },
+    /// `SHA256SUMS` has no line for the package.
+    NoEntry { name: String },
+    /// The file's SHA-256 is not the one in `SHA256SUMS`.
+    HashMismatch { name: String },
+    /// Anything else (unreadable file, no program inside, write problem).
+    Failed { reason: String },
+}
+
+impl ArchiveProblem {
+    /// The text in `language` (the locale keys `rust.gsdx_file.*`).
+    pub fn message(&self, language: crate::language::Language) -> String {
+        use crate::messages::render;
+        match self {
+            ArchiveProblem::WrongName { name } => render("gsdx_file.wrong_name", language, &[("name", name)]),
+            ArchiveProblem::TooOld { version } => {
+                render("gsdx_file.too_old", language, &[("version", &version.text()), ("minimum", &MINIMUM_VERSION.text())])
+            }
+            ArchiveProblem::TooLarge { name } => render("gsdx_file.too_large", language, &[("name", name)]),
+            ArchiveProblem::SumsUnavailable { reason } => render("gsdx_file.no_sums", language, &[("reason", reason)]),
+            ArchiveProblem::NoEntry { name } => render("gsdx_file.no_entry", language, &[("name", name)]),
+            ArchiveProblem::HashMismatch { name } => render("gsdx_file.hash_mismatch", language, &[("name", name)]),
+            ArchiveProblem::Failed { reason } => render("gsdx_file.failed", language, &[("reason", reason)]),
+        }
+    }
+}
+
+/// The version an archive file claims by its name, when the name and the version are acceptable (TASK-158).
+pub fn archive_version(path: &Path) -> Result<Version, ArchiveProblem> {
+    let name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+    let version = parse_package_name(&name).ok_or(ArchiveProblem::WrongName { name })?;
+    if version < MINIMUM_VERSION {
+        return Err(ArchiveProblem::TooOld { version });
+    }
+    Ok(version)
+}
+
+/// [`install_from_archive`] with the reason kept apart from its text.
+pub fn install_from_archive_checked(path: &Path, sums: &BTreeMap<String, String>, root: &Path) -> Result<Outcome, ArchiveProblem> {
+    let version = archive_version(path)?;
+    let name = package_name(version);
+    let expected = sums.get(&name).ok_or_else(|| ArchiveProblem::NoEntry { name: name.clone() })?;
+    let unreadable = |error: std::io::Error| ArchiveProblem::Failed { reason: format!("{}: {error}", path.display()) };
+    let length = fs::metadata(path).map_err(unreadable)?.len();
+    if length > MAX_PACKAGE_BYTES {
+        return Err(ArchiveProblem::TooLarge { name });
+    }
+    let bytes = fs::read(path).map_err(unreadable)?;
+    if sha256_hex(&bytes) != *expected {
+        return Err(ArchiveProblem::HashMismatch { name });
+    }
+    install_package(&bytes, version, sums, root, &mut |_| {}).map_err(|reason| ArchiveProblem::Failed { reason })
+}
+
+/// Installs a renderer package the player downloaded by hand. The version comes only from the exact file name
+/// `gt4-gs-<version>-windows-x64.zip`; the file is verified against `sums` (the `SHA256SUMS` of that release) exactly like a
+/// download, and an archive without a matching line is never installed.
+pub fn install_from_archive(path: &Path, sums: &BTreeMap<String, String>, root: &Path) -> Result<Outcome, String> {
+    install_from_archive_checked(path, sums, root).map_err(|problem| problem.message(crate::language::Language::fallback()))
+}
+
+/// The `SHA256SUMS` of the stable release `version`, through the release source. Without them nothing can be verified.
+pub fn fetch_release_sums(source: &dyn ReleaseSource, version: Version) -> Result<BTreeMap<String, String>, ArchiveProblem> {
+    let unavailable = |reason: String| ArchiveProblem::SumsUnavailable { reason };
+    let releases = parse_releases(&source.releases_json().map_err(unavailable)?, Stream::Renderer).map_err(unavailable)?;
+    let release = releases
+        .iter()
+        .find(|release| release.is_stable() && release.version == Some(version))
+        .ok_or_else(|| unavailable(format!("no release {} in {RELEASE_REPOSITORY}", version.text())))?;
+    let asset = release
+        .asset(CHECKSUM_ASSET)
+        .ok_or_else(|| unavailable(format!("release {} has no {CHECKSUM_ASSET}", release.tag)))?;
+    let text = source.download(&asset.url).map_err(unavailable)?;
+    Ok(parse_checksums(&String::from_utf8_lossy(&text)))
+}
+
+/// The whole "install from a file" flow: file name -> version, `SHA256SUMS` of that release from the source, verify, install.
+pub fn install_archive_with_release(
+    source: &dyn ReleaseSource,
+    path: &Path,
+    root: &Path,
+    progress: &mut dyn FnMut(Step),
+) -> Result<Outcome, ArchiveProblem> {
+    let version = archive_version(path)?;
+    progress(Step::Listing);
+    let sums = fetch_release_sums(source, version)?;
+    progress(Step::Installing);
+    install_from_archive_checked(path, &sums, root)
 }
 
 fn stage_and_publish(
@@ -210,6 +351,7 @@ fn stage_and_publish(
         }
     }
     fs::write(staging.join("sha256.txt"), format!("{actual}\n")).map_err(|error| error.to_string())?;
+    ensure_portable_marker(staging).map_err(|error| format!("{PORTABLE_MARKER}: {error}"))?;
 
     let target = version_directory(root, version);
     guard::check_write(root, &target)?;

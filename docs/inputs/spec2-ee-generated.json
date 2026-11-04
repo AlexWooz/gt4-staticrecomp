@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "schema": "spec2-ee-generated/1",
+  "input_elf": {
+    "path": "SCUS_974.36",
+    "size_bytes": 6520944,
+    "sha256": "36f60b1a989b343e98ca55b1f07f051aa83a3fa1a4fcb4acb409adb148afc640"
+  },
+  "translator": {
+    "path": "private/reference-acceleration-study/eerecomp.exe",
+    "size_bytes": 692224,
+    "sha256": "5aec705e31da349c941414fd54be264000459c3cb0d22727e7d810b5b24b03c0"
+  },
+  "command": "code 1332727 instructions (5205 KiB), functions 18597, entries 153474, rejected seeds 33; 346 units written to O:/gt4recomp-scratch/spec2-s8c-generated-clean",
+  "stats": "code 1332727 instructions (5205 KiB), functions 18597, entries 153474, rejected seeds 33",
+  "entry_seeds": {
+    "path": "entry-seeds.txt",
+    "sha256": "041c186448d75756a3fc4413c53e7c829b46bf13f83c699ca4a998734a35ec8a"
+  },
+  "files": 348,
+  "units": 346,
+  "inventory_sha256": "2d8c92a4ba05ba2c0be7cfce213479ee91c70142ba0353bf57959a73d5b8bca2",
+  "total_bytes": 93030717,
+  "notes": "Plain-ELF translation. S8c seeds (scripts/spec2_entry_seeds.py) cover wide lui/addiu text pointers (window 64), stack-frame fallthrough entries and literal pointers inside executable segments; the plugin segment is translated as code because it is an executable PT_LOAD."
+}

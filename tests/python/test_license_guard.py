@@ -25,6 +25,10 @@ ASSETS = Path(os.environ.get('GT4_ASSETS_ROOT', 'C:/Antigravity/gt4-staticrecomp
 DONOR_SRC = ASSETS / 'private/references/ps2-web-recomp/runtime/src'
 PIN = json.loads((ROOT / 'docs/inputs/slice206-license-guard-runtime.json').read_text(encoding='utf-8'))
 PIN_V1 = json.loads((ROOT / 'docs/inputs/slice205-license-guard-runtime.json').read_text(encoding='utf-8'))
+# TASK-100 S8b: the current guard overlay (per-target Manager add and body shift) is pinned by the slice277 capsule;
+# slice206 and slice262 stay the history of the earlier overlay text.
+PIN_S8B = json.loads((ROOT / 'docs/inputs/slice277-license-guard-runtime.json').read_text(encoding='utf-8'))
+PIN_262 = json.loads((ROOT / 'docs/inputs/slice262-license-guard-runtime.json').read_text(encoding='utf-8'))
 DONOR_EXCERPT = (
     '#include "ps2/generated.hpp"\n'
     '#include "ps2/system.hpp"\n'
@@ -60,7 +64,11 @@ class LicenseGuardDerivationTests(unittest.TestCase):
         self.assertEqual(PIN['license_guard_profile'], 'task017-guard-v2')
         self.assertEqual(PIN_V1['license_guard_profile'], 'task017-guard-v1')
         self.assertEqual(sorted(PIN['source_sha256']), list(guard.CAPSULE_FILES))
-        self.assertEqual(PIN['license_guard_overlay_sha256'], guard.overlay_sha256(guard.GUARD_OVERLAY_PATH))
+        # TASK-100 S8b: the current overlay text is pinned by slice277; the slice206/slice262 pins keep the older text.
+        self.assertEqual(PIN_S8B['license_guard_overlay_sha256'], guard.overlay_sha256(guard.GUARD_OVERLAY_PATH))
+        self.assertNotEqual(PIN['license_guard_overlay_sha256'], guard.overlay_sha256(guard.GUARD_OVERLAY_PATH))
+        self.assertNotEqual(PIN_262['license_guard_overlay_sha256'], guard.overlay_sha256(guard.GUARD_OVERLAY_PATH))
+        self.assertEqual(PIN_S8B['license_guard_profile'], PIN_262['license_guard_profile'])
 
     def test_fresh_derivation_matches_the_pin_when_the_donor_is_present(self):
         if not DONOR_SRC.exists():
@@ -71,19 +79,24 @@ class LicenseGuardDerivationTests(unittest.TestCase):
             for name in ('dispatch.cpp', 'kernel.cpp', 'iop/cdvdfsv.cpp'):
                 (donor / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(DONOR_SRC / name, donor / name)
-            receipt = guard.prepare(root / 'private/slice206-license-guard-runtime', root)
-            self.assertEqual(receipt['source_sha256'], PIN['source_sha256'])
+            receipt = guard.prepare(root / 'private/slice277-license-guard-runtime', root,
+                                    display_aspect=True, frame_counters=True)
+            self.assertEqual(receipt['source_sha256'], PIN_S8B['source_sha256'])
+            self.assertEqual(receipt['license_guard_overlay_sha256'], PIN_S8B['license_guard_overlay_sha256'])
             with self.assertRaises(ValueError):
-                guard.prepare(root / 'private/slice206-license-guard-runtime', root)
+                guard.prepare(root / 'private/slice277-license-guard-runtime', root,
+                              display_aspect=True, frame_counters=True)
             with self.assertRaises(ValueError):
                 guard.prepare(root / 'outside', root)
 
     def test_capsule_files_match_their_pins_when_present(self):
-        for pin in (PIN, PIN_V1):
-            capsule = ASSETS / pin['capsule']
+        for capsule_name, pin in (('slice205-license-guard-runtime', PIN_V1),
+                                  ('slice206-license-guard-runtime', PIN),
+                                  ('slice277-license-guard-runtime', PIN_S8B)):
+            capsule = ASSETS / 'private' / capsule_name
             if not capsule.exists():
                 continue
-            with self.subTest(capsule=pin['capsule']):
+            with self.subTest(capsule=capsule_name):
                 self.assertEqual(sorted(p.name for p in capsule.iterdir()),
                                  ['cdvdfsv.cpp', 'dispatch.cpp', 'kernel.cpp', 'runtime.json'])
                 for name, expected in pin['source_sha256'].items():
@@ -95,6 +108,10 @@ class LicenseGuardDerivationTests(unittest.TestCase):
         self.assertNotEqual(PIN['source_sha256']['dispatch.cpp'], PIN_V1['source_sha256']['dispatch.cpp'])
         for name in ('kernel.cpp', 'cdvdfsv.cpp'):
             self.assertEqual(PIN['source_sha256'][name], PIN_V1['source_sha256'][name], name)
+        # TASK-100 S8b moves only the guard overlay: the aspect and frame-counter files stay as slice262 pinned them.
+        for name in ('kernel.cpp', 'cdvdfsv.cpp'):
+            self.assertEqual(PIN_S8B['source_sha256'][name], PIN_262['source_sha256'][name], name)
+        self.assertNotEqual(PIN_S8B['source_sha256']['dispatch.cpp'], PIN_262['source_sha256']['dispatch.cpp'])
 
     def test_halt_dump_and_fsv_files_equal_the_slice204_capsule_derivation(self):
         if not DONOR_SRC.exists():
@@ -286,6 +303,62 @@ int main(int argc, char **argv) {
         result = self.run_harness('h')
         self.assertEqual(result.stdout.strip(), 'count=0x00000000 guarded=0')
         self.assertIn('header offset 0x44 size 0x1BB8 arg1 0x01D0E540 unexpected -> unchanged', result.stderr)
+
+
+@unittest.skipUnless(CLANG_CL.exists(), 'clang-cl is not installed')
+class LicenseGuardSpec2BehaviourTests(unittest.TestCase):
+    """TASK-100 S8b: the same overlay compiled with GT4_TARGET_SPEC2.
+
+    Spec II loader A returns to 0x0010CB54, the virtual is 0x002012C8 (loadDemoInputs), and the loader hands it a
+    pointer 0x80 into the body; the virtual adds 0x1A24, so the guard must write at body + 0x1AA4 (the Manager stream
+    the CRC-confirmed demos carry). Loader B returns to 0x0010CCE4.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        sections = perf.overlay_sections(guard.GUARD_OVERLAY_PATH.read_text(encoding='utf-8'),
+                                         guard.GUARD_OVERLAY_ANCHORS)
+        model = (LicenseGuardBehaviourTests.MODEL.replace('@HELPERS@', sections['helpers'])
+                 .replace('@HOOK@', sections['hook'])
+                 .replace('c.r[5].w[0] = body;', 'c.r[5].w[0] = body + 0x80u;')
+                 .replace('c.r[31].w[0] = 0x00110350u;', 'c.r[31].w[0] = 0x0010CB58u;'))
+        source = Path(cls.folder.name) / 'harness.cpp'
+        source.write_text(model, encoding='utf-8')
+        cls.exe = Path(cls.folder.name) / 'harness.exe'
+        subprocess.run([str(CLANG_CL), '/nologo', '/std:c++20', '/EHsc', '/W4', '/WX', '/DGT4_TARGET_SPEC2',
+                        '/I', str(ROOT / 'native'), str(source), str(ROOT / 'native/license_guard.cpp'),
+                        '/Fe:' + str(cls.exe)], check=True, capture_output=True, cwd=cls.folder.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.folder.cleanup()
+
+    def run_harness(self, scenario):
+        return subprocess.run([str(self.exe), scenario], capture_output=True, text=True, check=True)
+
+    def test_shifted_pointer_insane_count_is_guarded_at_the_manager(self):
+        result = self.run_harness('i')
+        self.assertEqual(result.stdout.strip(), 'count=0xFFFFFFFF guarded=1')
+        self.assertIn('[license-guard] loader 0x0010CA18 target 0x002012C8 demo 0x01D0E5C0', result.stderr)
+        self.assertIn('layout=bad count=0x7F7F7F7F -> skipped (count set to 0xFFFFFFFF, guarded load 1) '
+                      'manager 0x01D0FFE4', result.stderr)
+
+    def test_shifted_pointer_sane_layout_passes_unchanged(self):
+        result = self.run_harness('s')
+        self.assertEqual(result.stdout.strip(), 'count=0x00000000 guarded=0')
+        self.assertIn('[license-guard] loader 0x0010CA18 target 0x002012C8 demo 0x01D0E5C0', result.stderr)
+        self.assertIn('crc=fail layout=ok count=0x00000000 -> unchanged', result.stderr)
+
+    def test_second_spec2_loader_insane_count_is_guarded(self):
+        result = self.run_harness('r')
+        self.assertEqual(result.stdout.strip(), 'count=0xFFFFFFFF guarded=1')
+        self.assertIn('[license-guard] loader 0x0010CBA8 target 0x003D5F00 demo 0x01D0E5C0', result.stderr)
+
+    def test_another_return_address_is_silent(self):
+        result = self.run_harness('o')
+        self.assertEqual(result.stdout.strip(), 'count=0x00000000 guarded=0')
+        self.assertEqual(result.stderr, '')
 
 
 if __name__ == '__main__':

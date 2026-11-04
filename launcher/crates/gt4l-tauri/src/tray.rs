@@ -11,6 +11,7 @@
 //!   not go to the tray;
 //! - tray "Quit" is disabled while the game runs (and ignored if sent anyway).
 
+use gt4l_core::messages;
 use std::sync::Mutex;
 
 use serde_json::json;
@@ -165,7 +166,7 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: Event) {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-            let _ = app.emit("close-confirm", json!({ "message": "The game is running. Close the launcher anyway?" }));
+            let _ = app.emit("close-confirm", json!({ "message": gt4l_core::messages::text("tray.close_confirm", crate::state::current_language()) }));
         }
         Action::Exit => app.exit(0),
         Action::Ignore => {}
@@ -174,7 +175,7 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: Event) {
 
 /// Builds the tray icon and its menu, and manages the [`Control`]. Called once from the setup hook.
 pub fn install(app: &mut App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show launcher", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", gt4l_core::messages::text("tray.show", crate::state::current_language()), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = tauri::menu::Menu::with_items(app, &[&show, &quit])?;
     let mut builder = TrayIconBuilder::with_id("gt4recomp-tray")

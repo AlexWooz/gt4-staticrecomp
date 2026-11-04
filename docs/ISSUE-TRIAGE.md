@@ -86,3 +86,34 @@ version/reproduction details. No fix, completion date, closure or release was pr
 All five bodies and authors were reread after publication. A fresh open-issue query returned
 no issue without a moesuito comment. Follow-up reports on previously answered issues remain
 separate work; this does not mean every new comment has received another response.
+
+## Update 2026-11-04 (owner: close what is fixed, answer the control and feature requests)
+
+Closed as fixed, each with a note in the reporter's language:
+
+- For 1.3.0-rc12: #183 and #134 (trigger range, TASK-147), #178 (stick dead zone, TASK-147), #99 (flashing window and hang
+  exit, TASK-145 via TASK-127).
+- In published pre-releases: #191 (GT Auto bubbles, rc10, as #104), #185 (Spec II replays, rc10), #139 and #179 (GSdx missing,
+  Play offers CoreGS 2.0, rc10), #115 (no sound device, rc10), #123 (toggles with a controller, rc8), #132 (portable build,
+  rc7), #89 (integrated GPU start, rc5; the reporter races on rc6 in #112).
+
+Answered and left open: #161 (Xbox button icons: not planned, a texture pack can replace them), #88 (wheel and force
+feedback: planned after 1.3.0, no date), #128 (European release: not planned). 24 issues stay open.
+
+## Review of the open issues after 1.3.0-rc13 (2026-11-04)
+
+The 18 open issues and their six log bundles were reviewed against what each release fixed; replies were posted in the owner's
+name once rc13 was out.
+
+- **Closed:** #87 (cheats, not planned: each code patch must be mapped by hand in a recompiled game), #128 (PAL, not now),
+  #186 (duplicate of #189).
+- **AMD crashes on CoreGS 2.0** (#187 RX 6700 XT, #188 RX 6600, #189 RX 5700 XT, #190 RX 6700; rc8 to rc10): exit 0xC0000005
+  right after a stall, no error line, the shader step unfinished in most crashing launches. Asked to retest on rc13 (rc12 fixed
+  a thread-unsafe use of the command pool and swapchain, IN-536) with full logs and `logs\shaders.log`. #190's older
+  0xCFFFFFFF closes are the "not responding" bug fixed in rc12 (TASK-145).
+- **Needs information:** #107 (0xC0000135, a DLL failed to load before any game log; the game's DLLs all ship with it),
+  #126 (no data), #181 (images only).
+- **Retest asked:** #112 (CoreGS 2.0 and the frame-rate modes on an i3 UHD), #184 (photo mode: flicker fixed in rc13, frame
+  times are TASK-162).
+- **Open as requests:** #97 (weak hardware; HD 4000 has no Vulkan 1.2), #88 (TASK-018, TASK-123), #92, #135 (TASK-163),
+  #160 (TASK-164, in rc14), #161 (TASK-165).

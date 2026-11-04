@@ -1,0 +1,468 @@
+................................................................GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmp2u648w7r\owner\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmp2u648w7r\owner\private\manual-play\session-20261027-015248-060961
+.........ss...........................s..........................................................................................s.......s.GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmprgx6uobj\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmprgx6uobj\private\manual-play\session-20261027-015258-497398
+Measurement mode: gs-async
+Performance test: F7 starts, F8 reports, F9 toggles diagnostics. Owner controls gameplay.
+VU1 verify: every 50th generated call is compared with the interpreter; mismatches go to the session log.
+......FAIL: --vu1-verify and --vu1-interpret-only require --mode vu1-aot, gs-async, pacing, vu1-flags, vu1-full, quickfix, vu1-all, quickfix2, quickfix3, vu0-aot, main or mtvu-measure
+FAIL: --vu1-verify and --vu1-interpret-only require --mode vu1-aot, gs-async, pacing, vu1-flags, vu1-full, quickfix, vu1-all, quickfix2, quickfix3, vu0-aot, main or mtvu-measure
+FAIL: --vu1-verify takes a positive N
+FAIL: --vu1-verify compares against the AOT path; it cannot be combined with --vu1-interpret-only
+.....s..s......F..FAIL: --gs-scale takes 1..12 and requires --mode pcsx2
+FAIL: --gs-scale takes 1..12 and requires --mode pcsx2
+.......s.sss.....s.......s.....s...........FFFFF....FFFF.....FAIL: --gs-resolution requires --mode pcsx2
+FAIL: --gs-resolution and --gs-scale both set the internal resolution
+FAIL: --gs-scale (or --gs-resolution) and --gs-setting upscale=... both set the internal resolution
+...FAIL: --gs-setting requires --mode pcsx2
+FAIL: unknown GS setting 'nope' (ids are in docs/launcher/gs-settings.toml)
+FAIL: upscale must be one of 1080p, 10x, 11x, 1440p, 480p, 4K, 5x, 720p, 7x, 8K, 8x, 9x, got '13'
+FAIL: unknown GS setting 'gt4_readback' (ids are in docs/launcher/gs-settings.toml)
+FAIL: --gs-readback and --gs-setting performance_mode=... both set the readback mode
+FAIL: --gs-scale (or --gs-resolution) and --gs-setting upscale=... both set the internal resolution
+...........F.....F..F...........................s......s.s..s.s..s.....FAIL: --gs-readback requires --mode pcsx2
+....frames 2: adjacent 4.350 alternate 8.577 comb 0.507 flicker mean 0.000 max 0.000
+GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmppx2z0woh\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmppx2z0woh\private\manual-play\session-20261027-015300-586802
+GS: PCSX2 GS process, readback mode accurate, scale 3x.
+.GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpyv3acfhh\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpyv3acfhh\private\manual-play\session-20261027-015300-590045
+GS: PCSX2 GS process, readback mode accurate, scale 3x.
+GS process stopped; restarting with the built-in renderer (CoreGS 1.1). Previous log: C:\Users\Alano\AppData\Local\Temp\tmpyv3acfhh\private\manual-play\session-20261027-015300-590045
+GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpyv3acfhh\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpyv3acfhh\private\manual-play\session-20261027-015300-591638
+Restart with the built-in renderer (CoreGS 1.1) after the GS process stopped.
+......................................................................................................................ss...................................................ssssss.........ss..GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpu0jm2mg2\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpu0jm2mg2\private\manual-play\session-20261027-015315-123654
+GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpu0jm2mg2\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpu0jm2mg2\private\manual-play\session-20261027-015315-130561
+..s.usage: python.exe -m unittest [-h] [--frames FRAMES] [--timeout TIMEOUT]
+                              [--press PRESS] [--card-seed CARD_SEED]
+                              [--runtime-manifest RUNTIME_MANIFEST] [--window]
+                              [--capture-audio] [--interactive]
+                              [--controls CONTROLS] [--force-480p]
+                              [--assets-root ASSETS_ROOT]
+                              [--play-card PLAY_CARD]
+                              run_directory
+python.exe -m unittest: error: unrecognized arguments: --aspect 4:3
+..........s.....FAIL: --vu1-verify and --vu1-interpret-only require --mode vu1-aot, gs-async, pacing, vu1-flags, vu1-full, quickfix, vu1-all, quickfix2, quickfix3, vu0-aot, main or mtvu-measure
+.....GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Separate test card (--play-card); the owner card is not used: C:\Users\Alano\AppData\Local\Temp\tmpv3fqjm5q\private\test-cards\gt4-100pct.ps2
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpv3fqjm5q\private\test-cards\gt4-100pct.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpv3fqjm5q\private\manual-play\session-20261027-015322-522928
+.GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpovuuas_c\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpovuuas_c\private\manual-play\session-20261027-015322-553732
+..........GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpnzvm14gt\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpnzvm14gt\private\manual-play\session-20261027-015322-865733
+Measurement mode: vu-split
+Performance test: F7 starts, F8 reports, F9 toggles diagnostics. Owner controls gameplay.
+VU1 recording: missed programs go to C:\Users\Alano\AppData\Local\Temp\tmpnzvm14gt\private\manual-play\session-20261027-015322-865733\vu1-corpus
+Summary is written when the game exits. Owner controls gameplay.
+GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpnzvm14gt\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpnzvm14gt\private\manual-play\session-20261027-015322-868399
+Measurement mode: vu-split
+Performance test: F7 starts, F8 reports, F9 toggles diagnostics. Owner controls gameplay.
+....GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmp8n5y6ngx\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmp8n5y6ngx\private\manual-play\session-20261027-015322-968879
+Capture starts OFF. Select the scene yourself, then press F8 to start/stop.
+One capture per launch, up to 256 records: C:\Users\Alano\AppData\Local\Temp\tmp8n5y6ngx\private\manual-play\session-20261027-015322-968879\shape-capture.json
+.usage: python.exe -m unittest [-h] --assets-root ASSETS_ROOT
+python.exe -m unittest: error: unrecognized arguments: --aspect 4:3
+..sssssss.s....ss.....s...............s...............................sssssss..FAIL: [Errno 2] No such file or directory: 'C:\\Users\\Alano\\AppData\\Local\\Temp\\tmpo52vfun0\\missing.elf'
+..FAIL: [Errno 17] File exists: 'C:\\Users\\Alano\\AppData\\Local\\Temp\\tmp5n0xtbkw\\entries.txt'
+......vu0-image: pin verified 2d7b26535008f1b3402ba70e8365cae749e64079eb32381d6853612abc896d44
+vu0-entries: 14 vcallms entries, sha256=2f5ac510cda32588c706b550a2ef1181537296d258039709180d7909a251471e
+GT4 experimental: audio + XInput. Close window to exit.
+Keyboard: Enter starts, arrow keys steer, Z accelerates, A brakes; S returns in options.
+Display: 16:9 fixed. Alt+Enter or F11 toggles borderless fullscreen.
+Local save: C:\Users\Alano\AppData\Local\Temp\tmpslncfuqg\private\manual-play\card.ps2
+Session log: C:\Users\Alano\AppData\Local\Temp\tmpslncfuqg\private\manual-play\session-20261027-015328-161159
+Measurement mode: vu1-aot
+Performance test: F7 starts, F8 reports, F9 toggles diagnostics. Owner controls gameplay.
+VU1 verify: every 50th generated call is compared with the interpreter; mismatches go to the session log.
+.....FAIL: --vu1-verify and --vu1-interpret-only require --mode vu1-aot, gs-async, pacing, vu1-flags, vu1-full, quickfix, vu1-all, quickfix2, quickfix3, vu0-aot, main or mtvu-measure
+FAIL: --vu1-verify and --vu1-interpret-only require --mode vu1-aot, gs-async, pacing, vu1-flags, vu1-full, quickfix, vu1-all, quickfix2, quickfix3, vu0-aot, main or mtvu-measure
+FAIL: --vu1-verify takes a positive N
+FAIL: --vu1-verify compares against the AOT path; it cannot be combined with --vu1-interpret-only
+.............sss...s.
+======================================================================
+FAIL: test_defaults_are_vulkan_3x_high_blending_automatic_deinterlace_16_9_vsync (test_gs_live.ConfigTests.test_defaults_are_vulkan_3x_high_blending_automatic_deinterlace_16_9_vsync)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_live.py", line 42, in test_defaults_are_vulkan_3x_high_blending_automatic_deinterlace_16_9_vsync
+    self.assertEqual(text.splitlines()[1:], [
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+        '[EmuCore/GS]', 'Renderer = 14', 'upscale_multiplier = 3', 'accurate_blending_unit = 3',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        'LoadTextureReplacements = true', '', '[GT4GS]',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'ProhibitDynamicCode = false'])  # slice194 (TASK-037): readback mode accurate by default; TASK-064: ACG off
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['[Em[315 chars]e', 'LoadTextureReplacementsAsync = true', '',[37 chars]lse'] != ['[Em[315 chars]e', '', '[GT4GS]', 'ProhibitDynamicCode = false']
+
+First differing element 13:
+'LoadTextureReplacementsAsync = true'
+''
+
+First list contains 1 additional elements.
+First extra element 16:
+'ProhibitDynamicCode = false'
+
+  ['[EmuCore/GS]',
+   'Renderer = 14',
+   'upscale_multiplier = 3',
+   'accurate_blending_unit = 3',
+   'deinterlace_mode = 0',
+   'AspectRatio = 16:9',
+   'VsyncEnable = true',
+   'DisableMailboxPresentation = true',
+   'HWDownloadMode = 0',
+   'OsdShowFPS = false',
+   'OsdShowGPU = false',
+   'OsdShowResolution = false',
+   'LoadTextureReplacements = true',
+-  'LoadTextureReplacementsAsync = true',
+   '',
+   '[GT4GS]',
+   'ProhibitDynamicCode = false']
+
+======================================================================
+FAIL: test_cache_and_headless_sections_are_unchanged (test_gs_settings.DefaultTests.test_cache_and_headless_sections_are_unchanged)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 151, in test_cache_and_headless_sections_are_unchanged
+    self.assertEqual(probe.gs_config_text({}, None, 'C:/cache'), LEGACY_CACHE)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '; gt[375 chars]rue\nLoadTextureReplacementsAsync = true\n\n[F[63 chars]se\n' != '; gt[375 chars]rue\n\n[Folders]\nCache = C:/cache\n\n[GT4GS]\[26 chars]se\n'
+  ; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-036 minimal settings)
+  [EmuCore/GS]
+  Renderer = 14
+  upscale_multiplier = 3
+  accurate_blending_unit = 3
+  deinterlace_mode = 0
+  AspectRatio = 16:9
+  VsyncEnable = true
+  DisableMailboxPresentation = true
+  HWDownloadMode = 0
+  OsdShowFPS = false
+  OsdShowGPU = false
+  OsdShowResolution = false
+  LoadTextureReplacements = true
+- LoadTextureReplacementsAsync = true
+  
+  [Folders]
+  Cache = C:/cache
+  
+  [GT4GS]
+  ProhibitDynamicCode = false
+
+
+======================================================================
+FAIL: test_default_file_bytes_match_the_main_writer (test_gs_settings.DefaultTests.test_default_file_bytes_match_the_main_writer)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 174, in test_default_file_bytes_match_the_main_writer
+    self.assertEqual(target.read_bytes(), (LEGACY_RUN.replace('\n', os.linesep)).encode('utf-8'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: b'; g[404 chars]e\r\nLoadTextureReplacementsAsync = true\r\n\r[99 chars]\r\n' != b'; g[404 chars]e\r\n\r\n[Folders]\r\nCache = C:/cache\r\n\r\n[60 chars]\r\n'
+
+======================================================================
+FAIL: test_default_ini_is_main_default (test_gs_settings.DefaultTests.test_default_ini_is_main_default)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 143, in test_default_ini_is_main_default
+    self.assertEqual(gs_settings.render_ini(rows()), LEGACY_DEFAULT)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '; gt[375 chars]rue\nLoadTextureReplacementsAsync = true\n\n[G[32 chars]se\n' != '; gt[375 chars]rue\n\n[GT4GS]\nProhibitDynamicCode = false\n'
+  ; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-036 minimal settings)
+  [EmuCore/GS]
+  Renderer = 14
+  upscale_multiplier = 3
+  accurate_blending_unit = 3
+  deinterlace_mode = 0
+  AspectRatio = 16:9
+  VsyncEnable = true
+  DisableMailboxPresentation = true
+  HWDownloadMode = 0
+  OsdShowFPS = false
+  OsdShowGPU = false
+  OsdShowResolution = false
+  LoadTextureReplacements = true
+- LoadTextureReplacementsAsync = true
+  
+  [GT4GS]
+  ProhibitDynamicCode = false
+
+
+======================================================================
+FAIL: test_probe_default_is_unchanged (test_gs_settings.DefaultTests.test_probe_default_is_unchanged)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 146, in test_probe_default_is_unchanged
+    self.assertEqual(probe.gs_config_text({}), LEGACY_DEFAULT)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '; gt[375 chars]rue\nLoadTextureReplacementsAsync = true\n\n[G[32 chars]se\n' != '; gt[375 chars]rue\n\n[GT4GS]\nProhibitDynamicCode = false\n'
+  ; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-036 minimal settings)
+  [EmuCore/GS]
+  Renderer = 14
+  upscale_multiplier = 3
+  accurate_blending_unit = 3
+  deinterlace_mode = 0
+  AspectRatio = 16:9
+  VsyncEnable = true
+  DisableMailboxPresentation = true
+  HWDownloadMode = 0
+  OsdShowFPS = false
+  OsdShowGPU = false
+  OsdShowResolution = false
+  LoadTextureReplacements = true
+- LoadTextureReplacementsAsync = true
+  
+  [GT4GS]
+  ProhibitDynamicCode = false
+
+
+======================================================================
+FAIL: test_run_text_with_data_root_and_eager_switch (test_gs_settings.DefaultTests.test_run_text_with_data_root_and_eager_switch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 163, in test_run_text_with_data_root_and_eager_switch
+    self.assertEqual(probe.gs_config_text({}, None, 'C:/cache', 'C:/data'), LEGACY_RUN)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '; gt[375 chars]rue\nLoadTextureReplacementsAsync = true\n\n[F[83 chars]se\n' != '; gt[375 chars]rue\n\n[Folders]\nCache = C:/cache\n\n[GT4GS]\[46 chars]se\n'
+  ; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-036 minimal settings)
+  [EmuCore/GS]
+  Renderer = 14
+  upscale_multiplier = 3
+  accurate_blending_unit = 3
+  deinterlace_mode = 0
+  AspectRatio = 16:9
+  VsyncEnable = true
+  DisableMailboxPresentation = true
+  HWDownloadMode = 0
+  OsdShowFPS = false
+  OsdShowGPU = false
+  OsdShowResolution = false
+  LoadTextureReplacements = true
+- LoadTextureReplacementsAsync = true
+  
+  [Folders]
+  Cache = C:/cache
+  
+  [GT4GS]
+  DataRoot = C:/data
+  ProhibitDynamicCode = false
+
+
+======================================================================
+FAIL: test_user_settings_replace_defaults_and_add_when_set_rows (test_gs_settings.IniTests.test_user_settings_replace_defaults_and_add_when_set_rows)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 280, in test_user_settings_replace_defaults_and_add_when_set_rows
+    self.assertEqual(text.splitlines(), [
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+        gs_settings.INI_HEADER, '[EmuCore/GS]', 'Renderer = 14', 'upscale_multiplier = 6',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        'OsdShowGPU = false', 'OsdShowResolution = false', 'LoadTextureReplacements = true', '', '[GT4GS]',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'ProhibitDynamicCode = false'])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['; g[419 chars]e', 'LoadTextureReplacementsAsync = true', '',[37 chars]lse'] != ['; g[419 chars]e', '', '[GT4GS]', 'ProhibitDynamicCode = false']
+
+First differing element 15:
+'LoadTextureReplacementsAsync = true'
+''
+
+First list contains 1 additional elements.
+First extra element 18:
+'ProhibitDynamicCode = false'
+
+  ['; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-036 minimal '
+   'settings)',
+   '[EmuCore/GS]',
+   'Renderer = 14',
+   'upscale_multiplier = 6',
+   'accurate_blending_unit = 3',
+   'deinterlace_mode = 0',
+   'AspectRatio = 16:9',
+   'VsyncEnable = true',
+   'DisableMailboxPresentation = true',
+   'HWDownloadMode = 0',
+   'fxaa = true',
+   'OsdShowFPS = false',
+   'OsdShowGPU = false',
+   'OsdShowResolution = false',
+   'LoadTextureReplacements = true',
+-  'LoadTextureReplacementsAsync = true',
+   '',
+   '[GT4GS]',
+   'ProhibitDynamicCode = false']
+
+======================================================================
+FAIL: test_launcher_offers_only_settable_options (test_gs_settings.OfferedTests.test_launcher_offers_only_settable_options)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 358, in test_launcher_offers_only_settable_options
+    self.assertTrue({'graphics_api', 'vsync', 'deinterlace', 'blending', 'fxaa'} <= offered)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_overlay_rows_are_advanced_toggles_off_by_default (test_gs_settings.OsdRowTests.test_overlay_rows_are_advanced_toggles_off_by_default)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 693, in test_overlay_rows_are_advanced_toggles_off_by_default
+    self.assertEqual((row['page'], row['control'], row['section'], row['key'], row['default'], row['written'],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      row['status']),
+                      ^^^^^^^^^^^^^^^
+                     ('advanced', 'toggle', 'GT4GS', key, default, 'when-set', 'ok'), identifier)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Tuples differ: ('hidden', 'toggle', 'GT4GS', 'PerfOverlayFPS', 'true', 'when-set', 'ok') != ('advanced', 'toggle', 'GT4GS', 'PerfOverlayFPS', 'true', 'when-set', 'ok')
+
+First differing element 0:
+'hidden'
+'advanced'
+
+- ('hidden', 'toggle', 'GT4GS', 'PerfOverlayFPS', 'true', 'when-set', 'ok')
+?   ^^  --
+
++ ('advanced', 'toggle', 'GT4GS', 'PerfOverlayFPS', 'true', 'when-set', 'ok')
+?   ^ +++++
+ : perf_overlay_fps
+
+======================================================================
+FAIL: test_advanced_page_holds_the_rest_of_the_user_options (test_gs_settings.PageLayoutTests.test_advanced_page_holds_the_rest_of_the_user_options)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 612, in test_advanced_page_holds_the_rest_of_the_user_options
+    self.assertEqual(len(advanced), 40)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+AssertionError: 5 != 40
+
+======================================================================
+FAIL: test_row_is_an_advanced_always_written_switch_defaulting_to_false (test_gs_settings.ProhibitDynamicCodeTests.test_row_is_an_advanced_always_written_switch_defaulting_to_false)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 711, in test_row_is_an_advanced_always_written_switch_defaulting_to_false
+    self.assertEqual((row['page'], row['order'], row['control'], row['type'], row['section'], row['key'],
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      row['default'], row['written'], row['status']),
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     ('advanced', 39, 'toggle', 'bool', 'GT4GS', 'ProhibitDynamicCode', 'false', 'always', 'ok'))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Tuples differ: ('hidden', 55, 'toggle', 'bool', 'GT4GS', '[41 chars]'ok') != ('advanced', 39, 'toggle', 'bool', 'GT4GS',[43 chars]'ok')
+
+First differing element 0:
+'hidden'
+'advanced'
+
+- ('hidden',
+-  55,
++ ('advanced',
++  39,
+   'toggle',
+   'bool',
+   'GT4GS',
+   'ProhibitDynamicCode',
+   'false',
+   'always',
+   'ok')
+
+======================================================================
+FAIL: test_reset_gives_the_exact_default_ini (test_gs_settings.ResetToDefaultsTests.test_reset_gives_the_exact_default_ini)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 647, in test_reset_gives_the_exact_default_ini
+    self.assertEqual(gs_settings.render_ini(rows(), settings), LEGACY_DEFAULT)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '; gt[375 chars]rue\nLoadTextureReplacementsAsync = true\n\n[G[32 chars]se\n' != '; gt[375 chars]rue\n\n[GT4GS]\nProhibitDynamicCode = false\n'
+  ; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-036 minimal settings)
+  [EmuCore/GS]
+  Renderer = 14
+  upscale_multiplier = 3
+  accurate_blending_unit = 3
+  deinterlace_mode = 0
+  AspectRatio = 16:9
+  VsyncEnable = true
+  DisableMailboxPresentation = true
+  HWDownloadMode = 0
+  OsdShowFPS = false
+  OsdShowGPU = false
+  OsdShowResolution = false
+  LoadTextureReplacements = true
+- LoadTextureReplacementsAsync = true
+  
+  [GT4GS]
+  ProhibitDynamicCode = false
+
+
+======================================================================
+FAIL: test_when_set_row_equal_to_its_default_is_not_written (test_gs_settings.ResetToDefaultsTests.test_when_set_row_equal_to_its_default_is_not_written)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Antigravity\gt4-wt-133-rc7-ra-controls\tests\python\test_gs_settings.py", line 667, in test_when_set_row_equal_to_its_default_is_not_written
+    self.assertEqual(text, LEGACY_DEFAULT)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '; gt[375 chars]rue\nLoadTextureReplacementsAsync = true\n\n[G[32 chars]se\n' != '; gt[375 chars]rue\n\n[GT4GS]\nProhibitDynamicCode = false\n'
+  ; gt4-gs.ini written by scripts/external_runtime_probe.py (TASK-036 minimal settings)
+  [EmuCore/GS]
+  Renderer = 14
+  upscale_multiplier = 3
+  accurate_blending_unit = 3
+  deinterlace_mode = 0
+  AspectRatio = 16:9
+  VsyncEnable = true
+  DisableMailboxPresentation = true
+  HWDownloadMode = 0
+  OsdShowFPS = false
+  OsdShowGPU = false
+  OsdShowResolution = false
+  LoadTextureReplacements = true
+- LoadTextureReplacementsAsync = true
+  
+  [GT4GS]
+  ProhibitDynamicCode = false
+
+
+----------------------------------------------------------------------
+Ran 710 tests in 43.469s
+
+FAILED (failures=13, skipped=55)

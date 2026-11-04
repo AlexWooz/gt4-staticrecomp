@@ -8,10 +8,14 @@
 // Only the EE thread calls the EE entry points; the worker calls worker_gif() and the Donor worker callbacks.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
 namespace gt4::mtvu {
+
+class SpscByteRing;
+class Doorbell;
 
 struct Settings {
   bool enabled = true;  // GT4_MTVU: worker thread and shadow VIF1 (default on; 0 restores the single-thread path)
@@ -67,6 +71,25 @@ bool queue_privileged(std::uint32_t address, std::uint64_t value);
 // EE wait of the last blocking gs_privileged sync in microseconds, then 0 (per-register accounting).
 std::uint64_t take_privileged_wait_us();
 
+// TASK-116 step 1 (rc6): the download sync without the VU1 drain. In pcsx2 mode with Performance mode on, the per-frame
+// flare readback is answered locally, so sync("download") only closes the VIF1 batch and returns; the READ_FIFO that
+// follows is queued in the journal (queue_readback) and posted at its stream position without waiting, and the blocking
+// drain runs only for the readbacks that still need accurate data (drain_download) or at the VBlank. Every pointer
+// starts null: with nothing registered sync("download") drains exactly as before (donor mode, CoreGS 1.1).
+struct DownloadOrdering {
+  // EE thread: true when the readback that follows is answered locally by the GS stream.
+  bool (*defer)() = nullptr;
+  // EE thread: posts the queued READ_FIFO at its journal position (no wait for the reply).
+  void (*post_readback)(std::uint32_t qwords) = nullptr;
+};
+void set_download_ordering(const DownloadOrdering &ordering);
+// EE thread: queues a READ_FIFO behind the journal entries already queued. False when the worker does not run or the
+// consumer is not registered: the caller then takes the accurate path.
+bool queue_readback(std::uint32_t qwords);
+// EE thread: the blocking drain a readback that needs accurate data performs before its READ_FIFO. No-op when the
+// journal is empty (nothing deferred); counted as "download" for the F8 report.
+void drain_download();
+
 // Donor operations. The worker callbacks run on the worker thread; render_gs runs on the EE thread.
 // Every callback starts null (1.2.2 bug, TASK-092): donor mode never sets post_vsync, and an uninitialised pointer
 // sent vblank_sync into the TASK-084 deferred path and a call through stack garbage at the first VBlank.
@@ -83,6 +106,12 @@ struct Donor {
   // Returns false when no VSYNC was held. Called from the journal drain, so the record lands after the frame's GIF
   // output in stream order.
   bool (*post_vsync)() = nullptr;
+  // IN-461 (CPU survey T3, direct GS intake; hw renderer only): true when a GS consumer in this process can read the
+  // worker's output ring itself. Asked once, at start.
+  bool (*direct_gs_available)() = nullptr;
+  // IN-461: puts job `job` at this point of the GS stream; the consumer then reads that job's records from `output`
+  // (waiting on `bell`) up to its JobDone. EE thread, at the job's program position.
+  void (*post_gs_job)(std::uint64_t job, SpscByteRing &output, Doorbell &bell) = nullptr;
 };
 
 // Starts the worker when settings.enabled (EE thread, before emulation). Verify hashing works either way.
@@ -101,6 +130,13 @@ std::uint64_t worker_busy_us();
 
 // EE entry points (no-ops when not enabled, except gif_transfer which renders directly).
 void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc);
+// IN-522: the guest memory of a table the GS worker will write (`ticket` in the GS stream). A VIF packet copied from it gets the
+// fresh words on the VU1 worker, before it runs. `wait_copy` waits for that read and copies part of its table.
+void note_deferred_table(const std::uint8_t *dest, std::size_t bytes, std::uint64_t ticket);
+using DeferredTableCopy = void (*)(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out);
+void set_deferred_table_copy(DeferredTableCopy copy);
+std::uint64_t deferred_table_patches();  // VIF packets given fresh words so far
+bool direct_gs_intake();  // VU1 jobs run on the worker and the GS worker reads their output itself
 // TASK-084 step 1: closes the pending VIF1 batch and posts it as one job. Called by the DMA chain end, a VIF1 stall,
 // and before any other journal or sync operation; a no-op when nothing is batched or GT4_MTVU_CHAIN=0.
 void flush_vif_chain();

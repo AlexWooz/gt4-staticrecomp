@@ -246,6 +246,35 @@ void check_readback_and_frames() {
               static_cast<unsigned long long>(producer->wait_totals().frames_waits));
 }
 
+// TASK-116 step 1: a READ_FIFO posted without waiting, then collected by request id. The record is the one read_fifo
+// posts (same payload, same id sequence), so the stream bytes and the hash do not change; only the wait moves.
+void check_readback_nowait() {
+  auto producer = Session::create_producer(small_options(16384));
+  auto consumer = Session::open_consumer(producer->name());
+  std::thread server([&] { serve(*consumer, 0, 3); });
+  std::vector<std::uint8_t> reply(16384);
+  for (std::uint32_t n = 0; n < 6; ++n) {
+    const std::uint32_t qwords = 4 + n * 11;
+    const std::uint64_t id = producer->post_read_fifo_nowait(qwords);
+    require(id == producer->control().readback_request, "a no-wait post advances the request id");
+    for (int spin = 0; spin < 5000 && producer->control().readback_done < id; ++spin) Sleep(1);
+    require(producer->readback_reply(id, reply.data(), qwords), "the reply of the no-wait request is collected");
+    require(producer->readback_status() == kReadbackOk, "no-wait readback status");
+    for (std::uint64_t i = 0; i < std::uint64_t(qwords) * 16; ++i)
+      require(reply[i] == pattern(id, i), "no-wait readback bytes");
+    // Only the reply that is still in the response area is returned.
+    require(!producer->readback_reply(id - 1, reply.data(), qwords), "an older reply id is not returned");
+    require(!producer->readback_reply(id + 1, reply.data(), qwords), "a not-yet-posted reply id is not returned");
+  }
+  post_shutdown(*producer);
+  server.join();
+  RecordView event;
+  require(producer->wait_event(event, 1000) && event.header->type == static_cast<std::uint16_t>(RecordType::exiting),
+          "EXITING event after no-wait readbacks");
+  producer->events_in().release(event);
+  std::printf("[gs-stream-ipc] no-wait readbacks: 6 posted and collected by id, ok\n");
+}
+
 // Auto-reset events left signalled from earlier waits wake a sleeper with nothing to do; it must sleep again.
 void check_spurious_wakes() {
   auto producer = Session::create_producer(small_options(8192));
@@ -502,6 +531,7 @@ int main(int argc, char **argv) {
     check_layout();
     check_split();
     check_readback_and_frames();
+    check_readback_nowait();
     check_spurious_wakes();
     check_wake_batching();
     check_fatal_flag();

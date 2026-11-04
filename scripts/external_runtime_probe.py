@@ -125,8 +125,12 @@ PERF_PROFILES = {
     # TASK-084 (release 1.2.2): the slice240 recipe with the frame-cost runtime (instrumentation, VIF1 chain jobs, GIF
     # fast path, VBlank journal). Kept as history; mode pcsx2 now points at the release 1.2.3 build.
     'pcsx2-slice262': ('slice262-pcsx2.json', 'private/slice262-build/build/gt4vulkan.exe'),
-    # TASK-120: stable 1.2.4 slice1190 inputs with reviewed controller curves and standardized SDL3 trigger handling.
-    'pcsx2': ('slice1200-pcsx2.json', 'private/slice1200-dualsense-build/build/gt4vulkan.exe'),
+    # TASK-092 (release 1.2.3): slice262 plus the MTVU test-switch fixes and null Donor callbacks (the 1.2.2 CoreGS 1.1
+    # crash). Kept as history after the 1.3.0 release (TASK-100/TASK-101).
+    'pcsx2-slice268': ('slice268-pcsx2.json', 'private/slice268-build/build/gt4vulkan.exe'),
+    # TASK-100/TASK-101 (release 1.3.0): the task/101-multi-game source with the standalone start (TASK-097), the
+    # target-aware hooks and both games; v2.00 release build, slice262 capsules, gt4-gs 1.2.1.
+    'pcsx2': ('slice279-pcsx2.json', 'private/slice279-build/build/gt4vulkan.exe'),
     # TASK-080 addendum (slice218): the slice217 build plus the seamless display host code (GT4_OUTPUT_SIZE gives the
     # auto aspect, GT4_MONITOR the monitor, per-monitor DPI awareness).
     'pcsx2-slice218': ('slice218-pcsx2.json', 'private/slice218-build/build/gt4vulkan.exe'),
@@ -167,6 +171,10 @@ PERF_PROFILES = {
     # docs/inputs/slice208-ee-entries.txt; library profile coverage). History mode: mode pcsx2 is slice209 (same library).
     'pcsx2-coverage': ('slice208-pcsx2.json', 'private/slice208-build/build/gt4vulkan.exe'),
 }
+# TASK-100/TASK-101 (release 1.3.0): the Spec II game build. The launcher starts it with the Spec II disc and the derived
+# ELF (launcher gt4l-disc spec2.rs); the v2.00 probe modes do not run it. This constant keeps the release pin and the
+# executable in one place for the release tests.
+SPEC2_RELEASE = ('slice280-spec2.json', 'private/slice280-build/build/gt4vulkan-spec2.exe')
 GS_ASYNC_MANIFEST = 'slice152-gs-async.json'
 PACING_MANIFEST = 'slice153-pacing.json'
 # Manifests whose binaries accept the VU1 AOT verification and interpreter options.
@@ -182,7 +190,7 @@ VU1_AOT_MANIFESTS = ('slice151-vu1-aot.json', GS_ASYNC_MANIFEST, PACING_MANIFEST
                      'slice212b-pcsx2.json',
                      'slice214-pcsx2.json', 'slice215-pcsx2.json', 'slice217-pcsx2.json', 'slice218-pcsx2.json',
                      'slice240-pcsx2.json', 'slice260-pcsx2.json', 'slice262-pcsx2.json',
-                     'slice268-pcsx2.json', 'slice1190-pcsx2.json', 'slice1200-pcsx2.json')
+                     'slice268-pcsx2.json', 'slice279-pcsx2.json')
 # Manifests whose binaries contain the VU0 AOT table and accept --vu0-verify.
 VU0_AOT_MANIFESTS = ('slice160-vu0-aot.json', 'slice166-main.json', 'slice169-mtvu-measure.json', 'slice170-mtvu.json',
                      'slice171-mtvu.json', 'slice172-mtvu.json', 'slice178-main.json', 'slice191-pcsx2-stream.json',
@@ -194,7 +202,7 @@ VU0_AOT_MANIFESTS = ('slice160-vu0-aot.json', 'slice166-main.json', 'slice169-mt
                      'slice212b-pcsx2.json',
                      'slice214-pcsx2.json', 'slice215-pcsx2.json', 'slice217-pcsx2.json', 'slice218-pcsx2.json',
                      'slice240-pcsx2.json', 'slice260-pcsx2.json', 'slice262-pcsx2.json',
-                     'slice268-pcsx2.json', 'slice1190-pcsx2.json', 'slice1200-pcsx2.json')
+                     'slice268-pcsx2.json', 'slice279-pcsx2.json')
 # Host pacing overrides, forwarded unchanged and recorded in run evidence.
 PACING_OVERRIDES = {'GT4_PACING': ('paced', 'audio'),
                     'GT4_PRESENT_MODE': ('fifo', 'mailbox', 'immediate')}
@@ -303,7 +311,11 @@ GS_STREAM_NAMES = ('GT4_RENDERER', 'GT4_GS_PROCESS', 'GT4_GS_CAPTURE', 'GT4_GS_C
                    'GT4_GS_SCALE', 'GT4_GS_ASPECT', 'GT4_GS_READBACK', 'GT4_GS_EAGER_ACQUIRE',
                    'GT4_GS_HANDSHAKE_TIMEOUT_MS', 'GT4_GS_LOST_GRACE_FRAMES', 'GT4_GS_SETTINGS',
                    # TASK-041 (slice198): game-side test and A/B switches (wake batching, stream hash).
-                   'GT4_GS_WAKE_BYTES', 'GT4_GS_STREAM_HASH')
+                   'GT4_GS_WAKE_BYTES', 'GT4_GS_STREAM_HASH',
+                   # TASK-116 (rc6): the local flare readback (Performance mode) and its probe.
+                   'GT4_GS_READBACK_LOCAL', 'GT4_GS_READBACK_LOG',
+                   # TASK-117 (rc6): answer the flare table as zeros (no flares, no sun glare) and its A/B switch.
+                   'GT4_GS_HIDE_FLARES')
 # TASK-039: user GS settings as JSON (play_performance.py --gs-setting ID=VALUE and the shortcuts). The table:
 # docs/launcher/gs-settings.toml; the gt4-gs.ini writer is gs_config_text below (scripts/gs_settings.py).
 GS_SETTINGS_ENV = 'GT4_GS_SETTINGS'
@@ -328,7 +340,7 @@ GS_DEFAULT_READBACK = 'accurate'
 GS_SHADER_CACHE = 'private/slice193-gt4gs-cache'
 GS_DATA_ROOT = 'private/slice193-gt4gs-data'
 # Printed by the game when the player chose "restart with the built-in renderer" after a GS process failure.
-GS_RESTART_MARKER = '[gs-ipc] restart requested: renderer donor (CoreGS 1.1)'
+GS_RESTART_MARKER = '[gs-ipc] renderer change requested: CoreGS 2.0'
 # Headless runs write a PNG every N vsyncs (the table's DumpEvery row).
 GS_HEADLESS_DUMP_EVERY = 100
 # Owner-launched VU1 recording reuses the vu-split binary; only this manifest may record.

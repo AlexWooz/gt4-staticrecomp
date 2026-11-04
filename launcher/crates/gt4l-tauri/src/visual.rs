@@ -2,7 +2,9 @@
 //! the Saves and Replays pages can be captured. Enabled by `GT4RECOMP_VISUAL_SEED=1`. The saves are
 //! synthetic test data, not game data.
 
-use gt4saves::card::{DirEntry, Node, GAME_SAVE_NAME, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
+use gt4saves::card::{DirEntry, Node, MODE_DIR_DEFAULT, MODE_FILE_DEFAULT};
+use gt4l_core::games::{self, Game, GT4};
+use gt4saves::Library;
 use gt4saves::Card;
 
 use crate::saves;
@@ -22,7 +24,7 @@ fn directory(name: &str, children: Vec<Node>) -> Node {
 /// A synthetic game save: a few files whose contents depend on `seed`, so two saves differ.
 fn game_save(seed: u8) -> Node {
     let pattern = |len: usize| (0..len).map(|i| (i as u8).wrapping_mul(7).wrapping_add(seed)).collect();
-    directory(GAME_SAVE_NAME, vec![file("icon.sys", pattern(964)), file("garage", pattern(20_000))])
+    directory(GT4.save_folder, vec![file("icon.sys", pattern(964)), file("garage", pattern(20_000))])
 }
 
 fn replay() -> Node {
@@ -34,7 +36,7 @@ pub fn seed(state: &AppState) {
     if std::env::var("GT4RECOMP_VISUAL_SEED").as_deref() != Ok("1") {
         return;
     }
-    if saves::saves(&state.library).map(|items| !items.is_empty()).unwrap_or(true) {
+    if saves::saves(state.library()).map(|items| !items.is_empty()).unwrap_or(true) {
         return;
     }
     let folder = state.dirs.root().join("visual-seed");
@@ -48,8 +50,9 @@ pub fn seed(state: &AppState) {
         let image = Card::build(&items).expect("synthetic card builds").to_image();
         let path = folder.join(name);
         if std::fs::write(&path, image).is_ok() {
-            let _ = saves::import_path(&state.library, &path);
+            let libraries: Vec<(&'static Game, &Library)> = games::GAMES.iter().map(|game| (*game, state.library_of(game))).collect();
+            let _ = saves::import_path(&libraries, &path, crate::state::language_of(&state));
         }
     }
-    let _ = saves::activate(&state.library, "Save 01");
+    let _ = saves::activate(state.library(), "Save 01");
 }

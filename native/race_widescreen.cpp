@@ -65,6 +65,8 @@ void widescreen_hold_at_guest_vblank(std::uint8_t *ram, std::uint32_t ram_size) 
 }
 
 std::uint32_t widescreen_option_address(std::uint32_t owner_pointer, std::uint32_t ram_size) {
+  if (!::gt4::target::available(widescreen_owner_pointer_address))
+    return 0;
   if (owner_pointer == 0)
     return 0;
   if (!word_in_ram(widescreen_owner_pointer_address, ram_size))
@@ -115,6 +117,10 @@ bool owner_settled(OwnerSettle &settle, std::uint32_t owner_pointer) {
 }
 
 bool force_widescreen_at_vblank(std::uint8_t *ram, std::uint32_t ram_size, WidescreenState &state) {
+  if (!::gt4::target::available(widescreen_owner_pointer_address)) {
+    ::gt4::target::note_hook_unavailable("16:9 hold (GT4_FORCE_WIDESCREEN)");
+    return false;
+  }
   if (!word_in_ram(widescreen_owner_pointer_address, ram_size))
     return false;
   const std::uint32_t owner_pointer = read_le32(ram + widescreen_owner_pointer_address);

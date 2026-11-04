@@ -24,22 +24,32 @@
 
 #include <cstdint>
 
+#include "game_target.hpp"
+
 namespace gt4::display {
 
-inline constexpr std::uint32_t widescreen_owner_pointer_address = 0x622F4Cu;
-inline constexpr std::uint32_t widescreen_option_object_offset = 0x38CB0u;
-inline constexpr std::uint32_t widescreen_flag_offset = 0x14u;
-inline constexpr std::uint32_t widescreen_record_offset = 0x24u;
-inline constexpr std::uint32_t widescreen_record_bytes = 44u; // 11 words
-inline constexpr std::uint32_t widescreen_record_width_offset = 0xCu;
-inline constexpr std::uint32_t widescreen_record_height_offset = 0x10u;
-inline constexpr std::uint32_t video_system_offset = 0x1388u;
-inline constexpr std::uint32_t video_system_ntsc = 1u;
-inline constexpr std::uint32_t widescreen_global_address = 0x6184F0u;
-inline constexpr std::uint32_t widescreen_preset_4_3 = 0x622E90u;
-inline constexpr std::uint32_t widescreen_preset_wide = 0x622EC0u;
-inline constexpr std::uint32_t widescreen_preset_4_3_ntsc = 0x622EF0u;
-inline constexpr std::uint32_t widescreen_preset_wide_ntsc = 0x622F20u;
+// TASK-100 S3: the numbers live in native/game_target.hpp (per-target table). These names are the v2.00 guest chain
+// above, resolved for the active target; a target without the hook gets 0 and the hook disables itself.
+inline constexpr std::uint32_t widescreen_owner_pointer_address =
+    ::gt4::target::active().hooks.widescreen_owner_pointer;
+inline constexpr std::uint32_t widescreen_option_object_offset =
+    ::gt4::target::active().hooks.widescreen_option_offset;
+inline constexpr std::uint32_t widescreen_flag_offset = ::gt4::target::active().hooks.widescreen_flag_offset;
+inline constexpr std::uint32_t widescreen_record_offset = ::gt4::target::active().hooks.widescreen_record_offset;
+inline constexpr std::uint32_t widescreen_record_bytes = ::gt4::target::active().hooks.widescreen_record_bytes;
+inline constexpr std::uint32_t widescreen_record_width_offset =
+    ::gt4::target::active().hooks.widescreen_record_width_offset;
+inline constexpr std::uint32_t widescreen_record_height_offset =
+    ::gt4::target::active().hooks.widescreen_record_height_offset;
+inline constexpr std::uint32_t video_system_offset = ::gt4::target::active().hooks.video_system_offset;
+inline constexpr std::uint32_t video_system_ntsc = ::gt4::target::active().hooks.video_system_ntsc;
+inline constexpr std::uint32_t widescreen_global_address = ::gt4::target::active().hooks.widescreen_global;
+inline constexpr std::uint32_t widescreen_preset_4_3 = ::gt4::target::active().hooks.widescreen_preset_4_3;
+inline constexpr std::uint32_t widescreen_preset_wide = ::gt4::target::active().hooks.widescreen_preset_wide;
+inline constexpr std::uint32_t widescreen_preset_4_3_ntsc =
+    ::gt4::target::active().hooks.widescreen_preset_4_3_ntsc;
+inline constexpr std::uint32_t widescreen_preset_wide_ntsc =
+    ::gt4::target::active().hooks.widescreen_preset_wide_ntsc;
 
 // GT4_FORCE_WIDESCREEN: unset or nullptr = 1 (on, the launcher default), "0" = off, "1" = on. Empty or any other
 // value throws std::invalid_argument, so a typo refuses the start instead of silently changing the aspect.

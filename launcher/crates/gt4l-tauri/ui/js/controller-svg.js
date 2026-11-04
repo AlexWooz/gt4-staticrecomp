@@ -287,7 +287,7 @@
       viewBox: [VIEW.x, VIEW.y, VIEW.w, VIEW.h].join(" "),
       class: "pad-svg",
       role: "group",
-      "aria-label": "DualShock 2 controller. Select a button to change what drives it."
+      "aria-label": GT4.t("controls.svg_label")
     });
     var defsNode = defs(svg);
 

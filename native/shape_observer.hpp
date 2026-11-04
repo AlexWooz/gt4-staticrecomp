@@ -5,11 +5,18 @@
 #include <cstdint>
 #include <span>
 
+#include "game_target.hpp"
+
 namespace gt4::observation {
 
-inline constexpr std::uint32_t shape_call_pc = 0x00455A5C;
-inline constexpr std::uint32_t shape_target_pc = 0x0049D308;
-inline constexpr std::uint32_t shape_return_pc = 0x00455A64;
+// TASK-100 S3: guest addresses from the per-target table (a target without them gets kNeverMatch, so the observer
+// never triggers there).
+inline constexpr std::uint32_t shape_call_pc =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.shape_call_pc);
+inline constexpr std::uint32_t shape_target_pc =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.shape_target_pc);
+inline constexpr std::uint32_t shape_return_pc =
+    ::gt4::target::match_or_never(::gt4::target::active().hooks.shape_return_pc);
 inline constexpr std::uint32_t shape_state_address = 0x70002000;
 
 struct MemoryView {

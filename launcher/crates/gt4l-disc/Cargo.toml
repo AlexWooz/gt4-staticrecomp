@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "GT4Recomp launcher: disc image checks, SHA-256, CORE.GT4 extraction and ELF rebuild for setup"
 
 [dependencies]
+gt4l-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

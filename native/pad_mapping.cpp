@@ -1,6 +1,7 @@
 #include "pad_mapping.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>

@@ -5,7 +5,8 @@
 //! - [`Stream::Renderer`]: gt4-gs (the PCSX2 GS renderer), repository `moesuito/gt4recomp-gs`, tags
 //!   `gt4gs-vX.Y.Z`, asset `gt4-gs-X.Y.Z-windows-x64.zip` and `SHA256SUMS`.
 //!
-//! Drafts and prereleases are never offered. The release body is the release notes. Tests and the offline
+//! Drafts are never offered. Release candidates (`vX.Y.Z-rcN`, GitHub pre-releases) are offered only on the Beta channel
+//! (TASK-109, `update::UpdateChannel`); the Stable channel never sees them. The release body is the release notes. Tests and the offline
 //! folder source read the same JSON as the GitHub REST API, so no test touches the network.
 
 use std::fs;
@@ -15,7 +16,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-pub use crate::version::Version;
+pub use crate::version::{ReleaseVersion, Version};
 
 /// GT4Recomp repository (launcher, game and installer).
 pub const LAUNCHER_REPOSITORY: &str = "moesuito/gt4-staticrecomp";
@@ -32,6 +33,9 @@ pub const LAUNCHER_MINIMUM: Version = Version(1, 0, 0);
 /// added the custom texture loading and the 2-row bottom crop. An older install is replaced at the next launch
 /// (`gs_release::needs_install`).
 pub const RENDERER_MINIMUM: Version = Version(1, 2, 1);
+/// Lowest GT4Recomp version the version picker lists (TASK-109): `1.3.0-rc5` is the first build that reads the
+/// multi-game data layout, settings schema 8 and the per-game save names, so an older one cannot read this data.
+pub const PICKER_MINIMUM: ReleaseVersion = ReleaseVersion::candidate(Version(1, 3, 0), 5);
 /// Longest time a download may take. The gt4-gs package is far below the size limit of the install code.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// Longest time the release list may take at launch. The check never blocks Play.
@@ -80,16 +84,33 @@ impl Stream {
         tag.strip_prefix(self.tag_prefix()).and_then(Version::parse)
     }
 
-    /// The tag of a version of this stream.
-    pub fn tag(self, version: Version) -> String {
-        format!("{}{}", self.tag_prefix(), version.text())
+    /// The version of a tag including a release candidate part (`v1.3.0-rc5`), or `None` for any other tag.
+    pub fn parse_release_tag(self, tag: &str) -> Option<ReleaseVersion> {
+        tag.strip_prefix(self.tag_prefix()).and_then(ReleaseVersion::parse)
     }
 
-    /// The download asset of a version: the setup program for GT4Recomp, the zip for gt4-gs.
-    pub fn package_name(self, version: Version) -> String {
+    /// The tag of a version of this stream.
+    pub fn tag(self, version: impl Into<ReleaseVersion>) -> String {
+        format!("{}{}", self.tag_prefix(), version.into().text())
+    }
+
+    /// The download asset of a version: the setup program for GT4Recomp, the zip for gt4-gs. A release candidate
+    /// carries its label: `GT4Recomp-Setup-1.3.0-rc5.exe`.
+    pub fn package_name(self, version: impl Into<ReleaseVersion>) -> String {
+        let text = version.into().text();
         match self {
-            Stream::Launcher => format!("GT4Recomp-Setup-{}.exe", version.text()),
-            Stream::Renderer => format!("gt4-gs-{}-windows-x64.zip", version.text()),
+            Stream::Launcher => format!("GT4Recomp-Setup-{text}.exe"),
+            Stream::Renderer => format!("gt4-gs-{text}-windows-x64.zip"),
+        }
+    }
+
+    /// The download asset for a build kind (TASK-098): the portable build updates from `GT4Recomp-<version>-portable.zip`,
+    /// the installer build from the setup program. gt4-gs has one package for both.
+    pub fn package_name_for(self, version: impl Into<ReleaseVersion>, portable: bool) -> String {
+        let version = version.into();
+        match (self, portable) {
+            (Stream::Launcher, true) => format!("GT4Recomp-{}-portable.zip", version.text()),
+            _ => self.package_name(version),
         }
     }
 }
@@ -107,6 +128,10 @@ pub struct Release {
     pub tag: String,
     /// `None` when the tag does not match the stream's tag format.
     pub version: Option<Version>,
+    /// The version with its release candidate part: `1.3.0-rc5` has `version` None (not stable) and this `Some`.
+    pub release_version: Option<ReleaseVersion>,
+    /// GitHub's `published_at` (ISO 8601 UTC, sorts as text); `None` for a draft.
+    pub published_at: Option<String>,
     pub prerelease: bool,
     pub draft: bool,
     /// The release body (the release notes), cut to [`MAX_NOTES_CHARS`]. Plain text as GitHub stores it.
@@ -117,6 +142,11 @@ pub struct Release {
 impl Release {
     pub fn asset(&self, name: &str) -> Option<&Asset> {
         self.assets.iter().find(|asset| asset.name == name)
+    }
+
+    /// A release candidate (`vX.Y.Z-rcN`): not a draft, with a candidate tag.
+    pub fn is_candidate(&self) -> bool {
+        !self.draft && self.release_version.is_some_and(|version| version.is_candidate())
     }
 
     /// A stable release: not a draft, not a prerelease, with a valid version of the stream.
@@ -132,6 +162,8 @@ struct ApiRelease {
     prerelease: bool,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    published_at: Option<String>,
     #[serde(default)]
     body: Option<String>,
     #[serde(default)]
@@ -151,6 +183,8 @@ pub fn parse_releases(json: &str, stream: Stream) -> Result<Vec<Release>, String
         .into_iter()
         .map(|release| Release {
             version: stream.parse_tag(&release.tag_name),
+            release_version: stream.parse_release_tag(&release.tag_name),
+            published_at: release.published_at,
             tag: release.tag_name,
             prerelease: release.prerelease,
             draft: release.draft,
@@ -170,6 +204,19 @@ pub fn select_latest(releases: &[Release], minimum: Version) -> Option<&Release>
         .iter()
         .filter(|release| release.is_stable())
         .filter_map(|release| release.version.map(|version| (version, release)))
+        .filter(|(version, _)| *version >= minimum)
+        .max_by_key(|(version, _)| *version)
+        .map(|(_, release)| release)
+}
+
+/// The release the launcher offers on a channel, newest by version, at or above `minimum`, never a draft. Stable: the
+/// stable releases only. Beta: the stable releases and the release candidates together, so a Beta player gets the final
+/// release when it ships.
+pub fn select_offer(releases: &[Release], channel: crate::update::UpdateChannel, minimum: ReleaseVersion) -> Option<&Release> {
+    releases
+        .iter()
+        .filter(|release| release.is_stable() || (channel == crate::update::UpdateChannel::Beta && release.is_candidate()))
+        .filter_map(|release| release.release_version.map(|version| (version, release)))
         .filter(|(version, _)| *version >= minimum)
         .max_by_key(|(version, _)| *version)
         .map(|(_, release)| release)
@@ -338,6 +385,18 @@ mod tests {
         assert_eq!(Stream::Renderer.tag(Version(1, 0, 1)), "gt4gs-v1.0.1");
         assert_eq!(Stream::Launcher.package_name(Version(1, 0, 0)), "GT4Recomp-Setup-1.0.0.exe");
         assert_eq!(Stream::Renderer.package_name(Version(1, 0, 1)), "gt4-gs-1.0.1-windows-x64.zip");
+    }
+
+    #[test]
+    fn a_candidate_build_carries_its_label_in_the_asset_names_and_the_tag() {
+        let rc5 = ReleaseVersion::parse("1.3.0-rc5").unwrap();
+        assert_eq!(Stream::Launcher.package_name(rc5), "GT4Recomp-Setup-1.3.0-rc5.exe");
+        assert_eq!(Stream::Launcher.package_name_for(rc5, false), "GT4Recomp-Setup-1.3.0-rc5.exe");
+        assert_eq!(Stream::Launcher.package_name_for(rc5, true), "GT4Recomp-1.3.0-rc5-portable.zip");
+        assert_eq!(Stream::Launcher.tag(rc5), "v1.3.0-rc5");
+        assert_eq!(Stream::Launcher.parse_release_tag("v1.3.0-rc5"), Some(rc5));
+        assert_eq!(Stream::Launcher.parse_tag("v1.3.0-rc5"), None, "a candidate is not a stable version");
+        assert_eq!(Stream::Launcher.package_name(Version(1, 3, 0)), "GT4Recomp-Setup-1.3.0.exe");
     }
 
     #[test]

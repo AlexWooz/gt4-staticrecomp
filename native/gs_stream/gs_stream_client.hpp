@@ -5,6 +5,9 @@
 //   unset or "donor"  the donor GS front end and the native Vulkan renderer (unchanged; every hook returns at once)
 //   "pcsx2"           the GS stream: no donor Vulkan device; GIF, privileged writes, VSYNC and readbacks go to a GS
 //                     process (GT4_GS_PROCESS=<executable>) over shared memory (gs_stream_ipc.hpp)
+//   "hw"              TASK-027 development builds only (CMake GT4_HW_GS=ON, compile definition GT4_GS_STREAM_HW): no
+//                     donor Vulkan device and no GS process; the same hooks feed the in-process HWR backend
+//                     (gs_stream_sink.hpp). GT4_GS_CAPTURE is refused in this mode. Other builds refuse "hw".
 // Any other value stops the process before the game starts.
 //
 // TASK-036 (slice193), pcsx2 mode: GT4_GS_PROCESS_SHA256=<hex> refuses a GS process whose SHA-256 differs (the launcher
@@ -13,7 +16,7 @@
 //
 // TASK-037/038 (slice194): F8 prints the readback wait distribution; a GS process death lets the guest run
 // GT4_GS_LOST_GRACE_FRAMES (default 180) more VSYNCs so the runtime flushes a changed memory card, then halts; with a
-// window, a message box offers a restart with the built-in renderer (the launcher reads the restart line from the log);
+// window, a message box offers CoreGS 2.0 (the launcher reads the restart line from the log);
 // GT4_GS_HANDSHAKE_TIMEOUT_MS (default 20000) bounds the handshake; 0x0 resizes (minimized window) are not sent.
 //
 // GT4_GS_CAPTURE=<file> writes the same records to a .gscap version 2 file in either renderer mode (the donor output is
@@ -29,13 +32,19 @@
 
 #include "gs_stream/gs_stream_protocol.h"
 
+namespace gt4::mtvu {
+class SpscByteRing;
+class Doorbell;
+}  // namespace gt4::mtvu
+
 namespace gt4::gs_stream {
 
-enum class Renderer { donor, pcsx2 };
+enum class Renderer { donor, pcsx2, hw };
 
 // Parsed once from GT4_RENDERER. An unknown value prints a message and exits with EXIT_FAILURE.
 Renderer renderer();
-// True when GT4_RENDERER=pcsx2: the donor GS front end and Vulkan renderer are not used.
+// True when GT4_RENDERER=pcsx2 (or hw in a GT4_GS_STREAM_HW build): the donor GS front end and Vulkan renderer are
+// not used.
 bool stream_renderer();
 
 // --- hooks (EE thread) ---
@@ -68,6 +77,32 @@ const char *privileged_register_name(int index);
 // Local-to-host FIFO read. Returns true when the stream renderer answered it (data filled); false in donor mode,
 // where the capture only records the request and the donor serves the data.
 bool read_fifo(std::uint8_t *data, std::uint32_t qwords);
+// TASK-116 step 0 (P0 gate): the guest RAM window used to report a READ_FIFO destination as an EE address in the
+// GT4_GS_READBACK_LOG lines. native/game_main.cpp sets it once from ps2::g_ram; unset, the destination is reported as 0.
+// A probe aid only: read_fifo itself does not look at it.
+void set_guest_ram(std::uint8_t *base, std::uint32_t size);
+
+// TASK-116 step 1 (rc6): the flare readback answered locally in Performance mode (gt4-gs HWDownloadMode 2). The game
+// must not wait for the GS process to render and download the per-frame 2 KiB flare visibility table: only that
+// readback (128 qwords, a 64x8 PSMCT32 buffer) is answered with the previous reply, one frame old, and its READ_FIFO is
+// queued behind the MTVU journal, so the GS process still receives it at its stream position (the stream hash does not
+// change). Every other readback (car icons, loading picture, thumbnail, photo) keeps the blocking drain and the round
+// trip, and so does the first flare readback of a scene. GT4_GS_READBACK_LOCAL=0 turns the local answer off (A/B);
+// GT4_GS_READBACK_LOG=1 logs every reply. The journal services come from mtvu_bridge.cpp (pcsx2 mode only): with none
+// registered, every readback is served exactly as before.
+struct ReadbackJournal {
+  // EE thread: queues a READ_FIFO behind the journal entries already queued. False: nothing was queued, and the
+  // caller drains and waits for an accurate reply.
+  bool (*queue_readback)(std::uint32_t qwords) = nullptr;
+  // EE thread: the blocking drain the accurate path needs (the deferred sync("download")).
+  void (*drain_download)() = nullptr;
+};
+void set_readback_journal(const ReadbackJournal &journal);
+// True when the flare readback is answered locally: the GS stream runs, Performance mode is on, GT4_GS_READBACK_LOCAL is
+// not 0, and the journal is registered. Read by the MTVU download ordering to defer sync("download").
+bool readback_local_active();
+// Posts the queued READ_FIFO without waiting for the reply; called by the MTVU journal drain, in stream order.
+void post_read_fifo_nowait(std::uint32_t qwords);
 // Start of the vertical blank, after the donor toggled the field: odd_field is the CSR FIELD bit the EE now reads.
 // The donor toggles the field together with INTC VBLANK_S, before the game's VBLANK_S handler runs, so this is also
 // the display field of the frame that ends here (protocol 1.1 VSYNC.field; docs/GS-STREAM-PROTOCOL.md 6.1).
@@ -77,6 +112,12 @@ void on_vsync(bool odd_field);
 // so the GS process sees the frame complete before its VSYNC. Without deferral both calls behave as before.
 void set_vsync_deferral(bool defer);
 bool post_pending_vsync();
+// IN-461 (CPU survey T3, direct GS intake): with GT4_RENDERER=hw the in-process GS worker can read the VU1 worker's
+// output ring itself. mtvu_direct_available() says whether it can (asked once by the MTVU runtime at start);
+// on_mtvu_job() puts VU1 job `job` at this point of the GS stream (EE thread, the job's program position): the GS worker
+// then executes that job's GIF records straight from `output`, waiting on `bell`, up to its JobDone.
+bool mtvu_direct_available();
+void on_mtvu_job(std::uint64_t job, gt4::mtvu::SpscByteRing &output, gt4::mtvu::Doorbell &bell);
 // GS hard reset (donor render_reset) and GIF path reset.
 void on_gs_reset();
 void on_gif_reset();

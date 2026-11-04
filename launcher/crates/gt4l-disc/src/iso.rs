@@ -95,9 +95,30 @@ impl Iso {
 
     /// Finds a root-level file. Names compare case-insensitively and must include `;1`.
     pub fn find(&mut self, name: &str) -> Result<FileEntry, IsoError> {
-        let directory_bytes = self.root.size_bytes.min(MAX_DIRECTORY_BYTES);
-        let directory = read_at(&mut self.file, self.root.extent_sector * SECTOR_BYTES, directory_bytes as usize)
-            .map_err(|_| IsoError::Truncated("root directory".into()))?;
+        let root = self.root.clone();
+        self.find_in(&root, name)
+    }
+
+    /// Finds a file by its path from the root, directories separated by `/` (`IRX/CDVDMAN.IRX;1`). Directory names have no
+    /// version suffix; the file name must include `;1`.
+    pub fn find_path(&mut self, path: &str) -> Result<FileEntry, IsoError> {
+        let mut directory = self.root.clone();
+        let mut parts = path.trim_start_matches('/').split('/').peekable();
+        while let Some(part) = parts.next() {
+            let entry = self.find_in(&directory, part)?;
+            if parts.peek().is_none() {
+                return Ok(entry);
+            }
+            directory = entry;
+        }
+        Err(IsoError::FileNotFound(path.to_string()))
+    }
+
+    /// Finds `name` in one directory (the records of `directory`'s extent).
+    fn find_in(&mut self, directory: &FileEntry, name: &str) -> Result<FileEntry, IsoError> {
+        let directory_bytes = directory.size_bytes.min(MAX_DIRECTORY_BYTES);
+        let directory = read_at(&mut self.file, directory.extent_sector * SECTOR_BYTES, directory_bytes as usize)
+            .map_err(|_| IsoError::Truncated(format!("directory {}", directory.name)))?;
         let mut offset = 0usize;
         while offset < directory.len() {
             let length = directory[offset] as usize;

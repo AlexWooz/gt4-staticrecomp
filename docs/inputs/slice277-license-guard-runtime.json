@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "donor_revision": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "donor_sha256": {
+    "dispatch.cpp": "691c1d045b928ef789338f0954ec820fc0fd4e938cd2b2940743b3ad6005f995",
+    "kernel.cpp": "003c9e0a0e2c1cb61a6fd8ec846a4798c3027ed933b6825c6377112106f0168a",
+    "iop/cdvdfsv.cpp": "c313e10af0baaf63d9bd31040c168f38936c979c37fdce45afdf060d11560fbe"
+  },
+  "license_guard_profile": "task017-guard-v2+task080-aspect-v2",
+  "license_guard_overlay_sha256": "7765a1c79d5c4ef8846fd7b4d6a2c629453342bc552be78547c9be6fc5a6e79a",
+  "halt_dump_overlay_sha256": "519027e1b425fa99d93c401868b29611001440d3df3b2b090d00b37c03af659c",
+  "fsv_trace_overlay_sha256": "03579b77bb1ae26f040325157f7dcf91d32afd57e484b43b32bd1040dcbc59a0",
+  "source_sha256": {
+    "cdvdfsv.cpp": "0074d14f838d303314cdc7601450993134702cacd59bef9e288ec74e87ffad1d",
+    "dispatch.cpp": "ae0bab3509b7f32a6145c15e17fda6384df2cf182b1186beb18537a88a39b5da",
+    "kernel.cpp": "9384da59e72fb056d6b52363f8d26d7bbf4793e8c47481f41304d741f00e5754"
+  },
+  "display_aspect_overlay_sha256": "65992ad963a5b166cc960ab8f3366edafd048908769a79817651a18b50dde901",
+  "frame_counters_profile": "task084-frame-counters-v1",
+  "receipt_sha256": "103605aa81a6fefa9da3fc8ed15eb110d8e7d64b5d0baa7e0f0d7fad45c649be"
+}

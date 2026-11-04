@@ -146,7 +146,7 @@ def setting_row(text, setting_id):
 class SettingsTableTests(unittest.TestCase):
     def test_software_raster_rows_name_the_c_rasterizer(self):
         text = (ROOT / 'docs/launcher/gs-settings.toml').read_text(encoding='utf-8')
-        renderer = setting_row(text, 'renderer')
+        renderer = setting_row(text, 'graphics_api')
         hacks = setting_row(text, 'user_hacks')
         for row in (renderer, hacks):
             self.assertIn('C rasterizer', row)

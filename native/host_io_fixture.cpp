@@ -78,10 +78,31 @@ void check_standardized_sdl_triggers() {
 }
 } // namespace
 
+// TASK-156: Windows keeps its paced buffers and 60 ms target; Wine gets 24 x 512 frames under 100 ms; GT4_AUDIO_LATENCY_MS
+// changes only the target, within 20..500 ms.
+void check_paced_audio_profiles() {
+  const PacedAudioProfile windows = choose_paced_audio_profile(false, nullptr);
+  require(windows.frames_per_buffer == 256 && windows.buffer_count == 16 &&
+              windows.target_frames == gt4::pacing::target_latency_frames,
+          "Windows paced audio unchanged (16 x 256 frames, 60 ms)");
+  const PacedAudioProfile wine = choose_paced_audio_profile(true, nullptr);
+  require(wine.frames_per_buffer == 512 && wine.buffer_count == 24 && wine.target_frames == 4800,
+          "Wine paced audio: 24 x 512 frames, 100 ms");
+  require(choose_paced_audio_profile(false, "100").target_frames == 4800, "GT4_AUDIO_LATENCY_MS=100 is 4800 frames");
+  const PacedAudioProfile wine_short = choose_paced_audio_profile(true, "40");
+  require(wine_short.frames_per_buffer == 512 && wine_short.target_frames == 1920, "an override keeps Wine's buffers");
+  for (const char *bad : {"19", "501", "abc", "60ms", ""}) {
+    require(choose_paced_audio_profile(false, bad).target_frames == gt4::pacing::target_latency_frames,
+            "an invalid GT4_AUDIO_LATENCY_MS keeps the default target");
+  }
+  require(!running_under_wine(), "this fixture runs on Windows, not Wine");
+}
+
 int main() {
   // A missing SDL3.dll must fail the test, not open a system error dialog.
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   try {
+    check_paced_audio_profiles();
     check_standardized_sdl_triggers();
     const WORD buttons[] = {XINPUT_GAMEPAD_BACK,
                             XINPUT_GAMEPAD_LEFT_THUMB,
@@ -114,12 +135,13 @@ int main() {
     require(map_gamepad(gamepad).buttons == 0, "trigger deadzone");
     gamepad.bLeftTrigger = 31;
     require(map_gamepad(gamepad).buttons == 256 &&
-                map_gamepad(gamepad).pressures[8] == 1,
-            "trigger first step");
+                map_gamepad(gamepad).pressures[8] == 0,
+            "trigger first step: pressed, lowest pressure");
+    // TASK-147: L2 (brake) and R2 (throttle) end at GT4's 100%, pressures 84 and 45.
     gamepad.bLeftTrigger = gamepad.bRightTrigger = 255;
     require(map_gamepad(gamepad).buttons == 768 &&
-                map_gamepad(gamepad).pressures[8] == 255 &&
-                map_gamepad(gamepad).pressures[9] == 255,
+                map_gamepad(gamepad).pressures[8] == 84 &&
+                map_gamepad(gamepad).pressures[9] == 45,
             "trigger endpoints");
     gamepad = {};
     gamepad.sThumbLX = -32768;
@@ -130,10 +152,13 @@ int main() {
                 std::array<std::uint8_t, 4>{255, 255, 0, 0},
             "signed endpoints and Y inversion");
     gamepad = {};
-    gamepad.sThumbLX = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
-    gamepad.sThumbRY = -XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE;
+    // TASK-147: the stick dead zone is 10% (3277 of 32767); one unit past it the game already steers.
+    gamepad.sThumbLX = 3277;
+    gamepad.sThumbRY = -3277;
     require(map_gamepad(gamepad).axes == PadState{}.axes,
             "axis deadzone boundary");
+    gamepad.sThumbLX = 3277 + 300;
+    require(map_gamepad(gamepad).axes[2] >= 166, "past the dead zone the byte steps over the game's own dead zone");
     int previous = 0;
     for (int value = -32768; value <= 32767; ++value) {
       gamepad.sThumbLX = static_cast<SHORT>(value);
@@ -240,6 +265,27 @@ int main() {
     require(rejected, "closed sink refuses new samples");
     std::fprintf(stderr, "PASS: real Windows audio completion, ring wrap, "
                          "partial drain and cancel\n");
+    // TASK-129: without an output device the sink is silent: it accepts and drops samples in both modes, queues
+    // nothing, never waits, and still refuses samples once closed.
+    for (const auto mode : {gt4::pacing::Mode::audio, gt4::pacing::Mode::paced}) {
+      AudioOutput silent(nullptr, mode, AudioDevice::none);
+      require(silent.silent(), "no device gives a silent sink");
+      for (int block = 0; block < 600; ++block)
+        require(silent.push(samples.data(), 32), "silent sink accepts samples");
+      silent.pump();
+      require(silent.received_frames() == 19200 && silent.queued_frames() == 0 && silent.completed_frames() == 0,
+              "silent sink counts and queues nothing");
+      silent.close(true);
+      bool silent_rejected = false;
+      try {
+        silent.push(samples.data(), 32);
+      } catch (const std::runtime_error &) {
+        silent_rejected = true;
+      }
+      require(silent_rejected, "closed silent sink refuses new samples");
+    }
+    require(!audio.silent(), "the system device opens on this machine");
+    std::fprintf(stderr, "PASS: silent sink without an output device (audio and paced modes)\n");
     // Paced mode on the real device: three seconds at 60 Hz, one 800-frame
     // block per guest frame. Pushes never wait; the queue stays bounded; the
     // device consumes at wall-clock rate; the resample ratio stays in bounds.
@@ -248,7 +294,7 @@ int main() {
       gt4::pacing::FramePacer pacer(clock.frequency(), gt4::pacing::guest_vblank_rate);
       AudioOutput paced(nullptr, gt4::pacing::Mode::paced);
       std::array<std::int16_t, 800 * 2> frame_audio{};
-      const std::uint64_t bound = gt4::pacing::target_latency_frames + 16 * 256;
+      const std::uint64_t bound = paced.target_latency_frames() + 16 * 256;
       const std::int64_t longest_push = static_cast<std::int64_t>(clock.frequency() / 500);
       std::int64_t worst_push = 0;
       std::uint64_t worst_queue = 0;

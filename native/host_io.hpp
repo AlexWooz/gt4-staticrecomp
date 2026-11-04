@@ -60,17 +60,41 @@ private:
   ULONGLONG next_scan_ = 0;
   SDL_Gamepad *sdl_pad_ = nullptr;
   ULONGLONG sdl_next_scan_ = 0;
+  // TASK-148: the controller chosen in the launcher (GT4_PAD), and whether the open pad is it. While another pad stands in
+  // for it, the scan keeps looking for it every two seconds.
+  gt4::pad::PadChoice pad_choice_;
+  bool has_pad_choice_ = false;
+  bool reading_choice_ = false;
   ULONGLONG rumble_sent_at_ = 0;
   bool sdl_initialized_ = false;
   std::uint16_t motors_ = 0;
 };
 
+// The output the game asks for: the Windows default device, or none (GT4_AUDIO=none, and the fixture).
+enum class AudioDevice { system, none };
+
+// TASK-156 (issue #129; re-done from Luan Antony's PR #141): the paced audio path's buffers and target. On Windows sixteen
+// 256-frame buffers under a 60 ms target, as before. Under Wine (Proton, SteamOS) waveOut on PipeWire pulls about 1024
+// frames at a time, so that queue ran dry between pulls (crackling engine notes): twenty-four 512-frame buffers under
+// 100 ms. GT4_AUDIO_LATENCY_MS=20..500 sets only the target, keeping the buffers of the system detected.
+struct PacedAudioProfile {
+  std::size_t frames_per_buffer;
+  std::size_t buffer_count;
+  std::size_t target_frames;
+};
+PacedAudioProfile choose_paced_audio_profile(bool wine, const char *latency_ms);
+// True when the game runs under Wine (ntdll exports wine_get_version).
+bool running_under_wine();
+
 class AudioOutput {
 public:
   // `mode` selects the blocking WinMM path (audio) or the non-blocking paced
   // ring with rate control (paced); see pacing.hpp.
+  // TASK-129 (issues #93, #115): when Windows has no output device, or opening it fails, the output is silent instead of
+  // stopping the game: push() accepts and drops the samples, and silent() is true.
   explicit AudioOutput(std::function<bool()> pump_messages = {},
-                       gt4::pacing::Mode mode = gt4::pacing::Mode::audio);
+                       gt4::pacing::Mode mode = gt4::pacing::Mode::audio,
+                       AudioDevice requested = AudioDevice::system);
   ~AudioOutput();
   AudioOutput(const AudioOutput &) = delete;
   AudioOutput &operator=(const AudioOutput &) = delete;
@@ -84,8 +108,10 @@ public:
   // Frames queued on the device plus the ring (paced) or pending (audio).
   std::uint64_t queued_frames();
   gt4::pacing::Mode mode() const { return mode_; }
+  bool silent() const { return silent_; }
   double resampler_ratio() const { return resampler_.ratio(); }
   std::uint64_t underruns() const { return underruns_; }
+  std::size_t target_latency_frames() const { return target_latency_frames_; }
   std::uint64_t overflow_frames() const { return overflow_frames_; }
   std::uint64_t received_frames() const { return received_; }
   std::uint64_t completed_frames() const { return completed_; }
@@ -94,7 +120,7 @@ public:
 
 private:
   static constexpr std::size_t max_frames_per_buffer = 512;
-  static constexpr std::size_t max_buffers = 16;
+  static constexpr std::size_t max_buffers = 24;  // TASK-156: the Wine profile's buffer count
   struct Buffer {
     std::array<std::int16_t, max_frames_per_buffer * 2> samples{};
     WAVEHDR header{};
@@ -106,8 +132,11 @@ private:
   std::size_t pending_frames_ = 0;
   std::size_t frames_per_buffer_ = 512;
   std::size_t buffer_count_ = 4;
+  std::size_t target_latency_frames_ = gt4::pacing::target_latency_frames;  // TASK-156: the paced profile's target
   std::size_t next_buffer_ = 0;
   gt4::pacing::Mode mode_ = gt4::pacing::Mode::audio;
+  bool silent_ = false;
+  bool closed_ = false;
   bool started_ = false;
   gt4::pacing::FrameRing ring_{gt4::pacing::paced_ring_frames};
   gt4::pacing::LinearResampler resampler_;

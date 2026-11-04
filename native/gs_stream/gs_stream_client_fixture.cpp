@@ -144,7 +144,121 @@ void run_script(std::uint32_t frames) {
   client::finish(stdout);
 }
 
+// TASK-116 step 1: the flare visibility table (64x8 PSMCT32 = 128 qwords), the only readback answered locally.
+constexpr std::uint32_t kFlareQwords = 128;
+
+// TASK-116 step 1: the journal services of the client, faked so the local flare answer can be exercised without MTVU.
+// queue_readback counts the queued READ_FIFO; drain_download models the journal drain (it posts the queued READ_FIFO, as
+// the bridge does through post_read_fifo_nowait).
+std::uint64_t g_queued = 0, g_drained = 0, g_queue_depth = 0;
+std::uint32_t g_queued_qwords = 0;
+
+bool fake_queue_readback(std::uint32_t qwords) {
+  ++g_queued;
+  ++g_queue_depth;
+  g_queued_qwords = qwords;
+  return true;
+}
+
+void fake_drain_download() {
+  ++g_drained;
+  while (g_queue_depth > 0) {
+    --g_queue_depth;
+    gt4::gs_stream::post_read_fifo_nowait(g_queued_qwords);
+  }
+}
+
+// The reply the pattern consumer writes: a function of the request id and the byte index (child mode "pattern").
+std::uint8_t pattern_byte(std::uint64_t id, std::uint64_t i) {
+  return static_cast<std::uint8_t>((id * 131u + i * 7u + (i >> 8)) & 0xFFu);
+}
+
+// TASK-116 step 1: the local flare readback (Performance mode). The first readback waits as today; the next one is the
+// previous reply, byte for byte, queued behind the journal with no drain; a 512-qword readback is never local and its
+// request lands after the queued one (same id sequence, same records).
+void run_local_script() {
+  namespace client = gt4::gs_stream;
+  client::set_readback_journal({&fake_queue_readback, &fake_drain_download});
+  client::set_halt_handler(count_halt);
+  client::on_gs_reset();
+  g_queued = g_drained = g_queue_depth = 0;
+  std::vector<std::uint8_t> flare(kFlareQwords * 16, 0xEE);
+  std::vector<std::uint8_t> icon(512 * 16, 0xEE);
+
+  // 1. First flare readback of the scene: the accurate path (drain, request 1, wait), cached.
+  require(client::read_fifo(flare.data(), kFlareQwords), "the first flare readback is served");
+  require(g_drained == 1 && g_queued == 0, "the first flare readback drains and waits");
+  const std::vector<std::uint8_t> first = flare;
+  for (std::uint64_t i = 0; i < first.size(); ++i) require(first[i] == pattern_byte(1, i), "first reply is request 1");
+
+  // 2. Second flare readback: answered from the cache (request 1 again, byte for byte), queued, no drain.
+  std::fill(flare.begin(), flare.end(), 0xEE);
+  require(client::read_fifo(flare.data(), kFlareQwords), "the second flare readback is served");
+  require(g_drained == 1, "the second flare readback does not drain");
+  require(g_queued == 1 && g_queued_qwords == kFlareQwords, "the second flare readback queues one 128-qword request");
+  require(flare == first, "the second reply is the previous one, byte for byte");
+
+  // 3. A 512-qword readback is never local: drain (which posts the queued request 2), request 3, wait.
+  require(client::read_fifo(icon.data(), 512), "the icon readback is served");
+  require(g_drained == 2, "the icon readback drains");
+  for (std::uint64_t i = 0; i < icon.size(); ++i) require(icon[i] == pattern_byte(3, i), "icon reply is request 3");
+
+  client::finish(stdout);
+}
+
+// TASK-116 step 1 (A/B): with GT4_GS_READBACK_LOCAL=0 every readback drains and waits, so each reply is fresh.
+void run_local_off_script() {
+  namespace client = gt4::gs_stream;
+  client::set_readback_journal({&fake_queue_readback, &fake_drain_download});
+  client::set_halt_handler(count_halt);
+  client::on_gs_reset();
+  g_queued = g_drained = g_queue_depth = 0;
+  std::vector<std::uint8_t> flare(kFlareQwords * 16, 0xEE);
+  for (std::uint64_t n = 1; n <= 2; ++n) {
+    require(client::read_fifo(flare.data(), kFlareQwords), "the flare readback is served");
+    for (std::uint64_t i = 0; i < flare.size(); ++i)
+      require(flare[i] == pattern_byte(n, i), "the kill switch keeps every reply fresh");
+  }
+  require(g_queued == 0 && g_drained == 2, "the kill switch drains and waits for every readback");
+  client::finish(stdout);
+}
+
+// TASK-117: with GT4_GS_HIDE_FLARES=1 (the Performance mode default) the flare table is served as zeros from the first
+// readback, while the READ_FIFO is still queued once per readback and the journal keeps the download order.
+void run_hidden_script() {
+  namespace client = gt4::gs_stream;
+  client::set_readback_journal({&fake_queue_readback, &fake_drain_download});
+  client::set_halt_handler(count_halt);
+  client::on_gs_reset();
+  g_queued = g_drained = g_queue_depth = 0;
+  std::vector<std::uint8_t> flare(kFlareQwords * 16, 0xEE);
+  for (std::uint64_t n = 1; n <= 2; ++n) {
+    std::fill(flare.begin(), flare.end(), 0xEE);
+    require(client::read_fifo(flare.data(), kFlareQwords), "the hidden flare readback is served");
+    for (std::uint8_t byte : flare) require(byte == 0, "the hidden flare table is zeros");
+    require(g_queued == n && g_queued_qwords == kFlareQwords, "every hidden readback queues one READ_FIFO");
+    require(g_drained == 0, "the hidden readback never drains");
+  }
+  std::vector<std::uint8_t> icon(512 * 16, 0xEE);
+  require(client::read_fifo(icon.data(), 512), "the icon readback is served");
+  require(g_drained == 1, "the icon readback drains the queued requests");
+  for (std::uint64_t i = 0; i < icon.size(); ++i) require(icon[i] == pattern_byte(3, i), "icon reply is request 3");
+  client::finish(stdout);
+}
+
 int scenario_main(const std::string &scenario, std::uint32_t frames) {
+  if (scenario == "pcsx2-local") {
+    run_local_script();
+    return 0;
+  }
+  if (scenario == "pcsx2-local-off") {
+    run_local_off_script();
+    return 0;
+  }
+  if (scenario == "pcsx2-hidden") {
+    run_hidden_script();
+    return 0;
+  }
   if (scenario == "donor") {
     const auto data = qwords_of(4, 1);
     require(!gt4::gs_stream::stream_renderer(), "donor by default");
@@ -219,7 +333,8 @@ std::uint32_t run_scenario(const std::string &scenario, const std::vector<Env> &
   for (const char *name : {"GT4_RENDERER", "GT4_GS_PROCESS", "GT4_GS_CAPTURE", "GT4_GS_RECORD_OUTPUT",
                            "GT4_GS_CAPTURE_FRAMES", "GT4_GS_FRAMES_IN_FLIGHT", "GT4_FIXTURE_CHILD",
                            "GT4_GS_PROCESS_SHA256", "GT4_GS_CONFIG", "GT4_GS_HANDSHAKE_TIMEOUT_MS",
-                           "GT4_GS_LOST_GRACE_FRAMES", "GT4_FIXTURE_PID_FILE"})
+                           "GT4_GS_LOST_GRACE_FRAMES", "GT4_FIXTURE_PID_FILE", "GT4_GS_READBACK_LOCAL",
+                           "GT4_GS_HIDE_FLARES", "GT4_GS_READBACK_LOG"})
     _putenv_s(name, "");
   for (const Env &item : env) _putenv_s(item.name, item.value.c_str());
   std::printf("[fixture] scenario %s\n", scenario.c_str());
@@ -504,6 +619,53 @@ int main(int argc, char **argv) {
         }
         return 0;
       }
+      if (std::string(mode) == "pattern") {
+        // TASK-116 step 1: answers every READ_FIFO with pattern_byte(request_id, i) and writes how many it served, so the
+        // local flare answer can be checked byte for byte (and the request sequence of the stream).
+        ReadyPayload pattern_ready{};
+        pattern_ready.version_major = kVersionMajor;
+        pattern_ready.version_minor = 3;
+        pattern_ready.consumer_pid = ipc::current_process_id();
+        session->post_event(RecordType::ready, &pattern_ready, sizeof pattern_ready);
+        std::uint64_t served = 0, last_id = 0;
+        ipc::RecordView view;
+        for (;;) {
+          session->next_command(view);
+          const auto type = static_cast<RecordType>(view.header->type);
+          if (type == RecordType::read_fifo) {
+            ReadFifoPayload request{};
+            if (view.header->payload_bytes == sizeof request) {
+              std::memcpy(&request, view.payload, sizeof request);
+              const std::uint64_t bytes = std::uint64_t(request.qwords) * 16;
+              for (std::uint64_t i = 0; i < bytes; ++i)
+                session->response_area()[i] = pattern_byte(request.request_id, i);
+              ++served;
+              last_id = request.request_id;
+              session->release_command(view);
+              session->complete_readback(request.request_id, bytes, kReadbackOk);
+              continue;
+            }
+            session->release_command(view);
+            continue;
+          }
+          if (type == RecordType::vsync) {
+            session->release_command(view);
+            session->complete_vsync();
+            continue;
+          }
+          session->release_command(view);
+          if (type == RecordType::control) {
+            ControlPayload pattern_control{};
+            std::memcpy(&pattern_control, view.payload, sizeof pattern_control);
+            if (pattern_control.kind == static_cast<std::uint32_t>(ControlKind::shutdown)) break;
+          }
+        }
+        if (const char *result = std::getenv("GT4_FIXTURE_PID_FILE"); result && *result) {
+          std::ofstream out(std::string(result) + ".pattern");
+          out << served << ' ' << last_id;
+        }
+        return 0;
+      }
       if (std::string(mode) == "hang") {
         // Posts READY, then ignores the game (no peer waits): only the kill-on-close job can end it.
         ReadyPayload hang_ready{};
@@ -554,8 +716,7 @@ int main(int argc, char **argv) {
     require(run_scenario("pcsx2", {{"GT4_RENDERER", "pcsx2"}, {"GT4_GS_PROCESS", recorder},
                                    {"GT4_GS_RECORD_OUTPUT", recorded}, {"GT4_GS_CAPTURE", pcsx2_capture},
                                    {"GT4_GS_PROCESS_SHA256", recorder_sha}, {"GT4_GS_CONFIG", config}}) == 0,
-            "pcsx2 scenario (pinned process, --config)");
-    check_stream_file(donor_file, 10);
+            "pcsx2 scenario (pinned process, --config)");    check_stream_file(donor_file, 10);
     check_stream_file(pcsx2_capture, 10);
     // The recorder's file also holds the CONTROL shutdown posted by finish() after the in-process capture closed.
     const std::vector<char> donor_bytes = read_all(donor_file), capture_bytes = read_all(pcsx2_capture);
@@ -576,6 +737,81 @@ int main(int argc, char **argv) {
     require(read_all(ordered_capture) == capture_bytes, "ordered privileged writes: capture equals the pcsx2 capture");
     require(read_all(ordered_recorded) == recorded_bytes, "ordered privileged writes: recorder file equals the pcsx2 one");
     std::puts("[fixture] queued privileged writes keep the stream byte-identical");
+
+    // TASK-116 step 1: the flare readback answered locally in Performance mode (gt4-gs HWDownloadMode 2), and the kill
+    // switch that turns it off. The consumer answers pattern_byte(request_id, i), so "the previous reply" is checked
+    // byte for byte.
+    const std::string local_config = scratch + "\\gt4-gs-local.ini";
+    {
+      std::ofstream ini(local_config, std::ios::binary);
+      ini << "[EmuCore/GS]\nHWDownloadMode = 2\n";
+    }
+    const std::string local_result = scratch + "\\local.pid";
+    DeleteFileA((local_result + ".pattern").c_str());
+    require(run_scenario("pcsx2-local", {{"GT4_RENDERER", "pcsx2"}, {"GT4_GS_PROCESS", argv[0]},
+                                         {"GT4_FIXTURE_CHILD", "pattern"}, {"GT4_FIXTURE_PID_FILE", local_result},
+                                         {"GT4_GS_CONFIG", local_config}, {"GT4_GS_READBACK_LOCAL", "1"},
+                                         {"GT4_GS_HIDE_FLARES", "0"}}) == 0,
+            "pcsx2-local scenario");
+    {
+      std::ifstream in(local_result + ".pattern");
+      std::uint64_t served = 0, last_id = 0;
+      in >> served >> last_id;
+      require(served == 3 && last_id == 3, "one READ_FIFO per readback, in stream order");
+    }
+    std::puts("[fixture] Performance mode: the flare readback is the previous reply, one READ_FIFO per readback");
+    const std::string local_off_result = scratch + "\\local-off.pid";
+    DeleteFileA((local_off_result + ".pattern").c_str());
+    require(run_scenario("pcsx2-local-off", {{"GT4_RENDERER", "pcsx2"}, {"GT4_GS_PROCESS", argv[0]},
+                                             {"GT4_FIXTURE_CHILD", "pattern"},
+                                             {"GT4_FIXTURE_PID_FILE", local_off_result},
+                                             {"GT4_GS_CONFIG", local_config}, {"GT4_GS_READBACK_LOCAL", "0"}}) == 0,
+            "pcsx2-local-off scenario");
+    {
+      std::ifstream in(local_off_result + ".pattern");
+      std::uint64_t served = 0;
+      in >> served;
+      require(served == 2, "the kill switch posts one READ_FIFO per readback and waits for each");
+    }
+    std::puts("[fixture] GT4_GS_READBACK_LOCAL=0 keeps every readback accurate");
+
+    // TASK-117: GT4_GS_HIDE_FLARES=1 (the Performance mode default) answers the flare table as zeros from the first
+    // readback, still queues one READ_FIFO per readback and keeps the icons accurate after the drain.
+    const std::string hidden_result = scratch + "\\hidden.pid";
+    DeleteFileA((hidden_result + ".pattern").c_str());
+    require(run_scenario("pcsx2-hidden", {{"GT4_RENDERER", "pcsx2"}, {"GT4_GS_PROCESS", argv[0]},
+                                          {"GT4_FIXTURE_CHILD", "pattern"}, {"GT4_FIXTURE_PID_FILE", hidden_result},
+                                          {"GT4_GS_CONFIG", local_config}, {"GT4_GS_READBACK_LOCAL", "1"},
+                                          {"GT4_GS_HIDE_FLARES", "1"}}) == 0,
+            "pcsx2-hidden scenario");
+    {
+      std::ifstream in(hidden_result + ".pattern");
+      std::uint64_t served = 0, last_id = 0;
+      in >> served >> last_id;
+      require(served == 3 && last_id == 3, "hidden flares: one READ_FIFO per readback, in stream order");
+    }
+    std::puts("[fixture] GT4_GS_HIDE_FLARES=1 answers the flare table as zeros and keeps the icons");
+
+    // TASK-117: GT4_GS_READBACK_LOCAL=1 also works with gt4-gs HWDownloadMode 0 (Accurate), so the flare table can be
+    // answered locally while the car icons, loading picture and thumbnail stay Accurate (the mode-0 experiment).
+    const std::string accurate_config = scratch + "\\gt4-gs-accurate.ini";
+    {
+      std::ofstream ini(accurate_config, std::ios::binary);
+      ini << "[EmuCore/GS]\nHWDownloadMode = 0\n";
+    }
+    const std::string accurate_result = scratch + "\\accurate-local.pid";
+    DeleteFileA((accurate_result + ".pattern").c_str());
+    require(run_scenario("pcsx2-hidden", {{"GT4_RENDERER", "pcsx2"}, {"GT4_GS_PROCESS", argv[0]},
+                                          {"GT4_FIXTURE_CHILD", "pattern"}, {"GT4_FIXTURE_PID_FILE", accurate_result},
+                                          {"GT4_GS_CONFIG", accurate_config}, {"GT4_GS_READBACK_LOCAL", "1"}}) == 0,
+            "pcsx2-hidden under Accurate");
+    {
+      std::ifstream in(accurate_result + ".pattern");
+      std::uint64_t served = 0, last_id = 0;
+      in >> served >> last_id;
+      require(served == 3 && last_id == 3, "accurate mode: one READ_FIFO per readback, in stream order");
+    }
+    std::puts("[fixture] GT4_GS_READBACK_LOCAL=1 works with Accurate readbacks (mode 0)");
 
     // TASK-060/062 (protocol 1.2): CONTROL cursor after attach_window, OSD_STATS about every 0.5 s to a consumer that
     // asked for them, and never in the .gscap capture.

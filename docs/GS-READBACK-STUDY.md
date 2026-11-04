@@ -262,6 +262,27 @@ the round trip fits this).
   - gt4-gs: deferred-read flag and async download (2-4 days, tainted agent);
   - native: producer and remap (3-4 days);
   - CoreGS 2.0: the M8 write-back with timeline waits, already in spec chapter 10.
+- **Shipped in rc6 (TASK-116 step 1), and R1a below:** the native half is in `native/gs_stream/gs_stream_client.cpp`
+  (`local_flare_readback`, journal-ordered, one frame old); the gt4-gs async download is TASK-116 step 2 (1.3.1).
+
+### R1a. Answer the flare table as zeros (rc6, TASK-117)
+
+- **Change:** the same journal-ordered answer, but `dst` is filled with zeros (`GT4_GS_HIDE_FLARES`, on in Performance
+  Mode, `0` = R1's previous reply). The READ_FIFO is still posted, so the journal ordering and the deferred
+  `sync("download")` are unchanged; only the bytes the EE receives differ.
+- **Effect:** the VU1 scales each lamp, headlight and the sun by its own pixel (section 2), so the game draws **no**
+  flare, halo or sun glare. This is the "zero visibility" case the VU1 already handles (a fully occluded light samples
+  zero; split screen uses the constant `0x000000FF`).
+- **Fidelity:** a presentation loss only. The EE never reads the table (section 2), so physics, timing, AI, saves and
+  replays are untouched. It also removes R1's one-frame lag and the index-remap flicker, because nothing is drawn.
+- **Measured (2026-10-25, night, 1x):** 3,763 of 3,763 tables answered as zeros (`nz=0..0`), no readback wait, EE
+  critical path unchanged (5.87-6.52 ms against 6.00-6.44 ms with R1's previous reply); dumps before the race are
+  byte-identical and the race dumps differ only on the lights and their glows.
+- **Cost left:** the guest still samples each light and still queues the 2 KiB download; only a guest patch removes
+  those, and a runtime-switched guest patch cannot keep the switch-off path identical (the EE clock is counted in
+  instructions). The GS-side download is TASK-116 step 2's target.
+- **Limitation:** split screen keeps the headlight glow. That path draws lights with the constant `0x000000FF` instead of
+  the table (section 1.1), so only the sun disappears there. Single-player races are fully flare-free.
 
 ### R2. Same-frame, EE-asynchronous readback ("pending memory")
 

@@ -1,0 +1,24 @@
+{
+  "disc": {
+    "sha256": "6a3484b9672c10a92154ecee6faa5bbcfd4ed8cd538d8283e429c3fe6e1704b2",
+    "size_bytes": 3683418112
+  },
+  "files": {
+    "/SCUS_974.36;1": {
+      "sha256": "db08421bc26bdc0298e80cb02a8f2067ddf640f0575af5dfe0548f1fd73ac39d",
+      "size_bytes": 6520944
+    },
+    "/SYSTEM.CNF;1": {
+      "sha256": "409fc6b9222d84569a57a9453e808f6118af024208b178b69fddd2980dd9a82d",
+      "size_bytes": 57
+    }
+  },
+  "schema_version": 1,
+  "system": {
+    "boot_path": "/SCUS_974.36;1",
+    "serial": "SCUS-97436",
+    "version": "1.00",
+    "video_mode": "NTSC"
+  },
+  "note": "Spec II v1.10 (SCUS-97436 Public Beta lineage). No CORE.GT4: the game is one plain ELF. The SYSTEM.CNF hash is verified by scripts/spec2_elf_patch.py only through the boot path and disc identity; it is refreshed by the tool's --refresh-system-hash mode when needed."
+}

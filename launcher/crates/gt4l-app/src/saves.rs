@@ -7,7 +7,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gt4saves::card::GAME_SAVE_NAME;
+use gt4saves::SaveNames;
+
+/// The Gran Turismo 4 item names (the command-line tool works on the retail game only).
+const GAME_SAVE_NAME: &str = "BASCUS-97328GAMEDATA";
+const GT4_NAMES: SaveNames = SaveNames::new("BASCUS-97328GAMEDATA", "BASCUS-97328");
 use gt4saves::library::{Library, Report};
 
 use crate::recycle;
@@ -28,7 +32,7 @@ pub struct Item {
 /// Opens (and creates, if needed) the library under `data_root`.
 pub fn open(data_root: &Path) -> Result<(PathBuf, Library), String> {
     let root = data_root.join(LIBRARY_FOLDER);
-    let library = Library::open(&root).map_err(|error| format!("save library: {error}"))?;
+    let library = Library::open(&root, GT4_NAMES).map_err(|error| format!("save library: {error}"))?;
     Ok((root, library))
 }
 

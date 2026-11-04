@@ -29,7 +29,7 @@ class ProbeTests(unittest.TestCase):
         evidence.update(profile='performance', perf_schema_version=1,
                         keyboard_input_fix='digital_only_slice136', capture_activation_implemented=False)
         if mode: evidence['measurement_mode'] = mode
-        if mode in ('vu-split', 'vu1-aot', 'gs-async', 'pacing', 'vu1-flags', 'vu1-full', 'quickfix', 'vu1-all', 'quickfix2', 'quickfix3', 'vu0-aot', 'main', 'mtvu-measure', 'mtvu', 'pcsx2-stream', 'pcsx2', 'license-guard', 'pcsx2-coverage'): evidence['vu_scope_profile'] = 'unit_split_run_fast_only'
+        if mode in ('vu-split', 'vu1-aot', 'gs-async', 'pacing', 'vu1-flags', 'vu1-full', 'quickfix', 'vu1-all', 'quickfix2', 'quickfix3', 'vu0-aot', 'main', 'mtvu-measure', 'mtvu', 'pcsx2-stream', 'pcsx2', 'pcsx2-slice268', 'license-guard', 'pcsx2-coverage'): evidence['vu_scope_profile'] = 'unit_split_run_fast_only'
         manifest = root / 'docs/inputs' / name
         manifest.write_text(json.dumps(evidence))
         return manifest, evidence

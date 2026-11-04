@@ -2,8 +2,7 @@
 //! The state lives behind one mutex. Long jobs (setup, the game, controller capture) run on their
 //! own threads and lock the state only to read or write their results.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
@@ -11,26 +10,52 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gt4controls::{self as controls_file, Controls, CONTROLS_FILE_NAME};
+use std::collections::BTreeMap;
+
+use gt4l_core::settings::Settings;
 use gt4l_core::config::{self, ConfigFile};
+use gt4l_core::language::{self, Language};
+use gt4l_core::display as display_rules;
+use gt4l_core::gs_release;
+use gt4l_core::gs_table;
+use gt4l_core::launch;
+use gt4l_core::games::{self, Game, GT4};
 use gt4l_core::paths::{self, DataDirs, UserDirs};
+use gt4l_core::textures::{self, TextureLocation};
 use gt4l_disc::setup as disc_setup;
-use gt4l_disc::Pins;
+use gt4l_disc::spec2 as disc_spec2;
+use gt4l_disc::{DiscGame, Pins, Spec2Pins};
 use gt4saves::library::Library;
 
+use crate::discord_presence::DiscordPresence;
 use crate::saves;
+
+/// One game's save library and the user folders it was opened in (the Documents-free `games\<id>` place, or the data-folder
+/// fallback). Two games never share one (TASK-101).
+pub struct GameLibrary {
+    pub library: Library,
+    pub user: UserDirs,
+}
 
 pub struct AppState {
     pub dirs: DataDirs,
     pub pins: Pins,
+    pub spec2_pins: Spec2Pins,
     pub config: ConfigFile,
     pub controls: Controls,
     /// The user data in use: `%APPDATA%\GT4Recomp`, or the 1.2.0 places until their move has happened.
     pub user_dirs: UserDirs,
+    /// One save library per game (`games\<id>\Saves`, `Replays`, `backups`).
+    pub libraries: BTreeMap<&'static str, GameLibrary>,
+    /// The game the home screen shows. The stored choice (`[game] selected`) is the game played last; picking another game
+    /// on the page only changes this until that game starts.
+    pub selected: &'static Game,
+    /// The game of the setup that is running or was last run (set when a disc is accepted).
+    pub setup_game: Option<&'static Game>,
     /// The folder of `GT4Recomp.exe`: stored paths inside it are kept relative (portable copies).
     pub install_dir: PathBuf,
     /// The move of the 1.2.0 large data, while it runs and its result (TASK-091).
     pub migration: MigrationRun,
-    pub library: Library,
     /// Set by the Cancel button of setup; the setup thread checks it between steps.
     pub setup_cancel: Arc<AtomicBool>,
     pub setup_busy: bool,
@@ -40,6 +65,9 @@ pub struct AppState {
     pub setup_outcome: SetupOutcome,
     /// The running game's child process (shared with the watcher thread and Stop).
     pub game_child: Option<Arc<Mutex<Option<Child>>>>,
+    /// IN-507: the shader compile before Play, and whether its window's Cancel stopped it.
+    pub shaders_child: Arc<Mutex<Option<Child>>>,
+    pub shaders_cancelled: Arc<AtomicBool>,
     /// Control name while a rebind waits for a press from the pad service (`pad_service`).
     pub capturing: Option<String>,
     /// Message shown on Home, e.g. why the last start failed.
@@ -52,8 +80,9 @@ pub struct AppState {
     pub replays_status: String,
     /// True when the controls file was written by a newer launcher: it is kept as it is (never overwritten).
     pub controls_locked: bool,
-    /// Invalidates in-flight RetroAchievements account work after any account/options mutation.
     pub ra_revision: u64,
+    /// Discord Rich Presence manager for the current launcher session.
+    pub discord: Arc<DiscordPresence>,
 }
 
 pub type Shared = Arc<Mutex<AppState>>;
@@ -81,8 +110,11 @@ pub struct SetupRun {
     /// Bytes done and total of a copy or a download (0 when not known).
     pub bytes_done: u64,
     pub bytes_total: u64,
-    /// The renderer sub-step: `listing`, `downloading`, `installing`, `done` or `failed`.
+    /// The renderer sub-step: `checking`, `compiling` (bytes hold the shaders done and total), `listing`, `downloading`,
+    /// `installing`, `done` or `failed`.
     pub renderer_step: String,
+    /// What setup decided: `coregs20`, `gsdx_fallback` (this PC cannot run CoreGS 2.0), or empty (GSdx stayed the renderer).
+    pub renderer_choice: String,
 }
 
 /// The result of the last disc pick or setup run.
@@ -98,6 +130,38 @@ pub enum SetupOutcome {
     Done { renderer_note: String },
 }
 
+/// The language the launcher shows now: set at start-up and whenever the setting changes (`set_current_language`), so
+/// the messages built deep in the launcher do not need the state.
+static CURRENT_LANGUAGE: Mutex<Language> = Mutex::new(Language::fallback());
+
+/// The language of the messages the launcher sends now.
+pub fn current_language() -> Language {
+    // The tests of this crate check the English texts; the language of the machine running them must not change that.
+    if cfg!(test) {
+        return Language::fallback();
+    }
+    *CURRENT_LANGUAGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Makes `language` the language of the messages from now on.
+pub fn set_current_language(language: Language) {
+    *CURRENT_LANGUAGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = language;
+}
+
+/// The language of the messages the launcher sends now (see `current_language`), for a settings table.
+pub fn language_of(state: &AppState) -> Language {
+    language_of_settings(&state.config.settings)
+}
+
+/// The language the settings choose, with `auto` resolved by the Windows user language.
+pub fn language_of_settings(settings: &gt4l_core::Settings) -> Language {
+    if cfg!(test) {
+        // See `current_language`: the tests of this crate check the English texts.
+        return Language::fallback();
+    }
+    language::resolve(settings.get("language"), &gt4l_platform::system::os_locale())
+}
+
 /// Locks the state; a poisoned lock still gives its data (a panicked job must not hang the UI).
 pub fn lock(shared: &Shared) -> MutexGuard<'_, AppState> {
     match shared.lock() {
@@ -106,13 +170,26 @@ pub fn lock(shared: &Shared) -> MutexGuard<'_, AppState> {
     }
 }
 
-/// Appends one line to the launcher log in the data folder.
+/// Writes a small text file through a temporary file and a rename.
+fn write_text_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let temporary = path.with_extension("ini.tmp");
+    fs::write(&temporary, text)?;
+    fs::rename(&temporary, path)
+}
+
+/// Appends an INFO line to the launcher's session log (see `session_log`).
 pub fn log(dirs: &DataDirs, message: &str) {
-    let seconds = SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_secs()).unwrap_or(0);
-    let _ = std::fs::create_dir_all(dirs.logs());
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(dirs.logs().join("launcher.log")) {
-        let _ = writeln!(file, "[{seconds}] {message}");
-    }
+    crate::session_log::write(dirs, gt4l_core::logs::Level::Info, message);
+}
+
+/// Appends a WARN line: a soft problem the player may notice (TASK-112).
+pub fn log_warn(dirs: &DataDirs, message: &str) {
+    crate::session_log::write(dirs, gt4l_core::logs::Level::Warn, message);
+}
+
+/// Appends an ERROR line: a real failure (a crash, a lost GPU, a failed setup, import, harvest or update) (TASK-112).
+pub fn log_error(dirs: &DataDirs, message: &str) {
+    crate::session_log::write(dirs, gt4l_core::logs::Level::Error, message);
 }
 
 impl AppState {
@@ -131,6 +208,9 @@ impl AppState {
         for warning in &warnings {
             log(&dirs, &format!("settings: {warning}"));
         }
+        set_current_language(language_of_settings(&config.settings));
+        // TASK-109: a release candidate build with no chosen update channel stays on Beta; any other build on Stable.
+        gt4l_core::update::apply_channel_default(&mut config.settings, gt4l_core::launcher_release_version());
         // Stored paths inside the install folder are relative (see `save_config`); resolve them here.
         config.disc_path = config.disc_path.map(|path| paths::resolve_portable(&path, &install_dir));
         config.dev_game_dir = config.dev_game_dir.map(|path| paths::resolve_portable(&path, &install_dir));
@@ -156,42 +236,120 @@ impl AppState {
                 Controls::default()
             }
         };
-        let opened = saves::open(&dirs, &user, pre_1_0_root.as_deref())?;
-        for line in &opened.log {
-            log(&dirs, line);
+        let mut libraries = BTreeMap::new();
+        let mut library_notice = None;
+        for game in games::GAMES {
+            // Only Gran Turismo 4 has a library from before 1.0.0 to take over.
+            let old_root = if game.id == GT4.id { pre_1_0_root.as_deref() } else { None };
+            let opened = saves::open(&dirs.for_game(game), &user.for_game(game), game, old_root)?;
+            for line in &opened.log {
+                log(&dirs, &format!("{}: {line}", game.id));
+            }
+            if game.id == GT4.id {
+                library_notice = opened.notice.clone();
+            }
+            libraries.insert(game.id, GameLibrary { library: opened.library, user: opened.user });
         }
-        Ok(AppState {
+        let spec2_pins = Spec2Pins::embedded()?;
+        let mut state = AppState {
             dirs,
             pins,
+            spec2_pins,
             config,
             controls,
-            user_dirs: opened.user,
+            user_dirs: user,
+            libraries,
+            selected: &GT4,
+            setup_game: None,
             install_dir,
             migration: MigrationRun::default(),
-            library: opened.library,
             setup_cancel: Arc::new(AtomicBool::new(false)),
             setup_busy: false,
             setup_run: SetupRun::default(),
             setup_outcome: SetupOutcome::None,
             game_child: None,
+            shaders_child: Arc::new(Mutex::new(None)),
+            shaders_cancelled: Arc::new(AtomicBool::new(false)),
             capturing: None,
             home_message: String::new(),
             controls_status: String::new(),
-            saves_status: opened.notice.unwrap_or_default(),
+            saves_status: library_notice.unwrap_or_default(),
             replays_status: String::new(),
             controls_locked,
             ra_revision: 0,
-        })
+            discord: Arc::new(DiscordPresence::new_default()),
+        };
+        // TASK-118: the RC settings must not survive into a final build: an RC install can leave the release report or
+        // the VU check on, and the final build does not ship their rows. Force the factory values and save.
+        if !gt4l_core::LAUNCHER_VERSION.contains("-rc") {
+            let mut changed = false;
+            for (id, factory) in [("performance_report", "off"), ("check_vu_code", "off")] {
+                if state.config.settings.get(id) != factory {
+                    let _ = state.config.settings.set(id, factory);
+                    changed = true;
+                }
+            }
+            if changed {
+                state.save_config();
+                log(&state.dirs, "final build: the release-candidate settings went back to their factory values");
+            }
+        }
+        let installed = state.installed_games();
+        state.selected = games::initial_selection(state.config.selected_game.as_deref(), &installed);
+        Ok(state)
     }
 
-    /// The cheap check of the copied disc image and the prepared files (no hash; see `gt4l_disc::setup`).
+    /// The data folders of one game (the shared parts are the same for every game).
+    pub fn game_dirs(&self, game: &'static Game) -> DataDirs {
+        self.dirs.for_game(game)
+    }
+
+    /// The save library of a game.
+    pub fn library_of(&self, game: &'static Game) -> &Library {
+        &self.libraries[game.id].library
+    }
+
+    /// The user folders of a game's library (`Saves`, `Replays`, `backups`).
+    pub fn user_for(&self, game: &'static Game) -> &UserDirs {
+        &self.libraries[game.id].user
+    }
+
+    /// The library of the game the page shows.
+    pub fn library(&self) -> &Library {
+        self.library_of(self.selected)
+    }
+
+    /// The user folders of the game the page shows.
+    pub fn selected_user(&self) -> &UserDirs {
+        self.user_for(self.selected)
+    }
+
+    /// The cheap check of one game's copied disc image and prepared files (no hash; see `gt4l_disc::setup`).
+    pub fn installed_of(&self, game: &'static Game) -> disc_setup::Installed {
+        let dirs = self.game_dirs(game);
+        match DiscGame::from_id(game.id) {
+            Some(DiscGame::Spec2) => disc_spec2::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.spec2_pins),
+            _ => disc_setup::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.pins),
+        }
+    }
+
+    /// The check for the game the page shows.
     pub fn installed(&self) -> disc_setup::Installed {
-        disc_setup::check_installed(&self.dirs.prepared(), &self.dirs.disc_folder(), &self.pins)
+        self.installed_of(self.selected)
     }
 
-    /// Home is ready when setup is not running and the copied image and prepared files pass the cheap check.
+    /// The games whose files pass the cheap check, in table order.
+    pub fn installed_games(&self) -> Vec<&'static Game> {
+        games::GAMES
+            .iter()
+            .copied()
+            .filter(|game| matches!(self.installed_of(game), disc_setup::Installed::Ready { .. }))
+            .collect()
+    }
+
+    /// Home is ready when setup is not running and at least one game passes the cheap check.
     pub fn home_ready(&self) -> bool {
-        !self.setup_busy && matches!(self.installed(), disc_setup::Installed::Ready { .. })
+        !self.setup_busy && !self.installed_games().is_empty()
     }
 
     /// Writes the settings to the user data folder. A path inside the install folder is stored relative to it, so a
@@ -201,7 +359,46 @@ impl AppState {
         stored.disc_path = stored.disc_path.map(|path| paths::portable_path(&path, &self.install_dir));
         stored.dev_game_dir = stored.dev_game_dir.map(|path| paths::portable_path(&path, &self.install_dir));
         if let Err(error) = config::save(&self.user_dirs.config_file(), &stored) {
-            log(&self.dirs, &format!("settings not saved: {error}"));
+            log_error(&self.dirs, &format!("settings not saved: {error}"));
+        }
+        // TASK-097: a direct start of the game reads the same choices.
+        self.write_standalone_files(&self.config.settings);
+    }
+
+    /// Writes what a direct start of the game reads (TASK-097) into the user config folder: `game.ini` (fullscreen, present
+    /// mode, monitor, output size and the diagnostic switches) and `gt4-gs.ini` (the session ini a Play writes, with the
+    /// same display plan). The game finds the folder as the launcher does (`<install>\user\config` for the portable
+    /// build, `%APPDATA%\GT4Recomp\config` otherwise). `settings` are the values of the run (TASK-108: a run that
+    /// falls back to Direct3D 11 writes its own). Failures are logged; nothing here can stop the launcher.
+    pub fn write_standalone_files(&self, stored: &Settings) {
+        // TASK-108: a save writes the stored choices, so the API, card and Adapter are resolved here as a Play does.
+        let (resolved, _, _) = gt4l_platform::gpu::run_settings(stored, gt4l_core::language::Language::fallback());
+        let settings = &resolved;
+        let monitors = gt4l_platform::display::monitors();
+        let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
+        let config_dir = self.user_dirs.config_dir().to_path_buf();
+        let game_ini = config_dir.join(launch::STANDALONE_CONFIG_FILE);
+        let mut text = launch::standalone_config_text(settings, display.as_ref());
+        if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
+            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
+            text.push_str(&launch::coregs20_section(settings, display.as_ref(), integrated, &self.texture_location().0));
+        }
+        if let Err(error) = fs::create_dir_all(&config_dir).and_then(|()| write_text_atomic(&game_ini, &text)) {
+            log_error(&self.dirs, &format!("{} not written: {error}", game_ini.display()));
+        }
+        // gt4-gs.ini needs the installed GSdx only for its folders; without it the previous file stays.
+        let renderer_root = self.dirs.renderer_root();
+        if let Some(installed) = gs_release::installed(&renderer_root) {
+            let paths = launch::Pcsx2Paths::for_session(&installed, &self.dirs.renderer_install_root(), &config_dir, &self.texture_location().0.folder);
+            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
+            match launch::gs_config_text(settings, &paths, display.as_ref(), integrated) {
+                Ok(text) => {
+                    if let Err(error) = gs_table::write_ini_atomic(&paths.config, &text) {
+                        log_error(&self.dirs, &format!("{} not written: {error}", paths.config.display()));
+                    }
+                }
+                Err(message) => log(&self.dirs, &format!("gt4-gs.ini for a direct start not rendered: {message}")),
+            }
         }
     }
 
@@ -213,6 +410,12 @@ impl AppState {
 
     pub fn disc_path(&self) -> Option<&Path> {
         self.config.disc_path.as_deref()
+    }
+
+    /// Where the renderers read custom textures (TASK-157): the folder the player chose when it is usable, else the
+    /// default `Textures` folder. The second value is the log line for a choice that cannot be used (it stays stored).
+    pub fn texture_location(&self) -> (TextureLocation, Option<String>) {
+        textures::resolve_location(&self.dirs.textures(), self.config.textures_path.as_deref(), self.dirs.root())
     }
 }
 

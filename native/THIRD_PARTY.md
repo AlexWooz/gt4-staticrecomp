@@ -62,3 +62,39 @@ The game executable never contains or links GPL code. The two processes exchange
 - Replace the Khronos header copy from the PCSX2 checkout with an upstream copy (section 3).
 - Read the Microsoft redistributable terms that apply to the copied CRT DLLs (section 1).
 - Keep the release notes of `gt4gs-v1.0.1` and the fork's `gt4gs/NOTICE` in step with each gt4-gs release.
+
+## 7. CoreGS 2.0 development branch (TASK-027, `GT4_HW_GS=ON` only)
+
+Nothing below is in the release executable: the HWR libraries are built only with `GT4_HW_GS=ON` on
+`task/027-coregs2`.
+
+### HWR texture replacement core (TASK-027, M16/M18)
+
+Vendored under `native/hw_gs/replace/third_party/`, unmodified:
+
+- **xxHash 0.8.3** (`xxhash.h`), XXH3-64 with seed 0 for the replacement keys
+  (chapters 11.2 and 11.3 of the TASK-026 specification). Upstream
+  <https://github.com/Cyan4973/xxHash> tag `v0.8.3`, file SHA-256
+  `17973c0dc49d9854ca26caa191f0e12f7a424b68858d9a78de3860d959d85e4b`.
+  Licence: BSD-2-Clause, Copyright (C) 2012-2023 Yann Collet (notice in the header).
+- **stb_image v2.30** (`stb_image.h`), PNG decoder only (`STBI_ONLY_PNG`, no stdio).
+  Upstream <https://github.com/nothings/stb> master, file SHA-256
+  `594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3`.
+  Licence: public domain (header statement "public domain image loader").
+
+Original code under `native/hw_gs/replace/` (MIT) is written from the TASK-026
+specification only (decision 0069). The test fixtures under
+`native/hw_gs/replace/tests/` (reference GS memory, PNG writer) are original
+code for CTest and are not linked into the game.
+
+### HWR shader compiler (TASK-027, M4)
+
+- **glslangValidator 16.2.0** (glslang project, Khronos), taken from the Vulkan SDK 1.4.341.1 at
+  `$VULKAN_SDK/Bin/glslangValidator.exe`. File SHA-256
+  `db832826d73049193882d5572ad76e14fcb7b1cdfc1a6b892ac25217b850b6bc`, pinned in
+  `native/hw_gs/shaders/CMakeLists.txt` (`GT4_HW_GLSLANG_SHA256`). Build tool only: it is not
+  linked or shipped, and the SPIR-V it emits from our own GLSL is embedded in the build output.
+  The glslang licence (BSD-style) is not vendored here; check the upstream licence before
+  redistributing the binary itself. Implementation note IN-201.
+- Our own HWR GLSL (`native/hw_gs/shaders/*.glsl`, `.vert`, `.frag`, `.comp`) is MIT, written from
+  `docs/hw-renderer-spec` only (decision 0069). No third-party shader source is vendored.

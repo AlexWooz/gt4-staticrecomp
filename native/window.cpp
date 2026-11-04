@@ -10,10 +10,14 @@
 #include "ps2/system.hpp"
 #include "perf_probe.hpp"
 #include "frame_clock.hpp"
+#include "frame_skip.hpp"
 #include "pacing.hpp"
 #include "window_mode.hpp"
+#include "window_heartbeat.hpp"
+#include "key_forward.hpp"
 #include "cursor_autohide.hpp"
 #include "achievements.hpp"
+#include "input_recording.hpp"
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
 #endif
@@ -26,11 +30,16 @@
 #include <array>
 #endif
 
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cwchar>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -38,6 +47,176 @@ constexpr wchar_t window_title[] = L"Gran Turismo 4";
 HWND game_window = nullptr;
 bool surface_attached = false;
 bool closing = false;
+std::uint64_t input_vblank = 0;  // guest VBlanks so far (input recording, pacing, diagnostics)
+// TASK-145: the client size the renderer last got (from attach_window or a WM_SIZE). A size message with an unchanged
+// size (a style or z-order change, a display re-detected) is not passed on: each one rebuilt the renderer's swapchain,
+// and while a flip-model swapchain is rebuilt the compositor shows what lies behind the window for a frame.
+std::uint32_t renderer_client_width = 0, renderer_client_height = 0;
+std::uint64_t unchanged_size_messages = 0;
+std::uint64_t position_changes = 0;
+
+// TASK-145 diagnostics: the module and offset of a code address, for the window watch's stack.
+std::string module_of_address(const void *address) {
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          static_cast<LPCWSTR>(address), &module))
+    return "unknown";
+  wchar_t path[MAX_PATH] = L"";
+  GetModuleFileNameW(module, path, MAX_PATH);
+  const wchar_t *name = std::wcsrchr(path, L'\\');
+  char text[260] = "";
+  WideCharToMultiByte(CP_UTF8, 0, name != nullptr ? name + 1 : path, -1, text, sizeof text, nullptr, nullptr);
+  return std::string(text) + "+0x" + [&] {
+    char offset[24];
+    std::snprintf(offset, sizeof offset, "%llx",
+                  static_cast<unsigned long long>(static_cast<const char *>(address) - reinterpret_cast<const char *>(module)));
+    return std::string(offset);
+  }();
+}
+// TASK-145 diagnostics: the program and window class behind a window handle, for the position-change log.
+std::string window_owner(HWND handle) {
+  if (handle == nullptr) return "none";
+  DWORD pid = 0;
+  GetWindowThreadProcessId(handle, &pid);
+  auto utf8 = [](const wchar_t *text) {
+    char out[512] = "";
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, out, sizeof out, nullptr, nullptr);
+    return std::string(out);
+  };
+  std::string program = "pid " + std::to_string(pid);
+  if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+    wchar_t path[MAX_PATH] = L"";
+    DWORD size = MAX_PATH;
+    if (QueryFullProcessImageNameW(process, 0, path, &size)) {
+      const wchar_t *name = std::wcsrchr(path, L'\\');
+      program = utf8(name != nullptr ? name + 1 : path);
+    }
+    CloseHandle(process);
+  }
+  wchar_t class_name[128] = L"";
+  GetClassNameW(handle, class_name, 128);
+  return program + " (" + utf8(class_name) + ")";
+}
+
+// TASK-145 diagnostics: the visible top-level windows Windows takes as not responding (it replaces them by a "Ghost"
+// window of dwm.exe after about 5 seconds, which re-stacks a fullscreen window in front of it).
+std::string hung_windows() {
+  std::string list;
+  EnumWindows(
+      [](HWND handle, LPARAM out) -> BOOL {
+        if (IsWindowVisible(handle) && IsHungAppWindow(handle)) {
+          auto &text = *reinterpret_cast<std::string *>(out);
+          if (!text.empty()) text += ", ";
+          text += window_owner(handle);
+        }
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&list));
+  return list.empty() ? "none" : list;
+}
+
+// TASK-145 diagnostics: GT4_WINDOW_WATCH=1 starts a thread that asks Windows every 50 ms whether it takes the game
+// window as not responding (IsHungAppWindow; after about 5 seconds dwm.exe covers such a window with a white "Ghost"
+// window) and whether a Ghost window exists. It logs each change with the time since the game thread last read its
+// messages, and the game thread's call stack whenever that time passes one second. The launcher does not pass our
+// environment on, so a diagnostic build for the owner sets GT4_TEST_WINDOW_WATCH=1 at compile time instead.
+#ifndef GT4_TEST_WINDOW_WATCH
+#define GT4_TEST_WINDOW_WATCH 0
+#endif
+std::atomic<std::uint64_t> last_pump_ms{0};
+std::atomic<std::uint64_t> watched_vblank{0};
+std::atomic<bool> watch_stop{false};
+std::thread window_watch;
+bool window_watch_wanted() {
+  static const bool on = [] {
+    const char *text = std::getenv("GT4_WINDOW_WATCH");
+    return text != nullptr ? std::strcmp(text, "1") == 0 : GT4_TEST_WINDOW_WATCH != 0;
+  }();
+  return on;
+}
+// The return addresses on the stack of `thread` (suspended while it is read), innermost first.
+std::vector<std::uint64_t> stack_of(HANDLE thread) {
+  std::array<std::uint64_t, 32> frames{};
+  std::size_t count = 0;
+  if (SuspendThread(thread) == static_cast<DWORD>(-1)) return {};
+  CONTEXT context{};
+  context.ContextFlags = CONTEXT_FULL;
+  if (GetThreadContext(thread, &context)) {
+    while (count < frames.size() && context.Rip != 0) {
+      frames[count++] = context.Rip;
+      DWORD64 image_base = 0;
+      PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+      if (function == nullptr) {  // a leaf function: the return address is on top of the stack
+        context.Rip = *reinterpret_cast<const DWORD64 *>(context.Rsp);
+        context.Rsp += 8;
+      } else {
+        void *handler_data = nullptr;
+        DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context, &handler_data, &establisher,
+                         nullptr);
+      }
+    }
+  }
+  ResumeThread(thread);
+  return std::vector<std::uint64_t>(frames.begin(), frames.begin() + count);
+}
+void start_window_watch() {
+  if (!window_watch_wanted() || window_watch.joinable()) return;
+  HANDLE game_thread = nullptr;
+  DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &game_thread,
+                  THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
+  std::fprintf(stderr, "[window] watch: on (window thread %lu, message thread %lu)\n",
+               GetWindowThreadProcessId(game_window, nullptr), GetCurrentThreadId());
+  last_pump_ms.store(GetTickCount64(), std::memory_order_relaxed);
+  window_watch = std::thread([game_thread, window = game_window] {
+    bool hung = false, ghost = false, stack_logged = false;
+    std::uint64_t hung_since = 0, ghost_since = 0;
+    while (!watch_stop.load(std::memory_order_relaxed) && IsWindow(window)) {
+      Sleep(50);
+      const std::uint64_t now = GetTickCount64();
+      const std::uint64_t quiet = now - last_pump_ms.load(std::memory_order_relaxed);
+      const unsigned long long vblank = watched_vblank.load(std::memory_order_relaxed);
+      const bool now_hung = IsHungAppWindow(window) != FALSE;
+      HWND ghost_window = FindWindowW(L"Ghost", nullptr);
+      const bool now_ghost = ghost_window != nullptr && IsWindowVisible(ghost_window);
+      if (now_hung != hung) {
+        if (now_hung) hung_since = now;
+        std::fprintf(stderr, "[window] watch: %s at VBlank %llu; messages last read %llu ms ago%s\n",
+                     now_hung ? "Windows takes the game window as NOT RESPONDING" : "the game window responds again",
+                     vblank, static_cast<unsigned long long>(quiet),
+                     now_hung ? "" : (" (after " + std::to_string(now - hung_since) + " ms)").c_str());
+        hung = now_hung;
+      }
+      if (now_ghost && !ghost) {
+        ghost_since = now;
+        RECT area{};
+        GetWindowRect(ghost_window, &area);
+        std::fprintf(stderr, "[window] watch: Ghost window shown at VBlank %llu: %s, %ld,%ld %ldx%ld\n", vblank,
+                     window_owner(ghost_window).c_str(), area.left, area.top, area.right - area.left,
+                     area.bottom - area.top);
+      } else if (!now_ghost && ghost) {
+        std::fprintf(stderr, "[window] watch: Ghost window gone at VBlank %llu after %llu ms\n", vblank,
+                     static_cast<unsigned long long>(now - ghost_since));
+      }
+      ghost = now_ghost;
+      if (quiet >= 1000 && !stack_logged && game_thread != nullptr) {
+        const std::vector<std::uint64_t> frames = stack_of(game_thread);
+        std::string text;
+        for (const std::uint64_t frame : frames)
+          text += "\n    " + module_of_address(reinterpret_cast<const void *>(frame));
+        std::fprintf(stderr, "[window] watch: messages not read for %llu ms at VBlank %llu; game thread stack:%s\n",
+                     static_cast<unsigned long long>(quiet), vblank, text.c_str());
+        stack_logged = true;
+      }
+      if (quiet < 1000) stack_logged = false;
+    }
+    if (game_thread != nullptr) CloseHandle(game_thread);
+  });
+}
+void stop_window_watch() {
+  watch_stop.store(true, std::memory_order_relaxed);
+  if (window_watch.joinable()) window_watch.join();
+}
 ControllerInput *controller = nullptr;
 gt4::window_mode::ToggleState fullscreen_state;
 #ifdef GT4_SHAPE_CAPTURE
@@ -133,6 +312,17 @@ void declare_dpi_awareness() {
   std::fprintf(stderr, "[window] DPI awareness %s\n", aware ? "per-monitor v2" : "system");
 }
 
+// IN-520: GT4_INPUT_RECORD=<file> writes the pad state the game receives per VBlank, and F9 ends the recording and closes the
+// game. GT4_INPUT_REPLAY=<file> gives the game those states at the same VBlanks instead of reading any input.
+gt4::input_recording::Recorder input_recorder;
+std::unique_ptr<gt4::input_recording::Player> input_player;
+// GT4_PACING_FROM_VBLANK=<n>: no waiting before this VBlank, then paced: a bench reaches a race in less time, with the same
+// presses, since they count VBlanks.
+const std::uint64_t paced_from_vblank = [] {
+  const char *text = std::getenv("GT4_PACING_FROM_VBLANK");
+  return text != nullptr ? std::strtoull(text, nullptr, 10) : 0ull;
+}();
+
 void apply_pad(const PadState &pad) {
   ps2::set_pad_buttons(pad.buttons);
   for (int axis = 0; axis < 4; ++axis)
@@ -193,6 +383,13 @@ void set_fullscreen(bool enabled) {
 
 LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
                                   LPARAM second) {
+  if (input_recorder.active() && message == WM_KEYDOWN && first == VK_F9) {
+    const std::uint64_t changes = input_recorder.finish(input_vblank);
+    std::fprintf(stderr, "[input] recording ended by F9 at VBlank %llu, %llu changes; closing the game\n",
+                 static_cast<unsigned long long>(input_vblank), static_cast<unsigned long long>(changes));
+    PostMessageW(window, WM_CLOSE, 0, 0);
+    return 0;
+  }
 #ifdef GT4_PERF_PROBE
   if (message == WM_KEYDOWN && (first == VK_F7 || first == VK_F8 || first == VK_F9)) {
     if (first == VK_F7) {
@@ -217,6 +414,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   }
 #endif
   if (message == WM_CLOSE) {
+    input_recorder.finish(input_vblank);  // Alt+F4 or the window's X also leave a complete recording
 #ifdef GT4_GS_STREAM_CLIENT
     // TASK-038: with GT4_RENDERER=pcsx2 the GS process draws into a child of this window, and DestroyWindow waits for
     // that process's window thread (a stalled GS window thread would freeze the close). Halt the guest instead; the
@@ -243,6 +441,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
     PostQuitMessage(0);
     return 0;
   }
+  // TASK-145: the responsiveness timer (window_heartbeat.hpp). Reading it from the queue is its whole job.
+  if (gt4::window_heartbeat::is_heartbeat(message, first)) return 0;
 #ifdef GT4_GS_STREAM_CLIENT
   // TASK-038 (slice195): with GT4_RENDERER=pcsx2 the picture is a child window of another process. Whenever this
   // window is activated (also when gt4-gs.exe gives the foreground back after a click on the picture), the keyboard
@@ -250,6 +450,13 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   if (message == WM_ACTIVATE && LOWORD(first) != WA_INACTIVE && gt4::gs_stream::stream_renderer()) {
     SetFocus(window);
     return 0;
+  }
+  // TASK-154 (key_forward.hpp): the overlay keys also reach the picture's window in gt4-gs (ReShade's Home); this window
+  // still handles them as before.
+  if (gt4::key_forward::should_forward(message, first) && gt4::gs_stream::stream_renderer()) {
+    for (HWND child = GetWindow(window, GW_CHILD); child != nullptr; child = GetWindow(child, GW_HWNDNEXT)) {
+      PostMessageW(child, message, first, second);
+    }
   }
 #endif
   // TASK-060: over the client area the cursor follows the auto-hide state; elsewhere (frame, title bar) the default.
@@ -261,18 +468,90 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   }
   if (message == WM_KILLFOCUS && controller) {
     controller->stop();
-    if (ps2::g_options.presses.empty())
+    if (ps2::g_options.presses.empty() && !input_player)
       apply_pad({});
   }
   if (message == WM_MOVE || message == WM_SIZE)
     gt4::achievements::on_window_pos_changed(window);
+  // TASK-145 diagnostics (GT4_WINDOW_WATCH=1): the game window losing or getting the activation, and which program's
+  // window takes it (the first ten and then every 25th of each).
+  if ((message == WM_ACTIVATEAPP || message == WM_ACTIVATE) && surface_attached && window_watch_wanted()) {
+    static std::uint64_t activations[2] = {0, 0};
+    const bool app = message == WM_ACTIVATEAPP;
+    const std::uint64_t count = ++activations[app ? 1 : 0];
+    if (count <= 10 || count % 25 == 0) {
+      std::string other = "none";
+      if (app) {
+        // lParam: the thread of the application being activated or deactivated.
+        if (HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(second))) {
+          const DWORD pid = GetProcessIdOfThread(thread);
+          CloseHandle(thread);
+          other = "pid " + std::to_string(pid);
+          if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+            wchar_t path[MAX_PATH] = L"";
+            DWORD size = MAX_PATH;
+            if (QueryFullProcessImageNameW(process, 0, path, &size)) {
+              const wchar_t *name = std::wcsrchr(path, L'\\');
+              char text[260] = "";
+              WideCharToMultiByte(CP_UTF8, 0, name != nullptr ? name + 1 : path, -1, text, sizeof text, nullptr, nullptr);
+              other = text;
+            }
+            CloseHandle(process);
+          }
+        }
+      } else {
+        other = window_owner(reinterpret_cast<HWND>(second));  // lParam: the window being activated or deactivated
+      }
+      const bool active = app ? first != 0 : LOWORD(first) != WA_INACTIVE;
+      std::fprintf(stderr, "[window] %s %s at VBlank %llu (%llu so far); the other side: %s\n", app ? "application" : "window",
+                   active ? "activated" : "deactivated", static_cast<unsigned long long>(input_vblank),
+                   static_cast<unsigned long long>(count), other.c_str());
+    }
+  }
+  // TASK-145 diagnostics (GT4_WINDOW_WATCH=1): who moves or re-stacks the game window, the first ten and then every
+  // 25th.
+  if (message == WM_WINDOWPOSCHANGED && surface_attached && window_watch_wanted()) {
+    ++position_changes;
+    if (position_changes <= 10 || position_changes % 25 == 0) {
+      const auto *position = reinterpret_cast<const WINDOWPOS *>(second);
+      std::fprintf(stderr, "[window] position change %llu at VBlank %llu: flags 0x%04x, %d,%d %dx%d; above: %s; foreground: %s; "
+                           "not responding: %s\n",
+                   static_cast<unsigned long long>(position_changes), static_cast<unsigned long long>(input_vblank),
+                   position->flags, position->x, position->y, position->cx, position->cy,
+                   window_owner(GetWindow(window, GW_HWNDPREV)).c_str(), window_owner(GetForegroundWindow()).c_str(),
+                   hung_windows().c_str());
+    }
+  }
   // TASK-080: GT4_DISPLAY_ASPECT=auto follows the client area (windowed, fullscreen, Alt+Enter, resize).
   if (message == WM_SIZE)
     gt4::display_aspect::set_window_client_size(LOWORD(second), HIWORD(second));
   if (message == WM_SIZE && surface_attached) {
-    ps2::gs::resize_window(LOWORD(second), HIWORD(second));
+    const std::uint32_t width = LOWORD(second), height = HIWORD(second);
+    if (width == renderer_client_width && height == renderer_client_height) {
+      // TASK-145: nothing to resize. The first ones and then every 50th are logged, to see how often Windows sends them.
+      ++unchanged_size_messages;
+      if (unchanged_size_messages <= 5 || unchanged_size_messages % 50 == 0)
+        std::fprintf(stderr, "[window] size message with the same client size %ux%u at VBlank %llu, not passed on (%llu so far)\n",
+                     width, height, static_cast<unsigned long long>(input_vblank),
+                     static_cast<unsigned long long>(unchanged_size_messages));
+      return 0;
+    }
+    static std::uint64_t size_changes = 0;  // a drag of the window border sends one per mouse step: log a few
+    if (++size_changes <= 10 || size_changes % 100 == 0)
+      std::fprintf(stderr, "[window] client size %ux%u -> %ux%u at VBlank %llu\n", renderer_client_width,
+                   renderer_client_height, width, height, static_cast<unsigned long long>(input_vblank));
+    renderer_client_width = width;
+    renderer_client_height = height;
+    ps2::gs::resize_window(width, height);
     return 0;
   }
+  // TASK-145 diagnostics: display and DPI changes, which bring size messages with them.
+  if (message == WM_DISPLAYCHANGE)
+    std::fprintf(stderr, "[window] display change: %ux%u at %u bits, VBlank %llu\n", LOWORD(second), HIWORD(second),
+                 static_cast<unsigned>(first), static_cast<unsigned long long>(input_vblank));
+  if (message == WM_DPICHANGED)
+    std::fprintf(stderr, "[window] DPI change to %u at VBlank %llu\n", static_cast<unsigned>(LOWORD(first)),
+                 static_cast<unsigned long long>(input_vblank));
   return DefWindowProcW(window, message, first, second);
 }
 
@@ -291,6 +570,8 @@ void present_race_view(bool fill, double ratio) {
 }
 
 bool pump_messages() {
+  last_pump_ms.store(GetTickCount64(), std::memory_order_relaxed);
+  watched_vblank.store(input_vblank, std::memory_order_relaxed);
   MSG message{};
   while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
     if (message.message == WM_QUIT) {
@@ -307,15 +588,61 @@ bool pump_messages() {
 // Releases the guest frame. Paced mode waits on the wall-clock grid first, so
 // each VBlank comes at the donor's 60 Hz rate and audio never sets the pace.
 // The interval histogram is recorded in both modes.
+std::int64_t last_release = 0;
+std::int64_t ee_frame_ticks = 0;  // from the last release to this VBlank, before any wait for the pacer
+std::int64_t last_gs_wait = 0;
+
+// TASK-082: what the frame skip decides from, and what the presenter and the pacer get from it.
+void note_frame_skip_vblank() {
+  if (!gt4::frame_skip::g_enabled) return;
+  gt4::frame_skip::Controller &skip = gt4::frame_skip::controller();
+  const std::int64_t gs_wait = gt4::pacing::ee_gs_wait_us.load(std::memory_order_relaxed);
+  const std::int32_t ee_frame = static_cast<std::int32_t>(std::max<std::int64_t>(ee_frame_ticks * 1000000 / static_cast<std::int64_t>(frame_clock ? frame_clock->frequency() : 1) -
+                                                                                     (gs_wait - last_gs_wait), 0));
+  last_gs_wait = gs_wait;
+  skip.note_vblank(input_vblank, gt4::pacing::ee_slack_us, gt4::pacing::gs_late_us.load(std::memory_order_relaxed),
+                   gt4::pacing::gs_cost_us.load(std::memory_order_relaxed), ee_frame);
+  gt4::pacing::frame_skip_engaged.store(skip.gate_open(), std::memory_order_relaxed);
+  gt4::pacing::frame_skip_recent.store(skip.skipping_recently(), std::memory_order_relaxed);
+  if (input_vblank % 600 == 0) gt4::frame_skip::print_report(stderr);
+}
+
 void release_frame() {
   if (pacing_mode == gt4::pacing::Mode::paced) {
     if (!frame_pacer->anchored())
       frame_pacer->anchor(frame_clock->now());
+    if (const std::int32_t shift = gt4::pacing::grid_shift_us.exchange(0, std::memory_order_relaxed)) {
+      frame_pacer->shift(static_cast<std::int64_t>(shift) * static_cast<std::int64_t>(frame_clock->frequency()) / 1000000);
+    }
     // TASK-084 step 0: the sleep is its own category, so F8 ee_dispatch and unattributed mean work, not sleep.
     GT4_PERF_SCOPE(gt4::perf::Category::pacing_wait);
-    frame_clock->wait_until(frame_pacer->deadline());
+    // Bench switch: GT4_PACING_NO_WAIT=1 runs as fast as it can with a window, to compare with a run with no window.
+    static const bool no_wait = std::getenv("GT4_PACING_NO_WAIT") != nullptr;
+    ee_frame_ticks = last_release != 0 ? frame_clock->now() - last_release : 0;
+    gt4::pacing::ee_slack_us = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+        (frame_pacer->deadline() - frame_clock->now()) * 1000000 / static_cast<std::int64_t>(frame_clock->frequency()), -100000, 100000));
+    // IN-519: behind the grid, frames were released at once until it caught up: bursts of 9 ms intervals after a slow stretch,
+    // a zigzag in the frametime for no gain. A frame now waits at least this long after the last one, so the lost time comes
+    // back at about 1 ms per frame; past a whole period behind, the pacer restarts its grid as before.
+    // GT4_PACING_MIN_INTERVAL_US=0 releases at once (A/B).
+    static const std::int64_t min_interval = [] {
+      const char *text = std::getenv("GT4_PACING_MIN_INTERVAL_US");
+      const std::int64_t microseconds = text != nullptr ? std::atoll(text) : 15700;
+      return microseconds * static_cast<std::int64_t>(frame_clock->frequency()) / 1000000;
+    }();
+    // Not waiting, the grid must not run ahead of the clock, or the first paced frame would sleep until the grid came back.
+    if (input_vblank + 1 < paced_from_vblank) frame_pacer->anchor(frame_clock->now());
+    if (!no_wait && input_vblank + 1 >= paced_from_vblank) {
+      // TASK-082: with frames being left out the lost time comes back at once: that is what they are for. TASK-146: up to 12
+      // frames (200 ms) are owed and paid back; the laptop's longest stalls were 70-80 ms on top of a delay already owed.
+      frame_pacer->set_resync_periods(gt4::pacing::frame_skip_engaged.load(std::memory_order_relaxed) ? 12 : 1);
+      const std::int64_t earliest =
+          last_release != 0 && !gt4::pacing::frame_skip_recent.load(std::memory_order_relaxed) ? last_release + min_interval : 0;
+      frame_clock->wait_until(std::max(frame_pacer->deadline(), earliest));
+    }
   }
   const std::int64_t released = frame_clock->now();
+  last_release = released;
   if (pacing_mode == gt4::pacing::Mode::paced)
     frame_pacer->release(released);
   pacing_diagnostics.record_release(released, frame_clock->frequency());
@@ -327,6 +654,9 @@ void on_vblank() {
       {ps2::now(), ps2::primitives_drawn(), ps2::vu1_interpreted_calls()});
 #endif
   release_frame();
+  ++input_vblank;
+  if (input_vblank == 1) start_window_watch();  // TASK-145 diagnostics, GT4_WINDOW_WATCH=1 only
+  note_frame_skip_vblank();
   GT4_PERF_SCOPE(gt4::perf::Category::host_vblank);
   if (!pump_messages())
     return;
@@ -350,8 +680,12 @@ void on_vblank() {
         buttons |= binding.button_mask;
     }
   }
-  if (ps2::g_options.presses.empty()) {
-    apply_pad(controller->poll(focused, buttons));
+  if (input_player) {
+    apply_pad(input_player->at(input_vblank));
+  } else if (ps2::g_options.presses.empty()) {
+    const PadState pad = controller->poll(focused, buttons);
+    apply_pad(pad);
+    input_recorder.vblank(input_vblank, pad);
     if (focused)
       controller->rumble(ps2::pad_rumble());
   }
@@ -367,7 +701,56 @@ void on_vblank() {
 }
 } // namespace
 
+// IN-520: the recording and replay files; false stops the start, since a bench must not run with half its input.
+bool open_input_files() {
+  const char *record = std::getenv("GT4_INPUT_RECORD");
+  const char *replay = std::getenv("GT4_INPUT_REPLAY");
+  std::string error;
+  if (record != nullptr && replay != nullptr) {
+    std::fprintf(stderr, "[input] GT4_INPUT_RECORD and GT4_INPUT_REPLAY together, game not started\n");
+    return false;
+  }
+  if (record != nullptr && !input_recorder.open(record, error)) {
+    std::fprintf(stderr, "[input] %s, game not started\n", error.c_str());
+    return false;
+  }
+  if (record != nullptr) std::fprintf(stderr, "[input] recording to %s; F9 ends it and closes the game\n", record);
+  if (replay != nullptr) {
+    input_player = std::make_unique<gt4::input_recording::Player>();
+    if (!input_player->load(replay, error)) {
+      std::fprintf(stderr, "[input] %s: %s, game not started\n", replay, error.c_str());
+      return false;
+    }
+    std::fprintf(stderr, "[input] replaying %s: %zu changes up to VBlank %llu\n", replay, input_player->changes(),
+                 static_cast<unsigned long long>(input_player->end()));
+  }
+  return true;
+}
+
+bool install_input_replay_without_window() {
+  if (std::getenv("GT4_INPUT_RECORD") != nullptr) {
+    std::fprintf(stderr, "[input] GT4_INPUT_RECORD needs --window, game not started\n");
+    return false;
+  }
+  if (std::getenv("GT4_INPUT_REPLAY") == nullptr) {
+    if (gt4::frame_skip::g_enabled) {
+      ps2::g_options.on_vblank = [] {
+        ++input_vblank;
+        note_frame_skip_vblank();
+      };
+    }
+    return true;
+  }
+  if (!open_input_files()) return false;
+  ps2::g_options.on_vblank = [] {
+    apply_pad(input_player->at(++input_vblank));
+    note_frame_skip_vblank();
+  };
+  return true;
+}
+
 bool open_window(bool fullscreen) {
+  if (!open_input_files()) return false;
   // The launcher passes GT4_FULLSCREEN (its Display setting, on by default). An invalid value stops the start.
   bool start_fullscreen = fullscreen;
   try {
@@ -414,7 +797,7 @@ bool open_window(bool fullscreen) {
   // TASK-088: a black background, not none. With no brush Windows shows the new window white until the first frame
   // (the start before the Sony logo); the game paints every frame, so only the first frames show it.
   window_class.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-  // Icon from the executable resource (gt4vulkan.rc, IDI 1 = game.ico from launcher/assets/brand).
+  // Icon from the executable resource (gt4vulkan.rc, IDI 1 = launcher.ico from launcher/assets/brand).
   window_class.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
   arrow_cursor = window_class.hCursor;
   if (!RegisterClassW(&window_class))
@@ -457,6 +840,15 @@ bool open_window(bool fullscreen) {
       window_class.hInstance, nullptr);
   if (!game_window)
     throw std::runtime_error("Cannot create native game window");
+  // TASK-145: without this timer Windows takes the game window as not responding after 5 seconds without input, and
+  // in fullscreen the desktop flashes every 6 seconds (window_heartbeat.hpp, decision 0076). Keep it.
+  if (gt4::window_heartbeat::wanted(std::getenv("GT4_WINDOW_HEARTBEAT"))) {
+    const bool started = gt4::window_heartbeat::start(game_window);
+    std::fprintf(stderr, "[window] responsiveness timer %s (GT4_WINDOW_HEARTBEAT; a message every %u ms)\n",
+                 started ? "on" : "could not start", gt4::window_heartbeat::interval_ms);
+  } else {
+    std::fprintf(stderr, "[window] responsiveness timer off (GT4_WINDOW_HEARTBEAT=0): expect \"Not responding\"\n");
+  }
   // Start in borderless fullscreen on the window's monitor: the same path as Alt+Enter and F11.
   if (start_fullscreen)
     set_fullscreen(true);
@@ -484,6 +876,8 @@ int run_window(const std::function<int()> &emulate) {
   ControllerInput input(active_controls, input_backend);
   controller = &input;
   const auto cleanup = [&]() {
+    stop_window_watch();
+    input_recorder.finish(input_vblank);
     gt4::achievements::shutdown();
 #ifdef GT4_PERF_PROBE
     gt4::perf::Probe::shared().set_report_section({});
@@ -560,6 +954,8 @@ int run_window(const std::function<int()> &emulate) {
                                 nullptr, nullptr, bounds.right, bounds.bottom))
       throw std::runtime_error("Native Vulkan presentation refused window");
     surface_attached = true;
+    renderer_client_width = static_cast<std::uint32_t>(bounds.right);
+    renderer_client_height = static_cast<std::uint32_t>(bounds.bottom);
     // The presentation is 16:9 pillarbox; TASK-080 fills the screen in the race view at other ratios.
     ps2::gs::gpu::set_widescreen(true);
     gt4::display_aspect::set_presentation_sink(present_race_view);
@@ -568,7 +964,15 @@ int run_window(const std::function<int()> &emulate) {
     // shortcut: one thread and FIFO presentation, qualify pipelining later.
     ps2::g_options.on_vblank = on_vblank;
     gt4::achievements::initialize(game_window, ps2::g_ram, ps2::kRamSize, ps2::g_spr, ps2::kScratchpadSize);
-    AudioOutput audio(pump_messages, pacing_mode);
+    const char *audio_choice = std::getenv("GT4_AUDIO");
+    AudioOutput audio(pump_messages, pacing_mode,
+                      audio_choice != nullptr && std::strcmp(audio_choice, "none") == 0 ? AudioDevice::none
+                                                                                       : AudioDevice::system);
+    // TASK-129: without sound the blocking audio path has nothing to wait on, so the frame clock paces the game.
+    if (audio.silent() && pacing_mode == gt4::pacing::Mode::audio) {
+      pacing_mode = gt4::pacing::Mode::paced;
+      std::fprintf(stderr, "[pacing] mode=paced: no audio output to pace on\n");
+    }
     audio_output = &audio;
 #ifdef GT4_PERF_PROBE
     gt4::perf::Probe::shared().set_report_section([](std::FILE *output) {

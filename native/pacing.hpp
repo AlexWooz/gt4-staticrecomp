@@ -8,12 +8,32 @@
 // blocks the emulation thread; instead the produced stream is resampled by a
 // ratio within +-0.5 % so the device queue stays at its latency target.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
 
 namespace gt4::pacing {
+
+// IN-514: how long before the VBlank's deadline the EE finished its last frame, in microseconds, negative when late, and
+// kNoSlack before the first paced frame. Written and read on the EE thread only.
+inline constexpr std::int32_t kNoSlack = INT32_MIN;
+inline std::int32_t ee_slack_us = kNoSlack;
+
+// IN-521: how much later the release grid should run, in microseconds, set by the presentation's latency control.
+inline std::atomic<std::int32_t> grid_shift_us{0};
+
+// TASK-082: guest VBlanks queued in the GS worker, and what the frame skip tells the presenter: a running race where a frame may
+// have no drawing (hold the display when it did not change), and frames left out lately (the display queue control waits).
+inline std::atomic<std::uint32_t> gs_vsyncs_queued{0};
+// How long after the next VBlank was due the GS worker finished the last one, in microseconds; negative: in time.
+inline std::atomic<std::int32_t> gs_late_us{0};
+// What a drawn frame takes on the GS worker (mean of the last ones), and how long the EE has waited for it so far, in microseconds.
+inline std::atomic<std::int32_t> gs_cost_us{0};
+inline std::atomic<std::int64_t> ee_gs_wait_us{0};
+inline std::atomic<bool> frame_skip_engaged{false};
+inline std::atomic<bool> frame_skip_recent{false};
 
 // Audio latency target: 60 ms of stereo 48 kHz frames.
 inline constexpr std::size_t target_latency_frames = 2880;
@@ -34,6 +54,9 @@ const char *mode_name(Mode mode);
 enum class PresentMode { fifo, mailbox, immediate };
 PresentMode parse_present_mode(const char *value);
 const char *present_mode_name(PresentMode mode);
+// The mode to use on a surface that may not have the wanted one. FIFO always exists (Vulkan requires it). Mailbox and
+// immediate stand in for each other (both are "do not wait for vsync"), then FIFO.
+PresentMode available_present_mode(PresentMode wanted, bool mailbox_available, bool immediate_available);
 
 // Release schedule on a clock with `frequency` ticks per second. The period is
 // frequency / rate ticks, kept exact by storing the deadline scaled by `rate`,
@@ -47,6 +70,11 @@ public:
 
   // Starts the grid: the first frame is due at `now`.
   void anchor(std::int64_t now);
+  // IN-521: moves the grid by this many ticks; positive is later.
+  void shift(std::int64_t ticks);
+  // TASK-082: behind by this many periods before the grid restarts (default 1). With frames left out the host catches up, so a
+  // heavy frame must not lose its time for good: the game keeps its speed.
+  void set_resync_periods(std::uint32_t periods) { resync_periods_ = periods; }
   bool anchored() const { return anchored_; }
   // Deadline of the next release, in clock ticks (floor of the scaled value).
   std::int64_t deadline() const;
@@ -69,6 +97,7 @@ private:
   std::int64_t scaled_deadline_ = 0;
   std::uint64_t late_frames_ = 0;
   std::uint64_t resyncs_ = 0;
+  std::uint32_t resync_periods_ = 1;
 };
 
 // Linear resampler for interleaved stereo int16 frames. `ratio` is output

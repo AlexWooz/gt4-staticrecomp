@@ -60,6 +60,8 @@ SCENES = {
 }
 
 # The gt4-gs.ini the probe writes for performance runs (TASK-036 minimal settings, 1x), plus surfaceless dumping.
+# HWDownloadMode (TASK-116 step 0): 0 = Accurate (GSHardwareDownloadMode Enabled), 2 = NoReadbacks, the launcher's
+# Performance mode (docs/launcher/gs-settings.toml, performance_mode).
 GS_INI = """; gt4-gs.ini written by scripts/frame_cost_headless.py (the probe's TASK-036 settings, 1x).
 [EmuCore/GS]
 Renderer = 14
@@ -69,7 +71,7 @@ deinterlace_mode = 0
 AspectRatio = Auto 4:3/3:2
 VsyncEnable = true
 DisableMailboxPresentation = true
-HWDownloadMode = 0
+HWDownloadMode = {readback}
 
 [Folders]
 Cache = {cache}
@@ -81,18 +83,16 @@ Surfaceless = true
 {dump_lines}"""
 
 
-def gs_config_for_run(run, scale, dump_lines=''):
-    """Keep all renderer writes inside this run, including caches and DataRoot."""
-    run = Path(run)
-    return GS_INI.format(scale=scale, cache=run / 'gs-cache', data=run / 'gs-data', dump_lines=dump_lines)
-
-
 def sha256(path):
     digest = hashlib.sha256()
     with open(path, 'rb') as handle:
         for block in iter(lambda: handle.read(1 << 20), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+# TASK-116 step 0: --readback to the HWDownloadMode value of the generated gt4-gs.ini (docs/launcher/gs-settings.toml).
+READBACK_MODES = {'accurate': 0, 'no-readbacks': 2}
 
 
 def builders_running():
@@ -105,17 +105,57 @@ def builders_running():
     return [name for name in names if name in output]
 
 
+def with_textures(ini_text, textures):
+    """Adds the launcher's custom-texture keys to a gt4-gs.ini: [Folders] Textures and LoadTextureReplacements.
+
+    TASK-100 S7c: gt4-gs 1.2.1 reads the folder recursively, but PCSX2's loader switch defaults to off, so the launcher
+    always writes it (docs/launcher/gs-settings.toml, texture_load). Both keys are only written when a pack folder is
+    named, so every existing run stays byte-identical.
+    """
+    if textures is None:
+        return ini_text
+    folders = '[Folders]\n'
+    section = '[EmuCore/GS]\n'
+    if ini_text.count(folders) != 1 or ini_text.count(section) != 1:
+        raise ValueError('the gt4-gs.ini template needs one [EmuCore/GS] and one [Folders] section')
+    text = ini_text.replace(folders, folders + f'Textures = {textures}\n')
+    return text.replace(section, section + 'LoadTextureReplacements = true\n')
+
+
+def game_arguments(exe, elf_copy, iso, card, frames, presses, donor_frames_dir=None, frame_every=0):
+    """The gt4vulkan command line for one headless run (pure, so the harness contract is testable)."""
+    card = Path(card)
+    arguments = [str(exe), str(elf_copy), '--ntsc', '--disc', str(iso), '--frames', str(frames),
+                 '--memcard', str(card), '--misses', str(card.parent / 'misses.txt')]
+    if donor_frames_dir is not None and frame_every:
+        # The donor renderer dumps from the game process; in pcsx2 mode the GS process dumps instead (DumpEvery).
+        arguments += ['--frames-dir', str(donor_frames_dir), '--frame-every', str(frame_every)]
+    for press in presses:
+        arguments += ['--press', press]
+    return arguments
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--build', required=True, help='build directory that holds gt4vulkan.exe')
+    parser.add_argument('--build', required=True, help='build directory that holds gt4vulkan.exe (or gt4vulkan-spec2.exe)')
+    parser.add_argument('--exe', help='executable name inside --build (default gt4vulkan.exe; Spec II uses gt4vulkan-spec2.exe)')
     parser.add_argument('--scene', required=True, choices=sorted(SCENES))
     parser.add_argument('--out', required=True, help='fresh run directory (created)')
     parser.add_argument('--assets-root', default=str(ROOT))
+    parser.add_argument('--card', help='memory-card image to copy into the run (default: the scene seed card)')
     parser.add_argument('--frames', type=int, help='override the scene frame count')
     parser.add_argument('--frame-every', type=int, default=100, help='frame dump interval (0 = no dumps)')
     parser.add_argument('--renderer', choices=('pcsx2', 'donor'), default='pcsx2')
     parser.add_argument('--scale', type=int, default=1, help='gt4-gs internal resolution (1 = the owner 480p look)')
+    parser.add_argument('--readback', choices=('accurate', 'no-readbacks'), default='accurate',
+                        help='gt4-gs HWDownloadMode: accurate (0, the default) or no-readbacks (2, Performance mode)')
     parser.add_argument('--gs-exe', help='gt4-gs.exe used for pcsx2 runs')
+    parser.add_argument('--gs-sha256', help='expected gt4-gs.exe SHA-256, forwarded as GT4_GS_PROCESS_SHA256')
+    parser.add_argument('--elf', help='game ELF (default the pinned v2.00 reconstructed ELF)')
+    parser.add_argument('--iso', help='disc image (default the v2.00 ISO)')
+    parser.add_argument('--textures', help='custom texture pack folder for gt4-gs [Folders] Textures (pcsx2 only)')
+    parser.add_argument('--press', action='append', default=[], metavar='FRAME:BUTTON:FRAMES',
+                        help='override the scene press schedule (repeatable; TASK-100 S7c uses the Spec II boot order)')
     parser.add_argument('--env', action='append', default=[], metavar='KEY=VALUE',
                         help='extra environment (repeatable); GT4_ switches for A/B')
     parser.add_argument('--keep-dumps', action='store_true', help='keep the frame dumps after hashing')
@@ -124,7 +164,7 @@ def main():
 
     assets = Path(options.assets_root)
     build = (assets / options.build).resolve() if not Path(options.build).is_absolute() else Path(options.build)
-    exe = build / 'gt4vulkan.exe'
+    exe = build / (options.exe or 'gt4vulkan.exe')
     if not exe.exists():
         raise SystemExit(f'no executable at {exe}')
     run = Path(options.out).resolve()
@@ -132,12 +172,15 @@ def main():
         raise SystemExit(f'refusing to reuse {run}')
     scene = SCENES[options.scene]
     frames = options.frames or scene['frames']
-    iso = assets / 'Gran Turismo 4 (USA) (v2.00).iso'
-    elf = assets / 'private/reconstructed/SCUS_973.28.elf'
-    card = assets / scene['card']
+    iso = Path(options.iso) if options.iso else assets / 'Gran Turismo 4 (USA) (v2.00).iso'
+    elf = Path(options.elf) if options.elf else assets / 'private/reconstructed/SCUS_973.28.elf'
+    card = Path(options.card) if options.card else assets / scene['card']
     for path in (iso, elf, card):
         if not path.exists():
             raise SystemExit(f'missing input: {path}')
+    textures = Path(options.textures).resolve() if options.textures else None
+    if textures is not None and not textures.is_dir():
+        raise SystemExit(f'missing texture folder: {textures}')
 
     running = builders_running()
     if running and not options.allow_builders:
@@ -159,23 +202,29 @@ def main():
         if options.frame_every:
             # gt4-gs treats DumpEvery = 0 as "every frame", so the keys are omitted when no dumps are wanted.
             dump_lines = f'DumpDir = {run / "gs-frames"}\nDumpEvery = {options.frame_every}\n'
-        (run / 'gt4-gs.ini').write_text(gs_config_for_run(run, options.scale, dump_lines), encoding='utf-8')
+        ini = with_textures(GS_INI.format(scale=options.scale, readback=READBACK_MODES[options.readback],
+                                          cache=assets / 'private/slice193-gt4gs-cache',
+                                          data=assets / 'private/slice193-gt4gs-data', dump_lines=dump_lines),
+                            str(textures) if textures else None)
+        (run / 'gt4-gs.ini').write_text(ini, encoding='utf-8')
         environment.update({'GT4_RENDERER': 'pcsx2', 'GT4_GS_PROCESS': str(gs_exe),
                             'GT4_GS_CONFIG': str(run / 'gt4-gs.ini')})
+        if options.gs_sha256:
+            environment['GT4_GS_PROCESS_SHA256'] = options.gs_sha256
+    elif options.textures:
+        raise SystemExit('--textures needs --renderer pcsx2 (the donor renderer has no texture packs)')
     for assignment in options.env:
         key, _, value = assignment.partition('=')
         if not key or not _:
             raise SystemExit(f'--env wants KEY=VALUE, got {assignment!r}')
         environment[key] = value
 
-    arguments = [str(exe), str(run / 'SCUS_973.28'), '--ntsc', '--disc', str(iso), '--frames', str(frames),
-                 '--memcard', str(run / 'card.ps2'), '--misses', str(run / 'misses.txt')]
+    arguments = game_arguments(exe, run / 'SCUS_973.28', iso, run / 'card.ps2', frames,
+                               options.press or scene['presses'],
+                               donor_frames_dir=run / 'frames' if options.renderer == 'donor' else None,
+                               frame_every=options.frame_every)
     if options.frame_every and options.renderer == 'donor':
-        # The donor renderer dumps from the game process; in pcsx2 mode the GS process dumps instead (DumpEvery).
         (run / 'frames').mkdir(exist_ok=True)
-        arguments += ['--frames-dir', str(run / 'frames'), '--frame-every', str(options.frame_every)]
-    for press in scene['presses']:
-        arguments += ['--press', press]
 
     conditions = {
         'scene': options.scene,
@@ -183,11 +232,18 @@ def main():
         'frame_every': options.frame_every,
         'renderer': options.renderer,
         'scale': options.scale,
+        'readback': options.readback,
         'build': str(exe),
         'build_sha256': sha256(exe),
+        'elf': str(elf),
         'elf_sha256': sha256(elf),
+        'iso': str(iso),
         'card_sha256': sha256(card),
+        'gs_exe': environment.get('GT4_GS_PROCESS'),
         'gs_exe_sha256': sha256(environment['GT4_GS_PROCESS']) if 'GT4_GS_PROCESS' in environment else None,
+        'gs_process_sha256_expected': options.gs_sha256,
+        'textures': str(textures) if textures else None,
+        'presses': options.press or scene['presses'],
         'gt4_environment': {key: value for key, value in environment.items() if key.startswith(('GT4_', 'PS2_'))},
         'builders_before': running,
     }

@@ -131,9 +131,61 @@ pub fn active_pad(ids: &[u32]) -> Option<u32> {
     ids.iter().copied().min()
 }
 
+// TASK-148: the choice itself lives in gt4l-core (the `controller` setting validates it there).
+pub use gt4l_core::controller::{is_controller_setting, PadChoice, AUTO_CONTROLLER};
+
+/// One connected pad as the choice sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PadIdentity<'a> {
+    pub id: u32,
+    pub guid: &'a str,
+    pub serial: &'a str,
+}
+
+/// TASK-148: the pad to read. The chosen one when it is connected: the same GUID and serial, or else the first pad of
+/// the same model (the same unit is not there, another of its kind is); without a choice, or with the chosen model
+/// unplugged, controller 1 (`active_pad`). The game applies the same rule.
+pub fn chosen_pad(pads: &[PadIdentity<'_>], choice: Option<&PadChoice>) -> Option<u32> {
+    if let Some(choice) = choice {
+        let same_model = |pad: &&PadIdentity<'_>| pad.guid.eq_ignore_ascii_case(&choice.guid);
+        if !choice.serial.is_empty() {
+            if let Some(pad) = pads.iter().filter(same_model).filter(|pad| pad.serial == choice.serial).min_by_key(|pad| pad.id) {
+                return Some(pad.id);
+            }
+        }
+        if let Some(pad) = pads.iter().filter(same_model).min_by_key(|pad| pad.id) {
+            return Some(pad.id);
+        }
+    }
+    let ids: Vec<u32> = pads.iter().map(|pad| pad.id).collect();
+    active_pad(&ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const XBOX: &str = "030000005e0400008e02000014010000";
+    const DUALSENSE: &str = "050000004c050000e60c000000810000";
+
+    #[test]
+    fn the_chosen_pad_wins_over_controller_one_and_falls_back_to_it() {
+        let pads = [
+            PadIdentity { id: 3, guid: XBOX, serial: "" },
+            PadIdentity { id: 7, guid: DUALSENSE, serial: "a0:ab:51:00:00:01" },
+            PadIdentity { id: 9, guid: DUALSENSE, serial: "a0:ab:51:00:00:02" },
+        ];
+        assert_eq!(chosen_pad(&pads, None), Some(3), "no choice: controller 1, the lowest id");
+        let second = PadChoice::parse(&format!("{DUALSENSE}/a0:ab:51:00:00:02")).unwrap();
+        assert_eq!(chosen_pad(&pads, Some(&second)), Some(9), "the same unit by its serial");
+        let gone_unit = PadChoice::parse(&format!("{DUALSENSE}/a0:ab:51:00:00:03")).unwrap();
+        assert_eq!(chosen_pad(&pads, Some(&gone_unit)), Some(7), "another pad of the chosen model");
+        let model = PadChoice::parse(DUALSENSE).unwrap();
+        assert_eq!(chosen_pad(&pads, Some(&model)), Some(7));
+        let unplugged = PadChoice::parse("03000000d620000011a7000000000000").unwrap();
+        assert_eq!(chosen_pad(&pads, Some(&unplugged)), Some(3), "the chosen model is unplugged: controller 1");
+        assert_eq!(chosen_pad(&[], Some(&model)), None);
+    }
 
     fn raw() -> RawPad {
         RawPad::default()

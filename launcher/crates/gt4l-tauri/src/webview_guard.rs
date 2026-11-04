@@ -30,7 +30,7 @@ use gt4l_platform::process::spawn_outside_job;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::state::log;
+use crate::state::{log, log_error, log_warn};
 
 /// The flag file in the user folder (`%APPDATA%\GT4Recomp`) while safe mode is on.
 pub const SAFE_MODE_FILE: &str = "webview-safe-mode";
@@ -83,16 +83,22 @@ where
 /// The value of `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` with `--disable-gpu` added. An existing value is kept (its
 /// switches stay in front); the switch is not added twice.
 pub fn with_gpu_disabled(existing: Option<&str>) -> String {
+    with_switch(existing, DISABLE_GPU)
+}
+
+/// `existing` with `switch` added once, after the switches already there.
+fn with_switch(existing: Option<&str>, switch: &str) -> String {
     let existing = existing.unwrap_or("").trim();
-    if existing.split_whitespace().any(|switch| switch == DISABLE_GPU) {
+    if existing.split_whitespace().any(|present| present == switch) {
         return existing.to_string();
     }
     if existing.is_empty() {
-        DISABLE_GPU.to_string()
+        switch.to_string()
     } else {
-        format!("{existing} {DISABLE_GPU}")
+        format!("{existing} {switch}")
     }
 }
+
 
 /// The flag file of safe mode in `user_root`.
 pub fn safe_mode_flag(user_root: &Path) -> PathBuf {
@@ -148,7 +154,8 @@ pub fn gpu_row(safe_mode_on: bool) -> Value {
         "id": GPU_ROW_ID,
         "label": "Launcher GPU acceleration",
         "help": "Off keeps the launcher window without GPU acceleration, after it failed to draw in WebView2. On takes effect at the next start of the launcher.",
-        "page": "advanced",
+        "page": "basic",
+        "group": "general",
         "control": "toggle",
         "values": Value::Null,
         "default": true,
@@ -202,10 +209,10 @@ pub fn check_webview2_at_start(dirs: &DataDirs) -> bool {
     let check = gt4l_platform::webview2::check_installed(fixed, test_webview2_missing());
     match &check.version {
         Some(version) => log(dirs, &format!("WebView2 runtime found in the registry: {version}")),
-        None => log(dirs, "WebView2 runtime not found in the registry"),
+        None => log_warn(dirs, "WebView2 runtime not found in the registry"),
     }
     if check.missing {
-        log(dirs, "WebView2 is missing: the native message is shown before any window");
+        log_error(dirs, "WebView2 is missing: the native message is shown before any window");
     }
     check.missing
 }
@@ -275,6 +282,15 @@ pub fn ui_ready(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The page writes a short line to the launcher log (the 1.3.0 intro: start, end, skipped). Capped at 200 characters.
+#[tauri::command]
+pub fn ui_log(app: AppHandle, message: String) -> Result<(), String> {
+    let guard = app.state::<Arc<Guard>>().inner().clone();
+    let line: String = message.chars().filter(|c| !c.is_control()).take(200).collect();
+    log(&guard.dirs, &format!("page: {line}"));
+    Ok(())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -297,7 +313,7 @@ pub fn start_watchdog(app: AppHandle, guard: Arc<Guard>) {
             Decision::Show => {}
             Decision::RestartInSafeMode => restart_in_safe_mode(&app, &guard),
             Decision::ShowNativeErrorAndExit => {
-                log(&guard.dirs, "the launcher page did not draw in safe mode either");
+                log_error(&guard.dirs, "the launcher page did not draw in safe mode either");
                 hide_main_window(&app);
                 show_failure(&guard.dirs, Problem::NotDrawn);
                 app.exit(0);
@@ -310,18 +326,18 @@ fn restart_in_safe_mode(app: &AppHandle, guard: &Guard) {
     let now = unix_seconds();
     if let Err(error) = write_safe_mode(&guard.user_root, "the window did not draw within 12 s (WebView2)", now) {
         // Without the flag a restart would wait again and again, so the player gets the message instead.
-        log(&guard.dirs, &format!("the page did not draw; the safe mode flag could not be written: {error}"));
+        log_error(&guard.dirs, &format!("the page did not draw; the safe mode flag could not be written: {error}"));
         hide_main_window(app);
         show_failure(&guard.dirs, Problem::NotDrawn);
         app.exit(0);
         return;
     }
-    log(&guard.dirs, "the page did not draw in 12 s: restarting with WebView2 GPU acceleration off (safe mode)");
+    log_warn(&guard.dirs, "the page did not draw in 12 s: restarting with WebView2 GPU acceleration off (safe mode)");
     let started = std::env::current_exe().and_then(|exe| spawn_outside_job(Command::new(exe).arg(RESTART_ARGUMENT)));
     match started {
         Ok(_) => app.exit(0),
         Err(error) => {
-            log(&guard.dirs, &format!("the safe mode restart could not start: {error}"));
+            log_error(&guard.dirs, &format!("the safe mode restart could not start: {error}"));
             hide_main_window(app);
             show_failure(&guard.dirs, Problem::NotDrawn);
             app.exit(0);
@@ -334,17 +350,18 @@ fn restart_in_safe_mode(app: &AppHandle, guard: &Guard) {
 pub fn show_failure(dirs: &DataDirs, problem: Problem) {
     let logs = dirs.logs();
     let logs_text = logs.display();
-    let text = match problem {
-        Problem::NotDrawn => format!(
-            "GT4Recomp could not draw its window. The launcher window is drawn by Microsoft Edge WebView2, which did not \
-             show it, even without GPU acceleration.\n\nYes: open the WebView2 download page ({WEBVIEW2_DOWNLOAD_URL}).\n\
-             No: open the log folder ({logs_text}).\nCancel: close."
-        ),
-        Problem::Missing => format!(
-            "GT4Recomp could not start its window: Microsoft Edge WebView2 is missing or could not start.\n\nYes: open \
-             the WebView2 download page ({WEBVIEW2_DOWNLOAD_URL}).\nNo: open the log folder ({logs_text}).\nCancel: close."
-        ),
+    // The native message comes before any window and before the settings are read in full: it follows the Windows
+    // language (`auto`).
+    let language = gt4l_core::language::from_os_locale(&gt4l_platform::system::os_locale());
+    let id = match problem {
+        Problem::NotDrawn => "dialog.not_drawn",
+        Problem::Missing => "dialog.missing",
     };
+    let text = gt4l_core::messages::render(
+        id,
+        language,
+        &[("url", WEBVIEW2_DOWNLOAD_URL), ("logs", &logs_text.to_string())],
+    );
     log(dirs, &format!("native message: {problem:?}"));
     match dialog::error_box_yes_no_cancel("GT4Recomp", &text) {
         Choice::Yes => {

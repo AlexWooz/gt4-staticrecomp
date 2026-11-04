@@ -118,7 +118,7 @@ pub const SETTINGS: Chain = Chain {
     file: "settings.toml",
     key: "schema_version",
     first: 0,
-    current: 7,
+    current: 8,
     steps: &[
         Step { from: 0, apply: settings_0_to_1 },
         Step { from: 1, apply: settings_1_to_2 },
@@ -127,6 +127,7 @@ pub const SETTINGS: Chain = Chain {
         Step { from: 4, apply: settings_4_to_5 },
         Step { from: 5, apply: settings_5_to_6 },
         Step { from: 6, apply: settings_6_to_7 },
+        Step { from: 7, apply: settings_7_to_8 },
     ],
 };
 
@@ -266,6 +267,21 @@ fn settings_6_to_7(document: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Schema 8 (TASK-101, launcher 1.3.0): the launcher runs more than one game, and the file records which one the home
+/// screen shows (`[game] selected`, the first game installed, then the game played last). Every file of schema 7 or
+/// older belongs to a launcher that ran Gran Turismo 4 only, so it selects `gt4`; a value already written (a hand edit)
+/// is kept. A fresh install has no file, so nothing is selected until its first game is set up.
+fn settings_7_to_8(document: &mut Value) -> Result<(), String> {
+    let Some(root) = document.as_object_mut() else {
+        return Ok(());
+    };
+    let game = root.entry("game").or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(game) = game.as_object_mut() {
+        game.entry("selected").or_insert_with(|| Value::from("gt4"));
+    }
+    Ok(())
+}
+
 /// Example and first real step: the earlier dev builds wrote no schema number and nothing else differs, so the
 /// step has no content change. It is the template for later steps: change the document, nothing else.
 fn settings_0_to_1(_document: &mut Value) -> Result<(), String> {
@@ -390,7 +406,7 @@ mod tests {
     fn settings_schema_zero_reaches_the_current_schema_and_keeps_its_values() {
         let mut document = json!({"settings": {"vsync": "fast"}});
         assert_eq!(migrate(&SETTINGS, &mut document).unwrap(), 0);
-        assert_eq!(document["schema_version"], json!(7));
+        assert_eq!(document["schema_version"], json!(8));
         assert_eq!(document["settings"]["vsync"], json!("fast"));
         assert!(document["settings"].get("widescreen").is_none(), "added by step 3, dropped by step 4");
         assert!(document["settings"].get("aspect_ratio").is_none(), "added by step 4, dropped by step 5");
@@ -412,7 +428,7 @@ mod tests {
             "install": {"disc_path": "D:/gt4.iso"}
         });
         assert_eq!(migrate(&SETTINGS, &mut released).unwrap(), 3);
-        assert_eq!(released["schema_version"], json!(7));
+        assert_eq!(released["schema_version"], json!(8));
         assert!(released["settings"].get("aspect_ratio").is_none());
         assert_eq!(released["settings"]["monitor"], json!("primary"));
         assert_eq!(released["settings"]["resolution"], json!("desktop"));
@@ -442,7 +458,7 @@ mod tests {
             "install": {"disc_path": "D:/gt4.iso"}
         });
         assert_eq!(migrate(&SETTINGS, &mut file).unwrap(), 4);
-        assert_eq!(file["schema_version"], json!(7));
+        assert_eq!(file["schema_version"], json!(8));
         for gone in ["aspect_ratio", "aspect_custom"] {
             assert!(file["settings"].get(gone).is_none(), "{gone} dropped from [settings]");
             assert!(file["choices"].get(gone).is_none(), "{gone} dropped from [choices]");
@@ -476,7 +492,7 @@ mod tests {
 
         let mut chained = json!({"schema_version": 2, "settings": {"vsync": "on"}});
         assert_eq!(migrate(&SETTINGS, &mut chained).unwrap(), 2);
-        assert_eq!(chained["schema_version"], json!(7));
+        assert_eq!(chained["schema_version"], json!(8));
     }
 
     #[test]
@@ -494,7 +510,7 @@ mod tests {
     fn a_stored_coregs11_renderer_becomes_gsdx_in_schema_7() {
         let mut document = json!({"schema_version": 6, "settings": {"renderer": "coregs11", "vsync": "fast"}, "choices": {"renderer": true}});
         assert_eq!(migrate(&SETTINGS, &mut document).unwrap(), 6);
-        assert_eq!(document["schema_version"], json!(7));
+        assert_eq!(document["schema_version"], json!(8));
         assert_eq!(document["settings"]["renderer"], json!("pcsx2"), "CoreGS 1.1 is gone: GSdx");
         assert_eq!(document["settings"]["vsync"], json!("fast"), "other values survive");
         assert_eq!(document["choices"]["renderer"], json!(true), "the choice flag is kept");
