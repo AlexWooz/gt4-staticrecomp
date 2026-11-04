@@ -3226,6 +3226,12 @@ IOP modules are the game's code; an image is Spec II 1.10 exactly when both matc
 5. **Close rc14** (owner, 2026-11-04): the full trigger range on by default with the fixed-width meter (TASK-161), the shader
    compile guard and `shaders.log` in the bundle (TASK-170), then the PGO build of both games, the gates against rc13 and the
    GitHub pre-release `v1.3.0-rc14` (the owner's word given). The license front end is TASK-171 for rc15.
+   Done (2026-11-04): games slice408 (PGO and ThinLTO from `build/cam360/*-units-rc14b`; exe `a4e1c742...` v2.00,
+   `e5267b8f...` Spec II; distribution `private/slice408-dist-130-rc14`). Gates against rc13 (`gates5.sh`, wrong=0): race clock
+   and simulation state identical on three Spec II laps and the v2.00 night race, every compared frame identical, VU1/VU0 and
+   MTVU checks 0 differences; overlay check 10/10 at 21:9 and 9/10 at 32:9 (one pause-menu fade frame; 32:9 frames identical to
+   slice407). CTest 301/301 on both games, Python 790, launcher 665, focus checks 294/294 and 301/301, nav-test 217/217.
+   TASK-173's Tested / Not tested badge dropped by the owner the same day.
 
 Waiting on players (issues answered 2026-11-04, `docs/ISSUE-TRIAGE.md`): the AMD crash reports #187-#190 retest on rc13; a new
 task if they still crash (TASK-170 is the rc14 answer to the Discord report).

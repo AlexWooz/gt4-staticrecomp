@@ -3,8 +3,11 @@
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader
-compile guard and `shaders.log` in the log bundle (TASK-170), and Spec II images accepted by their code (TASK-173). PGO build of both games from `build/cam360/*-units-rc14b`, gates against rc13, then the pre-release
-`v1.3.0-rc14` (the owner's word given). Next: TASK-171 (the first license on laptops) for rc15. Recorded: TASK-172 (an earlier
+compile guard and `shaders.log` in the log bundle (TASK-170), and Spec II images accepted by their code (TASK-173). Games slice408 (PGO and ThinLTO from `build/cam360/*-units-rc14b`;
+pins `docs/inputs/slice408-*.json`, exe `a4e1c742...` v2.00, `e5267b8f...` Spec II; distribution
+`private/slice408-dist-130-rc14`), launchers labelled rc14 (`private/slice408-launchers-rc14`). Gates against rc13 identical
+(race clock, simulation state, every compared frame, VU1/VU0 and MTVU 0 differences); CTest 301/301 on both games, Python 790,
+launcher 665, focus checks 294/294 and 301/301. Pre-release `v1.3.0-rc14` (the owner's word given). Next: TASK-171 (the first license on laptops) for rc15. Recorded: TASK-172 (an earlier
 Spec II release needs its own build).
 
 ## TASK-095: 2D overlays over the race view at ultrawide ratios, both games (2026-11-04)
