@@ -248,7 +248,8 @@ impl Controls {
         tuning
     }
 
-    /// Writes the tuning into the analog trigger source of `input`. The deadzone is clamped to [0, 0.95].
+    /// Writes the tuning into the analog trigger source of `input`. The deadzone is clamped to [0, 0.95]. A `range`
+    /// option (TASK-147: the pressure byte at full travel) is kept.
     pub fn set_trigger_tuning(&mut self, input: &str, tuning: TriggerTuning) -> Result<(), ControlsError> {
         let current: Vec<String> = self.sources(input).map(|sources| sources.to_vec()).unwrap_or_default();
         let deadzone = tuning.deadzone.clamp(0.0, 0.95);
@@ -257,8 +258,9 @@ impl Controls {
             .into_iter()
             .map(|source| {
                 if source.starts_with("xinput:LT") || source.starts_with("xinput:RT") {
-                    let (base, _) = split_options(&source);
-                    format!("{base} | {options}")
+                    let (base, existing) = split_options(&source);
+                    let range = existing.iter().find(|option| option.starts_with("range=")).map(|option| format!(" {option}"));
+                    format!("{base} | {options}{}", range.unwrap_or_default())
                 } else {
                     source
                 }
@@ -614,6 +616,16 @@ fn validate_option(line: usize, kind: InputKind, analog: bool, option: &str) -> 
                 return Err(error(line, "curve must be linear, quadratic, cubic, s_curve, smooth_power, sublinear or logarithmic"));
             }
         }
+        // TASK-147: the pressure byte a trigger gives at full travel (the game defaults R2 to 45 and L2 to 84).
+        "range" => {
+            if !(analog && kind == InputKind::Button) {
+                return Err(error(line, "range applies to triggers only"));
+            }
+            let parsed: u32 = value.parse().map_err(|_| error(line, "range must be a whole number from 1 to 255"))?;
+            if !(1..=255).contains(&parsed) {
+                return Err(error(line, "range must be a whole number from 1 to 255"));
+            }
+        }
         "invert" => {
             if kind != InputKind::Stick {
                 return Err(error(line, "invert applies to sticks only"));
@@ -684,6 +696,12 @@ mod tests {
         assert!(Controls::parse("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=1.5\"]\n").is_err());
         assert!(Controls::parse("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=cubic\"]\n").is_ok());
         assert!(Controls::parse("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=sharp\"]\n").is_err());
+        // TASK-147: the pressure byte at full travel, triggers only, 1..=255.
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=45\"]\n").is_ok());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=0\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=256\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=4.5\"]\n").is_err());
+        assert!(Controls::parse("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range=45\"]\n").is_err());
     }
 
     #[test]
@@ -701,6 +719,13 @@ mod tests {
             controls.sources("circle").unwrap(),
             &["xinput:B".to_string(), "key:Space".to_string()][..]
         );
+    }
+
+    #[test]
+    fn a_trigger_range_survives_a_tuning_change() {
+        let mut controls = Controls::parse("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=90\"]\n").unwrap();
+        controls.set_trigger_tuning("r2", TriggerTuning { deadzone: 0.05, curve: Curve::Linear }).unwrap();
+        assert!(controls.render().contains("r2 = [\"xinput:RT | deadzone=0.050 curve=linear range=90\"]"));
     }
 
     #[test]

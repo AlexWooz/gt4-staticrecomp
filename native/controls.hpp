@@ -80,6 +80,9 @@ struct Binding {
   double scale = 1.0; // 0 <= scale <= 2, applied after the curve, clamped to full travel
   bool invert = false; // axes only
   Curve curve = Curve::linear;
+  // Triggers: the pressure byte at full travel (option `range`). GT4 takes a much smaller byte than 255 as 100% throttle
+  // or brake, so R2 and L2 default to the game's own 100% (controls.cpp, TASK-147); other inputs to 255.
+  std::uint8_t pressure_full = 255;
 };
 
 struct ControlMap {

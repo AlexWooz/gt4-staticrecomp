@@ -114,12 +114,13 @@ int main() {
     require(map_gamepad(gamepad).buttons == 0, "trigger deadzone");
     gamepad.bLeftTrigger = 31;
     require(map_gamepad(gamepad).buttons == 256 &&
-                map_gamepad(gamepad).pressures[8] == 1,
-            "trigger first step");
+                map_gamepad(gamepad).pressures[8] == 0,
+            "trigger first step: pressed, lowest pressure");
+    // TASK-147: L2 (brake) and R2 (throttle) end at GT4's 100%, pressures 84 and 45.
     gamepad.bLeftTrigger = gamepad.bRightTrigger = 255;
     require(map_gamepad(gamepad).buttons == 768 &&
-                map_gamepad(gamepad).pressures[8] == 255 &&
-                map_gamepad(gamepad).pressures[9] == 255,
+                map_gamepad(gamepad).pressures[8] == 84 &&
+                map_gamepad(gamepad).pressures[9] == 45,
             "trigger endpoints");
     gamepad = {};
     gamepad.sThumbLX = -32768;

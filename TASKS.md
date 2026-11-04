@@ -2865,3 +2865,21 @@ Checks: `frame-skip-suite-v200.sh` 30 FPS over VBlanks 6450-7600 (intro and star
 simulation state identical over the whole race (2,478 left out); `frame-skip-suite.sh` (Spec II) ok, 22 of the known drawing
 words; 60 FPS at 12x on the desktop's RX 9060 XT: game speed 100.00%, 40.3 frames drawn per second. New laptop builds write
 `frameskip.csv` beside game.log (compile-time switch, test builds only); owner test pending.
+
+### TASK-147 — Triggers and sticks: GT4's 100% came at a third of the trigger (rc12)
+
+Owner and players (2026-11-03): the throttle reaches 100% with the trigger 30-40% pressed, and a small stick push steers
+more than it should. Our host path is linear (trigger byte to pressure byte, stick to the PS2 byte after the XInput dead
+zone; the emulated pad passes the bytes on unchanged). The game scales it (Confirmed, translated code of both games): the
+pressure byte p of the button assigned to a function becomes min(100 * min(2p, 256) / d, 256), d = 35 throttle (v2.00
+0x0043BEE8, Spec II 0x00319194), 65 brake (0x0043BF48, 0x003191F0), 35 reverse, so 100% throttle from p = 45 and 100%
+brake from p = 84, made for the DualShock 2's pressure buttons: about 27% and 40% of a trigger's travel with our 30/255
+dead zone. Community reference (not copied): Silent and Aero_'s "Adjusted triggers sensitivity" PCSX2 patch changes those
+instructions; Spec II ships a similar patch as an optional PCSX2 extra, not on its disc, so both our games have the stock
+scaling.
+
+Trigger fix on `task/134-game-code-optimization-study` (owner's choice, host side, no game code change): a trigger on R2
+spans 0..45 and one on L2 0..84 over its travel past the dead zone, the game's own 100% at the end, rounded to the nearest
+step; the controls option `range` (1..255) changes it per binding, and the launcher accepts and keeps it. A game-side
+patch for finer steps (like Silent's, about 230 instead of 46 and 85) is for later. Checks: controls, pad mapping and SDL
+fixtures; launcher controls tests. Stick study in progress.

@@ -61,11 +61,16 @@ void check_triggers_and_pressure() {
                                                  static_cast<std::uint8_t>(raw));
     require(pad.pressures[8] == expected.pressure, "L2 pressure equals the controls.cpp reader");
   }
+  // TASK-147: R2 (throttle) spans GT4's 0..45 and L2 (brake) 0..84 over the trigger travel.
   GamepadReading reading = at_rest();
   reading.right_trigger = 255;
-  require(map_reading(reading, map).pressures[9] == 255, "full R2 is pressure 255");
+  reading.left_trigger = 255;
+  require(map_reading(reading, map).pressures[9] == 45, "full R2 is the game's 100% throttle, pressure 45");
+  require(map_reading(reading, map).pressures[8] == 84, "full L2 is the game's 100% brake, pressure 84");
+  reading = at_rest();
   reading.right_trigger = 31;
-  require(map_reading(reading, map).pressures[9] == 1, "R2 just above threshold is pressure 1");
+  require((map_reading(reading, map).buttons & (1u << 9)) != 0 && map_reading(reading, map).pressures[9] == 0,
+          "R2 just above threshold is pressed with the lowest pressure");
   std::fprintf(stderr, "PASS: trigger threshold 30/255 and analog L2/R2 pressure for all 256 values\n");
 }
 
@@ -133,7 +138,7 @@ void check_remap() {
   const std::uint8_t quadratic = map_reading(reading, remap).pressures[9];
   require(quadratic > 0 && quadratic < 128, "quadratic R2 curve gives a lower pressure than linear");
   reading.right_trigger = 255;
-  require(map_reading(reading, remap).pressures[9] == 255, "full RT is full pressure on the curve too");
+  require(map_reading(reading, remap).pressures[9] == 45, "full RT is R2's full range on the curve too");
 
   // A deadzone on the stick remap: a stick inside 0.5 of travel reads at rest.
   const ControlMap stick_map = parse_controls(

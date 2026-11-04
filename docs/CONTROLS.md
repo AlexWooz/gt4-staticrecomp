@@ -100,8 +100,17 @@ Options follow the source after a `|`, separated by spaces: `"xinput:LT | deadzo
 | `scale` | triggers, sticks | 0 to 2; multiplies the curve output, clamped to full travel | 1 |
 | `curve` | triggers, sticks | `linear`, `quadratic`, `cubic`, `s_curve`, `smooth_power`, `sublinear`, `logarithmic` | `linear` |
 | `invert` | sticks only | `true` or `false` | `false` |
+| `range` | triggers only | whole number 1 to 255; the pressure byte at full travel | 45 on R2, 84 on L2, 255 on any other input |
 
 Digital sources (`xinput:A` etc. and `key:` sources) take no options.
+
+**Why R2 and L2 stop at 45 and 84 (TASK-147).** GT4 turns the pressure byte `p` of the button that drives a function
+into `min(100 * min(2p, 256) / d, 256)`, with `d = 35` for the throttle and `65` for the brake (both games; v2.00
+`0x0043BEE8` and `0x0043BF48`, Spec II `0x00319194` and `0x003191F0`). That is 100% throttle from `p = 45` and 100% brake
+from `p = 84`, made for the DualShock 2's pressure buttons. A trigger that drove the whole byte reached 100% throttle at
+about 27% of its travel and 100% brake at about 40%. R2 (the throttle in the usual trigger setup) and L2 (the brake) now
+spread the game's own range over the whole travel. If the game's controller options put the brake on R2 or the throttle
+on L2, set `range=84` on R2 or `range=45` on L2; `range=255` restores the whole byte.
 
 SDL3 Gamepad triggers already use 0 released through 32767 pressed for Xbox and DualSense alike.
 The adapter reduces that standardized value to a pressure byte; raw joystick/HID signed ranges are
@@ -111,7 +120,9 @@ Reading rules, as implemented in `native/controls.cpp`:
 
 - **Trigger:** raw value `v`, deadzone `d` (raw units, rounded). Digital bit set when `v > d`. With
   linear and scale 1: `pressure = (v - d) * 255 / (255 - d)`, integer division (the slice 157 formula).
-  Otherwise `pressure = floor(min(1, curve(n) * scale) * 255)`, where `n = (v - d) / (255 - d)`.
+  Otherwise `pressure = floor(min(1, curve(n) * scale) * 255)`, where `n = (v - d) / (255 - d)`. With a `range` `r`
+  below 255: `pressure = round(min(1, curve(n) * scale) * r)`, to the nearest step so a trigger a hair short of its end
+  still gives `r`.
 - **Stick:** the sign of the raw value sets the travel range (32768 below zero, 32767 above), as
   before. `invert` flips the direction. Output is the PS2 byte: 128 at rest, 0..255 across travel.
 - **Several sources on one input:** buttons OR together, and the highest pressure wins. On a stick,

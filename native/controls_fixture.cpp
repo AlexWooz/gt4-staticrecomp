@@ -3,6 +3,8 @@
 
 #include "controls.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -144,13 +146,14 @@ void check_defaults_and_example_files() {
 }
 
 void check_trigger_readings() {
-  const Binding &left = only_binding(default_controls(), "l2");
+  // With the whole byte (range=255) a trigger reads as slice 157 did.
+  const Binding left = only_binding(parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255\"]\n"), "l2");
   std::uint8_t previous = 0;
   for (int raw = 0; raw <= 255; ++raw) {
     const auto reading = read_trigger(left, static_cast<std::uint8_t>(raw));
     const auto expected = legacy_trigger(static_cast<std::uint8_t>(raw));
     require(reading.pressed == expected.pressed && reading.pressure == expected.pressure,
-            "default trigger reading equals slice 157 at every raw value");
+            "a range=255 trigger reading equals slice 157 at every raw value");
     require(reading.pressure >= previous, "trigger pressure is monotone");
     previous = reading.pressure;
   }
@@ -158,25 +161,53 @@ void check_trigger_readings() {
   require(read_trigger(left, 31).pressure == 1, "trigger first step is pressure 1");
   require(read_trigger(left, 255).pressure == 255, "trigger full travel is pressure 255");
 
+  // TASK-147: the default L2 (brake) spans 0..84 and the default R2 (throttle) 0..45 over the travel past the deadzone,
+  // GT4's own 100% (min(100 * min(2p, 256) / d, 256), d = 65 brake, 35 throttle). The digital bit is as before.
+  const struct { const char *input; std::uint8_t full; int game_divisor; } pedals[] = {{"l2", 84, 65}, {"r2", 45, 35}};
+  for (const auto &pedal : pedals) {
+    const Binding &binding = only_binding(default_controls(), pedal.input);
+    require(binding.pressure_full == pedal.full, "the default trigger range is the game's 100%");
+    std::uint8_t prior = 0;
+    for (int raw = 0; raw <= 255; ++raw) {
+      const auto reading = read_trigger(binding, static_cast<std::uint8_t>(raw));
+      require(reading.pressed == legacy_trigger(static_cast<std::uint8_t>(raw)).pressed, "the digital bit is unchanged");
+      const long expected = raw <= 30 ? 0 : std::lround((raw - 30) * static_cast<double>(pedal.full) / 225.0);
+      require(reading.pressure == expected && reading.pressure >= prior, "the range spreads evenly over the travel");
+      prior = reading.pressure;
+      // What the game makes of it: below its 100% until the last few percent of the travel.
+      const int game = std::min(100 * std::min(2 * static_cast<int>(reading.pressure), 256) / pedal.game_divisor, 256);
+      if (raw < 248) require(game < 256, "the game's 100% comes only at the end of the travel");
+    }
+    require(read_trigger(binding, 255).pressure == pedal.full, "full travel is the game's 100%");
+    // Half the travel past the deadzone is about half of the game's value (128 of 256).
+    const int half = read_trigger(binding, 30 + 113).pressure;
+    const int game_half = 100 * 2 * half / pedal.game_divisor;
+    require(game_half >= 118 && game_half <= 138, "half the travel is about half throttle or brake in the game");
+  }
+  const Binding custom = only_binding(parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=90\"]\n"), "r2");
+  require(read_trigger(custom, 255).pressure == 90, "range sets the pressure at full travel");
+  const Binding on_face = only_binding(parse_text("schema = 1\n[bindings]\ncross = [\"xinput:RT\"]\n"), "cross");
+  require(read_trigger(on_face, 255).pressure == 255, "a trigger on another button keeps the whole byte");
+
   // Deadzone 0.5 (raw 128 of 255): rest up to 128, then 255 / 127 per unit.
-  const Binding half = only_binding(parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.5\"]\n"), "l2");
+  const Binding half = only_binding(parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.5 range=255\"]\n"), "l2");
   require(!read_trigger(half, 128).pressed && read_trigger(half, 129).pressure == 2,
           "custom trigger deadzone sets the rest point");
 
   // Quadratic: half travel gives about a quarter of full pressure.
   const Binding quadratic = only_binding(
-      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=quadratic\"]\n"), "l2");
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=quadratic range=255\"]\n"), "l2");
   const auto middle = read_trigger(quadratic, 142).pressure;
   require(middle >= 62 && middle <= 64, "quadratic curve: half travel near quarter pressure");
 
   // S-Curve, smooth power, sublinear and logarithmic curves
   const Binding scurve = only_binding(
-      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=s_curve\"]\n"), "l2");
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=s_curve range=255\"]\n"), "l2");
   const auto scurve_mid = read_trigger(scurve, 142).pressure;
   require(scurve_mid >= 125 && scurve_mid <= 128, "s-curve at half travel is near half pressure");
 
   const Binding sublinear = only_binding(
-      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=sublinear\"]\n"), "l2");
+      parse_text("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=sublinear range=255\"]\n"), "l2");
   const auto sublinear_mid = read_trigger(sublinear, 142).pressure;
   require(sublinear_mid >= 175 && sublinear_mid <= 185, "sublinear curve at half travel is near 70% pressure");
 
@@ -185,7 +216,7 @@ void check_trigger_readings() {
       {"linear", 128}, {"quadratic", 64}, {"cubic", 32}, {"s_curve", 128},
       {"smooth_power", 90}, {"sublinear", 180}, {"logarithmic", 189}};
   for (const auto &curve : curves) {
-    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0 curve=") +
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 deadzone=0 curve=") +
                                     curve.name + "\"]\n");
     const auto &binding = only_binding(controls, "l2");
     require(read_trigger(binding, 0).pressure == 0, "every curve rests at zero");
@@ -204,7 +235,7 @@ void check_trigger_readings() {
       {"linear", 126}, {"quadratic", 63}, {"cubic", 31}, {"s_curve", 126},
       {"smooth_power", 89}, {"sublinear", 179}, {"logarithmic", 188}};
   for (const auto &curve : default_dz_curves) {
-    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | curve=") +
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 curve=") +
                                     curve.name + "\"]\n");
     const auto &binding = only_binding(controls, "l2");
     require(read_trigger(binding, 0).pressure == 0, "every default-deadzone curve rests at zero");
@@ -224,7 +255,7 @@ void check_trigger_readings() {
       {"linear", 128}, {"quadratic", 64}, {"cubic", 32}, {"s_curve", 129},
       {"smooth_power", 91}, {"sublinear", 181}, {"logarithmic", 189}};
   for (const auto &curve : half_dz_curves) {
-    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | deadzone=0.5 curve=") +
+    const auto controls = parse_text(std::string("schema = 1\n[bindings]\nl2 = [\"xinput:LT | range=255 deadzone=0.5 curve=") +
                                     curve.name + "\"]\n");
     const auto &binding = only_binding(controls, "l2");
     require(read_trigger(binding, 0).pressure == 0, "half-deadzone curve rests at zero");
@@ -241,10 +272,10 @@ void check_trigger_readings() {
 
   // Scale 0.5 halves full travel; scale 2 is clamped at full pressure.
   const Binding half_scale = only_binding(
-      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=0.5\"]\n"), "r2");
+      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=0.5 range=255\"]\n"), "r2");
   require(read_trigger(half_scale, 255).pressure == 127, "scale 0.5 halves full travel");
   const Binding double_scale = only_binding(
-      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=2\"]\n"), "r2");
+      parse_text("schema = 1\n[bindings]\nr2 = [\"xinput:RT | scale=2 range=255\"]\n"), "r2");
   require(read_trigger(double_scale, 255).pressure == 255, "scale 2 clamps at full pressure");
   std::fprintf(stderr, "PASS: trigger readings: slice 157 match, deadzone, curve, scale\n");
 }
@@ -428,6 +459,11 @@ void check_invalid_files() {
                       "invert must be true or false", 3, "invert not boolean");
   expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | gain=2\"]\n",
                       "unknown option 'gain'", 3, "unknown option");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=0\"]\n", "range must be", 3, "range of zero");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=256\"]\n", "range must be", 3, "range over a byte");
+  expect_config_error("schema = 1\n[bindings]\nr2 = [\"xinput:RT | range=4.5\"]\n", "range must be", 3, "range not whole");
+  expect_config_error("schema = 1\n[bindings]\nlstick_x = [\"xinput:LX | range=45\"]\n", "range applies to triggers only", 3,
+                      "range on a stick");
   expect_config_error("schema = 1\n[bindings]\ncross = xinput:A\n",
                       "quoted string or an array", 3, "unquoted value");
   expect_config_error("schema = 1\n[bindings]\ncross = [\"xinput:A\" \"key:Z\"]\n",
