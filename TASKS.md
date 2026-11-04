@@ -2623,7 +2623,17 @@ preview consistency, full native/Python/Rust and en-US/pt-BR checks, both target
 installer+portable verification. New builds go to draft; owner gameplay/review before merge or
 publication. No code, builds, running agents or public rc7 authorized by this mapping step.
 
-### TASK-134 — Game-code optimization study (research and plan)
+### TASK-134 — Game-code optimization study (research and plan; closed 2026-11-04)
+
+**State 2026-11-04: ✅ closed** (owner: "fechar a task depois pra não voltar em otimizações que já foram feitas"). Three
+rounds: rc9 (process CPU per VBlank -18% on the i5-7200U, -19% on the 5700X against rc8), the second round (slice395, -26%
+against rc8 on the desktop) and a third, measured round during rc14 that kept nothing: a CLUT same-palette probe (about 5% of the
+CLUT flushes keep their palette), the VU1 `vfix` census (what is left is needed), the SPU2 envelope (about 0.03 ms) and CoreGS 2.0
+batches per submission from 16 to 256 on the Avell at 1x, 2x, 3x and 6x (no measurable effect). Every kept step, every dropped
+idea with its numbers, and what limits the Avell at 6x (the game's one GS download per frame) are in
+`docs/GAME-CODE-OPTIMIZATION-STUDY.md` sections 8 and 9. What is left is large and gets its own task if it is ever started:
+TASK-168 (several palettes in one batch), P8 (the translator: `Cpu & __restrict`, one host function per guest function) and a
+CoreGS 2.0 submission thread. Performance numbers come from the Avell from now on (owner, 2026-11-04).
 
 **State 2026-11-03:** 🧪 second round on top of the TASK-139 picture fixes, final build `build/t134-cand/f3-spec2` and `f3-v200` (pins slice395), packed in `private/slice395-dist-t134r2` and installed on the owner's desktop for their test (2026-11-03, files checked against the manifest; the notebook keeps the first rc9 build). **Published on the owner's word as pre-release `v1.3.0-rc9`** (2026-11-03, tag `39320b99`, installer `4f2c54bc...`, zip `fdb54662...`); the task goes on toward rc10. Player's session with a warm shader cache, George V Paris lap, 1x, 5700X: process CPU 12.96 (rc8) / 10.59 (slice392) -> 9.57 ms per VBlank (-26% / -9.7%). Kept: CoreGS 2.0 submits every 64 batches on a discrete GPU, VU1 CLIP over lanes, VU1 outer product as one vector operation, VU0 over four lanes, GPU vertices inserted per primitive, partial VU loads and stores as whole qwords (VU tables regenerated, `private/slice394-*`). Dropped with a measurement: VIF wrap mask, per-format generic VIF unpack, uber pipelines only. Gates against slice392 all equal (three recorded laps, v2.00 night and Arcade, 6x, VU and MTVU verify). The bench now uses a warm shader cache per executable (rc9's earlier numbers compiled pipelines during the lap). Left: CoreGS 2.0 submission thread, deferred flare readback, SPU2 envelope, P8.
 
@@ -3093,6 +3103,17 @@ image is now named `Spec II 1.10 (PT-BR + CPSP)` in `docs/inputs/spec2-variants.
 bytes; `spec2_pins` test). The George V lap recording replayed on it (rc14a Spec II build) boots, races and finishes the lap
 with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself stays outside git (`*.iso`).
 
+### TASK-168 — CoreGS 2.0: draw primitives with different palettes in one batch (planned, after 1.3.0)
+
+Found by TASK-134's third round (2026-11-04, rc14a Spec II build, the George V lap): a CLUT load forces a batch flush before it
+(the batch would otherwise draw with the new palette). On that lap there are about 1,500-1,630 such flushes per VBlank, 1,013-1,020
+of them with the same texture, and only 45-105 load an identical palette, so the flushes are real palette changes. Each flush is a
+batch through the renderer and the graphics driver; together they are the largest part of the GS thread (the CLUT path costs
+2.0 ms per VBlank on the desktop's plain build, 1.5 ms of it the flush). Idea: give each primitive the palette it was drawn with
+(a palette slot per draw or per vertex, palettes kept on the GPU) so a palette change no longer ends the batch, with palettes
+read from GPU targets (IN-417) kept exact. Large: the vertex format, the shaders, the CLUT upload path and the texture cache
+change, so it waits until after 1.3.0 and the owner's word. Gates: every identity gate, plus the owner's picture tests.
+
 ### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
 
 1.3.0-rc13 is published (2026-11-04). rc14 starts after the owner compacts the session's context. Steps:
@@ -3102,6 +3123,7 @@ with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself 
    TASK-161 (trigger range 0-251, off by default, with a launcher switch and locale keys in both languages; it changes
    TASK-147's 45/84 ranges when on). Review, rebuild the hooked units (`scripts/camera360_units.py` and the new hooks), check
    that the race clock, state and frames stay identical with the new options at their defaults, merge.
+   Done: PR #197 merged on 2026-11-04 (units `build/cam360/*-units-rc14`, Spec II on the TASK-166 units).
 2. **PR #177** (Luan Antony, TASK-095, ultrawide 2D menu canvas): the camera agent finds where the pause, results, replay and
    pre-race screens set their projection in v2.00 and Spec II and adds the hook; it comes as its own PR. Same checks; 16:9 must
    stay identical.
@@ -3113,6 +3135,7 @@ with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself 
    owner's desktop (installer update mode) and the laptop's portable copy; gates against rc13 with
    `private/task134-tools/gates5.sh` (references `build/evidence/*r13pgo*`); performance measured on the laptop only. Telegram
    the owner when it is ready. No PGO build until the owner asks; then a draft, and a pre-release only on the owner's word.
+   Done for the desktop (2026-11-04, slice406, gates against rc13 identical); the laptop's portable copy follows.
 
 Waiting on players (issues answered 2026-11-04, `docs/ISSUE-TRIAGE.md`): the AMD crash reports #187-#190 retest on rc13; a new
 task if they still crash.

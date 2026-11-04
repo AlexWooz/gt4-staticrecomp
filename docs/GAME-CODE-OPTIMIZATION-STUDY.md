@@ -654,3 +654,38 @@ verify). The notebook was off: not measured.
 **Left, cheapest first:** the SPU2 envelope, about 0.05 ms on the desktop; a CoreGS 2.0 submission thread (about 0.3 ms off the GS thread's critical path, but presentation
 submits on the same queue, so every submission must go through one ordered queue); a deferred flare readback on the GS thread (it
 waits about 0.5 ms per VBlank for the GPU); P8.
+
+## 9. Third round and close (2026-11-04, during rc14)
+
+The owner asked for one more round while rc14 waited for the camera session's pull request, and for the task to be closed
+afterwards so that nothing measured here is tried again. Method: a CPU sampler profile of the rc14a Spec II plain build on the
+George V Paris lap at 1x on the desktop (sampler VBlanks 3000-7000, warm shader cache; shares only, the desktop builds and runs
+other sessions), then any A/B on the **Avell laptop** (RTX 3060, the owner's performance machine from 2026-11-04, over SSH: the
+lap headless, interleaved rounds, `cpu_summary.py` over VBlanks 2400-8032).
+
+### The profile (Confirmed, plain build, desktop, ms per VBlank)
+
+Process 16.2 ms: GS worker 8.0, VU1 worker 4.2 (1.2 of it waiting), EE 4.1 (1.2 waiting). The GS worker is flat: the largest
+own items are the graphics driver (1.0 exclusive, 1.8 inclusive with the loader), GIF parsing 0.26, `ShouldDraw` 0.26, the
+upload hash 0.16, one `GpuDraw` record per primitive 0.11, memory copies 0.3 in total (memoised upload replays, palette copies,
+vertex inserts: all needed). By call path, a CLUT load costs 2.0 ms, of which 1.5 ms is the batch flush it forces and 0.3 ms the
+store of drawn targets before the palette is read. VU1: `vfix` 0.56 (13%). EE: the SPU2 mixer 0.17 (render_voice, the envelope,
+ADPCM decoding).
+
+### Measured and dropped (do not try again without a new reason)
+
+| Idea | Measurement | Verdict |
+|---|---|---|
+| Skip the batch flush when a CLUT load leaves the palette as it was | probe counter (`PeekLoad` against the buffer, after the store): of 1,494-1,631 CLUT flushes per VBlank (1,013-1,020 of them with the same texture), only 45-105 load an identical palette | dropped: about 5% of those flushes, with ordering risks around GPU-held palettes |
+| Fewer `vfix` in the generated VU1 code | the emitter already keeps fixed shadows and uses the `n` operations; of the 94,223 `vfix` left in the VU1 table (slice397), 70,534 fix a register once at program entry or after a load, 20,124 fix Q, 2,298 fix I, 1,267 the accumulator | dropped: what is left is needed |
+| SPU2 envelope constants taken once per phase instead of per sample | the whole mixer is 0.17 ms; this part of it about 0.03 ms (estimate from the profile) | dropped: below any A/B's noise, a new runtime capsule for it |
+| Deferred flare readback in the normal mode | Performance Mode already answers the flare table one download late (IN-439) | not for the normal mode: a late answer changes what the game draws |
+| CoreGS 2.0 batches per submission (`GT4_CORE2_SUBMIT_EVERY`; discrete default 64 since round 2) | Avell, the lap headless, 3 rounds per value: 1x 16, 32, 48, 64, 128, 256; 3x and 6x 64, 128, 256 (3x with the order rotated); 6x also 16, 32, 48. Every value within 11.5-11.7 ms (1x), 13.1-13.5 ms (3x) and 17.1-17.4 ms (6x) of wall per VBlank once the laptop is warm; the first run of each series is the fastest whatever its value, and the value run first in every round looked slower (an order effect, gone once the order was rotated). Frames and state identical at 16 (6x) and 256 (1x) | dropped: no measurable effect on this machine; the default stays |
+
+### What limits the Avell at 6x (Confirmed, logs of the runs above)
+
+At 6x the heaviest lap takes about 17 ms of wall per VBlank headless while the GPU is busy about 13 ms: the GS thread waits 4.5
+to 5.5 ms per VBlank for the GPU at the game's one EE download per VBlank (`download=5.46 (1.00)`, the light-flare visibility
+table). The EE waits for that answer, so the GPU idles while the game computes the next frame: in the faithful mode the CPU and
+the GPU take turns once per frame. At 1x the same wait is 1.3 ms. Performance Mode already answers the table one download late
+(IN-439, decision 0073) and removes the turn.
