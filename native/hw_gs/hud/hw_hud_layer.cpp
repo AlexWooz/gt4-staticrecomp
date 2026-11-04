@@ -32,9 +32,10 @@ struct QuadConstants {
 
 }  // namespace
 
-Layer::Layer(VkPhysicalDevice physical, VkDevice device, std::uint32_t slots, void *window, std::string gpu_name, std::string scale)
-    : physical_(physical), device_(device), slots_(slots), window_(window) {
+Layer::Layer(VkPhysicalDevice physical, VkDevice device, std::uint32_t slots, void *window, std::string gpu_name, std::string scale, Mode mode)
+    : physical_(physical), device_(device), slots_(slots), window_(window), mode_(mode) {
   facts_.gpu_name = std::move(gpu_name);
+  facts_.cpu_name = cpu_brand_string();
   facts_.scale = std::move(scale);
   sampler_ = std::make_unique<SystemSampler>(window_, [this](const SystemReading &reading) {
     const std::lock_guard<std::mutex> lock(mutex_);
@@ -331,7 +332,9 @@ bool Layer::ensure_resources(VkFormat format, VkExtent2D extent) {
     GlyphAtlas atlas = make_glyph_atlas(pixels);
     if (atlas.coverage.empty()) return false;
     destroy_panel_resources();
-    canvas_ = std::make_unique<Canvas>(std::move(atlas));
+    // The number of lines is fixed for the session: the names and the mode decide it, not the readings.
+    const std::size_t lines = hud_lines(mode_, report_line(report_status_, perf::ReportStatus::now_ms()), facts_, FrameWindow{}, SystemReading{}).size();
+    canvas_ = std::make_unique<Canvas>(std::move(atlas), mode_ == Mode::full ? kColumns : kFpsColumns, lines, mode_ == Mode::full);
     font_pixels_ = pixels;
   }
   return image_ != VK_NULL_HANDLE || create_panel_resources();
@@ -386,17 +389,17 @@ void Layer::record(VkCommandBuffer cmd, std::uint32_t slot, VkImage target_image
   SystemReading reading;
   {
     const std::lock_guard<std::mutex> lock(mutex_);
-    times_.recent_intervals(intervals_, static_cast<std::size_t>(canvas_->graph_width()));
+    if (canvas_->has_graph()) times_.recent_intervals(intervals_, static_cast<std::size_t>(canvas_->graph_width()));
     if (text_due) {
       frames = times_.window(now);
       reading = reading_;
     }
   }
   if (text_due) {
-    canvas_->draw_text(hud_lines(facts, frames, reading));
+    canvas_->draw_text(hud_lines(mode_, report_line(report_status_, perf::ReportStatus::now_ms()), facts, frames, reading));
     next_text_ms_ = now + kTextPeriodMs;
   }
-  canvas_->draw_graph(intervals_);
+  canvas_->draw_graph(intervals_);  // nothing for the FPS only panel
 
   // Only the rows that changed go to the image. The first time, all of them.
   const std::uint32_t width = static_cast<std::uint32_t>(canvas_->width());
@@ -415,7 +418,7 @@ void Layer::record(VkCommandBuffer cmd, std::uint32_t slot, VkImage target_image
     add_rows(0, canvas_->height());
   } else {
     if (text_due) add_rows(canvas_->text_top(), canvas_->text_rows());
-    add_rows(canvas_->graph_top(), canvas_->graph_rows());
+    if (canvas_->has_graph()) add_rows(canvas_->graph_top(), canvas_->graph_rows());
   }
   VkImageMemoryBarrier to_copy{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   to_copy.oldLayout = image_ready_ ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;

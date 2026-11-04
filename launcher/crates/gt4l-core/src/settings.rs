@@ -110,6 +110,17 @@ const VSYNC_CHOICES: &[Choice] = &[
     Choice { value: "off", label: "Off", selectable: true },
 ];
 
+/// TASK-175: the performance HUD's three states. Earlier launchers stored a toggle (`on`/`off`): `on` is read as `full`
+/// ([`legacy_value`]).
+pub const HUD_FPS_ONLY: &str = "fps";
+pub const HUD_FULL: &str = "full";
+
+const HUD_CHOICES: &[Choice] = &[
+    Choice { value: "off", label: "Off", selectable: true },
+    Choice { value: HUD_FPS_ONLY, label: "FPS only", selectable: true },
+    Choice { value: HUD_FULL, label: "Full", selectable: true },
+];
+
 const VERIFY_CHOICES: &[Choice] = &[
     Choice { value: "off", label: "Off", selectable: true },
     Choice { value: "100", label: "Every 100th call", selectable: true },
@@ -264,9 +275,10 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Advanced,
         group: "Performance",
         title: "Performance HUD",
-        info: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the \
-               processor, the graphics card and memory.",
-        kind: TOGGLE,
+        info: "Shows a panel in the corner while you play. FPS only shows just the frame rate. Full shows the graphics card and \
+               processor names, the frame rate and frame time with a live graph, the game's use of the processor, the graphics \
+               card and memory, and the state of the performance report when that is on.",
+        kind: Kind::Choice(HUD_CHOICES),
         default: "off",
         connected: true,
     },
@@ -356,6 +368,16 @@ impl fmt::Display for SettingError {
 }
 
 impl std::error::Error for SettingError {}
+
+/// A value an earlier launcher stored for a setting that has since changed type, read as its current value (TASK-175: the
+/// performance HUD was a toggle; `on` meant the whole panel). Any other value is returned as it is.
+pub fn legacy_value<'a>(id: &str, value: &'a str) -> &'a str {
+    if id == "performance_hud" && value == "on" {
+        HUD_FULL
+    } else {
+        value
+    }
+}
 
 /// Checks one value against its definition. Choices must be selectable; toggles are `on`/`off`.
 pub fn validate(definition: &SettingDef, value: &str) -> Result<String, SettingError> {
@@ -455,7 +477,7 @@ impl Settings {
     /// Sets a validated value. Unknown ids and invalid values are refused and leave the state unchanged.
     pub fn set(&mut self, id: &str, value: &str) -> Result<(), SettingError> {
         let definition = definition(id).ok_or_else(|| SettingError::UnknownSetting(id.to_string()))?;
-        let value = validate(definition, value)?;
+        let value = validate(definition, legacy_value(id, value))?;
         self.values.insert(definition.id, value);
         Ok(())
     }

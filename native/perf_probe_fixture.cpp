@@ -141,6 +141,38 @@ void check_report_and_pause_coalescing(std::FILE *stream) {
           "F9 pause preserves unreported complete interval");
 }
 
+// TASK-175: F7 and F8 are announced for the HUD: Recording while an interval runs, Saved after the report, nothing for a report that
+// was not written.
+void check_report_status(std::FILE *stream) {
+  using namespace gt4::perf;
+  tick = 0;
+  ReportStatus status(true);
+  Probe probe({clock, nullptr}, true, stream);
+  probe.set_report_status(&status);
+  const auto now = [] { return ReportStatus::now_ms(); };
+  require(status.phase(now()) == ReportPhase::idle, "idle before any key");
+  probe.request(Request::start); probe.frame_boundary({});
+  require(status.phase(now()) == ReportPhase::recording, "F7 records");
+  for (int frame = 0; frame < 3; ++frame) { tick += 1000; probe.frame_boundary({}); }
+  require(status.phase(now()) == ReportPhase::recording, "the interval keeps recording");
+  probe.request(Request::report); tick += 1000; probe.frame_boundary({});
+  require(status.phase(now()) == ReportPhase::saved, "F8 saves");
+  require(status.phase(now() + ReportStatus::kSavedShownMs) == ReportPhase::idle, "and Saved fades to Idle");
+  // F8 with no interval: the report says so ("no complete interval") and nothing is announced as saved.
+  probe.request(Request::start); probe.frame_boundary({});
+  probe.request(Request::report); probe.frame_boundary({});
+  require(status.phase(now()) == ReportPhase::idle, "a report that was not written is not Saved");
+  // F9 pauses the probe: a running interval stops recording; F8 in the same boundary keeps its Saved.
+  probe.request(Request::start); probe.frame_boundary({});
+  tick += 1000; probe.frame_boundary({});
+  probe.request(Request::toggle); tick += 1000; probe.frame_boundary({});
+  require(!probe.enabled() && status.phase(now()) == ReportPhase::idle, "a paused probe is Idle");
+  // A probe with no status (the tests above, the headless runs) announces nothing and does not crash.
+  Probe silent({clock, nullptr}, true, stream);
+  silent.request(Request::start); silent.frame_boundary({});
+  silent.request(Request::report); silent.frame_boundary({});
+}
+
 void check_frame_only_report(std::FILE *stream) {
   using namespace gt4::perf;
   tick = cpu_tick = 0;
@@ -234,6 +266,7 @@ int main() {
     check_disable_and_fault(stream);
     check_percentiles_and_tail(stream);
     check_report_and_pause_coalescing(stream);
+    check_report_status(stream);
     check_frame_only_report(stream);
     check_split_vu_report(stream);
     check_scope_clock();

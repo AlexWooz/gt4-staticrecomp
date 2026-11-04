@@ -2,8 +2,18 @@
 // TASK-135: see hw_hud.hpp.
 #include "hw_hud.hpp"
 
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#define GT4_HUD_CPUID 1
+#if defined(_MSC_VER) || defined(_WIN32)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
+
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <utility>
 
 namespace gt4::hw::hud {
@@ -93,22 +103,126 @@ void FrameTimes::recent_intervals(std::vector<float> &out, std::size_t count) co
   }
 }
 
-std::vector<Line> hud_lines(const SessionFacts &facts, const FrameWindow &frames, const SystemReading &system) {
+std::string cpu_brand_string() {
+#ifdef GT4_HUD_CPUID
+  unsigned registers[4] = {};
+  const auto leaf = [&registers](unsigned number) {
+#if defined(_MSC_VER) || defined(_WIN32)
+    int out[4];
+    __cpuid(out, static_cast<int>(number));
+    std::memcpy(registers, out, sizeof registers);
+#else
+    __cpuid(number, registers[0], registers[1], registers[2], registers[3]);
+#endif
+  };
+  leaf(0x80000000u);
+  if (registers[0] < 0x80000004u) return {};
+  char brand[49] = {};
+  for (unsigned part = 0; part < 3; ++part) {
+    leaf(0x80000002u + part);
+    std::memcpy(brand + 16 * part, registers, sizeof registers);
+  }
+  return clean_device_name(brand);  // the string ends at the first NUL of the 48 bytes
+#else
+  return {};
+#endif
+}
+
+Mode mode_from_setting(const char *text) {
+  if (text == nullptr) return Mode::off;
+  const std::string value = text;
+  if (value == "1") return Mode::full;
+  if (value == "fps") return Mode::fps_only;
+  return Mode::off;
+}
+
+ReportLine report_line(const perf::ReportStatus &status, std::uint64_t now_ms) {
+  if (!status.enabled()) return ReportLine::hidden;
+  switch (status.phase(now_ms)) {
+  case perf::ReportPhase::recording: return ReportLine::recording;
+  case perf::ReportPhase::saved: return ReportLine::saved;
+  case perf::ReportPhase::idle: break;
+  }
+  return ReportLine::idle;
+}
+
+std::string clean_device_name(const std::string &raw) {
+  std::string out;
+  bool pending_space = false, in_sequence = false;
+  for (const char character : raw) {
+    const unsigned char byte = static_cast<unsigned char>(character);
+    if (byte >= 0x80 && byte < 0xC0 && in_sequence) continue;  // the rest of a UTF-8 sequence
+    in_sequence = false;
+    if (byte <= ' ' || byte == 0x7F) {
+      pending_space = !out.empty();
+      continue;
+    }
+    if (pending_space) out += ' ';
+    pending_space = false;
+    if (byte > '~') {
+      out += '?';
+      in_sequence = byte >= 0xC0;
+    } else {
+      out += character;
+    }
+  }
+  return out;
+}
+
+std::vector<std::string> fit_name(const std::string &raw, int columns) {
+  std::vector<std::string> lines;
+  const std::string name = clean_device_name(raw);
+  if (name.empty() || columns < 1) return lines;
+  const std::size_t width = static_cast<std::size_t>(columns);
+  std::string current;
+  std::size_t start = 0;
+  while (start < name.size()) {
+    std::size_t end = name.find(' ', start);
+    if (end == std::string::npos) end = name.size();
+    std::string word = name.substr(start, end - start);
+    start = end + 1;
+    // A word longer than a whole line takes lines of its own; its last piece goes on like a short word.
+    while (word.size() > width) {
+      if (!current.empty()) {
+        lines.push_back(current);
+        current.clear();
+      }
+      lines.push_back(word.substr(0, width));
+      word.erase(0, width);
+    }
+    if (current.empty()) {
+      current = word;
+    } else if (current.size() + 1 + word.size() <= width) {
+      current += ' ';
+      current += word;
+    } else {
+      lines.push_back(current);
+      current = word;
+    }
+  }
+  if (!current.empty()) lines.push_back(current);
+  return lines;
+}
+
+std::vector<Line> hud_lines(Mode mode, ReportLine report, const SessionFacts &facts, const FrameWindow &frames, const SystemReading &system) {
   std::vector<Line> lines;
-  lines.reserve(kLineCount);
+  if (mode == Mode::off) return lines;
+  if (mode == Mode::fps_only) {
+    const std::string text = frames.intervals == 0 ? std::string("  -- FPS") : formatted("%5.1f FPS", frames.fps);
+    lines.push_back(Line{{Segment{text, kWhite}}, Segment{}});
+    return lines;
+  }
+
+  for (const std::string &part : fit_name(facts.gpu_name, kColumns)) lines.push_back(Line{{Segment{part, kWhite}}, Segment{}});
+  for (const std::string &part : fit_name(facts.cpu_name, kColumns)) lines.push_back(Line{{Segment{part, kWhite}}, Segment{}});
 
   char size[32];
   std::snprintf(size, sizeof size, "[%ux%u]", facts.output_width, facts.output_height);
-  const std::size_t room = static_cast<std::size_t>(kColumns) - std::string(size).size() - 1;
-  std::string name = facts.gpu_name;
-  if (name.size() > room) name = name.substr(0, room - 2) + "..";
-  lines.push_back(Line{{Segment{name, kWhite}}, Segment{size, kDim}});
-
+  std::string output = size;
+  if (system.refresh_hz != 0) output += " " + std::to_string(system.refresh_hz) + "Hz";
   std::string renderer = "CoreGS 2.0";
   if (!facts.scale.empty()) renderer += "  " + facts.scale + "x";
-  std::string refresh;
-  if (system.refresh_hz != 0) refresh = std::to_string(system.refresh_hz) + "Hz";
-  lines.push_back(Line{{Segment{renderer, kWhite}}, Segment{refresh, kDim}});
+  lines.push_back(Line{{Segment{renderer, kWhite}}, Segment{output, kDim}});
 
   if (frames.intervals == 0) {
     lines.push_back(Line{{Segment{"FPS:      --", kWhite}}, Segment{}});
@@ -127,14 +241,20 @@ std::vector<Line> hud_lines(const SessionFacts &facts, const FrameWindow &frames
   lines.push_back(Line{{Segment{"GPU:   " + percent_text(system.gpu_percent), kGreen}}, Segment{}});
   lines.push_back(Line{{Segment{"Mem:   " + memory_text(system.memory_mb), kWhite}},
                        Segment{"VRAM: " + memory_text(system.video_memory_mb), kWhite}});
+  switch (report) {
+  case ReportLine::hidden: break;
+  case ReportLine::idle: lines.push_back(Line{{Segment{"Report:", kWhite}, Segment{" Idle", kDim}}, Segment{}}); break;
+  case ReportLine::recording: lines.push_back(Line{{Segment{"Report:", kWhite}, Segment{" Recording", kRed}}, Segment{}}); break;
+  case ReportLine::saved: lines.push_back(Line{{Segment{"Report:", kWhite}, Segment{" Saved", kGreen}}, Segment{}}); break;
+  }
   return lines;
 }
 
-Canvas::Canvas(GlyphAtlas atlas) : atlas_(std::move(atlas)) {
+Canvas::Canvas(GlyphAtlas atlas, int columns, std::size_t line_count, bool with_graph) : atlas_(std::move(atlas)), line_count_(line_count) {
   padding_ = std::max(4, atlas_.cell_height / 2);
-  graph_height_ = kGraphRows * atlas_.cell_height;
-  width_ = kColumns * atlas_.cell_width + 2 * padding_;
-  graph_top_ = padding_ + text_rows() + padding_ / 2;
+  graph_height_ = with_graph ? kGraphRows * atlas_.cell_height : 0;
+  width_ = columns * atlas_.cell_width + 2 * padding_;
+  graph_top_ = padding_ + text_rows() + (with_graph ? padding_ / 2 : 0);
   height_ = graph_top_ + graph_height_ + padding_;
   pixels_.assign(static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_), premultiplied(kPanel, 255u));
   // The panel's rounded corners.
@@ -187,6 +307,7 @@ void Canvas::draw_text(const std::vector<Line> &lines) {
   clear_rows(text_top(), text_rows());
   int y = text_top();
   for (const Line &line : lines) {
+    if (y + atlas_.cell_height > text_top() + text_rows()) break;  // the panel was made for this many lines
     int x = padding_;
     for (const Segment &segment : line.left) {
       draw_string(x, y, segment.text, segment.colour);
@@ -205,6 +326,7 @@ int Canvas::graph_row_of(double ms) const {
 }
 
 void Canvas::draw_graph(const std::vector<float> &intervals_ms) {
+  if (!has_graph()) return;
   clear_rows(graph_top_, graph_height_);
   const int left = graph_left(), columns = graph_width();
   for (const double guide : {kOneFrameMs, 2.0 * kOneFrameMs}) {

@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "../../perf_report_status.hpp"
+
 namespace gt4::hw::hud {
 
 // Colours are 0xAABBGGRR, the byte order of R8G8B8A8.
@@ -41,9 +43,34 @@ struct SystemReading {
   std::uint32_t refresh_hz = 0;
 };
 
+// What the launcher asked for (GT4_HW_HUD): "1" is the full panel, "fps" is the frame rate alone, anything else is no HUD.
+enum class Mode { off, fps_only, full };
+Mode mode_from_setting(const char *text);
+
+// The performance report's line (TASK-175): none while the launcher's report is off, else what the F7/F8 keys are doing.
+enum class ReportLine { hidden, idle, recording, saved };
+
+// The report line to show now: hidden while the report is off (the launcher's Performance report), else Idle, Recording or Saved from the
+// probe's status (perf_report_status.hpp). Lock free: two atomic loads.
+ReportLine report_line(const perf::ReportStatus &status, std::uint64_t now_ms);
+
+// A device name as the HUD shows it: whitespace runs (and the padding some brand strings carry) become one space, the ends are
+// trimmed, and a byte outside printable ASCII becomes one '?' (the glyph atlas has no others; a UTF-8 sequence counts once).
+std::string clean_device_name(const std::string &raw);
+
+// The fit rule for a device name (the graphics card, the processor): the name is never cut. It is cleaned, then set on as many lines
+// of at most `columns` characters as it needs, breaking at the spaces (a word longer than a line is split at the line's end). No
+// word is dropped and none abbreviated. An empty name is no lines.
+std::vector<std::string> fit_name(const std::string &raw, int columns);
+
+// The processor's brand string from CPUID (leaves 0x80000002..4), cleaned by clean_device_name; empty when the processor reports none or
+// is not x86. Read once at the start (a few instructions), never per frame. No Windows types: Linux uses <cpuid.h>.
+std::string cpu_brand_string();
+
 // What does not change while the game runs, except the output size.
 struct SessionFacts {
   std::string gpu_name;
+  std::string cpu_name;  // the processor's brand string; empty when not known (then there is no processor line)
   std::string scale;  // the render scale's multiplier as text ("3"); empty when not known
   std::uint32_t output_width = 0, output_height = 0;
 };
@@ -82,10 +109,14 @@ struct Line {
   Segment right;  // drawn against the right edge
 };
 
-// The HUD's text. Fits `columns` characters per line; a long graphics card name is cut.
-inline constexpr int kColumns = 34;
-inline constexpr std::size_t kLineCount = 7;
-std::vector<Line> hud_lines(const SessionFacts &facts, const FrameWindow &frames, const SystemReading &system);
+// The HUD's text, one Line per row, at most kColumns (the full panel) or kFpsColumns (FPS only) characters wide. Full: the graphics
+// card name (wrapped by fit_name), the processor name (the same), the renderer and scale with the output size and refresh rate, FPS,
+// frame time, CPU, GPU, memory and VRAM, and the report line when `report` is not hidden. FPS only: one line, the frame rate.
+// The number of lines depends on the names and the mode, never on the readings. The text is English only: the HUD has no language
+// switch (the launcher's texts are the translated ones).
+inline constexpr int kColumns = 36;
+inline constexpr int kFpsColumns = 10;
+std::vector<Line> hud_lines(Mode mode, ReportLine report, const SessionFacts &facts, const FrameWindow &frames, const SystemReading &system);
 
 class Canvas {
 public:
@@ -93,7 +124,9 @@ public:
   static constexpr double kGraphTopMs = 50.0;
   static constexpr int kGraphRows = 5;
 
-  explicit Canvas(GlyphAtlas atlas);
+  // `columns` characters wide and `line_count` text lines tall; `with_graph` adds the frame time graph under the text (the FPS only
+  // panel has none).
+  Canvas(GlyphAtlas atlas, int columns, std::size_t line_count, bool with_graph);
 
   int width() const { return width_; }
   int height() const { return height_; }
@@ -102,7 +135,8 @@ public:
 
   // The first row and the number of rows of the text and of the graph.
   int text_top() const { return padding_; }
-  int text_rows() const { return static_cast<int>(kLineCount) * atlas_.cell_height; }
+  int text_rows() const { return static_cast<int>(line_count_) * atlas_.cell_height; }
+  bool has_graph() const { return graph_height_ > 0; }
   int graph_top() const { return graph_top_; }
   int graph_rows() const { return graph_height_; }
   int graph_left() const { return padding_; }
@@ -120,6 +154,7 @@ private:
   void blend(int x, int y, std::uint32_t colour, std::uint32_t coverage);
 
   GlyphAtlas atlas_;
+  std::size_t line_count_ = 0;
   int padding_ = 0, width_ = 0, height_ = 0, graph_top_ = 0, graph_height_ = 0;
   std::vector<std::uint32_t> pixels_;
 };

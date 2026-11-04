@@ -376,7 +376,7 @@ Config parse_config(std::string_view text) {
     } else if (key == "trigger_full_range") {
       valid = value == "0" || value == "1";  // TASK-161: the full trigger range (absent = 0, the launcher's toggle)
     } else if (key == "hw_hud") {
-      valid = value == "1";  // TASK-135: the performance HUD
+      valid = value == "1" || value == "fps";  // TASK-135, TASK-175: the performance HUD, the full panel or the frame rate alone
     } else if (key == "hw_postfx") {
       valid = value == "fxaa";
     } else if (key == "hw_present_mode") {

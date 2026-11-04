@@ -960,12 +960,15 @@ mod table_tests {
     }
 
     #[test]
-    fn the_performance_hud_is_a_coregs_switch_in_advanced_off_by_default() {
+    fn the_performance_hud_is_a_coregs_choice_in_advanced_off_by_default() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let hud = row(&table, "performance_hud");
-        assert_eq!(hud["control"], "toggle");
+        assert_eq!(hud["control"], "dropdown");
         assert_eq!(hud["page"], "advanced");
-        assert_eq!(hud["current"], false);
+        assert_eq!(hud["current"], "off");
+        assert_eq!(hud["default"], "off");
+        let values: Vec<&str> = hud["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["off", "fps", "full"]);
         assert_eq!(hud["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
     }
 

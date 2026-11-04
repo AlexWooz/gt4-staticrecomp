@@ -1,6 +1,7 @@
 #pragma once
 
 #include "perf_accounting.hpp"
+#include "perf_report_status.hpp"
 #include <atomic>
 #include <cstdio>
 #include <functional>
@@ -85,6 +86,9 @@ public:
   // Extra report lines (for example pacing diagnostics) printed after each
   // interval report. An empty function removes the section.
   void set_report_section(std::function<void(std::FILE *)> section);
+  // TASK-175: where F7 ("Recording") and F8 ("Saved") are announced for the performance HUD; null: nowhere. Set before the first
+  // frame boundary (Probe::shared() points it at ReportStatus::shared()).
+  void set_report_status(ReportStatus *status) noexcept { status_ = status; }
   bool enabled() const noexcept { return accounting_.enabled(); }
   bool valid() const noexcept;
   std::uint64_t frames() const noexcept { return frames_; }
@@ -98,6 +102,8 @@ public:
   std::uint64_t cumulative_exclusive_us(Category category) const noexcept;
 
 private:
+  ReportStatus *status_ = nullptr;
+  bool report_written_ = false;  // the last print() wrote a full report (not "disabled", INVALID or "no complete interval")
   bool owner() noexcept;
   std::uint64_t timestamp() noexcept;
   void reset(std::uint64_t now, GuestSample guest) noexcept;
