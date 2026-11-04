@@ -3058,6 +3058,28 @@ study (`docs/studies/BUTTON-PROMPTS.md`, PR #166) designs it through texture rep
 setting (PlayStation, Xbox, Switch). Needs the glyph textures drawn (own or CC0 art) and the replacement path on both
 renderers (CoreGS 2.0 and GSdx). No change to the game code.
 
+### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
+
+1.3.0-rc13 is published (2026-11-04). rc14 starts after the owner compacts the session's context. Steps:
+
+1. **The camera session's pull request** (one PR into `task/134-game-code-optimization-study`, not merged by that session):
+   TASK-159b (the pedal zeroing reaches only pad 0's right stick Y), TASK-160 (field of view in real time, on by default) and
+   TASK-161 (trigger range 0-251, off by default, with a launcher switch and locale keys in both languages; it changes
+   TASK-147's 45/84 ranges when on). Review, rebuild the hooked units (`scripts/camera360_units.py` and the new hooks), check
+   that the race clock, state and frames stay identical with the new options at their defaults, merge.
+2. **PR #177** (Luan Antony, TASK-095, ultrawide 2D menu canvas): the camera agent finds where the pause, results, replay and
+   pre-race screens set their projection in v2.00 and Spec II and adds the hook; it comes as its own PR. Same checks; 16:9 must
+   stay identical.
+3. **TASK-164** (issue #160): a launcher hint, before the first Play with an empty card, that Cross (Z on the keyboard)
+   confirms GT4's question about creating its game data. Both languages.
+4. **Build and install:** plain test builds of both games (everything enabled), launchers labelled rc14, installed on the
+   owner's desktop (installer update mode) and the laptop's portable copy; gates against rc13 with
+   `private/task134-tools/gates5.sh` (references `build/evidence/*r13pgo*`); performance measured on the laptop only. Telegram
+   the owner when it is ready. No PGO build until the owner asks; then a draft, and a pre-release only on the owner's word.
+
+Waiting on players (issues answered 2026-11-04, `docs/ISSUE-TRIAGE.md`): the AMD crash reports #187-#190 retest on rc13; a new
+task if they still crash.
+
 ### rc13 plan (owner, 2026-11-04): close the open pull requests before 1.3.0 final
 
 The owner wants every open pull request settled so 1.3.0 can leave the release candidates. For rc13, on
