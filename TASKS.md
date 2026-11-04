@@ -3044,12 +3044,20 @@ setting that leaves the engine and every other sound alone; it reads the 480p co
 buffers in progressive mode. A sound option changes no gameplay; a colour change would alter the original picture, so it needs
 the owner's word first. Check both in the game before building.
 
-### TASK-164 — First save creation: tell keyboard players which key confirms (issue #160; study #167)
+### TASK-164 — First save creation: tell keyboard players which key confirms (issue #160; study #167; done in rc14)
 
-Owner (2026-11-04): planned. On a new card GT4 asks whether to create its game data and answers only Cross (`Z` on the default
-keyboard map); players who press Enter or Space think it froze (issue #160, rinegan33). Luan Antony's study
-(`docs/studies/FIRST-SAVE-CREATION.md`, PR #167) proposes a first-boot reminder in the launcher, among other options. Smallest
-step first: a clear hint before the first Play with an empty card, in both languages.
+Owner (2026-11-04): planned. On a new card GT4 asks whether to create its game data and answers only Cross; players who press
+another key think it froze (issue #160, rinegan33). Luan Antony's study (`docs/studies/FIRST-SAVE-CREATION.md`, PR #167)
+proposes a first-boot reminder in the launcher, among other options. Smallest step first: a clear hint before the first Play
+with an empty card, in both languages.
+
+Done (2026-11-04, rc14): Play shows a note after the shader step and before the start whenever the selected game's library has
+no active save and the card the game left behind holds none (`saves::first_start_expected`; command `first_start_hint`). It
+names the keys from the player's current controls (default: Cross = `W / Enter`, controller `A`, D-pad right = `Right`) and
+says that a question starting on Cancel or No needs Right first (the slice110 pilot: the format question starts on Cancel).
+Play starts, Cancel and Back start nothing, a failed check starts at once. Tests: `saves` unit test, flow audit
+`play_names_the_first_start_keys_until_the_game_has_a_save`, focus checks (six cases) in both languages; locale keys
+`home.first_start_*` in en-US and pt-BR.
 
 ### TASK-165 — Xbox and Switch button prompts in the game (issue #161; study #166)
 
@@ -3057,6 +3065,33 @@ Owner (2026-11-04): planned. Issue #161 asks for Xbox or Switch button prompts i
 study (`docs/studies/BUTTON-PROMPTS.md`, PR #166) designs it through texture replacement of the button glyphs plus a launcher
 setting (PlayStation, Xbox, Switch). Needs the glyph textures drawn (own or CC0 art) and the replacement path on both
 renderers (CoreGS 2.0 and GSdx). No change to the game code.
+
+### TASK-166 — Spec II ultrawide: race-font text and mirror stretched (owner, 2026-11-04; done in rc14)
+
+Owner (2026-11-04): on Spec II, at ratios wider than 16:9, the digital speedometer and the odometer (clearest in the bumper
+camera's gauges) look distorted; v2.00 is fine. Cause (Confirmed): TASK-080 P2 patched two immediates of v2.00 into loads from
+the host-filled HUD parameter block (`scripts/aspect_elf_patch.py`, decision 0071): the race font x scale (`lui at,0x3F40`, 0.75)
+and the rear-view mirror divisor (`addiu t0,zero,640`). The Spec II port (TASK-100 S8) mapped the HUD canvas hook but not these
+two words, so every glyph of the race font (lap timer, speed, lap times, gauges) and the mirror kept 16:9 widths in frame
+pixels and were stretched with the frame.
+
+Done (2026-11-04): `scripts/spec2_aspect_patch.py` patches the same two instructions of the Spec II derived ELF (0x001C519C in
+`RaceDisplay::render` 0x001C5040, 0x001EB65C in the mirror placement) to the same words and block; the pinned translator and
+seeds give units byte-identical to the pinned Spec II translation except `unit_0031` and `unit_003A`, one line each
+(`private/slice405-spec2-aspect-producer`, receipt `spec2-aspect-generation.json`). The 360 camera hooks apply on top unchanged.
+Checks: `tests/python/test_spec2_aspect_patch.py`; George V lap replayed at 21:9 and 16:9 on rc13 and on the patched build:
+at 21:9 the timer and the speed keep their 16:9 shape (rc13 stretched them by 21/16); at 16:9 every compared frame is
+identical to rc13.
+
+### TASK-167 — Spec II PT-BR + CPSP disc image (owner, 2026-11-04; done in rc14)
+
+Owner (2026-11-04): support the "GT4 Spec II PTBR + CPSP" image: the Spec II 1.10 PT-BR translation with some cars replaced by
+Gran Turismo PSP cars, on the same 1.10 base. Checked (Confirmed): its `SCUS_974.36` and `SYSTEM.CNF` are the pinned ones, and
+every file under the root, `IRX`, `NET` and `EPSON` is byte-identical to the PT-BR image; only `GT4.VOL` differs (3,447,201,792
+-> 3,954,532,352 bytes). The launcher already accepts any image with the pinned executable as a "Spec II 1.10 variant"; the
+image is now named `Spec II 1.10 (PT-BR + CPSP)` in `docs/inputs/spec2-variants.json` (sha256 `96557472...`, 4,202,430,464
+bytes; `spec2_pins` test). The George V lap recording replayed on it (rc14a Spec II build) boots, races and finishes the lap
+with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself stays outside git (`*.iso`).
 
 ### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
 
@@ -3070,8 +3105,10 @@ renderers (CoreGS 2.0 and GSdx). No change to the game code.
 2. **PR #177** (Luan Antony, TASK-095, ultrawide 2D menu canvas): the camera agent finds where the pause, results, replay and
    pre-race screens set their projection in v2.00 and Spec II and adds the hook; it comes as its own PR. Same checks; 16:9 must
    stay identical.
-3. **TASK-164** (issue #160): a launcher hint, before the first Play with an empty card, that Cross (Z on the keyboard)
-   confirms GT4's question about creating its game data. Both languages.
+3. **TASK-164** (issue #160): a launcher hint, before the first Play with an empty card, that Cross confirms GT4's question
+   about creating its game data. Both languages. Done.
+3b. **TASK-166** (owner): Spec II ultrawide race-font text and mirror (the TASK-080 P2 patch table for Spec II). Done.
+3c. **TASK-167** (owner): the Spec II PT-BR + CPSP image named as a known variant. Done.
 4. **Build and install:** plain test builds of both games (everything enabled), launchers labelled rc14, installed on the
    owner's desktop (installer update mode) and the laptop's portable copy; gates against rc13 with
    `private/task134-tools/gates5.sh` (references `build/evidence/*r13pgo*`); performance measured on the laptop only. Telegram

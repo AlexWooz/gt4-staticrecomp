@@ -1190,6 +1190,105 @@
     }
   }
 
+  // TASK-164 (issue #160): on a start with no save yet, Play shows which keys answer the game's first-start questions, after the
+  // shaders and before the start. Play in the note starts; Cancel and Back start nothing; a failed check starts at once; a
+  // controls set without a controller button names only the keys. The commands are stubbed; `calls` is what Play asked of Rust.
+  async function firstStartHintChecks() {
+    var real = GT4.backend.call;
+    var calls = [];
+    var hint = null;
+    GT4.backend.call = function (command, args) {
+      if (command === "first_start_hint") {
+        calls.push(command);
+        return hint === "fail" ? Promise.reject(new Error("the library could not be read")) : Promise.resolve(hint);
+      }
+      if (command === "coregs20_offer") {
+        calls.push(command);
+        return Promise.resolve(false);
+      }
+      if (command === "prepare_shaders" || command === "play") {
+        calls.push(command);
+        return Promise.resolve(command === "prepare_shaders" ? true : null);
+      }
+      return real(command, args);
+    };
+    var modal = function () { return document.querySelector(".modal"); };
+    var started = function () { return document.querySelector(".stage.home").classList.contains("is-running"); };
+    var freshHome = async function () {
+      await setHash("#/settings/general");
+      await setHash("#/home");
+      await wait(300);
+      calls.length = 0;
+    };
+    var clickPlay = async function () {
+      document.querySelector(".play").click();
+      await wait(150);
+    };
+    var full = { game: "Gran Turismo 4", confirm: "W / Enter", pad: "A", right: "Right" };
+    var all = "coregs20_offer,prepare_shaders,first_start_hint,play";
+    try {
+      hint = null;
+      await freshHome();
+      await clickPlay();
+      check("with a save, Play starts without a note", !modal() && calls.join(",") === all, calls.join(","));
+
+      hint = full;
+      await freshHome();
+      await clickPlay();
+      var box = modal();
+      check("without a save, the note opens after the shaders and before the start",
+        !!box && calls.join(",") === "coregs20_offer,prepare_shaders,first_start_hint", calls.join(","));
+      if (box) {
+        var text = box.textContent;
+        check("the note has the title", box.querySelector("h3").textContent === T("home.first_start_title"), box.querySelector("h3").textContent);
+        check("the note names the game, the Cross keys, the controller button and the right key",
+          text.indexOf(T("home.first_start_text", { game: full.game })) >= 0 &&
+          text.indexOf(T("home.first_start_confirm_pad", { keys: full.confirm, pad: full.pad })) >= 0 &&
+          text.indexOf(T("home.first_start_cancel_first", { right: full.right })) >= 0, text);
+        check("Play is the default button of the note", document.activeElement && document.activeElement.textContent === T("common.play"),
+          document.activeElement && document.activeElement.textContent);
+        document.activeElement.click();
+        await wait(150);
+        check("Play in the note starts the game", !modal() && calls.join(",") === all, calls.join(","));
+      }
+
+      await freshHome();
+      await clickPlay();
+      if (modal()) {
+        Array.prototype.filter.call(modal().querySelectorAll(".modal-actions button"), function (button) {
+          return button.textContent === T("common.cancel");
+        })[0].click();
+        await wait(150);
+      }
+      check("Cancel in the note starts nothing", !modal() && !started() && calls.indexOf("play") < 0, calls.join(","));
+
+      await freshHome();
+      await clickPlay();
+      if (modal()) {
+        GT4.ui.topDialog().back();
+        await wait(150);
+      }
+      check("Back closes the note and starts nothing", !modal() && !started() && calls.indexOf("play") < 0, calls.join(","));
+
+      hint = "fail";
+      await freshHome();
+      await clickPlay();
+      check("when the check itself fails, Play goes on", !modal() && calls.join(",") === all, calls.join(","));
+
+      hint = { game: "Gran Turismo 4", confirm: "W / Enter", pad: "", right: "Right" };
+      await freshHome();
+      await clickPlay();
+      var keysOnly = modal() ? modal().textContent : "";
+      check("without a controller button the note names only the keys",
+        keysOnly.indexOf(T("home.first_start_confirm", { keys: "W / Enter" })) >= 0, keysOnly);
+    } finally {
+      GT4.backend.call = real;
+      GT4.ui.topDialog() && GT4.ui.topDialog().close();
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+    }
+  }
+
   // The live switch (Settings > General > Language): the whole UI changes at once, in both directions.
   async function languageSwitchChecks() {
     var before = GT4.i18n.current();
@@ -1601,6 +1700,7 @@
       await rendererRowChecks();
       await gsdxDialogChecks();
       await playOfferChecks();
+      await firstStartHintChecks();
       await advancedSectionChecks();
       await controlsChecks();
       await gamesChecks();

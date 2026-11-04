@@ -302,6 +302,23 @@ pub fn activate(library: &Library, slot: &str) -> Result<(), String> {
     library.activate_slot(slot).map_err(|error| error.to_string())
 }
 
+/// TASK-164 (issue #160): whether the next start meets the game's first-start questions (create the game data, then format
+/// the card, where Cancel is selected first). True when the library has no active save and the card the game left behind,
+/// which the next start harvests first (see [`prepare_card`]), holds none either. A library that cannot be read gives false:
+/// Play reports that problem itself.
+pub fn first_start_expected(library: &Library, runtime_card: &Path) -> bool {
+    match library.active_save() {
+        Ok(Some(_)) | Err(_) => return false,
+        Ok(None) => {}
+    }
+    let names = library.names();
+    let on_card = fs::read(runtime_card)
+        .ok()
+        .and_then(|bytes| items_of_card_image(&bytes).ok())
+        .is_some_and(|items| items.iter().any(|item| names.is_game_save(&item.name())));
+    !on_card
+}
+
 /// Writes the card for the next start: the active save and every replay, read back before it is
 /// written. A card the game left behind is harvested first, so nothing it wrote is lost; the old file
 /// is also kept under `backups` by `write_card_image`.
@@ -702,6 +719,29 @@ mod tests {
         assert!(!root.iter().any(|name| name == GT4.save_folder), "no game save on the next card: {root:?}");
         assert!(root.iter().any(|name| name == REPLAY), "the replay is still there: {root:?}");
         assert!(!library.active_dir().join(GT4.save_folder).exists(), "and Play did not bring the save back");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn the_first_start_hint_shows_only_while_no_save_exists_in_the_library_or_on_the_last_card() {
+        let data = scratch("first-start");
+        let (_, library) = open_scratch(&data);
+        let runtime_card = data.join("runtime").join("card.ps2");
+        assert!(first_start_expected(&library, &runtime_card), "a new library, no card yet");
+
+        fs::create_dir_all(runtime_card.parent().unwrap()).unwrap();
+        fs::write(&runtime_card, card_with(&[replay()])).unwrap();
+        assert!(first_start_expected(&library, &runtime_card), "a card with only a replay");
+
+        fs::write(&runtime_card, b"not a card").unwrap();
+        assert!(first_start_expected(&library, &runtime_card), "an unreadable card holds no save");
+
+        fs::write(&runtime_card, card_with(&[game_save(3)])).unwrap();
+        assert!(!first_start_expected(&library, &runtime_card), "the game made its data on the last start");
+
+        harvest_card(&library, &runtime_card).unwrap();
+        fs::remove_file(&runtime_card).unwrap();
+        assert!(!first_start_expected(&library, &runtime_card), "the library has an active save");
         let _ = fs::remove_dir_all(&data);
     }
 }

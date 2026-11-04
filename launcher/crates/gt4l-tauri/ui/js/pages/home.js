@@ -302,21 +302,72 @@
         });
       }
 
-      function startGame() {
-        paint(true);
-        // IN-507: asks whether the shaders are compiled; the window opens by itself when they are not (js/app.js).
-        call("prepare_shaders").then(function (goOn) {
+      // TASK-164 (issue #160): on a start that meets the game's first-start questions (no save yet), a note says which keys
+      // answer them, from the current controls (first_start_hint: null, or {game, confirm, pad, right}). Resolves true to start,
+      // false when the player closed the note. A failed check starts the game.
+      function firstStartHint() {
+        return call("first_start_hint").then(function (hint) {
+          if (!hint) {
+            return true;
+          }
+          return new Promise(function (resolve) {
+            var answered = false;
+            function answer(start) {
+              answered = true;
+              resolve(start);
+            }
+            var confirmKey = hint.pad ? "home.first_start_confirm_pad" : "home.first_start_confirm";
+            var lines = [
+              GT4.t("home.first_start_text", { game: hint.game }),
+              GT4.t(confirmKey, { keys: hint.confirm, pad: hint.pad }),
+              GT4.t("home.first_start_cancel_first", { right: hint.right })
+            ];
+            GT4.ui.openDialog({
+              title: GT4.t("home.first_start_title"),
+              body: h("div", { class: "first-start-hint" }, lines.map(function (line) {
+                return h("p", { class: "modal-text", text: line });
+              })),
+              buttons: [
+                { label: GT4.t("common.play"), primary: true, run: function () { answer(true); } },
+                { label: GT4.t("common.cancel"), run: function () { answer(false); } }
+              ],
+              onClose: function () {
+                if (!answered) {
+                  resolve(false);
+                }
+              }
+            });
+          });
+        }, function () {
+          return true;
+        });
+      }
+
+      function startAfterHint() {
+        return firstStartHint().then(function (start) {
           preparingShaders = false;
-          GT4.closeShaderWindow();
-          if (!goOn) {
+          if (!start) {
             paint(false);
             return null;
           }
           return call("play");
-        }, function () {
-          preparingShaders = false;
+        });
+      }
+
+      function startGame() {
+        paint(true);
+        // IN-507: asks whether the shaders are compiled; the window opens by itself when they are not (js/app.js).
+        call("prepare_shaders").then(function (goOn) {
           GT4.closeShaderWindow();
-          return call("play");
+          if (!goOn) {
+            preparingShaders = false;
+            paint(false);
+            return null;
+          }
+          return startAfterHint();
+        }, function () {
+          GT4.closeShaderWindow();
+          return startAfterHint();
         }).then(function () {
           // Follow the next poll for the real state.
         }, function (err) {
