@@ -75,8 +75,11 @@ void check_v200_values() {
   // TASK-159 360-degree chase camera.
   check(h.camera_yaw_call_return == 0x3456D8u, "chase camera yaw call return label");
   check(h.camera_pad_stick_x == 0x86F99Eu, "right stick X byte of pad port 0");
-  check(h.camera_accelerator_scale_return == 0x4387C8u, "analog accelerator scale return label");
-  check(h.camera_brake_scale_return == 0x4387F0u, "analog brake scale return label");
+  check(h.camera_analog_loop_return == 0x43BE74u, "DualShock analog loop's handler call return label");
+  check(h.camera_analog_channel_table == 0x6A64C0u && h.camera_analog_slot_bias == 0u, "analog loop slot table, slot in s0");
+  // TASK-160 field of view adjustment.
+  check(h.fov_projection_call_return == 0x37A1C4u, "projection store call return label");
+  check(h.fov_pad_buttons == 0x64C794u, "port 0 button halfword");
   // Both v2.00 tables (the release one and the one the modules compile against) agree.
   check(kV200Hooks.widescreen_owner_pointer == h.widescreen_owner_pointer, "kV200Hooks is the active table");
 }

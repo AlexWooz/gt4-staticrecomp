@@ -326,6 +326,14 @@ Binding parse_source(std::string_view text, const InputInfo &input, const std::s
       if (full < 1.0 || full > 255.0 || full != std::floor(full))
         fail(source, line, "range must be a whole number from 1 to 255");
       binding.pressure_full = static_cast<std::uint8_t>(full);
+    } else if (option == "range_full") {
+      // TASK-161: the pressure at full travel when the game's full trigger range is on.
+      if (binding.kind != SourceKind::xinput_trigger)
+        fail(source, line, "range_full applies to triggers only");
+      const double full = parse_number(value, source, line, option);
+      if (full < 1.0 || full > 255.0 || full != std::floor(full))
+        fail(source, line, "range_full must be a whole number from 1 to 255");
+      binding.pressure_full_wide = static_cast<std::uint8_t>(full);
     } else if (option == "game_deadzone") {
       if (binding.kind != SourceKind::xinput_axis)
         fail(source, line, "game_deadzone applies to stick axes only");
@@ -563,23 +571,40 @@ std::vector<KeyboardBinding> keyboard_bindings(const ControlMap &map) {
   return result;
 }
 
+namespace {
+PressureScale g_pressure_scale = PressureScale::stock;
+}
+
+void set_pressure_scale(PressureScale scale) { g_pressure_scale = scale; }
+
+PressureScale pressure_scale() { return g_pressure_scale; }
+
+std::uint8_t pressure_full_for(const Binding &binding, PressureScale scale) {
+  return scale == PressureScale::full ? binding.pressure_full_wide : binding.pressure_full;
+}
+
 TriggerReading read_trigger(const Binding &binding, std::uint8_t raw) {
+  return read_trigger(binding, raw, g_pressure_scale);
+}
+
+TriggerReading read_trigger(const Binding &binding, std::uint8_t raw, PressureScale scale) {
+  const int full = pressure_full_for(binding, scale);
   const int deadzone = deadzone_raw(binding, trigger_full);
   if (raw <= deadzone)
     return {};
   const int range = trigger_full - deadzone;
   const int distance = raw - deadzone;
   int pressure = 0;
-  if (is_default_shape(binding) && binding.pressure_full == trigger_full) {
+  if (is_default_shape(binding) && full == trigger_full) {
     pressure = distance * trigger_full / range;
   } else {
     const double fraction = std::min(1.0, static_cast<double>(distance) / range);
     const double shaped = std::min(1.0, shape(fraction, binding.curve) * binding.scale);
-    if (binding.pressure_full == trigger_full) {
+    if (full == trigger_full) {
       pressure = static_cast<int>(std::floor(shaped * trigger_full));
     } else {
       // TASK-147: to the nearest of the game's steps, so a trigger a hair short of its end still gives the game's 100%.
-      pressure = static_cast<int>(std::lround(shaped * binding.pressure_full));
+      pressure = static_cast<int>(std::lround(shaped * full));
     }
   }
   return {true, static_cast<std::uint8_t>(std::clamp(pressure, 0, trigger_full))};

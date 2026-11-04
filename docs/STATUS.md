@@ -30,6 +30,14 @@ simulation state and every compared frame identical, VU1/VU0 and MTVU checks 0 d
 `avell-rc12test-before-rc13test-20261104T064859Z`). Still open for rc13: TASK-150 (showroom frame times) and TASK-151's frame
 times: both scenes read GS memory back (the showroom every other frame, photo mode every frame) and wait for the GPU.
 
+## TASK-161: full trigger range for the throttle and the brake, both games, off by default (2026-11-04)
+
+Branch `task/161-trigger-sensitivity`; `docs/research/TRIGGER-SENSITIVITY.md`. Owner test decides the default.
+
+## TASK-160: field of view zoom on R3 + D-pad, both games, on by default, checked headless (2026-11-04)
+
+Branch `task/160-fov-adjustment`; `docs/FOV-ADJUST.md`. Owner test pending.
+
 ## TASK-159: 360-degree chase camera on the right stick, both games checked headless, on by default (2026-11-04)
 
 On `task/159-360-chase-camera` (from task/134 at `ad457090`). On by default in v2.00 and Spec II (owner, 2026-11-04; in rc13):

@@ -3252,5 +3252,47 @@ it off; a launcher toggle is a later step. Design, decoded patches, addresses an
   clock and state equal the build without the hook; with it on and the stick moved, the race clock equals it at every VBlank,
   the simulation differs only in the camera's own words while the stick is off rest and not at all once it is released, and
   the camera turns and comes back; owner test in game.
+- TASK-159b (branch `task/159b-camera-pedal-scope`): the pedal zeroing reached any analog axis assigned to the pedals and a
+  wheel's pedals (the handler has two callers); it now acts only in the DualShock analog loop on the right stick Y
+  channels assigned to the accelerator or the brake. Checks as for TASK-159, both games, plus a left stick accelerator
+  (harness) that still works with the camera on.
 - State (2026-11-04): v2.00 and Spec II done and checked headless (Arcade race on v2.00, the owner's Tokyo R246 Time Trial
   on Spec II), on by default; owner test in game pending; the coordinator opens the PR into task/134 after review.
+
+### TASK-160 — Field of view adjustment on R3 + D-pad (both games, on by default)
+
+Owner request (2026-11-04): built in, on by default in both games. Idea from the "FoV Adjustment" PCSX2 patch by Duchi/Vyerq
+(v2.00) and Blitznoz (Spec II); references only. Branch `task/160-fov-adjustment` (from `task/159b-camera-pedal-scope`).
+`GT4_FOV_ADJUST=0` or `fov_adjust=0` in `game.ini` turns it off. Design, decoded patch, addresses and checks:
+`docs/FOV-ADJUST.md`.
+
+- The race cameras' projection function (v2.00 `func_0037A170`, Spec II `0x0023E7E0`) stores the scales 1, 1 and 1 / tan(fov/2);
+  the patch rewrote that 1.0 immediate in guest code. Our version: `scripts/camera360_units.py` adds a host call before the
+  store call (`0x0037A1BC`, Spec II `0x0023E82C`) that gives the scales k, k and k / t; k = 1 + n/128, 0.5 to 2.0, stepped once
+  per guest VBlank from the port 0 button halfword the game keeps (`0x0064C794`, Spec II `0x00681344`): R3 + up, R3 + down,
+  L3 + R3 resets; other buttons may be held; no wrap.
+- Acceptance: CTest `native_fov_adjust` (switch, steps and clamp, factor); headless replays: switch off and nothing pressed
+  identical to the reference; with the combinations the race clock is identical at every VBlank, the view zooms and comes
+  back, and only what the camera draws changes in the state (light flares, view lists, Spec II's drawing-written car words).
+  The game ignores the combinations in races (both games). Owner test in game pending.
+
+### TASK-161 — Full trigger range for the throttle and the brake (study, then both games; off by default)
+
+Owner request (2026-11-04): throttle and brake precision is low. Idea from the "Full Trigger Sensitivity" PCSX2 patch by Silent
+& Aero_; references only. Branch `task/161-trigger-sensitivity` (from `task/160-fov-adjustment`). Study and design:
+`docs/research/TRIGGER-SENSITIVITY.md`; controls: `docs/CONTROLS.md`.
+
+- Study: the game turns a pressure byte p into min(100 * min(2p, 256) / d, 256) with d = 35 (throttle) and 65 (brake): 100%
+  from p = 45 and 84, 46 and 85 levels (both games, Confirmed). The host already gives every level (TASK-147 maps the trigger
+  travel onto 0..45 and 0..84), so the loss is in the game, not on our side. The reference patch's v2.00 reverse line hits the
+  wrong instruction (`0x0043C018` is `slti`, the divisor is at `0x0043C01C`).
+- Change: `GT4_TRIGGER_FULL_RANGE=1` (`game.ini` `trigger_full_range`, launcher toggle "Full trigger range (experimental)" on the
+  Controls page; off by default until the owner's test): `scripts/camera360_units.py` replaces the doubling and the divisor of
+  the throttle and brake cases with host functions (2p and d when off; p and 99 when on: 100% from p = 254, about 255 levels),
+  and the same switch moves the triggers' default ranges to the whole byte; `range` applies to the game's scale, the new
+  `range_full` to the full one.
+- Acceptance: CTest `native_trigger_range` and `native_controls` (every range combination), Rust and launcher tests, focus
+  checks in both languages and nav-test; headless sweeps: off identical to the reference, on 254 throttle and 254 brake levels
+  with 100% at p = 254, race clock identical at every VBlank. Owner test in game decides the default.
+- State (2026-11-04): done on both games and checked headless; launcher toggle, Rust tests, nav-test and focus checks in
+  en-US and pt-BR pass. Owner test in game pending.

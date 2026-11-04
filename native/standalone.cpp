@@ -371,6 +371,10 @@ Config parse_config(std::string_view text) {
       valid = value == "1";  // TASK-146: the 60 FPS mode leaves frames out in a race when the PC falls behind
     } else if (key == "camera_360") {
       valid = value == "0" || value == "1";  // TASK-159: the 360-degree chase camera on the right stick (absent = 1)
+    } else if (key == "fov_adjust") {
+      valid = value == "0" || value == "1";  // TASK-160: the field of view adjustment on R3 + D-pad (absent = 1)
+    } else if (key == "trigger_full_range") {
+      valid = value == "0" || value == "1";  // TASK-161: the full trigger range (absent = 0, the launcher's toggle)
     } else if (key == "hw_hud") {
       valid = value == "1";  // TASK-135: the performance HUD
     } else if (key == "hw_postfx") {
@@ -433,6 +437,8 @@ Environment config_environment(const Config &config) {  Environment out;
   if (const auto *value = get("output_size")) out.emplace_back("GT4_OUTPUT_SIZE", *value);
   if (const auto *value = get("pad")) out.emplace_back("GT4_PAD", *value);
   if (const auto *value = get("camera_360")) out.emplace_back("GT4_CAMERA_360", *value);
+  if (const auto *value = get("fov_adjust")) out.emplace_back("GT4_FOV_ADJUST", *value);
+  if (const auto *value = get("trigger_full_range")) out.emplace_back("GT4_TRIGGER_FULL_RANGE", *value);
   if (const auto *value = get("async_gs"); value && *value == "0") out.emplace_back("GT4_GS_SYNC", "1");
   if (const auto *value = get("performance_report"); value && *value == "1") out.emplace_back("GT4_PERF", "1");
   if (const auto *value = get("check_vu_code"); value && *value != "0") {

@@ -58,7 +58,9 @@ fn default_settings_send_the_main_profile_variables_plus_the_launcher_defaults()
     for gone in ["PS2_SCALE", "GT4_DEINTERLACE", "GT4_AA", "GT4_PRESENT_FILTER"] {
         assert!(!environment.contains_key(gone), "{gone} is a CoreGS 1.1 variable");
     }
-    assert_eq!(environment.len(), 10, "the GSdx variables: renderer, process pin, config, PS2_GS and the common holds");
+    // TASK-161: the full trigger range is always stated, off by default (the game reads it for both of its sides).
+    assert_eq!(environment["GT4_TRIGGER_FULL_RANGE"], "0");
+    assert_eq!(environment.len(), 11, "the GSdx variables: renderer, process pin, config, PS2_GS and the common holds");
 }
 
 #[test]
@@ -575,6 +577,9 @@ fn variables_of_game_ini(text: &str) -> std::collections::BTreeMap<String, Strin
                     variables.insert("GT4_VU0_VERIFY".to_string(), value.to_string());
                 }
             }
+            "trigger_full_range" => {
+                variables.insert("GT4_TRIGGER_FULL_RANGE".to_string(), value.to_string());
+            }
             other => panic!("unknown game.ini key {other}"),
         }
     }
@@ -590,6 +595,7 @@ fn every_game_ini_key_stands_for_the_variable_the_launcher_sets_at_play() {
         vec![("vsync", "off")],
         vec![("performance_report", "on"), ("check_vu_code", "100")],
         vec![("check_vu_code", "1000"), ("fullscreen", "off"), ("vsync", "on")],
+        vec![("trigger_full_range", "on")],
     ];
     let display = display_target(r"\\.\DISPLAY1", 2560, 1440);
     for changes in variants {

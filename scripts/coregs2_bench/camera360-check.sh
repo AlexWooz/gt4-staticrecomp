@@ -2,19 +2,20 @@
 # TASK-159: the 360-degree chase camera against a build without it, on one recorded drive (docs/CAMERA-360.md).
 # usage: camera360-check.sh <recording> <reference exe> <candidate exe> <dump VBlank> [ENV=VAL ...]
 #   env NAME=<run prefix, default cam360> SCALE=1 EVERY=25 FROM=<first dumped frame> DYNAMICS=<0x10000 v2.00, 0x24000 Spec II>
+#       SWITCH=<the feature's switch, default GT4_CAMERA_360; GT4_FOV_ADJUST for TASK-160, which uses this script too>
 # The reference exe is the same game built from the plain translated units; the candidate is built from the units of
 # scripts/camera360_units.py. Three headless replays of the recording, each with the race clock of every VBlank (frame skip log,
 # no frame left out), the simulation state and the race object at <dump VBlank>, and frames from FROM every EVERY:
 #   ref  the reference;
-#   off  the candidate with GT4_CAMERA_360=0: frames, clock and state must equal the reference (the hook does nothing);
-#   on   the candidate with GT4_CAMERA_360 unset (on, the default since 2026-11-04): the race clock must equal the reference at
+#   off  the candidate with $SWITCH=0: frames, clock and state must equal the reference (the hook does nothing);
+#   on   the candidate with $SWITCH unset (on, the default since 2026-11-04): the race clock must equal the reference at
 #        every VBlank; the state words that differ are listed (the camera's own words while the stick is off rest), and so are
 #        the frames that differ.
 # Exit code 1 when `off` differs from `ref` in anything, or the clock of `on` differs anywhere.
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/common.sh"
 recording=$1; ref=$2; cand=$3; dump_at=$4; shift 4
-name=${NAME:-cam360}; dynamics=${DYNAMICS:-0x10000}
+name=${NAME:-cam360}; dynamics=${DYNAMICS:-0x10000}; switch=${SWITCH:-GT4_CAMERA_360}
 folder() { echo "$GT4_BENCH_OUT/replay-$recording-$name-$1"; }
 run() {  # <run> <exe> [ENV=VAL ...]
   local run=$1 exe=$2; shift 2
@@ -25,9 +26,9 @@ run() {  # <run> <exe> [ENV=VAL ...]
     GT4_FRAME_SKIP_DUMP_FILE="$(cygpath -w "$(folder "$run")/state.bin")" "$@" | tail -1
 }
 run ref "$ref" "$@"
-run off "$cand" GT4_CAMERA_360=0 "$@"
+run off "$cand" "$switch=0" "$@"
 run on "$cand" "$@"
-grep -a "\[camera360\]" "$(folder on)/log.txt" | head -3
+grep -a "\[camera360\]\|\[fov\]" "$(folder on)/log.txt" | head -4
 wrong=0
 echo "== off against ref (the hook present, the switch off)"
 python - "$(cygpath -w "$(folder ref)")" "$(cygpath -w "$(folder off)")" "$dynamics" <<'EOF' || wrong=1

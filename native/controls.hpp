@@ -83,6 +83,10 @@ struct Binding {
   // Triggers: the pressure byte at full travel (option `range`). GT4 takes a much smaller byte than 255 as 100% throttle
   // or brake, so R2 and L2 default to the game's own 100% (controls.cpp, TASK-147); other inputs to 255.
   std::uint8_t pressure_full = 255;
+  // TASK-161: the same with the game's full trigger range on (GT4_TRIGGER_FULL_RANGE=1), where 255 is the game's 100% for
+  // the throttle and the brake (option `range_full`, default 255 for every trigger). `range` applies to the game's own
+  // scale only and `range_full` to the full one, so a range made for one scale never caps the other.
+  std::uint8_t pressure_full_wide = 255;
   // Sticks: step over GT4's own stick dead zone (option `game_deadzone=skip|keep`, TASK-147), so the game turns from the
   // first step past this binding's dead zone and linearly to full lock.
   bool skip_game_deadzone = true;
@@ -125,8 +129,18 @@ struct TriggerReading {
   std::uint8_t pressure = 0;
 };
 
-// Reads an XInput trigger (0..255) through one binding.
+// TASK-161: which pressure scale the game uses (native/trigger_range.hpp): its own (stock, the default) or the full range.
+// The game executable sets it once at start from GT4_TRIGGER_FULL_RANGE, before any pad is read; fixtures pass it.
+enum class PressureScale { stock, full };
+void set_pressure_scale(PressureScale scale);
+PressureScale pressure_scale();
+// The pressure byte at full travel for a binding under a scale: pressure_full (stock) or pressure_full_wide (full).
+std::uint8_t pressure_full_for(const Binding &binding, PressureScale scale);
+
+// Reads an XInput trigger (0..255) through one binding, under the scale the game uses (pressure_scale()).
 TriggerReading read_trigger(const Binding &binding, std::uint8_t raw);
+// The same under a given scale.
+TriggerReading read_trigger(const Binding &binding, std::uint8_t raw, PressureScale scale);
 
 // Reads an XInput stick axis (-32768..32767) through one binding; returns the PS2
 // byte, 128 at rest.
