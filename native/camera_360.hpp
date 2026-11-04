@@ -13,7 +13,8 @@
 // The call is a direct `jal`, which the translator turns into a direct C++ call, so neither the runtime's dispatch nor a
 // VBlank write can reach it. scripts/camera360_units.py therefore adds one call to before_chase_yaw_call() in the
 // translated unit of that call site, between the delay slot (which loads f13) and the call; the EE library is then built
-// from those units. With GT4_CAMERA_360 off, the function returns at once and the guest state is untouched.
+// from those units. On by default (owner, 2026-11-04); with GT4_CAMERA_360=0 the function returns at once and the guest
+// state is untouched. With the stick at rest it changes nothing either.
 //
 // The angle comes from the right stick X byte of pad port 0 in the game's own pad buffer (v2.00 0x0086F99E, Spec II
 // 0x0089B0DE: buffer + 0x1E), the byte the game itself reads, so a recorded drive replays the same camera.
@@ -23,7 +24,8 @@
 // sideways push that is not perfectly level would also accelerate or brake. While the camera is on, the race input's analog
 // channel handler (v2.00 func_004386F0, Spec II 0x00314870) gets 0 as the value of its accelerator and brake cases, and its
 // own zero test then stores nothing: the effect of the community "Disable right analog throttle/brake" patch, here only
-// while GT4_CAMERA_360=1. The pressure buttons still accelerate and brake; steering and the menus are untouched.
+// while the camera is on (the default; GT4_CAMERA_360=0 gives the right stick Y back to the pedals). The pressure buttons
+// still accelerate and brake; steering and the menus are untouched.
 
 #include <array>
 #include <bit>
@@ -42,8 +44,8 @@ inline constexpr const char *kIniKey = "camera_360";
 inline constexpr std::uint8_t kStickRest = 128;
 inline constexpr std::uint32_t kPiBits = 0x40490FDBu;  // pi as the nearest f32
 
-// GT4_CAMERA_360: nullptr (unset), "" or "0" = off; "1" = on. Any other value throws std::invalid_argument naming the
-// variable, so a typo refuses the start instead of silently leaving the camera as it was.
+// GT4_CAMERA_360: nullptr (unset), "" or "1" = on (the default, owner 2026-11-04); "0" = off. Any other value throws
+// std::invalid_argument naming the variable, so a typo refuses the start instead of silently choosing for the player.
 bool parse_switch(const char *value);
 
 // The yaw offset for a right stick X byte, as f32 bits: pi * clamp((stick - 128) / 127, -1, 1). 0 (no offset) at rest.
@@ -78,8 +80,8 @@ struct Addresses {
 };
 Addresses active_addresses();
 
-// Reads GT4_CAMERA_360 once and prints one line when it is on. An invalid value prints the refusal and exits the process with
-// status 1. Called at start (headless and windowed, launcher and direct starts); the hook reads the result.
+// Reads GT4_CAMERA_360 once and prints one line with the state. An invalid value prints the refusal and exits the process
+// with status 1. Called at start (headless and windowed, launcher and direct starts); the hooks read the result.
 void configure_from_environment();
 bool enabled();
 

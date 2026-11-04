@@ -370,7 +370,7 @@ Config parse_config(std::string_view text) {
     } else if (key == "hw_frame_skip_adaptive") {
       valid = value == "1";  // TASK-146: the 60 FPS mode leaves frames out in a race when the PC falls behind
     } else if (key == "camera_360") {
-      valid = value == "0" || value == "1";  // TASK-159: the 360-degree chase camera on the right stick
+      valid = value == "0" || value == "1";  // TASK-159: the 360-degree chase camera on the right stick (absent = 1)
     } else if (key == "hw_hud") {
       valid = value == "1";  // TASK-135: the performance HUD
     } else if (key == "hw_postfx") {

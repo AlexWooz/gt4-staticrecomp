@@ -1,14 +1,16 @@
 # Current Status
 
-## TASK-159: 360-degree chase camera on the right stick, v2.00 checked headless (2026-11-04)
+## TASK-159: 360-degree chase camera on the right stick, both games checked headless, on by default (2026-11-04)
 
-On `task/159-360-chase-camera` (from task/134 at `ad457090`), off by default: `GT4_CAMERA_360=1` or `camera_360=1` in `game.ini`.
+On `task/159-360-chase-camera` (from task/134 at `ad457090`). On by default in v2.00 and Spec II (owner, 2026-11-04; for rc14):
+`GT4_CAMERA_360=0` or `camera_360=0` in `game.ini` turns it off.
 The right stick X turns the chase camera round the car through the game's own camera spring (a host call that
 `scripts/camera360_units.py` adds to the translated yaw call), and the right stick Y stops being the analog throttle and brake
 while it is on. Headless v2.00 Arcade race (plain test build): switch off identical to the build without the hook (frames,
 race clock, state); switch on: race clock identical at every VBlank, simulation identical once the stick is released (only the
-camera's own words differ while it is held), the view turns and comes back. Owner test in game pending; Spec II next.
-`docs/CAMERA-360.md`.
+camera's own words differ while it is held), the view turns and comes back; with the stick at rest, identical. Spec II, the
+owner's Tokyo R246 Time Trial with the stick moved: the same results (the simulation words that differ after release are the
+camera's and the ones drawing writes). Owner test in game pending. `docs/CAMERA-360.md`.
 
 ## 1.3.0-rc12 built with PGO and published as a pre-release (2026-11-04, night)
 

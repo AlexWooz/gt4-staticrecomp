@@ -15,8 +15,8 @@ bool g_enabled = false;
 }
 
 bool parse_switch(const char *value) {
-  if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) return false;
-  if (std::strcmp(value, "1") == 0) return true;
+  if (value == nullptr || value[0] == '\0' || std::strcmp(value, "1") == 0) return true;  // on by default
+  if (std::strcmp(value, "0") == 0) return false;
   throw std::invalid_argument("GT4_CAMERA_360 must be 0 or 1");
 }
 
@@ -38,7 +38,9 @@ void configure_from_environment() {
     target::note_hook_unavailable("360-degree chase camera (GT4_CAMERA_360)");
     g_enabled = false;
   }
-  if (g_enabled)
+  if (!g_enabled)
+    std::fprintf(stderr, "[camera360] off\n");
+  else
     std::fprintf(stderr,
                  "[camera360] on: right stick X (guest byte 0x%08X) turns the chase camera (call return 0x%08X); analog "
                  "accelerator and brake off (returns 0x%08X, 0x%08X)\n",

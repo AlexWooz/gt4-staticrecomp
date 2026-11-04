@@ -1,5 +1,5 @@
 // CTest native_camera_360: the pure rules of the TASK-159 360-degree chase camera (native/camera_360.hpp), host only.
-//   - GT4_CAMERA_360: unset, empty and 0 are off, 1 is on, anything else is refused;
+//   - GT4_CAMERA_360: unset, empty and 1 are on (the default, owner 2026-11-04), 0 is off, anything else is refused;
 //   - the stick byte to yaw offset table: 0 at rest, a half turn at both ends, odd around rest, monotonic, and the
 //     reference patch's direction (right is positive);
 //   - the yaw argument: unchanged at rest (no guest add at all), the guest add otherwise;
@@ -30,8 +30,8 @@ void check(bool condition, const char *what) {
 float as_float(std::uint32_t bits) { return std::bit_cast<float>(bits); }
 
 void check_switch() {
-  check(!parse_switch(nullptr), "unset is off");
-  check(!parse_switch(""), "empty is off");
+  check(parse_switch(nullptr), "unset is on (the default)");
+  check(parse_switch(""), "empty is on (the default)");
   check(!parse_switch("0"), "0 is off");
   check(parse_switch("1"), "1 is on");
   for (const char *value : {"2", "on", "yes", "-1", "01", " 1", "1 "}) {

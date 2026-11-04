@@ -437,14 +437,15 @@ void check_resolve() {
           "pad takes a controller, not auto or other text");
     check(has(sa::resolve(pad, chosen.access()).set, "GT4_PAD", "050000004c050000e60c000000810000/a0:ab:51:12:34:56"),
           "game.ini's pad becomes GT4_PAD");
-    // TASK-159: the 360-degree chase camera, for any renderer; only 0 and 1.
+    // TASK-159: the 360-degree chase camera, for any renderer; only 0 and 1, on (1) when the key is absent.
     sa::Inputs camera = inputs_for(*layout, nullptr);
-    camera.config = sa::parse_config("version=1\ncamera_360=1\n");
+    camera.config = sa::parse_config("version=1\ncamera_360=0\n");
     check(camera.config->warnings.empty(), "the 360 camera key is accepted");
-    check(has(sa::resolve(camera, chosen.access()).set, "GT4_CAMERA_360", "1"), "game.ini's camera_360 becomes GT4_CAMERA_360");
+    check(has(sa::resolve(camera, chosen.access()).set, "GT4_CAMERA_360", "0"), "game.ini's camera_360 becomes GT4_CAMERA_360");
     check(!sa::parse_config("camera_360=2\n").warnings.empty() && !sa::parse_config("camera_360=on\n").warnings.empty(),
           "camera_360 takes only 0 or 1");
-    check(lacks(sa::resolve(inputs_for(*layout, nullptr), chosen.access()).set, "GT4_CAMERA_360"), "no key, no variable (off)");
+    check(lacks(sa::resolve(inputs_for(*layout, nullptr), chosen.access()).set, "GT4_CAMERA_360"),
+          "no key, no variable: the game's default, on");
     sa::Inputs fast = inputs_for(*layout, nullptr);
     fast.config = sa::parse_config(std::string("present_mode=mailbox") + char(10) + "renderer=coregs20" + char(10) + "hw_present_mode=fifo" + char(10));
     check(has(sa::resolve(fast, chosen.access()).set, "GT4_PRESENT_MODE", "fifo"), "a stored Fast vsync draws as On under CoreGS 2.0");

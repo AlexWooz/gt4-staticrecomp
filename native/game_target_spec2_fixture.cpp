@@ -43,10 +43,13 @@ bool spec2_target_has_the_s8_hooks() {
       h.license_replay_loader_return != 0x10CCE4u || h.license_crc_table != 0x731DB0u ||
       h.license_manager_add != 0x1A24u || h.license_body_shift != 0x80u)
     return false;
-  // Not mapped yet: the request struct and the shape observer stay disabled; TASK-159's camera comes with its Spec II step.
-  return h.display_request_state == 0 && h.shape_call_pc == 0 && h.shape_target_pc == 0 && h.shape_return_pc == 0 &&
-         h.camera_yaw_call_return == 0 && h.camera_pad_stick_x == 0 && h.camera_accelerator_scale_return == 0 &&
-         h.camera_brake_scale_return == 0;
+  // TASK-159: the 360-degree chase camera (the spring at 0x002063D8, the pad buffer 0x0089B0C0 + 0x1E, the analog handler
+  // at 0x00314870).
+  if (h.camera_yaw_call_return != 0x00206490u || h.camera_pad_stick_x != 0x0089B0DEu ||
+      h.camera_accelerator_scale_return != 0x00314948u || h.camera_brake_scale_return != 0x00314970u)
+    return false;
+  // Not mapped yet: the request struct and the shape observer stay disabled.
+  return h.display_request_state == 0 && h.shape_call_pc == 0 && h.shape_target_pc == 0 && h.shape_return_pc == 0;
 }
 
 bool spec2_match_addresses_never_match() {

@@ -6,9 +6,10 @@
 # scripts/camera360_units.py. Three headless replays of the recording, each with the race clock of every VBlank (frame skip log,
 # no frame left out), the simulation state and the race object at <dump VBlank>, and frames from FROM every EVERY:
 #   ref  the reference;
-#   off  the candidate with GT4_CAMERA_360 unset: frames, clock and state must equal the reference (the hook does nothing);
-#   on   the candidate with GT4_CAMERA_360=1: the race clock must equal the reference at every VBlank; the state words that
-#        differ are listed (the camera's own words while the stick is off rest), and so are the frames that differ.
+#   off  the candidate with GT4_CAMERA_360=0: frames, clock and state must equal the reference (the hook does nothing);
+#   on   the candidate with GT4_CAMERA_360 unset (on, the default since 2026-11-04): the race clock must equal the reference at
+#        every VBlank; the state words that differ are listed (the camera's own words while the stick is off rest), and so are
+#        the frames that differ.
 # Exit code 1 when `off` differs from `ref` in anything, or the clock of `on` differs anywhere.
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/common.sh"
@@ -24,8 +25,8 @@ run() {  # <run> <exe> [ENV=VAL ...]
     GT4_FRAME_SKIP_DUMP_FILE="$(cygpath -w "$(folder "$run")/state.bin")" "$@" | tail -1
 }
 run ref "$ref" "$@"
-run off "$cand" "$@"
-run on "$cand" GT4_CAMERA_360=1 "$@"
+run off "$cand" GT4_CAMERA_360=0 "$@"
+run on "$cand" "$@"
 grep -a "\[camera360\]" "$(folder on)/log.txt" | head -3
 wrong=0
 echo "== off against ref (the hook present, the switch off)"

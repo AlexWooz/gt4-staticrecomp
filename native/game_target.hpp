@@ -265,10 +265,10 @@ inline constexpr HookAddresses kSpec2Hooks = {
     /* frame_flare_track_count_offset */ 0x1848u,
     /* frame_flare_car_count_offset */ 0xA34u,
     /* frame_render_world */ 0x001EA240u,
-    /* camera_yaw_call_return */ 0u,  // TASK-159 Spec II step: not filled yet
-    /* camera_pad_stick_x */ 0u,
-    /* camera_accelerator_scale_return */ 0u,
-    /* camera_brake_scale_return */ 0u,
+    /* camera_yaw_call_return */ 0x00206490u,  // spring at 0x002063D8: jal 0x00230F00 at 0x00206488
+    /* camera_pad_stick_x */ 0x0089B0DEu,      // pad buffer 0x0089B0C0 (set up at 0x0051BF18) + 0x1E
+    /* camera_accelerator_scale_return */ 0x00314948u,  // handler 0x00314870 case 3: jal 0x00314848 at 0x00314940
+    /* camera_brake_scale_return */ 0x00314970u,        // handler 0x00314870 case 4: jal 0x00314848 at 0x00314968
 };
 
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};
