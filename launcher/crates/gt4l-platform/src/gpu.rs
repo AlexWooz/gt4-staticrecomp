@@ -108,6 +108,7 @@ fn gpu_inputs() -> (Vec<gpu::VulkanGpu>, Vec<DxgiGpu>) {
                     device_id: device.device_id,
                     driver_version: device.driver_version,
                     luid: device.luid,
+                    graphics_queues: device.graphics_queues,
                 })
                 .collect()
         }
@@ -227,6 +228,7 @@ mod cache_tests {
             integrated,
             vendor_id: 0,
             driver_version: 0,
+            graphics_queues: None,
         }
     }
 

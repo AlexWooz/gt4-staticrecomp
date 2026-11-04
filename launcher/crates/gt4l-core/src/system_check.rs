@@ -92,6 +92,19 @@ pub struct VulkanDevice {
     pub driver_version: u32,
     /// VkPhysicalDeviceIDProperties::deviceLUID, when the driver reports it as valid (TASK-101 item 3).
     pub luid: Option<u64>,
+    /// The queue count of the graphics queue family the game would use (see [`graphics_queue_count`]); `None` when the
+    /// driver could not be asked.
+    pub graphics_queues: Option<u32>,
+}
+
+/// VK_QUEUE_GRAPHICS_BIT.
+pub const QUEUE_GRAPHICS_BIT: u32 = 1;
+
+/// The queue count of the family the game draws with: the FIRST family that has the graphics bit, in the order the driver
+/// lists them (native/hw_gs/hw_gs_backend.cpp, `queue_family`). `families` is `(queueFlags, queueCount)` per family.
+/// `None` when no family can draw.
+pub fn graphics_queue_count(families: &[(u32, u32)]) -> Option<u32> {
+    families.iter().find(|(flags, _)| flags & QUEUE_GRAPHICS_BIT != 0).map(|(_, count)| *count)
 }
 
 /// Microsoft's vendor id: the "Microsoft Direct3D12 (...)" devices of the Vulkan-on-D3D12 layer (Dozen, part of the
@@ -220,12 +233,30 @@ mod tests {
         assert!(CPU_UNSUPPORTED_MESSAGE.contains("SSE4.1"));
     }
 
+    #[test]
+    fn the_graphics_queue_count_is_that_of_the_first_family_that_can_draw() {
+        const COMPUTE: u32 = 2;
+        const TRANSFER: u32 = 4;
+        // Steam Deck (RADV): one graphics queue.
+        assert_eq!(graphics_queue_count(&[(QUEUE_GRAPHICS_BIT | COMPUTE | TRANSFER, 1), (COMPUTE, 4)]), Some(1));
+        // Most AMD and NVIDIA cards on Windows: several.
+        assert_eq!(graphics_queue_count(&[(QUEUE_GRAPHICS_BIT | COMPUTE | TRANSFER, 16), (COMPUTE, 8), (TRANSFER, 2)]), Some(16));
+        assert_eq!(graphics_queue_count(&[(QUEUE_GRAPHICS_BIT | COMPUTE, 2)]), Some(2));
+        // The graphics family is not the first one: a transfer-only family listed before it does not count.
+        assert_eq!(graphics_queue_count(&[(TRANSFER, 2), (COMPUTE, 8), (QUEUE_GRAPHICS_BIT | COMPUTE, 1)]), Some(1));
+        // The first graphics family wins over a later, larger one.
+        assert_eq!(graphics_queue_count(&[(QUEUE_GRAPHICS_BIT, 1), (QUEUE_GRAPHICS_BIT, 4)]), Some(1));
+        // Nothing can draw, or nothing was listed.
+        assert_eq!(graphics_queue_count(&[(COMPUTE, 8)]), None);
+        assert_eq!(graphics_queue_count(&[]), None);
+    }
+
     fn required_extensions() -> Vec<String> {
         GAME_INSTANCE_EXTENSIONS.iter().map(|name| name.to_string()).collect()
     }
 
     fn device(name: &str, major: u32, minor: u32) -> VulkanDevice {
-        VulkanDevice { name: name.into(), api_major: major, api_minor: minor, vendor_id: 0x1002, device_type: 2, device_id: 0, driver_version: 0, luid: None }
+        VulkanDevice { name: name.into(), api_major: major, api_minor: minor, vendor_id: 0x1002, device_type: 2, device_id: 0, driver_version: 0, luid: None, graphics_queues: None }
     }
 
     #[test]
@@ -277,9 +308,10 @@ mod tests {
             device_id: 0,
             driver_version: 0,
             luid: None,
+            graphics_queues: None,
         };
         let llvmpipe =
-            VulkanDevice { name: "llvmpipe".into(), api_major: 1, api_minor: 3, vendor_id: 0x10005, device_type: 4, device_id: 0, driver_version: 0, luid: None };
+            VulkanDevice { name: "llvmpipe".into(), api_major: 1, api_minor: 3, vendor_id: 0x10005, device_type: 4, device_id: 0, driver_version: 0, luid: None, graphics_queues: None };
         assert!(!is_gpu_driver(&dozen) && !is_gpu_driver(&llvmpipe));
         let only_layers =
             VulkanProbe::Ready { instance_extensions: required_extensions(), devices: vec![dozen.clone(), llvmpipe] };

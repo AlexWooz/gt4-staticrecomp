@@ -641,9 +641,9 @@
     if (control.limited) {
       keyNodes.push(h("span", { class: "hint-text", text: GT4.t("settings.limited", { value: control.limited }) }));
     }
-    if (row.note) {
-      // A row that is shown but not available now (the launcher sends `note` only for such a row).
-      keyNodes.push(h("span", { class: "hint-text", text: row.note }));
+    if (row.note_key || row.note) {
+      // A row that is shown but not available now (the launcher sends a note only for such a row; `note_key` is translated).
+      keyNodes.push(h("span", { class: "hint-text", text: row.note_key && GT4.i18n.has(row.note_key) ? GT4.t(row.note_key) : row.note }));
     }
     return h("div", { class: "row" + (row.disabled ? " is-disabled" : ""), data: { row: row.id } }, [
       h("div", { class: "k" }, keyNodes),

@@ -140,6 +140,32 @@ mod vulkan_ffi {
     type EnumeratePhysicalDevices = unsafe extern "system" fn(VkInstance, *mut u32, *mut VkPhysicalDevice) -> VkResult;
     type GetPhysicalDeviceProperties = unsafe extern "system" fn(VkPhysicalDevice, *mut c_void);
     type GetPhysicalDeviceProperties2 = unsafe extern "system" fn(VkPhysicalDevice, *mut c_void);
+    type GetPhysicalDeviceQueueFamilyProperties = unsafe extern "system" fn(VkPhysicalDevice, *mut u32, *mut VkQueueFamilyProperties);
+
+    /// VkQueueFamilyProperties (Vulkan 1.0).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct VkQueueFamilyProperties {
+        queue_flags: u32,
+        queue_count: u32,
+        timestamp_valid_bits: u32,
+        min_image_transfer_granularity: [u32; 3],
+    }
+
+    /// The queue count of the family the game draws with (`system_check::graphics_queue_count`, the same rule as the game).
+    unsafe fn graphics_queues(handle: VkPhysicalDevice, families_of: Option<GetPhysicalDeviceQueueFamilyProperties>) -> Option<u32> {
+        let families_of = families_of?;
+        let mut count = 0u32;
+        families_of(handle, &mut count, ptr::null_mut());
+        if count == 0 {
+            return None;
+        }
+        let mut families = vec![VkQueueFamilyProperties::default(); count as usize];
+        families_of(handle, &mut count, families.as_mut_ptr());
+        families.truncate(count as usize);
+        let listed: Vec<(u32, u32)> = families.iter().map(|family| (family.queue_flags, family.queue_count)).collect();
+        gt4l_core::system_check::graphics_queue_count(&listed)
+    }
 
     const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: u32 = 1_000_059_001;
     const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES: u32 = 1_000_071_004;
@@ -259,6 +285,7 @@ mod vulkan_ffi {
         let destroy = load::<DestroyInstance>(get, instance, c"vkDestroyInstance");
         let enumerate_devices = load::<EnumeratePhysicalDevices>(get, instance, c"vkEnumeratePhysicalDevices");
         let properties_of = load::<GetPhysicalDeviceProperties>(get, instance, c"vkGetPhysicalDeviceProperties");
+        let families_of = load::<GetPhysicalDeviceQueueFamilyProperties>(get, instance, c"vkGetPhysicalDeviceQueueFamilyProperties");
         // The LUID comes from vkGetPhysicalDeviceProperties2 (core in Vulkan 1.1; the KHR name is tried too). Without it
         // the devices are still listed, with no LUID.
         let properties2_of = load::<GetPhysicalDeviceProperties2>(get, instance, c"vkGetPhysicalDeviceProperties2")
@@ -285,6 +312,7 @@ mod vulkan_ffi {
                             device_id: prefix.device_id,
                             driver_version: prefix.driver_version,
                             luid,
+                            graphics_queues: graphics_queues(handle, families_of),
                         });
                     }
                 }

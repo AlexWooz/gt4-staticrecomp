@@ -45,6 +45,8 @@ pub struct VulkanGpu {
     pub luid: Option<u64>,
     /// The driver's own version number, raw (0 when unknown).
     pub driver_version: u32,
+    /// The queue count of the graphics queue family the game would use (`system_check::graphics_queue_count`).
+    pub graphics_queues: Option<u32>,
 }
 
 /// A hardware adapter as DXGI reports it.
@@ -72,6 +74,15 @@ pub struct GpuDevice {
     pub vendor_id: u32,
     /// The Vulkan driver's version number, raw (0 when the card has no Vulkan driver here).
     pub driver_version: u32,
+    /// The queue count of the graphics queue family the game would use (`None` when unknown, or no Vulkan driver).
+    pub graphics_queues: Option<u32>,
+}
+
+/// Whether the one-queue presentation path (TASK-174) applies to the card the game will use: it does on a card with ONE
+/// graphics queue (Steam Deck), and not on one with two or more, which present from their own thread already. `None`
+/// when the card, or its queue count, is unknown: the game then decides by itself.
+pub fn shared_queue_applies(card: Option<&GpuDevice>) -> Option<bool> {
+    card.and_then(|card| card.graphics_queues).map(|queues| queues < 2)
 }
 
 impl GpuDevice {
@@ -166,6 +177,7 @@ pub fn merge(vulkan: &[VulkanGpu], dxgi: &[DxgiGpu]) -> Vec<GpuDevice> {
             integrated: gpu.integrated,
             vendor_id: gpu.vendor_id,
             driver_version: gpu.driver_version,
+            graphics_queues: gpu.graphics_queues,
         });
     }
     // DXGI can list one physical card several times with different LUIDs (rc4: this machine's single RX 9060 XT shows up
@@ -205,6 +217,7 @@ pub fn merge(vulkan: &[VulkanGpu], dxgi: &[DxgiGpu]) -> Vec<GpuDevice> {
                 integrated: adapter.dedicated_video_memory < SHARED_MEMORY_LIMIT,
                 vendor_id: adapter.vendor_id,
                 driver_version: 0,
+                graphics_queues: None,
             });
         }
     }
@@ -223,13 +236,14 @@ fn same_ids_or_name(vendor_a: u32, device_a: u32, name_a: &str, vendor_b: u32, d
 /// One line of the log for a Vulkan device as the probe reported it (before the merge).
 pub fn describe_vulkan(gpu: &VulkanGpu) -> String {
     format!(
-        "graphics input: vulkan {} pci {:04x}:{:04x} {} api {}.{} luid {}",
+        "graphics input: vulkan {} pci {:04x}:{:04x} {} api {}.{} graphics queues {} luid {}",
         gpu.name,
         gpu.vendor_id,
         gpu.device_id,
         if gpu.integrated { "integrated" } else { "other" },
         gpu.api.0,
         gpu.api.1,
+        gpu.graphics_queues.map_or("-".to_string(), |queues| queues.to_string()),
         gpu.luid.map_or("-".to_string(), |luid| format!("{luid:#018x}"))
     )
 }
@@ -386,7 +400,7 @@ mod tests {
     use super::*;
 
     fn vulkan(name: &str, api: (u32, u32), integrated: bool) -> VulkanGpu {
-        VulkanGpu { name: name.into(), api, integrated, vendor_id: 0, device_id: 0, luid: None, driver_version: 0 }
+        VulkanGpu { name: name.into(), api, integrated, vendor_id: 0, device_id: 0, luid: None, driver_version: 0, graphics_queues: None }
     }
 
     fn dxgi(name: &str, memory: u64) -> DxgiGpu {
@@ -395,7 +409,7 @@ mod tests {
 
     /// A card with its PCI ids and LUID, as both APIs report it.
     fn card_vulkan(name: &str, vendor: u32, device: u32, luid: u64) -> VulkanGpu {
-        VulkanGpu { name: name.into(), api: (1, 3), integrated: false, vendor_id: vendor, device_id: device, luid: Some(luid), driver_version: 0 }
+        VulkanGpu { name: name.into(), api: (1, 3), integrated: false, vendor_id: vendor, device_id: device, luid: Some(luid), driver_version: 0, graphics_queues: None }
     }
 
     fn card_dxgi(name: &str, vendor: u32, device: u32, luid: u64, memory: u64) -> DxgiGpu {
@@ -410,6 +424,27 @@ mod tests {
             &[vulkan("Intel(R) UHD Graphics", (1, 3), true), vulkan("NVIDIA GeForce RTX 4060", (1, 3), false)],
             &[dxgi("Intel(R) UHD Graphics", 128 * 1024 * 1024), dxgi("NVIDIA GeForce RTX 4060", 8 * GIB)],
         )
+    }
+
+    #[test]
+    fn the_queue_count_of_the_graphics_family_travels_from_the_probe_to_the_card_and_the_log_line() {
+        let deck = VulkanGpu { graphics_queues: Some(1), ..vulkan("AMD Custom GPU 0405 (RADV VANGOGH)", (1, 3), true) };
+        let desktop = VulkanGpu { graphics_queues: Some(16), ..vulkan("Radeon RX 9060 XT", (1, 3), false) };
+        let cards = merge(&[deck.clone(), desktop.clone()], &[]);
+        assert_eq!(cards[0].graphics_queues, Some(1));
+        assert_eq!(cards[1].graphics_queues, Some(16));
+        assert!(describe_vulkan(&deck).contains("graphics queues 1 "), "{}", describe_vulkan(&deck));
+        assert!(describe_vulkan(&vulkan("x", (1, 3), false)).contains("graphics queues - "));
+    }
+
+    #[test]
+    fn the_one_queue_path_applies_only_to_a_card_with_a_single_graphics_queue() {
+        let with = |queues: Option<u32>| merge(&[VulkanGpu { graphics_queues: queues, ..vulkan("GPU", (1, 3), false) }], &[]).remove(0);
+        assert_eq!(shared_queue_applies(Some(&with(Some(1)))), Some(true));
+        assert_eq!(shared_queue_applies(Some(&with(Some(2)))), Some(false), "two queues present from their own thread already");
+        assert_eq!(shared_queue_applies(Some(&with(Some(16)))), Some(false));
+        assert_eq!(shared_queue_applies(Some(&with(None))), None, "unknown: the game decides");
+        assert_eq!(shared_queue_applies(None), None, "no card");
     }
 
     fn english() -> Language {

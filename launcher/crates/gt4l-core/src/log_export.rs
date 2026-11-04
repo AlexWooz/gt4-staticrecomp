@@ -138,6 +138,8 @@ pub struct GpuFact {
     pub driver_version: u32,
     /// Dedicated video memory in bytes (DXGI).
     pub video_memory: u64,
+    /// The queue count of the graphics family the game would use (`None` when unknown).
+    pub graphics_queues: Option<u32>,
 }
 
 /// What `system.txt` says about the machine and the launcher (all plain text, no paths of the player).
@@ -185,12 +187,13 @@ pub fn system_text(facts: &SystemFacts) -> String {
     }
     for (index, gpu) in facts.gpus.iter().enumerate() {
         lines.push(format!(
-            "graphics card {}: {} (vendor {}, driver version {:#010x}, video memory {} MB)",
+            "graphics card {}: {} (vendor {}, driver version {:#010x}, video memory {} MB, graphics queues {})",
             index + 1,
             or_unknown(&gpu.name),
             vendor_name(gpu.vendor_id),
             gpu.driver_version,
-            gpu.video_memory / (1024 * 1024)
+            gpu.video_memory / (1024 * 1024),
+            gpu.graphics_queues.map_or("unknown".to_string(), |queues| queues.to_string())
         ));
     }
     let (card, api) = &facts.chosen;
@@ -339,8 +342,8 @@ mod tests {
             windows: "Windows 11 (build 26100)".into(),
             cpu: "AMD64 Family 25 Model 33".into(),
             gpus: vec![
-                GpuFact { name: "NVIDIA GeForce RTX 3060 Laptop GPU".into(), vendor_id: 0x10DE, driver_version: 0x0001_5521, video_memory: 6 << 30 },
-                GpuFact { name: "Intel(R) UHD Graphics".into(), vendor_id: 0x8086, driver_version: 0, video_memory: 128 << 20 },
+                GpuFact { name: "NVIDIA GeForce RTX 3060 Laptop GPU".into(), vendor_id: 0x10DE, driver_version: 0x0001_5521, video_memory: 6 << 30, graphics_queues: Some(16) },
+                GpuFact { name: "Intel(R) UHD Graphics".into(), vendor_id: 0x8086, driver_version: 0, video_memory: 128 << 20, graphics_queues: None },
             ],
             chosen: ("NVIDIA GeForce RTX 3060 Laptop GPU".into(), "vulkan".into()),
             displays: vec![("DELL U3419W".into(), 3440, 1440, true)],
@@ -355,8 +358,9 @@ mod tests {
             "launcher: GT4Recomp 1.3.0",
             "install: Installer",
             "windows: Windows 11 (build 26100)",
-            "graphics card 1: NVIDIA GeForce RTX 3060 Laptop GPU (vendor NVIDIA, driver version 0x00015521, video memory 6144 MB)",
+            "graphics card 1: NVIDIA GeForce RTX 3060 Laptop GPU (vendor NVIDIA, driver version 0x00015521, video memory 6144 MB, graphics queues 16)",
             "graphics card 2: Intel(R) UHD Graphics (vendor Intel",
+            "graphics queues unknown)",
             "chosen card: NVIDIA GeForce RTX 3060 Laptop GPU (API vulkan)",
             "display DELL U3419W (primary): 3440x1440",
             "game Gran Turismo 4 Spec II (SCUS-97436): not installed",

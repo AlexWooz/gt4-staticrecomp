@@ -103,6 +103,7 @@ fn system_facts(state: &AppState) -> SystemFacts {
                 vendor_id: card.vendor_id,
                 driver_version: card.driver_version,
                 video_memory: card.dedicated_video_memory,
+                graphics_queues: card.graphics_queues,
             })
             .collect(),
         chosen: (plan.card.as_ref().and_then(|card| card.name()).unwrap_or_default().to_string(), plan.api.clone()),

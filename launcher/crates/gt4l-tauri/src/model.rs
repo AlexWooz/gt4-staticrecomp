@@ -73,6 +73,18 @@ fn fill_api_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::G
     }
 }
 
+/// The Presentation thread row (TASK-174). The one-queue path matters on a card with ONE graphics queue; on a card with two
+/// or more the game presents from its own thread already, so the row is shown but not available, with a note. With no
+/// queue count (no probe), the row works normally and the game decides by itself.
+fn fill_present_thread_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice]) {
+    let plan = gt4l_core::gpu::plan(&settings.gs_value("graphics_api"), settings.get("graphics_card"), cards, Language::fallback());
+    if gt4l_core::gpu::shared_queue_applies(plan.card.as_ref()) == Some(false) {
+        row["disabled"] = json!(true);
+        row["note_key"] = json!("settings.already_active");
+        row["note"] = json!("Already active on this card");
+    }
+}
+
 /// The Graphics card row (TASK-108): Automatic (best), then every card by name. A stored card that is not present is
 /// listed too, so the page shows what is stored; the run then falls back to Automatic.
 fn fill_card_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice]) {
@@ -165,6 +177,7 @@ pub fn settings_table_with_monitors(
         if definition.id == "graphics_card"
             || definition.id == "coregs_sharpening"
             || definition.id == "frame_rate"
+            || definition.id == "present_thread"
             || definition.id == "controller"
         {
             continue;
@@ -204,6 +217,12 @@ pub fn settings_table_with_monitors(
                 let mut skip = launcher_row(definition, settings);
                 skip["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
                 rows.push(skip);
+            }
+            if let Some(definition) = gt4l_core::settings::definition("present_thread") {
+                let mut thread = launcher_row(definition, settings);
+                thread["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
+                fill_present_thread_row(&mut thread, settings, cards);
+                rows.push(thread);
             }
             continue;
         }
@@ -957,6 +976,60 @@ mod table_tests {
         let order = ids(&table);
         let mode = order.iter().position(|id| id == "performance_mode").unwrap();
         assert_eq!(order[mode + 1], "frame_rate");
+    }
+
+    fn card_with_queues(name: &str, queues: Option<u32>) -> gt4l_core::gpu::GpuDevice {
+        let gpu = gt4l_core::gpu::VulkanGpu {
+            name: name.into(),
+            api: (1, 3),
+            integrated: false,
+            vendor_id: 0x1002,
+            device_id: 1,
+            luid: None,
+            driver_version: 0,
+            graphics_queues: queues,
+        };
+        gt4l_core::gpu::merge(&[gpu], &[]).remove(0)
+    }
+
+    #[test]
+    fn the_presentation_thread_is_a_coregs_toggle_on_by_default_after_the_frame_rate() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let thread = row(&table, "present_thread");
+        assert_eq!(thread["control"], "toggle");
+        assert_eq!(thread["page"], "basic");
+        assert_eq!(thread["default"], true);
+        assert_eq!(thread["current"], true);
+        assert_eq!(thread["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
+        assert!(thread.get("note_key").is_none());
+        let order = ids(&table);
+        let skip = order.iter().position(|id| id == "frame_rate").unwrap();
+        assert_eq!(order[skip + 1], "present_thread");
+    }
+
+    #[test]
+    fn the_presentation_thread_is_not_applicable_on_a_card_with_two_or_more_graphics_queues() {
+        let settings = Settings::default();
+        let table_for = |cards: &[gt4l_core::gpu::GpuDevice]| {
+            settings_table_with_monitors(&settings, &Controls::default(), &[], cards, false)
+        };
+        let one = table_for(&[card_with_queues("Steam Deck", Some(1))]);
+        assert_eq!(row(&one, "present_thread")["disabled"], false, "one queue: the row works");
+        assert!(row(&one, "present_thread").get("note_key").is_none());
+        let two = table_for(&[card_with_queues("Radeon", Some(2))]);
+        assert_eq!(row(&two, "present_thread")["disabled"], true);
+        assert_eq!(row(&two, "present_thread")["note_key"], "settings.already_active");
+        assert_eq!(row(&two, "present_thread")["current"], true, "the stored value is kept");
+        let unknown = table_for(&[card_with_queues("Radeon", None)]);
+        assert_eq!(row(&unknown, "present_thread")["disabled"], false, "unknown: the row works, the game decides");
+        let none = table_for(&[]);
+        assert_eq!(row(&none, "present_thread")["disabled"], false, "no probe: the row works");
+        // The card the game will use decides, not another one in the machine.
+        let mut chosen = Settings::default();
+        chosen.set("graphics_card", "Steam Deck").unwrap();
+        let cards = [card_with_queues("Radeon", Some(16)), card_with_queues("Steam Deck", Some(1))];
+        let table = settings_table_with_monitors(&chosen, &Controls::default(), &[], &cards, false);
+        assert_eq!(row(&table, "present_thread")["disabled"], false);
     }
 
     #[test]

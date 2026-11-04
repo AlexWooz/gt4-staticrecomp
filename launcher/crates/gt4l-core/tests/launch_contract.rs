@@ -284,6 +284,22 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
 }
 
 #[test]
+fn the_one_queue_presentation_path_is_the_games_default_and_only_off_is_passed() {
+    let textures = TextureLocation::default_folder(Path::new("T"));
+    let mut settings = Settings::default();
+    assert!(settings.is_on("present_thread"), "on by default");
+    let on = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert!(!on.contains_key("GT4_HW_PRESENT_SHARED_QUEUE"), "on passes nothing: the game decides by its queue count");
+    assert!(!launch::coregs20_section(&settings, None, false, &textures).contains("hw_present_shared_queue"));
+    settings.set("present_thread", "off").unwrap();
+    let off = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert_eq!(off["GT4_HW_PRESENT_SHARED_QUEUE"], "0");
+    assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_present_shared_queue=0\n"));
+    // Only CoreGS 2.0 has it.
+    assert!(!env_map(&game_environment(&settings)).contains_key("GT4_HW_PRESENT_SHARED_QUEUE"));
+}
+
+#[test]
 fn the_performance_hud_is_off_by_default_and_on_only_when_chosen() {
     let textures = TextureLocation::default_folder(Path::new("T"));
     let mut settings = Settings::default();
