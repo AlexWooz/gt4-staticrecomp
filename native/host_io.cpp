@@ -317,13 +317,46 @@ constexpr std::size_t blocking_buffer_count = 4;
 // Paced path: sixteen 256-frame buffers (5.3 ms each) under a 60 ms target.
 constexpr std::size_t paced_frames_per_buffer = 256;
 constexpr std::size_t paced_buffer_count = 16;
+// TASK-156: under Wine, twenty-four 512-frame buffers (10.7 ms each) under a 100 ms target.
+constexpr std::size_t wine_frames_per_buffer = 512;
+constexpr std::size_t wine_buffer_count = 24;
+constexpr std::size_t wine_target_frames = 4800;
 } // namespace
+
+PacedAudioProfile choose_paced_audio_profile(bool wine, const char *latency_ms) {
+  PacedAudioProfile profile = wine ? PacedAudioProfile{wine_frames_per_buffer, wine_buffer_count, wine_target_frames}
+                                   : PacedAudioProfile{paced_frames_per_buffer, paced_buffer_count,
+                                                       gt4::pacing::target_latency_frames};
+  if (latency_ms != nullptr && *latency_ms != '\0') {
+    char *end = nullptr;
+    const long ms = std::strtol(latency_ms, &end, 10);
+    if (end != latency_ms && *end == '\0' && ms >= 20 && ms <= 500)
+      profile.target_frames = static_cast<std::size_t>(ms) * 48u;  // 48 frames per millisecond at 48 kHz
+    else
+      std::fprintf(stderr, "[audio] GT4_AUDIO_LATENCY_MS=%s is not 20..500: the default target is kept\n", latency_ms);
+  }
+  return profile;
+}
+
+bool running_under_wine() {
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  return ntdll != nullptr && GetProcAddress(ntdll, "wine_get_version") != nullptr;
+}
 
 AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode mode, AudioDevice requested)
     : mode_(mode), pump_messages_(std::move(pump_messages)) {
   const bool paced = mode_ == gt4::pacing::Mode::paced;
-  frames_per_buffer_ = paced ? paced_frames_per_buffer : blocking_frames_per_buffer;
-  buffer_count_ = paced ? paced_buffer_count : blocking_buffer_count;
+  const bool wine = paced && running_under_wine();
+  frames_per_buffer_ = blocking_frames_per_buffer;
+  buffer_count_ = blocking_buffer_count;
+  if (paced) {
+    const PacedAudioProfile profile = choose_paced_audio_profile(wine, std::getenv("GT4_AUDIO_LATENCY_MS"));
+    frames_per_buffer_ = profile.frames_per_buffer;
+    buffer_count_ = profile.buffer_count;
+    target_latency_frames_ = profile.target_frames;
+    controller_ = gt4::pacing::RateController{static_cast<double>(target_latency_frames_),
+                                              1.0 / static_cast<double>(gt4::pacing::guest_vblank_rate)};
+  }
   event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!event_)
     throw std::runtime_error("Cannot create audio completion event");
@@ -365,8 +398,8 @@ AudioOutput::AudioOutput(std::function<bool()> pump_messages, gt4::pacing::Mode 
     if (paced)
       std::fprintf(stderr,
                    "[audio] Windows PCM stereo16 48000 Hz, paced: %zu x %zu "
-                   "frames, 60 ms target, non-blocking, rate control +-0.5 percent\n",
-                   buffer_count_, frames_per_buffer_);
+                   "frames, %zu ms target%s, non-blocking, rate control +-0.5 percent\n",
+                   buffer_count_, frames_per_buffer_, target_latency_frames_ / 48u, wine ? " (Wine)" : "");
     else
       std::fprintf(stderr,
                    "[audio] Windows PCM stereo16 48000 Hz, 4 x 512 frames\n");
@@ -514,7 +547,7 @@ void AudioOutput::pump() {
   if (mode_ != gt4::pacing::Mode::paced || !device_)
     return;
   reap();
-  if (!started_ && ring_.size() >= gt4::pacing::target_latency_frames)
+  if (!started_ && ring_.size() >= target_latency_frames_)
     started_ = true;
   if (!started_)
     return;
@@ -526,8 +559,7 @@ void AudioOutput::pump() {
   // Submit only while the device stays within the target: the excess waits in
   // the ring, where the controller can see it.
   while (ring_.size() >= frames_per_buffer_ &&
-         (queued_device_buffers() + 1) * frames_per_buffer_ <=
-             gt4::pacing::target_latency_frames &&
+         (queued_device_buffers() + 1) * frames_per_buffer_ <= target_latency_frames_ &&
          !buffers_[next_buffer_].queued)
     submit_paced_block();
 }

@@ -78,10 +78,31 @@ void check_standardized_sdl_triggers() {
 }
 } // namespace
 
+// TASK-156: Windows keeps its paced buffers and 60 ms target; Wine gets 24 x 512 frames under 100 ms; GT4_AUDIO_LATENCY_MS
+// changes only the target, within 20..500 ms.
+void check_paced_audio_profiles() {
+  const PacedAudioProfile windows = choose_paced_audio_profile(false, nullptr);
+  require(windows.frames_per_buffer == 256 && windows.buffer_count == 16 &&
+              windows.target_frames == gt4::pacing::target_latency_frames,
+          "Windows paced audio unchanged (16 x 256 frames, 60 ms)");
+  const PacedAudioProfile wine = choose_paced_audio_profile(true, nullptr);
+  require(wine.frames_per_buffer == 512 && wine.buffer_count == 24 && wine.target_frames == 4800,
+          "Wine paced audio: 24 x 512 frames, 100 ms");
+  require(choose_paced_audio_profile(false, "100").target_frames == 4800, "GT4_AUDIO_LATENCY_MS=100 is 4800 frames");
+  const PacedAudioProfile wine_short = choose_paced_audio_profile(true, "40");
+  require(wine_short.frames_per_buffer == 512 && wine_short.target_frames == 1920, "an override keeps Wine's buffers");
+  for (const char *bad : {"19", "501", "abc", "60ms", ""}) {
+    require(choose_paced_audio_profile(false, bad).target_frames == gt4::pacing::target_latency_frames,
+            "an invalid GT4_AUDIO_LATENCY_MS keeps the default target");
+  }
+  require(!running_under_wine(), "this fixture runs on Windows, not Wine");
+}
+
 int main() {
   // A missing SDL3.dll must fail the test, not open a system error dialog.
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   try {
+    check_paced_audio_profiles();
     check_standardized_sdl_triggers();
     const WORD buttons[] = {XINPUT_GAMEPAD_BACK,
                             XINPUT_GAMEPAD_LEFT_THUMB,
@@ -273,7 +294,7 @@ int main() {
       gt4::pacing::FramePacer pacer(clock.frequency(), gt4::pacing::guest_vblank_rate);
       AudioOutput paced(nullptr, gt4::pacing::Mode::paced);
       std::array<std::int16_t, 800 * 2> frame_audio{};
-      const std::uint64_t bound = gt4::pacing::target_latency_frames + 16 * 256;
+      const std::uint64_t bound = paced.target_latency_frames() + 16 * 256;
       const std::int64_t longest_push = static_cast<std::int64_t>(clock.frequency() / 500);
       std::int64_t worst_push = 0;
       std::uint64_t worst_queue = 0;
