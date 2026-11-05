@@ -538,6 +538,7 @@
           paint(!!appState.game_running);
           if (was !== isRunning) {
             gameSignature = "";
+            focusPlayOnAndroid(true);  // TASK-180: the button changed between Play and Resume
           }
           applyGames(appState);
         }, function () {});
@@ -562,7 +563,40 @@
       }
       // After the page is in place (the router and nav.js settle the focus first).
       setTimeout(function () { focusPlayOnAndroid(true); }, 0);
-      document.addEventListener("visibilitychange", focusPlayOnAndroid);
+      // Back from the game (or another app): Play/Resume again, whatever had the focus before.
+      function onVisible() {
+        if (document.visibilityState === "visible") {
+          movedThisVisit = false;
+          focusPlayOnAndroid(true);
+        }
+      }
+      document.addEventListener("visibilitychange", onVisible);
+      // Android gives the WebView the input focus when the launcher comes back, and the WebView then focuses the element at
+      // the edge it was entered from (the footer link): Play/Resume takes it back right after.
+      function onWindowFocus() {
+        setTimeout(function () { focusPlayOnAndroid(true); }, 0);
+      }
+      window.addEventListener("focus", onWindowFocus);
+      // The first key the WebView gets after the launcher comes back may also be the one that gives it the input focus,
+      // landing on the element at the edge it was entered from. Until the player moves on this visit, A / Enter is Play
+      // (or Resume) on Android, whatever holds the focus.
+      var movedThisVisit = false;
+      function onKeyFirst(event) {
+        if (GT4.platform !== "android" || GT4.ui.topDialog()) {
+          return;
+        }
+        if (/^Arrow/.test(event.key) || event.key === "Tab") {
+          movedThisVisit = true;
+          return;
+        }
+        if (!movedThisVisit && (event.key === "Enter" || event.key === " ") && document.activeElement !== playButton) {
+          event.preventDefault();
+          event.stopPropagation();
+          playButton.focus({ preventScroll: true });
+          play();
+        }
+      }
+      document.addEventListener("keydown", onKeyFirst, true);
 
       GT4.hooks.start = play;
       GT4.hooks.y = function () { GT4.go("#/settings/graphics"); };
@@ -575,7 +609,9 @@
 
       return {
         destroy: function () {
-          document.removeEventListener("visibilitychange", focusPlayOnAndroid);
+          document.removeEventListener("visibilitychange", onVisible);
+          window.removeEventListener("focus", onWindowFocus);
+          document.removeEventListener("keydown", onKeyFirst, true);
           clearInterval(timer);
           window.removeEventListener("resize", updateNotesEdges);
           document.body.classList.remove("is-home");
