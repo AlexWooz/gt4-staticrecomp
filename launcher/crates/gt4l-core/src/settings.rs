@@ -199,6 +199,16 @@ pub const SETTINGS: &[SettingDef] = &[
         connected: true,
     },
     SettingDef {
+        id: "present_thread",
+        page: Page::Graphics,
+        group: "Performance",
+        title: "Presentation thread (one-queue GPUs)",
+        info: "For the Steam Deck and other GPUs that have a single queue for graphics work. The game shows finished frames from a separate thread, so it does not wait for the screen. On other graphics cards this changes nothing: they already do it.",
+        kind: TOGGLE,
+        default: "on",
+        connected: true,
+    },
+    SettingDef {
         id: "coregs_sharpening",
         page: Page::Graphics,
         group: "Image",

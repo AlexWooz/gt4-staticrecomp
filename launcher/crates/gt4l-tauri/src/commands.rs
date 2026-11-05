@@ -1583,8 +1583,10 @@ pub fn open_latest_log(shared: State<'_, Shared>) -> Result<(), String> {
 /// `export_logs()`: writes the log bundle (TASK-111) into a folder the player picks (Desktop by default). Returns the zip's
 /// path, or `None` when the player cancels. Nothing is written before the folder is picked.
 #[tauri::command]
-pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<String>, String> {
+pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>, pads: State<'_, pad_service::Handle>) -> Result<Option<String>, String> {
     let shared = shared.inner().clone();
+    // The pads the launcher's gamepad service knows now, by name (no serial numbers).
+    let controllers = crate::log_bundle::controller_names(&pads.inner().status());
     tauri::async_runtime::spawn_blocking(move || {
         let (language, start) = {
             let state = lock(&shared);
@@ -1605,7 +1607,7 @@ pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Op
         let folder = picked.into_path().map_err(|error| error.to_string())?;
         let user = std::env::var("USERNAME").unwrap_or_default();
         let state = lock(&shared);
-        match crate::log_bundle::export(&state, &folder, &user) {
+        match crate::log_bundle::export(&state, &folder, &user, &controllers) {
             Ok(path) => {
                 state::log(&state.dirs, &format!("logs exported to {}", path.display()));
                 Ok(Some(path.display().to_string()))

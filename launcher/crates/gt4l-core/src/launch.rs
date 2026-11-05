@@ -243,6 +243,10 @@ pub fn coregs20_environment(
     } else {
         variables.insert("GT4_FRAME_SKIP", "1".to_string());
     }
+    // TASK-174: the one-queue presentation path is the game's default on a GPU with one graphics queue; only "off" is passed.
+    if !settings.is_on("present_thread") {
+        variables.insert("GT4_HW_PRESENT_SHARED_QUEUE", "0".to_string());
+    }
     // TASK-135: the performance HUD.
     if settings.is_on("performance_hud") {
         variables.insert("GT4_HW_HUD", "1".to_string());
@@ -452,7 +456,7 @@ pub fn controller_environment(settings: &Settings) -> Option<String> {
 pub const GAMEPAD_MAPPINGS_FILE: &str = "gamecontrollerdb.txt";
 
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
-/// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
+/// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_present_shared_queue` (written only when off), `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
 /// `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps its `present_mode`).
 pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &TextureLocation) -> String {
     let mut text = String::from("renderer=coregs20\n");
@@ -466,6 +470,7 @@ pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, in
             "GT4_FRAME_SKIP_FORCE" => "hw_frame_skip",
             "GT4_FRAME_SKIP" => "hw_frame_skip_adaptive",
             "GT4_HW_HUD" => "hw_hud",
+            "GT4_HW_PRESENT_SHARED_QUEUE" => "hw_present_shared_queue",
             "GT4_HW_TEXTURES" => "hw_textures",
             "GT4_HW_POSTFX" => "hw_postfx",
             "GT4_CORE2_FSR_SHARPNESS" => "hw_sharpening",

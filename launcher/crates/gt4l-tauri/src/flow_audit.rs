@@ -1874,7 +1874,7 @@ fn the_log_bundle_lists_the_shader_guard_files_and_nothing_else_of_the_cache() {
     fs::write(cache.join("quarantine.bin"), synthetic_guard_file(1, &[[0x11, 0x22, 0x33], [0xcafe, 0, 1]])).unwrap();
     fs::write(cache.join("compiling.bin"), synthetic_guard_file(0, &[[7, 8, 9]])).unwrap();
     fs::write(cache.join("variants.bin"), b"pipeline cache bytes").unwrap();
-    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
     let guard = entries.iter().find(|entry| entry.path == "logs/shader-guard.txt").expect("logs/shader-guard.txt in the bundle");
     assert!(guard.text.contains("quarantine.bin") && guard.text.contains("compiling.bin"));
     assert!(guard.text.contains("a1b2c3d4e5f60718") && guard.text.contains("vendor 1002, device 73df"));
@@ -1889,17 +1889,59 @@ fn the_log_bundle_lists_the_shader_guard_files_and_nothing_else_of_the_cache() {
 #[test]
 fn the_log_bundle_names_a_damaged_guard_file_and_has_no_listing_without_files() {
     let (root, _dirs, _pins, shared) = new_install("bundle-shader-guard-damaged");
-    let none = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let none = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
     assert!(none.iter().all(|entry| entry.path != "logs/shader-guard.txt"));
     let cache = lock(&shared).texture_location().0.shader_cache.expect("a shader cache folder");
     fs::create_dir_all(&cache).unwrap();
     let mut damaged = synthetic_guard_file(0, &[[1, 2, 3]]);
     damaged.truncate(damaged.len() - 2);
     fs::write(cache.join("quarantine.bin"), damaged).unwrap();
-    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
     let guard = entries.iter().find(|entry| entry.path == "logs/shader-guard.txt").expect("a damaged file is still named");
     assert!(guard.text.contains("quarantine.bin") && guard.text.contains("damaged"));
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_log_bundle_system_report_has_the_machine_facts_and_no_personal_value() {
+    // The owner's system report: processor, memory, system, drivers, displays, storage, power and pads. A fact that cannot be
+    // read says "unknown" and never fails the bundle. `--nocapture` prints the report this machine makes.
+    let (root, _dirs, _pins, shared) = new_install("bundle-system-facts");
+    let pads = vec!["Xbox Wireless Controller".to_string()];
+    let entries = crate::log_bundle::collect(&lock(&shared), &pads).unwrap();
+    let system = entries.iter().find(|entry| entry.path == "system.txt").expect("system.txt in the bundle");
+    println!("{}", system.text);
+    for key in [
+        "cpu cores: ", "cpu features: ", "memory: ", "windows edition: ", "wine: ", "storage: ", "power: ", "controller 1: Xbox Wireless Controller",
+    ] {
+        assert!(system.text.lines().any(|line| line.starts_with(key)), "missing {key:?} in\n{}", system.text);
+    }
+    // The existing lines keep their meaning.
+    for key in ["launcher: GT4Recomp ", "install: ", "windows: ", "cpu: ", "chosen card: ", "selected game: "] {
+        assert!(system.text.lines().any(|line| line.starts_with(key)), "missing {key:?}");
+    }
+    // The storage line names the drive letter and nothing else of the path.
+    let storage = system.text.lines().find(|line| line.starts_with("storage: ")).unwrap();
+    assert!(!storage.contains('\\') && !storage.contains(root.to_string_lossy().as_ref()), "{storage}");
+    // No computer name and no user name.
+    if let Ok(computer) = std::env::var("COMPUTERNAME") {
+        assert!(!system.text.to_lowercase().contains(&computer.to_lowercase()), "the computer name is in the report");
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_pad_names_of_the_log_bundle_come_from_the_pad_status_without_serials() {
+    let status = serde_json::json!({
+        "pads": [
+            { "name": "Xbox Wireless Controller", "kind": "xbox", "key": "guid:serial-123", "active": true },
+            { "name": "  ", "kind": "x", "key": "k", "active": false },
+            { "name": "DualSense Wireless Controller", "kind": "ps5", "key": "guid2:serial-456", "active": false }
+        ]
+    });
+    let names = crate::log_bundle::controller_names(&status);
+    assert_eq!(names, vec!["Xbox Wireless Controller".to_string(), "DualSense Wireless Controller".to_string()]);
+    assert!(crate::log_bundle::controller_names(&serde_json::Value::Null).is_empty());
 }
 
 #[test]
@@ -1908,7 +1950,7 @@ fn the_log_bundle_carries_the_shader_prepare_log() {
     let (root, dirs, _pins, shared) = new_install("bundle-shaders-log");
     fs::create_dir_all(dirs.logs()).unwrap();
     fs::write(dirs.logs().join("shaders.log"), "[core2] shader guard: 1 variants quarantined\n").unwrap();
-    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
     let shaders = entries.iter().find(|entry| entry.path == "logs/shaders.log").expect("logs/shaders.log in the bundle");
     assert!(shaders.text.contains("shader guard"));
     assert!(entries.iter().all(|entry| !gt4l_core::log_export::is_forbidden(&entry.path)));

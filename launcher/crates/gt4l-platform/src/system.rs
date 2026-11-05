@@ -7,7 +7,7 @@
 //!   instance. It opens no window and allocates no GPU memory. A loaded driver stays in the launcher process until it
 //!   exits. The graphics cards are listed by `gpu::probe_gpus`, which uses this probe.
 
-use gt4l_core::system_check::{CpuFeatures, VulkanDevice, VulkanProbe};
+use gt4l_core::system_check::{CpuFeatures, DriverFacts, VulkanDevice, VulkanProbe};
 
 /// The Windows user language as a locale name (`pt-BR`, `en-US`), from `GetUserDefaultLocaleName`. Empty when it cannot
 /// be read or off Windows; `gt4l_core::language` then uses English.
@@ -75,7 +75,7 @@ mod vulkan_ffi {
     use windows::Win32::Foundation::FreeLibrary;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
 
-    use super::{VulkanDevice, VulkanProbe};
+    use super::{DriverFacts, VulkanDevice, VulkanProbe};
 
     type VkInstance = *mut c_void;
     type VkPhysicalDevice = *mut c_void;
@@ -140,6 +140,32 @@ mod vulkan_ffi {
     type EnumeratePhysicalDevices = unsafe extern "system" fn(VkInstance, *mut u32, *mut VkPhysicalDevice) -> VkResult;
     type GetPhysicalDeviceProperties = unsafe extern "system" fn(VkPhysicalDevice, *mut c_void);
     type GetPhysicalDeviceProperties2 = unsafe extern "system" fn(VkPhysicalDevice, *mut c_void);
+    type GetPhysicalDeviceQueueFamilyProperties = unsafe extern "system" fn(VkPhysicalDevice, *mut u32, *mut VkQueueFamilyProperties);
+
+    /// VkQueueFamilyProperties (Vulkan 1.0).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct VkQueueFamilyProperties {
+        queue_flags: u32,
+        queue_count: u32,
+        timestamp_valid_bits: u32,
+        min_image_transfer_granularity: [u32; 3],
+    }
+
+    /// The queue count of the family the game draws with (`system_check::graphics_queue_count`, the same rule as the game).
+    unsafe fn graphics_queues(handle: VkPhysicalDevice, families_of: Option<GetPhysicalDeviceQueueFamilyProperties>) -> Option<u32> {
+        let families_of = families_of?;
+        let mut count = 0u32;
+        families_of(handle, &mut count, ptr::null_mut());
+        if count == 0 {
+            return None;
+        }
+        let mut families = vec![VkQueueFamilyProperties::default(); count as usize];
+        families_of(handle, &mut count, families.as_mut_ptr());
+        families.truncate(count as usize);
+        let listed: Vec<(u32, u32)> = families.iter().map(|family| (family.queue_flags, family.queue_count)).collect();
+        gt4l_core::system_check::graphics_queue_count(&listed)
+    }
 
     const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: u32 = 1_000_059_001;
     const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES: u32 = 1_000_071_004;
@@ -154,6 +180,44 @@ mod vulkan_ffi {
         device_luid: [u8; 8],
         device_node_mask: u32,
         device_luid_valid: u32,
+    }
+
+    const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES: u32 = 1_000_196_000;
+
+    /// VkPhysicalDeviceDriverProperties (Vulkan 1.2 / VK_KHR_driver_properties), chained through pNext.
+    #[repr(C)]
+    struct DriverPropertiesChain {
+        s_type: u32,
+        p_next: *mut c_void,
+        driver_id: u32,
+        driver_name: [c_char; 256],
+        driver_info: [c_char; 256],
+        conformance_version: [u8; 4],
+    }
+
+    /// The driver's own description, when it answers (the struct stays zeroed otherwise, and the fields come back empty).
+    unsafe fn driver_facts(handle: VkPhysicalDevice, properties2_of: Option<GetPhysicalDeviceProperties2>, api_patch: u32) -> DriverFacts {
+        let mut facts = DriverFacts { api_patch, ..DriverFacts::default() };
+        let Some(properties2_of) = properties2_of else {
+            return facts;
+        };
+        let mut chain = DriverPropertiesChain {
+            s_type: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+            p_next: ptr::null_mut(),
+            driver_id: 0,
+            driver_name: [0; 256],
+            driver_info: [0; 256],
+            conformance_version: [0; 4],
+        };
+        let mut buffer = vec![0u64; PROPERTIES_BUFFER / 8];
+        let bytes = buffer.as_mut_ptr().cast::<u8>();
+        bytes.cast::<u32>().write(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2);
+        bytes.add(8).cast::<*mut c_void>().write(&mut chain as *mut DriverPropertiesChain as *mut c_void);
+        properties2_of(handle, buffer.as_mut_ptr().cast());
+        facts.name = text(&chain.driver_name);
+        facts.info = text(&chain.driver_info);
+        facts.id = if chain.driver_id != 0 { Some(chain.driver_id) } else { None };
+        facts
     }
 
     fn text(raw: &[c_char]) -> String {
@@ -259,6 +323,7 @@ mod vulkan_ffi {
         let destroy = load::<DestroyInstance>(get, instance, c"vkDestroyInstance");
         let enumerate_devices = load::<EnumeratePhysicalDevices>(get, instance, c"vkEnumeratePhysicalDevices");
         let properties_of = load::<GetPhysicalDeviceProperties>(get, instance, c"vkGetPhysicalDeviceProperties");
+        let families_of = load::<GetPhysicalDeviceQueueFamilyProperties>(get, instance, c"vkGetPhysicalDeviceQueueFamilyProperties");
         // The LUID comes from vkGetPhysicalDeviceProperties2 (core in Vulkan 1.1; the KHR name is tried too). Without it
         // the devices are still listed, with no LUID.
         let properties2_of = load::<GetPhysicalDeviceProperties2>(get, instance, c"vkGetPhysicalDeviceProperties2")
@@ -285,6 +350,8 @@ mod vulkan_ffi {
                             device_id: prefix.device_id,
                             driver_version: prefix.driver_version,
                             luid,
+                            graphics_queues: graphics_queues(handle, families_of),
+                            driver: driver_facts(handle, properties2_of, prefix.api_version & 0xFFF),
                         });
                     }
                 }
@@ -372,7 +439,7 @@ pub fn windows_version() -> String {
 
 /// A REG_SZ value under HKEY_LOCAL_MACHINE (64-bit view).
 #[cfg(windows)]
-fn registry_string(key: &str, value: &str) -> Option<String> {
+pub(crate) fn registry_string(key: &str, value: &str) -> Option<String> {
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
     let (key, value) = (HSTRING::from(key), HSTRING::from(value));

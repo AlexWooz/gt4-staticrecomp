@@ -108,6 +108,8 @@ fn gpu_inputs() -> (Vec<gpu::VulkanGpu>, Vec<DxgiGpu>) {
                     device_id: device.device_id,
                     driver_version: device.driver_version,
                     luid: device.luid,
+                    graphics_queues: device.graphics_queues,
+                    driver: device.driver.clone(),
                 })
                 .collect()
         }
@@ -144,10 +146,22 @@ fn dxgi_adapters() -> Vec<DxgiGpu> {
                 vendor_id: desc.VendorId,
                 device_id: desc.DeviceId,
                 luid: Some(luid),
+                windows_driver: windows_driver_of(&adapter),
             });
         }
     }
     adapters
+}
+
+/// The Windows driver version of an adapter: the user-mode driver version DXGI reports for the D3D device interface
+/// (`32.0.15.6094` once split in four). `None` when the driver does not answer.
+#[cfg(windows)]
+fn windows_driver_of(adapter: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) -> Option<u64> {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+
+    // SAFETY: a plain COM call on a live adapter; it only reads the version.
+    unsafe { adapter.CheckInterfaceSupport(&IDXGIDevice::IID) }.ok().and_then(|version| u64::try_from(version).ok())
 }
 
 #[cfg(not(windows))]
@@ -227,6 +241,8 @@ mod cache_tests {
             integrated,
             vendor_id: 0,
             driver_version: 0,
+            graphics_queues: None,
+            driver: Default::default(),
         }
     }
 

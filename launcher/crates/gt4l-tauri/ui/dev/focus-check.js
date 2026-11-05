@@ -992,6 +992,72 @@
     await setHash("#/settings/graphics");
   }
 
+  // TASK-174: the Presentation thread row. CoreGS 2.0 only; works on a one-queue card (and when the queue count is unknown);
+  // shown but not available, with a note, on a card with two or more graphics queues.
+  async function presentThreadChecks() {
+    function shown() {
+      return Array.prototype.map.call(document.querySelectorAll("[data-row]"), function (node) { return node.getAttribute("data-row"); });
+    }
+    function valueOf(table) {
+      return GT4.settingsModel.findRow(table, "present_thread");
+    }
+    var renderer = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "renderer").current;
+    await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    check("the Presentation thread row is not shown under GSdx", shown().indexOf("present_thread") < 0, shown().join("|"));
+    await GT4.backend.call("set_setting", { id: "renderer", value: "coregs20" });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    var order = shown();
+    check("the Presentation thread row is shown under CoreGS 2.0, after the frame rate", order.indexOf("frame_rate") >= 0 && order.indexOf("present_thread") > order.indexOf("frame_rate"), order.join("|"));
+    var node = document.querySelector("[data-row=\"present_thread\"]");
+    var label = node && node.querySelector(".k span");
+    check("the row's label is the translated one", !!label && label.textContent === T("setting.present_thread.label") && label.textContent.length > 10, label ? label.textContent : "no row");
+    var tip = node && node.querySelector(".tip");
+    check("the info text is the translated one and explains the single queue", !!tip && tip.textContent.indexOf(T("setting.present_thread.help")) >= 0 && T("setting.present_thread.help").length > 60,
+      tip ? tip.textContent.slice(0, 80) : "no tip");
+    check("the row is on by default and works (not disabled, no note)", selectorText("present_thread") === T("settings.on") && !node.classList.contains("is-disabled") && !node.querySelector(".hint-text"),
+      node ? node.className : "no row");
+    await stepSelector("present_thread", 1);
+    check("a step turns it off and the table holds the value", valueOf(await GT4.backend.call("get_settings_table")).current === false && selectorText("present_thread") === T("settings.off"),
+      String(selectorText("present_thread")));
+    await stepSelector("present_thread", -1);
+    check("a step back turns it on again", valueOf(await GT4.backend.call("get_settings_table")).current === true && selectorText("present_thread") === T("settings.on"), String(selectorText("present_thread")));
+
+    // A card with two or more graphics queues: the launcher sends the row disabled with a note key.
+    var real = GT4.backend.call;
+    GT4.backend.call = function (command, args) {
+      var result = real.call(GT4.backend, command, args);
+      if (command !== "get_settings_table") {
+        return result;
+      }
+      return result.then(function (table) {
+        var row = valueOf(table);
+        row.disabled = true;
+        row.note_key = "settings.already_active";
+        return table;
+      });
+    };
+    try {
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+      await wait(250);
+      var off = document.querySelector("[data-row=\"present_thread\"]");
+      var hint = off && off.querySelector(".hint-text");
+      check("a two-queue card shows the row disabled", !!off && off.classList.contains("is-disabled") && off.querySelector(".selector[aria-disabled=\"true\"]") !== null, off ? off.className : "no row");
+      check("a two-queue card says it is already active, in this language", !!hint && hint.textContent === T("settings.already_active") && hint.textContent.length > 8, hint ? hint.textContent : "no note");
+      check("the disabled row keeps its info text", !!off && off.querySelector(".tip").textContent.indexOf(T("setting.present_thread.help")) >= 0, "no tip");
+    } finally {
+      GT4.backend.call = real;
+    }
+    await GT4.backend.call("set_setting", { id: "renderer", value: renderer });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+  }
+
   // Owner, 2026-11-02: choosing GSdx when it is missing asks first. The dialog shows the download and closes by itself; declining,
   // or a failed download, goes back to CoreGS 2.0, and the choice is stored only after the install.
   async function gsdxDialogChecks() {
@@ -1742,6 +1808,7 @@
       await libraryActionChecks();
       await valueChecks();
       await rendererRowChecks();
+      await presentThreadChecks();
       await gsdxDialogChecks();
       await playOfferChecks();
       await firstStartHintChecks();

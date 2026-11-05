@@ -205,6 +205,11 @@
     { id: "performance_report", label: "Performance report", help: "Records frame timing while you play for bug reports.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
     { visible_when: { id: "renderer", equals: "coregs20" }, id: "frame_rate", label: "Frame rate (experimental)", help: "60 FPS is the default. The 30 FPS mode is for weaker PCs and is still experimental: races draw 30 frames per second, with the game at full speed and the same physics. Menus stay at 60.", page: "basic", group: null, control: "dropdown", values: [{ value: "60", label: "60 FPS" }, { value: "30", label: "30 FPS" }], default: "60", current: "60", connected: true },
+    // TASK-174: ?queues=2 is a card with two graphics queues (the row is shown but not available); the default is one queue.
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "present_thread", label: "Presentation thread (one-queue GPUs)",
+      help: "For the Steam Deck and other graphics cards that have a single queue for graphics work. The game shows finished frames from a separate thread, so it does not wait for the screen. On other graphics cards this changes nothing: they already do it.",
+      page: "basic", group: "graphics", control: "toggle", values: null, default: true, current: true,
+      disabled: query.get("queues") === "2", note_key: query.get("queues") === "2" ? "settings.already_active" : undefined },
     { visible_when: { id: "renderer", equals: "coregs20" }, id: "coregs_sharpening", label: "Sharpening (FSR1)",
       help: "AMD FidelityFX Super Resolution 1 sharpening of the final picture. Off leaves the picture as the game drew it.",
       page: "basic", group: "graphics", control: "dropdown",
