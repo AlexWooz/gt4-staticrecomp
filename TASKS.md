@@ -3567,6 +3567,24 @@ pass.
   skipped.
 - **Agent deviation:** it amended and force-pushed its own task-branch commit, so the standing rules now forbid that.
 
+### Idea: experimental iOS and macOS port (owner, 2026-11-05; not scheduled)
+
+The owner wants an experimental iOS port for a friend's iPhone 17 Pro Max, built on the friend's MacBook Air M1.
+
+**Why Apple GPUs suit CoreGS:**
+- They are tile-based with unified memory, like Android phones.
+- Metal offers in-tile reads in raster order (programmable blending and raster order groups). That is the exact
+  no-barrier blending path the S23's Adreno driver lacks.
+
+**Notes:**
+- No JIT is needed: CoreGS is AOT, and iOS forbids JIT.
+- Tauri runs on iOS.
+- MoltenVK first, a native Metal path later.
+- Measure on a real device: the iOS simulator does not show real performance.
+- Mind the per-app memory limits and the signing.
+
+Not in the current phases (Phase 3 Linux, Phase 4 Android): it starts only on the owner's word.
+
 ### TASK-183: CoreGS 2.0 on unified memory (owner, 2026-11-05)
 
 **Scope:** Android, Apple Silicon, iOS and PC integrated GPUs. The study is
