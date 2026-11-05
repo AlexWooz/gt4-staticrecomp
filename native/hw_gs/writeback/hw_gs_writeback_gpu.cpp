@@ -190,6 +190,9 @@ struct GpuDrawer::Impl {
   VkDescriptorSetLayout deinterlaceSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout deinterlaceLayout = VK_NULL_HANDLE;
   VkShaderModule deinterlaceModule = VK_NULL_HANDLE;
+  // TASK-179: the device was created with shaderStorageImageArrayDynamicIndexing (hw_deinterlace_scaled.comp indexes its
+  // history images with a push constant); without it the constant-index build of the kernel runs.
+  bool storageImageArrayDynamicIndexing = false;
   VkPipeline deinterlacePipeline = VK_NULL_HANDLE;
   VkDescriptorPool deinterlacePool = VK_NULL_HANDLE;
   VkDescriptorSet deinterlaceSet = VK_NULL_HANDLE;
@@ -1587,6 +1590,7 @@ bool GpuDrawer::Init(const VulkanHandles &handles, std::string &error) {
   s.physical = static_cast<VkPhysicalDevice>(handles.physical);
   s.device = static_cast<VkDevice>(handles.device);
   s.queue = static_cast<VkQueue>(handles.queue);
+  s.storageImageArrayDynamicIndexing = handles.profile.storage_image_array_dynamic_indexing_enabled;  // TASK-179
   if (!s.instance || !s.physical || !s.device || !s.queue) {
     error = "GpuDrawer::Init needs instance, physical device, device and queue";
     return false;
@@ -1968,8 +1972,11 @@ bool GpuDrawer::Impl::create_deinterlace(std::string &error) {
     writes[i + 1].pImageInfo = &others[i];
   }
   gt4_hwd_vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
-  deinterlaceModule = make_module(hwgs::shaders::hw_deinterlace_scaled_words,
-                                  hwgs::shaders::hw_deinterlace_scaled_word_count, error);
+  deinterlaceModule = storageImageArrayDynamicIndexing
+                          ? make_module(hwgs::shaders::hw_deinterlace_scaled_words,
+                                        hwgs::shaders::hw_deinterlace_scaled_word_count, error)
+                          : make_module(hwgs::shaders::hw_deinterlace_scaled_constant_words,
+                                        hwgs::shaders::hw_deinterlace_scaled_constant_word_count, error);
   if (!deinterlaceModule) return false;
   VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
   info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

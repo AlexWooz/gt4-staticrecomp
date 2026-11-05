@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "../hw_device_profile.hpp"
+
 namespace hwgs::gpu {
 
 // Vulkan handles owned by the caller (the HWR backend). Passed as void* to keep this header Vulkan-free.
@@ -28,6 +30,10 @@ struct VulkanHandles {
     // The device was created with independentBlend (IN-481: per-attachment write masks of the ROP path).
     bool independentBlend = false;
     bool dualSourceBlend = false;  // IN-482: dualSrcBlend
+    // TASK-179: the capability probe of the device (vulkan_loader::probe_device_profile), with what it was created with
+    // (largePoints, shaderStorageImageArrayDynamicIndexing). Not probed (`profile.probed` false): the renderers take the
+    // paths that need neither feature.
+    gt4::hw::DeviceProfile profile;
 };
 
 // Vertex record of chapter 03.3 (32 bytes). X and Y are 12.4 two's complement values.

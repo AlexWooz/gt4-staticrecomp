@@ -56,6 +56,7 @@ struct Headless {
     bool interlock = false;
     bool independentBlend = false;
     bool dualSourceBlend = false;
+    gt4::hw::DeviceProfile profile;  // TASK-179: the capability probe, with the features enabled below
 
     bool Create(std::string& error) {
         if (!gt4::hw::vulkan_loader::load_loader(error)) return false;
@@ -119,6 +120,9 @@ struct Headless {
         gt4_hw_vkGetPhysicalDeviceFeatures2(physical, &supportedFeatures);
         enabledFeatures.independentBlend = supportedFeatures.features.independentBlend;
         enabledFeatures.dualSrcBlend = supportedFeatures.features.dualSrcBlend;
+        // TASK-179: largePoints and shaderStorageImageArrayDynamicIndexing where the device has them, as the game's device.
+        profile = gt4::hw::vulkan_loader::probe_device_profile(instance, physical);
+        gt4::hw::vulkan_loader::enable_profile_features(profile, enabledFeatures);
         dualSourceBlend = supportedFeatures.features.dualSrcBlend == VK_TRUE;
         independentBlend = supportedFeatures.features.independentBlend == VK_TRUE;
         dev.pEnabledFeatures = &enabledFeatures;
@@ -4245,6 +4249,61 @@ int TestCore2OverlapOrder(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_point_quads (TASK-179): on a device without largePoints core 2 draws each point as two triangles (hw_vertex.vert,
+// HWR_POINT_QUAD) instead of a point gl_PointSize = scale wide. The square must be the same: blended points, many of them
+// on the same pixels (their order matters), through a GEQUAL depth test that also writes depth, at 2x and 3x. The
+// images and GS memory with GT4_CORE2_POINT_QUADS=1 must equal those of the points drawn as points.
+cpuref::CaptureWriter Core2PointsCapture() {
+    cpuref::CaptureWriter capture;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y, uint32_t z) { return uint64_t{x} | (uint64_t{y} << 16) | (uint64_t{z} << 32); };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    uint32_t seed = 4242u;
+    auto next = [&seed](uint32_t range) {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 16) % range;
+    };
+    std::vector<uint64_t> words = {(uint64_t{127} << 16) | (uint64_t{127} << 48), 0x40,  // scissor 128 x 128
+                                   0, 0x18,                                                 // XYOFFSET 0
+                                   (uint64_t{1} << 16) | (uint64_t{2} << 17), 0x47,         // ZTE, GEQUAL
+                                   16, 0x4E,                                                // Z32 at page 16, written
+                                   uint64_t{2} << 16, 0x4C,                                 // CT32 at page 0, FBW 2
+                                   0x44, 0x42,                                              // (Cs - Cd) * As + Cd
+                                   0u | (1u << 3) | (1u << 6), 0x00};                       // points, Gouraud, blend
+    uint32_t x = 0, y = 0;
+    for (int p = 0; p < 900; ++p) {
+        if (p % 3 != 0) {  // two in three on a new pixel, the rest on the one before (sub-pixel positions differ)
+            x = next(60 * 16);
+            y = next(60 * 16);
+        }
+        words.push_back(rgbaq(0x10000000u | (next(0x70u) << 24) | next(0x1000000u)));
+        words.push_back(0x01);
+        words.push_back(xyz(x + next(16), y + next(16), next(0x10000u) << 16));
+        words.push_back(0x05);
+    }
+    ad(words);
+    capture.FrameEnd(0);
+    return capture;
+}
+
+int TestCore2PointQuads(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    for (uint32_t scale : {2u, 3u}) {
+        const std::string tag = "points at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(handles, tag.c_str(), Core2PointsCapture(), 1, "GT4_CORE2_POINT_QUADS", false,
+                                 [](const Core2AbRun&, const Core2AbRun&) { return 0; }, false, scale, "1");
+    }
+    std::printf("hw_core2_point_quads: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_texture_replacement (IN-470, chapter 11): an uploaded 64 x 64 CT32 pattern drawn 1:1 into pages 0-1. A first
 // run dumps it under its Format P name; a 4x image with that name in a pack folder then replaces it. Each native pixel
 // shows a texel of its 4 x 4 cell of the image, in GS memory, and with no pack the run is unchanged.
@@ -6583,6 +6642,7 @@ int main(int argc, char** argv) {
     handles.pixelInterlock = headless.interlock;
     handles.independentBlend = headless.independentBlend;
     handles.dualSourceBlend = headless.dualSourceBlend;
+    handles.profile = headless.profile;  // TASK-179
     gpu::GpuDrawer drawer;
     if (!drawer.Init(handles, error)) {
         std::printf("%s: GPU drawer init failed: %s\n", name.c_str(), error.c_str());
@@ -6645,6 +6705,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);
     if (name == "hw_core2_texture_replacement") return TestCore2TextureReplacement(handles);
     if (name == "hw_core2_overlap_order") return TestCore2OverlapOrder(handles);
+    if (name == "hw_core2_point_quads") return TestCore2PointQuads(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());

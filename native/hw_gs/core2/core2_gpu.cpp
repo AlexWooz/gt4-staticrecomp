@@ -352,6 +352,12 @@ struct Gpu::Impl {
   std::map<std::pair<VkImageView, VkImageView>, VkFramebuffer> ropFramebuffers;
   VkPipeline pipelines[3] = {};  // points, lines, triangles
   VkPipeline interlockTriangles = VK_NULL_HANDLE;
+  // TASK-179: points are gl_PointSize = scale wide, which above one pixel needs largePoints. Without it (or with a largest
+  // point size under the scale) pipelines[0] draws each point as two triangles (hw_vertex.vert, HWR_POINT_QUAD): a
+  // triangle list reading the point's vertex record once per instance, drawn six vertices per point. The square is the
+  // one point rasterization covers. GT4_CORE2_POINT_QUADS=1 / 0 forces quads / point sizes (A/B).
+  bool pointQuads = false;
+  VkShaderModule pointQuadModule = VK_NULL_HANDLE;
 
   // IN-437: the interlocked triangle pipeline specialised per draw state. hw_pixel_uber.frag reads the state block
   // and branches on about 50 of its fields in every wave; with the fields as specialization constants the compiler
@@ -804,12 +810,15 @@ struct Gpu::Impl {
     return module;
   }
 
+  // `pointQuad` (TASK-179): the point pipeline without largePoints: the HWR_POINT_QUAD vertex stage, a triangle list, and
+  // the vertex record read per instance.
   VkPipeline make_graphics(VkPrimitiveTopology topology, VkShaderModule fragment, std::string &error,
-                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0, bool sheenEarlyOut = false) {
+                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0, bool sheenEarlyOut = false,
+                           bool pointQuad = false) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertexModule;
+    stages[0].module = pointQuad ? pointQuadModule : vertexModule;
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -833,7 +842,8 @@ struct Gpu::Impl {
     bytes += 4;
     const VkSpecializationInfo withEarlyZ{count, entries, bytes, data};
     stages[1].pSpecializationInfo = &withEarlyZ;
-    VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex),
+                                            pointQuad ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes[7]{};
     attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};   // S, T
     attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UINT, 8};   // R, G, B, A
@@ -848,7 +858,7 @@ struct Gpu::Impl {
     vertexInput.vertexAttributeDescriptionCount = 7;
     vertexInput.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    assembly.topology = topology;
+    assembly.topology = pointQuad ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : topology;
     VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     viewport.viewportCount = 1;
     viewport.scissorCount = 1;
@@ -856,7 +866,7 @@ struct Gpu::Impl {
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.cullMode = VK_CULL_MODE_NONE;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0f;
+    raster.lineWidth = 1.0f;  // TASK-179: every line is one pixel wide (no wideLines needed; GS lines are not widened at scale)
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -1997,7 +2007,14 @@ struct Gpu::Impl {
         gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, command.pipeline);
         bound.pipeline = command.pipeline;
       }
-      gt4_hwd_vkCmdDraw(cmd, command.count, 1, baseVertex + command.first, 0);
+      if (pointQuads && command.pipeline == pipelines[0]) {
+        // TASK-179: six corners per point, one instance per point record (the same records, read per instance).
+        gt4_hwd_vkCmdDraw(cmd, 6, command.count, 0, baseVertex + command.first);
+        stats.pointQuads += command.count;
+      } else {
+        gt4_hwd_vkCmdDraw(cmd, command.count, 1, baseVertex + command.first, 0);
+      }
+      if (command.pipeline == pipelines[0]) stats.points += command.count;
       stats.draws++;
       drewSinceBarrier = true;
     }
@@ -2442,7 +2459,10 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   VkPhysicalDeviceProperties properties{};
   gt4_hw_vkGetPhysicalDeviceProperties(s.physical, &properties);
   s.limits = properties.limits;
-  s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+  // TASK-179: from the device profile, by the same rule (VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU); from the device type when
+  // the device's creator did not probe it.
+  s.integrated = handles.profile.probed ? handles.profile.integrated_defaults
+                                        : gt4::hw::integrated_defaults(static_cast<std::uint32_t>(properties.deviceType));
   s.deviceProperties = properties;  // IN-507
   {
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
@@ -2621,7 +2641,20 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.fragmentModule =
       s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
   if (!s.vertexModule || !s.fragmentModule) return false;
-  s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error);
+  {
+    // TASK-179: points of `scale` pixels as points where the device was created with largePoints and draws them that
+    // large (and always at 1x), as two triangles elsewhere.
+    const char *quadSwitch = std::getenv("GT4_CORE2_POINT_QUADS");
+    const bool sizesFit = handles.profile.points_of_size(static_cast<float>(s.scale));
+    s.pointQuads = quadSwitch ? std::strcmp(quadSwitch, "0") != 0 : !sizesFit;
+    if (s.pointQuads) {
+      s.pointQuadModule = s.make_module(hwgs::shaders::hw_vertex_point_quad_words, hwgs::shaders::hw_vertex_point_quad_word_count, error);
+      if (!s.pointQuadModule) return false;
+    }
+    std::fprintf(stderr, "[core2] points at %ux: %s\n", s.scale,
+                 s.pointQuads ? "two triangles each (no largePoints, or a smaller largest point size)" : "points (largePoints or 1x)");
+  }
+  s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error, nullptr, 0, false, s.pointQuads);
   s.pipelines[1] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, s.fragmentModule, error);
   s.pipelines[2] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.fragmentModule, error);
   if (!s.pipelines[0] || !s.pipelines[1] || !s.pipelines[2]) return false;
@@ -2692,8 +2725,13 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
         !s.image_layouts(fxaaCounts, 2, 2 * 4, s.fxaaSetLayout, s.fxaaLayout, error)) {
       return false;
     }
-    s.deinterlaceModule = s.make_module(hwgs::shaders::hw_deinterlace_scaled_words,
-                                        hwgs::shaders::hw_deinterlace_scaled_word_count, error);
+    // TASK-179: the kernel indexes its history images with a push constant, which needs shaderStorageImageArrayDynamicIndexing;
+    // without it the constant-index build runs (the same pixels).
+    s.deinterlaceModule = handles.profile.storage_image_array_dynamic_indexing_enabled
+                              ? s.make_module(hwgs::shaders::hw_deinterlace_scaled_words,
+                                              hwgs::shaders::hw_deinterlace_scaled_word_count, error)
+                              : s.make_module(hwgs::shaders::hw_deinterlace_scaled_constant_words,
+                                              hwgs::shaders::hw_deinterlace_scaled_constant_word_count, error);
     s.fxaaModule = s.make_module(hwgs::shaders::hw_postfx_fxaa_words, hwgs::shaders::hw_postfx_fxaa_word_count, error);
     if (!s.deinterlaceModule || !s.fxaaModule) return false;
     s.deinterlacePipeline = s.make_compute(s.deinterlaceModule, error, s.deinterlaceLayout);

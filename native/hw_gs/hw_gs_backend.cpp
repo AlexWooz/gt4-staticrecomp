@@ -302,6 +302,8 @@ struct Backend::Impl {
   }
 
   bool independent_blend = false;
+  // TASK-179: the capability probe of the chosen device, with what it was created with (logged once).
+  DeviceProfile profile;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
   VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
@@ -674,6 +676,7 @@ struct Backend::Impl {
     // Re-inspect the chosen device so queue_family and the report describe it.
     std::vector<std::string> missing;
     inspect_device(physical, missing, report);
+    profile = vulkan_loader::probe_device_profile(instance, physical);
     return true;
   }
 
@@ -704,6 +707,10 @@ struct Backend::Impl {
     features2.features.pipelineStatisticsQuery = supported.features.pipelineStatisticsQuery;
     features2.features.independentBlend = supported.features.independentBlend;  // IN-481
     independent_blend = supported.features.independentBlend == VK_TRUE;
+    // TASK-179: points wider than one pixel (largePoints) and the deinterlace kernel's indexed history images
+    // (shaderStorageImageArrayDynamicIndexing) were used without being enabled. Enabled where the device has them; where
+    // it does not, core 2 draws points as two triangles and runs the constant-index build of the kernel.
+    vulkan_loader::enable_profile_features(profile, features2.features);
 
     // IN-345: pixel interlock lets the GPU path draw a batch of triangles in one draw (no barriers).
     // GT4_HW_INTERLOCK=0 leaves it off on a device that has it: the path of GPUs without it (most mobile GPUs), for
@@ -717,6 +724,8 @@ struct Backend::Impl {
     if (pixel_interlock) v12.pNext = &interlock;
     std::vector<const char *> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     if (pixel_interlock) extensions.push_back(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
+    // TASK-179: the heap budgets core 2 sizes its rings from.
+    if (const char *budget = vulkan_loader::memory_budget_extension(profile)) extensions.push_back(budget);
     // IN-515: the present mode that keeps no old frames in the queue, on request (choose_present_mode).
     std::uint32_t extension_count = 0;
     vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, nullptr);
@@ -773,6 +782,7 @@ struct Backend::Impl {
     vkGetDeviceQueue(device, queue_family, 0, &queue);
     if (own_present_queue) vkGetDeviceQueue(device, queue_family, 1, &present_queue);
     std::fprintf(stderr, "[hw] presentation queue: %s\n", own_present_queue ? "its own (IN-516)" : "the rendering queue");
+    std::fprintf(stderr, "[hw] device profile: %s\n", profile_line(profile).c_str());
 
     VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1508,6 +1518,7 @@ bool Backend::init(const Options &options, std::string &error) {
   handles.pixelInterlock = s.pixel_interlock;
   handles.independentBlend = s.independent_blend;
   handles.dualSourceBlend = true;  // a required feature of this backend
+  handles.profile = s.profile;      // TASK-179
   {
     // M12 (06.1, IN-371): GT4_HW_SCALE clamped to the device ceiling s_max = max(1, floor(maxImageDimension2D /
     // 1280)); the 06.3 half-pixel mode sets the vertex shift factor (native: s, normal: m, off: 1).
