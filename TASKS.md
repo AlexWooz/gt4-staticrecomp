@@ -3416,8 +3416,29 @@ The owner also asked for:
 - Play preselected on the home page;
 - F8 per-cluster thread residency and thermal status.
 
-**Test3 (on the device over USB):** pre-rotation, ADPF hints and big-core placement, FXAA at internal resolution, a
-1080p-output option, and Snapdragon GSR.
+**APK test3: done (2026-11-05 ~17:50; OpenCode DeepSeek, reviewed).**
+- GitHub draft `v1.3.0-android-test3`. Branch at d45e286d. APK sha256 `8a776323...`, versionCode 3, same key.
+- **Pad in game:** the input focus is re-read on resume. There is a fallback that reads the pad straight from Android key
+  and motion events when SDL opens no gamepad. game.log gets an `[input]` device block.
+- **Launcher:** the wheel page is hidden on Android, and the pad commands' Tauri state is managed.
+- **One app:** the game Activity runs in the launcher's task with no animation. A gate Activity sends the icon and recents
+  to the running game.
+- **Pause dialog:** centred and localised.
+- **Render scale:** the percentage comes from render height against screen height, with the old values migrated.
+- **Shader prepare card:** no button is focused.
+- **Version label:** fixed.
+- **Bench mode:** `GT4_BENCH_CARD` + `GT4_INPUT_REPLAY` via debug.env, using a copy of the card.
+- **Windows:** Play is preselected.
+- **Spec II:** not yet; it needs the regenerated hooked Spec II unit set (see the port plan).
+
+**APK test4 (in progress, DeepSeek):**
+- the TASK-182 exact savings ON on Android;
+- single-queue present;
+- UMA phase 1;
+- UMA phase 2 (present direct, with pre-rotation);
+- then Spec II.
+
+Later: ADPF and big cores, FXAA at internal resolution, a 1080p output option, Snapdragon GSR.
 
 **Owner's later logs (normal mode, 2x):**
 - The title screen runs at 29 fps.
