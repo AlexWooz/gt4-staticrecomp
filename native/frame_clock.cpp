@@ -3,7 +3,13 @@
 #include <cstdio>
 #include <stdexcept>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+// clang-format off
+#include <windows.h>
 #include <timeapi.h>
+// clang-format on
 
 #pragma comment(lib, "winmm.lib")
 
@@ -31,6 +37,7 @@ FrameClock::FrameClock() {
     period_raised_ = true;
     std::fprintf(stderr, "[pacing] high-resolution waitable timer unavailable; using 1 ms Sleep\n");
   }
+  high_resolution_ = timer_ != nullptr;
 }
 
 FrameClock::~FrameClock() {

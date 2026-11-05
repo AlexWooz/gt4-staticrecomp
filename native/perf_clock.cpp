@@ -3,9 +3,13 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#ifdef _WIN32
 #include <intrin.h>
 #define NOMINMAX
 #include <windows.h>
+#elif defined(__x86_64__)
+#include <cpuid.h>
+#endif
 
 namespace gt4::perf {
 
@@ -26,6 +30,7 @@ std::uint64_t tsc_scale_from(std::uint64_t ticks, std::uint64_t counter_ticks, s
 
 namespace {
 
+#ifdef _WIN32
 bool invariant_tsc() noexcept {
   int registers[4]{};
   __cpuid(registers, static_cast<int>(0x80000000u));
@@ -50,6 +55,34 @@ std::uint64_t calibrate() noexcept {
   return tsc_scale_from(last - first, static_cast<std::uint64_t>(now.QuadPart - start.QuadPart),
                         static_cast<std::uint64_t>(hz.QuadPart));
 }
+#else
+// TASK-180: the same calibration on POSIX: the counter (TSC, or the arm64 generic timer) against CLOCK_MONOTONIC over 2 ms.
+bool invariant_counter() noexcept {
+#if defined(__x86_64__)
+  unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+  if (!__get_cpuid(0x80000000u, &eax, &ebx, &ecx, &edx) || eax < 0x80000007u) return false;
+  __get_cpuid(0x80000007u, &eax, &ebx, &ecx, &edx);
+  return (edx & (1u << 8)) != 0;
+#else
+  return gt4::platform::cycle_counter_is_generic_timer();
+#endif
+}
+
+std::uint64_t calibrate() noexcept {
+  const char *value = std::getenv("GT4_PERF_CLOCK");
+  if (value != nullptr && std::strcmp(value, "steady") == 0) return 0;
+  if (!invariant_counter()) return 0;
+  const auto start = std::chrono::steady_clock::now();
+  const std::uint64_t first = gt4::platform::cycle_counter();
+  auto now = start;
+  do {
+    now = std::chrono::steady_clock::now();
+  } while (now - start < std::chrono::milliseconds(2));
+  const std::uint64_t last = gt4::platform::cycle_counter();
+  const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(now - start).count();
+  return tsc_scale_from(last - first, static_cast<std::uint64_t>(nanoseconds), 1000000000u);
+}
+#endif
 
 } // namespace
 

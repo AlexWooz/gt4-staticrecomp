@@ -1,4 +1,4 @@
-// TASK-097: the entry point of the game executable.
+// TASK-097: the entry point of the game executable (Windows; TASK-180: Android starts in android_main.cpp).
 //
 // The pinned donor `main.cpp` (port slice200) is compiled unchanged with `main` renamed to `gt4_donor_main`
 // (native/CMakeLists.txt). This `main` decides how the game was started:
@@ -7,19 +7,12 @@
 //   - without one (a double click, or only `--` options): standalone mode. The game finds its files from its own folder,
 //     reads the launcher's config file, applies the built-in defaults and calls the donor main with the command line the
 //     launcher would have built. Rules and tests: standalone.hpp / standalone_fixture.cpp.
+// TASK-180: the explicit start and the game options are in game_start.cpp (shared with Android); the process helpers
+// (environment, executable path, error box) go through native/platform/platform.hpp.
 
-#include "camera_360.hpp"
-#include "controls.hpp"
-#include "fov_adjust.hpp"
-#include "trigger_range.hpp"
-#include "frame_skip.hpp"
+#include "game_start.hpp"
+#include "platform/platform.hpp"
 #include "standalone.hpp"
-#include "window.hpp"
-
-#ifdef GT4_GS_STREAM_CLIENT
-#include "gs_stream/gs_stream_client.hpp"
-#include "ps2/memory.hpp"
-#endif
 
 #include <windows.h>
 
@@ -37,8 +30,6 @@
 #include <string>
 #include <vector>
 
-int gt4_donor_main(int argc, char **argv);
-
 #ifdef GT4_HW_SHADER_PREPARE
 namespace gt4::hw {
 int prepare_shaders_main();  // IN-507: hw_gs/hw_gs_prepare.cpp
@@ -52,35 +43,8 @@ namespace sa = gt4::standalone;
 constexpr int kExitProblem = 3;      // a missing piece: a message was shown
 constexpr int kExitAlreadyRunning = 4;
 
-// TASK-161: one switch drives both sides of the full trigger range: the game's pedal scale (the translated statements read
-// gt4::trigger_range) and the controls' trigger ranges (the whole byte with it on, 45 and 84 with it off), set before any
-// pad is read, so the launcher and a direct start cannot disagree.
-void configure_trigger_range() {
-  gt4::trigger_range::configure_from_environment();
-  gt4::controls::set_pressure_scale(gt4::trigger_range::enabled() ? gt4::controls::PressureScale::full
-                                                                  : gt4::controls::PressureScale::stock);
-}
-
-std::wstring widen(const std::string &text) {
-  if (text.empty()) return {};
-  const int length = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-  std::wstring out(static_cast<std::size_t>(length), L'\0');
-  MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), out.data(), length);
-  return out;
-}
-
-void show_message(const std::string &title, const std::string &text) {
-  // Test knob: GT4_STANDALONE_MESSAGE_FILE=<path> writes the text there instead of opening a message box (headless checks).
-  char *file = nullptr;
-  std::size_t length = 0;
-  if (_dupenv_s(&file, &length, "GT4_STANDALONE_MESSAGE_FILE") == 0 && file != nullptr && *file != '\0') {
-    std::ofstream(file, std::ios::binary) << title << "\n" << text << "\n";
-    std::free(file);
-    return;
-  }
-  std::free(file);
-  MessageBoxW(nullptr, widen(text).c_str(), widen(title).c_str(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
-}
+// The player's error box (GT4_STANDALONE_MESSAGE_FILE writes it to a file instead, for headless checks).
+void show_message(const std::string &title, const std::string &text) { gt4::platform::show_error(title, text); }
 
 std::optional<std::string> sha256_of_file(const std::filesystem::path &path) {
   std::ifstream file(path, std::ios::binary);
@@ -157,12 +121,7 @@ sa::Access real_access() {
     return std::filesystem::path(shorter);
   };
   access.environment = [](const std::string &name) -> std::optional<std::string> {
-    char *value = nullptr;
-    std::size_t length = 0;
-    if (_dupenv_s(&value, &length, name.c_str()) != 0 || value == nullptr) return std::nullopt;
-    std::string text(value);
-    std::free(value);
-    return text;
+    return gt4::platform::environment(name.c_str());
   };
   return access;
 }
@@ -213,11 +172,9 @@ void prune_sessions(const std::filesystem::path &sessions) {
 }
 
 int run_standalone(int argc, char **argv) {
-  _putenv_s("GT4_DIRECT_START", "1");  // the GS client's message says where the renderer is chosen: no launcher will store it
+  gt4::platform::set_environment("GT4_DIRECT_START", "1");  // the GS client's message says where the renderer is chosen: no launcher will store it
   const sa::Access access = real_access();
-  wchar_t module[32768];
-  const DWORD length = GetModuleFileNameW(nullptr, module, static_cast<DWORD>(std::size(module)));
-  const std::filesystem::path executable = length > 0 && length < std::size(module) ? std::filesystem::path(module) : std::filesystem::path();
+  const std::filesystem::path executable = gt4::platform::executable_path();
 
   sa::Check why;
   const std::optional<sa::Layout> layout =
@@ -270,7 +227,7 @@ int run_standalone(int argc, char **argv) {
   std::fprintf(stderr, "[standalone] data %s, user %s\n", layout->data_root.string().c_str(), layout->user_root.string().c_str());
   for (const std::string &note : config_notes) std::fprintf(stderr, "[standalone] %s\n", note.c_str());
   for (const auto &[name, value] : resolved.set) {
-    _putenv_s(name.c_str(), value.c_str());
+    gt4::platform::set_environment(name.c_str(), value.c_str());
     std::fprintf(stderr, "[standalone] %s=%s\n", name.c_str(), value.c_str());
   }
 
@@ -280,9 +237,7 @@ int run_standalone(int argc, char **argv) {
   std::vector<char *> pointers;
   for (std::string &argument : storage) pointers.push_back(argument.data());
   pointers.push_back(nullptr);
-  gt4::camera360::configure_from_environment();  // TASK-159: game.ini camera_360 arrives here as GT4_CAMERA_360
-  gt4::fov_adjust::configure_from_environment();  // TASK-160: game.ini fov_adjust arrives here as GT4_FOV_ADJUST
-  configure_trigger_range();                       // TASK-161: game.ini trigger_full_range as GT4_TRIGGER_FULL_RANGE
+  gt4::start::configure_game_options();  // TASK-159/160/161: game.ini camera_360, fov_adjust, trigger_full_range
   return gt4_donor_main(static_cast<int>(storage.size()), pointers.data());
 }
 
@@ -292,23 +247,8 @@ int main(int argc, char **argv) {
 #ifdef GT4_HW_SHADER_PREPARE
   if (argc == 2 && std::string(argv[1]) == "--prepare-shaders") return gt4::hw::prepare_shaders_main();
 #endif
-#ifdef GT4_GS_STREAM_CLIENT
-  // TASK-116 step 0 (P0 gate): the guest RAM window that turns a READ_FIFO host pointer into an EE address in the
-  // GT4_GS_READBACK_LOG lines (native/gs_stream/gs_readback_probe.hpp). Nothing happens when the switch is unset.
-  gt4::gs_stream::set_guest_ram(ps2::g_ram, ps2::kRamSize);
-#endif
-  if (!sa::is_standalone_start(argc, argv)) {
-    // IN-520: the window sets up the recording and replay files itself; a headless run replays here.
-    bool window = false;
-    for (int i = 1; i < argc; ++i) {
-      window = window || std::strcmp(argv[i], "--window") == 0 || std::strcmp(argv[i], "--fullscreen") == 0;
-    }
-    gt4::frame_skip::start_from_environment();
-    gt4::camera360::configure_from_environment();  // TASK-159: an invalid GT4_CAMERA_360 stops the start here
-    gt4::fov_adjust::configure_from_environment();  // TASK-160: an invalid GT4_FOV_ADJUST stops the start here
-    configure_trigger_range();                       // TASK-161: an invalid GT4_TRIGGER_FULL_RANGE stops the start here
-    if (!window && !install_input_replay_without_window()) return 1;
-    return gt4_donor_main(argc, argv);
-  }
+  // TASK-116 step 0 (P0 gate): the guest RAM window of the GT4_GS_READBACK_LOG lines (native/gs_stream/gs_readback_probe.hpp).
+  gt4::start::note_guest_ram();
+  if (!sa::is_standalone_start(argc, argv)) return gt4::start::run_explicit(argc, argv);
   return run_standalone(argc, argv);
 }

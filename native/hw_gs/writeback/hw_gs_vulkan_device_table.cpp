@@ -2,6 +2,10 @@
 // Written from the Vulkan specification, clean room (decision 0069). See the header for the naming rule.
 #include "hw_gs_vulkan_device_table.hpp"
 
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+
 namespace gt4::hw::vulkan_device {
 namespace {
 
@@ -15,12 +19,22 @@ void resolve(Pointer &slot, PFN_vkGetInstanceProcAddr proc, VkInstance instance,
 } // namespace
 
 bool load_device_entry_points(VkInstance instance, std::vector<std::string> &missing) {
+#ifdef _WIN32
   HMODULE library = GetModuleHandleW(L"vulkan-1.dll");
   if (!library) {
     missing.push_back("vulkan-1.dll (not loaded)");
     return false;
   }
   auto proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(library, "vkGetInstanceProcAddr"));
+#else
+  // TASK-180: libvulkan.so is already open (hw_gs_vulkan_loader.cpp); RTLD_NOLOAD only returns that handle.
+  void *library = dlopen("libvulkan.so", RTLD_NOW | RTLD_NOLOAD);
+  if (!library) {
+    missing.push_back("libvulkan.so (not loaded)");
+    return false;
+  }
+  auto proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(library, "vkGetInstanceProcAddr"));
+#endif
   if (!proc) {
     missing.push_back("vkGetInstanceProcAddr");
     return false;

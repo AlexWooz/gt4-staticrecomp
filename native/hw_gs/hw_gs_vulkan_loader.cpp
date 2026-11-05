@@ -6,6 +6,10 @@
 
 #include <cstring>
 
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
+
 namespace gt4::hw::vulkan_loader {
 namespace {
 
@@ -22,8 +26,17 @@ void resolve(Pointer &slot, VkInstance instance, const char *name, std::vector<s
 
 PFN_vkVoidFunction instance_proc(VkInstance instance, const char *name) { return get_instance_proc(instance, name); }
 
+const char *platform_surface_extension() {
+#ifdef _WIN32
+  return VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
+#else
+  return VK_KHR_ANDROID_SURFACE_EXTENSION_NAME;
+#endif
+}
+
 bool load_loader(std::string &error) {
   if (get_instance_proc) return true;
+#ifdef _WIN32
   HMODULE library = LoadLibraryExW(L"vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (!library) {
     error = "vulkan-1.dll could not be loaded";
@@ -35,6 +48,19 @@ bool load_loader(std::string &error) {
     error = "vulkan-1.dll lacks vkGetInstanceProcAddr";
     return false;
   }
+#else
+  // TASK-180: the system loader of Android (always present on Vulkan devices, API 24 and later).
+  void *library = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+  if (!library) {
+    error = std::string("libvulkan.so could not be loaded: ") + dlerror();
+    return false;
+  }
+  get_instance_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(library, "vkGetInstanceProcAddr"));
+  if (!get_instance_proc) {
+    error = "libvulkan.so lacks vkGetInstanceProcAddr";
+    return false;
+  }
+#endif
   gt4_hw_vkCreateInstance = reinterpret_cast<PFN_vkCreateInstance>(
       get_instance_proc(nullptr, "vkCreateInstance"));
   if (!gt4_hw_vkCreateInstance) {
@@ -80,7 +106,11 @@ void resolve_headless(VkInstance instance, std::vector<std::string> &missing) {
 void resolve_surface(VkInstance instance, std::vector<std::string> &missing) {
   resolve(gt4_hw_vkAcquireNextImageKHR, instance, "vkAcquireNextImageKHR", missing);
   resolve(gt4_hw_vkCreateSwapchainKHR, instance, "vkCreateSwapchainKHR", missing);
+#ifdef _WIN32
   resolve(gt4_hw_vkCreateWin32SurfaceKHR, instance, "vkCreateWin32SurfaceKHR", missing);
+#else
+  resolve(gt4_hw_vkCreateAndroidSurfaceKHR, instance, "vkCreateAndroidSurfaceKHR", missing);
+#endif
   resolve(gt4_hw_vkDestroySurfaceKHR, instance, "vkDestroySurfaceKHR", missing);
   resolve(gt4_hw_vkDestroySwapchainKHR, instance, "vkDestroySwapchainKHR", missing);
   resolve(gt4_hw_vkGetPhysicalDeviceSurfaceCapabilitiesKHR, instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", missing);

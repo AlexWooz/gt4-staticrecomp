@@ -9,7 +9,6 @@
 #include <map>
 #include <bit>
 #include <chrono>
-#include <intrin.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +21,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "../../platform/cycle_counter.hpp"
 #include "core2_depth_alias.hpp"
 #include "core2_gpu.hpp"
 #include "core2_replace.hpp"
@@ -395,11 +395,11 @@ struct PhaseClock {
 double MicrosecondsPerTick() {
     static const double value = [] {
         const auto start = std::chrono::steady_clock::now();
-        const std::uint64_t startTicks = __rdtsc();
+        const std::uint64_t startTicks = gt4::platform::cycle_counter();
         while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(2)) {
         }
         const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
-        return us / static_cast<double>(__rdtsc() - startTicks);
+        return us / static_cast<double>(gt4::platform::cycle_counter() - startTicks);
     }();
     return value;
 }
@@ -416,7 +416,7 @@ public:
     ScopedUs(PhaseClock &clock, double PhaseTimes::*field)
         : clock_(clock), field_(field), parent_(clock.open), start_(0), stopped_(!PhaseTimingOn()) {
         if (stopped_) return;
-        start_ = __rdtsc();
+        start_ = gt4::platform::cycle_counter();
         clock.open = this;
     }
     ~ScopedUs() { Stop(); }
@@ -424,7 +424,7 @@ public:
     void Stop() {
         if (stopped_) return;
         stopped_ = true;
-        const double us = static_cast<double>(__rdtsc() - start_) * MicrosecondsPerTick();
+        const double us = static_cast<double>(gt4::platform::cycle_counter() - start_) * MicrosecondsPerTick();
         clock_.inclusive.*field_ += us;
         clock_.exclusive.*field_ += us - children_;
         if (parent_) parent_->children_ += us;
@@ -3514,7 +3514,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     void StartTextureReplacement() {
         // Read as Windows holds them: in the narrow form an accented folder is in the ANSI code page, not UTF-8.
+#ifdef _WIN32
         const wchar_t *root = _wgetenv(L"GT4_HW_TEXTURES");
+#else
+        const char *root = std::getenv("GT4_HW_TEXTURES");  // TASK-180: UTF-8 paths outside Windows
+#endif
         const char *dump = std::getenv("GT4_HW_DUMP_TEXTURES");
         textureDumps_ = dump != nullptr && std::strcmp(dump, "0") != 0;
         replacementSync_ = std::getenv("GT4_HW_TEXTURES_SYNC") != nullptr;
@@ -3534,7 +3538,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             stats.replacementFiles = report.filesRegistered;
         }
         if (textureDumps_) {
+#ifdef _WIN32
             const wchar_t *dumpDir = _wgetenv(L"GT4_HW_TEXTURE_DUMP_DIR");
+#else
+            const char *dumpDir = std::getenv("GT4_HW_TEXTURE_DUMP_DIR");
+#endif
             textureDumpDir_ = dumpDir != nullptr ? std::filesystem::path(dumpDir)
                                                  : (folder.empty() ? std::filesystem::path("TextureDumps")
                                                                    : folder.parent_path() / "TextureDumps");

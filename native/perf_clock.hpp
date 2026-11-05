@@ -7,6 +7,8 @@
 
 #include <cstdint>
 
+#include "platform/cycle_counter.hpp"
+
 namespace gt4::perf {
 
 // Microseconds in 0.64 fixed point per TSC tick; 0 when the TSC is not used. Set once, by the calibration during static
@@ -24,7 +26,7 @@ inline std::uint64_t wall_us_from_ticks(std::uint64_t ticks, std::uint64_t us_pe
 
 inline std::uint64_t scope_wall_us() noexcept {
   if (g_tsc_us_per_tick == 0) return steady_wall_us();
-  const std::uint64_t now = wall_us_from_ticks(__builtin_ia32_rdtsc(), g_tsc_us_per_tick);
+  const std::uint64_t now = wall_us_from_ticks(gt4::platform::cycle_counter(), g_tsc_us_per_tick);
   if (now < t_last_wall_us) return t_last_wall_us;
   t_last_wall_us = now;
   return now;

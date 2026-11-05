@@ -70,6 +70,35 @@ message box, process info. The Win32 code moves behind it unchanged. Remove the 
 `core2_upload.cpp:7,178-230` (add the scalar form, keep SSE2 on x86). **Gate: Windows byte-identical** (CTest, Python,
 frame dumps, recorded-drive identity).
 
+**Done in TASK-180 (2026-11-04, branch `task/180-android-emulator`), for Android first:**
+- `native/platform/platform.hpp`: monotonic milliseconds, environment (narrow and path), set environment, executable
+  path, thread and process CPU time, the player's error box; `platform_win32.cpp` is the exact calls the Windows build
+  made, `platform_posix.cpp` the POSIX form (SDL3 message box, logcat on Android). `cycle_counter.hpp`: RDTSC on x86-64
+  (what `__rdtsc` compiled to), CNTVCT on arm64.
+- The larger seams keep their own headers: `window.hpp` (Win32 host `window.cpp` unchanged; SDL3 host `window_sdl.cpp`),
+  `host_io.hpp` (XInput and WinMM guarded by `_WIN32`; SDL3 pads shared; SDL3 audio `audio_sdl.cpp` with the same
+  paced ring and rate control), `frame_clock.hpp` (`frame_clock.cpp` Win32, `frame_clock_posix.cpp`), the explicit start
+  `game_start.cpp` (shared by `game_main.cpp` and `android_main.cpp`).
+- `gs_stream_client.cpp`: the GSdx process path and capture files compile on Windows only; elsewhere the client is the
+  in-process CoreGS 2.0 sink. `gpu_unavailable.cpp` stands in for CoreGS 1.1 (Win32-only presenter) outside Windows.
+- CoreGS 2.0 (`native/hw_gs`, minimal): the loader opens `libvulkan.so` and creates an Android surface; `_wgetenv` paths,
+  `__rdtsc`, the frametime timer and the profile CPU clocks have POSIX branches; POSIX forms of the HUD glyph/system
+  sampler and of the CPU sampler are new files.
+- Every Windows change is either a new file or a `#ifdef _WIN32` branch around the unchanged Win32 text; the few call
+  sites that now go through the layer call the same Win32 function. Gate (2026-11-05): `build/t180-v200` CTest 301/301
+  (`hw_replace_q07_pcsx2_dumps` excluded; `native_platform` is the new control); `gates6.sh` t180 against the rc14 PGO
+  builds: the three Spec II recordings identical (race clock, 212,992-byte state, frames), the v2.00 night race 3x
+  (state, clock, 10 of 10 frames), the Arcade path 3x (14 of 14), the Spec II lap 6x (12 of 12), VU1/VU0 verify 0
+  mismatches, MTVU verify 0 mismatches: `wrong=0`.
+
+Still open in L0: the window glue shared by `window.cpp` and `window_sdl.cpp` (pacing release, input files) should move
+to one file once a windowed Windows run can be checked; RetroAchievements (WinHTTP, GDI+); the GS stream IPC; the
+`core2_upload.cpp` SSE2 scalar form (arm64); the IOP `strtol` clamp (donor `iop/libs.cpp`, needs a capsule).
+
+**Found by the NDK build:** the pinned runtime capsule's VU report-period lambdas mix `unsigned long long` and
+`std::uint64_t` returns, which only LLP64 accepts; the Android build compiles a configure-time copy with one cast (the
+next capsule should carry it from `scripts/vu1_aot_overlay.inc` and the VU0 overlay).
+
 ### L1. Linux build, headless
 
 - CMake accepts Linux + clang++; the EE translator (`tools/ee_producer`) builds on Linux; check that it emits byte-identical

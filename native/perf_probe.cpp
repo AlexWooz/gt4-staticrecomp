@@ -16,8 +16,12 @@ __attribute__((weak)) void vu0_aot_report(std::FILE *) {}  // strong definition:
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <time.h>  // TASK-180: CLOCK_THREAD_CPUTIME_ID
+#endif
 
 namespace gt4::perf {
 namespace {
@@ -27,7 +31,24 @@ Probe::MtvuReset g_mtvu_reset = nullptr;
 Probe::MtvuReport g_gs_ipc_report = nullptr;
 Probe::MtvuReset g_gs_ipc_reset = nullptr;
 std::uint64_t wall_us() { return scope_wall_us(); }
+#ifndef _WIN32
+// TASK-180: the value of an environment variable, at most `size` - 1 characters, as GetEnvironmentVariableA gives it
+// (the length copied; 0 when unset; the needed size when it does not fit).
+unsigned long environment_value(const char *name, char *value, unsigned long size) {
+  const char *text = std::getenv(name);
+  if (text == nullptr) return 0;
+  const std::size_t length = std::strlen(text);
+  if (length + 1 > size) return static_cast<unsigned long>(length + 1);
+  std::memcpy(value, text, length + 1);
+  return static_cast<unsigned long>(length);
+}
+#endif
 std::uint64_t cpu_us() {
+#ifndef _WIN32
+  timespec value{};
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0) return UINT64_MAX;
+  return static_cast<std::uint64_t>(value.tv_sec) * 1000000u + static_cast<std::uint64_t>(value.tv_nsec) / 1000u;
+#else
   FILETIME created{}, exited{}, kernel{}, user{};
   if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user))
     return UINT64_MAX;
@@ -36,6 +57,7 @@ std::uint64_t cpu_us() {
   };
   // Divide before adding: FILETIME units are 100ns, not guest cycles.
   return ticks(kernel) / 10 + ticks(user) / 10;
+#endif
 }
 constexpr const char *names[] = {
     "ee_dispatch", "vu_interpret", "iop_run", "vif_gif", "gs_host_copy",
@@ -65,7 +87,11 @@ FrameCounters g_frame_counters;
 bool counters_enabled() {
   static const bool enabled = [] {
     char value[8]{};
+#ifdef _WIN32
     const DWORD length = GetEnvironmentVariableA("GT4_PERF_COUNTERS", value, sizeof value);
+#else
+    const unsigned long length = environment_value("GT4_PERF_COUNTERS", value, sizeof value);
+#endif
     return !(length == 1 && value[0] == '0');
   }();
   return enabled;
@@ -118,11 +144,20 @@ Probe &Probe::shared() {
 #endif
   static Probe probe({wall_us, cpu_us}, [] {
     char value[8]{};
+#ifdef _WIN32
     if (GetEnvironmentVariableA("GT4_PERF", value, sizeof value) == 1 && value[0] == '1')
       return true;
+#else
+    if (environment_value("GT4_PERF", value, sizeof value) == 1 && value[0] == '1')
+      return true;
+#endif
     // TASK-011 step 3: GT4_MTVU_REPORT_EVERY (headless [mtvu] report) turns the accounting on; "0" or unset does not.
     char every[32]{};
+#ifdef _WIN32
     const DWORD length = GetEnvironmentVariableA("GT4_MTVU_REPORT_EVERY", every, sizeof every);
+#else
+    const unsigned long length = environment_value("GT4_MTVU_REPORT_EVERY", every, sizeof every);
+#endif
     return length > 0 && !(length == 1 && every[0] == '0');
   }(), stderr, detailed, split_vu);
   return probe;

@@ -1,6 +1,10 @@
 #include "install_paths.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/platform.hpp"  // TASK-180: the loaded game library's folder on Android
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -20,10 +24,14 @@ std::string narrow(const std::filesystem::path &path) { return path.string(); }
 } // namespace
 
 std::filesystem::path executable_directory() {
+#ifdef _WIN32
   wchar_t path[32768];
   const DWORD length = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
   if (length == 0 || length >= std::size(path)) return {};
   return std::filesystem::path(path).parent_path();
+#else
+  return gt4::platform::executable_path().parent_path();
+#endif
 }
 
 std::filesystem::path choose_shader_directory(const std::filesystem::path &build_time_directory) {

@@ -11,12 +11,22 @@
 // the HWR backend refers to the global Vulkan names any more.
 //
 // Include this header only from translation units that implement the backend (native/hw_gs/*.cpp).
+//
+// TASK-180: the presentation surface is the platform's own: VK_KHR_win32_surface on Windows (an HWND),
+// VK_KHR_android_surface on Android (an ANativeWindow, from the SDL3 window). The loader library is vulkan-1.dll on
+// Windows and libvulkan.so on Android. Everything else is the same on every platform.
 #pragma once
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #define VK_USE_PLATFORM_WIN32_KHR
+#elif defined(__ANDROID__)
+#define VK_USE_PLATFORM_ANDROID_KHR
+#else
+#error "hw_gs_vulkan_loader.hpp: no Vulkan surface platform for this target yet (Linux: TASK-074 L2)"
+#endif
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
@@ -35,7 +45,11 @@
 #define vkCreateInstance gt4_hw_vkCreateInstance
 #define vkCreateSemaphore gt4_hw_vkCreateSemaphore
 #define vkCreateSwapchainKHR gt4_hw_vkCreateSwapchainKHR
+#ifdef _WIN32
 #define vkCreateWin32SurfaceKHR gt4_hw_vkCreateWin32SurfaceKHR
+#else
+#define vkCreateAndroidSurfaceKHR gt4_hw_vkCreateAndroidSurfaceKHR
+#endif
 #define vkDestroyCommandPool gt4_hw_vkDestroyCommandPool
 #define vkDestroyDevice gt4_hw_vkDestroyDevice
 #define vkDestroyFence gt4_hw_vkDestroyFence
@@ -74,7 +88,11 @@ inline PFN_vkCreateFence gt4_hw_vkCreateFence = nullptr;
 inline PFN_vkCreateInstance gt4_hw_vkCreateInstance = nullptr;
 inline PFN_vkCreateSemaphore gt4_hw_vkCreateSemaphore = nullptr;
 inline PFN_vkCreateSwapchainKHR gt4_hw_vkCreateSwapchainKHR = nullptr;
+#ifdef _WIN32
 inline PFN_vkCreateWin32SurfaceKHR gt4_hw_vkCreateWin32SurfaceKHR = nullptr;
+#else
+inline PFN_vkCreateAndroidSurfaceKHR gt4_hw_vkCreateAndroidSurfaceKHR = nullptr;
+#endif
 inline PFN_vkDestroyCommandPool gt4_hw_vkDestroyCommandPool = nullptr;
 inline PFN_vkDestroyDevice gt4_hw_vkDestroyDevice = nullptr;
 inline PFN_vkDestroyFence gt4_hw_vkDestroyFence = nullptr;
@@ -104,8 +122,12 @@ inline PFN_vkWaitForFences gt4_hw_vkWaitForFences = nullptr;
 
 namespace gt4::hw::vulkan_loader {
 
-// Loads vulkan-1.dll and vkGetInstanceProcAddr, then vkCreateInstance. False with `error` on failure.
+// Loads vulkan-1.dll (libvulkan.so on Android) and vkGetInstanceProcAddr, then vkCreateInstance. False with `error` on
+// failure.
 bool load_loader(std::string &error);
+
+// The instance extension that creates this platform's presentation surface (VK_KHR_win32_surface, VK_KHR_android_surface).
+const char *platform_surface_extension();
 
 // Fills every instance-level pointer for `instance`. Names the entry points that did not resolve.
 bool load_instance_entry_points(VkInstance instance, std::vector<std::string> &missing);

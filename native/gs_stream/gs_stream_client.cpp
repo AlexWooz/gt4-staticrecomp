@@ -3,17 +3,29 @@
 #include "gs_stream_client.hpp"
 #include "gs_stream_sink.hpp"
 
+// TASK-180: the GS process path (GT4_RENDERER=pcsx2, gt4-gs.exe over shared memory) and the stream capture files exist
+// only on Windows. Elsewhere the client is the in-process CoreGS 2.0 sink alone (GT4_RENDERER=hw).
+#ifdef _WIN32
+#define GT4_GS_STREAM_PROCESS 1
+#endif
+
+#ifdef GT4_GS_STREAM_PROCESS
 #include "gs_readback_probe.hpp"
 #include "gs_stream_file.hpp"
 #include "gs_stream_ipc.hpp"
+#endif
 #include "perf_probe.hpp"
 #include "../install_paths.hpp"
 #include "../display_aspect.hpp"
 
+#ifdef GT4_GS_STREAM_PROCESS
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <bcrypt.h>
+#else
+#include "../platform/platform.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -28,7 +40,9 @@
 #include <string>
 #include <vector>
 
+#ifdef GT4_GS_STREAM_PROCESS
 #pragma comment(lib, "bcrypt.lib")
+#endif
 
 namespace gt4::gs_stream {
 namespace {
@@ -39,7 +53,9 @@ bool g_pending_vsync = false;
 bool g_has_pending_vsync = false;
 
 namespace proto = ::gs_stream;
+#ifdef GT4_GS_STREAM_PROCESS
 namespace ipc = ::gs_stream::ipc;
+#endif
 using proto::RecordType;
 
 // The serial the producer announces in the control block and in stream files. The consumer uses it only to select
@@ -101,6 +117,7 @@ std::uint32_t g_guest_ram_size = 0;
 // TASK-116 step 1: the MTVU journal services of the local flare answer (set_readback_journal).
 ReadbackJournal g_readback_journal{};
 
+#ifdef GT4_GS_STREAM_PROCESS
 // CPU time of the calling thread in microseconds (UINT64_MAX when unavailable).
 std::uint64_t thread_cpu_us() {
   FILETIME created{}, exited{}, kernel{}, user{};
@@ -119,11 +136,13 @@ std::uint64_t elapsed_ns(LARGE_INTEGER from, LARGE_INTEGER to) {
   const std::uint64_t ticks = static_cast<std::uint64_t>(to.QuadPart - from.QuadPart);
   return ticks / frequency * 1000000000ull + ticks % frequency * 1000000000ull / frequency;
 }
+#endif
 
 constexpr const char *kPrivilegedNames[kPrivilegedRegisterSlots] = {
     "PMODE", "SMODE1", "SMODE2", "SRFSH", "SYNCH1", "SYNCH2", "SYNCV", "DISPFB1", "DISPLAY1", "DISPFB2",
     "DISPLAY2", "EXTBUF", "EXTDATA", "EXTWRITE", "BGCOLOR", "CSR", "IMR", "BUSDIR", "SIGLBLID", "other"};
 
+#ifdef GT4_GS_STREAM_PROCESS
 // A visible top-level window of this process (the game window exists before the GS process starts), or null.
 HWND visible_game_window() {
   struct Search {
@@ -173,6 +192,16 @@ void offer_restart(HWND window, const std::wstring &what) {
     offer_restart(window, L"The GS renderer (gt4-gs.exe) could not start:\n" + wide_text(message) + L".");
   std::exit(EXIT_FAILURE);
 }
+#else
+[[noreturn]] void refuse(const std::string &message) {
+  std::fprintf(stderr, "[gs-ipc] %s; refusing to start\n", message.c_str());
+  std::fflush(stderr);
+  gt4::platform::show_error("GT4Recomp: GS renderer", "The renderer could not start:\n" + message + ".");
+  std::exit(EXIT_FAILURE);
+}
+#endif
+
+#ifdef GT4_GS_STREAM_PROCESS
 
 std::uint32_t environment_number(const char *name, std::uint32_t fallback, std::uint32_t low, std::uint32_t high) {
   const char *value = std::getenv(name);
@@ -1089,11 +1118,37 @@ class Client {
   std::uint64_t osd_last_vsync_us_ = 0, osd_max_frame_us_ = 0;
   std::uint64_t osd_records_ = 0, osd_ticks_ = 0, osd_tick_ns_total_ = 0, osd_post_ns_total_ = 0, osd_post_ns_max_ = 0;
 };
+#else
+// TASK-180: no GS process and no capture files on this platform. client() never creates one (parse_renderer refuses
+// pcsx2, start() refuses a capture); the members only keep the hooks below compiling, and do nothing.
+class Client {
+ public:
+  explicit Client(Renderer) {}
+  void start() { refuse("GT4_GS_CAPTURE (GS stream capture files) is available on Windows only"); }
+  bool stream() const { return false; }
+  void gif(int, const std::uint8_t *, std::uint32_t) {}
+  void privileged(std::uint32_t, std::uint64_t) {}
+  void post_privileged(std::uint32_t, std::uint64_t) {}
+  bool local_active() const { return false; }
+  void post_queued_readback(std::uint32_t) {}
+  bool read_fifo(std::uint8_t *, std::uint32_t) { return false; }
+  void vsync(bool) {}
+  void reset(proto::ResetKind, std::uint32_t) {}
+  void attach(std::uint64_t, std::uint32_t, std::uint32_t) {}
+  void request_resize(std::uint32_t, std::uint32_t) {}
+  void set_halt(void (*)(const char *)) {}
+  void finish(std::FILE *) {}
+};
+#endif
 
 Renderer parse_renderer() {
   const char *value = std::getenv("GT4_RENDERER");
   if (!value || std::strcmp(value, "donor") == 0) return Renderer::donor;
+#ifdef GT4_GS_STREAM_PROCESS
   if (std::strcmp(value, "pcsx2") == 0) return Renderer::pcsx2;
+#else
+  if (std::strcmp(value, "pcsx2") == 0) refuse("GT4_RENDERER=pcsx2 (GSdx, gt4-gs.exe) is available on Windows only");
+#endif
 #ifdef GT4_GS_STREAM_HW
   if (std::strcmp(value, "hw") == 0) return Renderer::hw;
   refuse(std::string("GT4_RENDERER=\"") + value + "\" is not donor, pcsx2 or hw");
@@ -1117,6 +1172,7 @@ Client *client() {
   return instance;
 }
 
+#ifdef GT4_GS_STREAM_PROCESS
 void Client::report_interval_hook(std::FILE *file, const gt4::perf::IntervalTime &interval, std::uint64_t frames) {
   if (Client *c = client()) c->report_interval(file, interval, frames);
 }
@@ -1148,6 +1204,7 @@ void Client::wait_end(ipc::Wake which) {
     c->wait_token_ = 0;
   }
 }
+#endif
 
 // SMODE1 fields (GS privileged register 0x12000010): LC bits 3-9, CMOD bits 13-14 (0 progressive, 2 NTSC, 3 PAL).
 // SMODE2 (0x12000020): INT bit 0, FFMD bit 1. Values written for each SetGsCrt request, as in the TASK-012 seam.
@@ -1156,6 +1213,7 @@ constexpr std::uint64_t kLcAnalog = 32, kLcHdtv = 22, kLcVga = 15;
 
 }  // namespace
 
+#ifdef GT4_GS_STREAM_PROCESS
 bool file_sha256(const std::wstring &path, std::string &hex, std::string &error) {
   HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
@@ -1193,6 +1251,7 @@ bool file_sha256(const std::wstring &path, std::string &hex, std::string &error)
   }
   return true;
 }
+#endif
 
 bool map_set_gs_crt(std::uint32_t interlace, std::uint32_t mode, std::uint32_t field, std::uint64_t &smode1,
                     std::uint64_t &smode2) {

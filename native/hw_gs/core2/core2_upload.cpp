@@ -4,7 +4,12 @@
 
 #include "core2_upload.hpp"
 
+// TASK-180 (Linux plan L0): SSE2 on x86-64 (every Windows build); a portable form of the same column store elsewhere
+// (arm64 Android), with the same bytes written and the same change bits.
+#if defined(__SSE2__) || defined(_M_X64)
+#define HW_CORE2_UPLOAD_SSE2 1
 #include <emmintrin.h>
+#endif
 
 #include <algorithm>
 #include <bit>
@@ -175,7 +180,11 @@ std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view,
                               std::uint64_t *changedBlocks) {
     constexpr std::uint32_t kPageWidth = 64, kPageHeight = 32;
     std::uint32_t diff = 0;
+#ifdef HW_CORE2_UPLOAD_SSE2
     __m128i changed = _mm_setzero_si128();
+#else
+    std::uint64_t changed = 0;
+#endif
     const std::uint32_t perRow = std::max<std::uint32_t>(1u, view.bufferWidth * 64u / kPageWidth);
     std::uint32_t row = 0;
     while (row < height) {
@@ -206,6 +215,23 @@ std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view,
             const std::uint32_t pageBlock = view.basePointer + memory::kBlocksPerPage * (pageRow + x / kPageWidth);
             std::uint8_t *page = memoryBytes + ((pageBlock * memory::kBlockBytes) & (memory::kLocalMemoryBytes - 1u));
             std::uint8_t *out = page + colBase[(x % kPageWidth) / 8u];
+#ifndef HW_CORE2_UPLOAD_SSE2
+            // The SSE2 form below as 64-bit words: the column holds a0 c0 a1 c1 b0 d0 b1 d1, where a/b are the two
+            // 16-byte halves of the even row's 8 pixels and c/d those of the odd row.
+            std::uint64_t in[8];
+            std::memcpy(&in[0], row0 + column * 4u, 32u);  // a0 a1 b0 b1
+            std::memcpy(&in[4], row1 + column * 4u, 32u);  // c0 c1 d0 d1
+            const std::uint64_t words[8] = {in[0], in[4], in[1], in[5], in[2], in[6], in[3], in[7]};
+            std::uint64_t old[8];
+            std::memcpy(old, out, sizeof old);
+            std::uint64_t diffs = 0;
+            for (int w = 0; w < 8; ++w) diffs |= old[w] ^ words[w];
+            changed |= diffs;
+            if (changedBlocks && diffs != 0) {
+                MarkBlocks(changedBlocks, pageBlock, 1u << (colBase[(x % kPageWidth) / 8u] >> 8));  // IN-453
+            }
+            std::memcpy(out, words, sizeof words);
+#else
             const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row0 + column * 4u));
             const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row0 + column * 4u + 16u));
             const __m128i c = _mm_loadu_si128(reinterpret_cast<const __m128i *>(row1 + column * 4u));
@@ -224,10 +250,15 @@ std::uint32_t HostToLocalCt32(std::uint8_t *memoryBytes, const BufferView &view,
             _mm_store_si128(o + 1, q1);
             _mm_store_si128(o + 2, q2);
             _mm_store_si128(o + 3, q3);
+#endif
         }
         row += 2;
     }
+#ifdef HW_CORE2_UPLOAD_SSE2
     if (_mm_movemask_epi8(_mm_cmpeq_epi8(changed, _mm_setzero_si128())) != 0xFFFF) diff |= 1u;
+#else
+    if (changed != 0) diff |= 1u;
+#endif
     return diff;
 }
 

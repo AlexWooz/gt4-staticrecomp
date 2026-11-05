@@ -1100,7 +1100,11 @@ struct Gpu::Impl {
 
   void open_shader_cache() {
     // Read as Windows holds it: in the narrow form an accented folder (C:\\Users\\Jo\u00e3o) is in the ANSI code page, not UTF-8.
+#ifdef _WIN32
     const wchar_t *folder = _wgetenv(L"GT4_HW_SHADER_CACHE");
+#else
+    const char *folder = std::getenv("GT4_HW_SHADER_CACHE");  // TASK-180: UTF-8 paths outside Windows
+#endif
     if (!folder || !*folder) return;
     std::error_code ignored;
     shaderCacheFolder = std::filesystem::path(folder);

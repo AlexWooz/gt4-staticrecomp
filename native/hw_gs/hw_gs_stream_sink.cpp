@@ -19,10 +19,15 @@
 #include "hw_gs_options.hpp"
 #include "mtvu_ring.hpp"
 
+#include "platform/cycle_counter.hpp"
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <intrin.h>
+#else
+#include <time.h>  // TASK-180: CLOCK_MONOTONIC and the CPU-time clocks of the profile lines
+#endif
 
 #include <algorithm>
 #include <array>
@@ -236,12 +241,22 @@ void print_flare_table() {
 void print_transport(double n) {
   constexpr int kValues = 25;
   static std::uint64_t lastTsc = 0;
+#ifdef _WIN32
   static LARGE_INTEGER lastQpc{};
+#else
+  static std::int64_t lastQpc = 0;  // TASK-180: CLOCK_MONOTONIC nanoseconds
+#endif
   static std::uint64_t last[kValues] = {};
-  const std::uint64_t tsc = __rdtsc();
+  const std::uint64_t tsc = gt4::platform::cycle_counter();
+#ifdef _WIN32
   LARGE_INTEGER qpc{}, frequency{};
   QueryPerformanceCounter(&qpc);
   QueryPerformanceFrequency(&frequency);
+#else
+  timespec monotonic{};
+  clock_gettime(CLOCK_MONOTONIC, &monotonic);
+  const std::int64_t qpc = static_cast<std::int64_t>(monotonic.tv_sec) * 1000000000 + monotonic.tv_nsec;
+#endif
   const TransportCounters &t = g_transport;
   const std::uint64_t values[kValues] = {
       t.gif_commands.load(), t.gif_bytes.load(), t.privileged_commands.load(), t.vsync_commands.load(),
@@ -252,7 +267,11 @@ void print_transport(double n) {
       t.wakeups.load(), t.max_depth.load(), t.mtvu_jobs.load(), t.mtvu_records.load(), t.mtvu_wait_ticks.load(),
       t.mtvu_sleeps.load()};
   if (lastTsc != 0 && tsc > lastTsc) {
+#ifdef _WIN32
     const double seconds = static_cast<double>(qpc.QuadPart - lastQpc.QuadPart) / static_cast<double>(frequency.QuadPart);
+#else
+    const double seconds = static_cast<double>(qpc - lastQpc) / 1e9;
+#endif
     const double msPerTick = seconds * 1000.0 / static_cast<double>(tsc - lastTsc);
     const auto d = [&](int i) { return static_cast<double>(values[i] - last[i]) / n; };
     const auto ms = [&](int i) { return d(i) * msPerTick; };
@@ -326,6 +345,7 @@ void maybe_profile(Backend &hw) {
     static double lastThreadMs = 0.0;
     static double lastProcessMs = 0.0;
     static bool primed = false;
+#ifdef _WIN32
     auto filetime_ms = [](const FILETIME &kernel, const FILETIME &user) {
       const auto ticks = [](const FILETIME &t) {
         return (static_cast<unsigned long long>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
@@ -336,6 +356,13 @@ void maybe_profile(Backend &hw) {
     double threadMs = 0.0, processMs = 0.0;
     if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) threadMs = filetime_ms(kernel, user);
     if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) processMs = filetime_ms(kernel, user);
+#else
+    const auto cpu_ms = [](clockid_t clock) {
+      timespec value{};
+      return clock_gettime(clock, &value) == 0 ? static_cast<double>(value.tv_sec) * 1000.0 + value.tv_nsec / 1e6 : 0.0;
+    };
+    const double threadMs = cpu_ms(CLOCK_THREAD_CPUTIME_ID), processMs = cpu_ms(CLOCK_PROCESS_CPUTIME_ID);
+#endif
     if (primed) {
       std::fprintf(stderr,
                    "[hw] cost vsync=%llu gs_thread_cpu_ms=%.2f process_cpu_core_ms=%.2f render_passes=%.1f "
@@ -522,12 +549,12 @@ public:
   void push(SinkRecord kind, std::uint8_t path, std::uint64_t value, const std::uint8_t *payload, std::size_t bytes) {
     if (kind == SinkRecord::Vsync) {
       if (queuedVsyncs_.load(std::memory_order_seq_cst) >= kFramesAhead) {
-        const std::uint64_t start = __rdtsc();
+        const std::uint64_t start = gt4::platform::cycle_counter();
         const auto waitStart = std::chrono::steady_clock::now();
         wait_for([this] { return queuedVsyncs_.load(std::memory_order_seq_cst) < kFramesAhead; }, kWantNothing);
         gt4::pacing::ee_gs_wait_us.fetch_add(
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - waitStart).count(), std::memory_order_relaxed);
-        add(g_transport.vsync_wait_ticks, __rdtsc() - start);
+        add(g_transport.vsync_wait_ticks, gt4::platform::cycle_counter() - start);
         add(g_transport.vsync_waits, 1);
       }
       gt4::pacing::gs_vsyncs_queued.store(static_cast<std::uint32_t>(queuedVsyncs_.fetch_add(1, std::memory_order_seq_cst) + 1),
@@ -590,10 +617,10 @@ public:
 
   // Waits until every queued record has executed; the caller then runs with the backend lock held.
   std::unique_lock<std::mutex> drain() {
-    const std::uint64_t start = __rdtsc();
+    const std::uint64_t start = gt4::platform::cycle_counter();
     if (ring_.head() != ring_.tail()) wait_for([this] { return ring_.head() == ring_.tail(); }, kWantEmpty);
     std::unique_lock<std::mutex> backend(backendMutex_);
-    add(g_transport.drain_wait_ticks, __rdtsc() - start);
+    add(g_transport.drain_wait_ticks, gt4::platform::cycle_counter() - start);
     add(g_transport.drains, 1);
     return backend;
   }
@@ -636,24 +663,24 @@ private:
       if (!ring_.try_peek(header, payload)) {
         const std::uint32_t seen = work_.snapshot();
         if (!ring_.try_peek(header, payload)) {
-          const std::uint64_t start = __rdtsc();
+          const std::uint64_t start = gt4::platform::cycle_counter();
           const auto idleStart = std::chrono::steady_clock::now();
           sleeping_.store(true, std::memory_order_relaxed);
           bool slept = false;
           work_.wait_changed(seen, slept);
           sleeping_.store(false, std::memory_order_relaxed);
           g_gs_idle += std::chrono::steady_clock::now() - idleStart;
-          add(g_transport.idle_ticks, __rdtsc() - start);
+          add(g_transport.idle_ticks, gt4::platform::cycle_counter() - start);
           if (slept) add(g_transport.wakeups, 1);
           continue;
         }
       }
       const SinkRecord kind = static_cast<SinkRecord>(header.kind);
-      const std::uint64_t busyStart = __rdtsc();
+      const std::uint64_t busyStart = gt4::platform::cycle_counter();
       if (kind == SinkRecord::MtvuJob) {
         // IN-461: the job's records, outside the backend lock while the worker waits for them.
         const std::uint64_t waited = execute_mtvu_job(header.job);
-        add(g_transport.busy_ticks[0], __rdtsc() - busyStart - waited);
+        add(g_transport.busy_ticks[0], gt4::platform::cycle_counter() - busyStart - waited);
         add(g_transport.mtvu_wait_ticks, waited);
         ring_.release();
         notify_progress(false);
@@ -689,7 +716,7 @@ private:
         }
       }
       const int slot = kind == SinkRecord::Gif ? 0 : kind == SinkRecord::Privileged ? 1 : kind == SinkRecord::Vsync ? 2 : 3;
-      add(g_transport.busy_ticks[slot], __rdtsc() - busyStart);
+      add(g_transport.busy_ticks[slot], gt4::platform::cycle_counter() - busyStart);
       ring_.release();
       const bool vsyncDone = kind == SinkRecord::Vsync;
       if (vsyncDone) {
@@ -712,10 +739,10 @@ private:
       if (!mtvuOutput_->try_peek(record, bytes)) {
         const std::uint32_t seen = mtvuBell_->snapshot();
         if (!mtvuOutput_->try_peek(record, bytes)) {
-          const std::uint64_t start = __rdtsc();
+          const std::uint64_t start = gt4::platform::cycle_counter();
           bool slept = false;
           mtvuBell_->wait_changed(seen, slept);
-          waited += __rdtsc() - start;
+          waited += gt4::platform::cycle_counter() - start;
           if (slept) add(g_transport.mtvu_sleeps, 1);
           continue;
         }
@@ -772,9 +799,9 @@ void gif(int path, const std::uint8_t *data, std::uint32_t qwc) {
     gif_now(path, data, bytes);
     return;
   }
-  const std::uint64_t start = __rdtsc();
+  const std::uint64_t start = gt4::platform::cycle_counter();
   g_worker->push(SinkRecord::Gif, static_cast<std::uint8_t>(path), 0, data, bytes);
-  const std::uint64_t ticks = __rdtsc() - start;
+  const std::uint64_t ticks = gt4::platform::cycle_counter() - start;
   add(g_transport.gif_ticks, ticks);
   add(g_transport.copy_ticks, ticks);  // the copy into the ring is the whole hook now
   add(g_transport.gif_commands, 1);
@@ -796,11 +823,11 @@ void privileged(std::uint32_t address, std::uint64_t value) {
     privileged_now(address, value);
     return;
   }
-  const std::uint64_t start = __rdtsc();
+  const std::uint64_t start = gt4::platform::cycle_counter();
   std::uint8_t payload[sizeof address];
   std::memcpy(payload, &address, sizeof address);
   g_worker->push(SinkRecord::Privileged, 0, value, payload, sizeof payload);
-  add(g_transport.privileged_ticks, __rdtsc() - start);
+  add(g_transport.privileged_ticks, gt4::platform::cycle_counter() - start);
   add(g_transport.privileged_commands, 1);
 }
 
@@ -875,13 +902,13 @@ void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
   }
   if (qwords == FlareTableReads::kQwords && flare_deadline_ms() > 0.0 && g_window_attached.load(std::memory_order_relaxed) &&
       g_ee_vblanks != 0) {
-    const std::uint64_t start = __rdtsc();
+    const std::uint64_t start = gt4::platform::cycle_counter();
     const auto startTime = std::chrono::steady_clock::now();
     const auto deadline = g_ee_last_vblank + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                                  std::chrono::duration<double, std::milli>(flare_deadline_ms()));
     const bool late = g_worker->read_flare_table(data, g_ee_vblanks, deadline);
     const auto endTime = std::chrono::steady_clock::now();
-    add(g_transport.read_fifo_ticks, __rdtsc() - start);
+    add(g_transport.read_fifo_ticks, gt4::platform::cycle_counter() - start);
     add(g_transport.read_fifos, 1);
     add(g_transport.flare_reads, 1);
     if (late) add(g_transport.flare_late, 1);
@@ -892,12 +919,12 @@ void read_fifo(std::uint8_t *data, std::uint32_t qwords) {
     g_flare_answer_ms = std::chrono::duration<double, std::milli>(endTime - g_ee_last_vblank).count();
     return;
   }
-  const std::uint64_t start = __rdtsc();
+  const std::uint64_t start = gt4::platform::cycle_counter();
   {
     const std::unique_lock<std::mutex> lock = g_worker->drain();  // the read observes everything queued before it
     read_fifo_now(data, qwords);
   }
-  add(g_transport.read_fifo_ticks, __rdtsc() - start);
+  add(g_transport.read_fifo_ticks, gt4::platform::cycle_counter() - start);
   add(g_transport.read_fifos, 1);
 }
 

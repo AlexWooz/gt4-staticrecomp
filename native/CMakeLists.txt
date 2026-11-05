@@ -875,8 +875,20 @@ target_include_directories(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/devel/SDL3-3.4.1
 target_link_libraries(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/${GT4_SDL3_IMPORT_LIB}")
 add_library(gt4_pad_mapping STATIC pad_mapping.cpp pad_choice.cpp input_recording.cpp)
 target_compile_options(gt4_pad_mapping PRIVATE /W4)
+# TASK-180 (Linux plan L0): the platform layer (native/platform/platform.hpp). Windows builds its Win32 form; the Android
+# build (android/native/CMakeLists.txt) builds platform_posix.cpp and the SDL3 host instead.
+add_library(gt4_platform STATIC platform/platform_win32.cpp)
+target_include_directories(gt4_platform PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_options(gt4_platform PRIVATE /W4)
+target_compile_definitions(gt4_platform PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_executable(platform_fixture platform/platform_fixture.cpp)
+target_link_libraries(platform_fixture PRIVATE gt4_platform)
+target_compile_options(platform_fixture PRIVATE /W4)
+target_compile_definitions(platform_fixture PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME native_platform COMMAND $<TARGET_FILE:platform_fixture>)
+set_tests_properties(native_platform PROPERTIES PASS_REGULAR_EXPRESSION "PASS: platform layer")
 add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp)
-target_link_libraries(native_host_io PUBLIC gt4_pad_mapping)
+target_link_libraries(native_host_io PUBLIC gt4_pad_mapping gt4_platform)
 if(GT4_PERF_RUNTIME_SOURCE)
     target_compile_definitions(native_host_io PRIVATE GT4_PERF_PROBE)
     target_link_libraries(native_host_io PUBLIC gt4_perf_probe)
@@ -933,7 +945,7 @@ endif()
 # unchanged with `main` renamed, and game_main.cpp calls it: with an ELF argument exactly as before, without one (a double click)
 # after the standalone rules of standalone.cpp built the command line and environment the launcher would have passed.
 set_source_files_properties("${PORT}/main.cpp" PROPERTIES COMPILE_DEFINITIONS "main=gt4_donor_main")
-add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.cpp ${GT4VULKAN_RESOURCES})
+add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp game_start.cpp standalone.cpp window.cpp ${GT4VULKAN_RESOURCES})
 # TASK-159: the host side of the call that scripts/camera360_units.py adds to the translated chase camera. An EE library built
 # from those units needs it; one built from the plain units leaves it unused.
 target_sources(gt4vulkan PRIVATE camera_360_hook.cpp fov_adjust_hook.cpp)

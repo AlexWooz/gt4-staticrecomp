@@ -1,4 +1,7 @@
 #pragma once
+// TASK-180: the Win32 pieces (XInput, WinMM waveOut) are compiled only on Windows. Other platforms use SDL3 for the
+// pads (the default backend everywhere) and for audio (audio_sdl.cpp), behind the same classes.
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -7,6 +10,7 @@
 #include <mmsystem.h>
 #include <Xinput.h>
 // clang-format on
+#endif
 
 #include "controls.hpp"
 #include "pacing.hpp"
@@ -26,12 +30,16 @@ struct SDL_Gamepad;
 // One standardized SDL3 gamepad reading, shared by live polling and the virtual-device fixture.
 gt4::pad::GamepadReading read_sdl_gamepad(SDL_Gamepad *gamepad);
 
+#ifdef _WIN32
 // Maps one XInput state through the binding table. The default-argument overload
 // uses controls::default_controls(), which equals the slice 157 mapping.
 PadState map_gamepad(const XINPUT_GAMEPAD &gamepad, const gt4::controls::ControlMap &map);
 PadState map_gamepad(const XINPUT_GAMEPAD &gamepad);
+#endif
 void merge_keyboard(PadState &pad, std::uint16_t buttons);
+#ifdef _WIN32
 XINPUT_VIBRATION map_rumble(std::uint16_t rumble);
+#endif
 
 // Player 1's pad. GT4_INPUT=sdl (default): SDL3 gamepad subsystem only, no SDL window; the first connected pad is
 // player 1, and hot-plug is polled. GT4_INPUT=xinput: the previous XInput path.
@@ -48,24 +56,29 @@ public:
   gt4::pad::Backend backend() const { return backend_; }
 
 private:
+#ifdef _WIN32
   PadState poll_xinput(bool focused);
-  PadState poll_sdl(bool focused);
   void rumble_xinput(std::uint16_t value);
+  void stop_xinput();
+#endif
+  PadState poll_sdl(bool focused);
   void rumble_sdl(std::uint16_t value);
   void close_sdl_pad();
 
   gt4::controls::ControlMap map_;
   gt4::pad::Backend backend_;
+#ifdef _WIN32
   DWORD slot_ = XUSER_MAX_COUNT;
   ULONGLONG next_scan_ = 0;
+#endif
   SDL_Gamepad *sdl_pad_ = nullptr;
-  ULONGLONG sdl_next_scan_ = 0;
+  std::uint64_t sdl_next_scan_ = 0;  // gt4::platform::monotonic_ms (GetTickCount64 on Windows)
   // TASK-148: the controller chosen in the launcher (GT4_PAD), and whether the open pad is it. While another pad stands in
   // for it, the scan keeps looking for it every two seconds.
   gt4::pad::PadChoice pad_choice_;
   bool has_pad_choice_ = false;
   bool reading_choice_ = false;
-  ULONGLONG rumble_sent_at_ = 0;
+  std::uint64_t rumble_sent_at_ = 0;
   bool sdl_initialized_ = false;
   std::uint16_t motors_ = 0;
 };
@@ -83,9 +96,11 @@ struct PacedAudioProfile {
   std::size_t target_frames;
 };
 PacedAudioProfile choose_paced_audio_profile(bool wine, const char *latency_ms);
-// True when the game runs under Wine (ntdll exports wine_get_version).
+// True when the game runs under Wine (ntdll exports wine_get_version); always false outside Windows.
 bool running_under_wine();
 
+// Windows: WinMM waveOut (host_io.cpp). Other platforms (TASK-180): an SDL3 audio stream (audio_sdl.cpp) with the same
+// two modes, the same ring, resampler and rate control, and the device queue counted in frames instead of buffers.
 class AudioOutput {
 public:
   // `mode` selects the blocking WinMM path (audio) or the non-blocking paced
@@ -119,6 +134,7 @@ public:
   void close(bool drain);
 
 private:
+#ifdef _WIN32
   static constexpr std::size_t max_frames_per_buffer = 512;
   static constexpr std::size_t max_buffers = 24;  // TASK-156: the Wine profile's buffer count
   struct Buffer {
@@ -157,4 +173,30 @@ private:
   bool submit();
   bool push_paced(const std::int16_t *samples, std::size_t frames);
   void submit_paced_block();
+#else
+  // TASK-180: SDL3 audio stream (audio_sdl.cpp). The device queue is the stream's queued bytes; blocks of
+  // frames_per_buffer_ frames move from the ring to it in paced mode, as the WinMM buffers do on Windows.
+  std::size_t frames_per_buffer_ = 512;
+  std::size_t target_latency_frames_ = gt4::pacing::target_latency_frames;
+  gt4::pacing::Mode mode_ = gt4::pacing::Mode::audio;
+  bool silent_ = false;
+  bool closed_ = false;
+  bool started_ = false;
+  gt4::pacing::FrameRing ring_{gt4::pacing::paced_ring_frames};
+  gt4::pacing::LinearResampler resampler_;
+  gt4::pacing::RateController controller_{
+      static_cast<double>(gt4::pacing::target_latency_frames),
+      1.0 / static_cast<double>(gt4::pacing::guest_vblank_rate)};
+  std::vector<std::int16_t> converted_;
+  std::vector<std::int16_t> block_;
+  struct SDL_AudioStream *stream_ = nullptr;
+  std::function<bool()> pump_messages_;
+  std::uint64_t received_ = 0, submitted_ = 0, completed_ = 0, canceled_ = 0;
+  std::uint64_t empty_queue_ = 0, waits_ = 0;
+  std::uint64_t underruns_ = 0, overflow_frames_ = 0;
+  std::size_t peak_ = 0;
+  std::size_t device_queued_frames() const;
+  bool push_paced(const std::int16_t *samples, std::size_t frames);
+  bool push_blocking(const std::int16_t *samples, std::size_t frames);
+#endif
 };

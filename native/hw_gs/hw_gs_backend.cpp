@@ -190,7 +190,11 @@ struct Backend::Impl {
 
   // On the frametime thread: when the presentation `id` reached the display, in the log's milliseconds; 0 when it did not
   // within half a second.
+#ifdef _WIN32
   double wait_until_shown(VkSwapchainKHR on, std::uint64_t id, HANDLE timer) {
+#else
+  double wait_until_shown(VkSwapchainKHR on, std::uint64_t id, void *timer) {  // TASK-180: no waitable timer here
+#endif
     VkPresentWait2InfoKHR info{VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR};
     info.presentId = id;
     info.timeout = 0;
@@ -203,6 +207,12 @@ struct Backend::Impl {
       }
       if (result == VK_SUCCESS) return frametime_now_ms();
       if (result != VK_TIMEOUT || std::chrono::steady_clock::now() >= deadline) return 0.0;
+#ifndef _WIN32
+      // TASK-180: POSIX sleeps are precise enough for the half-millisecond poll.
+      (void)timer;
+      std::this_thread::sleep_for(std::chrono::microseconds(kShownPollUs));
+      continue;
+#else
       if (timer != nullptr) {
         LARGE_INTEGER due{};
         due.QuadPart = -kShownPollUs * 10;  // relative, in 100 ns units
@@ -210,12 +220,17 @@ struct Backend::Impl {
       } else {
         std::this_thread::yield();
       }
+#endif
     }
   }
 
   void frametime_worker() {
     // A high-resolution timer for the half-millisecond polls (a plain Sleep rounds to the system tick).
+#ifdef _WIN32
     HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+#else
+    void *timer = nullptr;
+#endif
     for (;;) {
       FrametimeEntry entry{};
       {
@@ -224,7 +239,9 @@ struct Backend::Impl {
         frametime_changed.notify_all();
         frametime_changed.wait(lock, [&] { return frametime_stop || !frametime_queue.empty(); });
         if (frametime_queue.empty()) {
+#ifdef _WIN32
           if (timer != nullptr) CloseHandle(timer);
+#endif
           return;
         }
         entry = frametime_queue.front();
@@ -308,7 +325,11 @@ struct Backend::Impl {
   VkExtent2D extent{};
   std::uint32_t image_count = 0;
   VkSemaphore render_finished[max_swapchain_images] = {};
+#ifdef _WIN32
   HWND window = nullptr;
+#else
+  void *window = nullptr;  // TASK-180: the ANativeWindow of the SDL3 game window
+#endif
   std::atomic<bool> resize_pending{false};  // also set by the presentation thread of TASK-082
   // TASK-145: why the swapchain is rebuilt (logged with each rebuild), and a VK_SUBOPTIMAL_KHR seen since the last frame
   // end. A suboptimal swapchain still presents; it is rebuilt only when the surface size changed, since every rebuild
@@ -528,8 +549,13 @@ struct Backend::Impl {
   // Feature report and device choice (chapter 12.6). Returns false with `error` set when no device qualifies.
   bool create_instance(std::string &error) {
     if (!vulkan_loader::load_loader(error)) return false;
+#ifdef _WIN32
     const char *extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
                                 VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME};
+#else
+    const char *extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, vulkan_loader::platform_surface_extension(),
+                                VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME};
+#endif
     // The frametime log's shown times need the third one (the log goes on without them).
     const auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
         vulkan_loader::instance_proc(nullptr, "vkEnumerateInstanceExtensionProperties"));
@@ -837,10 +863,15 @@ struct Backend::Impl {
   bool create_swapchain(std::string &error) {
     VkSurfaceCapabilitiesKHR caps{};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps);
+#ifdef _WIN32
     RECT client{};
     GetClientRect(window, &client);
     const auto width = static_cast<std::uint32_t>(client.right - client.left);
     const auto height = static_cast<std::uint32_t>(client.bottom - client.top);
+#else
+    // TASK-180: an Android surface always has a defined current extent (its window's buffer size).
+    const std::uint32_t width = caps.currentExtent.width, height = caps.currentExtent.height;
+#endif
     if (caps.currentExtent.width != 0xFFFFFFFFu) {
       extent = caps.currentExtent;
     } else {
@@ -1695,6 +1726,7 @@ bool Backend::attach_window(void *hwnd, std::string &error) {
     error = "attach_window before init";
     return false;
   }
+#ifdef _WIN32
   s.window = static_cast<HWND>(hwnd);
   VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
   info.hinstance = GetModuleHandleW(nullptr);
@@ -1704,6 +1736,17 @@ bool Backend::attach_window(void *hwnd, std::string &error) {
     error = std::string("vkCreateWin32SurfaceKHR failed: ") + vk_result_text(result);
     return false;
   }
+#else
+  // TASK-180: `hwnd` is the ANativeWindow* of the game window (window_sdl.cpp).
+  s.window = hwnd;
+  VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
+  info.window = static_cast<ANativeWindow *>(hwnd);
+  const VkResult result = vkCreateAndroidSurfaceKHR(s.instance, &info, nullptr, &s.surface);
+  if (result != VK_SUCCESS) {
+    error = std::string("vkCreateAndroidSurfaceKHR failed: ") + vk_result_text(result);
+    return false;
+  }
+#endif
   VkBool32 supported = VK_FALSE;
   vkGetPhysicalDeviceSurfaceSupportKHR(s.physical, s.queue_family, s.surface, &supported);
   if (!supported) {
