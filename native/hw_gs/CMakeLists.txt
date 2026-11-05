@@ -157,6 +157,10 @@ add_test(NAME hw_present_spacing COMMAND hw_present_spacing_fixture)
 add_executable(hw_device_profile_fixture hw_device_profile_fixture.cpp)
 target_compile_options(hw_device_profile_fixture PRIVATE /W4)
 add_test(NAME hw_device_profile COMMAND hw_device_profile_fixture)
+# TASK-179: the swapchain pre-transform and its blit (CPU only).
+add_executable(hw_present_transform_fixture hw_present_transform_fixture.cpp)
+target_compile_options(hw_present_transform_fixture PRIVATE /W4)
+add_test(NAME hw_present_transform COMMAND hw_present_transform_fixture)
 
 add_executable(hw_gs_smoke hw_gs_smoke.cpp)
 target_include_directories(hw_gs_smoke PRIVATE "${GT4_HW_VULKAN_SDK}/Include")

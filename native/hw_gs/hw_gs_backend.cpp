@@ -11,6 +11,7 @@
 #include "../pacing.hpp"
 #include "hw_gs_present_rect.hpp"
 #include "hw_present_latency.hpp"
+#include "hw_present_transform.hpp"
 #include "hw_present_spacing.hpp"
 
 #include "hw_gs_vulkan_loader.hpp" // Vulkan names renamed to gt4_hw_*; pointers loaded at run time
@@ -304,6 +305,8 @@ struct Backend::Impl {
   bool independent_blend = false;
   // TASK-179: the capability probe of the chosen device, with what it was created with (logged once).
   DeviceProfile profile;
+  // TASK-179: the swapchain's pre-transform and the blit axes it reverses (hw_present_transform.hpp).
+  PresentTransform present_transform;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
   VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
@@ -902,7 +905,21 @@ struct Backend::Impl {
     info.imageArrayLayers = 1;
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    info.preTransform = caps.currentTransform;
+    // TASK-179: the pre-transform is the one the picture is drawn with (hw_present_transform.hpp). It was the surface's
+    // currentTransform with the picture drawn unrotated: right only while that is the identity (always on Windows). Now
+    // the identity wherever the surface takes it, and the platform's compositor turns the picture for a rotated display.
+    present_transform = choose_present_transform(caps.supportedTransforms, caps.currentTransform);
+    if (!present_transform.handled) {
+      error = std::string("the surface takes only quarter-turn pre-transforms (current: ") +
+              transform_name(caps.currentTransform) + "), which this renderer cannot draw";
+      return false;
+    }
+    if (present_transform.pre_transform != kTransformIdentity || caps.currentTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+      std::fprintf(stderr, "[hw] swapchain pre-transform: %s (the surface's current: %s)%s\n",
+                   transform_name(present_transform.pre_transform), transform_name(caps.currentTransform),
+                   present_transform.upright() ? "" : "; the picture is blitted mirrored to match, the performance HUD stays off");
+    }
+    info.preTransform = static_cast<VkSurfaceTransformFlagBitsKHR>(present_transform.pre_transform);
     info.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
                               ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                               : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
@@ -1052,8 +1069,6 @@ struct Backend::Impl {
       stats.present_fill = fill ? 1u : 0u;
       stats.present_fill_millionths = static_cast<std::uint32_t>(aspect >> 32);
       const std::uint32_t dw = rect.width, dh = rect.height;
-      const std::int32_t left = static_cast<std::int32_t>(rect.left);
-      const std::int32_t top = static_cast<std::int32_t>(rect.top);
       stats.present_left = rect.left;
       stats.present_top = rect.top;
       stats.present_width = rect.width;
@@ -1086,11 +1101,14 @@ struct Backend::Impl {
       blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
       blit.srcOffsets[1] = {static_cast<std::int32_t>(lw), static_cast<std::int32_t>(lh), 1};
       blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      blit.dstOffsets[0] = {left, top, 0};
-      blit.dstOffsets[1] = {left + static_cast<std::int32_t>(dw), top + static_cast<std::int32_t>(dh), 1};
+      // TASK-179: under a mirrored or half-turned pre-transform the blit reverses those axes (the identity: left, top to
+      // left + dw, top + dh as before).
+      const BlitDestination destination = present_blit_destination(rect, extent.width, extent.height, present_transform);
+      blit.dstOffsets[0] = {destination.x0, destination.y0, 0};
+      blit.dstOffsets[1] = {destination.x1, destination.y1, 1};
       gt4_hwd_vkCmdBlitImage(cmd, upload.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, draw_images[index],
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-      if (hud_layer) {
+      if (hud_layer && present_transform.upright()) {
         hud_layer->record(cmd, static_cast<std::uint32_t>(submissions % frame_slots), draw_images[index], swapchain_format, extent);
       }
     });
