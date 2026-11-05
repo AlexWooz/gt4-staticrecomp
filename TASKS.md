@@ -3369,7 +3369,24 @@ his Logitech G27:
   show their real values;
 - the base is the launcher wheel UI of PR #101 by **JulioHeroZ** (merged via #109/#111, removed in 1.2.5 because it drove the
   game through the normal pad); credit JulioHeroZ for it in the notes and the credits.
-State: waiting for the PR #205 review and the wheel table research.
+PR #205 was reviewed (in scope, no GPL, the game identical without a wheel file: v2.00 night race and Arcade gates,
+CTest 302/303) and **merged into main on 2026-11-05 (a4a3a5b6, owner)**, with a thank-you comment. The fixes the review
+asked for are part of this task:
+- **High:** a `wheel.toml` without `mode` turns on the withdrawn 1.2.x pad bridge. Make `dfp` the default and remove pad mode,
+  keeping SDL enumeration, device ownership, sources and calibration.
+- **High:** the USB capsule (`GT4_USB_RUNTIME_SOURCE`) must be pinned (`private/sliceNNN-usb-runtime` plus a `docs/inputs` pin) and
+  built into both games.
+- **Medium:** update only the force effects that changed (about 400 DirectInput calls per second today, on the emulation
+  thread); run `stop()` once on focus loss; add host-side DFP fixtures with a fake haptic sink; pin the donor hash in
+  `prepare_usb_runtime.py` and give `test_usb_runtime.py` a synthetic donor.
+- **Low:** the unused VID helpers (MOZA is 0x346E, not 0x1209), old comments, `-Wswitch` warnings.
+- **Launcher:** pass `GT4_WHEEL_FILE` at Play and in `game.ini`; validate the file on save, since the game refuses a bad
+  one; put `wheel.toml` in the log bundle; add wheels to `system.txt`; close the launcher's SDL and haptic handles before
+  Play.
+The research table (`docs/research/WHEEL-AUTOMAP-TABLE.md`, written beside the PR): VID:PIDs are well known (SDL's list
+of 71 wheels), but button and axis indices are mostly unpublished. So the auto-map uses family templates plus a short
+capture wizard, and saves the result as a shareable preset. The old UI lives at cbfd8b8: `ui/js/pages/wheel.js`,
+`gt4l-core/src/wheel.rs`, `gt4l-platform/src/sdl_wheels.rs` and the nine wheel commands. State: in progress.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
