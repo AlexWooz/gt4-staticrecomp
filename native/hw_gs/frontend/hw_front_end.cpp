@@ -392,7 +392,10 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
         if (flush && PaletteSegmentAllowed(write, contextIndex)) {
             flush = false;
             keepAsSegment = true;
-            std::copy(clut_.Halfwords(), clut_.Halfwords() + clut::kClutHalfwords, clutBeforeLoad_.begin());
+            // TASK-168b: only the first kept load of a batch needs the buffer before it (a later one's segment has it).
+            if (batch_.paletteSegments.empty()) {
+                std::copy(clut_.Halfwords(), clut_.Halfwords() + clut::kClutHalfwords, clutBeforeLoad_.begin());
+            }
             generationBefore = clut_.Generation();
         }
         if (flush) {
@@ -415,10 +418,9 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
         ++clutLoadsKept_;
         if (clut_.Generation() != generationBefore) {
             if (batch_.paletteSegments.empty()) {
-                PaletteSegment first;
+                PaletteSegment& first = batch_.paletteSegments.emplace_back();
                 first.clutGeneration = generationBefore;
                 first.clut = clutBeforeLoad_;
-                batch_.paletteSegments.push_back(first);
             }
             BeginPaletteSegment();
         }
@@ -435,12 +437,12 @@ void FrontEnd::BeginPaletteSegment() {
         std::copy(clut_.Halfwords(), clut_.Halfwords() + clut::kClutHalfwords, last.clut.begin());
         return;
     }
-    PaletteSegment next;
+    // TASK-168b: built in place (a segment is 1 KiB; a local copy pushed back cost two more copies per kept load).
+    PaletteSegment& next = batch_.paletteSegments.emplace_back();
     next.firstPrim = static_cast<uint32_t>(batch_.prims.size());
     next.firstVertex = static_cast<uint32_t>(batch_.vertices.size());
     next.clutGeneration = clut_.Generation();
     std::copy(clut_.Halfwords(), clut_.Halfwords() + clut::kClutHalfwords, next.clut.begin());
-    batch_.paletteSegments.push_back(next);
 }
 
 // TASK-168: whether a CLUT load that would end the pending batch may start a palette segment instead. Each condition

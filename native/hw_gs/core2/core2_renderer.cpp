@@ -613,6 +613,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     const bool gpuClut_ = std::strcmp(gpuClutMode_, "0") != 0 && std::strcmp(gpuClutMode_, "textures") != 0;
     const bool gpuTextures_ = std::strcmp(gpuClutMode_, "0") != 0 && std::strcmp(gpuClutMode_, "clut") != 0;
     std::array<std::uint64_t, 512> clutSource_{};
+    // TASK-168b: the number of nonzero clutSource_ entries (SetClutSource, ClearClutSource). At 0, GpuPaletteKey answers 0
+    // without walking a palette's halfwords: in the player's view it was asked about 1000 times per VBlank (each CLUT load
+    // the palette segment hook saw), 0.56 ms of the GS thread.
+    std::uint32_t clutGpuHalfwords_ = 0;
     std::uint64_t clutTargetLoadCount_ = 0;
     bool gpuClutMirror_ = false;
     // Halfwords loaded from memory since the GPU CLUT last received the CPU unit's words: written to the GPU only
@@ -810,18 +814,66 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         for (const Target &t : targets_) {
             if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) return false;
         }
+        clutSpanClear_ = true;
+        clutSpanClearBegin_ = span.begin;
         return true;
     }
+
+    // TASK-168b: the CSM1 span (64 blocks from clutSpanClearBegin_) of the CLUT load PaletteSegmentAllowed just let start a
+    // palette segment: no drawn target meets it. The front end calls SetBeforeLocalRead for that load right after the hook
+    // (nothing changes the targets in between), and with no drawn target there that callback has nothing to read back or
+    // load on the GPU, so it skips its own walk of the targets (about 0.3 us each, once per kept load). It clears the mark,
+    // and so does OnClutLoaded.
+    mutable bool clutSpanClear_ = false;
+    mutable std::uint32_t clutSpanClearBegin_ = 0;
 
     // TASK-168: the consumers that take one palette per batch get a batch's segments one by one, as the CLUT-load flushes
     // gave them: texture replacement (chapter 11 keys a texture by its palette) and GT4's tone sequence (7.2: ToneHook
     // decides per batch, from its palette, and keeps a run across batches). ToneHook leaves a batch to the normal path,
     // without reading its palette, unless it is a T8 sprite batch over a 32-bit target (ShuffleSource) or a run is going on.
-    bool PaletteSegmentsNeedSplit(const Batch &batch) {
-        if (replacementLoader_) return true;
-        const bool textured = ((batch.state.effectivePrim >> primbit::kTme) & 1u) != 0;
-        const bool toneShape = textured && batch.cls == PrimClass::Sprite && tex0::Psm(batch.state.ctx.tex0) == 0x13u;
-        return toneShape && (toneActive_ || ShuffleSource(batch) != nullptr);
+    //
+    // TASK-168b: the batches that met that rule in GT4 are the tone sequence's copy-back strips (64 x 32 pixels, eight 8 x 32
+    // T8 sprites with a CLUT load each, about 166 batches and 1100 segments per VBlank in the player's view), and ToneHook
+    // skips every one of them: a run is going on, the sprite has the run's shape and FBMSK, and the palette is not read. So
+    // the route follows ToneHook segment by segment, as it would have taken each segment's batch, without building them:
+    //  - the leading segments ToneHook would skip are skipped here (the run's state does not change);
+    //  - when no other segment can take the hook (PossibleShuffle false for each, so ToneHook would end the run and leave
+    //    each to the normal path), they are drawn as one batch without ToneHook;
+    //  - otherwise the remaining segments get a batch each (ToneHook may start a run, which reads that segment's palette).
+    // Whole: one batch as usual; WholeNoTone: one batch, ToneHook already decided; Skipped: nothing left to draw; Split: a
+    // batch for each segment from `first` on (the segments before it were skipped).
+    enum class SegmentRoute { Whole, WholeNoTone, Skipped, Split };
+    SegmentRoute RoutePaletteSegments(const Batch &batch, std::uint32_t &first) {
+        const std::uint32_t segments = PaletteSegmentCount(batch);
+        first = 0;  // the first segment ToneHook would not skip
+        if (!replacementLoader_) {
+            const bool textured = ((batch.state.effectivePrim >> primbit::kTme) & 1u) != 0;
+            const bool toneShape = textured && batch.cls == PrimClass::Sprite && tex0::Psm(batch.state.ctx.tex0) == 0x13u;
+            if (!toneShape || (!toneActive_ && ShuffleSource(batch) == nullptr)) return SegmentRoute::Whole;
+            const std::uint32_t fbmsk = frame::Fbmsk(batch.state.ctx.frame);
+            while (first < segments && toneActive_ && fbmsk == toneFbmsk_ && PossibleShuffleSegment(batch, first)) ++first;
+            if (first > 0) {
+                // What OnBatch and ToneHook do for each skipped segment's batch (RewriteDepthClear leaves a textured batch).
+                counters.batches += first;
+                if (fbmsk != 0xFFFFFFFFu) lastSceneFrame_ = batch.state.ctx.frame;
+                stats.toneDrawsSkipped += first;
+                stats.paletteSegmentsToneSkipped += first;
+            }
+            if (first == segments) return SegmentRoute::Skipped;
+            if (first == 0) {
+                bool anyShape = false;
+                for (std::uint32_t segment = 0; segment < segments && !anyShape; ++segment) {
+                    anyShape = PossibleShuffleSegment(batch, segment);
+                }
+                if (!anyShape) {
+                    toneActive_ = false;  // ToneHook on the first segment's batch ends the run
+                    stats.paletteSegmentsWholeNoTone++;
+                    return SegmentRoute::WholeNoTone;
+                }
+            }
+        }
+        stats.paletteSegmentSplits++;
+        return SegmentRoute::Split;
     }
 
     // TASK-168: the palette rows of a batch with several palette segments. Segment 0 has the batch's row (draw.paletteRow,
@@ -886,6 +938,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         frontEnd_.SetBeforeLocalRead([this](const BlockRange &range) {
             ScopedUs clutTimer(clock_, &PhaseTimes::clut);
             times_.clutLoads += 1;
+            // TASK-168b: the palette segment hook found no drawn target over this load's span a moment ago.
+            const bool clear = clutSpanClear_ && range.begin == clutSpanClearBegin_ && range.count == 64u;
+            clutSpanClear_ = false;
+            if (clear) return;
             const BlockSpan span{range.begin, range.count};
             // IN-408: one drawn 32-bit colour target under a CSM1 palette is read on the GPU when the load happens.
             if (gpuClut_ && span.count < kAllBlocks && (ClutSourceTarget(span) != nullptr || ClutTargetsOnGpu(span))) {
@@ -1026,8 +1082,24 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return out;
     }
 
+    // TASK-168b: every clutSource_ write goes through these two, which keep clutGpuHalfwords_.
+    void SetClutSource(const HalfwordRanges &ranges, std::uint64_t source) {
+        if (source == 0 && clutGpuHalfwords_ == 0) return;  // every entry is 0 already (the common load from memory)
+        for (int r = 0; r < 2; ++r) {
+            for (std::uint32_t i = ranges.begin[r]; i < ranges.end[r]; ++i) {
+                clutGpuHalfwords_ = clutGpuHalfwords_ + (source != 0 ? 1u : 0u) - (clutSource_[i] != 0 ? 1u : 0u);
+                clutSource_[i] = source;
+            }
+        }
+    }
+    void ClearClutSource() {
+        clutSource_.fill(0);
+        clutGpuHalfwords_ = 0;
+    }
+
     // IN-408: a hash of which GPU loads wrote the halfwords a palette uses; 0 when the CPU CLUT unit holds them all.
     std::uint64_t GpuPaletteKey(std::uint32_t psm, std::uint32_t cpsm, std::uint32_t csa) const {
+        if (clutGpuHalfwords_ == 0) return 0;  // TASK-168b: no halfword was written on the GPU
         std::uint64_t hash = 0;
         bool gpu = false;
         for (std::uint32_t index : ClutHalfwordsUsed(psm, cpsm, csa)) {
@@ -1041,6 +1113,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     void OnClutLoaded(const clut::Tex0Write &write) {
         const bool fromTarget = clutFromTargetPending_;
         clutFromTargetPending_ = false;
+        clutSpanClear_ = false;  // TASK-168b: the mark lives for one load at most
         const HalfwordRanges written = ClutHalfwordsWritten(write);
         std::string error;
         if (fromTarget) {
@@ -1086,7 +1159,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                  held.y0, held.x1, held.y1);
                 }
                 ++clutTargetLoadCount_;
-                written.Fill(clutSource_, clutTargetLoadCount_);
+                SetClutSource(written, clutTargetLoadCount_);
                 stats.clutTargetLoads++;
                 return;
             }
@@ -1136,7 +1209,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         return;
                     }
                     ++clutTargetLoadCount_;
-                    written.Fill(clutSource_, clutTargetLoadCount_);
+                    SetClutSource(written, clutTargetLoadCount_);
                     stats.clutTargetLoads++;
                     stats.clutMultiTargetLoads++;
                     return;
@@ -1144,7 +1217,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         // A load from memory: the CPU CLUT unit's words are right; the GPU CLUT gets them before its next reader.
-        written.Fill(clutSource_, std::uint64_t{0});
+        SetClutSource(written, std::uint64_t{0});
         if (!gpuClutMirror_) return;
         written.Fill(clutMirrorPending_, true);
         clutMirrorAnyPending_ = clutMirrorAnyPending_ || !written.empty();
@@ -1183,7 +1256,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             return false;
         }
         frontEnd_.MutableClut().SetHalfwords(halfwords);
-        clutSource_.fill(0);
+        ClearClutSource();
         stats.clutReads++;
         return true;
     }
@@ -3333,6 +3406,55 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool OnSync(SyncKind, std::uint32_t, std::uint32_t) override { return false; }
 
     // ---- 7.2 GT4's channel-shuffle hook ------------------------------------------------------------------------
+    // TASK-168b: PossibleShuffle (below) on the batch of palette segment `segment` alone (PaletteSegmentBatch's vertices, in
+    // the same order), without building it.
+    bool PossibleShuffleSegment(const Batch &batch, std::uint32_t segment) const {
+        const std::uint32_t firstPrim = batch.paletteSegments.empty() ? 0u : batch.paletteSegments[segment].firstPrim;
+        const std::uint32_t endPrim = PaletteSegmentEndPrim(batch, segment);
+        const Vertex *vertex0 = nullptr, *vertex1 = nullptr;
+        std::size_t count = 0;
+        std::int32_t minX = INT32_MAX, minY = INT32_MAX, maxX = INT32_MIN, maxY = INT32_MIN;
+        for (std::uint32_t p = firstPrim; p < endPrim; ++p) {
+            const PrimRecord &record = batch.prims[p];
+            for (std::uint32_t k = 0; k < record.count; ++k) {
+                const Vertex &v = batch.vertices[record.first + k];
+                if (count == 0) vertex0 = &v;
+                if (count == 1) vertex1 = &v;
+                ++count;
+                minX = std::min(minX, v.x4);
+                minY = std::min(minY, v.y4);
+                maxX = std::max(maxX, v.x4);
+                maxY = std::max(maxY, v.y4);
+            }
+        }
+        return PossibleShuffleShape(batch.state, batch.cls, count, vertex0, vertex1, minX, minY, maxX, maxY);
+    }
+
+    // PossibleShuffle's rule on a batch of state `state` and class `cls` with `count` vertices (the first two given) and
+    // their bounding box in 1/16 pixels.
+    static bool PossibleShuffleShape(const BatchState &state, PrimClass cls, std::size_t count, const Vertex *vertex0,
+                                     const Vertex *vertex1, std::int32_t minX, std::int32_t minY, std::int32_t maxX,
+                                     std::int32_t maxY) {
+        const std::uint64_t prim = state.effectivePrim;
+        if (((prim >> primbit::kTme) & 1u) == 0) return false;
+        if (cls != PrimClass::Sprite) return false;
+        const std::uint64_t tex0 = state.ctx.tex0;
+        if (tex0::Psm(tex0) != 0x13u) return false;  // T8
+        if (count < 2) return false;
+        const std::int32_t boxW = (maxX - minX) >> 4;
+        const std::int32_t boxH = (maxY - minY) >> 4;
+        if (count <= 2 && boxW <= 8 && boxH <= 8) return false;
+        const std::int32_t firstW = std::abs(vertex1->x4 - vertex0->x4) >> 4;
+        const std::int32_t firstH = std::abs(vertex1->y4 - vertex0->y4) >> 4;
+        const std::uint64_t clamp = state.ctx.clamp;
+        const bool regionMode = clampreg::Wms(clamp) >= 2 || clampreg::Wmt(clamp) >= 2;
+        const bool shape = firstW == 8 || firstH == 2 || regionMode;
+        if (!shape || boxW > 64) return false;
+        // The strip case: a texture twice as wide as the frame, page aligned.
+        if (boxH > 64 && tex0::Tbw(tex0) != 2u * frame::Fbw(state.ctx.frame)) return false;
+        return true;
+    }
+
     // A possible channel-shuffle draw (addendum: detection). Only the first draw of a run needs its texture base to
     // resolve to a colour target; later draws (GT4's copy-back strips read the temporary page) only need the shape.
     bool PossibleShuffle(const Batch &batch) const {
@@ -3340,8 +3462,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const std::uint64_t prim = state.effectivePrim;
         if (((prim >> primbit::kTme) & 1u) == 0) return false;
         if (batch.cls != PrimClass::Sprite) return false;
-        const std::uint64_t tex0 = state.ctx.tex0;
-        if (tex0::Psm(tex0) != 0x13u) return false;  // T8
+        if (tex0::Psm(state.ctx.tex0) != 0x13u) return false;  // T8
         if (batch.vertices.size() < 2) return false;
         std::int32_t minX = INT32_MAX, minY = INT32_MAX, maxX = INT32_MIN, maxY = INT32_MIN;
         for (const Vertex &v : batch.vertices) {
@@ -3350,18 +3471,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             maxX = std::max(maxX, v.x4);
             maxY = std::max(maxY, v.y4);
         }
-        const std::int32_t boxW = (maxX - minX) >> 4;
-        const std::int32_t boxH = (maxY - minY) >> 4;
-        if (batch.vertices.size() <= 2 && boxW <= 8 && boxH <= 8) return false;
-        const std::int32_t firstW = std::abs(batch.vertices[1].x4 - batch.vertices[0].x4) >> 4;
-        const std::int32_t firstH = std::abs(batch.vertices[1].y4 - batch.vertices[0].y4) >> 4;
-        const std::uint64_t clamp = state.ctx.clamp;
-        const bool regionMode = clampreg::Wms(clamp) >= 2 || clampreg::Wmt(clamp) >= 2;
-        const bool shape = firstW == 8 || firstH == 2 || regionMode;
-        if (!shape || boxW > 64) return false;
-        // The strip case: a texture twice as wide as the frame, page aligned.
-        if (boxH > 64 && tex0::Tbw(tex0) != 2u * frame::Fbw(state.ctx.frame)) return false;
-        return true;
+        return PossibleShuffleShape(state, batch.cls, batch.vertices.size(), &batch.vertices[0], &batch.vertices[1], minX,
+                                    minY, maxX, maxY);
     }
 
     Target *ShuffleSource(const Batch &batch) {
@@ -4022,20 +4133,37 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }
 
     void OnBatch(Batch &&batch) override {
-        // TASK-168: a consumer that takes one palette per batch gets the segments one by one.
-        if (batch.paletteSegments.size() > 1u && !failed_ && PaletteSegmentsNeedSplit(batch)) {
-            stats.paletteSegmentSplits++;
-            const std::uint32_t segments = PaletteSegmentCount(batch);
-            for (std::uint32_t segment = 0; segment < segments && !failed_; ++segment) {
-                OnBatch(PaletteSegmentBatch(batch, segment));
+        // TASK-168: a consumer that takes one palette per batch gets the segments as it would have got their batches
+        // (RoutePaletteSegments).
+        bool toneHook = true;
+        if (batch.paletteSegments.size() > 1u && !failed_) {
+            std::uint32_t first = 0;
+            SegmentRoute route = SegmentRoute::Whole;
+            {
+                ScopedUs batchTimer(clock_, &PhaseTimes::batch);
+                route = RoutePaletteSegments(batch, first);
             }
-            return;
+            if (route == SegmentRoute::Skipped) return;
+            if (route == SegmentRoute::Split) {
+                const std::uint32_t segments = PaletteSegmentCount(batch);
+                for (std::uint32_t segment = first; segment < segments && !failed_; ++segment) {
+                    ProcessBatch(PaletteSegmentBatch(batch, segment), true);
+                }
+                return;
+            }
+            toneHook = route != SegmentRoute::WholeNoTone;
         }
+        ProcessBatch(batch, toneHook);
+    }
+
+    // One batch to the GPU. toneHook false: ToneHook was already decided for it (RoutePaletteSegments).
+    void ProcessBatch(Batch &&batch, bool toneHook) { ProcessBatch(batch, toneHook); }
+    void ProcessBatch(Batch &batch, bool toneHook) {
         ScopedUs batchTimer(clock_, &PhaseTimes::batch);
         if (failed_) return;
         counters.batches++;
         if (!RewriteDepthClear(batch) && frame::Fbmsk(batch.state.ctx.frame) != 0xFFFFFFFFu) lastSceneFrame_ = batch.state.ctx.frame;
-        {
+        if (toneHook) {
             ScopedUs timer(clock_, &PhaseTimes::hook);
             if (ToneHook(batch)) return;
         }
@@ -5124,10 +5252,12 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0), (unsigned long long)g.selfTextureBatches, (unsigned long long)g.selfCopies,
                  static_cast<double>(g.selfCopyPixels) / 1.0e6);
     // TASK-168: batches drawn with several palette segments, their segments, and segmented batches split for a consumer
-    // that takes one palette.
-    std::fprintf(stderr, "[core2] palette segments batches=%llu segments=%llu splits=%llu\n",
+    // that takes one palette; TASK-168b: segments the tone hook skipped without a batch of their own, and segmented T8
+    // sprite batches drawn whole without the tone hook.
+    std::fprintf(stderr, "[core2] palette segments batches=%llu segments=%llu splits=%llu tone_skipped=%llu whole_no_tone=%llu\n",
                  (unsigned long long)c.paletteSegmentBatches, (unsigned long long)c.paletteSegmentsDrawn,
-                 (unsigned long long)c.paletteSegmentSplits);
+                 (unsigned long long)c.paletteSegmentSplits, (unsigned long long)c.paletteSegmentsToneSkipped,
+                 (unsigned long long)c.paletteSegmentsWholeNoTone);
     // Diagnostics: GT4_CORE2_BARRIER_TRACE=1 adds the cumulative full barriers by command and hazard.
     static const bool barrierTrace = std::getenv("GT4_CORE2_BARRIER_TRACE") != nullptr;
     if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n", barrierReport.c_str());
@@ -5263,7 +5393,7 @@ void Renderer::ResetGs() {
     s.ReadbackAll();  // 4.4: a reset keeps local memory, so every drawn area is stored first
     s.frontEnd_.ResetGs();
     s.frontEnd_.GifReset(7u);
-    s.clutSource_.fill(0);  // IN-408: the CPU CLUT unit is authoritative again
+    s.ClearClutSource();  // IN-408: the CPU CLUT unit is authoritative again
     s.gpuClutMirror_ = false;
     s.clutFromTargetPending_ = false;
     s.clutMirrorPending_.fill(false);

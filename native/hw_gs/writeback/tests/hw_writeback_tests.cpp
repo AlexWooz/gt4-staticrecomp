@@ -4449,10 +4449,88 @@ cpuref::CaptureWriter Core2PaletteSegmentsToneCapture(uint32_t frames) {
     return c.capture;
 }
 
+// TASK-168b: GT4's tone sequence as the player's view sends it: the run's first draw reads the 32-bit target (one 8 x 32 T8
+// sprite, its own batch: the next TEX0 changes the texture base), then the copy-back strips read the T8 page at page 12
+// with a CLUT load before each 8 x 32 sprite, one batch of three palette segments. ToneHook skips every strip (a run is
+// going on, the same shape and FBMSK) without reading its palette, so core 2 skips the segments without a batch each.
+cpuref::CaptureWriter Core2PaletteSegmentsToneRunCapture(uint32_t frames) {
+    SegmentCapture c;
+    constexpr uint64_t kSource = 16, kDraw = 4, kClutA = 40, kClutB = 41;  // pages
+    c.UploadT8();
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        c.Upload(kSource * 32, 16, 16, false, [frame](uint32_t x, uint32_t y) {
+            return 0x80000000u | (((x + 16u * y) * 0x030507u + frame * 0x0F0F0Fu) & 0xFFFFFFu);
+        });
+        c.UploadPalette(kClutA * 32, 9u + frame);
+        c.UploadPalette(kClutB * 32, 61u + frame);
+        std::vector<uint64_t> words = SegmentCapture::Setup(0);
+        const std::vector<uint64_t> target = {
+            SegmentCapture::Tex0(kSource * 32, 0x00, 4, 1, 0, false), 0x06,
+            SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u), 0x01,
+            SegmentCapture::Uv(0, 0), 0x03, SegmentCapture::Xyz(0, 0), 0x05, SegmentCapture::Uv(16, 16), 0x03,
+            SegmentCapture::Xyz(32, 32), 0x05,
+            SegmentCapture::Frame(kDraw), 0x4C};
+        words.insert(words.end(), target.begin(), target.end());
+        const auto strip = [&](uint64_t base, uint64_t cbp, uint32_t x) {
+            const std::vector<uint64_t> part = {
+                SegmentCapture::Tex0(base, 0x13, 5, 0, cbp, true), 0x06,
+                SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u),
+                0x01, SegmentCapture::Uv(x, 0), 0x03, SegmentCapture::Xyz(x, 0), 0x05, SegmentCapture::Uv(x + 8, 32), 0x03,
+                SegmentCapture::Xyz(x + 8, 32), 0x05};
+            words.insert(words.end(), part.begin(), part.end());
+        };
+        strip(0, kClutA * 32, 0);  // the run's first draw, over the target at page 0
+        strip(SegmentCapture::kT8 * 32, kClutB * 32, 8);
+        strip(SegmentCapture::kT8 * 32, kClutA * 32, 16);
+        strip(SegmentCapture::kT8 * 32, kClutB * 32, 24);
+        c.Ad(words);
+        c.capture.FrameEnd(frame);
+    }
+    return c.capture;
+}
+
+// TASK-168b: T8 sprites over a 32-bit target (ShuffleSource finds it) with a CLUT load before each, but not of the tone
+// sequence's shape (12 x 12): ToneHook would leave each segment's batch to the normal path, so core 2 draws the batch whole.
+cpuref::CaptureWriter Core2PaletteSegmentsNoShuffleCapture(uint32_t frames) {
+    SegmentCapture c;
+    constexpr uint64_t kSource = 16, kDraw = 4, kClutA = 40, kClutB = 41;  // pages
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        c.Upload(kSource * 32, 16, 16, false, [frame](uint32_t x, uint32_t y) {
+            return 0x80000000u | (((x + 16u * y) * 0x050709u + frame * 0x0B0B0Bu) & 0xFFFFFFu);
+        });
+        c.UploadPalette(kClutA * 32, 13u + frame);
+        c.UploadPalette(kClutB * 32, 87u + frame);
+        std::vector<uint64_t> words = SegmentCapture::Setup(0);
+        const std::vector<uint64_t> target = {
+            SegmentCapture::Tex0(kSource * 32, 0x00, 4, 1, 0, false), 0x06,
+            SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u), 0x01,
+            SegmentCapture::Uv(0, 0), 0x03, SegmentCapture::Xyz(0, 0), 0x05, SegmentCapture::Uv(16, 16), 0x03,
+            SegmentCapture::Xyz(32, 32), 0x05,
+            SegmentCapture::Frame(kDraw), 0x4C};
+        words.insert(words.end(), target.begin(), target.end());
+        const auto sprite = [&](uint64_t cbp, uint32_t x, uint32_t y) {
+            const std::vector<uint64_t> part = {
+                SegmentCapture::Tex0(0, 0x13, 5, 0, cbp, true), 0x06,
+                SegmentCapture::kSprite | SegmentCapture::kTme | SegmentCapture::kFst, 0x00, SegmentCapture::Rgbaq(0x80808080u),
+                0x01, SegmentCapture::Uv(x, y), 0x03, SegmentCapture::Xyz(x, y), 0x05, SegmentCapture::Uv(x + 12, y + 12), 0x03,
+                SegmentCapture::Xyz(x + 12, y + 12), 0x05};
+            words.insert(words.end(), part.begin(), part.end());
+        };
+        sprite(kClutA * 32, 0, 0);
+        sprite(kClutB * 32, 12, 4);
+        sprite(kClutA * 32, 20, 16);
+        c.Ad(words);
+        c.capture.FrameEnd(frame);
+    }
+    return c.capture;
+}
+
 // hw_core2_palette_segments (TASK-168): GT4_CORE2_PALETTE_SEGMENTS on CLUT loads that only change the palette of the pending
 // batch's T8 texture. The same images and GS memory with the switch off and on, at 1x and 2x; with it on, one batch per
 // run of loads (its sprites drawn with a palette row each); loads from a drawn target, or after a GPU palette, still end
-// the batch; a T8 batch over a 32-bit target goes to the tone hook segment by segment.
+// the batch; a T8 batch over a 32-bit target goes to the tone hook segment by segment; TASK-168b: a tone run's copy-back
+// strips are skipped segment by segment without a batch each, and T8 sprites over a 32-bit target that are not of the
+// tone sequence's shape are drawn whole.
 int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
     const char* kSwitch = "GT4_CORE2_PALETTE_SEGMENTS";
     int failures = 0;
@@ -4543,6 +4621,50 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                      return off.stats.paletteSegmentSplits == 0 && on.stats.paletteSegmentSplits == kFrames &&
                                                     on.stats.toneRuns == off.stats.toneRuns && off.stats.toneRuns > 0 &&
                                                     on.stats.toneDrawsSkipped == off.stats.toneDrawsSkipped
+                                                ? 0
+                                                : 1;
+                                 },
+                                 false, scale);
+        // TASK-168b: the copy-back strips of a tone run: every segment skipped as ToneHook skips its batch, none built.
+        failures += CheckCore2Ab(handles, ("a tone run's copy-back strips" + tag).c_str(), Core2PaletteSegmentsToneRunCapture(kFrames),
+                                 kFrames, kSwitch, false,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  split batches %llu / %llu, segments skipped by the tone hook %llu / %llu, tone "
+                                                 "runs %llu / %llu, tone draws skipped %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentSplits),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentSplits),
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentsToneSkipped),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentsToneSkipped),
+                                                 static_cast<unsigned long long>(off.stats.toneRuns),
+                                                 static_cast<unsigned long long>(on.stats.toneRuns),
+                                                 static_cast<unsigned long long>(off.stats.toneDrawsSkipped),
+                                                 static_cast<unsigned long long>(on.stats.toneDrawsSkipped));
+                                     return off.stats.paletteSegmentsToneSkipped == 0 && on.stats.paletteSegmentSplits == 0 &&
+                                                    on.stats.paletteSegmentsToneSkipped == 3u * kFrames && off.stats.toneRuns == kFrames &&
+                                                    on.stats.toneRuns == off.stats.toneRuns &&
+                                                    on.stats.toneDrawsSkipped == off.stats.toneDrawsSkipped
+                                                ? 0
+                                                : 1;
+                                 },
+                                 false, scale);
+        // TASK-168b: T8 sprites over a 32-bit target that no segment's batch would give the tone hook: drawn whole.
+        failures += CheckCore2Ab(handles, ("T8 over a 32-bit target, not a shuffle" + tag).c_str(),
+                                 Core2PaletteSegmentsNoShuffleCapture(kFrames), kFrames, kSwitch, false,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  segmented batches %llu / %llu, drawn whole without the tone hook %llu / %llu, "
+                                                 "split batches %llu / %llu, tone runs %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentsWholeNoTone),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentsWholeNoTone),
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentSplits),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentSplits),
+                                                 static_cast<unsigned long long>(off.stats.toneRuns),
+                                                 static_cast<unsigned long long>(on.stats.toneRuns));
+                                     return off.stats.paletteSegmentBatches == 0 && on.stats.paletteSegmentBatches == kFrames &&
+                                                    on.stats.paletteSegmentsWholeNoTone == kFrames &&
+                                                    on.stats.paletteSegmentSplits == 0 && on.stats.toneRuns == 0 &&
+                                                    off.stats.toneRuns == 0
                                                 ? 0
                                                 : 1;
                                  },
