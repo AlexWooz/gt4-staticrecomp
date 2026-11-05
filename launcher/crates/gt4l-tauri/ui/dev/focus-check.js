@@ -1847,7 +1847,12 @@
     for (var tries = 0; tries < 60 && document.querySelector(".modal.is-wizard"); tries++) {
       await wait(500);
     }
+    // The summary opens after the wheel is switched on (a command round trip), so it can come a moment after the wizard.
     var finished = document.querySelector(".modal h3");
+    for (var waits = 0; waits < 20 && !(finished && finished.textContent === T("wheel.wizard.done_title")); waits++) {
+      await wait(150);
+      finished = document.querySelector(".modal h3");
+    }
     check("the wizard ends with the summary", !!finished && finished.textContent === T("wheel.wizard.done_title"), finished ? finished.textContent : "none");
     var after = await wheelConfig();
     check("the wizard bound the steering, the pedals and the buttons", after.steering.source === "axis:0" && after.throttle.source === "axis:2" &&
