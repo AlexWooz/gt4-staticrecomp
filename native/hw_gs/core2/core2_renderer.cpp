@@ -730,10 +730,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // TASK-168: a CLUT load that only changes the palette of the pending batch's indexed texture starts a palette segment
     // of the batch instead of ending it (FrontEnd::SetPaletteSegmentHook, PaletteSegmentAllowed below), when every palette
     // of the batch is a CPU one; each segment's primitives look their colours up in a palette row of their own
-    // (GpuVertex::paletteRow). Needs the palette rows. GT4_CORE2_PALETTE_SEGMENTS=0 ends the batch at every such load,
-    // as before (A/B).
-    const bool paletteSegments_ = paletteRows_ && (std::getenv("GT4_CORE2_PALETTE_SEGMENTS") == nullptr ||
-                                                   std::strcmp(std::getenv("GT4_CORE2_PALETTE_SEGMENTS"), "0") != 0);
+    // (GpuVertex::paletteRow). Needs the palette rows. Off by default (owner, 2026-11-05: TASK-168b found no GT4 scene
+    // that gains; see docs/hw-renderer-spec/TASK-168-PALETTE-SEGMENTS.md): every such load ends the batch, the chapter
+    // 07.3 rule. GT4_CORE2_PALETTE_SEGMENTS=1 (any value but 0) turns them on.
+    const bool paletteSegments_ = paletteRows_ && std::getenv("GT4_CORE2_PALETTE_SEGMENTS") != nullptr &&
+                                  std::strcmp(std::getenv("GT4_CORE2_PALETTE_SEGMENTS"), "0") != 0;
     std::vector<std::uint32_t> pinnedPaletteRows_;   // rows the batch being prepared names: not taken for another palette
     std::vector<std::int32_t> segmentPaletteRows_;  // the batch's segment rows (DrawBatch::segmentPaletteRows)
 
@@ -5322,7 +5323,9 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
         std::fprintf(stderr, "[core2] performance mode (decision 0073): delayed downloads %s, flares hidden %s\n",
                      impl_->delayedDownloads_ ? "on" : "off", impl_->hideFlares_ ? "on" : "off");
     }
-    std::fprintf(stderr, "[core2] palette segments (TASK-168) %s\n", impl_->paletteSegments_ ? "on" : "off");
+    // The prefix and the state as the last word stay as before (bench scripts read them).
+    std::fprintf(stderr, "[core2] palette segments (TASK-168) [default off, GT4_CORE2_PALETTE_SEGMENTS=1 for on] %s\n",
+                 impl_->paletteSegments_ ? "on" : "off");
     std::fprintf(stderr, "[core2] texture cache budget %llu MiB (%s GPU)\n",
                  static_cast<unsigned long long>(impl_->textureBudget_ >> 20),
                  impl_->gpu_.Integrated() ? "integrated" : "discrete");

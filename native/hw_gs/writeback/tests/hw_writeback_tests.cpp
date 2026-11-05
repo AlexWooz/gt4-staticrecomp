@@ -4529,10 +4529,12 @@ cpuref::CaptureWriter Core2PaletteSegmentsNoShuffleCapture(uint32_t frames) {
 // batch's T8 texture. The same images and GS memory with the switch off and on, at 1x and 2x; with it on, one batch per
 // run of loads (its sprites drawn with a palette row each); loads from a drawn target, or after a GPU palette, still end
 // the batch; a T8 batch over a 32-bit target goes to the tone hook segment by segment; TASK-168b: a tone run's copy-back
-// strips are skipped segment by segment without a batch each, and T8 sprites over a 32-bit target that are not of the
-// tone sequence's shape are drawn whole.
+// strips form no segment (the batch filter ends the batch at their loads), and T8 sprites over a 32-bit target that are
+// not of the tone sequence's shape are drawn whole. The switch is off by default (owner, 2026-11-05), so the "on" runs set
+// it to 1.
 int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
     const char* kSwitch = "GT4_CORE2_PALETTE_SEGMENTS";
+    const char* kOn = "1";
     int failures = 0;
     constexpr uint32_t kFrames = 3;
     for (uint32_t scale : {1u, 2u}) {
@@ -4552,7 +4554,7 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 ? 0
                                                 : 1;
                                  },
-                                 false, scale);
+                                 false, scale, kOn);
         // Many palettes (the row ring): 1100 a frame, new every frame. Batches of 256 segments (the most a batch holds),
         // five a frame, and more palettes in a frame than the 1024 rows: rows are taken again while earlier batches of
         // the frame that name them may still wait to be recorded.
@@ -4574,7 +4576,7 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 ? 0
                                                 : 1;
                                  },
-                                 true, scale);
+                                 true, scale, kOn);
         failures += CheckCore2Ab(handles, ("a row named by an earlier segment" + tag).c_str(), Core2PaletteRowPinCapture(), 2,
                                  kSwitch, true,
                                  [](const Core2AbRun& off, const Core2AbRun& on) {
@@ -4590,7 +4592,7 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 ? 0
                                                 : 1;
                                  },
-                                 true, scale);
+                                 true, scale, kOn);
         failures += CheckCore2Ab(handles, ("loads from a GPU palette" + tag).c_str(), Core2PaletteSegmentsGpuCapture(kFrames),
                                  kFrames, kSwitch, false,
                                  [](const Core2AbRun& off, const Core2AbRun& on) {
@@ -4607,7 +4609,7 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 ? 0
                                                 : 1;
                                  },
-                                 false, scale);
+                                 false, scale, kOn);
         failures += CheckCore2Ab(handles, ("T8 over a 32-bit target" + tag).c_str(), Core2PaletteSegmentsToneCapture(kFrames),
                                  kFrames, kSwitch, false,
                                  [](const Core2AbRun& off, const Core2AbRun& on) {
@@ -4624,7 +4626,7 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 ? 0
                                                 : 1;
                                  },
-                                 false, scale);
+                                 false, scale, kOn);
         // TASK-168b: the copy-back strips of a tone run: the batch filter ends the strip batch at each of its two loads
         // that keep the texture, so no segment forms and every strip reaches ToneHook as with the switch off.
         failures += CheckCore2Ab(handles, ("a tone run's copy-back strips" + tag).c_str(), Core2PaletteSegmentsToneRunCapture(kFrames),
@@ -4650,7 +4652,7 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 ? 0
                                                 : 1;
                                  },
-                                 false, scale);
+                                 false, scale, kOn);
         // TASK-168b: T8 sprites over a 32-bit target that no segment's batch would give the tone hook: drawn whole.
         failures += CheckCore2Ab(handles, ("T8 over a 32-bit target, not a shuffle" + tag).c_str(),
                                  Core2PaletteSegmentsNoShuffleCapture(kFrames), kFrames, kSwitch, false,
@@ -4672,7 +4674,7 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 ? 0
                                                 : 1;
                                  },
-                                 false, scale);
+                                 false, scale, kOn);
     }
     std::printf("hw_core2_palette_segments: %d failures\n", failures);
     return failures == 0 ? 0 : 1;

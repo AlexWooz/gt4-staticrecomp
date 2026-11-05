@@ -56,9 +56,12 @@ VBlank, about 1,000 of them under a pending batch that keeps its texture and onl
 
 ## The switch
 
-`GT4_CORE2_PALETTE_SEGMENTS`, on by default in core 2 (it needs the palette rows of IN-409, so
-`GT4_CORE2_PALETTE_ROWS=0` turns it off too). `=0` does not set the front-end hook, so the front end runs the chapter
-07.3 rule exactly as before. Logged at start as `[core2] palette segments (TASK-168) on|off`. Counters: the
+`GT4_CORE2_PALETTE_SEGMENTS`, **off by default** (owner, 2026-11-05, after TASK-168b: no GT4 scene measured gains);
+`GT4_CORE2_PALETTE_SEGMENTS=1` (any value but 0) turns it on in core 2. It needs the palette rows of IN-409, so
+`GT4_CORE2_PALETTE_ROWS=0` turns it off too. Off, core 2 sets neither the front-end hook nor the batch filter, so the
+front end runs the chapter 07.3 rule exactly as before. Logged at start as
+`[core2] palette segments (TASK-168) [default off, GT4_CORE2_PALETTE_SEGMENTS=1 for on] on|off` (the state stays the
+last word). Counters: the
 `[core2] batch flushes/vblank` line adds `clut_kept`, `segmented_batches` and `segments_per_segmented_batch`; the
 `[core2] palette segments` line gives the session's batches drawn with several segments (`batches`, `segments`), the
 segmented batches drawn segment by segment (`splits`), and (TASK-168b) the segmented T8 sprite batches drawn whole
@@ -98,7 +101,7 @@ is a TEX0 write of the other context, CSM2, the batch's frame or depth rows meet
 the batch's frame or depth rows, an auto-flush could split the batch, the batch holds 256 segments, a drawn target
 holds the palette's page (core 2), the batch's palette was loaded on the GPU (core 2), the batch is a T8 sprite batch
 while a tone run is going on (core 2, TASK-168b), texture replacement or dumping is
-active (core 2), or `GT4_CORE2_PALETTE_SEGMENTS=0`. The old core and the CPU reference never set the hook.
+active (core 2), or the switch is off (the default). The old core and the CPU reference never set the hook.
 
 ## Tests
 
@@ -210,9 +213,10 @@ skipped).
 **Default.** In the scenes measured so far GT4 almost never forms a palette segment that reaches the GPU: none in the
 George V lap, in Motegi and Hong Kong (B-Spec) or in the v2.00 night race, and in the 52-track survey only 2 tracks drew
 any batch with segments (23 and 211 batches over a whole run); the many candidates were the copy-back strips, which
-draw nothing. With this change the switch costs nothing measurable either way. This change leaves it on; TASK-168b's
-recommendation is to turn it off by default until a scene shows a gain, since the segmented draw path then runs almost
-never in play (an owner decision).
+draw nothing. With the batch filter the switch costs nothing measurable either way. TASK-168b recommended turning it
+off by default until a scene shows a gain, since the segmented draw path would run almost never in play, and the owner
+decided so on 2026-11-05: segments ship off in rc15, the code and the switch stay, and the cost cuts above
+(`GpuPaletteKey`, the CLUT source count) help the default path too.
 
 ## Known limits
 
