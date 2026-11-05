@@ -3398,7 +3398,14 @@ is in `private/android-signing`, and every later APK must use the same key).
 - Performance mode stays OFF by default on Android; make the normal mode lighter instead.
 - Snapdragon GSR is a later candidate to replace FSR1 on Android. Check its licence and A/B it against FSR1.
 
-**APK test2 scope (in progress):** merge rc15 (HUD); render scale 100% = native screen, with the slider below 50%; the
+**APK test2: done (2026-11-05 ~13:50).**
+- GitHub draft `v1.3.0-android-test2` (prerelease flag, never published), branch at 9113a9e7, same signing key.
+- APK sha256 `b7860ec8...`, versionCode 2, arm64, 16 KB aligned.
+- Includes the TASK-182 step 1 diagnostics.
+- Checked in the emulator: the lifecycle, Resume, the prepare card and the HUD.
+- Windows CTest 319/319.
+
+Its scope: merge rc15 (HUD); render scale 100% = native screen, with the slider below 50%; the
 HUD on Android with the SoC GPU, resolution, and GPU and CPU use; Export logs carries 10 sessions.
 
 The owner also asked for:
