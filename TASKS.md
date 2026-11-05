@@ -3522,8 +3522,23 @@ New switches:
 Ranked exact changes, R1 to R10, are in the study. The cheapest and biggest first is R1: draw the self copy inside the open
 pass.
 
-**State:** step 2a (R1, `GT4_CORE2_SELF_COPY_DRAW`, default off) is in progress. It is the first task run on OpenCode with
-DeepSeek V4.1 Flash, at effort max. The Android test2 merges the step 1 diagnostics, to trace on the S23.
+**Step 2a done (2026-11-05, 3b5f806e; OpenCode with DeepSeek V4.1 Flash at effort max, reviewed).** R1 is
+`GT4_CORE2_SELF_COPY_DRAW`, default off: the self copy is drawn inside the open pass. Per VBlank at 2x, off to on:
+
+| | Render passes | Full barriers | Fragment barriers |
+|---|---|---|---|
+| Hong Kong | 52.3 to 23.8 | 566 to 506 | 33 to 98 |
+| Motegi | 46.7 to 20.3 | 240 to 184 | 28 to 88 |
+
+- All copies take the new path on the desktop. The colour-attachment path (no interlock: the S23 and integrated GPUs)
+  always falls back, so there is no gain on the phone.
+- Flare hashes are identical (HK 2x/10x, Motegi 2x, Motegi with no interlock). CTest 319/320, 1 skipped.
+- Timing A/B is pending: on the desktop when no build runs, then a default decision.
+
+**Step 2b (R8) in progress on DeepSeek:** compose/deinterlace/present, the S23's largest GPU cost (43 ms/VBlank at 6x, 6.7
+at 2x, in 480i menus).
+- Split the category first, then exact reductions behind switches.
+- Anything inexact goes to Performance Mode only.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
