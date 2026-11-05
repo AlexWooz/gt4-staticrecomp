@@ -340,6 +340,15 @@ From the owner's S23 Ultra test of test1:
 - **Diagnostics:** threads named gt4-ee/gs/vu1/present; cluster shares, frequencies and thermal status in F8 and the HUD
   log; Export logs carries 10 game sessions on Android; logs mirrored to the external folder; `debug.env` for remote
   variables.
+- **TASK-182 diagnostics merged** (`task/182-barrier-scope` at 6f0e4f10): with `GT4_CORE2_BARRIER_TRACE=1` and
+  `GT4_CORE2_GPU_CATEGORIES=1` in `debug.env`, the Android game log carries the `[core2] barriers by reason`,
+  `[core2] sync vblank=...` and `[core2] gpu categories ms/vblank ...` lines every 600 VBlanks (checked in the emulator;
+  GPU timestamps work there).
+- **Emulator limits (not phone findings):** Lavapipe keeps no compiled pipelines in its cache data (`pipelines.bin` is a
+  header, "0 KiB"), so every session there recompiles the 300 known variants in the background (about 150 s under
+  translation, uber shader meanwhile); on the phone check `[core2] shader cache: N KiB` (should be large after a prepare)
+  and a small `compile_ms` in the second session. The first `[core2] ms/vblank` line of an emulator session can show
+  huge stage times (a counter read across translated cores; Hypothesis), later lines are normal.
 
 ## Subtle risks (Android), ranked
 
