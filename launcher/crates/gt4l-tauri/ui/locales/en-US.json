@@ -3,6 +3,7 @@
   "shaders.title": "Compiling shaders",
   "shaders.text": "This runs once, and again after an update or a new graphics driver. The game starts when it ends.",
   "shaders.count": "{done} of {total}",
+  "shaders.retry": "Preparing shaders again, attempt {attempt}",
   "common.back": "Back",
   "common.reset": "Reset",
   "common.remove": "Remove",

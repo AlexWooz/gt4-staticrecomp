@@ -123,6 +123,16 @@
     check("the window shows the title and the count", !!bar && document.querySelector(".modal h3").textContent === T("shaders.title") &&
       document.querySelector(".shader-count").textContent === T("shaders.count", { done: 50, total: 200 }), bar ? bar.style.width : "none");
     check("the bar follows the count", !!bar && bar.style.width === "25%", bar ? bar.style.width : "none");
+    // TASK-170b: a retry names its attempt under the count; the first attempt shows nothing there.
+    var retry = document.querySelector(".shader-retry");
+    check("the first attempt shows no retry line", !!retry && retry.textContent === "", retry ? retry.textContent : "missing");
+    GT4_MOCK.emit("shaders-progress", { done: 0, total: 150, attempt: 3 });
+    await wait(50);
+    check("a retry says its attempt number", !!retry && retry.textContent === T("shaders.retry", { attempt: 3 }) && retry.textContent.indexOf("3") >= 0 &&
+      retry.textContent.indexOf("{") < 0, retry ? retry.textContent : "missing");
+    check("the count restarts with the retry", document.querySelector(".shader-count").textContent === T("shaders.count", { done: 0, total: 150 }), document.querySelector(".shader-count").textContent);
+    GT4_MOCK.emit("shaders-progress", { done: 50, total: 200, attempt: 1 });
+    await wait(50);
     check("Cancel has the focus", document.activeElement && document.activeElement.textContent === T("common.cancel"), document.activeElement && document.activeElement.textContent);
     document.querySelector(".modal").__dialog.back();
     check("Back does not close it", !!document.querySelector(".shader-bar"), "closed");
