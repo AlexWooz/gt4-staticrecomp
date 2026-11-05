@@ -62,6 +62,11 @@ struct Core2Counters {
     std::uint64_t specialisedBatches = 0;      // IN-437: batches drawn with a pipeline specialised to their state
     std::uint64_t computeFills = 0;            // IN-442: batches drawn as compute fills
     std::uint64_t selfCopies = 0;              // spec 8.8: batches that sampled a copy of the target they draw into
+    std::uint64_t selfCopyDraws = 0;           // TASK-182 R1: those copies drawn inside the open pass (GT4_CORE2_SELF_COPY_DRAW)
+    // TASK-182 R8 (GT4_CORE2_DEINT_FIELD_COMPOSE=1), from the GPU's counters: display merges written into the
+    // deinterlace field's history image, and full-display copies the deinterlace recorded.
+    std::uint64_t postFieldComposes = 0;
+    std::uint64_t postCopies = 0;
     // IN-470: texture replacement (chapter 11.7).
     std::uint64_t replacementFiles = 0;        // names registered from the pack folder
     std::uint64_t replacementKeys = 0;         // Format P keys computed (new content)

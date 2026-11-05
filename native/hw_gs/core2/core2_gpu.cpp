@@ -239,7 +239,8 @@ struct Gpu::Impl {
   // TASK-182 (GT4_CORE2_GPU_CATEGORIES=1, diagnostics): where the GPU time of a recording goes by kind of work. Each change of
   // kind writes a bottom-of-pipe timestamp (no barrier), so a kind owns the time from its mark to the next one: the work
   // that finishes in between, including the tail of an earlier command that overlapped it. Times are read in wait_slot.
-  enum : std::uint32_t { kCatDraw, kCatCompose, kCatPresent, kCatUpload, kCatCompute, kCatReadback, kCatStartGap, kCatKinds };
+  enum : std::uint32_t { kCatDraw, kCatCompose, kCatDeinterlace, kCatFxaa, kCatPresent, kCatUpload, kCatCompute,
+                         kCatReadback, kCatStartGap, kCatKinds };
   static constexpr std::uint32_t kCatPoints = 512;
   const bool catOn = std::getenv("GT4_CORE2_GPU_CATEGORIES") != nullptr;
   VkQueryPool catPool = VK_NULL_HANDLE;
@@ -352,6 +353,12 @@ struct Gpu::Impl {
   // (hw_postfx_fxaa.comp: 0 source, 1 output), each with its own set layout; the images follow the display size.
   Image deinterlaceHistory[gpu::kGpuDeinterlaceHistory];
   Image deinterlaceWoven, deinterlaceOutput, fxaa;
+  // TASK-182 R8: the image the post chain last produced (the display image, or with GT4_CORE2_DEINT_FIELD_COMPOSE=1 still
+  // the display image: the deinterlace writes its result there). FXAA, the presentation resample and the host read use it.
+  Image *post = &display;
+  // TASK-182 R8: the history entry the next display merge composes into (PrepareDeinterlace), or null when the merge
+  // writes the display image.
+  Image *fieldTarget = nullptr;
   // IN-432: presentation resampling (core2_present_scale.comp: 0 source, 1 output); two passes ping-pong through
   // presentA and presentB, the last one writes presentOut.
   Image presentA, presentB, presentOut;
@@ -893,6 +900,26 @@ struct Gpu::Impl {
     return &selfCopies.back().image;
   }
 
+  // TASK-182 step 2a, row R1 of docs/hw-renderer-spec/STUDY-BARRIER-SCOPE.md: the self copy drawn inside the open
+  // render pass. core2_self_copy.frag moves the sampled rectangle (the rectangle the transfer copies) into the pooled
+  // image as a storage-image write from the fragment stage, ordered with fragment barriers (draw to draw), instead of a
+  // vkCmdCopyImage that needs the pass closed. GT4_CORE2_SELF_COPY_DRAW=1 turns it on; the default is the transfer.
+  //
+  // The transfer stays the path wherever the draw cannot apply: the colour-attachment path (IN-481, `ropOn`: a sampled
+  // image may be an attachment of the open pass), a rectangle the framebuffer scissor cannot hold, and
+  // GT4_CORE2_LAZY_BARRIERS=0 (which orders every command with a full barrier, illegal inside a pass). Every decision
+  // is counted in the TASK-182 trace.
+  bool selfCopyDraw = std::getenv("GT4_CORE2_SELF_COPY_DRAW") != nullptr &&
+                      std::strcmp(std::getenv("GT4_CORE2_SELF_COPY_DRAW"), "0") != 0;
+  VkDescriptorSetLayout selfCopySetLayout = VK_NULL_HANDLE;  // 0 the source view, 1 the pooled copy view
+  VkPipelineLayout selfCopyLayout = VK_NULL_HANDLE;          // no push constants: the scissor says what to copy
+  VkShaderModule selfCopyVertexModule = VK_NULL_HANDLE, selfCopyModule = VK_NULL_HANDLE;
+  VkPipeline selfCopyPipeline = VK_NULL_HANDLE;  // core2_self_copy.vert + .frag, the storage draw pass
+  // True while a pooled self-copy image may have been written or read since the last full barrier. The draws of a pass
+  // are ordered by its fragment barriers; a copy recorded when no pass is open (a compute or transfer command ended it)
+  // records a full barrier first. full_barrier() clears it.
+  bool copyImagesUnordered = false;
+
   VkShaderModule make_module(const std::uint32_t *words, std::size_t count, std::string &error) {
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     info.codeSize = count * sizeof(std::uint32_t);
@@ -996,6 +1023,57 @@ struct Gpu::Impl {
     info.pDynamicState = &dynamic;
     info.layout = drawLayout;
     info.renderPass = rop == 0 ? renderPass : rop_depth_mask(rop) != 0 ? ropPassBoth : ropPassFrame;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    check(gt4_hwd_vkCreateGraphicsPipelines(device, pipelineCache, 1, &info, nullptr, &pipeline),
+          "vkCreateGraphicsPipelines", error);
+    return pipeline;
+  }
+
+  // TASK-182 R1: the pipeline of the self copy draw (core2_self_copy.vert/.frag). No vertex input and no vertex buffer
+  // (the three corners of a full-screen triangle come from gl_VertexIndex), no colour attachment (the fragment stage
+  // stores the source word at its own pixel of the destination), dynamic viewport and scissor, and the draw pass's
+  // render pass so that the draw runs inside a pass the targets' own draws opened.
+  VkPipeline make_self_copy_pipeline(std::string &error) {
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = selfCopyVertexModule;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = selfCopyModule;
+    stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    blend.attachmentCount = 0;
+    VkDynamicState dynamicStates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamicStates;
+    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertexInput;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &blend;
+    info.pDynamicState = &dynamic;
+    info.layout = selfCopyLayout;
+    info.renderPass = renderPass;
     VkPipeline pipeline = VK_NULL_HANDLE;
     check(gt4_hwd_vkCreateGraphicsPipelines(device, pipelineCache, 1, &info, nullptr, &pipeline),
           "vkCreateGraphicsPipelines", error);
@@ -1725,6 +1803,9 @@ struct Gpu::Impl {
     std::vector<Row> flushes;           // draw flushes (the deferred batches recorded) by what asked for them
     std::vector<Row> submits;           // submissions by caller
     std::vector<Row> setAllocations;    // transient descriptor sets by kind
+    // TASK-182 step 2a: spec 8.8 self copies by the path they took and whether the copied rectangle meets the rectangle
+    // the batch that samples it draws (the oracle's D3 path 2 needs a disjoint one to copy nothing at all).
+    std::vector<Row> selfCopies;
     std::uint64_t passBatches = 0, passCommands = 0, passFragmentBarriers = 0;  // the open pass so far
     std::uint64_t updateCalls = 0, updateWrites = 0;
     std::uint64_t bindDescriptorSets = 0, bindPipelines = 0, bindVertexBuffers = 0, setViewports = 0, setScissors = 0,
@@ -1761,6 +1842,7 @@ struct Gpu::Impl {
     }
     drewSinceBarrier = false;
     mayLowerDepth.clear();
+    copyImagesUnordered = false;  // a full barrier covers every pooled self-copy image
     pendingBufferReads = pendingBufferWrites = 0;  // everything before is ordered against everything after
     pendingGlmReads.clear();
     pendingGlmWrites.clear();
@@ -2249,9 +2331,59 @@ struct Gpu::Impl {
     prof_end();
   }
 
+  // TASK-182 R1: the self copy (spec 8.8) recorded as a draw inside the open render pass, in place of a vkCmdCopyImage
+  // that needs the pass closed. `left, top, right, bottom` are the copied rectangle in output pixels, half-open. The
+  // pass is the storage draw pass (no attachments), so a fragment barrier orders the earlier draws' stores to the
+  // source before the copy's loads, and the batch that samples the copy (recorded right after it) is ordered by its own
+  // texture-from-target barrier. A word keeps its own pixel, exactly what the transfer copied.
+  bool record_self_copy(const Image &source, Image &destination, std::int32_t left, std::int32_t top,
+                        std::int32_t right, std::int32_t bottom, std::string &error) {
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!allocate_set(selfCopySetLayout, set, error)) return false;  // may submit: before the pass, never inside it
+    VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, source.view, VK_IMAGE_LAYOUT_GENERAL},
+                                       {VK_NULL_HANDLE, destination.view, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet writes[2]{};
+    for (std::uint32_t i = 0; i < 2; ++i) {
+      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[i].dstSet = set;
+      writes[i].dstBinding = i;
+      writes[i].descriptorCount = 1;
+      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      writes[i].pImageInfo = &images[i];
+    }
+    update_sets(2, writes);
+    if (!renderPassOpen) {
+      // A pass was ended by a compute or transfer command since the last copy: a full barrier is the only thing that
+      // orders the pooled copy image's earlier readers against this write across the pass boundary.
+      if (copyImagesUnordered) full_barrier("self copy draw: the pooled copy was used before this pass");
+      if (!begin_recording(error)) return false;
+      begin_draw_pass();
+    }
+    fragment_barrier("self copy draw: after the draws that wrote the source");
+    gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, selfCopyPipeline);
+    gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, selfCopyLayout, 0, 1, &set, 0, nullptr);
+    const VkViewport viewport{0.0f, 0.0f, static_cast<float>(framebufferWidth), static_cast<float>(framebufferHeight),
+                              0.0f, 1.0f};
+    gt4_hwd_vkCmdSetViewport(cmd, 0, 1, &viewport);
+    const VkRect2D scissor{{left, top},
+                           {static_cast<std::uint32_t>(right - left), static_cast<std::uint32_t>(bottom - top)}};
+    gt4_hwd_vkCmdSetScissor(cmd, 0, 1, &scissor);
+    gt4_hwd_vkCmdDraw(cmd, 3, 1, 0, 0);
+    passState = PassState{};  // the copy bound its own pipeline, set and viewport: the batch sets its own again
+    drewSinceBarrier = true;
+    copyImagesUnordered = true;
+    stats.selfCopies++;
+    stats.selfCopyDraws++;
+    stats.selfCopyPixels += static_cast<std::uint64_t>(right - left) * static_cast<std::uint64_t>(bottom - top);
+    if (trace.on) ++trace.drawCalls;
+    return true;
+  }
+
   // Records the deferred batches in one render pass, ordered against the pending compute and transfer accesses.
   // `why` names what asked (a command's label, or the calling function); `detail` the dependency (diagnostics only).
-  void flush_draws(const char *why = __builtin_FUNCTION(), const char *detail = "") {
+  // `keepPassOpen` (TASK-182 R1, the self copy draw): the pass stays open after the batches, so the copy draw and the
+  // batch that samples it join it instead of paying a pass end and a pass begin here.
+  void flush_draws(const char *why = __builtin_FUNCTION(), const char *detail = "", bool keepPassOpen = false) {
     if (deferred.empty()) return;
     cat_mark(kCatDraw);
     std::string flushKey;  // TASK-182 diagnostics
@@ -2277,6 +2409,8 @@ struct Gpu::Impl {
       }
     }
     if (hazard) {
+      // A full barrier cannot be recorded inside a render pass; a pass the self copy draw left open ends here.
+      end_render_pass("a full barrier before the draws");
       barrierLabel = "draws";
       full_barrier(why);
       barrierLabel = "other";
@@ -2288,16 +2422,20 @@ struct Gpu::Impl {
     const std::uint32_t query = slot * kTimestampsPerSlot + 2u + 2u * pair;
     if (timed) gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, query);
     // IN-481: a new pass when the way of writing or the attachments change; a texture taken from a target must see what
-    // the attachments of the current pass wrote.
-    const DeferredDraw *open = nullptr;
+    // the attachments of the current pass wrote. TASK-182 R1: a pass the self copy draw left open takes the first batch
+    // as a continuation (no new pass, and the barrier of record_draw orders the batch against the copy draw).
+    bool passOpen = renderPassOpen;
+    const DeferredDraw *open = nullptr;  // the batch that began or continued the pass
     for (std::size_t i = 0; i < deferred.size(); ++i) {
       const DeferredDraw &draw = deferred[i];
-      const bool newPass = open == nullptr || draw.rop != open->rop ||
+      const bool sameKind = open == nullptr ? !draw.rop : draw.rop == open->rop;
+      const bool newPass = !passOpen || !sameKind ||
                            (draw.rop && (draw.ropFramebuffer != open->ropFramebuffer || draw.ropPass != open->ropPass ||
                                          (draw.textureFromTarget && drewSinceBarrier)));
       if (newPass) {
-        if (open != nullptr) {
-          end_render_pass(draw.rop != open->rop ? "pass change: colour attachments on or off"
+        if (passOpen) {
+          end_render_pass(open == nullptr || draw.rop != open->rop
+                              ? "pass change: colour attachments on or off"
                           : draw.ropFramebuffer != open->ropFramebuffer || draw.ropPass != open->ropPass
                               ? "pass change: other colour attachments"
                               : "pass change: texture from target after a draw (attachments)");
@@ -2309,13 +2447,16 @@ struct Gpu::Impl {
           begin_draw_pass();
         }
         open = &draw;
+        passOpen = true;
       }
       record_draw(draw, newPass);
     }
-    if (trace.on) {
-      end_render_pass_as("draws recorded for " + flushKey);
-    } else {
-      end_render_pass();
+    if (!keepPassOpen) {
+      if (trace.on) {
+        end_render_pass_as("draws recorded for " + flushKey);
+      } else {
+        end_render_pass();
+      }
     }
     if (timed) {
       gt4_hwd_vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, query + 1u);
@@ -2555,6 +2696,7 @@ struct Gpu::Impl {
                          : layout == deinterlaceSetLayout ? "deinterlace"
                          : layout == fxaaSetLayout      ? "fxaa"
                          : layout == presentSetLayout   ? "present"
+                         : layout == selfCopySetLayout  ? "self copy"
                                                         : "other";
       ++SyncTrace::row(trace.setAllocations, kind).count;
     }
@@ -2771,8 +2913,7 @@ std::string Gpu::BarrierReport() const {
 
 // TASK-182 (GT4_CORE2_BARRIER_TRACE=1): the cumulative counts of how the GPU is synchronised and fed, one row per line:
 // "[core2] sync <section> <key>: count=... [batches=... commands=... fragment_barriers=...]". Empty without the switch.
-std::string Gpu::SyncReport(std::uint64_t vblanks) const {
-  const Impl::SyncTrace &t = impl_->trace;
+std::string Gpu::SyncReport(std::uint64_t vblanks) const {  const Impl::SyncTrace &t = impl_->trace;
   if (!t.on) return std::string();
   std::string report;
   char line[640];
@@ -2795,6 +2936,7 @@ std::string Gpu::SyncReport(std::uint64_t vblanks) const {
   rows("flush", t.flushes, false);
   rows("submit", t.submits, false);
   rows("set_allocation", t.setAllocations, false);
+  rows("self_copy", t.selfCopies, false);
   std::snprintf(line, sizeof line,
                 "[core2] sync vblank=%llu totals: full_barriers=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu "
                 "batches_recorded=%llu draw_calls=%llu bind_descriptor_sets=%llu bind_pipelines=%llu bind_vertex_buffers=%llu "
@@ -2810,6 +2952,15 @@ std::string Gpu::SyncReport(std::uint64_t vblanks) const {
                 static_cast<unsigned long long>(t.updateWrites), static_cast<unsigned long long>(impl_->stats.submissions));
   report += line;
   return report;
+}
+
+void Gpu::NoteSelfSampleNoCopy(SelfSampleNoCopy why) {
+  Impl &s = *impl_;
+  if (!s.trace.on) return;
+  ++Impl::SyncTrace::row(s.trace.selfCopies, why == SelfSampleNoCopy::Disjoint
+                                                    ? "no copy: sampled rectangle disjoint from the drawn one"
+                                                    : "no copy: frame untouched (IN-495)")
+        .count;
 }
 
 bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shift, std::string &error) {
@@ -3112,10 +3263,38 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   if (!s.fillModule) return false;
   s.fillPipeline = s.make_compute(s.fillModule, error);
   if (!s.fillPipeline) return false;
+  // TASK-182 R1: the self copy draw's descriptor set (0 the source view, 1 the pooled copy view) and its pipeline, only
+  // when the switch asks for the path (GT4_CORE2_SELF_COPY_DRAW).
+  if (s.selfCopyDraw) {
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    if (!check(gt4_hwd_vkCreateDescriptorSetLayout(s.device, &layoutInfo, nullptr, &s.selfCopySetLayout),
+               "vkCreateDescriptorSetLayout", error)) {
+      return false;
+    }
+    VkPipelineLayoutCreateInfo pipelineLayout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayout.setLayoutCount = 1;
+    pipelineLayout.pSetLayouts = &s.selfCopySetLayout;
+    if (!check(gt4_hwd_vkCreatePipelineLayout(s.device, &pipelineLayout, nullptr, &s.selfCopyLayout),
+               "vkCreatePipelineLayout", error)) {
+      return false;
+    }
+    s.selfCopyVertexModule = s.make_module(hwgs::shaders::core2_self_copy_vertex_words,
+                                           hwgs::shaders::core2_self_copy_vertex_word_count, error);
+    s.selfCopyModule =
+        s.make_module(hwgs::shaders::core2_self_copy_words, hwgs::shaders::core2_self_copy_word_count, error);
+    if (!s.selfCopyVertexModule || !s.selfCopyModule) return false;
+    s.selfCopyPipeline = s.make_self_copy_pipeline(error);
+    if (!s.selfCopyPipeline) return false;
+  }
   {
     const std::uint32_t deinterlaceCounts[7] = {gpu::kGpuDeinterlaceHistory, 0, 0, 0, 1, 1, 1};
     const std::uint32_t fxaaCounts[2] = {1, 1};
-    if (!s.image_layouts(deinterlaceCounts, 7, 14 * 4, s.deinterlaceSetLayout, s.deinterlaceLayout, error) ||
+    if (!s.image_layouts(deinterlaceCounts, 7, 16 * 4, s.deinterlaceSetLayout, s.deinterlaceLayout, error) ||
         !s.image_layouts(fxaaCounts, 2, 2 * 4, s.fxaaSetLayout, s.fxaaLayout, error)) {
       return false;
     }
@@ -3483,6 +3662,11 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
 
   // Spec 8.8: the texture is the target this batch draws into and the batch samples where it draws. Its sampled
   // rectangle is copied first (after the draws that wrote it) and the batch samples the copy.
+  // TASK-182 R1: with GT4_CORE2_SELF_COPY_DRAW the copy is a draw inside the open render pass (record_self_copy), taken
+  // after the draws of the pass and before this batch; the transfer below stays the fallback. The rectangle is the same
+  // either way, so the batch samples the same words.
+  std::int32_t selfCopyLeft = 0, selfCopyTop = 0, selfCopyRight = 0, selfCopyBottom = 0;  // output pixels, half-open
+  bool selfCopyInPass = false;
   if (batch.selfCopy && !paletted) {
     Image *copy = s.self_copy_image(*texture, error);
     if (!copy) return false;
@@ -3491,19 +3675,52 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     const std::int32_t right = std::min(batch.copyX1 + 1, static_cast<std::int32_t>(texture->nativeWidth));
     const std::int32_t bottom = std::min(batch.copyY1 + 1, static_cast<std::int32_t>(texture->nativeHeight));
     if (right > left && bottom > top) {
-      s.outside_pass();
-      s.touch("self copy", {texture}, {copy}, 0, 0);
-      VkImageCopy region{};
-      region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.srcOffset = {left * sc, top * sc, 0};
-      region.dstOffset = region.srcOffset;
-      region.extent = {static_cast<std::uint32_t>((right - left) * sc), static_cast<std::uint32_t>((bottom - top) * sc), 1};
-      gt4_hwd_vkCmdCopyImage(s.cmd, texture->image, VK_IMAGE_LAYOUT_GENERAL, copy->image, VK_IMAGE_LAYOUT_GENERAL, 1,
-                             &region);
-      s.after_op();
-      s.stats.selfCopies++;
-      s.stats.selfCopyPixels += static_cast<std::uint64_t>(region.extent.width) * region.extent.height;
+      selfCopyLeft = left * sc;
+      selfCopyTop = top * sc;
+      selfCopyRight = right * sc;
+      selfCopyBottom = bottom * sc;
+      // The copy as a draw applies where the pass has no attachments (IN-481 puts the targets there on an integrated GPU,
+      // and a sampled image may be one), where LAZY_BARRIERS orders the commands that are not draws (a full barrier per
+      // command cannot be recorded inside a pass), and where the rectangle fits the pass's framebuffer scissor. Every
+      // core 2 image is one r32ui storage image (make_image), so the fragment stage can write the pooled copy.
+      selfCopyInPass = s.selfCopyDraw && s.lazyBarriers && !s.ropOn &&
+                       selfCopyRight <= static_cast<std::int32_t>(s.framebufferWidth) &&
+                       selfCopyBottom <= static_cast<std::int32_t>(s.framebufferHeight);
+      // TASK-182 step 2a diagnostics: does the copied rectangle meet what the batch draws? The renderer takes the copy only
+      // when the sampled footprint meets the drawn rectangle, so this is always yes here; the counter is the check that it
+      // stays so, and the disjoint case is counted where the renderer decides (`no copy: sampled rectangle disjoint`).
+      bool meetsDrawn = false;
+      for (const gpu::GpuDraw &draw : *batch.draws) {
+        if (draw.count != 0 && draw.x1 >= left && draw.x0 <= right - 1 && draw.y1 >= top && draw.y0 <= bottom - 1) {
+          meetsDrawn = true;
+          break;
+        }
+      }
+      if (s.trace.on) {
+        std::string row = selfCopyInPass ? "drawn in the pass, " : "vkCmdCopyImage, ";
+        row += meetsDrawn ? "overlapping the batch" : "disjoint from the batch";
+        ++Impl::SyncTrace::row(s.trace.selfCopies, row).count;
+      }
+      if (!selfCopyInPass) {
+        s.outside_pass();
+        s.touch("self copy", {texture}, {copy}, 0, 0);
+        VkImageCopy region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.srcOffset = {left * sc, top * sc, 0};
+        region.dstOffset = region.srcOffset;
+        region.extent = {static_cast<std::uint32_t>((right - left) * sc), static_cast<std::uint32_t>((bottom - top) * sc), 1};
+        gt4_hwd_vkCmdCopyImage(s.cmd, texture->image, VK_IMAGE_LAYOUT_GENERAL, copy->image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                               &region);
+        s.after_op();
+        s.stats.selfCopies++;
+        s.stats.selfCopyPixels += static_cast<std::uint64_t>(region.extent.width) * region.extent.height;
+      } else {
+        s.flush_draws("self copy", "reads what a draw writes", /*keepPassOpen=*/true);
+        if (!s.record_self_copy(*texture, *copy, selfCopyLeft, selfCopyTop, selfCopyRight, selfCopyBottom, error)) {
+          return false;
+        }
+      }
     }
     texture = copy;
   }
@@ -3991,7 +4208,25 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   // TASK-168: and the palette rows of its later palette segments (every row its vertices name).
   static const std::vector<std::int32_t> kNoSegmentRows;
   const std::vector<std::int32_t> &segmentRows = paletted && batch.segmentPaletteRows ? *batch.segmentPaletteRows : kNoSegmentRows;
-  if (s.deferDraws) {
+  if (selfCopyInPass) {
+    // TASK-182 R1: the copy was drawn into the pass the flush left open; this batch follows it there. Its
+    // texture-from-target barrier orders it after the copy (the fragment barrier of record_draw).
+    if (!s.renderPassOpen) {  // a descriptor-set allocation may have submitted in between
+      s.full_barrier("self copy draw: the batch's descriptor set began a new recording");
+      s.begin_draw_pass();
+    }
+    s.record_draw(record, false);
+    s.deferredCommands.resize(record.firstCommand);
+    // The accesses of the batch, as the non-deferred path records them: a later compute or transfer command is ordered
+    // against them. The copy draw's own write of the pooled image is ordered by the barriers around it (a full barrier
+    // would be illegal inside the pass), so it is not added to the pending writes.
+    s.pendingReads.add(textureUse.serial, textureUse.region);
+    for (const Impl::Use &use : {Impl::Use(texels), Impl::Use(frame), Impl::Use(depth)}) {
+      s.pendingReads.add(use.serial, use.region);
+    }
+    for (const std::int32_t row : segmentRows) s.pendingReads.add(texture->serial, static_cast<std::uint32_t>(row));
+    for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.pendingWrites.add(use.serial, use.region);
+  } else if (s.deferDraws) {
     // IN-420: recorded with the next render pass.
     for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
       s.drawReads.add(use.serial, use.region);
@@ -4719,23 +4954,35 @@ bool Gpu::Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight
 }
 
 bool Gpu::Compose(const std::uint32_t words[28], ImageId sourceA, ImageId sourceB, std::uint32_t outWidth,
-                  std::uint32_t outHeight, std::string &error) {
+                  std::uint32_t outHeight, bool intoField, std::string &error) {
   Impl &s = *impl_;
   if (outWidth == 0 || outHeight == 0) {
     error = "CORE2 compose of an empty display";
     return false;
   }
   if (!s.begin_recording(error)) return false;
+  // The display image always exists at the display size: it is the presentation target and, when the deinterlace writes
+  // the field's own history image, the image the deinterlaced result is written over.
   if (s.display.width != outWidth || s.display.height != outHeight) {
     s.doom(s.display);
     if (!s.make_image(s.display, outWidth, outHeight, 1, error)) return false;
   }
+  s.post = &s.display;
+  Image *out = &s.display;
+  if (intoField) {
+    out = s.fieldTarget;
+    if (!out || !out->alive || out->width != outWidth || out->height != outHeight) {
+      error = "CORE2 compose into a deinterlace field that was not prepared";
+      return false;
+    }
+    s.stats.fieldComposes++;
+  }
   const Image *a = s.image_of(sourceA);
   const Image *b = s.image_of(sourceB);
   s.outside_pass();
-  s.touch("compose", {a, b}, {&s.display}, 0, 0);
+  s.touch("compose", {a, b}, {out}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
-  if (!s.compute_set(s.staging.buffer, 0, 16, a ? a->view : s.atlas.view, b ? b->view : s.atlas.view, s.display.view,
+  if (!s.compute_set(s.staging.buffer, 0, 16, a ? a->view : s.atlas.view, b ? b->view : s.atlas.view, out->view,
                      set, error)) {
     return false;
   }
@@ -4745,13 +4992,14 @@ bool Gpu::Compose(const std::uint32_t words[28], ImageId sourceA, ImageId source
 }
 
 std::uint64_t Gpu::DisplayImage() const {
-  return reinterpret_cast<std::uint64_t>(impl_->display.image);
+  return reinterpret_cast<std::uint64_t>(impl_->post->image);
 }
 
-bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error) {
+bool Gpu::PrepareDeinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error) {
   Impl &s = *impl_;
-  if (step.width == 0 || step.height == 0 || step.width > s.display.width || step.height > s.display.height ||
-      step.current >= gpu::kGpuDeinterlaceHistory || step.mode < 2 || step.mode > 6) {
+  s.fieldTarget = nullptr;
+  if (step.width == 0 || step.height == 0 || step.current >= gpu::kGpuDeinterlaceHistory || step.mode < 2 ||
+      step.mode > 6) {
     error = "CORE2 deinterlace outside the display image";
     return false;
   }
@@ -4762,21 +5010,76 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
   for (Image &image : s.deinterlaceHistory) {
     if (!s.post_image(image, step.width, step.height, fresh, error)) return false;
   }
-  if (!s.post_image(s.deinterlaceWoven, step.width, step.height, fresh, error) ||
-      !s.post_image(s.deinterlaceOutput, step.width, step.height, fresh, error)) {
+  if (!s.post_image(s.deinterlaceWoven, step.width, step.height, fresh, error)) return false;
+  if (s.display.width != step.width || s.display.height != step.height) {
+    s.doom(s.display);
+    if (!s.make_image(s.display, step.width, step.height, 1, error)) return false;
+  }
+  s.fieldTarget = &s.deinterlaceHistory[step.current];
+  return true;
+}
+
+bool Gpu::SnapshotLastOutput(std::string &error) {
+  Impl &s = *impl_;
+  if (!s.display.alive || s.display.width == 0 || s.display.height == 0) {
+    error = "CORE2 last output snapshot without a display image";
     return false;
   }
+  if (!s.begin_recording(error)) return false;
+  bool fresh = false;
+  if (!s.post_image(s.deinterlaceOutput, s.display.width, s.display.height, fresh, error)) return false;
+  s.flush_draws();
+  s.end_render_pass();
+  s.full_barrier();
+  s.cat_mark(Impl::kCatDeinterlace);  // TASK-182 diagnostics
+  VkImageCopy region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.extent = {s.display.width, s.display.height, 1};
+  gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceOutput.image,
+                         VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+  s.full_barrier();
+  s.stats.postCopies++;
+  return true;
+}
+
+bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, bool fieldComposed, std::string &error) {
+  Impl &s = *impl_;
+  if (step.width == 0 || step.height == 0 || step.width > s.display.width || step.height > s.display.height ||
+      step.current >= gpu::kGpuDeinterlaceHistory || step.mode < 2 || step.mode > 6) {
+    error = "CORE2 deinterlace outside the display image";
+    return false;
+  }
+  if (fieldComposed && (!s.fieldTarget || !s.fieldTarget->alive)) {
+    error = "CORE2 deinterlace of a field that was not composed";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  // The history follows the display size. A new size starts a new history: the caller's step then says there is no
+  // earlier field and no earlier output (its history is cleared on the same size change).
+  bool fresh = false;
+  for (Image &image : s.deinterlaceHistory) {
+    if (!s.post_image(image, step.width, step.height, fresh, error)) return false;
+  }
+  if (!s.post_image(s.deinterlaceWoven, step.width, step.height, fresh, error)) return false;
+  if (!fieldComposed && !s.post_image(s.deinterlaceOutput, step.width, step.height, fresh, error)) return false;
+  const Image &field = s.deinterlaceHistory[step.current];
   s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
-  s.cat_mark(Impl::kCatCompose);  // TASK-182 diagnostics
+  s.cat_mark(Impl::kCatDeinterlace);  // TASK-182 diagnostics
   VkImageCopy region{};
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.extent = {step.width, step.height, 1};
-  gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceHistory[step.current].image,
-                         VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-  s.full_barrier();
+  if (!fieldComposed) {
+    // The display merge wrote the display image: keep this field's words in its history entry, then deinterlace over
+    // the display image.
+    gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, field.image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                           &region);
+    s.full_barrier();
+    s.stats.postCopies++;
+  }
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.deinterlaceSetLayout, set, error)) return false;
   VkDescriptorImageInfo history[gpu::kGpuDeinterlaceHistory];
@@ -4784,7 +5087,11 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
     history[i] = {VK_NULL_HANDLE, s.deinterlaceHistory[i].view, VK_IMAGE_LAYOUT_GENERAL};
   }
   const VkDescriptorImageInfo woven{VK_NULL_HANDLE, s.deinterlaceWoven.view, VK_IMAGE_LAYOUT_GENERAL};
-  const VkDescriptorImageInfo previous{VK_NULL_HANDLE, s.deinterlaceOutput.view, VK_IMAGE_LAYOUT_GENERAL};
+  // With the field composed into its history entry the last output is in the display image and the shader reads it
+  // through `previous_in_output` (the display image is a valid binding either way and is never read here when set).
+  const VkDescriptorImageInfo previous{VK_NULL_HANDLE,
+                                      fieldComposed ? s.display.view : s.deinterlaceOutput.view,
+                                      VK_IMAGE_LAYOUT_GENERAL};
   const VkDescriptorImageInfo output{VK_NULL_HANDLE, s.display.view, VK_IMAGE_LAYOUT_GENERAL};
   VkWriteDescriptorSet writes[4]{};
   const std::uint32_t bindings[4] = {0, 4, 5, 6};
@@ -4801,21 +5108,23 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlacePipeline);
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlaceLayout, 0, 1, &set, 0, nullptr);
   auto dispatch = [&](std::uint32_t mode) {
-    const std::uint32_t push[14] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
+    const std::uint32_t push[16] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
                                     step.previousSame, step.previousOther, step.haveOutput ? 1u : 0u,
                                     step.thresholdPermille, step.initWoven ? 1u : 0u, step.rowStep,
-                                    step.olderOther};
+                                    step.olderOther, fieldComposed ? 1u : 0u, step.skipDeadDecision};
     gt4_hwd_vkCmdPushConstants(s.cmd, s.deinterlaceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     gt4_hwd_vkCmdDispatch(s.cmd, (step.width + 7) / 8, (step.height + 7) / 8, 1);
     s.full_barrier();
   };
   if (step.mode == 2 || step.mode == 3) dispatch(1);  // the weave update first
   dispatch(step.mode);
-  if (step.mode >= 5) {
+  if (!fieldComposed && step.mode >= 5) {
     gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceOutput.image,
                            VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     s.full_barrier();
+    s.stats.postCopies++;
   }
+  s.post = &s.display;  // the deinterlaced display is written over the display image
   s.stats.deinterlaces++;
   return true;
 }
@@ -4832,10 +5141,10 @@ bool Gpu::Fxaa(std::uint32_t width, std::uint32_t height, std::string &error) {
   s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
-  s.cat_mark(Impl::kCatCompose);  // TASK-182 diagnostics
+  s.cat_mark(Impl::kCatFxaa);  // TASK-182 diagnostics
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.fxaaSetLayout, set, error)) return false;
-  const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, s.display.view, VK_IMAGE_LAYOUT_GENERAL},
+  const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, s.post->view, VK_IMAGE_LAYOUT_GENERAL},
                                            {VK_NULL_HANDLE, s.fxaa.view, VK_IMAGE_LAYOUT_GENERAL}};
   VkWriteDescriptorSet writes[2]{};
   for (std::uint32_t i = 0; i < 2; ++i) {
@@ -4862,7 +5171,7 @@ std::uint64_t Gpu::FxaaImage() const { return reinterpret_cast<std::uint64_t>(im
 bool Gpu::PresentScale(bool fromFxaa, std::uint32_t width, std::uint32_t height, std::uint32_t outWidth,
                        std::uint32_t outHeight, float sharpness, std::string &error) {
   Impl &s = *impl_;
-  Image &source = fromFxaa ? s.fxaa : s.display;
+  Image &source = fromFxaa ? s.fxaa : *s.post;
   if (width == 0 || height == 0 || width > source.width || height > source.height || outWidth == 0 ||
       outHeight == 0 || outWidth > s.limits.maxImageDimension2D || outHeight > s.limits.maxImageDimension2D) {
     error = "CORE2 presentation resampling outside the display image";
@@ -4942,7 +5251,7 @@ std::uint64_t Gpu::PresentImage() const { return reinterpret_cast<std::uint64_t>
 bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels,
                       std::string &error, bool presentScaled, bool fxaa) {
   Impl &s = *impl_;
-  const Image &source = presentScaled ? s.presentOut : fxaa ? s.fxaa : s.display;
+  const Image &source = presentScaled ? s.presentOut : fxaa ? s.fxaa : *s.post;
   width = std::min(width, source.width);
   height = std::min(height, source.height);
   const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * 4u;

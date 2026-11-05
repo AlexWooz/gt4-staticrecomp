@@ -97,6 +97,11 @@ extern const std::uint32_t core2_clut_target_words[];
 extern const std::size_t core2_clut_target_word_count;
 extern const std::uint32_t core2_materialize_words[];
 extern const std::size_t core2_materialize_word_count;
+// TASK-182 R1: the self copy of a self-sampling batch, drawn inside the open render pass.
+extern const std::uint32_t core2_self_copy_vertex_words[];
+extern const std::size_t core2_self_copy_vertex_word_count;
+extern const std::uint32_t core2_self_copy_words[];
+extern const std::size_t core2_self_copy_word_count;
 
 // Exactness compute entry points (fixture only; never linked into the game).
 extern const std::uint32_t hw_blend_exact_words[];

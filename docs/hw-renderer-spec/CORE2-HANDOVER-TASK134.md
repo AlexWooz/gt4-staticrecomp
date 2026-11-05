@@ -142,6 +142,7 @@ Gain on the GS worker: about -11% with ThinLTO, GIF front end -28%, frames ident
 | `GT4_MTVU_WAKE_KB=<n>` | 64 | Output between worker wake-ups of the EE; 0 wakes for every record |
 | `GT4_HW_GS_THREAD=0` | on | No GS worker (direct intake then stays off) |
 | `GT4_CORE2_SELF_COPY=0` | on | Samples the target itself (IN-463, frames vary by run) |
+| `GT4_CORE2_SELF_COPY_DRAW=1` | off | The self copy drawn inside the open pass (TASK-182 R1) instead of `vkCmdCopyImage` |
 | `GT4_CORE2_GLM_PAGES=0` | on | GLM hazards on the whole buffer (IN-464) |
 | `GT4_CORE2_LAZY_BARRIERS=0` | on | A barrier around every command |
 | `GT4_CORE2_GROUP_DISJOINT=0` | on | Per-primitive path waits before every primitive (IN-466) |

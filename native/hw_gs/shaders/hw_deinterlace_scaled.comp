@@ -22,6 +22,11 @@
 //   6 adaptive, moving rows interpolated (IN-405, CORE2's default): as 5, but a moving pixel is always the average of
 //     the rows above and below. Rule 5 keeps the woven row where those two rows disagree, which on thin strokes moving
 //     fast (GT4's GT Mode ticker) weaves two text positions into a comb; the reference shows that text clean.
+//
+// TASK-182 step 2c (`skip_dead_decision`): modes 5 and 6 only choose between two words, the woven row and the average of
+// the rows above and below. When those two words are already the same the tests cannot change what is saved, and a mode 5
+// run that is not interpolating saves the woven row whatever they say; the invocation then stores the word it already
+// has and returns before the tests and their reads.
 
 #version 450
 
@@ -37,7 +42,10 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0, r32ui) uniform uimage2D history[4];  // merge images of the last fields
 layout(set = 0, binding = 4, r32ui) uniform uimage2D woven;
 layout(set = 0, binding = 5, r32ui) uniform readonly uimage2D previous_output;
-layout(set = 0, binding = 6, r32ui) uniform writeonly uimage2D display_out;
+// TASK-182 R8: read as well as written, because with the field composed into `history[current]` the last adaptive output
+// is still in this image at the start of the pass (`previous_in_output`). A load at the texel this invocation stores is
+// the same in-place pattern core2_tone.comp uses.
+layout(set = 0, binding = 6, r32ui) uniform uimage2D display_out;
 
 layout(push_constant) uniform DeinterlaceParameters {
     uint mode;
@@ -55,6 +63,12 @@ layout(push_constant) uniform DeinterlaceParameters {
     uint row_step;        // IN-386: output rows per algorithm row: 1 = one output row (the reference), scale = one
                           // native row (the IN-381 interpretation)
     uint older_other;     // IN-396: history index of the opposite-parity field three back, or 4 when there is none
+    // TASK-182 R8: 1 when the last adaptive output is still in display_out (the display merge wrote this field's history
+    // image instead of the display image), 0 when it is the separate previous_output image.
+    uint previous_in_output;
+    // TASK-182 step 2c: 1 when the motion tests may be skipped where they cannot change the saved word (see the
+    // `skip_dead_decision` block below), 0 for the tests of today.
+    uint skip_dead_decision;
 } pc;
 
 uvec4 unpack_rgba(uint word) {
@@ -130,9 +144,14 @@ void main() {
         return;
     }
     bool have_woven = pc.previous_other < 4u || pc.have_output != 0u;
-    uint woven_word = pc.previous_other < 4u ? load_history(pc.previous_other, p)
-                      : pc.have_output != 0u ? imageLoad(previous_output, p).x
-                                             : here;
+    // TASK-182 R8: the last adaptive output, read from the display image itself when the field was composed into its
+    // history entry (the display merge did not overwrite the display this VBlank).
+    uint woven_word = here;
+    if (pc.previous_other < 4u) {
+        woven_word = load_history(pc.previous_other, p);
+    } else if (pc.have_output != 0u) {
+        woven_word = pc.previous_in_output != 0u ? imageLoad(display_out, p).x : imageLoad(previous_output, p).x;
+    }
     bool edge_row = row == 0u || row + 1u == rows;
     if (edge_row) {
         imageStore(display_out, p, uvec4(woven_word, 0u, 0u, 0u));
@@ -142,6 +161,20 @@ void main() {
     uint down = load_history(pc.current, ivec2(p.x, p.y + s));
     uvec4 bob4 = (unpack_rgba(up) + unpack_rgba(down) + 1u) / 2u;
     uint bob = pack_rgba(bob4);
+    // TASK-182 step 2c: the motion tests below choose between `bob` and `woven_word` only. When the two are the same
+    // word the choice cannot change what is saved, and when `interpolate` is false (mode 5 with an older opposite-parity
+    // field to weave) the saved word is the woven row whatever the tests say. Both cases are decided from words this
+    // invocation has already loaded (up, down, woven_word), so skipping the tests is exact: the same 4-byte word lands
+    // in the same texel, and a whole row of them sums to the same picture. GT4_CORE2_DEINT_SKIP_DECISION=1.
+    if (pc.skip_dead_decision != 0u) {
+        const int up_down = channel_excess(up, down);
+        const bool interpolate = pc.mode == 6u || !have_woven ||
+                                 (up_down < 0 && 10 * channel_excess(up, woven_word) >= 9 * up_down);
+        if (!interpolate || bob == woven_word) {
+            imageStore(display_out, p, uvec4(woven_word, 0u, 0u, 0u));
+            return;
+        }
+    }
     bool motion = pc.previous_same >= 4u || pc.previous_other >= 4u || pc.older_other >= 4u;
     if (!motion) {
         motion = channel_excess(up, load_history(pc.previous_same, ivec2(p.x, p.y - s))) > 0 ||

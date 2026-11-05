@@ -3308,6 +3308,173 @@ int TestCore2InterlacedPresent(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_post_field_compose (TASK-182 R8, step 2c): GT4_CORE2_DEINT_FIELD_COMPOSE=1 has the display merge of a
+// deinterlaced frame write straight into that field's deinterlace history image, and reads the last adaptive output from
+// the display image, so both full-display image copies the deinterlace used to record disappear; TASK-182 step 2c
+// (GT4_CORE2_DEINT_SKIP_DECISION=1) has the adaptive kernel skip its motion tests where the words it already loaded
+// decide the saved one. The composed output of the same 480i stream must be identical in all four switch combinations at
+// 1x, 2x, 3x and 10x, for the adaptive (rule 6, the default), the weave and the bob modes; a progressive stream (no
+// deinterlace: the merge writes the display in every run) must be identical too. The counters must show the path each
+// run took: 8 field composes and no copy with the field switch, and no field compose with the copies of the old path
+// (one per field, plus the last-output copy of the adaptive modes).
+int TestCore2PostFieldCompose(const gpu::VulkanHandles& handles) {
+    constexpr uint32_t kWidth = 64;
+    constexpr uint32_t kRows = 32;  // field buffer rows; the frame is 64 rows when interlaced
+    auto lineColour = [](uint32_t line, uint32_t x, uint32_t frame) {
+        // TASK-182 step 2c: rows 4..11 are one flat colour, so the rows above and below a missing row and the
+        // woven row hold the same word there and the motion-test skip of the adaptive modes runs (it must save
+        // that same word).
+        if (line >= 4 && line < 12) return 0x80000000u | 0x005A7B3Cu;
+        const uint32_t moving = x >= kWidth / 2 ? frame * 0x00302010u : 0u;  // the right half changes every VBlank
+        return 0x80000000u | (((line * 7u + 3u) & 0xFFu) | (((line * 13u) & 0xFFu) << 8) | ((x * 3u) << 16)) + moving;
+    };
+    auto upload = [&](writeback::Renderer& renderer, uint32_t fieldLine, uint32_t frame) {
+        std::vector<Qword> stream;
+        stream.push_back(PackedTag(4, false, 0, {0xE}));
+        stream.push_back(Qword{(uint64_t{1} << 16) | (uint64_t{1} << 48), 0x50});  // BITBLTBUF: DBP 0, DBW 1, CT32
+        stream.push_back(Qword{0, 0x51});
+        stream.push_back(Qword{uint64_t{kWidth} | (uint64_t{kRows} << 32), 0x52});
+        stream.push_back(Qword{0, 0x53});
+        const uint32_t qwords = kWidth * kRows / 4;
+        stream.push_back(PackedTag(qwords, true, 2, {}));
+        for (uint32_t i = 0; i < qwords; ++i) {
+            const uint32_t row = (i * 4) / kWidth;
+            const uint32_t x = (i * 4) % kWidth;
+            uint32_t c[4];
+            for (uint32_t k = 0; k < 4; ++k) c[k] = lineColour(2 * row + fieldLine, x + k, frame);
+            stream.push_back(Qword{uint64_t{c[0]} | (uint64_t{c[1]} << 32), uint64_t{c[2]} | (uint64_t{c[3]} << 32)});
+        }
+        renderer.GifTransfer(1, reinterpret_cast<const uint8_t*>(stream.data()), stream.size() * sizeof(Qword));
+    };
+    auto setup = [&](writeback::Renderer& renderer, display::DeinterlaceMode mode, bool interlaced) {
+        writeback::OutputSettings settings;
+        settings.deinterlace = mode;
+        renderer.SetOutputSettings(settings);
+        renderer.WritePrivileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));  // PMODE: RC1, MMOD 1, ALP 255
+        renderer.WritePrivileged(0x12000010u, uint64_t{2} << 13);              // SMODE1: NTSC
+        renderer.WritePrivileged(0x12000020u, interlaced ? 3u : 0u);           // SMODE2: INT and FFMD when interlaced
+        renderer.WritePrivileged(0x12000060u, interlaced ? 1u : 0u);           // SYNCV: an interlaced signal (13.1)
+        renderer.WritePrivileged(0x12000070u, uint64_t{1} << 9);               // DISPFB1: FBP 0, FBW 1, CT32
+        renderer.WritePrivileged(0x12000080u, (uint64_t{3} << 23) | (uint64_t{4 * kWidth - 1} << 32) |
+                                                  (uint64_t{2 * kRows - 1} << 44));  // DISPLAY1: MAGH 3, 64 x 64
+    };
+    struct PostRun {
+        std::vector<std::vector<uint32_t>> frames;
+        std::uint64_t deinterlaced = 0, fieldComposes = 0, copies = 0;
+        std::uint32_t width = 0, height = 0;
+    };
+    auto run = [&](uint32_t scale, display::DeinterlaceMode mode, bool interlaced, bool on, bool skip, PostRun& out) {
+        _putenv_s("GT4_HW_DEINTERLACE_ROWS", "native");
+        _putenv_s("GT4_HW_DEINTERLACE_MOVING", "");
+        _putenv_s("GT4_CORE2_DEINT_FIELD_COMPOSE", on ? "1" : "0");
+        _putenv_s("GT4_CORE2_DEINT_SKIP_DECISION", skip ? "1" : "0");
+        _putenv_s("GT4_HW_CORE", "2");
+        writeback::Renderer renderer;
+        _putenv_s("GT4_HW_CORE", "");
+        std::string error;
+        renderer.SetScale(scale, static_cast<float>(scale));
+        const bool ready = renderer.Init(handles, error);  // reads both TASK-182 switches
+        _putenv_s("GT4_CORE2_DEINT_FIELD_COMPOSE", "");
+        _putenv_s("GT4_CORE2_DEINT_SKIP_DECISION", "");
+        if (!ready) {
+            std::printf("  init failed: %s\n", error.c_str());
+            return false;
+        }
+        setup(renderer, mode, interlaced);
+        for (uint32_t frame = 0; frame < 8; ++frame) {
+            const bool odd = (frame & 1u) != 0;
+            upload(renderer, odd ? 1u : 0u, frame);
+            renderer.SetDisplayField(odd);
+            renderer.Flush();
+            writeback::GpuFrame gpuFrame;
+            std::vector<std::uint32_t> pixels;
+            if (!renderer.ComposeFrameGpu(gpuFrame) || !gpuFrame.valid || !renderer.ReadGpuFrame(gpuFrame, pixels)) {
+                std::printf("  compose failed: %s\n", renderer.LastError().c_str());
+                return false;
+            }
+            out.width = gpuFrame.width;
+            out.height = gpuFrame.height;
+            out.frames.push_back(std::move(pixels));
+        }
+        if (renderer.Failed()) {
+            std::printf("  renderer failed: %s\n", renderer.LastError().c_str());
+            return false;
+        }
+        out.deinterlaced = renderer.GetCounters().deinterlacedFrames;
+        const core2::Core2Counters* counters = renderer.Core2Stats();
+        if (!counters) return false;
+        out.fieldComposes = counters->postFieldComposes;
+        out.copies = counters->postCopies;
+        return true;
+    };
+    int failures = 0;
+    const struct {
+        display::DeinterlaceMode mode;
+        bool interlaced;
+        std::uint64_t copiesPerField;  // the old path: the history copy, plus the last-output copy of modes 5 and 6
+        const char* name;
+    } cases[] = {{display::DeinterlaceMode::Auto, true, 2, "adaptive rule 6"},
+                 {display::DeinterlaceMode::Weave, true, 1, "weave"},
+                 {display::DeinterlaceMode::Bob, true, 1, "bob"},
+                 {display::DeinterlaceMode::Auto, false, 0, "progressive (no deinterlace)"}};
+    auto compare = [](const PostRun& a, const PostRun& b, std::uint64_t& compared, std::uint64_t& differing) {
+        compared = differing = 0;
+        if (a.frames.size() != b.frames.size()) {
+            differing = 1;
+            return;
+        }
+        for (std::size_t frame = 0; frame < a.frames.size(); ++frame) {
+            if (a.frames[frame].size() != b.frames[frame].size()) {
+                ++differing;
+                continue;
+            }
+            for (std::size_t i = 0; i < a.frames[frame].size(); ++i) {
+                ++compared;
+                if (a.frames[frame][i] != b.frames[frame][i]) ++differing;
+            }
+        }
+    };
+    // TASK-182 step 2c adds the third and fourth runs: the motion-test skip alone, and both TASK-182 switches. All four
+    // orders must produce the same composed frames as today's (off, off), at 10x too.
+    for (uint32_t scale : {1u, 2u, 3u, 10u}) {
+        for (const auto& c : cases) {
+            PostRun base, fieldOnly, skipOnly, both;
+            const bool ok = run(scale, c.mode, c.interlaced, false, false, base) &&
+                            run(scale, c.mode, c.interlaced, true, false, fieldOnly) &&
+                            run(scale, c.mode, c.interlaced, false, true, skipOnly) &&
+                            run(scale, c.mode, c.interlaced, true, true, both);
+            std::uint64_t compared = 0, differing = 0, compared2 = 0, differing2 = 0, compared3 = 0, differing3 = 0;
+            compare(base, fieldOnly, compared, differing);
+            compare(base, skipOnly, compared2, differing2);
+            compare(base, both, compared3, differing3);
+            const std::uint64_t fieldFrames = c.interlaced ? 8 : 0;
+            const bool counters = fieldOnly.fieldComposes == fieldFrames && both.fieldComposes == fieldFrames &&
+                                  base.fieldComposes == 0 && skipOnly.fieldComposes == 0 && fieldOnly.copies == 0 &&
+                                  both.copies == 0 && base.copies == 8 * c.copiesPerField &&
+                                  skipOnly.copies == 8 * c.copiesPerField && base.deinterlaced == both.deinterlaced &&
+                                  base.deinterlaced == skipOnly.deinterlaced;
+            std::printf("  %s at %ux: field compose %llu, skip %llu, both %llu differing of %llu, size %ux%u, "
+                        "deinterlaced %llu/%llu, field composes %llu/%llu, display copies %llu/%llu\n",
+                        c.name, scale, static_cast<unsigned long long>(differing),
+                        static_cast<unsigned long long>(differing2), static_cast<unsigned long long>(differing3),
+                        static_cast<unsigned long long>(compared), base.width, base.height,
+                        static_cast<unsigned long long>(base.deinterlaced),
+                        static_cast<unsigned long long>(both.deinterlaced),
+                        static_cast<unsigned long long>(base.fieldComposes),
+                        static_cast<unsigned long long>(both.fieldComposes),
+                        static_cast<unsigned long long>(base.copies), static_cast<unsigned long long>(both.copies));
+            if (!ok || differing != 0 || differing2 != 0 || differing3 != 0 || compared == 0 || !counters ||
+                base.width != both.width || base.height != both.height) {
+                ++failures;
+            }
+        }
+    }
+    _putenv_s("GT4_HW_DEINTERLACE_MOVING", "");
+    _putenv_s("GT4_HW_DEINTERLACE_ROWS", "");
+    std::printf("hw_core2_post_field_compose: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // ---- Core 2 A/B fixtures (IN-407, IN-408) ------------------------------------------------------------------------
 // Core 2 at 2x replays one stream twice, with an A/B switch (an environment variable core 2 reads when it is built)
 // set to "0" and left unset, and compares both runs with each other and with the CPU reference renderer (1x, the GS
@@ -5041,6 +5208,98 @@ int TestCore2SelfTexture(const gpu::VulkanHandles& handles) {
         }
     }
     std::printf("hw_core2_self_texture: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// TASK-182 step 2a (R1): two self-sampling sprites over one 64 x 64 CT32 frame (pages 0-1), after a 64 x 64 pattern
+// texture is drawn into it 1:1. The first samples the whole frame and writes its top-left quarter at half size, so the
+// copied rectangle meets what it draws (the spec 8.8 case the renderer already had). A SCISSOR write flushes its batch
+// under pixels the same sprite would draw anyway, and the second sprite samples the frame's top-right quarter into its
+// bottom-left one, so the copied rectangle is disjoint from what it draws (the oracle's D3 path 2 case: a copy nothing
+// needs, still copied by both paths here).
+cpuref::CaptureWriter Core2SelfCopyDrawCapture() {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kPatternPage = 16;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto tex0 = [](uint64_t page) {  // CT32 64 x 64, TBW 1, TCC, decal
+        return uint64_t{page * 32} | (uint64_t{1} << 14) | (uint64_t{6} << 26) | (uint64_t{6} << 30) |
+               (uint64_t{1} << 34) | (uint64_t{1} << 35);
+    };
+    auto scissor = [](uint32_t x1, uint32_t y1) {  // SCISSOR_1 at (0, 0) with inclusive corner (x1, y1)
+        return uint64_t{x1} << 16 | uint64_t{y1} << 48;
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    ad({(kPatternPage * 32) << 32 | (uint64_t{1} << 48), 0x50, 0, 0x51, uint64_t{64} | (uint64_t{64} << 32), 0x52, 0,
+        0x53});
+    auto texel = [](uint32_t n) {
+        const uint32_t x = n % 64, y = n / 64;
+        return uint64_t{(x * 4u) | ((y * 4u) << 8) | ((((x ^ y) * 4u) & 0xFFu) << 16) | (0x80u << 24)};
+    };
+    std::vector<uint64_t> pixels;
+    for (uint32_t n = 0; n < 64 * 64; n += 2) pixels.push_back(texel(n) | (texel(n + 1) << 32));
+    capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(pixels.size() / 2), true, false, 0, 2, {},
+                                                 pixels));
+    const uint64_t sprite = 6u | (1u << 4) | (1u << 8);  // sprite, TME, FST
+    // The pattern into pages 0-1, under a scissor that encloses every self-sampling sprite.
+    ad({scissor(63, 63), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+        uint64_t{1} << 16, 0x4C, tex0(kPatternPage), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0),
+        0x03, xyz(0, 0), 0x05, uv(64, 64), 0x03, xyz(64, 64), 0x05});
+    // Sprite 1: samples pages 0-1 whole (they are the frame), writes their top-left 32 x 32 at half size: the copy meets
+    // the draw.
+    ad({tex0(0), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(64, 64),
+        0x03, xyz(32, 32), 0x05});
+    // A scissor the sprites already fit in, written between them: it flushes the batch before it without changing a pixel,
+    // so each sprite is a batch of its own.
+    ad({scissor(31, 63), 0x40});
+    // Sprite 2: samples texels 32..56 and writes pixels 4..27, so its sampled rectangle (with the copy's border) meets
+    // nothing it draws: no copy at all (the oracle's D3 path 2, which the renderer already takes).
+    ad({tex0(0), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(32, 32), 0x03, xyz(4, 4), 0x05, uv(56, 56),
+        0x03, xyz(28, 28), 0x05});
+    ad({scissor(63, 63), 0x40});
+    // Sprite 3: a 1:1 pass over the frame's bottom-right 16 x 16 (GT4's luminance reduction): the copy meets the draw
+    // again, and it is the second copy of the stream.
+    ad({tex0(0), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(48, 48), 0x03, xyz(48, 48), 0x05, uv(64, 64),
+        0x03, xyz(64, 64), 0x05});
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_self_copy_draw (TASK-182 step 2a, R1): GT4_CORE2_SELF_COPY_DRAW=1 draws the spec 8.8 self copy inside the open
+// render pass (core2_self_copy.frag) instead of running vkCmdCopyImage after closing it. The stream has two copies (one
+// meeting the drawn rectangle at half size, one a 1:1 pass) and one self-sampling sprite whose sampled rectangle is
+// disjoint from what it draws and so needs no copy in either path. The two runs must give the same image and the same GS
+// memory at 1x and at scale, and the drawn path must be the one that ran.
+int TestCore2SelfCopyDraw(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    const cpuref::CaptureWriter capture = Core2SelfCopyDrawCapture();
+    for (uint32_t scale : {1u, 2u, 3u, 12u}) {
+        const std::string tag = " at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(
+            handles, ("self copy draw" + tag).c_str(), capture, 1, "GT4_CORE2_SELF_COPY_DRAW", scale == 1,
+            [](const Core2AbRun& off, const Core2AbRun& on) {
+                std::printf("  copies %llu (transfer run %llu), of which drawn in the pass %llu (transfer run %llu)\n",
+                            static_cast<unsigned long long>(on.stats.selfCopies),
+                            static_cast<unsigned long long>(off.stats.selfCopies),
+                            static_cast<unsigned long long>(on.stats.selfCopyDraws),
+                            static_cast<unsigned long long>(off.stats.selfCopyDraws));
+                // Two self-sampling batches need a copy, both drawn in the pass with the switch on and neither with it off.
+                return on.stats.selfCopies == 2 && on.stats.selfCopyDraws == 2 && off.stats.selfCopies == 2 &&
+                               off.stats.selfCopyDraws == 0
+                           ? 0
+                           : 1;
+            },
+            false, scale, "1");
+    }
+    std::printf("hw_core2_self_copy_draw: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
 
@@ -7255,6 +7514,7 @@ int main(int argc, char** argv) {
     if (name == "hw_tone_hle_exact") return TestToneHleExact(handles);
     if (name == "hw_scale_interlaced_present") return TestScaleInterlacedPresent(handles);
     if (name == "hw_core2_interlaced_present") return TestCore2InterlacedPresent(handles);
+    if (name == "hw_core2_post_field_compose") return TestCore2PostFieldCompose(handles);
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_palette_segments") return TestCore2PaletteSegments(handles);
@@ -7280,6 +7540,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);
+    if (name == "hw_core2_self_copy_draw") return TestCore2SelfCopyDraw(handles);
     if (name == "hw_core2_texture_replacement") return TestCore2TextureReplacement(handles);
     if (name == "hw_core2_overlap_order") return TestCore2OverlapOrder(handles);
     if (name == "hw_core2_point_quads") return TestCore2PointQuads(handles);

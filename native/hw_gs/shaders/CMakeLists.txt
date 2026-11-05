@@ -122,6 +122,9 @@ hw_add_shader(core2_present_scale "${HW_SHADER_DIR}/core2_present_scale.comp" co
 hw_add_shader(hw_hud_vertex "${HW_SHADER_DIR}/hw_hud.vert" vert)
 hw_add_shader(hw_hud_fragment "${HW_SHADER_DIR}/hw_hud.frag" frag)
 hw_add_shader(core2_fill "${HW_SHADER_DIR}/core2_fill.comp" comp)
+# TASK-182 R1: the self copy of a self-sampling batch drawn inside the open render pass (GT4_CORE2_SELF_COPY_DRAW).
+hw_add_shader(core2_self_copy_vertex "${HW_SHADER_DIR}/core2_self_copy.vert" vert)
+hw_add_shader(core2_self_copy "${HW_SHADER_DIR}/core2_self_copy.frag" frag)
 hw_add_shader(core2_clut_target "${HW_SHADER_DIR}/core2_clut_target.comp" comp)
 hw_add_shader(core2_materialize "${HW_SHADER_DIR}/core2_materialize.comp" comp)
 hw_add_shader(hw_blend_exact "${HW_SHADER_DIR}/hw_blend_exact.comp" comp)

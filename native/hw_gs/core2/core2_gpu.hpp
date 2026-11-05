@@ -74,6 +74,7 @@ struct Core2GpuStats {
     std::uint64_t recycledImages = 0;  // B4: images taken over from finished ones instead of allocated
     std::uint64_t selfTextureBatches = 0;  // batches whose texture is the colour or depth image they draw into
     std::uint64_t selfCopies = 0;          // spec 8.8: of those, batches that sampled a copy taken before them
+    std::uint64_t selfCopyDraws = 0;       // TASK-182 R1: of those copies, ones drawn inside the open pass (GT4_CORE2_SELF_COPY_DRAW)
     std::uint64_t selfCopyPixels = 0;      // output pixels those copies moved
     std::uint64_t draws = 0;
     std::uint64_t patches = 0;
@@ -84,6 +85,11 @@ struct Core2GpuStats {
     std::uint64_t tones = 0;
     std::uint64_t composes = 0;
     std::uint64_t deinterlaces = 0;
+    // TASK-182 R8 (GT4_CORE2_DEINT_FIELD_COMPOSE=1): display merges written straight into the field's deinterlace history
+    // image, and full-display image copies the deinterlace recorded (two per deinterlaced VBlank without the switch, none
+    // with it).
+    std::uint64_t fieldComposes = 0;
+    std::uint64_t postCopies = 0;
     std::uint64_t fxaaFrames = 0;
     std::uint64_t presentScales = 0;  // IN-432: frames resampled to the window rectangle
     // IN-437: pipelines specialised per draw state (GT4_CORE2_SPECIALIZE).
@@ -108,10 +114,10 @@ struct Core2GpuStats {
     std::uint64_t gpuNs = 0;            // B4: GPU time of finished submissions (timestamps, first to last command)
     std::uint64_t timedSubmissions = 0;
     std::uint64_t drawPassNs = 0;
-    // TASK-182 (GT4_CORE2_GPU_CATEGORIES=1): GPU time by kind of work, nanoseconds: draw passes, compose and deinterlace,
-    // present, uploads and copies, compute (fills, decodes, patches, tone), readback copies, and the start gap (the recording's
-    // start to its first mark).
-    std::uint64_t catNs[7] = {};
+    // TASK-182 (GT4_CORE2_GPU_CATEGORIES=1): GPU time by kind of work, nanoseconds: draw passes, compose, deinterlace,
+    // FXAA, present, uploads and copies, compute (fills, decodes, patches, tone), readback copies, and the start gap (the
+    // recording's start to its first mark). Kept in the order of Gpu::Impl's kCat* kinds.
+    std::uint64_t catNs[9] = {};
     std::uint64_t primitives = 0;          // B4: pipeline statistics of finished submissions (input primitives,
     std::uint64_t fragments = 0;           // fragment shader invocations, compute shader invocations)
     std::uint64_t computeInvocations = 0;
@@ -269,15 +275,28 @@ public:
               std::string &error);
 
     // 5.3: the display merge. `words` is the compose push block (28 words, core2_compose.comp); sources are the
-    // images of circuits 1 and 2 (kNoImage: not shown). The result is the display image (RGBA8 words, GENERAL).
+    // images of circuits 1 and 2 (kNoImage: not shown). The result is the display image (RGBA8 words, GENERAL), or the
+    // deinterlace field image when `intoField` is set (TASK-182 R8: PrepareDeinterlace chose it for this VBlank).
     bool Compose(const std::uint32_t words[28], ImageId sourceA, ImageId sourceB, std::uint32_t outWidth,
-                 std::uint32_t outHeight, std::string &error);
+                 std::uint32_t outHeight, bool intoField, std::string &error);
+    // The image the post chain last produced: the display image, where the deinterlace writes its result over the merge
+    // (with GT4_CORE2_DEINT_FIELD_COMPOSE=1 the merge itself went into a field history image). Fxaa, PresentScale and
+    // ReadDisplay read it.
     std::uint64_t DisplayImage() const;  // VkImage
-    // 13.4 at scale (IN-405): deinterlaces the top-left step.width x step.height pixels of the display image in
-    // place with the old core's kernel and step (hw_deinterlace_scaled.comp: the display image is first copied into
-    // history entry `current`). The history images (four merge images, the woven image, the last adaptive output)
-    // follow the display size; the caller keeps which entry holds which field.
-    bool Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error);
+    // TASK-182 R8 (GT4_CORE2_DEINT_FIELD_COMPOSE=1): creates the history, woven and output images of this deinterlace
+    // step at step.width x step.height and remembers the history entry this field's display merge composes into, so the
+    // full-display copy of the composed image into the history is not needed. False (with an error) on a bad step.
+    bool PrepareDeinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error);
+    // TASK-182 R8: the display image still holds the last deinterlaced output and is about to be overwritten by a merge
+    // (a progressive frame, or the kernel's rare fallback to the last output): copies it into the deinterlace output
+    // image, which is what the deinterlace reads as `previous_output` without the field-compose order.
+    bool SnapshotLastOutput(std::string &error);
+    // 13.4 at scale (IN-405): deinterlaces the top-left step.width x step.height pixels of the display image in place
+    // with the old core's kernel and step (hw_deinterlace_scaled.comp). Without `fieldComposed` the display image is
+    // first copied into history entry `current`; with it the merge already wrote that entry and the last adaptive
+    // output is still in the display image (no copy either way). The history images (four merge images, the woven
+    // image) follow the display size; the caller keeps which entry holds which field.
+    bool Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, bool fieldComposed, std::string &error);
     // 13.5 (IN-376, IN-405 in core 2): FXAA of the display image's top-left width x height pixels into the FXAA image.
     bool Fxaa(std::uint32_t width, std::uint32_t height, std::string &error);
     // IN-432: the composed frame (`fromFxaa`: the FXAA output) of width x height resampled to outWidth x outHeight
@@ -305,6 +324,12 @@ public:
     // TASK-182 (GT4_CORE2_BARRIER_TRACE=1): fragment barriers, render pass ends, flushes, submissions and descriptor traffic by
     // reason, cumulative, one line per row; empty without the switch.
     std::string SyncReport(std::uint64_t vblanks) const;
+    // TASK-182 step 2a (GT4_CORE2_BARRIER_TRACE=1): a batch that samples the colour or depth target it draws into and needs
+    // no copy of it (the oracle's D3 path 2). `disjoint`: the sampled rectangle and the drawn one do not meet, so the batch
+    // reads the target itself; `frameUntouched`: the batch keeps every lane of the frame, so its own writes change nothing
+    // it reads (IN-495). Counted in the sync report; does nothing without the switch.
+    enum class SelfSampleNoCopy { Disjoint, FrameUntouched };
+    void NoteSelfSampleNoCopy(SelfSampleNoCopy why);
 
 private:
     struct Impl;

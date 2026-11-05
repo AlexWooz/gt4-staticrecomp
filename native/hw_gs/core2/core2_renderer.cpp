@@ -485,6 +485,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     }();
     const bool presentResample_ = std::getenv("GT4_CORE2_PRESENT_FILTER") == nullptr ||
                                   std::strcmp(std::getenv("GT4_CORE2_PRESENT_FILTER"), "bilinear") != 0;
+    // TASK-182 R8: the deinterlaced frame's display merge writes this field's history image directly, so neither of the
+    // two full-display copies the deinterlace used to record is needed (GT4_CORE2_DEINT_FIELD_COMPOSE=1). Off by default:
+    // the old order is the A/B reference.
+    const bool deintFieldCompose_ = std::getenv("GT4_CORE2_DEINT_FIELD_COMPOSE") != nullptr &&
+                                    std::strcmp(std::getenv("GT4_CORE2_DEINT_FIELD_COMPOSE"), "0") != 0;
+    // TASK-182 step 2c: the adaptive deinterlace skips its motion tests where the words it has already loaded decide
+    // the saved word (GT4_CORE2_DEINT_SKIP_DECISION=1). Exact; off by default, the full test path is the A/B reference.
+    const bool deintSkipDecision_ = std::getenv("GT4_CORE2_DEINT_SKIP_DECISION") != nullptr &&
+                                    std::strcmp(std::getenv("GT4_CORE2_DEINT_SKIP_DECISION"), "0") != 0;
     const float rcasSharpness_ = std::getenv("GT4_CORE2_FSR_SHARPNESS") != nullptr
                                      ? std::exp2(-std::max(0.0f, static_cast<float>(std::atof(std::getenv("GT4_CORE2_FSR_SHARPNESS")))))
                                      : 0.0f;
@@ -507,6 +516,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     DeinterlaceHistory deinterlace_;
     // A second compose in the same VBlank (a dump next to the present) returns the first, so the history moves once.
     std::uint64_t composedVblank_ = ~std::uint64_t{0};
+    // TASK-182 R8 (GT4_CORE2_DEINT_FIELD_COMPOSE=1): the display image holds the last deinterlaced output (no merge
+    // wrote it since), so the deinterlace can read `previous_output` from it instead of a copied image.
+    bool displayHoldsLastOutput_ = false;
     writeback::GpuFrame lastFrame_;
 
     std::vector<Target> targets_;
@@ -4546,6 +4558,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             namespace gf = gpu::gpufield;
             const bool frameUntouched = draw.texture == draw.frame && draw.texture != draw.depth &&
                                         t.state.fields[gf::Fbmsk] == 0xFFFFFFFFu;
+            // TASK-182 step 2a: the two ways a self-sampled batch needs no copy (the oracle's D3 path 2 and IN-495), counted
+            // for the sync trace. Only the copy path below ever reaches Gpu::Draw as `selfCopy`.
+            if (selfCopy_ && (draw.texture == draw.frame || draw.texture == draw.depth)) {
+                if (frameUntouched) {
+                    gpu_.NoteSelfSampleNoCopy(Gpu::SelfSampleNoCopy::FrameUntouched);
+                } else if (Intersect(textureFootprint_, t.rect).Empty()) {
+                    gpu_.NoteSelfSampleNoCopy(Gpu::SelfSampleNoCopy::Disjoint);
+                }
+            }
             if (selfCopy_ && !frameUntouched && (draw.texture == draw.frame || draw.texture == draw.depth) &&
                 !Intersect(textureFootprint_, t.rect).Empty()) {
                 const PixelRect copy = Intersect(textureFootprint_,
@@ -4701,6 +4722,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             stats.specialisedBatches = gpu_.Stats().specialisedBatches;
             stats.computeFills = gpu_.Stats().computeFills;
             stats.selfCopies = gpu_.Stats().selfCopies;
+            stats.selfCopyDraws = gpu_.Stats().selfCopyDraws;
         }
         if (!drawn) {
             Fail(error);
@@ -5023,9 +5045,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return true;
     }
 
-    // 13.4 at scale (IN-405): the old core's history rules around Gpu::Deinterlace.
-    bool DeinterlaceGpu(display::DeinterlaceMode mode, int vblankField, std::uint32_t width, std::uint32_t height,
-                        std::string &error) {
+    // 13.4 at scale (IN-405): the old core's history rules around Gpu::Deinterlace. The step is planned before the
+    // display merge, because with GT4_CORE2_DEINT_FIELD_COMPOSE=1 the merge writes this field's history image directly.
+    void PlanDeinterlace(display::DeinterlaceMode mode, int vblankField, std::uint32_t width, std::uint32_t height,
+                         gpu::GpuDrawer::DeinterlaceStep &step) {
         DeinterlaceHistory &h = deinterlace_;
         if (h.width != width || h.height != height) {
             h.Clear();
@@ -5033,11 +5056,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             h.height = height;
         }
         const int rowParity = (vblankField ^ (settings_.bottomFieldFirst ? 1 : 0)) & 1;
-        gpu::GpuDrawer::DeinterlaceStep step;
         step.width = width;
         step.height = height;
         step.rowParity = static_cast<std::uint32_t>(rowParity);
         step.field = static_cast<std::uint32_t>(vblankField & 1);
+        step.skipDeadDecision = deintSkipDecision_ ? 1u : 0u;
         // IN-386: one output row per algorithm row (the reference); GT4_HW_DEINTERLACE_ROWS=native: one native row.
         const bool nativeRows = std::getenv("GT4_HW_DEINTERLACE_ROWS") != nullptr &&
                                        std::strcmp(std::getenv("GT4_HW_DEINTERLACE_ROWS"), "native") == 0;
@@ -5088,11 +5111,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 break;
             }
         }
-        if (!gpu_.Deinterlace(step, error)) return false;
+    }
+
+    bool RunDeinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, bool fieldComposed, std::string &error) {
+        if (!gpu_.Deinterlace(step, fieldComposed, error)) return false;
+        DeinterlaceHistory &h = deinterlace_;
         if (step.mode >= 5) {
-            h.valid[current] = true;  // only the adaptive mode keeps a field history
-            h.parity[current] = rowParity;
-            h.age[current] = ++h.clock;
+            h.valid[step.current] = true;  // only the adaptive mode keeps a field history
+            h.parity[step.current] = static_cast<int>(step.rowParity);
+            h.age[step.current] = ++h.clock;
             h.output = true;
         }
         if (step.mode == 2 || step.mode == 3) h.woven = true;
@@ -5199,10 +5226,44 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             words[26 + i] = c.display_height;
         }
         std::string error;
-        bool composed = gpu_.Compose(words, sources[0], sources[1], outWidth, outHeight, error);
+        // TASK-182 R8: the merge of a deinterlaced frame is written straight into this field's history image, so the
+        // copy of the composed display into the history and the copy of the deinterlaced display into a separate
+        // "last output" image both disappear (Gpu::PrepareDeinterlace and Gpu::Deinterlace with fieldComposed). The one
+        // case the new order cannot serve is the kernel's fallback to the last output of an earlier field (no history
+        // entry of the opposite parity, `haveOutput`): the display image is that output only while every VBlank since
+        // the last deinterlace composed into a field. Such a VBlank takes the old order instead, so the result stays
+        // bit-identical; with alternating fields and a history cleared on a size change it does not arise (Hyp).
+        gpu::GpuDrawer::DeinterlaceStep step;
+        bool fieldComposed = false;
+        if (interlaced && deinterlace) {
+            PlanDeinterlace(effective, vblankField, outWidth, outHeight, step);
+            const bool needsLastOutput = step.previousOther >= gpu::kGpuDeinterlaceHistory && step.haveOutput;
+            fieldComposed = deintFieldCompose_ && !needsLastOutput;
+            if (fieldComposed) {
+                if (!gpu_.PrepareDeinterlace(step, error)) {
+                    Fail(error);
+                    return false;
+                }
+            }
+        }
+        // TASK-182 R8: a merge that writes the display image ends the "the display is the last deinterlaced output"
+        // state. While it lasts the deinterlace reads `previous_output` from the display; otherwise the old order's
+        // output image has to hold that output, so it is copied once here (a transition frame: 480i -> 480p, or the
+        // kernel's rare `previousOther >= 4` fallback above).
+        if (deintFieldCompose_ && displayHoldsLastOutput_ && !fieldComposed) {
+            if (!gpu_.SnapshotLastOutput(error)) {
+                Fail(error);
+                return false;
+            }
+            displayHoldsLastOutput_ = false;
+        }
+        bool composed = gpu_.Compose(words, sources[0], sources[1], outWidth, outHeight, fieldComposed, error);
         if (composed && interlaced) {
             if (offsetRows != 0) counters.interlaceOffsetFrames++;
-            if (deinterlace) composed = DeinterlaceGpu(effective, vblankField, outWidth, outHeight, error);
+            if (deinterlace) {
+                composed = RunDeinterlace(step, fieldComposed, error);
+                if (composed) displayHoldsLastOutput_ = true;
+            }
         }
         const bool fxaa = composed && fxaa_;
         if (fxaa) composed = gpu_.Fxaa(outWidth, outHeight, error);  // IN-376
@@ -5558,11 +5619,11 @@ void Renderer::Flush() {
         last = now;
         std::fprintf(stderr, "[core2] wall ms/vblank=%.2f (the whole emulator, GS thread included)\n", wall);
         if (std::getenv("GT4_CORE2_GPU_CATEGORIES") != nullptr) {  // TASK-182
-            static std::uint64_t lastCat[7] = {}, lastBusy = 0;
+            static std::uint64_t lastCat[9] = {}, lastBusy = 0, lastPostCopies = 0;
             const Core2GpuStats &gs = s.gpu_.Stats();
-            double ms[7];
+            double ms[9];
             double sum = 0;
-            for (int k = 0; k < 7; ++k) {
+            for (int k = 0; k < 9; ++k) {
                 ms[k] = static_cast<double>(gs.catNs[k] - lastCat[k]) / 600.0e6;
                 lastCat[k] = gs.catNs[k];
                 sum += ms[k];
@@ -5570,10 +5631,14 @@ void Renderer::Flush() {
             const double busy = static_cast<double>(gs.gpuNs - lastBusy) / 600.0e6;
             lastBusy = gs.gpuNs;
             std::fprintf(stderr,
-                         "[core2] gpu categories ms/vblank draw_passes=%.2f compose_deinterlace=%.2f present=%.2f uploads_copies=%.2f "
-                         "compute=%.2f readback=%.2f start_gap=%.2f unattributed=%.2f (gpu_busy=%.2f, the sum of each submission's "
-                         "first-to-last timestamp)\n",
-                         ms[0], ms[1], ms[2], ms[3], ms[4], ms[5], ms[6], busy - sum, busy);
+                         "[core2] gpu categories ms/vblank draw_passes=%.2f compose=%.2f deinterlace=%.2f fxaa=%.2f "
+                         "present=%.2f compose_deinterlace=%.2f uploads_copies=%.2f compute=%.2f readback=%.2f "
+                         "start_gap=%.2f unattributed=%.2f (gpu_busy=%.2f, the sum of each submission's first-to-last "
+                         "timestamp) field_composes=%llu post_copies=%.2f/vblank\n",
+                         ms[0], ms[1], ms[2], ms[3], ms[4], ms[1] + ms[2], ms[5], ms[6], ms[7], ms[8], busy - sum, busy,
+                         static_cast<unsigned long long>(gs.fieldComposes),
+                         static_cast<double>(gs.postCopies - lastPostCopies) / 600.0);
+            lastPostCopies = gs.postCopies;
         }
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
@@ -5774,6 +5839,8 @@ const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.sheensEarly = impl_->gpu_.Stats().sheensEarly;
     impl_->stats.drains = impl_->gpu_.Stats().drains;
     impl_->stats.afterWaitSubmissions = impl_->gpu_.Stats().afterWaitSubmissions;
+    impl_->stats.postFieldComposes = impl_->gpu_.Stats().fieldComposes;
+    impl_->stats.postCopies = impl_->gpu_.Stats().postCopies;
     return impl_->stats;
 }
 bool Renderer::Failed() const { return impl_->failed_; }
