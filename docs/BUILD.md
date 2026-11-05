@@ -3348,3 +3348,24 @@ file the donor's register stub answers as before, so a build with the capsule ru
 - **Checks:** CTest `native_usb_dfp` and `native_wheel`; Python `test_usb_runtime.py` (a synthetic donor, plus the pin and the
   real donor when `private/` is present); `private/task134-tools/gates6.sh` with v2.00 and Spec II builds that include the
   capsule, against the rc14 PGO builds.
+
+## 1.3.0-rc15 test build (slice410, 2026-11-05)
+
+Plain builds (no PGO, no ThinLTO) of both games from `release/1.3.0-rc15`, for the owner's racing wheel test; uploaded as a
+GitHub draft only.
+
+- **Configure:** the rc14 recipe values (`build/recipes/t134-spec2.CMakeCache.txt` and `t146-v200.CMakeCache.txt` of the TASK-134
+  worktree): the slice407 EE libraries (`build/t134-ee-*-rc14b`, `b7600c5d...` Spec II, `c4c4ef5e...` v2.00), port slice200,
+  shaders slice153, VU1 slice397, VU0 slice394 (v2.00 image slice160, Spec II image slice390), IPU slice365, license guard
+  slice376, memory card slice200, SPU2 slice396, runtime capsules slice262 (v2.00) and slice276 (Spec II), `GT4_SSE41=ON`,
+  `GT4_HW_THINLTO=OFF`, plus `GT4_USB_RUNTIME_SOURCE=private/slice409-usb-runtime` (TASK-181).
+- **Pins:** `scripts/pin_task134_build.py 410 --base 407 --target gt4|spec2 --exe private/slice410-game/<exe> --library
+  private/slice407-ee-<game>/ps2game.lib --usb-capsule private/slice409-usb-runtime` (the `branch` field then set to
+  `release/1.3.0-rc15`): `docs/inputs/slice410-pcsx2.json` (v2.00, `7060f8bf...`) and `slice410-spec2.json` (Spec II,
+  `a4d84180...`). Distribution `private/slice410-dist-130-rc15` (`scripts/make_distribution.py ... --second-exe`).
+- **Launcher and installer:** `launcher/tools/build-release.ps1 -Label rc15` (and `-Portable`), `CARGO_TARGET_DIR` in the
+  worktree's `build/`; copies in `private/slice410-launchers-rc15`; makensis `/DVERSION=1.3.0 /DLABEL=rc15` with SDL3
+  `private/tooling/sdl3-3.4.18/runtime/SDL3.dll` and `private/release-100-webview2/MicrosoftEdgeWebview2Setup.exe`;
+  `scripts/make_portable_zip.py --version 1.3.0-rc15`; output `private/release-130-rc15-out`.
+- **Checks:** CTest 318/318 on each game (q07 skipped), Python 802 (57 skipped), `gates6.sh` against the rc14 PGO builds
+  (wrong=0).
