@@ -3569,8 +3569,22 @@ pass.
 
 **Implementer:** OpenCode DeepSeek, for Android test4.
 
-**Step 2c (in progress, DeepSeek):** `GT4_CORE2_DEINT_NATIVE_DECISION`. The deinterlace decides once per native pixel
-instead of in every output sub-pixel, cutting reads about scale² (36x at 6x). Exact.
+**Step 2c done (8d25d4e4, DeepSeek, reviewed).**
+- **Rejected:** the per-native-pixel decision would change 0.49% of the missing-row pixels on a real menu frame, so it is
+  not exact and was not built.
+- **Built instead:** `GT4_CORE2_DEINT_SKIP_DECISION`, default off. It skips the motion tests that cannot change the word
+  (exact by construction).
+- **Desktop 10x menu:** deinterlace 5.09 to 3.10 ms (-39%); with field compose, -42%; gpu_busy -25%.
+- **Gates:** identity at 1x/2x/3x/10x (fixture, menu and race dumps, flare hashes); CTest 321/321 (1 skipped).
+- **Also fixed:** a latent core-1 push-constant size bug.
+
+**Step 3 (in progress, DeepSeek):** cheap exact asynchrony from `STUDY-ASYNC-READBACK.md`.
+- K-rule defaults (`GT4_CORE2_SUBMIT_AFTER_WAIT`) on tile and unified-memory GPUs.
+- A newest-fence wait with an optional bounded spin.
+
+**Owner (2026-11-05):** "implement all of it", cheapest first.
+- The exact switches go ON for Android in the next APK.
+- On Windows they stay off until the owner's in-game tests.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
