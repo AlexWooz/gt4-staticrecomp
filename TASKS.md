@@ -3373,7 +3373,9 @@ PR #205 was reviewed (in scope, no GPL, the game identical without a wheel file:
 CTest 302/303) and **merged into main on 2026-11-05 (a4a3a5b6, owner)**, with a thank-you comment. The fixes the review
 asked for are part of this task:
 - **High:** a `wheel.toml` without `mode` turns on the withdrawn 1.2.x pad bridge. Make `dfp` the default and remove pad mode,
-  keeping SDL enumeration, device ownership, sources and calibration.
+  keeping SDL enumeration, device ownership, sources and calibration. **Owner (2026-11-05): the native DFP path only; no pad
+  bridge. Any wheel goes through DFP: auto-mapped if known, mapped by hand if not. Any other mode stays off and is built only
+  if players ask.**
 - **High:** the USB capsule (`GT4_USB_RUNTIME_SOURCE`) must be pinned (`private/sliceNNN-usb-runtime` plus a `docs/inputs` pin) and
   built into both games.
 - **Medium:** update only the force effects that changed (about 400 DirectInput calls per second today, on the emulation
