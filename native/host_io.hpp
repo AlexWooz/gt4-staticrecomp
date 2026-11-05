@@ -44,6 +44,9 @@ public:
   ControllerInput &operator=(const ControllerInput &) = delete;
   PadState poll(bool focused, std::uint16_t keyboard_buttons);
   void rumble(std::uint16_t value);
+  // SDL instance IDs the wheel subsystem (wheel.hpp) owns: the gamepad path never opens them, so a wheel that SDL also
+  // lists as a gamepad is not read twice.
+  void set_excluded_devices(std::vector<std::uint32_t> ids);
   void stop();
   gt4::pad::Backend backend() const { return backend_; }
 
@@ -53,7 +56,9 @@ private:
   void rumble_xinput(std::uint16_t value);
   void rumble_sdl(std::uint16_t value);
   void close_sdl_pad();
+  bool is_excluded(std::uint32_t instance) const;
 
+  std::vector<std::uint32_t> excluded_devices_;
   gt4::controls::ControlMap map_;
   gt4::pad::Backend backend_;
   DWORD slot_ = XUSER_MAX_COUNT;

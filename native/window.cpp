@@ -6,6 +6,7 @@
 #include "gpu.hpp"
 #include "gs/gs.hpp"
 #include "host_io.hpp"
+#include "wheel.hpp"
 #include "native_vulkan.hpp"
 #include "ps2/system.hpp"
 #include "perf_probe.hpp"
@@ -218,6 +219,11 @@ void stop_window_watch() {
   if (window_watch.joinable()) window_watch.join();
 }
 ControllerInput *controller = nullptr;
+// Racing wheel bridge (native/wheel.hpp, from the withdrawn TASK-121 work): wheel, pedals, handbrake and shifter
+// devices mapped onto the DualShock 2 state. Disabled unless a wheel.toml with enabled = true is found.
+gt4::wheel::WheelInput *wheel_controller = nullptr;
+gt4::wheel::WheelConfig active_wheel;
+bool has_explicit_wheel_file = false;
 gt4::window_mode::ToggleState fullscreen_state;
 #ifdef GT4_SHAPE_CAPTURE
 std::unique_ptr<gt4::observation::CaptureControl> capture;
@@ -468,6 +474,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   }
   if (message == WM_KILLFOCUS && controller) {
     controller->stop();
+    if (wheel_controller)
+      wheel_controller->stop();
     if (ps2::g_options.presses.empty() && !input_player)
       apply_pad({});
   }
@@ -683,11 +691,20 @@ void on_vblank() {
   if (input_player) {
     apply_pad(input_player->at(input_vblank));
   } else if (ps2::g_options.presses.empty()) {
-    const PadState pad = controller->poll(focused, buttons);
+    // The wheel resolves which devices it owns first, so the gamepad path never reads them too.
+    if (wheel_controller) {
+      wheel_controller->prepare(focused);
+      controller->set_excluded_devices(wheel_controller->owned_device_ids());
+    }
+    PadState pad = controller->poll(focused, buttons);
+    if (wheel_controller)
+      wheel_controller->merge_prepared(pad);
     apply_pad(pad);
     input_recorder.vblank(input_vblank, pad);
     if (focused)
       controller->rumble(ps2::pad_rumble());
+    if (wheel_controller)
+      wheel_controller->rumble(focused, ps2::pad_rumble());
   }
   if (audio_output) {
     // Paced mode: move ring data to the device without waiting.
@@ -768,6 +785,15 @@ bool open_window(bool fullscreen) {
     return false;
   }
   keyboard_keys = gt4::controls::keyboard_bindings(active_controls);
+  try {
+    active_wheel = gt4::wheel::load_wheel_from_environment(&has_explicit_wheel_file);
+  } catch (const gt4::wheel::ConfigError &error) {
+    std::fprintf(stderr, "[wheel] invalid wheel file, game not started: %s\n", error.what());
+    return false;
+  }
+  std::fprintf(stderr, "[wheel] %s (enabled=%s, preset=%s)\n",
+               has_explicit_wheel_file ? "wheel.toml found" : "no wheel.toml", active_wheel.enabled ? "true" : "false",
+               active_wheel.preset.c_str());
   // TASK-080: an invalid GT4_DISPLAY_ASPECT, GT4_OUTPUT_SIZE or GT4_ASPECT_FOV_EXTRA stops the start here (prints and
   // exits).
   gt4::display_aspect::configured_setting();
@@ -874,6 +900,8 @@ void flush_cards_now(); // memcard capsule sio2.cpp (scripts/prepare_memcard_flu
 
 int run_window(const std::function<int()> &emulate) {
   ControllerInput input(active_controls, input_backend);
+  gt4::wheel::WheelInput wheel_input(active_wheel, has_explicit_wheel_file);
+  wheel_controller = &wheel_input;
   controller = &input;
   const auto cleanup = [&]() {
     stop_window_watch();
@@ -895,6 +923,8 @@ int run_window(const std::function<int()> &emulate) {
     ps2::set_audio_sink({});
     ps2::g_options.on_vblank = {};
     input.stop();
+    wheel_input.stop();
+    wheel_controller = nullptr;
     controller = nullptr;
     surface_attached = false;
     if (IsWindow(game_window))
