@@ -3317,6 +3317,19 @@ Hong Kong at 6x on the Avell). Needs the address of the loaded course id (gt4-de
 side to the renderer, and a per-track table with its own identity checks. State: recorded; general optimisations first
 (TASK-168b palette segments, the per-frame download study).
 
+### TASK-178 — CoreGS 2.0: restart the GPU right after the per-frame flare read (rc15 optimisation; 2026-11-04)
+
+Study: `docs/hw-renderer-spec/STUDY-FRAME-DOWNLOAD-COST.md`. The per-frame download is GT4's light-flare visibility table
+(64x8 PSMCT32, 2 KiB; lamps, headlights and the sun), read at the end of the world pass. The copy is tiny; the cost is that
+the GS worker waits for the whole GPU queue, which grows with the scale, and the GPU then idles until the next submission.
+Ceiling of the whole wait: about 4.1 ms/VBlank in Hong Kong and 2.0 at Motegi (6x, Avell), but Hong Kong at 6x is also
+GPU-bound (about 15 ms of GPU work per VBlank). First step (O1, exact): submit once K batches after any waited submission
+(`GT4_CORE2_SUBMIT_AFTER_WAIT=K`, 0 = off), plus idle, I_cpu and reply-hash counters, and three traces (a GPU profile on a
+Motegi sun frame and on Hong Kong, the Motegi store-before-write readback, Hong Kong's readback targets). Branch
+`task/178-submit-after-wait`. Keep it only with a measured gain (at least 0.3 ms/VBlank on two scenes on the Avell). State:
+in progress. TASK-168 found on the Avell: no gain as built (segments are split back for GT4's T8-over-target batches); the
+fix is TASK-168b (`task/168b-segments-fix`). Owner (2026-11-04): no hurry; keep optimising, change approach when one fails.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
