@@ -171,6 +171,11 @@ pub fn vendor_name(vendor_id: u32) -> String {
         0x1002 => "AMD".to_string(),
         0x8086 => "Intel".to_string(),
         0x1414 => "Microsoft".to_string(),
+        // TASK-180: the phones' GPU vendors and Mesa (the emulator's Lavapipe).
+        0x5143 => "Qualcomm".to_string(),
+        0x13B5 => "ARM".to_string(),
+        0x1010 => "Imagination".to_string(),
+        0x10005 => "Mesa".to_string(),
         0 => "unknown".to_string(),
         other => format!("0x{other:04X}"),
     }

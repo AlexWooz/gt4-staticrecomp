@@ -69,7 +69,7 @@ if(ANDROID_ABI STREQUAL "x86_64")
     add_compile_options(-msse4.1)  # the Windows floor (SSE4.1); the x86-64 Android ABI guarantees SSE4.2
 endif()
 # Android 15 and later phones may use 16 KB pages: every native library is aligned for them.
-set(GT4_ANDROID_LINK_FLAGS -Wl,-z,max-page-size=16384 -Wl,--no-undefined)
+set(GT4_ANDROID_LINK_FLAGS -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,--no-undefined)
 
 # ---- Pin checks (the same manifests as the Windows build; verification never updates a pin) -------------------------
 function(gt4_require_sha256 file expected what)

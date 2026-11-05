@@ -1254,7 +1254,10 @@
   function drawAbout(content, info) {
       content.appendChild(h("h1", { text: GT4.t("tab.about") }));
       content.appendChild(h("p", { class: "note", text: "GT4Recomp " + (info.gt4recomp || info.version || "") }));
-      content.appendChild(h("p", { class: "note", text: GT4.t("about.gt4gs", { version: info.gt4gs || GT4.t("common.not_installed") }) }));
+      // TASK-180: no GSdx (gt4-gs) on Android, so no line for it.
+      if (GT4.platform !== "android") {
+        content.appendChild(h("p", { class: "note", text: GT4.t("about.gt4gs", { version: info.gt4gs || GT4.t("common.not_installed") }) }));
+      }
       content.appendChild(h("p", { class: "note", text: GT4.t("about.build", { build: info.build || "Installer" }) }));
       var checkButton = h("button", {
         class: "btn small",
@@ -1293,6 +1296,8 @@
       content.appendChild(h("div", { class: "group", text: GT4.t("about.more") }));
       // The game runs from GT4Recomp's own copy of the disc image (the file chosen at setup is not needed any more,
       // so its path is not shown; it is in prepare.json and the log for support).
+      // TASK-180: Android has no file manager view of the app's own folders; there the logs leave as one zip (Export logs).
+      var noFolders = GT4.platform === "android";
       var openGameFiles = h("button", {
         class: "btn small",
         type: "button",
@@ -1309,7 +1314,7 @@
           h("span", { text: info.game_name ? GT4.t("about.game_files_of", { game: info.game_name }) : GT4.t("about.game_files") }),
           h("span", { class: "val", text: info.game_files || "" })
         ]),
-        h("div", { class: "ctl" }, [openGameFiles])
+        h("div", { class: "ctl" }, noFolders ? [] : [openGameFiles])
       ]));
       // The player's settings, saves and replays live in %APPDATA%\GT4Recomp (kept by the uninstaller).
       var openSaves = h("button", {
@@ -1328,7 +1333,7 @@
           h("span", { text: GT4.t("about.saves_replays") }),
           h("span", { class: "val", text: info.saves_folder || "" })
         ]),
-        h("div", { class: "ctl" }, [openSaves])
+        h("div", { class: "ctl" }, noFolders ? [] : [openSaves])
       ]));
       var openLog = h("button", {
         class: "btn small",
@@ -1363,7 +1368,7 @@
       }, GT4.t("about.open_latest_log"));
       content.appendChild(h("div", { class: "row" }, [
         h("div", { class: "k", text: GT4.t("about.logs") }),
-        h("div", { class: "ctl buttons" }, [openLog, openLatest, exportLogs])
+        h("div", { class: "ctl buttons" }, noFolders ? [exportLogs] : [openLog, openLatest, exportLogs])
       ]));
   }
 

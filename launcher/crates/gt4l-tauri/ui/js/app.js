@@ -160,7 +160,10 @@
               });
             }
           }
-        ]
+        ].filter(function (button) {
+          // TASK-180: on Android the zip went where the player saved it; there is no folder to open.
+          return GT4.platform !== "android" || button.label !== GT4.t("about.open_export_folder");
+        })
       });
     }, function (err) {
       GT4.ui.toast(GT4.errorText(err), true);

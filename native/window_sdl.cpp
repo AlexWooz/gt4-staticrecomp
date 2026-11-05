@@ -38,6 +38,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -182,7 +183,38 @@ void wait_for_foreground() {
   if (frame_pacer) frame_pacer->anchor(frame_clock->now());  // no burst of frames to catch up the time away
 }
 
+// F7 starts a performance interval, F8 writes its report (to stderr: the session's game.log), F9 toggles.
+void perf_key(SDL_Scancode scancode) {
+#ifdef GT4_PERF_PROBE
+  if (scancode == SDL_SCANCODE_F7 || scancode == SDL_SCANCODE_F8 || scancode == SDL_SCANCODE_F9) {
+    if (scancode == SDL_SCANCODE_F7) {
+      counters_at_last_report = pacing_counters();
+      pacing_diagnostics.reset();
+    }
+    const auto request = scancode == SDL_SCANCODE_F7   ? gt4::perf::Request::start
+                         : scancode == SDL_SCANCODE_F8 ? gt4::perf::Request::report
+                                                       : gt4::perf::Request::toggle;
+    gt4::perf::Probe::shared().request(request, false);
+  }
+#else
+  (void)scancode;
+#endif
+}
+
+#ifdef __ANDROID__
+// TASK-180 (owner, 2026-11-05): a phone has no F7/F8. GameActivity draws a small touch button while the launcher's
+// performance report is on (GT4_PERF=1); a tap asks for F7 (1) or F8 (2) here, from the UI thread, and the game thread
+// runs it at its next event pump, exactly as the keys. The controller never sees it.
+std::atomic<int> touch_report_request{0};
+#endif
+
 bool pump_messages() {
+#ifdef __ANDROID__
+  if (const int request = touch_report_request.exchange(0, std::memory_order_acq_rel); request != 0) {
+    std::fprintf(stderr, "[perf] %s from the touch button\n", request == 1 ? "interval started (F7)" : "report (F8)");
+    perf_key(request == 1 ? SDL_SCANCODE_F7 : SDL_SCANCODE_F8);
+  }
+#endif
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
     switch (event.type) {
@@ -221,19 +253,7 @@ bool pump_messages() {
           closing = true;
           return false;
         }
-#ifdef GT4_PERF_PROBE
-        if (event.key.scancode == SDL_SCANCODE_F7 || event.key.scancode == SDL_SCANCODE_F8 ||
-            event.key.scancode == SDL_SCANCODE_F9) {
-          if (event.key.scancode == SDL_SCANCODE_F7) {
-            counters_at_last_report = pacing_counters();
-            pacing_diagnostics.reset();
-          }
-          const auto request = event.key.scancode == SDL_SCANCODE_F7   ? gt4::perf::Request::start
-                               : event.key.scancode == SDL_SCANCODE_F8 ? gt4::perf::Request::report
-                                                                       : gt4::perf::Request::toggle;
-          gt4::perf::Probe::shared().request(request, false);
-        }
-#endif
+        perf_key(event.key.scancode);
         break;
       default:
         break;
@@ -581,3 +601,12 @@ int run_window(const std::function<int()> &emulate) {
     return 1;
   }
 }
+
+#ifdef __ANDROID__
+#include <jni.h>
+// GameActivity.nativeReportRequest(1 = start an interval, 2 = write the report). Any thread.
+extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativeReportRequest(JNIEnv *, jclass,
+                                                                                                       jint request) {
+  if (request == 1 || request == 2) touch_report_request.store(request, std::memory_order_release);
+}
+#endif

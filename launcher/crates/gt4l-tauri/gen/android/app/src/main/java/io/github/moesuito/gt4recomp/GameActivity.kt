@@ -9,9 +9,17 @@
 // The process ends with the activity, so every start gets fresh native state.
 package io.github.moesuito.gt4recomp
 
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Bundle
 import android.os.Process
 import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.widget.FrameLayout
+import android.widget.TextView
 import org.libsdl.app.SDLActivity
 
 class GameActivity : SDLActivity() {
@@ -19,10 +27,57 @@ class GameActivity : SDLActivity() {
         const val EXTRA_ARGUMENTS = "io.github.moesuito.gt4recomp.ARGUMENTS"
         const val EXTRA_ENVIRONMENT = "io.github.moesuito.gt4recomp.ENVIRONMENT"
         private const val TAG = "GT4Recomp-game"
+
+        // native/window_sdl.cpp: 1 starts a performance interval (F7), 2 writes its report (F8) to the game log.
+        @JvmStatic
+        external fun nativeReportRequest(request: Int)
     }
 
-    // Load order: the C++ runtime, SDL3, then the game; the last one holds SDL_main.
-    override fun getLibraries(): Array<String> = arrayOf("c++_shared", "SDL3", "gt4")
+    private var recording = false
+
+    // Load order: SDL3, then the game (the C++ runtime is linked into it); the last one holds SDL_main.
+    override fun getLibraries(): Array<String> = arrayOf("SDL3", "gt4")
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val environment = intent.getStringArrayExtra(EXTRA_ENVIRONMENT) ?: arrayOf()
+        if (environment.contains("GT4_PERF=1")) addReportButton()
+    }
+
+    // TASK-180 (owner, 2026-11-05): the F7/F8 performance report without a keyboard. Only while the launcher's
+    // performance report setting is on (GT4_PERF=1). A small, faint button on the left edge (clear of the race HUD): a tap
+    // starts an interval, the next writes the report. It never takes focus, so the controller keeps all its input.
+    private fun addReportButton() {
+        val size = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 44f, resources.displayMetrics).toInt()
+        val margin = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics).toInt()
+        val button = TextView(this)
+        button.gravity = Gravity.CENTER
+        button.setTextColor(Color.WHITE)
+        button.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11f)
+        button.isFocusable = false
+        button.isFocusableInTouchMode = false
+        button.contentDescription = "Performance report"
+        fun paint() {
+            val shape = GradientDrawable()
+            shape.shape = GradientDrawable.OVAL
+            shape.setColor(if (recording) Color.rgb(200, 30, 30) else Color.rgb(60, 60, 60))
+            shape.setStroke(2, Color.WHITE)
+            button.background = shape
+            button.text = if (recording) "F8" else "F7"
+            button.alpha = if (recording) 0.7f else 0.35f
+        }
+        paint()
+        button.setOnClickListener {
+            recording = !recording
+            nativeReportRequest(if (recording) 1 else 2)
+            Log.i(TAG, if (recording) "touch button: interval started (F7)" else "touch button: report written (F8)")
+            paint()
+        }
+        val layout = FrameLayout.LayoutParams(size, size, Gravity.START or Gravity.CENTER_VERTICAL)
+        layout.leftMargin = margin
+        addContentView(button, layout)
+        button.visibility = View.VISIBLE
+    }
 
     // Called on SDL's thread, after the libraries are loaded and before SDL_main.
     override fun getArguments(): Array<String> {

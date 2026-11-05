@@ -282,7 +282,8 @@ pub fn linked_image(image: &ImageReceipt, install_dir: &Path) -> Option<PathBuf>
 
 /// The file name a receipt records for the image.
 pub(crate) fn image_file_name(disc: &Path) -> String {
-    disc.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+    // TASK-180: an Android document records its decoded file name, not its URI.
+    crate::source::display_name(disc)
 }
 
 /// Fast identity checks (no full hash): extension, ISO structure, `SYSTEM.CNF`, `CORE.GT4`, size.

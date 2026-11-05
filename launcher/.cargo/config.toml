@@ -1,0 +1,7 @@
+# TASK-180: the Android libraries are aligned for 16 KB memory pages (Android 15 and later devices may use them): every
+# LOAD segment and the end of RELRO (NDK r26 lld otherwise keeps the RELRO end on 4 KB).
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-Wl,-z,common-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-Wl,-z,common-page-size=16384"]

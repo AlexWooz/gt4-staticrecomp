@@ -1570,7 +1570,8 @@ pub fn about_info_of(shared: &Shared) -> Result<AboutInfo, String> {
         saves_folder: state.user_dirs.root().display().to_string(),
         game_name: state.selected.display_name.to_string(),
         credits: model::credits_text().to_string(),
-        build: gt4l_core::build_kind::BUILD.label().to_string(),
+        // TASK-180: the Android app is neither the installer nor the portable build.
+        build: if cfg!(target_os = "android") { "Android app".to_string() } else { gt4l_core::build_kind::BUILD.label().to_string() },
     })
 }
 

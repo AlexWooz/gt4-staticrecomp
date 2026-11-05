@@ -185,6 +185,47 @@ download list, the AVD and the adb commands: [ANDROID-EMULATOR](ANDROID-EMULATOR
   swapped). That confirms TASK-179's rotation-safe present; the Android-only branch in `hw_gs_backend.cpp` gives way to it.
   The EE thread is SDL's game thread, with a 1 MB stack (as the Windows main thread); enough for the boot.
 
+## First APK: `1.3.0-android-test1` (TASK-180, 2026-11-05)
+
+The owner's rule (2026-11-05): the Android app always opens the PC launcher first (the same Tauri launcher, same
+page, same Rust core); Play starts the game. Built from the TASK-180 branch, arm64-v8a, signed with the owner's
+release key (kept in `private/`), installed by hand (no store, no in-app installer). Build: `android/README.md`.
+
+- **Structure:** the launcher (`gt4l-tauri` as a library) is `MainActivity`; `GameActivity` (SDL3) runs `libgt4.so` in
+  its own `:game` process, started by Play with the Windows launch contract (arguments; game.ini values as environment).
+  A Kotlin bridge (`GameBridgePlugin`) gives the Rust side what Windows does with files and processes.
+- **Disc image:** picked with the Storage Access Framework, kept as a document with a persistable read permission,
+  never copied. Setup (`gt4l-disc`) reads it through a descriptor (`gt4l_disc::source`), so the pins are checked exactly
+  as on Windows; the game gets `--disc fd:N` and reads with `pread` through the donor's disc reader API.
+- **Platform rules** (`gt4l_core::platform`, tested): CoreGS 2.0 only (no Renderer row, no GSdx rows or downloads), no
+  monitor, resolution, fullscreen, graphics card or Discord rows, the GPU counts as integrated (1x at the default Render
+  scale), updates are a check plus the APK download in the browser (only releases that ship an APK are offered).
+- **Cards and saves:** app storage; card writes `fsync` the file and its folder. Saves and replays import and export
+  through the system picker.
+- **Logs:** the launcher's lines go to its log files and logcat (`GT4Recomp-launcher`), the game's to the session
+  `game.log` and logcat (`GT4Recomp-game`). Android's records of how each app process ended (exit status, crash, ANR,
+  low memory) are read at start, at Play and at export; a native crash's tombstone is kept and decoded to text
+  (`gt4l_core::tombstone`). Export logs saves one zip through the system picker, with `system.txt` holding the phone's
+  model, Android version, SoC, memory, display and refresh rate, Vulkan device and features. The game library keeps its
+  symbol table (tombstones name functions); the full one with line tables stays beside the APK in `private/`.
+- **Performance report:** with the launcher's report setting on, a small touch button on the game's left edge starts an
+  interval (F7) and writes the report (F8) to the game log; it never takes the controller's focus.
+- **16 KB pages:** `libgt4.so` and the launcher library are linked with `max-page-size` and `common-page-size` 16384; the
+  C++ runtime is linked into `libgt4.so` (NDK r26's `libc++_shared.so` is 4 KB aligned). Checked in the APK with `llvm-readelf -l`
+  and `zipalign -c -P 16`: every LOAD segment 0x4000, every library stored 16 KB aligned, the RELRO end of `libgt4.so`
+  (0x4168000) and of the launcher library (0xdc0000) on 16 KB. `libSDL3.so` from the official 3.4.18 package ends its
+  RELRO at 0x243000 (a 4 KB boundary), but its next writable segment starts at 0x246eb0, in the following 16 KB page,
+  so the linker's read-only protection rounded up to 0x244000 covers no writable data; a rebuilt SDL3 would remove the
+  question.
+- **Not on Android yet, and why:** GSdx (a Windows program; CoreGS 2.0 is the only renderer), Discord status (no Discord
+  game status on Android), the in-app updater (Android installs APKs only through the system installer), the launcher's
+  own graphics switch (a WebView2 guard), RetroAchievements in the game (its HTTP and overlay layers are Windows-only),
+  a texture folder outside the app (needs a document tree), the performance HUD (no text renderer on Android yet), and
+  the "open folder" buttons (Android has no file manager entry point for app storage).
+- **Tested in the emulator** (arm64 APK through the image's ARM translation, Lavapipe): launcher in landscape, SAF pick
+  from Downloads, setup with exact pins, Play, the game's first start and "Save successful" on its card. Not tested
+  yet: a real phone (Adreno), pause and resume (A6), performance.
+
 ## Subtle risks (Android), ranked
 
 1. The no-interlock CoreGS path is slow or misordered on tilers; D1 may be required before playable speed.

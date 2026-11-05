@@ -1,10 +1,10 @@
 # Android emulator: build, install and run (TASK-180, Android plan stage A2)
 
-Status: TASK-180 (2026-11-04/05). The game boots to its menus in the emulator with CoreGS 2.0 at 1x, on CPU Vulkan
-(Lavapipe) for now. How to build `libgt4.so` with the NDK, package the game activity, and run
-it in the Android Studio emulator on the desktop (Ryzen 7 5700X, RX 9060 XT). Plans: [ANDROID-PORT-PLAN](ANDROID-PORT-PLAN.md),
-[LINUX-PORT-PLAN](LINUX-PORT-PLAN.md) (the platform seam, stage L0). Nothing here is a release path: no store, no
-signing beyond the debug key, the player's files pushed with adb.
+Status: TASK-180 (2026-11-04/05). The first APK (launcher first, SAF disc pick, Play) runs in the emulator: the game reaches its menus and saves with CoreGS 2.0 at 1x, on CPU Vulkan
+(Lavapipe) for now. How to run the app in the Android Studio emulator on the desktop (Ryzen 7 5700X, RX 9060 XT); the
+APK build is in `android/README.md`. Plans: [ANDROID-PORT-PLAN](ANDROID-PORT-PLAN.md),
+[LINUX-PORT-PLAN](LINUX-PORT-PLAN.md) (the platform seam, stage L0). Nothing here is a release path: no store, and the
+APKs are test builds.
 
 ## What was downloaded (owner approval of 2026-11-04) and why
 
@@ -73,47 +73,40 @@ Screens and the game log of that run: `build/evidence/t180-emulator/` in the TAS
    the translated v2.00 units (rc14b, the hooked units checked against
    `private/slice408-ee-v200/v200-units-rc14b.camera360-units.json`). Flags: API 29, `-ffp-contract=off`,
    `-fno-strict-aliasing` (as clang-cl), `-fsigned-char` (as Windows), SSE4.1 on x86_64, `-z max-page-size=16384`.
-3. Stage and package:
-   ```
-   android\stage-native-libs.cmd x86_64 build\android-x86_64
-   set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
-   set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr
-   cd android && gradlew.bat assembleDebug
-   ```
-   The APK is `android\app\build\outputs\apk\debug\app-debug.apk`. `gradle/wrapper/gradle-wrapper.jar` is not committed
-   (a third-party binary): on a fresh checkout run `gradle wrapper` once in `android\` with any Gradle 9.x (the
-   unpacked 9.8.2 distribution works) before `gradlew`.
+3. Stage and package: `android/README.md` (the launcher's Gradle project, `cargo tauri android build`). For the emulator,
+   `--target x86_64` with an x86_64 `libgt4.so`, or the arm64 APK itself: this Android 16 image runs arm64 apps through
+   its ARM translation (`ro.dalvik.vm.native.bridge=libndk_translation.so`), slower but enough for the app's flows.
 
 The app's name and icon are the PC game's (owner, 2026-11-05): "Gran Turismo 4" and the art of
 `launcher/assets/brand/launcher.ico`, redrawn at the Android sizes from its source (`logo-gt4.png`) by
 `android/tools/make_icons.py` (Pillow from the tooling venv): legacy `mipmap-*/ic_launcher.png` and an adaptive icon
 (white background, emblem foreground, also the themed icon).
 
-## Install and first run (adb)
+## Install and first run (the player's way, no adb push)
 
-The game reads its files from the app-specific external folder; adb can write there without root.
+Since the first APK (2026-11-05) the app starts like on a phone: the launcher opens, the player picks the disc image
+with the system's file picker, the launcher sets the game up, and Play starts it. adb is only the installer and the
+log reader here:
 
 ```
 set ADB=%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe
-%ADB% install -r android\app\build\outputs\apk\debug\app-debug.apk
-%ADB% shell mkdir -p /sdcard/Android/data/io.github.moesuito.gt4recomp/files
-%ADB% push "C:\Antigravity\gt4-staticrecomp\Gran Turismo 4 (USA) (v2.00).iso" /sdcard/Android/data/io.github.moesuito.gt4recomp/files/disc.iso
-%ADB% push C:\Antigravity\gt4-staticrecomp\private\reconstructed\SCUS_973.28.elf /sdcard/Android/data/io.github.moesuito.gt4recomp/files/SCUS_973.28.elf
-rem optional: a memory card (a copy, never the owner's own card file), and settings
-%ADB% push <a copy of a card.ps2> /sdcard/Android/data/io.github.moesuito.gt4recomp/files/card.ps2
-%ADB% push gt4.env /sdcard/Android/data/io.github.moesuito.gt4recomp/files/gt4.env
-%ADB% shell am start -n io.github.moesuito.gt4recomp/.GameActivity
-%ADB% logcat -s GT4Recomp SDL SDL/APP
-%ADB% pull /sdcard/Android/data/io.github.moesuito.gt4recomp/files/game.log
-%ADB% shell am force-stop io.github.moesuito.gt4recomp
+rem the disc image where a player keeps it (any folder the picker shows; Downloads here)
+%ADB% push "C:\Antigravity\gt4-staticrecomp\Gran Turismo 4 (USA) (v2.00).iso" "/sdcard/Download/Gran Turismo 4 (USA) (v2.00).iso"
+%ADB% install -r <the APK>
+%ADB% shell am start -n io.github.moesuito.gt4recomp/.MainActivity
+%ADB% logcat -s GT4Recomp-launcher GT4Recomp-game
 ```
 
-Notes from the first runs: start the app once before pushing (the system creates the files folder with the app as its
-owner; a folder made by `adb shell mkdir` first belongs to the shell user); from Git Bash set `MSYS_NO_PATHCONV=1` or the
-`/sdcard/...` paths are rewritten; Start is `adb shell input keyevent KEYCODE_ENTER` (the emulator keyboard maps to the
-game's default keys; a tap shorter than a frame is held for one VBlank). Screens: `adb exec-out screencap -p > shot.png`.
+Then on the screen: Choose disc image, the menu, Downloads, the ISO; setup checks it in place (about 90 s for the
+5.3 GB image under the arm64 translation); Finish; Play. An APK signed with another key (the old debug skeleton) must be
+uninstalled first; its leftover `Android/data/<package>` files may need `adb root` and `rm -rf` to free the space.
+From Git Bash set `MSYS_NO_PATHCONV=1`, or `/sdcard/...` paths are rewritten. Keys: the emulator keyboard reaches the
+game (arrows, Enter = Cross); `adb shell input keyevent KEYCODE_ENTER` works too. Screens:
+`adb exec-out screencap -p > shot.png`.
 
-`gt4.env` holds `NAME=VALUE` lines set before the game starts (the launcher's environment contract): for example
-`GT4_HW_SCALE=1`, `GT4_PERF=1`, `GT4_HW_DUMP_DIR=/sdcard/Android/data/io.github.moesuito.gt4recomp/files/frames`.
-`args.txt` adds command-line arguments, one per line (for example `--frames` and `3000` for a bounded run). Defaults:
-CoreGS 2.0 (`GT4_RENDERER=hw`, `GT4_HW_CORE=2`), scale 1, 480p races, 16:9, FIFO.
+Result of the first APK on this emulator (arm64 build, translated): launcher in landscape with the PC look; the picker
+returned the document with a persistable permission; setup identified and hashed the image through the descriptor
+(pins matched, "Gran Turismo 4 (USA v2.00)"); Play started the game process with the launch contract; the game booted,
+created its game data on the card ("Save successful") at 1x with CoreGS 2.0 on Lavapipe. A first build crashed in the
+launcher's Vulkan probe under the translation (a Vulkan 1.1 call on a 1.0 instance, now not made off Windows): the crash
+was recorded with its tombstone at the next start, as designed.

@@ -124,9 +124,27 @@ fn system_facts(state: &AppState) -> SystemFacts {
             (name, monitor.desktop.width, monitor.desktop.height, monitor.primary)
         })
         .collect();
+    // TASK-180: on Android the Vulkan devices come straight from the system loader (the Windows card list keeps only
+    // what the Windows game can open), and the graphics settings of the PC do not apply.
+    #[cfg(target_os = "android")]
+    let (cards, plan, graphics_settings) = {
+        let _ = (cards, plan);
+        let devices = match gt4l_platform::system::probe_vulkan() {
+            gt4l_core::system_check::VulkanProbe::Ready { devices, .. } => devices,
+            _ => Vec::new(),
+        };
+        let chosen = devices.first().map(|device| device.name.clone()).unwrap_or_default();
+        (devices, (chosen, "vulkan".to_string()), Vec::new())
+    };
+    #[cfg(not(target_os = "android"))]
+    let graphics_settings = vec![
+        ("graphics_api".to_string(), state.config.settings.get("graphics_api").to_string()),
+        ("graphics_card".to_string(), state.config.settings.get("graphics_card").to_string()),
+    ];
     SystemFacts {
         windows: gt4l_platform::system::windows_version(),
         cpu: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default(),
+        #[cfg(not(target_os = "android"))]
         gpus: cards
             .iter()
             .map(|card| GpuFact {
@@ -136,7 +154,30 @@ fn system_facts(state: &AppState) -> SystemFacts {
                 video_memory: card.dedicated_video_memory,
             })
             .collect(),
+        #[cfg(target_os = "android")]
+        gpus: cards
+            .iter()
+            .map(|device| GpuFact {
+                name: format!(
+                    "{} (Vulkan {}.{}, device 0x{:X}, type {}, driver {}.{}.{})",
+                    device.name,
+                    device.api_major,
+                    device.api_minor,
+                    device.device_id,
+                    device.device_type,
+                    device.driver_version >> 22,
+                    (device.driver_version >> 12) & 0x3FF,
+                    device.driver_version & 0xFFF
+                ),
+                vendor_id: device.vendor_id,
+                driver_version: device.driver_version,
+                video_memory: 0,
+            })
+            .collect(),
+        #[cfg(not(target_os = "android"))]
         chosen: (plan.card.as_ref().and_then(|card| card.name()).unwrap_or_default().to_string(), plan.api.clone()),
+        #[cfg(target_os = "android")]
+        chosen: plan,
         displays: monitors,
         launcher_version: gt4l_core::LAUNCHER_VERSION.to_string(),
         install: if cfg!(target_os = "android") { "Android app".to_string() } else { gt4l_core::build_kind::BUILD.label().to_string() },
@@ -145,10 +186,7 @@ fn system_facts(state: &AppState) -> SystemFacts {
             .map(|game| (game.display_name.to_string(), game.serial.to_string(), installed.contains(game)))
             .collect(),
         selected_game: state.selected.display_name.to_string(),
-        graphics: vec![
-            ("graphics_api".to_string(), state.config.settings.get("graphics_api").to_string()),
-            ("graphics_card".to_string(), state.config.settings.get("graphics_card").to_string()),
-        ],
+        graphics: graphics_settings,
         device: device_lines(),
     }
 }
