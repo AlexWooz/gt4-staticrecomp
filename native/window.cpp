@@ -12,6 +12,9 @@
 #include "perf_probe.hpp"
 #include "frame_clock.hpp"
 #include "frame_skip.hpp"
+#ifdef GT4_COREGS3_HOOKS
+#include "coregs3/coregs3_hooks.hpp"
+#endif
 #include "pacing.hpp"
 #include "window_mode.hpp"
 #include "window_heartbeat.hpp"
@@ -663,6 +666,9 @@ void on_vblank() {
 #endif
   release_frame();
   ++input_vblank;
+#ifdef GT4_COREGS3_HOOKS
+  gt4::coregs3::at_vblank(input_vblank);  // TASK-090: stamps the captured frame with its guest VBlank
+#endif
   if (input_vblank == 1) start_window_watch();  // TASK-145 diagnostics, GT4_WINDOW_WATCH=1 only
   note_frame_skip_vblank();
   GT4_PERF_SCOPE(gt4::perf::Category::host_vblank);
@@ -750,7 +756,19 @@ bool install_input_replay_without_window() {
       ps2::g_options.on_vblank = [] {
         ++input_vblank;
         note_frame_skip_vblank();
+#ifdef GT4_COREGS3_HOOKS
+        gt4::coregs3::at_vblank(input_vblank);  // TASK-090: the guest VBlank of a headless capture
+#endif
       };
+    } else {
+#ifdef GT4_COREGS3_HOOKS
+      if (gt4::coregs3::active()) {
+        ps2::g_options.on_vblank = [] {
+          static std::uint64_t frame = 0;
+          gt4::coregs3::at_vblank(++frame);  // TASK-090: the guest VBlank of a headless capture
+        };
+      }
+#endif
     }
     return true;
   }
@@ -758,6 +776,9 @@ bool install_input_replay_without_window() {
   ps2::g_options.on_vblank = [] {
     apply_pad(input_player->at(++input_vblank));
     note_frame_skip_vblank();
+#ifdef GT4_COREGS3_HOOKS
+    gt4::coregs3::at_vblank(input_vblank);  // TASK-090: the guest VBlank of a headless capture
+#endif
   };
   return true;
 }

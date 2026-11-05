@@ -10,6 +10,9 @@
 
 #include "camera_360.hpp"
 #include "controls.hpp"
+#ifdef GT4_COREGS3_HOOKS
+#include "coregs3/coregs3_hooks.hpp"
+#endif
 #include "fov_adjust.hpp"
 #include "trigger_range.hpp"
 #include "frame_skip.hpp"
@@ -304,6 +307,9 @@ int main(int argc, char **argv) {
       window = window || std::strcmp(argv[i], "--window") == 0 || std::strcmp(argv[i], "--fullscreen") == 0;
     }
     gt4::frame_skip::start_from_environment();
+#ifdef GT4_COREGS3_HOOKS
+    gt4::coregs3::configure_from_environment();  // TASK-090: an invalid GT4_COREGS3 stops the start here
+#endif
     gt4::camera360::configure_from_environment();  // TASK-159: an invalid GT4_CAMERA_360 stops the start here
     gt4::fov_adjust::configure_from_environment();  // TASK-160: an invalid GT4_FOV_ADJUST stops the start here
     configure_trigger_range();                       // TASK-161: an invalid GT4_TRIGGER_FULL_RANGE stops the start here

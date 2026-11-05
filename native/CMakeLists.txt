@@ -966,6 +966,13 @@ add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.
 # TASK-159: the host side of the call that scripts/camera360_units.py adds to the translated chase camera. An EE library built
 # from those units needs it; one built from the plain units leaves it unused.
 target_sources(gt4vulkan PRIVATE camera_360_hook.cpp fov_adjust_hook.cpp)
+# TASK-090: the host side of the observe-only hooks scripts/coregs3_units.py adds. Only a build whose EE library carries
+# those calls needs (and must define) this, so it stays behind GT4_COREGS3.
+if(GT4_COREGS3)
+    target_sources(gt4vulkan PRIVATE coregs3/coregs3_hooks.cpp)
+    target_compile_definitions(gt4vulkan PRIVATE GT4_COREGS3_HOOKS)
+    target_link_libraries(gt4vulkan PRIVATE gt4_coregs3)
+endif()
 # TASK-095: the same for the 2D overlay ortho calls and the strobe text (native/display_aspect.hpp).
 target_sources(gt4vulkan PRIVATE display_aspect_hook.cpp)
 if(GT4_TARGET STREQUAL "spec2")
@@ -1059,6 +1066,24 @@ target_compile_options(wheel_fixture PRIVATE /W4)
 add_test(NAME native_wheel COMMAND $<TARGET_FILE:wheel_fixture>)
 add_executable(shape_observer_fixture shape_observer_fixture.cpp shape_observer.cpp)
 target_compile_options(shape_observer_fixture PRIVATE /W4)
+
+# TASK-090 CoreGS 3.0, phase 1: the scene snapshot, the bounded VIF decoder, the capture format and the offline car
+# renderer (native/coregs3/). The hooks themselves are only linked into the game when GT4_COREGS3 is ON, because they need
+# an EE library built from the units scripts/coregs3_units.py instruments.
+add_library(gt4_coregs3 STATIC
+    coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
+    coregs3/coregs3_render.cpp coregs3/coregs3_png.cpp)
+target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
+target_compile_options(gt4_coregs3 PRIVATE /W4)
+add_executable(coregs3_fixture coregs3/coregs3_fixture.cpp)
+target_link_libraries(coregs3_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_fixture PRIVATE /W4)
+add_test(NAME native_coregs3 COMMAND $<TARGET_FILE:coregs3_fixture>)
+# The offline milestone tool (docs/COREGS3-PLAN.md §4 step 1c): a capture in, a native PNG out.
+add_executable(gt4_coregs3_render tools/coregs3_render_main.cpp)
+target_link_libraries(gt4_coregs3_render PRIVATE gt4_coregs3)
+target_compile_options(gt4_coregs3_render PRIVATE /W4)
+option(GT4_COREGS3 "Link the CoreGS 3.0 observe-only capture hooks (needs an EE library from scripts/coregs3_units.py)" OFF)
 add_executable(perf_accounting_fixture perf_accounting_fixture.cpp)
 target_compile_options(perf_accounting_fixture PRIVATE /W4)
 add_executable(fpu_chop_fixture fpu_chop_fixture.cpp)
