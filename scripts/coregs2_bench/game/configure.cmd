@@ -10,6 +10,8 @@ set "EXTRA=%T134_ARGS%"
 rem VU1GEN and VU0GEN override the VU tables (VU1 slice397: rc10, a product with VF0.w is a copy; VU0 slice394: the second
 rem rc9 round; the first rc9 had slice157 and slice390/slice160).
 if "%VU1GEN%"=="" set "VU1GEN=%A%/private/slice397-vu1-gen"
+rem USBRT overrides the USB capsule of the native DFP wheel (TASK-181, docs/inputs/slice409-usb-runtime.json).
+if "%USBRT%"=="" set "USBRT=%A%/private/slice409-usb-runtime"
 set "VU0GEN_GIVEN=%VU0GEN%"
 if /i "%TARGET%"=="spec2" (
   set "PROFILE=spec2"
@@ -34,6 +36,7 @@ cmake -S "%WT%" -B "%WT%\build\%DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release ^
  -DGT4_MEMCARD_RUNTIME_SOURCE=%A%/private/slice200-memcard-runtime ^
  -DGT4_PERF_RUNTIME_SOURCE=%RUNTIME% ^
  -DGT4_SPU2_RUNTIME_SOURCE=%A%/private/slice396-spu2-runtime ^
+ -DGT4_USB_RUNTIME_SOURCE=%USBRT% ^
  -DGT4_PORT_DIR=%A%/private/slice200-port ^
  -DGT4_PYTHON=%A%/private/tooling-venv/Scripts/python.exe ^
  -DGT4_RELEASE_DISTRIBUTION=ON ^

@@ -8,6 +8,7 @@ The output file must not exist: a new slice always gets a new pin file (docs/inp
 
 usage: pin_task134_build.py <slice> --base <slice> --target gt4|spec2 --exe <path under assets> --library <path under assets>
        [--vu1-dir <path under assets>] [--vu0-dir <path under assets>] [--spu2-capsule <path under assets>]
+       [--usb-capsule <path under assets>]
        --classification <text> --status <text> [--purpose <text>] [--assets-root <folder>] [--date 2026-11-03]
 """
 
@@ -34,6 +35,7 @@ def main():
     parser.add_argument('--vu1-dir')
     parser.add_argument('--vu0-dir')
     parser.add_argument('--spu2-capsule', help='the SPU2 capsule of TASK-125 (scripts/prepare_spu2_runtime.py)')
+    parser.add_argument('--usb-capsule', help='the USB capsule of the native DFP wheel, TASK-181 (scripts/prepare_usb_runtime.py)')
     parser.add_argument('--classification', required=True)
     parser.add_argument('--status', required=True)
     parser.add_argument('--purpose', default='TASK-134: the CPU optimisation, second round.')
@@ -73,6 +75,10 @@ def main():
         # The capsule's runtime.json pins its derived spu2.cpp; CMake checks that pin when it builds.
         pin['spu2_capsule'] = options.spu2_capsule
         pin['spu2_capsule_sha256'] = identity(assets / options.spu2_capsule / 'runtime.json')[1]
+    if options.usb_capsule:
+        # The same for the USB capsule (docs/inputs/slice409-usb-runtime.json): runtime.json pins the derived iop/hw.cpp.
+        pin['usb_capsule'] = options.usb_capsule
+        pin['usb_capsule_sha256'] = identity(assets / options.usb_capsule / 'runtime.json')[1]
     pin['slice'] = options.slice
     pin['date'] = options.date
     pin['branch'] = 'task/134-game-code-optimization-study'

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "slice": 409,
+  "date": "2026-11-05",
+  "branch": "task/181-wheel-page",
+  "purpose": "TASK-181 (with TASK-018 of PR #205 by WaimateWihongi): the USB capsule for the native Driving Force Pro wheel. The derived iop/hw.cpp sends the OHCI registers to native/usb_ohci.cpp while the virtual DFP is plugged in (wheel.toml enabled = true, or GT4_DFP=1); otherwise the donor's register stub answers as before.",
+  "tool": "scripts/prepare_usb_runtime.py",
+  "command": "scripts/prepare_usb_runtime.py C:/Antigravity/gt4-staticrecomp/private/slice409-usb-runtime --assets-root C:/Antigravity/gt4-staticrecomp",
+  "runtime_source_commit": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "donor": {
+    "path": "private/references/ps2-web-recomp/runtime/src/iop/hw.cpp",
+    "sha256": "b8b56b21a8bf00652004847b55baaca9caa74d6757139ef8c6f27597de38c836"
+  },
+  "capsule": "private/slice409-usb-runtime",
+  "files": [
+    {
+      "path": "private/slice409-usb-runtime/hw.cpp",
+      "size_bytes": 11382,
+      "sha256": "7dd95c5bcc85b4cd96d008ce625f06bb07618e4c118b3c3d5d0ec6f9b86830ee"
+    },
+    {
+      "path": "private/slice409-usb-runtime/runtime.json",
+      "size_bytes": 427,
+      "sha256": "7dc8a3ba2acae167311406cf21018fed5426584672451d9241a9ab3689ea4256"
+    }
+  ],
+  "cmake": "-DGT4_USB_RUNTIME_SOURCE=C:/Antigravity/gt4-staticrecomp/private/slice409-usb-runtime (CMake checks hw.cpp against runtime.json hw_sha256)",
+  "game_pins": "Game pins that include the capsule name it as usb_capsule and usb_capsule_sha256 (the SHA-256 of runtime.json), as for spu2_capsule: scripts/pin_task134_build.py --usb-capsule private/slice409-usb-runtime.",
+  "checks": "CTest native_usb_dfp and native_wheel; Python test_usb_runtime.py; gates of v2.00 and Spec II builds with the capsule against the rc14 PGO builds (private/task134-tools/gates6.sh): docs/WHEEL-NATIVE-DFP.md.",
+  "limits": [
+    "Without a wheel file the game reads the donor stub, so builds with and without the capsule run the same; with the virtual DFP plugged in the game's own USB driver runs (docs/WHEEL-NATIVE-DFP.md).",
+    "Save states do not include the USB model."
+  ]
+}

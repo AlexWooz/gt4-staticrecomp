@@ -1,10 +1,14 @@
-"""USB capsule (TASK-018, native DFP wheel): derives the donor's iop/hw.cpp so the OHCI registers at
+"""USB capsule (TASK-018, native DFP wheel; TASK-181): derives the donor's iop/hw.cpp so the OHCI registers at
 0x1F801600 reach the controller model in native/usb_ohci.cpp, which carries the virtual Driving Force Pro of
-native/usb_dfp.cpp. Without a wheel in DFP mode (wheel.toml mode = "dfp" or GT4_DFP=1) the donor's register stub
-answers exactly as before.
+native/usb_dfp.cpp. Without a wheel (wheel.toml enabled = true, or GT4_DFP=1) the donor's register stub answers exactly as
+before.
 
-usage: prepare_usb_runtime.py <fresh output folder> [--assets-root <checkout>]
-Writes hw.cpp and runtime.json (with the derived file's SHA-256, which CMake checks).
+The donor file is pinned by its SHA-256 (like scripts/prepare_spu2_runtime.py); edit points are anchored on unique donor
+text, and removing the edits must restore the normalized donor input. The output folder must be new and inside the assets
+checkout's private/ (derived donor code is never committed).
+
+usage: prepare_usb_runtime.py <fresh output folder under private/> [--assets-root <checkout>]
+Writes hw.cpp and runtime.json (with the derived file's SHA-256, which CMake checks: GT4_USB_RUNTIME_SOURCE).
 """
 import argparse
 import hashlib
@@ -13,7 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DONOR_FILE = 'private/references/ps2-web-recomp/runtime/src/iop/hw.cpp'
-DONOR_SHA256 = None  # recorded in runtime.json; the donor checkout itself is pinned by external-recomp-references.json
+# ps2-web-recomp 1b4808793a12c45125262fd2d5f50a9ec9f7c020, runtime/src/iop/hw.cpp as checked out on Windows (CRLF).
+DONOR_SHA256 = 'b8b56b21a8bf00652004847b55baaca9caa74d6757139ef8c6f27597de38c836'
 
 INCLUDES_OLD = '#include "ps2/state.hpp"\n'
 INCLUDES_NEW = '#include "ps2/state.hpp"\n\n#include "usb_dfp.hpp"\n'
@@ -86,17 +91,70 @@ extern bool g_usb_timer;
 void reset() {
 '''
 
+# Applied in this order; removed in the reverse order.
+EDITS = [
+    ('includes', INCLUDES_OLD, INCLUDES_NEW),
+    ('forward declarations', FORWARD_OLD, FORWARD_NEW),
+    ('reset', RESET_OLD, RESET_NEW),
+    ('register read', READ_OLD, READ_NEW),
+    ('register write', WRITE_OLD, WRITE_NEW),
+]
+
 
 def derive(source: str) -> str:
-    for old in (INCLUDES_OLD, READ_OLD, WRITE_OLD, RESET_OLD, FORWARD_OLD):
+    """The derived text of a normalized (LF) donor text. Refuses a text where an edit point is missing or repeated."""
+    for name, old, _ in EDITS:
         if source.count(old) != 1:
-            raise SystemExit(f'edit point not found exactly once in the donor iop/hw.cpp: {old[:60]!r}')
-    source = source.replace(INCLUDES_OLD, INCLUDES_NEW)
-    source = source.replace(FORWARD_OLD, FORWARD_NEW)
-    source = source.replace(RESET_OLD, RESET_NEW)
-    source = source.replace(READ_OLD, READ_NEW)
-    source = source.replace(WRITE_OLD, WRITE_NEW)
+            raise ValueError(f'{name}: edit point not found exactly once in the donor iop/hw.cpp: {old[:60]!r}')
+    for _, old, new in EDITS:
+        source = source.replace(old, new)
     return source
+
+
+def remove_overlay(derived: str) -> str:
+    for name, old, new in reversed(EDITS):
+        if derived.count(new) != 1:
+            raise ValueError(f'{name}: the derived source lacks this edit')
+        derived = derived.replace(new, old)
+    return derived
+
+
+def read_donor(assets_root: Path) -> bytes:
+    raw = (assets_root / DONOR_FILE).read_bytes()
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual != DONOR_SHA256:
+        raise ValueError(f'Donor source differs from the pinned version: {DONOR_FILE} ({actual})')
+    return raw
+
+
+def prepare(output: Path, assets_root: Path = None, donor: bytes = None) -> dict:
+    """Writes hw.cpp and runtime.json into `output` (new, under <assets>/private). `donor` replaces the pinned donor
+    read (the fixtures' synthetic donor); it is still derived and reversed the same way."""
+    assets_root = Path(assets_root or ROOT).resolve()
+    output = Path(output).resolve()
+    private = assets_root / 'private'
+    if not output.is_relative_to(private) or output == private:
+        raise ValueError('Derived donor code must stay inside the assets checkout private/')
+    raw = read_donor(assets_root) if donor is None else donor
+    text = raw.decode('utf-8')
+    crlf = '\r\n' in text  # a Windows checkout of the donor has CRLF line endings; edits are made on LF
+    normalized = text.replace('\r\n', '\n')
+    derived_text = derive(normalized)
+    if remove_overlay(derived_text) != normalized:
+        raise ValueError('USB overlay does not reverse to the donor input')
+    derived = (derived_text.replace('\n', '\r\n') if crlf else derived_text).encode('utf-8')
+    output.mkdir(parents=True, exist_ok=False)
+    (output / 'hw.cpp').write_bytes(derived)
+    receipt = {
+        'schema_version': 1,
+        'donor_file': DONOR_FILE,
+        'donor_sha256': hashlib.sha256(raw).hexdigest(),
+        'hw_sha256': hashlib.sha256(derived).hexdigest(),
+        'overlay': 'TASK-018/TASK-181: OHCI registers reach native/usb_ohci.cpp while the virtual DFP is plugged in',
+        'tool': 'scripts/prepare_usb_runtime.py',
+    }
+    (output / 'runtime.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8', newline='\n')
+    return receipt
 
 
 def main(argv=None):
@@ -104,17 +162,7 @@ def main(argv=None):
     parser.add_argument('output', type=Path)
     parser.add_argument('--assets-root', type=Path, default=ROOT)
     args = parser.parse_args(argv)
-    donor = (args.assets_root / DONOR_FILE).read_bytes()
-    text = donor.decode('utf-8')
-    crlf = '\r\n' in text  # a Windows checkout of the donor has CRLF line endings; edits are made on LF
-    derived_text = derive(text.replace('\r\n', '\n'))
-    derived = (derived_text.replace('\n', '\r\n') if crlf else derived_text).encode('utf-8')
-    args.output.mkdir(parents=True, exist_ok=False)
-    (args.output / 'hw.cpp').write_bytes(derived)
-    receipt = {'schema_version': 1, 'donor_file': DONOR_FILE, 'donor_sha256': hashlib.sha256(donor).hexdigest(),
-               'hw_sha256': hashlib.sha256(derived).hexdigest(), 'tool': 'scripts/prepare_usb_runtime.py'}
-    (args.output / 'runtime.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8', newline='\n')
-    print(json.dumps(receipt, indent=2))
+    print(json.dumps(prepare(args.output, args.assets_root), indent=2))
 
 
 if __name__ == '__main__':

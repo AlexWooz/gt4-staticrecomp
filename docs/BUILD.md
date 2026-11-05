@@ -3329,3 +3329,22 @@ translated units changed by `scripts/camera360_units.py <v200|spec2> <units> <fr
 and that removing its insertions gives the units back), then `scripts/coregs2_bench/game/ee_configure.cmd`/`ee_build.cmd` and
 `configure.cmd` with `GT4_EE_LIBRARY` as for TASK-134. The executable always has the host side (`native/camera_360_hook.cpp`);
 an EE library from the plain units leaves it unused. Recipe and checks: `docs/CAMERA-360.md`.
+
+## TASK-181: the USB capsule of the native Driving Force Pro wheel (slice409)
+
+The native wheel (TASK-018, PR #205 by WaimateWihongi; `docs/WHEEL-NATIVE-DFP.md`) needs the USB capsule: a derived
+`runtime/src/iop/hw.cpp` whose OHCI registers reach `native/usb_ohci.cpp` while the virtual DFP is plugged in. Without a wheel
+file the donor's register stub answers as before, so a build with the capsule runs the game unchanged (gates below).
+
+- **Capsule:** `scripts/prepare_usb_runtime.py C:/Antigravity/gt4-staticrecomp/private/slice409-usb-runtime --assets-root
+  C:/Antigravity/gt4-staticrecomp`. The script refuses a donor whose SHA-256 is not the pinned `b8b56b21...c836`, a new
+  folder outside `private/` or an existing one, and checks that removing its edits gives the donor back. Pin:
+  `docs/inputs/slice409-usb-runtime.json` (`hw.cpp` `7dd95c5b...30ee`, `runtime.json` `7dc8a3ba...4256`).
+- **Configure:** `-DGT4_USB_RUNTIME_SOURCE=C:/Antigravity/gt4-staticrecomp/private/slice409-usb-runtime` (CMake checks
+  `hw.cpp` against `runtime.json`). `scripts/coregs2_bench/game/configure.cmd` passes it for both games by default (`USBRT`
+  overrides it), so the rc builds of v2.00 and Spec II include the wheel.
+- **Game pins:** `scripts/pin_task134_build.py ... --usb-capsule private/slice409-usb-runtime` adds `usb_capsule` and
+  `usb_capsule_sha256` (the SHA-256 of `runtime.json`), as `--spu2-capsule` does.
+- **Checks:** CTest `native_usb_dfp` and `native_wheel`; Python `test_usb_runtime.py` (a synthetic donor, plus the pin and the
+  real donor when `private/` is present); `private/task134-tools/gates6.sh` with v2.00 and Spec II builds that include the
+  capsule, against the rc14 PGO builds.
