@@ -3341,6 +3341,17 @@ Motegi Performance mode has a 16x16 CT32 store into a drawn Z24 target every sec
 fix is TASK-168b (`task/168b-segments-fix`). Owner (2026-11-04): no hurry; keep optimising, change approach when one fails.
 In rc15 (2026-11-05): `task/178-submit-after-wait` at c73b3be8 only (K=0 by default, the counters kept); the branch's
 uncommitted O3 work is not in it.
+O3 result (2026-11-05, desktop RX 9060 XT, 6x/10x/12x, Spec II B-Spec Hong Kong and Motegi; study section 9.8): **dropped**.
+`GT4_CORE2_READ_BLOCKS_ONLY=1` cuts 98% of Hong Kong's downloaded pixels, but it is not exact. One Motegi flare reply in
+6,588 differs at 6x, and the final hash differs at 10x and 12x: GT4's flare chain draws overlapping 64x192 scratch windows
+at a new base each frame, and cut targets stay drawn. It also brings no gain. Wall per VBlank, off to on:
+- Hong Kong: 6x 10.95 to 11.96, 10x 17.79 to 19.10, 12x 26.53 to 24.97;
+- Motegi: flat at every scale.
+
+An exact O3 would need a deferred write-back layer in front of every GS memory reader and writer, for at most the CPU
+write-back of the extra pixels (0.30-0.33 ms/VBlank). It stays only on the task branch (80cf04c9, off by default, with the
+fixture, the per-download pixel counters and `GT4_HW_FLARE_REPLY_TRACE`) and is not merged anywhere. Next GPU step:
+TASK-182.
 
 ### TASK-179 — Android stage A1 on Windows: Vulkan correctness gaps (owner, 2026-11-04; in parallel to rc15)
 
@@ -3367,6 +3378,39 @@ it to GitHub as a private draft for him to test. Steps:
 Downloads approved by the owner: the emulator system image (Google, sdkmanager), SDL3 3.4.18 for Android (libsdl-org) and
 Gradle. Installed: SDK platforms 34/36/36.1, NDK 26.1, build-tools, emulator (no image or AVD before this). Branch
 `task/180-android-emulator`. State: in progress.
+
+**APK test1 (2026-11-05)** is the GitHub draft `v1.3.0-android-test1` (arm64, branch at 95056cd0; the release signing key
+is in `private/android-signing`, and every later APK must use the same key).
+
+**Owner's S23 Ultra test (Adreno 740, Android 17), from his log bundles:**
+- **Nordschleife race, Performance mode:** about 60 VBlanks/s at both 1x and 2x. GPU busy is about 11.5 ms/VBlank at both
+  scales, with draw passes about 9.5 ms. That is fixed per-pass and per-barrier overhead, not fill: per VBlank, about 750
+  fragment barriers, 75 full barriers and 20 render passes.
+- **Hitches:** 5% of frames skipped, audio underruns, and in-game pipeline compiles of 2.2 s per session (up to 44 ms each).
+- **Showroom:** 20, 46 and 36 VBlanks/s (normal, Performance 1x, Performance 2x).
+- **Normal mode:** readback waits of 1.4 to 4 ms/VBlank.
+- **FXAA plus FSR1 at 2x:** GPU 11.5 rises to 15.5 ms. Both filters run at 3088x1440.
+- **Swapchain:** every present reports suboptimal, because the identity pre-transform makes the compositor rotate.
+- **Launcher killed:** the launcher was killed twice ("dependency died": an open ExternalStorageProvider descriptor).
+- **Black screen:** after a round trip to Settings the screen stayed black while the game kept running.
+
+**Owner decisions (2026-11-05):**
+- Performance mode stays OFF by default on Android; make the normal mode lighter instead.
+- Snapdragon GSR is a later candidate to replace FSR1 on Android. Check its licence and A/B it against FSR1.
+
+**APK test2 scope (in progress):** merge rc15 (HUD); render scale 100% = native screen, with the slider below 50%; the
+HUD on Android with the SoC GPU, resolution, and GPU and CPU use; Export logs carries 10 sessions.
+
+The owner also asked for:
+- Back pauses the game and asks Close or Minimize; the launcher shows Resume while the game lives;
+- pause on background, and the surface and swapchain rebuilt on return (the black-screen fix);
+- the provider fix (`detachFd`);
+- the first-open shader prepare, as on Windows;
+- Play preselected on the home page;
+- F8 per-cluster thread residency and thermal status.
+
+**Test3 (on the device over USB):** pre-rotation, ADPF hints and big-core placement, FXAA at internal resolution, a
+1080p-output option, and Snapdragon GSR.
 
 ### TASK-181 — Launcher Wheel page for the native DFP wheel (owner, 2026-11-05; with PR #205)
 
@@ -3405,6 +3449,36 @@ capture wizard, and saves the result as a shareable preset. The old UI lives at 
 `task/181-wheel-page` (a2374ee0), merged into `release/1.3.0-rc15` and in the rc15 test build (USB capsule slice409 in both
 games). Next: the owner's G27 test on that build (`docs/WHEEL-NATIVE-DFP.md`).
 
+### TASK-182 — CoreGS 2.0: scope GPU barriers and render passes (2026-11-05; desktop first, also for Android)
+
+**Why.** CoreGS issues about 660-680 FULL barriers (all commands to all commands) per VBlank on the desktop (George V, Hong
+Kong). On the S23's Adreno 740 (tile-based), the Nordschleife race costs about 11.5 ms of GPU time per VBlank at both 1x and
+2x: about 750 fragment barriers, 75 full barriers and 20 render passes per VBlank. On a tile-based GPU every pass end stores
+tile memory, and in-pass barriers can push the driver out of tile mode.
+
+**Target behaviour.** The GSdx oracle's prose report (`docs/hw-renderer-spec/ORACLE-GSDX-TONE-READBACK-FLUSH.md`, D2-D4)
+describes it:
+- the narrowest barrier per real hazard;
+- three paths for self-sampling draws;
+- one pass per run of draws to the same targets;
+- descriptors pushed only when they change.
+
+**Steps.**
+1. **Measure and classify** (no behaviour change; `docs/hw-renderer-spec/STUDY-BARRIER-SCOPE.md`):
+   - full barriers by command and hazard;
+   - fragment barriers by reason;
+   - render passes by end reason;
+   - descriptor writes per VBlank.
+
+   Scenes: Hong Kong and Motegi at 2x, 10x and 12x on the desktop. Output: a ranked list of exact changes.
+2. **Implement** one change at a time, each behind an A/B switch:
+   - exact: flare reply hashes, gates6 wrong=0, CTest;
+   - desktop A/B at 10x/12x (owner: the Avell is off-limits; desktop only);
+   - then on the S23 over USB.
+
+Clean room: implementation agents never open PCSX2 sources. Branch `task/182-barrier-scope` from `release/1.3.0-rc15`, in the
+`gt4-wt-178-download-wait` worktree. State: step 1 in progress.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
@@ -3422,7 +3496,7 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-174b | Launcher: the TASK-174 option with queue detection, and a richer `system.txt` | `task/174b-launcher-option` (c8d20c08) | ✅ In rc15 (a6a855a6; pt-BR mojibake repaired at a07f63ad) |
 | TASK-175 | Performance HUD: full names, report state, Off / FPS only / Full | `task/175-performance-hud` (2e2f87f3) | ✅ In rc15 (49acaf41); the HUD's look in a game run still to check |
 | TASK-179 | Android stage A1 on Windows: Vulkan correctness | `task/179-vulkan-correctness` (4a70b53d) | ✅ In rc15 (a2390b2d) |
-| TASK-178 | Submit after a waited readback (K=0 by default) and the flare-read counters | `task/178-submit-after-wait` (c73b3be8 only) | ✅ In rc15 (6f318594); O3 continues on the branch |
+| TASK-178 | Submit after a waited readback (K=0 by default) and the flare-read counters | `task/178-submit-after-wait` (c73b3be8 only) | ✅ In rc15 (6f318594); O3 dropped (not exact on Motegi, no gain; 80cf04c9 stays on the branch only) |
 | TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner's G27 test pending |
 | TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner) |
 
