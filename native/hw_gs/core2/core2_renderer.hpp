@@ -53,6 +53,14 @@ struct Core2Counters {
     std::uint64_t downloads = 0;
     std::uint64_t downloadTargets = 0;
     std::uint64_t downloadPixels = 0;
+    // TASK-178 O3 (GT4_CORE2_READ_BLOCKS_ONLY): the native pixels downloads would reduce over whole drawn areas (the
+    // count the switch at 0 reduces), targets cut to the read's blocks, left out (none of their pixels read), given the
+    // IN-408 debt by it, and given a dirty rectangle because a newer target was written over their area.
+    std::uint64_t downloadPixelsWhole = 0;
+    std::uint64_t readBlocksCut = 0;
+    std::uint64_t readBlocksSkipped = 0;
+    std::uint64_t readBlocksDebts = 0;
+    std::uint64_t readBlocksDirty = 0;
     std::uint64_t drains = 0;                // TASK-178, from the GPU's counters: waited submissions
     std::uint64_t afterWaitSubmissions = 0;  // TASK-178, from the GPU's counters: submissions by GT4_CORE2_SUBMIT_AFTER_WAIT
     std::uint64_t batchedReadbacks = 0;        // IN-429: target readbacks reduced together in one submission

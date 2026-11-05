@@ -710,6 +710,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     struct DrainMark {
         std::uint64_t downloads = 0, downloadReadbacks = 0, downloadTargets = 0, downloadPixels = 0;
         std::uint64_t drains = 0, idleNs = 0, idles = 0, gapNs = 0, gaps = 0, afterWaitSubmissions = 0;
+        std::uint64_t pixelsWhole = 0, cut = 0, skipped = 0, debts = 0, dirty = 0;  // TASK-178 O3
     };
     DrainMark lastDrainMark_;
     std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
@@ -2646,7 +2647,60 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // 35 targets in one VBlank, one GPU round trip each before. GT4_CORE2_BATCH_READBACK=0 reduces one by one (A/B).
     const bool batchReadback_ = std::getenv("GT4_CORE2_BATCH_READBACK") == nullptr ||
                                 std::strcmp(std::getenv("GT4_CORE2_BATCH_READBACK"), "0") != 0;
-    bool Readback(const BlockSpan &span, const BufferView *limitView = nullptr, const PixelRect *limit = nullptr) {
+    // TASK-178 O3 (docs/hw-renderer-spec/STUDY-FRAME-DOWNLOAD-COST.md, 9.5): an EE download reduces a target of another
+    // base, width or class only over the GS blocks the download reads, not over its whole drawn area. GT4's light flare
+    // table (64 x 8 CT32) is drawn into the memory of older 640 x 224 CT24 and 128 x 128 Z24 targets in Hong Kong, and
+    // each download wrote those whole targets back: 99.9% of the downloaded pixels. The download's bytes are the same:
+    // every pixel of every target in the read's blocks is written, oldest draw first. The target keeps its drawn area
+    // and owes the rest to memory as IN-408's GPU reads do (readOnGpu: stored before a write patches its page rows, and
+    // before 6.2 drops it); a target written before a newer one over the same blocks takes those blocks back from
+    // memory (a dirty rectangle), so it never writes its older pixels over the newer ones later. Not taken for a target
+    // when a newer one has pending dirty rectangles (their patches read memory the whole write would have changed).
+    // OFF by default: it is not exact. A whole write-back also clears the target's drawn area, and the newest-wins order
+    // of later readbacks is per target (lastDraw), not per pixel. GT4's flare chain draws a 64 x 192 scratch window at a
+    // new base every frame, the windows overlapping in memory; a window kept drawn by the cut later wins over an older-
+    // drawn window that an older readback had written under it (Motegi 6x: one of 6,588 flare replies differs, VBlank
+    // 9097). GT4_CORE2_READ_BLOCKS_ONLY=1 turns it on (diagnostics and A/B only).
+    const bool readBlocksOnly_ = std::getenv("GT4_CORE2_READ_BLOCKS_ONLY") != nullptr &&
+                                 std::strcmp(std::getenv("GT4_CORE2_READ_BLOCKS_ONLY"), "0") != 0;
+
+    // TASK-178 O3: the GS blocks a rectangle of `view` covers, sorted, each once (whole block cells, so a rectangle off
+    // the cell grid still counts every block it touches).
+    static std::vector<std::uint32_t> BlocksOfRect(const BufferView &view, const PixelRect &rect) {
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        const std::int32_t bw = info.blockWidth, bh = info.blockHeight;
+        std::vector<std::uint32_t> blocks;
+        for (std::int32_t by = rect.y0 / bh; by <= rect.y1 / bh; ++by) {
+            for (std::int32_t bx = rect.x0 / bw; bx <= rect.x1 / bw; ++bx) {
+                blocks.push_back(BlockOfPixel(view, static_cast<std::uint32_t>(bx * bw), static_cast<std::uint32_t>(by * bh)));
+            }
+        }
+        std::sort(blocks.begin(), blocks.end());
+        blocks.erase(std::unique(blocks.begin(), blocks.end()), blocks.end());
+        return blocks;
+    }
+
+    // TASK-178 O3: the bounding rectangle of the pixels of `rect` (in `view`, a target's write-back view) whose block is
+    // one of `blocks` (sorted). Each block cell of the format lies in exactly one block, so every pixel in those blocks
+    // is inside the result.
+    static PixelRect PixelsInBlocks(const BufferView &view, const PixelRect &rect, const std::vector<std::uint32_t> &blocks) {
+        const memory::PsmInfo &info = memory::psmInfo(view.psm);
+        const std::int32_t bw = info.blockWidth, bh = info.blockHeight;
+        PixelRect found;
+        for (std::int32_t by = rect.y0 / bh; by <= rect.y1 / bh; ++by) {
+            for (std::int32_t bx = rect.x0 / bw; bx <= rect.x1 / bw; ++bx) {
+                const std::uint32_t block =
+                    BlockOfPixel(view, static_cast<std::uint32_t>(bx * bw), static_cast<std::uint32_t>(by * bh));
+                if (!std::binary_search(blocks.begin(), blocks.end(), block)) continue;
+                found = Union(found, Intersect(rect, PixelRect{bx * bw, by * bh, bx * bw + bw - 1, by * bh + bh - 1}));
+            }
+        }
+        return found;
+    }
+
+    // `download`: the read is an EE download of `limit` in `limitView` (TASK-178 O3 applies).
+    bool Readback(const BlockSpan &span, const BufferView *limitView = nullptr, const PixelRect *limit = nullptr,
+                  bool download = false) {
         ScopedUs timer(clock_, &PhaseTimes::readback);
         std::vector<Target *> order;
         for (Target &t : targets_) {
@@ -2655,21 +2709,45 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             order.push_back(&t);
         }
         std::sort(order.begin(), order.end(), [](const Target *a, const Target *b) { return a->lastDraw < b->lastDraw; });
+        // TASK-178 O3: the blocks the download reads, and per target whether a newer one has dirty rectangles.
+        const bool blocksOnly = download && readBlocksOnly_ && limitView && limit && !limit->Empty();
+        std::vector<std::uint32_t> readBlocks;
+        if (blocksOnly) readBlocks = BlocksOfRect(*limitView, *limit);
+        std::vector<bool> newerDirty(order.size(), false);
+        for (std::size_t i = order.size(); i > 1; --i) newerDirty[i - 2] = newerDirty[i - 1] || !order[i - 1]->dirty.empty();
         std::vector<PixelRect> areas;
         std::vector<Target *> reduced;
+        std::vector<bool> cutAreas;  // TASK-178 O3: the area is the read's blocks only and leaves drawn pixels behind
         bool batch = batchReadback_;
-        for (Target *t : order) {
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            Target *t = order[i];
             PixelRect area = t->drawn;
-            if (limitView && limit && limitView->basePointer == t->view.basePointer &&
-                limitView->bufferWidth == t->view.bufferWidth && ClassOf(limitView->psm) == t->cls) {
-                area = Intersect(area, *limit);
+            const bool sameView = limitView && limit && limitView->basePointer == t->view.basePointer &&
+                                  limitView->bufferWidth == t->view.bufferWidth && ClassOf(limitView->psm) == t->cls;
+            if (sameView) area = Intersect(area, *limit);
+            const PixelRect bounds{0, 0, static_cast<std::int32_t>(t->width) - 1, static_cast<std::int32_t>(t->height) - 1};
+            const bool cut = blocksOnly && !sameView && !newerDirty[i];
+            if (download) {
+                const PixelRect whole = Intersect(area, bounds);
+                if (!whole.Empty()) stats.downloadPixelsWhole += static_cast<std::uint64_t>(whole.x1 - whole.x0 + 1) * (whole.y1 - whole.y0 + 1);
             }
-            area = Intersect(area, PixelRect{0, 0, static_cast<std::int32_t>(t->width) - 1,
-                                             static_cast<std::int32_t>(t->height) - 1});
-            if (area.Empty()) continue;
+            if (cut) {
+                const BufferView out{t->view.basePointer, t->view.bufferWidth, ReadbackPsm(*t)};
+                area = PixelsInBlocks(out, Intersect(area, bounds), readBlocks);
+            }
+            area = Intersect(area, bounds);
+            if (area.Empty()) {
+                if (cut) {  // none of its pixels is in the read's blocks: it owes its whole drawn area
+                    if (!t->readOnGpu) stats.readBlocksDebts++;
+                    t->readOnGpu = true;
+                    stats.readBlocksSkipped++;
+                }
+                continue;
+            }
             if (!reduced.empty() && !t->dirty.empty()) batch = false;
             reduced.push_back(t);
             areas.push_back(area);
+            cutAreas.push_back(cut && !Contains(area, t->drawn));
         }
         std::vector<std::vector<std::uint32_t>> batched;
         if (batch && reduced.size() > 1) {
@@ -2733,6 +2811,26 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             stats.readbacks++;
             stats.readbackPixels += static_cast<std::uint64_t>(w) * h;
+        }
+        // TASK-178 O3: a target cut to the read's blocks owes the rest of its drawn area to memory; where a newer target
+        // was written over the blocks of its area, memory is now newer than its image there.
+        for (std::size_t i = 0; i < reduced.size(); ++i) {
+            if (!cutAreas[i]) continue;
+            Target &t = *reduced[i];
+            stats.readBlocksCut++;
+            if (!t.readOnGpu) stats.readBlocksDebts++;
+            t.readOnGpu = true;
+            const Psm psm = ReadbackPsm(t);
+            const BlockSpan written = SpanOfRect(BufferView{t.view.basePointer, t.view.bufferWidth, psm}, areas[i]);
+            for (std::size_t j = i + 1; j < reduced.size(); ++j) {
+                const Target &later = *reduced[j];
+                const BufferView laterOut{later.view.basePointer, later.view.bufferWidth, ReadbackPsm(later)};
+                if (SpansOverlap(written, SpanOfRect(laterOut, areas[j]))) {
+                    PushDirty(t, Dirty{areas[i], psm});
+                    stats.readBlocksDirty++;
+                    break;
+                }
+            }
         }
         return true;
     }
@@ -5067,6 +5165,7 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
         impl_->textureBudget_ = impl_->gpu_.Integrated() ? kTextureCacheBytesIntegrated : kTextureCacheBytes;
     }
     impl_->StartTextureReplacement();
+    std::fprintf(stderr, "[core2] read blocks only (TASK-178 O3, GT4_CORE2_READ_BLOCKS_ONLY) %s\n", impl_->readBlocksOnly_ ? "on" : "off");
     if (impl_->delayedDownloads_ || impl_->hideFlares_) {
         std::fprintf(stderr, "[core2] performance mode (decision 0073): delayed downloads %s, flares hidden %s\n",
                      impl_->delayedDownloads_ ? "on" : "off", impl_->hideFlares_ ? "on" : "off");
@@ -5186,13 +5285,14 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
             } else if (!s.delayedDownloads_ || !s.AnswerDelayedDownload(view, rect)) {
                 const std::uint64_t before = s.stats.readbacks;
                 s.readbackReason_ = "download";
-                s.Readback(SpanOfRect(view, rect), &view, &rect);
+                s.Readback(SpanOfRect(view, rect), &view, &rect, true);
                 s.readbackReason_ = "other";
                 if (s.stats.readbacks != before) s.stats.downloadReadbacks++;
             }
         } else {
             s.ReadbackAll();
             s.stats.downloadReadbacks++;
+            s.stats.downloadPixelsWhole += s.stats.readbackPixels - pixelsBefore;  // TASK-178 O3: not cut
         }
         s.stats.downloadTargets += s.stats.readbacks - readbacksBefore;
         s.stats.downloadPixels += s.stats.readbackPixels - pixelsBefore;
@@ -5329,6 +5429,11 @@ void Renderer::Flush() {
             now.gapNs = g.drainGapCpuNs;
             now.gaps = g.drainGaps;
             now.afterWaitSubmissions = g.afterWaitSubmissions;
+            now.pixelsWhole = s.stats.downloadPixelsWhole;
+            now.cut = s.stats.readBlocksCut;
+            now.skipped = s.stats.readBlocksSkipped;
+            now.debts = s.stats.readBlocksDebts;
+            now.dirty = s.stats.readBlocksDirty;
             const Impl::DrainMark &was = s.lastDrainMark_;
             const auto per = [](std::uint64_t value, std::uint64_t count) {
                 return count != 0 ? static_cast<double>(value) / static_cast<double>(count) : 0.0;
@@ -5350,6 +5455,15 @@ void Renderer::Flush() {
                          per(now.gapNs - was.gapNs, now.gaps - was.gaps) / 1.0e6,
                          static_cast<double>(now.afterWaitSubmissions - was.afterWaitSubmissions) / 600.0,
                          s.gpu_.SubmitAfterWait(), s.gpu_.SubmitEvery());
+            // TASK-178 O3: what the downloads would have reduced over whole drawn areas, and the targets cut to the read's
+            // blocks, left out, given the IN-408 debt and given a dirty rectangle (per VBlank).
+            std::fprintf(stderr,
+                         "[core2] read blocks only (O3) %s: px/readback_download=%.1f whole_px/readback_download=%.1f "
+                         "cut/vblank=%.2f left_out/vblank=%.2f debts/vblank=%.2f dirty/vblank=%.2f\n",
+                         s.readBlocksOnly_ ? "on" : "off", per(now.downloadPixels - was.downloadPixels, readbackDownloads),
+                         per(now.pixelsWhole - was.pixelsWhole, readbackDownloads),
+                         static_cast<double>(now.cut - was.cut) / 600.0, static_cast<double>(now.skipped - was.skipped) / 600.0,
+                         static_cast<double>(now.debts - was.debts) / 600.0, static_cast<double>(now.dirty - was.dirty) / 600.0);
             s.lastDrainMark_ = now;
         }
         std::string byReason;

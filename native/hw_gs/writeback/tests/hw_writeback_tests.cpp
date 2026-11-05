@@ -4654,6 +4654,136 @@ int TestCore2DelayedDownloads(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_read_blocks_only (TASK-178 O3, GT4_CORE2_READ_BLOCKS_ONLY): a 256 x 64 CT32 target A (FBW 4, four 64 x 64
+// colours), then a newer 64 x 8 CT32 target B in A's third page (FBP 2, FBW 1), as GT4 draws its flare table into the
+// memory of older targets. A download of B cuts A to B's eight blocks; then the rest of A is read three ways:
+// a download of all of A right away (A must take B's newer pixels back from memory, not write its own over them);
+// after A ages out (6.2: it owes its other pixels to memory); after a CT16 upload over A's first block (its page rows are
+// patched from memory). Every download is checked word for word against the hardware result, with the switch at 0 and
+// at 1; at 1 A must have been cut. The switch is off by default (not exact in GT4's flare chain, see core2_renderer.cpp);
+// this checks the mechanism. At 3x.
+int TestCore2ReadBlocksOnly(const gpu::VulkanHandles& handles) {
+    const uint32_t colourA[4] = {0x80102030u, 0x80405060u, 0x80708090u, 0x80A0B0C0u};
+    const uint32_t colourB = 0x80F0E0D0u;
+    const uint32_t kUploadWord = 0x12341234u;  // CT16 pixels 0x1234 in pairs: every word of the written block
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto send = [](writeback::Renderer& renderer, std::vector<Qword> registers) {
+        registers.insert(registers.begin(), PackedTag(static_cast<uint32_t>(registers.size()), true, 0, {0xE}));
+        return renderer.GifTransfer(1, reinterpret_cast<const uint8_t*>(registers.data()), registers.size() * sizeof(Qword));
+    };
+    auto draw = [&](writeback::Renderer& renderer) {
+        std::vector<Qword> r;
+        r.push_back(Qword{uint64_t{0} | (uint64_t{4} << 16), 0x4C});            // FRAME_1: FBP 0, FBW 4, CT32 (A)
+        r.push_back(Qword{uint64_t{100} | (uint64_t{1} << 32), 0x4E});          // ZBUF_1: ZBP 100, ZMSK
+        r.push_back(Qword{(uint64_t{255} << 16) | (uint64_t{63} << 48), 0x40});  // SCISSOR_1: 0..255 x 0..63
+        r.push_back(Qword{0, 0x18});                                             // XYOFFSET_1 = 0
+        r.push_back(Qword{(uint64_t{1} << 16) | (uint64_t{1} << 17), 0x47});    // TEST_1: ZTE, ZTST ALWAYS
+        r.push_back(Qword{6, 0x00});                                             // PRIM: sprite
+        for (uint32_t k = 0; k < 4; ++k) {
+            r.push_back(Qword{rgbaq(colourA[k]), 0x01});
+            r.push_back(Qword{xyz(64 * k, 0), 0x05});
+            r.push_back(Qword{xyz(64 * k + 64, 64), 0x05});
+        }
+        r.push_back(Qword{uint64_t{2} | (uint64_t{1} << 16), 0x4C});            // FRAME_1: FBP 2, FBW 1, CT32 (B)
+        r.push_back(Qword{(uint64_t{63} << 16) | (uint64_t{31} << 48), 0x40});   // SCISSOR_1: 0..63 x 0..31
+        r.push_back(Qword{6, 0x00});
+        r.push_back(Qword{rgbaq(colourB), 0x01});
+        r.push_back(Qword{xyz(0, 0), 0x05});
+        r.push_back(Qword{xyz(64, 8), 0x05});
+        return send(renderer, r);
+    };
+    auto download = [&](writeback::Renderer& renderer, uint32_t sbp, uint32_t sbw, uint32_t w, uint32_t h,
+                        std::vector<uint32_t>& words) {
+        if (!send(renderer, {Qword{uint64_t{sbp} | (uint64_t{sbw} << 16), 0x50},  // BITBLTBUF: SBP, SBW, CT32
+                             Qword{0, 0x51}, Qword{uint64_t{w} | (uint64_t{h} << 32), 0x52}, Qword{1, 0x53}})) {
+            return false;
+        }
+        words.assign(static_cast<size_t>(w) * h, 0xFFFFFFFFu);
+        return renderer.ReadFifo(words.data(), words.size() * 4) == words.size() * 4;
+    };
+    auto uploadCt16 = [&](writeback::Renderer& renderer) {  // 16 x 8 CT16 at DBP 0, DBW 1: A's first block
+        if (!send(renderer, {Qword{(uint64_t{0} << 32) | (uint64_t{1} << 48) | (uint64_t{2} << 56), 0x50},
+                             Qword{0, 0x51}, Qword{uint64_t{16} | (uint64_t{8} << 32), 0x52}, Qword{0, 0x53}})) {
+            return false;
+        }
+        std::vector<Qword> image(1 + 16);
+        image[0] = PackedTag(16, true, 2, {});  // IMAGE, 16 qwords
+        for (size_t i = 1; i < image.size(); ++i) image[i] = Qword{0x1234123412341234ull, 0x1234123412341234ull};
+        return renderer.GifTransfer(3, reinterpret_cast<const uint8_t*>(image.data()), image.size() * sizeof(Qword));
+    };
+    // The hardware result for A's 256 x 64 pixels: B's strip over A, and the CT16 upload's first block when it ran.
+    auto expectedA = [&](uint32_t x, uint32_t y, bool uploaded) {
+        if (uploaded && x < 8 && y < 8) return kUploadWord;
+        if (x >= 128 && x < 192 && y < 8) return colourB;
+        return colourA[x / 64];
+    };
+    int failures = 0;
+    const char* phases[3] = {"read right away", "after ageing", "after a CT16 upload"};
+    for (int phase = 0; phase < 3; ++phase) {
+        for (const char* setting : {"0", "1"}) {
+            _putenv_s("GT4_CORE2_READ_BLOCKS_ONLY", setting);
+            _putenv_s("GT4_CORE2_CPU_SPRITES", "0");  // the sprites on the GPU, as GT4's flare chain is
+            _putenv_s("GT4_HW_CORE", "2");
+            writeback::Renderer renderer;
+            _putenv_s("GT4_HW_CORE", "");
+            renderer.SetScale(3, 3.0f);
+            std::string error;
+            const bool ready = renderer.Init(handles, error) && renderer.Core2();
+            _putenv_s("GT4_CORE2_CPU_SPRITES", "");
+            _putenv_s("GT4_CORE2_READ_BLOCKS_ONLY", "");
+            if (!ready) {
+                std::printf("hw_core2_read_blocks_only: core 2 init failed: %s\n", error.c_str());
+                return 1;
+            }
+            std::vector<uint32_t> words;
+            int wrong = 0;
+            if (!draw(renderer) || !download(renderer, 64, 1, 64, 8, words)) {
+                std::printf("hw_core2_read_blocks_only: GIF transfer or download refused\n");
+                return 1;
+            }
+            uint32_t offB = 0;
+            for (uint32_t w : words) offB += w != colourB ? 1u : 0u;
+            if (phase == 1) {
+                for (int vblank = 0; vblank < 62; ++vblank) renderer.Flush();  // A unused for over 60 frames: 6.2
+            }
+            if (phase == 2 && !uploadCt16(renderer)) {
+                std::printf("hw_core2_read_blocks_only: upload refused\n");
+                return 1;
+            }
+            if (!download(renderer, 0, 4, 256, 64, words)) {
+                std::printf("hw_core2_read_blocks_only: download refused\n");
+                return 1;
+            }
+            uint32_t offA = 0, shown = 0;
+            for (uint32_t y = 0; y < 64; ++y) {
+                for (uint32_t x = 0; x < 256; ++x) {
+                    const uint32_t want = expectedA(x, y, phase == 2);
+                    if (words[y * 256 + x] == want) continue;
+                    if (shown++ < 3) {
+                        std::printf("    %s, switch %s: A pixel %u,%u is %08X, not %08X\n", phases[phase], setting, x, y,
+                                    words[y * 256 + x], want);
+                    }
+                    ++offA;
+                }
+            }
+            const core2::Core2Counters* stats = renderer.Core2Stats();
+            const uint64_t cut = stats ? stats->readBlocksCut : 0;
+            const uint64_t dirty = stats ? stats->readBlocksDirty : 0;
+            const bool on = std::strcmp(setting, "1") == 0;
+            if (offB != 0 || offA != 0 || renderer.Failed() || (on ? cut == 0 || dirty == 0 : cut != 0)) wrong = 1;
+            std::printf("  %s, switch %s: B download %u words wrong, A download %u words wrong; cut %llu, dirty %llu, "
+                        "pixels reduced %llu (whole areas %llu)%s\n",
+                        phases[phase], setting, offB, offA, static_cast<unsigned long long>(cut),
+                        static_cast<unsigned long long>(dirty), static_cast<unsigned long long>(stats ? stats->readbackPixels : 0),
+                        static_cast<unsigned long long>(stats ? stats->downloadPixelsWhole : 0), wrong ? "  WRONG" : "");
+            failures += wrong;
+        }
+    }
+    std::printf("hw_core2_read_blocks_only: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_specialised (IN-437): pipelines specialised per draw state (GT4_CORE2_SPECIALIZE=sync: every batch waits
 // for its variant) against the uber pipeline (=0) on the core 2 streams of the other tests: identical images and GS
 // memory, and the 1x streams equal to the CPU reference. Without pixel interlock nothing is specialised.
@@ -6657,6 +6787,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_prepare_shaders") return TestCore2PrepareShaders(handles);
     if (name == "hw_core2_shader_guard") return TestCore2ShaderGuard(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
+    if (name == "hw_core2_read_blocks_only") return TestCore2ReadBlocksOnly(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);
     if (name == "hw_core2_texture_replacement") return TestCore2TextureReplacement(handles);

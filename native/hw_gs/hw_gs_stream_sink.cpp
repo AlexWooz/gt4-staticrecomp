@@ -206,11 +206,19 @@ void read_fifo_now(std::uint8_t *data, std::uint32_t qwords) {
   const std::size_t filled = backend().read_transfer_fifo(data, qwords);
   if (filled < qwords) std::memset(data + filled * 16, 0, (static_cast<std::size_t>(qwords) - filled) * 16);
   if (qwords == FlareTableReads::kQwords) {
+    std::uint64_t own = 14695981039346656037ull;
     for (std::size_t i = 0; i < FlareTableReads::kBytes; ++i) {
       g_flare_reply_hash ^= data[i];
       g_flare_reply_hash *= 1099511628211ull;
+      own = (own ^ data[i]) * 1099511628211ull;
     }
     ++g_flare_replies;
+    // Diagnostics: GT4_HW_FLARE_REPLY_TRACE=<VBlank> prints each reply's own hash from that VBlank on.
+    static const long long traceFrom = std::getenv("GT4_HW_FLARE_REPLY_TRACE") ? std::atoll(std::getenv("GT4_HW_FLARE_REPLY_TRACE")) : -1;
+    if (traceFrom >= 0 && static_cast<long long>(g_vsyncs) >= traceFrom) {
+      std::fprintf(stderr, "[hw] flare reply %llu vsync=%llu hash=%016llx\n", static_cast<unsigned long long>(g_flare_replies),
+                   static_cast<unsigned long long>(g_vsyncs), static_cast<unsigned long long>(own));
+    }
   }
 }
 
