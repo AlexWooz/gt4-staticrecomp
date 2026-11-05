@@ -224,7 +224,7 @@ confirm.
 | R5 | **Fragment barriers by image.** For a batch sampling another target, wait only if an earlier draw of the pass wrote that target (track written image serials since the last barrier). With interlock off, the 1,070 / 565 `primitive may share a pixel` barriers stay (they are real overlaps; tightening them needs a better disjointness test or the colour-attachment path, see R10). | 29 / 27 per VBlank now; not the 565-1,070 | A later draw reading a target no earlier draw wrote cannot see a hazard | Hyp: small | Hyp: small-moderate (in-pass barriers are expensive) | Low | `GT4_CORE2_FRAGMENT_BY_IMAGE=0` |
 | R6 | **Persistent descriptor sets.** Keep draw sets across submissions (the key already carries the image serials) and give decodes a per-image set or push descriptors; write a set only when its images change. | 233 / 162 draw sets and 472 / 109 decode sets per VBlank; 800 / 337 update calls, 4,139 / 1,781 writes | Pure CPU bookkeeping | Hyp: CPU only, small-medium on the GS thread in Hong Kong | Hyp: driver cost of descriptor allocation and writes can be much higher on mobile | Low | `GT4_CORE2_PERSISTENT_SETS=0` |
 | R7 | **GLM hazards below the 8 KiB page** (by block run). | `glm pages` + `war` 104 / 30 per VBlank | Page to block precision, rectangles already exact | Hyp: small | Hyp: small | Medium (page bookkeeping is per page everywhere) | `GT4_CORE2_GLM_BLOCKS=0` |
-| R8 | **Compose, deinterlace and present at output size** (section 6): fuse the deinterlace weave, compose and present into fewer full-output passes and skip a pass when its inputs did not change (a static menu repeats the same source). Needs the compose/deinterlace split of step 2 before it is ranked. | up to 5-6 of 7.2 ms at 10x in menus on the desktop | Fusing is exact; skipping an unchanged frame is exact for a stateless pass, not for deinterlace modes with history | Hyp: large in menus at high scale | Hyp: the 12-15 ms of the S23 menus | Medium | `GT4_CORE2_FUSE_POST=0` |
+| R8 | **Compose, deinterlace and present at output size** (section 6): fuse the deinterlace weave, compose and present into fewer full-output passes and skip a pass when its inputs did not change (a static menu repeats the same source). Needs the compose/deinterlace split of step 2 before it is ranked. | up to 5-6 of 7.2 ms at 10x in menus on the desktop | Fusing is exact; skipping an unchanged frame is exact for a stateless pass, not for deinterlace modes with history | Hyp: large in menus at high scale | Hyp: the 12-15 ms of the S23 menus | Medium | `GT4_CORE2_FUSE_POST=0` (done as `GT4_CORE2_DEINT_FIELD_COMPOSE`, step 2b) |
 | R9 | **Raise `GT4_CORE2_SUBMIT_EVERY` on tile GPUs** (existing switch): the cadence ends 5.3 / 3.9 passes per VBlank; not exact by construction (submission boundaries never change what is drawn, TASK-178 9.2). A/B only. | 5.3 / 3.9 pass ends | Submission boundaries do not change results | none | Hyp: small | None (existing) | `GT4_CORE2_SUBMIT_EVERY=<n>` |
 | R10 | **More batches through colour attachments (IN-481)** on devices without interlock, so ROP order replaces the per-primitive barriers (565-1,070 per VBlank). The attachment path is off here; which batches it takes and why is a separate study. | the no-interlock fragment barriers | ROP order is the GS order per pixel | n/a (interlock is on) | Hyp: the largest for the 593-1,103 fragment barriers | High | existing `GT4_CORE2_ROP` family |
 
@@ -359,4 +359,184 @@ rerun alone.
 - **U: the colour-attachment path** (integrated GPUs) always falls back to the transfer, so R1's gain there is zero.
 - **Hyp: the first copy after `Init`** compiles a pipeline inside the first frame unless the driver had it cached; the
   pipeline is created at `Init`, not at first use.
+
+## Step 2b: R8, compose, deinterlace and present split, explained, and the field-compose order
+
+Date 2026-11-05. Same branch, same **not PCSX2-tainted** status as step 1 (no PCSX2 source, fork,
+`private/tooling/pcsx2-*` or reference tree opened; only `docs/hw-renderer-spec/` and our own code). This section splits
+the step 1 `compose_deinterlace` category, explains the cost per pass, and implements one exact reduction: with
+`GT4_CORE2_DEINT_FIELD_COMPOSE=1` the display merge of a deinterlaced frame writes that field's deinterlace history image
+directly and the deinterlace reads the last output from the display image, so both full-display copies and two of the four
+full barriers a deinterlaced VBlank recorded are gone. Switch off by default; the old order is the A/B reference.
+
+### 1. The split (C)
+
+`GT4_CORE2_GPU_CATEGORIES=1` now prints one category per pass: `compose`, `deinterlace`, `fxaa`, `present`, plus the sum
+`compose_deinterlace` so the step 1 numbers stay comparable (the sum no longer includes FXAA; FXAA is off in every run
+here). Two counters come with it: `post_copies=<n>/vblank`, the full-display `vkCmdCopyImage` calls the deinterlace
+recorded, and `field_composes=<n>`, the display merges written into a field history image instead of the display image.
+
+Method: `build/t178-spec2` (Spec II, Release, SSE4.1; final executable SHA-256 `86a4f5a230d4941d`), the TASK-178 press
+scenes, **presenting** (`--window`, `GT4_OUTPUT_SIZE=3088x1440`, the client area 2858x1333), paced at 60 Hz,
+`GT4_CORE2_GPU_CATEGORIES=1`; every row of this table is one run of that build. The menu rows are
+the title screen with no presses (1500 VBlanks, `build/t182-r8-window.sh menu`; the table reads the 600-1200 interval).
+The race rows are the last 600 VBlanks of a 5400-VBlank Hong Kong reverse and Motegi Road Course B-Spec run (the game
+reaches the race at about VBlank 3000; `build/t182-r8-window.sh hk|mot`). Indicative timings: the desktop was shared with
+an Android build and other work. ms per VBlank:
+
+| Scene | Scale | `GT4_CORE2_DEINT_FIELD_COMPOSE` | draw passes | compose | deinterlace | present | `gpu_busy` |
+|---|---|---|---|---|---|---|---|
+| 480i menu | 2x | 0 (today) | 0.06 | 0.03 | 0.16 | 0.34 | 0.65 |
+| 480i menu | 2x | 1 | 0.06 | 0.04 | **0.13** | 0.35 | 0.62 |
+| 480i menu | 10x | 0 (today) | 1.03 | 0.76 | 3.74 | 1.60 | 7.43 |
+| 480i menu | 10x | 1 | 1.03 | 0.76 | **3.04** | 1.67 | **6.79** |
+| Hong Kong 480p race | 2x | 0 (today) | 1.29 | 0.04 | 0.00 | 0.34 | 3.32 |
+| Hong Kong 480p race | 2x | 1 | 1.30 | 0.04 | 0.00 | 0.34 | 3.34 |
+| Motegi 480p race | 2x | 0 (today) | 1.14 | 0.04 | 0.00 | 0.34 | 2.18 |
+| Motegi 480p race | 2x | 1 | 1.13 | 0.04 | 0.00 | 0.34 | 2.18 |
+| Hong Kong 480p race | 10x | 0 (today) | 10.08 | 0.46 | 0.00 | 0.96 | 17.01 |
+| Hong Kong 480p race | 10x | 1 | 10.21 | 0.47 | 0.00 | 0.97 | 17.21 |
+| Motegi 480p race | 10x | 0 (today) | 9.07 | 0.48 | 0.00 | 1.00 | 13.53 |
+| Motegi 480p race | 10x | 1 | 8.90 | 0.48 | 0.00 | 0.99 | 13.30 |
+
+Reading:
+- **Compose and deinterlace already run at the internal scale, never at the screen (C, code).** `ComposeGpu` composes
+  `merge_output_size(layout, deinterlaced, 1) * scale_` into the display image: 640x448 x s in a 480i menu (1280x896 at
+  2x, 6400x4480 = 28.7 Mpx at 10x), and the deinterlace works on that same image. Only `PresentScale` touches the window
+  rectangle. The owner's rule ("every post step at the render resolution, only the final upscale at screen size") is
+  therefore already the order in core 2: the S23's 43.3 ms is not a screen-resolution mistake, it is how many
+  internal-resolution passes run per VBlank.
+- **In a 480i menu the deinterlace is the largest post cost (C):** 0.16 of 0.53 post ms at 2x and 3.74 of 6.10 at 10x
+  (compose 0.03 / 0.76, present 0.34 / 1.60).
+- **A 480p race has no deinterlace at all (C):** the race display is progressive, so the post chain is one compose plus
+  one present, 0.38 of 3.32 `gpu_busy` at 2x and 1.43 of 17.01 at 10x. The race is draw-bound, and the phone's menu
+  problem does not exist there; the 480p rows also show that the R8 switch changes nothing in a race (0 copies either
+  way) — it can only pay where the game is interlaced.
+- **Present is the largest single category at 2x (C):** 0.34 of 0.65 `gpu_busy`. At 2x the internal image is smaller
+  than the window (1280x896 -> 2858x1333), so it is one FSR1 EASU pass (12 taps per output pixel); at 10x the internal
+  image is larger (6400x4480 -> 2858x1333) and it becomes two Lanczos-2 passes (ratios 2.24 and 3.36, about 10 and 14
+  taps per output pixel) for 1.6 ms.
+- **The race rows are draw-bound and switch-insensitive (C):** draw passes are 39% (Hong Kong 2x), 52% (Motegi 2x), 59%
+  (Hong Kong 10x) and 67% (Motegi 10x) of `gpu_busy`, and each off/on pair agrees within 1.3% (the two 10x race rows
+  within 0.15 ms of draw passes, which is the run-to-run noise of a shared desktop). The switch only touches deinterlaced
+  VBlanks, and a 480p race has none.
+
+### 2. Why it scales with the internal scale (the 43 ms at 6x)
+
+Every image here is `VK_FORMAT_R32_UINT` (one GS word per texel, the display image holding packed RGBA8) with
+`STORAGE | TRANSFER_SRC | TRANSFER_DST`, always in `VK_IMAGE_LAYOUT_GENERAL`; no post pass uses a colour or depth
+attachment (the IN-481 attachment path is off on this device), and the compute passes write storage images (C, code).
+Per deinterlaced VBlank, before this step (C, code):
+
+| Pass | Size | Reads | Writes | Per VBlank |
+|---|---|---|---|---|
+| `core2_compose.comp` (display merge) | internal: native display x s (6400x4480 = 28.7 Mpx at 10x) | 1 texel of 4 B per enabled circuit (<= 2) from an r32ui storage image, plus `imageSize` | 1 4-byte texel per output pixel (storage image) | 1 dispatch (8x8 workgroups) |
+| `hw_deinterlace_scaled.comp` (mode 6, the default) | same | up to 19 4-byte `imageLoad`s per missing-row pixel: this field 1, woven 1, up/down 2, previous same-parity up/down 2, older opposite-parity 1, and 4 neighbours x 3; a field-row pixel reads 1 | 1 4-byte texel per output pixel | 1 dispatch |
+| `vkCmdCopyImage` display -> `history[current]` | same | a full-display copy (read + write) | image copy | 1 |
+| `vkCmdCopyImage` display -> `deinterlaceOutput` (modes 5 and 6) | same | a full-display copy | image copy | 1 |
+| `hw_postfx_fxaa.comp` (off by default) | same | 9 luma taps + 2 x `kSearchSteps` + 2 | 1 texel | 0 here |
+| `core2_present_scale.comp` | the window rect (2858x1333) | 12 taps (EASU, growing) or 2 + 4 x widen per axis per pass (Lanczos-2, shrinking) + 5 (RCAS) | 1 texel per pass | 1-3 dispatches |
+| full barriers | - | - | - | 4, all in the deinterlace: before the history copy, after it, after the dispatch, after the last-output copy |
+
+Answer, labelled:
+- **C:** every pass except present has (native display x s) pixels squared. At 6x a 640x448 menu is 3840x2688 = 10.3 Mpx,
+  **2.3x the phone's 3088x1440 screen**; at 10x on the desktop it is 28.7 Mpx, 6.5x the window. Five full-image passes
+  run per deinterlaced VBlank (merge write, history copy, deinterlace reads, deinterlace write, last-output copy).
+- **C:** the deinterlace reads ~19 taps on half the rows, about 10 4-byte loads per output pixel, and writes 4 B: at 10x
+  that is ~1.1 GB of *requested* reads and 115 MB of writes for one dispatch. Neighbouring invocations reuse most of
+  those texels, so the DRAM traffic is far lower (Hyp), and the measured 3.8 ms is more than bandwidth alone explains.
+- **Hyp:** on a tile-based GPU each of those five passes is a full flush of a ~41 MB image (at 6x) to memory and back
+  with a barrier between passes, so the cost is the number of passes and their round trips, not arithmetic: 5 x 41 MB in
+  43.3 ms is only 4.7 GB/s of DRAM traffic, far under the Adreno 740's bandwidth. The desktop shows the same shape at a
+  much smaller absolute cost: the two copies plus their two drains are 0.72 ms at 10x, 0.36 ms per copy of 115 MB
+  (bottom-of-pipe marks charge a preceding command's tail to the next category, so a copy's span includes the drain).
+- **C:** the internal scale enters twice, as pixels (quadratic) and as passes (linear). That is why the chain is
+  invisible at 2x (0.53 of 0.64 `gpu_busy`) and dominant at 10x (6.12 of 7.45), and why the phone's 6x menus are the
+  worst case in the project. Present scales differently — its output is the window, but its tap count grows with the
+  shrink ratio, which is why it costs 1.6 ms at 10x and 0.34 ms at 2x.
+- **U:** how much of the phone's 43.3 ms is per-pass overhead (barriers, tile flushes) against per-pixel work. The
+  clean separation experiment is the same 6x menu with `GT4_HW_DEINTERLACE=off` (one full-image merge and no deinterlace
+  or copies) on the phone; not run here.
+
+### 3. The switch: `GT4_CORE2_DEINT_FIELD_COMPOSE=1` (exact, default off)
+
+What changes (C, code):
+- `Renderer::PlanDeinterlace` computes the field, the history indices and the kernel mode **before** the merge (none of it
+  needs the composed image), and `Gpu::PrepareDeinterlace` creates the history and woven images at the display size and
+  remembers this field's history image. `Gpu::Compose(..., intoField=true)` then writes the merge into it, so the
+  "composed display -> history" copy disappears; the separate last-output image is never created on this path.
+- `Gpu::Deinterlace(step, fieldComposed=true)` records no copy at all and binds the **display image** as the kernel's
+  `previous_output`: at that moment the display still holds the previous deinterlaced output, because this VBlank's merge
+  no longer wrote it. The kernel reads it at the texel it writes (new push word `previous_in_output`; `display_out` is
+  read-write, the same in-place-per-texel pattern `core2_tone.comp` already uses), so the last-output image and its copy
+  disappear too.
+- The one VBlank the new order cannot serve is the kernel's fallback to the last output of an earlier field (no history
+  entry of the opposite parity while `haveOutput` is set): it takes the old order. `Gpu::SnapshotLastOutput` keeps the
+  fallback image current across a 480i -> 480p transition (one copy, once per transition). With alternating fields and a
+  history cleared on a size change the fallback does not arise (Hyp: 0 in both scenes and in every fixture).
+- What it removes per deinterlaced VBlank: **2 full-display copies, 2 full barriers**, and the separate last-output image
+  at the display size — `image_mb` 1115.3 -> 1005.9 at 10x in the menus (-109 MB; about -41 MB at 6x on the phone).
+- The old order is untouched behind the switch (unset or 0): same passes, same barriers, same copies.
+
+### 4. Identity evidence (C)
+
+- **Fixture `hw_core2_post_field_compose` (new, CTest).** The stream of `hw_core2_interlaced_present` (a 64x32 field
+  buffer, per-field lines, a right half that changes every VBlank), 8 fields, at 1x, 2x and 3x, for the adaptive
+  (rule 6), weave, bob and a progressive stream: **every composed frame is bit-identical** with the switch off and on
+  (32,768 / 131,072 / 294,912 pixels per case, 0 differing), the deinterlace count is 8/8, and the counters show the path
+  each run took: field composes 0 -> 8, display copies 16 -> 0 (adaptive, two per field) and 8 -> 0 (weave, bob, one per
+  field). The switch-off order is the one `hw_core2_interlaced_present` compares with the CPU presentation at 1x
+  (weave and adaptive rule 5, all eight VBlanks); with the two fixtures together the switch-on output equals the old
+  order equals the CPU reference where that reference exists.
+- **Composed frames from the existing dump tool** (`GT4_HW_DUMP_SOURCE=upscaled`, P6 PPM), off against on:
+
+| Run | Scale | VBlanks dumped | Composed image (SHA-256, first 16) | Switch off = on? |
+|---|---|---|---|---|
+| 480i menu (title) | 2x | 1200 / 1500 | `2ec8aaf864975a1e` / `1eb80181cf16157a` (1280x896) | yes, 2 of 2 |
+| 480i menu (title) | 10x | 1200 / 1500 | `f921e8ca555c1a9e` / `44a6082802dd186a` (6400x4480) | yes, 2 of 2 |
+| Hong Kong race | 1x | 6000 / 7500 / 9000 | `b4806526f617e277` / `159ab52a605ba3b9` / `1fd5868e80593448` (640x448) | yes, 3 of 3 |
+| Hong Kong race | 2x | 6000 / 7500 / 9000 | `cd48f790cd3ea660` / `2c52b62d42836f72` / `e6fa4eae3ee06f57` (1280x896) | yes, 3 of 3 |
+| Motegi race | 2x | 6000 / 7500 / 9000 | `ef8bc58eb50ac93f` / `7259e3633353ca31` / `a08349df75c8cf20` (1280x896) | yes, 3 of 3 |
+| Hong Kong race | 10x | 6000 / 7500 / 9000 | `172f0c6378a79f67` / `dc2e6bb99b24c332` / `3dd53b5fc493cd51` (6400x4480) | yes, 3 of 3 |
+
+- **Presented image** (the same menu runs with `--window`, so the dump goes through `ComposeFrameGpu`, `PresentScale` and
+  `ReadGpuFrame`, that is the picture the swapchain receives): 2x `0d6366e465cb0b7d` / `41cdf22983493433` and 10x
+  `ac2ec9d4f5c9569c` / `a03b7fba92c77472`, 2369x1333 each, **identical off against on**, 2 of 2 at both scales.
+  Side-by-side crops for the owner: `build/evidence182/r8-crops/` (menu 2x and 10x, Hong Kong 2x and 10x, composed and
+  presented; the old order above, the new below, 1:1 and 4x zoom).
+- **Flare reply hashes** of section 3, with the switch on:
+
+| Run | Replies | Hash | Section 3 reference |
+|---|---|---|---|
+| Hong Kong 2x | 6835 | `2f4c1cc9f174d00e` | same |
+| Hong Kong 10x | 6835 | `61109e8f3143264a` | same |
+| Motegi 2x | 6588 | `7bf932fbb8799965` | same |
+| Hong Kong 1x (no section 3 row) | 6835 | `3f22899e9703be24` | switch off and on equal |
+
+### 5. Times, off against on
+
+From the table in section 1: at 10x in a 480i menu the deinterlace drops 3.74 -> 3.04 ms (-19%) and `gpu_busy` 7.43 ->
+6.79 (-9%); at 2x 0.16 -> 0.13 ms (0.65 -> 0.62). Compose and present do not change (0.76/1.60 at 10x, 0.03/0.34 at 2x). In the 480p
+races nothing changes, as expected (no deinterlace). On the phone the same change removes two of the five full-image
+passes the 6x menu runs per VBlank, so it should pay proportionally more than on the desktop (Hyp; the phone was not run
+for this step).
+
+### 6. What is left, and why it is not in this step
+
+- **The deinterlace dispatch itself is now the biggest post item in a 480i menu (C: 3.04 of 6.83 `gpu_busy` at 10x).**
+  Its motion decision is per *native* row and column (it samples at +-`row_step` and +-k x `scale`), so every one of the
+  s x s output pixels inside a native pixel takes the same decision and repeats the same 19 loads. Computing the decision
+  once per native pixel (1/scale^2 of the work: 100x less at 10x) and resolving it per output pixel with 1-2 loads is the
+  obvious next exact reduction; it needs a decision image and a proof per mode, so it is a step of its own.
+- **Skipping an unchanged frame** (a static menu) was not implemented: every VBlank in the measured menus composes a
+  different image (the title animates; the dump pairs at VBlank 1200 and 1500 differ), and the deinterlace carries field
+  history that advances every VBlank, so a skip would have to be proven against the history, not just the sources. The
+  exact form is a per-image write stamp plus an identical push block; nothing to gain until a scene repeats a frame.
+- **Present** (1.6 ms at 10x in the menu): no exact reduction is left (its output is the picture). The cheaper bilinear
+  path already exists as Performance mode on integrated GPUs, not here.
+- **A `GT4_CORE2_POST_AT_SCREEN` order** (compose/deinterlace at the window size) is not implemented on purpose: it
+  changes the picture (the owner accepts a scaling-only difference, but this is a resolution change, not a scaling one)
+  and it is what today's code already avoids. If it is ever wanted, it belongs to Performance mode and must be measured
+  against the faithful order.
+
 

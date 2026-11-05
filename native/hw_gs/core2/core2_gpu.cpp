@@ -239,7 +239,8 @@ struct Gpu::Impl {
   // TASK-182 (GT4_CORE2_GPU_CATEGORIES=1, diagnostics): where the GPU time of a recording goes by kind of work. Each change of
   // kind writes a bottom-of-pipe timestamp (no barrier), so a kind owns the time from its mark to the next one: the work
   // that finishes in between, including the tail of an earlier command that overlapped it. Times are read in wait_slot.
-  enum : std::uint32_t { kCatDraw, kCatCompose, kCatPresent, kCatUpload, kCatCompute, kCatReadback, kCatStartGap, kCatKinds };
+  enum : std::uint32_t { kCatDraw, kCatCompose, kCatDeinterlace, kCatFxaa, kCatPresent, kCatUpload, kCatCompute,
+                         kCatReadback, kCatStartGap, kCatKinds };
   static constexpr std::uint32_t kCatPoints = 512;
   const bool catOn = std::getenv("GT4_CORE2_GPU_CATEGORIES") != nullptr;
   VkQueryPool catPool = VK_NULL_HANDLE;
@@ -352,6 +353,12 @@ struct Gpu::Impl {
   // (hw_postfx_fxaa.comp: 0 source, 1 output), each with its own set layout; the images follow the display size.
   Image deinterlaceHistory[gpu::kGpuDeinterlaceHistory];
   Image deinterlaceWoven, deinterlaceOutput, fxaa;
+  // TASK-182 R8: the image the post chain last produced (the display image, or with GT4_CORE2_DEINT_FIELD_COMPOSE=1 still
+  // the display image: the deinterlace writes its result there). FXAA, the presentation resample and the host read use it.
+  Image *post = &display;
+  // TASK-182 R8: the history entry the next display merge composes into (PrepareDeinterlace), or null when the merge
+  // writes the display image.
+  Image *fieldTarget = nullptr;
   // IN-432: presentation resampling (core2_present_scale.comp: 0 source, 1 output); two passes ping-pong through
   // presentA and presentB, the last one writes presentOut.
   Image presentA, presentB, presentOut;
@@ -3283,7 +3290,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   {
     const std::uint32_t deinterlaceCounts[7] = {gpu::kGpuDeinterlaceHistory, 0, 0, 0, 1, 1, 1};
     const std::uint32_t fxaaCounts[2] = {1, 1};
-    if (!s.image_layouts(deinterlaceCounts, 7, 14 * 4, s.deinterlaceSetLayout, s.deinterlaceLayout, error) ||
+    if (!s.image_layouts(deinterlaceCounts, 7, 15 * 4, s.deinterlaceSetLayout, s.deinterlaceLayout, error) ||
         !s.image_layouts(fxaaCounts, 2, 2 * 4, s.fxaaSetLayout, s.fxaaLayout, error)) {
       return false;
     }
@@ -4943,23 +4950,35 @@ bool Gpu::Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight
 }
 
 bool Gpu::Compose(const std::uint32_t words[28], ImageId sourceA, ImageId sourceB, std::uint32_t outWidth,
-                  std::uint32_t outHeight, std::string &error) {
+                  std::uint32_t outHeight, bool intoField, std::string &error) {
   Impl &s = *impl_;
   if (outWidth == 0 || outHeight == 0) {
     error = "CORE2 compose of an empty display";
     return false;
   }
   if (!s.begin_recording(error)) return false;
+  // The display image always exists at the display size: it is the presentation target and, when the deinterlace writes
+  // the field's own history image, the image the deinterlaced result is written over.
   if (s.display.width != outWidth || s.display.height != outHeight) {
     s.doom(s.display);
     if (!s.make_image(s.display, outWidth, outHeight, 1, error)) return false;
   }
+  s.post = &s.display;
+  Image *out = &s.display;
+  if (intoField) {
+    out = s.fieldTarget;
+    if (!out || !out->alive || out->width != outWidth || out->height != outHeight) {
+      error = "CORE2 compose into a deinterlace field that was not prepared";
+      return false;
+    }
+    s.stats.fieldComposes++;
+  }
   const Image *a = s.image_of(sourceA);
   const Image *b = s.image_of(sourceB);
   s.outside_pass();
-  s.touch("compose", {a, b}, {&s.display}, 0, 0);
+  s.touch("compose", {a, b}, {out}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
-  if (!s.compute_set(s.staging.buffer, 0, 16, a ? a->view : s.atlas.view, b ? b->view : s.atlas.view, s.display.view,
+  if (!s.compute_set(s.staging.buffer, 0, 16, a ? a->view : s.atlas.view, b ? b->view : s.atlas.view, out->view,
                      set, error)) {
     return false;
   }
@@ -4969,13 +4988,14 @@ bool Gpu::Compose(const std::uint32_t words[28], ImageId sourceA, ImageId source
 }
 
 std::uint64_t Gpu::DisplayImage() const {
-  return reinterpret_cast<std::uint64_t>(impl_->display.image);
+  return reinterpret_cast<std::uint64_t>(impl_->post->image);
 }
 
-bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error) {
+bool Gpu::PrepareDeinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error) {
   Impl &s = *impl_;
-  if (step.width == 0 || step.height == 0 || step.width > s.display.width || step.height > s.display.height ||
-      step.current >= gpu::kGpuDeinterlaceHistory || step.mode < 2 || step.mode > 6) {
+  s.fieldTarget = nullptr;
+  if (step.width == 0 || step.height == 0 || step.current >= gpu::kGpuDeinterlaceHistory || step.mode < 2 ||
+      step.mode > 6) {
     error = "CORE2 deinterlace outside the display image";
     return false;
   }
@@ -4986,21 +5006,76 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
   for (Image &image : s.deinterlaceHistory) {
     if (!s.post_image(image, step.width, step.height, fresh, error)) return false;
   }
-  if (!s.post_image(s.deinterlaceWoven, step.width, step.height, fresh, error) ||
-      !s.post_image(s.deinterlaceOutput, step.width, step.height, fresh, error)) {
+  if (!s.post_image(s.deinterlaceWoven, step.width, step.height, fresh, error)) return false;
+  if (s.display.width != step.width || s.display.height != step.height) {
+    s.doom(s.display);
+    if (!s.make_image(s.display, step.width, step.height, 1, error)) return false;
+  }
+  s.fieldTarget = &s.deinterlaceHistory[step.current];
+  return true;
+}
+
+bool Gpu::SnapshotLastOutput(std::string &error) {
+  Impl &s = *impl_;
+  if (!s.display.alive || s.display.width == 0 || s.display.height == 0) {
+    error = "CORE2 last output snapshot without a display image";
     return false;
   }
+  if (!s.begin_recording(error)) return false;
+  bool fresh = false;
+  if (!s.post_image(s.deinterlaceOutput, s.display.width, s.display.height, fresh, error)) return false;
+  s.flush_draws();
+  s.end_render_pass();
+  s.full_barrier();
+  s.cat_mark(Impl::kCatDeinterlace);  // TASK-182 diagnostics
+  VkImageCopy region{};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.extent = {s.display.width, s.display.height, 1};
+  gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceOutput.image,
+                         VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+  s.full_barrier();
+  s.stats.postCopies++;
+  return true;
+}
+
+bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, bool fieldComposed, std::string &error) {
+  Impl &s = *impl_;
+  if (step.width == 0 || step.height == 0 || step.width > s.display.width || step.height > s.display.height ||
+      step.current >= gpu::kGpuDeinterlaceHistory || step.mode < 2 || step.mode > 6) {
+    error = "CORE2 deinterlace outside the display image";
+    return false;
+  }
+  if (fieldComposed && (!s.fieldTarget || !s.fieldTarget->alive)) {
+    error = "CORE2 deinterlace of a field that was not composed";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  // The history follows the display size. A new size starts a new history: the caller's step then says there is no
+  // earlier field and no earlier output (its history is cleared on the same size change).
+  bool fresh = false;
+  for (Image &image : s.deinterlaceHistory) {
+    if (!s.post_image(image, step.width, step.height, fresh, error)) return false;
+  }
+  if (!s.post_image(s.deinterlaceWoven, step.width, step.height, fresh, error)) return false;
+  if (!fieldComposed && !s.post_image(s.deinterlaceOutput, step.width, step.height, fresh, error)) return false;
+  const Image &field = s.deinterlaceHistory[step.current];
   s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
-  s.cat_mark(Impl::kCatCompose);  // TASK-182 diagnostics
+  s.cat_mark(Impl::kCatDeinterlace);  // TASK-182 diagnostics
   VkImageCopy region{};
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.extent = {step.width, step.height, 1};
-  gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceHistory[step.current].image,
-                         VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-  s.full_barrier();
+  if (!fieldComposed) {
+    // The display merge wrote the display image: keep this field's words in its history entry, then deinterlace over
+    // the display image.
+    gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, field.image, VK_IMAGE_LAYOUT_GENERAL, 1,
+                           &region);
+    s.full_barrier();
+    s.stats.postCopies++;
+  }
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.deinterlaceSetLayout, set, error)) return false;
   VkDescriptorImageInfo history[gpu::kGpuDeinterlaceHistory];
@@ -5008,7 +5083,11 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
     history[i] = {VK_NULL_HANDLE, s.deinterlaceHistory[i].view, VK_IMAGE_LAYOUT_GENERAL};
   }
   const VkDescriptorImageInfo woven{VK_NULL_HANDLE, s.deinterlaceWoven.view, VK_IMAGE_LAYOUT_GENERAL};
-  const VkDescriptorImageInfo previous{VK_NULL_HANDLE, s.deinterlaceOutput.view, VK_IMAGE_LAYOUT_GENERAL};
+  // With the field composed into its history entry the last output is in the display image and the shader reads it
+  // through `previous_in_output` (the display image is a valid binding either way and is never read here when set).
+  const VkDescriptorImageInfo previous{VK_NULL_HANDLE,
+                                      fieldComposed ? s.display.view : s.deinterlaceOutput.view,
+                                      VK_IMAGE_LAYOUT_GENERAL};
   const VkDescriptorImageInfo output{VK_NULL_HANDLE, s.display.view, VK_IMAGE_LAYOUT_GENERAL};
   VkWriteDescriptorSet writes[4]{};
   const std::uint32_t bindings[4] = {0, 4, 5, 6};
@@ -5025,21 +5104,23 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlacePipeline);
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlaceLayout, 0, 1, &set, 0, nullptr);
   auto dispatch = [&](std::uint32_t mode) {
-    const std::uint32_t push[14] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
+    const std::uint32_t push[15] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
                                     step.previousSame, step.previousOther, step.haveOutput ? 1u : 0u,
                                     step.thresholdPermille, step.initWoven ? 1u : 0u, step.rowStep,
-                                    step.olderOther};
+                                    step.olderOther, fieldComposed ? 1u : 0u};
     gt4_hwd_vkCmdPushConstants(s.cmd, s.deinterlaceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     gt4_hwd_vkCmdDispatch(s.cmd, (step.width + 7) / 8, (step.height + 7) / 8, 1);
     s.full_barrier();
   };
   if (step.mode == 2 || step.mode == 3) dispatch(1);  // the weave update first
   dispatch(step.mode);
-  if (step.mode >= 5) {
+  if (!fieldComposed && step.mode >= 5) {
     gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceOutput.image,
                            VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     s.full_barrier();
+    s.stats.postCopies++;
   }
+  s.post = &s.display;  // the deinterlaced display is written over the display image
   s.stats.deinterlaces++;
   return true;
 }
@@ -5056,10 +5137,10 @@ bool Gpu::Fxaa(std::uint32_t width, std::uint32_t height, std::string &error) {
   s.flush_draws();
   s.end_render_pass();
   s.full_barrier();  // a host read or a rare pass: ordered at once
-  s.cat_mark(Impl::kCatCompose);  // TASK-182 diagnostics
+  s.cat_mark(Impl::kCatFxaa);  // TASK-182 diagnostics
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!s.allocate_set(s.fxaaSetLayout, set, error)) return false;
-  const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, s.display.view, VK_IMAGE_LAYOUT_GENERAL},
+  const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, s.post->view, VK_IMAGE_LAYOUT_GENERAL},
                                            {VK_NULL_HANDLE, s.fxaa.view, VK_IMAGE_LAYOUT_GENERAL}};
   VkWriteDescriptorSet writes[2]{};
   for (std::uint32_t i = 0; i < 2; ++i) {
@@ -5086,7 +5167,7 @@ std::uint64_t Gpu::FxaaImage() const { return reinterpret_cast<std::uint64_t>(im
 bool Gpu::PresentScale(bool fromFxaa, std::uint32_t width, std::uint32_t height, std::uint32_t outWidth,
                        std::uint32_t outHeight, float sharpness, std::string &error) {
   Impl &s = *impl_;
-  Image &source = fromFxaa ? s.fxaa : s.display;
+  Image &source = fromFxaa ? s.fxaa : *s.post;
   if (width == 0 || height == 0 || width > source.width || height > source.height || outWidth == 0 ||
       outHeight == 0 || outWidth > s.limits.maxImageDimension2D || outHeight > s.limits.maxImageDimension2D) {
     error = "CORE2 presentation resampling outside the display image";
@@ -5166,7 +5247,7 @@ std::uint64_t Gpu::PresentImage() const { return reinterpret_cast<std::uint64_t>
 bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &pixels,
                       std::string &error, bool presentScaled, bool fxaa) {
   Impl &s = *impl_;
-  const Image &source = presentScaled ? s.presentOut : fxaa ? s.fxaa : s.display;
+  const Image &source = presentScaled ? s.presentOut : fxaa ? s.fxaa : *s.post;
   width = std::min(width, source.width);
   height = std::min(height, source.height);
   const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * 4u;

@@ -3308,6 +3308,147 @@ int TestCore2InterlacedPresent(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_post_field_compose (TASK-182 R8): GT4_CORE2_DEINT_FIELD_COMPOSE=1 has the display merge of a deinterlaced
+// frame write straight into that field's deinterlace history image, and reads the last adaptive output from the display
+// image, so both full-display image copies the deinterlace used to record disappear. The composed output of the same
+// 480i stream must be identical with the switch off and on at 1x, 2x and 3x, for the adaptive (rule 6, the default), the
+// weave and the bob modes; a progressive stream (no deinterlace: the merge writes the display in both runs) must be
+// identical too. The counters must show the path each run took: 8 field composes and no copy with the switch, and no
+// field compose with the copies of the old path (one per field, plus the last-output copy of the adaptive modes).
+int TestCore2PostFieldCompose(const gpu::VulkanHandles& handles) {
+    constexpr uint32_t kWidth = 64;
+    constexpr uint32_t kRows = 32;  // field buffer rows; the frame is 64 rows when interlaced
+    auto lineColour = [](uint32_t line, uint32_t x, uint32_t frame) {
+        const uint32_t moving = x >= kWidth / 2 ? frame * 0x00302010u : 0u;  // the right half changes every VBlank
+        return 0x80000000u | (((line * 7u + 3u) & 0xFFu) | (((line * 13u) & 0xFFu) << 8) | ((x * 3u) << 16)) + moving;
+    };
+    auto upload = [&](writeback::Renderer& renderer, uint32_t fieldLine, uint32_t frame) {
+        std::vector<Qword> stream;
+        stream.push_back(PackedTag(4, false, 0, {0xE}));
+        stream.push_back(Qword{(uint64_t{1} << 16) | (uint64_t{1} << 48), 0x50});  // BITBLTBUF: DBP 0, DBW 1, CT32
+        stream.push_back(Qword{0, 0x51});
+        stream.push_back(Qword{uint64_t{kWidth} | (uint64_t{kRows} << 32), 0x52});
+        stream.push_back(Qword{0, 0x53});
+        const uint32_t qwords = kWidth * kRows / 4;
+        stream.push_back(PackedTag(qwords, true, 2, {}));
+        for (uint32_t i = 0; i < qwords; ++i) {
+            const uint32_t row = (i * 4) / kWidth;
+            const uint32_t x = (i * 4) % kWidth;
+            uint32_t c[4];
+            for (uint32_t k = 0; k < 4; ++k) c[k] = lineColour(2 * row + fieldLine, x + k, frame);
+            stream.push_back(Qword{uint64_t{c[0]} | (uint64_t{c[1]} << 32), uint64_t{c[2]} | (uint64_t{c[3]} << 32)});
+        }
+        renderer.GifTransfer(1, reinterpret_cast<const uint8_t*>(stream.data()), stream.size() * sizeof(Qword));
+    };
+    auto setup = [&](writeback::Renderer& renderer, display::DeinterlaceMode mode, bool interlaced) {
+        writeback::OutputSettings settings;
+        settings.deinterlace = mode;
+        renderer.SetOutputSettings(settings);
+        renderer.WritePrivileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));  // PMODE: RC1, MMOD 1, ALP 255
+        renderer.WritePrivileged(0x12000010u, uint64_t{2} << 13);              // SMODE1: NTSC
+        renderer.WritePrivileged(0x12000020u, interlaced ? 3u : 0u);           // SMODE2: INT and FFMD when interlaced
+        renderer.WritePrivileged(0x12000060u, interlaced ? 1u : 0u);           // SYNCV: an interlaced signal (13.1)
+        renderer.WritePrivileged(0x12000070u, uint64_t{1} << 9);               // DISPFB1: FBP 0, FBW 1, CT32
+        renderer.WritePrivileged(0x12000080u, (uint64_t{3} << 23) | (uint64_t{4 * kWidth - 1} << 32) |
+                                                  (uint64_t{2 * kRows - 1} << 44));  // DISPLAY1: MAGH 3, 64 x 64
+    };
+    struct PostRun {
+        std::vector<std::vector<uint32_t>> frames;
+        std::uint64_t deinterlaced = 0, fieldComposes = 0, copies = 0;
+        std::uint32_t width = 0, height = 0;
+    };
+    auto run = [&](uint32_t scale, display::DeinterlaceMode mode, bool interlaced, bool on, PostRun& out) {
+        _putenv_s("GT4_HW_DEINTERLACE_ROWS", "native");
+        _putenv_s("GT4_HW_DEINTERLACE_MOVING", "");
+        _putenv_s("GT4_CORE2_DEINT_FIELD_COMPOSE", on ? "1" : "0");
+        _putenv_s("GT4_HW_CORE", "2");
+        writeback::Renderer renderer;
+        _putenv_s("GT4_HW_CORE", "");
+        std::string error;
+        renderer.SetScale(scale, static_cast<float>(scale));
+        const bool ready = renderer.Init(handles, error);  // reads GT4_CORE2_DEINT_FIELD_COMPOSE
+        _putenv_s("GT4_CORE2_DEINT_FIELD_COMPOSE", "");
+        if (!ready) {
+            std::printf("  init failed: %s\n", error.c_str());
+            return false;
+        }
+        setup(renderer, mode, interlaced);
+        for (uint32_t frame = 0; frame < 8; ++frame) {
+            const bool odd = (frame & 1u) != 0;
+            upload(renderer, odd ? 1u : 0u, frame);
+            renderer.SetDisplayField(odd);
+            renderer.Flush();
+            writeback::GpuFrame gpuFrame;
+            std::vector<std::uint32_t> pixels;
+            if (!renderer.ComposeFrameGpu(gpuFrame) || !gpuFrame.valid || !renderer.ReadGpuFrame(gpuFrame, pixels)) {
+                std::printf("  compose failed: %s\n", renderer.LastError().c_str());
+                return false;
+            }
+            out.width = gpuFrame.width;
+            out.height = gpuFrame.height;
+            out.frames.push_back(std::move(pixels));
+        }
+        if (renderer.Failed()) {
+            std::printf("  renderer failed: %s\n", renderer.LastError().c_str());
+            return false;
+        }
+        out.deinterlaced = renderer.GetCounters().deinterlacedFrames;
+        const core2::Core2Counters* counters = renderer.Core2Stats();
+        if (!counters) return false;
+        out.fieldComposes = counters->postFieldComposes;
+        out.copies = counters->postCopies;
+        return true;
+    };
+    int failures = 0;
+    const struct {
+        display::DeinterlaceMode mode;
+        bool interlaced;
+        std::uint64_t copiesPerField;  // the old path: the history copy, plus the last-output copy of modes 5 and 6
+        const char* name;
+    } cases[] = {{display::DeinterlaceMode::Auto, true, 2, "adaptive rule 6"},
+                 {display::DeinterlaceMode::Weave, true, 1, "weave"},
+                 {display::DeinterlaceMode::Bob, true, 1, "bob"},
+                 {display::DeinterlaceMode::Auto, false, 0, "progressive (no deinterlace)"}};
+    for (uint32_t scale : {1u, 2u, 3u}) {
+        for (const auto& c : cases) {
+            PostRun off, on;
+            const bool ok = run(scale, c.mode, c.interlaced, false, off) && run(scale, c.mode, c.interlaced, true, on);
+            std::uint64_t compared = 0, differing = 0;
+            if (ok && off.frames.size() == 8 && on.frames.size() == 8) {
+                for (std::size_t frame = 0; frame < off.frames.size(); ++frame) {
+                    if (off.frames[frame].size() != on.frames[frame].size()) {
+                        ++differing;
+                        continue;
+                    }
+                    for (std::size_t i = 0; i < off.frames[frame].size(); ++i) {
+                        ++compared;
+                        if (off.frames[frame][i] != on.frames[frame][i]) ++differing;
+                    }
+                }
+            } else {
+                differing = 1;
+            }
+            const std::uint64_t fieldFrames = c.interlaced ? 8 : 0;
+            const bool counters = on.fieldComposes == fieldFrames && off.fieldComposes == 0 && on.copies == 0 &&
+                                  off.copies == 8 * c.copiesPerField && off.deinterlaced == on.deinterlaced;
+            std::printf("  %s at %ux: %llu pixels compared, %llu differing, size %ux%u, deinterlaced %llu/%llu, "
+                        "field composes %llu/%llu, display copies %llu/%llu\n",
+                        c.name, scale, static_cast<unsigned long long>(compared),
+                        static_cast<unsigned long long>(differing), off.width, off.height,
+                        static_cast<unsigned long long>(off.deinterlaced),
+                        static_cast<unsigned long long>(on.deinterlaced),
+                        static_cast<unsigned long long>(off.fieldComposes),
+                        static_cast<unsigned long long>(on.fieldComposes), static_cast<unsigned long long>(off.copies),
+                        static_cast<unsigned long long>(on.copies));
+            if (!ok || differing != 0 || !counters || off.width != on.width || off.height != on.height) ++failures;
+        }
+    }
+    _putenv_s("GT4_HW_DEINTERLACE_MOVING", "");
+    _putenv_s("GT4_HW_DEINTERLACE_ROWS", "");
+    std::printf("hw_core2_post_field_compose: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // ---- Core 2 A/B fixtures (IN-407, IN-408) ------------------------------------------------------------------------
 // Core 2 at 2x replays one stream twice, with an A/B switch (an environment variable core 2 reads when it is built)
 // set to "0" and left unset, and compares both runs with each other and with the CPU reference renderer (1x, the GS
@@ -7347,6 +7488,7 @@ int main(int argc, char** argv) {
     if (name == "hw_tone_hle_exact") return TestToneHleExact(handles);
     if (name == "hw_scale_interlaced_present") return TestScaleInterlacedPresent(handles);
     if (name == "hw_core2_interlaced_present") return TestCore2InterlacedPresent(handles);
+    if (name == "hw_core2_post_field_compose") return TestCore2PostFieldCompose(handles);
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_palette_segments") return TestCore2PaletteSegments(handles);

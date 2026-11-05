@@ -37,7 +37,10 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0, r32ui) uniform uimage2D history[4];  // merge images of the last fields
 layout(set = 0, binding = 4, r32ui) uniform uimage2D woven;
 layout(set = 0, binding = 5, r32ui) uniform readonly uimage2D previous_output;
-layout(set = 0, binding = 6, r32ui) uniform writeonly uimage2D display_out;
+// TASK-182 R8: read as well as written, because with the field composed into `history[current]` the last adaptive output
+// is still in this image at the start of the pass (`previous_in_output`). A load at the texel this invocation stores is
+// the same in-place pattern core2_tone.comp uses.
+layout(set = 0, binding = 6, r32ui) uniform uimage2D display_out;
 
 layout(push_constant) uniform DeinterlaceParameters {
     uint mode;
@@ -55,6 +58,9 @@ layout(push_constant) uniform DeinterlaceParameters {
     uint row_step;        // IN-386: output rows per algorithm row: 1 = one output row (the reference), scale = one
                           // native row (the IN-381 interpretation)
     uint older_other;     // IN-396: history index of the opposite-parity field three back, or 4 when there is none
+    // TASK-182 R8: 1 when the last adaptive output is still in display_out (the display merge wrote this field's history
+    // image instead of the display image), 0 when it is the separate previous_output image.
+    uint previous_in_output;
 } pc;
 
 uvec4 unpack_rgba(uint word) {
@@ -130,9 +136,14 @@ void main() {
         return;
     }
     bool have_woven = pc.previous_other < 4u || pc.have_output != 0u;
-    uint woven_word = pc.previous_other < 4u ? load_history(pc.previous_other, p)
-                      : pc.have_output != 0u ? imageLoad(previous_output, p).x
-                                             : here;
+    // TASK-182 R8: the last adaptive output, read from the display image itself when the field was composed into its
+    // history entry (the display merge did not overwrite the display this VBlank).
+    uint woven_word = here;
+    if (pc.previous_other < 4u) {
+        woven_word = load_history(pc.previous_other, p);
+    } else if (pc.have_output != 0u) {
+        woven_word = pc.previous_in_output != 0u ? imageLoad(display_out, p).x : imageLoad(previous_output, p).x;
+    }
     bool edge_row = row == 0u || row + 1u == rows;
     if (edge_row) {
         imageStore(display_out, p, uvec4(woven_word, 0u, 0u, 0u));
