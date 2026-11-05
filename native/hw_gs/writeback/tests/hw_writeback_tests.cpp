@@ -6554,6 +6554,22 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                              "GT4_CORE2_SLOTS", false, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
     failures += CheckCore2Ab(handles, "submission slots, GPU palettes", Core2GpuPaletteCapture(4), 4, "GT4_CORE2_SLOTS",
                              true, [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    // TASK-178: the first submission after a waited one (a readback) sent after K batches, here 1, must give the same images
+    // and memory as the plain cadence; the rule must have run (submissions by it with K, none off).
+    auto afterWaitCounters = [](const char* what) {
+        return [what](const Core2AbRun& off, const Core2AbRun& on) {
+            std::printf("  %s: drains %llu / %llu, submissions after a wait %llu / %llu\n", what,
+                        static_cast<unsigned long long>(off.stats.drains), static_cast<unsigned long long>(on.stats.drains),
+                        static_cast<unsigned long long>(off.stats.afterWaitSubmissions),
+                        static_cast<unsigned long long>(on.stats.afterWaitSubmissions));
+            return off.stats.drains > 0 && off.stats.afterWaitSubmissions == 0 && on.stats.afterWaitSubmissions > 0 ? 0 : 1;
+        };
+    };
+    failures += CheckCore2Ab(handles, "submit after a wait, stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6,
+                             "GT4_CORE2_SUBMIT_AFTER_WAIT", true, afterWaitCounters("stream over a GPU-read render"), false, 2,
+                             "1");
+    failures += CheckCore2Ab(handles, "submit after a wait, GPU-read ageing", Core2GpuReadAgeingCapture(72), 72,
+                             "GT4_CORE2_SUBMIT_AFTER_WAIT", true, afterWaitCounters("GPU-read ageing"), true, 2, "1");
     // IN-429 / IN-430: batched readbacks and merged dirty rectangles give the same images and memory.
     auto readbackCounters = [](const char* what) {
         return [what](const Core2AbRun& off, const Core2AbRun& on) {

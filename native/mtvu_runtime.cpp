@@ -15,6 +15,7 @@
 #include "perf_probe.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -147,6 +148,11 @@ struct Runtime {
   std::atomic<std::uint64_t> job_patches_posted{0};
   std::uint64_t job_patches_applied = 0;  // worker thread only
   DeferredTableCopy table_copy = nullptr;
+  // TASK-178 diagnostics: per read with patches, its first job, packed (ticket << 32 | job, low 32 bits of each) in slot
+  // ticket % 16, stored before that job enters the GS stream; written by the EE only. The EE runs up to two VBlanks ahead of
+  // the GS worker, so the slots keep the last 16 reads.
+  std::array<std::atomic<std::uint64_t>, 16> first_patched_job{};
+  std::uint64_t first_patched_ticket = 0;  // EE thread only
 
   std::atomic<bool> worker_failed{false};
   std::exception_ptr worker_error;  // written by the worker before worker_failed is released
@@ -590,6 +596,11 @@ void post_table_patches(Runtime &r, std::uint64_t job, std::vector<Runtime::Tabl
     for (Runtime::TablePatch &patch : patches) {
       patch.job = job;
       r.job_patches.push_back(patch);
+      if (patch.ticket != r.first_patched_ticket) {  // TASK-178 diagnostics
+        r.first_patched_ticket = patch.ticket;
+        r.first_patched_job[patch.ticket % r.first_patched_job.size()].store((patch.ticket << 32) | (job & 0xFFFFFFFFull),
+                                                                            std::memory_order_release);
+      }
     }
   }
   r.job_patches_posted.fetch_add(patches.size(), std::memory_order_release);
@@ -608,6 +619,12 @@ void note_deferred_table(const std::uint8_t *dest, std::size_t bytes, std::uint6
 void set_deferred_table_copy(DeferredTableCopy copy) { rt().table_copy = copy; }
 
 std::uint64_t deferred_table_patches() { return rt().job_patches_posted.load(std::memory_order_relaxed); }
+
+std::uint64_t deferred_table_first_job(std::uint64_t ticket) {
+  const Runtime &r = rt();
+  const std::uint64_t packed = r.first_patched_job[ticket % r.first_patched_job.size()].load(std::memory_order_acquire);
+  return (packed >> 32) == (ticket & 0xFFFFFFFFull) ? (packed & 0xFFFFFFFFull) : 0;
+}
 
 bool direct_gs_intake() { return enabled() && rt().direct; }
 

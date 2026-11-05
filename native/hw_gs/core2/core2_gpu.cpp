@@ -205,6 +205,10 @@ struct Gpu::Impl {
     std::uint32_t passTimestamps = 0;  // B4: draw pass timestamp pairs written in this slot's recording
     std::vector<Image> doomed;  // released once this slot's submission is complete
     std::uint64_t serial = 0;   // IN-439: the number of the submission this slot carries (1, 2, ...)
+    // TASK-178 diagnostics (timestamp ticks, 0: none): this slot's last finished command buffer end, and, for the first
+    // submission after a drain, the drained work's end, so its own start gives the GPU idle time in between.
+    std::uint64_t endTick = 0;
+    std::uint64_t idleFromTick = 0;
   };
   // S4: up to kMaxSlots submissions in flight (GT4_CORE2_SLOTS, 2 to 24; IN-517: default 16 on a discrete GPU, 8 on an
   // integrated one, set at Init, since a race VBlank at 6x has 25-45 submissions and 8 kept the GS thread within a third of a
@@ -280,6 +284,21 @@ struct Gpu::Impl {
     return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : kSubmitEveryAtInit;
   }();
   std::uint32_t batchesSinceSubmit = 0;
+  // TASK-178 (O1 of docs/hw-renderer-spec/STUDY-FRAME-DOWNLOAD-COST.md): a waited submission (a readback: Reduce,
+  // ReduceMany, ReadClut) drains the queue, and the GPU then idles until the next submission, which came `submitEvery`
+  // batches later or at the VBlank flush (the flare and glare draws right after GT4's flare read). With
+  // GT4_CORE2_SUBMIT_AFTER_WAIT=<K> the first mid-frame submission after a waited one comes after K batches; the cadence is
+  // `submitEvery` again after it. Submission boundaries never change what is drawn. 0 = off (A/B); unset: decided at Init.
+  std::uint32_t submitAfterWait = [] {
+    const char *text = std::getenv("GT4_CORE2_SUBMIT_AFTER_WAIT");
+    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : kSubmitEveryAtInit;
+  }();
+  bool afterWait = false;  // the last submission was waited for, and none has followed it yet (the K rule applies)
+  // TASK-178 diagnostics: a drain whose next submission has not been sent yet, the CPU time its wait ended and the GPU end of
+  // the drained work (timestamp ticks, 0: none).
+  bool drainOpen = false;
+  std::chrono::steady_clock::time_point drainEndCpu{};
+  std::uint64_t drainEndTick = 0;
   // IN-451: speculative depth rejection before texturing in the pixel shader (exact); GT4_CORE2_EARLY_Z=0 turns it
   // off (A/B, the shader's constant 103).
   bool earlyZ = std::getenv("GT4_CORE2_EARLY_Z") == nullptr || std::strcmp(std::getenv("GT4_CORE2_EARLY_Z"), "0") != 0;
@@ -2241,6 +2260,7 @@ struct Gpu::Impl {
     stats.waitNs += static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count());
     stats.waits++;
+    s.endTick = 0;
     if (timestamps) {
       std::uint64_t ticks[2] = {};
       if (gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * kTimestampsPerSlot, 2, sizeof ticks, ticks,
@@ -2248,7 +2268,13 @@ struct Gpu::Impl {
           ticks[1] >= ticks[0]) {
         stats.gpuNs += static_cast<std::uint64_t>(static_cast<double>(ticks[1] - ticks[0]) * timestampNs);
         stats.timedSubmissions++;
+        s.endTick = ticks[1];
+        if (s.idleFromTick != 0 && ticks[0] >= s.idleFromTick) {  // TASK-178: the first submission after a drain
+          stats.drainIdleNs += static_cast<std::uint64_t>(static_cast<double>(ticks[0] - s.idleFromTick) * timestampNs);
+          stats.drainIdles++;
+        }
       }
+      s.idleFromTick = 0;
       std::uint64_t pass[2 * kPassTimestampPairs] = {};
       if (s.passTimestamps != 0 &&
           gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * kTimestampsPerSlot + 2u, 2u * s.passTimestamps,
@@ -2322,9 +2348,21 @@ struct Gpu::Impl {
     return true;
   }
 
+  // TASK-178: after a waited submission every slot is idle; the next submission opens the K rule's window and the idle
+  // diagnostics close on it.
+  bool wait_all_drained(std::string &error) {
+    if (!wait_all(error)) return false;
+    stats.drains++;
+    drainOpen = true;
+    drainEndCpu = std::chrono::steady_clock::now();
+    drainEndTick = slots[lastSubmitted].endTick;
+    afterWait = submitAfterWait != 0;
+    return true;
+  }
+
   bool submit(bool wait, std::string &error) {
     if (!recording) {
-      return wait ? wait_all(error) : true;
+      return wait ? wait_all_drained(error) : true;
     }
     flush_draws();
     end_render_pass();
@@ -2338,17 +2376,25 @@ struct Gpu::Impl {
     VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     info.commandBufferCount = 1;
     info.pCommandBuffers = &cmd;
+    if (drainOpen) {  // TASK-178 diagnostics: the first submission after a drain
+      stats.drainGapCpuNs += static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - drainEndCpu).count());
+      stats.drainGaps++;
+      slots[slot].idleFromTick = drainEndTick;
+      drainOpen = false;
+    }
     const auto submitCall = [&] { return gt4_hw_vkQueueSubmit(queue, 1, &info, fence); };
     const VkResult submitted = queueLock ? queueLock->run(gt4::hw::QueueLock::Caller::gs_thread, submitCall) : submitCall();
     if (!check(submitted, "vkQueueSubmit", error)) return false;
     stats.submissions++;
     batchesSinceSubmit = 0;
+    afterWait = false;
     slots[slot].inFlight = true;
     slots[slot].serial = ++submitCount;
     slots[slot].doomed.insert(slots[slot].doomed.end(), doomed.begin(), doomed.end());
     doomed.clear();
     lastSubmitted = slot;
-    return wait ? wait_all(error) : true;
+    return wait ? wait_all_drained(error) : true;
   }
 
   bool allocate_set(VkDescriptorSetLayout layout, VkDescriptorSet &set, std::string &error) {
@@ -2617,6 +2663,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   }
   if (s.slotCount == 0) s.slotCount = s.integrated ? 8u : 16u;  // IN-517
   if (s.submitEvery == Impl::kSubmitEveryAtInit) s.submitEvery = s.integrated ? 32u : 64u;  // TASK-134
+  // TASK-178: off by default until the A/B on the Avell decides (desktop runs: docs/hw-renderer-spec/STUDY-FRAME-DOWNLOAD-COST.md).
+  if (s.submitAfterWait == Impl::kSubmitEveryAtInit) s.submitAfterWait = 0u;
   const VkBufferUsageFlags stagingUsage =
       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
@@ -2999,6 +3047,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.ready = true;
   std::fprintf(stderr, "[core2] ready: scale %u, shift %.3f, pixel interlock %s, max native side %u\n", s.scale,
                static_cast<double>(s.shift), s.interlock ? "yes" : "no", MaxNativeSide());
+  std::fprintf(stderr, "[core2] submissions: %u slots, every %u batches, after a wait %u batches (TASK-178 GT4_CORE2_SUBMIT_AFTER_WAIT, 0 = off)\n",
+               s.slotCount, s.submitEvery, s.submitAfterWait);
   return true;
 }
 
@@ -3755,9 +3805,14 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     s.deferredCommands.resize(record.firstCommand);
   }
   s.stats.batches++;
-  if (s.submitEvery != 0 && ++s.batchesSinceSubmit >= s.submitEvery) {
+  // TASK-178: the first submission after a waited one comes after submitAfterWait batches (afterWait is only set when it is
+  // not 0), every later one after submitEvery.
+  const bool afterWait = s.afterWait;
+  const std::uint32_t every = afterWait ? s.submitAfterWait : s.submitEvery;
+  if (every != 0 && ++s.batchesSinceSubmit >= every) {
     if (!s.submit(false, error)) return false;
     s.stats.midFrameSubmissions++;
+    if (afterWait) s.stats.afterWaitSubmissions++;
   }
   return true;
 }
@@ -4727,5 +4782,7 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
 }
 
 bool Gpu::Submit(bool wait, std::string &error) { return impl_->submit(wait, error); }
+std::uint32_t Gpu::SubmitEvery() const { return impl_->submitEvery; }
+std::uint32_t Gpu::SubmitAfterWait() const { return impl_->submitAfterWait; }
 
 }  // namespace hwgs::core2

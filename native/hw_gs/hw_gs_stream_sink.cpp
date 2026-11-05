@@ -197,9 +197,86 @@ void privileged_now(std::uint32_t address, std::uint64_t value) {
   }
 }
 
+// TASK-178 diagnostics: an FNV-1a hash over every flare table reply (128 qwords) in stream order, so runs that must give the
+// VU1 the same tables can be compared. Written under the backend lock (or on the only thread, GT4_HW_GS_THREAD=0).
+std::uint64_t g_flare_reply_hash = 14695981039346656037ull;
+std::uint64_t g_flare_replies = 0;
+
 void read_fifo_now(std::uint8_t *data, std::uint32_t qwords) {
   const std::size_t filled = backend().read_transfer_fifo(data, qwords);
   if (filled < qwords) std::memset(data + filled * 16, 0, (static_cast<std::size_t>(qwords) - filled) * 16);
+  if (qwords == FlareTableReads::kQwords) {
+    for (std::size_t i = 0; i < FlareTableReads::kBytes; ++i) {
+      g_flare_reply_hash ^= data[i];
+      g_flare_reply_hash *= 1099511628211ull;
+    }
+    ++g_flare_replies;
+  }
+}
+
+// TASK-178 diagnostics (I_cpu of STUDY-FRAME-DOWNLOAD-COST.md, option O4): the GS worker's busy time from the end of a flare read
+// (IN-522 FlareRead) to the start of the first VU1 job given that read's words (IN-522 TablePatch), the CPU work an
+// asynchronous read could overlap with the GPU. Its wall time too (idle and VU1 waits included). GS worker only.
+struct FlareGap {
+  bool open = false;
+  std::uint64_t ticket = 0;  // the read whose first patched job is awaited
+  std::uint64_t busyTicks = 0;
+  std::chrono::steady_clock::time_point readEnd{};
+  std::uint64_t matched = 0, unmatched = 0, busyTotalTicks = 0;
+  double wallTotalMs = 0.0;
+};
+FlareGap g_flare_gap;
+std::uint64_t g_tsc_start = 0;  // the worker's start, to turn TSC ticks into ms
+std::chrono::steady_clock::time_point g_tsc_start_time{};
+
+void flare_gap_read(std::uint64_t ticket) {
+  FlareGap &g = g_flare_gap;
+  if (g.open) ++g.unmatched;  // the previous read had no patched job before this one
+  g.open = true;
+  g.ticket = ticket;
+  g.busyTicks = 0;
+  g.readEnd = std::chrono::steady_clock::now();
+}
+
+void flare_gap_busy(std::uint64_t ticks) {
+  if (g_flare_gap.open) g_flare_gap.busyTicks += ticks;
+}
+
+void flare_gap_job(std::uint64_t job) {  // before VU1 job `job` runs on the GS worker
+  FlareGap &g = g_flare_gap;
+  if (!g.open || gt4::gs_stream::g_deferred_table.first_job == nullptr) return;
+  const std::uint64_t first = gt4::gs_stream::g_deferred_table.first_job(g.ticket);
+  if (first == 0 || first != (job & 0xFFFFFFFFull)) return;
+  g.open = false;
+  ++g.matched;
+  g.busyTotalTicks += g.busyTicks;
+  g.wallTotalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g.readEnd).count();
+}
+
+// Every 600 VBlanks: the reply hash and count (cumulative), and I_cpu per matched read over the interval.
+void print_flare_replies() {
+  static std::uint64_t lastMatched = 0, lastUnmatched = 0, lastBusy = 0;
+  static double lastWall = 0.0;
+  const FlareGap &g = g_flare_gap;
+  double msPerTick = 0.0;
+  const std::uint64_t tsc = __rdtsc();
+  if (g_tsc_start != 0 && tsc > g_tsc_start) {
+    msPerTick = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g_tsc_start_time).count() /
+                static_cast<double>(tsc - g_tsc_start);
+  }
+  const std::uint64_t matched = g.matched - lastMatched;
+  const double perRead = matched != 0 ? 1.0 / static_cast<double>(matched) : 0.0;
+  std::fprintf(stderr,
+               "[hw] flare replies vsync=%llu replies=%llu hash=%016llx | i_cpu_ms/read=%.3f i_wall_ms/read=%.3f "
+               "(read end to its first patched VU1 job; %llu matched, %llu without one)\n",
+               static_cast<unsigned long long>(g_vsyncs), static_cast<unsigned long long>(g_flare_replies),
+               static_cast<unsigned long long>(g_flare_reply_hash),
+               static_cast<double>(g.busyTotalTicks - lastBusy) * msPerTick * perRead, (g.wallTotalMs - lastWall) * perRead,
+               static_cast<unsigned long long>(matched), static_cast<unsigned long long>(g.unmatched - lastUnmatched));
+  lastMatched = g.matched;
+  lastUnmatched = g.unmatched;
+  lastBusy = g.busyTotalTicks;
+  lastWall = g.wallTotalMs;
 }
 
 // Once per guest VBlank: submit the recorded work, then present (window) or close the frame (headless).
@@ -449,6 +526,7 @@ void vsync_now(bool odd_field) {
                                 std::memory_order_relaxed);
   maybe_dump(hw);
   maybe_profile(hw);
+  if (g_vsyncs % 600 == 0) print_flare_replies();  // TASK-178
 }
 
 void gs_reset_now() {
@@ -666,6 +744,8 @@ private:
   void run() {
     sampler::name_current_thread("gs-worker");
     thread_placement::apply("gs");
+    g_tsc_start_time = std::chrono::steady_clock::now();
+    g_tsc_start = __rdtsc();
     for (;;) {
       mtvu::RecordHeader header;
       const std::uint8_t *payload = nullptr;
@@ -687,14 +767,18 @@ private:
       const SinkRecord kind = static_cast<SinkRecord>(header.kind);
       const std::uint64_t busyStart = __rdtsc();
       if (kind == SinkRecord::MtvuJob) {
+        flare_gap_job(header.job);  // TASK-178 diagnostics
         // IN-461: the job's records, outside the backend lock while the worker waits for them.
         const std::uint64_t waited = execute_mtvu_job(header.job);
-        add(g_transport.busy_ticks[0], __rdtsc() - busyStart - waited);
+        const std::uint64_t busy = __rdtsc() - busyStart - waited;
+        add(g_transport.busy_ticks[0], busy);
         add(g_transport.mtvu_wait_ticks, waited);
+        flare_gap_busy(busy);
         ring_.release();
         notify_progress(false);
         continue;
       }
+      std::uint64_t flareTicket = 0;  // TASK-178 diagnostics: the flare read this record finished
       {
         std::lock_guard<std::mutex> backendLock(backendMutex_);
         switch (kind) {
@@ -719,13 +803,19 @@ private:
             FlareTableReads::Table table;
             read_fifo_now(table.data(), FlareTableReads::kQwords);
             if (std::uint8_t *dest = flareReads_.next_dest()) std::memcpy(dest, table.data(), table.size());
-            flareReads_.finish(table);
+            flareTicket = flareReads_.finish(table);
             break;
           }
         }
       }
       const int slot = kind == SinkRecord::Gif ? 0 : kind == SinkRecord::Privileged ? 1 : kind == SinkRecord::Vsync ? 2 : 3;
-      add(g_transport.busy_ticks[slot], __rdtsc() - busyStart);
+      const std::uint64_t busy = __rdtsc() - busyStart;
+      add(g_transport.busy_ticks[slot], busy);
+      if (flareTicket != 0) {
+        flare_gap_read(flareTicket);
+      } else {
+        flare_gap_busy(busy);
+      }
       ring_.release();
       const bool vsyncDone = kind == SinkRecord::Vsync;
       if (vsyncDone) {

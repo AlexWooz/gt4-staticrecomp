@@ -266,3 +266,223 @@ Hong Kong VBlank, to rank O5's passes; `GT4_CORE2_STORE_TRACE` for section 6.
 | The GPU cost of the glare, the flares and the sampling chain at 6x | GPU profile |
 | I_cpu, the CPU work between the read and the flares | the section 7 counter |
 | How much headless drains overstate paced play | owner F8, same scene, O1 on and off |
+
+TASK-178 (section 9) answers the first four rows on the desktop; the last still needs the owner's F8 runs.
+
+## 9. TASK-178 results
+
+Date: 2026-11-04/05. Branch `task/178-submit-after-wait` (base `release/1.3.0-rc15` `8255e507`). Agent status: **not
+PCSX2-tainted** (TASK-027 implementation agent; no PCSX2 sources, fork or `private/tooling/pcsx2-*` opened). Machine: the
+desktop (Ryzen 7 5700X, RX 9060 XT), Spec II, headless, unpaced, plain Release builds (`build/t178-spec2`, `build/t178-v200`).
+The desktop was shared with two other agents' benches (TASK-168b, TASK-179) during this work, so every time below is
+**indicative**; counts, hashes and identity results are exact. Logs: `build/evidence/` of the TASK-178 worktree.
+
+### 9.1 What was built
+
+- **The rule (O1).** `GT4_CORE2_SUBMIT_AFTER_WAIT=<K>`: after any waited submission in `Gpu` (`submit(true)`: `Reduce`,
+  `ReduceMany`, `ReadClut`, and the diagnostic `ReadDisplay`, `ReadImage`, `ProfileReport`), the first mid-frame submission
+  comes after K draw batches, then the cadence is `submitEvery` again. Any other submission (ring full, VBlank flush) ends
+  the K window. `0` = off, which is today's behaviour; **the default stays 0** until the Avell A/B. The log line
+  `[core2] submissions: <slots> slots, every <n> batches, after a wait <K> batches` shows the setting in every run.
+- **Diagnostics** (no behaviour change), in the 600-VBlank lines:
+  - `[core2] downloads/vblank=... with_readback=... targets/readback_download=... px/readback_download=...
+    wait_ms/readback_download=... | drains/vblank=... gpu_idle_ms/drain=... (timestamps ...) cpu_gap_ms/drain=...
+    after_wait_submits/vblank=... (K=..., every ...)`. The GPU idle is measured with the slot timestamps: from the end of
+    the drained work's last command buffer to the start of the next submission's first. The CPU gap is the end of the fence
+    wait to the next `vkQueueSubmit`.
+  - `[hw] flare replies vsync=... replies=... hash=... | i_cpu_ms/read=... i_wall_ms/read=...`: a running FNV-1a hash
+    over every 128-qword flare reply in stream order, and I_cpu: the GS worker's busy time from the end of the IN-522
+    `FlareRead` to the start of the first VU1 job given that read's words (the IN-522 `TablePatch`, matched by job id
+    through a 16-entry ring the VU1 transport fills before the job enters the GS stream).
+- **CTest control** (`hw_core2_gpu_clut`): K=1 against off on two captures (stream over a GPU-read render, GPU-read ageing):
+  images and memory equal, the rule ran (7 and 71 submissions by it, 0 off).
+
+### 9.2 Identity (C)
+
+- **Flare reply hash sequence**, 16 lines per run (the cumulative hash every 600 VBlanks), identical for K = 0, 8, 16 and 32:
+  Hong Kong 6835 replies, final hash `3f22899e9703be24`; Motegi 6588 replies, `817268cdcf807c3b`. The A/B runs (K = 0 and
+  16, Hong Kong, Motegi and George V) repeat them: see 9.3.
+- **Desktop frame and state gates** against the rc14 PGO references (`gates6.sh`, copy in `private/task178-tools/`), the
+  candidate run with `GT4_CORE2_SUBMIT_AFTER_WAIT=16`: `wrong=0`.
+  - Spec II George V, El Capitan, Tokyo R246 at 1x: race clock identical, simulation state identical (212,992 bytes),
+    frames 24/35/35 identical.
+  - v2.00 night race 3x: state identical (131,072 bytes), clock identical, 10 frames identical; Arcade path 3x: 14 frames
+    identical.
+  - Spec II George V lap 6x: 12 frames identical.
+  - VU1 and VU0 against the interpreter (Spec II 1x and v2.00 night 1x): `verify_mismatches=0`; MTVU check: 8032 frames,
+    0 mismatches.
+- **CTest** (full, `-j 4`, desktop under the other agents' load): Spec II build 0 failures of 301; v2.00 build 1 failure of 301:
+  `hw_core2_rop` failed once ("batches through colour attachments: 0") and passed twice alone (H: its pipelines compile
+  asynchronously and were not ready under load; the rule is off by default and touches no ROP code). The only skip in both
+  is `hw_replace_q07_pcsx2_dumps`. An earlier full run had `hw_cpu_sampler` fail once under load and pass alone.
+
+### 9.3 Indicative desktop A/B, K = 0 against K = 16
+
+Method: `private/task178-tools/ab.sh`, order A B B A A B (A = 0, B = 16), each round Hong Kong (reverse), Motegi Road
+Course and the George V replay, all Spec II at 6x, headless, `GT4_HW_PROFILE_EVERY=600`; press timelines from TASK-168's
+Avell notes. Windows: Hong Kong 4476-9876, Motegi 4460-9860, George 3000-8032. Table: median [min-max] of the run means
+(`private/task178-tools/ab_table.py`). The runner waited up to 90 s for no other game process, then ran anyway and sampled
+every 3 s: **15 of the 18 runs had another agent's game running** (2-33 samples), and all nine K = 0 runs did. That
+load, rather than K, may explain part of the wall differences.
+
+| Scene | Metric (ms) | K = 0 | K = 16 | Change |
+|---|---|---|---|---|
+| Hong Kong | wall per VBlank | 13.10 [13.03-13.28] | 10.68 [10.59-14.94] | -2.42 |
+| | GS worker CPU | 9.19 [8.58-9.64] | 8.65 [8.61-9.19] | -0.54 |
+| | read wait (download fence) | 2.94 [2.05-4.09] | 1.70 [1.70-4.99] | -1.24 |
+| | GPU busy | 8.23 [7.69-8.90] | 7.44 [7.33-10.04] | -0.79 |
+| | GPU idle after a drain, per drain | 2.25 [2.19-2.53] | 1.29 [1.18-2.28] | -0.96 |
+| | CPU gap per drain | 1.50 [1.32-2.08] | 1.02 [0.93-1.03] | -0.48 |
+| | I_cpu per read | 0.75 [0.73-0.78] | 0.71 [0.70-0.77] | -0.04 |
+| Motegi | wall per VBlank | 8.44 [7.60-16.86] | 7.54 [7.48-7.85] | -0.90 |
+| | GS worker CPU | 6.31 [6.10-7.27] | 6.42 [6.35-6.69] | +0.12 |
+| | read wait | 1.80 [0.95-2.41] | 0.95 [0.89-0.98] | -0.85 |
+| | GPU busy | 5.66 [4.94-6.22] | 4.80 [4.78-5.10] | -0.87 |
+| | GPU idle per drain | 1.97 [1.23-10.00] | 1.07 [0.89-1.10] | -0.91 |
+| | CPU gap per drain | 1.00 [0.88-8.08] | 0.69 [0.68-0.73] | -0.31 |
+| | I_cpu per read | 0.50 [0.48-0.64] | 0.48 [0.47-0.51] | -0.03 |
+| George V | wall per VBlank | 15.32 [14.39-15.65] | 14.17 [13.36-16.87] | -1.15 |
+| | GS worker CPU | 13.06 [12.62-13.12] | 12.38 [12.12-14.53] | -0.68 |
+| | read wait | 2.43 [1.19-2.52] | 1.52 [1.20-1.61] | -0.91 |
+| | GPU busy | 7.74 [7.17-8.00] | 8.52 [6.99-9.91] | +0.78 |
+| | GPU idle per drain | 3.40 [3.08-3.41] | 1.65 [1.58-1.97] | -1.75 |
+| | CPU gap per drain | 2.67 [2.65-2.68] | 1.26 [1.23-1.53] | -1.41 |
+| | I_cpu per read | 0.33 [0.32-0.33] | 0.31 [0.30-0.36] | -0.02 |
+
+Per VBlank: drains 0.99 (Hong Kong), 0.69 (Motegi), 1.07 (George V), the same with both settings; the rule sent 0.94,
+0.65 and 1.07 extra submissions per VBlank, one per drain that had draws after it. The flare reply hash sequences are
+identical over all six runs of each scene (Hong Kong `3f22899e9703be24` after 6835 replies, Motegi `817268cdcf807c3b` after
+6588, George V `1e108f7eb7013b1c` after 5746).
+
+Reading (C for the counters, H for the wall):
+- **The mechanism works as the study predicted.** The GPU idle after a drain falls by 0.9-1.8 ms per drain in every run,
+  and the CPU gap with it. The download's fence wait falls by 0.85-1.24 ms per VBlank: the next drain finds less queued
+  work, because the post-read work of the frame before reached the GPU earlier.
+- **The wall falls in the medians (-0.9 to -2.4 ms)**, but the K = 0 runs all ran beside another agent's bench and the
+  least disturbed pair at Motegi (r5, K = 0, 10 samples: 7.60; r6, K = 16, clean: 7.54) differs by only 0.07 ms. The
+  K-only sweep before the A/B (one run each, others' games absent at the start and end of each run) gave Motegi 10.27 ms at
+  K = 0 against 7.08 at K = 8, and Hong Kong 9.57 against 10.51 (that K = 8 run took 109 s against 79 s, H: disturbed).
+  The desktop cannot separate the wall gain from the other agents' load; the Avell A/B decides.
+- **No sign of a cost**: the GS worker CPU is equal or lower with K = 16 (the extra submission per drain costs less than
+  the study's 0.05-0.2 ms estimate on this CPU, or is hidden by the noise), and I_cpu is unchanged.
+
+### 9.4 The GPU profiles (`GT4_CORE2_GPU_PROFILE_AT`, 6x, desktop; C numbers, H reading)
+
+Each command is isolated by barriers and timed on its own, so the totals are the commands' own GPU cost, not the frame's
+GPU time. The profiled VBlank's commands start at the end of VBlank V and stop at the end of V + 1, so they include the end
+of one game frame and the start of the next. Another agent's game was running at the time (GPU contention possible).
+
+**Motegi, VBlank 5100** (`press-prof-mot6-5100`). The 6x dump of VBlank 5101 shows the race looking toward the sun: the
+washed-out, hazy sky of GT4's sun glare and the following cars' headlights (C, frame); the sun disc itself is above the
+frame (H). The download that frame reads back the table (4 px). 513 commands, 4.24 ms:
+
+| Kind | GPU ms | Share |
+|---|---|---|
+| opaque world geometry (indexed textures, depth test and write), 119 batches | 0.62 | 15% |
+| compute fills (frame and depth clears), 13 | 0.49 | 12% |
+| full-screen passes over targets (glare/post: blend 0211, copy, alpha write; 10.3 Mpx each) | 0.89 | 21% |
+| full-screen untextured overlays (blend 1222 x2, 0101 x2, a 31.9 Mpx depth pass) | 0.51 | 12% |
+| the light-sampling chain's small draws (64x192 scratch and 64x32 table, at 6x) | 0.24 | 6% |
+| CPU-word patches and dirty patches | 0.24 | 6% |
+
+After the table's last write (H: where the read waits): 0.81 ms of GPU work, of which the full-screen copy 0.27, the 30
+additive flare sprites 0.16 (tiny, about 5 us each), a fill 0.16, the sun-glare overlay (untextured, blend 1222) 0.11 and two
+untextured full-screen 0101 passes 0.08. So the flares themselves are cheap; what follows the read is a handful of
+full-screen passes at 10-23 Mpx each.
+
+**Hong Kong, VBlank 7000** (`press-prof-hk6-7000`; dusk, a street lamp in view). 1193 commands, 8.49 ms:
+
+| Kind | GPU ms | Share |
+|---|---|---|
+| dirty patches (GLM rows into targets after EE texture uploads), 323 | 1.55 | 18% |
+| full-screen depth-tested passes sampling a target, 4 (41 Mpx) | 0.84 | 10% |
+| opaque world geometry, 71 batches (46 Mpx) | 0.61 | 7% |
+| compute fills, 14 | 0.49 | 6% |
+| indexed blend 0101 with depth test (34 batches, 27 Mpx) | 0.44 | 5% |
+| GLM writes of targets, 118 | 0.42 | 5% |
+| other full-screen target passes (blend 0211, 0101, copy, alpha write) | 1.13 | 13% |
+
+After the read: 2.81 ms, led by the four full-screen depth-tested target passes (0.84), a 0101 target pass (0.30), the copy
+(0.26), two untextured 0122 overlays (0.21) and 101 dirty patches (0.21).
+
+**Ranking for O5 (H).** The GPU cost at 6x is the full-screen post and glare passes (Motegi about 33%, Hong Kong about
+28% of the isolated time) and, in Hong Kong, the 323 dirty patches (18%). The light-sampling chain is about 6% and the flare
+sprites under 4%. The cheapest O5 targets are therefore the full-screen passes after the read and Hong Kong's dirty patches,
+not the flares.
+
+### 9.5 The two traces
+
+**`GT4_CORE2_READBACK_TRACE`, Hong Kong 6x, VBlanks 4476-9876** (`press-trace-hk6-rb`, C). 4,591 download readbacks
+(0.85 per VBlank), 1.24 targets each:
+
+| Targets reduced together | Count | Mean native px |
+|---|---|---|
+| the table only (64x32 CT32 target, `bw=1`) | 3,635 | 4.8 |
+| a 128x128 Z24 target (`bw=2`) + the table | 431 | 16,391 |
+| a 640x224 CT24 target (`bw=10`) + the table | 180 | 108,800 |
+| CT24 640x224 + Z24 128x128 + the table | 104 | 46,281 |
+| up to four CT24 640x224 targets + the table | 56 | 89,000-266,000 |
+
+- **The extra targets are other-view targets over the table's blocks:** 640x224 CT24 targets (499 reductions, 78,500 px
+  on average, often the whole 143,360 px) and a 128x128 Z24 target (636, always its whole 16,384 px). The table moves in
+  memory from frame to frame (BP 13472, 13504, 12864, 13888, 14048, ...) and lands inside the memory of old 640x224 render
+  targets. Per VBlank that is 7,260 px of CT24 and 1,930 px of Z24 written back to memory for 4 px of table: about 99.9% of
+  the download's pixels. This is exactly O3's case (limit an other-view target to the read's blocks), and it also leaves
+  those targets undrawn, which costs later reads.
+- **Motegi** (1x run with dumps, `press-trace-mot1-dumps`): 0.64 download readbacks per VBlank, 1.04 targets each; the
+  table alone in 88% of them. The readbacks come in stretches that match the frames: the sun-glare views (5040-5220,
+  5520-5640, 6240) and front views with the cars' headlights toward the camera read the table back every VBlank; rear views
+  with no light toward the camera (4740-4980, 6600-6780, 9000-9240) read none. This confirms the study's hypothesis (sun or
+  lamp sampled) for Motegi (C for the correlation, H for the cause).
+
+**`GT4_CORE2_STORE_TRACE`, Motegi Performance mode, VBlanks 8340-8700** (`press-trace-mot6p-store`, C). The
+every-second-VBlank store of section 6 is, from VBlank 8422 to 8446 and in similar runs elsewhere:
+`store write bp=15936 bw=1 psm=00 rect=0,0,15,15 target bp=15936 bw=1 size=64x64` followed by
+`readback before write ... psm=49 size=64x64 area=0,0,63,63`. GT4 uploads a 16x16 CT32 image (and on other VBlanks a 16x10
+PSMT4 image, `bw=2`) into the memory of a drawn 64x64 **Z24** target at BP 15936, and that target is read back whole first.
+Why the exact merges decline it (code, C):
+- IN-512 (bit patch) and IN-538 (block patch) take only targets of the 32-bit colour class; this target is Z24 (depth
+  class), so both refuse;
+- IN-539 (store on the GPU) accepts depth targets (multi-target on) and the CT32 write fills whole blocks, but it is off by
+  default (`GT4_CORE2_WHOLE_BLOCK_WRITES=1`, measured as a loss on George V at 2x in rc13); the PSMT4 16x10 write is not on
+  block cells, so IN-539 could not take that one anyway.
+- Desktop cost: 0.25 ms of store wait per VBlank over 8400-9000 (0.28 stores per VBlank); the study's Avell figure is 2.2-3.7
+  ms per store. Exact fix candidates (H): extend IN-512/IN-538 to the depth-32 class (the merge is by 256-byte block and both
+  layouts hold one 32-bit word per pixel, but the Z32 block order differs, so the bit positions must come from the Z layout),
+  or enable IN-539 only when the target under the write is a depth target.
+
+### 9.6 Numbers at K = 0 (desktop, means over the race window; C)
+
+Hong Kong and Motegi from the K sweep's K = 0 runs (no other game at their start and end), George V from the A/B's K = 0
+runs (median).
+
+| Scene | Downloads with a readback /VBlank | Targets per readback | Pixels per readback | Drains /VBlank | GPU idle per drain | CPU gap per drain | I_cpu per read |
+|---|---|---|---|---|---|---|---|
+| Hong Kong 6x | 0.86 | 1.23 | 10,540 | 0.99 | 1.36 ms | 1.18 ms | 0.66 ms |
+| Motegi 6x | 0.63 | 1.04 | 518 | 0.69 | 3.48 ms | 3.02 ms | 0.49 ms |
+| George V 6x | 1.00 | 1.01 | 69 | 1.07 | 3.40 ms | 2.67 ms | 0.33 ms |
+
+- The GPU idle after a drain is mostly the CPU gap: the GS worker recording up to 64 batches before the next submission.
+  At Motegi the GS worker also waits for the EE there (headless, the EE-bound scene), so part of that idle is not the
+  cadence's (H); two intervals at the end of the run averaged 5 and 19 ms per drain.
+- I_cpu is 0.3-1.4 ms per read by interval on the desktop (Hong Kong 0.66, Motegi 0.49 on average), and its wall time equals
+  it: the GS worker is busy all the way from the read to the flare job. Below the study's 1 ms bar for O4 on this CPU;
+  the Avell's slower CPU decides.
+
+### 9.7 Recommendation
+
+- **K = 16 on a discrete GPU**, as the study suggested: identity holds at 8, 16 and 32, the gates pass at 16, and on the
+  desktop it halves the GPU idle after a drain in all three scenes with no CPU cost seen. 8 brought the idle a little
+  lower (Motegi 0.78 ms per drain in the K = 8 sweep run, 1.07 at 16 in the A/B), but each K submission then carries less
+  work; that and an integrated GPU's K are for the Avell and the notebook to show.
+- **Keep the default at 0 until the Avell A/B** (study section 7's rule: the wall at least 0.3 ms/VBlank lower on two scenes
+  with no loss on the third). The kit is ready in the worktree's `build/t178-avell-kit/` (`prepare-kit.sh` already run:
+  exe, ELF, cards, recording, `SHA256SUMS`; `run-ab.cmd 16` runs A B B A A B over the three scenes; `README.txt`); it was not
+  run. If the Avell confirms, the default becomes 16 where `submitEvery` is 64 (discrete GPUs), one line in `Gpu::Init`.
+- **Next, by these results:**
+  - O3 (limit other-view targets to the read's blocks) for Hong Kong: 99.9% of its download pixels are other-view CT24 and
+    Z24 targets (9.5);
+  - the Motegi store: extend IN-512/IN-538 to the depth-32 class, or IN-539 for depth targets only (9.5);
+  - O5 on the full-screen passes after the read and Hong Kong's dirty patches (9.4); the flares themselves are cheap;
+  - O4 waits for the Avell's I_cpu: 0.3-0.75 ms per read on the desktop, under the 1 ms bar;
+  - O2 (spin on the last fence) remains the next cheap A/B.

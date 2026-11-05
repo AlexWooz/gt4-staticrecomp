@@ -81,14 +81,16 @@ public:
     return late;
   }
 
-  // Worker: the next posted read has finished with this table.
-  void finish(const Table &table) {
+  // Worker: the next posted read has finished with this table. Returns that read's ticket.
+  std::uint64_t finish(const Table &table) {
+    std::uint64_t ticket = 0;
     {
       const std::lock_guard<std::mutex> lock(mutex_);
       table_ = table;
-      ++done_;
+      ticket = ++done_;
     }
     doneChanged_.notify_all();
+    return ticket;
   }
 
 private:
