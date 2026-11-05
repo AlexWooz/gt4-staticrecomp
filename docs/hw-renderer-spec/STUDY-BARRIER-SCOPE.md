@@ -243,3 +243,120 @@ Avell and the S23 (not on this shared desktop).
 - U: the time each barrier costs; the counts here rank the things to remove, not their cost. The TASK-178 profile (section 9.4 of
   STUDY-FRAME-DOWNLOAD-COST) isolates commands with barriers and cannot give it either.
 - Hyp: R1's pass reduction brings the desktop's 52 passes near the phone's 20 only if the chain is the same one.
+
+## Step 2a: R1, the self copy drawn inside the open render pass
+
+Date 2026-11-05, same branch and the same **not PCSX2-tainted** status as step 1 (no PCSX2 source, fork,
+`private/tooling/pcsx2-*` or reference tree opened; the only outside input is the clean-room prose
+`ORACLE-GSDX-TONE-READBACK-FLUSH.md`, D3). This section records the implementation of row R1, the diagnostic it added and
+its gates. Timing is not measured: the desktop is shared and the gate is counts plus identity.
+
+### What changed (C, code)
+
+- **`core2_self_copy.vert` / `.frag`** (new): a full-screen triangle and a fragment stage that stores
+  `imageLoad(source, texel)` into the destination at the same texel. Both images are the core 2 target format (r32ui GS
+  words), so a word keeps its pixel, exactly what `vkCmdCopyImage` moved. Built by the pinned glslang like every core 2
+  shader (no new tool).
+- **`Gpu::Draw`** (`core2_gpu.cpp`): with `GT4_CORE2_SELF_COPY_DRAW=1` the spec 8.8 copy is recorded as a draw inside the
+  render pass the earlier batches opened (`Impl::record_self_copy`), after a fragment barrier (earlier stores to the
+  source), and the batch that samples the copy is recorded right after it in the same pass, ordered by its own
+  texture-from-target fragment barrier. The copy vitals are identical to the transfer's: the same clipped native
+  rectangle times the scale, at the same offsets, into the same pooled image.
+- **`Impl::flush_draws`** gained `keepPassOpen`: the flush that used to end the pass at the copy now leaves it open (and
+  skips the pass end), and later batches continue in it. A pass left open is closed by the next `outside_pass` /
+  `end_render_pass` of whatever command follows (all of them still call it), and if a full barrier is needed while a
+  pass is open, `flush_draws` ends the pass before the barrier (a barrier inside a pass is illegal).
+- **The transfer stays** wherever the draw cannot apply, and each reason is a plain condition in `Gpu::Draw`: the
+  colour-attachment path (IN-481: a sampled image may be an attachment of the open pass), `GT4_CORE2_LAZY_BARRIERS=0`
+  (which records a full barrier per command), a rectangle outside the pass's framebuffer scissor, and the default (the
+  switch unset or 0).
+- **WAR across passes**: a pooled copy image is reused from pass to pass. `copyImagesUnordered` is set when a copy is
+  drawn and cleared by any full barrier; a copy that has to begin a new pass (a compute or transfer command ended the
+  previous one) records a full barrier first, so the next write of the pooled image is ordered against the previous
+  pass's readers. Inside one pass the two fragment barriers cover RAW and WAR.
+- **Diagnostics** (`GT4_CORE2_BARRIER_TRACE=1`): `[core2] sync ... self_copy <key>: count=` rows for
+  `drawn in the pass, overlapping the batch`, `vkCmdCopyImage, overlapping the batch` and, from the renderer
+  (`Gpu::NoteSelfSampleNoCopy`), `no copy: sampled rectangle disjoint from the drawn one` and
+  `no copy: frame untouched (IN-495)`.
+- **CTest `hw_core2_self_copy_draw`** (new): a synthetic stream with two copied self-sampling sprites (a half-size
+  reduction that meets its draw, and a 1:1 pass) and one whose sampled rectangle is disjoint from what it draws, at 1x,
+  2x, 3x and 12x, switch off against on: images and GS memory bit-identical, the 1x memory equal to the CPU reference,
+  two copies drawn in the pass with the switch on and none with it off.
+
+### The disjoint question (C)
+
+**The oracle's D3 path 2 is already there, upstream of the copy.** `ProcessBatch` takes the copy only when the sampled
+footprint meets the batch's drawn rectangle (`core2_renderer.cpp`, the spec 8.8 block, `Intersect(textureFootprint_,
+t.rect)`); otherwise the batch samples the target itself. So the copy path never sees a disjoint rectangle by
+construction, and the counters say exactly that: **none of the copies is disjoint** (0 in both scenes, either path), and
+**the disjoint case is already handled without a copy**: 2.00 per VBlank in Hong Kong (5.4% of the 37.35 self-sampled
+batches), 0 in Motegi. IN-495's "frame untouched" case is another 1.00 per VBlank (2.7% / 3.1%). **Implementing path 2
+at the copy site would save nothing** (C for these two scenes, H for others); what remains of the self-copy problem is
+the 92% / 97% of self-sampled batches that really do overlap, which is what R1 addresses. The new fixture forces a
+disjoint sprite and gets its row (1 per replay), so the counter can see it when it happens.
+
+### Counts (C)
+
+Window (4800, 9600] of the press scenes, per VBlank, `private/task182-tools/sync_table.py`; one build
+(`build/t178-spec2`), `GT4_CORE2_BARRIER_TRACE=1`, the switch off against on, Spec II headless, 2x.
+
+| Per VBlank | Hong Kong off | Hong Kong on | Motegi off | Motegi on |
+|---|---|---|---|---|
+| render passes | 52.31 | **23.81** | 46.71 | **20.30** |
+| pass ends: `draws recorded for self copy` | 33.76 | 0 | 30.56 | 0 |
+| full barriers | 565.73 | 505.51 | 239.78 | 184.07 |
+| fragment barriers | 32.71 | 97.51 | 27.90 | 87.96 |
+| draw flushes | 52.31 | 23.09 | 46.71 | 19.57 |
+| submissions | 7.22 | 7.22 | 5.58 | 5.58 |
+| self-sampled batches | 37.35 | 37.35 | 32.02 | 32.02 |
+| ... copied (of which drawn in the pass) | 34.35 (0) | 34.35 (**100%**) | 31.02 (0) | 31.02 (**100%**) |
+| ... no copy: sampled rectangle disjoint | 2.00 | 2.00 | 0 | 0 |
+| ... no copy: frame untouched (IN-495) | 1.00 | 1.00 | 1.00 | 1.00 |
+
+Pass ends by reason with the switch on (per VBlank, Hong Kong / Motegi): the clear (`draws recorded for clear: reads
+what a draw writes`) 6.81 / 6.37, the submission cadence (`draws recorded for Draw: submission`) 4.71 / 3.43, the fill
+2.87 / 2.97, the VBlank flush 0.96 / 0.99, the readback 0.72 / 0.60, and the ends the open pass now pays when a compute
+or transfer command closes it: `Draw` 3.20 / 2.13 (the clear and fill paths), `clear_new_image` 0.95 / 0.89,
+`WriteClut` 0.86 / 0.77, `a full barrier before the draws` 0.95 / 0.78, then `UploadGlm`, `ClutFromTarget`,
+`DecodeTexture`, `MaterializeTarget` and `Patch` (0.02-0.33 each).
+
+Reading: **the pass count is 54% lower in Hong Kong and 57% lower in Motegi**; the copies all take the drawn path
+(100%, no fallback in these scenes). The full barriers fall by 60 and 56 per VBlank — the copy's own `image raw` barrier
+and the flush hazard that preceded it — and the fragment barriers rise by 65 and 60, the two per copy that replace them.
+It is not the full 34/31: a copy still needs a pass of its own when the submission cadence, a readback or a compute
+command falls between it and its batch, and the pass the copy used to share with the draws before it is now closed by
+whichever command follows the chain instead of by the copy.
+
+### Exactness gates (C)
+
+Flare reply hashes, `build/t178-spec2` (Spec II), the study's scenes and commands, `GT4_CORE2_SELF_COPY_DRAW=1`:
+
+| Run | Replies | Hash | Section 3 reference |
+|---|---|---|---|
+| Hong Kong 2x | 6835 | `2f4c1cc9f174d00e` | same |
+| Hong Kong 10x | 6835 | `61109e8f3143264a` | same |
+| Motegi 2x | 6588 | `7bf932fbb8799965` | same |
+| Motegi 2x, `GT4_HW_INTERLOCK=0` | 6588 | `7bf932fbb8799965` | same |
+
+The switch-off runs of the same build give the same hashes (Hong Kong 2x and Motegi 2x were run both ways).
+
+CTest: the full suite on the same build (`build/t178-spec2`, run serially, `ctest --output-on-failure`): **320 tests,
+319 passed, 1 skipped** (`hw_replace_q07_pcsx2_dumps`: no PCSX2 dumps on this machine), **0 failed**, 471.8 s. The new
+`hw_core2_self_copy_draw` passes at 1x, 2x, 3x and 12x, as do `hw_core2_self_texture`, `hw_core2_sync_trace`,
+`hw_core2_rop`, `hw_core2_whole_clears` and `hw_core2_compute_fills`. No test failed under load, so no test needed a
+rerun alone.
+
+### Doubts (U, Hyp)
+
+- **U: the GPU cost of a copy drawn instead of transferred.** Two fragment barriers and a small draw replace a transfer
+  and a full barrier; the count is right, the cost is not measured (no timing A/B on this shared desktop).
+- **Hyp: the remaining passes.** The pass ends that remain are the clear, the submission cadence, the fill, the VBlank
+  flush and the readback, plus the ends the open pass now pays when a compute or transfer command closes it (`Draw`,
+  `clear_new_image`, `WriteClut`, `UploadGlm`, ...). Making a command wait for the pass instead of ending it would need
+  the pass to survive a compute dispatch, which it cannot; recording that work before the chain starts would.
+- **U: other tracks and the phone.** The disjoint share and the copy rate are measured on Hong Kong and Motegi only; the
+  Nordschleife (rally, rain, night) and the S23's chain are not. `GT4_CORE2_BARRIER_TRACE=1` answers both on the device.
+- **U: the colour-attachment path** (integrated GPUs) always falls back to the transfer, so R1's gain there is zero.
+- **Hyp: the first copy after `Init`** compiles a pipeline inside the first frame unless the driver had it cached; the
+  pipeline is created at `Init`, not at first use.
+

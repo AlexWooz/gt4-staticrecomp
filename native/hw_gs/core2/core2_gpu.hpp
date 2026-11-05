@@ -74,6 +74,7 @@ struct Core2GpuStats {
     std::uint64_t recycledImages = 0;  // B4: images taken over from finished ones instead of allocated
     std::uint64_t selfTextureBatches = 0;  // batches whose texture is the colour or depth image they draw into
     std::uint64_t selfCopies = 0;          // spec 8.8: of those, batches that sampled a copy taken before them
+    std::uint64_t selfCopyDraws = 0;       // TASK-182 R1: of those copies, ones drawn inside the open pass (GT4_CORE2_SELF_COPY_DRAW)
     std::uint64_t selfCopyPixels = 0;      // output pixels those copies moved
     std::uint64_t draws = 0;
     std::uint64_t patches = 0;
@@ -305,6 +306,12 @@ public:
     // TASK-182 (GT4_CORE2_BARRIER_TRACE=1): fragment barriers, render pass ends, flushes, submissions and descriptor traffic by
     // reason, cumulative, one line per row; empty without the switch.
     std::string SyncReport(std::uint64_t vblanks) const;
+    // TASK-182 step 2a (GT4_CORE2_BARRIER_TRACE=1): a batch that samples the colour or depth target it draws into and needs
+    // no copy of it (the oracle's D3 path 2). `disjoint`: the sampled rectangle and the drawn one do not meet, so the batch
+    // reads the target itself; `frameUntouched`: the batch keeps every lane of the frame, so its own writes change nothing
+    // it reads (IN-495). Counted in the sync report; does nothing without the switch.
+    enum class SelfSampleNoCopy { Disjoint, FrameUntouched };
+    void NoteSelfSampleNoCopy(SelfSampleNoCopy why);
 
 private:
     struct Impl;

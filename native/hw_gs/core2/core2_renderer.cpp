@@ -4538,6 +4538,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             namespace gf = gpu::gpufield;
             const bool frameUntouched = draw.texture == draw.frame && draw.texture != draw.depth &&
                                         t.state.fields[gf::Fbmsk] == 0xFFFFFFFFu;
+            // TASK-182 step 2a: the two ways a self-sampled batch needs no copy (the oracle's D3 path 2 and IN-495), counted
+            // for the sync trace. Only the copy path below ever reaches Gpu::Draw as `selfCopy`.
+            if (selfCopy_ && (draw.texture == draw.frame || draw.texture == draw.depth)) {
+                if (frameUntouched) {
+                    gpu_.NoteSelfSampleNoCopy(Gpu::SelfSampleNoCopy::FrameUntouched);
+                } else if (Intersect(textureFootprint_, t.rect).Empty()) {
+                    gpu_.NoteSelfSampleNoCopy(Gpu::SelfSampleNoCopy::Disjoint);
+                }
+            }
             if (selfCopy_ && !frameUntouched && (draw.texture == draw.frame || draw.texture == draw.depth) &&
                 !Intersect(textureFootprint_, t.rect).Empty()) {
                 const PixelRect copy = Intersect(textureFootprint_,
@@ -4693,6 +4702,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             stats.specialisedBatches = gpu_.Stats().specialisedBatches;
             stats.computeFills = gpu_.Stats().computeFills;
             stats.selfCopies = gpu_.Stats().selfCopies;
+            stats.selfCopyDraws = gpu_.Stats().selfCopyDraws;
         }
         if (!drawn) {
             Fail(error);

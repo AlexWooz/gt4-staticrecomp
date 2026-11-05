@@ -5044,6 +5044,98 @@ int TestCore2SelfTexture(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// TASK-182 step 2a (R1): two self-sampling sprites over one 64 x 64 CT32 frame (pages 0-1), after a 64 x 64 pattern
+// texture is drawn into it 1:1. The first samples the whole frame and writes its top-left quarter at half size, so the
+// copied rectangle meets what it draws (the spec 8.8 case the renderer already had). A SCISSOR write flushes its batch
+// under pixels the same sprite would draw anyway, and the second sprite samples the frame's top-right quarter into its
+// bottom-left one, so the copied rectangle is disjoint from what it draws (the oracle's D3 path 2 case: a copy nothing
+// needs, still copied by both paths here).
+cpuref::CaptureWriter Core2SelfCopyDrawCapture() {
+    cpuref::CaptureWriter capture;
+    constexpr uint64_t kPatternPage = 16;
+    auto rgbaq = [](uint32_t colour) { return uint64_t{colour} | (uint64_t{0x3F800000u} << 32); };
+    auto xyz = [](uint32_t x, uint32_t y) { return uint64_t{x * 16} | (uint64_t{y * 16} << 16); };
+    auto uv = [](uint32_t u, uint32_t v) { return uint64_t{u * 16} | (uint64_t{v * 16} << 16); };
+    auto tex0 = [](uint64_t page) {  // CT32 64 x 64, TBW 1, TCC, decal
+        return uint64_t{page * 32} | (uint64_t{1} << 14) | (uint64_t{6} << 26) | (uint64_t{6} << 30) |
+               (uint64_t{1} << 34) | (uint64_t{1} << 35);
+    };
+    auto scissor = [](uint32_t x1, uint32_t y1) {  // SCISSOR_1 at (0, 0) with inclusive corner (x1, y1)
+        return uint64_t{x1} << 16 | uint64_t{y1} << 48;
+    };
+    capture.Privileged(0x12000000u, 1u | (1u << 5) | (0xFFu << 8));
+    capture.Privileged(0x12000010u, uint64_t{2} << 13);
+    capture.Privileged(0x12000070u, uint64_t{1} << 9);
+    capture.Privileged(0x12000080u, (uint64_t{63} << 32) | (uint64_t{63} << 44));
+    auto ad = [&](const std::vector<uint64_t>& words) {
+        capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(words.size() / 2), true, false, 0, 0, {0xE},
+                                                     words));
+    };
+    ad({(kPatternPage * 32) << 32 | (uint64_t{1} << 48), 0x50, 0, 0x51, uint64_t{64} | (uint64_t{64} << 32), 0x52, 0,
+        0x53});
+    auto texel = [](uint32_t n) {
+        const uint32_t x = n % 64, y = n / 64;
+        return uint64_t{(x * 4u) | ((y * 4u) << 8) | ((((x ^ y) * 4u) & 0xFFu) << 16) | (0x80u << 24)};
+    };
+    std::vector<uint64_t> pixels;
+    for (uint32_t n = 0; n < 64 * 64; n += 2) pixels.push_back(texel(n) | (texel(n + 1) << 32));
+    capture.Gif(1, cpuref::CaptureWriter::Packet(static_cast<uint32_t>(pixels.size() / 2), true, false, 0, 2, {},
+                                                 pixels));
+    const uint64_t sprite = 6u | (1u << 4) | (1u << 8);  // sprite, TME, FST
+    // The pattern into pages 0-1, under a scissor that encloses every self-sampling sprite.
+    ad({scissor(63, 63), 0x40, 0, 0x18, uint64_t{1} << 17, 0x47, uint64_t{1} << 32, 0x4E,
+        uint64_t{1} << 16, 0x4C, tex0(kPatternPage), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0),
+        0x03, xyz(0, 0), 0x05, uv(64, 64), 0x03, xyz(64, 64), 0x05});
+    // Sprite 1: samples pages 0-1 whole (they are the frame), writes their top-left 32 x 32 at half size: the copy meets
+    // the draw.
+    ad({tex0(0), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(0, 0), 0x03, xyz(0, 0), 0x05, uv(64, 64),
+        0x03, xyz(32, 32), 0x05});
+    // A scissor the sprites already fit in, written between them: it flushes the batch before it without changing a pixel,
+    // so each sprite is a batch of its own.
+    ad({scissor(31, 63), 0x40});
+    // Sprite 2: samples texels 32..56 and writes pixels 4..27, so its sampled rectangle (with the copy's border) meets
+    // nothing it draws: no copy at all (the oracle's D3 path 2, which the renderer already takes).
+    ad({tex0(0), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(32, 32), 0x03, xyz(4, 4), 0x05, uv(56, 56),
+        0x03, xyz(28, 28), 0x05});
+    ad({scissor(63, 63), 0x40});
+    // Sprite 3: a 1:1 pass over the frame's bottom-right 16 x 16 (GT4's luminance reduction): the copy meets the draw
+    // again, and it is the second copy of the stream.
+    ad({tex0(0), 0x06, 0, 0x14, sprite, 0x00, rgbaq(0x80808080u), 0x01, uv(48, 48), 0x03, xyz(48, 48), 0x05, uv(64, 64),
+        0x03, xyz(64, 64), 0x05});
+    capture.FrameEnd(0);
+    return capture;
+}
+
+// hw_core2_self_copy_draw (TASK-182 step 2a, R1): GT4_CORE2_SELF_COPY_DRAW=1 draws the spec 8.8 self copy inside the open
+// render pass (core2_self_copy.frag) instead of running vkCmdCopyImage after closing it. The stream has two copies (one
+// meeting the drawn rectangle at half size, one a 1:1 pass) and one self-sampling sprite whose sampled rectangle is
+// disjoint from what it draws and so needs no copy in either path. The two runs must give the same image and the same GS
+// memory at 1x and at scale, and the drawn path must be the one that ran.
+int TestCore2SelfCopyDraw(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    const cpuref::CaptureWriter capture = Core2SelfCopyDrawCapture();
+    for (uint32_t scale : {1u, 2u, 3u, 12u}) {
+        const std::string tag = " at " + std::to_string(scale) + "x";
+        failures += CheckCore2Ab(
+            handles, ("self copy draw" + tag).c_str(), capture, 1, "GT4_CORE2_SELF_COPY_DRAW", scale == 1,
+            [](const Core2AbRun& off, const Core2AbRun& on) {
+                std::printf("  copies %llu (transfer run %llu), of which drawn in the pass %llu (transfer run %llu)\n",
+                            static_cast<unsigned long long>(on.stats.selfCopies),
+                            static_cast<unsigned long long>(off.stats.selfCopies),
+                            static_cast<unsigned long long>(on.stats.selfCopyDraws),
+                            static_cast<unsigned long long>(off.stats.selfCopyDraws));
+                // Two self-sampling batches need a copy, both drawn in the pass with the switch on and neither with it off.
+                return on.stats.selfCopies == 2 && on.stats.selfCopyDraws == 2 && off.stats.selfCopies == 2 &&
+                               off.stats.selfCopyDraws == 0
+                           ? 0
+                           : 1;
+            },
+            false, scale, "1");
+    }
+    std::printf("hw_core2_self_copy_draw: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_core2_compute_fills (IN-442): constant fills drawn by core2_fill.comp (GT4_CORE2_COMPUTE_FILLS, on by default)
 // against the same batches rasterised (=0) on the core 2 streams with untextured sprites: identical images and GS
 // memory at 1x (and equal to the CPU reference where the stream is exact) and at 2x and 3x, with fills counted.
@@ -7280,6 +7372,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);
     if (name == "hw_core2_self_texture") return TestCore2SelfTexture(handles);
+    if (name == "hw_core2_self_copy_draw") return TestCore2SelfCopyDraw(handles);
     if (name == "hw_core2_texture_replacement") return TestCore2TextureReplacement(handles);
     if (name == "hw_core2_overlap_order") return TestCore2OverlapOrder(handles);
     if (name == "hw_core2_point_quads") return TestCore2PointQuads(handles);
