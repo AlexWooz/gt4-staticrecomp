@@ -17,7 +17,10 @@ exe `7060f8bf...` v2.00, `a4d84180...` Spec II; distribution `private/slice410-d
 builds (`gates6.sh`, wrong=0): race clock, simulation state and every compared frame identical on three Spec II laps (24, 35,
 35 frames), the v2.00 night race (10/10) and Arcade path (14/14) at 3x and Spec II at 6x (12/12); VU1 236,448 and 355,388
 samples and MTVU 8,032 frames with 0 differences. CTest 318/318 on both games (q07 skipped), Python 802 (57 skipped), launcher
-`cargo test` 750 passed (9 ignored).
+`cargo test` 750 passed (9 ignored), focus checks 357/357 and 364/364, nav-test 260/260, locale keys 909 in both.
+Launchers labelled rc15 (`private/slice410-launchers-rc15`), installer `20b438e0...` and portable zip `8534510f...`
+(`private/release-130-rc15-out`; contents equal to their sources). Uploaded as the GitHub **draft** `v1.3.0-rc15` (not
+published) for the owner's G27 test; a pre-release and PGO only on his word.
 
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
