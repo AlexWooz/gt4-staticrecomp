@@ -5434,6 +5434,13 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
     // The prefix and the state as the last word stay as before (bench scripts read them).
     std::fprintf(stderr, "[core2] palette segments (TASK-168) [default off, GT4_CORE2_PALETTE_SEGMENTS=1 for on] %s\n",
                  impl_->paletteSegments_ ? "on" : "off");
+    // TASK-182 steps 2b/2c: the deinterlace order in use. The Android launcher turns both on by default; the values here
+    // are the ones this session actually took (debug.env or the command line may override them).
+    std::fprintf(stderr,
+                 "[core2] deinterlace order (TASK-182) field compose %s, decision skip %s "
+                 "[GT4_CORE2_DEINT_FIELD_COMPOSE=%d, GT4_CORE2_DEINT_SKIP_DECISION=%d]\n",
+                 impl_->deintFieldCompose_ ? "on" : "off", impl_->deintSkipDecision_ ? "on" : "off",
+                 impl_->deintFieldCompose_ ? 1 : 0, impl_->deintSkipDecision_ ? 1 : 0);
     std::fprintf(stderr, "[core2] texture cache budget %llu MiB (%s GPU)\n",
                  static_cast<unsigned long long>(impl_->textureBudget_ >> 20),
                  impl_->gpu_.Integrated() ? "integrated" : "discrete");

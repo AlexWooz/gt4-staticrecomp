@@ -1027,6 +1027,23 @@ pub fn play(shared: &Shared) -> Result<(), String> {
         ),
     );
     let mut plan = launch::plan_coregs20_launch(&inputs, &settings, display.as_ref(), false, &textures, &[]);
+    // TASK-180 test4: the exact TASK-182 deinterlace savings are the Android default. A deinterlaced frame writes its
+    // display merge straight into that field's history image (two full-display copies and two full barriers fewer per
+    // deinterlaced VBlank) and the adaptive kernel skips the motion tests its loaded words already decide. Both are
+    // bit-identical (TASK-182 steps 2b and 2c), so no setting gates them; they matter on the phone's 480i menus. Set
+    // before debug.env is merged, so a diagnosis build can still turn either one off with GT4_CORE2_...=0.
+    plan.environment.push(("GT4_CORE2_DEINT_FIELD_COMPOSE".into(), "1".into()));
+    plan.environment.push(("GT4_CORE2_DEINT_SKIP_DECISION".into(), "1".into()));
+    // TASK-180 test4: the phone presents from the rendering queue (`PresentPath::rendering_queue`, the path of a device
+    // with one graphics queue). The picture is drawn straight into the acquired swapchain image, so the window-sized
+    // picture and the second copy into the swapchain image (about 36 MB per presented frame at 3088x1440, STUDY-UNIFIED
+    // MEMORY 4.2) disappear. Presentation only, so the picture is exact. debug.env still overrides it.
+    plan.environment.push(("GT4_HW_PRESENT_QUEUE".into(), "0".into()));
+    state::log(
+        &dirs,
+        "android defaults: GT4_CORE2_DEINT_FIELD_COMPOSE=1, GT4_CORE2_DEINT_SKIP_DECISION=1 (TASK-182, exact), \
+         GT4_HW_PRESENT_QUEUE=0 (single-queue present)",
+    );
     let controls_path = state.user_dirs.controls_file();
     if controls_path.exists() {
         plan.environment.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
