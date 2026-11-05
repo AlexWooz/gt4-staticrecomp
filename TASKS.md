@@ -3309,6 +3309,14 @@ emulator doubles the frame rate.
   5. Report what holds and what breaks.
 - State (2026-11-04): recorded, not scheduled; rc15 stays the focus (owner).
 
+### TASK-177 — Per-track renderer settings, only where a general optimisation is not enough (owner idea, 2026-11-04)
+
+Owner: an optimisation that helps one track may hurt another; if no general change fixes the heaviest tracks, read from game
+memory which track the race loaded and apply that track's own setting, starting with the worst ones (Motegi Road Course and
+Hong Kong at 6x on the Avell). Needs the address of the loaded course id (gt4-decomp names), a small scene hint from the EE
+side to the renderer, and a per-track table with its own identity checks. State: recorded; general optimisations first
+(TASK-168b palette segments, the per-frame download study).
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
