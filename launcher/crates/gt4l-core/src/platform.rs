@@ -61,6 +61,15 @@ impl Platform {
         matches!(self, Platform::Android)
     }
 
+    /// How many game sessions' logs Export logs carries. Android (owner, test2): 10, because each F8 report lives in its
+    /// session's game.log and a benchmark evening is many sessions; Windows keeps its 3.
+    pub const fn game_sessions_exported(self) -> usize {
+        match self {
+            Platform::Windows => crate::log_export::KEPT_FOR_EXPORT,
+            Platform::Android => 10,
+        }
+    }
+
     /// Whether the launcher downloads and installs its own updates. Android only checks and opens the download page.
     pub const fn installs_updates(self) -> bool {
         matches!(self, Platform::Windows)
@@ -147,6 +156,8 @@ mod tests {
         assert!(android.allows_renderer(CORE_GS_20));
         assert!(!android.installs_updates());
         assert!(android.scale_floor_follows_screen() && !Platform::Windows.scale_floor_follows_screen());
+        assert_eq!(android.game_sessions_exported(), 10);
+        assert_eq!(Platform::Windows.game_sessions_exported(), crate::log_export::KEPT_FOR_EXPORT);
         assert!(android.offers("performance_hud"), "the HUD draws on Android since test2");
         for row in ["graphics_card", "monitor", "resolution", "fullscreen", "discord_rich_presence"] {
             assert!(!android.offers(row), "{row}");

@@ -199,6 +199,25 @@ class GameBridgePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    // TASK-180 test2: the screen's current mode in landscape, the Render scale's output (100% = native, as a monitor).
+    @Command
+    fun displayInfo(invoke: Invoke) {
+        val answer = JSObject()
+        try {
+            @Suppress("DEPRECATION")
+            val display = activity.display ?: activity.windowManager.defaultDisplay
+            val mode = display.mode
+            answer.put("width", maxOf(mode.physicalWidth, mode.physicalHeight))
+            answer.put("height", minOf(mode.physicalWidth, mode.physicalHeight))
+            answer.put("refreshHz", mode.refreshRate.toDouble())
+        } catch (error: Exception) {
+            answer.put("width", 0)
+            answer.put("height", 0)
+            answer.put("refreshHz", 0.0)
+        }
+        invoke.resolve(answer)
+    }
+
     @Command
     fun deviceInfo(invoke: Invoke) {
         val lines = mutableListOf<String>()

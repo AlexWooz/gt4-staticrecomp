@@ -266,8 +266,23 @@
       readout.textContent = format(input.value);
       input.setAttribute("aria-valuetext", format(input.value));
     };
-    input.addEventListener("input", paint);
+    // TASK-180: on Android a touch is handled below (sideways drag or tap only). The WebView's own range input also
+    // reacts to the touch (it jumps to it, even when the finger only starts a scroll); that value is put back.
+    var touchActive = false;
+    var shownValue = String(row.current);
+    input.addEventListener("input", function () {
+      if (touchActive && GT4.platform === "android") {
+        input.value = shownValue;
+      }
+      paint();
+    });
     input.addEventListener("change", function () {
+      if (touchActive && GT4.platform === "android") {
+        input.value = shownValue;
+        paint();
+        return;
+      }
+      shownValue = input.value;
       commit(ctx, row.id, Number(input.value));
     });
     // Touch and pen: drag with pointer capture. The thumb is 14 px, so the track is inset by 7 px on each side.
@@ -291,6 +306,7 @@
       }
       touchDrag = true;
       if (scrollSafe) {
+        touchActive = true;
         touchStart = { x: event.clientX, y: event.clientY };
         touchMoved = false;
         return;
@@ -314,6 +330,7 @@
         input.setPointerCapture(event.pointerId);
       }
       input.value = String(valueAt(event.clientX));
+      shownValue = input.value;
       paint();
     });
     function endTouchDrag(event) {
@@ -322,14 +339,24 @@
       }
       touchDrag = false;
       if (scrollSafe) {
+        // The WebView's own change event comes after the pointer events: keep ignoring it for a moment.
+        setTimeout(function () { touchActive = false; }, 400);
         if (event.type === "pointercancel") {
+          input.value = shownValue;
           paint();
           return;
         }
         if (!touchMoved) {
+          // A tap sets the value where it lands; a swipe that did not go sideways (the page did not scroll) changes nothing.
+          if (Math.abs(event.clientX - touchStart.x) >= 8 || Math.abs(event.clientY - touchStart.y) >= 8) {
+            input.value = shownValue;
+            paint();
+            return;
+          }
           input.value = String(valueAt(event.clientX));
           paint();
         }
+        shownValue = input.value;
       }
       commit(ctx, row.id, Number(input.value));
     }
@@ -341,6 +368,7 @@
         return;
       }
       input.value = String(next);
+      shownValue = input.value;
       paint();
       commit(ctx, row.id, next);
     });

@@ -70,7 +70,8 @@ pub(crate) fn collect(state: &AppState, controllers: &[String]) -> Result<Vec<En
         .map(|path| (changed(&path), path))
         .collect();
     folders.sort_by(|a, b| b.0.cmp(&a.0));
-    for folder in log_export::newest(folders, KEPT_FOR_EXPORT) {
+    // TASK-180: Android carries the newest 10 (each F8 report is in its session's game.log); Windows 3.
+    for folder in log_export::newest(folders, gt4l_core::Platform::current().game_sessions_exported()) {
         let name = folder.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         for file in ["game.log", "gt4-gs.ini"] {
             if let Ok(text) = fs::read_to_string(folder.join(file)) {

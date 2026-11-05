@@ -145,10 +145,38 @@ extern "C" {
     fn __android_log_write(priority: std::ffi::c_int, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> std::ffi::c_int;
 }
 
+/// The screen read from the Java side at start (`displayInfo`): width and height in landscape, refresh rate.
+static SCREEN: OnceLock<(gt4l_core::display::Size, u32)> = OnceLock::new();
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct DisplayInfo {
+    width: u32,
+    height: u32,
+    refresh_hz: f32,
+}
+
+/// Reads the screen's current mode once (from a worker thread: the bridge answers through the main thread).
+fn load_screen(dirs: &DataDirs) {
+    match bridge().and_then(|bridge| bridge.run_mobile_plugin::<DisplayInfo>("displayInfo", ()).map_err(|error| error.to_string())) {
+        Ok(info) if info.width > 0 && info.height > 0 => {
+            let size = gt4l_core::display::Size::new(info.width.max(info.height), info.width.min(info.height));
+            let _ = SCREEN.set((size, info.refresh_hz.round() as u32));
+            state::log(dirs, &format!("screen: {} at {:.2} Hz (the Render scale's output)", size.text(), info.refresh_hz));
+        }
+        Ok(_) => state::log_warn(dirs, "screen: the display reported no size"),
+        Err(message) => state::log_warn(dirs, &format!("screen: not read ({message})")),
+    }
+}
+
 /// The phone's screen as the launcher's display model sees a monitor (TASK-180 test2, owner: 100% is the screen's
-/// native output, as a 1440p monitor on the PC). MainActivity puts the current display mode in the environment before
-/// the launcher starts (`GT4_ANDROID_DISPLAY=3088x1440@120`, landscape), so no call to the Java side is needed here.
+/// native output, as a 1440p monitor on the PC): the mode read at start, else the one MainActivity put in the
+/// environment (`GT4_ANDROID_DISPLAY=3088x1440@120`; not visible to an arm64 library run by an x86 emulator's
+/// translation, hence the bridge first).
 pub fn screen() -> Option<(gt4l_core::display::Size, u32)> {
+    if let Some(screen) = SCREEN.get() {
+        return Some(*screen);
+    }
     let text = std::env::var("GT4_ANDROID_DISPLAY").ok()?;
     let (size, refresh) = text.split_once('@').unwrap_or((text.as_str(), "0"));
     let (width, height) = size.split_once('x')?;
@@ -379,6 +407,7 @@ pub fn run() {
             // The phone's facts and the game's last ends, read off the main thread (the bridge answers through it).
             let start_dirs = dirs.clone();
             std::thread::spawn(move || {
+                load_screen(&start_dirs);
                 for line in device_lines() {
                     state::log(&start_dirs, &line);
                 }
@@ -507,6 +536,8 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // Named as on Windows (session-<seconds>), so the log bundle takes its game.log.
     let session_dir = dirs.session(&format!("session-{seconds}"));
+    // As on Windows: the newest KEEP_SESSIONS (20) stay, more than the 10 that Export logs carries on Android.
+    gt4l_platform::game::prune_sessions(&dirs.sessions(), gt4l_platform::game::KEEP_SESSIONS);
     std::fs::create_dir_all(&session_dir).map_err(|error| format!("session folder: {error}"))?;
     let (textures, _) = state.texture_location();
     let inputs = LaunchInputs { game_executable: Path::new("libgt4.so"), elf: &elf, disc: &disc, card: &card, session_dir: &session_dir };

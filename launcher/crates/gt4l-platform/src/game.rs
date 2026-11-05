@@ -290,7 +290,8 @@ fn session_name() -> String {
     format!("session-{seconds}")
 }
 
-fn prune_sessions(sessions: &Path, keep: usize) {
+/// Removes all but the newest `keep` session folders (names sort by start time). Also used by the Android Play (TASK-180).
+pub fn prune_sessions(sessions: &Path, keep: usize) {
     let Ok(entries) = fs::read_dir(sessions) else {
         return;
     };
@@ -306,6 +307,14 @@ fn prune_sessions(sessions: &Path, keep: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sessions_kept_cover_what_export_logs_carries() {
+        // TASK-180: Export logs takes the newest 10 game sessions on Android; pruning must leave at least those.
+        for platform in [gt4l_core::Platform::Windows, gt4l_core::Platform::Android] {
+            assert!(KEEP_SESSIONS >= platform.game_sessions_exported(), "{platform:?}");
+        }
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let folder = std::env::temp_dir().join(format!("gt4l-game-{name}-{}", std::process::id()));
