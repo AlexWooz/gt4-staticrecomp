@@ -2663,7 +2663,14 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     const char *ropSwitch = std::getenv("GT4_CORE2_ROP");
     const bool wanted = ropSwitch ? std::strcmp(ropSwitch, "0") != 0 : s.integrated;
     s.dualSourceBlend = handles.dualSourceBlend;
-    if (wanted && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
+    // TASK-179: the path's own format need (the device check no longer refuses a device without it): the targets'
+    // R8G8B8A8_UNORM views as blendable colour attachments.
+    VkFormatProperties rgba8{};
+    gt4_hw_vkGetPhysicalDeviceFormatProperties(s.physical, VK_FORMAT_R8G8B8A8_UNORM, &rgba8);
+    const VkFormatFeatureFlags ropFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    const bool ropFormat = (rgba8.optimalTilingFeatures & ropFeatures) == ropFeatures;
+    if (wanted && !ropFormat) std::fprintf(stderr, "[core2] colour attachment path (IN-481): R8G8B8A8_UNORM is not a blendable colour attachment here\n");
+    if (wanted && ropFormat && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
       VkAttachmentDescription attachment{};
       attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
       attachment.samples = VK_SAMPLE_COUNT_1_BIT;

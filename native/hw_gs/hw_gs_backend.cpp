@@ -68,7 +68,11 @@ bool format_supports(VkPhysicalDevice device, VkFormat format, VkFormatFeatureFl
   return (have & required) == required;
 }
 
-// Chapter 12.6 formats: depth D32, R16/R32 uint sampled, RGBA8 and RGBA16 unorm blendable, R32 float attachment.
+// The formats every path uses (chapter 12.6 as built). TASK-179: the list named D32_SFLOAT depth attachments, R16_UINT
+// sampled, R16G16B16A16_UNORM blendable and R32_SFLOAT colour attachments, which nothing creates (core 2 draws into
+// R32_UINT storage images and has no depth attachment), so a device without them was refused for nothing. Formats only
+// one path uses are checked by that path: R8G8B8A8_UNORM blendable colour attachments by core 2's ROP path (IN-481),
+// which stays off without them.
 struct FormatRequirement {
   VkFormat format;
   VkFormatFeatureFlags flags;
@@ -76,16 +80,12 @@ struct FormatRequirement {
 };
 
 constexpr FormatRequirement required_formats[] = {
-    {VK_FORMAT_D32_SFLOAT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, "D32_SFLOAT depth attachment"},
-    {VK_FORMAT_R16_UINT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "R16_UINT sampled"},
-    {VK_FORMAT_R32_UINT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "R32_UINT sampled"},
+    // Every target and texel image of both cores.
+    {VK_FORMAT_R32_UINT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT, "R32_UINT storage image"},
+    // The presentation's upload image: written, halved and blitted into the swapchain with a linear filter.
     {VK_FORMAT_R8G8B8A8_UNORM,
-     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT,
-     "R8G8B8A8_UNORM blendable colour"},
-    {VK_FORMAT_R16G16B16A16_UNORM,
-     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT,
-     "R16G16B16A16_UNORM blendable colour"},
-    {VK_FORMAT_R32_SFLOAT, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "R32_SFLOAT colour attachment"},
+     VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT,
+     "R8G8B8A8_UNORM blit with a linear filter"},
 };
 
 } // namespace
