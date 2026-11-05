@@ -87,6 +87,220 @@ struct Saved {
 struct GameArgs<'a> {
     arguments: &'a [String],
     environment: Vec<String>,
+    /// The pause dialog's texts in the launcher's language: title, keep playing, minimize, close game.
+    texts: Vec<String>,
+}
+
+/// What the bridge knows about the game's process (`gameState`).
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct GameState {
+    #[serde(default)]
+    alive: bool,
+    #[serde(default)]
+    pid: i32,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    heartbeat_age_ms: Option<i64>,
+}
+
+/// The last answer and when it was read (the home page asks every second or so).
+static GAME_STATE: Mutex<Option<(Instant, GameState)>> = Mutex::new(None);
+
+/// TASK-180 test2: whether the game's process is alive (Minimize keeps it, paused). Asked from the system's list of
+/// this app's processes, at most once a second. When a game seen alive is gone, the launcher logs it and reads
+/// Android's record of how it ended.
+pub fn game_alive(dirs: &DataDirs) -> bool {
+    let mut cached = GAME_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((when, state)) = cached.as_ref() {
+        if when.elapsed() < std::time::Duration::from_millis(900) {
+            return state.alive;
+        }
+    }
+    let now = match bridge().and_then(|bridge| bridge.run_mobile_plugin::<GameState>("gameState", ()).map_err(|error| error.to_string())) {
+        Ok(state) => state,
+        Err(message) => {
+            state::log_warn(dirs, &format!("game state not read: {message}"));
+            return cached.as_ref().is_some_and(|(_, state)| state.alive);
+        }
+    };
+    let before = cached.as_ref().map(|(_, state)| state.clone());
+    *cached = Some((Instant::now(), now.clone()));
+    drop(cached);
+    match before {
+        Some(before) if before.alive && !now.alive => {
+            state::log(dirs, &format!("the game process {} is gone", before.pid));
+            record_game_exits(dirs);
+        }
+        Some(before) if before.alive == now.alive && before.state == now.state => {}
+        _ if now.alive => state::log(
+            dirs,
+            &format!(
+                "the game process {} is alive ({}, heartbeat {} ms old)",
+                now.pid,
+                now.state.as_deref().unwrap_or("state unknown"),
+                now.heartbeat_age_ms.map(|age| age.to_string()).unwrap_or_else(|| "-".into())
+            ),
+        ),
+        _ => {}
+    }
+    now.alive
+}
+
+#[derive(Serialize)]
+struct ShaderArgs<'a> {
+    environment: Vec<String>,
+    log: &'a str,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ShadersState {
+    #[serde(default)]
+    shaders_alive: bool,
+}
+
+fn shaders_alive() -> bool {
+    bridge()
+        .and_then(|bridge| bridge.run_mobile_plugin::<ShadersState>("gameState", ()).map_err(|error| error.to_string()))
+        .map(|state| state.shaders_alive)
+        .unwrap_or(false)
+}
+
+/// TASK-180 test2 (owner): the shader prepare before Play, as on Windows (`gt4l_platform::game::prepare_shaders`): the
+/// same attempts and guard-file rules (TASK-170b/170c), but each attempt is ShaderPrepareService in its own process,
+/// which writes its `shaders progress D T` / `shaders ready` lines into `logs/shaders.log`; the launcher follows them.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_shaders(
+    dirs: &DataDirs,
+    settings: &gt4l_core::Settings,
+    display: Option<&gt4l_core::display::DisplayTarget>,
+    textures: &gt4l_core::textures::TextureLocation,
+    cancelled: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(u32, u32, u32),
+) -> Result<gt4l_core::shader_prepare::PrepareOutcome, String> {
+    use gt4l_core::shader_prepare::{self, PrepareOutcome};
+    use std::sync::atomic::Ordering;
+    let guard = textures.shader_cache.clone();
+    let snapshot = || {
+        let read = |name: &str| guard.as_ref().and_then(|folder| std::fs::read(folder.join(name)).ok());
+        shader_prepare::snapshot_of(
+            read(shader_prepare::QUARANTINE_FILE).as_deref(),
+            read(shader_prepare::COMPILING_FILE).as_deref(),
+            read(shader_prepare::SUSPECTS_FILE).as_deref(),
+        )
+    };
+    let last_total = std::cell::Cell::new(0u32);
+    let outcome = shader_prepare::run_attempts(
+        shader_prepare::MAX_PREPARE_ATTEMPTS,
+        &|| cancelled.load(Ordering::SeqCst),
+        &snapshot,
+        &mut |attempt| {
+            if attempt > 1 {
+                progress(0, last_total.get(), attempt);
+            }
+            prepare_once(dirs, settings, display, textures, attempt, cancelled, &mut |done, total| {
+                last_total.set(total);
+                progress(done, total, attempt);
+            })
+        },
+    );
+    match outcome {
+        PrepareOutcome::Failed { message, .. } => Err(message),
+        outcome => Ok(outcome),
+    }
+}
+
+fn prepare_once(
+    dirs: &DataDirs,
+    settings: &gt4l_core::Settings,
+    display: Option<&gt4l_core::display::DisplayTarget>,
+    textures: &gt4l_core::textures::TextureLocation,
+    attempt: u32,
+    cancelled: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(u32, u32),
+) -> Result<gt4l_core::shader_prepare::AttemptReport, String> {
+    use gt4l_core::launch::{self, LaunchInputs, ShaderPrepareLine};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::sync::atomic::Ordering;
+    let logs = dirs.logs();
+    std::fs::create_dir_all(&logs).map_err(|error| format!("logs folder: {error}"))?;
+    let log_path = logs.join("shaders.log");
+    if attempt <= 1 {
+        std::fs::write(&log_path, b"").map_err(|error| format!("shaders.log: {error}"))?;
+    }
+    let mut header = std::fs::OpenOptions::new().append(true).open(&log_path).map_err(|error| format!("shaders.log: {error}"))?;
+    let _ = header.write_all(format!("=== shader prepare, attempt {attempt} ===\n").as_bytes());
+    let start = header.seek(SeekFrom::End(0)).unwrap_or(0);
+    drop(header);
+    // Only the environment of the plan is used (the renderer, the card, the shader cache folder, the options).
+    let dummy = Path::new("libgt4.so");
+    let inputs = LaunchInputs { game_executable: dummy, elf: dummy, disc: dummy, card: dummy, session_dir: &logs };
+    let plan = launch::plan_coregs20_launch(&inputs, settings, display, false, textures, &[]);
+    let environment: Vec<String> = plan.environment.iter().map(|(name, value)| format!("{name}={value}")).collect();
+    let log_text = log_path.display().to_string();
+    let _: Done = bridge()?
+        .run_mobile_plugin("prepareShaders", ShaderArgs { environment, log: &log_text })
+        .map_err(|error| format!("shader prepare: {error}"))?;
+    let began = Instant::now();
+    let mut offset = start;
+    let mut pending = String::new();
+    let (mut finished, mut best_done, mut seen_alive) = (false, 0u32, false);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if let Ok(mut file) = std::fs::File::open(&log_path) {
+            if file.seek(SeekFrom::Start(offset)).is_ok() {
+                let mut chunk = String::new();
+                if let Ok(read) = file.read_to_string(&mut chunk) {
+                    offset += read as u64;
+                    pending.push_str(&chunk);
+                }
+            }
+        }
+        while let Some(end) = pending.find('\n') {
+            let line: String = pending.drain(..=end).collect();
+            match launch::parse_shader_prepare_line(line.trim_end()) {
+                Some(ShaderPrepareLine::Progress { done, total }) => {
+                    best_done = best_done.max(done);
+                    progress(done, total);
+                }
+                Some(ShaderPrepareLine::Ready) => finished = true,
+                None => {}
+            }
+        }
+        let alive = shaders_alive();
+        seen_alive |= alive;
+        if cancelled.load(Ordering::SeqCst) {
+            let _: Result<Done, _> = bridge()?.run_mobile_plugin("stopShaders", ());
+            break;
+        }
+        // Ended (or never came up within 10 s, or still going after 30 minutes: a hung driver).
+        if (!alive && (seen_alive || began.elapsed().as_secs() > 10)) || began.elapsed().as_secs() > 1800 {
+            if alive {
+                let _: Result<Done, _> = bridge()?.run_mobile_plugin("stopShaders", ());
+            }
+            break;
+        }
+    }
+    if let Ok(mut log) = std::fs::OpenOptions::new().append(true).open(&log_path) {
+        let _ = log.write_all(
+            format!("=== attempt {attempt} ended {} after {} s ===\n", if finished { "(finished)" } else { "(not finished)" }, began.elapsed().as_secs())
+                .as_bytes(),
+        );
+    }
+    Ok(gt4l_core::shader_prepare::AttemptReport { finished, best_done })
+}
+
+/// Brings the minimized game back (its activity unpauses itself).
+pub fn resume_game(shared: &Shared) -> Result<(), String> {
+    let dirs = state::lock(shared).dirs.clone();
+    if !game_alive(&dirs) {
+        return Err("The game is not running any more; press Play.".to_string());
+    }
+    state::log(&dirs, "resume: the minimized game comes back");
+    let _: Done = bridge()?.run_mobile_plugin("resumeGame", ()).map_err(|error| format!("resume: {error}"))?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -257,7 +471,13 @@ pub fn record_game_exits(dirs: &DataDirs) -> usize {
         let when = gt4l_platform::system::utc_time_of(std::time::UNIX_EPOCH + std::time::Duration::from_millis(exit.time.max(0) as u64));
         let mut line = format!(
             "{} process {} ended {} UTC: {} (reason {}, status {}, importance {}), memory pss {} MB rss {} MB",
-            if exit.process.ends_with(":game") { "game" } else { "launcher" },
+            if exit.process.ends_with(":game") {
+                "game"
+            } else if exit.process.ends_with(":shaders") {
+                "shader prepare"
+            } else {
+                "launcher"
+            },
             exit.pid,
             when.stamp(),
             exit.reason_name,
@@ -358,10 +578,10 @@ pub fn save_document(source: &Path, name: &str, mime_type: &str) -> Result<bool,
 }
 
 /// Starts the game activity (`:game` process) with the launch contract.
-pub fn start_game(arguments: &[String], environment: &[(String, String)]) -> Result<(), String> {
+pub fn start_game(arguments: &[String], environment: &[(String, String)], texts: Vec<String>) -> Result<(), String> {
     let environment = environment.iter().map(|(name, value)| format!("{name}={value}")).collect();
     let _: Done = bridge()?
-        .run_mobile_plugin("startGame", GameArgs { arguments, environment })
+        .run_mobile_plugin("startGame", GameArgs { arguments, environment, texts })
         .map_err(|error| format!("game start: {error}"))?;
     Ok(())
 }
@@ -434,6 +654,7 @@ pub fn run() {
             crate::commands::prepare_shaders,
             crate::commands::cancel_shader_prepare,
             crate::commands::play,
+            crate::commands::resume_game,
             crate::commands::first_start_hint,
             crate::commands::stop_game,
             crate::commands::saves_list,
@@ -512,8 +733,12 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     use gt4l_core::messages;
     use gt4l_disc::setup::Installed;
 
-    // The previous run's end first: a crash is in the launcher log before the next start.
+    // A minimized game is resumed, never started twice.
     let data_dirs = state::lock(shared).dirs.clone();
+    if game_alive(&data_dirs) {
+        return resume_game(shared);
+    }
+    // The previous run's end first: a crash is in the launcher log before the next start.
     record_game_exits(&data_dirs);
     let state = state::lock(shared);
     let language = state::language_of(&state);
@@ -580,5 +805,9 @@ pub fn play(shared: &Shared) -> Result<(), String> {
         state::log(&dirs, &format!("game start: {name}={value}"));
     }
     drop(state);
-    start_game(&plan.arguments, &plan.environment)
+    let texts = ["game.pause_title", "game.pause_keep", "game.pause_minimize", "game.pause_close"]
+        .iter()
+        .map(|key| messages::text(key, language).to_string())
+        .collect();
+    start_game(&plan.arguments, &plan.environment, texts)
 }

@@ -1511,6 +1511,12 @@ bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t heig
   return true;
 }
 
+#ifdef __ANDROID__
+void detach_window() {
+  if (const InProcessSink *sink = hw_sink(); sink != nullptr && sink->detach_window != nullptr) sink->detach_window();
+}
+#endif
+
 void resize_window(std::uint32_t width, std::uint32_t height) {
   if (const InProcessSink *sink = hw_sink()) return sink->resize_window(width, height);
   Client *c = client();

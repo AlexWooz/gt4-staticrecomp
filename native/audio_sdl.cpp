@@ -110,6 +110,18 @@ bool AudioOutput::push_blocking(const std::int16_t *samples, std::size_t frames)
   return true;
 }
 
+#ifdef __ANDROID__
+void AudioOutput::set_paused(bool paused) {
+  if (stream_ == nullptr) return;
+  if (paused) {
+    SDL_PauseAudioStreamDevice(stream_);
+    SDL_ClearAudioStream(stream_);
+  } else {
+    SDL_ResumeAudioStreamDevice(stream_);
+  }
+}
+#endif
+
 bool AudioOutput::push(const std::int16_t *samples, std::size_t frames) {
   GT4_PERF_SCOPE(gt4::perf::Category::audio_push);
   if (closed_ || (!stream_ && !silent_) || (frames && !samples))

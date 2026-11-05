@@ -57,6 +57,11 @@ struct InProcessSink {
   void (*display_aspect)(bool fill, std::uint32_t ratio_millionths) = nullptr;
   // End of the run: wait for the GPU and print the session summary.
   void (*finish)(std::FILE *output) = nullptr;
+#ifdef __ANDROID__
+  // TASK-180: the game goes to the background and its surface will be destroyed: wait for the GS worker, then drop the
+  // swapchain and the surface. attach_window gives the new surface when the game comes back.
+  void (*detach_window)() = nullptr;
+#endif
   // IN-461 (direct GS intake): VU1 job `job` belongs at this point of the GS stream; the GS worker executes its GIF
   // records straight from the MTVU output ring `output` (waiting on `bell`) up to its JobDone. Null: not supported.
   void (*mtvu_job)(std::uint64_t job, gt4::mtvu::SpscByteRing &output, gt4::mtvu::Doorbell &bell) = nullptr;

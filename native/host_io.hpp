@@ -137,6 +137,10 @@ public:
   std::uint64_t completed_frames() const { return completed_; }
   std::uint64_t canceled_frames() const { return canceled_; }
   void close(bool drain);
+#ifdef __ANDROID__
+  // TASK-180: the device stops (and drops what it holds) while the game is parked, and starts again after.
+  void set_paused(bool paused);
+#endif
 
 private:
 #ifdef _WIN32

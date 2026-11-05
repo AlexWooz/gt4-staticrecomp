@@ -32,6 +32,9 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#ifdef __ANDROID__
+#include <pthread.h>
+#endif
 #include <memory>
 #include <cstring>
 #include <stdexcept>
@@ -1462,6 +1465,9 @@ struct Backend::Impl {
   }
 
   void pacer_worker() {
+#ifdef __ANDROID__
+    pthread_setname_np(pthread_self(), "gt4-present");  // TASK-180: found by name by android_diagnostics.cpp
+#endif
     std::uint32_t finished_slot = kNoSlot;
     for (;;) {
       PacedPicture picture{};

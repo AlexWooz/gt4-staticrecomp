@@ -59,6 +59,13 @@ class SaveArgs {
 class GameArgs {
     var arguments: Array<String> = arrayOf()
     var environment: Array<String> = arrayOf()
+    var texts: Array<String> = arrayOf()
+}
+
+@InvokeArg
+class ShaderArgs {
+    var environment: Array<String> = arrayOf()
+    var log: String = ""
 }
 
 @InvokeArg
@@ -123,10 +130,13 @@ class GameBridgePlugin(private val activity: Activity) : Plugin(activity) {
     fun openFd(invoke: Invoke) {
         val args = invoke.parseArgs(UriArgs::class.java)
         try {
-            val descriptor = activity.contentResolver.openFileDescriptor(Uri.parse(args.uri), "r")
+            // The raw descriptor is detached and the ParcelFileDescriptor closed at once: an open one keeps a stable
+            // reference to the documents provider, and when Android kills that provider's process (memory pressure, the
+            // game is large) every process holding such a reference dies with it ("dependency died", owner's test1).
+            val fd = activity.contentResolver.openFileDescriptor(Uri.parse(args.uri), "r")?.use { it.detachFd() } ?: -1
             val answer = JSObject()
             // Detached: the Rust side owns the descriptor from here and closes it.
-            answer.put("fd", descriptor?.detachFd() ?: -1)
+            answer.put("fd", fd)
             invoke.resolve(answer)
         } catch (error: Exception) {
             invoke.reject(error.message ?: error.toString())
@@ -170,7 +180,76 @@ class GameBridgePlugin(private val activity: Activity) : Plugin(activity) {
         val intent = Intent(activity, GameActivity::class.java).apply {
             putExtra(GameActivity.EXTRA_ARGUMENTS, args.arguments)
             putExtra(GameActivity.EXTRA_ENVIRONMENT, args.environment)
+            putExtra(GameActivity.EXTRA_TEXTS, args.texts)
         }
+        activity.runOnUiThread {
+            try {
+                activity.startActivity(intent)
+                invoke.resolve(JSObject())
+            } catch (error: Exception) {
+                invoke.reject(error.message ?: error.toString())
+            }
+        }
+    }
+
+    // TASK-180 test2: is the game's process alive (Minimize keeps it, paused)? The process list of this app (the
+    // system's own record) decides; the game's heartbeat file adds whether it is paused and how fresh that is (a
+    // minimized game may be frozen by the system, so a stale heartbeat alone does not mean it is gone).
+    @Command
+    fun gameState(invoke: Invoke) {
+        val answer = JSObject()
+        try {
+            val manager = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val game = manager.runningAppProcesses?.firstOrNull { it.processName == activity.packageName + ":game" }
+            answer.put("alive", game != null)
+            answer.put("pid", game?.pid ?: 0)
+            val shaders = manager.runningAppProcesses?.firstOrNull { it.processName == activity.packageName + ":shaders" }
+            answer.put("shadersAlive", shaders != null)
+            answer.put("shadersPid", shaders?.pid ?: 0)
+            val heartbeat = File(activity.filesDir, GameActivity.HEARTBEAT_FILE)
+            if (game != null && heartbeat.exists()) {
+                val parts = heartbeat.readText().trim().split(" ")
+                if (parts.size >= 3 && parts[0].toIntOrNull() == game.pid) {
+                    answer.put("state", parts[1])
+                    answer.put("heartbeatAgeMs", System.currentTimeMillis() - (parts[2].toLongOrNull() ?: 0L))
+                }
+            }
+        } catch (error: Exception) {
+            invoke.reject(error.message ?: error.toString())
+            return
+        }
+        invoke.resolve(answer)
+    }
+
+    // TASK-180 test2: the shader prepare in its own process (ShaderPrepareService).
+    @Command
+    fun prepareShaders(invoke: Invoke) {
+        val args = invoke.parseArgs(ShaderArgs::class.java)
+        try {
+            val intent = Intent(activity, ShaderPrepareService::class.java)
+                .putExtra(ShaderPrepareService.EXTRA_ENVIRONMENT, args.environment)
+                .putExtra(ShaderPrepareService.EXTRA_LOG, args.log)
+            activity.startService(intent)
+            invoke.resolve(JSObject())
+        } catch (error: Exception) {
+            invoke.reject(error.message ?: error.toString())
+        }
+    }
+
+    // Cancel: the prepare's process ends (what it compiled stays in the cache).
+    @Command
+    fun stopShaders(invoke: Invoke) {
+        val manager = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        manager.runningAppProcesses?.firstOrNull { it.processName == activity.packageName + ":shaders" }?.let {
+            android.os.Process.killProcess(it.pid)
+        }
+        invoke.resolve(JSObject())
+    }
+
+    // TASK-180 test2: Resume brings the minimized game's activity back; it unpauses itself in onResume.
+    @Command
+    fun resumeGame(invoke: Invoke) {
+        val intent = Intent(activity, GameActivity::class.java).putExtra(GameActivity.EXTRA_RESUME, true)
         activity.runOnUiThread {
             try {
                 activity.startActivity(intent)

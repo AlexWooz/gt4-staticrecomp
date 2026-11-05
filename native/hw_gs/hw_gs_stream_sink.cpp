@@ -1122,6 +1122,17 @@ void resize_window(std::uint32_t width, std::uint32_t height) {
   backend().resize_window(width, height);
 }
 
+#ifdef __ANDROID__
+// TASK-180: see gs_stream_sink.hpp. Called on the EE thread while the game is parked.
+void detach_window() {
+  std::unique_lock<std::mutex> lock;
+  if (g_worker) lock = g_worker->drain();
+  backend().detach_window();
+  g_window_attached.store(false, std::memory_order_relaxed);
+  std::fprintf(stderr, "[hw] window output detached (the surface goes away)\n");
+}
+#endif
+
 RenderCounters stats_counters() { return g_backend ? g_backend->render_counters() : RenderCounters{}; }
 
 void finish(std::FILE *output) {
@@ -1233,6 +1244,9 @@ const InProcessSink &hw_in_process_sink() {
     s.resize_window = &gt4::hw::resize_window;
     s.display_aspect = &gt4::hw::display_aspect;
     s.finish = &gt4::hw::finish;
+#ifdef __ANDROID__
+    s.detach_window = &gt4::hw::detach_window;
+#endif
     s.mtvu_job = &gt4::hw::mtvu_job;
     return s;
   }();

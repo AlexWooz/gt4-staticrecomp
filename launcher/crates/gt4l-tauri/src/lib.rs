@@ -239,6 +239,7 @@ pub fn run() {
             commands::prepare_shaders,
             commands::cancel_shader_prepare,
             commands::play,
+            commands::resume_game,
             commands::first_start_hint,
             commands::stop_game,
             commands::saves_list,

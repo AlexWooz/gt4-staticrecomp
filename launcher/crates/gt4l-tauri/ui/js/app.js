@@ -306,6 +306,7 @@
     GT4.i18n.setSetting(appState.language || "auto");
     // TASK-180: "windows" or "android" (the backend's platform rules; the page only adapts its wording).
     GT4.platform = appState.platform || "windows";
+    document.body.classList.toggle("platform-android", GT4.platform === "android");
     booted = true;
     showMigration(appState);
     var route = parseRoute();

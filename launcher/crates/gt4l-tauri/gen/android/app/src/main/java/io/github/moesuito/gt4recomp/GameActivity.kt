@@ -9,6 +9,8 @@
 // The process ends with the activity, so every start gets fresh native state.
 package io.github.moesuito.gt4recomp
 
+import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -16,7 +18,10 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.util.Log
 import android.util.TypedValue
@@ -24,20 +29,45 @@ import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.window.OnBackInvokedDispatcher
+import java.io.File
 import org.libsdl.app.SDLActivity
 
 class GameActivity : SDLActivity() {
     companion object {
         const val EXTRA_ARGUMENTS = "io.github.moesuito.gt4recomp.ARGUMENTS"
         const val EXTRA_ENVIRONMENT = "io.github.moesuito.gt4recomp.ENVIRONMENT"
+        // The pause dialog's texts in the launcher's language: title, keep playing, minimize, close game.
+        const val EXTRA_TEXTS = "io.github.moesuito.gt4recomp.TEXTS"
+        // Set by the launcher's Resume: the activity comes back and the game goes on.
+        const val EXTRA_RESUME = "io.github.moesuito.gt4recomp.RESUME"
+        // "<pid> <running|paused> <epoch ms>", rewritten every 2 s (GameBridgePlugin.gameState reads it).
+        const val HEARTBEAT_FILE = "game-heartbeat"
         private const val TAG = "GT4Recomp-game"
 
         // native/window_sdl.cpp: 1 starts a performance interval (F7), 2 writes its report (F8) to the game log.
         @JvmStatic
         external fun nativeReportRequest(request: Int)
+
+        // native/window_sdl.cpp: true parks the game (EE stopped, card files written, audio paused), false lets it go on.
+        @JvmStatic
+        external fun nativeSetPaused(paused: Boolean)
     }
 
     private var recording = false
+    private var pauseDialog: AlertDialog? = null
+    private var paused = false
+    private val heartbeat = Handler(Looper.getMainLooper())
+    private val beat = object : Runnable {
+        override fun run() {
+            try {
+                File(filesDir, HEARTBEAT_FILE).writeText("${Process.myPid()} ${if (paused) "paused" else "running"} ${System.currentTimeMillis()}")
+            } catch (error: Exception) {
+                Log.w(TAG, "heartbeat not written: $error")
+            }
+            heartbeat.postDelayed(this, 2000)
+        }
+    }
 
     // Load order: SDL3, then the game (the C++ runtime is linked into it); the last one holds SDL_main.
     override fun getLibraries(): Array<String> = arrayOf("SDL3", "gt4")
@@ -46,6 +76,84 @@ class GameActivity : SDLActivity() {
         super.onCreate(savedInstanceState)
         val environment = intent.getStringArrayExtra(EXTRA_ENVIRONMENT) ?: arrayOf()
         if (environment.contains("GT4_PERF=1")) addReportButton()
+        // TASK-180 test2 (owner): Back pauses the game and asks what to do. Android 13+ (and every app targeting 36)
+        // delivers Back through the dispatcher; older versions call onBackPressed.
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { onBack() }
+        }
+        heartbeat.post(beat)
+    }
+
+    @Deprecated("Android 12 and older")
+    override fun onBackPressed() {
+        onBack()
+    }
+
+    private fun texts(): Array<String> {
+        val given = intent.getStringArrayExtra(EXTRA_TEXTS) ?: arrayOf()
+        return if (given.size >= 4) given else arrayOf("Game paused", "Keep playing", "Minimize", "Close game")
+    }
+
+    private fun setPaused(value: Boolean, why: String) {
+        if (paused == value) return
+        paused = value
+        nativeSetPaused(value)
+        Log.i(TAG, (if (value) "paused: " else "resumed: ") + why)
+    }
+
+    private fun onBack() {
+        if (pauseDialog?.isShowing == true) {
+            pauseDialog?.cancel()
+            return
+        }
+        showPauseDialog()
+    }
+
+    private fun showPauseDialog() {
+        setPaused(true, "Back")
+        val (title, keep, minimize, close) = texts()
+        val dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(title)
+            .setPositiveButton(keep) { _, _ -> setPaused(false, "keep playing") }
+            .setNeutralButton(minimize) { _, _ -> minimize() }
+            .setNegativeButton(close) { _, _ -> closeGame() }
+            .setOnCancelListener { setPaused(false, "Back again") }
+            .create()
+        dialog.setOnDismissListener { pauseDialog = null }
+        pauseDialog = dialog
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus()
+    }
+
+    // Minimize: the game stays alive and paused; the launcher comes back (its Play button reads Resume).
+    private fun minimize() {
+        Log.i(TAG, "minimize: the game stays paused in the background")
+        moveTaskToBack(true)
+        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+    }
+
+    // Close: the normal end (SDL asks the game to quit; it writes its cards and ends the process).
+    private fun closeGame() {
+        Log.i(TAG, "close: the game ends")
+        setPaused(false, "closing")
+        finish()
+    }
+
+    // The same pause path for Home, the app switcher and the notification shade (A6).
+    override fun onPause() {
+        setPaused(true, "the activity left the foreground")
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (pauseDialog?.isShowing != true) setPaused(false, "the activity is back in the foreground")
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // The launch contract stays the first intent's; a Resume only brings the activity back.
+        if (intent.getBooleanExtra(EXTRA_RESUME, false)) Log.i(TAG, "resume from the launcher")
     }
 
     // TASK-180 (owner, 2026-11-05): the F7/F8 performance report without a keyboard. Only while the launcher's
@@ -134,8 +242,8 @@ class GameActivity : SDLActivity() {
 
     private fun descriptorArgument(uri: String): String {
         return try {
-            val descriptor = contentResolver.openFileDescriptor(Uri.parse(uri), "r")
-            "fd:" + (descriptor?.detachFd() ?: -1)
+            // Detached and closed at once: no stable provider reference stays (see GameBridgePlugin.openFd).
+            "fd:" + (contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { it.detachFd() } ?: -1)
         } catch (error: Exception) {
             Log.e(TAG, "cannot open $uri: $error")
             "fd:-1"
@@ -143,6 +251,8 @@ class GameActivity : SDLActivity() {
     }
 
     override fun onDestroy() {
+        heartbeat.removeCallbacks(beat)
+        File(filesDir, HEARTBEAT_FILE).delete()
         Log.i(TAG, "game activity closed; the game process ends")
         super.onDestroy()
         // Fresh native state at every start: the game's globals live as long as this process.

@@ -30,6 +30,9 @@
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
 #endif
+#ifdef __ANDROID__
+#include "android_diagnostics.hpp"
+#endif
 
 #include <SDL3/SDL.h>
 
@@ -165,23 +168,66 @@ void handle_resize(std::uint32_t width, std::uint32_t height) {
   ps2::gs::resize_window(width, height);
 }
 
-// Android: the game waits while it is in the background (no surface to present to, and the system may stop the GPU work).
-void wait_for_foreground() {
-  std::fprintf(stderr, "[window] in the background at VBlank %llu: the game waits\n",
+#ifdef __ANDROID__
+// TASK-180 (A6): the player paused the game (Back: the pause dialog, Minimize) or the activity left the foreground
+// (Home, the app switcher, the notification shade). GameActivity sets this from its UI thread.
+std::atomic<bool> user_paused{false};
+
+void flush_cards_before_parking();
+
+// The game thread parks here: the EE stops (so the GS and MTVU workers run dry and sleep on their doorbells), the
+// memory card files are written out, audio stops. In the background the surface is let go (it is destroyed after
+// onStop) and the new one is attached when the game comes back. Leaves when the game is in the foreground and not
+// paused, or when the activity closes.
+void park(bool background) {
+  std::fprintf(stderr, "[window] paused (%s) at VBlank %llu\n", background ? "background" : "pause dialog",
                static_cast<unsigned long long>(input_vblank));
   if (controller) controller->stop();
+  flush_cards_before_parking();
+  if (audio_output != nullptr) audio_output->set_paused(true);
+  bool detached = false;
+  const auto let_go_of_surface = [&] {
+    if (detached) return;
+    gt4::gs_stream::detach_window();
+    detached = true;
+  };
+  if (background) let_go_of_surface();
   SDL_Event event;
-  while (SDL_WaitEvent(&event)) {
-    if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_TERMINATING) {
-      ps2::halt("window closed");
-      closing = true;
-      return;
+  for (;;) {
+    // SDL blocks inside this call while the activity is paused (SDL_HINT_ANDROID_BLOCK_ON_PAUSE): no spinning.
+    if (SDL_WaitEventTimeout(&event, 100)) {
+      if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_TERMINATING) {
+        input_recorder.finish(input_vblank);
+        ps2::halt("window closed");
+        closing = true;
+        return;
+      }
+      if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
+        background = true;
+        let_go_of_surface();
+      }
+      if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) background = false;
     }
-    if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) break;
+    if (!background && !user_paused.load(std::memory_order_acquire)) break;
   }
-  std::fprintf(stderr, "[window] back in the foreground\n");
+  if (detached) {
+    native_surface = SDL_GetPointerProperty(SDL_GetWindowProperties(game_window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,
+                                            nullptr);
+    int pixel_width = 0, pixel_height = 0;
+    SDL_GetWindowSizeInPixels(game_window, &pixel_width, &pixel_height);
+    renderer_client_width = static_cast<std::uint32_t>(pixel_width);
+    renderer_client_height = static_cast<std::uint32_t>(pixel_height);
+    const bool attached = native_surface != nullptr &&
+                          gt4::gs_stream::attach_window(reinterpret_cast<std::uint64_t>(native_surface),
+                                                        renderer_client_width, renderer_client_height);
+    std::fprintf(stderr, "[window] new surface %ux%u %s\n", renderer_client_width, renderer_client_height,
+                 attached ? "attached" : "NOT attached (no picture)");
+  }
+  if (audio_output != nullptr) audio_output->set_paused(false);
+  std::fprintf(stderr, "[window] resumed at VBlank %llu\n", static_cast<unsigned long long>(input_vblank));
   if (frame_pacer) frame_pacer->anchor(frame_clock->now());  // no burst of frames to catch up the time away
 }
+#endif
 
 // F7 starts a performance interval, F8 writes its report (to stderr: the session's game.log), F9 toggles.
 void perf_key(SDL_Scancode scancode) {
@@ -190,6 +236,9 @@ void perf_key(SDL_Scancode scancode) {
     if (scancode == SDL_SCANCODE_F7) {
       counters_at_last_report = pacing_counters();
       pacing_diagnostics.reset();
+#ifdef __ANDROID__
+      gt4::android_diag::interval_start();
+#endif
     }
     const auto request = scancode == SDL_SCANCODE_F7   ? gt4::perf::Request::start
                          : scancode == SDL_SCANCODE_F8 ? gt4::perf::Request::report
@@ -210,6 +259,8 @@ std::atomic<int> touch_report_request{0};
 
 bool pump_messages() {
 #ifdef __ANDROID__
+  if (user_paused.load(std::memory_order_acquire)) park(false);
+  if (closing) return false;
   if (const int request = touch_report_request.exchange(0, std::memory_order_acq_rel); request != 0) {
     std::fprintf(stderr, "[perf] %s from the touch button\n", request == 1 ? "interval started (F7)" : "report (F8)");
     perf_key(request == 1 ? SDL_SCANCODE_F7 : SDL_SCANCODE_F8);
@@ -226,7 +277,9 @@ bool pump_messages() {
         closing = true;
         return false;
       case SDL_EVENT_WILL_ENTER_BACKGROUND:
-        wait_for_foreground();
+#ifdef __ANDROID__
+        park(true);
+#endif
         if (closing) return false;
         break;
       case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -496,6 +549,9 @@ bool open_window(bool fullscreen) {
     std::fprintf(stderr, "[window] no native surface for the SDL window on this platform, game not started\n");
     return false;
   }
+#ifdef __ANDROID__
+  gt4::android_diag::start();
+#endif
   int pixel_width = 0, pixel_height = 0;
   SDL_GetWindowSizeInPixels(game_window, &pixel_width, &pixel_height);
   gt4::display_aspect::set_window_client_size(static_cast<std::uint32_t>(pixel_width),
@@ -508,6 +564,18 @@ bool open_window(bool fullscreen) {
 namespace ps2::iop::sio2 {
 void flush_cards_now();  // memcard capsule sio2.cpp (scripts/prepare_memcard_flush.py)
 }
+#endif
+
+#ifdef __ANDROID__
+namespace {
+// TASK-180: a game minimized or in the background may be killed by Android; nothing written to the card is lost.
+void flush_cards_before_parking() {
+#ifdef GT4_MEMCARD_FLUSH_OVERLAY
+  ps2::iop::sio2::flush_cards_now();
+  std::fprintf(stderr, "[window] memory card files written out before parking\n");
+#endif
+}
+}  // namespace
 #endif
 
 int run_window(const std::function<int()> &emulate) {
@@ -574,6 +642,9 @@ int run_window(const std::function<int()> &emulate) {
       pacing_diagnostics.format(output, pacing_mode, session.since(counters_at_last_report), session);
       counters_at_last_report = session;
       pacing_diagnostics.reset();
+#ifdef __ANDROID__
+      gt4::android_diag::report(output);
+#endif
     });
 #endif
     ps2::set_audio_sink([&audio](const std::int16_t *samples, std::size_t frames) {
@@ -608,5 +679,12 @@ int run_window(const std::function<int()> &emulate) {
 extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativeReportRequest(JNIEnv *, jclass,
                                                                                                        jint request) {
   if (request == 1 || request == 2) touch_report_request.store(request, std::memory_order_release);
+}
+
+// GameActivity.nativeSetPaused: true parks the game at its next event pump (the pause dialog, Minimize, onPause);
+// false lets it go on once the activity is in the foreground again. Any thread.
+extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativeSetPaused(JNIEnv *, jclass,
+                                                                                                   jboolean paused) {
+  user_paused.store(paused == JNI_TRUE, std::memory_order_release);
 }
 #endif

@@ -13,9 +13,20 @@
 #include <cstdlib>
 #include <string>
 
+#ifdef _WIN32
 #include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace gt4::hw {
+
+#ifndef _WIN32
+namespace {
+// TASK-180: the Android app runs this in its own process (ShaderPrepareService); POSIX names the call setenv.
+int _putenv_s(const char *name, const char *value) { return setenv(name, value, 1); }
+}  // namespace
+#endif
 
 int prepare_shaders_main() {
   // The pipelines do not depend on the scale, so the renderer's images stay small. A texture pack is not read.

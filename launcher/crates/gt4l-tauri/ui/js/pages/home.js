@@ -151,8 +151,16 @@
       var timer = null;
       var isRunning = false;
 
+      // TASK-180 test2: on Android a running game is a minimized one (its own process, paused): the Play button stays
+      // and reads Resume, which brings it back. Play shows again once its process is gone.
+      var resumable = GT4.platform === "android";
+
       function paint(nowRunning) {
         isRunning = nowRunning;
+        if (resumable) {
+          playButton.textContent = GT4.t(nowRunning ? "home.resume" : "common.play");
+          return;
+        }
         page.classList.toggle("is-running", nowRunning);
       }
 
@@ -391,7 +399,16 @@
         });
       }
 
-      playButton.addEventListener("click", play);
+      playButton.addEventListener("click", function () {
+        if (resumable && isRunning) {
+          call("resume_game").then(null, function (err) {
+            GT4.ui.toast(GT4.errorText(err), true);
+            paint(false);
+          });
+          return;
+        }
+        play();
+      });
       stopButton.addEventListener("click", stop);
       versionPrev.addEventListener("click", function () { cycleGame(-1); });
       versionNext.addEventListener("click", function () { cycleGame(1); });
@@ -511,6 +528,9 @@
       document.body.classList.add("is-home");
 
       function poll() {
+        if (typeof focusPlayOnAndroid === "function") {
+          focusPlayOnAndroid();
+        }
         call("app_state").then(function (appState) {
           var was = isRunning;
           paint(!!appState.game_running);
@@ -527,6 +547,16 @@
       if (GT4.devFocus === "play") {
         playButton.focus({ preventScroll: true });
       }
+      // TASK-180 test2 (owner): on Android the home page starts on Play (Resume while the game is minimized), also when
+      // the launcher comes back from the game: one A press starts or resumes it.
+      function focusPlayOnAndroid() {
+        if (GT4.platform === "android" && playButton.isConnected &&
+            (document.activeElement === null || document.activeElement === document.body)) {
+          playButton.focus({ preventScroll: true });
+        }
+      }
+      focusPlayOnAndroid();
+      document.addEventListener("visibilitychange", focusPlayOnAndroid);
 
       GT4.hooks.start = play;
       GT4.hooks.y = function () { GT4.go("#/settings/graphics"); };
@@ -539,6 +569,7 @@
 
       return {
         destroy: function () {
+          document.removeEventListener("visibilitychange", focusPlayOnAndroid);
           clearInterval(timer);
           window.removeEventListener("resize", updateNotesEdges);
           document.body.classList.remove("is-home");

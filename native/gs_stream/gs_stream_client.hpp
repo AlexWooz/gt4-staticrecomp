@@ -126,6 +126,10 @@ void on_gif_reset();
 void on_set_gs_crt(std::uint32_t interlace, std::uint32_t mode, std::uint32_t field);
 // Window: the GS process renders into a child of this window (CONTROL attach_window / resize).
 bool attach_window(std::uint64_t window, std::uint32_t width, std::uint32_t height);
+#ifdef __ANDROID__
+// TASK-180: the in-process renderer lets go of the window's surface (the game goes to the background).
+void detach_window();
+#endif
 // TASK-060 (protocol 1.2): the mouse cursor policy the game window uses (GT4_CURSOR_AUTOHIDE, native/cursor_autohide.hpp).
 // Call before attach_window; attach_window then sends CONTROL cursor to a 1.2 consumer, so the GS child window hides the
 // cursor over the picture with the same rule. Default: auto-hide on, 3000 ms.

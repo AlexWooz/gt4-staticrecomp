@@ -8,6 +8,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#ifdef __ANDROID__
+#include <pthread.h>
+#endif
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -36,6 +40,12 @@ inline void apply(const char *name) {
   if (mask == 0) return;
   const bool ok = SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(mask)) != 0;
   std::fprintf(stderr, "[threads] %s on CPUs %llx%s\n", name, static_cast<unsigned long long>(mask), ok ? "" : " (refused)");
+#elif defined(__ANDROID__)
+  // TASK-180: the heavy threads carry their role in their name (gt4-ee, gt4-gs, gt4-vu1): the cluster statistics of
+  // android_diagnostics.cpp find them by it, and so do top and simpleperf.
+  char thread_name[16];
+  std::snprintf(thread_name, sizeof thread_name, "gt4-%s", name);
+  pthread_setname_np(pthread_self(), thread_name);
 #else
   (void)name;
 #endif

@@ -59,6 +59,11 @@ body.input-pad .ring-on {
   transition: box-shadow 150ms ease-out;
 }
 body.input-mouse .ring-on { box-shadow: none; }
+/* TASK-180 test2 (owner): on a phone (about 560 dpi) the soft glow is hard to see: a solid white edge and a blue band. */
+body.platform-android.input-keys .ring-on,
+body.platform-android.input-pad .ring-on {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.95), 0 0 0 6px rgba(44, 107, 237, 0.9), 0 0 18px var(--focus-glow);
+}
 
 /* A focused row (pad and keyboard): a slightly lighter band with a thin accent edge and a brighter label. */
 body.input-keys .row:focus-within,

@@ -46,6 +46,27 @@ pub fn app_state(shared: State<'_, Shared>) -> Result<Value, String> {
     Ok(app_state_of(&lock(shared.inner())))
 }
 
+/// Whether a game is running: the child process on Windows; on Android the game's own process, which Minimize keeps
+/// alive (the home page then offers Resume).
+fn game_running(state: &AppState) -> bool {
+    #[cfg(target_os = "android")]
+    return crate::android::game_alive(&state.dirs);
+    #[cfg(not(target_os = "android"))]
+    state.game_child.is_some()
+}
+
+/// `resume_game()`: brings the minimized game back (Android, TASK-180 test2).
+#[tauri::command]
+pub fn resume_game(shared: State<'_, Shared>) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    return crate::android::resume_game(shared.inner());
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = shared;
+        Err("Resume is for the Android app".to_string())
+    }
+}
+
 /// The game the setup section of `app_state` talks about: the game of a setup that is running or has just ended, else the
 /// game the page shows.
 fn setup_subject(state: &AppState) -> &'static Game {
@@ -198,7 +219,7 @@ pub fn app_state_of(state: &AppState) -> Value {
             "note": note,
             "game": target,
         },
-        "game_running": state.game_child.is_some(),
+        "game_running": game_running(state),
         "game_files": game_files_folder(state, state.selected).display().to_string(),
         "selected_game": state.selected.id,
         "any_installed": !installed_games.is_empty(),
@@ -757,6 +778,35 @@ pub fn use_coregs20_for_play(shared: &Shared, card_has_vulkan: bool) -> Result<(
 #[tauri::command(async)]
 pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool, String> {
     let shared: Shared = shared.inner().clone();
+    // TASK-180 test2: on Android the prepare is ShaderPrepareService in its own process (android.rs); the same progress
+    // card, attempts and log lines as on Windows. A minimized game resumes without one.
+    #[cfg(target_os = "android")]
+    {
+        let (settings, dirs, textures, game) = {
+            let state = lock(&shared);
+            if crate::android::game_alive(&state.dirs) {
+                return Ok(true);
+            }
+            state.shaders_cancelled.store(false, Ordering::SeqCst);
+            (state.config.settings.clone(), state.dirs.clone(), state.texture_location().0, state.selected)
+        };
+        let monitors = crate::android::monitors();
+        let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
+        let cancelled = { lock(&shared).shaders_cancelled.clone() };
+        let mut worked = false;
+        let result = crate::android::prepare_shaders(&dirs, &settings, display.as_ref(), &textures, &cancelled, &mut |done, total, attempt| {
+            worked = true;
+            let _ = app.emit("shaders-progress", json!({ "done": done, "total": total, "attempt": attempt }));
+        });
+        let state = lock(&shared);
+        if state.shaders_cancelled.load(Ordering::SeqCst) {
+            state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
+            return Ok(false);
+        }
+        log_prepare_outcome(&state.dirs, &result, worked);
+        return Ok(true);
+    }
+    #[allow(unreachable_code)]
     let (settings, game, dirs, textures, executable, slot, language) = {
         let state = lock(&shared);
         if state.game_child.is_some() || !launch::uses_coregs20(&state.config.settings) {
@@ -816,6 +866,9 @@ fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<Prepar
 pub fn cancel_shader_prepare(shared: State<'_, Shared>) -> Result<(), String> {
     let state = lock(shared.inner());
     state.shaders_cancelled.store(true, Ordering::SeqCst);
+    // TASK-180: on Android the prepare's own loop sees the flag and ends its process.
+    #[cfg(target_os = "android")]
+    return Ok(());
     let mut guard = state.shaders_child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(process) = guard.as_mut() {
         process.kill().map_err(|error| format!("could not stop the shader compile: {error}"))?;

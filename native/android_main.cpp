@@ -17,6 +17,8 @@
 #include <SDL3/SDL_main.h>
 
 #include <android/log.h>
+#include <fcntl.h>
+#include <jni.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -99,6 +101,47 @@ bool open_disc_descriptor(int descriptor) {
 }
 
 }  // namespace
+
+namespace gt4::hw {
+int prepare_shaders_main();  // hw_gs/hw_gs_prepare.cpp (IN-507)
+}
+
+// TASK-180 test2: the shader prepare (the launcher's `--prepare-shaders` on Windows), run by ShaderPrepareService in its
+// own process (":shaders") before a CoreGS 2.0 session. `environment` is the launch plan's (NAME=VALUE: the same shader
+// cache folder, renderer and card choice as the game); `log` receives stdout and stderr directly (no pipe: the last
+// "shaders ready" line must be in the file when the process ends). The launcher reads the progress lines from it. The
+// process ends inside prepare_shaders_main (exit 0: the cache is ready).
+extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_ShaderPrepareService_nativePrepare(JNIEnv *env, jclass,
+                                                                                                         jobjectArray environment,
+                                                                                                         jstring log) {
+  const char *log_path = env->GetStringUTFChars(log, nullptr);
+  const int file = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+  env->ReleaseStringUTFChars(log, log_path);
+  if (file >= 0) {
+    dup2(file, STDOUT_FILENO);
+    dup2(file, STDERR_FILENO);
+    close(file);
+  }
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+  std::setvbuf(stderr, nullptr, _IONBF, 0);
+  const jsize count = env->GetArrayLength(environment);
+  for (jsize i = 0; i < count; ++i) {
+    auto entry = static_cast<jstring>(env->GetObjectArrayElement(environment, i));
+    const char *text = env->GetStringUTFChars(entry, nullptr);
+    const std::string line = text;
+    env->ReleaseStringUTFChars(entry, text);
+    env->DeleteLocalRef(entry);
+    const std::size_t equals = line.find('=');
+    if (equals != std::string::npos && equals > 0)
+      gt4::platform::set_environment(line.substr(0, equals).c_str(), line.substr(equals + 1).c_str());
+  }
+  std::fprintf(stderr, "[shaders] prepare in process %d\n", static_cast<int>(getpid()));
+  __android_log_print(ANDROID_LOG_INFO, "GT4Recomp-game", "shader prepare in process %d", static_cast<int>(getpid()));
+  const int result = gt4::hw::prepare_shaders_main();  // ends the process itself when it finishes
+  std::fprintf(stderr, "[shaders] prepare stopped with %d\n", result);
+  std::fflush(stdout);
+  _exit(result);
+}
 
 int main(int argc, char **argv) {
   redirect_output(std::getenv("GT4_ANDROID_LOG"));

@@ -244,7 +244,8 @@ target_link_libraries(gt4_hw_vulkan_loader PUBLIC dl)
 add_library(gt4_hw_hud STATIC "${HW}/hud/hw_hud.cpp" "${HW}/hud/hw_hud_system_posix.cpp")
 # The HUD draws its glyphs and reads the refresh rate through the game activity (SDL3 gives the JNI environment).
 target_link_libraries(gt4_hw_hud PRIVATE gt4_sdl3)
-add_library(gt4_hw_backend STATIC "${HW}/hw_gs_backend.cpp" "${HW}/hw_gs_dispatch.cpp" "${HW}/hud/hw_hud_layer.cpp")
+add_library(gt4_hw_backend STATIC "${HW}/hw_gs_backend.cpp" "${HW}/hw_gs_dispatch.cpp" "${HW}/hud/hw_hud_layer.cpp"
+    "${HW}/hw_gs_prepare.cpp")
 target_include_directories(gt4_hw_backend PRIVATE "${GT4_VULKAN_INCLUDE}")
 target_link_libraries(gt4_hw_backend PUBLIC gt4_hw_hud gt4_hw_options gt4_pacing gt4_hw_writeback gt4_hw_vulkan_loader)
 add_library(gt4_hw_stream_sink STATIC "${HW}/hw_gs_stream_sink.cpp" "${HW}/hw_cpu_sampler_posix.cpp")
@@ -321,7 +322,7 @@ target_link_libraries(ps2runtime PUBLIC gt4_pacing gt4_quickfix gt4_install_path
 set_source_files_properties("${PORT}/main.cpp" PROPERTIES COMPILE_DEFINITIONS "main=gt4_donor_main"
     COMPILE_OPTIONS "-include;${NATIVE}/platform/msvc_compat.hpp")
 add_library(gt4 SHARED "${PORT}/main.cpp" "${NATIVE}/game_start.cpp" "${NATIVE}/window_sdl.cpp"
-    "${NATIVE}/android_main.cpp" "${NATIVE}/camera_360_hook.cpp" "${NATIVE}/fov_adjust_hook.cpp"
+    "${NATIVE}/android_main.cpp" "${NATIVE}/android_diagnostics.cpp" "${NATIVE}/camera_360_hook.cpp" "${NATIVE}/fov_adjust_hook.cpp"
     "${NATIVE}/display_aspect_hook.cpp")
 target_compile_definitions(gt4 PRIVATE PS2_WINDOW GT4_MEMCARD_FLUSH_OVERLAY GT4_PLATFORM_SDL3)
 target_include_directories(gt4 PRIVATE "${PORT}" "${NATIVE}")
