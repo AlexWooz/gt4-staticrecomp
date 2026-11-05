@@ -87,7 +87,11 @@ pub fn prepare_shaders(
 /// The guard files of the shader cache folder, read now.
 fn guard_snapshot(folder: Option<&Path>) -> GuardSnapshot {
     let read = |name: &str| folder.and_then(|folder| fs::read(folder.join(name)).ok());
-    shader_prepare::snapshot_of(read(shader_prepare::QUARANTINE_FILE).as_deref(), read(shader_prepare::COMPILING_FILE).as_deref())
+    shader_prepare::snapshot_of(
+        read(shader_prepare::QUARANTINE_FILE).as_deref(),
+        read(shader_prepare::COMPILING_FILE).as_deref(),
+        read(shader_prepare::SUSPECTS_FILE).as_deref(),
+    )
 }
 
 /// The line that opens an attempt's part of `shaders.log`.
@@ -344,7 +348,11 @@ mod tests {
             file.extend_from_slice(&value.to_le_bytes());
         }
         fs::write(folder.join(shader_prepare::COMPILING_FILE), &file).unwrap();
-        assert_eq!(guard_snapshot(Some(&folder)), GuardSnapshot { quarantined: 0, in_flight: 1, serial: false });
+        let snapshot = guard_snapshot(Some(&folder));
+        assert_eq!((snapshot.compiling.clone(), snapshot.quarantine.is_empty(), snapshot.suspects.is_empty()), (file.clone(), true, true));
+        // A suspects.bin written later is another state: the first crash of a key is progress.
+        fs::write(folder.join(shader_prepare::SUSPECTS_FILE), &file).unwrap();
+        assert_ne!(guard_snapshot(Some(&folder)), snapshot);
         let _ = fs::remove_dir_all(&folder);
     }
 }
