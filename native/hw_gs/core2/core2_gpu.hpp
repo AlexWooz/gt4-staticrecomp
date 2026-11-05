@@ -140,6 +140,35 @@ struct Core2GpuStats {
     std::uint64_t drainIdles = 0;     // drains measured that way
     std::uint64_t drainGapCpuNs = 0;  // CPU: the end of the fence wait to the next vkQueueSubmit
     std::uint64_t drainGaps = 0;
+    // TASK-180 test4 (P1-C, STUDY-UNIFIED-MEMORY 7.2): every data path in bytes, always counted (an integer add next to
+    // work that already copies or records a command). Printed every 600 VBlanks as "[core2] data paths/vblank".
+    // CPU -> GPU: what the CPU writes into host-visible memory the GPU reads.
+    std::uint64_t cpuGlmBytes = 0;       // UploadGlm: the pages written into the GLM
+    std::uint64_t cpuPaletteBytes = 0;   // DecodeTexture: a palette expanded for a decode (1024 bytes)
+    std::uint64_t cpuPatchBytes = 0;     // Patch: the words written into a target
+    std::uint64_t cpuClutBytes = 0;      // WriteClut: the 256 RGBA words mirrored into the GPU CLUT
+    std::uint64_t cpuToneBytes = 0;      // Tone: the table upload (1024 bytes)
+    std::uint64_t cpuFillStateBytes = 0; // Draw: a fill's push state
+    std::uint64_t cpuVertexBytes = 0;    // Draw: the vertices pushed into the vertex ring
+    std::uint64_t cpuUniformBytes = 0;   // Draw: the draw state pushed into the uniform ring (once per draw)
+    std::uint64_t cpuImageBytes = 0;     // UploadAtlas, UploadImage: texels staged for the GPU
+    // GPU copies: bytes a copy command moves (read plus write are two different paths, counted by direction).
+    std::uint64_t gpuCopyBufferBytes = 0;          // buffer-to-buffer (GLM pages, CLUT writes, CLUT reads)
+    std::uint64_t gpuCopyBufferToImageBytes = 0;   // staging to image (atlas, standalone uploads)
+    std::uint64_t gpuCopyImageBytes = 0;           // image-to-image (grow, copy, self copy, deinterlace, snapshot)
+    std::uint64_t gpuCopyImageToBufferBytes = 0;   // image-to-buffer (image reads)
+    std::uint64_t gpuClearBytes = 0;               // clears of new images and whole-image fills
+    // Bytes the CPU memcpys out of mapped GPU memory (readbacks). The fence is what makes them legal (see the host-read
+    // barrier).
+    std::uint64_t hostReadBytes = 0;
+    // Ring high-water marks (bytes) since the last print, their shares (one recording's part of each ring), and how many
+    // times a ring was full enough to submit early.
+    std::uint64_t ringHighStaging = 0, ringHighVertex = 0, ringHighUniform = 0;
+    std::uint64_t ringShareStagingBytes = 0, ringShareVertexBytes = 0, ringShareUniformBytes = 0;
+    std::uint64_t ringFullSubmits = 0;
+    // TASK-180 test4 (P1-D): the dependencies into the host domain recorded before a host read
+    // (GT4_CORE2_HOST_READ_BARRIER, on by default). Not part of fullBarriers; pending sets are untouched.
+    std::uint64_t hostReadBarriers = 0;
 };
 
 // IN-408: a CLUT load (07.4) whose source is a drawn 32-bit colour target, done on the GPU.
@@ -319,6 +348,8 @@ public:
     std::uint32_t SubmitEvery() const;
     std::uint32_t SubmitAfterWait() const;
     const Core2GpuStats &Stats() const;
+    // TASK-180 test4 (P1-C): the ring high-water marks go back to zero after the data-path line printed them.
+    void ResetRingHighMarks();
     // Diagnostics: cumulative full barriers as " label[/kind]=count" (the command that needed one and its hazard).
     std::string BarrierReport() const;
     // TASK-182 (GT4_CORE2_BARRIER_TRACE=1): fragment barriers, render pass ends, flushes, submissions and descriptor traffic by

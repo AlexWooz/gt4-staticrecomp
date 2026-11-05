@@ -3487,6 +3487,7 @@ struct Core2AbRun {
     std::vector<std::vector<uint8_t>> images;
     std::vector<std::vector<uint8_t>> memory;
     core2::Core2Counters stats;
+    core2::Core2GpuStats gpu;  // TASK-180 test4 (P1-C): data paths, ring high-water marks, host-read barriers
 };
 
 constexpr size_t kGsMemoryBytes = 4u * 1024u * 1024u;
@@ -3528,6 +3529,7 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
                                           },
                                           error);
     if (const core2::Core2Counters* stats = renderer.Core2Stats()) out.stats = *stats;
+    if (const core2::Core2GpuStats* gpu = renderer.Core2GpuCounters()) out.gpu = *gpu;
     if (renderer.Failed()) error += " " + renderer.LastError();
     return ok && !renderer.Failed();
 }
@@ -6885,6 +6887,106 @@ int TestCore2SyncTrace(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_data_paths (TASK-180 test4, STUDY-UNIFIED-MEMORY P1-C/P1-D): the per-path byte counters and the spec-required
+// host-read barrier (GT4_CORE2_HOST_READ_BARRIER). The barrier adds a dependency into the host domain before a host read;
+// it changes no command's data, so every frame's image and the GS memory must be identical with the switch off and on.
+// The counters must see the traffic the captures really carry (vertices, uniforms, GLM or window decodes, the readbacks),
+// each ring's high-water mark must stay inside its share, and the barrier must be recorded exactly on the runs that read
+// back to the host.
+int TestCore2DataPaths(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    for (uint32_t scale : {1u, 2u}) {
+        auto run = [&](const char* name, const cpuref::CaptureWriter& capture, uint32_t frames) {
+            Core2AbRun off, on;
+            std::string error;
+            if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_HOST_READ_BARRIER", false, off, error, 0, scale) ||
+                !ReplayCore2Ab(handles, capture, "GT4_CORE2_HOST_READ_BARRIER", true, on, error, 0, scale)) {
+                std::printf("  %s at %ux: replay failed: %s\n", name, scale, error.c_str());
+                ++failures;
+                return;
+            }
+            if (off.images.size() != frames || on.images.size() != frames || off.memory.size() != on.memory.size()) {
+                std::printf("  %s at %ux: frame counts %zu / %zu\n", name, scale, off.images.size(), on.images.size());
+                ++failures;
+                return;
+            }
+            uint64_t differingImages = 0, differingMemory = 0;
+            for (uint32_t frame = 0; frame < frames; ++frame) {
+                if (off.images[frame] != on.images[frame]) ++differingImages;
+                if (frame < off.memory.size() && off.memory[frame] != on.memory[frame]) ++differingMemory;
+            }
+            if (differingImages != 0 || differingMemory != 0) {
+                std::printf("  %s at %ux: the host-read barrier changed %llu image(s) and %llu memory frame(s)\n", name, scale,
+                            static_cast<unsigned long long>(differingImages),
+                            static_cast<unsigned long long>(differingMemory));
+                ++failures;
+            }
+            // The switch-off run must record no host-domain dependency at all; the switch-on run needs one for each wait
+            // that ends in a host read.
+            if (off.gpu.hostReadBarriers != 0) {
+                std::printf("  %s at %ux: %llu host-read barriers with the switch off\n", name, scale,
+                            static_cast<unsigned long long>(off.gpu.hostReadBarriers));
+                ++failures;
+            }
+            const bool readBack = on.stats.readbacks > 0 || on.gpu.hostReadBytes > 0;
+            if (readBack && on.gpu.hostReadBarriers == 0) {
+                std::printf("  %s at %ux: a readback with no host-read barrier\n", name, scale);
+                ++failures;
+            }
+            if (!readBack && on.gpu.hostReadBarriers != 0) {
+                std::printf("  %s at %ux: %llu host-read barriers without a readback\n", name, scale,
+                            static_cast<unsigned long long>(on.gpu.hostReadBarriers));
+                ++failures;
+            }
+            // What a drawn capture must have written through the CPU: vertices and uniforms on every draw, and the GLM
+            // uploads or the decode windows.
+            if (on.gpu.cpuVertexBytes == 0 || on.gpu.cpuUniformBytes == 0) {
+                std::printf("  %s at %ux: vertices %llu bytes, uniforms %llu bytes\n", name, scale,
+                            static_cast<unsigned long long>(on.gpu.cpuVertexBytes),
+                            static_cast<unsigned long long>(on.gpu.cpuUniformBytes));
+                ++failures;
+            }
+            if (on.gpu.cpuGlmBytes + on.gpu.windowBytes == 0) {
+                std::printf("  %s at %ux: no GLM upload and no decode window\n", name, scale);
+                ++failures;
+            }
+            if (on.stats.readbacks > 0 && on.gpu.hostReadBytes < 4u * on.stats.readbackPixels) {
+                std::printf("  %s at %ux: host reads %llu bytes for %llu readback pixels\n", name, scale,
+                            static_cast<unsigned long long>(on.gpu.hostReadBytes),
+                            static_cast<unsigned long long>(on.stats.readbackPixels));
+                ++failures;
+            }
+            if (on.gpu.ringShareStagingBytes == 0 || on.gpu.ringHighStaging > on.gpu.ringShareStagingBytes ||
+                on.gpu.ringHighVertex > on.gpu.ringShareVertexBytes ||
+                on.gpu.ringHighUniform > on.gpu.ringShareUniformBytes) {
+                std::printf("  %s at %ux: ring high-water staging %llu/%llu, vertex %llu/%llu, uniform %llu/%llu\n", name,
+                            scale, static_cast<unsigned long long>(on.gpu.ringHighStaging),
+                            static_cast<unsigned long long>(on.gpu.ringShareStagingBytes),
+                            static_cast<unsigned long long>(on.gpu.ringHighVertex),
+                            static_cast<unsigned long long>(on.gpu.ringShareVertexBytes),
+                            static_cast<unsigned long long>(on.gpu.ringHighUniform),
+                            static_cast<unsigned long long>(on.gpu.ringShareUniformBytes));
+                ++failures;
+            }
+            std::printf("  %s at %ux: images and memory identical (host-read barriers %llu on / %llu off, vertex %llu B, "
+                        "uniform %llu B, glm %llu B, window %llu B, image %llu B, host reads %llu B)\n",
+                        name, scale, static_cast<unsigned long long>(on.gpu.hostReadBarriers),
+                        static_cast<unsigned long long>(off.gpu.hostReadBarriers),
+                        static_cast<unsigned long long>(on.gpu.cpuVertexBytes),
+                        static_cast<unsigned long long>(on.gpu.cpuUniformBytes),
+                        static_cast<unsigned long long>(on.gpu.cpuGlmBytes),
+                        static_cast<unsigned long long>(on.gpu.windowBytes),
+                        static_cast<unsigned long long>(on.gpu.cpuImageBytes),
+                        static_cast<unsigned long long>(on.gpu.hostReadBytes));
+        };
+        run("cache stream", CacheFixtureCapture(), kCacheFixtureFrames);
+        run("GPU palettes", Core2GpuPaletteCapture(4), 4);
+        run("stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6);
+    }
+    std::printf("hw_core2_data_paths: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_postfx_fxaa (IN-376, chapter 13.5): a dark buffer with one bright flat triangle whose long edges are steep
 // and shallow, composed on the GPU at 1x and 2x with and without FXAA. Edge-only FXAA must leave every pixel away
 // from the edges unchanged, change pixels along them, and only produce colours between the two flat colours.
@@ -7545,6 +7647,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_overlap_order") return TestCore2OverlapOrder(handles);
     if (name == "hw_core2_point_quads") return TestCore2PointQuads(handles);
     if (name == "hw_core2_sync_trace") return TestCore2SyncTrace(handles);
+    if (name == "hw_core2_data_paths") return TestCore2DataPaths(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());

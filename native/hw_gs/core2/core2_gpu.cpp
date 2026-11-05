@@ -71,6 +71,7 @@ struct Buffer {
   VkDeviceSize size = 0;
   VkDeviceSize used = 0;  // ring cursor for this recording, inside the recording's share
   VkDeviceSize base = 0;  // the recording's share: [base, base + size / slotCount) (S4: the slots take turns)
+  std::uint32_t type = UINT32_MAX;  // the memory type it was allocated from (P1-B placement report)
 };
 
 struct Image {
@@ -330,6 +331,9 @@ struct Gpu::Impl {
   bool drewSinceBarrier = false;
 
   Buffer staging, vertices, uniforms, readback;
+  // TASK-180 test4 (P1-B): the memory type each non-ring object took, for the placement line. glmType and clutType are
+  // their own allocations, imageType the last type a CORE2 image used (they all ask for the same one).
+  std::uint32_t glmType = UINT32_MAX, clutType = UINT32_MAX, imageType = UINT32_MAX;
   // IN-439: results of the reductions taken later (ReduceLater), kLaterSlots of up to kLaterWords words each, and the
   // submission that carries each one. The recording in progress becomes submission submitCount + 1.
   static constexpr std::uint32_t kLaterSlots = 64, kLaterWords = 1024;
@@ -566,6 +570,7 @@ struct Gpu::Impl {
     if (!check(gt4_hwd_vkBindBufferMemory(device, out.buffer, out.memory, 0), "vkBindBufferMemory", error)) return false;
     if (!check(gt4_hwd_vkMapMemory(device, out.memory, 0, size, 0, &out.mapped), "vkMapMemory", error)) return false;
     out.size = size;
+    out.type = allocate.memoryTypeIndex;
     return true;
   }
 
@@ -640,10 +645,20 @@ struct Gpu::Impl {
     }
     VkDeviceSize at = (buffer.used + alignment - 1) / alignment * alignment;
     if (at + bytes > half) {
+      ++stats.ringFullSubmits;  // TASK-180 test4 (P1-C): a ring ran out of its share mid-recording
       if (!submit(false, error) || !begin_recording(error)) return false;
       at = 0;
     }
     buffer.used = at + bytes;
+    // TASK-180 test4 (P1-C): the high-water mark of each recording ring, reset by the data-path print. Only the three
+    // per-share rings are measured.
+    if (&buffer == &staging) {
+      stats.ringHighStaging = std::max(stats.ringHighStaging, static_cast<std::uint64_t>(buffer.used));
+    } else if (&buffer == &vertices) {
+      stats.ringHighVertex = std::max(stats.ringHighVertex, static_cast<std::uint64_t>(buffer.used));
+    } else if (&buffer == &uniforms) {
+      stats.ringHighUniform = std::max(stats.ringHighUniform, static_cast<std::uint64_t>(buffer.used));
+    }
     offset = buffer.base + at;
     return true;
   }
@@ -776,6 +791,7 @@ struct Gpu::Impl {
       error = "no device-local memory type for a CORE2 image";
       return false;
     }
+    imageType = allocate.memoryTypeIndex;
     if (imageBlocksOn && requirements.size <= kOwnAllocationBytes) {
       if (!take_block_memory(requirements, allocate.memoryTypeIndex, out, error)) return false;
     } else {
@@ -819,6 +835,7 @@ struct Gpu::Impl {
     VkClearColorValue zero{};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     gt4_hwd_vkCmdClearColorImage(cmd, out.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+    stats.gpuClearBytes += static_cast<std::uint64_t>(out.bytes);  // P1-C: a new image is cleared whole
     full_barrier();
     return true;
   }
@@ -1850,6 +1867,24 @@ struct Gpu::Impl {
     pendingWrites.clear();
   }
 
+  // TASK-180 test4 (P1-D, STUDY-UNIFIED-MEMORY 7.2): Vulkan's host-read rule. Device writes are visible to a host read of
+  // mapped memory only with a dependency into the host domain (the spec's fence note, section 2.7), which the full barrier
+  // above does not give: it ends at ALL_COMMANDS, not HOST, and names no HOST_READ access. Exact; the old core does the
+  // same (hw_gs_writeback_gpu.cpp). GT4_CORE2_HOST_READ_BARRIER=0 leaves it out (A/B).
+  const bool hostReadBarrier = [] {
+    const char *value = std::getenv("GT4_CORE2_HOST_READ_BARRIER");
+    return value == nullptr || std::strcmp(value, "0") != 0;
+  }();
+  void host_read_barrier() {
+    if (!hostReadBarrier) return;
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    gt4_hw_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+    ++stats.hostReadBarriers;  // not counted in fullBarriers; the pending sets already cover the full barrier above
+  }
+
   // IN-419: the accesses recorded since the last full barrier, so a compute or transfer command gets a barrier only
   // when it depends on one of them: it reads or writes what an earlier command wrote, or writes what one read. Core 2
   // recorded a barrier before and after every one (about 2000 per night VBlank, each draining the GPU), though most
@@ -2375,6 +2410,7 @@ struct Gpu::Impl {
     stats.selfCopies++;
     stats.selfCopyDraws++;
     stats.selfCopyPixels += static_cast<std::uint64_t>(right - left) * static_cast<std::uint64_t>(bottom - top);
+    stats.gpuCopyImageBytes += static_cast<std::uint64_t>(right - left) * static_cast<std::uint64_t>(bottom - top) * 4u;  // P1-C
     if (trace.on) ++trace.drawCalls;
     return true;
   }
@@ -3070,16 +3106,20 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   if (!s.make_buffer(s.staging, rings.staging, stagingUsage, uploadMemory, error)) return false;
   if (!s.make_buffer(s.vertices, rings.vertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
   if (!s.make_buffer(s.uniforms, rings.uniform, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
+  // TASK-180 test4 (P1-C): one recording's share of each ring, for the high-water marks' "/share".
+  s.stats.ringShareStagingBytes = static_cast<std::uint64_t>(s.ring_share(s.staging));
+  s.stats.ringShareVertexBytes = static_cast<std::uint64_t>(s.ring_share(s.vertices));
+  s.stats.ringShareUniformBytes = static_cast<std::uint64_t>(s.ring_share(s.uniforms));
   {
+    // TASK-180 test4 (P1-B): the same line, with every type's letters from gt4::hw::memory_type_letters (Z lazily
+    // allocated, P protected, both new here) and the heap it belongs to. The prefix stays: bench scripts read it.
     std::string types;
     for (std::uint32_t i = 0; i < s.memoryProperties.memoryTypeCount; ++i) {
-      const VkMemoryPropertyFlags flags = s.memoryProperties.memoryTypes[i].propertyFlags;
-      types += std::string(" ") + std::to_string(i) + ":" + ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "L" : "") +
-               ((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "V" : "") + ((flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "C" : "") +
-               ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? "H" : "");
+      types += " " + std::to_string(i) + ":" + gt4::hw::memory_type_letters(s.memoryProperties.memoryTypes[i].propertyFlags) +
+               "@" + std::to_string(s.memoryProperties.memoryTypes[i].heapIndex);
     }
-    std::fprintf(stderr, "[core2] memory types (L local, V visible, C coherent, H cached):%s; upload buffers %s\n", types.c_str(),
-                 uploadMemory ? "prefer cached" : "first visible");
+    std::fprintf(stderr, "[core2] memory types (L local, V visible, C coherent, H cached, Z lazy, P protected):%s; upload buffers %s\n",
+                 types.c_str(), uploadMemory ? "prefer cached" : "first visible");
   }
   if (!s.make_buffer(s.readback, s.readbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
   if (!s.make_buffer(s.later, static_cast<VkDeviceSize>(Impl::kLaterSlots) * Impl::kLaterWords * 4u, stagingUsage,
@@ -3334,6 +3374,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
       error = "no device-local memory type for the CORE2 GLM";
       return false;
     }
+    s.glmType = allocateGlm.memoryTypeIndex;
     if (!check(gt4_hwd_vkAllocateMemory(s.device, &allocateGlm, nullptr, &s.glmMemory), "vkAllocateMemory", error) ||
         !check(gt4_hwd_vkBindBufferMemory(s.device, s.glm, s.glmMemory, 0), "vkBindBufferMemory", error)) {
       return false;
@@ -3409,6 +3450,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
       error = "no device-local memory type for the CORE2 GPU CLUT";
       return false;
     }
+    s.clutType = allocateClut.memoryTypeIndex;
     if (!check(gt4_hwd_vkAllocateMemory(s.device, &allocateClut, nullptr, &s.clutMemory), "vkAllocateMemory", error) ||
         !check(gt4_hwd_vkBindBufferMemory(s.device, s.clut, s.clutMemory, 0), "vkBindBufferMemory", error)) {
       return false;
@@ -3430,6 +3472,31 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
 
   if (!s.make_image(s.atlas, kAtlasSide, kAtlasSide, 1, error)) return false;
   if (!s.make_image(s.display, 640u * s.scale, 448u * s.scale, 1, error)) return false;
+  // TASK-180 test4 (P1-B): where every core 2 object landed. The phone's answer is the UMA question in one line: the
+  // rings on a host-visible device-local type, the GLM, CLUT and images on an L type. The shape comes from the probe;
+  // a device whose creator did not probe says unknown.
+  {
+    auto type_text = [&s](std::uint32_t type) {
+      if (type == UINT32_MAX || type >= s.memoryProperties.memoryTypeCount) return std::string("none");
+      return std::to_string(type) + ":" + gt4::hw::memory_type_letters(s.memoryProperties.memoryTypes[type].propertyFlags);
+    };
+    auto mib = [](VkDeviceSize bytes) { return std::to_string(static_cast<unsigned long long>(bytes >> 20)); };
+    const gt4::hw::MemoryShape shape = handles.profile.probed ? handles.profile.memory_shape : gt4::hw::MemoryShape::unknown;
+    std::fprintf(stderr,
+                 "[core2] placement (memory shape %s%s): staging %s %s MiB, vertices %s %s MiB, uniforms %s %s MiB, "
+                 "readback %s %s MiB, later %s %s MiB, glm_tables %s %s MiB, inverse_ct32 %s %s MiB, glm %s, clut %s, "
+                 "images %s\n",
+                 gt4::hw::memory_shape_name(shape),
+                 handles.profile.probed && handles.profile.memory_shape_forced ? ", forced" : "",
+                 type_text(s.staging.type).c_str(), mib(s.staging.size).c_str(),
+                 type_text(s.vertices.type).c_str(), mib(s.vertices.size).c_str(),
+                 type_text(s.uniforms.type).c_str(), mib(s.uniforms.size).c_str(),
+                 type_text(s.readback.type).c_str(), mib(s.readback.size).c_str(),
+                 type_text(s.later.type).c_str(), mib(s.later.size).c_str(),
+                 type_text(s.glmTables.type).c_str(), mib(s.glmTables.size).c_str(),
+                 type_text(s.inverseCt32.type).c_str(), mib(s.inverseCt32.size).c_str(), type_text(s.glmType).c_str(),
+                 type_text(s.clutType).c_str(), type_text(s.imageType).c_str());
+  }
   s.queue_known_variants();  // IN-489
   s.ready = true;
   std::fprintf(stderr, "[core2] ready: scale %u, shift %.3f, pixel interlock %s, max native side %u\n", s.scale,
@@ -3474,6 +3541,7 @@ bool Gpu::GrowImage(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeH
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.extent = {old.width, old.height, 1};
   gt4_hwd_vkCmdCopyImage(s.cmd, old.image, VK_IMAGE_LAYOUT_GENERAL, grown.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+  s.stats.gpuCopyImageBytes += static_cast<std::uint64_t>(old.width) * old.height * 4u;  // P1-C
   s.full_barrier();
   s.doom(old);
   old = grown;
@@ -3520,6 +3588,7 @@ bool Gpu::CopyImage(ImageId from, ImageId to, std::int32_t x0, std::int32_t y0, 
   region.extent = {static_cast<std::uint32_t>(right - left) * sc, static_cast<std::uint32_t>(bottom - top) * sc, 1};
   gt4_hwd_vkCmdCopyImage(s.cmd, source->image, VK_IMAGE_LAYOUT_GENERAL, destination->image, VK_IMAGE_LAYOUT_GENERAL,
                          1, &region);
+  s.stats.gpuCopyImageBytes += static_cast<std::uint64_t>(region.extent.width) * region.extent.height * 4u;  // P1-C
   s.after_op();
   return true;
 }
@@ -3554,6 +3623,7 @@ bool Gpu::UploadAtlas(std::uint32_t x, std::uint32_t y, std::uint32_t width, std
   VkDeviceSize offset = 0;
   if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels, static_cast<std::size_t>(bytes));
+  s.stats.cpuImageBytes += bytes;  // P1-C
   s.outside_pass();
   s.touch("upload atlas", {}, {&s.atlas}, 0, 0);
   VkBufferImageCopy region{};
@@ -3562,6 +3632,7 @@ bool Gpu::UploadAtlas(std::uint32_t x, std::uint32_t y, std::uint32_t width, std
   region.imageOffset = {static_cast<std::int32_t>(x), static_cast<std::int32_t>(y), 0};
   region.imageExtent = {width, height, 1};
   gt4_hwd_vkCmdCopyBufferToImage(s.cmd, s.staging.buffer, s.atlas.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+  s.stats.gpuCopyBufferToImageBytes += bytes;  // P1-C
   s.after_op();
   s.stats.atlasUploads++;
   return true;
@@ -3586,6 +3657,7 @@ bool Gpu::UploadImage(ImageId id, std::uint32_t width, std::uint32_t height, con
     if (!s.ring(s.staging, bytes, 16, offset, error)) return false;
     std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, texels + static_cast<std::size_t>(top) * width,
                 static_cast<std::size_t>(bytes));
+    s.stats.cpuImageBytes += bytes;  // P1-C
     s.outside_pass();
     s.touch("upload image", {}, {image}, 0, 0);
     VkBufferImageCopy region{};
@@ -3594,6 +3666,7 @@ bool Gpu::UploadImage(ImageId id, std::uint32_t width, std::uint32_t height, con
     region.imageOffset = {0, static_cast<std::int32_t>(top), 0};
     region.imageExtent = {width, rows, 1};
     gt4_hwd_vkCmdCopyBufferToImage(s.cmd, s.staging.buffer, image->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    s.stats.gpuCopyBufferToImageBytes += bytes;  // P1-C
     s.after_op();
   }
   s.stats.atlasUploads++;
@@ -3647,6 +3720,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   if (!s.recording && !s.begin_recording(error)) return false;  // a ring may have submitted
   std::memcpy(static_cast<std::uint8_t *>(s.vertices.mapped) + vertexOffset, batch.vertices->data(),
               static_cast<std::size_t>(vertexBytes));
+  s.stats.cpuVertexBytes += vertexBytes;  // P1-C
   gpu::GpuPixelState state = batch.state;
   state.fields[gpu::gpufield::TexOriginX] = batch.mipInfo;  // IN-428: the mip parameters (0 without mips)
   state.fields[gpu::gpufield::TexOriginY] = paletted ? static_cast<std::uint32_t>(batch.paletteRow) : 0u;
@@ -3659,6 +3733,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   }
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
+  s.stats.cpuUniformBytes += sizeof state.fields;  // P1-C: once per draw (a rewrite below is not counted again)
 
   // Spec 8.8: the texture is the target this batch draws into and the batch samples where it draws. Its sampled
   // rectangle is copied first (after the draws that wrote it) and the batch samples the copy.
@@ -3712,6 +3787,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
         region.extent = {static_cast<std::uint32_t>((right - left) * sc), static_cast<std::uint32_t>((bottom - top) * sc), 1};
         gt4_hwd_vkCmdCopyImage(s.cmd, texture->image, VK_IMAGE_LAYOUT_GENERAL, copy->image, VK_IMAGE_LAYOUT_GENERAL, 1,
                                &region);
+        s.stats.gpuCopyImageBytes += static_cast<std::uint64_t>(region.extent.width) * region.extent.height * 4u;  // P1-C
         s.after_op();
         s.stats.selfCopies++;
         s.stats.selfCopyPixels += static_cast<std::uint64_t>(region.extent.width) * region.extent.height;
@@ -3853,11 +3929,13 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
           value.uint32[0] = static_cast<std::uint32_t>(v0.rgba[0]) | static_cast<std::uint32_t>(v0.rgba[1]) << 8 |
                             static_cast<std::uint32_t>(v0.rgba[2]) << 16 | static_cast<std::uint32_t>(v0.rgba[3]) << 24;
           gt4_hwd_vkCmdClearColorImage(s.cmd, frame->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+          s.stats.gpuClearBytes += static_cast<std::uint64_t>(frame->width) * frame->height * 4u;  // P1-C
         }
         if (depthClearable) {
           VkClearColorValue value{};
           value.uint32[0] = std::min(v0.z, batch.zMax);
           gt4_hwd_vkCmdClearColorImage(s.cmd, depth->image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+          s.stats.gpuClearBytes += static_cast<std::uint64_t>(depth->width) * depth->height * 4u;  // P1-C
         }
         s.after_op();
         s.stats.wholeClears++;
@@ -3879,6 +3957,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       if (!s.ring(s.staging, sizeof state.fields, align, stateOffset, error)) return false;
       if (!s.recording && !s.begin_recording(error)) return false;
       std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + stateOffset, state.fields, sizeof state.fields);
+      s.stats.cpuFillStateBytes += sizeof state.fields;  // P1-C
       s.outside_pass();
       s.touch("fill", {frame, depth}, {frame, depth}, 0, 0);
       VkDescriptorSet fillSet = VK_NULL_HANDLE;
@@ -4280,12 +4359,14 @@ bool Gpu::UploadGlm(const std::uint8_t *memory,
     if (!s.ring(s.staging, size, 16, at, error)) return false;
     std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + at, memory + offset, size);
     copies.push_back(VkBufferCopy{at, offset, size});
+    s.stats.cpuGlmBytes += size;  // P1-C: the pages this VBlank wrote into the GLM
     if (size != 0) written.merge(s.glm_pages_of_blocks(offset / 256u, (offset + size - 1u) / 256u - offset / 256u + 1u));
   }
   s.outside_pass();
   s.touch("glm upload", {}, {}, 0, s.kGlmBuffer, nullptr, &written);
   if (!copies.empty()) {
     gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.glm, static_cast<std::uint32_t>(copies.size()), copies.data());
+    for (const VkBufferCopy &copy : copies) s.stats.gpuCopyBufferBytes += copy.size;  // P1-C
   }
   s.after_op();
   return true;
@@ -4308,7 +4389,10 @@ bool Gpu::DecodeTexture(ImageId id, std::uint32_t bp, std::uint32_t bw, std::uin
   std::uint32_t windowBase = 0, windowWords = 0;
   if (!s.bind_window(glmRange, windowBase, windowWords, error)) return false;
   if (!s.ring(s.staging, 256 * 4, align, paletteOffset, error)) return false;
-  if (palette) std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + paletteOffset, palette, 256 * 4);
+  if (palette) {
+    std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + paletteOffset, palette, 256 * 4);
+    s.stats.cpuPaletteBytes += 256u * 4u;  // P1-C: the palette expanded for this decode
+  }
   s.outside_pass();
   const GlmPages texturePages = s.glm_pages_of_rect(bp, bw, psm, 0, 0, static_cast<std::int32_t>(width) - 1,
                                                           static_cast<std::int32_t>(height) - 1);  // IN-464
@@ -4670,10 +4754,12 @@ bool Gpu::WriteClut(std::uint32_t first, std::uint32_t count, const std::uint16_
   if (!s.ring(s.staging, count * 4u, 16, offset, error)) return false;
   auto *values = reinterpret_cast<std::uint32_t *>(static_cast<std::uint8_t *>(s.staging.mapped) + offset);
   for (std::uint32_t i = 0; i < count; ++i) values[i] = halfwords[first + i];
+  s.stats.cpuClutBytes += count * 4u;  // P1-C
   s.outside_pass();
   s.touch("clut write", {}, {}, 0, s.kClutBuffer);
   VkBufferCopy copy{offset, first * 4u, count * 4u};
   gt4_hwd_vkCmdCopyBuffer(s.cmd, s.staging.buffer, s.clut, 1, &copy);
+  s.stats.gpuCopyBufferBytes += count * 4u;  // P1-C
   s.after_op();
   s.stats.clutWrites++;
   return true;
@@ -4689,9 +4775,12 @@ bool Gpu::ReadClut(std::uint16_t halfwords[512], std::string &error) {
   VkBufferCopy copy{0, 0, 512 * 4};
   gt4_hwd_vkCmdCopyBuffer(s.cmd, s.clut, s.readback.buffer, 1, &copy);
   s.full_barrier();
+  s.host_read_barrier();  // TASK-180 test4 (P1-D)
   if (!s.submit(true, error)) return false;
   const auto *values = static_cast<const std::uint32_t *>(s.readback.mapped);
   for (std::uint32_t i = 0; i < 512; ++i) halfwords[i] = static_cast<std::uint16_t>(values[i]);
+  s.stats.gpuCopyBufferBytes += 512 * 4;  // P1-C: the GPU CLUT to the readback buffer
+  s.stats.hostReadBytes += 512 * 4;
   s.stats.clutReads++;
   return true;
 }
@@ -4762,6 +4851,7 @@ bool Gpu::Patch(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, s
   const VkDeviceSize align = std::max<VkDeviceSize>(s.limits.minStorageBufferOffsetAlignment, 16);
   if (!s.ring(s.staging, bytes, align, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, words.data(), static_cast<std::size_t>(bytes));
+  s.stats.cpuPatchBytes += bytes;  // P1-C
   s.outside_pass();
   // One row is tracked as a row (the palette rows of IN-409; IN-420), anything else as the whole image.
   const std::uint32_t region = y0 == y1 ? static_cast<std::uint32_t>(y0) : Impl::kWholeImage;
@@ -4800,10 +4890,12 @@ bool Gpu::Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, 
   const std::uint32_t push[6] = {0u, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height,
                                  FloatBits(static_cast<float>(image->scale))};
   s.dispatch(s.reducePipeline, set, push, 6, width, height);
-  s.full_barrier();  // the host reads the result
+  s.full_barrier();       // the host reads the result
+  s.host_read_barrier();  // TASK-180 test4 (P1-D): and the host-domain dependency the spec asks for
   if (!s.submit(true, error)) return false;
   words.resize(static_cast<std::size_t>(width) * height);
   std::memcpy(words.data(), s.readback.mapped, static_cast<std::size_t>(bytes));
+  s.stats.hostReadBytes += bytes;
   s.stats.reductions++;
   return true;
 }
@@ -4846,7 +4938,8 @@ bool Gpu::ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std
     s.dispatch(s.reducePipeline, set, push, 6, width, height);  // distinct buffer ranges: no barrier between them
     s.stats.reductions++;
   }
-  s.full_barrier();  // the host reads the results
+  s.full_barrier();       // the host reads the results
+  s.host_read_barrier();  // TASK-180 test4 (P1-D)
   if (!s.submit(true, error)) return false;
   words.resize(requests.size());
   for (std::size_t i = 0; i < requests.size(); ++i) {
@@ -4854,6 +4947,7 @@ bool Gpu::ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std
     const std::size_t count = static_cast<std::size_t>(r.x1 - r.x0 + 1) * static_cast<std::size_t>(r.y1 - r.y0 + 1);
     words[i].resize(count);
     std::memcpy(words[i].data(), static_cast<const std::uint8_t *>(s.readback.mapped) + offsets[i], count * 4u);
+    s.stats.hostReadBytes += count * 4u;
   }
   return true;
 }
@@ -4898,7 +4992,8 @@ bool Gpu::ReduceLater(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t
   const std::uint32_t push[6] = {0u, static_cast<std::uint32_t>(x0), static_cast<std::uint32_t>(y0), width, height,
                                  FloatBits(static_cast<float>(image->scale))};
   s.dispatch(s.reducePipeline, set, push, 6, width, height);
-  s.full_barrier();  // the host reads the result after the fence
+  s.full_barrier();       // the host reads the result after the fence
+  s.host_read_barrier();  // TASK-180 test4 (P1-D)
   s.stats.reductions++;
   s.stats.laterReductions++;
   slotResult.serial = s.submitCount + 1u;  // the recording in progress (compute_set may have submitted the one before)
@@ -4924,6 +5019,7 @@ bool Gpu::TakeReduced(std::uint32_t ticket, std::vector<std::uint32_t> &words, s
   std::memcpy(words.data(), static_cast<const std::uint8_t *>(s.later.mapped) + static_cast<std::size_t>(ticket) *
                                                                                   Impl::kLaterWords * 4u,
               static_cast<std::size_t>(result.count) * 4u);
+  s.stats.hostReadBytes += static_cast<std::uint64_t>(result.count) * 4u;
   result.serial = 0;
   return true;
 }
@@ -4941,6 +5037,7 @@ bool Gpu::Tone(ImageId id, std::uint32_t nativeWidth, std::uint32_t nativeHeight
   const VkDeviceSize align = std::max<VkDeviceSize>(s.limits.minStorageBufferOffsetAlignment, 16);
   if (!s.ring(s.staging, 256 * 4, align, offset, error)) return false;
   std::memcpy(static_cast<std::uint8_t *>(s.staging.mapped) + offset, palette, 256 * 4);
+  s.stats.cpuToneBytes += 256u * 4u;  // P1-C
   s.outside_pass();
   s.touch("tone", {image}, {image}, 0, 0);
   VkDescriptorSet set = VK_NULL_HANDLE;
@@ -5039,6 +5136,7 @@ bool Gpu::SnapshotLastOutput(std::string &error) {
   gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceOutput.image,
                          VK_IMAGE_LAYOUT_GENERAL, 1, &region);
   s.full_barrier();
+  s.stats.gpuCopyImageBytes += static_cast<std::uint64_t>(s.display.width) * s.display.height * 4u;  // P1-C
   s.stats.postCopies++;
   return true;
 }
@@ -5078,6 +5176,7 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, bool fieldCom
     gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, field.image, VK_IMAGE_LAYOUT_GENERAL, 1,
                            &region);
     s.full_barrier();
+    s.stats.gpuCopyImageBytes += static_cast<std::uint64_t>(step.width) * step.height * 4u;  // P1-C
     s.stats.postCopies++;
   }
   VkDescriptorSet set = VK_NULL_HANDLE;
@@ -5122,6 +5221,7 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, bool fieldCom
     gt4_hwd_vkCmdCopyImage(s.cmd, s.display.image, VK_IMAGE_LAYOUT_GENERAL, s.deinterlaceOutput.image,
                            VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     s.full_barrier();
+    s.stats.gpuCopyImageBytes += static_cast<std::uint64_t>(step.width) * step.height * 4u;  // P1-C
     s.stats.postCopies++;
   }
   s.post = &s.display;  // the deinterlaced display is written over the display image
@@ -5275,9 +5375,12 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
     region.imageExtent = {width, rows, 1};
     gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, source.image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
     s.full_barrier();
+    s.host_read_barrier();  // TASK-180 test4 (P1-D)
     if (!s.submit(true, error)) return false;
     std::memcpy(pixels.data() + static_cast<std::size_t>(top) * width, s.readback.mapped,
                 static_cast<std::size_t>(rowBytes * rows));
+    s.stats.gpuCopyImageToBufferBytes += static_cast<std::uint64_t>(rowBytes * rows);
+    s.stats.hostReadBytes += static_cast<std::uint64_t>(rowBytes * rows);
   }
   return true;
 }
@@ -5307,10 +5410,19 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
   region.imageExtent = {width, height, 1};
   gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, image->image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
   s.full_barrier();
+  s.host_read_barrier();  // TASK-180 test4 (P1-D)
   if (!s.submit(true, error)) return false;
   words.resize(static_cast<std::size_t>(width) * height);
   std::memcpy(words.data(), s.readback.mapped, static_cast<std::size_t>(bytes));
+  s.stats.gpuCopyImageToBufferBytes += bytes;
+  s.stats.hostReadBytes += bytes;
   return true;
+}
+
+void Gpu::ResetRingHighMarks() {
+    impl_->stats.ringHighStaging = 0;
+    impl_->stats.ringHighVertex = 0;
+    impl_->stats.ringHighUniform = 0;
 }
 
 bool Gpu::Submit(bool wait, std::string &error) { return impl_->submit(wait, error, "Submit (renderer)"); }

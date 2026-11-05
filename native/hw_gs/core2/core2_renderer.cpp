@@ -5662,6 +5662,40 @@ void Renderer::Flush() {
                      static_cast<double>(s.gpu_.Stats().fragments - s.lastFragments_) / 600.0,
                      static_cast<double>(s.gpu_.Stats().computeInvocations - s.lastCompute_) / 600.0);
         {
+            // TASK-180 test4 (P1-C, STUDY-UNIFIED-MEMORY 7.2): every CPU -> GPU, GPU copy and host-read path in KiB per
+            // VBlank, plus each ring's high-water mark against its share. A snapshot of the previous print gives the
+            // deltas; the high-water marks are reset after printing, so the next line covers 600 fresh VBlanks.
+            const Core2GpuStats &gs = s.gpu_.Stats();
+            static Core2GpuStats last{};
+            const auto kib = [](std::uint64_t now, std::uint64_t before) { return static_cast<double>(now - before) / 600.0 / 1024.0; };
+            const double mib = 1024.0 * 1024.0;
+            std::fprintf(stderr,
+                         "[core2] data paths/vblank cpu_to_gpu_kib glm=%.0f window=%.0f palette=%.0f patch=%.0f clut=%.1f "
+                         "tone=%.1f fill=%.1f vertex=%.0f uniform=%.0f image=%.0f | gpu_copy_kib buffer=%.0f "
+                         "buffer_to_image=%.0f image=%.0f image_to_buffer=%.0f clears=%.0f | host_read_kib=%.1f | "
+                         "ring_high_mib staging=%.1f/%.1f vertex=%.1f/%.1f uniform=%.2f/%.2f | ring_full_submits=%.2f\n",
+                         kib(gs.cpuGlmBytes, last.cpuGlmBytes), kib(gs.windowBytes, last.windowBytes),
+                         kib(gs.cpuPaletteBytes, last.cpuPaletteBytes), kib(gs.cpuPatchBytes, last.cpuPatchBytes),
+                         kib(gs.cpuClutBytes, last.cpuClutBytes), kib(gs.cpuToneBytes, last.cpuToneBytes),
+                         kib(gs.cpuFillStateBytes, last.cpuFillStateBytes), kib(gs.cpuVertexBytes, last.cpuVertexBytes),
+                         kib(gs.cpuUniformBytes, last.cpuUniformBytes), kib(gs.cpuImageBytes, last.cpuImageBytes),
+                         kib(gs.gpuCopyBufferBytes, last.gpuCopyBufferBytes),
+                         kib(gs.gpuCopyBufferToImageBytes, last.gpuCopyBufferToImageBytes),
+                         kib(gs.gpuCopyImageBytes, last.gpuCopyImageBytes),
+                         kib(gs.gpuCopyImageToBufferBytes, last.gpuCopyImageToBufferBytes),
+                         kib(gs.gpuClearBytes, last.gpuClearBytes), kib(gs.hostReadBytes, last.hostReadBytes),
+                         static_cast<double>(gs.ringHighStaging) / mib,
+                         static_cast<double>(gs.ringShareStagingBytes) / mib,
+                         static_cast<double>(gs.ringHighVertex) / mib,
+                         static_cast<double>(gs.ringShareVertexBytes) / mib,
+                         static_cast<double>(gs.ringHighUniform) / mib,
+                         static_cast<double>(gs.ringShareUniformBytes) / mib,
+                         static_cast<double>(gs.ringFullSubmits - last.ringFullSubmits) / 600.0);
+            last = gs;
+            last.ringHighStaging = last.ringHighVertex = last.ringHighUniform = 0;  // the next line's marks start at zero
+            s.gpu_.ResetRingHighMarks();
+        }
+        {
             // TASK-027 CPU survey: exclusive stage times (each minus the stages nested in it); gif_parse is the GIF
             // front end itself, vblank_own the VBlank work outside the stages it runs.
             const PhaseTimes &x = s.clock_.exclusive;
@@ -5850,6 +5884,8 @@ const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.postCopies = impl_->gpu_.Stats().postCopies;
     return impl_->stats;
 }
+// TASK-180 test4 (P1-C): the GPU data-path counters, for the acceptance test.
+const Core2GpuStats &Renderer::GpuStats() const { return impl_->gpu_.Stats(); }
 bool Renderer::Failed() const { return impl_->failed_; }
 const std::string &Renderer::FailureText() const { return impl_->failure_; }
 

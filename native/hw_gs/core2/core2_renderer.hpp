@@ -20,6 +20,10 @@
 
 namespace hwgs::core2 {
 
+// Defined in core2_gpu.hpp; forward declared here (and in hw_gs_writeback.hpp) so the GPU header's include of the
+// writeback one stays one-way.
+struct Core2GpuStats;
+
 // The session counters of CORE2 (replay summary and the [hw] core2 line of the F8 report).
 struct Core2Counters {
     std::uint64_t ropBatches = 0;         // IN-481, from the GPU's counters
@@ -167,6 +171,9 @@ public:
     const std::uint8_t *Slm();
     const writeback::Counters &GetCounters() const;
     const Core2Counters &Core2Stats() const;
+    // TASK-180 test4 (P1-C): the GPU-side counters (data paths, ring high-water marks, host-read barriers). Read by the
+    // data-path acceptance test; the F8 report and the 600-VBlank lines read them through Gpu::Stats.
+    const Core2GpuStats &GpuStats() const;
     bool Failed() const;
     const std::string &FailureText() const;
 

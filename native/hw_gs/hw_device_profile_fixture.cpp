@@ -51,6 +51,55 @@ int main() {
   check(!integrated_defaults(kDeviceTypeDiscrete) && !integrated_defaults(kDeviceTypeOther), "only the integrated type");
   check(std::string(vendor_name(kVendorQualcomm)) == "Qualcomm" && std::string(vendor_name(0x1234)) == "unknown", "vendor names");
 
+  // ---- TASK-180 test4 (P1-A): the memory shape and the type letters ----
+  {
+    // `list` is a device's memory types, in Vulkan's order, with each type in heap 0.
+    auto shape = [](std::uint32_t device_type, std::initializer_list<std::uint32_t> list) {
+      std::array<MemoryTypeInfo, 32> types{};
+      std::uint32_t count = 0;
+      for (std::uint32_t flags : list) types[count++].flags = flags;
+      return classify_memory(device_type, types.data(), count);
+    };
+    const std::uint32_t L = kMemoryLocal, V = kMemoryVisible, C = kMemoryCoherent, H = kMemoryCached, Z = kMemoryLazy;
+    // The owner's S23 Ultra, measured: 0:L 1:L 2:L 3:LVH 4:LVC 5:LVC 6:LVCH 7:L 8:L.
+    check(shape(kDeviceTypeIntegrated, {L, L, L, L | V | H, L | V | C, L | V | C, L | V | C | H, L, L}) ==
+              MemoryShape::unified_all_local,
+          "the S23 is unified-all-local");
+    // Intel-like, AMD APU-like and a ReBAR discrete card.
+    check(shape(kDeviceTypeIntegrated, {L, L | V | C, L | V | C | H}) == MemoryShape::unified_all_local,
+          "an Intel-like list is unified-all-local");
+    {
+      std::array<MemoryTypeInfo, 4> apu{};
+      apu[0] = MemoryTypeInfo{L, 0};
+      apu[1] = MemoryTypeInfo{V | C, 1};
+      apu[2] = MemoryTypeInfo{V | C | H, 1};
+      apu[3] = MemoryTypeInfo{L | V | C, 0};
+      check(classify_memory(kDeviceTypeIntegrated, apu.data(), 4) == MemoryShape::unified_split,
+            "host-visible types outside the local heap make an APU unified-split");
+    }
+    {
+      std::array<MemoryTypeInfo, 4> rebar{};
+      rebar[0] = MemoryTypeInfo{L, 0};
+      rebar[1] = MemoryTypeInfo{V | C, 1};
+      rebar[2] = MemoryTypeInfo{L | V | C, 0};  // ReBAR: a local type the CPU may write does not make it unified
+      rebar[3] = MemoryTypeInfo{V | C | H, 1};
+      check(classify_memory(kDeviceTypeDiscrete, rebar.data(), 4) == MemoryShape::discrete, "a ReBAR card is discrete");
+    }
+    check(shape(kDeviceTypeCpu, {L | V | C | H}) == MemoryShape::unified_all_local, "Lavapipe is unified-all-local");
+    check(shape(kDeviceTypeIntegrated, {L, L | V | C, L | Z}) == MemoryShape::unified_all_local,
+          "an Apple-like list is unified-all-local");
+    check(shape(kDeviceTypeIntegrated, {L, L | Z}) == MemoryShape::unknown, "no host-visible type at all is unknown");
+    check(shape(kDeviceTypeIntegrated, {}) == MemoryShape::unknown, "no types is unknown");
+    check(shape(kDeviceTypeVirtual, {L | V | C}) == MemoryShape::unknown, "a virtual device is unknown");
+    check(shape(kDeviceTypeOther, {L | V | C}) == MemoryShape::unknown, "any other device type is unknown");
+    check(memory_type_letters(L | V | C | H) == "LVCH", "the S23's type 6 letters");
+    check(memory_type_letters(L | Z) == "LZ", "a lazily allocated type");
+    check(memory_type_letters(L | V | C | H | Z | kMemoryProtected) == "LVCHZP", "every letter, in order");
+    check(std::string(memory_shape_name(MemoryShape::unified_split)) == "unified-split" &&
+              std::string(memory_shape_name(MemoryShape::unknown)) == "unknown",
+          "the shape names");
+  }
+
   // ---- Points: one pixel always, larger only with largePoints and within the device's largest size ----
   DeviceProfile profile;
   check(profile.points_of_size(1.0f) && !profile.points_of_size(2.0f), "no largePoints: one-pixel points only");
@@ -79,6 +128,22 @@ int main() {
   check(line.find("heaps 0:local 16384 MiB (budget 15360 MiB, used 1024 MiB), 1:host 32768 MiB") != std::string::npos,
         "the line lists the heaps");
   check(largest_heap(profile, true) == 0 && largest_heap(profile, false) == 1, "largest heaps");
+  // TASK-180 test4 (P1-A): the profile line carries the shape and every type.
+  profile.memory_shape = MemoryShape::discrete;
+  profile.type_count = 3;
+  profile.types[0] = MemoryTypeInfo{kMemoryLocal, 0};
+  profile.types[1] = MemoryTypeInfo{kMemoryLocal | kMemoryVisible | kMemoryCoherent, 0};
+  profile.types[2] = MemoryTypeInfo{kMemoryLocal | kMemoryVisible | kMemoryCoherent | kMemoryCached, 0};
+  {
+    const std::string typed = profile_line(profile);
+    check(typed.find("memory shape discrete") != std::string::npos, "the line names the memory shape");
+    check(typed.find("types 0:L@0 1:LVC@0 2:LVCH@0") != std::string::npos, "the line lists every memory type");
+    profile.memory_shape_forced = true;
+    check(profile_line(profile).find("memory shape discrete (forced)") != std::string::npos, "a forced shape is marked");
+    profile.memory_shape_forced = false;
+    profile.type_count = 0;
+    check(profile_line(profile).find("types none") != std::string::npos, "no types says so");
+  }
 
   // ---- Rings: today's sizes wherever they fit in a quarter of the heap's budget ----
   check(today(plan_core2_rings(request(16, 16 * GiB, 15 * GiB)), 16), "a desktop keeps today's 736 MiB");

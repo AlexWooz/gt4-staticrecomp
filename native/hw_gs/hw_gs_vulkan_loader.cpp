@@ -222,6 +222,29 @@ gt4::hw::DeviceProfile probe_device_profile(VkInstance instance, VkPhysicalDevic
       heap.usage = budget.heapUsage[i];
     }
   }
+  // TASK-180 test4 (P1-A/P1-A2): the memory types and the shape they make. Values copied as they are (the header is pure
+  // arithmetic and knows no Vulkan).
+  profile.type_count = std::min<std::uint32_t>(memory.memoryProperties.memoryTypeCount,
+                                               static_cast<std::uint32_t>(profile.types.size()));
+  for (std::uint32_t i = 0; i < profile.type_count; ++i) {
+    profile.types[i].flags = memory.memoryProperties.memoryTypes[i].propertyFlags;
+    profile.types[i].heap = memory.memoryProperties.memoryTypes[i].heapIndex;
+  }
+  profile.memory_shape =
+      gt4::hw::classify_memory(profile.device_type, profile.types.data(), profile.type_count);
+  // A diagnostics override: a desktop can report a phone's shape (the placement and data-path lines then read as it would).
+  if (const char *forced = std::getenv("GT4_HW_MEMORY_SHAPE")) {
+    gt4::hw::MemoryShape shape = gt4::hw::MemoryShape::unknown;
+    if (std::strcmp(forced, "discrete") == 0) shape = gt4::hw::MemoryShape::discrete;
+    else if (std::strcmp(forced, "unified-all-local") == 0) shape = gt4::hw::MemoryShape::unified_all_local;
+    else if (std::strcmp(forced, "unified-split") == 0) shape = gt4::hw::MemoryShape::unified_split;
+    else std::fprintf(stderr, "[hw] GT4_HW_MEMORY_SHAPE=%s: not one of discrete|unified-all-local|unified-split, ignored\n", forced);
+    if (shape != gt4::hw::MemoryShape::unknown) {
+      profile.memory_shape = shape;
+      profile.memory_shape_forced = true;
+      std::fprintf(stderr, "[hw] GT4_HW_MEMORY_SHAPE=%s: memory shape forced (diagnostics)\n", forced);
+    }
+  }
   return profile;
 }
 

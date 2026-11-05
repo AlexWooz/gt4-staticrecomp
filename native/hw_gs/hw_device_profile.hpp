@@ -85,6 +85,64 @@ inline DeviceClass classify_device(std::uint32_t vendor_id, std::uint32_t device
 // off the class instead.
 inline bool integrated_defaults(std::uint32_t device_type) { return device_type == kDeviceTypeIntegrated; }
 
+// ---- Unified memory (TASK-180 test4, STUDY-UNIFIED-MEMORY P1-A) ----------------------------------------------------
+//
+// The memory shape of the device: where the CPU writes and the GPU reads, and whether Vulkan reports the two as the same
+// memory. Nothing keys a rendering decision off it yet (phase 1 only reports it); phases 3-5 do.
+// The VkMemoryPropertyFlagBits values (copied in as plain integers like the rest of this header).
+constexpr std::uint32_t kMemoryLocal = 0x01, kMemoryVisible = 0x02, kMemoryCoherent = 0x04, kMemoryCached = 0x08,
+                        kMemoryLazy = 0x10, kMemoryProtected = 0x20;
+
+struct MemoryTypeInfo {
+  std::uint32_t flags = 0;  // VkMemoryType::propertyFlags
+  std::uint32_t heap = 0;   // VkMemoryType::heapIndex
+};
+
+// discrete: the device's own memory. unified_all_local: an integrated or CPU device whose every host-visible type is also
+// device-local (Adreno, Mali, Intel, Apple through MoltenVK, Lavapipe). unified_split: integrated, with host-visible types
+// outside the device-local heap (AMD APUs on Windows). unknown: anything else (no types, virtual or other devices).
+enum class MemoryShape : std::uint8_t { discrete, unified_all_local, unified_split, unknown };
+
+inline const char *memory_shape_name(MemoryShape shape) {
+  switch (shape) {
+  case MemoryShape::discrete: return "discrete";
+  case MemoryShape::unified_all_local: return "unified-all-local";
+  case MemoryShape::unified_split: return "unified-split";
+  case MemoryShape::unknown: return "unknown";
+  }
+  return "unknown";
+}
+
+// The rules, in order: no types -> unknown; a discrete device -> discrete; an integrated or CPU device -> unified-all-local
+// when every host-visible type is device-local, unified-split when one is not, unknown when it has no visible type at all;
+// anything else -> unknown.
+inline MemoryShape classify_memory(std::uint32_t device_type, const MemoryTypeInfo *types, std::uint32_t count) {
+  if (types == nullptr || count == 0) return MemoryShape::unknown;
+  if (device_type == kDeviceTypeDiscrete) return MemoryShape::discrete;
+  if (device_type != kDeviceTypeIntegrated && device_type != kDeviceTypeCpu) return MemoryShape::unknown;
+  bool any_visible = false;
+  bool all_visible_local = true;
+  for (std::uint32_t i = 0; i < count; ++i) {
+    if ((types[i].flags & kMemoryVisible) == 0) continue;
+    any_visible = true;
+    if ((types[i].flags & kMemoryLocal) == 0) all_visible_local = false;
+  }
+  if (!any_visible) return MemoryShape::unknown;
+  return all_visible_local ? MemoryShape::unified_all_local : MemoryShape::unified_split;
+}
+
+// "L", "V", "C", "H", "Z" (lazily allocated), "P" (protected), in that order; the S23's type 6 reads "LVCH".
+inline std::string memory_type_letters(std::uint32_t flags) {
+  std::string letters;
+  if (flags & kMemoryLocal) letters += 'L';
+  if (flags & kMemoryVisible) letters += 'V';
+  if (flags & kMemoryCoherent) letters += 'C';
+  if (flags & kMemoryCached) letters += 'H';
+  if (flags & kMemoryLazy) letters += 'Z';
+  if (flags & kMemoryProtected) letters += 'P';
+  return letters;
+}
+
 struct HeapInfo {
   std::uint64_t size = 0;    // VkMemoryHeap::size
   std::uint64_t budget = 0;  // VK_EXT_memory_budget heapBudget at the probe; 0 without the extension
@@ -113,6 +171,13 @@ struct DeviceProfile {
   bool memory_budget = false;
   std::uint32_t heap_count = 0;
   std::array<HeapInfo, 16> heaps{};
+
+  // Memory types (P1-A): their properties and heap, and the shape they make. `memory_shape_forced` says
+  // GT4_HW_MEMORY_SHAPE replaced the probe's answer (diagnostics: a desktop can report a phone's shape in its logs).
+  std::uint32_t type_count = 0;
+  std::array<MemoryTypeInfo, 32> types{};
+  MemoryShape memory_shape = MemoryShape::unknown;
+  bool memory_shape_forced = false;
 
   // True when points of `size` pixels can be drawn as points (else core 2 draws them as two triangles).
   bool points_of_size(float size) const { return size <= 1.0f || (large_points_enabled && size <= point_size_max); }
@@ -150,6 +215,19 @@ inline std::string profile_line(const DeviceProfile &p) {
     const HeapInfo &heap = p.heaps[i];
     line += (i == 0 ? ", heaps " : ", ") + std::to_string(i) + (heap.device_local ? ":local " : ":host ") + mib_text(heap.size);
     if (p.memory_budget) line += " (budget " + mib_text(heap.budget) + ", used " + mib_text(heap.usage) + ")";
+  }
+  // P1-A: the memory shape and every memory type, `<index>:<letters>@<heap>`.
+  line += ", memory shape ";
+  line += memory_shape_name(p.memory_shape);
+  if (p.memory_shape_forced) line += " (forced)";
+  if (p.type_count == 0) {
+    line += ", types none";
+    return line;
+  }
+  line += ", types ";
+  for (std::uint32_t i = 0; i < p.type_count && i < p.types.size(); ++i) {
+    line += (i == 0 ? "" : " ") + std::to_string(i) + ":" + memory_type_letters(p.types[i].flags) + "@" +
+            std::to_string(p.types[i].heap);
   }
   return line;
 }

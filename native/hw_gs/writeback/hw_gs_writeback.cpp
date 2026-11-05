@@ -3827,6 +3827,7 @@ void Renderer::SetAsyncPresentation(bool enabled) {
 void Renderer::SetCpuSmallSprites(bool enabled) { impl_->cpuSmallSprites_ = enabled; }
 
 const core2::Core2Counters* Renderer::Core2Stats() const { return core2_ ? &core2_->Core2Stats() : nullptr; }
+const core2::Core2GpuStats* Renderer::Core2GpuCounters() const { return core2_ ? &core2_->GpuStats() : nullptr; }
 
 bool Renderer::PrepareCore2Shaders(const std::function<void(std::size_t, std::size_t)>& progress, std::string& error) {
     if (!core2_) {

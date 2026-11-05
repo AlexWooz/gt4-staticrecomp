@@ -27,6 +27,7 @@
 namespace hwgs::core2 {
 class Renderer;
 struct Core2Counters;
+struct Core2GpuStats;
 }
 
 namespace hwgs::writeback {
@@ -412,6 +413,8 @@ public:
     bool PrepareCore2Shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error);
     // CORE2's own session counters (nullptr with the old core).
     const core2::Core2Counters *Core2Stats() const;
+    // TASK-180 test4 (P1-C): CORE2's GPU data-path counters (nullptr with the old core).
+    const core2::Core2GpuStats *Core2GpuCounters() const;
 
 private:
     class Impl;
