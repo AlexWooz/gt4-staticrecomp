@@ -3355,6 +3355,22 @@ Downloads approved by the owner: the emulator system image (Google, sdkmanager),
 Gradle. Installed: SDK platforms 34/36/36.1, NDK 26.1, build-tools, emulator (no image or AVD before this). Branch
 `task/180-android-emulator`. State: in progress.
 
+### TASK-181 — Launcher Wheel page for the native DFP wheel (owner, 2026-11-05; with PR #205)
+
+PR #205 (WaimateWihongi, TASK-018) makes GT4 see a virtual Driving Force Pro on its USB port (option A of
+`docs/WHEEL-DFP-PLAN.md`), configured by a `wheel.toml`; it has no launcher UI. The owner wants, for the rc15 test build and
+his Logitech G27:
+- a launcher **Wheel** page: the detected wheel, mapping of its axes and buttons onto the DFP's controls with capture
+  ("press the button"), pedal calibration and dead zones, force feedback strength and a "test force" button, and a check that
+  the game's own force feedback really reaches the wheel;
+- **automatic mapping for known wheels** (not only the G27: Logitech, Thrustmaster, Fanatec, MOZA, Simagic, Turtle Beach, PXN
+  and others, from a researched VID:PID table, `docs/research/WHEEL-AUTOMAP-TABLE.md`); unknown wheels are mapped by hand;
+- a nice UI: the on-screen wheel **rotates with the physical wheel** at its real angle, and the accelerator, brake and clutch
+  show their real values;
+- the base is the launcher wheel UI of PR #101 by **JulioHeroZ** (merged via #109/#111, removed in 1.2.5 because it drove the
+  game through the normal pad); credit JulioHeroZ for it in the notes and the credits.
+State: waiting for the PR #205 review and the wheel table research.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
