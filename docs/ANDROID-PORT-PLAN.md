@@ -166,10 +166,19 @@ download list, the AVD and the adb commands: [ANDROID-EMULATOR](ANDROID-EMULATOR
   with clang-cl: `-ffp-contract=off`, `-fno-strict-aliasing`, `-fsigned-char`; 16 KB page alignment for every ABI.
 - **App:** `android/` holds a minimal Gradle project (AGP 9.5.0, Gradle 9.8.2): one `GameActivity` extending
   `SDLActivity` in its own process (`:game`), landscape, Vulkan, controller; the native libraries are staged into it.
+- **First boot (2026-11-05):** on the emulator with Lavapipe (CPU Vulkan) the game boots, plays the opening movie
+  (IPU video), takes Start from the emulator keyboard and reaches the GT Mode home at 1x with CoreGS 2.0, in landscape,
+  with SDL3 audio (AAudio). Host-GPU emulation crashes inside AMD's OpenGL driver on this desktop (details in
+  ANDROID-EMULATOR); SwiftShader lacks `dualSrcBlend`, which CoreGS 2.0 requires.
 - **Learned so far:** the donor runtime and the translated units need no source change for Android x86_64; CoreGS 2.0
   needed only the surface/loader seam and POSIX forms of three diagnostics; one LP64 fix in the pinned runtime capsule
   (configure-time copy, see LINUX-PORT-PLAN); the SDL3 AAR ships its libraries as prefab modules only, so they are staged
-  into `jniLibs` by hand.
+  into `jniLibs` by hand. Orientation: SDLActivity overrides the manifest's orientation from `SDL_HINT_ORIENTATIONS`
+  (a resizable window without it gets "any orientation"); this Android 16 image reports the window's own size as
+  `currentExtent` with `currentTransform` = rotate 90 in landscape, so the identity pre-transform with the extent as
+  reported is right (the picture was turned with `preTransform = currentTransform`, and squashed when the extent was
+  swapped). That confirms TASK-179's rotation-safe present; the Android-only branch in `hw_gs_backend.cpp` gives way to it.
+  The EE thread is SDL's game thread, with a 1 MB stack (as the Windows main thread); enough for the boot.
 
 ## Subtle risks (Android), ranked
 

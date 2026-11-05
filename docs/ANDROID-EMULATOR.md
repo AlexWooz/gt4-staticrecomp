@@ -1,6 +1,7 @@
 # Android emulator: build, install and run (TASK-180, Android plan stage A2)
 
-Status: first part of TASK-180 (2026-11-04). How to build `libgt4.so` with the NDK, package the game activity, and run
+Status: TASK-180 (2026-11-04/05). The game boots to its menus in the emulator with CoreGS 2.0 at 1x, on CPU Vulkan
+(Lavapipe) for now. How to build `libgt4.so` with the NDK, package the game activity, and run
 it in the Android Studio emulator on the desktop (Ryzen 7 5700X, RX 9060 XT). Plans: [ANDROID-PORT-PLAN](ANDROID-PORT-PLAN.md),
 [LINUX-PORT-PLAN](LINUX-PORT-PLAN.md) (the platform seam, stage L0). Nothing here is a release path: no store, no
 signing beyond the debug key, the player's files pushed with adb.
@@ -26,7 +27,7 @@ Gradle home stay on the SSD). `config.ini` changes:
 
 | Setting | Value | Why |
 |---|---|---|
-| `hw.gpu.enabled`, `hw.gpu.mode` | `yes`, `host` | Vulkan through gfxstream on the host GPU (the RX 9060 XT); `swiftshader_indirect` would be CPU Vulkan, far too slow |
+| `hw.gpu.enabled`, `hw.gpu.mode` | `yes`, `host` | meant for Vulkan through gfxstream on the RX 9060 XT; that mode crashes here (below), so the runs pass `-gpu lavapipe` |
 | `hw.ramSize` | 8192 | the game process, ~400 MiB of CoreGS host rings and the system; the host has 64 GB |
 | `hw.cpu.ncore` | 8 | EE, VU1 worker, GS worker, audio and the system |
 | `hw.initialOrientation` | `landscape` | the game activity is landscape-only |
@@ -40,8 +41,23 @@ Start it (no system setting changes; the variables are per command):
 
 ```
 set ANDROID_AVD_HOME=F:\GT4Recomp-android\avd
-%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe -avd GT4Recomp_API36_x86_64 -gpu host -feature Vulkan -no-snapshot -no-boot-anim
+%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe -avd GT4Recomp_API36_x86_64 -gpu lavapipe -no-window -no-snapshot -no-boot-anim -crash-report-mode never
 ```
+
+**Host GPU mode does not work on this desktop yet (2026-11-05).** `-gpu host` (Vulkan through gfxstream on the RX 9060 XT,
+which the emulator detects and selects) crashes the emulator during boot inside AMD's OpenGL driver (`atio6axx.dll`,
+seen in the emulator's minidump with cdb); the host side of the emulator still uses OpenGL for its composition. The same
+happens without a window (`-no-window`); with `-feature -HostComposition` the guest hangs at boot; `-feature ForceANGLE`
+falls back to SwiftShader. `-crash-report-mode never` keeps the emulator from asking to send a crash report.
+- `-gpu swiftshader` boots, but SwiftShader lacks `dualSrcBlend`, so CoreGS 2.0 refuses the device (clear message).
+- `-gpu lavapipe` (Mesa's CPU Vulkan for the guest, SwiftShader for the system's GLES) works: **the game boots, plays
+  the opening movie and reaches the menus (GT Mode home) at 1x with CoreGS 2.0**, in landscape. Speed is software-render
+  speed: about 36 VBlanks/s in the opening movie and 11 in the GT Mode home on the 5700X (the game's own pacing clock;
+  the F8 probe's TSC-calibrated clock reads about twice too fast inside the emulator).
+- Still to try for host-GPU speed: a newer or older AMD driver, or an emulator release whose host composition uses
+  Vulkan; a real phone (Adreno/Mali) is the target anyway.
+
+Screens and the game log of that run: `build/evidence/t180-emulator/` in the TASK-180 worktree (not committed).
 
 ## Build
 
@@ -91,6 +107,11 @@ rem optional: a memory card (a copy, never the owner's own card file), and setti
 %ADB% pull /sdcard/Android/data/io.github.moesuito.gt4recomp/files/game.log
 %ADB% shell am force-stop io.github.moesuito.gt4recomp
 ```
+
+Notes from the first runs: start the app once before pushing (the system creates the files folder with the app as its
+owner; a folder made by `adb shell mkdir` first belongs to the shell user); from Git Bash set `MSYS_NO_PATHCONV=1` or the
+`/sdcard/...` paths are rewritten; Start is `adb shell input keyevent KEYCODE_ENTER` (the emulator keyboard maps to the
+game's default keys; a tap shorter than a frame is held for one VBlank). Screens: `adb exec-out screencap -p > shot.png`.
 
 `gt4.env` holds `NAME=VALUE` lines set before the game starts (the launcher's environment contract): for example
 `GT4_HW_SCALE=1`, `GT4_PERF=1`, `GT4_HW_DUMP_DIR=/sdcard/Android/data/io.github.moesuito.gt4recomp/files/frames`.

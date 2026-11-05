@@ -863,6 +863,11 @@ struct Backend::Impl {
   bool create_swapchain(std::string &error) {
     VkSurfaceCapabilitiesKHR caps{};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps);
+#ifndef _WIN32
+    std::fprintf(stderr, "[hw] surface: current extent %ux%u, current transform 0x%x, supported 0x%x\n",
+                 caps.currentExtent.width, caps.currentExtent.height, static_cast<unsigned>(caps.currentTransform),
+                 static_cast<unsigned>(caps.supportedTransforms));
+#endif
 #ifdef _WIN32
     RECT client{};
     GetClientRect(window, &client);
@@ -923,7 +928,15 @@ struct Backend::Impl {
     info.imageArrayLayers = 1;
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+#ifdef _WIN32
     info.preTransform = caps.currentTransform;
+#else
+    // TASK-180: Android reports the window's own size as currentExtent and the display's rotation as currentTransform.
+    // With the identity pre-transform the compositor turns the picture (TASK-179 makes this the rule everywhere).
+    info.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0
+                            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                            : caps.currentTransform;
+#endif
     info.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
                               ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                               : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;

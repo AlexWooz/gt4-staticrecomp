@@ -71,6 +71,9 @@ struct ScancodeBinding {
   std::uint16_t button_mask;
 };
 std::vector<ScancodeBinding> keyboard_keys;
+// Keys pressed since the last VBlank: a tap shorter than a frame (an adb key event, a quick touch keyboard) still reaches
+// the game for one VBlank instead of falling between two samples of the keyboard state.
+std::vector<SDL_Scancode> keys_pressed_since_vblank;
 gt4::input_recording::Recorder input_recorder;
 std::unique_ptr<gt4::input_recording::Player> input_player;
 const std::uint64_t paced_from_vblank = [] {
@@ -209,6 +212,7 @@ bool pump_messages() {
         break;
       case SDL_EVENT_KEY_DOWN:
         if (event.key.repeat) break;
+        keys_pressed_since_vblank.push_back(event.key.scancode);
         if (input_recorder.active() && event.key.scancode == SDL_SCANCODE_F9) {
           const std::uint64_t changes = input_recorder.finish(input_vblank);
           std::fprintf(stderr, "[input] recording ended by F9 at VBlank %llu, %llu changes; closing the game\n",
@@ -295,15 +299,25 @@ void release_frame() {
 }
 
 std::uint16_t keyboard_buttons() {
-  if (!focused) return 0;
+  if (!focused) {
+    keys_pressed_since_vblank.clear();
+    return 0;
+  }
   const bool *keys = SDL_GetKeyboardState(nullptr);
   const bool alt_held = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
+  const auto tapped = [](SDL_Scancode scancode) {
+    return scancode != SDL_SCANCODE_UNKNOWN &&
+           std::find(keys_pressed_since_vblank.begin(), keys_pressed_since_vblank.end(), scancode) !=
+               keys_pressed_since_vblank.end();
+  };
   std::uint16_t buttons = 0;
   for (const ScancodeBinding &binding : keyboard_keys) {
     if (binding.scancode == SDL_SCANCODE_RETURN && alt_held) continue;  // Alt+Enter is not Start (window.cpp rule)
-    if (keys[binding.scancode] || (binding.alternate != SDL_SCANCODE_UNKNOWN && keys[binding.alternate]))
+    if (keys[binding.scancode] || (binding.alternate != SDL_SCANCODE_UNKNOWN && keys[binding.alternate]) ||
+        tapped(binding.scancode) || tapped(binding.alternate))
       buttons |= binding.button_mask;
   }
+  keys_pressed_since_vblank.clear();
   return buttons;
 }
 
@@ -437,11 +451,16 @@ bool open_window(bool fullscreen) {
   // the output size, as on Windows.
   const int width = output.known() ? static_cast<int>(output.width) : 960;
   const int height = output.known() ? static_cast<int>(output.height) : 540;
-  SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+  SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #ifdef __ANDROID__
+  // Landscape only. SDLActivity sets the activity's orientation from this hint when the window is created; a resizable
+  // window without it gets "any orientation" (the manifest's sensorLandscape is then overridden and a phone held
+  // upright shows the game letterboxed in portrait).
+  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
   flags |= SDL_WINDOW_FULLSCREEN;
   (void)fullscreen;
 #else
+  flags |= SDL_WINDOW_RESIZABLE;
   if (fullscreen) flags |= SDL_WINDOW_FULLSCREEN;
 #endif
   game_window = SDL_CreateWindow("Gran Turismo 4", width, height, flags);
