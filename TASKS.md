@@ -3425,6 +3425,8 @@ LVH/LVC/LVCH). So the Android path can drop the PC-style copies:
 - the GS-memory mirror shared between CPU and GPU.
 
 This saves CPU time and, on a SoC, memory bandwidth and heat. Measure each change against the copy path, behind a switch.
+Owner (2026-11-05): the same zero-copy path applies to PC integrated GPUs, which also share system RAM. One example is the
+notebook's HD 620, where CoreGS already detects an integrated GPU. Recorded as an idea only, not scheduled.
 
 ### TASK-181 — Launcher Wheel page for the native DFP wheel (owner, 2026-11-05; with PR #205)
 
