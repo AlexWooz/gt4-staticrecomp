@@ -3546,6 +3546,29 @@ pass.
   skipped.
 - **Agent deviation:** it amended and force-pushed its own task-branch commit, so the standing rules now forbid that.
 
+### TASK-183: CoreGS 2.0 on unified memory (owner, 2026-11-05)
+
+**Scope:** Android, Apple Silicon, iOS and PC integrated GPUs. The study is
+`docs/hw-renderer-spec/STUDY-UNIFIED-MEMORY.md` (Opus planner, not PCSX2-tainted).
+
+**Findings:**
+- CoreGS's data streams already live in memory the GPU reads directly.
+- The real waste is the present chain: about 110 MB per frame at 3088x1440, from a copy, a black clear, a blit and the
+  second-queue copy.
+- On the phone the upload rings use cached memory.
+- CoreGS 2.0 has no host-read barrier before CPU readbacks (a latent spec bug).
+- UMA cannot shorten the normal-mode flare wait.
+
+**Plan, cheapest first (owner, 2026-11-05: quick big gains in each Android test build, complex work later):**
+1. Phase 0: A/B the existing switches (`GT4_HW_PRESENT_QUEUE=0`, `GT4_CORE2_CACHED_UPLOAD=0`,
+   `GT4_CORE2_SUBMIT_AFTER_WAIT=8`).
+2. Phase 1: memory-shape detection, counters and the host-read barrier. Exact.
+3. Phase 2: render the final picture straight into the swapchain image, together with pre-rotation (about 95-110 MB per
+   frame).
+4. Phases 3-6: placement and footprint, feeding the GPU around readbacks, a shared GS mirror, research.
+
+**Implementer:** OpenCode DeepSeek, for Android test4.
+
 **Step 2c (in progress, DeepSeek):** `GT4_CORE2_DEINT_NATIVE_DECISION`. The deinterlace decides once per native pixel
 instead of in every output sub-pixel, cutting reads about scale² (36x at 6x). Exact.
 
