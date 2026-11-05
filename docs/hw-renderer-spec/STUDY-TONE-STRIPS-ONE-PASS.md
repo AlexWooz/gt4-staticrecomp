@@ -129,6 +129,21 @@ Items 4.1 and 4.2 of the plan below are implemented on `task/168b-segments-fix`:
   same flush counts, CLUT loads performed and skipped, and CLUT buffer as one receiving them), the palette and tone
   fixtures, and the full CTest.
 
+**Measured** (desktop, George V lap 1x, VBlank blocks 4800-7800; Indicative: other agents' games ran during most runs):
+- The run's own CPU time (the temporary counters of section 3, two interleaved runs each): early drop on 1.46-1.61 ms per
+  VBlank (mostly 1.50-1.52), off 1.58-1.62 ms in the cleaner run (1.63-2.10 in the other): about 0.09 ms saved (6%).
+  Inside the run, the batch and hook stages fall from 0.066 to 0.014 ms and the front end from about 1.34 to 1.31 ms.
+  The CLUT stage inside the run is now 0.19-0.20 ms against 0.52-0.56 ms before the single walk: about 0.33 ms saved.
+  So a run costs about 1.5 ms instead of 2.0-2.3 ms.
+- Whole GS thread, A/B of 3 interleaved runs (median [min-max]): 1x on 11.38 [11.00-12.97], off 12.01 [10.91-13.86],
+  e655a630 (segments off) 11.51 [11.09-12.39]; gif_parse 3.82 / 3.96 / 3.77; batch_own 1.49 / 1.57 / 1.51; translate
+  0.73 / 0.76 / 0.72; CLUT stage 0.80 / 0.81 / 1.06. 6x on 13.34 [12.15-13.99], off 13.17 [12.52-14.57]. The run-to-run
+  spread (about 2 ms) is larger than the effect; renderer batches per VBlank stay 2,288 (1x) and 2,304 (6x) as counted,
+  while about 1,539 of them per VBlank no longer reach `OnBatch`. Clean numbers need the Avell.
+- Why the early drop saves little: translation never ran for these batches, the 02.4 rounding returns at once for FST
+  sprites, and most of a run's cost is the front end's per-vertex work (15,687 kicks) and the CLUT loads themselves,
+  which the drop does not touch. The next step, if wanted, is item 7.3 (held CLUT loads), then the per-kick path.
+
 ## 7. Plan, cheapest first
 
 1. The single-walk CLUT callback (exact by inspection; gates: George V, El Capitan and Tokyo R246 1x identity, v2.00
