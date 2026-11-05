@@ -206,10 +206,34 @@ pub fn settings_table_for(
     cards: &[gt4l_core::gpu::GpuDevice],
     integrated_gpu: bool,
 ) -> Value {
+    settings_table_versioned(
+        gt4l_core::LAUNCHER_VERSION,
+        platform,
+        settings,
+        controls,
+        monitors,
+        cards,
+        integrated_gpu,
+    )
+}
+
+/// [`settings_table_for`] for a given launcher version: the release-candidate row rule is a function of the version
+/// alone (`gt4l_core::is_test_build`), so the tests can ask what a final build, an rc and an Android test build show.
+fn settings_table_versioned(
+    version: &str,
+    platform: Platform,
+    settings: &Settings,
+    controls: &Controls,
+    monitors: &[Monitor],
+    cards: &[gt4l_core::gpu::GpuDevice],
+    integrated_gpu: bool,
+) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     // TASK-118: the release performance report and the VU code check are release-candidate settings; final builds do
     // not ship them, so their rows do not exist there either.
-    let release_candidate = gt4l_core::LAUNCHER_VERSION.contains("-rc");
+    // TASK-180 test3 fix (owner, 2026-11-05): a test build is a release candidate (`-rc`) OR an Android test build
+    // (`-android-test`). Keying only off "-rc" hid both rows, and turned the report off, in 1.3.0-android-test3.
+    let release_candidate = gt4l_core::is_test_build(version);
     for definition in SETTINGS {
         if !release_candidate && RC_ONLY_ROWS.contains(&definition.id) {
             continue;
@@ -1070,6 +1094,67 @@ mod table_tests {
         assert_eq!(scale["values"][1]["label"], "83% · 2x · 1280x896");
         assert_eq!(scale["values"][2]["label"], "124% · 3x · 1920x1344");
         assert_eq!(scale["values"].as_array().unwrap().len(), 12, "every multiplier the renderer accepts");
+    }
+
+    /// TASK-180 test3 fix (owner, 2026-11-05): the owner's phone lost the Performance report row and the F7/F8 touch
+    /// button in 1.3.0-android-test3. The cause was the release-candidate rule reading "-rc" only: an Android test build
+    /// was treated as a final build, which hides the row and forces the report off. Test builds (rc AND android-test)
+    /// must show the row on both platforms; a final build must not show it.
+    #[test]
+    fn the_performance_report_row_is_offered_on_every_test_build_and_no_final_build() {
+        let test_builds = ["1.3.0-rc5", "1.3.0-android-test3", "1.3.0-android-test4"];
+        for version in test_builds {
+            for platform in [Platform::Windows, Platform::Android] {
+                let table = settings_table_versioned(
+                    version,
+                    platform,
+                    &Settings::default(),
+                    &Controls::default(),
+                    &[],
+                    &[],
+                    false,
+                );
+                let report = row(&table, "performance_report");
+                assert_eq!(report["control"], "toggle", "{version} on {platform:?}");
+                assert_eq!(report["group"], "rc", "{version} on {platform:?}: the RC Settings section");
+                row(&table, "check_vu_code");  // the other release-candidate row travels with it
+            }
+        }
+        for version in ["1.3.0", "1.2.5"] {
+            for platform in [Platform::Windows, Platform::Android] {
+                let table = settings_table_versioned(
+                    version,
+                    platform,
+                    &Settings::default(),
+                    &Controls::default(),
+                    &[],
+                    &[],
+                    false,
+                );
+                assert!(
+                    table["rows"].as_array().unwrap().iter().all(|row| row["id"] != "performance_report"),
+                    "{version} on {platform:?}: a final build ships no report row"
+                );
+            }
+        }
+    }
+
+    /// TASK-180 test4 (owner, 2026-11-05): an Android test build turns the report on by default, and the row then reads
+    /// On. The value comes from the state load; here the table must show whatever the settings hold.
+    #[test]
+    fn the_performance_report_row_reads_the_stored_value() {
+        let mut settings = Settings::default();
+        settings.set("performance_report", "on").unwrap();
+        let table = settings_table_versioned(
+            "1.3.0-android-test4",
+            Platform::Android,
+            &settings,
+            &Controls::default(),
+            &[],
+            &[],
+            false,
+        );
+        assert_eq!(row(&table, "performance_report")["current"], true);
     }
 
     #[test]

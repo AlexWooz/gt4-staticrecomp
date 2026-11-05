@@ -220,8 +220,10 @@ class GameActivity : SDLActivity() {
     }
 
     // TASK-180 (owner, 2026-11-05): the F7/F8 performance report without a keyboard. Only while the launcher's
-    // performance report setting is on (GT4_PERF=1). A small, faint button on the left edge (clear of the race HUD): a tap
-    // starts an interval, the next writes the report. It never takes focus, so the controller keeps all its input.
+    // performance report setting is on (GT4_PERF=1). A small, faint button in the TOP-LEFT corner (owner, 2026-11-05
+    // 17:53: the middle of the left edge sat right over his phone's front camera), kept clear of the display cutout and
+    // the system bars by the window's insets: a tap starts an interval, the next writes the report. It never takes
+    // focus, so the controller keeps all its input.
     private fun addReportButton() {
         val size = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 44f, resources.displayMetrics).toInt()
         val margin = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8f, resources.displayMetrics).toInt()
@@ -248,10 +250,44 @@ class GameActivity : SDLActivity() {
             Log.i(TAG, if (recording) "touch button: interval started (F7)" else "touch button: report written (F8)")
             paint()
         }
-        val layout = FrameLayout.LayoutParams(size, size, Gravity.START or Gravity.CENTER_VERTICAL)
+        val layout = FrameLayout.LayoutParams(size, size, Gravity.START or Gravity.TOP)
         layout.leftMargin = margin
+        layout.topMargin = margin
         addContentView(button, layout)
         button.visibility = View.VISIBLE
+        // The top-left corner is under the display cutout on phones whose front camera sits there, and under the status
+        // bar in many orientations. The window's insets tell both; the button adds them to its own margin, on every
+        // change and once the view is attached. The insets are passed on untouched, so SDL and the game see them too.
+        val keepClear = { insets: android.view.WindowInsets ->
+            val left = if (Build.VERSION.SDK_INT >= 30) {
+                maxOf(
+                    insets.getInsets(android.view.WindowInsets.Type.displayCutout()).left,
+                    insets.getInsets(android.view.WindowInsets.Type.systemBars()).left,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                maxOf(insets.systemWindowInsetLeft, insets.displayCutout?.safeInsetLeft ?: 0)
+            }
+            val top = if (Build.VERSION.SDK_INT >= 30) {
+                maxOf(
+                    insets.getInsets(android.view.WindowInsets.Type.displayCutout()).top,
+                    insets.getInsets(android.view.WindowInsets.Type.systemBars()).top,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                maxOf(insets.systemWindowInsetTop, insets.displayCutout?.safeInsetTop ?: 0)
+            }
+            layout.leftMargin = margin + left
+            layout.topMargin = margin + top
+            button.layoutParams = layout
+            Log.i(TAG, "report button: top-left corner, clear of $left x $top of insets")
+        }
+        button.setOnApplyWindowInsetsListener { _, insets ->
+            keepClear(insets)
+            insets
+        }
+        button.requestApplyInsets()
+        button.post { window.decorView.rootWindowInsets?.let(keepClear) }
     }
 
     // TASK-180 test2: the performance HUD's glyphs (native/hw_gs/hud/hw_hud_system_posix.cpp calls this through JNI).

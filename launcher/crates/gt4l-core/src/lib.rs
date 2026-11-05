@@ -57,3 +57,34 @@ pub const RELEASE_LABEL: &str = env!("GT4_RELEASE_LABEL");
 pub fn launcher_release_version() -> Option<ReleaseVersion> {
     ReleaseVersion::parse(LAUNCHER_VERSION)
 }
+
+/// Whether a version string names a test build. Test builds are the release candidates (`1.3.0-rc5`) and the Android
+/// test builds (`1.3.0-android-test4`); both carry the release-candidate settings (TASK-118: the performance report and
+/// the VU code check) and neither may keep them on in a final build. A stable version (`1.3.0`) has no such rows.
+pub fn is_test_build(version: &str) -> bool {
+    let version = version.trim();
+    version.contains("-rc") || version.contains("-android-test")
+}
+
+/// Whether the launcher running now is a test build (see [`is_test_build`]).
+pub fn test_build() -> bool {
+    is_test_build(LAUNCHER_VERSION)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builds_are_release_candidates_and_android_tests() {
+        assert!(is_test_build("1.3.0-rc5"), "a release candidate");
+        assert!(is_test_build("1.3.0-rc15"), "a later release candidate");
+        assert!(is_test_build("1.3.0-android-test4"), "an Android test build");
+        assert!(is_test_build("1.3.0-android-test10"), "a later Android test build");
+        assert!(!is_test_build("1.3.0"), "a final build ships no test rows");
+        assert!(!is_test_build("1.2.5"), "an older final build");
+        assert!(!is_test_build(""), "an empty version is not a test build");
+        // The rule that broke test3: its label carries neither "-rc" nor a stable-only version.
+        assert!(is_test_build("1.3.0-android-test3"), "test3 is a test build even though it has no -rc label");
+    }
+}

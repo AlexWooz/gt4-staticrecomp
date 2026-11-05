@@ -409,6 +409,14 @@
     var firstAdvanced = document.querySelector("[data-section=\"advanced\"] [data-setting]");
     var firstId = firstAdvanced ? firstAdvanced.getAttribute("data-setting") : null;
     check("the Advanced section holds the advanced rows", firstId === "performance_report", "first " + firstId);
+    // TASK-180 test3 fix (owner, 2026-11-05): the Performance report row is what ships the F7/F8 touch button in the game;
+    // it must exist as an enabled toggle on both platforms.
+    var reportToggle = document.querySelector("[data-row=\"performance_report\"] [data-setting=\"performance_report\"]");
+    var reportValue = reportToggle ? reportToggle.getAttribute("aria-valuetext") : null;
+    check("the Performance report row is a focusable On/Off toggle",
+      !!reportToggle && reportToggle.getAttribute("role") === "spinbutton" && reportToggle.getAttribute("data-focusable") === "1" &&
+        (reportValue === T("settings.on") || reportValue === T("settings.off")),
+      reportToggle ? "role " + reportToggle.getAttribute("role") + ", value " + reportValue : "missing");
     press("ArrowRight");
     await wait(200);
     // Without a remembered row, A enters on the first control of the tab (settings.js focusRow): Monitor, at the top of

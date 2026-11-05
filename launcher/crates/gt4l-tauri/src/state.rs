@@ -350,7 +350,10 @@ impl AppState {
         };
         // TASK-118: the RC settings must not survive into a final build: an RC install can leave the release report or
         // the VU check on, and the final build does not ship their rows. Force the factory values and save.
-        if !gt4l_core::LAUNCHER_VERSION.contains("-rc") {
+        // TASK-180 test3 fix (owner, 2026-11-05): the test builds are the release candidates AND the Android test builds
+        // (`1.3.0-android-testN`); keying only off "-rc" turned the report off on the owner's phone.
+        let test_build = gt4l_core::test_build();
+        if !test_build {
             let mut changed = false;
             for (id, factory) in [("performance_report", "off"), ("check_vu_code", "off")] {
                 if state.config.settings.get(id) != factory {
@@ -363,8 +366,23 @@ impl AppState {
                 log(&state.dirs, "final build: the release-candidate settings went back to their factory values");
             }
         }
-        // TASK-180: a value the platform fixes (CoreGS 2.0 on Android) replaces whatever is stored, and is saved.
+        // TASK-180 test4 (owner, 2026-11-05): an Android test build comes with the performance report ON, so the F7/F8
+        // touch button is in the game from the first launch and the owner's reports keep coming. A value the player chose
+        // on the Settings page is kept; a final build never reaches here (it forces the report off just above).
         let platform = gt4l_core::Platform::current();
+        if test_build
+            && platform == gt4l_core::Platform::Android
+            && !state.config.settings.was_chosen("performance_report")
+            && state.config.settings.get("performance_report") != "on"
+        {
+            let _ = state.config.settings.set("performance_report", "on");
+            state.save_config();
+            log(
+                &state.dirs,
+                "android test build: the performance report is on by default (F7 starts an interval, F8 writes it)",
+            );
+        }
+        // TASK-180: a value the platform fixes (CoreGS 2.0 on Android) replaces whatever is stored, and is saved.
         let mut forced = false;
         for definition in gt4l_core::SETTINGS {
             if let Some(value) = platform.forced_value(definition.id) {
