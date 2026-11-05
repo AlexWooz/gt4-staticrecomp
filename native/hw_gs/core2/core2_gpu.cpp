@@ -1302,11 +1302,12 @@ struct Gpu::Impl {
   }
 
   // TASK-170c: the field names of a SpecKey in key order (the kSpecFields, then push, anisotropy and ROP words).
-  static constexpr const char *kSpecKeyNames[kSpecFieldCount + 3] = {
+  static constexpr const char *kSpecKeyNames[] = {
       "Format",  "Fba",      "Dither", "Ate",     "Atst",      "Afail",  "DateOn", "Datm",    "Ztest",   "Ztst",
       "Zmsk",    "Zformat",  "BlendOn", "Pabe",   "BlendA",    "BlendB", "BlendC", "BlendD",  "Colclamp", "TexOn",
       "Tfx",     "Tcc",      "TexelKind", "Aem",  "FogOn",     "TexFst", "TexLinear", "WrapS", "WrapT",   "KeepTopByte",
       "push",    "aniso",    "rop"};
+  static_assert(std::size(kSpecKeyNames) == kSpecFieldCount + 3, "a name per SpecKey word");
 
   // The key as "Name=value ..." (values in hex), for the game log.
   static std::string describe_key(const SpecKey &key) {
