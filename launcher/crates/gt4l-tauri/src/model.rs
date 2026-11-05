@@ -139,7 +139,7 @@ fn fill_resolution_row(row: &mut Value, settings: &Settings, monitors: &[Monitor
 
 /// The Render scale slider's readout per step: "100% · 4x · 2560x1792" for the output size the game would use now
 /// (1920 x 1080 when no monitor is known).
-fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], integrated_gpu: bool) {
+fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], integrated_gpu: bool, platform: Platform) {
     let output = display::resolve_target(monitors, settings.get("monitor"), settings.get("resolution"))
         .map(|target| target.output)
         .unwrap_or(display::FALLBACK_OUTPUT);
@@ -151,6 +151,10 @@ fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monit
     }
     row["values"]["labels"] = Value::Object(labels);
     row["values"]["output"] = json!(output.text());
+    // TASK-180: on a phone the slider starts where the screen gets 1x.
+    if platform.scale_floor_follows_screen() {
+        row["values"]["min"] = json!(display::render_scale_floor(output));
+    }
 }
 
 /// The settings table with the connected monitors (TASK-080 addendum: Monitor, Resolution and Render scale).
@@ -222,7 +226,7 @@ pub fn settings_table_for(
         match definition.id {
             "monitor" => fill_monitor_row(&mut row, settings, monitors),
             "resolution" => fill_resolution_row(&mut row, settings, monitors),
-            "render_scale" => fill_render_scale_row(&mut row, settings, monitors, integrated_gpu),
+            "render_scale" => fill_render_scale_row(&mut row, settings, monitors, integrated_gpu, platform),
             "vsync" if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 => without_fast_vsync(&mut row),
             // TASK-135: CoreGS 2.0's own; GSdx has its overlay rows.
             "performance_hud" => row["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 }),
@@ -915,7 +919,6 @@ mod table_tests {
             "resolution",
             "fullscreen",
             "discord_rich_presence",
-            "performance_hud",
             "cas_sharpness",
         ] {
             assert!(!listed.iter().any(|id| id == absent), "{absent} is not an Android row");
@@ -924,12 +927,33 @@ mod table_tests {
             let kept = listed.iter().any(|id| *id == table_row.id);
             assert_eq!(kept, CORE_GS_20_TABLE_ROWS.contains(&table_row.id.as_str()), "{}", table_row.id);
         }
-        for present in ["language", "update_channel", "render_scale", "vsync", "frame_rate", "coregs_sharpening", "trigger_full_range"] {
+        for present in ["language", "update_channel", "render_scale", "vsync", "frame_rate", "coregs_sharpening", "trigger_full_range", "performance_hud"] {
             assert!(listed.iter().any(|id| id == present), "{present} is an Android row");
         }
         for row in android["rows"].as_array().unwrap() {
             assert_ne!(row["visible_when"]["id"], "renderer", "{} would hide without the Renderer row", row["id"]);
         }
+    }
+
+    // TASK-180 (owner, test1 feedback): the phone's screen is the output; the slider starts at its 1x step.
+    #[test]
+    fn android_render_scale_follows_the_phone_screen() {
+        let screen = Monitor {
+            device: "android".into(),
+            name: "screen".into(),
+            primary: true,
+            desktop: display::Size::new(3088, 1440),
+            modes: vec![display::Size::new(3088, 1440)],
+        };
+        let mut settings = Settings::default();
+        settings.set("renderer", gt4l_core::settings::CORE_GS_20).unwrap();
+        let android = settings_table_for(Platform::Android, &settings, &Controls::default(), &[screen.clone()], &[], false);
+        let scale = row(&android, "render_scale");
+        assert_eq!(scale["values"]["output"], "3088x1440");
+        assert_eq!(scale["values"]["min"], json!(display::render_scale_floor(display::Size::new(3088, 1440))));
+        assert!(scale["values"]["labels"]["100"].as_str().unwrap().contains("5x"), "100% is the screen's native multiplier");
+        let windows = settings_table_for(Platform::Windows, &Settings::default(), &Controls::default(), &[screen], &[], false);
+        assert_eq!(row(&windows, "render_scale")["values"]["min"], json!(display::RENDER_SCALE_MIN), "Windows keeps its floor");
     }
 
     #[test]

@@ -244,7 +244,12 @@ fn visual_ready() -> bool {
 /// TASK-080 addendum: the Monitor and Resolution rows list the connected monitors and their modes, read each time.
 #[tauri::command]
 pub fn get_settings_table(shared: State<'_, Shared>) -> Result<Value, String> {
-    get_settings_table_with_monitors(shared.inner(), &gt4l_platform::display::monitors())
+    // TASK-180: on Android the output is the phone's own screen.
+    #[cfg(target_os = "android")]
+    let monitors = crate::android::monitors();
+    #[cfg(not(target_os = "android"))]
+    let monitors = gt4l_platform::display::monitors();
+    get_settings_table_with_monitors(shared.inner(), &monitors)
 }
 
 /// The table without monitors (tests and the flow audit): Monitor shows "Primary monitor", Resolution the desktop.
@@ -256,8 +261,7 @@ pub fn get_settings_table_with_monitors(shared: &Shared, monitors: &[display_rul
     let state = lock(shared);
     // TASK-114 rc5: one card list, read from the cache (no probe here), serves both the rows and the integrated check.
     let cards = gt4l_platform::gpu::cached_gpus();
-    let integrated_gpu = Platform::current().integrated_gpu_only()
-        || gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
+    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
     let mut table = model::settings_table_with_monitors(&state.config.settings, &state.controls, monitors, &cards, integrated_gpu);
     // TASK-091: the launcher's own row (Graphics > Advanced), not a game setting.
     let safe_mode = webview_guard::safe_mode_on(state.user_dirs.root());
@@ -296,6 +300,9 @@ pub fn set_setting_of(id: String, value: Value, shared: &Shared) -> Result<(), S
         let text = model::value_text(&value, definition.kind == settings::Kind::Toggle)
             .ok_or_else(|| format!("'{id}' needs a plain value"))?;
         state.config.settings.set_by_user(&id, &text).map_err(|error| error.to_string())?;
+        // TASK-180: on Android every change is logged (a touch can move a slider; the log shows what was stored and when).
+        #[cfg(target_os = "android")]
+        state::log(&state.dirs, &format!("setting {id} = {text}"));
         if id == "language" {
             // The messages from Rust follow the new language at once (the UI re-draws on its own).
             state::set_current_language(state::language_of(&state));

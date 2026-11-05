@@ -9,7 +9,11 @@
 // The process ends with the activity, so every start gets fresh native state.
 package io.github.moesuito.gt4recomp
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -77,6 +81,42 @@ class GameActivity : SDLActivity() {
         layout.leftMargin = margin
         addContentView(button, layout)
         button.visibility = View.VISIBLE
+    }
+
+    // TASK-180 test2: the performance HUD's glyphs (native/hw_gs/hud/hw_hud_system_posix.cpp calls this through JNI).
+    // The 95 printable ASCII glyphs of the system's monospace font, side by side in one row of cells:
+    // {cell width, cell height, coverage 0-255 row-major over the whole strip}.
+    @Suppress("unused")
+    fun glyphAtlas(pixelHeight: Int): IntArray {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.typeface = Typeface.MONOSPACE
+        paint.textSize = pixelHeight.toFloat()
+        paint.color = Color.WHITE
+        val metrics = paint.fontMetricsInt
+        val cellHeight = maxOf(1, metrics.descent - metrics.ascent)
+        val cellWidth = maxOf(1, kotlin.math.ceil(paint.measureText("M").toDouble()).toInt())
+        val glyphs = 126 - 32 + 1
+        val bitmap = Bitmap.createBitmap(cellWidth * glyphs, cellHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        for (index in 0 until glyphs) {
+            canvas.drawText((32 + index).toChar().toString(), (index * cellWidth).toFloat(), (-metrics.ascent).toFloat(), paint)
+        }
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        bitmap.recycle()
+        val out = IntArray(2 + pixels.size)
+        out[0] = cellWidth
+        out[1] = cellHeight
+        for (i in pixels.indices) out[2 + i] = (pixels[i] ushr 24) and 0xFF
+        return out
+    }
+
+    // The display's current refresh rate (phones change it on the fly), for the HUD.
+    @Suppress("unused")
+    fun displayRefreshHz(): Float {
+        @Suppress("DEPRECATION")
+        val current = (if (android.os.Build.VERSION.SDK_INT >= 30) display else null) ?: windowManager.defaultDisplay
+        return current?.refreshRate ?: 0f
     }
 
     // Called on SDL's thread, after the libraries are loaded and before SDL_main.

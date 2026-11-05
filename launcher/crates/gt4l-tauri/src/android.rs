@@ -145,6 +145,32 @@ extern "C" {
     fn __android_log_write(priority: std::ffi::c_int, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> std::ffi::c_int;
 }
 
+/// The phone's screen as the launcher's display model sees a monitor (TASK-180 test2, owner: 100% is the screen's
+/// native output, as a 1440p monitor on the PC). MainActivity puts the current display mode in the environment before
+/// the launcher starts (`GT4_ANDROID_DISPLAY=3088x1440@120`, landscape), so no call to the Java side is needed here.
+pub fn screen() -> Option<(gt4l_core::display::Size, u32)> {
+    let text = std::env::var("GT4_ANDROID_DISPLAY").ok()?;
+    let (size, refresh) = text.split_once('@').unwrap_or((text.as_str(), "0"));
+    let (width, height) = size.split_once('x')?;
+    let (width, height): (u32, u32) = (width.trim().parse().ok()?, height.trim().parse().ok()?);
+    let refresh = refresh.trim().parse::<f32>().map(|hertz| hertz.round() as u32).unwrap_or(0);
+    (width > 0 && height > 0).then(|| (gt4l_core::display::Size::new(width.max(height), width.min(height)), refresh))
+}
+
+/// The monitors of the display model: the phone's screen, its current mode as the desktop and only mode.
+pub fn monitors() -> Vec<gt4l_core::display::Monitor> {
+    match screen() {
+        Some((size, _)) => vec![gt4l_core::display::Monitor {
+            device: "android-screen".to_string(),
+            name: "Phone screen".to_string(),
+            primary: true,
+            desktop: size,
+            modes: vec![size],
+        }],
+        None => Vec::new(),
+    }
+}
+
 /// Writes one launcher log line to logcat (tag `GT4Recomp-launcher`).
 pub fn logcat(level: gt4l_core::logs::Level, message: &str) {
     let priority = match level {
@@ -484,9 +510,24 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     std::fs::create_dir_all(&session_dir).map_err(|error| format!("session folder: {error}"))?;
     let (textures, _) = state.texture_location();
     let inputs = LaunchInputs { game_executable: Path::new("libgt4.so"), elf: &elf, disc: &disc, card: &card, session_dir: &session_dir };
-    // A phone's GPU shares the system's memory: the Render scale starts at 1x, as on a PC with an integrated GPU.
-    let integrated_gpu = gt4l_core::Platform::current().integrated_gpu_only();
-    let mut plan = launch::plan_coregs20_launch(&inputs, &settings, None, integrated_gpu, &textures, &[]);
+    // TASK-180 test2: the output is the phone's screen (100% = its native multiplier, as a monitor on the PC). The
+    // decision is logged, so a scale seen in the game can be traced to the setting it came from.
+    let monitors = monitors();
+    let display = gt4l_core::display::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
+    let scale = launch::session_plan(&settings, display.as_ref(), false);
+    state::log(
+        &dirs,
+        &format!(
+            "play: render scale {}% gives {}x ({}x{} internal) for the screen {} ({})",
+            settings.get("render_scale"),
+            scale.multiplier,
+            scale.internal_width,
+            scale.internal_height,
+            display.as_ref().map(|target| target.output.text()).unwrap_or_else(|| "unknown, 1920x1080 assumed".to_string()),
+            screen().map(|(_, hertz)| format!("{hertz} Hz")).unwrap_or_else(|| "refresh unknown".to_string()),
+        ),
+    );
+    let mut plan = launch::plan_coregs20_launch(&inputs, &settings, display.as_ref(), false, &textures, &[]);
     let controls_path = state.user_dirs.controls_file();
     if controls_path.exists() {
         plan.environment.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));

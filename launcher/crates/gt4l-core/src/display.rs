@@ -29,7 +29,10 @@ pub const MIN_OUTPUT_SIDE: u32 = 320;
 pub const MAX_OUTPUT_SIDE: u32 = 16384;
 
 /// Render scale slider: 50% to 200% in steps of 25%, default 100%.
-pub const RENDER_SCALE_MIN: u32 = 50;
+/// TASK-180 (owner, 2026-11-05): a phone's screen makes 100% a high multiplier (5x at 3088 x 1440) and its owner wants
+/// 720p-class output, so on Android the scale goes down to 0%; the slider starts at the step that gives 1x on that
+/// screen ([`render_scale_floor`]). Windows keeps 50%.
+pub const RENDER_SCALE_MIN: u32 = if cfg!(target_os = "android") { 0 } else { 50 };
 pub const RENDER_SCALE_MAX: u32 = 200;
 pub const RENDER_SCALE_STEP: u32 = 25;
 pub const RENDER_SCALE_DEFAULT: u32 = 100;
@@ -106,6 +109,24 @@ pub fn is_render_scale(percent: u32) -> bool {
 }
 
 /// The slider's steps in order.
+/// The multiplier 100% gives on an output: the smallest whole multiple of the native frame that covers it.
+pub fn base_multiplier(output_width: u32, output_height: u32) -> u32 {
+    let (width, height) = if output_height > output_width { (output_height, output_width) } else { (output_width, output_height) };
+    ceil_div(width, NATIVE_FRAME_WIDTH).max(ceil_div(height, NATIVE_FRAME_HEIGHT)).max(1)
+}
+
+/// TASK-180: the lowest step worth offering on an output, the one that gives 1x (each 25% step is one multiplier), kept
+/// between [`RENDER_SCALE_MIN`] and 100%.
+pub fn render_scale_floor(output: Size) -> u32 {
+    render_scale_floor_from(output, RENDER_SCALE_MIN)
+}
+
+fn render_scale_floor_from(output: Size, minimum: u32) -> u32 {
+    let base = base_multiplier(output.width, output.height) as i64;
+    let floor = RENDER_SCALE_DEFAULT as i64 - RENDER_SCALE_STEP as i64 * (base - 1);
+    floor.clamp(minimum as i64, RENDER_SCALE_DEFAULT as i64) as u32
+}
+
 pub fn render_scale_steps() -> Vec<u32> {
     (RENDER_SCALE_MIN..=RENDER_SCALE_MAX).step_by(RENDER_SCALE_STEP as usize).collect()
 }
@@ -368,6 +389,17 @@ mod tests {
 
     fn plan(width: u32, height: u32, scale: u32) -> DisplayPlan {
         display_plan(width, height, scale, PCSX2_GS_CAPS).unwrap()
+    }
+
+    #[test]
+    fn the_android_floor_is_the_step_of_1x() {
+        // The owner's S23 Ultra at WQHD+ (5x at 100%), the same phone at FHD+ (4x), a 1080p screen (3x).
+        assert_eq!(render_scale_floor_from(Size::new(3088, 1440), 0), 0);
+        assert_eq!(render_scale_floor_from(Size::new(2316, 1080), 0), 25);
+        assert_eq!(render_scale_floor_from(Size::new(1920, 1080), 0), 50);
+        assert_eq!(render_scale_floor_from(Size::new(1440, 3088), 0), 0, "portrait sizes count as landscape");
+        assert_eq!(render_scale_floor_from(Size::new(3088, 1440), 50), 50, "never below the platform's minimum");
+        assert_eq!(base_multiplier(3088, 1440), 5);
     }
 
     #[test]

@@ -242,6 +242,8 @@ add_library(gt4_hw_vulkan_loader STATIC "${HW}/hw_gs_vulkan_loader.cpp")
 target_include_directories(gt4_hw_vulkan_loader PUBLIC "${HW}" "${GT4_VULKAN_INCLUDE}")
 target_link_libraries(gt4_hw_vulkan_loader PUBLIC dl)
 add_library(gt4_hw_hud STATIC "${HW}/hud/hw_hud.cpp" "${HW}/hud/hw_hud_system_posix.cpp")
+# The HUD draws its glyphs and reads the refresh rate through the game activity (SDL3 gives the JNI environment).
+target_link_libraries(gt4_hw_hud PRIVATE gt4_sdl3)
 add_library(gt4_hw_backend STATIC "${HW}/hw_gs_backend.cpp" "${HW}/hw_gs_dispatch.cpp" "${HW}/hud/hw_hud_layer.cpp")
 target_include_directories(gt4_hw_backend PRIVATE "${GT4_VULKAN_INCLUDE}")
 target_link_libraries(gt4_hw_backend PUBLIC gt4_hw_hud gt4_hw_options gt4_pacing gt4_hw_writeback gt4_hw_vulkan_loader)

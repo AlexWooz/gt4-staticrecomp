@@ -272,6 +272,15 @@
     });
     // Touch and pen: drag with pointer capture. The thumb is 14 px, so the track is inset by 7 px on each side.
     var touchDrag = false;
+    // TASK-180 (owner, 2026-11-05): on a phone the page scrolls under the finger. There a touch changes a slider only
+    // when it moves sideways first (or taps without moving); a vertical swipe that starts on the slider scrolls the
+    // page and leaves the value alone (pan-y lets the WebView scroll; it then cancels the pointer).
+    var scrollSafe = GT4.platform === "android";
+    var touchStart = null;
+    var touchMoved = false;
+    if (scrollSafe) {
+      input.style.touchAction = "pan-y";
+    }
     function valueAt(clientX) {
       var box = input.getBoundingClientRect();
       return GT4.input.valueFromPointer(clientX, box.left + 7, box.width - 14, spec.min, spec.max, spec.step);
@@ -281,6 +290,11 @@
         return;
       }
       touchDrag = true;
+      if (scrollSafe) {
+        touchStart = { x: event.clientX, y: event.clientY };
+        touchMoved = false;
+        return;
+      }
       input.setPointerCapture(event.pointerId);
       input.value = String(valueAt(event.clientX));
       paint();
@@ -290,14 +304,33 @@
       if (!touchDrag) {
         return;
       }
+      if (scrollSafe && !touchMoved) {
+        var dx = Math.abs(event.clientX - touchStart.x);
+        var dy = Math.abs(event.clientY - touchStart.y);
+        if (dx < 8 || dx <= dy) {
+          return;
+        }
+        touchMoved = true;
+        input.setPointerCapture(event.pointerId);
+      }
       input.value = String(valueAt(event.clientX));
       paint();
     });
-    function endTouchDrag() {
+    function endTouchDrag(event) {
       if (!touchDrag) {
         return;
       }
       touchDrag = false;
+      if (scrollSafe) {
+        if (event.type === "pointercancel") {
+          paint();
+          return;
+        }
+        if (!touchMoved) {
+          input.value = String(valueAt(event.clientX));
+          paint();
+        }
+      }
       commit(ctx, row.id, Number(input.value));
     }
     input.addEventListener("pointerup", endTouchDrag);

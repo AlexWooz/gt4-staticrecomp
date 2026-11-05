@@ -26,7 +26,6 @@ const ANDROID_ROWS_NOT_OFFERED: &[(&str, &str)] = &[
     ("resolution", "the game always fills the phone's screen"),
     ("fullscreen", "the game always fills the phone's screen"),
     ("discord_rich_presence", "Discord has no game status on Android"),
-    ("performance_hud", "the performance overlay has no text on Android yet"),
     ("launcher_gpu", "the launcher's own graphics switch guards WebView2, a Windows component"),
 ];
 
@@ -56,9 +55,9 @@ impl Platform {
         matches!(self, Platform::Windows)
     }
 
-    /// Whether the game always renders on a GPU that shares the system's memory (a phone's): the Render scale then climbs
-    /// from 1x at its default (the integrated-GPU rule of issue #89), as on a PC with an integrated GPU.
-    pub const fn integrated_gpu_only(self) -> bool {
+    /// Whether the Render scale slider starts at the step that gives 1x on the screen (Android: the phone's own screen is
+    /// the output, 100% is its native size, and the owner wants 720p-class output too). Windows keeps its 50% floor.
+    pub const fn scale_floor_follows_screen(self) -> bool {
         matches!(self, Platform::Android)
     }
 
@@ -147,7 +146,8 @@ mod tests {
         assert!(!android.allows_renderer(PCSX2_GS));
         assert!(android.allows_renderer(CORE_GS_20));
         assert!(!android.installs_updates());
-        assert!(android.integrated_gpu_only() && !Platform::Windows.integrated_gpu_only());
+        assert!(android.scale_floor_follows_screen() && !Platform::Windows.scale_floor_follows_screen());
+        assert!(android.offers("performance_hud"), "the HUD draws on Android since test2");
         for row in ["graphics_card", "monitor", "resolution", "fullscreen", "discord_rich_presence"] {
             assert!(!android.offers(row), "{row}");
             assert!(android.why_not_offered(row).is_some(), "{row}");

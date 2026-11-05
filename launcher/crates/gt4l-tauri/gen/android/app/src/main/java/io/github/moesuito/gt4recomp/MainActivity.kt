@@ -10,8 +10,24 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    publishDisplay()
     super.onCreate(savedInstanceState)
     hideSystemBars()
+  }
+
+  // TASK-180 test2: the launcher's display model takes the phone's screen as its monitor (100% Render scale = the screen's
+  // native output). The current mode, in landscape, goes to the environment before the launcher library starts.
+  private fun publishDisplay() {
+    try {
+      @Suppress("DEPRECATION")
+      val display = (if (android.os.Build.VERSION.SDK_INT >= 30) display else null) ?: windowManager.defaultDisplay
+      val mode = display.mode
+      val wide = maxOf(mode.physicalWidth, mode.physicalHeight)
+      val tall = minOf(mode.physicalWidth, mode.physicalHeight)
+      android.system.Os.setenv("GT4_ANDROID_DISPLAY", "${wide}x${tall}@${mode.refreshRate}", true)
+    } catch (error: Exception) {
+      android.util.Log.w("GT4Recomp-launcher", "display mode not known: $error")
+    }
   }
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {

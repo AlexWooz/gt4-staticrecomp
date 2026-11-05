@@ -2,6 +2,10 @@
 // TASK-135: see hw_hud.hpp.
 #include "hw_hud.hpp"
 
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
+
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 #define GT4_HUD_CPUID 1
 #if defined(_MSC_VER) || defined(_WIN32)
@@ -41,6 +45,9 @@ std::string formatted(const char *pattern, double a, double b = 0.0, double c = 
 }
 
 std::string percent_text(double percent) {
+#ifdef __ANDROID__
+  if (percent < 0.0) return std::string("  n/a");  // TASK-180: a reading Android does not give this app
+#endif
   return percent < 0.0 ? std::string("   --") : formatted("%5.1f%%", percent);
 }
 
@@ -103,8 +110,38 @@ void FrameTimes::recent_intervals(std::vector<float> &out, std::size_t count) co
   }
 }
 
+#ifdef __ANDROID__
+namespace {
+std::string system_property(const char *name) {
+  char value[PROP_VALUE_MAX] = {};
+  return __system_property_get(name, value) > 0 ? std::string(value) : std::string();
+}
+
+// TASK-180: the commercial names of the common phone chips (the SoC model is all Android reports).
+const char *soc_marketing_name(const std::string &model) {
+  static const std::pair<const char *, const char *> kNames[] = {
+      {"SM8750", "Snapdragon 8 Elite"},     {"SM8650", "Snapdragon 8 Gen 3"},   {"SM8550", "Snapdragon 8 Gen 2"},
+      {"SM8475", "Snapdragon 8+ Gen 1"},    {"SM8450", "Snapdragon 8 Gen 1"},   {"SM8350", "Snapdragon 888"},
+      {"SM8250", "Snapdragon 865"},         {"SM7675", "Snapdragon 7+ Gen 3"},  {"SM7550", "Snapdragon 7 Gen 3"},
+  };
+  for (const auto &[soc, name] : kNames)
+    if (model.rfind(soc, 0) == 0) return name;
+  return nullptr;
+}
+}  // namespace
+#endif
+
 std::string cpu_brand_string() {
-#ifdef GT4_HUD_CPUID
+#ifdef __ANDROID__
+  // TASK-180: an arm64 phone has no CPUID brand string: the SoC as Android reports it (Build.SOC_MANUFACTURER and
+  // Build.SOC_MODEL read these properties), with the chip's commercial name when known: "QTI SM8550 (Snapdragon 8 Gen 2)".
+  const std::string model = system_property("ro.soc.model");
+  std::string name = system_property("ro.soc.manufacturer");
+  if (!model.empty()) name += (name.empty() ? "" : " ") + model;
+  if (name.empty()) name = system_property("ro.board.platform");
+  if (const char *marketing = soc_marketing_name(model)) name += std::string(" (") + marketing + ")";
+  return clean_device_name(name);
+#elif defined(GT4_HUD_CPUID)
   unsigned registers[4] = {};
   const auto leaf = [&registers](unsigned number) {
 #if defined(_MSC_VER) || defined(_WIN32)
