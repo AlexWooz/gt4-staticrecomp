@@ -486,3 +486,46 @@ runs (median).
   - O5 on the full-screen passes after the read and Hong Kong's dirty patches (9.4); the flares themselves are cheap;
   - O4 waits for the Avell's I_cpu: 0.3-0.75 ms per read on the desktop, under the 1 ms bar;
   - O2 (spin on the last fence) remains the next cheap A/B.
+
+### 9.8 O3: read blocks only (2026-11-05)
+
+`GT4_CORE2_READ_BLOCKS_ONLY=1` (commit `80cf04c9`, **off by default**): an EE download reduces a target of another base,
+width or class only over its pixels in the GS blocks the download reads. Such a target keeps its drawn area and owes the
+rest to memory through the IN-408 `readOnGpu` debt: it is stored before a write patches its page rows and before 6.2
+drops it. A target written before a newer one over the same blocks gets a dirty rectangle. The CTest
+`hw_core2_read_blocks_only` checks a newer target over a cut one, then the rest of it read right away, after ageing and
+after a CT16 upload, word for word; it fails if the dirty rectangle or the debt is removed.
+
+**Not exact (C).**
+- Hong Kong's flare replies are identical at 6x, 10x and 12x, and `gates6.sh` passes with it on (`wrong=0`).
+- Motegi's are not: one reply in 6,588 differs at 6x (reply 6086, VBlank 9097), and the final hash differs at 10x and 12x.
+- Cause: the old whole write-back also clears the target's drawn area, and later readbacks order targets by `lastDraw`
+  per target, not per pixel. GT4's flare chain draws a 64 x 192 scratch window at a new base every frame, and the
+  windows overlap in memory (BP 13984, 14016, 14048, 14112, ...).
+- With the cut, windows stay drawn, and at VBlank 9097 three of them, drawn after window 13984, are written over it in
+  the read's blocks. The old code had written them back earlier and then written 13984 on top.
+- An exact O3 must keep the old state change: the target becomes undrawn, and its pixels outside the read's blocks reach
+  memory before anything reads or partly overwrites those blocks. That needs a deferred write-back layer in front of GS
+  memory, hooked into every reader: CLUT loads, GLM uploads, decode windows, downloads, moves, display, uploads and
+  readbacks.
+- It would save only the CPU write-back of the extra pixels. The CPU part of all readbacks in Hong Kong at 6x is 0.30-0.33
+  ms/VBlank (exclusive readback time minus its GPU waits, O3 off), and it does not grow with the scale.
+
+**Desktop A/B, O3 0 against 1** (`ab.sh`, A B B A A B, Spec II B-Spec, headless; no other game process in 35 of 36 runs, one sample in the 36th;
+median of the run means, ms):
+
+| Scene, scale | Wall | GS worker | Read wait | GPU busy | Stores /VBlank | Px reduced per readback download |
+|---|---|---|---|---|---|---|
+| Hong Kong 6x | 10.95 → 11.96 | 8.34 → 9.06 | 2.22 → 2.33 | 7.80 → 8.35 | 0.12 → 0.45 | 10,540 → 215 |
+| Motegi 6x | 8.01 → 8.07 | 6.22 → 6.30 | 1.50 → 1.57 | 5.45 → 5.48 | 0.07 → 0.09 | 518 → 168 |
+| Hong Kong 10x | 17.79 → 19.10 | 6.00 → 7.49 | 10.39 → 10.13 | 16.53 → 17.18 | 0.12 → 0.45 | 10,540 → 215 |
+| Motegi 10x | 11.72 → 12.03 | 4.55 → 5.03 | 4.66 → 4.82 | 11.00 → 11.21 | 0.07 → 0.09 | 518 → 168 |
+| Hong Kong 12x | 26.53 → 24.97 | 8.07 → 6.88 | 14.41 → 15.56 | 23.45 → 23.38 | 0.12 → 0.45 | 10,540 → 215 |
+| Motegi 12x | 16.46 → 16.47 | 5.01 → 5.19 | 7.44 → 7.93 | 15.49 → 15.42 | 0.07 → 0.09 | 518 → 168 |
+
+- The cut removes 98% of Hong Kong's download pixels, but the debt adds 0.33 stores before a write per VBlank, mostly
+  PSMT8 texture uploads over the 128 x 128 Z24 targets.
+- Hong Kong's wall rises at 6x (+1.0) and 10x (+1.3) and falls at 12x (-1.6, with the read wait +1.2); Motegi is
+  neutral at every scale. There is no consistent gain to set against the lost exactness.
+- **Recommendation:** drop O3. Keep the counters (pixels per readback download) and the per-reply trace
+  (`GT4_HW_FLARE_REPLY_TRACE=<VBlank>`). The switch could be removed or kept as a diagnostic.

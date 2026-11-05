@@ -6611,6 +6611,21 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_sync_trace (TASK-182): GT4_CORE2_BARRIER_TRACE (counts of barriers, pass ends, flushes, submissions and descriptor
+// traffic) and GT4_CORE2_GPU_CATEGORIES (a timestamp at each change of kind of work) are diagnostics only: the images and
+// the GS memory of every frame must be identical with each switch on and off.
+int TestCore2SyncTrace(const gpu::VulkanHandles& handles) {
+    int failures = 0;
+    for (const char* diagnostics : {"GT4_CORE2_BARRIER_TRACE", "GT4_CORE2_GPU_CATEGORIES"}) {
+        failures += CheckCore2Ab(handles, diagnostics, CacheFixtureCapture(), kCacheFixtureFrames, diagnostics, false,
+                                 [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+        failures += CheckCore2Ab(handles, diagnostics, Core2GpuPaletteCapture(4), 4, diagnostics, false,
+                                 [](const Core2AbRun&, const Core2AbRun&) { return 0; });
+    }
+    std::printf("hw_core2_sync_trace: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // hw_postfx_fxaa (IN-376, chapter 13.5): a dark buffer with one bright flat triangle whose long edges are steep
 // and shallow, composed on the GPU at 1x and 2x with and without FXAA. Edge-only FXAA must leave every pixel away
 // from the edges unchanged, change pixels along them, and only produce colours between the two flat colours.
@@ -7268,6 +7283,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_texture_replacement") return TestCore2TextureReplacement(handles);
     if (name == "hw_core2_overlap_order") return TestCore2OverlapOrder(handles);
     if (name == "hw_core2_point_quads") return TestCore2PointQuads(handles);
+    if (name == "hw_core2_sync_trace") return TestCore2SyncTrace(handles);
     if (name == "hw_core2_present_scale") return TestCore2PresentScale(handles);
     if (name == "hw_core2_forced_bilinear") return TestCore2ForcedBilinear(handles);
     std::printf("unknown test: %s\n", name.c_str());
