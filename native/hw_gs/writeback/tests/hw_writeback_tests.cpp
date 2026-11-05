@@ -4680,6 +4680,49 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
+// hw_core2_tone_early_drop (TASK-168b): GT4_CORE2_TONE_EARLY_DROP. A tone run's copy-back strips are dropped as the front
+// end emits them instead of in OnBatch: the same images and GS memory with the switch off and on, at 1x and 2x, the same
+// tone runs and skipped draws (four per frame: the run's first draw and three strips), and three early drops per frame
+// with it on (the strips after the run's first draw, which starts the run in OnBatch).
+// T8 sprites over a 32-bit target that are not of the shuffle shape start no run: nothing is dropped.
+int TestCore2ToneEarlyDrop(const gpu::VulkanHandles& handles) {
+    const char* kSwitch = "GT4_CORE2_TONE_EARLY_DROP";
+    int failures = 0;
+    constexpr uint32_t kFrames = 3;
+    for (uint32_t scale : {1u, 2u}) {
+        const std::string tag = scale == 1 ? " at 1x" : " at 2x";
+        failures += CheckCore2Ab(handles, ("a tone run's copy-back strips" + tag).c_str(), Core2PaletteSegmentsToneRunCapture(kFrames),
+                                 kFrames, kSwitch, false,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     std::printf("  early drops %llu / %llu, tone runs %llu / %llu, tone draws skipped %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.toneDropsOnArrival),
+                                                 static_cast<unsigned long long>(on.stats.toneDropsOnArrival),
+                                                 static_cast<unsigned long long>(off.stats.toneRuns),
+                                                 static_cast<unsigned long long>(on.stats.toneRuns),
+                                                 static_cast<unsigned long long>(off.stats.toneDrawsSkipped),
+                                                 static_cast<unsigned long long>(on.stats.toneDrawsSkipped));
+                                     return off.stats.toneDropsOnArrival == 0 && on.stats.toneDropsOnArrival == 3u * kFrames &&
+                                                    off.stats.toneRuns == kFrames && on.stats.toneRuns == off.stats.toneRuns &&
+                                                    on.stats.toneDrawsSkipped == off.stats.toneDrawsSkipped &&
+                                                    off.stats.toneDrawsSkipped == 4u * kFrames
+                                                ? 0
+                                                : 1;
+                                 },
+                                 false, scale);
+        failures += CheckCore2Ab(handles, ("T8 over a 32-bit target, not a shuffle" + tag).c_str(),
+                                 Core2PaletteSegmentsNoShuffleCapture(kFrames), kFrames, kSwitch, false,
+                                 [](const Core2AbRun& off, const Core2AbRun& on) {
+                                     return off.stats.toneDropsOnArrival == 0 && on.stats.toneDropsOnArrival == 0 &&
+                                                    on.stats.toneRuns == 0 && off.stats.toneRuns == 0
+                                                ? 0
+                                                : 1;
+                                 },
+                                 false, scale);
+    }
+    std::printf("hw_core2_tone_early_drop: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 int TestCore2OverlapOrder(const gpu::VulkanHandles& handles) {
     const int failures = CheckCore2Ab(handles, "overlapping strips and sprites", Core2OverlapCapture(), 1,
                                       "GT4_CORE2_GROUP_DISJOINT", false,
@@ -7066,6 +7109,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_cpu_sprites") return TestCore2CpuSprites(handles);
     if (name == "hw_core2_gpu_clut") return TestCore2GpuClut(handles);
     if (name == "hw_core2_palette_segments") return TestCore2PaletteSegments(handles);
+    if (name == "hw_core2_tone_early_drop") return TestCore2ToneEarlyDrop(handles);
     if (name == "hw_core2_drawn_page_test") return TestCore2DrawnPageTest(handles);
     if (name == "hw_core2_width_grace") return TestCore2WidthGrace(handles);
     if (name == "hw_core2_glm_memo") return TestCore2GlmMemo(handles);

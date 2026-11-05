@@ -38,6 +38,7 @@ struct Core2Counters {
     std::uint64_t readbackPixels = 0;
     std::uint64_t toneRuns = 0;
     std::uint64_t toneDrawsSkipped = 0;
+    std::uint64_t toneDropsOnArrival = 0;      // TASK-168b: of those, dropped as the front end emitted them (no OnBatch)
     std::uint64_t toneAlphaOnlyUnsupported = 0;  // 7.2 alpha-only variant: drawn normally (not implemented yet)
     std::uint64_t displayFromTargets = 0;
     std::uint64_t displayFromMemory = 0;

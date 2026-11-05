@@ -109,7 +109,27 @@ Renderer batches per VBlank stay the same (2,288 on this lap): they are counted 
 - **Counters:** the renderer's batch count and `toneDrawsSkipped` keep their meaning; a new counter
   (`tone_dropped_on_arrival`) tells how many batches took the early path.
 
-## 6. Plan, cheapest first
+## 6. Done (2026-11-05)
+
+Items 4.1 and 4.2 of the plan below are implemented on `task/168b-segments-fix`:
+- `BatchSink::DropOnArrival` (front end): asked for every emitted batch after the 02.6 discard; on yes the front end
+  keeps `NoteBatchWritesToClut`, the flush reason and counts and `BatchesEmitted`, and recycles the batch storage,
+  without the 02.4 rounding, the vertex trace or `OnBatch`. Core 2 answers with `ToneHook`'s skip test and its side
+  effects (`counters.batches`, the last scene frame, `toneDrawsSkipped`, and the new `toneDropsOnArrival`, printed as
+  `tone_early`). `GT4_CORE2_TONE_EARLY_DROP=0` turns it off.
+- `SetBeforeLocalRead` returns after one walk when no drawn target meets the load's span.
+- Every skipped draw but a run's first now takes the early path: George V lap `tone_skipped=8659420 tone_early=8653797`
+  (5,623 runs), El Capitan 11,922,680 / 11,914,938, Tokyo R246 12,153,680 / 12,145,788, v2.00 Arcade 1,319,780 /
+  1,318,923.
+- Identity (gates6 against rc14 PGO, Confirmed): George V, El Capitan and Tokyo R246 at 1x (race clock, simulation state,
+  state dump, 24/35/35 frames), v2.00 night race 3x (state, clock, 10 frames), v2.00 Arcade 3x (14 frames), George V 6x
+  (12 frames), VU1/VU0 verify (0 mismatches, 0 interpreted calls) and MTVU verify (8,032 frames, 0 mismatches) all
+  identical. Fixtures: `hw_core2_tone_early_drop` (A/B at 1x and 2x: images and GS memory equal, the same tone runs and
+  skipped draws, 3 early drops per frame), `m3_hw_front_end_drop_on_arrival` (a sink dropping every batch leaves the
+  same flush counts, CLUT loads performed and skipped, and CLUT buffer as one receiving them), the palette and tone
+  fixtures, and the full CTest.
+
+## 7. Plan, cheapest first
 
 1. The single-walk CLUT callback (exact by inspection; gates: George V, El Capitan and Tokyo R246 1x identity, v2.00
    night 3x, v2.00 Arcade 3x, George V 6x frames, VU and MTVU checks (`gates6`); fixtures `hw_core2_gpu_clut`, the

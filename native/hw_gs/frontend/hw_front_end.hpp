@@ -48,6 +48,15 @@ class BatchSink {
 public:
     virtual ~BatchSink() = default;
     virtual void OnBatch(Batch&& batch) = 0;
+    // TASK-168b: asked for every batch the front end emits (after the chapter 02.6 discard), before the work only a
+    // drawn batch needs (chapter 02.4 ST rounding, the vertex trace) and before OnBatch. True: the sink has applied the
+    // batch's whole effect itself (it draws nothing, e.g. core 2 dropping GT4's tone-run draws), so the batch is neither
+    // rounded, traced nor handed over; the front end still does its own bookkeeping (CLUT staleness, flush reason and
+    // counts). The default never drops.
+    virtual bool DropOnArrival(const Batch& batch) {
+        (void)batch;
+        return false;
+    }
 };
 
 // Receives SIGNAL, FINISH and LABEL in stream order. Returning true asks for a flush.
@@ -130,6 +139,8 @@ public:
     }
     // CLUT-load flushes whose batch had the same texture as the new TEX0 (CPU survey R9).
     uint64_t ClutFlushesSameTexture() const { return clutFlushSameTexture_; }
+    // TASK-168b: emitted batches the sink dropped on arrival (BatchSink::DropOnArrival).
+    uint64_t BatchesDroppedOnArrival() const { return batchesDroppedOnArrival_; }
     const Batch& PendingBatch() const { return batch_; }
     bool TexflushPending() const { return texflushPending_; }
 
@@ -168,6 +179,8 @@ private:
     bool TextureMeetsBatchBuffers() const;
     void BeginPaletteSegment();
     void EmitBatch(Batch& batch, FlushReason reason);
+    void CountEmittedBatch(Batch& batch, FlushReason reason);  // TASK-168b
+    static void RecycleStorage(Batch& batch, Batch& used);
     void FlushSegmentsBeforeLast(FlushReason reason);
     TexelRect ComputeTexelRect(const Candidate& candidate) const;
     bool BatchTouches(uint32_t begin, uint32_t count, bool asDestination) const;
@@ -252,6 +265,7 @@ private:
 
     std::array<uint64_t, static_cast<size_t>(FlushReason::Count)> flushCounts_{};
     uint64_t clutFlushSameTexture_ = 0;
+    uint64_t batchesDroppedOnArrival_ = 0;  // TASK-168b
     uint64_t clutLoadsKept_ = 0;            // TASK-168
     uint64_t segmentedBatches_ = 0;
     uint64_t paletteSegmentsEmitted_ = 0;

@@ -1115,8 +1115,9 @@ void FrontEnd::FlushBatch(FlushReason reason) {
     flushing_ = false;
 }
 
-// The end of a batch (chapter 02.4, 02.9, 07.2): dropped when its depth test never passes, else rounded, traced and
-// handed to the sink. `batch` keeps (or gets back) vector storage for reuse; the caller clears it.
+// The end of a batch (chapter 02.4, 02.9, 07.2): dropped when its depth test never passes or when the sink drops it on
+// arrival (TASK-168b), else rounded, traced and handed to the sink. `batch` keeps (or gets back) vector storage for
+// reuse; the caller clears it.
 void FrontEnd::EmitBatch(Batch& batch, FlushReason reason) {
     const ContextRegs& ctx = batch.state.ctx;
     const bool textured = Tme(batch.state.effectivePrim);
@@ -1128,6 +1129,17 @@ void FrontEnd::EmitBatch(Batch& batch, FlushReason reason) {
     // TASK-168: a segment opened by a load after the last primitive has no primitive: dropped.
     if (!batch.paletteSegments.empty() && batch.paletteSegments.back().firstPrim >= batch.prims.size()) {
         batch.paletteSegments.pop_back();
+    }
+    // TASK-168b: a batch the sink drops on arrival skips the rounding, the trace and the hand-over below; the rest of
+    // this function's bookkeeping happens as for any batch.
+    if (batches_.DropOnArrival(batch)) {
+        ++batchesDroppedOnArrival_;
+        NoteBatchWritesToClut(batch);
+        CountEmittedBatch(batch, reason);
+        Batch dropped = std::move(batch);
+        batch = Batch{};
+        RecycleStorage(batch, dropped);
+        return;
     }
     // Chapter 02.4 decides per batch (sprites, or constant Z): per palette segment here, each being the batch a
     // CLUT-load flush would have ended (TASK-168).
@@ -1166,6 +1178,15 @@ void FrontEnd::EmitBatch(Batch& batch, FlushReason reason) {
     }
     NoteBatchWritesToClut(batch);
 
+    CountEmittedBatch(batch, reason);
+    Batch out = std::move(batch);
+    batch = Batch{};
+    batches_.OnBatch(std::move(out));
+    RecycleStorage(batch, out);
+}
+
+// The flush reason and the counts of an emitted batch (drawn or dropped on arrival).
+void FrontEnd::CountEmittedBatch(Batch& batch, FlushReason reason) {
     batch.reason = reason;
     flushCounts_[static_cast<size_t>(reason)]++;
     counters_.Add(Counter::BatchesEmitted);
@@ -1173,17 +1194,17 @@ void FrontEnd::EmitBatch(Batch& batch, FlushReason reason) {
         ++segmentedBatches_;
         paletteSegmentsEmitted_ += batch.paletteSegments.size();
     }
-    Batch out = std::move(batch);
-    batch = Batch{};
-    batches_.OnBatch(std::move(out));
-    // IN-360: a sink that did not keep the batch leaves its storage here; the next batch reuses it
-    // (cleared, capacity kept) instead of growing new vectors.
-    out.vertices.clear();
-    out.prims.clear();
-    out.paletteSegments.clear();
-    batch.vertices.swap(out.vertices);
-    batch.prims.swap(out.prims);
-    batch.paletteSegments.swap(out.paletteSegments);
+}
+
+// IN-360: a sink that did not keep the batch leaves its storage in `used`; the next batch (`batch`, a fresh one) reuses
+// it (cleared, capacity kept) instead of growing new vectors.
+void FrontEnd::RecycleStorage(Batch& batch, Batch& used) {
+    used.vertices.clear();
+    used.prims.clear();
+    used.paletteSegments.clear();
+    batch.vertices.swap(used.vertices);
+    batch.prims.swap(used.prims);
+    batch.paletteSegments.swap(used.paletteSegments);
 }
 
 // TASK-168: the capacity limit reached by a batch with palette segments. The CLUT-load flushes would have started a

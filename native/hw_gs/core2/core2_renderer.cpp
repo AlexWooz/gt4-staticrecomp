@@ -943,6 +943,16 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             clutSpanClear_ = false;
             if (clear) return;
             const BlockSpan span{range.begin, range.count};
+            // TASK-168b: with no drawn target over the span (the usual case: GT4's tone-run loads, about 1,260 per VBlank)
+            // neither the GPU paths nor a readback below can apply; one walk instead of three.
+            bool drawnOver = false;
+            for (const Target &t : targets_) {
+                if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) {
+                    drawnOver = true;
+                    break;
+                }
+            }
+            if (!drawnOver) return;
             // IN-408: one drawn 32-bit colour target under a CSM1 palette is read on the GPU when the load happens.
             if (gpuClut_ && span.count < kAllBlocks && (ClutSourceTarget(span) != nullptr || ClutTargetsOnGpu(span))) {
                 clutFromTargetPending_ = true;
@@ -4133,6 +4143,26 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return true;
     }
 
+    // TASK-168b (STUDY-TONE-STRIPS-ONE-PASS.md): GT4's tone run sends about 1,540 draws per VBlank that ToneHook drops
+    // (its extraction batches and copy-back strips), and the front end used to round, trace and hand over each one first.
+    // The front end now asks before that work: the answer is ToneHook's own skip test (a run going on, the run's FBMSK,
+    // PossibleShuffle on the batch, which ST rounding does not change), with the side effects OnBatch, ProcessBatch and
+    // ToneHook have for such a batch (the batch count, the last scene frame, the skipped-draw count;
+    // RewriteDepthClear leaves a textured batch). GT4_CORE2_TONE_EARLY_DROP=0 hands every batch over (A/B).
+    const bool toneEarlyDrop_ = std::getenv("GT4_CORE2_TONE_EARLY_DROP") == nullptr ||
+                                std::strcmp(std::getenv("GT4_CORE2_TONE_EARLY_DROP"), "0") != 0;
+    bool DropOnArrival(const Batch &batch) override {
+        if (!toneEarlyDrop_ || !toneActive_ || failed_ || batch.paletteSegments.size() > 1u) return false;
+        const std::uint32_t fbmsk = frame::Fbmsk(batch.state.ctx.frame);
+        if (fbmsk != toneFbmsk_ || !PossibleShuffle(batch)) return false;
+        ScopedUs batchTimer(clock_, &PhaseTimes::batch);
+        counters.batches++;
+        if (fbmsk != 0xFFFFFFFFu) lastSceneFrame_ = batch.state.ctx.frame;
+        stats.toneDrawsSkipped++;
+        stats.toneDropsOnArrival++;
+        return true;
+    }
+
     void OnBatch(Batch &&batch) override {
         // TASK-168: a consumer that takes one palette per batch gets the segments as it would have got their batches
         // (RoutePaletteSegments).
@@ -5225,7 +5255,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     std::fprintf(stderr,
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
-                 "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
+                 "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_early=%llu tone_alpha_only=%llu display targets=%llu "
                  "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu forced_bilinear=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
                  "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f texture_mb=%.1f self_texture=%llu self_copies=%llu self_copy_mpx=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
@@ -5234,7 +5264,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.atlasHits, (unsigned long long)g.atlasUploads,
                  (unsigned long long)c.dirtyPatches, (unsigned long long)c.dirtyPatchPixels,
                  (unsigned long long)c.readbacks, (unsigned long long)c.readbackPixels, (unsigned long long)c.toneRuns,
-                 (unsigned long long)c.toneDrawsSkipped, (unsigned long long)c.toneAlphaOnlyUnsupported,
+                 (unsigned long long)c.toneDrawsSkipped, (unsigned long long)c.toneDropsOnArrival,
+                 (unsigned long long)c.toneAlphaOnlyUnsupported,
                  (unsigned long long)c.displayFromTargets, (unsigned long long)c.displayFromMemory,
                  (unsigned long long)c.indexedFromTargetReadbacks, (unsigned long long)c.directFromTargetReadbacks,
                  (unsigned long long)c.clutReadbacks, (unsigned long long)c.downloadReadbacks,

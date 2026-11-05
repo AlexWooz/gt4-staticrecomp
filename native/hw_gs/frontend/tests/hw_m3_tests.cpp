@@ -2071,6 +2071,103 @@ void TestFastPathsPaletteSegments() {
     std::printf("hw_front_end_fast_paths: %d batches with palette segments\n", segmented);
 }
 
+// ---- TASK-168b: batches dropped on arrival ---------------------------------------------------------------------
+
+// A sink that drops every batch on arrival, and one that receives them all.
+struct DropEverything : BatchSink {
+    uint64_t dropped = 0;
+    uint64_t received = 0;
+    bool DropOnArrival(const Batch&) override {
+        ++dropped;
+        return true;
+    }
+    void OnBatch(Batch&&) override { ++received; }
+};
+struct ReceiveEverything : BatchSink {
+    uint64_t received = 0;
+    void OnBatch(Batch&&) override { ++received; }
+};
+
+// What a run leaves in the front end: the flush counts, the batch and CLUT counters and the CLUT buffer.
+struct FrontEndOutcome {
+    std::vector<uint64_t> flushes;
+    std::vector<uint64_t> counters;
+    std::vector<uint16_t> clut;
+    uint64_t dropped = 0;
+};
+
+FrontEndOutcome RunWithSink(const std::vector<Qword>& stream, BatchSink& sink) {
+    std::vector<uint8_t> slm(kLocalMemoryBytes, 0);
+    WritePaletteCsm1(slm, kSegmentPalettes[0], PaletteA);
+    WritePaletteCsm1(slm, kSegmentPalettes[1], PaletteB);
+    WritePaletteCsm1(slm, 0x40, PaletteC);  // inside the frame's first page row
+    NoSync sync;
+    NoMemory memory;
+    FrontEnd fe(FrontEndOptions{}, sink, sync, memory);
+    fe.SetLocalMemory(slm.data());
+    fe.GifTransfer(1, stream.data(), stream.size());
+    fe.FlushBatch(FlushReason::Sync);
+    FrontEndOutcome out;
+    for (size_t r = 0; r < static_cast<size_t>(FlushReason::Count); ++r) {
+        out.flushes.push_back(fe.FlushReasonCount(static_cast<FlushReason>(r)));
+    }
+    for (Counter c : {Counter::BatchesEmitted, Counter::BatchesDiscarded, Counter::ClutLoadsRequested,
+                      Counter::ClutLoadsPerformed, Counter::ClutLoadsSkipped}) {
+        out.counters.push_back(fe.Counters().Get(c));
+    }
+    out.clut.assign(fe.Clut().Halfwords(), fe.Clut().Halfwords() + clut::kClutHalfwords);
+    out.dropped = fe.BatchesDroppedOnArrival();
+    return out;
+}
+
+// A sink that drops every batch on arrival leaves the front end exactly as one that receives them: the same flushes by
+// reason, the same CLUT loads performed and skipped (the dropped batches still make the palette in their frame rows
+// stale, chapter 07.3), the same CLUT buffer. Two streams: the segment basics (loads between sprites), and a palette
+// inside the frame's rows that a dropped batch makes stale.
+void TestDropOnArrival() {
+    std::vector<std::vector<Qword>> streams(2);
+    AppendSegmentBaseline(streams[0], kSegmentSpritePrim);
+    AppendAd(streams[0], {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1)}});
+    AppendSegmentSprite(streams[0], 0, 0);
+    AppendSegmentSprite(streams[0], 16, 0);
+    AppendAd(streams[0], {{reg::kTex0One, SegmentTex0(kSegmentPalettes[1], 1)}});
+    AppendSegmentSprite(streams[0], 32, 0);
+    AppendAd(streams[0], {{reg::kTex0One, SegmentTex0(kSegmentPalettes[0], 1)}});
+    AppendSegmentSprite(streams[0], 48, 0);
+    // The palette at block 0x40 lies in the frame's first page row. Its first load is performed; a sprite draws over those
+    // rows; another texture ends that batch (its frame rows make the palette stale); the same load is then performed
+    // again, and once more right after (no flush in between: redundant).
+    AppendSegmentBaseline(streams[1], kSegmentSpritePrim);
+    AppendAd(streams[1], {{reg::kTex0One, SegmentTex0(0x40, 1)}});
+    AppendSegmentSprite(streams[1], 0, 0);
+    AppendAd(streams[1], {{reg::kTex0One, SegmentTex0(0x40, 0, kSegmentTexture + 0x20)}});
+    AppendSegmentSprite(streams[1], 16, 0);
+    AppendAd(streams[1], {{reg::kTex0One, SegmentTex0(0x40, 1)}});
+    AppendSegmentSprite(streams[1], 32, 0);
+    AppendAd(streams[1], {{reg::kTex0One, SegmentTex0(0x40, 1)}});
+    for (const std::vector<Qword>& stream : streams) {
+        ReceiveEverything receiver;
+        DropEverything dropper;
+        const FrontEndOutcome received = RunWithSink(stream, receiver);
+        const FrontEndOutcome dropped = RunWithSink(stream, dropper);
+        CHECK(receiver.received > 0);
+        CHECK_EQ(dropper.received, 0u);
+        CHECK_EQ(dropper.dropped, receiver.received);
+        CHECK_EQ(dropped.dropped, receiver.received);
+        CHECK_EQ(received.dropped, 0u);
+        CHECK(dropped.flushes == received.flushes);
+        CHECK(dropped.counters == received.counters);
+        CHECK(dropped.clut == received.clut);
+        if (&stream == &streams[1]) {
+            CHECK_EQ(received.counters[3], 2u);  // the stale palette was loaded again
+            CHECK(received.counters[4] >= 1u);   // the last load was redundant
+        }
+        std::printf("  %llu batches, CLUT loads performed %llu / skipped %llu\n",
+                    static_cast<unsigned long long>(receiver.received), static_cast<unsigned long long>(received.counters[3]),
+                    static_cast<unsigned long long>(received.counters[4]));
+    }
+}
+
 int main(int argc, char** argv) {
     const std::string name = argc > 1 ? argv[1] : "";
     struct Entry {
@@ -2095,6 +2192,7 @@ int main(int argc, char** argv) {
              TestPaletteSegmentsStillFlush();
              TestPaletteSegmentCapacity();
          }},
+        {"hw_front_end_drop_on_arrival", [] { TestDropOnArrival(); }},
         {"hw_block_ranges_overlap", [] { TestBlockRangesOverlap(); }},
         {"hw_transfers", [] { TestTransfers(); TestMipLevelTransferFlush(); }},
         {"hw_counters", [] { TestCounters(); }},
