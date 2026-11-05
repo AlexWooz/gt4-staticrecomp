@@ -14,6 +14,10 @@
 #include <string>
 #include <vector>
 
+namespace gt4::hw {
+class QueueLock;  // hw_queue_lock.hpp
+}
+
 namespace hwgs::gpu {
 
 // Vulkan handles owned by the caller (the HWR backend). Passed as void* to keep this header Vulkan-free.
@@ -28,6 +32,9 @@ struct VulkanHandles {
     // The device was created with independentBlend (IN-481: per-attachment write masks of the ROP path).
     bool independentBlend = false;
     bool dualSourceBlend = false;  // IN-482: dualSrcBlend
+    // TASK-174: set when the presentation thread shares `queue` (a device with one queue in its graphics family). Every
+    // vkQueueSubmit and vkDeviceWaitIdle on it then runs inside this lock (Vulkan external synchronization); null otherwise.
+    gt4::hw::QueueLock *queueLock = nullptr;
 };
 
 // Vertex record of chapter 03.3 (32 bytes). X and Y are 12.4 two's complement values.

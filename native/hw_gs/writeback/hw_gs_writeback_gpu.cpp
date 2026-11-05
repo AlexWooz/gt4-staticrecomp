@@ -13,6 +13,7 @@
 #include "hw_gs_writeback_gpu.hpp"
 
 #include "hw_gs_vulkan_device_table.hpp"
+#include "../hw_queue_lock.hpp"
 #include "../memory/hw_memory.hpp"
 #include "../shaders/hw_shader_blobs.hpp"
 
@@ -90,7 +91,22 @@ struct GpuDrawer::Impl {
   VkPhysicalDevice physical = VK_NULL_HANDLE;
   VkDevice device = VK_NULL_HANDLE;
   VkQueue queue = VK_NULL_HANDLE;
+  gt4::hw::QueueLock *queueLock = nullptr;  // TASK-174: the presentation thread shares `queue` (VulkanHandles::queueLock)
   VkPhysicalDeviceMemoryProperties memory{};
+
+  // Every queue call of the drawer goes through these two.
+  VkResult submit_to_queue(const VkSubmitInfo &submit, VkFence signalled) {
+    const auto call = [&] { return gt4_hw_vkQueueSubmit(queue, 1, &submit, signalled); };
+    return queueLock ? queueLock->run(gt4::hw::QueueLock::Caller::gs_thread, call) : call();
+  }
+  void device_wait_idle() {
+    const auto call = [&] { return gt4_hw_vkDeviceWaitIdle(device); };
+    if (queueLock) {
+      queueLock->run(gt4::hw::QueueLock::Caller::device_idle, call);
+    } else {
+      call();
+    }
+  }
 
   VkCommandPool pool = VK_NULL_HANDLE;
   VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -1363,7 +1379,7 @@ struct GpuDrawer::Impl {
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
-    if (!check(gt4_hw_vkQueueSubmit(queue, 1, &submit, fence), "vkQueueSubmit", error)) return false;
+    if (!check(submit_to_queue(submit, fence), "vkQueueSubmit", error)) return false;
     gt4_hw_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
     gt4_hw_vkResetFences(device, 1, &fence);
     return true;
@@ -1374,7 +1390,7 @@ struct GpuDrawer::Impl {
       std::string ignored;
       submit(true, ignored);  // recorded work completes before the resources go
     }
-    if (device) gt4_hw_vkDeviceWaitIdle(device);
+    if (device) device_wait_idle();
     if (device && secondFrameReady) {
       // Both frame sets' rings and fences (the current-set fields are copies; cleared so they are not freed twice).
       save_frame(currentFrame);
@@ -1587,6 +1603,7 @@ bool GpuDrawer::Init(const VulkanHandles &handles, std::string &error) {
   s.physical = static_cast<VkPhysicalDevice>(handles.physical);
   s.device = static_cast<VkDevice>(handles.device);
   s.queue = static_cast<VkQueue>(handles.queue);
+  s.queueLock = handles.queueLock;
   if (!s.instance || !s.physical || !s.device || !s.queue) {
     error = "GpuDrawer::Init needs instance, physical device, device and queue";
     return false;
@@ -2386,7 +2403,7 @@ bool GpuDrawer::Impl::submit(bool wait, std::string &error) {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
     gt4_hw_vkResetFences(device, 1, &fence);
-    if (!check(gt4_hw_vkQueueSubmit(queue, 1, &submitInfo, fence), "vkQueueSubmit", error)) return false;
+    if (!check(submit_to_queue(submitInfo, fence), "vkQueueSubmit", error)) return false;
     recording = false;
     inFlight = true;
     ++stats.submissions;
