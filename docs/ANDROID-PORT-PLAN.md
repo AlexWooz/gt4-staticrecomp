@@ -166,6 +166,11 @@ download list, the AVD and the adb commands: [ANDROID-EMULATOR](ANDROID-EMULATOR
   with clang-cl: `-ffp-contract=off`, `-fno-strict-aliasing`, `-fsigned-char`; 16 KB page alignment for every ABI.
 - **App:** `android/` holds a minimal Gradle project (AGP 9.5.0, Gradle 9.8.2): one `GameActivity` extending
   `SDLActivity` in its own process (`:game`), landscape, Vulkan, controller; the native libraries are staged into it.
+- **arm64-v8a probe (2026-11-05):** every native library (runtime and capsules, VU1/VU0 AOT, CoreGS 2.0, the GS seam,
+  host I/O), the entry sources and a sample of translated units (with `table.cpp` and the hooked units) compile for
+  `aarch64-linux-android29` with no change: `fp4.hpp` takes its scalar form (bit-identical, slower; NEON is still to
+  write), `core2_upload.cpp` its new portable column store, the perf clock the generic timer. The full arm64 link was
+  not run (disk); the x86_64 link has no undefined symbols. Build command: `android/README.md`.
 - **First boot (2026-11-05):** on the emulator with Lavapipe (CPU Vulkan) the game boots, plays the opening movie
   (IPU video), takes Start from the emulator keyboard and reaches the GT Mode home at 1x with CoreGS 2.0, in landscape,
   with SDL3 audio (AAudio). Host-GPU emulation crashes inside AMD's OpenGL driver on this desktop (details in
