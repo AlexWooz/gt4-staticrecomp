@@ -833,7 +833,7 @@
   "wheel.received.yes": "Recebido",
   "wheel.received.no": "Não recebido",
   "wheel.received.unknown": "Desconhecido",
-  "wheel.received_reason.summary": "{played} dos {commands} comandos de força do jogo chegaram ao volante.",
+  "wheel.received_reason.summary": "O jogo enviou {commands} comandos de força e o volante os aplicou ({played} atualizações de força; uma força nova substitui uma antiga que ainda não tinha sido enviada).",
   "wheel.received_reason.ended_early": "O jogo fechou antes de informar.",
   "wheel.received_reason.no_haptics": "O jogo não encontrou force feedback no volante.",
   "wheel.received_reason.no_wheel_file": "O jogo não encontrou o arquivo do volante.",

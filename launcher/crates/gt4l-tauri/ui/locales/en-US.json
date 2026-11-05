@@ -833,7 +833,7 @@
   "wheel.received.yes": "Received",
   "wheel.received.no": "Not received",
   "wheel.received.unknown": "Unknown",
-  "wheel.received_reason.summary": "{played} of the game's {commands} force commands were played on the wheel.",
+  "wheel.received_reason.summary": "The game sent {commands} force commands and the wheel played them ({played} force updates; a newer force replaces an older one that was not sent yet).",
   "wheel.received_reason.ended_early": "The game ended before it could report it.",
   "wheel.received_reason.no_haptics": "The game found no force feedback on the wheel.",
   "wheel.received_reason.no_wheel_file": "The game found no wheel file.",
