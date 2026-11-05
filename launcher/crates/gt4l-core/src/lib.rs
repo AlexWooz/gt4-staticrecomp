@@ -33,6 +33,10 @@ pub mod update;
 pub mod version;
 pub mod version_list;
 pub mod versions;
+pub mod wheel;
+pub mod wheel_capture;
+pub mod wheel_identity;
+pub mod wheel_session;
 
 pub use config::ConfigFile;
 pub use settings::{SettingDef, Settings, SETTINGS};

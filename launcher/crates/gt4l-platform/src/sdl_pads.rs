@@ -9,7 +9,7 @@ use std::path::Path;
 use sdl3::event::Event;
 use sdl3::gamepad::{Axis, Button, Gamepad};
 use sdl3::joystick::JoystickId;
-use sdl3::{GamepadSubsystem, JoystickSubsystem};
+use sdl3::{GamepadSubsystem, HapticSubsystem, JoystickSubsystem};
 use sdl3::{EventPump, Sdl};
 
 use crate::pad::RawPad;
@@ -40,6 +40,9 @@ pub struct SdlPads {
     joysticks: JoystickSubsystem,
     events: EventPump,
     open: BTreeMap<u32, Gamepad>,
+    /// TASK-181: while the game runs the launcher opens no wheel, not even as a gamepad (the game needs the wheel's
+    /// force feedback for itself).
+    skip_wheels: bool,
 }
 
 impl SdlPads {
@@ -49,13 +52,14 @@ impl SdlPads {
         let subsystem = sdl.gamepad().map_err(|error| format!("SDL3 gamepads did not start: {error}"))?;
         let joysticks = sdl.joystick().map_err(|error| format!("SDL3 joysticks did not start: {error}"))?;
         let events = sdl.event_pump().map_err(|error| format!("SDL3 events did not start: {error}"))?;
-        let mut pads = SdlPads { _sdl: sdl, subsystem, joysticks, events, open: BTreeMap::new() };
+        let mut pads = SdlPads { _sdl: sdl, subsystem, joysticks, events, open: BTreeMap::new(), skip_wheels: false };
         pads.rescan();
         Ok(pads)
     }
 
     /// Reads SDL's events (hot plug) and refreshes the pad states. Call once per tick while the launcher is active.
-    pub fn pump(&mut self) {
+    /// Returns true when a device was added or removed (TASK-181: the Wheel page reads its list again).
+    pub fn pump(&mut self) -> bool {
         let mut changed = false;
         for event in self.events.poll_iter() {
             if matches!(
@@ -69,11 +73,16 @@ impl SdlPads {
             self.rescan();
         }
         self.subsystem.update();
+        changed
     }
 
-    /// Opens the pads that appeared and closes the ones that went away.
+    /// Opens the pads that appeared and closes the ones that went away (and, while [`SdlPads::set_skip_wheels`] is on,
+    /// every racing wheel).
     fn rescan(&mut self) {
-        let ids = self.subsystem.gamepads().unwrap_or_default();
+        let mut ids = self.subsystem.gamepads().unwrap_or_default();
+        if self.skip_wheels {
+            ids.retain(|id| !self.is_wheel(*id));
+        }
         let live: BTreeSet<u32> = ids.iter().map(|id| u32::from(*id)).collect();
         self.open.retain(|id, _| live.contains(id));
         for id in ids {
@@ -84,6 +93,41 @@ impl SdlPads {
                 }
             }
         }
+    }
+
+    /// TASK-181: the game's rule for a racing wheel (`gt4l_core::wheel_identity::is_candidate`), read without opening it.
+    fn is_wheel(&self, id: JoystickId) -> bool {
+        let raw = sdl3::sys::joystick::SDL_JoystickID(u32::from(id));
+        // SAFETY: plain queries on a connected instance id; the name is copied at once.
+        let (name, sdl_wheel) = unsafe {
+            let text = sdl3::sys::joystick::SDL_GetJoystickNameForID(raw);
+            let name = if text.is_null() { String::new() } else { CStr::from_ptr(text).to_string_lossy().into_owned() };
+            (name, sdl3::sys::joystick::SDL_GetJoystickTypeForID(raw) == sdl3::sys::joystick::SDL_JOYSTICK_TYPE_WHEEL)
+        };
+        gt4l_core::wheel_identity::is_candidate(sdl_wheel, &name, &self.guid_of(id))
+    }
+
+    /// TASK-181: `true` closes every racing wheel opened as a gamepad and opens none until `false` (the game runs).
+    pub fn set_skip_wheels(&mut self, skip: bool) {
+        if self.skip_wheels != skip {
+            self.skip_wheels = skip;
+            self.rescan();
+        }
+    }
+
+    /// TASK-181: the joystick subsystem, for the Wheel page's reader (`sdl_wheels`).
+    pub fn joystick_subsystem(&self) -> &JoystickSubsystem {
+        &self.joysticks
+    }
+
+    /// TASK-181: the SDL GUID of a connected joystick (32 hex digits).
+    pub fn guid_of(&self, id: JoystickId) -> String {
+        self.subsystem.guid_for_id(id).string()
+    }
+
+    /// TASK-181: starts SDL's haptic subsystem for the force test; it stops when the returned value is dropped.
+    pub fn haptic(&self) -> Result<HapticSubsystem, String> {
+        self._sdl.haptic().map_err(|error| format!("SDL3 haptics did not start: {error}"))
     }
 
     /// The connected pads in SDL's order.
