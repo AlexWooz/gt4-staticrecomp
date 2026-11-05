@@ -3337,7 +3337,9 @@ From `docs/ANDROID-PORT-PLAN.md` section 2: features used without being enabled 
 device), a rotation-safe present, host rings sized from the heaps and `VK_EXT_memory_budget` (today's sizes as the cap), and a
 start-up capability profile struct (today's integrated-GPU behaviour unchanged). Frames identical to rc14 (gates6), validation
 layer clean, CTest. Out of scope: Vulkan 1.1, precise/invariant interpolation, no-interlock tuning, D1, determinism items.
-Branch `task/179-vulkan-correctness`. State: in progress. Also on 2026-11-04: an Avell comparison of GSdx and CoreGS 2.0
+Branch `task/179-vulkan-correctness`. State: in progress. Android target (owner, 2026-11-04): his S23 Ultra (Adreno 740),
+at least 2x in races, 3x if possible. Suggested next step after A1, cheapest first: build the renderer alone with its tests
+for arm64 Android and measure the no-interlock path on the S23 (owner: later, not now). Also on 2026-11-04: an Avell comparison of GSdx and CoreGS 2.0
 (normal and Performance) at 6x on Motegi Road Course and Hong Kong (owner).
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
