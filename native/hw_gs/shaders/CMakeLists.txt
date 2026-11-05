@@ -70,19 +70,26 @@ endfunction()
 
 hw_add_shader(hw_vertex_smooth "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=0)
 hw_add_shader(hw_vertex_flat "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=1)
-# TASK-179: core 2's points as two triangles, on devices without largePoints.
-hw_add_shader(hw_vertex_point_quad "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=0 HWR_POINT_QUAD=1)
+# TASK-168: core 2's vertex stage passes each vertex's palette row on (its pixel variants read it, HWR_PALETTE_ROW=1).
+hw_add_shader(hw_vertex_core2 "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=0 HWR_PALETTE_ROW=1)
+# TASK-179: core 2's points as two triangles, on devices without largePoints. Core 2's pixel variants read the palette
+# row (TASK-168), so this stage passes it on too.
+hw_add_shader(hw_vertex_point_quad "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=0 HWR_POINT_QUAD=1
+    HWR_PALETTE_ROW=1)
 hw_add_shader(hw_pixel_uber_smooth "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0)
 hw_add_shader(hw_pixel_uber_smooth_interlock "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag
               DEFINES HWR_FLAT_COLOUR=0 HWR_INTERLOCK=1)
 hw_add_shader(hw_pixel_uber_flat "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=1)
 # IN-451: core 2's variants reject occluded fragments before texturing (draw set binding 5: the depth image again).
-hw_add_shader(hw_pixel_uber_core2 "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_EARLY_Z=1)
+hw_add_shader(hw_pixel_uber_core2 "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_EARLY_Z=1
+              HWR_PALETTE_ROW=1)
 hw_add_shader(hw_pixel_uber_core2_interlock "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag
-              DEFINES HWR_FLAT_COLOUR=0 HWR_INTERLOCK=1 HWR_EARLY_Z=1)
+              DEFINES HWR_FLAT_COLOUR=0 HWR_INTERLOCK=1 HWR_EARLY_Z=1 HWR_PALETTE_ROW=1)
 # IN-481: core 2's variant for draws that read nothing back: colour attachments instead of storage writes.
-hw_add_shader(hw_pixel_uber_core2_rop "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=1)
-hw_add_shader(hw_pixel_uber_core2_rop_blend "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=2)
+hw_add_shader(hw_pixel_uber_core2_rop "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=1
+              HWR_PALETTE_ROW=1)
+hw_add_shader(hw_pixel_uber_core2_rop_blend "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0 HWR_ROP=2
+              HWR_PALETTE_ROW=1)
 # M10 GLM kernels (IN-347): texture decode from the GLM and target swizzle into the GLM.
 hw_add_shader(hw_glm_decode "${HW_SHADER_DIR}/hw_glm_decode.comp" comp)
 hw_add_shader(hw_glm_swizzle "${HW_SHADER_DIR}/hw_glm_swizzle.comp" comp)

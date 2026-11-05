@@ -187,10 +187,9 @@ bool BuildTexture(const BatchState& state, const clut::ClutUnit& clut, TextureUn
 
 // The CPU palette of an indexed texture (CLUT buffer through CPSM, CSA and TEXA). Only the CPU decode and the
 // palette-ring GLM decode need it; with the GPU CLUT (IN-349) the GPU expands the indices (IN-353: not decoded).
-void DecodePalette(const BatchState& state, const clut::ClutUnit& clut, TextureUnit& texture) {
-    const uint64_t tex0Register = state.ctx.tex0;
-    texture.palette = clut.Decode(tex0::Psm(tex0Register), tex0::Cpsm(tex0Register), tex0::Csa(tex0Register),
-                                  state.env.texa);
+// TASK-168: the CLUT buffer of the batch's palette segment `segment` (the CLUT unit's buffer without segments).
+void DecodePalette(const Batch& batch, uint32_t segment, const clut::ClutUnit& clut, TextureUnit& texture) {
+    texture.palette = DecodeSegmentPalette(batch, segment, clut);
 }
 
 // Colour of one stored texel value after TEXA and palette expansion, packed RGBA8 (the GPU's texel format).
@@ -423,17 +422,33 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
             out.glmPsm = static_cast<uint32_t>(texture.view.psm);
             out.glmIndexed = texture.cls == TexClass::Indexed;
             if (out.glmIndexed && !out.glmGpuClut) {
-                DecodePalette(state, clut, texture);
+                DecodePalette(batch, 0, clut, texture);
                 out.palette.assign(texture.palette.entries, texture.palette.entries + 256);
+                // TASK-168: every segment's palette, for a palette row each.
+                const uint32_t segments = PaletteSegmentCount(batch);
+                if (segments > 1u) {
+                    out.segmentPalettes.reserve(256u * segments);
+                    for (uint32_t segment = 0; segment < segments; ++segment) {
+                        const clut::Palette palette = DecodeSegmentPalette(batch, segment, clut);
+                        out.segmentPalettes.insert(out.segmentPalettes.end(), palette.entries, palette.entries + 256);
+                    }
+                }
             }
             counters.texturesFromGlm++;
+        }
+        // TASK-168: a texture expanded with one palette (the CPU decode below, or the GPU CLUT) cannot draw a batch with
+        // several palettes.
+        if (texture.cls == TexClass::Indexed && PaletteSegmentCount(batch) > 1u && (!out.glmTexture || out.glmGpuClut)) {
+            out.paletteSegmentsUnsupported = true;
+            out.skippedTexture = true;
+            return;
         }
         if (out.textureSlot >= 0 || out.glmTexture) {
             // Raw stored words on the GPU; the pixel shader expands CT16/CT24 with TEXA (IN-346, IN-347).
             if (out.textureSlot >= 0) counters.texturesFromTargets++;
         } else {
         if (beforeTextureRead) beforeTextureRead(texture.view, width, height);
-        if (texture.cls == TexClass::Indexed) DecodePalette(state, clut, texture);
+        if (texture.cls == TexClass::Indexed) DecodePalette(batch, 0, clut, texture);
         TextureKey key;
         key.tbp = texture.view.basePointer;
         key.tbw = texture.view.bufferWidth;
@@ -518,7 +533,16 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
 
     // Primitives, in stream order (chapter 03.2). Each keeps its own scissor (the CPU clip).
     bool haveRect = false;
-    for (const PrimRecord& record : batch.prims) {
+    // TASK-168: the palette segment of each draw, when the batch has several palettes and they reach the GPU per draw.
+    const bool segmentPerDraw = !out.segmentPalettes.empty();
+    uint32_t segment = 0;
+    uint32_t segmentEnd = PaletteSegmentEndPrim(batch, 0);
+    for (uint32_t primIndex = 0; primIndex < batch.prims.size(); ++primIndex) {
+        const PrimRecord& record = batch.prims[primIndex];
+        while (primIndex >= segmentEnd && segment + 1u < PaletteSegmentCount(batch)) {
+            ++segment;
+            segmentEnd = PaletteSegmentEndPrim(batch, segment);
+        }
         counters.primitives++;
         if (record.rect.Empty()) continue;
         // IN-391: never clip a primitive with its own draw rectangle. The reference computes one rectangle per DRAW and
@@ -631,6 +655,7 @@ void Translate(const Batch& batch, const memory::LocalMemory& local, const clut:
                 continue;
         }
         out.draws.push_back(draw);
+        if (segmentPerDraw) out.drawSegments.push_back(segment);
         if (!haveRect) {
             out.rect = PixelRect{clip.x0, clip.y0, clip.x1, clip.y1};
             haveRect = true;

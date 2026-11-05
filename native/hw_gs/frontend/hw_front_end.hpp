@@ -48,6 +48,15 @@ class BatchSink {
 public:
     virtual ~BatchSink() = default;
     virtual void OnBatch(Batch&& batch) = 0;
+    // TASK-168b: asked for every batch the front end emits (after the chapter 02.6 discard), before the work only a
+    // drawn batch needs (chapter 02.4 ST rounding, the vertex trace) and before OnBatch. True: the sink has applied the
+    // batch's whole effect itself (it draws nothing, e.g. core 2 dropping GT4's tone-run draws), so the batch is neither
+    // rounded, traced nor handed over; the front end still does its own bookkeeping (CLUT staleness, flush reason and
+    // counts). The default never drops.
+    virtual bool DropOnArrival(const Batch& batch) {
+        (void)batch;
+        return false;
+    }
 };
 
 // Receives SIGNAL, FINISH and LABEL in stream order. Returning true asks for a flush.
@@ -83,6 +92,25 @@ public:
     clut::ClutUnit& MutableClut() { return clut_; }
     void SetClutLoaded(std::function<void(const clut::Tex0Write&)> callback);
 
+    // TASK-168: asked when a CLUT load would end the pending batch only because the batch draws an indexed texture
+    // that stays the same (TEX0 base and indexed fields, the same context), while the batch's frame and depth buffers
+    // meet neither the palette's memory nor the texture, and no auto-flush can split it (PaletteSegmentAllowed in the
+    // source has the list). True keeps the batch: the primitives after the load form a new palette segment
+    // (Batch::paletteSegments). The renderer answers true only when it can draw the batch's CPU palettes per primitive
+    // and the load reads GS memory alone (no palette read on the GPU).
+    // Empty = never (every such load ends the batch, the chapter 07.3 rule as before).
+    using PaletteSegmentHook = std::function<bool(const clut::Tex0Write& write, const Batch& pending)>;
+    void SetPaletteSegmentHook(PaletteSegmentHook hook) { paletteSegmentHook_ = std::move(hook); }
+    // TASK-168b: the renderer's cheap question about the pending batch alone, asked once the load is known to keep the
+    // texture and before the front end's memory checks and the hook: false ends the batch at the load (a batch the
+    // renderer gains nothing from merging). Empty = every batch may go on to the hook.
+    using PaletteSegmentBatchFilter = std::function<bool(const Batch& pending)>;
+    void SetPaletteSegmentBatchFilter(PaletteSegmentBatchFilter filter) { paletteSegmentBatchFilter_ = std::move(filter); }
+    // CLUT loads that kept the batch as a new segment (TASK-168), and batches emitted with segments.
+    uint64_t ClutLoadsKept() const { return clutLoadsKept_; }
+    uint64_t SegmentedBatches() const { return segmentedBatches_; }
+    uint64_t PaletteSegmentsEmitted() const { return paletteSegmentsEmitted_; }
+
     // Feeds whole qwords to a GIF path (1..3).
     void GifTransfer(uint32_t path, const Qword* qwords, size_t count);
     bool GifBusy(uint32_t path) const;
@@ -111,6 +139,8 @@ public:
     }
     // CLUT-load flushes whose batch had the same texture as the new TEX0 (CPU survey R9).
     uint64_t ClutFlushesSameTexture() const { return clutFlushSameTexture_; }
+    // TASK-168b: emitted batches the sink dropped on arrival (BatchSink::DropOnArrival).
+    uint64_t BatchesDroppedOnArrival() const { return batchesDroppedOnArrival_; }
     const Batch& PendingBatch() const { return batch_; }
     bool TexflushPending() const { return texflushPending_; }
 
@@ -142,6 +172,16 @@ private:
 
     std::optional<FlushReason> DecideFlush() const;
     bool AutoflushWanted(const Candidate& candidate, PrimType type) const;
+    bool AutoflushStateAllows() const;
+    // TASK-168.
+    bool PaletteSegmentAllowed(const clut::Tex0Write& write, uint32_t contextIndex) const;
+    bool BatchBuffersMeet(uint32_t begin, uint32_t count) const;
+    bool TextureMeetsBatchBuffers() const;
+    void BeginPaletteSegment();
+    void EmitBatch(Batch& batch, FlushReason reason);
+    void CountEmittedBatch(Batch& batch, FlushReason reason);  // TASK-168b
+    static void RecycleStorage(Batch& batch, Batch& used);
+    void FlushSegmentsBeforeLast(FlushReason reason);
     TexelRect ComputeTexelRect(const Candidate& candidate) const;
     bool BatchTouches(uint32_t begin, uint32_t count, bool asDestination) const;
     bool MipLevelsTouch(const ContextRegs& ctx, uint32_t levelZeroBlocks, uint32_t begin, uint32_t count) const;
@@ -150,7 +190,7 @@ private:
     bool ZbufUsed(const ContextRegs& ctx) const;
 
     void OnTex0Write(uint32_t contextIndex);
-    void NoteBatchWritesToClut();
+    void NoteBatchWritesToClut(const Batch& batch);
     TransferHooks MakeTransferHooks();
 
     FrontEndOptions options_;
@@ -168,6 +208,9 @@ private:
     const uint8_t* localMemory_ = nullptr;
     std::function<void(const BlockRange&)> beforeLocalRead_;
     std::function<void(const clut::Tex0Write&)> clutLoaded_;
+    PaletteSegmentHook paletteSegmentHook_;
+    PaletteSegmentBatchFilter paletteSegmentBatchFilter_;  // TASK-168b
+    std::array<uint16_t, clut::kClutHalfwords> clutBeforeLoad_{};  // TASK-168: the CLUT buffer before a kept load
     std::vector<uint8_t> zeroMemory_;
 
     Batch batch_;
@@ -222,6 +265,10 @@ private:
 
     std::array<uint64_t, static_cast<size_t>(FlushReason::Count)> flushCounts_{};
     uint64_t clutFlushSameTexture_ = 0;
+    uint64_t batchesDroppedOnArrival_ = 0;  // TASK-168b
+    uint64_t clutLoadsKept_ = 0;            // TASK-168
+    uint64_t segmentedBatches_ = 0;
+    uint64_t paletteSegmentsEmitted_ = 0;
 };
 
 }  // namespace hwgs

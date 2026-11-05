@@ -16,9 +16,12 @@ extern const std::uint32_t hw_vertex_smooth_words[];
 extern const std::size_t hw_vertex_smooth_word_count;
 extern const std::uint32_t hw_vertex_flat_words[];
 extern const std::size_t hw_vertex_flat_word_count;
-// TASK-179: smooth colour, a point drawn as two triangles (six vertices per instance), for devices without largePoints.
+// TASK-179: smooth colour, a point drawn as two triangles (six vertices per instance), for devices without largePoints;
+// with core 2's palette row (TASK-168).
 extern const std::uint32_t hw_vertex_point_quad_words[];
 extern const std::size_t hw_vertex_point_quad_word_count;
+extern const std::uint32_t hw_vertex_core2_words[];
+extern const std::size_t hw_vertex_core2_word_count;
 
 // Uber pixel fragment stage, smooth and flat variants (must match the vertex stage).
 extern const std::uint32_t hw_pixel_uber_smooth_words[];

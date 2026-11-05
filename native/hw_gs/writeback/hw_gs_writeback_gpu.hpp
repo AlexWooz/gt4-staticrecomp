@@ -55,9 +55,15 @@ struct GpuVertex {
     std::uint16_t u;
     std::uint16_t v;
     std::uint8_t fog;
-    std::uint8_t pad[3];
+    std::uint8_t pad;
+    // TASK-168 (core 2 only, not read by the old core's pipelines): the palette row of this vertex's primitive for an
+    // indexed memory texture, plus one; 0 = the batch's row (DrawBatch::paletteRow). A batch with several palette
+    // segments gives the vertices of its later segments their own rows.
+    std::uint16_t paletteRow;
 };
 static_assert(sizeof(GpuVertex) == 32, "GpuVertex must match the 32-byte record of chapter 03.3");
+static_assert(offsetof(GpuVertex, fog) == 28 && offsetof(GpuVertex, paletteRow) == 30,
+              "the vertex input of the pipelines reads F at byte 28 and the palette row at byte 30");
 
 enum class GpuTopology : std::uint8_t { Points, Lines, Triangles };
 

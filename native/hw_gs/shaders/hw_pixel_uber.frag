@@ -36,6 +36,13 @@ layout(location = 1) in float in_q;
 layout(location = 3) in float in_fog;
 layout(location = 4) in vec2 in_uv;
 layout(location = 5) noperspective in float in_z;
+// TASK-168 (core 2): the palette row of the fragment's primitive plus one, 0 for the batch's row (palette_row below).
+#ifndef HWR_PALETTE_ROW
+#define HWR_PALETTE_ROW 0
+#endif
+#if HWR_PALETTE_ROW
+layout(location = 6) flat in uint in_palette_row;
+#endif
 
 layout(std140, set = 0, binding = 0) uniform PixelStateBlock {
     uint format;
@@ -265,12 +272,24 @@ int wrap_texel(int texel, uint log2_size, uint mode, uint minimum, uint maximum)
 // on the GPU, expanded here with TEXA exactly as the CPU decode does (hw_texel_colour, verified bit-exact).
 //
 // IN-409 (CORE2): an indexed memory texture keeps its CLUT indices; the colour is the RGBA8 entry of palette row
-// tex_origin_y, an image bound where a target texture would be (binding 4, unused by memory textures). A palette that
-// changes then never needs the texture decoded again, and bilinear filtering blends looked-up colours, as the GS does.
+// tex_origin_y (TASK-168: palette_row()), an image bound where a target texture would be (binding 4, unused by memory
+// textures). A palette that changes then never needs the texture decoded again, and bilinear filtering blends looked-up
+// colours, as the GS does.
+//
+// TASK-168: the palette row of this fragment's primitive. A batch whose primitives use several palettes (CLUT loads that
+// only changed the palette of its texture) gives each vertex its primitive's row plus one; 0 keeps the batch's row.
+int palette_row() {
+#if HWR_PALETTE_ROW
+    return int(in_palette_row != 0u ? in_palette_row - 1u : state.tex_origin_y);
+#else
+    return int(state.tex_origin_y);
+#endif
+}
+
 ivec4 fetch_texel(int x, int y) {
     if (ST_TEXEL_KIND == HW_TEXEL_INDEXED) {
         uint index = imageLoad(hw_texels, ivec2(x, y)).x & 255u;
-        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
+        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), palette_row())).x;
         return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, ST_AEM != 0u);
     }
     uint raw = imageLoad(hw_texels, ivec2(x + int(state.tex_origin_x), y + int(state.tex_origin_y))).x;
@@ -308,7 +327,7 @@ ivec4 fetch_level(int level, int x, int y) {
     }
     if (ST_TEXEL_KIND == HW_TEXEL_INDEXED) {
         uint index = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x & 255u;
-        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), int(state.tex_origin_y))).x;
+        uint entry = imageLoad(hw_texels_scaled, ivec2(int(index), palette_row())).x;
         return hw_texel_colour(HW_TEXEL_RGBA8, entry, state.ta0, state.ta1, ST_AEM != 0u);
     }
     uint raw = imageLoad(hw_texels, ivec2(x + ox, y + oy)).x;

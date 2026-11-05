@@ -38,6 +38,7 @@ struct Core2Counters {
     std::uint64_t readbackPixels = 0;
     std::uint64_t toneRuns = 0;
     std::uint64_t toneDrawsSkipped = 0;
+    std::uint64_t toneDropsOnArrival = 0;      // TASK-168b: of those, dropped as the front end emitted them (no OnBatch)
     std::uint64_t toneAlphaOnlyUnsupported = 0;  // 7.2 alpha-only variant: drawn normally (not implemented yet)
     std::uint64_t displayFromTargets = 0;
     std::uint64_t displayFromMemory = 0;
@@ -91,6 +92,11 @@ struct Core2Counters {
     std::uint64_t decodesOverTargets = 0;      // B2: ... over drawn targets (never cached, IN-411)
     std::uint64_t paletteRowsWritten = 0;      // IN-409: palette rows filled (CPU palettes and GPU CLUT expansions)
     std::uint64_t paletteRowHits = 0;          // IN-409: draws whose palette row was already filled
+    std::uint64_t paletteSegmentBatches = 0;   // TASK-168: batches drawn with several palette segments (rows per vertex)
+    std::uint64_t paletteSegmentsDrawn = 0;    // TASK-168: the segments of those batches
+    std::uint64_t paletteSegmentSplits = 0;    // TASK-168: segmented batches drawn segment by segment (tone hook, replacement)
+    std::uint64_t paletteSegmentsWholeNoTone = 0;  // TASK-168b: segmented T8 sprite batches drawn whole, no segment taking ToneHook
+    std::uint64_t paletteSegmentToneRefusals = 0;  // TASK-168b: CLUT loads that ended a T8 sprite batch during a tone run
     std::uint64_t clutMultiTargetLoads = 0;    // IN-417: GPU CLUT loads read from the GLM over several or depth targets
     std::uint64_t mipDraws = 0;           // C1: textured draws with TEX1.MXL > 0 and MMIN 2..5
     std::uint64_t trilinearDraws = 0;     // C1: ... of which MMIN 3 or 5 (mip-linear)

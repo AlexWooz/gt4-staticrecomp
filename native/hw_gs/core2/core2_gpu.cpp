@@ -908,7 +908,7 @@ struct Gpu::Impl {
     stages[1].pSpecializationInfo = &withEarlyZ;
     VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex),
                                             pointQuad ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes[7]{};
+    VkVertexInputAttributeDescription attributes[8]{};
     attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};   // S, T
     attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UINT, 8};   // R, G, B, A
     attributes[2] = {2, 0, VK_FORMAT_R32_SFLOAT, 12};     // Q
@@ -916,10 +916,11 @@ struct Gpu::Impl {
     attributes[4] = {4, 0, VK_FORMAT_R32_UINT, 20};       // Z
     attributes[5] = {5, 0, VK_FORMAT_R16G16_UINT, 24};    // U, V
     attributes[6] = {6, 0, VK_FORMAT_R8_UNORM, 28};       // F
+    attributes[7] = {7, 0, VK_FORMAT_R16_UINT, 30};       // TASK-168: the primitive's palette row + 1 (0: the batch's)
     VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vertexInput.vertexBindingDescriptionCount = 1;
     vertexInput.pVertexBindingDescriptions = &binding;
-    vertexInput.vertexAttributeDescriptionCount = 7;
+    vertexInput.vertexAttributeDescriptionCount = 8;
     vertexInput.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = pointQuad ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : topology;
@@ -1181,7 +1182,7 @@ struct Gpu::Impl {
     std::filesystem::create_directories(shaderCacheFolder, ignored);
     namespace sh = hwgs::shaders;
     std::uint64_t h = 1469598103934665603ull;
-    h = hash_shader_words(h, sh::hw_vertex_smooth_words, sh::hw_vertex_smooth_word_count);
+    h = hash_shader_words(h, sh::hw_vertex_core2_words, sh::hw_vertex_core2_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_words, sh::hw_pixel_uber_core2_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_interlock_words, sh::hw_pixel_uber_core2_interlock_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_rop_words, sh::hw_pixel_uber_core2_rop_word_count);
@@ -2767,7 +2768,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     }
   }
   s.open_shader_cache();  // IN-489
-  s.vertexModule = s.make_module(hwgs::shaders::hw_vertex_smooth_words, hwgs::shaders::hw_vertex_smooth_word_count, error);
+  s.vertexModule = s.make_module(hwgs::shaders::hw_vertex_core2_words, hwgs::shaders::hw_vertex_core2_word_count, error);
   s.fragmentModule =
       s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
   if (!s.vertexModule || !s.fragmentModule) return false;
@@ -3723,23 +3724,31 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
 
   // IN-419: the batch reads its textures (one palette row) and reads and writes its frame and depth.
   const Impl::Use textureUse = paletted ? Impl::Use(texture, static_cast<std::uint32_t>(batch.paletteRow)) : Impl::Use(texture);
+  // TASK-168: and the palette rows of its later palette segments (every row its vertices name).
+  static const std::vector<std::int32_t> kNoSegmentRows;
+  const std::vector<std::int32_t> &segmentRows = paletted && batch.segmentPaletteRows ? *batch.segmentPaletteRows : kNoSegmentRows;
   if (s.deferDraws) {
     // IN-420: recorded with the next render pass.
     for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
       s.drawReads.add(use.serial, use.region);
     }
+    for (const std::int32_t row : segmentRows) s.drawReads.add(texture->serial, static_cast<std::uint32_t>(row));
     for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.drawWrites.add(use.serial, use.region);
     s.deferred.push_back(record);
   } else {
     bool first = false;
     if (!s.renderPassOpen) {
-      if (s.lazyBarriers) s.order({texels, textureUse, frame, depth}, {frame, depth}, 0, 0);
+      if (s.lazyBarriers) {
+        s.order({texels, textureUse, frame, depth}, {frame, depth}, 0, 0);
+        for (const std::int32_t row : segmentRows) s.order({Impl::Use(texture, static_cast<std::uint32_t>(row))}, {}, 0, 0);
+      }
       s.begin_draw_pass();
       first = true;
     } else if (s.lazyBarriers) {
       for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
         s.pendingReads.add(use.serial, use.region);
       }
+      for (const std::int32_t row : segmentRows) s.pendingReads.add(texture->serial, static_cast<std::uint32_t>(row));
       for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.pendingWrites.add(use.serial, use.region);
     }
     s.record_draw(record, first);
