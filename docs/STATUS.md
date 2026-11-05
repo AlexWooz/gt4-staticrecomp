@@ -1,3 +1,27 @@
+## Android test4: the Performance report back, TASK-182 savings on, UMA phase 1 (TASK-180, 2026-11-05 evening)
+
+`1.3.0-android-test4` (arm64, versionCode 4, same release key) answers the owner's test3 findings.
+
+- **Performance report (regression fixed).** TASK-118 hid its Settings row and forced it off in every build whose version
+  lacks "-rc", and test builds are labelled `1.3.0-android-testN`; `gt4l_core::is_test_build` now accepts both test labels,
+  an Android test build comes with the report ON unless the player chose a value, and the in-game touch button moved from
+  the middle of the left edge (over the owner's front camera) to the top-left corner, offset by the window insets (display
+  cutout and system bars). Tests: core version rule, model row on Windows and Android for test builds and not in a final
+  build, focus-check case for the toggle.
+- **The exact TASK-182 savings on by default on Android:** `GT4_CORE2_DEINT_FIELD_COMPOSE=1` and
+  `GT4_CORE2_DEINT_SKIP_DECISION=1` from the launcher's game environment (overridable by `debug.env`, logged by the game);
+  Windows unchanged. `task/182-barrier-scope` at 8d25d4e4 is merged (steps 2a-2c).
+- **Single-queue present on Android:** `GT4_HW_PRESENT_QUEUE=0`, about 36 MB less per presented frame at 3088x1440;
+  presentation only.
+- **Unified-memory phase 1** (STUDY-UNIFIED-MEMORY 7.2, P1-A to P1-D): memory shape with `GT4_HW_MEMORY_SHAPE`, the shape
+  and every memory type in the `[hw] device profile` line, a `[core2] placement` line, per-path byte counters with ring
+  high-water marks in `[core2] data paths/vblank`, and the spec-required host-read barrier
+  (`GT4_CORE2_HOST_READ_BARRIER`, on by default). No rendering change; `hw_core2_data_paths` and the extended
+  `hw_device_profile` cover it, the `hw_*` CTest suite is green (176 passed, 1 skipped as designed).
+- **Not in this build:** unified-memory phase 2 (the picture drawn straight into the swapchain image with pre-rotation) and
+  Spec II on Android (the hooked unit set, `libgt4spec2.so`, both libraries, the Activity choosing by game, the launcher's
+  install and Play path).
+
 ## Android test3: one app (TASK-180 follow-up, 2026-11-05 evening)
 
 The owner asked for the launcher and the game to feel like one app. The game Activity now runs in the launcher's own task

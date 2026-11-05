@@ -3421,6 +3421,33 @@ Spec II on Android (Part B): the `GT4_TARGET=spec2` NDK recipe and `libgt4spec2.
 ships v2.00 only (the hooked Spec II unit set has to be regenerated with `scripts/camera360_units.py spec2` first), and a
 bench for Spec II is refused with a message instead of starting the wrong library.
 
+**APK test4 (owner's S23 test of test3, 2026-11-05 ~17:50):** the controller and the Render scale are fixed; the
+Performance report came back missing (its Settings row and the in-game F7/F8 touch button), which is this build's first
+fix. Scope in order, easiest and biggest gain first:
+- **The TASK-182 exact savings on by default on Android:** `GT4_CORE2_DEINT_FIELD_COMPOSE=1` (a deinterlaced frame's
+  display merge straight into that field's history image: two full-display copies and two full barriers fewer per
+  deinterlaced VBlank) and `GT4_CORE2_DEINT_SKIP_DECISION=1` (the adaptive kernel skips the motion tests its loaded words
+  already decide). Set by the Android launcher's game environment, overridable from `debug.env`, logged by the game
+  (`[core2] deinterlace order (TASK-182) ...`). Windows defaults unchanged. Merged first:
+  `task/182-barrier-scope` at 8d25d4e4 (steps 2a-2c), journal conflict resolved keeping both sides.
+- **Single-queue present on Android:** `GT4_HW_PRESENT_QUEUE=0` (the rendering-queue path), so the picture is drawn into
+  the acquired swapchain image instead of a window-sized picture plus a second copy: about 36 MB less per presented frame
+  at 3088x1440 (STUDY-UNIFIED-MEMORY 4.2). Presentation only. Logged by the backend (`[hw] presentation queue`).
+- **Unified-memory phase 1** (STUDY-UNIFIED-MEMORY 7.2, P1-A to P1-D): memory-shape classification with
+  `GT4_HW_MEMORY_SHAPE`, the memory-type and placement logs, per-path byte counters with ring high-water marks
+  (`[core2] data paths/vblank`), and the spec-required host-read barrier (`GT4_CORE2_HOST_READ_BARRIER`, on by default).
+  Tests: `hw_device_profile` extended, new `hw_core2_data_paths` (three captures at 1x and 2x, barrier off against on:
+  identical images and GS memory, counters and rings checked). No rendering change.
+- **The Performance report fix (test3 regression):** TASK-118 hid its row and forced it off in any build without "-rc" in
+  the version, and test builds are labelled `1.3.0-android-testN`; `gt4l_core::is_test_build` now accepts both test
+  labels, an Android test build comes with the report ON unless the player chose a value, and the in-game touch button
+  moved from the middle of the left edge (over the owner's front camera) to the top-left corner, offset by the window
+  insets (display cutout and system bars). Tests: a core test of the version rule, a model test that the row exists on
+  Windows and Android for test builds and not in a final build, and a focus-check case for the toggle.
+- **Still open for the next run:** unified-memory phase 2 (the final picture drawn straight into the swapchain image with
+  pre-rotation, `GT4_HW_PRESENT_DIRECT`) and Spec II on Android (`libgt4spec2.so`: the hooked unit set, both libraries in
+  the APK, the Activity picking by game, the launcher's install and Play path).
+
 **One app (owner, same day; APK rebuilt as `1.3.0-android-test3`):** the game runs in the launcher's own task
 (`singleTop`, no task affinity, black window theme, no activity animation), one card in recents; the app icon enters
 through a windowless `LaunchGateActivity` that starts the running game or the launcher and finishes, because a

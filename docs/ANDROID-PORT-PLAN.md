@@ -398,6 +398,36 @@ game library).
   emulator: Play, Home, icon → game, recents → game, Back → pause dialog, Minimize → launcher ("Retomar"), Resume → game,
   Close → launcher ("Jogar"), Play → a new session.
 
+## Test APK 4: `1.3.0-android-test4` (TASK-180, 2026-11-05)
+
+From the owner's S23 test of test3: the controller and the Render scale are fixed, and the **Performance report came back
+missing** (its Settings row and the in-game F7/F8 touch button). That was a launcher regression, not a game one, and this
+build's first fix.
+
+- **Why it vanished.** TASK-118 keeps the release-candidate rows (the performance report and the VU code check) out of
+  final builds: `model.rs` drops them and `state.rs` forces the report off unless the launcher version contains `-rc`.
+  Test builds are labelled `1.3.0-android-testN`, which has no `-rc`, so test3 was read as a final build; the game was
+  never given `GT4_PERF=1`, so `GameActivity` never added the touch button. `gt4l_core::is_test_build` now accepts `-rc`
+  and `-android-test`, and `test_build()` drives both places; an Android test build turns the report on unless the player
+  chose a value (a chosen "off" is kept; a final build still forces it off).
+- **The touch button** moved from the middle of the left edge (over the owner's front camera) to the **top-left corner**,
+  adding the window insets (display cutout and system bars) to its margin on every change and once attached, so it never
+  sits under a camera hole or the status bar. Same 44 dp faint circle, same F7/F8 taps, never focusable.
+- **The exact TASK-182 savings are Android defaults** now: `GT4_CORE2_DEINT_FIELD_COMPOSE=1` and
+  `GT4_CORE2_DEINT_SKIP_DECISION=1` in the launcher's game environment (merged before `debug.env`, so a diagnosis build can
+  still override them), logged by the game as `[core2] deinterlace order (TASK-182) ...`; Windows keeps them off. The
+  branch also carries `task/182-barrier-scope` at 8d25d4e4 (steps 2a-2c).
+- **Single-queue present on Android:** `GT4_HW_PRESENT_QUEUE=0`, the rendering-queue path: the picture is drawn into the
+  acquired swapchain image instead of a window-sized picture plus a second copy, about 36 MB less per presented frame at
+  3088x1440. Presentation only.
+- **Unified-memory phase 1** (STUDY-UNIFIED-MEMORY 7.2): memory shape with the `GT4_HW_MEMORY_SHAPE` override, the shape
+  and every memory type in the `[hw] device profile` line, a `[core2] placement` line, per-path byte counters and ring
+  high-water marks in `[core2] data paths/vblank`, and the spec-required host-read barrier (`GT4_CORE2_HOST_READ_BARRIER`,
+  on by default). Diagnostics and one exact barrier: no picture changes, covered by `hw_core2_data_paths` and the extended
+  `hw_device_profile`.
+- **Still open:** unified-memory phase 2 (phase 2 of the study: the final picture drawn straight into the swapchain image
+  with pre-rotation, `GT4_HW_PRESENT_DIRECT`) and Spec II on Android (below).
+
 ### Spec II on Android: what a later build needs
 
 Spec II is **not** in test3: the APK ships `libgt4.so` (v2.00) only, and a `GT4_BENCH_GAME=spec2` bench is refused with a
