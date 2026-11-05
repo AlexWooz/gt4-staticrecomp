@@ -3535,10 +3535,19 @@ pass.
 - Flare hashes are identical (HK 2x/10x, Motegi 2x, Motegi with no interlock). CTest 319/320, 1 skipped.
 - Timing A/B is pending: on the desktop when no build runs, then a default decision.
 
-**Step 2b (R8) in progress on DeepSeek:** compose/deinterlace/present, the S23's largest GPU cost (43 ms/VBlank at 6x, 6.7
-at 2x, in 480i menus).
-- Split the category first, then exact reductions behind switches.
-- Anything inexact goes to Performance Mode only.
+**Step 2b done (fe475db8/e7ebb20b, DeepSeek, reviewed):** R8, `GT4_CORE2_DEINT_FIELD_COMPOSE`, default off.
+- **Compose and deinterlace already run at the internal resolution, not the screen.** The S23's 43 ms at 6x comes from five
+  full-image passes per interlaced VBlank, 10.3 Mpx each.
+- **The change:** the display merge writes the field history directly, removing 2 full copies and 2 barriers per
+  interlaced VBlank.
+  - Desktop 10x menu: gpu_busy 7.43 to 6.79 ms.
+  - 480p races have no deinterlace and are unchanged.
+- **Gates:** bit-identical (fixture `hw_core2_post_field_compose`, menu and race dumps, flare hashes); CTest 320/321, 1
+  skipped.
+- **Agent deviation:** it amended and force-pushed its own task-branch commit, so the standing rules now forbid that.
+
+**Step 2c (in progress, DeepSeek):** `GT4_CORE2_DEINT_NATIVE_DECISION`. The deinterlace decides once per native pixel
+instead of in every output sub-pixel, cutting reads about scale² (36x at 6x). Exact.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
