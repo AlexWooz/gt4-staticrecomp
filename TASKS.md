@@ -1503,7 +1503,30 @@ thread) moves onto the GPU and the game renders natively. It may first run the w
 or approximate, then restore them one by one natively (flares through occlusion queries, no GS readbacks). Fidelity
 is a measured, per-scene target, not a bit-exact gate. A faithful renderer stays the default and the reference; CoreGS
 3.0 is opt-in until it beats it. Game logic, physics, timing, saves and gameplay-relevant read-backs never change.
-Scope rule in AGENTS.md; roadmap in docs/COREGS2-ROADMAP.md; study `vu1-direct-gpu-study` (in progress).
+Scope rule in AGENTS.md; roadmap in docs/COREGS2-ROADMAP.md; plan `docs/COREGS3-PLAN.md` (2026-11-05).
+
+🔄 **Phase 1 in progress (2026-11-05, branch `task/090-coregs3` from `release/1.3.0-rc15`):** the observe-only EE hooks
+and the `.gt4scene` capture are implemented and measured; the offline car render and the per-vertex VU1 comparison are
+open. State, hook table, capture format and the first measurements: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md).
+
+- Done: `native/coregs3/` (hooks, scene format, bounded VIF decoder, shape channels, CPU reference rasteriser, PNG
+  writer), `scripts/coregs3_units.py` (K1/K3/K4/K5 insertions with a byte-exact removal proof), the offline tool
+  `gt4_coregs3_render`, the identity gate `scripts/coregs3_bench/coregs3-check.sh`, `native_coregs3` CTest and the
+  `test_coregs3_units.py` controls. Builds stay behind `GT4_COREGS3` (off by default) and need an EE library from the
+  instrumented units; no pin or launcher change.
+- M1 reached on the plan's P1-B (night race, six cars): 116 car draws per frame, 169 texture and 39 material records,
+  ~182 KB of model packets captured per frame, 0 read failures, 0 overflow. P1-A (`licenca-b1`) captures **0** car draws
+  during the timed run: that camera is a bumper camera with no car in the main view (the car only appears at the result
+  screen). P1-A is an identity scene, not a car scene.
+- Identity gate on `licenca-b1` (3,511 VBlanks, 1,576 racing): race clock, per-VBlank simulation digest and the 64 KiB
+  state dump identical in ref, off and shadow. Frame-dump identity is **not** an oracle at 1x: the reference build
+  against itself differs in frame 3275 (same box, 142 px), so that check belongs at 3x.
+- Open (step 1d): the VU1 vertex formula and the triangle topology. Positions, channels and the `0xC1` matrix packet are
+  confirmed; `vf27` holds a world position and `+0xFA0` holds 2D state in the observed frames, so the projection is not
+  captured yet. The offline pictures are a labelled point cloud until the tap lands.
+- Next: the VU1 tap (`GT4_COREGS3_CAPTURE` + draw markers), the vertex reference against it, then the live overlay seam
+  (review work) and the 3x G-IMAGE gate.
+
 
 ### TASK-087 — GS readbacks without stalls
 **Owner decision 2026-10-21: CoreGS 2.0 only.** gt4-gs (the PCSX2 GS fork) gets no more feature work; at most texture

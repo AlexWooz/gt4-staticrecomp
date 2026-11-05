@@ -102,7 +102,18 @@ shows the car silhouette. Triangle topology (strip vs list, and the strip table'
 linear readings produce wrong surfaces, so the offline milestone picture is a point cloud, labelled as such. The offline
 tool keeps every mode behind a flag so the next round can compare.
 
-## 6. Reproducing
+## 6. Gates run in this round
+
+| Gate | Result |
+|---|---|
+| G-LOGIC on P1-A (`licenca-b1`, 3,511 VBlanks, 1,576 racing) | race clock, per-VBlank digest and the 64 KiB state dump identical in ref, `off` and `shadow` |
+| G-OFF / G-SHADOW frame identity | **not an oracle at 1x**: the reference build differs from itself in frame 3275 (same box). Must run at 3x. |
+| CTest `build/t090-v200-coregs3` | 319 tests, 100% passed, 1 skipped (PCSX2-dump test) |
+| Python `tests/python` | 809 tests, OK, 57 skipped |
+| G-ROBUST (capture) | 0 read failures, 0 orphan pass ends, 0 capacity refusals on the observed frames |
+| G-TAP, G-IMAGE, G-PERF | not run yet (the tap and the live seam do not exist) |
+
+## 7. Reproducing
 
 ```
 # units with the hooks, then the EE library

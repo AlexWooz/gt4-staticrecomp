@@ -1,5 +1,19 @@
 # Current Status
 
+## CoreGS 3.0 phase 1 started (2026-11-05, branch `task/090-coregs3`)
+
+The observe-only EE hooks and the `.gt4scene` capture of a race frame's car draws are implemented and measured on the
+plan's P1-B scene (night race, six cars): 116 car draws per frame, 169 texture and 39 material records, ~182 KB of model
+VIF packets per frame, 0 read failures and 0 overflow. On P1-A (`licenca-b1`) the car-pass bracket captures 0 draws
+during the timed run because that camera is a bumper camera (no car in the main view; the car appears at the result
+screen). Identity gate on `licenca-b1` over 3,511 VBlanks (1,576 racing): race clock, per-VBlank simulation digest and the
+64 KiB state dump are identical in the reference build, in `GT4_COREGS3=off` and in `GT4_COREGS3=shadow`; a 1x frame dump
+is not reproducible even for one build against itself (frame 3275), so frame identity has to be run at 3x. Still open for
+phase 1: the VU1 vertex formula and the triangle topology (step 1d, the tap), then the live overlay seam. Design, hook
+table, capture format, measurements and open questions: [COREGS3-HOOKS](COREGS3-HOOKS.md). Nothing ships: CoreGS 3.0 is
+off by default, has no launcher entry and no pin or release change. Everything below is the previous state of `main`
+(1.3.0-rc15).
+
 ## 1.3.0-rc15 test build as a GitHub draft (2026-11-05, morning)
 
 Integrated on `release/1.3.0-rc15` (merge commits, in order): `origin/main` (PR #205, the native DFP wheel of WaimateWihongi,
