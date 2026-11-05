@@ -3308,17 +3308,23 @@ int TestCore2InterlacedPresent(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
-// hw_core2_post_field_compose (TASK-182 R8): GT4_CORE2_DEINT_FIELD_COMPOSE=1 has the display merge of a deinterlaced
-// frame write straight into that field's deinterlace history image, and reads the last adaptive output from the display
-// image, so both full-display image copies the deinterlace used to record disappear. The composed output of the same
-// 480i stream must be identical with the switch off and on at 1x, 2x and 3x, for the adaptive (rule 6, the default), the
-// weave and the bob modes; a progressive stream (no deinterlace: the merge writes the display in both runs) must be
-// identical too. The counters must show the path each run took: 8 field composes and no copy with the switch, and no
-// field compose with the copies of the old path (one per field, plus the last-output copy of the adaptive modes).
+// hw_core2_post_field_compose (TASK-182 R8, step 2c): GT4_CORE2_DEINT_FIELD_COMPOSE=1 has the display merge of a
+// deinterlaced frame write straight into that field's deinterlace history image, and reads the last adaptive output from
+// the display image, so both full-display image copies the deinterlace used to record disappear; TASK-182 step 2c
+// (GT4_CORE2_DEINT_SKIP_DECISION=1) has the adaptive kernel skip its motion tests where the words it already loaded
+// decide the saved one. The composed output of the same 480i stream must be identical in all four switch combinations at
+// 1x, 2x, 3x and 10x, for the adaptive (rule 6, the default), the weave and the bob modes; a progressive stream (no
+// deinterlace: the merge writes the display in every run) must be identical too. The counters must show the path each
+// run took: 8 field composes and no copy with the field switch, and no field compose with the copies of the old path
+// (one per field, plus the last-output copy of the adaptive modes).
 int TestCore2PostFieldCompose(const gpu::VulkanHandles& handles) {
     constexpr uint32_t kWidth = 64;
     constexpr uint32_t kRows = 32;  // field buffer rows; the frame is 64 rows when interlaced
     auto lineColour = [](uint32_t line, uint32_t x, uint32_t frame) {
+        // TASK-182 step 2c: rows 4..11 are one flat colour, so the rows above and below a missing row and the
+        // woven row hold the same word there and the motion-test skip of the adaptive modes runs (it must save
+        // that same word).
+        if (line >= 4 && line < 12) return 0x80000000u | 0x005A7B3Cu;
         const uint32_t moving = x >= kWidth / 2 ? frame * 0x00302010u : 0u;  // the right half changes every VBlank
         return 0x80000000u | (((line * 7u + 3u) & 0xFFu) | (((line * 13u) & 0xFFu) << 8) | ((x * 3u) << 16)) + moving;
     };
@@ -3357,17 +3363,19 @@ int TestCore2PostFieldCompose(const gpu::VulkanHandles& handles) {
         std::uint64_t deinterlaced = 0, fieldComposes = 0, copies = 0;
         std::uint32_t width = 0, height = 0;
     };
-    auto run = [&](uint32_t scale, display::DeinterlaceMode mode, bool interlaced, bool on, PostRun& out) {
+    auto run = [&](uint32_t scale, display::DeinterlaceMode mode, bool interlaced, bool on, bool skip, PostRun& out) {
         _putenv_s("GT4_HW_DEINTERLACE_ROWS", "native");
         _putenv_s("GT4_HW_DEINTERLACE_MOVING", "");
         _putenv_s("GT4_CORE2_DEINT_FIELD_COMPOSE", on ? "1" : "0");
+        _putenv_s("GT4_CORE2_DEINT_SKIP_DECISION", skip ? "1" : "0");
         _putenv_s("GT4_HW_CORE", "2");
         writeback::Renderer renderer;
         _putenv_s("GT4_HW_CORE", "");
         std::string error;
         renderer.SetScale(scale, static_cast<float>(scale));
-        const bool ready = renderer.Init(handles, error);  // reads GT4_CORE2_DEINT_FIELD_COMPOSE
+        const bool ready = renderer.Init(handles, error);  // reads both TASK-182 switches
         _putenv_s("GT4_CORE2_DEINT_FIELD_COMPOSE", "");
+        _putenv_s("GT4_CORE2_DEINT_SKIP_DECISION", "");
         if (!ready) {
             std::printf("  init failed: %s\n", error.c_str());
             return false;
@@ -3409,38 +3417,56 @@ int TestCore2PostFieldCompose(const gpu::VulkanHandles& handles) {
                  {display::DeinterlaceMode::Weave, true, 1, "weave"},
                  {display::DeinterlaceMode::Bob, true, 1, "bob"},
                  {display::DeinterlaceMode::Auto, false, 0, "progressive (no deinterlace)"}};
-    for (uint32_t scale : {1u, 2u, 3u}) {
-        for (const auto& c : cases) {
-            PostRun off, on;
-            const bool ok = run(scale, c.mode, c.interlaced, false, off) && run(scale, c.mode, c.interlaced, true, on);
-            std::uint64_t compared = 0, differing = 0;
-            if (ok && off.frames.size() == 8 && on.frames.size() == 8) {
-                for (std::size_t frame = 0; frame < off.frames.size(); ++frame) {
-                    if (off.frames[frame].size() != on.frames[frame].size()) {
-                        ++differing;
-                        continue;
-                    }
-                    for (std::size_t i = 0; i < off.frames[frame].size(); ++i) {
-                        ++compared;
-                        if (off.frames[frame][i] != on.frames[frame][i]) ++differing;
-                    }
-                }
-            } else {
-                differing = 1;
+    auto compare = [](const PostRun& a, const PostRun& b, std::uint64_t& compared, std::uint64_t& differing) {
+        compared = differing = 0;
+        if (a.frames.size() != b.frames.size()) {
+            differing = 1;
+            return;
+        }
+        for (std::size_t frame = 0; frame < a.frames.size(); ++frame) {
+            if (a.frames[frame].size() != b.frames[frame].size()) {
+                ++differing;
+                continue;
             }
+            for (std::size_t i = 0; i < a.frames[frame].size(); ++i) {
+                ++compared;
+                if (a.frames[frame][i] != b.frames[frame][i]) ++differing;
+            }
+        }
+    };
+    // TASK-182 step 2c adds the third and fourth runs: the motion-test skip alone, and both TASK-182 switches. All four
+    // orders must produce the same composed frames as today's (off, off), at 10x too.
+    for (uint32_t scale : {1u, 2u, 3u, 10u}) {
+        for (const auto& c : cases) {
+            PostRun base, fieldOnly, skipOnly, both;
+            const bool ok = run(scale, c.mode, c.interlaced, false, false, base) &&
+                            run(scale, c.mode, c.interlaced, true, false, fieldOnly) &&
+                            run(scale, c.mode, c.interlaced, false, true, skipOnly) &&
+                            run(scale, c.mode, c.interlaced, true, true, both);
+            std::uint64_t compared = 0, differing = 0, compared2 = 0, differing2 = 0, compared3 = 0, differing3 = 0;
+            compare(base, fieldOnly, compared, differing);
+            compare(base, skipOnly, compared2, differing2);
+            compare(base, both, compared3, differing3);
             const std::uint64_t fieldFrames = c.interlaced ? 8 : 0;
-            const bool counters = on.fieldComposes == fieldFrames && off.fieldComposes == 0 && on.copies == 0 &&
-                                  off.copies == 8 * c.copiesPerField && off.deinterlaced == on.deinterlaced;
-            std::printf("  %s at %ux: %llu pixels compared, %llu differing, size %ux%u, deinterlaced %llu/%llu, "
-                        "field composes %llu/%llu, display copies %llu/%llu\n",
-                        c.name, scale, static_cast<unsigned long long>(compared),
-                        static_cast<unsigned long long>(differing), off.width, off.height,
-                        static_cast<unsigned long long>(off.deinterlaced),
-                        static_cast<unsigned long long>(on.deinterlaced),
-                        static_cast<unsigned long long>(off.fieldComposes),
-                        static_cast<unsigned long long>(on.fieldComposes), static_cast<unsigned long long>(off.copies),
-                        static_cast<unsigned long long>(on.copies));
-            if (!ok || differing != 0 || !counters || off.width != on.width || off.height != on.height) ++failures;
+            const bool counters = fieldOnly.fieldComposes == fieldFrames && both.fieldComposes == fieldFrames &&
+                                  base.fieldComposes == 0 && skipOnly.fieldComposes == 0 && fieldOnly.copies == 0 &&
+                                  both.copies == 0 && base.copies == 8 * c.copiesPerField &&
+                                  skipOnly.copies == 8 * c.copiesPerField && base.deinterlaced == both.deinterlaced &&
+                                  base.deinterlaced == skipOnly.deinterlaced;
+            std::printf("  %s at %ux: field compose %llu, skip %llu, both %llu differing of %llu, size %ux%u, "
+                        "deinterlaced %llu/%llu, field composes %llu/%llu, display copies %llu/%llu\n",
+                        c.name, scale, static_cast<unsigned long long>(differing),
+                        static_cast<unsigned long long>(differing2), static_cast<unsigned long long>(differing3),
+                        static_cast<unsigned long long>(compared), base.width, base.height,
+                        static_cast<unsigned long long>(base.deinterlaced),
+                        static_cast<unsigned long long>(both.deinterlaced),
+                        static_cast<unsigned long long>(base.fieldComposes),
+                        static_cast<unsigned long long>(both.fieldComposes),
+                        static_cast<unsigned long long>(base.copies), static_cast<unsigned long long>(both.copies));
+            if (!ok || differing != 0 || differing2 != 0 || differing3 != 0 || compared == 0 || !counters ||
+                base.width != both.width || base.height != both.height) {
+                ++failures;
+            }
         }
     }
     _putenv_s("GT4_HW_DEINTERLACE_MOVING", "");

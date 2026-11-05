@@ -335,6 +335,9 @@ public:
         // mismatch becomes a sub-native comb); scale = one native row, the IN-381 interpretation (a full native-row
         // ghost at scale).
         std::uint32_t rowStep = 1;
+        // TASK-182 step 2c (GT4_CORE2_DEINT_SKIP_DECISION=1): the adaptive kernel skips the motion tests where the
+        // loaded words already decide the saved one (bob equals the woven row, or mode 5 weaves whatever they say).
+        std::uint32_t skipDeadDecision = 0;
     };
     bool DeinterlaceScaled(const DeinterlaceStep &step, std::string &error);
     // IN-382: while paused, draws are not repeated into the scaled images and loads do not refresh them (the caller

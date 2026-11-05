@@ -1941,7 +1941,10 @@ bool GpuDrawer::Impl::create_deinterlace(std::string &error) {
              "vkCreateDescriptorSetLayout", error)) {
     return false;
   }
-  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 14 * sizeof(std::uint32_t)};
+  // TASK-182 step 2c: the kernel's block is 16 words (`previous_in_output` and `skip_dead_decision` included); this path
+  // pushes 0 for both, so the block is fully defined (it used to declare and push 14, leaving `previous_in_output`
+  // undefined for core 1).
+  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16 * sizeof(std::uint32_t)};
   VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   layoutInfo.setLayoutCount = 1;
   layoutInfo.pSetLayouts = &deinterlaceSetLayout;
@@ -3716,10 +3719,12 @@ bool GpuDrawer::DeinterlaceScaled(const DeinterlaceStep &step, std::string &erro
   s.boundComputePipeline = s.deinterlacePipeline;
   s.boundComputeSet = s.deinterlaceSet;
   auto dispatch = [&](std::uint32_t mode) {
-    const std::uint32_t push[14] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
+    // TASK-182 step 2c: this path (core 1, the reference renderer) never asks for the motion-test skip, and never
+    // composes the field into its history image; both words are pushed so the block is fully defined.
+    const std::uint32_t push[16] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
                                     step.previousSame, step.previousOther, step.haveOutput ? 1u : 0u,
                                     step.thresholdPermille, step.initWoven ? 1u : 0u, step.rowStep,
-                                    step.olderOther};
+                                    step.olderOther, 0u, 0u};
     gt4_hwd_vkCmdPushConstants(s.cmd, s.deinterlaceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     s.recorded_work();
     gt4_hwd_vkCmdDispatch(s.cmd, (step.width + 7) / 8, (step.height + 7) / 8, 1);

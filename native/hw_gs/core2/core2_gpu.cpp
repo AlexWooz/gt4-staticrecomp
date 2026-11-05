@@ -3290,7 +3290,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   {
     const std::uint32_t deinterlaceCounts[7] = {gpu::kGpuDeinterlaceHistory, 0, 0, 0, 1, 1, 1};
     const std::uint32_t fxaaCounts[2] = {1, 1};
-    if (!s.image_layouts(deinterlaceCounts, 7, 15 * 4, s.deinterlaceSetLayout, s.deinterlaceLayout, error) ||
+    if (!s.image_layouts(deinterlaceCounts, 7, 16 * 4, s.deinterlaceSetLayout, s.deinterlaceLayout, error) ||
         !s.image_layouts(fxaaCounts, 2, 2 * 4, s.fxaaSetLayout, s.fxaaLayout, error)) {
       return false;
     }
@@ -5104,10 +5104,10 @@ bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, bool fieldCom
   gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlacePipeline);
   gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.deinterlaceLayout, 0, 1, &set, 0, nullptr);
   auto dispatch = [&](std::uint32_t mode) {
-    const std::uint32_t push[15] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
+    const std::uint32_t push[16] = {mode, step.width, step.height, s.scale, step.rowParity, step.field, step.current,
                                     step.previousSame, step.previousOther, step.haveOutput ? 1u : 0u,
                                     step.thresholdPermille, step.initWoven ? 1u : 0u, step.rowStep,
-                                    step.olderOther, fieldComposed ? 1u : 0u};
+                                    step.olderOther, fieldComposed ? 1u : 0u, step.skipDeadDecision};
     gt4_hwd_vkCmdPushConstants(s.cmd, s.deinterlaceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
     gt4_hwd_vkCmdDispatch(s.cmd, (step.width + 7) / 8, (step.height + 7) / 8, 1);
     s.full_barrier();

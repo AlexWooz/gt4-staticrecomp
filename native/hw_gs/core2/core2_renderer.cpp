@@ -490,6 +490,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // the old order is the A/B reference.
     const bool deintFieldCompose_ = std::getenv("GT4_CORE2_DEINT_FIELD_COMPOSE") != nullptr &&
                                     std::strcmp(std::getenv("GT4_CORE2_DEINT_FIELD_COMPOSE"), "0") != 0;
+    // TASK-182 step 2c: the adaptive deinterlace skips its motion tests where the words it has already loaded decide
+    // the saved word (GT4_CORE2_DEINT_SKIP_DECISION=1). Exact; off by default, the full test path is the A/B reference.
+    const bool deintSkipDecision_ = std::getenv("GT4_CORE2_DEINT_SKIP_DECISION") != nullptr &&
+                                    std::strcmp(std::getenv("GT4_CORE2_DEINT_SKIP_DECISION"), "0") != 0;
     const float rcasSharpness_ = std::getenv("GT4_CORE2_FSR_SHARPNESS") != nullptr
                                      ? std::exp2(-std::max(0.0f, static_cast<float>(std::atof(std::getenv("GT4_CORE2_FSR_SHARPNESS")))))
                                      : 0.0f;
@@ -5048,6 +5052,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         step.height = height;
         step.rowParity = static_cast<std::uint32_t>(rowParity);
         step.field = static_cast<std::uint32_t>(vblankField & 1);
+        step.skipDeadDecision = deintSkipDecision_ ? 1u : 0u;
         // IN-386: one output row per algorithm row (the reference); GT4_HW_DEINTERLACE_ROWS=native: one native row.
         const bool nativeRows = std::getenv("GT4_HW_DEINTERLACE_ROWS") != nullptr &&
                                        std::strcmp(std::getenv("GT4_HW_DEINTERLACE_ROWS"), "native") == 0;

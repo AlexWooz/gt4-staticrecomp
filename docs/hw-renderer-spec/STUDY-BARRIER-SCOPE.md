@@ -528,6 +528,10 @@ for this step).
   s x s output pixels inside a native pixel takes the same decision and repeats the same 19 loads. Computing the decision
   once per native pixel (1/scale^2 of the work: 100x less at 10x) and resolving it per output pixel with 1-2 loads is the
   obvious next exact reduction; it needs a decision image and a proof per mode, so it is a step of its own.
+  *Step 2c tested this premise and did not ship it: the default kernel decides per output row (IN-386), and a per-native
+  decision changes 0.49% of the missing-row pixels on a real menu frame. What shipped instead is the exact part of the
+  same idea (`GT4_CORE2_DEINT_SKIP_DECISION=1`), -39% of the deinterlace at 10x. See "Step 2c" below for the measurements
+  and for the next exact reduction, which is a "moved" flags pass, not a per-native decision.*
 - **Skipping an unchanged frame** (a static menu) was not implemented: every VBlank in the measured menus composes a
   different image (the title animates; the dump pairs at VBlank 1200 and 1500 differ), and the deinterlace carries field
   history that advances every VBlank, so a skip would have to be proven against the history, not just the sources. The
@@ -540,3 +544,159 @@ for this step).
   against the faithful order.
 
 
+## Step 2c: the deinterlace decision, "once per native pixel", and what the adaptive pass really costs
+
+Date 2026-11-05. Same branch, same **not PCSX2-tainted** status as steps 1, 2a and 2b (no PCSX2 source, fork,
+`private/tooling/pcsx2-*` or reference tree opened). Section 6 of step 2b proposed the next exact reduction: "the motion
+decision is per native row and column, so every one of the s x s output pixels inside a native pixel takes the same
+decision and repeats the same 19 loads; computing the decision once per native pixel (1/scale^2 of the work) and
+resolving it per output pixel with 1-2 loads is the obvious next exact reduction". This step tested that premise before
+implementing it. The premise does not hold, in two independent ways (sections 1 and 2), so the planned
+`GT4_CORE2_DEINT_NATIVE_DECISION` path was not built: it cannot be bit-identical on real content. What did ship is a
+smaller exact change in the same kernel, `GT4_CORE2_DEINT_SKIP_DECISION=1` (sections 3 and 4): the adaptive modes skip
+the motion tests where the two words they choose between are already equal. It is the part of the decision that is
+provably dead, and it is 39-42% of the deinterlace category at 10x.
+
+### 1. There is no per-native-pixel decision in the default kernel (C, code)
+
+`PlanDeinterlace` sets `step.rowStep = nativeRows ? scale_ : 1u`, and `nativeRows` is only true with
+`GT4_HW_DEINTERLACE_ROWS=native` (IN-386). The default is **one output row per algorithm row**: `row = gid.y`,
+`up`/`down` are the output rows `y-1` and `y+1`, and the field parity alternates every output row. At 10x the three rows
+of one decision are therefore *three sub-rows of the same native pixel*, and inside one native block the decision is
+taken once per output row. A "decision per native pixel" is the IN-381 interpretation (one native row per algorithm
+row), which IN-386 replaced because it weaved a full native-row ghost at scale - the owner's doubled menu lines. So the
+proposed change is not a refactor of today's kernel; it is a different deinterlace.
+
+### 2. Even with native rows, the inputs of the decision differ inside a native block (C, measured)
+
+`core2_compose.comp` maps an output pixel to the source pixel one for one when the placement is the read size at the
+same scale (`sx = (p.x - x0)`, `at = read * source_scale + sx`), so the composed image is a 1:1 copy of a render made at
+the internal scale, not a nearest-neighbour blow-up of a native image. Measured on the real 480i menu (no presses, 1500
+VBlanks, `GT4_HW_DEINTERLACE=off`, `GT4_HW_DUMP_SOURCE=upscaled`, `GT4_HW_DUMP_EVERY=1`, `GT4_HW_DUMP_FROM=1197`,
+`GT4_HW_SCALE=10`): of the 640x448 native blocks of the 6400x4480 frame at VBlank 1200, **46.7% are one colour in all
+100 of their output pixels**, so 53.3% carry sub-native detail.
+
+The decision itself was then replayed on the real merge images. With `GT4_HW_DEINTERLACE=off` each dump of VBlank t is
+exactly the image the kernel keeps in `history[]`, so the four consecutive dumps 1197..1200 are `older_other` (1197),
+`previous_same` (1198), `previous_other` (1199) and `current` (1200) for VBlank 1200; the model recomputes mode 6 with
+`row_step = 1`, threshold 80 permille, the k loop at +-1 and +-2 x `scale`, and the same integer `channel_excess`
+(max channel difference * 1000 > 80 * 255). Two rules were compared:
+
+- today's, per output pixel: 14,329,600 missing-row pixels;
+- "one decision per native pixel": the block's first missing output row (row `10 * ny + 1`) at sub-column 0, applied to
+  every missing row and column of that block.
+
+Result (C, model on real dumps):
+
+| Quantity | Value |
+|---|---|
+| Native blocks whose decision is not constant inside the block | 4,183 of 286,720 (1.46%) |
+| Missing-row output pixels whose saved word changes | 69,608 of 14,329,600 (0.49%) |
+| Pixels of the whole frame that change | 0.24% |
+| Missing-row pixels where `bob` already equals the woven row (the decision cannot matter) | 46.5% |
+| Missing-row pixels the base comparisons already mark as moving | 0.64% |
+
+So the per-native-pixel decision changes the picture in about one pixel of four hundred, which is enough to fail a
+bit-identity gate, and enough to make it a different deinterlace. (The replay is
+`build/t182-b2c-native-decision-model.py`, a numpy script that reads the four dumps and prints the three counts; it is a
+replay of the kernel's arithmetic on the real merge images, not the kernel itself: it cannot see the GPU's
+`previous_output` fallback, which does not arise in this stream because alternating fields always have an
+opposite-parity history entry. Label: High confidence for the decision counts, C for the pixel counts.)
+
+### 3. The exact change that did ship: `GT4_CORE2_DEINT_SKIP_DECISION=1`
+
+Modes 5 and 6 end in one of two words: `bob` (the average of the rows above and below, rounded up per channel) or the
+woven row (`previous_other` at this texel, or the fallback). `interpolate` - mode 6, or no woven history, or rule 5's
+`up`/`down` test - decides whether a moving pixel takes `bob` at all. Both are known before any motion test runs, from
+words the invocation has already loaded (`up`, `down`, `woven_word`). Therefore:
+
+- if `interpolate` is false (mode 5 with an older opposite-parity field to weave), the saved word is the woven row
+  whatever the tests say;
+- otherwise, when `bob` equals the woven row, both branches save the same word.
+
+In both cases the kernel now stores that word and returns before the three base comparisons and the k loop. The switch
+is off by default; with it unset the kernel runs exactly the code of step 2b. Bit-identity is by construction (the same
+4-byte word lands in the same texel), and it was verified (section 4).
+
+On the measured menu frame this covers 46.5% of the missing-row pixels: those invocations no longer read `previous_same`
+twice, `older_other` once, or the 12-24 words of the k loop.
+
+*Found while adding the switch's push word (C, code):* the kernel's push block is 16 words, but the core 2 pipeline
+layout declared 15 and the core 1 writeback path declared and pushed 14, so `previous_in_output` (the word TASK-182 R8
+added) was undefined for core 1 and a new word would have reached neither. Both layouts now declare 16 words and both
+callers push all 16 (core 1 pushes 0 for the two TASK-182 words).
+
+### 4. Identity evidence (C)
+
+- **Fixture `hw_core2_post_field_compose`, extended.** The same 480i stream (a 64x32 field buffer, per-field lines, a
+  right half that changes every VBlank, and now rows 4..11 in one flat colour so the skip path actually runs), 8 fields,
+  at 1x, 2x, 3x **and 10x**, for adaptive (rule 6), weave, bob and a progressive stream, in **four** switch
+  combinations: today's (off/off), field compose only, skip only, and both. Every composed frame is bit-identical in the
+  four: 32,768 / 131,072 / 294,912 / 3,276,800 pixels per case, 0 differing; the counters still show 8/8 field composes
+  and 16 -> 0 (adaptive) or 8 -> 0 (weave, bob) display copies.
+- **Composed frames from the game** (`GT4_HW_DUMP_SOURCE=upscaled`, P6 PPM, VBlanks 1200 and 1500), all four switch
+  combinations, equal to the step 2b hashes:
+
+| Scene | Scale | Field compose | Skip | Composed image (SHA-256, first 16) |
+|---|---|---|---|---|
+| 480i menu | 1x | 0 | 0 / 1 | `e01e4cd6f27a33c3` / `304912a9f41c1d52` (640x448), 2 of 2 equal |
+| 480i menu | 2x | 0 / 1 | 0 / 1 | `2ec8aaf864975a1e` / `1eb80181cf16157a` (1280x896), 8 of 8 equal |
+| 480i menu | 3x | 0 | 0 / 1 | `b63232d9afcdd383` / `df5983514225aee6` (1920x1344), 2 of 2 equal |
+| 480i menu | 10x | 0 / 1 | 0 / 1 | `f921e8ca555c1a9e` / `44a6082802dd186a` (6400x4480), 8 of 8 equal |
+
+- **Race scenes** (480p, no deinterlace: the switch cannot act there) with the skip on: the nine composed dumps of
+  Hong Kong 2x, Motegi 2x and Hong Kong 10x (VBlanks 6000, 7500, 9000) are **identical** to the step 2b runs, and the
+  flare reply hashes equal section 3:
+
+| Run | Replies | Hash | Section 3 reference |
+|---|---|---|---|
+| Hong Kong 2x | 6835 | `2f4c1cc9f174d00e` | same |
+| Hong Kong 10x | 6835 | `61109e8f3143264a` | same |
+| Motegi 2x | 6588 | `7bf932fbb8799965` | same |
+
+- **Full CTest, serial:** 321 tests, **100% passed, 0 failed**, 1 skipped (`hw_replace_q07_pcsx2_dumps`, the PCSX2
+  dump fixture, absent in a clean room), 643.9 s (`ctest --test-dir build/t178-spec2 --output-on-failure`).
+
+### 5. Times, off against on
+
+Same method as step 2b: `build/t178-spec2` (Spec II, Release), presenting (`--window`, `GT4_CORE2_GPU_CATEGORIES=1`,
+client area 2858x1333, paced at 60 Hz), the 480i title screen with no presses, 1500 VBlanks, the 600-1200 interval.
+Indicative only: the desktop was shared with an Android emulator image for the whole batch, and the absolute values are
+higher than step 2b's table (which read 3.74 / 3.04 at 10x); the off/on pairs were run back to back and the direction
+held in both orders (see the note below the table). ms per VBlank:
+
+| Scene | Scale | `GT4_CORE2_DEINT_FIELD_COMPOSE` | `..._SKIP_DECISION` | deinterlace | `gpu_busy` |
+|---|---|---|---|---|---|
+| 480i menu | 2x | 0 | 0 | 0.23 / 0.20 | 0.71 / 0.62 |
+| 480i menu | 2x | 0 | 1 | **0.16 / 0.15** | 0.62 / 0.60 |
+| 480i menu | 2x | 1 | 0 | 0.16 / 0.18 | 0.55 / 0.63 |
+| 480i menu | 2x | 1 | 1 | **0.13 / 0.12** | 0.57 / 0.57 |
+| 480i menu | 10x | 0 | 0 | 4.85 / 5.15 / 5.38 / 4.79 / 5.28 | 7.85 / 8.28 / 8.69 / 7.68 / 8.54 |
+| 480i menu | 10x | 0 | 1 | **2.59 / 3.45 / 3.46 / 2.98 / 3.00** | 5.07 / 6.80 / 6.85 / 5.97 / 6.01 |
+| 480i menu | 10x | 1 | 0 | 4.61 / 4.61 | 7.89 / 7.91 |
+| 480i menu | 10x | 1 | 1 | **2.69 / 2.69** | 6.04 / 6.04 |
+
+Means at 10x: 5.09 -> 3.10 ms of deinterlace (-39%) and 8.21 -> 6.14 of `gpu_busy` (-25%) in today's order; 4.61 ->
+2.69 (-42%) and 7.90 -> 6.04 (-24%) with the field compose. At 2x: 0.215 -> 0.155 (-28%). The last two 10x rows were also
+run in reverse order (skip first: 2.98 / 3.00, then 4.79 / 5.28), so the difference is not an ordering or warm-up
+effect. The 480p races are unchanged (they deinterlace nothing).
+
+### 6. What is left
+
+- **The decision is still the largest part of the adaptive pass, and it is now the only thing in it (C, the 10x rows).**
+  With the field compose, the 46.5% of missing-row pixels the skip removes are 1.9 ms of the 4.6, so the whole decision is
+  about 4 ms of that 4.6; a study probe that stored the woven row and returned (no decision at all, temporary shader, not
+  shipped) measured 0.65 ms of deinterlace in the same batch. The remaining 2.7 ms is the other 52.8% of missing-row
+  pixels, which run the three base comparisons and the five-column k loop in full. The exact form of that reduction is
+  *not* a per-native decision (it changes the picture, section 2): it is to compute the three comparisons **once per
+  output pixel** into a small "moved" image and then dilate it over the +-2 native columns the k loop samples (about 30
+  word loads per missing pixel cut to 6-8, one word per row and column group instead of six). It needs a new image, a
+  second dispatch and a packing layout, so it is a step of its own; it is reported here with its cost model and not
+  implemented.
+- **The step 2b proposal would have been worth real time, had it been exact.** The decision is *not* free: it is 85-90%
+  of the adaptive pass at 10x (4.6 -> 0.65 ms with no decision at all). The proposal's only problem is that its decision
+  is per native pixel, which is a different picture.
+- **The phone (Hyp, not run).** The S23's 30+ ms at 6x is about ten times the desktop's whole 10x deinterlace for 2.8x
+  the pixels, so its cost is dominated by per-pass and per-barrier work, not by the kernel's arithmetic. The skip removes
+  work inside the kernel and should pay in proportion to the decision share there; that share is unmeasured on Adreno.
+- **Skipping an unchanged frame, present, and `GT4_CORE2_POST_AT_SCREEN`** are unchanged from section 6 of step 2b.

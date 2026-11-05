@@ -22,6 +22,11 @@
 //   6 adaptive, moving rows interpolated (IN-405, CORE2's default): as 5, but a moving pixel is always the average of
 //     the rows above and below. Rule 5 keeps the woven row where those two rows disagree, which on thin strokes moving
 //     fast (GT4's GT Mode ticker) weaves two text positions into a comb; the reference shows that text clean.
+//
+// TASK-182 step 2c (`skip_dead_decision`): modes 5 and 6 only choose between two words, the woven row and the average of
+// the rows above and below. When those two words are already the same the tests cannot change what is saved, and a mode 5
+// run that is not interpolating saves the woven row whatever they say; the invocation then stores the word it already
+// has and returns before the tests and their reads.
 
 #version 450
 
@@ -61,6 +66,9 @@ layout(push_constant) uniform DeinterlaceParameters {
     // TASK-182 R8: 1 when the last adaptive output is still in display_out (the display merge wrote this field's history
     // image instead of the display image), 0 when it is the separate previous_output image.
     uint previous_in_output;
+    // TASK-182 step 2c: 1 when the motion tests may be skipped where they cannot change the saved word (see the
+    // `skip_dead_decision` block below), 0 for the tests of today.
+    uint skip_dead_decision;
 } pc;
 
 uvec4 unpack_rgba(uint word) {
@@ -153,6 +161,20 @@ void main() {
     uint down = load_history(pc.current, ivec2(p.x, p.y + s));
     uvec4 bob4 = (unpack_rgba(up) + unpack_rgba(down) + 1u) / 2u;
     uint bob = pack_rgba(bob4);
+    // TASK-182 step 2c: the motion tests below choose between `bob` and `woven_word` only. When the two are the same
+    // word the choice cannot change what is saved, and when `interpolate` is false (mode 5 with an older opposite-parity
+    // field to weave) the saved word is the woven row whatever the tests say. Both cases are decided from words this
+    // invocation has already loaded (up, down, woven_word), so skipping the tests is exact: the same 4-byte word lands
+    // in the same texel, and a whole row of them sums to the same picture. GT4_CORE2_DEINT_SKIP_DECISION=1.
+    if (pc.skip_dead_decision != 0u) {
+        const int up_down = channel_excess(up, down);
+        const bool interpolate = pc.mode == 6u || !have_woven ||
+                                 (up_down < 0 && 10 * channel_excess(up, woven_word) >= 9 * up_down);
+        if (!interpolate || bob == woven_word) {
+            imageStore(display_out, p, uvec4(woven_word, 0u, 0u, 0u));
+            return;
+        }
+    }
     bool motion = pc.previous_same >= 4u || pc.previous_other >= 4u || pc.older_other >= 4u;
     if (!motion) {
         motion = channel_excess(up, load_history(pc.previous_same, ivec2(p.x, p.y - s))) > 0 ||
