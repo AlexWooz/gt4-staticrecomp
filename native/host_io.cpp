@@ -145,11 +145,131 @@ PadState ControllerInput::poll(bool focused, std::uint16_t keyboard_buttons) {
 #else
   PadState pad = poll_sdl(focused);
 #endif
+  // TASK-180 test3 (owner's phone): some controllers reach the Activity as Android keys and motion but never appear in
+  // SDL's gamepad list (no HID gamepad mapping for that pad). GameActivity forwards them here; they are the pad while
+  // SDL has none, and never a second reading of a pad SDL does see.
+  if (backend_ == gt4::pad::Backend::sdl && sdl_pad_ == nullptr && android_active_) {
+    pad = android_pad();
+    if (!android_used_) {
+      android_used_ = true;
+      log_devices("android key/motion pad (SDL opened no gamepad)", focused);
+    }
+  }
+  // TASK-180 test3: the first read and every device change write the `[input]` block, after the scan above, so the
+  // "which one the game reads" line is the truth of that moment. The fingerprint is a plain hash of the device list.
+  const std::uint64_t fingerprint = device_fingerprint();
+  if (!devices_logged_) {
+    devices_logged_ = true;
+    log_devices("start", focused);
+  } else if (fingerprint != devices_fingerprint_) {
+    log_devices("device change", focused);
+  }
+  devices_fingerprint_ = fingerprint;
   // Without focus the pad is neutral: the keyboard counts only in the game window.
   if (!focused)
     return pad;
   merge_keyboard(pad, keyboard_buttons);
   return pad;
+}
+
+// TASK-180 test3: the Android key and motion fallback. Key codes and axes are the Android ones (KeyEvent.KEYCODE_*,
+// MotionEvent.AXIS_*), which GameActivity passes through as plain numbers. The mapping is the same standardized gamepad
+// reading read_sdl_gamepad builds (face buttons by position, sticks, triggers, hat), so controls.cpp applies unchanged.
+void ControllerInput::android_key(int keycode, bool down) {
+  std::uint16_t mask = 0;
+  switch (keycode) {
+    case 96: mask = gt4::controls::xinput::a; break;             // KEYCODE_BUTTON_A
+    case 97: mask = gt4::controls::xinput::b; break;             // KEYCODE_BUTTON_B
+    case 99: mask = gt4::controls::xinput::x; break;             // KEYCODE_BUTTON_X
+    case 100: mask = gt4::controls::xinput::y; break;            // KEYCODE_BUTTON_Y
+    case 102: mask = gt4::controls::xinput::left_shoulder; break;   // KEYCODE_BUTTON_L1
+    case 103: mask = gt4::controls::xinput::right_shoulder; break;  // KEYCODE_BUTTON_R1
+    case 106: mask = gt4::controls::xinput::left_thumb; break;   // KEYCODE_BUTTON_THUMBL
+    case 107: mask = gt4::controls::xinput::right_thumb; break;  // KEYCODE_BUTTON_THUMBR
+    case 108: mask = gt4::controls::xinput::start; break;        // KEYCODE_BUTTON_START
+    case 109: mask = gt4::controls::xinput::back; break;         // KEYCODE_BUTTON_SELECT
+    case 19: mask = gt4::controls::xinput::dpad_up; break;       // KEYCODE_DPAD_UP
+    case 20: mask = gt4::controls::xinput::dpad_down; break;     // KEYCODE_DPAD_DOWN
+    case 21: mask = gt4::controls::xinput::dpad_left; break;     // KEYCODE_DPAD_LEFT
+    case 22: mask = gt4::controls::xinput::dpad_right; break;    // KEYCODE_DPAD_RIGHT
+    case 104:  // KEYCODE_BUTTON_L2: a digital trigger, the full travel (an analog one arrives as a motion axis)
+    case 105:  // KEYCODE_BUTTON_R2
+      android_active_ = true;
+      if (keycode == 104)
+        android_left_trigger_ = down ? 255 : 0;
+      else
+        android_right_trigger_ = down ? 255 : 0;
+      return;
+    default: return;
+  }
+  android_active_ = true;
+  if (down)
+    android_buttons_ |= mask;
+  else
+    android_buttons_ &= static_cast<std::uint16_t>(~mask);
+}
+
+void ControllerInput::android_motion(int axis, float value) {
+  const auto to_sdl = [](float axis_value) {
+    return static_cast<std::int16_t>(std::clamp(axis_value, -1.0f, 1.0f) * 32767.0f);
+  };
+  const auto to_trigger = [](float axis_value) {
+    return static_cast<std::uint8_t>(std::clamp(axis_value, 0.0f, 1.0f) * 255.0f);
+  };
+  switch (axis) {
+    case 0: android_axes_[0] = to_sdl(value); break;                    // AXIS_X
+    case 1: android_axes_[1] = static_cast<std::int16_t>(-to_sdl(value)); break;  // AXIS_Y (Android down is positive)
+    case 2: android_axes_[2] = to_sdl(value); break;                    // AXIS_Z (right stick X)
+    case 11: android_axes_[3] = static_cast<std::int16_t>(-to_sdl(value)); break; // AXIS_RZ (right stick Y)
+    case 17: android_left_trigger_ = to_trigger(value); break;          // AXIS_LTRIGGER
+    case 18: android_right_trigger_ = to_trigger(value); break;         // AXIS_RTRIGGER
+    case 23: android_left_trigger_ = to_trigger(value); break;          // AXIS_BRAKE
+    case 22: android_right_trigger_ = to_trigger(value); break;         // AXIS_GAS
+    case 14:                                                            // AXIS_HAT_Y: a hat, -1 up
+    case 15: {                                                          // AXIS_HAT_X: -1 left
+      const std::uint16_t up = gt4::controls::xinput::dpad_up, down = gt4::controls::xinput::dpad_down;
+      const std::uint16_t left = gt4::controls::xinput::dpad_left, right = gt4::controls::xinput::dpad_right;
+      const std::uint16_t pair = axis == 14 ? static_cast<std::uint16_t>(up | down) : static_cast<std::uint16_t>(left | right);
+      android_buttons_ &= static_cast<std::uint16_t>(~pair);
+      if (value < -0.5f) android_buttons_ |= axis == 14 ? up : left;
+      if (value > 0.5f) android_buttons_ |= axis == 14 ? down : right;
+      break;
+    }
+    default: return;
+  }
+  android_active_ = true;
+}
+
+PadState ControllerInput::android_pad() const {
+  gt4::pad::GamepadReading reading;
+  reading.buttons = android_buttons_;
+  reading.left_trigger = android_left_trigger_;
+  reading.right_trigger = android_right_trigger_;
+  reading.thumb_lx = android_axes_[0];
+  reading.thumb_ly = android_axes_[1];
+  reading.thumb_rx = android_axes_[2];
+  reading.thumb_ry = android_axes_[3];
+  return gt4::pad::map_reading(reading, map_);
+}
+
+std::uint64_t ControllerInput::device_fingerprint() const {
+  if (backend_ == gt4::pad::Backend::xinput)
+    return 1;  // one slot, no hot-plug list; the connect and disconnect lines come from poll_xinput
+  std::uint64_t hash = 1469598103934665603ull;
+  int count = 0;
+  SDL_JoystickID *ids = SDL_GetJoysticks(&count);
+  const auto mix = [&hash](const char *text) {
+    for (const unsigned char *character = reinterpret_cast<const unsigned char *>(text); character != nullptr && *character;
+         ++character)
+      hash = (hash ^ *character) * 1099511628211ull;
+  };
+  for (int index = 0; ids != nullptr && index < count; ++index) {
+    mix(std::to_string(ids[index]).c_str());
+    mix(SDL_GetJoystickNameForID(ids[index]));
+    mix(SDL_IsGamepad(ids[index]) ? "g" : "j");
+  }
+  if (ids != nullptr) SDL_free(ids);
+  return hash ^ static_cast<std::uint64_t>(count);
 }
 
 #ifdef _WIN32
@@ -294,6 +414,75 @@ PadState ControllerInput::poll_sdl(bool focused) {
     return pad;
   }
   return gt4::pad::map_reading(read_sdl_gamepad(sdl_pad_), map_);
+}
+
+// TASK-180 test3: the `[input]` block (see the header). It answers the player's "the pad does nothing in the game" with
+// data: which devices SDL enumerated, whether each got a gamepad mapping (an unmapped joystick is never listed as a
+// gamepad, so the game cannot open it as one), and which instance the game reads. The window's input focus is part of
+// it because the pad is read as neutral while the window does not have it.
+std::string ControllerInput::reading_text() const {
+  if (backend_ == gt4::pad::Backend::xinput)
+    return "";  // the XInput slot is reported by log_devices
+  if (sdl_pad_ == nullptr)
+    return "";
+  const char *name = SDL_GetGamepadName(sdl_pad_);
+  return std::string("\"") + (name != nullptr ? name : "unnamed") + "\" (instance " +
+         std::to_string(SDL_GetGamepadID(sdl_pad_)) + (reading_choice_ ? ", the launcher's choice" : "") + ")";
+}
+
+void ControllerInput::log_devices(const char *reason, bool window_focused) const {
+  std::fprintf(stderr, "[input] === %s: backend %s, window focus %s ===\n", reason != nullptr ? reason : "input",
+               gt4::pad::backend_name(backend_), window_focused ? "yes" : "NO");
+  if (backend_ == gt4::pad::Backend::xinput) {
+#ifdef _WIN32
+    if (slot_ == XUSER_MAX_COUNT)
+      std::fprintf(stderr, "[input] XInput: no controller connected; the game reads the keyboard only\n");
+    else
+      std::fprintf(stderr, "[input] reading XInput slot %lu\n", static_cast<unsigned long>(slot_));
+#endif
+    return;
+  }
+  int count = 0;
+  SDL_JoystickID *ids = SDL_GetJoysticks(&count);
+  std::fprintf(stderr, "[input] devices: %d connected%s\n", count, has_pad_choice_ ? ", the launcher's controller chosen" : "");
+  for (int index = 0; ids != nullptr && index < count; ++index) {
+    const SDL_JoystickID id = ids[index];
+    const char *name = SDL_GetJoystickNameForID(id);
+    const bool gamepad = SDL_IsGamepad(id);
+    char guid[33] = {};
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid, sizeof guid);
+    int axes = 0, buttons = 0, hats = 0;
+    // Counts need the device open; the game opens it anyway unless the wheel owns it, and opening twice is allowed.
+    const bool excluded = is_excluded(id);
+    if (SDL_Joystick *probe = excluded ? nullptr : SDL_OpenJoystick(id)) {
+      axes = SDL_GetNumJoystickAxes(probe);
+      buttons = SDL_GetNumJoystickButtons(probe);
+      SDL_CloseJoystick(probe);
+    }
+    const char *mapping = gamepad ? SDL_GetGamepadMappingForID(id) : nullptr;
+    const char *type = gamepad ? "gamepad" : "joystick, no gamepad mapping";
+    std::fprintf(stderr,
+                 "[input]   %d: \"%s\" vid:pid %04x:%04x guid %s, %s, %d axes, %d buttons, %s%s%s\n", index + 1,
+                 name != nullptr ? name : "unnamed", static_cast<unsigned>(SDL_GetJoystickVendorForID(id)),
+                 static_cast<unsigned>(SDL_GetJoystickProductForID(id)), guid, type, axes, buttons,
+                 excluded ? "owned by the wheel" : (sdl_pad_ != nullptr && SDL_GetGamepadID(sdl_pad_) == id) ? "READ" : "-",
+                 mapping != nullptr ? ", mapping: " : "", mapping != nullptr ? mapping : "");
+    if (mapping != nullptr) SDL_free(const_cast<char *>(mapping));
+  }
+  if (ids != nullptr) SDL_free(ids);
+  const std::string reading = reading_text();
+  bool any_gamepad = false;
+  for (int index = 0; ids != nullptr && index < count; ++index) any_gamepad |= SDL_IsGamepad(ids[index]);
+  if (!reading.empty())
+    std::fprintf(stderr, "[input] reading %s\n", reading.c_str());
+  else if (any_gamepad)
+    std::fprintf(stderr, "[input] reading nothing yet: the gamepad above is not open at this moment (the scan opens it at "
+                         "the next VBlank)\n");
+  else if (count > 0)
+    std::fprintf(stderr, "[input] reading nothing: none of the devices is a gamepad (a joystick without a gamepad mapping "
+                         "needs SDL_GAMECONTROLLERCONFIG_FILE); the game reads the keyboard only\n");
+  else
+    std::fprintf(stderr, "[input] reading nothing: no device; the game reads the keyboard only\n");
 }
 
 void ControllerInput::rumble(std::uint16_t value) {

@@ -42,8 +42,15 @@ android {
         // Android 10: Vulkan 1.1+ and AAudio on every device (the game library is built for API 29).
         minSdk = 29
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        // TASK-180 test3: the version Android shows comes from the same `GT4_RELEASE_LABEL` the launcher library uses
+        // (`gt4l-core/build.rs`: the crate version + "-" + label), so the APK, the home footer and the logs say the same
+        // thing. The tauri CLI rewrites tauri.properties at every build with its own last values, so the version is
+        // taken from the crate version part of that file and the label from the environment; the code from the
+        // environment too (3 for this test build).
+        val releaseLabel = (System.getenv("GT4_RELEASE_LABEL") ?: "").trim()
+        val crateVersion = tauriProperties.getProperty("tauri.android.versionName", "1.3.0").substringBefore("-")
+        versionCode = (System.getenv("GT4_ANDROID_VERSION_CODE") ?: "3").toInt()
+        versionName = if (releaseLabel.isEmpty()) crateVersion else "$crateVersion-$releaseLabel"
     }
     buildTypes {
         getByName("debug") {

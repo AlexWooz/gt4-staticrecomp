@@ -7,7 +7,9 @@
   "use strict";
   var GT4 = (root.GT4 = root.GT4 || {});
   GT4.features = {
-    mods: false
+    mods: false,
+    // Racing wheels (TASK-181): the Wheel page and its tab. The backend turns it off on Android (app_state.wheel).
+    wheel: true
   };
   // Home background slideshow (six slots, in order); see ui/assets/backgrounds/README.md. Each slot has a CSS
   // class bg-slide-1..6 in css/app.css, so the list length must match the CSS slots.

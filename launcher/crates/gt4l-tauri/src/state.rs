@@ -192,6 +192,56 @@ pub fn log(dirs: &DataDirs, message: &str) {
     crate::session_log::write(dirs, gt4l_core::logs::Level::Info, message);
 }
 
+/// TASK-180 test3 (owner's phone): the Render scale written before schema 9 is a notch of the screen's native multiplier,
+/// not the percentage of the screen's height the row shows now. Converted once, with the screen and GPU of this launch:
+/// Windows keeps the multiplier the player had, Android goes to the 2x default (the phone's values were never chosen as
+/// percentages). A screen that cannot be read leaves the file alone; the next start converts it. Returns what it did.
+pub fn migrate_render_scale(config: &mut ConfigFile, dirs: &DataDirs) -> bool {
+    match monitors_for_scale().first().map(|monitor| monitor.desktop) {
+        Some(screen) => migrate_render_scale_at(screen, config, dirs),
+        None => {
+            if config.render_scale_model < 2 {
+                log(dirs, "settings: the Render scale is from the old scale model; the screen is not known yet, Play converts it");
+            }
+            false
+        }
+    }
+}
+
+/// [`migrate_render_scale`] for a known screen size (Android's Play converts once the screen has been read).
+pub fn migrate_render_scale_at(screen: display_rules::Size, config: &mut ConfigFile, dirs: &DataDirs) -> bool {
+    if config.render_scale_model >= 2 {
+        return false;
+    }
+    let stored = config.settings.get("render_scale").parse::<u32>().unwrap_or(display_rules::RENDER_SCALE_DEFAULT);
+    // The old model climbed from the screen's own multiplier (k) on a discrete card, which is what a PC's plan used for
+    // the stored notches; an integrated GPU's untouched 100% was 1x, and that value is converted like any other notch.
+    let integrated = false;
+    let (percent, line) = display_rules::migrate_render_scale(
+        stored,
+        screen,
+        integrated,
+        display_rules::RendererCaps { max_multiplier: crate::model::MAX_UPSCALE_DEFAULT },
+        cfg!(target_os = "android"),
+    );
+    let _ = config.settings.set("render_scale", &percent.to_string());
+    config.render_scale_model = 2;
+    log(dirs, &line);
+    true
+}
+
+/// The monitor the Render scale is measured against: the stored one when it can be read, else the primary.
+fn monitors_for_scale() -> Vec<display_rules::Monitor> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android::monitors()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        gt4l_platform::display::monitors()
+    }
+}
+
 /// Appends a WARN line: a soft problem the player may notice (TASK-112).
 pub fn log_warn(dirs: &DataDirs, message: &str) {
     crate::session_log::write(dirs, gt4l_core::logs::Level::Warn, message);
@@ -221,6 +271,10 @@ impl AppState {
         set_current_language(language_of_settings(&config.settings));
         // TASK-109: a release candidate build with no chosen update channel stays on Beta; any other build on Stable.
         gt4l_core::update::apply_channel_default(&mut config.settings, gt4l_core::launcher_release_version());
+        // TASK-180 test3 (owner's phone): a Render scale stored under the old notch model is converted with the screen in
+        // hand, then the file records the new meaning (schema 9). Windows keeps the picture the player had; Android goes
+        // to the 2x default (test1's "125" became 6x on the S23 and the menus ran at 12 fps).
+        migrate_render_scale(&mut config, &dirs);
         // Stored paths inside the install folder are relative (see `save_config`); resolve them here.
         config.disc_path = config.disc_path.map(|path| paths::resolve_portable(&path, &install_dir));
         config.dev_game_dir = config.dev_game_dir.map(|path| paths::resolve_portable(&path, &install_dir));

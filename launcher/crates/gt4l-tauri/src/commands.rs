@@ -226,6 +226,8 @@ pub fn app_state_of(state: &AppState) -> Value {
         "language": state.config.settings.get("language"),
         // TASK-180: the page's platform rules (the update dialog downloads in the browser on Android).
         "platform": Platform::current().name(),
+        // TASK-180 test3 (owner): the Wheel page is Windows only; Android offers pads only.
+        "wheel": Platform::current().offers_wheel_page(),
         "games": games::GAMES.iter().map(|game| game_row(state, game)).collect::<Vec<_>>(),
         "migration": {
             "running": state.migration.running,

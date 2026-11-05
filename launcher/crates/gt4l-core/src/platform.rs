@@ -70,6 +70,12 @@ impl Platform {
         }
     }
 
+    /// Whether the launcher offers the Wheel page (TASK-181). Android has no wheel support: pads only (owner, test3), so
+    /// the page, its tab and its commands are not offered there. Windows is unchanged.
+    pub const fn offers_wheel_page(self) -> bool {
+        matches!(self, Platform::Windows)
+    }
+
     /// Whether the launcher downloads and installs its own updates. Android only checks and opens the download page.
     pub const fn installs_updates(self) -> bool {
         matches!(self, Platform::Windows)
@@ -158,6 +164,9 @@ mod tests {
         assert!(android.scale_floor_follows_screen() && !Platform::Windows.scale_floor_follows_screen());
         assert_eq!(android.game_sessions_exported(), 10);
         assert_eq!(Platform::Windows.game_sessions_exported(), crate::log_export::KEPT_FOR_EXPORT);
+        // TASK-180 test3 (owner): wheels are Windows only; Android offers pads only, so no Wheel page.
+        assert!(!android.offers_wheel_page());
+        assert!(Platform::Windows.offers_wheel_page());
         assert!(android.offers("performance_hud"), "the HUD draws on Android since test2");
         for row in ["graphics_card", "monitor", "resolution", "fullscreen", "discord_rich_presence"] {
             assert!(!android.offers(row), "{row}");

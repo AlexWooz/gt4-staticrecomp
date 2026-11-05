@@ -38,7 +38,13 @@
   // LB/RB and Q/E cycling, and route checks, so a hidden tab is unreachable.
   function visibleTabs() {
     return TABS.filter(function (tab) {
-      return tab.id !== "mods" || GT4.features.mods;
+      if (tab.id === "mods") {
+        return GT4.features.mods;
+      }
+      if (tab.id === "wheel") {
+        return GT4.features.wheel;
+      }
+      return true;
     });
   }
   GT4.visibleTabs = visibleTabs;

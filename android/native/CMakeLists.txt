@@ -49,8 +49,8 @@ foreach(required IN ITEMS GT4_ASSETS_ROOT GT4_EE_UNITS_DIR GT4_PORT_DIR GT4_PERF
         message(FATAL_ERROR "android/native needs -D${required}=...; see configure-android.cmd")
     endif()
 endforeach()
-if(NOT GT4_TARGET STREQUAL "v200")
-    message(FATAL_ERROR "The Android build starts with v2.00 (TASK-180); Spec II follows")
+if(NOT GT4_TARGET STREQUAL "v200" AND NOT GT4_TARGET STREQUAL "spec2")
+    message(FATAL_ERROR "android/native builds the v2.00 (GT4_TARGET=v200) and Spec II (GT4_TARGET=spec2) game libraries")
 endif()
 set(DONOR "${GT4_ASSETS_ROOT}/private/references/ps2-web-recomp")
 set(PORT "${GT4_PORT_DIR}")
@@ -328,3 +328,7 @@ target_compile_definitions(gt4 PRIVATE PS2_WINDOW GT4_MEMCARD_FLUSH_OVERLAY GT4_
 target_include_directories(gt4 PRIVATE "${PORT}" "${NATIVE}")
 target_link_libraries(gt4 PRIVATE ps2game ps2runtime native_host_io gt4_platform gt4_sdl3 android log dl)
 target_link_options(gt4 PRIVATE ${GT4_ANDROID_LINK_FLAGS})
+# TASK-180 test3: the Spec II library is libgt4spec2.so, as the port plan names it; v2.00 stays libgt4.so.
+if(GT4_TARGET STREQUAL "spec2")
+    set_target_properties(gt4 PROPERTIES OUTPUT_NAME gt4spec2)
+endif()

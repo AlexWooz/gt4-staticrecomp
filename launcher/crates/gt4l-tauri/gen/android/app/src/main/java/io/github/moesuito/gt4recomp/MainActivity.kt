@@ -44,6 +44,14 @@ class MainActivity : TauriActivity() {
     } catch (error: Exception) {
       android.util.Log.w("GT4Recomp-launcher", "display mode not known: $error")
     }
+    // TASK-180 test3 (owner's phone): the device's language for the launcher's "Auto" setting. Rust reads no locale on
+    // Android; without this the launcher fell back to English while the page was Portuguese (the pause dialog was English).
+    try {
+      val tag = java.util.Locale.getDefault().toLanguageTag()
+      android.system.Os.setenv("GT4_ANDROID_LOCALE", tag, true)
+    } catch (error: Exception) {
+      android.util.Log.w("GT4Recomp-launcher", "locale not known: $error")
+    }
   }
 
   override fun onWindowFocusChanged(hasFocus: Boolean) {

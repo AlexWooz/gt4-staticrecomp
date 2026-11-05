@@ -13,7 +13,7 @@ use crate::settings::{self, Settings};
 use crate::version::{ReleaseVersion, Version};
 
 /// Schema of this file (`migrate::SETTINGS`). Files without a schema number are schema 0 and are migrated.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigFile {
@@ -29,6 +29,10 @@ pub struct ConfigFile {
     /// The game the home screen shows (`[game] selected`, schema 8, TASK-101): the first game installed, then the game
     /// played last. `None` before any game is installed. An id the launcher does not know reads as `None`.
     pub selected_game: Option<String>,
+    /// `[install] render_scale_model` (schema 9, TASK-180 test3): 2 when `render_scale` is a percentage of the screen's
+    /// height (the current meaning), 1 for a file written under the old one-notch-of-25% model. A file without the key is
+    /// model 1, which `state::migrate_render_scale` converts with the screen in hand.
+    pub render_scale_model: u32,
 }
 
 impl Default for ConfigFile {
@@ -41,6 +45,7 @@ impl Default for ConfigFile {
             skipped_launcher: None,
             skipped_renderer: None,
             selected_game: None,
+            render_scale_model: 1,
         }
     }
 }
@@ -137,6 +142,13 @@ pub fn parse(text: &str) -> Result<(ConfigFile, Vec<String>), ConfigError> {
         .and_then(|value| value.as_str())
         .filter(|text| !text.is_empty())
         .map(PathBuf::from);
+    config.render_scale_model = table
+        .get("install")
+        .and_then(|value| value.as_table())
+        .and_then(|section| section.get("render_scale_model"))
+        .and_then(|value| value.as_integer())
+        .and_then(|number| u32::try_from(number).ok())
+        .unwrap_or(1);
     config.dev_game_dir = table
         .get("dev")
         .and_then(|value| value.as_table())
@@ -207,6 +219,7 @@ pub fn render(config: &ConfigFile) -> String {
     if let Some(path) = &config.textures_path {
         text.push_str(&format!("textures_path = {}\n", quote(&path.to_string_lossy())));
     }
+    text.push_str(&format!("render_scale_model = {}\n", config.render_scale_model));
     if let Some(path) = &config.dev_game_dir {
         text.push_str("\n[dev]\n");
         text.push_str(&format!("game_dir = {}\n", quote(&path.to_string_lossy())));

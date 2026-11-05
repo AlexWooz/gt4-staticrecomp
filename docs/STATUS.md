@@ -1,3 +1,19 @@
+## Android test3 (TASK-180, 2026-11-05 afternoon)
+
+`1.3.0-android-test3` (arm64, versionCode 3, same release key, `zipalign -c -P 16` clean) is built from
+`task/180-android-emulator` and kept in `private/android-test3/` with its `.sha256` and `symbols/`; it is 117,924,022 bytes.
+It answers the owner's test2 findings: the game's `[input]` block names every device SDL sees and the one the game reads, and
+a pad Android reports only as keys and motion is now read through `GameActivity` (forwarded to `libgt4.so`); the Wheel page is
+off on Android (pads only); the launcher's pad state is managed on Android (the "state not managed for fields 'pads'" error)
+with a start-up check of every command state; bench mode from `debug.env` (`GT4_BENCH_CARD`/`GT4_BENCH_GAME`: the recording's
+own card copy, the player's card untouched, the copy removed when the game ends); the Render scale is a percentage of the
+screen height on both platforms, with a schema 9 migration (Windows keeps the picture, Android goes to 2x); the shader
+prepare card focuses nothing; the pause dialog is centred, localised through the device locale and pad-driven; the version
+comes from `GT4_RELEASE_LABEL`; Windows preselects Play too. Checks: CTest 320/320 (1 skipped), launcher tests 291 + suites
+passing except the known `flow_audit::a_1_2_x_install_moves...` flake while another game process ran, focus checks pass in
+en-US and pt-BR, locale keys 917 in both. Spec II on Android is groundwork only (`GT4_TARGET=spec2` builds
+`libgt4spec2.so`; the hooked unit set must be regenerated first), so the APK is still v2.00 only.
+
 # Current Status
 
 ## 1.3.0-rc15 test build as a GitHub draft (2026-11-05, morning)

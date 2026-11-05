@@ -350,6 +350,49 @@ From the owner's S23 Ultra test of test1:
   and a small `compile_ms` in the second session. The first `[core2] ms/vblank` line of an emulator session can show
   huge stage times (a counter read across translated cores; Hypothesis), later lines are normal.
 
+## Test APK 3: `1.3.0-android-test3` (TASK-180, 2026-11-05)
+
+From the owner's S23 Ultra test of test2 (2026-11-05 13:54). The APK is arm64-v8a, versionCode 3, signed with the same
+release key (certificate SHA-256 `bed20009...79bd7`), `zipalign -c -P 16` clean, and lives in `private/android-test3/`
+with its `.sha256` and `symbols/`. It is 117,924,022 bytes (test2: 117,513,418; the difference is the code, not a second
+game library).
+
+- **The controller in the game ([input]):** the pad path itself works (the emulator's gamepad moves the menus), so the
+  owner's pad is not being opened by the game. `game.log` now carries an `[input]` block at the first VBlank and on every
+  device change: every device SDL sees (name, VID:PID, GUID, gamepad or joystick, the mapping found, its axes and
+  buttons), which one the game reads, and the window's input focus (the pad reads neutral without it). A pad that Android
+  reports as keys and motion but SDL never lists as a gamepad is now read anyway: `GameActivity` forwards its key and
+  motion events to `libgt4.so` (`nativePadKey`/`nativePadMotion`), and the game uses that state only while SDL has no
+  gamepad open, so nothing is ever read twice. Coming back from the background re-reads the window's focus.
+- **Wheel page:** Android offers pads only (owner). The Wheel page, its tab and its commands are not offered there
+  (`Platform::offers_wheel_page`, `app_state.wheel`), and a `GT4_BENCH_GAME=spec2` bench is refused rather than starting
+  the wrong library. Windows is unchanged.
+- **Pad state for the launcher's commands:** the Android app builder now manages `pad_service::Handle` (it was only
+  managed on Windows, which is the "state not managed for fields 'pads'" error), and both builders log a start-up check
+  of every state the commands ask for (`managed_states`, with a source-scanning test that keeps the list in step).
+- **Bench mode (`debug.env`):** `GT4_BENCH_CARD` (an absolute `.ps2` under the app's external files folder; anything else
+  stops Play with the reason in the log) is copied into the session folder as `bench-card.ps2` and passed as `--memcard`;
+  the player's card is not written, backed up or synced, the copy is deleted when the game ends (and a stale one at the
+  next start), and both logs say so ("bench: ..."). `GT4_BENCH_GAME=gt4|spec2` picks the game (Spec II refuses: no
+  library in this APK). The game logs a `[bench]` line when `GT4_INPUT_REPLAY` drives the pad.
+- **Render scale is a percentage of the screen height, on every platform:** `display::percent_for_multiplier` (1x = 448
+  px of the screen's height: 31% at 1440, 62% at 2x) and `multiplier_for_percent`; the row is one position per multiplier
+  ("31% · 1x · 640x448"), so label, positions and the stored value are one formula. Settings schema 9 marks a file written
+  under the old notch model and the value is converted once: Windows keeps the multiplier the old value meant, Android
+  goes to the 2x default (test1's "125" was 6x on the S23 and the menus ran at 12 fps). On the emulator 25% → 83% (2x).
+- **Shader prepare:** nothing has the focus in its card (Cancel took it, so one A press cancelled the prepare).
+- **Pause dialog:** centred, in the launcher's language (the Android `os_locale` reads `GT4_ANDROID_LOCALE`, set by
+  MainActivity from the device locale: "Auto" used to fall back to English while the page was Portuguese), and
+  controller-navigable with Keep playing focused.
+- **Version:** `1.3.0-android-test3` from `GT4_RELEASE_LABEL` (accepted as `rc<N>` or `android-test<N>`), shown by the
+  footer, the logs, and Android's own `versionName`.
+- **Windows:** the home page preselects Play there too (owner).
+
+What Spec II still needs (part B, not in this APK): the arm64 library from the Spec II translated units, which have to be
+regenerated with their hooks first (`scripts/camera360_units.py spec2 <translated units> <fresh folder>`, then
+`android/native/configure-android-spec2.cmd`, which builds `libgt4spec2.so`), packaging both libraries, the game
+Activity choosing the library by game, and the launcher's install/Play path for Spec II (its own ELF, card and disc).
+
 ## Subtle risks (Android), ranked
 
 1. The no-interlock CoreGS path is slow or misordered on tilers; D1 may be required before playable speed.

@@ -118,7 +118,7 @@ pub const SETTINGS: Chain = Chain {
     file: "settings.toml",
     key: "schema_version",
     first: 0,
-    current: 8,
+    current: 9,
     steps: &[
         Step { from: 0, apply: settings_0_to_1 },
         Step { from: 1, apply: settings_1_to_2 },
@@ -128,8 +128,22 @@ pub const SETTINGS: Chain = Chain {
         Step { from: 5, apply: settings_5_to_6 },
         Step { from: 6, apply: settings_6_to_7 },
         Step { from: 7, apply: settings_7_to_8 },
+        Step { from: 8, apply: settings_8_to_9 },
     ],
 };
+
+/// Schema 9 (TASK-180 test3): the Render scale is a percentage of the screen's height; it used to be a notch of the
+/// screen's native multiplier. A schema 8 file's `render_scale` is in the old meaning, and this step records that in the
+/// file (`[install] render_scale_model = 1`); the launcher then converts the value with the screen in hand and writes 2
+/// (`state::migrate_render_scale`). Nothing else changes.
+fn settings_8_to_9(document: &mut Value) -> Result<(), String> {
+    let table = document.as_object_mut().ok_or("settings.toml: the document is not a table")?;
+    let install = table.entry("install".to_string()).or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(section) = install.as_object_mut() {
+        section.entry("render_scale_model".to_string()).or_insert_with(|| Value::from(1));
+    }
+    Ok(())
+}
 
 /// Controls file (`controls.toml`), schema key `schema`. Written as schema 1 since the first release.
 pub const CONTROLS: Chain = Chain { file: "controls.toml", key: "schema", first: 1, current: 1, steps: &[] };
@@ -397,6 +411,18 @@ mod tests {
         assert!(matches!(plan(&VERSION_FILE, &json!({"gt4recomp": "1.0.0"})), Verdict::Corrupt(_)));
     }
 
+    /// TASK-180 test3: a schema 8 file's Render scale is in the old notch model, and step 9 says so in the file so the
+    /// launcher can convert it with the screen in hand.
+    #[test]
+    fn schema_eight_marks_the_old_render_scale_model() {
+        let mut document = json!({"schema_version": 8, "settings": {"render_scale": "125"}, "install": {"disc_path": "D:/gt4.iso"}});
+        assert_eq!(migrate(&SETTINGS, &mut document).unwrap(), 8);
+        assert_eq!(document["schema_version"], json!(9));
+        assert_eq!(document["install"]["render_scale_model"], json!(1));
+        assert_eq!(document["install"]["disc_path"], json!("D:/gt4.iso"), "the rest of [install] is kept");
+        assert_eq!(document["settings"]["render_scale"], json!("125"), "the value is converted at load, with the screen");
+    }
+
     #[test]
     fn backup_names_carry_the_schema_and_the_time() {
         assert_eq!(backup_name("settings.toml", 0, 1760000000), "settings.toml.bak-schema0-1760000000");
@@ -406,7 +432,7 @@ mod tests {
     fn settings_schema_zero_reaches_the_current_schema_and_keeps_its_values() {
         let mut document = json!({"settings": {"vsync": "fast"}});
         assert_eq!(migrate(&SETTINGS, &mut document).unwrap(), 0);
-        assert_eq!(document["schema_version"], json!(8));
+        assert_eq!(document["schema_version"], json!(9));
         assert_eq!(document["settings"]["vsync"], json!("fast"));
         assert!(document["settings"].get("widescreen").is_none(), "added by step 3, dropped by step 4");
         assert!(document["settings"].get("aspect_ratio").is_none(), "added by step 4, dropped by step 5");
@@ -428,7 +454,7 @@ mod tests {
             "install": {"disc_path": "D:/gt4.iso"}
         });
         assert_eq!(migrate(&SETTINGS, &mut released).unwrap(), 3);
-        assert_eq!(released["schema_version"], json!(8));
+        assert_eq!(released["schema_version"], json!(9));
         assert!(released["settings"].get("aspect_ratio").is_none());
         assert_eq!(released["settings"]["monitor"], json!("primary"));
         assert_eq!(released["settings"]["resolution"], json!("desktop"));
@@ -458,7 +484,7 @@ mod tests {
             "install": {"disc_path": "D:/gt4.iso"}
         });
         assert_eq!(migrate(&SETTINGS, &mut file).unwrap(), 4);
-        assert_eq!(file["schema_version"], json!(8));
+        assert_eq!(file["schema_version"], json!(9));
         for gone in ["aspect_ratio", "aspect_custom"] {
             assert!(file["settings"].get(gone).is_none(), "{gone} dropped from [settings]");
             assert!(file["choices"].get(gone).is_none(), "{gone} dropped from [choices]");
@@ -492,7 +518,7 @@ mod tests {
 
         let mut chained = json!({"schema_version": 2, "settings": {"vsync": "on"}});
         assert_eq!(migrate(&SETTINGS, &mut chained).unwrap(), 2);
-        assert_eq!(chained["schema_version"], json!(8));
+        assert_eq!(chained["schema_version"], json!(9));
     }
 
     #[test]
@@ -510,7 +536,7 @@ mod tests {
     fn a_stored_coregs11_renderer_becomes_gsdx_in_schema_7() {
         let mut document = json!({"schema_version": 6, "settings": {"renderer": "coregs11", "vsync": "fast"}, "choices": {"renderer": true}});
         assert_eq!(migrate(&SETTINGS, &mut document).unwrap(), 6);
-        assert_eq!(document["schema_version"], json!(8));
+        assert_eq!(document["schema_version"], json!(9));
         assert_eq!(document["settings"]["renderer"], json!("pcsx2"), "CoreGS 1.1 is gone: GSdx");
         assert_eq!(document["settings"]["vsync"], json!("fast"), "other values survive");
         assert_eq!(document["choices"]["renderer"], json!(true), "the choice flag is kept");

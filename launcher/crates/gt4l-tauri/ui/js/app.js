@@ -96,6 +96,8 @@
         text: GT4.t("shaders.text"),
         body: GT4.ui.h("div", {}, [GT4.ui.h("div", { class: "shader-bar" }, [shaderBar]), shaderCount, shaderRetry]),
         dismissable: false,
+        // TASK-180 test3 (owner): nothing focused. The only button is Cancel, and one A press used to cancel the prepare.
+        focus: "none",
         buttons: [{
           label: GT4.t("common.cancel"),
           closes: false,
@@ -307,6 +309,11 @@
     // TASK-180: "windows" or "android" (the backend's platform rules; the page only adapts its wording).
     GT4.platform = appState.platform || "windows";
     document.body.classList.toggle("platform-android", GT4.platform === "android");
+    // TASK-180 test3 (owner): racing wheels are not supported on Android; the Wheel page, its tab and its commands are
+    // not offered there (the backend says so, so the page has no second rule to keep in step).
+    if (appState.wheel === false) {
+      GT4.features.wheel = false;
+    }
     booted = true;
     showMigration(appState);
     var route = parseRoute();

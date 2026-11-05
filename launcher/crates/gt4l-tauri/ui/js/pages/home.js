@@ -530,15 +530,13 @@
       document.body.classList.add("is-home");
 
       function poll() {
-        if (typeof focusPlayOnAndroid === "function") {
-          focusPlayOnAndroid();
-        }
+        focusPlay();
         call("app_state").then(function (appState) {
           var was = isRunning;
           paint(!!appState.game_running);
           if (was !== isRunning) {
             gameSignature = "";
-            focusPlayOnAndroid(true);  // TASK-180: the button changed between Play and Resume
+            focusPlay(true);  // TASK-180: the button changed between Play and Resume
           }
           applyGames(appState);
         }, function () {});
@@ -550,10 +548,11 @@
       if (GT4.devFocus === "play") {
         playButton.focus({ preventScroll: true });
       }
-      // TASK-180 test2 (owner): on Android the home page starts on Play (Resume while the game is minimized), also when
-      // the launcher comes back from the game: one A press starts or resumes it.
-      function focusPlayOnAndroid(always) {
-        if (GT4.platform !== "android" || !playButton.isConnected || GT4.ui.topDialog()) {
+      // TASK-180 test2 (owner): the home page starts on Play (Resume while the game is minimized), also when the
+      // launcher comes back from the game: one A press starts or resumes it. TASK-180 test3 (owner): the same on
+      // Windows, so the pad and Enter reach Play first there too.
+      function focusPlay(always) {
+        if (!playButton.isConnected || GT4.ui.topDialog()) {
           return;
         }
         if (always === true || document.activeElement === null || document.activeElement === document.body ||
@@ -562,19 +561,19 @@
         }
       }
       // After the page is in place (the router and nav.js settle the focus first).
-      setTimeout(function () { focusPlayOnAndroid(true); }, 0);
+      setTimeout(function () { focusPlay(true); }, 0);
       // Back from the game (or another app): Play/Resume again, whatever had the focus before.
       function onVisible() {
         if (document.visibilityState === "visible") {
           movedThisVisit = false;
-          focusPlayOnAndroid(true);
+          focusPlay(true);
         }
       }
       document.addEventListener("visibilitychange", onVisible);
       // Android gives the WebView the input focus when the launcher comes back, and the WebView then focuses the element at
       // the edge it was entered from (the footer link): Play/Resume takes it back right after.
       function onWindowFocus() {
-        setTimeout(function () { focusPlayOnAndroid(true); }, 0);
+        setTimeout(function () { focusPlay(true); }, 0);
       }
       window.addEventListener("focus", onWindowFocus);
       // The first key the WebView gets after the launcher comes back may also be the one that gives it the input focus,

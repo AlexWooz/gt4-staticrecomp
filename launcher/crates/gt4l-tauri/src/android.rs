@@ -132,6 +132,7 @@ pub fn game_alive(dirs: &DataDirs) -> bool {
         Some(before) if before.alive && !now.alive => {
             state::log(dirs, &format!("the game process {} is gone", before.pid));
             record_game_exits(dirs);
+            finish_bench_session(dirs);
         }
         Some(before) if before.alive == now.alive && before.state == now.state => {}
         _ if now.alive => state::log(
@@ -371,7 +372,11 @@ struct ExternalDir {
 fn load_external_dir() {
     if let Ok(found) = bridge().and_then(|bridge| bridge.run_mobile_plugin::<ExternalDir>("externalDir", ()).map_err(|error| error.to_string())) {
         if !found.path.is_empty() {
-            let _ = EXTERNAL_DIR.set(PathBuf::from(found.path));
+            let folder = PathBuf::from(found.path);
+            // TASK-180 test3 (part A): the bench folder, created by the app so it owns it. A folder made by adb (root)
+            // is not statable by the app even when the files inside are readable, which refused a pushed bench card.
+            let _ = std::fs::create_dir_all(folder.join("bench"));
+            let _ = EXTERNAL_DIR.set(folder);
         }
     }
 }
@@ -398,6 +403,122 @@ fn debug_environment(dirs: &DataDirs) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+// ---- Bench mode (TASK-180 test3, part A) ---------------------------------------------------------------------------
+
+/// The bench session in progress: the card copy and its session folder, both removed when the game ends. Play refuses a
+/// card outside the app's external files folder, so a bench can never open a card the player keeps elsewhere.
+#[derive(Clone, Debug)]
+struct BenchSession {
+    card: PathBuf,
+    session: PathBuf,
+}
+
+static BENCH_SESSION: Mutex<Option<BenchSession>> = Mutex::new(None);
+
+/// What `GT4_BENCH_*` in debug.env asks for this Play.
+#[derive(Default)]
+struct BenchRequest {
+    /// The recording's card, to be copied into the session folder and passed as `--memcard`.
+    card: Option<PathBuf>,
+    /// The game the bench starts, whatever the home page shows.
+    game: Option<&'static gt4l_core::games::Game>,
+}
+
+impl BenchRequest {
+    /// Whether the game library a bench asks for is in this app: v2.00 (`libgt4.so`) always; Spec II only when
+    /// `libgt4spec2.so` is packaged (TASK-180 part B: the Spec II arm64 library is a plan in the port plan, not shipped
+    /// in this APK, so a bench for it is refused instead of starting v2.00's library with Spec II's ELF).
+    fn has_library(&self, game: &gt4l_core::games::Game) -> bool {
+        game.id == gt4l_core::games::GT4.id
+    }
+}
+
+/// Reads the bench request from debug.env's values. The card must be an absolute `.ps2` path inside the app's external
+/// files folder (`/sdcard/Android/data/<package>/files/...`, where adb pushes a recording's card); anything else stops
+/// Play with a message in the launcher log, because a bench must never touch the player's own card.
+fn bench_request(debug: &[(String, String)], dirs: &DataDirs) -> Result<BenchRequest, String> {
+    let value = |name: &str| debug.iter().find(|(key, _)| key == name).map(|(_, text)| text.clone());
+    let mut request = BenchRequest::default();
+    if let Some(game) = value("GT4_BENCH_GAME") {
+        request.game = Some(match game.trim() {
+            "gt4" => &gt4l_core::games::GT4,
+            "spec2" => &gt4l_core::games::SPEC2,
+            other => {
+                let message = format!("bench: GT4_BENCH_GAME={other} is not gt4 or spec2; Play refused");
+                state::log_error(dirs, &message);
+                return Err(message);
+            }
+        });
+    }
+    if let Some(text) = value("GT4_BENCH_CARD") {
+        let path = PathBuf::from(text.trim());
+        // The Java side reports /storage/emulated/0/...; debug.env is written by hand, often with /sdcard/... (the same
+        // place through a symlink, and /storage/self/primary too). Both spellings are reduced to one before the check.
+        let external = EXTERNAL_DIR.get().cloned();
+        let inside = external.as_ref().is_some_and(|folder| external_form(&path).starts_with(&external_form(folder)));
+        if !path.is_absolute() || !inside {
+            let message = format!(
+                "bench: GT4_BENCH_CARD={} is not an absolute path under the app's external files folder {}; Play refused",
+                path.display(),
+                external.as_ref().map(|folder| folder.display().to_string()).unwrap_or_else(|| "(not known yet)".into())
+            );
+            state::log_error(dirs, &message);
+            return Err(message);
+        }
+        if path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("ps2") {
+            let message = format!("bench: GT4_BENCH_CARD={} is not a .ps2 card; Play refused", path.display());
+            state::log_error(dirs, &message);
+            return Err(message);
+        }
+        if !path.is_file() {
+            let message = format!("bench: GT4_BENCH_CARD={} does not exist; Play refused", path.display());
+            state::log_error(dirs, &message);
+            return Err(message);
+        }
+        request.card = Some(path);
+    }
+    Ok(request)
+}
+
+/// One spelling of an external-storage path: `/sdcard/...`, `/storage/emulated/0/...` and `/storage/self/primary/...` are
+/// the same place, so all three become `/storage/emulated/0/...` before a comparison.
+fn external_form(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    for alias in ["/sdcard/", "/storage/self/primary/"] {
+        if let Some(rest) = text.strip_prefix(alias) {
+            return PathBuf::from(format!("/storage/emulated/0/{rest}"));
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Removes a bench session's card copy left behind by a launcher that was killed with the game (the normal end goes
+/// through [`finish_bench_session`]): a session folder with `bench-card.ps2` but no live game. Called once at start-up.
+fn remove_stale_bench_cards(dirs: &DataDirs) {
+    let Ok(entries) = std::fs::read_dir(dirs.sessions()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let card = entry.path().join("bench-card.ps2");
+        if card.is_file() && std::fs::remove_file(&card).is_ok() {
+            state::log(dirs, &format!("bench: stale session card {} removed at start-up", card.display()));
+        }
+    }
+}
+
+/// Removes the session's card copy when the game ends (the recording's own card is never modified: the copy is what the
+/// game wrote). Called from the game-state poll, and at start for a copy a killed launcher left behind.
+fn finish_bench_session(dirs: &DataDirs) {
+    let session = BENCH_SESSION.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+    if let Some(session) = session {
+        match std::fs::remove_file(&session.card) {
+            Ok(()) => state::log(dirs, &format!("bench: session card {} removed; the player's card was not touched", session.card.display())),
+            Err(error) => state::log_warn(dirs, &format!("bench: session card {} not removed: {error}", session.card.display())),
+        }
+        let _ = std::fs::remove_dir(&session.session);
+    }
 }
 
 /// The screen read from the Java side at start (`displayInfo`): width and height in landscape, refresh rate.
@@ -676,19 +797,28 @@ pub fn run() {
             let pins = Pins::embedded()?;
             let app_state = AppState::load_with(dirs.clone(), pins, user.clone(), None, root.join("install"))?;
             state::log(&dirs, &format!("GT4Recomp {} (Android) starting, data in {}", gt4l_core::LAUNCHER_VERSION, root.display()));
+            // The app's external files folder at once (a bench card path is checked against it); the screen comes from a
+            // worker thread, because the bridge answers through the main thread and is not ready inside setup.
+            load_external_dir();
             // The phone's facts and the game's last ends, read off the main thread (the bridge answers through it).
             let start_dirs = dirs.clone();
             std::thread::spawn(move || {
                 load_screen(&start_dirs);
-                load_external_dir();
                 for line in device_lines() {
                     state::log(&start_dirs, &line);
                 }
                 record_game_exits(&start_dirs);
+                remove_stale_bench_cards(&start_dirs);
             });
             let shared: Shared = Arc::new(Mutex::new(app_state));
             app.manage(shared);
             app.manage(Arc::new(Guard { page: PageReady::default(), dirs, user_root: user.root().to_path_buf(), started }));
+            // TASK-180 test3 (owner's phone): the pad commands (capture_binding, pad_status, the Controls page's live
+            // view, the Wheel page's status) need this state on Android too. It was only managed on Windows, so every
+            // one of them stopped with "state not managed for fields 'pads'".
+            let pads = crate::pad_service::spawn(app.handle().clone());
+            app.manage(pads);
+            crate::managed_states::check(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -793,24 +923,48 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     }
     // The previous run's end first: a crash is in the launcher log before the next start.
     record_game_exits(&data_dirs);
-    let state = state::lock(shared);
+    // TASK-180 test3: the Render scale stored under the old notch model is converted the first time Play knows the
+    // screen (on Android the load-time attempt has no screen: the bridge is not ready inside setup).
+    let monitors = monitors();
+    let mut state = state::lock(shared);
+    if let Some(screen) = monitors.first().map(|monitor| monitor.desktop) {
+        if crate::state::migrate_render_scale_at(screen, &mut state.config, &data_dirs) {
+            state.save_config();
+        }
+    }
     let language = state::language_of(&state);
-    let disc = match state.installed() {
+    let settings = state.config.settings.clone();
+    // TASK-180 test2: the values debug.env adds (remote diagnosis), read once here: the launch plan carries them, and
+    // they decide a bench session before the card and the game are chosen.
+    let debug = debug_environment(&data_dirs);
+    // TASK-180 test3 (Part A): bench mode. `GT4_BENCH_CARD` (debug.env) makes Play use a copy of that card for the
+    // session, so a recorded drive runs from the recording's card and the player's card is never written, backed up or
+    // synced. `GT4_BENCH_GAME` picks the game (gt4 or spec2) the bench starts, whatever the home page shows.
+    let bench = bench_request(&debug, &data_dirs)?;
+    let game = bench.game.unwrap_or(state.selected);
+    if bench.game.is_some() && !bench.has_library(game) {
+        // Part B (the Spec II game library for arm64) is not in this APK yet: refuse instead of starting the wrong game.
+        let message = format!("bench: GT4_BENCH_GAME={} has no game library in this APK (libgt4spec2.so); Play refused", game.id);
+        state::log_error(&data_dirs, &message);
+        return Err(message);
+    }
+    let disc = match state.installed_of(game) {
         Installed::Ready { image, .. } => image,
         Installed::NotSetUp => return Err(messages::text("game.set_up_first", language).into()),
         _ => return Err(messages::render("setup.game_files_missing_reason", language, &[("reason", "")])),
     };
-    let game = state.selected;
     let dirs = state.game_dirs(game);
-    let settings = state.config.settings.clone();
     let elf = launch::game_elf(game, &dirs.prepared());
     let card = dirs.runtime_card();
     if let Some(parent) = card.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("runtime folder: {error}"))?;
     }
-    crate::saves::prepare_card(state.library_of(game), &card, language)
-        .inspect_err(|message| state::log_error(&dirs, &format!("play: the memory card could not be prepared: {message}")))?;
-    state::log(&dirs, &format!("play: card ready at {}", card.display()));
+    if bench.card.is_none() {
+        crate::saves::prepare_card(state.library_of(game), &card, language).inspect_err(|message| {
+            state::log_error(&dirs, &format!("play: the memory card could not be prepared: {message}"))
+        })?;
+        state::log(&dirs, &format!("play: card ready at {}", card.display()));
+    }
     let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // Named as on Windows (session-<seconds>), so the log bundle takes its game.log.
     let session_dir = dirs.session(&format!("session-{seconds}"));
@@ -818,10 +972,46 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     gt4l_platform::game::prune_sessions(&dirs.sessions(), gt4l_platform::game::KEEP_SESSIONS);
     std::fs::create_dir_all(&session_dir).map_err(|error| format!("session folder: {error}"))?;
     let (textures, _) = state.texture_location();
-    let inputs = LaunchInputs { game_executable: Path::new("libgt4.so"), elf: &elf, disc: &disc, card: &card, session_dir: &session_dir };
+    let session_card = match &bench.card {
+        Some(source) => {
+            let copy = session_dir.join("bench-card.ps2");
+            std::fs::copy(source, &copy).map_err(|error| format!("bench card {}: {error}", source.display()))?;
+            state::log(
+                &dirs,
+                &format!(
+                    "bench: card {} copied to {} ({} bytes); the player's card {} is not written, backed up or synced in this session",
+                    source.display(),
+                    copy.display(),
+                    std::fs::metadata(&copy).map(|metadata| metadata.len()).unwrap_or(0),
+                    card.display()
+                ),
+            );
+            BENCH_SESSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .replace(BenchSession { card: copy.clone(), session: session_dir.clone() });
+            state::log(
+                &dirs,
+                &format!(
+                    "bench: session {} runs {} with the recording's card; GT4_INPUT_REPLAY={}",
+                    session_dir.display(),
+                    game.display_name,
+                    debug.iter().find(|(name, _)| name == "GT4_INPUT_REPLAY").map(|(_, value)| value.as_str()).unwrap_or("(none)")
+                ),
+            );
+            copy
+        }
+        None => card.clone(),
+    };
+    let inputs = LaunchInputs {
+        game_executable: Path::new("libgt4.so"),
+        elf: &elf,
+        disc: &disc,
+        card: &session_card,
+        session_dir: &session_dir,
+    };
     // TASK-180 test2: the output is the phone's screen (100% = its native multiplier, as a monitor on the PC). The
     // decision is logged, so a scale seen in the game can be traced to the setting it came from.
-    let monitors = monitors();
     let display = gt4l_core::display::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
     let scale = launch::session_plan(&settings, display.as_ref(), false);
     state::log(
@@ -851,7 +1041,7 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     // RetroAchievements needs the desktop HTTP and overlay layers, not built for Android yet.
     plan.environment.push(("GT4_RA_ENABLED".into(), "0".into()));
     // debug.env (remote diagnosis): its GT4_* values replace the plan's; the game logs them again (GT4_ANDROID_DEBUG_ENV).
-    let debug = debug_environment(&dirs);
+    let debug = debug.clone();
     if !debug.is_empty() {
         plan.environment.retain(|(name, _)| !debug.iter().any(|(added, _)| added == name));
         let names: Vec<&str> = debug.iter().map(|(name, _)| name.as_str()).collect();

@@ -157,6 +157,17 @@
     };
     overlay.__dialog = api;
     document.body.appendChild(overlay);
+    // TASK-180 test3 (owner): a dialog whose only button must not be easy to press by accident (Cancel of the shader
+    // prepare) takes the focus itself: `focus: "none"` leaves no button focused, so A does nothing until the player moves
+    // to one on purpose.
+    var box = overlay.querySelector(".modal-box");
+    if (options.focus === "none") {
+      if (box) {
+        box.tabIndex = -1;
+        box.focus({ preventScroll: true });
+      }
+      return api;
+    }
     var first = overlay.querySelector("[data-default]") || overlay.querySelector("button");
     if (first) {
       first.focus({ preventScroll: true });

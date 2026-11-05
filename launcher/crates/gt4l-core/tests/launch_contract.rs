@@ -140,7 +140,7 @@ fn settings_map_to_their_variables() {
     }
     assert!(settings.set_gs("upscale", "4K").is_err(), "the internal resolution is derived, not set");
     for (id, good, bad) in [
-        ("render_scale", "150", "110"),
+        ("render_scale", "150", "1201"),
         ("resolution", "2560x1080", "2560*1080"),
         ("monitor", r"\\.\DISPLAY2@3440x1440", "DISPLAY2"),
     ] {
@@ -234,7 +234,7 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     let on = env_map(&launch::coregs20_environment(&settings, Some(&display), false, &textures));
     assert_eq!(on["GT4_RENDERER"], "hw");
     assert_eq!(on["GT4_HW_CORE"], "2");
-    assert_eq!(on["GT4_HW_SCALE"], "3", "the session plan's multiplier");
+    assert_eq!(on["GT4_HW_SCALE"], "2", "100% of a 1080-high screen is 2x (TASK-180 test3)");
     assert_eq!(on["GT4_HW_TEXTURES"], r"D:\data\Textures", "custom textures are on by default");
     assert_eq!(on["GT4_FORCE_480P"], "1");
     assert_eq!(on["GT4_FORCE_WIDESCREEN"], "1");
@@ -272,11 +272,11 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     assert!(!tuned.contains_key("GT4_HW_TEXTURES"));
     assert_eq!(tuned["GT4_HW_POSTFX"], "fxaa");
     assert_eq!(tuned["GT4_CORE2_FSR_SHARPNESS"], "0.2");
-    assert_eq!(tuned["GT4_HW_SCALE"], "1", "the integrated GPU default of the session plan");
+    assert_eq!(tuned["GT4_HW_SCALE"], "2", "the session plan: 100% of 1080 is 2x, whatever the GPU");
 
     let section = launch::coregs20_section(&settings, Some(&display), false, &textures);
     assert!(section.starts_with("renderer=coregs20\n"));
-    assert!(section.contains("hw_scale=3\n") && section.contains("hw_performance=1\n") && section.contains("hw_postfx=fxaa\n"));
+    assert!(section.contains("hw_scale=2\n") && section.contains("hw_performance=1\n") && section.contains("hw_postfx=fxaa\n"));
     assert!(section.contains("hw_sharpening=0.2\n"));
     assert!(section.contains("hw_frame_skip=2\n"));
     assert!(!section.contains("hw_frame_skip_adaptive"));
@@ -415,14 +415,24 @@ fn pcsx2_plan_keeps_the_probe_argument_list_and_scrubs_inherited_names() {
 
 #[test]
 fn session_ini_matches_the_python_writer_for_the_default_settings() {
+    // The fixture is the table writer's 3x (scripts/gs_settings.py). TASK-180 test3: the multiplier now comes from the
+    // Render scale as a percentage of the screen's height, so the scale that gives 3x on 1920 x 1080 (124%) reproduces
+    // the fixture, and the untouched default (100%) is 2x there.
     let paths = pcsx2_paths();
-    let text = launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap();
+    let mut settings = Settings::default();
+    let three_x = gt4l_core::display::percent_for_multiplier(3, 1080);
+    settings.set("render_scale", &three_x.to_string()).unwrap();
+    let text = launch::gs_config_text(&settings, &paths, None, false).unwrap();
     let bytes = gt4l_core::gs_table::ini_file_bytes(&text);
     let expected = gt4l_core::gs_table::ini_file_bytes(include_str!("fixtures/gs/default-session.ini"));  // LF in the file
     assert_eq!(bytes.as_slice(), expected.as_slice(), "Rust gt4-gs.ini differs from scripts/gs_settings.py");
-    // A 1920x1080 output at 100% is the same 3x: the default INI did not change with the display plan.
     let full_hd = display_target(r"\\.\DISPLAY1", 1920, 1080);
-    assert_eq!(launch::gs_config_text(&Settings::default(), &paths, Some(&full_hd), false).unwrap(), text);
+    assert_eq!(launch::gs_config_text(&settings, &paths, Some(&full_hd), false).unwrap(), text);
+    assert_eq!(
+        multiplier_line(&launch::gs_config_text(&Settings::default(), &paths, Some(&full_hd), false).unwrap()),
+        "upscale_multiplier = 2",
+        "100% is 448 pixels of 1080: 2x"
+    );
 }
 
 fn display_target(device: &str, width: u32, height: u32) -> DisplayTarget {
@@ -437,16 +447,18 @@ fn multiplier_line(text: &str) -> &str {
 fn the_internal_resolution_follows_the_output_size_and_the_render_scale() {
     let paths = pcsx2_paths();
     let mut settings = Settings::default();
+    // TASK-180 test3: the percentage is the internal frame's height against the screen's height, on every platform.
     for (width, height, scale, expected) in [
-        (1920, 1080, "100", "3"),
-        (2560, 1080, "100", "4"),
+        (1920, 1080, "100", "2"),
+        (1920, 1080, "124", "3"),
+        (2560, 1080, "100", "2"),
         (2560, 1440, "50", "2"),
-        (2560, 1440, "100", "4"),
-        (2560, 1440, "200", "8"),
-        (3440, 1440, "100", "6"),
-        (3440, 1440, "200", "10"),
-        (3088, 1440, "100", "5"),
-        (3840, 2160, "75", "5"),
+        (2560, 1440, "100", "3"),
+        (2560, 1440, "200", "6"),
+        (3440, 1440, "100", "3"),
+        (3440, 1440, "300", "10"),
+        (3088, 1440, "187", "6"),
+        (3840, 2160, "75", "4"),
         (1280, 720, "100", "2"),
     ] {
         settings.set("render_scale", scale).unwrap();
@@ -457,20 +469,22 @@ fn the_internal_resolution_follows_the_output_size_and_the_render_scale() {
     // A stored upscale (an old file edited by hand) never wins: the plan does.
     settings.set("render_scale", "100").unwrap();
     let text = launch::gs_config_text(&settings, &paths, Some(&display_target("x", 2560, 1440)), false).unwrap();
-    assert_eq!(multiplier_line(&text), "upscale_multiplier = 4");
+    assert_eq!(multiplier_line(&text), "upscale_multiplier = 3");
 }
 
 #[test]
-fn an_integrated_gpu_plays_the_untouched_default_at_native_resolution() {
-    // Issue #89: 1440 x 900 is 3x on a discrete card; the integrated default is 1x, a changed scale is kept.
+fn the_gpu_no_longer_changes_the_render_scale() {
+    // TASK-180 test3: the percentage alone decides (the old issue #89 default gave an integrated GPU 1x at 100%); 1440 x
+    // 900 at 100% is 2x everywhere, and 150% (1350 pixels, 3.01x) is 3x.
     let paths = pcsx2_paths();
-    let target = display_target(r"\.\DISPLAY1", 1440, 900);
+    let target = display_target(r"\\.\DISPLAY1", 1440, 900);
     let mut settings = Settings::default();
-    let text = launch::gs_config_text(&settings, &paths, Some(&target), true).unwrap();
-    assert_eq!(multiplier_line(&text), "upscale_multiplier = 1");
-    assert_eq!(multiplier_line(&launch::gs_config_text(&settings, &paths, Some(&target), false).unwrap()), "upscale_multiplier = 3");
+    let integrated = launch::gs_config_text(&settings, &paths, Some(&target), true).unwrap();
+    let discrete = launch::gs_config_text(&settings, &paths, Some(&target), false).unwrap();
+    assert_eq!(multiplier_line(&integrated), "upscale_multiplier = 2");
+    assert_eq!(integrated, discrete, "the same plan on both kinds of GPU");
     settings.set("render_scale", "150").unwrap();
-    let text = launch::gs_config_text(&settings, &paths, Some(&target), true).unwrap();
+    let text = launch::gs_config_text(&settings, &paths, Some(&target), false).unwrap();
     assert_eq!(multiplier_line(&text), "upscale_multiplier = 3");
 }
 

@@ -134,7 +134,11 @@
     check("the count restarts with the retry", document.querySelector(".shader-count").textContent === T("shaders.count", { done: 0, total: 150 }), document.querySelector(".shader-count").textContent);
     GT4_MOCK.emit("shaders-progress", { done: 50, total: 200, attempt: 1 });
     await wait(50);
-    check("Cancel has the focus", document.activeElement && document.activeElement.textContent === T("common.cancel"), document.activeElement && document.activeElement.textContent);
+    // TASK-180 test3 (owner): nothing focused. The only button is Cancel, and one pad A press used to cancel the prepare;
+    // the dialog box takes the focus instead, so cancelling needs a move to the button first.
+    check("nothing has the focus (Cancel cannot be pressed by accident)",
+      !!document.activeElement && document.activeElement.classList.contains("modal-box") &&
+      !document.activeElement.matches("button"), document.activeElement && document.activeElement.className);
     document.querySelector(".modal").__dialog.back();
     check("Back does not close it", !!document.querySelector(".shader-bar"), "closed");
     GT4.closeShaderWindow();

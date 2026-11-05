@@ -28,18 +28,21 @@ pub const MAX_RATIO: f64 = 8.0;
 pub const MIN_OUTPUT_SIDE: u32 = 320;
 pub const MAX_OUTPUT_SIDE: u32 = 16384;
 
-/// Render scale slider: 50% to 200% in steps of 25%, default 100%.
-/// TASK-180 (owner, 2026-11-05): a phone's screen makes 100% a high multiplier (5x at 3088 x 1440) and its owner wants
-/// 720p-class output, so on Android the scale goes down to 0%; the slider starts at the step that gives 1x on that
-/// screen ([`render_scale_floor`]). Windows keeps 50%.
-pub const RENDER_SCALE_MIN: u32 = if cfg!(target_os = "android") { 0 } else { 50 };
-pub const RENDER_SCALE_MAX: u32 = 200;
-pub const RENDER_SCALE_STEP: u32 = 25;
+/// Render scale: **the internal frame's height as a percentage of the screen's height** (owner, 2026-11-05; TASK-180
+/// test3). 1x is 448 px high, so on a 1440-pixel-high screen 1x is 31% and 2x is 62%; 100% is "as tall as the screen".
+/// The whole multiplier is the one closest to the percentage, so the slider, its label and the stored value are one
+/// number on every platform (the old model, one 25% notch = one multiplier from the screen's native multiplier, called
+/// 1x "0%" on a phone and meant 5x at 100% there).
+pub const RENDER_SCALE_MIN: u32 = 1;
+pub const RENDER_SCALE_MAX: u32 = 1200;
+pub const RENDER_SCALE_STEP: u32 = 1;
 pub const RENDER_SCALE_DEFAULT: u32 = 100;
+/// The multiplier GT4's own default scale gives on a screen where the frame is smaller than the screen (the owner's
+/// 2x default on Android, and the same "sharper than 1x, cheaper than native" choice elsewhere).
+pub const RENDER_SCALE_DEFAULT_MULTIPLIER: u32 = 2;
 
 /// The internal multiplier an integrated GPU gets while the Render scale is the untouched default (issue #89): GT4's
-/// native 640 x 448 frame, so a 1440 x 900 screen starts at native resolution instead of 3x. It is also the baseline the
-/// slider climbs from: 125% is 2x, 150% is 3x, up to 5x at 200%.
+/// native 640 x 448 frame. Kept for the plans of older files; the height percentage needs no GPU-dependent baseline.
 pub const INTEGRATED_DEFAULT_MULTIPLIER: u32 = 1;
 
 /// What a renderer accepts as an internal-resolution multiplier.
@@ -62,8 +65,8 @@ pub struct DisplayPlan {
     pub output_height: u32,
     /// Whether the input was portrait (height above width) and was turned.
     pub portrait_input: bool,
-    /// Whether the integrated-GPU default applied: the render scale is the untouched default on an integrated GPU, so
-    /// the multiplier is [`INTEGRATED_DEFAULT_MULTIPLIER`] instead of the scaled value (issue #89).
+    /// Always false since the Render scale is a percentage of the screen height (TASK-180 test3): kept for the callers
+    /// that log the plan, and for the older integrated-GPU rule of issue #89, which no longer changes the multiplier.
     pub integrated_default: bool,
     /// k = ceil(max(W / 640, H / 448)): the smallest whole multiplier whose frame covers the output on both axes.
     pub base_multiplier: u32,
@@ -103,48 +106,33 @@ pub fn is_sixteen_nine(ratio: f64) -> bool {
     (ratio / (16.0 / 9.0) - 1.0).abs() <= SNAP_TOLERANCE
 }
 
-/// Whether a render scale is one of the slider's steps (50, 75, ..., 200).
+/// Whether a render scale is a value the slider can store (the slider's own positions come from
+/// [`render_scale_steps_for`] for the current screen).
 pub fn is_render_scale(percent: u32) -> bool {
-    (RENDER_SCALE_MIN..=RENDER_SCALE_MAX).contains(&percent) && (percent - RENDER_SCALE_MIN) % RENDER_SCALE_STEP == 0
+    (RENDER_SCALE_MIN..=RENDER_SCALE_MAX).contains(&percent)
 }
 
-/// The slider's steps in order.
-/// The multiplier 100% gives on an output: the smallest whole multiple of the native frame that covers it.
+/// The multiplier 100% gives on an output: the smallest whole multiple of the native frame that covers it. Kept for the
+/// log line of a plan (the scale itself no longer climbs from it).
 pub fn base_multiplier(output_width: u32, output_height: u32) -> u32 {
     let (width, height) = if output_height > output_width { (output_height, output_width) } else { (output_width, output_height) };
     ceil_div(width, NATIVE_FRAME_WIDTH).max(ceil_div(height, NATIVE_FRAME_HEIGHT)).max(1)
 }
 
-/// TASK-180: the lowest step worth offering on an output, the one that gives 1x (each 25% step is one multiplier), kept
-/// between [`RENDER_SCALE_MIN`] and 100%.
+/// The landscape height of an output (a portrait input is turned sideways by the plan).
+fn landscape_height(output: Size) -> u32 {
+    output.height.min(output.width)
+}
+
+/// TASK-180 test3: the lowest slider position on an output, the percentage of 1x there (31% on a 1440-high screen).
 pub fn render_scale_floor(output: Size) -> u32 {
-    render_scale_floor_from(output, RENDER_SCALE_MIN)
+    percent_for_multiplier(1, landscape_height(output).max(1))
 }
 
-fn render_scale_floor_from(output: Size, minimum: u32) -> u32 {
-    let base = base_multiplier(output.width, output.height) as i64;
-    let floor = RENDER_SCALE_DEFAULT as i64 - RENDER_SCALE_STEP as i64 * (base - 1);
-    floor.clamp(minimum as i64, RENDER_SCALE_DEFAULT as i64) as u32
-}
-
-pub fn render_scale_steps() -> Vec<u32> {
-    (RENDER_SCALE_MIN..=RENDER_SCALE_MAX).step_by(RENDER_SCALE_STEP as usize).collect()
-}
-
-/// Whether the integrated-GPU default applies: the GPU is integrated and the Render scale is still the default. A
-/// stored scale that was changed (any value but 100%) is kept as the player chose it. Note that the stored value
-/// cannot tell an untouched 100% from a chosen one, so a 100% chosen on an integrated GPU gets the same default. The
-/// flag only drives the log line: the multiplier itself always climbs from [`INTEGRATED_DEFAULT_MULTIPLIER`] on an
-/// integrated GPU, so the slider has no jump at 125%.
-pub fn integrated_default_applies(render_scale: u32, integrated_gpu: bool) -> bool {
-    integrated_gpu && render_scale == RENDER_SCALE_DEFAULT
-}
-
-/// The render plan for an output size, a render scale (percent) and a renderer. Pure. Discrete GPUs and every
-/// changed scale use [`display_plan_on`] with `integrated_gpu` false.
+/// The render plan for an output size, a render scale (percent of the screen height) and a renderer. Pure.
 ///
 /// Refused: a zero or out-of-range side, a ratio outside 1:2 .. 8:1 after turning a portrait input sideways, and a
-/// render scale that is not a slider step.
+/// render scale outside [`RENDER_SCALE_MIN`] .. [`RENDER_SCALE_MAX`].
 pub fn display_plan(
     output_width: u32,
     output_height: u32,
@@ -154,19 +142,19 @@ pub fn display_plan(
     display_plan_on(output_width, output_height, render_scale, caps, false)
 }
 
-/// [`display_plan`] for the GPU the game will use: on an integrated GPU the slider's baseline is
-/// [`INTEGRATED_DEFAULT_MULTIPLIER`] instead of k (issue #89), and each 25% step adds one multiplier. Otherwise the plan is
-/// the same as [`display_plan`].
+/// [`display_plan`] for the GPU the game will use. The multiplier is the one closest to the stored percentage of the
+/// screen's height on every platform; `integrated_gpu` only feeds the log flag now (the old model climbed from a
+/// 1x baseline on an integrated GPU, which made 1x "0%" on a phone).
 pub fn display_plan_on(
     output_width: u32,
     output_height: u32,
     render_scale: u32,
     caps: RendererCaps,
-    integrated_gpu: bool,
+    _integrated_gpu: bool,
 ) -> Result<DisplayPlan, PlanError> {
     if !is_render_scale(render_scale) {
         return Err(PlanError(format!(
-            "render scale {render_scale}% is not one of {RENDER_SCALE_MIN}% to {RENDER_SCALE_MAX}% in steps of {RENDER_SCALE_STEP}%"
+            "render scale {render_scale}% is outside {RENDER_SCALE_MIN}% to {RENDER_SCALE_MAX}%"
         )));
     }
     let portrait_input = output_height > output_width;
@@ -182,18 +170,13 @@ pub fn display_plan_on(
         return Err(PlanError(format!("output size {output_width}x{output_height} is not a display ratio the game accepts")));
     }
     let base_multiplier = ceil_div(width, NATIVE_FRAME_WIDTH).max(ceil_div(height, NATIVE_FRAME_HEIGHT));
-    // TASK-118 (owner, 2026-10-26): the slider is additive. The plan at 100% is the baseline (on an integrated GPU that
-    // is the 1x of issue #89, not k), and each 25% step adds or removes one whole multiplier. Before, a changed scale
-    // multiplied k by the percentage: on the laptop 100% gave 1x and 125% gave 4x, a four-times jump for one notch.
-    let integrated_default = integrated_default_applies(render_scale, integrated_gpu);
-    let baseline = if integrated_gpu { INTEGRATED_DEFAULT_MULTIPLIER } else { base_multiplier };
-    let steps = (render_scale as i32 - RENDER_SCALE_DEFAULT as i32) / RENDER_SCALE_STEP as i32;
-    let multiplier = (baseline as i32 + steps).clamp(1, caps.max_multiplier.max(1) as i32) as u32;
+    let multiplier = multiplier_for_percent(render_scale, height, caps);
     Ok(DisplayPlan {
         output_width: width,
         output_height: height,
         portrait_input,
-        integrated_default,
+        // The new model has no GPU-dependent baseline: the percentage alone decides (kept for the log line of Play).
+        integrated_default: false,
         base_multiplier,
         render_scale,
         multiplier,
@@ -207,6 +190,92 @@ pub fn display_plan_on(
 /// "4x · 2560x1792": the slider's readout for a plan.
 pub fn describe_plan(plan: &DisplayPlan) -> String {
     format!("{}x \u{00B7} {}x{}", plan.multiplier, plan.internal_width, plan.internal_height)
+}
+
+// Render scale as a percentage of the screen ------------------------------------------------------------------------
+
+/// TASK-180 test3 (owner, 2026-11-05): the Render scale percentage means **the internal frame's height against the
+/// screen's height**: 1x is 448 px high, so on a 1440-pixel-high screen 1x is 31% and 2x is 62%. Height is the axis
+/// chosen on purpose: every multiplier scales the frame's height by exactly the same factor (448 -> 896 -> 1344), while
+/// the width already carries the aspect (640 at 4:3, stretched to the screen's wider shape by the game's own aspect
+/// path), so a width-based percentage would mix the aspect into the number the player reads. The frame height is what
+/// the multiplier is *for* (the vertical resolution), and it is the one number that does not change with the screen's
+/// shape. Before this, 100% meant "the screen's native multiplier" (5x at 3088x1440) and 1x was labelled 0%.
+pub fn percent_for_multiplier(multiplier: u32, output_height: u32) -> u32 {
+    if output_height == 0 {
+        return RENDER_SCALE_DEFAULT;
+    }
+    let percent = (u64::from(NATIVE_FRAME_HEIGHT) * u64::from(multiplier.max(1)) * 100 + u64::from(output_height) / 2)
+        / u64::from(output_height);
+    percent.clamp(1, u64::from(RENDER_SCALE_MAX)) as u32
+}
+
+/// The whole multiplier closest to a percentage of the screen's height (ties go to the smaller one, so a rounded-down
+/// label never grows the internal resolution behind the player's back).
+pub fn multiplier_for_percent(percent: u32, output_height: u32, caps: RendererCaps) -> u32 {
+    if output_height == 0 {
+        return 1;
+    }
+    let numerator = u64::from(percent) * u64::from(output_height);
+    let denominator = 100 * u64::from(NATIVE_FRAME_HEIGHT);
+    // Nearest whole multiplier: round half down.
+    let multiplier = (2 * numerator + denominator - 1) / (2 * denominator);
+    (multiplier.max(1) as u32).min(caps.max_multiplier.max(1))
+}
+
+/// The percentage the slider shows for a multiplier on a screen of this height ("31%").
+pub fn render_scale_label(multiplier: u32, output_height: u32) -> String {
+    format!("{}%", percent_for_multiplier(multiplier, output_height))
+}
+
+/// The slider positions on an output: one per multiplier the renderer accepts, in order, each as the percentage of the
+/// screen's height it gives there. This is the whole scale model: label, slider and stored value are the same number.
+pub fn render_scale_steps_for(output_height: u32, caps: RendererCaps) -> Vec<u32> {
+    let mut steps: Vec<u32> = (1..=caps.max_multiplier.max(1)).map(|m| percent_for_multiplier(m, output_height)).collect();
+    steps.sort_unstable();
+    steps.dedup();
+    steps
+}
+
+/// The default Render scale on an output: 2x, as the owner asked for (owner, 2026-11-05), in the same percentage.
+pub fn render_scale_default_for(output_height: u32) -> u32 {
+    percent_for_multiplier(2, output_height)
+}
+
+/// The stored Render scale a value written under the old notch model becomes, with the log line that explains it.
+/// Windows: the multiplier the old value meant on this screen is kept, so the player's picture does not change.
+/// Android: the phone's notches were never a percentage the player chose (test1's "125" became 6x on the S23 and the
+/// menus ran at 12 fps), so the value goes to the 2x default (owner, 2026-11-05).
+pub fn migrate_render_scale(old_percent: u32, output: Size, integrated_gpu: bool, caps: RendererCaps, android: bool) -> (u32, String) {
+    let height = landscape_height(output).max(1);
+    if android {
+        let percent = percent_for_multiplier(RENDER_SCALE_DEFAULT_MULTIPLIER, height);
+        return (
+            percent,
+            format!(
+                "settings: render_scale {old_percent} was stored under the old scale model; on Android it goes to the 2x default, {percent}% of the screen height"
+            ),
+        );
+    }
+    let (multiplier, percent) = migrate_notch_scale(old_percent, output, integrated_gpu, caps);
+    (
+        percent,
+        format!(
+            "settings: render_scale {old_percent} was stored under the old scale model; it meant {multiplier}x on this screen, stored as {percent}% of its height"
+        ),
+    )
+}
+
+/// TASK-180 test3: a Render scale stored under the old "one notch of 25% = one multiplier" model, converted to the
+/// multiplier it meant on the screen and GPU of that time, then to the percentage of this screen's height. The old
+/// model is `multiplier = baseline + (percent - 100) / 25`, with baseline k (the smallest multiplier whose frame covers
+/// the output) on a discrete GPU and 1 on an integrated one. Returns `(old multiplier, new percentage)`.
+pub fn migrate_notch_scale(old_percent: u32, output: Size, integrated_gpu: bool, caps: RendererCaps) -> (u32, u32) {
+    let baseline = if integrated_gpu { INTEGRATED_DEFAULT_MULTIPLIER } else { base_multiplier(output.width, output.height) };
+    // 25 was the old model's notch; the constant is written out here because the current step is 1%.
+    let steps = (old_percent as i32 - 100) / 25;
+    let multiplier = (baseline as i32 + steps).clamp(1, caps.max_multiplier.max(1) as i32) as u32;
+    (multiplier, percent_for_multiplier(multiplier, landscape_height(output)))
 }
 
 // Monitors ---------------------------------------------------------------------------------------------------------
@@ -392,13 +461,13 @@ mod tests {
     }
 
     #[test]
-    fn the_android_floor_is_the_step_of_1x() {
-        // The owner's S23 Ultra at WQHD+ (5x at 100%), the same phone at FHD+ (4x), a 1080p screen (3x).
-        assert_eq!(render_scale_floor_from(Size::new(3088, 1440), 0), 0);
-        assert_eq!(render_scale_floor_from(Size::new(2316, 1080), 0), 25);
-        assert_eq!(render_scale_floor_from(Size::new(1920, 1080), 0), 50);
-        assert_eq!(render_scale_floor_from(Size::new(1440, 3088), 0), 0, "portrait sizes count as landscape");
-        assert_eq!(render_scale_floor_from(Size::new(3088, 1440), 50), 50, "never below the platform's minimum");
+    fn the_floor_is_the_percentage_of_1x() {
+        // 1x is 448 pixels high: 31% on the owner's S23 Ultra (1440), 41% on a 1080p screen, 56% on 800.
+        assert_eq!(render_scale_floor(Size::new(3088, 1440)), 31);
+        assert_eq!(render_scale_floor(Size::new(2316, 1080)), 41);
+        assert_eq!(render_scale_floor(Size::new(1920, 1080)), 41);
+        assert_eq!(render_scale_floor(Size::new(1440, 3088)), 31, "portrait sizes count as landscape");
+        assert_eq!(render_scale_floor(Size::new(1280, 800)), 56);
         assert_eq!(base_multiplier(3088, 1440), 5);
     }
 
@@ -414,46 +483,11 @@ mod tests {
             (3088, 1440, 5),
             (3840, 2160, 6),
         ] {
-            let result = plan(width, height, 100);
+            let result = plan(width, height, percent_for_multiplier(k, height));
             assert_eq!(result.base_multiplier, k, "{width}x{height}");
-            assert_eq!(result.multiplier, k, "{width}x{height} at 100%");
+            assert_eq!(result.multiplier, k, "{width}x{height} at its k percentage");
             assert!(640 * k >= width && 448 * k >= height, "never below the output on either axis");
         }
-    }
-
-    #[test]
-    fn render_scale_moves_one_multiplier_per_step() {
-        // Owner (2026-10-26): each 25% step is one whole multiplier from the 100% plan, never a multiplication of it.
-        // A discrete 3x baseline: 50/75/100/125/150/175/200% -> 1/2/3/4/5/6/7x.
-        let steps: Vec<u32> = render_scale_steps().iter().map(|&scale| plan(1920, 1080, scale).multiplier).collect();
-        assert_eq!(steps, vec![1, 2, 3, 4, 5, 6, 7]);
-        assert_eq!(describe_plan(&plan(1920, 1080, 125)), "4x \u{00B7} 2560x1792");
-        // 2560x1440 has a 4x baseline: 100% stays 4x and one notch is 5x (the old formula gave 8x at 200%).
-        assert_eq!(plan(2560, 1440, 75).multiplier, 3);
-        assert_eq!(plan(2560, 1440, 100).multiplier, 4);
-        assert_eq!(plan(2560, 1440, 125).multiplier, 5);
-        assert_eq!(plan(2560, 1440, 200).multiplier, 8);
-        // Clamped at the bottom (1x) and at the gt4-gs maximum (12x).
-        assert_eq!(plan(640, 480, 50).multiplier, 1);
-        assert_eq!(plan(3840, 2160, 200).multiplier, 10, "6x baseline + 4 steps");
-        assert_eq!(plan(7680, 4320, 200).multiplier, 12, "12x baseline clamped");
-        let small = RendererCaps { max_multiplier: 6 };
-        assert_eq!(display_plan(3840, 2160, 200, small).unwrap().multiplier, 6);
-    }
-
-    #[test]
-    fn integrated_gpu_climbs_from_1x_without_a_jump() {
-        // issue #89: 100% on an integrated GPU is 1x. The slider used to jump to 4x at 125% (k 3 x 125%); it now climbs
-        // one multiplier per step, so the laptop can try 2x and 3x.
-        let integrated: Vec<u32> = render_scale_steps()
-            .iter()
-            .map(|&scale| display_plan_on(1366, 768, scale, PCSX2_GS_CAPS, true).unwrap().multiplier)
-            .collect();
-        assert_eq!(integrated, vec![1, 1, 1, 2, 3, 4, 5]);
-        let plan_100 = display_plan_on(1366, 768, 100, PCSX2_GS_CAPS, true).unwrap();
-        assert!(plan_100.integrated_default);
-        assert_eq!((plan_100.base_multiplier, plan_100.multiplier), (3, 1));
-        assert!(!display_plan_on(1366, 768, 125, PCSX2_GS_CAPS, true).unwrap().integrated_default);
     }
 
     #[test]
@@ -469,17 +503,18 @@ mod tests {
 
     #[test]
     fn a_phone_screen_and_portrait_input_are_safe() {
-        let phone = plan(3088, 1440, 100);
+        let phone = plan(3088, 1440, percent_for_multiplier(5, 1440));
         assert_eq!((phone.base_multiplier, phone.internal_width, phone.internal_height), (5, 3200, 2240));
         assert!(phone.ultrawide_on && !phone.portrait_input);
         // The same phone reporting its natural (portrait) orientation: turned sideways, same plan.
-        let portrait = plan(1440, 3088, 100);
+        let portrait = plan(1440, 3088, percent_for_multiplier(5, 1440));
         assert!(portrait.portrait_input);
         assert_eq!((portrait.output_width, portrait.output_height), (3088, 1440));
         assert_eq!(portrait.multiplier, phone.multiplier);
         assert_eq!(portrait.aspect, phone.aspect);
         let square = plan(1080, 1080, 100);
         assert_eq!(square.base_multiplier, 3);
+        assert_eq!(square.multiplier, 2, "100% is 448 pixels of 1080: 2x");
         assert!(square.ultrawide_on);
     }
 
@@ -490,10 +525,11 @@ mod tests {
         assert!(display_plan(100, 100, 100, PCSX2_GS_CAPS).is_err(), "below 320");
         assert!(display_plan(20000, 2000, 100, PCSX2_GS_CAPS).is_err(), "above 16384");
         assert!(display_plan(16000, 1000, 100, PCSX2_GS_CAPS).is_err(), "ratio 16:1");
-        for scale in [0, 49, 60, 101, 225, 1000] {
+        for scale in [0, 1201, 5000] {
             assert!(display_plan(1920, 1080, scale, PCSX2_GS_CAPS).is_err(), "{scale}%");
         }
-        assert_eq!(render_scale_steps(), vec![50, 75, 100, 125, 150, 175, 200]);
+        assert!(display_plan(1920, 1080, 1, PCSX2_GS_CAPS).is_ok(), "1% is 1x on a big screen");
+        assert!(display_plan(1920, 1080, 1200, PCSX2_GS_CAPS).is_ok(), "12x on a short screen is 1200%");
     }
 
     fn monitor(device: &str, name: &str, primary: bool, desktop: Size) -> Monitor {
@@ -574,50 +610,117 @@ mod tests {
         }
     }
 
-    // Issue #89 (1.3.0): integrated GPUs start at native resolution while the render scale is the untouched default.
+    // TASK-180 test3 (owner, 2026-11-05): the Render scale is the internal frame height as a percentage of the screen
+    // height, on every platform. These are the screens the owner named, plus the phone the bug was found on.
 
     #[test]
-    fn an_integrated_gpu_with_the_default_scale_renders_at_native_1x() {
-        // 1440 x 900 is k 3 on a discrete card (1920 x 1344); the integrated default gives 1x = 640 x 448.
-        let plan = display_plan_on(1440, 900, RENDER_SCALE_DEFAULT, PCSX2_GS_CAPS, true).unwrap();
-        assert_eq!(plan.base_multiplier, 3);
-        assert_eq!(plan.multiplier, INTEGRATED_DEFAULT_MULTIPLIER);
-        assert_eq!((plan.internal_width, plan.internal_height), (640, 448));
-        assert!(plan.integrated_default);
-    }
-
-    #[test]
-    fn a_discrete_gpu_keeps_the_scaled_multiplier_at_the_default_scale() {
-        let plan = display_plan_on(1440, 900, RENDER_SCALE_DEFAULT, PCSX2_GS_CAPS, false).unwrap();
-        assert_eq!(plan.multiplier, 3);
-        assert!(!plan.integrated_default);
-        assert_eq!(plan, display_plan(1440, 900, RENDER_SCALE_DEFAULT, PCSX2_GS_CAPS).unwrap());
-    }
-
-    #[test]
-    fn a_changed_render_scale_climbs_from_the_integrated_baseline() {
-        // The player's choice wins, one multiplier per 25% step from the integrated 1x baseline (TASK-118, owner
-        // 2026-10-26): 50/75% stay at 1x, 125% is 2x, 200% is 5x.
-        for (scale, expected) in [(50, 1), (75, 1), (125, 2), (150, 3), (200, 5)] {
-            let plan = display_plan_on(1440, 900, scale, PCSX2_GS_CAPS, true).unwrap();
-            assert_eq!(plan.multiplier, expected, "{scale}%");
-            assert!(!plan.integrated_default, "{scale}%");
+    fn the_render_scale_percentage_is_the_frame_height_over_the_screen_height() {
+        // The owner's example: a 1440-pixel-high screen has 1x (448) at about 31% and 2x (896) at about 62%.
+        for screen in [Size::new(3088, 1440), Size::new(1920, 1080), Size::new(2560, 1440), Size::new(3440, 1440)] {
+            let one = percent_for_multiplier(1, screen.height);
+            let two = percent_for_multiplier(2, screen.height);
+            assert_eq!(one, (448u64 * 100 / u64::from(screen.height)) as u32, "{screen:?} 1x");
+            assert_eq!(two, percent_for_multiplier(2, screen.height));
+            if screen.height == 1440 {
+                assert_eq!((one, two), (31, 62), "the owner's numbers");
+            }
+        }
+        for (screen, one, two, three) in [
+            (Size::new(3088, 1440), 31, 62, 93),
+            (Size::new(2400, 1080), 41, 83, 124),
+            (Size::new(1920, 1080), 41, 83, 124),
+            (Size::new(2560, 1440), 31, 62, 93),
+            (Size::new(3440, 1440), 31, 62, 93),
+            (Size::new(1280, 800), 56, 112, 168),
+        ] {
+            assert_eq!(percent_for_multiplier(1, screen.height), one, "{screen:?} 1x");
+            assert_eq!(percent_for_multiplier(2, screen.height), two, "{screen:?} 2x");
+            assert_eq!(percent_for_multiplier(3, screen.height), three, "{screen:?} 3x");
         }
     }
 
     #[test]
-    fn the_integrated_default_never_exceeds_the_renderer_cap() {
-        let capped = RendererCaps { max_multiplier: 1 };
-        assert_eq!(display_plan_on(1920, 1080, RENDER_SCALE_DEFAULT, capped, true).unwrap().multiplier, 1);
-        let zero_cap = RendererCaps { max_multiplier: 0 };
-        assert_eq!(display_plan_on(1920, 1080, RENDER_SCALE_DEFAULT, zero_cap, true).unwrap().multiplier, 1);
+    fn every_screen_reaches_1x_and_2x_from_its_own_percentages() {
+        let caps = RendererCaps { max_multiplier: 12 };
+        for screen in [
+            Size::new(3088, 1440),
+            Size::new(2400, 1080),
+            Size::new(1920, 1080),
+            Size::new(2560, 1440),
+            Size::new(3440, 1440),
+            Size::new(1280, 800),
+        ] {
+            for multiplier in 1..=6 {
+                let percent = percent_for_multiplier(multiplier, screen.height);
+                assert_eq!(
+                    multiplier_for_percent(percent, screen.height, caps),
+                    multiplier,
+                    "{screen:?} {multiplier}x at {percent}%"
+                );
+                let plan = display_plan(screen.width, screen.height, percent, caps).unwrap();
+                assert_eq!(plan.multiplier, multiplier, "{screen:?} at {percent}%");
+                assert_eq!(plan.internal_height, 448 * multiplier);
+                // The label, the slider position and the stored value are the same number: the plan kept it.
+                assert_eq!(plan.render_scale, percent);
+                assert_eq!(render_scale_label(multiplier, screen.height), format!("{percent}%"));
+            }
+        }
     }
 
     #[test]
-    fn the_integrated_default_applies_only_to_the_default_scale_on_an_integrated_gpu() {
-        assert!(integrated_default_applies(100, true));
-        assert!(!integrated_default_applies(100, false));
-        assert!(!integrated_default_applies(125, true));
-        assert!(!integrated_default_applies(50, true));
+    fn the_slider_steps_are_one_per_multiplier_and_start_at_1x() {
+        let caps = RendererCaps { max_multiplier: 6 };
+        let steps = render_scale_steps_for(1440, caps);
+        assert_eq!(steps, vec![31, 62, 93, 124, 156, 187], "one position per multiplier, the smallest = 1x");
+        assert_eq!(steps[0], render_scale_floor(Size::new(3088, 1440)), "the floor is 1x, not 0%");
+        // A portrait surface is read as the landscape one the game draws (the plan turns it).
+        assert_eq!(render_scale_floor(Size::new(1440, 3088)), 31);
+    }
+
+    #[test]
+    fn the_default_scale_is_2x() {
+        assert_eq!(percent_for_multiplier(RENDER_SCALE_DEFAULT_MULTIPLIER, 1440), 62);
+        assert_eq!(render_scale_default_for(1440), 62);
+        let plan = display_plan(3088, 1440, render_scale_default_for(1440), PCSX2_GS_CAPS).unwrap();
+        assert_eq!(plan.multiplier, 2);
+        assert_eq!((plan.internal_width, plan.internal_height), (1280, 896));
+    }
+
+    #[test]
+    fn the_multiplier_is_clamped_by_the_renderer_and_never_zero() {
+        let capped = RendererCaps { max_multiplier: 1 };
+        assert_eq!(display_plan(1920, 1080, 300, capped).unwrap().multiplier, 1);
+        let zero_cap = RendererCaps { max_multiplier: 0 };
+        assert_eq!(display_plan(1920, 1080, 100, zero_cap).unwrap().multiplier, 1);
+        assert_eq!(multiplier_for_percent(1, 4320, PCSX2_GS_CAPS), 1, "1% of a 4K screen is still 1x");
+        assert_eq!(multiplier_for_percent(1200, 448, PCSX2_GS_CAPS), 12, "1200% of 448 px is 12x");
+        assert_eq!(multiplier_for_percent(300, 800, PCSX2_GS_CAPS), 5, "300% of 800 is 2400 px: 5x");
+        assert_eq!(multiplier_for_percent(300, 4320, PCSX2_GS_CAPS), 12, "12x is the PCSX2 GS cap");
+    }
+
+    #[test]
+    fn an_out_of_range_scale_is_refused() {
+        assert!(!is_render_scale(0));
+        assert!(!is_render_scale(RENDER_SCALE_MAX + 1));
+        assert!(is_render_scale(1));
+        assert!(display_plan(1920, 1080, 0, PCSX2_GS_CAPS).is_err());
+        assert!(display_plan(1920, 1080, 1201, PCSX2_GS_CAPS).is_err());
+    }
+
+    #[test]
+    fn an_old_notch_scale_migrates_to_the_multiplier_it_meant() {
+        // Test1 stored "125" on the owner's S23 (3088 x 1440). The old rule climbed from the screen's own multiplier
+        // (5x, CoreGS 2.0 reporting a discrete-class device there): 125% was 6x, which the new model stores as 187%.
+        let (multiplier, percent) = migrate_notch_scale(125, Size::new(3088, 1440), false, PCSX2_GS_CAPS);
+        assert_eq!(multiplier, 6);
+        assert_eq!(percent, 187);
+        // On a 1920 x 1080 PC the old 100% was 3x (k = 3); the new value keeps exactly that picture, at 124%.
+        let (multiplier, percent) = migrate_notch_scale(100, Size::new(1920, 1080), false, PCSX2_GS_CAPS);
+        assert_eq!((multiplier, percent), (3, 124));
+        // An integrated laptop at the untouched 100% was 1x (issue #89): it stays 1x, at 56% on 1280 x 800.
+        let (multiplier, percent) = migrate_notch_scale(100, Size::new(1280, 800), true, PCSX2_GS_CAPS);
+        assert_eq!((multiplier, percent), (1, 56));
+        // Values below the baseline clamp to 1x, never to 0x.
+        assert_eq!(migrate_notch_scale(0, Size::new(1920, 1080), false, PCSX2_GS_CAPS), (1, 41));
     }
 }

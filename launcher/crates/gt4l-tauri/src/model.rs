@@ -137,24 +137,37 @@ fn fill_resolution_row(row: &mut Value, settings: &Settings, monitors: &[Monitor
     }
 }
 
-/// The Render scale slider's readout per step: "100% · 4x · 2560x1792" for the output size the game would use now
-/// (1920 x 1080 when no monitor is known).
-fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], integrated_gpu: bool, platform: Platform) {
+/// The Render scale row (TASK-180 test3, owner 2026-11-05): one position per whole multiplier the renderer accepts,
+/// labelled with the percentage of the screen's height it gives there ("31% · 1x · 640x448"), for the output the game
+/// would use now (1920 x 1080 when no monitor is known). The arrows step from one multiplier to the next, and the value
+/// it stores is the percentage in the label, so the label, the positions and the stored value are one formula
+/// (`display::render_scale_steps_for`); the same on every platform.
+fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], _integrated_gpu: bool, _platform: Platform) {
     let output = display::resolve_target(monitors, settings.get("monitor"), settings.get("resolution"))
         .map(|target| target.output)
         .unwrap_or(display::FALLBACK_OUTPUT);
-    let mut labels = serde_json::Map::new();
-    for step in display::render_scale_steps() {
-        if let Ok(plan) = display::display_plan_on(output.width, output.height, step, display::PCSX2_GS_CAPS, integrated_gpu) {
-            labels.insert(step.to_string(), json!(format!("{step}% \u{00B7} {}", display::describe_plan(&plan))));
-        }
+    let caps = display::RendererCaps { max_multiplier: MAX_UPSCALE_DEFAULT };
+    let height = output.height.min(output.width);
+    let steps = display::render_scale_steps_for(height, caps);
+    let stored = settings.get("render_scale").parse::<u32>().unwrap_or(display::RENDER_SCALE_DEFAULT);
+    // The position the stored value lands on: the multiplier closest to it on this screen.
+    let current = display::percent_for_multiplier(display::multiplier_for_percent(stored, height, caps), height);
+    let mut options: Vec<Value> = Vec::new();
+    for percent in &steps {
+        let multiplier = display::multiplier_for_percent(*percent, height, caps);
+        let label = format!(
+            "{percent}% · {}x · {}x{}",
+            multiplier,
+            display::NATIVE_FRAME_WIDTH * multiplier,
+            display::NATIVE_FRAME_HEIGHT * multiplier
+        );
+        options.push(json!({ "value": percent.to_string(), "label": label }));
     }
-    row["values"]["labels"] = Value::Object(labels);
-    row["values"]["output"] = json!(output.text());
-    // TASK-180: on a phone the slider starts where the screen gets 1x.
-    if platform.scale_floor_follows_screen() {
-        row["values"]["min"] = json!(display::render_scale_floor(output));
-    }
+    row["control"] = json!("dropdown");
+    row["values"] = Value::Array(options);
+    row["current"] = json!(current.to_string());
+    row["output"] = json!(output.text());
+    row["default"] = json!(display::render_scale_default_for(height).to_string());
 }
 
 /// The settings table with the connected monitors (TASK-080 addendum: Monitor, Resolution and Render scale).
@@ -935,7 +948,7 @@ mod table_tests {
         }
     }
 
-    // TASK-180 (owner, test1 feedback): the phone's screen is the output; the slider starts at its 1x step.
+    // TASK-180 (owner, test1 feedback; test3): the phone's screen is the output, and the row's first position is 1x there.
     #[test]
     fn android_render_scale_follows_the_phone_screen() {
         let screen = Monitor {
@@ -949,11 +962,11 @@ mod table_tests {
         settings.set("renderer", gt4l_core::settings::CORE_GS_20).unwrap();
         let android = settings_table_for(Platform::Android, &settings, &Controls::default(), &[screen.clone()], &[], false);
         let scale = row(&android, "render_scale");
-        assert_eq!(scale["values"]["output"], "3088x1440");
-        assert_eq!(scale["values"]["min"], json!(display::render_scale_floor(display::Size::new(3088, 1440))));
-        assert!(scale["values"]["labels"]["100"].as_str().unwrap().contains("5x"), "100% is the screen's native multiplier");
+        assert_eq!(scale["output"], "3088x1440");
+        assert_eq!(scale["values"][0]["label"], "31% · 1x · 640x448", "1x is not 0% any more");
+        assert_eq!(scale["values"][1]["label"], "62% · 2x · 1280x896");
         let windows = settings_table_for(Platform::Windows, &Settings::default(), &Controls::default(), &[screen], &[], false);
-        assert_eq!(row(&windows, "render_scale")["values"]["min"], json!(display::RENDER_SCALE_MIN), "Windows keeps its floor");
+        assert_eq!(row(&windows, "render_scale")["values"][0]["label"], "31% · 1x · 640x448", "the same formula");
     }
 
     #[test]
@@ -1049,21 +1062,25 @@ mod table_tests {
         let resolution = row(&table, "resolution");
         assert_eq!(resolution["current"], "2560x1080");
         assert_eq!(resolution["values"][0]["label"], "3440x1440 (desktop)");
-        // The render scale readout follows the chosen output: 2560x1080 gives k = 4.
+        // TASK-180 test3: one position per multiplier, labelled with the percentage of the 1080-pixel height it gives.
         let scale = row(&table, "render_scale");
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 4x \u{00B7} 2560x1792");
-        assert_eq!(scale["values"]["labels"]["50"], "50% \u{00B7} 2x \u{00B7} 1280x896");
-        assert_eq!(scale["values"]["labels"]["200"], "200% \u{00B7} 8x \u{00B7} 5120x3584");
+        assert_eq!(scale["control"], "dropdown");
+        assert_eq!(scale["values"][0]["value"], "41", "1x is 448 of 1080 pixels");
+        assert_eq!(scale["values"][0]["label"], "41% · 1x · 640x448");
+        assert_eq!(scale["values"][1]["label"], "83% · 2x · 1280x896");
+        assert_eq!(scale["values"][2]["label"], "124% · 3x · 1920x1344");
+        assert_eq!(scale["values"].as_array().unwrap().len(), 12, "every multiplier the renderer accepts");
     }
 
     #[test]
-    fn an_integrated_gpu_reads_the_default_render_scale_at_1x() {
-        // Issue #89: the readout shows the plan the game gets; the slider is additive (TASK-118), so 150% from the
-        // integrated 1x baseline is 3x, not 5x.
-        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
-        let scale = row(&table, "render_scale");
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 1x \u{00B7} 640x448");
-        assert_eq!(scale["values"]["labels"]["150"], "150% \u{00B7} 3x \u{00B7} 1920x1344");
+    fn the_render_scale_row_shows_the_percentage_of_the_screen_height_on_both_platforms() {
+        for platform in [Platform::Windows, Platform::Android] {
+            let table = settings_table_for(platform, &Settings::default(), &Controls::default(), &[], &[], false);
+            let scale = row(&table, "render_scale");
+            assert_eq!(scale["output"], "1920x1080", "{platform:?}");
+            assert_eq!(scale["values"][0]["label"], "41% · 1x · 640x448", "{platform:?}");
+            assert_eq!(scale["current"], "83", "{platform:?}: the stored 100% lands on 2x of 1080 (83%)");
+        }
     }
 
     #[test]
@@ -1072,11 +1089,9 @@ mod table_tests {
         assert_eq!(row(&table, "monitor")["current"], "primary");
         assert_eq!(row(&table, "resolution")["current"], "desktop");
         let scale = row(&table, "render_scale");
-        assert_eq!(scale["control"], "slider");
-        assert_eq!((scale["values"]["min"].as_u64(), scale["values"]["max"].as_u64(), scale["values"]["step"].as_u64()),
-                   (Some(50), Some(200), Some(25)));
-        assert_eq!(scale["current"], 100);
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1344");
+        assert_eq!(scale["control"], "dropdown", "one position per multiplier (TASK-180 test3)");
+        assert_eq!(scale["current"], "83", "2x of 1080, the position the stored 100% lands on");
+        assert_eq!(scale["values"][1]["label"], "83% \u{00B7} 2x \u{00B7} 1280x896");
         assert!(scale.get("visible_when").is_none(), "shown under both renderers");
         assert_eq!(scale["group"], "graphics");
     }

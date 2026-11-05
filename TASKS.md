@@ -3412,6 +3412,15 @@ The owner also asked for:
 **Test3 (on the device over USB):** pre-rotation, ADPF hints and big-core placement, FXAA at internal resolution, a
 1080p-output option, and Snapdragon GSR.
 
+**APK test3 scope (owner's S23 test of test2, 2026-11-05 13:54):** bench mode from `debug.env` (a recording's own card,
+never the player's); the game's input path made visible and fixed for a pad that only Android sees; the Wheel page gone on
+Android; the launcher's pad state registered (rebind and the live view); the Render scale as a percentage of the screen
+height on every platform, migrated once; the shader prepare's Cancel no longer focused; the pause dialog centred, in the
+launcher's language and pad-driven; the version from one source (`1.3.0-android-test3`); Windows home preselects Play too.
+Spec II on Android (Part B): the `GT4_TARGET=spec2` NDK recipe and `libgt4spec2.so`'s name are in place, but the APK still
+ships v2.00 only (the hooked Spec II unit set has to be regenerated with `scripts/camera360_units.py spec2` first), and a
+bench for Spec II is refused with a message instead of starting the wrong library.
+
 ### TASK-181 — Launcher Wheel page for the native DFP wheel (owner, 2026-11-05; with PR #205)
 
 PR #205 (WaimateWihongi, TASK-018) makes GT4 see a virtual Driving Force Pro on its USB port (option A of

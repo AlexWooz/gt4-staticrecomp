@@ -21,18 +21,19 @@ fn quoted(text: &str) -> String {
     format!("{text:?}")
 }
 
-/// The release label of this build (TASK-109): `GT4_RELEASE_LABEL=rc5` makes the launcher version `1.3.0-rc5`. Empty or
-/// missing = a stable build. Anything but `rc<N>` stops the build.
+/// The release label of this build (TASK-109): `GT4_RELEASE_LABEL=rc5` makes the launcher version `1.3.0-rc5`, and
+/// `GT4_RELEASE_LABEL=android-test3` makes it `1.3.0-android-test3` (the Android test builds, TASK-180). Empty or
+/// missing = a stable build. Anything but `rc<N>` or `android-test<N>` stops the build.
 fn release_label() {
     println!("cargo:rerun-if-env-changed=GT4_RELEASE_LABEL");
     let label = std::env::var("GT4_RELEASE_LABEL").unwrap_or_default();
     let label = label.trim();
     if !label.is_empty() {
-        let digits = label.strip_prefix("rc").unwrap_or("");
-        let valid = !digits.is_empty()
-            && digits.bytes().all(|byte| byte.is_ascii_digit())
-            && !digits.starts_with('0');
-        assert!(valid, "GT4_RELEASE_LABEL must be empty or rc<N> (N from 1, no leading zero), got '{label}'");
+        let valid = ["rc", "android-test"].iter().any(|prefix| {
+            let digits = label.strip_prefix(prefix).unwrap_or("");
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) && !digits.starts_with('0')
+        });
+        assert!(valid, "GT4_RELEASE_LABEL must be empty, rc<N> or android-test<N> (N from 1, no leading zero), got '{label}'");
     }
     let cargo = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
     let full = if label.is_empty() { cargo } else { format!("{cargo}-{label}") };

@@ -16,6 +16,7 @@ mod relocation;
 mod renderer_switch;
 mod saves;
 mod log_bundle;
+mod managed_states;
 mod session_log;
 mod setup;
 mod state;
@@ -173,6 +174,9 @@ pub fn run() {
             // The gamepad service (SDL3) runs on its own thread for the whole session.
             let pads = pad_service::spawn(app.handle().clone());
             app.manage(pads);
+            // TASK-180 test3: every state the commands ask for is in the log at start-up (a missing one stops its
+            // command with "state not managed for fields ...", which is how the Android pad commands failed).
+            managed_states::check(app.handle());
             // Every launch: version file, first gt4-gs install if needed, and the update check (never blocks Play).
             let launch_shared = app.state::<state::Shared>().inner().clone();
             let launch_app = app.handle().clone();

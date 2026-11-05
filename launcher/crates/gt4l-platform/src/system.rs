@@ -28,7 +28,10 @@ pub fn os_locale() -> String {
 /// Off Windows there is no Windows user language: English.
 #[cfg(not(windows))]
 pub fn os_locale() -> String {
-    String::new()
+    // TASK-180 test3 (owner's phone): Android has no LC_ALL to read; MainActivity sets GT4_ANDROID_LOCALE from the
+    // device's Locale at start (pt-BR on the owner's phone). Without it the launcher's "Auto" language fell back to
+    // English while the page was Portuguese, which is why the pause dialog came out in English.
+    std::env::var("GT4_ANDROID_LOCALE").unwrap_or_default()
 }
 
 /// The processor features the rules need (CPUID leaf 1, ECX: SSE3, SSSE3, SSE4.1).

@@ -130,7 +130,7 @@ fn invalid_values_and_unknown_keys_fall_back_with_warnings() {
 
 #[test]
 fn newer_schema_is_refused_and_syntax_errors_are_reported() {
-    assert!(matches!(config::parse("schema_version = 9\n"), Err(config::ConfigError::NewerSchema(9))));
+    assert!(matches!(config::parse("schema_version = 10\n"), Err(config::ConfigError::NewerSchema(10))));
     assert!(matches!(config::parse("[settings\n"), Err(config::ConfigError::Syntax(_))));
 }
 

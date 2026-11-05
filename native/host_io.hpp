@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 // TASK-075: the PS2 pad state lives in pad_mapping.hpp (shared with the SDL3 path).
@@ -57,6 +58,19 @@ public:
   void set_excluded_devices(std::vector<std::uint32_t> ids);
   void stop();
   gt4::pad::Backend backend() const { return backend_; }
+  // TASK-180 test3: the `[input]` block of game.log. Lists every device SDL sees (name, VID:PID, gamepad or joystick,
+  // mapping found or not) and which one the game reads, so a pad that does nothing on a player's phone says why.
+  // `reason` heads the block ("start", "device added", ...); `window_focused` is the window's input focus, which the pad
+  // path needs. Safe to call at any time on the game thread.
+  void log_devices(const char *reason, bool window_focused) const;
+  // The device the game reads, for the caller's own lines ("" while none): its name and instance id.
+  std::string reading_text() const;
+  // TASK-180 test3: a pad that Android reports as keys and motion but that SDL does not enumerate as a gamepad
+  // (GameActivity forwards them; `keycode` is an Android KeyEvent code, `axis` a MotionEvent axis). Read only while SDL
+  // has no gamepad open, so a pad SDL does see is never read twice. Any event makes the fallback active.
+  void android_key(int keycode, bool down);
+  void android_motion(int axis, float value);
+  bool has_gamepad() const { return sdl_pad_ != nullptr; }
 
 private:
 #ifdef _WIN32
@@ -68,6 +82,10 @@ private:
   void rumble_sdl(std::uint16_t value);
   void close_sdl_pad();
   bool is_excluded(std::uint32_t instance) const;
+  // TASK-180 test3: a hash of the connected device list, so the `[input]` block follows hot plug on every host.
+  std::uint64_t device_fingerprint() const;
+  // TASK-180 test3: the Android key/motion fallback's reading as the engine's own pad state.
+  PadState android_pad() const;
 
   std::vector<std::uint32_t> excluded_devices_;
   gt4::controls::ControlMap map_;
@@ -86,6 +104,15 @@ private:
   std::uint64_t rumble_sent_at_ = 0;
   bool sdl_initialized_ = false;
   std::uint16_t motors_ = 0;
+  // TASK-180 test3: the `[input]` block was written, and the device list hash it was written for.
+  bool devices_logged_ = false;
+  std::uint64_t devices_fingerprint_ = 0;
+  // TASK-180 test3: the pad GameActivity forwards as Android keys and motion (SDL did not enumerate it as a gamepad).
+  std::uint16_t android_buttons_ = 0;
+  std::uint8_t android_left_trigger_ = 0, android_right_trigger_ = 0;
+  std::array<std::int16_t, 4> android_axes_{};  // lx, ly, rx, ry in SDL's -32768..32767
+  bool android_active_ = false;
+  bool android_used_ = false;  // the fallback fed the game at least once (one log line)
 };
 
 // The output the game asks for: the Windows default device, or none (GT4_AUDIO=none, and the fixture).

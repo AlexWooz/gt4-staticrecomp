@@ -59,6 +59,26 @@ class GameActivity : SDLActivity() {
 
         @JvmStatic
         external fun nativeLeaveBackground()
+
+        // native/window_sdl.cpp (TASK-180 test3): a pad that Android reports as keys and motion but that SDL does not
+        // enumerate as a gamepad (some USB controllers). The game reads these only while SDL has no gamepad open.
+        @JvmStatic
+        external fun nativePadKey(keycode: Int, down: Boolean)
+
+        @JvmStatic
+        external fun nativePadMotion(axis: Int, value: Float)
+
+        // The Android key codes of a gamepad's buttons (KeyEvent.KEYCODE_*): the ones own_pad_event forwards. A pad key
+        // event that SDL does understand reaches SDL too; the native side ignores these while SDL has a gamepad open.
+        private val PAD_KEYS = intArrayOf(
+            96, 97, 99, 100,      // BUTTON_A, B, X, Y
+            102, 103, 104, 105,   // BUTTON_L1, R1, L2, R2
+            106, 107,             // BUTTON_THUMBL, THUMBR
+            108, 109,             // BUTTON_START, SELECT
+            19, 20, 21, 22,       // DPAD_UP, DOWN, LEFT, RIGHT
+        )
+        // The MotionEvent axes of a gamepad (MotionEvent.AXIS_*): sticks, hat and analog triggers.
+        private val PAD_AXES = intArrayOf(0, 1, 2, 11, 14, 15, 17, 18, 22, 23)
     }
 
     private var recording = false
@@ -129,6 +149,21 @@ class GameActivity : SDLActivity() {
         dialog.setOnDismissListener { pauseDialog = null }
         pauseDialog = dialog
         dialog.show()
+        // TASK-180 test3 (owner): centred on the screen (it sat at the bottom) and driven by the pad. The three buttons are
+        // focusable and Keep playing takes the focus, so A keeps the game and the d-pad/stick move between the buttons.
+        dialog.window?.let { window ->
+            window.setGravity(Gravity.CENTER)
+            val attributes = window.attributes
+            attributes.width = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            attributes.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            window.attributes = attributes
+        }
+        for (which in listOf(AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEUTRAL, AlertDialog.BUTTON_NEGATIVE)) {
+            dialog.getButton(which)?.apply {
+                isFocusable = true
+                isFocusableInTouchMode = true
+            }
+        }
         dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus()
     }
 
@@ -245,6 +280,36 @@ class GameActivity : SDLActivity() {
         @Suppress("DEPRECATION")
         val current = (if (android.os.Build.VERSION.SDK_INT >= 30) display else null) ?: windowManager.defaultDisplay
         return current?.refreshRate ?: 0f
+    }
+
+    // TASK-180 test3 (owner's phone): the controller must work in the game. SDL enumerates most pads, but a USB pad
+    // Android reports only as keys and motion never reaches the game at all, because SDL builds no gamepad for it. Both
+    // dispatchers below forward the pad's events to the game (nativePadKey/nativePadMotion) and then let SDL have them
+    // as well; the game reads the forwarded state only while SDL has no gamepad open, so nothing is ever read twice.
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        forwardPadKey(event)
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun forwardPadKey(event: android.view.KeyEvent) {
+        if (!libraryLoaded || !PAD_KEYS.contains(event.keyCode)) return
+        val sources = event.device?.sources ?: 0
+        val pad = (sources and android.view.InputDevice.SOURCE_JOYSTICK) != 0 ||
+            (sources and android.view.InputDevice.SOURCE_GAMEPAD) != 0 ||
+            (sources and android.view.InputDevice.SOURCE_DPAD) != 0
+        if (!pad) return  // a keyboard key that happens to share a pad code (Enter is not in the list)
+        when (event.action) {
+            android.view.KeyEvent.ACTION_DOWN -> nativePadKey(event.keyCode, true)
+            android.view.KeyEvent.ACTION_UP -> nativePadKey(event.keyCode, false)
+        }
+    }
+
+    override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+        if (libraryLoaded && event.isFromSource(android.view.InputDevice.SOURCE_JOYSTICK)) {
+            // Every standard gamepad axis; a pad without one reports nothing for it.
+            for (axis in PAD_AXES) nativePadMotion(axis, event.getAxisValue(axis))
+        }
+        return super.dispatchGenericMotionEvent(event)
     }
 
     // Called on SDL's thread, after the libraries are loaded and before SDL_main.

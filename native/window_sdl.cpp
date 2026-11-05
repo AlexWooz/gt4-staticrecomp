@@ -248,8 +248,12 @@ void park(bool background) {
     break;
   }
   if (audio_output != nullptr) audio_output->set_paused(false);
-  std::fprintf(stderr, "[window] resumed at VBlank %llu (paused at %llu)\n", static_cast<unsigned long long>(input_vblank),
-               static_cast<unsigned long long>(parked_at));
+  // TASK-180 test3: a focus change that arrived while the game was parked is not always repeated on return, and the pad
+  // reads neutral without the window's focus (the owner's "nothing works after coming back"). Ask the window.
+  focused = (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+  std::fprintf(stderr, "[window] resumed at VBlank %llu (paused at %llu), window focus %s\n",
+               static_cast<unsigned long long>(input_vblank), static_cast<unsigned long long>(parked_at),
+               focused ? "yes" : "NO");
   if (frame_pacer) frame_pacer->anchor(frame_clock->now());  // no burst of frames to catch up the time away
 }
 #endif
@@ -276,6 +280,30 @@ void perf_key(SDL_Scancode scancode) {
 }
 
 #ifdef __ANDROID__
+// TASK-180 test3: GameActivity forwards the pad's Android key and motion events (see ControllerInput::android_key).
+// They arrive on the UI thread, so they wait in this queue for the game thread's next VBlank.
+struct AndroidInputEvent {
+  bool motion;
+  int code;
+  float value;
+};
+std::mutex android_input_mutex;
+std::vector<AndroidInputEvent> android_input_events;
+
+void drain_android_input() {
+  std::vector<AndroidInputEvent> events;
+  {
+    const std::lock_guard<std::mutex> lock(android_input_mutex);
+    events.swap(android_input_events);
+  }
+  for (const AndroidInputEvent &event : events) {
+    if (event.motion)
+      controller->android_motion(event.code, event.value);
+    else
+      controller->android_key(event.code, event.value != 0.0f);
+  }
+}
+
 // TASK-180 (owner, 2026-11-05): a phone has no F7/F8. GameActivity draws a small touch button while the launcher's
 // performance report is on (GT4_PERF=1); a tap asks for F7 (1) or F8 (2) here, from the UI thread, and the game thread
 // runs it at its next event pump, exactly as the keys. The controller never sees it.
@@ -309,13 +337,24 @@ bool pump_messages() {
         break;
       case SDL_EVENT_WINDOW_FOCUS_GAINED:
         focused = true;
+        // TASK-180 test3: the pad is read as neutral without the window's focus, so the log says when it comes and goes.
+        std::fprintf(stderr, "[input] window focus gained at VBlank %llu: the pad reads again\n",
+                     static_cast<unsigned long long>(input_vblank));
+        if (controller) controller->log_devices("window focus gained", focused);
         break;
       case SDL_EVENT_WINDOW_FOCUS_LOST:
         focused = false;
+        std::fprintf(stderr, "[input] window focus lost at VBlank %llu: the pad reads NEUTRAL until the focus comes back\n",
+                     static_cast<unsigned long long>(input_vblank));
         if (controller) {
           controller->stop();
           if (ps2::g_options.presses.empty() && !input_player) apply_pad({});
+          controller->log_devices("window focus lost", focused);
         }
+        break;
+      case SDL_EVENT_JOYSTICK_ADDED:
+      case SDL_EVENT_JOYSTICK_REMOVED:
+        // The `[input]` block is written by ControllerInput::poll when the device list changes (host_io.cpp).
         break;
       case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
         handle_resize(static_cast<std::uint32_t>(event.window.data1), static_cast<std::uint32_t>(event.window.data2));
@@ -435,12 +474,16 @@ void on_vblank() {
   if (input_player) {
     apply_pad(input_player->at(input_vblank));
   } else if (ps2::g_options.presses.empty()) {
+#ifdef __ANDROID__
+    if (controller) drain_android_input();
+#endif
     const PadState pad = controller->poll(focused, buttons);
     apply_pad(pad);
     input_recorder.vblank(input_vblank, pad);
     if (focused)
       controller->rumble(ps2::pad_rumble());
   }
+  // TASK-180 test3: the `[input]` block is written by controller->poll (a device appeared, went away, or the first read).
   if (audio_output) {
     audio_output->pump();
     pacing_diagnostics.record_queue_frames(audio_output->queued_frames());
@@ -485,6 +528,11 @@ bool open_input_files() {
     }
     std::fprintf(stderr, "[input] replaying %s: %zu changes up to VBlank %llu\n", replay, input_player->changes(),
                  static_cast<unsigned long long>(input_player->end()));
+    // TASK-180 test3 (Part A): make a bench session obvious in game.log, next to the launch contract's arguments.
+    std::fprintf(stderr,
+                 "[bench] session: the pad comes from %s for every guest VBlank; the memory card is the one --memcard "
+                 "names (a bench session runs its own copy and never the player's card)\n",
+                 replay);
   }
   return true;
 }
@@ -722,6 +770,23 @@ extern "C" JNIEXPORT jboolean JNICALL Java_io_github_moesuito_gt4recomp_GameActi
 
 extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativeLeaveBackground(JNIEnv *, jclass) {
   background_wanted.store(false, std::memory_order_release);
+}
+
+// GameActivity.dispatchKeyEvent: a pad key Android reports for a device SDL did not enumerate as a gamepad. `down` is
+// the action; `keycode` is KeyEvent.KEYCODE_*. Any thread.
+extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativePadKey(JNIEnv *, jclass,
+                                                                                           jint keycode, jboolean down) {
+  const std::lock_guard<std::mutex> lock(android_input_mutex);
+  if (android_input_events.size() < 256)
+    android_input_events.push_back({false, keycode, down == JNI_TRUE ? 1.0f : 0.0f});
+}
+
+// GameActivity.dispatchGenericMotionEvent: a pad axis (MotionEvent.AXIS_*), -1..1 (triggers 0..1). Any thread.
+extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativePadMotion(JNIEnv *, jclass,
+                                                                                               jint axis, jfloat value) {
+  const std::lock_guard<std::mutex> lock(android_input_mutex);
+  if (android_input_events.size() < 256)
+    android_input_events.push_back({true, axis, value});
 }
 
 // GameActivity.nativeSetPaused: true parks the game at its next event pump (the pause dialog, Minimize, onPause);
