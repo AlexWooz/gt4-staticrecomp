@@ -3342,6 +3342,19 @@ at least 2x in races, 3x if possible. Suggested next step after A1, cheapest fir
 for arm64 Android and measure the no-interlock path on the S23 (owner: later, not now). Also on 2026-11-04: an Avell comparison of GSdx and CoreGS 2.0
 (normal and Performance) at 6x on Motegi Road Course and Hong Kong (owner).
 
+### TASK-180 — Android: the game boots in the Android Studio emulator (owner, 2026-11-04; Phase 4 started)
+
+Owner, 2026-11-04: focus first on opening and running the game in the PC's Android emulator; when there is an APK, upload
+it to GitHub as a private draft for him to test. Steps:
+1. The platform seam of the Linux plan (L0), Windows unchanged and identical.
+2. An NDK build of `libgt4.so` for x86_64 (the emulator) and arm64-v8a (phones, 16 KB pages) with `-ffp-contract=off`.
+3. A minimal Gradle app with an SDLActivity game Activity in its own process; for the first runs the disc and card come in by
+   `adb push`.
+4. Boot to the title screen at 1x with CoreGS 2.0, v2.00 first.
+Downloads approved by the owner: the emulator system image (Google, sdkmanager), SDL3 3.4.18 for Android (libsdl-org) and
+Gradle. Installed: SDK platforms 34/36/36.1, NDK 26.1, build-tools, emulator (no image or AVD before this). Branch
+`task/180-android-emulator`. State: in progress.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
