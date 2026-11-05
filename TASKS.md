@@ -3412,6 +3412,20 @@ The owner also asked for:
 **Test3 (on the device over USB):** pre-rotation, ADPF hints and big-core placement, FXAA at internal resolution, a
 1080p-output option, and Snapdragon GSR.
 
+**Owner's later logs (normal mode, 2x):**
+- The title screen runs at 29 fps.
+- In 480i menus, gpu_busy is 13.7-16.8 ms/VBlank with draw passes at 1-2 ms. This non-draw GPU time is target #1, split
+  under TASK-182.
+- In the normal race about half the frames are skipped: the per-frame readback serialises CPU and GPU.
+
+**Unified memory (owner idea, 2026-11-05).** On the S23 every memory type is device-local and host-visible (types 3-6:
+LVH/LVC/LVCH). So the Android path can drop the PC-style copies:
+- uploads written straight where the GPU reads (no staging copy);
+- readback results written by the GPU where the CPU reads them;
+- the GS-memory mirror shared between CPU and GPU.
+
+This saves CPU time and, on a SoC, memory bandwidth and heat. Measure each change against the copy path, behind a switch.
+
 ### TASK-181 — Launcher Wheel page for the native DFP wheel (owner, 2026-11-05; with PR #205)
 
 PR #205 (WaimateWihongi, TASK-018) makes GT4 see a virtual Driving Force Pro on its USB port (option A of
