@@ -3493,7 +3493,30 @@ describes it:
    - then on the S23 over USB.
 
 Clean room: implementation agents never open PCSX2 sources. Branch `task/182-barrier-scope` from `release/1.3.0-rc15`, in the
-`gt4-wt-178-download-wait` worktree. State: step 1 in progress.
+`gt4-wt-178-download-wait` worktree.
+
+**Step 1 result (2026-11-05, 6f0e4f10, diagnostics only; flare hashes unchanged).** Counts per VBlank, identical at 2x, 10x and
+12x:
+- **Full barriers:** Hong Kong 566, Motegi 240.
+  - Target-image read-after-write: 40% / 51%.
+  - GPU CLUT buffer: 31% / 14%.
+  - GLM pages: 18% / 13%.
+- **Render passes:** 52 / 47; 65% end only for a `self copy`.
+- **Fragment barriers:** 33 / 28 with interlock; without it (the phone's path), 1,103 / 593, 95% of them "primitive may share
+  a pixel".
+- **Descriptor updates:** 800 / 337.
+- **480i menus:** 85-90% of `gpu_busy` is compose/deinterlace/present, not drawing.
+
+New switches:
+- `GT4_CORE2_BARRIER_TRACE=1`;
+- `GT4_CORE2_GPU_CATEGORIES=1`;
+- the CTest `hw_core2_sync_trace`.
+
+Ranked exact changes, R1 to R10, are in the study. The cheapest and biggest first is R1: draw the self copy inside the open
+pass.
+
+**State:** step 2a (R1, `GT4_CORE2_SELF_COPY_DRAW`, default off) is in progress. It is the first task run on OpenCode with
+DeepSeek V4.1 Flash, at effort max. The Android test2 merges the step 1 diagnostics, to trace on the S23.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
