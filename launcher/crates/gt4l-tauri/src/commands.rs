@@ -17,7 +17,7 @@ use gt4l_core::gs_release;
 use gt4l_core::launch;
 use gt4l_core::paths::{self, DataDirs};
 use gt4l_core::settings;
-use gt4l_core::{Settings, LAUNCHER_VERSION};
+use gt4l_core::{Platform, Settings, LAUNCHER_VERSION};
 use gt4l_disc::setup::{self as disc_setup, Installed};
 use gt4l_platform::game;
 use serde::Serialize;
@@ -142,11 +142,8 @@ pub fn app_state_of(state: &AppState) -> Value {
     let language = state::language_of(state);
     let subject = setup_subject(state);
     let installed = state.installed_of(subject);
-    let chosen_name = state
-        .disc_path()
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // TASK-180: an Android document shows its file name, not its URI.
+    let chosen_name = state.disc_path().map(gt4l_disc::source::display_name).unwrap_or_default();
     let run = &state.setup_run;
     let (screen, problem, disc_name) = if visual_ready() {
         ("done", String::new(), setup::game_disc_name(&GT4, "2.00", ""))
@@ -205,6 +202,8 @@ pub fn app_state_of(state: &AppState) -> Value {
         "selected_game": state.selected.id,
         "any_installed": !installed_games.is_empty(),
         "language": state.config.settings.get("language"),
+        // TASK-180: the page's platform rules (the update dialog downloads in the browser on Android).
+        "platform": Platform::current().name(),
         "games": games::GAMES.iter().map(|game| game_row(state, game)).collect::<Vec<_>>(),
         "migration": {
             "running": state.migration.running,
@@ -256,11 +255,12 @@ pub fn get_settings_table_with_monitors(shared: &Shared, monitors: &[display_rul
     let state = lock(shared);
     // TASK-114 rc5: one card list, read from the cache (no probe here), serves both the rows and the integrated check.
     let cards = gt4l_platform::gpu::cached_gpus();
-    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
+    let integrated_gpu = Platform::current().integrated_gpu_only()
+        || gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
     let mut table = model::settings_table_with_monitors(&state.config.settings, &state.controls, monitors, &cards, integrated_gpu);
     // TASK-091: the launcher's own row (Graphics > Advanced), not a game setting.
     let safe_mode = webview_guard::safe_mode_on(state.user_dirs.root());
-    if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut) {
+    if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut).filter(|_| Platform::current().offers(webview_guard::GPU_ROW_ID)) {
         rows.push(webview_guard::gpu_row(safe_mode));
     }
     Ok(table)
@@ -280,6 +280,10 @@ pub fn set_setting(app: AppHandle, id: String, value: Value, shared: State<'_, S
 }
 
 pub fn set_setting_of(id: String, value: Value, shared: &Shared) -> Result<(), String> {
+    // TASK-180: a row the platform does not offer (the renderer on Android, ...) is never stored (gt4l_core::platform).
+    if !model::platform_accepts(Platform::current(), &id) {
+        return Err(format!("'{id}' is not a setting on this platform"));
+    }
     let mut state = lock(shared);
     if id == webview_guard::GPU_ROW_ID {
         // TASK-091: the launcher's own toggle; takes effect at the next start.
@@ -524,6 +528,12 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
 #[tauri::command]
 pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     let shared: Shared = shared.inner().clone();
+    // TASK-180: Android starts the game activity (android.rs); everything below is the Windows process start.
+    #[cfg(target_os = "android")]
+    {
+        let _ = &app;
+        return crate::android::play(&shared).inspect_err(|message| lock(&shared).home_message = message.clone());
+    }
     // TASK-081: the processor check before the game starts (`gt4l_core::system_check`). Vulkan is checked per run in
     // `prepare_play`, and only when Vulkan is the chosen Graphics API (TASK-108).
     let language = state::language_of(&lock(&shared));
@@ -585,6 +595,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         "game-state",
         json!({ "running": true, "message": graphics_notice.clone().unwrap_or_default(), "notice": graphics_notice.is_some() }),
     );
+    #[cfg(desktop)]
     crate::tray::handle(&app, crate::tray::Event::GameStarted);
 
     std::thread::spawn(move || {
@@ -658,6 +669,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         if offer_logs {
             let _ = app.emit("logs-offer", json!({ "reason": message.clone() }));
         }
+        #[cfg(desktop)]
         crate::tray::handle(&app, crate::tray::Event::GameEnded { message });
     });
     Ok(())
@@ -1057,16 +1069,31 @@ pub enum Kind {
 async fn import_with_picker(app: AppHandle, shared: Shared, kind: Kind, game: Option<String>) -> Result<Option<LibraryView>, String> {
     let language = state::language_of(&lock(&shared));
     tauri::async_runtime::spawn_blocking(move || {
-        let picked = app
-            .dialog()
-            .file()
-            .set_title(messages::text("saves.import_title", language))
-            .add_filter(messages::text("saves.import_filter", language), &["psu", "ps2", "mcd", "bin", "card"])
-            .blocking_pick_file();
-        let Some(picked) = picked else {
-            return Ok(None);
+        // TASK-180: on Android the picked document is copied into the app's cache first; the import reads that file.
+        #[cfg(target_os = "android")]
+        let path = {
+            let _ = language;
+            let staging = crate::android::cache_file(&app, "import")?;
+            let Some(picked) = crate::android::pick_document(&["*/*"], false, Some(&staging))? else {
+                return Ok(None);
+            };
+            let named = crate::android::cache_file(&app, picked.name.as_deref().unwrap_or("import.psu"))?;
+            fs::rename(&staging, &named).map_err(|error| format!("{}: {error}", named.display()))?;
+            named
         };
-        let path = picked.into_path().map_err(|error| error.to_string())?;
+        #[cfg(not(target_os = "android"))]
+        let path = {
+            let picked = app
+                .dialog()
+                .file()
+                .set_title(messages::text("saves.import_title", language))
+                .add_filter(messages::text("saves.import_filter", language), &["psu", "ps2", "mcd", "bin", "card"])
+                .blocking_pick_file();
+            let Some(picked) = picked else {
+                return Ok(None);
+            };
+            picked.into_path().map_err(|error| error.to_string())?
+        };
         let page = page_game(game.as_deref(), lock(&shared).selected);
         import_into_game(&shared, &path, kind, page).map(Some)
     })
@@ -1180,18 +1207,32 @@ pub async fn saves_export(app: AppHandle, id: String, shared: State<'_, Shared>)
             let (bytes, suggested) = saves::export(state.library_of(game), &name)?;
             (bytes, suggested, language)
         };
-        let picked = app
-            .dialog()
-            .file()
-            .set_title(messages::text("saves.export_title", language))
-            .set_file_name(&suggested)
-            .add_filter(messages::text("saves.export_filter", language), &["psu"])
-            .blocking_save_file();
-        let Some(picked) = picked else {
-            return Ok(None);
+        // TASK-180: on Android the save is written to the app's cache, then the player picks where the copy goes.
+        #[cfg(target_os = "android")]
+        let path = {
+            let path = crate::android::cache_file(&app, &suggested)?;
+            fs::write(&path, &bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+            if !crate::android::save_document(&path, &suggested, "application/octet-stream")? {
+                return Ok(None);
+            }
+            PathBuf::from(&suggested)
         };
-        let path = picked.into_path().map_err(|error| error.to_string())?;
-        fs::write(&path, &bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+        #[cfg(not(target_os = "android"))]
+        let path = {
+            let picked = app
+                .dialog()
+                .file()
+                .set_title(messages::text("saves.export_title", language))
+                .set_file_name(&suggested)
+                .add_filter(messages::text("saves.export_filter", language), &["psu"])
+                .blocking_save_file();
+            let Some(picked) = picked else {
+                return Ok(None);
+            };
+            let path = picked.into_path().map_err(|error| error.to_string())?;
+            fs::write(&path, &bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+            path
+        };
         let mut state = lock(&shared);
         state.saves_status = messages::render("saves.exported", language, &[("path", &path.display().to_string())]);
         saves_view(&state).map(Some)
@@ -1478,6 +1519,8 @@ pub fn release_notes() -> ReleaseNotes {
 #[tauri::command]
 pub fn open_link(name: String) -> Result<(), String> {
     let url = project_link(&name).ok_or_else(|| format!("{name} is not a link of this launcher"))?;
+    #[cfg(target_os = "android")]
+    return crate::android::open_url(url);
     #[cfg(windows)]
     {
         std::process::Command::new("explorer.exe")
@@ -1486,7 +1529,7 @@ pub fn open_link(name: String) -> Result<(), String> {
             .map(|_| ())
             .map_err(|error| format!("could not open {url}: {error}"))
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "android")))]
     {
         Err(format!("open {url} in a browser"))
     }
@@ -1576,21 +1619,57 @@ pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Op
                 .unwrap_or_else(|| state.dirs.root().to_path_buf());
             (state::language_of(&state), start)
         };
-        let picked = app
-            .dialog()
-            .file()
-            .set_title(messages::text("logs.export_title", language))
-            .set_directory(&start)
-            .blocking_pick_folder();
-        let Some(picked) = picked else {
-            return Ok(None);
+        // TASK-180: Android has no folder picker for this; the bundle is written to the app's cache and the player then
+        // picks where the copy goes (below).
+        #[cfg(target_os = "android")]
+        let folder = {
+            let _ = &start;
+            crate::android::cache_file(&app, "logs")?.with_file_name("")
         };
-        let folder = picked.into_path().map_err(|error| error.to_string())?;
+        #[cfg(not(target_os = "android"))]
+        let folder = {
+            let picked = app
+                .dialog()
+                .file()
+                .set_title(messages::text("logs.export_title", language))
+                .set_directory(&start)
+                .blocking_pick_folder();
+            let Some(picked) = picked else {
+                return Ok(None);
+            };
+            picked.into_path().map_err(|error| error.to_string())?
+        };
         let user = std::env::var("USERNAME").unwrap_or_default();
+        // TASK-180: the game's last ends (Android's records, a crash's tombstone) go into the bundle too.
+        #[cfg(target_os = "android")]
+        {
+            let dirs = lock(&shared).dirs.clone();
+            crate::android::record_game_exits(&dirs);
+        }
         let state = lock(&shared);
         match crate::log_bundle::export(&state, &folder, &user) {
             Ok(path) => {
                 state::log(&state.dirs, &format!("logs exported to {}", path.display()));
+                // TASK-180: the player picks where the bundle goes (Storage Access Framework); the launcher state is not
+                // held while the picker is open.
+                #[cfg(target_os = "android")]
+                {
+                    let dirs = state.dirs.clone();
+                    drop(state);
+                    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "logs.zip".into());
+                    let saved = crate::android::save_document(&path, &name, "application/zip");
+                    let _ = fs::remove_file(&path);
+                    match &saved {
+                        Ok(true) => state::log(&dirs, &format!("log bundle {name} saved by the player")),
+                        Ok(false) => state::log(&dirs, "log bundle not saved (cancelled)"),
+                        Err(message) => state::log_error(&dirs, &format!("log bundle not saved: {message}")),
+                    }
+                    if !saved? {
+                        return Ok(None);
+                    }
+                    Ok(Some(name))
+                }
+                #[cfg(not(target_os = "android"))]
                 Ok(Some(path.display().to_string()))
             }
             Err(error) => {
@@ -1713,16 +1792,25 @@ pub async fn choose_textures_folder(app: AppHandle, shared: State<'_, Shared>) -
                 .unwrap_or_else(|| state.dirs.root().to_path_buf());
             (state::language_of(&state), start)
         };
-        let picked = app
-            .dialog()
-            .file()
-            .set_title(messages::text("textures.pick_title", language))
-            .set_directory(&start)
-            .blocking_pick_folder();
-        let Some(picked) = picked else {
-            return Ok(None);
+        // TASK-180: a texture folder outside the app is not available on Android yet (a document tree would be needed).
+        #[cfg(target_os = "android")]
+        let folder: PathBuf = {
+            let _ = (&app, &start);
+            return Err("Choosing a texture folder is not available on Android yet.".to_string());
         };
-        let folder = picked.into_path().map_err(|error| error.to_string())?;
+        #[cfg(not(target_os = "android"))]
+        let folder = {
+            let picked = app
+                .dialog()
+                .file()
+                .set_title(messages::text("textures.pick_title", language))
+                .set_directory(&start)
+                .blocking_pick_folder();
+            let Some(picked) = picked else {
+                return Ok(None);
+            };
+            picked.into_path().map_err(|error| error.to_string())?
+        };
         let mut state = lock(&shared);
         let checked = gt4l_core::textures::check_textures_path(&folder, state.dirs.root())
             .map_err(|error| messages::text(error.message_id(), language).to_string())?;

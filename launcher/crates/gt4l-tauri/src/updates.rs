@@ -21,7 +21,7 @@ use gt4l_core::releases::{self, GithubSource, ReleaseSource, Stream};
 use gt4l_core::update::{self, Offer, UpdateChannel};
 use gt4l_core::version_list;
 use gt4l_core::versions::{self, VersionFile};
-use gt4l_core::{ReleaseVersion, Version, LAUNCHER_VERSION};
+use gt4l_core::{Platform, ReleaseVersion, Version, LAUNCHER_VERSION};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -73,7 +73,10 @@ impl OfferView {
             installed: offer.installed.map(|version| version.text()),
             latest: offer.latest.text(),
             notes: offer.notes.clone(),
-            package: offer.stream.package_name_for(offer.latest, gt4l_core::build_kind::BUILD.is_portable()),
+            package: match offer.stream {
+                Stream::Launcher => Platform::current().launcher_package_name(offer.latest, gt4l_core::build_kind::BUILD.is_portable()),
+                Stream::Renderer => offer.stream.package_name_for(offer.latest, gt4l_core::build_kind::BUILD.is_portable()),
+            },
             update: offer.is_update(),
         }
     }
@@ -90,7 +93,12 @@ pub struct Check {
 
 fn fetch(stream: Stream) -> Result<Vec<releases::Release>, String> {
     let source = GithubSource::for_stream(stream);
-    releases::parse_releases(&source.releases_json()?, stream)
+    let mut list = releases::parse_releases(&source.releases_json()?, stream)?;
+    // TASK-180: Android sees only the launcher releases that ship its APK (Windows: every release, as before).
+    if stream == Stream::Launcher {
+        list.retain(|release| Platform::current().takes_release(release));
+    }
+    Ok(list)
 }
 
 /// An explicit update check includes both streams. GSdx is the only renderer (TASK-096), so every check covers it.
@@ -101,7 +109,7 @@ pub fn check(
     skipped_launcher: Option<ReleaseVersion>,
     skipped_renderer: Option<Version>,
 ) -> Check {
-    check_with(dirs, channel, skipped_launcher, skipped_renderer, true, fetch)
+    check_with(dirs, channel, skipped_launcher, skipped_renderer, Platform::current().has_gsdx(), fetch)
 }
 
 /// The injected fetcher lets tests verify which network requests an automatic check actually makes.
@@ -259,7 +267,7 @@ pub fn check_on_launch(app: AppHandle, shared: Shared) {
         }
     }
     let channel = UpdateChannel::of(&config.settings);
-    let result = check_with(&dirs, channel, config.skipped_launcher, config.skipped_renderer, true, fetch);
+    let result = check_with(&dirs, channel, config.skipped_launcher, config.skipped_renderer, Platform::current().has_gsdx(), fetch);
     let offers: Vec<OfferView> = result.offers.iter().filter(|offer| offer.is_update()).map(OfferView::of).collect();
     if !offers.is_empty() {
         let _ = app.emit("update-available", json!({ "offers": offers }));
@@ -389,7 +397,12 @@ pub fn pick_release<'a>(
 }
 
 /// The installer or portable path for the target. Updating ends the launcher.
+/// TASK-180: Android has no installer here; the browser downloads the release's APK and the player installs it.
 fn run_launcher_update(app: &AppHandle, dirs: &DataDirs, target: &Target) -> Result<String, String> {
+    if !Platform::current().installs_updates() {
+        let _ = app;
+        return open_launcher_download(dirs, target);
+    }
     if gt4l_core::build_kind::BUILD.is_portable() {
         start_portable_update(app, dirs, target)
     } else {
@@ -543,6 +556,22 @@ pub fn portable_start_cleanup(dirs: &DataDirs, exe_dir: &Path) {
             }
         });
     }
+}
+
+/// Android (TASK-180, owner 2026-11-05): no update is installed by the app. The chosen release (the same pick as the
+/// installer path) has its APK opened in the browser, which downloads it; the player then opens it to install.
+fn open_launcher_download(dirs: &DataDirs, target: &Target) -> Result<String, String> {
+    let list = fetch(Stream::Launcher)?;
+    let (release, version) = pick_release(&list, target, gt4l_core::launcher_release_version())?;
+    let url = Platform::current()
+        .launcher_download_url(release)
+        .ok_or_else(|| format!("release {} has no Android download", release.tag))?;
+    state::log(dirs, &format!("update: opening the download of {} in the browser", version.text()));
+    #[cfg(target_os = "android")]
+    crate::android::open_url(&url)?;
+    #[cfg(not(target_os = "android"))]
+    let _ = url;
+    Ok(messages::render("update.download_opened", state::current_language(), &[("version", &version.text())]))
 }
 
 /// Downloads the GT4Recomp setup program of the chosen release (see [`Target`]), checks it, starts it, and ends the launcher.

@@ -159,6 +159,9 @@ pub struct SystemFacts {
     pub selected_game: String,
     /// Settings that decide the graphics (name, value).
     pub graphics: Vec<(String, String)>,
+    /// TASK-180: the facts of a phone (model, Android version, SoC, memory, display, Vulkan features), one per line. When
+    /// present they replace the Windows, processor and monitor lines.
+    pub device: Vec<String>,
 }
 
 /// The vendor's name for a PCI vendor id.
@@ -178,8 +181,12 @@ pub fn system_text(facts: &SystemFacts) -> String {
     let mut lines = Vec::new();
     lines.push(format!("launcher: GT4Recomp {}", facts.launcher_version));
     lines.push(format!("install: {}", facts.install));
-    lines.push(format!("windows: {}", or_unknown(&facts.windows)));
-    lines.push(format!("cpu: {}", or_unknown(&facts.cpu)));
+    if facts.device.is_empty() {
+        lines.push(format!("windows: {}", or_unknown(&facts.windows)));
+        lines.push(format!("cpu: {}", or_unknown(&facts.cpu)));
+    } else {
+        lines.extend(facts.device.iter().cloned());
+    }
     if facts.gpus.is_empty() {
         lines.push("graphics cards: none found".to_string());
     }
@@ -195,7 +202,7 @@ pub fn system_text(facts: &SystemFacts) -> String {
     }
     let (card, api) = &facts.chosen;
     lines.push(format!("chosen card: {} (API {})", or_unknown(card), or_unknown(api)));
-    if facts.displays.is_empty() {
+    if facts.displays.is_empty() && facts.device.is_empty() {
         lines.push("displays: none found".to_string());
     }
     for (name, width, height, primary) in &facts.displays {
@@ -334,6 +341,27 @@ mod tests {
     }
 
     #[test]
+    fn a_phone_report_has_its_device_lines_instead_of_windows_and_monitors() {
+        let facts = SystemFacts {
+            windows: String::new(),
+            cpu: String::new(),
+            gpus: vec![GpuFact { name: "Adreno (TM) 740".into(), vendor_id: 0x5143, driver_version: 0x8020_0000, video_memory: 0 }],
+            chosen: ("Adreno (TM) 740".into(), "vulkan".into()),
+            displays: Vec::new(),
+            launcher_version: "1.3.0-rc15".into(),
+            install: "Android app".into(),
+            games: Vec::new(),
+            selected_game: "Gran Turismo 4".into(),
+            graphics: Vec::new(),
+            device: vec!["device: samsung SM-S918B".into(), "display: 3088x1440 at 120.00 Hz".into()],
+        };
+        let text = system_text(&facts);
+        assert!(text.contains("device: samsung SM-S918B\ndisplay: 3088x1440 at 120.00 Hz"));
+        assert!(text.contains("graphics card 1: Adreno (TM) 740"));
+        assert!(!text.contains("windows:") && !text.contains("cpu:") && !text.contains("displays: none found"));
+    }
+
+    #[test]
     fn the_system_report_names_every_fact_and_no_user_path() {
         let facts = SystemFacts {
             windows: "Windows 11 (build 26100)".into(),
@@ -349,6 +377,7 @@ mod tests {
             games: vec![("Gran Turismo 4".into(), "SCUS-97328".into(), true), ("Gran Turismo 4 Spec II".into(), "SCUS-97436".into(), false)],
             selected_game: "Gran Turismo 4".into(),
             graphics: vec![("graphics_api".into(), "auto".into())],
+            device: Vec::new(),
         };
         let text = system_text(&facts);
         for expected in [

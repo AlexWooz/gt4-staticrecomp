@@ -61,6 +61,9 @@ set(PORT "${GT4_PORT_DIR}")
 #   translated code and the donor runtime are only qualified under that rule.
 # -fsigned-char: char is signed on Windows and x86-64; arm64 Android makes it unsigned by default.
 add_compile_options(-ffp-contract=off -fno-strict-aliasing -fsigned-char)
+# Line tables only, as the Windows build (/Z7 -gline-tables-only): stack traces keep file and line, and the build folders
+# stay about a third of the size with the NDK's default full -g (which the toolchain file adds before these options).
+add_compile_options(-gline-tables-only)
 add_compile_definitions(GT4_MTVU_RUNTIME _CRT_SECURE_NO_WARNINGS)
 if(ANDROID_ABI STREQUAL "x86_64")
     add_compile_options(-msse4.1)  # the Windows floor (SSE4.1); the x86-64 Android ABI guarantees SSE4.2

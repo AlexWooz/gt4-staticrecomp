@@ -8,6 +8,7 @@ pub mod identify;
 pub mod iso;
 pub mod pins;
 pub mod setup;
+pub mod source;
 pub mod spec2;
 pub mod spec2_elf;
 pub mod spec2_pins;

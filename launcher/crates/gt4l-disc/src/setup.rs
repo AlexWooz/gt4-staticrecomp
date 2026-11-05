@@ -265,12 +265,19 @@ pub struct SetupRequest<'a> {
 
 /// The path a receipt records for the image (see [`ImageReceipt::linked_path`]).
 pub(crate) fn linked_path(disc: &Path, install_dir: &Path) -> Result<String, SetupError> {
+    // TASK-180: an Android document (content URI) is recorded as it is; it is not a path under any folder.
+    if crate::source::is_document(disc) {
+        return Ok(disc.display().to_string());
+    }
     Ok(paths::portable_path(&std::path::absolute(disc)?, install_dir).display().to_string())
 }
 
 /// The image a receipt links to, when it links to one.
 pub fn linked_image(image: &ImageReceipt, install_dir: &Path) -> Option<PathBuf> {
-    image.linked_path.as_ref().map(|stored| paths::resolve_portable(Path::new(stored), install_dir))
+    image.linked_path.as_ref().map(|stored| {
+        let stored = Path::new(stored);
+        if crate::source::is_document(stored) { stored.to_path_buf() } else { paths::resolve_portable(stored, install_dir) }
+    })
 }
 
 /// The file name a receipt records for the image.
@@ -280,12 +287,14 @@ pub(crate) fn image_file_name(disc: &Path) -> String {
 
 /// Fast identity checks (no full hash): extension, ISO structure, `SYSTEM.CNF`, `CORE.GT4`, size.
 pub fn precheck(disc: &Path, pins: &Pins) -> Result<DiscSummary, SetupError> {
+    // TASK-180: an Android document has no file name in its URI; its content is checked below like any image.
     let extension = disc.extension().and_then(|value| value.to_str()).map(str::to_string);
     match extension.as_deref() {
+        _ if crate::source::is_document(disc) => {}
         Some(value) if value.eq_ignore_ascii_case("iso") => {}
         other => return Err(SetupError::NotPlainIso { extension: other.map(str::to_string) }),
     }
-    if !disc.is_file() || File::open(disc).is_err() {
+    if !crate::source::is_readable_file(disc) {
         return Err(SetupError::NotFound);
     }
     let mut iso = Iso::open(disc).map_err(|error| match error {
@@ -360,7 +369,7 @@ pub(crate) fn hash_image_as(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Stage, f32),
 ) -> Result<Identity, SetupError> {
-    let mut file = File::open(path)?;
+    let mut file = crate::source::open(path)?;
     let total = file.metadata()?.len().max(1);
     let mut digest = Sha256::new();
     let mut buffer = vec![0u8; HASH_CHUNK_BYTES];
@@ -417,7 +426,7 @@ fn finish(
     progress(Stage::Preparing, 0.5);
     write_staging(request, &core_bytes, &elf_bytes)?;
 
-    let metadata = fs::metadata(request.disc)?;
+    let metadata = crate::source::metadata(request.disc)?;
     let receipt = Receipt {
         schema_version: RECEIPT_SCHEMA,
         launcher_version: request.launcher_version.to_string(),
@@ -579,7 +588,7 @@ pub fn check_installed_with(prepared: &Path, disc_folder: &Path, install_dir: &P
         return Installed::Missing { reason };
     }
     if let Some(path) = linked_image(image, install_dir) {
-        return match fs::metadata(&path) {
+        return match crate::source::metadata(&path) {
             Ok(metadata) if metadata.len() == image.size_bytes && modified_nanos(&metadata).abs_diff(image.modified_unix_nanos) <= LINKED_TIME_TOLERANCE_NANOS => {
                 Installed::Ready { image: path, serial: receipt.disc.serial, version: receipt.disc.version }
             }

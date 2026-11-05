@@ -453,10 +453,10 @@ bool open_window(bool fullscreen) {
   const int height = output.known() ? static_cast<int>(output.height) : 540;
   SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #ifdef __ANDROID__
-  // Landscape only. SDLActivity sets the activity's orientation from this hint when the window is created; a resizable
-  // window without it gets "any orientation" (the manifest's sensorLandscape is then overridden and a phone held
-  // upright shows the game letterboxed in portrait).
-  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+  // Fixed landscape: never portrait, no auto-rotation (owner, 2026-11-05). SDLActivity sets the activity's orientation
+  // from this hint when the window is created ("LandscapeLeft" alone = SCREEN_ORIENTATION_LANDSCAPE); without it the
+  // manifest's orientation is overridden and a phone held upright showed the game letterboxed in portrait.
+  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft");
   flags |= SDL_WINDOW_FULLSCREEN;
   (void)fullscreen;
 #else

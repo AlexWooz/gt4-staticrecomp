@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGO = ROOT / "launcher" / "assets" / "brand" / "logo-gt4.png"
-RES = ROOT / "android" / "app" / "src" / "main" / "res"
+RES = ROOT / "launcher" / "crates" / "gt4l-tauri" / "gen" / "android" / "app" / "src" / "main" / "res"
 DENSITIES = {"mdpi": 1.0, "hdpi": 1.5, "xhdpi": 2.0, "xxhdpi": 3.0, "xxxhdpi": 4.0}
 LEGACY_DP = 48
 ADAPTIVE_DP = 108
@@ -93,7 +93,12 @@ def main() -> int:
         "</resources>\n",
         encoding="utf-8",
     )
-    print("Android icons written to", RES)
+    # The Tauri launcher (the Android app's main activity) needs the same art as a PNG for its context (bundle.icon in
+    # tauri.android.conf.json); 512 px, the size Tauri's icon tooling starts from.
+    tauri_icon = ROOT / "launcher" / "crates" / "gt4l-tauri" / "icons" / "icon.png"
+    tauri_icon.parent.mkdir(parents=True, exist_ok=True)
+    legacy_icon(emblem, 512).save(tauri_icon, optimize=True)
+    print("Android icons written to", RES, "and", tauri_icon)
     return 0
 
 

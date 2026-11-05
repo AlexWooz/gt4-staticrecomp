@@ -51,28 +51,39 @@ pub fn read_cpu_features() -> CpuFeatures {
 
 /// The processor check, which blocks setup and Play (TASK-108: setup needs no GPU, and the graphics card is chosen per
 /// run by `gpu::run_settings`).
+#[cfg(not(target_os = "android"))]
 pub fn processor_problem(language: gt4l_core::language::Language) -> Option<String> {
     gt4l_core::system_check::cpu_problem_in(&read_cpu_features(), language)
 }
 
-#[cfg(windows)]
+/// TASK-180: on Android the game library is built for the device's own processor (arm64, or x86-64 with SSE4.1 for the
+/// emulator), so the x86 features of the Windows executable are not a requirement.
+#[cfg(target_os = "android")]
+pub fn processor_problem(_language: gt4l_core::language::Language) -> Option<String> {
+    None
+}
+
+#[cfg(any(windows, target_os = "android"))]
 pub fn probe_vulkan() -> VulkanProbe {
     vulkan_ffi::probe()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 pub fn probe_vulkan() -> VulkanProbe {
     VulkanProbe::LoaderMissing
 }
 
 /// The few Vulkan 1.0 entry points the probe uses, declared by hand (no Vulkan crate in the launcher).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "android"))]
 mod vulkan_ffi {
     use std::ffi::{c_char, c_void, CStr};
     use std::ptr;
 
+    #[cfg(windows)]
     use windows::core::{s, w};
+    #[cfg(windows)]
     use windows::Win32::Foundation::FreeLibrary;
+    #[cfg(windows)]
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
 
     use super::{VulkanDevice, VulkanProbe};
@@ -185,6 +196,7 @@ mod vulkan_ffi {
         }
     }
 
+    #[cfg(windows)]
     pub fn probe() -> VulkanProbe {
         // SAFETY: the library is loaded from System32 only and freed at the end; every function pointer comes from the
         // loader's own vkGetInstanceProcAddr and is called with the Vulkan 1.0 signatures declared above.
@@ -200,6 +212,35 @@ mod vulkan_ffi {
                 None => VulkanProbe::LoaderMissing,
             };
             let _ = FreeLibrary(library);
+            result
+        }
+    }
+
+    /// TASK-180: Android's system loader (`libvulkan.so`), the one the game uses: the log bundle reports the phone's GPU
+    /// and driver from it.
+    #[cfg(target_os = "android")]
+    pub fn probe() -> VulkanProbe {
+        extern "C" {
+            fn dlopen(name: *const c_char, flags: i32) -> *mut c_void;
+            fn dlsym(library: *mut c_void, name: *const c_char) -> *mut c_void;
+            fn dlclose(library: *mut c_void) -> i32;
+        }
+        const RTLD_NOW: i32 = 2;
+        // SAFETY: the system library is opened and closed here; every function pointer comes from its own
+        // vkGetInstanceProcAddr and is called with the Vulkan 1.0 signatures declared above.
+        unsafe {
+            let library = dlopen(c"libvulkan.so".as_ptr(), RTLD_NOW);
+            if library.is_null() {
+                return VulkanProbe::LoaderMissing;
+            }
+            let address = dlsym(library, c"vkGetInstanceProcAddr".as_ptr());
+            let result = if address.is_null() {
+                VulkanProbe::LoaderMissing
+            } else {
+                let get: GetInstanceProcAddr = std::mem::transmute(address);
+                probe_with(get)
+            };
+            dlclose(library);
             result
         }
     }
@@ -261,8 +302,13 @@ mod vulkan_ffi {
         let properties_of = load::<GetPhysicalDeviceProperties>(get, instance, c"vkGetPhysicalDeviceProperties");
         // The LUID comes from vkGetPhysicalDeviceProperties2 (core in Vulkan 1.1; the KHR name is tried too). Without it
         // the devices are still listed, with no LUID.
+        #[cfg(windows)]
         let properties2_of = load::<GetPhysicalDeviceProperties2>(get, instance, c"vkGetPhysicalDeviceProperties2")
             .or_else(|| load::<GetPhysicalDeviceProperties2>(get, instance, c"vkGetPhysicalDeviceProperties2KHR"));
+        // TASK-180: a LUID matches DXGI adapters, which Android has not; and the instance here is Vulkan 1.0, where the
+        // 1.1 call is not valid (the emulator's arm64 translation crashed in it).
+        #[cfg(not(windows))]
+        let properties2_of: Option<GetPhysicalDeviceProperties2> = None;
         if let (Some(enumerate_devices), Some(properties_of)) = (enumerate_devices, properties_of) {
             let mut count = 0u32;
             if enumerate_devices(instance, &mut count, ptr::null_mut()) == VK_SUCCESS && count > 0 {

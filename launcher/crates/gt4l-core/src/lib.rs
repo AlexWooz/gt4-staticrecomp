@@ -21,6 +21,7 @@ pub mod logs;
 pub mod messages;
 pub mod migrate;
 pub mod paths;
+pub mod platform;
 pub mod portable_update;
 pub mod releases;
 pub mod relocate;
@@ -29,12 +30,14 @@ pub mod secret;
 pub mod settings;
 pub mod system_check;
 pub mod textures;
+pub mod tombstone;
 pub mod update;
 pub mod version;
 pub mod version_list;
 pub mod versions;
 
 pub use config::ConfigFile;
+pub use platform::Platform;
 pub use settings::{SettingDef, Settings, SETTINGS};
 pub use version::{ReleaseVersion, Version};
 

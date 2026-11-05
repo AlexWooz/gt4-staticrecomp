@@ -59,7 +59,7 @@ pub struct Iso {
 
 impl Iso {
     pub fn open(path: &Path) -> Result<Iso, IsoError> {
-        let mut file = File::open(path)?;
+        let mut file = crate::source::open(path)?;
         let length_bytes = file.metadata()?.len();
         let descriptor = read_at(&mut file, PRIMARY_DESCRIPTOR_SECTOR * SECTOR_BYTES, SECTOR_BYTES as usize)
             .map_err(|_| IsoError::Truncated("no primary volume descriptor".into()))?;

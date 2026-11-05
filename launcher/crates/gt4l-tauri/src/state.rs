@@ -294,6 +294,21 @@ impl AppState {
                 log(&state.dirs, "final build: the release-candidate settings went back to their factory values");
             }
         }
+        // TASK-180: a value the platform fixes (CoreGS 2.0 on Android) replaces whatever is stored, and is saved.
+        let platform = gt4l_core::Platform::current();
+        let mut forced = false;
+        for definition in gt4l_core::SETTINGS {
+            if let Some(value) = platform.forced_value(definition.id) {
+                if state.config.settings.get(definition.id) != value {
+                    let _ = state.config.settings.set(definition.id, value);
+                    forced = true;
+                }
+            }
+        }
+        if forced {
+            state.save_config();
+            log(&state.dirs, &format!("{}: the settings this platform fixes were set", platform.name()));
+        }
         let installed = state.installed_games();
         state.selected = games::initial_selection(state.config.selected_game.as_deref(), &installed);
         Ok(state)

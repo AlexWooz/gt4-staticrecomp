@@ -5,6 +5,7 @@ use gt4controls::{Controls, Curve, Stick, TriggerTuning, BUTTON_INPUTS};
 use gt4l_core::display::{self, Monitor};
 use gt4l_core::gs_table;
 use gt4l_core::language::Language;
+use gt4l_core::platform::Platform;
 use gt4l_core::settings::{Kind, Page, SettingDef, Settings, SETTINGS};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -150,6 +151,32 @@ pub fn settings_table_with_monitors(
     cards: &[gt4l_core::gpu::GpuDevice],
     integrated_gpu: bool,
 ) -> Value {
+    settings_table_for(Platform::current(), settings, controls, monitors, cards, integrated_gpu)
+}
+
+/// Whether `set_setting` accepts a row on a platform (TASK-180): a launcher row the platform offers, or a PCSX2 GS table
+/// row that exists there (on Android only the rows CoreGS 2.0 honours). Other ids (triggers, sticks) are not platform rows.
+pub fn platform_accepts(platform: Platform, id: &str) -> bool {
+    if !platform.offers(id) {
+        return false;
+    }
+    if pcsx2_table_rows().iter().any(|row| row.id == id) {
+        return platform.has_gsdx() || CORE_GS_20_TABLE_ROWS.contains(&id);
+    }
+    true
+}
+
+/// The settings table of a platform (TASK-180, owner 2026-11-05): the rows a platform does not offer are left out here,
+/// in one place (`Platform`). On Android CoreGS 2.0 is the only renderer: no Renderer row, no GSdx-only row, and the
+/// rows that follow the renderer are always shown. The payload says the platform (`platform`).
+pub fn settings_table_for(
+    platform: Platform,
+    settings: &Settings,
+    controls: &Controls,
+    monitors: &[Monitor],
+    cards: &[gt4l_core::gpu::GpuDevice],
+    integrated_gpu: bool,
+) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     // TASK-118: the release performance report and the VU code check are release-candidate settings; final builds do
     // not ship them, so their rows do not exist there either.
@@ -166,6 +193,7 @@ pub fn settings_table_with_monitors(
             || definition.id == "coregs_sharpening"
             || definition.id == "frame_rate"
             || definition.id == "controller"
+            || !platform.offers(definition.id)
         {
             continue;
         }
@@ -190,6 +218,11 @@ pub fn settings_table_with_monitors(
         rows.push(row);
     }
     for row in pcsx2_table_rows() {
+        let gsdx_only = !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str());
+        // The rows after CAS and the Graphics API are not GSdx's; they stay on a platform without GSdx (below).
+        if gsdx_only && !platform.has_gsdx() && row.id != "cas_sharpness" && row.id != "graphics_api" {
+            continue;
+        }
         let mut out = gs_row(row, settings);
         if !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str()) {
             out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::PCSX2_GS });
@@ -208,7 +241,9 @@ pub fn settings_table_with_monitors(
             continue;
         }
         if row.id == "cas_sharpness" {
-            rows.push(out);
+            if platform.has_gsdx() {
+                rows.push(out);
+            }
             if let Some(definition) = gt4l_core::settings::definition("coregs_sharpening") {
                 let mut sharpening = launcher_row(definition, settings);
                 sharpening["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
@@ -217,8 +252,13 @@ pub fn settings_table_with_monitors(
             continue;
         }
         if row.id == "graphics_api" {
-            fill_api_row(&mut out, settings, cards);
-            rows.push(out);
+            if platform.has_gsdx() {
+                fill_api_row(&mut out, settings, cards);
+                rows.push(out);
+            }
+            if !platform.offers("graphics_card") {
+                continue;
+            }
             if let Some(definition) = gt4l_core::settings::definition("graphics_card") {
                 let mut card = launcher_row(definition, settings);
                 fill_card_row(&mut card, settings, cards);
@@ -235,7 +275,17 @@ pub fn settings_table_with_monitors(
     for stick in [Stick::Left, Stick::Right] {
         rows.push(stick_row(stick, controls));
     }
-    json!({ "max_upscale": MAX_UPSCALE_DEFAULT, "rows": rows })
+    // Without a renderer choice the renderer is fixed: a rule on the absent Renderer row would hide its rows.
+    if !platform.offers("renderer") {
+        for row in &mut rows {
+            if row["visible_when"]["id"] == "renderer" {
+                if let Some(object) = row.as_object_mut() {
+                    object.remove("visible_when");
+                }
+            }
+        }
+    }
+    json!({ "max_upscale": MAX_UPSCALE_DEFAULT, "platform": platform.name(), "rows": rows })
 }
 
 /// CoreGS 2.0 has no "Fast" vsync (owner, 2026-10-30). A value stored for GSdx stays stored and shows as On here, which is
@@ -829,6 +879,63 @@ mod tests {
 #[cfg(test)]
 mod table_tests {
     use super::*;
+
+    // TASK-180: the Android table (owner 2026-11-05): CoreGS 2.0 only, no GSdx row, no Renderer row.
+    #[test]
+    fn android_has_no_renderer_or_gsdx_rows() {
+        let mut settings = Settings::default();
+        settings.set("renderer", gt4l_core::settings::CORE_GS_20).unwrap();
+        let android = settings_table_for(Platform::Android, &settings, &Controls::default(), &[], &[], false);
+        assert_eq!(android["platform"], "android");
+        let listed = ids(&android);
+        for absent in [
+            "renderer",
+            "graphics_card",
+            "graphics_api",
+            "monitor",
+            "resolution",
+            "fullscreen",
+            "discord_rich_presence",
+            "performance_hud",
+            "cas_sharpness",
+        ] {
+            assert!(!listed.iter().any(|id| id == absent), "{absent} is not an Android row");
+        }
+        for table_row in pcsx2_table_rows() {
+            let kept = listed.iter().any(|id| *id == table_row.id);
+            assert_eq!(kept, CORE_GS_20_TABLE_ROWS.contains(&table_row.id.as_str()), "{}", table_row.id);
+        }
+        for present in ["language", "update_channel", "render_scale", "vsync", "frame_rate", "coregs_sharpening", "trigger_full_range"] {
+            assert!(listed.iter().any(|id| id == present), "{present} is an Android row");
+        }
+        for row in android["rows"].as_array().unwrap() {
+            assert_ne!(row["visible_when"]["id"], "renderer", "{} would hide without the Renderer row", row["id"]);
+        }
+    }
+
+    #[test]
+    fn windows_keeps_the_renderer_choice_and_gsdx_rows() {
+        let windows = settings_table_for(Platform::Windows, &Settings::default(), &Controls::default(), &[], &[], false);
+        assert_eq!(windows["platform"], "windows");
+        let listed = ids(&windows);
+        for present in ["renderer", "graphics_card", "graphics_api", "monitor", "resolution", "fullscreen", "cas_sharpness"] {
+            assert!(listed.iter().any(|id| id == present), "{present} is a Windows row");
+        }
+        if !cfg!(target_os = "android") {
+            assert_eq!(windows, settings_table(&Settings::default(), &Controls::default()));
+        }
+    }
+
+    #[test]
+    fn set_setting_refuses_rows_android_does_not_offer() {
+        for refused in ["renderer", "monitor", "resolution", "fullscreen", "graphics_card", "discord_rich_presence", "cas_sharpness", "launcher_gpu"] {
+            assert!(!platform_accepts(Platform::Android, refused), "{refused}");
+            assert!(platform_accepts(Platform::Windows, refused), "{refused}");
+        }
+        for accepted in ["language", "render_scale", "performance_mode", "fxaa", "texture_load", "l2_deadzone", "lstick_deadzone"] {
+            assert!(platform_accepts(Platform::Android, accepted), "{accepted}");
+        }
+    }
 
     fn ids(table: &Value) -> Vec<String> {
         table["rows"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap().to_string()).collect()

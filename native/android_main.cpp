@@ -1,45 +1,46 @@
 // SPDX-License-Identifier: MIT
-// TASK-180 (Android plan A2): the entry point of libgt4.so, called by SDL3's SDLActivity on its game thread (SDL_main).
-//
-// First-run layout (no Storage Access Framework yet, docs/ANDROID-EMULATOR.md): the player's files are pushed with adb
-// into the app-specific external folder, /sdcard/Android/data/<package>/files/:
-//   SCUS_973.28.elf   the reconstructed game ELF (the launcher's setup makes it on Windows)
-//   disc.iso          the player's own disc image (Gran Turismo 4 USA v2.00)
-//   card.ps2          the memory card (created by the game when missing)
-//   gt4.env           optional: NAME=VALUE lines set in the environment before the game starts (game.ini values as the
-//                     launcher passes them, for example GT4_HW_SCALE=1)
-//   args.txt          optional: extra command-line arguments, one per line (for example --frames 3000 for a bounded run)
-// The game writes game.log there (stderr, also copied to logcat under the tag GT4Recomp).
-// Defaults: CoreGS 2.0 (GT4_RENDERER=hw, GT4_HW_CORE=2), 1x, 16:9, the race display at 480p, paced frames; the same
-// defaults the launcher gives a CoreGS 2.0 start on Windows.
+// TASK-180 (docs/ANDROID-PORT-PLAN.md section 4): the entry point of libgt4.so, called by SDL3's SDLActivity on its game
+// thread (SDL_main). The game is started only by the launcher's Play (the app's GameActivity), with the launch contract
+// the Windows launcher gives gt4vulkan.exe:
+//   arguments    the command line of gt4l_core::launch (ELF, --ntsc, --disc, --memcard, --misses, ...). The disc image is a
+//                document the app holds a read permission to; GameActivity opens it and passes --disc fd:<descriptor>,
+//                and the game reads the image through that descriptor (never a copy).
+//   environment  the game.ini values (GT4_*), set by GameActivity before SDL_main, plus:
+//                GT4_ANDROID_LOG  the session's game.log (stdout and stderr go there and to logcat, tag GT4Recomp);
+//                GT4_ANDROID_CWD  the session folder, the working directory (the Windows launcher's working directory).
 #include "game_start.hpp"
 #include "platform/platform.hpp"
+
+#include "ps2/disc.hpp"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
 #include <android/log.h>
 #include <pthread.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace {
 
-constexpr const char *kLogTag = "GT4Recomp";
+// The game's lines in logcat (`adb logcat -s GT4Recomp-game GT4Recomp-launcher`); the launcher's own use
+// GT4Recomp-launcher.
+constexpr const char *kLogTag = "GT4Recomp-game";
 
-// stdout and stderr go to <files>/game.log and to logcat: a pipe read by a thread that writes both.
-void redirect_output(const std::filesystem::path &log_path) {
+// stdout and stderr go to the session's game.log (when the launcher names one) and to logcat: a pipe read by a thread
+// that writes both.
+void redirect_output(const char *log_path) {
   int pipe_ends[2];
   if (pipe(pipe_ends) != 0) return;
-  std::FILE *log = std::fopen(log_path.c_str(), "w");
+  std::FILE *log = log_path != nullptr ? std::fopen(log_path, "w") : nullptr;
   dup2(pipe_ends[1], STDOUT_FILENO);
   dup2(pipe_ends[1], STDERR_FILENO);
   close(pipe_ends[1]);
@@ -67,52 +68,52 @@ void redirect_output(const std::filesystem::path &log_path) {
   }).detach();
 }
 
-void set_default(const char *name, const char *value) {
-  if (std::getenv(name) == nullptr) gt4::platform::set_environment(name, value);
+constexpr const char *kDescriptorPrefix = "fd:";
+
+// The disc image through the descriptor GameActivity opened (pread: no shared file position, any thread).
+bool open_disc_descriptor(int descriptor) {
+  struct stat status {};
+  if (descriptor < 0 || fstat(descriptor, &status) != 0 || status.st_size <= 0) return false;
+  const std::string name = "disc image (descriptor " + std::to_string(descriptor) + ")";
+  return ps2::disc::open(name, static_cast<std::uint64_t>(status.st_size),
+                         [descriptor](std::uint64_t offset, void *out, std::size_t bytes) -> std::size_t {
+                           std::size_t done = 0;
+                           while (done < bytes) {
+                             const ssize_t got = pread(descriptor, static_cast<char *>(out) + done, bytes - done,
+                                                       static_cast<off_t>(offset + done));
+                             if (got <= 0) break;
+                             done += static_cast<std::size_t>(got);
+                           }
+                           return done;
+                         });
 }
 
-// NAME=VALUE lines; '#' starts a comment line. Values replace the defaults above.
-void apply_environment_file(const std::filesystem::path &path) {
-  std::ifstream file(path);
-  std::string line;
-  while (std::getline(file, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty() || line[0] == '#') continue;
-    const std::size_t equals = line.find('=');
-    if (equals == std::string::npos || equals == 0) {
-      std::fprintf(stderr, "[android] %s: ignored line without NAME=VALUE: %s\n", path.c_str(), line.c_str());
-      continue;
-    }
-    const std::string name = line.substr(0, equals), value = line.substr(equals + 1);
-    gt4::platform::set_environment(name.c_str(), value.c_str());
-    std::fprintf(stderr, "[android] %s=%s\n", name.c_str(), value.c_str());
-  }
-}
-
-std::vector<std::string> read_arguments(const std::filesystem::path &path) {
-  std::vector<std::string> out;
-  std::ifstream file(path);
-  std::string line;
-  while (std::getline(file, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (!line.empty() && line[0] != '#') out.push_back(line);
-  }
-  return out;
+// The process ends here with the game's result, so Android records it (ApplicationExitInfo: exit, status = code) and
+// the launcher tells a clean end from a crash. The log thread gets a moment to write the last lines.
+[[noreturn]] void end_process(int code) {
+  std::fprintf(stderr, "[android] the game process ends with %d\n", code);
+  std::fflush(stdout);
+  std::fflush(stderr);
+  usleep(300 * 1000);
+  _exit(code);
 }
 
 }  // namespace
 
 int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  const char *external = SDL_GetAndroidExternalStoragePath();
-  if (external == nullptr) {
-    gt4::platform::show_error("Gran Turismo 4", std::string("No app storage folder: ") + SDL_GetError());
-    return 3;
+  redirect_output(std::getenv("GT4_ANDROID_LOG"));
+#if defined(__aarch64__)
+  constexpr const char *kAbi = "arm64-v8a";
+#else
+  constexpr const char *kAbi = "x86_64";
+#endif
+  std::fprintf(stderr, "[android] GT4Recomp game library (%s), process %d, %d arguments\n", kAbi, static_cast<int>(getpid()),
+               argc - 1);
+  if (argc < 2) {
+    gt4::platform::show_error("Gran Turismo 4", "Start Gran Turismo 4 from its launcher: open the Gran Turismo 4 app and "
+                                                "press Play.");
+    end_process(3);
   }
-  const std::filesystem::path root(external);
-  redirect_output(root / "game.log");
-  std::fprintf(stderr, "[android] GT4Recomp game library, files in %s\n", root.c_str());
   // The EE runs on this thread (SDL's game thread): its stack size matters for the large translated functions (Android
   // plan risk 7; Windows runs it on the main thread's 1 MB).
   pthread_attr_t attributes;
@@ -122,31 +123,32 @@ int main(int argc, char **argv) {
     pthread_attr_destroy(&attributes);
     std::fprintf(stderr, "[android] game thread stack %zu KiB\n", stack_bytes / 1024);
   }
-  std::error_code ignored;
-  std::filesystem::current_path(root, ignored);
-
-  set_default("GT4_RENDERER", "hw");
-  set_default("GT4_HW_CORE", "2");
-  set_default("GT4_HW_SCALE", "1");
-  set_default("GT4_FORCE_480P", "1");
-  set_default("GT4_FORCE_WIDESCREEN", "1");
-  set_default("GT4_DISPLAY_ASPECT", "auto");
-  set_default("GT4_PRESENT_MODE", "fifo");
-  set_default("GT4_HW_SHADER_CACHE", (root / "shader-cache").c_str());
-  apply_environment_file(root / "gt4.env");
-
-  const std::filesystem::path elf = root / "SCUS_973.28.elf", disc = root / "disc.iso", card = root / "card.ps2";
-  for (const std::filesystem::path &needed : {elf, disc}) {
-    if (!std::filesystem::exists(needed, ignored)) {
-      gt4::platform::show_error("Gran Turismo 4", "Missing " + needed.string() +
-                                                      ".\nPush the game files with adb first (docs/ANDROID-EMULATOR.md).");
-      return 3;
-    }
+  if (const char *folder = std::getenv("GT4_ANDROID_CWD")) {
+    std::error_code error;
+    std::filesystem::current_path(folder, error);
+    if (error) std::fprintf(stderr, "[android] cannot enter %s: %s\n", folder, error.message().c_str());
   }
-  std::vector<std::string> storage = {"libgt4.so", elf.string(), "--ntsc", "--disc", disc.string(), "--frames", "0",
-                                      "--memcard", card.string(), "--misses", (root / "misses.txt").string(),
-                                      "--fullscreen"};
-  for (std::string &extra : read_arguments(root / "args.txt")) storage.push_back(std::move(extra));
+
+  // The launch contract's command line, with the disc descriptor taken out: the image is opened here, so the runtime
+  // (which opens --disc by path) finds it open.
+  std::vector<std::string> storage = {"libgt4.so"};
+  bool disc_ready = false;
+  for (int i = 1; i < argc; ++i) {
+    const std::string argument = argv[i];
+    if (argument == "--disc" && i + 1 < argc && std::strncmp(argv[i + 1], kDescriptorPrefix, 3) == 0) {
+      const int descriptor = std::atoi(argv[i + 1] + 3);
+      disc_ready = open_disc_descriptor(descriptor);
+      ++i;
+      continue;
+    }
+    storage.push_back(argument);
+  }
+  if (!disc_ready) {
+    std::fprintf(stderr, "[android] the disc image could not be opened from its descriptor\n");
+    gt4::platform::show_error("Gran Turismo 4", "The disc image cannot be read. Choose it again in the launcher "
+                                                "(Settings > Games).");
+    end_process(3);
+  }
   std::vector<char *> pointers;
   for (std::string &argument : storage) {
     std::fprintf(stderr, "[android] argument %s\n", argument.c_str());
@@ -155,6 +157,5 @@ int main(int argc, char **argv) {
   pointers.push_back(nullptr);
   gt4::start::note_guest_ram();
   const int result = gt4::start::run_explicit(static_cast<int>(storage.size()), pointers.data());
-  std::fprintf(stderr, "[android] the game ended with %d\n", result);
-  return result;
+  end_process(result);
 }

@@ -7,6 +7,7 @@
 #include <io.h>
 #include <stdio.h>
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -63,6 +64,18 @@ bool write_card_atomically(const std::filesystem::path &path,
 
   std::error_code error;
   std::filesystem::rename(temporary, path, error);  // MoveFileExW(REPLACE_EXISTING) on Windows
+#ifndef _WIN32
+  // TASK-180 (Android plan section 5): the rename itself must reach storage too. Android may kill the game right after
+  // a save; without a sync of the folder the card's directory entry can still name the old file after a power loss.
+  if (!error) {
+    const std::filesystem::path folder = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+    const int directory = ::open(folder.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (directory < 0) return false;
+    const bool synced = ::fsync(directory) == 0;
+    ::close(directory);
+    return synced;
+  }
+#endif
   return !error;
 }
 

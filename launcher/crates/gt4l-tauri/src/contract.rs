@@ -1,7 +1,7 @@
 //! The launcher's command and event contract. Five places must agree, and these tests fail on any mismatch:
 //!
 //! - `commands.list`: the one list of commands (build.rs reads it for the `allow-*` permissions);
-//! - the `tauri::generate_handler![...]` call of main.rs (the commands Rust serves);
+//! - the `tauri::generate_handler![...]` call of lib.rs (the commands Rust serves; android.rs serves the same minus the tray);
 //! - `capabilities/default.json` (the `allow-<name>` permissions the page is granted; a missing one is denied at
 //!   run time with "not allowed by ACL", which the dev mock never reports);
 //! - the commands the page calls (`call("name")` and the list/import/activate/remove tables in ui/js);
@@ -18,7 +18,8 @@ mod tests {
     /// The one list of commands the page may call. build.rs reads the same file.
     const COMMANDS_LIST: &str = include_str!("../commands.list");
     const BUILD_RS: &str = include_str!("../build.rs");
-    const MAIN_RS: &str = include_str!("main.rs");
+    const LIB_RS: &str = include_str!("lib.rs");
+    const ANDROID_RS: &str = include_str!("android.rs");
     const CAPABILITY: &str = include_str!("../capabilities/default.json");
 
     /// Names from commands.list (blank lines and `#` comments skipped).
@@ -31,11 +32,16 @@ mod tests {
             .collect()
     }
 
-    /// The names in the `generate_handler!` call of main.rs, without module prefixes.
+    /// The names in the `generate_handler!` call of lib.rs (the desktop launcher), without module prefixes.
     fn registered_commands() -> BTreeSet<String> {
-        let start = MAIN_RS.find("generate_handler![").expect("handler list") + "generate_handler![".len();
-        let end = start + MAIN_RS[start..].find(']').expect("end of handler list");
-        MAIN_RS[start..end]
+        handler_names(LIB_RS)
+    }
+
+    /// The names in the first `generate_handler!` call of a source file, without module prefixes.
+    fn handler_names(source: &str) -> BTreeSet<String> {
+        let start = source.find("generate_handler![").expect("handler list") + "generate_handler![".len();
+        let end = start + source[start..].find(']').expect("end of handler list");
+        source[start..end]
             .split(',')
             .map(str::trim)
             .filter(|name| !name.is_empty())
@@ -154,12 +160,20 @@ mod tests {
     #[test]
     fn registered_commands_match_the_command_list() {
         assert_same(
-            "generate_handler! in main.rs",
-            "main.rs",
+            "generate_handler! in lib.rs",
+            "lib.rs",
             &listed_commands(),
             "commands.list",
             &registered_commands(),
         );
+    }
+
+    /// TASK-180: the Android app serves the same commands as the desktop launcher, except the tray's close confirmation.
+    #[test]
+    fn android_serves_the_desktop_commands_minus_the_tray() {
+        let mut expected = registered_commands();
+        assert!(expected.remove("confirm_close"), "the desktop list has the tray's confirm_close");
+        assert_eq!(handler_names(ANDROID_RS), expected, "android.rs generate_handler! differs from lib.rs minus confirm_close");
     }
 
     #[test]

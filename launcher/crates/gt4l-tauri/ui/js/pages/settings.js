@@ -925,8 +925,17 @@
     }
 
     function startInstall(entry) {
-      GT4.ui.toast(GT4.t("versions.starting", { version: entry.version }));
-      call("install_launcher_version", { tag: entry.tag }).then(null, function (err) {
+      // TASK-180: on Android the chosen version is downloaded by the browser; the player installs it.
+      var android = GT4.platform === "android";
+      GT4.ui.toast(android ? GT4.t("updates.opening_download") : GT4.t("versions.starting", { version: entry.version }));
+      call("install_launcher_version", { tag: entry.tag }).then(function (result) {
+        if (android) {
+          if (result && result.message) {
+            GT4.ui.toast(result.message);
+          }
+          restore();
+        }
+      }, function (err) {
         GT4.ui.toast(errorText(err), true);
         restore();
       });

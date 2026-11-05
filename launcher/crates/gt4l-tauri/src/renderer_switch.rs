@@ -95,6 +95,12 @@ pub async fn install_gsdx_archive(app: AppHandle, shared: State<'_, Shared>) -> 
         (state.dirs.clone(), state::language_of(&state))
     };
     tauri::async_runtime::spawn_blocking(move || {
+        // TASK-180: GSdx (gt4-gs.exe) is Windows-only; Android has CoreGS 2.0 alone.
+        #[cfg(target_os = "android")]
+        if true {
+            let _ = (&app, &dirs);
+            return Err("GSdx is not available on Android.".to_string());
+        }
         let picked = app
             .dialog()
             .file()

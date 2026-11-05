@@ -12,6 +12,21 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=GT4_SDL3_ROOT");
+    println!("cargo:rerun-if-env-changed=GT4_SDL3_ANDROID_ROOT");
+    // TASK-180: the Android app links the libSDL3.so of the official SDL3 3.4.18 Android package (the one the game
+    // loads; the APK ships it). `GT4_SDL3_ANDROID_ROOT` is that package's folder (private/tooling/sdl3-3.4.18-android).
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        let root = PathBuf::from(env::var("GT4_SDL3_ANDROID_ROOT").expect("GT4_SDL3_ANDROID_ROOT: the SDL3 3.4.18 Android package folder"));
+        let abi = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+            Ok("aarch64") => "arm64-v8a",
+            Ok("x86_64") => "x86_64",
+            other => panic!("no SDL3 Android library for {other:?}"),
+        };
+        let libs = root.join(format!("aar/prefab/modules/SDL3-shared/libs/android.{abi}"));
+        assert!(libs.join("libSDL3.so").exists(), "libSDL3.so not found under {}", libs.display());
+        println!("cargo:rustc-link-search=native={}", libs.display());
+        return;
+    }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

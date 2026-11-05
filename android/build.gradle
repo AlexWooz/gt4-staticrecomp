@@ -1,5 +1,0 @@
-// TASK-180: Android Gradle Plugin 9.5.0 on Gradle 9.8.2 (gradle/wrapper/gradle-wrapper.properties); JDK 17 or later
-// (Android Studio's JBR works).
-plugins {
-    id "com.android.application" version "9.5.0" apply false
-}

@@ -57,6 +57,9 @@ pub fn start(dirs: &DataDirs, header: &[String]) -> Result<PathBuf, String> {
 
 /// Appends one line at `level`. Before [`start`] the line goes to the 1.2.x `launcher.log` of the data folder.
 pub fn write(dirs: &DataDirs, level: Level, message: &str) {
+    // TASK-180: on Android every launcher line also goes to logcat (tag GT4Recomp-launcher).
+    #[cfg(target_os = "android")]
+    crate::android::logcat(level, message);
     let text = format!("{}\n", logs::line(&gt4l_platform::system::local_time(), level, message));
     let guard = session();
     match guard.as_ref() {

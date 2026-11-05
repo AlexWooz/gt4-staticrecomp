@@ -77,8 +77,39 @@ pub(crate) fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
         entries.push(Entry { path: "settings.toml".to_string(), text });
     }
 
+    // TASK-180: how the game's process ended (Android's records), and the newest crash texts (tombstones, ANR traces).
+    let exits = dirs.logs().join("game-exits");
+    if let Ok(text) = fs::read_to_string(exits.join("game-exits.log")) {
+        entries.push(Entry { path: "game-exits/game-exits.log".to_string(), text });
+    }
+    let traces: Vec<(SystemTime, PathBuf)> = fs::read_dir(&exits)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "txt"))
+        .map(|path| (changed(&path), path))
+        .collect();
+    for path in log_export::newest(traces, KEPT_FOR_EXPORT) {
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Ok(text) = fs::read_to_string(&path) {
+            entries.push(Entry { path: format!("game-exits/{name}"), text });
+        }
+    }
+
     entries.push(Entry { path: "system.txt".to_string(), text: log_export::system_text(&system_facts(state)) });
     Ok(entries)
+}
+
+/// The phone's facts (TASK-180); none on Windows.
+#[cfg(target_os = "android")]
+fn device_lines() -> Vec<String> {
+    crate::android::device_lines()
+}
+
+#[cfg(not(target_os = "android"))]
+fn device_lines() -> Vec<String> {
+    Vec::new()
 }
 
 /// The facts of `system.txt`, read now.
@@ -108,7 +139,7 @@ fn system_facts(state: &AppState) -> SystemFacts {
         chosen: (plan.card.as_ref().and_then(|card| card.name()).unwrap_or_default().to_string(), plan.api.clone()),
         displays: monitors,
         launcher_version: gt4l_core::LAUNCHER_VERSION.to_string(),
-        install: gt4l_core::build_kind::BUILD.label().to_string(),
+        install: if cfg!(target_os = "android") { "Android app".to_string() } else { gt4l_core::build_kind::BUILD.label().to_string() },
         games: games::GAMES
             .iter()
             .map(|game| (game.display_name.to_string(), game.serial.to_string(), installed.contains(game)))
@@ -118,5 +149,6 @@ fn system_facts(state: &AppState) -> SystemFacts {
             ("graphics_api".to_string(), state.config.settings.get("graphics_api").to_string()),
             ("graphics_card".to_string(), state.config.settings.get("graphics_card").to_string()),
         ],
+        device: device_lines(),
     }
 }

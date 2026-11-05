@@ -167,20 +167,50 @@ pub async fn setup_choose_disc(app: AppHandle, game: Option<String>, shared: Sta
             return Err(messages::text("setup.already_running", state::current_language()).to_string());
         }
         refuse_unsupported_system(&shared)?;
-        let picked = app
-            .dialog()
-            .file()
-            .set_title(match game.as_deref().and_then(games::by_id) {
-                Some(requested) => messages::render("setup.picker_title_game", state::current_language(), &[("game", requested.display_name)]),
-                None => messages::text("setup.picker_title_any", state::current_language()).to_string(),
-            })
-            .add_filter(messages::text("setup.picker_filter", state::current_language()), &["iso"])
-            .blocking_pick_file();
-        let Some(picked) = picked else {
-            return Ok(None);
-        };
-        let path: PathBuf = picked.into_path().map_err(|error| error.to_string())?;
-        choose_disc_path_for(&shared, &path, game.as_deref()).map(Some)
+        // TASK-180: on Android the image is a document the app keeps a read permission to (never copied); its content
+        // URI is the image's path from here on, read through gt4l_disc::source.
+        #[cfg(target_os = "android")]
+        {
+            let _ = &app;
+            let picked = crate::android::pick_document(&["application/x-iso9660-image", "application/octet-stream", "*/*"], true, None)?;
+            let dirs = lock(&shared).dirs.clone();
+            let Some(picked) = picked else {
+                state::log(&dirs, "setup: the disc picker was cancelled");
+                return Ok(None);
+            };
+            let uri = picked.uri.unwrap_or_default();
+            let size = gt4l_disc::source::metadata(Path::new(&uri)).map(|metadata| metadata.len());
+            state::log(
+                &dirs,
+                &format!(
+                    "setup: picked {} ({}), {}; read permission kept",
+                    picked.name.as_deref().unwrap_or("no name"),
+                    uri,
+                    match &size {
+                        Ok(bytes) => format!("{bytes} bytes"),
+                        Err(error) => format!("size unreadable: {error}"),
+                    }
+                ),
+            );
+            choose_disc_path_for(&shared, Path::new(&uri), game.as_deref()).map(Some)
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let picked = app
+                .dialog()
+                .file()
+                .set_title(match game.as_deref().and_then(games::by_id) {
+                    Some(requested) => messages::render("setup.picker_title_game", state::current_language(), &[("game", requested.display_name)]),
+                    None => messages::text("setup.picker_title_any", state::current_language()).to_string(),
+                })
+                .add_filter(messages::text("setup.picker_filter", state::current_language()), &["iso"])
+                .blocking_pick_file();
+            let Some(picked) = picked else {
+                return Ok(None);
+            };
+            let path: PathBuf = picked.into_path().map_err(|error| error.to_string())?;
+            choose_disc_path_for(&shared, &path, game.as_deref()).map(Some)
+        }
     })
     .await
     .map_err(|error| error.to_string())?

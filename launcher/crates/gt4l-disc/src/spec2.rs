@@ -35,12 +35,14 @@ const MAX_EXECUTABLE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Opens the image and reads `SYSTEM.CNF`, with the same refusals as the Gran Turismo 4 check (file, ISO, PS2 disc).
 pub(crate) fn open_and_read_system(disc: &Path) -> Result<(Iso, cnf::SystemConfig), SetupError> {
+    // TASK-180: an Android document has no file name in its URI; its content is checked below like any image.
     let extension = disc.extension().and_then(|value| value.to_str()).map(str::to_string);
     match extension.as_deref() {
+        _ if crate::source::is_document(disc) => {}
         Some(value) if value.eq_ignore_ascii_case("iso") => {}
         other => return Err(SetupError::NotPlainIso { extension: other.map(str::to_string) }),
     }
-    if !disc.is_file() || fs::File::open(disc).is_err() {
+    if !crate::source::is_readable_file(disc) {
         return Err(SetupError::NotFound);
     }
     let mut iso = Iso::open(disc).map_err(|error| match error {
@@ -156,7 +158,7 @@ fn finish(
     fs::create_dir_all(request.staging)?;
     setup::write_synced(&request.staging.join(ELF_FILE), &derived)?;
 
-    let metadata = fs::metadata(request.disc)?;
+    let metadata = crate::source::metadata(request.disc)?;
     let receipt = Receipt {
         schema_version: RECEIPT_SCHEMA,
         launcher_version: request.launcher_version.to_string(),

@@ -69,9 +69,19 @@
     return box;
   }
 
+  // TASK-180: on Android the launcher only downloads: the browser fetches the APK and the player installs it.
+  function downloadsOnly() {
+    return GT4.platform === "android";
+  }
+
   function startUpdate(offer) {
-    GT4.ui.toast(offer.stream === "launcher" ? GT4.t("updates.starting_setup") : GT4.t("updates.installing_renderer"));
-    GT4.backend.call("apply_update", { stream: offer.stream }).then(null, function (err) {
+    var launcher = offer.stream === "launcher";
+    GT4.ui.toast(launcher ? GT4.t(downloadsOnly() ? "updates.opening_download" : "updates.starting_setup") : GT4.t("updates.installing_renderer"));
+    GT4.backend.call("apply_update", { stream: offer.stream }).then(function (result) {
+      if (launcher && downloadsOnly() && result && result.message) {
+        GT4.ui.toast(result.message);
+      }
+    }, function (err) {
       GT4.ui.toast(errorText(err), true);
     });
   }
@@ -99,7 +109,7 @@
       dismissable: true,
       onClose: showNext,
       buttons: [
-        { label: GT4.t("updates.update"), primary: true, run: function () { startUpdate(offer); } },
+        { label: GT4.t(downloadsOnly() && offer.stream === "launcher" ? "updates.download" : "updates.update"), primary: true, run: function () { startUpdate(offer); } },
         { label: GT4.t("updates.not_now") },
         { label: GT4.t("updates.skip_version"), run: function () { skip(offer); } }
       ]

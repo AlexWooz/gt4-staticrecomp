@@ -12,6 +12,12 @@ build = "build.rs"
 name = "GT4Recomp"
 path = "src/main.rs"
 
+# TASK-180: the launcher as a library: the Windows executable calls it, and the Android app loads it (cdylib).
+[lib]
+name = "gt4l_tauri_lib"
+path = "src/lib.rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [features]
 # Development only: GT4RECOMP_VISUAL_PAGE, GT4RECOMP_VISUAL_READY and GT4RECOMP_VISUAL_SEED set the
 # page, a ready-looking home and a synthetic save library for screenshots. Not in release builds.
