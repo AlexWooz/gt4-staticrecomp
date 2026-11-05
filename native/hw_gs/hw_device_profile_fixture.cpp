@@ -1,4 +1,5 @@
-// CTest hw_device_profile: TASK-179, the capability profile's class rule and log line (hw_device_profile.hpp), host only.
+// CTest hw_device_profile: TASK-179, the capability profile's class rule and log line, and the sizing of core 2's
+// host-visible rings from the heap (hw_device_profile.hpp), host only.
 #include "hw_device_profile.hpp"
 
 #include <cstdint>
@@ -16,7 +17,22 @@ void check(bool condition, const char *what) {
   std::exit(1);
 }
 
+constexpr std::uint64_t MiB = std::uint64_t{1} << 20;
 constexpr std::uint64_t GiB = std::uint64_t{1} << 30;
+
+RingRequest request(std::uint32_t shares, std::uint64_t heap, std::uint64_t budget) {
+  RingRequest r;
+  r.shares = shares;
+  r.heap_size = heap;
+  r.heap_budget = budget;
+  r.other = 256 * 1024;  // core 2's delayed-reduction buffer
+  return r;
+}
+
+bool today(const RingPlan &plan, std::uint32_t shares) {
+  return plan.shares == shares && plan.staging == 32 * MiB * shares && plan.vertex == 8 * MiB * shares &&
+         plan.uniform == 2 * MiB * shares && plan.readback == 64 * MiB && !plan.reduced;
+}
 
 }  // namespace
 
@@ -64,6 +80,56 @@ int main() {
         "the line lists the heaps");
   check(largest_heap(profile, true) == 0 && largest_heap(profile, false) == 1, "largest heaps");
 
+  // ---- Rings: today's sizes wherever they fit in a quarter of the heap's budget ----
+  check(today(plan_core2_rings(request(16, 16 * GiB, 15 * GiB)), 16), "a desktop keeps today's 736 MiB");
+  check(plan_core2_rings(request(16, 16 * GiB, 15 * GiB)).total() == 736 * MiB, "736 MiB on a discrete GPU");
+  check(today(plan_core2_rings(request(8, 4 * GiB, 0)), 8), "an integrated GPU without a budget keeps today's 400 MiB");
+  check(plan_core2_rings(request(8, 4 * GiB, 0)).total() == 400 * MiB, "400 MiB on an integrated GPU");
+  check(std::string(plan_core2_rings(request(8, 4 * GiB, 0)).basis) == "heap size", "the heap size without a budget");
+  check(std::string(plan_core2_rings(request(8, 4 * GiB, 3 * GiB)).basis) == "heap budget", "the budget when there is one");
+  check(plan_core2_rings(request(8, 4 * GiB, 3 * GiB)).allowance == 768 * MiB, "a quarter of the budget");
+  check(plan_core2_rings(request(8, 2 * GiB, 3 * GiB)).allowance == 512 * MiB, "the budget is never above the heap");
+  check(today(plan_core2_rings(request(16, 0, 0)), 16), "an unknown heap keeps today's sizes");
+  {
+    RingRequest fixed = request(16, 256 * MiB, 0);
+    fixed.fixed = true;
+    check(today(plan_core2_rings(fixed), 16), "GT4_CORE2_RINGS=fixed keeps today's sizes on any heap");
+  }
+  {  // 2 GiB of budget: 512 MiB allowed; 64 MiB of readback leaves 10 shares of 42 MiB.
+    const RingPlan plan = plan_core2_rings(request(16, 6 * GiB, 2 * GiB));
+    check(plan.reduced && plan.shares == 10 && plan.readback == 64 * MiB, "2 GiB: 10 shares");
+    check(plan.staging == 320 * MiB && plan.vertex == 80 * MiB && plan.uniform == 20 * MiB, "2 GiB: ring sizes");
+    check(plan.total() <= plan.allowance, "2 GiB: within the allowance");
+  }
+  {  // A forced budget of 256 MiB: 64 MiB allowed, below the floor of two shares and 16 MiB of readback.
+    RingRequest forced = request(16, 16 * GiB, 15 * GiB);
+    forced.forced_budget = 256 * MiB;
+    const RingPlan plan = plan_core2_rings(forced);
+    check(std::string(plan.basis) == "forced budget", "the forced budget wins");
+    check(plan.shares == kRingMinimumShares && plan.readback == kReadbackMinimumBytes, "the floor: two shares, 16 MiB");
+  }
+  {  // 600 MiB of allowance: 13 shares would leave too little readback; 12 shares and 64 MiB fit.
+    const RingPlan plan = plan_core2_rings(request(16, 8 * GiB, 2400 * MiB));
+    check(plan.shares == 12 && plan.readback == 64 * MiB && plan.total() <= plan.allowance, "2400 MiB: 12 shares");
+  }
+  {  // Two shares fit but not the whole readback: it shrinks, in whole MiB, not below 16.
+    RingRequest small = request(16, 1 * GiB, 0);
+    small.forced_budget = 512 * MiB;  // 128 MiB allowed: two shares are 84 MiB, 43 MiB left (minus the 256 KiB)
+    const RingPlan plan = plan_core2_rings(small);
+    check(plan.shares == 2 && plan.readback == 43 * MiB && plan.total() <= plan.allowance, "128 MiB: two shares, 43 MiB");
+  }
+  // Every budget: never above today's sizes, never below the floor, within the allowance whenever the floor allows.
+  for (std::uint64_t budget = 16 * MiB; budget <= 24 * GiB; budget += 48 * MiB) {
+    for (std::uint32_t shares : {8u, 16u, 24u}) {
+      const RingPlan plan = plan_core2_rings(request(shares, 32 * GiB, budget));
+      check(plan.shares >= kRingMinimumShares && plan.shares <= shares, "shares between the floor and today's");
+      check(plan.readback >= kReadbackMinimumBytes && plan.readback <= 64 * MiB, "readback between 16 and 64 MiB");
+      check(plan.staging == 32 * MiB * plan.shares, "a share keeps its size");
+      const bool atFloor = plan.shares == kRingMinimumShares && plan.readback == kReadbackMinimumBytes;
+      check(atFloor || plan.total() + 256 * 1024 <= plan.allowance, "within the allowance above the floor");
+      check(plan.reduced == !today(plan, shares), "reduced exactly when below today's sizes");
+    }
+  }
   std::printf("hw_device_profile: ok\n");
   return 0;
 }

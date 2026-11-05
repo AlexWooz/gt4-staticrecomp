@@ -39,6 +39,8 @@
 namespace hwgs::core2 {
 namespace {
 
+// Today's ring sizes for 8 recordings in flight (a recording's share is an eighth), and the readback buffer. TASK-179: the
+// cap of the sizes planned from the device's heaps (gt4::hw::plan_core2_rings); GT4_CORE2_RINGS=fixed keeps them as they are.
 constexpr VkDeviceSize kStagingBytes = static_cast<VkDeviceSize>(256) << 20;
 constexpr VkDeviceSize kVertexBytes = static_cast<VkDeviceSize>(64) << 20;
 constexpr VkDeviceSize kUniformBytes = static_cast<VkDeviceSize>(16) << 20;
@@ -358,6 +360,8 @@ struct Gpu::Impl {
   // one point rasterization covers. GT4_CORE2_POINT_QUADS=1 / 0 forces quads / point sizes (A/B).
   bool pointQuads = false;
   VkShaderModule pointQuadModule = VK_NULL_HANDLE;
+  // TASK-179: the readback buffer's size (kReadbackBytes unless the heap is small, plan_core2_rings).
+  VkDeviceSize readbackBytes = kReadbackBytes;
 
   // IN-437: the interlocked triangle pipeline specialised per draw state. hw_pixel_uber.frag reads the state block
   // and branches on about 50 of its fields in every wave; with the fields as specialization constants the compiler
@@ -519,6 +523,58 @@ struct Gpu::Impl {
     if (!check(gt4_hwd_vkBindBufferMemory(device, out.buffer, out.memory, 0), "vkBindBufferMemory", error)) return false;
     if (!check(gt4_hwd_vkMapMemory(device, out.memory, 0, size, 0, &out.mapped), "vkMapMemory", error)) return false;
     out.size = size;
+    return true;
+  }
+
+  // TASK-179: the sizes of the staging, vertex, uniform and readback buffers for `shares` recordings, planned from the
+  // heap the upload rings live in (its VK_EXT_memory_budget budget when the profile has one): today's sizes wherever they
+  // fit in a quarter of it (gt4::hw::plan_core2_rings). GT4_CORE2_RINGS=fixed keeps today's sizes whatever the heap (A/B);
+  // GT4_CORE2_RINGS=<MiB> plans for a budget of that many MiB instead (a small device's sizes on a large desktop).
+  bool plan_rings(const gt4::hw::DeviceProfile &profile, VkBufferUsageFlags usage, VkMemoryPropertyFlags preferred,
+                  std::uint32_t shares, gt4::hw::RingPlan &plan, std::string &error) const {
+    // The memory type a ring buffer takes, from a small buffer of the same usage.
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = 4096;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer probe = VK_NULL_HANDLE;
+    if (!check(gt4_hwd_vkCreateBuffer(device, &info, nullptr, &probe), "vkCreateBuffer", error)) return false;
+    VkMemoryRequirements requirements{};
+    gt4_hwd_vkGetBufferMemoryRequirements(device, probe, &requirements);
+    gt4_hwd_vkDestroyBuffer(device, probe, nullptr);
+    std::uint32_t type = 0;
+    if (!memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     preferred, type)) {
+      error = "no host-visible memory type for a CORE2 buffer";
+      return false;
+    }
+    const std::uint32_t heap = memoryProperties.memoryTypes[type].heapIndex;
+    gt4::hw::RingRequest request;
+    request.heap_size = memoryProperties.memoryHeaps[heap].size;
+    request.heap_budget = profile.probed && profile.memory_budget && heap < profile.heap_count ? profile.heaps[heap].budget : 0;
+    request.shares = shares;
+    request.staging_share = kStagingBytes / 8u;
+    request.vertex_share = kVertexBytes / 8u;
+    request.uniform_share = kUniformBytes / 8u;
+    request.readback = kReadbackBytes;
+    request.other = static_cast<std::uint64_t>(kLaterSlots) * kLaterWords * 4u;
+    if (const char *rings = std::getenv("GT4_CORE2_RINGS")) {
+      if (std::strcmp(rings, "fixed") == 0) {
+        request.fixed = true;
+      } else if (std::atoll(rings) > 0) {
+        request.forced_budget = static_cast<std::uint64_t>(std::atoll(rings)) << 20;
+      }
+    }
+    plan = gt4::hw::plan_core2_rings(request);
+    std::fprintf(stderr,
+                 "[core2] rings: %u shares, staging %llu MiB, vertex %llu MiB, uniform %llu MiB, readback %llu MiB (%llu MiB "
+                 "mapped); heap %u of %llu MiB, budget %llu MiB, allowance %llu MiB (%s): %s\n",
+                 plan.shares, static_cast<unsigned long long>(plan.staging >> 20),
+                 static_cast<unsigned long long>(plan.vertex >> 20), static_cast<unsigned long long>(plan.uniform >> 20),
+                 static_cast<unsigned long long>(plan.readback >> 20), static_cast<unsigned long long>(plan.total() >> 20), heap,
+                 static_cast<unsigned long long>(request.heap_size >> 20), static_cast<unsigned long long>(request.heap_budget >> 20),
+                 static_cast<unsigned long long>(plan.allowance >> 20), plan.basis,
+                 plan.reduced ? "reduced to fit" : "today's sizes");
     return true;
   }
 
@@ -2490,6 +2546,19 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   }
   if (s.slotCount == 0) s.slotCount = s.integrated ? 8u : 16u;  // IN-517
   if (s.submitEvery == Impl::kSubmitEveryAtInit) s.submitEvery = s.integrated ? 32u : 64u;  // TASK-134
+  const VkBufferUsageFlags stagingUsage =
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
+  // write-combined type the first match would give. GT4_CORE2_CACHED_UPLOAD=0 / 1 forces it off / on (A/B).
+  const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
+  const VkMemoryPropertyFlags uploadMemory =
+      (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
+  // TASK-179: the rings sized from their heap (gt4::hw::plan_core2_rings), today's sizes as the cap. IN-517: today's sizes
+  // are for 8 slots and a recording's share stays the same with more. Fewer shares than slots (a small heap): fewer slots.
+  gt4::hw::RingPlan rings;
+  if (!s.plan_rings(handles.profile, stagingUsage, uploadMemory, std::max<std::uint32_t>(s.slotCount, 8u), rings, error)) return false;
+  s.slotCount = std::min(s.slotCount, rings.shares);
+  s.readbackBytes = rings.readback;
   s.lastSubmitted = s.slotCount - 1u;  // S4: the first recording takes slot 0
   if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
     VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -2520,18 +2589,9 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     }
   }
 
-  const VkBufferUsageFlags stagingUsage =
-      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
-  // write-combined type the first match would give. GT4_CORE2_CACHED_UPLOAD=0 / 1 forces it off / on (A/B).
-  const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
-  const VkMemoryPropertyFlags uploadMemory =
-      (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
-  // IN-517: the sizes are for 8 slots; a recording's share stays the same with more.
-  const VkDeviceSize ringScale = std::max<std::uint32_t>(s.slotCount, 8u);
-  if (!s.make_buffer(s.staging, kStagingBytes / 8u * ringScale, stagingUsage, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.vertices, kVertexBytes / 8u * ringScale, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.uniforms, kUniformBytes / 8u * ringScale, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.staging, rings.staging, stagingUsage, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.vertices, rings.vertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.uniforms, rings.uniform, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
   {
     std::string types;
     for (std::uint32_t i = 0; i < s.memoryProperties.memoryTypeCount; ++i) {
@@ -2543,7 +2603,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     std::fprintf(stderr, "[core2] memory types (L local, V visible, C coherent, H cached):%s; upload buffers %s\n", types.c_str(),
                  uploadMemory ? "prefer cached" : "first visible");
   }
-  if (!s.make_buffer(s.readback, kReadbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
+  if (!s.make_buffer(s.readback, s.readbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
   if (!s.make_buffer(s.later, static_cast<VkDeviceSize>(Impl::kLaterSlots) * Impl::kLaterWords * 4u, stagingUsage,
                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
 
@@ -4142,7 +4202,7 @@ bool Gpu::Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, 
   const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
   const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  if (bytes > kReadbackBytes) {
+  if (bytes > s.readbackBytes) {
     error = "CORE2 reduction larger than the readback buffer";
     return false;
   }
@@ -4180,7 +4240,7 @@ bool Gpu::ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std
     offsets.push_back(total);
     total += static_cast<VkDeviceSize>(r.x1 - r.x0 + 1) * static_cast<VkDeviceSize>(r.y1 - r.y0 + 1) * 4u;
   }
-  if (total > kReadbackBytes) return false;  // empty error: reduce one by one
+  if (total > s.readbackBytes) return false;  // empty error: reduce one by one
   if (!s.begin_recording(error)) return false;
   s.flush_draws();
   s.end_render_pass();
@@ -4531,12 +4591,12 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
   width = std::min(width, source.width);
   height = std::min(height, source.height);
   const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * 4u;
-  if (rowBytes == 0 || height == 0 || rowBytes > kReadbackBytes) {
+  if (rowBytes == 0 || height == 0 || rowBytes > s.readbackBytes) {
     error = "CORE2 display read outside the readback buffer";
     return false;
   }
   // IN-435: frames larger than the readback buffer (7680 x 5376 at 12x is 165 MB) are read in bands of rows.
-  const std::uint32_t bandRows = static_cast<std::uint32_t>(std::min<VkDeviceSize>(height, kReadbackBytes / rowBytes));
+  const std::uint32_t bandRows = static_cast<std::uint32_t>(std::min<VkDeviceSize>(height, s.readbackBytes / rowBytes));
   pixels.resize(static_cast<std::size_t>(width) * height);
   for (std::uint32_t top = 0; top < height; top += bandRows) {
     const std::uint32_t rows = std::min(bandRows, height - top);
@@ -4568,7 +4628,7 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
   width = std::min(width, image->width);
   height = std::min(height, image->height);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  if (bytes == 0 || bytes > kReadbackBytes) {
+  if (bytes == 0 || bytes > s.readbackBytes) {
     error = "CORE2 image read outside the readback buffer";
     return false;
   }

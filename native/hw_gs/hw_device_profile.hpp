@@ -6,7 +6,7 @@
 // in one line and handed to the renderer with the device (gpu::VulkanHandles::profile), so that later stages can key
 // settings off the vendor and device class instead of the single "integrated GPU" test of today. Only the structure is
 // new: `integrated_defaults` is today's rule (VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) and nothing reads `device_class`
-// yet.
+// yet. Also the sizing of core 2's host-visible rings from the heaps (plan_core2_rings).
 //
 // Pure arithmetic and strings, no Vulkan: the numbers that come from Vulkan are copied in as plain integers (the
 // physical device type has the VkPhysicalDeviceType values, the transform bits the VkSurfaceTransformFlagBitsKHR ones).
@@ -152,6 +152,87 @@ inline std::string profile_line(const DeviceProfile &p) {
     if (p.memory_budget) line += " (budget " + mib_text(heap.budget) + ", used " + mib_text(heap.usage) + ")";
   }
   return line;
+}
+
+// ---- Core 2's host-visible rings, sized from the device (TASK-179) -------------------------------------------------
+//
+// Core 2 maps four rings: staging, vertex and uniform with one share per recording in flight, and the readback buffer.
+// Today's sizes come from constants: per share 32 MiB staging, 8 MiB vertex and 2 MiB uniform, 8 or 16 shares (8 on an
+// integrated GPU, 16 on a discrete one), and 64 MiB of readback: 400 or 736 MiB. Those stay the sizes, and the cap,
+// wherever they fit in a quarter of the heap they live in (its VK_EXT_memory_budget budget when the device reports one,
+// else its size). Where they do not, the number of shares goes down first (a share keeps its size, so no request that
+// fits today stops fitting; fewer recordings are in flight), to two at least; then the readback buffer, to 16 MiB at
+// least (a whole 2048 x 2048 1x reduction; larger display reads go in bands). A phone's low-memory killer acts fast.
+
+constexpr std::uint64_t kRingMiB = std::uint64_t{1} << 20;
+constexpr std::uint32_t kRingMinimumShares = 2;
+constexpr std::uint64_t kReadbackMinimumBytes = 16 * kRingMiB;
+
+struct RingRequest {
+  std::uint64_t heap_size = 0;    // the heap of the ring memory type
+  std::uint64_t heap_budget = 0;  // its budget (VK_EXT_memory_budget), 0 when unknown
+  std::uint64_t forced_budget = 0;  // GT4_CORE2_RINGS=<MiB>: a budget to plan for instead (tests on a large desktop)
+  bool fixed = false;               // GT4_CORE2_RINGS=fixed: today's sizes whatever the heap
+  std::uint32_t shares = 16;        // today's share count
+  std::uint64_t staging_share = 32 * kRingMiB, vertex_share = 8 * kRingMiB, uniform_share = 2 * kRingMiB;
+  std::uint64_t readback = 64 * kRingMiB;
+  std::uint64_t other = 0;  // other mapped buffers in the same heap (counted, never resized)
+};
+
+struct RingPlan {
+  std::uint32_t shares = 0;
+  std::uint64_t staging = 0, vertex = 0, uniform = 0, readback = 0;
+  std::uint64_t allowance = 0;  // a quarter of the budget planned for (0 with `fixed`)
+  bool reduced = false;         // below today's sizes
+  const char *basis = "";       // "fixed", "forced budget", "heap budget" or "heap size"
+
+  std::uint64_t total() const { return staging + vertex + uniform + readback; }
+};
+
+inline RingPlan plan_core2_rings(const RingRequest &r) {
+  RingPlan plan;
+  const std::uint64_t per_share = r.staging_share + r.vertex_share + r.uniform_share;
+  auto fill = [&](std::uint32_t shares, std::uint64_t readback) {
+    plan.shares = shares;
+    plan.staging = r.staging_share * shares;
+    plan.vertex = r.vertex_share * shares;
+    plan.uniform = r.uniform_share * shares;
+    plan.readback = readback;
+  };
+  fill(r.shares, r.readback);
+  if (r.fixed) {
+    plan.basis = "fixed";
+    return plan;
+  }
+  std::uint64_t base = r.heap_size;
+  plan.basis = "heap size";
+  if (r.forced_budget != 0) {
+    base = r.forced_budget;
+    plan.basis = "forced budget";
+  } else if (r.heap_budget != 0) {
+    base = r.heap_size != 0 ? std::min(r.heap_budget, r.heap_size) : r.heap_budget;
+    plan.basis = "heap budget";
+  }
+  if (base == 0) {  // nothing known about the heap: today's sizes
+    plan.basis = "unknown heap";
+    return plan;
+  }
+  plan.allowance = base / 4;
+  const std::uint64_t room = plan.allowance > r.other ? plan.allowance - r.other : 0;
+  if (plan.total() <= room) return plan;
+  plan.reduced = true;
+  const std::uint64_t for_shares = room > r.readback ? room - r.readback : 0;
+  const std::uint64_t fitting = per_share != 0 ? for_shares / per_share : r.shares;
+  const std::uint32_t shares = static_cast<std::uint32_t>(
+      std::clamp<std::uint64_t>(fitting, kRingMinimumShares, std::max<std::uint64_t>(r.shares, kRingMinimumShares)));
+  std::uint64_t readback = r.readback;
+  const std::uint64_t share_bytes = per_share * shares;
+  if (share_bytes + readback > room) {
+    const std::uint64_t left = room > share_bytes ? room - share_bytes : 0;
+    readback = std::clamp<std::uint64_t>(left / kRingMiB * kRingMiB, std::min(kReadbackMinimumBytes, r.readback), r.readback);
+  }
+  fill(shares, readback);
+  return plan;
 }
 
 }  // namespace gt4::hw
