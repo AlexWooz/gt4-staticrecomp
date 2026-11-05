@@ -117,6 +117,8 @@ struct Core2GpuStats {
     std::uint64_t renderPasses = 0;      // B4: render pass begins (one after every compute or transfer break)
     std::uint64_t drawFlushes = 0;       // IN-420: groups of deferred draw batches recorded in one render pass
     std::uint64_t midFrameSubmissions = 0;  // IN-410: submissions after a number of draw batches
+    std::uint64_t points = 0;      // TASK-179: point primitives drawn
+    std::uint64_t pointQuads = 0;  // TASK-179: of those, drawn as two triangles (no largePoints)
 };
 
 // IN-408: a CLUT load (07.4) whose source is a drawn 32-bit colour target, done on the GPU.

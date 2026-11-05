@@ -5031,6 +5031,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0,
                  (unsigned long long)g.wholeClears, (unsigned long long)g.plainBatches, (unsigned long long)g.roadSheensSkipped, (unsigned long long)g.sheensEarly,
                  (unsigned long long)c.depthIntoColourFills, static_cast<double>(c.depthIntoColourPixels) / 1.0e6);
+    // TASK-179: point primitives, and those drawn as two triangles (a device without largePoints).
+    std::fprintf(stderr, "[core2] points=%llu point_quads=%llu\n", (unsigned long long)g.points, (unsigned long long)g.pointQuads);
 }
 
 }  // namespace

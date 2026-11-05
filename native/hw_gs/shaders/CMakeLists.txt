@@ -70,6 +70,8 @@ endfunction()
 
 hw_add_shader(hw_vertex_smooth "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=0)
 hw_add_shader(hw_vertex_flat "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=1)
+# TASK-179: core 2's points as two triangles, on devices without largePoints.
+hw_add_shader(hw_vertex_point_quad "${HW_SHADER_DIR}/hw_vertex.vert" vert DEFINES HWR_FLAT_COLOUR=0 HWR_POINT_QUAD=1)
 hw_add_shader(hw_pixel_uber_smooth "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag DEFINES HWR_FLAT_COLOUR=0)
 hw_add_shader(hw_pixel_uber_smooth_interlock "${HW_SHADER_DIR}/hw_pixel_uber.frag" frag
               DEFINES HWR_FLAT_COLOUR=0 HWR_INTERLOCK=1)
@@ -94,6 +96,8 @@ hw_add_shader(hw_scale_tone_carry "${HW_SHADER_DIR}/hw_scale_tone_carry.comp" co
 hw_add_shader(hw_tone_strips "${HW_SHADER_DIR}/hw_tone_strips.comp" comp)
 # IN-381: 13.4 deinterlace of the scaled presentation frame (480i menus at scale).
 hw_add_shader(hw_deinterlace_scaled "${HW_SHADER_DIR}/hw_deinterlace_scaled.comp" comp)
+# TASK-179: the same kernel with constant indices only, on devices without shaderStorageImageArrayDynamicIndexing.
+hw_add_shader(hw_deinterlace_scaled_constant "${HW_SHADER_DIR}/hw_deinterlace_scaled.comp" comp DEFINES HWR_CONSTANT_INDEXING=1)
 # 13.5 edge-only FXAA of the presentation frame (IN-376).
 hw_add_shader(hw_postfx_fxaa "${HW_SHADER_DIR}/hw_postfx_fxaa.comp" comp)
 hw_add_shader(hw_glm_unswizzle "${HW_SHADER_DIR}/hw_glm_unswizzle.comp" comp)

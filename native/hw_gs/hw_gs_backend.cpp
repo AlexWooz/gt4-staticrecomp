@@ -11,6 +11,7 @@
 #include "../pacing.hpp"
 #include "hw_gs_present_rect.hpp"
 #include "hw_present_latency.hpp"
+#include "hw_present_transform.hpp"
 #include "hw_present_spacing.hpp"
 #include "hw_queue_lock.hpp"
 #include "hw_shared_present.hpp"
@@ -77,7 +78,11 @@ bool format_supports(VkPhysicalDevice device, VkFormat format, VkFormatFeatureFl
   return (have & required) == required;
 }
 
-// Chapter 12.6 formats: depth D32, R16/R32 uint sampled, RGBA8 and RGBA16 unorm blendable, R32 float attachment.
+// The formats every path uses (chapter 12.6 as built). TASK-179: the list named D32_SFLOAT depth attachments, R16_UINT
+// sampled, R16G16B16A16_UNORM blendable and R32_SFLOAT colour attachments, which nothing creates (core 2 draws into
+// R32_UINT storage images and has no depth attachment), so a device without them was refused for nothing. Formats only
+// one path uses are checked by that path: R8G8B8A8_UNORM blendable colour attachments by core 2's ROP path (IN-481),
+// which stays off without them.
 struct FormatRequirement {
   VkFormat format;
   VkFormatFeatureFlags flags;
@@ -85,16 +90,12 @@ struct FormatRequirement {
 };
 
 constexpr FormatRequirement required_formats[] = {
-    {VK_FORMAT_D32_SFLOAT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, "D32_SFLOAT depth attachment"},
-    {VK_FORMAT_R16_UINT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "R16_UINT sampled"},
-    {VK_FORMAT_R32_UINT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "R32_UINT sampled"},
+    // Every target and texel image of both cores.
+    {VK_FORMAT_R32_UINT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT, "R32_UINT storage image"},
+    // The presentation's upload image: written, halved and blitted into the swapchain with a linear filter.
     {VK_FORMAT_R8G8B8A8_UNORM,
-     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT,
-     "R8G8B8A8_UNORM blendable colour"},
-    {VK_FORMAT_R16G16B16A16_UNORM,
-     VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT,
-     "R16G16B16A16_UNORM blendable colour"},
-    {VK_FORMAT_R32_SFLOAT, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, "R32_SFLOAT colour attachment"},
+     VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT,
+     "R8G8B8A8_UNORM blit with a linear filter"},
 };
 
 } // namespace
@@ -391,6 +392,10 @@ struct Backend::Impl {
   }
 
   bool independent_blend = false;
+  // TASK-179: the capability probe of the chosen device, with what it was created with (logged once).
+  DeviceProfile profile;
+  // TASK-179: the swapchain's pre-transform and the blit axes it reverses (hw_present_transform.hpp).
+  PresentTransform present_transform;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
   VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
@@ -763,6 +768,7 @@ struct Backend::Impl {
     // Re-inspect the chosen device so queue_family and the report describe it.
     std::vector<std::string> missing;
     inspect_device(physical, missing, report);
+    profile = vulkan_loader::probe_device_profile(instance, physical);
     return true;
   }
 
@@ -802,6 +808,10 @@ struct Backend::Impl {
     features2.features.pipelineStatisticsQuery = supported.features.pipelineStatisticsQuery;
     features2.features.independentBlend = supported.features.independentBlend;  // IN-481
     independent_blend = supported.features.independentBlend == VK_TRUE;
+    // TASK-179: points wider than one pixel (largePoints) and the deinterlace kernel's indexed history images
+    // (shaderStorageImageArrayDynamicIndexing) were used without being enabled. Enabled where the device has them; where
+    // it does not, core 2 draws points as two triangles and runs the constant-index build of the kernel.
+    vulkan_loader::enable_profile_features(profile, features2.features);
 
     // IN-345: pixel interlock lets the GPU path draw a batch of triangles in one draw (no barriers).
     // GT4_HW_INTERLOCK=0 leaves it off on a device that has it: the path of GPUs without it (most mobile GPUs), for
@@ -815,6 +825,8 @@ struct Backend::Impl {
     if (pixel_interlock) v12.pNext = &interlock;
     std::vector<const char *> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     if (pixel_interlock) extensions.push_back(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
+    // TASK-179: the heap budgets core 2 sizes its rings from.
+    if (const char *budget = vulkan_loader::memory_budget_extension(profile)) extensions.push_back(budget);
     // IN-515: the present mode that keeps no old frames in the queue, on request (choose_present_mode).
     std::uint32_t extension_count = 0;
     vkEnumerateDeviceExtensionProperties(physical, nullptr, &extension_count, nullptr);
@@ -881,6 +893,7 @@ struct Backend::Impl {
                                                                                              : "";
     std::fprintf(stderr, "[hw] presentation queue: %s (graphics family %u with %u queue%s%s)\n", path_text, queue_family,
                  family_queues, family_queues == 1 ? "" : "s", reason);
+    std::fprintf(stderr, "[hw] device profile: %s\n", profile_line(profile).c_str());
 
     VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1000,7 +1013,21 @@ struct Backend::Impl {
     info.imageArrayLayers = 1;
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    info.preTransform = caps.currentTransform;
+    // TASK-179: the pre-transform is the one the picture is drawn with (hw_present_transform.hpp). It was the surface's
+    // currentTransform with the picture drawn unrotated: right only while that is the identity (always on Windows). Now
+    // the identity wherever the surface takes it, and the platform's compositor turns the picture for a rotated display.
+    present_transform = choose_present_transform(caps.supportedTransforms, caps.currentTransform);
+    if (!present_transform.handled) {
+      error = std::string("the surface takes only quarter-turn pre-transforms (current: ") +
+              transform_name(caps.currentTransform) + "), which this renderer cannot draw";
+      return false;
+    }
+    if (present_transform.pre_transform != kTransformIdentity || caps.currentTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+      std::fprintf(stderr, "[hw] swapchain pre-transform: %s (the surface's current: %s)%s\n",
+                   transform_name(present_transform.pre_transform), transform_name(caps.currentTransform),
+                   present_transform.upright() ? "" : "; the picture is blitted mirrored to match, the performance HUD stays off");
+    }
+    info.preTransform = static_cast<VkSurfaceTransformFlagBitsKHR>(present_transform.pre_transform);
     info.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
                               ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                               : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
@@ -1150,8 +1177,6 @@ struct Backend::Impl {
       stats.present_fill = fill ? 1u : 0u;
       stats.present_fill_millionths = static_cast<std::uint32_t>(aspect >> 32);
       const std::uint32_t dw = rect.width, dh = rect.height;
-      const std::int32_t left = static_cast<std::int32_t>(rect.left);
-      const std::int32_t top = static_cast<std::int32_t>(rect.top);
       stats.present_left = rect.left;
       stats.present_top = rect.top;
       stats.present_width = rect.width;
@@ -1184,11 +1209,14 @@ struct Backend::Impl {
       blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
       blit.srcOffsets[1] = {static_cast<std::int32_t>(lw), static_cast<std::int32_t>(lh), 1};
       blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      blit.dstOffsets[0] = {left, top, 0};
-      blit.dstOffsets[1] = {left + static_cast<std::int32_t>(dw), top + static_cast<std::int32_t>(dh), 1};
+      // TASK-179: under a mirrored or half-turned pre-transform the blit reverses those axes (the identity: left, top to
+      // left + dw, top + dh as before).
+      const BlitDestination destination = present_blit_destination(rect, extent.width, extent.height, present_transform);
+      blit.dstOffsets[0] = {destination.x0, destination.y0, 0};
+      blit.dstOffsets[1] = {destination.x1, destination.y1, 1};
       gt4_hwd_vkCmdBlitImage(cmd, upload.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, draw_images[index],
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-      if (hud_layer) {
+      if (hud_layer && present_transform.upright()) {
         hud_layer->record(cmd, static_cast<std::uint32_t>(submissions % frame_slots), draw_images[index], swapchain_format, extent);
       }
     });
@@ -1760,6 +1788,7 @@ bool Backend::init(const Options &options, std::string &error) {
   handles.independentBlend = s.independent_blend;
   handles.dualSourceBlend = true;  // a required feature of this backend
   handles.queueLock = s.shares_queue() ? &s.queue_lock : nullptr;  // TASK-174: the renderer's submissions share the queue
+  handles.profile = s.profile;      // TASK-179
   {
     // M12 (06.1, IN-371): GT4_HW_SCALE clamped to the device ceiling s_max = max(1, floor(maxImageDimension2D /
     // 1280)); the 06.3 half-pixel mode sets the vertex shift factor (native: s, normal: m, off: 1).

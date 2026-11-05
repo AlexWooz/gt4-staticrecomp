@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "../hw_device_profile.hpp"
+
 namespace gt4::hw {
 class QueueLock;  // hw_queue_lock.hpp
 }
@@ -35,6 +37,10 @@ struct VulkanHandles {
     // TASK-174: set when the presentation thread shares `queue` (a device with one queue in its graphics family). Every
     // vkQueueSubmit and vkDeviceWaitIdle on it then runs inside this lock (Vulkan external synchronization); null otherwise.
     gt4::hw::QueueLock *queueLock = nullptr;
+    // TASK-179: the capability probe of the device (vulkan_loader::probe_device_profile), with what it was created with
+    // (largePoints, shaderStorageImageArrayDynamicIndexing). Not probed (`profile.probed` false): the renderers take the
+    // paths that need neither feature.
+    gt4::hw::DeviceProfile profile;
 };
 
 // Vertex record of chapter 03.3 (32 bytes). X and Y are 12.4 two's complement values.

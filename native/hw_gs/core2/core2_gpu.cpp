@@ -40,6 +40,8 @@
 namespace hwgs::core2 {
 namespace {
 
+// Today's ring sizes for 8 recordings in flight (a recording's share is an eighth), and the readback buffer. TASK-179: the
+// cap of the sizes planned from the device's heaps (gt4::hw::plan_core2_rings); GT4_CORE2_RINGS=fixed keeps them as they are.
 constexpr VkDeviceSize kStagingBytes = static_cast<VkDeviceSize>(256) << 20;
 constexpr VkDeviceSize kVertexBytes = static_cast<VkDeviceSize>(64) << 20;
 constexpr VkDeviceSize kUniformBytes = static_cast<VkDeviceSize>(16) << 20;
@@ -354,6 +356,14 @@ struct Gpu::Impl {
   std::map<std::pair<VkImageView, VkImageView>, VkFramebuffer> ropFramebuffers;
   VkPipeline pipelines[3] = {};  // points, lines, triangles
   VkPipeline interlockTriangles = VK_NULL_HANDLE;
+  // TASK-179: points are gl_PointSize = scale wide, which above one pixel needs largePoints. Without it (or with a largest
+  // point size under the scale) pipelines[0] draws each point as two triangles (hw_vertex.vert, HWR_POINT_QUAD): a
+  // triangle list reading the point's vertex record once per instance, drawn six vertices per point. The square is the
+  // one point rasterization covers. GT4_CORE2_POINT_QUADS=1 / 0 forces quads / point sizes (A/B).
+  bool pointQuads = false;
+  VkShaderModule pointQuadModule = VK_NULL_HANDLE;
+  // TASK-179: the readback buffer's size (kReadbackBytes unless the heap is small, plan_core2_rings).
+  VkDeviceSize readbackBytes = kReadbackBytes;
 
   // IN-437: the interlocked triangle pipeline specialised per draw state. hw_pixel_uber.frag reads the state block
   // and branches on about 50 of its fields in every wave; with the fields as specialization constants the compiler
@@ -521,6 +531,58 @@ struct Gpu::Impl {
     if (!check(gt4_hwd_vkBindBufferMemory(device, out.buffer, out.memory, 0), "vkBindBufferMemory", error)) return false;
     if (!check(gt4_hwd_vkMapMemory(device, out.memory, 0, size, 0, &out.mapped), "vkMapMemory", error)) return false;
     out.size = size;
+    return true;
+  }
+
+  // TASK-179: the sizes of the staging, vertex, uniform and readback buffers for `shares` recordings, planned from the
+  // heap the upload rings live in (its VK_EXT_memory_budget budget when the profile has one): today's sizes wherever they
+  // fit in a quarter of it (gt4::hw::plan_core2_rings). GT4_CORE2_RINGS=fixed keeps today's sizes whatever the heap (A/B);
+  // GT4_CORE2_RINGS=<MiB> plans for a budget of that many MiB instead (a small device's sizes on a large desktop).
+  bool plan_rings(const gt4::hw::DeviceProfile &profile, VkBufferUsageFlags usage, VkMemoryPropertyFlags preferred,
+                  std::uint32_t shares, gt4::hw::RingPlan &plan, std::string &error) const {
+    // The memory type a ring buffer takes, from a small buffer of the same usage.
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = 4096;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer probe = VK_NULL_HANDLE;
+    if (!check(gt4_hwd_vkCreateBuffer(device, &info, nullptr, &probe), "vkCreateBuffer", error)) return false;
+    VkMemoryRequirements requirements{};
+    gt4_hwd_vkGetBufferMemoryRequirements(device, probe, &requirements);
+    gt4_hwd_vkDestroyBuffer(device, probe, nullptr);
+    std::uint32_t type = 0;
+    if (!memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     preferred, type)) {
+      error = "no host-visible memory type for a CORE2 buffer";
+      return false;
+    }
+    const std::uint32_t heap = memoryProperties.memoryTypes[type].heapIndex;
+    gt4::hw::RingRequest request;
+    request.heap_size = memoryProperties.memoryHeaps[heap].size;
+    request.heap_budget = profile.probed && profile.memory_budget && heap < profile.heap_count ? profile.heaps[heap].budget : 0;
+    request.shares = shares;
+    request.staging_share = kStagingBytes / 8u;
+    request.vertex_share = kVertexBytes / 8u;
+    request.uniform_share = kUniformBytes / 8u;
+    request.readback = kReadbackBytes;
+    request.other = static_cast<std::uint64_t>(kLaterSlots) * kLaterWords * 4u;
+    if (const char *rings = std::getenv("GT4_CORE2_RINGS")) {
+      if (std::strcmp(rings, "fixed") == 0) {
+        request.fixed = true;
+      } else if (std::atoll(rings) > 0) {
+        request.forced_budget = static_cast<std::uint64_t>(std::atoll(rings)) << 20;
+      }
+    }
+    plan = gt4::hw::plan_core2_rings(request);
+    std::fprintf(stderr,
+                 "[core2] rings: %u shares, staging %llu MiB, vertex %llu MiB, uniform %llu MiB, readback %llu MiB (%llu MiB "
+                 "mapped); heap %u of %llu MiB, budget %llu MiB, allowance %llu MiB (%s): %s\n",
+                 plan.shares, static_cast<unsigned long long>(plan.staging >> 20),
+                 static_cast<unsigned long long>(plan.vertex >> 20), static_cast<unsigned long long>(plan.uniform >> 20),
+                 static_cast<unsigned long long>(plan.readback >> 20), static_cast<unsigned long long>(plan.total() >> 20), heap,
+                 static_cast<unsigned long long>(request.heap_size >> 20), static_cast<unsigned long long>(request.heap_budget >> 20),
+                 static_cast<unsigned long long>(plan.allowance >> 20), plan.basis,
+                 plan.reduced ? "reduced to fit" : "today's sizes");
     return true;
   }
 
@@ -812,12 +874,15 @@ struct Gpu::Impl {
     return module;
   }
 
+  // `pointQuad` (TASK-179): the point pipeline without largePoints: the HWR_POINT_QUAD vertex stage, a triangle list, and
+  // the vertex record read per instance.
   VkPipeline make_graphics(VkPrimitiveTopology topology, VkShaderModule fragment, std::string &error,
-                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0, bool sheenEarlyOut = false) {
+                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0, bool sheenEarlyOut = false,
+                           bool pointQuad = false) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertexModule;
+    stages[0].module = pointQuad ? pointQuadModule : vertexModule;
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -841,7 +906,8 @@ struct Gpu::Impl {
     bytes += 4;
     const VkSpecializationInfo withEarlyZ{count, entries, bytes, data};
     stages[1].pSpecializationInfo = &withEarlyZ;
-    VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex),
+                                            pointQuad ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes[7]{};
     attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};   // S, T
     attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UINT, 8};   // R, G, B, A
@@ -856,7 +922,7 @@ struct Gpu::Impl {
     vertexInput.vertexAttributeDescriptionCount = 7;
     vertexInput.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    assembly.topology = topology;
+    assembly.topology = pointQuad ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : topology;
     VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     viewport.viewportCount = 1;
     viewport.scissorCount = 1;
@@ -864,7 +930,7 @@ struct Gpu::Impl {
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.cullMode = VK_CULL_MODE_NONE;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0f;
+    raster.lineWidth = 1.0f;  // TASK-179: every line is one pixel wide (no wideLines needed; GS lines are not widened at scale)
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -2060,7 +2126,14 @@ struct Gpu::Impl {
         gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, command.pipeline);
         bound.pipeline = command.pipeline;
       }
-      gt4_hwd_vkCmdDraw(cmd, command.count, 1, baseVertex + command.first, 0);
+      if (pointQuads && command.pipeline == pipelines[0]) {
+        // TASK-179: six corners per point, one instance per point record (the same records, read per instance).
+        gt4_hwd_vkCmdDraw(cmd, 6, command.count, 0, baseVertex + command.first);
+        stats.pointQuads += command.count;
+      } else {
+        gt4_hwd_vkCmdDraw(cmd, command.count, 1, baseVertex + command.first, 0);
+      }
+      if (command.pipeline == pipelines[0]) stats.points += command.count;
       stats.draws++;
       drewSinceBarrier = true;
     }
@@ -2512,7 +2585,10 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   VkPhysicalDeviceProperties properties{};
   gt4_hw_vkGetPhysicalDeviceProperties(s.physical, &properties);
   s.limits = properties.limits;
-  s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+  // TASK-179: from the device profile, by the same rule (VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU); from the device type when
+  // the device's creator did not probe it.
+  s.integrated = handles.profile.probed ? handles.profile.integrated_defaults
+                                        : gt4::hw::integrated_defaults(static_cast<std::uint32_t>(properties.deviceType));
   s.deviceProperties = properties;  // IN-507
   {
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
@@ -2540,6 +2616,19 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   }
   if (s.slotCount == 0) s.slotCount = s.integrated ? 8u : 16u;  // IN-517
   if (s.submitEvery == Impl::kSubmitEveryAtInit) s.submitEvery = s.integrated ? 32u : 64u;  // TASK-134
+  const VkBufferUsageFlags stagingUsage =
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
+  // write-combined type the first match would give. GT4_CORE2_CACHED_UPLOAD=0 / 1 forces it off / on (A/B).
+  const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
+  const VkMemoryPropertyFlags uploadMemory =
+      (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
+  // TASK-179: the rings sized from their heap (gt4::hw::plan_core2_rings), today's sizes as the cap. IN-517: today's sizes
+  // are for 8 slots and a recording's share stays the same with more. Fewer shares than slots (a small heap): fewer slots.
+  gt4::hw::RingPlan rings;
+  if (!s.plan_rings(handles.profile, stagingUsage, uploadMemory, std::max<std::uint32_t>(s.slotCount, 8u), rings, error)) return false;
+  s.slotCount = std::min(s.slotCount, rings.shares);
+  s.readbackBytes = rings.readback;
   s.lastSubmitted = s.slotCount - 1u;  // S4: the first recording takes slot 0
   if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
     VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -2570,18 +2659,9 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     }
   }
 
-  const VkBufferUsageFlags stagingUsage =
-      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
-  // write-combined type the first match would give. GT4_CORE2_CACHED_UPLOAD=0 / 1 forces it off / on (A/B).
-  const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
-  const VkMemoryPropertyFlags uploadMemory =
-      (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
-  // IN-517: the sizes are for 8 slots; a recording's share stays the same with more.
-  const VkDeviceSize ringScale = std::max<std::uint32_t>(s.slotCount, 8u);
-  if (!s.make_buffer(s.staging, kStagingBytes / 8u * ringScale, stagingUsage, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.vertices, kVertexBytes / 8u * ringScale, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.uniforms, kUniformBytes / 8u * ringScale, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.staging, rings.staging, stagingUsage, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.vertices, rings.vertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.uniforms, rings.uniform, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
   {
     std::string types;
     for (std::uint32_t i = 0; i < s.memoryProperties.memoryTypeCount; ++i) {
@@ -2593,7 +2673,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     std::fprintf(stderr, "[core2] memory types (L local, V visible, C coherent, H cached):%s; upload buffers %s\n", types.c_str(),
                  uploadMemory ? "prefer cached" : "first visible");
   }
-  if (!s.make_buffer(s.readback, kReadbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
+  if (!s.make_buffer(s.readback, s.readbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
   if (!s.make_buffer(s.later, static_cast<VkDeviceSize>(Impl::kLaterSlots) * Impl::kLaterWords * 4u, stagingUsage,
                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
 
@@ -2691,7 +2771,20 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.fragmentModule =
       s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
   if (!s.vertexModule || !s.fragmentModule) return false;
-  s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error);
+  {
+    // TASK-179: points of `scale` pixels as points where the device was created with largePoints and draws them that
+    // large (and always at 1x), as two triangles elsewhere.
+    const char *quadSwitch = std::getenv("GT4_CORE2_POINT_QUADS");
+    const bool sizesFit = handles.profile.points_of_size(static_cast<float>(s.scale));
+    s.pointQuads = quadSwitch ? std::strcmp(quadSwitch, "0") != 0 : !sizesFit;
+    if (s.pointQuads) {
+      s.pointQuadModule = s.make_module(hwgs::shaders::hw_vertex_point_quad_words, hwgs::shaders::hw_vertex_point_quad_word_count, error);
+      if (!s.pointQuadModule) return false;
+    }
+    std::fprintf(stderr, "[core2] points at %ux: %s\n", s.scale,
+                 s.pointQuads ? "two triangles each (no largePoints, or a smaller largest point size)" : "points (largePoints or 1x)");
+  }
+  s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error, nullptr, 0, false, s.pointQuads);
   s.pipelines[1] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, s.fragmentModule, error);
   s.pipelines[2] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.fragmentModule, error);
   if (!s.pipelines[0] || !s.pipelines[1] || !s.pipelines[2]) return false;
@@ -2700,7 +2793,14 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     const char *ropSwitch = std::getenv("GT4_CORE2_ROP");
     const bool wanted = ropSwitch ? std::strcmp(ropSwitch, "0") != 0 : s.integrated;
     s.dualSourceBlend = handles.dualSourceBlend;
-    if (wanted && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
+    // TASK-179: the path's own format need (the device check no longer refuses a device without it): the targets'
+    // R8G8B8A8_UNORM views as blendable colour attachments.
+    VkFormatProperties rgba8{};
+    gt4_hw_vkGetPhysicalDeviceFormatProperties(s.physical, VK_FORMAT_R8G8B8A8_UNORM, &rgba8);
+    const VkFormatFeatureFlags ropFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    const bool ropFormat = (rgba8.optimalTilingFeatures & ropFeatures) == ropFeatures;
+    if (wanted && !ropFormat) std::fprintf(stderr, "[core2] colour attachment path (IN-481): R8G8B8A8_UNORM is not a blendable colour attachment here\n");
+    if (wanted && ropFormat && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
       VkAttachmentDescription attachment{};
       attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
       attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2762,8 +2862,13 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
         !s.image_layouts(fxaaCounts, 2, 2 * 4, s.fxaaSetLayout, s.fxaaLayout, error)) {
       return false;
     }
-    s.deinterlaceModule = s.make_module(hwgs::shaders::hw_deinterlace_scaled_words,
-                                        hwgs::shaders::hw_deinterlace_scaled_word_count, error);
+    // TASK-179: the kernel indexes its history images with a push constant, which needs shaderStorageImageArrayDynamicIndexing;
+    // without it the constant-index build runs (the same pixels).
+    s.deinterlaceModule = handles.profile.storage_image_array_dynamic_indexing_enabled
+                              ? s.make_module(hwgs::shaders::hw_deinterlace_scaled_words,
+                                              hwgs::shaders::hw_deinterlace_scaled_word_count, error)
+                              : s.make_module(hwgs::shaders::hw_deinterlace_scaled_constant_words,
+                                              hwgs::shaders::hw_deinterlace_scaled_constant_word_count, error);
     s.fxaaModule = s.make_module(hwgs::shaders::hw_postfx_fxaa_words, hwgs::shaders::hw_postfx_fxaa_word_count, error);
     if (!s.deinterlaceModule || !s.fxaaModule) return false;
     s.deinterlacePipeline = s.make_compute(s.deinterlaceModule, error, s.deinterlaceLayout);
@@ -4167,7 +4272,7 @@ bool Gpu::Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, 
   const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
   const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  if (bytes > kReadbackBytes) {
+  if (bytes > s.readbackBytes) {
     error = "CORE2 reduction larger than the readback buffer";
     return false;
   }
@@ -4205,7 +4310,7 @@ bool Gpu::ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std
     offsets.push_back(total);
     total += static_cast<VkDeviceSize>(r.x1 - r.x0 + 1) * static_cast<VkDeviceSize>(r.y1 - r.y0 + 1) * 4u;
   }
-  if (total > kReadbackBytes) return false;  // empty error: reduce one by one
+  if (total > s.readbackBytes) return false;  // empty error: reduce one by one
   if (!s.begin_recording(error)) return false;
   s.flush_draws();
   s.end_render_pass();
@@ -4556,12 +4661,12 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
   width = std::min(width, source.width);
   height = std::min(height, source.height);
   const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * 4u;
-  if (rowBytes == 0 || height == 0 || rowBytes > kReadbackBytes) {
+  if (rowBytes == 0 || height == 0 || rowBytes > s.readbackBytes) {
     error = "CORE2 display read outside the readback buffer";
     return false;
   }
   // IN-435: frames larger than the readback buffer (7680 x 5376 at 12x is 165 MB) are read in bands of rows.
-  const std::uint32_t bandRows = static_cast<std::uint32_t>(std::min<VkDeviceSize>(height, kReadbackBytes / rowBytes));
+  const std::uint32_t bandRows = static_cast<std::uint32_t>(std::min<VkDeviceSize>(height, s.readbackBytes / rowBytes));
   pixels.resize(static_cast<std::size_t>(width) * height);
   for (std::uint32_t top = 0; top < height; top += bandRows) {
     const std::uint32_t rows = std::min(bandRows, height - top);
@@ -4593,7 +4698,7 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
   width = std::min(width, image->width);
   height = std::min(height, image->height);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  if (bytes == 0 || bytes > kReadbackBytes) {
+  if (bytes == 0 || bytes > s.readbackBytes) {
     error = "CORE2 image read outside the readback buffer";
     return false;
   }
