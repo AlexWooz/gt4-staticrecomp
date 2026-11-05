@@ -355,6 +355,23 @@
     var coregs = shown();
     check("CoreGS 2.0 shows its Graphics menus above its switches", menusAbove(coregs, ["renderer", "render_scale", "frame_rate", "coregs_sharpening"], ["performance_mode", "fxaa"]), coregs.join("|"));
     check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, ["frame_rate", "coregs_sharpening"]) && lacks(coregs, gsdxOnly), coregs.join("|"));
+    // TASK-175: the Performance HUD is a three-way choice (Off, FPS only, Full), Off by default, in the Advanced section.
+    function hudNode() { return document.querySelector(".selector[data-setting=\"performance_hud\"]"); }
+    var hudWords = ["off", "fps", "full"].map(function (value) { return T("choice.performance_hud." + value); });
+    check("the Performance HUD choices are text in this language, all different", hudWords.every(function (word) { return word.indexOf("choice.") !== 0; }) &&
+      hudWords[0] !== hudWords[1] && hudWords[1] !== hudWords[2] && hudWords[0] !== hudWords[2], hudWords.join("|"));
+    check("the Performance HUD help is text in this language", T("setting.performance_hud.help").indexOf("setting.") !== 0, T("setting.performance_hud.help"));
+    check("CoreGS 2.0 shows the Performance HUD as a choice in Advanced, Off by default", !!hudNode() && !!hudNode().closest("[data-section=\"advanced\"]") &&
+      hudNode().getAttribute("aria-valuetext") === hudWords[0], hudNode() ? hudNode().getAttribute("aria-valuetext") : "no selector");
+    for (var hudStep = 1; hudStep <= 2; hudStep++) {
+      await GT4.backend.call("set_setting", { id: "performance_hud", value: ["off", "fps", "full"][hudStep] });
+      await setHash("#/settings/about");
+      await setHash("#/settings/graphics");
+      await wait(200);
+      check("the Performance HUD selector shows " + hudWords[hudStep], !!hudNode() && hudNode().getAttribute("aria-valuetext") === hudWords[hudStep],
+        hudNode() ? hudNode().getAttribute("aria-valuetext") : "no selector");
+    }
+    await GT4.backend.call("set_setting", { id: "performance_hud", value: "off" });
     await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
     await setHash("#/settings/about");
     await setHash("#/settings/graphics");

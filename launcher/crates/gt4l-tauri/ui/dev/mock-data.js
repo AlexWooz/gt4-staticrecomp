@@ -200,8 +200,8 @@
         { value: "off", label: "Off" }
       ],
       default: "on", current: "on" },
-    { visible_when: { id: "renderer", equals: "coregs20" }, id: "performance_hud", label: "Performance HUD", help: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the processor, the graphics card and memory.",
-      page: "advanced", control: "toggle", values: null, default: false, current: false },
+    { visible_when: { id: "renderer", equals: "coregs20" }, id: "performance_hud", label: "Performance HUD", help: "Shows a panel in the corner while you play. FPS only shows just the frame rate. Full shows the names of your graphics card and processor, the frame rate and frame time with a live graph, the game's use of the processor, the graphics card and memory, and the state of the performance report when that is turned on.",
+      page: "advanced", control: "dropdown", values: [{ value: "off", label: "Off" }, { value: "fps", label: "FPS only" }, { value: "full", label: "Full" }], default: "off", current: "off" },
     { id: "performance_report", label: "Performance report", help: "Records frame timing while you play for bug reports.",
       page: "advanced", control: "toggle", values: null, default: false, current: false },
     { visible_when: { id: "renderer", equals: "coregs20" }, id: "frame_rate", label: "Frame rate (experimental)", help: "60 FPS is the default. The 30 FPS mode is for weaker PCs and is still experimental: races draw 30 frames per second, with the game at full speed and the same physics. Menus stay at 60.", page: "basic", group: null, control: "dropdown", values: [{ value: "60", label: "60 FPS" }, { value: "30", label: "30 FPS" }], default: "60", current: "60", connected: true },

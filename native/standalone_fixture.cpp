@@ -425,6 +425,11 @@ void check_resolve() {
     check(lacks(coregs.set, "PS2_GS") && lacks(coregs.set, "GT4_GS_PROCESS") && lacks(coregs.set, "GT4_GS_CONFIG"),
           "nothing of GSdx goes with it");
     check(has(coregs.set, "GT4_FORCE_480P", "1") && has(coregs.set, "GT4_FORCE_WIDESCREEN", "1"), "the fixed holds stay");
+    // TASK-175: the HUD's FPS only mode.
+    sa::Inputs fps_hud = inputs_for(*layout, nullptr);
+    fps_hud.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_hud=fps\n");
+    check(fps_hud.config->warnings.empty() && has(sa::resolve(fps_hud, chosen.access()).set, "GT4_HW_HUD", "fps"), "game.ini's hw_hud=fps becomes GT4_HW_HUD=fps");
+    check(!sa::parse_config("hw_hud=full\n").warnings.empty() && !sa::parse_config("hw_hud=0\n").warnings.empty(), "other HUD values are refused");
     // TASK-146: the 60 FPS mode's frame skipping when behind, and nothing else for it.
     sa::Inputs sixty = inputs_for(*layout, nullptr);
     sixty.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_frame_skip_adaptive=1\n");

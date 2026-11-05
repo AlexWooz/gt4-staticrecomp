@@ -247,9 +247,11 @@ pub fn coregs20_environment(
     if !settings.is_on("present_thread") {
         variables.insert("GT4_HW_PRESENT_SHARED_QUEUE", "0".to_string());
     }
-    // TASK-135: the performance HUD.
-    if settings.is_on("performance_hud") {
-        variables.insert("GT4_HW_HUD", "1".to_string());
+    // TASK-135, TASK-175: the performance HUD. Full is GT4_HW_HUD=1, FPS only is GT4_HW_HUD=fps, Off sets nothing.
+    match settings.get("performance_hud") {
+        crate::settings::HUD_FULL => drop(variables.insert("GT4_HW_HUD", "1".to_string())),
+        crate::settings::HUD_FPS_ONLY => drop(variables.insert("GT4_HW_HUD", "fps".to_string())),
+        _ => {}
     }
     // No frametime.csv in the session folder any more (owner, 2026-11-03: not needed). GT4_HW_FRAMETIME_LOG=<csv> by hand
     // still writes it for a bench (scripts/coregs2_bench/frametime_plot.py).

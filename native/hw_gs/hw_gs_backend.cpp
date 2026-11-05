@@ -344,11 +344,9 @@ struct Backend::Impl {
     frametime_file = nullptr;
   }
 
-  // TASK-135: the performance HUD (GT4_HW_HUD=1); null when off.
-  const bool hud_wanted = [] {
-    const char *text = std::getenv("GT4_HW_HUD");
-    return text != nullptr && std::strcmp(text, "1") == 0;
-  }();
+  // TASK-135, TASK-175: the performance HUD (GT4_HW_HUD=1 the full panel, GT4_HW_HUD=fps the frame rate alone); null when off.
+  const gt4::hw::hud::Mode hud_mode = gt4::hw::hud::mode_from_setting(std::getenv("GT4_HW_HUD"));
+  const bool hud_wanted = hud_mode != gt4::hw::hud::Mode::off;
   std::unique_ptr<gt4::hw::hud::Layer> hud_layer;
 
   // vkQueuePresentKHR with the log's id and times, counted as shown or failed (TASK-174).
@@ -1055,7 +1053,7 @@ struct Backend::Impl {
     }
     if (hud_wanted && !hud_layer) {
       const char *scale = std::getenv("GT4_HW_SCALE");
-      hud_layer = std::make_unique<gt4::hw::hud::Layer>(physical, device, frame_slots, window, report.device_name, scale != nullptr ? scale : "");
+      hud_layer = std::make_unique<gt4::hw::hud::Layer>(physical, device, frame_slots, window, report.device_name, scale != nullptr ? scale : "", hud_mode);
     }
     resize_pending = false;
     return true;

@@ -300,19 +300,43 @@ fn the_one_queue_presentation_path_is_the_games_default_and_only_off_is_passed()
 }
 
 #[test]
-fn the_performance_hud_is_off_by_default_and_on_only_when_chosen() {
+fn the_performance_hud_is_off_by_default_and_fps_only_or_full_when_chosen() {
     let textures = TextureLocation::default_folder(Path::new("T"));
     let mut settings = Settings::default();
-    assert!(!settings.is_on("performance_hud"));
+    assert_eq!(settings.get("performance_hud"), "off");
     let off = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
     assert!(!off.contains_key("GT4_HW_HUD"));
     assert!(!launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud"));
-    settings.set("performance_hud", "on").unwrap();
-    let on = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
-    assert_eq!(on["GT4_HW_HUD"], "1");
+    settings.set("performance_hud", "fps").unwrap();
+    let fps = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert_eq!(fps["GT4_HW_HUD"], "fps");
+    assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud=fps\n"));
+    settings.set("performance_hud", "full").unwrap();
+    let full = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert_eq!(full["GT4_HW_HUD"], "1");
     assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud=1\n"));
     // It is CoreGS 2.0's own: GSdx has its overlay.
     assert!(!env_map(&game_environment(&settings)).contains_key("GT4_HW_HUD"));
+    assert!(settings.set("performance_hud", "maybe").is_err());
+}
+
+#[test]
+fn a_stored_performance_hud_on_from_the_toggle_days_reads_as_full() {
+    let textures = TextureLocation::default_folder(Path::new("T"));
+    let mut settings = Settings::default();
+    settings.set("performance_hud", "on").unwrap();
+    assert_eq!(settings.get("performance_hud"), "full");
+    assert_eq!(env_map(&launch::coregs20_environment(&settings, None, false, &textures))["GT4_HW_HUD"], "1");
+    // Reading a settings file does the same, and an old `off` stays off.
+    let (file, warnings) = gt4l_core::config::parse("[settings]
+performance_hud = \"on\"
+").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(file.settings.get("performance_hud"), "full");
+    let (file, _) = gt4l_core::config::parse("[settings]
+performance_hud = \"off\"
+").unwrap();
+    assert_eq!(file.settings.get("performance_hud"), "off");
 }
 
 #[test]
