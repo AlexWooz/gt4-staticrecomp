@@ -5163,8 +5163,8 @@ int TestCore2PrepareShaders(const gpu::VulkanHandles& handles) {
 
 // hw_core2_shader_guard (TASK-170): a prepare that ends inside a variant compile (a driver that ends the process there,
 // simulated with GT4_CORE2_TEST_COMPILE_ABANDON) leaves the guard; the next prepare compiles one variant at a time (a
-// parallel run left several keys in flight) or quarantines the one key in flight, and a later prepare finishes without the
-// quarantined variants.
+// parallel run left several keys in flight) or marks the one key in flight a suspect (TASK-170c); the same key ending a
+// second run is quarantined, and a later prepare finishes without the quarantined variants.
 int TestCore2ShaderGuard(const gpu::VulkanHandles& handles) {
     namespace fs = std::filesystem;
     const fs::path folder = fs::temp_directory_path() / ("gt4_shader_guard_test_" + std::to_string(_getpid()));
@@ -5190,8 +5190,8 @@ int TestCore2ShaderGuard(const gpu::VulkanHandles& handles) {
         }
         run.guard = renderer.ShaderGuard();
         run.ready = renderer.PrepareShaders([&](std::size_t, std::size_t all) { run.total = all; }, error);
-        std::printf("  %s: ready %d, %zu variants, %zu quarantined, serial %d\n", what, run.ready ? 1 : 0, run.total,
-                    run.guard.quarantined, run.guard.serial ? 1 : 0);
+        std::printf("  %s: ready %d, %zu variants, %zu quarantined, %zu suspects, serial %d\n", what, run.ready ? 1 : 0,
+                    run.total, run.guard.quarantined, run.guard.suspects, run.guard.serial ? 1 : 0);
         return run;
     };
     const Run clean = prepare("a clean prepare", "");
@@ -5201,26 +5201,84 @@ int TestCore2ShaderGuard(const gpu::VulkanHandles& handles) {
     // A run that ends inside its 4th compile leaves compiling.bin.
     const Run died = prepare("ends inside a compile", "4");
     if (died.ready || !fs::exists(folder / "compiling.bin", ignored)) ++failures;
-    // The next start reads it: one prepare at a time from now on, one quarantined variant if one key was in flight.
+    // The next start reads it: one prepare at a time from now on. One key in flight is only a suspect (TASK-170c), never
+    // quarantined at the first end; several keys name nobody. The suspect compiles again and is cleared.
     const Run after = prepare("after it", "");
-    if (!after.ready || !after.guard.serial || after.guard.quarantined > 1 || fs::exists(folder / "compiling.bin", ignored)) {
+    if (!after.ready || !after.guard.serial || after.guard.quarantined != 0 || after.guard.suspects > 1 ||
+        fs::exists(folder / "compiling.bin", ignored) || fs::exists(folder / "suspects.bin", ignored)) {
         ++failures;
     }
-    if (after.total + after.guard.quarantined != clean.total) ++failures;
+    if (after.total != clean.total) ++failures;
 
-    // A one-at-a-time run that ends inside its 2nd compile: exactly that variant is quarantined.
+    // Strike one: a one-at-a-time run ends inside its 2nd compile. That key is a suspect, not quarantined...
     fs::remove(folder / "prepared.bin", ignored);
     const Run diedSerial = prepare("one at a time, ends inside a compile", "2");
     if (diedSerial.ready || !fs::exists(folder / "compiling.bin", ignored)) ++failures;
     fs::remove(folder / "prepared.bin", ignored);
-    const Run quarantinedRun = prepare("after it", "");
-    if (!quarantinedRun.ready || !quarantinedRun.guard.serial || quarantinedRun.guard.quarantined != after.guard.quarantined + 1 ||
-        quarantinedRun.total + quarantinedRun.guard.quarantined != clean.total || !fs::exists(folder / "quarantine.bin", ignored)) {
+    const Run suspected = prepare("after strike one", "");
+    if (!suspected.ready || !suspected.guard.serial || suspected.guard.suspects != 1 || suspected.guard.quarantined != 0 ||
+        suspected.total != clean.total) {
         ++failures;
     }
-    // The quarantine stays for the next starts; a damaged guard file is ignored.
-    const Run again = prepare("the next start", "");
-    if (again.guard.quarantined != quarantinedRun.guard.quarantined || !again.guard.serial) ++failures;
+    // ...it was compiled again (the total is the whole list) and, compiling fine, is cleared.
+    if (fs::exists(folder / "suspects.bin", ignored) || fs::exists(folder / "quarantine.bin", ignored) == false) ++failures;
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run cleared = prepare("the suspect compiled fine", "");
+    if (cleared.guard.suspects != 0 || cleared.guard.quarantined != 0 || cleared.total != clean.total) ++failures;
+
+    // Two strikes on the same key: it ends two runs in a row (the same 2nd compile of the same list) and is quarantined.
+    fs::remove(folder / "prepared.bin", ignored);
+    prepare("strike one again", "2");
+    fs::remove(folder / "prepared.bin", ignored);
+    prepare("strike two", "2");
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run quarantinedRun = prepare("after strike two", "");
+    if (!quarantinedRun.ready || !quarantinedRun.guard.serial || quarantinedRun.guard.quarantined != 1 ||
+        quarantinedRun.guard.suspects != 0 || quarantinedRun.total + quarantinedRun.guard.quarantined != clean.total ||
+        !fs::exists(folder / "quarantine.bin", ignored) || fs::exists(folder / "suspects.bin", ignored)) {
+        ++failures;
+    }
+    // rc14 files (quarantine.bin and no suspects.bin) load as they are, and the quarantine stays.
+    const Run again = prepare("the next start, rc14 layout", "");
+    if (again.guard.quarantined != 1 || again.guard.suspects != 0 || !again.guard.serial) ++failures;
+
+    // A new suspect next to the quarantine; another driver's files start clean; a damaged suspects.bin is ignored.
+    fs::remove(folder / "prepared.bin", ignored);
+    prepare("a different key ends a run", "2");
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run twoKinds = prepare("a suspect beside the quarantine", "1");
+    if (twoKinds.guard.suspects != 1 || twoKinds.guard.quarantined != 1) ++failures;
+    if (!fs::exists(folder / "suspects.bin", ignored)) ++failures;
+    fs::remove(folder / "compiling.bin", ignored);  // the run that just ended inside its first compile
+    auto copyGuard = [&](const char* from, const char* to) {
+        std::error_code copyError;
+        fs::copy_file(folder / from, folder / to, fs::copy_options::overwrite_existing, copyError);
+    };
+    copyGuard("suspects.bin", "suspects.keep");
+    copyGuard("quarantine.bin", "quarantine.keep");
+    for (const char* name : {"suspects.bin", "quarantine.bin"}) {
+        std::fstream file(folder / name, std::ios::binary | std::ios::in | std::ios::out);
+        file.seekp(24);  // the driver version of the header (magic 8, shader set 8, vendor 4, device 4)
+        const std::uint32_t otherDriver = 0x7777u;
+        file.write(reinterpret_cast<const char*>(&otherDriver), sizeof otherDriver);
+    }
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run otherDriver = prepare("another driver's files", "");
+    if (!otherDriver.ready || otherDriver.guard.quarantined != 0 || otherDriver.guard.suspects != 0 || otherDriver.guard.serial ||
+        otherDriver.total != clean.total) {
+        ++failures;
+    }
+    copyGuard("suspects.keep", "suspects.bin");
+    copyGuard("quarantine.keep", "quarantine.bin");
+    {
+        std::ofstream garbage(folder / "suspects.bin", std::ios::binary | std::ios::trunc);
+        garbage << "not a guard file";
+    }
+    fs::remove(folder / "prepared.bin", ignored);
+    const Run damagedSuspects = prepare("a damaged suspects.bin", "");
+    if (!damagedSuspects.ready || damagedSuspects.guard.suspects != 0 || damagedSuspects.guard.quarantined != 1) ++failures;
+
+    // A damaged quarantine.bin is ignored too.
     {
         std::ofstream garbage(folder / "quarantine.bin", std::ios::binary | std::ios::trunc);
         garbage << "not a guard file";

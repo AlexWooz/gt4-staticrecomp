@@ -154,6 +154,7 @@ public:
     // inside their compile; prepares one variant at a time after a parallel prepare died).
     struct ShaderGuardState {
       std::size_t quarantined = 0;
+      std::size_t suspects = 0;  // TASK-170c: keys that ended one run; compiled again, quarantined at a second end
       bool serial = false;
     };
     ShaderGuardState ShaderGuard() const;

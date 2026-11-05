@@ -88,12 +88,13 @@ pub(crate) fn collect(state: &AppState) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
-/// The readable listing of `quarantine.bin` and `compiling.bin` in the shader cache `folder`, if either exists.
+/// The readable listing of `quarantine.bin`, `suspects.bin` and `compiling.bin` in the shader cache `folder`, if either exists.
 pub(crate) fn shader_guard_listing(folder: Option<&Path>) -> Option<String> {
     let folder = folder?;
     let quarantine = fs::read(folder.join(shader_prepare::QUARANTINE_FILE)).ok();
     let compiling = fs::read(folder.join(shader_prepare::COMPILING_FILE)).ok();
-    shader_prepare::guard_listing(quarantine.as_deref(), compiling.as_deref())
+    let suspects = fs::read(folder.join(shader_prepare::SUSPECTS_FILE)).ok();
+    shader_prepare::guard_listing(quarantine.as_deref(), compiling.as_deref(), suspects.as_deref())
 }
 
 /// The facts of `system.txt`, read now.
