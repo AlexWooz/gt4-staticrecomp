@@ -3271,6 +3271,9 @@ per VBlank on the Deck (gif_parse 3.6, draw 3.2, translate 1.67), which TASK-168
 - Still to test: the Deck player's `[hw] presentation` line with and without `GT4_HW_PRESENT_SHARED_QUEUE=0`; the laptop with
   HD 620 when the owner frees it ("not now" on 2026-11-04).
 - State (2026-11-04): game side reviewed and tested on the desktop; launcher side in progress.
+- State (2026-11-05): TASK-174 (314b0236) and TASK-174b (c8d20c08) merged into `release/1.3.0-rc15` and in the rc15 test
+  build (the three pt-BR texts of the option, written as mojibake on the branch, repaired at a07f63ad). Still to test: the Deck
+  player's log.
 
 ### TASK-175 — CoreGS 2.0 performance HUD: full names, the report state, two modes (owner, 2026-11-04; rc15)
 
@@ -3282,6 +3285,8 @@ The owner's photo of the HUD on the RTX 3060 laptop: the GPU name is cut ("NVIDI
 - Branch `task/175-performance-hud`; tests: HUD fixture (fit rule, CPU line, report state machine, FPS-only layout), launcher
   mapping and compatibility, focus checks in both languages; the coordinator checks it in a game run.
 - State (2026-11-04): in progress.
+- State (2026-11-05): 2e2f87f3 merged into `release/1.3.0-rc15` and in the rc15 test build (beside TASK-174's
+  `hw_present_shared_queue` in `launch.rs` and `standalone.cpp`). The HUD's look in a game run is still to check.
 
 ### TASK-176 — Experimental 120 FPS races with the simulation at 120 Hz (study; not in any rc; owner, 2026-11-04)
 
@@ -3334,6 +3339,8 @@ CT24 and 128x128 Z24, 99.9% of the downloaded pixels), so limit the reduction to
 section 9: GPU time is about 30% full-screen post/glare passes and 15% world geometry; Hong Kong dirty patches 18%;
 Motegi Performance mode has a 16x16 CT32 store into a drawn Z24 target every second VBlank (IN-539, off by default). TASK-168 found on the Avell: no gain as built (segments are split back for GT4's T8-over-target batches); the
 fix is TASK-168b (`task/168b-segments-fix`). Owner (2026-11-04): no hurry; keep optimising, change approach when one fails.
+In rc15 (2026-11-05): `task/178-submit-after-wait` at c73b3be8 only (K=0 by default, the counters kept); the branch's
+uncommitted O3 work is not in it.
 
 ### TASK-179 — Android stage A1 on Windows: Vulkan correctness gaps (owner, 2026-11-04; in parallel to rc15)
 
@@ -3342,7 +3349,8 @@ From `docs/ANDROID-PORT-PLAN.md` section 2: features used without being enabled 
 device), a rotation-safe present, host rings sized from the heaps and `VK_EXT_memory_budget` (today's sizes as the cap), and a
 start-up capability profile struct (today's integrated-GPU behaviour unchanged). Frames identical to rc14 (gates6), validation
 layer clean, CTest. Out of scope: Vulkan 1.1, precise/invariant interpolation, no-interlock tuning, D1, determinism items.
-Branch `task/179-vulkan-correctness`. State: in progress. Android target (owner, 2026-11-04): his S23 Ultra (Adreno 740),
+Branch `task/179-vulkan-correctness`. State (2026-11-05): done (4a70b53d), merged into `release/1.3.0-rc15` with its
+rotation-safe present; the point-quad vertex stage now also carries TASK-168's palette row. Android target (owner, 2026-11-04): his S23 Ultra (Adreno 740),
 at least 2x in races, 3x if possible. Suggested next step after A1, cheapest first: build the renderer alone with its tests
 for arm64 Android and measure the no-interlock path on the S23 (owner: later, not now). Also on 2026-11-04: an Avell comparison of GSdx and CoreGS 2.0
 (normal and Performance) at 6x on Motegi Road Course and Hong Kong (owner).
@@ -3393,7 +3401,9 @@ asked for are part of this task:
 The research table (`docs/research/WHEEL-AUTOMAP-TABLE.md`, written beside the PR): VID:PIDs are well known (SDL's list
 of 71 wheels), but button and axis indices are mostly unpublished. So the auto-map uses family templates plus a short
 capture wizard, and saves the result as a shareable preset. The old UI lives at cbfd8b8: `ui/js/pages/wheel.js`,
-`gt4l-core/src/wheel.rs`, `gt4l-platform/src/sdl_wheels.rs` and the nine wheel commands. State: in progress.
+`gt4l-core/src/wheel.rs`, `gt4l-platform/src/sdl_wheels.rs` and the nine wheel commands. State (2026-11-05): done on
+`task/181-wheel-page` (a2374ee0), merged into `release/1.3.0-rc15` and in the rc15 test build (USB capsule slice409 in both
+games). Next: the owner's G27 test on that build (`docs/WHEEL-NATIVE-DFP.md`).
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
@@ -3401,21 +3411,34 @@ The owner gave rc15 two to three days; a plain test build first (no PGO), Telegr
 owner's word (busy on 2026-11-04). Each task is built by a subagent in its own worktree and branch; the coordinator reviews
 (diff, tests, gates) and integrates on `release/1.3.0-rc15` (this branch, from `task/171-license-front-end`).
 
-| Task | What | Branch | State (2026-11-04) |
+| Task | What | Branch | State (2026-11-05) |
 |---|---|---|---|
 | TASK-171 | Track map of every Spec II track (A-Spec, B-Spec) headless on the desktop; batches/VBlank, flush reasons | `task/171-license-front-end` | ✅ Done: palette flushes are the largest batch cause in the player's view on every track |
-| TASK-168 / 168b | Several palettes in one batch (palette segments) | `task/168b-segments-fix` (249e4817, fb9111c7) | ✅ No gain on GT4: the ~1,000 loads/VBlank are tone-sequence copy-back strips that ToneHook must take one palette at a time. 168b makes segments cost-neutral and speeds the default path (GpuPaletteKey fast path, about 0.6 ms/VBlank at 1x, indicative); **owner (2026-11-05): off by default in rc15, code and switch kept**. Next: study drawing the tone strips as one GPU pass |
-| TASK-170b | The launcher runs the shader prepare again (up to 12 attempts while each gets further); `logs/shader-guard.txt` | `task/170b-prepare-retry` (0e4e6d9e) | ✅ Reviewed: launcher 681 tests, focus checks 297/297 and 304/304 |
-| TASK-170c | Quarantine a variant only after two crashes of the same key; the launcher's progress rule follows (a first crash counts as progress; compare the guard files' bytes, not counts) | not started | 📋 After TASK-168 |
-| TASK-174 | Presentation off the GS thread on one-queue GPUs (Steam Deck, issue #204) | `task/174-single-queue-present` | 🔄 Game side reviewed and desktop-tested; launcher option `task/174b-launcher-option` in progress |
-| TASK-174b | Launcher: the TASK-174 option with queue detection, and a richer `system.txt` | `task/174b-launcher-option` | 🔄 In progress |
-| TASK-175 | Performance HUD: full names, report state, Off / FPS only / Full | `task/175-performance-hud` | 🔄 In progress |
+| PR #205 (TASK-018) | Native Driving Force Pro wheel (WaimateWihongi) | `main` a4a3a5b6 | ✅ Merged into rc15 (6288ac5a) |
+| TASK-168 / 168b | Several palettes in one batch (palette segments); tone-run early drop; one target walk per CLUT load | `task/168b-segments-fix` (1c9f8240) | ✅ In rc15 (dea88144). Segments no gain on GT4 (the ~1,000 loads/VBlank are tone-sequence copy-back strips); **owner (2026-11-05): segments off by default, code and switch kept**; the early drop and the single CLUT walk on (Avell, George V 1x: wall 12.55 against 12.94 ms/VBlank). Next: study drawing the tone strips as one GPU pass |
+| TASK-170b | The launcher runs the shader prepare again while each attempt gets further; `logs/shader-guard.txt` | `task/170b-prepare-retry` (0e4e6d9e) | ✅ In rc15 (892d82f5) |
+| TASK-170c | Quarantine a variant only after two crashes of the same key (`suspects.bin`); the launcher compares the guard files' bytes; 20 attempts | `task/170c-two-crash-quarantine` (965dc8e7) | ✅ In rc15 (48d63a64) |
+| TASK-174 | Presentation off the GS thread on one-queue GPUs (Steam Deck, issue #204) | `task/174-single-queue-present` (314b0236) | ✅ In rc15 (38a1d9ef); the Deck player's test pending |
+| TASK-174b | Launcher: the TASK-174 option with queue detection, and a richer `system.txt` | `task/174b-launcher-option` (c8d20c08) | ✅ In rc15 (a6a855a6; pt-BR mojibake repaired at a07f63ad) |
+| TASK-175 | Performance HUD: full names, report state, Off / FPS only / Full | `task/175-performance-hud` (2e2f87f3) | ✅ In rc15 (49acaf41); the HUD's look in a game run still to check |
+| TASK-179 | Android stage A1 on Windows: Vulkan correctness | `task/179-vulkan-correctness` (4a70b53d) | ✅ In rc15 (a2390b2d) |
+| TASK-178 | Submit after a waited readback (K=0 by default) and the flare-read counters | `task/178-submit-after-wait` (c73b3be8 only) | ✅ In rc15 (6f318594); O3 continues on the branch |
+| TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner's G27 test pending |
+| TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner) |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
 against the rc14 PGO builds (`private/task134-tools/gates6.sh`), the A-Spec track map before/after, the rc15 notes in both
 languages, plain test builds of both games and the launcher, install on the desktop, Telegram the owner. PGO and the GitHub
 draft and pre-release only on the owner's word.
+
+**Integration and test build (2026-11-05, morning; owner: a draft for his G27 test).** All the rows above merged here in
+order (main, 170b, 170c, 174, 174b, 175, 179, 168b, 178 at c73b3be8, 181), every feature kept (STATUS has the conflicts).
+Games slice410, plain (pins `docs/inputs/slice410-*.json`, exe `7060f8bf...` v2.00, `a4d84180...` Spec II, the slice407 EE
+libraries plus the USB capsule slice409). Gates against rc14 PGO (`gates6.sh`) wrong=0; CTest 318/318 on both; Python 802;
+launcher 750 tests, focus checks 357/357 and 364/364, nav-test 260/260; locale keys 909 in both. Uploaded as the GitHub
+**draft** `v1.3.0-rc15` (never published; pre-release only on the owner's word). Not done yet: the A-Spec track map
+before/after (TASK-168b's gain was measured on the Avell instead) and PGO.
 
 ### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
 

@@ -1,5 +1,24 @@
 # Current Status
 
+## 1.3.0-rc15 test build as a GitHub draft (2026-11-05, morning)
+
+Integrated on `release/1.3.0-rc15` (merge commits, in order): `origin/main` (PR #205, the native DFP wheel of WaimateWihongi,
+and README), TASK-170b and TASK-170c (shader prepare retry, two-crash quarantine), TASK-174 and TASK-174b (presentation off the
+GS thread on one-queue GPUs, the launcher option, a richer `system.txt`), TASK-175 (performance HUD Off / FPS only / Full),
+TASK-179 (Vulkan correctness, rotation-safe present), TASK-168b (palette segments off by default; tone-run early drop and one
+CLUT walk on), TASK-178 at c73b3be8 (K=0, counters) and TASK-181 (the launcher Wheel page and the DFP fixes, USB capsule
+slice409). Not in it: TASK-180 (Android). Conflicts resolved by keeping every feature (`log_bundle.rs`, `launch.rs`,
+`standalone.cpp`, `hw_gs_backend.cpp`, the writeback handles, `core2_gpu.cpp/.hpp`, the vertex shader builds and the CTest
+lists); TASK-179's point-quad vertex stage now also carries TASK-168's palette row. The three pt-BR texts of TASK-174b's option
+were mojibake and are repaired.
+
+Games slice410, plain (no PGO, no ThinLTO), the slice407 EE libraries plus the USB capsule (pins `docs/inputs/slice410-*.json`,
+exe `7060f8bf...` v2.00, `a4d84180...` Spec II; distribution `private/slice410-dist-130-rc15`). Gates against the rc14 PGO
+builds (`gates6.sh`, wrong=0): race clock, simulation state and every compared frame identical on three Spec II laps (24, 35,
+35 frames), the v2.00 night race (10/10) and Arcade path (14/14) at 3x and Spec II at 6x (12/12); VU1 236,448 and 355,388
+samples and MTVU 8,032 frames with 0 differences. CTest 318/318 on both games (q07 skipped), Python 802 (57 skipped), launcher
+`cargo test` 750 passed (9 ignored).
+
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader
