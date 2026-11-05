@@ -92,6 +92,11 @@ public:
     // Empty = never (every such load ends the batch, the chapter 07.3 rule as before).
     using PaletteSegmentHook = std::function<bool(const clut::Tex0Write& write, const Batch& pending)>;
     void SetPaletteSegmentHook(PaletteSegmentHook hook) { paletteSegmentHook_ = std::move(hook); }
+    // TASK-168b: the renderer's cheap question about the pending batch alone, asked once the load is known to keep the
+    // texture and before the front end's memory checks and the hook: false ends the batch at the load (a batch the
+    // renderer gains nothing from merging). Empty = every batch may go on to the hook.
+    using PaletteSegmentBatchFilter = std::function<bool(const Batch& pending)>;
+    void SetPaletteSegmentBatchFilter(PaletteSegmentBatchFilter filter) { paletteSegmentBatchFilter_ = std::move(filter); }
     // CLUT loads that kept the batch as a new segment (TASK-168), and batches emitted with segments.
     uint64_t ClutLoadsKept() const { return clutLoadsKept_; }
     uint64_t SegmentedBatches() const { return segmentedBatches_; }
@@ -191,6 +196,7 @@ private:
     std::function<void(const BlockRange&)> beforeLocalRead_;
     std::function<void(const clut::Tex0Write&)> clutLoaded_;
     PaletteSegmentHook paletteSegmentHook_;
+    PaletteSegmentBatchFilter paletteSegmentBatchFilter_;  // TASK-168b
     std::array<uint16_t, clut::kClutHalfwords> clutBeforeLoad_{};  // TASK-168: the CLUT buffer before a kept load
     std::vector<uint8_t> zeroMemory_;
 

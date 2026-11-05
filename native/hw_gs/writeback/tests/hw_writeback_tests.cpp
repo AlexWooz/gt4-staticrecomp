@@ -4625,23 +4625,27 @@ int TestCore2PaletteSegments(const gpu::VulkanHandles& handles) {
                                                 : 1;
                                  },
                                  false, scale);
-        // TASK-168b: the copy-back strips of a tone run: every segment skipped as ToneHook skips its batch, none built.
+        // TASK-168b: the copy-back strips of a tone run: the batch filter ends the strip batch at each of its two loads
+        // that keep the texture, so no segment forms and every strip reaches ToneHook as with the switch off.
         failures += CheckCore2Ab(handles, ("a tone run's copy-back strips" + tag).c_str(), Core2PaletteSegmentsToneRunCapture(kFrames),
                                  kFrames, kSwitch, false,
                                  [](const Core2AbRun& off, const Core2AbRun& on) {
-                                     std::printf("  split batches %llu / %llu, segments skipped by the tone hook %llu / %llu, tone "
-                                                 "runs %llu / %llu, tone draws skipped %llu / %llu\n",
+                                     std::printf("  loads refused during a tone run %llu / %llu, segmented batches %llu / %llu, "
+                                                 "split batches %llu / %llu, tone runs %llu / %llu, tone draws skipped %llu / %llu\n",
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentToneRefusals),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentToneRefusals),
+                                                 static_cast<unsigned long long>(off.stats.paletteSegmentBatches),
+                                                 static_cast<unsigned long long>(on.stats.paletteSegmentBatches),
                                                  static_cast<unsigned long long>(off.stats.paletteSegmentSplits),
                                                  static_cast<unsigned long long>(on.stats.paletteSegmentSplits),
-                                                 static_cast<unsigned long long>(off.stats.paletteSegmentsToneSkipped),
-                                                 static_cast<unsigned long long>(on.stats.paletteSegmentsToneSkipped),
                                                  static_cast<unsigned long long>(off.stats.toneRuns),
                                                  static_cast<unsigned long long>(on.stats.toneRuns),
                                                  static_cast<unsigned long long>(off.stats.toneDrawsSkipped),
                                                  static_cast<unsigned long long>(on.stats.toneDrawsSkipped));
-                                     return off.stats.paletteSegmentsToneSkipped == 0 && on.stats.paletteSegmentSplits == 0 &&
-                                                    on.stats.paletteSegmentsToneSkipped == 3u * kFrames && off.stats.toneRuns == kFrames &&
-                                                    on.stats.toneRuns == off.stats.toneRuns &&
+                                     return off.stats.paletteSegmentToneRefusals == 0 &&
+                                                    on.stats.paletteSegmentToneRefusals == 2u * kFrames &&
+                                                    on.stats.paletteSegmentBatches == 0 && on.stats.paletteSegmentSplits == 0 &&
+                                                    off.stats.toneRuns == kFrames && on.stats.toneRuns == off.stats.toneRuns &&
                                                     on.stats.toneDrawsSkipped == off.stats.toneDrawsSkipped
                                                 ? 0
                                                 : 1;

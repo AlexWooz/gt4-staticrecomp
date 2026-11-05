@@ -470,6 +470,10 @@ bool FrontEnd::PaletteSegmentAllowed(const clut::Tex0Write& write, uint32_t cont
     if (write.csm != 0u) {
         return false;
     }
+    // TASK-168b: the renderer's veto on the batch itself, before the memory checks below (about 0.2 us per load).
+    if (paletteSegmentBatchFilter_ && !paletteSegmentBatchFilter_(batch_)) {
+        return false;
+    }
     // The frame and depth footprints below assume rows no wider than the buffer.
     const uint32_t frameWidth = 64u * std::max<uint32_t>(frame::Fbw(snapCtx.frame), 1u);
     if (batch_.drawRect.x1 >= static_cast<int32_t>(frameWidth)) {

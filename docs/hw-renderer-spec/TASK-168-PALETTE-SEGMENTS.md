@@ -28,14 +28,17 @@ VBlank, about 1,000 of them under a pending batch that keeps its texture and onl
     would have ended there;
   - core 2: `PaletteRow` per segment (keyed by content as for any CPU palette); the tone hook and the texture
     replacement key read the batch's own palette (`DecodeSegmentPalette`, `PaletteSegmentClut`).
-- **Route** (TASK-168b, `RoutePaletteSegments`): texture replacement or dumping takes one palette per batch, so core 2
-  draws a segmented batch segment by segment (`PaletteSegmentBatch`, what the flush would have emitted) while it is
-  active. For GT4's tone sequence (7.2), core 2 follows `ToneHook` segment by segment, as it would have taken each
-  segment's batch, when the batch is a T8 sprite batch that the hook could take (a 32-bit target at its texture base, or
-  a tone run going on): the leading segments the hook would skip (a run going on, the run's FBMSK, `PossibleShuffle`
-  true for that segment's primitives) are skipped without a batch each; when no segment has the shuffle shape, the hook
-  would end the run and leave every segment to the normal path, so the batch is drawn whole without the hook; otherwise
-  the remaining segments get a batch each (the hook may start a run there, which reads that segment's palette).
+- **Tone runs** (TASK-168b): while GT4's tone sequence (7.2) has a run going on, core 2's batch filter
+  (`FrontEnd::SetPaletteSegmentBatchFilter`, `PaletteSegmentBatchAllowed`) refuses segments for a T8 sprite batch, before
+  the front end's memory checks: those are the copy-back strips, which `ToneHook` skips whole without reading their
+  palettes, so merging them saves nothing and costs the front end more than the flushes.
+- **Route** (`RoutePaletteSegments`): texture replacement or dumping takes one palette per batch, so core 2 draws a
+  segmented batch segment by segment (`PaletteSegmentBatch`, what the flush would have emitted) while it is active. A
+  segmented T8 sprite batch that `ToneHook` could take (a 32-bit target at its texture base, or a run going on) follows
+  the hook as it would have taken each segment's batch (TASK-168b): when no segment has the shuffle shape
+  (`PossibleShuffle` false for each segment's primitives), the hook would end any run and leave every segment to the
+  normal path, so the batch is drawn whole without the hook; otherwise each segment gets a batch (the hook may start a
+  run there, which reads that segment's palette).
 - **GPU** (`core2_gpu.cpp`, `hw_vertex.vert`, `hw_pixel_uber.frag`): `GpuVertex::paletteRow` (bytes 30-31, unused
   before; the vertex stays 32 bytes) is bound as `R16_UINT` at location 7 in core 2's pipelines and passed flat to the
   pixel stage. 0 means the batch's row (`DrawBatch::paletteRow`, the state block's `tex_origin_y`); n means row n - 1.
@@ -58,8 +61,9 @@ VBlank, about 1,000 of them under a pending batch that keeps its texture and onl
 07.3 rule exactly as before. Logged at start as `[core2] palette segments (TASK-168) on|off`. Counters: the
 `[core2] batch flushes/vblank` line adds `clut_kept`, `segmented_batches` and `segments_per_segmented_batch`; the
 `[core2] palette segments` line gives the session's batches drawn with several segments (`batches`, `segments`), the
-segmented batches drawn segment by segment (`splits`), and (TASK-168b) the segments the tone hook skipped without a
-batch of their own (`tone_skipped`) and the segmented T8 sprite batches drawn whole without the hook (`whole_no_tone`).
+segmented batches drawn segment by segment (`splits`), and (TASK-168b) the segmented T8 sprite batches drawn whole
+without the hook (`whole_no_tone`) and the CLUT loads that ended a T8 sprite batch because a tone run was going on
+(`tone_refused`).
 
 ## Why the pixels stay the same
 
@@ -92,7 +96,8 @@ A segmented batch must be equal to the batches the chapter 07.3 flushes would ha
 The load ends the batch, as before, when: the texture changes (TBP0, TBW, PSM, TW, TH, TCC, TFX, CPSM or CSA), the load
 is a TEX0 write of the other context, CSM2, the batch's frame or depth rows meet the palette's page, the texture meets
 the batch's frame or depth rows, an auto-flush could split the batch, the batch holds 256 segments, a drawn target
-holds the palette's page (core 2), the batch's palette was loaded on the GPU (core 2), texture replacement or dumping is
+holds the palette's page (core 2), the batch's palette was loaded on the GPU (core 2), the batch is a T8 sprite batch
+while a tone run is going on (core 2, TASK-168b), texture replacement or dumping is
 active (core 2), or `GT4_CORE2_PALETTE_SEGMENTS=0`. The old core and the CPU reference never set the hook.
 
 ## Tests
@@ -107,9 +112,12 @@ active (core 2), or `GT4_CORE2_PALETTE_SEGMENTS=0`. The old core and the CPU ref
   row ring (1100 palettes a frame, five batches of up to 256 segments, more palettes than rows), a row an earlier
   segment of the same batch names (the ring's next row; without the pinning that frame differs in 1178 words), loads
   from a GPU palette that must still flush, and a T8 batch over a 32-bit target split for the tone hook; TASK-168b: a
-  tone run's copy-back strips (a run started by one batch, then one batch of three 8 x 32 segments that the hook skips:
-  `tone_skipped` 3 per frame, no split, the same tone runs and skipped draws as with the switch off), and 12 x 12 T8
-  sprites over a 32-bit target (not of the shuffle shape: drawn whole, `whole_no_tone` 1 per frame).
+  tone run's copy-back strips (a run started by one batch, then three 8 x 32 strips over another page with a load
+  each: the batch filter ends the batch at both loads that keep the texture, `tone_refused` 2 per frame, no segment,
+  the same tone runs and skipped draws as with the switch off), and 12 x 12 T8 sprites over a 32-bit target (not of
+  the shuffle shape: drawn whole, `whole_no_tone` 1 per frame).
+- `m3_hw_palette_segments` (TASK-168b): the batch filter refusing ends the batch without asking the hook; allowing
+  leaves the decision to the hook.
 
 ## TASK-168b: what the segments were in GT4, and what changed
 
@@ -145,10 +153,12 @@ the old batches and the front end paid for nothing.
 
 **What changed**
 
-1. **The route** (`RoutePaletteSegments`, above): the copy-back strips are no longer split. The segments the tone hook
-   would skip are skipped at once (`tone_skipped`), with the same counters as the hook (`toneDrawsSkipped`, the batch
-   count, the last scene frame), so the run's state and every count stay as with the switch off. A segmented T8 sprite
-   batch that no segment of could take the hook is drawn whole (`whole_no_tone`); only the others are still split.
+1. **No segments for the copy-back strips** (the batch filter, above): while a tone run is going on, a CLUT load under a
+   T8 sprite batch ends it, as with the switch off, and the front end asks this before its memory checks. A first
+   version kept the strips as segments and skipped them at once in core 2 (exact, no split, the same tone counters),
+   but each kept load still cost the front end more than the flush it replaced (desktop A/B below).
+   A segmented T8 sprite batch that no segment of could take the hook is drawn whole (`whole_no_tone`); only a batch
+   with a segment of the shuffle shape is still split.
 2. **`GpuPaletteKey` answers 0 at once while no CLUT halfword was written on the GPU**: core 2 counts the nonzero
    `clutSource_` entries (`SetClutSource`, `ClearClutSource`, every write of that array), and a load from memory with no
    GPU halfword anywhere writes nothing. This helps every caller (the palette row of every indexed batch, the tone
@@ -160,6 +170,49 @@ the old batches and the front end paid for nothing.
    first one of a batch, and segments are built in place (`emplace_back`) instead of a local 1 KiB copy pushed back.
    Copying only the halfwords CPSM and CSA read was not done: every kept load in these scenes is a T8 CT32 palette with
    CSA 0, which reads all 512 halfwords.
+
+**Desktop A/B** (George V replay lap, Spec II, headless, unpaced, 480p, 16:9, `GT4_HW_PROFILE_EVERY=600`; means over
+VBlanks 3000-8032, median of 3 interleaved runs [min-max]; Indicative: the desktop was shared, other agents' game runs
+were active during most runs, so only runs of one session compare; counts are exact):
+
+| 1x, session 1 | e655a630 on | e655a630 off | merged strips (249e4817) on | 249e4817 off |
+|---|---|---|---|---|
+| GS thread ms | 15.25 [14.31-17.30] | 13.41 [13.08-13.61] | 13.26 [12.55-13.88] | 12.77 [12.33-14.17] |
+| gif_parse ms | 5.87 [5.52-7.11] | 4.38 [4.29-4.49] | 4.53 [4.36-4.96] | 4.13 [4.02-4.72] |
+| splits (session) | 742980 | 0 | 0 | 0 |
+
+| final (batch filter) | 1x on | 1x off | 6x on | 6x off |
+|---|---|---|---|---|
+| GS thread ms | 11.71 [11.14-13.67] | 11.79 [11.75-12.46] | 12.44 [12.08-12.67] | 12.22 [11.51-13.23] |
+| gif_parse ms | 3.82 [3.75-4.54] | 3.90 [3.86-4.05] | 4.09 [3.99-4.23] | 4.04 [3.81-4.21] |
+| batch_own ms | 1.52 [1.46-1.81] | 1.55 [1.53-1.62] | 1.61 [1.60-1.66] | 1.60 [1.54-1.71] |
+| draw ms | 2.05 [1.85-2.69] | 2.05 [2.00-2.45] | 2.10 [2.05-2.26] | 2.06 [1.87-2.43] |
+| batches per VBlank (renderer) | 2288.4 | 2288.4 | 2303.7 | 2303.7 |
+| GPU batches per VBlank | 747.5 | 747.5 | 762.8 | 762.8 |
+| CLUT-load flushes per VBlank | 1555.3 | 1597.5 | 1579.6 | 1612.5 |
+
+Session lines with the final build, segments on: `batches=0 segments=0 splits=0 whole_no_tone=0 tone_refused=5510540`
+(1x and 6x). The 34 loads per VBlank still kept open a segment that got no primitive before the batch ended (dropped).
+
+- The merged strips (first version) cut the e655a630 penalty from about +14% to about +4% of GS thread time, and the
+  `GpuPaletteKey` fast path made the segments-off path about 5% faster than e655a630's (13.41 to 12.77 ms in the same
+  session).
+- With the batch filter, segments on and off are equal within the run spread at 1x and 6x: no segment forms in this
+  lap, and nothing is drawn differently.
+
+**Identity** (final build, segments on, against the rc14 PGO references; Confirmed): the George V lap at 1x (race clock
+at every VBlank, simulation state 0 of 36864 words, state dump, 24 of 24 frames), the same lap at 6x (12 of 12 frames)
+and the v2.00 night race at 3x (state.bin, race clock, 10 of 10 frames) are identical. `hw_core2_palette_segments`,
+`m3_hw_palette_segments`, `m3_hw_clut_snapshot`, `m3_hw_front_end_fast_paths`, `hw_core2_gpu_clut` and
+`hw_tone_hle_exact` pass, and so does the full CTest of the Spec II build (303 tests, `hw_replace_q07_pcsx2_dumps`
+skipped).
+
+**Default.** In the scenes measured so far GT4 almost never forms a palette segment that reaches the GPU: none in the
+George V lap, in Motegi and Hong Kong (B-Spec) or in the v2.00 night race, and in the 52-track survey only 2 tracks drew
+any batch with segments (23 and 211 batches over a whole run); the many candidates were the copy-back strips, which
+draw nothing. With this change the switch costs nothing measurable either way. This change leaves it on; TASK-168b's
+recommendation is to turn it off by default until a scene shows a gain, since the segmented draw path then runs almost
+never in play (an owner decision).
 
 ## Known limits
 

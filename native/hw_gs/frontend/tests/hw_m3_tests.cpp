@@ -1759,11 +1759,13 @@ struct SegmentRun {
     uint64_t kept = 0;
     uint64_t clutFlushes = 0;
     uint32_t hookQuestions = 0;
+    uint32_t filterQuestions = 0;
     std::vector<uint8_t> clutAtEnd;
 };
 
+// `filterAnswer`: -1 sets no batch filter (TASK-168b), else the filter's answer.
 SegmentRun RunSegments(const std::vector<Qword>& stream, bool segments, bool hookAnswer = true,
-                       FrontEndOptions options = FrontEndOptions{}) {
+                       FrontEndOptions options = FrontEndOptions{}, int filterAnswer = -1) {
     std::vector<uint8_t> slm(kLocalMemoryBytes, 0);
     WritePaletteCsm1(slm, kSegmentPalettes[0], PaletteA);
     WritePaletteCsm1(slm, kSegmentPalettes[1], PaletteB);
@@ -1780,6 +1782,12 @@ SegmentRun RunSegments(const std::vector<Qword>& stream, bool segments, bool hoo
             ++run.hookQuestions;
             return hookAnswer;
         });
+        if (filterAnswer >= 0) {
+            fe.SetPaletteSegmentBatchFilter([&](const Batch&) {
+                ++run.filterQuestions;
+                return filterAnswer != 0;
+            });
+        }
     }
     fe.GifTransfer(1, stream.data(), stream.size());
     fe.FlushBatch(FlushReason::Sync);
@@ -1868,7 +1876,8 @@ void TestPaletteSegmentRounding() {
 }
 
 // The loads that must still end the batch: a texture change, CSM2, a palette in the frame's memory, a texture inside
-// the frame, the other context, the renderer's refusal, and the segment limit.
+// the frame, the other context, the renderer's refusal (the hook, or TASK-168b's batch filter, asked before the hook),
+// and the segment limit.
 void TestPaletteSegmentsStillFlush() {
     auto twoSprites = [](uint64_t secondTex0, uint8_t tex0Register = reg::kTex0One, uint32_t firstTbp = kSegmentTexture) {
         std::vector<Qword> s;
@@ -1884,6 +1893,8 @@ void TestPaletteSegmentsStillFlush() {
         std::vector<Qword> stream;
         bool hookAnswer;
         uint64_t batches;
+        int filterAnswer = -1;         // TASK-168b: -1 no batch filter
+        uint32_t hookQuestions = ~0u;  // checked when not ~0u
     };
     const Case cases[] = {
         {"same texture (kept)", twoSprites(SegmentTex0(kSegmentPalettes[1], 1)), true, 1},
@@ -1893,9 +1904,13 @@ void TestPaletteSegmentsStillFlush() {
         {"texture in the frame", twoSprites(SegmentTex0(kSegmentPalettes[1], 1, 0x40), reg::kTex0One, 0x40), true, 2},
         {"other context", twoSprites(SegmentTex0(kSegmentPalettes[1], 1), reg::kTex0Two), true, 2},
         {"renderer refuses", twoSprites(SegmentTex0(kSegmentPalettes[1], 1)), false, 2},
+        {"batch filter refuses, hook not asked", twoSprites(SegmentTex0(kSegmentPalettes[1], 1)), true, 2, 0, 0},
+        {"batch filter allows", twoSprites(SegmentTex0(kSegmentPalettes[1], 1)), true, 1, 1, 1},
     };
     for (const Case& c : cases) {
-        const SegmentRun run = RunSegments(c.stream, true, c.hookAnswer);
+        const SegmentRun run = RunSegments(c.stream, true, c.hookAnswer, FrontEndOptions{}, c.filterAnswer);
+        if (c.hookQuestions != ~0u) CHECK_EQ(run.hookQuestions, c.hookQuestions);
+        if (c.filterAnswer >= 0) CHECK_EQ(run.filterQuestions, 1u);
         if (run.batches.size() != c.batches) std::fprintf(stderr, "  case '%s'\n", c.name);
         CHECK_EQ(run.batches.size(), c.batches);
         // Whatever happened, the batches equal those of the run without segments, segment by segment.

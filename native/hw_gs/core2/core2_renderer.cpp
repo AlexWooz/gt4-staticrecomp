@@ -798,6 +798,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return static_cast<std::int32_t>(row);
     }  // B0: GPU fence wait time at the last timing line
 
+    // TASK-168b: the front end's cheap question about the pending batch (FrontEnd::PaletteSegmentBatchFilter). No for a T8
+    // sprite batch while a tone run is going on: GT4's copy-back strips (about 950 loads per VBlank in the player's view).
+    // ToneHook skips such batches whole and never reads their palettes, so a segment saves nothing downstream, while a kept
+    // load cost the front end more than the flush it replaces (desktop A/B of the George V lap, 1x: GS thread +4% with the
+    // strips merged and skipped at once, +3% when the hook refused them after the front end's memory checks, equal to
+    // segments off with this filter). The load ends the batch.
+    bool PaletteSegmentBatchAllowed(const Batch &pending) {
+        if (!toneActive_ || !ToneShape(pending)) return true;
+        stats.paletteSegmentToneRefusals++;
+        return false;
+    }
+
     // TASK-168: the front end's question for a CLUT load under a pending indexed batch (FrontEnd::PaletteSegmentHook). Yes
     // only while every palette of the batch is a CPU one, drawn through palette rows keyed by content: the batch's palette
     // so far uses no halfword a GPU load wrote (the load about to happen writes every halfword the same CPSM and CSA read,
@@ -832,44 +844,31 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // decides per batch, from its palette, and keeps a run across batches). ToneHook leaves a batch to the normal path,
     // without reading its palette, unless it is a T8 sprite batch over a 32-bit target (ShuffleSource) or a run is going on.
     //
-    // TASK-168b: the batches that met that rule in GT4 are the tone sequence's copy-back strips (64 x 32 pixels, eight 8 x 32
-    // T8 sprites with a CLUT load each, about 166 batches and 1100 segments per VBlank in the player's view), and ToneHook
-    // skips every one of them: a run is going on, the sprite has the run's shape and FBMSK, and the palette is not read. So
-    // the route follows ToneHook segment by segment, as it would have taken each segment's batch, without building them:
-    //  - the leading segments ToneHook would skip are skipped here (the run's state does not change);
-    //  - when no other segment can take the hook (PossibleShuffle false for each, so ToneHook would end the run and leave
-    //    each to the normal path), they are drawn as one batch without ToneHook;
-    //  - otherwise the remaining segments get a batch each (ToneHook may start a run, which reads that segment's palette).
-    // Whole: one batch as usual; WholeNoTone: one batch, ToneHook already decided; Skipped: nothing left to draw; Split: a
-    // batch for each segment from `first` on (the segments before it were skipped).
-    enum class SegmentRoute { Whole, WholeNoTone, Skipped, Split };
-    SegmentRoute RoutePaletteSegments(const Batch &batch, std::uint32_t &first) {
-        const std::uint32_t segments = PaletteSegmentCount(batch);
-        first = 0;  // the first segment ToneHook would not skip
+    // TASK-168b: with the batch filter (PaletteSegmentBatchAllowed) no segment forms while a tone run is going on, so a
+    // segmented T8 sprite batch meets this rule through a 32-bit target at its texture base (the run's first draw). The route
+    // follows ToneHook as it would have taken each segment's batch: when no segment has the shuffle shape (PossibleShuffle
+    // false for each segment's primitives), ToneHook would end any run and leave every segment to the normal path, so the
+    // batch is drawn whole without the hook; otherwise each segment gets a batch (the hook may start a run there, which
+    // reads that segment's palette).
+    // Whole: one batch as usual; WholeNoTone: one batch, ToneHook already decided; Split: a batch for each segment.
+    enum class SegmentRoute { Whole, WholeNoTone, Split };
+    // A textured T8 sprite batch: the batches ToneHook may take (PossibleShuffle's first conditions).
+    static bool ToneShape(const Batch &batch) {
+        const bool textured = ((batch.state.effectivePrim >> primbit::kTme) & 1u) != 0;
+        return textured && batch.cls == PrimClass::Sprite && tex0::Psm(batch.state.ctx.tex0) == 0x13u;
+    }
+    SegmentRoute RoutePaletteSegments(const Batch &batch) {
         if (!replacementLoader_) {
-            const bool textured = ((batch.state.effectivePrim >> primbit::kTme) & 1u) != 0;
-            const bool toneShape = textured && batch.cls == PrimClass::Sprite && tex0::Psm(batch.state.ctx.tex0) == 0x13u;
-            if (!toneShape || (!toneActive_ && ShuffleSource(batch) == nullptr)) return SegmentRoute::Whole;
-            const std::uint32_t fbmsk = frame::Fbmsk(batch.state.ctx.frame);
-            while (first < segments && toneActive_ && fbmsk == toneFbmsk_ && PossibleShuffleSegment(batch, first)) ++first;
-            if (first > 0) {
-                // What OnBatch and ToneHook do for each skipped segment's batch (RewriteDepthClear leaves a textured batch).
-                counters.batches += first;
-                if (fbmsk != 0xFFFFFFFFu) lastSceneFrame_ = batch.state.ctx.frame;
-                stats.toneDrawsSkipped += first;
-                stats.paletteSegmentsToneSkipped += first;
+            if (!ToneShape(batch) || (!toneActive_ && ShuffleSource(batch) == nullptr)) return SegmentRoute::Whole;
+            bool anyShape = false;
+            const std::uint32_t segments = PaletteSegmentCount(batch);
+            for (std::uint32_t segment = 0; segment < segments && !anyShape; ++segment) {
+                anyShape = PossibleShuffleSegment(batch, segment);
             }
-            if (first == segments) return SegmentRoute::Skipped;
-            if (first == 0) {
-                bool anyShape = false;
-                for (std::uint32_t segment = 0; segment < segments && !anyShape; ++segment) {
-                    anyShape = PossibleShuffleSegment(batch, segment);
-                }
-                if (!anyShape) {
-                    toneActive_ = false;  // ToneHook on the first segment's batch ends the run
-                    stats.paletteSegmentsWholeNoTone++;
-                    return SegmentRoute::WholeNoTone;
-                }
+            if (!anyShape) {
+                toneActive_ = false;  // ToneHook on the first segment's batch ends any run
+                stats.paletteSegmentsWholeNoTone++;
+                return SegmentRoute::WholeNoTone;
             }
         }
         stats.paletteSegmentSplits++;
@@ -966,6 +965,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             frontEnd_.SetPaletteSegmentHook([this](const clut::Tex0Write &write, const Batch &pending) {
                 return PaletteSegmentAllowed(write, pending);
             });
+            frontEnd_.SetPaletteSegmentBatchFilter([this](const Batch &pending) { return PaletteSegmentBatchAllowed(pending); });
         }
     }
 
@@ -4137,16 +4137,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // (RoutePaletteSegments).
         bool toneHook = true;
         if (batch.paletteSegments.size() > 1u && !failed_) {
-            std::uint32_t first = 0;
             SegmentRoute route = SegmentRoute::Whole;
             {
                 ScopedUs batchTimer(clock_, &PhaseTimes::batch);
-                route = RoutePaletteSegments(batch, first);
+                route = RoutePaletteSegments(batch);
             }
-            if (route == SegmentRoute::Skipped) return;
             if (route == SegmentRoute::Split) {
                 const std::uint32_t segments = PaletteSegmentCount(batch);
-                for (std::uint32_t segment = first; segment < segments && !failed_; ++segment) {
+                for (std::uint32_t segment = 0; segment < segments && !failed_; ++segment) {
                     ProcessBatch(PaletteSegmentBatch(batch, segment), true);
                 }
                 return;
@@ -5252,12 +5250,12 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0), (unsigned long long)g.selfTextureBatches, (unsigned long long)g.selfCopies,
                  static_cast<double>(g.selfCopyPixels) / 1.0e6);
     // TASK-168: batches drawn with several palette segments, their segments, and segmented batches split for a consumer
-    // that takes one palette; TASK-168b: segments the tone hook skipped without a batch of their own, and segmented T8
-    // sprite batches drawn whole without the tone hook.
-    std::fprintf(stderr, "[core2] palette segments batches=%llu segments=%llu splits=%llu tone_skipped=%llu whole_no_tone=%llu\n",
+    // that takes one palette; TASK-168b: segmented T8 sprite batches drawn whole without the tone hook, and CLUT loads that
+    // ended a T8 sprite batch because a tone run was going on (PaletteSegmentBatchAllowed).
+    std::fprintf(stderr, "[core2] palette segments batches=%llu segments=%llu splits=%llu whole_no_tone=%llu tone_refused=%llu\n",
                  (unsigned long long)c.paletteSegmentBatches, (unsigned long long)c.paletteSegmentsDrawn,
-                 (unsigned long long)c.paletteSegmentSplits, (unsigned long long)c.paletteSegmentsToneSkipped,
-                 (unsigned long long)c.paletteSegmentsWholeNoTone);
+                 (unsigned long long)c.paletteSegmentSplits, (unsigned long long)c.paletteSegmentsWholeNoTone,
+                 (unsigned long long)c.paletteSegmentToneRefusals);
     // Diagnostics: GT4_CORE2_BARRIER_TRACE=1 adds the cumulative full barriers by command and hazard.
     static const bool barrierTrace = std::getenv("GT4_CORE2_BARRIER_TRACE") != nullptr;
     if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n", barrierReport.c_str());
