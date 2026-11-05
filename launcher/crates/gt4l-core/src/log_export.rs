@@ -453,6 +453,42 @@ pub fn system_text(facts: &SystemFacts) -> String {
     text
 }
 
+/// One connected wheel as `system.txt` lists it (TASK-181): never a serial number or a path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WheelFact {
+    pub name: String,
+    /// `046D:C29B`, or empty when SDL gave no IDs.
+    pub vid_pid: String,
+    /// SDL's view: `wheel`, `gamepad` or `other`.
+    pub sdl_type: String,
+    /// `wheel` (the device the game drives) or `auxiliary` (pedals, a shifter).
+    pub role: String,
+    /// The force feedback effects found by the launcher's force test (`constant spring ...`), `yes` when SDL says the
+    /// device has haptics but no test ran, `no`, or empty when unknown.
+    pub haptic: String,
+}
+
+/// The wheel lines of `system.txt` (TASK-181), appended after [`system_text`]: whether the virtual Driving Force Pro is
+/// on (`wheel.toml` enabled), then one line per connected wheel or auxiliary device.
+pub fn wheel_lines(wheels: &[WheelFact], dfp_on: bool) -> String {
+    let mut text = format!("racing wheel: virtual Driving Force Pro {}\n", if dfp_on { "on" } else { "off" });
+    if wheels.is_empty() {
+        text.push_str("wheels: none connected\n");
+    }
+    for (index, wheel) in wheels.iter().enumerate() {
+        text.push_str(&format!(
+            "wheel {}: {} ({}, SDL type {}, {}, haptic {})\n",
+            index + 1,
+            or_unknown(&wheel.name),
+            or_unknown(&wheel.vid_pid),
+            or_unknown(&wheel.sdl_type),
+            or_unknown(&wheel.role),
+            or_unknown(&wheel.haptic)
+        ));
+    }
+    text
+}
+
 fn or_unknown(text: &str) -> &str {
     if text.trim().is_empty() {
         "unknown"
@@ -562,6 +598,28 @@ mod tests {
         let refused = write_zip(&root.join("refused.zip"), &[Entry { path: "Saves/Active/x".into(), text: String::new() }]);
         assert!(refused.is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_wheel_lines_name_each_wheel_and_whether_the_dfp_is_on() {
+        let none = wheel_lines(&[], false);
+        assert_eq!(none, "racing wheel: virtual Driving Force Pro off\nwheels: none connected\n");
+        let text = wheel_lines(
+            &[
+                WheelFact {
+                    name: "Logitech G27 Racing Wheel USB".into(),
+                    vid_pid: "046D:C29B".into(),
+                    sdl_type: "wheel".into(),
+                    role: "wheel".into(),
+                    haptic: "constant spring damper friction gain autocenter".into(),
+                },
+                WheelFact { name: "Pedals".into(), vid_pid: String::new(), sdl_type: "other".into(), role: "auxiliary".into(), haptic: "no".into() },
+            ],
+            true,
+        );
+        assert!(text.starts_with("racing wheel: virtual Driving Force Pro on\n"));
+        assert!(text.contains("wheel 1: Logitech G27 Racing Wheel USB (046D:C29B, SDL type wheel, wheel, haptic constant spring damper friction gain autocenter)\n"));
+        assert!(text.contains("wheel 2: Pedals (unknown, SDL type other, auxiliary, haptic no)\n"));
     }
 
     #[test]

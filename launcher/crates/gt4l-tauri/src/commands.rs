@@ -23,7 +23,7 @@ use gt4l_disc::setup::{self as disc_setup, Installed};
 use gt4l_platform::game;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::model;
@@ -426,6 +426,11 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
     }
+    // TASK-181: the racing wheel file (the game's virtual Driving Force Pro), only when it exists.
+    let wheel_path = state.wheel_path();
+    if wheel_path.exists() {
+        extra.push(("GT4_WHEEL_FILE".into(), wheel_path.display().to_string()));
+    }
     // TASK-148: the controller chosen on the Controls page, and the player's SDL gamepad mappings when there are any.
     if let Some(choice) = launch::controller_environment(&state.config.settings) {
         extra.push(("GT4_PAD".into(), choice));
@@ -552,7 +557,22 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     if !textures.custom {
         paths::ensure_texture_folders(&textures.folder).map_err(|error| format!("texture folder: {error}"))?;
     }
-    let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
+    // TASK-181: the launcher closes every SDL handle first (the wheel's and its force feedback): the game owns them.
+    let pads = app.try_state::<pad_service::Handle>().map(|pads| pads.inner().clone());
+    if let Some(pads) = &pads {
+        if !pads.release_for_game() {
+            state::log_warn(&dirs, "controller input: SDL3 did not confirm it closed its devices before the game started");
+        }
+    }
+    let running = match game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra) {
+        Ok(running) => running,
+        Err(error) => {
+            if let Some(pads) = &pads {
+                pads.game_ended();
+            }
+            return Err(error);
+        }
+    };
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let mut state = lock(&shared);
@@ -606,6 +626,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         drop(running);
         lock(&shared).discord.on_game_end();
         lock(&shared).game_child = None;
+        if let Some(pads) = &pads {
+            pads.game_ended();
+        }
         let renderer_changed = gsdx_error.is_some() && {
             let stored = lock(&shared).config.settings.clone();
             let (_, graphics, _) = gt4l_platform::gpu::run_settings(&stored, state::current_language());

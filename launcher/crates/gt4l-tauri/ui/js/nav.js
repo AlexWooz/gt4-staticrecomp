@@ -17,7 +17,9 @@
  * sets them. B closes an open help tip, then the top dialog, then goes back.
  *
  * Rebind (Controls): while GT4.capturing is set only B does anything on the pad (GT4.cancelCapture), and every key
- * goes to GT4.captureKey(event) first (it returns true when it used the key).
+ * goes to GT4.captureKey(event) first (it returns true when it used the key). The Wheel page's set-up wizard (TASK-181)
+ * may also set GT4.capturePad(name): it gets the other pad presses while a capture runs (only when the wheel being set up
+ * is not itself a gamepad, so a wheel button is never taken for a pad press).
  */
 (function (root) {
   "use strict";
@@ -178,6 +180,9 @@
   // Face and shoulder buttons go through GT4.input.padRoute (pure, tested in dev/nav-test.html).
   function padPress(name) {
     if (GT4.capturing && name !== "b") {
+      if (GT4.capturePad) {
+        GT4.capturePad(name);
+      }
       return;
     }
     setMode("pad");

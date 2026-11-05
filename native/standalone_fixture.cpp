@@ -335,6 +335,10 @@ void check_config() {
   check(has(changed_environment, "GT4_FULLSCREEN", "0") && has(changed_environment, "GT4_PRESENT_MODE", "mailbox"), "windowed, mailbox");
   check(has(changed_environment, "GT4_GS_SYNC", "1") && has(changed_environment, "GT4_PERF", "1"), "synchronous GS and the report");
   check(has(changed_environment, "GT4_VU1_VERIFY", "100") && has(changed_environment, "GT4_VU0_VERIFY", "100"), "VU checks");
+  const sa::Config wheel = sa::parse_config("wheel_file=C:\\Users\\P\\AppData\\Roaming\\GT4Recomp\\wheel.toml\nwheel_file=\n");
+  check(has(sa::config_environment(wheel), "GT4_WHEEL_FILE", "C:\\Users\\P\\AppData\\Roaming\\GT4Recomp\\wheel.toml") &&
+            wheel.warnings.size() == 1,
+        "TASK-181: wheel_file becomes GT4_WHEEL_FILE; an empty value is refused");
 
   const sa::Config bad = sa::parse_config("fullscreen=yes\nmonitor=DISPLAY1\noutput_size=axb\npresent_mode=slow\nunknown=1\nno equals\n  # comment\n\n");
   check(bad.values.empty() && bad.warnings.size() == 6, "unknown keys, a line without = and refused values are dropped with a warning");

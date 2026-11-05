@@ -447,6 +447,15 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
     text
 }
 
+/// TASK-181: the `game.ini` line of the racing wheel file, `wheel_file=<path>` (the game sets `GT4_WHEEL_FILE` from it on
+/// a direct start). The launcher adds it only when `wheel.toml` exists; at Play it passes `GT4_WHEEL_FILE` itself.
+pub fn wheel_file_line(path: &std::path::Path) -> String {
+    format!("{STANDALONE_WHEEL_KEY}={}\n", path.display())
+}
+
+/// The `game.ini` key of [`wheel_file_line`].
+pub const STANDALONE_WHEEL_KEY: &str = "wheel_file";
+
 /// TASK-148: the `GT4_PAD` value of the chosen controller (`controller::PadChoice` text), `None` while none is stored.
 pub fn controller_environment(settings: &Settings) -> Option<String> {
     let value = settings.get("controller");

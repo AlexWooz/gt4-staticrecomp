@@ -145,7 +145,7 @@ can be remapped in the launcher (Settings > Controls). The keyboard has a fixed 
 game's function names and a check on GS settings; Julio Vitor Rufino ([JulioHeroZ](https://github.com/JulioHeroZ)), for
 racing wheel support, RetroAchievements and the renderer choice kept on updates; Luan Antony
 ([luanantony](https://github.com/luanantony)), for the racing wheel integration, DualSense trigger curves and many fixes
-and studies. Thank you!
+and studies; the launcher's Wheel page is built on their 1.2.5 wheel page. Thank you!
 
 | Project | Author | What it gives this project |
 |---|---|---|

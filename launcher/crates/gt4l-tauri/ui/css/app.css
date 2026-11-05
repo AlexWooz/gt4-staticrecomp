@@ -1168,3 +1168,142 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 }
 .ra-unsupported-title { font-weight: 600; color: var(--white); font-size: 14px; margin-bottom: 6px; }
 .ra-unsupported-desc { font-size: 13px; color: var(--silver); line-height: 1.45; }
+
+/* ---------- Wheel page (js/pages/wheel.js, js/wheel-svg.js; TASK-181) ----------
+   The Controls page's layout (.is-controls, .cx-*): the drawing is the hero, the panel scrolls. The wheel turns at its real
+   angle; the chips are the focus targets and keep their places, their leader lines fade while the wheel is turned. */
+.wh-top { flex: none; display: flex; align-items: center; gap: 18px; margin-top: 8px; max-width: 760px; }
+.wh-enabled { flex: 1; min-width: 0; }
+.wh-enabled .row { border-bottom: 0; min-height: 48px; }
+.wh-enabled .row .ctl { width: 220px; }
+.wh-setup { flex: none; }
+.wh-pad::before { inset: 0 6% 22% 6%; background: radial-gradient(ellipse 42% 48% at 50% 46%, rgba(44, 107, 237, 0.16), rgba(44, 107, 237, 0.04) 60%, rgba(44, 107, 237, 0) 78%); }
+.wheel-svg .wh-floor { fill: rgba(0, 0, 0, 0.22); }
+.wheel-svg .wh-base { fill: url(#wh-base); stroke: #0b0d10; stroke-width: 2; }
+.wheel-svg .wh-rim { fill: none; stroke: url(#wh-rim); stroke-width: 30; }
+.wheel-svg .wh-rim-grip { fill: none; stroke: rgba(255, 255, 255, 0.05); stroke-width: 20; stroke-dasharray: 2 7; }
+.wheel-svg .wh-rim-edge { fill: none; stroke: rgba(255, 255, 255, 0.18); stroke-width: 1.5; transition: stroke 150ms; }
+.wheel-svg .wh-rim-edge.inner { stroke: rgba(0, 0, 0, 0.6); stroke-width: 2; }
+.wheel-svg .wh-top-mark { fill: #e8553e; stroke: rgba(255, 255, 255, 0.75); stroke-width: 1; }
+.wheel-svg .wh-spokes { fill: url(#wh-spoke); stroke: #0e1014; stroke-width: 2; stroke-linejoin: round; }
+.wheel-svg .wh-spokes-shine { fill: none; stroke: rgba(255, 255, 255, 0.12); stroke-width: 1.5; }
+.wheel-svg .wh-hub { fill: #15181d; stroke: rgba(255, 255, 255, 0.14); stroke-width: 2; }
+.wheel-svg .wh-hub-ring { fill: none; stroke: rgba(120, 165, 255, 0.35); stroke-width: 1.5; }
+.wheel-svg .wh-hub-dot { fill: rgba(120, 165, 255, 0.6); }
+.wheel-svg .wh-paddle { fill: url(#wh-paddle); stroke: #0c0e12; stroke-width: 2; }
+.wheel-svg .wh-paddle-label { font: 500 22px var(--label); fill: #dfe3ea; text-anchor: middle; }
+.wheel-svg .wh-cap { fill: url(#wh-cap); stroke: rgba(0, 0, 0, 0.75); stroke-width: 1.5; }
+.wheel-svg .wh-cap-label { font: 500 9px var(--label); fill: #c9ced6; text-anchor: middle; letter-spacing: 0.04em; }
+.wheel-svg .wh-arrow { fill: #c9ced6; }
+.wheel-svg .wh-glyph { stroke-width: 2.2; }
+.wheel-svg .wh-ctl.is-down .wh-cap { fill: #2c6bed; stroke: #9cc0ff; }
+.wheel-svg .wh-ctl.is-down .wh-paddle { fill: #3f7cf0; stroke: #9cc0ff; }
+.wheel-svg .wh-ctl.is-down .wh-arrow, .wheel-svg .wh-ctl.is-down .wh-cap-label, .wheel-svg .wh-ctl.is-down .wh-paddle-label { fill: #ffffff; }
+.wheel-svg .wh-ctl.is-down .wh-glyph { stroke: #ffffff; }
+.wheel-svg .wh-ctl.is-selected .wh-cap, .wheel-svg .wh-ctl.is-selected .wh-paddle { stroke: #9cc0ff; stroke-width: 2.5; filter: drop-shadow(0 0 6px rgba(44, 107, 237, 0.95)); }
+.wheel-svg .wh-ctl.is-capturing .wh-cap, .wheel-svg .wh-ctl.is-capturing .wh-paddle { stroke: #ffffff; stroke-width: 2.5; animation: wh-pulse 1.1s ease-in-out infinite; }
+.wheel-svg .wh-turning.is-selected .wh-rim-edge:not(.inner) { stroke: #9cc0ff; stroke-width: 3; filter: drop-shadow(0 0 6px rgba(44, 107, 237, 0.95)); }
+.wheel-svg .wh-turning.is-capturing .wh-rim-edge:not(.inner) { stroke: #ffffff; stroke-width: 3; animation: wh-pulse 1.1s ease-in-out infinite; }
+@keyframes wh-pulse { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.3; } }
+.wheel-svg .wh-angle { font: 300 34px var(--text); fill: #ffffff; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.wheel-svg .wh-lock { font: 500 11px var(--label); fill: #8d939c; text-anchor: middle; letter-spacing: 0.14em; text-transform: uppercase; }
+.wheel-svg .wh-bar-track { fill: var(--graphite); }
+.wheel-svg .wh-bar-fill { fill: #5d93f5; }
+.wheel-svg .wh-bar-tick { fill: rgba(255, 255, 255, 0.55); }
+.wheel-svg .wh-pedal-base { fill: rgba(255, 255, 255, 0.025); stroke: rgba(255, 255, 255, 0.07); stroke-width: 1.5; }
+.wheel-svg .wh-plate { transition: transform 60ms linear; }
+.wheel-svg .wh-plate-back { fill: url(#wh-pedal); stroke: #0c0e12; stroke-width: 2; }
+.wheel-svg .wh-plate-raw { fill: rgba(255, 255, 255, 0.24); }
+.wheel-svg .wh-plate-rib { stroke: rgba(255, 255, 255, 0.16); stroke-width: 2; stroke-linecap: round; }
+.wheel-svg .wh-pedal-name { font: 500 12px var(--label); letter-spacing: 0.16em; fill: #9aa0a8; text-anchor: middle; text-transform: uppercase; }
+.wheel-svg .wh-pedal-value { font: 500 16px var(--label); fill: #ffffff; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.wheel-svg .wh-item.is-unbound .wh-pedal-value { fill: var(--faint); }
+.wheel-svg .wh-hb-base { fill: #1a1d22; stroke: rgba(255, 255, 255, 0.1); }
+.wheel-svg .wh-hb-arm { fill: url(#wh-pedal); stroke: #0c0e12; stroke-width: 1.5; }
+.wheel-svg .wh-hb-grip { fill: #2a2e35; stroke: rgba(255, 255, 255, 0.2); stroke-width: 1.5; }
+.wheel-svg .wh-hb-lever { transition: transform 60ms linear; }
+.wheel-svg .wh-halo { fill: none; stroke: var(--accent); stroke-width: 2.5; opacity: 0; transition: opacity 150ms ease-out; }
+.wheel-svg .wh-item.is-selected .wh-halo { opacity: 1; filter: drop-shadow(0 0 6px rgba(44, 107, 237, 0.9)); }
+.wheel-svg .wh-item.is-capturing .wh-halo { opacity: 1; stroke: #ffffff; animation: wh-pulse 1.1s ease-in-out infinite; }
+.wheel-svg .wh-item:focus { outline: none; }
+.wheel-svg .wh-chip-text { font-size: 15px; }
+.wheel-svg .wh-chip-text.is-small { font-size: 13px; }
+.wheel-svg .wh-chip-glyph-bg { fill: #0f1114; stroke: rgba(255, 255, 255, 0.2); stroke-width: 1.2; }
+.wheel-svg .wh-chip-sign { font: 500 21px var(--label); fill: #e6e9ee; text-anchor: middle; }
+.wheel-svg .wh-chip-tag { font: 500 10.5px var(--label); fill: #e6e9ee; text-anchor: middle; }
+.wheel-svg .badge.is-aux .chip-bg { stroke: rgba(92, 207, 174, 0.85); }
+.wheel-svg .badge.is-capturing .chip-bg { stroke: #ffffff; animation: wh-pulse 1.1s ease-in-out infinite; }
+.wheel-svg .badge.is-live .wh-chip-glyph-bg { fill: #2c6bed; stroke: #ffffff; }
+.wheel-svg .wh-leader { transition: opacity 200ms ease-out; }
+.wheel-svg.is-turned .wh-leader { opacity: 0; }
+.wheel-svg .wh-pedal-chip .chip-bg { fill: #16181c; }
+.wheel-svg .wh-item.is-selected .wh-pedal-chip .chip-bg { fill: #1f3f8c; stroke: #9cc0ff; }
+.wheel-svg .wh-item.is-unbound .wh-pedal-chip .chip-bg { stroke-dasharray: 4 3; }
+.wheel-svg .wh-item.is-unbound .wh-pedal-chip .chip-text { fill: #6b717b; }
+.wh-key { display: inline-block; width: 16px; height: 8px; border-radius: 3px; }
+.wh-key.raw { background: rgba(255, 255, 255, 0.28); }
+.wh-key.out { background: linear-gradient(90deg, #2c6bed, #9cc0ff); }
+.wh-key.aux { height: 12px; border-radius: 6px; border: 1.5px solid rgba(92, 207, 174, 0.85); }
+.wh-card-title { font: 500 11px var(--label); letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim); margin-bottom: 4px; }
+.wh-card-note { font-size: 12px; color: var(--faint); margin-bottom: 8px; line-height: 16px; }
+.wh-device-name { font-size: 20px; line-height: 25px; margin-top: 4px; overflow-wrap: anywhere; }
+.wh-line { font-size: 12.5px; color: var(--dim); margin-top: 4px; line-height: 17px; overflow-wrap: anywhere; }
+.wh-line.is-strong { color: var(--silver); }
+.wh-line.is-warn { color: var(--silver); padding: 8px 10px; border-left: 2px solid #e3b341; background: rgba(227, 179, 65, 0.08); margin-top: 8px; }
+.wh-line.is-tip { color: var(--silver); padding: 8px 10px; border-left: 2px solid var(--accent); background: rgba(44, 107, 237, 0.09); margin-top: 8px; }
+.wh-device-row .row { min-height: 44px; }
+.wh-panel .row .ctl { width: 58%; }
+.wh-sources { flex-wrap: wrap; justify-content: flex-end; }
+.xchip.wh-chip { width: auto; padding: 0 10px; border-radius: 13px; }
+.xchip.is-aux { border-color: rgba(92, 207, 174, 0.85); }
+.wh-meter-row { margin-top: 6px; }
+.wh-meter-row[hidden] { display: none; }
+.cx-meter .sat { left: var(--l, 100%); width: 2px; background: rgba(255, 255, 255, 0.55); }
+.wh-test-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.wh-test { flex: none; }
+.wh-test-result { font-size: 12px; color: var(--dim); line-height: 16px; min-width: 0; }
+.wh-received { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--hair); }
+.wh-received-k { color: var(--silver); font-size: 13px; }
+.wh-received-v { flex: none; font: 500 12px var(--label); letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--hair); color: var(--dim); }
+.wh-received-v.is-yes { color: #86e3ad; border-color: rgba(47, 168, 102, 0.6); background: rgba(47, 168, 102, 0.12); }
+.wh-received-v.is-no { color: #ff9e9e; border-color: rgba(214, 69, 69, 0.6); background: rgba(214, 69, 69, 0.1); }
+.wh-received-why { font-size: 12px; color: var(--faint); margin-top: 6px; line-height: 16px; }
+.wh-presets .cx-reset-all { margin-top: 10px; }
+.wh-preset-actions { flex-direction: column; }
+.wh-preset-actions .btn { flex: none; width: 100%; }
+.cx-count:empty { display: none; }
+.wh-preset-list { display: flex; flex-direction: column; max-height: 300px; overflow-y: auto; margin: 4px 0 6px; }
+.wh-preset-row { display: flex; align-items: center; gap: 10px; min-height: 52px; border-bottom: 1px solid var(--hair); }
+.wh-preset-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wh-preset-name span { color: var(--white); }
+.wh-preset-name small { color: var(--faint); font-size: 12px; }
+.wh-wizard { grid-column: 1 / -1; }
+.wh-step { font: 500 11px var(--label); letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim); }
+.wh-progress { height: 4px; border-radius: 2px; background: var(--graphite); margin: 6px 0 16px; overflow: hidden; }
+.wh-progress-fill { display: block; height: 100%; width: var(--w, 0%); background: linear-gradient(90deg, #2c6bed, #9cc0ff); transition: width 250ms ease-out; }
+.cx-capture-text .wh-prompt { font: 300 22px/28px var(--text); color: var(--white); }
+.wh-capture-sub { line-height: 17px; }
+.wh-now { margin-top: 8px; min-height: 18px; color: #9cc0ff; font-size: 13px; }
+.cx-ring.is-waiting { animation: wh-spin 1.4s linear infinite; }
+@keyframes wh-spin { to { transform: rotate(360deg); } }
+.modal.is-wizard .modal-box { grid-template-columns: minmax(0, 1fr); }
+.modal.is-wizard .modal-actions { margin-top: 14px; }
+.wh-mini .wh-mini-rim { fill: none; stroke: #c9ced6; stroke-width: 5; }
+.wh-mini .wh-mini-spoke { stroke: #c9ced6; stroke-width: 4; stroke-linecap: round; }
+.wh-mini .wh-mini-hub { fill: #c9ced6; }
+.wh-mini .wh-mini-mark { fill: #e8553e; }
+.wh-mini .wh-mini-pedal { fill: #262a31; stroke: rgba(255, 255, 255, 0.45); stroke-width: 2.5; }
+.wh-mini .wh-mini-rib { stroke: rgba(255, 255, 255, 0.4); stroke-width: 3; stroke-linecap: round; }
+.wh-mini-throttle .wh-mini-pedal { stroke: #5ce096; }
+.wh-mini-brake .wh-mini-pedal { stroke: #ff7b7b; }
+.wh-mini-clutch .wh-mini-pedal { stroke: #85b2ff; }
+.wh-mini .wh-mini-hb { fill: #f6c35c; }
+.wh-mini .wh-mini-base { fill: #5c626b; }
+@media (max-height: 660px) {
+  .wh-top { margin-top: 2px; }
+  .wh-enabled .row { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cx-ring.is-waiting { animation: none; }
+  .wheel-svg .wh-plate, .wheel-svg .wh-hb-lever { transition: none; }
+}

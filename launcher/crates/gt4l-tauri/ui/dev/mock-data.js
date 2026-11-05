@@ -17,6 +17,9 @@
  *   focus=play                                      (home: focus the Play button, for screenshots)
  *   Controls: pad=A,LB,DpadRight lt=0.6 rt=0.2 lx=0.7 ly=-0.45 rx= ry= pads=2 nopad=1 (a still dev controller),
  *             select=circle mode=key capture=hold|conflict remap=1 locked=1
+ *   Wheel (TASK-181): wheel=g27|unknown|both|none wheelcfg=g27|fresh wheelfile=migrated|refused|newer steer=90 thr=0.6
+ *             brk=0.3 clu=0 wbtn=0,4 what=1 wheelmove=1 session=yes|no|unknown|off|none ffbtest=noffb capture=hold
+ *             wizard=1 wizardstep=N wheelselect=throttle wheelpanel=ffb presets=1 (see the wheel block below)
  */
 (function (root) {
   "use strict";
@@ -994,8 +997,14 @@
       case "confirm_close":
       case "ui_ready":
         return null;
-      default:
+      default: {
+        // TASK-181: the Wheel page's commands (wheelCommand returns undefined for any other name).
+        var wheelAnswer = wheelCommand(command, args);
+        if (wheelAnswer !== undefined) {
+          return wheelAnswer;
+        }
         throw new Error("Mock has no command " + command);
+      }
     }
   }
 
@@ -1063,6 +1072,385 @@
     var summary = devSummary();
     if (summary.connected) {
       emit("pad-live", root.GT4.controlsModel.padLive(summary.pad));
+    }
+  }, 50);
+  // ---- TASK-181: the Wheel page. The same shapes as wheel_page.rs and wheel_service.rs (sample devices, not game data).
+  // ?wheel=g27|unknown|both|none (default g27), ?wheelcfg=g27|fresh (default g27: a configured G27; fresh: no file yet),
+  // ?wheelfile=migrated|refused|newer, ?steer=<degrees> ?thr= ?brk= ?clu= (0..1 pedal travel), ?wbtn=0,4 (buttons
+  // down), ?what=1 (hat bits), ?wheelmove=1 (the wheel and pedals move by themselves), ?session=yes|no|unknown|off|none,
+  // ?ffbtest=noffb, ?capture=hold (a capture waits), ?wizard=1&wizardstep=N (the set-up wizard at step N),
+  // ?wheelselect=throttle, ?wheelpanel=ffb (the panel scrolled to force feedback), ?presets=1 (one saved preset).
+  var WHEEL_G27 = "030000006d0400009bc2000000000000";
+  var WHEEL_UNKNOWN = "03000000341200007856000000000000";
+  var WHEEL_PEDALS = "03000000b70e00003b18000000000000";
+  var wheelParam = query.get("wheel") || "g27";
+  var WHEEL_SLOTS = [
+    { id: "dpad_up", dfp: "dpad_up" }, { id: "dpad_right", dfp: "dpad_right" }, { id: "dpad_down", dfp: "dpad_down" },
+    { id: "dpad_left", dfp: "dpad_left" }, { id: "cross", dfp: "cross" }, { id: "circle", dfp: "circle" },
+    { id: "square", dfp: "square" }, { id: "triangle", dfp: "triangle" }, { id: "l1", dfp: "l2" }, { id: "r1", dfp: "r2" },
+    { id: "l2", dfp: "gear_down" }, { id: "r2", dfp: "gear_up" }, { id: "l3", dfp: "l3" }, { id: "r3", dfp: "r3" },
+    { id: "select", dfp: "select" }, { id: "start", dfp: "start" }
+  ];
+  var WHEEL_FAMILIES = [
+    { id: "logitech_legacy", name: "Logitech Driving Force / G25 / G27", software: "Logitech G HUB or Logitech Profiler", direct_drive: false, force_feedback: true },
+    { id: "logitech_ps", name: "Logitech G29 / G923 (PlayStation)", software: "Logitech G HUB", direct_drive: false, force_feedback: true },
+    { id: "generic", name: "Racing wheel", software: "", direct_drive: false, force_feedback: true }
+  ];
+  function wheelPedal(source, deadzone, saturation) {
+    return { source: source, mode: "inverted", deadzone: deadzone, saturation: saturation, curve: "linear" };
+  }
+  function wheelDefaults() {
+    return {
+      version: 1, enabled: false, device_guid: "", device_name: "", preset: "generic",
+      steering: { source: "axis:0", rotation_degrees: 900, invert: false },
+      throttle: wheelPedal("axis:1", 0.02, 0.98), brake: wheelPedal("axis:2", 0.02, 0.98),
+      handbrake: wheelPedal("", 0.05, 0.95), clutch: wheelPedal("axis:3", 0.05, 0.95),
+      ffb: { enabled: true, strength: 1, damper: 0.15, invert: false },
+      buttons: { dpad_up: ["hat:0:up"], dpad_right: ["hat:0:right"], dpad_down: ["hat:0:down"], dpad_left: ["hat:0:left"],
+        cross: ["btn:0"], circle: ["btn:2"], square: ["btn:1"], triangle: ["btn:3"], l1: ["btn:7"], r1: ["btn:6"],
+        l2: ["btn:5"], r2: ["btn:4"], l3: ["btn:10"], r3: ["btn:11"], select: ["btn:8"], start: ["btn:9"] }
+    };
+  }
+  // The capture answers of the mock (a G27-like layout: Z throttle, Rz brake, Y clutch; sample indices).
+  var WHEEL_CAPTURES = {
+    throttle: { source: "axis:2", mode: "inverted", rest: 32767, value: -20000 },
+    brake: { source: "axis:3", mode: "inverted", rest: 32767, value: -21000 },
+    clutch: { source: "axis:1", mode: "inverted", rest: 32767, value: -18000 },
+    handbrake: { source: "btn:22", mode: null },
+    cross: "btn:0", square: "btn:1", circle: "btn:2", triangle: "btn:3", r2: "btn:4", l2: "btn:5", r1: "btn:6", l1: "btn:7",
+    select: "btn:8", start: "btn:9", r3: "btn:10", l3: "btn:11",
+    dpad_up: "hat:0:up", dpad_right: "hat:0:right", dpad_down: "hat:0:down", dpad_left: "hat:0:left"
+  };
+  function wheelG27Config() {
+    var config = wheelDefaults();
+    config.enabled = true;
+    config.device_guid = WHEEL_G27;
+    config.device_name = "Logitech G27 Racing Wheel USB";
+    config.preset = "logitech_legacy";
+    config.throttle.source = "axis:2";
+    config.brake.source = "axis:3";
+    config.clutch.source = "axis:1";
+    config.ffb.strength = 0.8;
+    WHEEL_SLOTS.forEach(function (slot) { config.buttons[slot.id] = [WHEEL_CAPTURES[slot.id]]; });
+    return config;
+  }
+  var wheelConfig = query.get("wheelcfg") === "fresh" ? wheelDefaults() : wheelG27Config();
+  var wheelFileState = query.get("wheelcfg") === "fresh" ? "missing" : (query.get("wheelfile") || "loaded");
+  var wheelWatching = false;
+  var wheelFeatures = null;
+  var wheelPresets = query.get("presets") === "1"
+    ? [{ name: "G27 (sample)", device_name: "Logitech G27 Racing Wheel USB", preset: "G27 (sample)", problem: null, config: wheelG27Config() }]
+    : [];
+  function wheelDevices() {
+    var list = [];
+    if (wheelParam === "g27" || wheelParam === "both") {
+      list.push({ id: 11, guid: WHEEL_G27, name: "Logitech G27 Racing Wheel USB", vid_pid: "046D:C29B", sdl_type: "wheel", is_gamepad: false,
+        axes: 4, buttons: 23, hats: 1, haptic: true, features: wheelFeatures, family: "logitech_legacy",
+        family_name: "Logitech Driving Force / G25 / G27", model: "G27", matched_by: "vid_pid",
+        software: "Logitech G HUB or Logitech Profiler", direct_drive: false, force_feedback: true, notes: [] });
+    }
+    if (wheelParam === "unknown" || wheelParam === "both") {
+      list.push({ id: 12, guid: WHEEL_UNKNOWN, name: "USB Racing Wheel", vid_pid: "1234:5678", sdl_type: "other", is_gamepad: false,
+        axes: 3, buttons: 12, hats: 1, haptic: false, features: null, family: null, family_name: null, model: null,
+        matched_by: "none", software: "", direct_drive: false, force_feedback: true, notes: [] });
+    }
+    if (wheelParam === "both") {
+      list.push({ id: 13, guid: WHEEL_PEDALS, name: "ClubSport Pedals", vid_pid: "0EB7:183B", sdl_type: "other", is_gamepad: false,
+        axes: 3, buttons: 0, hats: 0, haptic: false, features: null, family: null, family_name: null, model: null,
+        matched_by: "none", software: "", direct_drive: false, force_feedback: true, notes: [] });
+    }
+    return list;
+  }
+  function wheelPrimary(devices) {
+    if (wheelConfig.device_guid) {
+      var same = devices.filter(function (device) { return device.guid === wheelConfig.device_guid; });
+      return same.length === 1 ? same[0].id : null;
+    }
+    var wheel = devices.filter(function (device) { return device.name.toLowerCase().indexOf("pedal") < 0; })[0];
+    return wheel ? wheel.id : null;
+  }
+  function wheelStatus() {
+    var devices = wheelDevices();
+    var primaryId = wheelPrimary(devices);
+    devices.forEach(function (device) {
+      device.role = device.id === primaryId ? "wheel" : device.name.toLowerCase().indexOf("pedal") >= 0 ? "auxiliary" : "other_wheel";
+    });
+    return { available: true, error: "", game_running: gameRunning, watching: wheelWatching, primary: primaryId,
+      configured: wheelConfig.device_guid,
+      configured_connected: !!wheelConfig.device_guid && devices.some(function (device) { return device.guid === wheelConfig.device_guid; }),
+      devices: devices };
+  }
+  function wheelView(taken) {
+    return {
+      config: JSON.parse(JSON.stringify(wheelConfig)),
+      slots: WHEEL_SLOTS,
+      families: WHEEL_FAMILIES,
+      pedal_modes: ["inverted", "normal", "positive", "combined_negative", "combined_positive"],
+      curves: ["linear", "quadratic", "cubic"],
+      file: { state: wheelFileState, detail: wheelFileState === "refused" ? "line 3: mode must be \"dfp\"" : wheelFileState === "migrated" ? "a 1.2.x wheel file (no mode)" : "",
+        exists: wheelFileState !== "missing", locked: wheelFileState === "newer" },
+      status: wheelStatus(),
+      presets: wheelPresets.map(function (preset) { return { name: preset.name, device_name: preset.device_name, preset: preset.preset, problem: preset.problem }; }),
+      game_running: gameRunning,
+      taken_from: taken || []
+    };
+  }
+  function wheelTemplate(family) {
+    var config = wheelDefaults();
+    config.preset = family;
+    ["throttle", "brake", "clutch", "handbrake"].forEach(function (id) { config[id].source = ""; });
+    Object.keys(config.buttons).forEach(function (slot) { config.buttons[slot] = slot.indexOf("dpad_") === 0 ? config.buttons[slot] : []; });
+    if (family === "logitech_ps") {
+      [["cross", 0], ["square", 1], ["circle", 2], ["triangle", 3], ["r2", 4], ["l2", 5], ["r1", 6], ["l1", 7], ["select", 8],
+        ["start", 9], ["r3", 10], ["l3", 11]].forEach(function (pair) { config.buttons[pair[0]] = ["btn:" + pair[1]]; });
+    }
+    return config;
+  }
+  function wheelSaved() {
+    wheelFileState = wheelFileState === "newer" ? "newer" : "loaded";
+  }
+  function wheelSet(key, value) {
+    if (wheelFileState === "newer") {
+      throw new Error("The wheel file was written by a newer GT4Recomp and is kept as it is.");
+    }
+    var parts = String(key).split(".");
+    var section = parts[0] === "wheel" ? wheelConfig : wheelConfig[parts[0]];
+    if (parts.length !== 2 || !section || !Object.prototype.hasOwnProperty.call(section, parts[1])) {
+      throw new Error("unknown wheel setting '" + key + "'");
+    }
+    if (key === "steering.rotation_degrees" && (value < 180 || value > 1080)) {
+      throw new Error("rotation_degrees must be between 180 and 1080");
+    }
+    section[parts[1]] = value;
+    if (parts[1] === "deadzone" && section.saturation <= section.deadzone + 0.05) {
+      section.saturation = Math.min(1, Math.round((section.deadzone + 0.06) * 1000) / 1000);
+    }
+    if (parts[1] === "saturation" && section.saturation <= section.deadzone + 0.05) {
+      section.deadzone = Math.max(0, Math.round((section.saturation - 0.06) * 1000) / 1000);
+    }
+    wheelSaved();
+  }
+  function wheelAssign(target, source, mode, add) {
+    var taken = [];
+    if (target === "steering") {
+      wheelConfig.steering.source = source;
+    } else if (["throttle", "brake", "clutch", "handbrake"].indexOf(target) >= 0) {
+      wheelConfig[target].source = source;
+      if (mode) {
+        wheelConfig[target].mode = mode;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(wheelConfig.buttons, target)) {
+      Object.keys(wheelConfig.buttons).forEach(function (slot) {
+        if (slot !== target && wheelConfig.buttons[slot].indexOf(source) >= 0) {
+          wheelConfig.buttons[slot] = wheelConfig.buttons[slot].filter(function (one) { return one !== source; });
+          taken.push(slot);
+        }
+      });
+      wheelConfig.buttons[target] = add ? wheelConfig.buttons[target].concat([source]).slice(-3) : [source];
+    } else {
+      throw new Error("unknown wheel control '" + target + "'");
+    }
+    wheelSaved();
+    return taken;
+  }
+  var wheelCapturePending = null;
+  function wheelCapture(args) {
+    return new Promise(function (resolve, reject) {
+      if (gameRunning) {
+        reject(new Error("The game is running: close it to change the wheel's controls or test the force."));
+        return;
+      }
+      if (wheelCapturePending) {
+        wheelCapturePending(new Error("capture cancelled"));
+      }
+      wheelCapturePending = reject;
+      if (query.get("capture") === "hold") {
+        return;
+      }
+      setTimeout(function () {
+        if (wheelCapturePending !== reject) {
+          return;
+        }
+        wheelCapturePending = null;
+        var answer;
+        if (args.target === "steering") {
+          answer = { source: "axis:0", mode: null, rest: 0, value: args.phase === "right" ? 31000 : -31000 };
+        } else {
+          var known = WHEEL_CAPTURES[args.target];
+          answer = typeof known === "string" ? { source: known, mode: null } : Object.assign({}, known);
+        }
+        answer.target = args.target;
+        answer.device_name = "Logitech G27 Racing Wheel USB";
+        answer.guid = WHEEL_G27;
+        resolve(answer);
+      }, 450);
+    });
+  }
+  // The live raw state: still values from the query, or a slow sweep with ?wheelmove=1.
+  function wheelLive(now) {
+    if (root.GT4.devWheelLive) {
+      return root.GT4.devWheelLive(); // the focus checks' still wheel
+    }
+    var moving = query.get("wheelmove") === "1";
+    var phase = now / 1000;
+    var steer = moving ? 210 * Math.sin(phase / 1.7) : Number(query.get("steer") || 0);
+    function pedal(name, offset) {
+      if (moving) {
+        return Math.max(0, Math.sin(phase / 1.3 + offset));
+      }
+      return Number(query.get(name) || 0);
+    }
+    function inverted(travel) {
+      return Math.round(32767 - travel * 65535);
+    }
+    var steerRaw = Math.max(-32768, Math.min(32767, Math.round(steer / 450 * 32767)));
+    var pressed = (query.get("wbtn") || "").split(",").filter(Boolean).map(Number);
+    var devices = [];
+    if (wheelParam === "g27" || wheelParam === "both") {
+      devices.push({ id: 11, guid: WHEEL_G27, axes: [steerRaw, inverted(pedal("clu", 2.1)), inverted(pedal("thr", 0)), inverted(pedal("brk", 3.3))],
+        pressed: pressed, hats: [Number(query.get("what") || 0)] });
+    }
+    if (wheelParam === "unknown" || wheelParam === "both") {
+      devices.push({ id: 12, guid: WHEEL_UNKNOWN, axes: [steerRaw, inverted(pedal("thr", 0)), inverted(pedal("brk", 3.3))], pressed: pressed, hats: [0] });
+    }
+    if (wheelParam === "both") {
+      devices.push({ id: 13, guid: WHEEL_PEDALS, axes: [-32768, -32768, -32768], pressed: [], hats: [] });
+    }
+    return { devices: devices };
+  }
+  function wheelSession() {
+    var kind = query.get("session") || "yes";
+    if (kind === "none") {
+      return { found: false, received: "unknown", reason: "no_session" };
+    }
+    var base = { found: true, session: "session-1793001234", modified: "2026-11-05T01:12:00Z", wheel_file: "found", enabled: true,
+      preset: "logitech_legacy", refused: "", no_ffb: "", dfp_configured: true,
+      devices: [{ name: "Logitech G27 Racing Wheel USB", vid_pid: "046d:c29b", sdl_type: "wheel", axes: 4, buttons: 23, hats: 1 }],
+      ffb_device: { constant: true, spring: true, damper: true, friction: true, gain: true, autocenter: true }, summary: null };
+    if (kind === "yes") {
+      base.summary = { game_force_commands: 5120, effect_updates_sent: 4810, effects_started: 4, haptic_device_open: true,
+        effects_supported: true, game_forces_played: 4790, reached_the_wheel: true };
+      base.received = "yes";
+      base.reason = "summary";
+    } else if (kind === "no") {
+      base.ffb_device = null;
+      base.no_ffb = "Haptic: Joystick isn't a haptic device.";
+      base.received = "no";
+      base.reason = "no_haptics";
+    } else if (kind === "off") {
+      base.enabled = false;
+      base.received = "no";
+      base.reason = "wheel_off";
+    } else {
+      base.received = "unknown";
+      base.reason = "ended_early";
+    }
+    return base;
+  }
+  function wheelCommand(command, args) {
+    switch (command) {
+      case "get_wheel_config":
+        return wheelView();
+      case "set_wheel_setting":
+        wheelSet(args.key, args.value);
+        return wheelView();
+      case "apply_wheel_preset":
+        if (args.saved) {
+          var saved = wheelPresets.filter(function (preset) { return preset.name === args.name; })[0];
+          if (!saved) {
+            throw new Error("no preset named '" + args.name + "'");
+          }
+          var enabled = wheelConfig.enabled;
+          wheelConfig = JSON.parse(JSON.stringify(saved.config));
+          wheelConfig.enabled = enabled;
+        } else {
+          var keep = wheelConfig.enabled;
+          wheelConfig = wheelTemplate(args.name);
+          wheelConfig.enabled = keep;
+          var device = wheelDevices().filter(function (one) { return one.guid === args.guid; })[0];
+          if (device) {
+            wheelConfig.device_guid = device.guid;
+            wheelConfig.device_name = device.name;
+          }
+        }
+        wheelSaved();
+        return wheelView();
+      case "assign_wheel_binding":
+        return wheelView(wheelAssign(args.target, args.source, args.mode, args.add));
+      case "reset_wheel_binding":
+        wheelAssign(args.target, "", null, false);
+        if (Object.prototype.hasOwnProperty.call(wheelConfig.buttons, args.target)) {
+          wheelConfig.buttons[args.target] = [];
+        }
+        return wheelView();
+      case "reset_wheel_config":
+        wheelConfig = wheelDefaults();
+        wheelSaved();
+        return wheelView();
+      case "capture_wheel_binding":
+        return wheelCapture(args);
+      case "cancel_wheel_capture":
+        if (wheelCapturePending) {
+          var cancel = wheelCapturePending;
+          wheelCapturePending = null;
+          cancel(new Error("capture cancelled"));
+        }
+        return null;
+      case "test_wheel_ffb":
+        if (gameRunning) {
+          throw new Error("The game is running: close it to change the wheel's controls or test the force.");
+        }
+        return new Promise(function (resolve) {
+          setTimeout(function () {
+            if (query.get("ffbtest") === "noffb") {
+              resolve({ device_name: "Logitech G27 Racing Wheel USB", has_ffb: false, features: { constant: false, spring: false, damper: false, friction: false, gain: false, autocenter: false },
+                played: false, error: "Haptic: Joystick isn't a haptic device." });
+              return;
+            }
+            wheelFeatures = { constant: true, spring: true, damper: true, friction: true, gain: true, autocenter: true };
+            resolve({ device_name: "Logitech G27 Racing Wheel USB", has_ffb: true, features: wheelFeatures, played: true, error: "" });
+          }, 900);
+        });
+      case "wheel_watch":
+        wheelWatching = !!args.on;
+        return wheelStatus();
+      case "get_wheel_session_check":
+        return wheelSession();
+      case "list_wheel_presets":
+        return wheelView().presets;
+      case "save_wheel_preset": {
+        var name = String(args.name || "").trim();
+        if (!name || /[\\/:*?"<>|]/.test(name)) {
+          throw new Error("a preset name may hold letters, digits, spaces and - _ ( ) . + only");
+        }
+        wheelPresets = wheelPresets.filter(function (preset) { return preset.name !== name; });
+        wheelPresets.push({ name: name, device_name: wheelConfig.device_name, preset: name, problem: null, config: JSON.parse(JSON.stringify(wheelConfig)) });
+        return wheelView().presets;
+      }
+      case "delete_wheel_preset":
+        wheelPresets = wheelPresets.filter(function (preset) { return preset.name !== args.name; });
+        return wheelView().presets;
+      default:
+        return undefined;
+    }
+  }
+  root.GT4.devWheel = {
+    select: query.get("wheelselect") || "",
+    capture: query.get("capture") || "",
+    wizard: query.get("wizard") === "1",
+    wizardStep: Number(query.get("wizardstep") || 0),
+    panel: query.get("wheelpanel") || ""
+  };
+  var lastWheelStatus = "";
+  setInterval(function () {
+    var status = wheelStatus();
+    var key = JSON.stringify(status);
+    if (key !== lastWheelStatus) {
+      lastWheelStatus = key;
+      emit("wheel-status", status);
+    }
+    if (wheelWatching && !gameRunning) {
+      emit("wheel-live", wheelLive(Date.now()));
     }
   }, 50);
   root.GT4_MOCK = { invoke: invoke, listen: listen, emit: emit };

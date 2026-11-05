@@ -83,8 +83,12 @@ pub(crate) fn collect(state: &AppState, controllers: &[String]) -> Result<Vec<En
     if let Ok(text) = fs::read_to_string(state.user_dirs.config_file()) {
         entries.push(Entry { path: "settings.toml".to_string(), text });
     }
+    // TASK-181: the racing wheel file (the mapping and force settings of the virtual Driving Force Pro).
+    if let Ok(text) = fs::read_to_string(state.wheel_path()) {
+        entries.push(Entry { path: "wheel.toml".to_string(), text });
+    }
 
-    entries.push(Entry { path: "system.txt".to_string(), text: log_export::system_text(&system_facts(state, controllers)) });
+    entries.push(Entry { path: "system.txt".to_string(), text: log_export::system_text(&system_facts(state, controllers)) + &wheel_report(state) });
     Ok(entries)
 }
 
@@ -103,6 +107,12 @@ pub fn controller_names(status: &serde_json::Value) -> Vec<String> {
         .as_array()
         .map(|pads| pads.iter().filter_map(|pad| pad["name"].as_str()).map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect())
         .unwrap_or_default()
+}
+
+/// TASK-181: the wheel lines of `system.txt` (the connected wheels the pad service saw, and whether the virtual Driving
+/// Force Pro is on), appended after the other facts.
+fn wheel_report(state: &AppState) -> String {
+    log_export::wheel_lines(&state.wheel_facts, state.wheel.enabled)
 }
 
 /// The facts of `system.txt`, read now.

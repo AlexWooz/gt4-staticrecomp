@@ -7,7 +7,8 @@
  *                       Display, Graphics and Advanced sections inside Graphics (no Display or Advanced tab; the
  *                       D-pad walks through all three), and the
  *                       Controls page (entry on the DS2, spatial moves, rebind and cancel, conflict and swap, live
- *                       input from a still dev pad, Y reset, X reset all)
+ *                       input from a still dev pad, Y reset, X reset all), and the Wheel page (TASK-181: entry, chips, the
+ *                       real-angle wheel and pedals, bind, clear, calibration, the force test, the wizard, presets)
  *   ?scenario=4k        only sets the state for docs/launcher/shots/graphics-4k-updated.png (4K chosen, row shown)
  *   ?scenario=advanced  only sets the state for docs/launcher/shots/graphics-advanced-section.png (pad focus on the
  *                       first Advanced row inside Graphics)
@@ -19,7 +20,7 @@
 (function (root) {
   "use strict";
   var GT4 = root.GT4;
-  var TABS = ["graphics", "controls", "games", "saves", "replays", "achievements", "about"];
+  var TABS = ["graphics", "controls", "wheel", "games", "saves", "replays", "achievements", "about"];
   var lines = [];
   var failures = 0;
 
@@ -1794,6 +1795,195 @@
     }
   }
 
+  // TASK-181: the Wheel page (js/pages/wheel.js): entry on the steering chip, D-pad moves between the chips with the
+  // panel following, the real-angle wheel and the pedals from the live event, bind and cancel, clear and bind again, a
+  // pedal's dead zone, the 900-degree warning, the force test and "received", the set-up wizard from start to end,
+  // presets, and no raw locale key on the page.
+  function wheelFocused() {
+    var active = document.activeElement;
+    var item = active && active.closest ? active.closest(".wh-item") : null;
+    return item ? item.getAttribute("data-control") : null;
+  }
+
+  function wheelChipText(id) {
+    var item = document.querySelector(".wh-item[data-control=\"" + id + "\"] .chip-text");
+    return item ? item.textContent : null;
+  }
+
+  function wheelCardName() {
+    var name = document.querySelector(".wh-control .cx-name");
+    return name ? name.textContent : null;
+  }
+
+  async function wheelConfig() {
+    return (await GT4.backend.call("get_wheel_config")).config;
+  }
+
+  async function wheelFocus(id) {
+    var item = document.querySelector(".wh-item[data-control=\"" + id + "\"]");
+    if (item) {
+      item.focus();
+    }
+    await wait(120);
+  }
+
+  async function wheelChecks() {
+    // A still G27 for the live checks: +90 degrees (a fifth of the travel), the accelerator at 60%, button 1 down.
+    GT4.devWheelLive = function () {
+      return { devices: [{ id: 11, guid: "030000006d0400009bc2000000000000", axes: [6554, 32767, Math.round(32767 - 0.6 * 65535), 32767], pressed: [0], hats: [0] }] };
+    };
+    await setHash("#/settings/wheel");
+    await wait(500);
+    check("the Wheel preview with live input running keeps focus on the tab list", sideStepOk("wheel"), sideDetail());
+    press("ArrowRight");
+    await wait(250);
+    check("entering Wheel focuses the steering chip", wheelFocused() === "steering", "focus " + wheelFocused());
+    check("the Wheel footer offers Bind, Clear and Set up", footerText().indexOf(T("wheel.hint.bind")) >= 0 && footerText().indexOf(T("wheel.hint.clear")) >= 0 &&
+      footerText().indexOf(T("wheel.hint.setup")) >= 0, footerText());
+    check("the panel shows the steering with its rotation", wheelCardName() === T("wheel.steering") && !!document.querySelector("input[data-setting=\"wheel-rotation\"]"), wheelCardName());
+
+    // The wheel turns at its real angle and the pedals show what the game gets.
+    var turning = document.querySelector(".wheel-svg .wh-turning");
+    check("the drawn wheel turns to +90 degrees", !!turning && /^rotate\(90\.0\d 500 225\)$/.test(turning.getAttribute("transform") || ""), turning ? turning.getAttribute("transform") : "none");
+    check("the angle reads +90°", (document.querySelector(".wheel-svg .wh-angle") || {}).textContent === "+90°", (document.querySelector(".wheel-svg .wh-angle") || {}).textContent);
+    var throttleValue = document.querySelector(".wh-item[data-control=\"throttle\"] .wh-pedal-value");
+    check("the accelerator shows the game's 60%", !!throttleValue && throttleValue.textContent === "60%", throttleValue ? throttleValue.textContent : "none");
+    var crossChip = document.querySelector(".wh-item[data-control=\"cross\"]");
+    check("button 1 lights Cross", !!crossChip && crossChip.classList.contains("is-live"), "no is-live");
+    check("live input never moves focus", wheelFocused() === "steering", "focus " + wheelFocused());
+
+    // D-pad between the chips; the panel follows.
+    await wheelFocus("cross");
+    press("ArrowUp");
+    await wait(150);
+    check("D-pad up from Cross reaches Circle", wheelFocused() === "circle", "focus " + wheelFocused());
+    check("the panel follows the selection (Circle)", wheelCardName() === T("wheel.control.circle"), wheelCardName());
+    press("ArrowDown");
+    await wait(150);
+    press("ArrowDown");
+    await wait(150);
+    check("D-pad down from Cross reaches R3", wheelFocused() === "r3", "focus " + wheelFocused());
+
+    // Bind, then cancel with Esc (B on the pad goes through the same GT4.cancelCapture).
+    await wheelFocus("cross");
+    GT4.nav.activate();
+    await wait(200);
+    check("A on a chip opens the bind overlay", !!document.querySelector(".modal.is-capture") && GT4.capturing === true, "capturing " + GT4.capturing);
+    check("the overlay names the control", ((document.querySelector(".modal.is-capture h3") || {}).textContent || "").indexOf(T("wheel.control.cross")) >= 0, "title");
+    check("the bind footer shows only B Cancel", footerText() === "B" + T("common.cancel"), footerText());
+    press("Escape");
+    await wait(200);
+    check("Esc cancels the bind and closes the overlay", !document.querySelector(".modal.is-capture") && GT4.capturing === false, "capturing " + GT4.capturing);
+    check("after a cancel, focus is back on the chip", wheelFocused() === "cross", "focus " + wheelFocused());
+
+    // Y clears Cross; A binds it again (the mock answers button 1).
+    GT4.hooks.y();
+    await wait(300);
+    check("Y clears Cross", (await wheelConfig()).buttons.cross.length === 0 && wheelChipText("cross") === T("wheel.unbound"), wheelChipText("cross"));
+    GT4.nav.activate();
+    await wait(1200);
+    check("a capture binds Cross to button 1", JSON.stringify((await wheelConfig()).buttons.cross) === "[\"btn:0\"]" &&
+      wheelChipText("cross") === T("wheel.source.button", { n: 1 }), wheelChipText("cross"));
+
+    // A pedal: its calibration rows; the dead zone moves by one step.
+    await wheelFocus("throttle");
+    check("the accelerator's card has its direction, dead zone, saturation and curve", wheelCardName() === T("wheel.pedal.throttle") &&
+      !!document.querySelector("[data-setting=\"wheel-throttle-mode\"]") && !!document.querySelector("input[data-setting=\"wheel-throttle-deadzone\"]") &&
+      !!document.querySelector("input[data-setting=\"wheel-throttle-saturation\"]") && !!document.querySelector("[data-setting=\"wheel-throttle-curve\"]"), wheelCardName());
+    var deadzone = document.querySelector("input[data-setting=\"wheel-throttle-deadzone\"]");
+    if (deadzone) {
+      deadzone.focus();
+      press("ArrowRight");
+      await wait(400);
+    }
+    check("the dead zone moves by one step (2% to 3%)", (await wheelConfig()).throttle.deadzone === 0.03, String((await wheelConfig()).throttle.deadzone));
+    var focusedSetting = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("data-setting") : null;
+    check("the dead zone keeps the focus after the change", focusedSetting === "wheel-throttle-deadzone", "focus " + focusedSetting);
+
+    // The rotation: 900 has no warning; another value says so.
+    await wheelFocus("steering");
+    check("900 degrees shows no warning", (document.querySelector(".row[data-row=\"wheel-rotation\"]") || { textContent: "" }).textContent.indexOf(T("wheel.rotation_warning")) < 0, "warning");
+    var rotation = document.querySelector("input[data-setting=\"wheel-rotation\"]");
+    if (rotation) {
+      rotation.focus();
+      press("ArrowRight");
+      await wait(400);
+    }
+    check("910 degrees warns that the car steers differently", (await wheelConfig()).steering.rotation_degrees === 910 &&
+      (document.querySelector(".row[data-row=\"wheel-rotation\"]") || { textContent: "" }).textContent.indexOf(T("wheel.rotation_warning")) >= 0, "rotation");
+    await GT4.backend.call("set_wheel_setting", { key: "steering.rotation_degrees", value: 900 });
+
+    // Force feedback: the test plays and lists the effects; the last game's line says Received.
+    var test = document.querySelector(".wh-test");
+    check("the force test is enabled while the game is not running", !!test && !test.disabled, "disabled");
+    if (test) {
+      test.click();
+      await wait(1300);
+    }
+    check("the force test reports the effects it found", ((document.querySelector(".wh-test-result") || {}).textContent || "").indexOf(T("wheel.effect.constant")) >= 0, (document.querySelector(".wh-test-result") || {}).textContent);
+    check("the last game's force feedback reads Received", (document.querySelector(".wh-received-v") || {}).textContent === T("wheel.received.yes"), (document.querySelector(".wh-received-v") || {}).textContent);
+
+    // The wizard, from the intro to the summary: every step answered by the mock, the wheel turned on at the end.
+    await GT4.backend.call("set_wheel_setting", { key: "wheel.enabled", value: false });
+    await wheelFocus("steering");
+    GT4.hooks.x();
+    await wait(200);
+    var start = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) { return button.textContent === T("wheel.wizard.start"); })[0];
+    check("X opens the set-up wizard's intro", !!start, "no Start");
+    if (start) {
+      start.click();
+      await wait(300);
+    }
+    check("the wizard starts at step 1 of 21 with the steering", ((document.querySelector(".wh-step") || {}).textContent || "") === T("wheel.wizard.step", { n: 1, total: 21 }) &&
+      ((document.querySelector(".wh-prompt") || {}).textContent || "") === T("wheel.prompt.steer_left"), (document.querySelector(".wh-step") || {}).textContent);
+    check("the wizard footer offers B Skip", footerText().indexOf("B" + T("wheel.wizard.skip")) === 0, footerText());
+    for (var tries = 0; tries < 60 && document.querySelector(".modal.is-wizard"); tries++) {
+      await wait(500);
+    }
+    // The summary opens after the wheel is switched on (a command round trip), so it can come a moment after the wizard.
+    var finished = document.querySelector(".modal h3");
+    for (var waits = 0; waits < 20 && !(finished && finished.textContent === T("wheel.wizard.done_title")); waits++) {
+      await wait(150);
+      finished = document.querySelector(".modal h3");
+    }
+    check("the wizard ends with the summary", !!finished && finished.textContent === T("wheel.wizard.done_title"), finished ? finished.textContent : "none");
+    var after = await wheelConfig();
+    check("the wizard bound the steering, the pedals and the buttons", after.steering.source === "axis:0" && after.throttle.source === "axis:2" &&
+      after.brake.source === "axis:3" && after.clutch.source === "axis:1" && JSON.stringify(after.buttons.r2) === "[\"btn:4\"]" &&
+      JSON.stringify(after.buttons.dpad_left) === "[\"hat:0:left\"]", JSON.stringify(after.buttons));
+    check("turning left read negative: the steering is not reversed", after.steering.invert === false, String(after.steering.invert));
+    check("the wizard turned the wheel on", after.enabled === true, String(after.enabled));
+    var done = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) { return button.textContent === T("wheel.wizard.done"); })[0];
+    if (done) {
+      done.click();
+      await wait(200);
+    }
+
+    // Presets: save one, see it in the list.
+    var saveButton = Array.prototype.filter.call(document.querySelectorAll(".wh-presets button"), function (button) { return button.textContent === T("wheel.presets.save"); })[0];
+    if (saveButton) {
+      saveButton.click();
+      await wait(200);
+    }
+    var nameInput = document.querySelector(".modal .modal-input");
+    check("Save as preset asks for a name with one filled in", !!nameInput && nameInput.value.length > 0, nameInput ? nameInput.value : "none");
+    var saveIt = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) { return button.textContent === T("wheel.presets.save_button"); })[0];
+    if (saveIt) {
+      saveIt.click();
+      await wait(300);
+    }
+    var presets = await GT4.backend.call("list_wheel_presets");
+    check("the preset is saved", presets.length === 1 && presets[0].name === (nameInput ? nameInput.value.trim() : ""), JSON.stringify(presets));
+
+    var rawKey = /wheel\.(?!toml)[a-z_]+/.exec(document.querySelector(".stage .content").textContent);
+    check("no raw locale key shows on the Wheel page", !rawKey, rawKey ? rawKey[0] : "");
+    await wheelFocus("steering");
+    press("Escape");
+    await wait(200);
+    check("B returns Wheel to the tab list", sideStepOk("wheel"), sideDetail());
+    delete GT4.devWheelLive;
+  }
+
   async function run() {
     await GT4.i18n.ready;
     await wait(300);
@@ -1831,6 +2021,7 @@
       await firstStartHintChecks();
       await advancedSectionChecks();
       await controlsChecks();
+      await wheelChecks();
       await gamesChecks();
       await achievementsChecks();
       await shaderWindowChecks();

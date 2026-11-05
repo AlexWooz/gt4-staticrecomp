@@ -68,7 +68,8 @@ public:
   // True once the guest has configured the device (the game's driver found it).
   bool configured() const;
   void set_configured(bool value);
-  // The wheel is present on the host (GT4_DFP / wheel.toml mode = "dfp"); without it no device is plugged in.
+  // The virtual wheel is plugged in (wheel.toml enabled = true, or GT4_DFP=1); without it no device is plugged in and the
+  // USB capsule leaves the donor register stub answering.
   bool enabled() const;
   void set_enabled(bool value);
   // Called after every force change, outside the lock, on the thread that changed them (the emulation thread).

@@ -23,6 +23,7 @@
     { id: "general", key: "tab.general" },
     { id: "graphics", key: "tab.graphics" },
     { id: "controls", key: "tab.controls" },
+    { id: "wheel", key: "tab.wheel" },
     { id: "games", key: "tab.games" },
     { id: "saves", key: "tab.saves" },
     { id: "replays", key: "tab.replays" },
@@ -134,12 +135,16 @@
 
   var rowToFocusAfterRedraw = null;
 
-  // ctx = {table, content, refresh(focusId)}
+  // ctx = {table, content, refresh(focusId), commit?(id, value, keepDrawn)}. A page with its own file (the Wheel page,
+  // TASK-181) passes `commit` and writes its rows itself; everything else goes through set_setting.
   // A successful write updates the row model, then the table is read again: other rows may depend on this one
   // (visible_when, disabled), so the whole tab is drawn from the new table, with focus kept on the same row.
   // `keepDrawn`: the control already shows the value, and the tab is drawn again only if the change moved something else (a redraw
   // would cut the control's slide): ctx.selfDrawn lists the rows whose value on screen is newer than the last draw.
   function commit(ctx, id, value, keepDrawn) {
+    if (ctx.commit) {
+      return ctx.commit(id, value, keepDrawn);
+    }
     return call("set_setting", { id: id, value: value }).then(
       function () {
         model.applyChange(ctx.table, id, value);
