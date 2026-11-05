@@ -1048,6 +1048,9 @@ public:
         SDL_DestroyHapticEffect(haptic_, id);
       id = -1;
     }
+    // With no effect left the gain is safe to give back at full, so the next program finds the wheel as it was.
+    if (features_ & SDL_HAPTIC_GAIN)
+      SDL_SetHapticGain(haptic_, 100);
     SDL_CloseHaptic(haptic_);
     haptic_ = nullptr;
   }

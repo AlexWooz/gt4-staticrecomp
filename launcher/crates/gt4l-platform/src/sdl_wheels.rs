@@ -262,6 +262,10 @@ pub fn test_force(joystick: &Joystick, level: i16, invert: bool) -> ForceTest {
         let features = Features::from_bits(bits);
         let mut result = ForceTest { has_ffb: true, features, played: false, error: String::new() };
         if features.constant {
+            // A game that ended may have left the device gain at 0 (the game stops its forces that way).
+            if features.gain {
+                sys_haptic::SDL_SetHapticGain(haptic, 100);
+            }
             let first = if invert { level } else { level.saturating_neg() };
             let mut effect = sys_haptic::SDL_HapticEffect::default();
             effect.constant = sys_haptic::SDL_HapticConstant {
