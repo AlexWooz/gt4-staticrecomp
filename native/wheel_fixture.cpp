@@ -1,16 +1,26 @@
+// CTest native_wheel: the racing wheel of the native Driving Force Pro path (native/wheel.hpp, native/dfp_haptics.hpp).
+// wheel.toml parsing (mode, the removed pad bridge's keys, refused files), pedal calibration, the DFP input a device
+// snapshot gives (steering on the game's range, button bits, hat), the force feedback effect lifecycle on a fake haptic
+// sink (create, update only what changed, stop once, one owner thread), and WheelInput on an SDL3 virtual wheel.
 #include "wheel.hpp"
-#include "host_io.hpp"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
+
+using namespace gt4::wheel;
 
 void require(bool condition, const char *label) {
   if (!condition)
@@ -20,247 +30,457 @@ void require(bool condition, const char *label) {
 void require_rejects(std::string_view toml, const char *label) {
   bool rejected = false;
   try {
-    (void)gt4::wheel::parse_wheel_config(toml, "bad.toml");
-  } catch (const gt4::wheel::ConfigError &) {
+    (void)parse_wheel_config(toml, "bad.toml");
+  } catch (const ConfigError &) {
     rejected = true;
   }
   require(rejected, label);
 }
 
-void test_presets_and_roundtrip() {
-  using namespace gt4::wheel;
-  for (const char *preset :
-       {"generic", "hori", "logitech_g29", "logitech_dfgt", "thrustmaster", "fanatec_moza", "combined_pedals"}) {
-    const WheelConfig cfg = preset_wheel_config(preset);
-    const std::string text = serialize_wheel_config(cfg);
-    const WheelConfig parsed = parse_wheel_config(text, std::string(preset) + ".toml");
-    require(parsed.version == 1, "preset version");
-    require(parsed.enabled == cfg.enabled, "preset enabled");
-    require(parsed.preset == cfg.preset, "preset name roundtrip");
-    require(parsed.pedal_map_mode == cfg.pedal_map_mode, "preset pedal_map_mode roundtrip");
-    require(parsed.steering.source == cfg.steering.source, "preset steering source roundtrip");
-    require(parsed.steering.rotation_degrees == cfg.steering.rotation_degrees, "preset rotation_degrees roundtrip");
-    require(parsed.steering.effective_degrees == cfg.steering.effective_degrees, "preset effective_degrees roundtrip");
-    require(parsed.throttle.source == cfg.throttle.source, "preset throttle source roundtrip");
-    require(parsed.throttle.mode == cfg.throttle.mode, "preset throttle mode roundtrip");
-    require(parsed.brake.source == cfg.brake.source, "preset brake source roundtrip");
-    require(parsed.brake.mode == cfg.brake.mode, "preset brake mode roundtrip");
-    require(parsed.buttons == cfg.buttons, "preset buttons roundtrip");
-  }
+// ---------------------------------------------------------------------------------------------------- configuration
+
+void test_mode_and_legacy_keys() {
+  // No mode key: the DFP path (the only one).
+  const WheelConfig plain = parse_wheel_config("[wheel]\nversion = 1\nenabled = true\n", "plain");
+  require(plain.enabled, "a file without mode enables the wheel");
+  require(parse_wheel_config("[wheel]\nversion = 1\nmode = \"dfp\"\n", "dfp").version == 1, "mode dfp accepted");
+  require_rejects("[wheel]\nversion = 1\nmode = \"pad\"\n", "the removed pad bridge mode is refused");
+  require_rejects("[wheel]\nversion = 1\nmode = \"other\"\n", "an unknown mode is refused");
+  // A file of the 1.2.x launcher: every key of the pad bridge still loads and is ignored.
+  const WheelConfig legacy = parse_wheel_config("# 1.2.x\n[wheel]\nversion = 1\nenabled = true\n"
+                                                "device_guid = \"\"\ndevice_name = \"\"\npreset = \"logitech_g29\"\n"
+                                                "pedal_map_mode = \"both\"\n[steering]\nsource = \"axis:0\"\n"
+                                                "rotation_degrees = 900\neffective_degrees = 540\ndeadzone = 0.020\n"
+                                                "linearity = \"quadratic\"\nsensitivity = 1.200\ninvert = false\n"
+                                                "[ffb]\nenabled = true\nstrength = 0.800\ncentering_spring = 0.250\n"
+                                                "damper = 0.150\ncurb_rumble = 1.000\ninvert = false\n"
+                                                "[buttons]\nr2 = [\"btn:4\"]\nshift_down = [\"btn:5\"]\n",
+                                                "legacy");
+  require(legacy.enabled && legacy.steering.rotation_degrees == 900, "1.2.x file loads");
+  require(std::abs(legacy.ffb.strength - 0.8) < 1e-9, "1.2.x force strength kept");
+  require(legacy.buttons[10].size() == 1 && legacy.buttons[10][0].index == 5, "shift_down alias fills the l2 slot");
+  require_rejects("[wheel]\nversion = 1\nunknown = 1\n", "unknown [wheel] key refused");
+  require_rejects("[wheel]\nversion = 2\n", "reject unsupported version");
+  require_rejects("[wheel]\nenabled = true\n", "reject missing version");
+  require_rejects("[wheel]\nversion = 1\n[steering]\nrotation_degrees = 90\n", "reject rotation < 180");
+  require_rejects("[wheel]\nversion = 1\n[throttle]\ndeadzone = 0.40\nsaturation = 0.42\n",
+                  "reject saturation too close to deadzone");
+  require_rejects("[wheel]\nversion = 1\n[buttons]\ncross = [\"axis:0\"]\n", "reject raw axis without +/- on a button");
+  require_rejects("[wheel]\nversion = 1\n[ffb]\nstrength = 3\n", "reject strength above 2");
+  require(!parse_wheel_config("[wheel]\nversion = 1\n", "disabled-default").enabled,
+          "a file omitting enabled does not activate hardware");
+  require(!default_wheel_config().enabled, "default native configuration is opt-in");
+
+  // Round trip through the serializer.
+  WheelConfig config = default_wheel_config();
+  config.enabled = true;
+  config.device_guid = "030000006d0400009bc2000000000000";
+  config.device_name = "Logitech G27 Racing Wheel";
+  config.preset = "logitech_legacy";
+  config.steering.rotation_degrees = 900;
+  config.steering.invert = true;
+  config.throttle.source = parse_source_ref("axis:2", "x", 1);
+  config.clutch.source = parse_source_ref("axis:1", "x", 1);
+  config.ffb.strength = 0.65;
+  config.ffb.invert = true;
+  config.buttons[4] = {parse_source_ref("dev:0300000000000000000000000000beef:btn:3", "x", 1)};
+  const WheelConfig again = parse_wheel_config(serialize_wheel_config(config), "roundtrip");
+  require(again.enabled && again.device_guid == config.device_guid && again.device_name == config.device_name,
+          "round trip keeps the wheel identity");
+  require(again.steering.invert && again.throttle.source == config.throttle.source &&
+              again.clutch.source == config.clutch.source && again.buttons[4] == config.buttons[4],
+          "round trip keeps sources");
+  require(std::abs(again.ffb.strength - 0.65) < 1e-9 && again.ffb.invert, "round trip keeps force settings");
+  require(serialize_wheel_config(config).find("mode = \"dfp\"") != std::string::npos, "the serializer writes mode dfp");
 }
 
-void test_steering_math() {
-  using namespace gt4::wheel;
-  SteeringConfig cfg{};
-  cfg.rotation_degrees = 900;
-  cfg.effective_degrees = 900;
-  cfg.deadzone = 0.0;
-  cfg.linearity = Curve::linear;
-  cfg.sensitivity = 1.0;
-  cfg.invert = false;
-
-  require(read_steering(cfg, 0) == 128, "steering center");
-  require(read_steering(cfg, -32768) == 0, "steering full left");
-  require(read_steering(cfg, 32767) == 255, "steering full right");
-
-  int prev = 0;
-  for (int raw = -32768; raw <= 32767; ++raw) {
-    const int byte = read_steering(cfg, static_cast<std::int16_t>(raw));
-    require(byte >= prev, "steering monotonic across full 16-bit travel");
-    prev = byte;
-  }
-
-  // Effective rotation lock: 540 deg effective on a 900 deg wheel reaches full lock at 60% physical travel.
-  cfg.effective_degrees = 540;
-  require(read_steering(cfg, static_cast<std::int16_t>(32767 * 60 / 100)) == 255,
-          "effective lock reaches full right at 60% travel");
-  require(read_steering(cfg, static_cast<std::int16_t>(-32768 * 60 / 100)) == 0,
-          "effective lock reaches full left at 60% travel");
-
-  // Invert flips direction.
-  cfg.effective_degrees = 900;
-  cfg.invert = true;
-  require(read_steering(cfg, -32768) == 255, "inverted steering full left -> 255");
-  require(read_steering(cfg, 32767) == 0, "inverted steering full right -> 0");
-
-  // Deadzone holds center.
-  cfg.invert = false;
-  cfg.deadzone = 0.10;
-  require(read_steering(cfg, 3000) == 128, "steering inside deadzone is 128");
-  require(read_steering(cfg, 4000) > 128, "steering outside deadzone moves right");
+void test_refused_file_runs_without_wheel() {
+  const std::filesystem::path folder = std::filesystem::temp_directory_path() / "gt4-wheel-fixture";
+  std::filesystem::create_directories(folder);
+  const std::filesystem::path bad = folder / "bad-wheel.toml";
+  { std::ofstream(bad) << "[wheel]\nversion = 1\nenabled = true\nmode = \"pad\"\n"; }
+  char *inherited = nullptr;
+  std::size_t length = 0;
+  _dupenv_s(&inherited, &length, "GT4_WHEEL_FILE");
+  const std::string saved = inherited ? inherited : "";
+  std::free(inherited);
+  _putenv_s("GT4_WHEEL_FILE", bad.string().c_str());
+  const WheelFileResult refused = load_wheel_from_environment();
+  _putenv_s("GT4_WHEEL_FILE", (folder / "missing.toml").string().c_str());
+  const WheelFileResult missing = load_wheel_from_environment();
+  _putenv_s("GT4_WHEEL_FILE", "");
+  const WheelFileResult none = load_wheel_from_environment();
+  _putenv_s("GT4_WHEEL_FILE", saved.c_str());
+  std::filesystem::remove_all(folder);
+  require(!refused.error.empty() && !refused.config.enabled, "a refused file gives an error and no wheel");
+  require(refused.error.find("removed") != std::string::npos, "the refusal names the removed pad mode");
+  require(!missing.error.empty() && !missing.config.enabled, "a missing GT4_WHEEL_FILE gives an error and no wheel");
+  require(none.path.empty() && none.error.empty() && !none.config.enabled, "no file: no wheel, no error");
 }
 
 void test_pedal_modes() {
-  using namespace gt4::wheel;
   PedalConfig p{};
   p.source = {SourceKind::axis, {}, 1, HatDirection::up};
-  p.deadzone = 0.02;
-  p.saturation = 0.98;
-  p.curve = Curve::linear;
-
-  // 1. Inverted (+32767 rest -> -32768 full)
   p.mode = PedalAxisMode::inverted;
   require(read_pedal(p, 32767) == 0, "inverted pedal rest at +32767");
   require(read_pedal(p, 0) >= 126 && read_pedal(p, 0) <= 129, "inverted pedal half travel at 0");
   require(read_pedal(p, -32768) == 255, "inverted pedal full press at -32768");
-
-  // 2. Normal (-32768 rest -> +32767 full)
   p.mode = PedalAxisMode::normal;
   require(read_pedal(p, -32768) == 0, "normal pedal rest at -32768");
-  require(read_pedal(p, 0) >= 126 && read_pedal(p, 0) <= 129, "normal pedal half travel at 0");
   require(read_pedal(p, 32767) == 255, "normal pedal full press at +32767");
-
-  // 3. Positive (0 rest -> +32767 full)
   p.mode = PedalAxisMode::positive;
-  require(read_pedal(p, -10000) == 0, "positive pedal ignores negative half");
-  require(read_pedal(p, 0) == 0, "positive pedal rest at 0");
-  require(read_pedal(p, 32767) == 255, "positive pedal full at +32767");
-
-  // 4. Combined negative / positive (single shared axis)
+  require(read_pedal(p, -10000) == 0 && read_pedal(p, 32767) == 255, "positive pedal");
   p.mode = PedalAxisMode::combined_negative;
-  require(read_pedal(p, 20000) == 0, "combined_negative ignores positive half");
-  require(read_pedal(p, -32768) == 255, "combined_negative full at -32768");
-
+  require(read_pedal(p, 20000) == 0 && read_pedal(p, -32768) == 255, "combined_negative pedal");
   p.mode = PedalAxisMode::combined_positive;
-  require(read_pedal(p, -20000) == 0, "combined_positive ignores negative half");
-  require(read_pedal(p, 32767) == 255, "combined_positive full at +32767");
+  require(read_pedal(p, -20000) == 0 && read_pedal(p, 32767) == 255, "combined_positive pedal");
+  p.mode = PedalAxisMode::inverted;
+  p.curve = Curve::quadratic;
+  require(read_pedal(p, 0) < 80, "quadratic curve lowers half travel");
 }
 
-void test_multi_device_and_pedal_map_modes() {
-  using namespace gt4::wheel;
-
-  const std::string base_guid = "030000006d0400004fc2000000000000";
-  const std::string pedals_guid = "03000000eb0300000120000000000000";
-  const std::string shifter_guid = "030000004f04000060b6000000000000";
-
-  const std::string toml =
-      "[wheel]\n"
-      "version = 1\n"
-      "enabled = true\n"
-      "device_guid = \"" + base_guid + "\"\n"
-      "pedal_map_mode = \"both\"\n"
-      "[steering]\n"
-      "source = \"axis:0\"\n"
-      "rotation_degrees = 900\n"
-      "effective_degrees = 900\n"
-      "[throttle]\n"
-      "source = \"dev:" + pedals_guid + ":axis:0\"\n"
-      "mode = \"normal\"\n"
-      "[brake]\n"
-      "source = \"dev:" + pedals_guid + ":axis:1\"\n"
-      "mode = \"normal\"\n"
-      "[handbrake]\n"
-      "source = \"dev:" + shifter_guid + ":axis:0\"\n"
-      "mode = \"positive\"\n"
-      "[buttons]\n"
-      "shift_up = [\"btn:4\", \"dev:" + shifter_guid + ":btn:0\"]\n"
-      "shift_down = [\"btn:5\", \"dev:" + shifter_guid + ":btn:1\"]\n"
-      "look_back = [\"hat:0:down\"]\n";
-
-  const WheelConfig cfg = parse_wheel_config(toml, "multi.toml");
-
-  DeviceReading wheelbase{};
-  wheelbase.guid = base_guid;
-  wheelbase.name = "Logitech G29 Driving Force Racing Wheel";
-  wheelbase.is_wheel = true;
-  wheelbase.axes = {16384}; // ~50% right turn
-  wheelbase.buttons = {false, false, false, false, false, false};
-  wheelbase.hats = {0x04}; // hat down -> look_back (L1, bit 10)
-
-  DeviceReading pedals{};
-  pedals.guid = pedals_guid;
-  pedals.name = "USB Load Cell Pedals";
-  pedals.is_wheel = false;
-  pedals.axes = {32767, 0}; // full throttle, ~50% brake
-
-  DeviceReading shifter{};
-  shifter.guid = shifter_guid;
-  shifter.name = "USB Shifter + Handbrake";
-  shifter.is_wheel = false;
-  shifter.axes = {32767}; // full handbrake
-  shifter.buttons = {true, false}; // shift_up pressed on external shifter
-
-  bool active = false;
-  const PadState state = map_wheel_devices(cfg, {wheelbase, pedals, shifter}, &active);
-  require(active, "multi-device wheel state active");
-  require(state.axes[2] > 180 && state.axes[2] < 200, "wheelbase steering mapped to lstick_x");
-  require((state.buttons & (1u << 14)) != 0 && state.pressures[14] == 255, "external pedal full throttle -> Cross");
-  require((state.buttons & (1u << 9)) != 0 && state.pressures[9] == 255, "external pedal full throttle + shift_up -> R2");
-  require((state.buttons & (1u << 15)) != 0 && state.pressures[15] >= 120 && state.pressures[15] <= 135,
-          "external pedal half brake -> Square pressure");
-  require((state.buttons & (1u << 8)) != 0 && state.pressures[8] >= 120 && state.pressures[8] <= 135,
-          "external pedal half brake -> L2 pressure");
-  require((state.buttons & (1u << 13)) != 0 && state.pressures[13] == 255,
-          "external handbrake axis -> Circle pressure");
-  require((state.buttons & (1u << 10)) != 0 && state.pressures[10] == 255,
-          "hat down -> L1 look_back");
-
-  // Also check rstick_y pedal map mode:
-  WheelConfig rstick_cfg = cfg;
-  rstick_cfg.pedal_map_mode = PedalMapMode::rstick_y;
-  pedals.axes = {32767, -32768}; // full throttle, zero brake
-  const PadState rstick_throttle = map_wheel_devices(rstick_cfg, {wheelbase, pedals, shifter});
-  require(rstick_throttle.axes[1] == 0, "rstick_y mode full throttle -> axis 1 == 0");
-  pedals.axes = {-32768, 32767}; // zero throttle, full brake
-  const PadState rstick_brake = map_wheel_devices(rstick_cfg, {wheelbase, pedals, shifter});
-  require(rstick_brake.axes[1] == 255, "rstick_y mode full brake -> axis 1 == 255");
-}
-
-void test_opt_in_and_device_identity() {
-  using namespace gt4::wheel;
-  const char *inherited = std::getenv("GT4_WHEEL_FILE");
-  const std::string saved = inherited ? inherited : "";
-  _putenv_s("GT4_WHEEL_FILE", "");
-  bool explicit_file = true;
-  const auto disabled = load_wheel_from_environment(&explicit_file);
-  _putenv_s("GT4_WHEEL_FILE", saved.c_str());
-  require(!disabled.enabled && !explicit_file, "no explicit wheel file means disabled; never read APPDATA");
-  require(!default_wheel_config().enabled, "default native configuration is opt-in");
-  require(!parse_wheel_config("[wheel]\nversion = 1\n", "disabled-default").enabled,
-          "configuration omitting enabled does not implicitly activate hardware");
-  for (const char *name : {"USB Gamepad", "DualSense Wireless Controller", "Thrustmaster HOTAS", "Logitech F310", "USB Pedals"}) {
-    require(!is_candidate_wheel_device(false, false, name, "030000006d0400001dc2000000000000"),
-            "vendor, six axes and non-gamepad joystick status do not establish wheel identity");
-  }
+void test_identity() {
+  require(!is_candidate_wheel_device(false, false, "Logitech F310", "030000006d0400001dc2000000000000"),
+          "a Logitech gamepad VID:PID is not a wheel");
+  require(is_candidate_wheel_device(false, false, "Unknown", "030000006d0400009bc2000000000000"),
+          "the G27 VID:PID is a wheel without a name match");
+  require(is_candidate_wheel_device(false, false, "Device", "03000000f51000007770000000000000"),
+          "Turtle Beach VelocityOne Race (10F5:7077, not in SDL's list) is a wheel");
+  require(is_candidate_wheel_device(false, false, "Gudsen MOZA R5 Base", "03000000" "6e34" "0000" "0400" "000000000000"),
+          "MOZA vendor 0x346E is a wheel");
+  require(!is_candidate_wheel_device(true, false, "Turtle Beach VelocityOne Multi-Shift"),
+          "a shifter is never the primary wheel, even with SDL's wheel type");
+  require(!is_candidate_wheel_device(false, false, "USB Pedals"), "pedals are not the primary wheel");
   require(is_candidate_wheel_device(false, true, "HORI Racing Wheel Apex"), "named XInput wheel recognized");
-  require(is_candidate_wheel_device(true, false, "Unknown USB Device"), "SDL wheel type recognized");
-  DeviceReading unknown{};
-  unknown.guid = "11111111111111111111111111111111";
-  unknown.name = "USB Gamepad";
-  unknown.is_gamepad = true;
-  unknown.axes = std::vector<std::int16_t>(6, 0);
-  auto cfg = default_wheel_config();
-  cfg.enabled = true;
-  require(select_primary_device(cfg, {unknown}) == -1, "six-axis gamepad never automatically selected");
-  cfg.device_guid = unknown.guid;
-  require(select_primary_device(cfg, {unknown}) == 0, "explicit GUID permits manually configured generic device");
-  require(select_primary_device(cfg, {unknown, unknown}) == -1, "duplicate explicit GUID is ambiguous, no primary target");
-  cfg.steering.source.device_guid = unknown.guid;
-  cfg.throttle.source.device_guid = unknown.guid;
-  cfg.brake.source = {};
-  for (auto &slot : cfg.buttons) slot.clear();
-  const auto ambiguous = map_wheel_devices(cfg, {unknown, unknown});
-  require(ambiguous.buttons == 0 && ambiguous.axes[2] == 128, "duplicate auxiliary GUID reads neutral");
+  require(is_known_wheel_vid_pid(0x0483, 0x0522) && is_known_wheel_vid_pid(0x3670, 0x0501) &&
+              is_known_wheel_vid_pid(0x11FF, 0x3245),
+          "Simagic and PXN IDs from the research table");
+  require(!is_known_wheel_vid_pid(0x1209, 0x0000), "0x1209 (generic open hardware) is not MOZA");
+  std::uint16_t vid = 0, pid = 0;
+  require(extract_guid_vid_pid("030000006d0400009bc2000000000000", vid, pid) && vid == 0x046D && pid == 0xC29B,
+          "VID:PID from an SDL GUID");
+  require(!extract_guid_vid_pid("short", vid, pid), "a short GUID has no VID:PID");
+
+  DeviceReading pad{};
+  pad.guid = "030000005e0400008e02000000007801";
+  pad.name = "Xbox 360 Controller";
+  pad.is_gamepad = true;
+  WheelConfig config = default_wheel_config();
+  config.enabled = true;
+  require(select_primary_device(config, {pad}) == -1, "auto-detect skips a standard gamepad");
+  config.device_guid = pad.guid;
+  require(select_primary_device(config, {pad}) == 0, "an explicit GUID selects any device");
+  require(select_primary_device(config, {pad, pad}) == -1, "a duplicate explicit GUID is ambiguous");
 }
 
-struct VirtualDevice {
+// ---------------------------------------------------------------------------------------------------- DFP input
+
+DeviceReading wheel_reading() {
+  DeviceReading wheel{};
+  wheel.guid = "030000006d0400009bc2000000000000";
+  wheel.name = "Logitech G27 Racing Wheel";
+  wheel.is_wheel = true;
+  wheel.axes = {0, 32767, 32767, 32767};
+  wheel.buttons = std::vector<bool>(24, false);
+  wheel.hats = {0};
+  return wheel;
+}
+
+void test_dfp_input() {
+  WheelConfig config = default_wheel_config();
+  config.enabled = true;
+  config.steering.rotation_degrees = 900;
+  DeviceReading wheel = wheel_reading();
+  const auto input_for = [&](int range) { return map_dfp_input(config, {wheel}, 0, range); };
+
+  // Steering: 14 bits, 0 full left, 0x1FFF centre, 0x3FFF full right; 1:1 on the game's 900 degrees.
+  require(input_for(900).steering == 0x1FFF, "centred wheel is 0x1FFF");
+  wheel.axes[0] = -32768;
+  require(input_for(900).steering == 0, "full left is 0");
+  wheel.axes[0] = 32767;
+  require(input_for(900).steering == 0x3FFF, "full right is 0x3FFF");
+  wheel.axes[0] = 16384; // 225 degrees right on a 900-degree wheel
+  require(std::abs(static_cast<int>(input_for(900).steering) - (0x1FFF + 0x1000)) <= 1, "half right is a quarter");
+  // On the DFP's 200-degree mode the wheel reaches full lock at 100 degrees.
+  wheel.axes[0] = static_cast<std::int16_t>(std::lround(32767.0 * 100.0 / 450.0));
+  require(input_for(200).steering == 0x3FFF, "100 degrees right is full lock on a 200-degree range");
+  wheel.axes[0] = static_cast<std::int16_t>(std::lround(32767.0 * 50.0 / 450.0));
+  require(std::abs(static_cast<int>(input_for(200).steering) - (0x1FFF + 0x1000)) <= 2, "50 of 100 degrees is half");
+  // A 270-degree wheel on 900 degrees: full lock turns the DFP 135 degrees.
+  config.steering.rotation_degrees = 270;
+  wheel.axes[0] = 32767;
+  require(std::abs(static_cast<int>(input_for(900).steering) - (0x1FFF + 2458)) <= 1, "270-degree wheel on 900");
+  config.steering.invert = true;
+  require(input_for(900).steering < 0x1FFF, "inverted steering turns the other way");
+  config.steering.invert = false;
+  config.steering.rotation_degrees = 900;
+  wheel.axes[0] = 0;
+
+  // Pedals: pressed 0..255 (the device model inverts them on the wire).
+  wheel.axes[1] = -32768;
+  wheel.axes[2] = 0;
+  const gt4::usb::DfpInput pedals = input_for(900);
+  require(pedals.throttle == 255, "throttle fully pressed");
+  require(pedals.brake >= 126 && pedals.brake <= 129, "brake half pressed");
+  wheel.axes[1] = wheel.axes[2] = 32767;
+
+  // Buttons: default bindings btn 0..11 onto the DFP's bits. The shift slots are the paddles (DFP R1/L1).
+  const struct {
+    int host_button;
+    int dfp_bit;
+    const char *label;
+  } expected[] = {{0, 0, "btn 0 Cross"}, {1, 1, "btn 1 Square"}, {2, 2, "btn 2 Circle"}, {3, 3, "btn 3 Triangle"},
+                  {4, 4, "btn 4 right paddle: DFP R1"}, {5, 5, "btn 5 left paddle: DFP L1"}, {6, 6, "btn 6 DFP R2"},
+                  {7, 7, "btn 7 DFP L2"}, {8, 8, "btn 8 Select"}, {9, 9, "btn 9 Start"}, {10, 10, "btn 10 R3"},
+                  {11, 11, "btn 11 L3"}};
+  for (const auto &item : expected) {
+    std::fill(wheel.buttons.begin(), wheel.buttons.end(), false);
+    wheel.buttons[static_cast<std::size_t>(item.host_button)] = true;
+    require(input_for(900).buttons == (1u << item.dfp_bit), item.label);
+  }
+  std::fill(wheel.buttons.begin(), wheel.buttons.end(), false);
+  require(input_for(900).buttons == 0 && input_for(900).hat == 8, "nothing pressed: no bits, hat released (8)");
+  wheel.hats[0] = 0x01 | 0x02;
+  require(input_for(900).hat == 1, "hat up-right is 1");
+  wheel.hats[0] = 0x08;
+  require(input_for(900).hat == 6, "hat left is 6");
+  wheel.hats[0] = 0;
+
+  // The handbrake pedal presses Circle past half travel.
+  config.handbrake.source = parse_source_ref("axis:3", "x", 1);
+  wheel.axes[3] = -32768;
+  require((input_for(900).buttons & (1u << 2)) != 0, "handbrake presses Circle");
+  wheel.axes[3] = 32767;
+  require(input_for(900).buttons == 0, "released handbrake presses nothing");
+
+  // A disabled configuration or no primary device is neutral.
+  config.enabled = false;
+  require(input_for(900).steering == 0x1FFF && input_for(900).buttons == 0, "disabled wheel is neutral");
+  config.enabled = true;
+  require(map_dfp_input(config, {wheel}, -1, 900).buttons == 0, "no primary device is neutral");
+}
+
+// ---------------------------------------------------------------------------------------------------- force feedback
+
+struct FakeSink final : HapticSink {
+  struct Log {
+    std::mutex mutex;
+    std::vector<std::string> calls;
+    std::array<EffectParams, effect_kind_count> last{};
+    std::vector<std::thread::id> threads;
+    int stops = 0;
+    int releases = 0;
+    void add(std::string call) {
+      std::lock_guard lock(mutex);
+      calls.push_back(std::move(call));
+      threads.push_back(std::this_thread::get_id());
+    }
+    std::vector<std::string> take() {
+      std::lock_guard lock(mutex);
+      std::vector<std::string> out;
+      out.swap(calls);
+      return out;
+    }
+  };
+  Log &log;
+  bool friction_supported;
+  FakeSink(Log &target, bool friction = true) : log(target), friction_supported(friction) {}
+  bool create(EffectKind kind, const EffectParams &params) override {
+    if (kind == EffectKind::friction && !friction_supported)
+      return false;
+    log.add(std::string("create ") + effect_kind_name(kind));
+    std::lock_guard lock(log.mutex);
+    log.last[static_cast<std::size_t>(kind)] = params;
+    return true;
+  }
+  bool update(EffectKind kind, const EffectParams &params) override {
+    log.add(std::string("update ") + effect_kind_name(kind));
+    std::lock_guard lock(log.mutex);
+    log.last[static_cast<std::size_t>(kind)] = params;
+    return true;
+  }
+  bool run(EffectKind kind) override {
+    log.add(std::string("run ") + effect_kind_name(kind));
+    return true;
+  }
+  void stop_all() override {
+    log.add("stop");
+    std::lock_guard lock(log.mutex);
+    ++log.stops;
+  }
+  void set_gain(int percent) override { log.add("gain " + std::to_string(percent)); }
+  void release() override {
+    log.add("release");
+    std::lock_guard lock(log.mutex);
+    ++log.releases;
+  }
+};
+
+std::string joined(const std::vector<std::string> &calls) {
+  std::string out;
+  for (const auto &call : calls)
+    out += (out.empty() ? "" : ", ") + call;
+  return out;
+}
+
+void require_calls(FakeSink::Log &log, const std::string &expected, const char *label) {
+  const std::string actual = joined(log.take());
+  if (actual != expected) {
+    std::fprintf(stderr, "  expected: %s\n  actual:   %s\n", expected.c_str(), actual.c_str());
+    require(false, label);
+  }
+}
+
+gt4::usb::DfpForces racing_force(double level) {
+  gt4::usb::DfpForces forces;
+  forces.autocenter = false;
+  forces.constant = level;
+  forces.range_degrees = 900;
+  return forces;
+}
+
+void test_effect_plan() {
+  FfbConfig config;
+  config.strength = 0.5;
+  config.damper = 0.2;
+  gt4::usb::DfpForces forces = racing_force(1.0);
+  EffectPlan plan = plan_dfp_effects(forces, config);
+  require(plan[0].level == 16384, "strength 0.5 halves the constant force");
+  config.invert = true;
+  require(plan_dfp_effects(forces, config)[0].level == -16384, "invert reverses the constant force");
+  config.invert = false;
+  require(plan[2].left_coeff == static_cast<std::int16_t>(std::lround(0.2 * 32767)), "damper floor not scaled by strength");
+  require(plan[1].left_coeff == 0, "no game spring and no default spring: spring off");
+  forces.autocenter = true;
+  forces.autocenter_strength = 0.5;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[1].left_coeff == static_cast<std::int16_t>(std::lround(0.25 * 32767)), "default spring at strength");
+  forces.spring = true;
+  forces.spring_left = forces.spring_right = 1.0;
+  forces.spring_center = 0.5;
+  forces.spring_deadband = 0.2;
+  forces.spring_saturation = 1.0;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[1].center == static_cast<std::int16_t>(std::lround(0.5 * 32767)) &&
+              plan[1].deadband == static_cast<std::uint16_t>(std::lround(0.1 * 65535)),
+          "the game's spring replaces the default spring");
+  config.strength = 0.0;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[0].level == 0 && plan[2].left_coeff == 0, "zero strength: no force and no damping floor");
+}
+
+void test_player_lifecycle() {
+  FakeSink::Log log;
+  FakeSink sink(log, /*friction=*/false);
+  DfpHapticPlayer player(sink);
+  FfbConfig config;
+  const auto plan = [&](double level) { return plan_dfp_effects(racing_force(level), config); };
+
+  player.apply(plan(0.1), true);
+  require_calls(log, "create constant, create spring, create damper, gain 100, run constant, run spring, run damper",
+                "first force creates the supported effects with their values and starts them once");
+  require(!player.supported(EffectKind::friction), "an effect the device lacks is not supported");
+  player.apply(plan(0.2), true);
+  require_calls(log, "update constant", "a new force level updates only the constant force");
+  player.apply(plan(0.2), true);
+  require_calls(log, "", "the same forces send nothing");
+  gt4::usb::DfpForces menu = racing_force(0.2);
+  menu.friction = true;
+  menu.friction_coefficient = 0.5;
+  menu.friction_saturation = 1.0;
+  player.apply(plan_dfp_effects(menu, config), true);
+  require_calls(log, "", "friction is never sent to a device without it");
+  player.apply(plan(0.2), false);
+  require_calls(log, "stop, gain 0", "focus loss stops once");
+  player.apply(plan(0.3), false);
+  player.stop();
+  require_calls(log, "", "further focus loss and stop calls send nothing");
+  player.apply(plan(0.3), true);
+  require_calls(log, "update constant, gain 100, run constant, run spring, run damper",
+                "focus regained: the changed force, then the effects start again");
+  require(player.updates_sent() == 2 && player.starts() == 2, "update and start counters");
+  player.release();
+  require_calls(log, "stop, gain 0, release", "release stops and closes");
+  player.apply(plan(0.4), true);
+  require_calls(log, "", "nothing after release");
+}
+
+void test_haptic_thread(bool threaded) {
+  FakeSink::Log log;
+  int opened = 0;
+  void *opened_device = nullptr;
+  int token = 0;
+  {
+    DfpHapticThread haptics(FfbConfig{}, [&](void *device) -> std::unique_ptr<HapticSink> {
+      ++opened;
+      opened_device = device;
+      return std::make_unique<FakeSink>(log);
+    }, threaded);
+    haptics.attach(&token);
+    require(opened == 1 && opened_device == &token, "attach opens the device's sink");
+    haptics.set_active(true);
+    for (int step = 1; step <= 200; ++step) {
+      gt4::usb::DfpForces forces = racing_force(step / 200.0);
+      forces.revision = static_cast<std::uint64_t>(step);
+      haptics.set_forces(forces);
+    }
+    haptics.wait_idle();
+    {
+      std::lock_guard lock(log.mutex);
+      require(log.last[0].level == 32767, "the latest force set is the one on the wheel");
+      if (threaded) {
+        const auto main_thread = std::this_thread::get_id();
+        require(std::all_of(log.threads.begin(), log.threads.end(),
+                            [&](std::thread::id id) { return id != main_thread && id == log.threads.front(); }),
+                "every device call comes from the one haptics thread");
+      }
+    }
+    const DfpHapticThread::Stats stats = haptics.stats();
+    require(stats.force_sets == 200, "every force set counted");
+    require(stats.forces_played >= 1 && stats.forces_played <= 200, "game forces reached the wheel");
+    // Every level differs, and the first one also turns the default spring off: at most 201 updates; the thread drops
+    // the levels it has not reached yet.
+    require(stats.updates_sent <= 201, "never more updates than changes");
+    if (!threaded)
+      require(stats.updates_sent == 201, "without the thread every change is one update");
+    haptics.set_active(false);
+    haptics.set_active(false);
+    haptics.wait_idle();
+    {
+      std::lock_guard lock(log.mutex);
+      require(log.stops == 1, "focus loss stops the effects once");
+    }
+    haptics.detach();
+    {
+      std::lock_guard lock(log.mutex);
+      require(log.releases == 1, "detach releases the device before returning");
+    }
+  }
+  std::lock_guard lock(log.mutex);
+  require(log.releases == 1 && log.stops == 1, "shutdown after detach sends nothing more");
+}
+
+// ---------------------------------------------------------------------------------------------------- SDL3 virtual wheel
+
+struct VirtualWheel {
   SDL_JoystickID id = 0;
   SDL_Joystick *joystick = nullptr;
-  VirtualDevice(const char *name, SDL_JoystickType type, Uint16 product) {
+  VirtualWheel(const char *name, SDL_JoystickType type, Uint16 product) {
     SDL_VirtualJoystickDesc description{};
     SDL_INIT_INTERFACE(&description);
-    description.type = type;
+    description.type = static_cast<Uint16>(type);
     description.name = name;
     description.vendor_id = 0xdead;
     description.product_id = product;
-    description.naxes = SDL_GAMEPAD_AXIS_COUNT;
-    description.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
-    description.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
-    description.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+    description.naxes = 4;
+    description.nbuttons = 16;
+    description.nhats = 1;
     id = SDL_AttachVirtualJoystick(&description);
-    require(id != 0, "attach owned virtual device");
+    require(id != 0, "attach virtual wheel");
     joystick = SDL_OpenJoystick(id);
-    require(joystick != nullptr, "open owned virtual device");
+    require(joystick != nullptr, "open virtual wheel");
+    for (int axis = 1; axis < 4; ++axis)
+      SDL_SetJoystickVirtualAxis(joystick, axis, 32767); // pedals at rest
   }
   std::string guid() const {
     char text[64]{};
@@ -268,222 +488,124 @@ struct VirtualDevice {
     return text;
   }
   void detach() {
-    if (id) SDL_DetachVirtualJoystick(id);
+    if (joystick)
+      SDL_CloseJoystick(joystick);
+    joystick = nullptr;
+    if (id)
+      SDL_DetachVirtualJoystick(id);
     id = 0;
   }
-  ~VirtualDevice() {
-    if (joystick) SDL_CloseJoystick(joystick);
-    if (id) SDL_DetachVirtualJoystick(id);
-  }
+  ~VirtualWheel() { detach(); }
 };
 
-void test_owned_routing_disconnect_and_haptic_stop() {
-  using namespace gt4::wheel;
-  require(SDL_InitSubSystem(SDL_INIT_GAMEPAD), "virtual routing SDL initialization");
-  struct Cleanup { ~Cleanup() { SDL_QuitSubSystem(SDL_INIT_GAMEPAD); } } cleanup;
-  VirtualDevice auxiliary("GT4 fixture standalone USB pedals", SDL_JOYSTICK_TYPE_UNKNOWN, 101);
-  VirtualDevice hori("GT4 fixture HORI Racing Wheel", SDL_JOYSTICK_TYPE_GAMEPAD, 102);
-  VirtualDevice xbox("GT4 fixture Xbox Controller", SDL_JOYSTICK_TYPE_GAMEPAD, 103);
-  require(SDL_IsGamepad(hori.id) && SDL_IsGamepad(xbox.id), "owned virtual wheel and second controller both SDL gamepads");
-  SDL_SetJoystickVirtualAxis(hori.joystick, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768);
-  SDL_SetJoystickVirtualAxis(hori.joystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768);
-  SDL_SetJoystickVirtualAxis(xbox.joystick, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768);
-  SDL_SetJoystickVirtualAxis(xbox.joystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768);
-  SDL_SetJoystickVirtualButton(xbox.joystick, SDL_GAMEPAD_BUTTON_EAST, true);
-
-  auto config = default_wheel_config();
+void test_wheel_input_on_virtual_wheel() {
+  require(SDL_InitSubSystem(SDL_INIT_GAMEPAD), "SDL initialization");
+  struct Cleanup {
+    ~Cleanup() { SDL_QuitSubSystem(SDL_INIT_GAMEPAD); }
+  } cleanup;
+  VirtualWheel wheel("GT4 fixture racing wheel", SDL_JOYSTICK_TYPE_WHEEL, 201);
+  FakeSink::Log log;
+  void *haptic_device = nullptr;
+  WheelConfig config = default_wheel_config();
   config.enabled = true;
-  config.device_guid = hori.guid();
-  config.throttle.source = {SourceKind::axis, {}, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER};
-  config.throttle.mode = PedalAxisMode::normal;
-  config.brake.source = {SourceKind::axis, {}, SDL_GAMEPAD_AXIS_LEFT_TRIGGER};
-  config.brake.mode = PedalAxisMode::normal;
-  config.handbrake.source.device_guid = auxiliary.guid();
-  config.handbrake.source.index = 0;
-  config.handbrake.mode = PedalAxisMode::positive;
-  for (auto &slot : config.buttons) slot.clear();
-
-  int gain = 0, center = 0, stops = 0, rumble_stops = 0;
-  std::uint16_t low = 0, high = 0;
-  HapticOutput output;
-  output.gain = [&](int value) { gain = value; };
-  output.autocenter = [&](int value) { center = value; };
-  output.stop_all = [&] { ++stops; };
-  output.stop_rumble = [&] { ++rumble_stops; };
-  output.rumble = [](float) {};
-  output.joystick_rumble = [&](std::uint16_t a, std::uint16_t b) { low = a; high = b; };
-  WheelInput wheel(config, true, output);
-  // Local port: the SDL backend is the default since TASK-075; the XInput-to-SDL switch of the 1.2.x bridge is not kept.
-  ControllerInput controller(gt4::controls::default_controls(), gt4::pad::Backend::sdl);
-  wheel.prepare(true);
-  require(wheel.primary_instance_id() == hori.id, "haptic primary uses owned wheel instance ID");
-  auto exclusions = wheel.owned_device_ids();
-  require(std::find(exclusions.begin(), exclusions.end(), hori.id) != exclusions.end(), "production ownership contains the virtual HORI");
-  // Filter every non-fixture gamepad without opening or commanding it.
-  int count = 0;
-  auto *ids = SDL_GetGamepads(&count);
-  for (int i = 0; ids && i < count; ++i)
-    if (ids[i] != xbox.id && ids[i] != hori.id && ids[i] != auxiliary.id) exclusions.push_back(ids[i]);
-  SDL_free(ids);
-  controller.set_excluded_devices(exclusions);
-  SDL_SetJoystickVirtualAxis(hori.joystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 32767);
-  wheel.prepare(true);
-  auto pad = controller.poll(true, static_cast<std::uint16_t>(1u << 3));
-  wheel.merge_prepared(pad);
-  require(pad.pressures[14] == 255, "owned wheel throttle drives Cross");
-  require(pad.pressures[13] == 255, "separate Xbox gamepad remains routed through SDL");
-  require((pad.buttons & (1u << 3)) != 0, "keyboard remains available with wheel ownership");
-  require(pad.pressures[8] == 0 && pad.pressures[9] == 0,
-          "wheel trigger never also generates parallel gamepad shift buttons");
-
-  wheel.rumble(true, 0);
-  require(center > 0 && gain > 0, "focused centering can be active with raw game rumble zero");
-  wheel.prepare(false);
-  require(center == 0 && gain == 0 && low == 0 && high == 0 && stops > 0 && rumble_stops > 0,
-          "focus loss stops autocenter, gain, effects and both rumble outputs even with raw zero");
-  wheel.prepare(true);
-  wheel.rumble(true, 0xff01);
-  require(center > 0 && low > 0 && high > 0, "focused resume restores configured feedback through fake sink");
-  wheel.stop();
-  require(center == 0 && gain == 0 && low == 0 && high == 0, "explicit stop clears nonzero feedback");
-
-  auto zero_config = config;
-  zero_config.ffb.strength = 0.0;
+  config.device_guid = wheel.guid();
+  gt4::usb::DfpBridge &bridge = gt4::usb::DfpBridge::shared();
   {
-    WheelInput zero_strength(zero_config, true, output);
-    zero_strength.prepare(true);
-    zero_strength.rumble(true, 0xff01);
-    require(center == 0 && gain == 0 && low == 0 && high == 0,
-            "zero master strength produces no gain, centering or rumble through production output policy");
+    WheelInput input(config, [&](void *device) -> std::unique_ptr<HapticSink> {
+      haptic_device = device;
+      return std::make_unique<FakeSink>(log);
+    });
+    require(bridge.enabled(), "an enabled wheel plugs the virtual DFP in");
+    input.prepare(true);
+    require(input.has_active_wheel() && input.primary_instance_id() == wheel.id, "the virtual wheel is the primary");
+    require(haptic_device != nullptr, "the wheel's haptics were opened from its joystick");
+    const auto &owned = input.owned_device_ids();
+    require(std::find(owned.begin(), owned.end(), wheel.id) != owned.end(), "the gamepad path never reads the wheel");
+
+    SDL_SetJoystickVirtualAxis(wheel.joystick, 0, 32767);
+    SDL_SetJoystickVirtualAxis(wheel.joystick, 1, -32768);
+    SDL_SetJoystickVirtualButton(wheel.joystick, 4, true);
+    SDL_SetJoystickVirtualHat(wheel.joystick, 0, SDL_HAT_UP);
+    input.prepare(true);
+    gt4::usb::DfpInput seen = bridge.input();
+    require(seen.steering == 0x3FFF, "the DFP sees full right lock");
+    require(seen.throttle == 255, "the DFP sees the throttle");
+    require(seen.buttons == (1u << 4), "the right paddle is the DFP's R1");
+    require(seen.hat == 0, "the hat reaches the DFP");
+
+    // The game's force command reaches the wheel through the bridge's listener.
+    gt4::usb::DfpForces forces = racing_force(0.5);
+    bridge.set_forces(forces);
+    input.wait_haptics_idle();
+    {
+      std::lock_guard lock(log.mutex);
+      require(log.last[0].level == static_cast<std::int16_t>(std::lround(0.5 * 32767)), "the game's force on the wheel");
+    }
+    require(input.haptic_stats().forces_played >= 1, "the summary counts the force as played");
+    require(input.force_summary().find("reached the wheel yes") != std::string::npos, "summary line says yes");
+
+    // Focus loss: neutral input; the forces stop once however often VBlank and the window call it.
+    input.prepare(false);
+    input.prepare(false);
+    input.stop();
+    input.wait_haptics_idle();
+    seen = bridge.input();
+    require(seen.steering == 0x1FFF && seen.buttons == 0 && seen.throttle == 0, "no focus: neutral DFP input");
+    {
+      std::lock_guard lock(log.mutex);
+      require(log.stops == 1, "focus loss stopped the forces once");
+    }
+    input.prepare(true);
+    input.wait_haptics_idle();
+    require(bridge.input().steering == 0x3FFF, "focus regained: input again");
+
+    // Unplugging the wheel releases the haptic handle before its joystick closes.
+    wheel.detach();
+    input.prepare(true);
+    {
+      std::lock_guard lock(log.mutex);
+      require(log.releases == 1, "unplugged wheel: haptics released");
+    }
+    require(!input.has_active_wheel() && input.owned_device_ids().empty(), "unplugged wheel owns nothing");
   }
-  auxiliary.detach();
-  wheel.prepare(true); // Before the periodic two-second scan, filtered snapshot is shorter.
-  require(wheel.primary_instance_id() == hori.id, "earlier-device disconnect cannot retarget the wheel");
-  hori.detach();
-  wheel.prepare(true);
-  require(!wheel.has_active_wheel(), "wheel detach clears primary immediately between scans");
-  require(center == 0 && gain == 0 && low == 0 && high == 0, "detach clears all feedback through the production stop path");
-  require(wheel.owned_device_ids().empty(), "detached wheel and auxiliary own no gamepad instances");
-  controller.set_excluded_devices({});
-  require(controller.backend() == gt4::pad::Backend::sdl, "SDL backend unchanged after ownership ends");
-  VirtualDevice reconnected("GT4 fixture HORI Racing Wheel", SDL_JOYSTICK_TYPE_GAMEPAD, 102);
-  require(reconnected.guid() == config.device_guid, "same virtual model reconnects under its persisted GUID");
-  SDL_SetJoystickVirtualAxis(reconnected.joystick, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768);
-  SDL_SetJoystickVirtualAxis(reconnected.joystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768);
-  SDL_Delay(2010); // Exercise the normal production rescan interval, not a test-only scan hook.
-  wheel.prepare(true);
-  require(wheel.primary_instance_id() == reconnected.id, "reconnect acquires the new instance ID");
-  wheel.rumble(true, 0);
-  require(center > 0, "focused reconnect restores only the newly selected wheel through the fake sink");
-  wheel.stop();
+  bridge.set_force_listener({});
+  bridge.set_enabled(false);
+  bridge.set_input({});
 }
 
-void test_gamepad_exclusion_and_validation() {
-  using namespace gt4::wheel;
-
-  // A standard Xbox/PlayStation gamepad is not auto-selected when device_guid is empty.
-  DeviceReading xbox_pad{};
-  xbox_pad.guid = "030000005e0400008e02000000007801";
-  xbox_pad.name = "Xbox 360 Controller";
-  xbox_pad.is_wheel = false;
-  xbox_pad.is_gamepad = true;
-  xbox_pad.axes = {32767, -32768, -32768};
-
-  WheelConfig auto_cfg = default_wheel_config();
-  auto_cfg.enabled = true;
-  require(!is_candidate_wheel_device(false, true, "Xbox 360 Controller"),
-          "standard gamepad is not a candidate wheel");
-  require(select_primary_device(auto_cfg, {xbox_pad}) == -1,
-          "auto-detect skips standard gamepad");
-
-  // Validation errors:
-  require_rejects("[wheel]\nversion = 2\n", "reject unsupported version");
-  require_rejects("[wheel]\nenabled = true\n", "reject missing version");
-  require_rejects("[wheel]\nversion = 1\n[steering]\nrotation_degrees = 90\n", "reject rotation < 180");
-  require_rejects("[wheel]\nversion = 1\n[throttle]\ndeadzone = 0.40\nsaturation = 0.42\n",
-                  "reject saturation too close to deadzone");
-  require_rejects("[wheel]\nversion = 1\n[buttons]\ncross = [\"axis:0\"]\n",
-                  "reject raw axis without +/- threshold on button");
-}
-
-void test_live_sdl_virtual_wheel() {
-  using namespace gt4::wheel;
-
-  require(SDL_InitSubSystem(SDL_INIT_JOYSTICK), "SDL_InitSubSystem(SDL_INIT_JOYSTICK)");
-  SDL_VirtualJoystickDesc desc{};
-  SDL_INIT_INTERFACE(&desc);
-  desc.type = SDL_JOYSTICK_TYPE_WHEEL;
-  desc.naxes = 4;
-  desc.nbuttons = 12;
-  desc.nhats = 1;
-  desc.name = "GT4 Virtual Racing Wheel";
-
-  const SDL_JoystickID virt_id = SDL_AttachVirtualJoystick(&desc);
-  require(virt_id != 0, "SDL_AttachVirtualJoystick succeeded");
-
-  SDL_Joystick *virt_joy = SDL_OpenJoystick(virt_id);
-  require(virt_joy != nullptr, "SDL_OpenJoystick on virtual wheel");
-
-  // Set initial rest state: steering centered (0), inverted pedals at rest (+32767).
-  SDL_SetJoystickVirtualAxis(virt_joy, 0, 0);
-  SDL_SetJoystickVirtualAxis(virt_joy, 1, 32767);
-  SDL_SetJoystickVirtualAxis(virt_joy, 2, 32767);
-  SDL_SetJoystickVirtualAxis(virt_joy, 3, 32767);
-  SDL_UpdateJoysticks();
-
-  char guid_buf[64]{};
-  SDL_GUIDToString(SDL_GetJoystickGUID(virt_joy), guid_buf, sizeof(guid_buf));
-
-  WheelConfig cfg = default_wheel_config();
-  cfg.enabled = true;
-  cfg.device_guid = guid_buf;
-  WheelInput wheel_input(cfg, true);
-
-  PadState pad{};
-  wheel_input.poll_and_merge(true, pad);
-  require(wheel_input.has_active_wheel(), "WheelInput connected to virtual wheel");
-  require(pad.axes[2] == 128 && pad.buttons == 0, "virtual wheel rest state is neutral");
-
-  // Turn wheel full left (-32768), press throttle full (-32768), press right paddle (btn 4 -> R2).
-  SDL_SetJoystickVirtualAxis(virt_joy, 0, -32768);
-  SDL_SetJoystickVirtualAxis(virt_joy, 1, -32768);
-  SDL_SetJoystickVirtualButton(virt_joy, 4, true);
-  SDL_SetJoystickVirtualHat(virt_joy, 0, SDL_HAT_UP);
-
-  pad = {};
-  wheel_input.poll_and_merge(true, pad);
-  require(pad.axes[2] == 0, "virtual wheel full left steering -> lstick_x = 0");
-  require((pad.buttons & (1u << 14)) != 0 && pad.pressures[14] == 255,
-          "virtual wheel full throttle -> Cross pressure 255");
-  require((pad.buttons & (1u << 9)) != 0 && pad.pressures[9] == 255,
-          "virtual wheel right paddle -> R2 Shift Up");
-  require((pad.buttons & (1u << 4)) != 0 && pad.pressures[4] == 255,
-          "virtual wheel hat up -> D-Pad Up");
-
-  // Unfocused window leaves pad untouched and stops rumble.
-  PadState unfocused{};
-  wheel_input.poll_and_merge(false, unfocused);
-  require(unfocused.buttons == 0 && unfocused.axes[2] == 128, "unfocused poll leaves pad neutral");
-
-  SDL_CloseJoystick(virt_joy);
-  SDL_DetachVirtualJoystick(virt_id);
-  SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+void test_disabled_wheel_touches_nothing() {
+  gt4::usb::DfpBridge &bridge = gt4::usb::DfpBridge::shared();
+  bridge.set_enabled(false);
+  int opened = 0;
+  {
+    WheelInput input(default_wheel_config(), [&](void *) -> std::unique_ptr<HapticSink> {
+      ++opened;
+      return nullptr;
+    });
+    input.prepare(true);
+    input.stop();
+    require(!input.has_active_wheel() && input.owned_device_ids().empty(), "disabled wheel owns nothing");
+  }
+  require(!bridge.enabled() && opened == 0, "a disabled wheel never plugs the DFP in nor opens haptics");
 }
 
 } // namespace
 
 int main() {
   try {
-    test_opt_in_and_device_identity();
-    test_owned_routing_disconnect_and_haptic_stop();
-    test_presets_and_roundtrip();
-    test_steering_math();
+    test_mode_and_legacy_keys();
+    test_refused_file_runs_without_wheel();
     test_pedal_modes();
-    test_multi_device_and_pedal_map_modes();
-    test_gamepad_exclusion_and_validation();
-    test_live_sdl_virtual_wheel();
-    std::fprintf(stderr, "PASS: wheel presets, steering lock/linearity, 5 pedal modes, multi-device mapping, "
-                         "SDL3 virtual wheel\n");
+    test_identity();
+    test_dfp_input();
+    test_effect_plan();
+    test_player_lifecycle();
+    test_haptic_thread(true);
+    test_haptic_thread(false);
+    test_disabled_wheel_touches_nothing();
+    test_wheel_input_on_virtual_wheel();
+    std::fprintf(stderr, "PASS: wheel.toml (mode dfp, 1.2.x keys, refused files), pedals, identity, DFP input, "
+                         "force effects (changed-only updates, stop once, one haptics thread), SDL3 virtual wheel\n");
     return 0;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "FAIL: %s\n", error.what());

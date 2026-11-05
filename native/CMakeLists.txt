@@ -286,7 +286,7 @@ if(GT4_USB_RUNTIME_SOURCE)
     if(NOT usb_actual STREQUAL usb_expected)
         message(FATAL_ERROR "USB hw.cpp differs from its runtime.json pin")
     endif()
-    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/iop/hw\.cpp$")
+    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/iop/hw\\.cpp$")
     list(APPEND RUNTIME_FILES "${usb_capsule}/hw.cpp")
     set_source_files_properties("${usb_capsule}/hw.cpp" PROPERTIES
         INCLUDE_DIRECTORIES "${DONOR}/runtime/src/iop;${CMAKE_CURRENT_SOURCE_DIR}")
@@ -904,7 +904,7 @@ target_include_directories(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/devel/SDL3-3.4.1
 target_link_libraries(gt4_sdl3 INTERFACE "${GT4_SDL3_ROOT}/${GT4_SDL3_IMPORT_LIB}")
 add_library(gt4_pad_mapping STATIC pad_mapping.cpp pad_choice.cpp input_recording.cpp)
 target_compile_options(gt4_pad_mapping PRIVATE /W4)
-add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp wheel.cpp)
+add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp wheel.cpp dfp_haptics.cpp)
 target_link_libraries(native_host_io PUBLIC gt4_pad_mapping gt4_usb)
 if(GT4_PERF_RUNTIME_SOURCE)
     target_compile_definitions(native_host_io PRIVATE GT4_PERF_PROBE)
@@ -1049,7 +1049,8 @@ target_link_libraries(host_io_fixture PRIVATE native_host_io)
 add_custom_command(TARGET host_io_fixture POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GT4_SDL3_ROOT}/${GT4_SDL3_RUNTIME_DLL}" "$<TARGET_FILE_DIR:host_io_fixture>/SDL3.dll")
 target_compile_options(host_io_fixture PRIVATE /W4)
-# Racing wheel bridge (native/wheel.hpp): config parse, source refs, steering and pedal curves, device mapping.
+# Racing wheel (native/wheel.hpp, native/dfp_haptics.hpp): wheel.toml, pedals, the DFP input, the force effect lifecycle on
+# a fake haptic sink and the haptics thread, WheelInput on an SDL3 virtual wheel.
 add_executable(wheel_fixture wheel_fixture.cpp)
 target_link_libraries(wheel_fixture PRIVATE native_host_io)
 add_custom_command(TARGET wheel_fixture POST_BUILD

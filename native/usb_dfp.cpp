@@ -47,7 +47,7 @@ bool trace_enabled() {
 
 DfpBridge &DfpBridge::shared() {
   static DfpBridge bridge;
-  // GT4_DFP=1 plugs the virtual wheel in without a host wheel (headless tests); wheel.toml mode = "dfp" does it too.
+  // GT4_DFP=1 plugs the virtual wheel in without a host wheel (headless tests); an enabled wheel.toml does it too.
   static const bool forced = [] {
     const char *value = std::getenv("GT4_DFP");
     if (value && *value == '1')
