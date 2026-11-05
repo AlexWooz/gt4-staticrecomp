@@ -3326,8 +3326,13 @@ Ceiling of the whole wait: about 4.1 ms/VBlank in Hong Kong and 2.0 at Motegi (6
 GPU-bound (about 15 ms of GPU work per VBlank). First step (O1, exact): submit once K batches after any waited submission
 (`GT4_CORE2_SUBMIT_AFTER_WAIT=K`, 0 = off), plus idle, I_cpu and reply-hash counters, and three traces (a GPU profile on a
 Motegi sun frame and on Hong Kong, the Motegi store-before-write readback, Hong Kong's readback targets). Branch
-`task/178-submit-after-wait`. Keep it only with a measured gain (at least 0.3 ms/VBlank on two scenes on the Avell). State:
-in progress. TASK-168 found on the Avell: no gain as built (segments are split back for GT4's T8-over-target batches); the
+`task/178-submit-after-wait`. Keep it only with a measured gain (at least 0.3 ms/VBlank on two scenes on the Avell).
+Result (2026-11-05, Avell, 18 runs at 6x): no gain. Wall per VBlank K0/K16: Hong Kong 16.68/16.69, Motegi 11.32/11.39,
+George V 18.86/19.03. GPU idle after a drain fell, but the GS worker rose. So the default stays off; the switch and the new
+counters stay. Next on the same branch: O3, exact. In Hong Kong the 4-pixel table read reduces whole old targets (640x224
+CT24 and 128x128 Z24, 99.9% of the downloaded pixels), so limit the reduction to the read's blocks. Traces in the study's
+section 9: GPU time is about 30% full-screen post/glare passes and 15% world geometry; Hong Kong dirty patches 18%;
+Motegi Performance mode has a 16x16 CT32 store into a drawn Z24 target every second VBlank (IN-539, off by default). TASK-168 found on the Avell: no gain as built (segments are split back for GT4's T8-over-target batches); the
 fix is TASK-168b (`task/168b-segments-fix`). Owner (2026-11-04): no hurry; keep optimising, change approach when one fails.
 
 ### TASK-179 — Android stage A1 on Windows: Vulkan correctness gaps (owner, 2026-11-04; in parallel to rc15)
