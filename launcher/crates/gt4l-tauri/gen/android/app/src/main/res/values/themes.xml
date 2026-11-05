@@ -3,4 +3,17 @@
     <style name="Theme.gt4l_tauri" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
     </style>
+
+    <!-- TASK-180 test3 (owner): the game Activity shares the launcher's task and must look like another screen of the same
+         app: a black window from the first frame (no white or themed flash while SDL starts), no title bar, and no window
+         animation of its own, so going from the launcher to the game has no app-open animation. -->
+    <style name="Theme.gt4l_game" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+
+    <!-- TASK-180 test3: the app icon's gate draws nothing at all (it starts the game or the launcher and finishes). -->
+    <style name="Theme.gt4l_gate" parent="@android:style/Theme.NoDisplay" />
 </resources>

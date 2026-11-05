@@ -3421,6 +3421,16 @@ Spec II on Android (Part B): the `GT4_TARGET=spec2` NDK recipe and `libgt4spec2.
 ships v2.00 only (the hooked Spec II unit set has to be regenerated with `scripts/camera360_units.py spec2` first), and a
 bench for Spec II is refused with a message instead of starting the wrong library.
 
+**One app (owner, same day; APK rebuilt as `1.3.0-android-test3`):** the game runs in the launcher's own task
+(`singleTop`, no task affinity, black window theme, no activity animation), one card in recents; the app icon enters
+through a windowless `LaunchGateActivity` that starts the running game or the launcher and finishes, because a
+`singleTask` launcher resets the task (destroying the game) and a `singleTop` one pushes a second launcher on top; Minimize
+brings the launcher to the front of the same task with the game alive below and Resume takes it back (focused, after the
+WebView settles); Back on the launcher leaves the app in the background instead of finishing the task under a live game.
+Checked in the emulator, step by step with screenshots: Play, Home, icon → game, recents → game (one card), Back → pt-BR
+pause dialog, Minimize → launcher with Retomar focused, Resume → game, Close → launcher with Jogar focused, Play → a new
+session.
+
 ### TASK-181 — Launcher Wheel page for the native DFP wheel (owner, 2026-11-05; with PR #205)
 
 PR #205 (WaimateWihongi, TASK-018) makes GT4 see a virtual Driving Force Pro on its USB port (option A of

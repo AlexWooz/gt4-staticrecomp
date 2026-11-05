@@ -168,10 +168,16 @@ class GameActivity : SDLActivity() {
     }
 
     // Minimize: the game stays alive and paused; the launcher comes back (its Play button reads Resume).
+    // Minimize: the game stays alive and paused in the launcher's task, with the launcher brought back over it (TASK-180
+    // test3: no separate task, no animation). The launcher's Resume brings the game's own instance back to the front.
     private fun minimize() {
-        Log.i(TAG, "minimize: the game stays paused in the background")
-        moveTaskToBack(true)
-        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+        Log.i(TAG, "minimize: the launcher comes to the front, the game stays paused below it")
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        )
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, 0)
     }
 
     // Close: the normal end (SDL asks the game to quit; it writes its cards and ends the process).
@@ -179,6 +185,8 @@ class GameActivity : SDLActivity() {
         Log.i(TAG, "close: the game ends")
         setPaused(false, "closing")
         finish()
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, 0)
     }
 
     // The same pause path for Home, the app switcher, the notification shade, Settings and screen off (A6): the game

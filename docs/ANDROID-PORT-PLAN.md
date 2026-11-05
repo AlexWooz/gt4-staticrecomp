@@ -387,11 +387,33 @@ game library).
 - **Version:** `1.3.0-android-test3` from `GT4_RELEASE_LABEL` (accepted as `rc<N>` or `android-test<N>`), shown by the
   footer, the logs, and Android's own `versionName`.
 - **Windows:** the home page preselects Play there too (owner).
+- **One app (test3 follow-up, owner):** the game Activity runs in the launcher's own task (`GameActivity` is
+  `singleTop` with no task affinity, a black theme and no window animation), so recents shows one card. The app icon
+  enters through a windowless `LaunchGateActivity` that starts the running game when there is one (a `singleTask`
+  launcher would reset the task and destroy the game; a `singleTop` one would put a second launcher on top of it), and
+  the launcher otherwise. Home or the app switcher leave the paused game on top of the task, so the icon and the
+  recents card land back in it (surface rebuilt, audio resumed); Minimize brings the launcher to the front of the same
+  task with the game alive below, Resume brings the game back, and Back on the launcher leaves the app in the background
+  instead of finishing the task under a live game. Close game still ends the Activity and its process. Checked in the
+  emulator: Play, Home, icon → game, recents → game, Back → pause dialog, Minimize → launcher ("Retomar"), Resume → game,
+  Close → launcher ("Jogar"), Play → a new session.
 
-What Spec II still needs (part B, not in this APK): the arm64 library from the Spec II translated units, which have to be
-regenerated with their hooks first (`scripts/camera360_units.py spec2 <translated units> <fresh folder>`, then
-`android/native/configure-android-spec2.cmd`, which builds `libgt4spec2.so`), packaging both libraries, the game
-Activity choosing the library by game, and the launcher's install/Play path for Spec II (its own ELF, card and disc).
+### Spec II on Android: what a later build needs
+
+Spec II is **not** in test3: the APK ships `libgt4.so` (v2.00) only, and a `GT4_BENCH_GAME=spec2` bench is refused with a
+message instead of starting the wrong library. The groundwork is in place — `android/native/CMakeLists.txt` accepts
+`-DGT4_TARGET=spec2` and names the library `libgt4spec2.so`, and `android/native/configure-android-spec2.cmd` holds the
+Spec II arm64 recipe (its units, hook manifest, `slice276-spec2-iop-runtime`, `slice394-spec2-vu0-gen`, the same
+`-ffp-contract=off` and 16 KB pages). What is missing, in order:
+
+1. **The hooked Spec II unit set.** The translated Spec II units in `private/slice405-spec2-aspect-producer/generated` are
+   the pre-hook set, so the build stops on the manifest's `sha256_after` pins. Regenerate them with
+   `private/tooling-venv/Scripts/python.exe scripts/camera360_units.py spec2 <translated units folder> <fresh output>`
+   (the script refuses an existing output folder and pins the translation hashes), then point `GT4_EE_UNITS_DIR` at it.
+2. Build `libgt4spec2.so` for `arm64-v8a` with that script and stage both libraries in `jniLibs` (`stage-native-libs.cmd`).
+3. The game Activity picking the library by game (`getLibraries()` returning `gt4spec2` for Spec II) and the launcher's
+   install/Play path for Spec II on Android (its own disc, ELF, memory card and settings, as v2.00 has).
+4. The emulator check that Spec II reaches its title screen at 1x, and the APK size with both libraries.
 
 ## Subtle risks (Android), ranked
 

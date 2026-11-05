@@ -181,15 +181,25 @@ class GameBridgePlugin(private val activity: Activity) : Plugin(activity) {
             putExtra(GameActivity.EXTRA_ARGUMENTS, args.arguments)
             putExtra(GameActivity.EXTRA_ENVIRONMENT, args.environment)
             putExtra(GameActivity.EXTRA_TEXTS, args.texts)
+            // TASK-180 test3: the game is another screen of this app, in this task and without an open animation.
+            addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
         }
         activity.runOnUiThread {
             try {
                 activity.startActivity(intent)
+                noTransition(activity)
                 invoke.resolve(JSObject())
             } catch (error: Exception) {
                 invoke.reject(error.message ?: error.toString())
             }
         }
+    }
+
+    /// TASK-180 test3: no activity transition. `overridePendingTransition` is deprecated from API 34 but still applies;
+    /// the game's theme also sets no window animation, so the two together keep the change instant on every version.
+    private fun noTransition(activity: Activity) {
+        @Suppress("DEPRECATION")
+        activity.overridePendingTransition(0, 0)
     }
 
     // TASK-180 test2: is the game's process alive (Minimize keeps it, paused)? The process list of this app (the
@@ -249,10 +259,17 @@ class GameBridgePlugin(private val activity: Activity) : Plugin(activity) {
     // TASK-180 test2: Resume brings the minimized game's activity back; it unpauses itself in onResume.
     @Command
     fun resumeGame(invoke: Invoke) {
-        val intent = Intent(activity, GameActivity::class.java).putExtra(GameActivity.EXTRA_RESUME, true)
+        // TASK-180 test3: the game lives in the launcher's task, below it after Minimize; this brings that same instance
+        // back to the front instead of starting another one, with no animation.
+        val intent = Intent(activity, GameActivity::class.java).apply {
+            putExtra(GameActivity.EXTRA_RESUME, true)
+            addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+        }
         activity.runOnUiThread {
             try {
                 activity.startActivity(intent)
+                @Suppress("DEPRECATION")
+                activity.overridePendingTransition(0, 0)
                 invoke.resolve(JSObject())
             } catch (error: Exception) {
                 invoke.reject(error.message ?: error.toString())

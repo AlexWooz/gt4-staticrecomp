@@ -59,6 +59,34 @@ class MainActivity : TauriActivity() {
     if (hasFocus) hideSystemBars()
   }
 
+  // TASK-180 test3 (owner: one app): the game runs in this launcher's own task, below the launcher after Minimize. Back
+  // on the launcher would finish this activity and take the whole task (and the live game) with it, so while a game is
+  // alive Back leaves the app in the background instead, exactly as it does when the game is on top.
+  override fun onBackPressed() {
+    if (gameAlive()) {
+      moveTaskToBack(true)
+      return
+    }
+    @Suppress("DEPRECATION")
+    super.onBackPressed()
+  }
+
+  /// Whether the game's activity is alive: its heartbeat file (`filesDir/game-heartbeat`, rewritten every 2 s by
+  /// GameActivity) is younger than five seconds. No cross-process IPC needed.
+  private fun gameAlive(): Boolean {
+    return try {
+      val file = java.io.File(filesDir, "game-heartbeat")
+      if (!file.isFile) {
+        false
+      } else {
+        val stamp = file.readText().trim().split(' ').lastOrNull()?.toLongOrNull() ?: return false
+        System.currentTimeMillis() - stamp < 5000
+      }
+    } catch (error: Exception) {
+      false
+    }
+  }
+
   private fun hideSystemBars() {
     val controller = WindowCompat.getInsetsController(window, window.decorView)
     controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

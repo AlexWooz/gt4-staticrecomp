@@ -562,11 +562,18 @@
       }
       // After the page is in place (the router and nav.js settle the focus first).
       setTimeout(function () { focusPlay(true); }, 0);
+      // TASK-180 test3: when the launcher comes back over a minimized game, the WebView restores the element it last had
+      // (the footer link) a moment after the activity resumes, so the first press landed there instead of on Resume.
+      // One more attempt after that settles puts Play/Resume back on top.
+      function focusPlaySettled() {
+        setTimeout(function () { focusPlay(true); }, 250);
+      }
       // Back from the game (or another app): Play/Resume again, whatever had the focus before.
       function onVisible() {
         if (document.visibilityState === "visible") {
           movedThisVisit = false;
           focusPlay(true);
+          focusPlaySettled();
         }
       }
       document.addEventListener("visibilitychange", onVisible);
@@ -574,6 +581,7 @@
       // the edge it was entered from (the footer link): Play/Resume takes it back right after.
       function onWindowFocus() {
         setTimeout(function () { focusPlay(true); }, 0);
+        focusPlaySettled();
       }
       window.addEventListener("focus", onWindowFocus);
       // The first key the WebView gets after the launcher comes back may also be the one that gives it the input focus,

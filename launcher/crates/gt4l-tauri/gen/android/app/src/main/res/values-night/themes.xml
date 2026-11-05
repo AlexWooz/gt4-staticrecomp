@@ -3,4 +3,15 @@
     <style name="Theme.gt4l_tauri" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
     </style>
+
+    <!-- TASK-180 test3: the game Activity's theme (values/themes.xml); the same in dark mode: black window, no animation. -->
+    <style name="Theme.gt4l_game" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+
+    <!-- TASK-180 test3: the app icon's gate draws nothing at all (it starts the game or the launcher and finishes). -->
+    <style name="Theme.gt4l_gate" parent="@android:style/Theme.NoDisplay" />
 </resources>

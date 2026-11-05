@@ -1,3 +1,20 @@
+## Android test3: one app (TASK-180 follow-up, 2026-11-05 evening)
+
+The owner asked for the launcher and the game to feel like one app. The game Activity now runs in the launcher's own task
+(`singleTop`, no task affinity, a black theme, no window animation), so recents shows one card with the game's own picture,
+and the app icon enters through a windowless `LaunchGateActivity` that starts the running game when there is one (or the
+launcher) and finishes at once — the two ways the launcher itself could be the icon's target either reset the task and
+destroy the game (`singleTask`) or put a second launcher on top of it (`singleTop`). Home and the app switcher leave the
+paused game on top, so the icon and the recents card land back in it (surface rebuilt, audio resumed); Minimize brings the
+launcher to the front of that task with the game alive below and Resume takes it back, with Resume focused after the
+WebView settles; Back on the launcher leaves the app in the background instead of finishing the task under a live game;
+Close game still ends the Activity and its process. Verified in the emulator step by step (screenshots and the launcher log's
+`game start`/`resume`/`game process gone` lines): Play, Home, icon → game, recents → game, Back → pt-BR pause dialog,
+Minimize → launcher (Retomar focused), Resume → game, Close → launcher (Jogar focused), Play → a new session. The APK in
+`private/android-test3/` was rebuilt with it (sha256 `f1be8ee1…f070b`, 117,924,210 bytes, same key, `zipalign -P 16` clean);
+launcher tests 291 + 142 (the flow_audit flake passed with no game process running) and the focus checks pass in both
+languages. Spec II is still groundwork only (see the Android plan for the regenerated hooked unit set it needs).
+
 ## Android test3 (TASK-180, 2026-11-05 afternoon)
 
 `1.3.0-android-test3` (arm64, versionCode 3, same release key, `zipalign -c -P 16` clean) is built from
