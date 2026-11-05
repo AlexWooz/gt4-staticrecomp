@@ -66,6 +66,10 @@ pub const PREPARE_RECEIPT: &str = "prepare.json";
 /// Name of the controls file (`gt4controls::CONTROLS_FILE_NAME`).
 pub const CONTROLS_FILE: &str = "controls.toml";
 
+/// Name of the racing wheel file (`crate::wheel::FILE_NAME`, TASK-018/TASK-181), beside the controls file: the game
+/// looks there when `GT4_WHEEL_FILE` is not set.
+pub const WHEEL_FILE: &str = "wheel.toml";
+
 /// The large data folder. `root` takes every write; `read_layers` are older or read-only folders that still hold
 /// game files or a renderer (the read-only `<install>\data`, or the 1.2.0 `%LOCALAPPDATA%\GT4Recomp` until its move
 /// finished). Reads of the game files, the renderer and the textures use the first folder that has them.
@@ -428,6 +432,16 @@ impl UserDirs {
 
     pub fn controls_file(&self) -> PathBuf {
         self.controls_file.clone()
+    }
+
+    /// The racing wheel file (`wheel.toml`), next to `controls.toml` (cbfd8b8 put it there too).
+    pub fn wheel_file(&self) -> PathBuf {
+        self.controls_file.with_file_name(WHEEL_FILE)
+    }
+
+    /// The named wheel presets (`config\wheel-presets\<name>.toml`, TASK-181).
+    pub fn wheel_presets(&self) -> PathBuf {
+        self.config_dir.join(crate::wheel::PRESETS_FOLDER)
     }
 
     /// Card images kept before `runtime\card.ps2` is replaced.

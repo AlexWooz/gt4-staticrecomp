@@ -581,6 +581,10 @@ fn variables_of_game_ini(text: &str) -> std::collections::BTreeMap<String, Strin
             "trigger_full_range" => {
                 variables.insert("GT4_TRIGGER_FULL_RANGE".to_string(), value.to_string());
             }
+            // TASK-181: written beside the other keys only when wheel.toml exists (state.rs `write_standalone_files`).
+            "wheel_file" => {
+                variables.insert("GT4_WHEEL_FILE".to_string(), value.to_string());
+            }
             other => panic!("unknown game.ini key {other}"),
         }
     }
@@ -680,4 +684,14 @@ fn a_chosen_textures_folder_reaches_the_renderers_and_the_shader_cache_stays_in_
     let paths = launch::Pcsx2Paths { textures: chosen.folder.clone(), ..pcsx2_paths() };
     let text = launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap();
     assert!(text.contains(r"E:\Emulators\PCSX2\textures"), "{text}");
+}
+
+#[test]
+fn the_wheel_file_line_of_game_ini_stands_for_gt4_wheel_file() {
+    let path = std::path::Path::new(r"C:\Users\Player\AppData\Roaming\GT4Recomp\wheel.toml");
+    let line = launch::wheel_file_line(path);
+    assert_eq!(line, format!("{}={}\n", launch::STANDALONE_WHEEL_KEY, path.display()));
+    let variables = variables_of_game_ini(&line);
+    assert_eq!(variables.get("GT4_WHEEL_FILE").map(String::as_str), Some(r"C:\Users\Player\AppData\Roaming\GT4Recomp\wheel.toml"));
+    assert!(!launch::standalone_config_text(&Settings::default(), None).contains("wheel_file"), "only written when the file exists");
 }
