@@ -5257,7 +5257,7 @@ namespace {
 
 // The [core2] session line (replay summary, game log every 600 VBlanks).
 void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64_t vblanks,
-                     const std::string &barrierReport, const clut::ClutUnit &clut) {
+                     const std::string &barrierReport, const std::string &syncReport, const clut::ClutUnit &clut) {
     std::fprintf(stderr,
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
@@ -5296,7 +5296,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.paletteSegmentToneRefusals);
     // Diagnostics: GT4_CORE2_BARRIER_TRACE=1 adds the cumulative full barriers by command and hazard.
     static const bool barrierTrace = std::getenv("GT4_CORE2_BARRIER_TRACE") != nullptr;
-    if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n", barrierReport.c_str());
+    if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n%s", barrierReport.c_str(), syncReport.c_str());
     if (c.replacementFiles != 0 || c.replacementDumps != 0) {
         std::fprintf(stderr,
                      "[core2] texture replacement files=%llu keys=%llu requests=%llu loads=%llu failed=%llu hits=%llu "
@@ -5334,7 +5334,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
 
 Renderer::Renderer() : impl_(std::make_unique<Impl>()) {}
 Renderer::~Renderer() {
-    PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_->vblanks_, impl_->gpu_.BarrierReport(), impl_->frontEnd_.Clut());
+    PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_->vblanks_, impl_->gpu_.BarrierReport(), impl_->gpu_.SyncReport(impl_->vblanks_), impl_->frontEnd_.Clut());
 }
 
 void Renderer::SetScale(std::uint32_t scale, float shift) {
@@ -5540,7 +5540,7 @@ void Renderer::Flush() {
         s.stats.liveTargets = 0;
         for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;
         s.stats.targetSlots = s.targets_.size();
-        PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_, s.gpu_.BarrierReport(), s.frontEnd_.Clut());
+        PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_, s.gpu_.BarrierReport(), s.gpu_.SyncReport(s.vblanks_), s.frontEnd_.Clut());
         if (s.d1Stats_) s.PrintD1Classes();
         const PhaseTimes &p = s.times_;
         const double f = 600.0 * 1000.0;  // microseconds over 600 VBlanks -> milliseconds per VBlank
@@ -5549,6 +5549,24 @@ void Renderer::Flush() {
         const double wall = std::chrono::duration<double, std::milli>(now - last).count() / 600.0;
         last = now;
         std::fprintf(stderr, "[core2] wall ms/vblank=%.2f (the whole emulator, GS thread included)\n", wall);
+        if (std::getenv("GT4_CORE2_GPU_CATEGORIES") != nullptr) {  // TASK-182
+            static std::uint64_t lastCat[7] = {}, lastBusy = 0;
+            const Core2GpuStats &gs = s.gpu_.Stats();
+            double ms[7];
+            double sum = 0;
+            for (int k = 0; k < 7; ++k) {
+                ms[k] = static_cast<double>(gs.catNs[k] - lastCat[k]) / 600.0e6;
+                lastCat[k] = gs.catNs[k];
+                sum += ms[k];
+            }
+            const double busy = static_cast<double>(gs.gpuNs - lastBusy) / 600.0e6;
+            lastBusy = gs.gpuNs;
+            std::fprintf(stderr,
+                         "[core2] gpu categories ms/vblank draw_passes=%.2f compose_deinterlace=%.2f present=%.2f uploads_copies=%.2f "
+                         "compute=%.2f readback=%.2f start_gap=%.2f unattributed=%.2f (gpu_busy=%.2f, the sum of each submission's "
+                         "first-to-last timestamp)\n",
+                         ms[0], ms[1], ms[2], ms[3], ms[4], ms[5], ms[6], busy - sum, busy);
+        }
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
                      "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f sprite_check=%.2f gpu_wait=%.2f glm=%.2f (%.0f calls, "

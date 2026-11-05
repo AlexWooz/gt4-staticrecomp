@@ -108,6 +108,10 @@ struct Core2GpuStats {
     std::uint64_t gpuNs = 0;            // B4: GPU time of finished submissions (timestamps, first to last command)
     std::uint64_t timedSubmissions = 0;
     std::uint64_t drawPassNs = 0;
+    // TASK-182 (GT4_CORE2_GPU_CATEGORIES=1): GPU time by kind of work, nanoseconds: draw passes, compose and deinterlace,
+    // present, uploads and copies, compute (fills, decodes, patches, tone), readback copies, and the start gap (the recording's
+    // start to its first mark).
+    std::uint64_t catNs[7] = {};
     std::uint64_t primitives = 0;          // B4: pipeline statistics of finished submissions (input primitives,
     std::uint64_t fragments = 0;           // fragment shader invocations, compute shader invocations)
     std::uint64_t computeInvocations = 0;
@@ -298,6 +302,9 @@ public:
     const Core2GpuStats &Stats() const;
     // Diagnostics: cumulative full barriers as " label[/kind]=count" (the command that needed one and its hazard).
     std::string BarrierReport() const;
+    // TASK-182 (GT4_CORE2_BARRIER_TRACE=1): fragment barriers, render pass ends, flushes, submissions and descriptor traffic by
+    // reason, cumulative, one line per row; empty without the switch.
+    std::string SyncReport(std::uint64_t vblanks) const;
 
 private:
     struct Impl;
