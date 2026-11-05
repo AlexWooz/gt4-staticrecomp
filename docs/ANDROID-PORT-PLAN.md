@@ -222,6 +222,9 @@ release key (kept in `private/`), installed by hand (no store, no in-app install
   own graphics switch (a WebView2 guard), RetroAchievements in the game (its HTTP and overlay layers are Windows-only),
   a texture folder outside the app (needs a document tree), the performance HUD (no text renderer on Android yet), and
   the "open folder" buttons (Android has no file manager entry point for app storage).
+- **Noted for later (no change in this APK):** Qualcomm advises against `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` before
+  Adreno 750 (it turns off UBWC compression); CoreGS 2.0 sets it on the ROP image (`core2_gpu.cpp`). The performance
+  items are in [ANDROID-PERFORMANCE-PLAN](ANDROID-PERFORMANCE-PLAN.md).
 - **Tested in the emulator** (arm64 APK through the image's ARM translation, Lavapipe): launcher in landscape, SAF pick
   from Downloads, setup with exact pins, Play, the game's first start and "Save successful" on its card. Not tested
   yet: a real phone (Adreno), pause and resume (A6), performance.
