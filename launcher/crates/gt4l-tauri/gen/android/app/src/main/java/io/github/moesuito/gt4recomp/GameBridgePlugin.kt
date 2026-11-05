@@ -297,6 +297,12 @@ class GameBridgePlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(answer)
     }
 
+    // TASK-180 test2: the app's external files folder (adb can push debug.env there without root).
+    @Command
+    fun externalDir(invoke: Invoke) {
+        invoke.resolve(JSObject().put("path", activity.getExternalFilesDir(null)?.path ?: ""))
+    }
+
     @Command
     fun deviceInfo(invoke: Invoke) {
         val lines = mutableListOf<String>()

@@ -43,12 +43,15 @@ void redirect_output(const char *log_path) {
   int pipe_ends[2];
   if (pipe(pipe_ends) != 0) return;
   std::FILE *log = log_path != nullptr ? std::fopen(log_path, "w") : nullptr;
+  // TASK-180 test2: a copy in the app's external files folder, which adb can read on a release build.
+  const char *mirror_path = std::getenv("GT4_ANDROID_LOG_MIRROR");
+  std::FILE *mirror = mirror_path != nullptr ? std::fopen(mirror_path, "w") : nullptr;
   dup2(pipe_ends[1], STDOUT_FILENO);
   dup2(pipe_ends[1], STDERR_FILENO);
   close(pipe_ends[1]);
   std::setvbuf(stdout, nullptr, _IOLBF, 0);
   std::setvbuf(stderr, nullptr, _IONBF, 0);
-  std::thread([read_end = pipe_ends[0], log] {
+  std::thread([read_end = pipe_ends[0], log, mirror] {
     std::string line;
     char buffer[4096];
     for (;;) {
@@ -57,6 +60,10 @@ void redirect_output(const char *log_path) {
       if (log != nullptr) {
         std::fwrite(buffer, 1, static_cast<std::size_t>(got), log);
         std::fflush(log);
+      }
+      if (mirror != nullptr) {
+        std::fwrite(buffer, 1, static_cast<std::size_t>(got), mirror);
+        std::fflush(mirror);
       }
       for (ssize_t i = 0; i < got; ++i) {
         if (buffer[i] == '\n') {
@@ -152,6 +159,19 @@ int main(int argc, char **argv) {
 #endif
   std::fprintf(stderr, "[android] GT4Recomp game library (%s), process %d, %d arguments\n", kAbi, static_cast<int>(getpid()),
                argc - 1);
+  // TASK-180 test2: the variables the launcher took from debug.env (remote diagnosis), logged here as well.
+  if (const char *names = std::getenv("GT4_ANDROID_DEBUG_ENV")) {
+    std::string list = names;
+    for (std::size_t start = 0; start <= list.size();) {
+      const std::size_t end = std::min(list.find(',', start), list.size());
+      const std::string name = list.substr(start, end - start);
+      if (!name.empty()) {
+        const char *value = std::getenv(name.c_str());
+        std::fprintf(stderr, "debug.env: %s=%s\n", name.c_str(), value != nullptr ? value : "");
+      }
+      start = end + 1;
+    }
+  }
   if (argc < 2) {
     gt4::platform::show_error("Gran Turismo 4", "Start Gran Turismo 4 from its launcher: open the Gran Turismo 4 app and "
                                                 "press Play.");

@@ -283,8 +283,19 @@
       }
 
       var preparingShaders = false;
+      // TASK-180 test2: on Android a running game is a minimized one; Play (Resume) brings it back.
+      function resumeGame() {
+        call("resume_game").then(null, function (err) {
+          GT4.ui.toast(GT4.errorText(err), true);
+          paint(false);
+        });
+      }
+
       function play() {
         if (isRunning) {
+          if (resumable) {
+            resumeGame();
+          }
           return;
         }
         if (!installedNow) {
@@ -399,16 +410,7 @@
         });
       }
 
-      playButton.addEventListener("click", function () {
-        if (resumable && isRunning) {
-          call("resume_game").then(null, function (err) {
-            GT4.ui.toast(GT4.errorText(err), true);
-            paint(false);
-          });
-          return;
-        }
-        play();
-      });
+      playButton.addEventListener("click", play);
       stopButton.addEventListener("click", stop);
       versionPrev.addEventListener("click", function () { cycleGame(-1); });
       versionNext.addEventListener("click", function () { cycleGame(1); });
@@ -549,13 +551,17 @@
       }
       // TASK-180 test2 (owner): on Android the home page starts on Play (Resume while the game is minimized), also when
       // the launcher comes back from the game: one A press starts or resumes it.
-      function focusPlayOnAndroid() {
-        if (GT4.platform === "android" && playButton.isConnected &&
-            (document.activeElement === null || document.activeElement === document.body)) {
+      function focusPlayOnAndroid(always) {
+        if (GT4.platform !== "android" || !playButton.isConnected || GT4.ui.topDialog()) {
+          return;
+        }
+        if (always === true || document.activeElement === null || document.activeElement === document.body ||
+            !page.contains(document.activeElement)) {
           playButton.focus({ preventScroll: true });
         }
       }
-      focusPlayOnAndroid();
+      // After the page is in place (the router and nav.js settle the focus first).
+      setTimeout(function () { focusPlayOnAndroid(true); }, 0);
       document.addEventListener("visibilitychange", focusPlayOnAndroid);
 
       GT4.hooks.start = play;

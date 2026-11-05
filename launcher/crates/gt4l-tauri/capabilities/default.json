@@ -18,6 +18,7 @@
     "allow-setup-start",
     "allow-setup-cancel",
     "allow-play",
+    "allow-resume-game",
     "allow-first-start-hint",
     "allow-stop-game",
     "allow-prepare-shaders",

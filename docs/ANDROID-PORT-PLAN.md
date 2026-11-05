@@ -318,6 +318,29 @@ scaled display compose (`hw_display_compose_scaled.comp`, not on the product pat
 with a per-circuit value, which needs the dynamic-indexing feature that is now enabled where present but has no fallback
 there; and the validation message above.
 
+## Test APK 2: `1.3.0-android-test2` (TASK-180, 2026-11-05)
+
+From the owner's S23 Ultra test of test1:
+- **Render scale:** the phone's screen is the launcher's monitor (100% = its native multiplier, 5x at 3088x1440); on
+  Android the slider starts at the step that gives 1x (`display::render_scale_floor`); a vertical swipe no longer moves a
+  slider (the owner's accidental 5x); every setting change and the scale chosen at Play are logged.
+- **Performance HUD** (TASK-175's panel, merged from rc15): glyphs from the system monospace font through the activity,
+  CPU line = the SoC, GPU line = the Vulkan device, refresh = the display's current rate, GPU busy from the Adreno driver
+  when readable, else "n/a".
+- **Pause, Minimize, Resume (A6):** Back pauses (EE parked, card files written, audio paused) and asks Keep playing /
+  Minimize / Close game; Minimize keeps the game process alive and paused in its own task, and the launcher's Play reads
+  Resume while that process lives. Leaving the foreground (Home, recents, shade, Settings, screen off) parks the game and
+  releases its swapchain and surface through the game thread before the window is destroyed (GameActivity.onPause waits
+  for it); the new surface is attached on return once it has a real size (the owner's black screen after Settings).
+- **Provider references:** the disc document's ParcelFileDescriptor is closed right after `detachFd()` in both
+  processes (the owner's launcher was killed twice with "dependency died ... ExternalStorageProvider").
+- **Shader prepare before Play,** as on Windows: ShaderPrepareService in its own `:shaders` process runs libgt4's
+  `--prepare-shaders` path with the session's environment; the launcher shows the same card and runs the same attempts
+  and guard rules (300 variants, 198 s on the emulator's software Vulkan).
+- **Diagnostics:** threads named gt4-ee/gs/vu1/present; cluster shares, frequencies and thermal status in F8 and the HUD
+  log; Export logs carries 10 game sessions on Android; logs mirrored to the external folder; `debug.env` for remote
+  variables.
+
 ## Subtle risks (Android), ranked
 
 1. The no-interlock CoreGS path is slow or misordered on tilers; D1 may be required before playable speed.

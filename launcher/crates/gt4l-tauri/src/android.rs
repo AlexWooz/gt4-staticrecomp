@@ -359,6 +359,47 @@ extern "C" {
     fn __android_log_write(priority: std::ffi::c_int, tag: *const std::ffi::c_char, text: *const std::ffi::c_char) -> std::ffi::c_int;
 }
 
+/// The app's external files folder (`/sdcard/Android/data/<package>/files`), read at start.
+static EXTERNAL_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+#[derive(Deserialize, Default)]
+struct ExternalDir {
+    #[serde(default)]
+    path: String,
+}
+
+fn load_external_dir() {
+    if let Ok(found) = bridge().and_then(|bridge| bridge.run_mobile_plugin::<ExternalDir>("externalDir", ()).map_err(|error| error.to_string())) {
+        if !found.path.is_empty() {
+            let _ = EXTERNAL_DIR.set(PathBuf::from(found.path));
+        }
+    }
+}
+
+/// TASK-180 test2 (remote diagnosis): `debug.env` in the external files folder, pushed with adb, adds variables to the
+/// next Play. Only `GT4_*` names are taken; everything else is logged as ignored. No file: nothing changes.
+fn debug_environment(dirs: &DataDirs) -> Vec<(String, String)> {
+    let Some(path) = EXTERNAL_DIR.get().map(|folder| folder.join("debug.env")) else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
+        match line.split_once('=') {
+            Some((name, value))
+                if name.starts_with("GT4_") && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') =>
+            {
+                state::log(dirs, &format!("debug.env: {name}={value}"));
+                out.push((name.to_string(), value.to_string()));
+            }
+            _ => state::log_warn(dirs, &format!("debug.env: ignored \"{line}\" (only GT4_NAME=VALUE lines are taken)")),
+        }
+    }
+    out
+}
+
 /// The screen read from the Java side at start (`displayInfo`): width and height in landscape, refresh rate.
 static SCREEN: OnceLock<(gt4l_core::display::Size, u32)> = OnceLock::new();
 
@@ -420,6 +461,17 @@ pub fn logcat(level: gt4l_core::logs::Level, message: &str) {
         gt4l_core::logs::Level::Warn => 5,
         gt4l_core::logs::Level::Error => 6,
     };
+    // TASK-180 test2: also into the external files folder, which adb can read on a release build:
+    // adb pull /sdcard/Android/data/io.github.moesuito.gt4recomp/files/logs/launcher.log
+    if let Some(folder) = EXTERNAL_DIR.get() {
+        let logs = folder.join("logs");
+        let _ = std::fs::create_dir_all(&logs);
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("launcher.log")) {
+            use std::io::Write;
+            let stamp = gt4l_core::logs::LocalTime::stamp(&gt4l_platform::system::local_time());
+            let _ = writeln!(file, "{stamp} {level:?} {message}");
+        }
+    }
     let text = std::ffi::CString::new(message.replace('\0', " ")).unwrap_or_default();
     // SAFETY: both strings are NUL-terminated and live through the call.
     unsafe {
@@ -628,6 +680,7 @@ pub fn run() {
             let start_dirs = dirs.clone();
             std::thread::spawn(move || {
                 load_screen(&start_dirs);
+                load_external_dir();
                 for line in device_lines() {
                     state::log(&start_dirs, &line);
                 }
@@ -797,7 +850,22 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     }
     // RetroAchievements needs the desktop HTTP and overlay layers, not built for Android yet.
     plan.environment.push(("GT4_RA_ENABLED".into(), "0".into()));
+    // debug.env (remote diagnosis): its GT4_* values replace the plan's; the game logs them again (GT4_ANDROID_DEBUG_ENV).
+    let debug = debug_environment(&dirs);
+    if !debug.is_empty() {
+        plan.environment.retain(|(name, _)| !debug.iter().any(|(added, _)| added == name));
+        let names: Vec<&str> = debug.iter().map(|(name, _)| name.as_str()).collect();
+        plan.environment.push(("GT4_ANDROID_DEBUG_ENV".into(), names.join(",")));
+        plan.environment.extend(debug.iter().cloned());
+    }
     plan.environment.push(("GT4_ANDROID_LOG".into(), plan.log_path.display().to_string()));
+    // The game log also goes to the external files folder (adb pull .../files/sessions/<session>/game.log).
+    if let (Some(folder), Some(name)) = (EXTERNAL_DIR.get(), session_dir.file_name()) {
+        let mirror = folder.join("sessions").join(name);
+        if std::fs::create_dir_all(&mirror).is_ok() {
+            plan.environment.push(("GT4_ANDROID_LOG_MIRROR".into(), mirror.join("game.log").display().to_string()));
+        }
+    }
     plan.environment.push(("GT4_ANDROID_CWD".into(), plan.working_directory.display().to_string()));
     state::log(&dirs, &format!("game start (Android): session {}", session_dir.display()));
     state::log(&dirs, &format!("game start: arguments {}", plan.arguments.join(" ")));

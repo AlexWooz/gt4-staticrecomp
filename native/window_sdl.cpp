@@ -42,6 +42,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -169,62 +172,84 @@ void handle_resize(std::uint32_t width, std::uint32_t height) {
 }
 
 #ifdef __ANDROID__
-// TASK-180 (A6): the player paused the game (Back: the pause dialog, Minimize) or the activity left the foreground
-// (Home, the app switcher, the notification shade). GameActivity sets this from its UI thread.
+// TASK-180 (A6): the player paused the game (Back: the pause dialog, Minimize) or the activity leaves the foreground
+// (Home, the app switcher, the notification shade, Settings, screen off). GameActivity sets these from its UI thread.
 std::atomic<bool> user_paused{false};
+// The activity is going to the background: its surface is destroyed after onStop, so the game thread lets go of it
+// first. GameActivity.onPause waits (briefly) for `surface_released`; onResume clears the request.
+std::atomic<bool> background_wanted{false};
+std::mutex park_mutex;
+std::condition_variable park_changed;
+bool surface_released = false;  // under park_mutex
 
 void flush_cards_before_parking();
 
 // The game thread parks here: the EE stops (so the GS and MTVU workers run dry and sleep on their doorbells), the
-// memory card files are written out, audio stops. In the background the surface is let go (it is destroyed after
-// onStop) and the new one is attached when the game comes back. Leaves when the game is in the foreground and not
-// paused, or when the activity closes.
+// memory card files are written out, audio stops, the VBlank count stands still. In the background the swapchain and
+// the surface are let go (before the window is destroyed); on return the new window's surface is attached once it has
+// a real size (0x0 is not presentable). Leaves when the activity is in front and not paused, or when it closes.
 void park(bool background) {
-  std::fprintf(stderr, "[window] paused (%s) at VBlank %llu\n", background ? "background" : "pause dialog",
-               static_cast<unsigned long long>(input_vblank));
+  const std::uint64_t parked_at = input_vblank;
+  std::fprintf(stderr, "[window] paused (%s) at VBlank %llu, surface %p %ux%u\n",
+               background ? "background" : (background_wanted.load() ? "leaving the foreground" : "pause dialog"),
+               static_cast<unsigned long long>(parked_at), native_surface, renderer_client_width, renderer_client_height);
   if (controller) controller->stop();
   flush_cards_before_parking();
   if (audio_output != nullptr) audio_output->set_paused(true);
-  bool detached = false;
+  bool released = false;
+  bool sdl_background = background;
   const auto let_go_of_surface = [&] {
-    if (detached) return;
-    gt4::gs_stream::detach_window();
-    detached = true;
+    if (!released) {
+      gt4::gs_stream::detach_window();
+      released = true;
+      std::fprintf(stderr, "[window] surface %p released before the window goes away\n", native_surface);
+    }
+    const std::lock_guard<std::mutex> lock(park_mutex);
+    surface_released = true;
+    park_changed.notify_all();
   };
-  if (background) let_go_of_surface();
   SDL_Event event;
   for (;;) {
-    // SDL blocks inside this call while the activity is paused (SDL_HINT_ANDROID_BLOCK_ON_PAUSE): no spinning.
-    if (SDL_WaitEventTimeout(&event, 100)) {
+    if (sdl_background || background_wanted.load(std::memory_order_acquire)) let_go_of_surface();
+    // SDL does not block on pause here (SDL_HINT_ANDROID_BLOCK_ON_PAUSE=0): this thread waits on its own, idle.
+    if (SDL_WaitEventTimeout(&event, 50)) {
       if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_TERMINATING) {
         input_recorder.finish(input_vblank);
         ps2::halt("window closed");
         closing = true;
         return;
       }
-      if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
-        background = true;
-        let_go_of_surface();
-      }
-      if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) background = false;
+      if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_DID_ENTER_BACKGROUND) sdl_background = true;
+      if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) sdl_background = false;
+      continue;
     }
-    if (!background && !user_paused.load(std::memory_order_acquire)) break;
-  }
-  if (detached) {
-    native_surface = SDL_GetPointerProperty(SDL_GetWindowProperties(game_window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,
-                                            nullptr);
+    if (sdl_background || background_wanted.load(std::memory_order_acquire) || user_paused.load(std::memory_order_acquire))
+      continue;
+    if (!released) break;
+    // Back from the background: the new window, once it has a size.
+    void *window = SDL_GetPointerProperty(SDL_GetWindowProperties(game_window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,
+                                          nullptr);
     int pixel_width = 0, pixel_height = 0;
     SDL_GetWindowSizeInPixels(game_window, &pixel_width, &pixel_height);
+    if (window == nullptr || pixel_width <= 0 || pixel_height <= 0) continue;
+    native_surface = window;
     renderer_client_width = static_cast<std::uint32_t>(pixel_width);
     renderer_client_height = static_cast<std::uint32_t>(pixel_height);
-    const bool attached = native_surface != nullptr &&
-                          gt4::gs_stream::attach_window(reinterpret_cast<std::uint64_t>(native_surface),
+    const bool attached = gt4::gs_stream::attach_window(reinterpret_cast<std::uint64_t>(native_surface),
                                                         renderer_client_width, renderer_client_height);
-    std::fprintf(stderr, "[window] new surface %ux%u %s\n", renderer_client_width, renderer_client_height,
-                 attached ? "attached" : "NOT attached (no picture)");
+    std::fprintf(stderr, "[window] new surface %p %ux%u %s\n", native_surface, renderer_client_width,
+                 renderer_client_height, attached ? "attached" : "not attached yet (retrying)");
+    if (!attached) continue;
+    released = false;
+    {
+      const std::lock_guard<std::mutex> lock(park_mutex);
+      surface_released = false;
+    }
+    break;
   }
   if (audio_output != nullptr) audio_output->set_paused(false);
-  std::fprintf(stderr, "[window] resumed at VBlank %llu\n", static_cast<unsigned long long>(input_vblank));
+  std::fprintf(stderr, "[window] resumed at VBlank %llu (paused at %llu)\n", static_cast<unsigned long long>(input_vblank),
+               static_cast<unsigned long long>(parked_at));
   if (frame_pacer) frame_pacer->anchor(frame_clock->now());  // no burst of frames to catch up the time away
 }
 #endif
@@ -259,7 +284,7 @@ std::atomic<int> touch_report_request{0};
 
 bool pump_messages() {
 #ifdef __ANDROID__
-  if (user_paused.load(std::memory_order_acquire)) park(false);
+  if (user_paused.load(std::memory_order_acquire) || background_wanted.load(std::memory_order_acquire)) park(false);
   if (closing) return false;
   if (const int request = touch_report_request.exchange(0, std::memory_order_acq_rel); request != 0) {
     std::fprintf(stderr, "[perf] %s from the touch button\n", request == 1 ? "interval started (F7)" : "report (F8)");
@@ -530,6 +555,9 @@ bool open_window(bool fullscreen) {
   // from this hint when the window is created ("LandscapeLeft" alone = SCREEN_ORIENTATION_LANDSCAPE); without it the
   // manifest's orientation is overridden and a phone held upright showed the game letterboxed in portrait.
   SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft");
+  // TASK-180 test2: the game thread parks itself (park(), with the surface let go first); SDL must not block it inside
+  // its event pump while paused (GameActivity also sets SDL_ANDROID_BLOCK_ON_PAUSE=0 before SDL starts).
+  SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
   flags |= SDL_WINDOW_FULLSCREEN;
   (void)fullscreen;
 #else
@@ -679,6 +707,21 @@ int run_window(const std::function<int()> &emulate) {
 extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativeReportRequest(JNIEnv *, jclass,
                                                                                                        jint request) {
   if (request == 1 || request == 2) touch_report_request.store(request, std::memory_order_release);
+}
+
+// GameActivity.onPause / onResume: the activity leaves or regains the foreground. Leaving waits (at most `timeout_ms`)
+// until the game thread has let go of the surface, so the swapchain is gone before the window is destroyed.
+extern "C" JNIEXPORT jboolean JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativeEnterBackground(JNIEnv *, jclass,
+                                                                                                         jint timeout_ms) {
+  user_paused.store(true, std::memory_order_release);
+  background_wanted.store(true, std::memory_order_release);
+  std::unique_lock<std::mutex> lock(park_mutex);
+  return park_changed.wait_for(lock, std::chrono::milliseconds(timeout_ms), [] { return surface_released; }) ? JNI_TRUE
+                                                                                                            : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_io_github_moesuito_gt4recomp_GameActivity_nativeLeaveBackground(JNIEnv *, jclass) {
+  background_wanted.store(false, std::memory_order_release);
 }
 
 // GameActivity.nativeSetPaused: true parks the game at its next event pump (the pause dialog, Minimize, onPause);

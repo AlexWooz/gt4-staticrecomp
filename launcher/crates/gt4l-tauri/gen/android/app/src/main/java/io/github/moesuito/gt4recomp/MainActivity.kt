@@ -9,6 +9,22 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : TauriActivity() {
+  private var page: android.webkit.WebView? = null
+
+  // TASK-180 test2: the page holds the input focus from the start (and again when the launcher comes back), so the first
+  // controller or key press acts on the page instead of only moving Android's focus to the WebView.
+  override fun onWebViewCreate(webView: android.webkit.WebView) {
+    page = webView
+    webView.isFocusable = true
+    webView.isFocusableInTouchMode = true
+    webView.post { webView.requestFocus() }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    page?.post { page?.requestFocus() }
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     publishDisplay()
     super.onCreate(savedInstanceState)

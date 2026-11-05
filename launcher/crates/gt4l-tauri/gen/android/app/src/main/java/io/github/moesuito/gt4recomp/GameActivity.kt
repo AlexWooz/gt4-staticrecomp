@@ -52,6 +52,13 @@ class GameActivity : SDLActivity() {
         // native/window_sdl.cpp: true parks the game (EE stopped, card files written, audio paused), false lets it go on.
         @JvmStatic
         external fun nativeSetPaused(paused: Boolean)
+
+        // native/window_sdl.cpp: the activity leaves the foreground; waits until the game thread has let go of the surface.
+        @JvmStatic
+        external fun nativeEnterBackground(timeoutMs: Int): Boolean
+
+        @JvmStatic
+        external fun nativeLeaveBackground()
     }
 
     private var recording = false
@@ -139,16 +146,29 @@ class GameActivity : SDLActivity() {
         finish()
     }
 
-    // The same pause path for Home, the app switcher and the notification shade (A6).
+    // The same pause path for Home, the app switcher, the notification shade, Settings and screen off (A6): the game
+    // parks and lets go of its surface before the window is destroyed (owner's test1: black screen after Settings).
     override fun onPause() {
-        setPaused(true, "the activity left the foreground")
+        paused = true
+        if (libraryLoaded) {
+            val released = nativeEnterBackground(1500)
+            Log.i(TAG, "paused: the activity left the foreground (surface ${if (released) "released" else "NOT released in 1.5 s"})")
+        }
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
-        if (pauseDialog?.isShowing != true) setPaused(false, "the activity is back in the foreground")
+        if (libraryLoaded) {
+            nativeLeaveBackground()
+            if (pauseDialog?.isShowing != true) setPaused(false, "the activity is back in the foreground")
+            else Log.i(TAG, "back in the foreground; the pause dialog stays")
+        }
     }
+
+    // The native methods exist once SDLActivity has loaded the libraries (onCreate).
+    private val libraryLoaded: Boolean
+        get() = SDLActivity.mBrokenLibraries == false
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -229,6 +249,8 @@ class GameActivity : SDLActivity() {
 
     // Called on SDL's thread, after the libraries are loaded and before SDL_main.
     override fun getArguments(): Array<String> {
+        // The game thread parks itself while paused (window_sdl.cpp park()); SDL must not block it in its event pump.
+        SDLActivity.nativeSetenv("SDL_ANDROID_BLOCK_ON_PAUSE", "0")
         for (entry in intent.getStringArrayExtra(EXTRA_ENVIRONMENT) ?: arrayOf()) {
             val equals = entry.indexOf('=')
             if (equals > 0) SDLActivity.nativeSetenv(entry.substring(0, equals), entry.substring(equals + 1))

@@ -71,8 +71,15 @@ Output: `launcher\crates\gt4l-tauri\gen\android\app\build\outputs\apk\universal\
 | What | File in the app's data | logcat tag |
 |---|---|---|
 | Launcher (setup, disc pick, Play, updates, page) | `data/logs/latest.log` and the session logs | `GT4Recomp-launcher` |
+| Shader prepare before Play (progress, attempts) | `data/logs/shaders.log` | `GT4Recomp-game` |
 | Game (the same `[core2]`, `[perf]`, `[hw]`, `[dfp]` lines as on the PC) | `data/sessions/session-<time>/game.log` | `GT4Recomp-game` |
 | How the game's process ended (exit status, crash, ANR, low memory) | `data/logs/game-exits/game-exits.log`; a native crash's tombstone as `.pb` and as text | `GT4Recomp-launcher` |
+
+Over USB on a release (non-debuggable) build the same logs are mirrored into the app's external folder, readable
+without root: `adb -s <serial> pull /sdcard/Android/data/io.github.moesuito.gt4recomp/files/` gives `logs/launcher.log`
+(every launcher line) and `sessions/session-<time>/game.log` (each game session, written live). A `debug.env` pushed
+there (`NAME=VALUE` lines, only `GT4_*` names are taken) adds variables to the next Play; each one is logged as
+`debug.env: NAME=VALUE` in both logs.
 
 Settings > About > Export logs saves one zip through the system's "save as" (latest.log, the newest launcher session
 logs, the newest game logs, the game exits and crash texts, `settings.toml` and `system.txt` with the phone's model,
