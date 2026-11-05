@@ -451,7 +451,7 @@ Answer, labelled:
   much smaller absolute cost: the two copies plus their two drains are 0.72 ms at 10x, 0.36 ms per copy of 115 MB
   (bottom-of-pipe marks charge a preceding command's tail to the next category, so a copy's span includes the drain).
 - **C:** the internal scale enters twice, as pixels (quadratic) and as passes (linear). That is why the chain is
-  invisible at 2x (0.53 of 0.64 `gpu_busy`) and dominant at 10x (6.12 of 7.45), and why the phone's 6x menus are the
+  invisible at 2x (0.53 of 0.65 `gpu_busy`) and dominant at 10x (6.10 of 7.43), and why the phone's 6x menus are the
   worst case in the project. Present scales differently — its output is the window, but its tap count grows with the
   shrink ratio, which is why it costs 1.6 ms at 10x and 0.34 ms at 2x.
 - **U:** how much of the phone's 43.3 ms is per-pass overhead (barriers, tile flushes) against per-pixel work. The
@@ -523,7 +523,7 @@ for this step).
 
 ### 6. What is left, and why it is not in this step
 
-- **The deinterlace dispatch itself is now the biggest post item in a 480i menu (C: 3.04 of 6.83 `gpu_busy` at 10x).**
+- **The deinterlace dispatch itself is now the biggest post item in a 480i menu (C: 3.04 of 6.79 `gpu_busy` at 10x).**
   Its motion decision is per *native* row and column (it samples at +-`row_step` and +-k x `scale`), so every one of the
   s x s output pixels inside a native pixel takes the same decision and repeats the same 19 loads. Computing the decision
   once per native pixel (1/scale^2 of the work: 100x less at 10x) and resolving it per output pixel with 1-2 loads is the
