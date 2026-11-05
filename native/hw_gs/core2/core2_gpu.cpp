@@ -8,6 +8,7 @@
 #include "core2_gpu.hpp"
 
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
+#include "../hw_queue_lock.hpp"
 #include "../shaders/hw_shader_blobs.hpp"
 #include "../memory/hw_memory.hpp"
 
@@ -39,6 +40,8 @@
 namespace hwgs::core2 {
 namespace {
 
+// Today's ring sizes for 8 recordings in flight (a recording's share is an eighth), and the readback buffer. TASK-179: the
+// cap of the sizes planned from the device's heaps (gt4::hw::plan_core2_rings); GT4_CORE2_RINGS=fixed keeps them as they are.
 constexpr VkDeviceSize kStagingBytes = static_cast<VkDeviceSize>(256) << 20;
 constexpr VkDeviceSize kVertexBytes = static_cast<VkDeviceSize>(64) << 20;
 constexpr VkDeviceSize kUniformBytes = static_cast<VkDeviceSize>(16) << 20;
@@ -183,6 +186,7 @@ struct Gpu::Impl {
   VkPhysicalDevice physical = VK_NULL_HANDLE;
   VkDevice device = VK_NULL_HANDLE;
   VkQueue queue = VK_NULL_HANDLE;
+  gt4::hw::QueueLock *queueLock = nullptr;  // TASK-174: the presentation thread shares `queue` (VulkanHandles::queueLock)
   VkPhysicalDeviceMemoryProperties memoryProperties{};
   VkPhysicalDeviceLimits limits{};
   std::uint32_t scale = 1;
@@ -201,6 +205,10 @@ struct Gpu::Impl {
     std::uint32_t passTimestamps = 0;  // B4: draw pass timestamp pairs written in this slot's recording
     std::vector<Image> doomed;  // released once this slot's submission is complete
     std::uint64_t serial = 0;   // IN-439: the number of the submission this slot carries (1, 2, ...)
+    // TASK-178 diagnostics (timestamp ticks, 0: none): this slot's last finished command buffer end, and, for the first
+    // submission after a drain, the drained work's end, so its own start gives the GPU idle time in between.
+    std::uint64_t endTick = 0;
+    std::uint64_t idleFromTick = 0;
   };
   // S4: up to kMaxSlots submissions in flight (GT4_CORE2_SLOTS, 2 to 24; IN-517: default 16 on a discrete GPU, 8 on an
   // integrated one, set at Init, since a race VBlank at 6x has 25-45 submissions and 8 kept the GS thread within a third of a
@@ -276,6 +284,21 @@ struct Gpu::Impl {
     return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : kSubmitEveryAtInit;
   }();
   std::uint32_t batchesSinceSubmit = 0;
+  // TASK-178 (O1 of docs/hw-renderer-spec/STUDY-FRAME-DOWNLOAD-COST.md): a waited submission (a readback: Reduce,
+  // ReduceMany, ReadClut) drains the queue, and the GPU then idles until the next submission, which came `submitEvery`
+  // batches later or at the VBlank flush (the flare and glare draws right after GT4's flare read). With
+  // GT4_CORE2_SUBMIT_AFTER_WAIT=<K> the first mid-frame submission after a waited one comes after K batches; the cadence is
+  // `submitEvery` again after it. Submission boundaries never change what is drawn. 0 = off (A/B); unset: decided at Init.
+  std::uint32_t submitAfterWait = [] {
+    const char *text = std::getenv("GT4_CORE2_SUBMIT_AFTER_WAIT");
+    return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)) : kSubmitEveryAtInit;
+  }();
+  bool afterWait = false;  // the last submission was waited for, and none has followed it yet (the K rule applies)
+  // TASK-178 diagnostics: a drain whose next submission has not been sent yet, the CPU time its wait ended and the GPU end of
+  // the drained work (timestamp ticks, 0: none).
+  bool drainOpen = false;
+  std::chrono::steady_clock::time_point drainEndCpu{};
+  std::uint64_t drainEndTick = 0;
   // IN-451: speculative depth rejection before texturing in the pixel shader (exact); GT4_CORE2_EARLY_Z=0 turns it
   // off (A/B, the shader's constant 103).
   bool earlyZ = std::getenv("GT4_CORE2_EARLY_Z") == nullptr || std::strcmp(std::getenv("GT4_CORE2_EARLY_Z"), "0") != 0;
@@ -352,6 +375,14 @@ struct Gpu::Impl {
   std::map<std::pair<VkImageView, VkImageView>, VkFramebuffer> ropFramebuffers;
   VkPipeline pipelines[3] = {};  // points, lines, triangles
   VkPipeline interlockTriangles = VK_NULL_HANDLE;
+  // TASK-179: points are gl_PointSize = scale wide, which above one pixel needs largePoints. Without it (or with a largest
+  // point size under the scale) pipelines[0] draws each point as two triangles (hw_vertex.vert, HWR_POINT_QUAD): a
+  // triangle list reading the point's vertex record once per instance, drawn six vertices per point. The square is the
+  // one point rasterization covers. GT4_CORE2_POINT_QUADS=1 / 0 forces quads / point sizes (A/B).
+  bool pointQuads = false;
+  VkShaderModule pointQuadModule = VK_NULL_HANDLE;
+  // TASK-179: the readback buffer's size (kReadbackBytes unless the heap is small, plan_core2_rings).
+  VkDeviceSize readbackBytes = kReadbackBytes;
 
   // IN-437: the interlocked triangle pipeline specialised per draw state. hw_pixel_uber.frag reads the state block
   // and branches on about 50 of its fields in every wave; with the fields as specialization constants the compiler
@@ -419,9 +450,14 @@ struct Gpu::Impl {
   // vkCreateGraphicsPipelines, and a variant that does so would end every session that compiles it. Around each variant
   // compile the keys in flight are kept in <cache>/compiling.bin; a process that dies leaves the file, and the next start of
   // the renderer reads it (open_compile_guard): several keys in flight (a parallel prepare) make the next prepares compile
-  // one variant at a time; one key in flight is quarantined (quarantine.bin). A quarantined variant is never compiled again on
-  // this card and driver: its draws keep the uber pipeline, which draws the same pixels. Another driver or card starts with
-  // an empty guard (the files name the card, the driver and the shaders they were written for).
+  // one variant at a time and name nobody; one key in flight is a SUSPECT the first time (suspects.bin, TASK-170c) and is
+  // compiled again; the same key in flight at a second end is quarantined (quarantine.bin). A suspect whose compile ends
+  // normally is cleared. A quarantined variant is never compiled again on this card and driver: its draws keep the uber
+  // pipeline, which draws the same pixels. Two strikes, because an intermittent driver crash may end a run inside an innocent
+  // variant (the RX 6700 XT report: seven variants with nothing in common). Another driver or card starts with an empty guard
+  // (the files name the card, the driver and the shaders they were written for). The three files share one layout: this header,
+  // then `count` keys of `keyWords` 32-bit words; `flags` matters in quarantine.bin only. An rc14 folder (no suspects.bin)
+  // reads as no suspects, and its quarantine stays. Every key a start quarantines or suspects is logged by field name.
   struct GuardFileHeader {
     char magic[8] = {'G', 'T', '4', 'G', 'R', 'D', '1', '\0'};
     std::uint64_t shaderSet = 0;
@@ -434,6 +470,7 @@ struct Gpu::Impl {
   std::mutex compilingMutex;
   std::vector<SpecKey> compiling;                        // compilingMutex: the keys inside vkCreateGraphicsPipelines now
   std::unordered_set<SpecKey, SpecKeyHash> quarantined;  // read at start, never compiled
+  std::vector<SpecKey> suspects;                         // compilingMutex: keys that ended one run (suspects.bin), compiled again
   bool serialPrepare = false;
   // Tests only (GT4_CORE2_TEST_COMPILE_ABANDON=<n>): the n-th variant compile of this renderer leaves the guard files as a
   // process that died inside it would, and PrepareShaders stops.
@@ -513,6 +550,58 @@ struct Gpu::Impl {
     if (!check(gt4_hwd_vkBindBufferMemory(device, out.buffer, out.memory, 0), "vkBindBufferMemory", error)) return false;
     if (!check(gt4_hwd_vkMapMemory(device, out.memory, 0, size, 0, &out.mapped), "vkMapMemory", error)) return false;
     out.size = size;
+    return true;
+  }
+
+  // TASK-179: the sizes of the staging, vertex, uniform and readback buffers for `shares` recordings, planned from the
+  // heap the upload rings live in (its VK_EXT_memory_budget budget when the profile has one): today's sizes wherever they
+  // fit in a quarter of it (gt4::hw::plan_core2_rings). GT4_CORE2_RINGS=fixed keeps today's sizes whatever the heap (A/B);
+  // GT4_CORE2_RINGS=<MiB> plans for a budget of that many MiB instead (a small device's sizes on a large desktop).
+  bool plan_rings(const gt4::hw::DeviceProfile &profile, VkBufferUsageFlags usage, VkMemoryPropertyFlags preferred,
+                  std::uint32_t shares, gt4::hw::RingPlan &plan, std::string &error) const {
+    // The memory type a ring buffer takes, from a small buffer of the same usage.
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = 4096;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer probe = VK_NULL_HANDLE;
+    if (!check(gt4_hwd_vkCreateBuffer(device, &info, nullptr, &probe), "vkCreateBuffer", error)) return false;
+    VkMemoryRequirements requirements{};
+    gt4_hwd_vkGetBufferMemoryRequirements(device, probe, &requirements);
+    gt4_hwd_vkDestroyBuffer(device, probe, nullptr);
+    std::uint32_t type = 0;
+    if (!memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     preferred, type)) {
+      error = "no host-visible memory type for a CORE2 buffer";
+      return false;
+    }
+    const std::uint32_t heap = memoryProperties.memoryTypes[type].heapIndex;
+    gt4::hw::RingRequest request;
+    request.heap_size = memoryProperties.memoryHeaps[heap].size;
+    request.heap_budget = profile.probed && profile.memory_budget && heap < profile.heap_count ? profile.heaps[heap].budget : 0;
+    request.shares = shares;
+    request.staging_share = kStagingBytes / 8u;
+    request.vertex_share = kVertexBytes / 8u;
+    request.uniform_share = kUniformBytes / 8u;
+    request.readback = kReadbackBytes;
+    request.other = static_cast<std::uint64_t>(kLaterSlots) * kLaterWords * 4u;
+    if (const char *rings = std::getenv("GT4_CORE2_RINGS")) {
+      if (std::strcmp(rings, "fixed") == 0) {
+        request.fixed = true;
+      } else if (std::atoll(rings) > 0) {
+        request.forced_budget = static_cast<std::uint64_t>(std::atoll(rings)) << 20;
+      }
+    }
+    plan = gt4::hw::plan_core2_rings(request);
+    std::fprintf(stderr,
+                 "[core2] rings: %u shares, staging %llu MiB, vertex %llu MiB, uniform %llu MiB, readback %llu MiB (%llu MiB "
+                 "mapped); heap %u of %llu MiB, budget %llu MiB, allowance %llu MiB (%s): %s\n",
+                 plan.shares, static_cast<unsigned long long>(plan.staging >> 20),
+                 static_cast<unsigned long long>(plan.vertex >> 20), static_cast<unsigned long long>(plan.uniform >> 20),
+                 static_cast<unsigned long long>(plan.readback >> 20), static_cast<unsigned long long>(plan.total() >> 20), heap,
+                 static_cast<unsigned long long>(request.heap_size >> 20), static_cast<unsigned long long>(request.heap_budget >> 20),
+                 static_cast<unsigned long long>(plan.allowance >> 20), plan.basis,
+                 plan.reduced ? "reduced to fit" : "today's sizes");
     return true;
   }
 
@@ -804,12 +893,15 @@ struct Gpu::Impl {
     return module;
   }
 
+  // `pointQuad` (TASK-179): the point pipeline without largePoints: the HWR_POINT_QUAD vertex stage, a triangle list, and
+  // the vertex record read per instance.
   VkPipeline make_graphics(VkPrimitiveTopology topology, VkShaderModule fragment, std::string &error,
-                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0, bool sheenEarlyOut = false) {
+                           const VkSpecializationInfo *specialization = nullptr, std::uint32_t rop = 0, bool sheenEarlyOut = false,
+                           bool pointQuad = false) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertexModule;
+    stages[0].module = pointQuad ? pointQuadModule : vertexModule;
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -833,8 +925,9 @@ struct Gpu::Impl {
     bytes += 4;
     const VkSpecializationInfo withEarlyZ{count, entries, bytes, data};
     stages[1].pSpecializationInfo = &withEarlyZ;
-    VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes[7]{};
+    VkVertexInputBindingDescription binding{0, sizeof(gpu::GpuVertex),
+                                            pointQuad ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attributes[8]{};
     attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};   // S, T
     attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UINT, 8};   // R, G, B, A
     attributes[2] = {2, 0, VK_FORMAT_R32_SFLOAT, 12};     // Q
@@ -842,13 +935,14 @@ struct Gpu::Impl {
     attributes[4] = {4, 0, VK_FORMAT_R32_UINT, 20};       // Z
     attributes[5] = {5, 0, VK_FORMAT_R16G16_UINT, 24};    // U, V
     attributes[6] = {6, 0, VK_FORMAT_R8_UNORM, 28};       // F
+    attributes[7] = {7, 0, VK_FORMAT_R16_UINT, 30};       // TASK-168: the primitive's palette row + 1 (0: the batch's)
     VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vertexInput.vertexBindingDescriptionCount = 1;
     vertexInput.pVertexBindingDescriptions = &binding;
-    vertexInput.vertexAttributeDescriptionCount = 7;
+    vertexInput.vertexAttributeDescriptionCount = 8;
     vertexInput.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    assembly.topology = topology;
+    assembly.topology = pointQuad ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : topology;
     VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     viewport.viewportCount = 1;
     viewport.scissorCount = 1;
@@ -856,7 +950,7 @@ struct Gpu::Impl {
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.cullMode = VK_CULL_MODE_NONE;
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = 1.0f;
+    raster.lineWidth = 1.0f;  // TASK-179: every line is one pixel wide (no wideLines needed; GS lines are not widened at scale)
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -1111,7 +1205,7 @@ struct Gpu::Impl {
     std::filesystem::create_directories(shaderCacheFolder, ignored);
     namespace sh = hwgs::shaders;
     std::uint64_t h = 1469598103934665603ull;
-    h = hash_shader_words(h, sh::hw_vertex_smooth_words, sh::hw_vertex_smooth_word_count);
+    h = hash_shader_words(h, sh::hw_vertex_core2_words, sh::hw_vertex_core2_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_words, sh::hw_pixel_uber_core2_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_interlock_words, sh::hw_pixel_uber_core2_interlock_word_count);
     h = hash_shader_words(h, sh::hw_pixel_uber_core2_rop_words, sh::hw_pixel_uber_core2_rop_word_count);
@@ -1299,36 +1393,85 @@ struct Gpu::Impl {
     write_whole_file(path, &header, sizeof header, keys.data(), keys.size() * sizeof(SpecKey));
   }
 
-  // TASK-170, at the renderer's start (open_shader_cache): what a run that died while compiling left, then the quarantine.
-  // Quarantined keys go into specSeen, so specialised_pipeline never asks for them (their draws keep the uber pipeline) and
-  // queue_known_variants skips them; variants_to_prepare leaves them out.
+  // TASK-170c: the field names of a SpecKey in key order (the kSpecFields, then push, anisotropy and ROP words).
+  static constexpr const char *kSpecKeyNames[] = {
+      "Format",  "Fba",      "Dither", "Ate",     "Atst",      "Afail",  "DateOn", "Datm",    "Ztest",   "Ztst",
+      "Zmsk",    "Zformat",  "BlendOn", "Pabe",   "BlendA",    "BlendB", "BlendC", "BlendD",  "Colclamp", "TexOn",
+      "Tfx",     "Tcc",      "TexelKind", "Aem",  "FogOn",     "TexFst", "TexLinear", "WrapS", "WrapT",   "KeepTopByte",
+      "push",    "aniso",    "rop"};
+  static_assert(std::size(kSpecKeyNames) == kSpecFieldCount + 3, "a name per SpecKey word");
+
+  // The key as "Name=value ..." (values in hex), for the game log.
+  static std::string describe_key(const SpecKey &key) {
+    std::string text;
+    char piece[48];
+    for (std::uint32_t i = 0; i < kSpecFieldCount + 3; ++i) {
+      std::snprintf(piece, sizeof piece, "%s%s=%x", i == 0 ? "" : " ", kSpecKeyNames[i], key[i]);
+      text += piece;
+    }
+    return text;
+  }
+
+  // suspects.bin holds the list; an empty list removes the file (compilingMutex held, or at start).
+  void write_suspects_file(const std::vector<SpecKey> &list) const {
+    if (list.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove(shaderCacheFolder / "suspects.bin", ignored);
+    } else {
+      write_guard_file(shaderCacheFolder / "suspects.bin", list, 0);
+    }
+  }
+
+  // TASK-170, at the renderer's start (open_shader_cache): what a run that died while compiling left, then the quarantine and
+  // the suspects. Quarantined keys go into specSeen, so specialised_pipeline never asks for them (their draws keep the uber
+  // pipeline) and queue_known_variants skips them; variants_to_prepare leaves them out. Suspects are compiled as any variant.
   void open_compile_guard() {
     std::vector<SpecKey> list;
     std::uint32_t flags = 0;
     read_guard_file(shaderCacheFolder / "quarantine.bin", list, flags);
+    std::uint32_t ignoredFlags = 0;
+    std::vector<SpecKey> suspectList;
+    read_guard_file(shaderCacheFolder / "suspects.bin", suspectList, ignoredFlags);
+    // A key both quarantined and suspected (files edited by hand) is quarantined.
+    suspectList.erase(std::remove_if(suspectList.begin(), suspectList.end(),
+                                     [&](const SpecKey &key) { return std::find(list.begin(), list.end(), key) != list.end(); }),
+                      suspectList.end());
     std::vector<SpecKey> inFlight;
     std::uint32_t inFlightFlags = 0;
     if (read_guard_file(shaderCacheFolder / "compiling.bin", inFlight, inFlightFlags) && !inFlight.empty()) {
       flags |= kGuardSerial;
       if (inFlight.size() == 1) {
-        if (std::find(list.begin(), list.end(), inFlight[0]) == list.end()) list.push_back(inFlight[0]);
-        std::fprintf(stderr, "[core2] shader guard: the last run stopped while compiling one variant: it is quarantined on "
-                     "this card and driver (its draws keep the uber pipeline, the same pixels)\n");
+        const SpecKey &key = inFlight[0];
+        const auto suspect = std::find(suspectList.begin(), suspectList.end(), key);
+        if (suspect != suspectList.end()) {
+          suspectList.erase(suspect);
+          if (std::find(list.begin(), list.end(), key) == list.end()) list.push_back(key);
+          std::fprintf(stderr, "[core2] shader guard: a second run stopped while compiling the same variant: it is "
+                       "quarantined on this card and driver (its draws keep the uber pipeline, the same pixels): %s\n",
+                       describe_key(key).c_str());
+        } else if (std::find(list.begin(), list.end(), key) == list.end()) {
+          suspectList.push_back(key);
+          std::fprintf(stderr, "[core2] shader guard: the last run stopped while compiling one variant: it is a suspect and "
+                       "is compiled again; a second stop quarantines it: %s\n", describe_key(key).c_str());
+        }
       } else {
         std::fprintf(stderr, "[core2] shader guard: the last run stopped while compiling %zu variants at once: the next "
                      "prepares compile one variant at a time\n", inFlight.size());
       }
       write_guard_file(shaderCacheFolder / "quarantine.bin", list, flags);
+      write_suspects_file(suspectList);
     }
     std::error_code ignored;
     std::filesystem::remove(shaderCacheFolder / "compiling.bin", ignored);
     serialPrepare = (flags & kGuardSerial) != 0;
     quarantined.insert(list.begin(), list.end());
     for (const SpecKey &key : list) specSeen.insert(key);
-    if (!list.empty() || serialPrepare) {
-      std::fprintf(stderr, "[core2] shader guard: %zu variants quarantined, prepares compile %s\n", list.size(),
-                   serialPrepare ? "one variant at a time" : "in parallel");
+    {
+      std::lock_guard<std::mutex> lock(compilingMutex);
+      suspects = suspectList;
     }
+    std::fprintf(stderr, "[core2] shader guard: %zu quarantined, %zu suspects, prepares compile %s\n", list.size(),
+                 suspectList.size(), serialPrepare ? "one variant at a time" : "in parallel");
   }
 
   // TASK-170: the guard file around one variant compile (any thread). False: do not compile (tests: the run "died").
@@ -1351,6 +1494,12 @@ struct Gpu::Impl {
     if (abandoned.load()) return;  // tests: a dead process removes nothing
     const auto found = std::find(compiling.begin(), compiling.end(), key);
     if (found != compiling.end()) compiling.erase(found);
+    // TASK-170c: the compile ended normally, so a suspect is cleared.
+    const auto suspect = std::find(suspects.begin(), suspects.end(), key);
+    if (suspect != suspects.end()) {
+      suspects.erase(suspect);
+      write_suspects_file(suspects);
+    }
     if (compiling.empty()) {
       std::error_code ignored;
       std::filesystem::remove(shaderCacheFolder / "compiling.bin", ignored);
@@ -2001,7 +2150,14 @@ struct Gpu::Impl {
         gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, command.pipeline);
         bound.pipeline = command.pipeline;
       }
-      gt4_hwd_vkCmdDraw(cmd, command.count, 1, baseVertex + command.first, 0);
+      if (pointQuads && command.pipeline == pipelines[0]) {
+        // TASK-179: six corners per point, one instance per point record (the same records, read per instance).
+        gt4_hwd_vkCmdDraw(cmd, 6, command.count, 0, baseVertex + command.first);
+        stats.pointQuads += command.count;
+      } else {
+        gt4_hwd_vkCmdDraw(cmd, command.count, 1, baseVertex + command.first, 0);
+      }
+      if (command.pipeline == pipelines[0]) stats.points += command.count;
       stats.draws++;
       drewSinceBarrier = true;
     }
@@ -2108,6 +2264,7 @@ struct Gpu::Impl {
     stats.waitNs += static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waitStart).count());
     stats.waits++;
+    s.endTick = 0;
     if (timestamps) {
       std::uint64_t ticks[2] = {};
       if (gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * kTimestampsPerSlot, 2, sizeof ticks, ticks,
@@ -2115,7 +2272,13 @@ struct Gpu::Impl {
           ticks[1] >= ticks[0]) {
         stats.gpuNs += static_cast<std::uint64_t>(static_cast<double>(ticks[1] - ticks[0]) * timestampNs);
         stats.timedSubmissions++;
+        s.endTick = ticks[1];
+        if (s.idleFromTick != 0 && ticks[0] >= s.idleFromTick) {  // TASK-178: the first submission after a drain
+          stats.drainIdleNs += static_cast<std::uint64_t>(static_cast<double>(ticks[0] - s.idleFromTick) * timestampNs);
+          stats.drainIdles++;
+        }
       }
+      s.idleFromTick = 0;
       std::uint64_t pass[2 * kPassTimestampPairs] = {};
       if (s.passTimestamps != 0 &&
           gt4_hwd_vkGetQueryPoolResults(device, timestamps, index * kTimestampsPerSlot + 2u, 2u * s.passTimestamps,
@@ -2189,9 +2352,21 @@ struct Gpu::Impl {
     return true;
   }
 
+  // TASK-178: after a waited submission every slot is idle; the next submission opens the K rule's window and the idle
+  // diagnostics close on it.
+  bool wait_all_drained(std::string &error) {
+    if (!wait_all(error)) return false;
+    stats.drains++;
+    drainOpen = true;
+    drainEndCpu = std::chrono::steady_clock::now();
+    drainEndTick = slots[lastSubmitted].endTick;
+    afterWait = submitAfterWait != 0;
+    return true;
+  }
+
   bool submit(bool wait, std::string &error) {
     if (!recording) {
-      return wait ? wait_all(error) : true;
+      return wait ? wait_all_drained(error) : true;
     }
     flush_draws();
     end_render_pass();
@@ -2205,15 +2380,25 @@ struct Gpu::Impl {
     VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     info.commandBufferCount = 1;
     info.pCommandBuffers = &cmd;
-    if (!check(gt4_hw_vkQueueSubmit(queue, 1, &info, fence), "vkQueueSubmit", error)) return false;
+    if (drainOpen) {  // TASK-178 diagnostics: the first submission after a drain
+      stats.drainGapCpuNs += static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - drainEndCpu).count());
+      stats.drainGaps++;
+      slots[slot].idleFromTick = drainEndTick;
+      drainOpen = false;
+    }
+    const auto submitCall = [&] { return gt4_hw_vkQueueSubmit(queue, 1, &info, fence); };
+    const VkResult submitted = queueLock ? queueLock->run(gt4::hw::QueueLock::Caller::gs_thread, submitCall) : submitCall();
+    if (!check(submitted, "vkQueueSubmit", error)) return false;
     stats.submissions++;
     batchesSinceSubmit = 0;
+    afterWait = false;
     slots[slot].inFlight = true;
     slots[slot].serial = ++submitCount;
     slots[slot].doomed.insert(slots[slot].doomed.end(), doomed.begin(), doomed.end());
     doomed.clear();
     lastSubmitted = slot;
-    return wait ? wait_all(error) : true;
+    return wait ? wait_all_drained(error) : true;
   }
 
   bool allocate_set(VkDescriptorSetLayout layout, VkDescriptorSet &set, std::string &error) {
@@ -2398,6 +2583,10 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
 Gpu::ShaderGuardState Gpu::ShaderGuard() const {
   ShaderGuardState state;
   state.quarantined = impl_->quarantined.size();
+  {
+    std::lock_guard<std::mutex> lock(impl_->compilingMutex);
+    state.suspects = impl_->suspects.size();
+  }
   state.serial = impl_->serialPrepare;
   return state;
 }
@@ -2430,6 +2619,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.physical = static_cast<VkPhysicalDevice>(handles.physical);
   s.device = static_cast<VkDevice>(handles.device);
   s.queue = static_cast<VkQueue>(handles.queue);
+  s.queueLock = handles.queueLock;
   s.scale = std::max<std::uint32_t>(scale, 1u);
   s.shift = shift;
   if (!s.instance || !s.physical || !s.device || !s.queue) {
@@ -2446,7 +2636,10 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   VkPhysicalDeviceProperties properties{};
   gt4_hw_vkGetPhysicalDeviceProperties(s.physical, &properties);
   s.limits = properties.limits;
-  s.integrated = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+  // TASK-179: from the device profile, by the same rule (VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU); from the device type when
+  // the device's creator did not probe it.
+  s.integrated = handles.profile.probed ? handles.profile.integrated_defaults
+                                        : gt4::hw::integrated_defaults(static_cast<std::uint32_t>(properties.deviceType));
   s.deviceProperties = properties;  // IN-507
   {
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
@@ -2474,6 +2667,21 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   }
   if (s.slotCount == 0) s.slotCount = s.integrated ? 8u : 16u;  // IN-517
   if (s.submitEvery == Impl::kSubmitEveryAtInit) s.submitEvery = s.integrated ? 32u : 64u;  // TASK-134
+  // TASK-178: off by default until the A/B on the Avell decides (desktop runs: docs/hw-renderer-spec/STUDY-FRAME-DOWNLOAD-COST.md).
+  if (s.submitAfterWait == Impl::kSubmitEveryAtInit) s.submitAfterWait = 0u;
+  const VkBufferUsageFlags stagingUsage =
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
+  // write-combined type the first match would give. GT4_CORE2_CACHED_UPLOAD=0 / 1 forces it off / on (A/B).
+  const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
+  const VkMemoryPropertyFlags uploadMemory =
+      (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
+  // TASK-179: the rings sized from their heap (gt4::hw::plan_core2_rings), today's sizes as the cap. IN-517: today's sizes
+  // are for 8 slots and a recording's share stays the same with more. Fewer shares than slots (a small heap): fewer slots.
+  gt4::hw::RingPlan rings;
+  if (!s.plan_rings(handles.profile, stagingUsage, uploadMemory, std::max<std::uint32_t>(s.slotCount, 8u), rings, error)) return false;
+  s.slotCount = std::min(s.slotCount, rings.shares);
+  s.readbackBytes = rings.readback;
   s.lastSubmitted = s.slotCount - 1u;  // S4: the first recording takes slot 0
   if (s.limits.timestampComputeAndGraphics && s.limits.timestampPeriod > 0.0f) {
     VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -2504,18 +2712,9 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     }
   }
 
-  const VkBufferUsageFlags stagingUsage =
-      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  // IN-476: on an integrated GPU the CPU writes these through its caches (the GPU shares them) rather than through the
-  // write-combined type the first match would give. GT4_CORE2_CACHED_UPLOAD=0 / 1 forces it off / on (A/B).
-  const char *cachedUpload = std::getenv("GT4_CORE2_CACHED_UPLOAD");
-  const VkMemoryPropertyFlags uploadMemory =
-      (cachedUpload ? std::strcmp(cachedUpload, "0") != 0 : s.integrated) ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0;
-  // IN-517: the sizes are for 8 slots; a recording's share stays the same with more.
-  const VkDeviceSize ringScale = std::max<std::uint32_t>(s.slotCount, 8u);
-  if (!s.make_buffer(s.staging, kStagingBytes / 8u * ringScale, stagingUsage, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.vertices, kVertexBytes / 8u * ringScale, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
-  if (!s.make_buffer(s.uniforms, kUniformBytes / 8u * ringScale, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.staging, rings.staging, stagingUsage, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.vertices, rings.vertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, uploadMemory, error)) return false;
+  if (!s.make_buffer(s.uniforms, rings.uniform, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uploadMemory, error)) return false;
   {
     std::string types;
     for (std::uint32_t i = 0; i < s.memoryProperties.memoryTypeCount; ++i) {
@@ -2527,7 +2726,7 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     std::fprintf(stderr, "[core2] memory types (L local, V visible, C coherent, H cached):%s; upload buffers %s\n", types.c_str(),
                  uploadMemory ? "prefer cached" : "first visible");
   }
-  if (!s.make_buffer(s.readback, kReadbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
+  if (!s.make_buffer(s.readback, s.readbackBytes, stagingUsage, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
   if (!s.make_buffer(s.later, static_cast<VkDeviceSize>(Impl::kLaterSlots) * Impl::kLaterWords * 4u, stagingUsage,
                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT, error)) return false;
 
@@ -2621,11 +2820,24 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     }
   }
   s.open_shader_cache();  // IN-489
-  s.vertexModule = s.make_module(hwgs::shaders::hw_vertex_smooth_words, hwgs::shaders::hw_vertex_smooth_word_count, error);
+  s.vertexModule = s.make_module(hwgs::shaders::hw_vertex_core2_words, hwgs::shaders::hw_vertex_core2_word_count, error);
   s.fragmentModule =
       s.make_module(hwgs::shaders::hw_pixel_uber_core2_words, hwgs::shaders::hw_pixel_uber_core2_word_count, error);
   if (!s.vertexModule || !s.fragmentModule) return false;
-  s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error);
+  {
+    // TASK-179: points of `scale` pixels as points where the device was created with largePoints and draws them that
+    // large (and always at 1x), as two triangles elsewhere.
+    const char *quadSwitch = std::getenv("GT4_CORE2_POINT_QUADS");
+    const bool sizesFit = handles.profile.points_of_size(static_cast<float>(s.scale));
+    s.pointQuads = quadSwitch ? std::strcmp(quadSwitch, "0") != 0 : !sizesFit;
+    if (s.pointQuads) {
+      s.pointQuadModule = s.make_module(hwgs::shaders::hw_vertex_point_quad_words, hwgs::shaders::hw_vertex_point_quad_word_count, error);
+      if (!s.pointQuadModule) return false;
+    }
+    std::fprintf(stderr, "[core2] points at %ux: %s\n", s.scale,
+                 s.pointQuads ? "two triangles each (no largePoints, or a smaller largest point size)" : "points (largePoints or 1x)");
+  }
+  s.pipelines[0] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_POINT_LIST, s.fragmentModule, error, nullptr, 0, false, s.pointQuads);
   s.pipelines[1] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_LINE_LIST, s.fragmentModule, error);
   s.pipelines[2] = s.make_graphics(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, s.fragmentModule, error);
   if (!s.pipelines[0] || !s.pipelines[1] || !s.pipelines[2]) return false;
@@ -2634,7 +2846,14 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     const char *ropSwitch = std::getenv("GT4_CORE2_ROP");
     const bool wanted = ropSwitch ? std::strcmp(ropSwitch, "0") != 0 : s.integrated;
     s.dualSourceBlend = handles.dualSourceBlend;
-    if (wanted && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
+    // TASK-179: the path's own format need (the device check no longer refuses a device without it): the targets'
+    // R8G8B8A8_UNORM views as blendable colour attachments.
+    VkFormatProperties rgba8{};
+    gt4_hw_vkGetPhysicalDeviceFormatProperties(s.physical, VK_FORMAT_R8G8B8A8_UNORM, &rgba8);
+    const VkFormatFeatureFlags ropFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+    const bool ropFormat = (rgba8.optimalTilingFeatures & ropFeatures) == ropFeatures;
+    if (wanted && !ropFormat) std::fprintf(stderr, "[core2] colour attachment path (IN-481): R8G8B8A8_UNORM is not a blendable colour attachment here\n");
+    if (wanted && ropFormat && handles.independentBlend && s.specMode != Impl::SpecMode::off && s.deferDraws) {
       VkAttachmentDescription attachment{};
       attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
       attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2696,8 +2915,13 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
         !s.image_layouts(fxaaCounts, 2, 2 * 4, s.fxaaSetLayout, s.fxaaLayout, error)) {
       return false;
     }
-    s.deinterlaceModule = s.make_module(hwgs::shaders::hw_deinterlace_scaled_words,
-                                        hwgs::shaders::hw_deinterlace_scaled_word_count, error);
+    // TASK-179: the kernel indexes its history images with a push constant, which needs shaderStorageImageArrayDynamicIndexing;
+    // without it the constant-index build runs (the same pixels).
+    s.deinterlaceModule = handles.profile.storage_image_array_dynamic_indexing_enabled
+                              ? s.make_module(hwgs::shaders::hw_deinterlace_scaled_words,
+                                              hwgs::shaders::hw_deinterlace_scaled_word_count, error)
+                              : s.make_module(hwgs::shaders::hw_deinterlace_scaled_constant_words,
+                                              hwgs::shaders::hw_deinterlace_scaled_constant_word_count, error);
     s.fxaaModule = s.make_module(hwgs::shaders::hw_postfx_fxaa_words, hwgs::shaders::hw_postfx_fxaa_word_count, error);
     if (!s.deinterlaceModule || !s.fxaaModule) return false;
     s.deinterlacePipeline = s.make_compute(s.deinterlaceModule, error, s.deinterlaceLayout);
@@ -2827,6 +3051,8 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.ready = true;
   std::fprintf(stderr, "[core2] ready: scale %u, shift %.3f, pixel interlock %s, max native side %u\n", s.scale,
                static_cast<double>(s.shift), s.interlock ? "yes" : "no", MaxNativeSide());
+  std::fprintf(stderr, "[core2] submissions: %u slots, every %u batches, after a wait %u batches (TASK-178 GT4_CORE2_SUBMIT_AFTER_WAIT, 0 = off)\n",
+               s.slotCount, s.submitEvery, s.submitAfterWait);
   return true;
 }
 
@@ -3552,32 +3778,45 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
 
   // IN-419: the batch reads its textures (one palette row) and reads and writes its frame and depth.
   const Impl::Use textureUse = paletted ? Impl::Use(texture, static_cast<std::uint32_t>(batch.paletteRow)) : Impl::Use(texture);
+  // TASK-168: and the palette rows of its later palette segments (every row its vertices name).
+  static const std::vector<std::int32_t> kNoSegmentRows;
+  const std::vector<std::int32_t> &segmentRows = paletted && batch.segmentPaletteRows ? *batch.segmentPaletteRows : kNoSegmentRows;
   if (s.deferDraws) {
     // IN-420: recorded with the next render pass.
     for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
       s.drawReads.add(use.serial, use.region);
     }
+    for (const std::int32_t row : segmentRows) s.drawReads.add(texture->serial, static_cast<std::uint32_t>(row));
     for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.drawWrites.add(use.serial, use.region);
     s.deferred.push_back(record);
   } else {
     bool first = false;
     if (!s.renderPassOpen) {
-      if (s.lazyBarriers) s.order({texels, textureUse, frame, depth}, {frame, depth}, 0, 0);
+      if (s.lazyBarriers) {
+        s.order({texels, textureUse, frame, depth}, {frame, depth}, 0, 0);
+        for (const std::int32_t row : segmentRows) s.order({Impl::Use(texture, static_cast<std::uint32_t>(row))}, {}, 0, 0);
+      }
       s.begin_draw_pass();
       first = true;
     } else if (s.lazyBarriers) {
       for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
         s.pendingReads.add(use.serial, use.region);
       }
+      for (const std::int32_t row : segmentRows) s.pendingReads.add(texture->serial, static_cast<std::uint32_t>(row));
       for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.pendingWrites.add(use.serial, use.region);
     }
     s.record_draw(record, first);
     s.deferredCommands.resize(record.firstCommand);
   }
   s.stats.batches++;
-  if (s.submitEvery != 0 && ++s.batchesSinceSubmit >= s.submitEvery) {
+  // TASK-178: the first submission after a waited one comes after submitAfterWait batches (afterWait is only set when it is
+  // not 0), every later one after submitEvery.
+  const bool afterWait = s.afterWait;
+  const std::uint32_t every = afterWait ? s.submitAfterWait : s.submitEvery;
+  if (every != 0 && ++s.batchesSinceSubmit >= every) {
     if (!s.submit(false, error)) return false;
     s.stats.midFrameSubmissions++;
+    if (afterWait) s.stats.afterWaitSubmissions++;
   }
   return true;
 }
@@ -4101,7 +4340,7 @@ bool Gpu::Reduce(ImageId id, std::int32_t x0, std::int32_t y0, std::int32_t x1, 
   const std::uint32_t width = static_cast<std::uint32_t>(x1 - x0 + 1);
   const std::uint32_t height = static_cast<std::uint32_t>(y1 - y0 + 1);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  if (bytes > kReadbackBytes) {
+  if (bytes > s.readbackBytes) {
     error = "CORE2 reduction larger than the readback buffer";
     return false;
   }
@@ -4139,7 +4378,7 @@ bool Gpu::ReduceMany(const std::vector<ReduceRequest> &requests, std::vector<std
     offsets.push_back(total);
     total += static_cast<VkDeviceSize>(r.x1 - r.x0 + 1) * static_cast<VkDeviceSize>(r.y1 - r.y0 + 1) * 4u;
   }
-  if (total > kReadbackBytes) return false;  // empty error: reduce one by one
+  if (total > s.readbackBytes) return false;  // empty error: reduce one by one
   if (!s.begin_recording(error)) return false;
   s.flush_draws();
   s.end_render_pass();
@@ -4490,12 +4729,12 @@ bool Gpu::ReadDisplay(std::uint32_t width, std::uint32_t height, std::vector<std
   width = std::min(width, source.width);
   height = std::min(height, source.height);
   const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(width) * 4u;
-  if (rowBytes == 0 || height == 0 || rowBytes > kReadbackBytes) {
+  if (rowBytes == 0 || height == 0 || rowBytes > s.readbackBytes) {
     error = "CORE2 display read outside the readback buffer";
     return false;
   }
   // IN-435: frames larger than the readback buffer (7680 x 5376 at 12x is 165 MB) are read in bands of rows.
-  const std::uint32_t bandRows = static_cast<std::uint32_t>(std::min<VkDeviceSize>(height, kReadbackBytes / rowBytes));
+  const std::uint32_t bandRows = static_cast<std::uint32_t>(std::min<VkDeviceSize>(height, s.readbackBytes / rowBytes));
   pixels.resize(static_cast<std::size_t>(width) * height);
   for (std::uint32_t top = 0; top < height; top += bandRows) {
     const std::uint32_t rows = std::min(bandRows, height - top);
@@ -4527,7 +4766,7 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
   width = std::min(width, image->width);
   height = std::min(height, image->height);
   const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
-  if (bytes == 0 || bytes > kReadbackBytes) {
+  if (bytes == 0 || bytes > s.readbackBytes) {
     error = "CORE2 image read outside the readback buffer";
     return false;
   }
@@ -4547,5 +4786,7 @@ bool Gpu::ReadImage(ImageId id, std::uint32_t width, std::uint32_t height, std::
 }
 
 bool Gpu::Submit(bool wait, std::string &error) { return impl_->submit(wait, error); }
+std::uint32_t Gpu::SubmitEvery() const { return impl_->submitEvery; }
+std::uint32_t Gpu::SubmitAfterWait() const { return impl_->submitAfterWait; }
 
 }  // namespace hwgs::core2

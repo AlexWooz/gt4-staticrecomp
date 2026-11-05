@@ -271,6 +271,27 @@ if(GT4_SPU2_RUNTIME_SOURCE)
         INCLUDE_DIRECTORIES "${DONOR}/runtime/src/iop;${CMAKE_CURRENT_SOURCE_DIR}")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${spu2_capsule}/spu2.cpp")
 endif()
+# TASK-018 (native DFP wheel): USB capsule (scripts/prepare_usb_runtime.py). Replaces the donor iop/hw.cpp with the
+# derived source whose OHCI registers reach native/usb_ohci.cpp (the virtual Driving Force Pro of native/usb_dfp.cpp); the
+# manifest pins the derived file's SHA-256. Without a wheel in DFP mode the derived file answers as the donor stub.
+set(GT4_USB_RUNTIME_SOURCE "" CACHE PATH "Verified USB capsule: derived iop/hw.cpp and runtime.json")
+if(GT4_USB_RUNTIME_SOURCE)
+    get_filename_component(usb_capsule "${GT4_USB_RUNTIME_SOURCE}" ABSOLUTE)
+    if(NOT EXISTS "${usb_capsule}/hw.cpp" OR NOT EXISTS "${usb_capsule}/runtime.json")
+        message(FATAL_ERROR "The USB capsule needs hw.cpp and runtime.json")
+    endif()
+    file(READ "${usb_capsule}/runtime.json" usb_manifest)
+    string(JSON usb_expected GET "${usb_manifest}" hw_sha256)
+    file(SHA256 "${usb_capsule}/hw.cpp" usb_actual)
+    if(NOT usb_actual STREQUAL usb_expected)
+        message(FATAL_ERROR "USB hw.cpp differs from its runtime.json pin")
+    endif()
+    list(FILTER RUNTIME_FILES EXCLUDE REGEX "/iop/hw\\.cpp$")
+    list(APPEND RUNTIME_FILES "${usb_capsule}/hw.cpp")
+    set_source_files_properties("${usb_capsule}/hw.cpp" PROPERTIES
+        INCLUDE_DIRECTORIES "${DONOR}/runtime/src/iop;${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${usb_capsule}/hw.cpp")
+endif()
 # TASK-017 (slice205 v1, slice206 v2): license demo guard capsule (scripts/prepare_license_guard.py). Replaces the donor
 # dispatch.cpp (guard at both license loaders' demo-input calls, native/license_guard.*), kernel.cpp (halt
 # dump, off unless GT4_HALT_DUMP=1) and iop/cdvdfsv.cpp (FSV read trace, off unless GT4_FSV_TRACE=1). Every derived
@@ -358,7 +379,15 @@ target_include_directories(gt4_vulkan_extensions PUBLIC "${CMAKE_CURRENT_SOURCE_
 add_executable(vulkan_extensions_fixture vulkan_extensions_fixture.cpp)
 target_link_libraries(vulkan_extensions_fixture PRIVATE gt4_vulkan_extensions)
 target_compile_options(vulkan_extensions_fixture PRIVATE /W4)
-target_link_libraries(ps2runtime_vulkan PUBLIC gt4_pacing gt4_quickfix gt4_install_paths gt4_vulkan_extensions)
+# TASK-018: the USB controller model and the virtual Driving Force Pro (used by the USB capsule and the wheel).
+add_library(gt4_usb STATIC usb_ohci.cpp usb_dfp.cpp)
+target_compile_options(gt4_usb PRIVATE /W4)
+target_include_directories(gt4_usb PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+add_executable(usb_dfp_fixture usb_dfp_fixture.cpp)
+target_link_libraries(usb_dfp_fixture PRIVATE gt4_usb)
+target_compile_options(usb_dfp_fixture PRIVATE /W4)
+add_test(NAME native_usb_dfp COMMAND $<TARGET_FILE:usb_dfp_fixture>)
+target_link_libraries(ps2runtime_vulkan PUBLIC gt4_pacing gt4_quickfix gt4_install_paths gt4_vulkan_extensions gt4_usb)
 # TASK-059 (slice200): installed-folder paths (<exe folder>\shaders, <exe folder>\gs\gt4-gs.exe) and --portable-check.
 add_library(gt4_install_paths STATIC install_paths.cpp)
 target_compile_options(gt4_install_paths PRIVATE /W4)
@@ -887,8 +916,8 @@ target_compile_options(platform_fixture PRIVATE /W4)
 target_compile_definitions(platform_fixture PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME native_platform COMMAND $<TARGET_FILE:platform_fixture>)
 set_tests_properties(native_platform PROPERTIES PASS_REGULAR_EXPRESSION "PASS: platform layer")
-add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp)
-target_link_libraries(native_host_io PUBLIC gt4_pad_mapping gt4_platform)
+add_library(native_host_io STATIC host_io.cpp frame_clock.cpp controls.cpp wheel.cpp dfp_haptics.cpp)
+target_link_libraries(native_host_io PUBLIC gt4_pad_mapping gt4_usb gt4_platform)
 if(GT4_PERF_RUNTIME_SOURCE)
     target_compile_definitions(native_host_io PRIVATE GT4_PERF_PROBE)
     target_link_libraries(native_host_io PUBLIC gt4_perf_probe)
@@ -1032,6 +1061,14 @@ target_link_libraries(host_io_fixture PRIVATE native_host_io)
 add_custom_command(TARGET host_io_fixture POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GT4_SDL3_ROOT}/${GT4_SDL3_RUNTIME_DLL}" "$<TARGET_FILE_DIR:host_io_fixture>/SDL3.dll")
 target_compile_options(host_io_fixture PRIVATE /W4)
+# Racing wheel (native/wheel.hpp, native/dfp_haptics.hpp): wheel.toml, pedals, the DFP input, the force effect lifecycle on
+# a fake haptic sink and the haptics thread, WheelInput on an SDL3 virtual wheel.
+add_executable(wheel_fixture wheel_fixture.cpp)
+target_link_libraries(wheel_fixture PRIVATE native_host_io)
+add_custom_command(TARGET wheel_fixture POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GT4_SDL3_ROOT}/${GT4_SDL3_RUNTIME_DLL}" "$<TARGET_FILE_DIR:wheel_fixture>/SDL3.dll")
+target_compile_options(wheel_fixture PRIVATE /W4)
+add_test(NAME native_wheel COMMAND $<TARGET_FILE:wheel_fixture>)
 add_executable(shape_observer_fixture shape_observer_fixture.cpp shape_observer.cpp)
 target_compile_options(shape_observer_fixture PRIVATE /W4)
 add_executable(perf_accounting_fixture perf_accounting_fixture.cpp)

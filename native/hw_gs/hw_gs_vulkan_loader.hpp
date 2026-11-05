@@ -33,6 +33,8 @@
 #include <string>
 #include <vector>
 
+#include "hw_device_profile.hpp"
+
 // Renames: the backend source keeps the Vulkan names; the preprocessor points them at the pointers below.
 #define vkAcquireNextImageKHR gt4_hw_vkAcquireNextImageKHR
 #define vkAllocateCommandBuffers gt4_hw_vkAllocateCommandBuffers
@@ -143,5 +145,18 @@ bool pixel_interlock_supported(VkPhysicalDevice physical);
 
 // An entry point outside the tables above (diagnostics), null when it does not resolve.
 PFN_vkVoidFunction instance_proc(VkInstance instance, const char *name);
+
+// TASK-179: the capability probe (hw_device_profile.hpp): identity, class, the features drawing at scale relies on and
+// every memory heap with its VK_EXT_memory_budget budget. Fills the `*_supported` fields; the `*_enabled` ones stay false
+// until enable_profile_features. GT4_HW_PRETEND_MISSING=large_points,dynamic_indexing (diagnostics, A/B) reports the
+// named features as missing, so their fallbacks run on a device that has them.
+gt4::hw::DeviceProfile probe_device_profile(VkInstance instance, VkPhysicalDevice physical);
+
+// Turns on in `features` what the profile says the device has and the renderer uses (largePoints,
+// shaderStorageImageArrayDynamicIndexing) and records that in the profile's `*_enabled` fields.
+void enable_profile_features(gt4::hw::DeviceProfile &profile, VkPhysicalDeviceFeatures &features);
+
+// VK_EXT_memory_budget, to be enabled on the device when the profile found it (null otherwise).
+const char *memory_budget_extension(const gt4::hw::DeviceProfile &profile);
 
 } // namespace gt4::hw::vulkan_loader

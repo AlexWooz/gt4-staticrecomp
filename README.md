@@ -145,7 +145,7 @@ can be remapped in the launcher (Settings > Controls). The keyboard has a fixed 
 game's function names and a check on GS settings; Julio Vitor Rufino ([JulioHeroZ](https://github.com/JulioHeroZ)), for
 racing wheel support, RetroAchievements and the renderer choice kept on updates; Luan Antony
 ([luanantony](https://github.com/luanantony)), for the racing wheel integration, DualSense trigger curves and many fixes
-and studies. Thank you!
+and studies; the launcher's Wheel page is built on their 1.2.5 wheel page. Thank you!
 
 | Project | Author | What it gives this project |
 |---|---|---|
@@ -180,3 +180,13 @@ Exact revisions and licenses: [THIRD_PARTY.md](native/THIRD_PARTY.md).
 [TASKS](TASKS.md) · [CONTRIBUTING](CONTRIBUTING.md) · [STATUS](docs/STATUS.md) · [BUILD](docs/BUILD.md) ·
 [ARCHITECTURE](docs/ARCHITECTURE.md) · [Renderers](docs/GS-RENDERER-OPTIONS.md) · [Decisions](docs/decisions/) ·
 [Journal](docs/journal/)
+
+## Star history
+
+<a href="https://www.star-history.com/#moesuito/gt4-staticrecomp&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=moesuito/gt4-staticrecomp&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=moesuito/gt4-staticrecomp&type=Date" />
+    <img alt="Star history chart of moesuito/gt4-staticrecomp" src="https://api.star-history.com/svg?repos=moesuito/gt4-staticrecomp&type=Date" />
+  </picture>
+</a>

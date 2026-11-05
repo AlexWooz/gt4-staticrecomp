@@ -17,12 +17,13 @@ use gt4l_core::gs_release;
 use gt4l_core::launch;
 use gt4l_core::paths::{self, DataDirs};
 use gt4l_core::settings;
+use gt4l_core::shader_prepare::{GaveUp, PrepareOutcome};
 use gt4l_core::{Platform, Settings, LAUNCHER_VERSION};
 use gt4l_disc::setup::{self as disc_setup, Installed};
 use gt4l_platform::game;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::model;
@@ -429,6 +430,11 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
     }
+    // TASK-181: the racing wheel file (the game's virtual Driving Force Pro), only when it exists.
+    let wheel_path = state.wheel_path();
+    if wheel_path.exists() {
+        extra.push(("GT4_WHEEL_FILE".into(), wheel_path.display().to_string()));
+    }
     // TASK-148: the controller chosen on the Controls page, and the player's SDL gamepad mappings when there are any.
     if let Some(choice) = launch::controller_environment(&state.config.settings) {
         extra.push(("GT4_PAD".into(), choice));
@@ -561,7 +567,22 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     if !textures.custom {
         paths::ensure_texture_folders(&textures.folder).map_err(|error| format!("texture folder: {error}"))?;
     }
-    let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
+    // TASK-181: the launcher closes every SDL handle first (the wheel's and its force feedback): the game owns them.
+    let pads = app.try_state::<pad_service::Handle>().map(|pads| pads.inner().clone());
+    if let Some(pads) = &pads {
+        if !pads.release_for_game() {
+            state::log_warn(&dirs, "controller input: SDL3 did not confirm it closed its devices before the game started");
+        }
+    }
+    let running = match game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra) {
+        Ok(running) => running,
+        Err(error) => {
+            if let Some(pads) = &pads {
+                pads.game_ended();
+            }
+            return Err(error);
+        }
+    };
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let mut state = lock(&shared);
@@ -616,6 +637,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         drop(running);
         lock(&shared).discord.on_game_end();
         lock(&shared).game_child = None;
+        if let Some(pads) = &pads {
+            pads.game_ended();
+        }
         let renderer_changed = gsdx_error.is_some() && {
             let stored = lock(&shared).config.settings.clone();
             let (_, graphics, _) = gt4l_platform::gpu::run_settings(&stored, state::current_language());
@@ -746,22 +770,38 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
     let monitors = gt4l_platform::display::monitors();
     let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
     let mut worked = false;
-    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &mut |done, total| {
+    let cancelled = { lock(&shared).shaders_cancelled.clone() };
+    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &mut |progress| {
         worked = true;
-        let _ = app.emit("shaders-progress", json!({ "done": done, "total": total }));
+        let _ = app.emit("shaders-progress", json!({ "done": progress.done, "total": progress.total, "attempt": progress.attempt }));
     });
     let state = lock(&shared);
     if state.shaders_cancelled.load(Ordering::SeqCst) {
         state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
         return Ok(false);
     }
-    match result {
-        Ok(true) if worked => state::log(&state.dirs, "shaders: compiled"),
-        Ok(true) => {}
-        Ok(false) => state::log_error(&state.dirs, "shaders: the compile did not finish; the game compiles as it plays (logs\\shaders.log)"),
-        Err(message) => state::log_error(&state.dirs, &format!("shaders: {message}")),
-    }
+    log_prepare_outcome(&state.dirs, &result, worked);
     Ok(true)
+}
+
+/// What the log says about a prepare (TASK-170b): a finished one, a retried one, or the reason the game starts without it
+/// (it then compiles as it plays).
+fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<PrepareOutcome, String>, worked: bool) {
+    match result {
+        Ok(PrepareOutcome::Finished { attempts }) if *attempts > 1 => {
+            state::log(dirs, &format!("shaders: compiled after {attempts} attempts (logs\\shaders.log)"));
+        }
+        Ok(PrepareOutcome::Finished { .. }) if worked => state::log(dirs, "shaders: compiled"),
+        Ok(PrepareOutcome::Finished { .. }) | Ok(PrepareOutcome::Cancelled { .. }) => {}
+        Ok(PrepareOutcome::GaveUp { attempts, why }) => {
+            let reason = match why {
+                GaveUp::NoProgress => "the last attempt got no further",
+                GaveUp::LimitReached => "the attempt limit was reached",
+            };
+            state::log_error(dirs, &format!("shaders: the compile did not finish after {attempts} attempts, {reason}; the game compiles as it plays (logs\\shaders.log)"));
+        }
+        Ok(PrepareOutcome::Failed { message, .. }) | Err(message) => state::log_error(dirs, &format!("shaders: {message}")),
+    }
 }
 
 /// Cancel in the "Compiling shaders" window. What was compiled stays in the cache for the next Play.
@@ -1610,8 +1650,10 @@ pub fn open_latest_log(shared: State<'_, Shared>) -> Result<(), String> {
 /// `export_logs()`: writes the log bundle (TASK-111) into a folder the player picks (Desktop by default). Returns the zip's
 /// path, or `None` when the player cancels. Nothing is written before the folder is picked.
 #[tauri::command]
-pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<String>, String> {
+pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>, pads: State<'_, pad_service::Handle>) -> Result<Option<String>, String> {
     let shared = shared.inner().clone();
+    // The pads the launcher's gamepad service knows now, by name (no serial numbers).
+    let controllers = crate::log_bundle::controller_names(&pads.inner().status());
     tauri::async_runtime::spawn_blocking(move || {
         let (language, start) = {
             let state = lock(&shared);
@@ -1648,7 +1690,7 @@ pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Op
             crate::android::record_game_exits(&dirs);
         }
         let state = lock(&shared);
-        match crate::log_bundle::export(&state, &folder, &user) {
+        match crate::log_bundle::export(&state, &folder, &user, &controllers) {
             Ok(path) => {
                 state::log(&state.dirs, &format!("logs exported to {}", path.display()));
                 // TASK-180: the player picks where the bundle goes (Storage Access Framework); the launcher state is not

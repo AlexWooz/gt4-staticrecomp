@@ -863,6 +863,11 @@ fn play(ui: &AppWindow, app: &Shared) {
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
     }
+    // TASK-181: the racing wheel file beside the controls file (the game's virtual Driving Force Pro), when it exists.
+    let wheel_path = controls_path.with_file_name(paths::WHEEL_FILE);
+    if wheel_path.exists() {
+        extra.push(("GT4_WHEEL_FILE".into(), wheel_path.display().to_string()));
+    }
     let card = dirs.runtime_card();
     let prepared = saves::prepare_card(&lock(app).library, &card);
     if let Err(message) = prepared {

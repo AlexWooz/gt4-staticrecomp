@@ -47,6 +47,7 @@ struct HeadlessDevice {
     bool interlock = false;
     bool independentBlend = false;
     bool dualSourceBlend = false;
+    gt4::hw::DeviceProfile profile;  // TASK-179: the capability probe, with the features enabled below
 
     bool Create(std::string& error) {
         if (!gt4::hw::vulkan_loader::load_loader(error)) return false;
@@ -110,6 +111,9 @@ struct HeadlessDevice {
         gt4_hw_vkGetPhysicalDeviceFeatures2(physical, &supportedFeatures);
         enabledFeatures.independentBlend = supportedFeatures.features.independentBlend;
         enabledFeatures.dualSrcBlend = supportedFeatures.features.dualSrcBlend;
+        // TASK-179: largePoints and shaderStorageImageArrayDynamicIndexing where the device has them, as the game's device.
+        profile = gt4::hw::vulkan_loader::probe_device_profile(instance, physical);
+        gt4::hw::vulkan_loader::enable_profile_features(profile, enabledFeatures);
         dualSourceBlend = supportedFeatures.features.dualSrcBlend == VK_TRUE;
         independentBlend = supportedFeatures.features.independentBlend == VK_TRUE;
         deviceInfo.pEnabledFeatures = &enabledFeatures;
@@ -315,6 +319,7 @@ int main(int argc, char** argv) {
     handles.pixelInterlock = headless.interlock;
     handles.independentBlend = headless.independentBlend;
     handles.dualSourceBlend = headless.dualSourceBlend;
+    handles.profile = headless.profile;  // TASK-179
     std::printf("pixel_interlock=%d scale=%u\n", headless.interlock ? 1 : 0, scale);
     renderer.SetScale(scale, halfPixelShift > 0.0f ? halfPixelShift : static_cast<float>(scale));  // 06.3 half-pixel
     if (!renderer.Init(handles, error)) {

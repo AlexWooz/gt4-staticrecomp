@@ -613,6 +613,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     const bool gpuClut_ = std::strcmp(gpuClutMode_, "0") != 0 && std::strcmp(gpuClutMode_, "textures") != 0;
     const bool gpuTextures_ = std::strcmp(gpuClutMode_, "0") != 0 && std::strcmp(gpuClutMode_, "clut") != 0;
     std::array<std::uint64_t, 512> clutSource_{};
+    // TASK-168b: the number of nonzero clutSource_ entries (SetClutSource, ClearClutSource). At 0, GpuPaletteKey answers 0
+    // without walking a palette's halfwords: in the player's view it was asked about 1000 times per VBlank (each CLUT load
+    // the palette segment hook saw), 0.56 ms of the GS thread.
+    std::uint32_t clutGpuHalfwords_ = 0;
     std::uint64_t clutTargetLoadCount_ = 0;
     bool gpuClutMirror_ = false;
     // Halfwords loaded from memory since the GPU CLUT last received the CPU unit's words: written to the GPU only
@@ -706,10 +710,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         spikeMark_ = now;
     }
+    // TASK-178: the download and drain counters at the last [core2] interval line.
+    struct DrainMark {
+        std::uint64_t downloads = 0, downloadReadbacks = 0, downloadTargets = 0, downloadPixels = 0;
+        std::uint64_t drains = 0, idleNs = 0, idles = 0, gapNs = 0, gaps = 0, afterWaitSubmissions = 0;
+    };
+    DrainMark lastDrainMark_;
     std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
     std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
     std::array<std::uint64_t, static_cast<std::size_t>(FlushReason::Count)> lastFlushCounts_{};  // CPU survey R9
     std::uint64_t lastClutSameTexture_ = 0;
+    std::uint64_t lastClutKept_ = 0, lastSegmentedBatches_ = 0, lastPaletteSegments_ = 0;  // TASK-168
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
     // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
@@ -722,14 +733,33 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::vector<std::uint64_t> paletteRowKey_;
     std::uint32_t nextPaletteRow_ = 0;
 
+    // TASK-168: a CLUT load that only changes the palette of the pending batch's indexed texture starts a palette segment
+    // of the batch instead of ending it (FrontEnd::SetPaletteSegmentHook, PaletteSegmentAllowed below), when every palette
+    // of the batch is a CPU one; each segment's primitives look their colours up in a palette row of their own
+    // (GpuVertex::paletteRow). Needs the palette rows. Off by default (owner, 2026-11-05: TASK-168b found no GT4 scene
+    // that gains; see docs/hw-renderer-spec/TASK-168-PALETTE-SEGMENTS.md): every such load ends the batch, the chapter
+    // 07.3 rule. GT4_CORE2_PALETTE_SEGMENTS=1 (any value but 0) turns them on.
+    const bool paletteSegments_ = paletteRows_ && std::getenv("GT4_CORE2_PALETTE_SEGMENTS") != nullptr &&
+                                  std::strcmp(std::getenv("GT4_CORE2_PALETTE_SEGMENTS"), "0") != 0;
+    std::vector<std::uint32_t> pinnedPaletteRows_;   // rows the batch being prepared names: not taken for another palette
+    std::vector<std::int32_t> segmentPaletteRows_;  // the batch's segment rows (DrawBatch::segmentPaletteRows)
+
     // The palette row of an indexed texture's palette (TEX0 CPSM and CSA, TEXA), filled on first use; -1 on failure.
     std::int32_t PaletteRow(const writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa) {
         const std::uint32_t cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
         const std::uint32_t csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
         const std::uint64_t gpuKey = GpuPaletteKey(t.glmPsm, cpsm, csa);
-        const std::uint64_t entries = (t.glmPsm & 7u) == 3u ? 256u : 16u;
-        std::uint64_t key = gpuKey != 0 ? gpuKey : writeback::HashPaletteWords(t.palette);
-        const std::uint64_t parts[] = {entries, gpuKey != 0 ? cpsm : 0u, gpuKey != 0 ? csa : 0u,
+        return PaletteRowOf(t.glmPsm, t.palette.data(), t.palette.size(), gpuKey, cpsm, csa, texa);
+    }
+
+    // The palette row of the CPU palette `entries` (`count` entries as BatchTranslation::palette holds them, gpuKey 0) or of
+    // the GPU CLUT's palette (gpuKey from GpuPaletteKey, with CPSM, CSA and TEXA) for a texture of format `psm`, filled on
+    // first use; -1 on failure. A row in pinnedPaletteRows_ is never given to another palette (TASK-168).
+    std::int32_t PaletteRowOf(std::uint32_t psm, const std::uint32_t *entries, std::size_t count, std::uint64_t gpuKey,
+                              std::uint32_t cpsm, std::uint32_t csa, std::uint64_t texa) {
+        const std::uint64_t indices = (psm & 7u) == 3u ? 256u : 16u;
+        std::uint64_t key = gpuKey != 0 ? gpuKey : writeback::HashPaletteWords(entries, count);
+        const std::uint64_t parts[] = {indices, gpuKey != 0 ? cpsm : 0u, gpuKey != 0 ? csa : 0u,
                                        gpuKey != 0 ? (texa & 0xFF000080FFull) : 0u};
         for (std::uint64_t part : parts) key = (key ^ part) * 1099511628211ull;
         if (auto found = paletteRowOf_.find(key); found != paletteRowOf_.end()) {
@@ -745,8 +775,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
             paletteRowKey_.assign(kPaletteRows, 0);
         }
-        const std::uint32_t row = nextPaletteRow_;
-        nextPaletteRow_ = (nextPaletteRow_ + 1u) % kPaletteRows;
+        std::uint32_t row = nextPaletteRow_;
+        while (std::find(pinnedPaletteRows_.begin(), pinnedPaletteRows_.end(), row) != pinnedPaletteRows_.end()) {
+            row = (row + 1u) % kPaletteRows;  // TASK-168: at most kMaxPaletteSegments rows are pinned, of 1024
+        }
+        nextPaletteRow_ = (row + 1u) % kPaletteRows;
         if (paletteRowKey_[row] != 0) paletteRowOf_.erase(paletteRowKey_[row]);
         paletteRowKey_[row] = key;
         paletteRowOf_[key] = row;
@@ -757,9 +790,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             palette.cpsm = cpsm;
             palette.csa = csa;
             palette.texa = texa;
-            ok = gpu_.PaletteRowFromGpuClut(paletteImage_, row, t.glmPsm, palette, error);
+            ok = gpu_.PaletteRowFromGpuClut(paletteImage_, row, psm, palette, error);
         } else {
-            std::vector<std::uint32_t> words(t.palette.begin(), t.palette.end());
+            std::vector<std::uint32_t> words(entries, entries + count);
             words.resize(256, 0u);
             ok = gpu_.Patch(paletteImage_, 0, static_cast<std::int32_t>(row), 255, static_cast<std::int32_t>(row), words,
                             0xFFFFFFFFu, error);
@@ -771,6 +804,126 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         stats.paletteRowsWritten++;
         return static_cast<std::int32_t>(row);
     }  // B0: GPU fence wait time at the last timing line
+
+    // TASK-168b: the front end's cheap question about the pending batch (FrontEnd::PaletteSegmentBatchFilter). No for a T8
+    // sprite batch while a tone run is going on: GT4's copy-back strips (about 950 loads per VBlank in the player's view).
+    // ToneHook skips such batches whole and never reads their palettes, so a segment saves nothing downstream, while a kept
+    // load cost the front end more than the flush it replaces (desktop A/B of the George V lap, 1x: GS thread +4% with the
+    // strips merged and skipped at once, +3% when the hook refused them after the front end's memory checks, equal to
+    // segments off with this filter). The load ends the batch.
+    bool PaletteSegmentBatchAllowed(const Batch &pending) {
+        if (!toneActive_ || !ToneShape(pending)) return true;
+        stats.paletteSegmentToneRefusals++;
+        return false;
+    }
+
+    // TASK-168: the front end's question for a CLUT load under a pending indexed batch (FrontEnd::PaletteSegmentHook). Yes
+    // only while every palette of the batch is a CPU one, drawn through palette rows keyed by content: the batch's palette
+    // so far uses no halfword a GPU load wrote (the load about to happen writes every halfword the same CPSM and CSA read,
+    // from memory), and the load reads GS memory alone, under no drawn target (no readback and no GPU load, IN-408 and
+    // IN-417, which keep one GPU CLUT state). Texture replacement looks a texture up by its one palette: no segments.
+    bool PaletteSegmentAllowed(const clut::Tex0Write &write, const Batch &pending) const {
+        if (!paletteSegments_ || replacementLoader_) return false;
+        const std::uint64_t tex0 = pending.state.ctx.tex0;
+        if (GpuPaletteKey(static_cast<std::uint32_t>(tex0::Psm(tex0)), static_cast<std::uint32_t>(tex0::Cpsm(tex0)),
+                          static_cast<std::uint32_t>(tex0::Csa(tex0))) != 0) {
+            return false;
+        }
+        const BlockSpan span{write.cbp & ~31u, 64u};  // the range SetBeforeLocalRead reports for a CSM1 load
+        for (const Target &t : targets_) {
+            if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) return false;
+        }
+        clutSpanClear_ = true;
+        clutSpanClearBegin_ = span.begin;
+        return true;
+    }
+
+    // TASK-168b: the CSM1 span (64 blocks from clutSpanClearBegin_) of the CLUT load PaletteSegmentAllowed just let start a
+    // palette segment: no drawn target meets it. The front end calls SetBeforeLocalRead for that load right after the hook
+    // (nothing changes the targets in between), and with no drawn target there that callback has nothing to read back or
+    // load on the GPU, so it skips its own walk of the targets (about 0.3 us each, once per kept load). It clears the mark,
+    // and so does OnClutLoaded.
+    mutable bool clutSpanClear_ = false;
+    mutable std::uint32_t clutSpanClearBegin_ = 0;
+
+    // TASK-168: the consumers that take one palette per batch get a batch's segments one by one, as the CLUT-load flushes
+    // gave them: texture replacement (chapter 11 keys a texture by its palette) and GT4's tone sequence (7.2: ToneHook
+    // decides per batch, from its palette, and keeps a run across batches). ToneHook leaves a batch to the normal path,
+    // without reading its palette, unless it is a T8 sprite batch over a 32-bit target (ShuffleSource) or a run is going on.
+    //
+    // TASK-168b: with the batch filter (PaletteSegmentBatchAllowed) no segment forms while a tone run is going on, so a
+    // segmented T8 sprite batch meets this rule through a 32-bit target at its texture base (the run's first draw). The route
+    // follows ToneHook as it would have taken each segment's batch: when no segment has the shuffle shape (PossibleShuffle
+    // false for each segment's primitives), ToneHook would end any run and leave every segment to the normal path, so the
+    // batch is drawn whole without the hook; otherwise each segment gets a batch (the hook may start a run there, which
+    // reads that segment's palette).
+    // Whole: one batch as usual; WholeNoTone: one batch, ToneHook already decided; Split: a batch for each segment.
+    enum class SegmentRoute { Whole, WholeNoTone, Split };
+    // A textured T8 sprite batch: the batches ToneHook may take (PossibleShuffle's first conditions).
+    static bool ToneShape(const Batch &batch) {
+        const bool textured = ((batch.state.effectivePrim >> primbit::kTme) & 1u) != 0;
+        return textured && batch.cls == PrimClass::Sprite && tex0::Psm(batch.state.ctx.tex0) == 0x13u;
+    }
+    SegmentRoute RoutePaletteSegments(const Batch &batch) {
+        if (!replacementLoader_) {
+            if (!ToneShape(batch) || (!toneActive_ && ShuffleSource(batch) == nullptr)) return SegmentRoute::Whole;
+            bool anyShape = false;
+            const std::uint32_t segments = PaletteSegmentCount(batch);
+            for (std::uint32_t segment = 0; segment < segments && !anyShape; ++segment) {
+                anyShape = PossibleShuffleSegment(batch, segment);
+            }
+            if (!anyShape) {
+                toneActive_ = false;  // ToneHook on the first segment's batch ends any run
+                stats.paletteSegmentsWholeNoTone++;
+                return SegmentRoute::WholeNoTone;
+            }
+        }
+        stats.paletteSegmentSplits++;
+        return SegmentRoute::Split;
+    }
+
+    // TASK-168: the palette rows of a batch with several palette segments. Segment 0 has the batch's row (draw.paletteRow,
+    // already taken); every later segment gets the row of its own palette, and the vertices of its draws name it
+    // (GpuVertex::paletteRow = row + 1). The rows stay pinned while they are taken, so a later segment never takes the row
+    // an earlier one of the same batch got; the GPU orders the draw after their writes (DrawBatch::segmentPaletteRows).
+    bool AssignSegmentPaletteRows(writeback::BatchTranslation &t, std::uint64_t tex0, std::uint64_t texa, DrawBatch &draw) {
+        const std::uint32_t cpsm = static_cast<std::uint32_t>(tex0::Cpsm(tex0));
+        const std::uint32_t csa = static_cast<std::uint32_t>(tex0::Csa(tex0));
+        if (GpuPaletteKey(t.glmPsm, cpsm, csa) != 0) {
+            Fail("TASK-168: a batch with palette segments reads a palette loaded on the GPU");
+            return false;
+        }
+        const std::size_t segments = t.segmentPalettes.size() / 256u;
+        if (segments < 2 || t.drawSegments.size() != t.draws.size()) {
+            Fail("TASK-168: palette segments without a palette or a segment per draw");
+            return false;
+        }
+        segmentPaletteRows_.assign(segments, draw.paletteRow);
+        pinnedPaletteRows_.assign(1, static_cast<std::uint32_t>(draw.paletteRow));
+        for (std::size_t segment = 1; segment < segments; ++segment) {
+            const std::int32_t row = PaletteRowOf(t.glmPsm, t.segmentPalettes.data() + 256u * segment, 256u, 0, cpsm, csa, texa);
+            if (row < 0) {
+                pinnedPaletteRows_.clear();
+                return false;
+            }
+            segmentPaletteRows_[segment] = row;
+            pinnedPaletteRows_.push_back(static_cast<std::uint32_t>(row));
+        }
+        pinnedPaletteRows_.clear();
+        for (std::size_t d = 0; d < t.draws.size(); ++d) {
+            const std::uint32_t segment = t.drawSegments[d];
+            if (segment == 0 || segment >= segments) continue;
+            const std::uint16_t value = static_cast<std::uint16_t>(segmentPaletteRows_[segment] + 1);
+            const gpu::GpuDraw &one = t.draws[d];
+            for (std::uint32_t v = one.first; v < one.first + one.count && v < t.vertices.size(); ++v) {
+                t.vertices[v].paletteRow = value;
+            }
+        }
+        draw.segmentPaletteRows = &segmentPaletteRows_;
+        stats.paletteSegmentBatches++;
+        stats.paletteSegmentsDrawn += segments;
+        return true;
+    }
 
     std::vector<gpu::GpuVertex> vertexScratch_;
     std::vector<Qword> gifScratch_;
@@ -791,7 +944,21 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         frontEnd_.SetBeforeLocalRead([this](const BlockRange &range) {
             ScopedUs clutTimer(clock_, &PhaseTimes::clut);
             times_.clutLoads += 1;
+            // TASK-168b: the palette segment hook found no drawn target over this load's span a moment ago.
+            const bool clear = clutSpanClear_ && range.begin == clutSpanClearBegin_ && range.count == 64u;
+            clutSpanClear_ = false;
+            if (clear) return;
             const BlockSpan span{range.begin, range.count};
+            // TASK-168b: with no drawn target over the span (the usual case: GT4's tone-run loads, about 1,260 per VBlank)
+            // neither the GPU paths nor a readback below can apply; one walk instead of three.
+            bool drawnOver = false;
+            for (const Target &t : targets_) {
+                if (t.alive && !t.drawn.Empty() && SpansOverlap(TargetSpan(t, t.drawn), span)) {
+                    drawnOver = true;
+                    break;
+                }
+            }
+            if (!drawnOver) return;
             // IN-408: one drawn 32-bit colour target under a CSM1 palette is read on the GPU when the load happens.
             if (gpuClut_ && span.count < kAllBlocks && (ClutSourceTarget(span) != nullptr || ClutTargetsOnGpu(span))) {
                 clutFromTargetPending_ = true;
@@ -811,6 +978,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs clutTimer(clock_, &PhaseTimes::clut);
             OnClutLoaded(write);
         });
+        if (paletteSegments_) {  // TASK-168
+            frontEnd_.SetPaletteSegmentHook([this](const clut::Tex0Write &write, const Batch &pending) {
+                return PaletteSegmentAllowed(write, pending);
+            });
+            frontEnd_.SetPaletteSegmentBatchFilter([this](const Batch &pending) { return PaletteSegmentBatchAllowed(pending); });
+        }
     }
 
     // IN-408: the drawn target a CSM1 palette over `span` must be read from on the GPU: exactly one drawn target
@@ -926,8 +1099,24 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return out;
     }
 
+    // TASK-168b: every clutSource_ write goes through these two, which keep clutGpuHalfwords_.
+    void SetClutSource(const HalfwordRanges &ranges, std::uint64_t source) {
+        if (source == 0 && clutGpuHalfwords_ == 0) return;  // every entry is 0 already (the common load from memory)
+        for (int r = 0; r < 2; ++r) {
+            for (std::uint32_t i = ranges.begin[r]; i < ranges.end[r]; ++i) {
+                clutGpuHalfwords_ = clutGpuHalfwords_ + (source != 0 ? 1u : 0u) - (clutSource_[i] != 0 ? 1u : 0u);
+                clutSource_[i] = source;
+            }
+        }
+    }
+    void ClearClutSource() {
+        clutSource_.fill(0);
+        clutGpuHalfwords_ = 0;
+    }
+
     // IN-408: a hash of which GPU loads wrote the halfwords a palette uses; 0 when the CPU CLUT unit holds them all.
     std::uint64_t GpuPaletteKey(std::uint32_t psm, std::uint32_t cpsm, std::uint32_t csa) const {
+        if (clutGpuHalfwords_ == 0) return 0;  // TASK-168b: no halfword was written on the GPU
         std::uint64_t hash = 0;
         bool gpu = false;
         for (std::uint32_t index : ClutHalfwordsUsed(psm, cpsm, csa)) {
@@ -941,6 +1130,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     void OnClutLoaded(const clut::Tex0Write &write) {
         const bool fromTarget = clutFromTargetPending_;
         clutFromTargetPending_ = false;
+        clutSpanClear_ = false;  // TASK-168b: the mark lives for one load at most
         const HalfwordRanges written = ClutHalfwordsWritten(write);
         std::string error;
         if (fromTarget) {
@@ -986,7 +1176,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                  held.y0, held.x1, held.y1);
                 }
                 ++clutTargetLoadCount_;
-                written.Fill(clutSource_, clutTargetLoadCount_);
+                SetClutSource(written, clutTargetLoadCount_);
                 stats.clutTargetLoads++;
                 return;
             }
@@ -1036,7 +1226,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         return;
                     }
                     ++clutTargetLoadCount_;
-                    written.Fill(clutSource_, clutTargetLoadCount_);
+                    SetClutSource(written, clutTargetLoadCount_);
                     stats.clutTargetLoads++;
                     stats.clutMultiTargetLoads++;
                     return;
@@ -1044,7 +1234,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         // A load from memory: the CPU CLUT unit's words are right; the GPU CLUT gets them before its next reader.
-        written.Fill(clutSource_, std::uint64_t{0});
+        SetClutSource(written, std::uint64_t{0});
         if (!gpuClutMirror_) return;
         written.Fill(clutMirrorPending_, true);
         clutMirrorAnyPending_ = clutMirrorAnyPending_ || !written.empty();
@@ -1083,7 +1273,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             return false;
         }
         frontEnd_.MutableClut().SetHalfwords(halfwords);
-        clutSource_.fill(0);
+        ClearClutSource();
         stats.clutReads++;
         return true;
     }
@@ -3233,6 +3423,55 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     bool OnSync(SyncKind, std::uint32_t, std::uint32_t) override { return false; }
 
     // ---- 7.2 GT4's channel-shuffle hook ------------------------------------------------------------------------
+    // TASK-168b: PossibleShuffle (below) on the batch of palette segment `segment` alone (PaletteSegmentBatch's vertices, in
+    // the same order), without building it.
+    bool PossibleShuffleSegment(const Batch &batch, std::uint32_t segment) const {
+        const std::uint32_t firstPrim = batch.paletteSegments.empty() ? 0u : batch.paletteSegments[segment].firstPrim;
+        const std::uint32_t endPrim = PaletteSegmentEndPrim(batch, segment);
+        const Vertex *vertex0 = nullptr, *vertex1 = nullptr;
+        std::size_t count = 0;
+        std::int32_t minX = INT32_MAX, minY = INT32_MAX, maxX = INT32_MIN, maxY = INT32_MIN;
+        for (std::uint32_t p = firstPrim; p < endPrim; ++p) {
+            const PrimRecord &record = batch.prims[p];
+            for (std::uint32_t k = 0; k < record.count; ++k) {
+                const Vertex &v = batch.vertices[record.first + k];
+                if (count == 0) vertex0 = &v;
+                if (count == 1) vertex1 = &v;
+                ++count;
+                minX = std::min(minX, v.x4);
+                minY = std::min(minY, v.y4);
+                maxX = std::max(maxX, v.x4);
+                maxY = std::max(maxY, v.y4);
+            }
+        }
+        return PossibleShuffleShape(batch.state, batch.cls, count, vertex0, vertex1, minX, minY, maxX, maxY);
+    }
+
+    // PossibleShuffle's rule on a batch of state `state` and class `cls` with `count` vertices (the first two given) and
+    // their bounding box in 1/16 pixels.
+    static bool PossibleShuffleShape(const BatchState &state, PrimClass cls, std::size_t count, const Vertex *vertex0,
+                                     const Vertex *vertex1, std::int32_t minX, std::int32_t minY, std::int32_t maxX,
+                                     std::int32_t maxY) {
+        const std::uint64_t prim = state.effectivePrim;
+        if (((prim >> primbit::kTme) & 1u) == 0) return false;
+        if (cls != PrimClass::Sprite) return false;
+        const std::uint64_t tex0 = state.ctx.tex0;
+        if (tex0::Psm(tex0) != 0x13u) return false;  // T8
+        if (count < 2) return false;
+        const std::int32_t boxW = (maxX - minX) >> 4;
+        const std::int32_t boxH = (maxY - minY) >> 4;
+        if (count <= 2 && boxW <= 8 && boxH <= 8) return false;
+        const std::int32_t firstW = std::abs(vertex1->x4 - vertex0->x4) >> 4;
+        const std::int32_t firstH = std::abs(vertex1->y4 - vertex0->y4) >> 4;
+        const std::uint64_t clamp = state.ctx.clamp;
+        const bool regionMode = clampreg::Wms(clamp) >= 2 || clampreg::Wmt(clamp) >= 2;
+        const bool shape = firstW == 8 || firstH == 2 || regionMode;
+        if (!shape || boxW > 64) return false;
+        // The strip case: a texture twice as wide as the frame, page aligned.
+        if (boxH > 64 && tex0::Tbw(tex0) != 2u * frame::Fbw(state.ctx.frame)) return false;
+        return true;
+    }
+
     // A possible channel-shuffle draw (addendum: detection). Only the first draw of a run needs its texture base to
     // resolve to a colour target; later draws (GT4's copy-back strips read the temporary page) only need the shape.
     bool PossibleShuffle(const Batch &batch) const {
@@ -3240,8 +3479,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         const std::uint64_t prim = state.effectivePrim;
         if (((prim >> primbit::kTme) & 1u) == 0) return false;
         if (batch.cls != PrimClass::Sprite) return false;
-        const std::uint64_t tex0 = state.ctx.tex0;
-        if (tex0::Psm(tex0) != 0x13u) return false;  // T8
+        if (tex0::Psm(state.ctx.tex0) != 0x13u) return false;  // T8
         if (batch.vertices.size() < 2) return false;
         std::int32_t minX = INT32_MAX, minY = INT32_MAX, maxX = INT32_MIN, maxY = INT32_MIN;
         for (const Vertex &v : batch.vertices) {
@@ -3250,18 +3488,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             maxX = std::max(maxX, v.x4);
             maxY = std::max(maxY, v.y4);
         }
-        const std::int32_t boxW = (maxX - minX) >> 4;
-        const std::int32_t boxH = (maxY - minY) >> 4;
-        if (batch.vertices.size() <= 2 && boxW <= 8 && boxH <= 8) return false;
-        const std::int32_t firstW = std::abs(batch.vertices[1].x4 - batch.vertices[0].x4) >> 4;
-        const std::int32_t firstH = std::abs(batch.vertices[1].y4 - batch.vertices[0].y4) >> 4;
-        const std::uint64_t clamp = state.ctx.clamp;
-        const bool regionMode = clampreg::Wms(clamp) >= 2 || clampreg::Wmt(clamp) >= 2;
-        const bool shape = firstW == 8 || firstH == 2 || regionMode;
-        if (!shape || boxW > 64) return false;
-        // The strip case: a texture twice as wide as the frame, page aligned.
-        if (boxH > 64 && tex0::Tbw(tex0) != 2u * frame::Fbw(state.ctx.frame)) return false;
-        return true;
+        return PossibleShuffleShape(state, batch.cls, batch.vertices.size(), &batch.vertices[0], &batch.vertices[1], minX,
+                                    minY, maxX, maxY);
     }
 
     Target *ShuffleSource(const Batch &batch) {
@@ -3301,8 +3529,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                            static_cast<std::uint32_t>(tex0::Csa(tex0)))) {
             return true;
         }
-        const clut::Palette palette =
-            frontEnd_.Clut().Decode(tex0::Psm(tex0), tex0::Cpsm(tex0), tex0::Csa(tex0), batch.state.env.texa);
+        // TASK-168: the batch's own palette (its one segment's copy for a batch split from a segmented one).
+        const clut::Palette palette = DecodeSegmentPalette(batch, 0, frontEnd_.Clut());
         if (!ApplyDirty(*target)) return true;
         const PixelRect extent = Union(target->valid, target->drawn);
         if (!extent.Empty()) {
@@ -3423,22 +3651,28 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     // Empties a translation for the next batch, keeping the capacity of its vectors.
     static void ResetTranslation(writeback::BatchTranslation &t) {
-        std::vector<std::uint32_t> palette, texels;
+        std::vector<std::uint32_t> palette, texels, segmentPalettes, drawSegments;
         std::vector<gpu::GpuVertex> vertices;
         std::vector<gpu::GpuDraw> draws;
         palette.swap(t.palette);
         texels.swap(t.texels);
         vertices.swap(t.vertices);
         draws.swap(t.draws);
+        segmentPalettes.swap(t.segmentPalettes);
+        drawSegments.swap(t.drawSegments);
         t = writeback::BatchTranslation{};
         palette.clear();
         texels.clear();
         vertices.clear();
         draws.clear();
+        segmentPalettes.clear();
+        drawSegments.clear();
         t.palette.swap(palette);
         t.texels.swap(texels);
         t.vertices.swap(vertices);
         t.draws.swap(draws);
+        t.segmentPalettes.swap(segmentPalettes);
+        t.drawSegments.swap(drawSegments);
     }
 
     // ---- Texture replacement and dumping (chapter 11, Format P: the names of existing packs) --------------------
@@ -3674,7 +3908,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // game's texture there (the GT Auto logo, doubled when the two buffers held different versions). Such a palette is
         // read from GS memory for the key, as a memory source reads it: a palette the GPU drew does not match a pack name.
         std::array<std::uint16_t, 512> memoryClut{};
-        const std::uint16_t *clutWords = frontEnd_.Clut().Halfwords();
+        const std::uint16_t *clutWords = PaletteSegmentClut(batch, 0, frontEnd_.Clut());  // TASK-168: the batch's own
         std::uint64_t paletteKey = t.glmIndexed ? writeback::HashPaletteWords(t.palette) : 0;
         if (t.glmIndexed && GpuPaletteKey(t.glmPsm, tex0::Cpsm(tex0), tex0::Csa(tex0)) != 0) {
             clut::Tex0Write write;
@@ -3923,12 +4157,56 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return true;
     }
 
+    // TASK-168b (STUDY-TONE-STRIPS-ONE-PASS.md): GT4's tone run sends about 1,540 draws per VBlank that ToneHook drops
+    // (its extraction batches and copy-back strips), and the front end used to round, trace and hand over each one first.
+    // The front end now asks before that work: the answer is ToneHook's own skip test (a run going on, the run's FBMSK,
+    // PossibleShuffle on the batch, which ST rounding does not change), with the side effects OnBatch, ProcessBatch and
+    // ToneHook have for such a batch (the batch count, the last scene frame, the skipped-draw count;
+    // RewriteDepthClear leaves a textured batch). GT4_CORE2_TONE_EARLY_DROP=0 hands every batch over (A/B).
+    const bool toneEarlyDrop_ = std::getenv("GT4_CORE2_TONE_EARLY_DROP") == nullptr ||
+                                std::strcmp(std::getenv("GT4_CORE2_TONE_EARLY_DROP"), "0") != 0;
+    bool DropOnArrival(const Batch &batch) override {
+        if (!toneEarlyDrop_ || !toneActive_ || failed_ || batch.paletteSegments.size() > 1u) return false;
+        const std::uint32_t fbmsk = frame::Fbmsk(batch.state.ctx.frame);
+        if (fbmsk != toneFbmsk_ || !PossibleShuffle(batch)) return false;
+        ScopedUs batchTimer(clock_, &PhaseTimes::batch);
+        counters.batches++;
+        if (fbmsk != 0xFFFFFFFFu) lastSceneFrame_ = batch.state.ctx.frame;
+        stats.toneDrawsSkipped++;
+        stats.toneDropsOnArrival++;
+        return true;
+    }
+
     void OnBatch(Batch &&batch) override {
+        // TASK-168: a consumer that takes one palette per batch gets the segments as it would have got their batches
+        // (RoutePaletteSegments).
+        bool toneHook = true;
+        if (batch.paletteSegments.size() > 1u && !failed_) {
+            SegmentRoute route = SegmentRoute::Whole;
+            {
+                ScopedUs batchTimer(clock_, &PhaseTimes::batch);
+                route = RoutePaletteSegments(batch);
+            }
+            if (route == SegmentRoute::Split) {
+                const std::uint32_t segments = PaletteSegmentCount(batch);
+                for (std::uint32_t segment = 0; segment < segments && !failed_; ++segment) {
+                    ProcessBatch(PaletteSegmentBatch(batch, segment), true);
+                }
+                return;
+            }
+            toneHook = route != SegmentRoute::WholeNoTone;
+        }
+        ProcessBatch(batch, toneHook);
+    }
+
+    // One batch to the GPU. toneHook false: ToneHook was already decided for it (RoutePaletteSegments).
+    void ProcessBatch(Batch &&batch, bool toneHook) { ProcessBatch(batch, toneHook); }
+    void ProcessBatch(Batch &batch, bool toneHook) {
         ScopedUs batchTimer(clock_, &PhaseTimes::batch);
         if (failed_) return;
         counters.batches++;
         if (!RewriteDepthClear(batch) && frame::Fbmsk(batch.state.ctx.frame) != 0xFFFFFFFFu) lastSceneFrame_ = batch.state.ctx.frame;
-        {
+        if (toneHook) {
             ScopedUs timer(clock_, &PhaseTimes::hook);
             if (ToneHook(batch)) return;
         }
@@ -4002,6 +4280,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs timer(clock_, &PhaseTimes::translate);
             writeback::TranslateBatchHooked(batch, memory_.Local(), frontEnd_.Clut(), t, counters, {}, this, fromTarget,
                                             fromGlm);
+        }
+        if (t.paletteSegmentsUnsupported) {  // TASK-168: every memory texture of this core goes through the GLM
+            Fail("TASK-168: a batch with palette segments reached a texture path with one palette");
+            return;
         }
         if (t.skippedTexture) {
             counters.batchesSkippedTexture++;
@@ -4201,6 +4483,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 draw.paletteRow = PaletteRow(t, batch.state.ctx.tex0, batch.state.env.texa);
                 if (draw.paletteRow < 0) return;
                 draw.palettes = paletteImage_;
+                // TASK-168: the later palette segments' rows, named by their vertices.
+                if (!t.segmentPalettes.empty() &&
+                    !AssignSegmentPaletteRows(t, batch.state.ctx.tex0, batch.state.env.texa, draw)) {
+                    return;
+                }
             }
             stats.texturesFromMemory++;
             // Diagnostics: GT4_CORE2_DUMP_TEX=<texture base block>:<folder> writes that texture as this core decoded
@@ -4982,7 +5269,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     std::fprintf(stderr,
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
-                 "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
+                 "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_early=%llu tone_alpha_only=%llu display targets=%llu "
                  "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu forced_bilinear=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
                  "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f texture_mb=%.1f self_texture=%llu self_copies=%llu self_copy_mpx=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
@@ -4991,7 +5278,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.atlasHits, (unsigned long long)g.atlasUploads,
                  (unsigned long long)c.dirtyPatches, (unsigned long long)c.dirtyPatchPixels,
                  (unsigned long long)c.readbacks, (unsigned long long)c.readbackPixels, (unsigned long long)c.toneRuns,
-                 (unsigned long long)c.toneDrawsSkipped, (unsigned long long)c.toneAlphaOnlyUnsupported,
+                 (unsigned long long)c.toneDrawsSkipped, (unsigned long long)c.toneDropsOnArrival,
+                 (unsigned long long)c.toneAlphaOnlyUnsupported,
                  (unsigned long long)c.displayFromTargets, (unsigned long long)c.displayFromMemory,
                  (unsigned long long)c.indexedFromTargetReadbacks, (unsigned long long)c.directFromTargetReadbacks,
                  (unsigned long long)c.clutReadbacks, (unsigned long long)c.downloadReadbacks,
@@ -5007,6 +5295,13 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)g.batches, (unsigned long long)g.draws, (unsigned long long)g.submissions,
                  (unsigned long long)c.mipDraws, (unsigned long long)c.trilinearDraws, (unsigned long long)c.mipConstantLod, (unsigned long long)c.mipMaxLevels, (unsigned long long)c.mipTextures, (unsigned long long)c.mipLevelsDecoded, (unsigned long long)g.waits, (unsigned long long)g.recycledImages, (unsigned long long)g.windowDecodes, static_cast<double>(g.windowBytes) / (1024.0 * 1024.0), (unsigned long long)g.fullBarriers, (unsigned long long)g.barriersSkipped, (unsigned long long)g.fragmentBarriers, (unsigned long long)g.renderPasses, (unsigned long long)g.drawFlushes, static_cast<double>(g.imageBytes) / (1024.0 * 1024.0), static_cast<double>(c.textureBytes) / (1024.0 * 1024.0), (unsigned long long)g.selfTextureBatches, (unsigned long long)g.selfCopies,
                  static_cast<double>(g.selfCopyPixels) / 1.0e6);
+    // TASK-168: batches drawn with several palette segments, their segments, and segmented batches split for a consumer
+    // that takes one palette; TASK-168b: segmented T8 sprite batches drawn whole without the tone hook, and CLUT loads that
+    // ended a T8 sprite batch because a tone run was going on (PaletteSegmentBatchAllowed).
+    std::fprintf(stderr, "[core2] palette segments batches=%llu segments=%llu splits=%llu whole_no_tone=%llu tone_refused=%llu\n",
+                 (unsigned long long)c.paletteSegmentBatches, (unsigned long long)c.paletteSegmentsDrawn,
+                 (unsigned long long)c.paletteSegmentSplits, (unsigned long long)c.paletteSegmentsWholeNoTone,
+                 (unsigned long long)c.paletteSegmentToneRefusals);
     // Diagnostics: GT4_CORE2_BARRIER_TRACE=1 adds the cumulative full barriers by command and hazard.
     static const bool barrierTrace = std::getenv("GT4_CORE2_BARRIER_TRACE") != nullptr;
     if (barrierTrace) std::fprintf(stderr, "[core2] barriers by reason%s\n", barrierReport.c_str());
@@ -5039,6 +5334,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.uploadsReplayed, static_cast<double>(c.uploadBytesReplayed) / 1048576.0,
                  (unsigned long long)g.wholeClears, (unsigned long long)g.plainBatches, (unsigned long long)g.roadSheensSkipped, (unsigned long long)g.sheensEarly,
                  (unsigned long long)c.depthIntoColourFills, static_cast<double>(c.depthIntoColourPixels) / 1.0e6);
+    // TASK-179: point primitives, and those drawn as two triangles (a device without largePoints).
+    std::fprintf(stderr, "[core2] points=%llu point_quads=%llu\n", (unsigned long long)g.points, (unsigned long long)g.pointQuads);
 }
 
 }  // namespace
@@ -5073,6 +5370,9 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
         std::fprintf(stderr, "[core2] performance mode (decision 0073): delayed downloads %s, flares hidden %s\n",
                      impl_->delayedDownloads_ ? "on" : "off", impl_->hideFlares_ ? "on" : "off");
     }
+    // The prefix and the state as the last word stay as before (bench scripts read them).
+    std::fprintf(stderr, "[core2] palette segments (TASK-168) [default off, GT4_CORE2_PALETTE_SEGMENTS=1 for on] %s\n",
+                 impl_->paletteSegments_ ? "on" : "off");
     std::fprintf(stderr, "[core2] texture cache budget %llu MiB (%s GPU)\n",
                  static_cast<unsigned long long>(impl_->textureBudget_ >> 20),
                  impl_->gpu_.Integrated() ? "integrated" : "discrete");
@@ -5141,7 +5441,7 @@ void Renderer::ResetGs() {
     s.ReadbackAll();  // 4.4: a reset keeps local memory, so every drawn area is stored first
     s.frontEnd_.ResetGs();
     s.frontEnd_.GifReset(7u);
-    s.clutSource_.fill(0);  // IN-408: the CPU CLUT unit is authoritative again
+    s.ClearClutSource();  // IN-408: the CPU CLUT unit is authoritative again
     s.gpuClutMirror_ = false;
     s.clutFromTargetPending_ = false;
     s.clutMirrorPending_.fill(false);
@@ -5174,6 +5474,8 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
     s.frontEnd_.FlushBatch(FlushReason::Transfer);
     if (s.pendingRead_ && s.memory_.LocalToHostPending()) {
         const LocalToHostSetup &setup = *s.pendingRead_;
+        const std::uint64_t readbacksBefore = s.stats.readbacks, pixelsBefore = s.stats.readbackPixels;  // TASK-178
+        s.stats.downloads++;
         const auto psm = memory::decodePsm(setup.spsm);
         if (psm && setup.rrw != 0 && setup.rrh != 0 && setup.ssax + setup.rrw <= 2048u && setup.ssay + setup.rrh <= 2048u) {
             const BufferView view{setup.sbp, setup.sbw, *psm};
@@ -5194,6 +5496,8 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
             s.ReadbackAll();
             s.stats.downloadReadbacks++;
         }
+        s.stats.downloadTargets += s.stats.readbacks - readbacksBefore;
+        s.stats.downloadPixels += s.stats.readbackPixels - pixelsBefore;
         s.pendingRead_.reset();
     }
     bool overrun = false;
@@ -5301,9 +5605,23 @@ void Renderer::Flush() {
                 s.lastFlushCounts_[r] = count;
             }
             const std::uint64_t sameTexture = s.frontEnd_.ClutFlushesSameTexture();
-            std::fprintf(stderr, "[core2] batch flushes/vblank%s clut_same_texture=%.1f\n", reasons.c_str(),
-                         static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0);
+            // TASK-168: CLUT loads that kept their batch as a new palette segment, batches emitted with segments, and
+            // their segments per batch.
+            const std::uint64_t kept = s.frontEnd_.ClutLoadsKept();
+            const std::uint64_t segmented = s.frontEnd_.SegmentedBatches();
+            const std::uint64_t segments = s.frontEnd_.PaletteSegmentsEmitted();
+            const std::uint64_t newSegmented = segmented - s.lastSegmentedBatches_;
+            std::fprintf(stderr,
+                         "[core2] batch flushes/vblank%s clut_same_texture=%.1f clut_kept=%.1f segmented_batches=%.1f "
+                         "segments_per_segmented_batch=%.2f\n",
+                         reasons.c_str(), static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0,
+                         static_cast<double>(kept - s.lastClutKept_) / 600.0, static_cast<double>(newSegmented) / 600.0,
+                         newSegmented != 0 ? static_cast<double>(segments - s.lastPaletteSegments_) / static_cast<double>(newSegmented)
+                                           : 0.0);
             s.lastClutSameTexture_ = sameTexture;
+            s.lastClutKept_ = kept;
+            s.lastSegmentedBatches_ = segmented;
+            s.lastPaletteSegments_ = segments;
         }
         s.lastPrimitives_ = s.gpu_.Stats().primitives;
         s.lastFragments_ = s.gpu_.Stats().fragments;
@@ -5311,6 +5629,45 @@ void Renderer::Flush() {
         s.lastDrawPassNs_ = s.gpu_.Stats().drawPassNs;
         s.lastGpuNs_ = s.gpu_.Stats().gpuNs;
         s.lastTimedSubmissions_ = s.gpu_.Stats().timedSubmissions;
+        {
+            // TASK-178: per EE download that read back a target, the targets and native pixels reduced and the fence wait; per
+            // drain (waited submission), the GPU idle until the next submission (GPU timestamps: the drained work's last
+            // command to the next submission's first) and the CPU gap (the end of the fence wait to the next vkQueueSubmit).
+            const Core2GpuStats &g = s.gpu_.Stats();
+            Impl::DrainMark now;
+            now.downloads = s.stats.downloads;
+            now.downloadReadbacks = s.stats.downloadReadbacks;
+            now.downloadTargets = s.stats.downloadTargets;
+            now.downloadPixels = s.stats.downloadPixels;
+            now.drains = g.drains;
+            now.idleNs = g.drainIdleNs;
+            now.idles = g.drainIdles;
+            now.gapNs = g.drainGapCpuNs;
+            now.gaps = g.drainGaps;
+            now.afterWaitSubmissions = g.afterWaitSubmissions;
+            const Impl::DrainMark &was = s.lastDrainMark_;
+            const auto per = [](std::uint64_t value, std::uint64_t count) {
+                return count != 0 ? static_cast<double>(value) / static_cast<double>(count) : 0.0;
+            };
+            const std::uint64_t readbackDownloads = now.downloadReadbacks - was.downloadReadbacks;
+            std::fprintf(stderr,
+                         "[core2] downloads/vblank=%.2f with_readback=%.2f targets/readback_download=%.2f "
+                         "px/readback_download=%.1f wait_ms/readback_download=%.3f | drains/vblank=%.2f "
+                         "gpu_idle_ms/drain=%.3f (timestamps, %.2f/vblank measured) cpu_gap_ms/drain=%.3f "
+                         "(CPU: fence wait end to next submit) after_wait_submits/vblank=%.2f (K=%u, every %u)\n",
+                         static_cast<double>(now.downloads - was.downloads) / 600.0,
+                         static_cast<double>(readbackDownloads) / 600.0,
+                         per(now.downloadTargets - was.downloadTargets, readbackDownloads),
+                         per(now.downloadPixels - was.downloadPixels, readbackDownloads),
+                         per(s.WaitOf("download").waitNs, readbackDownloads) / 1.0e6,
+                         static_cast<double>(now.drains - was.drains) / 600.0,
+                         per(now.idleNs - was.idleNs, now.idles - was.idles) / 1.0e6,
+                         static_cast<double>(now.idles - was.idles) / 600.0,
+                         per(now.gapNs - was.gapNs, now.gaps - was.gaps) / 1.0e6,
+                         static_cast<double>(now.afterWaitSubmissions - was.afterWaitSubmissions) / 600.0,
+                         s.gpu_.SubmitAfterWait(), s.gpu_.SubmitEvery());
+            s.lastDrainMark_ = now;
+        }
         std::string byReason;
         std::uint64_t attributed = 0;
         for (Impl::ReasonWait &w : s.reasonWaits_) {
@@ -5397,6 +5754,8 @@ const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.ropBatches = impl_->gpu_.Stats().ropBatches;
     impl_->stats.roadSheensSkipped = impl_->gpu_.Stats().roadSheensSkipped;
     impl_->stats.sheensEarly = impl_->gpu_.Stats().sheensEarly;
+    impl_->stats.drains = impl_->gpu_.Stats().drains;
+    impl_->stats.afterWaitSubmissions = impl_->gpu_.Stats().afterWaitSubmissions;
     return impl_->stats;
 }
 bool Renderer::Failed() const { return impl_->failed_; }

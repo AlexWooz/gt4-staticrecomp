@@ -160,6 +160,7 @@ Probe &Probe::shared() {
 #endif
     return length > 0 && !(length == 1 && every[0] == '0');
   }(), stderr, detailed, split_vu);
+  probe.set_report_status(&ReportStatus::shared());
   return probe;
 }
 
@@ -269,12 +270,17 @@ void Probe::frame_boundary(GuestSample guest) noexcept {
     print("manual (F8)");
     reset(now, guest);
     manual_ = false;
+    if (status_) {
+      if (report_written_) status_->report_saved(ReportStatus::now_ms());
+      else status_->interval_ended();
+    }
   }
   if (pending_toggle_) {
     if (enabled() && !pending_report_) print("diagnostics paused (F9)");
     accounting_.set_enabled(!enabled(), now);
     reset(now, guest);
     manual_ = false;
+    if (status_ && !enabled() && !pending_report_) status_->interval_ended();  // a report saved in this boundary stays Saved
     std::fprintf(output_, "[perf] diagnostics %s at VBlank; new interval\n",
                  enabled() ? "enabled" : "disabled");
   }
@@ -283,6 +289,7 @@ void Probe::frame_boundary(GuestSample guest) noexcept {
     reset(now, guest);
     manual_ = true;
     std::fputs("[perf] manual interval started (F7); automatic resets suspended\n", output_);
+    if (status_) status_->interval_started();
   }
   const bool periodic = !manual_ && enabled() && accounting_.interval().elapsed_us >= 5000000;
   if (periodic) {
@@ -335,6 +342,7 @@ static void print_frame_counters(std::FILE *file, std::uint64_t frames, std::uin
 }
 
 void Probe::print(const char *reason) noexcept {
+  report_written_ = false;
   if (!enabled()) { std::fprintf(output_, "[perf] %s: disabled\n", reason); return; }
   if (!valid()) {
     std::fprintf(output_, "[perf] INVALID: accounting_fault=%u wrong_thread=%d counter_fault=%d\n",
@@ -374,6 +382,7 @@ void Probe::print(const char *reason) noexcept {
   }
   else std::fputs("[perf] measured_thread_cpu=Unknown\n", output_);
   print_frame_counters(output_, frames_, elapsed, accounting_.interval());
+  report_written_ = true;
   if (report_section_)
     report_section_(output_);
   if (g_mtvu_report)

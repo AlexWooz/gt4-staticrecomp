@@ -15,21 +15,32 @@
 //!   them to the DS2 buttons through the controls file. `sticks.left|right` are -1..1, y positive down.
 //! - `pad-nav` `{name}`: a press for nav.js (`a b x y lb rb start`, and `up down left right` with repeat).
 //!
+//! - `wheel-status` and `wheel-live` (TASK-181): the Wheel page's devices and their raw state (`wheel_service`). The
+//!   joystick handles of the Wheel page are open only while the page asks for them (`wheel_watch`, renewed every two
+//!   seconds); a haptic handle only during the force test.
+//!
 //! The thread does no SDL work while the window is hidden for a game (`Handle::set_active(false)`, called from the
-//! tray). A rebind capture is answered by the same loop, so the page never reads the pad itself.
+//! tray). TASK-181: before the game starts, Play calls `Handle::release_for_game`, which closes every SDL handle (SDL
+//! itself shuts down) and waits for it, so the game owns the wheel and its force feedback; SDL starts again when the
+//! window is shown, without any racing wheel while the game still runs. A rebind capture is answered by the same loop,
+//! so the page never reads the pad itself.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use gt4l_core::wheel_capture::{Capture as WheelCaptureState, Captured, Request as WheelCaptureRequest};
 use gt4l_platform::pad::{self, PadChoice, PadIdentity, PadSample};
 use gt4l_platform::sdl_pads::{PadInfo, SdlPads};
+use gt4l_platform::sdl_wheels::{self, Counts, Features, ForceTest, JoystickEntry, WheelReader};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::pad_nav::Navigator;
 use crate::state::{self, Shared};
+use crate::wheel_service;
 
 /// About 60 readings a second.
 const TICK: Duration = Duration::from_millis(16);
@@ -38,11 +49,36 @@ const TICK: Duration = Duration::from_millis(16);
 const CHOICE_SETTLE: Duration = Duration::from_secs(2);
 /// The error a capture returns when it is cancelled (the page looks for "cancel" in it).
 pub const CAPTURE_CANCELLED: &str = "capture cancelled";
+/// How long a `wheel_watch(true)` keeps the Wheel page's devices open (the page renews it every two seconds).
+const WHEEL_WATCH: Duration = Duration::from_secs(5);
+/// How long Play waits for the service to close its SDL handles before the game starts.
+const RELEASE_WAIT: Duration = Duration::from_millis(1500);
+/// How often the device list is read again without a hot-plug event.
+const WHEEL_LIST_REFRESH: Duration = Duration::from_millis(1000);
+
+/// What a wheel capture waits for, from the page (`capture_wheel_binding`).
+pub struct WheelCaptureAsk {
+    pub request: WheelCaptureRequest,
+}
+
+/// A finished wheel capture: the control, and the name of the device it came from.
+pub struct WheelCaptureAnswer {
+    pub captured: Captured,
+    pub device_name: String,
+}
 
 enum Command {
     /// Waits for the next newly pressed control of the active pad; the reply carries its source name.
     Capture(Sender<Result<String, String>>),
     Cancel,
+    /// TASK-181: closes every SDL handle (SDL shuts down) and answers once done: the game is about to start.
+    Release(Sender<()>),
+    /// TASK-181: the Wheel page shows (`true`, renewed by the page) or left (`false`).
+    WheelWatch(bool),
+    WheelCapture(WheelCaptureAsk, Sender<Result<WheelCaptureAnswer, String>>),
+    WheelCancel,
+    /// The force test on the device the game drives: strength 0..2 and `[ffb] invert`.
+    WheelTest { strength: f64, invert: bool, reply: Sender<Result<(String, ForceTest), String>> },
 }
 
 struct PendingCapture {
@@ -57,6 +93,10 @@ pub struct Handle {
     commands: Sender<Command>,
     status: Arc<Mutex<Value>>,
     active: Arc<AtomicBool>,
+    /// TASK-181: the last `wheel-status` payload.
+    wheel_status: Arc<Mutex<Value>>,
+    /// TASK-181: the game runs: no wheel handle, no force test.
+    game_running: Arc<AtomicBool>,
 }
 
 impl Handle {
@@ -85,6 +125,57 @@ impl Handle {
             Err(poisoned) => poisoned.into_inner().clone(),
         }
     }
+
+    /// TASK-181: the last `wheel-status` payload.
+    pub fn wheel_status(&self) -> Value {
+        match self.wheel_status.lock() {
+            Ok(value) => value.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// TASK-181: called by Play before the game starts. Marks the game as running and waits (at most `RELEASE_WAIT`)
+    /// until the service closed every SDL joystick, gamepad and haptic handle. Returns false when it did not answer.
+    pub fn release_for_game(&self) -> bool {
+        self.game_running.store(true, Ordering::Relaxed);
+        let (reply, answer) = channel();
+        if self.commands.send(Command::Release(reply)).is_err() {
+            return true; // no service thread: nothing is open
+        }
+        answer.recv_timeout(RELEASE_WAIT).is_ok()
+    }
+
+    /// TASK-181: the game ended; the Wheel page may open the wheel again.
+    pub fn game_ended(&self) {
+        self.game_running.store(false, Ordering::Relaxed);
+    }
+
+    pub fn game_running(&self) -> bool {
+        self.game_running.load(Ordering::Relaxed)
+    }
+
+    /// TASK-181: the Wheel page is shown (`true`, renewed every two seconds) or gone (`false`).
+    pub fn wheel_watch(&self, on: bool) {
+        let _ = self.commands.send(Command::WheelWatch(on));
+    }
+
+    /// TASK-181: starts a wheel capture; the receiver gets the control, or `Err` when cancelled or impossible.
+    pub fn start_wheel_capture(&self, ask: WheelCaptureAsk) -> Receiver<Result<WheelCaptureAnswer, String>> {
+        let (reply, receiver) = channel();
+        let _ = self.commands.send(Command::WheelCapture(ask, reply));
+        receiver
+    }
+
+    pub fn cancel_wheel_capture(&self) {
+        let _ = self.commands.send(Command::WheelCancel);
+    }
+
+    /// TASK-181: plays the force test; the receiver gets the device name and what the test found.
+    pub fn test_force(&self, strength: f64, invert: bool) -> Receiver<Result<(String, ForceTest), String>> {
+        let (reply, receiver) = channel();
+        let _ = self.commands.send(Command::WheelTest { strength, invert, reply });
+        receiver
+    }
 }
 
 /// Starts the service thread and returns its handle. Manage the handle in Tauri's state.
@@ -94,6 +185,8 @@ pub fn spawn(app: AppHandle) -> Handle {
         commands,
         status: Arc::new(Mutex::new(status_json(false, &[], &[], None, pad::AUTO_CONTROLLER, "starting"))),
         active: Arc::new(AtomicBool::new(true)),
+        wheel_status: Arc::new(Mutex::new(json!({ "available": false, "error": "starting", "devices": [] }))),
+        game_running: Arc::new(AtomicBool::new(false)),
     };
     let worker = handle.clone();
     let spawned = std::thread::Builder::new()
@@ -206,22 +299,153 @@ fn log(app: &AppHandle, message: &str) {
     state::log(&dirs, message);
 }
 
-fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
-    let mut pads = match SdlPads::start() {
-        Ok(pads) => pads,
-        Err(message) => {
-            log(&app, &format!("controller input unavailable: {message}"));
-            publish(Some(&app), &handle, status_json(false, &[], &[], None, pad::AUTO_CONTROLLER, &message));
-            // Keep answering: a capture fails with the reason instead of waiting for a pad that cannot come.
-            while let Ok(command) = commands.recv() {
-                if let Command::Capture(reply) = command {
-                    let _ = reply.send(Err(message.clone()));
-                }
-            }
+/// TASK-181: the `wheel.toml` GUID of the device the game drives (empty: the first wheel), read each time.
+fn configured_wheel(app: &AppHandle) -> String {
+    let shared = app.state::<Shared>();
+    let state = state::lock(shared.inner());
+    state.wheel.device_guid.clone()
+}
+
+/// TASK-181: the Wheel page's side of the service: the device list, the open joysticks, a capture, the force results.
+#[derive(Default)]
+struct Wheels {
+    reader: WheelReader,
+    entries: Vec<JoystickEntry>,
+    counts: BTreeMap<u32, Counts>,
+    /// Force test results of this launcher session, by GUID.
+    features: BTreeMap<String, Features>,
+    watch_until: Option<Instant>,
+    listed_at: Option<Instant>,
+    capture: Option<PendingWheelCapture>,
+    last_status: Value,
+}
+
+struct PendingWheelCapture {
+    state: WheelCaptureState,
+    reply: Sender<Result<WheelCaptureAnswer, String>>,
+}
+
+impl Wheels {
+    fn watching(&self) -> bool {
+        self.watch_until.is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Closes every joystick handle and ends a capture with `reason`.
+    fn close(&mut self, reason: &str) {
+        self.reader.close_all();
+        if let Some(pending) = self.capture.take() {
+            let _ = pending.reply.send(Err(reason.to_string()));
+        }
+    }
+
+    fn status(&self, configured: &str, game_running: bool) -> Value {
+        wheel_service::status_json(&wheel_service::StatusInputs {
+            available: true,
+            error: "",
+            entries: &self.entries,
+            counts: &self.counts,
+            features: &self.features,
+            configured_guid: configured,
+            game_running,
+            watching: self.watching(),
+        })
+    }
+
+    /// Sends `wheel-status` when it changed, and keeps the `system.txt` facts in the state.
+    fn publish(&mut self, app: &AppHandle, handle: &Handle, configured: &str, game_running: bool) {
+        let status = self.status(configured, game_running);
+        if status == self.last_status {
             return;
         }
-    };
-    log(&app, "controller input: SDL3 gamepad subsystem started");
+        self.last_status = status.clone();
+        if let Ok(mut slot) = handle.wheel_status.lock() {
+            *slot = status.clone();
+        }
+        let facts = wheel_service::facts(&self.entries, &self.counts, &self.features, configured);
+        {
+            let shared = app.state::<Shared>();
+            state::lock(shared.inner()).wheel_facts = facts;
+        }
+        let _ = app.emit("wheel-status", status);
+    }
+
+    /// One tick with SDL running: the list, the open handles, the live event and the capture.
+    fn tick(&mut self, app: &AppHandle, handle: &Handle, pads: &SdlPads, devices_changed: bool, game_running: bool) {
+        if devices_changed || self.listed_at.is_none_or(|at| at.elapsed() >= WHEEL_LIST_REFRESH) {
+            self.entries = sdl_wheels::joysticks(pads);
+            self.listed_at = Some(Instant::now());
+            let entries = &self.entries;
+            self.counts.retain(|id, _| entries.iter().any(|entry| entry.id == *id));
+        }
+        let configured = configured_wheel(app);
+        if game_running || !self.watching() {
+            if !self.reader.is_empty() || self.capture.is_some() {
+                self.close(if game_running { "the game is running" } else { CAPTURE_CANCELLED });
+            }
+        } else {
+            let wanted: Vec<u32> = wheel_service::page_devices(&self.entries).iter().map(|entry| entry.id).collect();
+            self.reader.sync(pads.joystick_subsystem(), &wanted);
+            for id in &wanted {
+                if let Some(counts) = self.reader.counts(*id) {
+                    self.counts.insert(*id, counts);
+                }
+            }
+            let readings = self.reader.read(&self.entries);
+            let _ = app.emit("wheel-live", wheel_service::live_json(&readings));
+            let captured = self.capture.as_mut().and_then(|pending| pending.state.step(&readings));
+            if let Some(captured) = captured {
+                if let Some(pending) = self.capture.take() {
+                    let device_name =
+                        self.entries.iter().find(|entry| entry.id == captured.device).map(|entry| entry.name.clone()).unwrap_or_default();
+                    let _ = pending.reply.send(Ok(WheelCaptureAnswer { captured, device_name }));
+                }
+            }
+        }
+        self.publish(app, handle, &configured, game_running);
+    }
+
+    /// Starts a capture: the device the game drives now is the one plain sources mean.
+    fn start_capture(&mut self, app: &AppHandle, pads: &SdlPads, mut ask: WheelCaptureAsk, reply: Sender<Result<WheelCaptureAnswer, String>>) {
+        if let Some(previous) = self.capture.take() {
+            let _ = previous.reply.send(Err(CAPTURE_CANCELLED.to_string()));
+        }
+        self.entries = sdl_wheels::joysticks(pads);
+        self.listed_at = Some(Instant::now());
+        ask.request.primary = wheel_service::primary(&self.entries, &configured_wheel(app));
+        self.watch_until = Some(Instant::now() + WHEEL_WATCH);
+        self.capture = Some(PendingWheelCapture { state: WheelCaptureState::new(ask.request), reply });
+    }
+
+    /// The force test on the device the game drives. The joystick is the open one, or opened for the test only.
+    fn test(&mut self, app: &AppHandle, pads: &SdlPads, strength: f64, invert: bool) -> Result<(String, ForceTest), String> {
+        let language = state::current_language();
+        let no_wheel = || gt4l_core::messages::text("wheel.no_wheel", language).to_string();
+        self.entries = sdl_wheels::joysticks(pads);
+        self.listed_at = Some(Instant::now());
+        let id = wheel_service::primary(&self.entries, &configured_wheel(app)).ok_or_else(no_wheel)?;
+        let entry = self.entries.iter().find(|entry| entry.id == id).cloned().ok_or_else(no_wheel)?;
+        // The haptic subsystem lists the force feedback devices when it starts; it stops when `haptics` is dropped.
+        let haptics = pads.haptic()?;
+        let mut temporary = WheelReader::default();
+        if !self.reader.is_open(id) {
+            temporary.sync(pads.joystick_subsystem(), &[id]);
+        }
+        let reader = if self.reader.is_open(id) { &self.reader } else { &temporary };
+        let result = reader.joystick(id).map(|joystick| sdl_wheels::test_force(joystick, sdl_wheels::pull_level(strength), invert));
+        temporary.close_all();
+        drop(haptics);
+        let test = result.ok_or_else(no_wheel)?;
+        if test.has_ffb {
+            self.features.insert(entry.guid.clone(), test.features);
+        }
+        Ok((entry.name, test))
+    }
+}
+
+/// Starts SDL and loads the player's gamepad mappings. `skip_wheels`: the game runs, no racing wheel is opened.
+fn start_sdl(app: &AppHandle, skip_wheels: bool) -> Result<SdlPads, String> {
+    let mut pads = SdlPads::start()?;
+    pads.set_skip_wheels(skip_wheels);
     // TASK-148: the player's own SDL gamepad mappings (gamecontrollerdb.txt in the config folder), when there are any.
     let mappings = {
         let shared = app.state::<Shared>();
@@ -230,13 +454,52 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
     };
     if mappings.exists() {
         match pads.load_mappings(&mappings) {
-            Ok(added) => log(&app, &format!("controller input: {added} gamepad mappings from {}", mappings.display())),
-            Err(message) => log(&app, &format!("controller input: gamepad mappings not loaded: {message}")),
+            Ok(added) => log(app, &format!("controller input: {added} gamepad mappings from {}", mappings.display())),
+            Err(message) => log(app, &format!("controller input: gamepad mappings not loaded: {message}")),
         }
     }
+    Ok(pads)
+}
+
+fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
+    let mut sdl: Option<SdlPads> = match start_sdl(&app, false) {
+        Ok(pads) => {
+            log(&app, "controller input: SDL3 gamepad subsystem started");
+            Some(pads)
+        }
+        Err(message) => {
+            log(&app, &format!("controller input unavailable: {message}"));
+            publish(Some(&app), &handle, status_json(false, &[], &[], None, pad::AUTO_CONTROLLER, &message));
+            let wheel_status = json!({ "available": false, "error": message, "devices": [] });
+            if let Ok(mut slot) = handle.wheel_status.lock() {
+                *slot = wheel_status.clone();
+            }
+            let _ = app.emit("wheel-status", wheel_status);
+            // Keep answering: a capture fails with the reason instead of waiting for a pad that cannot come.
+            while let Ok(command) = commands.recv() {
+                match command {
+                    Command::Capture(reply) => {
+                        let _ = reply.send(Err(message.clone()));
+                    }
+                    Command::WheelCapture(_, reply) => {
+                        let _ = reply.send(Err(message.clone()));
+                    }
+                    Command::WheelTest { reply, .. } => {
+                        let _ = reply.send(Err(message.clone()));
+                    }
+                    Command::Release(reply) => {
+                        let _ = reply.send(());
+                    }
+                    Command::Cancel | Command::WheelCancel | Command::WheelWatch(_) => {}
+                }
+            }
+            return;
+        }
+    };
 
     let mut navigator = Navigator::default();
     let mut capture: Option<PendingCapture> = None;
+    let mut wheels = Wheels::default();
     let mut last_status = Value::Null;
     let mut was_active = true;
     // Since when the stored controller has not been the pad being read (`CHOICE_SETTLE`).
@@ -257,9 +520,61 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
                         let _ = pending.reply.send(Err(CAPTURE_CANCELLED.to_string()));
                     }
                 }
+                Command::Release(reply) => {
+                    // TASK-181: the game starts. Every handle goes (the wheel's, the gamepads', any haptic one): SDL shuts
+                    // down when `SdlPads` is dropped.
+                    wheels.close("the game is running");
+                    if let Some(pending) = capture.take() {
+                        let _ = pending.reply.send(Err("controller input is paused while the game runs".to_string()));
+                    }
+                    if sdl.take().is_some() {
+                        log(&app, "controller input: SDL3 closed for the game (the game owns the wheel and its force feedback)");
+                    }
+                    navigator = Navigator::default();
+                    let _ = reply.send(());
+                }
+                Command::WheelWatch(on) => {
+                    wheels.watch_until = on.then(|| Instant::now() + WHEEL_WATCH);
+                }
+                Command::WheelCapture(ask, reply) => match (&sdl, handle.game_running()) {
+                    (_, true) => {
+                        let _ = reply.send(Err(gt4l_core::messages::text("wheel.game_running", state::current_language()).to_string()));
+                    }
+                    (None, false) => {
+                        let _ = reply.send(Err("SDL3 is not running".to_string()));
+                    }
+                    (Some(pads), false) => wheels.start_capture(&app, pads, ask, reply),
+                },
+                Command::WheelCancel => {
+                    if let Some(pending) = wheels.capture.take() {
+                        let _ = pending.reply.send(Err(CAPTURE_CANCELLED.to_string()));
+                    }
+                }
+                Command::WheelTest { strength, invert, reply } => {
+                    let answer = match (&sdl, handle.game_running()) {
+                        (_, true) => Err(gt4l_core::messages::text("wheel.game_running", state::current_language()).to_string()),
+                        (None, false) => Err("SDL3 is not running".to_string()),
+                        (Some(pads), false) => wheels.test(&app, pads, strength, invert),
+                    };
+                    match &answer {
+                        Ok((name, test)) => log(
+                            &app,
+                            &format!(
+                                "wheel: force test on {name}: haptics {}, effects {}, played {}{}",
+                                if test.has_ffb { "yes" } else { "no" },
+                                test.features.text(),
+                                if test.played { "yes" } else { "no" },
+                                if test.error.is_empty() { String::new() } else { format!(" ({})", test.error) }
+                            ),
+                        ),
+                        Err(message) => log(&app, &format!("wheel: force test not run: {message}")),
+                    }
+                    let _ = reply.send(answer);
+                }
             }
         }
 
+        let game_running = handle.game_running();
         if !handle.active.load(Ordering::Relaxed) {
             if was_active {
                 was_active = false;
@@ -269,11 +584,44 @@ fn run(app: AppHandle, commands: Receiver<Command>, handle: Handle) {
                     let _ = pending.reply.send(Err("controller input is paused while the game runs".to_string()));
                 }
             }
+            // A window hidden for the game holds nothing of SDL.
+            if game_running {
+                wheels.close("the game is running");
+                if sdl.take().is_some() {
+                    log(&app, "controller input: SDL3 closed while the game runs");
+                }
+            }
             continue;
         }
         was_active = true;
 
-        pads.pump();
+        if sdl.is_none() {
+            // SDL starts again when the window is shown: after the game, or while it runs (then without any wheel).
+            match start_sdl(&app, game_running) {
+                Ok(pads) => {
+                    log(
+                        &app,
+                        if game_running {
+                            "controller input: SDL3 started again (no racing wheel while the game runs)"
+                        } else {
+                            "controller input: SDL3 started again"
+                        },
+                    );
+                    wheels.listed_at = None;
+                    sdl = Some(pads);
+                }
+                Err(message) => {
+                    publish(Some(&app), &handle, status_json(false, &[], &[], None, pad::AUTO_CONTROLLER, &message));
+                    continue;
+                }
+            }
+        }
+        let Some(pads) = sdl.as_mut() else {
+            continue;
+        };
+        pads.set_skip_wheels(game_running);
+        let devices_changed = pads.pump();
+        wheels.tick(&app, &handle, pads, devices_changed, game_running);
         let infos = pads.connected();
         let unrecognized = pads.unrecognized();
         let choice_text = controller_setting(&app);

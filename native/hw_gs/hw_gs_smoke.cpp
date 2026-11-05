@@ -5,11 +5,16 @@
 //   hw_gs_smoke --print-options           renderer and GT4_HW_* effective values, then the JSON object
 //   hw_gs_smoke [--frames N] [--window]   with GT4_RENDERER=hw: N guest frames of black output;
 //                                         --window also attaches a hidden window (real swapchain)
+//   --frames-left-out ON OFF              TASK-174 stress: frames left out (TASK-082's paced presentation) for ON frames, then
+//                                         not for OFF frames, over and over
+//   --jitter-ms N                         TASK-174 stress: a pseudo-random pause of 0 to N ms before each frame (uneven arrivals)
+//   --interval-us N                       TASK-174: one frame every N microseconds (16667: the game's 60 frames per second)
 //
 // Exit codes: 0 success (donor selected: nothing to run), 1 backend failure, 2 usage or option error.
 
 #include "hw_gs_dispatch.hpp"
 #include "hw_gs_present_rect.hpp"
+#include "../pacing.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -22,6 +27,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -31,7 +37,8 @@ gt4::hw::EnvironmentLookup process_environment() {
 
 int usage() {
   std::fprintf(stderr, "usage: hw_gs_smoke --print-options | [--frames N] [--window] [--display | --display-640] "
-                       "[--client W H] [--fill RATIO] [--resize-toggles N]\n");
+                       "[--client W H] [--fill RATIO] [--resize-toggles N] [--frames-left-out ON OFF] [--jitter-ms N] "
+                       "[--interval-us N]\n");
   return 2;
 }
 
@@ -62,6 +69,24 @@ void print_device(const gt4::hw::DeviceReport &report) {
   std::printf("optional_found:%s\noptional_missing:%s\n", found.c_str(), missing.c_str());
 }
 
+// TASK-174: the presentation path, and every presentation asked of it accounted for once the presentation thread is idle
+// (wait_idle); then what the presentations cost the GS thread, per presentation, and the longest single waits.
+void print_presentation(const gt4::hw::Stats &stats) {
+  const std::uint64_t ended = stats.presents_shown + stats.presents_not_shown + stats.presents_failed + stats.presents_left_out;
+  std::printf("presentation path=%s requests=%llu shown=%llu not_shown=%llu failed=%llu left_out=%llu accounted=%d\n",
+              stats.present_path, static_cast<unsigned long long>(stats.present_requests),
+              static_cast<unsigned long long>(stats.presents_shown), static_cast<unsigned long long>(stats.presents_not_shown),
+              static_cast<unsigned long long>(stats.presents_failed), static_cast<unsigned long long>(stats.presents_left_out),
+              ended == stats.present_requests ? 1 : 0);
+  const double requests = stats.present_requests != 0 ? static_cast<double>(stats.present_requests) : 1.0;
+  std::printf("presentation gs_present_ms=%.3f gs_wait_ms=%.3f gs_lock_wait_ms=%.4f gs_lock_longest_ms=%.3f "
+              "presenter_lock_wait_ms=%.4f presenter_queue_ms=%.3f presenter_longest_ms=%.3f presenter_display_wait_ms=%.3f\n",
+              stats.gs_present_step_us / requests / 1000.0, stats.gs_present_wait_us / requests / 1000.0,
+              stats.gs_queue_lock_wait_us / requests / 1000.0, stats.gs_queue_lock_longest_wait_us / 1000.0,
+              stats.presenter_queue_lock_wait_us / requests / 1000.0, stats.presenter_queue_call_us / requests / 1000.0,
+              stats.presenter_queue_longest_call_us / 1000.0, stats.presenter_display_wait_us / requests / 1000.0);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -76,6 +101,9 @@ int main(int argc, char **argv) {
   std::uint32_t client_width = 0, client_height = 0;
   bool fill = false;
   double fill_ratio = 0.0;
+  std::uint64_t left_out_on = 0, left_out_off = 0;  // TASK-174 stress pattern (0, 0: never)
+  std::uint32_t jitter_ms = 0;
+  std::int64_t interval_us = 0;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--print-options") {
@@ -99,6 +127,13 @@ int main(int argc, char **argv) {
     } else if (arg == "--fill" && i + 1 < argc) {
       fill = true;
       fill_ratio = std::strtod(argv[++i], nullptr);
+    } else if (arg == "--frames-left-out" && i + 2 < argc) {
+      left_out_on = std::strtoull(argv[++i], nullptr, 10);
+      left_out_off = std::strtoull(argv[++i], nullptr, 10);
+    } else if (arg == "--jitter-ms" && i + 1 < argc) {
+      jitter_ms = static_cast<std::uint32_t>(std::strtoul(argv[++i], nullptr, 10));
+    } else if (arg == "--interval-us" && i + 1 < argc) {
+      interval_us = std::strtoll(argv[++i], nullptr, 10);
     } else {
       return usage();
     }
@@ -160,10 +195,28 @@ int main(int argc, char **argv) {
       backend.write_privileged(0x12000080u, (std::uint64_t{63} << 32) | (std::uint64_t{63} << 44));  // 64 x 64
     }
   }
+  std::uint32_t jitter_state = 0x2545F491u;  // xorshift32: the same pauses on every run
+  const auto first_frame = std::chrono::steady_clock::now();
   for (std::uint64_t frame = 0; frame < frames; ++frame) {
+    if (interval_us > 0) {
+      // The system's sleep rounds to its tick: sleep to 2 ms before the frame's time, then yield.
+      const auto due = first_frame + std::chrono::microseconds(interval_us * static_cast<std::int64_t>(frame));
+      std::this_thread::sleep_until(due - std::chrono::milliseconds(2));
+      while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    }
+    if (left_out_on + left_out_off != 0) {
+      gt4::pacing::frame_skip_recent.store(frame % (left_out_on + left_out_off) < left_out_on, std::memory_order_relaxed);
+    }
+    if (jitter_ms != 0) {
+      jitter_state ^= jitter_state << 13;
+      jitter_state ^= jitter_state >> 17;
+      jitter_state ^= jitter_state << 5;
+      std::this_thread::sleep_for(std::chrono::microseconds(jitter_state % (jitter_ms * 1000u + 1u)));
+    }
     backend.next_frame();
     backend.present(gt4::hw::PresentPhase::progressive);
   }
+  gt4::pacing::frame_skip_recent.store(false, std::memory_order_relaxed);
   backend.flush();
   backend.wait_idle();
 
@@ -198,6 +251,7 @@ int main(int argc, char **argv) {
     if (worst_ms > 100.0) {
       std::fprintf(stderr, "hw_gs_smoke: a fullscreen-style toggle stalled for %.2f ms (limit 100 ms)\n", worst_ms);
       if (use_window) {
+        print_presentation(toggled);
         backend.detach_window();
         DestroyWindow(window);
       }
@@ -233,6 +287,8 @@ int main(int argc, char **argv) {
     std::printf("present_downscale_levels=%u scale=%u source=%ux%u\n", stats.present_downscale_levels,
                 backend.render_counters().scale, stats.present_source_width, stats.present_source_height);
   }
+
+  if (use_window) print_presentation(stats);
 
   if (use_window) {
     backend.detach_window();

@@ -28,6 +28,7 @@ pub mod relocate;
 pub mod retroachievements;
 pub mod secret;
 pub mod settings;
+pub mod shader_prepare;
 pub mod system_check;
 pub mod textures;
 pub mod tombstone;
@@ -35,6 +36,10 @@ pub mod update;
 pub mod version;
 pub mod version_list;
 pub mod versions;
+pub mod wheel;
+pub mod wheel_capture;
+pub mod wheel_identity;
+pub mod wheel_session;
 
 pub use config::ConfigFile;
 pub use platform::Platform;

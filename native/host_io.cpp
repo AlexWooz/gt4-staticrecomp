@@ -121,6 +121,24 @@ void ControllerInput::close_sdl_pad() {
   }
 }
 
+bool ControllerInput::is_excluded(std::uint32_t instance) const {
+  return std::find(excluded_devices_.begin(), excluded_devices_.end(), instance) != excluded_devices_.end();
+}
+
+void ControllerInput::set_excluded_devices(std::vector<std::uint32_t> ids) {
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  if (ids == excluded_devices_)
+    return;
+  excluded_devices_ = std::move(ids);
+  if (sdl_pad_ && is_excluded(SDL_GetGamepadID(sdl_pad_))) {
+    std::fprintf(stderr, "[input] SDL gamepad is owned by the wheel; looking for another controller\n");
+    stop();
+    close_sdl_pad();
+  }
+  sdl_next_scan_ = 0;
+}
+
 PadState ControllerInput::poll(bool focused, std::uint16_t keyboard_buttons) {
 #ifdef _WIN32
   PadState pad = backend_ == gt4::pad::Backend::sdl ? poll_sdl(focused) : poll_xinput(focused);
@@ -227,6 +245,8 @@ PadState ControllerInput::poll_sdl(bool focused) {
     SDL_JoystickID *ids = SDL_GetGamepads(&count);
     std::vector<gt4::pad::PadCandidate> candidates;
     for (int index = 0; ids && index < count; ++index) {
+      if (is_excluded(ids[index]))
+        continue;
       gt4::pad::PadCandidate candidate;
       candidate.instance = ids[index];
       char guid[33] = {};

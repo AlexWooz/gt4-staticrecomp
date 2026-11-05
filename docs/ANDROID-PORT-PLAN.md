@@ -52,15 +52,19 @@ What it needs, in order:
 - Features used but never enabled: `shaderStorageImageArrayDynamicIndexing` (`hw_deinterlace_scaled.comp:30,62`),
   `largePoints` (`hw_vertex.vert:67`, a POINT_LIST pipeline), and lines without the wide-line feature. Strict mobile
   drivers may misdraw or crash. Query, enable, or fall back (quad expansion from `hw_gs/decide`).
+  **Done in A1 (TASK-179):** both features enabled where supported, with fallbacks that draw the same pixels; no line is
+  ever wider than 1.0, so wideLines is not needed (see "Stage A1 result").
 - Required formats that core 2 does not use (`D32_SFLOAT` depth attachment, blendable `R16G16B16A16_UNORM`) can refuse a
-  device for nothing (`hw_gs_backend.cpp:78-89`): drop them.
+  device for nothing (`hw_gs_backend.cpp:78-89`): drop them. **Done in A1.**
 - Vulkan 1.2 is required (`hw_gs_backend.cpp:583`); much of the Android installed base reports 1.1. Accept 1.1 with
   `VK_KHR_timeline_semaphore` (and what else 1.2 core is used for) if the device floor needs it.
 - The swapchain uses `preTransform = currentTransform` but never rotates the content (`hw_gs_backend.cpp:895`): Android
   surfaces are often portrait-native, so the picture would be rotated or distorted. Use identity with a rotated blit, or
-  handle the transform.
+  handle the transform. **Done in A1** (identity wherever supported; quarter-turn-only surfaces refused, see below).
 - Memory: about 400 MiB of mapped host buffers (256 MiB staging, 64 vertex, 16 uniform, 64 readback) before any image,
   sized by constants. Size the rings from the heaps and `VK_EXT_memory_budget`; Android's low-memory killer acts fast.
+  (400 MiB is the integrated-GPU figure with 8 recordings in flight; a discrete GPU has 16 and maps 736 MiB.) **Done in
+  A1:** sized from the heap's budget with today's sizes as the cap.
 - Uploads require `HOST_COHERENT` memory and never flush; correct, but on Adreno/Mali the cached type may be non-coherent,
   so readbacks get slow: choose memory types per vendor.
 - Interpolation exactness: depth from `floor(gl_FragCoord.z * 2^32)` and colour from `floor(interpolant + 0.001)`
@@ -145,7 +149,7 @@ display cutout (an option to keep the HUD clear of it, using TASK-080's paramete
 | Stage | Content | Gate |
 |---|---|---|
 | A0 | Linux L0-L1b done: platform seam, determinism foundation, Linux arm64 identity, NEON `fp4` | arm64 identity on the recorded drives |
-| A1 | Fix the Vulkan correctness gaps on Windows (missing feature enables, vestigial formats, rotation-safe present, budget-sized rings, per-vendor profile structure) | Windows identity and frames unchanged |
+| A1 | Fix the Vulkan correctness gaps on Windows (missing feature enables, vestigial formats, rotation-safe present, budget-sized rings, per-vendor profile structure) | Windows identity and frames unchanged (done on Windows, TASK-179: see "Stage A1 result") |
 | A2 | Android skeleton: NDK build of `libgt4.so`, SDL3 game Activity in its own process, Android surface, boot to the title screen at 1x with CoreGS 2.0; IOP/VU0 interpreter and EE profile on a big core | boots on an Adreno and a Mali device |
 | A3 | Storage: SAF disc picker, fd-based reader in launcher and game, app storage for cards and caches, durable card writes | Spec II and v2.00 reach a race from the player's ISO |
 | A4 | Correctness on mobile GPUs: golden frames of the recorded drives against Windows, per vendor; fix driver issues behind per-vendor switches | picture parity on Adreno and Mali |
@@ -229,6 +233,91 @@ release key (kept in `private/`), installed by hand (no store, no in-app install
   from Downloads, setup with exact pins, Play, the game's first start and "Save successful" on its card. Not tested
   yet: a real phone (Adreno), pause and resume (A6), performance.
 
+### Stage A1 result (TASK-179, 2026-11-05)
+
+Done on Windows on branch `task/179-vulkan-correctness`; CoreGS 2.0 only, no mobile-only path. Frames, race clock and
+simulation state are identical to the rc14 PGO references (gates below). Probe results are from the desktop's RX 9060 XT.
+
+1. **Features used without being enabled.** The references held: `history[index]` in `hw_deinterlace_scaled.comp`
+   (declared at line 30, indexed with a push constant at line 62) and `gl_PointSize = pc.scale` in `hw_vertex.vert:67`.
+   - `largePoints` and `shaderStorageImageArrayDynamicIndexing` are now enabled where the device has them
+     (`vulkan_loader::enable_profile_features`, also on the fixture and replay devices).
+   - Without `largePoints` (or with a largest point size under the scale) core 2 draws each point as two triangles: a
+     `HWR_POINT_QUAD` build of `hw_vertex.vert`, a triangle-list pipeline that reads the point's vertex record per
+     instance and draws six corners per point, the square being the one point rasterization covers. This is done in the
+     vertex stage rather than in `hw_gs/decide` because the corners are `centre +- scale / 2` in GPU pixels, which the
+     12.4 front-end coordinates cannot express in every half-pixel mode. `GT4_CORE2_POINT_QUADS=1/0` forces it (A/B).
+   - Without dynamic indexing the deinterlace kernel's `HWR_CONSTANT_INDEXING=1` build runs (a switch with constant
+     indices; every caller's index is below 4, so the pixels are the same). Core 1 picks the same build.
+   - Lines: every pipeline (core 2, core 1, the HUD) has `lineWidth = 1.0` and no dynamic line width, so `wideLines` is
+     never needed. GS lines are drawn one GPU pixel wide at scale; widening them would be a fidelity change, not a Vulkan
+     fix (`hw_gs/decide` already has a LineQuad plan if it is ever wanted).
+   - RX 9060 XT: `largePoints` yes (max 8191.9), `wideLines` yes (max 8191.9, not used),
+     `shaderStorageImageArrayDynamicIndexing` yes; both enabled, so the default paths are unchanged.
+   - GT4 drew no point primitive in the recorded scenes checked (`[core2] points=0` on the night race and the George V
+     Paris replay). The fallbacks are covered by tests instead: `hw_core2_point_quads` (900 blended, depth-tested points,
+     many on the same pixels, at 2x and 3x: images and GS memory equal with and without the quads), and the GPU fixtures
+     run with `GT4_HW_PRETEND_MISSING=large_points,dynamic_indexing` (the probe reports both missing): 84 GPU
+     fixtures (core 2, scaling, pixel, tone, GLM, smoke) pass (a first run had one failure, `hw_core2_shader_cache`
+     writing no cache in its first session under the parallel load; it passed alone and on the rerun);
+     `hw_core2_interlaced_present` (every deinterlace mode at 2x and 4x) runs the constant-index kernel with 0 pixels off
+     the CPU deinterlacer; and the Arcade gate at 3x with both missing: 14 of 14 frames identical to the reference, 11 of
+     them deinterlaced.
+2. **Required formats.** The device check required `D32_SFLOAT` depth attachments, `R16_UINT` sampled,
+   `R16G16B16A16_UNORM` blendable and `R32_SFLOAT` colour attachments, which nothing creates. It now requires what every
+   path uses: `R32_UINT` storage images (every target) and `R8G8B8A8_UNORM` blits with a linear filter (the presentation's
+   upload image); both are mandatory in Vulkan. The ROP path (IN-481) checks its own need, `R8G8B8A8_UNORM` blendable
+   colour attachments, and stays off without it.
+3. **Rotation-safe present** (`hw_present_transform.hpp`). The pre-transform is now the identity wherever the surface
+   supports it (every desktop surface; Android's too): the picture is drawn upright and the compositor turns it for a
+   rotated display. Without the identity: `INHERIT`, else a transform the final blit can draw (half turn, mirror, mirror
+   with half turn: the blit reverses those axes; the performance HUD stays off there), else (quarter turns only, no known
+   surface) the swapchain is refused with a clear error rather than showing a turned picture; a rotation pass would be
+   stage A6 work if a device ever needs it. Windows: identity as before, nothing changes. Checked by the
+   `hw_present_transform` fixture (every transform a surface may report; every pixel of several pictures through the
+   blit's offset rule).
+4. **Memory sized from the device** (`plan_core2_rings`). Today's sizes are 400 MiB on an integrated GPU (8 recordings)
+   and 736 MiB on a discrete one (16). They stay the sizes and the cap wherever they fit in a quarter of the ring heap's
+   budget (`VK_EXT_memory_budget`, enabled where present; else the heap size). Where they do not, the share count goes
+   down first (a share keeps its size, so no request that fits today stops fitting), to two at least, then the readback
+   buffer, to 16 MiB at least. One log line gives the sizes, the heap, its budget and the allowance.
+   `GT4_CORE2_RINGS=fixed` keeps today's sizes; `GT4_CORE2_RINGS=<MiB>` plans for that budget (a small device's sizes on
+   the desktop). RX 9060 XT: heap 0 (host, 49074 MiB, budget 48306 MiB), allowance 12076 MiB: today's 736 MiB.
+   With `GT4_CORE2_RINGS=256` (64 MiB allowed: 2 shares and 16 MiB of readback, 100 MiB mapped instead
+   of 736) the v2.00 night race at 3x is identical to the reference (10 of 10 frames, race clock at all 12,097 VBlanks,
+   the simulation state). Fixture: `hw_device_profile`.
+5. **Per-vendor profile structure** (`hw_device_profile.hpp`, `vulkan_loader::probe_device_profile`): name, vendor,
+   device class (discrete; integrated from a desktop vendor; tiler-or-unknown for Adreno, Mali, PowerVR, Apple, Xclipse,
+   software and unknown devices), the features above with what was enabled, and every heap with its budget, logged in one
+   `[hw] device profile:` line and handed to the renderer with the device. Core 2's integrated-GPU defaults keep today's
+   rule (`VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`) through `integrated_defaults`; nothing keys off the class yet. Today
+   on the RX 9060 XT: `class discrete, integrated defaults off, Vulkan 1.4.359`.
+
+Checks:
+- Validation layer (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`, core checks), short headless runs at 3x of the v2.00
+  night race (7,700 VBlanks) and the George V Paris replay (3,000 VBlanks): before, 1 message in each run; after, the same
+  1 message. No feature-not-enabled message was reported before either: the layer cannot see these two (glslang declares
+  no `StorageImageArrayDynamicIndexing` capability for a push-constant index, and a point size is a run-time value), which
+  is why the fix rests on the probe and the fixtures. The one message is `VUID-VkSubpassDependency-srcSubpass-02243`:
+  core 2's draw render pass has a self-dependency between fragment stages without `VK_DEPENDENCY_BY_REGION_BIT`. Making
+  it by-region changes what the barrier guarantees for reads of other pixels (a texture taken from a target), so it
+  belongs to the `BY_REGION` work of stage A5, not here.
+- Identity against the rc14 PGO references (`gates6.sh`): Spec II George V Paris, El Capitan and Tokyo R246 at 1x (race
+  clock at every VBlank, simulation state, 24, 35 and 35 frames), the v2.00 night race at 3x (10 frames, clock, state),
+  the Arcade path at 3x (14 frames), George V Paris at 6x (12 frames), the VU1 and VU0 verify runs (0 mismatches) and the
+  MTVU check (0 mismatches in 8,032 frames): all identical. A first George V Paris run, made while other runs loaded the machine, had
+  20 bytes of the race object (past the dynamics block) different, with the clock, the dynamics, the frames and the EE
+  cycle count identical; reruns of the base build and of this build alone were identical, so that was run-to-run
+  variation under load, not this change.
+- CTest: 304 of 304 pass on the v2.00 build (three new: `hw_device_profile`, `hw_present_transform`,
+  `hw_core2_point_quads`); `hw_replace_q07_pcsx2_dumps` skipped as expected.
+
+Recorded, not done (out of A1's scope): Vulkan 1.1 acceptance; `precise`/`invariant` interpolation; the no-interlock
+tuning; the D1 attachment path; `-ffp-contract=off` and the other determinism items (Linux stage L0). Also found: core 1's
+scaled display compose (`hw_display_compose_scaled.comp`, not on the product path) indexes `scaled_frames[slot - 1u]`
+with a per-circuit value, which needs the dynamic-indexing feature that is now enabled where present but has no fallback
+there; and the validation message above.
+
 ## Subtle risks (Android), ranked
 
 1. The no-interlock CoreGS path is slow or misordered on tilers; D1 may be required before playable speed.
@@ -251,10 +340,16 @@ release key (kept in `private/`), installed by hand (no store, no in-app install
 Correctness and portability work that helps the PC too: `-ffp-contract=off` by default, the missing Vulkan feature
 enables, dropping vestigial format requirements, budget-sized rings, the directory fsync for cards, the IOP `strtol` clamp,
 the platform seam (L0), keeping new code free of Win32 and x86-only constructs. No mobile-only renderer paths until the
-owner starts Phase 4.
+owner starts Phase 4. The feature enables, the format requirements, the budget-sized rings, the rotation-safe present and
+the profile structure are done (stage A1, TASK-179).
 
 ## Owner decisions needed
 
-Target device floor (for example Snapdragon 8 Gen 1 / Dimensity 9000 / Exynos 2200 class and newer), whether Spec II and
-v2.00 ship together, touch controls scope, Tauri or native launcher, GitHub APK only or Play Store too, and which test
-devices (at least one Adreno and one Mali).
+Decided (owner, 2026-11-04):
+- **First test device and target:** the owner's Samsung Galaxy S23 Ultra (Snapdragon 8 Gen 2, Adreno 740).
+- **Goal on it:** at least 2x internal scale in races, 3x if possible.
+- **6x is not an Android target.**
+
+Still open: target device floor (for example Snapdragon 8 Gen 1 / Dimensity 9000 / Exynos 2200 class and newer), whether
+Spec II and v2.00 ship together, touch controls scope, Tauri or native launcher, GitHub APK only or Play Store too, and
+which test devices besides the S23 Ultra (at least one Mali).

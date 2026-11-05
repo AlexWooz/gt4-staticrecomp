@@ -284,19 +284,59 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
 }
 
 #[test]
-fn the_performance_hud_is_off_by_default_and_on_only_when_chosen() {
+fn the_one_queue_presentation_path_is_the_games_default_and_only_off_is_passed() {
     let textures = TextureLocation::default_folder(Path::new("T"));
     let mut settings = Settings::default();
-    assert!(!settings.is_on("performance_hud"));
+    assert!(settings.is_on("present_thread"), "on by default");
+    let on = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert!(!on.contains_key("GT4_HW_PRESENT_SHARED_QUEUE"), "on passes nothing: the game decides by its queue count");
+    assert!(!launch::coregs20_section(&settings, None, false, &textures).contains("hw_present_shared_queue"));
+    settings.set("present_thread", "off").unwrap();
+    let off = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert_eq!(off["GT4_HW_PRESENT_SHARED_QUEUE"], "0");
+    assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_present_shared_queue=0\n"));
+    // Only CoreGS 2.0 has it.
+    assert!(!env_map(&game_environment(&settings)).contains_key("GT4_HW_PRESENT_SHARED_QUEUE"));
+}
+
+#[test]
+fn the_performance_hud_is_off_by_default_and_fps_only_or_full_when_chosen() {
+    let textures = TextureLocation::default_folder(Path::new("T"));
+    let mut settings = Settings::default();
+    assert_eq!(settings.get("performance_hud"), "off");
     let off = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
     assert!(!off.contains_key("GT4_HW_HUD"));
     assert!(!launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud"));
-    settings.set("performance_hud", "on").unwrap();
-    let on = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
-    assert_eq!(on["GT4_HW_HUD"], "1");
+    settings.set("performance_hud", "fps").unwrap();
+    let fps = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert_eq!(fps["GT4_HW_HUD"], "fps");
+    assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud=fps\n"));
+    settings.set("performance_hud", "full").unwrap();
+    let full = env_map(&launch::coregs20_environment(&settings, None, false, &textures));
+    assert_eq!(full["GT4_HW_HUD"], "1");
     assert!(launch::coregs20_section(&settings, None, false, &textures).contains("hw_hud=1\n"));
     // It is CoreGS 2.0's own: GSdx has its overlay.
     assert!(!env_map(&game_environment(&settings)).contains_key("GT4_HW_HUD"));
+    assert!(settings.set("performance_hud", "maybe").is_err());
+}
+
+#[test]
+fn a_stored_performance_hud_on_from_the_toggle_days_reads_as_full() {
+    let textures = TextureLocation::default_folder(Path::new("T"));
+    let mut settings = Settings::default();
+    settings.set("performance_hud", "on").unwrap();
+    assert_eq!(settings.get("performance_hud"), "full");
+    assert_eq!(env_map(&launch::coregs20_environment(&settings, None, false, &textures))["GT4_HW_HUD"], "1");
+    // Reading a settings file does the same, and an old `off` stays off.
+    let (file, warnings) = gt4l_core::config::parse("[settings]
+performance_hud = \"on\"
+").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(file.settings.get("performance_hud"), "full");
+    let (file, _) = gt4l_core::config::parse("[settings]
+performance_hud = \"off\"
+").unwrap();
+    assert_eq!(file.settings.get("performance_hud"), "off");
 }
 
 #[test]
@@ -581,6 +621,10 @@ fn variables_of_game_ini(text: &str) -> std::collections::BTreeMap<String, Strin
             "trigger_full_range" => {
                 variables.insert("GT4_TRIGGER_FULL_RANGE".to_string(), value.to_string());
             }
+            // TASK-181: written beside the other keys only when wheel.toml exists (state.rs `write_standalone_files`).
+            "wheel_file" => {
+                variables.insert("GT4_WHEEL_FILE".to_string(), value.to_string());
+            }
             other => panic!("unknown game.ini key {other}"),
         }
     }
@@ -680,4 +724,14 @@ fn a_chosen_textures_folder_reaches_the_renderers_and_the_shader_cache_stays_in_
     let paths = launch::Pcsx2Paths { textures: chosen.folder.clone(), ..pcsx2_paths() };
     let text = launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap();
     assert!(text.contains(r"E:\Emulators\PCSX2\textures"), "{text}");
+}
+
+#[test]
+fn the_wheel_file_line_of_game_ini_stands_for_gt4_wheel_file() {
+    let path = std::path::Path::new(r"C:\Users\Player\AppData\Roaming\GT4Recomp\wheel.toml");
+    let line = launch::wheel_file_line(path);
+    assert_eq!(line, format!("{}={}\n", launch::STANDALONE_WHEEL_KEY, path.display()));
+    let variables = variables_of_game_ini(&line);
+    assert_eq!(variables.get("GT4_WHEEL_FILE").map(String::as_str), Some(r"C:\Users\Player\AppData\Roaming\GT4Recomp\wheel.toml"));
+    assert!(!launch::standalone_config_text(&Settings::default(), None).contains("wheel_file"), "only written when the file exists");
 }

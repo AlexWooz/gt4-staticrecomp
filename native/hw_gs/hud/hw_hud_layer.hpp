@@ -21,7 +21,7 @@ namespace gt4::hw::hud {
 class Layer {
 public:
   // `slots`: the frame slots the backend records in turn; `window`: the HWND of the game's window.
-  Layer(VkPhysicalDevice physical, VkDevice device, std::uint32_t slots, void *window, std::string gpu_name, std::string scale);
+  Layer(VkPhysicalDevice physical, VkDevice device, std::uint32_t slots, void *window, std::string gpu_name, std::string scale, Mode mode);
   ~Layer();
   Layer(const Layer &) = delete;
   Layer &operator=(const Layer &) = delete;
@@ -63,6 +63,8 @@ private:
   std::uint32_t slots_;
   void *window_;
   SessionFacts facts_;
+  Mode mode_;
+  perf::ReportStatus &report_status_ = perf::ReportStatus::shared();
 
   std::mutex mutex_;  // times_ and reading_: the presenting thread and the sampler thread
   FrameTimes times_;

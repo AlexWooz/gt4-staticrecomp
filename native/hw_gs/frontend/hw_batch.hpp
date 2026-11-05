@@ -4,6 +4,7 @@
 // Written from the TASK-026 specification (docs/hw-renderer-spec) (clean room).
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -74,6 +75,22 @@ struct VertexTrace {
     bool unsafeQ = false;
 };
 
+// TASK-168: a palette segment. A CLUT load that only changes the palette of the pending batch's indexed texture (the
+// texture, CPSM and CSA stay the same) no longer ends the batch when the renderer allows it (FrontEnd::
+// SetPaletteSegmentHook): the batch goes on and the primitives after the load form a new segment, which keeps a copy of
+// the CLUT buffer the load produced. Segment s covers primitives [firstPrim, next segment's firstPrim) and their
+// vertices [firstVertex, next segment's firstVertex); the last one runs to the end of the batch.
+struct PaletteSegment {
+    uint32_t firstPrim = 0;       // index into Batch::prims
+    uint32_t firstVertex = 0;     // index into Batch::vertices
+    uint32_t clutGeneration = 0;  // ClutUnit::Generation() of the buffer below
+    std::array<uint16_t, clut::kClutHalfwords> clut{};  // the CLUT buffer these primitives see
+};
+
+// Segments one batch may hold; a load past them ends the batch as before. A segment is 1 KiB, and a renderer gives each
+// segment a palette row that must stay put until the batch is drawn (core 2 has 1024 rows).
+constexpr uint32_t kMaxPaletteSegments = 256;
+
 struct Batch {
     BatchState state;
     PrimClass cls = PrimClass::Invalid;
@@ -82,10 +99,26 @@ struct Batch {
     PixelRect drawRect;
     FlushReason reason = FlushReason::Count;
     VertexTrace trace;
+    // TASK-168: empty = one palette, the CLUT unit's buffer when the batch is drawn (the CLUT cannot change under a
+    // pending indexed batch without a segment or a flush). Otherwise every primitive's palette is its segment's copy,
+    // the first segment starting at primitive 0.
+    std::vector<PaletteSegment> paletteSegments;
 
     bool Empty() const { return prims.empty(); }
     void Clear();
 };
+
+// TASK-168: the number of palettes of a batch (1 when it has no segments).
+uint32_t PaletteSegmentCount(const Batch& batch);
+// One past the last primitive of segment `segment` (the whole batch without segments).
+uint32_t PaletteSegmentEndPrim(const Batch& batch, uint32_t segment);
+// The CLUT buffer segment `segment`'s primitives see: its copy, or `live`'s buffer without segments.
+const uint16_t* PaletteSegmentClut(const Batch& batch, uint32_t segment, const clut::ClutUnit& live);
+// The palette of segment `segment` for the batch's TEX0 (PSM, CPSM, CSA) and TEXA (chapter 07.5).
+clut::Palette DecodeSegmentPalette(const Batch& batch, uint32_t segment, const clut::ClutUnit& live);
+// A batch of segment `segment`'s primitives alone, with that segment as its only (explicit) palette: what a CLUT-load
+// flush would have emitted. For consumers that take one palette per batch.
+Batch PaletteSegmentBatch(const Batch& batch, uint32_t segment);
 
 // Chapter 02.4: the number of mantissa bits to clear for S (and T) given the
 // unbiased exponents of S (or T) and Q. Vector: S = 0.5, Q = 1.0 gives 10.
@@ -101,6 +134,9 @@ float ClearMantissaLowBits(float value, uint32_t bits);
 // and is a sprite batch or has constant Z. constantZ is the caller's check.
 // Returns true when rounding was applied.
 bool ApplyStRounding(Batch& batch, bool constantZ);
+// The same on primitives [firstPrim, endPrim) only, constantZ being their own check (TASK-168: per palette segment, as
+// the batch a CLUT-load flush would have ended there).
+bool ApplyStRoundingToPrims(Batch& batch, bool constantZ, uint32_t firstPrim, uint32_t endPrim);
 
 // Texel coordinates of one vertex (chapter 01.5). Returns false when a result is NaN.
 bool TexelCoordinates(const Vertex& vertex, bool fst, uint32_t twLog2, uint32_t thLog2,

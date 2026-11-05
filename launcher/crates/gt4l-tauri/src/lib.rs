@@ -23,6 +23,8 @@ mod state;
 mod tray;
 mod updates;
 mod webview_guard;
+mod wheel_page;
+mod wheel_service;
 #[cfg(feature = "visual-check")]
 mod visual;
 
@@ -258,6 +260,20 @@ pub fn run() {
             commands::reset_binding,
             commands::assign_binding,
             commands::reset_all_bindings,
+            wheel_page::get_wheel_config,
+            wheel_page::set_wheel_setting,
+            wheel_page::apply_wheel_preset,
+            wheel_page::assign_wheel_binding,
+            wheel_page::reset_wheel_binding,
+            wheel_page::reset_wheel_config,
+            wheel_page::capture_wheel_binding,
+            wheel_page::cancel_wheel_capture,
+            wheel_page::test_wheel_ffb,
+            wheel_page::wheel_watch,
+            wheel_page::get_wheel_session_check,
+            wheel_page::list_wheel_presets,
+            wheel_page::save_wheel_preset,
+            wheel_page::delete_wheel_preset,
             commands::about_info,
             commands::release_notes,
             commands::open_link,

@@ -3,7 +3,9 @@
 //! One zip, `GT4Recomp-logs-YYYYMMDD-HHMMSS.zip`, written to a folder the player picks. It holds only text:
 //! - `latest.log` (see [`crate::logs`]);
 //! - the newest [`KEPT_FOR_EXPORT`] launcher session logs;
-//! - `logs/shaders.log`, the last shader prepare step (TASK-170: it names where a compile stopped);
+//! - `logs/shaders.log`, the last shader prepare step with a header per attempt (TASK-170: it names where a compile stopped);
+//! - `logs/shader-guard.txt`, a readable listing of the shader cache's `quarantine.bin` and `compiling.bin` (TASK-170b:
+//!   header fields and each key as hex words; no other file of the cache folder);
 //! - the newest [`KEPT_FOR_EXPORT`] game session folders' `game.log` and `gt4-gs.ini`;
 //! - the settings file;
 //! - `system.txt` (see [`system_text`]).
@@ -18,6 +20,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::logs::LocalTime;
+use crate::system_check::{decode_driver_version, windows_driver_text, DriverFacts};
 
 /// The newest session logs and game sessions the bundle holds.
 pub const KEPT_FOR_EXPORT: usize = 3;
@@ -138,6 +141,70 @@ pub struct GpuFact {
     pub driver_version: u32,
     /// Dedicated video memory in bytes (DXGI).
     pub video_memory: u64,
+    /// The queue count of the graphics family the game would use (`None` when unknown).
+    pub graphics_queues: Option<u32>,
+    /// The Vulkan apiVersion `(major, minor, patch)`; `None` when the card has no Vulkan driver here.
+    pub api: Option<(u32, u32, u32)>,
+    /// The driver as Vulkan describes it, and the Windows driver version of DXGI.
+    pub driver: DriverFacts,
+}
+
+/// The refresh rate and the scale factor of one monitor, in the order of `SystemFacts::displays`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DisplayExtra {
+    pub refresh_hz: Option<u32>,
+    pub scale_percent: Option<u32>,
+}
+
+/// Wine (and so Proton, the Steam Deck's way): `ntdll.dll` exports `wine_get_version`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WineFacts {
+    pub version: String,
+    /// The host system as `wine_get_host_version` says it ("Linux 6.5.0"); empty when it does not.
+    pub host: String,
+}
+
+/// The drive that holds the game data folder: the drive letter only, never a path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StorageFact {
+    pub drive: String,
+    pub free: u64,
+    pub total: u64,
+}
+
+/// `GetSystemPowerStatus`, reduced to what a bug report needs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PowerFact {
+    /// `Some(true)` on AC power, `Some(false)` on battery, `None` when unknown.
+    pub on_ac: Option<bool>,
+    /// A battery is present.
+    pub has_battery: bool,
+    /// Battery charge, 0 to 100; `None` when unknown.
+    pub battery_percent: Option<u8>,
+}
+
+/// The machine facts that are not about graphics. Every part is read in a way that cannot fail the bundle: what could not
+/// be read stays `None` or empty and the report says "unknown".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MachineFacts {
+    /// The processor's brand string ("AMD Ryzen 7 5700X 8-Core Processor"), already cleaned by [`clean_cpu_brand`];
+    /// empty when it could not be read.
+    pub cpu_model: String,
+    pub cpu_cores: Option<u32>,
+    pub cpu_threads: Option<u32>,
+    pub sse4_1: Option<bool>,
+    pub avx2: Option<bool>,
+    pub ram_total: Option<u64>,
+    pub ram_available: Option<u64>,
+    /// The Windows edition ("Professional", "Core"); empty when unknown.
+    pub os_edition: String,
+    /// The processor architecture ("AMD64", "ARM64"); empty when unknown.
+    pub os_architecture: String,
+    pub wine: Option<WineFacts>,
+    pub storage: Option<StorageFact>,
+    pub power: Option<PowerFact>,
+    /// The connected pads by name (no serial numbers).
+    pub controllers: Vec<String>,
 }
 
 /// What `system.txt` says about the machine and the launcher (all plain text, no paths of the player).
@@ -145,11 +212,14 @@ pub struct GpuFact {
 pub struct SystemFacts {
     pub windows: String,
     pub cpu: String,
+    pub machine: MachineFacts,
     pub gpus: Vec<GpuFact>,
     /// The graphics card and API this run would use: `(card, api)`; empty when none.
     pub chosen: (String, String),
     /// `(name, width, height, primary)` for each monitor.
     pub displays: Vec<(String, u32, u32, bool)>,
+    /// Refresh rate and scale per monitor, by position in `displays` (missing entries are unknown).
+    pub display_extras: Vec<DisplayExtra>,
     pub launcher_version: String,
     /// `Installer` or `Portable`.
     pub install: String,
@@ -181,6 +251,159 @@ pub fn vendor_name(vendor_id: u32) -> String {
     }
 }
 
+/// The CPUID brand string (48 bytes from leaves 0x80000002-4, or a registry value) as one clean line: cut at the first NUL,
+/// control characters dropped, runs of spaces made one, trimmed. Old processors pad the string with spaces on the left.
+pub fn clean_cpu_brand(raw: &[u8]) -> String {
+    let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
+    let text: String = String::from_utf8_lossy(&raw[..end]).chars().filter(|c| !c.is_control()).collect();
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A size in GB (2^30 bytes) with one decimal.
+pub fn gigabytes(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / (1u64 << 30) as f64)
+}
+
+/// The drive letter of a path as `C:`, or `None` for a path with no drive (a network share, a relative path). Nothing else
+/// of the path is kept, so no user name can reach the report.
+pub fn drive_of(path: &str) -> Option<String> {
+    let mut chars = path.chars();
+    let (letter, colon) = (chars.next()?, chars.next()?);
+    if letter.is_ascii_alphabetic() && colon == ':' {
+        Some(format!("{}:", letter.to_ascii_uppercase()))
+    } else {
+        None
+    }
+}
+
+/// The number of physical cores in the buffer `GetLogicalProcessorInformationEx(RelationProcessorCore)` fills: records of
+/// `{relationship: u32, size: u32, ...}`, one per core. `None` for a buffer that does not parse (a size of zero, or a record
+/// that runs past the end).
+pub fn count_core_records(buffer: &[u8]) -> Option<u32> {
+    const RELATION_PROCESSOR_CORE: u32 = 0;
+    let mut offset = 0usize;
+    let mut cores = 0u32;
+    while offset < buffer.len() {
+        let header = buffer.get(offset..offset + 8)?;
+        let relationship = u32::from_le_bytes(header[0..4].try_into().ok()?);
+        let size = u32::from_le_bytes(header[4..8].try_into().ok()?) as usize;
+        if size < 8 || offset + size > buffer.len() {
+            return None;
+        }
+        if relationship == RELATION_PROCESSOR_CORE {
+            cores += 1;
+        }
+        offset += size;
+    }
+    Some(cores)
+}
+
+fn yes_no(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+fn number_or_unknown(value: Option<u32>) -> String {
+    value.map_or("unknown".to_string(), |number| number.to_string())
+}
+
+/// The lines about the processor and memory.
+fn machine_lines(machine: &MachineFacts) -> Vec<String> {
+    vec![
+        format!("cpu model: {}", or_unknown(&machine.cpu_model)),
+        format!(
+            "cpu cores: {} physical, {} threads",
+            number_or_unknown(machine.cpu_cores),
+            number_or_unknown(machine.cpu_threads)
+        ),
+        format!("cpu features: SSE4.1 {}, AVX2 {}", yes_no(machine.sse4_1), yes_no(machine.avx2)),
+        format!(
+            "memory: total {} GB, available {} GB",
+            machine.ram_total.map_or("unknown".to_string(), gigabytes),
+            machine.ram_available.map_or("unknown".to_string(), gigabytes)
+        ),
+    ]
+}
+
+/// The lines about the operating system: the edition and architecture (the `windows:` line keeps the version and build) and
+/// whether this is Wine or Proton.
+fn os_lines(machine: &MachineFacts) -> Vec<String> {
+    let mut lines = vec![format!(
+        "windows edition: {}, architecture {}",
+        or_unknown(&machine.os_edition),
+        or_unknown(&machine.os_architecture)
+    )];
+    lines.push(match &machine.wine {
+        Some(wine) if wine.host.trim().is_empty() => format!("wine: Wine {}", or_unknown(&wine.version)),
+        Some(wine) => format!("wine: Wine {} (host {})", or_unknown(&wine.version), wine.host.trim()),
+        None => "wine: not detected".to_string(),
+    });
+    lines
+}
+
+/// One line about the Vulkan side of a card: apiVersion, the driver as it names itself, the decoded version and the Windows
+/// driver version. The raw value stays on the `graphics card` line.
+fn vulkan_driver_line(index: usize, gpu: &GpuFact) -> String {
+    let api = gpu.api.map_or("unknown".to_string(), |(major, minor, patch)| format!("{major}.{minor}.{patch}"));
+    let name = match (gpu.driver.name.trim(), gpu.driver.id) {
+        ("", None) => "unknown".to_string(),
+        ("", Some(id)) => format!("id {id}"),
+        (name, None) => name.to_string(),
+        (name, Some(id)) => format!("{name} (id {id})"),
+    };
+    let decoded = decode_driver_version(gpu.vendor_id, gpu.driver.id, gpu.driver_version).unwrap_or_else(|| "unknown".to_string());
+    let info = if gpu.driver.info.trim().is_empty() { "unknown" } else { gpu.driver.info.trim() };
+    format!(
+        "graphics card {} vulkan: api {}, driver {}, driver info {}, driver version {}, windows driver {}",
+        index + 1,
+        api,
+        name,
+        info,
+        decoded,
+        gpu.driver.windows_driver.map_or("unknown".to_string(), windows_driver_text)
+    )
+}
+
+/// The lines about storage, power and controllers.
+fn environment_lines(machine: &MachineFacts) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(match &machine.storage {
+        Some(storage) => format!(
+            "storage: drive {}, free {} GB of {} GB",
+            or_unknown(&storage.drive),
+            gigabytes(storage.free),
+            gigabytes(storage.total)
+        ),
+        None => "storage: unknown".to_string(),
+    });
+    lines.push(match &machine.power {
+        Some(power) => {
+            let source = match power.on_ac {
+                Some(true) => "AC power",
+                Some(false) => "battery",
+                None => "unknown source",
+            };
+            let battery = match (power.has_battery, power.battery_percent) {
+                (false, _) => "no battery".to_string(),
+                (true, Some(percent)) => format!("battery {percent}%"),
+                (true, None) => "battery charge unknown".to_string(),
+            };
+            format!("power: {source}, {battery}")
+        }
+        None => "power: unknown".to_string(),
+    });
+    if machine.controllers.is_empty() {
+        lines.push("controllers: none connected".to_string());
+    }
+    for (index, name) in machine.controllers.iter().enumerate() {
+        lines.push(format!("controller {}: {}", index + 1, or_unknown(name)));
+    }
+    lines
+}
+
 /// `system.txt`: one `key: value` line per fact.
 pub fn system_text(facts: &SystemFacts) -> String {
     let mut lines = Vec::new();
@@ -189,6 +412,8 @@ pub fn system_text(facts: &SystemFacts) -> String {
     if facts.device.is_empty() {
         lines.push(format!("windows: {}", or_unknown(&facts.windows)));
         lines.push(format!("cpu: {}", or_unknown(&facts.cpu)));
+        lines.extend(os_lines(&facts.machine));
+        lines.extend(machine_lines(&facts.machine));
     } else {
         lines.extend(facts.device.iter().cloned());
     }
@@ -197,28 +422,34 @@ pub fn system_text(facts: &SystemFacts) -> String {
     }
     for (index, gpu) in facts.gpus.iter().enumerate() {
         lines.push(format!(
-            "graphics card {}: {} (vendor {}, driver version {:#010x}, video memory {} MB)",
+            "graphics card {}: {} (vendor {}, driver version {:#010x}, video memory {} MB, graphics queues {})",
             index + 1,
             or_unknown(&gpu.name),
             vendor_name(gpu.vendor_id),
             gpu.driver_version,
-            gpu.video_memory / (1024 * 1024)
+            gpu.video_memory / (1024 * 1024),
+            gpu.graphics_queues.map_or("unknown".to_string(), |queues| queues.to_string())
         ));
+        lines.push(vulkan_driver_line(index, gpu));
     }
     let (card, api) = &facts.chosen;
     lines.push(format!("chosen card: {} (API {})", or_unknown(card), or_unknown(api)));
     if facts.displays.is_empty() && facts.device.is_empty() {
         lines.push("displays: none found".to_string());
     }
-    for (name, width, height, primary) in &facts.displays {
+    for (index, (name, width, height, primary)) in facts.displays.iter().enumerate() {
+        let extra = facts.display_extras.get(index).copied().unwrap_or_default();
         lines.push(format!(
-            "display {} ({}): {}x{}",
+            "display {} ({}): {}x{}, refresh {}, scale {}",
             or_unknown(name),
             if *primary { "primary" } else { "secondary" },
             width,
-            height
+            height,
+            extra.refresh_hz.map_or("unknown".to_string(), |hz| format!("{hz} Hz")),
+            extra.scale_percent.map_or("unknown".to_string(), |percent| format!("{percent}%"))
         ));
     }
+    lines.extend(environment_lines(&facts.machine));
     lines.push(format!("selected game: {}", or_unknown(&facts.selected_game)));
     for (name, serial, installed) in &facts.games {
         lines.push(format!(
@@ -231,6 +462,42 @@ pub fn system_text(facts: &SystemFacts) -> String {
     }
     let mut text = lines.join("\n");
     text.push('\n');
+    text
+}
+
+/// One connected wheel as `system.txt` lists it (TASK-181): never a serial number or a path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WheelFact {
+    pub name: String,
+    /// `046D:C29B`, or empty when SDL gave no IDs.
+    pub vid_pid: String,
+    /// SDL's view: `wheel`, `gamepad` or `other`.
+    pub sdl_type: String,
+    /// `wheel` (the device the game drives) or `auxiliary` (pedals, a shifter).
+    pub role: String,
+    /// The force feedback effects found by the launcher's force test (`constant spring ...`), `yes` when SDL says the
+    /// device has haptics but no test ran, `no`, or empty when unknown.
+    pub haptic: String,
+}
+
+/// The wheel lines of `system.txt` (TASK-181), appended after [`system_text`]: whether the virtual Driving Force Pro is
+/// on (`wheel.toml` enabled), then one line per connected wheel or auxiliary device.
+pub fn wheel_lines(wheels: &[WheelFact], dfp_on: bool) -> String {
+    let mut text = format!("racing wheel: virtual Driving Force Pro {}\n", if dfp_on { "on" } else { "off" });
+    if wheels.is_empty() {
+        text.push_str("wheels: none connected\n");
+    }
+    for (index, wheel) in wheels.iter().enumerate() {
+        text.push_str(&format!(
+            "wheel {}: {} ({}, SDL type {}, {}, haptic {})\n",
+            index + 1,
+            or_unknown(&wheel.name),
+            or_unknown(&wheel.vid_pid),
+            or_unknown(&wheel.sdl_type),
+            or_unknown(&wheel.role),
+            or_unknown(&wheel.haptic)
+        ));
+    }
     text
 }
 
@@ -350,7 +617,7 @@ mod tests {
         let facts = SystemFacts {
             windows: String::new(),
             cpu: String::new(),
-            gpus: vec![GpuFact { name: "Adreno (TM) 740".into(), vendor_id: 0x5143, driver_version: 0x8020_0000, video_memory: 0 }],
+            gpus: vec![GpuFact { name: "Adreno (TM) 740".into(), vendor_id: 0x5143, driver_version: 0x8020_0000, video_memory: 0, ..GpuFact::default() }],
             chosen: ("Adreno (TM) 740".into(), "vulkan".into()),
             displays: Vec::new(),
             launcher_version: "1.3.0-rc15".into(),
@@ -359,6 +626,7 @@ mod tests {
             selected_game: "Gran Turismo 4".into(),
             graphics: Vec::new(),
             device: vec!["device: samsung SM-S918B".into(), "display: 3088x1440 at 120.00 Hz".into()],
+            ..SystemFacts::default()
         };
         let text = system_text(&facts);
         assert!(text.contains("device: samsung SM-S918B\ndisplay: 3088x1440 at 120.00 Hz"));
@@ -367,13 +635,35 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_lines_name_each_wheel_and_whether_the_dfp_is_on() {
+        let none = wheel_lines(&[], false);
+        assert_eq!(none, "racing wheel: virtual Driving Force Pro off\nwheels: none connected\n");
+        let text = wheel_lines(
+            &[
+                WheelFact {
+                    name: "Logitech G27 Racing Wheel USB".into(),
+                    vid_pid: "046D:C29B".into(),
+                    sdl_type: "wheel".into(),
+                    role: "wheel".into(),
+                    haptic: "constant spring damper friction gain autocenter".into(),
+                },
+                WheelFact { name: "Pedals".into(), vid_pid: String::new(), sdl_type: "other".into(), role: "auxiliary".into(), haptic: "no".into() },
+            ],
+            true,
+        );
+        assert!(text.starts_with("racing wheel: virtual Driving Force Pro on\n"));
+        assert!(text.contains("wheel 1: Logitech G27 Racing Wheel USB (046D:C29B, SDL type wheel, wheel, haptic constant spring damper friction gain autocenter)\n"));
+        assert!(text.contains("wheel 2: Pedals (unknown, SDL type other, auxiliary, haptic no)\n"));
+    }
+
+    #[test]
     fn the_system_report_names_every_fact_and_no_user_path() {
         let facts = SystemFacts {
             windows: "Windows 11 (build 26100)".into(),
             cpu: "AMD64 Family 25 Model 33".into(),
             gpus: vec![
-                GpuFact { name: "NVIDIA GeForce RTX 3060 Laptop GPU".into(), vendor_id: 0x10DE, driver_version: 0x0001_5521, video_memory: 6 << 30 },
-                GpuFact { name: "Intel(R) UHD Graphics".into(), vendor_id: 0x8086, driver_version: 0, video_memory: 128 << 20 },
+                GpuFact { name: "NVIDIA GeForce RTX 3060 Laptop GPU".into(), vendor_id: 0x10DE, driver_version: 0x0001_5521, video_memory: 6 << 30, graphics_queues: Some(16), ..GpuFact::default() },
+                GpuFact { name: "Intel(R) UHD Graphics".into(), vendor_id: 0x8086, driver_version: 0, video_memory: 128 << 20, graphics_queues: None, ..GpuFact::default() },
             ],
             chosen: ("NVIDIA GeForce RTX 3060 Laptop GPU".into(), "vulkan".into()),
             displays: vec![("DELL U3419W".into(), 3440, 1440, true)],
@@ -382,15 +672,16 @@ mod tests {
             games: vec![("Gran Turismo 4".into(), "SCUS-97328".into(), true), ("Gran Turismo 4 Spec II".into(), "SCUS-97436".into(), false)],
             selected_game: "Gran Turismo 4".into(),
             graphics: vec![("graphics_api".into(), "auto".into())],
-            device: Vec::new(),
+            ..SystemFacts::default()
         };
         let text = system_text(&facts);
         for expected in [
             "launcher: GT4Recomp 1.3.0",
             "install: Installer",
             "windows: Windows 11 (build 26100)",
-            "graphics card 1: NVIDIA GeForce RTX 3060 Laptop GPU (vendor NVIDIA, driver version 0x00015521, video memory 6144 MB)",
+            "graphics card 1: NVIDIA GeForce RTX 3060 Laptop GPU (vendor NVIDIA, driver version 0x00015521, video memory 6144 MB, graphics queues 16)",
             "graphics card 2: Intel(R) UHD Graphics (vendor Intel",
+            "graphics queues unknown)",
             "chosen card: NVIDIA GeForce RTX 3060 Laptop GPU (API vulkan)",
             "display DELL U3419W (primary): 3440x1440",
             "game Gran Turismo 4 Spec II (SCUS-97436): not installed",
@@ -400,5 +691,161 @@ mod tests {
         }
         assert!(!text.contains("C:\\Users"), "no profile path in the report");
         assert_eq!(vendor_name(0x1234), "0x1234");
+    }
+
+    fn full_facts() -> SystemFacts {
+        SystemFacts {
+            windows: "Windows 11 24H2 (build 26100)".into(),
+            cpu: "AMD64 Family 25 Model 33".into(),
+            machine: MachineFacts {
+                cpu_model: "AMD Ryzen 7 5700X 8-Core Processor".into(),
+                cpu_cores: Some(8),
+                cpu_threads: Some(16),
+                sse4_1: Some(true),
+                avx2: Some(true),
+                ram_total: Some(32 << 30),
+                ram_available: Some((12 << 30) + (1 << 29)),
+                os_edition: "Professional".into(),
+                os_architecture: "AMD64".into(),
+                wine: None,
+                storage: Some(StorageFact { drive: "D:".into(), free: 120 << 30, total: 931 << 30 }),
+                power: Some(PowerFact { on_ac: Some(false), has_battery: true, battery_percent: Some(55) }),
+                controllers: vec!["Xbox Wireless Controller".into(), "DualSense Wireless Controller".into()],
+            },
+            gpus: vec![GpuFact {
+                name: "NVIDIA GeForce RTX 4060".into(),
+                vendor_id: 0x10DE,
+                driver_version: (581 << 22) | (15 << 14),
+                video_memory: 8 << 30,
+                graphics_queues: Some(16),
+                api: Some((1, 4, 312)),
+                driver: DriverFacts {
+                    api_patch: 312,
+                    id: Some(4),
+                    name: "NVIDIA".into(),
+                    info: "581.15".into(),
+                    windows_driver: Some((32u64 << 48) | (15u64 << 16) | 8115),
+                },
+            }],
+            displays: vec![("DELL U3419W".into(), 3440, 1440, true), ("Second".into(), 1920, 1080, false)],
+            display_extras: vec![DisplayExtra { refresh_hz: Some(144), scale_percent: Some(125) }],
+            ..SystemFacts::default()
+        }
+    }
+
+    #[test]
+    fn the_report_has_one_plain_line_for_each_new_fact() {
+        let text = system_text(&full_facts());
+        for expected in [
+            "cpu cores: 8 physical, 16 threads",
+            "cpu features: SSE4.1 yes, AVX2 yes",
+            "memory: total 32.0 GB, available 12.5 GB",
+            "windows edition: Professional, architecture AMD64",
+            "wine: not detected",
+            "graphics card 1 vulkan: api 1.4.312, driver NVIDIA (id 4), driver info 581.15, driver version 581.15.0.0, windows driver 32.0.15.8115",
+            "display DELL U3419W (primary): 3440x1440, refresh 144 Hz, scale 125%",
+            "display Second (secondary): 1920x1080, refresh unknown, scale unknown",
+            "storage: drive D:, free 120.0 GB of 931.0 GB",
+            "power: battery, battery 55%",
+            "controller 1: Xbox Wireless Controller",
+            "controller 2: DualSense Wireless Controller",
+        ] {
+            assert!(text.lines().any(|line| line == expected), "missing {expected:?} in\n{text}");
+        }
+        // The raw driver value stays on the card line.
+        assert!(text.contains("driver version 0x"), "{text}");
+        assert!(text.lines().all(|line| line.contains(": ")), "one `key: value` fact per line:\n{text}");
+    }
+
+    #[test]
+    fn every_unread_fact_says_unknown_and_the_report_still_builds() {
+        let text = system_text(&SystemFacts {
+            gpus: vec![GpuFact { name: "X".into(), ..GpuFact::default() }],
+            displays: vec![("D".into(), 800, 600, true)],
+            ..SystemFacts::default()
+        });
+        for expected in [
+            "cpu model: unknown",
+            "cpu cores: unknown physical, unknown threads",
+            "cpu features: SSE4.1 unknown, AVX2 unknown",
+            "memory: total unknown GB, available unknown GB",
+            "windows edition: unknown, architecture unknown",
+            "graphics card 1 vulkan: api unknown, driver unknown, driver info unknown, driver version unknown, windows driver unknown",
+            "display D (primary): 800x600, refresh unknown, scale unknown",
+            "storage: unknown",
+            "power: unknown",
+            "controllers: none connected",
+        ] {
+            assert!(text.lines().any(|line| line == expected), "missing {expected:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_wine_report_names_the_version_and_the_host() {
+        let mut facts = full_facts();
+        facts.machine.wine = Some(WineFacts { version: "9.0".into(), host: "Linux 6.5.0-valve".into() });
+        assert!(system_text(&facts).lines().any(|line| line == "wine: Wine 9.0 (host Linux 6.5.0-valve)"));
+        facts.machine.wine = Some(WineFacts { version: "10.0".into(), host: String::new() });
+        assert!(system_text(&facts).lines().any(|line| line == "wine: Wine 10.0"));
+        // Proton on a Steam Deck: RADV with the single graphics queue, Mesa's standard driver version.
+        facts.gpus[0] = GpuFact {
+            name: "AMD Custom GPU 0405 (RADV VANGOGH)".into(),
+            vendor_id: 0x1002,
+            driver_version: (24 << 22) | 5,
+            graphics_queues: Some(1),
+            api: Some((1, 3, 274)),
+            driver: DriverFacts { id: Some(3), name: "radv".into(), info: "Mesa 24.0.5".into(), ..DriverFacts::default() },
+            ..GpuFact::default()
+        };
+        let text = system_text(&facts);
+        assert!(text.contains("graphics card 1 vulkan: api 1.3.274, driver radv (id 3), driver info Mesa 24.0.5, driver version 24.0.5, windows driver unknown"), "{text}");
+        assert!(text.contains("graphics queues 1)"), "{text}");
+    }
+
+    #[test]
+    fn the_cpu_brand_is_cut_at_the_nul_and_trimmed_and_the_line_says_unknown_without_it() {
+        let mut raw = b"  AMD Ryzen 7 5700X  8-Core Processor            ".to_vec();
+        raw.push(0);
+        raw.extend_from_slice(b"garbage after the end");
+        assert_eq!(clean_cpu_brand(&raw), "AMD Ryzen 7 5700X 8-Core Processor");
+        assert_eq!(clean_cpu_brand(b"Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz\r\n"), "Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz");
+        assert_eq!(clean_cpu_brand(b""), "");
+        assert_eq!(clean_cpu_brand(&[0, b'x']), "");
+        let mut facts = full_facts();
+        facts.machine.cpu_model = clean_cpu_brand(&raw);
+        let text = system_text(&facts);
+        assert!(text.lines().any(|line| line == "cpu model: AMD Ryzen 7 5700X 8-Core Processor"), "{text}");
+        assert!(text.lines().any(|line| line == "cpu: AMD64 Family 25 Model 33"), "the cpu line stays");
+        facts.machine.cpu_model = String::new();
+        assert!(system_text(&facts).lines().any(|line| line == "cpu model: unknown"));
+    }
+
+    #[test]
+    fn plain_drives_sizes_and_core_records() {
+        assert_eq!(drive_of("D:\\Games\\GT4Recomp").as_deref(), Some("D:"));
+        assert_eq!(drive_of("c:/users/alano/x").as_deref(), Some("C:"));
+        assert_eq!(drive_of("\\\\server\\share\\x"), None, "a network share has no drive letter");
+        assert_eq!(drive_of("relative/path"), None);
+        assert_eq!(drive_of(""), None);
+        assert_eq!(gigabytes(0), "0.0");
+        assert_eq!(gigabytes((15 << 30) + (1 << 29)), "15.5");
+        // Two core records (relationship 0) and one cache record (relationship 2), each 12 bytes here.
+        let record = |relationship: u32| {
+            let mut bytes = relationship.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&12u32.to_le_bytes());
+            bytes.extend_from_slice(&[0u8; 4]);
+            bytes
+        };
+        let buffer: Vec<u8> = [record(0), record(2), record(0)].concat();
+        assert_eq!(count_core_records(&buffer), Some(2));
+        assert_eq!(count_core_records(&[]), Some(0));
+        assert_eq!(count_core_records(&buffer[..buffer.len() - 3]), None, "a record cut short");
+        assert_eq!(count_core_records(&[0, 0, 0, 0, 0, 0, 0, 0]), None, "a size of zero");
+    }
+
+    #[test]
+    fn no_new_line_can_carry_a_user_name_or_a_path() {
+        let text = system_text(&full_facts());
+        assert!(!text.contains('\\') && !text.contains("Users"), "{text}");
     }
 }

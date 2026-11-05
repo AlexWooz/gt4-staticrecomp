@@ -243,9 +243,15 @@ pub fn coregs20_environment(
     } else {
         variables.insert("GT4_FRAME_SKIP", "1".to_string());
     }
-    // TASK-135: the performance HUD.
-    if settings.is_on("performance_hud") {
-        variables.insert("GT4_HW_HUD", "1".to_string());
+    // TASK-174: the one-queue presentation path is the game's default on a GPU with one graphics queue; only "off" is passed.
+    if !settings.is_on("present_thread") {
+        variables.insert("GT4_HW_PRESENT_SHARED_QUEUE", "0".to_string());
+    }
+    // TASK-135, TASK-175: the performance HUD. Full is GT4_HW_HUD=1, FPS only is GT4_HW_HUD=fps, Off sets nothing.
+    match settings.get("performance_hud") {
+        crate::settings::HUD_FULL => drop(variables.insert("GT4_HW_HUD", "1".to_string())),
+        crate::settings::HUD_FPS_ONLY => drop(variables.insert("GT4_HW_HUD", "fps".to_string())),
+        _ => {}
     }
     // No frametime.csv in the session folder any more (owner, 2026-11-03: not needed). GT4_HW_FRAMETIME_LOG=<csv> by hand
     // still writes it for a bench (scripts/coregs2_bench/frametime_plot.py).
@@ -441,6 +447,15 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
     text
 }
 
+/// TASK-181: the `game.ini` line of the racing wheel file, `wheel_file=<path>` (the game sets `GT4_WHEEL_FILE` from it on
+/// a direct start). The launcher adds it only when `wheel.toml` exists; at Play it passes `GT4_WHEEL_FILE` itself.
+pub fn wheel_file_line(path: &std::path::Path) -> String {
+    format!("{STANDALONE_WHEEL_KEY}={}\n", path.display())
+}
+
+/// The `game.ini` key of [`wheel_file_line`].
+pub const STANDALONE_WHEEL_KEY: &str = "wheel_file";
+
 /// TASK-148: the `GT4_PAD` value of the chosen controller (`controller::PadChoice` text), `None` while none is stored.
 pub fn controller_environment(settings: &Settings) -> Option<String> {
     let value = settings.get("controller");
@@ -452,7 +467,7 @@ pub fn controller_environment(settings: &Settings) -> Option<String> {
 pub const GAMEPAD_MAPPINGS_FILE: &str = "gamecontrollerdb.txt";
 
 /// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
-/// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
+/// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_present_shared_queue` (written only when off), `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
 /// `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps its `present_mode`).
 pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &TextureLocation) -> String {
     let mut text = String::from("renderer=coregs20\n");
@@ -466,6 +481,7 @@ pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, in
             "GT4_FRAME_SKIP_FORCE" => "hw_frame_skip",
             "GT4_FRAME_SKIP" => "hw_frame_skip_adaptive",
             "GT4_HW_HUD" => "hw_hud",
+            "GT4_HW_PRESENT_SHARED_QUEUE" => "hw_present_shared_queue",
             "GT4_HW_TEXTURES" => "hw_textures",
             "GT4_HW_POSTFX" => "hw_postfx",
             "GT4_CORE2_FSR_SHARPNESS" => "hw_sharpening",

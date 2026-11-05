@@ -85,6 +85,7 @@ void start_with_donor(const Settings &settings) {
   if (gt4::mtvu::direct_gs_intake() && gt4::gs_stream::g_deferred_table.wait_copy != nullptr) {
     gt4::mtvu::set_deferred_table_copy(gt4::gs_stream::g_deferred_table.wait_copy);
     gt4::gs_stream::g_deferred_table.patches = &gt4::mtvu::deferred_table_patches;
+    gt4::gs_stream::g_deferred_table.first_job = &gt4::mtvu::deferred_table_first_job;  // TASK-178 diagnostics
     gt4::gs_stream::g_deferred_table.note = &gt4::mtvu::note_deferred_table;
   }
 #endif

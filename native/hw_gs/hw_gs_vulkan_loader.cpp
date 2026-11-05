@@ -4,6 +4,11 @@
 
 #include "hw_gs_vulkan_loader.hpp"
 
+// Vulkan create-info and query structs are initialised with sType only (pNext defaults to null by the spec).
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
+
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #ifndef _WIN32
@@ -151,6 +156,87 @@ bool pixel_interlock_supported(VkPhysicalDevice physical) {
 bool load_headless_entry_points(VkInstance instance, std::vector<std::string> &missing) {
   resolve_headless(instance, missing);
   return missing.empty();
+}
+
+gt4::hw::DeviceProfile probe_device_profile(VkInstance instance, VkPhysicalDevice physical) {
+  gt4::hw::DeviceProfile profile;
+  if (!gt4_hw_vkGetPhysicalDeviceProperties || !gt4_hw_vkGetPhysicalDeviceFeatures2) return profile;
+  VkPhysicalDeviceProperties properties{};
+  gt4_hw_vkGetPhysicalDeviceProperties(physical, &properties);
+  VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  gt4_hw_vkGetPhysicalDeviceFeatures2(physical, &features);
+  profile.probed = true;
+  profile.name = properties.deviceName;
+  profile.vendor_id = properties.vendorID;
+  profile.device_id = properties.deviceID;
+  profile.device_type = static_cast<std::uint32_t>(properties.deviceType);
+  profile.api_version = properties.apiVersion;
+  profile.driver_version = properties.driverVersion;
+  profile.device_class = gt4::hw::classify_device(profile.vendor_id, profile.device_type);
+  profile.integrated_defaults = gt4::hw::integrated_defaults(profile.device_type);
+  profile.large_points_supported = features.features.largePoints == VK_TRUE;
+  profile.point_size_max = properties.limits.pointSizeRange[1];
+  profile.point_size_granularity = properties.limits.pointSizeGranularity;
+  profile.wide_lines_supported = features.features.wideLines == VK_TRUE;
+  profile.line_width_max = properties.limits.lineWidthRange[1];
+  profile.storage_image_array_dynamic_indexing_supported = features.features.shaderStorageImageArrayDynamicIndexing == VK_TRUE;
+
+  if (const char *pretend = std::getenv("GT4_HW_PRETEND_MISSING")) {
+    if (std::strstr(pretend, "large_points")) profile.large_points_supported = false;
+    if (std::strstr(pretend, "dynamic_indexing")) profile.storage_image_array_dynamic_indexing_supported = false;
+    std::fprintf(stderr, "[hw] GT4_HW_PRETEND_MISSING=%s: those features are treated as missing (diagnostics)\n", pretend);
+  }
+
+  if (gt4_hw_vkEnumerateDeviceExtensionProperties) {
+    std::uint32_t count = 0;
+    gt4_hw_vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> extensions(count);
+    gt4_hw_vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, extensions.data());
+    for (const VkExtensionProperties &extension : extensions) {
+      if (std::strcmp(extension.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) profile.memory_budget = true;
+    }
+  }
+  const auto properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+      instance_proc(instance, "vkGetPhysicalDeviceMemoryProperties2"));
+  const auto properties1 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+      instance_proc(instance, "vkGetPhysicalDeviceMemoryProperties"));
+  VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+  VkPhysicalDeviceMemoryProperties2 memory{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+  if (profile.memory_budget && properties2) {
+    memory.pNext = &budget;
+    properties2(physical, &memory);
+  } else if (properties1) {
+    profile.memory_budget = false;
+    properties1(physical, &memory.memoryProperties);
+  } else {
+    profile.memory_budget = false;
+  }
+  profile.heap_count = std::min<std::uint32_t>(memory.memoryProperties.memoryHeapCount,
+                                               static_cast<std::uint32_t>(profile.heaps.size()));
+  for (std::uint32_t i = 0; i < profile.heap_count; ++i) {
+    gt4::hw::HeapInfo &heap = profile.heaps[i];
+    heap.size = memory.memoryProperties.memoryHeaps[i].size;
+    heap.device_local = (memory.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+    if (profile.memory_budget) {
+      heap.budget = budget.heapBudget[i];
+      heap.usage = budget.heapUsage[i];
+    }
+  }
+  return profile;
+}
+
+void enable_profile_features(gt4::hw::DeviceProfile &profile, VkPhysicalDeviceFeatures &features) {
+  // Points are drawn gl_PointSize = scale wide (hw_vertex.vert): above 1 they need largePoints (core 2 draws them as two
+  // triangles without it). The deinterlace kernel indexes its history images with a push constant (hw_deinterlace_scaled.comp),
+  // which needs shaderStorageImageArrayDynamicIndexing (without it the constant-index build of the kernel runs).
+  profile.large_points_enabled = profile.large_points_supported;
+  profile.storage_image_array_dynamic_indexing_enabled = profile.storage_image_array_dynamic_indexing_supported;
+  if (profile.large_points_enabled) features.largePoints = VK_TRUE;
+  if (profile.storage_image_array_dynamic_indexing_enabled) features.shaderStorageImageArrayDynamicIndexing = VK_TRUE;
+}
+
+const char *memory_budget_extension(const gt4::hw::DeviceProfile &profile) {
+  return profile.memory_budget ? VK_EXT_MEMORY_BUDGET_EXTENSION_NAME : nullptr;
 }
 
 } // namespace gt4::hw::vulkan_loader
