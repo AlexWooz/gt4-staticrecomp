@@ -1,0 +1,17 @@
+// TASK-180: the Android app of GT4Recomp (stage A2: the game activity only; the launcher comes later).
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "GT4Recomp"
+include ":app"

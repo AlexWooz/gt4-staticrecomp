@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TASK-180 (Android plan A2): the game activity. Landscape, fullscreen, controller first, Vulkan; its own process so a
+     later launcher activity survives a game crash and each start gets fresh global state. Name and icon as on the PC
+     (owner, 2026-11-05): "Gran Turismo 4" and the launcher.ico art (res/mipmap-*, android/tools/make_icons.py). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- CoreGS 2.0 needs Vulkan 1.2 (checked at start; not a store filter yet). -->
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x402000" android:required="false" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <!-- SDL3 controller rumble. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:label="Gran Turismo 4"
+        android:icon="@mipmap/ic_launcher"
+        android:appCategory="game"
+        android:isGame="true"
+        android:allowBackup="false"
+        android:hardwareAccelerated="true">
+
+        <activity
+            android:name=".GameActivity"
+            android:process=":game"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:alwaysRetainTaskState="true"
+            android:screenOrientation="sensorLandscape"
+            android:preferMinimalPostProcessing="true"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

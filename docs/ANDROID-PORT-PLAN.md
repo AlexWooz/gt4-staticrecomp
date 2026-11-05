@@ -155,6 +155,22 @@ display cutout (an option to keep the HUD clear of it, using TASK-080's paramete
 | A8 | Packaging: signed APK, 16 KB alignment check, update flow, release assets | sideload install and update on two devices |
 | A9 | Owner test and a closed beta | owner approval |
 
+## Stage A2 progress (TASK-180, from 2026-11-04)
+
+Started on the Android Studio emulator (x86_64, API 36) before any phone, with the owner's approval. Procedure, the
+download list, the AVD and the adb commands: [ANDROID-EMULATOR](ANDROID-EMULATOR.md).
+- **Seam:** the Linux plan's L0 layer, done for Android first (see LINUX-PORT-PLAN, stage L0); Windows unchanged.
+- **Build:** `android/native/CMakeLists.txt` builds the whole game as `libgt4.so` with NDK 26.1 (API 29, CMake + Ninja
+  outside Gradle): the translated v2.00 units (rc14b), the pinned donor runtime and capsules (checked against
+  `docs/inputs`), VU1/VU0 AOT, CoreGS 2.0, SDL3 3.4.18 from the official AAR. Flags pinned for determinism and ABI parity
+  with clang-cl: `-ffp-contract=off`, `-fno-strict-aliasing`, `-fsigned-char`; 16 KB page alignment for every ABI.
+- **App:** `android/` holds a minimal Gradle project (AGP 9.5.0, Gradle 9.8.2): one `GameActivity` extending
+  `SDLActivity` in its own process (`:game`), landscape, Vulkan, controller; the native libraries are staged into it.
+- **Learned so far:** the donor runtime and the translated units need no source change for Android x86_64; CoreGS 2.0
+  needed only the surface/loader seam and POSIX forms of three diagnostics; one LP64 fix in the pinned runtime capsule
+  (configure-time copy, see LINUX-PORT-PLAN); the SDL3 AAR ships its libraries as prefab modules only, so they are staged
+  into `jniLibs` by hand.
+
 ## Subtle risks (Android), ranked
 
 1. The no-interlock CoreGS path is slow or misordered on tilers; D1 may be required before playable speed.

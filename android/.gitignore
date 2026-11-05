@@ -1,0 +1,17 @@
+# Gradle and Android Studio output; machine paths (local.properties) and signing keys never go to git.
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+*.keystore
+*.jks
+captures/
+.cxx/
+.externalNativeBuild/
+# Staged by stage-native-libs.cmd (built outside git, never committed).
+app/src/main/jniLibs/
+app/libs/
+# The Gradle wrapper jar (a third-party binary) is not committed: create it once with any Gradle 9.x,
+# "gradle wrapper" in this folder (docs/ANDROID-EMULATOR.md). gradlew and gradle-wrapper.properties are committed.
+gradle/wrapper/gradle-wrapper.jar
