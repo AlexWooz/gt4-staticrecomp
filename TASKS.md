@@ -3330,6 +3330,16 @@ Motegi sun frame and on Hong Kong, the Motegi store-before-write readback, Hong 
 in progress. TASK-168 found on the Avell: no gain as built (segments are split back for GT4's T8-over-target batches); the
 fix is TASK-168b (`task/168b-segments-fix`). Owner (2026-11-04): no hurry; keep optimising, change approach when one fails.
 
+### TASK-179 — Android stage A1 on Windows: Vulkan correctness gaps (owner, 2026-11-04; in parallel to rc15)
+
+From `docs/ANDROID-PORT-PLAN.md` section 2: features used without being enabled (`shaderStorageImageArrayDynamicIndexing`,
+`largePoints`, wide lines: query, enable or a same-pixel fallback), required formats core 2 never uses (no longer refuse a
+device), a rotation-safe present, host rings sized from the heaps and `VK_EXT_memory_budget` (today's sizes as the cap), and a
+start-up capability profile struct (today's integrated-GPU behaviour unchanged). Frames identical to rc14 (gates6), validation
+layer clean, CTest. Out of scope: Vulkan 1.1, precise/invariant interpolation, no-interlock tuning, D1, determinism items.
+Branch `task/179-vulkan-correctness`. State: in progress. Also on 2026-11-04: an Avell comparison of GSdx and CoreGS 2.0
+(normal and Performance) at 6x on Motegi Road Course and Hong Kong (owner).
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
