@@ -11,7 +11,7 @@ WebView settles; Back on the launcher leaves the app in the background instead o
 Close game still ends the Activity and its process. Verified in the emulator step by step (screenshots and the launcher log's
 `game start`/`resume`/`game process gone` lines): Play, Home, icon → game, recents → game, Back → pt-BR pause dialog,
 Minimize → launcher (Retomar focused), Resume → game, Close → launcher (Jogar focused), Play → a new session. The APK in
-`private/android-test3/` was rebuilt with it (sha256 `f1be8ee1…f070b`, 117,924,210 bytes, same key, `zipalign -P 16` clean);
+`private/android-test3/` was rebuilt with it (sha256 `8a776323…bbc`, 117,924,214 bytes, same key, `zipalign -P 16` clean);
 launcher tests 291 + 142 (the flow_audit flake passed with no game process running) and the focus checks pass in both
 languages. Spec II is still groundwork only (see the Android plan for the regenerated hooked unit set it needs).
 

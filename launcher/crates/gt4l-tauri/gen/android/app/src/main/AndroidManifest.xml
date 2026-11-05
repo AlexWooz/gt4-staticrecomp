@@ -29,6 +29,7 @@
         <activity
             android:name=".LaunchGateActivity"
             android:exported="true"
+            android:label="@string/app_name"
             android:launchMode="singleTop"
             android:noHistory="true"
             android:theme="@style/Theme.gt4l_gate"
