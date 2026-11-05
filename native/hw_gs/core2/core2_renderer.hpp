@@ -48,6 +48,13 @@ struct Core2Counters {
     std::uint64_t delayedDownloads = 0;        // IN-439: downloads answered with the previous same download's words
     std::uint64_t hiddenFlareTables = 0;       // IN-441: flare visibility tables answered as zeros        // IN-439: downloads answered with the previous same download's words
     std::uint64_t downloadReadbacks = 0;       // EE downloads (local-to-host transfers) that read back a target
+    // TASK-178: EE downloads handled (hidden flare tables included), and the targets and native pixels the readbacks of
+    // downloads reduced.
+    std::uint64_t downloads = 0;
+    std::uint64_t downloadTargets = 0;
+    std::uint64_t downloadPixels = 0;
+    std::uint64_t drains = 0;                // TASK-178, from the GPU's counters: waited submissions
+    std::uint64_t afterWaitSubmissions = 0;  // TASK-178, from the GPU's counters: submissions by GT4_CORE2_SUBMIT_AFTER_WAIT
     std::uint64_t batchedReadbacks = 0;        // IN-429: target readbacks reduced together in one submission
     std::uint64_t textureBytes = 0;            // IN-431: 1x texels in the texture cache now
     std::uint64_t dirtyMerged = 0;

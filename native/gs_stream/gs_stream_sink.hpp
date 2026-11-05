@@ -29,6 +29,8 @@ struct DeferredTable {
   void (*note)(const std::uint8_t *dest, std::size_t bytes, std::uint64_t ticket) = nullptr;   // set by the VU1 transport
   void (*wait_copy)(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out) = nullptr;  // set by the sink
   std::uint64_t (*patches)() = nullptr;  // set by the VU1 transport: VIF packets given fresh words so far
+  // TASK-178 diagnostics, set by the VU1 transport: the first VU1 job given words of read `ticket`, 0 while none is known.
+  std::uint64_t (*first_job)(std::uint64_t ticket) = nullptr;
 };
 inline DeferredTable g_deferred_table;
 

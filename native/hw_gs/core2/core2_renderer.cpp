@@ -706,6 +706,12 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
         spikeMark_ = now;
     }
+    // TASK-178: the download and drain counters at the last [core2] interval line.
+    struct DrainMark {
+        std::uint64_t downloads = 0, downloadReadbacks = 0, downloadTargets = 0, downloadPixels = 0;
+        std::uint64_t drains = 0, idleNs = 0, idles = 0, gapNs = 0, gaps = 0, afterWaitSubmissions = 0;
+    };
+    DrainMark lastDrainMark_;
     std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
     std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
     std::array<std::uint64_t, static_cast<std::size_t>(FlushReason::Count)> lastFlushCounts_{};  // CPU survey R9
@@ -5166,6 +5172,8 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
     s.frontEnd_.FlushBatch(FlushReason::Transfer);
     if (s.pendingRead_ && s.memory_.LocalToHostPending()) {
         const LocalToHostSetup &setup = *s.pendingRead_;
+        const std::uint64_t readbacksBefore = s.stats.readbacks, pixelsBefore = s.stats.readbackPixels;  // TASK-178
+        s.stats.downloads++;
         const auto psm = memory::decodePsm(setup.spsm);
         if (psm && setup.rrw != 0 && setup.rrh != 0 && setup.ssax + setup.rrw <= 2048u && setup.ssay + setup.rrh <= 2048u) {
             const BufferView view{setup.sbp, setup.sbw, *psm};
@@ -5186,6 +5194,8 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
             s.ReadbackAll();
             s.stats.downloadReadbacks++;
         }
+        s.stats.downloadTargets += s.stats.readbacks - readbacksBefore;
+        s.stats.downloadPixels += s.stats.readbackPixels - pixelsBefore;
         s.pendingRead_.reset();
     }
     bool overrun = false;
@@ -5303,6 +5313,45 @@ void Renderer::Flush() {
         s.lastDrawPassNs_ = s.gpu_.Stats().drawPassNs;
         s.lastGpuNs_ = s.gpu_.Stats().gpuNs;
         s.lastTimedSubmissions_ = s.gpu_.Stats().timedSubmissions;
+        {
+            // TASK-178: per EE download that read back a target, the targets and native pixels reduced and the fence wait; per
+            // drain (waited submission), the GPU idle until the next submission (GPU timestamps: the drained work's last
+            // command to the next submission's first) and the CPU gap (the end of the fence wait to the next vkQueueSubmit).
+            const Core2GpuStats &g = s.gpu_.Stats();
+            Impl::DrainMark now;
+            now.downloads = s.stats.downloads;
+            now.downloadReadbacks = s.stats.downloadReadbacks;
+            now.downloadTargets = s.stats.downloadTargets;
+            now.downloadPixels = s.stats.downloadPixels;
+            now.drains = g.drains;
+            now.idleNs = g.drainIdleNs;
+            now.idles = g.drainIdles;
+            now.gapNs = g.drainGapCpuNs;
+            now.gaps = g.drainGaps;
+            now.afterWaitSubmissions = g.afterWaitSubmissions;
+            const Impl::DrainMark &was = s.lastDrainMark_;
+            const auto per = [](std::uint64_t value, std::uint64_t count) {
+                return count != 0 ? static_cast<double>(value) / static_cast<double>(count) : 0.0;
+            };
+            const std::uint64_t readbackDownloads = now.downloadReadbacks - was.downloadReadbacks;
+            std::fprintf(stderr,
+                         "[core2] downloads/vblank=%.2f with_readback=%.2f targets/readback_download=%.2f "
+                         "px/readback_download=%.1f wait_ms/readback_download=%.3f | drains/vblank=%.2f "
+                         "gpu_idle_ms/drain=%.3f (timestamps, %.2f/vblank measured) cpu_gap_ms/drain=%.3f "
+                         "(CPU: fence wait end to next submit) after_wait_submits/vblank=%.2f (K=%u, every %u)\n",
+                         static_cast<double>(now.downloads - was.downloads) / 600.0,
+                         static_cast<double>(readbackDownloads) / 600.0,
+                         per(now.downloadTargets - was.downloadTargets, readbackDownloads),
+                         per(now.downloadPixels - was.downloadPixels, readbackDownloads),
+                         per(s.WaitOf("download").waitNs, readbackDownloads) / 1.0e6,
+                         static_cast<double>(now.drains - was.drains) / 600.0,
+                         per(now.idleNs - was.idleNs, now.idles - was.idles) / 1.0e6,
+                         static_cast<double>(now.idles - was.idles) / 600.0,
+                         per(now.gapNs - was.gapNs, now.gaps - was.gaps) / 1.0e6,
+                         static_cast<double>(now.afterWaitSubmissions - was.afterWaitSubmissions) / 600.0,
+                         s.gpu_.SubmitAfterWait(), s.gpu_.SubmitEvery());
+            s.lastDrainMark_ = now;
+        }
         std::string byReason;
         std::uint64_t attributed = 0;
         for (Impl::ReasonWait &w : s.reasonWaits_) {
@@ -5389,6 +5438,8 @@ const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.ropBatches = impl_->gpu_.Stats().ropBatches;
     impl_->stats.roadSheensSkipped = impl_->gpu_.Stats().roadSheensSkipped;
     impl_->stats.sheensEarly = impl_->gpu_.Stats().sheensEarly;
+    impl_->stats.drains = impl_->gpu_.Stats().drains;
+    impl_->stats.afterWaitSubmissions = impl_->gpu_.Stats().afterWaitSubmissions;
     return impl_->stats;
 }
 bool Renderer::Failed() const { return impl_->failed_; }

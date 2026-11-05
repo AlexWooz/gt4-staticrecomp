@@ -117,6 +117,14 @@ struct Core2GpuStats {
     std::uint64_t renderPasses = 0;      // B4: render pass begins (one after every compute or transfer break)
     std::uint64_t drawFlushes = 0;       // IN-420: groups of deferred draw batches recorded in one render pass
     std::uint64_t midFrameSubmissions = 0;  // IN-410: submissions after a number of draw batches
+    // TASK-178 (GT4_CORE2_SUBMIT_AFTER_WAIT): the first mid-frame submission after a waited one, sent after K batches.
+    std::uint64_t afterWaitSubmissions = 0;
+    // TASK-178 diagnostics: waited submissions (each drains the whole queue), and what follows them until the next submission.
+    std::uint64_t drains = 0;
+    std::uint64_t drainIdleNs = 0;    // GPU idle (timestamps): the drained work's last command to the next submission's first
+    std::uint64_t drainIdles = 0;     // drains measured that way
+    std::uint64_t drainGapCpuNs = 0;  // CPU: the end of the fence wait to the next vkQueueSubmit
+    std::uint64_t drainGaps = 0;
 };
 
 // IN-408: a CLUT load (07.4) whose source is a drawn 32-bit colour target, done on the GPU.
@@ -278,6 +286,9 @@ public:
                    std::string &error);
 
     bool Submit(bool wait, std::string &error);
+    // TASK-178: batches per mid-frame submission, and after a waited submission (0: the rule is off).
+    std::uint32_t SubmitEvery() const;
+    std::uint32_t SubmitAfterWait() const;
     const Core2GpuStats &Stats() const;
     // Diagnostics: cumulative full barriers as " label[/kind]=count" (the command that needed one and its hazard).
     std::string BarrierReport() const;
