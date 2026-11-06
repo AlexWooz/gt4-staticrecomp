@@ -71,7 +71,7 @@
   },
   "source_capsule": "private/slice262-frame-cost-runtime",
   "source_manifest": "slice262-frame-cost-runtime.json",
-  "preserved_inputs": "Port (slice200), memcard capsule, shaders (slice153), VU1/VU0 tables and EE library profile aspect (slice217) as slice268. Changed: the executable, gt4-gs 1.2.1.",
+  "preserved_inputs": "Port (slice200), memcard capsule, shaders (slice153), the VU1/VU0 tables and the slice407 EE library as slice411. Changed: the executable (TASK-194).",
   "limits": [
     "Unsynchronized readbacks answer from the PCSX2 GS local memory copy: GPU-drawn pixels are stale (zeros in the gs_live_check sprite test), so the night-race lens flare may change; accurate is the default.",
     "Deferred swap chain acquire and detached input queues are checked only with hidden windows; the owner checks the visible window (fullscreen, Alt+Tab, minimize).",
@@ -93,7 +93,7 @@
   ],
   "review": {
     "status": "pending",
-    "note": "TASK-088 owner test build of 2026-10-21 (installer and portable folder). Not approved for default use."
+    "note": "TASK-194 owner test build of 2026-11-06 (the next build of the rc15 draft). Not approved for default use."
   },
   "owner_launch": {
     "default": "python scripts\\play_performance.py --assets-root C:\\Antigravity\\gt4-staticrecomp --mode pcsx2",

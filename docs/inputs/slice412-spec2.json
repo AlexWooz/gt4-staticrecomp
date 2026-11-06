@@ -71,7 +71,7 @@
   },
   "source_capsule": "private/slice276-spec2-iop-runtime",
   "source_manifest": "slice276-spec2-iop-runtime.json",
-  "preserved_inputs": "Port (slice200), shaders (slice153), VU1 table (slice157) and VU0 image/table (slice160) as the v2.00 release. Changed: target/profile, EE library, runtime capsule, license guard, executable; gt4-gs 1.2.1.",
+  "preserved_inputs": "Port (slice200), shaders (slice153), the VU1 table (slice157) and the VU0 image/table (slice160) as slice411; the Spec II target/profile, its slice407 EE library, the runtime capsule and the license guard as slice411. Changed: the executable (TASK-194).",
   "limits": [
     "Unsynchronized readbacks answer from the PCSX2 GS local memory copy: GPU-drawn pixels are stale (zeros in the gs_live_check sprite test), so the night-race lens flare may change; accurate is the default.",
     "Deferred swap chain acquire and detached input queues are checked only with hidden windows; the owner checks the visible window (fullscreen, Alt+Tab, minimize).",
@@ -93,7 +93,7 @@
   ],
   "review": {
     "status": "pending",
-    "note": "TASK-088 owner test build of 2026-10-21 (installer and portable folder). Not approved for default use."
+    "note": "TASK-194 owner test build of 2026-11-06 (the next build of the rc15 draft). Not approved for default use."
   },
   "owner_launch": {
     "default": "the launcher's Spec II Play (gt4vulkan-spec2.exe with the derived ELF and the Spec II disc copy)"
