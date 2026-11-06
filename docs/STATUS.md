@@ -10,8 +10,8 @@ against the strips: **116 of 116 draws, 335 tables, 1,549 strips, 12,146 vertice
 starts ADC**; the slice fit is 0.97 px mean rms over 111 draws (5 ambiguous record matches are reported). The mapping now
 selects the frame by the tap source record's VBlank and uses the strip table to disambiguate repeated vertex counts, so
 draws spanning jobs and jobs carrying several draws both map. M2 has flat-shaded surfaces for all cars and a new sheet;
-the 3x identity gate was re-run (result below). Still open: the VU1 lighting formula, G-IMAGE/G-PERF and the M4 live
-overlay (not started).
+the 3x identity gate still passes (8,997 VBlanks, 1,686 racing, 13/13 frames, clock/digest/state identical for `off` and
+`shadow`). Still open: the VU1 lighting formula, G-IMAGE/G-PERF and the M4 live overlay (not started).
 
 The observe-only EE hooks and the `.gt4scene` capture of a race frame's car draws are implemented and measured on the
 plan's P1-B scene (night race, six cars): 116 car draws per frame, 169 texture and 39 material records, ~182 KB of model
