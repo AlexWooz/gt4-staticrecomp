@@ -3655,6 +3655,25 @@ GSdx-type renderer. The work in progress stays uncommitted in the `gt4-wt-178-do
 - The exact switches go ON for Android in the next APK.
 - On Windows they stay off until the owner's in-game tests.
 
+### TASK-185: Android on-screen virtual controller (owner, 2026-11-06; planned)
+
+**Why.** The Android build plays only with a physical controller (USB or Bluetooth); there is no touch control in the
+game.
+
+**Target behaviour:**
+- With no physical controller connected, an on-screen virtual controller appears over the game.
+- When a physical controller connects (Bluetooth, USB or any other), the virtual controller hides and is disabled.
+- When the last physical controller disconnects, it comes back.
+
+**Notes:**
+- It feeds the same pad input the physical controller feeds (DualShock 2 buttons and both sticks), with analog
+  pressure where the game reads it.
+- It must not cover the F7 report button or the camera cutout.
+- The layout must be usable while driving.
+- A setting may turn it off or force it on later.
+- Covers the "touch controls" part of TASK-022.
+- Applies to the public Android build and, through the upstream merge, to the mobile build.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
