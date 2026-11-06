@@ -1552,9 +1552,14 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   with pairing and unmatched counts, `lerp_matrix`, `interpolation_alpha`) plus `native_coregs3_timeline`; the guest stays
   bit-exact at 60 Hz and the capture already carries the timestamp and the identity source. Architecture in
   `docs/COREGS3-PLAN.md` §5.5 (latency, fallback, CoreGS 2.0 hybrid, HUD at guest rate).
-- Next: the strip breaks from the tap's ADC flags (then clean surfaces), more draws mapped (68 still unmapped because
-  their shapes span several jobs), the camera in the timeline, the Z/STQ/RGBA parts of G-TAP, and only then the live
-  overlay seam (review work) and G-IMAGE.
+- Round 5: the strip-break channel is **identified but not yet decoded**: a car part carries a `V1-8` channel of 4 bytes
+  for 33 vertices (`176,176,84,84`), i.e. a 32-bit **bit mask**, not an index list; other shapes carry an all-zero one.
+  The tap's ADC flags were measured against the captured channels and are a per-vertex draw flag (`1,1,0,0` pattern), not a
+  break marker. The 3x identity gate was re-run and still passes (8,997 VBlanks, 13/13 frames, clock/digest/state).
+  M2 keeps the geometric break heuristic and is labelled as evidence, not fidelity.
+- Next: decode the 32-bit break mask (one or two bits per vertex) and the `V3-8` channel at 0x80, apply the breaks in
+  `build_mesh`, remap the 68 multi-job draws, the camera in the timeline, the Z/STQ/RGBA parts of G-TAP, and only then the
+  live overlay seam (review work) and G-IMAGE.
 
 
 ### TASK-087 — GS readbacks without stalls

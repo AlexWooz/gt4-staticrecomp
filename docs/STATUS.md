@@ -18,9 +18,11 @@ by the projective fit), and the model decode is confirmed too — the parts that
 decals, so rendering the body of one car gives a recognisable silhouette (`build/evidence/coregs3/m2/car1_surface.png`).
 **G-TAP now passes**: the tap records each posted VIF packet's job and guest address (which the capture also stores per
 item), so each draw selects its job exactly; night race VBlank 7398 gives 48 draws, 5,868 vertex pairs, **rms 0.073 px,
-worst 0.222 px, 100% within 0.25 px**. Still open: the model's strip breaks (the capture does not carry them; the tap's ADC
-flags do), the 68 draws whose shapes span several jobs, the Z/STQ/RGBA parts of G-TAP, the M2 surfaces and then the live
-overlay seam. **Variable FPS** is designed and its data structures are in place (`native/coregs3/coregs3_timeline.*`:
+worst 0.222 px, 100% within 0.25 px**. Still open: the model's strip breaks — identified this round as a **32-bit bit
+mask** in a `V1-8` channel (4 bytes for 33 vertices, `176,176,84,84`) rather than an index list, not yet decoded — the 68
+draws whose shapes span several jobs, the Z/STQ/RGBA parts of G-TAP, the M2 surfaces and then the live overlay seam. The
+tap's ADC flags are a per-vertex draw flag, not a break marker. **Variable FPS** is designed and its data structures are in
+place (`native/coregs3/coregs3_timeline.*`:
 guest timestamps, stable object identity, frame ring, pairing, lerp; plan §5.5). Design, hook table, capture format, measurements and open questions:
 [COREGS3-HOOKS](COREGS3-HOOKS.md). Nothing ships: CoreGS 3.0 is
 off by default, has no launcher entry and no pin or release change. Everything below is the previous state of `main`

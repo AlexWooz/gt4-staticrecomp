@@ -146,9 +146,36 @@ measurements narrowed it down:
   last posted job id gave `jobs 460505..460504` (empty): GT4's shape VIF packets are kicked outside the `render_cars`
   bracket, so the pass's jobs are not contiguous between the two hooks. A job tag has to come from the DMA/kick side.
 
-**Open:** the per-vertex G-TAP fit is not reported because the tap's records cannot yet be matched to draws. Next round:
-tag the job at the *kick* (where `post_vif_packet` runs) with the pass the EE is in, and re-parse the records that the
-XYZ read does not explain (a per-tag descriptor audit first).
+**Solved: the exact draw-to-record mapping, and the G-TAP gate.** The tap now also records, for every VIF packet the EE
+posts, the job it was posted as and the packet's **guest address** (`tap_job_source`, called from `post_vif_packet` and
+from `flush_vif_chain` for each packet of a batch). The capture stores the same addresses per item, so a draw selects its
+job exactly, with no guessing from vertex counts. The tool aligns each draw inside its job's vertex stream and searches a
+window around the expected offset (clipping makes the emitted count differ), keeping the placement with the smallest
+residual. Night race, VBlank 7398, `gt4_coregs3_tap fit-all`:
+
+| G-TAP (screen XY, 1x) | Result |
+|---|---|
+| draws fitted | 48 of 116 (68 skipped: no single-job mapping) |
+| vertex pairs | 5,868 |
+| rms | **0.073 px** |
+| worst | **0.222 px** (draw 41) |
+| vertices within 0.25 px | **100%** (4,854 within 0.10 px, 1,014 within 0.25 px, none beyond) |
+| draws with worst <= 0.25 px | **48 of 48** |
+
+One draw fitted alone is even tighter (projective rms 0.025 px, worst 0.043 px): the transform is affine to that precision
+at these distances.
+
+**The strip-break channel (measured, not yet decoded).** A car part carries, besides its `V3-16` positions, a `V3-8 x33`
+channel at TOPS 0x80 (not `V4-8`, so it is not the colour), a `V2-16 x33` channel at TOPS 0x40 (UV-like) and a `V1-8 x4`
+channel at TOPS 0x40 with bytes `176, 176, 84, 84`. Four bytes for 33 vertices is 32 bits: the break list is very likely a
+**bit mask, one or two bits per vertex**, not a list of indices (the plan's "reset bytes"). Other car shapes carry an
+all-zero `V1-8` channel, which is why some parts tear and others do not. The tap's ADC flags were measured against the
+captured channels and are a per-vertex draw flag (`1,1,0,0` in the observed stream), not a break marker.
+
+**Variable FPS.** The presentation timeline (`native/coregs3/coregs3_timeline.{hpp,cpp}`, `native_coregs3_timeline`) is in
+place: guest timestamps, stable object identity (hash of the model's own addresses), a ring of frames, pairing with
+unmatched counts, matrix lerp and the interpolation factor. Design and the CoreGS 2.0 / HUD interaction:
+`docs/COREGS3-PLAN.md` section 5.5.
 
 ## 7. A measured gotcha: the capture must not write during the guest's frame
 
