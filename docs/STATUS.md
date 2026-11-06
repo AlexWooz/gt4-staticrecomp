@@ -13,15 +13,16 @@ The Android build of `libgt4spec2.so` never had the TASK-100 S7b asynchronous FI
 - **Fix.** The Android CMake now requires a Spec II capsule with `sif.cpp`, verifies it against the capsule pin and compiles
   it in place of the donor's `iop/sif.cpp`; a Spec II configure without it fails with a message naming the file. The v2.00
   Android build is untouched (the block is `GT4_TARGET STREQUAL "spec2"`).
-- **Proof.** After the fix Spec II draws the Sony and Polyphony screens (313,904 B/frame of GIF, 25-34 VBlanks/s at 2x) and
-  continues into the intro's streaming phase; before it produced no GIF at all.
+- **Proof.** After the fix Spec II draws the Sony and Polyphony screens (313,904 B/frame of GIF, 24-34 VBlanks/s at 2x);
+  before it produced no GIF at all. It then repeats the same seven records without leaving those screens, a second
+  Android-only stall that is not isolated yet (the owner's S23 moves through the same phase when booting v2.00).
 - **Measurements kept.** Five F8 run-loop categories (`runloop_mtvu_pump`, `runloop_sif_pump`, `runloop_events`,
   `vblank_action`) in the `[frame] run loop` line, a `gs_drain` scope around the journal drain in `mtvu::pump()`, and
   `GT4_GS_PRESENT_LOG` (flush/next_frame/present per VBlank; a present costs ~1 s on this emulator).
 - **Gates.** CTest 324/324 (1 skipped), Python 802 OK (48 skipped). Spec II does not reach the title screen inside the
-  emulator's test window: after the publisher screens it streams the intro at 25-34 VBlanks/s, which is the emulator's
-  software Vulkan (lavapipe behind gfxstream: ~100 ms of GPU for 306 KiB/frame, ~97,000 1-byte reads/s in the guest Vulkan
-  driver); the owner's S23 runs the same code on the Adreno driver.
+  emulator's test window (the publisher screens, then the repeated seven records above); the emulator's software Vulkan
+  (lavapipe behind gfxstream: ~100 ms of GPU for 306 KiB/frame, ~97,000 1-byte reads/s in the guest Vulkan driver) makes
+  each frame 40-50 ms there, while the S23 uses the Adreno driver.
 
 ## Android test5: effect toggles replace Performance Mode; Spec II ships (TASK-180, 2026-11-06)
 
