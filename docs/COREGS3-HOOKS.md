@@ -102,18 +102,67 @@ shows the car silhouette. Triangle topology (strip vs list, and the strip table'
 linear readings produce wrong surfaces, so the offline milestone picture is a point cloud, labelled as such. The offline
 tool keeps every mode behind a flag so the next round can compare.
 
-## 6. Gates run in this round
+## 6. The VU1 tap (step 1d)
+
+`native/coregs3/coregs3_tap.{hpp,cpp}` records what the VU1 microcode actually produced. The recording point is our own
+MTVU adapter: `worker_gif` in `native/mtvu_runtime.cpp` receives every PATH1 (XGKICK) emission with its job id, and the
+synchronous path records there too. The tap copies the bytes after the runtime accepted them and never writes back, so it is
+observe-only like the EE hooks. It is gated to the capture's VBlank window (`GT4_COREGS3_TAP_VBLANKS`, defaulting to
+`GT4_COREGS3_CAPTURE_VBLANKS`), bounded to 96 MB, and stops with a counter when the bound is reached; an unconfigured tap
+is one branch on the normal path.
+
+File `.gt4tap`: header `GT4T`/version, then `u32 bytes, u32 reserved, u64 job, u64 vblank, data[bytes]` per emission.
+
+Reader and analysis: `native/coregs3/coregs3_gif.{hpp,cpp}` (a bounded GIF parser following CoreGS 2.0's own front end:
+GIFtag NLOOP/EOP/PRE/PRIM/FLG/NREG/REGS, PACKED and REGLIST, XYZ2/XYZF2 with the ADC bit at high bit 47, RGBAQ, ST, UV)
+and the tool `gt4_coregs3_tap` (`stats`, `dump`, `fit`).
+
+First measurement (night race, VBlanks 7398-7399, `build/evidence/coregs3/m3/cars.gt4tap`, 3.9 MB):
+
+| Quantity | Value |
+|---|---|
+| emissions (GIF packets) | 2,573 |
+| vertices | 78,326 |
+| vertices the GS draws (ADC = 0) | 23,705 (30%) |
+| vertices marked ADC | 54,621 (70%) |
+| jobs | 60, one per captured draw |
+
+The 70% ADC share matches the plan's independent expectation for race PATH1 data ("70-80% of race vertices are ADC
+no-draw", §2), which is a strong sign that the tap sees the same stream the GS sees. Per job the vertex totals match the
+captured draws' position counts (e.g. job 460209 = 80 vertices = draw 1's 80), so a job is one draw, split into one or
+more XGKICKs (a 56-vertex and a 24-vertex GIF packet in that example).
+
+**Open (the reason the per-vertex gate is not reported yet):** the tapped XYZ values come out around (-1970, +1865) pixels
+for every record, i.e. outside the 640x448 screen for all 2,573 records, with plausible *relative* structure (a car-sized
+box, ADC in pairs). Either the coordinate space needs a transform this round did not identify (a viewport/offset or a
+different fixed-point convention), or the records are a pass other than the visible one. Until that is settled the tap
+cannot be used to fit the projection, so the offline pictures stay labelled as geometry/coverage evidence.
+
+## 7. A measured gotcha: the capture must not write during the guest's frame
+
+At 3x, the night-race gate first came out with 13/13 frames identical and the race clock and digest identical, but
+`state.bin` differed in **512 words** at race-object offsets 0xEC0..0x16BC, and only in `shadow` (the run that writes a
+capture). The reference build against itself is byte-identical, so the dump is deterministic: the capture's `fwrite` on the
+EE thread at VBlank was changing the guest. The region holds coordinates in one run and the allocator's fill pattern in the
+other, i.e. a streaming buffer whose double-buffer pick moved by one.
+
+Fix: the capture now **queues the frame block in memory** and writes the whole file at shutdown, off the guest's timeline.
+The EE-thread cost of a captured frame is then one `memcpy`, not a disk write. This is the same class of trap as
+`GT4_HW_FLARE_DEADLINE_MS`: a capture build must not do I/O where the guest can see the delay.
+
+## 8. Gates run in this round
 
 | Gate | Result |
 |---|---|
 | G-LOGIC on P1-A (`licenca-b1`, 3,511 VBlanks, 1,576 racing) | race clock, per-VBlank digest and the 64 KiB state dump identical in ref, `off` and `shadow` |
-| G-OFF / G-SHADOW frame identity | **not an oracle at 1x**: the reference build differs from itself in frame 3275 (same box). Must run at 3x. |
+| G-OFF / G-SHADOW frame identity | **not an oracle at 1x**: the reference build differs from itself in frame 3275 (same box). |
+| G-OFF / G-SHADOW at 3x, night race (`coregs3-night-check.sh`, 8,997 VBlanks, 1,686 racing, 13 frames) | **passes**: clock, digest, `state.bin` and every frame identical for `off` and `shadow` |
 | CTest `build/t090-v200-coregs3` | 319 tests, 100% passed, 1 skipped (PCSX2-dump test) |
 | Python `tests/python` | 809 tests, OK, 57 skipped |
 | G-ROBUST (capture) | 0 read failures, 0 orphan pass ends, 0 capacity refusals on the observed frames |
 | G-TAP, G-IMAGE, G-PERF | not run yet (the tap and the live seam do not exist) |
 
-## 7. Reproducing
+## 9. Reproducing
 
 ```
 # units with the hooks, then the EE library

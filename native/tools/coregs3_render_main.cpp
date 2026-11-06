@@ -212,6 +212,7 @@ int main(int argc, char **argv) {
 
   bool list = false;
   bool ndc = false;
+  bool counts = false;
   int only_draw = -1;
   int frame_index = -1;
   const char *out = nullptr;
@@ -220,6 +221,7 @@ int main(int argc, char **argv) {
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
     if (argument == "--list") list = true;
+    else if (argument == "--counts") counts = true;
     else if (argument == "--ndc") ndc = true;
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
@@ -230,9 +232,10 @@ int main(int argc, char **argv) {
     else if (argument == "--no-depth") options.depth_test = false;
     else if (argument == "--object") options.object_space = true;
     else if (argument == "--points") options.points = true;
+    else if (argument == "--point-size" && index + 1 < argc) options.point_size = static_cast<std::uint32_t>(std::atoi(argv[++index]));
     else if (argument == "--topology" && index + 1 < argc) {
       const std::string value = argv[++index];
-      options.topology = value == "list" ? Topology::list : Topology::strip;
+      options.topology = value == "list" ? Topology::list : value == "quad" ? Topology::quad : Topology::strip;
     }
     else if (argument == "--draw" && index + 1 < argc) only_draw = std::atoi(argv[++index]);
     else if (argument == "--yaw" && index + 1 < argc) options.object_yaw = static_cast<float>(std::atof(argv[++index]));
@@ -242,6 +245,21 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "gt4_coregs3_render: unknown argument %s\n", argument.c_str());
       return 2;
     }
+  }
+
+  if (counts) {
+    for (const FrameSnapshot &frame : frames) {
+      std::printf("frame %u vblank %llu\n", frame.index, static_cast<unsigned long long>(frame.vblank));
+      MeshOptions mesh_options;
+      for (const CapturedDraw &draw : frame.draws) {
+        Mesh mesh;
+        std::string ignored;
+        const bool ok = build_mesh(frame.packets.data(), frame.packets.size(), draw, mesh_options, mesh, ignored);
+        std::printf("  draw %u items %u value %08X %s %zu\n", draw.sequence, draw.item_count, draw.cmd_value,
+                    ok ? "vertices" : "refused", mesh.vertices.size());
+      }
+    }
+    return 0;
   }
 
   if (ndc) {

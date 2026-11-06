@@ -33,7 +33,8 @@ struct RenderOptions {
   // Object-space view: ignore the draw's captured matrix and frame the captured geometry with one generated camera
   // (yaw/pitch in degrees, orthographic). It is what produces a recognisable picture of the model while the VU1 vertex
   // convention is still being derived (plan step 1d); a picture in this mode is evidence of geometry, not of placement.
-  bool points = false;  // draw vertices as dots instead of triangles (a topology-independent diagnostic)
+  bool points = false;   // draw vertices as dots instead of triangles (a topology-independent diagnostic)
+  std::uint32_t point_size = 1;  // splat radius in pixels
   bool object_space = false;
   float object_yaw = 35.0f;
   float object_pitch = 20.0f;

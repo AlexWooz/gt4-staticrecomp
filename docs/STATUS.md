@@ -8,9 +8,15 @@ VIF packets per frame, 0 read failures and 0 overflow. On P1-A (`licenca-b1`) th
 during the timed run because that camera is a bumper camera (no car in the main view; the car appears at the result
 screen). Identity gate on `licenca-b1` over 3,511 VBlanks (1,576 racing): race clock, per-VBlank simulation digest and the
 64 KiB state dump are identical in the reference build, in `GT4_COREGS3=off` and in `GT4_COREGS3=shadow`; a 1x frame dump
-is not reproducible even for one build against itself (frame 3275), so frame identity has to be run at 3x. Still open for
-phase 1: the VU1 vertex formula and the triangle topology (step 1d, the tap), then the live overlay seam. Design, hook
-table, capture format, measurements and open questions: [COREGS3-HOOKS](COREGS3-HOOKS.md). Nothing ships: CoreGS 3.0 is
+is not reproducible even for one build against itself (frame 3275), so frame identity has to be run at 3x. The **frame identity gate at 3x now passes** on the night race (`coregs3-night-check.sh`: 8,997 VBlanks, 1,686 racing, 13
+frames identical, clock/digest/state identical for `off` and `shadow`); the first attempt exposed a real trap — a capture
+file write on the EE thread at VBlank moved 512 words of the race object, so the capture now queues blocks and writes at
+shutdown. The **VU1 tap** exists (recorded at the MTVU worker's PATH1 emission, bounded, with a GIF parser and
+`gt4_coregs3_tap stats|dump|fit`) and measures 2,573 packets / 78,326 vertices / 70% ADC for two night-race VBlanks, which
+matches the plan's expectation for race PATH1 data. Still open for phase 1: the tap's XYZ does not land in the 640x448
+screen, so the coordinate space, the projection fit, the vertex reference, the triangle topology, the M2 surfaces and then
+the live overlay seam remain. Design, hook table, capture format, measurements and open questions:
+[COREGS3-HOOKS](COREGS3-HOOKS.md). Nothing ships: CoreGS 3.0 is
 off by default, has no launcher entry and no pin or release change. Everything below is the previous state of `main`
 (1.3.0-rc15).
 

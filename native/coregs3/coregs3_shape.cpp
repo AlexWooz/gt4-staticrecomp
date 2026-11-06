@@ -185,6 +185,23 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
     if (start == 0 || start >= vertex_count) continue;
     if (mesh.strip_starts.back() != start) mesh.strip_starts.push_back(start);
   }
+  if (options.topology == Topology::quad) {
+    // Hypothesis from the tap's ADC pattern (two drawn and two culled vertices per group of four): the vertex arrays
+    // are quad groups, each a triangle pair. Tried side by side with the strip reading until the tap settles it.
+    for (std::uint32_t vertex = 0; vertex + 3 < vertex_count; vertex += 4) {
+      mesh.indices.push_back(vertex + 0);
+      mesh.indices.push_back(vertex + 1);
+      mesh.indices.push_back(vertex + 2);
+      mesh.indices.push_back(vertex + 0);
+      mesh.indices.push_back(vertex + 2);
+      mesh.indices.push_back(vertex + 3);
+    }
+    if (mesh.indices.empty()) {
+      error = "no triangles (fewer than four vertices)";
+      return false;
+    }
+    return true;
+  }
   if (options.topology == Topology::list) {
     for (std::uint32_t vertex = 0; vertex + 2 < vertex_count; vertex += 3) {
       mesh.indices.push_back(vertex);

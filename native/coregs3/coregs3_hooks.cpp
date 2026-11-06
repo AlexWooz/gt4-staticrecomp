@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include "coregs3_tap.hpp"
+
 #include "ps2/memory.hpp"
 #include "ps2/system.hpp"
 
@@ -58,6 +60,7 @@ struct State {
   std::uint64_t frame_overflow_flags = 0;
   FrameSnapshot frame;
   std::vector<std::uint8_t> block;
+  std::vector<std::vector<std::uint8_t>> pending_blocks;  // frame blocks waiting for the shutdown flush
   CaptureCounters counters;
   CameraSnapshot camera;
 };
@@ -289,6 +292,7 @@ void configure_from_environment() {
   }
 
   g.all_draws = std::getenv("GT4_COREGS3_ALL_DRAWS") != nullptr;
+  configure_tap_from_environment();
   const char *path = std::getenv("GT4_COREGS3_CAPTURE");
   if (const char *trace = std::getenv("GT4_COREGS3_TRACE_FRAMES"); trace != nullptr && *trace != '\0')
     g.trace_frames = static_cast<std::uint64_t>(std::strtoll(trace, nullptr, 10));
@@ -314,7 +318,14 @@ void configure_from_environment() {
 }
 
 void shutdown() {
+  tap_shutdown();
   if (g.capture != nullptr) {
+    for (const std::vector<std::uint8_t> &block : g.pending_blocks)
+      if (std::fwrite(block.data(), 1, block.size(), g.capture) != block.size()) {
+        std::fprintf(stderr, "[coregs3] capture write failed while flushing\n");
+        break;
+      }
+    g.pending_blocks.clear();
     std::fclose(g.capture);
     g.capture = nullptr;
   }
@@ -333,6 +344,7 @@ void at_vblank(std::uint64_t vblank) noexcept {
   reset_frame();
   g.frame_open = true;
   g.vblank = vblank;
+  tap_at_vblank(vblank);
   if (vblank != 0 && vblank % 600 == 0) print_report(stderr);
 }
 
@@ -555,6 +567,11 @@ void print_report(std::FILE *out) noexcept {
                static_cast<unsigned long long>(c.overflow), static_cast<unsigned long long>(g.vblank), c.largest_items,
                c.largest_draw_bytes, c.largest_frame_bytes, static_cast<unsigned long long>(g.pass_count),
                static_cast<unsigned long long>(g.orphan_pass_ends));
+  const TapCounters &tap = tap_counters();
+  if (tap.records != 0)
+    std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",
+                 static_cast<unsigned long long>(tap.records), static_cast<unsigned long long>(tap.bytes),
+                 static_cast<unsigned long long>(tap.refused));
 }
 
 }  // namespace gt4::coregs3

@@ -461,7 +461,9 @@ target_compile_options(mtvu_perf_fixture PRIVATE /W4)
 target_link_libraries(mtvu_journal_fixture PRIVATE gt4_mtvu_journal)
 target_compile_options(mtvu_journal_fixture PRIVATE /W4)
 # TASK-011 step 2: worker runtime (EE shadow, worker dispatch, journal drain). Linked into the slice170 runtime only.
-add_library(gt4_mtvu_runtime STATIC mtvu_runtime.cpp)
+# TASK-090: the VU1 tap lives with the worker that emits PATH1 (coregs3_tap.cpp); an unconfigured tap is one branch.
+add_library(gt4_mtvu_runtime STATIC mtvu_runtime.cpp coregs3/coregs3_tap.cpp)
+target_include_directories(gt4_mtvu_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_link_libraries(gt4_mtvu_runtime PUBLIC gt4_mtvu_journal gt4_mtvu_measure gt4_perf_probe gt4_quickfix)
 target_compile_options(gt4_mtvu_runtime PRIVATE /W4)
 # TASK-035: GS stream protocol, shared-memory transport and .gscap v2 files (MIT, no donor or renderer code), the
@@ -968,10 +970,12 @@ add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.
 target_sources(gt4vulkan PRIVATE camera_360_hook.cpp fov_adjust_hook.cpp)
 # TASK-090: the host side of the observe-only hooks scripts/coregs3_units.py adds. Only a build whose EE library carries
 # those calls needs (and must define) this, so it stays behind GT4_COREGS3.
+# The tap entry points are called from the MTVU runtime whatever the switch says (an unconfigured tap is one branch), so
+# the small core library is always linked; only the hooks themselves need the instrumented EE library.
+target_link_libraries(gt4vulkan PRIVATE gt4_coregs3)
 if(GT4_COREGS3)
     target_sources(gt4vulkan PRIVATE coregs3/coregs3_hooks.cpp)
     target_compile_definitions(gt4vulkan PRIVATE GT4_COREGS3_HOOKS)
-    target_link_libraries(gt4vulkan PRIVATE gt4_coregs3)
 endif()
 # TASK-095: the same for the 2D overlay ortho calls and the strobe text (native/display_aspect.hpp).
 target_sources(gt4vulkan PRIVATE display_aspect_hook.cpp)
@@ -1072,7 +1076,7 @@ target_compile_options(shape_observer_fixture PRIVATE /W4)
 # an EE library built from the units scripts/coregs3_units.py instruments.
 add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
-    coregs3/coregs3_render.cpp coregs3/coregs3_png.cpp)
+    coregs3/coregs3_render.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 add_executable(coregs3_fixture coregs3/coregs3_fixture.cpp)
@@ -1083,6 +1087,10 @@ add_test(NAME native_coregs3 COMMAND $<TARGET_FILE:coregs3_fixture>)
 add_executable(gt4_coregs3_render tools/coregs3_render_main.cpp)
 target_link_libraries(gt4_coregs3_render PRIVATE gt4_coregs3)
 target_compile_options(gt4_coregs3_render PRIVATE /W4)
+# The VU1 tap analysis (plan step 1d): what the microcode produced, and the fit of the transform it applied.
+add_executable(gt4_coregs3_tap tools/coregs3_tap_main.cpp)
+target_link_libraries(gt4_coregs3_tap PRIVATE gt4_coregs3)
+target_compile_options(gt4_coregs3_tap PRIVATE /W4)
 option(GT4_COREGS3 "Link the CoreGS 3.0 observe-only capture hooks (needs an EE library from scripts/coregs3_units.py)" OFF)
 add_executable(perf_accounting_fixture perf_accounting_fixture.cpp)
 target_compile_options(perf_accounting_fixture PRIVATE /W4)

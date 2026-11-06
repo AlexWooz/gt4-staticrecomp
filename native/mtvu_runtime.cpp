@@ -13,6 +13,7 @@
 #include "fov_adjust.hpp"
 #include "perf_clock.hpp"
 #include "perf_probe.hpp"
+#include "coregs3/coregs3_tap.hpp"
 
 #include <algorithm>
 #include <array>
@@ -717,6 +718,7 @@ void gif_transfer(int path, const std::uint8_t *data, std::uint32_t qwc) {
   Runtime &r = rt();
   if (path < 0 || path > 3) throw std::logic_error("mtvu GIF path out of range");
   if (!enabled()) {
+    if (path == 1) gt4::coregs3::tap_path1(0, data, static_cast<std::size_t>(qwc) * 16);
     r.donor.render_gs(path, data, qwc);
     return;
   }
@@ -942,6 +944,7 @@ void worker_gif(int path, const std::uint8_t *data, std::uint32_t qwc) {
     }
   }
   gt4::perf::Scope output(gt4::perf::Category::mtvu_output);
+  if (path == 1) gt4::coregs3::tap_path1(r.worker_job, data, static_cast<std::size_t>(qwc) * 16);
   r.worker_end->emit_gif(static_cast<std::uint8_t>(path), r.worker_job, data, static_cast<std::size_t>(qwc) * 16);
 }
 

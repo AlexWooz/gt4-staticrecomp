@@ -64,8 +64,9 @@ void rasterise(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &
       if (!vertex.valid) continue;
       const int centre_x = static_cast<int>(vertex.x);
       const int centre_y = static_cast<int>(vertex.y);
-      for (int dy = -1; dy <= 1; ++dy)
-        for (int dx = -1; dx <= 1; ++dx) {
+      const int radius = static_cast<int>(options.point_size);
+      for (int dy = -radius; dy <= radius; ++dy)
+        for (int dx = -radius; dx <= radius; ++dx) {
           const int x = centre_x + dx, y = centre_y + dy;
           if (x < 0 || y < 0 || x >= static_cast<int>(width) || y >= static_cast<int>(height)) continue;
           const std::size_t pixel = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);

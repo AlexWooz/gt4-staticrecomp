@@ -528,6 +528,11 @@ without a `private/` junction (AGENTS.md). Untainted agent.
 
 **Scenes.**
 - P1-A `licenca-b1` (v2.00, existing recording; dumps at VBlanks 2050-2430 every 20).
+  **Update 2026-11-05 (measured): P1-A is not a car scene.** Its timed run uses a bumper camera: the K5 bracket runs every
+  frame and captures 0 car draws, and the reference frame at VBlank 2060 shows the road and the HUD with no car body. The
+  car only appears at the result screen (~VBlank 3000) through a different pass. P1-A therefore stays as an **identity**
+  scene (G-OFF/G-SHADOW, clock/digest/state) and **P1-B, the night race, is the phase-1 car scene**. See
+  [COREGS3-HOOKS](COREGS3-HOOKS.md) §5 and decision 0077.
 - P1-B `night-run.sh` (six cars, night; dumps 7400-11000 every 600).
 - P1-C a new synthetic v2.00 Arcade time trial written as a press script by the agent (car and track available on the
   Arcade card; the owner's Supra/Nordschleife only if a card with it exists among the bench cards).

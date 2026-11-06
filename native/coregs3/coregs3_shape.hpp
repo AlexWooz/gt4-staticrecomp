@@ -71,7 +71,7 @@ struct Mesh {
   std::uint32_t triangles() const { return static_cast<std::uint32_t>(indices.size() / 3); }
 };
 
-enum class Topology : std::uint8_t { strip = 0, list = 1 };
+enum class Topology : std::uint8_t { strip = 0, list = 1, quad = 2 };
 
 struct MeshOptions {
   // The compressed 16-bit positions are divided by this (Nenkai's reader uses 4096; docs plan §4.2 calls it a

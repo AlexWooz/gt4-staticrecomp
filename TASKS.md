@@ -1524,8 +1524,20 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
 - Open (step 1d): the VU1 vertex formula and the triangle topology. Positions, channels and the `0xC1` matrix packet are
   confirmed; `vf27` holds a world position and `+0xFA0` holds 2D state in the observed frames, so the projection is not
   captured yet. The offline pictures are a labelled point cloud until the tap lands.
-- Next: the VU1 tap (`GT4_COREGS3_CAPTURE` + draw markers), the vertex reference against it, then the live overlay seam
-  (review work) and the 3x G-IMAGE gate.
+- Round 2: **the VU1 tap exists** (`native/coregs3/coregs3_tap.*`, recorded at the MTVU worker's PATH1 emission, gated to
+  the capture window, bounded to 96 MB) with a bounded GIF parser and the `gt4_coregs3_tap` tool (`stats`/`dump`/`fit`).
+  On the night race it records 2,573 GIF packets / 78,326 vertices for two VBlanks, with **70% ADC no-draw** — the plan's
+  own expectation for race PATH1 data — and per-job vertex totals equal to the captured draws' position counts.
+- **Frame identity at 3x now passes** (`scripts/coregs3_bench/coregs3-night-check.sh`): 8,997 VBlanks, 1,686 racing, 13
+  frames, `off` and `shadow` both identical to the reference in clock, digest, `state.bin` and every frame. The first run
+  failed because the capture wrote the file on the EE thread at VBlank (512 words of the race object); the capture now
+  queues the blocks and writes at shutdown.
+- Still open (step 1d): the tap's XYZ does not land in the 640x448 screen (2,549 of 2,573 records), so the coordinate
+  space or the pass the records belong to has to be identified before the projection can be fitted; the triangle topology
+  (strip/list/quad readings all fail) follows the same analysis. The per-vertex G-TAP gate and the M2 surfaces are
+  therefore **not** reported. M4 (the live seam) was not started: the brief's steps 1-2 are not solid.
+- Next: settle the tap's coordinate space (compare a *known* full-screen pass first), then the projection fit, the vertex
+  reference, the topology, the M2 surfaces, and only then the live overlay seam (review work) and G-IMAGE.
 
 
 ### TASK-087 — GS readbacks without stalls
