@@ -4311,19 +4311,25 @@ orchestrator publishes.
    identical frames), the v2.00 night race (10 of 10, state identical), the Arcade path (14 of 14) and Spec II at 6x (12 of
    12); VU1 236,448 and VU0 39,731 samples on Spec II, VU1 355,388 and VU0 56,156 on v2.00, MTVU 8,032 frames, 0 differences.
 4. **Tests:** CTest 318 of 319 on each game (`hw_replace_q07_pcsx2_dumps` skipped; 605.7 s and 584.4 s), Python 804 (57
-   skipped), launcher `cargo test --workspace` 778 (9 ignored), focus checks 396/396 en-US and 403/403 pt-BR, nav-test 265/265,
+   skipped), launcher `cargo test --workspace` 778 (9 ignored), focus checks 413/413 en-US and 420/420 pt-BR, nav-test 265/265,
    locale keys 917 in both, no JS errors; a headless smoke boot of each game to its title screen (frame 1800: v2.00 640x448,
    64,490 colours, 21,405 primitives; Spec II 26,024 colours).
-5. **Release files:** launchers labelled rc15 (`private/slice413-launchers-rc15`, installer `0ea142c3...` 19,362,304 bytes,
-   portable `f588e14e...` 19,374,080 bytes); distribution `private/slice413-dist-130-rc15` (19 files); installer
-   `GT4Recomp-Setup-1.3.0-rc15.exe` (`aa8c6399...`, 52,363,255 bytes) and portable zip
-   `GT4Recomp-1.3.0-rc15-portable.zip` (`c272855a...`, 81,492,076 bytes) in `private/release-130-rc15-pgo-out` with
+5. **Release files:** launchers labelled rc15 (`private/slice413-launchers-rc15`, installer `cf758982...` 19,366,400 bytes,
+   portable `8505d2f2...` 19,378,176 bytes); distribution `private/slice413-dist-130-rc15` (19 files); installer
+   `GT4Recomp-Setup-1.3.0-rc15.exe` (`a7b06572...`, 52,374,302 bytes) and portable zip
+   `GT4Recomp-1.3.0-rc15-portable.zip` (`a851b60c...`, 81,496,120 bytes) in `private/release-130-rc15-pgo-out` with
    `SHA256SUMS`; 24 of 24 installer payload files and 24 of 24 zip files equal to their sources (`PORTABLE.txt` generated).
 6. **Found and fixed:** the dev mock (`ui/dev/mock-data.js`) stored `ffb.centering_spring` as the page's `"game"`/`"off"`
    token instead of the boolean `gt4l_core` keeps, so the two Centring spring focus checks failed on a truthy `"off"`; the mock
    now normalises exactly like `WheelConfig::set_setting`.
 7. **Not done:** the GitHub release (the orchestrator's step); no in-game play test of this build (the owner's test of the
    rc15 line is the confirmation).
+
+**TASK-199 follow-up (2026-11-06).** `origin/release/1.3.0-rc15` at 265487b5 (TASK-199's info cards in a top layer, the
+TASK-200 record) merged at 75828b9a; the TASKS, STATUS and journal conflicts keep both sides and the rc15 notes keep
+TASK-199's bullet in both languages, and the dev mock keeps the centring-spring fix. The games, the EE libraries and the
+pins are untouched: only the two launchers, the installer and the zip above were rebuilt, and the launcher checks re-ran
+(cargo 778, focus checks 413/413 and 420/420, nav-test 265/265, locale keys 917).
 
 ### TASK-199: info cards (tooltips) draw above everything (owner, 2026-11-06; for the rc15 test build)
 
