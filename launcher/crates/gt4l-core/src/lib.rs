@@ -20,6 +20,7 @@ pub mod log_export;
 pub mod logs;
 pub mod messages;
 pub mod migrate;
+pub mod moves;
 pub mod paths;
 pub mod portable_update;
 pub mod releases;

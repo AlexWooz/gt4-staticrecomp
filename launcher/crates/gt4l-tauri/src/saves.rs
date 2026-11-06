@@ -13,6 +13,7 @@ use gt4l_core::games::{self, Game};
 use gt4l_core::guard;
 use gt4l_core::language::Language;
 use gt4l_core::messages;
+use gt4l_core::moves;
 use gt4l_core::paths::{DataDirs, UserDirs, UserRootSource};
 use gt4saves::card::Node;
 use gt4saves::folder::FolderError;
@@ -73,6 +74,7 @@ fn open_at(user: &UserDirs, names: SaveNames, pre_1_0_root: Option<&Path>, log: 
             &user.library_migration_marker(),
             &gt4saves::timestamp(),
             &migration::copy_file,
+            &moves::move_path,
         );
         log.push(outcome.describe(&targets));
         let old_library = old_root.join("library");
@@ -266,14 +268,36 @@ fn describe_found(found: &[String], language: Language) -> String {
 /// moved to `backups`, so the next Play does not harvest the old save back into the empty Active folder. Returns the slot
 /// the old save went to.
 pub fn new_save(library: &Library, runtime_card: &Path) -> Result<Option<String>, String> {
+    new_save_with(library, runtime_card, &moves::MoveOps::real())
+}
+
+/// [`new_save`] with the file operations given, so a test can make the move between the card and the backups report
+/// another volume.
+fn new_save_with(library: &Library, runtime_card: &Path, file_ops: &moves::MoveOps<'_>) -> Result<Option<String>, String> {
     harvest_card(library, runtime_card)?;
-    if runtime_card.is_file() {
-        let backups = library.paths().backups.clone();
-        fs::create_dir_all(&backups).map_err(|error| format!("{}: {error}", backups.display()))?;
-        let target = backups.join(format!("{}-before-new-save.ps2", gt4saves::timestamp()));
-        fs::rename(runtime_card, &target).map_err(|error| format!("{}: {error}", runtime_card.display()))?;
-    }
+    park_runtime_card(library, runtime_card, gt4saves::library::NEW_SAVE_BACKUP_SUFFIX, file_ops)?;
     library.new_save().map_err(|error| error.to_string())
+}
+
+/// Moves the card the game reads into `<backups>\<timestamp><suffix>`, so the next Play builds a fresh card instead of
+/// harvesting the save that was just deleted or kept aside. The card and the backups are on different drives in some
+/// installs (the card lives in the `<install>\data` folder, the backups in `%APPDATA%`; issue #208), so this goes through
+/// [`moves::move_path`]: a plain rename would fail there and leave the stale card in place, which brings a deleted save
+/// back at the next Play.
+fn park_runtime_card(
+    library: &Library,
+    runtime_card: &Path,
+    suffix: &str,
+    file_ops: &moves::MoveOps<'_>,
+) -> Result<(), String> {
+    if !runtime_card.is_file() {
+        return Ok(());
+    }
+    let backups = library.paths().backups.clone();
+    fs::create_dir_all(&backups).map_err(|error| format!("{}: {error}", backups.display()))?;
+    let target = backups.join(format!("{}{suffix}", gt4saves::timestamp()));
+    moves::move_path_with(runtime_card, &target, file_ops).map_err(|error| format!("{}: {error}", runtime_card.display()))?;
+    Ok(())
 }
 
 /// The `.psu` bytes of a save, and the file name the save dialog suggests (`<name>.psu`).
@@ -428,16 +452,24 @@ fn report_text(report: &Report, language: Language) -> String {
 
 /// Sends a library item to the Recycle Bin. Deleting the active save also parks the runtime card: what the last run left on
 /// it is harvested first (so unharvested progress is not lost), then the card moves to `backups` as
-/// `<timestamp>-before-delete.ps2`. Without that, the next Play would harvest the deleted save back from the stale card. The
-/// caller refuses this while the game runs.
+/// `<timestamp>-before-delete.ps2`. Without that, the next Play would harvest the deleted save back from the stale card,
+/// which is the whole of issue #208 on an install whose card and library are on different drives. The caller refuses this
+/// while the game runs.
 pub fn delete(library: &Library, item: &Item, runtime_card: &Path) -> Result<(), String> {
-    delete_with(library, item, runtime_card, &recycle::move_to_recycle_bin)
+    delete_with(library, item, runtime_card, &recycle::move_to_recycle_bin, &moves::MoveOps::real())
 }
 
-/// [`delete`] with the removal of the item's folder given (the Recycle Bin for the launcher, a plain removal in tests).
-fn delete_with(library: &Library, item: &Item, runtime_card: &Path, remove: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+/// [`delete`] with the removal of the item's folder and the file operations given (the Recycle Bin and real moves for the
+/// launcher, a plain removal and a rename that can report another volume in tests).
+fn delete_with(
+    library: &Library,
+    item: &Item,
+    runtime_card: &Path,
+    remove: &dyn Fn(&Path) -> Result<(), String>,
+    file_ops: &moves::MoveOps<'_>,
+) -> Result<(), String> {
     if item.active {
-        return delete_active(library, runtime_card, remove);
+        return delete_active(library, runtime_card, remove, file_ops);
     }
     let path = if item.name.starts_with(SLOT_PREFIX) {
         library.slot_dir(&item.name)
@@ -452,18 +484,18 @@ fn delete_with(library: &Library, item: &Item, runtime_card: &Path, remove: &dyn
 
 /// Deletes the active save: harvest the runtime card, park it in `backups`, move the save to the Recycle Bin and clear its
 /// display name. The next Play builds a card without a game save, so the game starts a new profile.
-fn delete_active(library: &Library, runtime_card: &Path, remove: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+fn delete_active(
+    library: &Library,
+    runtime_card: &Path,
+    remove: &dyn Fn(&Path) -> Result<(), String>,
+    file_ops: &moves::MoveOps<'_>,
+) -> Result<(), String> {
     harvest_card(library, runtime_card)?;
     let path = library.active_save_dir();
     if !path.is_dir() {
         return Err("The active save is not in the library any more".to_string());
     }
-    if runtime_card.is_file() {
-        let backups = library.paths().backups.clone();
-        fs::create_dir_all(&backups).map_err(|error| format!("{}: {error}", backups.display()))?;
-        let target = backups.join(format!("{}{}", gt4saves::timestamp(), gt4saves::library::DELETE_BACKUP_SUFFIX));
-        fs::rename(runtime_card, &target).map_err(|error| format!("{}: {error}", runtime_card.display()))?;
-    }
+    park_runtime_card(library, runtime_card, gt4saves::library::DELETE_BACKUP_SUFFIX, file_ops)?;
     remove(&path)?;
     library.clear_active_name().map_err(|error| error.to_string())
 }
@@ -679,6 +711,44 @@ mod tests {
         fs::remove_dir_all(path).map_err(|error| error.to_string())
     }
 
+    /// The moves of a one-volume machine.
+    fn moves_here() -> moves::MoveOps<'static> {
+        moves::MoveOps::real()
+    }
+
+    fn copy_file(from: &Path, to: &Path) -> std::io::Result<u64> {
+        fs::copy(from, to)
+    }
+
+    /// A rename that reports another volume when the two places are on either side of `install`, as Windows does for an
+    /// install on `F:` whose save library is on `C:` (issue #208). A staging copy beside its destination still renames: it
+    /// is on the destination's own volume.
+    fn cross_drive_rename(install: &Path, from: &Path, to: &Path) -> std::io::Result<()> {
+        let staging = from.file_name().is_some_and(|name| name.to_string_lossy().contains(".moving"));
+        if !staging && from.starts_with(install) != to.starts_with(install) {
+            return Err(std::io::Error::from_raw_os_error(moves::ERROR_NOT_SAME_DEVICE));
+        }
+        fs::rename(from, to)
+    }
+
+    /// A card file left by the game, and the folders of an install on another drive.
+    fn other_drive_card(data: &Path, items: &[Node]) -> PathBuf {
+        let install = data.join("install-data").join("games").join("gt4").join("runtime");
+        fs::create_dir_all(&install).unwrap();
+        let card = install.join("card.ps2");
+        fs::write(&card, card_with(items)).unwrap();
+        card
+    }
+
+    /// The parked card in `backups` whose name ends with `suffix` (there is one in each test).
+    fn parked_cards(library: &Library, suffix: &str) -> Vec<PathBuf> {
+        fs::read_dir(library.paths().backups.clone())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().ends_with(suffix)))
+            .collect()
+    }
+
     #[test]
     fn deleting_the_active_save_clears_it() {
         let data = scratch("delete");
@@ -688,7 +758,7 @@ mod tests {
         harvest_card(&library, &card).unwrap();
         library.rename_save(GT4.save_folder, "My career").unwrap();
         assert!(library.active_dir().join(gt4saves::library::NAME_FILE).is_file());
-        delete_with(&library, &active_item(), &data.join("no-runtime-card.ps2"), &remove_folder).unwrap();
+        delete_with(&library, &active_item(), &data.join("no-runtime-card.ps2"), &remove_folder, &moves_here()).unwrap();
         assert!(!library.active_dir().join(GT4.save_folder).exists(), "the save left the library");
         assert!(!library.active_dir().join(gt4saves::library::NAME_FILE).exists(), "its display name is gone");
         assert!(!names(&saves(&library).unwrap()).contains(&GT4.save_folder.to_string()));
@@ -704,7 +774,7 @@ mod tests {
         fs::create_dir_all(runtime_card.parent().unwrap()).unwrap();
         fs::write(&runtime_card, card_with(&[game_save(5), replay()])).unwrap();
         harvest_card(&library, &runtime_card).unwrap();
-        delete_with(&library, &active_item(), &runtime_card, &remove_folder).unwrap();
+        delete_with(&library, &active_item(), &runtime_card, &remove_folder, &moves_here()).unwrap();
         assert!(!runtime_card.exists(), "the stale runtime card is moved away");
         let parked: Vec<String> = fs::read_dir(&library.paths().backups)
             .unwrap()
@@ -719,6 +789,79 @@ mod tests {
         assert!(!root.iter().any(|name| name == GT4.save_folder), "no game save on the next card: {root:?}");
         assert!(root.iter().any(|name| name == REPLAY), "the replay is still there: {root:?}");
         assert!(!library.active_dir().join(GT4.save_folder).exists(), "and Play did not bring the save back");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn deleting_the_active_save_parks_a_card_from_another_drive_and_the_next_play_starts_clean() {
+        // Issue #208: the game and its data folder on one drive, `%APPDATA%` (the library and the card backups) on
+        // another. The park was a plain rename, which Windows refuses across volumes, so the save was never deleted.
+        let data = scratch("delete-other-drive");
+        let (_, library) = open_scratch(&data);
+        let install = data.join("install-data");
+        let card_before = card_with(&[game_save(5), replay()]);
+        let runtime_card = other_drive_card(&data, &[game_save(5), replay()]);
+        harvest_card(&library, &runtime_card).unwrap();
+        library.rename_save(GT4.save_folder, "My career").unwrap();
+
+        let rename = |from: &Path, to: &Path| cross_drive_rename(&install, from, to);
+        let file_ops = moves::MoveOps { rename: &rename, copy_file: &copy_file };
+        delete_with(&library, &active_item(), &runtime_card, &remove_folder, &file_ops).unwrap();
+
+        assert!(!runtime_card.exists(), "the card on the other drive is moved away, so nothing brings the save back");
+        assert!(!library.active_dir().join(GT4.save_folder).exists(), "the save left the library");
+        assert!(!library.active_dir().join(gt4saves::library::NAME_FILE).exists(), "its display name is gone");
+        let parked = parked_cards(&library, gt4saves::library::DELETE_BACKUP_SUFFIX);
+        assert_eq!(parked.len(), 1, "{parked:?}");
+        assert_eq!(fs::read(&parked[0]).unwrap(), card_before, "the card is kept whole, byte for byte");
+
+        prepare_card(&library, &runtime_card, Language::fallback()).unwrap();
+        let rebuilt = Card::from_image(&fs::read(&runtime_card).unwrap()).unwrap().root().unwrap();
+        let root: Vec<String> = rebuilt.iter().map(|node| node.name()).collect();
+        assert!(!root.iter().any(|name| name == GT4.save_folder), "no game save on the next card: {root:?}");
+        assert!(!library.active_dir().join(GT4.save_folder).exists(), "and Play did not bring the save back");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_new_save_from_an_install_on_another_drive_parks_the_card_and_keeps_the_old_save() {
+        let data = scratch("new-save-other-drive");
+        let (_, library) = open_scratch(&data);
+        let install = data.join("install-data");
+        let runtime_card = other_drive_card(&data, &[game_save(6), replay()]);
+
+        let rename = |from: &Path, to: &Path| cross_drive_rename(&install, from, to);
+        let file_ops = moves::MoveOps { rename: &rename, copy_file: &copy_file };
+        let parked = new_save_with(&library, &runtime_card, &file_ops).unwrap();
+
+        assert_eq!(parked, Some("Save 01".to_string()), "the old save went to a slot");
+        assert!(!runtime_card.exists(), "the card on the other drive is moved away");
+        assert_eq!(parked_cards(&library, gt4saves::library::NEW_SAVE_BACKUP_SUFFIX).len(), 1);
+        assert!(library.slot_dir("Save 01").join(GT4.save_folder).is_dir());
+        assert!(!library.active_dir().join(GT4.save_folder).exists(), "Active is empty, so the game starts a new profile");
+
+        prepare_card(&library, &runtime_card, Language::fallback()).unwrap();
+        let rebuilt = Card::from_image(&fs::read(&runtime_card).unwrap()).unwrap().root().unwrap();
+        let root: Vec<String> = rebuilt.iter().map(|node| node.name()).collect();
+        assert!(!root.iter().any(|name| name == GT4.save_folder), "the new card carries no save: {root:?}");
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_card_on_another_drive_is_harvested_into_the_library_and_written_back_there() {
+        let data = scratch("harvest-other-drive");
+        let (_, library) = open_scratch(&data);
+        let runtime_card = other_drive_card(&data, &[game_save(8), replay()]);
+
+        let report = harvest_card(&library, &runtime_card).unwrap();
+        assert!(report.added.contains(&GT4.save_folder.to_string()));
+        assert!(library.active_dir().join(GT4.save_folder).is_dir(), "the save is in the library, on its own drive");
+        assert!(library.replays_dir().join(REPLAY).is_dir());
+
+        prepare_card(&library, &runtime_card, Language::fallback()).unwrap();
+        let rebuilt = Card::from_image(&fs::read(&runtime_card).unwrap()).unwrap().root().unwrap();
+        let root: Vec<String> = rebuilt.iter().map(|node| node.name()).collect();
+        assert_eq!(root, vec![GT4.save_folder.to_string(), REPLAY.to_string()], "the card keeps the save and the replay");
         let _ = fs::remove_dir_all(&data);
     }
 

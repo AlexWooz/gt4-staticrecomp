@@ -143,6 +143,10 @@ pub fn copy_file(from: &Path, to: &Path) -> io::Result<u64> {
     fs::copy(from, to)
 }
 
+/// Moves a file or a folder. The launcher passes one that also works across volumes (the old library may be on the
+/// Windows drive and the data folder on another one, issue #208); the tests pass their own.
+pub type Mover<'a> = &'a dyn Fn(&Path, &Path) -> io::Result<()>;
+
 /// Every file under `folder` (recursively), sorted. A missing folder has none.
 fn files_under(folder: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
@@ -295,7 +299,15 @@ fn write_marker(marker: &Path, outcome: &Outcome, sources: &LegacySources, targe
 
 /// Runs the migration once. `data_root` is the AppData data folder (the parked folder goes there), `marker` the
 /// JSON marker, `stamp` the UTC timestamp used in folder names. Never panics; every problem is in the outcome.
-pub fn migrate(sources: &LegacySources, targets: &Targets, data_root: &Path, marker: &Path, stamp: &str, copier: Copier<'_>) -> Outcome {
+pub fn migrate(
+    sources: &LegacySources,
+    targets: &Targets,
+    data_root: &Path,
+    marker: &Path,
+    stamp: &str,
+    copier: Copier<'_>,
+    mover: Mover<'_>,
+) -> Outcome {
     if marker_status(marker).as_deref() == Some("migrated") {
         return Outcome::AlreadyMigrated;
     }
@@ -314,7 +326,7 @@ pub fn migrate(sources: &LegacySources, targets: &Targets, data_root: &Path, mar
     if new_files > 0 {
         return record(marker, Outcome::Conflict { old_files, new_files }, sources, targets, stamp);
     }
-    let outcome = match copy_and_swap(sources, targets, data_root, stamp, copier) {
+    let outcome = match copy_and_swap(sources, targets, data_root, stamp, copier, mover) {
         Ok(outcome) => outcome,
         Err(error) => Outcome::Failed(error),
     };
@@ -331,7 +343,14 @@ fn record(marker: &Path, outcome: Outcome, sources: &LegacySources, targets: &Ta
     outcome
 }
 
-fn copy_and_swap(sources: &LegacySources, targets: &Targets, data_root: &Path, stamp: &str, copier: Copier<'_>) -> Result<Outcome, String> {
+fn copy_and_swap(
+    sources: &LegacySources,
+    targets: &Targets,
+    data_root: &Path,
+    stamp: &str,
+    copier: Copier<'_>,
+    mover: Mover<'_>,
+) -> Result<Outcome, String> {
     let saves_stage = staging_for(&targets.saves, stamp);
     let replays_stage = staging_for(&targets.replays, stamp);
     let rollback = || {
@@ -383,7 +402,8 @@ fn copy_and_swap(sources: &LegacySources, targets: &Targets, data_root: &Path, s
         rollback();
         return Err(format!("{}: {error}", targets.replays.display()));
     }
-    // Park the old folders: renamed, never deleted.
+    // Park the old folders: moved, never deleted. The old library and the data folder are on different drives in some
+    // installs (issue #208), so this uses the launcher's cross-volume move rather than a plain rename.
     let parked = data_root.join(format!("library.migrated-{stamp}"));
     let mut park_problems = Vec::new();
     if let Err(error) = fs::create_dir_all(&parked) {
@@ -391,8 +411,8 @@ fn copy_and_swap(sources: &LegacySources, targets: &Targets, data_root: &Path, s
     } else {
         for (folder, name) in sources.folders() {
             if folder.exists() {
-                if let Err(error) = fs::rename(&folder, parked.join(&name)) {
-                    park_problems.push(format!("{} was not renamed ({error}); it keeps its data", folder.display()));
+                if let Err(error) = mover(&folder, &parked.join(&name)) {
+                    park_problems.push(format!("{} was not moved ({error}); it keeps its data", folder.display()));
                 }
             }
         }

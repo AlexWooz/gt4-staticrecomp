@@ -3779,6 +3779,36 @@ the 1.3.0 final, so a slower PC turns off only what costs frames.
   minimum (the launcher accepts gt4-gs >= 1.2.1 today).
 - State (2026-11-06): implemented on `task/186-effect-toggles-pc`; owner test with the G27 pending.
 
+### TASK-188: saves when the install and the save library are on different drives (issue #208; rc15)
+
+**Why.** A player on Windows 10 with Spec II (1.3.0-rc14, issue #208) could not delete a save: pressing Delete did nothing,
+deleting `%APPDATA%\GT4Recomp\games\spec2\Saves` by hand brought the save back at the next start, and New save failed with
+`data\games\spec2\runtime\card.ps2: ... (os error 17)`. `os error 17` is `ERROR_NOT_SAME_DEVICE`: the install (its `data`
+folder with the runtime card) is on `F:` and `%APPDATA%` (the save library and the card backups) is on `C:`, and the launcher
+moved the card between them with `fs::rename`, which Windows only allows inside one volume.
+
+**What.**
+- One helper for moves, `gt4l_core::moves::move_path`: a rename when both places are on one volume (unchanged, atomic, it still
+  replaces the target in one step, so the library's guarantees stay), and across volumes (`ERROR_NOT_SAME_DEVICE` 17 on Windows,
+  `EXDEV` 18 on Unix) a copy, checked file by file against its source (size and SHA-256), placed through a staging name on the
+  destination's volume, and only then the source removed. A failed check keeps the source and removes only the half copy.
+  `MoveOps` lets a test make the rename report another volume, which is how a two-drive PC is reproduced on CI's one volume.
+- Deleting the active save and New save park the runtime card through it, so the card really leaves the drive it lives on and
+  the next Play builds a card without that save. Deleting a save by hand in `%APPDATA%` no longer returns, because the stale
+  card on the other drive is no longer harvested.
+- The pre-1.0 save-library migration parks the old folders through the same helper (the old library and the data folder are on
+  different drives in the same layout).
+- Audit of every `fs::rename` in `launcher/crates` (51 sites, 45 in product code): the other sites are inside one folder
+  (temporary file to its target, `Active` to `Save NN` inside `Saves`, staging to `prepared` inside a game folder, a version
+  folder inside `gs`, the portable update's own folders) or already carry their own cross-volume path (`relocate`, `games_layout`,
+  and the installer build's own swaps). None of them can cross volumes in a supported layout, so none changed.
+- Tests: unit tests for the helper (same-volume rename never copies; a file and a folder across volumes; a truncated copy is
+  refused with the source kept; a missing destination folder; a replaced target), flow tests for delete, New save and harvest
+  with the runtime card and the library under different roots, a migration test that the park goes through the mover given and
+  keeps the data when it fails, and the existing save tests unchanged.
+- Games unchanged (slice411); launchers labelled rc15; installer and portable zip in `private/release-130-rc15c-out`.
+- State (2026-11-06): implemented on `task/188-cross-drive-saves`; owner test pending.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
@@ -3800,6 +3830,7 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner's G27 test pending |
 | TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner) |
 | TASK-186 | Effect toggles instead of Performance Mode, both renderers (owner, 2026-11-06) | `task/186-effect-toggles-pc` | ✅ For the rc15 test build (owner test pending); `task/180-android-emulator` gets the same correction |
+| TASK-188 | Saves on a PC whose install and save library are on different drives (issue #208) | `task/188-cross-drive-saves` | ✅ For the rc15 test build (owner test pending) |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
