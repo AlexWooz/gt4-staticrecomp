@@ -3741,6 +3741,28 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-200: GSdx on PC: fractional render scales and OpenGL, with a new gt4-gs build (owner, 2026-11-06; planned for rc16)
+
+The Android GSdx (ARMSX2) offers fractional render scales (1.25x, 1.5x, 1.75x, 2.5x). The PC GSdx (gt4-gs) should offer
+them too. The main reason for the gt4-gs rebuild is OpenGL, which is still missing from the launcher.
+- **Map first (a PCSX2-tainted agent, in prose):**
+  - does gt4-gs, built from the fork `moesuito/gt4recomp-gs`, already accept a fractional upscale multiplier?
+  - or does only the launcher limit it to whole numbers?
+  - what must change in the fork for each fractional value?
+- **New gt4-gs build:**
+  - from the fork, with the fractional scales, and OpenGL allowed (`Renderer = 12`; this takes over part 3 of
+    TASK-107);
+  - allow-list and SHA256SUMS in the fork;
+  - a new launcher pin.
+- **Launcher:**
+  - the fractional scales in the GSdx Resolution list, in both languages;
+  - the OpenGL entry in the Graphics API list (the "older PCs" group of TASK-103), with `docs/launcher/gs-settings.toml`;
+  - migration for stored values.
+- **Gates:**
+  - every scale and OpenGL draw the reference scenes (night race, replay, menus) with no crash;
+  - per scale, the final frames are compared with the nearest whole scale;
+  - no GPL code enters the game executable: gt4-gs stays a separate process (decision 0070).
+
 ### TASK-196: 4:3 screens and the aspect rule taken from the display (owner, 2026-11-06; planned)
 
 Some players use 4:3 monitors (Discord, YouTube). This is not a new graphics option: the ratio follows the screen
