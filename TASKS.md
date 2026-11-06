@@ -3585,6 +3585,12 @@ The owner wants an experimental iOS port for a friend's iPhone 17 Pro Max, built
 
 Not in the current phases (Phase 3 Linux, Phase 4 Android): it starts only on the owner's word.
 
+**Owner (2026-11-05):**
+- iOS comes after Android.
+- The friend builds on his own Mac, from his own disc.
+- So the port needs an end-to-end build from the player's own disc on macOS: the ELF reconstruction, the EE units, the
+  VU1 code and the game library. Today the translated game code comes from a pinned private library.
+
 ### TASK-183: CoreGS 2.0 on unified memory (owner, 2026-11-05)
 
 **Scope:** Android, Apple Silicon, iOS and PC integrated GPUs. The study is
