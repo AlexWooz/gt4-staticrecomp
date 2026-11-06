@@ -2501,6 +2501,7 @@ Gpu::~Gpu() {
 bool Gpu::Ready() const { return impl_->ready; }
 
 bool Gpu::Integrated() const { return impl_->integrated; }
+bool Gpu::RoadSheenSkipped() const { return impl_->skipRoadSheen; }
 
 bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
   Impl &s = *impl_;
@@ -2641,9 +2642,16 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     if (s.clearWholeSetting < 0) s.clearTopZero = s.integrated || scale > 1;  // IN-494
     const char *plainSwitch = std::getenv("GT4_CORE2_PLAIN_DISJOINT");  // IN-496
     s.plainDisjoint = plainSwitch ? std::strcmp(plainSwitch, "0") != 0 : s.integrated;
-    const char *sheenSwitch = std::getenv("GT4_CORE2_ROAD_SHEEN");  // IN-501
+    // IN-501: GT4's sheen on the road, a full-screen pass that adds a small target's picture weighted by destination
+    // alpha; Performance Mode left it out and the road got darker. TASK-186: its own effect toggle now,
+    // GT4_CORE2_PERF_ROAD_SHEEN=1 turns it off (the older GT4_CORE2_ROAD_SHEEN=0 says the same and wins; the
+    // GT4_CORE2_PERFORMANCE bundle still turns every item off).
+    const char *sheenSwitch = std::getenv("GT4_CORE2_ROAD_SHEEN");
+    const char *sheenEffect = std::getenv("GT4_CORE2_PERF_ROAD_SHEEN");
     const char *performanceSwitch = std::getenv("GT4_CORE2_PERFORMANCE");
-    s.skipRoadSheen = sheenSwitch ? std::strcmp(sheenSwitch, "0") == 0 : performanceSwitch && std::strcmp(performanceSwitch, "0") != 0;
+    s.skipRoadSheen = sheenSwitch  ? std::strcmp(sheenSwitch, "0") == 0
+                      : sheenEffect ? std::strcmp(sheenEffect, "0") != 0
+                      : performanceSwitch && std::strcmp(performanceSwitch, "0") != 0;
   }
 
   VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};

@@ -536,6 +536,11 @@ impl Settings {
         definition(id).map(|definition| definition.connected).unwrap_or(false)
     }
 
+    /// Whether a GS table toggle is on (TASK-186: the effect toggles read `[gs] effect_<name> = true`).
+    pub fn gs_is_on(&self, id: &str) -> bool {
+        self.gs_value(id) == "true"
+    }
+
     /// A PCSX2 GS table value (`gs_table`), or its table default when the user has not set it.
     pub fn gs_value(&self, id: &str) -> String {
         match self.gs.get(id) {

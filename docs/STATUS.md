@@ -1,5 +1,43 @@
 # Current Status
 
+## TASK-186: the Performance Mode becomes individual effect toggles on PC (2026-11-06)
+
+On `task/186-effect-toggles-pc` (from `release/1.3.0-rc15` at bdc68efd), the split TASK-180 test5 made for Android, with the
+owner's correction of the same day (the two GSdx settings the old preset also wrote are rows again, and the preset's third
+CoreGS item is a row too so that the whole bundle stays reachable):
+
+- The `performance_mode` row is gone. Graphics shows `effect_flares` (both renderers: our game code answers GT4's 64 x 8 flare
+  visibility table as zeros, so neither the night lights nor the sun is drawn and the processor never waits for the table; the
+  GSdx path through `GT4_GS_HIDE_FLARES=1` with `GT4_GS_READBACK_LOCAL=1`, CoreGS 2.0 through `GT4_CORE2_PERF_FLARES=1`),
+  `effect_road_sheen` (CoreGS 2.0 only, `GT4_CORE2_PERF_ROAD_SHEEN=1`) and `effect_targets` (CoreGS 2.0: Full resolution, the
+  default, or 1x, the preset's small-effect target choice, `GT4_CORE2_EFFECTS_1X`). No effect toggle writes the readback
+  mode.
+- `blending` ("Blending accuracy", High or Minimum, written to `accurate_blending_unit`) and `hw_download_mode` ("Readbacks",
+  the five values of the row before TASK-091, Accurate by default) are GSdx player rows again, each shown only under GSdx.
+- Settings schema 8 to 9: a stored `performance_mode = "no-readbacks"` becomes every effect off, small effects 1x, Minimum
+  blending and Accurate readbacks. A schema 5 file's non-accurate `hw_download_mode` (folded into Performance Mode by schema
+  6) migrates the same way.
+- `game.ini` carries `hw_effect_flares`, `hw_effect_road_sheen` and `hw_effect_targets` for a direct CoreGS 2.0 start. The
+  pinned gt4-gs 1.2.1 embeds the TASK-091 allow-list (HWDownloadMode 0 and 2), so it ignores Readbacks 1, 3 and 4 until a
+  gt4-gs build with the regenerated allow-list ships; the row is offered as the owner asked and the notes and
+  `docs/GS-SETTINGS.md` say so.
+- The same correction goes to `task/180-android-emulator` in a separate launcher-only commit.
+
+Games slice411, plain (no PGO, no ThinLTO), the slice407 EE libraries and the slice409 USB capsule, pins
+`docs/inputs/slice411-pcsx2.json` (exe `f0fc8970...`) and `slice411-spec2.json` (`64a6dcb0...`, Spec II), distribution
+`private/slice411-dist-130-rc15b`. Launchers labelled rc15 (installer `68c7355e...` 19,364,352 bytes, portable `aac78ff0...`
+19,292,672 bytes); installer `GT4Recomp-Setup-1.3.0-rc15.exe` `07779e70...` and portable zip `GT4Recomp-1.3.0-rc15-portable.zip`
+`bdbf17f7...` in `private/release-130-rc15b-out` (contents checked against their sources: 24 of 24 zip files and every
+installer payload file equal by sha256, plus the WebView2 bootstrapper). CTest 318 of 319 on each game (q07 skipped); Python
+804 (57 skipped in the CTest entry, 39 with the build env); launcher `cargo test --workspace` 755 passed (9 ignored). Gates
+against the rc14 PGO builds (`gates6.sh`, wrong=0): the three Spec II laps, the v2.00 night race (10/10 frames, state
+identical), the Arcade path (14/14) and Spec II at 6x (12/12), VU1 236,448 / 355,388 samples and MTVU 8,032 frames with 0
+differences. Effect gates on the same exes: every effect on (explicit 0) identical to the rc15 default (frames 10/10 and 18/18,
+state identical); every item off (three rows) identical to `GT4_CORE2_PERFORMANCE=1` (10/10 frames, state identical); each row
+alone changes only its own effect (flare off: 511 and 483 words of the 512-word flare table; sheen off: 0 words; small effects
+1x: 42 words in the table) with the race clock identical in every pair. The new CoreGS 2.0 fixture `hw_core2_effect_toggles`
+and the GSdx stream fixture cover the renderer and game-side answers.
+
 ## 1.3.0-rc15 test build as a GitHub draft (2026-11-05, morning)
 
 Integrated on `release/1.3.0-rc15` (merge commits, in order): `origin/main` (PR #205, the native DFP wheel of WaimateWihongi,

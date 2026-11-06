@@ -24,7 +24,12 @@ const DERIVED_TABLE_IDS: &[&str] = &["vsync", "mailbox", "upscale"];
 const RC_ONLY_ROWS: &[&str] = &["performance_report", "check_vu_code"];
 /// The renderer defines the graphics options (owner, 2026-10-30): the table rows are GSdx's, and of them only these exist
 /// under CoreGS 2.0 too (launch::coregs20_environment). `coregs_sharpening` (FSR1, where GSdx has CAS) exists only there.
-const CORE_GS_20_TABLE_ROWS: &[&str] = &["performance_mode", "texture_load", "fxaa"];
+/// TASK-186: `effect_flares` exists under both renderers (CoreGS 2.0 answers the table as zeros; the GSdx stream client
+/// does the same); `effect_road_sheen` is CoreGS-only and handled where its row is built.
+const CORE_GS_20_TABLE_ROWS: &[&str] = &["effect_flares", "texture_load", "fxaa"];
+/// GS table rows that exist under CoreGS 2.0 only (TASK-186: the road sheen's classifier is core 2's, and the small
+/// effect targets at 1x are core 2's own resolution choice).
+const CORE_GS_20_ONLY_TABLE_ROWS: &[&str] = &["effect_road_sheen", "effect_targets"];
 
 pub fn pcsx2_table_rows() -> Vec<&'static gs_table::Row> {
     gs_table::offered().into_iter().filter(|row| !DERIVED_TABLE_IDS.contains(&row.id.as_str())).collect()
@@ -204,14 +209,15 @@ pub fn settings_table_with_monitors(
     }
     for row in pcsx2_table_rows() {
         let mut out = gs_row(row, settings);
-        if !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str()) {
+        if CORE_GS_20_ONLY_TABLE_ROWS.contains(&row.id.as_str()) {
+            // TASK-186: the road sheen belongs to CoreGS 2.0's classifier, so its row shows only under that renderer.
+            out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
+        } else if !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str()) {
             out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::PCSX2_GS });
         }
-        // What Performance Mode does depends on the renderer.
-        if row.id == "performance_mode" && settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
-            out["help_key"] = json!("setting.performance_mode.help_coregs20");
-        }
-        if row.id == "performance_mode" {
+        // TASK-186: the frame rate and the presentation thread sit after the effect rows and the two GSdx-only settings of
+        // the old Performance Mode (they used to follow the Performance Mode row), under the renderer that has them.
+        if row.id == "hw_download_mode" {
             rows.push(out);
             if let Some(definition) = gt4l_core::settings::definition("frame_rate") {
                 let mut skip = launcher_row(definition, settings);
@@ -950,21 +956,89 @@ mod table_tests {
         assert_eq!(scale["group"], "graphics");
     }
 
+    /// TASK-186 (owner, 2026-11-06; the same split as TASK-180 test5 on Android): Performance Mode is no longer one row.
+    /// Each of its effects is its own toggle on the Graphics page, on by default (drawn as the original game); turning one
+    /// off is what earns its speed.
     #[test]
-    fn performance_mode_is_a_graphics_toggle_off_by_default() {
+    fn the_effect_toggles_are_on_by_default_and_performance_mode_is_gone() {
         let table = settings_table(&Settings::default(), &Controls::default());
-        let mode = row(&table, "performance_mode");
-        assert_eq!(mode["control"], "toggle");
-        assert_eq!(mode["page"], "basic", "the main Graphics section, not Advanced");
-        assert_eq!(mode["group"], Value::Null);
-        assert_eq!(mode["default"], json!(false));
-        assert_eq!(mode["current"], json!(false));
-        assert!(mode.get("disabled").is_none(), "a stored renderer never disables it");
-        assert!(mode.get("visible_when").is_none(), "shown under both renderers");
+        for id in ["effect_flares", "effect_road_sheen"] {
+            let toggle = row(&table, id);
+            assert_eq!(toggle["control"], "toggle", "{id}");
+            assert_eq!(toggle["page"], "basic", "{id}: the main Graphics section");
+            assert_eq!(toggle["group"], Value::Null, "{id}");
+            assert_eq!(toggle["default"], json!(true), "{id}: every effect is drawn by default");
+            assert_eq!(toggle["current"], json!(true), "{id}");
+            assert!(toggle.get("disabled").is_none(), "{id}: a stored renderer never disables it");
+        }
+        assert!(row(&table, "effect_flares").get("visible_when").is_none(), "the flares work under both renderers");
+        assert_eq!(
+            row(&table, "effect_road_sheen")["visible_when"]["equals"],
+            "coregs20",
+            "the road sheen is CoreGS 2.0's item"
+        );
+        assert!(!ids(&table).contains(&"performance_mode".to_string()), "the bundle row is gone");
+        for gsdx_only in ["blending", "hw_download_mode"] {
+            assert_eq!(row(&table, gsdx_only)["visible_when"]["equals"], "pcsx2", "{gsdx_only} is for GSdx");
+            assert_eq!(row(&table, gsdx_only)["page"], "basic", "{gsdx_only} sits on the Graphics page");
+        }
+        // TASK-186: the third item of the old bundle, a CoreGS 2.0 choice (full resolution by default).
+        let targets = row(&table, "effect_targets");
+        assert_eq!(targets["control"], "dropdown");
+        assert_eq!(targets["default"], "full");
+        assert_eq!(targets["current"], "full");
+        assert_eq!(targets["visible_when"]["equals"], "coregs20");
+        let values: Vec<&str> =
+            targets["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["full", "1x"]);
     }
 
     #[test]
-    fn frame_rate_is_a_coregs_choice_of_60_by_default_after_performance_mode() {
+    fn blending_offers_high_and_minimum_with_high_by_default() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let blending = row(&table, "blending");
+        assert_eq!(blending["control"], "dropdown");
+        assert_eq!(blending["default"], "high");
+        assert_eq!(blending["current"], "high", "the old Performance Mode's Minimum is not a default");
+        let values: Vec<&str> =
+            blending["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["high", "minimum"], "the preset's two values, High first");
+        let mut chosen = Settings::default();
+        chosen.set_gs("blending", "minimum").unwrap();
+        assert_eq!(row(&settings_table(&chosen, &Controls::default()), "blending")["current"], "minimum");
+    }
+
+    #[test]
+    fn readbacks_offer_the_five_values_of_the_row_before_task_091() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let readbacks = row(&table, "hw_download_mode");
+        assert_eq!(readbacks["control"], "dropdown");
+        assert_eq!(readbacks["label"], "Readbacks");
+        assert_eq!(readbacks["default"], "accurate");
+        assert_eq!(readbacks["current"], "accurate", "TASK-186: Accurate again, and the player may change it");
+        let shown: Vec<(&str, &str)> = readbacks["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| (value["value"].as_str().unwrap(), value["label"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                ("accurate", "Accurate (default)"),
+                ("enabled-force-full", "Enabled, force full"),
+                ("no-readbacks", "No readbacks"),
+                ("unsynchronized", "Unsynchronized (faster, may drop effects)"),
+                ("disabled", "Disabled"),
+            ]
+        );
+        let mut chosen = Settings::default();
+        chosen.set_gs("hw_download_mode", "unsynchronized").unwrap();
+        assert_eq!(row(&settings_table(&chosen, &Controls::default()), "hw_download_mode")["current"], "unsynchronized");
+    }
+
+    #[test]
+    fn frame_rate_is_a_coregs_choice_of_60_by_default_after_the_effect_toggles() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let skip = row(&table, "frame_rate");
         assert_eq!(skip["control"], "dropdown");
@@ -974,8 +1048,8 @@ mod table_tests {
         assert_eq!(skip["current"], "60");
         assert_eq!(skip["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
         let order = ids(&table);
-        let mode = order.iter().position(|id| id == "performance_mode").unwrap();
-        assert_eq!(order[mode + 1], "frame_rate");
+        let readbacks = order.iter().position(|id| id == "hw_download_mode").unwrap();
+        assert_eq!(order[readbacks + 1], "frame_rate", "the frame rate follows the effect toggles");
     }
 
     fn card_with_queues(name: &str, queues: Option<u32>) -> gt4l_core::gpu::GpuDevice {
@@ -1047,20 +1121,29 @@ mod table_tests {
     }
 
     #[test]
-    fn the_readback_row_is_gone_from_the_table() {
+    fn the_readback_row_is_a_gsdx_row_and_no_toggle_writes_the_fast_mode() {
         let table = settings_table(&Settings::default(), &Controls::default());
-        assert!(!ids(&table).contains(&"hw_download_mode".to_string()));
-        assert!(!pcsx2_table_rows().iter().any(|row| row.id == "hw_download_mode"));
-        assert!(!gs_table::rows().iter().any(|row| row.key == "HWDownloadMode" && row.id != "performance_mode"));
+        assert!(ids(&table).contains(&"hw_download_mode".to_string()), "TASK-186: Readbacks is a player row again");
+        assert!(pcsx2_table_rows().iter().any(|row| row.id == "hw_download_mode"));
+        let writers: Vec<&str> = gs_table::rows()
+            .iter()
+            .filter(|row| row.key == "HWDownloadMode")
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(writers, ["hw_download_mode"], "the effect toggles never write the download mode");
+        assert_eq!(row(&table, "hw_download_mode")["visible_when"]["equals"], "pcsx2", "GSdx only");
     }
 
     #[test]
-    fn the_toggle_maps_on_and_off_to_the_two_readback_choices() {
-        let row = pcsx2_table_rows().into_iter().find(|row| row.id == "performance_mode").unwrap();
-        assert_eq!(toggle_choices(row), Some(("accurate", "no-readbacks")));
-        assert_eq!(gs_value_text(row, &json!(true)).as_deref(), Some("no-readbacks"), "On");
-        assert_eq!(gs_value_text(row, &json!(false)).as_deref(), Some("accurate"), "Off");
-        assert_eq!(gs_value_text(row, &json!("accurate")), None, "a toggle takes true or false");
+    fn the_gsdx_settings_are_plain_choices_not_toggles() {
+        for id in ["blending", "hw_download_mode"] {
+            let table_row = pcsx2_table_rows().into_iter().find(|row| row.id == id).unwrap();
+            assert_eq!(toggle_choices(table_row), None, "{id} is a choice of its own");
+        }
+        let blending = pcsx2_table_rows().into_iter().find(|row| row.id == "blending").unwrap();
+        assert_eq!(gs_value_text(blending, &json!("minimum")).as_deref(), Some("minimum"));
+        let readbacks = pcsx2_table_rows().into_iter().find(|row| row.id == "hw_download_mode").unwrap();
+        assert_eq!(gs_value_text(readbacks, &json!("unsynchronized")).as_deref(), Some("unsynchronized"));
         let other = pcsx2_table_rows().into_iter().find(|row| row.id == "fxaa").unwrap();
         assert_eq!(toggle_choices(other), None);
     }
@@ -1086,11 +1169,14 @@ mod table_tests {
         for both in ["renderer", "render_scale", "graphics_card", "monitor", "resolution", "fullscreen", "vsync"] {
             assert!(row(&table, both).get("visible_when").is_none(), "{both} works under both renderers");
         }
-        assert!(row(&table, "performance_mode").get("help_key").is_none());
+        assert_eq!(row(&table, "effect_road_sheen")["visible_when"]["equals"], "coregs20", "the road sheen is CoreGS 2.0's");
         let mut chosen = Settings::default();
         chosen.set("renderer", "coregs20").unwrap();
         let under_coregs = settings_table(&chosen, &Controls::default());
-        assert_eq!(row(&under_coregs, "performance_mode")["help_key"], "setting.performance_mode.help_coregs20");
+        assert_eq!(
+            row(&under_coregs, "effect_road_sheen")["visible_when"]["equals"], "coregs20",
+            "the road sheen shows under the renderer it belongs to"
+        );
         let vsync_values = |table: &Value| -> Vec<String> {
             row(table, "vsync")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap().to_string()).collect()
         };

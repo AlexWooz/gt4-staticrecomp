@@ -91,7 +91,8 @@ fn config_round_trip_keeps_values_and_paths() {
     config.settings.set("monitor", r"\\.\DISPLAY2@3440x1440").unwrap();
     config.settings.set("resolution", "2560x1080").unwrap();
     config.settings.set("render_scale", "175").unwrap();
-    config.settings.set_gs("performance_mode", "no-readbacks").unwrap();
+    config.settings.set_gs("effect_flares", "false").unwrap();
+    config.settings.set_gs("hw_download_mode", "unsynchronized").unwrap();
     config.disc_path = Some(r#"D:\Games\Gran Turismo 4 "quoted" (USA).iso"#.into());
     config.textures_path = Some(r"E:\Emulators\PCSX2\textures".into());
     config.dev_game_dir = Some(r"C:\Antigravity\build\game".into());
@@ -130,7 +131,7 @@ fn invalid_values_and_unknown_keys_fall_back_with_warnings() {
 
 #[test]
 fn newer_schema_is_refused_and_syntax_errors_are_reported() {
-    assert!(matches!(config::parse("schema_version = 9\n"), Err(config::ConfigError::NewerSchema(9))));
+    assert!(matches!(config::parse("schema_version = 10\n"), Err(config::ConfigError::NewerSchema(10))));
     assert!(matches!(config::parse("[settings\n"), Err(config::ConfigError::Syntax(_))));
 }
 

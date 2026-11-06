@@ -3674,6 +3674,31 @@ game.
 - Covers the "touch controls" part of TASK-022.
 - Applies to the public Android build and, through the upstream merge, to the mobile build.
 
+### TASK-186: Effect toggles instead of Performance Mode on PC (owner, 2026-11-06; in the rc15 test build)
+
+**Why.** The owner wants the Performance Mode split into individual switches on PC too (as TASK-180 did for Android), before
+the 1.3.0 final, so a slower PC turns off only what costs frames.
+
+**What.**
+- The old Performance Mode row is gone. Each thing it changed is its own Graphics row: *Sun glare and light flares* (both
+  renderers; the game answers the flare visibility table with zeros itself) and *Road sheen* (CoreGS 2.0 only), both on by
+  default, and *Small effects* (CoreGS 2.0: Full resolution, the default, or Lower, the preset's 1x for the small effect
+  pictures inside a scaled frame).
+- The two GSdx settings the preset also wrote are rows again: *Blending accuracy* (High or Minimum, written to
+  `accurate_blending_unit`) and *Readbacks* (the five values of `hw_download_mode` before TASK-091, Accurate by default,
+  written to `HWDownloadMode`). No effect toggle writes the readback mode any more.
+- Migration (settings schema 8 to 9): a stored `performance_mode = "no-readbacks"` becomes every effect off, small effects
+  Lower, blending Minimum and readbacks Accurate.
+- Games: slice411, plain (no PGO, no ThinLTO), both targets; launchers labelled rc15; installer and portable zip in
+  `private/release-130-rc15b-out`.
+- Gates: every effect on identical to the rc15 draft (frames, flare reply hashes, `gates6.sh` wrong=0); every effect off
+  identical to `GT4_CORE2_PERFORMANCE=1`; each toggle alone changes only its own effect with the race clock and the simulation
+  state identical; the new `hw_core2_effect_toggles` fixture for CoreGS 2.0 and the stream-client fixture for the GSdx path.
+- The same correction goes to `task/180-android-emulator` in a separate launcher-only commit.
+- **Open:** the pinned gt4-gs 1.2.1 embeds the TASK-091 allow-list (HWDownloadMode 0 and 2), so it ignores 1, 3 and 4 until a
+  gt4-gs build with the regenerated allow-list ships; the launcher offers the row as the owner asked.
+- State (2026-11-06): implemented on `task/186-effect-toggles-pc`; owner test with the G27 pending.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
@@ -3694,6 +3719,7 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-178 | Submit after a waited readback (K=0 by default) and the flare-read counters | `task/178-submit-after-wait` (c73b3be8 only) | ✅ In rc15 (6f318594); O3 dropped (not exact on Motegi, no gain; 80cf04c9 stays on the branch only) |
 | TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner's G27 test pending |
 | TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner) |
+| TASK-186 | Effect toggles instead of Performance Mode, both renderers (owner, 2026-11-06) | `task/186-effect-toggles-pc` | ✅ For the rc15 test build (owner test pending); `task/180-android-emulator` gets the same correction |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates

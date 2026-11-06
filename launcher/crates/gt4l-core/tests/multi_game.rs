@@ -85,13 +85,13 @@ fn the_selected_game_is_stored_and_a_file_of_schema_7_selects_gt4() {
     assert!(!config::render(&file).contains("[game]"));
     file.selected_game = Some("spec2".to_string());
     let text = config::render(&file);
-    assert!(text.contains("schema_version = 8"));
+    assert!(text.contains("schema_version = 9"));
     assert!(text.contains("[game]\nselected = \"spec2\""), "{text}");
     let (read, warnings) = config::parse(&text).unwrap();
     assert_eq!(read.selected_game.as_deref(), Some("spec2"));
     assert!(warnings.is_empty());
     // A game this launcher does not know is ignored with a warning.
-    let (unknown, warnings) = config::parse("schema_version = 8\n[game]\nselected = \"gt9\"\n").unwrap();
+    let (unknown, warnings) = config::parse("schema_version = 9\n[game]\nselected = \"gt9\"\n").unwrap();
     assert_eq!(unknown.selected_game, None);
     assert!(warnings.iter().any(|warning| warning.contains("gt9")));
     // The step from schema 7: every older file belongs to a launcher that ran Gran Turismo 4 only.
@@ -99,7 +99,7 @@ fn the_selected_game_is_stored_and_a_file_of_schema_7_selects_gt4() {
     let path = dir.join("settings.toml");
     fs::write(&path, "schema_version = 7\n[settings]\nvsync = \"fast\"\n[install]\ndisc_path = \"D:/gt4.iso\"\n").unwrap();
     let (loaded, notes) = config::load(&path);
-    assert!(notes.iter().any(|note| note.contains("migrated from schema 7 to 8")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("migrated from schema 7 to 9")), "{notes:?}");
     assert_eq!(loaded.selected_game.as_deref(), Some("gt4"));
     assert_eq!(loaded.settings.get("vsync"), "fast", "other values survive");
     let _ = fs::remove_dir_all(&dir);

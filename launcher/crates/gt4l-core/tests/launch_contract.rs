@@ -61,7 +61,9 @@ fn default_settings_send_the_main_profile_variables_plus_the_launcher_defaults()
     // TASK-161: the full trigger range is always stated, on by default since rc14 (owner, 2026-11-04; the game reads it
     // for both of its sides).
     assert_eq!(environment["GT4_TRIGGER_FULL_RANGE"], "1");
-    assert_eq!(environment.len(), 11, "the GSdx variables: renderer, process pin, config, PS2_GS and the common holds");
+    // TASK-186: GT4_GS_HIDE_FLARES is always stated, 0 with the effect on (the default).
+    assert_eq!(environment["GT4_GS_HIDE_FLARES"], "0");
+    assert_eq!(environment.len(), 12, "the GSdx variables: renderer, process pin, config, PS2_GS, the flare toggle and the common holds");
 }
 
 #[test]
@@ -241,7 +243,10 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     for gsdx_only in ["GT4_GS_PROCESS", "GT4_GS_PROCESS_SHA256", "GT4_GS_CONFIG", "PS2_GS"] {
         assert!(!on.contains_key(gsdx_only), "{gsdx_only} belongs to GSdx");
     }
-    assert!(!on.contains_key("GT4_CORE2_PERFORMANCE"), "full precision unless Performance Mode is on");
+    assert!(!on.contains_key("GT4_CORE2_PERFORMANCE"), "the bundle is not sent any more");
+    assert_eq!(on["GT4_CORE2_PERF_FLARES"], "0", "the flares are drawn by default");
+    assert_eq!(on["GT4_CORE2_PERF_ROAD_SHEEN"], "0", "the road sheen is drawn by default");
+    assert_eq!(on["GT4_CORE2_EFFECTS_1X"], "0", "small effects at full resolution by default");
     assert!(!on.contains_key("GT4_HW_FRAMETIME_LOG"), "no frametime.csv in the session folder (owner, 2026-11-03)");
     assert!(!on.contains_key("GT4_FRAME_SKIP_FORCE"), "no fixed pattern unless the player asks for 30 FPS");
     assert_eq!(on["GT4_FRAME_SKIP"], "1", "TASK-146: 60 FPS leaves frames out in a race only when the PC falls behind");
@@ -260,13 +265,17 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
     assert!(!launch::coregs20_section(&settings, None, false, &textures).contains("hw_present_mode"));
     settings.set("vsync", "on").unwrap();
 
-    settings.set_gs("performance_mode", "no-readbacks").unwrap();
+    settings.set_gs("effect_flares", "false").unwrap();
+    settings.set_gs("effect_road_sheen", "false").unwrap();
     settings.set_gs("texture_load", "false").unwrap();
     settings.set_gs("fxaa", "true").unwrap();
     settings.set("coregs_sharpening", "medium").unwrap();
     settings.set("frame_rate", "30").unwrap();
     let tuned = env_map(&launch::coregs20_environment(&settings, None, true, &textures));
-    assert_eq!(tuned["GT4_CORE2_PERFORMANCE"], "1");
+    assert_eq!(tuned["GT4_CORE2_PERF_FLARES"], "1", "the flare toggle off");
+    assert_eq!(tuned["GT4_CORE2_PERF_ROAD_SHEEN"], "1", "the road sheen toggle off");
+    assert_eq!(tuned["GT4_CORE2_EFFECTS_1X"], "0", "small effects at full resolution by default");
+    assert!(!tuned.contains_key("GT4_CORE2_PERFORMANCE"), "the bundle is not sent any more");
     assert_eq!(tuned["GT4_FRAME_SKIP_FORCE"], "2");
     assert!(!tuned.contains_key("GT4_FRAME_SKIP"), "30 FPS is the fixed pattern alone");
     assert!(!tuned.contains_key("GT4_HW_TEXTURES"));
@@ -276,7 +285,9 @@ fn a_coregs20_session_runs_the_hw_renderer_with_the_shared_choices() {
 
     let section = launch::coregs20_section(&settings, Some(&display), false, &textures);
     assert!(section.starts_with("renderer=coregs20\n"));
-    assert!(section.contains("hw_scale=3\n") && section.contains("hw_performance=1\n") && section.contains("hw_postfx=fxaa\n"));
+    assert!(section.contains("hw_scale=3\n") && section.contains("hw_effect_flares=1\n") && section.contains("hw_postfx=fxaa\n"));
+    assert!(section.contains("hw_effect_road_sheen=1\n"));
+    assert!(section.contains("hw_effect_targets=0\n"), "the full resolution is the default");
     assert!(section.contains("hw_sharpening=0.2\n"));
     assert!(section.contains("hw_frame_skip=2\n"));
     assert!(!section.contains("hw_frame_skip_adaptive"));
@@ -401,6 +412,17 @@ fn pcsx2_environment_carries_the_process_pin_config_and_480p() {
     assert_eq!(environment["GT4_PRESENT_MODE"], "fifo");
     assert!(!environment.contains_key("GT4_GS_READBACK"), "readback is written in the INI");
     assert!(!environment.contains_key("PS2_SCALE"), "CoreGS 1.1 variables are not sent to PCSX2 GS");
+    // TASK-186: the flare toggle is answered by our stream client (TASK-117), and the local answer is only enabled when
+    // the flares are off, so the icons and the loading picture keep draining accurately.
+    assert_eq!(environment["GT4_GS_HIDE_FLARES"], "0", "the flares are drawn by default");
+    assert!(!environment.contains_key("GT4_GS_READBACK_LOCAL"), "every readback is accurate by default");
+
+    let mut no_flares = Settings::default();
+    no_flares.set_gs("effect_flares", "false").unwrap();
+    let no_flares = env_map(&launch::pcsx2_environment(&no_flares, &paths));
+    assert_eq!(no_flares["GT4_GS_HIDE_FLARES"], "1");
+    assert_eq!(no_flares["GT4_GS_READBACK_LOCAL"], "1", "the zero answer needs the local flare readback");
+    assert!(!no_flares.contains_key("GT4_GS_READBACK"), "no readback mode is written by an effect toggle");
 }
 
 #[test]
@@ -423,6 +445,22 @@ fn session_ini_matches_the_python_writer_for_the_default_settings() {
     // A 1920x1080 output at 100% is the same 3x: the default INI did not change with the display plan.
     let full_hd = display_target(r"\\.\DISPLAY1", 1920, 1080);
     assert_eq!(launch::gs_config_text(&Settings::default(), &paths, Some(&full_hd), false).unwrap(), text);
+}
+
+#[test]
+fn the_effect_toggles_never_reach_the_ini() {
+    // TASK-186: the effect rows are launcher-only (written = "never"), so the table's refusal must not see them.
+    let paths = pcsx2_paths();
+    let mut settings = Settings::default();
+    settings.set_gs("effect_flares", "false").unwrap();
+    settings.set_gs("effect_road_sheen", "false").unwrap();
+    let text = launch::gs_config_text(&settings, &paths, None, false).unwrap();
+    assert_eq!(
+        text,
+        launch::gs_config_text(&Settings::default(), &paths, None, false).unwrap(),
+        "the INI is the same with every effect off: no toggle writes a gt4-gs key"
+    );
+    assert!(!text.contains("FLARE") && !text.contains("SHEEN"), "{text}");
 }
 
 fn display_target(device: &str, width: u32, height: u32) -> DisplayTarget {
@@ -555,13 +593,13 @@ fn both_window_modes_pass_window_and_send_gt4_fullscreen_to_the_game_and_the_gs_
 
 // ---- TASK-117: the flare limits of the parked guest patch ---------------------------------------------------------
 
-/// The derived-ELF flare limits were parked in rc6: Performance Mode removes the flares in the host (the client answers
+/// The derived-ELF flare limits were parked in rc6: the effect toggle removes the flares in the host (the client answers
 /// the visibility table as zeros), so the launcher never sends `GT4_FLARE_LIMITS`, for either game or mode. An inherited
 /// value from a parent process is scrubbed.
 #[test]
 fn the_parked_flare_limits_are_never_sent() {
     let mut performance = Settings::default();
-    performance.set_gs("performance_mode", "no-readbacks").unwrap();
+    performance.set_gs("effect_flares", "false").unwrap();
     let accurate = Settings::default();
     for settings in [&performance, &accurate] {
         assert!(!env_map(&plan_launch(&inputs(), settings, None, &[]).environment)
