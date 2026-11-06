@@ -3696,6 +3696,19 @@ most of it is game-independent.
 CoreGS is MIT, so it could become a separate library. Porting another game also needs its own EE/VU/IOP work, which is
 the larger part per game.
 
+### TASK-187: GT4Recomp consumes CoreGS from its own repository (owner, 2026-11-06; planned, after 1.3.0 final)
+
+CoreGS 2.0 is being extracted into the public MIT repository `moesuito/coregs`. It is a generic PS2 GS renderer, with
+GT4's shortcuts moved into an optional game profile.
+
+**Plan:**
+- GT4Recomp then uses `coregs` as a git submodule pinned to a commit, in place of the in-tree renderer.
+- Updating CoreGS is a submodule bump, gated by the usual identity checks: flare hashes, gates6 and CTest.
+- The GT4 profile lives in `coregs/profiles/gt4` or in GT4Recomp.
+- Renderer fixes made for GT4Recomp land in `coregs` first.
+
+The switch waits for 1.3.0 final, so rc15 is not put at risk.
+
 ### TASK-185: Android on-screen virtual controller (owner, 2026-11-06; planned)
 
 **Why.** The Android build plays only with a physical controller (USB or Bluetooth); there is no touch control in the
