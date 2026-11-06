@@ -3808,6 +3808,37 @@ moved the card between them with `fs::rename`, which Windows only allows inside 
   keeps the data when it fails, and the existing save tests unchanged.
 - Games unchanged (slice411); launchers labelled rc15; installer and portable zip in `private/release-130-rc15c-out`.
 - State (2026-11-06): implemented on `task/188-cross-drive-saves`; owner test pending.
+### TASK-193: an option row changes only through its arrows (owner, 2026-11-06; for the rc15 test build)
+
+**Why.** The owner tapped the left arrow of a `< value >` row on his phone (the Android launcher shares this UI) and the row
+moved forward: the whole option control was one click target, so a tap that landed next to the small arrow stepped forward. His
+words: "tira essa hitbox da linha e coloca só da seta pra esquerda e da direita, sem a opção da linha".
+
+**What.**
+1. **Only the arrows change the value with a pointer** (every settings page and the Wheel page cards). A click or tap on the
+   row's label or on the value writes nothing; the left arrow steps back and the right arrow forward. The keyboard, the pad and
+   assistive technology keep their behaviour (Left/Right step, A/Enter still goes to the next value, the row still takes focus):
+   `GT4.input.stepsFromActivation(detail)` (`js/input-rules.js`) tells a click with no click count (0, what `nav.js`
+   `activate()` produces) from a pointer click (1 and up).
+2. **Bigger invisible hit areas, same look.** The drawn arrow stays a 24 x 24 px box (the hover ring now uses `::after` at the
+   same size) with a **32 x 32 px** hit area with a mouse and **44 x 44 px** with a finger (`--selector-arrow-hit`,
+   `44px` under `pointer: coarse`); negative margins take the padding back, so the glyph, the value and the layout do not move.
+   The two areas never reach the middle third of the value.
+3. **Label wrap (the TASK-189 nit).** `.row .k > span:first-child` states `overflow-wrap: normal` and `hyphens: manual` and never
+   gets a `min-width: 0` box; the label keeps its words whole and the control gives way (the Wheel panel's control may shrink,
+   its value ends with an ellipsis). The mid-word break did not reproduce on this checkout before the change; the rule is now
+   explicit and gated.
+
+**Tests.** `dev/focus-check.js`: 24 new checks (a click on a label or value changes nothing and writes nothing, each arrow steps
+its own way, 32 x 32 px with a mouse and 44 x 44 px on touch, no overlap with the value's middle, the glyph stays centred,
+Left/Right and A still step, a toggle row and a Wheel card row follow the same rule); they fail on the old handler (14 failures
+when it is restored). `dev/nav-test.js`: 5 new cases on `stepsFromActivation`. Results: focus checks **392/392** en-US and
+**399/399** pt-BR (368 and 375 before), nav-test **265/265**, no JS errors, locale keys unchanged, no Rust (no `cargo test`).
+Real pointer and touch hit-testing in headless Edge and screenshots at 1366x768 and 2400x1080: `build/evidence/t193/`.
+
+**Branch.** `task/193-option-arrows` (from `release/1.3.0-rc15` at eeefb1b9). The UI commit touches only
+`launcher/crates/gt4l-tauri/ui/`, so it can be cherry-picked onto the Android branch. Docs in a second commit.
+
 ### TASK-189: Wheel page after the owner's G27 test (owner, 2026-11-06; in the rc15 test build)
 
 **Why.** The owner tested the rc15 draft with his Logitech G27: the wheel drawing and the buttons are right ("the wheel visual
@@ -3867,6 +3898,7 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-186 | Effect toggles instead of Performance Mode, both renderers (owner, 2026-11-06) | `task/186-effect-toggles-pc` | ✅ For the rc15 test build (owner test pending); `task/180-android-emulator` gets the same correction |
 | TASK-188 | Saves on a PC whose install and save library are on different drives (issue #208) | `task/188-cross-drive-saves` | ✅ For the rc15 test build (owner test pending) |
 | TASK-189 | Wheel page after the owner's G27 test: one-action mapping popup, no guessed mapping, the shipped G27 preset, no "Your wheel" card, a tidy force feedback card, no on/off switch (owner, 2026-11-06) | `task/189-wheel-page-polish` | ✅ For the rc15 test build (owner test pending) |
+| TASK-193 | Option rows change only through their arrows (label and value taps do nothing), 32 x 32 px arrows with a mouse and 44 x 44 px on touch, row labels never split a word (owner, 2026-11-06) | `task/193-option-arrows` | ✅ For the rc15 test build (UI only, cherry-pickable to the Android branch) |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates

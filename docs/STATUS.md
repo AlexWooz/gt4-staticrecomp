@@ -1,5 +1,41 @@
 # Current Status
 
+## TASK-193: an option row changes only through its arrows (owner report from his phone, 2026-11-06)
+
+On `task/193-option-arrows` (from `release/1.3.0-rc15` at eeefb1b9). The owner tapped the left arrow of an option row
+(`< value >`) on the Android launcher, which shares this UI, and the row moved forward: the whole control was one hit box, so a
+tap that landed next to the small arrow stepped forward. His words: "tira essa hitbox da linha e coloca só da seta pra
+esquerda e da direita".
+
+- **Only the arrows change the value with a pointer.** The control's own click handler no longer steps on a pointer click; the
+  left arrow steps back and the right arrow forward, as they already did. A keyboard, pad or assistive click still steps
+  forward: `GT4.input.stepsFromActivation(detail)` (`js/input-rules.js`) tells a click with no click count (`detail` 0, which is
+  what `nav.js` `activate()` and assistive technology produce) from a mouse, finger or pen click (count 1 and up). Left/Right on
+  a focused row, A/Enter and the row focus are unchanged.
+- **Bigger invisible hit areas, same look.** Each arrow keeps its drawn 24 x 24 px box (the hover ring is now drawn on a
+  pseudo-element at the same 24 px size), and the hit area around it grew: **32 x 32 px with a mouse**, **44 x 44 px with a
+  finger** (`--selector-arrow-hit` in `css/app.css`, `44px` in the `pointer: coarse` block). Negative margins take the padding
+  back, so the glyph, the value and the row layout do not move; the deeper box paints above the value's edge, and it never
+  reaches the middle third of the value (checked). The touch rule that padded the arrow with `inset: -12px` is gone.
+- **Label wrap (the TASK-189 nit).** `.row .k > span:first-child` now states `overflow-wrap: normal` and `hyphens: manual`, and
+  the label never gets a `min-width: 0` box: a word is never split, the control gives way instead (`.wh-panel .row .ctl` may
+  shrink, the value ends with an ellipsis). A mid-word break could not be reproduced on this checkout before the change
+  (measured at 900, 960, 1024, 1200 and 1366 px, both languages, the Wheel page with the steering, throttle and cross cards):
+  the rule is now explicit and gated.
+- **Tests.** `dev/focus-check.js` has 24 new checks (`optionPointerChecks`, run after the Wheel checks): a click on a row's label
+  or value changes nothing (and writes nothing), the left arrow steps back, the right arrow forward, the arrows are 32 x 32 px
+  with a mouse and 44 x 44 px on touch (the `pointer: coarse` rule is read from the stylesheet), they never reach the middle of
+  the value, the glyph stays centred in the drawn box, Left/Right and A still step, and a toggle row and a Wheel card row follow
+  the same rule. They fail on the previous behaviour (reproduced by temporarily restoring the old handler: 14 failures).
+  `dev/nav-test.js` has 5 new unit cases for `stepsFromActivation`.
+- **Results.** Focus checks **392/392 en-US** and **399/399 pt-BR** (368 and 375 before), nav-test **265/265** (260 before), no
+  JS errors; locale keys unchanged (925 in both). No Rust changed, so no `cargo test`. Real hit-testing in headless Edge:
+  1366x768 mouse (32 x 32: a click 13 px from the glyph centre steps, 22 px does not) and 2400x1080 with touch (44 x 44: 20 px
+  steps, 40 px does not; Chromium's touch adjustment still snaps a tap 26 px out to the arrow). Screenshots at 1366x768 and
+  2400x1080 (Graphics and Wheel, before and after) and the hover ring: `build/evidence/t193/`.
+- **Cherry-pickable.** The UI commit touches only `launcher/crates/gt4l-tauri/ui/` (JS, CSS, dev checks, the dev README) so it
+  applies to the Android branch as it is.
+
 ## TASK-188: saves when the install and the save library are on different drives (issue #208, 2026-11-06)
 
 On `task/188-cross-drive-saves` (from `release/1.3.0-rc15` at 110cacad), the fix for the player with the game on `F:` and
