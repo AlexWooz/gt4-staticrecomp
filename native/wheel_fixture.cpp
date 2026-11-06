@@ -58,6 +58,22 @@ void test_mode_and_legacy_keys() {
                                                 "legacy");
   require(legacy.enabled && legacy.steering.rotation_degrees == 900, "1.2.x file loads");
   require(std::abs(legacy.ffb.strength - 0.8) < 1e-9, "1.2.x force strength kept");
+  require(legacy.ffb.centering_spring, "a 1.2.x centering_spring amount still parses: nonzero means game");
+  require(!parse_wheel_config("[wheel]\nversion = 1\n[ffb]\ncentering_spring = \"off\"\n", "spring-off")
+               .ffb.centering_spring,
+          "centering_spring off");
+  require(parse_wheel_config("[wheel]\nversion = 1\n[ffb]\ncentering_spring = \"game\"\n", "spring-game")
+              .ffb.centering_spring,
+          "centering_spring game");
+  require(parse_wheel_config("[wheel]\nversion = 1\n[ffb]\ncentring_spring = \"game\"\n", "spring-uk")
+              .ffb.centering_spring,
+          "the British spelling parses too");
+  require(!parse_wheel_config("[wheel]\nversion = 1\n[ffb]\ncentering_spring = 0.0\n", "spring-zero")
+               .ffb.centering_spring,
+          "a 1.2.x zero means off");
+  require(!default_wheel_config().ffb.centering_spring, "the game's centring springs are off by default (TASK-192)");
+  require_rejects("[wheel]\nversion = 1\n[ffb]\ncentering_spring = \"maybe\"\n", "an unknown spring token is refused");
+  require_rejects("[wheel]\nversion = 1\n[ffb]\ncentering_spring = 4\n", "an out-of-range spring amount is refused");
   require(legacy.buttons[10].size() == 1 && legacy.buttons[10][0].index == 5, "shift_down alias fills the l2 slot");
   require_rejects("[wheel]\nversion = 1\nunknown = 1\n", "unknown [wheel] key refused");
   require_rejects("[wheel]\nversion = 2\n", "reject unsupported version");
@@ -83,6 +99,7 @@ void test_mode_and_legacy_keys() {
   config.clutch.source = parse_source_ref("axis:1", "x", 1);
   config.ffb.strength = 0.65;
   config.ffb.invert = true;
+  config.ffb.centering_spring = true;
   config.buttons[4] = {parse_source_ref("dev:0300000000000000000000000000beef:btn:3", "x", 1)};
   const WheelConfig again = parse_wheel_config(serialize_wheel_config(config), "roundtrip");
   require(again.enabled && again.device_guid == config.device_guid && again.device_name == config.device_name,
@@ -91,6 +108,9 @@ void test_mode_and_legacy_keys() {
               again.clutch.source == config.clutch.source && again.buttons[4] == config.buttons[4],
           "round trip keeps sources");
   require(std::abs(again.ffb.strength - 0.65) < 1e-9 && again.ffb.invert, "round trip keeps force settings");
+  require(again.ffb.centering_spring, "round trip keeps the centring spring choice");
+  require(serialize_wheel_config(config).find("centering_spring = \"game\"") != std::string::npos,
+          "the serializer writes the centring spring as a token");
   require(serialize_wheel_config(config).find("mode = \"dfp\"") != std::string::npos, "the serializer writes mode dfp");
 }
 
@@ -354,7 +374,11 @@ void test_effect_plan() {
   forces.autocenter = true;
   forces.autocenter_strength = 0.5;
   plan = plan_dfp_effects(forces, config);
-  require(plan[1].left_coeff == static_cast<std::int16_t>(std::lround(0.25 * 32767)), "default spring at strength");
+  require(plan[1].left_coeff == 0, "the DFP default spring is off by default (TASK-192)");
+  config.centering_spring = true;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[1].left_coeff == static_cast<std::int16_t>(std::lround(0.25 * 32767)),
+          "centering_spring game: the default spring at strength");
   forces.spring = true;
   forces.spring_left = forces.spring_right = 1.0;
   forces.spring_center = 0.5;
@@ -364,6 +388,25 @@ void test_effect_plan() {
   require(plan[1].center == static_cast<std::int16_t>(std::lround(0.5 * 32767)) &&
               plan[1].deadband == static_cast<std::uint16_t>(std::lround(0.1 * 65535)),
           "the game's spring replaces the default spring");
+  // TASK-192: with the setting off the game's spring is planned as nothing, and nothing else changes.
+  config.centering_spring = false;
+  gt4::usb::DfpForces menu = forces;
+  menu.constant = 0.25;
+  menu.damper = true;
+  menu.damper_left = menu.damper_right = 0.3;
+  menu.damper_saturation = 1.0;
+  menu.friction = true;
+  menu.friction_coefficient = 0.5;
+  menu.friction_saturation = 0.125;
+  const EffectPlan suppressed = plan_dfp_effects(menu, config);
+  config.centering_spring = true;
+  const EffectPlan played = plan_dfp_effects(menu, config);
+  require(suppressed[1] == EffectParams{}, "centering_spring off: the spring effect carries no force");
+  require(played[1].left_coeff != 0, "centering_spring game: the same forces carry the spring");
+  require(suppressed[0] == played[0] && suppressed[2] == played[2] && suppressed[3] == played[3],
+          "the centring spring choice touches neither the racing force, the damper nor the friction");
+  require(suppressed[0].level == static_cast<std::int16_t>(std::lround(0.25 * 0.5 * 32767)),
+          "strength still scales the game's racing force with the spring off");
   config.strength = 0.0;
   plan = plan_dfp_effects(forces, config);
   require(plan[0].level == 0 && plan[2].left_coeff == 0, "zero strength: no force and no damping floor");
@@ -438,11 +481,11 @@ void test_haptic_thread(bool threaded) {
     const DfpHapticThread::Stats stats = haptics.stats();
     require(stats.force_sets == 200, "every force set counted");
     require(stats.forces_played >= 1 && stats.forces_played <= 200, "game forces reached the wheel");
-    // Every level differs, and the first one also turns the default spring off: at most 201 updates; the thread drops
-    // the levels it has not reached yet.
-    require(stats.updates_sent <= 201, "never more updates than changes");
+    // Every level differs: at most 200 updates. The first force set no longer changes the spring either, which is off by
+    // default since TASK-192; the thread drops the levels it has not reached yet.
+    require(stats.updates_sent <= 200, "never more updates than changes");
     if (!threaded)
-      require(stats.updates_sent == 201, "without the thread every change is one update");
+      require(stats.updates_sent == 200, "without the thread every change is one update");
     haptics.set_active(false);
     haptics.set_active(false);
     haptics.wait_idle();
@@ -543,6 +586,8 @@ void test_wheel_input_on_virtual_wheel() {
     }
     require(input.haptic_stats().forces_played >= 1, "the summary counts the force as played");
     require(input.force_summary().find("reached the wheel yes") != std::string::npos, "summary line says yes");
+    require(input.force_summary().find("centering spring off") != std::string::npos,
+            "summary line names the centring spring setting");
 
     // Focus loss: neutral input; the forces stop once however often VBlank and the window call it.
     input.prepare(false);

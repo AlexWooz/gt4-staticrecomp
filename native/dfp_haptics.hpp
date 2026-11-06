@@ -28,6 +28,10 @@ struct FfbConfig {
   double strength = 1.0; // 0.0..2.0, scales the game's forces
   double damper = 0.15;  // 0.0..1.0, the least damping the wheel always has (not scaled by strength)
   bool invert = false;   // reverses the game's constant force for wheels that turn the other way
+  // [ffb] centering_spring = "off" | "game" (TASK-192). GT4 centres the wheel with its own spring effects (in the menus)
+  // and, on reset, with the DFP's default spring; on the owner's G27 that read as a slow pull to the centre that never
+  // stopped, so they are off unless this asks for them. The racing force, the damper and the friction are not affected.
+  bool centering_spring = false;
 };
 
 enum class EffectKind : std::uint8_t { constant, spring, damper, friction };

@@ -33,6 +33,16 @@ std::vector<std::uint8_t> string_descriptor(const char *text) {
   return out;
 }
 
+// GT4_DFP_TEST_STEER=<percent of full travel>: the reported steering follows a triangle wave, one full period every 600
+// interrupt IN reports (about 6 s at the 100 reports per second the game polls), starting at full left. It lets a headless
+// run show what the game asks for while the wheel is off centre (TASK-192); 0 or unset turns it off.
+std::uint16_t swept_steering(std::uint64_t reports, int percent) {
+  const double phase = static_cast<double>(reports % 600u) / 600.0;
+  const double triangle = phase < 0.5 ? phase * 2.0 : 2.0 - phase * 2.0;  // 0 = full left, 1 = full right
+  const double offset = (triangle * 2.0 - 1.0) * (std::clamp(percent, 0, 100) / 100.0);
+  return static_cast<std::uint16_t>(std::lround(std::clamp(8191.5 + offset * 8191.0, 0.0, 16383.0)));
+}
+
 } // namespace
 
 bool trace_enabled() {
@@ -326,6 +336,30 @@ std::array<std::uint8_t, 8> Dfp::encode_report(const DfpInput &input) {
 
 Dfp::Dfp(DfpBridge &bridge) : bridge_(bridge) {}
 
+Dfp::~Dfp() { log_census(); }
+
+void Dfp::log_census() const {
+  if (commands_ == 0)
+    return;
+  std::fprintf(stderr, "[dfp] census: %llu force commands this session, %zu command types:\n",
+               static_cast<unsigned long long>(commands_), census_.size());
+  for (const auto &[key, value] : census_) {
+    std::fprintf(stderr, "[dfp]   %02X %02X x%llu latest", key >> 8, key & 0xFF,
+                 static_cast<unsigned long long>(value.first));
+    for (const std::uint8_t byte : value.second)
+      std::fprintf(stderr, " %02X", byte);
+    std::fprintf(stderr, "\n");
+  }
+  const DfpForces &f = decoder_.forces();
+  std::fprintf(stderr,
+               "[dfp]   last decoded: constant %.3f, spring %s %.2f/%.2f centre %.2f dead band %.2f saturation %.2f, "
+               "damper %s %.2f/%.2f saturation %.2f, friction %s %.2f saturation %.2f, default spring %s, range %d\n",
+               f.constant, f.spring ? "on" : "off", f.spring_left, f.spring_right, f.spring_center, f.spring_deadband,
+               f.spring_saturation, f.damper ? "on" : "off", f.damper_left, f.damper_right, f.damper_saturation,
+               f.friction ? "on" : "off", f.friction_coefficient, f.friction_saturation,
+               f.autocenter ? "on" : "off", f.range_degrees);
+}
+
 void Dfp::reset() {
   address_ = pending_address_ = 0;
   address_pending_ = false;
@@ -442,6 +476,14 @@ int Dfp::in(unsigned endpoint, std::span<std::uint8_t> buffer) {
     }();
     if (test_bit >= 0 && test_bit < 14 && (reports_ / 50) % 2 == 1)
       input.buttons |= static_cast<std::uint16_t>(1u << test_bit);
+    // Headless check (GT4_DFP_TEST_STEER=<percent>): turns the virtual wheel, so a bench sees the game's forces off centre.
+    static const int test_steer = [] {
+      const char *value = std::getenv("GT4_DFP_TEST_STEER");
+      return value && *value ? std::atoi(value) : 0;
+    }();
+    if (test_steer > 0)
+      input.steering = swept_steering(reports_, test_steer);
+    last_reported_ = input;
     const auto report = encode_report(input);
     const std::size_t count = std::min<std::size_t>(buffer.size(), report.size());
     std::copy_n(report.begin(), count, buffer.begin());
@@ -482,8 +524,8 @@ void Dfp::command(const std::uint8_t *data, std::size_t length) {
       using clock = std::chrono::steady_clock;
       static const clock::time_point start = clock::now();
       const double ms = std::chrono::duration<double, std::milli>(clock::now() - start).count();
-      std::fprintf(csv, "%.2f,%.4f,%u,%02X,%02X,%u\n", ms, decoder_.forces().constant, bridge_.input().steering, data[0],
-                   data[1], data[2]);
+      std::fprintf(csv, "%.2f,%.4f,%u,%02X,%02X,%u\n", ms, decoder_.forces().constant, last_reported_.steering,
+                   data[0], data[1], data[2]);
       if (commands_ % 200 == 0)
         std::fflush(csv);
     }
