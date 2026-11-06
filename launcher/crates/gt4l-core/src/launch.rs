@@ -479,6 +479,25 @@ pub fn controller_environment(settings: &Settings) -> Option<String> {
     crate::controller::PadChoice::parse(value).map(|_| value.to_string())
 }
 
+/// TASK-185: the `GT4_VIRTUAL_PAD` mode of one stored value: `always`, `off`, and `auto` for the default and for anything
+/// unrecognised (an edited settings file never takes the pad away by accident).
+pub fn virtual_pad_mode(value: &str) -> &'static str {
+    match value {
+        "always" => "always",
+        "off" => "off",
+        _ => "auto",
+    }
+}
+
+/// TASK-185: the `GT4_VIRTUAL_PAD` value at Play, from the `virtual_pad` setting of the launcher's Controls page. `auto`
+/// is the default and also what a build without the setting yet passes (the row belongs to the launcher's editor).
+pub fn virtual_pad_environment(settings: &Settings) -> &'static str {
+    if crate::settings::definition("virtual_pad").is_none() {
+        return "auto";
+    }
+    virtual_pad_mode(settings.get("virtual_pad"))
+}
+
 /// TASK-148: the SDL gamepad mappings file in the user config folder (`gamecontrollerdb.txt` format). The launcher loads
 /// it and the game gets it as SDL_GAMECONTROLLERCONFIG_FILE: a mapping there makes a controller SDL3 does not know usable.
 pub const GAMEPAD_MAPPINGS_FILE: &str = "gamecontrollerdb.txt";

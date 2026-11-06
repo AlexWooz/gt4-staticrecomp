@@ -1,3 +1,41 @@
+## TASK-185 backend: the Android on-screen virtual pad (2026-11-06)
+
+Owner (2026-11-06): a first-hand virtual controller for GT4 on a phone, shown only while no physical controller is
+connected. Two agents share one layout-file contract: this is the game side (branch `task/185-virtual-pad-backend` from
+`task/180-android-emulator` at 224f5460); the launcher editor is the other.
+
+- **Contract.** `<user>/virtual-pad.json` (the launcher's user folder, `/data/data/<package>/user`, which is where
+  `config/settings.toml` lives; the external `files/user` folder is tried too), else
+  `android/virtual-pad/default-layout.json` — byte-identical to the contract and packaged as the APK asset
+  `assets/default-layout.json` through a Gradle `assets.srcDir`. `GT4_VIRTUAL_PAD=auto|always|off` comes from
+  `[controls] virtual_pad` at Play (`gt4l_core::launch::virtual_pad_environment`, `auto` when the setting is absent).
+  The file is re-read at every start.
+- **Layout model, separate from the input mapping** (`native/virtual_pad.{hpp,cpp}`, pure C++): a strict JSON reader with
+  line/column errors, the validation (an unknown `binds`, type or geometry skips that element with a log line; an unusable
+  file falls back to the default and says why), the stick maths (offset from where the thumb landed, circular clamp, dead
+  zone 0.08, 128 at rest, PS2 Y up), the d-pad directions and the merge with the physical pad. A later task swaps layouts
+  per game context through `Pad::set_layout`; nothing in the input path changes.
+- **Input path.** The overlay sends `nativeVirtualPadTouch(element, dx, dy, down)`; the pad turns it into buttons at full
+  pressure (255) and the two analog bytes. `on_vblank` merges it into the state `ControllerInput` polled
+  (`gt4::vpad::merge`: buttons OR, pressure max, each axis the value further from rest) and applies it once through
+  `ps2::set_pad_buttons/axis/pressure`, so the game still reads one pad (port 1) and an input recording keeps the merged
+  state.
+- **Overlay** (`VirtualPadView.kt`, added before the F7 button so the button stays on top): outlined shapes with the
+  PlayStation symbols on the face buttons, the global and per-element opacity, multi-touch, a knob that follows the thumb
+  and recentres, light haptics when the layout asks.
+- **Visibility** (`GameActivity.kt`): `auto` follows `InputManager.InputDeviceListener` (hot-plug and the state at start),
+  `always` ignores it, `off` never builds the overlay; a hidden pad releases everything it held. Each change logs
+  `virtual pad shown: no controller` / `virtual pad hidden: <name> connected` in logcat and `[vpad] ...` in the game log,
+  together with `[vpad] cross down` and `[vpad] lstick x=255 y=128` from the game thread.
+- **Tests.** `native_virtual_pad` CTest (the shipped default's 12 elements, refused files, six kinds of skipped element,
+  clamping, player/default/fallback, stick maths, d-pad, merge, live pad, geometry) passes; the launch contract test
+  `the_virtual_pad_mode_is_a_stored_choice_with_auto_as_default` passes (34/34 in that suite).
+- **Emulator evidence** (`build/evidence/t185/`): the pad over the game picture with no controller, held Cross and moved
+  stick (`[vpad]` lines), an injected device event hiding it, a two-element player layout honoured and a broken one
+  falling back, and F7 working above the overlay. The emulator's software Vulkan on a shared host ran the guest at about
+  0.4 VBlanks/s (F8: `EE gs_drain=2767 ms/frame`), so no guest screen that reacts to input was reached; on the owner's
+  phone the same path runs at the 60 VBlanks/s of TASK-180.
+
 ## TASK-180b: Spec II on Android — the black picture and the 3.2 s frames were the missing S7b IOP rule (2026-11-06)
 
 Spec II in the emulator stayed black with `gif bytes/frame: path1=0 path2=0 path3=0` and `run_due_events=3248 ms/frame`.
