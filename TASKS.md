@@ -1557,9 +1557,21 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   The tap's ADC flags were measured against the captured channels and are a per-vertex draw flag (`1,1,0,0` pattern), not a
   break marker. The 3x identity gate was re-run and still passes (8,997 VBlanks, 13/13 frames, clock/digest/state).
   M2 keeps the geometric break heuristic and is labelled as evidence, not fidelity.
-- Next: decode the 32-bit break mask (one or two bits per vertex) and the `V3-8` channel at 0x80, apply the breaks in
-  `build_mesh`, remap the 68 multi-job draws, the camera in the timeline, the Z/STQ/RGBA parts of G-TAP, and only then the
-  live overlay seam (review work) and G-IMAGE.
+- Round 6 (2026-11-06): **the strip table is decoded and gated.** The `V1-8` channel at TOPS 0x40 is a strip-length list:
+  byte 0 is the strip count and each next byte is **three times the triangle count** of one strip (`byte / 3 + 2`
+  vertices); a zero first byte means one strip over the whole item (the all-zero variant). The read needed two VIF fixes:
+  the UNPACK **STMASK enable bit (28)** and the one-component broadcast (the write lands in lane 3 of the destination
+  qwords, which is why the earlier lane-0 read showed UV bytes). Evidence: draw 3's bytes `3, 6, 57, 18` = strips of 4,
+  21 and 8 vertices = 33. `gt4_coregs3_tap gate` now checks every draw without the tap: **116/116 draws, 335 strip tables,
+  1,549 strips, 12,146 vertices, 0 triangles crossing a strip break, 3,098/3,098 strip starts ADC**; the affine slice fit
+  is 0.97 px mean rms over 111 draws, and 5 are reported as ambiguous record matches. The mapping uses the source
+  record's VBlank (the worker emits GIF about two VBlanks behind) and the item's strip table to choose between records of
+  the same vertex count, so a job can carry several draws and a draw can span jobs. ADC was also measured: the first two
+  vertices of every strip are structural, and inside a strip ADC is the VU1's own facing cull (580 of 4,745 in-strip
+  triangles disagree with the sign test, 268 of them under a quarter of a pixel). M2 now uses a flat-shaded mode:
+  all 116 draws (12,146 vertices, 8,034 of 9,048 triangles, 518,641 pixels) and one car body, with a new sheet.
+- Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the M4 live overlay seam (review work), M4 only
+  after the 3x gate re-run, and the remaining G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

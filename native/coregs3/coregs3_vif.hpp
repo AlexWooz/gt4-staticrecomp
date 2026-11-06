@@ -45,17 +45,19 @@ enum class ChannelFormat : std::uint8_t {
 
 struct VifCommand {
   std::uint32_t offset = 0;       // byte offset of the command word inside the packet
+  std::uint32_t payload_offset = 0;  // byte offset of the first payload word inside the packet
   std::uint32_t header = 0;       // the raw command word
   std::uint32_t opcode = 0;       // bits 24..30
   std::uint32_t immediate = 0;    // bits 0..15
   std::uint32_t num = 0;          // bits 16..23 (UNPACK: 0 means 256)
   bool unpack = false;
   bool tops = false;              // UNPACK imm bit 15: address is relative to the VIF1 double-buffer window
+  bool masked = false;            // UNPACK bit 28: the STMASK register applies to this write
+  std::uint32_t stmask = 0;       // the STMASK register in force when the command executed
   std::uint32_t destination = 0;  // qword address (0..1023) after the tops bit was removed
   ChannelFormat format = ChannelFormat::unknown;
   std::uint32_t vectors = 0;      // destination vectors written
   std::uint32_t source_words = 0; // 32-bit words consumed from the payload
-  std::uint32_t payload_offset = 0;
 };
 
 struct VifPacket {

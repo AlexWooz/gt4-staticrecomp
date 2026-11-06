@@ -168,25 +168,13 @@ void print_channel_scan(const FrameSnapshot &frame) {
     std::string mesh_error;
     MeshOptions options;
     if (build_mesh(frame.packets.data(), frame.packets.size(), draw, options, mesh, mesh_error)) {
-      std::printf("  mesh: %zu vertices, %u triangles, %zu strips, colours %d uv %d\n", mesh.vertices.size(),
-                  mesh.triangles(), mesh.strip_starts.size(), mesh.has_colors ? 1 : 0, mesh.has_uv ? 1 : 0);
-      std::printf("  strips:");
+      std::printf("  mesh: %zu vertices, %u triangles, %zu strips, colours %d uv %d table %d\n", mesh.vertices.size(),
+                  mesh.triangles(), mesh.strip_starts.size(), mesh.has_colors ? 1 : 0, mesh.has_uv ? 1 : 0,
+                  mesh.has_strip_table ? 1 : 0);
+      std::printf("  strips length:");
+      for (std::uint32_t length : mesh.strip_lengths) std::printf(" %u", length);
+      std::printf("\n  strips start:");
       for (std::uint32_t start : mesh.strip_starts) std::printf(" %u", start);
-      std::printf("\n  resets:");
-      for (const CapturedItem &item : draw.items) {
-        if (item.packet_bytes == 0) continue;
-        const VifPacket packet = decode_packet(frame.packets.data() + item.packet_offset, item.packet_bytes);
-        if (!packet.ok) continue;
-        for (const VifCommand &entry : packet.commands) {
-          if (!entry.unpack) continue;
-          if (classify_reset(entry.tops, entry.destination, entry.format)) {
-            std::vector<VifVector> vectors;
-            const std::uint8_t *image = entry.tops ? packet.packed.data() : packet.window.data();
-            if (read_vu_vectors(image, entry.destination * 16u, entry.vectors, vectors))
-              for (const VifVector &vector : vectors) std::printf(" %u", vector.v[0] & 0xFFu);
-          }
-        }
-      }
       std::printf("\n");
     } else {
       std::printf("  mesh refused: %s\n", mesh_error.c_str());
@@ -234,6 +222,7 @@ int main(int argc, char **argv) {
     else if (argument == "--height" && index + 1 < argc) options.height = static_cast<std::uint32_t>(std::atoi(argv[++index]));
     else if (argument == "--position-scale" && index + 1 < argc) options.position_scale = static_cast<float>(std::atof(argv[++index]));
     else if (argument == "--no-depth") options.depth_test = false;
+    else if (argument == "--flat") options.flat_shading = true;
     else if (argument == "--object") options.object_space = true;
     else if (argument == "--points") options.points = true;
     else if (argument == "--point-size" && index + 1 < argc) options.point_size = static_cast<std::uint32_t>(std::atoi(argv[++index]));

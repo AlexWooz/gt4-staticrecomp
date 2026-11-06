@@ -50,8 +50,35 @@ std::uint32_t unpack_word(std::uint32_t vn, std::uint32_t vl, std::uint32_t num,
          unpack_destination(qword);
 }
 
+// Bit 28 enables STMASK for this UNPACK (the donor's `masked` bit; the GT4 strip-table write uses it).
+std::uint32_t mask_unpack(std::uint32_t word) { return word | 0x10000000u; }
+
+// A packet with `vertices` V3-16 positions at TOPS qword 0 and, when `table` is not empty, an STMASK 0x3F3F3F3F plus a
+// masked V1-8 strip table at TOPS qword 0x40 (lane 3 only, exactly the shape the capture showed).
+std::vector<std::uint8_t> make_strip_packet(std::uint32_t vertices, const std::vector<std::uint8_t> &table) {
+  std::vector<std::uint8_t> packet;
+  auto pad = [&packet] {
+    while (packet.size() % 4 != 0) packet.push_back(0);
+  };
+  put_u32(packet, unpack_word(2, 1, static_cast<std::uint32_t>(vertices), 0x00, true));
+  for (std::uint32_t index = 0; index < vertices; ++index) {
+    put_u16(packet, static_cast<std::uint16_t>(index * 1024));
+    put_u16(packet, 0);
+    put_u16(packet, 0);
+  }
+  pad();
+  if (!table.empty()) {
+    put_u32(packet, 0x20000000u);  // STMASK
+    put_u32(packet, 0x3F3F3F3Fu);
+    put_u32(packet, mask_unpack(unpack_word(0, 2, static_cast<std::uint32_t>(table.size()), 0x40, true)));
+    for (std::uint8_t value : table) packet.push_back(value);
+    pad();
+  }
+  return packet;
+}
+
 std::vector<std::uint8_t> make_packet() {
-  // 3 positions (V3-16, TOPS qword 0), 3 colours (V4-8, TOPS qword 0x80), 1 reset byte (V1-8, absolute qword 0x40).
+  // 3 positions (V3-16, TOPS qword 0), 3 colours (V4-8, TOPS qword 0x80), and a one-strip strip table [1, 3].
   std::vector<std::uint8_t> packet;
   auto pad = [&packet] {
     while (packet.size() % 4 != 0) packet.push_back(0);
@@ -65,8 +92,11 @@ std::vector<std::uint8_t> make_packet() {
   for (std::uint32_t vertex = 0; vertex < 3; ++vertex)
     for (std::uint32_t lane = 0; lane < 4; ++lane) packet.push_back(static_cast<std::uint8_t>(0x40 + vertex * 8));
   pad();
-  put_u32(packet, unpack_word(0, 2, 1, 0x40, false));
-  packet.push_back(0x00);
+  put_u32(packet, 0x20000000u);  // STMASK
+  put_u32(packet, 0x3F3F3F3Fu);
+  put_u32(packet, mask_unpack(unpack_word(0, 2, 2, 0x40, true)));
+  packet.push_back(1);  // one strip
+  packet.push_back(3);  // three times one triangle -> three vertices
   pad();
   return packet;
 }
@@ -166,7 +196,10 @@ void check_vif_decoder() {
   require(packet.commands[0].format == ChannelFormat::v3_16, "positions are V3-16");
   require(packet.commands[1].destination == 0x80 && packet.commands[1].format == ChannelFormat::v4_8,
           "colours are V4-8 at TOPS + 0x80");
-  require(!packet.commands[2].tops && packet.commands[2].destination == 0x40, "the reset byte is absolute qword 0x40");
+  require(packet.commands[2].tops && packet.commands[2].destination == 0x40, "the strip table is at TOPS + 0x40");
+  require(packet.commands[2].format == ChannelFormat::v1_8, "the strip table is V1-8");
+  require(packet.commands[2].masked && packet.commands[2].stmask == 0x3F3F3F3Fu,
+          "the strip table write enables STMASK 0x3F3F3F3F");
 
   std::vector<VifVector> positions;
   require(read_vu_vectors(packet.packed.data(), 0, 3, positions), "the positions are readable");
@@ -179,6 +212,13 @@ void check_vif_decoder() {
   std::vector<VifVector> colors;
   require(read_vu_vectors(packet.packed.data(), 0x80 * 16, 3, colors), "the colours are readable");
   require(colors[0].v[0] == 0x40u && colors[2].v[3] == 0x50u, "the colour lanes are the packet bytes");
+
+  // STMASK 0x3F3F3F3F writes lane 3 only; the one-component UNPACK is broadcast first, so lane 3 carries the byte and
+  // lane 0 keeps whatever was there (zero: nothing else writes qword 0x40 in this packet).
+  std::vector<VifVector> table;
+  require(read_vu_vectors(packet.packed.data(), 0x40 * 16, 2, table), "the strip table is readable");
+  require(table[0].v[3] == 1 && table[1].v[3] == 3, "the strip table bytes land in lane 3");
+  require(table[0].v[0] == 0 && table[1].v[0] == 0, "the masked lanes stay untouched");
 
   // An unknown opcode must be refused instead of skipped.
   std::vector<std::uint8_t> unknown;
@@ -203,6 +243,8 @@ void check_vif_decoder() {
   std::vector<VifVector> filled;
   require(read_vu_vectors(fill_packet.window.data(), 0, 2, filled), "the filled rows are readable");
   require(filled[0].v[0] == 0x12345678u, "the first vector is the source element");
+  require(filled[0].v[1] == 0x12345678u && filled[0].v[3] == 0x12345678u,
+          "a one-component UNPACK is broadcast into all four lanes");
   require(filled[1].v[0] == 0xAAAAAAAAu, "the filled vector takes the row register");
 }
 
@@ -231,6 +273,8 @@ void check_mesh() {
   require(build_mesh(packets.data(), packets.size(), draw, options, mesh, error), "the mesh builds");
   require(mesh.vertices.size() == 3, "three vertices");
   require(mesh.has_colors && mesh.has_uv == false, "colours present, no UV channel");
+  require(mesh.has_strip_table, "the strip table is decoded");
+  require(mesh.strip_lengths.size() == 1 && mesh.strip_lengths[0] == 3, "one strip of three vertices");
   require(mesh.triangles() == 1, "one triangle");
   require(mesh.vertices[0].position[0] == -1.0f, "the position scale is applied");
   require(mesh.vertices[2].position[1] == 1.0f, "the second lane is Y");
@@ -240,7 +284,43 @@ void check_mesh() {
   require(scan.channels.size() == 3, "three channels reported");
   require(scan.channels[0].role == ChannelRole::positions, "channel 0 is positions");
   require(scan.channels[1].role == ChannelRole::color, "channel 1 is colour");
-  require(scan.channels[2].role == ChannelRole::reset, "channel 2 is the reset list");
+  require(scan.channels[2].role == ChannelRole::strip_table, "channel 2 is the strip table");
+
+  // Two strips of three and four vertices: the table says one triangle and two triangles.
+  {
+    std::vector<std::uint8_t> two_strips = make_strip_packet(7, {2, 3, 6});
+    CapturedDraw split = make_draw(static_cast<std::uint32_t>(two_strips.size()));
+    Mesh split_mesh;
+    require(build_mesh(two_strips.data(), two_strips.size(), split, options, split_mesh, error),
+            "a two-strip table builds");
+    require(split_mesh.strip_lengths.size() == 2 && split_mesh.strip_lengths[0] == 3 && split_mesh.strip_lengths[1] == 4,
+            "the two strip lengths are decoded");
+    require(split_mesh.triangles() == 3, "one triangle plus two triangles");
+  }
+
+  // The all-zero variant: a table whose first byte is zero means no breaks, one strip over the whole item.
+  {
+    std::vector<std::uint8_t> zero_table = make_strip_packet(3, {0});
+    CapturedDraw whole = make_draw(static_cast<std::uint32_t>(zero_table.size()));
+    Mesh whole_mesh;
+    require(build_mesh(zero_table.data(), zero_table.size(), whole, options, whole_mesh, error),
+            "a zero table builds");
+    require(whole_mesh.has_strip_table && whole_mesh.strip_lengths.size() == 1 && whole_mesh.strip_lengths[0] == 3,
+            "a zero table means one strip over the item");
+  }
+
+  // A length byte that is not three times a triangle count, or a total that does not cover the item, is refused.
+  {
+    std::vector<std::uint8_t> bad_length = make_strip_packet(3, {1, 4});
+    CapturedDraw bad = make_draw(static_cast<std::uint32_t>(bad_length.size()));
+    Mesh refused;
+    require(!build_mesh(bad_length.data(), bad_length.size(), bad, options, refused, error),
+            "a length byte that is not a multiple of three is refused");
+    std::vector<std::uint8_t> bad_total = make_strip_packet(3, {1, 9});
+    CapturedDraw short_item = make_draw(static_cast<std::uint32_t>(bad_total.size()));
+    require(!build_mesh(bad_total.data(), bad_total.size(), short_item, options, refused, error),
+            "a table that covers more vertices than the item has is refused");
+  }
 
   // No position channel: refused with a message rather than an empty mesh.
   std::vector<std::uint8_t> colours_only;

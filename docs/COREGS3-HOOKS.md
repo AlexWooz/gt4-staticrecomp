@@ -86,9 +86,11 @@ call. The car only appears at the result screen (VBlank ~3000), which is a diffe
 scene (hooks do nothing) but not a **car** scene. Scene B is the car scene, as the plan's P1-B expected.
 
 Channel layout of a car shape (`night-run`, VBlank 7398, draw 0, 3 items): per item one `V3-32` single vector at TOPS qword
-`0xC0` (auxiliary), then `V3-16` positions at TOPS `0x00`, `V4-8` at TOPS `0x80`, and `V1-8` at TOPS `0x40`
-(**C** from the capture; the last channel is all zeros in every observed car frame, so it is not a strip table).
-The course shapes add `V2-16`/`V2-32` UVs at TOPS `0x40` and use absolute `0xC0`-range channels as well.
+`0xC0` (auxiliary: the first lane is the vertex count), then `V3-16` positions at TOPS `0x00`, `V4-8` at TOPS `0x80`, and
+`V1-8` at TOPS `0x40` (**C** from the capture; that last channel is the strip table, decoded in §6). Some parts use
+`V3-8` compressed normals at TOPS `0x80` instead of the `V4-8` colour, and the wheel/tyre parts use float `V3-32`
+positions at absolute qword `0`. The course shapes add `V2-16`/`V2-32` UVs at TOPS `0x40` and use absolute `0xC0`-range
+channels as well.
 
 The matrix: the eight qwords at the PGL output cursor, read back after the call, are exactly
 `tag, rows 0-2 × value, vf27, m2[0..3]` (**C**, the tag is `0x10000008`/`0x6C08C0C1`). Rows 0-2 are scaled by the shape's
@@ -165,12 +167,39 @@ residual. Night race, VBlank 7398, `gt4_coregs3_tap fit-all`:
 One draw fitted alone is even tighter (projective rms 0.025 px, worst 0.043 px): the transform is affine to that precision
 at these distances.
 
-**The strip-break channel (measured, not yet decoded).** A car part carries, besides its `V3-16` positions, a `V3-8 x33`
-channel at TOPS 0x80 (not `V4-8`, so it is not the colour), a `V2-16 x33` channel at TOPS 0x40 (UV-like) and a `V1-8 x4`
-channel at TOPS 0x40 with bytes `176, 176, 84, 84`. Four bytes for 33 vertices is 32 bits: the break list is very likely a
-**bit mask, one or two bits per vertex**, not a list of indices (the plan's "reset bytes"). Other car shapes carry an
-all-zero `V1-8` channel, which is why some parts tear and others do not. The tap's ADC flags were measured against the
-captured channels and are a per-vertex draw flag (`1,1,0,0` in the observed stream), not a break marker.
+**The strip table, decoded (C).** A car part carries, besides its `V3-16` positions, a `V3-8` channel at TOPS 0x80
+(compressed normals), a `V2-16` channel at TOPS 0x40 (UV-like) and a `V1-8 x4` channel at TOPS 0x40. The `V1-8` write is
+the one that matters: its UNPACK has **STMASK enabled (bit 28)** and the packet sets STMASK `0x3F3F3F3F`, so only lane 3
+of each destination qword is written. The decoder used to ignore the mask bit and read lane 0, which is why an earlier
+round saw the UV bytes `176,176,84,84` and called it a suspect bit mask. The payload itself is
+`3, 6, 57, 18` for that 33-vertex part, and the format is a **strip-length list**:
+
+- byte 0 = number of strips (3 here);
+- each following byte = **three times the triangle count** of one strip, so a strip has `byte / 3 + 2` vertices
+  (6/3+2 = 4, 57/3+2 = 21, 18/3+2 = 8; 4+21+8 = 33);
+- a first byte of 0 means "no list": one strip over the whole item. That is the all-zero variant some shapes carry.
+
+The reading is proven on the whole night-race frame. `gt4_coregs3_tap gate` decodes every draw without the tap, splits
+the vertex array with the table and checks every triangle the VU1 draws (ADC = 0 on its last vertex) against the strips:
+**116 of 116 draws, 335 strip tables, 1,549 strips, 12,146 vertices, 0 triangles crossing a strip break**. Every one of
+the 3,098 strip-start vertices (the first two of each strip) is ADC, which is the structural half of the rule.
+
+**What ADC also does (C, measured).** Within a strip, ADC is the VU1's own per-triangle cull: a vertex is ADC when the
+triangle ending at it faces away (the screen-space area sign, with the strip parity folded in). That is why the raw
+pattern is `1,1,0,0` for a quad strip: the first two vertices of each strip are structural, and the triangles that would
+connect two quads face away. The correlation is not perfect at this precision: of 4,745 in-strip triangles the VU1
+draws, 580 disagree with the sign test (268 of them have less than a quarter of a pixel of area, where the fixed-point
+sign is not stable). The cull formula itself is therefore still **H**, but it does not affect the topology: the native
+renderer builds the strips from the table and lets its rasteriser cull.
+
+**Mapping every draw (C).** The tap now covers the whole car pass: the worker emits a job's GIF about two VBlanks after
+the packets were posted (measured: source records at VBlank 7398, GIF records at 7400), so a tap window that stops at the
+frame's own VBlank misses the tail (59 of 116 draws had a source record and no GIF record). With the window widened to
+7394-7404 and the frame selected by the **source record's VBlank**, every draw maps: an item finds its GIF record by
+vertex count, and when several records share a count the item's own strip table decides (the record whose strip starts
+are ADC wins). A job can carry several draws and a draw can span several jobs; both cases are covered by the per-item
+mapping. The gate also fits the model positions to the tapped screen positions (G-TAP affine fit): 111 of the 116 slices
+fit at a mean rms of 0.97 px, and the 5 that do not (up to 37 px) are reported as ambiguous count matches, never hidden.
 
 **Variable FPS.** The presentation timeline (`native/coregs3/coregs3_timeline.{hpp,cpp}`, `native_coregs3_timeline`) is in
 place: guest timestamps, stable object identity (hash of the model's own addresses), a ring of frames, pairing with
@@ -196,10 +225,11 @@ The EE-thread cost of a captured frame is then one `memcpy`, not a disk write. T
 | G-LOGIC on P1-A (`licenca-b1`, 3,511 VBlanks, 1,576 racing) | race clock, per-VBlank digest and the 64 KiB state dump identical in ref, `off` and `shadow` |
 | G-OFF / G-SHADOW frame identity | **not an oracle at 1x**: the reference build differs from itself in frame 3275 (same box). |
 | G-OFF / G-SHADOW at 3x, night race (`coregs3-night-check.sh`, 8,997 VBlanks, 1,686 racing, 13 frames) | **passes**: clock, digest, `state.bin` and every frame identical for `off` and `shadow` |
+| G-TAP on the night race, VBlank 7398, strip table (`gt4_coregs3_tap gate`) | **passes**: 116 of 116 draws mapped, 335 strip tables, 1,549 strips, 12,146 vertices, **0 triangles crossing a strip break**, 3,098 of 3,098 strip starts ADC; the affine slice fit is 0.97 px mean rms over the 111 draws with a unique record match |
 | CTest `build/t090-v200-coregs3` | 319 tests, 100% passed, 1 skipped (PCSX2-dump test) |
 | Python `tests/python` | 809 tests, OK, 57 skipped |
 | G-ROBUST (capture) | 0 read failures, 0 orphan pass ends, 0 capacity refusals on the observed frames |
-| G-TAP, G-IMAGE, G-PERF | not run yet (the tap and the live seam do not exist) |
+| G-IMAGE, G-PERF | not run yet (the live seam does not exist) |
 
 ## 9. Reproducing
 
@@ -216,4 +246,8 @@ GT4_BENCH_OUT=... bash scripts/coregs3_bench/coregs3-check.sh licenca-b1 <ref ex
 # the offline tool
 gt4_coregs3_render <capture> --list
 gt4_coregs3_render <capture> --frame 0 --out car.png --object --points
+# the strip-table gate (needs a tap window that covers the worker's lag: see §6)
+gt4_coregs3_tap gate <tap.gt4tap> <capture.gt4scene> 0 --verbose
+# milestone sheet (test tool, Pillow)
+python scripts/coregs3_bench/coregs3_sheet.py out.png --title "..." <ref.png> "CoreGS 2.0" <native.png> "native"
 ```

@@ -31,6 +31,10 @@ struct RenderOptions {
   float position_scale = 1.0f / 4096.0f;
   Topology topology = Topology::strip;
   float max_edge = 0.0f;
+  // Flat-shaded diagnostic: one face normal per triangle, shaded by a fixed headlight in view space and the mean vertex
+  // colour. It shows the decoded surface without the VU1 lighting (not derived yet) and is what the M2 sheet uses.
+  bool flat_shading = false;
+  std::array<float, 3> light_direction{0.35f, 0.45f, -0.82f};  // view space, towards the light
   // Object-space view: ignore the draw's captured matrix and frame the captured geometry with one generated camera
   // (yaw/pitch in degrees, orthographic). It is what produces a recognisable picture of the model while the VU1 vertex
   // convention is still being derived (plan step 1d); a picture in this mode is evidence of geometry, not of placement.

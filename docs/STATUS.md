@@ -2,6 +2,17 @@
 
 ## CoreGS 3.0 phase 1 started (2026-11-05, branch `task/090-coregs3`)
 
+**Update 2026-11-06: the strip table is decoded and the car pass is fully gated.** The `V1-8` channel at TOPS 0x40 is a
+strip-length list (byte 0 = strip count, then three times the triangle count per strip; `byte / 3 + 2` vertices), and a
+zero first byte means one strip. The read required two VIF decoder fixes: the UNPACK STMASK enable bit and the
+one-component broadcast. `gt4_coregs3_tap gate` decodes every draw without the tap and checks the VU1's drawn triangles
+against the strips: **116 of 116 draws, 335 tables, 1,549 strips, 12,146 vertices, 0 crossings, 3,098 of 3,098 strip
+starts ADC**; the slice fit is 0.97 px mean rms over 111 draws (5 ambiguous record matches are reported). The mapping now
+selects the frame by the tap source record's VBlank and uses the strip table to disambiguate repeated vertex counts, so
+draws spanning jobs and jobs carrying several draws both map. M2 has flat-shaded surfaces for all cars and a new sheet;
+the 3x identity gate was re-run (result below). Still open: the VU1 lighting formula, G-IMAGE/G-PERF and the M4 live
+overlay (not started).
+
 The observe-only EE hooks and the `.gt4scene` capture of a race frame's car draws are implemented and measured on the
 plan's P1-B scene (night race, six cars): 116 car draws per frame, 169 texture and 39 material records, ~182 KB of model
 VIF packets per frame, 0 read failures and 0 overflow. On P1-A (`licenca-b1`) the car-pass bracket captures 0 draws

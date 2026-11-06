@@ -175,12 +175,14 @@ VifPacket decode_packet(const std::uint8_t *bytes, std::size_t size) {
       }
       entry.unpack = true;
       entry.tops = (command >> 15) & 1u;
+      entry.masked = ((command >> 28) & 1u) != 0;
+      entry.stmask = mask;
       entry.destination = (command & 0x3FFu) + (entry.tops ? tops : 0u);
       entry.destination %= kVuQwords;
       entry.format = format;
       entry.vectors = vectors;
       entry.source_words = words;
-      entry.payload_offset = 0;
+      entry.payload_offset = static_cast<std::uint32_t>(payload);
 
       // Write the destination vectors with the STMOD/STMASK/STROW/STCOL semantics of the hardware.
       std::uint8_t *image = entry.tops ? packet.packed.data() : packet.window.data();
@@ -220,7 +222,10 @@ VifPacket decode_packet(const std::uint8_t *bytes, std::size_t size) {
                 value[component] = raw;
               }
             }
-            if (format_components == 2) {
+            // The VIF broadcasts a one-component vector into all four VU lanes; two components duplicate into 2/3.
+            if (format_components == 1) {
+              value[1] = value[2] = value[3] = value[0];
+            } else if (format_components == 2) {
               value[2] = value[0];
               value[3] = value[1];
             }
@@ -229,7 +234,9 @@ VifPacket decode_packet(const std::uint8_t *bytes, std::size_t size) {
         std::uint32_t *destination = reinterpret_cast<std::uint32_t *>(image + static_cast<std::size_t>(address) * 16u);
         const std::uint32_t mask_row = cycle < 4 ? cycle : 3;
         for (std::uint32_t component = 0; component < 4; ++component) {
-          std::uint32_t write_mode = (mask >> ((mask_row * 4 + component) * 2)) & 3u;
+          // STMASK applies only to a masked write (UNPACK bit 28); 0 = write the value, 1 = STROW, 2 = STCOL,
+          // 3 = skip. An unmasked write is mode 0 for every component.
+          std::uint32_t write_mode = entry.masked ? ((mask >> ((mask_row * 4 + component) * 2)) & 3u) : 0u;
           if (fill && write_mode == 0) write_mode = 1;
           if (write_mode == 3) continue;
           std::uint32_t out = value[component];

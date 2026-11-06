@@ -95,6 +95,35 @@ void rasterise(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &
     }
     const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     if (area == 0.0f) continue;
+    // Flat shading: one face normal in view space (the matrix rotates the model normal) and the mean vertex colour.
+    float flat_r = 1.0f, flat_g = 1.0f, flat_b = 1.0f;
+    if (options.flat_shading) {
+      const MeshVertex &va = mesh.vertices[mesh.indices[index + 0]];
+      const MeshVertex &vb = mesh.vertices[mesh.indices[index + 1]];
+      const MeshVertex &vc = mesh.vertices[mesh.indices[index + 2]];      const float e1[3] = {vb.position[0] - va.position[0], vb.position[1] - va.position[1],
+                           vb.position[2] - va.position[2]};
+      const float e2[3] = {vc.position[0] - va.position[0], vc.position[1] - va.position[1],
+                           vc.position[2] - va.position[2]};
+      const float n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                          e1[0] * e2[1] - e1[1] * e2[0]};
+      const float vn[3] = {matrix.row[0][0] * n[0] + matrix.row[0][1] * n[1] + matrix.row[0][2] * n[2],
+                           matrix.row[1][0] * n[0] + matrix.row[1][1] * n[1] + matrix.row[1][2] * n[2],
+                           matrix.row[2][0] * n[0] + matrix.row[2][1] * n[1] + matrix.row[2][2] * n[2]};
+      const float length = std::sqrt(vn[0] * vn[0] + vn[1] * vn[1] + vn[2] * vn[2]);
+      float shade = 1.0f;
+      if (length > 1e-12f) {
+        const float lx = options.light_direction[0], ly = options.light_direction[1], lz = options.light_direction[2];
+        const float ll = std::sqrt(lx * lx + ly * ly + lz * lz);
+        const float cosine = ll > 0.0f ? std::fabs((vn[0] * lx + vn[1] * ly + vn[2] * lz) / (length * ll)) : 0.0f;
+        shade = 0.18f + 0.82f * cosine;
+      }
+      flat_r = 0.5f * (va.color[0] + vb.color[0] + vc.color[0]) / 255.0f * shade;
+      flat_g = 0.5f * (va.color[1] + vb.color[1] + vc.color[1]) / 255.0f * shade;
+      flat_b = 0.5f * (va.color[2] + vb.color[2] + vc.color[2]) / 255.0f * shade;
+      if (!mesh.has_colors) {
+        flat_r = flat_g = flat_b = static_cast<float>(options.fallback_color[0]) / 255.0f * shade;
+      }
+    }
     int min_x = static_cast<int>(std::floor(std::min({a.x, b.x, c.x})));
     int max_x = static_cast<int>(std::ceil(std::max({a.x, b.x, c.x})));
     int min_y = static_cast<int>(std::floor(std::min({a.y, b.y, c.y})));
@@ -129,9 +158,9 @@ void rasterise(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &
         if (options.depth_test && !(depth_value <= depth[pixel])) continue;
         // The GS interpolates Gouraud colours linearly in screen space; perspective correction is only for the texture
         // coordinates (STQ), which this reference does not use yet.
-        const float red = alpha * a.r + beta * b.r + gamma * c.r;
-        const float green = alpha * a.g + beta * b.g + gamma * c.g;
-        const float blue = alpha * a.b + beta * b.b + gamma * c.b;
+        const float red = options.flat_shading ? flat_r : alpha * a.r + beta * b.r + gamma * c.r;
+        const float green = options.flat_shading ? flat_g : alpha * a.g + beta * b.g + gamma * c.g;
+        const float blue = options.flat_shading ? flat_b : alpha * a.b + beta * b.b + gamma * c.b;
         depth[pixel] = depth_value;
         rgba[pixel * 4 + 0] = clamp_level(red);
         rgba[pixel * 4 + 1] = clamp_level(green);

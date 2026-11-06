@@ -10,27 +10,25 @@ namespace gt4::coregs3 {
 namespace {
 
 ChannelRole classify(bool tops, std::uint32_t destination, ChannelFormat format) {
-  // The reset list sits at qword 0x40 like the UVs, distinguished by its single 8-bit component: the car packets carry no
-  // UV channel at all and use exactly this form (evidence: the channel scan of a captured night-race car draw).
-  if (destination == 0x40u && format == ChannelFormat::v1_8) return ChannelRole::reset;
-  if (tops) {
-    if (destination == 0x00u) {
-      if (format == ChannelFormat::v3_16 || format == ChannelFormat::v3_32) return ChannelRole::positions;
-      return ChannelRole::unknown;
-    }
-    if (destination == 0x40u) {
-      switch (format) {
-      case ChannelFormat::v2_16:
-      case ChannelFormat::v2_32:
-      case ChannelFormat::v3_16:
-      case ChannelFormat::v3_32: return ChannelRole::uv;
-      default: return ChannelRole::unknown;
-      }
-    }
-    if (destination == 0x80u && format == ChannelFormat::v4_8) return ChannelRole::color;
-    return ChannelRole::auxiliary;
+  if (tops && destination == 0x00u) {
+    if (format == ChannelFormat::v3_16 || format == ChannelFormat::v3_32) return ChannelRole::positions;
+    return ChannelRole::unknown;
   }
-  if (destination == 0x00u && format == ChannelFormat::v3_32) return ChannelRole::positions;
+  // The strip table sits at TOPS-relative qword 0x40 like the UVs, distinguished by its single 8-bit component. The
+  // VU1 program writes it through STMASK 0x3F3F3F3F, so only lane 3 of each qword changes; see decode_strip_table.
+  if (tops && destination == 0x40u && format == ChannelFormat::v1_8) return ChannelRole::strip_table;
+  if (tops && destination == 0x40u) {
+    switch (format) {
+    case ChannelFormat::v2_16:
+    case ChannelFormat::v2_32:
+    case ChannelFormat::v3_16:
+    case ChannelFormat::v3_32: return ChannelRole::uv;
+    default: return ChannelRole::unknown;
+    }
+  }
+  if (tops && destination == 0x80u && format == ChannelFormat::v4_8) return ChannelRole::color;
+  // An absolute V3-32 vector at qword 0 is a float position channel (the wheel and tyre shapes use it).
+  if (!tops && destination == 0x00u && format == ChannelFormat::v3_32) return ChannelRole::positions;
   return ChannelRole::auxiliary;
 }
 
@@ -42,6 +40,16 @@ float decode_bits(std::uint32_t raw) {
   return value;
 }
 
+struct ItemData {
+  std::vector<float> positions;      // 3 floats per vertex
+  std::vector<std::uint8_t> colors;  // 4 bytes per vertex
+  std::vector<float> uvs;            // 2 floats per vertex
+  std::vector<std::uint8_t> strip_table;
+  bool has_colors = false;
+  bool has_uv = false;
+  std::uint32_t vertices() const { return static_cast<std::uint32_t>(positions.size() / 3); }
+};
+
 }  // namespace
 
 const char *channel_role_name(ChannelRole role) noexcept {
@@ -49,14 +57,49 @@ const char *channel_role_name(ChannelRole role) noexcept {
   case ChannelRole::positions: return "positions";
   case ChannelRole::uv: return "uv";
   case ChannelRole::color: return "color";
-  case ChannelRole::reset: return "reset";
+  case ChannelRole::strip_table: return "strip_table";
   case ChannelRole::auxiliary: return "auxiliary";
   default: return "unknown";
   }
 }
 
-bool classify_reset(bool tops, std::uint32_t destination, ChannelFormat format) noexcept {
-  return classify(tops, destination, format) == ChannelRole::reset;
+bool classify_strip_table(bool tops, std::uint32_t destination, ChannelFormat format) noexcept {
+  return classify(tops, destination, format) == ChannelRole::strip_table;
+}
+
+bool decode_strip_table(const std::vector<std::uint8_t> &bytes, std::uint32_t vertices,
+                        std::vector<std::uint32_t> &lengths, std::string &error) {
+  lengths.clear();
+  if (bytes.empty() || bytes[0] == 0) {
+    // The all-zero variant: no strip list, so the item is one strip.
+    lengths.push_back(vertices);
+    return vertices != 0;
+  }
+  const std::uint32_t strips = bytes[0];
+  if (bytes.size() < 1u + strips) {
+    error = "strip table declares " + std::to_string(strips) + " strips but carries " +
+            std::to_string(bytes.size() - 1u) + " bytes";
+    return false;
+  }
+  std::uint32_t total = 0;
+  for (std::uint32_t index = 0; index < strips; ++index) {
+    const std::uint32_t value = bytes[1u + index];
+    if (value % 3u != 0) {
+      error = "strip " + std::to_string(index) + " has a length byte " + std::to_string(value) +
+              " that is not a multiple of three";
+      lengths.clear();
+      return false;
+    }
+    const std::uint32_t count = value / 3u + 2u;
+    lengths.push_back(count);
+    total += count;
+  }
+  if (total != vertices) {
+    error = "strip table covers " + std::to_string(total) + " vertices, the item has " + std::to_string(vertices);
+    lengths.clear();
+    return false;
+  }
+  return true;
 }
 
 ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedDraw &draw) {
@@ -96,11 +139,8 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
                 const MeshOptions &options, Mesh &mesh, std::string &error) {
   mesh = Mesh{};
 
-  std::vector<float> positions;  // 3 per vertex
-  std::vector<std::uint8_t> colors;
-  std::vector<float> uvs;
-  std::vector<std::uint8_t> resets;
-
+  std::vector<ItemData> items;
+  items.reserve(draw.item_count);
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
     if (item.packet_bytes == 0) continue;
@@ -113,6 +153,7 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
       error = "VIF decode: " + packet.error;
       return false;
     }
+    ItemData data;
     for (const VifCommand &entry : packet.commands) {
       if (!entry.unpack) continue;
       const ChannelRole role = classify(entry.tops, entry.destination, entry.format);
@@ -125,70 +166,86 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
       switch (role) {
       case ChannelRole::positions:
         for (const VifVector &vector : vectors) {
-          const float scale = entry.format == ChannelFormat::v3_32 ? 1.0f : options.position_scale;
-          positions.push_back(entry.format == ChannelFormat::v3_32 ? decode_bits(vector.v[0])
-                                                                  : decode_signed16(vector.v[0]) * scale);
-          positions.push_back(entry.format == ChannelFormat::v3_32 ? decode_bits(vector.v[1])
-                                                                  : decode_signed16(vector.v[1]) * scale);
-          positions.push_back(entry.format == ChannelFormat::v3_32 ? decode_bits(vector.v[2])
-                                                                  : decode_signed16(vector.v[2]) * scale);
+          const bool floats = entry.format == ChannelFormat::v3_32;
+          const float scale = floats ? 1.0f : options.position_scale;
+          data.positions.push_back(floats ? decode_bits(vector.v[0]) : decode_signed16(vector.v[0]) * scale);
+          data.positions.push_back(floats ? decode_bits(vector.v[1]) : decode_signed16(vector.v[1]) * scale);
+          data.positions.push_back(floats ? decode_bits(vector.v[2]) : decode_signed16(vector.v[2]) * scale);
         }
         break;
       case ChannelRole::color:
-        mesh.has_colors = true;
-        for (const VifVector &vector : vectors) {
+        data.has_colors = true;
+        for (const VifVector &vector : vectors)
           for (std::uint32_t lane = 0; lane < 4; ++lane)
-            colors.push_back(static_cast<std::uint8_t>(vector.v[lane] & 0xFFu));
-        }
+            data.colors.push_back(static_cast<std::uint8_t>(vector.v[lane] & 0xFFu));
         break;
       case ChannelRole::uv:
-        mesh.has_uv = true;
+        data.has_uv = true;
         for (const VifVector &vector : vectors) {
-          uvs.push_back(static_cast<float>(static_cast<std::uint16_t>(vector.v[0] & 0xFFFFu)) / 65536.0f);
+          data.uvs.push_back(static_cast<float>(static_cast<std::uint16_t>(vector.v[0] & 0xFFFFu)) / 65536.0f);
           const float v = static_cast<float>(static_cast<std::uint16_t>(vector.v[1] & 0xFFFFu)) / 65536.0f;
-          uvs.push_back(options.flip_v ? 1.0f - v : v);
+          data.uvs.push_back(options.flip_v ? 1.0f - v : v);
         }
         break;
-      case ChannelRole::reset:
-        for (const VifVector &vector : vectors) resets.push_back(static_cast<std::uint8_t>(vector.v[0] & 0xFFu));
+      case ChannelRole::strip_table:
+        // A later table in the same packet overwrites the earlier one on the VU (same destination), so keep the last.
+        // The VU1 program writes the table through STMASK 0x3F3F3F3F, which lands the byte in lane 3 only (measured;
+        // docs/COREGS3-HOOKS.md §6). An unmasked write broadcasts it to every lane, so lane 3 is the stable source.
+        data.strip_table.clear();
+        for (const VifVector &vector : vectors)
+          data.strip_table.push_back(static_cast<std::uint8_t>(vector.v[3] & 0xFFu));
         break;
       default: break;
       }
     }
+    if (data.vertices() != 0) items.push_back(std::move(data));
   }
 
-  const std::size_t vertex_count = positions.size() / 3;
+  std::uint32_t vertex_count = 0;
+  for (const ItemData &item : items) vertex_count += item.vertices();
   if (vertex_count == 0) {
     error = "no position channel";
     return false;
   }
+
   mesh.vertices.resize(vertex_count);
-  for (std::size_t index = 0; index < vertex_count; ++index) {
-    MeshVertex &vertex = mesh.vertices[index];
-    vertex.position = {positions[index * 3 + 0], positions[index * 3 + 1], positions[index * 3 + 2]};
-    if (mesh.has_colors && (index + 1) * 4 <= colors.size()) {
-      for (std::uint32_t lane = 0; lane < 4; ++lane) vertex.color[lane] = colors[index * 4 + lane];
+  std::uint32_t base = 0;
+  for (const ItemData &item : items) {
+    for (std::uint32_t index = 0; index < item.vertices(); ++index) {
+      MeshVertex &vertex = mesh.vertices[base + index];
+      vertex.position = {item.positions[index * 3 + 0], item.positions[index * 3 + 1], item.positions[index * 3 + 2]};
+      if (item.has_colors && (index + 1) * 4 <= item.colors.size())
+        for (std::uint32_t lane = 0; lane < 4; ++lane) vertex.color[lane] = item.colors[index * 4 + lane];
+      if (item.has_uv && (index + 1) * 2 <= item.uvs.size()) {
+        vertex.uv = {item.uvs[index * 2 + 0], item.uvs[index * 2 + 1]};
+        vertex.has_uv = true;
+      }
     }
-    if (mesh.has_uv && (index + 1) * 2 <= uvs.size()) {
-      vertex.uv = {uvs[index * 2 + 0], uvs[index * 2 + 1]};
-      vertex.has_uv = true;
-    }
+    mesh.has_colors = mesh.has_colors || item.has_colors;
+    mesh.has_uv = mesh.has_uv || item.has_uv;
+    if (!item.strip_table.empty()) mesh.has_strip_table = true;
+    base += item.vertices();
   }
 
-  // Strip topology: the reset bytes give the first vertex of a new strip (0 is the start of the first one). Every other
-  // strip continues from the previous vertex list, which is the layout of a GT4 shape: one vertex array per packet and
-  // reset markers inside it.
-  mesh.strip_starts.clear();
-  mesh.strip_starts.push_back(0);
-  for (std::uint8_t reset : resets) {
-    const std::uint32_t start = reset;
-    if (start == 0 || start >= vertex_count) continue;
-    if (mesh.strip_starts.back() != start) mesh.strip_starts.push_back(start);
+  if (options.topology == Topology::list) {
+    for (std::uint32_t vertex = 0; vertex + 2 < vertex_count; vertex += 3) {
+      mesh.strip_starts.push_back(vertex);
+      mesh.strip_lengths.push_back(3);
+      mesh.indices.push_back(vertex);
+      mesh.indices.push_back(vertex + 1);
+      mesh.indices.push_back(vertex + 2);
+    }
+    if (mesh.indices.empty()) {
+      error = "no triangles (fewer than three vertices)";
+      return false;
+    }
+    return true;
   }
   if (options.topology == Topology::quad) {
-    // Hypothesis from the tap's ADC pattern (two drawn and two culled vertices per group of four): the vertex arrays
-    // are quad groups, each a triangle pair. Tried side by side with the strip reading until the tap settles it.
+    // Diagnostic only: two triangles per four vertices, ignoring the strip table.
     for (std::uint32_t vertex = 0; vertex + 3 < vertex_count; vertex += 4) {
+      mesh.strip_starts.push_back(vertex);
+      mesh.strip_lengths.push_back(4);
       mesh.indices.push_back(vertex + 0);
       mesh.indices.push_back(vertex + 1);
       mesh.indices.push_back(vertex + 2);
@@ -202,42 +259,44 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
     }
     return true;
   }
-  if (options.topology == Topology::list) {
-    for (std::uint32_t vertex = 0; vertex + 2 < vertex_count; vertex += 3) {
-      mesh.indices.push_back(vertex);
-      mesh.indices.push_back(vertex + 1);
-      mesh.indices.push_back(vertex + 2);
-    }
-    if (mesh.indices.empty()) {
-      error = "no triangles (fewer than three vertices)";
+
+  // Strip topology: each item's strip table says how many vertices every strip has (a table with no bytes is one strip
+  // over the whole item). A strip of n vertices has n-2 triangles; the winding alternates from the strip's first vertex.
+  base = 0;
+  for (std::uint32_t item_index = 0; item_index < items.size(); ++item_index) {
+    const ItemData &item = items[item_index];
+    std::vector<std::uint32_t> lengths;
+    std::string table_error;
+    if (!decode_strip_table(item.strip_table, item.vertices(), lengths, table_error)) {
+      error = "item " + std::to_string(item_index) + ": " + table_error;
       return false;
     }
-    return true;
-  }
-  for (std::size_t index = 0; index < mesh.strip_starts.size(); ++index) {
-    const std::uint32_t begin = mesh.strip_starts[index];
-    const std::uint32_t end = index + 1 < mesh.strip_starts.size()
-                                  ? mesh.strip_starts[index + 1]
-                                  : static_cast<std::uint32_t>(vertex_count);
-    if (end <= begin + 2) continue;
-    const float limit = options.max_edge;
-    auto far = [&](std::uint32_t a, std::uint32_t b) {
-      if (limit <= 0.0f) return false;
-      const auto &pa = mesh.vertices[a].position;
-      const auto &pb = mesh.vertices[b].position;
-      const float dx = pa[0] - pb[0], dy = pa[1] - pb[1], dz = pa[2] - pb[2];
-      return dx * dx + dy * dy + dz * dz > limit * limit;
-    };
-    for (std::uint32_t vertex = begin; vertex + 2 < end; ++vertex) {
-      const bool flip = ((vertex - begin) & 1u) != 0;
-      const std::uint32_t a = vertex + (flip ? 1u : 0u);
-      const std::uint32_t b = vertex + (flip ? 0u : 1u);
-      const std::uint32_t c = vertex + 2;
-      if (far(a, b) || far(b, c) || far(a, c)) continue;
-      mesh.indices.push_back(a);
-      mesh.indices.push_back(b);
-      mesh.indices.push_back(c);
+    std::uint32_t begin = base;
+    for (const std::uint32_t length : lengths) {
+      const std::uint32_t end = begin + length;
+      mesh.strip_starts.push_back(begin);
+      mesh.strip_lengths.push_back(length);
+      for (std::uint32_t vertex = begin; vertex + 2 < end; ++vertex) {
+        const bool flip = ((vertex - begin) & 1u) != 0;
+        const std::uint32_t a = vertex + (flip ? 1u : 0u);
+        const std::uint32_t b = vertex + (flip ? 0u : 1u);
+        const std::uint32_t c = vertex + 2;
+        if (options.max_edge > 0.0f) {
+          auto far = [&](std::uint32_t first, std::uint32_t second) {
+            const auto &pa = mesh.vertices[first].position;
+            const auto &pb = mesh.vertices[second].position;
+            const float dx = pa[0] - pb[0], dy = pa[1] - pb[1], dz = pa[2] - pb[2];
+            return dx * dx + dy * dy + dz * dz > options.max_edge * options.max_edge;
+          };
+          if (far(a, b) || far(b, c) || far(a, c)) continue;
+        }
+        mesh.indices.push_back(a);
+        mesh.indices.push_back(b);
+        mesh.indices.push_back(c);
+      }
+      begin = end;
     }
+    base += item.vertices();
   }
   if (mesh.indices.empty()) {
     error = "no triangles (strip list is too short)";
