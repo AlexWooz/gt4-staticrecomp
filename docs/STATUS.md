@@ -24,9 +24,9 @@ harvested again at the next Play, so a save deleted by hand in `%APPDATA%` came 
 - Tests: 8 unit tests on the helper, 3 new flow tests (delete, New save, harvest with the card and the library under different
   roots and a rename that reports another volume), a migration test for the park mover. Launcher `cargo test --workspace` 768
   passed (9 ignored); focus checks 358/358 en-US and 365/365 pt-BR; nav-test 260/260; locale keys 925 in both.
-- Launchers labelled rc15 (installer `0411b1a6...` 19,383,808 bytes, portable `76d27613...` 19,310,592 bytes); installer
-  `GT4Recomp-Setup-1.3.0-rc15.exe` (`0960ac78...`, 48,231,557 bytes) and portable zip `GT4Recomp-1.3.0-rc15-portable.zip`
-  (`9af0fe4d...`, 75,712,839 bytes) in `private/release-130-rc15c-out` with `SHA256SUMS`; the games are the unchanged slice411
+- Launchers labelled rc15 (installer build `7cc5df06...` 19,383,808 bytes, portable `220bbeee...` 19,310,592 bytes); installer
+  `GT4Recomp-Setup-1.3.0-rc15.exe` (`ac46f2cd...`, 48,235,834 bytes) and portable zip `GT4Recomp-1.3.0-rc15-portable.zip`
+  (`5c2f9140...`, 75,712,838 bytes) in `private/release-130-rc15c-out` with `SHA256SUMS`; the games are the unchanged slice411
   distribution (`private/slice411-dist-130-rc15b`, `gt4.exe` `f0fc8970...`, `gt4-spec2.exe` `64a6dcb0...`). Contents checked
   against their sources: 48 of 48 files equal by sha256 (24 installer payload files, 24 zip files, plus `PORTABLE.txt`), 20 of
   20 game files present. Draft only; no publish.
