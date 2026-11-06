@@ -580,9 +580,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // IN-441 (performance mode, as rc7's TASK-117 does for the PCSX2 GS): GT4's night race reads back its light flare
     // visibility table, a 64 x 8 PSMCT32 rectangle (2048 bytes), once per frame; the VU1 scales every light flare and the
     // sun glare by its entry. Answered as zeros, without a readback, the game draws none of them: no GPU wait for the
-    // table and no flare draws. GT4_GS_HIDE_FLARES=0/1 overrides the performance mode default (the same switch as rc7's).
+    // table and no flare draws.
+    // TASK-186 (owner, 2026-11-06): Performance Mode is now a set of independent effect toggles. This one hides the sun
+    // glare and the light flares; they share the one table, so they cannot be split (the VU1 scales both by it).
+    // GT4_CORE2_PERF_FLARES=1 turns them off; the older GT4_GS_HIDE_FLARES says the same and wins (it is the A/B and the
+    // switch the GSdx path has used since TASK-117); GT4_CORE2_PERFORMANCE=1 still turns every item off.
     const bool hideFlares_ = std::getenv("GT4_GS_HIDE_FLARES") != nullptr
                                  ? std::strcmp(std::getenv("GT4_GS_HIDE_FLARES"), "0") != 0
+                             : std::getenv("GT4_CORE2_PERF_FLARES") != nullptr
+                                 ? std::strcmp(std::getenv("GT4_CORE2_PERF_FLARES"), "0") != 0
                                  : performance_;
     bool zeroRead_ = false;  // the pending LOCAL->HOST read is a hidden flare table: its bytes are zeros
     const char *readbackReason_ = "other";  // diagnostics (GT4_CORE2_READBACK_TRACE): why the next readback runs
@@ -5358,10 +5364,13 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
         impl_->textureBudget_ = impl_->gpu_.Integrated() ? kTextureCacheBytesIntegrated : kTextureCacheBytes;
     }
     impl_->StartTextureReplacement();
-    if (impl_->delayedDownloads_ || impl_->hideFlares_) {
-        std::fprintf(stderr, "[core2] performance mode (decision 0073): delayed downloads %s, flares hidden %s\n",
-                     impl_->delayedDownloads_ ? "on" : "off", impl_->hideFlares_ ? "on" : "off");
-    }
+    // TASK-186: the effect toggles this session took, one per item (Performance Mode is no bundle any more).
+    // `on` means the effect is drawn; GT4_CORE2_PERF_<ITEM>=1 turns one off.
+    std::fprintf(stderr,
+                 "[core2] effects (TASK-186; GT4_CORE2_PERF_<ITEM>=1 turns one off, GT4_CORE2_PERFORMANCE=1 all): "
+                 "sun glare and light flares %s, road sheen %s, effect targets at 1x %s, delayed downloads %s\n",
+                 impl_->hideFlares_ ? "off" : "on", impl_->gpu_.RoadSheenSkipped() ? "off" : "on",
+                 impl_->effectTargets1x_ ? "on" : "off", impl_->delayedDownloads_ ? "on" : "off");
     // The prefix and the state as the last word stay as before (bench scripts read them).
     std::fprintf(stderr, "[core2] palette segments (TASK-168) [default off, GT4_CORE2_PALETTE_SEGMENTS=1 for on] %s\n",
                  impl_->paletteSegments_ ? "on" : "off");

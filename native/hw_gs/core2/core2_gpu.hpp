@@ -174,6 +174,8 @@ public:
     // IN-431: true on an integrated GPU (its images live in system memory shared with the game); the image budgets
     // are smaller there.
     bool Integrated() const;
+    // TASK-186: the road sheen effect is off (GT4_CORE2_PERF_ROAD_SHEEN=1), for the [core2] effects log line.
+    bool RoadSheenSkipped() const;
     std::uint32_t Scale() const;
     std::uint32_t MaxNativeSide() const;  // the largest native side an image can have at this scale
 

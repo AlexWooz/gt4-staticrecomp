@@ -79,6 +79,10 @@ pub struct Row {
     pub forced: bool,
     #[serde(default)]
     pub env: String,
+    /// A launcher-only row the Settings page still shows (TASK-186: the effect toggles, which reach the game as an
+    /// environment variable and are never written to the INI). `written = "never"` rows are otherwise hidden from the UI.
+    #[serde(default)]
+    pub offered: bool,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +149,9 @@ fn check_row(row: &Row) -> Result<(), TableError> {
     if row.written == "never" && (!row.section.is_empty() || !row.key.is_empty()) {
         return refuse(format!("{name}: launcher-only row must have no INI section or key"));
     }
+    if row.offered && (row.written != "never" || row.env.is_empty()) {
+        return refuse(format!("{name}: an offered launcher-only row must be written = \"never\" with an env variable"));
+    }
     if row.written != "never" && row.status == "ok" && (row.section.is_empty() || row.key.is_empty()) {
         return refuse(format!("{name}: settable row needs an INI section and key"));
     }
@@ -205,7 +212,8 @@ pub fn default_value(id: &str) -> Option<String> {
 /// Checks a user value (from settings.toml or the UI) against the compiled-in table and returns its normalized text.
 pub fn check_user_value(id: &str, raw: &str) -> Result<String, String> {
     let row = row(id).ok_or_else(|| format!("unknown GS setting '{id}'"))?;
-    if matches!(row.written.as_str(), "never" | "launcher") || row.kind == "path" {
+    // TASK-186: an offered launcher-only row (the effect toggles) takes a user value; it simply never reaches the INI.
+    if (matches!(row.written.as_str(), "never" | "launcher") && !row.offered) || row.kind == "path" {
         return Err(format!("{id} is set by the launcher, not by a user setting"));
     }
     if row.page == MODS_PAGE {
@@ -223,7 +231,7 @@ pub fn offered() -> Vec<&'static Row> {
             row.page != MODS_PAGE
                 && row.page != "hidden"
                 && row.status == "ok"
-                && !matches!(row.written.as_str(), "never" | "launcher")
+                && (!matches!(row.written.as_str(), "never" | "launcher") || (row.offered && !row.env.is_empty()))
                 && (row.kind != "enum" || row.choices.iter().any(|choice| choice.status == "ok"))
         })
         .collect()
@@ -245,6 +253,19 @@ pub fn offered_choices(row: &Row) -> Vec<&str> {
         return vec![row.default.as_str()];
     }
     row.choices.iter().filter(|choice| choice.status == "ok").map(|choice| choice.name.as_str()).collect()
+}
+
+/// Readbacks values (`hw_download_mode`) that the gt4-gs the launcher runs accepts. The gt4-gs the launcher installs is
+/// at least `gs_release::RENDERER_MINIMUM` (1.2.1), and 1.2.1 embeds the allow-list of the TASK-091 settings table, whose
+/// `HWDownloadMode` had only Accurate (0) and NoReadbacks (2): any other value is ignored by gt4-gs with one warning line
+/// in the session log, so the launcher never offers one. The table keeps the five values of the row before TASK-091 (the
+/// Android GS accepts every one, and the allow-list file still lists them for a future gt4-gs build); widen this list, and
+/// the row's offered choices with it, when a gt4-gs build with the regenerated allow-list becomes the minimum.
+pub const GT4GS_HW_DOWNLOAD_MODES: &[&str] = &["accurate", "no-readbacks"];
+
+/// Whether the gt4-gs the launcher runs accepts a `hw_download_mode` value (see [`GT4GS_HW_DOWNLOAD_MODES`]).
+pub fn gt4gs_accepts_hw_download_mode(name: &str) -> bool {
+    GT4GS_HW_DOWNLOAD_MODES.contains(&name)
 }
 
 /// Checks one value of a row and returns its normalized text (enum name, bool, integer text, float text or path).

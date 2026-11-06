@@ -78,8 +78,28 @@ fn every_enabled_bool_and_int_row_round_trips() {
 #[test]
 fn the_row_helpers_see_the_enabled_values() {
     let blending: &Row = gs_table::row("blending").unwrap();
-    assert_eq!(gs_table::offered_choices(blending), vec!["minimum", "basic", "medium", "high", "full", "maximum"]);
+    assert_eq!(gs_table::offered_choices(blending), vec!["high", "minimum"]);
     let graphics_api = gs_table::row("graphics_api").unwrap();
     assert_eq!(gs_table::offered_choices(graphics_api), vec!["auto", "vulkan", "d3d12", "d3d11"]);
     assert!(gs_table::offered().iter().all(|row| row.page == "basic" || row.page == "advanced"));
+}
+
+#[test]
+fn the_launcher_offers_only_the_readback_values_the_installed_gt4gs_accepts() {
+    // TASK-186 follow-up: the table keeps the five values of the row before TASK-091 (the allow-list lists them for a future
+    // gt4-gs build), while the launcher offers the two that gt4-gs 1.2.1 accepts.
+    let readbacks = gs_table::row("hw_download_mode").unwrap();
+    assert_eq!(
+        gs_table::offered_choices(readbacks),
+        vec!["accurate", "enabled-force-full", "no-readbacks", "unsynchronized", "disabled"],
+        "the table keeps every value"
+    );
+    assert_eq!(gs_table::GT4GS_HW_DOWNLOAD_MODES, ["accurate", "no-readbacks"]);
+    for accepted in gs_table::GT4GS_HW_DOWNLOAD_MODES {
+        assert!(gs_table::offered_choices(readbacks).contains(accepted), "{accepted} is a table value");
+        assert!(gs_table::gt4gs_accepts_hw_download_mode(accepted), "{accepted}");
+    }
+    for refused in ["enabled-force-full", "unsynchronized", "disabled"] {
+        assert!(!gs_table::gt4gs_accepts_hw_download_mode(refused), "{refused}");
+    }
 }

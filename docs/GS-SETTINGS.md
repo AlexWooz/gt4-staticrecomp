@@ -123,9 +123,11 @@ tab), followed by "Reset to defaults" (Y on the pad). Pre-configured to the GT4 
 - Display: `deinterlace` (Automatic, always; TASK-047), `disable_interlace_offset` (off), `antiblur` (on),
   `offsets` (off), `overscan` (off), `fmv_aspect` (off), `tv_shader` (None).
 - Filtering and accuracy: `filter` (texture filtering, PS2 bilinear), `trilinear` (Automatic), `anisotropic` (off, the
-  60 FPS budget), `mipmap` (hardware mipmapping on, `hw_mipmap`), `blending` (High, always), `dithering` (Unscaled),
-  `texture_preloading` (Full), `performance_mode` "Performance Mode" (a toggle, Off by default: Off = Accurate, always
-  written; On = NoReadbacks, GSdx only, TASK-091), `accurate_alpha_test` (off), `aa1` (off), `rov` (off, experimental).
+  60 FPS budget), `mipmap` (hardware mipmapping on, `hw_mipmap`), `blending` (High or Minimum, TASK-186: the old
+  Performance Mode's second GSdx setting as a row, GSdx only), `dithering` (Unscaled),
+  `texture_preloading` (Full), `hw_download_mode` "Readbacks" (Accurate by default, always written; the table keeps the
+  five values of the row before TASK-091, and the launcher offers the two gt4-gs 1.2.1 accepts, GSdx only, TASK-186),
+  `accurate_alpha_test` (off), `aa1` (off), `rov` (off, experimental).
 - Colour: `shade_boost` (off) and the four levels (50 each).
 - OSD: none since 2026-10-21. PCSX2's own OSD rows moved to HIDDEN (forced off); the performance overlay below is
   GT4Recomp's own.
@@ -318,7 +320,7 @@ citations.
 | `filter` | `filter` | Nearest 0, Forced 1, PS2 2, Forced but sprite excluded 3 | PS2 (2) |
 | `trilinear` | `TriFilter` | Automatic -1, Off 0, PS2 1, Forced 2 | Automatic |
 | `anisotropic` | `MaxAnisotropy` | 0, 2, 4, 8, 16 | 0 |
-| `blending` | `accurate_blending_unit` | Minimum 0 ... High 3 ... Maximum 5 | High (3) |
+| `blending` | `accurate_blending_unit` | High 3, Minimum 0 (TASK-186: the two values the preset used) | High (3) |
 | `dithering` | `dithering_ps2` | Off 0, Scaled 1, Unscaled 2, Force 32 bit 3 | Unscaled (2) |
 | `texture_preloading` | `texture_preloading` | None 0, Partial 1, Full 2 | Full |
 | `deinterlace` | `deinterlace_mode` | Automatic 0, Off 1, Weave, Bob, Blend, Adaptive (TFF/BFF) 2 to 9 | Automatic |
@@ -328,18 +330,27 @@ citations.
 | `tv_shader` | `TVShader` | None 0 ... Lottes CRT 5, 4xRGSS 6, NxAGSS 7 | None |
 | `shade_boost` | `ShadeBoost` | bool | off |
 | `shade_boost_*` | `ShadeBoost_Brightness`, `_Contrast`, `_Gamma`, `_Saturation` | 1 to 100 | 50 |
-| `performance_mode` | `HWDownloadMode` | toggle: Off = Accurate 0, On = NoReadbacks 2 (TASK-091) | Off, Accurate (0) |
+| `hw_download_mode` | `HWDownloadMode` | Accurate 0, EnabledForceFull 1, NoReadbacks 2, Unsynchronized 3, Disabled 4 (TASK-186) | Accurate (0) |
 | `osd_messages_pos`, `osd_performance_pos` | `OsdMessagesPos`, `OsdPerformancePos` | None 0, Top left 1 ... Bottom right 9 | Top left (1); Top right (3) |
 | `osd_scale` | `OsdScale` | 25 to 500 (percent) | 100 |
 | `adapter` | `Adapter` | empty or a name from `GSGetAdapterInfo` | empty |
 | `mipmap` | `hw_mipmap` | bool | on |
 
-Readback mapping (TASK-091, 1.2.1): the launcher row is Performance Mode (`performance_mode`). `--gs-readback`
-(`GT4_GS_READBACK`) is a shortcut for it: accurate = `HWDownloadMode` Enabled (0, written by default); no-readbacks =
-NoReadbacks (2). Unsynchronized (3) is no longer a table value. A shortcut and `--gs-setting performance_mode=...` for
-the same row conflict. The allow-list (`gs-settings-allowlist.json`) lists the values of the table, so gt4-gs now
-ignores `HWDownloadMode` 1, 3 and 4. The launcher stores the old readback key as Performance Mode On when it was not
-accurate (settings schema 5 to 6).
+Readback mapping (TASK-186, owner 2026-11-06): Readbacks is a player row again (`hw_download_mode`), with the five
+values of the row before TASK-091 and Accurate (0) by default. `--gs-readback` (`GT4_GS_READBACK`) is a shortcut for it,
+with the same five names; a shortcut and `--gs-setting hw_download_mode=...` for the same row conflict. The effect
+toggles never write the readback mode: turning the flares off answers the flare visibility table as zeros in our game
+code (`GT4_GS_HIDE_FLARES=1` with `GT4_GS_READBACK_LOCAL=1` on the GSdx path, `GT4_CORE2_PERF_FLARES=1` on CoreGS 2.0),
+so the car icons and the loading picture stay accurate. Blending accuracy is a row too (`blending`, High or Minimum), and
+the CoreGS 2.0 effect rows (`effect_flares`, `effect_road_sheen`, `effect_targets`) are launcher-only: they reach the game
+as `GT4_CORE2_PERF_FLARES`, `GT4_CORE2_PERF_ROAD_SHEEN` and `GT4_CORE2_EFFECTS_1X`, never in this file.
+**The allow-list limitation, and what the launcher does about it:** the gt4-gs 1.2.1 the launcher runs embeds the
+allow-list of the TASK-091 table, which listed only `HWDownloadMode` 0 and 2, so it ignores 1, 3 and 4 (one warning line
+in the session log). The table keeps all five values and `--gs-readback` still spells them, but the launcher offers only
+the two gt4-gs accepts (`gs_table::GT4GS_HW_DOWNLOAD_MODES`) and a stored 1, 3 or 4 becomes Accurate with a log line; the
+row widens again when a gt4-gs build with the regenerated allow-list becomes the minimum. The old Performance Mode choice
+itself migrates to every effect off, small effects at 1x, Minimum blending and Accurate readbacks (settings schema 8 to
+9).
 
 `UserHacks_*`: the names are recorded in the `user_hacks` row notes. Each name is a hidden per-key row for TASK-043.
 
