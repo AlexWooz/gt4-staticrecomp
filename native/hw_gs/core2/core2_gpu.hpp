@@ -140,6 +140,11 @@ struct Core2GpuStats {
     std::uint64_t drainIdles = 0;     // drains measured that way
     std::uint64_t drainGapCpuNs = 0;  // CPU: the end of the fence wait to the next vkQueueSubmit
     std::uint64_t drainGaps = 0;
+    // TASK-182 step 3 (O2): waits that took the newest-fence path, and the bounded spin before the blocking wait (polls and
+    // the ones that saw the fence signalled already).
+    std::uint64_t newestFenceWaits = 0;
+    std::uint64_t spinPolls = 0;
+    std::uint64_t spinHits = 0;
 };
 
 // IN-408: a CLUT load (07.4) whose source is a drawn 32-bit colour target, done on the GPU.
