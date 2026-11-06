@@ -726,6 +726,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     struct DrainMark {
         std::uint64_t downloads = 0, downloadReadbacks = 0, downloadTargets = 0, downloadPixels = 0;
         std::uint64_t drains = 0, idleNs = 0, idles = 0, gapNs = 0, gaps = 0, afterWaitSubmissions = 0;
+        std::uint64_t newestFenceWaits = 0, spinPolls = 0, spinHits = 0;  // TASK-182 step 3 (O2)
     };
     DrainMark lastDrainMark_;
     std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
@@ -5769,6 +5770,9 @@ void Renderer::Flush() {
             now.gapNs = g.drainGapCpuNs;
             now.gaps = g.drainGaps;
             now.afterWaitSubmissions = g.afterWaitSubmissions;
+            now.newestFenceWaits = g.newestFenceWaits;
+            now.spinPolls = g.spinPolls;
+            now.spinHits = g.spinHits;
             const Impl::DrainMark &was = s.lastDrainMark_;
             const auto per = [](std::uint64_t value, std::uint64_t count) {
                 return count != 0 ? static_cast<double>(value) / static_cast<double>(count) : 0.0;
@@ -5778,7 +5782,8 @@ void Renderer::Flush() {
                          "[core2] downloads/vblank=%.2f with_readback=%.2f targets/readback_download=%.2f "
                          "px/readback_download=%.1f wait_ms/readback_download=%.3f | drains/vblank=%.2f "
                          "gpu_idle_ms/drain=%.3f (timestamps, %.2f/vblank measured) cpu_gap_ms/drain=%.3f "
-                         "(CPU: fence wait end to next submit) after_wait_submits/vblank=%.2f (K=%u, every %u)\n",
+                         "(CPU: fence wait end to next submit) after_wait_submits/vblank=%.2f (K=%u, every %u) "
+                         "newest_fence_waits/vblank=%.2f spin_polls/vblank=%.0f (hits %.2f)\n",
                          static_cast<double>(now.downloads - was.downloads) / 600.0,
                          static_cast<double>(readbackDownloads) / 600.0,
                          per(now.downloadTargets - was.downloadTargets, readbackDownloads),
@@ -5789,7 +5794,10 @@ void Renderer::Flush() {
                          static_cast<double>(now.idles - was.idles) / 600.0,
                          per(now.gapNs - was.gapNs, now.gaps - was.gaps) / 1.0e6,
                          static_cast<double>(now.afterWaitSubmissions - was.afterWaitSubmissions) / 600.0,
-                         s.gpu_.SubmitAfterWait(), s.gpu_.SubmitEvery());
+                         s.gpu_.SubmitAfterWait(), s.gpu_.SubmitEvery(),
+                         static_cast<double>(now.newestFenceWaits - was.newestFenceWaits) / 600.0,
+                         static_cast<double>(now.spinPolls - was.spinPolls) / 600.0,
+                         static_cast<double>(now.spinHits - was.spinHits) / 600.0);
             s.lastDrainMark_ = now;
         }
         std::string byReason;
@@ -5880,6 +5888,9 @@ const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.sheensEarly = impl_->gpu_.Stats().sheensEarly;
     impl_->stats.drains = impl_->gpu_.Stats().drains;
     impl_->stats.afterWaitSubmissions = impl_->gpu_.Stats().afterWaitSubmissions;
+    impl_->stats.newestFenceWaits = impl_->gpu_.Stats().newestFenceWaits;
+    impl_->stats.spinPolls = impl_->gpu_.Stats().spinPolls;
+    impl_->stats.spinHits = impl_->gpu_.Stats().spinHits;
     impl_->stats.postFieldComposes = impl_->gpu_.Stats().fieldComposes;
     impl_->stats.postCopies = impl_->gpu_.Stats().postCopies;
     return impl_->stats;

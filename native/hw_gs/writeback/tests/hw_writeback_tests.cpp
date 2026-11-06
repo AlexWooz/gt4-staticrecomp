@@ -3492,17 +3492,31 @@ struct Core2AbRun {
 
 constexpr size_t kGsMemoryBytes = 4u * 1024u * 1024u;
 
-// `onValue` is the switch's value for the "on" run ("" = its default); "0" turns it off.
+// `onValue` is the switch's value for the "on" run ("" = its default); "0" turns it off. `extraEnv` holds further
+// variables set for both runs before the renderer reads them (name, value); cleared afterwards.
+using EnvPairs = std::vector<std::pair<const char*, const char*>>;
+
+void ApplyEnv(const EnvPairs& env) {
+    for (const auto& [name, value] : env) _putenv_s(name, value);
+}
+
+void ClearEnv(const EnvPairs& env) {
+    for (const auto& [name, value] : env) _putenv_s(name, "");
+}
+
 bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWriter& capture, const char* abSwitch,
                    bool on, Core2AbRun& out, std::string& error, uint32_t memoryFromFrame = 0, uint32_t scale = 2,
-                   const std::function<void(writeback::Renderer&)>& configure = {}, const char* onValue = "") {
+                   const std::function<void(writeback::Renderer&)>& configure = {}, const char* onValue = "",
+                   const EnvPairs& extraEnv = {}) {
     _putenv_s(abSwitch, on ? onValue : "0");
+    ApplyEnv(extraEnv);
     _putenv_s("GT4_HW_CORE", "2");
     writeback::Renderer renderer;
     _putenv_s("GT4_HW_CORE", "");
     renderer.SetScale(scale, static_cast<float>(scale));
     const bool ready = renderer.Init(handles, error);  // some switches are read here
     _putenv_s(abSwitch, "");
+    ClearEnv(extraEnv);
     if (!ready) return false;
     if (configure) configure(renderer);
     if (!renderer.Core2()) {
@@ -3538,13 +3552,14 @@ bool ReplayCore2Ab(const gpu::VulkanHandles& handles, const cpuref::CaptureWrite
 int CheckCore2Ab(const gpu::VulkanHandles& handles, const char* name, const cpuref::CaptureWriter& capture,
                  uint32_t frames, const char* abSwitch, bool exact,
                  const std::function<int(const Core2AbRun& off, const Core2AbRun& on)>& counters,
-                 bool memoryLastOnly = false, uint32_t scale = 2, const char* onValue = "") {
+                 bool memoryLastOnly = false, uint32_t scale = 2, const char* onValue = "",
+                 const EnvPairs& extraEnv = {}) {
     Core2AbRun off, on;
     std::vector<std::vector<uint8_t>> reference;
     std::string error;
     const uint32_t memoryFrom = memoryLastOnly ? frames - 1 : 0;
-    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error, memoryFrom, scale, {}, onValue) &&
-              ReplayCore2Ab(handles, capture, abSwitch, true, on, error, memoryFrom, scale, {}, onValue);
+    bool ok = ReplayCore2Ab(handles, capture, abSwitch, false, off, error, memoryFrom, scale, {}, onValue, extraEnv) &&
+              ReplayCore2Ab(handles, capture, abSwitch, true, on, error, memoryFrom, scale, {}, onValue, extraEnv);
     if (ok) {
         cpuref::CpuRenderer renderer;
         cpuref::ReplaySummary summary;
@@ -6831,6 +6846,39 @@ int TestCore2GpuClut(const gpu::VulkanHandles& handles) {
                              "1");
     failures += CheckCore2Ab(handles, "submit after a wait, GPU-read ageing", Core2GpuReadAgeingCapture(72), 72,
                              "GT4_CORE2_SUBMIT_AFTER_WAIT", true, afterWaitCounters("GPU-read ageing"), true, 2, "1");
+    // TASK-182 step 3 (O2): waiting for the newest submission's fence only must give the same images and memory as waiting
+    // for every slot, and the newest-fence path must have run on the "on" side and not on the "off" side.
+    auto newestFenceCounters = [](const char* what) {
+        return [what](const Core2AbRun& off, const Core2AbRun& on) {
+            std::printf("  %s: drains %llu / %llu, newest-fence waits %llu / %llu\n", what,
+                        static_cast<unsigned long long>(off.stats.drains), static_cast<unsigned long long>(on.stats.drains),
+                        static_cast<unsigned long long>(off.stats.newestFenceWaits),
+                        static_cast<unsigned long long>(on.stats.newestFenceWaits));
+            return off.stats.drains > 0 && off.stats.newestFenceWaits == 0 && on.stats.newestFenceWaits > 0 ? 0 : 1;
+        };
+    };
+    failures += CheckCore2Ab(handles, "newest fence only, stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6,
+                             "GT4_CORE2_WAIT_NEWEST_FENCE", true, newestFenceCounters("stream over a GPU-read render"));
+    failures += CheckCore2Ab(handles, "newest fence only, GPU-read ageing", Core2GpuReadAgeingCapture(72), 72,
+                             "GT4_CORE2_WAIT_NEWEST_FENCE", true, newestFenceCounters("GPU-read ageing"), true);
+    // TASK-182 step 3: the bounded spin before the blocking wait polls the fence (and may see it signalled) and changes
+    // nothing else; it runs on the newest-fence path, so both runs have that on.
+    auto spinCounters = [](const char* what) {
+        return [what](const Core2AbRun& off, const Core2AbRun& on) {
+            std::printf("  %s: spin polls %llu / %llu, spin hits %llu / %llu\n", what,
+                        static_cast<unsigned long long>(off.stats.spinPolls),
+                        static_cast<unsigned long long>(on.stats.spinPolls),
+                        static_cast<unsigned long long>(off.stats.spinHits),
+                        static_cast<unsigned long long>(on.stats.spinHits));
+            return off.stats.spinPolls == 0 && on.stats.spinPolls > 0 ? 0 : 1;
+        };
+    };
+    failures += CheckCore2Ab(handles, "readback spin, stream over a GPU-read render", Core2StreamOverRenderCapture(6), 6,
+                             "GT4_HW_READBACK_SPIN", true, spinCounters("stream over a GPU-read render"), false, 2, "1",
+                             {{"GT4_CORE2_WAIT_NEWEST_FENCE", "1"}});
+    failures += CheckCore2Ab(handles, "readback spin, GPU-read ageing", Core2GpuReadAgeingCapture(72), 72,
+                             "GT4_HW_READBACK_SPIN", true, spinCounters("GPU-read ageing"), true, 2, "1",
+                             {{"GT4_CORE2_WAIT_NEWEST_FENCE", "1"}});
     // IN-429 / IN-430: batched readbacks and merged dirty rectangles give the same images and memory.
     auto readbackCounters = [](const char* what) {
         return [what](const Core2AbRun& off, const Core2AbRun& on) {
