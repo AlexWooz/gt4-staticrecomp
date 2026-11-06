@@ -1957,6 +1957,19 @@
       current = Object.assign({}, current, { renderer_choice: "gsdx_fallback" });
       await wait(900);
       check("the last step says why GSdx was needed", lastStep().indexOf(T("setup.renderer_ready_gsdx")) >= 0, lastStep());
+      // TASK-180 (owner, 2026-11-06): on Android there is no renderer step and no GSdx anywhere on the page: CoreGS 2.0 is
+      // inside the game there and the PC GSdx is never downloaded.
+      var windowsPlatform = GT4.platform;
+      GT4.platform = "android";
+      current = Object.assign({}, current, { state: "done", renderer_step: "done", renderer_choice: "coregs20" });
+      await wait(900);
+      var androidLabels = Array.prototype.map.call(scratch.querySelectorAll(".steps li .t"), function (node) { return node.textContent; });
+      check("the Android setup page has no renderer step", androidLabels.indexOf(T("setup.step_renderer")) < 0, androidLabels.join(" | "));
+      check("the Android setup page never mentions GSdx or gt4-gs",
+        scratch.textContent.indexOf("GSdx") < 0 && scratch.textContent.indexOf("gt4-gs") < 0,
+        String(scratch.textContent.indexOf("GSdx")) + " / " + String(scratch.textContent.indexOf("gt4-gs")));
+      GT4.platform = windowsPlatform;
+      await wait(900);
     } finally {
       if (handle) {
         handle.destroy();

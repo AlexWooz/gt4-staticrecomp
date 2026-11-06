@@ -1,3 +1,38 @@
+## TASK-180 integration: the virtual pad, the arrows-only rows and no PC GSdx on Android (2026-11-06, branch `task/180-android-emulator`)
+
+The Android branch now carries both halves of TASK-185, TASK-193's pointer rule and the owner's "no PC GSdx on Android".
+
+- **Merges** (`b63cb6c1` backend, `8bdf95b1` editor, both forked at 224f5460): real merges with both sides kept. The only
+  conflicts were `docs/STATUS.md` and `docs/journal/2026-11-06.md`, where each branch added its own section; both sections
+  stay, and the editor's "not merged" lines now record the merge. The editor's settings row and the backend's
+  `GT4_VIRTUAL_PAD` are the same key, so the merge needed no code glue.
+- **Contract, checked on the merged branch:** `[settings] virtual_pad` (Auto default) → `virtual_pad_environment` →
+  `GT4_VIRTUAL_PAD` in the Android Play plan; `android/virtual-pad/default-layout.json` is one file (sha256
+  `8357e505…`) that the APK packages as `assets/default-layout.json` and the launcher `include_str!`s; and the editor
+  writes the file the game reads, `/data/user/0/<package>/user/virtual-pad.json`, confirmed by the game's own emulator log
+  line (it also tries the external `files/user` copy).
+- **TASK-193 by hand** (its UI commit is `83f67bdc` on `release/1.3.0-rc15`): the cherry-pick conflicted in
+  `ui/css/app.css` and `ui/dev/README.md` only, because this branch has no rc15 Wheel-page spacing. The Wheel-card rules
+  were adapted to this branch (`58%` / `48%`, the `.is-tip` line kept) and everything else applied as written:
+  `GT4.input.stepsFromActivation(detail)`, a row that steps only when the click has no click count, arrows that keep their
+  24 px drawing with a 32 px (mouse) / 44 px (touch) invisible hit area behind a `::after` ring, and labels that wrap
+  between words only. The 24 focus checks and 5 nav cases came over.
+- **No PC GSdx on Android** (owner): `gt4l_core::launch::setup_renderer` now takes the `Platform` and answers Coregs20 on
+  one without GSdx, so setup never falls back to the `gt4-gs.exe` download; `launch::gsdx_installs_here` guards
+  `updates::install_renderer` (the single transfer path), `download_gsdx`, `install_gsdx_archive`, `gsdx_download_needed`
+  and `coregs20_offer` (Play's "GSdx is missing" prompt); and the setup page leaves the renderer step out on Android. The
+  Renderer row was already absent from the Android settings table (TASK-180 test5); the emulator screenshot shows the
+  Graphics page with no such row. Windows is unchanged.
+- **Checks:** `cargo test --workspace` **799 passed, 0 failed, 9 ignored** (two new launch-contract tests, one of them
+  `android_never_installs_gsdx_at_the_end_of_setup`); focus checks **427/427** en-US and **434/434** pt-BR, nav-test
+  **293/293**, locale parity inside the focus checks (no new keys); the `native_virtual_pad` fixture **9/9 groups PASS**
+  (built on its own, `build/run-vpad-fixture.cmd`). Evidence: `build/evidence/t180-integrate/`.
+- **Emulator:** the installed APK is `1.3.0-android-test6`, which predates this branch's launcher changes (its UI is
+  embedded in the Rust library), so it opens (home, Settings > Gráficos without a Renderer row) but cannot show the new
+  Controls section. Opening the Controls page on this emulator killed the emulator process 4 times out of 4 (the host's
+  SwiftShader/lavapipe setup, before any of this branch's code ran); the Controls section and the Android setup page are
+  shown from the dev mock instead, at 2400x1080, both languages.
+
 ## TASK-185 backend: the Android on-screen virtual pad (2026-11-06)
 
 Owner (2026-11-06): a first-hand virtual controller for GT4 on a phone, shown only while no physical controller is
@@ -7,8 +42,9 @@ connected. Two agents share one layout-file contract: this is the game side (bra
 - **Contract.** `<user>/virtual-pad.json` (the launcher's user folder, `/data/data/<package>/user`, which is where
   `config/settings.toml` lives; the external `files/user` folder is tried too), else
   `android/virtual-pad/default-layout.json` — byte-identical to the contract and packaged as the APK asset
-  `assets/default-layout.json` through a Gradle `assets.srcDir`. `GT4_VIRTUAL_PAD=auto|always|off` comes from
-  `[controls] virtual_pad` at Play (`gt4l_core::launch::virtual_pad_environment`, `auto` when the setting is absent).
+  `assets/default-layout.json` through a Gradle `assets.srcDir`. `GT4_VIRTUAL_PAD=auto|always|off` comes from the
+  `virtual_pad` setting at Play (`gt4l_core::launch::virtual_pad_environment`, `auto` when the setting is absent; it lives
+  in `settings.toml`'s one `[settings]` table — the contract text said `[controls]`, but the game only sees the variable).
   The file is re-read at every start.
 - **Layout model, separate from the input mapping** (`native/virtual_pad.{hpp,cpp}`, pure C++): a strict JSON reader with
   line/column errors, the validation (an unknown `binds`, type or geometry skips that element with a log line; an unusable

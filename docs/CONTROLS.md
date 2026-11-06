@@ -260,9 +260,10 @@ Run with the default file first, then with `triggers-as-pedals.toml`.
 ## Virtual controller layout (TASK-185, Android)
 
 The phone's on-screen pad has its own file, **`user/virtual-pad.json`** (the `user` folder the launcher already uses for
-`settings.toml` and the saves; on Android the app's external `user` folder). The launcher edits it on the Controls page;
-the game reads it when it starts. It is a separate file from `controls.toml` on purpose: controllers, wheels and the
-on-screen pad are three different things, and the pad layout is shared by both agents through this one format.
+`settings.toml` and the saves; on Android the app's own data folder, `/data/data/<package>/user`, which is the one the
+launcher writes). The launcher edits it on the Controls page; the game reads it when it starts. It is a separate file
+from `controls.toml` on purpose: controllers, wheels and the on-screen pad are three different things, and the pad layout
+is shared by both agents through this one format.
 
 The built-in layout is [`android/virtual-pad/default-layout.json`](../android/virtual-pad/default-layout.json); the
 backend embeds the same bytes in the APK and the launcher compiles them in, so the two cannot drift. With no player file,

@@ -3646,8 +3646,36 @@ tests included). Focus checks 401/401 (en-US) and 408/408 (pt-BR); nav-test 288/
 `build/evidence/t185-editor/`: the Controls section and the editor with an element selected, both languages, at
 2400x1080 and 1366x768.
 
-**State.** Done on the branch, committed and pushed; not merged (one writer). The backend agent adds `GT4_VIRTUAL_PAD` at
-Play and the in-game overlay; the owner's phone test follows once both sides are in one build.
+**State.** Done on the branch, committed and pushed; merged into `task/180-android-emulator` on 2026-11-06 (below).
+
+**Integration into TASK-180 (2026-11-06).** Both halves and TASK-193 are now in `task/180-android-emulator`
+(`b63cb6c1` backend, `8bdf95b1` editor; the backend branch forked at 224f5460 with no other work between).
+- **Conflicts:** only `docs/STATUS.md` and `docs/journal/2026-11-06.md` (both sides added a section) — both kept, and the
+  editor's stale "not merged" lines now say the two halves are one branch.
+- **Contract checked after the merge:**
+  - the row reaches the game: `[settings] virtual_pad` (Auto default) → `launch::virtual_pad_environment` →
+    `GT4_VIRTUAL_PAD=auto|always|off` in the Android Play plan (`android.rs`); covered by
+    `the_virtual_pad_mode_is_a_stored_choice_with_auto_as_default`;
+  - `android/virtual-pad/default-layout.json` is one file for both agents (sha256 `8357e505…`): the APK packages it with a
+    Gradle `assets.srcDir` and the launcher `include_str!`s the same path, so they cannot drift;
+  - the editor's file is the file the game reads: the launcher's user folder on Android is `app.path().app_data_dir()`
+    (Tauri `getDataDir` = `/data/user/0/<package>`) + `/user`, and the game reads
+    `/data/user/0/<package>/user/virtual-pad.json` first, then the external `files/user` one. Confirmed in the emulator's
+    log: `virtual pad: no player layout at /data/user/0/io.github.moesuito.gt4recomp/user/virtual-pad.json or
+    /storage/emulated/0/Android/data/…/files/user/virtual-pad.json`.
+- **TASK-193 ported by hand** (its UI commit `83f67bdc` from `release/1.3.0-rc15`): the cherry-pick conflicted only in
+  `ui/css/app.css` and `ui/dev/README.md` (this branch has no rc15 Wheel-page spacing), so the Wheel-card rules were
+  adapted to this branch's widths (`58%`/`48%`, the existing `.is-tip` line kept) and the rest applied as written:
+  `GT4.input.stepsFromActivation`, the pointer-only row handler, `--selector-arrow-hit` 32 px / 44 px with the `::after`
+  ring, the label-wrap guard, 24 new focus checks and 5 nav cases.
+- **No PC GSdx on Android** (owner, 2026-11-06): `launch::setup_renderer` takes the platform and returns Coregs20 on a
+  platform without GSdx, so setup never downloads `gt4-gs`; `launch::gsdx_installs_here` guards `updates::install_renderer`,
+  `download_gsdx`, `install_gsdx_archive`, `gsdx_download_needed` and `coregs20_offer`; the setup page leaves the renderer
+  step out on Android. Windows is unchanged.
+- **Checks:** `cargo test --workspace` 799 passed, 0 failed, 9 ignored (gt4l-core 311, gt4l-tauri lib 146 + 4 ignored; two
+  new launch-contract tests). Focus checks **427/427** en-US and **434/434** pt-BR (5 new: the Android setup page, the
+  TASK-193 pointer rules), nav-test **293/293**, locale parity inside the focus checks. `native_virtual_pad` fixture
+  9/9 groups PASS (compiled on its own in `build/run-vpad-fixture.cmd`). Evidence in `build/evidence/t180-integrate/`.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
@@ -3668,8 +3696,8 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-179 | Android stage A1 on Windows: Vulkan correctness | `task/179-vulkan-correctness` (4a70b53d) | ✅ In rc15 (a2390b2d) |
 | TASK-178 | Submit after a waited readback (K=0 by default) and the flare-read counters | `task/178-submit-after-wait` (c73b3be8 only) | ✅ In rc15 (6f318594); O3 dropped (not exact on Motegi, no gain; 80cf04c9 stays on the branch only) |
 | TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner's G27 test pending |
-| TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner) |
-| TASK-185 | Android virtual pad (backend half) | `task/185-virtual-pad-backend` | ✅ Backend done: overlay, input merge, auto visibility, layout file, `native_virtual_pad` CTest, emulator evidence; the launcher editor is a parallel branch |
+| TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner). 2026-11-06: the TASK-185 halves and TASK-193 are merged here, and no PC GSdx on Android |
+| TASK-185 | Android virtual pad (both halves: overlay and launcher editor) | `task/185-virtual-pad-backend` + `task/185-virtual-pad-editor`, merged into `task/180-android-emulator` (b63cb6c1, 8bdf95b1) | ✅ Both halves in one branch: overlay, input merge, auto visibility, layout file, the Controls section and the layout editor, `GT4_VIRTUAL_PAD` at Play, `native_virtual_pad` CTest. The owner's phone test pending |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
