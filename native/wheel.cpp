@@ -1046,6 +1046,15 @@ public:
     std::fprintf(stderr, "[wheel] DFP %s effect not started: %s\n", effect_kind_name(kind), SDL_GetError());
     return false;
   }
+  bool stop(EffectKind kind) override {
+    const int id = ids_[static_cast<std::size_t>(kind)];
+    if (!haptic_ || id < 0)
+      return false;
+    if (SDL_StopHapticEffect(haptic_, id))
+      return true;
+    std::fprintf(stderr, "[wheel] DFP %s effect not stopped: %s\n", effect_kind_name(kind), SDL_GetError());
+    return false;
+  }
   void stop_all() override {
     if (haptic_)
       SDL_StopHapticEffects(haptic_);
@@ -1086,7 +1095,8 @@ std::unique_ptr<HapticSink> open_sdl_haptics(void *device) {
   }
   const Uint32 features = SDL_GetHapticFeatures(haptic);
   // Opening never enables force: the gain stays 0 until the first force starts the effects, and the device's own
-  // autocentre is off, because the game's springs (and the DFP's default spring) are played as effects.
+  // autocentre is off, because the game's own spring effects are played as effects and the DFP default spring is ignored
+  // (TASK-194, as PCSX2 does).
   if (features & SDL_HAPTIC_GAIN)
     SDL_SetHapticGain(haptic, 0);
   if (features & SDL_HAPTIC_AUTOCENTER)

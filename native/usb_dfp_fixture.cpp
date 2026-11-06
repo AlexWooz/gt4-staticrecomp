@@ -105,6 +105,14 @@ struct Guest {
 
 void test_decoder() {
   DfpCommandDecoder decoder;
+  // TASK-194: the DFP's default spring commands are accepted and change nothing; there is no default spring to play.
+  const std::uint8_t spring_on[7] = {0x04, 0, 0, 0, 0, 0, 0};
+  const std::uint8_t spring_off[7] = {0x05, 0, 0, 0, 0, 0, 0};
+  const std::uint8_t default_strength[7] = {0x0E, 0x00, 0xFF, 0xFF, 0xFF, 0, 0};
+  require(decoder.apply(spring_on, 7), "default spring on is understood and ignored");
+  require(decoder.apply(default_strength, 7), "set default spring is understood and ignored");
+  require(decoder.apply(spring_off, 7), "default spring off is harmless");
+  require(!decoder.forces().spring, "no default spring is ever decoded as a force");
   const std::uint8_t constant_play[7] = {0x11, 0x00, 0xC0, 0x80, 0x80, 0x80, 0x00};  // slot 0, constant, 0xC0
   require(decoder.apply(constant_play, 7), "constant download-and-play understood");
   require(std::abs(decoder.forces().constant - (0xC0 - 128.0) / 127.0) < 1e-9, "constant force level from slot 0's byte");
@@ -116,6 +124,9 @@ void test_decoder() {
   require(decoder.forces().spring && decoder.forces().spring_left == 1.0 && decoder.forces().spring_right == 1.0,
           "spring coefficients from k nibbles");
   require(std::abs(decoder.forces().spring_center) < 0.01, "spring centred between its dead band bytes");
+  decoder.apply(spring_on, 7);
+  require(decoder.forces().spring && decoder.forces().spring_left == 1.0,
+          "a default spring on neither adds a spring nor replaces the game's");
   const std::uint8_t range900[7] = {0xF8, 0x03, 0, 0, 0, 0, 0};
   decoder.apply(range900, 7);
   require(decoder.forces().range_degrees == 900, "extended command sets the 900-degree range");
@@ -126,10 +137,8 @@ void test_decoder() {
   const std::uint8_t variable_stop[7] = {0x13, 0x08, 0x7F, 0x80, 0, 0, 0};
   decoder.apply(variable_stop, 7);
   require(decoder.forces().constant == 0.0, "stopping the variable force releases the wheel");
-  const std::uint8_t spring_off[7] = {0x05, 0, 0, 0, 0, 0, 0};
-  decoder.apply(spring_off, 7);
-  require(!decoder.forces().autocenter, "default spring off");
 }
+
 
 void test_gt4_commands() {
   // The exact bytes GT4 v2.00 sends (headless rc15 run, TASK-192: menus then a drive), in order, and what the planner is
@@ -152,7 +161,7 @@ void test_gt4_commands() {
   send({0xF5});
   send({0xF8, 0x03});
   send({0x13, 0x03});
-  require(!decoder.forces().autocenter, "GT4 turns the DFP default spring off once, and it stays off");
+  require(!decoder.forces().spring, "the DFP default spring on commands play no spring");
   require(decoder.forces().range_degrees == 900, "GT4 sets the 900-degree range");
   send({0x21, 0x0B, 0x7F, 0x7F, 0x77, 0x00, 0x80});  // the menu centring spring, slot 1
   const DfpForces menu = decoder.forces();
@@ -164,18 +173,81 @@ void test_gt4_commands() {
   require(menu.constant == 0.0, "the menu spring carries no constant force");
   send({0x23, 0x0B, 0x7F, 0x7F, 0x77, 0x00, 0x80});  // stop slot 1
   require(!decoder.forces().spring, "the game stops its menu spring before the drive");
+  send({0xF4});  // a stray default spring on must not bring a spring back
+  require(!decoder.forces().spring, "default spring on stays harmless after the game's spring was stopped");
   send({0x21, 0x0E, 0x80, 0xFF, 0x20});  // friction, slot 1
-  require(decoder.forces().friction && std::abs(decoder.forces().friction_saturation - 0x20 / 255.0) < 1e-9,
-          "friction with its clip byte");
+  const DfpForces friction = decoder.forces();
+  require(friction.friction, "friction is decoded");
+  require(std::abs(friction.friction_left - 0x80 / 255.0) < 1e-9, "the first friction byte is the left coefficient (0.5)");
+  require(std::abs(friction.friction_right - 0xFF / 255.0) < 1e-9, "the second friction byte is the right coefficient (1.0)");
+  require(std::abs(friction.friction_saturation - 0x20 / 255.0) < 1e-9, "friction with its clip byte");
   send({0x21, 0x0E, 0x00, 0x00, 0x02});  // friction off
-  require(decoder.forces().friction, "a zero-coefficient friction stays a decoded friction with no force");
+  require(decoder.forces().friction && decoder.forces().friction_left == 0.0 && decoder.forces().friction_right == 0.0,
+          "a zero-coefficient friction stays a decoded friction with no force");
   send({0x11, 0x08, 0x90, 0x80, 0x00, 0x00, 0x00});  // the racing variable force, slot 0
   require(std::abs(decoder.forces().constant - (0x90 - 128.0) / 127.0) < 1e-9, "the racing force level is decoded");
   require(!decoder.forces().spring, "no spring is planned while racing");
+  require(!decoder.forces().damper, "no damper is planned while racing");
   send({0x13, 0x08, 0x90, 0x80, 0x00, 0x00, 0x00});  // stop slot 0
   require(decoder.forces().constant == 0.0, "the game stops the racing force between stretches");
   require(!decoder.forces().spring && !decoder.forces().damper, "still no spring and no damper while racing");
 }
+
+void test_spring_stop_and_other_slots() {
+  // A spring stop must leave no spring behind, and a second slot's spring must replace the first one's parameters rather
+  // than keep playing them (TASK-194).
+  DfpCommandDecoder decoder;
+  const auto send = [&](std::initializer_list<std::uint8_t> bytes) {
+    std::uint8_t command[8] = {};
+    std::size_t at = 0;
+    for (const std::uint8_t byte : bytes) {
+      if (at < 8)
+        command[at++] = byte;
+    }
+    require(decoder.apply(command, 7), "the spring command is understood");
+  };
+  send({0x21, 0x0B, 0x7F, 0x7F, 0x77, 0x00, 0x80});  // slot 1: k = 7 (7/15), clip 0x80
+  require(decoder.forces().spring && std::abs(decoder.forces().spring_left - 7.0 / 15.0) < 1e-9,
+          "the first slot's spring");
+  send({0x21, 0x0B, 0x7F, 0x7F, 0xFF, 0x00, 0x40});  // slot 1 again: k = 15, clip 0x40
+  require(std::abs(decoder.forces().spring_left - 1.0) < 1e-9 &&
+              std::abs(decoder.forces().spring_saturation - 0x40 / 255.0) < 1e-9,
+          "a refreshed spring keeps the slot's newest parameters");
+  send({0x41, 0x0B, 0x7F, 0x7F, 0x33, 0x00, 0x20});  // slot 2: k = 3 (3/15), clip 0x20
+  require(std::abs(decoder.forces().spring_left - 3.0 / 15.0) < 1e-9, "a spring downloaded on another slot replaces the old one");
+  require(std::abs(decoder.forces().spring_saturation - 0x20 / 255.0) < 1e-9, "and takes that slot's clip");
+  send({0x23, 0x0B, 0, 0, 0, 0, 0});  // stop slot 1: slot 2 still asks for its spring
+  require(decoder.forces().spring && std::abs(decoder.forces().spring_left - 3.0 / 15.0) < 1e-9,
+          "stopping the older slot leaves the newer slot's spring");
+  send({0x43, 0x0B, 0, 0, 0, 0, 0});  // stop slot 2: the last spring is gone
+  require(!decoder.forces().spring, "stopping the last spring slot stops the spring");
+}
+
+void test_usb_reset_in_a_session() {
+  // A USB reset in the middle of a session (a track load re-enumerates the device on some setups): nothing comes back.
+  DfpBridge bridge;
+  Dfp wheel(bridge);
+  const auto send = [&](std::initializer_list<std::uint8_t> bytes) {
+    std::uint8_t command[8] = {};
+    std::size_t at = 0;
+    for (const std::uint8_t byte : bytes) {
+      if (at < 8)
+        command[at++] = byte;
+    }
+    require(wheel.out(2, command) == 8, "the interrupt OUT carries the command");
+  };
+  send({0xF4});                                     // the DFP default spring on, as GT4 sends at boot
+  send({0x21, 0x0B, 0x7F, 0x7F, 0x77, 0x00, 0x80});  // the game's own menu spring
+  send({0x11, 0x08, 0x90, 0x80, 0x00, 0x00, 0x00});  // and a racing force
+  require(bridge.forces().spring && bridge.forces().constant != 0.0, "the game's forces reach the host");
+  wheel.reset();  // the USB reset
+  const DfpForces after = bridge.forces();
+  require(!after.spring, "a USB reset brings no spring back, not even a default one");
+  require(after.constant == 0.0 && !after.damper && !after.friction, "a USB reset releases every force");
+  send({0xF4});  // the boot command again, as a re-enumerated device would see
+  require(!bridge.forces().spring, "the default spring stays off after the reset");
+}
+
 
 void test_report() {
   DfpInput input;
@@ -283,6 +355,8 @@ void test_bus() {
 int main() {
   test_decoder();
   test_gt4_commands();
+  test_spring_stop_and_other_slots();
+  test_usb_reset_in_a_session();
   test_report();
   test_bus();
   if (failures) {

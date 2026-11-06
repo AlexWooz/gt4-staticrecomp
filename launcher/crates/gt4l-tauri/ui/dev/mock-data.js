@@ -1133,7 +1133,7 @@
       steering: { source: "", rotation_degrees: 900, invert: false },
       throttle: wheelPedal("", 0.02, 0.98), brake: wheelPedal("", 0.02, 0.98),
       handbrake: wheelPedal("", 0.05, 0.95), clutch: wheelPedal("", 0.05, 0.95),
-      ffb: { enabled: true, strength: 1, damper: 0.15, invert: false },
+      ffb: { enabled: true, strength: 1, damper: 0.0, invert: false, centering_spring: false },
       buttons: { dpad_up: [], dpad_right: [], dpad_down: [], dpad_left: [], cross: [], circle: [], square: [], triangle: [],
         l1: [], r1: [], l2: [], r2: [], l3: [], r3: [], select: [], start: [] }
     };

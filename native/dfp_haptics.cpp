@@ -46,39 +46,48 @@ const char *effect_kind_name(EffectKind kind) {
 EffectPlan plan_dfp_effects(const gt4::usb::DfpForces &forces, const FfbConfig &config) {
   const double gain = std::clamp(config.strength, 0.0, 2.0);
   EffectPlan plan{};
-  // Constant: the game's aligning force (GT4 sends it as a variable force on slot 0 while racing).
-  plan[static_cast<std::size_t>(EffectKind::constant)].level =
-      signed_level((config.invert ? -forces.constant : forces.constant) * gain);
-  // Spring: the game's spring; without one, the DFP's own default centring spring while it is on (wheels such as the
-  // MOZA R5 have no device autocentre to stand in for it). TASK-192: both are centring springs and are off with
-  // [ffb] centering_spring = "off" (the default); the saturation-zero condition sends no force and the effect idles.
-  EffectParams &spring = plan[static_cast<std::size_t>(EffectKind::spring)];
-  if (!config.centering_spring)
-    spring = condition(0.0, 0.0, gain, 0.0, 0.0, 0.0);
-  else if (forces.spring)
-    spring = condition(forces.spring_left, forces.spring_right, gain, forces.spring_center, forces.spring_deadband,
-                       forces.spring_saturation);
-  else if (forces.autocenter)
-    spring = condition(forces.autocenter_strength, forces.autocenter_strength, gain, 0.0, 0.0, 1.0);
-  else
-    spring = condition(0.0, 0.0, gain, 0.0, 0.0, 0.0);
+  // Constant: the game's aligning force (GT4 sends it as a variable force on slot 0 while racing). It exists the whole
+  // time the effects play, as PCSX2's one constant effect does; level 0 simply applies no force.
+  PlannedEffect &constant = plan[static_cast<std::size_t>(EffectKind::constant)];
+  constant.active = true;
+  constant.params.level = signed_level((config.invert ? -forces.constant : forces.constant) * gain);
+  // Spring: the game's own spring, only while the game asks for it and only with [ffb] centering_spring = "game". A spring
+  // stop (`23 0B`) makes it inactive, which stops the host effect; a spring on another slot replaces these parameters
+  // because the decoder hands over the newest command. There is no DFP default spring to fall back on (TASK-194).
+  PlannedEffect &spring = plan[static_cast<std::size_t>(EffectKind::spring)];
+  if (config.centering_spring && forces.spring) {
+    spring.active = true;
+    spring.params =
+        condition(forces.spring_left, forces.spring_right, gain, forces.spring_center, forces.spring_deadband,
+                  forces.spring_saturation);
+  }
   // Damper: the game's damper, at least the configured floor. The floor is the wheel's own stabiliser, applied by its
   // firmware with no game latency (a geared DFP had some of this from its own friction, a direct-drive base has almost
-  // none), so it does not follow the strength; it is off only when the strength is zero.
+  // none), so it does not follow the strength; it is off only when the strength is zero or the floor is zero. With both
+  // at zero there is no damper effect at all, as in PCSX2.
   const double floor = gain > 0.0 ? std::clamp(config.damper, 0.0, 1.0) : 0.0;
-  const double damper_left = std::max(forces.damper ? forces.damper_left : 0.0, floor);
-  const double damper_right = std::max(forces.damper ? forces.damper_right : 0.0, floor);
-  const double damper_saturation = forces.damper ? std::max(forces.damper_saturation, floor > 0.0 ? 1.0 : 0.0) : 1.0;
-  plan[static_cast<std::size_t>(EffectKind::damper)] =
-      condition(damper_left, damper_right, 1.0, 0.0, 0.0, damper_saturation);
-  // Friction: the game's friction (GT4 sets it on slot 1 in menus).
-  plan[static_cast<std::size_t>(EffectKind::friction)] =
-      condition(forces.friction ? forces.friction_coefficient : 0.0, forces.friction ? forces.friction_coefficient : 0.0,
-                gain, 0.0, 0.0, forces.friction_saturation);
+  PlannedEffect &damper = plan[static_cast<std::size_t>(EffectKind::damper)];
+  if (forces.damper || floor > 0.0) {
+    damper.active = true;
+    const double damper_left = std::max(forces.damper ? forces.damper_left : 0.0, floor);
+    const double damper_right = std::max(forces.damper ? forces.damper_right : 0.0, floor);
+    const double damper_saturation = forces.damper ? std::max(forces.damper_saturation, floor > 0.0 ? 1.0 : 0.0) : 1.0;
+    damper.params = condition(damper_left, damper_right, 1.0, 0.0, 0.0, damper_saturation);
+  }
+  // Friction: the game's friction (GT4 sets it on slot 1 in menus), each side's coefficient as the bytes give it.
+  PlannedEffect &friction = plan[static_cast<std::size_t>(EffectKind::friction)];
+  if (forces.friction) {
+    friction.active = true;
+    friction.params = condition(forces.friction_left, forces.friction_right, gain, 0.0, 0.0, forces.friction_saturation);
+  }
   return plan;
 }
 
 // ------------------------------------------------------------------------------------------------------------ player
+
+bool DfpHapticPlayer::running() const {
+  return std::any_of(running_.begin(), running_.end(), [](bool on) { return on; });
+}
 
 void DfpHapticPlayer::apply(const EffectPlan &plan, bool active) {
   if (released_)
@@ -87,40 +96,51 @@ void DfpHapticPlayer::apply(const EffectPlan &plan, bool active) {
     stop();
     return;
   }
-  if (!created_) {
-    // Created once with the current parameters, so the first start needs no update.
-    for (std::size_t index = 0; index < effect_kind_count; ++index) {
-      supported_[index] = sink_.create(static_cast<EffectKind>(index), plan[index]);
-      sent_[index] = plan[index];
+  for (std::size_t index = 0; index < effect_kind_count; ++index) {
+    const PlannedEffect &planned = plan[index];
+    const auto kind = static_cast<EffectKind>(index);
+    if (!planned.active) {
+      // The game no longer asks for this effect: stop it once. Its last parameters stay, so asking again is one update.
+      if (running_[index]) {
+        sink_.stop(kind);
+        running_[index] = false;
+      }
+      continue;
     }
-    created_ = true;
-  } else {
-    // Only the effects whose parameters changed: while racing that is the constant force alone.
-    for (std::size_t index = 0; index < effect_kind_count; ++index) {
-      if (!supported_[index] || plan[index] == sent_[index])
+    if (!supported_[index]) {
+      // Created on first use with the current parameters, so the first run needs no update. A device that refuses it is
+      // never asked again, and the game's other effects are not affected.
+      if (!sink_.create(kind, planned.params))
         continue;
-      if (sink_.update(static_cast<EffectKind>(index), plan[index])) {
-        sent_[index] = plan[index];
+      supported_[index] = true;
+      sent_[index] = planned;
+    } else if (!(planned == sent_[index])) {
+      // Only the effects whose parameters changed: while racing that is the constant force alone.
+      if (sink_.update(kind, planned.params)) {
+        sent_[index] = planned;
         ++updates_sent_;
       }
     }
+    if (!running_[index]) {
+      if (!gain_on_) {
+        sink_.set_gain(100);
+        gain_on_ = true;
+      }
+      if (sink_.run(kind)) {
+        running_[index] = true;
+        ++starts_;
+      }
+    }
   }
-  if (running_ || std::none_of(supported_.begin(), supported_.end(), [](bool on) { return on; }))
-    return;
-  sink_.set_gain(100);
-  for (std::size_t index = 0; index < effect_kind_count; ++index)
-    if (supported_[index])
-      sink_.run(static_cast<EffectKind>(index));
-  running_ = true;
-  ++starts_;
 }
 
 void DfpHapticPlayer::stop() {
-  if (!running_)
+  if (!running())
     return;
   sink_.stop_all();
   sink_.set_gain(0);
-  running_ = false;
+  gain_on_ = false;
+  running_.fill(false);
 }
 
 void DfpHapticPlayer::release() {

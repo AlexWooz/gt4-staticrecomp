@@ -480,6 +480,11 @@
         toggleRow("wheel-ffb-enabled", "ffb.enabled", t("wheel.ffb.enabled"), t("wheel.ffb.enabled_help"), cfg.ffb.enabled),
         percentRow("wheel-ffb-strength", "ffb.strength", t("wheel.ffb.strength"), t("wheel.ffb.strength_help"), 0, 200, 5, function () { return cfg.ffb.strength; }),
         percentRow("wheel-ffb-damper", "ffb.damper", t("wheel.ffb.damper"), t("wheel.ffb.damper_help"), 0, 100, 5, function () { return cfg.ffb.damper; }),
+        // TASK-194: the game's own centring spring, off by default. It writes `[ffb] centering_spring = "off" | "game"`.
+        choiceRow("wheel-ffb-centering", "ffb.centering_spring", t("wheel.ffb.centering_spring"),
+          t("wheel.ffb.centering_spring_help"),
+          [{ value: "off", label: t("wheel.ffb.centering_off") }, { value: "game", label: t("wheel.ffb.centering_game") }],
+          cfg.ffb.centering_spring ? "game" : "off"),
         toggleRow("wheel-ffb-invert", "ffb.invert", t("wheel.ffb.invert"), t("wheel.ffb.invert_help"), cfg.ffb.invert)
       ], ffbRows);
       if (focusId && focusId.indexOf("wheel-ffb-") === 0) {

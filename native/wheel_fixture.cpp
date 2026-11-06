@@ -323,6 +323,10 @@ struct FakeSink final : HapticSink {
     log.add(std::string("run ") + effect_kind_name(kind));
     return true;
   }
+  bool stop(EffectKind kind) override {
+    log.add(std::string("stop ") + effect_kind_name(kind));
+    return true;
+  }
   void stop_all() override {
     log.add("stop");
     std::lock_guard lock(log.mutex);
@@ -353,7 +357,6 @@ void require_calls(FakeSink::Log &log, const std::string &expected, const char *
 
 gt4::usb::DfpForces racing_force(double level) {
   gt4::usb::DfpForces forces;
-  forces.autocenter = false;
   forces.constant = level;
   forces.range_degrees = 900;
   return forces;
@@ -361,55 +364,76 @@ gt4::usb::DfpForces racing_force(double level) {
 
 void test_effect_plan() {
   FfbConfig config;
-  config.strength = 0.5;
-  config.damper = 0.2;
+  require(config.damper == 0.0, "the damper floor is 0 by default: PCSX2 applies none (TASK-194)");
+  require(!config.centering_spring, "the centring spring is off by default");
   gt4::usb::DfpForces forces = racing_force(1.0);
   EffectPlan plan = plan_dfp_effects(forces, config);
-  require(plan[0].level == 16384, "strength 0.5 halves the constant force");
+  require(plan[0].active && plan[0].params.level == 32767, "the racing force is the constant effect");
+  require(!plan[1].active, "no game spring: the spring effect is not there at all");
+  require(!plan[2].active, "no game damper and no floor: the damper effect is not there at all");
+  require(!plan[3].active, "no game friction: the friction effect is not there at all");
+  config.strength = 0.5;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[0].params.level == 16384, "strength 0.5 halves the constant force");
   config.invert = true;
-  require(plan_dfp_effects(forces, config)[0].level == -16384, "invert reverses the constant force");
+  require(plan_dfp_effects(forces, config)[0].params.level == -16384, "invert reverses the constant force");
   config.invert = false;
-  require(plan[2].left_coeff == static_cast<std::int16_t>(std::lround(0.2 * 32767)), "damper floor not scaled by strength");
-  require(plan[1].left_coeff == 0, "no game spring and no default spring: spring off");
-  forces.autocenter = true;
-  forces.autocenter_strength = 0.5;
-  plan = plan_dfp_effects(forces, config);
-  require(plan[1].left_coeff == 0, "the DFP default spring is off by default (TASK-192)");
-  config.centering_spring = true;
-  plan = plan_dfp_effects(forces, config);
-  require(plan[1].left_coeff == static_cast<std::int16_t>(std::lround(0.25 * 32767)),
-          "centering_spring game: the default spring at strength");
+  // A game spring only plays with centering_spring = "game", and a stop clears it instead of sending zeroes.
   forces.spring = true;
-  forces.spring_left = forces.spring_right = 1.0;
+  forces.spring_left = 7.0 / 15.0;
+  forces.spring_right = 7.0 / 15.0;
   forces.spring_center = 0.5;
   forces.spring_deadband = 0.2;
-  forces.spring_saturation = 1.0;
+  forces.spring_saturation = 0.5;
   plan = plan_dfp_effects(forces, config);
-  require(plan[1].center == static_cast<std::int16_t>(std::lround(0.5 * 32767)) &&
-              plan[1].deadband == static_cast<std::uint16_t>(std::lround(0.1 * 65535)),
-          "the game's spring replaces the default spring");
-  // TASK-192: with the setting off the game's spring is planned as nothing, and nothing else changes.
-  config.centering_spring = false;
-  gt4::usb::DfpForces menu = forces;
-  menu.constant = 0.25;
-  menu.damper = true;
-  menu.damper_left = menu.damper_right = 0.3;
-  menu.damper_saturation = 1.0;
-  menu.friction = true;
-  menu.friction_coefficient = 0.5;
-  menu.friction_saturation = 0.125;
-  const EffectPlan suppressed = plan_dfp_effects(menu, config);
+  require(!plan[1].active, "centering_spring off: the game's spring is not played");
   config.centering_spring = true;
-  const EffectPlan played = plan_dfp_effects(menu, config);
-  require(suppressed[1] == EffectParams{}, "centering_spring off: the spring effect carries no force");
-  require(played[1].left_coeff != 0, "centering_spring game: the same forces carry the spring");
-  require(suppressed[0] == played[0] && suppressed[2] == played[2] && suppressed[3] == played[3],
-          "the centring spring choice touches neither the racing force, the damper nor the friction");
-  require(suppressed[0].level == static_cast<std::int16_t>(std::lround(0.25 * 0.5 * 32767)),
-          "strength still scales the game's racing force with the spring off");
-  config.strength = 0.0;
   plan = plan_dfp_effects(forces, config);
-  require(plan[0].level == 0 && plan[2].left_coeff == 0, "zero strength: no force and no damping floor");
+  require(plan[1].active, "centering_spring game: the game's spring plays");
+  require(plan[1].params.left_coeff == static_cast<std::int16_t>(std::lround(7.0 / 15.0 * 0.5 * 32767)),
+          "the spring coefficient follows the strength");
+  require(plan[1].params.center == static_cast<std::int16_t>(std::lround(0.5 * 32767)) &&
+              plan[1].params.deadband == static_cast<std::uint16_t>(std::lround(0.1 * 65535)),
+          "the spring keeps its centre and dead band");
+  forces.spring = false;
+  plan = plan_dfp_effects(forces, config);
+  require(!plan[1].active, "a spring stop (23 0B) stops the spring effect instead of sending a zero spring");
+  require(plan[1].params == EffectParams{}, "and the stopped spring carries no parameters");
+  // Friction uses each side's byte: GT4's "21 0E 80 FF 20" is 0.5 left, 1.0 right and a 0.125 clip.
+  forces.friction = true;
+  forces.friction_left = 0x80 / 255.0;
+  forces.friction_right = 0xFF / 255.0;
+  forces.friction_saturation = 0x20 / 255.0;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[3].active, "the game's friction plays");
+  require(plan[3].params.left_coeff == static_cast<std::int16_t>(std::lround(0x80 / 255.0 * 0.5 * 32767)),
+          "the left friction coefficient is the first byte (0.5 at strength 0.5)");
+  require(plan[3].params.right_coeff == static_cast<std::int16_t>(std::lround(0xFF / 255.0 * 0.5 * 32767)),
+          "the right friction coefficient is the second byte (1.0 at strength 0.5), not the max of the two");
+  require(plan[3].params.left_sat == static_cast<std::uint16_t>(std::lround(0x20 / 255.0 * 65535)),
+          "the friction clip is the saturation");
+  forces.friction = false;
+  // The damper floor stays a setting: 0 by default, applied at full saturation when set.
+  config.damper = 0.2;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[2].active && plan[2].params.left_coeff == static_cast<std::int16_t>(std::lround(0.2 * 32767)),
+          "a configured damper floor is a damper effect not scaled by strength");
+  forces.damper = true;
+  forces.damper_left = 0.1;
+  forces.damper_right = 0.3;
+  forces.damper_saturation = 0.5;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[2].params.left_coeff == static_cast<std::int16_t>(std::lround(0.2 * 32767)),
+          "the floor lifts a weaker game damper");
+  config.damper = 0.0;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[2].params.left_coeff == static_cast<std::int16_t>(std::lround(0.1 * 32767)) &&
+              plan[2].params.right_coeff == static_cast<std::int16_t>(std::lround(0.3 * 32767)),
+          "without a floor the game's own damper is used as it comes");
+  config.strength = 0.0;
+  forces.damper = false;
+  plan = plan_dfp_effects(forces, config);
+  require(plan[0].params.level == 0 && !plan[2].active, "zero strength: no force and no damping floor");
 }
 
 void test_player_lifecycle() {
@@ -420,18 +444,39 @@ void test_player_lifecycle() {
   const auto plan = [&](double level) { return plan_dfp_effects(racing_force(level), config); };
 
   player.apply(plan(0.1), true);
-  require_calls(log, "create constant, create spring, create damper, gain 100, run constant, run spring, run damper",
-                "first force creates the supported effects with their values and starts them once");
-  require(!player.supported(EffectKind::friction), "an effect the device lacks is not supported");
+  require_calls(log, "create constant, gain 100, run constant",
+                "the first force creates and starts the one effect the game asks for");
+  require(!player.supported(EffectKind::spring) && !player.supported(EffectKind::damper) &&
+              !player.supported(EffectKind::friction),
+          "nothing is created for an effect the game has not asked for");
   player.apply(plan(0.2), true);
   require_calls(log, "update constant", "a new force level updates only the constant force");
   player.apply(plan(0.2), true);
   require_calls(log, "", "the same forces send nothing");
+  // The game's spring, with the setting on: created on its first use, and a spring stop stops it.
+  config.centering_spring = true;
   gt4::usb::DfpForces menu = racing_force(0.2);
-  menu.friction = true;
-  menu.friction_coefficient = 0.5;
-  menu.friction_saturation = 1.0;
+  menu.spring = true;
+  menu.spring_left = menu.spring_right = 7.0 / 15.0;
+  menu.spring_saturation = 0.5;
   player.apply(plan_dfp_effects(menu, config), true);
+  require_calls(log, "create spring, run spring", "the game's spring starts when it arrives");
+  menu.spring = false;
+  player.apply(plan_dfp_effects(menu, config), true);
+  require_calls(log, "stop spring", "a spring stop stops the SDL spring effect instead of sending zeroes");
+  menu.spring = true;
+  player.apply(plan_dfp_effects(menu, config), true);
+  require_calls(log, "run spring", "the same spring again starts the created effect again, with no update");
+  menu.spring = false;
+  player.apply(plan_dfp_effects(menu, config), true);
+  require_calls(log, "stop spring", "and its stop stops it again");
+  // Friction on a device without it: never sent, and the other effects keep working.
+  gt4::usb::DfpForces friction = racing_force(0.2);
+  friction.friction = true;
+  friction.friction_left = 0x80 / 255.0;
+  friction.friction_right = 0xFF / 255.0;
+  friction.friction_saturation = 0x20 / 255.0;
+  player.apply(plan_dfp_effects(friction, config), true);
   require_calls(log, "", "friction is never sent to a device without it");
   player.apply(plan(0.2), false);
   require_calls(log, "stop, gain 0", "focus loss stops once");
@@ -439,9 +484,9 @@ void test_player_lifecycle() {
   player.stop();
   require_calls(log, "", "further focus loss and stop calls send nothing");
   player.apply(plan(0.3), true);
-  require_calls(log, "update constant, gain 100, run constant, run spring, run damper",
-                "focus regained: the changed force, then the effects start again");
-  require(player.updates_sent() == 2 && player.starts() == 2, "update and start counters");
+  require_calls(log, "update constant, gain 100, run constant",
+                "focus regained: the changed force, then the effect starts again");
+  require(player.updates_sent() == 2 && player.starts() == 4, "update and start counters");
   player.release();
   require_calls(log, "stop, gain 0, release", "release stops and closes");
   player.apply(plan(0.4), true);

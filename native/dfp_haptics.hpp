@@ -26,11 +26,14 @@ namespace gt4::wheel {
 struct FfbConfig {
   bool enabled = true;
   double strength = 1.0; // 0.0..2.0, scales the game's forces
-  double damper = 0.15;  // 0.0..1.0, the least damping the wheel always has (not scaled by strength)
+  // 0.0..1.0, the least damping the wheel always has (not scaled by strength). 0 by default (TASK-194): PCSX2 applies no
+  // damper and GT4 sends none in a race, so a floor was damping the wheel when the game asked for none.
+  double damper = 0.0;
   bool invert = false;   // reverses the game's constant force for wheels that turn the other way
-  // [ffb] centering_spring = "off" | "game" (TASK-192). GT4 centres the wheel with its own spring effects (in the menus)
-  // and, on reset, with the DFP's default spring; on the owner's G27 that read as a slow pull to the centre that never
-  // stopped, so they are off unless this asks for them. The racing force, the damper and the friction are not affected.
+  // [ffb] centering_spring = "off" | "game" (TASK-192). GT4 centres the wheel with its own spring effects (in the menus);
+  // on the owner's G27 that read as a slow pull to the centre that never stopped, so they are off unless this asks for
+  // them. The racing force, the damper and the friction are not affected. There is no DFP default spring at all
+  // (TASK-194): the "default spring on" command is ignored, as PCSX2 ignores it.
   bool centering_spring = false;
 };
 
@@ -51,9 +54,19 @@ struct EffectParams {
   bool operator==(const EffectParams &other) const = default;
 };
 
-using EffectPlan = std::array<EffectParams, effect_kind_count>;
+// An effect the game asks for now. `active` is what separates "the game wants this effect" from "the game wants it with
+// no strength": a spring stop stops the host effect (TASK-194) instead of sending it zero parameters, exactly as PCSX2
+// stops its one spring, while a condition the game keeps asking for stays created and only its parameters change.
+struct PlannedEffect {
+  bool active = false;
+  EffectParams params{};
+  bool operator==(const PlannedEffect &other) const = default;
+};
 
-// The four effects for the game's current forces, scaled by the [ffb] settings.
+using EffectPlan = std::array<PlannedEffect, effect_kind_count>;
+
+// The four effects for the game's current forces, scaled by the [ffb] settings. An effect is active only when the game
+// asks for it (or the damper floor is above zero); nothing plays a default centring spring.
 EffectPlan plan_dfp_effects(const gt4::usb::DfpForces &forces, const FfbConfig &config);
 
 // Where effects go. Production: SDL3 haptics on the wheel (native/wheel.cpp). Fixtures: a recording fake.
@@ -64,6 +77,8 @@ public:
   virtual bool create(EffectKind kind, const EffectParams &params) = 0;
   virtual bool update(EffectKind kind, const EffectParams &params) = 0;
   virtual bool run(EffectKind kind) = 0;
+  // Stops one effect; the game stopped asking for it (a spring stop, for example).
+  virtual bool stop(EffectKind kind) = 0;
   virtual void stop_all() = 0;
   virtual void set_gain(int percent) = 0; // ignored when the device has no gain control
   virtual void release() = 0;             // destroys the effects and closes the device
@@ -77,17 +92,18 @@ public:
   void apply(const EffectPlan &plan, bool active);
   void stop();
   void release();
-  bool running() const { return running_; }
+  bool running() const;
+  // An effect the device accepted (created on its first use).
   bool supported(EffectKind kind) const { return supported_[static_cast<std::size_t>(kind)]; }
   std::uint64_t updates_sent() const { return updates_sent_; }
   std::uint64_t starts() const { return starts_; }
 
 private:
   HapticSink &sink_;
-  bool created_ = false;
-  bool running_ = false;
   bool released_ = false;
+  bool gain_on_ = false;
   std::array<bool, effect_kind_count> supported_{};
+  std::array<bool, effect_kind_count> running_{};
   EffectPlan sent_{};
   std::uint64_t updates_sent_ = 0;
   std::uint64_t starts_ = 0;
