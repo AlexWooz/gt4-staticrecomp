@@ -3696,6 +3696,20 @@ most of it is game-independent.
 CoreGS is MIT, so it could become a separate library. Porting another game also needs its own EE/VU/IOP work, which is
 the larger part per game.
 
+### TASK-190: "Send my wheel profile" without an account (owner, 2026-11-06; planned)
+
+Players with a wheel we have no preset for can send us their finished mapping, so we can ship it as a built-in preset,
+like the owner's Logitech G27 preset in TASK-189. A preset is a small text file.
+
+**Plan:**
+- A "Send my profile" button on the Wheel page uploads only the preset TOML: the mapping, the wheel's name and its USB
+  vendor and product IDs. No personal data and no account.
+- The upload goes to a small Netlify function (free tier). The function:
+  - validates the file (schema, size limit) and rate-limits by client;
+  - opens a GitHub issue labelled `wheel-preset` with a bot token kept in Netlify's environment.
+- We review the issue and embed the good presets.
+- Both languages; the launcher shows what it sends before sending.
+
 ### TASK-187: GT4Recomp consumes CoreGS from its own repository (owner, 2026-11-06; planned, after 1.3.0 final)
 
 CoreGS 2.0 is being extracted into the public MIT repository `moesuito/coregs`. It is a generic PS2 GS renderer, with
