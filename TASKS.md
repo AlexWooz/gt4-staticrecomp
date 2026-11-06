@@ -3676,6 +3676,26 @@ GSdx-type renderer. The work in progress stays uncommitted in the `gt4-wt-178-do
 - The exact switches go ON for Android in the next APK.
 - On Windows they stay off until the owner's in-game tests.
 
+### Idea: CoreGS 2.0 as a generic PS2 GS renderer (owner question, 2026-11-06; not scheduled)
+
+CoreGS 2.0 models the PS2 GS itself (GIF, privileged registers, local memory, texture and CLUT handling, readbacks), so
+most of it is game-independent.
+
+**What is GT4-specific today:**
+- **Recognised GT4 patterns:** some performance paths recognise them (the flare table, the road sheen, the tone strips,
+  deinterlace choices).
+- **Fidelity gates:** they cover only v2.00 and Spec II.
+- **Untested GS features:** other games use features GT4 never exercises, such as some blend, depth and channel-shuffle
+  cases and video formats. Those paths are probably incomplete (Hypothesis).
+
+**What making it generic would take:**
+1. Split a generic core from per-game profiles; GT4's shortcuts become the GT4 profile.
+2. Build a GS-dump corpus from other games, compared against a reference on final images only (clean room).
+3. Fill the missing features as they show up.
+
+CoreGS is MIT, so it could become a separate library. Porting another game also needs its own EE/VU/IOP work, which is
+the larger part per game.
+
 ### TASK-185: Android on-screen virtual controller (owner, 2026-11-06; planned)
 
 **Why.** The Android build plays only with a physical controller (USB or Bluetooth); there is no touch control in the
