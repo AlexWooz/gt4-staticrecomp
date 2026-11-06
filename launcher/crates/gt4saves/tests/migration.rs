@@ -18,6 +18,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const STAMP: [u8; 8] = [0, 39, 50, 7, 12, 10, 0xEA, 0x07];
+
+/// The mover of a one-volume machine: a plain rename.
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
 const REPLAY: &str = "BASCUS-97328R0001";
 const RUN_STAMP: &str = "20261021-120000";
 
@@ -53,7 +58,11 @@ impl Fixture {
     }
 
     fn run(&self, copier: migration::Copier<'_>) -> Outcome {
-        migration::migrate(&self.sources(), &self.targets(), &self.data, &self.marker(), RUN_STAMP, copier)
+        self.run_with(copier, &rename)
+    }
+
+    fn run_with(&self, copier: migration::Copier<'_>, mover: migration::Mover<'_>) -> Outcome {
+        migration::migrate(&self.sources(), &self.targets(), &self.data, &self.marker(), RUN_STAMP, copier, mover)
     }
 
     fn library_paths(&self) -> LibraryPaths {
@@ -164,6 +173,35 @@ fn the_old_library_is_copied_verified_and_parked() {
         .filter(|entry| entry.file_name().to_string_lossy().contains("migrating"))
         .collect();
     assert!(leftovers.is_empty());
+}
+
+#[test]
+fn the_old_folders_are_parked_with_the_mover_given_and_a_failure_keeps_their_data() {
+    let fixture = Fixture::new("park-mover");
+    fixture.old_library();
+    let memcard_before = snapshot(&fixture.data.join("library").join("memcard"));
+    // The old library and the data folder are on different drives in some installs (issue #208): the launcher passes a
+    // move that copies there. This test gives one that can be counted.
+    let calls = Cell::new(0);
+    let counting = |from: &Path, to: &Path| -> io::Result<()> {
+        calls.set(calls.get() + 1);
+        fs::rename(from, to)
+    };
+    let outcome = fixture.run_with(&copy_file, &counting);
+    let Outcome::Migrated { parked, park_problems, .. } = &outcome else { panic!("{outcome:?}") };
+    assert!(park_problems.is_empty(), "{park_problems:?}");
+    assert!(calls.get() >= 1, "the park goes through the mover, not a plain rename");
+    assert_eq!(snapshot(&parked.join("memcard")), memcard_before);
+
+    // A mover that refuses (a locked old folder, say) keeps the data where it was and says so.
+    let second = Fixture::new("park-mover-fails");
+    second.old_library();
+    let refusing = |_: &Path, _: &Path| -> io::Result<()> { Err(io::Error::from_raw_os_error(17)) };
+    let outcome = second.run_with(&copy_file, &refusing);
+    let Outcome::Migrated { park_problems, .. } = &outcome else { panic!("{outcome:?}") };
+    assert_eq!(park_problems.len(), 2, "one line per old folder: {park_problems:?}");
+    assert!(park_problems[0].contains("was not moved"), "{park_problems:?}");
+    assert!(second.data.join("library").join("memcard").is_dir(), "the old folder keeps its data");
 }
 
 #[test]

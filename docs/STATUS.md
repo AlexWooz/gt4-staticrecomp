@@ -1,5 +1,36 @@
 # Current Status
 
+## TASK-188: saves when the install and the save library are on different drives (issue #208, 2026-11-06)
+
+On `task/188-cross-drive-saves` (from `release/1.3.0-rc15` at 110cacad), the fix for the player with the game on `F:` and
+`%APPDATA%` on `C:`: the runtime card `<install>\data\games\<game>\runtime\card.ps2` and the card backups
+`%APPDATA%\GT4Recomp\games\<game>\backups` are on different volumes there, and the launcher moved the card between them with
+`fs::rename`, which Windows refuses (`ERROR_NOT_SAME_DEVICE`, os error 17). Consequences seen in the report: Delete did
+nothing (the park failed before the Recycle Bin call), New save failed with the error text, and the stale card on `F:` was
+harvested again at the next Play, so a save deleted by hand in `%APPDATA%` came back.
+
+- New `gt4l_core::moves`: `move_path`/`move_path_with` keep the atomic rename on one volume (the library's replace guarantees
+  stay) and, across volumes (`ERROR_NOT_SAME_DEVICE` 17, `EXDEV` 18), copy, check every file against its source (size and
+  SHA-256), place the copy through a staging name on the destination's volume, then remove the source. A failed check keeps the
+  source and removes only the half copy; empty folders are kept; a link or special file is refused rather than lost. `MoveOps`
+  injects the rename and the copy, so a test reports another volume on CI's single volume.
+- `delete_active` and `new_save` (gt4l-tauri `saves.rs`) park the card through it (`park_runtime_card`), so the card leaves
+  whatever drive it lives on before the save is removed and the next Play builds a card without it. The pre-1.0 library
+  migration parks the old folders through the same mover (`gt4saves::migration::migrate` takes a `Mover`).
+- Audit: 51 `fs::rename` sites in `launcher/crates` (45 in product code) — every one either stays inside one folder (temporary
+  file to its target, `Active` to `Save NN`, staging to `prepared`, a `gs` version folder, the portable update's own folders)
+  or already has its own cross-volume path (`relocate`, `games_layout`, the installer's swap). Only the three sites above can
+  cross volumes in a supported layout (installer, portable, custom data folder, chosen textures folder, OneDrive).
+- Tests: 8 unit tests on the helper, 3 new flow tests (delete, New save, harvest with the card and the library under different
+  roots and a rename that reports another volume), a migration test for the park mover. Launcher `cargo test --workspace` 768
+  passed (9 ignored); focus checks 358/358 en-US and 365/365 pt-BR; nav-test 260/260; locale keys 925 in both.
+- Launchers labelled rc15 (installer `0411b1a6...` 19,383,808 bytes, portable `76d27613...` 19,310,592 bytes); installer
+  `GT4Recomp-Setup-1.3.0-rc15.exe` (`0960ac78...`, 48,231,557 bytes) and portable zip `GT4Recomp-1.3.0-rc15-portable.zip`
+  (`9af0fe4d...`, 75,712,839 bytes) in `private/release-130-rc15c-out` with `SHA256SUMS`; the games are the unchanged slice411
+  distribution (`private/slice411-dist-130-rc15b`, `gt4.exe` `f0fc8970...`, `gt4-spec2.exe` `64a6dcb0...`). Contents checked
+  against their sources: 48 of 48 files equal by sha256 (24 installer payload files, 24 zip files, plus `PORTABLE.txt`), 20 of
+  20 game files present. Draft only; no publish.
+
 ## TASK-186: the Performance Mode becomes individual effect toggles on PC (2026-11-06)
 
 On `task/186-effect-toggles-pc` (from `release/1.3.0-rc15` at bdc68efd), the split TASK-180 test5 made for Android, with the
