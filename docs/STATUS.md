@@ -19,10 +19,18 @@ The Android build of `libgt4spec2.so` never had the TASK-100 S7b asynchronous FI
 - **Measurements kept.** Five F8 run-loop categories (`runloop_mtvu_pump`, `runloop_sif_pump`, `runloop_events`,
   `vblank_action`) in the `[frame] run loop` line, a `gs_drain` scope around the journal drain in `mtvu::pump()`, and
   `GT4_GS_PRESENT_LOG` (flush/next_frame/present per VBlank; a present costs ~1 s on this emulator).
-- **Gates.** CTest 324/324 (1 skipped), Python 802 OK (48 skipped). Spec II does not reach the title screen inside the
-  emulator's test window (the publisher screens, then the repeated seven records above); the emulator's software Vulkan
-  (lavapipe behind gfxstream: ~100 ms of GPU for 306 KiB/frame, ~97,000 1-byte reads/s in the guest Vulkan driver) makes
-  each frame 40-50 ms there, while the S23 uses the Adreno driver.
+- **Second cause (Confirmed, same day): the Android build never defined `GT4_TARGET_SPEC2`.** `native/CMakeLists.txt` has
+  set it since TASK-100 S3; without it the Spec II library ran the **v2.00** guest addresses of every host hook, so the
+  16:9 hold, the 480p hold and the display-request reader found nothing (`[display] game-data pointer ... -> 0xFFB30018`
+  against the PC's `0x009BD690`) and the game stopped after the publisher screens, repeating seven GIF records. The
+  Android CMake now sets the definition when `GT4_TARGET=spec2`, right after the check that only `v200` and `spec2` are
+  accepted, and `native/game_target.hpp`'s Spec II row is what runs. Proof: the pointer line now reads
+  `0x009BD910 at vblank 12` with the 480p index written at `0x009BF6A8`, the seven-record loop ends, the opening movie
+  plays at 20-24 VBlanks/s and the **Spec II title screen** appears (`Modo Arcade` / `Modo Gran Turismo`, `v1.10`).
+  v2.00 on the same emulator reaches its own title screen (`Arcade Mode` / `Gran Turismo Mode`).
+- **Gates.** CTest 324/324 (1 skipped), Python 802 OK (48 skipped) for the shared code of the first pass; the second fix
+  touches `android/native/CMakeLists.txt` only and the v2.00 Android configure enters neither Spec II block. v2.00 on the
+  same emulator, through the same launch contract, plays its opening at 22.8 VBlanks/s.
 
 ## Android test5: effect toggles replace Performance Mode; Spec II ships (TASK-180, 2026-11-06)
 

@@ -63,6 +63,10 @@ Output: `launcher\crates\gt4l-tauri\gen\android\app\build\outputs\apk\universal\
   against the capsule pin and compiles it in place of the donor's `iop/sif.cpp`, exactly like the Windows build; a Spec II
   configure with a capsule that has no `sif.cpp` fails and names the file. Without it the game waits for ever on the
   `dev9x:` devctl after `INETCTL.IRX` and the picture stays black (TASK-180b).
+- **Spec II sets `GT4_TARGET_SPEC2`** (TASK-180b). That definition selects the Spec II row of `native/game_target.hpp`, the
+  guest addresses of every host hook (16:9 hold, 480p hold, display aspect, race camera, HUD canvas, license guard). The
+  Android CMake now sets it for `GT4_TARGET=spec2` as the Windows build does; without it the Spec II library ran the
+  v2.00 addresses, found no game-data object and stopped after the publisher screens.
 
 - **Version:** `tauri.android.conf.json` sets the APK's `versionName` (`1.3.0-android-test1`) and `versionCode`. The
   launcher inside reports the PC version it is built from (`GT4_RELEASE_LABEL`), which also decides its update channel.

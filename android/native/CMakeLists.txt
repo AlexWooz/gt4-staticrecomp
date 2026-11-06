@@ -52,6 +52,14 @@ endforeach()
 if(NOT GT4_TARGET STREQUAL "v200" AND NOT GT4_TARGET STREQUAL "spec2")
     message(FATAL_ERROR "android/native builds the v2.00 (GT4_TARGET=v200) and Spec II (GT4_TARGET=spec2) game libraries")
 endif()
+# TASK-100 S3, wired for Android by TASK-180b: GT4_TARGET_SPEC2 selects the Spec II row of native/game_target.hpp (the
+# guest addresses of every host hook). native/CMakeLists.txt has set it since S3; this build did not, so libgt4spec2.so
+# carried the v2.00 addresses. The widescreen/480p/aspect hooks then read a nonexistent game-data object (the pointer
+# logged 0xFFB30018 instead of the PC's 0x009BD690) and the Spec II display-request state was never observed. Any target
+# that is neither v200 nor spec2 fails above, so the definition can only be one of the two.
+if(GT4_TARGET STREQUAL "spec2")
+    add_compile_definitions(GT4_TARGET_SPEC2)
+endif()
 set(DONOR "${GT4_ASSETS_ROOT}/private/references/ps2-web-recomp")
 set(PORT "${GT4_PORT_DIR}")
 
