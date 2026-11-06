@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "coregs3_tap.hpp"
+#include "mtvu_runtime.hpp"
 
 #include "ps2/memory.hpp"
 #include "ps2/system.hpp"
@@ -48,6 +49,7 @@ struct State {
   bool frame_open = false;
   bool all_draws = false;
   std::uint64_t pass_count = 0;
+  std::uint64_t pass_job_first = 0, pass_job_last = 0;
   std::uint64_t orphan_pass_ends = 0;
   std::uint32_t frame_index = 0;
   std::uint64_t frame_vblank = 0;
@@ -351,6 +353,10 @@ void at_vblank(std::uint64_t vblank) noexcept {
 void car_pass_begin(ps2::Cpu &cpu) noexcept {
   (void)cpu;
   if (g.mode == Mode::off) return;
+  // TASK-090: name the pass in the worker's job stream. Flushing here and at the end puts the pass's VIF packets in their
+  // own jobs, so the tap's records of this pass can be selected exactly (no guessing from vertex counts).
+  gt4::mtvu::flush_vif_chain();
+  g.pass_job_first = gt4::mtvu::last_posted_job() + 1;
   g.in_car_pass = true;
   g.pass_count += 1;
   if (g.trace_frames != 0 && g.trace_events < g.trace_frames) {
@@ -374,9 +380,13 @@ void car_pass_end(ps2::Cpu &cpu) noexcept {
     return;
   }
   g.in_car_pass = false;
+  gt4::mtvu::flush_vif_chain();
+  g.pass_job_last = gt4::mtvu::last_posted_job();
   if (g.trace_frames != 0 && g.trace_events < g.trace_frames) {
-    std::fprintf(stderr, "[coregs3] pass end %llu draws %u\n", static_cast<unsigned long long>(g.vblank),
-                 g.frame.draw_count);
+    std::fprintf(stderr, "[coregs3] pass end %llu draws %u jobs %llu..%llu\n",
+                 static_cast<unsigned long long>(g.vblank), g.frame.draw_count,
+                 static_cast<unsigned long long>(g.pass_job_first),
+                 static_cast<unsigned long long>(g.pass_job_last));
     ++g.trace_events;
   }
 }

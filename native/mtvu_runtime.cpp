@@ -670,6 +670,12 @@ void flush_vif_chain() {
   rethrow_worker_error();
 }
 
+std::uint64_t last_posted_job() {
+  Runtime &r = rt();
+  if (!enabled()) return 0;
+  return r.next_job == 0 ? 0 : r.next_job - 1;
+}
+
 void note_vif_chain() {
   Runtime &r = rt();
   if (!enabled()) return;

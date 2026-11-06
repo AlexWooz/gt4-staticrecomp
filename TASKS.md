@@ -1536,8 +1536,14 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   space or the pass the records belong to has to be identified before the projection can be fitted; the triangle topology
   (strip/list/quad readings all fail) follows the same analysis. The per-vertex G-TAP gate and the M2 surfaces are
   therefore **not** reported. M4 (the live seam) was not started: the brief's steps 1-2 are not solid.
-- Next: settle the tap's coordinate space (compare a *known* full-screen pass first), then the projection fit, the vertex
-  reference, the topology, the M2 surfaces, and only then the live overlay seam (review work) and G-IMAGE.
+- Round 3: the coordinate space is confirmed (`px = (X - XYOFFSET.OFX)/16`, XYZ 12.4; a constant offset is absorbed by
+  the projective fit). The model decode is confirmed too: the parts that looked flat are the car's ground shadows and
+  decals (`y == 0`), and rendering the body of **one** car gives a recognisable silhouette (`build/evidence/coregs3/m2/
+  car1_surface.png`); the noisy surface is the unresolved topology. Selecting the pass by job id from the EE hook does
+  **not** work: GT4 kicks the shape VIF packets outside the `render_cars` bracket, so `jobs 460505..460504` is empty.
+- Next: tag the job at the kick (`post_vif_packet`) with the pass the EE is in, and audit the tap records whose XYZ read
+  does not explain them (per-tag descriptor audit), then the projection fit, the vertex reference, the topology, the M2
+  surfaces, and only then the live overlay seam (review work) and G-IMAGE.
 
 
 ### TASK-087 — GS readbacks without stalls

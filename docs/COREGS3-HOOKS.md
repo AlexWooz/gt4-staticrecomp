@@ -132,11 +132,23 @@ no-draw", §2), which is a strong sign that the tap sees the same stream the GS 
 captured draws' position counts (e.g. job 460209 = 80 vertices = draw 1's 80), so a job is one draw, split into one or
 more XGKICKs (a 56-vertex and a 24-vertex GIF packet in that example).
 
-**Open (the reason the per-vertex gate is not reported yet):** the tapped XYZ values come out around (-1970, +1865) pixels
-for every record, i.e. outside the 640x448 screen for all 2,573 records, with plausible *relative* structure (a car-sized
-box, ADC in pairs). Either the coordinate space needs a transform this round did not identify (a viewport/offset or a
-different fixed-point convention), or the records are a pass other than the visible one. Until that is settled the tap
-cannot be used to fit the projection, so the offline pictures stay labelled as geometry/coverage evidence.
+**The coordinate space** (owner hint, confirmed against our own front end, `hw_front_end.cpp:621`): GS XYZ is 12.4 fixed
+point and the screen pixel is `(X - XYOFFSET.OFX) / 16`, `(Y - OFY) / 16`. A constant offset is *absorbed* by the
+projective fit, so it was never the blocker; what the tap showed instead was that the recorded XYZ of a whole frame still
+wraps over the full 16-bit range, i.e. some records are not vertex data the way this parser reads them. Two further
+measurements narrowed it down:
+
+- **The model decode is right.** Draw 3 of the captured frame has full 3D positions (e.g. `(-3042, 3413, -3207)`), while
+  draws 1 and 2 are genuinely flat (`y == 0`): they are the car's ground shadows and decals. Earlier object-space
+  pictures were dominated by those flat parts, which is why they looked like plates. Rendering the body only (height
+  filter, one car) gives a recognisable car silhouette — the surface noise in it is the **topology**, not the positions.
+- **The pass cannot be selected by job id from the EE hook.** Flushing the VIF chain at the pass boundary and reading the
+  last posted job id gave `jobs 460505..460504` (empty): GT4's shape VIF packets are kicked outside the `render_cars`
+  bracket, so the pass's jobs are not contiguous between the two hooks. A job tag has to come from the DMA/kick side.
+
+**Open:** the per-vertex G-TAP fit is not reported because the tap's records cannot yet be matched to draws. Next round:
+tag the job at the *kick* (where `post_vif_packet` runs) with the pass the EE is in, and re-parse the records that the
+XYZ read does not explain (a per-tag descriptor audit first).
 
 ## 7. A measured gotcha: the capture must not write during the guest's frame
 

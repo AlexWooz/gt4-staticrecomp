@@ -143,6 +143,10 @@ bool direct_gs_intake();  // VU1 jobs run on the worker and the GS worker reads 
 // TASK-084 step 1: closes the pending VIF1 batch and posts it as one job. Called by the DMA chain end, a VIF1 stall,
 // and before any other journal or sync operation; a no-op when nothing is batched or GT4_MTVU_CHAIN=0.
 void flush_vif_chain();
+
+// TASK-090: the id of the last job posted to the worker (0 when the worker is off). A capture uses it to name the exact
+// job range of a render pass: flush at the pass boundary, then remember the id. Observe-only.
+std::uint64_t last_posted_job();
 // Counts one VIF1 DMA chain start (the denominator of "jobs per DMA chain").
 void note_vif_chain();
 void post_vif_write(std::uint32_t reg, std::uint32_t value);

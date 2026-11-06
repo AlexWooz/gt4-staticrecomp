@@ -15,6 +15,7 @@
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -214,6 +215,8 @@ int main(int argc, char **argv) {
   bool ndc = false;
   bool counts = false;
   int only_draw = -1;
+  float min_y = 0.0f;
+  int draw_range_last = -1;
   int frame_index = -1;
   const char *out = nullptr;
   const char *report = nullptr;
@@ -238,6 +241,8 @@ int main(int argc, char **argv) {
       options.topology = value == "list" ? Topology::list : value == "quad" ? Topology::quad : Topology::strip;
     }
     else if (argument == "--draw" && index + 1 < argc) only_draw = std::atoi(argv[++index]);
+    else if (argument == "--min-y" && index + 1 < argc) min_y = static_cast<float>(std::atof(argv[++index]));
+    else if (argument == "--first-car" && index + 1 < argc) draw_range_last = std::atoi(argv[++index]) - 1;
     else if (argument == "--yaw" && index + 1 < argc) options.object_yaw = static_cast<float>(std::atof(argv[++index]));
     else if (argument == "--pitch" && index + 1 < argc) options.object_pitch = static_cast<float>(std::atof(argv[++index]));
     else if (argument == "--no-flip-y") options.flip_y = false;
@@ -292,6 +297,35 @@ int main(int argc, char **argv) {
   }
 
   FrameSnapshot selected = frames[frame_index];
+  if (min_y > 0.0f) {
+    // Flat parts (every vertex at y ~= 0) are the car's ground shadows and decals in this model; the body is what has
+    // height. Filtering them is a presentation aid for the offline picture, not a claim about the format.
+    std::vector<CapturedDraw> kept;
+    MeshOptions mesh_options;
+    for (const CapturedDraw &draw : selected.draws) {
+      Mesh mesh;
+      std::string ignored;
+      if (!build_mesh(selected.packets.data(), selected.packets.size(), draw, mesh_options, mesh, ignored)) continue;
+      bool has_height = false;
+      for (const MeshVertex &vertex : mesh.vertices)
+        if (std::fabs(vertex.position[1]) >= min_y) {
+          has_height = true;
+          break;
+        }
+      if (has_height) kept.push_back(draw);
+    }
+    selected.draws = std::move(kept);
+    selected.draw_count = static_cast<std::uint32_t>(selected.draws.size());
+  }
+  if (draw_range_last >= 0) {
+    // One car of a grid: the draws of one car are contiguous in submission order, and every car's vertices are in its own
+    // model space, so rendering all of them at once overlays six models at the origin.
+    std::vector<CapturedDraw> kept;
+    for (const CapturedDraw &draw : selected.draws)
+      if (draw.sequence <= static_cast<std::uint32_t>(draw_range_last)) kept.push_back(draw);
+    selected.draws = std::move(kept);
+    selected.draw_count = static_cast<std::uint32_t>(selected.draws.size());
+  }
   if (only_draw >= 0) {
     std::vector<CapturedDraw> kept;
     for (const CapturedDraw &draw : selected.draws)
