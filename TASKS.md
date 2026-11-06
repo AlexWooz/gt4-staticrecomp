@@ -3648,6 +3648,9 @@ Not in the current phases (Phase 3 Linux, Phase 4 Android): it starts only on th
 
 **Gates:** flare hashes (also with `GT4_HW_INTERLOCK=0`), frame dumps off against on, CTest serial.
 
+**Paused (owner, 2026-11-06):** CoreGS 2.0 optimization work is paused while the focus is the mobile build with the
+GSdx-type renderer. The work in progress stays uncommitted in the `gt4-wt-178-download-wait` worktree, to resume later.
+
 **Owner (2026-11-05):** "implement all of it", cheapest first.
 - The exact switches go ON for Android in the next APK.
 - On Windows they stay off until the owner's in-game tests.
