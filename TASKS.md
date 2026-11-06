@@ -3685,8 +3685,9 @@ the 1.3.0 final, so a slower PC turns off only what costs frames.
   default, and *Small effects* (CoreGS 2.0: Full resolution, the default, or Lower, the preset's 1x for the small effect
   pictures inside a scaled frame).
 - The two GSdx settings the preset also wrote are rows again: *Blending accuracy* (High or Minimum, written to
-  `accurate_blending_unit`) and *Readbacks* (the five values of `hw_download_mode` before TASK-091, Accurate by default,
-  written to `HWDownloadMode`). No effect toggle writes the readback mode any more.
+  `accurate_blending_unit`) and *Readbacks* (Accurate by default, written to `HWDownloadMode`). The table keeps the five
+  values of the row before TASK-091, but the launcher offers only the two the installed gt4-gs accepts (Accurate and No
+  readbacks; a stored 1, 3 or 4 becomes Accurate with a log line). No effect toggle writes the readback mode any more.
 - Migration (settings schema 8 to 9): a stored `performance_mode = "no-readbacks"` becomes every effect off, small effects
   Lower, blending Minimum and readbacks Accurate.
 - Games: slice411, plain (no PGO, no ThinLTO), both targets; launchers labelled rc15; installer and portable zip in
@@ -3695,8 +3696,8 @@ the 1.3.0 final, so a slower PC turns off only what costs frames.
   identical to `GT4_CORE2_PERFORMANCE=1`; each toggle alone changes only its own effect with the race clock and the simulation
   state identical; the new `hw_core2_effect_toggles` fixture for CoreGS 2.0 and the stream-client fixture for the GSdx path.
 - The same correction is commit `0ee1a707` on `task/180-android-emulator` (launcher and game.ini parts; the branch's schema 10).
-- **Open:** the pinned gt4-gs 1.2.1 embeds the TASK-091 allow-list (HWDownloadMode 0 and 2), so it ignores 1, 3 and 4 until a
-  gt4-gs build with the regenerated allow-list ships; the launcher offers the row as the owner asked.
+- **Open:** the Readbacks row widens back to the five values when a gt4-gs build with the regenerated allow-list becomes the
+  minimum (the launcher accepts gt4-gs >= 1.2.1 today).
 - State (2026-11-06): implemented on `task/186-effect-toggles-pc`; owner test with the G27 pending.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries

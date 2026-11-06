@@ -255,6 +255,19 @@ pub fn offered_choices(row: &Row) -> Vec<&str> {
     row.choices.iter().filter(|choice| choice.status == "ok").map(|choice| choice.name.as_str()).collect()
 }
 
+/// Readbacks values (`hw_download_mode`) that the gt4-gs the launcher runs accepts. The gt4-gs the launcher installs is
+/// at least `gs_release::RENDERER_MINIMUM` (1.2.1), and 1.2.1 embeds the allow-list of the TASK-091 settings table, whose
+/// `HWDownloadMode` had only Accurate (0) and NoReadbacks (2): any other value is ignored by gt4-gs with one warning line
+/// in the session log, so the launcher never offers one. The table keeps the five values of the row before TASK-091 (the
+/// Android GS accepts every one, and the allow-list file still lists them for a future gt4-gs build); widen this list, and
+/// the row's offered choices with it, when a gt4-gs build with the regenerated allow-list becomes the minimum.
+pub const GT4GS_HW_DOWNLOAD_MODES: &[&str] = &["accurate", "no-readbacks"];
+
+/// Whether the gt4-gs the launcher runs accepts a `hw_download_mode` value (see [`GT4GS_HW_DOWNLOAD_MODES`]).
+pub fn gt4gs_accepts_hw_download_mode(name: &str) -> bool {
+    GT4GS_HW_DOWNLOAD_MODES.contains(&name)
+}
+
 /// Checks one value of a row and returns its normalized text (enum name, bool, integer text, float text or path).
 /// Mirrors `parse_value` in scripts/gs_settings.py: a forced row accepts only its default value.
 pub fn parse_value(row: &Row, raw: &str) -> Result<String, TableError> {

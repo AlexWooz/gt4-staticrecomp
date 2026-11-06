@@ -555,6 +555,15 @@ impl Settings {
             return Err(format!("{id} is set by the launcher: {reason}"));
         }
         let normalized = crate::gs_table::check_user_value(id, value)?;
+        // TASK-186: the gt4-gs the launcher runs ignores a Readbacks value it does not accept, so such a value is refused
+        // here (the config load then keeps the default and logs it) instead of being written into the INI for nothing.
+        if id == "hw_download_mode" && !crate::gs_table::gt4gs_accepts_hw_download_mode(&normalized) {
+            return Err(format!(
+                "gt4-gs {} accepts {} for {id}, not '{normalized}'",
+                crate::gs_release::MINIMUM_VERSION.text(),
+                crate::gs_table::GT4GS_HW_DOWNLOAD_MODES.join(", ")
+            ));
+        }
         self.gs.insert(id.to_string(), normalized);
         Ok(())
     }

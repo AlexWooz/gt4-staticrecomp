@@ -393,6 +393,11 @@ fn gs_row(row: &gs_table::Row, settings: &Settings) -> Value {
             Value::Array(
                 row.choices
                     .iter()
+                    // TASK-186: the gt4-gs the launcher runs accepts only Accurate and No readbacks; the other three values
+                    // of the row before TASK-091 come back when a gt4-gs build with the regenerated allow-list ships.
+                    .filter(|choice| {
+                        row.id != "hw_download_mode" || gs_table::gt4gs_accepts_hw_download_mode(&choice.name)
+                    })
                     .map(|choice| {
                         // The table's English label when it has one; the UI translates the value by key (TASK-102).
                         let label = if choice.label.is_empty() { choice.name.as_str() } else { choice.label.as_str() };
@@ -1009,7 +1014,7 @@ mod table_tests {
     }
 
     #[test]
-    fn readbacks_offer_the_five_values_of_the_row_before_task_091() {
+    fn readbacks_offer_only_the_values_the_installed_gt4gs_accepts() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let readbacks = row(&table, "hw_download_mode");
         assert_eq!(readbacks["control"], "dropdown");
@@ -1022,19 +1027,13 @@ mod table_tests {
             .iter()
             .map(|value| (value["value"].as_str().unwrap(), value["label"].as_str().unwrap()))
             .collect();
-        assert_eq!(
-            shown,
-            vec![
-                ("accurate", "Accurate (default)"),
-                ("enabled-force-full", "Enabled, force full"),
-                ("no-readbacks", "No readbacks"),
-                ("unsynchronized", "Unsynchronized (faster, may drop effects)"),
-                ("disabled", "Disabled"),
-            ]
-        );
+        // TASK-186 follow-up: gt4-gs 1.2.1 embeds the TASK-091 allow-list, so the other three values are not offered (they
+        // would be ignored with a warning line).
+        assert_eq!(shown, vec![("accurate", "Accurate (default)"), ("no-readbacks", "No readbacks")]);
         let mut chosen = Settings::default();
-        chosen.set_gs("hw_download_mode", "unsynchronized").unwrap();
-        assert_eq!(row(&settings_table(&chosen, &Controls::default()), "hw_download_mode")["current"], "unsynchronized");
+        chosen.set_gs("hw_download_mode", "no-readbacks").unwrap();
+        assert_eq!(row(&settings_table(&chosen, &Controls::default()), "hw_download_mode")["current"], "no-readbacks");
+        assert!(chosen.set_gs("hw_download_mode", "unsynchronized").is_err(), "gt4-gs ignores it");
     }
 
     #[test]

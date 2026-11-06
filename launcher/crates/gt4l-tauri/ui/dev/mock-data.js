@@ -196,14 +196,12 @@
         { value: "minimum", label: "Minimum (faster)" }
       ],
       default: "high", current: "high" },
+    // The launcher offers only the values the gt4-gs it runs accepts (1.2.1 embeds the TASK-091 allow-list).
     { visible_when: { id: "renderer", equals: "pcsx2" }, id: "hw_download_mode", label: "Readbacks", help: "How the graphics plugin reads images back from the graphics card.",
       page: "basic", group: "graphics", control: "dropdown",
       values: [
         { value: "accurate", label: "Accurate (default)" },
-        { value: "enabled-force-full", label: "Enabled, force full" },
-        { value: "no-readbacks", label: "No readbacks" },
-        { value: "unsynchronized", label: "Unsynchronized (faster, may drop effects)" },
-        { value: "disabled", label: "Disabled" }
+        { value: "no-readbacks", label: "No readbacks" }
       ],
       default: "accurate", current: "accurate" },
     { visible_when: { id: "renderer", equals: "pcsx2" }, id: "cas_mode", label: "Sharpening (CAS)", help: "FidelityFX Contrast Adaptive Sharpening. Off leaves the picture as the game drew it.",

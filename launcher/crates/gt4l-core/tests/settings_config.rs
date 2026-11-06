@@ -92,7 +92,7 @@ fn config_round_trip_keeps_values_and_paths() {
     config.settings.set("resolution", "2560x1080").unwrap();
     config.settings.set("render_scale", "175").unwrap();
     config.settings.set_gs("effect_flares", "false").unwrap();
-    config.settings.set_gs("hw_download_mode", "unsynchronized").unwrap();
+    config.settings.set_gs("hw_download_mode", "no-readbacks").unwrap();
     config.disc_path = Some(r#"D:\Games\Gran Turismo 4 "quoted" (USA).iso"#.into());
     config.textures_path = Some(r"E:\Emulators\PCSX2\textures".into());
     config.dev_game_dir = Some(r"C:\Antigravity\build\game".into());
@@ -127,6 +127,21 @@ fn invalid_values_and_unknown_keys_fall_back_with_warnings() {
     assert_eq!(config.settings.get("vsync"), "on");
     assert_eq!(config.settings.get("fullscreen"), "off");
     assert_eq!(warnings.len(), 2, "{warnings:?}");
+}
+
+#[test]
+fn a_readbacks_value_the_installed_gt4gs_ignores_becomes_accurate_with_a_warning() {
+    // TASK-186 follow-up: gt4-gs 1.2.1 embeds the TASK-091 allow-list (Accurate and No readbacks only).
+    for stored in ["enabled-force-full", "unsynchronized", "disabled"] {
+        let text = format!("schema_version = 9\n[gs]\nhw_download_mode = \"{stored}\"\n");
+        let (config, warnings) = config::parse(&text).unwrap();
+        assert!(warnings.iter().any(|warning| warning.contains("gt4-gs 1.2.1")), "{stored}: {warnings:?}");
+        assert_eq!(config.settings.gs_value("hw_download_mode"), "accurate", "{stored}");
+        assert!(!config.settings.gs_overrides().contains_key("hw_download_mode"), "{stored}: the default, not stored");
+    }
+    let (kept, warnings) = config::parse("schema_version = 9\n[gs]\nhw_download_mode = \"no-readbacks\"\n").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(kept.settings.gs_value("hw_download_mode"), "no-readbacks");
 }
 
 #[test]

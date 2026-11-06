@@ -13,23 +13,23 @@ CoreGS item is a row too so that the whole bundle stays reachable):
   default, or 1x, the preset's small-effect target choice, `GT4_CORE2_EFFECTS_1X`). No effect toggle writes the readback
   mode.
 - `blending` ("Blending accuracy", High or Minimum, written to `accurate_blending_unit`) and `hw_download_mode` ("Readbacks",
-  the five values of the row before TASK-091, Accurate by default) are GSdx player rows again, each shown only under GSdx.
+  Accurate by default) are GSdx player rows again, each shown only under GSdx. The table keeps the five values of the row
+  before TASK-091, but the launcher offers only Accurate and No readbacks, the two the gt4-gs 1.2.1 it runs accepts
+  (`gs_table::GT4GS_HW_DOWNLOAD_MODES`); a stored 1, 3 or 4 becomes Accurate with a log line.
 - Settings schema 8 to 9: a stored `performance_mode = "no-readbacks"` becomes every effect off, small effects 1x, Minimum
   blending and Accurate readbacks. A schema 5 file's non-accurate `hw_download_mode` (folded into Performance Mode by schema
   6) migrates the same way.
 - `game.ini` carries `hw_effect_flares`, `hw_effect_road_sheen` and `hw_effect_targets` for a direct CoreGS 2.0 start. The
-  pinned gt4-gs 1.2.1 embeds the TASK-091 allow-list (HWDownloadMode 0 and 2), so it ignores Readbacks 1, 3 and 4 until a
-  gt4-gs build with the regenerated allow-list ships; the row is offered as the owner asked and the notes and
-  `docs/GS-SETTINGS.md` say so.
+  Readbacks row offers only what the installed gt4-gs accepts (see above), so no choice of it does nothing on Windows.
 - The same correction is commit `0ee1a707` on `task/180-android-emulator` (schema 10 there, launcher and game.ini parts).
 
 Games slice411, plain (no PGO, no ThinLTO), the slice407 EE libraries and the slice409 USB capsule, pins
 `docs/inputs/slice411-pcsx2.json` (exe `f0fc8970...`) and `slice411-spec2.json` (`64a6dcb0...`, Spec II), distribution
-`private/slice411-dist-130-rc15b`. Launchers labelled rc15 (installer `68c7355e...` 19,364,352 bytes, portable `aac78ff0...`
-19,292,672 bytes); installer `GT4Recomp-Setup-1.3.0-rc15.exe` `07779e70...` and portable zip `GT4Recomp-1.3.0-rc15-portable.zip`
-`bdbf17f7...` in `private/release-130-rc15b-out` (contents checked against their sources: 24 of 24 zip files and every
+`private/slice411-dist-130-rc15b`. Launchers labelled rc15 (installer `b414318c...` 19,384,320 bytes, portable `44f919c9...`
+19,293,696 bytes); installer `GT4Recomp-Setup-1.3.0-rc15.exe` `145808d4...` and portable zip `GT4Recomp-1.3.0-rc15-portable.zip`
+`8fc51251...` in `private/release-130-rc15b-out` (contents checked against their sources: 24 of 24 zip files and every
 installer payload file equal by sha256, plus the WebView2 bootstrapper). CTest 318 of 319 on each game (q07 skipped); Python
-804 (57 skipped in the CTest entry, 39 with the build env); launcher `cargo test --workspace` 755 passed (9 ignored). Gates
+804 (57 skipped in the CTest entry, 39 with the build env); launcher `cargo test --workspace` 757 passed (9 ignored). Gates
 against the rc14 PGO builds (`gates6.sh`, wrong=0): the three Spec II laps, the v2.00 night race (10/10 frames, state
 identical), the Arcade path (14/14) and Spec II at 6x (12/12), VU1 236,448 / 355,388 samples and MTVU 8,032 frames with 0
 differences. Effect gates on the same exes: every effect on (explicit 0) identical to the rc15 default (frames 10/10 and 18/18,

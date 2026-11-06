@@ -125,8 +125,9 @@ tab), followed by "Reset to defaults" (Y on the pad). Pre-configured to the GT4 
 - Filtering and accuracy: `filter` (texture filtering, PS2 bilinear), `trilinear` (Automatic), `anisotropic` (off, the
   60 FPS budget), `mipmap` (hardware mipmapping on, `hw_mipmap`), `blending` (High or Minimum, TASK-186: the old
   Performance Mode's second GSdx setting as a row, GSdx only), `dithering` (Unscaled),
-  `texture_preloading` (Full), `hw_download_mode` "Readbacks" (Accurate by default, always written; the five values of
-  the row before TASK-091, GSdx only, TASK-186), `accurate_alpha_test` (off), `aa1` (off), `rov` (off, experimental).
+  `texture_preloading` (Full), `hw_download_mode` "Readbacks" (Accurate by default, always written; the table keeps the
+  five values of the row before TASK-091, and the launcher offers the two gt4-gs 1.2.1 accepts, GSdx only, TASK-186),
+  `accurate_alpha_test` (off), `aa1` (off), `rov` (off, experimental).
 - Colour: `shade_boost` (off) and the four levels (50 each).
 - OSD: none since 2026-10-21. PCSX2's own OSD rows moved to HIDDEN (forced off); the performance overlay below is
   GT4Recomp's own.
@@ -343,10 +344,13 @@ code (`GT4_GS_HIDE_FLARES=1` with `GT4_GS_READBACK_LOCAL=1` on the GSdx path, `G
 so the car icons and the loading picture stay accurate. Blending accuracy is a row too (`blending`, High or Minimum), and
 the CoreGS 2.0 effect rows (`effect_flares`, `effect_road_sheen`, `effect_targets`) are launcher-only: they reach the game
 as `GT4_CORE2_PERF_FLARES`, `GT4_CORE2_PERF_ROAD_SHEEN` and `GT4_CORE2_EFFECTS_1X`, never in this file.
-**The allow-list limitation:** the pinned gt4-gs 1.2.1 embeds the allow-list of the TASK-091 table, which listed only
-`HWDownloadMode` 0 and 2, so it ignores 1, 3 and 4 (one warning line in the session log) until a new gt4-gs build with
-the regenerated allow-list ships. The old Performance Mode choice itself migrates to every effect off, small effects at
-1x, Minimum blending and Accurate readbacks (settings schema 8 to 9).
+**The allow-list limitation, and what the launcher does about it:** the gt4-gs 1.2.1 the launcher runs embeds the
+allow-list of the TASK-091 table, which listed only `HWDownloadMode` 0 and 2, so it ignores 1, 3 and 4 (one warning line
+in the session log). The table keeps all five values and `--gs-readback` still spells them, but the launcher offers only
+the two gt4-gs accepts (`gs_table::GT4GS_HW_DOWNLOAD_MODES`) and a stored 1, 3 or 4 becomes Accurate with a log line; the
+row widens again when a gt4-gs build with the regenerated allow-list becomes the minimum. The old Performance Mode choice
+itself migrates to every effect off, small effects at 1x, Minimum blending and Accurate readbacks (settings schema 8 to
+9).
 
 `UserHacks_*`: the names are recorded in the `user_hacks` row notes. Each name is a hidden per-key row for TASK-043.
 
