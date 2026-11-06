@@ -129,6 +129,25 @@ const VERIFY_CHOICES: &[Choice] = &[
 
 const TOGGLE: Kind = Kind::Toggle;
 
+/// The GSdx Resolution row's choices (TASK-200): Automatic (the Render scale plan), then the multipliers in ascending
+/// order. The values come from `display::GSDX_RESOLUTION_VALUES`; the readout beside each is filled at run time.
+const GSDX_RESOLUTION_CHOICES: &[Choice] = &[
+    Choice { value: crate::display::GSDX_RESOLUTION_AUTO, label: "Automatic", selectable: true },
+    Choice { value: "1", label: "1x", selectable: true },
+    Choice { value: "1.25", label: "1.25x", selectable: true },
+    Choice { value: "1.5", label: "1.5x", selectable: true },
+    Choice { value: "1.75", label: "1.75x", selectable: true },
+    Choice { value: "2", label: "2x", selectable: true },
+    Choice { value: "2.5", label: "2.5x", selectable: true },
+    Choice { value: "3", label: "3x", selectable: true },
+    Choice { value: "4", label: "4x", selectable: true },
+    Choice { value: "5", label: "5x", selectable: true },
+    Choice { value: "6", label: "6x", selectable: true },
+    Choice { value: "8", label: "8x", selectable: true },
+    Choice { value: "10", label: "10x", selectable: true },
+    Choice { value: "12", label: "12x", selectable: true },
+];
+
 /// Every user setting, in display order. Ids are the TOML keys.
 pub const SETTINGS: &[SettingDef] = &[
     SettingDef {
@@ -197,6 +216,16 @@ pub const SETTINGS: &[SettingDef] = &[
             step: crate::display::RENDER_SCALE_STEP,
         },
         default: "100",
+        connected: true,
+    },
+    SettingDef {
+        id: "gsdx_resolution",
+        page: Page::Graphics,
+        group: "Image",
+        title: "Resolution (GSdx)",
+        info: "How sharp GSdx draws the game. Automatic follows the Render scale and the Resolution; or pick a fixed                multiplier, including 1.25x, 1.5x, 1.75x and 2.5x, which need GSdx 1.3.0 or newer. The number beside                each choice is the resulting internal resolution.",
+        kind: Kind::Choice(GSDX_RESOLUTION_CHOICES),
+        default: crate::display::GSDX_RESOLUTION_AUTO,
         connected: true,
     },
     SettingDef {

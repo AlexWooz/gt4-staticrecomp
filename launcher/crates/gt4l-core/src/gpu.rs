@@ -7,7 +7,8 @@
 //! - **Automatic card.** A discrete card over an integrated one; among equals the most dedicated video memory.
 //!   Software and CPU adapters are never candidates.
 //! - **Automatic API.** Vulkan when the chosen card reports Vulkan 1.2 or newer, else Direct3D 11 (a card without
-//!   Vulkan almost never has Direct3D 12, and Direct3D 11 is the fastest of the rest).
+//!   Vulkan almost never has Direct3D 12, and Direct3D 11 is the fastest of the rest). Automatic never picks OpenGL
+//!   (TASK-200); OpenGL is an explicit choice for older PCs.
 //! - **Explicit choices win.** A stored API or card is used as stored. Explicit Vulkan on a card without Vulkan 1.2
 //!   runs with Direct3D 11 for that run, with a note for the player. A stored card that is no longer present falls
 //!   back to Automatic for that run, with a log line.
@@ -20,10 +21,13 @@ use crate::messages;
 
 /// The stored value of the Automatic choices (`graphics_api` and `graphics_card`).
 pub const AUTOMATIC: &str = "auto";
-/// The `graphics_api` values of the three APIs the game offers.
+/// The `graphics_api` values of the APIs the game offers.
 pub const VULKAN_API: &str = "vulkan";
 pub const DIRECT3D_12_API: &str = "d3d12";
 pub const DIRECT3D_11_API: &str = "d3d11";
+/// OpenGL (TASK-200): `[EmuCore/GS] Renderer = 12`. Offered only to gt4-gs 1.3.0 or newer (its allow-list), and never
+/// chosen by Automatic.
+pub const OPENGL_API: &str = "opengl";
 /// The API a run uses when Vulkan is needed but the chosen card has no Vulkan 1.2.
 pub const FALLBACK_API: &str = DIRECT3D_11_API;
 /// The lowest Vulkan version the game accepts on its card (`system_check::MINIMUM_VULKAN`).

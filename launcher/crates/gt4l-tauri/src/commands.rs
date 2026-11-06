@@ -259,7 +259,18 @@ pub fn get_settings_table_with_monitors(shared: &Shared, monitors: &[display_rul
     // TASK-114 rc5: one card list, read from the cache (no probe here), serves both the rows and the integrated check.
     let cards = gt4l_platform::gpu::cached_gpus();
     let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
-    let mut table = model::settings_table_with_monitors(&state.config.settings, &state.controls, monitors, &cards, integrated_gpu);
+    // TASK-200: the fractional scales and OpenGL exist only in gt4-gs 1.3.0 or newer (its allow-list). The version in use
+    // comes from `current.txt`, a cheap read; an install made without it keeps today's lists.
+    let fractional_scales = gt4l_core::textures::renderer_version_in_use(&state.dirs.renderer_root())
+        .is_some_and(|version| version >= gt4l_core::releases::RENDERER_FRACTIONAL_MINIMUM);
+    let mut table = model::settings_table_with_monitors(
+        &state.config.settings,
+        &state.controls,
+        monitors,
+        &cards,
+        integrated_gpu,
+        fractional_scales,
+    );
     // TASK-091: the launcher's own row (Graphics > Advanced), not a game setting.
     let safe_mode = webview_guard::safe_mode_on(state.user_dirs.root());
     if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut) {

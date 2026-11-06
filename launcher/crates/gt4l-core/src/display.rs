@@ -51,6 +51,43 @@ pub struct RendererCaps {
 /// (max texture size / 1280) is lowered by gt4-gs itself with a notice; gt4-gs does not report that limit yet.
 pub const PCSX2_GS_CAPS: RendererCaps = RendererCaps { max_multiplier: 12 };
 
+/// The GSdx Resolution row (TASK-200): `auto` follows the Render scale and the output size ([`display_plan`]); any other
+/// value is written to `[EmuCore/GS] upscale_multiplier` exactly, including the fractional scales that gt4-gs 1.3.0
+/// accepts. Older gt4-gs keeps today's list (the row is not offered), and the plan stays whole.
+pub const GSDX_RESOLUTION_AUTO: &str = "auto";
+
+/// The multipliers the GSdx Resolution row offers, in ascending value order. The four fractional scales (1.25, 1.5, 1.75
+/// and 2.5) need gt4-gs 1.3.0.
+pub const GSDX_RESOLUTION_VALUES: &[&str] = &["1", "1.25", "1.5", "1.75", "2", "2.5", "3", "4", "5", "6", "8", "10", "12"];
+
+/// Whether a multiplier is one of the fractional scales gt4-gs 1.3.0 added (TASK-200).
+pub fn is_fractional_multiplier(value: &str) -> bool {
+    matches!(value, "1.25" | "1.5" | "1.75" | "2.5")
+}
+
+/// The canonical stored value of the GSdx Resolution row for `text`: one of [`GSDX_RESOLUTION_VALUES`], or
+/// [`GSDX_RESOLUTION_AUTO`] for `auto`, an unknown value or an empty text.
+pub fn gsdx_resolution(text: &str) -> &'static str {
+    GSDX_RESOLUTION_VALUES.iter().copied().find(|value| *value == text.trim()).unwrap_or(GSDX_RESOLUTION_AUTO)
+}
+
+/// The internal resolution of a multiplier, `640 x multiplier` by `448 x multiplier`, in whole pixels. `None` for
+/// `auto` or anything that is not a multiplier the row offers.
+pub fn internal_size_of_multiplier(value: &str) -> Option<(u32, u32)> {
+    let canonical = gsdx_resolution(value);
+    if canonical == GSDX_RESOLUTION_AUTO {
+        return None;
+    }
+    let multiplier: f64 = canonical.parse().ok()?;
+    Some(((NATIVE_FRAME_WIDTH as f64 * multiplier).round() as u32, (NATIVE_FRAME_HEIGHT as f64 * multiplier).round() as u32))
+}
+
+/// "1.25x · 800x560", or "3x · 1920x1344" for a whole multiplier: the GSdx Resolution row's readout.
+pub fn describe_multiplier(value: &str) -> Option<String> {
+    let (width, height) = internal_size_of_multiplier(value)?;
+    Some(format!("{value}x \u{00B7} {width}x{height}"))
+}
+
 /// The plan for one output size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DisplayPlan {
@@ -462,6 +499,24 @@ mod tests {
             assert!(display_plan(1920, 1080, scale, PCSX2_GS_CAPS).is_err(), "{scale}%");
         }
         assert_eq!(render_scale_steps(), vec![50, 75, 100, 125, 150, 175, 200]);
+    }
+
+    #[test]
+    fn the_gsdx_resolution_values_are_ordered_and_include_the_fractional_scales() {
+        // TASK-200: ascending order, the four fractional scales in place.
+        assert_eq!(
+            GSDX_RESOLUTION_VALUES,
+            ["1", "1.25", "1.5", "1.75", "2", "2.5", "3", "4", "5", "6", "8", "10", "12"]
+        );
+        assert_eq!(describe_multiplier("1.25").unwrap(), "1.25x \u{00B7} 800x560");
+        assert_eq!(describe_multiplier("2.5").unwrap(), "2.5x \u{00B7} 1600x1120");
+        assert_eq!(describe_multiplier("3").unwrap(), "3x \u{00B7} 1920x1344");
+        assert_eq!(describe_multiplier(GSDX_RESOLUTION_AUTO), None);
+        assert_eq!(gsdx_resolution("auto"), GSDX_RESOLUTION_AUTO);
+        assert_eq!(gsdx_resolution("1.5"), "1.5");
+        assert_eq!(gsdx_resolution("1.30"), GSDX_RESOLUTION_AUTO, "not one of the values");
+        assert!(is_fractional_multiplier("1.25") && is_fractional_multiplier("2.5"));
+        assert!(!is_fractional_multiplier("2") && !is_fractional_multiplier("auto"));
     }
 
     fn monitor(device: &str, name: &str, primary: bool, desktop: Size) -> Monitor {

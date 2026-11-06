@@ -121,6 +121,7 @@ fn each_game_starts_its_own_program_with_its_own_elf_disc_and_card() {
         let inputs = LaunchInputs { game_executable: &program, elf: &elf, disc: &disc, card: &card, session_dir: session };
         let paths = launch::Pcsx2Paths {
             executable: PathBuf::from("gs/gt4-gs.exe"),
+            version: gt4l_core::gs_release::Version(1, 2, 1),
             executable_sha256: "00".repeat(32),
             config: session.join("gt4-gs.ini"),
             cache: PathBuf::from("gs/cache"),

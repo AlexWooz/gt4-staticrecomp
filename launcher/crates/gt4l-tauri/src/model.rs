@@ -38,7 +38,7 @@ pub fn pcsx2_table_rows() -> Vec<&'static gs_table::Row> {
 /// The payload of `get_settings_table`: `{max_upscale, rows}`. Launcher rows come from `SETTINGS`, PCSX2 GS rows from
 /// the table file; both use the row shape of ui/dev/README.md. The table rows only GSdx honours show only under GSdx.
 pub fn settings_table(settings: &Settings, controls: &Controls) -> Value {
-    settings_table_with_monitors(settings, controls, &[], &[], false)
+    settings_table_with_monitors(settings, controls, &[], &[], false, false)
 }
 
 /// The Monitor row's choices: one per connected monitor, labelled by its name ("DELL U3419W"; a second one with the same
@@ -66,14 +66,20 @@ fn fill_monitor_row(row: &mut Value, settings: &Settings, monitors: &[Monitor]) 
 }
 
 /// The Graphics API row (TASK-108): the Automatic choice says which API it resolves to for the card the run would use.
-fn fill_api_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice]) {
+fn fill_api_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice], opengl_ok: bool) {
     let plan = gt4l_core::gpu::plan(&settings.gs_value("graphics_api"), settings.get("graphics_card"), cards, Language::fallback());
     // TASK-118: no "Automatic" in the UI. The entry is dropped and, while the stored value is still automatic, the row
     // shows the API this start resolves to (Play then stores it).
     if let Some(values) = row["values"].as_array_mut() {
         values.retain(|value| value["value"] != gt4l_core::gpu::AUTOMATIC);
+        // TASK-200: OpenGL is for a gt4-gs 1.3.0 or newer; an older one refuses Renderer 12.
+        if !opengl_ok {
+            values.retain(|value| value["value"] != gt4l_core::gpu::OPENGL_API);
+        }
     }
-    if settings.gs_value("graphics_api") == gt4l_core::gpu::AUTOMATIC {
+    if settings.gs_value("graphics_api") == gt4l_core::gpu::AUTOMATIC
+        || (!opengl_ok && settings.gs_value("graphics_api") == gt4l_core::gpu::OPENGL_API)
+    {
         row["current"] = json!(plan.api);
     }
 }
@@ -157,23 +163,56 @@ fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monit
     row["values"]["output"] = json!(output.text());
 }
 
+/// The GSdx Resolution row (TASK-200): Automatic (the Render scale plan, with the multiplier it gives now) and every
+/// fixed multiplier in ascending order, each with its internal resolution ("1.25x · 800x560"). Only drawn when the
+/// installed gt4-gs is 1.3.0 or newer.
+fn fill_gsdx_resolution_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], integrated_gpu: bool) {
+    let output = display::resolve_target(monitors, settings.get("monitor"), settings.get("resolution"))
+        .map(|target| target.output)
+        .unwrap_or(display::FALLBACK_OUTPUT);
+    let scale = settings.get("render_scale").parse::<u32>().unwrap_or(display::RENDER_SCALE_DEFAULT);
+    let plan = display::display_plan_on(output.width, output.height, scale, display::PCSX2_GS_CAPS, integrated_gpu)
+        .unwrap_or_else(|_| display::display_plan_on(1920, 1080, scale, display::PCSX2_GS_CAPS, integrated_gpu).expect("a valid plan"));
+    let plan_text = display::describe_plan(&plan);
+    let mut values = vec![json!({
+        "value": display::GSDX_RESOLUTION_AUTO,
+        "label": format!("Automatic ({plan_text})"),
+        "plan": plan_text,
+    })];
+    for value in display::GSDX_RESOLUTION_VALUES {
+        if let Some(label) = display::describe_multiplier(value) {
+            values.push(json!({ "value": value, "label": label }));
+        }
+    }
+    row["values"] = Value::Array(values);
+    row["current"] = json!(display::gsdx_resolution(&settings.get("gsdx_resolution")));
+}
+
 /// The settings table with the connected monitors (TASK-080 addendum: Monitor, Resolution and Render scale).
 /// `integrated_gpu` is true when the game renders on an integrated GPU (issue #89): the Render scale readout then shows
-/// the untouched default at 1x.
+/// the untouched default at 1x. `fractional_scales` is true when the installed gt4-gs is 1.3.0 or newer (TASK-200): the
+/// GSdx Resolution row then replaces the Render scale slider for GSdx, and the Graphics API row lists OpenGL.
 pub fn settings_table_with_monitors(
     settings: &Settings,
     controls: &Controls,
     monitors: &[Monitor],
     cards: &[gt4l_core::gpu::GpuDevice],
     integrated_gpu: bool,
+    fractional_scales: bool,
 ) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     // TASK-118: the release performance report and the VU code check are release-candidate settings; final builds do
     // not ship them, so their rows do not exist there either.
     let release_candidate = gt4l_core::LAUNCHER_VERSION.contains("-rc");
+    // TASK-200: the GSdx Resolution list replaces the Render scale slider for GSdx, and only when the installed gt4-gs
+    // accepts the fractional scales; CoreGS 2.0 keeps the Render scale slider (its own list).
+    let gsdx_resolution = fractional_scales && settings.get("renderer") == gt4l_core::settings::PCSX2_GS;
     for definition in SETTINGS {
         if !release_candidate && RC_ONLY_ROWS.contains(&definition.id) {
             continue;
+        }
+        if definition.id == "gsdx_resolution" {
+            continue; // drawn where the Render scale row is, under GSdx only
         }
         // TASK-108: the Graphics card row sits after the Graphics API row and the FSR1 row after CAS (added with the table
         // rows below).
@@ -185,6 +224,14 @@ pub fn settings_table_with_monitors(
             || definition.id == "present_thread"
             || definition.id == "controller"
         {
+            continue;
+        }
+        if definition.id == "render_scale" && gsdx_resolution {
+            if let Some(definition) = gt4l_core::settings::definition("gsdx_resolution") {
+                let mut row = launcher_row(definition, settings);
+                fill_gsdx_resolution_row(&mut row, settings, monitors, integrated_gpu);
+                rows.push(row);
+            }
             continue;
         }
         let mut row = launcher_row(definition, settings);
@@ -242,7 +289,7 @@ pub fn settings_table_with_monitors(
             continue;
         }
         if row.id == "graphics_api" {
-            fill_api_row(&mut out, settings, cards);
+            fill_api_row(&mut out, settings, cards, fractional_scales);
             rows.push(out);
             if let Some(definition) = gt4l_core::settings::definition("graphics_card") {
                 let mut card = launcher_row(definition, settings);
@@ -907,7 +954,7 @@ mod table_tests {
     fn monitor_and_resolution_list_the_connected_monitors_and_their_modes() {
         let monitors = two_monitors();
         let mut settings = Settings::default();
-        let table = settings_table_with_monitors(&settings, &Controls::default(), &monitors, &[], false);
+        let table = settings_table_with_monitors(&settings, &Controls::default(), &monitors, &[], false, false);
         let monitor_row = row(&table, "monitor");
         assert_eq!(monitor_row["group"], "display");
         assert_eq!(monitor_row["control"], "dropdown");
@@ -924,7 +971,7 @@ mod table_tests {
 
         settings.set("monitor", r"\\.\DISPLAY2@3440x1440").unwrap();
         settings.set("resolution", "2560x1080").unwrap();
-        let table = settings_table_with_monitors(&settings, &Controls::default(), &monitors, &[], false);
+        let table = settings_table_with_monitors(&settings, &Controls::default(), &monitors, &[], false, false);
         assert_eq!(row(&table, "monitor")["current"], r"\\.\DISPLAY2@3440x1440");
         let resolution = row(&table, "resolution");
         assert_eq!(resolution["current"], "2560x1080");
@@ -937,10 +984,52 @@ mod table_tests {
     }
 
     #[test]
+    fn the_gsdx_resolution_list_replaces_the_render_scale_only_for_a_new_enough_gt4gs() {
+        // TASK-200: GSdx with gt4-gs 1.3.0 or newer gets the Resolution list (Automatic plus every multiplier, The
+        // fractional scales in ascending order); CoreGS 2.0 and an older gt4-gs keep the Render scale slider.
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false, true);
+        let order = ids(&table);
+        assert!(order.contains(&"gsdx_resolution".to_string()));
+        assert!(!order.contains(&"render_scale".to_string()));
+        let resolution = row(&table, "gsdx_resolution");
+        assert_eq!(resolution["current"], "auto");
+        assert_eq!(resolution["default"], "auto");
+        let values: Vec<&str> =
+            resolution["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["auto", "1", "1.25", "1.5", "1.75", "2", "2.5", "3", "4", "5", "6", "8", "10", "12"]);
+        assert_eq!(resolution["values"][1]["label"], "1x \u{00B7} 640x448");
+        assert_eq!(resolution["values"][2]["label"], "1.25x \u{00B7} 800x560");
+        assert_eq!(resolution["values"][0]["plan"], "3x \u{00B7} 1920x1344", "the plan of 1920x1080 at 100%");
+
+        let mut coregs = Settings::default();
+        coregs.set("renderer", gt4l_core::settings::CORE_GS_20).unwrap();
+        let table = settings_table_with_monitors(&coregs, &Controls::default(), &[], &[], false, true);
+        assert!(ids(&table).contains(&"render_scale".to_string()), "CoreGS 2.0 keeps its list");
+        assert!(!ids(&table).contains(&"gsdx_resolution".to_string()));
+
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false, false);
+        assert!(ids(&table).contains(&"render_scale".to_string()), "an older gt4-gs keeps today's list");
+        assert!(!ids(&table).contains(&"gsdx_resolution".to_string()));
+    }
+
+    #[test]
+    fn opengl_is_offered_only_with_a_new_enough_gt4gs() {
+        // TASK-200: Renderer 12 is in the 1.3.0 allow-list only; Automatic never resolves to it (gpu::plan).
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false, true);
+        let values: Vec<&str> =
+            row(&table, "graphics_api")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["vulkan", "d3d12", "d3d11", "opengl"]);
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false, false);
+        let values: Vec<&str> =
+            row(&table, "graphics_api")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["vulkan", "d3d12", "d3d11"]);
+    }
+
+    #[test]
     fn an_integrated_gpu_reads_the_default_render_scale_at_1x() {
         // Issue #89: the readout shows the plan the game gets; the slider is additive (TASK-118), so 150% from the
         // integrated 1x baseline is 3x, not 5x.
-        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true, false);
         let scale = row(&table, "render_scale");
         assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 1x \u{00B7} 640x448");
         assert_eq!(scale["values"]["labels"]["150"], "150% \u{00B7} 3x \u{00B7} 1920x1344");
@@ -1085,7 +1174,7 @@ mod table_tests {
     fn the_presentation_thread_is_not_applicable_on_a_card_with_two_or_more_graphics_queues() {
         let settings = Settings::default();
         let table_for = |cards: &[gt4l_core::gpu::GpuDevice]| {
-            settings_table_with_monitors(&settings, &Controls::default(), &[], cards, false)
+            settings_table_with_monitors(&settings, &Controls::default(), &[], cards, false, false)
         };
         let one = table_for(&[card_with_queues("Steam Deck", Some(1))]);
         assert_eq!(row(&one, "present_thread")["disabled"], false, "one queue: the row works");
@@ -1102,7 +1191,7 @@ mod table_tests {
         let mut chosen = Settings::default();
         chosen.set("graphics_card", "Steam Deck").unwrap();
         let cards = [card_with_queues("Radeon", Some(16)), card_with_queues("Steam Deck", Some(1))];
-        let table = settings_table_with_monitors(&chosen, &Controls::default(), &[], &cards, false);
+        let table = settings_table_with_monitors(&chosen, &Controls::default(), &[], &cards, false, false);
         assert_eq!(row(&table, "present_thread")["disabled"], false);
     }
 
@@ -1212,7 +1301,8 @@ mod table_tests {
                 ("vulkan", "Vulkan"),
                 ("d3d12", "Direct3D 12"),
                 ("d3d11", "Direct3D 11"),
-            ]
+            ],
+            "an older gt4-gs keeps today's three APIs"
         );
         assert!(values.iter().all(|value| value["disabled"] == false));
         // The choice is stored and shown back (the engine row keeps its own id, `renderer`).
@@ -1220,7 +1310,9 @@ mod table_tests {
         chosen.set_gs("graphics_api", "d3d11").unwrap();
         let table = settings_table(&chosen, &Controls::default());
         assert_eq!(row(&table, "graphics_api")["current"], "d3d11");
-        assert!(chosen.set_gs("graphics_api", "opengl").is_err(), "OpenGL is not offered yet");
+        // TASK-200: OpenGL is a table value for gt4-gs 1.3.0 or newer; an older install keeps three APIs (the row is
+        // built by `opengl_is_offered_only_with_a_new_enough_gt4gs` above).
+        assert!(chosen.set_gs("graphics_api", "opengl").is_ok());
     }
 
     #[test]

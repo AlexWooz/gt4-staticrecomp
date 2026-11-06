@@ -114,6 +114,8 @@ impl std::fmt::Debug for LaunchPlan {
 pub struct Pcsx2Paths {
     /// `gt4-gs.exe` in the installed version folder.
     pub executable: PathBuf,
+    /// The installed gt4-gs version (TASK-200: the fractional scales and OpenGL need 1.3.0 or newer).
+    pub version: crate::version::Version,
     /// SHA-256 of that file (`GT4_GS_PROCESS_SHA256`, checked by the game).
     pub executable_sha256: String,
     /// `gt4-gs.ini` written for this session.
@@ -131,6 +133,7 @@ impl Pcsx2Paths {
     pub fn for_session(installed: &Installed, renderer_root: &Path, session_dir: &Path, textures: &Path) -> Pcsx2Paths {
         Pcsx2Paths {
             executable: installed.executable.clone(),
+            version: installed.version,
             executable_sha256: installed.executable_sha256.clone(),
             config: session_dir.join("gt4-gs.ini"),
             cache: renderer_root.join("cache"),
@@ -376,6 +379,9 @@ pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, integr
 /// fifo writes both true, mailbox writes mailbox false, immediate writes vsync false. `upscale_multiplier` comes from
 /// the session plan ([`session_plan`]); a stored `upscale` value is never used (there is no such setting). With no
 /// display known and Render scale 100% the plan gives 3x, the table default, so that INI is unchanged.
+/// TASK-200: with gt4-gs 1.3.0 or newer a fixed GSdx Resolution (`gsdx_resolution`) wins over the plan and is written
+/// exactly (1.25, 1.5, 1.75 and 2.5 included, with a dot); OpenGL (`graphics_api = opengl`) is only written to such a
+/// version, and an older one keeps the whole multiplier and the three APIs.
 pub fn gs_config_text(
     settings: &Settings,
     paths: &Pcsx2Paths,
@@ -389,7 +395,19 @@ pub fn gs_config_text(
     // TASK-108: the Adapter (the chosen graphics card's name) is written by the launcher, not by the table: its row is
     // not settable from a value yet (status resolved). It is added below the table's render, in its section.
     let adapter = user.remove("adapter").filter(|name| !name.is_empty());
-    user.insert("upscale".to_string(), session_plan(settings, display, integrated_gpu).multiplier.to_string());
+    // TASK-200: the installed version decides what it accepts. An older gt4-gs keeps the whole multiplier of the plan and
+    // never receives OpenGL (its allow-list would ignore both, and the session would start with the wrong picture).
+    let extended = paths.version >= crate::releases::RENDERER_FRACTIONAL_MINIMUM;
+    let multiplier = match (extended, display::gsdx_resolution(&settings.get("gsdx_resolution"))) {
+        (true, value) if value != display::GSDX_RESOLUTION_AUTO => value.to_string(),
+        _ => session_plan(settings, display, integrated_gpu).multiplier.to_string(),
+    };
+    user.insert("upscale".to_string(), multiplier);
+    if !extended && user.get("graphics_api").is_some_and(|api| api == crate::gpu::OPENGL_API) {
+        // The table's Automatic value (Renderer 14, Vulkan): the launcher never leaves an unresolved Automatic in the
+        // file at Play, so this only happens after a downgrade to a gt4-gs that has no OpenGL in its allow-list.
+        user.insert("graphics_api".to_string(), crate::gpu::AUTOMATIC.to_string());
+    }
     // TASK-186 (owner, 2026-11-06): Performance Mode is no longer a preset. Blending accuracy and the Readbacks mode are
     // player rows of the table now (`blending`, `hw_download_mode`), written by the table writer like every other row; no
     // effect toggle writes either, so an effect that is on is never broken.

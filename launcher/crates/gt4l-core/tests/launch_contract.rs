@@ -472,6 +472,49 @@ fn multiplier_line(text: &str) -> &str {
 }
 
 #[test]
+fn a_fixed_gsdx_resolution_is_written_with_a_dot_and_gated_by_the_gt4gs_version() {
+    // TASK-200: 1.25x, 1.5x, 1.75x and 2.5x reach the INI exactly, with a dot whatever the locale; a gt4-gs older than
+    // 1.3.0 refuses them (its allow-list), so the plan's whole multiplier is written for it.
+    let target = display_target(r"\\.\DISPLAY1", 1920, 1080);
+    let mut settings = Settings::default();
+    let mut current = pcsx2_paths();
+    current.version = gt4l_core::gs_release::Version(1, 3, 0);
+    for value in ["1.25", "1.5", "1.75", "2.5"] {
+        settings.set("gsdx_resolution", value).unwrap();
+        let text = launch::gs_config_text(&settings, &current, Some(&target), false).unwrap();
+        assert_eq!(multiplier_line(&text), format!("upscale_multiplier = {value}"), "{value}");
+    }
+    // Automatic and a whole multiplier both keep the plan's 3x at 1920x1080 and Render scale 100%.
+    for value in ["auto", "3"] {
+        settings.set("gsdx_resolution", value).unwrap();
+        let text = launch::gs_config_text(&settings, &current, Some(&target), false).unwrap();
+        assert_eq!(multiplier_line(&text), "upscale_multiplier = 3", "{value}");
+    }
+    // The same fixed 1.25x with the shipped gt4-gs 1.2.1: the plan wins.
+    settings.set("gsdx_resolution", "1.25").unwrap();
+    let mut shipped = pcsx2_paths();
+    shipped.version = gt4l_core::gs_release::Version(1, 2, 1);
+    let text = launch::gs_config_text(&settings, &shipped, Some(&target), false).unwrap();
+    assert_eq!(multiplier_line(&text), "upscale_multiplier = 3");
+}
+
+#[test]
+fn opengl_is_written_only_to_a_gt4gs_that_accepts_it() {
+    // TASK-200: Renderer 12 (OpenGL) exists in gt4-gs 1.3.0's allow-list only; an older install keeps the table default
+    // (Automatic, Renderer 14) instead of silently ignoring the line.
+    let mut settings = Settings::default();
+    settings.set_gs("graphics_api", "opengl").unwrap();
+    let mut current = pcsx2_paths();
+    current.version = gt4l_core::gs_release::Version(1, 3, 0);
+    let text = launch::gs_config_text(&settings, &current, None, false).unwrap();
+    assert!(text.contains("Renderer = 12\n"), "{text}");
+    let mut shipped = pcsx2_paths();
+    shipped.version = gt4l_core::gs_release::Version(1, 2, 1);
+    let text = launch::gs_config_text(&settings, &shipped, None, false).unwrap();
+    assert!(text.contains("Renderer = 14\n"), "{text}");
+}
+
+#[test]
 fn the_internal_resolution_follows_the_output_size_and_the_render_scale() {
     let paths = pcsx2_paths();
     let mut settings = Settings::default();
@@ -552,6 +595,7 @@ fn installed_fixture() -> gt4l_core::gs_release::Installed {
 fn pcsx2_paths() -> launch::Pcsx2Paths {
     launch::Pcsx2Paths {
         executable: PathBuf::from("C:/gs/0.3.2/gt4-gs.exe"),
+        version: gt4l_core::gs_release::Version(0, 3, 2),
         executable_sha256: "a".repeat(64),
         config: PathBuf::from("C:/session/gt4-gs.ini"),
         cache: PathBuf::from("C:/gs/cache"),

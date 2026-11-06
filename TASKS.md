@@ -3743,6 +3743,23 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 ### TASK-200: GSdx on PC: fractional render scales and OpenGL, with a new gt4-gs build (owner, 2026-11-06; planned for rc16)
 
+**Status: done in code (2026-11-06)**, `task/200-fractional-scales-opengl` (fork) and `task/200-gsdx-scales-opengl`
+(launcher worktree `C:\Antigravity\gt4-wt-200-gsdx-scales`, from `release/1.3.0-rc15` at 265487b5). Not built yet: no
+rc16, no installer, no release; tested at the rc16 build.
+
+- **Map.** The GS core already handles a fractional multiplier (a float; the Qt/ImGui lists once offered 1.25x to 3.5x,
+  removed in 2025 without touching the GS). gt4-gs refused it only in its allow-list, and the same allow-list refused
+  `Renderer = 12` although OpenGL is compiled in.
+- **Fork (gt4-gs 1.3.0, branch `task/200-fractional-scales-opengl`, pushed, not merged, not tagged):** the vendored
+  allow-list takes 1.25, 1.5, 1.75 and 2.5 for `upscale_multiplier` and 12 for `Renderer` (SHA256SUMS updated); the
+  version string is `gt4gs 1.3.0`. It compiles; the headless replay accepts `upscale_multiplier = 1.25` and draws with
+  Vulkan; OpenGL in a headless replay crashed inside the AMD OpenGL driver (`atio6axx.dll`) at the PBuffer pixel format,
+  so OpenGL starts only with a real window path (owner test).
+- **Launcher:** the GSdx Resolution row (`gsdx_resolution`) replaces the Render scale slider for GSdx with `auto` (the
+  existing plan, unchanged for existing installs) or a fixed multiplier, the four fractional ones included, written with
+  a dot; OpenGL joins the Graphics API list after Direct3D 11; both only when the installed gt4-gs is 1.3.0 or newer
+  (`RENDERER_FRACTIONAL_MINIMUM`). Locales in both languages; table and allow-list regenerated.
+
 The Android GSdx (ARMSX2) offers fractional render scales (1.25x, 1.5x, 1.75x, 2.5x). The PC GSdx (gt4-gs) should offer
 them too. The main reason for the gt4-gs rebuild is OpenGL, which is still missing from the launcher.
 - **Map first (a PCSX2-tainted agent, in prose):**

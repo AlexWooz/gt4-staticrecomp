@@ -210,10 +210,13 @@ class ValueTests(unittest.TestCase):
     def test_upscale_presets_and_multipliers(self):
         upscale = by_id()['upscale']
         for text, name in (('1080p', '1080p'), ('3', '1080p'), ('1', '480p'), ('2', '720p'), ('4', '1440p'),
-                           ('6', '4K'), ('12', '8K'), ('5', '5x'), ('11x', '11x')):
+                           ('6', '4K'), ('12', '8K'), ('5', '5x'), ('11x', '11x'),
+                           ('1.25', '1.25x'), ('1.5', '1.5x'), ('1.75', '1.75x'), ('2.5', '2.5x')):
             self.assertEqual(gs_settings.parse_value(upscale, text), name, text)
         self.assertEqual(gs_settings.ini_value(upscale, '4K'), '6')
-        for value in ('0', '13', '08', '1.5', '4k', ''):
+        # TASK-200: the four fractional scales are values of the row (gt4-gs 1.3.0); other fractions stay refused.
+        self.assertEqual(gs_settings.ini_value(upscale, '1.25x'), '1.25')
+        for value in ('0', '13', '08', '1.3', '1.250', '4k', ''):
             with self.assertRaisesRegex(gs_settings.SettingsError, 'upscale must be one of', msg=value):
                 gs_settings.parse_value(upscale, value)
 
@@ -255,10 +258,11 @@ class ValueTests(unittest.TestCase):
         renderer = by_id()['graphics_api']
         # TASK-088 (1.2.0): these values are enabled now (the binary accepts them).
         self.assertEqual(gs_settings.parse_value(renderer, 'd3d12'), 'd3d12')
-        # TASK-103: Direct3D 11 and Vulkan are the other two; anything else (OpenGL, a software renderer) is refused.
+        # TASK-103: Direct3D 11 and Vulkan are the other two; TASK-200: OpenGL (12) joined them.
         self.assertEqual(gs_settings.parse_value(renderer, 'd3d11'), 'd3d11')
         self.assertEqual(gs_settings.parse_value(renderer, 'vulkan'), 'vulkan')
-        for refused in ('opengl', 'software', ''):
+        self.assertEqual(gs_settings.parse_value(renderer, 'opengl'), 'opengl')
+        for refused in ('software', ''):
             with self.assertRaises(gs_settings.SettingsError, msg=refused):
                 gs_settings.parse_value(renderer, refused)
         self.assertEqual(gs_settings.parse_value(by_id()['filter'], 'bilinear-ps2'), 'bilinear-ps2')
@@ -392,7 +396,7 @@ class OfferedTests(unittest.TestCase):
         for row in gs_settings.offered(rows()):
             if row['type'] == 'enum':
                 self.assertTrue(gs_settings.offered_choices(row), row['id'])
-        self.assertEqual(gs_settings.offered_choices(by_id()['graphics_api']), ['auto', 'vulkan', 'd3d12', 'd3d11'])
+        self.assertEqual(gs_settings.offered_choices(by_id()['graphics_api']), ['auto', 'vulkan', 'd3d12', 'd3d11', 'opengl'])
 
 
 class PlayPerformanceTests(unittest.TestCase):
@@ -501,7 +505,7 @@ class ProbeEnvironmentTests(unittest.TestCase):
 # Each entry: launcher id -> (INI key, {launcher name: INI value}, default launcher name).
 ENUM_EXPECTED = {
     # TASK-108: auto is the default; it writes 14 only if never resolved (the launcher resolves it before every write).
-    'graphics_api': ('Renderer', {'auto': '14', 'vulkan': '14', 'd3d12': '15', 'd3d11': '3'}, 'auto'),
+    'graphics_api': ('Renderer', {'auto': '14', 'vulkan': '14', 'd3d12': '15', 'd3d11': '3', 'opengl': '12'}, 'auto'),
     'filter': ('filter', {'nearest': '0', 'bilinear-forced': '1', 'bilinear-ps2': '2',
                           'bilinear-forced-sprite-excluded': '3'}, 'bilinear-ps2'),
     'trilinear': ('TriFilter', {'automatic': '-1', 'off': '0', 'ps2': '1', 'forced': '2'}, 'automatic'),
@@ -603,7 +607,7 @@ class ResolvedValueTests(unittest.TestCase):
         self.assertEqual(gs_settings.offered_choices(by_id()['deinterlace'])[0], 'automatic')
         self.assertEqual(len(gs_settings.offered_choices(by_id()['deinterlace'])), 10)
         self.assertEqual(gs_settings.offered_choices(by_id()['blending']), ['high', 'minimum'])
-        self.assertEqual(gs_settings.offered_choices(by_id()['graphics_api']), ['auto', 'vulkan', 'd3d12', 'd3d11'])
+        self.assertEqual(gs_settings.offered_choices(by_id()['graphics_api']), ['auto', 'vulkan', 'd3d12', 'd3d11', 'opengl'])
 
     def test_resolved_values_stay_out_of_the_default_ini(self):
         text = gs_settings.render_ini(rows())
@@ -631,11 +635,11 @@ class PageLayoutTests(unittest.TestCase):
                                  'blending', 'hw_download_mode', 'fxaa', 'cas_mode', 'cas_sharpness', 'texture_load'])
         upscale = by_id()['upscale']
         self.assertEqual((upscale['control'], upscale['type'], upscale['default']), ('dropdown', 'enum', '1080p'))
-        # TASK-080 addendum (owner, 2026-10-21): hidden, always written, set by the launcher from the display plan;
-        # every multiplier 1 to 12 stays a settable choice, so the gt4-gs allow-list is unchanged.
+        # TASK-080 addendum (owner, 2026-10-21): hidden, always written, set by the launcher from the display plan; every
+        # multiplier 1 to 12 stays a settable choice, and TASK-200 adds the four fractional scales (gt4-gs 1.3.0).
         self.assertEqual((upscale['page'], upscale['written'], upscale['status']), ('hidden', 'always', 'ok'))
-        self.assertEqual(sorted(int(choice['ini']) for choice in upscale['choices'] if choice['status'] == 'ok'),
-                         list(range(1, 13)))
+        self.assertEqual(sorted(float(choice['ini']) for choice in upscale['choices'] if choice['status'] == 'ok'),
+                         [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
         # Owner decision 2026-10-16: ONLY these presets are offered.
         self.assertEqual(gs_settings.offered_choices(upscale), ['480p', '720p', '1080p', '1440p', '4K', '8K'])
         self.assertEqual({choice['label'] for choice in upscale['choices'] if choice.get('offered', True)},
@@ -804,11 +808,11 @@ class ProhibitDynamicCodeTests(unittest.TestCase):
         entries = {(entry['section'], entry['key']): entry for entry in
                    json.loads(gs_settings.allowlist_text(rows()))['entries']}
         self.assertEqual(entries[('EmuCore/GS', 'upscale_multiplier')]['values'],
-                         ['1', '2', '3', '4', '6', '12', '5', '7', '8', '9', '10', '11'])
+                         ['1', '2', '3', '4', '6', '12', '1.25', '1.5', '1.75', '2.5', '5', '7', '8', '9', '10', '11'])
         self.assertEqual(entries[('GT4GS', 'PerfOverlay')], {'section': 'GT4GS', 'key': 'PerfOverlay', 'type': 'bool',
                                                              'values': ['true', 'false']})
         self.assertEqual((entries[('GT4GS', 'SpinUs')]['min'], entries[('GT4GS', 'SpinUs')]['max']), (0, 2000))
-        self.assertEqual(entries[('EmuCore/GS', 'Renderer')]['values'], ['14', '15', '3'])
+        self.assertEqual(entries[('EmuCore/GS', 'Renderer')]['values'], ['14', '15', '3', '12'])
         self.assertEqual(entries[('GT4GS', 'DataRoot')], {'section': 'GT4GS', 'key': 'DataRoot', 'type': 'path'})
         # Every key gt4-gs reads from [GT4GS] is listed (gt4-gs 1.0.0 ignores the others).
         for key in ('Surfaceless', 'SpinUs', 'ProhibitDynamicCode', 'DeferSwapChainAcquire', 'DebugStallWindowMs',

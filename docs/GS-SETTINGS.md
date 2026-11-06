@@ -28,16 +28,32 @@ outside it is ignored with one warning line; gt4-gs never refuses to start becau
   k = ceil(max(W / 640, H / 448)) for the chosen output size W x H, times the **Render scale** (a launcher row, 50% to
   200% in steps of 25%, default 100%), rounded to a whole number (ties up) and clamped to 1..12. A stored `[gs] upscale`
   is dropped by settings schema 5 and refused by `Settings::set_gs`.
-- **What gt4-gs accepts for upscale:** `[EmuCore/GS] upscale_multiplier` takes the whole numbers 1 to 12 only (the
-  allow-list values `1|2|3|4|6|12|5|7|8|9|10|11`; no fractional multipliers, `ExtendedUpscalingMultipliers` is never
-  written). gt4-gs lowers a value above the GPU's limit (max texture size / 1280: 12x on 16384-texel GPUs, 6x on 8192)
-  with a notice; READY does not report that limit yet. Every value 1 to 12 is a choice of the row, so the allow-list
-  and gt4-gs are unchanged (no fork change).
+- **What gt4-gs accepts for upscale:** `[EmuCore/GS] upscale_multiplier` takes the whole numbers 1 to 12 and, since
+  gt4-gs 1.3.0 (TASK-200), the fractional scales 1.25, 1.5, 1.75 and 2.5 (the allow-list values
+  `1|2|3|4|6|12|1.25|1.5|1.75|2.5|5|7|8|9|10|11`; `ExtendedUpscalingMultipliers` is still never written). gt4-gs
+  lowers a value above the GPU's limit (max texture size / 1280: 12x on 16384-texel GPUs, 6x on 8192) with a notice;
+  READY does not report that limit yet. The launcher writes a fractional value only from the GSdx Resolution row
+  (`gsdx_resolution`, see the TASK-200 section below), and only to an installed gt4-gs 1.3.0 or newer; the Render
+  scale plan keeps whole multipliers.
 - k per output: 1920x1080 3x, 1920x1200 3x, 1680x1050 3x, 2560x1080 4x, 2560x1440 4x, 3440x1440 6x, 3088x1440 5x,
   3840x2160 6x. Render scale 2560x1440: 50% 2x, 100% 4x, 200% 8x. The default INI (1920x1080 or no monitor known, 100%)
   is unchanged: `upscale_multiplier = 3`.
 - `aspect` stays forced 16:9 in the INI: the per-scene fill still comes only from protocol 1.3 `display_aspect`; the
   launcher has no aspect setting any more (always auto from the output size, decision 0071 addendum).
+
+**TASK-200 (owner, 2026-11-06): fractional scales and OpenGL for GSdx, in a new gt4-gs build.**
+
+- **Fractional scales.** The four values 1.25, 1.5, 1.75 and 2.5 join the `upscale` row as `offered = false` choices
+  (their INI values stay exact and use a dot, independent of the locale). The launcher writes one only from its GSdx
+  Resolution row (`gsdx_resolution`, a launcher setting, not a table row): `auto` keeps the Render scale plan (whole
+  multipliers, the default, so existing installs do not change), and a fixed value is written as is. The row replaces
+  the Render scale slider for GSdx and only when the installed gt4-gs is 1.3.0 or newer (`current.txt`); CoreGS 2.0 and
+  an older gt4-gs keep today's slider.
+- **OpenGL.** `graphics_api` gains `opengl` (`Renderer = 12`, after Direct3D 11). Automatic never resolves to it
+  (`gpu::plan` stays Vulkan or Direct3D 11), it is offered only with gt4-gs 1.3.0 or newer, and the INI writer falls
+  back to Automatic (Vulkan) for an older install after a downgrade.
+- **Version gate.** `gt4l_core::releases::RENDERER_FRACTIONAL_MINIMUM` is 1.3.0 (the next fork version: 1.2.1's
+  allow-list refuses both, so a new minor version is what the release gets). No release build was made (owner: rc16).
 
 ## What it is
 
@@ -117,7 +133,8 @@ this table. Only the renderer choice `coregs-1.1` remains.
 Shown under the "Advanced" heading at the bottom of the Graphics page (owner, 2026-10-21; before, a separate Advanced
 tab), followed by "Reset to defaults" (Y on the pad). Pre-configured to the GT4 ideal. Groups in order:
 
-- Renderer and presentation: `renderer` (Graphics API, Vulkan; D3D12 and D3D11 after the owner checks them), `adapter`
+- Renderer and presentation: `renderer` (Graphics API, Vulkan; D3D12, D3D11 and, since TASK-200, OpenGL for older PCs
+  once gt4-gs 1.3.0 is installed), `adapter`
   (empty, resolved), `vsync` (always set by `GT4_PRESENT_MODE`), `mailbox`, `linear_present` (present filter, Smooth),
   `integer_scaling` (off).
 - Display: `deinterlace` (Automatic, always; TASK-047), `disable_interlace_offset` (off), `antiblur` (on),
@@ -316,7 +333,7 @@ citations.
 
 | Launcher row | INI key | Values (INI) | GT4 default |
 |---|---|---|---|
-| `renderer` | `Renderer` | Vulkan 14, D3D12 15, D3D11 3 (D3D resolved, not offered) | Vulkan 14 |
+| `renderer` | `Renderer` | Vulkan 14, D3D12 15, D3D11 3, OpenGL 12 (1.3.0) | Vulkan 14 |
 | `filter` | `filter` | Nearest 0, Forced 1, PS2 2, Forced but sprite excluded 3 | PS2 (2) |
 | `trilinear` | `TriFilter` | Automatic -1, Off 0, PS2 1, Forced 2 | Automatic |
 | `anisotropic` | `MaxAnisotropy` | 0, 2, 4, 8, 16 | 0 |

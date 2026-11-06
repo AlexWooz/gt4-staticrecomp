@@ -66,7 +66,7 @@ notes = "Owner decision 2026-10-16 (TASK-049, item 1). Launcher-only: pcsx2 = gt
 [[setting]]
 id = "graphics_api"
 label = "API"
-help = "Automatic uses Vulkan when the graphics card supports Vulkan 1.2, otherwise Direct3D 11. Choose Vulkan, Direct3D 12 or Direct3D 11 to force one."
+help = "Automatic uses Vulkan when the graphics card supports Vulkan 1.2, otherwise Direct3D 11. Choose Vulkan, Direct3D 12, Direct3D 11 or OpenGL to force one."
 page = "basic"
 order = 7
 control = "dropdown"
@@ -81,15 +81,17 @@ choices = [
   { name = "vulkan", ini = "14", status = "ok", label = "Vulkan" },
   { name = "d3d12", ini = "15", status = "ok", label = "Direct3D 12" },
   { name = "d3d11", ini = "3", status = "ok", label = "Direct3D 11" },
+  { name = "opengl", ini = "12", status = "ok", label = "OpenGL" },
 ]
 # TASK-103 (release 1.3.0): the id is graphics_api, not renderer, which is the launcher's engine setting (GSdx, CoreGS 2.0).
-# OpenGL (GL 4.1 minimum, value 12) comes later: it needs a new gt4-gs build with its allow-list entry, then a choice here.
-notes = "GSRendererType (pcsx2/Config.h:271-281): VK = 14, DX12 = 15, DX11 = 3. Loader pcsx2/Pcsx2Config.cpp:1044 (key Renderer). UI values pcsx2/ImGui/FullscreenUI_Settings.cpp:2774-2790. Owner decision 2026-10-23 (TASK-103): Vulkan and Direct3D 12 recommended, Direct3D 11 for older PCs; no OpenGL yet. The software renderer (SW = 13) is not offered; in the JIT-free gt4-gs 0.4.0 (TASK-042) it would run the C rasterizer (no software JIT), which is slow and not checked for GT4. TASK-108 (release 1.3.0): the default is auto, resolved by the launcher at every start to vulkan or d3d11 (gt4l-core gpu::plan) before the file is written; ini 14 is only the value an unresolved auto would write, which the launcher never does. Explicit vulkan, d3d12 and d3d11 values are kept."
+# TASK-200 (release 1.3.0-rc16): OpenGL (GL 4.1 minimum, value 12) joins the list under Direct3D 11 (the "older PCs" group) once
+# gt4-gs 1.3.0 accepts it; the launcher offers it only to an installed gt4-gs 1.3.0 or newer, and Automatic never picks it.
+notes = "GSRendererType (pcsx2/Config.h:271-281): VK = 14, DX12 = 15, DX11 = 3, OGL = 12. Loader pcsx2/Pcsx2Config.cpp:1044 (key Renderer). UI values pcsx2/ImGui/FullscreenUI_Settings.cpp:2774-2790. Owner decision 2026-10-23 (TASK-103): Vulkan and Direct3D 12 recommended, Direct3D 11 for older PCs. TASK-200 (owner, 2026-11-06): OpenGL is a fourth choice, after Direct3D 11, for older PCs; gt4-gs 1.3.0 allows Renderer = 12 in its allow-list (1.2.1 refuses it), so the launcher only offers it to an installed 1.3.0 or newer. Automatic stays Vulkan or Direct3D 11: it never resolves to OpenGL. The software renderer (SW = 13) is not offered; in the JIT-free gt4-gs 0.4.0 (TASK-042) it would run the C rasterizer (no software JIT), which is slow and not checked for GT4. TASK-108 (release 1.3.0): the default is auto, resolved by the launcher at every start to vulkan or d3d11 (gt4l-core gpu::plan) before the file is written; ini 14 is only the value an unresolved auto would write, which the launcher never does. Explicit vulkan, d3d12, d3d11 and opengl values are kept."
 
 [[setting]]
 id = "upscale"
 label = "Internal resolution"
-help = "GS internal resolution multiplier, 1x to 12x. Set by the launcher from the Resolution and the Render scale (TASK-080 addendum); not a user setting."
+help = "GS internal resolution multiplier: whole values 1x to 12x and, with gt4-gs 1.3.0 or newer, 1.25x, 1.5x, 1.75x and 2.5x. Set by the launcher from the Resolution and the Render scale (TASK-080 addendum), or by the GSdx Resolution row (TASK-200); not a user setting."
 page = "hidden"
 order = 1
 control = "dropdown"
@@ -107,6 +109,10 @@ choices = [
   { name = "1440p", ini = "4", status = "ok", label = "1440p (4x)", height = 1440 },
   { name = "4K", ini = "6", status = "ok", label = "4K (6x)", height = 2160 },
   { name = "8K", ini = "12", status = "ok", label = "8K (12x)", height = 4320 },
+  { name = "1.25x", ini = "1.25", status = "ok", offered = false },
+  { name = "1.5x", ini = "1.5", status = "ok", offered = false },
+  { name = "1.75x", ini = "1.75", status = "ok", offered = false },
+  { name = "2.5x", ini = "2.5", status = "ok", offered = false },
   { name = "5x", ini = "5", status = "ok", offered = false },
   { name = "7x", ini = "7", status = "ok", offered = false },
   { name = "8x", ini = "8", status = "ok", offered = false },
@@ -114,7 +120,7 @@ choices = [
   { name = "10x", ini = "10", status = "ok", offered = false },
   { name = "11x", ini = "11", status = "ok", offered = false },
 ]
-notes = "TASK-080 addendum (owner, 2026-10-21): no longer offered. The launcher writes it from the display plan (gt4l-core display::display_plan): k = ceil(max(W / 640, H / 448)) for the output size W x H, times the Render scale (50% to 200%), rounded to a whole multiplier (ties up) and clamped to 1..12; every value 1 to 12 is a choice of this row, so the allow-list is unchanged. Before: Owner decision 2026-10-16 (TASK-060/061/062 request): the launcher showed ONLY the six presets 480p (1x), 720p (2x), 1080p (3x), 1440p (4x), 4K (6x) and 8K (12x), with PCSX2's width-based mapping (640 x scale >= the target width: 1280, 1920, 2560, 3840, 7680). Default 1080p (3x) in the table; the launcher (TASK-019) will pick the smallest preset whose height is at least the monitor's VERTICAL resolution (unknown monitor: 1080p; scripts/gs_settings.py upscale_preset_for_monitor) and grey out presets above the GPU limit max(max texture size / 1280, 1) (upscale_presets_within_texture_limit). The other multipliers (5x, 7x to 11x) stay settable from the command line (play_performance.py --gs-scale N keeps 1 to 12) but are not offered. Range history: D.1, widened by owner decision 6 (2026-10-16). The loader accepts 1 to 12 (pcsx2/Pcsx2Config.cpp:1045). PCSX2 clamps any value above GSGetMaxUpscaleMultiplier = max(max texture size / 1280, 1) (pcsx2/GS/GS.cpp:677-681) with an OSD warning (pcsx2/GS/GS.cpp:225-240). A 16384-texel GPU allows 12x; 8192 allows 6x. READY carries no max-upscale field: ReadyPayload (3rdparty/gt4recomp-gs-stream/gs_stream_protocol.h:177-187) has only a reserved u32. Until gt4-gs reports the limit, the launcher offers 1 to 12 and PCSX2 clamps. ExtendedUpscalingMultipliers is NOT required up to 12x (see extended_upscale). --gs-scale N sets this row (GT4_GS_SCALE)."
+notes = "TASK-080 addendum (owner, 2026-10-21): no longer offered. The launcher writes it from the display plan (gt4l-core display::display_plan): k = ceil(max(W / 640, H / 448)) for the output size W x H, times the Render scale (50% to 200%), rounded to a whole multiplier (ties up) and clamped to 1..12. TASK-200 (owner, 2026-11-06): with gt4-gs 1.3.0 or newer the launcher's GSdx Resolution row (launcher setting gsdx_resolution) may write 1.25, 1.5, 1.75 or 2.5 instead (with a dot, independent of the locale); those four are choices of this row, so the table and the allow-list accept them. gt4-gs 1.2.1 refuses them (its allow-list has 1 to 12 only), so the launcher offers them only to an installed 1.3.0 or newer; Automatic (auto) keeps the whole multiplier of the plan. Before: Owner decision 2026-10-16 (TASK-060/061/062 request): the launcher showed ONLY the six presets 480p (1x), 720p (2x), 1080p (3x), 1440p (4x), 4K (6x) and 8K (12x), with PCSX2's width-based mapping (640 x scale >= the target width: 1280, 1920, 2560, 3840, 7680). Default 1080p (3x) in the table; the launcher (TASK-019) will pick the smallest preset whose height is at least the monitor's VERTICAL resolution (unknown monitor: 1080p; scripts/gs_settings.py upscale_preset_for_monitor) and grey out presets above the GPU limit max(max texture size / 1280, 1) (upscale_presets_within_texture_limit). The other multipliers (5x, 7x to 11x) stay settable from the command line (play_performance.py --gs-scale N keeps 1 to 12) but are not offered. Range history: D.1, widened by owner decision 6 (2026-10-16). The loader accepts 1 to 12 (pcsx2/Pcsx2Config.cpp:1045). PCSX2 clamps any value above GSGetMaxUpscaleMultiplier = max(max texture size / 1280, 1) (pcsx2/GS/GS.cpp:677-681) with an OSD warning (pcsx2/GS/GS.cpp:225-240). A 16384-texel GPU allows 12x; 8192 allows 6x. READY carries no max-upscale field: ReadyPayload (3rdparty/gt4recomp-gs-stream/gs_stream_protocol.h:177-187) has only a reserved u32. Until gt4-gs reports the limit, the launcher offers 1 to 12 and PCSX2 clamps. ExtendedUpscalingMultipliers is NOT required up to 12x (see extended_upscale). --gs-scale N sets this row (GT4_GS_SCALE)."
 
 [[setting]]
 id = "deinterlace"
