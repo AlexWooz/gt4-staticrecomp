@@ -3696,6 +3696,17 @@ most of it is game-independent.
 CoreGS is MIT, so it could become a separate library. Porting another game also needs its own EE/VU/IOP work, which is
 the larger part per game.
 
+### TASK-191: a small GT4Recomp website on Netlify (owner idea, 2026-11-06; planned)
+
+A simple project site, linked from the GitHub repository:
+- what GT4Recomp is, screenshots, requirements, the Discord, the Ko-fi;
+- a link to the GitHub repository.
+
+It hosts no download: every "Download" button points to the latest GitHub release page (`releases/latest`). It never
+offers or links the game itself. Deployed from the repository with `netlify.toml`, on the free tier. The same Netlify
+project can host TASK-190's profile-upload function, so the site and the function share one deployment. If the site is
+not wanted, the function still works on its own.
+
 ### TASK-190: "Send my wheel profile" without an account (owner, 2026-11-06; planned)
 
 Players with a wheel we have no preset for can send us their finished mapping, so we can ship it as a built-in preset,
