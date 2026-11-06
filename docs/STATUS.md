@@ -1,3 +1,28 @@
+## TASK-180b: Spec II on Android — the black picture and the 3.2 s frames were the missing S7b IOP rule (2026-11-06)
+
+Spec II in the emulator stayed black with `gif bytes/frame: path1=0 path2=0 path3=0` and `run_due_events=3248 ms/frame`.
+The Android build of `libgt4spec2.so` never had the TASK-100 S7b asynchronous FILEIO server:
+
+- **Cause (Confirmed).** `native/CMakeLists.txt` splices the Spec II capsule's `iop/sif.cpp` (the DNAS310.IMG reboot selects
+  the asynchronous FILEIO server, whose devctl completes with the 0x80000011 packet) into the Windows build;
+  `android/native/CMakeLists.txt` never did. The Android Spec II library ran the donor's synchronous server, the game's
+  fileio thread waited for ever on the `dev9x:` devctl after `IRX\INETCTL.IRX`, and the boot stopped before drawing.
+  Evidence: the PC log prints `[sif] DNAS310.IMG is a Sony IOP reboot image (LOADFILE 3100): asynchronous FILEIO server`
+  and `[fileio] devctl dev9x: 0x4401`, the Android log neither; `b"asynchronous FILEIO server"` appears 0 times in the
+  test5 library and 1 time once the capsule's sif.cpp is spliced.
+- **Fix.** The Android CMake now requires a Spec II capsule with `sif.cpp`, verifies it against the capsule pin and compiles
+  it in place of the donor's `iop/sif.cpp`; a Spec II configure without it fails with a message naming the file. The v2.00
+  Android build is untouched (the block is `GT4_TARGET STREQUAL "spec2"`).
+- **Proof.** After the fix Spec II draws the Sony and Polyphony screens (313,904 B/frame of GIF, 25-34 VBlanks/s at 2x) and
+  continues into the intro's streaming phase; before it produced no GIF at all.
+- **Measurements kept.** Five F8 run-loop categories (`runloop_mtvu_pump`, `runloop_sif_pump`, `runloop_events`,
+  `vblank_action`) in the `[frame] run loop` line, a `gs_drain` scope around the journal drain in `mtvu::pump()`, and
+  `GT4_GS_PRESENT_LOG` (flush/next_frame/present per VBlank; a present costs ~1 s on this emulator).
+- **Gates.** CTest 324/324 (1 skipped), Python 802 OK (48 skipped). Spec II does not reach the title screen inside the
+  emulator's test window: after the publisher screens it streams the intro at 25-34 VBlanks/s, which is the emulator's
+  software Vulkan (lavapipe behind gfxstream: ~100 ms of GPU for 306 KiB/frame, ~97,000 1-byte reads/s in the guest Vulkan
+  driver); the owner's S23 runs the same code on the Adreno driver.
+
 ## Android test5: effect toggles replace Performance Mode; Spec II ships (TASK-180, 2026-11-06)
 
 The CoreGS 2.0 optimisation work is paused by the owner (2026-11-06); this build keeps the exact TASK-182 savings and
