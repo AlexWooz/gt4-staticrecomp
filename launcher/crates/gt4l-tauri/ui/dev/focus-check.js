@@ -1830,8 +1830,10 @@
 
   async function wheelChecks() {
     // A still G27 for the live checks: +90 degrees (a fifth of the travel), the accelerator at 60%, button 1 down.
+    // The G27 layout of the shipped preset (TASK-189): axis 0 the wheel, 1 the accelerator, 2 the brake, 4 the clutch;
+    // button 17 (index 17) is Cross.
     GT4.devWheelLive = function () {
-      return { devices: [{ id: 11, guid: "030000006d0400009bc2000000000000", axes: [6554, 32767, Math.round(32767 - 0.6 * 65535), 32767], pressed: [0], hats: [0] }] };
+      return { devices: [{ id: 11, guid: "030000006d0400009bc2000000000000", axes: [6554, Math.round(32767 - 0.6 * 65535), 32767, 32767, 32767], pressed: [17], hats: [0] }] };
     };
     await setHash("#/settings/wheel");
     await wait(500);
@@ -1842,6 +1844,14 @@
     check("the Wheel footer offers Bind, Clear and Set up", footerText().indexOf(T("wheel.hint.bind")) >= 0 && footerText().indexOf(T("wheel.hint.clear")) >= 0 &&
       footerText().indexOf(T("wheel.hint.setup")) >= 0, footerText());
     check("the panel shows the steering with its rotation", wheelCardName() === T("wheel.steering") && !!document.querySelector("input[data-setting=\"wheel-rotation\"]"), wheelCardName());
+    check("the 'Your wheel' card is gone (TASK-189)", !document.querySelector(".wh-device") && !document.querySelector(".wh-device-name"), "still there");
+    check("the badge says Connected without the USB ID", (document.querySelector(".cx-status-sub") || {}).textContent === T("wheel.status_connected"),
+      (document.querySelector(".cx-status-sub") || {}).textContent);
+    check("the page says which preset was applied", (document.querySelector(".wh-preset-notice") || {}).textContent === T("wheel.preset_applied", { name: "Logitech G27" }),
+      (document.querySelector(".wh-preset-notice") || {}).textContent);
+    check("there is no 'Racing wheel in the game' switch", !document.querySelector("[data-setting=\"wheel-enabled\"]") && !document.querySelector(".wh-enabled"), "switch found");
+    var rotationTip = document.querySelector(".row[data-row=\"wheel-rotation\"] .info .tip");
+    check("the 900-degree advice is the Rotation row's tooltip", !!rotationTip && rotationTip.textContent.indexOf("900") >= 0, rotationTip ? rotationTip.textContent : "none");
 
     // The wheel turns at its real angle and the pedals show what the game gets.
     var turning = document.querySelector(".wheel-svg .wh-turning");
@@ -1871,11 +1881,34 @@
     await wait(200);
     check("A on a chip opens the bind overlay", !!document.querySelector(".modal.is-capture") && GT4.capturing === true, "capturing " + GT4.capturing);
     check("the overlay names the control", ((document.querySelector(".modal.is-capture h3") || {}).textContent || "").indexOf(T("wheel.control.cross")) >= 0, "title");
-    check("the bind footer shows only B Cancel", footerText() === "B" + T("common.cancel"), footerText());
+    check("the overlay says which game action it sets", ((document.querySelector(".cx-capture .wh-prompt") || {}).textContent || "") ===
+      T("wheel.prompt.button", { control: T("wheel.control.cross") }) &&
+      ((document.querySelector(".cx-capture-foot") || {}).textContent || "") === T("wheel.map_hint"),
+      (document.querySelector(".cx-capture .wh-prompt") || {}).textContent);
+    check("the bind footer offers B Cancel and Y Clear", footerText() === "B" + T("common.cancel") + "|" + "Y" + T("wheel.hint.clear"), footerText());
     press("Escape");
     await wait(200);
     check("Esc cancels the bind and closes the overlay", !document.querySelector(".modal.is-capture") && GT4.capturing === false, "capturing " + GT4.capturing);
     check("after a cancel, focus is back on the chip", wheelFocused() === "cross", "focus " + wheelFocused());
+
+    // TASK-189: one click on a control of the drawing opens the same popup; its Clear removes the control.
+    var crossChipNode = document.querySelector(".wh-item[data-control=\"cross\"] .chip-text");
+    if (crossChipNode) {
+      var box = crossChipNode.getBoundingClientRect();
+      crossChipNode.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }));
+      await wait(250);
+    }
+    check("one click on a chip opens the capture popup", !!document.querySelector(".modal.is-capture") && GT4.capturing === true, "capturing " + GT4.capturing);
+    var clearInPopup = Array.prototype.filter.call(document.querySelectorAll(".modal.is-capture .modal-actions button"), function (button) {
+      return button.textContent === T("wheel.clear");
+    })[0];
+    check("the popup offers Clear", !!clearInPopup, "no Clear");
+    if (clearInPopup) {
+      clearInPopup.click();
+      await wait(300);
+    }
+    check("Clear in the popup unbinds the control", (await wheelConfig()).buttons.cross.length === 0 && !document.querySelector(".modal.is-capture"),
+      JSON.stringify((await wheelConfig()).buttons.cross));
 
     // Y clears Cross; A binds it again (the mock answers button 1).
     GT4.hooks.y();
@@ -1923,6 +1956,9 @@
     }
     check("the force test reports the effects it found", ((document.querySelector(".wh-test-result") || {}).textContent || "").indexOf(T("wheel.effect.constant")) >= 0, (document.querySelector(".wh-test-result") || {}).textContent);
     check("the last game's force feedback reads Received", (document.querySelector(".wh-received-v") || {}).textContent === T("wheel.received.yes"), (document.querySelector(".wh-received-v") || {}).textContent);
+    check("the last game's line is shown when the game reported it", !!document.querySelector(".wh-received") && !document.querySelector(".wh-received").hidden, "hidden");
+    check("the force feedback result is one compact line", !!document.querySelector(".wh-test-result") &&
+      document.querySelector(".wh-test-result").className.indexOf("wh-test-result") === 0, document.querySelector(".wh-test-result") ? document.querySelector(".wh-test-result").className : "none");
 
     // The wizard, from the intro to the summary: every step answered by the mock, the wheel turned on at the end.
     await GT4.backend.call("set_wheel_setting", { key: "wheel.enabled", value: false });
@@ -1953,7 +1989,8 @@
       after.brake.source === "axis:3" && after.clutch.source === "axis:1" && JSON.stringify(after.buttons.r2) === "[\"btn:4\"]" &&
       JSON.stringify(after.buttons.dpad_left) === "[\"hat:0:left\"]", JSON.stringify(after.buttons));
     check("turning left read negative: the steering is not reversed", after.steering.invert === false, String(after.steering.invert));
-    check("the wizard turned the wheel on", after.enabled === true, String(after.enabled));
+    check("the wizard leaves the on/off to Play (no switch on the page)", after.enabled === false &&
+      !document.querySelector("[data-setting=\"wheel-enabled\"]"), String(after.enabled));
     var done = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) { return button.textContent === T("wheel.wizard.done"); })[0];
     if (done) {
       done.click();

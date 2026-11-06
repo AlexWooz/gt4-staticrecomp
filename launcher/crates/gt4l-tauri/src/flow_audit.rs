@@ -185,7 +185,7 @@ fn walk_pages(shared: &Shared, card: &Path) -> Vec<String> {
 
 /// What Play would run, without running it.
 fn play_plan(shared: &Shared, program_dir: &Path) -> Result<launch::LaunchPlan, String> {
-    let inputs = commands::prepare_play(shared, program_dir)?;
+    let inputs = commands::prepare_play(shared, program_dir, &json!({}))?;
     let session = inputs.dirs.session("session-plan-only");
     let card = inputs.dirs.runtime_card();
     let launch_inputs = LaunchInputs {
@@ -903,10 +903,10 @@ fn two_games_install_side_by_side_and_never_mix() {
     // Each game plays with its own program, ELF, disc and card (checked up to the GSdx step, which a test has none of).
     let program = stand_in_programs(&root, &["gt4.exe"]);
     commands::select_game_of("spec2".into(), &second).unwrap();
-    let missing = commands::prepare_play(&second, &program).map(|_| ()).unwrap_err();
+    let missing = commands::prepare_play(&second, &program, &json!({})).map(|_| ()).unwrap_err();
     assert!(missing.contains("Gran Turismo 4 Spec II") && missing.contains("missing"), "{missing}");
     stand_in_programs(&root, &["gt4-spec2.exe"]);
-    let refusal = commands::prepare_play(&second, &program).map(|_| ()).unwrap_err();
+    let refusal = commands::prepare_play(&second, &program, &json!({})).map(|_| ()).unwrap_err();
     assert!(refusal.starts_with("GSdx could not run the game"), "reaches the shared GSdx check: {refusal}");
 
     // Saves are apart: an import into Spec II is not in Gran Turismo 4, and the page names the game it shows.
@@ -1118,7 +1118,7 @@ fn retroachievements_options_and_launch_environment() {
 
     // 6. Prepare play for GT4
     commands::select_game_of("gt4".to_string(), &shared).unwrap();
-    let play_gt4 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for GT4");
+    let play_gt4 = commands::prepare_play(&shared, &program, &json!({})).expect("prepare play succeeds for GT4");
     assert_eq!(play_gt4.game.id, "gt4");
 
     let extra_map: std::collections::HashMap<_, _> = play_gt4.extra.clone().into_iter().collect();
@@ -1134,7 +1134,7 @@ fn retroachievements_options_and_launch_environment() {
 
     // 7. Switch to Spec II and prepare play: verify RA is disabled, credentials and hash are NOT sent
     commands::select_game_of("spec2".to_string(), &shared).unwrap();
-    let play_spec2 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for Spec II");
+    let play_spec2 = commands::prepare_play(&shared, &program, &json!({})).expect("prepare play succeeds for Spec II");
     assert_eq!(play_spec2.game.id, "spec2");
 
     let spec2_extra: std::collections::HashMap<_, _> = play_spec2.extra.clone().into_iter().collect();
@@ -2087,5 +2087,125 @@ fn a_refused_wheel_file_gets_one_copy_and_the_first_change_replaces_it() {
     let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads the new file");
     assert!(config.enabled);
     assert_eq!(crate::wheel_page::get_wheel_config_of(&shared)["file"]["state"], json!("loaded"));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// TASK-189: a wheel the launcher ships a preset for starts from it, and a wheel it does not know starts with nothing
+/// mapped (owner, 2026-11-06: no guessed controls). Both are checked the way the page reads them.
+#[test]
+fn a_g27_starts_from_the_shipped_preset_and_an_unknown_wheel_from_nothing() {
+    use crate::wheel_page;
+    const G27: &str = "030000006d0400009bc2000000000000";
+    const UNKNOWN: &str = "03000000341200007856000000000000";
+    let g27_status = json!({ "available": true, "primary": 1,
+        "devices": [{ "id": 1, "guid": G27, "name": "Logitech G27 Racing Wheel USB", "role": "wheel" }] });
+    let unknown_status = json!({ "available": true, "primary": 2,
+        "devices": [{ "id": 2, "guid": UNKNOWN, "name": "USB Racing Wheel", "role": "wheel" }] });
+
+    let root = scratch("wheel-preset");
+    let dirs = DataDirs::new(root.join("data"));
+    let pins = Pins::embedded().expect("embedded pins");
+    let shared = launch(&dirs, &pins);
+    assert!(!lock(&shared).wheel_path().exists());
+    let view = wheel_page::get_wheel_config_with(&shared, g27_status.clone(), false);
+    assert_eq!(view["file"]["state"], json!("loaded"), "the preset writes the file at once");
+    assert_eq!(view["applied_preset"], json!("Logitech G27"));
+    assert_eq!(view["config"]["preset"], json!("Logitech G27"));
+    assert_eq!(view["config"]["device_guid"], json!(G27));
+    assert_eq!(view["config"]["device_name"], json!("Logitech G27 Racing Wheel USB"));
+    assert_eq!(view["config"]["buttons"]["cross"], json!(["btn:17"]));
+    assert_eq!(view["config"]["buttons"]["r2"], json!(["btn:4"]));
+    assert_eq!(view["config"]["steering"]["source"], json!("axis:0"));
+    assert_eq!(view["config"]["enabled"], json!(false), "the preset never decides the wheel is on in the game");
+    let written = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(lock(&shared).wheel_path()).unwrap()).expect("the game reads the preset");
+    assert_eq!(written.preset, "Logitech G27");
+    assert!(written.validate().is_ok());
+    let log = fs::read_to_string(dirs.logs().join("launcher.log")).unwrap_or_default();
+    assert!(log.contains("wheel: preset Logitech G27 applied for Logitech G27 Racing Wheel USB"), "{log}");
+
+    // The player's own mapping is never replaced by the preset on the next read.
+    wheel_page::assign_wheel_binding_of("cross".into(), "btn:6".into(), None, false, &shared, g27_status.clone(), false).unwrap();
+    let again = wheel_page::get_wheel_config_with(&shared, g27_status.clone(), false);
+    assert_eq!(again["config"]["buttons"]["cross"], json!(["btn:6"]), "a saved mapping stays as the player left it");
+    assert_eq!(again["applied_preset"], json!(null), "nothing was applied the second time");
+
+    // Reset: everything unassigned and then the G27's own preset again, so a reset never leaves the wheel unusable.
+    let reset = wheel_page::reset_wheel_config_of(&shared, g27_status.clone(), false).unwrap();
+    assert_eq!(reset["config"]["buttons"]["cross"], json!(["btn:17"]), "reset goes back to the G27 preset");
+    assert_eq!(reset["config"]["throttle"]["source"], json!("axis:1"));
+    assert_eq!(reset["applied_preset"], json!("Logitech G27"));
+
+    // An unknown wheel: every control unassigned, nothing written.
+    let other_root = scratch("wheel-unknown");
+    let other_dirs = DataDirs::new(other_root.join("data"));
+    let other = launch(&other_dirs, &pins);
+    let view = wheel_page::get_wheel_config_with(&other, unknown_status, false);
+    assert_eq!(view["file"]["state"], json!("missing"));
+    assert_eq!(view["applied_preset"], json!(null));
+    assert_eq!(view["config"]["steering"]["source"], json!(""));
+    assert_eq!(view["config"]["throttle"]["source"], json!(""));
+    assert_eq!(view["config"]["buttons"]["cross"], json!([]));
+    assert!(!lock(&other).wheel_path().exists(), "nothing is written until the player maps something");
+    let reset = wheel_page::reset_wheel_config_of(&other, json!({ "available": true, "devices": [{ "id": 2, "guid": UNKNOWN, "name": "USB Racing Wheel", "role": "wheel" }] }), false).unwrap();
+    assert_eq!(reset["config"]["steering"]["source"], json!(""), "a reset of a wheel with no preset is still nothing");
+    assert_eq!(reset["applied_preset"], json!(null));
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(other_root);
+}
+
+/// TASK-189: Play plugs the virtual Driving Force Pro in exactly when a wheel is connected, and the on/off value a
+/// 1.3.0-rc15 file stored (the removed "Racing wheel in the game" switch) is dropped and derived instead.
+#[test]
+fn play_switches_the_virtual_wheel_from_what_is_connected() {
+    use crate::wheel_page;
+    const G27: &str = "030000006d0400009bc2000000000000";
+    let connected = json!({ "available": true, "primary": 1,
+        "devices": [{ "id": 1, "guid": G27, "name": "Logitech G27 Racing Wheel USB", "role": "wheel" }] });
+    let unplugged = json!({ "available": true, "primary": null, "devices": [] });
+    let unknown = json!({ "available": false, "error": "starting", "devices": [] });
+
+    let root = scratch("wheel-play");
+    let dirs = DataDirs::new(root.join("data"));
+    let pins = Pins::embedded().expect("embedded pins");
+    let shared = launch(&dirs, &pins);
+    let wheel_path = lock(&shared).wheel_path();
+
+    // No wheel, no file: nothing is written and the game gets no wheel file.
+    wheel_page::prepare_for_play(&mut lock(&shared), &unplugged);
+    assert!(!wheel_path.exists());
+
+    // A G27: its preset, and the virtual wheel in the game.
+    wheel_page::prepare_for_play(&mut lock(&shared), &connected);
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads it");
+    assert!(config.enabled, "a connected wheel is in the game");
+    assert_eq!(config.preset, "Logitech G27");
+
+    // Unplugged: the same file, the virtual wheel out. The stored on/off is not a player setting any more.
+    wheel_page::prepare_for_play(&mut lock(&shared), &unplugged);
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads it");
+    assert!(!config.enabled);
+
+    // A 1.3.0-rc15 file that stored the switch on, with no wheel connected: the value is dropped at the next Start.
+    let mut legacy = gt4l_core::wheel::WheelConfig::default();
+    legacy.enabled = true;
+    legacy.save_atomic(&wheel_path).unwrap();
+    lock(&shared).wheel = legacy;
+    wheel_page::prepare_for_play(&mut lock(&shared), &unplugged);
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads it");
+    assert!(!config.enabled, "the old switch's value does not survive Play");
+
+    // And the other way: stored off, a wheel plugged in, the game gets the wheel.
+    lock(&shared).wheel.enabled = false;
+    wheel_page::prepare_for_play(&mut lock(&shared), &connected);
+    assert!(gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).unwrap().enabled);
+
+    // SDL3 without a device list decides nothing: the stored value is kept so a Start right at boot keeps the wheel.
+    wheel_page::prepare_for_play(&mut lock(&shared), &unknown);
+    assert!(gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).unwrap().enabled);
+
+    let log = fs::read_to_string(dirs.logs().join("launcher.log")).unwrap_or_default();
+    assert!(log.contains("wheel: virtual Driving Force Pro on for this Start (Logitech G27 Racing Wheel USB connected)"), "{log}");
+    assert!(log.contains("wheel: virtual Driving Force Pro off for this Start (no wheel connected)"), "{log}");
+    assert!(log.contains("wheel: the device list was not ready: the stored on/off is kept for this Start"), "{log}");
     let _ = fs::remove_dir_all(root);
 }

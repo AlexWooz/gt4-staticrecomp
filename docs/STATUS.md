@@ -31,6 +31,34 @@ harvested again at the next Play, so a save deleted by hand in `%APPDATA%` came 
   against their sources: 48 of 48 files equal by sha256 (24 installer payload files, 24 zip files, plus `PORTABLE.txt`), 20 of
   20 game files present. Draft only; no publish.
 
+## TASK-189: the Wheel page after the owner's G27 test (2026-11-06)
+
+On `task/189-wheel-page-polish` (from `release/1.3.0-rc15` at 110cacad). The owner tested the rc15 draft with his Logitech G27:
+the wheel drawing and the buttons are right and stay untouched; the rest of the page follows his list.
+
+- **One action to map.** A click on a control of the drawing (or its Map button, or A on the pad) opens a small capture popup
+  named for the control, which waits for the button, the axis or the pedal, offers Clear in the same popup, and closes on Esc,
+  B or Cancel. A click on the empty drawing only selects. The two-click "click, then Atribuir" flow is gone.
+- **No guessed mapping.** A wheel the launcher has no preset for starts with every control unassigned (`WheelConfig::unassigned`
+  on a missing or refused file and on reset; `wheel_identity::template("generic")` no longer pre-fills axis 0 and the D-pad).
+  The game's own file-format fallback (`WheelConfig::default`, `native/wheel.cpp`) is untouched.
+- **The shipped G27 preset** (`crates/gt4l-core/assets/wheel-presets/logitech-g27.toml`, the owner's own mapping, listed by USB
+  IDs in `wheel_identity::BUILTIN_PRESETS` for `046D:C29B`) applies by itself when a G27 is detected and there is no `wheel.toml`
+  yet, both at the page and at Play, and the page says which preset was applied. Another wheel gets one by adding a table entry.
+- **The "Your wheel" card is gone**; the 900-degree advice is the Rotation row's tooltip and the badge reads "Connected"
+  without the USB ID. What remains is compact and conditional: the wheel the game uses when several are connected, and the mode
+  warnings.
+- **The force feedback card is tidy** (one compact result line under Test force; the "in the last game" row only when the game
+  reported it), checked at 1366x768 and 1920x1080 (`build/evidence/t189/`).
+- **No on/off switch.** `prepare_play` calls `wheel_page::prepare_for_play`: the virtual DFP is in the game exactly when the wheel
+  status lists a wheel and out when none is; the file is written and the decision logged. An SDL3 status without a device list
+  keeps the stored value. The `[wheel] enabled` stored by a 1.3.0-rc15 file is no longer a player setting (derived at Play).
+
+Tests: `cargo test --workspace` green except `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`, which fails
+only while a game process runs on the machine (`gt4vulkan.exe` was open; the log line is "large data: not moved now (Gran
+Turismo 4 is running)") and is unrelated. Focus checks en-US 368/368 and pt-BR 375/375, nav-test 260/260, locale keys 913 in
+both. Owner test of the next rc15 build pending.
+
 ## TASK-186: the Performance Mode becomes individual effect toggles on PC (2026-11-06)
 
 On `task/186-effect-toggles-pc` (from `release/1.3.0-rc15` at bdc68efd), the split TASK-180 test5 made for Android, with the

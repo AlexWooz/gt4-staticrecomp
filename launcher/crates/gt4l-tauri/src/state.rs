@@ -89,6 +89,9 @@ pub struct AppState {
     pub wheel_load: LoadState,
     /// True when `wheel.toml` was written by a newer launcher: it is kept as it is (never overwritten).
     pub wheel_locked: bool,
+    /// TASK-189: the shipped preset the launcher applied by itself (its name), so the page can say so plainly. Cleared by
+    /// a reset or by loading another preset.
+    pub wheel_applied_preset: Option<String>,
     /// The connected wheels for `system.txt`, kept up to date by the pad service.
     pub wheel_facts: Vec<WheelFact>,
     /// Discord Rich Presence manager for the current launcher session.
@@ -289,6 +292,7 @@ impl AppState {
             controls_locked,
             ra_revision: 0,
             wheel_locked: matches!(wheel_load, LoadState::Newer(_)),
+            wheel_applied_preset: None,
             wheel: wheel_config,
             wheel_load,
             wheel_facts: Vec::new(),

@@ -1125,16 +1125,17 @@
   function wheelPedal(source, deadzone, saturation) {
     return { source: source, mode: "inverted", deadzone: deadzone, saturation: saturation, curve: "linear" };
   }
-  function wheelDefaults() {
+  // TASK-189: the mapping the launcher starts from with no preset for the wheel: nothing is guessed, so every control is
+  // empty and the player maps each one. The calibration numbers are the launcher's defaults.
+  function wheelUnassigned() {
     return {
       version: 1, enabled: false, device_guid: "", device_name: "", preset: "generic",
-      steering: { source: "axis:0", rotation_degrees: 900, invert: false },
-      throttle: wheelPedal("axis:1", 0.02, 0.98), brake: wheelPedal("axis:2", 0.02, 0.98),
-      handbrake: wheelPedal("", 0.05, 0.95), clutch: wheelPedal("axis:3", 0.05, 0.95),
+      steering: { source: "", rotation_degrees: 900, invert: false },
+      throttle: wheelPedal("", 0.02, 0.98), brake: wheelPedal("", 0.02, 0.98),
+      handbrake: wheelPedal("", 0.05, 0.95), clutch: wheelPedal("", 0.05, 0.95),
       ffb: { enabled: true, strength: 1, damper: 0.15, invert: false },
-      buttons: { dpad_up: ["hat:0:up"], dpad_right: ["hat:0:right"], dpad_down: ["hat:0:down"], dpad_left: ["hat:0:left"],
-        cross: ["btn:0"], circle: ["btn:2"], square: ["btn:1"], triangle: ["btn:3"], l1: ["btn:7"], r1: ["btn:6"],
-        l2: ["btn:5"], r2: ["btn:4"], l3: ["btn:10"], r3: ["btn:11"], select: ["btn:8"], start: ["btn:9"] }
+      buttons: { dpad_up: [], dpad_right: [], dpad_down: [], dpad_left: [], cross: [], circle: [], square: [], triangle: [],
+        l1: [], r1: [], l2: [], r2: [], l3: [], r3: [], select: [], start: [] }
     };
   }
   // The capture answers of the mock (a G27-like layout: Z throttle, Rz brake, Y clutch; sample indices).
@@ -1147,21 +1148,39 @@
     select: "btn:8", start: "btn:9", r3: "btn:10", l3: "btn:11",
     dpad_up: "hat:0:up", dpad_right: "hat:0:right", dpad_down: "hat:0:down", dpad_left: "hat:0:left"
   };
-  function wheelG27Config() {
-    var config = wheelDefaults();
-    config.enabled = true;
+  // TASK-189: the preset the launcher ships for the G27 (the owner's own mapping, 046D:C29B), the same numbers as
+  // crates/gt4l-core/assets/wheel-presets/logitech-g27.toml.
+  function wheelG27Preset() {
+    var config = wheelUnassigned();
     config.device_guid = WHEEL_G27;
     config.device_name = "Logitech G27 Racing Wheel USB";
-    config.preset = "logitech_legacy";
-    config.throttle.source = "axis:2";
-    config.brake.source = "axis:3";
-    config.clutch.source = "axis:1";
-    config.ffb.strength = 0.8;
-    WHEEL_SLOTS.forEach(function (slot) { config.buttons[slot.id] = [WHEEL_CAPTURES[slot.id]]; });
+    config.preset = "Logitech G27";
+    config.steering.source = "axis:0";
+    config.throttle.source = "axis:1";
+    config.brake.source = "axis:2";
+    config.clutch.source = "axis:4";
+    config.buttons.dpad_up = ["hat:0:up"];
+    config.buttons.dpad_right = ["hat:0:right"];
+    config.buttons.dpad_down = ["hat:0:down"];
+    config.buttons.dpad_left = ["hat:0:left"];
+    config.buttons.square = ["btn:16"];
+    config.buttons.cross = ["btn:17"];
+    config.buttons.circle = ["btn:18"];
+    config.buttons.triangle = ["btn:15"];
+    config.buttons.r1 = ["btn:19"];
+    config.buttons.l1 = ["btn:20"];
+    config.buttons.r3 = ["btn:21"];
+    config.buttons.l3 = ["btn:22"];
+    config.buttons.select = ["btn:7"];
+    config.buttons.start = ["btn:6"];
+    config.buttons.r2 = ["btn:4"];
+    config.buttons.l2 = ["btn:5"];
     return config;
   }
-  var wheelConfig = query.get("wheelcfg") === "fresh" ? wheelDefaults() : wheelG27Config();
+  var wheelConfig = query.get("wheelcfg") === "fresh" ? wheelUnassigned() : wheelG27Preset();
   var wheelFileState = query.get("wheelcfg") === "fresh" ? "missing" : (query.get("wheelfile") || "loaded");
+  // TASK-189: the preset the launcher applied by itself (the G27 with no mapping of its own), or "".
+  var wheelApplied = query.get("wheelcfg") === "fresh" ? "" : "Logitech G27";
   var wheelWatching = false;
   var wheelFeatures = null;
   var wheelPresets = query.get("presets") === "1"
@@ -1206,9 +1225,37 @@
       configured_connected: !!wheelConfig.device_guid && devices.some(function (device) { return device.guid === wheelConfig.device_guid; }),
       devices: devices };
   }
+  // TASK-189: a wheel the launcher ships a preset for (the G27) starts from it when the player has no mapping of their
+  // own; `?wheelpreset=0` shows the rule switched off (the unassigned case).
+  function wheelAutoPreset() {
+    if (query.get("wheelpreset") === "0" || wheelFileState !== "missing") {
+      return;
+    }
+    var g27 = wheelDevices().filter(function (device) { return device.guid === WHEEL_G27; })[0];
+    if (!g27) {
+      return;
+    }
+    wheelConfig = wheelG27Preset();
+    wheelFileState = "loaded";
+    wheelApplied = "Logitech G27";
+  }
+  // TASK-189: Reset gives the shipped preset back (the launcher does the same), or nothing when it has none for the wheel.
+  function wheelResetPreset() {
+    if (query.get("wheelpreset") === "0") {
+      return;
+    }
+    var g27 = wheelDevices().filter(function (device) { return device.guid === WHEEL_G27; })[0];
+    if (!g27) {
+      return;
+    }
+    wheelConfig = wheelG27Preset();
+    wheelApplied = "Logitech G27";
+  }
   function wheelView(taken) {
+    wheelAutoPreset();
     return {
       config: JSON.parse(JSON.stringify(wheelConfig)),
+      applied_preset: wheelApplied || null,
       slots: WHEEL_SLOTS,
       families: WHEEL_FAMILIES,
       pedal_modes: ["inverted", "normal", "positive", "combined_negative", "combined_positive"],
@@ -1221,11 +1268,18 @@
       taken_from: taken || []
     };
   }
+  // TASK-189: the generic family is a wheel the launcher does not know: it starts with nothing mapped.
   function wheelTemplate(family) {
-    var config = wheelDefaults();
+    var config = wheelUnassigned();
     config.preset = family;
-    ["throttle", "brake", "clutch", "handbrake"].forEach(function (id) { config[id].source = ""; });
-    Object.keys(config.buttons).forEach(function (slot) { config.buttons[slot] = slot.indexOf("dpad_") === 0 ? config.buttons[slot] : []; });
+    if (family === "generic") {
+      return config;
+    }
+    config.steering.source = "axis:0";
+    config.buttons.dpad_up = ["hat:0:up"];
+    config.buttons.dpad_right = ["hat:0:right"];
+    config.buttons.dpad_down = ["hat:0:down"];
+    config.buttons.dpad_left = ["hat:0:left"];
     if (family === "logitech_ps") {
       [["cross", 0], ["square", 1], ["circle", 2], ["triangle", 3], ["r2", 4], ["l2", 5], ["r1", 6], ["l1", 7], ["select", 8],
         ["start", 9], ["r3", 10], ["l3", 11]].forEach(function (pair) { config.buttons[pair[0]] = ["btn:" + pair[1]]; });
@@ -1234,6 +1288,7 @@
   }
   function wheelSaved() {
     wheelFileState = wheelFileState === "newer" ? "newer" : "loaded";
+    wheelApplied = "";
   }
   function wheelSet(key, value) {
     if (wheelFileState === "newer") {
@@ -1333,7 +1388,8 @@
     var pressed = (query.get("wbtn") || "").split(",").filter(Boolean).map(Number);
     var devices = [];
     if (wheelParam === "g27" || wheelParam === "both") {
-      devices.push({ id: 11, guid: WHEEL_G27, axes: [steerRaw, inverted(pedal("clu", 2.1)), inverted(pedal("thr", 0)), inverted(pedal("brk", 3.3))],
+      // The G27 layout of the shipped preset (TASK-189): 0 the wheel, 1 the accelerator, 2 the brake, 4 the clutch.
+      devices.push({ id: 11, guid: WHEEL_G27, axes: [steerRaw, inverted(pedal("thr", 0)), inverted(pedal("brk", 3.3)), 0, inverted(pedal("clu", 2.1))],
         pressed: pressed, hats: [Number(query.get("what") || 0)] });
     }
     if (wheelParam === "unknown" || wheelParam === "both") {
@@ -1410,8 +1466,10 @@
         }
         return wheelView();
       case "reset_wheel_config":
-        wheelConfig = wheelDefaults();
-        wheelSaved();
+        wheelConfig = wheelUnassigned();
+        wheelFileState = "loaded";
+        wheelApplied = "";
+        wheelResetPreset();
         return wheelView();
       case "capture_wheel_binding":
         return wheelCapture(args);

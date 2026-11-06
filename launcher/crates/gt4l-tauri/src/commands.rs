@@ -33,6 +33,7 @@ use crate::saves::{self, Item};
 use gt4saves::Library;
 use crate::state::{self, lock, AppState, SetupOutcome, Shared};
 use crate::webview_guard;
+use crate::wheel_page;
 
 /// `app_state()` (ui/dev/README.md):
 /// `{setup: {state, step, progress, bytes_done, bytes_total, renderer_step, disc_name, problem, note}, game_running,
@@ -393,9 +394,10 @@ pub struct PlayInputs {
     pub api: String,
 }
 
-/// The checks of Play before anything starts. `program_dir` is the folder of `GT4Recomp.exe`.
-pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, String> {
-    let state = lock(shared);
+/// The checks of Play before anything starts. `program_dir` is the folder of `GT4Recomp.exe`. `wheel` is the pad
+/// service's last `wheel-status` payload: it decides whether the virtual Driving Force Pro is in the game (TASK-189).
+pub fn prepare_play(shared: &Shared, program_dir: &Path, wheel: &Value) -> Result<PlayInputs, String> {
+    let mut state = lock(shared);
     let language = state::language_of(&state);
     if state.game_child.is_some() {
         return Err(messages::text("game.already_running", language).into());
@@ -426,7 +428,10 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
     }
-    // TASK-181: the racing wheel file (the game's virtual Driving Force Pro), only when it exists.
+    // TASK-181, TASK-189: the racing wheel file (the game's virtual Driving Force Pro). Play writes what the wheel
+    // detected now means (the shipped preset for it, and whether the virtual wheel is plugged in), then passes the file
+    // when it exists.
+    wheel_page::prepare_for_play(&mut state, wheel);
     let wheel_path = state.wheel_path();
     if wheel_path.exists() {
         extra.push(("GT4_WHEEL_FILE".into(), wheel_path.display().to_string()));
@@ -539,7 +544,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         state.home_message = problem.clone();
         return Err(problem);
     }
-    let inputs = prepare_play(&shared, &program_directory()).inspect_err(|message| {
+    // TASK-189: the wheels connected now, before the launcher closes its SDL handles for the game.
+    let wheel_status = app.try_state::<pad_service::Handle>().map(|pads| pads.inner().wheel_status()).unwrap_or_default();
+    let inputs = prepare_play(&shared, &program_directory(), &wheel_status).inspect_err(|message| {
         lock(&shared).home_message = message.clone();
     })?;
     let PlayInputs { game, dirs, disc, elf, executable, settings, pcsx2, display, extra, graphics_notice, api } = inputs;
