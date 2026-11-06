@@ -195,7 +195,7 @@ renderer builds the strips from the table and lets its rasteriser cull.
 **Mapping every draw (C).** The tap now covers the whole car pass: the worker emits a job's GIF about two VBlanks after
 the packets were posted (measured: source records at VBlank 7398, GIF records at 7400), so a tap window that stops at the
 frame's own VBlank misses the tail (59 of 116 draws had a source record and no GIF record). With the window widened to
-7394-7404 and the frame selected by the **source record's VBlank**, every draw maps: an item finds its GIF record by
+7398-7405 and the frame selected by the **source record's VBlank**, every draw maps: an item finds its GIF record by
 vertex count, and when several records share a count the item's own strip table decides (the record whose strip starts
 are ADC wins). A job can carry several draws and a draw can span several jobs; both cases are covered by the per-item
 mapping. The gate also fits the model positions to the tapped screen positions (G-TAP affine fit): 111 of the 116 slices
