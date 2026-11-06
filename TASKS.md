@@ -3741,6 +3741,28 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-200: GSdx on PC: fractional render scales and OpenGL, with a new gt4-gs build (owner, 2026-11-06; planned for rc16)
+
+The Android GSdx (ARMSX2) offers fractional render scales (1.25x, 1.5x, 1.75x, 2.5x). The PC GSdx (gt4-gs) should offer
+them too. The main reason for the gt4-gs rebuild is OpenGL, which is still missing from the launcher.
+- **Map first (a PCSX2-tainted agent, in prose):**
+  - does gt4-gs, built from the fork `moesuito/gt4recomp-gs`, already accept a fractional upscale multiplier?
+  - or does only the launcher limit it to whole numbers?
+  - what must change in the fork for each fractional value?
+- **New gt4-gs build:**
+  - from the fork, with the fractional scales, and OpenGL allowed (`Renderer = 12`; this takes over part 3 of
+    TASK-107);
+  - allow-list and SHA256SUMS in the fork;
+  - a new launcher pin.
+- **Launcher:**
+  - the fractional scales in the GSdx Resolution list, in both languages;
+  - the OpenGL entry in the Graphics API list (the "older PCs" group of TASK-103), with `docs/launcher/gs-settings.toml`;
+  - migration for stored values.
+- **Gates:**
+  - every scale and OpenGL draw the reference scenes (night race, replay, menus) with no crash;
+  - per scale, the final frames are compared with the nearest whole scale;
+  - no GPL code enters the game executable: gt4-gs stays a separate process (decision 0070).
+
 ### TASK-196: 4:3 screens and the aspect rule taken from the display (owner, 2026-11-06; planned)
 
 Some players use 4:3 monitors (Discord, YouTube). This is not a new graphics option: the ratio follows the screen
@@ -4302,3 +4324,40 @@ orchestrator publishes.
    now normalises exactly like `WheelConfig::set_setting`.
 7. **Not done:** the GitHub release (the orchestrator's step); no in-game play test of this build (the owner's test of the
    rc15 line is the confirmation).
+
+### TASK-199: info cards (tooltips) draw above everything (owner, 2026-11-06; for the rc15 test build)
+
+**Why.** The owner sent a phone screenshot from Settings > Graphics: with the info card of "Reflexo do sol e flares das
+luzes" open, the next row's textures-folder line drew straight through the card, and the row's own value ("Ligado") sat
+over its right edge. "Verifica em todos os locais que pode ter isso e corrija, sem build nova só pra isso."
+
+**Cause.** `.enter-item` (the 180 ms fade and rise of a tab's rows, `settings.js enterAnimation`) keeps its final state
+(`animation-fill-mode: both`), so every row keeps a `transform: matrix(1, 0, 0, 1, 0, 0)`, and any transform makes the
+row its own stacking context. The card was a child of the row's "i" with `z-index: 20`, which only ordered it inside its
+own row: every row after it was painted later, over the card.
+
+**What.** The card is drawn in a top layer instead of inside the row. `ui.js` moves the open card into `.popover-layer`
+(a `position: fixed` container on the `body`, `z-index: 20`: above the page, under a dialog, the migration bar and the
+toast), places it from its "i" (right and 8 px up, as before; to the left near the right edge, up near the bottom) and
+keeps it inside the window through `resize` and `scroll`; the CSS caps its width and height to the viewport and lets it
+scroll inside. The card goes back under its "i" when it closes, so nothing else about the markup changes: `ui.js` keeps
+`.is-shown` in step with the two old CSS rules (`.info.is-open`, and focus in the keys or pad mode), and B, a second
+click, a tap outside and a tap on the card close it as before. One path covers every "i" of every page (Settings,
+Controls, Wheel, Achievements) and the cards of the header rows. A card left open while its row goes away (tab change) is
+removed. The card gained a soft shadow so it reads as floating over content.
+
+**Checks.** `dev/focus-check.js` grew `tipLayerChecks` (17 checks): the owner's row and the textures line under it are the
+first case, plus the first row, a middle row, the last row with the window scrolled to the end, the Controls and Wheel
+header cards, all with `document.elementFromPoint` at the centre and the four corners of the card and inside the window;
+the layer itself, a second click, a tap outside, a tap on the card, and keys/pad focus showing the card. Measured: 411 of
+413 en-US and 418 of 420 pt-BR (the two failures are the pre-existing Centring spring checks of TASK-194, identical on the
+branch before this change: 394/396 and 401/403), nav-test 265/265, launcher `cargo test --workspace` 714 passed, 9 ignored
+(one failure, `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`, in the 1.2.x data migration and
+unrelated to the UI). The same `elementFromPoint` assertions were run over every page with an "i" (42 cards: General 5,
+Graphics 17, Controls 9, Wheel 8, Achievements 3; About, Games, Saves and Replays have none) and at 1366x768, 2400x1080,
+1080x2400 and 420x900, with the screenshots inspected as well: no card is covered and none leaves the window. A dialog
+(modal, z-index 30) still paints above a card, and opening one closes it through the pointerdown path.
+Evidence in `build/evidence/t199/` (before and after screenshots).
+
+**State (2026-11-06):** done, branch `task/199-tooltip-layer`, pushed, no PR, no release. UI only
+(`launcher/crates/gt4l-tauri/ui`), so the same commit can be applied to the Android branch.
