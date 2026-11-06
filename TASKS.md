@@ -3741,6 +3741,23 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-195: Cloud saves and cloud replays through the player's own Google Drive (owner, 2026-11-06; planned)
+
+The owner's full specification, in Portuguese, is `docs/tasks/TASK-195-cloud-saves-replays.pt-BR.md`.
+
+**Summary:**
+- Opt-in sync of saves and replays to the player's own Google Drive app-data folder (`drive.appdata` scope, invisible in
+  My Drive). There is no project server, and offline play is fully preserved.
+- OAuth through Google's official flow; the launcher never sees the password.
+- Sync while playing, at each completed in-game save, at a safe point found in the real save path (not file watching).
+  It runs asynchronously, with retries.
+- Steam-Cloud-like conflict handling: never "newest wins" on divergence; both copies are kept and resolved on screen.
+  v2.00 and Spec II are never mixed.
+- Cloud replays can be turned on separately, with usage shown and selective cleanup. Public sharing is out of scope.
+- PC and Android, then other platforms. The maintainer sets up the Google Cloud project.
+
+Study the real save and replay paths before designing.
+
 ### TASK-191: a small GT4Recomp website on Netlify (owner idea, 2026-11-06; planned)
 
 A simple project site, linked from the GitHub repository:
