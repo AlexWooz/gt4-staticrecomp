@@ -1,8 +1,9 @@
 # GT4Recomp racing wheel: the virtual Logitech Driving Force Pro (TASK-018, TASK-181). Written by the launcher.
 # TASK-189: the preset the launcher ships for the Logitech G27 (USB 046D:C29B). The owner mapped it on his own G27
 # (2026-11-06, the 1.3.0-rc15 test): the wheel on axis 0, the pedals on axes 1..3, the D-pad on hat 0, the face buttons,
-# the paddles (gear up = the right paddle, gear down = the left paddle) and the force feedback at full strength with a
-# light damping. It is applied by itself when a G27 is connected and the player has no mapping of their own.
+# the paddles (gear up = the right paddle, gear down = the left paddle) and the force feedback at full strength with no
+# damping (TASK-194: the game sends no damper in a race, as PCSX2 applies none). It is applied by itself when a G27 is
+# connected and the player has no mapping of their own.
 # The [buttons] keys keep the DualShock 2 names of the 1.2.x files. What each one presses on the Driving Force Pro:
 #   cross, circle, square, triangle -> Cross, Circle, Square, Triangle
 #   r2 -> gear up (DFP R1, the right paddle)    l2 -> gear down (DFP L1, the left paddle)
@@ -55,7 +56,7 @@ curve = "linear"
 [ffb]
 enabled = true
 strength = 1.000
-damper = 0.150
+damper = 0.000
 invert = false
 
 [buttons]

@@ -357,7 +357,7 @@ pub fn template(family_id: &str) -> Option<WheelConfig> {
     }
     config.ffb.enabled = family.force_feedback;
     config.ffb.strength = if family.direct_drive { 0.6 } else { 1.0 };
-    config.ffb.damper = 0.15;
+    config.ffb.damper = 0.0;
     config.ffb.invert = false;
     Some(config)
 }
@@ -517,7 +517,8 @@ mod tests {
         assert_eq!(config.buttons["r3"], vec!["btn:21"]);
         assert_eq!(config.buttons["l3"], vec!["btn:22"]);
         assert_eq!(config.buttons["dpad_left"], vec!["hat:0:left"]);
-        assert_eq!((config.ffb.strength, config.ffb.damper), (1.0, 0.15));
+        assert_eq!((config.ffb.strength, config.ffb.damper), (1.0, 0.0), "no damping: the game sends none in a race");
+        assert!(!config.ffb.centering_spring, "the game's centring spring stays off");
         assert_eq!(builtin_preset_by_name("Logitech G27").map(|one| one.product), Some(0xC29B));
         assert!(builtin_preset_by_name("G27").is_none());
     }

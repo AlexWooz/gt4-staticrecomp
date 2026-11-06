@@ -59,10 +59,12 @@ carries `wheel_file=<path>` for a direct start of the game executable. Without t
 - `[throttle]`, `[brake]`: source, polarity mode, dead zone, saturation, curve. `[handbrake]` presses Circle past half
   travel. `[clutch]` is only for the launcher's live view: the DFP has no clutch.
 - `[ffb] enabled`, `strength` (0..2, scales the game's forces), `damper` (0..1, a damping floor the wheel always has, not
-  scaled by strength), `invert` (reverses the game's constant force), and `centering_spring` (`"off"` by default, or
-  `"game"`; TASK-192). `off` plays neither the game's spring effects (GT4's menu centring spring, type `0B`) nor the DFP's
-  default spring; `game` plays both (the behaviour up to rc15). The racing force, the damper, the friction and GT4's own
-  force feedback strength setting are not affected. Why it defaults to off: see `docs/decisions/0077-centering-spring-off.md`.
+  scaled by strength; **0 by default** since TASK-194, as PCSX2 applies no damper and GT4 sends none in a race),
+  `invert` (reverses the game's constant force), and `centering_spring` (`"off"` by default, or `"game"`; TASK-192,
+  TASK-194). `off` plays no spring at all; `game` plays GT4's own spring effects (its menu spring, type `0B`) while the game
+  asks for them. There is **no DFP default spring**: the "default spring on" command (`F4`) is ignored, as PCSX2 ignores it,
+  and `F5` and the "set default spring" command are harmless. The racing force, the friction and GT4's own force feedback
+  strength setting are not affected. Why `centering_spring` defaults to off: see `docs/decisions/0077-centering-spring-off.md`.
 - `[buttons]` keeps the DualShock 2 slot names of the 1.2.x files, so those files keep their meaning:
 
   | Slot | DFP control |
@@ -101,11 +103,22 @@ forces on the emulation thread instead of the haptics thread (A/B); `GT4_DFP_TES
     left of the range, 0x80 at the centre, 0xCA at the right): GT4's self-aligning torque, sent as a constant force.
 - **The centring spring is off by default** (`[ffb] centering_spring = "off"`, TASK-192): GT4's own spring is a centring force
   and on the owner's G27 it read as a slow pull to the centre that never stopped ("from the moment the game opens"). `game`
-  plays it as before. The DFP default spring is covered by the same key.
-- **One owner:** `DfpHapticThread` opens the haptic device from the wheel's joystick, creates the four persistent effects
-  (constant, spring, damper, friction, where supported) and is the only code that touches the device. The emulation thread
-  only stores the latest force set (every game force command) and wakes it, so a slow wheel driver never stalls the game; a
-  force set the thread has not reached yet is replaced by the newer one.
+  plays it; with the default `off` no spring effect is even created.
+- **PCSX2's behaviour (TASK-194).** The owner's reference is PCSX2, which does not pull the wheel to the centre in a race,
+  and the four differences it showed are gone:
+  - the DFP "default spring on" command (`F4`) does nothing and no default spring is ever played; a USB reset (the decoder's
+    `reset`) leaves no force behind, so it cannot bring one back either;
+  - a spring stop (`23 0B`) clears the slot, and a plan with no spring **stops** the SDL spring effect (`SDL_StopHapticEffect`)
+    instead of sending a zero-saturation spring. The decoder keeps each slot's effect type and the order of its last download,
+    so a spring downloaded on another slot replaces the old parameters (one host spring, as in PCSX2) rather than the first
+    active slot's values staying on the wheel;
+  - friction keeps the two coefficient bytes apart: `21 0E 80 FF 20` is 0.5 on the left, 1.0 on the right and a 0.125 clip
+    (it used to take the max of the two, doubling the left side);
+  - the damper floor is 0 by default and the damper effect exists only when the game sends one or the player sets a floor.
+- **One owner:** `DfpHapticThread` opens the haptic device from the wheel's joystick, creates each effect on its first use
+  (constant always while focused, spring/damper/friction only when the game asks for one, where supported) and is the only
+  code that touches the device. The emulation thread only stores the latest force set (every game force command) and wakes
+  it, so a slow wheel driver never stalls the game; a force set the thread has not reached yet is replaced by the newer one.
 - **Only what changed:** an effect is sent only when its parameters change. While racing that is the constant force alone
   (at most one call per game command), instead of four `SDL_UpdateHapticEffect` calls per command (about 400 a second).
 - **Stop once:** focus loss stops the effects once (`stop_all`, gain 0), however often VBlank or the window ask; focus

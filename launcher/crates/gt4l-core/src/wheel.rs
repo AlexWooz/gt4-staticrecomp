@@ -108,10 +108,15 @@ pub struct FfbConfig {
     pub enabled: bool,
     /// 0.0..2.0, scales the game's forces.
     pub strength: f64,
-    /// 0.0..1.0, the damping the wheel always has (not scaled by `strength`).
+    /// 0.0..1.0, the damping the wheel always has (not scaled by `strength`). 0 by default: the game sends no damper in a
+    /// race and a floor was damping the wheel when the game asked for none (TASK-194).
     pub damper: f64,
     /// Reverses the game's constant force.
     pub invert: bool,
+    /// The game's own centring spring effects (GT4's menu spring). `false` (the default) plays neither them nor any default
+    /// spring; `true` is `centering_spring = "game"` (TASK-192, TASK-194). The racing force, the damper and the friction are
+    /// not affected.
+    pub centering_spring: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -178,7 +183,7 @@ impl Default for WheelConfig {
             brake: pedal("axis:2", 0.02, 0.98),
             handbrake: pedal("", 0.05, 0.95),
             clutch: pedal("axis:3", 0.05, 0.95),
-            ffb: FfbConfig { enabled: true, strength: 1.0, damper: 0.15, invert: false },
+            ffb: FfbConfig { enabled: true, strength: 1.0, damper: 0.0, invert: false, centering_spring: false },
             buttons: default_buttons(),
         }
     }
@@ -642,8 +647,33 @@ impl WheelConfig {
                         config.ffb.damper = damper;
                     }
                     "invert" => config.ffb.invert = parse_bool(value).map_err(at)?,
+                    // TASK-194: the game's centring spring. "off" (the default) plays no spring at all; "game" plays GT4's
+                    // own menu spring. A 1.2.x amount or boolean still parses: nonzero means "game". Both spellings.
+                    "centering_spring" | "centring_spring" => {
+                        let token = trim(value);
+                        if token.starts_with('"') {
+                            config.ffb.centering_spring = match unquote(token).map_err(at)? {
+                                "off" => false,
+                                "game" => true,
+                                other => {
+                                    return Err(at(format!(
+                                        "ffb centering_spring must be \"off\" or \"game\" (got \"{other}\")"
+                                    )))
+                                }
+                            };
+                        } else if token == "true" || token == "false" {
+                            config.ffb.centering_spring = token == "true";
+                        } else if let Some(amount) = parse_number(token) {
+                            if !(0.0..=1.0).contains(&amount) {
+                                return Err(at("ffb centering_spring must be \"off\" or \"game\"".into()));
+                            }
+                            config.ffb.centering_spring = amount > 0.0;
+                        } else {
+                            return Err(at("ffb centering_spring must be \"off\" or \"game\"".into()));
+                        }
+                    }
                     // The pad bridge's rumble shaping; the game's own forces replace it. Ignored, value unread.
-                    "centering_spring" | "curb_rumble" => notes.legacy_keys.push(format!("ffb.{key}")),
+                    "curb_rumble" => notes.legacy_keys.push(format!("ffb.{key}")),
                     other => return Err(at(format!("unknown [ffb] key '{other}'"))),
                 },
                 "buttons" => {
@@ -790,7 +820,11 @@ impl WheelConfig {
         out.push_str(&format!("enabled = {}\n", self.ffb.enabled));
         out.push_str(&format!("strength = {:.3}\n", round3(self.ffb.strength)));
         out.push_str(&format!("damper = {:.3}\n", round3(self.ffb.damper)));
-        out.push_str(&format!("invert = {}\n\n", self.ffb.invert));
+        out.push_str(&format!("invert = {}\n", self.ffb.invert));
+        out.push_str(&format!(
+            "centering_spring = \"{}\"\n\n",
+            if self.ffb.centering_spring { "game" } else { "off" }
+        ));
         out.push_str("[buttons]\n");
         for slot in BUTTON_SLOTS {
             let sources = self.buttons.get(slot.id).cloned().unwrap_or_default();
@@ -827,8 +861,8 @@ impl WheelConfig {
 
     /// Changes one setting. `key` is `section.field`: `wheel.enabled`, `wheel.device_guid`, `wheel.device_name`,
     /// `wheel.preset`, `steering.rotation_degrees`, `steering.invert`, `<pedal>.mode|deadzone|saturation|curve`,
-    /// `ffb.enabled|strength|damper|invert`. Sources change through [`assign_binding`]. A pedal's dead zone and
-    /// saturation move each other to stay 0.05 apart. The result is validated.
+    /// `ffb.enabled|strength|damper|invert|centering_spring`. Sources change through [`assign_binding`]. A pedal's dead
+    /// zone and saturation move each other to stay 0.05 apart. The result is validated.
     ///
     /// [`assign_binding`]: WheelConfig::assign_binding
     pub fn set_setting(&mut self, key: &str, value: &serde_json::Value) -> Result<(), String> {
@@ -853,6 +887,22 @@ impl WheelConfig {
             "ffb.strength" => next.ffb.strength = round3(as_number()?),
             "ffb.damper" => next.ffb.damper = round3(as_number()?),
             "ffb.invert" => next.ffb.invert = as_bool()?,
+            // The page sends "off" or "game"; a boolean is accepted too, so an older caller keeps working.
+            "ffb.centering_spring" => {
+                next.ffb.centering_spring = match value {
+                    serde_json::Value::Bool(flag) => *flag,
+                    serde_json::Value::String(text) => match text.as_str() {
+                        "off" => false,
+                        "game" => true,
+                        other => {
+                            return Err(format!(
+                                "expected \"off\" or \"game\" for {key} (got \"{other}\")"
+                            ))
+                        }
+                    },
+                    _ => return Err(format!("expected \"off\" or \"game\" for {key}")),
+                }
+            }
             _ => {
                 let Some((section, field)) = key.split_once('.') else {
                     return Err(format!("unknown wheel setting '{key}'"));
@@ -1315,6 +1365,8 @@ start = [\"btn:9\"]
         assert_eq!(config.steering.rotation_degrees, 900);
         assert_eq!(config.throttle.source, "axis:1");
         assert_eq!(config.buttons["r2"], vec!["btn:4"], "gear up (DFP R1) is the right paddle, button 4 by default");
+        assert_eq!(config.ffb.damper, 0.0, "no damping floor by default (TASK-194)");
+        assert!(!config.ffb.centering_spring, "the game's centring spring is off by default");
         assert!(config.validate().is_ok());
     }
 
@@ -1332,7 +1384,7 @@ start = [\"btn:9\"]
         assert!(text.starts_with("# GT4Recomp racing wheel"), "the slot comment comes first");
         assert!(text.contains("r2 -> gear up (DFP R1, the right paddle)"));
         assert!(text.contains("mode = \"dfp\"\n"));
-        for legacy in ["pedal_map_mode", "effective_degrees", "linearity", "sensitivity", "centering_spring", "curb_rumble"] {
+        for legacy in ["pedal_map_mode", "effective_degrees", "linearity", "sensitivity", "curb_rumble"] {
             assert!(!text.contains(legacy), "{legacy} is a 1.2.x key and is not written");
         }
         let (_, notes) = WheelConfig::read(&text, false).unwrap();
@@ -1522,7 +1574,7 @@ start = [\"btn:9\"]
         assert_eq!(config.ffb.strength, 0.667, "numbers are kept as written (3 decimals)");
         config.set_setting("wheel.device_name", &serde_json::json!("G27 \"pro\"\\")).unwrap();
         assert_eq!(config.device_name, "G27 pro");
-        for key in ["wheel.pedal_map_mode", "steering.sensitivity", "ffb.centering_spring", "ffb.curb_rumble", "nothing"] {
+        for key in ["wheel.pedal_map_mode", "steering.sensitivity", "ffb.curb_rumble", "nothing"] {
             assert!(config.set_setting(key, &serde_json::json!(1)).is_err(), "{key} is not a DFP setting");
         }
         assert!(config.set_setting("throttle.mode", &serde_json::json!("sideways")).is_err());
@@ -1607,7 +1659,7 @@ start = [\"btn:9\"]
         assert_eq!(config.preset, "generic");
         assert_eq!(config.steering.rotation_degrees, 900);
         assert_eq!((config.throttle.deadzone, config.throttle.saturation), (0.02, 0.98));
-        assert_eq!((config.ffb.strength, config.ffb.damper), (1.0, 0.15));
+        assert_eq!((config.ffb.strength, config.ffb.damper), (1.0, 0.0));
         assert!(config.is_unassigned());
         assert!(config.validate().is_ok());
         let text = config.to_toml();
@@ -1616,9 +1668,53 @@ start = [\"btn:9\"]
         assert!(!WheelConfig::default().is_unassigned(), "the game's default still has its own indices");
     }
 
+    /// TASK-194: `[ffb] centering_spring` is a real key of the model now (it used to be an ignored 1.2.x key), so the
+    /// Wheel page can offer Off / Follow the game and the file round-trips through the game's parser.
     #[test]
-    fn the_live_values_follow_the_game() {
-        let pedal = PedalConfig { source: "axis:1".into(), mode: "inverted".into(), deadzone: 0.02, saturation: 0.98, curve: "linear".into() };
+    fn the_centring_spring_key_reads_writes_round_trips_and_refuses_junk() {
+        let head = "[wheel]\nversion = 1\n";
+        assert!(!WheelConfig::from_toml(&format!("{head}[ffb]\ncentering_spring = \"off\"\n"))
+            .unwrap()
+            .ffb
+            .centering_spring);
+        assert!(WheelConfig::from_toml(&format!("{head}[ffb]\ncentering_spring = \"game\"\n"))
+            .unwrap()
+            .ffb
+            .centering_spring);
+        assert!(WheelConfig::from_toml(&format!("{head}[ffb]\ncentring_spring = \"game\"\n"))
+            .unwrap()
+            .ffb
+            .centering_spring, "the British spelling parses too");
+        assert!(WheelConfig::from_toml(&format!("{head}[ffb]\ncentering_spring = 0.250\n"))
+            .unwrap()
+            .ffb
+            .centering_spring, "a 1.2.x amount still parses: nonzero means game");
+        assert!(!WheelConfig::from_toml(&format!("{head}[ffb]\ncentering_spring = 0.0\n"))
+            .unwrap()
+            .ffb
+            .centering_spring);
+        assert!(WheelConfig::from_toml(&format!("{head}[ffb]\ncentering_spring = true\n"))
+            .unwrap()
+            .ffb
+            .centering_spring);
+        assert!(!WheelConfig::default().ffb.centering_spring, "off is the default");
+        assert!(WheelConfig::from_toml(&format!("{head}[ffb]\ncentering_spring = \"maybe\"\n")).is_err());
+        assert!(WheelConfig::from_toml(&format!("{head}[ffb]\ncentering_spring = 4\n")).is_err());
+
+        let mut config = WheelConfig::default();
+        assert!(config.to_toml().contains("centering_spring = \"off\"\n"), "off is written as a token");
+        config.set_setting("ffb.centering_spring", &serde_json::json!("game")).unwrap();
+        assert!(config.ffb.centering_spring);
+        assert!(config.to_toml().contains("centering_spring = \"game\"\n"));
+        assert_eq!(WheelConfig::from_toml(&config.to_toml()).unwrap(), config, "the key round-trips");
+        config.set_setting("ffb.centering_spring", &serde_json::json!(false)).unwrap();
+        assert!(!config.ffb.centering_spring, "a boolean is accepted too");
+        assert!(config.set_setting("ffb.centering_spring", &serde_json::json!("maybe")).is_err());
+        assert!(config.set_setting("ffb.centering_spring", &serde_json::json!(3)).is_err());
+    }
+
+    #[test]
+    fn the_live_values_follow_the_game() {        let pedal = PedalConfig { source: "axis:1".into(), mode: "inverted".into(), deadzone: 0.02, saturation: 0.98, curve: "linear".into() };
         assert_eq!(pedal_byte(&pedal, 32767), 0, "an inverted pedal at rest");
         assert_eq!(pedal_byte(&pedal, -32768), 255);
         assert!(pedal_byte(&pedal, 0) > 120 && pedal_byte(&pedal, 0) < 135);

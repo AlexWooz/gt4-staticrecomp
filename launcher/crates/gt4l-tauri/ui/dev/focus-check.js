@@ -2103,6 +2103,20 @@
     await GT4.backend.call("set_wheel_setting", { key: "steering.rotation_degrees", value: 900 });
 
     // Force feedback: the test plays and lists the effects; the last game's line says Received.
+    // TASK-194: the centring spring row (Off by default, Follow the game) and the damper floor at 0%.
+    check("the force feedback card has a centring spring row, Off by default",
+      !!document.querySelector("[data-setting=\"wheel-ffb-centering\"]") &&
+        selectorText("wheel-ffb-centering") === T("wheel.ffb.centering_off") && (await wheelConfig()).ffb.centering_spring === false,
+      document.querySelector("[data-setting=\"wheel-ffb-centering\"]") ? selectorText("wheel-ffb-centering") : "no row");
+    check("the damping starts at 0%", (await wheelConfig()).ffb.damper === 0, String((await wheelConfig()).ffb.damper));
+    if (document.querySelector("[data-setting=\"wheel-ffb-centering\"]")) {
+      await stepSelector("wheel-ffb-centering", 1);
+      check("the centring spring steps to Follow the game and is written", (await wheelConfig()).ffb.centering_spring === true &&
+        selectorText("wheel-ffb-centering") === T("wheel.ffb.centering_game"), JSON.stringify((await wheelConfig()).ffb));
+      await stepSelector("wheel-ffb-centering", -1);
+      check("and back to Off", (await wheelConfig()).ffb.centering_spring === false &&
+        selectorText("wheel-ffb-centering") === T("wheel.ffb.centering_off"), JSON.stringify((await wheelConfig()).ffb));
+    }
     var test = document.querySelector(".wh-test");
     check("the force test is enabled while the game is not running", !!test && !test.disabled, "disabled");
     if (test) {
