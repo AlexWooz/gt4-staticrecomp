@@ -14,7 +14,7 @@ fn fixture(name: &str) -> String {
 #[test]
 fn renderer_list_uses_the_real_asset_names_and_skips_drafts_and_prereleases() {
     let releases = releases::parse_releases(&fixture("gt4gs-list.json"), Stream::Renderer).unwrap();
-    // The list is the real 1.1.0 release (2026-10-21). The launcher minimum is 1.2.1 (TASK-088), so the minimum is
+    // The list is the real 1.1.0 release (2026-10-21). The launcher minimum is 1.3.0 (TASK-200), so the minimum is
     // passed here: the test checks the asset names and the draft and prerelease rules of the real list.
     let chosen = releases::select_latest(&releases, Version(1, 1, 0)).unwrap();
     assert_eq!(chosen.tag, "gt4gs-v1.1.0");
@@ -34,7 +34,7 @@ fn renderer_list_refuses_a_launcher_tag_and_an_old_stable() {
     for tag in ["gt4gs-v1.0.0", "gt4gs-v1.0.1"] {
         let old = releases.iter().find(|release| release.tag == tag).unwrap();
         assert!(old.is_stable());
-        assert!(old.version.unwrap() < Stream::Renderer.minimum(), "{tag} is below the 1.2.1 minimum");
+        assert!(old.version.unwrap() < Stream::Renderer.minimum(), "{tag} is below the 1.3.0 minimum");
     }
 }
 
@@ -50,14 +50,14 @@ fn launcher_list_offers_the_first_stable_release_and_never_the_draft() {
 #[test]
 fn the_renderer_update_decision_uses_the_real_list() {
     let releases = releases::parse_releases(&fixture("gt4gs-list.json"), Stream::Renderer).unwrap();
-    // Until gt4-gs 1.2.1 is published, the real list (newest stable 1.1.0) is below the minimum: nothing is offered.
+    // Until gt4-gs 1.3.0 is published, the real list (newest stable 1.1.0) is below the minimum: nothing is offered.
     assert!(update::decide(Stream::Renderer, UpdateChannel::Stable, Some(Version(1, 1, 0).into()), &releases, None).is_none());
     assert!(update::decide(Stream::Renderer, UpdateChannel::Stable, Some(Version(1, 0, 1).into()), &releases, None).is_none());
-    // Once 1.2.1 is listed (a fixture here, the real list has no 1.2.1 yet), an installed 1.0.1 is offered it.
+    // Once 1.3.0 is listed (a fixture here), an installed 1.0.1 is offered it.
     let mut listed = releases.clone();
-    listed.push(releases::parse_releases(r#"[{"tag_name":"gt4gs-v1.2.1","prerelease":false,"draft":false,"assets":[]}]"#, Stream::Renderer).unwrap().remove(0));
+    listed.push(releases::parse_releases(r#"[{"tag_name":"gt4gs-v1.3.0","prerelease":false,"draft":false,"assets":[]}]"#, Stream::Renderer).unwrap().remove(0));
     let offer = update::decide(Stream::Renderer, UpdateChannel::Stable, Some(Version(1, 0, 1).into()), &listed, None).unwrap();
-    assert_eq!(offer.latest, Version(1, 2, 1).into());
+    assert_eq!(offer.latest, Version(1, 3, 0).into());
     assert!(offer.is_update());
 }
 

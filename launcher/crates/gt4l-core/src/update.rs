@@ -274,12 +274,12 @@ mod tests {
     #[test]
     fn the_renderer_ignores_the_channel() {
         let list = parse_releases(
-            r#"[{"tag_name":"gt4gs-v1.2.2-rc1","prerelease":true,"draft":false,"assets":[]},
-                {"tag_name":"gt4gs-v1.2.1","prerelease":false,"draft":false,"assets":[]}]"#,
+            r#"[{"tag_name":"gt4gs-v1.3.2-rc1","prerelease":true,"draft":false,"assets":[]},
+                {"tag_name":"gt4gs-v1.3.1","prerelease":false,"draft":false,"assets":[]}]"#,
             Stream::Renderer,
         )
         .unwrap();
         let offer = decide(Stream::Renderer, UpdateChannel::Beta, None, &list, None).unwrap();
-        assert_eq!(offer.latest, rv(1, 2, 1));
+        assert_eq!(offer.latest, rv(1, 3, 1));
     }
 }

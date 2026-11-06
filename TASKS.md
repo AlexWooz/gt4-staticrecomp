@@ -3741,11 +3741,12 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
-### TASK-200: GSdx on PC: fractional render scales and OpenGL, with a new gt4-gs build (owner, 2026-11-06; planned for rc16)
+### TASK-200: GSdx on PC: fractional render scales and OpenGL, in gt4-gs 1.3.0 and rc15 (owner, 2026-11-06)
 
-**Status: done in code (2026-11-06)**, `task/200-fractional-scales-opengl` (fork) and `task/200-gsdx-scales-opengl`
-(launcher worktree `C:\Antigravity\gt4-wt-200-gsdx-scales`, from `release/1.3.0-rc15` at 265487b5). Not built yet: no
-rc16, no installer, no release; tested at the rc16 build.
+**Status: done (2026-11-06), in rc15.** Launcher `task/200-gsdx-scales-opengl` (0311cc5a) merged into `task/198-rc15-pgo`;
+fork `task/200-fractional-scales-opengl` (a47553a3c) merged into `gt4gs/main` (4c980f21c) and tagged `gt4gs-v1.3.0`.
+gt4-gs 1.3.0 is a GitHub **draft pre-release** (the orchestrator publishes it together with rc15). The rc15 launchers,
+installer and zip in `private/release-130-rc15-pgo-out` carry it; the hashes are in STATUS and the journal.
 
 - **Review (owner, same day).** The separate "Resolution (GSdx)" list was rejected. The fractional values are finer
   steps of the **existing Render scale**, which is always a percentage of the screen: 100% is the automatic multiplier
@@ -3757,15 +3758,27 @@ rc16, no installer, no release; tested at the rc16 build.
 - **Map.** The GS core already handles a fractional multiplier (a float; the Qt/ImGui lists once offered 1.25x to 3.5x,
   removed in 2025 without touching the GS). gt4-gs refused it only in its allow-list, and the same allow-list refused
   `Renderer = 12` although OpenGL is compiled in.
-- **Fork (gt4-gs 1.3.0, branch `task/200-fractional-scales-opengl`, pushed, not merged, not tagged):** the vendored
-  allow-list takes 1.25, 1.5, 1.75 and 2.5 for `upscale_multiplier` and 12 for `Renderer` (SHA256SUMS updated); the
-  version string is `gt4gs 1.3.0`. It compiles; the headless replay accepts `upscale_multiplier = 1.25` and draws with
-  Vulkan; OpenGL in a headless replay crashed inside the AMD OpenGL driver (`atio6axx.dll`) at the PBuffer pixel format,
-  so OpenGL starts only with a real window path (owner test).
-- **Launcher:** the Render scale snap and write above; the four fractional steps and OpenGL only when the installed
-  gt4-gs is 1.3.0 or newer (`RENDERER_FRACTIONAL_MINIMUM`), whole numbers and the three APIs for an older install.
+- **Fork (gt4-gs 1.3.0):** the vendored allow-list takes 1.25, 1.5, 1.75 and 2.5 for `upscale_multiplier` and 12 for
+  `Renderer` (SHA256SUMS updated); it also keeps the pre-TASK-186 blending values 1/2/4/5 through an allow extension, so
+  an older launcher that runs it is unaffected. Version string `gt4gs 1.3.0`. Package `gt4-gs-1.3.0-windows-x64.zip`
+  `3995f036...` 13,024,001 bytes and source zip `e5e30ab5...` (GPLv3 6(d)) from `gt4gs/release-local.ps1 -Draft` (a
+  pre-release draft, ignored by every launcher's automatic picker). Headless replay with `upscale_multiplier = 2.5` on
+  Vulkan: exit 0, the driver line present, no "ignoring" line. OpenGL in a headless replay crashes inside the AMD OpenGL
+  driver (`atio6axx.dll`) at the PBuffer pixel format, so its runtime gate is the owner's in-game test with a window.
+- **Launcher (rc15):** the Render scale snap and write above; the four fractional steps and OpenGL only when the
+  installed gt4-gs is 1.3.0 or newer (`RENDERER_FRACTIONAL_MINIMUM`). `RENDERER_MINIMUM` and `RENDERER_PINNED` are 1.3.0:
+  the launcher installs the pinned pre-release by tag, verifies it against that release's `SHA256SUMS`, and a newer
+  stable still wins; an installed 1.2.1 goes to the 1.3.0 folder and 1.2.1 stays as the previous version for rollback.
   OpenGL joins the Graphics API list after Direct3D 11; Automatic never resolves to it. Locales in both languages; table
-  and allow-list updated. The `gsdx_resolution` row and its locale keys are gone.
+  and allow-list updated.
+- **Release files (rc15):** launchers `c802114a...` (installer build, 19,450,368 bytes) and `c0dc2ab6...` (portable,
+  19,395,584 bytes); installer `GT4Recomp-Setup-1.3.0-rc15.exe` `0d809f4f...` 52,379,244 bytes and zip
+  `GT4Recomp-1.3.0-rc15-portable.zip` `0bcd48ae...` 81,504,579 bytes in `private/release-130-rc15-pgo-out`, with
+  `SHA256SUMS`. 20 of 20 installer game files and 25 zip entries equal to their sources; both games equal to the slice413
+  pins.
+- **Tests:** `cargo test --workspace` 783 passed (9 ignored); focus checks 357/357 en-US and 364/364 pt-BR, nav-test
+  260/260, locale parity included. No real installer run: the agent session is not elevated and the installer requires
+  admin; its payload was checked file by file instead.
 
 The Android GSdx (ARMSX2) offers fractional render scales (1.25x, 1.5x, 1.75x, 2.5x). The PC GSdx (gt4-gs) should offer
 them too. The main reason for the gt4-gs rebuild is OpenGL, which is still missing from the launcher.

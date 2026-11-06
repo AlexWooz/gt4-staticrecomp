@@ -131,11 +131,12 @@ fn invalid_values_and_unknown_keys_fall_back_with_warnings() {
 
 #[test]
 fn a_readbacks_value_the_installed_gt4gs_ignores_becomes_accurate_with_a_warning() {
-    // TASK-186 follow-up: gt4-gs 1.2.1 embeds the TASK-091 allow-list (Accurate and No readbacks only).
+    // TASK-186 follow-up: the gt4-gs the launcher installs (1.3.0 since TASK-200) accepts Accurate and No readbacks only
+    // for hw_download_mode.
     for stored in ["enabled-force-full", "unsynchronized", "disabled"] {
         let text = format!("schema_version = 9\n[gs]\nhw_download_mode = \"{stored}\"\n");
         let (config, warnings) = config::parse(&text).unwrap();
-        assert!(warnings.iter().any(|warning| warning.contains("gt4-gs 1.2.1")), "{stored}: {warnings:?}");
+        assert!(warnings.iter().any(|warning| warning.contains("gt4-gs 1.3.0")), "{stored}: {warnings:?}");
         assert_eq!(config.settings.gs_value("hw_download_mode"), "accurate", "{stored}");
         assert!(!config.settings.gs_overrides().contains_key("hw_download_mode"), "{stored}: the default, not stored");
     }
