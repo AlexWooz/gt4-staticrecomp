@@ -1051,6 +1051,161 @@
     await setHash("#/settings/graphics");
   }
 
+  // TASK-193 (owner, 2026-11-06): an option row changes only through its arrows with a mouse or a finger. A click on the
+  // row's label or on its value does nothing; the left arrow steps back and the right arrow forward. The keyboard and the
+  // pad keep stepping forward on A and left/right, and the arrows got a bigger invisible hit area.
+  function pointerClick(node) {
+    var box = node.getBoundingClientRect();
+    var where = {
+      bubbles: true, cancelable: true, detail: 1, view: root,
+      clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2)
+    };
+    node.dispatchEvent(new MouseEvent("mousedown", where));
+    node.dispatchEvent(new MouseEvent("mouseup", where));
+    node.dispatchEvent(new MouseEvent("click", where));
+  }
+
+  function rowNode(id) {
+    return document.querySelector(".row[data-row=\"" + id + "\"]");
+  }
+
+  // The hit area the stylesheet gives the arrows: the base rule and the (pointer: coarse) rule of css/app.css.
+  function arrowHitFromRules(coarse) {
+    var found = "";
+    function walk(rules) {
+      Array.prototype.forEach.call(rules || [], function (rule) {
+        if (rule.cssRules && rule.media) {
+          var matches = rule.media.mediaText.indexOf("pointer: coarse") >= 0;
+          if (matches === coarse) {
+            walk(rule.cssRules);
+          }
+          return;
+        }
+        if (!rule.selectorText || rule.selectorText.indexOf(".selector-arrow") < 0 || !rule.style) {
+          return;
+        }
+        var hit = rule.style.getPropertyValue("--selector-arrow-hit");
+        if (hit) {
+          found = hit.trim();
+        }
+      });
+    }
+    Array.prototype.forEach.call(document.styleSheets, function (sheet) {
+      try {
+        walk(sheet.cssRules);
+      } catch (err) {
+        // a stylesheet from another origin: nothing to read
+      }
+    });
+    return found;
+  }
+
+  async function optionPointerChecks() {
+    await setHash("#/settings/graphics");
+    await wait(300);
+    var vsync = selectorNode("vsync");
+    check("a dropdown row is on Graphics for the pointer checks", !!vsync, "no vsync row");
+    if (!vsync) {
+      return;
+    }
+    var first = selectorText("vsync");
+    var firstValue = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "vsync").current;
+    pointerClick(rowNode("vsync").querySelector(".k > span"));
+    await wait(200);
+    check("a click on the row's label does not change the value", selectorText("vsync") === first, selectorText("vsync") + " after the label click");
+    pointerClick(vsync.querySelector(".selector-value:not(.is-leaving)"));
+    await wait(200);
+    check("a click on the row's value does not change the value", selectorText("vsync") === first, selectorText("vsync") + " after the value click");
+    var tableAfterBody = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "vsync");
+    check("the row body click writes nothing", !!tableAfterBody && String(tableAfterBody.current) === String(firstValue), tableAfterBody ? String(tableAfterBody.current) : "no row");
+
+    var arrows = vsync.querySelectorAll(".selector-arrow");
+    pointerClick(arrows[0]);
+    await wait(200);
+    var back = selectorText("vsync");
+    check("the left arrow steps back", back !== first, back + " (was " + first + ")");
+    pointerClick(arrows[1]);
+    await wait(200);
+    check("the right arrow steps forward again", selectorText("vsync") === first, selectorText("vsync"));
+
+    // The hit area: 32 x 32 px with a mouse, 44 x 44 px with a finger, drawn on the same 24 px glyph box.
+    var leftBox = arrows[0].getBoundingClientRect();
+    var rightBox = arrows[1].getBoundingClientRect();
+    check("each arrow has a 32 x 32 px hit area with a mouse",
+      Math.round(leftBox.width) >= 32 && Math.round(leftBox.height) >= 32 && Math.round(rightBox.width) >= 32 && Math.round(rightBox.height) >= 32,
+      Math.round(leftBox.width) + "x" + Math.round(leftBox.height) + " and " + Math.round(rightBox.width) + "x" + Math.round(rightBox.height));
+    check("a finger gets a 44 x 44 px hit area (the coarse rule)", arrowHitFromRules(true) === "44px" && arrowHitFromRules(false) === "32px",
+      "coarse " + arrowHitFromRules(true) + ", fine " + arrowHitFromRules(false));
+    var windowBox = vsync.querySelector(".selector-window").getBoundingClientRect();
+    var middleLeft = windowBox.left + windowBox.width / 3;
+    var middleRight = windowBox.right - windowBox.width / 3;
+    var leftReach = leftBox.right > middleLeft && leftBox.right < middleRight;
+    var rightReach = rightBox.left > middleLeft && rightBox.left < middleRight;
+    check("the arrows do not reach the middle of the value", !leftReach && !rightReach,
+      "left reaches " + Math.round(leftBox.right - windowBox.left) + " of " + Math.round(windowBox.width) + ", right from " + Math.round(rightBox.left - windowBox.left));
+    var glyph = arrows[0].querySelector("svg").getBoundingClientRect();
+    check("the arrow glyph stays where it was: centred in the drawn 24 px box",
+      Math.abs((glyph.left + glyph.width / 2) - (vsync.getBoundingClientRect().left + 12)) < 0.6,
+      "glyph centre " + (glyph.left + glyph.width / 2) + ", box centre " + (vsync.getBoundingClientRect().left + 12));
+
+    // The keyboard and the pad keep their behaviour: left and right step, A goes forward.
+    vsync.focus({ preventScroll: true });
+    press("ArrowRight");
+    await wait(200);
+    check("right on a focused row still steps it", selectorText("vsync") !== first, selectorText("vsync"));
+    press("ArrowLeft");
+    await wait(200);
+    check("left on a focused row still steps it back", selectorText("vsync") === first, selectorText("vsync"));
+    GT4.nav.activate();
+    await wait(200);
+    check("A on a focused row still goes to the next value", selectorText("vsync") !== first, selectorText("vsync"));
+    pointerClick(arrows[0]);
+    await wait(200);
+    check("the arrow puts the value back after the pad step", selectorText("vsync") === first, selectorText("vsync"));
+
+    // A toggle row follows the same pointer rule.
+    var toggle = selectorNode("fxaa");
+    check("a toggle row is on Graphics for the pointer checks", !!toggle, "no fxaa row");
+    if (toggle) {
+      var toggleFirst = selectorText("fxaa");
+      pointerClick(rowNode("fxaa").querySelector(".k > span"));
+      await wait(200);
+      check("a click on a toggle row's label does not change it", selectorText("fxaa") === toggleFirst, selectorText("fxaa"));
+      pointerClick(rowNode("fxaa").querySelector(".selector-value:not(.is-leaving)"));
+      await wait(250);
+      check("a click on a toggle row's value does not change it", selectorText("fxaa") === toggleFirst, selectorText("fxaa"));
+      var toggleArrows = toggle.querySelectorAll(".selector-arrow");
+      pointerClick(toggleArrows[0]);
+      await wait(250);
+      check("a toggle row's left arrow steps it", selectorText("fxaa") !== toggleFirst, selectorText("fxaa"));
+      pointerClick(toggle.querySelectorAll(".selector-arrow")[1]);
+      await wait(250);
+      check("a toggle row's right arrow steps it back", selectorText("fxaa") === toggleFirst, selectorText("fxaa"));
+    }
+
+    // The Wheel page's own cards use the same control.
+    await setHash("#/settings/wheel");
+    await wait(400);
+    var wheelToggle = selectorNode("wheel-ffb-enabled");
+    check("the force feedback card has an option row", !!wheelToggle, "no wheel-ffb-enabled row");
+    if (wheelToggle) {
+      var wheelFirst = selectorText("wheel-ffb-enabled");
+      pointerClick(rowNode("wheel-ffb-enabled").querySelector(".k > span"));
+      await wait(250);
+      check("a click on a Wheel card's row label does not change it", selectorText("wheel-ffb-enabled") === wheelFirst, selectorText("wheel-ffb-enabled"));
+      pointerClick(wheelToggle.querySelector(".selector-value:not(.is-leaving)"));
+      await wait(250);
+      check("a click on a Wheel card's row value does not change it", selectorText("wheel-ffb-enabled") === wheelFirst, selectorText("wheel-ffb-enabled"));
+      pointerClick(wheelToggle.querySelectorAll(".selector-arrow")[0]);
+      await wait(300);
+      check("a Wheel card's row steps through its arrows", selectorText("wheel-ffb-enabled") !== wheelFirst, selectorText("wheel-ffb-enabled"));
+      pointerClick(selectorNode("wheel-ffb-enabled").querySelectorAll(".selector-arrow")[1]);
+      await wait(300);
+      check("a Wheel card's row steps back through its arrows", selectorText("wheel-ffb-enabled") === wheelFirst, selectorText("wheel-ffb-enabled"));
+    }
+    await setHash("#/settings/graphics");
+  }
+
   // TASK-174: the Presentation thread row. CoreGS 2.0 only; works on a one-queue card (and when the queue count is unknown);
   // shown but not available, with a note, on a card with two or more graphics queues.
   async function presentThreadChecks() {
@@ -2303,6 +2458,9 @@
       await controlsChecks();
       await virtualPadChecks();
       await wheelChecks();
+      // The pointer rule of the option rows, after the wheel page's own checks (a wheel setting written here clears the
+      // mock's "preset applied by itself" notice those checks read).
+      await optionPointerChecks();
       await gamesChecks();
       await achievementsChecks();
       await shaderWindowChecks();
