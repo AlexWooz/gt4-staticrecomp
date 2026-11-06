@@ -25,7 +25,11 @@ const DERIVED_TABLE_IDS: &[&str] = &["vsync", "mailbox", "upscale"];
 const RC_ONLY_ROWS: &[&str] = &["performance_report", "check_vu_code"];
 /// The renderer defines the graphics options (owner, 2026-10-30): the table rows are GSdx's, and of them only these exist
 /// under CoreGS 2.0 too (launch::coregs20_environment). `coregs_sharpening` (FSR1, where GSdx has CAS) exists only there.
-const CORE_GS_20_TABLE_ROWS: &[&str] = &["performance_mode", "texture_load", "fxaa"];
+// TASK-180 test5: `effect_flares` exists under both renderers (CoreGS 2.0 answers the table as zeros; the GSdx stream
+// client does the same); `effect_road_sheen` is CoreGS-only and handled where its row is built.
+const CORE_GS_20_TABLE_ROWS: &[&str] = &["effect_flares", "texture_load", "fxaa"];
+/// GS table rows that exist under CoreGS 2.0 only, on every platform (TASK-180 test5: the road sheen's classifier is core 2's).
+const CORE_GS_20_ONLY_TABLE_ROWS: &[&str] = &["effect_road_sheen"];
 
 pub fn pcsx2_table_rows() -> Vec<&'static gs_table::Row> {
     gs_table::offered().into_iter().filter(|row| !DERIVED_TABLE_IDS.contains(&row.id.as_str())).collect()
@@ -190,7 +194,9 @@ pub fn platform_accepts(platform: Platform, id: &str) -> bool {
         return false;
     }
     if pcsx2_table_rows().iter().any(|row| row.id == id) {
-        return platform.has_gsdx() || CORE_GS_20_TABLE_ROWS.contains(&id);
+        return platform.has_gsdx()
+            || CORE_GS_20_TABLE_ROWS.contains(&id)
+            || CORE_GS_20_ONLY_TABLE_ROWS.contains(&id);
     }
     true
 }
@@ -274,19 +280,28 @@ fn settings_table_versioned(
     for row in pcsx2_table_rows() {
         let gsdx_only = !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str());
         // The rows after CAS and the Graphics API are not GSdx's; they stay on a platform without GSdx (below).
-        if gsdx_only && !platform.has_gsdx() && row.id != "cas_sharpness" && row.id != "graphics_api" {
+        if gsdx_only
+            && !platform.has_gsdx()
+            && row.id != "cas_sharpness"
+            && row.id != "graphics_api"
+            && row.id != "effect_road_sheen"
+        {
             continue;
         }
         let mut out = gs_row(row, settings);
         if !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str()) {
             out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::PCSX2_GS });
         }
-        // What Performance Mode does depends on the renderer.
-        if row.id == "performance_mode" && settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
-            out["help_key"] = json!("setting.performance_mode.help_coregs20");
-        }
-        if row.id == "performance_mode" {
+        // TASK-180 test5: the road sheen is CoreGS 2.0's item (its classifier is core 2's), so its row shows under CoreGS 2.0
+        // on every platform, Android included, and never under GSdx.
+        if row.id == "effect_road_sheen" {
+            // Android has one renderer (CoreGS 2.0) and no Renderer row, so the condition would be dead there.
+            if platform.has_gsdx() {
+                out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
+            }
             rows.push(out);
+            // The frame rate and the presentation thread sit after the effect rows, under the renderer that has them
+            // (they used to follow Performance Mode, which the effect toggles replace).
             if let Some(definition) = gt4l_core::settings::definition("frame_rate") {
                 let mut skip = launcher_row(definition, settings);
                 skip["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
@@ -962,7 +977,9 @@ mod table_tests {
         }
         for table_row in pcsx2_table_rows() {
             let kept = listed.iter().any(|id| *id == table_row.id);
-            assert_eq!(kept, CORE_GS_20_TABLE_ROWS.contains(&table_row.id.as_str()), "{}", table_row.id);
+            let expected = CORE_GS_20_TABLE_ROWS.contains(&table_row.id.as_str())
+                || CORE_GS_20_ONLY_TABLE_ROWS.contains(&table_row.id.as_str());  // CoreGS 2.0 is the only renderer here
+            assert_eq!(kept, expected, "{}", table_row.id);
         }
         for present in ["language", "update_channel", "render_scale", "vsync", "frame_rate", "coregs_sharpening", "trigger_full_range", "performance_hud"] {
             assert!(listed.iter().any(|id| id == present), "{present} is an Android row");
@@ -1012,7 +1029,16 @@ mod table_tests {
             assert!(!platform_accepts(Platform::Android, refused), "{refused}");
             assert!(platform_accepts(Platform::Windows, refused), "{refused}");
         }
-        for accepted in ["language", "render_scale", "performance_mode", "fxaa", "texture_load", "l2_deadzone", "lstick_deadzone"] {
+        for accepted in [
+            "language",
+            "render_scale",
+            "effect_flares",
+            "effect_road_sheen",
+            "fxaa",
+            "texture_load",
+            "l2_deadzone",
+            "lstick_deadzone",
+        ] {
             assert!(platform_accepts(Platform::Android, accepted), "{accepted}");
         }
     }
@@ -1181,21 +1207,30 @@ mod table_tests {
         assert_eq!(scale["group"], "graphics");
     }
 
+    /// TASK-180 test5 (owner, 2026-11-05): Performance Mode is no longer one row. Each of its effects is its own toggle on
+    /// the Graphics page, on by default (drawn as the original game); turning one off is what earns its speed.
     #[test]
-    fn performance_mode_is_a_graphics_toggle_off_by_default() {
+    fn the_effect_toggles_are_on_by_default_and_performance_mode_is_gone() {
         let table = settings_table(&Settings::default(), &Controls::default());
-        let mode = row(&table, "performance_mode");
-        assert_eq!(mode["control"], "toggle");
-        assert_eq!(mode["page"], "basic", "the main Graphics section, not Advanced");
-        assert_eq!(mode["group"], Value::Null);
-        assert_eq!(mode["default"], json!(false));
-        assert_eq!(mode["current"], json!(false));
-        assert!(mode.get("disabled").is_none(), "a stored renderer never disables it");
-        assert!(mode.get("visible_when").is_none(), "shown under both renderers");
+        for id in ["effect_flares", "effect_road_sheen"] {
+            let toggle = row(&table, id);
+            assert_eq!(toggle["control"], "toggle", "{id}");
+            assert_eq!(toggle["page"], "basic", "{id}: the main Graphics section");
+            assert_eq!(toggle["default"], json!(true), "{id}: every effect is drawn by default");
+            assert_eq!(toggle["current"], json!(true), "{id}");
+            assert!(toggle.get("disabled").is_none(), "{id}: a stored renderer never disables it");
+        }
+        assert!(row(&table, "effect_flares").get("visible_when").is_none(), "the flares work under both renderers");
+        assert_eq!(
+            row(&table, "effect_road_sheen")["visible_when"]["equals"],
+            "coregs20",
+            "the road sheen is CoreGS 2.0's item"
+        );
+        assert!(!ids(&table).contains(&"performance_mode".to_string()), "the bundle row is gone");
     }
 
     #[test]
-    fn frame_rate_is_a_coregs_choice_of_60_by_default_after_performance_mode() {
+    fn frame_rate_is_a_coregs_choice_of_60_by_default_after_the_effect_toggles() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let skip = row(&table, "frame_rate");
         assert_eq!(skip["control"], "dropdown");
@@ -1205,8 +1240,8 @@ mod table_tests {
         assert_eq!(skip["current"], "60");
         assert_eq!(skip["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
         let order = ids(&table);
-        let mode = order.iter().position(|id| id == "performance_mode").unwrap();
-        assert_eq!(order[mode + 1], "frame_rate");
+        let effects = order.iter().position(|id| id == "effect_road_sheen").unwrap();
+        assert_eq!(order[effects + 1], "frame_rate", "the frame rate follows the effect toggles");
     }
 
     fn card_with_queues(name: &str, queues: Option<u32>) -> gt4l_core::gpu::GpuDevice {
@@ -1287,7 +1322,7 @@ mod table_tests {
 
     #[test]
     fn the_toggle_maps_on_and_off_to_the_two_readback_choices() {
-        let row = pcsx2_table_rows().into_iter().find(|row| row.id == "performance_mode").unwrap();
+        let row = gs_table::row("performance_mode").expect("the hidden download row");
         assert_eq!(toggle_choices(row), Some(("accurate", "no-readbacks")));
         assert_eq!(gs_value_text(row, &json!(true)).as_deref(), Some("no-readbacks"), "On");
         assert_eq!(gs_value_text(row, &json!(false)).as_deref(), Some("accurate"), "Off");
@@ -1317,11 +1352,17 @@ mod table_tests {
         for both in ["renderer", "render_scale", "graphics_card", "monitor", "resolution", "fullscreen", "vsync"] {
             assert!(row(&table, both).get("visible_when").is_none(), "{both} works under both renderers");
         }
-        assert!(row(&table, "performance_mode").get("help_key").is_none());
+        assert!(
+            row(&table, "effect_road_sheen").get("visible_when").is_some(),
+            "the road sheen is conditional under GSdx"
+        );
         let mut chosen = Settings::default();
         chosen.set("renderer", "coregs20").unwrap();
         let under_coregs = settings_table(&chosen, &Controls::default());
-        assert_eq!(row(&under_coregs, "performance_mode")["help_key"], "setting.performance_mode.help_coregs20");
+        assert_eq!(
+            row(&under_coregs, "effect_road_sheen")["visible_when"]["equals"], "coregs20",
+            "the road sheen shows under the renderer it belongs to"
+        );
         let vsync_values = |table: &Value| -> Vec<String> {
             row(table, "vsync")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap().to_string()).collect()
         };
