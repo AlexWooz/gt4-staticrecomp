@@ -36,6 +36,36 @@ connected. Two agents share one layout-file contract: this is the game side (bra
   0.4 VBlanks/s (F8: `EE gs_drain=2767 ms/frame`), so no guest screen that reacts to input was reached; on the owner's
   phone the same path runs at the 60 VBlanks/s of TASK-180.
 
+## TASK-185 launcher: the virtual controller and its layout editor (2026-11-06; branch `task/185-virtual-pad-editor`)
+
+The owner (2026-11-06) asked for a first-hand on-screen controller on the phone, shown only while no physical controller is
+connected, with a simple way to move and resize its buttons in the launcher ("like ARMSX2 does"). Two agents build it in
+parallel; this branch is the launcher side, and the only interface between them is the contract now written in
+[docs/CONTROLS.md](CONTROLS.md#virtual-controller-layout-task-185-android).
+
+- **Contract (version 1).** The player's layout is `user/virtual-pad.json`: `x`/`y` are the element's centre in screen
+  fractions, `size` its height (fraction of the screen height), the optional `width` its width (fraction of the screen
+  *width*; absent = square). The built-in layout is `android/virtual-pad/default-layout.json`, byte-identical for both
+  agents (the launcher compiles it in). The mode is the `virtual_pad` setting (Auto default / Always / Off, the game gets
+  it as `GT4_VIRTUAL_PAD`). The setting is stored in the `[settings]` table like every launcher setting; the contract text
+  called it `[controls]`, but `settings.toml` has one settings table and the backend reads the environment variable, so the
+  interface itself is unchanged.
+- **Controls page, "Virtual controller" section** (shown where the backend says the game draws the pad — Android — and in
+  the Windows dev mock): mode row, Edit layout, Reset to default, global opacity and vibration, and a status line.
+- **Editor.** Full-screen landscape canvas over a dimmed race scene, 20:9 / 16:9 / 21:9 previews; drag to move, pinch or
+  the corner handle to resize, tap to select; size, width, opacity and shown/hidden per element; global opacity, vibration
+  and snap to grid; Undo / Reset / Save / Cancel; the F7 corner is reserved and warns on overlap; elements are clamped
+  inside the screen; coordinates stay fractions. Keyboard and pad: Tab or the D-pad and A select, arrows or the left stick
+  move, Shift+arrow or LB/RB resize, X undo, Y reset, B back.
+- **Rust.** `gt4l-core::virtual_pad` (load, validate, atomic save, reset, a newer file kept and locked) and the
+  `get_virtual_pad` / `save_virtual_pad` / `reset_virtual_pad` commands, in `commands.list`, `capabilities/default.json`
+  and both handlers. Tests: 17 in the core plus the launcher's flow-audit round trip and the table rule.
+- **Checks.** `cargo test --workspace` 797 passed, 0 failed (gt4l-core 311, gt4l-tauri lib 150). Focus checks 401/401
+  (en-US) and 408/408 (pt-BR); nav-test 288/288. Screenshots in `build/evidence/t185-editor/` (the section and the editor,
+  both languages, 2400x1080 and 1366x768).
+- **Merged with the backend** (2026-11-06): the in-game overlay and `GT4_VIRTUAL_PAD` at Play came from
+  `task/185-virtual-pad-backend`; the two sides meet on the layout file, its mode and the environment variable.
+
 ## TASK-180b: Spec II on Android — the black picture and the 3.2 s frames were the missing S7b IOP rule (2026-11-06)
 
 Spec II in the emulator stayed black with `gif bytes/frame: path1=0 path2=0 path3=0` and `run_due_events=3248 ms/frame`.

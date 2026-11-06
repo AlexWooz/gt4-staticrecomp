@@ -3614,6 +3614,41 @@ describes it:
 Clean room: implementation agents never open PCSX2 sources. Branch `task/182-barrier-scope` from `release/1.3.0-rc15`, in the
 `gt4-wt-178-download-wait` worktree. State: step 1 in progress.
 
+### TASK-185 — Launcher: the virtual controller and its layout editor (2026-11-06; editor side, Android)
+
+**Why.** The owner (2026-11-06) asked for a first-hand on-screen controller on the phone, shown only while no physical
+controller is connected, with a simple way to customise the pad in the launcher ("like ARMSX2 does"): move and resize the
+buttons. Two agents build it in parallel: this task is the launcher's settings row and layout editor; the backend draws
+and runs the pad in the game. They meet only through one contract, written down in
+[docs/CONTROLS.md](docs/CONTROLS.md#virtual-controller-layout-task-185-android): `user/virtual-pad.json` (format
+version 1), the Auto/Always/Off key and `GT4_VIRTUAL_PAD` at Play.
+
+**Built** (branch `task/185-virtual-pad-editor`, from `task/180-android-emulator` at 224f5460):
+- **Controls page, "Virtual controller" section** (shown where the backend says the game draws the pad — Android — and in
+  the Windows dev mock for testing): the mode row (Auto, the default, / Always / Off), Edit layout, Reset to default, the
+  layout's global opacity and vibration, and a status line (the player's layout, the default one, or why it was not used).
+- **Full-screen landscape editor**: every element on a dimmed race scene, 20:9 (default), 16:9 and 21:9 previews; touch
+  drag to move, a pinch or the corner handle to resize, a tap to select; size, width (wide buttons only), opacity and
+  shown/hidden for the selected element; global opacity, vibration, snap to grid; Undo, Reset to default, Save, Cancel.
+  The F7 report button's corner is drawn as a reserved zone and an overlap warns. Elements stay inside the screen while
+  they are moved or resized; the file keeps screen fractions, so a layout fits any phone.
+  Keyboard and pad: Tab or the D-pad selects, the arrows (keyboard) or the left stick (pad) move, Shift+arrow or LB/RB
+  resize, X undoes, Y resets, B goes back; A and B keep the launcher's meaning.
+- **Rust** (`gt4l-core::virtual_pad` and the `get_virtual_pad` / `save_virtual_pad` / `reset_virtual_pad` commands): load
+  the player's layout or the built-in one, validate it, save atomically (temporary file + rename) to
+  `user/virtual-pad.json`, delete it on reset. A file from a newer format is kept as it is and the editor is locked. The
+  built-in layout is `android/virtual-pad/default-layout.json`, byte-identical to the backend's APK asset and compiled
+  into the launcher.
+- **Texts** in en-US and pt-BR with the same keys and placeholders.
+
+**Checks (2026-11-06).** `cargo test --workspace` 797 passed, 0 failed (gt4l-core 311, gt4l-tauri lib 150, both new
+tests included). Focus checks 401/401 (en-US) and 408/408 (pt-BR); nav-test 288/288. Screenshots in
+`build/evidence/t185-editor/`: the Controls section and the editor with an element selected, both languages, at
+2400x1080 and 1366x768.
+
+**State.** Done on the branch, committed and pushed; not merged (one writer). The backend agent adds `GT4_VIRTUAL_PAD` at
+Play and the in-game overlay; the owner's phone test follows once both sides are in one build.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
