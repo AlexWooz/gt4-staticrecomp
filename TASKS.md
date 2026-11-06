@@ -3983,6 +3983,7 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-189 | Wheel page after the owner's G27 test: one-action mapping popup, no guessed mapping, the shipped G27 preset, no "Your wheel" card, a tidy force feedback card, no on/off switch (owner, 2026-11-06) | `task/189-wheel-page-polish` | ✅ For the rc15 test build (owner test pending) |
 | TASK-193 | Option rows change only through their arrows (label and value taps do nothing), 32 x 32 px arrows with a mouse and 44 x 44 px on touch, row labels never split a word (owner, 2026-11-06) | `task/193-option-arrows` | ✅ For the rc15 test build (UI only, cherry-pickable to the Android branch) |
 | TASK-194 | Force feedback like PCSX2 (no default spring, a spring stop stops the spring, per-side friction, no damper floor), the Centring spring row, the rc15 test build (owner, 2026-11-06) | `task/194-rc15-build` | ✅ For the rc15 test build (owner test pending) |
+| TASK-198 | The 1.3.0-rc15 release build with PGO and ThinLTO, the full release gates, launchers labelled rc15 and the installer and portable zip (owner, 2026-11-06) | `task/198-rc15-pgo` | ✅ Done: slice413 (PGO), gates6 wrong=0, CTest 318/319 each, Python 804, launcher 778; `private/release-130-rc15-pgo-out`; the orchestrator publishes |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
@@ -4266,3 +4267,38 @@ labelled rc15, installer and portable zip in `private/release-130-rc15d-out` wit
 their sources. No gates6 (no physics or game logic changed). CTest 318 of 319 on each game (`hw_replace_q07_pcsx2_dumps`
 skipped, as in rc15), Python 804 (57 skipped), launcher 778 (9 ignored), focus checks 427/427 en-US and 434/434 pt-BR,
 nav-test 293/293, locale keys 917 in both, and a headless smoke boot of each game to its title screen.
+
+### TASK-198 — The 1.3.0-rc15 release build with PGO, ready to publish (owner, 2026-11-06; done)
+
+Branch `task/198-rc15-pgo` from `release/1.3.0-rc15` at b9a55c72 (TASK-194 merged), worktree
+`C:\Antigravity\gt4-wt-198-rc15-pgo`. The owner approved rc15 and asked for the optimised build ("com as otimizações"); the
+orchestrator publishes.
+
+1. **The recipe** is rc14's (`private/task134-tools/final14.sh`, `docs/BUILD.md`): `scripts/coregs2_bench/pgo-all.sh` per game
+   with `EE_GENERATED` set to the rc14 hooked units. The units were copied from the TASK-134 worktree and their inventory
+   digests checked against the slice407 receipts (`83387682...` v2.00, `7105d292...` Spec II), so the EE side is the same code
+   as rc14/rc15. The instrumented build trains on the three recorded Spec II runs (the George V Paris lap at 1x and 2x, the
+   Spec II night race) and the two v2.00 scenes (night race, Arcade) with a warm shader cache (300 variants prepared by the
+   rc15 test build first), merges the profile, then rebuilds the EE library and the game with `GT4_HW_PGO=use` and
+   `GT4_HW_THINLTO=ON`.
+2. **Games slice413** (`private/slice413-game`, `private/slice413-ee-v200`, `private/slice413-ee-spec2`, the two profiles) with
+   new pins `docs/inputs/slice413-pcsx2.json` (`gt4vulkan.exe` `049a8c6e...`, 94,659,072 bytes, library `1e782517...`) and
+   `slice413-spec2.json` (`gt4vulkan-spec2.exe` `f3b59ddc...`, 102,409,216 bytes, library `2d21b147...`), the USB capsule
+   `private/slice409-usb-runtime` and the rc15 wheel code.
+3. **Gates** against the rc14 PGO builds (`private/task134-tools/gates6.sh`, wrong=0): the three Spec II laps (24, 35 and 35
+   identical frames), the v2.00 night race (10 of 10, state identical), the Arcade path (14 of 14) and Spec II at 6x (12 of
+   12); VU1 236,448 and VU0 39,731 samples on Spec II, VU1 355,388 and VU0 56,156 on v2.00, MTVU 8,032 frames, 0 differences.
+4. **Tests:** CTest 318 of 319 on each game (`hw_replace_q07_pcsx2_dumps` skipped; 605.7 s and 584.4 s), Python 804 (57
+   skipped), launcher `cargo test --workspace` 778 (9 ignored), focus checks 396/396 en-US and 403/403 pt-BR, nav-test 265/265,
+   locale keys 917 in both, no JS errors; a headless smoke boot of each game to its title screen (frame 1800: v2.00 640x448,
+   64,490 colours, 21,405 primitives; Spec II 26,024 colours).
+5. **Release files:** launchers labelled rc15 (`private/slice413-launchers-rc15`, installer `0ea142c3...` 19,362,304 bytes,
+   portable `f588e14e...` 19,374,080 bytes); distribution `private/slice413-dist-130-rc15` (19 files); installer
+   `GT4Recomp-Setup-1.3.0-rc15.exe` (`aa8c6399...`, 52,363,255 bytes) and portable zip
+   `GT4Recomp-1.3.0-rc15-portable.zip` (`c272855a...`, 81,492,076 bytes) in `private/release-130-rc15-pgo-out` with
+   `SHA256SUMS`; 24 of 24 installer payload files and 24 of 24 zip files equal to their sources (`PORTABLE.txt` generated).
+6. **Found and fixed:** the dev mock (`ui/dev/mock-data.js`) stored `ffb.centering_spring` as the page's `"game"`/`"off"`
+   token instead of the boolean `gt4l_core` keeps, so the two Centring spring focus checks failed on a truthy `"off"`; the mock
+   now normalises exactly like `WheelConfig::set_setting`.
+7. **Not done:** the GitHub release (the orchestrator's step); no in-game play test of this build (the owner's test of the
+   rc15 line is the confirmation).

@@ -1302,6 +1302,15 @@
     if (key === "steering.rotation_degrees" && (value < 180 || value > 1080)) {
       throw new Error("rotation_degrees must be between 180 and 1080");
     }
+    // TASK-194: the page sends "off" or "game" for the game's centring spring and the file carries the boolean, exactly
+    // as gt4l_core::wheel::WheelConfig::set_setting does. Keeping the token here would hand the page a truthy "off".
+    if (key === "ffb.centering_spring") {
+      if (value === "off" || value === "game") {
+        value = value === "game";
+      } else if (typeof value !== "boolean") {
+        throw new Error("expected \"off\" or \"game\" for " + key);
+      }
+    }
     section[parts[1]] = value;
     if (parts[1] === "deadzone" && section.saturation <= section.deadzone + 0.05) {
       section.saturation = Math.min(1, Math.round((section.deadzone + 0.06) * 1000) / 1000);
