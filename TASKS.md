@@ -3673,9 +3673,10 @@ tests included). Focus checks 401/401 (en-US) and 408/408 (pt-BR); nav-test 288/
   `download_gsdx`, `install_gsdx_archive`, `gsdx_download_needed` and `coregs20_offer`; the setup page leaves the renderer
   step out on Android. Windows is unchanged.
 - **Checks:** `cargo test --workspace` 799 passed, 0 failed, 9 ignored (gt4l-core 311, gt4l-tauri lib 146 + 4 ignored; two
-  new launch-contract tests). Focus checks **427/427** en-US and **434/434** pt-BR (5 new: the Android setup page, the
-  TASK-193 pointer rules), nav-test **293/293**, locale parity inside the focus checks. `native_virtual_pad` fixture
-  9/9 groups PASS (compiled on its own in `build/run-vpad-fixture.cmd`). Evidence in `build/evidence/t180-integrate/`.
+  new launch-contract tests). Focus checks **427/427** en-US and **434/434** pt-BR (2 new for the Android setup page, on
+  top of TASK-193's 24 and the editor's 43), nav-test **293/293**, locale parity inside the focus checks.
+  `native_virtual_pad` fixture 9/9 groups PASS (compiled on its own in `build/run-vpad-fixture.cmd`). Evidence in
+  `build/evidence/t180-integrate/`.
 
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
