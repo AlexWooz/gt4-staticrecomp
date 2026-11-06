@@ -1,5 +1,33 @@
 # Current Status
 
+## TASK-199: info cards draw above everything (owner, 2026-11-06)
+
+On `task/199-tooltip-layer` (from `release/1.3.0-rc15`). The owner sent a phone screenshot from Settings > Graphics: the
+info card of "Reflexo do sol e flares das luzes" had the next row's textures-folder line drawn through it, and the row's
+own value over its right edge.
+
+- **Cause.** The row entrance animation (`.enter-item`, `settings.js enterAnimation`, `animation-fill-mode: both`) leaves a
+  `transform` on every row, and a transform makes the row its own stacking context. The card was a child of the row's "i"
+  with `z-index: 20`, which only ordered it inside its own row, so every later row was painted over it.
+- **Fix.** One top layer for every card: `ui.js` moves the open card into `.popover-layer` on the `body` (`position: fixed`,
+  `z-index: 20`: above the page, below a dialog, the migration bar and the toast), places it from its "i" (right and 8 px
+  up; left near the right edge, up near the bottom), follows `resize` and `scroll` and keeps it inside the window; the CSS
+  caps its size to the viewport and lets a long card scroll. It goes back under its "i" when it closes; `.is-shown` replaces
+  the two old CSS rules, so a tap, a second tap, a tap outside, a tap on the card and B all close it as before. Every page's
+  "i" (Settings, Controls, Wheel, Achievements) and the header cards use the same path; a card whose row goes away with a
+  tab change is removed. The card gained a soft shadow.
+- **Tests.** `dev/focus-check.js` `tipLayerChecks`: 17 checks (`document.elementFromPoint` at the card's centre and four
+  corners, inside the window, on the owner's row over the textures line, the first row, a middle row, the last row scrolled
+  to the end, Controls and Wheel headers; the layer, second click, tap outside, tap on the card, keys/pad focus).
+  411 of 413 en-US and 418 of 420 pt-BR, the two failures being the pre-existing TASK-194 Centring spring checks (394/396
+  and 401/403 on the branch before this change); nav-test 265/265; launcher `cargo test --workspace` 714 passed, 9 ignored,
+  one failure in the 1.2.x data migration (`flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`), which does
+  not touch the UI. The same `elementFromPoint` assertions were run over every page with an "i" (42 cards: General 5,
+  Graphics 17, Controls 9, Wheel 8, Achievements 3) and at 1366x768, 2400x1080, 1080x2400 and 420x900, and the screenshots
+  were inspected: no card is covered and none leaves the window. A dialog still paints above a card (z-index 30 against the
+  layer's 20) and opening one closes the card through the pointerdown path. Evidence: `build/evidence/t199/`.
+- **Not done:** no release and no build (the owner asked for none); the Android branch still has to take the UI commit.
+
 ## TASK-194: force feedback like PCSX2, the Centring spring row, and the rc15 test build (owner, 2026-11-06)
 
 On `task/194-rc15-build` (from `release/1.3.0-rc15` at a4acb3bd, which already has TASK-186, 188, 189, 192 and 193). The
