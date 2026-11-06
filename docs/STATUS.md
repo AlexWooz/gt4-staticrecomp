@@ -22,8 +22,10 @@ own value over its right edge.
   411 of 413 en-US and 418 of 420 pt-BR, the two failures being the pre-existing TASK-194 Centring spring checks (394/396
   and 401/403 on the branch before this change); nav-test 265/265; launcher `cargo test --workspace` 714 passed, 9 ignored,
   one failure in the 1.2.x data migration (`flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`), which does
-  not touch the UI. Cards checked by hand on every page with an "i" and in the dialogs, both languages, 1366x768, 2400x1080,
-  1080x2400 and 420x900. Evidence: `build/evidence/t199/`.
+  not touch the UI. The same `elementFromPoint` assertions were run over every page with an "i" (42 cards: General 5,
+  Graphics 17, Controls 9, Wheel 8, Achievements 3) and at 1366x768, 2400x1080, 1080x2400 and 420x900, and the screenshots
+  were inspected: no card is covered and none leaves the window. A dialog still paints above a card (z-index 30 against the
+  layer's 20) and opening one closes the card through the pointerdown path. Evidence: `build/evidence/t199/`.
 - **Not done:** no release and no build (the owner asked for none); the Android branch still has to take the UI commit.
 
 ## TASK-194: force feedback like PCSX2, the Centring spring row, and the rc15 test build (owner, 2026-11-06)

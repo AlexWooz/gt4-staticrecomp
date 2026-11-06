@@ -4295,8 +4295,10 @@ the layer itself, a second click, a tap outside, a tap on the card, and keys/pad
 413 en-US and 418 of 420 pt-BR (the two failures are the pre-existing Centring spring checks of TASK-194, identical on the
 branch before this change: 394/396 and 401/403), nav-test 265/265, launcher `cargo test --workspace` 714 passed, 9 ignored
 (one failure, `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`, in the 1.2.x data migration and
-unrelated to the UI). Cards checked by hand on General, Graphics, Controls, Wheel, Achievements, About and the dialogs, in
-en-US and pt-BR, at 1366x768, 2400x1080 portrait/landscape and 420x900: none leaves the window and none is covered.
+unrelated to the UI). The same `elementFromPoint` assertions were run over every page with an "i" (42 cards: General 5,
+Graphics 17, Controls 9, Wheel 8, Achievements 3; About, Games, Saves and Replays have none) and at 1366x768, 2400x1080,
+1080x2400 and 420x900, with the screenshots inspected as well: no card is covered and none leaves the window. A dialog
+(modal, z-index 30) still paints above a card, and opening one closes it through the pointerdown path.
 Evidence in `build/evidence/t199/` (before and after screenshots).
 
 **State (2026-11-06):** done, branch `task/199-tooltip-layer`, pushed, no PR, no release. UI only
