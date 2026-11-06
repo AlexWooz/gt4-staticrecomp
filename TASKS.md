@@ -3617,9 +3617,30 @@ Not in the current phases (Phase 3 Linux, Phase 4 Android): it starts only on th
 - **Gates:** identity at 1x/2x/3x/10x (fixture, menu and race dumps, flare hashes); CTest 321/321 (1 skipped).
 - **Also fixed:** a latent core-1 push-constant size bug.
 
-**Step 3 (in progress, DeepSeek):** cheap exact asynchrony from `STUDY-ASYNC-READBACK.md`.
-- K-rule defaults (`GT4_CORE2_SUBMIT_AFTER_WAIT`) on tile and unified-memory GPUs.
-- A newest-fence wait with an optional bounded spin.
+**Step 3 done (cdc52868, 54d2a0f4, DeepSeek, reviewed):** cheap exact asynchrony from `STUDY-ASYNC-READBACK.md`.
+- `GT4_CORE2_WAIT_NEWEST_FENCE`, default on: a readback waits for the newest submission's fence only (exact on one
+  in-order queue); the older slots' bookkeeping moves to the slot's reuse.
+- `GT4_HW_READBACK_SPIN`, default off: a bounded poll before blocking. No gain on the desktop.
+- K rule device default: K 8 on tile-based and unified-memory GPUs, K 0 on discrete GPUs (the desktop A/B stayed under
+  the 0.3 ms bar). `game.log` names the K and its reason.
+- Gates: flare hashes identical in all 16 lines (K 8, newest fence, both; HK 2x/10x, Motegi 2x), gates6 wrong=0, CTest
+  321/321 (1 skipped), Python 802. Not measured on the phone yet.
+
+### TASK-184: cut the no-interlock path's barriers on tile GPUs (2026-11-05; branch `task/182-barrier-scope`)
+
+**Why.** On the S23 (Adreno 740, no interlock, no raster-order or tile-image extension) the colour-attachment path issues
+1,318-1,983 fragment barriers per VBlank at 2x, 98% of them "primitive may share a pixel"; at 2x the race runs at about
+28 fps, stall-bound.
+
+**Steps (DeepSeek, effort max; brief in the coordinator's scratchpad):**
+1. Log the device's raster-order, local-read, feedback-loop, tile-image and interlock capabilities at start-up.
+2. A raster-order attachment access path where a device offers it (`GT4_CORE2_RASTER_ORDER`); mocked-capability fixture.
+3. Exact, pixel-coverage overlap tests instead of bounding boxes, with batching between barriers
+   (`GT4_CORE2_TIGHT_OVERLAP`); fixture against brute-force coverage.
+4. Load and store ops of the colour-attachment passes (DONT_CARE, no transient depth store, clears as load ops).
+5. Why the GS thread's CPU time grows with the scale (28.6 ms per VBlank at 3x on the S23).
+
+**Gates:** flare hashes (also with `GT4_HW_INTERLOCK=0`), frame dumps off against on, CTest serial.
 
 **Owner (2026-11-05):** "implement all of it", cheapest first.
 - The exact switches go ON for Android in the next APK.
