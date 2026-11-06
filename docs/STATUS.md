@@ -22,7 +22,7 @@ harvested again at the next Play, so a save deleted by hand in `%APPDATA%` came 
   or already has its own cross-volume path (`relocate`, `games_layout`, the installer's swap). Only the three sites above can
   cross volumes in a supported layout (installer, portable, custom data folder, chosen textures folder, OneDrive).
 - Tests: 8 unit tests on the helper, 3 new flow tests (delete, New save, harvest with the card and the library under different
-  roots and a rename that reports another volume), a migration test for the park mover. Launcher `cargo test --workspace` 768
+  roots and a rename that reports another volume), a migration test for the park mover. Launcher `cargo test --workspace` 769
   passed (9 ignored); focus checks 358/358 en-US and 365/365 pt-BR; nav-test 260/260; locale keys 925 in both.
 - Launchers labelled rc15 (installer build `7cc5df06...` 19,383,808 bytes, portable `220bbeee...` 19,310,592 bytes); installer
   `GT4Recomp-Setup-1.3.0-rc15.exe` (`ac46f2cd...`, 48,235,834 bytes) and portable zip `GT4Recomp-1.3.0-rc15-portable.zip`
