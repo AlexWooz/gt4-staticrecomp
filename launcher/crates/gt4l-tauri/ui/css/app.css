@@ -468,6 +468,10 @@ body.input-pad nav.side .ring-on { box-shadow: none; }
 /* option rows: 48 px, label left, one control right */
 .row { display: flex; align-items: center; min-height: 38px; border-bottom: 1px solid var(--hair); gap: 16px; }
 .row .k { flex: 1; color: var(--white); display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* TASK-193 (the TASK-189 nit): a label wraps between words only, never inside one. Its box is never narrower than its longest
+   word (no min-width: 0 on the label), so a word is never split: the control gives way instead and shortens its value with an
+   ellipsis. */
+.row .k > span:first-child { overflow-wrap: normal; hyphens: manual; }
 /* Every control column is 220 px and right-aligned, so controls in one column line up
    (spatial focus depends on it). */
 .row .ctl { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: none; width: 240px; }
@@ -527,16 +531,29 @@ body.input-pad .info:focus .tip { display: block; }
 .row .ctl.wide .select { width: 100%; }
 
 /* The option control (owner, 2026-11-02), as the version switch on the home page: the value between two arrows, in an endless
-   loop; the new value slides in from the side of the arrow used. One focus stop: left and right step it. */
+   loop; the new value slides in from the side of the arrow used. One focus stop: left and right step it. Only the arrows change
+   it with a mouse or a finger (TASK-193). */
 .selector {
-  display: flex; align-items: center; width: 100%; height: 30px; font-size: 12.5px; color: var(--white); cursor: pointer;
+  display: flex; align-items: center; width: 100%; height: 30px; font-size: 12.5px; color: var(--white); cursor: default;
   border-radius: 3px;
 }
+/* TASK-193 (owner, 2026-11-06): the drawn arrow stays a 24 px box, but its hit area is bigger and invisible: 32 x 32 px with a
+   mouse and 44 x 44 px with a finger (the coarse rule below). The negative margin takes back the padding, so the glyph, the
+   value and the row's layout do not move, and the deeper box paints above the value's edge (z-index) for the touch area. */
 .selector-arrow {
-  flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 3px; color: var(--dim);
-  border: 1px solid transparent; transition: color 150ms ease, border-color 150ms ease;
+  --selector-arrow-hit: 32px;
+  flex: none; position: relative; z-index: 1; cursor: pointer;
+  width: var(--selector-arrow-hit); height: var(--selector-arrow-hit);
+  margin: calc((24px - var(--selector-arrow-hit)) / 2);
+  display: grid; place-items: center; color: var(--dim);
 }
-.selector-arrow:hover { color: var(--white); border-color: rgba(255, 255, 255, 0.3); }
+/* The hover ring is drawn on the 24 px box, so a bigger hit area does not change how the arrow looks. */
+.selector-arrow::after {
+  content: ""; position: absolute; inset: calc((var(--selector-arrow-hit) - 24px) / 2); border-radius: 3px;
+  border: 1px solid transparent; pointer-events: none; transition: border-color 150ms ease;
+}
+.selector-arrow:hover { color: var(--white); }
+.selector-arrow:hover::after { border-color: rgba(255, 255, 255, 0.3); }
 body.input-keys .selector:focus .selector-arrow,
 body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 .selector.is-stuck { cursor: default; }
@@ -899,8 +916,8 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 @media (pointer: coarse) {
   .row { min-height: 56px; gap: 28px; }
   .option { height: 56px; }
-  .selector-arrow { position: relative; }
-  .selector-arrow::before { content: ""; position: absolute; inset: -12px; }
+  /* TASK-193: a finger gets a 44 x 44 px hit area around each arrow (32 x 32 with a mouse above). */
+  .selector-arrow { --selector-arrow-hit: 44px; }
   .tab { min-height: 52px; line-height: 52px; }
   .hint { min-height: 52px; }
   .btn { height: 52px; }
@@ -1261,9 +1278,10 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 .wh-line.is-strong { color: var(--silver); }
 .wh-line.is-warn { color: var(--silver); padding: 6px 10px; border-left: 2px solid #e3b341; background: rgba(227, 179, 65, 0.08); margin-top: 6px; }
 .wh-device-row .row { min-height: 44px; border-bottom: 0; }
-.wh-panel .row .ctl { width: 54%; min-width: 0; }
-/* Labels stay inside the card: they wrap between words (never inside one) and never push the control out. */
-.wh-panel .row .k { min-width: 0; font-size: 12.5px; line-height: 15px; white-space: normal; overflow-wrap: normal; }
+.wh-panel .row .ctl { width: 54%; min-width: 0; flex: 0 1 auto; }
+/* Labels stay inside the card: they wrap between words (never inside one) and never push the control out. The label gets the
+   room it needs first; the control gives way and its value ends with an ellipsis (TASK-193). */
+.wh-panel .row .k { min-width: 0; flex: 1 1 auto; font-size: 12.5px; line-height: 15px; white-space: normal; overflow-wrap: normal; hyphens: manual; }
 .wh-panel .row { align-items: center; gap: 8px; }
 /* The force feedback switches carry their value and two arrows: their labels get the room instead. */
 .wh-ffb .row .ctl { width: 48%; }
