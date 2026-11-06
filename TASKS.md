@@ -3694,7 +3694,7 @@ the 1.3.0 final, so a slower PC turns off only what costs frames.
 - Gates: every effect on identical to the rc15 draft (frames, flare reply hashes, `gates6.sh` wrong=0); every effect off
   identical to `GT4_CORE2_PERFORMANCE=1`; each toggle alone changes only its own effect with the race clock and the simulation
   state identical; the new `hw_core2_effect_toggles` fixture for CoreGS 2.0 and the stream-client fixture for the GSdx path.
-- The same correction goes to `task/180-android-emulator` in a separate launcher-only commit.
+- The same correction is commit `0ee1a707` on `task/180-android-emulator` (launcher and game.ini parts; the branch's schema 10).
 - **Open:** the pinned gt4-gs 1.2.1 embeds the TASK-091 allow-list (HWDownloadMode 0 and 2), so it ignores 1, 3 and 4 until a
   gt4-gs build with the regenerated allow-list ships; the launcher offers the row as the owner asked.
 - State (2026-11-06): implemented on `task/186-effect-toggles-pc`; owner test with the G27 pending.

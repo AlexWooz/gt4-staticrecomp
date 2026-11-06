@@ -21,7 +21,7 @@ CoreGS item is a row too so that the whole bundle stays reachable):
   pinned gt4-gs 1.2.1 embeds the TASK-091 allow-list (HWDownloadMode 0 and 2), so it ignores Readbacks 1, 3 and 4 until a
   gt4-gs build with the regenerated allow-list ships; the row is offered as the owner asked and the notes and
   `docs/GS-SETTINGS.md` say so.
-- The same correction goes to `task/180-android-emulator` in a separate launcher-only commit.
+- The same correction is commit `0ee1a707` on `task/180-android-emulator` (schema 10 there, launcher and game.ini parts).
 
 Games slice411, plain (no PGO, no ThinLTO), the slice407 EE libraries and the slice409 USB capsule, pins
 `docs/inputs/slice411-pcsx2.json` (exe `f0fc8970...`) and `slice411-spec2.json` (`64a6dcb0...`, Spec II), distribution
