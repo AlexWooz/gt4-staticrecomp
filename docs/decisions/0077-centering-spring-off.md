@@ -8,10 +8,10 @@ has to be disabled".
 
 `wheel.toml` gets `[ffb] centering_spring = "off" | "game"`, and the **default is `off`**:
 
-- `off` plans no spring at all: neither GT4's own spring effects (types `01`, `0B`, `03`, `0D`) nor the DFP's default
-  spring (`autocenter`).
-- `game` is the behaviour of rc15 and earlier: the game's spring plays when it sends one, and the DFP default spring plays
-  while it is on.
+- `off` plans no spring at all: not GT4's own spring effects (types `01`, `0B`, `03`, `0D`).
+- `game` plays GT4's spring while the game asks for it. (Before TASK-194 it also played the DFP's default spring; there is
+  no default spring any more: the `F4` "default spring on" command is ignored, as PCSX2 ignores it, and a USB reset does not
+  bring one back.)
 - Nothing else changes: the racing constant force, the damper, the friction and the way GT4's own force feedback strength
   setting (Strong/Medium/Weak) scales them.
 - A 1.2.x file keeps loading: the old `[ffb] centering_spring` amount or boolean is read (nonzero = `game`), and the
@@ -44,3 +44,6 @@ has to be disabled".
   logs nothing). The Wheel page row ("Centring spring": Off / Game) is a follow-up task.
 - Tests: `native_usb_dfp` decodes GT4's exact command bytes (the spring, its stop, the friction and the racing force);
   `native_wheel` checks that `off` plans no spring and that the racing force, damper and friction do not change.
+- **TASK-194 (2026-11-06)** closes the launcher follow-up above: `gt4l-core` knows the key, the Wheel page has the row (Off
+  or Follow the game), and the force feedback otherwise follows PCSX2 (a spring stop stops the SDL spring, per-side
+  friction, no damper floor). The decision itself is unchanged: `centering_spring` stays `off` by default.

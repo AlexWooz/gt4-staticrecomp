@@ -3944,6 +3944,7 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-188 | Saves on a PC whose install and save library are on different drives (issue #208) | `task/188-cross-drive-saves` | ✅ For the rc15 test build (owner test pending) |
 | TASK-189 | Wheel page after the owner's G27 test: one-action mapping popup, no guessed mapping, the shipped G27 preset, no "Your wheel" card, a tidy force feedback card, no on/off switch (owner, 2026-11-06) | `task/189-wheel-page-polish` | ✅ For the rc15 test build (owner test pending) |
 | TASK-193 | Option rows change only through their arrows (label and value taps do nothing), 32 x 32 px arrows with a mouse and 44 x 44 px on touch, row labels never split a word (owner, 2026-11-06) | `task/193-option-arrows` | ✅ For the rc15 test build (UI only, cherry-pickable to the Android branch) |
+| TASK-194 | Force feedback like PCSX2 (no default spring, a spring stop stops the spring, per-side friction, no damper floor), the Centring spring row, the rc15 test build (owner, 2026-11-06) | `task/194-rc15-build` | ✅ For the rc15 test build (owner test pending) |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
@@ -4190,3 +4191,40 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+
+### TASK-194: force feedback like PCSX2, the Centring spring row, and the rc15 test build (owner, 2026-11-06; for the rc15 test build)
+
+**Why.** The owner drives GT4 with a Logitech G27 and compares it with PCSX2, where the wheel does not pull itself to the
+centre in a race. TASK-192 had already turned GT4's menu spring off by default; this task removes the remaining differences
+between our force feedback and PCSX2's, gives the setting a launcher row, and produces the next rc15 test build for his G27.
+
+**What.**
+1. **No default spring.** The DFP "default spring on" command (`F4`) is accepted and ignored, as PCSX2 ignores it: no default
+   centring spring is ever decoded or played, `F5` and "set default spring" stay harmless, and a USB reset in the middle of a
+   session leaves no force behind, so it cannot bring one back. `DfpForces` no longer carries an `autocenter` field at all.
+2. **A spring stop stops the spring.** With `[ffb] centering_spring = "game"`, the plan says whether the game currently asks
+   for the spring; a spring stop (`23 0B`) makes it inactive and `DfpHapticPlayer` calls `SDL_StopHapticEffect` on the spring
+   instead of sending a zero-saturation spring. The decoder keeps each slot's effect type and the order of its last download,
+   so a spring downloaded on another slot replaces the old parameters (one host spring, as in PCSX2).
+3. **Per-side friction.** The two coefficient bytes are used separately: `21 0E 80 FF 20` is 0.5 on the left, 1.0 on the right
+   and a 0.125 clip, not the max of the two on both sides.
+4. **Damper floor 0 by default** (`FfbConfig::damper`, `FfbConfig` in `gt4l-core`), the shipped G27 preset `damper = 0.0`, and
+   the damper effect exists only when the game sends one or a floor is set. `centering_spring` stays `off` by default.
+5. **Launcher:** Settings > Wheel > Force feedback has *Centring spring* (Off, the default, or Follow the game) with its info
+   tooltip in en-US and pt-BR. `gt4l-core/src/wheel.rs` learns `ffb.centering_spring` (`"off"`/`"game"`, plus a 1.2.x amount
+   or boolean; both spellings), writes it in `to_toml` and keeps the round trip; `set_wheel_setting` accepts `"off"`/`"game"`
+   and a boolean. The damping row now starts at 0%.
+
+**Fixtures.** `native_usb_dfp` drives GT4's exact bytes (boot, the menu spring and its stop, friction, the racing force), the
+`F4`/`F5`/`0E` commands, a second slot's spring replacing the first, a stop for each slot, and a USB reset in the middle of a
+session (no spring after it). `native_wheel` covers the plan (no default spring, a spring stop is an inactive effect, the
+per-side friction coefficients, the damper floor at 0) and the player (created on first use, a spring stop calls
+`stop spring`, the same spring again needs no update). The launcher tests cover the key's parse, both spellings, the legacy
+amount, the refusals, the round trip and `set_wheel_setting` in both forms.
+
+**Build.** Games slice412, plain (no PGO, no ThinLTO), the slice407 EE libraries and the slice409 USB capsule, pins
+`docs/inputs/slice412-pcsx2.json` and `slice412-spec2.json`, distribution `private/slice412-dist-130-rc15d`. Launchers
+labelled rc15, installer and portable zip in `private/release-130-rc15d-out` with `SHA256SUMS`; contents checked against
+their sources. No gates6 (no physics or game logic changed). CTest 318 of 319 on each game (`hw_replace_q07_pcsx2_dumps`
+skipped, as in rc15), Python 804 (57 skipped), launcher 778 (9 ignored), focus checks 427/427 en-US and 434/434 pt-BR,
+nav-test 293/293, locale keys 917 in both, and a headless smoke boot of each game to its title screen.

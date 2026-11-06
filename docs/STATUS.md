@@ -1,5 +1,53 @@
 # Current Status
 
+## TASK-194: force feedback like PCSX2, the Centring spring row, and the rc15 test build (owner, 2026-11-06)
+
+On `task/194-rc15-build` (from `release/1.3.0-rc15` at a4acb3bd, which already has TASK-186, 188, 189, 192 and 193). The
+owner drives GT4 with a Logitech G27 and says PCSX2 does not pull the wheel to the centre in a race. The reference's
+behaviour came from a prose summary only (`scratchpad/dfp-pcsx2-oracle.summary.txt`, written by a PCSX2-tainted research
+agent); no PCSX2 source was opened by this task and no GPL code was copied.
+
+- **No default spring.** The DFP "default spring on" command (`F4`) is accepted and ignored, as PCSX2 ignores it: no default
+  centring spring is ever decoded or played. `F5` and "set default spring" stay harmless. A USB reset calls the decoder's
+  `reset()`, which now recomputes an empty force set, so a reset in the middle of a session cannot bring a spring back.
+  `DfpForces` lost its `autocenter`/`autocenter_strength` fields; the census line prints the forces that exist.
+- **A spring stop stops the spring.** `EffectPlan` is now an array of `PlannedEffect { active, params }`. With
+  `[ffb] centering_spring = "game"`, a spring stop (`23 0B`) makes the spring inactive and `DfpHapticPlayer` calls the new
+  `HapticSink::stop(kind)` (`SDL_StopHapticEffect`) instead of sending a zero-saturation spring. The decoder keeps each slot's
+  effect type and a download order, so a spring downloaded on another slot replaces the old parameters (one host spring, as
+  in PCSX2) instead of the first active slot's values staying on the wheel. Effects are now created on their first use:
+  constant always while focused, spring/damper/friction only when the game asks for one.
+- **Per-side friction.** `DfpForces` carries `friction_left`/`friction_right`; `21 0E 80 FF 20` is 0.5 left, 1.0 right and a
+  0.125 clip, instead of the max of the two on both sides.
+- **Damper floor 0.** `FfbConfig::damper` defaults to 0 (PCSX2 applies no damper and GT4 sends none in a race), the shipped
+  G27 preset sets `damper = 0.0`, and there is no damper effect at all when the game sends none and the floor is 0.
+  `centering_spring` stays `off` by default.
+- **Launcher row.** Settings > Wheel > Force feedback > *Centring spring*: Off (default) or Follow the game, with an info
+  tooltip, in en-US and pt-BR. `gt4l-core/src/wheel.rs` learned `ffb.centering_spring` (`"off"`/`"game"`, plus a 1.2.x amount
+  or boolean and the British spelling), writes it as a token and keeps the round trip; `set_wheel_setting` accepts
+  `"off"`/`"game"` and a boolean. The damping row starts at 0%. The family template and the mock carry 0 too.
+- **Fixtures.** `native_usb_dfp`: GT4's exact bytes (boot, the menu spring `21 0B 7F 7F 77 00 80` and its `23 0B` stop,
+  friction, the racing variable force), `F4`/`F5`/`0E` changing nothing, a second slot's spring replacing the first, one stop
+  per slot, and a USB reset in the middle of a session (no spring after it, and `F4` again changes nothing). `native_wheel`:
+  the plan (no default spring, a stop is an inactive effect, per-side friction, the floor at 0) and the player (created on
+  first use, a spring stop calls `stop spring`, the same spring again is one run with no update). Launcher tests: the key's
+  parse, both spellings, the 1.2.x amount, the refusals, the round trip and `set_wheel_setting` in both forms.
+- **Build (slice412, plain, no PGO).** Both games from `build/412-v200` and `build/412-spec2` with the slice407 EE libraries
+  and the slice409 USB capsule: pins `docs/inputs/slice412-pcsx2.json` (`gt4vulkan.exe` `c0753942...`, 90,207,232 bytes) and
+  `slice412-spec2.json` (`gt4vulkan-spec2.exe` `99d83d63...`, 97,189,888 bytes); distribution
+  `private/slice412-dist-130-rc15d` (19 files). Launchers labelled rc15 (installer build `7c39a614...` 19,362,304 bytes,
+  portable `938470a9...` 19,374,080 bytes); installer `GT4Recomp-Setup-1.3.0-rc15.exe` (`13d4067e...`, 48,232,221 bytes) and
+  portable zip `GT4Recomp-1.3.0-rc15-portable.zip` (`9aec9196...`, 75,732,931 bytes) in `private/release-130-rc15d-out` with
+  `SHA256SUMS`. Contents checked against their sources: 24 of 24 installer payload files and 24 of 24 zip files equal by
+  sha256 (the WebView2 bootstrapper included).
+- **Tests.** CTest 318 of 319 on each game (`hw_replace_q07_pcsx2_dumps` skipped, as in rc15; 696.9 s and 577.9 s); Python
+  804 (57 skipped); launcher `cargo test --workspace` 778 passed (9 ignored); focus checks 427/427 en-US and 434/434 pt-BR;
+  nav-test 293/293; locale keys 917 in both. No gates6: the change touches no physics, no game logic and no rendering. Smoke
+  boot, headless, both games to their title screen (`build/evidence/smoke/`): v2.00 at frame 1800 (640x448, 21,405
+  primitives, 55k-64k colours) and Spec II at frame 1800 with its own save card (`private/coregs2-bench/cards/`), 218,626
+  primitives, the GT4 Spec II title with the Arcade / Gran Turismo menu.
+- **Not done:** the GitHub draft is the orchestrator's step; PGO only on the owner's word (the brief asked for a plain build).
+
 ## TASK-193: an option row changes only through its arrows (owner report from his phone, 2026-11-06)
 
 On `task/193-option-arrows` (from `release/1.3.0-rc15` at eeefb1b9). The owner tapped the left arrow of an option row
