@@ -3741,6 +3741,27 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-196: 4:3 screens and the aspect rule taken from the display (owner, 2026-11-06; planned)
+
+Some players use 4:3 monitors (Discord, YouTube). This is not a new graphics option: the ratio follows the screen
+resolution.
+- **16:10 and other near-16:9 screens:** keep the 16:9 game picture with bars at the top and bottom, as today.
+- **4:3 screens (and anything closer to 4:3 than to 16:9):** the forced 16:9 mode and the widescreen corrections are
+  turned off automatically, and the game runs in its native 4:3.
+- **Logging and docs:** the launcher logs the decision, and the docs explain it.
+- **Gates:** the race clock and state stay identical; only the projection and HUD hooks switch.
+
+### TASK-197: native multi-monitor (triple screen) without Nvidia Surround or AMD Eyefinity (owner, 2026-11-06; planned)
+
+Triple screens already work when the driver joins the monitors into one wide display (Surround, Eyefinity).
+- **Native support:** the game renders one wide picture (for example 3 x 16:9 = 48:9, through the existing aspect
+  correction) and splits it into three blocks.
+- **Presentation:** each block goes to its own borderless full-screen window on its own monitor.
+- **Launcher:** the player maps which monitor is the left, centre and right one, and can reorder them.
+- **Bezels:** offer bezel compensation if cheap.
+- **Renderers:** CoreGS 2.0 first; check whether the GSdx (gt4-gs) path can do the same.
+- **Constraints:** game logic never changes; frame pacing stays on one clock.
+
 ### TASK-195: Cloud saves and cloud replays through the player's own Google Drive (owner, 2026-11-06; planned)
 
 The owner's full specification, in Portuguese, is `docs/tasks/TASK-195-cloud-saves-replays.pt-BR.md`.
