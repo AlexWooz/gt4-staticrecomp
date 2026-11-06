@@ -32,23 +32,24 @@ outside it is ignored with one warning line; gt4-gs never refuses to start becau
   gt4-gs 1.3.0 (TASK-200), the fractional scales 1.25, 1.5, 1.75 and 2.5 (the allow-list values
   `1|2|3|4|6|12|1.25|1.5|1.75|2.5|5|7|8|9|10|11`; `ExtendedUpscalingMultipliers` is still never written). gt4-gs
   lowers a value above the GPU's limit (max texture size / 1280: 12x on 16384-texel GPUs, 6x on 8192) with a notice;
-  READY does not report that limit yet. The launcher writes a fractional value only from the GSdx Resolution row
-  (`gsdx_resolution`, see the TASK-200 section below), and only to an installed gt4-gs 1.3.0 or newer; the Render
-  scale plan keeps whole multipliers.
+  READY does not report that limit yet. The launcher writes a fractional value only from the Render scale, and only to an
+  installed gt4-gs 1.3.0 or newer; an older gt4-gs gets whole multipliers (see the TASK-200 section below).
 - k per output: 1920x1080 3x, 1920x1200 3x, 1680x1050 3x, 2560x1080 4x, 2560x1440 4x, 3440x1440 6x, 3088x1440 5x,
   3840x2160 6x. Render scale 2560x1440: 50% 2x, 100% 4x, 200% 8x. The default INI (1920x1080 or no monitor known, 100%)
-  is unchanged: `upscale_multiplier = 3`.
+  is unchanged: `upscale_multiplier = 3`. With the percentages of the review, 2560x1440 at 75% is 3x and at 125% is 5x;
+  4K at 50% is 3x.
 - `aspect` stays forced 16:9 in the INI: the per-scene fill still comes only from protocol 1.3 `display_aspect`; the
   launcher has no aspect setting any more (always auto from the output size, decision 0071 addendum).
 
 **TASK-200 (owner, 2026-11-06): fractional scales and OpenGL for GSdx, in a new gt4-gs build.**
 
 - **Fractional scales.** The four values 1.25, 1.5, 1.75 and 2.5 join the `upscale` row as `offered = false` choices
-  (their INI values stay exact and use a dot, independent of the locale). The launcher writes one only from its GSdx
-  Resolution row (`gsdx_resolution`, a launcher setting, not a table row): `auto` keeps the Render scale plan (whole
-  multipliers, the default, so existing installs do not change), and a fixed value is written as is. The row replaces
-  the Render scale slider for GSdx and only when the installed gt4-gs is 1.3.0 or newer (`current.txt`); CoreGS 2.0 and
-  an older gt4-gs keep today's slider.
+  (their INI values stay exact and use a dot, independent of the locale). The launcher writes them from the **Render
+  scale**: it is a percentage of the screen's automatic multiplier `k`, so 100% is exactly `k` (never below the screen);
+  the multiplier is `k x percentage / 100` snapped to the accepted value closest to it (an exact tie goes up), whole
+  numbers only up to gt4-gs 1.2.1 and with the four fractional values from 1.3.0 (`current.txt`). The owner rejected a
+  separate Resolution list on 2026-11-06; the Render scale is the only control. Labels show the 16:9 picture, width
+  `640 x multiplier` and height `floor(width x 9 / 16)`.
 - **OpenGL.** `graphics_api` gains `opengl` (`Renderer = 12`, after Direct3D 11). Automatic never resolves to it
   (`gpu::plan` stays Vulkan or Direct3D 11), it is offered only with gt4-gs 1.3.0 or newer, and the INI writer falls
   back to Automatic (Vulkan) for an older install after a downgrade.

@@ -399,8 +399,7 @@ impl AppState {
         let game_ini = config_dir.join(launch::STANDALONE_CONFIG_FILE);
         let mut text = launch::standalone_config_text(settings, display.as_ref());
         if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
-            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
-            text.push_str(&launch::coregs20_section(settings, display.as_ref(), integrated, &self.texture_location().0));
+            text.push_str(&launch::coregs20_section(settings, display.as_ref(), &self.texture_location().0));
         }
         // TASK-181: a direct start finds the racing wheel file through game.ini (only when the file exists).
         let wheel_path = self.wheel_path();
@@ -414,8 +413,7 @@ impl AppState {
         let renderer_root = self.dirs.renderer_root();
         if let Some(installed) = gs_release::installed(&renderer_root) {
             let paths = launch::Pcsx2Paths::for_session(&installed, &self.dirs.renderer_install_root(), &config_dir, &self.texture_location().0.folder);
-            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
-            match launch::gs_config_text(settings, &paths, display.as_ref(), integrated) {
+            match launch::gs_config_text(settings, &paths, display.as_ref()) {
                 Ok(text) => {
                     if let Err(error) = gs_table::write_ini_atomic(&paths.config, &text) {
                         log_error(&self.dirs, &format!("{} not written: {error}", paths.config.display()));

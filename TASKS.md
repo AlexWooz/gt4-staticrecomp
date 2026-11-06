@@ -3747,6 +3747,13 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 (launcher worktree `C:\Antigravity\gt4-wt-200-gsdx-scales`, from `release/1.3.0-rc15` at 265487b5). Not built yet: no
 rc16, no installer, no release; tested at the rc16 build.
 
+- **Review (owner, same day).** The separate "Resolution (GSdx)" list was rejected. The fractional values are finer
+  steps of the **existing Render scale**, which is always a percentage of the screen: 100% is the automatic multiplier
+  `k` and is never below the screen; a lower percentage scales `k` (on 4K, 50% is half of 6x = 3x). The multiplier is the
+  accepted value closest to `k x percentage / 100`, an exact tie going to the larger one. The TASK-105 integrated-GPU 1x
+  default (commit `4f76bb07`) was the only place where 100% was below the screen and is removed; the additive TASK-118
+  ladder (`92d6053e`) is replaced by this percentage. Labels show the 16:9 picture: width `640 x multiplier`, height
+  `floor(width x 9 / 16)` (2x = 1280x720, 2.5x = 1600x900, 1.25x = 800x450).
 - **Map.** The GS core already handles a fractional multiplier (a float; the Qt/ImGui lists once offered 1.25x to 3.5x,
   removed in 2025 without touching the GS). gt4-gs refused it only in its allow-list, and the same allow-list refused
   `Renderer = 12` although OpenGL is compiled in.
@@ -3755,10 +3762,10 @@ rc16, no installer, no release; tested at the rc16 build.
   version string is `gt4gs 1.3.0`. It compiles; the headless replay accepts `upscale_multiplier = 1.25` and draws with
   Vulkan; OpenGL in a headless replay crashed inside the AMD OpenGL driver (`atio6axx.dll`) at the PBuffer pixel format,
   so OpenGL starts only with a real window path (owner test).
-- **Launcher:** the GSdx Resolution row (`gsdx_resolution`) replaces the Render scale slider for GSdx with `auto` (the
-  existing plan, unchanged for existing installs) or a fixed multiplier, the four fractional ones included, written with
-  a dot; OpenGL joins the Graphics API list after Direct3D 11; both only when the installed gt4-gs is 1.3.0 or newer
-  (`RENDERER_FRACTIONAL_MINIMUM`). Locales in both languages; table and allow-list regenerated.
+- **Launcher:** the Render scale snap and write above; the four fractional steps and OpenGL only when the installed
+  gt4-gs is 1.3.0 or newer (`RENDERER_FRACTIONAL_MINIMUM`), whole numbers and the three APIs for an older install.
+  OpenGL joins the Graphics API list after Direct3D 11; Automatic never resolves to it. Locales in both languages; table
+  and allow-list updated. The `gsdx_resolution` row and its locale keys are gone.
 
 The Android GSdx (ARMSX2) offers fractional render scales (1.25x, 1.5x, 1.75x, 2.5x). The PC GSdx (gt4-gs) should offer
 them too. The main reason for the gt4-gs rebuild is OpenGL, which is still missing from the launcher.

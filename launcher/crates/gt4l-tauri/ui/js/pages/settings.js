@@ -207,10 +207,6 @@
     if (option.api_label) {
       params.api = option.api_label;
     }
-    // TASK-200: the GSdx Resolution "Automatic" entry names the multiplier it resolves to ("Automatic (4x · 2560x1792)").
-    if (option.plan) {
-      params.plan = option.plan;
-    }
     return params;
   }
 

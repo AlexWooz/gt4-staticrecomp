@@ -16,13 +16,18 @@ tested.
   `upscale_multiplier = 1.25` starts and draws with Vulkan (no "ignoring" line). OpenGL in a headless replay crashes
   inside the AMD OpenGL driver (`atio6axx.dll`, `ChoosePixelFormat` for PCSX2's PBuffer window) while a minimal WGL probe
   in the same session succeeds; the live path uses the game window, so the owner's in-game test is the gate.
-- **Launcher.** Settings > Graphics > *Resolution (GSdx)* (`gsdx_resolution`) replaces the Render scale slider for GSdx:
-  Automatic (the existing plan, so nothing changes for an existing install) or a fixed multiplier, 1.25x/1.5x/1.75x/2.5x
-  included, written with a dot in the INI. The Graphics API list gains OpenGL after Direct3D 11 ("older PCs"); Automatic
-  never resolves to it. Both appear only when the installed gt4-gs is 1.3.0 or newer (`RENDERER_FRACTIONAL_MINIMUM`);
-  older versions keep today's list, and the INI writer falls back to Automatic (Vulkan) for a downgrade.
+- **Launcher (after the owner's review, same day).** The separate *Resolution (GSdx)* row was rejected and removed. The
+  Render scale is the only control: it is a percentage of the screen's automatic multiplier `k`, so 100% is exactly `k`
+  and never below the screen, and 50% on 4K is half of 6x. The multiplier is `k x percentage / 100` snapped to the
+  accepted value closest to it (an exact tie goes up), whole numbers only up to gt4-gs 1.2.1 and with 1.25/1.5/1.75/2.5
+  from 1.3.0, written with a dot. The TASK-105 integrated-GPU 1x default (commit `4f76bb07`) was the one place where
+  100% was below the screen and is removed; the additive TASK-118 ladder (`92d6053e`) is replaced. Labels show the 16:9
+  picture: width `640 x multiplier`, height `floor(width x 9 / 16)`. The Graphics API list still gains OpenGL after
+  Direct3D 11; Automatic never resolves to it. Both the fractional steps and OpenGL appear only when the installed
+  gt4-gs is 1.3.0 or newer (`RENDERER_FRACTIONAL_MINIMUM`), and the INI writer falls back to whole numbers and
+  Automatic (Vulkan) for a downgrade.
 - **Tests:** launcher `cargo test --workspace` (see the journal for the count), the Python GS settings suite 74 tests OK,
-  locale parity and the focus checks in both languages (427/427 en-US, 434/434 pt-BR).
+  locale parity and the focus checks in both languages.
 - **Not done:** no rc16, no installer, no game build, no gt4-gs release; OpenGL still needs the owner's in-game test.
 
 ## TASK-199: info cards draw above everything (owner, 2026-11-06)

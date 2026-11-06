@@ -129,25 +129,6 @@ const VERIFY_CHOICES: &[Choice] = &[
 
 const TOGGLE: Kind = Kind::Toggle;
 
-/// The GSdx Resolution row's choices (TASK-200): Automatic (the Render scale plan), then the multipliers in ascending
-/// order. The values come from `display::GSDX_RESOLUTION_VALUES`; the readout beside each is filled at run time.
-const GSDX_RESOLUTION_CHOICES: &[Choice] = &[
-    Choice { value: crate::display::GSDX_RESOLUTION_AUTO, label: "Automatic", selectable: true },
-    Choice { value: "1", label: "1x", selectable: true },
-    Choice { value: "1.25", label: "1.25x", selectable: true },
-    Choice { value: "1.5", label: "1.5x", selectable: true },
-    Choice { value: "1.75", label: "1.75x", selectable: true },
-    Choice { value: "2", label: "2x", selectable: true },
-    Choice { value: "2.5", label: "2.5x", selectable: true },
-    Choice { value: "3", label: "3x", selectable: true },
-    Choice { value: "4", label: "4x", selectable: true },
-    Choice { value: "5", label: "5x", selectable: true },
-    Choice { value: "6", label: "6x", selectable: true },
-    Choice { value: "8", label: "8x", selectable: true },
-    Choice { value: "10", label: "10x", selectable: true },
-    Choice { value: "12", label: "12x", selectable: true },
-];
-
 /// Every user setting, in display order. Ids are the TOML keys.
 pub const SETTINGS: &[SettingDef] = &[
     SettingDef {
@@ -209,23 +190,13 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Image",
         title: "Render scale",
-        info: "How sharp the picture is drawn. 100% draws it at least at your resolution (taken from the Resolution                setting on the Display page); 50% is faster and softer, 200% is sharper and needs a much faster GPU.                The number next to the slider is the resulting internal resolution.",
+        info: "How sharp the picture is drawn, as a percentage of the automatic scale for your resolution. 100% draws                the game at least at your resolution (taken from the Resolution setting on the Display page); below that                it is faster and softer, above it sharper and heavier on the graphics card. The number next to the slider                is the resulting internal resolution.",
         kind: Kind::Steps {
             min: crate::display::RENDER_SCALE_MIN,
             max: crate::display::RENDER_SCALE_MAX,
             step: crate::display::RENDER_SCALE_STEP,
         },
         default: "100",
-        connected: true,
-    },
-    SettingDef {
-        id: "gsdx_resolution",
-        page: Page::Graphics,
-        group: "Image",
-        title: "Resolution (GSdx)",
-        info: "How sharp GSdx draws the game. Automatic follows the Render scale and the Resolution; or pick a fixed                multiplier, including 1.25x, 1.5x, 1.75x and 2.5x, which need GSdx 1.3.0 or newer. The number beside                each choice is the resulting internal resolution.",
-        kind: Kind::Choice(GSDX_RESOLUTION_CHOICES),
-        default: crate::display::GSDX_RESOLUTION_AUTO,
         connected: true,
     },
     SettingDef {
