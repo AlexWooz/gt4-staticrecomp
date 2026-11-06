@@ -114,6 +114,8 @@ impl std::fmt::Debug for LaunchPlan {
 pub struct Pcsx2Paths {
     /// `gt4-gs.exe` in the installed version folder.
     pub executable: PathBuf,
+    /// The installed gt4-gs version (TASK-200: the fractional scales and OpenGL need 1.3.0 or newer).
+    pub version: crate::version::Version,
     /// SHA-256 of that file (`GT4_GS_PROCESS_SHA256`, checked by the game).
     pub executable_sha256: String,
     /// `gt4-gs.ini` written for this session.
@@ -131,6 +133,7 @@ impl Pcsx2Paths {
     pub fn for_session(installed: &Installed, renderer_root: &Path, session_dir: &Path, textures: &Path) -> Pcsx2Paths {
         Pcsx2Paths {
             executable: installed.executable.clone(),
+            version: installed.version,
             executable_sha256: installed.executable_sha256.clone(),
             config: session_dir.join("gt4-gs.ini"),
             cache: renderer_root.join("cache"),
@@ -235,13 +238,12 @@ pub fn uses_coregs20(settings: &Settings) -> bool {
 pub fn coregs20_environment(
     settings: &Settings,
     display: Option<&DisplayTarget>,
-    integrated_gpu: bool,
     textures: &TextureLocation,
 ) -> Vec<(String, String)> {
     let mut variables: BTreeMap<&'static str, String> = BTreeMap::new();
     variables.insert("GT4_RENDERER", "hw".to_string());
     variables.insert("GT4_HW_CORE", "2".to_string());
-    variables.insert("GT4_HW_SCALE", session_plan(settings, display, integrated_gpu).multiplier.to_string());
+    variables.insert("GT4_HW_SCALE", display::multiplier_text(session_plan(settings, display, display::CORE_GS_CAPS).multiplier));
     // TASK-186 (owner, 2026-11-06): Performance Mode is replaced by independent effect toggles. The renderer's switches name
     // the effect they turn OFF (GT4_CORE2_PERF_<ITEM>=1); a toggle that is on sends 0, so the default of every effect is
     // drawn as the original game. The road sheen is CoreGS-only (its classifier is core 2's). Blending accuracy and the
@@ -352,23 +354,16 @@ pub fn display_environment(display: Option<&DisplayTarget>) -> Vec<(String, Stri
 }
 
 /// The render plan of a session (TASK-080 addendum): the output size of the display target (1920 x 1080 when none is
-/// known) and the Render scale, for the PCSX2 GS. `integrated_gpu` is true when the game renders on an integrated GPU
-/// (issue #89): the untouched default scale then plays at 1x. Never fails: an output the plan refuses falls back to
-/// 1920 x 1080.
-pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool) -> display::DisplayPlan {
+/// known) and the Render scale, for the renderer whose caps are given (`CORE_GS_CAPS`, or the gt4-gs caps of the
+/// installed version). Never fails: an output the plan refuses falls back to 1920 x 1080.
+pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, caps: display::RendererCaps) -> display::DisplayPlan {
     let scale = settings.get("render_scale").parse::<u32>().unwrap_or(display::RENDER_SCALE_DEFAULT);
     let output = display.map(|target| target.output).unwrap_or(display::FALLBACK_OUTPUT);
     let fallback = || {
-        display::display_plan(
-            display::FALLBACK_OUTPUT.width,
-            display::FALLBACK_OUTPUT.height,
-            display::RENDER_SCALE_DEFAULT,
-            display::PCSX2_GS_CAPS,
-        )
-        .expect("1920x1080 at 100% is a valid plan")
+        display::display_plan(display::FALLBACK_OUTPUT.width, display::FALLBACK_OUTPUT.height, display::RENDER_SCALE_DEFAULT, caps)
+            .expect("1920x1080 at 100% is a valid plan")
     };
-    display::display_plan_on(output.width, output.height, scale, display::PCSX2_GS_CAPS, integrated_gpu)
-        .unwrap_or_else(|_| fallback())
+    display::display_plan(output.width, output.height, scale, caps).unwrap_or_else(|_| fallback())
 }
 
 /// The gt4-gs.ini text of a session, rendered from the table (`gs_table::render_ini`, same rules as
@@ -376,11 +371,12 @@ pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, integr
 /// fifo writes both true, mailbox writes mailbox false, immediate writes vsync false. `upscale_multiplier` comes from
 /// the session plan ([`session_plan`]); a stored `upscale` value is never used (there is no such setting). With no
 /// display known and Render scale 100% the plan gives 3x, the table default, so that INI is unchanged.
+/// TASK-200: the installed version decides the scale caps — gt4-gs 1.3.0 or newer takes the fractional Render scale
+/// steps and OpenGL (`graphics_api = opengl`); an older one gets whole multipliers and keeps the three APIs.
 pub fn gs_config_text(
     settings: &Settings,
     paths: &Pcsx2Paths,
     display: Option<&DisplayTarget>,
-    integrated_gpu: bool,
 ) -> Result<String, String> {
     let mut user: BTreeMap<String, String> = settings.gs_overrides().clone();
     // TASK-186: the effect toggles are launcher-only rows (written = "never"): they reach the game as variables, never in
@@ -389,7 +385,18 @@ pub fn gs_config_text(
     // TASK-108: the Adapter (the chosen graphics card's name) is written by the launcher, not by the table: its row is
     // not settable from a value yet (status resolved). It is added below the table's render, in its section.
     let adapter = user.remove("adapter").filter(|name| !name.is_empty());
-    user.insert("upscale".to_string(), session_plan(settings, display, integrated_gpu).multiplier.to_string());
+    // TASK-200: gt4-gs 1.3.0 accepts the fractional scales; 1.2.1 refuses them (its allow-list would ignore the line).
+    let extended = paths.version >= crate::releases::RENDERER_FRACTIONAL_MINIMUM;
+    let caps = if extended { display::PCSX2_GS_FRACTIONAL_CAPS } else { display::PCSX2_GS_CAPS };
+    user.insert(
+        "upscale".to_string(),
+        display::multiplier_text(session_plan(settings, display, caps).multiplier),
+    );
+    if !extended && user.get("graphics_api").is_some_and(|api| api == crate::gpu::OPENGL_API) {
+        // The table's Automatic value (Renderer 14, Vulkan): the launcher never leaves an unresolved Automatic in the
+        // file at Play, so this only happens after a downgrade to a gt4-gs that has no OpenGL in its allow-list.
+        user.insert("graphics_api".to_string(), crate::gpu::AUTOMATIC.to_string());
+    }
     // TASK-186 (owner, 2026-11-06): Performance Mode is no longer a preset. Blending accuracy and the Readbacks mode are
     // player rows of the table now (`blending`, `hw_download_mode`), written by the table writer like every other row; no
     // effect toggle writes either, so an effect that is on is never broken.
@@ -490,12 +497,12 @@ pub const GAMEPAD_MAPPINGS_FILE: &str = "gamecontrollerdb.txt";
 /// `hw_present_shared_queue` (written only when off), `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its
 /// variable in [`coregs20_environment`], and `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps
 /// its `present_mode`).
-pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &TextureLocation) -> String {
+pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, textures: &TextureLocation) -> String {
     let mut text = String::from("renderer=coregs20\n");
     if settings.get("vsync") == "fast" {
         text.push_str("hw_present_mode=fifo\n");
     }
-    for (name, value) in coregs20_environment(settings, display, integrated_gpu, textures) {
+    for (name, value) in coregs20_environment(settings, display, textures) {
         let key = match name.as_str() {
             "GT4_HW_SCALE" => "hw_scale",
             "GT4_CORE2_PERF_FLARES" => "hw_effect_flares",
@@ -570,11 +577,10 @@ pub fn plan_coregs20_launch(
     inputs: &LaunchInputs<'_>,
     settings: &Settings,
     display: Option<&DisplayTarget>,
-    integrated_gpu: bool,
     textures: &TextureLocation,
     inherited_names: &[String],
 ) -> LaunchPlan {
-    let environment = coregs20_environment(settings, display, integrated_gpu, textures);
+    let environment = coregs20_environment(settings, display, textures);
     plan_with(inputs, with_display(environment, display), inherited_names)
 }
 

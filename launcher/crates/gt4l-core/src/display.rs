@@ -5,9 +5,9 @@
 //! - the aspect is always the output size's ratio (`GT4_DISPLAY_ASPECT=auto` with `GT4_OUTPUT_SIZE`); at 16:9 nothing
 //!   changes, at any other ratio the game's P1/P2 path (camera Hor+/Vert+, race view fill, HUD centred 16:9) turns on
 //!   by itself;
-//! - the internal render resolution is never below the output: `k = ceil(max(W / 640, H / 448))`, where 640 x 448 is
-//!   GT4's native frame (wide screens stretch its 640 width), and the effective multiplier is `k x render scale`,
-//!   rounded to a multiplier the renderer accepts.
+//! - the internal render resolution is never below the output at 100%: `k = ceil(max(W / 640, H / 448))`, where 640 x
+//!   448 is GT4's native frame (wide screens stretch its 640 width). The Render scale is a percentage of that automatic
+//!   multiplier, snapped to an accepted value (whole numbers, or fractional ones with gt4-gs 1.3.0).
 //!
 //! Everything here is pure and platform-independent (Windows reads the monitors in `gt4l-platform::display`; Android
 //! and iOS will feed their own screen size into [`display_plan`]).
@@ -28,28 +28,73 @@ pub const MAX_RATIO: f64 = 8.0;
 pub const MIN_OUTPUT_SIDE: u32 = 320;
 pub const MAX_OUTPUT_SIDE: u32 = 16384;
 
-/// Render scale slider: 50% to 200% in steps of 25%, default 100%.
+/// Render scale slider: 50% to 200% in steps of 25%, default 100%. The percentage is measured against the **automatic
+/// multiplier** ([`DisplayPlan::base_multiplier`], `k`), so 100% is exactly today's plan and 50% is half of it. The
+/// multiplier is the accepted value closest to `k x percentage / 100`; an exact tie goes to the larger value (the
+/// TASK-080 rule, "ties up"). Bounds and step are unchanged.
 pub const RENDER_SCALE_MIN: u32 = 50;
 pub const RENDER_SCALE_MAX: u32 = 200;
 pub const RENDER_SCALE_STEP: u32 = 25;
 pub const RENDER_SCALE_DEFAULT: u32 = 100;
 
-/// The internal multiplier an integrated GPU gets while the Render scale is the untouched default (issue #89): GT4's
-/// native 640 x 448 frame, so a 1440 x 900 screen starts at native resolution instead of 3x. It is also the baseline the
-/// slider climbs from: 125% is 2x, 150% is 3x, up to 5x at 200%.
-pub const INTEGRATED_DEFAULT_MULTIPLIER: u32 = 1;
+/// The fractional scales gt4-gs 1.3.0 accepts on top of the whole multipliers (TASK-200, owner 2026-11-06). They are
+/// finer positions of the same Render scale, never a separate choice: 1.25x, 1.5x, 1.75x and 2.5x.
+pub const FRACTIONAL_MULTIPLIERS: &[f64] = &[1.25, 1.5, 1.75, 2.5];
 
 /// What a renderer accepts as an internal-resolution multiplier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RendererCaps {
-    /// Whole multipliers 1 to `max_multiplier` only (no fractional scale).
+    /// Multipliers 1 to `max_multiplier`.
     pub max_multiplier: u32,
+    /// Whether the fractional multipliers of [`FRACTIONAL_MULTIPLIERS`] are accepted too. False keeps whole numbers only.
+    pub fractional: bool,
 }
 
-/// The PCSX2 GS (gt4-gs): `[EmuCore/GS] upscale_multiplier` takes the whole numbers 1 to 12 (the gt4-gs allow-list,
-/// docs/launcher/gs-settings-allowlist.json; the table row `upscale`). A value above the GPU's own limit
-/// (max texture size / 1280) is lowered by gt4-gs itself with a notice; gt4-gs does not report that limit yet.
-pub const PCSX2_GS_CAPS: RendererCaps = RendererCaps { max_multiplier: 12 };
+/// The PCSX2 GS (gt4-gs) up to 1.2.1: `[EmuCore/GS] upscale_multiplier` takes the whole numbers 1 to 12 (the gt4-gs
+/// allow-list, docs/launcher/gs-settings-allowlist.json; the table row `upscale`).
+pub const PCSX2_GS_CAPS: RendererCaps = RendererCaps { max_multiplier: 12, fractional: false };
+
+/// The PCSX2 GS from 1.3.0 (TASK-200): the same range plus the four fractional scales. A value above the GPU's own
+/// limit (max texture size / 1280) is lowered by gt4-gs itself with a notice; gt4-gs does not report that limit yet.
+pub const PCSX2_GS_FRACTIONAL_CAPS: RendererCaps = RendererCaps { max_multiplier: 12, fractional: true };
+
+/// CoreGS 2.0 (`GT4_HW_SCALE`): whole multipliers only, the list it has always taken.
+pub const CORE_GS_CAPS: RendererCaps = RendererCaps { max_multiplier: 12, fractional: false };
+
+/// Every multiplier a renderer accepts, ascending: 1 to `max_multiplier`, plus the fractional values when the renderer
+/// takes them (TASK-200).
+pub fn accepted_multipliers(caps: RendererCaps) -> Vec<f64> {
+    let max = caps.max_multiplier.max(1) as f64;
+    let mut values: Vec<f64> = (1..=caps.max_multiplier.max(1)).map(|multiplier| multiplier as f64).collect();
+    if caps.fractional {
+        values.extend(FRACTIONAL_MULTIPLIERS.iter().copied().filter(|multiplier| *multiplier <= max));
+    }
+    values.sort_by(|left, right| left.partial_cmp(right).expect("multipliers are finite"));
+    values
+}
+
+/// The accepted multiplier closest to `value`, clamped to 1 .. `caps.max_multiplier`; an exact tie goes to the larger
+/// value (the rounding rule of the Render scale, TASK-080: "ties up").
+pub fn snap_multiplier(value: f64, caps: RendererCaps) -> f64 {
+    let maximum = caps.max_multiplier.max(1) as f64;
+    let value = value.clamp(1.0, maximum);
+    let mut best = 1.0;
+    let mut best_distance = f64::INFINITY;
+    for candidate in accepted_multipliers(caps) {
+        let distance = (candidate - value).abs();
+        // `<=` with an ascending list makes an exact tie pick the larger candidate.
+        if distance <= best_distance {
+            best = candidate;
+            best_distance = distance;
+        }
+    }
+    best
+}
+
+/// The multiplier as it is written and shown: "3" for a whole one, "2.5" for a fractional one.
+pub fn multiplier_text(multiplier: f64) -> String {
+    format!("{multiplier}")
+}
 
 /// The plan for one output size.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,17 +104,15 @@ pub struct DisplayPlan {
     pub output_height: u32,
     /// Whether the input was portrait (height above width) and was turned.
     pub portrait_input: bool,
-    /// Whether the integrated-GPU default applied: the render scale is the untouched default on an integrated GPU, so
-    /// the multiplier is [`INTEGRATED_DEFAULT_MULTIPLIER`] instead of the scaled value (issue #89).
-    pub integrated_default: bool,
-    /// k = ceil(max(W / 640, H / 448)): the smallest whole multiplier whose frame covers the output on both axes.
+    /// k = ceil(max(W / 640, H / 448)): the smallest whole multiplier whose frame covers the output on both axes. It is
+    /// the 100% plan, so at 100% the internal frame is never smaller than the screen.
     pub base_multiplier: u32,
     /// The render scale in percent that was applied.
     pub render_scale: u32,
-    /// One whole multiplier per 25% step from the 100% plan (the integrated GPU's 1x baseline included), clamped to
-    /// 1 .. caps.max_multiplier.
-    pub multiplier: u32,
-    /// 640 x multiplier by 448 x multiplier.
+    /// The accepted multiplier closest to `k x render scale / 100` (an exact tie goes up), clamped to
+    /// 1 .. caps.max_multiplier. Whole numbers only, or the fractional values too when the renderer takes them.
+    pub multiplier: f64,
+    /// 640 x multiplier by 448 x multiplier: the frame the renderer really draws.
     pub internal_width: u32,
     pub internal_height: u32,
     /// W / H.
@@ -110,17 +153,9 @@ pub fn render_scale_steps() -> Vec<u32> {
     (RENDER_SCALE_MIN..=RENDER_SCALE_MAX).step_by(RENDER_SCALE_STEP as usize).collect()
 }
 
-/// Whether the integrated-GPU default applies: the GPU is integrated and the Render scale is still the default. A
-/// stored scale that was changed (any value but 100%) is kept as the player chose it. Note that the stored value
-/// cannot tell an untouched 100% from a chosen one, so a 100% chosen on an integrated GPU gets the same default. The
-/// flag only drives the log line: the multiplier itself always climbs from [`INTEGRATED_DEFAULT_MULTIPLIER`] on an
-/// integrated GPU, so the slider has no jump at 125%.
-pub fn integrated_default_applies(render_scale: u32, integrated_gpu: bool) -> bool {
-    integrated_gpu && render_scale == RENDER_SCALE_DEFAULT
-}
+/// The render plan for an output size, a render scale (percent of the automatic multiplier) and a renderer. Pure.
 
-/// The render plan for an output size, a render scale (percent) and a renderer. Pure. Discrete GPUs and every
-/// changed scale use [`display_plan_on`] with `integrated_gpu` false.
+/// The render plan for an output size, a render scale (percent of the automatic multiplier) and a renderer. Pure.
 ///
 /// Refused: a zero or out-of-range side, a ratio outside 1:2 .. 8:1 after turning a portrait input sideways, and a
 /// render scale that is not a slider step.
@@ -129,19 +164,6 @@ pub fn display_plan(
     output_height: u32,
     render_scale: u32,
     caps: RendererCaps,
-) -> Result<DisplayPlan, PlanError> {
-    display_plan_on(output_width, output_height, render_scale, caps, false)
-}
-
-/// [`display_plan`] for the GPU the game will use: on an integrated GPU the slider's baseline is
-/// [`INTEGRATED_DEFAULT_MULTIPLIER`] instead of k (issue #89), and each 25% step adds one multiplier. Otherwise the plan is
-/// the same as [`display_plan`].
-pub fn display_plan_on(
-    output_width: u32,
-    output_height: u32,
-    render_scale: u32,
-    caps: RendererCaps,
-    integrated_gpu: bool,
 ) -> Result<DisplayPlan, PlanError> {
     if !is_render_scale(render_scale) {
         return Err(PlanError(format!(
@@ -160,32 +182,38 @@ pub fn display_plan_on(
     if !(MIN_RATIO..=MAX_RATIO).contains(&aspect) {
         return Err(PlanError(format!("output size {output_width}x{output_height} is not a display ratio the game accepts")));
     }
-    let base_multiplier = ceil_div(width, NATIVE_FRAME_WIDTH).max(ceil_div(height, NATIVE_FRAME_HEIGHT));
-    // TASK-118 (owner, 2026-10-26): the slider is additive. The plan at 100% is the baseline (on an integrated GPU that
-    // is the 1x of issue #89, not k), and each 25% step adds or removes one whole multiplier. Before, a changed scale
-    // multiplied k by the percentage: on the laptop 100% gave 1x and 125% gave 4x, a four-times jump for one notch.
-    let integrated_default = integrated_default_applies(render_scale, integrated_gpu);
-    let baseline = if integrated_gpu { INTEGRATED_DEFAULT_MULTIPLIER } else { base_multiplier };
-    let steps = (render_scale as i32 - RENDER_SCALE_DEFAULT as i32) / RENDER_SCALE_STEP as i32;
-    let multiplier = (baseline as i32 + steps).clamp(1, caps.max_multiplier.max(1) as i32) as u32;
+    // The Render scale is a percentage of the automatic multiplier (owner, 2026-11-06): 100% is exactly k, 50% is half
+    // of it, and the result lands on the accepted multiplier closest to that value. The old TASK-118 ladder added one
+    // whole multiplier per step instead, so 50% on 4K was 4x and not half of 6x.
+    let base_multiplier = ceil_div(width, NATIVE_FRAME_WIDTH).max(ceil_div(height, NATIVE_FRAME_HEIGHT)).max(1);
+    let multiplier = snap_multiplier(base_multiplier as f64 * render_scale as f64 / 100.0, caps);
     Ok(DisplayPlan {
         output_width: width,
         output_height: height,
         portrait_input,
-        integrated_default,
         base_multiplier,
         render_scale,
         multiplier,
-        internal_width: NATIVE_FRAME_WIDTH * multiplier,
-        internal_height: NATIVE_FRAME_HEIGHT * multiplier,
+        internal_width: (NATIVE_FRAME_WIDTH as f64 * multiplier).round() as u32,
+        internal_height: (NATIVE_FRAME_HEIGHT as f64 * multiplier).round() as u32,
         aspect,
         ultrawide_on: !is_sixteen_nine(aspect),
     })
 }
 
-/// "4x · 2560x1792": the slider's readout for a plan.
+/// The 16:9 picture of a multiplier's width, for the label: the width is `640 x multiplier` and the height is
+/// `floor(width x 9 / 16)`. 2x is the internal 1280 x 896 frame shown as 1280 x 720; 2.5x is 1600 x 900 (owner,
+/// 2026-11-06: the labels name the 16:9 picture the player knows, not GT4's slightly taller 640 x 448 frame).
+pub fn label_size(multiplier: f64) -> (u32, u32) {
+    let width = (NATIVE_FRAME_WIDTH as f64 * multiplier).round() as u32;
+    let height = ((width as f64) * 9.0 / 16.0).floor() as u32;
+    (width, height)
+}
+
+/// "3x · 1920x1080": the slider's readout for a plan (the 16:9 label of [`label_size`]).
 pub fn describe_plan(plan: &DisplayPlan) -> String {
-    format!("{}x \u{00B7} {}x{}", plan.multiplier, plan.internal_width, plan.internal_height)
+    let (width, height) = label_size(plan.multiplier);
+    format!("{}x \u{00B7} {width}x{height}", multiplier_text(plan.multiplier))
 }
 
 // Monitors ---------------------------------------------------------------------------------------------------------
@@ -367,6 +395,10 @@ mod tests {
     use super::*;
 
     fn plan(width: u32, height: u32, scale: u32) -> DisplayPlan {
+        display_plan(width, height, scale, PCSX2_GS_FRACTIONAL_CAPS).unwrap()
+    }
+
+    fn whole_plan(width: u32, height: u32, scale: u32) -> DisplayPlan {
         display_plan(width, height, scale, PCSX2_GS_CAPS).unwrap()
     }
 
@@ -384,44 +416,97 @@ mod tests {
         ] {
             let result = plan(width, height, 100);
             assert_eq!(result.base_multiplier, k, "{width}x{height}");
-            assert_eq!(result.multiplier, k, "{width}x{height} at 100%");
+            assert_eq!(result.multiplier, f64::from(k), "{width}x{height} at 100%");
             assert!(640 * k >= width && 448 * k >= height, "never below the output on either axis");
         }
     }
 
     #[test]
-    fn render_scale_moves_one_multiplier_per_step() {
-        // Owner (2026-10-26): each 25% step is one whole multiplier from the 100% plan, never a multiplication of it.
-        // A discrete 3x baseline: 50/75/100/125/150/175/200% -> 1/2/3/4/5/6/7x.
-        let steps: Vec<u32> = render_scale_steps().iter().map(|&scale| plan(1920, 1080, scale).multiplier).collect();
-        assert_eq!(steps, vec![1, 2, 3, 4, 5, 6, 7]);
-        assert_eq!(describe_plan(&plan(1920, 1080, 125)), "4x \u{00B7} 2560x1792");
-        // 2560x1440 has a 4x baseline: 100% stays 4x and one notch is 5x (the old formula gave 8x at 200%).
-        assert_eq!(plan(2560, 1440, 75).multiplier, 3);
-        assert_eq!(plan(2560, 1440, 100).multiplier, 4);
-        assert_eq!(plan(2560, 1440, 125).multiplier, 5);
-        assert_eq!(plan(2560, 1440, 200).multiplier, 8);
-        // Clamped at the bottom (1x) and at the gt4-gs maximum (12x).
-        assert_eq!(plan(640, 480, 50).multiplier, 1);
-        assert_eq!(plan(3840, 2160, 200).multiplier, 10, "6x baseline + 4 steps");
-        assert_eq!(plan(7680, 4320, 200).multiplier, 12, "12x baseline clamped");
-        let small = RendererCaps { max_multiplier: 6 };
-        assert_eq!(display_plan(3840, 2160, 200, small).unwrap().multiplier, 6);
+    fn at_100_percent_the_internal_frame_covers_the_screen() {
+        // Owner rule (2026-11-06): 100% is the automatic scale from the screen, and the internal frame is never smaller
+        // than the screen, on either axis and for either renderer.
+        for (width, height) in [(1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)] {
+            for caps in [PCSX2_GS_CAPS, PCSX2_GS_FRACTIONAL_CAPS] {
+                let result = display_plan(width, height, 100, caps).unwrap();
+                assert!(
+                    result.internal_width >= width,
+                    "{width}x{height}: width {} is below {width}",
+                    result.internal_width
+                );
+                assert!(
+                    result.internal_height >= height,
+                    "{width}x{height}: height {} is below {height}",
+                    result.internal_height
+                );
+                assert_eq!(result.multiplier, f64::from(result.base_multiplier), "{width}x{height}: 100% is k");
+            }
+        }
+        assert_eq!(plan(1920, 1080, 100).multiplier, 3.0, "448 x 3 = 1344 covers 1080");
+        assert_eq!(plan(3840, 2160, 100).multiplier, 6.0);
     }
 
     #[test]
-    fn integrated_gpu_climbs_from_1x_without_a_jump() {
-        // issue #89: 100% on an integrated GPU is 1x. The slider used to jump to 4x at 125% (k 3 x 125%); it now climbs
-        // one multiplier per step, so the laptop can try 2x and 3x.
-        let integrated: Vec<u32> = render_scale_steps()
-            .iter()
-            .map(|&scale| display_plan_on(1366, 768, scale, PCSX2_GS_CAPS, true).unwrap().multiplier)
-            .collect();
-        assert_eq!(integrated, vec![1, 1, 1, 2, 3, 4, 5]);
-        let plan_100 = display_plan_on(1366, 768, 100, PCSX2_GS_CAPS, true).unwrap();
-        assert!(plan_100.integrated_default);
-        assert_eq!((plan_100.base_multiplier, plan_100.multiplier), (3, 1));
-        assert!(!display_plan_on(1366, 768, 125, PCSX2_GS_CAPS, true).unwrap().integrated_default);
+    fn the_percentage_scales_the_automatic_multiplier() {
+        // Owner (2026-11-06): the Render scale is a percentage of the screen's automatic scale. 1080p at 100% is 3x;
+        // 75% is 3 x 0.75 = 2.25, which is 2.5x with the fractional scales (an exact tie goes up) and 2x with whole
+        // numbers only.
+        assert_eq!(plan(1920, 1080, 100).multiplier, 3.0);
+        assert_eq!(plan(1920, 1080, 75).multiplier, 2.5);
+        assert_eq!(whole_plan(1920, 1080, 75).multiplier, 2.0);
+        // 4K at 100% is 6x and 50% is half of it, landing on 1080p.
+        assert_eq!(plan(3840, 2160, 100).multiplier, 6.0);
+        assert_eq!(plan(3840, 2160, 50).multiplier, 3.0);
+        // The whole ladder from the 3x baseline, 50% to 200%: 1.5, 2.5, 3, 4, 5, 5, 6 (nearest, ties up).
+        let steps: Vec<f64> = render_scale_steps().iter().map(|&scale| plan(1920, 1080, scale).multiplier).collect();
+        assert_eq!(steps, vec![1.5, 2.5, 3.0, 4.0, 5.0, 5.0, 6.0]);
+        // The same ladder with whole numbers only: 2, 2, 3, 4, 5, 5, 6.
+        let whole: Vec<f64> =
+            render_scale_steps().iter().map(|&scale| whole_plan(1920, 1080, scale).multiplier).collect();
+        assert_eq!(whole, vec![2.0, 2.0, 3.0, 4.0, 5.0, 5.0, 6.0]);
+        // 2560x1440 has a 4x baseline: 75% is 3x, 125% is 5x, 200% is 8x.
+        assert_eq!(plan(2560, 1440, 75).multiplier, 3.0);
+        assert_eq!(plan(2560, 1440, 125).multiplier, 5.0);
+        assert_eq!(plan(2560, 1440, 200).multiplier, 8.0);
+        // Clamped at 1x and at the renderer's maximum.
+        assert_eq!(plan(640, 480, 50).multiplier, 1.0);
+        assert_eq!(plan(7680, 4320, 200).multiplier, 12.0);
+        let small = RendererCaps { max_multiplier: 6, fractional: false };
+        assert_eq!(display_plan(3840, 2160, 200, small).unwrap().multiplier, 6.0);
+    }
+
+    #[test]
+    fn the_labels_are_the_16_9_picture_of_the_same_width() {
+        // Owner (2026-11-06): width = 640 x multiplier, height = floor(width x 9 / 16), rounded down.
+        assert_eq!(label_size(2.0), (1280, 720));
+        assert_eq!(label_size(2.5), (1600, 900));
+        assert_eq!(label_size(1.25), (800, 450));
+        assert_eq!(label_size(1.0), (640, 360));
+        assert_eq!(describe_plan(&plan(1920, 1080, 100)), "3x \u{00B7} 1920x1080");
+        assert_eq!(describe_plan(&plan(1920, 1080, 75)), "2.5x \u{00B7} 1600x900");
+        assert_eq!(describe_plan(&whole_plan(1920, 1080, 75)), "2x \u{00B7} 1280x720");
+        // The frame the renderer draws is GT4's taller one; only the label is 16:9.
+        let two = plan(1920, 1080, 50);
+        assert_eq!((two.multiplier, two.internal_width, two.internal_height), (1.5, 960, 672));
+    }
+
+    #[test]
+    fn accepted_multipliers_are_ordered_and_fractional_only_when_allowed() {
+        assert_eq!(
+            accepted_multipliers(PCSX2_GS_CAPS),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+        );
+        assert_eq!(
+            accepted_multipliers(PCSX2_GS_FRACTIONAL_CAPS),
+            vec![1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+        );
+        assert_eq!(multiplier_text(3.0), "3");
+        assert_eq!(multiplier_text(2.5), "2.5");
+        assert_eq!(multiplier_text(1.25), "1.25");
+        // Nearest, an exact tie goes up.
+        assert_eq!(snap_multiplier(2.25, PCSX2_GS_FRACTIONAL_CAPS), 2.5);
+        assert_eq!(snap_multiplier(2.25, PCSX2_GS_CAPS), 2.0);
+        assert_eq!(snap_multiplier(2.26, PCSX2_GS_FRACTIONAL_CAPS), 2.5);
+        assert_eq!(snap_multiplier(2.24, PCSX2_GS_FRACTIONAL_CAPS), 2.0);
     }
 
     #[test]
@@ -542,50 +627,21 @@ mod tests {
         }
     }
 
-    // Issue #89 (1.3.0): integrated GPUs start at native resolution while the render scale is the untouched default.
+    // TASK-105 (commit 4f76bb07, issue #89) made an untouched 100% play at 1x on an integrated GPU, below the screen.
+    // The owner restored the rule on 2026-11-06: the GPU no longer changes the plan, and 1440 x 900 is 3x on every card.
 
     #[test]
-    fn an_integrated_gpu_with_the_default_scale_renders_at_native_1x() {
-        // 1440 x 900 is k 3 on a discrete card (1920 x 1344); the integrated default gives 1x = 640 x 448.
-        let plan = display_plan_on(1440, 900, RENDER_SCALE_DEFAULT, PCSX2_GS_CAPS, true).unwrap();
-        assert_eq!(plan.base_multiplier, 3);
-        assert_eq!(plan.multiplier, INTEGRATED_DEFAULT_MULTIPLIER);
-        assert_eq!((plan.internal_width, plan.internal_height), (640, 448));
-        assert!(plan.integrated_default);
+    fn no_gpu_changes_the_plan_any_more() {
+        let plan = display_plan(1440, 900, RENDER_SCALE_DEFAULT, PCSX2_GS_CAPS).unwrap();
+        assert_eq!((plan.base_multiplier, plan.multiplier), (3, 3.0));
+        assert!(plan.internal_width >= 1440 && plan.internal_height >= 900);
     }
 
     #[test]
-    fn a_discrete_gpu_keeps_the_scaled_multiplier_at_the_default_scale() {
-        let plan = display_plan_on(1440, 900, RENDER_SCALE_DEFAULT, PCSX2_GS_CAPS, false).unwrap();
-        assert_eq!(plan.multiplier, 3);
-        assert!(!plan.integrated_default);
-        assert_eq!(plan, display_plan(1440, 900, RENDER_SCALE_DEFAULT, PCSX2_GS_CAPS).unwrap());
-    }
-
-    #[test]
-    fn a_changed_render_scale_climbs_from_the_integrated_baseline() {
-        // The player's choice wins, one multiplier per 25% step from the integrated 1x baseline (TASK-118, owner
-        // 2026-10-26): 50/75% stay at 1x, 125% is 2x, 200% is 5x.
-        for (scale, expected) in [(50, 1), (75, 1), (125, 2), (150, 3), (200, 5)] {
-            let plan = display_plan_on(1440, 900, scale, PCSX2_GS_CAPS, true).unwrap();
-            assert_eq!(plan.multiplier, expected, "{scale}%");
-            assert!(!plan.integrated_default, "{scale}%");
-        }
-    }
-
-    #[test]
-    fn the_integrated_default_never_exceeds_the_renderer_cap() {
-        let capped = RendererCaps { max_multiplier: 1 };
-        assert_eq!(display_plan_on(1920, 1080, RENDER_SCALE_DEFAULT, capped, true).unwrap().multiplier, 1);
-        let zero_cap = RendererCaps { max_multiplier: 0 };
-        assert_eq!(display_plan_on(1920, 1080, RENDER_SCALE_DEFAULT, zero_cap, true).unwrap().multiplier, 1);
-    }
-
-    #[test]
-    fn the_integrated_default_applies_only_to_the_default_scale_on_an_integrated_gpu() {
-        assert!(integrated_default_applies(100, true));
-        assert!(!integrated_default_applies(100, false));
-        assert!(!integrated_default_applies(125, true));
-        assert!(!integrated_default_applies(50, true));
+    fn the_cap_never_drops_below_1x() {
+        let capped = RendererCaps { max_multiplier: 1, fractional: false };
+        assert_eq!(display_plan(1920, 1080, RENDER_SCALE_DEFAULT, capped).unwrap().multiplier, 1.0);
+        let zero_cap = RendererCaps { max_multiplier: 0, fractional: false };
+        assert_eq!(display_plan(1920, 1080, RENDER_SCALE_DEFAULT, zero_cap).unwrap().multiplier, 1.0);
     }
 }

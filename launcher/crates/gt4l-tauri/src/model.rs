@@ -66,14 +66,20 @@ fn fill_monitor_row(row: &mut Value, settings: &Settings, monitors: &[Monitor]) 
 }
 
 /// The Graphics API row (TASK-108): the Automatic choice says which API it resolves to for the card the run would use.
-fn fill_api_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice]) {
+fn fill_api_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice], opengl_ok: bool) {
     let plan = gt4l_core::gpu::plan(&settings.gs_value("graphics_api"), settings.get("graphics_card"), cards, Language::fallback());
     // TASK-118: no "Automatic" in the UI. The entry is dropped and, while the stored value is still automatic, the row
     // shows the API this start resolves to (Play then stores it).
     if let Some(values) = row["values"].as_array_mut() {
         values.retain(|value| value["value"] != gt4l_core::gpu::AUTOMATIC);
+        // TASK-200: OpenGL is for a gt4-gs 1.3.0 or newer; an older one refuses Renderer 12.
+        if !opengl_ok {
+            values.retain(|value| value["value"] != gt4l_core::gpu::OPENGL_API);
+        }
     }
-    if settings.gs_value("graphics_api") == gt4l_core::gpu::AUTOMATIC {
+    if settings.gs_value("graphics_api") == gt4l_core::gpu::AUTOMATIC
+        || (!opengl_ok && settings.gs_value("graphics_api") == gt4l_core::gpu::OPENGL_API)
+    {
         row["current"] = json!(plan.api);
     }
 }
@@ -141,15 +147,16 @@ fn fill_resolution_row(row: &mut Value, settings: &Settings, monitors: &[Monitor
     }
 }
 
-/// The Render scale slider's readout per step: "100% · 4x · 2560x1792" for the output size the game would use now
-/// (1920 x 1080 when no monitor is known).
-fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], integrated_gpu: bool) {
+/// The Render scale slider's readout per step: "100% · 3x · 1920x1080" for the output size the game would use now
+/// (1920 x 1080 when no monitor is known). `caps` is the renderer's list: whole multipliers, or the fractional steps of
+/// gt4-gs 1.3.0 (TASK-200).
+fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], caps: display::RendererCaps) {
     let output = display::resolve_target(monitors, settings.get("monitor"), settings.get("resolution"))
         .map(|target| target.output)
         .unwrap_or(display::FALLBACK_OUTPUT);
     let mut labels = serde_json::Map::new();
     for step in display::render_scale_steps() {
-        if let Ok(plan) = display::display_plan_on(output.width, output.height, step, display::PCSX2_GS_CAPS, integrated_gpu) {
+        if let Ok(plan) = display::display_plan(output.width, output.height, step, caps) {
             labels.insert(step.to_string(), json!(format!("{step}% \u{00B7} {}", display::describe_plan(&plan))));
         }
     }
@@ -158,19 +165,27 @@ fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monit
 }
 
 /// The settings table with the connected monitors (TASK-080 addendum: Monitor, Resolution and Render scale).
-/// `integrated_gpu` is true when the game renders on an integrated GPU (issue #89): the Render scale readout then shows
-/// the untouched default at 1x.
+/// `fractional_scales` is true when the installed gt4-gs is 1.3.0 or newer (TASK-200): the Render scale then has the
+/// fractional steps for GSdx, and the Graphics API row lists OpenGL.
 pub fn settings_table_with_monitors(
     settings: &Settings,
     controls: &Controls,
     monitors: &[Monitor],
     cards: &[gt4l_core::gpu::GpuDevice],
-    integrated_gpu: bool,
+    fractional_scales: bool,
 ) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     // TASK-118: the release performance report and the VU code check are release-candidate settings; final builds do
     // not ship them, so their rows do not exist there either.
     let release_candidate = gt4l_core::LAUNCHER_VERSION.contains("-rc");
+    // TASK-200: the fractional steps are GSdx's (gt4-gs 1.3.0); CoreGS 2.0 keeps its whole-number list.
+    let caps = if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
+        display::CORE_GS_CAPS
+    } else if fractional_scales {
+        display::PCSX2_GS_FRACTIONAL_CAPS
+    } else {
+        display::PCSX2_GS_CAPS
+    };
     for definition in SETTINGS {
         if !release_candidate && RC_ONLY_ROWS.contains(&definition.id) {
             continue;
@@ -199,7 +214,7 @@ pub fn settings_table_with_monitors(
         match definition.id {
             "monitor" => fill_monitor_row(&mut row, settings, monitors),
             "resolution" => fill_resolution_row(&mut row, settings, monitors),
-            "render_scale" => fill_render_scale_row(&mut row, settings, monitors, integrated_gpu),
+            "render_scale" => fill_render_scale_row(&mut row, settings, monitors, caps),
             "vsync" if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 => without_fast_vsync(&mut row),
             // TASK-135: CoreGS 2.0's own; GSdx has its overlay rows.
             "performance_hud" => row["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 }),
@@ -242,7 +257,7 @@ pub fn settings_table_with_monitors(
             continue;
         }
         if row.id == "graphics_api" {
-            fill_api_row(&mut out, settings, cards);
+            fill_api_row(&mut out, settings, cards, fractional_scales);
             rows.push(out);
             if let Some(definition) = gt4l_core::settings::definition("graphics_card") {
                 let mut card = launcher_row(definition, settings);
@@ -931,19 +946,51 @@ mod table_tests {
         assert_eq!(resolution["values"][0]["label"], "3440x1440 (desktop)");
         // The render scale readout follows the chosen output: 2560x1080 gives k = 4.
         let scale = row(&table, "render_scale");
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 4x \u{00B7} 2560x1792");
-        assert_eq!(scale["values"]["labels"]["50"], "50% \u{00B7} 2x \u{00B7} 1280x896");
-        assert_eq!(scale["values"]["labels"]["200"], "200% \u{00B7} 8x \u{00B7} 5120x3584");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 4x \u{00B7} 2560x1440");
+        assert_eq!(scale["values"]["labels"]["50"], "50% \u{00B7} 2x \u{00B7} 1280x720");
+        assert_eq!(scale["values"]["labels"]["200"], "200% \u{00B7} 8x \u{00B7} 5120x2880");
     }
 
     #[test]
-    fn an_integrated_gpu_reads_the_default_render_scale_at_1x() {
-        // Issue #89: the readout shows the plan the game gets; the slider is additive (TASK-118), so 150% from the
-        // integrated 1x baseline is 3x, not 5x.
+    fn the_render_scale_has_fractional_steps_only_with_a_new_enough_gt4gs() {
+        // TASK-200: GSdx with gt4-gs 1.3.0 or newer offers the fractional steps inside the same Render scale slider;
+        // CoreGS 2.0 and an older gt4-gs keep whole numbers. 1080p at 100% is 3x; 75% is 2.5x (fractional) or 2x.
         let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
         let scale = row(&table, "render_scale");
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 1x \u{00B7} 640x448");
-        assert_eq!(scale["values"]["labels"]["150"], "150% \u{00B7} 3x \u{00B7} 1920x1344");
+        assert_eq!(scale["control"], "slider");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1080");
+        assert_eq!(scale["values"]["labels"]["75"], "75% \u{00B7} 2.5x \u{00B7} 1600x900");
+        assert_eq!(scale["values"]["labels"]["50"], "50% \u{00B7} 1.5x \u{00B7} 960x540");
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false);
+        let scale = row(&table, "render_scale");
+        assert_eq!(scale["values"]["labels"]["75"], "75% \u{00B7} 2x \u{00B7} 1280x720");
+        let mut coregs = Settings::default();
+        coregs.set("renderer", gt4l_core::settings::CORE_GS_20).unwrap();
+        let table = settings_table_with_monitors(&coregs, &Controls::default(), &[], &[], true);
+        assert_eq!(row(&table, "render_scale")["values"]["labels"]["75"], "75% \u{00B7} 2x \u{00B7} 1280x720");
+    }
+
+    #[test]
+    fn opengl_is_offered_only_with_a_new_enough_gt4gs() {
+        // TASK-200: Renderer 12 is in the 1.3.0 allow-list only; Automatic never resolves to it (gpu::plan).
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
+        let values: Vec<&str> =
+            row(&table, "graphics_api")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["vulkan", "d3d12", "d3d11", "opengl"]);
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false);
+        let values: Vec<&str> =
+            row(&table, "graphics_api")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["vulkan", "d3d12", "d3d11"]);
+    }
+
+    #[test]
+    fn the_render_scale_readout_is_the_16_9_label() {
+        // Owner (2026-11-06): 100% is the automatic 3x at 1080p (1920x1344 drawn, shown as 1920x1080); 150% is
+        // 4.5, which lands on 5x (an exact tie goes up).
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
+        let scale = row(&table, "render_scale");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1080");
+        assert_eq!(scale["values"]["labels"]["150"], "150% \u{00B7} 5x \u{00B7} 3200x1800");
     }
 
     #[test]
@@ -956,7 +1003,7 @@ mod table_tests {
         assert_eq!((scale["values"]["min"].as_u64(), scale["values"]["max"].as_u64(), scale["values"]["step"].as_u64()),
                    (Some(50), Some(200), Some(25)));
         assert_eq!(scale["current"], 100);
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1344");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1080");
         assert!(scale.get("visible_when").is_none(), "shown under both renderers");
         assert_eq!(scale["group"], "graphics");
     }
@@ -1212,7 +1259,8 @@ mod table_tests {
                 ("vulkan", "Vulkan"),
                 ("d3d12", "Direct3D 12"),
                 ("d3d11", "Direct3D 11"),
-            ]
+            ],
+            "an older gt4-gs keeps today's three APIs"
         );
         assert!(values.iter().all(|value| value["disabled"] == false));
         // The choice is stored and shown back (the engine row keeps its own id, `renderer`).
@@ -1220,7 +1268,9 @@ mod table_tests {
         chosen.set_gs("graphics_api", "d3d11").unwrap();
         let table = settings_table(&chosen, &Controls::default());
         assert_eq!(row(&table, "graphics_api")["current"], "d3d11");
-        assert!(chosen.set_gs("graphics_api", "opengl").is_err(), "OpenGL is not offered yet");
+        // TASK-200: OpenGL is a table value for gt4-gs 1.3.0 or newer; an older install keeps three APIs (the row is
+        // built by `opengl_is_offered_only_with_a_new_enough_gt4gs` above).
+        assert!(chosen.set_gs("graphics_api", "opengl").is_ok());
     }
 
     #[test]

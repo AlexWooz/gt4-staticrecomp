@@ -256,10 +256,19 @@ pub fn get_settings_table_of(shared: &Shared) -> Result<Value, String> {
 
 pub fn get_settings_table_with_monitors(shared: &Shared, monitors: &[display_rules::Monitor]) -> Result<Value, String> {
     let state = lock(shared);
-    // TASK-114 rc5: one card list, read from the cache (no probe here), serves both the rows and the integrated check.
+    // TASK-114 rc5: one card list, read from the cache (no probe here), serves the rows and the graphics card choice.
     let cards = gt4l_platform::gpu::cached_gpus();
-    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
-    let mut table = model::settings_table_with_monitors(&state.config.settings, &state.controls, monitors, &cards, integrated_gpu);
+    // TASK-200: the fractional scales and OpenGL exist only in gt4-gs 1.3.0 or newer (its allow-list). The version in use
+    // comes from `current.txt`, a cheap read; an install made without it keeps today's lists.
+    let fractional_scales = gt4l_core::textures::renderer_version_in_use(&state.dirs.renderer_root())
+        .is_some_and(|version| version >= gt4l_core::releases::RENDERER_FRACTIONAL_MINIMUM);
+    let mut table = model::settings_table_with_monitors(
+        &state.config.settings,
+        &state.controls,
+        monitors,
+        &cards,
+        fractional_scales,
+    );
     // TASK-091: the launcher's own row (Graphics > Advanced), not a game setting.
     let safe_mode = webview_guard::safe_mode_on(state.user_dirs.root());
     if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut) {
@@ -493,16 +502,22 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path, wheel: &Value) -> Resul
             );
         }
     }
-    // Issue #89: on an integrated GPU the untouched default scale plays at 1x (the GPU the system check reports).
-    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(settings.get("graphics_card"), &cards);
-    let plan = launch::session_plan(&settings, display.as_ref(), integrated_gpu.is_some());
+    // TASK-200: the fractional Render scale steps are GSdx's (gt4-gs 1.3.0 or newer); CoreGS 2.0 keeps whole numbers.
+    let caps = if coregs20 {
+        display_rules::CORE_GS_CAPS
+    } else if pcsx2.as_ref().is_some_and(|installed| installed.version >= gt4l_core::releases::RENDERER_FRACTIONAL_MINIMUM) {
+        display_rules::PCSX2_GS_FRACTIONAL_CAPS
+    } else {
+        display_rules::PCSX2_GS_CAPS
+    };
+    let plan = launch::session_plan(&settings, display.as_ref(), caps);
     state::log(
         &dirs,
         &format!(
             "display: {} output {} -> {}x internal {}x{} (k {}, render scale {}%, aspect {:.4}{})",
             display.as_ref().map(|target| target.device.as_str()).unwrap_or("unknown monitor"),
             display.as_ref().map(|target| target.output.text()).unwrap_or_else(|| "unknown".into()),
-            plan.multiplier,
+            display_rules::multiplier_text(plan.multiplier),
             plan.internal_width,
             plan.internal_height,
             plan.base_multiplier,
@@ -511,9 +526,6 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path, wheel: &Value) -> Resul
             if plan.ultrawide_on { ", aspect path on" } else { "" }
         ),
     );
-    if let (true, Some(name)) = (plan.integrated_default, integrated_gpu.as_deref()) {
-        state::log(&dirs, &format!("display: integrated GPU {name}: default internal {}x", plan.multiplier));
-    }
     Ok(PlayInputs {
         display,
         game,

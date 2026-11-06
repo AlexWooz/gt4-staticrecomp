@@ -33,6 +33,11 @@ pub const LAUNCHER_MINIMUM: Version = Version(1, 0, 0);
 /// added the custom texture loading and the 2-row bottom crop. An older install is replaced at the next launch
 /// (`gs_release::needs_install`).
 pub const RENDERER_MINIMUM: Version = Version(1, 2, 1);
+/// Lowest gt4-gs version whose allow-list accepts the fractional render scales (1.25, 1.5, 1.75 and 2.5) and OpenGL
+/// (`Renderer = 12`), TASK-200 (owner, 2026-11-06). gt4-gs 1.2.1 refuses both: the launcher offers them only to an
+/// installed 1.3.0 or newer and keeps the whole-number scales and the three APIs for older versions. Automatic never
+/// resolves to OpenGL.
+pub const RENDERER_FRACTIONAL_MINIMUM: Version = Version(1, 3, 0);
 /// Lowest GT4Recomp version the version picker lists (TASK-109): `1.3.0-rc5` is the first build that reads the
 /// multi-game data layout, settings schema 8 and the per-game save names, so an older one cannot read this data.
 pub const PICKER_MINIMUM: ReleaseVersion = ReleaseVersion::candidate(Version(1, 3, 0), 5);

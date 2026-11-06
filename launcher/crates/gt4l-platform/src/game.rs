@@ -127,8 +127,7 @@ fn prepare_shaders_once(
     let inherited: Vec<String> = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()).collect();
     // Only the program and the environment of this plan are used: nothing here reads the disc or the card.
     let inputs = LaunchInputs { game_executable, elf: game_executable, disc: game_executable, card: game_executable, session_dir: &logs };
-    let integrated = crate::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
-    let plan = launch::plan_coregs20_launch(&inputs, settings, display, integrated, textures, &inherited);
+    let plan = launch::plan_coregs20_launch(&inputs, settings, display, textures, &inherited);
     let mut command = Command::new(&plan.program);
     command.arg(launch::PREPARE_SHADERS_ARGUMENT).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::from(log));
     if let Some(folder) = game_executable.parent() {
@@ -208,7 +207,6 @@ pub fn start(
         card: &card,
         session_dir: &session_dir,
     };
-    let integrated = crate::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
     let mut plan = match pcsx2 {
         Some(pcsx2) => {
             // TASK-155: an install made before the marker existed gets it here (best effort: gt4-gs still starts without it
@@ -219,11 +217,11 @@ pub fn start(
                 }
             }
             let paths = Pcsx2Paths::for_session(pcsx2, &dirs.root().join("gs"), &session_dir, &textures.folder);
-            let text = launch::gs_config_text(settings, &paths, display, integrated)?;
+            let text = launch::gs_config_text(settings, &paths, display)?;
             gs_table::write_ini_atomic(&paths.config, &text).map_err(|error| format!("gt4-gs.ini: {error}"))?;
             launch::plan_pcsx2_launch(&inputs, settings, &paths, display, &inherited)
         }
-        None => launch::plan_coregs20_launch(&inputs, settings, display, integrated, textures, &inherited),
+        None => launch::plan_coregs20_launch(&inputs, settings, display, textures, &inherited),
     };
     plan.environment.extend(extra_environment.iter().cloned());
     let child = spawn(&plan)?;
