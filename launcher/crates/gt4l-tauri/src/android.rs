@@ -1039,10 +1039,14 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     // picture and the second copy into the swapchain image (about 36 MB per presented frame at 3088x1440, STUDY-UNIFIED
     // MEMORY 4.2) disappear. Presentation only, so the picture is exact. debug.env still overrides it.
     plan.environment.push(("GT4_HW_PRESENT_QUEUE".into(), "0".into()));
+    // TASK-182 step 3 measured on the owner's S23 showroom bench: a submission every 128 draw batches gave +11.6% VBlanks/s
+    // and 32% fewer render passes. Only submission boundaries change, never what is drawn. The K rule's device default
+    // (8 batches after a waited readback on a tiler) is clamped to this value by the renderer, so the two never fight.
+    plan.environment.push(("GT4_CORE2_SUBMIT_EVERY".into(), "128".into()));
     state::log(
         &dirs,
         "android defaults: GT4_CORE2_DEINT_FIELD_COMPOSE=1, GT4_CORE2_DEINT_SKIP_DECISION=1 (TASK-182, exact), \
-         GT4_HW_PRESENT_QUEUE=0 (single-queue present)",
+         GT4_HW_PRESENT_QUEUE=0 (single-queue present), GT4_CORE2_SUBMIT_EVERY=128 (TASK-182 step 3, exact)",
     );
     let controls_path = state.user_dirs.controls_file();
     if controls_path.exists() {
