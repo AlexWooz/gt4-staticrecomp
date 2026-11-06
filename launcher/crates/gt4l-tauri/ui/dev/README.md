@@ -20,17 +20,19 @@ Scripts are classic (not modules) so the pages also open from `file://`.
 | `js/wheel-model.js` | Pure Wheel rules (TASK-181, `GT4.wheelModel`): the DFP controls and the `wheel.toml` slot each writes, the set-up wizard's steps, sources (parse, describe, pressed with the game's thresholds), the steering angle (position times half the lock-to-lock range), the pedal travel and the byte the game gets (`read_pedal`), bound counts, the "force feedback received" line |
 | `js/wheel-svg.js` | GT4Recomp's own racing wheel and pedals drawing (no vendor artwork): the wheel turns at its real angle, the pedals show the raw travel and the game's value, one focusable chip per control (`GT4.wheelSvg`) |
 | `js/controls-model.js` | Pure Controls rules: live state from the pad-live shape and keys, the fixed keyboard layout, trigger output, key names, conflicts, chip labels (`GT4.controlsModel`). The Gamepad-object helpers (`padLive`, `padSummary`) are for the dev mock only |
+| `js/virtual-pad-model.js` | Pure virtual controller layout rules (TASK-185, `GT4.virtualPadModel`): the contract's screen fractions, the element box for a screen shape, moving/resizing/clamping, the F7 overlap, snapping and the layout validation. The format is in `docs/CONTROLS.md` |
 | `js/i18n.js` | Translations (TASK-102): `GT4.t(key, params)`, the language rule (`GT4.i18n.resolve`), `setSetting`, `onChange`. The files are `locales/` |
 | `locales/index.json`, `locales/<tag>.json` | The languages (the Settings list) and their texts; en-US is the fallback. See `docs/TRANSLATING.md` |
 | `js/config.js` | Feature flags (`mods` off for release 1.0.0) |
 | `js/app.js` | Router (`#/setup`, `#/home`, `#/settings/<tab>`) and boot |
-| `js/pages/*.js` | Setup, Home, Settings shell and rows, Saves and Replays, Controls, Wheel (`wheel.js`, TASK-181) |
+| `js/pages/*.js` | Setup, Home, Settings shell and rows, Saves and Replays, Controls, Wheel (`wheel.js`, TASK-181), the virtual pad editor (`virtual-pad-editor.js`, TASK-185) |
 | `assets/` | Fonts (Roboto, Roboto Condensed), `cover-front.png`, `logo-gt4.png` |
 | `dev/index.html` | Dev entry: same app with `dev/mock-data.js` (plain browser) |
 | `dev/mock-data.js` | Mock command layer; sample values only, not game data |
 | `dev/nav-test.html` | Unit tests: spatial picker, input rules, focus levels, settings row model (open in any browser) |
 | `dev/focus-check.html` | DOM-level focus and value checks on the mock (headless Edge; see below) |
 | `dev/MANUAL-CHECKLIST.md` | Manual checks for a controller and the Tauri build |
+| `dev/t185-checks.js` | Dev runner for TASK-185 (Node + the machine-wide Playwright): `checks` runs the focus checks in both languages and nav-test, `shots` writes `build/evidence/t185-editor/`. Serves `ui/` on a free local port; nothing is added to the repository |
 
 `ui/dev/` is for development. Exclude it from release bundles if the build does not need it.
 
