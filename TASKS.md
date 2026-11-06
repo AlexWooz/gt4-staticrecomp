@@ -1505,6 +1505,27 @@ is a measured, per-scene target, not a bit-exact gate. A faithful renderer stays
 3.0 is opt-in until it beats it. Game logic, physics, timing, saves and gameplay-relevant read-backs never change.
 Scope rule in AGENTS.md; roadmap in docs/COREGS2-ROADMAP.md; study `vu1-direct-gpu-study` (in progress).
 
+**Paused (owner, 2026-11-06), to resume later.** Phase 1 work is on branch `task/090-coregs3` at 4c3d3237 (pushed;
+worktree `C:\Antigravity\gt4-wt-090-coregs3`). The plan is `docs/COREGS3-PLAN.md`, and the state is in
+`docs/COREGS3-HOOKS.md` and in `build/evidence/coregs3/report.md` (ignored).
+
+Reached:
+- **M1:** observe-only hooks capture the race cars per frame.
+- **G-TAP:** the VU1 tap maps draws to records.
+- **Strip table decoded.** The `V1-8` channel at TOPS 0x40 is a strip-length list: a count, then 3 x the triangle count
+  of each strip. That reading needed two VIF decoder fixes (STMASK and the one-component broadcast).
+- **All 116 car draws of a night-race frame gated:** 1,549 strips, 12,146 vertices, 0 topology crossings.
+- **Flat-shaded M2 renders**, compared against CoreGS 2.0.
+- **The 3x identity gate passes:** clock, digest, state and 13/13 frames identical.
+
+Next, in order:
+1. Derive the VU1 lighting from the tap's RGBAQ.
+2. Textures.
+3. M4: the live overlay over CoreGS 2.0's frame, behind a switch that is off by default.
+4. The G-IMAGE and G-PERF gates.
+5. Settle the 5 ambiguous record matches.
+6. Write down the exact VU1 cull rule (580 facing exceptions, High confidence).
+
 ### TASK-087 — GS readbacks without stalls
 **Owner decision 2026-10-21: CoreGS 2.0 only.** gt4-gs (the PCSX2 GS fork) gets no more feature work; at most texture
 replacement is switched on (its implementation already exists) with a launcher option (TASK-048). So the gt4-gs steps
