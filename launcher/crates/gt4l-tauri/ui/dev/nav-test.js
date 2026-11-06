@@ -79,6 +79,14 @@ function startNavTest(root) {
   expect("stick full up scrolls -18 px", root.GT4.input.stickScroll(-1), -18);
   expect("stick just past the deadzone scrolls a little", root.GT4.input.stickScroll(0.25) > 0 && root.GT4.input.stickScroll(0.25) < 2, true);
 
+  // A click from the keyboard, the pad or assistive technology has no click count; a mouse, finger or pen click has one.
+  // An option row only steps on the first kind (TASK-193).
+  expect("a keyboard or assistive click steps an option row", root.GT4.input.stepsFromActivation(0), true);
+  expect("a click with no count at all steps an option row", root.GT4.input.stepsFromActivation(undefined), true);
+  expect("a mouse click does not step an option row", root.GT4.input.stepsFromActivation(1), false);
+  expect("a finger tap does not step an option row", root.GT4.input.stepsFromActivation(1), false);
+  expect("a double click does not step an option row", root.GT4.input.stepsFromActivation(2), false);
+
   // Slider from a touch position: 7 px thumb inset is applied by the caller; here the track is plain.
   expect("touch at the left end gives min", root.GT4.input.valueFromPointer(0, 0, 100, 1, 12, 1), 1);
   expect("touch at the right end gives max", root.GT4.input.valueFromPointer(100, 0, 100, 1, 12, 1), 12);
