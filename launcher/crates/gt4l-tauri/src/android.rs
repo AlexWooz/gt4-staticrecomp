@@ -1054,6 +1054,9 @@ pub fn play(shared: &Shared) -> Result<(), String> {
     if controls_path.exists() {
         plan.environment.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
     }
+    // TASK-185: the on-screen virtual pad's mode (auto, always, off) from the launcher's Controls page. The game reads the
+    // layout file itself (the user folder), so only the mode travels here.
+    plan.environment.push(("GT4_VIRTUAL_PAD".into(), launch::virtual_pad_environment(&settings).to_string()));
     if let Some(choice) = launch::controller_environment(&settings) {
         plan.environment.push(("GT4_PAD".into(), choice));
     }

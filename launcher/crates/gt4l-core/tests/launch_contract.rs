@@ -785,3 +785,27 @@ fn the_wheel_file_line_of_game_ini_stands_for_gt4_wheel_file() {
     assert_eq!(variables.get("GT4_WHEEL_FILE").map(String::as_str), Some(r"C:\Users\Player\AppData\Roaming\GT4Recomp\wheel.toml"));
     assert!(!launch::standalone_config_text(&Settings::default(), None).contains("wheel_file"), "only written when the file exists");
 }
+
+#[test]
+fn the_virtual_pad_mode_is_a_stored_choice_with_auto_as_default() {
+    // TASK-185: the game gets `GT4_VIRTUAL_PAD=auto|always|off`; the pad's layout file travels separately (the user
+    // folder), so only this one value is passed.
+    assert_eq!(launch::virtual_pad_mode("auto"), "auto");
+    assert_eq!(launch::virtual_pad_mode("always"), "always");
+    assert_eq!(launch::virtual_pad_mode("off"), "off");
+    // An edited settings file never takes the pad away by accident.
+    assert_eq!(launch::virtual_pad_mode(""), "auto");
+    assert_eq!(launch::virtual_pad_mode("ALWAYS"), "auto");
+    assert_eq!(launch::virtual_pad_mode("on"), "auto");
+
+    // The default and a build without the launcher's row (the editor owns it) both pass auto.
+    assert_eq!(launch::virtual_pad_environment(&Settings::default()), "auto");
+    // When the setting exists, its three values pass through unchanged.
+    let mut settings = Settings::default();
+    if settings::definition("virtual_pad").is_some() {
+        for value in ["auto", "always", "off"] {
+            settings.set("virtual_pad", value).unwrap();
+            assert_eq!(launch::virtual_pad_environment(&settings), value);
+        }
+    }
+}
