@@ -1,0 +1,77 @@
+# GT4Recomp racing wheel: the virtual Logitech Driving Force Pro (TASK-018, TASK-181). Written by the launcher.
+# TASK-189: the preset the launcher ships for the Logitech G27 (USB 046D:C29B). The owner mapped it on his own G27
+# (2026-11-06, the 1.3.0-rc15 test): the wheel on axis 0, the pedals on axes 1..3, the D-pad on hat 0, the face buttons,
+# the paddles (gear up = the right paddle, gear down = the left paddle) and the force feedback at full strength with a
+# light damping. It is applied by itself when a G27 is connected and the player has no mapping of their own.
+# The [buttons] keys keep the DualShock 2 names of the 1.2.x files. What each one presses on the Driving Force Pro:
+#   cross, circle, square, triangle -> Cross, Circle, Square, Triangle
+#   r2 -> gear up (DFP R1, the right paddle)    l2 -> gear down (DFP L1, the left paddle)
+#   r1 -> DFP R2                                l1 -> DFP L2
+#   r3, l3, select, start -> R3, L3, Select, Start
+#   dpad_up, dpad_right, dpad_down, dpad_left -> the DFP's D-pad (hat)
+# [handbrake] presses Circle past half travel. [clutch] is for the launcher's live view only: the DFP has no clutch.
+# rotation_degrees is the wheel's own lock-to-lock range; set the same number in the wheel's software (900 for GT4).
+[wheel]
+version = 1
+enabled = true
+mode = "dfp"
+device_guid = ""
+device_name = ""
+preset = "Logitech G27"
+
+[steering]
+source = "axis:0"
+rotation_degrees = 900
+invert = false
+
+[throttle]
+source = "axis:1"
+mode = "inverted"
+deadzone = 0.020
+saturation = 0.980
+curve = "linear"
+
+[brake]
+source = "axis:2"
+mode = "inverted"
+deadzone = 0.020
+saturation = 0.980
+curve = "linear"
+
+[handbrake]
+source = ""
+mode = "inverted"
+deadzone = 0.050
+saturation = 0.950
+curve = "linear"
+
+[clutch]
+source = "axis:4"
+mode = "inverted"
+deadzone = 0.050
+saturation = 0.950
+curve = "linear"
+
+[ffb]
+enabled = true
+strength = 1.000
+damper = 0.150
+invert = false
+
+[buttons]
+dpad_up = ["hat:0:up"]
+dpad_right = ["hat:0:right"]
+dpad_down = ["hat:0:down"]
+dpad_left = ["hat:0:left"]
+cross = ["btn:17"]
+circle = ["btn:18"]
+square = ["btn:16"]
+triangle = ["btn:15"]
+l1 = ["btn:20"]
+r1 = ["btn:19"]
+l2 = ["btn:5"]
+r2 = ["btn:4"]
+l3 = ["btn:22"]
+r3 = ["btn:21"]
+select = ["btn:7"]
+start = ["btn:6"]

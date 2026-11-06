@@ -314,7 +314,10 @@
         best = "steering";
       }
       if (best) {
-        onPick(best, "pointer");
+        // TASK-189: a click that landed on a control (its chip, its pedal or the rim) opens the capture popup at once; a
+        // click on the empty drawing only selects (the page decides in `onPick`).
+        var onControl = Object.keys(items).some(function (id) { return items[id].contains(event.target); });
+        onPick(best, onControl ? "chip" : "pointer");
       }
     });
     Object.keys(items).forEach(function (id) {

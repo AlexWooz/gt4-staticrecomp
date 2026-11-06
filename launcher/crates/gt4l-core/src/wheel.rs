@@ -184,6 +184,35 @@ impl Default for WheelConfig {
     }
 }
 
+impl WheelConfig {
+    /// The mapping the launcher starts a wheel from when it has no preset for it (TASK-189, owner 2026-11-06): every
+    /// control unassigned, so the page never guesses which button presses what. The calibration numbers stay the game's
+    /// (dead zones, saturation, curves, force feedback), the wheel off, and the source of every control empty; the player
+    /// maps each one, or a shipped preset for that wheel fills them in.
+    pub fn unassigned() -> WheelConfig {
+        let mut config = WheelConfig::default();
+        config.enabled = false;
+        config.preset = "generic".into();
+        config.steering.source.clear();
+        for name in PEDALS {
+            if let Some(pedal) = pedal_mut(&mut config, name) {
+                pedal.source.clear();
+            }
+        }
+        for sources in config.buttons.values_mut() {
+            sources.clear();
+        }
+        config
+    }
+
+    /// True when no control is bound at all: the state a wheel starts in before the player maps it.
+    pub fn is_unassigned(&self) -> bool {
+        self.steering.source.is_empty()
+            && PEDALS.iter().all(|name| self.pedal(name).is_some_and(|pedal| pedal.source.is_empty()))
+            && self.buttons.values().all(|sources| sources.is_empty())
+    }
+}
+
 // ---- sources ------------------------------------------------------------------------------------------------------
 
 /// The kinds of source the game reads.
@@ -961,14 +990,14 @@ pub fn plain_text(text: &str) -> String {
 /// What was found where the wheel file lives.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoadState {
-    /// No file: the defaults, the wheel off. Nothing is written until the player changes something.
+    /// No file: the unassigned mapping, the wheel off (TASK-189). Nothing is written until the player changes something.
     Missing,
     /// A DFP file read as it is.
     Loaded,
     /// A 1.2.x file (no `mode`, or the pad bridge's keys) or a `mode = "pad"` file. Its bindings are kept and it must be
     /// written again as a DFP file (the caller does it at once). The text says what was found.
     Migrated(String),
-    /// The game refuses the file (the error, `line N: ...`). The defaults are used; the file is kept until a change.
+    /// The game refuses the file (the error, `line N: ...`). The unassigned mapping is used; the file is kept until a change.
     Refused(String),
     /// A version this launcher does not know (a newer launcher wrote it): kept read only.
     Newer(String),
@@ -980,15 +1009,16 @@ pub struct Loaded {
     pub state: LoadState,
 }
 
-/// Reads `path` for the launcher: missing, read, migrated, refused or newer (see [`LoadState`]).
+/// Reads `path` for the launcher: missing, read, migrated, refused or newer (see [`LoadState`]). A file that is not there
+/// (or cannot be used) starts the mapping unassigned (TASK-189: no guessed controls); nothing is written until a change.
 pub fn load(path: &Path) -> Loaded {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Loaded { config: WheelConfig::default(), state: LoadState::Missing };
+            return Loaded { config: WheelConfig::unassigned(), state: LoadState::Missing };
         }
         Err(error) => {
-            return Loaded { config: WheelConfig::default(), state: LoadState::Refused(format!("cannot read the file: {error}")) };
+            return Loaded { config: WheelConfig::unassigned(), state: LoadState::Refused(format!("cannot read the file: {error}")) };
         }
     };
     load_text(&text)
@@ -1009,14 +1039,14 @@ pub fn load_text(text: &str) -> Loaded {
         }
         Err(error) => {
             if error.contains("unsupported wheel config version") {
-                return Loaded { config: WheelConfig::default(), state: LoadState::Newer(error) };
+                return Loaded { config: WheelConfig::unassigned(), state: LoadState::Newer(error) };
             }
             match WheelConfig::read(text, true) {
                 Ok((config, notes)) if notes.mode.as_deref() == Some("pad") => Loaded {
                     config,
                     state: LoadState::Migrated("mode \"pad\" (the removed DualShock 2 bridge): its bindings now drive the Driving Force Pro".into()),
                 },
-                _ => Loaded { config: WheelConfig::default(), state: LoadState::Refused(error) },
+                _ => Loaded { config: WheelConfig::unassigned(), state: LoadState::Refused(error) },
             }
         }
     }
@@ -1554,14 +1584,36 @@ start = [\"btn:9\"]
     }
 
     #[test]
-    fn a_missing_file_is_the_default_and_nothing_is_written() {
+    fn a_missing_file_starts_unassigned_and_nothing_is_written() {
         let dir = scratch("missing");
         let path = dir.join(FILE_NAME);
         let loaded = load(&path);
         assert_eq!(loaded.state, LoadState::Missing);
         assert!(!loaded.config.enabled);
+        assert!(loaded.config.is_unassigned(), "no preset, no guessed control (TASK-189)");
+        assert!(loaded.config.steering.source.is_empty());
+        assert!(loaded.config.buttons["cross"].is_empty());
+        assert!(loaded.config.validate().is_ok(), "an unassigned mapping is a valid file");
         assert!(!path.exists());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// TASK-189: the launcher's starting mapping never guesses a control; the game's own default (what a file that leaves
+    /// keys out means) keeps its indices, so `default()` and `unassigned()` stay two different things.
+    #[test]
+    fn the_unassigned_mapping_holds_no_control_and_keeps_the_calibration() {
+        let config = WheelConfig::unassigned();
+        assert!(!config.enabled);
+        assert_eq!(config.preset, "generic");
+        assert_eq!(config.steering.rotation_degrees, 900);
+        assert_eq!((config.throttle.deadzone, config.throttle.saturation), (0.02, 0.98));
+        assert_eq!((config.ffb.strength, config.ffb.damper), (1.0, 0.15));
+        assert!(config.is_unassigned());
+        assert!(config.validate().is_ok());
+        let text = config.to_toml();
+        let back = WheelConfig::from_toml(&text).expect("the game reads it");
+        assert!(back.is_unassigned(), "an unassigned file stays unassigned through the game's parser");
+        assert!(!WheelConfig::default().is_unassigned(), "the game's default still has its own indices");
     }
 
     #[test]

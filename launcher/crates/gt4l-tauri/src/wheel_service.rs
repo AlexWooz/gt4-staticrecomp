@@ -34,6 +34,20 @@ pub fn page_devices(entries: &[JoystickEntry]) -> Vec<&JoystickEntry> {
     entries.iter().filter(|entry| entry.is_wheel_page_device()).collect()
 }
 
+/// TASK-189: whether a `wheel-status` payload lists a wheel, which is exactly when Play plugs the virtual Driving Force
+/// Pro into the game. `None` when the status cannot say (SDL3 did not start or has not listed anything yet): the caller
+/// then keeps what it had instead of switching the wheel off on a guess. Auxiliary devices (a pedal set or a shifter on
+/// its own USB cable) are never the wheel.
+pub fn wheel_connected(status: &Value) -> Option<bool> {
+    if !status.get("available").and_then(Value::as_bool)? {
+        return None;
+    }
+    let devices = status.get("devices")?.as_array()?;
+    Some(devices.iter().any(|device| {
+        matches!(device.get("role").and_then(Value::as_str), Some("wheel") | Some("other_wheel"))
+    }))
+}
+
 fn features_json(features: &Features) -> Value {
     json!({
         "constant": features.constant,
@@ -79,8 +93,7 @@ pub fn device_json(entry: &JoystickEntry, counts: Option<&Counts>, features: Opt
 }
 
 /// What the status is built from.
-pub struct StatusInputs<'a> {
-    pub available: bool,
+pub struct StatusInputs<'a> {    pub available: bool,
     pub error: &'a str,
     pub entries: &'a [JoystickEntry],
     pub counts: &'a BTreeMap<u32, Counts>,
@@ -217,5 +230,21 @@ mod tests {
         assert_eq!(live["devices"][0]["pressed"], json!([1, 3]));
         assert_eq!(live["devices"][0]["axes"], json!([-16384, 32767]));
         assert_eq!(live["devices"][0]["hats"], json!([2]));
+    }
+
+    /// TASK-189: Play plugs the virtual Driving Force Pro in only when the status lists a wheel, and says it does not
+    /// know when SDL3 could not list the devices.
+    #[test]
+    fn a_wheel_is_connected_only_when_the_status_lists_one() {
+        let wheel = json!({ "available": true, "primary": 1, "devices": [{ "id": 1, "role": "wheel" }] });
+        assert_eq!(wheel_connected(&wheel), Some(true));
+        let other = json!({ "available": true, "primary": null, "devices": [{ "id": 1, "role": "other_wheel" }] });
+        assert_eq!(wheel_connected(&other), Some(true), "a second wheel is still a wheel");
+        let pedals = json!({ "available": true, "primary": null, "devices": [{ "id": 2, "role": "auxiliary" }] });
+        assert_eq!(wheel_connected(&pedals), Some(false), "a pedal set on its own USB cable is not a wheel");
+        assert_eq!(wheel_connected(&json!({ "available": true, "devices": [] })), Some(false));
+        assert_eq!(wheel_connected(&json!({ "available": false, "error": "starting", "devices": [] })), None);
+        assert_eq!(wheel_connected(&json!({})), None);
+        assert_eq!(wheel_connected(&Value::Null), None);
     }
 }

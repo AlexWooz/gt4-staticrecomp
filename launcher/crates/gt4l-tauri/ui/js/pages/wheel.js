@@ -7,11 +7,15 @@
  * JulioHeroZ, with luanantony: the wheel-and-pedal stage beside a side panel, the selected control card with its
  * calibration, live meters, capture and the force test. TASK-181 (owner, 2026-11-05: the DFP path only) drops the
  * DualShock 2 bridge settings and adds the real-angle wheel, the identity card, the set-up wizard and presets.
+ * TASK-189 (owner 2026-11-06, after his G27 test of the rc15 draft) makes one click open the capture popup, drops the
+ * identity card and the on/off switch, hides the "unknown" force feedback line and starts a wheel it ships a preset for
+ * from that preset (the G27); an unknown wheel starts with nothing mapped.
  *
- * Layout: header (title, note, the wheel's status), the "racing wheel in the game" switch and Set up; the drawing
- * (js/wheel-svg.js: the wheel turns at its real angle, the pedals show the raw travel and the value the game gets, one
- * chip per control) and the side panel (the wheel card, the selected control with its calibration, force feedback,
- * presets). Every change writes wheel.toml at once (no Save).
+ * Layout: header (title, note, the wheel's status), what the launcher did for this wheel (the shipped preset) and Set up;
+ * the drawing (js/wheel-svg.js: the wheel turns at its real angle, the pedals show the raw travel and the value the game
+ * gets, one chip per control) and the side panel (the selected control with its calibration, force feedback, presets).
+ * Every change writes wheel.toml at once (no Save). The wheel in the game is not a switch here: Play plugs the virtual
+ * Driving Force Pro in whenever a wheel is connected (src/wheel_page.rs, `prepare_for_play`).
  *
  * Commands (ui/dev/README.md): get_wheel_config, set_wheel_setting, apply_wheel_preset, assign_wheel_binding,
  * reset_wheel_binding, reset_wheel_config, capture_wheel_binding, cancel_wheel_capture, test_wheel_ffb, wheel_watch,
@@ -19,8 +23,9 @@
  * Events: wheel-status (on change), wheel-live (about 60 Hz while this page asks with wheel_watch, renewed every 2 s).
  *
  * Navigation (two levels, js/focus-levels.js): A on the tab list enters on the control selected last (the steering at
- * first). The D-pad moves between the chips; A binds the control (a capture), Y clears it, X starts the set-up wizard,
- * B returns to the tab list. Mouse and touch: a click selects the nearest control; a second click binds it.
+ * first). The D-pad moves between the chips; A opens the capture popup for the control, Y clears it, X starts the set-up
+ * wizard, B returns to the tab list. Mouse and touch: one click on a control opens the same popup; a click on the empty
+ * drawing only selects.
  */
 (function (root) {
   "use strict";
@@ -125,10 +130,11 @@
       h("div", { class: "cx-head-right" }, [status])
     ]));
 
-    // The switch (the virtual DFP plugged in or not) and Set up.
-    var enabledBox = h("div", { class: "wh-enabled" });
+    // TASK-189: the wheel in the game is no longer a switch on this page (Play plugs the virtual Driving Force Pro in
+    // whenever a wheel is connected), so this row holds what happened for this wheel and Set up.
+    var presetNotice = h("p", { class: "wh-preset-notice", role: "status", hidden: true, text: "" });
     var setupButton = h("button", { class: "btn primary wh-setup", type: "button", on: { click: function () { startWizard(); } } }, t("wheel.setup"));
-    content.appendChild(h("div", { class: "wh-top" }, [enabledBox, setupButton]));
+    content.appendChild(h("div", { class: "wh-top" }, [presetNotice, setupButton]));
     var notice = h("p", { class: "cx-locked", hidden: true, text: "" });
     content.appendChild(notice);
 
@@ -152,18 +158,12 @@
 
     // ---- side panel ---------------------------------------------------------------------------------------------------
     var panel = h("aside", { class: "cx-panel wh-panel", "aria-label": t("wheel.panel_label") });
-    // The wheel card.
-    var deviceName = h("div", { class: "cx-name wh-device-name" });
-    var deviceLines = h("div", { class: "wh-device-lines" });
+    // TASK-189: the "Your wheel" card is gone (the name is in the badge, the 900-degree advice is the Rotation row's
+    // tooltip). What remains is compact and only when it matters: the wheel the game uses when several are connected, and
+    // the warnings about the wheel's mode (compatibility mode and the like).
     var deviceNotes = h("div", { class: "wh-notes" });
     var deviceRow = h("div", { class: "wh-device-row" });
-    var deviceCard = h("section", { class: "cx-card wh-device" }, [
-      h("div", { class: "cx-state", text: t("wheel.device_title") }),
-      deviceName,
-      deviceLines,
-      deviceRow,
-      deviceNotes
-    ]);
+    var facts = h("div", { class: "wh-facts" }, [deviceRow, deviceNotes]);
     // The selected control.
     var cardGlyph = h("span", { class: "cx-glyph" });
     var cardName = h("div", { class: "cx-name" });
@@ -190,18 +190,22 @@
       h("div", { class: "cx-actions" }, [bindButton, clearButton]),
       cardHint
     ]);
-    // Force feedback.
+    // Force feedback. TASK-189: one compact result line under the button, and the last game's line only when the game
+    // reported something.
     var ffbRows = h("div", { class: "cx-rows" });
     var testButton = h("button", { class: "btn small wh-test", type: "button", on: { click: function () { testForce(); } } }, t("wheel.ffb.test"));
     var testResult = h("p", { class: "wh-test-result", role: "status", text: t("wheel.ffb.test_help") });
     var receivedValue = h("span", { class: "wh-received-v" });
     var receivedReason = h("p", { class: "wh-received-why" });
+    var received = h("div", { class: "wh-received" }, [
+      h("div", { class: "wh-received-row" }, [h("span", { class: "wh-received-k", text: t("wheel.ffb.received") }), receivedValue]),
+      receivedReason
+    ]);
     var ffbCard = h("section", { class: "cx-card wh-ffb", data: { section: "ffb" } }, [
       h("h2", { class: "wh-card-title", text: t("wheel.ffb.title") }),
       ffbRows,
       h("div", { class: "wh-test-row" }, [testButton, testResult]),
-      h("div", { class: "wh-received" }, [h("span", { class: "wh-received-k", text: t("wheel.ffb.received") }), receivedValue]),
-      receivedReason
+      received
     ]);
     // Presets.
     var presetsCard = h("section", { class: "cx-card wh-presets" }, [
@@ -213,7 +217,7 @@
       ]),
       h("button", { class: "btn danger small cx-reset-all", type: "button", on: { click: function () { confirmReset(); } } }, t("wheel.presets.reset"))
     ]);
-    panel.appendChild(deviceCard);
+    panel.appendChild(facts);
     panel.appendChild(card);
     panel.appendChild(ffbCard);
     panel.appendChild(presetsCard);
@@ -266,16 +270,12 @@
     }
 
     // ---- painting -----------------------------------------------------------------------------------------------------
-    function paintEnabled(focusId) {
-      var cfg = config();
-      var row = toggleRow("wheel-enabled", "wheel.enabled", t("wheel.enabled"), t("wheel.enabled_help"), cfg && cfg.enabled);
-      rowNodes([row], enabledBox);
-      if (focusId === "wheel-enabled") {
-        var target = enabledBox.querySelector("[data-setting=\"wheel-enabled\"]");
-        if (target) {
-          target.focus({ preventScroll: true });
-        }
-      }
+    // TASK-189: the on/off switch is gone. This row says what the launcher did for the wheel by itself (the shipped
+    // preset) and keeps Set up at hand.
+    function paintTop() {
+      var applied = (state.view && state.view.applied_preset) || "";
+      presetNotice.hidden = !applied;
+      presetNotice.textContent = applied ? t("wheel.preset_applied", { name: applied }) : "";
       setupButton.disabled = locked();
     }
 
@@ -294,7 +294,7 @@
       } else if (gameRunning()) {
         statusSub.textContent = t("wheel.status_game");
       } else {
-        statusSub.textContent = connected ? t("wheel.status_driven", { id: device.vid_pid || "?" }) : t("wheel.status_other");
+        statusSub.textContent = connected ? t("wheel.status_connected") : t("wheel.status_other");
       }
     }
 
@@ -302,32 +302,17 @@
       return h("p", { class: "wh-line" + (cls ? " " + cls : ""), text: text });
     }
 
-    function ffbLine(device) {
-      if (device.features) {
-        var names = ["constant", "spring", "damper", "friction", "gain", "autocenter"].filter(function (key) { return device.features[key]; })
-          .map(function (key) { return t("wheel.effect." + key); });
-        return t("wheel.ffb_line.features", { effects: names.length ? names.join(", ") : t("wheel.effect.none") });
-      }
-      if (device.haptic === true) {
-        return t("wheel.ffb_line.yes");
-      }
-      if (device.haptic === false) {
-        return t("wheel.ffb_line.no");
-      }
-      return t("wheel.ffb_line.unknown");
-    }
-
     var lastDeviceKey = "";
     function paintDevice() {
       var cfg = config();
-      // Only what the card shows: the watch flag and the event's timing never draw it again (that would drop the focus of
+      // Only what this block shows: the watch flag and the event's timing never draw it again (that would drop the focus of
       // its dropdown).
       var shown = state.status ? {
         available: state.status.available,
         primary: state.status.primary,
         configured_connected: state.status.configured_connected,
         devices: (state.status.devices || []).map(function (one) {
-          return [one.guid, one.name, one.role, one.family_name, one.model, one.vid_pid, one.sdl_type, one.haptic, one.features, one.notes, one.software];
+          return [one.guid, one.name, one.role, one.notes];
         })
       } : null;
       var key = JSON.stringify([shown, cfg && cfg.device_guid, cfg && cfg.device_name, locked()]);
@@ -335,34 +320,24 @@
         return;
       }
       lastDeviceKey = key;
-      var hadFocus = deviceCard.contains(document.activeElement);
+      var hadFocus = facts.contains(document.activeElement);
       var devices = (state.status && state.status.devices) || [];
       var device = M.mainDevice(state.status);
-      GT4.ui.clear(deviceLines);
       GT4.ui.clear(deviceNotes);
       GT4.ui.clear(deviceRow);
       if (!device) {
-        deviceName.textContent = t("wheel.no_wheel_title");
-        deviceLines.appendChild(line(t("wheel.no_wheel_text")));
         if (cfg && cfg.device_guid && cfg.device_name) {
           deviceNotes.appendChild(line(t("wheel.configured_missing", { name: cfg.device_name }), "is-warn"));
         }
+        facts.hidden = !deviceNotes.childElementCount;
         return;
       }
-      deviceName.textContent = device.name;
-      var family = device.family_name ? (device.model ? device.family_name + " · " + device.model : device.family_name) : t("wheel.family_unknown");
-      deviceLines.appendChild(line(family, "is-strong"));
-      deviceLines.appendChild(line(t("wheel.ids", { id: device.vid_pid || "?", type: t("wheel.sdl_type." + (device.sdl_type || "other")) })));
-      deviceLines.appendChild(line(ffbLine(device)));
       if (device.role !== "wheel" && state.status.primary === null && cfg && cfg.device_guid) {
         deviceNotes.appendChild(line(t("wheel.configured_missing", { name: cfg.device_name || cfg.device_guid }), "is-warn"));
       }
       (device.notes || []).forEach(function (note) {
         deviceNotes.appendChild(line(t(M.noteKey(note)), "is-warn"));
       });
-      if (device.force_feedback !== false) {
-        deviceNotes.appendChild(line(device.software ? t("wheel.set_900", { software: device.software }) : t("wheel.set_900_generic"), "is-tip"));
-      }
       // Several devices, or the configured wheel is not the one shown: choose the wheel the game drives.
       var choices = devices.filter(function (one) { return one.role !== "auxiliary" || (cfg && cfg.device_guid === one.guid); });
       if (choices.length > 1 || (cfg && cfg.device_guid && !state.status.configured_connected)) {
@@ -396,6 +371,7 @@
       if (aux.length) {
         deviceNotes.appendChild(line(t("wheel.also_connected", { names: aux.map(function (one) { return one.name; }).join(", ") })));
       }
+      facts.hidden = !deviceNotes.childElementCount && !deviceRow.childElementCount;
     }
 
     function paintBindings() {
@@ -477,7 +453,7 @@
       bindButton.disabled = locked() || gameRunning();
       clearButton.disabled = locked() || !sources.length;
       var pointer = GT4.inputMode && GT4.inputMode() === "mouse";
-      cardHint.textContent = gameRunning() ? t("wheel.game_running") : locked() ? "" : pointer ? t("wheel.click_again") : t("wheel.press_a");
+      cardHint.textContent = gameRunning() ? t("wheel.game_running") : locked() ? "" : pointer ? t("wheel.hint_click") : t("wheel.hint_a");
     }
 
     function paintTestState() {
@@ -485,8 +461,14 @@
       testButton.disabled = !state.testing && (gameRunning() || !M.mainDevice(state.status));
       testButton.textContent = state.testing ? t("wheel.ffb.testing") : t("wheel.ffb.test");
       if (gameRunning() && !state.testing) {
-        testResult.textContent = t("wheel.ffb.test_game");
+        setTestResult(t("wheel.ffb.test_game"), "");
       }
+    }
+
+    // TASK-189: one line, in the card's colour: green when the wheel played, amber when it could not.
+    function setTestResult(text, tone) {
+      testResult.textContent = text;
+      testResult.className = "wh-test-result" + (tone ? " is-" + tone : "");
     }
 
     function paintFfb(focusId) {
@@ -511,6 +493,8 @@
 
     function paintReceived() {
       var found = M.received(state.session);
+      // TASK-189: the line is only drawn when the game reported it; "Unknown" said nothing and took a whole row.
+      received.hidden = found.value === "unknown";
       receivedValue.textContent = t("wheel.received." + found.value);
       receivedValue.className = "wh-received-v is-" + found.value;
       var check = state.session || {};
@@ -537,7 +521,7 @@
     }
 
     function paint(focusId) {
-      paintEnabled(focusId);
+      paintTop();
       paintStatus();
       paintDevice();
       paintBindings();
@@ -713,22 +697,19 @@
     });
 
     // ---- picking and binding ----------------------------------------------------------------------------------------
+    // TASK-189: one click maps a control. `chip` is a click on a control of the drawing, `activate` is A on the pad (or
+    // Enter/Space on the focused control), `pointer` is a click on the empty drawing; both of the first two open the
+    // capture popup, the third only selects.
     function onPick(id, how) {
       if (state.capture) {
         return;
       }
       var item = drawing.items[id];
-      if (how === "activate") {
-        select(id);
-        bind(id);
-        return;
-      }
-      var again = id === state.selected && document.activeElement === item;
       select(id);
-      if (item && document.activeElement !== item) {
+      if (item && document.activeElement !== item && how !== "activate") {
         item.focus({ preventScroll: true });
       }
-      if (again) {
+      if (how !== "pointer") {
         bind(id);
       }
     }
@@ -753,11 +734,12 @@
       var text = h("p", { class: "modal-text wh-prompt", text: prompt });
       var sub = h("p", { class: "cx-capture-sub wh-capture-sub", text: "" });
       var message = h("p", { class: "cx-capture-msg", role: "status", text: "" });
+      var hint = h("p", { class: "cx-capture-foot", text: "" });
       var body = h("div", { class: "cx-capture" }, [
         h("div", { class: "cx-capture-art" }, [ring, glyph, seconds]),
-        h("div", { class: "cx-capture-text" }, [text, sub, message])
+        h("div", { class: "cx-capture-text" }, [text, sub, hint, message])
       ]);
-      return { body: body, arc: arc, seconds: seconds, glyph: glyph, text: text, sub: sub, message: message };
+      return { body: body, arc: arc, seconds: seconds, glyph: glyph, text: text, sub: sub, hint: hint, message: message };
     }
 
     function promptFor(id, phase) {
@@ -800,6 +782,9 @@
       });
     }
 
+    // One action, one popup (TASK-189, owner 2026-11-06): a click on a control on the drawing, on its card's Bind button
+    // or A on the pad opens this and waits for the button, the axis or the pedal to be pressed. Esc or Cancel closes it,
+    // Clear removes the control, Y clears it from the pad.
     function bind(id) {
       if (state.capture || !drawing.items[id]) {
         return;
@@ -814,7 +799,8 @@
       }
       select(id);
       var parts = captureBody(id, promptFor(id, "left"), true);
-      parts.sub.textContent = t("wheel.capture_cancels");
+      parts.sub.textContent = controlSub(id);
+      parts.hint.textContent = t("wheel.map_hint");
       var job = { done: false, started: Date.now(), timer: null, dialog: null };
       state.capture = job;
       function stop(reason, detail) {
@@ -826,12 +812,15 @@
         GT4.capturing = false;
         GT4.cancelCapture = null;
         GT4.captureKey = null;
+        GT4.capturePad = null;
         state.capture = null;
         drawing.setCapturing(null);
         call("cancel_wheel_capture").catch(function () {});
         job.dialog.close();
         paintHints();
-        if (reason === "timeout") {
+        if (reason === "clear") {
+          clearOne(id);
+        } else if (reason === "timeout") {
           GT4.ui.toast(t("wheel.no_press"));
         } else if (reason === "error") {
           GT4.ui.toast(GT4.errorText(detail), true);
@@ -858,16 +847,27 @@
         }
         return true;
       };
+      // The pad: B cancels, Y clears (the same keys as on the page, so nothing has to be learnt for the popup).
+      GT4.capturePad = function (name) {
+        if (name === "y") {
+          stop("clear");
+        }
+      };
       drawing.setCapturing(id);
       job.dialog = GT4.ui.openDialog({
-        title: t("wheel.bind_title", { control: controlName(id) }),
+        title: t("wheel.map_title", { control: controlName(id) }),
         body: parts.body,
-        wide: true,
         dismissable: false,
-        buttons: [{ label: t("common.cancel"), closes: false, run: function () { stop("cancel"); } }]
+        buttons: [
+          { label: t("common.cancel"), closes: false, run: function () { stop("cancel"); } },
+          { label: t("wheel.clear"), closes: false, run: function () { stop("clear"); } }
+        ]
       });
-      job.dialog.el.classList.add("is-capture");
-      GT4.ui.setHints([{ key: "B", label: t("common.cancel"), run: function () { stop("cancel"); } }]);
+      job.dialog.el.classList.add("is-capture", "is-bind");
+      GT4.ui.setHints([
+        { key: "B", label: t("common.cancel"), run: function () { stop("cancel"); } },
+        { key: "Y", label: t("wheel.hint.clear"), run: function () { stop("clear"); } }
+      ]);
       job.timer = root.setInterval(function () {
         if (dev.capture === "hold") {
           parts.seconds.textContent = "6";
@@ -937,6 +937,12 @@
             label: t("wheel.wizard.start"),
             primary: true,
             run: function () {
+              // TASK-189: a wheel that already has a mapping (the preset the launcher applied, or the player's own) keeps
+              // it; the wizard only starts a family template from empty, so stopping halfway never loses the preset.
+              if (M.boundCount(config()).bound > 0) {
+                runWizard(device);
+                return;
+              }
               call("apply_wheel_preset", { name: family, guid: device.guid }).then(function (view) {
                 apply(view);
                 runWizard(device);
@@ -1091,21 +1097,18 @@
       show(dev.wizardStep || 0);
     }
 
+    // The summary. TASK-189: nothing is switched on here; Play plugs the virtual Driving Force Pro in whenever a wheel is
+    // connected.
     function summary() {
       var count = M.boundCount(config());
-      var turnOn = config() && !config().enabled
-        ? call("set_wheel_setting", { key: "wheel.enabled", value: true }).then(apply, function () {})
-        : Promise.resolve();
-      turnOn.then(function () {
-        GT4.ui.openDialog({
-          title: t("wheel.wizard.done_title"),
-          text: t("wheel.wizard.done_text", { bound: count.bound, total: count.total }),
-          buttons: [
-            { label: t("wheel.presets.save"), run: function () { root.setTimeout(savePreset, 0); } },
-            { label: t("wheel.wizard.done"), primary: true }
-          ],
-          onClose: function () { root.setTimeout(paintHints, 0); }
-        });
+      GT4.ui.openDialog({
+        title: t("wheel.wizard.done_title"),
+        text: t("wheel.wizard.done_text", { bound: count.bound, total: count.total }),
+        buttons: [
+          { label: t("wheel.presets.save"), run: function () { root.setTimeout(savePreset, 0); } },
+          { label: t("wheel.wizard.done"), primary: true }
+        ],
+        onClose: function () { root.setTimeout(paintHints, 0); }
       });
     }
 
@@ -1116,7 +1119,7 @@
       }
       state.testing = true;
       paintTestState();
-      testResult.textContent = t("wheel.ffb.test_help");
+      setTestResult(t("wheel.ffb.testing_help"), "");
       call("test_wheel_ffb").then(function (result) {
         state.testing = false;
         state.test = result;
@@ -1124,16 +1127,16 @@
           return result.features && result.features[key];
         }).map(function (key) { return t("wheel.effect." + key); }).join(", ") || t("wheel.effect.none");
         if (!result.has_ffb) {
-          testResult.textContent = t("wheel.ffb.test_no_ffb", { name: result.device_name, error: result.error || "" });
+          setTestResult(t("wheel.ffb.test_no_ffb", { error: result.error || "" }), "warn");
         } else if (!result.played) {
-          testResult.textContent = t("wheel.ffb.test_no_constant", { name: result.device_name, effects: effects });
+          setTestResult(t("wheel.ffb.test_no_constant", { effects: effects }), "warn");
         } else {
-          testResult.textContent = t("wheel.ffb.test_played", { name: result.device_name, effects: effects });
+          setTestResult(t("wheel.ffb.test_played", { effects: effects }), "ok");
         }
         paintTestState();
       }, function (err) {
         state.testing = false;
-        testResult.textContent = GT4.errorText(err);
+        setTestResult(GT4.errorText(err), "warn");
         paintTestState();
       });
     }

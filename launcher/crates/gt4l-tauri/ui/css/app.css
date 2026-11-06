@@ -835,6 +835,9 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
   display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 20px; align-items: end;
 }
 .modal.is-capture .modal-box h3 { grid-column: 1 / -1; margin-bottom: 10px; }
+/* TASK-189: the per-control capture popup is small (the wizard keeps the wide box). */
+.modal.is-capture.is-bind .modal-box { width: 560px; }
+.modal.is-capture.is-bind .cx-capture { align-items: flex-start; }
 .modal.is-capture .modal-actions { margin-top: 0; }
 .cx-capture { display: flex; align-items: center; gap: 24px; }
 .cx-capture-art { position: relative; width: 112px; height: 112px; flex: none; display: grid; place-items: center; }
@@ -1172,11 +1175,15 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 /* ---------- Wheel page (js/pages/wheel.js, js/wheel-svg.js; TASK-181) ----------
    The Controls page's layout (.is-controls, .cx-*): the drawing is the hero, the panel scrolls. The wheel turns at its real
    angle; the chips are the focus targets and keep their places, their leader lines fade while the wheel is turned. */
-.wh-top { flex: none; display: flex; align-items: center; gap: 18px; margin-top: 8px; max-width: 760px; }
-.wh-enabled { flex: 1; min-width: 0; }
-.wh-enabled .row { border-bottom: 0; min-height: 48px; }
-.wh-enabled .row .ctl { width: 220px; }
-.wh-setup { flex: none; }
+/* TASK-189: the row under the title holds what the launcher did for this wheel (the shipped preset) and Set up; the
+   "racing wheel in the game" switch is gone (Play decides it from the wheel connected). */
+.wh-top { flex: none; display: flex; align-items: center; gap: 18px; margin-top: 8px; min-height: 40px; }
+.wh-preset-notice {
+  flex: 1; min-width: 0; margin: 0; padding: 8px 12px; border-left: 2px solid var(--accent); color: var(--silver);
+  background: rgba(44, 107, 237, 0.09); font-size: 13px; line-height: 17px;
+}
+.wh-preset-notice[hidden] { display: none; }
+.wh-setup { flex: none; margin-left: auto; }
 .wh-pad::before { inset: 0 6% 22% 6%; background: radial-gradient(ellipse 42% 48% at 50% 46%, rgba(44, 107, 237, 0.16), rgba(44, 107, 237, 0.04) 60%, rgba(44, 107, 237, 0) 78%); }
 .wheel-svg .wh-floor { fill: rgba(0, 0, 0, 0.22); }
 .wheel-svg .wh-base { fill: url(#wh-base); stroke: #0b0d10; stroke-width: 2; }
@@ -1246,28 +1253,40 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 .wh-key.aux { height: 12px; border-radius: 6px; border: 1.5px solid rgba(92, 207, 174, 0.85); }
 .wh-card-title { font: 500 11px var(--label); letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim); margin-bottom: 4px; }
 .wh-card-note { font-size: 12px; color: var(--faint); margin-bottom: 8px; line-height: 16px; }
-.wh-device-name { font-size: 20px; line-height: 25px; margin-top: 4px; overflow-wrap: anywhere; }
+/* TASK-189: the "Your wheel" card is gone; only what still matters stays, compactly: the wheel the game uses when
+   several are connected, and the warnings about the wheel's mode (compatibility mode and the like). */
+.wh-facts { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.wh-facts[hidden] { display: none; }
 .wh-line { font-size: 12.5px; color: var(--dim); margin-top: 4px; line-height: 17px; overflow-wrap: anywhere; }
 .wh-line.is-strong { color: var(--silver); }
-.wh-line.is-warn { color: var(--silver); padding: 8px 10px; border-left: 2px solid #e3b341; background: rgba(227, 179, 65, 0.08); margin-top: 8px; }
-.wh-line.is-tip { color: var(--silver); padding: 8px 10px; border-left: 2px solid var(--accent); background: rgba(44, 107, 237, 0.09); margin-top: 8px; }
-.wh-device-row .row { min-height: 44px; }
-.wh-panel .row .ctl { width: 58%; }
+.wh-line.is-warn { color: var(--silver); padding: 6px 10px; border-left: 2px solid #e3b341; background: rgba(227, 179, 65, 0.08); margin-top: 6px; }
+.wh-device-row .row { min-height: 44px; border-bottom: 0; }
+.wh-panel .row .ctl { width: 54%; min-width: 0; }
+/* Labels stay inside the card: they wrap between words (never inside one) and never push the control out. */
+.wh-panel .row .k { min-width: 0; font-size: 12.5px; line-height: 15px; white-space: normal; overflow-wrap: normal; }
+.wh-panel .row { align-items: center; gap: 8px; }
+/* The force feedback switches carry their value and two arrows: their labels get the room instead. */
+.wh-ffb .row .ctl { width: 48%; }
 .wh-sources { flex-wrap: wrap; justify-content: flex-end; }
 .xchip.wh-chip { width: auto; padding: 0 10px; border-radius: 13px; }
 .xchip.is-aux { border-color: rgba(92, 207, 174, 0.85); }
 .wh-meter-row { margin-top: 6px; }
 .wh-meter-row[hidden] { display: none; }
 .cx-meter .sat { left: var(--l, 100%); width: 2px; background: rgba(255, 255, 255, 0.55); }
-.wh-test-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
-.wh-test { flex: none; }
-.wh-test-result { font-size: 12px; color: var(--dim); line-height: 16px; min-width: 0; }
-.wh-received { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--hair); }
-.wh-received-k { color: var(--silver); font-size: 13px; }
+/* TASK-189: "Test force" and one compact result line under it, so nothing spills out of the card. */
+.wh-test-row { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-top: 10px; }
+.wh-test { flex: none; align-self: flex-start; }
+.wh-test-result { font-size: 12px; color: var(--dim); line-height: 16px; min-width: 0; overflow-wrap: anywhere; }
+.wh-test-result.is-ok { color: #86e3ad; }
+.wh-test-result.is-warn { color: #e3b341; }
+.wh-received { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--hair); }
+.wh-received[hidden] { display: none; }
+.wh-received-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.wh-received-k { color: var(--silver); font-size: 13px; min-width: 0; }
 .wh-received-v { flex: none; font: 500 12px var(--label); letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--hair); color: var(--dim); }
 .wh-received-v.is-yes { color: #86e3ad; border-color: rgba(47, 168, 102, 0.6); background: rgba(47, 168, 102, 0.12); }
 .wh-received-v.is-no { color: #ff9e9e; border-color: rgba(214, 69, 69, 0.6); background: rgba(214, 69, 69, 0.1); }
-.wh-received-why { font-size: 12px; color: var(--faint); margin-top: 6px; line-height: 16px; }
+.wh-received-why { font-size: 12px; color: var(--faint); margin-top: 6px; line-height: 16px; overflow-wrap: anywhere; }
 .wh-presets .cx-reset-all { margin-top: 10px; }
 .wh-preset-actions { flex-direction: column; }
 .wh-preset-actions .btn { flex: none; width: 100%; }
@@ -1301,7 +1320,6 @@ body.input-pad .selector:focus .selector-arrow { color: var(--white); }
 .wh-mini .wh-mini-base { fill: #5c626b; }
 @media (max-height: 660px) {
   .wh-top { margin-top: 2px; }
-  .wh-enabled .row { min-height: 40px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .cx-ring.is-waiting { animation: none; }

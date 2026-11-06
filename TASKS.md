@@ -3754,6 +3754,42 @@ the 1.3.0 final, so a slower PC turns off only what costs frames.
   minimum (the launcher accepts gt4-gs >= 1.2.1 today).
 - State (2026-11-06): implemented on `task/186-effect-toggles-pc`; owner test with the G27 pending.
 
+### TASK-189: Wheel page after the owner's G27 test (owner, 2026-11-06; in the rc15 test build)
+
+**Why.** The owner tested the rc15 draft with his Logitech G27: the wheel drawing and the buttons are right ("the wheel visual
+is impeccable, change nothing there"), the rest of the page is not. His list, and what was done:
+
+1. **Mapping took two clicks.** The page's capture popup is now opened by one action: a click on a control of the drawing, its
+   Map button in the panel, or A on the pad. It is named for the control, waits for the button, the axis or the pedal, offers
+   Clear in the same popup, and closes on Esc, B or Cancel; Y clears from the pad. A click on the empty drawing only selects.
+2. **No guessing.** A wheel with no preset starts with every control unassigned (`WheelConfig::unassigned`, `wheel::load` on a
+   missing or refused file, `reset_wheel_config`), and the `generic` family template no longer pre-fills axis 0 and the D-pad.
+   The game's own default parser (`WheelConfig::default`, `native/wheel.cpp`) is unchanged: it is the file format's fallback,
+   not the launcher's starting point.
+3. **A shipped G27 preset.** `crates/gt4l-core/assets/wheel-presets/logitech-g27.toml` is the owner's mapping, listed in
+   `wheel_identity::BUILTIN_PRESETS` by USB IDs (`046D:C29B`). `wheel_page::auto_apply_builtin` applies it when the launcher has
+   no `wheel.toml` and the detected device matches, at the page and at Play; the page says which preset was applied
+   (`applied_preset`). The table is the extension point for other wheels.
+4. **The "Your wheel" card is gone.** The name is in the badge, the 900-degree advice is the Rotation row's tooltip, and the
+   badge reads "Connected" without the USB ID. What remains of that block is compact and conditional: the wheel the game uses
+   when several are connected, and the mode warnings (compatibility mode and the like).
+5. **The force feedback card is tidy.** One compact result line under Test force ("played, effects: ..." in green, the refusal
+   in amber), and the "force feedback in the last game" row is only drawn when the game reported yes or no. Checked at
+   1366x768 and 1920x1080 (`build/evidence/t189/`).
+6. **No "Racing wheel in the game" switch.** `wheel_page::prepare_for_play` (called by `prepare_play`) plugs the virtual DFP in
+   exactly when the wheel status lists a wheel and leaves it out when none is, writes `wheel.toml` and logs the decision; with
+   SDL3 unavailable it keeps the stored value (a Start right at boot). The stored `[wheel] enabled` of a 1.3.0-rc15 file is no
+   longer a player setting: it is derived at Play, so the old key's value does not survive a Start.
+
+**Tests.** `cargo test --workspace`: all green except `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`,
+which fails only while a game process runs on the machine (`gt4vulkan.exe` was open; the log says "large data: not moved now
+(Gran Turismo 4 is running)"), unrelated to this task. New: the G27 preset (identity table and the shipped file's parsing),
+the unassigned start, `reset_template`, the shipped preset's auto-application and an unknown wheel's empty start (flow audit),
+`wheel_connected` and the per-Start on/off with the dropped stored value (flow audit). Focus checks en-US 368/368 and pt-BR
+375/375, nav-test 260/260, locale keys 913 in both languages. Screenshots: `build/evidence/t189/`.
+
+**Open.** The owner's test of the next rc15 build with the G27. GT4's own USB wheel code is untouched.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
@@ -3772,9 +3808,10 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-175 | Performance HUD: full names, report state, Off / FPS only / Full | `task/175-performance-hud` (2e2f87f3) | ✅ In rc15 (49acaf41); the HUD's look in a game run still to check |
 | TASK-179 | Android stage A1 on Windows: Vulkan correctness | `task/179-vulkan-correctness` (4a70b53d) | ✅ In rc15 (a2390b2d) |
 | TASK-178 | Submit after a waited readback (K=0 by default) and the flare-read counters | `task/178-submit-after-wait` (c73b3be8 only) | ✅ In rc15 (6f318594); O3 dropped (not exact on Motegi, no gain; 80cf04c9 stays on the branch only) |
-| TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner's G27 test pending |
+| TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner tested it on his G27 (2026-11-06: the drawing and the buttons are right) and asked for TASK-189 |
 | TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner) |
 | TASK-186 | Effect toggles instead of Performance Mode, both renderers (owner, 2026-11-06) | `task/186-effect-toggles-pc` | ✅ For the rc15 test build (owner test pending); `task/180-android-emulator` gets the same correction |
+| TASK-189 | Wheel page after the owner's G27 test: one-action mapping popup, no guessed mapping, the shipped G27 preset, no "Your wheel" card, a tidy force feedback card, no on/off switch (owner, 2026-11-06) | `task/189-wheel-page-polish` | ✅ For the rc15 test build (owner test pending) |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates

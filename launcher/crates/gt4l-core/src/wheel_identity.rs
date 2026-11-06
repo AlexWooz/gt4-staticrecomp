@@ -59,6 +59,50 @@ pub fn family(id: &str) -> Option<&'static Family> {
     FAMILIES.iter().find(|family| family.id == id)
 }
 
+/// A mapping the launcher ships for a wheel it knows by its USB IDs (TASK-189, owner 2026-11-06). The mechanism is
+/// generic: another wheel gets an entry here and a file under `assets/wheel-presets`, and its preset is applied by itself
+/// when the wheel is detected and the player has no mapping of their own.
+#[derive(Clone, Copy, Debug)]
+pub struct BuiltinPreset {
+    pub vendor: u16,
+    pub product: u16,
+    /// The name the page shows and `wheel.toml` keeps in its `preset` field.
+    pub name: &'static str,
+    /// The mapping, in the `wheel.toml` format (`include_str!` of the shipped file).
+    pub text: &'static str,
+}
+
+/// The presets the launcher ships. Only IDs whose mapping was mapped and tested on the real wheel belong here.
+pub const BUILTIN_PRESETS: [BuiltinPreset; 1] = [BuiltinPreset {
+    vendor: 0x046D,
+    product: 0xC29B,
+    name: "Logitech G27",
+    text: include_str!("../assets/wheel-presets/logitech-g27.toml"),
+}];
+
+/// The shipped preset of the wheel behind `guid`, when the launcher has one.
+pub fn builtin_preset(guid: &str) -> Option<&'static BuiltinPreset> {
+    let (vendor, product) = vid_pid(guid)?;
+    BUILTIN_PRESETS.iter().find(|preset| preset.vendor == vendor && preset.product == product)
+}
+
+/// The shipped preset with that name (as `wheel.toml` keeps it in `preset`).
+pub fn builtin_preset_by_name(name: &str) -> Option<&'static BuiltinPreset> {
+    BUILTIN_PRESETS.iter().find(|preset| preset.name == name)
+}
+
+/// The mapping of a shipped preset, ready to use: read with the game's own parser, named, and pointing at `guid` when it
+/// is known. `None` when the shipped file does not parse (a build error, never patched over at run time).
+pub fn builtin_preset_config(preset: &BuiltinPreset, guid: &str) -> Option<WheelConfig> {
+    let mut config = WheelConfig::from_toml(preset.text).ok()?;
+    config.preset = preset.name.to_string();
+    config.enabled = false;
+    if crate::wheel::is_guid(guid) {
+        config.device_guid = guid.to_ascii_lowercase();
+    }
+    Some(config)
+}
+
 /// A plain hint about the wheel's mode, shown on the page (the page has the texts, keyed by these ids).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -267,8 +311,14 @@ pub fn identify(guid: &str, name: &str, sdl_wheel: bool) -> Identity {
 /// The mapping a family starts from. Steering on axis 0 and the D-pad on hat 0 for every family (High); the
 /// PlayStation button indices for the G29/G923 family (Confirmed for the G923 by S8 of the research table). Pedals and
 /// the other buttons are left empty for the wizard. A direct-drive base starts with less force; HORI with none.
+///
+/// The `generic` family is a wheel the launcher does not know: it starts unassigned (TASK-189, owner 2026-11-06), so the
+/// page never guesses which button or axis is which. The player maps it with the set-up wizard.
 pub fn template(family_id: &str) -> Option<WheelConfig> {
     let family = family(family_id)?;
+    if family.id == "generic" {
+        return Some(WheelConfig::unassigned());
+    }
     let mut config = WheelConfig::default();
     config.preset = family.id.to_string();
     config.steering.source = "axis:0".into();
@@ -413,6 +463,11 @@ mod tests {
         for family in FAMILIES {
             let config = template(family.id).unwrap();
             assert!(config.validate().is_ok(), "{}", family.id);
+            if family.id == "generic" {
+                assert!(config.is_unassigned(), "an unknown wheel starts unassigned (TASK-189)");
+                assert_eq!(config.preset, "generic");
+                continue;
+            }
             assert_eq!(config.steering.source, "axis:0");
             assert_eq!(config.buttons["dpad_up"], vec!["hat:0:up"]);
             assert!(config.throttle.source.is_empty() && config.brake.source.is_empty(), "pedals are captured");
@@ -428,5 +483,42 @@ mod tests {
         assert!(template("moza").unwrap().ffb.strength < 1.0, "direct drive starts lower");
         assert!(!template("hori").unwrap().ffb.enabled);
         assert!(template("nothing").is_none());
+    }
+
+    /// TASK-189: the launcher ships the owner's own G27 mapping, found by its USB IDs and valid for the game.
+    #[test]
+    fn the_g27_ships_a_preset_the_launcher_applies_by_itself() {
+        let preset = builtin_preset(G27).expect("the G27 has a preset");
+        assert_eq!((preset.vendor, preset.product, preset.name), (0x046D, 0xC29B, "Logitech G27"));
+        assert!(builtin_preset("030000006d0400009bc20000ffffffff").is_some(), "the USB IDs decide, not the instance bytes");
+        let other = guid(0x046D, 0xC29A);
+        assert!(builtin_preset(&other).is_none(), "a Driving Force GT has no preset yet");
+        assert!(builtin_preset("nonsense").is_none());
+
+        let config = builtin_preset_config(preset, G27).expect("the shipped file parses");
+        assert!(config.validate().is_ok(), "the game accepts the preset");
+        assert!(!config.is_unassigned());
+        assert_eq!(config.preset, "Logitech G27");
+        assert_eq!(config.device_guid, G27);
+        assert!(!config.enabled, "the preset never decides the wheel is on: Play does");
+        assert_eq!(config.steering.source, "axis:0");
+        assert_eq!((config.throttle.source.as_str(), config.brake.source.as_str()), ("axis:1", "axis:2"));
+        assert_eq!(config.clutch.source, "axis:4");
+        assert_eq!(config.buttons["cross"], vec!["btn:17"]);
+        assert_eq!(config.buttons["square"], vec!["btn:16"]);
+        assert_eq!(config.buttons["triangle"], vec!["btn:15"]);
+        assert_eq!(config.buttons["circle"], vec!["btn:18"]);
+        assert_eq!(config.buttons["r2"], vec!["btn:4"], "gear up: the right paddle");
+        assert_eq!(config.buttons["l2"], vec!["btn:5"], "gear down: the left paddle");
+        assert_eq!(config.buttons["r1"], vec!["btn:19"]);
+        assert_eq!(config.buttons["l1"], vec!["btn:20"]);
+        assert_eq!(config.buttons["start"], vec!["btn:6"]);
+        assert_eq!(config.buttons["select"], vec!["btn:7"]);
+        assert_eq!(config.buttons["r3"], vec!["btn:21"]);
+        assert_eq!(config.buttons["l3"], vec!["btn:22"]);
+        assert_eq!(config.buttons["dpad_left"], vec!["hat:0:left"]);
+        assert_eq!((config.ffb.strength, config.ffb.damper), (1.0, 0.15));
+        assert_eq!(builtin_preset_by_name("Logitech G27").map(|one| one.product), Some(0xC29B));
+        assert!(builtin_preset_by_name("G27").is_none());
     }
 }

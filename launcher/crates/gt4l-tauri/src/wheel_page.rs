@@ -25,6 +25,7 @@ use tauri::State;
 
 use crate::pad_service::{self, WheelCaptureAsk};
 use crate::state::{self, lock, AppState, Shared};
+use crate::wheel_service;
 
 fn file_json(state: &AppState) -> Value {
     let (kind, detail) = match &state.wheel_load {
@@ -50,6 +51,7 @@ pub fn view(state: &AppState, status: Value, game_running: bool) -> Value {
         "presets": wheel::list_presets(&state.wheel_presets_dir()),
         "game_running": game_running || state.game_child.is_some(),
         "taken_from": [],
+        "applied_preset": state.wheel_applied_preset,
     })
 }
 
@@ -79,15 +81,97 @@ fn status_of(pads: &State<'_, pad_service::Handle>) -> (Value, bool) {
     (pads.inner().wheel_status(), pads.inner().game_running())
 }
 
-/// `get_wheel_config()`: the view.
+/// The device the page talks about: the one the game drives, else the first wheel, else the first device (the page's own
+/// `mainDevice` in `js/wheel-model.js`).
+pub fn main_device(status: &Value) -> Option<&Value> {
+    let devices = status.get("devices")?.as_array()?;
+    let primary = status.get("primary").and_then(Value::as_i64);
+    devices
+        .iter()
+        .find(|device| primary.is_some() && device.get("id").and_then(Value::as_i64) == primary)
+        .or_else(|| devices.iter().find(|device| device.get("role").and_then(Value::as_str) != Some("auxiliary")))
+        .or_else(|| devices.first())
+}
+
+/// TASK-189: the shipped preset of the wheel the page shows, as a whole mapping, when the launcher has one for it.
+pub fn builtin_for(status: &Value) -> Option<(&'static wheel_identity::BuiltinPreset, WheelConfig)> {
+    let device = main_device(status)?;
+    let guid = device.get("guid")?.as_str()?;
+    let preset = wheel_identity::builtin_preset(guid)?;
+    let mut config = wheel_identity::builtin_preset_config(preset, guid)?;
+    config.device_name = wheel::plain_text(device.get("name").and_then(Value::as_str).unwrap_or_default());
+    Some((preset, config))
+}
+
+/// TASK-189: applies the shipped preset of the wheel the page shows, when the launcher has no mapping of its own (no file
+/// yet, and the file was not refused or written by a newer launcher). Returns the preset's name. A write failure is logged
+/// and does not stop the page: the player can still map the wheel by hand.
+fn auto_apply_builtin(state: &mut AppState, status: &Value) -> Option<String> {
+    if !matches!(state.wheel_load, LoadState::Missing) || state.wheel_path().exists() || state.wheel_locked {
+        return None;
+    }
+    let (preset, config) = builtin_for(status)?;
+    let device_name = config.device_name.clone();
+    let guid = config.device_guid.clone();
+    if let Err(error) = change_wheel(state, |current| {
+        *current = config.clone();
+        Ok(())
+    }) {
+        state::log_error(&state.dirs, &format!("wheel: preset {} could not be written ({error})", preset.name));
+        return None;
+    }
+    state.wheel_applied_preset = Some(preset.name.to_string());
+    state::log(
+        &state.dirs,
+        &format!("wheel: preset {} applied for {} ({guid})", preset.name, if device_name.is_empty() { "the wheel" } else { &device_name }),
+    );
+    Some(preset.name.to_string())
+}
+
+/// TASK-189: Reset puts the wheel back to its shipped preset (a G27 keeps its own mapping), or to nothing when the launcher
+/// has none for it. `change_wheel` already wrote the empty mapping; this writes the preset over it.
+fn reset_to_builtin(state: &mut AppState, status: &Value) {
+    if state.wheel_locked {
+        return;
+    }
+    let Some((preset, config)) = builtin_for(status) else {
+        return;
+    };
+    let device_name = config.device_name.clone();
+    let guid = config.device_guid.clone();
+    match change_wheel(state, |current| {
+        *current = config.clone();
+        Ok(())
+    }) {
+        Ok(()) => {
+            state.wheel_applied_preset = Some(preset.name.to_string());
+            state::log(
+                &state.dirs,
+                &format!("wheel: reset gives preset {} for {} ({guid})", preset.name, if device_name.is_empty() { "the wheel" } else { &device_name }),
+            );
+        }
+        Err(error) => state::log_error(&state.dirs, &format!("wheel: preset {} could not be written after the reset ({error})", preset.name)),
+    }
+}
+
+/// `get_wheel_config()`: the view. A wheel the launcher ships a preset for starts from it (TASK-189).
 #[tauri::command]
 pub fn get_wheel_config(shared: State<'_, Shared>, pads: State<'_, pad_service::Handle>) -> Result<Value, String> {
     let (status, running) = status_of(&pads);
-    Ok(view(&lock(shared.inner()), status, running))
+    let mut state = lock(shared.inner());
+    auto_apply_builtin(&mut state, &status);
+    Ok(view(&state, status, running))
 }
 
 pub fn get_wheel_config_of(shared: &Shared) -> Value {
-    view(&lock(shared), json!({ "available": true, "devices": [] }), false)
+    get_wheel_config_with(shared, json!({ "available": true, "devices": [] }), false)
+}
+
+/// The view for a known wheel status (the tests and the page's own reads).
+pub fn get_wheel_config_with(shared: &Shared, status: Value, running: bool) -> Value {
+    let mut state = lock(shared);
+    auto_apply_builtin(&mut state, &status);
+    view(&state, status, running)
 }
 
 /// `set_wheel_setting({key, value})`: one setting (`wheel.enabled`, `steering.rotation_degrees`, `throttle.deadzone`,
@@ -101,6 +185,7 @@ pub fn set_wheel_setting(key: String, value: Value, shared: State<'_, Shared>, p
 pub fn set_wheel_setting_of(key: String, value: Value, shared: &Shared, status: Value, running: bool) -> Result<Value, String> {
     let mut state = lock(shared);
     change_wheel(&mut state, |config| config.set_setting(&key, &value))?;
+    state.wheel_applied_preset = None;
     Ok(view(&state, status, running))
 }
 
@@ -145,6 +230,7 @@ pub fn apply_wheel_preset_of(name: String, saved: bool, guid: Option<String>, sh
         *config = next;
         Ok(())
     })?;
+    state.wheel_applied_preset = None;
     state::log(&state.dirs, &format!("wheel: {} {name} applied", if saved { "preset" } else { "template" }));
     Ok(view(&state, status, running))
 }
@@ -168,6 +254,7 @@ pub fn assign_wheel_binding(
 pub fn assign_wheel_binding_of(target: String, source: String, mode: Option<String>, add: bool, shared: &Shared, status: Value, running: bool) -> Result<Value, String> {
     let mut state = lock(shared);
     let taken = change_wheel(&mut state, |config| config.assign_binding(&target, &source, mode.as_deref(), add))?;
+    state.wheel_applied_preset = None;
     let mut answer = view(&state, status, running);
     answer["taken_from"] = json!(taken);
     Ok(answer)
@@ -183,12 +270,25 @@ pub fn reset_wheel_binding(target: String, clear: bool, shared: State<'_, Shared
 
 pub fn reset_wheel_binding_of(target: String, clear: bool, shared: &Shared, status: Value, running: bool) -> Result<Value, String> {
     let mut state = lock(shared);
-    let template = wheel_identity::template(&state.wheel.preset).unwrap_or_default();
+    let template = reset_template(&state.wheel);
     change_wheel(&mut state, |config| config.reset_binding(&target, clear, &template))?;
+    state.wheel_applied_preset = None;
     Ok(view(&state, status, running))
 }
 
-/// `reset_wheel_config()`: everything back to the game's defaults, the wheel off. Returns the view.
+/// What a control goes back to when the player resets it: the shipped preset the mapping came from (a G27 keeps the G27's
+/// own binding), else the family's template, else nothing at all (TASK-189: never a guessed control).
+pub fn reset_template(config: &WheelConfig) -> WheelConfig {
+    if let Some(preset) = wheel_identity::builtin_preset_by_name(&config.preset) {
+        if let Some(found) = wheel_identity::builtin_preset_config(preset, &config.device_guid) {
+            return found;
+        }
+    }
+    wheel_identity::template(&config.preset).unwrap_or_else(WheelConfig::unassigned)
+}
+
+/// `reset_wheel_config()`: every control unassigned, then the shipped preset again for the wheel connected now (a G27
+/// starts from its own mapping). The virtual wheel in the game follows Play (TASK-189). Returns the view.
 #[tauri::command]
 pub fn reset_wheel_config(shared: State<'_, Shared>, pads: State<'_, pad_service::Handle>) -> Result<Value, String> {
     let (status, running) = status_of(&pads);
@@ -198,10 +298,12 @@ pub fn reset_wheel_config(shared: State<'_, Shared>, pads: State<'_, pad_service
 pub fn reset_wheel_config_of(shared: &Shared, status: Value, running: bool) -> Result<Value, String> {
     let mut state = lock(shared);
     change_wheel(&mut state, |config| {
-        *config = WheelConfig::default();
+        *config = WheelConfig::unassigned();
         Ok(())
     })?;
-    state::log(&state.dirs, "wheel: reset to the defaults (off)");
+    state.wheel_applied_preset = None;
+    state::log(&state.dirs, "wheel: every control unassigned");
+    reset_to_builtin(&mut state, &status);
     Ok(view(&state, status, running))
 }
 
@@ -272,6 +374,55 @@ pub fn cancel_wheel_capture(pads: State<'_, pad_service::Handle>) -> Result<(), 
 pub fn wheel_watch(on: bool, pads: State<'_, pad_service::Handle>) -> Result<Value, String> {
     pads.inner().wheel_watch(on);
     Ok(pads.inner().wheel_status())
+}
+
+/// TASK-189 (owner, 2026-11-06): what Play does to `wheel.toml` before the game starts. There is no on/off switch on the
+/// page any more:
+/// 1. a wheel the launcher ships a preset for, with no mapping of its own yet, gets that preset;
+/// 2. the virtual Logitech Driving Force Pro is plugged in when a wheel is connected, and left out when none is.
+///
+/// The stored `enabled` value of a 1.3.0-rc15 file is not a setting any more: it is the result of step 2, so the old key's
+/// value is dropped and replaced here (logged). When SDL3 has not listed the devices there is nothing to decide on, and
+/// the stored value is kept so a Play started right at boot does not lose the wheel.
+pub fn prepare_for_play(state: &mut AppState, status: &Value) {
+    if state.wheel_locked {
+        state::log(&state.dirs, "wheel: the wheel file is from a newer launcher: it is kept as it is");
+        return;
+    }
+    auto_apply_builtin(state, status);
+    let Some(connected) = wheel_service::wheel_connected(status) else {
+        if state.wheel_path().exists() {
+            state::log(&state.dirs, "wheel: the device list was not ready: the stored on/off is kept for this Start");
+        }
+        return;
+    };
+    if state.wheel.enabled == connected {
+        return;
+    }
+    if !state.wheel_path().exists() && !connected {
+        return; // no file, no wheel: nothing to write
+    }
+    let name = main_device(status)
+        .and_then(|device| device.get("name"))
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.wheel.device_name.clone());
+    let note = if connected {
+        format!("{} connected", if name.is_empty() { "a wheel" } else { &name })
+    } else {
+        "no wheel connected".to_string()
+    };
+    match change_wheel(state, |config| {
+        config.enabled = connected;
+        Ok(())
+    }) {
+        Ok(()) => state::log(
+            &state.dirs,
+            &format!("wheel: virtual Driving Force Pro {} for this Start ({note})", if connected { "on" } else { "off" }),
+        ),
+        Err(error) => state::log_error(&state.dirs, &format!("wheel: the virtual Driving Force Pro could not be switched {} ({error})", if connected { "on" } else { "off" })),
+    }
 }
 
 /// `test_wheel_ffb()`: the force test on the device the game drives: a short constant pull one way, then the other, at
@@ -398,5 +549,52 @@ mod tests {
         let status = json!({ "devices": [{ "guid": "030000006d0400009bc2000000000000", "name": "G27" }] });
         assert_eq!(device_name(&status, "030000006D0400009BC2000000000000").as_deref(), Some("G27"));
         assert_eq!(device_name(&status, "0300000000000000000000000000ffff"), None);
+    }
+
+    /// TASK-189: the page talks about the wheel the game drives, then the first wheel, then the first device.
+    #[test]
+    fn the_main_device_is_the_one_the_game_drives() {
+        let status = json!({
+            "primary": 9,
+            "devices": [
+                { "id": 5, "role": "other_wheel", "name": "second wheel" },
+                { "id": 9, "role": "wheel", "name": "the wheel" },
+                { "id": 12, "role": "auxiliary", "name": "pedals" }
+            ]
+        });
+        assert_eq!(main_device(&status).unwrap()["name"], json!("the wheel"));
+        let no_primary = json!({ "primary": null, "devices": [{ "id": 12, "role": "auxiliary" }, { "id": 5, "role": "other_wheel" }] });
+        assert_eq!(main_device(&no_primary).unwrap()["id"], json!(5), "a wheel before an auxiliary device");
+        assert!(main_device(&json!({ "devices": [] })).is_none());
+        assert!(main_device(&json!({})).is_none());
+    }
+
+    /// TASK-189: a control goes back to the shipped preset it came from, else to its family's template, else to nothing.
+    #[test]
+    fn a_control_goes_back_to_the_mapping_it_came_from() {
+        let g27 = wheel_identity::builtin_preset_config(
+            wheel_identity::builtin_preset("030000006d0400009bc2000000000000").unwrap(),
+            "030000006d0400009bc2000000000000",
+        )
+        .unwrap();
+        let back = reset_template(&g27);
+        assert_eq!(back.buttons["cross"], vec!["btn:17"], "the G27's own Cross, not the game's guess");
+        assert_eq!(back.throttle.source, "axis:1");
+        let ps = WheelConfig { preset: "logitech_ps".into(), ..WheelConfig::unassigned() };
+        assert_eq!(reset_template(&ps).buttons["cross"], vec!["btn:0"]);
+        let unknown = WheelConfig { preset: "generic".into(), ..WheelConfig::unassigned() };
+        assert!(reset_template(&unknown).is_unassigned(), "an unknown wheel goes back to nothing");
+        let nothing = WheelConfig { preset: "not a preset".into(), ..WheelConfig::unassigned() };
+        assert!(reset_template(&nothing).is_unassigned());
+    }
+
+    /// TASK-189: Play's rule, without a state: the shipped preset only when the launcher has no file of its own.
+    #[test]
+    fn the_shipped_preset_applies_only_without_a_mapping_of_the_players_own() {
+        let preset = wheel_identity::builtin_preset("030000006d0400009bc2000000000000").unwrap();
+        let config = wheel_identity::builtin_preset_config(preset, "030000006d0400009bc2000000000000").unwrap();
+        assert_eq!(config.preset, "Logitech G27");
+        assert!(config.validate().is_ok());
+        assert!(wheel_identity::builtin_preset("0300000000000000000000000000ffff").is_none());
     }
 }
