@@ -30,6 +30,7 @@ struct RenderOptions {
   bool depth_test = true;
   float position_scale = 1.0f / 4096.0f;
   Topology topology = Topology::strip;
+  float max_edge = 0.0f;
   // Object-space view: ignore the draw's captured matrix and frame the captured geometry with one generated camera
   // (yaw/pitch in degrees, orthographic). It is what produces a recognisable picture of the model while the VU1 vertex
   // convention is still being derived (plan step 1d); a picture in this mode is evidence of geometry, not of placement.

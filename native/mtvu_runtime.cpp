@@ -133,6 +133,7 @@ struct Runtime {
 
   // TASK-084 step 1: the pending VIF1 batch (EE thread only); walk_vif_batch replays it on the worker.
   VifBatch vif_batch;
+  std::vector<std::uint32_t> batch_sources;  // guest addresses of the packets in the pending batch (TASK-090 tap)
 
   // IN-522: the table the GS worker will write (EE thread only), the parts of the pending batch copied from it, and the parts
   // of posted jobs, for the worker. Empty nearly always, and `job_patches_posted` keeps the worker off the lock then.
@@ -643,6 +644,7 @@ void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc) {
     gt4::perf::frame_counters().vif_job_bytes += 4 + bytes;
     note_table_copy(r, data, bytes, 0, r.batch_patches);
     post_table_patches(r, job, r.batch_patches);
+    gt4::coregs3::tap_job_source(job, static_cast<std::uint32_t>(data - ps2::g_ram), qwc);
     r.journal->post_job(RecordKind::VifPacket, job, data, bytes);
     r.journal->drain(false);
     rethrow_worker_error();
@@ -652,6 +654,7 @@ void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc) {
   // below one job per packet; the journal placeholder keeps its position in the stream.
   if (!r.vif_batch.empty() && r.vif_batch.size() + 4 + bytes > kVifBatchBytes) flush_vif_chain();
   note_table_copy(r, data, bytes, r.vif_batch.size() + 4, r.batch_patches);
+  r.batch_sources.push_back(static_cast<std::uint32_t>(data - ps2::g_ram));
   r.vif_batch.append(data, qwc);
 }
 
@@ -664,6 +667,8 @@ void flush_vif_chain() {
   gt4::perf::frame_counters().vif_jobs += 1;
   gt4::perf::frame_counters().vif_job_bytes += r.vif_batch.size();
   post_table_patches(r, job, r.batch_patches);
+  for (const std::uint32_t source : r.batch_sources) gt4::coregs3::tap_job_source(job, source, 0);
+  r.batch_sources.clear();
   r.journal->post_job(RecordKind::VifBatch, job, r.vif_batch.payload(), r.vif_batch.size());
   r.vif_batch.reset();
   r.journal->drain(false);

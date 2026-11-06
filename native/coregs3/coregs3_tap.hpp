@@ -25,13 +25,20 @@
 namespace gt4::coregs3 {
 
 inline constexpr std::uint32_t kTapMagic = 0x54345447u;  // "GT4T"
-inline constexpr std::uint32_t kTapVersion = 1u;
+inline constexpr std::uint32_t kTapVersion = 2u;
+// Record kinds, in the record's second word. `gif` carries the PATH1 bytes; `source` names the guest address of a VIF
+// packet that was posted as a job, which is what links a tapped job to the captured draw that produced it.
+inline constexpr std::uint32_t kTapKindGif = 1u;
+inline constexpr std::uint32_t kTapKindSource = 2u;
 inline constexpr std::size_t kTapBytes = 96u * 1024u * 1024u;
 
 // Reads GT4_COREGS3_TAP (a .gt4tap path). Called next to the capture configuration; does nothing when the switch is off.
 void configure_tap_from_environment();
 // Called on the worker thread (and on the synchronous path) with one PATH1 emission, after the runtime accepted it.
 void tap_path1(std::uint64_t job, const std::uint8_t *data, std::size_t bytes) noexcept;
+// Called when the EE posts a VIF packet as job `job`: records the packet's guest address so a tapped record can be tied
+// to the shape that produced it (the capture stores the same address per item).
+void tap_job_source(std::uint64_t job, std::uint32_t guest_address, std::uint32_t qwc) noexcept;
 void tap_at_vblank(std::uint64_t vblank) noexcept;
 void tap_shutdown();
 
@@ -39,6 +46,7 @@ struct TapCounters {
   std::uint64_t records = 0;
   std::uint64_t bytes = 0;
   std::uint64_t refused = 0;  // records dropped because the byte bound was reached
+  std::uint64_t sources = 0;  // job -> VIF source address records
 };
 const TapCounters &tap_counters() noexcept;
 

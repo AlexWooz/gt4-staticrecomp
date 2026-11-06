@@ -1541,9 +1541,20 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   decals (`y == 0`), and rendering the body of **one** car gives a recognisable silhouette (`build/evidence/coregs3/m2/
   car1_surface.png`); the noisy surface is the unresolved topology. Selecting the pass by job id from the EE hook does
   **not** work: GT4 kicks the shape VIF packets outside the `render_cars` bracket, so `jobs 460505..460504` is empty.
-- Next: tag the job at the kick (`post_vif_packet`) with the pass the EE is in, and audit the tap records whose XYZ read
-  does not explain them (per-tag descriptor audit), then the projection fit, the vertex reference, the topology, the M2
-  surfaces, and only then the live overlay seam (review work) and G-IMAGE.
+- Round 4: **the exact draw-to-record mapping works** (the tap records each posted VIF packet's job and guest address;
+  the capture has the same addresses per item), and **G-TAP passes**: night race VBlank 7398, 48 draws, 5,868 vertex
+  pairs, **rms 0.073 px, worst 0.222 px, 100% of vertices within 0.25 px** — the plan's Phase-1 tolerance. The vertex
+  order is proven 1:1, so the arrays are strips; the remaining surface breaks are the model's strip breaks, which the
+  capture does not carry (the tap's ADC flags do). M2 changed to a body-only single-car view with a long-edge filter
+  (wheels and panels visible) and a new sheet.
+- **Variable FPS (owner requirement, 2026-11-05):** the presentation timeline is implemented —
+  `native/coregs3/coregs3_timeline.{hpp,cpp}` (`GuestTime`, `ObjectKey`, `ObjectTransform`, `TimelineFrame`, `FrameRing`
+  with pairing and unmatched counts, `lerp_matrix`, `interpolation_alpha`) plus `native_coregs3_timeline`; the guest stays
+  bit-exact at 60 Hz and the capture already carries the timestamp and the identity source. Architecture in
+  `docs/COREGS3-PLAN.md` §5.5 (latency, fallback, CoreGS 2.0 hybrid, HUD at guest rate).
+- Next: the strip breaks from the tap's ADC flags (then clean surfaces), more draws mapped (68 still unmapped because
+  their shapes span several jobs), the camera in the timeline, the Z/STQ/RGBA parts of G-TAP, and only then the live
+  overlay seam (review work) and G-IMAGE.
 
 
 ### TASK-087 — GS readbacks without stalls

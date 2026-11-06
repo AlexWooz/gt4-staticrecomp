@@ -124,7 +124,9 @@ void rasterise(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &
         if (!(inv_w > 0.0f)) continue;
         const float depth_value = 1.0f / inv_w;
         const std::size_t pixel = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);
-        if (options.depth_test && !(depth_value < depth[pixel])) continue;
+        // The GS tests with GEQUAL against a reversed Z: a later primitive wins at equal depth, which is what keeps the
+        // overlapping parts of one car from z-fighting in the offline picture.
+        if (options.depth_test && !(depth_value <= depth[pixel])) continue;
         // The GS interpolates Gouraud colours linearly in screen space; perspective correction is only for the texture
         // coordinates (STQ), which this reference does not use yet.
         const float red = alpha * a.r + beta * b.r + gamma * c.r;
@@ -186,6 +188,7 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
   mesh_options.position_scale = options.position_scale;
   mesh_options.flip_v = options.flip_v;
   mesh_options.topology = options.topology;
+  mesh_options.max_edge = options.max_edge;
 
   if (options.object_space) {
     // Object-space mode: build every mesh first, frame the union of their vertices, and draw with that one matrix.

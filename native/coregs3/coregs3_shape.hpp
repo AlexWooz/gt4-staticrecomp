@@ -79,6 +79,10 @@ struct MeshOptions {
   float position_scale = 1.0f / 4096.0f;
   bool flip_v = true;  // GT4 model UVs are bottom-up; the reference reader flips V
   Topology topology = Topology::strip;  // Hypothesis: the vertex arrays are triangle strips until the tap proves otherwise
+  // Reject triangles with an edge longer than this (metres). The strip reading is right about the vertex order (the tap
+  // fits at rms 0.07 px) but the model's strip *breaks* are not in the captured channels yet, so a few triangles span
+  // across parts; a car part is under ~2 m, so a long edge is a break. 0 disables the filter.
+  float max_edge = 0.0f;
 };
 
 // Builds one mesh from the draw's item packets. Items are concatenated in item order, which is the order the game issues

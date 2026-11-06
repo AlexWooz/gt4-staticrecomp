@@ -50,6 +50,9 @@ struct TapRecord {
   std::uint64_t vblank = 0;
   std::size_t offset = 0;
   std::uint32_t bytes = 0;
+  std::uint32_t kind = kTapKindGif;
+  std::uint32_t address = 0;  // kind == source: the VIF packet's guest address
+  std::uint32_t qwc = 0;
 };
 
 bool load_tap(const char *path, std::vector<std::uint8_t> &data, std::vector<TapRecord> &records,
@@ -83,6 +86,11 @@ bool load_tap(const char *path, std::vector<std::uint8_t> &data, std::vector<Tap
     for (int index = 0; index < 8; ++index) record.job |= static_cast<std::uint64_t>(data[at + 8 + index]) << (8 * index);
     for (int index = 0; index < 8; ++index)
       record.vblank |= static_cast<std::uint64_t>(data[at + 16 + index]) << (8 * index);
+    record.kind = u32(at + 4);
+    if (record.kind == kTapKindSource && bytes >= 8) {
+      record.address = u32(record.offset);
+      record.qwc = u32(record.offset + 4);
+    }
     if (bytes > data.size() - record.offset) {
       error = "record runs past the end of the tap";
       return false;
@@ -103,8 +111,14 @@ void command_stats(const char *path) {
   }
   std::printf("tap %s: %zu records\n", path, records.size());
   std::uint64_t vertices_total = 0, adc_total = 0, drawn_total = 0;
+  std::uint64_t gif_records = 0, source_records = 0;
   for (std::size_t index = 0; index < records.size(); ++index) {
     const TapRecord &record = records[index];
+    if (record.kind == kTapKindSource) {
+      ++source_records;
+      continue;
+    }
+    ++gif_records;
     const GifPacket packet = parse_gif(data.data() + record.offset, record.bytes);
     if (!packet.ok) {
       std::printf("  %3zu job %llu vblank %llu bytes %u: %s\n", index,
@@ -146,6 +160,8 @@ void command_stats(const char *path) {
   std::printf("jobs %zu:", jobs.size());
   for (const auto &job : jobs) std::printf(" %llu:%u", static_cast<unsigned long long>(job.first), job.second);
   std::printf("\n");
+  std::printf("gif %llu source %llu\n", static_cast<unsigned long long>(gif_records),
+              static_cast<unsigned long long>(source_records));
   std::printf("vertices %llu, drawn %llu, adc %llu\n", static_cast<unsigned long long>(vertices_total),
               static_cast<unsigned long long>(drawn_total), static_cast<unsigned long long>(adc_total));
 }
@@ -178,6 +194,64 @@ bool solve(std::vector<double> &matrix, std::vector<double> &rhs, std::vector<do
   return true;
 }
 
+// job -> the guest VIF packet addresses it carries. One job covers one packet, or a whole batch of them.
+std::vector<std::uint32_t> job_addresses(const std::vector<TapRecord> &records, std::uint64_t job) {
+  std::vector<std::uint32_t> addresses;
+  for (const TapRecord &record : records)
+    if (record.kind == kTapKindSource && record.job == job) addresses.push_back(record.address);
+  return addresses;
+}
+
+int command_map(const char *tap_path, const char *capture_path, int frame_index) {
+  std::vector<std::uint8_t> tap;
+  std::vector<TapRecord> records;
+  std::string error;
+  if (!load_tap(tap_path, tap, records, error)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: %s\n", error.c_str());
+    return 1;
+  }
+  std::vector<std::uint8_t> capture_data;
+  if (!read_file(capture_path, capture_data)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: cannot open %s\n", capture_path);
+    return 1;
+  }
+  SceneHeader header;
+  if (!parse_scene_header(capture_data.data(), capture_data.size(), header, error)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: %s\n", error.c_str());
+    return 1;
+  }
+  std::size_t at = 16;
+  int index = 0;
+  while (at < capture_data.size()) {
+    FrameSnapshot frame;
+    const std::size_t consumed =
+        parse_frame_block(capture_data.data() + at, capture_data.size() - at, header.version, frame, error);
+    if (consumed == 0) break;
+    if (frame_index < 0 || index == frame_index) {
+      std::printf("frame %d vblank %llu draws %u\n", index, static_cast<unsigned long long>(frame.vblank),
+                  frame.draw_count);
+      for (const CapturedDraw &draw : frame.draws)
+        for (std::uint32_t item = 0; item < draw.item_count; ++item)
+          std::printf("  draw %u item %u address %08X qwc %u\n", draw.sequence, item, draw.items[item].address,
+                      draw.items[item].qwords);
+      std::printf("jobs:\n");
+      std::uint64_t last_job = 0;
+      for (const TapRecord &record : records) {
+        if (record.kind != kTapKindSource || record.job == last_job) continue;
+        last_job = record.job;
+        std::printf("  job %llu:%s", static_cast<unsigned long long>(record.job), "");
+        for (const std::uint32_t address : job_addresses(records, record.job)) std::printf(" %08X", address);
+        std::printf("\n");
+      }
+      return 0;
+    }
+    at += consumed;
+    ++index;
+  }
+  std::fprintf(stderr, "gt4_coregs3_tap: frame %d is not in the capture\n", frame_index);
+  return 1;
+}
+
 int command_fit(const char *tap_path, const char *capture_path, std::size_t record_index, std::uint32_t draw_sequence,
                 bool affine_only) {
   std::vector<std::uint8_t> tap;
@@ -187,7 +261,7 @@ int command_fit(const char *tap_path, const char *capture_path, std::size_t reco
     std::fprintf(stderr, "gt4_coregs3_tap: %s\n", error.c_str());
     return 1;
   }
-  if (record_index >= records.size()) {
+  if (record_index != static_cast<std::size_t>(-1) && record_index >= records.size()) {
     std::fprintf(stderr, "gt4_coregs3_tap: record %zu is not in the tap (%zu records)\n", record_index,
                  records.size());
     return 1;
@@ -234,6 +308,28 @@ int command_fit(const char *tap_path, const char *capture_path, std::size_t reco
   if (!build_mesh(frame.packets.data(), frame.packets.size(), *draw, mesh_options, mesh, error)) {
     std::fprintf(stderr, "gt4_coregs3_tap: the draw does not decode: %s\n", error.c_str());
     return 1;
+  }
+  // Without an explicit record, find the job by the draw's VIF packet addresses: the tap records which guest address each
+  // job carried, and the capture stores the same addresses per item. That is the exact draw-to-record mapping.
+  if (record_index == static_cast<std::size_t>(-1)) {
+    std::uint64_t found = 0;
+    for (const CapturedItem &item : draw->items) {
+      if (item.packet_bytes == 0) continue;
+      for (const TapRecord &source : records)
+        if (source.kind == kTapKindSource && source.address == item.address && (found == 0 || source.job < found))
+          found = source.job;
+    }
+    if (found == 0) {
+      std::fprintf(stderr, "gt4_coregs3_tap: no tapped job carries draw %u's VIF packets\n", draw_sequence);
+      return 1;
+    }
+    for (std::size_t index = 0; index < records.size(); ++index)
+      if (records[index].kind == kTapKindGif && records[index].job == found) {
+        record_index = index;
+        break;
+      }
+    std::printf("draw %u -> job %llu (record %zu)\n", draw_sequence, static_cast<unsigned long long>(found),
+                record_index);
   }
   const TapRecord &record = records[record_index];
   // One VIF job can emit several GIF packets: gather every record of the same job, in order.
@@ -384,6 +480,204 @@ void command_dump(const char *path, std::size_t record_index) {
   }
 }
 
+// Fits every draw of a frame against the tapped vertices of its job, in submission order. A job can carry several draws,
+// so each job keeps a vertex cursor; the fit is what proves the alignment (a wrong pairing blows the residual up).
+int command_fit_all(const char *tap_path, const char *capture_path, int frame_index) {
+  std::vector<std::uint8_t> tap;
+  std::vector<TapRecord> records;
+  std::string error;
+  if (!load_tap(tap_path, tap, records, error)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: %s\n", error.c_str());
+    return 1;
+  }
+  // job -> its GIF records, in order
+  std::vector<std::pair<std::uint64_t, std::vector<std::size_t>>> jobs;
+  for (std::size_t index = 0; index < records.size(); ++index) {
+    if (records[index].kind != kTapKindGif) continue;
+    if (jobs.empty() || jobs.back().first != records[index].job) jobs.push_back({records[index].job, {}});
+    jobs.back().second.push_back(index);
+  }
+  std::vector<std::pair<std::uint32_t, std::uint64_t>> sources;  // address -> job
+  for (const TapRecord &record : records)
+    if (record.kind == kTapKindSource) sources.push_back({record.address, record.job});
+
+  std::vector<std::uint8_t> capture_data;
+  if (!read_file(capture_path, capture_data)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: cannot open %s\n", capture_path);
+    return 1;
+  }
+  SceneHeader header;
+  if (!parse_scene_header(capture_data.data(), capture_data.size(), header, error)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: %s\n", error.c_str());
+    return 1;
+  }
+  std::size_t at = 16;
+  int index = 0;
+  while (at < capture_data.size()) {
+    FrameSnapshot frame;
+    const std::size_t consumed =
+        parse_frame_block(capture_data.data() + at, capture_data.size() - at, header.version, frame, error);
+    if (consumed == 0) break;
+    if (frame_index >= 0 && index != frame_index) {
+      at += consumed;
+      ++index;
+      continue;
+    }
+
+    std::vector<std::pair<std::uint64_t, std::size_t>> cursor;  // job, next vertex of its stream
+    auto vertex_of = [&](std::uint64_t job) -> std::size_t {
+      for (auto &entry : cursor)
+        if (entry.first == job) return entry.second;
+      cursor.push_back({job, 0});
+      return 0;
+    };
+    std::vector<GifVertex> stream;  // all GIF vertices of the frame, per job, rebuilt lazily
+    std::uint64_t stream_job = 0;
+    auto load_stream = [&](std::uint64_t job) {
+      if (stream_job == job && !stream.empty()) return true;
+      stream.clear();
+      for (auto &entry : jobs) {
+        if (entry.first != job) continue;
+        for (const std::size_t record_index : entry.second) {
+          const GifPacket packet = parse_gif(tap.data() + records[record_index].offset, records[record_index].bytes);
+          if (!packet.ok) return false;
+          stream.insert(stream.end(), packet.vertices.begin(), packet.vertices.end());
+        }
+        stream_job = job;
+        return true;
+      }
+      return false;
+    };
+
+    double sum_sq = 0.0, worst = 0.0;
+    std::uint32_t fitted = 0, skipped = 0, pairs_total = 0;
+    std::uint32_t worst_draw = 0;
+    std::uint32_t within_010 = 0, within_025 = 0, within_1 = 0, within_4 = 0, beyond_4 = 0;
+    std::uint32_t draws_within_025 = 0;
+    std::vector<std::pair<double, std::uint32_t>> draw_worst_list;
+    MeshOptions mesh_options;
+    for (const CapturedDraw &draw : frame.draws) {
+      Mesh mesh;
+      std::string ignored;
+      if (!build_mesh(frame.packets.data(), frame.packets.size(), draw, mesh_options, mesh, ignored)) {
+        ++skipped;
+        continue;
+      }
+      std::uint64_t job = 0;
+      for (const CapturedItem &item : draw.items) {
+        if (item.packet_bytes == 0) continue;
+        for (const auto &source : sources)
+          if (source.first == item.address && (job == 0 || source.second < job)) job = source.second;
+      }
+      if (job == 0 || !load_stream(job)) {
+        ++skipped;
+        continue;
+      }
+      const std::size_t expected = vertex_of(job);
+      if (expected + mesh.vertices.size() > stream.size()) {
+        ++skipped;
+        continue;
+      }
+      // The cursor can drift when one draw emits more vertices than the captured shape has (clipping). Search a window
+      // around the expected offset for the placement with the smallest residual: a wrong placement cannot fit.
+      auto fit_at = [&](std::size_t first, std::vector<double> &row_x, std::vector<double> &row_y, double &rms) {
+        std::vector<double> normal(16, 0.0), rhs_x(4, 0.0), rhs_y(4, 0.0);
+        for (std::size_t k = 0; k < mesh.vertices.size(); ++k) {
+          const double p[4] = {mesh.vertices[k].position[0], mesh.vertices[k].position[1],
+                               mesh.vertices[k].position[2], 1.0};
+          const double sx = static_cast<std::int16_t>(stream[first + k].x) / 16.0;
+          const double sy = static_cast<std::int16_t>(stream[first + k].y) / 16.0;
+          for (std::size_t a = 0; a < 4; ++a) {
+            for (std::size_t b = 0; b < 4; ++b) normal[a * 4 + b] += p[a] * p[b];
+            rhs_x[a] += p[a] * sx;
+            rhs_y[a] += p[a] * sy;
+          }
+        }
+        std::vector<double> mx = normal, my = normal;
+        if (!solve(mx, rhs_x, row_x) || !solve(my, rhs_y, row_y)) return false;
+        double sum = 0.0;
+        for (std::size_t k = 0; k < mesh.vertices.size(); ++k) {
+          const double p[4] = {mesh.vertices[k].position[0], mesh.vertices[k].position[1],
+                               mesh.vertices[k].position[2], 1.0};
+          const double sx = static_cast<std::int16_t>(stream[first + k].x) / 16.0;
+          const double sy = static_cast<std::int16_t>(stream[first + k].y) / 16.0;
+          const double dx = row_x[0] * p[0] + row_x[1] * p[1] + row_x[2] * p[2] + row_x[3] - sx;
+          const double dy = row_y[0] * p[0] + row_y[1] * p[1] + row_y[2] * p[2] + row_y[3] - sy;
+          sum += dx * dx + dy * dy;
+        }
+        rms = std::sqrt(sum / static_cast<double>(mesh.vertices.size()));
+        return true;
+      };
+      std::size_t first = expected;
+      std::vector<double> best_x, best_y;
+      double best_rms = 1e30;
+      const std::size_t window = 320;
+      const std::size_t low = expected > window ? expected - window : 0;
+      const std::size_t high = std::min(expected + window, stream.size() - mesh.vertices.size());
+      for (std::size_t candidate = low; candidate <= high; ++candidate) {
+        std::vector<double> row_x, row_y;
+        double rms = 0.0;
+        if (!fit_at(candidate, row_x, row_y, rms)) continue;
+        if (rms < best_rms) {
+          best_rms = rms;
+          first = candidate;
+          best_x = row_x;
+          best_y = row_y;
+        }
+      }
+      if (best_rms > 1e29) {
+        ++skipped;
+        continue;
+      }
+      const std::vector<double> row_x = best_x, row_y = best_y;
+      double draw_worst = 0.0;
+      for (std::size_t k = 0; k < mesh.vertices.size(); ++k) {
+        const double p[4] = {mesh.vertices[k].position[0], mesh.vertices[k].position[1],
+                             mesh.vertices[k].position[2], 1.0};
+        const double sx = static_cast<std::int16_t>(stream[first + k].x) / 16.0;
+        const double sy = static_cast<std::int16_t>(stream[first + k].y) / 16.0;
+        const double dx = row_x[0] * p[0] + row_x[1] * p[1] + row_x[2] * p[2] + row_x[3] - sx;
+        const double dy = row_y[0] * p[0] + row_y[1] * p[1] + row_y[2] * p[2] + row_y[3] - sy;
+        const double error = std::sqrt(dx * dx + dy * dy);
+        sum_sq += dx * dx + dy * dy;
+        draw_worst = std::max(draw_worst, error);
+        if (error <= 0.10) ++within_010;
+        else if (error <= 0.25) ++within_025;
+        else if (error <= 1.0) ++within_1;
+        else if (error <= 4.0) ++within_4;
+        else ++beyond_4;
+      }
+      if (draw_worst <= 0.25) ++draws_within_025;
+      draw_worst_list.push_back({draw_worst, draw.sequence});
+      if (draw_worst > worst) {
+        worst = draw_worst;
+        worst_draw = draw.sequence;
+      }
+      pairs_total += static_cast<std::uint32_t>(mesh.vertices.size());
+      ++fitted;
+      for (auto &entry : cursor)
+        if (entry.first == job) entry.second += mesh.vertices.size();
+    }
+    std::printf("frame %d vblank %llu: %u draws fitted, %u skipped, %u vertex pairs\n", index,
+                static_cast<unsigned long long>(frame.vblank), fitted, skipped, pairs_total);
+    if (pairs_total != 0) {
+      std::printf("  rms %.4f px, worst %.4f px (draw %u), draws with worst <= 0.25 px: %u of %u\n",
+                  std::sqrt(sum_sq / pairs_total), worst, worst_draw, draws_within_025, fitted);
+      std::printf("  vertices: <=0.10 px %u, <=0.25 px %u, <=1 px %u, <=4 px %u, >4 px %u\n", within_010,
+                  within_025, within_1, within_4, beyond_4);
+      std::sort(draw_worst_list.begin(), draw_worst_list.end(),
+                [](const auto &a, const auto &b) { return a.first > b.first; });
+      std::printf("  worst draws:");
+      for (std::size_t i = 0; i < draw_worst_list.size() && i < 6; ++i)
+        std::printf(" %u(%.2fpx)", draw_worst_list[i].second, draw_worst_list[i].first);
+      std::printf("\n");
+    }
+    return 0;
+  }
+  std::fprintf(stderr, "gt4_coregs3_tap: frame %d is not in the capture\n", frame_index);
+  return 1;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -398,6 +692,20 @@ int main(int argc, char **argv) {
     command_stats(argv[2]);
     return 0;
   }
+  if (command == "fit-all") {
+    if (argc < 5) {
+      std::fprintf(stderr, "gt4_coregs3_tap: fit-all needs a capture and a frame index\n");
+      return 2;
+    }
+    return command_fit_all(argv[2], argv[3], std::atoi(argv[4]));
+  }
+  if (command == "map") {
+    if (argc < 5) {
+      std::fprintf(stderr, "gt4_coregs3_tap: map needs a capture and a frame index\n");
+      return 2;
+    }
+    return command_map(argv[2], argv[3], std::atoi(argv[4]));
+  }
   if (command == "dump") {
     if (argc < 4) {
       std::fprintf(stderr, "gt4_coregs3_tap: dump needs a record index\n");
@@ -411,7 +719,8 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "gt4_coregs3_tap: fit needs a record index and --draw\n");
       return 2;
     }
-    const std::size_t record = static_cast<std::size_t>(std::atoi(argv[4]));
+    const int record_arg = std::atoi(argv[4]);
+    const std::size_t record = record_arg < 0 ? static_cast<std::size_t>(-1) : static_cast<std::size_t>(record_arg);
     std::uint32_t draw = 0;
     bool affine_only = false;
     for (int index = 5; index < argc; ++index) {

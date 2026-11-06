@@ -319,6 +319,64 @@ or after any capacity/decode failure in a frame, that frame falls back to CoreGS
 - **CoreGS 3.0 upload thread:** decodes and uploads meshes and textures ahead of use from the published snapshots.
   Pipeline warm-up runs at race load.
 
+### 5.5 Presentation rate: variable FPS is part of the design (owner, 2026-11-05)
+
+**Requirement.** CoreGS 3.0 must support a variable presentation rate from the start, like a modern game: 60, 120,
+144 Hz or VRR. The game itself does not change. Physics, logic, timing, AI, saves and every EE-visible read-back stay at
+the guest's fixed 60 Hz and stay bit-exact; the per-VBlank simulation digest gate applies unchanged.
+
+**Contract.**
+
+1. **The guest stays the clock.** A guest frame is captured exactly as today (K1-K5, one snapshot per VBlank) and is
+   stamped with its guest time. The timestamp pair is `(vblank, ee ticks)`: the VBlank counter is the unit every gate and
+   bench speaks, and the EE cycle counter at that VBlank is the finer clock, so a presentation instant can be placed
+   between two frames without assuming that the guest is exactly 1/60 s per frame.
+2. **The renderer runs at its own rate.** For each presented image it takes the last **two** captured guest frames, pairs
+   their objects by stable identity, and interpolates each object's matrix (and the camera's) by
+   `alpha = (present_ticks - older.ticks) / (newer.ticks - older.ticks)`. Linear interpolation of the 4x4 entries is
+   enough for one 60 Hz step; quaternion/dual-quaternion interpolation arrives with motion vectors (phase 6).
+3. **One frame of latency, on purpose.** Interpolation needs the *next* frame, so the presented image trails the guest by
+   about one guest frame (16.7 ms). Extrapolation (which removes the latency but overshoots on impacts) is a later option
+   behind its own switch, never the default.
+4. **Stable object identity is the pairing key.** An object's key is a hash of the model's own data as the game keeps it:
+   the shape's `Cmd` address, every item packet address and the material record address
+   (`coregs3::object_key`, `native/coregs3/coregs3_timeline.hpp`). The matrix is what moves; the data does not, which is
+   what makes the key stable across frames (measured: the car shapes keep their addresses frame to frame). A model drawn
+   twice in one frame gets an `instance` number so two cars never collapse into one.
+5. **Fallback is explicit.** An object present in only one of the two frames is drawn with that frame's transform (no
+   interpolation), and the count is reported. A pair whose timestamps are not ordered, or whose guest frame was skipped
+   by the frame skipper, is refused as a whole and the newer frame is presented as is. Nothing is extrapolated on a
+   failed pair.
+6. **Ring, not a single frame.** The capture publishes into a ring of `N` frames (`coregs3::FrameRing`, default 8). The
+   renderer reads the ring, never the guest's live state: the EE thread publishes and never waits for the renderer, and
+   the renderer never blocks the guest. The ring also gives the deferred features their history (motion vectors,
+   reprojection, the tone/motion-blur feedback of phase 4).
+
+**Interaction with the CoreGS 2.0 hybrid.** CoreGS 2.0 draws at the guest rate, by construction: its output exists only
+when a guest frame was rendered, and its read-backs must stay exact. Therefore:
+
+- In levels 0-1 (`shadow`, `overlay`), the frame CoreGS 2.0 composites into is the **newest** guest frame. CoreGS 3.0
+  draws its own categories interpolated at the presentation rate on top of that frame; the 2.0-drawn parts (course, sky,
+  HUD, effects not yet native) therefore update at 60 Hz while the native parts move at the display rate. That is a
+  visible difference and is reported as such until phase 4, when CoreGS 3.0 owns the 3D frame and 2.0 reduces to the 2D
+  layer.
+- In level 2 (`replace`) the skipped VU1 work means the 2.0 frame no longer contains the covered categories; the merged
+  frame is then the *newer* guest frame with the native layer drawn interpolated over it, and the GS-equivalent Z used for
+  the merge comes from the same newer frame.
+- In level 3 (`own3d`) the 3D frame is CoreGS 3.0's and interpolates freely; CoreGS 2.0's 2D layer is composited from the
+  newest guest frame, at guest rate.
+
+**UI and HUD.** The HUD is 2D and answers the guest's own state (speed, gear, lap time). It is drawn **at the guest rate**
+from the newest frame, not interpolated: interpolating a digital readout invents values the game never had. If a scene
+needs a smoother-looking HUD, it can be drawn twice with the same numbers, which is exactly what the guest-rate layer
+already does when the display refreshes faster.
+
+**What phase 1 implements now.** The data structures and the identity: `native/coregs3/coregs3_timeline.{hpp,cpp}`
+(`GuestTime`, `ObjectKey`, `ObjectTransform`, `TimelineFrame`, `FrameRing` with pairing and unmatched counts,
+`lerp_matrix`, `interpolation_alpha`) and its fixture `native_coregs3_timeline`. The capture already carries the guest
+timestamp (`vblank`) and everything the key hashes, so no capture-format change was needed. The interpolated presentation
+itself lands with the live renderer (step 1e), where the same structures are filled from the published ring.
+
 ---
 
 ## 6. Effects inventory and native restoration

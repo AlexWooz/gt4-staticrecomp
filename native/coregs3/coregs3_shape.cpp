@@ -220,11 +220,23 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
                                   ? mesh.strip_starts[index + 1]
                                   : static_cast<std::uint32_t>(vertex_count);
     if (end <= begin + 2) continue;
+    const float limit = options.max_edge;
+    auto far = [&](std::uint32_t a, std::uint32_t b) {
+      if (limit <= 0.0f) return false;
+      const auto &pa = mesh.vertices[a].position;
+      const auto &pb = mesh.vertices[b].position;
+      const float dx = pa[0] - pb[0], dy = pa[1] - pb[1], dz = pa[2] - pb[2];
+      return dx * dx + dy * dy + dz * dz > limit * limit;
+    };
     for (std::uint32_t vertex = begin; vertex + 2 < end; ++vertex) {
       const bool flip = ((vertex - begin) & 1u) != 0;
-      mesh.indices.push_back(vertex + (flip ? 1u : 0u));
-      mesh.indices.push_back(vertex + (flip ? 0u : 1u));
-      mesh.indices.push_back(vertex + 2);
+      const std::uint32_t a = vertex + (flip ? 1u : 0u);
+      const std::uint32_t b = vertex + (flip ? 0u : 1u);
+      const std::uint32_t c = vertex + 2;
+      if (far(a, b) || far(b, c) || far(a, c)) continue;
+      mesh.indices.push_back(a);
+      mesh.indices.push_back(b);
+      mesh.indices.push_back(c);
     }
   }
   if (mesh.indices.empty()) {

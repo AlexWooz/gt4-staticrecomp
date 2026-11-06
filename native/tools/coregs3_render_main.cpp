@@ -216,6 +216,7 @@ int main(int argc, char **argv) {
   bool counts = false;
   int only_draw = -1;
   float min_y = 0.0f;
+  float max_edge = 0.0f;
   int draw_range_last = -1;
   int frame_index = -1;
   const char *out = nullptr;
@@ -243,6 +244,7 @@ int main(int argc, char **argv) {
     else if (argument == "--draw" && index + 1 < argc) only_draw = std::atoi(argv[++index]);
     else if (argument == "--min-y" && index + 1 < argc) min_y = static_cast<float>(std::atof(argv[++index]));
     else if (argument == "--first-car" && index + 1 < argc) draw_range_last = std::atoi(argv[++index]) - 1;
+    else if (argument == "--max-edge" && index + 1 < argc) max_edge = static_cast<float>(std::atof(argv[++index]));
     else if (argument == "--yaw" && index + 1 < argc) options.object_yaw = static_cast<float>(std::atof(argv[++index]));
     else if (argument == "--pitch" && index + 1 < argc) options.object_pitch = static_cast<float>(std::atof(argv[++index]));
     else if (argument == "--no-flip-y") options.flip_y = false;
@@ -267,6 +269,7 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  options.max_edge = max_edge;
   if (ndc) {
     for (const FrameSnapshot &frame : frames) {
       std::printf("frame %u vblank %llu\n", frame.index, static_cast<unsigned long long>(frame.vblank));

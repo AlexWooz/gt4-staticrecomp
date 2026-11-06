@@ -1076,13 +1076,18 @@ target_compile_options(shape_observer_fixture PRIVATE /W4)
 # an EE library built from the units scripts/coregs3_units.py instruments.
 add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
-    coregs3/coregs3_render.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp)
+    coregs3/coregs3_render.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 add_executable(coregs3_fixture coregs3/coregs3_fixture.cpp)
 target_link_libraries(coregs3_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_fixture PRIVATE /W4)
 add_test(NAME native_coregs3 COMMAND $<TARGET_FILE:coregs3_fixture>)
+# TASK-090: the variable-FPS presentation timeline (frames, timestamps, object identity, pairing, alpha).
+add_executable(coregs3_timeline_fixture coregs3/coregs3_timeline_fixture.cpp)
+target_link_libraries(coregs3_timeline_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_timeline_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_timeline COMMAND $<TARGET_FILE:coregs3_timeline_fixture>)
 # The offline milestone tool (docs/COREGS3-PLAN.md §4 step 1c): a capture in, a native PNG out.
 add_executable(gt4_coregs3_render tools/coregs3_render_main.cpp)
 target_link_libraries(gt4_coregs3_render PRIVATE gt4_coregs3)

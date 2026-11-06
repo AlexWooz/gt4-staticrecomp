@@ -16,9 +16,12 @@ shutdown. The **VU1 tap** exists (recorded at the MTVU worker's PATH1 emission, 
 matches the plan's expectation for race PATH1 data. Since then: the coordinate space is confirmed (XYZ 12.4, `px = (X - XYOFFSET.OFX)/16`, and a constant offset is absorbed
 by the projective fit), and the model decode is confirmed too — the parts that looked flat are the car's ground shadows and
 decals, so rendering the body of one car gives a recognisable silhouette (`build/evidence/coregs3/m2/car1_surface.png`).
-Still open: matching tap records to draws (the shape VIF kicks happen outside the `render_cars` bracket, so the job range
-between the pass hooks is empty), the projection fit, the vertex reference, the triangle topology, the M2 surfaces and then
-the live overlay seam. Design, hook table, capture format, measurements and open questions:
+**G-TAP now passes**: the tap records each posted VIF packet's job and guest address (which the capture also stores per
+item), so each draw selects its job exactly; night race VBlank 7398 gives 48 draws, 5,868 vertex pairs, **rms 0.073 px,
+worst 0.222 px, 100% within 0.25 px**. Still open: the model's strip breaks (the capture does not carry them; the tap's ADC
+flags do), the 68 draws whose shapes span several jobs, the Z/STQ/RGBA parts of G-TAP, the M2 surfaces and then the live
+overlay seam. **Variable FPS** is designed and its data structures are in place (`native/coregs3/coregs3_timeline.*`:
+guest timestamps, stable object identity, frame ring, pairing, lerp; plan §5.5). Design, hook table, capture format, measurements and open questions:
 [COREGS3-HOOKS](COREGS3-HOOKS.md). Nothing ships: CoreGS 3.0 is
 off by default, has no launcher entry and no pin or release change. Everything below is the previous state of `main`
 (1.3.0-rc15).
