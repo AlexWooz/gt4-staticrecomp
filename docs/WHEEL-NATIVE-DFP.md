@@ -52,14 +52,17 @@ carries `wheel_file=<path>` for a direct start of the game executable. Without t
 
 - `[wheel] enabled = true` plugs the virtual DFP in. `mode = "dfp"` is the default and the only mode; `mode = "pad"` (the
   removed 1.2.x bridge) is refused. Keys of the bridge are read and ignored, so 1.2.x files load: `pedal_map_mode`, steering
-  `effective_degrees`, `deadzone`, `linearity`, `sensitivity`, `[ffb] centering_spring`, `curb_rumble`. The launcher
-  migrates such files to DFP keys.
+  `effective_degrees`, `deadzone`, `linearity`, `sensitivity`, `curb_rumble`. The 1.2.x `[ffb] centering_spring` amount is
+  read as the new key (nonzero = `game`). The launcher migrates such files to DFP keys.
 - `[steering] source` and `rotation_degrees`: the host wheel's physical range, which maps 1:1 onto the range the game sets
   (GT4 sets 900 degrees). It must equal the range set in the wheel's software (G HUB, Profiler, Pit House...). `invert`.
 - `[throttle]`, `[brake]`: source, polarity mode, dead zone, saturation, curve. `[handbrake]` presses Circle past half
   travel. `[clutch]` is only for the launcher's live view: the DFP has no clutch.
 - `[ffb] enabled`, `strength` (0..2, scales the game's forces), `damper` (0..1, a damping floor the wheel always has, not
-  scaled by strength), `invert` (reverses the game's constant force).
+  scaled by strength), `invert` (reverses the game's constant force), and `centering_spring` (`"off"` by default, or
+  `"game"`; TASK-192). `off` plays neither the game's spring effects (GT4's menu centring spring, type `0B`) nor the DFP's
+  default spring; `game` plays both (the behaviour up to rc15). The racing force, the damper, the friction and GT4's own
+  force feedback strength setting are not affected. Why it defaults to off: see `docs/decisions/0077-centering-spring-off.md`.
 - `[buttons]` keeps the DualShock 2 slot names of the 1.2.x files, so those files keep their meaning:
 
   | Slot | DFP control |
@@ -73,10 +76,32 @@ carries `wheel_file=<path>` for a direct start of the game executable. Without t
 
 Switches: `GT4_DFP=1` plugs the virtual wheel in without a host wheel (headless tests); `GT4_DFP_TRACE=1` logs every
 command, a command census and `dfp-forces.csv`; `GT4_DFP_PORT=1|2` (default 2); `GT4_WHEEL_HAPTIC_THREAD=0` applies the
-forces on the emulation thread instead of the haptics thread (A/B).
+forces on the emulation thread instead of the haptics thread (A/B); `GT4_DFP_TEST_PULSE=<button bit>` and
+`GT4_DFP_TEST_STEER=<percent>` drive the virtual wheel headless (a button tap and a triangle sweep of the steering, about
+6 s per period), so a bench can see the game's forces with the wheel pressed or turned.
 
-## Force feedback (TASK-181)
+## Diagnosis in `game.log`
 
+- At the end of every session, without any switch: `[dfp] census: N force commands this session, M command types:`, one line
+  per (command byte, effect type) with its count and latest 8 bytes, and a `last decoded:` line with the constant force, the
+  spring (coefficients, centre, dead band, saturation), the damper, the friction, the default spring and the range.
+- `[wheel] force feedback summary: ... reached the wheel yes|no, centering spring off|game` (TASK-192 adds the last item).
+- With `GT4_DFP_TRACE=1`, every command, the census every 600 commands and `dfp-forces.csv` (host time, the game's constant
+  force, the steering the game last saw, and the command, type and first parameter byte).
+
+## Force feedback (TASK-181, TASK-192)
+
+- **What GT4 asks for** (measured headless on the rc15 build, TASK-192: the menus and the drives `licenca-b1` and
+  `el-capitan`, the census and `dfp-forces.csv`, plus the steering sweep):
+  - boot: `F3` (stop all slots), `F4` twice (default spring on), `F5` (off, and it stays off), `F8 03` (900 degrees);
+  - menus: a high-resolution spring, type `0B`, on slot 1 or 2: `21 0B 7F 7F 77 00 80` = k = 7 on both sides (7/15 = 0.47),
+    clip 0x80 (0.5), centred, no dead band; stopped with `23 0B` before a drive;
+  - drive: no spring and no damper; friction on slot 1 (`21 0E 80 FF 20`, coefficient 0x80, clip 0x20 = 0.125); the variable
+    force `11 08 <L1> 80 00 00 00` on slot 0 about 100 times a second, its level following the wheel angle (mean 0x2D at the
+    left of the range, 0x80 at the centre, 0xCA at the right): GT4's self-aligning torque, sent as a constant force.
+- **The centring spring is off by default** (`[ffb] centering_spring = "off"`, TASK-192): GT4's own spring is a centring force
+  and on the owner's G27 it read as a slow pull to the centre that never stopped ("from the moment the game opens"). `game`
+  plays it as before. The DFP default spring is covered by the same key.
 - **One owner:** `DfpHapticThread` opens the haptic device from the wheel's joystick, creates the four persistent effects
   (constant, spring, damper, friction, where supported) and is the only code that touches the device. The emulation thread
   only stores the latest force set (every game force command) and wakes it, so a slow wheel driver never stalls the game; a
@@ -89,8 +114,9 @@ forces on the emulation thread instead of the haptics thread (A/B).
   DirectInput device), also on `std::exit` (an exit hook). On a crash the process ends and Windows closes the device handle;
   that the wheel's driver then ends the force is a Hypothesis to check on each wheel.
 - **Log:** at exit `[wheel] force feedback summary: game force commands N, effect updates sent N, effects started N, haptic
-  device open|none, effects supported|none, game forces played N, reached the wheel yes|no`. The launcher's Wheel page reads
-  it from the last session log ("force feedback received").
+  device open|none, effects supported|none, game forces played N, reached the wheel yes|no, centering spring off|game`. The
+  launcher's Wheel page reads it from the last session log ("force feedback received"); it ignores the last item, so the
+  format stays readable by the shipped launcher.
 - **The launcher** closes all its SDL handles (the wheel's joystick and any haptic handle) before the game starts and opens
   a haptic handle only for its "Test force" button (a short constant pull each way), never while the game runs.
 
@@ -107,6 +133,13 @@ forces on the emulation thread instead of the haptics thread (A/B).
   the wheel by about 40 ms, which makes a strong, low-friction direct-drive base oscillate at about 2 Hz. A contributor-side
   adaptive filter was tried and works, but is left out of this change for a separate review.
 - Periodic, ramp and square effects are decoded but not played (GT4 was not seen sending them). `F8 06` is accepted unread.
+- **The wheel's own centring spring is outside our control.** The G27's log shows `autocenter=no` in SDL's feature list, so
+  `SDL_SetHapticAutocenter(haptic, 0)` is never called on it (SDL never advertises the feature on that device). If a wheel
+  still returns to the centre with `centering_spring = "off"`, the remaining spring is the wheel's own, set in Logitech's
+  software (G HUB / Gaming Software "centering spring"), not the game's.
+- The friction effect's two coefficient bytes: PCSX2's own prose calls its conversion a guess, and both readings of GT4's
+  `21 0E 80 FF 20` (0x80 and 0xFF as two coefficients, or 0x80 as the coefficient and 0xFF as the sign nibbles) are capped by
+  the 0x20 clip, so the wheel force is the same either way. Kept as is, with the larger of the two used.
 - Spec II and other wheels are not tested on hardware. Save states do not include the USB model.
 - With `enabled = true` the virtual DFP is plugged in even while the host wheel is unplugged (it reports a centred
   wheel and nothing pressed); the pad keeps working.

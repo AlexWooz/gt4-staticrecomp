@@ -3696,6 +3696,51 @@ most of it is game-independent.
 CoreGS is MIT, so it could become a separate library. Porting another game also needs its own EE/VU/IOP work, which is
 the larger part per game.
 
+### TASK-192: the G27 slowly pulls back to the centre all the time (force feedback, rc15)
+
+**Why.** Owner (2026-11-06, Logitech G27, rc15 draft): "The force feedback works impeccably: kerbs, everything. But the
+steering is heavy and not natural. From the moment the game opens, the wheel keeps slowly coming back to the centre, all
+the time." He set GT4's own force feedback from Strong to Weak and the launcher's damping to 0% and the pull stayed.
+
+**What was measured** (headless rc15 v2.00 and Spec II, `GT4_DFP=1 GT4_DFP_TRACE=1`, `dfp-forces.csv` and the census, through
+the menus and the bench drives `licenca-b1` and `el-capitan`, plus a new headless steering sweep `GT4_DFP_TEST_STEER`):
+
+| Phase | Effects the game asks for |
+|---|---|
+| boot/configuration | `F3` stop all, `F4` default spring on twice, `F5` off (it stays off), `F8 03` 900 degrees |
+| menus | a high-resolution spring (type `0B`) on slot 1 or 2: coefficients k = 7 (7/15 = 0.47) on both sides, clip byte 0x80 (0.5), centred, no dead band — GT4's menu centring spring; stopped (`23 0B`) before a drive |
+| drive | no spring, no damper; friction on slot 1 (type `0E`, coefficient 0x80, clip 0x20 = 0.125); and type `08` on slot 0 about 100 times a second (the variable force), whose level follows the wheel angle: mean 0x2D at the left of the range, 0x80 at the centre, 0xCA at the right (a self-aligning torque delivered as a constant force) |
+
+**Cause.** GT4's own centring spring. Nothing in the decoder or the planner was wrong in kind: the spring is decoded with the
+coefficients, clip and centre the game sent. But the planner played it, so in every menu the wheel was slowly pulled to the
+centre, which is the pull the owner describes ("from the moment the game opens, all the time"). In a drive the same game
+sends its self-aligning force, which is the force feedback he says works well and is kept. The DFP's own default spring was
+already off (the game sends `F5`, and the device autocentre is disabled at open). The damping floor of 15% in the `wheel.toml`
+of his logged session is what made the pull feel slow and the steering heavy; the launcher screen at 11:46 shows 15% (his
+0% test came later).
+
+**Fix.**
+- `[ffb] centering_spring = "off" | "game"` in `wheel.toml`, **default `off`** (owner: "I think it has to be disabled"):
+  `off` neither plays the game's spring effects nor the DFP's default spring; `game` is the old behaviour. The racing force,
+  the damper and the friction are untouched, and GT4's Strong/Weak setting still scales every force it scaled before. The
+  key also accepts the 1.2.x amount or boolean (nonzero = `game`) and the "centring" spelling, so old files keep loading.
+- `[dfp] census` of the session's force commands at the end of every session in `game.log`, without the trace switch: each
+  command and effect-type pair with its count and latest bytes, plus the last decoded force set. The `[wheel] force feedback
+  summary` line now ends with `centering spring off|game`.
+- Headless check `GT4_DFP_TEST_STEER=<percent>`: turns the virtual wheel in a triangle wave, so a bench shows the game's
+  forces off centre. `dfp-forces.csv` now records the steering the game last saw (it used to record the host wheel's).
+
+**Tests.** CTest `native_usb_dfp` feeds the exact command bytes GT4 sends and checks the decoded spring, its stop, the
+friction and the racing force; `native_wheel` checks the plan with the setting off and on (nothing else changes), the key's
+tokens and spellings, the 1.2.x amount, the refusals, the round trip and the summary line. Full CTest serial and the Python
+suite on the v2.00 build.
+
+**Launcher row (follow-up, not in this task):** Settings > Wheel > Force feedback > *Centring spring* (Off, the default, or
+Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` must accept the key first: it refuses unknown
+`[ffb]` keys today, so a hand-edited file with the key makes the launcher refuse the file (the game still loads it).
+
+**Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
+
 ### TASK-191: a small GT4Recomp website on Netlify (owner idea, 2026-11-06; planned)
 
 A simple project site, linked from the GitHub repository:

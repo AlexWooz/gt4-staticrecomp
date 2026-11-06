@@ -131,6 +131,52 @@ void test_decoder() {
   require(!decoder.forces().autocenter, "default spring off");
 }
 
+void test_gt4_commands() {
+  // The exact bytes GT4 v2.00 sends (headless rc15 run, TASK-192: menus then a drive), in order, and what the planner is
+  // handed: a centring spring in the menus only, then the aligning variable force while racing.
+  DfpCommandDecoder decoder;
+  const auto send = [&](std::initializer_list<std::uint8_t> bytes) {
+    std::uint8_t command[8] = {};
+    std::size_t at = 0;
+    for (const std::uint8_t byte : bytes) {
+      if (at < 8)
+        command[at++] = byte;
+    }
+    require(decoder.apply(command, 7), "GT4's command is understood");
+  };
+  send({0xF8, 0x06});
+  send({0xF3});
+  send({0xF4});
+  send({0xF4});
+  send({0xF8, 0x03});
+  send({0xF5});
+  send({0xF8, 0x03});
+  send({0x13, 0x03});
+  require(!decoder.forces().autocenter, "GT4 turns the DFP default spring off once, and it stays off");
+  require(decoder.forces().range_degrees == 900, "GT4 sets the 900-degree range");
+  send({0x21, 0x0B, 0x7F, 0x7F, 0x77, 0x00, 0x80});  // the menu centring spring, slot 1
+  const DfpForces menu = decoder.forces();
+  require(menu.spring, "the menu spring is decoded as a spring");
+  require(std::abs(menu.spring_left - 7.0 / 15.0) < 1e-9 && std::abs(menu.spring_right - 7.0 / 15.0) < 1e-9,
+          "high-resolution spring coefficients k = 7 on both sides");
+  require(std::abs(menu.spring_saturation - 0x80 / 255.0) < 1e-9, "spring clip byte 0x80 is the saturation");
+  require(std::abs(menu.spring_center) < 0.01 && menu.spring_deadband < 0.01, "spring centred with no dead band");
+  require(menu.constant == 0.0, "the menu spring carries no constant force");
+  send({0x23, 0x0B, 0x7F, 0x7F, 0x77, 0x00, 0x80});  // stop slot 1
+  require(!decoder.forces().spring, "the game stops its menu spring before the drive");
+  send({0x21, 0x0E, 0x80, 0xFF, 0x20});  // friction, slot 1
+  require(decoder.forces().friction && std::abs(decoder.forces().friction_saturation - 0x20 / 255.0) < 1e-9,
+          "friction with its clip byte");
+  send({0x21, 0x0E, 0x00, 0x00, 0x02});  // friction off
+  require(decoder.forces().friction, "a zero-coefficient friction stays a decoded friction with no force");
+  send({0x11, 0x08, 0x90, 0x80, 0x00, 0x00, 0x00});  // the racing variable force, slot 0
+  require(std::abs(decoder.forces().constant - (0x90 - 128.0) / 127.0) < 1e-9, "the racing force level is decoded");
+  require(!decoder.forces().spring, "no spring is planned while racing");
+  send({0x13, 0x08, 0x90, 0x80, 0x00, 0x00, 0x00});  // stop slot 0
+  require(decoder.forces().constant == 0.0, "the game stops the racing force between stretches");
+  require(!decoder.forces().spring && !decoder.forces().damper, "still no spring and no damper while racing");
+}
+
 void test_report() {
   DfpInput input;
   input.steering = 0x1FFF;
@@ -236,6 +282,7 @@ void test_bus() {
 
 int main() {
   test_decoder();
+  test_gt4_commands();
   test_report();
   test_bus();
   if (failures) {

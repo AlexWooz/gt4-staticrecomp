@@ -1,5 +1,36 @@
 # Current Status
 
+## TASK-192: the G27's slow pull to the centre is GT4's own spring, now off by default (2026-11-06)
+
+On `task/192-ffb-centering` (from `release/1.3.0-rc15` at 3df155c4), from the owner's rc15 report ("the steering is heavy and
+not natural; from the moment the game opens, the wheel keeps slowly coming back to the centre, all the time"):
+
+- **Measured first**, headless on the rc15 build with the virtual wheel (`GT4_DFP=1 GT4_DFP_TRACE=1`), through the menus and
+  the bench drives `licenca-b1` (v2.00 licence test) and `el-capitan` (Spec II time trial), plus a new headless steering sweep
+  (`GT4_DFP_TEST_STEER=60`) because GT4's racing force is a function of the wheel angle:
+  - boot: `F3`, `F4` twice, `F5` (the DFP default spring goes off and stays off), `F8 03`;
+  - menus: a high-resolution spring, type `0B`, slot 1 or 2: k = 7 (7/15 = 0.47) both sides, clip 0x80 (0.5), centred, no
+    dead band; stopped with `23 0B` before the drive;
+  - drive: no spring and no damper; friction on slot 1 (`0E`, coefficient 0x80, clip 0x20 = 0.125); the variable force (`08`)
+    on slot 0 about 100 times a second, its level following the wheel angle (mean 0x2D left, 0x80 at the centre, 0xCA right).
+- **Cause:** GT4's own centring spring, played as it was decoded. The decoder and the planner were right in kind (the
+  coefficients, clip and centre match the game's bytes); the DFP default spring was already off. In a drive there is no spring
+  at all: the aligning force is the game's tyre feedback and stays.
+- **Fix:** `[ffb] centering_spring = "off" | "game"` in `wheel.toml`, default **off**: `off` plays neither the game's spring
+  effects nor the DFP default spring, and nothing else changes (racing force, damper, friction, GT4's Strong/Weak scaling).
+  1.2.x files keep loading (an amount or a boolean: nonzero = `game`; the "centring" spelling parses too).
+- **Diagnosis for the next report:** a `[dfp] census` of the session's force commands with each type's count and latest bytes
+  and the last decoded force set, at the end of every session in `game.log` without the trace switch; the `[wheel] force
+  feedback summary` line ends with `centering spring off|game`; `dfp-forces.csv` records the steering the game last saw.
+- **Tests:** `native_usb_dfp` feeds GT4's exact bytes and checks the decoded spring, its stop, the friction and the racing
+  force; `native_wheel` checks the plan with the setting off and on, the key's tokens, spellings, 1.2.x amount, refusals, the
+  round trip and the summary line. CTest 318 of 319 on the v2.00 build (hw_replace_q07_pcsx2_dumps skipped, as in rc15);
+  Python 804 (57 skipped).
+- **Launcher row (follow-up):** Settings > Wheel > Force feedback > Centring spring (Off / Game). `gt4l-core`'s `wheel.rs`
+  refuses unknown `[ffb]` keys today, so it must learn `centering_spring` before users can set it from the UI.
+- The damper floor in the `wheel.toml` of the owner's logged session was 15% (his launcher screen at 11:46 shows Amortecimento
+  15%), which is why the pull felt slow and the steering heavy; his 0% test came after that log.
+
 ## TASK-186: the Performance Mode becomes individual effect toggles on PC (2026-11-06)
 
 On `task/186-effect-toggles-pc` (from `release/1.3.0-rc15` at bdc68efd), the split TASK-180 test5 made for Android, with the

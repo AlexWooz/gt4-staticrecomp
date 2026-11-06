@@ -615,7 +615,21 @@ WheelConfig parse_wheel_config(std::string_view text, const std::string &source_
             config.ffb.damper = d;
           } else if (key == "invert") {
             config.ffb.invert = parse_bool_token(value, source_name, line_no);
-          } else if (key == "centering_spring" || key == "curb_rumble") {
+          } else if (key == "centering_spring" || key == "centring_spring") {
+            // TASK-192: the game's own centring springs. "off" (the default) plays neither the game's spring effects nor the
+            // DFP's default spring; "game" plays them. A 1.2.x file's amount or boolean still parses: nonzero means "game".
+            const std::string_view token = trim(value);
+            if (token == "\"off\"" || token == "false") {
+              config.ffb.centering_spring = false;
+            } else if (token == "\"game\"" || token == "true") {
+              config.ffb.centering_spring = true;
+            } else {
+              const double amount = parse_double_token(token, source_name, line_no, "centering_spring");
+              if (amount < 0.0 || amount > 1.0)
+                fail(source_name, line_no, "ffb centering_spring must be \"off\" or \"game\"");
+              config.ffb.centering_spring = amount > 0.0;
+            }
+          } else if (key == "curb_rumble") {
             // Pad bridge rumble shaping; the game's own forces replace it. Ignored.
           } else {
             fail(source_name, line_no, "unknown [ffb] key '" + std::string(key) + "'");
@@ -686,7 +700,8 @@ std::string serialize_wheel_config(const WheelConfig &config) {
   out << "enabled = " << (config.ffb.enabled ? "true" : "false") << "\n";
   out << "strength = " << config.ffb.strength << "\n";
   out << "damper = " << config.ffb.damper << "\n";
-  out << "invert = " << (config.ffb.invert ? "true" : "false") << "\n\n";
+  out << "invert = " << (config.ffb.invert ? "true" : "false") << "\n";
+  out << "centering_spring = \"" << (config.ffb.centering_spring ? "game" : "off") << "\"\n\n";
 
   out << "[buttons]\n";
   for (std::size_t i = 0; i < button_slots.size(); ++i) {
@@ -1149,7 +1164,8 @@ std::string WheelInput::force_summary() const {
       << stats.updates_sent << ", effects started " << stats.starts << ", haptic device "
       << (stats.device_open ? "open" : "none") << ", effects " << (stats.effects_supported ? "supported" : "none")
       << ", game forces played " << stats.forces_played << ", reached the wheel "
-      << (stats.forces_played > 0 ? "yes" : "no");
+      << (stats.forces_played > 0 ? "yes" : "no") << ", centering spring "
+      << (config_.ffb.centering_spring ? "game" : "off");
   return out.str();
 }
 

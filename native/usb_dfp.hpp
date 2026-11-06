@@ -102,6 +102,8 @@ private:
 class Dfp final : public Device {
 public:
   explicit Dfp(DfpBridge &bridge);
+  // The census of the session's force commands goes to game.log here, without the trace switch (TASK-192).
+  ~Dfp() override;
   void reset() override;
   std::uint8_t address() const override { return address_; }
   int setup(std::span<const std::uint8_t, 8> packet) override;
@@ -116,6 +118,7 @@ public:
 
 private:
   void command(const std::uint8_t *data, std::size_t length);
+  void log_census() const;
 
   DfpBridge &bridge_;
   DfpCommandDecoder decoder_;
@@ -128,6 +131,7 @@ private:
   bool expect_report_data_ = false;
   std::uint64_t commands_ = 0;
   std::uint64_t reports_ = 0;
+  DfpInput last_reported_{};  // the input the last interrupt IN report carried (the steering the game last saw)
   std::map<unsigned, std::pair<std::uint64_t, std::array<std::uint8_t, 8>>> census_;
 };
 

@@ -50,9 +50,12 @@ EffectPlan plan_dfp_effects(const gt4::usb::DfpForces &forces, const FfbConfig &
   plan[static_cast<std::size_t>(EffectKind::constant)].level =
       signed_level((config.invert ? -forces.constant : forces.constant) * gain);
   // Spring: the game's spring; without one, the DFP's own default centring spring while it is on (wheels such as the
-  // MOZA R5 have no device autocentre to stand in for it).
+  // MOZA R5 have no device autocentre to stand in for it). TASK-192: both are centring springs and are off with
+  // [ffb] centering_spring = "off" (the default); the saturation-zero condition sends no force and the effect idles.
   EffectParams &spring = plan[static_cast<std::size_t>(EffectKind::spring)];
-  if (forces.spring)
+  if (!config.centering_spring)
+    spring = condition(0.0, 0.0, gain, 0.0, 0.0, 0.0);
+  else if (forces.spring)
     spring = condition(forces.spring_left, forces.spring_right, gain, forces.spring_center, forces.spring_deadband,
                        forces.spring_saturation);
   else if (forces.autocenter)
