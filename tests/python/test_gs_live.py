@@ -50,6 +50,8 @@ class ConfigTests(unittest.TestCase):
     def test_scale_present_mode_and_aspect(self):
         text = probe.gs_config_text({'GT4_GS_SCALE': '1', 'GT4_PRESENT_MODE': 'immediate', 'GT4_GS_ASPECT': '16:9'})
         self.assertIn('upscale_multiplier = 1\n', text)
+        # TASK-200 (owner, 2026-11-06): 1.5 is a fractional scale accepted with gt4-gs 1.3.0 and newer.
+        self.assertIn('upscale_multiplier = 1.5\n', probe.gs_config_text({'GT4_GS_SCALE': '1.5'}))
         self.assertIn('VsyncEnable = false\n', text)
         self.assertIn('AspectRatio = 16:9\n', text)
         # Owner, 2026-10-21: the aspect is fixed at 16:9 until the ultrawide update.
@@ -66,8 +68,9 @@ class ConfigTests(unittest.TestCase):
         self.assertIn('DumpEvery = 100\n', text)
 
     def test_bad_values_are_refused(self):
-        for name, value in (('GT4_GS_SCALE', '0'), ('GT4_GS_SCALE', '13'), ('GT4_GS_SCALE', '1.5'),
-                            ('GT4_GS_ASPECT', 'wide'), ('GT4_PRESENT_MODE', 'adaptive')):
+        for name, value in (('GT4_GS_SCALE', '0'), ('GT4_GS_SCALE', '13'), ('GT4_GS_SCALE', '1.1'),
+                            ('GT4_GS_SCALE', '1.250'), ('GT4_GS_ASPECT', 'wide'),
+                            ('GT4_PRESENT_MODE', 'adaptive')):
             with self.assertRaises(ValueError, msg=f'{name}={value}'):
                 probe.gs_config_text({name: value})
 
