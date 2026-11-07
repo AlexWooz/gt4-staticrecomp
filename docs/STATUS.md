@@ -1,5 +1,35 @@
 # Current Status
 
+## TASK-205: map every CoreGS 2.0 shader variant and what creates one (owner, 2026-11-07; analysis, no runtime change)
+
+On `task/205-variant-coverage` (from `task/204-no-ingame-compile` at c462fd45), build `private/slice416-spec2-build`
+(plain Spec II, rc15 recipe). Doc `docs/SHADER-VARIANT-COVERAGE.md`, tools `scripts/coregs2_bench/variant_decode.py` and
+`variant_survey.py`, journal entry.
+
+- **The pattern (Confirmed by construction + the survey).** A key is a 33-word draw state, not a track or car. The 544
+  shipped keys are 144 draw-state signatures expanded over scales 1/2/3/6 (105 signatures only at 1x, none at 4x). The
+  push word holds the sampled texture's scale (bits 0-19) and the scaled-frame flags (28/30), so each render scale is a
+  separate variant universe: the 300 storage-path keys this card prepares project to 136 keys at 4x, all new. The rc15
+  player's 44 new keys in one lap are the first slice of that set. The second source is material combinations the
+  recorded scenes never used (mip, SCANSMK — 0 keys in the list and IN-530, region-clamp wraps, alpha-test/blend,
+  raw CT24); the car slots added one field value, `Tfx=Highlight2`. No per-draw value is in the key and nothing grows
+  without bound (scale 1-12, aniso 0-7, ROP bounded); the design issue is the bounded scale multiplication. Two
+  proposals, not applied: prepare-side scale expansion (no shader change) or taking the scale out of the key (owner
+  decision).
+- **The survey.** 52 Arcade tracks (45 B-Spec; the 7 Dirt & Snow in A-Spec because B-Spec never starts there): 155
+  distinct keys, 69 new, 38 new signatures, 117 of the 144 shipped signatures seen, 4,046 repeated keys. All 67 1x runs
+  (plus A-Spec, four car slots, menus and car setup): 160 keys, 72 new, 41 signatures. Union with the shipped list 616
+  keys (372 on this card after the plain/ROP filters), under `kMaxSpecPipelines` (2048). A-Spec adds nothing; car slots
+  5/10 add 5 keys; slot 0 never starts a race; slots 17/24 add none. Pending: GT Mode showroom, photo mode, license
+  tests (need a Spec II GT Mode card), replay and split screen (need a menu route).
+- **Fallback cost.** George V Paris at 4x, repeated: deferred 5.69 ms gpu_busy / 8.90 ms wall per VBlank against
+  prepared 3.78 / 8.44 (1.91 ms GPU, +50%; wall +5%). At 1x TASK-204's night race was within noise (6.51 vs 6.54). A
+  first-encounter 4x session is ~2 ms/frame heavier until the next prepare — enough to cost a frame at the margin, not
+  the 1 s compile hitch (removed by TASK-204).
+- **Player loop (design only).** Launcher card after `deferred=N`, one validated export (variants.bin + the log bundle,
+  no automatic upload), merge-tool shader-set/key-size refusal, en-US/pt-BR guide.
+- **Not done:** launcher UI or export code; photo/replay/split-screen runs; no PR, no release.
+
 ## TASK-204: CoreGS 2.0 never compiles a pipeline during play (owner, 2026-11-07; reviewed, owner test build ready, ships with rc16)
 
 On `task/204-no-ingame-compile` (from `release/1.3.0-rc15` at f86d53d9), worktree

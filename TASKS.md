@@ -3741,6 +3741,51 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-205: map every CoreGS 2.0 shader variant and the pattern that creates one (owner, 2026-11-07; done, analysis)
+
+**Why.** `core2_known_variants.inc` (544 keys) is the union of recorded scenes, not every draw state the game can
+reach (IN-507). A player on rc15 at 4x asked 44 new keys in one lap and the driver ended the process inside one of the
+compiles (TASK-204, decision 0078). TASK-204 now records an unknown key and draws it with the uber pipeline (the same
+pixels), so the next prepare compiles it. The owner asked what creates a new key, for all of them mapped, and for the
+player base to close the gap; he also suspects the first-encounter uber path is the occasional lag.
+
+**What.**
+1. **Part A - the pattern.** A key is a 33-word draw state (`kSpecFields`, push, aniso, ROP), not a track, car or
+   scene. The 544 keys are 144 draw-state signatures expanded over scales 1/2/3/6 (plus a few aniso/ROP twins); 105
+   signatures exist only at 1x and there is no 4x key. The push word carries the sampled texture's scale (bits 0-19)
+   and the scaled-frame flags (28/30), so the render scale multiplies the corpus: the 300 storage keys this card
+   prepares project to 136 keys at 4x, all new. That is what the player met; 44 in a lap is the first slice. The second
+   source is material vocabulary the recorded scenes never used: mip sampling, SCANSMK (0 keys in the list, IN-530),
+   region-clamp wraps, alpha-test/blend combinations, raw CT24 textures. No per-draw value is in the key and nothing
+   grows without bound (scale 1-12, aniso 0-7, ROP bounded); the design issue is the bounded scale multiplication. Two
+   proposals, not applied: prepare-side scale expansion (no shader change) and taking the scale out of the key (owner
+   decision).
+2. **Part B - the survey.** A plain Spec II build from this branch (`private/slice416-*`, `-DGT4_TARGET=spec2
+   -DGT4_EE_PROFILE=spec2`, the rc15 recipe) ran the 52 Spec II Arcade tracks (45 B-Spec, the 7 Dirt & Snow in A-Spec
+   because B-Spec never starts there), plus A-Spec on three tracks, four car-list slots on two tracks, the
+   boot/Arcade/car-setup screens and a 4x diagnostic, each with a fresh shader cache so the session only records. The
+   52 runs produced 155 distinct keys, 69 new, 38 new signatures (117 of the shipped 144 signatures seen); all 67 1x
+   runs produced 160 keys, 72 new, 41 signatures. The union with the shipped list is 616 keys (372 on this card after
+   the plain/ROP filters), well under `kMaxSpecPipelines` (2048). Full matrix, per-track counts and every new key's
+   field-level diff: `docs/SHADER-VARIANT-COVERAGE.md`.
+3. **Part C - the player loop (design only).** A launcher notice after a session that deferred keys, one validated
+   export (`variants.bin` + the existing log bundle, no automatic upload), a merge tool (`variant_survey.py`) that
+   checks the magic, key size and shader-set hash, dedupes and refuses another build, and a short guide in en-US and
+   pt-BR. No UI or launcher code in this task.
+
+**Fallback cost.** George V Paris at 4x, the same run before and after the prepare, repeated once: deferred 5.69 ms
+gpu_busy and 8.90 ms wall/VBlank against prepared 3.78 and 8.44 (1.91 ms of GPU, +50%; wall +5%). At 1x TASK-204's
+night race was within noise (6.51 against 6.54). A first-encounter 4x session can therefore run about 2 ms per frame
+heavier until the next prepare, enough to cost a frame at the margin; the visible hitch was the compile (up to
+1,047.9 ms), which TASK-204 removed from play.
+
+**Tools.** `scripts/coregs2_bench/variant_decode.py` (decode, label and diff a `variants.bin`) and
+`variant_survey.py` (merge, dedupe, shader-set and cap checks, candidate `.inc` under `private/`). The harness is
+under `private/task205-tools/` (adapted from TASK-171, one fresh cache per run).
+
+**State.** Branch `task/205-variant-coverage` from `task/204-no-ingame-compile` at c462fd45, pushed; no PR, no release,
+no launcher change.
+
 ### TASK-204: CoreGS 2.0 never compiles a pipeline during play — the prepare does (owner, 2026-11-07; reviewed, owner test build ready, ships with rc16)
 
 **Why.** A player on rc15 (RX 6750 XT, AMD driver 25.10.30.02, CoreGS 2.0 at 4x) crashed with `0xC0000005` inside a
