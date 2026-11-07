@@ -3741,7 +3741,7 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
-### TASK-201: the (i) icons and row labels must never paint over an open info card (owner, 2026-11-06; planned, no build yet)
+### TASK-201: the (i) icons and row labels must never paint over an open info card (owner, 2026-11-06; fixed in code, ships with the next build)
 
 The owner's photo of the Android launcher (APK 103001507, Graphics, the Dithering card open) shows the next row's
 label "Taxa de quadros" and its (i) icon drawn over the card. The mobile branch does not have TASK-199 (336630b4) yet.
@@ -3750,6 +3750,23 @@ label "Taxa de quadros" and its (i) icon drawn over the card. The mobile branch 
   may carry their own stacking order. Use `document.elementFromPoint` checks on the icon of the following row.
 - **Tests:** the TASK-199 focus checks extended to the next row's (i) icon, in both languages and at phone size.
 - Ship with the next launcher build (rc16 on PC, the next APK on Android).
+
+**State (2026-11-06): fixed in code, ships with the next build.** Branch `task/201-info-icon` from
+`release/1.3.0-rc15` at 90acab37, pushed; no PR, no build, no release. UI only (`launcher/crates/gt4l-tauri/ui`), so the
+same UI commit can be applied to the Android branch.
+- **On PC, TASK-199 already covers the owner's paint-over.** Every card of all five pages with an "i" (42 cards) was
+  opened at 1366x768 and probed with `document.elementFromPoint` at every other row's (i) icon and label, and at the
+  value and the arrows: the card is the top element wherever it overlaps them. The owner's row pair was reproduced at
+  1366x768, 2400x1080 and 1080x2400 in both languages with the same result. The one remaining case was that a card
+  open by a tap and a second card opened by the keyboard focus on another row's (i) could draw one over the other.
+- **Fix (`js/ui.js`):** one card at a time. A card opened by a tap or a click keeps the screen until it is closed; with
+  the keyboard or the pad the focused (i) keeps its ring under the card instead of opening its own card over it
+  (A/Enter still opens it), and a dismissed card does not reopen while its (i) keeps the focus.
+- **Checks:** `dev/focus-check.js` grew 8 checks (the next row's (i) and label under an open card, the focused (i)'s
+  ring without a second card, and B closing without reopening). Focus checks **421/421 en-US** and **428/428 pt-BR**
+  (also 421/421 at 2400x1080 and 428/428 at 1080x2400), nav-test **265/265**, locale keys **918** in both languages with
+  identical keys and `{placeholders}`. Evidence in `build/evidence/t201/` (before and after, three sizes in both
+  languages).
 
 ### TASK-200: GSdx on PC: fractional render scales and OpenGL, in gt4-gs 1.3.0 and rc15 (owner, 2026-11-06)
 

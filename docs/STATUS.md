@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-201: nothing paints over an open info card (owner, 2026-11-06)
+
+On `task/201-info-icon` (from `release/1.3.0-rc15` at 90acab37), pushed; UI only, no PR and no build. TASK-199's top layer
+already keeps every (i), label, arrow and value under an open card on PC (all 42 cards probed at 1366x768; the owner's
+short-row/long-row pair reproduced at 2400x1080 and 1080x2400 in both languages). The remaining case was a second card:
+with a card open by a tap, putting the keyboard or pad focus on another row's (i) opened that row's card on top of it.
+`ui.js` now draws one card at a time (the tapped card keeps the screen; the focused (i) keeps its ring under it; A/Enter
+still opens it; B closes it without reopening). Focus checks 421/421 en-US and 428/428 pt-BR, nav-test 265/265, locale
+keys 918 in both; evidence in `build/evidence/t201/`. Ships with the next launcher build (rc16).
+
 ## TASK-198: the 1.3.0-rc15 release build with PGO and ThinLTO (owner, 2026-11-06)
 
 On `task/198-rc15-pgo` (from `release/1.3.0-rc15` at b9a55c72, TASK-194 merged). The owner approved rc15 and asked for the
