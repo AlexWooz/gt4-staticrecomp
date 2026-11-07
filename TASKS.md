@@ -3741,6 +3741,28 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-202: context-aware touch controls for racing on Android (owner, 2026-11-07; planned)
+
+The owner tested the basic PS2-style virtual pad on APK 103001508 and it works. He wants it kept for players who want
+it.
+
+The goal is a touch layout made for this game, not a PS2 pad layout, switching by context:
+- the menus;
+- the pre-race lobby;
+- a real race.
+
+It builds on TASK-077's context study (`docs/CONTEXT-INPUT-STUDY.md`) and the community PR
+[moesuito/gt4-staticrecomp#173](https://github.com/moesuito/gt4-staticrecomp/pull/173) (context-aware mapping, VBlank
+probe, transition filtering).
+
+- **In a race:**
+  - steering by an on-screen wheel or a slider, or buttons for players who prefer them;
+  - throttle and brake with levels: an analog amount from the touch position on the pedal area.
+- **In menus and the lobby:** the simple pad (D-pad, confirm, back, Start).
+- **Settings:** the layout and the steering type are chosen in the launcher's pad editor; the PS2 layout stays as an
+  option.
+- **Game logic never changes:** only the input that reaches the game's pad is mapped.
+
 ### TASK-201: the (i) icons and row labels must never paint over an open info card (owner, 2026-11-06; planned, no build yet)
 
 The owner's photo of the Android launcher (APK 103001507, Graphics, the Dithering card open) shows the next row's
