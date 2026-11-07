@@ -3741,6 +3741,16 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-201: the (i) icons and row labels must never paint over an open info card (owner, 2026-11-06; planned, no build yet)
+
+The owner's photo of the Android launcher (APK 103001507, Graphics, the Dithering card open) shows the next row's
+label "Taxa de quadros" and its (i) icon drawn over the card. The mobile branch does not have TASK-199 (336630b4) yet.
+- **Android:** port TASK-199's top-layer cards to the mobile launcher.
+- **PC (rc15 has TASK-199):** check that no (i) icon, focus ring or row label paints over an open card. The info icons
+  may carry their own stacking order. Use `document.elementFromPoint` checks on the icon of the following row.
+- **Tests:** the TASK-199 focus checks extended to the next row's (i) icon, in both languages and at phone size.
+- Ship with the next launcher build (rc16 on PC, the next APK on Android).
+
 ### TASK-200: GSdx on PC: fractional render scales and OpenGL, in gt4-gs 1.3.0 and rc15 (owner, 2026-11-06)
 
 **Status: done (2026-11-06), in rc15.** Launcher `task/200-gsdx-scales-opengl` (0311cc5a) merged into `task/198-rc15-pgo`;
