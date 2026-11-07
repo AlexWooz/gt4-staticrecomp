@@ -3741,6 +3741,22 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-203: export photo mode pictures through the game's own USB export (owner, 2026-11-07; recorded, not scheduled)
+
+A player suggestion (NewModelArmy, Discord, 2026-11-07), which the owner liked. GT4's photo mode can save pictures to
+a USB storage device, as JPEG files. In PCSX2 this needs a VHD image created and mounted in the emulator.
+
+GT4Recomp should make it easy:
+- **Emulated USB storage:** the game's USB export writes to an emulated USB mass-storage device, backed by a plain
+  folder on the PC, for example `user/photos/`. The JPEGs land there as the game writes them, with no disk image to
+  create or mount.
+- **Launcher:** an "Open photos folder" button, and the folder shown in the Saves/Replays area.
+- **Prerequisite:** photo mode must render well on CoreGS 2.0 first. It is still poor there, so this task waits for
+  that work. GSdx can be used to develop it.
+- **Builds on** TASK-018's emulated USB controller (the IOP USB stack). Map the game's USB storage driver path first,
+  read-only.
+- **Game logic never changes:** the JPEG bytes are the game's own; we only provide the device.
+
 ### TASK-202: context-aware touch controls for racing on Android (owner, 2026-11-07; planned)
 
 The owner tested the basic PS2-style virtual pad on APK 103001508 and it works. He wants it kept for players who want
