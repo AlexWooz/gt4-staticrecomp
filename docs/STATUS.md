@@ -1,9 +1,10 @@
 # Current Status
 
-## TASK-204: CoreGS 2.0 never compiles a pipeline during play (owner, 2026-11-07; done in code, ships with rc16)
+## TASK-204: CoreGS 2.0 never compiles a pipeline during play (owner, 2026-11-07; reviewed, owner test build ready, ships with rc16)
 
 On `task/204-no-ingame-compile` (from `release/1.3.0-rc15` at f86d53d9), worktree
-`C:\Antigravity\gt4-wt-204-no-ingame-compile`, build `private/slice414-*`. Decision 0078.
+`C:\Antigravity\gt4-wt-204-no-ingame-compile`, builds `private/slice414-*` (evidence) and `private/slice415-*` (owner
+test build). Decision 0078.
 
 - **Cause (player report, rc15, RX 6750 XT, driver 25.10.30.02, 4x):** `0xC0000005` inside a pipeline compile on the
   `spec_worker` thread. His log: 301 variants recreated at start in 227.7 ms (disk-cache hits), then 44 new keys requested
@@ -25,7 +26,22 @@ On `task/204-no-ingame-compile` (from `release/1.3.0-rc15` at f86d53d9), worktre
 - **Tests:** new `hw_core2_no_ingame_compile` (record + uber + never compiled; the stamp follows `variants.bin`; one
   strike in play quarantines, the prepare keeps two) and `hw_core2_shader_cache` reworked to record -> prepare (306
   variants, 6 recorded) -> recreate; `hw_core2_*` 35 of 35; launcher `cargo test --workspace` 783 passed, 9 ignored.
-- **Not done:** no in-game play test (owner), no rc16 build yet; the build's `private/slice414-*` is not pinned.
+- **Reviewed (independent, 2026-11-07):** the diff matches decision 0078; no behaviour defect found. Fixed: three stale
+  comments/log texts in `gt4l-tauri/src/commands.rs` that still said the game compiles as it plays. Residual risk
+  (Hypothesis, would need a design decision): `prepared_for` checks only the `pipelines.bin` header, so a cache whose
+  header matches but whose body the driver rejects would be compiled at the start; proving it needs a `pipelines.bin` hash
+  in the stamp.
+- **Checks rerun on this branch (2026-11-07):** `hw_core2_*` 35 of 35 in `slice414-build` and again in the owner build
+  `slice415-build`; launcher `cargo test --workspace` 783 passed, 9 ignored; headless v2.00 night race 9 of 9 identical
+  frames (default: 0 pipelines, 97 keys deferred, 3,153,803 uber batches caused; switch: 97 pipelines, 106.4 ms of
+  compile, 1.8 ms max). Python suite: 804 run, 1 failure pre-existing on the rc15 baseline (`test_gs_live` still expects
+  `GT4_GS_SCALE=1.5` to be refused; TASK-200 added the fractional scales), 58 skipped.
+- **Owner test build ready (1.3.0-rc16 test, plain, no PGO, v2.00):** `private/slice415-build` ->
+  `gt4vulkan.exe` 90,161,664 bytes `c94e7da6...`; pin `docs/inputs/slice415-pcsx2.json` (executable plus the `aspect` EE
+  library); kit `private/slice415-dist-task204` with the 19-file `game\` distribution and
+  `GT4Recomp-1.3.0-rc16-portable.zip` 42,108,777 bytes `3b43bded...`; portable launcher 19,400,192 bytes `c9031c69...`.
+- **Not done:** the owner in-game test of the slice415 kit (CoreGS 2.0 at 4x, a new scene mid-lap); Spec II is not in
+  this build; no rc16 release, installer or upload.
 
 ## TASK-198: the 1.3.0-rc15 release build with PGO and ThinLTO (owner, 2026-11-06)
 

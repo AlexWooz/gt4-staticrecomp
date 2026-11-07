@@ -3741,7 +3741,7 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
-### TASK-204: CoreGS 2.0 never compiles a pipeline during play — the prepare does (owner, 2026-11-07; done in code, ships with rc16)
+### TASK-204: CoreGS 2.0 never compiles a pipeline during play — the prepare does (owner, 2026-11-07; reviewed, owner test build ready, ships with rc16)
 
 **Why.** A player on rc15 (RX 6750 XT, AMD driver 25.10.30.02, CoreGS 2.0 at 4x) crashed with `0xC0000005` inside a
 pipeline compile on the `spec_worker` thread, 20 minutes into a lap. His `game.log`: 301 variants recreated at start in
@@ -3782,7 +3782,34 @@ the prepare then reports 1 suspect and 0 quarantined, and a play start reports 1
 CTest `hw_core2_*` 35 of 35. Launcher `cargo test --workspace` 783 passed, 9 ignored.
 
 **Branch** `task/204-no-ingame-compile` from `origin/release/1.3.0-rc15` at f86d53d9, worktree
-`C:\Antigravity\gt4-wt-204-no-ingame-compile`, build `private/slice414-*`. No PR, no release: ships with rc16.
+`C:\Antigravity\gt4-wt-204-no-ingame-compile`, builds `private/slice414-*` and `private/slice415-*`. No PR, no release:
+ships with rc16. Owner in-game test of the slice415 kit pending.
+
+**Review (independent, 2026-11-07).** `git diff origin/release/1.3.0-rc15...HEAD` re-read against decision 0078:
+`specialised_pipeline` has no driver-compile path while `compiles_in_play()` is false (an unknown key enters
+`specDeferred` and `variants.bin` exactly once, before any `specSeen` retry); `specDeferredBatches` counts exactly the
+triangle batches a deferral sent to the uber pipeline; the worker is started with no lock held and is always joined
+before the cache is saved; `GT4_CORE2_INGAME_COMPILE=1` and a run without `GT4_HW_SHADER_CACHE` keep the old path with
+`begin_compile`/`end_compile`; `PreparedStamp` (count plus FNV-1a of `variants.bin`) has a defined value for an absent,
+empty or damaged file, so a bad stamp only asks for a prepare. One strike in play quarantines, the prepare keeps
+TASK-170c's two, and a quarantined key is put into `specSeen`, so it is never recorded again (no prepare loop). Launcher:
+the parser needs exactly `shaders recorded N`; a failed or absent prepare cannot block Play (`prepare_shaders` returns
+`Ok(true)` on every non-cancel path). Fixed in review: three stale comments and log texts in `gt4l-tauri/src/commands.rs`
+still said the game "compiles as it plays" (it now draws with the uber pipeline and records the keys). Residual risk
+(Hypothesis, not changed, would need a design decision): `prepared_for` checks only the `pipelines.bin` header, so a cache
+whose header matches but whose body the driver rejects would be treated as prepared and compiled at the start; proving it
+needs a hash of `pipelines.bin` in the stamp.
+
+**Owner test build (1.3.0-rc16 test, plain, no PGO).** `private/slice415-build` (the slice414 recipe, `GT4_TARGET=v200`,
+`GT4_RELEASE_DISTRIBUTION=ON`) gives `gt4vulkan.exe` 90,161,664 bytes, sha256 `c94e7da6...`, pinned by
+`docs/inputs/slice415-pcsx2.json` with the `aspect` EE library it links
+(`private/slice217-ee-aspect-producer/game-build/ps2game.lib`, 70,693,756 bytes, `8e671a10...`). Kit
+`private/slice415-dist-task204`: the 19-file distribution `game\` (`make_distribution.py`), the portable launcher
+`private/slice415-launchers-rc16/GT4Recomp-portable.exe` 19,400,192 bytes `c9031c69...`
+(`build-release.ps1 -Portable -Label rc16`) and `GT4Recomp-1.3.0-rc16-portable.zip` 42,108,777 bytes `3b43bded...`
+(`make_portable_zip.py`). Checks rerun: `hw_core2_*` 35 of 35 in `slice414-build` and again in `slice415-build`, launcher
+783 passed / 9 ignored, headless v2.00 night race 9 of 9 identical frames (default vs `GT4_CORE2_INGAME_COMPILE=1`).
+Spec II is not in this build: the reviewed recipe and the player's report are v2.00.
 
 ### TASK-203: export photo mode pictures through the game's own USB export (owner, 2026-11-07; recorded, not scheduled)
 

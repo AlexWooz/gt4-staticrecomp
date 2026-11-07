@@ -752,8 +752,9 @@ pub fn use_coregs20_for_play(shared: &Shared, card_has_vulkan: bool) -> Result<(
 }
 
 /// Before Play (IN-507): under CoreGS 2.0 the game program compiles what the shader cache lacks, and `shaders-progress` opens
-/// the window only when there is work. Another renderer, or a problem here, goes straight to Play: the game then compiles
-/// on its own as it plays. False: the player cancelled, so no game starts.
+/// the window only when there is work. Another renderer, or a problem here, goes straight to Play: TASK-204 makes the game
+/// draw those variants with the uber pipeline (the same pixels) and record them for the next prepare. False: the player
+/// cancelled, so no game starts.
 #[tauri::command(async)]
 pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool, String> {
     let shared: Shared = shared.inner().clone();
@@ -793,7 +794,8 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
 }
 
 /// What the log says about a prepare (TASK-170b): a finished one, a retried one, or the reason the game starts without it
-/// (it then compiles as it plays). TASK-204: it names how many of the compiled variants the sessions recorded.
+/// (it then draws the missing variants with the uber pipeline and records them for the next prepare). TASK-204: it names
+/// how many of the compiled variants the sessions recorded.
 fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<PrepareOutcome, String>, worked: bool, recorded: u32) {
     if recorded != 0 {
         state::log(dirs, &format!("shaders: {recorded} recorded keys compiled"));
@@ -809,7 +811,7 @@ fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<Prepar
                 GaveUp::NoProgress => "the last attempt got no further",
                 GaveUp::LimitReached => "the attempt limit was reached",
             };
-            state::log_error(dirs, &format!("shaders: the compile did not finish after {attempts} attempts, {reason}; the game compiles as it plays (logs\\shaders.log)"));
+            state::log_error(dirs, &format!("shaders: the compile did not finish after {attempts} attempts, {reason}; the game draws those variants with the uber pipeline and the next Play compiles them (logs\\shaders.log)"));
         }
         Ok(PrepareOutcome::Failed { message, .. }) | Err(message) => state::log_error(dirs, &format!("shaders: {message}")),
     }
