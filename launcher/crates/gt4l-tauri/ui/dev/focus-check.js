@@ -2389,12 +2389,14 @@
     var nextLabelBox = nextLabel ? nextLabel.getBoundingClientRect() : null;
     var iconPoint = nextCardBox && nextIconBox ? overlapPoint(nextIconBox, nextCardBox) : null;
     var labelPoint = nextCardBox && nextLabelBox ? overlapPoint(nextLabelBox, nextCardBox) : null;
-    check("the open card reaches the i and the label of the row below it", !!nextCard && !!iconPoint && !!labelPoint,
+    // The card opens to the right of its "i", or to the left near the window edge (a narrow window): assert only
+    // where it actually reaches the next row, and require it to reach at least one of them.
+    check("the open card reaches the row below it", !!nextCard && (!!iconPoint || !!labelPoint),
       !nextCard ? "no card" : "i " + (iconPoint ? "covered" : "clear") + ", label " + (labelPoint ? "covered" : "clear"));
-    check("the next row's i draws under the open card", hitInside(nextCard, iconPoint),
-      iconPoint ? "i is not the card" : "no overlap");
-    check("the next row's label draws under the open card", hitInside(nextCard, labelPoint),
-      labelPoint ? "label is not the card" : "no overlap");
+    check("the next row's i draws under the open card, where the card reaches it", !iconPoint || hitInside(nextCard, iconPoint),
+      "i is not the card");
+    check("the next row's label draws under the open card, where the card reaches it", !labelPoint || hitInside(nextCard, labelPoint),
+      "label is not the card");
     press("Tab");
     await wait(60);
     if (nextInfo) {
@@ -2407,10 +2409,10 @@
       shownAfterFocus.length + " card(s)");
     check("the focused i of the next row shows its focus ring", !!nextInfo && nextInfo.classList.contains("ring-on"),
       nextInfo ? nextInfo.className : "no i");
-    check("with the focus on it, the next row's i stays under the open card", hitInside(nextCard, iconPoint),
-      iconPoint ? "i is not the card" : "no overlap");
-    check("with the focus on it, the next row's label stays under the open card", hitInside(nextCard, labelPoint),
-      labelPoint ? "label is not the card" : "no overlap");
+    check("with the focus on it, the next row's i stays under the open card, where the card reaches it",
+      !iconPoint || hitInside(nextCard, iconPoint), "i is not the card");
+    check("with the focus on it, the next row's label stays under the open card, where the card reaches it",
+      !labelPoint || hitInside(nextCard, labelPoint), "label is not the card");
     press("Escape");
     await wait(80);
     if (document.activeElement && document.activeElement.blur) {
