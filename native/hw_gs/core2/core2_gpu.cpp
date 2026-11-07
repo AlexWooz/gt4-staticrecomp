@@ -398,6 +398,17 @@ struct Gpu::Impl {
     return SpecMode::async;
   }();
   static constexpr std::uint32_t kSpecFieldCount = 30;
+  // TASK-204 (an RX 6750 XT report on 1.3.0-rc15: 0xC0000005 inside vkCreateGraphicsPipelines on the spec_worker thread,
+  // 44 variants compiled during play, one 1.0 s compile at a time): a play session does not compile a variant it has not
+  // seen before. specialised_pipeline records an unknown key in variants.bin (the next --prepare-shaders compiles it, under
+  // the launcher's guard and quarantine) and returns null, so the batch draws with the uber pipeline, which draws the same
+  // pixels. Story, pixels and the switch: docs/decisions/0078-no-pipeline-compile-during-play.md.
+  // GT4_CORE2_INGAME_COMPILE=1 restores the old in-play compile (A/B, and the headless replay gate); the default is off.
+  // Without a shader cache (GT4_HW_SHADER_CACHE) there is no list to defer to, so a bare developer run keeps compiling.
+  const bool inGameCompile = [] {
+    const char *text = std::getenv("GT4_CORE2_INGAME_COMPILE");
+    return text && *text && std::strcmp(text, "0") != 0;
+  }();
   // Diagnostics: GT4_CORE2_SPEC_FIELDS=<hex> specialises only the key slots whose bit is set (slot 30: the push word,
   // slot 31: the anisotropy of a mipmapped draw).
   const std::uint32_t specFieldMask = [] {
@@ -417,6 +428,10 @@ struct Gpu::Impl {
   };
   std::unordered_map<SpecKey, VkPipeline, SpecKeyHash> specLocal;  // GS thread: variants known to be ready
   std::unordered_set<SpecKey, SpecKeyHash> specSeen;               // GS thread: variants ready, compiling or queued
+  // TASK-204: GS thread. Keys this session deferred to the next prepare (recorded in variants.bin), and whether the last
+  // specialised_pipeline call deferred its key (the caller then counts the uber batch it caused).
+  std::unordered_set<SpecKey, SpecKeyHash> specDeferred;
+  bool specLastDeferred = false;
   std::mutex specMutex;  // guards the members below up to specThread, except the atomic
   std::condition_variable specWake;
   std::deque<SpecKey> specQueue;
@@ -1222,11 +1237,27 @@ struct Gpu::Impl {
     open_compile_guard();  // TASK-170
   }
 
+  // TASK-204: a play session never compiles a variant. With a shader cache an unknown key is recorded for the next
+  // prepare instead; GT4_CORE2_INGAME_COMPILE=1 (A/B) or no cache at all keeps the old path.
+  bool compiles_in_play() const { return inGameCompile || shaderCacheFolder.empty(); }
+
   // After every pipeline the game may need exists: the variants of the last sessions go to the worker before any draw.
   void queue_known_variants() {
     if (shaderCacheFolder.empty() || specMode != SpecMode::async) return;
     const char *preparing = std::getenv("GT4_HW_SHADER_PREPARE");  // IN-507: PrepareShaders compiles them itself
     if (preparing && *preparing) return;
+    // TASK-204: what a session creates here must be a disk-cache hit of what the prepare compiled, never a compile of
+    // something the driver has not compiled before. Only the prepare's own stamp proves that; without it this session
+    // keeps the uber pipeline (same pixels) and records its variants for the next prepare.
+    if (!compiles_in_play()) {
+      const PreparedStamp stamp = prepared_stamp();
+      if (!prepared_for(stamp)) {
+        std::fprintf(stderr, "[core2] shader cache: no prepare for the %u recorded variants on this card and driver; this "
+                     "session draws them with the uber pipeline (the same pixels) and compiles nothing (TASK-204)\n",
+                     stamp.variantCount);
+        return;
+      }
+    }
     const std::vector<std::uint8_t> bytes = read_whole_file(shaderCacheFolder / "variants.bin");
     VariantFileHeader header;
     const VariantFileHeader wanted;
@@ -1252,7 +1283,9 @@ struct Gpu::Impl {
   }
 
   // IN-507: what PrepareShaders last finished for. The shaders, the list and everything that decides the variants of this
-  // card must match, so an update, a new driver or another card asks for a new compile.
+  // card must match, so an update, a new driver or another card asks for a new compile. TASK-204: the list the sessions
+  // recorded counts too (`variants`/`variantCount`, the keys of variants.bin), so a session that deferred a variant makes
+  // the next Play run the prepare again instead of finding the stamp ready and compiling in play.
   struct PreparedStamp {
     char magic[8] = {'G', 'T', '4', 'P', 'R', 'E', 'P', '1'};
     std::uint64_t shaderSet = 0;
@@ -1262,10 +1295,35 @@ struct Gpu::Impl {
     std::uint32_t driverVersion = 0;
     std::uint32_t paths = 0;
     std::uint8_t cacheUuid[VK_UUID_SIZE] = {};
+    std::uint64_t variants = 0;      // TASK-204: FNV-1a of the keys variants.bin holds, in file order
+    std::uint32_t variantCount = 0;  // TASK-204: how many keys that list holds
   };
 
+  // The keys variants.bin holds, or empty when the file is absent, damaged or written for another build.
+  std::vector<SpecKey> variants_file_keys() const {
+    const std::vector<std::uint8_t> bytes = read_whole_file(shaderCacheFolder / "variants.bin");
+    VariantFileHeader header;
+    const VariantFileHeader wanted;
+    if (bytes.size() < sizeof header) return {};
+    std::memcpy(&header, bytes.data(), sizeof header);
+    if (std::memcmp(header.magic, wanted.magic, sizeof header.magic) != 0 || header.shaderSet != shaderSetHash ||
+        header.keyWords != wanted.keyWords || bytes.size() != sizeof header + std::size_t{header.count} * sizeof(SpecKey)) {
+      return {};
+    }
+    std::vector<SpecKey> keys(header.count);
+    if (header.count != 0) std::memcpy(keys.data(), bytes.data() + sizeof header, std::size_t{header.count} * sizeof(SpecKey));
+    return keys;
+  }
+
+  // The stamp of a variant list: its count and an FNV-1a over its keys in order (the same bytes variants.bin holds).
+  static std::uint64_t variant_list_hash(const std::vector<SpecKey> &keys) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (const SpecKey &key : keys) h = hash_shader_words(h, key.data(), key.size());
+    return h;
+  }
+
   PreparedStamp prepared_stamp() const {
-    PreparedStamp stamp;
+    PreparedStamp stamp{};  // TASK-204: braces zero the padding too, and prepared_for compares every byte
     stamp.shaderSet = shaderSetHash;
     stamp.list = hash_shader_words(1469598103934665603ull, kKnownVariantWords, std::size(kKnownVariantWords));
     stamp.vendorId = deviceProperties.vendorID;
@@ -1274,6 +1332,11 @@ struct Gpu::Impl {
     stamp.paths = (ropOn ? 1u : 0u) | (plainDisjoint ? 2u : 0u) | (interlock ? 4u : 0u) | (earlyOut ? 8u : 0u) | (earlyZ ? 16u : 0u) |
                   (ropBlendModule ? 32u : 0u) | (sheenEarly ? 64u : 0u);
     std::memcpy(stamp.cacheUuid, deviceProperties.pipelineCacheUUID, VK_UUID_SIZE);
+    // TASK-204: the list the sessions recorded. The prepare writes the stamp of the list it compiled, so a session that
+    // deferred a variant makes this differ and the next Play prepares again.
+    const std::vector<SpecKey> listed = variants_file_keys();
+    stamp.variantCount = static_cast<std::uint32_t>(listed.size());
+    stamp.variants = variant_list_hash(listed);
     return stamp;
   }
 
@@ -1290,8 +1353,9 @@ struct Gpu::Impl {
            std::filesystem::exists(shaderCacheFolder / "variants.bin");
   }
 
-  // The shipped list and the sessions' own, without what this card never asks for.
-  std::vector<SpecKey> variants_to_prepare() const {
+  // The shipped list and the sessions' own, without what this card never asks for. TASK-204: `recorded` receives how many
+  // of the returned keys came from the sessions' own list (variants.bin) and were not already in the shipped one.
+  std::vector<SpecKey> variants_to_prepare(std::size_t *recorded = nullptr) const {
     std::vector<SpecKey> keys;
     std::unordered_set<SpecKey, SpecKeyHash> seen;
     const auto add = [&](const std::uint32_t *words) {
@@ -1299,10 +1363,13 @@ struct Gpu::Impl {
       std::memcpy(key.data(), words, sizeof(SpecKey));
       const std::uint32_t word = key[kSpecFieldCount + 2];
       const bool plain = word == kPlainWord || word == kPlainSheenWord;
-      if (plain ? !plainDisjoint : word != 0 && (!ropOn || (rop_blend_mode(word) && ropBlendModule == VK_NULL_HANDLE))) return;
-      if (quarantined.count(key) != 0) return;  // TASK-170
-      if (keys.size() < kMaxSpecPipelines && seen.insert(key).second) keys.push_back(key);
+      if (plain ? !plainDisjoint : word != 0 && (!ropOn || (rop_blend_mode(word) && ropBlendModule == VK_NULL_HANDLE))) return false;
+      if (quarantined.count(key) != 0) return false;  // TASK-170
+      if (keys.size() >= kMaxSpecPipelines || !seen.insert(key).second) return false;
+      keys.push_back(key);
+      return true;
     };
+    std::size_t fromFile = 0;
     constexpr std::size_t kKeyWords = std::tuple_size_v<SpecKey>;
     for (std::size_t i = 0; i + kKeyWords <= std::size(kKnownVariantWords); i += kKeyWords) add(kKnownVariantWords + i);
     const std::vector<std::uint8_t> bytes = read_whole_file(shaderCacheFolder / "variants.bin");
@@ -1315,10 +1382,11 @@ struct Gpu::Impl {
         for (std::uint32_t i = 0; i < header.count; ++i) {
           std::uint32_t words[kKeyWords];
           std::memcpy(words, bytes.data() + sizeof header + i * sizeof(SpecKey), sizeof words);
-          add(words);
+          if (add(words)) ++fromFile;
         }
       }
     }
+    if (recorded) *recorded = fromFile;
     return keys;
   }
 
@@ -1434,18 +1502,30 @@ struct Gpu::Impl {
                       suspectList.end());
     std::vector<SpecKey> inFlight;
     std::uint32_t inFlightFlags = 0;
+    // TASK-204: the launcher's --prepare-shaders keeps the two strikes of TASK-170c (an intermittent driver crash may end
+    // a run inside an innocent variant). A play session does not: a key left in compiling.bin by a run in play has had
+    // its strike, and it is quarantined here at once so the next play never compiles it again.
+    const char *preparingEnv = std::getenv("GT4_HW_SHADER_PREPARE");
+    const bool preparing = preparingEnv && *preparingEnv;
     if (read_guard_file(shaderCacheFolder / "compiling.bin", inFlight, inFlightFlags) && !inFlight.empty()) {
       flags |= kGuardSerial;
       if (inFlight.size() == 1) {
         const SpecKey &key = inFlight[0];
         const auto suspect = std::find(suspectList.begin(), suspectList.end(), key);
-        if (suspect != suspectList.end()) {
+        const bool known = std::find(list.begin(), list.end(), key) != list.end();
+        if (!preparing) {
+          if (!known) list.push_back(key);
+          if (suspect != suspectList.end()) suspectList.erase(suspect);
+          std::fprintf(stderr, "[core2] shader guard: a play session stopped while compiling one variant: it is quarantined "
+                       "at once on this card and driver, and is never compiled in play again (its draws keep the uber "
+                       "pipeline, the same pixels): %s\n", describe_key(key).c_str());
+        } else if (suspect != suspectList.end()) {
           suspectList.erase(suspect);
-          if (std::find(list.begin(), list.end(), key) == list.end()) list.push_back(key);
+          if (!known) list.push_back(key);
           std::fprintf(stderr, "[core2] shader guard: a second run stopped while compiling the same variant: it is "
                        "quarantined on this card and driver (its draws keep the uber pipeline, the same pixels): %s\n",
                        describe_key(key).c_str());
-        } else if (std::find(list.begin(), list.end(), key) == list.end()) {
+        } else if (!known) {
           suspectList.push_back(key);
           std::fprintf(stderr, "[core2] shader guard: the last run stopped while compiling one variant: it is a suspect and "
                        "is compiled again; a second stop quarantines it: %s\n", describe_key(key).c_str());
@@ -1575,6 +1655,7 @@ struct Gpu::Impl {
     const VkPipeline pipeline = specialised_pipeline(spec_key(fields, pushWord));
     if (pipeline) return pipeline;
     stats.uberBatches++;
+    if (specLastDeferred) stats.specDeferredBatches++;  // TASK-204: this uber batch is one the deferral caused
     return uber;
   }
 
@@ -1595,8 +1676,10 @@ struct Gpu::Impl {
     return specialised_pipeline(key);
   }
 
-  // The ready variant of `key`, or null after asking for it (GS thread).
+  // The ready variant of `key`, or null after asking for it (GS thread). TASK-204: a play session never compiles; an
+  // unknown key is recorded in variants.bin for the next prepare and its batch keeps the uber pipeline.
   VkPipeline specialised_pipeline(const SpecKey &key) {
+    specLastDeferred = false;
     auto found = specLocal.find(key);
     if (found == specLocal.end() && specDoneCount.load(std::memory_order_acquire) != specDoneSeen) {
       std::lock_guard<std::mutex> lock(specMutex);
@@ -1607,8 +1690,30 @@ struct Gpu::Impl {
       stats.specialisedBatches++;
       return found->second;
     }
+    if (specDeferred.count(key) != 0) {  // TASK-204: already recorded for the next prepare; the batch keeps the uber pipeline
+      specLastDeferred = true;
+      return VK_NULL_HANDLE;
+    }
     if (specSeen.size() < kMaxSpecPipelines && specSeen.insert(key).second) {
       stats.specRequested = specSeen.size();
+      if (!compiles_in_play()) {
+        // TASK-204: recorded as wanted, never compiled here. The batch draws with the uber pipeline (same pixels); the
+        // next --prepare-shaders compiles the key under the launcher's guard and quarantine.
+        specDeferred.insert(key);
+        stats.specDeferred = specDeferred.size();
+        specLastDeferred = true;
+        {
+          std::lock_guard<std::mutex> lock(specMutex);
+          if (std::find(specKnown.begin(), specKnown.end(), key) == specKnown.end()) {
+            specKnown.push_back(key);
+            specKnownChanged = true;
+          }
+        }
+        // The worker only saves variants.bin here: it writes the list at once and again every 10 s, so a session that
+        // ends badly still leaves the keys for the next prepare.
+        if (!specThread.joinable()) specThread = std::thread([this] { spec_worker(); });
+        return VK_NULL_HANDLE;
+      }
       if (specMode == SpecMode::sync) {
         const auto start = std::chrono::steady_clock::now();
         std::string error;
@@ -2503,15 +2608,23 @@ bool Gpu::Ready() const { return impl_->ready; }
 bool Gpu::Integrated() const { return impl_->integrated; }
 bool Gpu::RoadSheenSkipped() const { return impl_->skipRoadSheen; }
 
-bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
+bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error, std::size_t *recorded) {
   Impl &s = *impl_;
+  if (recorded) *recorded = 0;
   if (s.shaderCacheFolder.empty() || s.specMode != Impl::SpecMode::async || !s.pipelineCache) {
     error = "no shader cache to prepare (GT4_HW_SHADER_CACHE)";
     return false;
   }
   const Impl::PreparedStamp wanted = s.prepared_stamp();
   if (s.prepared_for(wanted)) return true;
-  const std::vector<Impl::SpecKey> keys = s.variants_to_prepare();
+  std::size_t fromSessions = 0;
+  const std::vector<Impl::SpecKey> keys = s.variants_to_prepare(&fromSessions);
+  if (recorded) *recorded = fromSessions;
+  // TASK-204: the stamp names the list this prepare writes, so the next start finds variants.bin prepared; a session that
+  // records a new key makes the next stamp differ and the prepare runs again.
+  Impl::PreparedStamp stamp = wanted;
+  stamp.variantCount = static_cast<std::uint32_t>(keys.size());
+  stamp.variants = Impl::variant_list_hash(keys);
   progress(0, keys.size());
   {
     std::lock_guard<std::mutex> lock(s.specMutex);
@@ -2570,10 +2683,10 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error) {
     s.specKnownChanged = true;
   }
   s.save_shader_cache();
-  Impl::write_whole_file(s.shaderCacheFolder / "prepared.bin", &wanted, sizeof wanted, nullptr, 0);
+  Impl::write_whole_file(s.shaderCacheFolder / "prepared.bin", &stamp, sizeof stamp, nullptr, 0);
   progress(keys.size(), keys.size());
-  std::fprintf(stderr, "[core2] shader cache prepared: %zu variants, %zu failed, %u threads, %zu quarantined\n", keys.size(),
-               failures.load(), threadCount, s.quarantined.size());
+  std::fprintf(stderr, "[core2] shader cache prepared: %zu variants (%zu recorded by the sessions), %zu failed, %u threads, "
+               "%zu quarantined\n", keys.size(), fromSessions, failures.load(), threadCount, s.quarantined.size());
   return true;
 }
 

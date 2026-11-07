@@ -82,7 +82,8 @@ pub fn coregs20_on_this_pc() -> Coregs20Check {
         cancelled.store(false, Ordering::SeqCst);
         // The setup page counts the shaders; a retry (TASK-170b) simply counts again.
         let mut count = |step: gt4l_platform::game::PrepareProgress| progress(step.done, step.total);
-        match gt4l_platform::game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &mut count) {
+        let recorded = std::cell::Cell::new(0u32);
+        match gt4l_platform::game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &recorded, &mut count) {
             Ok(PrepareOutcome::Finished { .. }) => true,
             Ok(_) => {
                 state::log_warn(&dirs, "setup: CoreGS 2.0 did not start on this card (logs\\shaders.log)");

@@ -5840,8 +5840,10 @@ int TestCore2ShaderGuard(const gpu::VulkanHandles& handles) {
     return failures == 0 ? 0 : 1;
 }
 
-// hw_core2_shader_cache (IN-489): GT4_HW_SHADER_CACHE keeps the variants between sessions: a second session finds them,
-// the pictures do not change, and damaged files only cost the time to compile again.
+// hw_core2_shader_cache (IN-489, TASK-204): GT4_HW_SHADER_CACHE keeps the variants between sessions. A play session
+// records what it needs (TASK-204: it draws those with the uber pipeline and compiles nothing); the launcher's prepare
+// compiles the list; the next session recreates those variants from the disk cache, so the pictures do not change.
+// Damaged files only cost the time to compile again.
 int TestCore2ShaderCache(const gpu::VulkanHandles& handles) {
     namespace fs = std::filesystem;
     const fs::path folder = fs::temp_directory_path() / ("gt4_shader_cache_test_" + std::to_string(_getpid()));
@@ -5860,13 +5862,50 @@ int TestCore2ShaderCache(const gpu::VulkanHandles& handles) {
     Core2AbRun first, second, damaged;
     session("first session", first);
     const auto variantsSize = fs::file_size(folder / "variants.bin", ignored);
+    std::printf("  after the first session: variants.bin %llu bytes, %llu variants deferred, %llu pipelines\n",
+                static_cast<unsigned long long>(variantsSize), static_cast<unsigned long long>(first.stats.specDeferred),
+                static_cast<unsigned long long>(first.stats.specPipelines));
+    // TASK-204: the play session compiles nothing; it records the variants for the prepare.
+    if (handles.pixelInterlock && (variantsSize <= 24u || first.stats.specDeferred == 0)) ++failures;
+    if (first.stats.specPipelines != 0) {
+        std::printf("  the first session compiled %llu pipelines during play\n",
+                    static_cast<unsigned long long>(first.stats.specPipelines));
+        ++failures;
+    }
+    // The launcher's prepare compiles the recorded list into the disk cache.
+    std::size_t recorded = 0;
+    {
+        core2::Gpu prepare;
+        std::string error;
+        if (!prepare.Init(handles, 1, 1.0f, error)) {
+            std::printf("  the prepare did not start: %s\n", error.c_str());
+            ++failures;
+        } else {
+            std::size_t total = 0;
+            if (!prepare.PrepareShaders([&](std::size_t, std::size_t all) { total = all; }, error, &recorded)) {
+                std::printf("  the prepare failed: %s\n", error.c_str());
+                ++failures;
+            }
+            std::printf("  prepare: %zu variants, %zu recorded by the session\n", total, recorded);
+            if (recorded == 0) ++failures;
+        }
+    }
     const auto compiledSize = fs::file_size(folder / "pipelines.bin", ignored);
-    std::printf("  after the first session: variants.bin %llu bytes, pipelines.bin %llu bytes\n",
-                static_cast<unsigned long long>(variantsSize), static_cast<unsigned long long>(compiledSize));
-    if (handles.pixelInterlock && (variantsSize <= 24u || compiledSize == 0u)) ++failures;
+    std::printf("  after the prepare: variants.bin %llu bytes, pipelines.bin %llu bytes\n",
+                static_cast<unsigned long long>(fs::file_size(folder / "variants.bin", ignored)),
+                static_cast<unsigned long long>(compiledSize));
+    if (handles.pixelInterlock && compiledSize == 0u) ++failures;
     session("second session", second);
+    std::printf("  second session: %llu pipelines created from the disk cache, %llu deferred\n",
+                static_cast<unsigned long long>(second.stats.specPipelines),
+                static_cast<unsigned long long>(second.stats.specDeferred));
     if (second.images != first.images) {
         std::printf("  the second session's pictures differ\n");
+        ++failures;
+    }
+    // The second session found the prepared list in the disk cache instead of compiling it again.
+    if (handles.pixelInterlock && second.stats.specPipelines == 0) {
+        std::printf("  the second session did not recreate the prepared variants\n");
         ++failures;
     }
     if (fs::file_size(folder / "variants.bin", ignored) < variantsSize) {
@@ -5887,6 +5926,171 @@ int TestCore2ShaderCache(const gpu::VulkanHandles& handles) {
     _putenv_s("GT4_HW_SHADER_CACHE", "");
     fs::remove_all(folder, ignored);
     std::printf("hw_core2_shader_cache: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// hw_core2_no_ingame_compile (TASK-204): a play session never compiles a variant it has not seen before. An unknown key
+// is recorded in variants.bin, drawn with the uber pipeline, and the pictures are the ones the in-play compile drew
+// (GT4_CORE2_INGAME_COMPILE=1, the A/B). The stamp follows variants.bin, so a key a session records makes the next
+// prepare run again. A key left in compiling.bin by a session in play is quarantined at its first strike; the launcher's
+// prepare keeps the two strikes of TASK-170c.
+int TestCore2NoIngameCompile(const gpu::VulkanHandles& handles) {
+    namespace fs = std::filesystem;
+    const fs::path folder = fs::temp_directory_path() / ("gt4_no_ingame_compile_test_" + std::to_string(_getpid()));
+    std::error_code ignored;
+    fs::remove_all(folder, ignored);
+    _putenv_s("GT4_HW_SHADER_CACHE", folder.string().c_str());
+    int failures = 0;
+    const auto capture = CacheFixtureCapture();
+    auto run = [&](bool compileInPlay, Core2AbRun& out, const char* what) {
+        std::string error;
+        if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_INGAME_COMPILE", compileInPlay, out, error, 0, 2, {},
+                           compileInPlay ? "1" : "0")) {
+            std::printf("  %s: replay failed: %s\n", what, error.c_str());
+            ++failures;
+            return false;
+        }
+        return true;
+    };
+    auto count_in_file = [&]() -> std::uint32_t {
+        const std::vector<std::uint8_t> bytes = [&] {
+            std::ifstream file(folder / "variants.bin", std::ios::binary | std::ios::ate);
+            if (!file) return std::vector<std::uint8_t>{};
+            std::vector<std::uint8_t> data(static_cast<std::size_t>(file.tellg()));
+            file.seekg(0);
+            file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+            return data;
+        }();
+        if (bytes.size() < 24) return 0;
+        std::uint32_t count = 0;
+        std::memcpy(&count, bytes.data() + 20, sizeof count);  // magic 8, shaderSet 8, keyWords 4, count 4
+        return count;
+    };
+
+    // 1. Play with the default: the keys are recorded for the next prepare and drawn with the uber pipeline.
+    _putenv_s("GT4_CORE2_SPECIALIZE", "sync");  // deterministic, but no compile happens in play
+    Core2AbRun deferred, compiled;
+    const bool deferredOk = run(false, deferred, "play without the switch");
+    const std::uint32_t recordedKeys = count_in_file();
+    const bool compiledOk = run(true, compiled, "play with GT4_CORE2_INGAME_COMPILE=1");
+    _putenv_s("GT4_CORE2_SPECIALIZE", "");
+    if (deferredOk) {
+        std::printf("  play: %llu variants deferred, %llu uber batches caused by them, %llu pipelines created, %u recorded\n",
+                    static_cast<unsigned long long>(deferred.stats.specDeferred),
+                    static_cast<unsigned long long>(deferred.stats.specDeferredBatches),
+                    static_cast<unsigned long long>(deferred.stats.specPipelines), recordedKeys);
+        if (deferred.stats.specPipelines != 0 || deferred.stats.specialisedBatches != 0) ++failures;
+        if (deferred.stats.specDeferred == 0 && handles.pixelInterlock) ++failures;
+        if (deferred.stats.specDeferredBatches == 0 && handles.pixelInterlock) ++failures;
+        if (deferred.stats.specDeferredBatches != deferred.stats.uberBatches && handles.pixelInterlock) ++failures;
+        if (recordedKeys != deferred.stats.specDeferred && handles.pixelInterlock) ++failures;
+    }
+    if (compiledOk) {
+        std::printf("  play with the switch: %llu pipelines created, %llu specialised batches, %llu deferred\n",
+                    static_cast<unsigned long long>(compiled.stats.specPipelines),
+                    static_cast<unsigned long long>(compiled.stats.specialisedBatches),
+                    static_cast<unsigned long long>(compiled.stats.specDeferred));
+        if (compiled.stats.specPipelines == 0 && handles.pixelInterlock) ++failures;
+        if (compiled.stats.specDeferred != 0) ++failures;
+    }
+    // The uber fallback draws the same pixels as the in-play compile: every frame of both runs is identical.
+    if (deferredOk && compiledOk) {
+        std::size_t different = 0, frames = std::min(deferred.images.size(), compiled.images.size());
+        for (std::size_t frame = 0; frame < frames; ++frame) different += deferred.images[frame] != compiled.images[frame];
+        std::printf("  pixels: %zu of %zu frames differ between the uber fallback and the in-play compile\n", different, frames);
+        if (deferred.images.size() != compiled.images.size() || different != 0) ++failures;
+    }
+
+    // 2. The stamp follows the list: after the prepare it is ready; one more recorded key asks for another prepare.
+    auto prepare_work = [&](std::size_t* recorded, std::size_t* total, const char* what) -> bool {
+        core2::Gpu prepare;
+        std::string error;
+        if (!prepare.Init(handles, 1, 1.0f, error)) {
+            std::printf("  %s: did not start: %s\n", what, error.c_str());
+            ++failures;
+            return false;
+        }
+        bool worked = false;
+        *total = 0;
+        const bool ready = prepare.PrepareShaders([&](std::size_t, std::size_t all) { worked = true; *total = all; }, error, recorded);
+        if (!ready) {
+            std::printf("  %s: failed: %s\n", what, error.c_str());
+            ++failures;
+            return false;
+        }
+        std::printf("  %s: worked %d, %zu variants, %zu recorded\n", what, worked ? 1 : 0, *total, *recorded);
+        return worked;
+    };
+    std::size_t recordedNow = 0, totalNow = 0;
+    prepare_work(&recordedNow, &totalNow, "a prepare for the recorded keys");
+    if (recordedNow == 0) ++failures;
+    if (prepare_work(&recordedNow, &totalNow, "the same prepare again")) ++failures;  // nothing to do
+    // Grow the list: a key the prepare must compile (a copy of a recorded one with another Format field).
+    {
+        const std::vector<std::uint8_t> bytes = [&] {
+            std::ifstream file(folder / "variants.bin", std::ios::binary | std::ios::ate);
+            if (!file) return std::vector<std::uint8_t>{};
+            std::vector<std::uint8_t> data(static_cast<std::size_t>(file.tellg()));
+            file.seekg(0);
+            file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+            return data;
+        }();
+        if (bytes.size() >= 24 + 132) {  // header + one 33-word key
+            std::vector<std::uint8_t> grown = bytes;
+            std::vector<std::uint8_t> key(grown.end() - 132, grown.end());
+            key[0] ^= 0x01u;  // another Format value
+            grown.insert(grown.end(), key.begin(), key.end());
+            std::uint32_t count = 0;
+            std::memcpy(&count, grown.data() + 20, sizeof count);
+            ++count;
+            std::memcpy(grown.data() + 20, &count, sizeof count);
+            std::ofstream file(folder / "variants.bin", std::ios::binary | std::ios::trunc);
+            file.write(reinterpret_cast<const char*>(grown.data()), static_cast<std::streamsize>(grown.size()));
+        } else {
+            std::printf("  variants.bin has no key to copy (%zu bytes)\n", bytes.size());
+            ++failures;
+        }
+    }
+    if (!prepare_work(&recordedNow, &totalNow, "a prepare after the list grew")) ++failures;
+    if (recordedNow == 0) ++failures;
+
+    // 3. One strike in play quarantines; the launcher's prepare keeps its two strikes.
+    auto abandoned_play = [&](const char* what) {
+        _putenv_s("GT4_CORE2_TEST_COMPILE_ABANDON", "1");
+        _putenv_s("GT4_CORE2_SPECIALIZE", "sync");
+        Core2AbRun died;
+        run(true, died, what);
+        _putenv_s("GT4_CORE2_TEST_COMPILE_ABANDON", "");
+        _putenv_s("GT4_CORE2_SPECIALIZE", "");
+        if (!fs::exists(folder / "compiling.bin", ignored)) {
+            std::printf("  %s: no compiling.bin was left\n", what);
+            ++failures;
+        }
+    };
+    auto guard_state = [&](const char* prepareEnv, const char* what, std::size_t wantQuarantined, std::size_t wantSuspects) {
+        _putenv_s("GT4_HW_SHADER_PREPARE", prepareEnv);
+        core2::Gpu renderer;
+        std::string error;
+        if (!renderer.Init(handles, 1, 1.0f, error)) {
+            std::printf("  %s: did not start: %s\n", what, error.c_str());
+            ++failures;
+            _putenv_s("GT4_HW_SHADER_PREPARE", "");
+            return;
+        }
+        const core2::Gpu::ShaderGuardState guard = renderer.ShaderGuard();
+        _putenv_s("GT4_HW_SHADER_PREPARE", "");
+        std::printf("  %s: %zu quarantined, %zu suspects, serial %d\n", what, guard.quarantined, guard.suspects,
+                    guard.serial ? 1 : 0);
+        if (guard.quarantined != wantQuarantined || guard.suspects != wantSuspects) ++failures;
+    };
+    abandoned_play("a play session that stopped inside its first compile");
+    guard_state("1", "the launcher prepare after that strike", 0, 1);
+    abandoned_play("a second play session that stopped inside a compile");
+    guard_state("", "a play session after that strike", 1, 0);
+
+    _putenv_s("GT4_HW_SHADER_CACHE", "");
+    fs::remove_all(folder, ignored);
+    std::printf("hw_core2_no_ingame_compile: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
 
@@ -7396,6 +7600,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_rop") return TestCore2Rop(handles);
     if (name == "hw_core2_road_sheen") return TestCore2RoadSheen(handles);
     if (name == "hw_core2_shader_cache") return TestCore2ShaderCache(handles);
+    if (name == "hw_core2_no_ingame_compile") return TestCore2NoIngameCompile(handles);
     if (name == "hw_core2_prepare_shaders") return TestCore2PrepareShaders(handles);
     if (name == "hw_core2_shader_guard") return TestCore2ShaderGuard(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);

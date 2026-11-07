@@ -4697,6 +4697,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             ScopedUs timer(clock_, &PhaseTimes::draw);
             drawn = gpu_.Draw(draw, error);
             stats.specialisedBatches = gpu_.Stats().specialisedBatches;
+            stats.uberBatches = gpu_.Stats().uberBatches;
+            stats.specPipelines = gpu_.Stats().specPipelines;
+            stats.specDeferred = gpu_.Stats().specDeferred;
+            stats.specDeferredBatches = gpu_.Stats().specDeferredBatches;
             stats.computeFills = gpu_.Stats().computeFills;
             stats.selfCopies = gpu_.Stats().selfCopies;
         }
@@ -5313,17 +5317,19 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                      (unsigned long long)c.replacementLate, (unsigned long long)c.replacementMemoryPalettes, static_cast<double>(c.replacementWaitUs) / 1000.0,
                      static_cast<double>(c.replacementBytes) / (1024.0 * 1024.0), (unsigned long long)c.replacementDumps);
     }
-    // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled).
+    // IN-437: specialised pipelines (batches with their own variant, with the uber one while it compiled). TASK-204:
+    // variants this session deferred to the next prepare, and the uber batches they caused.
     std::fprintf(stderr,
                  "[core2] specialised pipelines=%llu states=%llu batches=%llu uber_batches=%llu compile_ms=%.1f "
-                 "compile_max_ms=%.1f failures=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
+                 "compile_max_ms=%.1f failures=%llu deferred=%llu deferred_uber_batches=%llu rop_batches=%llu delayed_downloads=%llu hidden_flare_tables=%llu compute_fills=%llu "
                  "fill_mpx=%.1f unchanged_uploads=%llu stale_by upload=%llu readback=%llu delayed=%llu move=%llu whole=%llu "
                  "block_hits=%llu clut_memo hits=%llu reads=%llu uploads_replayed=%llu (%.0f MiB) whole_clears=%llu plain_batches=%llu road_sheens_skipped=%llu sheens_early=%llu "
                  "depth_into_colour=%llu (%.1f Mpx)\n",
                  (unsigned long long)g.specPipelines, (unsigned long long)g.specRequested,
                  (unsigned long long)g.specialisedBatches, (unsigned long long)g.uberBatches,
                  static_cast<double>(g.specCompileNs) / 1.0e6, static_cast<double>(g.specCompileMaxNs) / 1.0e6,
-                 (unsigned long long)g.specFailures, (unsigned long long)g.ropBatches, (unsigned long long)c.delayedDownloads,
+                 (unsigned long long)g.specFailures, (unsigned long long)g.specDeferred,
+                 (unsigned long long)g.specDeferredBatches, (unsigned long long)g.ropBatches, (unsigned long long)c.delayedDownloads,
                  (unsigned long long)c.hiddenFlareTables, (unsigned long long)g.computeFills,
                  static_cast<double>(g.fillPixels) / 1.0e6, (unsigned long long)c.unchangedUploads,
                  (unsigned long long)c.staleBy[0], (unsigned long long)c.staleBy[1], (unsigned long long)c.staleBy[2],
@@ -5351,8 +5357,9 @@ void Renderer::SetScale(std::uint32_t scale, float shift) {
 
 std::uint32_t Renderer::Scale() const { return impl_->scale_; }
 
-bool Renderer::PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error) {
-    return impl_->gpu_.PrepareShaders(progress, error);
+bool Renderer::PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error,
+                              std::size_t *recorded) {
+    return impl_->gpu_.PrepareShaders(progress, error, recorded);
 }
 
 bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {

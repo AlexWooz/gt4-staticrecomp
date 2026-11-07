@@ -778,7 +778,8 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
     let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
     let mut worked = false;
     let cancelled = { lock(&shared).shaders_cancelled.clone() };
-    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &mut |progress| {
+    let recorded = std::cell::Cell::new(0u32);
+    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &recorded, &mut |progress| {
         worked = true;
         let _ = app.emit("shaders-progress", json!({ "done": progress.done, "total": progress.total, "attempt": progress.attempt }));
     });
@@ -787,13 +788,16 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
         state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
         return Ok(false);
     }
-    log_prepare_outcome(&state.dirs, &result, worked);
+    log_prepare_outcome(&state.dirs, &result, worked, recorded.get());
     Ok(true)
 }
 
 /// What the log says about a prepare (TASK-170b): a finished one, a retried one, or the reason the game starts without it
-/// (it then compiles as it plays).
-fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<PrepareOutcome, String>, worked: bool) {
+/// (it then compiles as it plays). TASK-204: it names how many of the compiled variants the sessions recorded.
+fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<PrepareOutcome, String>, worked: bool, recorded: u32) {
+    if recorded != 0 {
+        state::log(dirs, &format!("shaders: {recorded} recorded keys compiled"));
+    }
     match result {
         Ok(PrepareOutcome::Finished { attempts }) if *attempts > 1 => {
             state::log(dirs, &format!("shaders: compiled after {attempts} attempts (logs\\shaders.log)"));

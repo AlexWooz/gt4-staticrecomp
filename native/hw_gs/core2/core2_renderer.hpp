@@ -60,6 +60,12 @@ struct Core2Counters {
     std::uint64_t textureBytes = 0;            // IN-431: 1x texels in the texture cache now
     std::uint64_t dirtyMerged = 0;
     std::uint64_t specialisedBatches = 0;      // IN-437: batches drawn with a pipeline specialised to their state
+    std::uint64_t uberBatches = 0;             // IN-437: triangle batches drawn with the uber pipeline instead
+    // TASK-204: variants created in this session, variants recorded for the next prepare instead of compiled, and the
+    // uber batches those deferrals caused.
+    std::uint64_t specPipelines = 0;
+    std::uint64_t specDeferred = 0;
+    std::uint64_t specDeferredBatches = 0;
     std::uint64_t computeFills = 0;            // IN-442: batches drawn as compute fills
     std::uint64_t selfCopies = 0;              // spec 8.8: batches that sampled a copy of the target they draw into
     // IN-470: texture replacement (chapter 11.7).
@@ -134,7 +140,8 @@ public:
     void SetScale(std::uint32_t scale, float shift);
     std::uint32_t Scale() const;
     bool Init(const gpu::VulkanHandles &handles, std::string &error);
-    bool PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error);  // IN-507
+    bool PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error,
+                        std::size_t *recorded = nullptr);  // IN-507; TASK-204 adds `recorded`
 
     bool GifTransfer(std::uint32_t path, const std::uint8_t *bytes, std::size_t byteCount);
     bool GifBusy(std::uint32_t path) const;

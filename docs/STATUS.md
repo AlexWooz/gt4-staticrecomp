@@ -1,5 +1,32 @@
 # Current Status
 
+## TASK-204: CoreGS 2.0 never compiles a pipeline during play (owner, 2026-11-07; done in code, ships with rc16)
+
+On `task/204-no-ingame-compile` (from `release/1.3.0-rc15` at f86d53d9), worktree
+`C:\Antigravity\gt4-wt-204-no-ingame-compile`, build `private/slice414-*`. Decision 0078.
+
+- **Cause (player report, rc15, RX 6750 XT, driver 25.10.30.02, 4x):** `0xC0000005` inside a pipeline compile on the
+  `spec_worker` thread. His log: 301 variants recreated at start in 227.7 ms (disk-cache hits), then 44 new keys requested
+  **during play**, `compile_ms` 227.7 -> 26,517.1 ms (max 1,047.9 ms), and `compiling.bin` left with the key in flight.
+  The TASK-170 guard covers the prepare; in-play compiles had no retry or quarantine. `prepared.bin` did not hash
+  `variants.bin`, so after a session recorded keys the prepare said "ready" and the game compiled them itself.
+- **Fix:** `specialised_pipeline` never compiles in play — an unknown key is recorded in `variants.bin`, returns null and
+  the batch keeps the uber pipeline (same pixels); the start recreates only the variants a matching `prepared.bin`
+  vouches for (disk-cache hits); `PreparedStamp` now carries the hash and count of `variants.bin`, so recorded keys make
+  the next Play's prepare run; a key in `compiling.bin` at a game start is quarantined at its **first** strike (the
+  prepare keeps TASK-170c's two); `GT4_CORE2_INGAME_COMPILE=1` restores the old compile (off by default, A/B).
+  Logging: `[core2] ... deferred=N deferred_uber_batches=M`; the prepare prints `shaders recorded R` and the launcher
+  logs `shaders: R recorded keys compiled`.
+- **Pixels (headless v2.00 night race, 1x, 11,500 VBlanks, dumps from 6500 every 600):** default run 0 pipelines, 97 keys
+  deferred, 3,153,803 uber batches caused by them; switch-on run 97 pipelines and 35,498.9 ms of driver compile (max
+  503.1 ms): **9 of 9 frames byte-identical** (SHA-256). After `--prepare-shaders` on that cache: 328 variants recreated
+  in 256.5 ms, 3 new keys deferred, **9 of 9 identical** again; the prepare then compiled those 3 (331 variants, 31
+  recorded) and a fourth run recreated 331 in 349.3 ms with 0 deferred, **9 of 9 identical**.
+- **Tests:** new `hw_core2_no_ingame_compile` (record + uber + never compiled; the stamp follows `variants.bin`; one
+  strike in play quarantines, the prepare keeps two) and `hw_core2_shader_cache` reworked to record -> prepare (306
+  variants, 6 recorded) -> recreate; `hw_core2_*` 35 of 35; launcher `cargo test --workspace` 783 passed, 9 ignored.
+- **Not done:** no in-game play test (owner), no rc16 build yet; the build's `private/slice414-*` is not pinned.
+
 ## TASK-198: the 1.3.0-rc15 release build with PGO and ThinLTO (owner, 2026-11-06)
 
 On `task/198-rc15-pgo` (from `release/1.3.0-rc15` at b9a55c72, TASK-194 merged). The owner approved rc15 and asked for the

@@ -218,7 +218,21 @@ fn the_lines_of_the_shader_compile_are_read_and_anything_else_is_ignored() {
     assert_eq!(parse("shaders ready"), Some(Line::Ready));
     assert_eq!(parse("shaders progress 0 353"), Some(Line::Progress { done: 0, total: 353 }));
     assert_eq!(parse("shaders progress 12 353\r"), Some(Line::Progress { done: 12, total: 353 }));
-    for other in ["", "shaders", "shaders progress", "shaders progress 1", "shaders progress a b", "shaders ready now", "[core2] ready"] {
+    // TASK-204: how many of them the sessions recorded (variants.bin), which the launcher logs.
+    assert_eq!(parse("shaders recorded 44"), Some(Line::Recorded { count: 44 }));
+    assert_eq!(parse("shaders recorded 0\r"), Some(Line::Recorded { count: 0 }));
+    for other in [
+        "",
+        "shaders",
+        "shaders progress",
+        "shaders progress 1",
+        "shaders progress a b",
+        "shaders ready now",
+        "shaders recorded",
+        "shaders recorded x",
+        "shaders recorded 1 2",
+        "[core2] ready",
+    ] {
         assert_eq!(parse(other), None, "{other}");
     }
 }

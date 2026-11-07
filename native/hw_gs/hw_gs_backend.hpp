@@ -175,7 +175,9 @@ public:
   bool init(const Options &options, std::string &error);
 
   // IN-507: compiles what the CoreGS 2.0 shader cache lacks (`progress` gets done and total, only when there is work).
-  bool prepare_shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error);
+  // TASK-204: `recorded` receives how many of those variants the sessions recorded (variants.bin).
+  bool prepare_shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error,
+                       std::size_t *recorded = nullptr);
 
   void set_stream_event_handler(StreamEventHandler handler, void *context);
 

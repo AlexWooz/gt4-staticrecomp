@@ -3741,6 +3741,49 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-204: CoreGS 2.0 never compiles a pipeline during play — the prepare does (owner, 2026-11-07; done in code, ships with rc16)
+
+**Why.** A player on rc15 (RX 6750 XT, AMD driver 25.10.30.02, CoreGS 2.0 at 4x) crashed with `0xC0000005` inside a
+pipeline compile on the `spec_worker` thread, 20 minutes into a lap. His `game.log`: 301 variants recreated at start in
+227.7 ms (disk-cache hits), then **44 new keys requested during play**, `compile_ms` 227.7 -> 26,517.1 ms,
+`compile_max_ms` 1,047.9 ms, and `compiling.bin` left with the key in flight when the process died. The TASK-170 guard
+(files plus quarantine after two strikes) protects the launcher's prepare; in-play compiles are outside its retry loop.
+And `prepared.bin` did not hash `variants.bin`, so after a session recorded new keys the prepare reported "ready" and the
+game compiled them itself.
+
+**What.**
+1. **No compiling during play.** `specialised_pipeline` never compiles: an unknown key is recorded in `variants.bin`,
+   returns null, and the batch draws with the uber pipeline (same pixels). Keys the prepare compiled are recreated from
+   the disk cache only when `prepared.bin` matches, so a session never asks the driver for a shader it has not compiled
+   before. `GT4_CORE2_INGAME_COMPILE=1` restores the old path (A/B, off by default); without a shader cache a developer
+   run keeps compiling.
+2. **The prepare compiles the recorded keys.** `PreparedStamp` now carries the FNV-1a hash and count of `variants.bin`
+   (decision 0078), and the prepare writes the stamp of the list it compiled, so new keys make the next Play prepare
+   again. Progress is unchanged (`shaders progress 0 T` first, so the window opens); the prepare now also prints
+   `shaders recorded R` and the launcher logs `shaders: R recorded keys compiled`.
+3. **One strike in play quarantines.** A key in `compiling.bin` at a game start is quarantined at once; the launcher's
+   prepare keeps TASK-170c's two strikes.
+4. **Logging.** The game's `[core2] specialised pipelines=` line gained `deferred=N deferred_uber_batches=M`; the prepare
+   line names the recorded keys.
+
+**Pixels.** Headless v2.00 night race (the gates' scene, 1x, 11,500 VBlanks, dumps from VBlank 6500 every 600): the
+run with the default (0 pipelines created, 97 keys deferred, 3,153,803 uber batches caused by them) and the run with
+`GT4_CORE2_INGAME_COMPILE=1` (97 pipelines, 35,498.9 ms of driver compile, max 503.1 ms) produced **9 of 9 identical
+frames** (SHA-256 per frame). A third run after `--prepare-shaders` on that cache recreated 328 variants in 256.5 ms
+(0.8 ms each, disk-cache hits) and again matched 9 of 9, deferring only the 3 keys the corpus lacked; the prepare that
+followed compiled those 3 (331 variants, 31 recorded) and a fourth run recreated 331 in 349.3 ms with 0 deferred and
+9 of 9 identical again.
+
+**Tests.** `hw_core2_no_ingame_compile` (new): play records 6 variants, creates 0 pipelines, 55 uber batches all caused
+by them; 5 of 5 frames identical to the switch-on run (6 pipelines); the stamp is ready after a prepare, does no work a
+second time, and works again after `variants.bin` grows by one key (7 recorded); a play strike leaves `compiling.bin`,
+the prepare then reports 1 suspect and 0 quarantined, and a play start reports 1 quarantined and 0 suspects.
+`hw_core2_shader_cache` now covers record -> prepare (306 variants, 6 recorded) -> second session recreating them.
+CTest `hw_core2_*` 35 of 35. Launcher `cargo test --workspace` 783 passed, 9 ignored.
+
+**Branch** `task/204-no-ingame-compile` from `origin/release/1.3.0-rc15` at f86d53d9, worktree
+`C:\Antigravity\gt4-wt-204-no-ingame-compile`, build `private/slice414-*`. No PR, no release: ships with rc16.
+
 ### TASK-203: export photo mode pictures through the game's own USB export (owner, 2026-11-07; recorded, not scheduled)
 
 A player suggestion (NewModelArmy, Discord, 2026-11-07), which the owner liked. GT4's photo mode can save pictures to

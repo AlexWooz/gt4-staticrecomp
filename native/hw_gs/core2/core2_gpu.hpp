@@ -94,6 +94,10 @@ struct Core2GpuStats {
     std::uint64_t specCompileNs = 0;       // time spent compiling them
     std::uint64_t specCompileMaxNs = 0;
     std::uint64_t specFailures = 0;
+    // TASK-204: variants a play session recorded in variants.bin instead of compiling (the next prepare compiles them),
+    // and the triangle batches drawn with the uber pipeline because of them.
+    std::uint64_t specDeferred = 0;
+    std::uint64_t specDeferredBatches = 0;
     std::uint64_t submissions = 0;
     std::uint64_t waits = 0;
     std::uint64_t atlasUploads = 0;
@@ -160,9 +164,10 @@ public:
     bool Ready() const;
     // IN-507: compiles what the shader cache (GT4_HW_SHADER_CACHE) lacks. Returns at once when it is ready for these shaders,
     // this card and this driver, without calling `progress`; otherwise `progress` gets (done, total), starting at 0. False
-    // when there is no cache to prepare.
+    // when there is no cache to prepare. TASK-204: `recorded` receives how many of the compiled variants came from the list
+    // the sessions recorded (variants.bin), 0 when the caller does not ask.
     using ShaderProgress = std::function<void(std::size_t done, std::size_t total)>;
-    bool PrepareShaders(const ShaderProgress &progress, std::string &error);
+    bool PrepareShaders(const ShaderProgress &progress, std::string &error, std::size_t *recorded = nullptr);
     // TASK-170: what the compile guard read at the start (variants quarantined on this card and driver after a run died
     // inside their compile; prepares one variant at a time after a parallel prepare died).
     struct ShaderGuardState {

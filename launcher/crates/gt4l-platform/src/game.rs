@@ -59,6 +59,7 @@ pub fn prepare_shaders(
     textures: &TextureLocation,
     child: &Mutex<Option<Child>>,
     cancelled: &AtomicBool,
+    recorded: &Cell<u32>,
     progress: &mut dyn FnMut(PrepareProgress),
 ) -> Result<PrepareOutcome, String> {
     let guard_folder = textures.shader_cache.clone();
@@ -72,10 +73,20 @@ pub fn prepare_shaders(
             if attempt > 1 {
                 progress(PrepareProgress { done: 0, total: last_total.get(), attempt });
             }
-            prepare_shaders_once(dirs, game_executable, settings, display, textures, child, attempt, &mut |done, total| {
-                last_total.set(total);
-                progress(PrepareProgress { done, total, attempt });
-            })
+            prepare_shaders_once(
+                dirs,
+                game_executable,
+                settings,
+                display,
+                textures,
+                child,
+                attempt,
+                recorded,
+                &mut |done, total| {
+                    last_total.set(total);
+                    progress(PrepareProgress { done, total, attempt })
+                },
+            )
         },
     );
     match outcome {
@@ -118,6 +129,7 @@ fn prepare_shaders_once(
     textures: &TextureLocation,
     child: &Mutex<Option<Child>>,
     attempt: u32,
+    recorded: &Cell<u32>,
     progress: &mut dyn FnMut(u32, u32),
 ) -> Result<AttemptReport, String> {
     let logs = dirs.logs();
@@ -150,9 +162,14 @@ fn prepare_shaders_once(
     let mut best_done = 0;
     if let Some(stdout) = stdout {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(ShaderPrepareLine::Progress { done, total }) = launch::parse_shader_prepare_line(&line) {
-                best_done = best_done.max(done);
-                progress(done, total);
+            match launch::parse_shader_prepare_line(&line) {
+                Some(ShaderPrepareLine::Progress { done, total }) => {
+                    best_done = best_done.max(done);
+                    progress(done, total);
+                }
+                // TASK-204: how many of the compiled variants the sessions recorded (the launcher logs it).
+                Some(ShaderPrepareLine::Recorded { count }) => recorded.set(count),
+                _ => {}
             }
         }
     }

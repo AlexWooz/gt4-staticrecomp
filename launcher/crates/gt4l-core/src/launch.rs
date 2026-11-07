@@ -555,6 +555,8 @@ pub const PREPARE_SHADERS_ARGUMENT: &str = "--prepare-shaders";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderPrepareLine {
     Progress { done: u32, total: u32 },
+    /// TASK-204: how many of the variants this prepare compiled came from the sessions' own list (variants.bin).
+    Recorded { count: u32 },
     Ready,
 }
 
@@ -567,6 +569,7 @@ pub fn parse_shader_prepare_line(line: &str) -> Option<ShaderPrepareLine> {
     let line = match words.next()? {
         "ready" => ShaderPrepareLine::Ready,
         "progress" => ShaderPrepareLine::Progress { done: words.next()?.parse().ok()?, total: words.next()?.parse().ok()? },
+        "recorded" => ShaderPrepareLine::Recorded { count: words.next()?.parse().ok()? },
         _ => return None,
     };
     words.next().is_none().then_some(line)

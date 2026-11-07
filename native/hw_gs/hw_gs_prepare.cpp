@@ -4,6 +4,8 @@
 // whether there is work, so the launcher shows its window only then:
 //   shaders ready             nothing to do (or everything done)
 //   shaders progress D T      D of T compiled; `shaders progress 0 T` comes first
+//   shaders recorded R        TASK-204: R of those T came from the sessions' own list (variants.bin), and the launcher
+//                             logs how many recorded keys it compiled
 // Exit 0 when the cache is ready; any other exit leaves the session to compile on its own, as before.
 #include "hw_gs_backend.hpp"
 #include "hw_gs_options.hpp"
@@ -37,16 +39,21 @@ int prepare_shaders_main() {
     std::fprintf(stderr, "[shaders] %s\n", error.c_str());
     return 5;
   }
+  std::size_t recorded = 0;
   const bool ready = backend->prepare_shaders(
       [](std::size_t done, std::size_t total) {
         std::printf("shaders progress %zu %zu\n", done, total);
         std::fflush(stdout);
       },
-      error);
+      error, &recorded);
   if (!ready) {
     std::fprintf(stderr, "[shaders] %s\n", error.c_str());
     std::fflush(stderr);
     _exit(5);
+  }
+  if (recorded != 0) {
+    std::printf("shaders recorded %zu\n", recorded);
+    std::fflush(stdout);
   }
   std::printf("shaders ready\n");
   std::fflush(stdout);
