@@ -132,6 +132,14 @@ github.com/Kaezzey/gt4-staticrecomp is read-only.
   stalls). Research runs in parallel and read-only; **exactly one repository
   writer at a time**. Review every subagent claim: rerun CTest/Python and check
   pins before committing.
+- **One problem per subagent** (owner, 2026-11-07). Never bundle several problems in one brief, above all for
+  non-frontier models such as DeepSeek:
+  - every distinct problem the owner reports becomes its own run with a closed brief: one goal, its files, its
+    acceptance checks; ten problems in one report make ten runs;
+  - big work is split into tasks and subtasks;
+  - an unknown cause gets a read-only mapping run first, then one fix run per cause;
+  - independent runs may go in parallel, each writer in its own worktree and never two writers on the same files;
+  - every delivery is reviewed in full (diff and checks) before the next step.
 - One variable per candidate build; keep A/B switches (`GT4_PACING=audio`,
   `GT4_GS_SYNC=1`, `--vu1-interpret-only`, `--vu1-verify N`). Attack whatever the
   F8 report shows as the largest cost.
