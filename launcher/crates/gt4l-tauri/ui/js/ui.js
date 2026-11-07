@@ -178,9 +178,25 @@
   // Achievements) draws through toggleTip, so this one path covers them all.
   //
   // A card shows while its "i" is tapped (.is-open, the state B and a tap outside clear) or while it holds the focus
-  // with a keyboard or a pad (the rule the CSS used to express with `body.input-keys .info:focus .tip`).
+  // with a keyboard or a pad (the rule the CSS used to express with `body.input-keys .info:focus .tip`). Only one
+  // card is drawn at a time: a card opened by a tap keeps the screen over a focused "i" (TASK-201).
   var tipLayer = null;
   var shownTips = [];
+  // TASK-201: the "i" whose card was dismissed (B, a tap outside, a tap on the card) does not open it again while
+  // it keeps the focus; moving the focus anywhere else clears it. Without this, closing a card while the focus sat
+  // on another row's "i" would immediately show that row's card instead.
+  var dismissedInfo = null;
+
+  function focusedInfo() {
+    var active = document.activeElement;
+    return active && active.closest ? active.closest(".info") : null;
+  }
+
+  // A card opened by a tap or a click keeps the screen until it is closed: moving the keyboard or pad focus to
+  // another "i" must not stack a second card over it (TASK-201). The focused "i" keeps its ring, under the card.
+  function tapOpenInfo() {
+    return document.querySelector(".info.is-open");
+  }
 
   function tipLayerNode() {
     if (!tipLayer) {
@@ -272,11 +288,21 @@
   }
 
   function wantsTip(info) {
-    return info.classList.contains("is-open") || (keysOrPad() && info === document.activeElement);
+    if (info.classList.contains("is-open")) {
+      return true;
+    }
+    if (!keysOrPad() || info !== document.activeElement) {
+      return false;
+    }
+    return !tapOpenInfo() && info !== dismissedInfo;
   }
 
   // Brings every card in step with its "i", and drops a card whose row is gone (a tab change while it was open).
   function syncTips() {
+    var focused = focusedInfo();
+    if (dismissedInfo && dismissedInfo !== focused) {
+      dismissedInfo = null;
+    }
     for (var i = shownTips.length - 1; i >= 0; i -= 1) {
       var shown = shownTips[i];
       var anchor = shown.__anchor;
@@ -312,6 +338,8 @@
       }
     });
     if (closed) {
+      var focused = focusedInfo();
+      dismissedInfo = focused && focused !== except ? focused : null;
       syncTips();
     }
     return closed;
@@ -327,13 +355,19 @@
 
   document.addEventListener("pointerdown", function (event) {
     var target = event.target;
+    var closed = false;
     Array.prototype.forEach.call(document.querySelectorAll(".info.is-open"), function (el) {
       var tip = tipOf(el);
       if (!el.contains(target) && !(tip && tip.contains(target))) {
         el.classList.remove("is-open");
         el.setAttribute("aria-expanded", "false");
+        closed = true;
       }
     });
+    if (closed) {
+      var focused = focusedInfo();
+      dismissedInfo = focused && !focused.classList.contains("is-open") ? focused : null;
+    }
     syncTips();
   }, true);
 
@@ -347,6 +381,8 @@
     }
     info.classList.remove("is-open");
     info.setAttribute("aria-expanded", "false");
+    var focused = focusedInfo();
+    dismissedInfo = focused && !focused.classList.contains("is-open") ? focused : null;
     syncTips();
   }, true);
 

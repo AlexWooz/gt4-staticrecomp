@@ -15,6 +15,8 @@
  *   ?scenario=render    only sets the state for docs/launcher/shots/graphics-sections.png (pad focus on Render scale,
  *                       the Graphics section in view)
  *   ?scenario=general, ?scenario=graphics  only open that Settings tab (screenshots at 1280x720; no checks run)
+ *   Info cards (TASK-199, TASK-201): every card over the page, and the next row's "i" and label under an open card
+ *                       with that "i" holding the keyboard focus.
  *   Option values (rc6): no value of a .row selector or dropdown on General or Graphics wraps, in every language
  */
 (function (root) {
@@ -2224,6 +2226,34 @@
     return document.querySelector(".popover-layer .tip.is-shown");
   }
 
+  // TASK-201: the row after the one whose card is open, as in the owner's phone photo (a short row, then a longer
+  // one with its own "i").
+  function nextSettingsRow(row) {
+    var rows = Array.prototype.slice.call(document.querySelectorAll(".stage .content .row[data-row]"));
+    var index = rows.indexOf(row);
+    return index >= 0 ? rows[index + 1] || null : null;
+  }
+
+  // The centre of the overlap of two boxes, or null when they do not overlap.
+  function overlapPoint(box, other) {
+    var left = Math.max(box.left, other.left);
+    var right = Math.min(box.right, other.right);
+    var top = Math.max(box.top, other.top);
+    var bottom = Math.min(box.bottom, other.bottom);
+    if (right - left < 2 || bottom - top < 2) {
+      return null;
+    }
+    return [(left + right) / 2, (top + bottom) / 2];
+  }
+
+  function hitInside(tip, point) {
+    if (!tip || !point) {
+      return false;
+    }
+    var hit = document.elementFromPoint(point[0], point[1]);
+    return !!hit && tip.contains(hit);
+  }
+
   // Opens the card of one row's "i" with a click, and returns it. A row out of view is scrolled to the middle first; a
   // row already in view keeps its place, so a row near the bottom edge is checked where it is.
   async function openCard(rowId) {
@@ -2345,6 +2375,53 @@
     content.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
     await wait(80);
     check("a mouse press hides the card again", !shownCard(), shownCard() ? "still open" : "");
+
+    // TASK-201 (the owner's phone photo): open the card of a short row whose next row has an "i" and a longer label,
+    // then put the keyboard focus on that "i". The card must stay the top element at the next row's "i" and label,
+    // and the focused "i" must not open a second card over it.
+    var shortRow = document.querySelector(".row[data-row=\"fxaa\"]");
+    var following = shortRow ? nextSettingsRow(shortRow) : null;
+    var nextInfo = following ? following.querySelector(".info") : null;
+    var nextLabel = following ? following.querySelector(".k > span:first-child") : null;
+    var nextCard = shortRow && shortRow.querySelector(".info") ? await openCard("fxaa") : null;
+    var nextCardBox = nextCard ? nextCard.getBoundingClientRect() : null;
+    var nextIconBox = nextInfo ? nextInfo.getBoundingClientRect() : null;
+    var nextLabelBox = nextLabel ? nextLabel.getBoundingClientRect() : null;
+    var iconPoint = nextCardBox && nextIconBox ? overlapPoint(nextIconBox, nextCardBox) : null;
+    var labelPoint = nextCardBox && nextLabelBox ? overlapPoint(nextLabelBox, nextCardBox) : null;
+    check("the open card reaches the i and the label of the row below it", !!nextCard && !!iconPoint && !!labelPoint,
+      !nextCard ? "no card" : "i " + (iconPoint ? "covered" : "clear") + ", label " + (labelPoint ? "covered" : "clear"));
+    check("the next row's i draws under the open card", hitInside(nextCard, iconPoint),
+      iconPoint ? "i is not the card" : "no overlap");
+    check("the next row's label draws under the open card", hitInside(nextCard, labelPoint),
+      labelPoint ? "label is not the card" : "no overlap");
+    press("Tab");
+    await wait(60);
+    if (nextInfo) {
+      nextInfo.focus();
+      await wait(120);
+    }
+    var shownAfterFocus = document.querySelectorAll(".tip.is-shown");
+    check("with the focus on it, the next row's i does not open a second card",
+      !!nextCard && shownAfterFocus.length === 1 && shownCard() === nextCard,
+      shownAfterFocus.length + " card(s)");
+    check("the focused i of the next row shows its focus ring", !!nextInfo && nextInfo.classList.contains("ring-on"),
+      nextInfo ? nextInfo.className : "no i");
+    check("with the focus on it, the next row's i stays under the open card", hitInside(nextCard, iconPoint),
+      iconPoint ? "i is not the card" : "no overlap");
+    check("with the focus on it, the next row's label stays under the open card", hitInside(nextCard, labelPoint),
+      labelPoint ? "label is not the card" : "no overlap");
+    press("Escape");
+    await wait(80);
+    if (document.activeElement && document.activeElement.blur) {
+      document.activeElement.blur();
+    }
+    await wait(60);
+    check("B closes that card and does not reopen the focused i's card",
+      !shownCard() && document.querySelectorAll(".info.is-open").length === 0,
+      shownCard() ? "still open" : "reopened");
+    content.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await wait(60);
 
     // The same layer covers the header cards of the Controls and the Wheel pages.
     await setHash("#/settings/controls");
