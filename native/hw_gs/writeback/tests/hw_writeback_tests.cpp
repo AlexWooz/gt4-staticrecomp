@@ -6137,15 +6137,15 @@ int TestCore2PrepareScale(const gpu::VulkanHandles& handles) {
         }
         return true;
     };
-    // The real counts of the 544-key shipped corpus (TASK-206, measured 2026-11-07 on an RX 9060 XT): after the expansion
-    // and the dedupe of the whole corpus, before the card filters of variants_to_prepare. 255 is the corpus with the scale
-    // taken out (the same 255 TASK-205 projected for 4x); above 1x every textured key adds the target shape, which adds 81
-    // distinct keys and is the same for any scale because the shape replaces the scale with 1 or S.
+    // The real counts of the 644-key shipped corpus (TASK-208, measured 2026-11-07 on an RX 9060 XT): after the expansion
+    // and the dedupe of the whole corpus, before the card filters of variants_to_prepare. 315 is the corpus with the scale
+    // taken out; above 1x every textured key adds the target shape, which adds 91 distinct keys and is the same for any
+    // scale because the shape replaces the scale with 1 or S. (TASK-206 measured 255 and 336 on the 544-key corpus.)
     struct Expected {
         std::uint32_t scale;
         std::size_t keys;
     };
-    const Expected expected[] = {{1, 255}, {2, 336}, {4, 336}, {6, 336}};
+    const Expected expected[] = {{1, 315}, {2, 406}, {4, 406}, {6, 406}};
     for (const Expected& want : expected) {
         std::set<Key> unique;
         std::size_t written = 0, twoShapes = 0;

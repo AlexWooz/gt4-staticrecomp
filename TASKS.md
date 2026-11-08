@@ -3741,6 +3741,67 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-208: ship the mapped shader variants in both games (owner, 2026-11-07; implemented, both-game test build)
+
+**Why.** TASK-205 mapped every CoreGS 2.0 variant over both games and 81 runs and produced the final candidate:
+**644 keys = the 544 shipped + 100 new**, 204 draw-state signatures (60 new), under the 2048 cap. The owner wants that
+mapping shipped in **both GT4 v2.00 and Spec II**; a build with only one game is invalid (AGENTS.md, 2026-11-07). Without
+it a session still meets the states the recorded scenes never used (the v2.00 photo mode and license test `Zformat=Z16`,
+the used-car showroom, the Spec II license/menus, `Tfx=Highlight2`, SCANMSK) and draws them with the uber pipeline until
+the next prepare.
+
+**What.**
+1. **The shipped list is the TASK-205 final candidate.** `native/hw_gs/core2/core2_known_variants.inc` holds the 644 keys
+   (one `.inc` shared by both games: the keys are draw-state only). Verified 644 rows x 33 words, 644 distinct, the 544 old
+   keys all present, 100 new, 204 signatures, 60 new. TASK-205's candidate stays under `private/` as the evidence.
+2. **The TASK-206 counts move with the corpus.** `hw_core2_prepare_scale` measured, before the card filters: **315**
+   distinct keys at 1x (644 written) and **406** at 2x/4x/6x (917 written, 273 keys with both shapes); the fixture's
+   expected counts were updated to those real numbers (no assertion weakened). On this card (RX 9060 XT) the prepare
+   compiles **245 variants at 4x** (49 targets) where it compiled 175, and 196 at 1x.
+3. **Both games built plain** (no PGO, no ThinLTO) from this branch: v2.00 (`GT4_TARGET=v200`, `GT4_EE_PROFILE=aspect`)
+   and Spec II (`GT4_TARGET=spec2`, `GT4_EE_PROFILE=spec2` with the TASK-166 aspect-hooked Spec II EE library, the slice276
+   IOP runtime and the Spec II VU0 tables), both with `GT4_RELEASE_DISTRIBUTION=ON`. New slices, new pins:
+   `docs/inputs/slice418-pcsx2.json` (90,179,072 bytes `3aa564e8...`) and `docs/inputs/slice418-spec2.json`
+   (97,212,416 bytes `c0bbb047...`). The slice413/415/417 pins are untouched.
+4. **A both-game distribution folder** (`private/slice418-dist-130-rc16`): `gt4.exe`, `gt4-spec2.exe`, the nine shaders,
+   SDL3, the three CRT DLLs, the licences and the `MANIFEST.json` naming both pins. No installer, no portable zip, no
+   upload: the packaging step does that.
+
+**Gates (headless, this PC).**
+- **4x gate, Spec II** (George V Paris, B-Spec, 4x, the TASK-205/206 timeline, 2,400 VBlanks, dumps 4800/5400/6000/6600):
+  deferred run 75 keys, 0 pipelines, 2,645,167 uber batches; prepare at 4x **245 variants in 193.7 ms**, 49 added; prepared
+  run **0 deferred keys, 0 deferral-caused uber batches**, 245 pipelines from the cache, **4 of 4 frames identical**;
+  residual 53 uber batches at startup (not deferrals). `gpu_busy` over the race's four 600-VBlank blocks **5.67 against
+  3.78 ms/VBlank** (deferred against prepared; 1.89 ms, -33%) and wall 8.81 against 8.36 ms.
+- **4x gate, v2.00** (night race, GT Mode B-Spec Hong Kong Reverse, 4x, 11,500 VBlanks, frames every 600 from 6500):
+  deferred 97 keys, 0 pipelines, 3,287,021 uber batches; prepare at 4x **245 variants in 183.9 ms**, 49 added; prepared
+  run **0 deferred keys, 0 deferral-caused uber batches**, 245 pipelines, **9 of 9 frames identical**; 49 residual startup
+  uber batches. `gpu_busy` over four race blocks (VBlank 9000/9600/10200/10800) **5.71 against 4.15 ms/VBlank** (-27%),
+  wall 8.01 against 7.36.
+- **Both-game identity against the published rc15 PGO builds** (`slice413-dist-130-rc15/gt4.exe` and `gt4-spec2.exe`, the
+  same bytes as `slice413-game/gt4vulkan*.exe`): Spec II three recorded laps (George V Paris, El Capitan, Tokyo R246) at
+  1x, **state.bin identical** (212,992 bytes each), race clock 0 differs, **24/35/35 frames identical**, IDENTITY-OK;
+  Spec II 6x **12 of 12** frames; v2.00 night 3x **state.bin identical** (131,072 bytes; 12,097 VBlanks both, 4,786
+  racing) and **10 of 10** frames; v2.00 Arcade 3x **14 of 14**. VU1/VU0 verify: 0 interpreted calls, **verify_mismatches
+  0** (Spec II 24.1M/5.5M compiled calls, v2.00 36.2M/5.6M); MTVU **8,032 frames, 0 mismatches**. Gates script `wrong=0`.
+- **52-track spot check** (Spec II, 1x, prepared list 196 variants on this card): Nordschleife, Tsukuba, Infineon Sports
+  and Hong Kong, the TASK-205 route and window: **0 deferred keys, 0 deferral-caused uber batches** in all four (52-53
+  residual startup uber batches), `variants.bin` still 196 (nothing new recorded).
+- **Tests:** `hw_core2_*` **36 of 36** (125.7 s), including the updated `hw_core2_prepare_scale` (0 failures). Full CTest
+  **320 passed, 1 known skip, 0 failed of 321** on both builds (482.0 s v2.00, 458.2 s Spec II). Launcher
+  `cargo test --workspace` **784 passed, 9 ignored, 0 failed** (34 binaries; the launcher is unchanged by this task). Python
+  suite **804 tests, OK**, 57 skipped in this fresh worktree (missing optional private evidence: donor checkout, numpy, old
+  slice capsules; no skip touches the variant list).
+- **Distribution smoke test:** both `gt4.exe` and `gt4-spec2.exe` boot headless from the distribution folder to the frame
+  limit, loading the shaders from their own `shaders\`; no build or user path in either binary.
+
+**State.** Branch `task/208-both-game-variants` from `task/206-rc16-package` at 52fea56e, with `task/205-variant-coverage`
+at 71452b90 merged (096afe8d). Pins `docs/inputs/slice418-pcsx2.json` and `docs/inputs/slice418-spec2.json`; distribution
+`private/slice418-dist-130-rc16`; decision 0080; the rc16 notes updated to both games. No PR, no release, no upload.
+
+**Next.** The packaging step builds the installer and the portable zip from this both-game distribution and uploads the
+GitHub draft; the owner's in-game test of both games is pending. TASK-207 stays standby.
+
 ### TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, rc16 test build draft)
 
 **Why.** TASK-205 (Confirmed) found the main reason a session asks for "new" keys: **the render scale is part of the

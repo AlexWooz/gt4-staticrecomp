@@ -1,5 +1,38 @@
 # Current Status
 
+## TASK-208: the mapped CoreGS 2.0 variants ship in both games (owner, 2026-11-07; implemented, both-game test build)
+
+On `task/208-both-game-variants` (from `task/206-rc16-package` at 52fea56e, with `task/205-variant-coverage` at 71452b90
+merged). Decision 0080; builds `private/slice418-build` (v2.00) and `private/slice418-spec2-build` (Spec II), both plain;
+pins `docs/inputs/slice418-pcsx2.json` and `docs/inputs/slice418-spec2.json`; distribution
+`private/slice418-dist-130-rc16` (both games); journal 2026-11-07.
+
+- **Why.** TASK-205's final mapping: **644 keys = the 544 shipped + 100 new**, 204 draw-state signatures (60 new). The
+  owner wants them shipped in both GT4 v2.00 and Spec II; a one-game build is invalid (AGENTS.md).
+- **What.** The shipped `core2_known_variants.inc` is the TASK-205 candidate (644 rows x 33 words, 644 distinct, the 544
+  old keys all present, 0 lost), one list shared by both games. The TASK-206 prepare expansion is unchanged; with the
+  larger corpus it gives **315 distinct keys at 1x** (644 written) and **406 at 2x/4x/6x** (917 written, 273 both shapes)
+  before the card filters, and **245 variants at 4x on this card** (49 targets, against 175). The `hw_core2_prepare_scale`
+  fixture's expected counts were updated to those real numbers.
+- **Both games, plain (no PGO, no ThinLTO).** v2.00 `3aa564e8...` 90,179,072 bytes; Spec II `c0bbb047...` 97,212,416 bytes
+  (`GT4_TARGET=spec2`, `GT4_EE_PROFILE=spec2` with the TASK-166 aspect-hooked Spec II EE library, the slice276 IOP runtime
+  and the Spec II VU0 tables). Both `GT4_RELEASE_DISTRIBUTION=ON`; no build or user path in either binary.
+- **4x gate, Spec II** (George V Paris, B-Spec, 2,400 VBlanks): deferred 75 keys, 0 pipelines, 2,645,167 uber batches;
+  prepare at 4x 245 variants in 193.7 ms, 49 added; prepared **0 deferred keys, 0 deferral-caused uber batches, 4 of 4
+  frames identical**; `gpu_busy` **5.67 against 3.78 ms/VBlank** (1.89 ms, -33%), wall 8.81 against 8.36; 53 residual
+  startup uber batches (not deferrals).
+- **4x gate, v2.00** (night race, 4x, 11,500 VBlanks): deferred 97 keys, 3,287,021 uber batches; prepare 245 variants in
+  183.9 ms; prepared **0 deferred, 0 deferral-caused uber, 9 of 9 frames identical**; `gpu_busy` **5.71 against 4.15
+  ms/VBlank** over four race blocks, wall 8.01 against 7.36.
+- **Identity against the published rc15 PGO builds:** Spec II three laps (state.bin identical, 24/35/35 frames), Spec II 6x
+  12/12, v2.00 night 3x (state identical, 10/10), v2.00 Arcade 3x 14/14; VU1/VU0 verify mismatches 0, MTVU 8,032 frames 0
+  mismatches; gates script `wrong=0`.
+- **52-track spot check** (Spec II, 1x, prepared 196): Nordschleife, Tsukuba, Infineon Sports, Hong Kong: **0 deferred, 0
+  deferral-caused uber** in all four; `variants.bin` still 196.
+- **Tests.** `hw_core2_*` **36 of 36**; full CTest **320/321 each** (1 known skip, 0 failed; 482.0 s and 458.2 s); launcher
+  784/9 (unchanged task), Python 804 OK (57 environment skips in this fresh worktree).
+- **Not done.** Owner in-game test of both games; installer and portable zip (the packaging step); TASK-207 standby.
+
 ## TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, owner test build)
 
 On `task/206-scale-expansion` (from `task/205-variant-coverage` at c0e37897). Decision 0079; builds `private/slice417-build`

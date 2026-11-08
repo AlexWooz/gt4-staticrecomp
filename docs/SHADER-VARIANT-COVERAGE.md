@@ -11,6 +11,11 @@ Spec II GT Mode modes, and explains the rc15 player report (44 new keys in one l
 compile). It also designs the player crowd-sourcing loop. It changes no runtime code and no key format; the two
 key-format proposals wait for the owner.
 
+**Shipped (TASK-208, decision 0080):** the final candidate of this document is now the shipped
+`native/hw_gs/core2/core2_known_variants.inc` (644 keys, one list used by both GT4 v2.00 and Spec II), and TASK-206's
+prepare expansion applies to it. The measurements below stay as recorded; the section 5 counts were recomputed with the
+larger list.
+
 ## 1. The answer in one paragraph
 
 A key is a **draw state**, not a track, car or scene: 30 state-block fields, the texture push word, the mip anisotropy
@@ -213,11 +218,13 @@ rather than by playing forever.
 
 ## 5. The push word
 
-**Applied (TASK-206, decision 0079):** proposal 1 below - the prepare now takes the session's render scale
-(`--prepare-shaders --prepare-scale N`) and expands the shipped and recorded keys over it, with the scale in
-`PreparedStamp`. The numbers this section projects are the ones measured in TASK-206: 255 keys with the scale taken out,
-336 at any scale above 1x for the whole corpus, 175 on this card at 4x. The key format is unchanged; proposal 2 stays with
-the owner.
+**Applied (TASK-206, decision 0079; shipped with the final mapping in TASK-208, decision 0080):** proposal 1 below - the
+prepare now takes the session's render scale (`--prepare-shaders --prepare-scale N`) and expands the shipped and recorded
+keys over it, with the scale in `PreparedStamp`. TASK-206 measured the projection on the then-shipped 544-key corpus: 255
+keys with the scale taken out, 336 at any scale above 1x, 175 on this card at 4x. TASK-208 ships the final 644-key
+candidate below, and the same transformation now gives **315 keys at 1x and 406 at any scale above 1x** before the card
+filters (917 written, 273 keys with both shapes), and **245 on this card at 4x** (49 targets). The key format is unchanged;
+proposal 2 stays with the owner.
 
 | Bit | Meaning | Shipped keys | Final union keys |
 |---|---|---:|---:|
