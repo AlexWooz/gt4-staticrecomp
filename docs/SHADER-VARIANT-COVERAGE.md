@@ -6,9 +6,10 @@ Tools: `scripts/coregs2_bench/variant_decode.py`, `scripts/coregs2_bench/variant
 Evidence and the candidate list: `private/task205-*` (not committed).
 
 This document answers the owner's question: **why was a new pipeline generated?** It maps the shipped list, measures
-what the 52 Spec II Arcade tracks ask for, and explains the player report on rc15 (44 new keys in one lap, then a
-driver crash inside a compile). It also designs the player crowd-sourcing loop. It changes no runtime code and no key
-format; the two key-format proposals wait for the owner.
+the 52 Spec II Arcade tracks, adds the v2.00 pass (photo mode, showroom, license, Arcade, GT Mode races) and the
+Spec II GT Mode modes, and explains the rc15 player report (44 new keys in one lap, then a driver crash inside a
+compile). It also designs the player crowd-sourcing loop. It changes no runtime code and no key format; the two
+key-format proposals wait for the owner.
 
 ## 1. The answer in one paragraph
 
@@ -25,6 +26,10 @@ of the 30 state fields, only the SCANSMK push flag and new combinations; the car
 bounded), so the key space is finite and enumerable; the design problem is the scale multiplication, not an open-ended
 key. The fallback (uber) path costs 1.9 ms of GPU per VBlank at 4x and 0.03 ms at 1x; at 4x it can cost a frame at the
 margin, but it is not a stutter, while the 1.0 s compile stalls could be and TASK-204 removed them from play.
+**The final both-games mapping** (81 runs: the 52 Spec II tracks, the Spec II modes, and a v2.00 pass) recorded
+**191 keys, 100 new, 60 new draw-state signatures**; the candidate is **644 keys** (400 kept on this card after the
+plain/ROP filters), under the 2048 cap. The v2.00 photo mode is the first source of `Zformat=Z16` keys; Spec II
+disables photo mode, split screen needs a second pad, and replay and a Spec II GT Mode race remain blocked.
 
 ## 2. What a key is
 
@@ -80,8 +85,8 @@ the other side: the list is a union of recorded sessions at different scales, no
 The 52 tracks added no new value to any of the 30 fields. They found combinations the recorded scenes had not used:
 mip sampling (`push` bit 23) on indexed textures, SCANMSK (bits 20-21, IN-530, added after the list was recorded),
 region-clamp wraps, bilinear filtering, alpha-test comparisons, blend selectors, and raw CT24 texels. The car slots
-added one field value, `Tfx=Highlight2`; that is the only new 30-field value in all 67 runs. The per-field values and
-the new combinations are in section 4.
+added one field value, `Tfx=Highlight2`; the v2.00 photo mode and license test added `Zformat=Z16`. Those are the only
+new 30-field values in all 81 runs. The per-field values and the new combinations are in section 4.
 
 The fields that have never varied in the shipped list are `Fba` (always off), `Pabe` (off), `Colclamp` (on), `Tfx`
 (Modulate, until the car slot above), `Aem` (off), `aniso` (0) and the push flags replacement (22), force-linear (31)
@@ -98,9 +103,9 @@ add keys.
 | Time of day | **Yes, indirectly** | night changes fog, additive lights and reflection targets, so it adds blends and target-texture states |
 | Weather | **Yes, indirectly** | wet Tsukuba adds reflection/alpha states, measured in the survey |
 | A menu | **Only if it uses a state the race does not** | measured: the Arcade menus add 1 key and the car list/colour screen 35, all already in the shipped list; a menu with a new format or blend still would |
-| Photo mode | **Hypothesis: yes** | IN-537 shows a 640x448 Z16S depth target and a palette read per frame; the shipped list has no `Zformat=Z16` key |
-| Replay | **Hypothesis: few** | the same race states plus a camera path; the time-trial ghost is SCANMSK, which the list also lacks |
-| Split screen | **Hypothesis: yes** | two viewports and the SCANMSK row mask; not measured here |
+| Photo mode | **Yes in v2.00; disabled in Spec II** | measured: 48 keys, 20 new, the first `Zformat=Z16` states; the Spec II map says `Modo Fotografia: Função Desativada no Spec II` |
+| Replay | **Not mapped** | replay saves exist on both cards; the loader entry was not found in the GT Mode home or title menu (section 7.4) |
+| Split screen | **Yes, but needs two pads** | the 2P menu and track preview are reached; the race waits for a second controller, which the harness does not feed |
 | A per-draw value | **No** | no address, counter or geometry is in the key; the scale is a session/texture property, the aniso is bounded 0-7, the ROP word is a blend state |
 
 ### 3.4 What the survey actually found
@@ -110,6 +115,10 @@ the shipped 544. Of those, `31` are scale twins (the same state at another scale
 state combinations, `38` of them new signatures. The per-track table is in section 7; every new key of the
 whole survey (including the car slots) is in Appendix A.
 
+The final both-games mapping is larger: 81 runs (the 52 tracks, the Spec II GT Mode modes and a v2.00 pass) recorded
+**191 distinct keys, 100 new, 60 new signatures** (section 7.5). The v2.00 pass is where the first `Zformat=Z16` keys
+appear.
+
 ## 4. Field-level classification
 
 The families below group every new key by what differs from the nearest shipped key. A key can appear in one family
@@ -117,23 +126,34 @@ only; "state" means a combination the list never had.
 
 | Family | New keys | Scenes | Example |
 |---|---:|---:|---|
-| scale | 31 | 52 | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image |
-| state: push | 13 | 51 | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image scanmask |
-| state: TexLinear | 3 | 41 | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 |
+| scale | 40 | 71 | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image |
+| state: push | 14 | 67 | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image scanmask |
+| state: Zformat | 9 | 3 | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z16/masked fog scale=1 |
+| state: TexLinear | 3 | 48 | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 |
 | state: WrapT | 3 | 5 | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 |
-| state: BlendB | 2 | 24 | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image |
-| state: BlendB+BlendC | 2 | 10 | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image |
+| state: BlendB | 2 | 29 | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image |
+| state: BlendB+BlendC | 2 | 17 | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image |
 | state: Ztst | 2 | 5 | format=CT32 untextured blend z=GreaterEqual/Z24/masked scale=1 |
 | state: WrapS | 2 | 7 | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 |
-| state: WrapS+push | 2 | 3 | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 |
+| state: WrapS+push | 2 | 10 | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 |
 | state: Tcc+TexelKind | 2 | 3 | format=CT32 tex=Modulate/CT24raw atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 |
+| state: Zmsk | 2 | 2 | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24/masked fog scale=1 |
+| state: Format | 2 | 2 | format=CT16 tex=Modulate/RGBA8 blend scale=1 textured-image |
+| state: Zmsk+Zformat+TexLinear | 1 | 1 | format=CT32 tex=Modulate/CT16raw z=Always/Z16 scale=1 textured-image |
 | state: BlendC | 1 | 1 | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image |
+| state: Zformat+BlendB+BlendC | 1 | 1 | format=CT32 untextured blend z=GreaterEqual/Z16/masked fog scale=1 |
+| state: DateOn+BlendB+BlendC+TexOn | 1 | 1 | format=CT32 tex=Modulate/RGBA8 blend z=GreaterEqual/Z24/masked fog date scale=1 |
 | state: Ate+Atst+push | 1 | 4 | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 |
-| state: Ate+Atst | 1 | 45 | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 |
+| state: Ate+Atst | 1 | 52 | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 |
 | state: Atst | 1 | 3 | format=CT32 untextured blend atest=Greater/Keep z=Always/Z24/masked scale=1 |
 | state: FogOn | 1 | 1 | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 scale=1 |
-| state: Zmsk | 1 | 1 | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24/masked fog scale=1 |
+| state: Tfx | 1 | 2 | format=CT32 tex=Highlight2/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 |
 | state: Ate+Atst+Tcc+TexelKind | 1 | 1 | format=CT32 tex=Modulate/CT24raw blend atest=Greater/Keep z=GreaterEqual/Z24/masked scale=1 |
+| state: TexLinear+push | 1 | 1 | format=CT24 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image |
+| state: Ztst+Zmsk+Zformat | 1 | 1 | format=CT24 untextured blend z=GreaterEqual/Z16 scale=1 |
+| state: Format+Zformat+KeepTopByte | 1 | 1 | format=CT24 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z16 fog scale=1 |
+| state: TexFst | 1 | 2 | format=CT16 tex=Modulate/Indexed blend z=Always/Z32/masked scale=1 |
+| state: Format+BlendB+BlendD | 1 | 1 | format=CT16 untextured blend z=Always/Z24/masked scale=1 |
 
 Reading the families:
 
@@ -163,7 +183,7 @@ The per-field table shows the closed vocabulary:
 | Ztest | off, on | - |
 | Ztst | Never, Always, GreaterEqual | - |
 | Zmsk | off, on | - |
-| Zformat | Z32, Z24 | - |
+| Zformat | Z32, Z24 | Z16 |
 | BlendOn | off, on | - |
 | Pabe | off | - |
 | BlendA | Cs, Cd | - |
@@ -187,9 +207,9 @@ The per-field table shows the closed vocabulary:
 | rop | none, 0xF, 0x11, 0x1F, 0xE1, 0xEF, 0xF1, 0xFF, 0x1FF, 0x80000000, 0xC0000000 | - |
 
 In the 52 tracks no 30-field value was added; the only new value is the SCANSMK push flag (bits 20-21). The car slots
-added one field value, `Tfx=Highlight2`, which is why the car pass was worth running (section 7.4). That is still a
-closed, small vocabulary: the state space is finite and the list can be completed by enumeration rather than by
-playing forever.
+added `Tfx=Highlight2`; the v2.00 photo mode and license test added **`Zformat=Z16`**, a depth format the list never
+had. That is still a closed, small vocabulary: the state space is finite and the list can be completed by enumeration
+rather than by playing forever.
 
 ## 5. The push word
 
@@ -199,14 +219,14 @@ playing forever.
 336 at any scale above 1x for the whole corpus, 175 on this card at 4x. The key format is unchanged; proposal 2 stays with
 the owner.
 
-| Bit | Meaning | Shipped keys | 52-track keys |
+| Bit | Meaning | Shipped keys | Final union keys |
 |---|---|---:|---:|
-| `0x000FFFFF` | tex_scale: scale of the sampled texture image (its whole-texel scale, 1x..12x) | 544 | 155 |
+| `0x000FFFFF` | tex_scale: scale of the sampled texture image (its whole-texel scale, 1x..12x) | 544 | 191 |
 | `0x00100000` | scanmask.0: SCANMSK bit 0 (row mask, time trial ghost / split screen) | 0 | 0 |
-| `0x00200000` | scanmask.1: SCANMSK bit 1 (row mask, time trial ghost / split screen) | 0 | 2 |
+| `0x00200000` | scanmask.1: SCANMSK bit 1 (row mask, time trial ghost / split screen) | 0 | 3 |
 | `0x00400000` | replacement_texture: a replacement texture image is sampled instead of the game texture | 0 | 0 |
-| `0x00800000` | mip: texture sampled with mip levels (LOD), aniso in slot 31 | 20 | 20 |
-| `0x01000000` | textured_image: the batch samples a texture image (atlas or drawn target); never set when TexOn=0 | 251 | 39 |
+| `0x00800000` | mip: texture sampled with mip levels (LOD), aniso in slot 31 | 20 | 21 |
+| `0x01000000` | textured_image: the batch samples a texture image (atlas or drawn target); never set when TexOn=0 | 251 | 47 |
 | `0x02000000` | diagnostic_noz: GT4_HW_SCALED_DIAG=noz diagnostic | 0 | 0 |
 | `0x04000000` | diagnostic_notex: GT4_HW_SCALED_DIAG=notex diagnostic | 0 | 0 |
 | `0x08000000` | alpha_test_before_interlock: alpha test may discard before the interlock | 0 | 0 |
@@ -294,11 +314,15 @@ play. A remaining stutter should be looked for in presentation, readbacks and sc
   `private/slice407-ee-spec2/ps2game.lib`, `GT4_RELEASE_DISTRIBUTION=ON`. Output
   `private/slice416-spec2-build/build/gt4vulkan-spec2.exe` (97,212,416 bytes). No pin file: this build is evidence,
   not a release input.
-- **Harness:** `private/task205-tools/{press205,route205,survey205,modes205,prepare205,cars205}.sh`, copied and adapted
-  from the read-only TASK-171 harness (`t171-*.sh`). It boots Spec II headless from the `spec2-replays-20261104.ps2`
-  card (copied per run), forces 480p/16:9, 1x and a fresh `GT4_HW_SHADER_CACHE` per run, and presses through Arcade to
-  a short Single Race. With TASK-204 in the branch, the fresh cache has no `prepared.bin`, so the session compiles
-  nothing: it records every draw state it asks for and draws the uber pipeline. That makes the run a pure recorder.
+- **v2.00 build:** the same recipe with `-DGT4_TARGET=v200 -DGT4_EE_PROFILE=aspect`, the `slice262` runtime,
+  `slice394-v200-vu0-gen` and the aspect EE library; output `private/slice417-v200-build/build/gt4vulkan.exe`
+  (90,161,664 bytes). It shares the Spec II shader-set hash and key format.
+- **Harness:** `private/task205-tools/` (`press205`, `route205`, `survey205`, `modes205`, `prepare205`, `cars205`,
+  `replay205`, `v200-gtmode-probe`, `night-aspec`), copied and adapted from the read-only TASK-171 harness
+  (`t171-*.sh`). It boots headless from a copied card (the Spec II Arcade card, the v2.00 GT Mode/Arcade cards), forces
+  480p/16:9, 1x and a fresh `GT4_HW_SHADER_CACHE` per run, and presses or replays a recording to the scene. With
+  TASK-204 in the branch, the fresh cache has no `prepared.bin`, so the session compiles nothing: it records every
+  draw state it asks for and draws the uber pipeline. That makes the run a pure recorder.
 - The route and the 52 names are TASK-171's (`t171-route.sh`, `t171-names.tsv`). Each run is 1,200 VBlanks of race
   after the race start, about 45 s of wall time at 1x.
 
@@ -370,84 +394,101 @@ time and at the renderer's close; a `--frames` run exits through the runtime's h
 (usually 0-4) can be missing from its file. The union is what was written; a rerun of the same scene recovers the tail,
 which is why the second pass and the A-Spec runs matter. This is a recorder limit, not a coverage result.
 
-### 7.3 The counts and the cap
+### 7.3 The 52-track counts
 
 - 52 race runs (`tracks52-*` for 45, `dirt-*` for 7).
 - `155` distinct keys; `69` not in the shipped 544; `4046` duplicates across runs.
 - `38` new draw-state signatures; `117` of the shipped 144 signatures were seen.
-- On this card (discrete RX 9060 XT: the plain path and the colour-attachment/ROP path are off), the candidate keeps
-  `372` keys (the shipped list's 300 storage-path keys plus the new ones). The shipped list's 167 plain and 77
-  ROP keys are filtered by `variants_to_prepare` on this card, exactly as the run's own keys would be.
-- **Cap:** `kMaxSpecPipelines` is 2048. The candidate union is `616` keys, well under it. The cap is not a
-  problem for tracks; it becomes one only if the list carries many scales (section 5).
+- On this card (discrete RX 9060 XT: the plain path and the colour-attachment/ROP path are off), the 52-track candidate
+  keeps `372` keys (the shipped list's 300 storage-path keys plus the 72 new). The shipped list's 167 plain and
+  77 ROP keys are filtered by `variants_to_prepare` on this card, exactly as the run's own keys would be.
+- **Cap:** `kMaxSpecPipelines` is 2048. The 52-track candidate is `616` keys, well under it. The final
+  both-games candidate is in section 7.5.
 - **Priority rule if it ever grows:** do not truncate silently. First apply proposal 1 of section 5 (one prepared
   scale at a time); if the list still approaches 2048, keep keys by (a) how many scenes ask for them, (b) how many uber
   batches they save, and move the rest to a second, optionally downloaded list. A candidate key used by one scene is
   worth less than a key used by 40.
 
-The merge tool wrote the candidate to `private/task205-variants/candidate-1x.inc` (616 keys, one per row, the shipped
-list plus the 72 new). It is deliberately under `private/`: the shipped `.inc` changes only in a release, after the
-owner's review.
+The merge tool wrote the 52-track candidate to `private/task205-variants/candidate-1x.inc` (616 keys, one per row, the
+shipped list plus the 72 new). It is deliberately under `private/`: the shipped `.inc` changes only in a release, after
+the owner's review.
 
-### 7.4 The other modes
+### 7.4 The modes, both games
 
-The measured modes:
+| Run group | Runs | Keys per run | New vs 544 |
+|---|---:|---|---:|
+| GT4 v2.00 photo mode | 1 | 48 | 20 |
+| GT4 v2.00 used-car showroom | 1 | 28 | 7 |
+| GT4 v2.00 license test B-1 | 1 | 79 | 27 |
+| GT4 v2.00 Arcade (Clubman, car showroom) | 1 | 76 | 8 |
+| GT4 v2.00 GT Mode B-Spec night race | 1 | 96 | 31 |
+| GT4 v2.00 GT Mode A-Spec night race | 1 | 68 | 14 |
+| GT4 v2.00 GT Mode Casa menu | 1 | 1 | 0 |
+| Spec II license test | 1 | 66 | 19 |
+| Spec II used-car dealer/tuning display | 1 | 9 | 3 |
+| Spec II photo lab (album) | 1 | 1 | 0 |
+| Spec II license menu | 1 | 1 | 0 |
+| Spec II GT Mode event screen | 1 | 1 | 0 |
 
-| Mode | Runs | Keys per run (sum) | Distinct keys | New vs shipped | New beyond the 52 tracks |
-|---|---:|---:|---:|---:|---:|
-| Boot/title/Arcade menu | 2 | 2 | 1 | 0 | 0 |
-| Arcade car list and colour screen | 2 | 70 | 35 | 0 | 0 |
-| Same tracks in A-Spec (Tsukuba, Grand Valley, Tokyo) | 3 | 261 | 101 | 29 | 0 |
-| Car slot 5 (Tsukuba, Tokyo R246) | 2 | 173 | 101 | 29 | 5 |
-| Car slot 10 (Tsukuba, Tokyo R246) | 2 | 168 | 97 | 28 | 1 |
-| Car slot 17, Ford GT LM (the survey's car) | 2 | 182 | 102 | 31 | 0 |
-| Car slot 24 (Tsukuba, Tokyo R246) | 2 | 182 | 102 | 31 | 0 |
+**The v2.00 pass (7 runs, 142 distinct keys, 62 new against 544).** Photo mode (48 keys, 20 new: the first
+`Zformat=Z16` keys, as IN-537 predicted), used-car showroom (28, 7), license test B-1 (79, 27), Arcade Clubman with
+the car showroom (76, 8), GT Mode B-Spec night race (96, 31), GT Mode A-Spec night race (68, 14) and the Casa menu
+(1, 0). The v2.00 build is `private/slice417-v200-build` (plain, `GT4_EE_PROFILE=aspect`, the rc15 recipe).
 
-- **A-Spec changed nothing.** The same tracks in A-Spec recorded 101 distinct keys, 29 of them not in the shipped
-  list, but **none beyond the B-Spec union**. The mode changes who drives, not which draw states exist.
-- **A car can add a material state, but only a few.** Slots 5 and 10 together add 5 keys beyond the 52 tracks; slot 5
-  is where `Tfx=Highlight2` appears (a texture function the shipped list never had), plus a `DateOn`+blend+texture
-  combination and a SCANMSK state. Slots 17 and 24 add nothing. This is the "car through materials" answer measured:
-  most cars reuse the same states, a few body materials add one.
-- **Slot 0 never started a race.** Two attempts (Tsukuba, Tokyo) ended in the menus with `vblanks_480p=0`; the
-  TASK-171 car route has only slot 17 verified, and slot 0 is not a usable selection. The failed bins hold menu keys
-  only and are not part of the union.
-- **The boot/menu runs hold one key in their file**, not because the screens have no draws but because the file is
-  written at most every 10 s and these runs are short; their log shows 6 deferred states. The menu states are inside
-  every race bin (its first ~2,000 VBlanks), and all of them are in the shipped 544. The car list/colour screen adds
-  35 keys, also all shipped.
-- **Total 1x coverage:** 67 runs (52 race + 8 car + 3 A-Spec + 4 menu/setup) produce **160 distinct keys**, 72 of them
-  new, 41 new signatures, and 5 keys beyond the 52-track union.
+**The Spec II GT Mode modes.** License test (66 keys, 19 new), used-car dealer/tuning car display (9, 3), photo lab
+album (1, 0), license menu (1, 0), GT Mode event screen (1, 0) and the split-screen menus (1, 0 each). The Spec II
+save is on the bench card (`BASCUS-97436GAMEDATA`), so GT Mode is reachable without the owner's 100% save; the
+`Casa` menu was mapped (Garagem, Lab. de Fotos, Diário, Estatísticas, Opções, Trocas, Salvar).
 
-The modes that are pending, and why:
+**Blocked or pending, with the exact blocker:**
 
-| Mode | Why pending |
-|---|---|
-| GT Mode showroom, photo mode, license tests, GT Mode B-Spec/A-Spec | need a Spec II card with GT Mode data; the bench card is Arcade-only |
-| Replay | needs a finished race or a replay save, and a mapped menu route |
-| Split screen | the 2P entry in the Spec II Arcade menu was not navigated |
+| Mode | State | Blocker / what the owner must provide |
+|---|---|---|
+| Split-screen race | menu reached (`Tela Dividida`, category preview) | the 2P accept screen waits for a second controller; the harness feeds one pad. Provide a two-pad recording or a second-controller path |
+| Replay | replay saves exist on both cards (Spec II `BASCUS-97436R5MW/R8MW/R8UW/B5MW`); no replay entry found in the GT Mode home (Casa has no Replay in v2.00 or Spec II) or the title menu | name the menu path, or record the button sequence that loads a saved replay |
+| Spec II GT Mode race | event screen reached (`Eventos Europeus`, first event `0 Grand Tour`) | the rules-accept and car-entry sequence was not completed; the save has a Mitsubishi Lancer Evo. Provide a recording or the eligible event/car |
+| Spec II photo mode | **disabled by the mod**: the map says `Modo Fotografia: Função Desativada no Spec II` | none; use v2.00 for photo mode (measured) |
+| Spec II rotating showroom | used-car dealer and tuning car display captured | the rotating showroom proper was not separately reached; v2.00 used-car showroom measured |
 
-The modes that are pending are not guessed at: each needs either a Spec II GT Mode card or a mapped menu route, and
-neither exists in this worktree. Photo mode is the most valuable next one: IN-537 shows a Z16S depth target and a
-palette read per frame, and the shipped list has no `Zformat=Z16` key, so it is expected to add real states.
+The v2.00 GT Mode B-Spec and A-Spec runs cover the GT Mode race draw states; the Spec II Arcade 52 tracks cover the
+Spec II race states. Photo mode is the only mode that added a new depth format (`Z16`), and only v2.00 exposes it.
+
+### 7.5 The both-games union and the cap
+
+| Group | Runs | Keys recorded (sum) | Distinct keys | New vs 544 |
+|---|---:|---:|---:|---:|
+| Spec II 1x survey | 67 | 5239 | 160 | 72 |
+| Spec II modes | 7 | 80 | 66 | 19 |
+| v2.00 | 7 | 396 | 142 | 62 |
+
+**Final counts:** 81 runs, **191 distinct keys, 100 new against the 544, 60 new draw-state signatures**, 5,524 repeated
+keys across runs. The union with the shipped list is **644 keys**; on this card **400 are kept** (300 storage-path
+shipped keys + 100 new), after filtering the shipped list's 167 plain and 77 ROP keys. `kMaxSpecPipelines` is 2048, so
+the cap is **not exceeded**. The 28 keys beyond the previous 616 are the v2.00/mode additions: `Zformat=Z16` (photo
+and license), CT24/CT16 format states with Z24/Z16, `DateOn` blends, mip and a few blend/keep-top-byte combinations.
+
+The merge tool wrote the final candidate to `private/task205-variants/candidate-final.inc` (644 keys, the shipped list
+plus the 100 new). It is deliberately under `private/`: the shipped `.inc` changes only in a release, after the owner's
+review. The 52-track candidate (`candidate-1x.inc`, 616) remains as the narrower list.
 
 ## 8. Limits and confidence
 
 - **Confirmed by construction:** the key fields and their zeroing (`core2_gpu.cpp`); the file format; the scale
   projection (the 136/255 4x keys are a pure transformation of the shipped keys); the absence of 4x, SCANMSK and Z16
-  in the shipped list.
+  in the shipped list; the Spec II photo-mode disable text.
 - **High confidence:** the pattern that new keys are combinations, not new field values, in the 52 tracks (only the
-  SCANSMK flag); the per-track counts and the union (the recorder's own files); the card filters (the run prints
-  `colour attachment path off` and `[core2] shader cache` draws only storage keys).
-- **Measured on a subset:** A-Spec adds no key beyond B-Spec (three tracks); the car slots add 5 keys beyond the 52
-  tracks, including the one new field value `Tfx=Highlight2` (two tracks, four slots).
-- **Hypothesis:** photo mode, replay and split screen will add Z16/SCANMSK states (not measured); the prepare-side
-  scale expansion will remove the scale family without a fragment cost (not implemented).
+  SCANSMK flag); the per-track counts and the 52-track union (the recorder's own files); the card filters (the run
+  prints `colour attachment path off` and `[core2] shader cache` draws only storage keys); the v2.00 pass counts.
+- **Measured on a subset:** A-Spec adds no key beyond B-Spec (three Spec II tracks); the car slots add 5 keys beyond
+  the 52 tracks, including `Tfx=Highlight2`; the v2.00 modes add 28 keys beyond the previous 616, including `Z16`.
+- **Hypothesis:** the prepare-side scale expansion will remove the scale family without a fragment cost (not
+  implemented).
 - **Unknown:** the exact key set of the player's rc15 session (his `variants.bin` is not in the repository); the
-  integrated-GPU plain path and a card with the ROP path on; the full 2x/3x/4x/6x/12x sets; PAL/1080i; the modes listed
-  as pending.
+  integrated-GPU plain path and a card with the ROP path on; the full 2x/3x/4x/6x/12x sets; PAL/1080i; the blocked
+  modes above.
 - **Not measured:** the launcher's notice and export flow (design only); a real player list from another build (the
-  merge tool's `--shader-set` refusal is tested by construction, not with a foreign file).
+  merge tool's `--shader-set` refusal is tested by construction, not with a foreign file); the split-screen race, the
+  replay loader and a Spec II GT Mode race.
 
 ## Appendix A: every new key
 
@@ -456,78 +497,106 @@ says "another scale, aniso or ROP twin" has the same state and flags as a shippe
 
 | # | Scene (one that uses it) | Class of the key | Fields that differ from the nearest shipped key |
 |---:|---|---|---|
-| 1 | Motegi Road Course | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | push scale=2 textured_image->scale=1 textured_image |
-| 2 | Motegi West Short | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
-| 3 | Nürburgring Nordschleife | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image scanmask | push scale=1->scale=1 scanmask.1 textured_image |
-| 4 | Tsukuba, car slot 5 | format=CT32 tex=Modulate/Indexed z=Always/Z24/masked scale=1 scanmask | push scale=1->scale=1 scanmask.1 |
-| 5 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed z=Always/Z24/masked scale=1 scanmask | push scale=1->scale=1 scanmask.1 |
-| 6 | Tsukuba (wet) | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | BlendC As->Ad |
-| 7 | Motegi Road Course | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | BlendB Cd->Zero |
-| 8 | Motegi Road Course | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | BlendB Cd->Zero, BlendC As->Ad |
-| 9 | Tsukuba | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
-| 10 | Motegi Road Course | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 | TexLinear on->off |
-| 11 | Suzuka | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 12 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 13 | Infineon Sports | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 depth_from_position->scale=1 mip |
-| 14 | Mid-Field | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 15 | Nürburgring Nordschleife | format=CT32 tex=Modulate/RGBA8 blend z=GreaterEqual/Z24 fog scale=1 textured-image | push scale=1 textured_image depth_from_position->scale=1 textured_image |
-| 16 | Laguna Seca | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24 fog scale=1 | TexLinear on->off |
-| 17 | Infineon Sports | format=CT32 tex=Modulate/CT24raw z=GreaterEqual/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
-| 18 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
-| 19 | Valencia | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 | WrapT Repeat->RegionClamp |
-| 20 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 21 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 22 | Grand Canyon (A-Spec) | format=CT32 untextured blend z=GreaterEqual/Z24/masked scale=1 | Ztst Always->GreaterEqual |
-| 23 | Infineon Sports | format=CT32 tex=Modulate/CT24raw blend z=GreaterEqual/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
-| 24 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
-| 25 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 26 | Infineon Sports | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | WrapS RegionClamp->Repeat |
-| 27 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
-| 28 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 29 | Infineon Sports | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 1 | GT4 v2.00 license test B-1 | format=CT32 tex=Modulate/CT16raw z=Always/Z16 scale=1 textured-image | Zmsk on->off, Zformat Z24->Z16, TexLinear on->off |
+| 2 | Motegi Road Course | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | push scale=2 textured_image->scale=1 textured_image |
+| 3 | Motegi West Short | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 4 | Nürburgring Nordschleife | format=CT32 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image scanmask | push scale=1->scale=1 scanmask.1 textured_image |
+| 5 | GT4 v2.00 license test B-1 | format=CT32 tex=Modulate/Indexed z=Always/Z24/masked scale=1 scanmask | push scale=1->scale=1 scanmask.1 |
+| 6 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed z=Always/Z24/masked scale=1 scanmask | push scale=1->scale=1 scanmask.1 |
+| 7 | Tsukuba (wet) | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | BlendC As->Ad |
+| 8 | Motegi Road Course | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | BlendB Cd->Zero |
+| 9 | Motegi Road Course | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | BlendB Cd->Zero, BlendC As->Ad |
+| 10 | Tsukuba | format=CT32 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 11 | Motegi Road Course | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 | TexLinear on->off |
+| 12 | Suzuka | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 13 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 14 | Infineon Sports | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 depth_from_position->scale=1 mip |
+| 15 | Mid-Field | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 16 | Nürburgring Nordschleife | format=CT32 tex=Modulate/RGBA8 blend z=GreaterEqual/Z24 fog scale=1 textured-image | push scale=1 textured_image depth_from_position->scale=1 textured_image |
+| 17 | Laguna Seca | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24 fog scale=1 | TexLinear on->off |
+| 18 | Infineon Sports | format=CT32 tex=Modulate/CT24raw z=GreaterEqual/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 19 | GT4 v2.00 GT Mode B-Spec night race | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
+| 20 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
+| 21 | Valencia | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 | WrapT Repeat->RegionClamp |
+| 22 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 23 | Tsukuba | format=CT32 tex=Modulate/Indexed z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 24 | Grand Canyon (A-Spec) | format=CT32 untextured blend z=GreaterEqual/Z24/masked scale=1 | Ztst Always->GreaterEqual |
+| 25 | Infineon Sports | format=CT32 tex=Modulate/CT24raw blend z=GreaterEqual/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 26 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 27 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 28 | Infineon Sports | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | WrapS RegionClamp->Repeat |
+| 29 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
 | 30 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 31 | Fuji 2005 | format=CT32 tex=Modulate/RGBA8 blend z=GreaterEqual/Z24/masked scale=1 textured-image | Ztst Always->GreaterEqual |
-| 32 | Paris George V | format=CT32 untextured blend z=GreaterEqual/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
-| 33 | Laguna Seca | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | BlendB Cd->Zero |
-| 34 | Paris George V | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 35 | Laguna Seca | format=CT32 untextured blend z=GreaterEqual/Z24/masked fog scale=1 | BlendB Cd->Zero, BlendC As->Ad |
-| 36 | Cathedral Rocks II (A-Spec) | format=CT32 tex=Modulate/CT16raw blend z=GreaterEqual/Z24/masked fog scale=1 textured-image | push scale=1 textured_image depth_from_position->scale=1 textured_image |
-| 37 | Mid-Field | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 38 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 39 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | WrapS Repeat->RegionClamp, push scale=1->scale=1 mip |
-| 40 | Tokyo R246, car slot 5 | format=CT32 tex=Modulate/RGBA8 blend z=GreaterEqual/Z24/masked fog date scale=1 | DateOn off->on, BlendB Cd->Zero, BlendC As->Ad, TexOn off->on |
-| 41 | Cathedral Rocks II (A-Spec) | format=CT32 tex=Modulate/CT16raw blend z=GreaterEqual/Z24/masked fog date scale=1 textured-image | push scale=1 textured_image depth_from_position->scale=1 textured_image |
-| 42 | Hong Kong | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog date scale=1 | push scale=1 depth_from_position->scale=1 |
-| 43 | Special Stage Route 5 | format=CT32 tex=Modulate/Indexed blend atest=Equal/FrameOnly z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 44 | Motegi West Short | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 | Ate off->on, Atst Never->GreaterEqual, push scale=1 depth_from_position->scale=1 |
-| 45 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 | TexLinear on->off |
-| 46 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 | Ate off->on, Atst Never->GreaterEqual |
-| 47 | Fuji 80's | format=CT32 untextured blend atest=Greater/Keep z=Always/Z24/masked scale=1 | Atst Equal->Greater |
-| 48 | Motegi Super Speedway | format=CT32 tex=Modulate/CT24raw atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | Tcc on->off, TexelKind Indexed->CT24raw |
-| 49 | Cote d'Azur | format=CT32 tex=Modulate/CT24raw atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | Tcc on->off, TexelKind Indexed->CT24raw |
-| 50 | Grand Canyon (A-Spec) | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 scale=1 | FogOn on->off |
-| 51 | Infineon Sports | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | WrapT Repeat->RegionClamp |
-| 52 | Tsukuba | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
-| 53 | Tsukuba | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 54 | Tokyo R246, car slot 10 | format=CT32 tex=Highlight2/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | Tfx Modulate->Highlight2 |
-| 55 | Cathedral Rocks II (A-Spec) | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24/masked fog scale=1 | Zmsk off->on |
-| 56 | Costa di Amalfi | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 57 | Mid-Field | format=CT32 tex=Modulate/CT24raw blend atest=Greater/Keep z=GreaterEqual/Z24/masked scale=1 | Ate off->on, Atst Never->Greater, Tcc on->off, TexelKind Indexed->CT24raw |
-| 58 | Motegi Super Speedway | format=CT32 untextured blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
-| 59 | Infineon Sports | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 | WrapT Repeat->RegionClamp |
-| 60 | Tsukuba | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
-| 61 | Autumn Ring Mini | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
-| 62 | Circuit de la Sarthe I | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 | WrapS Repeat->RegionClamp |
-| 63 | Tsukuba | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | WrapS Repeat->RegionClamp, push scale=1->scale=1 mip |
-| 64 | Tsukuba | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
-| 65 | Infineon Sports | format=CT24 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
-| 66 | Infineon Sports | format=CT24 tex=Modulate/CT24raw z=Always/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
-| 67 | Infineon Sports | format=CT24 untextured blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
-| 68 | Nürburgring Nordschleife | format=CT16 untextured blend z=Always/Z32/masked scale=1 | push scale=1 depth_from_position->scale=1 |
-| 69 | Tsukuba (wet) | format=CT16 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 | push scale=1 textured_image depth_from_position->scale=1 |
-| 70 | Grand Valley East | format=CT16 tex=Modulate/CT16raw blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
-| 71 | Tsukuba (A-Spec) | format=CT16 tex=Modulate/Indexed blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
-| 72 | Tsukuba (A-Spec) | format=CT16 untextured blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 31 | Infineon Sports | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 32 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 33 | Fuji 2005 | format=CT32 tex=Modulate/RGBA8 blend z=GreaterEqual/Z24/masked scale=1 textured-image | Ztst Always->GreaterEqual |
+| 34 | Paris George V | format=CT32 untextured blend z=GreaterEqual/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 35 | Laguna Seca | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | BlendB Cd->Zero |
+| 36 | Paris George V | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 37 | Laguna Seca | format=CT32 untextured blend z=GreaterEqual/Z24/masked fog scale=1 | BlendB Cd->Zero, BlendC As->Ad |
+| 38 | GT4 v2.00 photo mode | format=CT32 tex=Modulate/CT16raw blend z=GreaterEqual/Z24/masked fog scale=1 textured-image | push scale=1 textured_image depth_from_position->scale=1 textured_image |
+| 39 | Mid-Field | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 40 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 41 | Tsukuba | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog scale=1 mip/aniso=0 | WrapS Repeat->RegionClamp, push scale=1->scale=1 mip |
+| 42 | GT4 v2.00 license test B-1 | format=CT32 untextured blend z=GreaterEqual/Z16/masked fog scale=1 | Zformat Z24->Z16, BlendB Cd->Zero, BlendC As->Ad |
+| 43 | GT4 v2.00 license test B-1 | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z16/masked fog scale=1 | Zformat Z24->Z16 |
+| 44 | Tokyo R246, car slot 5 | format=CT32 tex=Modulate/RGBA8 blend z=GreaterEqual/Z24/masked fog date scale=1 | DateOn off->on, BlendB Cd->Zero, BlendC As->Ad, TexOn off->on |
+| 45 | GT4 v2.00 photo mode | format=CT32 tex=Modulate/CT16raw blend z=GreaterEqual/Z24/masked fog date scale=1 textured-image | push scale=1 textured_image depth_from_position->scale=1 textured_image |
+| 46 | Hong Kong | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog date scale=1 | push scale=1 depth_from_position->scale=1 |
+| 47 | GT4 v2.00 GT Mode B-Spec night race | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog date scale=1 | push scale=1 depth_from_position->scale=1 |
+| 48 | GT4 v2.00 license test B-1 | format=CT32 tex=Modulate/Indexed blend z=GreaterEqual/Z24/masked fog date scale=1 | push scale=1 depth_from_position->scale=1 |
+| 49 | Special Stage Route 5 | format=CT32 tex=Modulate/Indexed blend atest=Equal/FrameOnly z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 50 | Motegi West Short | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 | Ate off->on, Atst Never->GreaterEqual, push scale=1 depth_from_position->scale=1 |
+| 51 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 | TexLinear on->off |
+| 52 | Nürburgring Nordschleife | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 | Ate off->on, Atst Never->GreaterEqual |
+| 53 | GT4 v2.00 GT Mode B-Spec night race | format=CT32 tex=Modulate/Indexed blend atest=GreaterEqual/Keep z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 54 | Fuji 80's | format=CT32 untextured blend atest=Greater/Keep z=Always/Z24/masked scale=1 | Atst Equal->Greater |
+| 55 | Motegi Super Speedway | format=CT32 tex=Modulate/CT24raw atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | Tcc on->off, TexelKind Indexed->CT24raw |
+| 56 | Cote d'Azur | format=CT32 tex=Modulate/CT24raw atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | Tcc on->off, TexelKind Indexed->CT24raw |
+| 57 | Grand Canyon (A-Spec) | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 scale=1 | FogOn on->off |
+| 58 | Infineon Sports | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | WrapT Repeat->RegionClamp |
+| 59 | Tsukuba | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
+| 60 | Tsukuba | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 61 | Tokyo R246, car slot 10 | format=CT32 tex=Highlight2/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | Tfx Modulate->Highlight2 |
+| 62 | GT4 v2.00 license test B-1 | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z16 fog scale=1 | Zformat Z24->Z16 |
+| 63 | Cathedral Rocks II (A-Spec) | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24/masked fog scale=1 | Zmsk off->on |
+| 64 | Costa di Amalfi | format=CT32 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24/masked fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 65 | Mid-Field | format=CT32 tex=Modulate/CT24raw blend atest=Greater/Keep z=GreaterEqual/Z24/masked scale=1 | Ate off->on, Atst Never->Greater, Tcc on->off, TexelKind Indexed->CT24raw |
+| 66 | Motegi Super Speedway | format=CT32 untextured blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 67 | Infineon Sports | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 | WrapT Repeat->RegionClamp |
+| 68 | Tsukuba | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
+| 69 | Autumn Ring Mini | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1 mip depth_from_position->scale=1 mip |
+| 70 | Circuit de la Sarthe I | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 | WrapS Repeat->RegionClamp |
+| 71 | Tsukuba | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | WrapS Repeat->RegionClamp, push scale=1->scale=1 mip |
+| 72 | Tsukuba | format=CT32 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 mip/aniso=0 | push scale=1->scale=1 mip |
+| 73 | GT4 v2.00 photo mode | format=CT32 tex=Modulate/RGBA8 atest=NotEqual/Keep z=Always/Z24 scale=1 textured-image | Zmsk on->off |
+| 74 | GT4 v2.00 license test B-1 | format=CT24 tex=Modulate/CT24raw blend z=Always/Z32/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 75 | GT4 v2.00 photo mode | format=CT24 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | TexLinear on->off, push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 76 | Infineon Sports | format=CT24 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 77 | Infineon Sports | format=CT24 tex=Modulate/CT24raw z=Always/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 78 | GT4 v2.00 GT Mode A-Spec night race | format=CT24 untextured blend z=Always/Z24/masked scale=1 | Zformat Z32->Z24 |
+| 79 | GT4 v2.00 GT Mode A-Spec night race | format=CT24 tex=Modulate/Indexed blend z=Always/Z24/masked scale=1 | Zformat Z32->Z24 |
+| 80 | GT4 v2.00 GT Mode A-Spec night race | format=CT24 tex=Modulate/Indexed blend z=Always/Z24/masked scale=1 | Zformat Z32->Z24 |
+| 81 | Infineon Sports | format=CT24 untextured blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 82 | GT4 v2.00 GT Mode A-Spec night race | format=CT24 tex=Modulate/Indexed blend z=Always/Z24/masked scale=1 | Zformat Z32->Z24 |
+| 83 | GT4 v2.00 license test B-1 | format=CT24 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | push scale=3 textured_image depth_from_position->scale=1 textured_image |
+| 84 | GT4 v2.00 photo mode | format=CT24 untextured blend z=Always/Z16/masked scale=1 | Zformat Z32->Z16 |
+| 85 | GT4 v2.00 photo mode | format=CT24 tex=Modulate/Indexed blend z=Always/Z16/masked scale=1 | Zformat Z32->Z16 |
+| 86 | GT4 v2.00 photo mode | format=CT24 tex=Modulate/Indexed blend z=Always/Z16/masked scale=1 | Zformat Z32->Z16 |
+| 87 | GT4 v2.00 photo mode | format=CT24 untextured blend z=GreaterEqual/Z16 scale=1 | Ztst Always->GreaterEqual, Zmsk on->off, Zformat Z32->Z16 |
+| 88 | GT4 v2.00 license test B-1 | format=CT24 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 89 | GT4 v2.00 photo mode | format=CT24 tex=Modulate/Indexed atest=Greater/Keep z=GreaterEqual/Z16 fog scale=1 | Format CT32->CT24, Zformat Z24->Z16, KeepTopByte off->on |
+| 90 | GT4 v2.00 license test B-1 | format=CT24 tex=Modulate/Indexed blend atest=Greater/RgbOnly z=GreaterEqual/Z24 fog scale=1 | push scale=1 depth_from_position->scale=1 |
+| 91 | GT4 v2.00 license test B-1 | format=CT16 tex=Modulate/RGBA8 blend scale=1 textured-image | Format CT32->CT16 |
+| 92 | Nürburgring Nordschleife | format=CT16 untextured blend z=Always/Z32/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 93 | GT4 v2.00 license test B-1 | format=CT16 tex=Modulate/Indexed blend z=Always/Z32/masked scale=1 | TexFst off->on |
+| 94 | GT4 v2.00 photo mode | format=CT16 tex=Modulate/RGBA8 z=Always/Z24/masked scale=1 textured-image | Format CT32->CT16 |
+| 95 | Tsukuba (wet) | format=CT16 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 | push scale=1 textured_image depth_from_position->scale=1 |
+| 96 | GT4 v2.00 GT Mode B-Spec night race | format=CT16 tex=Modulate/RGBA8 blend z=Always/Z24/masked scale=1 textured-image | push scale=1 textured_image depth_from_position->scale=1 textured_image |
+| 97 | Grand Valley East | format=CT16 tex=Modulate/CT16raw blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 98 | GT4 v2.00 Arcade (Clubman, car showroom) | format=CT16 tex=Modulate/Indexed blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 99 | GT4 v2.00 Arcade (Clubman, car showroom) | format=CT16 untextured blend z=Always/Z24/masked scale=1 | push scale=1 depth_from_position->scale=1 |
+| 100 | GT4 v2.00 license test B-1 | format=CT16 untextured blend z=Always/Z24/masked scale=1 | Format CT32->CT16, BlendB Zero->Cs, BlendD Zero->Cs |
 
 ## Appendix B: the run record
 

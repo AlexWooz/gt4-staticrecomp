@@ -3850,6 +3850,20 @@ heavier until the next prepare, enough to cost a frame at the margin; the visibl
 `variant_survey.py` (merge, dedupe, shader-set and cap checks, candidate `.inc` under `private/`). The harness is
 under `private/task205-tools/` (adapted from TASK-171, one fresh cache per run).
 
+**Follow-up (2026-11-07, both games and every mode).** A plain v2.00 build (`private/slice417-v200-build`, the rc15
+recipe) and the Spec II build ran the modes the first pass left pending. **v2.00 (7 runs, 142 distinct keys, 62 new):**
+photo mode 48 keys/20 new (the first `Zformat=Z16` states), used-car showroom 28/7, license B-1 79/27, Arcade
+Clubman with car showroom 76/8, GT Mode B-Spec night race 96/31, A-Spec night race 68/14, Casa menu 1/0. **Spec II
+GT Mode:** license test 66/19, used-car dealer/tuning car display 9/3, photo lab album 1/0, license menu 1/0, event
+screen 1/0. **Final both-games mapping: 81 runs, 191 distinct keys, 100 new against 544, 60 new draw-state
+signatures**, 5,524 repeated keys; candidate `private/task205-variants/candidate-final.inc` **644 keys** (400 kept on
+this card after the 167 plain/77 ROP filters), under the 2048 cap. **Blocked:** split-screen race (2P accept waits for
+a second controller; menus and track preview recorded), replay (saves exist on both cards, but no replay entry was
+found in the GT Mode home or title menu), Spec II GT Mode race (event screen reached; rules-accept/car-entry not
+completed), Spec II photo mode (**disabled by the mod**: `Modo Fotografia: Função Desativada no Spec II`), Spec II
+rotating showroom (dealer/tuning display recorded; v2.00 showroom measured). Docs and every count:
+`docs/SHADER-VARIANT-COVERAGE.md`.
+
 **State.** Branch `task/205-variant-coverage` from `task/204-no-ingame-compile` at c462fd45, pushed; no PR, no release,
 no launcher change.
 
