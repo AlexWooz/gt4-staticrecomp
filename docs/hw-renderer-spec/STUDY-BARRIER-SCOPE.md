@@ -1155,3 +1155,27 @@ What the two kinds of pass do (C, code):
 - **`GT4_CORE2_SUBMIT_EVERY=128`** (the phone's +11.6% VBlanks/s, 32% fewer passes): unchanged by this task; it is exact by
   construction (a submission boundary never changes what is drawn, TASK-178 9.2) and remains the Android default to confirm
   on the device.
+
+### 8. The 3x question: does the GS thread's CPU time grow with the scale?
+
+The brief recorded the phone's `gif` at **28.6 ms per VBlank at 3x**, more than a frame, and asked whether that is a
+blocking submit, CPU-side scaled work, or something else. The desktop does not reproduce it, and the way it does not is the
+answer we can give here (C for the numbers, H for the reading): the same Hong Kong race, headless, 5,400 VBlanks, one run
+per scale, the last 600-VBlank line (ms per VBlank):
+
+| Scale | `gif` | `batch` | `upload` | `draw` | `gpu_wait` | `gpu_busy` | `gpu_draw_passes` |
+|---|---|---|---|---|---|---|---|
+| 2x | 6.75 | 3.36 | 1.39 | 1.01 | 0.33 | 2.87 | 0.99 |
+| 3x | 6.80 | 3.36 | 1.42 | 1.00 | 0.60 | 3.84 | 1.67 |
+
+Every CPU-side category is the same at both scales (the guest emits the same commands: `upload` 130 calls, `clut` 368, `glm`
+52 calls and 264 pages in both runs), and the only things that grow are the GPU's own work (`gpu_busy` +34%,
+`gpu_draw_passes` +69%) and the wait the GS thread pays for it (`gpu_wait` 0.33 -> 0.60). So on this machine the scale
+reaches the GS thread only through *waiting*, not through scaled CPU work. On the phone the `gif` phase is where a blocking
+point lands (the same category that holds the submit), and a GPU that is 2-3x further behind at 3x turns every one of those
+points into a longer stall: 28.6 ms is the GPU backlog showing up as CPU time (Hyp; the phone's own `gpu_wait` and `submit`
+counters decide it, and they are already in the 600-VBlank line).
+
+That is also why no code changed for it here: the lever is the number of blocking submissions, which is
+`GT4_CORE2_SUBMIT_EVERY` (the phone measured +11.6% VBlanks/s and 32% fewer passes at 128), and the per-pass cost this
+task attacks. A "fix" that guessed at the phone's wait without its numbers would be a change nobody could check.
