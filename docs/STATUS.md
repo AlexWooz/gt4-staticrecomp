@@ -2,9 +2,10 @@
 
 ## TASK-205: map every CoreGS 2.0 shader variant and what creates one (owner, 2026-11-07; analysis, no runtime change)
 
-On `task/205-variant-coverage` (from `task/204-no-ingame-compile` at c462fd45), build `private/slice416-spec2-build`
-(plain Spec II, rc15 recipe). Doc `docs/SHADER-VARIANT-COVERAGE.md`, tools `scripts/coregs2_bench/variant_decode.py` and
-`variant_survey.py`, journal entry.
+On `task/205-variant-coverage` (from `task/204-no-ingame-compile` at c462fd45), builds
+`private/slice416-spec2-build` (plain Spec II) and `private/slice417-v200-build` (plain v2.00), both the rc15 recipe.
+Doc `docs/SHADER-VARIANT-COVERAGE.md`, tools `scripts/coregs2_bench/variant_decode.py` and `variant_survey.py`,
+journal entry.
 
 - **The pattern (Confirmed by construction + the survey).** A key is a 33-word draw state, not a track or car. The 544
   shipped keys are 144 draw-state signatures expanded over scales 1/2/3/6 (105 signatures only at 1x, none at 4x). The
@@ -20,15 +21,25 @@ On `task/205-variant-coverage` (from `task/204-no-ingame-compile` at c462fd45), 
   distinct keys, 69 new, 38 new signatures, 117 of the 144 shipped signatures seen, 4,046 repeated keys. All 67 1x runs
   (plus A-Spec, four car slots, menus and car setup): 160 keys, 72 new, 41 signatures. Union with the shipped list 616
   keys (372 on this card after the plain/ROP filters), under `kMaxSpecPipelines` (2048). A-Spec adds nothing; car slots
-  5/10 add 5 keys; slot 0 never starts a race; slots 17/24 add none. Pending: GT Mode showroom, photo mode, license
-  tests (need a Spec II GT Mode card), replay and split screen (need a menu route).
+  5/10 add 5 keys; slot 0 never starts a race; slots 17/24 add none.
+- **Follow-up (both games and every mode, 2026-11-07).** A plain v2.00 build (`private/slice417-v200-build`) and the
+  Spec II build ran the modes the first pass left pending. **v2.00 (7 runs, 142 distinct keys, 62 new):** photo mode
+  48/20 (the first `Zformat=Z16` states), used-car showroom 28/7, license B-1 79/27, Arcade Clubman with car showroom
+  76/8, GT Mode B-Spec night race 96/31, A-Spec night race 68/14, Casa menu 1/0. **Spec II GT Mode:** license test
+  66/19, used-car dealer/tuning car display 9/3, photo lab album 1/0, license menu 1/0, event screen 1/0. The Spec II
+  save is on the bench card (`BASCUS-97436GAMEDATA`), so no owner save is needed. **Final: 84 runs, 191 distinct keys,
+  100 new, 60 new signatures**, 5,527 repeated keys; candidate `candidate-final.inc` **644 keys** (400 kept on this
+  card after the 167 plain/77 ROP filters), under the 2048 cap. **Blocked:** split-screen race (needs a second
+  controller; menus recorded), replay (saves exist, loader entry not found), Spec II GT Mode race (event screen
+  reached, rules/car entry not completed), Spec II photo mode (**disabled by the mod**) and the Spec II rotating
+  showroom (dealer/tuning display recorded; the v2.00 showroom is measured). Details in `docs/SHADER-VARIANT-COVERAGE.md`.
 - **Fallback cost.** George V Paris at 4x, repeated: deferred 5.69 ms gpu_busy / 8.90 ms wall per VBlank against
   prepared 3.78 / 8.44 (1.91 ms GPU, +50%; wall +5%). At 1x TASK-204's night race was within noise (6.51 vs 6.54). A
   first-encounter 4x session is ~2 ms/frame heavier until the next prepare — enough to cost a frame at the margin, not
   the 1 s compile hitch (removed by TASK-204).
 - **Player loop (design only).** Launcher card after `deferred=N`, one validated export (variants.bin + the log bundle,
   no automatic upload), merge-tool shader-set/key-size refusal, en-US/pt-BR guide.
-- **Not done:** launcher UI or export code; photo/replay/split-screen runs; no PR, no release.
+- **Not done:** launcher UI or export code; the blocked runs above; no PR, no release.
 
 ## TASK-204: CoreGS 2.0 never compiles a pipeline during play (owner, 2026-11-07; reviewed, owner test build ready, ships with rc16)
 
