@@ -3479,6 +3479,35 @@ describes it:
 Clean room: implementation agents never open PCSX2 sources. Branch `task/182-barrier-scope` from `release/1.3.0-rc15`, in the
 `gt4-wt-178-download-wait` worktree. State: step 1 in progress.
 
+### TASK-184 - CoreGS 2.0: cut the GPU stalls of the no-interlock path (Android, Adreno), exactly (2026-11-06)
+
+**Why.** On the S23 Ultra (Adreno 740, no fragment shader interlock) the no-interlock path costs 1,318-1,983 fragment
+barriers, 112-130 full barriers and 26-35 render passes per VBlank at 2x, with `gpu_busy` about 11.5 ms at both 1x and 2x:
+the cost is per barrier and per pass, not per pixel. The phone has none of the ordering or attachment-read extensions
+(rasterization-order attachment access, dynamic-rendering local read, attachment feedback loop, shader tile image), so its
+per-primitive barriers cannot be replaced by hardware order.
+
+**What this task did** (`docs/hw-renderer-spec/STUDY-BARRIER-SCOPE.md`, "TASK-184"; journal 2026-11-06):
+1. **Capability log:** `DeviceProfile::ordering` and one `[hw] ordering:` line in game.log on every platform (the seven
+   extension families and their feature bits), plus `[core2] rasterization order attachment access:` and
+   `[core2] primitive overlap test:`.
+2. **`GT4_CORE2_RASTER_ORDER=0|1`** (auto where supported): the colour-attachment subpass and its pipelines declare
+   rasterization-order attachment access. It removes no barrier today (the attachment path pays none; the storage path
+   would need an attachment *read*), and it is the precondition for that variant. Pinned by a mocked-capability fixture.
+3. **`GT4_CORE2_TIGHT_OVERLAP=1`** (default off): the "may share a pixel" test is now an output-pixel test
+   (`core2_overlap.hpp`) - the pixel box on the raster grid clipped by the scissor, and a closed-form per-row interval test
+   with the top-left fill rule for axis-aligned right triangles; general triangles keep the separating-edge test. Hong Kong
+   2x without interlock: **fragment barriers 1,103.22 -> 830.45 per VBlank (-24.7%)**, Motegi 2x **593.39 -> 498.39
+   (-16.0%)**, full barriers and passes unchanged, draw calls 1,147 -> 953 and 1,007 -> 794, every flare hash and 12 of 12
+   frame dumps identical. Fixture `hw_core2_overlap`: 7,015 pairs against brute-force coverage, 0 false negatives.
+4. **Attachment loads and stores: audit only** - the storage pass has no attachments; the attachment passes already bind
+   depth only when it is written and use `DONT_CARE` for stencil. The one exact reduction found (fold a whole-image clear
+   into the next attachment pass's `loadOp = CLEAR`) is designed and not shipped.
+
+**Gates:** full CTest serial, 322 tests, 100% passed, 1 skipped (504.2 s); the four study flare hashes; the menu and both
+races' composed frames. **For Android:** `GT4_CORE2_TIGHT_OVERLAP=1` and `GT4_CORE2_SUBMIT_EVERY=128`;
+`GT4_CORE2_RASTER_ORDER` stays auto. State: done on the desktop, the phone A/B decides the defaults.
+
 ### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
 
 The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
