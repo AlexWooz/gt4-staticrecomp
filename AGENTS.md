@@ -210,6 +210,9 @@ github.com/Kaezzey/gt4-staticrecomp is read-only.
   Beta lists rcs by date (plus a newer stable on top), Stable lists finals by SemVer. Drafts are never listed or
   offered (the public API does not even return them), and versions older than the picker minimum are hidden. Going to
   an older version shows a strong downgrade warning; a newer version, from either channel, is always plain.
+- **Every build uploaded to GitHub ships both games** (owner, 2026-11-07): a draft or published build must include
+  **GT4 v2.00 and GT4 Spec II**. A build with only one of them is invalid; test builds included. The only exception
+  is a specifically scoped test that the owner asks for in words, and it must say so in its notes.
 - **Every new build goes up as a GitHub draft** (owner, 2026-10-23): after the automated checks and the language check,
   upload it as a **draft** release (`gh release create <tag> --draft`, with the label, the assets and the full notes
   plus a test-build warning). A draft is private: neither the public nor any launcher sees it, and the owner can
