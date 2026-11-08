@@ -3785,7 +3785,7 @@ the next prepare.
   racing) and **10 of 10** frames; v2.00 Arcade 3x **14 of 14**. VU1/VU0 verify: 0 interpreted calls, **verify_mismatches
   0** (Spec II 24.1M/5.5M compiled calls, v2.00 36.2M/5.6M); MTVU **8,032 frames, 0 mismatches**. Gates script `wrong=0`.
 - **52-track spot check** (Spec II, 1x, prepared list 196 variants on this card): Nordschleife, Tsukuba, Infineon Sports
-  and Hong Kong, the TASK-205 route and window: **0 deferred keys, 0 deferral-caused uber batches** in all four (52-53
+  and Hong Kong, the TASK-205 route and window: **0 deferred keys, 0 deferral-caused uber batches** in all four (53-64
   residual startup uber batches), `variants.bin` still 196 (nothing new recorded).
 - **Tests:** `hw_core2_*` **36 of 36** (125.7 s), including the updated `hw_core2_prepare_scale` (0 failures). Full CTest
   **320 passed, 1 known skip, 0 failed of 321** on both builds (482.0 s v2.00, 458.2 s Spec II). Launcher
