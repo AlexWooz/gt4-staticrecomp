@@ -164,7 +164,75 @@ gt4::hw::DeviceProfile probe_device_profile(VkInstance instance, VkPhysicalDevic
     gt4_hw_vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, extensions.data());
     for (const VkExtensionProperties &extension : extensions) {
       if (std::strcmp(extension.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) profile.memory_budget = true;
+      // TASK-184: the ordering and attachment-read extensions, by name (the feature bits are queried below, and only
+      // where the extension is present: a feature struct of an extension the device lacks has no defined answer).
+      if (std::strcmp(extension.extensionName, VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME) == 0) {
+        profile.ordering.raster_order_ext = true;
+      }
+      if (std::strcmp(extension.extensionName, VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME) == 0) {
+        profile.ordering.raster_order_arm = true;
+      }
+      if (std::strcmp(extension.extensionName, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME) == 0) {
+        profile.ordering.dynamic_rendering_local_read = true;
+      }
+      if (std::strcmp(extension.extensionName, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) == 0) {
+        profile.ordering.attachment_feedback_loop_layout = true;
+      }
+      if (std::strcmp(extension.extensionName, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME) == 0) {
+        profile.ordering.attachment_feedback_loop_dynamic_state = true;
+      }
+      if (std::strcmp(extension.extensionName, VK_EXT_SHADER_TILE_IMAGE_EXTENSION_NAME) == 0) {
+        profile.ordering.shader_tile_image = true;
+      }
+      if (std::strcmp(extension.extensionName, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME) == 0) {
+        profile.ordering.fragment_shader_interlock = true;
+      }
     }
+  }
+  // TASK-184: the feature bits, each struct chained only when its extension is present. The colour/depth/stencil ordering
+  // bits are aliases between the EXT and the ARM spelling, so one struct answers for both.
+  {
+    VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT order{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT};
+    VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR localRead{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR};
+    VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT feedbackLayout{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
+    VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT feedbackDynamic{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_FEATURES_EXT};
+    VkPhysicalDeviceShaderTileImageFeaturesEXT tileImage{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_TILE_IMAGE_FEATURES_EXT};
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT interlock{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+    VkPhysicalDeviceFeatures2 chain{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkBaseOutStructure *tail = reinterpret_cast<VkBaseOutStructure *>(&chain);
+    auto link = [&tail](void *structure) {
+      auto *node = reinterpret_cast<VkBaseOutStructure *>(structure);
+      node->pNext = nullptr;
+      tail->pNext = node;
+      tail = node;
+    };
+    if (profile.ordering.raster_order_ext || profile.ordering.raster_order_arm) link(&order);
+    if (profile.ordering.dynamic_rendering_local_read) link(&localRead);
+    if (profile.ordering.attachment_feedback_loop_layout) link(&feedbackLayout);
+    if (profile.ordering.attachment_feedback_loop_dynamic_state) link(&feedbackDynamic);
+    if (profile.ordering.shader_tile_image) link(&tileImage);
+    if (profile.ordering.fragment_shader_interlock) link(&interlock);
+    if (chain.pNext != nullptr) gt4_hw_vkGetPhysicalDeviceFeatures2(physical, &chain);
+    profile.ordering.raster_order_color_supported = order.rasterizationOrderColorAttachmentAccess == VK_TRUE;
+    profile.ordering.raster_order_depth_supported = order.rasterizationOrderDepthAttachmentAccess == VK_TRUE;
+    profile.ordering.raster_order_stencil_supported = order.rasterizationOrderStencilAttachmentAccess == VK_TRUE;
+    profile.ordering.dynamic_rendering_local_read =
+        profile.ordering.dynamic_rendering_local_read && localRead.dynamicRenderingLocalRead == VK_TRUE;
+    profile.ordering.attachment_feedback_loop_layout =
+        profile.ordering.attachment_feedback_loop_layout && feedbackLayout.attachmentFeedbackLoopLayout == VK_TRUE;
+    profile.ordering.attachment_feedback_loop_dynamic_state =
+        profile.ordering.attachment_feedback_loop_dynamic_state && feedbackDynamic.attachmentFeedbackLoopDynamicState == VK_TRUE;
+    profile.ordering.shader_tile_image_color = tileImage.shaderTileImageColorReadAccess == VK_TRUE;
+    profile.ordering.shader_tile_image_depth = tileImage.shaderTileImageDepthReadAccess == VK_TRUE;
+    profile.ordering.shader_tile_image_stencil = tileImage.shaderTileImageStencilReadAccess == VK_TRUE;
+    profile.ordering.interlock_sample = interlock.fragmentShaderSampleInterlock == VK_TRUE;
+    profile.ordering.interlock_pixel = interlock.fragmentShaderPixelInterlock == VK_TRUE;
+    profile.ordering.interlock_shading_rate = interlock.fragmentShaderShadingRateInterlock == VK_TRUE;
   }
   const auto properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
       instance_proc(instance, "vkGetPhysicalDeviceMemoryProperties2"));

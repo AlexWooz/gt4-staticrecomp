@@ -183,6 +183,59 @@ int main() {
       check(plan.reduced == !today(plan, shares), "reduced exactly when below today's sizes");
     }
   }
+  // ---- TASK-184: the ordering capabilities, mocked, and the raster-order decision they produce ----
+  {
+    DeviceProfile none;  // the S23's Adreno 740, as its own extension list reads: none of these
+    check(!raster_order_default_on(none), "no extension: the raster-order flags stay off");
+    check(std::string(raster_order_reason(none)) == "no rasterization-order attachment access", "and say why");
+    const std::string text = ordering_line(none);
+    check(text.find("rasterization-order attachment access: EXT no, ARM no, colour no (no), depth no (no), stencil no (no)") == 0,
+          "the ordering line starts with the three ordering bits, reported and enabled");
+    check(text.find("dynamic rendering local read no") != std::string::npos, "the line names local read");
+    check(text.find("attachment feedback loop layout no, dynamic state no") != std::string::npos, "the line names the loops");
+    check(text.find("shader tile image no (colour no, depth no, stencil no)") != std::string::npos, "the line names tile images");
+    check(text.find("fragment shader interlock no (sample no, pixel no, shading rate no)") != std::string::npos,
+          "the line names the interlock bits");
+
+    DeviceProfile present;  // the extension is in the list but the feature bit is not offered
+    present.ordering.raster_order_ext = true;
+    check(!raster_order_default_on(present), "extension without the feature: off");
+    check(std::string(raster_order_reason(present)) == "the extension is present but the feature is not", "and say why");
+
+    DeviceProfile created;  // reported and enabled at device creation: the path turns on by itself
+    created.ordering.raster_order_ext = true;
+    created.ordering.raster_order_color_supported = true;
+    created.ordering.raster_order_color_enabled = true;
+    created.ordering.raster_order_depth_supported = true;
+    created.ordering.raster_order_depth_enabled = true;
+    check(raster_order_default_on(created), "extension, feature and enabled: on by itself");
+    check(created.ordering.color_ordered(), "the colour bit is the one the subpass flag needs");
+    check(std::string(raster_order_reason(created)) == "the device has rasterizationOrderColorAttachmentAccess",
+          "and say why");
+    const std::string orderedText = ordering_line(created);
+    check(orderedText.find("colour yes (yes), depth yes (yes)") != std::string::npos,
+          "the line shows supported and enabled side by side");
+
+    DeviceProfile arm;  // the ARM spelling alone is enough (the three bits are the same bits)
+    arm.ordering.raster_order_arm = true;
+    arm.ordering.raster_order_color_supported = true;
+    arm.ordering.raster_order_color_enabled = true;
+    check(raster_order_default_on(arm), "the ARM spelling counts too");
+    check(ordering_line(arm).find("EXT no, ARM yes") != std::string::npos, "and the line keeps the spelling apart");
+
+    DeviceProfile reported;  // reported by the device but the device was created without it (a refused feature)
+    reported.ordering.raster_order_ext = true;
+    reported.ordering.raster_order_color_supported = true;
+    check(!raster_order_default_on(reported), "reported but not enabled: off, never a validation error");
+
+    // The flags the path declares for each of those profiles (the renderer static_asserts the bit values against Vulkan).
+    const RasterOrderFlags noFlags = raster_order_flags(none.ordering);
+    check(noFlags.subpass == 0 && noFlags.colorBlend == 0 && !noFlags.any(), "no capability, no flags");
+    const RasterOrderFlags ordered = raster_order_flags(created.ordering);
+    check(ordered.subpass == kRasterOrderSubpassColor && ordered.colorBlend == kRasterOrderColorBlendFlag && ordered.any(),
+          "colour access: the subpass and the pipeline both carry the colour bit");
+    check(raster_order_flags(reported.ordering).subpass == 0, "supported but not enabled: no flags");
+  }
   std::printf("hw_device_profile: ok\n");
   return 0;
 }

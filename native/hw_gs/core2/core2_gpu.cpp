@@ -6,6 +6,7 @@
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
 
 #include "core2_gpu.hpp"
+#include "core2_overlap.hpp"
 
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
 #include "../hw_queue_lock.hpp"
@@ -51,6 +52,12 @@ constexpr std::uint32_t kAtlasSide = 4096;      // 1x texel atlas
 constexpr std::uint32_t kGraphicsPushBytes = 32;
 constexpr std::uint32_t kComputePushBytes = 128;
 constexpr std::uint32_t kTransientSets = 32768;
+
+// TASK-184: the flag values the host-only device-profile fixture pins (hw_device_profile.hpp) must stay the Vulkan ones.
+static_assert(gt4::hw::kRasterOrderSubpassColor ==
+              VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT);
+static_assert(gt4::hw::kRasterOrderColorBlendFlag ==
+              VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
 
 bool check(VkResult result, const char *what, std::string &error) {
   if (result == VK_SUCCESS) return true;
@@ -103,41 +110,12 @@ struct DrawSetKeyHash {
   }
 };
 
-// IN-471: the pixels a primitive of a batch can cover, in 12.4 native units, for deciding without the pixel interlock
-// whether it must wait for earlier ones. A triangle, or (lines, points) only a box.
-struct PrimitiveShape {
-  std::int32_t x[3] = {}, y[3] = {};
-  std::int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
-  bool triangle = false;
-};
+// IN-471, TASK-184: the pixels a primitive of a batch can cover, in 12.4 native units (the edges) and output pixels
+// (the raster grid of the pass), for deciding without the pixel interlock whether it must wait for earlier ones.
+using PrimitiveShape = overlap::Shape;
 
-// Whether an edge of `a` has all of `b` on its outer side. A vertex of `b` that is also a vertex of `a` may lie on the
-// edge: identical vertices snap identically and the rasteriser's fill rule gives each sample of a shared edge or vertex
-// to one triangle. Any other vertex needs a gap of 1/16 native pixel, more than the GPU's vertex snapping can close.
-inline bool EdgeSeparates(const PrimitiveShape &a, const PrimitiveShape &b) {
-  for (int i = 0; i < 3; ++i) {
-    const int j = (i + 1) % 3, k = (i + 2) % 3;
-    const std::int64_t ex = a.x[j] - a.x[i], ey = a.y[j] - a.y[i];
-    const std::int64_t third = ex * (a.y[k] - a.y[i]) - ey * (a.x[k] - a.x[i]);
-    if (third == 0) return true;  // no area: covers nothing
-    const std::int64_t sign = third > 0 ? 1 : -1;
-    const std::int64_t gap = (ex < 0 ? -ex : ex) + (ey < 0 ? -ey : ey);
-    bool outside = true;
-    for (int m = 0; m < 3 && outside; ++m) {
-      const bool sharedVertex = (b.x[m] == a.x[0] && b.y[m] == a.y[0]) || (b.x[m] == a.x[1] && b.y[m] == a.y[1]) ||
-                                (b.x[m] == a.x[2] && b.y[m] == a.y[2]);
-      outside = sign * (ex * (b.y[m] - a.y[i]) - ey * (b.x[m] - a.x[i])) <= (sharedVertex ? 0 : -gap);
-    }
-    if (outside) return true;
-  }
-  return false;
-}
-
-inline bool ShapesMayShareAPixel(const PrimitiveShape &a, const PrimitiveShape &b) {
-  if (a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY) return false;
-  if (!a.triangle || !b.triangle) return true;
-  return !EdgeSeparates(a, b) && !EdgeSeparates(b, a);
-}
+// Whether an edge of `a` has all of `b` on its outer side: the filling rule shared by both tests (core2_overlap.hpp).
+inline bool EdgeSeparates(const PrimitiveShape &a, const PrimitiveShape &b) { return overlap::edge_separates(a, b); }
 
 // IN-464: a set of the GLM's 512 pages of 8 KiB (32 blocks each), for page-granular GLM hazards (Impl::order).
 struct GlmPages {
@@ -341,6 +319,10 @@ struct Gpu::Impl {
   std::vector<Image> recycled;
   VkDeviceSize recycledBytes = 0;
   bool integrated = false;  // IN-431: VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+  // TASK-184: the colour-attachment passes and pipelines declare rasterization-order attachment access (the device was
+  // created with the feature). GT4_CORE2_RASTER_ORDER=0 keeps the flags off; auto is on where the device has them.
+  bool rasterOrder = false;
+  gt4::hw::RasterOrderFlags rasterOrderFlags;
   bool recycleImages = std::getenv("GT4_CORE2_IMAGE_POOL") == nullptr || std::strcmp(std::getenv("GT4_CORE2_IMAGE_POOL"), "0") != 0;
   std::uint32_t nextSerial = 1;
   bool renderPassOpen = false;
@@ -1014,6 +996,8 @@ struct Gpu::Impl {
       ropAttachments[1].colorWriteMask = rop_depth_mask(rop);
       blend.attachmentCount = rop_depth_mask(rop) != 0 ? 2 : 1;
       blend.pAttachments = ropAttachments;
+      // TASK-184: the pipeline joins the ordered subpass it draws in (the spec requires the flag on both).
+      blend.flags = rasterOrderFlags.colorBlend;
       if (const RopBlend *mode = rop_blend_mode(rop)) {
         ropAttachments[0].blendEnable = VK_TRUE;
         ropAttachments[0].srcColorBlendFactor = mode->source;
@@ -2166,6 +2150,11 @@ struct Gpu::Impl {
   static constexpr std::size_t kDisjointGroupMax = 256;
   const bool groupDisjoint =
       std::getenv("GT4_CORE2_GROUP_DISJOINT") == nullptr || std::strcmp(std::getenv("GT4_CORE2_GROUP_DISJOINT"), "0") != 0;
+  // TASK-184: the output-pixel overlap test (core2_overlap.hpp) in place of the vertex-space bounds: the pixel box on the
+  // raster grid clipped by the scissor, and the fill-rule row test for axis-aligned right triangles. Exact (only a false
+  // "may share" can disappear, never a real pair). GT4_CORE2_TIGHT_OVERLAP=1 turns it on; unset or 0 is the IN-471 test.
+  const bool tightOverlap =
+      std::getenv("GT4_CORE2_TIGHT_OVERLAP") != nullptr && std::strcmp(std::getenv("GT4_CORE2_TIGHT_OVERLAP"), "0") != 0;
   std::vector<PrimitiveShape> disjointGroup;
   std::uint32_t disjointFrame = 0, disjointDepth = 0;
   struct FillRect { std::int32_t x0, y0, x1, y1; };  // IN-442 constant fills: output pixels [x0, x1) x [y0, y1)
@@ -3294,6 +3283,19 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   if (!s.pipelines[0] || !s.pipelines[1] || !s.pipelines[2]) return false;
   // IN-481
   {
+    // TASK-184: rasterization-order attachment access. Auto: on where the device was created with the colour feature;
+    // GT4_CORE2_RASTER_ORDER=0 turns it off, =1 asks for it (and stays off where the device cannot). It changes the
+    // subpass and pipeline flags of the colour-attachment path and nothing else: the path reads no attachment back, so
+    // the picture cannot change; the flags are what a later attachment-read variant needs.
+    {
+      const char *orderSwitch = std::getenv("GT4_CORE2_RASTER_ORDER");
+      const bool wanted = orderSwitch ? std::strcmp(orderSwitch, "0") != 0 : gt4::hw::raster_order_default_on(handles.profile);
+      s.rasterOrder = wanted && handles.profile.ordering.color_ordered();
+      s.rasterOrderFlags = s.rasterOrder ? gt4::hw::raster_order_flags(handles.profile.ordering) : gt4::hw::RasterOrderFlags{};
+      std::fprintf(stderr, "[core2] rasterization order attachment access: %s (%s%s)\n", s.rasterOrder ? "on" : "off",
+                   gt4::hw::raster_order_reason(handles.profile),
+                   orderSwitch && !s.rasterOrder && wanted ? ", GT4_CORE2_RASTER_ORDER=1 but unsupported" : "");
+    }
     const char *ropSwitch = std::getenv("GT4_CORE2_ROP");
     const bool wanted = ropSwitch ? std::strcmp(ropSwitch, "0") != 0 : s.integrated;
     s.dualSourceBlend = handles.dualSourceBlend;
@@ -3319,6 +3321,10 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
       for (std::uint32_t count = 1; count <= 2; ++count) {
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        // TASK-184: the subpass declares that its attachment accesses follow primitive order, so a fragment stage may
+        // read what the earlier primitives stored there (this path reads nothing back yet; the flag is what the read
+        // needs, and it changes no pixel while nothing reads).
+        subpass.flags = s.rasterOrderFlags.subpass;
         subpass.colorAttachmentCount = count;
         subpass.pColorAttachments = references;
         VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
@@ -3338,6 +3344,9 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
     }
     std::fprintf(stderr, "[core2] colour attachment path (IN-481) %s" "\n", s.ropOn ? "on" : "off");
   }
+  std::fprintf(stderr, "[core2] primitive overlap test: %s\n",
+               s.tightOverlap ? "output pixels on the raster grid, fill rule (GT4_CORE2_TIGHT_OVERLAP=1)"
+                              : "vertex bounds and separating edges (IN-471; GT4_CORE2_TIGHT_OVERLAP=1 tightens it)");
   if (handles.pixelInterlock) {
     s.interlockModule = s.make_module(hwgs::shaders::hw_pixel_uber_core2_interlock_words, hwgs::shaders::hw_pixel_uber_core2_interlock_word_count, error);
     if (!s.interlockModule) return false;
@@ -4177,22 +4186,23 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
           for (std::uint32_t v = draw.first; v + 3u <= draw.first + draw.count; v += 3u) {
             PrimitiveShape shape;
             shape.triangle = true;
-            shape.minX = shape.minY = INT32_MAX;
-            shape.maxX = shape.maxY = INT32_MIN;
             for (std::uint32_t corner = 0; corner < 3u; ++corner) {
               shape.x[corner] = static_cast<std::int16_t>((*batch.vertices)[v + corner].x);
               shape.y[corner] = static_cast<std::int16_t>((*batch.vertices)[v + corner].y);
-              shape.minX = std::min(shape.minX, shape.x[corner]);
-              shape.minY = std::min(shape.minY, shape.y[corner]);
-              shape.maxX = std::max(shape.maxX, shape.x[corner]);
-              shape.maxY = std::max(shape.maxY, shape.y[corner]);
             }
+            overlap::set_bounds(shape);
             shapes.push_back(shape);
           }
         }
         bool disjoint = shapes.size() <= 128u;
+        // TASK-184: this path is the interlock GPU's; it keeps the vertex-space test (IN-496's decision is about a whole
+        // screen pass whose triangles do not overlap at all).
         for (std::size_t a = 0; a < shapes.size() && disjoint; ++a) {
-          for (std::size_t b = a + 1; b < shapes.size() && disjoint; ++b) disjoint = !ShapesMayShareAPixel(shapes[a], shapes[b]);
+          for (std::size_t b = a + 1; b < shapes.size() && disjoint; ++b) {
+            const PrimitiveShape &p = shapes[a], &q = shapes[b];
+            const bool boxSeparation = p.maxx < q.minx || q.maxx < p.minx || p.maxy < q.miny || q.maxy < p.miny;
+            if (!boxSeparation && !EdgeSeparates(p, q) && !EdgeSeparates(q, p)) disjoint = false;
+          }
         }
         shapes.clear();
         if (disjoint) {
@@ -4226,19 +4236,18 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     s.disjointFrame = frame->serial;
     s.disjointDepth = depth->serial;
     const std::vector<gpu::GpuVertex> &vertexList = *batch.vertices;
+    // TASK-184 (GT4_CORE2_TIGHT_OVERLAP): the raster grid of the pass, for the output-pixel part of the overlap test.
+    const bool tightOverlap = s.tightOverlap;
+    const double rasterScale = static_cast<double>(sc);
+    const double rasterShift = static_cast<double>(frame->scale == s.scale ? s.shift : 1.0f);
     auto shapeOf = [&](std::uint32_t first, bool triangle) {
       PrimitiveShape shape;
       shape.triangle = triangle;
-      shape.minX = shape.minY = INT32_MAX;
-      shape.maxX = shape.maxY = INT32_MIN;
       for (std::uint32_t v = 0; v < (triangle ? 3u : 1u); ++v) {
         shape.x[v] = static_cast<std::int16_t>(vertexList[first + v].x);
         shape.y[v] = static_cast<std::int16_t>(vertexList[first + v].y);
-        shape.minX = std::min(shape.minX, shape.x[v]);
-        shape.minY = std::min(shape.minY, shape.y[v]);
-        shape.maxX = std::max(shape.maxX, shape.x[v]);
-        shape.maxY = std::max(shape.maxY, shape.y[v]);
       }
+      overlap::set_bounds(shape);
       return shape;
     };
     std::array<PrimitiveShape, 2> shapes;
@@ -4265,16 +4274,35 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
         } else {  // a box with a native pixel of slack
           PrimitiveShape box = shapeOf(draw.first, false);
           const PrimitiveShape end = shapeOf(draw.first + draw.count - 1u, false);
-          box.minX = std::min(box.minX, end.minX) - 16;
-          box.minY = std::min(box.minY, end.minY) - 16;
-          box.maxX = std::max(box.maxX, end.maxX) + 16;
-          box.maxY = std::max(box.maxY, end.maxY) + 16;
+          box.minx = std::min(box.minx, end.minx) - 16;
+          box.miny = std::min(box.miny, end.miny) - 16;
+          box.maxx = std::max(box.maxx, end.maxx) + 16;
+          box.maxy = std::max(box.maxy, end.maxy) + 16;
           shapes[shapeCount++] = box;
+        }
+        const std::int32_t clipLeft = command.scissor.offset.x;
+        const std::int32_t clipTop = command.scissor.offset.y;
+        const std::int32_t clipRight = clipLeft + static_cast<std::int32_t>(command.scissor.extent.width);
+        const std::int32_t clipBottom = clipTop + static_cast<std::int32_t>(command.scissor.extent.height);
+        if (tightOverlap) {
+          for (std::size_t n = 0; n < shapeCount; ++n) {
+            overlap::set_pixel_box(shapes[n], sc, static_cast<float>(rasterShift), clipLeft, clipTop, clipRight, clipBottom);
+          }
         }
         if (!group.empty() && group.size() + shapeCount <= Impl::kDisjointGroupMax) {
           bool overlaps = false;
           for (const PrimitiveShape &earlier : group) {
-            for (std::size_t n = 0; n < shapeCount && !overlaps; ++n) overlaps = ShapesMayShareAPixel(earlier, shapes[n]);
+            for (std::size_t n = 0; n < shapeCount && !overlaps; ++n) {
+              if (tightOverlap) {
+                overlaps = overlap::may_share_pixel(earlier, shapes[n], rasterScale, rasterShift);
+              } else {  // the IN-471 test: vertex-space bounds and the separating edges
+                const PrimitiveShape &b = shapes[n];
+                const bool boxesMeet = !(earlier.maxx < b.minx || b.maxx < earlier.minx || earlier.maxy < b.miny ||
+                                         b.maxy < earlier.miny);
+                overlaps = boxesMeet &&
+                           ((!earlier.triangle || !b.triangle) || (!EdgeSeparates(earlier, b) && !EdgeSeparates(b, earlier)));
+              }
+            }
             if (overlaps) break;
           }
           command.barrierFirst = overlaps;

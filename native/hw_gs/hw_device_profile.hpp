@@ -92,6 +92,39 @@ struct HeapInfo {
   bool device_local = false;
 };
 
+// ---- TASK-184: the ordering and attachment-read capabilities of the device --------------------------
+//
+// Core 2's no-interlock path (IN-466, IN-471) orders two primitives that may share a pixel with a fragment barrier,
+// because a storage image read-modify-write has no order of its own. Three families of extensions can replace that with
+// hardware order or make an attachment readable in place:
+//   - rasterization-order attachment access (VK_EXT_ and VK_ARM_ spellings): a subpass that declares it, plus pipelines
+//     that declare it, order the attachment accesses of overlapping primitives by primitive order, which is the only way
+//     a fragment shader may read a colour attachment it also writes (VK_EXT_attachment_feedback_loop_layout, or
+//     VK_KHR_dynamic_rendering_local_read with dynamic rendering, say how the image is laid out for that read);
+//   - VK_EXT_shader_tile_image: reads the tile's pixels from the fragment shader without a layout at all (Apple, some
+//     Mali), the cheapest form of the same idea;
+//   - VK_EXT_fragment_shader_interlock: the pixel interlock core 2 already uses where it exists (this record keeps the
+//     four bits for the log next to the others).
+// Every field is what the device reported at the probe, so game.log answers which of the paths a phone can take. Nothing
+// here changes a picture; only the renderer's choice of path reads it.
+struct OrderingCapabilities {
+  bool raster_order_ext = false;  // VK_EXT_rasterization_order_attachment_access in the device's extension list
+  bool raster_order_arm = false;  // VK_ARM_rasterization_order_attachment_access
+  bool raster_order_color_supported = false, raster_order_color_enabled = false;
+  bool raster_order_depth_supported = false, raster_order_depth_enabled = false;
+  bool raster_order_stencil_supported = false, raster_order_stencil_enabled = false;
+  bool dynamic_rendering_local_read = false;  // VK_KHR_dynamic_rendering_local_read, extension and feature
+  bool attachment_feedback_loop_layout = false;
+  bool attachment_feedback_loop_dynamic_state = false;
+  bool shader_tile_image = false;
+  bool shader_tile_image_color = false, shader_tile_image_depth = false, shader_tile_image_stencil = false;
+  bool fragment_shader_interlock = false;
+  bool interlock_sample = false, interlock_pixel = false, interlock_shading_rate = false;
+
+  // A colour attachment may be declared ordered by the subpass and its pipelines, and the device was created with it.
+  bool color_ordered() const { return raster_order_color_supported && raster_order_color_enabled; }
+};
+
 struct DeviceProfile {
   bool probed = false;  // false: the device's creator did not run the probe (every field below is a default)
   std::string name;
@@ -102,6 +135,8 @@ struct DeviceProfile {
   // TASK-182 step 3: a memory type that is both device-local and host-visible, i.e. the memory the CPU and the GPU both
   // use without a copy (an APU or a phone). The class above says what the device is; this says how its memory behaves.
   bool unified_memory = false;
+  // TASK-184: the ordering and attachment-read extensions and their feature bits (see OrderingCapabilities above).
+  OrderingCapabilities ordering;
 
   // Features that drawing at a scale above 1x relies on. `*_supported` is what the device has, `*_enabled` what the
   // device was created with (the creator sets it); the renderer keys its paths off `*_enabled`.
@@ -120,6 +155,64 @@ struct DeviceProfile {
   // True when points of `size` pixels can be drawn as points (else core 2 draws them as two triangles).
   bool points_of_size(float size) const { return size <= 1.0f || (large_points_enabled && size <= point_size_max); }
 };
+
+inline const char *yes_no(bool value) { return value ? "yes" : "no"; }
+
+// The one line the probe adds to game.log, next to the device profile.
+inline std::string ordering_line(const DeviceProfile &p) {
+  const OrderingCapabilities &c = p.ordering;
+  char text[512];
+  std::snprintf(text, sizeof text,
+                "rasterization-order attachment access: EXT %s, ARM %s, colour %s (%s), depth %s (%s), stencil %s (%s); "
+                "dynamic rendering local read %s; attachment feedback loop layout %s, dynamic state %s; "
+                "shader tile image %s (colour %s, depth %s, stencil %s); "
+                "fragment shader interlock %s (sample %s, pixel %s, shading rate %s)",
+                yes_no(c.raster_order_ext), yes_no(c.raster_order_arm), yes_no(c.raster_order_color_supported),
+                yes_no(c.raster_order_color_enabled), yes_no(c.raster_order_depth_supported),
+                yes_no(c.raster_order_depth_enabled), yes_no(c.raster_order_stencil_supported),
+                yes_no(c.raster_order_stencil_enabled), yes_no(c.dynamic_rendering_local_read),
+                yes_no(c.attachment_feedback_loop_layout), yes_no(c.attachment_feedback_loop_dynamic_state),
+                yes_no(c.shader_tile_image), yes_no(c.shader_tile_image_color), yes_no(c.shader_tile_image_depth),
+                yes_no(c.shader_tile_image_stencil), yes_no(c.fragment_shader_interlock), yes_no(c.interlock_sample),
+                yes_no(c.interlock_pixel), yes_no(c.interlock_shading_rate));
+  return text;
+}
+
+// TASK-184, GT4_CORE2_RASTER_ORDER: whether the colour-attachment passes declare rasterization order. Auto: on when the
+// device was created with the colour feature (nothing reads it back today, so it changes no picture, only the flags the
+// subpass and its pipelines carry). An explicit 0 turns it off for the A/B, an explicit 1 asks for it and is refused
+// where the device cannot.
+inline bool raster_order_default_on(const DeviceProfile &p) { return p.ordering.color_ordered(); }
+
+inline const char *raster_order_reason(const DeviceProfile &p) {
+  if (p.ordering.color_ordered()) return "the device has rasterizationOrderColorAttachmentAccess";
+  if (p.ordering.raster_order_ext || p.ordering.raster_order_arm) return "the extension is present but the feature is not";
+  return "no rasterization-order attachment access";
+}
+
+// The Vulkan flag bits the rasterization-order path sets, as plain integers so that a host-only fixture can pin the
+// mapping without the Vulkan headers. core2_gpu.cpp static_asserts each of them against the real enum value, so a header
+// that renumbers them breaks the build and never the picture.
+constexpr std::uint32_t kRasterOrderSubpassColor = 0x00000010u;    // VK_SUBPASS_DESCRIPTION_..._COLOR_ACCESS_BIT_EXT
+constexpr std::uint32_t kRasterOrderColorBlendFlag = 0x00000001u;  // VK_PIPELINE_COLOR_BLEND_STATE_CREATE_..._BIT_EXT
+
+struct RasterOrderFlags {
+  std::uint32_t subpass = 0;     // VkSubpassDescription::flags of the colour-attachment passes
+  std::uint32_t colorBlend = 0;  // VkPipelineColorBlendStateCreateInfo::flags of their pipelines
+  bool any() const { return subpass != 0; }
+};
+
+// What the colour-attachment path declares, given what the device reported and was created with. Only the colour bit is
+// used: the path's fragment stage reads no attachment back, so the depth and stencil ordering bits would carry no
+// guarantee anything depends on today (the probe still reports them, and the attachment-read variant of the path will
+// need the colour bit this sets).
+inline RasterOrderFlags raster_order_flags(const OrderingCapabilities &c) {
+  RasterOrderFlags flags;
+  if (!c.color_ordered()) return flags;
+  flags.subpass = kRasterOrderSubpassColor;
+  flags.colorBlend = kRasterOrderColorBlendFlag;
+  return flags;
+}
 
 // The largest heap with (device_local) or without device-local memory; -1 when there is none.
 inline int largest_heap(const DeviceProfile &profile, bool device_local) {

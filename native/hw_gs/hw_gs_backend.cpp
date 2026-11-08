@@ -865,6 +865,23 @@ struct Backend::Impl {
       extensions.push_back(VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME);
       present_wait_enabled = true;
     }
+    // TASK-184: rasterization-order attachment access, enabled where the device has it (the extension name joins the list
+    // and the feature struct joins the chain). Nothing reads the flags until core 2 asks for them
+    // (GT4_CORE2_RASTER_ORDER, auto), so enabling this changes no picture; the probe's line in game.log shows the result.
+    VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT rasterOrder{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT};
+    if (profile.ordering.raster_order_ext || profile.ordering.raster_order_arm) {
+      rasterOrder.rasterizationOrderColorAttachmentAccess =
+          profile.ordering.raster_order_color_supported ? VK_TRUE : VK_FALSE;
+      rasterOrder.rasterizationOrderDepthAttachmentAccess =
+          profile.ordering.raster_order_depth_supported ? VK_TRUE : VK_FALSE;
+      rasterOrder.rasterizationOrderStencilAttachmentAccess =
+          profile.ordering.raster_order_stencil_supported ? VK_TRUE : VK_FALSE;
+      extensions.push_back(profile.ordering.raster_order_ext ? VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME
+                                                             : VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
+      rasterOrder.pNext = features2.pNext;
+      features2.pNext = &rasterOrder;
+    }
     VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     info.pNext = &features2;
     info.queueCreateInfoCount = 1;
@@ -894,6 +911,15 @@ struct Backend::Impl {
     std::fprintf(stderr, "[hw] presentation queue: %s (graphics family %u with %u queue%s%s)\n", path_text, queue_family,
                  family_queues, family_queues == 1 ? "" : "s", reason);
     std::fprintf(stderr, "[hw] device profile: %s\n", profile_line(profile).c_str());
+    // TASK-184: what the device was actually created with, next to what it reported (the two differ when a feature the
+    // probe saw could not be enabled).
+    profile.ordering.raster_order_color_enabled =
+        rasterOrder.rasterizationOrderColorAttachmentAccess == VK_TRUE;
+    profile.ordering.raster_order_depth_enabled =
+        rasterOrder.rasterizationOrderDepthAttachmentAccess == VK_TRUE;
+    profile.ordering.raster_order_stencil_enabled =
+        rasterOrder.rasterizationOrderStencilAttachmentAccess == VK_TRUE;
+    std::fprintf(stderr, "[hw] ordering: %s\n", ordering_line(profile).c_str());
 
     VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;

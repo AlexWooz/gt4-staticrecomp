@@ -141,6 +141,13 @@ target_link_libraries(hw_core2_depth_alias_fixture PRIVATE gt4_hw_core)
 target_compile_options(hw_core2_depth_alias_fixture PRIVATE /W4)
 add_test(NAME hw_core2_depth_alias COMMAND hw_core2_depth_alias_fixture)
 
+# TASK-184: the output-pixel overlap test of the no-interlock path, against brute-force pixel coverage (CPU only).
+add_executable(hw_core2_overlap_fixture core2/core2_overlap_fixture.cpp)
+target_include_directories(hw_core2_overlap_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_options(hw_core2_overlap_fixture PRIVATE /W4)
+add_test(NAME hw_core2_overlap COMMAND hw_core2_overlap_fixture)
+set_tests_properties(hw_core2_overlap PROPERTIES PASS_REGULAR_EXPRESSION "hw_core2_overlap: 0 failures")
+
 # IN-514: the deadline of the flare table read (CPU only).
 add_executable(hw_flare_table_fixture hw_flare_table_fixture.cpp)
 target_compile_options(hw_flare_table_fixture PRIVATE /W4)

@@ -922,3 +922,236 @@ Hong Kong, 4,460-9,860 for Motegi), so five lines per run.
   the barrier study, row 4 of 9.1) is the larger phone lever and is still open.
 - **`gpu_busy` is not comparable across K settings** (it sums per-submission spans and the spans overlap): read it only
   inside one configuration, and use the wall for the comparison.
+
+## TASK-184: the no-interlock fragment barriers, the mobile ordering capabilities and the attachment passes
+
+Date 2026-11-06. Branch `task/182-barrier-scope`, worktree `gt4-wt-178-download-wait`. Agent status: **not PCSX2-tainted**
+(TASK-027 implementation agent: no PCSX2 or GSdx source, no `gt4recomp-gs` fork, no `private/tooling/pcsx2-*`, no
+`private/slice189-pcsx2-ref` opened). The only outside input is the owner's clean-room prose
+`ORACLE-ARMSX2-MOBILE-GPU.md` and `STUDY-UNIFIED-MEMORY.md`, the S23 measurements of 2026-11-05 and our own code.
+
+### 1. What the phone says, and what it means for the work
+
+The S23 Ultra (Adreno 740, Vulkan 1.3, driver 0x802a4001, 120 extensions) takes the no-interlock path (IN-466/471). Measured
+there at 2x (bench replays of test3, `EXPERIMENTS-2026-11-05.md`):
+
+| Per VBlank | Fragment barriers | of which "may share a pixel" | Full barriers | Render passes |
+|---|---|---|---|---|
+| Showroom | 1,318 | 98% | 130 | 35 |
+| Licence B-1 track | 1,983 | 98% | 112 | 26 |
+
+`gpu_busy` is about 11.5 ms per VBlank at **both** 1x and 2x, so the cost is per barrier and per pass, not per pixel: 35
+passes at ~0.3 ms each is the whole budget. That ranks the four items of this task: fewer "may share" barriers with the
+same picture (item 3), fewer passes and stores (item 4), the capability log for the devices after this one (item 1) and the
+rasterization-order path where a device offers it (item 2). **The S23 has none of the ordering extensions** (its own
+`vkjson` list): no `VK_EXT`/`VK_ARM_rasterization_order_attachment_access`, no
+`VK_KHR_dynamic_rendering_local_read`, no attachment feedback loop, no `VK_EXT_shader_tile_image`, no
+`VK_EXT_fragment_shader_interlock`. Item 3 is therefore the only one of the four that can move the phone's number today.
+
+### 2. The plan that was implemented
+
+1. **Capability log (item 1).** A `DeviceProfile::ordering` record, filled at start-up on every platform, printed in one
+   `[hw] ordering:` line; the device asks for `rasterizationOrderColorAttachmentAccess` where the extension exists, and the
+   renderer logs what it decided (`[core2] rasterization order attachment access: ...`) and which overlap test it uses
+   (`[core2] primitive overlap test: ...`).
+2. **Rasterization-order attachment access (item 2).** `GT4_CORE2_RASTER_ORDER=0|1`, auto where the device has the colour
+   feature: the colour-attachment subpass and its pipelines carry the ordering flags. The mocked-capability fixture pins the
+   decision and the flag mapping; the Vulkan objects cannot be created on a device without the feature, which this desktop
+   is (section 4).
+3. **Tight overlap test (item 3).** `GT4_CORE2_TIGHT_OVERLAP=1`: the "may share a pixel" test of the per-primitive path
+   replaced by an output-pixel test (`core2_overlap.hpp`), with a brute-force fixture.
+4. **Attachment loads and stores (item 4).** An audit of what the two pass kinds do, and the one exact reduction found
+   (section 6), which is not shipped.
+
+### 3. What changed (C, code)
+
+- **`native/hw_gs/hw_device_profile.hpp`**: `OrderingCapabilities` (the seven extension families and the feature bits that
+  matter: colour/depth/stencil attachment access, local read, feedback loop layout and dynamic state, tile image colour/
+  depth/stencil, and the four interlock bits), `ordering_line()`, `raster_order_default_on()`, `raster_order_reason()`, and
+  `raster_order_flags()` with the flag bits as plain integers (the renderer `static_assert`s them against the Vulkan enum
+  values, so a header that renumbers them breaks the build, never the picture).
+- **`native/hw_gs/hw_gs_vulkan_loader.cpp`**: the probe reads the extension list and chains each feature struct only when
+  its extension is present (a feature struct of a missing extension has no defined answer); the three ordering bits are
+  aliases between the EXT and the ARM spelling, so one struct answers for both.
+- **`native/hw_gs/hw_gs_backend.cpp`**: the device is created with `rasterizationOrderColorAttachmentAccess` (and depth/
+  stencil where offered) and with the extension name in the list, once, on every platform; `[hw] ordering:` follows the
+  device profile line.
+- **`native/hw_gs/core2/core2_gpu.cpp`**: the two new switches, the subpass and pipeline flags, the `[core2]` decision
+  lines, and the per-primitive test now asks `core2_overlap.hpp` when `GT4_CORE2_TIGHT_OVERLAP=1`.
+- **`native/hw_gs/core2/core2_overlap.hpp`** (new, pure arithmetic): the output-pixel box on the raster grid
+  (`scale * c/16 + 0.5 * shift`, the same mapping the vertex stage and the fill coverage use), clipped by the primitive's
+  own scissor; the per-row interval test for axis-aligned right triangles with the top-left fill rule; the IN-471
+  separating-axis test for general triangles; a 1e-6 output-pixel "a shared edge is not a shared pixel" margin.
+- **Fixtures**: `hw_core2_overlap` (new, CPU only) and the TASK-184 cases of `hw_device_profile` (mocked capabilities).
+
+### 4. Item 1 and item 2: what the devices have, and why the flags remove no barrier today
+
+The line, from this desktop (a discrete RX 9060 XT) and from the S23's own extension list:
+
+| Capability | Desktop RX 9060 XT (C, measured 2026-11-06) | S23 Ultra / Adreno 740 (C, owner's `vkjson`) |
+|---|---|---|
+| `VK_EXT_rasterization_order_attachment_access` | no | no |
+| `VK_ARM_rasterization_order_attachment_access` | no | no |
+| `rasterizationOrderColorAttachmentAccess` | no (not enabled) | no |
+| `rasterizationOrderDepthAttachmentAccess` / `...Stencil...` | no / no | no / no |
+| `VK_KHR_dynamic_rendering_local_read` | **yes** | no |
+| `VK_EXT_attachment_feedback_loop_layout` | **yes** | no |
+| `VK_EXT_attachment_feedback_loop_dynamic_state` | no | no |
+| `VK_EXT_shader_tile_image` (colour/depth/stencil) | no (no/no/no) | no |
+| `VK_EXT_fragment_shader_interlock` (sample/pixel/shading rate) | **yes** (yes/yes/no) | no |
+
+The log line this produces on the desktop:
+
+```
+[hw] ordering: rasterization-order attachment access: EXT no, ARM no, colour no (no), depth no (no), stencil no (no);
+dynamic rendering local read yes; attachment feedback loop layout yes, dynamic state no; shader tile image no
+(colour no, depth no, stencil no); fragment shader interlock yes (sample yes, pixel yes, shading rate no)
+```
+
+**Why the flags remove nothing here (C, code).** The colour-attachment path already records no per-primitive barrier: a
+batch that goes through attachments is one draw command with no barrier inside it, because fixed-function colour writes are
+ordered by primitive order by the API itself. The 565-1,070 "may share" barriers all come from the **storage** path, whose
+fragment stage *reads* the frame and depth words it writes. Ordering those reads needs an attachment read in the same
+subpass, and that needs both a layout for it (attachment feedback loop or dynamic-rendering local read) and the ordering
+guarantee (rasterization-order attachment access, or the interlock). The S23 has neither of the layout paths nor the
+ordering one, so its barriers cannot be removed by this route at all; a device with the extension gets the flags (and the
+guarantee) today and the attachment-read variant of the uber shader later. That is what the switch is for: it is the
+precondition, and it changes no pixel while nothing reads an attachment back.
+
+`GT4_CORE2_RASTER_ORDER` is auto-on where the device was created with the colour feature, `=0` forces it off for an A/B, and
+`=1` asks for it and is refused with a log line where the device cannot (the desktop, below). Verified by:
+
+- **the mocked-capability fixture** (`hw_device_profile`, CPU only): a profile with nothing reports off and says why; an
+  extension without the feature bit is off; extension + feature + enabled is on; the ARM spelling counts; reported but not
+  enabled is off; and `raster_order_flags()` returns no flags, the colour subpass bit, or the colour subpass bit plus the
+  colour-blend pipeline bit exactly as the renderer sets them. The renderer `static_assert`s those bit values against
+  `VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT` and
+  `VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT`;
+- **the code path**: the flags are only built from the profile the device creator filled after `vkCreateDevice`, so they can
+  only be set on a device that was created with the feature. On this desktop `GT4_CORE2_RASTER_ORDER=1` logs
+  `off (no rasterization-order attachment access, GT4_CORE2_RASTER_ORDER=1 but unsupported)` and changes nothing; with
+  `GT4_CORE2_ROP=1` forced as well (the colour-attachment path on a discrete GPU, for the test) the Hong Kong 2x flare reply
+  hash is `2f4c1cc9f174d00e` both with the switch at 1 and at 0, that is the reference.
+
+### 5. Item 3: the output-pixel overlap test
+
+**What it replaces (C, code).** Without the interlock a batch is recorded as one command per primitive, and a command whose
+primitive "may share a pixel" with any primitive recorded since the last barrier gets a fragment barrier before it. The old
+test (IN-471) was a vertex-space box rejection plus a six-axis separating-edge test with a 1/16-native gap, and it cannot
+separate two primitives that merely *touch*: for two sprites that tile side by side, the second sprite's vertices lie
+exactly on the first one's edge and the test has to answer "may share", although the fill rule gives every shared sample to
+exactly one of them.
+
+**The new test.** Two steps, both conservative in the only direction that matters (it may answer "share" when the pixels do
+not, never "no share" when they do):
+
+1. **The output-pixel box.** The pixels a primitive can cover, on the grid the GPU samples: a pixel is covered when its
+   centre `k + 0.5` lies inside the primitive, the grid maps a 12.4 guest coordinate `c` to `scale * c/16 + 0.5 * shift`,
+   and the box is clipped by the primitive's own scissor. 1/320 of a pixel of slack absorbs the float rounding of an edge.
+   Two boxes that do not intersect share no pixel, whatever the geometry says; this is where a scissor that clips a
+   primitive away, or a scale that puts two shapes on different pixels, removes a barrier the vertex-space test kept.
+2. **The row test for axis-aligned right triangles** (the two halves of every GT4 sprite, and the shape of everything drawn
+   as a quad): the covered pixels of one row are a half-open interval between its vertical leg and its diagonal, which is
+   the top-left fill rule (the left/top end belongs to the shape, the right/bottom end does not). Two shapes share a pixel
+   only if some row of their common band has both intervals overlapping, and on every row one end of each interval is
+   linear in `y`, so the question is two linear inequalities in `y` and is solved in closed form. Two quads that share an
+   edge, or the two halves of one quad's diagonal, come out as exactly disjoint. 1e-6 of a pixel of margin keeps two
+   parameterisations of the same line from drifting apart.
+   General triangles keep the IN-471 separating-edge test, on top of the pixel box.
+
+**A bug found while measuring (C).** The first version classified a triangle as a right triangle when its bounding box had
+three corners present, without checking that the *vertices* were those corners. A slanted triangle with one vertex in the
+middle of an edge of its box (common in the race scenes) passed that test, and the row test then decided its pixels from
+the wrong geometry: the Hong Kong barrier count went *up* to 2,186 instead of down (the debug counter showed `tight=1
+old=0` on those pairs). The classification now requires every vertex to be a corner of the box and the three vertices to be
+distinct, and the fixture's brute force is what pins it.
+
+**The fixture (`hw_core2_overlap`, CPU only).** 7,015 pairs at 1x, 2x, 3x and 12x: the two halves of a sprite (both
+diagonals), two sprites side by side, two sprites stacked, a primitive whose scissor removes it, 1,600 random sprite pairs
+and 800 random general triangle pairs. Brute force scans every pixel of the two boxes and tests the centre against both
+triangles (strict interior, 1e-9 native units of slack): **0 pairs where the test says "no shared pixel" and brute force
+finds one**; the tiling and sprite-half cases are all "no", and 225 of the 2,250 "share" answers on the random set are false
+positives (10%, a barrier the GPU did not need, never a missing one).
+
+**Counts (C).** `build/t184-spec2` (Spec II, Release; the TASK-178 recipe, with `private/slice407-ee-spec2/ps2game.lib`,
+the same SHA256 `b7600c5d...` the TASK-178/182 builds pinned), headless press scenes, window (4800, 9600], per VBlank,
+`GT4_HW_INTERLOCK=0`, `GT4_CORE2_BARRIER_TRACE=1`, `GT4_CORE2_TIGHT_OVERLAP` off against on:
+
+| Per VBlank | Hong Kong off | Hong Kong on | Motegi off | Motegi on |
+|---|---|---|---|---|
+| fragment barriers | 1,103.22 | 830.45 | 593.39 | 498.39 |
+| ... "primitive may share a pixel" | 1,070.51 | 797.74 | 565.49 | 470.49 |
+| ... "texture is another target" | 29.72 | 29.72 | 26.90 | 26.90 |
+| full barriers | 565.73 | 565.73 | 239.78 | 239.78 |
+| render passes | 52.31 | 52.31 | 46.71 | 46.71 |
+| draw calls (whole run, per VBlank) | 1,147 | 953 | 1,007 | 794 |
+
+Reading (C): **-24.7% of the fragment barriers in Hong Kong and -16.0% in Motegi**, all of it the "may share"
+row; the full barriers and the passes are untouched, because this change only removes barriers *inside* a pass. The draw
+calls fall by 17% and 21% as well: a primitive that no longer needs a barrier can be merged with the command before it when
+the vertices are contiguous and the pipeline is the same, so the two halves of a sprite become one `vkCmdDraw`. The three
+other fragment-barrier reasons are the same in both columns, as they must be (the change only touches the per-primitive
+test).
+
+**GPU time (H, indicative).** A presenting run of the same scene (`--window`, `GT4_OUTPUT_SIZE=3088x1440`, 5,400 VBlanks,
+`GT4_HW_INTERLOCK=0`, `GT4_CORE2_GPU_CATEGORIES=1`), one run per side, the two 600-VBlank lines of each: `gpu_busy` 4.36 and
+4.64 ms with the switch off against **3.96 and 4.18 ms with it on (-0.4 ms, about -10%)**, and `draw_passes` 3.50/3.10
+against 3.10/2.64 ms. The direction is consistent across both snapshots and with the count, but one run per side on a
+shared desktop is not a wall measurement; the phone's own A/B is what decides it.
+
+**Identity (C).** Flare reply hashes with `GT4_CORE2_TIGHT_OVERLAP=1`, `build/t184-spec2`, the study's section 3 references:
+
+| Run | Replies | Hash | Reference |
+|---|---|---|---|
+| Hong Kong 2x | 6,835 | `2f4c1cc9f174d00e` | same |
+| Hong Kong 10x | 6,835 | `61109e8f3143264a` | same |
+| Motegi 2x | 6,588 | `7bf932fbb8799965` | same |
+| Motegi 2x, `GT4_HW_INTERLOCK=0` | 6,588 | `7bf932fbb8799965` | same |
+
+**Frame dumps (C).** Composed scanout images of a presenting run, switch off against on, 2x, P6 PPM:
+- 480i menu, VBlanks 1497-1500, 1280x896: 4 of 4 identical (`41cdf22983493433` last frame; that is also the TASK-182
+  step 2b/2c presented-image hash for the same scene, so this build's picture equals the earlier reference);
+- Hong Kong race, VBlanks 5397-5400: 4 of 4 identical (`2b375ca728a9e568` last);
+- Motegi race, VBlanks 5397-5400: 4 of 4 identical (`23849ad8c34d5142` last).
+
+### 6. Item 4: the attachments, the loads and the stores
+
+What the two kinds of pass do (C, code):
+
+- **The storage pass** (the no-interlock path's own pass) has **no attachments at all**: the fragment stage writes the
+  frame and depth words through storage images, one subpass with a self-dependency. There is no load op and no store op to
+  tune, and no tile memory to keep. Everything this study has counted about it (barriers and pass ends) is untouched by
+  attachment load/store work.
+- **The colour-attachment passes** (`ropPassFrame`, `ropPassBoth`) use `LOAD` and `STORE` on the frame (the targets hold
+  content between passes, so both are needed) and bind the depth attachment **only** when the batch writes depth
+  (`rop_depth_mask(rop)`); a frame-only batch uses the one-attachment pass, so no needless depth store exists. Stencil load
+  and store are already `DONT_CARE`. The `renderArea` is the whole attachment, so the load and the store cover the whole
+  image whatever the pass draws: narrowing it would lose the pixels outside the scissor, so that is not an exact change.
+- **`DONT_CARE` where the content is fully overwritten** has no exact case today: an attachment pass covers a scissor, not
+  the image, and a batch that covers the whole image is rare. The whole-image case is already handled elsewhere: a
+  whole-target constant fill becomes `vkCmdClearColorImage` (IN-494), not a pass.
+- **"No pass break for a clear, use the load op"**: a clear of a target that a draw wrote ends the open pass today (6.8 and
+  6.4 pass ends per VBlank in Hong Kong and Motegi, 13% of the total), because the clear is a transfer command and cannot be
+  recorded inside a pass. The exact reduction is to **defer a whole-image clear into the next attachment pass's
+  `loadOp = CLEAR`**: the clear's image write and the pass's whole-image load then disappear into one tile-memory clear
+  (worth a full-image write plus a full-image read per clear on a tiler), and the pass end stays. It needs the clear to be
+  provable unread between the clear and that pass, which is what the pending-read/pending-write sets already track; it is a
+  step of its own (a deferred clear, its hazard rules, and the `rop` pass variants with a clear value) and was **not**
+  shipped here, so the phone's pass count and its attachment traffic are unchanged by this task.
+
+### 7. What this buys, and what is left
+
+- **Confirmed on the desktop path the phone uses:** the same pictures with 24.7% fewer fragment barriers in Hong Kong
+  and 16.0% fewer in Motegi, and 17% fewer draw calls (section 5). The phone's showroom (1,318 fragment
+  barriers, 98% "may share") is the most tile-like of its scenes, so it should keep the larger share of the reduction
+  (Hyp).
+- **Not measured:** the phone itself (no device in this session), and the wall time of the change anywhere. If a barrier
+  costs the S23 about 0.01 ms (11.5 ms over 1,318 barriers, an upper bound that also contains the 35 passes), the showroom
+  would save about 3 ms of 11.5 (Hyp).
+- **The remaining phone levers are outside this task** (C for the capability matrix): reading the destination attachment
+  in the fragment shader needs extensions the Adreno 740 does not have, so its per-primitive barriers cannot be replaced by
+  hardware order; the next exact reductions are the deferred clear of section 6, the region-granular full barriers (R2) and
+  the depth/blend parity work (R10), in that order of risk.
+- **`GT4_CORE2_SUBMIT_EVERY=128`** (the phone's +11.6% VBlanks/s, 32% fewer passes): unchanged by this task; it is exact by
+  construction (a submission boundary never changes what is drawn, TASK-178 9.2) and remains the Android default to confirm
+  on the device.
