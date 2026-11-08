@@ -1,5 +1,34 @@
 # Current Status
 
+## TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, owner test build)
+
+On `task/206-scale-expansion` (from `task/205-variant-coverage` at c0e37897). Decision 0079; builds `private/slice417-build`
+(v2.00, plain) and `private/slice417-spec2-build` (Spec II, for the gate); pin `docs/inputs/slice417-pcsx2.json`; kit
+`private/slice417-dist-task206`; journal entry.
+
+- **Why.** TASK-205 (Confirmed): the render scale is part of the pipeline key, the 544 shipped keys hold no 4x key, and a
+  4x session asks for a parallel set of every state it touches (the player's 44 keys in one lap) drawn with the uber
+  pipeline until the next prepare: +1.91 ms of `gpu_busy` per VBlank at 4x, measured. The owner approved option 1 of
+  section 5 of `docs/SHADER-VARIANT-COVERAGE.md`.
+- **What.** `--prepare-shaders --prepare-scale N` (the CoreGS 2.0 internal multiplier; the launcher passes the same number
+  its session sends as `GT4_HW_SCALE`, `launch::coregs20_scale`; absent: the old scale 1, said in the log).
+  `variants_to_prepare` expands every shipped and recorded key over that scale (`core2_variant_scale.hpp`): the 1x shape
+  (sampled image at 1x) and, above 1x and for a key that samples a texture image, the target shape (the same image drawn at
+  the scale); push bits 28/30 follow the frame and are cleared at 1x. `PreparedStamp` carries the scale (magic
+  `GT4PREP2`), so a cache prepared for another scale is refused and the session defers and records (TASK-204). The expanded
+  list is what `variants.bin` holds and the prepare logs `N variants for Sx (R recorded, K added for the scale)`. No
+  shader, key-format or specialisation change; the shipped `.inc` is untouched.
+- **Counts (RX 9060 XT, 544-key corpus, before the card filters).** 1x 255 distinct keys; 2x/4x/6x **336** (795 written,
+  251 keys with both shapes). The card keeps **175 at 4x** (136 x 1x shapes + 39 targets) where it kept 300, and **142 at
+  1x**.
+- **The 4x gate (headless, Spec II George V Paris, B-Spec, 2,400 VBlanks).** Deferred run: 75 keys recorded, 2,645,167
+  uber batches. `--prepare-shaders --prepare-scale 4`: 175 variants in 130.6 ms, `shaders added 39`. Prepared run:
+  **0 deferred keys, 0 deferral-caused uber batches, 175 pipelines from the disk cache, 4 of 4 dumped frames identical**;
+  residual 13 uber batches at startup before the pipelines were recreated. Race intervals: `gpu_busy` **5.71 against 3.78
+  ms/VBlank** (deferred against prepared), wall 8.96 against 8.76 - TASK-205's 5.69/3.78 within 0.02.
+- **Tests.** `hw_core2_*` **36 of 36** (new `hw_core2_prepare_scale`), launcher `cargo test --workspace` **784 passed, 9
+  ignored, 0 failed**, Python suite in the journal. No PR, no release, no upload.
+
 ## TASK-205: map every CoreGS 2.0 shader variant and what creates one (owner, 2026-11-07; analysis, no runtime change)
 
 On `task/205-variant-coverage` (from `task/204-no-ingame-compile` at c462fd45), build `private/slice416-spec2-build`

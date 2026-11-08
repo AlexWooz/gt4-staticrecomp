@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "runtime_source_commit": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "slice": 417,
+  "date": "2026-11-07",
+  "branch": "task/206-scale-expansion",
+  "commit": "c0e37897",
+  "baseline_commit": "f86d53d91dc7a42288b90c294d32de5174dac7a1",
+  "baseline": "origin/release/1.3.0-rc15",
+  "target": "v200",
+  "measurement_mode": "hw",
+  "profile": "performance",
+  "classification": "TASK-206 owner test build (v2.00): plain, no PGO, no ThinLTO, CoreGS 2.0 whose prepare expands the shader variant list over the session's render scale (--prepare-shaders --prepare-scale N). Built from the rc15 recipe (scripts/coregs2_bench/game/configure.cmd) with GT4_RELEASE_DISTRIBUTION=ON so the executable loads shaders from its own folder. The working tree of this pin is the TASK-206 change on top of c0e37897; the pin is committed with it.",
+  "purpose": "TASK-206: the prepare compiles the variant set a session at its own render scale asks for (the 1x shapes plus the targets at the scale), and PreparedStamp carries the scale, so a 4x session no longer defers keys the shipped corpus never recorded at 4x.",
+  "status": "TASK-206 owner test build (plain, no PGO); portable zip private/slice417-dist-task206/GT4Recomp-1.3.0-rc17-portable.zip; not a published release, no installer",
+  "runtime": {
+    "path": "private/slice417-game/gt4vulkan.exe",
+    "size_bytes": 90166272,
+    "sha256": "fde1b84196e12b893f16d8c7bc93842d60626cd197dd5506685ac72214efcee5"
+  },
+  "runtime_dependencies": [
+    { "path": "private/slice153-pacing-shaders/upload.spv", "size_bytes": 12336, "sha256": "4e0ef1e4aaf00ad6c63e068b33886b56e4cb310df17904b0037e951c2070a72c" },
+    { "path": "private/slice153-pacing-shaders/copy_read.spv", "size_bytes": 7872, "sha256": "b7ebe576bb96d554d225c11ce08a84f3b059cadebb71249bd29cd6b07c2dd1d6" },
+    { "path": "private/slice153-pacing-shaders/copy_write.spv", "size_bytes": 8892, "sha256": "00a9f2b3bb3565d5a715a7ae4c78f839703dba1583c138428e4c70931e6cb23c" },
+    { "path": "private/slice153-pacing-shaders/load_clut.spv", "size_bytes": 10416, "sha256": "a24f033fcf886084a3cf36c3c024b86893343761e6fa969b7e6366ba4f91cec9" },
+    { "path": "private/slice153-pacing-shaders/display.spv", "size_bytes": 9028, "sha256": "d575ad4e572c7cc47ddb93d0f6980072d972f8048dfb08d544f0e4ec300ff6e2" },
+    { "path": "private/slice153-pacing-shaders/raster.spv", "size_bytes": 50520, "sha256": "1d81e698dabc4102558e4df7b8f41d440c995d0a4f2c5286a2a974b8e4677f20" },
+    { "path": "private/slice153-pacing-shaders/resolve.spv", "size_bytes": 2320, "sha256": "4e68027a902068135e8aef939363c72bb936f0d1bdba51090cd5c44f13be55d3" },
+    { "path": "private/slice153-pacing-shaders/snapshot.spv", "size_bytes": 2328, "sha256": "bfcd7fd98d4999670f82de4cb824079bb021639a6d80dd08e82e2b04d3d0ffe7" },
+    { "path": "private/slice153-pacing-shaders/decode.spv", "size_bytes": 13780, "sha256": "df24d5e26904964d2dc1782aba006b125d5b1d4b54c735b0bdda7c03d0c38856" }
+  ],
+  "shader_capsule": "private/slice153-pacing-shaders",
+  "port_capsule": "private/slice200-port",
+  "source_capsule": "private/slice262-frame-cost-runtime",
+  "source_manifest": "slice262-frame-cost-runtime.json",
+  "ee_library": {
+    "path": "private/slice217-ee-aspect-producer/game-build/ps2game.lib",
+    "size_bytes": 70693756,
+    "sha256": "8e671a10667cdb3e20ad70367fe4021763309446cd525fc6c5f8d0dec57c129b",
+    "profile": "aspect (the library GT4_EE_PROFILE=aspect links, verified by CMake against docs/inputs/slice217-ee-libraries.json)",
+    "generated_units": "the slice217 aspect units (private/slice217-ee-aspect-producer/generated) with the rc14 hook sites added by scripts/camera360_units.py",
+    "recipe": "scripts/coregs2_bench/game/ee_configure.cmd and ee_build.cmd (plain: clang-cl 22.1.3, SSE4.1, the derived headers of scripts/prepare_fast_headers.py, no profile)"
+  },
+  "sdl3_pin": "docs/inputs/slice210-sdl3.json",
+  "gpu_renderer": "CoreGS 2.0 (GT4_RENDERER=hw, GT4_HW_CORE=2), built in; gt4-gs is not part of this CoreGS 2.0 test build",
+  "release_distribution": "GT4_RELEASE_DISTRIBUTION=ON: the executable loads the nine compute shaders from <executable folder>\\shaders and fails with a clear message when the folder is missing",
+  "shader_cache": "GT4_HW_SHADER_CACHE is set by the launcher (data\\shader-cache); the launcher's --prepare-shaders --prepare-scale N compiles the shipped corpus and the recorded keys expanded over the session's CoreGS 2.0 scale (TASK-206), and a session whose scale does not match the stamp compiles nothing and records (TASK-204)",
+  "toolchain": {
+    "compiler": "clang-cl 22.1.3 (C:/Program Files/LLVM/bin/clang-cl.exe)",
+    "language": "C++20",
+    "build": "CMake/Ninja VS2022 x64 ABI Windows SDK",
+    "cmake": "4.3.1",
+    "ninja": "1.13.2",
+    "serial_builds": true
+  },
+  "build_recipe": "private/slice417-build/configure.cmd (the slice415/rc15 recipe with -DGT4_ASSETS_ROOT=C:/Antigravity/gt4-staticrecomp, -DGT4_EE_PROFILE=aspect, -DGT4_TARGET=v200, -DGT4_HW_GS=ON, -DGT4_RELEASE_DISTRIBUTION=ON, no PGO, no ThinLTO) and private/slice417-build/build.cmd; the Spec II build of the same source is private/slice417-spec2-build (GT4_TARGET=spec2, GT4_EE_PROFILE=spec2), not distributed",
+  "distribution": "private/slice417-dist-task206 (make_distribution.py), portable zip private/slice417-dist-task206/GT4Recomp-1.3.0-rc17-portable.zip (make_portable_zip.py)",
+  "owner_launch": {
+    "portable": "extract GT4Recomp-1.3.0-rc17-portable.zip into a writable folder and start GT4Recomp.exe; set Settings > Graphics > Render scale to the scale to test, then Play (the launcher prepares that scale)",
+    "direct": "gt4.exe <reconstructed ELF> --ntsc --disc \"<v2.00 ISO>\" --memcard <copy>.ps2 (CoreGS 2.0, GT4_HW_SHADER_CACHE required for the TASK-204/TASK-206 behaviour)"
+  },
+  "limits": [
+    "No in-game play test yet: the owner tests 4x (and the other Render scales) on this exact build.",
+    "Spec II is not in this kit (v2.00 only): the Spec II build of the same source exists for the headless 4x gate only.",
+    "The kit carries no gt4-gs package: this is a CoreGS 2.0 build and the launcher downloads gt4-gs into its data folder when the PCSX2 GS renderer is selected (decision 0070).",
+    "The prepare is mandatory for specialised pipelines: a failed or skipped prepare leaves every variant on the uber pipeline (same pixels, more fragment cost) until the next Play's prepare.",
+    "A cache prepared for another render scale is refused on purpose (the scale is in the stamp): after changing the Render scale the first session draws with uber and records, and the next Play prepares at the new scale.",
+    "A quarantined variant stays on the uber pipeline on this card and driver (its pixels are the same); the way back is deleting the shader cache folder's quarantine.bin (the launcher's support log lists it).",
+    "The headless gate covers the Spec II George V Paris 4x scene: 0 deferred keys, 0 deferral-caused uber batches and 4 of 4 identical frames; other scenes and scales are the owner's in-game test."
+  ],
+  "review": {
+    "status": "pending",
+    "note": "TASK-206 owner test build of 2026-11-07 (plain, no PGO). hw_core2_* 36 of 36 (new hw_core2_prepare_scale), launcher and Python suites in the report; the 4x gate is 0 deferred and 4 of 4 identical frames. The owner's in-game test of this exact build is pending."
+  }
+}

@@ -165,9 +165,12 @@ public:
     // IN-507: compiles what the shader cache (GT4_HW_SHADER_CACHE) lacks. Returns at once when it is ready for these shaders,
     // this card and this driver, without calling `progress`; otherwise `progress` gets (done, total), starting at 0. False
     // when there is no cache to prepare. TASK-204: `recorded` receives how many of the compiled variants came from the list
-    // the sessions recorded (variants.bin), 0 when the caller does not ask.
+    // the sessions recorded (variants.bin), 0 when the caller does not ask. TASK-206: the list is expanded over the
+    // renderer's scale (GT4_HW_SCALE, the session's scale) and `added` receives how many keys that expansion added beyond
+    // the 1x shapes (0 at 1x).
     using ShaderProgress = std::function<void(std::size_t done, std::size_t total)>;
-    bool PrepareShaders(const ShaderProgress &progress, std::string &error, std::size_t *recorded = nullptr);
+    bool PrepareShaders(const ShaderProgress &progress, std::string &error, std::size_t *recorded = nullptr,
+                        std::size_t *added = nullptr);
     // TASK-170: what the compile guard read at the start (variants quarantined on this card and driver after a run died
     // inside their compile; prepares one variant at a time after a parallel prepare died).
     struct ShaderGuardState {

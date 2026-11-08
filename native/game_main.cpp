@@ -41,7 +41,7 @@ int gt4_donor_main(int argc, char **argv);
 
 #ifdef GT4_HW_SHADER_PREPARE
 namespace gt4::hw {
-int prepare_shaders_main();  // IN-507: hw_gs/hw_gs_prepare.cpp
+int prepare_shaders_main(int argumentCount, const char *const *arguments);  // IN-507: hw_gs/hw_gs_prepare.cpp
 }
 #endif
 
@@ -290,7 +290,10 @@ int run_standalone(int argc, char **argv) {
 
 int main(int argc, char **argv) {
 #ifdef GT4_HW_SHADER_PREPARE
-  if (argc == 2 && std::string(argv[1]) == "--prepare-shaders") return gt4::hw::prepare_shaders_main();
+  // TASK-206: the options after --prepare-shaders name the render scale the list is expanded for (--prepare-scale N).
+  if (argc >= 2 && std::string(argv[1]) == "--prepare-shaders") {
+    return gt4::hw::prepare_shaders_main(argc - 2, argv + 2);
+  }
 #endif
 #ifdef GT4_GS_STREAM_CLIENT
   // TASK-116 step 0 (P0 gate): the guest RAM window that turns a READ_FIFO host pointer into an EE address in the

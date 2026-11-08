@@ -193,6 +193,12 @@ playing forever.
 
 ## 5. The push word
 
+**Applied (TASK-206, decision 0079):** proposal 1 below - the prepare now takes the session's render scale
+(`--prepare-shaders --prepare-scale N`) and expands the shipped and recorded keys over it, with the scale in
+`PreparedStamp`. The numbers this section projects are the ones measured in TASK-206: 255 keys with the scale taken out,
+336 at any scale above 1x for the whole corpus, 175 on this card at 4x. The key format is unchanged; proposal 2 stays with
+the owner.
+
 | Bit | Meaning | Shipped keys | 52-track keys |
 |---|---|---:|---:|
 | `0x000FFFFF` | tex_scale: scale of the sampled texture image (its whole-texel scale, 1x..12x) | 544 | 155 |

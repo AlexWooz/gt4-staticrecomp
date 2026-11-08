@@ -780,23 +780,49 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
     let mut worked = false;
     let cancelled = { lock(&shared).shaders_cancelled.clone() };
     let recorded = std::cell::Cell::new(0u32);
-    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &recorded, &mut |progress| {
-        worked = true;
-        let _ = app.emit("shaders-progress", json!({ "done": progress.done, "total": progress.total, "attempt": progress.attempt }));
-    });
+    let prepared_scale = std::cell::Cell::new(0u32);
+    let total_keys = std::cell::Cell::new(0u32);
+    let result = game::prepare_shaders(
+        &dirs,
+        &executable,
+        &settings,
+        display.as_ref(),
+        &textures,
+        &slot,
+        &cancelled,
+        &recorded,
+        &prepared_scale,
+        &mut |progress| {
+            worked = true;
+            total_keys.set(progress.total);
+            let _ = app.emit("shaders-progress", json!({ "done": progress.done, "total": progress.total, "attempt": progress.attempt }));
+        },
+    );
     let state = lock(&shared);
     if state.shaders_cancelled.load(Ordering::SeqCst) {
         state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
         return Ok(false);
     }
-    log_prepare_outcome(&state.dirs, &result, worked, recorded.get());
+    log_prepare_outcome(&state.dirs, &result, worked, recorded.get(), prepared_scale.get(), total_keys.get());
     Ok(true)
 }
 
 /// What the log says about a prepare (TASK-170b): a finished one, a retried one, or the reason the game starts without it
 /// (it then draws the missing variants with the uber pipeline and records them for the next prepare). TASK-204: it names
-/// how many of the compiled variants the sessions recorded.
-fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<PrepareOutcome, String>, worked: bool, recorded: u32) {
+/// how many of the compiled variants the sessions recorded. TASK-206: it names the render scale the list was expanded for
+/// and how many keys the cache holds.
+fn log_prepare_outcome(
+    dirs: &gt4l_core::paths::DataDirs,
+    result: &Result<PrepareOutcome, String>,
+    worked: bool,
+    recorded: u32,
+    scale: u32,
+    total: u32,
+) {
+    let at_scale = if scale == 0 { String::new() } else { format!(" at {scale}x") };
+    if worked {
+        state::log(dirs, &format!("shaders: {total} keys prepared{at_scale}"));
+    }
     if recorded != 0 {
         state::log(dirs, &format!("shaders: {recorded} recorded keys compiled"));
     }

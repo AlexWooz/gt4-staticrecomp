@@ -5358,8 +5358,8 @@ void Renderer::SetScale(std::uint32_t scale, float shift) {
 std::uint32_t Renderer::Scale() const { return impl_->scale_; }
 
 bool Renderer::PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error,
-                              std::size_t *recorded) {
-    return impl_->gpu_.PrepareShaders(progress, error, recorded);
+                              std::size_t *recorded, std::size_t *added) {
+    return impl_->gpu_.PrepareShaders(progress, error, recorded, added);
 }
 
 bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {

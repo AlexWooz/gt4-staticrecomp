@@ -409,9 +409,9 @@ public:
     // CORE2 (the core rewrite, CORE2-DESIGN.md): true when GT4_HW_CORE=2 selected it at construction.
     bool Core2() const { return core2_ != nullptr; }
     // IN-507: false without CORE2 or without a shader cache. TASK-204: `recorded` receives how many of the compiled
-    // variants came from the sessions' own list (variants.bin).
+    // variants came from the sessions' own list (variants.bin). TASK-206: `added` how many keys the scale expansion added.
     bool PrepareCore2Shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error,
-                             std::size_t *recorded = nullptr);
+                             std::size_t *recorded = nullptr, std::size_t *added = nullptr);
     // CORE2's own session counters (nullptr with the old core).
     const core2::Core2Counters *Core2Stats() const;
 

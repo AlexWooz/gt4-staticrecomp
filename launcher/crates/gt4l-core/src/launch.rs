@@ -551,9 +551,23 @@ pub fn is_scrubbed(name: &str) -> bool {
 /// The argument that makes the game program compile the CoreGS 2.0 shader cache and leave (IN-507).
 pub const PREPARE_SHADERS_ARGUMENT: &str = "--prepare-shaders";
 
+/// TASK-206: the argument that names the render scale the prepare expands the variant list for. It carries the CoreGS 2.0
+/// internal multiplier (`GT4_HW_SCALE`, 1..12), never the Render scale percentage.
+pub const PREPARE_SCALE_ARGUMENT: &str = "--prepare-scale";
+
+/// TASK-206: the CoreGS 2.0 internal scale a session runs at, the one `--prepare-shaders` must be given as well: the
+/// Render scale percentage resolved against the display and snapped to a whole multiplier ([`session_plan`] with
+/// `CORE_GS_CAPS`, which takes no fractional value). 1 without a display or without a stored Render scale.
+pub fn coregs20_scale(settings: &Settings, display: Option<&DisplayTarget>) -> u32 {
+    let multiplier = session_plan(settings, display, display::CORE_GS_CAPS).multiplier;
+    multiplier.round().clamp(1.0, f64::from(display::CORE_GS_CAPS.max_multiplier)) as u32
+}
+
 /// One line of `--prepare-shaders` on stdout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderPrepareLine {
+    /// TASK-206: the render scale the list was expanded for.
+    Scale { scale: u32 },
     Progress { done: u32, total: u32 },
     /// TASK-204: how many of the variants this prepare compiled came from the sessions' own list (variants.bin).
     Recorded { count: u32 },
@@ -568,6 +582,7 @@ pub fn parse_shader_prepare_line(line: &str) -> Option<ShaderPrepareLine> {
     }
     let line = match words.next()? {
         "ready" => ShaderPrepareLine::Ready,
+        "scale" => ShaderPrepareLine::Scale { scale: words.next()?.parse().ok()? },
         "progress" => ShaderPrepareLine::Progress { done: words.next()?.parse().ok()?, total: words.next()?.parse().ok()? },
         "recorded" => ShaderPrepareLine::Recorded { count: words.next()?.parse().ok()? },
         _ => return None,

@@ -7,6 +7,7 @@
 
 #include "core2_gpu.hpp"
 
+#include "core2_variant_scale.hpp"
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
 #include "../hw_queue_lock.hpp"
 #include "../shaders/hw_shader_blobs.hpp"
@@ -398,6 +399,7 @@ struct Gpu::Impl {
     return SpecMode::async;
   }();
   static constexpr std::uint32_t kSpecFieldCount = 30;
+  static_assert(kVariantKeyWords == kSpecFieldCount + 3, "core2_variant_scale.hpp counts the words of a key");
   // TASK-204 (an RX 6750 XT report on 1.3.0-rc15: 0xC0000005 inside vkCreateGraphicsPipelines on the spec_worker thread,
   // 44 variants compiled during play, one 1.0 s compile at a time): a play session does not compile a variant it has not
   // seen before. specialised_pipeline records an unknown key in variants.bin (the next --prepare-shaders compiles it, under
@@ -416,6 +418,13 @@ struct Gpu::Impl {
     return text ? static_cast<std::uint32_t>(std::strtoul(text, nullptr, 16)) : 0xFFFFFFFFu;
   }();
   static constexpr std::size_t kMaxSpecPipelines = 2048;  // beyond this many draw states the uber pipeline draws
+  // Tests only (GT4_CORE2_TEST_SPEC_CAP): the same cap for this process, so a fixture can reach the truncation of the
+  // TASK-206 expansion without compiling two thousand pipelines. Unset or 0 keeps kMaxSpecPipelines.
+  const std::size_t specCap = [] {
+    const char *text = std::getenv("GT4_CORE2_TEST_SPEC_CAP");
+    const unsigned long value = text && *text ? std::strtoul(text, nullptr, 10) : 0ul;
+    return value == 0 ? kMaxSpecPipelines : static_cast<std::size_t>(value);
+  }();
   // The specialised fields, then the push word, then the anisotropy (tex_origin_x bits 21-23) of a mipmapped draw.
   // Slot kSpecFieldCount + 2: the ROP word of a draw through colour attachments (rop_word), 0 for storage writes.
   using SpecKey = std::array<std::uint32_t, kSpecFieldCount + 3>;
@@ -1252,9 +1261,9 @@ struct Gpu::Impl {
     if (!compiles_in_play()) {
       const PreparedStamp stamp = prepared_stamp();
       if (!prepared_for(stamp)) {
-        std::fprintf(stderr, "[core2] shader cache: no prepare for the %u recorded variants on this card and driver; this "
-                     "session draws them with the uber pipeline (the same pixels) and compiles nothing (TASK-204)\n",
-                     stamp.variantCount);
+        std::fprintf(stderr, "[core2] shader cache: no prepare for the %u recorded variants at %ux on this card and driver; "
+                     "this session draws them with the uber pipeline (the same pixels) and compiles nothing (TASK-204)\n",
+                     stamp.variantCount, scale);
         return;
       }
     }
@@ -1268,7 +1277,7 @@ struct Gpu::Impl {
       return;
     }
     std::lock_guard<std::mutex> lock(specMutex);
-    for (std::uint32_t i = 0; i < header.count && specSeen.size() < kMaxSpecPipelines; ++i) {
+    for (std::uint32_t i = 0; i < header.count && specSeen.size() < specCap; ++i) {
       SpecKey key;
       std::memcpy(key.data(), bytes.data() + sizeof header + i * sizeof(SpecKey), sizeof(SpecKey));
       const std::uint32_t rop = key[kSpecFieldCount + 2];
@@ -1285,9 +1294,11 @@ struct Gpu::Impl {
   // IN-507: what PrepareShaders last finished for. The shaders, the list and everything that decides the variants of this
   // card must match, so an update, a new driver or another card asks for a new compile. TASK-204: the list the sessions
   // recorded counts too (`variants`/`variantCount`, the keys of variants.bin), so a session that deferred a variant makes
-  // the next Play run the prepare again instead of finding the stamp ready and compiling in play.
+  // the next Play run the prepare again instead of finding the stamp ready and compiling in play. TASK-206: the render
+  // scale the list was expanded for counts too, so changing the Render scale asks for a new prepare and a session never
+  // uses a list prepared for another scale. The magic names the layout: an older prepared.bin is refused by its size.
   struct PreparedStamp {
-    char magic[8] = {'G', 'T', '4', 'P', 'R', 'E', 'P', '1'};
+    char magic[8] = {'G', 'T', '4', 'P', 'R', 'E', 'P', '2'};
     std::uint64_t shaderSet = 0;
     std::uint64_t list = 0;
     std::uint32_t vendorId = 0;
@@ -1297,6 +1308,7 @@ struct Gpu::Impl {
     std::uint8_t cacheUuid[VK_UUID_SIZE] = {};
     std::uint64_t variants = 0;      // TASK-204: FNV-1a of the keys variants.bin holds, in file order
     std::uint32_t variantCount = 0;  // TASK-204: how many keys that list holds
+    std::uint32_t scale = 0;         // TASK-206: the render scale the list was expanded for (GT4_HW_SCALE)
   };
 
   // The keys variants.bin holds, or empty when the file is absent, damaged or written for another build.
@@ -1337,6 +1349,7 @@ struct Gpu::Impl {
     const std::vector<SpecKey> listed = variants_file_keys();
     stamp.variantCount = static_cast<std::uint32_t>(listed.size());
     stamp.variants = variant_list_hash(listed);
+    stamp.scale = scale;  // TASK-206: the scale its list was expanded for
     return stamp;
   }
 
@@ -1353,9 +1366,14 @@ struct Gpu::Impl {
            std::filesystem::exists(shaderCacheFolder / "variants.bin");
   }
 
-  // The shipped list and the sessions' own, without what this card never asks for. TASK-204: `recorded` receives how many
-  // of the returned keys came from the sessions' own list (variants.bin) and were not already in the shipped one.
-  std::vector<SpecKey> variants_to_prepare(std::size_t *recorded = nullptr) const {
+  // The shipped list and the sessions' own, at this renderer's scale and without what this card never asks for.
+  // TASK-206: every source key is expanded to the shape(s) a session at this scale can ask for (variant_scaled_keys):
+  // the sampled image at 1x and, above 1x, that image as a target drawn at the scale. A source key recorded at another
+  // scale is not added as it is, because no session at this scale can ask for it; its state is kept through its 1x
+  // shape. TASK-204: `recorded` receives how many of the returned keys came from the sessions' own list (variants.bin)
+  // and were not already in the shipped one, `added` how many keys the scale expansion added beyond the 1x shapes (0 at
+  // 1x).
+  std::vector<SpecKey> variants_to_prepare(std::size_t *recorded = nullptr, std::size_t *added = nullptr) const {
     std::vector<SpecKey> keys;
     std::unordered_set<SpecKey, SpecKeyHash> seen;
     const auto add = [&](const std::uint32_t *words) {
@@ -1365,28 +1383,34 @@ struct Gpu::Impl {
       const bool plain = word == kPlainWord || word == kPlainSheenWord;
       if (plain ? !plainDisjoint : word != 0 && (!ropOn || (rop_blend_mode(word) && ropBlendModule == VK_NULL_HANDLE))) return false;
       if (quarantined.count(key) != 0) return false;  // TASK-170
-      if (keys.size() >= kMaxSpecPipelines || !seen.insert(key).second) return false;
+      if (keys.size() >= specCap || !seen.insert(key).second) return false;
       keys.push_back(key);
       return true;
     };
-    std::size_t fromFile = 0;
     constexpr std::size_t kKeyWords = std::tuple_size_v<SpecKey>;
-    for (std::size_t i = 0; i + kKeyWords <= std::size(kKnownVariantWords); i += kKeyWords) add(kKnownVariantWords + i);
-    const std::vector<std::uint8_t> bytes = read_whole_file(shaderCacheFolder / "variants.bin");
-    VariantFileHeader header;
-    const VariantFileHeader expected;
-    if (bytes.size() >= sizeof header) {
-      std::memcpy(&header, bytes.data(), sizeof header);
-      if (std::memcmp(header.magic, expected.magic, sizeof header.magic) == 0 && header.shaderSet == shaderSetHash &&
-          header.keyWords == expected.keyWords && bytes.size() == sizeof header + std::size_t{header.count} * sizeof(SpecKey)) {
-        for (std::uint32_t i = 0; i < header.count; ++i) {
-          std::uint32_t words[kKeyWords];
-          std::memcpy(words, bytes.data() + sizeof header + i * sizeof(SpecKey), sizeof words);
-          if (add(words)) ++fromFile;
-        }
+    std::vector<SpecKey> sources;  // the shipped list, then the sessions' own
+    for (std::size_t i = 0; i + kKeyWords <= std::size(kKnownVariantWords); i += kKeyWords) {
+      SpecKey key;
+      std::memcpy(key.data(), kKnownVariantWords + i, sizeof(SpecKey));
+      sources.push_back(key);
+    }
+    const std::size_t shippedCount = sources.size();
+    const std::vector<SpecKey> listed = variants_file_keys();
+    sources.insert(sources.end(), listed.begin(), listed.end());
+    // Pass 0 is the 1x shape of every key, pass 1 the target at this scale. Order is stable and the 1x shapes come first,
+    // so a list written by an earlier prepare reads the same way.
+    std::size_t fromFile = 0, fromScale = 0;
+    for (std::size_t pass = 0; pass < 2; ++pass) {
+      for (std::size_t i = 0; i < sources.size(); ++i) {
+        std::uint32_t twins[2][kKeyWords];
+        const std::size_t shapes = variant_scaled_keys(sources[i].data(), scale, twins);
+        if (pass >= shapes || !add(twins[pass])) continue;
+        if (pass == 1) ++fromScale;
+        else if (i >= shippedCount) ++fromFile;
       }
     }
     if (recorded) *recorded = fromFile;
+    if (added) *added = fromScale;
     return keys;
   }
 
@@ -1694,7 +1718,7 @@ struct Gpu::Impl {
       specLastDeferred = true;
       return VK_NULL_HANDLE;
     }
-    if (specSeen.size() < kMaxSpecPipelines && specSeen.insert(key).second) {
+    if (specSeen.size() < specCap && specSeen.insert(key).second) {
       stats.specRequested = specSeen.size();
       if (!compiles_in_play()) {
         // TASK-204: recorded as wanted, never compiled here. The batch draws with the uber pipeline (same pixels); the
@@ -2608,18 +2632,20 @@ bool Gpu::Ready() const { return impl_->ready; }
 bool Gpu::Integrated() const { return impl_->integrated; }
 bool Gpu::RoadSheenSkipped() const { return impl_->skipRoadSheen; }
 
-bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error, std::size_t *recorded) {
+bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error, std::size_t *recorded, std::size_t *added) {
   Impl &s = *impl_;
   if (recorded) *recorded = 0;
+  if (added) *added = 0;
   if (s.shaderCacheFolder.empty() || s.specMode != Impl::SpecMode::async || !s.pipelineCache) {
     error = "no shader cache to prepare (GT4_HW_SHADER_CACHE)";
     return false;
   }
   const Impl::PreparedStamp wanted = s.prepared_stamp();
   if (s.prepared_for(wanted)) return true;
-  std::size_t fromSessions = 0;
-  const std::vector<Impl::SpecKey> keys = s.variants_to_prepare(&fromSessions);
+  std::size_t fromSessions = 0, forScale = 0;
+  const std::vector<Impl::SpecKey> keys = s.variants_to_prepare(&fromSessions, &forScale);
   if (recorded) *recorded = fromSessions;
+  if (added) *added = forScale;
   // TASK-204: the stamp names the list this prepare writes, so the next start finds variants.bin prepared; a session that
   // records a new key makes the next stamp differ and the prepare runs again.
   Impl::PreparedStamp stamp = wanted;
@@ -2685,8 +2711,9 @@ bool Gpu::PrepareShaders(const ShaderProgress &progress, std::string &error, std
   s.save_shader_cache();
   Impl::write_whole_file(s.shaderCacheFolder / "prepared.bin", &stamp, sizeof stamp, nullptr, 0);
   progress(keys.size(), keys.size());
-  std::fprintf(stderr, "[core2] shader cache prepared: %zu variants (%zu recorded by the sessions), %zu failed, %u threads, "
-               "%zu quarantined\n", keys.size(), fromSessions, failures.load(), threadCount, s.quarantined.size());
+  std::fprintf(stderr, "[core2] shader cache prepared: %zu variants for %ux (%zu recorded by the sessions, %zu added for "
+               "the scale), %zu failed, %u threads, %zu quarantined\n", keys.size(), s.scale, fromSessions, forScale,
+               failures.load(), threadCount, s.quarantined.size());
   return true;
 }
 

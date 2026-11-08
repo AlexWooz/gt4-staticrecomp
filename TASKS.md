@@ -3741,6 +3741,71 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
+### TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, test build)
+
+**Why.** TASK-205 (Confirmed) found the main reason a session asks for "new" keys: **the render scale is part of the
+pipeline key** (push bits 0-19 hold the sampled texture's scale, bits 28/30 the scaled frame). The shipped 544 keys are
+144 draw-state signatures over scales 1/2/3/6 and there is **no 4x key at all**, so a 4x session asks for a parallel set of
+every state it touches; TASK-204 draws those with the uber pipeline (the same pixels, but measured at George V Paris 4x:
++1.91 ms of `gpu_busy` per VBlank, +50%) until the next prepare. The owner approved the prepare-side scale expansion
+(option 1 of section 5 of `docs/SHADER-VARIANT-COVERAGE.md`, decision 0079).
+
+**What.**
+1. **The session's scale reaches the prepare.** `--prepare-shaders --prepare-scale N` (N the CoreGS 2.0 internal
+   multiplier, `GT4_HW_SCALE`, 1..12; never the Render scale percentage), validated and reported as
+   `shaders scale N` on stdout; without it the prepare is the old scale 1 and says so. The launcher passes
+   `launch::coregs20_scale(settings, display)` - the same whole multiplier its session sends as `GT4_HW_SCALE` - and writes
+   it into the attempt header and the log (`shaders: N keys prepared at Sx`).
+2. **`variants_to_prepare` expands every key over that scale** (`native/hw_gs/core2/core2_variant_scale.hpp`, pure and
+   header-only, used by the renderer and by the fixture), shipped corpus and recorded keys alike, before the card/feature
+   filters, the quarantine and the cap: the *1x shape* (sampled scale 1: atlas, replacement, mipmapped game texture, 1x
+   effect target) and, when the key samples a texture image and the frame is above 1x, the *target shape* (sampled scale
+   S: the main frame and the effect targets drawn at the scale). Bits 28/30 follow the frame (set above 1x where `spec_key`
+   keeps them, cleared at 1x). A key recorded at another scale is not added as it is; its state is kept through its 1x
+   shape.
+3. **`PreparedStamp` carries the scale** (magic `GT4PREP2`), so a Render scale change invalidates the prepare and a session
+   never uses a list prepared for another scale: it compiles nothing, draws with uber and records (TASK-204).
+4. **The expanded list is what is written** to `variants.bin`, so the play session queues exactly what was prepared; the
+   prepare logs `N variants for Sx (R recorded, K added for the scale)` and stdout gains `shaders added K`.
+5. **No shader, key-format or specialisation change**; the shipped `.inc` is untouched.
+
+**Counts (this card, RX 9060 XT; the transformation over the 544-key corpus, before the card filters).** 1x: 255 distinct
+keys (544 written). 2x/4x/6x: **336** distinct (795 written, 251 keys with both shapes; the count is the same at any scale
+above 1x because the shape replaces the scale with 1 or S). The card keeps **175** at 4x (136 of them the 1x shapes, 39 the
+targets) where it kept 300 before, and **142** at 1x - fewer keys, better coverage, because a key recorded at another scale
+can never be asked at this one.
+
+**Gate (headless).** George V Paris, B-Spec, 4x, the TASK-205 fallback timeline and 2,400 VBlanks of race, with four
+frame dumps (vblank 4800/5400/6000/6600) and 3,748 480p VBlanks in the run. Deferred run (fresh cache): 75 keys
+recorded, 0 pipelines, 2,645,167 uber batches. `--prepare-shaders --prepare-scale 4`: 175 variants in 130.6 ms (max
+1.2 ms per variant), 0 failed, 0 quarantined, `shaders added 39`, `shaders scale 4`. Prepared run: **0 deferred keys and
+0 deferral-caused uber batches**, 175 pipelines recreated from the disk cache, **4 of 4 frames identical** (0 differing
+pixels); the residual is 13 uber batches in the first moments, before the worker finished recreating the 175 pipelines
+(`deferred=0`). The race's four 600-VBlank intervals: `gpu_busy` **5.71 against 3.78 ms/VBlank** (deferred against
+prepared) and wall 8.96 against 8.76 - TASK-205's 5.69/3.78 and 8.90/8.44 within 0.02/0.2, so the expansion buys exactly
+what the fallback cost.
+
+**Tests.** `hw_core2_prepare_scale` (new): the transformation at 1x/2x/4x/6x (counts above, both shapes and their push
+words, no duplicate), a real prepare at 4x (the file holds the expanded list, the stamp names the scale, a second prepare
+does nothing), a 1x session refusing the 4x prepare (0 pipelines, 6 deferred) and using a 1x prepare (0 deferred, the same
+pixels), and the cap (8 of the expanded list, no duplicate). `hw_core2_shader_cache` now prepares at the session's scale
+(2x) because the stamp carries it. The other `hw_core2_*` fixtures are unchanged.
+
+**State.** Branch `task/206-scale-expansion` from `task/205-variant-coverage` at c0e37897; build
+`private/slice417-build` (v2.00, plain) and `private/slice417-spec2-build` (Spec II, plain, for the gate); pin
+`docs/inputs/slice417-pcsx2.json`; kit `private/slice417-dist-task206` (portable launcher rc17, v2.00 only); no PR, no
+release, no upload.
+
+### TASK-207: the launcher's notice and the player export of recorded shader variants (owner, 2026-11-07; standby, not implemented)
+
+**Why.** TASK-205 designed a player loop that closes the variant gap faster than our own runs: after a session that deferred
+keys (`deferred=N` in the game log), the launcher shows a notice, the player exports `variants.bin` with the existing log
+bundle (no automatic upload), and `scripts/coregs2_bench/variant_survey.py` merges it after checking the magic, the key
+size and the shader-set hash.
+
+**State (owner, 2026-11-07).** **Standby, not implemented.** The launcher notice and the player export are not
+implemented; they wait for player feedback after the scale expansion of TASK-206. No UI, launcher or tool code in TASK-206.
+
 ### TASK-205: map every CoreGS 2.0 shader variant and the pattern that creates one (owner, 2026-11-07; done, analysis)
 
 **Why.** `core2_known_variants.inc` (544 keys) is the union of recorded scenes, not every draw state the game can

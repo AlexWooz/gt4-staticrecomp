@@ -175,9 +175,10 @@ public:
   bool init(const Options &options, std::string &error);
 
   // IN-507: compiles what the CoreGS 2.0 shader cache lacks (`progress` gets done and total, only when there is work).
-  // TASK-204: `recorded` receives how many of those variants the sessions recorded (variants.bin).
+  // TASK-204: `recorded` receives how many of those variants the sessions recorded (variants.bin). TASK-206: the list is
+  // expanded over the session's scale (GT4_HW_SCALE) and `added` receives how many keys that added beyond the 1x shapes.
   bool prepare_shaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error,
-                       std::size_t *recorded = nullptr);
+                       std::size_t *recorded = nullptr, std::size_t *added = nullptr);
 
   void set_stream_event_handler(StreamEventHandler handler, void *context);
 

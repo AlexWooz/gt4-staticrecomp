@@ -19,12 +19,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "../../core2/core2_gpu.hpp"
 #include "../../core2/core2_renderer.hpp"
+#include "../../core2/core2_variant_scale.hpp"
 #include "../../cpuref/cpuref_draw.hpp"
 #include "../../cpuref/cpuref_memory.hpp"
 #include "../../memory/hw_memory.hpp"
@@ -5872,12 +5874,13 @@ int TestCore2ShaderCache(const gpu::VulkanHandles& handles) {
                     static_cast<unsigned long long>(first.stats.specPipelines));
         ++failures;
     }
-    // The launcher's prepare compiles the recorded list into the disk cache.
+    // The launcher's prepare compiles the recorded list into the disk cache. TASK-206: at the session's own render scale
+    // (`ReplayCore2Ab` below runs at 2x), because the prepared list is the one a session at that scale asks for.
     std::size_t recorded = 0;
     {
         core2::Gpu prepare;
         std::string error;
-        if (!prepare.Init(handles, 1, 1.0f, error)) {
+        if (!prepare.Init(handles, 2, 1.0f, error)) {
             std::printf("  the prepare did not start: %s\n", error.c_str());
             ++failures;
         } else {
@@ -6091,6 +6094,236 @@ int TestCore2NoIngameCompile(const gpu::VulkanHandles& handles) {
     _putenv_s("GT4_HW_SHADER_CACHE", "");
     fs::remove_all(folder, ignored);
     std::printf("hw_core2_no_ingame_compile: %d failures\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// hw_core2_prepare_scale (TASK-206): the render scale is part of the CoreGS 2.0 key (TASK-205), so the list the prepare
+// compiles is the one a session at the session's own scale asks for. The fixture checks the prepare-time transformation
+// over the shipped corpus (the counts at 1x/2x/4x/6x, the two shapes of a key and their push words, no duplicates), a real
+// prepare at 4x (the file holds exactly the expanded list, the stamp names the scale), that a 1x session does not use a 4x
+// prepare (it defers and compiles nothing, TASK-204) and that a prepare at the session's scale is used (nothing deferred,
+// the same pixels), and the cap.
+int TestCore2PrepareScale(const gpu::VulkanHandles& handles) {
+    namespace fs = std::filesystem;
+    const fs::path folder = fs::temp_directory_path() / ("gt4_prepare_scale_test_" + std::to_string(_getpid()));
+    std::error_code ignored;
+    fs::remove_all(folder, ignored);
+    _putenv_s("GT4_HW_SHADER_CACHE", folder.string().c_str());
+    int failures = 0;
+    using Key = std::vector<std::uint32_t>;
+    constexpr std::size_t kKeyWords = core2::kVariantKeyWords;
+    // The shipped corpus, exactly as core2_gpu.cpp builds kKnownVariantWords.
+    constexpr std::uint32_t shipped[] = {
+#include "../core2/core2_known_variants.inc"
+    };
+    static_assert(sizeof(shipped) % (kKeyWords * 4) == 0, "the shipped corpus is a whole number of keys");
+    const std::size_t shippedKeys = sizeof(shipped) / (kKeyWords * 4);
+
+    // 1. The transformation over the shipped corpus. Every key of a session at S samples an image at 1x (the atlas, a
+    // replacement image, a mipmapped game texture, a 1x effect target) or a target at S, and the two frame flags follow
+    // the frame: set above 1x where the draw keeps them, cleared at 1x. Every other word is the recorded one.
+    auto shape_ok = [&](const std::uint32_t* key, std::uint32_t scale, const std::uint32_t* twin) {
+        const std::uint32_t push = twin[core2::kVariantPushSlot];
+        const std::uint32_t textureScale = push & core2::kPushSampledScaleMask;
+        if (textureScale != 1 && textureScale != scale) return false;
+        std::uint32_t flags = 0;
+        if (scale > 1) {
+            if (key[core2::kVariantZtestSlot] != 0) flags |= core2::kPushDepthFromPosition;
+            if (key[core2::kVariantDitherSlot] != 0) flags |= core2::kPushDitherFine;
+        }
+        if ((push & core2::kPushFrameScaleMask) != flags) return false;
+        for (std::size_t word = 0; word < kKeyWords; ++word) {
+            if (word != core2::kVariantPushSlot && twin[word] != key[word]) return false;
+        }
+        return true;
+    };
+    // The real counts of the 544-key shipped corpus (TASK-206, measured 2026-11-07 on an RX 9060 XT): after the expansion
+    // and the dedupe of the whole corpus, before the card filters of variants_to_prepare. 255 is the corpus with the scale
+    // taken out (the same 255 TASK-205 projected for 4x); above 1x every textured key adds the target shape, which adds 81
+    // distinct keys and is the same for any scale because the shape replaces the scale with 1 or S.
+    struct Expected {
+        std::uint32_t scale;
+        std::size_t keys;
+    };
+    const Expected expected[] = {{1, 255}, {2, 336}, {4, 336}, {6, 336}};
+    for (const Expected& want : expected) {
+        std::set<Key> unique;
+        std::size_t written = 0, twoShapes = 0;
+        bool shapes = true;
+        for (std::size_t i = 0; i < shippedKeys; ++i) {
+            const std::uint32_t* key = shipped + i * kKeyWords;
+            std::uint32_t twins[2][kKeyWords];
+            const std::size_t count = core2::variant_scaled_keys(key, want.scale, twins);
+            written += count;
+            if (count == 2) ++twoShapes;
+            for (std::size_t twin = 0; twin < count; ++twin) {
+                unique.emplace(twins[twin], twins[twin] + kKeyWords);
+                shapes = shapes && shape_ok(key, want.scale, twins[twin]);
+            }
+        }
+        std::printf("  %ux: %zu shipped keys -> %zu written (%zu with both shapes) -> %zu distinct\n", want.scale, shippedKeys,
+                    written, twoShapes, unique.size());
+        if (written == 0 || unique.size() > written || !shapes) ++failures;
+        if (unique.size() != want.keys) {
+            std::printf("  %ux: %zu distinct keys, the fixture expects %zu\n", want.scale, unique.size(), want.keys);
+            ++failures;
+        }
+        // At 1x both shapes are one key: the expansion is the identity of a 1x corpus (the flags are cleared).
+        if (want.scale == 1 && (written != shippedKeys || twoShapes != 0)) ++failures;
+        if (want.scale > 1 && twoShapes == 0) ++failures;
+    }
+
+    auto read_keys = [&](std::vector<Key>& keys) {
+        keys.clear();
+        std::ifstream file(folder / "variants.bin", std::ios::binary | std::ios::ate);
+        if (!file) return false;
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(file.tellg()));
+        file.seekg(0);
+        file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        constexpr std::size_t kHeader = 8 + 8 + 4 + 4;  // magic, shaderSet, keyWords, count
+        if (bytes.size() < kHeader) return false;
+        std::uint32_t count = 0;
+        std::memcpy(&count, bytes.data() + 20, sizeof count);
+        if (bytes.size() != kHeader + std::size_t{count} * kKeyWords * 4) return false;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            Key key(kKeyWords);
+            std::memcpy(key.data(), bytes.data() + kHeader + std::size_t{i} * kKeyWords * 4, kKeyWords * 4);
+            keys.push_back(std::move(key));
+        }
+        return true;
+    };
+    // The scale the stamp recorded: the last word of prepared.bin (TASK-206; the file's layout is PreparedStamp in
+    // core2_gpu.cpp and its magic says which layout).
+    auto stamped_scale = [&]() -> std::uint32_t {
+        std::ifstream file(folder / "prepared.bin", std::ios::binary | std::ios::ate);
+        if (!file) return 0;
+        const auto size = static_cast<std::size_t>(file.tellg());
+        if (size < 4) return 0;
+        file.seekg(static_cast<std::streamoff>(size - 4));
+        std::uint32_t scale = 0;
+        file.read(reinterpret_cast<char*>(&scale), sizeof scale);
+        return scale;
+    };
+    auto prepare = [&](std::uint32_t scale, const char* what, std::size_t* total, std::size_t* added) {
+        core2::Gpu renderer;
+        std::string error;
+        bool worked = false;
+        *total = 0;
+        *added = 0;
+        if (!renderer.Init(handles, scale, 1.0f, error)) {
+            std::printf("  %s: init failed: %s\n", what, error.c_str());
+            ++failures;
+            return false;
+        }
+        std::size_t recorded = 0;
+        const bool ready = renderer.PrepareShaders([&](std::size_t, std::size_t all) { worked = true; *total = all; }, error, &recorded, added);
+        std::printf("  %s: ready %d, worked %d, %zu keys (%zu added for the scale, %zu recorded)\n", what, ready ? 1 : 0,
+                    worked ? 1 : 0, *total, *added, recorded);
+        if (!ready) {
+            std::printf("  %s: failed: %s\n", what, error.c_str());
+            ++failures;
+            return false;
+        }
+        return worked;
+    };
+
+    // 2. A prepare at 4x: the file holds the expanded list, every key is one a 4x session can ask for, no duplicate, and
+    // the stamp names the scale.
+    std::size_t total4 = 0, added4 = 0;
+    const bool worked4 = prepare(4, "the first prepare at 4x", &total4, &added4);
+    if (!worked4 || total4 == 0 || added4 == 0) ++failures;
+    std::vector<Key> file4;
+    if (!read_keys(file4)) {
+        std::printf("  4x: variants.bin cannot be read\n");
+        ++failures;
+    } else {
+        std::set<Key> unique(file4.begin(), file4.end());
+        std::size_t wrongShape = 0;
+        for (const Key& key : file4) {
+            const std::uint32_t push = key[core2::kVariantPushSlot];
+            const std::uint32_t textureScale = push & core2::kPushSampledScaleMask;
+            std::uint32_t flags = 0;
+            if (key[core2::kVariantZtestSlot] != 0) flags |= core2::kPushDepthFromPosition;
+            if (key[core2::kVariantDitherSlot] != 0) flags |= core2::kPushDitherFine;
+            if ((textureScale != 1 && textureScale != 4) || (push & core2::kPushFrameScaleMask) != flags) ++wrongShape;
+        }
+        std::printf("  4x: variants.bin holds %zu keys, %zu distinct, %zu of another shape\n", file4.size(), unique.size(),
+                    wrongShape);
+        if (file4.size() != total4 || unique.size() != file4.size() || wrongShape != 0) ++failures;
+    }
+    if (stamped_scale() != 4) {
+        std::printf("  4x: prepared.bin names scale %u\n", stamped_scale());
+        ++failures;
+    }
+    if (prepare(4, "the same prepare at 4x again", &total4, &added4)) ++failures;  // ready: nothing to do
+
+    // 3. A 1x session does not use a list prepared for 4x: it compiles nothing and records what it asks for (TASK-204).
+    const auto capture = CacheFixtureCapture();
+    auto session = [&](std::uint32_t scale, const char* what, Core2AbRun& run) -> bool {
+        std::string error;
+        if (!ReplayCore2Ab(handles, capture, "GT4_CORE2_NO_SUCH_SWITCH", true, run, error, 0, scale)) {
+            std::printf("  %s: replay failed: %s\n", what, error.c_str());
+            ++failures;
+            return false;
+        }
+        std::printf("  %s: %llu pipelines, %llu deferred, %llu specialised batches\n", what,
+                    static_cast<unsigned long long>(run.stats.specPipelines),
+                    static_cast<unsigned long long>(run.stats.specDeferred),
+                    static_cast<unsigned long long>(run.stats.specialisedBatches));
+        return true;
+    };
+    Core2AbRun onFour, onOne;
+    const bool onFourOk = session(1, "a 1x session on the 4x prepare", onFour);
+    if (onFourOk && handles.pixelInterlock) {
+        if (onFour.stats.specPipelines != 0) ++failures;
+        if (onFour.stats.specDeferred == 0) ++failures;
+    }
+
+    // 4. A prepare at the session's scale: the list is the 1x one (the expansion adds nothing at 1x) and the next 1x
+    // session recreates every variant from the disk cache with nothing deferred, drawing the same pixels.
+    std::size_t total1 = 0, added1 = 0;
+    const bool worked1 = prepare(1, "a prepare at 1x", &total1, &added1);
+    if (!worked1 || added1 != 0 || total1 == 0) ++failures;
+    if (stamped_scale() != 1) ++failures;
+    std::vector<Key> file1;
+    if (read_keys(file1)) {
+        std::size_t wrongShape = 0;
+        for (const Key& key : file1) {
+            const std::uint32_t push = key[core2::kVariantPushSlot];
+            if ((push & core2::kPushSampledScaleMask) != 1 || (push & core2::kPushFrameScaleMask) != 0) ++wrongShape;
+        }
+        std::printf("  1x: variants.bin holds %zu keys, %zu with another shape\n", file1.size(), wrongShape);
+        if (!file1.empty() && wrongShape != 0) ++failures;
+    }
+    if (prepare(1, "a prepare at 1x on a session's list", &total1, &added1)) ++failures;  // nothing to do now
+    const bool onOneOk = session(1, "a 1x session on the 1x prepare", onOne);
+    if (onOneOk) {
+        if (onOne.stats.specDeferred != 0) ++failures;
+        if (handles.pixelInterlock && onOne.stats.specPipelines == 0) ++failures;
+        if (onFourOk && onOne.images != onFour.images) {
+            std::printf("  the pixels differ between the deferred and the prepared session\n");
+            ++failures;
+        }
+    }
+
+    // 5. The cap: with a small cap the prepare writes exactly that many keys, never a duplicate and never more.
+    fs::remove_all(folder, ignored);
+    _putenv_s("GT4_CORE2_TEST_SPEC_CAP", "8");
+    std::size_t totalCapped = 0, addedCapped = 0;
+    if (prepare(4, "a prepare at 4x under a cap of 8", &totalCapped, &addedCapped) && totalCapped != 8) ++failures;
+    _putenv_s("GT4_CORE2_TEST_SPEC_CAP", "");
+    std::vector<Key> capped;
+    if (read_keys(capped)) {
+        std::set<Key> unique(capped.begin(), capped.end());
+        std::printf("  cap 8: variants.bin holds %zu keys, %zu distinct\n", capped.size(), unique.size());
+        if (capped.size() != 8 || unique.size() != capped.size()) ++failures;
+    } else {
+        ++failures;
+    }
+
+    _putenv_s("GT4_HW_SHADER_CACHE", "");
+    fs::remove_all(folder, ignored);
+    std::printf("hw_core2_prepare_scale: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }
 
@@ -7602,6 +7835,7 @@ int main(int argc, char** argv) {
     if (name == "hw_core2_shader_cache") return TestCore2ShaderCache(handles);
     if (name == "hw_core2_no_ingame_compile") return TestCore2NoIngameCompile(handles);
     if (name == "hw_core2_prepare_shaders") return TestCore2PrepareShaders(handles);
+    if (name == "hw_core2_prepare_scale") return TestCore2PrepareScale(handles);
     if (name == "hw_core2_shader_guard") return TestCore2ShaderGuard(handles);
     if (name == "hw_core2_delayed_downloads") return TestCore2DelayedDownloads(handles);
     if (name == "hw_core2_compute_fills") return TestCore2ComputeFills(handles);

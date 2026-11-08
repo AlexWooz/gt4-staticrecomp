@@ -50,6 +50,8 @@ pub struct PrepareProgress {
 /// is work, and once more as a retry begins. When the program ends without finishing (a driver that ends the process inside a
 /// pipeline compile), it runs again while each attempt gets further, up to [`shader_prepare::MAX_PREPARE_ATTEMPTS`]
 /// (TASK-170b). Returns the outcome; every attempt's stderr goes to `logs\\shaders.log` under a header.
+/// `recorded` receives how many compiled keys the sessions recorded (TASK-204); `scale` the render scale the list was
+/// expanded for (TASK-206), which is the session's own CoreGS 2.0 scale unless the program reports another one.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_shaders(
     dirs: &DataDirs,
@@ -60,6 +62,7 @@ pub fn prepare_shaders(
     child: &Mutex<Option<Child>>,
     cancelled: &AtomicBool,
     recorded: &Cell<u32>,
+    scale: &Cell<u32>,
     progress: &mut dyn FnMut(PrepareProgress),
 ) -> Result<PrepareOutcome, String> {
     let guard_folder = textures.shader_cache.clone();
@@ -82,6 +85,7 @@ pub fn prepare_shaders(
                 child,
                 attempt,
                 recorded,
+                scale,
                 &mut |done, total| {
                     last_total.set(total);
                     progress(PrepareProgress { done, total, attempt })
@@ -106,21 +110,22 @@ fn guard_snapshot(folder: Option<&Path>) -> GuardSnapshot {
 }
 
 /// The line that opens an attempt's part of `shaders.log`.
-fn attempt_header(attempt: u32) -> String {
-    format!("=== shader prepare, attempt {attempt} ===\n")
+fn attempt_header(attempt: u32, scale: u32) -> String {
+    format!("=== shader prepare, attempt {attempt}, render scale {scale}x ===\n")
 }
 
 /// Opens `shaders.log` for an attempt: the first attempt of a Play starts the file anew, the others append to it.
-fn open_attempt_log(path: &Path, attempt: u32) -> Result<File, String> {
+fn open_attempt_log(path: &Path, attempt: u32, scale: u32) -> Result<File, String> {
     if attempt <= 1 {
         File::create(path).map_err(|error| format!("shaders.log: {error}"))?;
     }
     let mut log = OpenOptions::new().create(true).append(true).open(path).map_err(|error| format!("shaders.log: {error}"))?;
-    log.write_all(attempt_header(attempt).as_bytes()).map_err(|error| format!("shaders.log: {error}"))?;
+    log.write_all(attempt_header(attempt, scale).as_bytes()).map_err(|error| format!("shaders.log: {error}"))?;
     Ok(log)
 }
 
 /// One run of `gt4.exe --prepare-shaders`: the report says whether it finished and how far it got.
+#[allow(clippy::too_many_arguments)]
 fn prepare_shaders_once(
     dirs: &DataDirs,
     game_executable: &Path,
@@ -130,18 +135,28 @@ fn prepare_shaders_once(
     child: &Mutex<Option<Child>>,
     attempt: u32,
     recorded: &Cell<u32>,
+    scale: &Cell<u32>,
     progress: &mut dyn FnMut(u32, u32),
 ) -> Result<AttemptReport, String> {
     let logs = dirs.logs();
     fs::create_dir_all(&logs).map_err(|error| format!("logs folder: {error}"))?;
+    // TASK-206: the scale the session will run at; the list the prepare compiles is the one that session asks for.
+    let prepare_scale = launch::coregs20_scale(settings, display);
+    scale.set(prepare_scale);
     let log_path = logs.join("shaders.log");
-    let log = open_attempt_log(&log_path, attempt)?;
+    let log = open_attempt_log(&log_path, attempt, prepare_scale)?;
     let inherited: Vec<String> = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()).collect();
     // Only the program and the environment of this plan are used: nothing here reads the disc or the card.
     let inputs = LaunchInputs { game_executable, elf: game_executable, disc: game_executable, card: game_executable, session_dir: &logs };
     let plan = launch::plan_coregs20_launch(&inputs, settings, display, textures, &inherited);
     let mut command = Command::new(&plan.program);
-    command.arg(launch::PREPARE_SHADERS_ARGUMENT).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::from(log));
+    command
+        .arg(launch::PREPARE_SHADERS_ARGUMENT)
+        .arg(launch::PREPARE_SCALE_ARGUMENT)
+        .arg(prepare_scale.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(log));
     if let Some(folder) = game_executable.parent() {
         command.current_dir(folder);
     }
@@ -163,6 +178,9 @@ fn prepare_shaders_once(
     if let Some(stdout) = stdout {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             match launch::parse_shader_prepare_line(&line) {
+                // TASK-206: the scale the program says it prepared. It is what the launcher reports; a program that names
+                // another one (an older build ignores the option and prepares 1x) is reported as it spoke.
+                Some(ShaderPrepareLine::Scale { scale: prepared }) => scale.set(prepared),
                 Some(ShaderPrepareLine::Progress { done, total }) => {
                     best_done = best_done.max(done);
                     progress(done, total);
@@ -334,19 +352,28 @@ mod tests {
         let folder = scratch("shader-log");
         let path = folder.join("shaders.log");
         fs::write(&path, "an old Play\n").unwrap();
-        let mut first = open_attempt_log(&path, 1).unwrap();
+        // TASK-206: every attempt names the render scale it prepares for.
+        let mut first = open_attempt_log(&path, 1, 4).unwrap();
         first.write_all(b"[core2] stopped inside a compile\n").unwrap();
         drop(first);
-        let mut second = open_attempt_log(&path, 2).unwrap();
+        let mut second = open_attempt_log(&path, 2, 4).unwrap();
         second.write_all(b"[core2] shader guard: 1 variants quarantined\n").unwrap();
         drop(second);
-        drop(open_attempt_log(&path, 3).unwrap());
+        drop(open_attempt_log(&path, 3, 1).unwrap());
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("an old Play"), "attempt 1 starts the file anew");
-        let order: Vec<usize> = ["attempt 1 ===", "stopped inside a compile", "attempt 2 ===", "1 variants quarantined", "attempt 3 ==="]
-            .iter()
-            .map(|part| text.find(part).unwrap_or_else(|| panic!("{part} missing in {text}")))
-            .collect();
+        assert!(text.contains("attempt 1, render scale 4x ==="), "the scale is in the header: {text}");
+        assert!(text.contains("attempt 3, render scale 1x ==="), "the scale is in the header: {text}");
+        let order: Vec<usize> = [
+            "attempt 1, render scale 4x ===",
+            "stopped inside a compile",
+            "attempt 2, render scale 4x ===",
+            "1 variants quarantined",
+            "attempt 3, render scale 1x ===",
+        ]
+        .iter()
+        .map(|part| text.find(part).unwrap_or_else(|| panic!("{part} missing in {text}")))
+        .collect();
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "attempts stay in order: {text}");
         let _ = fs::remove_dir_all(&folder);
     }

@@ -141,7 +141,7 @@ public:
     std::uint32_t Scale() const;
     bool Init(const gpu::VulkanHandles &handles, std::string &error);
     bool PrepareShaders(const std::function<void(std::size_t, std::size_t)> &progress, std::string &error,
-                        std::size_t *recorded = nullptr);  // IN-507; TASK-204 adds `recorded`
+                        std::size_t *recorded = nullptr, std::size_t *added = nullptr);  // IN-507; TASK-204 `recorded`, TASK-206 `added`
 
     bool GifTransfer(std::uint32_t path, const std::uint8_t *bytes, std::size_t byteCount);
     bool GifBusy(std::uint32_t path) const;

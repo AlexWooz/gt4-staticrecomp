@@ -3829,12 +3829,12 @@ void Renderer::SetCpuSmallSprites(bool enabled) { impl_->cpuSmallSprites_ = enab
 const core2::Core2Counters* Renderer::Core2Stats() const { return core2_ ? &core2_->Core2Stats() : nullptr; }
 
 bool Renderer::PrepareCore2Shaders(const std::function<void(std::size_t, std::size_t)>& progress, std::string& error,
-                                  std::size_t* recorded) {
+                                  std::size_t* recorded, std::size_t* added) {
     if (!core2_) {
         error = "the shader cache belongs to CORE2 (GT4_HW_CORE=2)";
         return false;
     }
-    return core2_->PrepareShaders(progress, error, recorded);
+    return core2_->PrepareShaders(progress, error, recorded, added);
 }
 
 const Counters& Renderer::GetCounters() const { return core2_ ? core2_->GetCounters() : impl_->counters; }

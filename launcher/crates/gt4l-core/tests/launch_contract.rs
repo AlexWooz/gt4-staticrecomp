@@ -221,6 +221,9 @@ fn the_lines_of_the_shader_compile_are_read_and_anything_else_is_ignored() {
     // TASK-204: how many of them the sessions recorded (variants.bin), which the launcher logs.
     assert_eq!(parse("shaders recorded 44"), Some(Line::Recorded { count: 44 }));
     assert_eq!(parse("shaders recorded 0\r"), Some(Line::Recorded { count: 0 }));
+    // TASK-206: the render scale the list was expanded for.
+    assert_eq!(parse("shaders scale 4"), Some(Line::Scale { scale: 4 }));
+    assert_eq!(parse("shaders scale 1\r"), Some(Line::Scale { scale: 1 }));
     for other in [
         "",
         "shaders",
@@ -231,10 +234,42 @@ fn the_lines_of_the_shader_compile_are_read_and_anything_else_is_ignored() {
         "shaders recorded",
         "shaders recorded x",
         "shaders recorded 1 2",
+        "shaders scale",
+        "shaders scale x",
+        "shaders scale 1 2",
         "[core2] ready",
     ] {
         assert_eq!(parse(other), None, "{other}");
     }
+}
+
+#[test]
+fn the_prepare_is_given_the_scale_the_session_will_run_at() {
+    // TASK-206: the prepare expands the variant list over the CoreGS 2.0 internal scale, so it is given the multiplier the
+    // launch passes as GT4_HW_SCALE - never the Render scale percentage.
+    let textures = TextureLocation::default_folder(Path::new(r"D:\data\Textures"));
+    let mut settings = Settings::default();
+    settings.set("renderer", "coregs20").unwrap();
+    for (width, height, render_scale, expected) in [
+        (1920u32, 1080u32, 100u32, 3u32),
+        (3840, 2160, 100, 6),  // 4K: ceil(3840 / 640) = 6
+        (3840, 2160, 50, 3),   // half of 6
+        (2560, 1440, 75, 3),   // 4 x 75% = 3
+        (1280, 720, 100, 2),   // 720p: ceil(1280 / 640) = 2
+        (640, 480, 50, 1),     // never below 1
+    ] {
+        settings.set("render_scale", &render_scale.to_string()).unwrap();
+        let display = display_target(r"\\.\DISPLAY1", width, height);
+        let scale = launch::coregs20_scale(&settings, Some(&display));
+        assert_eq!(scale, expected, "{width}x{height} at {render_scale}%");
+        // The same number the session sends: the prepare and the game cannot disagree about the scale.
+        let environment = env_map(&launch::coregs20_environment(&settings, Some(&display), &textures));
+        assert_eq!(environment["GT4_HW_SCALE"], scale.to_string(), "{width}x{height} at {render_scale}%");
+    }
+    // No display known: the fallback plan, 3x at 100% and 1x at the bottom of the ladder.
+    settings.set("render_scale", "100").unwrap();
+    assert_eq!(launch::coregs20_scale(&settings, None), 3);
+    assert_eq!(launch::PREPARE_SCALE_ARGUMENT, "--prepare-scale");
 }
 
 #[test]
