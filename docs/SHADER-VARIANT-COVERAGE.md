@@ -26,7 +26,7 @@ of the 30 state fields, only the SCANSMK push flag and new combinations; the car
 bounded), so the key space is finite and enumerable; the design problem is the scale multiplication, not an open-ended
 key. The fallback (uber) path costs 1.9 ms of GPU per VBlank at 4x and 0.03 ms at 1x; at 4x it can cost a frame at the
 margin, but it is not a stutter, while the 1.0 s compile stalls could be and TASK-204 removed them from play.
-**The final both-games mapping** (84 runs: the 52 Spec II tracks, the Spec II modes, and a v2.00 pass) recorded
+**The final both-games mapping** (81 runs: the 52 Spec II tracks, the Spec II modes, and a v2.00 pass) recorded
 **191 keys, 100 new, 60 new draw-state signatures**; the candidate is **644 keys** (400 kept on this card after the
 plain/ROP filters), under the 2048 cap. The v2.00 photo mode is the first source of `Zformat=Z16` keys; Spec II
 disables photo mode, split screen needs a second pad, and replay and a Spec II GT Mode race remain blocked.
@@ -86,7 +86,7 @@ The 52 tracks added no new value to any of the 30 fields. They found combination
 mip sampling (`push` bit 23) on indexed textures, SCANMSK (bits 20-21, IN-530, added after the list was recorded),
 region-clamp wraps, bilinear filtering, alpha-test comparisons, blend selectors, and raw CT24 texels. The car slots
 added one field value, `Tfx=Highlight2`; the v2.00 photo mode and license test added `Zformat=Z16`. Those are the only
-new 30-field values in all 84 runs. The per-field values and the new combinations are in section 4.
+new 30-field values in all 81 runs. The per-field values and the new combinations are in section 4.
 
 The fields that have never varied in the shipped list are `Fba` (always off), `Pabe` (off), `Colclamp` (on), `Tfx`
 (Modulate, until the car slot above), `Aem` (off), `aniso` (0) and the push flags replacement (22), force-linear (31)
@@ -115,7 +115,7 @@ the shipped 544. Of those, `31` are scale twins (the same state at another scale
 state combinations, `38` of them new signatures. The per-track table is in section 7; every new key of the
 whole survey (including the car slots) is in Appendix A.
 
-The final both-games mapping is larger: 84 runs (the 52 tracks, the Spec II GT Mode modes and a v2.00 pass) recorded
+The final both-games mapping is larger: 81 runs (the 52 tracks, the Spec II GT Mode modes and a v2.00 pass) recorded
 **191 distinct keys, 100 new, 60 new signatures** (section 7.5). The v2.00 pass is where the first `Zformat=Z16` keys
 appear.
 
@@ -451,11 +451,11 @@ Spec II race states. Photo mode is the only mode that added a new depth format (
 
 | Group | Runs | Keys recorded (sum) | Distinct keys | New vs 544 |
 |---|---:|---:|---:|---:|
-| Spec II 1x survey | 70 | 5242 | 160 | 72 |
+| Spec II 1x survey | 67 | 5239 | 160 | 72 |
 | Spec II modes | 7 | 80 | 66 | 19 |
 | v2.00 | 7 | 396 | 142 | 62 |
 
-**Final counts:** 84 runs, **191 distinct keys, 100 new against the 544, 60 new draw-state signatures**, 5,527 repeated
+**Final counts:** 81 runs, **191 distinct keys, 100 new against the 544, 60 new draw-state signatures**, 5,524 repeated
 keys across runs. The union with the shipped list is **644 keys**; on this card **400 are kept** (300 storage-path
 shipped keys + 100 new), after filtering the shipped list's 167 plain and 77 ROP keys. `kMaxSpecPipelines` is 2048, so
 the cap is **not exceeded**. The 28 keys beyond the previous 616 are the v2.00/mode additions: `Zformat=Z16` (photo

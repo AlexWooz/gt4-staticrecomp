@@ -27,8 +27,8 @@ journal entry.
   48/20 (the first `Zformat=Z16` states), used-car showroom 28/7, license B-1 79/27, Arcade Clubman with car showroom
   76/8, GT Mode B-Spec night race 96/31, A-Spec night race 68/14, Casa menu 1/0. **Spec II GT Mode:** license test
   66/19, used-car dealer/tuning car display 9/3, photo lab album 1/0, license menu 1/0, event screen 1/0. The Spec II
-  save is on the bench card (`BASCUS-97436GAMEDATA`), so no owner save is needed. **Final: 84 runs, 191 distinct keys,
-  100 new, 60 new signatures**, 5,527 repeated keys; candidate `candidate-final.inc` **644 keys** (400 kept on this
+  save is on the bench card (`BASCUS-97436GAMEDATA`), so no owner save is needed. **Final: 81 runs, 191 distinct keys,
+  100 new, 60 new signatures**, 5,524 repeated keys; candidate `candidate-final.inc` **644 keys** (400 kept on this
   card after the 167 plain/77 ROP filters), under the 2048 cap. **Blocked:** split-screen race (needs a second
   controller; menus recorded), replay (saves exist, loader entry not found), Spec II GT Mode race (event screen
   reached, rules/car entry not completed), Spec II photo mode (**disabled by the mod**) and the Spec II rotating
