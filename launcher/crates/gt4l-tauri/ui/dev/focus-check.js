@@ -805,6 +805,10 @@
     check("Home has the version switch: two arrows around Normal", arrows.length === 2 && nameText() === T("home.normal"),
       arrows.length + " " + nameText());
     check("Gran Turismo 4 is selected first and shows Play", playText() === T("common.play"), playText());
+    // TASK-180 test3 (owner): the home page opens with Play selected, as it always did on Android; one A press starts it.
+    var focusedName = document.activeElement === document.querySelector(".play") ? "Play"
+      : (document.activeElement && (document.activeElement.className || document.activeElement.tagName));
+    check("the home page opens with Play focused", document.activeElement === document.querySelector(".play"), focusedName);
     check("the logo is the Gran Turismo 4 logo, with no Spec II line", !document.querySelector(".home-logo-spec2") &&
       !!document.querySelector(".home-logo"), "");
     arrows[1].click();
