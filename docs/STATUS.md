@@ -18,12 +18,13 @@ pins `docs/inputs/slice418-pcsx2.json` and `docs/inputs/slice418-spec2.json`; di
   (`GT4_TARGET=spec2`, `GT4_EE_PROFILE=spec2` with the TASK-166 aspect-hooked Spec II EE library, the slice276 IOP runtime
   and the Spec II VU0 tables). Both `GT4_RELEASE_DISTRIBUTION=ON`; no build or user path in either binary.
 - **4x gate, Spec II** (George V Paris, B-Spec, 2,400 VBlanks): deferred 75 keys, 0 pipelines, 2,645,167 uber batches;
-  prepare at 4x 245 variants in 193.7 ms, 49 added; prepared **0 deferred keys, 0 deferral-caused uber batches, 4 of 4
-  frames identical**; `gpu_busy` **5.67 against 3.78 ms/VBlank** (1.89 ms, -33%), wall 8.81 against 8.36; 53 residual
-  startup uber batches (not deferrals).
-- **4x gate, v2.00** (night race, 4x, 11,500 VBlanks): deferred 97 keys, 3,287,021 uber batches; prepare 245 variants in
-  183.9 ms; prepared **0 deferred, 0 deferral-caused uber, 9 of 9 frames identical**; `gpu_busy` **5.71 against 4.15
-  ms/VBlank** over four race blocks, wall 8.01 against 7.36.
+  prepare at 4x 245 variants, 49 added, 0 failed (3.1 s end to end, 2.8 s of it start-up); prepared **0 deferred keys, 0
+  deferral-caused uber batches, 4 of 4 frames identical** (pipelines recreated from the cache in 193.7 ms); `gpu_busy`
+  **5.67 against 3.78 ms/VBlank** (1.89 ms, -33%), wall 8.81 against 8.36; 53 residual startup uber batches (not
+  deferrals).
+- **4x gate, v2.00** (night race, 4x, 11,500 VBlanks): deferred 97 keys, 3,287,021 uber batches; prepare 245 variants
+  (3.1 s end to end); prepared **0 deferred, 0 deferral-caused uber, 9 of 9 frames identical** (recreated in 183.9 ms);
+  `gpu_busy` **5.71 against 4.15 ms/VBlank** over four race blocks, wall 8.01 against 7.36.
 - **Identity against the published rc15 PGO builds:** Spec II three laps (state.bin identical, 24/35/35 frames), Spec II 6x
   12/12, v2.00 night 3x (state identical, 10/10), v2.00 Arcade 3x 14/14; VU1/VU0 verify mismatches 0, MTVU 8,032 frames 0
   mismatches; gates script `wrong=0`.

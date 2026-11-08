@@ -33,10 +33,11 @@ the both-games AGENTS rule). Owner: every build uploaded to GitHub ships both GT
   it, a v2.00 or Spec II session at any scale still defers those states and draws them with the uber pipeline.
 - **The failure it removes is measured.** On the TASK-205/206 fallback scene (Spec II George V Paris, B-Spec, 4x, 2,400
   VBlanks) the deferred run recorded 75 keys, created 0 pipelines and drew 2,645,167 uber batches; after the prepare of the
-  644-key list at 4x (245 variants, 193.7 ms) the prepared run had **0 deferred keys, 0 deferral-caused uber batches** and
-  **4 of 4 identical frames**, with `gpu_busy` 3.78 against 5.67 ms per VBlank over the race's four 600-VBlank blocks (the
-  TASK-205/206 numbers reproduced). The same gate on the v2.00 night race at 4x is **0 deferred, 0 deferral-caused uber
-  batches, 9 of 9 identical frames** (245 variants, 183.9 ms).
+  644-key list at 4x (245 variants, 49 added, 0 failed; 3.1 s end to end, 2.8 s of it the prepare's own start-up) the
+  prepared run had **0 deferred keys, 0 deferral-caused uber batches** and **4 of 4 identical frames** (the pipelines were
+  recreated from the disk cache in 193.7 ms), with `gpu_busy` 3.78 against 5.67 ms per VBlank over the race's four
+  600-VBlank blocks (the TASK-205/206 numbers reproduced). The same gate on the v2.00 night race at 4x is **0 deferred, 0
+  deferral-caused uber batches, 9 of 9 identical frames** (245 variants, 3.1 s end to end; recreated in 183.9 ms).
 - **The list is still a union of recorded scenes, not an enumeration.** The 100 new keys come from the v2.00 photo mode and
   license test (the first `Zformat=Z16` states), the used-car showroom, the Spec II license/menus, the car materials
   (`Tfx=Highlight2`), the SCANMSK flag and material combinations. Modes that need a GT Mode card, a second controller

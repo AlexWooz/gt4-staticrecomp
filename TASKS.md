@@ -3769,13 +3769,16 @@ the next prepare.
 
 **Gates (headless, this PC).**
 - **4x gate, Spec II** (George V Paris, B-Spec, 4x, the TASK-205/206 timeline, 2,400 VBlanks, dumps 4800/5400/6000/6600):
-  deferred run 75 keys, 0 pipelines, 2,645,167 uber batches; prepare at 4x **245 variants in 193.7 ms**, 49 added; prepared
-  run **0 deferred keys, 0 deferral-caused uber batches**, 245 pipelines from the cache, **4 of 4 frames identical**;
+  deferred run 75 keys, 0 pipelines, 2,645,167 uber batches; prepare at 4x **245 variants**, 49 added, 0 failed (3.1 s
+  end to end, of which 2.8 s is the prepare's own start-up: a no-op prepare of the same cache; about 0.3 s of compile);
+  prepared run **0 deferred keys, 0 deferral-caused uber batches**, 245 pipelines from the cache (recreated in 193.7 ms),
+  **4 of 4 frames identical**;
   residual 53 uber batches at startup (not deferrals). `gpu_busy` over the race's four 600-VBlank blocks **5.67 against
   3.78 ms/VBlank** (deferred against prepared; 1.89 ms, -33%) and wall 8.81 against 8.36 ms.
 - **4x gate, v2.00** (night race, GT Mode B-Spec Hong Kong Reverse, 4x, 11,500 VBlanks, frames every 600 from 6500):
-  deferred 97 keys, 0 pipelines, 3,287,021 uber batches; prepare at 4x **245 variants in 183.9 ms**, 49 added; prepared
-  run **0 deferred keys, 0 deferral-caused uber batches**, 245 pipelines, **9 of 9 frames identical**; 49 residual startup
+  deferred 97 keys, 0 pipelines, 3,287,021 uber batches; prepare at 4x **245 variants**, 49 added, 0 failed (3.1 s end to
+  end, about 2.8 s of it the prepare's own start-up; about 0.3 s of compile); prepared run **0 deferred keys, 0
+  deferral-caused uber batches**, 245 pipelines (recreated in 183.9 ms), **9 of 9 frames identical**; 49 residual startup
   uber batches. `gpu_busy` over four race blocks (VBlank 9000/9600/10200/10800) **5.71 against 4.15 ms/VBlank** (-27%),
   wall 8.01 against 7.36.
 - **Both-game identity against the published rc15 PGO builds** (`slice413-dist-130-rc15/gt4.exe` and `gt4-spec2.exe`, the
