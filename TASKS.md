@@ -3741,7 +3741,7 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
-### TASK-208: ship the mapped shader variants in both games (owner, 2026-11-07; implemented, both-game test build)
+### TASK-208: ship the mapped shader variants in both games (owner, 2026-11-07; implemented, both-game 1.3.0-rc16 test build draft)
 
 **Why.** TASK-205 mapped every CoreGS 2.0 variant over both games and 81 runs and produced the final candidate:
 **644 keys = the 544 shipped + 100 new**, 204 draw-state signatures (60 new), under the 2048 cap. The owner wants that
@@ -3802,8 +3802,19 @@ the next prepare.
 at 71452b90 merged (096afe8d). Pins `docs/inputs/slice418-pcsx2.json` and `docs/inputs/slice418-spec2.json`; distribution
 `private/slice418-dist-130-rc16`; decision 0080; the rc16 notes updated to both games. No PR, no release, no upload.
 
-**Next.** The packaging step builds the installer and the portable zip from this both-game distribution and uploads the
-GitHub draft; the owner's in-game test of both games is pending. TASK-207 stays standby.
+**1.3.0-rc16 both-game test build (2026-11-08).** Worktree `gt4-wt-208-rc16-package`, branch `task/208-rc16-package`, from
+this branch at 8ccafcf8. The distribution above is used unchanged (20 files, both games; 136 checks against
+`MANIFEST.json` and the two pins, 0 problems). Launchers labelled rc16: installer build 19,456,512 bytes `4afe8c6e...`,
+portable 19,418,112 bytes `345fca3d...`; NSIS installer `GT4Recomp-Setup-1.3.0-rc16.exe` 48,232,008 bytes `8afe65b9...`
+and portable zip `GT4Recomp-1.3.0-rc16-portable.zip` 75,735,342 bytes `70d7a96b...` in `private/release-130-rc16-out`,
+with `SHA256SUMS`. Both payloads extracted and checked file by file: 56 comparisons, every file equal to its source, and
+**both games (gt4.exe and gt4-spec2.exe) in each**. Checks: `cargo test --workspace` 784 passed, 9 ignored, 0 failed; focus
+413/413 en-US and 420/420 pt-BR; nav-test 265/265; 918 locale keys in both with the same placeholders; no JS error. No real
+installer run (the session is not elevated), the payload was verified instead. Uploaded as the GitHub **draft**
+`v1.3.0-rc16` (pre-release flag, not published, not Latest); the 1.3.0 launcher notes carry the persistent rc16 bullets
+because the build embeds only x.y.z notes. No PR.
+
+**Next.** The owner's in-game test of both games; TASK-207 stays standby. Publishing the draft needs the owner's word.
 
 ### TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, rc16 test build draft)
 

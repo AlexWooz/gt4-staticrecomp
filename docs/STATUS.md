@@ -32,7 +32,14 @@ pins `docs/inputs/slice418-pcsx2.json` and `docs/inputs/slice418-spec2.json`; di
   deferral-caused uber** in all four; `variants.bin` still 196.
 - **Tests.** `hw_core2_*` **36 of 36**; full CTest **320/321 each** (1 known skip, 0 failed; 482.0 s and 458.2 s); launcher
   784/9 (unchanged task), Python 804 OK (57 environment skips in this fresh worktree).
-- **Not done.** Owner in-game test of both games; installer and portable zip (the packaging step); TASK-207 standby.
+- **1.3.0-rc16 both-game kit (2026-11-08).** Installer `GT4Recomp-Setup-1.3.0-rc16.exe` 48,232,008 bytes `8afe65b9...`,
+  portable zip `GT4Recomp-1.3.0-rc16-portable.zip` 75,735,342 bytes `70d7a96b...`, `SHA256SUMS`; launchers labelled rc16
+  (installer build 19,456,512 bytes `4afe8c6e...`, portable 19,418,112 bytes `345fca3d...`). Both payloads extracted and
+  checked file by file against the slice418 distribution (**both games, 20 files each**) and the launcher, SDL3 and
+  WebView2 sources: 56 comparisons, 0 differences. Uploaded as the GitHub **draft** `v1.3.0-rc16` (pre-release flag, not
+  published, not Latest). Checks: cargo 784 passed / 9 ignored / 0 failed, focus 413/413 en-US and 420/420 pt-BR, nav-test
+  265/265, 918 locale keys in both, no JS error. No real installer run (the session is not elevated).
+- **Not done.** Owner in-game test of both games; TASK-207 standby; publishing the draft needs the owner's word.
 
 ## TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, owner test build)
 
