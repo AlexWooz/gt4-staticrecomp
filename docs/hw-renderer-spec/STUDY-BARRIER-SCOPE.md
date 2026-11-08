@@ -502,8 +502,10 @@ What changes (C, code):
 - **Presented image** (the same menu runs with `--window`, so the dump goes through `ComposeFrameGpu`, `PresentScale` and
   `ReadGpuFrame`, that is the picture the swapchain receives): 2x `0d6366e465cb0b7d` / `41cdf22983493433` and 10x
   `ac2ec9d4f5c9569c` / `a03b7fba92c77472`, 2369x1333 each, **identical off against on**, 2 of 2 at both scales.
-  Side-by-side crops for the owner: `build/evidence182/r8-crops/` (menu 2x and 10x, Hong Kong 2x and 10x, composed and
-  presented; the old order above, the new below, 1:1 and 4x zoom).
+  Side-by-side crops for the owner were written to `build/evidence182/r8-crops/` (menu 2x and 10x, Hong Kong 2x and 10x,
+  composed and presented; the old order above, the new below, 1:1 and 4x zoom). That folder is scratch under `build/` and
+  has since been removed; `build/t182-r8-crops.py` rebuilds the sheets from the same PPM dumps, so getting them back means
+  repeating the identity runs of this table and of the composed-frame table above.
 - **Flare reply hashes** of section 3, with the switch on:
 
 | Run | Replies | Hash | Section 3 reference |
