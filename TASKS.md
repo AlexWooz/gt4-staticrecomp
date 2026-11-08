@@ -4581,3 +4581,38 @@ Evidence in `build/evidence/t199/` (before and after screenshots).
 
 **State (2026-11-06):** done, branch `task/199-tooltip-layer`, pushed, no PR, no release. UI only
 (`launcher/crates/gt4l-tauri/ui`), so the same commit can be applied to the Android branch.
+
+### TASK-209: split-screen with two controllers (owner, 2026-11-07; planned)
+
+**Why.** Players want split-screen, and the game's 2P mode needs two pads. The current input path does not guarantee a
+second controller: TASK-205's split-screen mapping stopped at the 2P accept screen because the harness feeds one pad.
+The owner wants two fronts: first the second controller, then how split-screen actually runs.
+
+**What.**
+1. **SDL3 input:** enumerate and assign two gamepads (P1/P2), per-player bindings, hot-plug, and a keyboard fallback
+   for the second player when a second pad is absent (some players do not have two pads). Keep the existing one-pad
+   path unchanged when only one pad is connected.
+2. **Launcher Controls:** player 1 and player 2 mapping, save/load, conflict handling, a live test view for both.
+3. **Fixtures:** two-pad `native_host_io`/`pad_mapping` tests, a split-screen entry test with two virtual pads; both
+   pads drive their own car; swapping and hot-plug behave.
+4. **No game logic change:** input only; the game's 2P mode is the reference.
+
+**State:** planned; branch TBD. The owner's test needs two physical pads or SDL virtual joysticks. This unblocks the
+split-screen keys and the 2P race in TASK-205.
+
+### TASK-210: split-screen validation: performance, renderers and ultrawide (owner, 2026-11-07; planned; depends on TASK-209)
+
+**Why.** With two pads, validate how split-screen runs: both viewports, 60 FPS at 100% game speed, frame pacing,
+CoreGS 2.0 and GSdx, ultrawide 21:9/32:9, HUD/UI layout, memory and the second player's view. This also completes the
+TASK-205 split-screen variant mapping.
+
+**What.**
+1. Headless/window gates with two virtual pads at 16:9, 21:9 and 32:9; 1x, 3x, 4x and 6x where the renderer supports
+   them; CoreGS 2.0 and GSdx.
+2. Measure FPS, frametime, GPU/CPU and state/frames; inspect both viewports, the HUD, the split line and the
+   ultrawide stretching; record the TASK-205 keys the mode asks for.
+3. Fix what the gates find or record an explicit known issue; add fixtures; owner test with two pads.
+4. **Acceptance:** split-screen enters, both players drive, 60 FPS at 100% speed on the test scenes, no distorted HUD
+   at ultrawide, no crash; a report with the real numbers.
+
+**State:** planned; depends on TASK-209. TASK-207 (launcher notice/export) stays standby.
