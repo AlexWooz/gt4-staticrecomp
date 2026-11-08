@@ -3741,7 +3741,7 @@ Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` mu
 
 **Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
 
-### TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, test build)
+### TASK-206: the prepare expands the shader variants over the session's render scale (owner, 2026-11-07; implemented, rc16 test build draft)
 
 **Why.** TASK-205 (Confirmed) found the main reason a session asks for "new" keys: **the render scale is part of the
 pipeline key** (push bits 0-19 hold the sampled texture's scale, bits 28/30 the scaled frame). The shipped 544 keys are
@@ -3793,8 +3793,10 @@ pixels), and the cap (8 of the expanded list, no duplicate). `hw_core2_shader_ca
 
 **State.** Branch `task/206-scale-expansion` from `task/205-variant-coverage` at c0e37897; build
 `private/slice417-build` (v2.00, plain) and `private/slice417-spec2-build` (Spec II, plain, for the gate); pin
-`docs/inputs/slice417-pcsx2.json`; kit `private/slice417-dist-task206` (portable launcher rc17, v2.00 only); no PR, no
-release, no upload.
+`docs/inputs/slice417-pcsx2.json`; kit `private/slice417-dist-task206`. The **1.3.0-rc16 test build** (worktree
+`gt4-wt-206-rc16-package`, branch `task/206-rc16-package`) packages the same v2.00 game with the rc16 launchers,
+installer and portable zip in `private/release-130-rc16-out` (see the journal); it is uploaded as the GitHub **draft**
+`v1.3.0-rc16`, not published. That test build is **v2.00 only** (no Spec II distribution). No PR.
 
 ### TASK-207: the launcher's notice and the player export of recorded shader variants (owner, 2026-11-07; standby, not implemented)
 

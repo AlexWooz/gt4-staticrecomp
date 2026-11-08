@@ -27,7 +27,12 @@ On `task/206-scale-expansion` (from `task/205-variant-coverage` at c0e37897). De
   residual 13 uber batches at startup before the pipelines were recreated. Race intervals: `gpu_busy` **5.71 against 3.78
   ms/VBlank** (deferred against prepared), wall 8.96 against 8.76 - TASK-205's 5.69/3.78 within 0.02.
 - **Tests.** `hw_core2_*` **36 of 36** (new `hw_core2_prepare_scale`), launcher `cargo test --workspace` **784 passed, 9
-  ignored, 0 failed**, Python suite in the journal. No PR, no release, no upload.
+  ignored, 0 failed**, Python suite in the journal. No PR; the rc16 test build below is the upload.
+- **1.3.0-rc16 test build (2026-11-07).** The same v2.00 game in an rc16 kit (`private/release-130-rc16-out`):
+  installer `GT4Recomp-Setup-1.3.0-rc16.exe` 27,914,921 bytes `0733f4f6...`, portable zip
+  `GT4Recomp-1.3.0-rc16-portable.zip` 42,118,027 bytes `c62d978b...`, `SHA256SUMS`; uploaded as the GitHub **draft**
+  `v1.3.0-rc16` (pre-release, not published, not Latest). Payloads checked file by file, cargo 784, focus 413/413
+  en-US and 420/420 pt-BR, nav-test 265/265, locale keys 918 in both. **v2.00 only: no Spec II in this build.**
 
 ## TASK-205: map every CoreGS 2.0 shader variant and what creates one (owner, 2026-11-07; analysis, no runtime change)
 
