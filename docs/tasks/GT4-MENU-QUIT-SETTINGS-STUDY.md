@@ -245,8 +245,8 @@ entry count (the pinned v2.00 reader's parity check is relaxed only for Spec II)
   node bases and the row widget is `node + 0x28`. The SelectBox is at `vtable 0x006D7118`, geometry `+0x24` =
   `{-64,16,460,36}`, rows/first/last `+0x90`/`+0x94`/`+0x98`, **index `+0xB8`**, visible end `+0xC0`. The row
   composite is `0x006C3EA0`; its prev/next/parent are `+0x18`/`+0x1C`/`+0x14`. The hidden composite node is at
-  `0xEA83F0` (widget `+0x28`, geometry `+0x24`, count `+0x20` = 11); the patched Quit node is `0xEA9DEC` (child pointer
-  `0xEA9DF0`). The StartScroll geometry `{160,332,320,68}` at parent node `+0x28`, widget `+0x24`, is the structural
+  `0xEA83F0` (widget `+0x28`, geometry `+0x24`, count `+0x20` = 11); the patched Quit node is `0xEA9DF0` (widget
+  `0xEA9E18`). The StartScroll geometry `{160,332,320,68}` at parent node `+0x28`, widget `+0x24`, is the structural
   gate. **C** from the headless top-menu state and the down-press index change.
 - **No `arca`:** no reliable Spec II menu-state word was located; the SelectBox is identified structurally, scanning
   every 15 VBlanks. A full boot can find a transient arcade TopRoot (`0xC66DF8`) before the current one

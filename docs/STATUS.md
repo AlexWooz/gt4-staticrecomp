@@ -10,7 +10,7 @@ and exit path as v2.00, with a target profile for the Spec II object model. The 
   `0x006C3EA0`, list node `0x006C3AD8`; geometry `+0x24` = `{-64,16,460,36}`, rows/first/last
   `+0x90/+0x94/+0x98`, **index `+0xB8`**, visible end `+0xC0`; the SelectBox stores node bases and the row widget is
   `node + 0x28`; row prev/next/parent `+0x18/+0x1C/+0x14`. Hidden composite node `0xEA83F0` (widget `+0x28`,
-  geometry `+0x24`, count `+0x20` = 11); patched Quit node `0xEA9DEC`. StartScroll `{160,332,320,68}` at
+  geometry `+0x24`, count `+0x20` = 11); patched Quit node `0xEA9DF0` (widget `0xEA9E18`). StartScroll `{160,332,320,68}` at
   parent node `+0x28` / widget `+0x24` is the structural gate. No reliable Spec II `arca` word was found; the scan
   runs every 15 VBlanks.
 - **Data patch:** the Spec II `projects/arcade/arcade.mproject` is a raw (kind 1) 216,146-byte record; tag
@@ -34,7 +34,7 @@ and exit path as v2.00, with a target profile for the Spec II object model. The 
 - **Build/kit:** `Y:\gt4recomp-scratch\slice423-spec2-build` (plain, no PGO/ThinLTO; C: was full), capsule
   `private/slice423-spec2-data-runtime` (`--mtvu --gs-stream --frame-cost --spec2-iop --data-patch`), pin
   `docs/inputs/slice423-spec2-data-runtime.json`; kit `Y:\gt4recomp-scratch\slice423-spec2-kit` (exe SHA-256
-  `e589517e...`, patch, recipe, report, state, card copy, ELF, shaders, frame, log, README). Test build only: no
+  `a767af6e...`, patch, recipe, report, state, card copy, ELF, shaders, frame, log, README). Test build only: no
   installer, release or upload. The owner's windowed controller test remains the gate; the attract-demo timer is the
   known risk.
 

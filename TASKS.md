@@ -4787,7 +4787,7 @@ whenever the arcade top menu is shown; a save whose `major_menu_project` is `gtm
 `native/menu_quit.*` and a Spec II `arcade.mproject` recipe (raw kind 1, 216,146 bytes). Spec II values: SelectBox
 vtable `0x006D7118`, composite `0x006C3EA0`, list node `0x006C3AD8`; rows/first/last `+0x90/+0x94/+0x98`, index
 `+0xB8`, end `+0xC0`; widget = node `+0x28`; hidden node `0xEA83F0` (widget `+0x28`, count `+0x20` = 11); Quit node
-`0xEA9DEC`. No reliable `arca` word: the SelectBox is gated structurally (vtable + geometry + StartScroll
+`0xEA9DF0` (widget `0xEA9E18`). No reliable `arca` word: the SelectBox is gated structurally (vtable + geometry + StartScroll
 `{160,332,320,68}` + row layout) and scanned every 15 VBlanks. Patch container 216,250 bytes, SHA-256
 `6b20fde2...`, verified against the PT-BR v1.10 disc; the TOC `0x115B800` pages carry an odd entry count (the
 Spec II layout relaxes only that parity). Headless: `[menu-quit] Quit Game row appended: 8 rows, last index 7`,

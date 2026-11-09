@@ -167,7 +167,7 @@ bytes (raw, kind 1). The game is one plain ELF (no `CORE.GT4`); the derived imag
 | Row prev / next / parent (widget) | `+0x18` / `+0x1C` / `+0x14` | C |
 | Row geometry | `+0x24` = `{64, 6+24*i, 320, 24}` (scroll moves the first y) | C |
 | Hidden composite | node `0xEA83F0`, widget `0xEA8418`, geometry `+0x24`, count node `+0x20` = 11 (extra `+0x28` = 12) | C (state) |
-| Hidden templates | 11 row nodes; Quit node `0xEA9DEC`, child pointer `0xEA9DF0` | C (state) |
+| Hidden templates | 11 row nodes; Quit node `0xEA9DF0`, widget `0xEA9E18` | C (state) |
 | StartScroll parent | node `+0x28` -> widget; geometry `+0x24` = `{160,332,320,68}` | C |
 | Menu state | no reliable `arca` word found; structural gate (SelectBox + StartScroll + row layout) | H |
 | `arcade.mproject` record | raw kind 1, 216,146 stored = decoded | C |
@@ -223,7 +223,7 @@ pinned with `pin_frame_cost_runtime.py`. `native/CMakeLists.txt` accepts a `slic
 the frame-cost family and the Spec II IOP carrier (it contains `sif.cpp` and `disc.cpp`).
 
 **Kit (private, test only):** `gt4vulkan-spec2.exe` SHA-256
-`e589517ed841f188628417cea8c5da3468315a110219afcfc0900fdd62eaf0d2`, `gt4-data.patch`, `recipe.json`, `report.json`,
+`a767af6e96e109cf988927270886beaf27d8674d68bacb20174d83e33818e58f`, `gt4-data.patch`, `recipe.json`, `report.json`,
 `state-topmenu.bin`, `card.ps2`, `SCUS_974.36`, `shaders/`, `quit-row.png`, `quit-row.log`, `README.md`.
 
 Run exactly as tested (from the kit, headless, create `frames` first):

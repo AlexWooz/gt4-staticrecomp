@@ -10,8 +10,8 @@
 //                       found; the SelectBox is identified by its own vtable, geometry and its StartScroll parent.
 //
 // Evidence for the Spec II values is in docs/tasks/QUIT-GAME-ROW-RETAIL-SPEC2.md: the headless state at VBlank 8,600
-// of the arcade TopRoot, the SelectBox at 0xA95E68 (vtable 0x006D7118), rows at 0x18566FC..0x18585DC (composite
-// 0x006C3EA0, node 0x006C3AD8), hidden at 0xEA83F0, Quit at 0xEA9DEC.
+// of the arcade TopRoot, the SelectBox at 0xA95E68 (vtable 0x006D7118), rows at 0x1856700..0x18585E0 (composite
+// 0x006C3EA0, node 0x006C3AD8), hidden at 0xEA83F0, Quit node 0xEA9DF0 (widget 0xEA9E18).
 #include "menu_quit.hpp"
 
 #include "game_target.hpp"
