@@ -1,10 +1,39 @@
 # Current Status
 
+## TASK-213 Phase 1b: Screen rows + Graphics menu design (2026-11-09, design/evidence)
+
+On `task/213-native-settings` after Phase 1. **Owner accepted Phase 1** in the windowed kit test (no HiVision,
+Fullscreen Off/On, live toggle; the kit's `game-changes.toml` recorded the change). This slice investigates the owner's
+next Screen rows and the Graphics menu; **no game code changed**.
+
+- **Resolution / Monitor rows (diagnostic, private):** a new data patch (`private/slice425-screen-labels`) relabels the
+  `Vertical` row **Resolution** and `Horizontal` **Monitor**. Headless frames (`private/slice425-run/png/`):
+  `frame_02300.png` shows the page with Fullscreen Off, Resolution **0**, Monitor **0**; `frame_02450.png` /
+  `frame_02750.png` keep numeric 0 and the old tooltips. **The gate:** the page script's `setupSlider` rewrites the
+  slider value text with `slider.index` on open and after every change, and `MOption.screen_adjust_v/h` return ints, so
+  a native override cannot keep a mode/monitor name on the slider. The widget itself supports strings
+  (`MTextFace.set_text` `0x00243BF0`) and the game's greyed state (`MWidget.set_insensitive` `0x00256F30`, the slider
+  `bgi` frame), so the smallest next step is a headless proof of host text injection on the value TextFace. Both rows
+  are **restart** values (`resolution = "WxH"`, `monitor = "<device>@<WxH>"`, validated and merged by the launcher);
+  hooking `screen_adjust_v/h` would keep the guest fields and the save untouched. No numeric list was shipped.
+- **Graphics menu route:** the Adhoc **v5** script/TOC route is **blocked** (MIT GTAdhocToolchain, source-only: v5
+  compile plus disassembler, no reassembler, no retail v5 source, no GT4.VOL TOC writer; OpenAdhoc is GPL-3.0 and
+  reference only). The **host-native page** route has the engine functions mapped but is unproven; the reachable
+  **Network** page is a data-only repurpose candidate that needs the owner's decision. No shell implemented; the host
+  text/insensitive gate is its first step. Full design, page content and restart rules: mapping §14.
+- **Tests:** no source changed, so the Phase 1 numbers stand; the targeted `native_native_settings` and the Python
+  data-patch tests were re-run to confirm the tree (numbers in the journal). The diagnostic patch/frames are private
+  (slice425) and not committed.
+
 ## TASK-213 Phase 1: native HiVision removal + Wide -> Fullscreen (2026-11-09, test build only)
 
 On `task/213-native-settings` (from `task/213-settings-map` at `a3d7f54b`). The owner chose **all-native in-game rows**
 (no floating host panel) and asked for more rows on the Screen page or a new graphics page inside Options (plan:
 `docs/tasks/INGAME-SETTINGS-MAP.md` sections 11-13).
+
+**Owner accepted Phase 1 (2026-11-09, windowed test):** he ran `private\slice424-kit\play.cmd` (with `--window`),
+saw Options > General > Screen with no HiVision and the `Wide` row as **Fullscreen Off/On**, and the toggle changed the
+window live. The kit's `game-changes.toml` written by that run (19:24) says `fullscreen = false`. Phase 1 is accepted.
 
 - **HiVision is gone** on v2.00: the same-length data patch of the unique `"NTSC"` literal in `option.adc`
   (`0x247FB`) makes the script's NTSC compare fail, so the row stays hidden. The Screen page now shows only

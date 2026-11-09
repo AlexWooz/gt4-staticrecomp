@@ -4854,7 +4854,9 @@ and the closest model for the native phase. No code, data, build or pin was chan
 **State (2026-11-09, TASK-213 Phase 1 - native row proof):** branch `task/213-native-settings` (from
 `task/213-settings-map` at `a3d7f54b`). The owner chose **all-native in-game rows** (no floating host panel) and asked
 for **more rows on the Options > Screen page or a new graphics page inside Options**; both are in the mapping
-sections 11-13. Implemented and proven headless on v2.00:
+sections 11-13. **Owner accepted the phase (2026-11-09, windowed):** he ran `private\slice424-kit\play.cmd` with
+`--window`, saw the Screen page with no HiVision and Fullscreen Off/On, and the toggle changed the window live; the
+kit's `game-changes.toml` from that run says `fullscreen = false`. Implemented and proven headless on v2.00:
 
 - **HiVision removed** by the same-length data patch (`option.adc` `"NTSC"` -> `"PAL "` at `0x247FB`) and **`Wide`
   relabelled Fullscreen** with literal `Off`/`On` labels and the stale tooltip off (`option.mproject`, no minify: 6
@@ -4889,3 +4891,23 @@ sections 11-13. Implemented and proven headless on v2.00:
   a **new page** needs a v5 script round trip (OpenAdhoc/GTAdhocToolchain compiles v5, the retail round trip is not
   proven) or the host-native page built from the game's widgets. Spec II gets only the HiVision byte patch
   (`0x2A2E5`) when its build is next made; its callback is Phase 2.
+
+**State (2026-11-09, TASK-213 Phase 1b - Screen rows + Graphics menu design):** **owner accepted Phase 1** in the
+windowed kit test. A diagnostic data patch (`private/slice425-screen-labels`, private, not committed) relabelled the
+`Vertical` row to **Resolution** and `Horizontal` to **Monitor**; headless frames show the labels with **numeric values
+0** and the old screen-adjust tooltips. **The exact gate:** the page script's `setupSlider` rewrites the slider's value
+text with `slider.index` on open and after every change, and the native `screen_adjust_v/h` getters return ints, so a
+native override cannot keep a resolution/monitor name on the slider. The widget supports strings (`MTextFace.set_text`
+`0x00243BF0`) and the game's own greyed state (`MWidget.set_insensitive` `0x00256F30`, the slider `bgi` frame), so the
+smallest next step is a headless proof of **host text injection** on the value TextFace; then the two rows can show the
+monitor's modes/monitors and grey out when Fullscreen is Off. Both are **restart** values (`resolution = "WxH"`,
+`monitor = "<device>@<WxH>"`; the launcher validators and `game_changes` merge already exist); hooking
+`screen_adjust_v/h` would keep the guest fields and the save untouched. **Graphics menu:** route decision in mapping
+§14.3 - the Adhoc **v5** script/TOC route is **blocked** (GTAdhocToolchain is MIT and source-only: v5 compile plus a
+disassembler, but no reassembler, no retail v5 sources, and no GT4.VOL TOC writer; `gt4_data_patch.py` refuses growth;
+OpenAdhoc is GPL-3.0 and a reference only); the **host-native page** route has the engine functions mapped
+(`MRenderContext.startPage/getCurrentPage/closePage`, `MComposite.appendChild/insertChild/getChild`,
+`MTextFace.set_text`, `MWidget.set_insensitive`) but is unproven; repurposing the reachable **Network** page is a
+data-only candidate that needs the owner's decision and removes that page. **No shell was implemented** (the host
+text/insensitive gate is its first step, shared with the Screen rows), and no game code changed in this slice. Page
+content/restart rules are in mapping §14.4.

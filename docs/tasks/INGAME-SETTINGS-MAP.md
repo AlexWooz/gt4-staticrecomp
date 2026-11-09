@@ -1086,3 +1086,148 @@ the host poller + the first real setting (`render_scale`) follows; if (a) fails,
 - **Primeiras linhas sugeridas:** Render scale, Renderer, flares, road sheen, small effects, blending e readbacks -
   todas **valem no próximo início** (só Fullscreen é ao vivo). O aviso de "vale no próximo início" fica com o launcher,
   que já mostra esse tipo de aviso; o jogo não desenha notificação própria.
+
+
+## 14. Phase 1b: the Screen rows and the Graphics menu decision (2026-11-09)
+
+Branch `task/213-native-settings`, after Phase 1 (`85ef6e40`, accepted) and the test-record commit (`1c6b4bf9`).
+Part A (Screen rows) and Part B (Graphics menu) are design/evidence here; no new game code shipped in this slice.
+
+### 14.1 Owner acceptance of Phase 1
+
+The owner ran `private\slice424-kit\play.cmd` with `--window`: Options > General > Screen shows no `HiVision`, the
+`Wide` row is `Fullscreen` with `Off`/`On`, and the toggle changed the window live. The kit's `game-changes.toml` from
+that run (19:24) says `fullscreen = false`. **C** (owner report + file). Recorded in TASKS, STATUS and the journal.
+
+### 14.2 Screen page: Resolution (Vertical) and Monitor (Horizontal)
+
+**What was done (data only, diagnostic):** a new private patch (`private/slice425-screen-labels`) relabels
+`LabelVertical` -> literal `Resolution` and `LabelHorizontal` -> literal `Monitor` (plus the Phase 1 NTSC/Fullscreen
+edits; 6 text replacements, 77,986-byte container, no minification). Headless frames
+(`private/slice425-run/png/`): `frame_02300.png` shows the page with **Fullscreen Off / Resolution / Monitor**, the
+values **0** and **0**; `frame_02450.png` (Resolution focused) and `frame_02750.png` (Monitor focused) keep the values
+**0**, and the tooltips still say "Adjusts the vertical/horizontal position of the screen". **C**
+
+**The exact value-display gate.** Each row's `SliderBar` has two TextFaces: the row label (key `LabelVertical` /
+`LabelHorizontal`) and the slider's own value `label` (`{10,1,150,24}`), plus `popup.min`, `popup.max` and
+`popup.pinch.value`. (Correction to §1.2/§9: the v2.00 `Vertical` slider range is **-20..50**, not -50..50; the
+`Horizontal` range is -50..50.) The page script's `setupSlider` (v7 twin, `ScreenRoot.ad`; the v5 bytecode strings name
+it too) runs on page open and after every slider change and writes **numbers** into all of them:
+`slider["label"].text = slider.index * bias`, `popup["pinch"]["value"].text = ...`, `popup["min"/"max"].text = ...`.
+The native `MOption.screen_adjust_v` (`0x001802F0`) / `screen_adjust_h` (`0x00180200`) getter returns a boxed **int**
+(the same shape as `wide_mode`); the script formats it. Therefore a native override can change the *index* and the
+stored host value but **cannot keep a resolution/monitor name on the slider**: the script rewrites the label to a number
+on open and after each change. **C** (decomp + script source + frames).
+
+**What the widget can do (the parts that exist):**
+- `MTextFace.set_text` `0x00243BF0` (getter `get_text` `0x00243B08`, `get_value` `0x00243A68`): the value TextFace
+  can display any string; the script itself writes a string in the `none` case of `setupSlider`.
+- `MWidget.set_insensitive` `0x00256F30` (`get_insensitive` `0x00256E90`): the engine's real greyed/not-selectable
+  state. The slider already carries the greyed art (`FrameImageFace "bgi"`, `visible_condition 8`,
+  `visible_compare 8`), so setting insensitive gives the game's own greyed look, not a fake. The network page uses
+  `.insensitive` the same way. **C** (data + natives) / **H** (the engine picks `bgi` from that state).
+- The value TextFace is a child of the SliderBar, itself a child of the row `Composite` (v2.00 `MComposite` vtable
+  `0x00662EF8`, row geometry `{0,52,320,32}` / `{0,84,320,32}`, slider `{150,4,160,24}`, value label
+  `{10,1,150,24}`), so the host can find it with the same geometry scan as `menu_quit`. **C** (tree) / **H** (scan).
+
+**The gate for the owner's target.** To show the monitor's modes and the monitor list on these rows the host must
+overwrite the script-written texts *after* the script (a VBlank watcher), i.e. derive and prove the host text
+injection: build a guest `String` (basic_string) and assign it to the value TextFace, or call `MTextFace.set_text`
+with the reader/boxed-string path; then set `insensitive` when Fullscreen is Off and ignore the slider setter while
+Off. The alternative is a v5 script edit of `setupSlider`/`onValueChanged` (blocked, 14.3). **H/U**. The smallest next
+step is one headless proof of the host text injection on the value TextFace (no resolver logic yet); if that frame
+shows a mode name, the two rows follow. **Do not ship a numeric list.**
+
+**Lists and write-through (ready once the display gate is passed).** The game can enumerate the current monitor's
+modes (`EnumDisplaySettingsW`) and the monitors (`EnumDisplayMonitors`/`GetMonitorInfoW`); the launcher's stored forms
+are `resolution = "WxH"` or `desktop`, and `monitor = "<device>@<WxH>"` or `primary`
+(`launcher/crates/gt4l-core/src/settings.rs`, `display.rs`). Both are **restart** values (the mapping §3.1/§4.3:
+`GT4_OUTPUT_SIZE` is read once and the display plan/render scale is built from it; a live window resize is not a
+settings change). The rows write `game-changes.toml` (`resolution`, `monitor`), the launcher validates and merges
+(`game_changes` -> `set_by_user`), and the guest `option + 0x18` (h) / `+0x1C` (v) fields and the save stay untouched by
+hooking `screen_adjust_v/h` and skipping the native. Greyed state: `insensitive` while Fullscreen is Off; the setter is
+ignored then. **C** for the validators/merge, **H** for the rows.
+
+### 14.3 The Graphics menu: route decision
+
+The owner wants a new **Graphics** menu inside Options, not a floating panel, carrying renderer, render scale, effects,
+GSdx blending/readbacks, frame rate and HUD with restart notices.
+
+**Route 1 - Adhoc v5 script/TOC: blocked.** GTAdhocToolchain (MIT) is present as **source only** in
+`private/slice151-research/nenkai/GTAdhocToolchain`: its CLI has `build`, `disassembly-repl`, `pack`/`unpack`,
+`mproject-to-bin`/`-to-text`; it supports bytecode **v5** compilation and a **disassembler**, but there is **no
+assembler from its disassembly** and **no `.ad` source for the retail v5 option project** (OpenAdhoc's GT4 `option`
+project is v7; OpenAdhoc is GPL-3.0 and is a reference only). The page list is script data (`OptionRoot.ad`'s
+`options` array and `start_page`), so a new page is a script edit. A v5 rebuild changes the `option.adc` layout and
+size, which needs a **new GT4.VOL TOC**; `scripts/gt4_data_patch.py` only does same-length replacements and refuses
+growth, and no TOC writer exists. The owner would also have to accept a GPL build tool in the private flow. **C** for
+the tool/commands/licence, **C** for the TOC gate. Smallest step if this route is chosen: build the MIT CLI, test
+`build -v 5` + disassembly on a scratch copy, then write a TOC writer; weeks, not a slice.
+
+**Route 2 - host-native page with the game's widgets: feasible pieces, unproven page.** The engine exposes
+`MRenderContext.startPage` `0x0022BC20` / `getCurrentPage` `0x0022BE00` / `closePage` `0x0022BD98`,
+`MComposite.appendChild` `0x00205420` / `insertChild` `0x00205530` / `getChild` `0x00205980`,
+`MTextFace.set_text` `0x00243BF0`, `MWidget.set_insensitive` `0x00256F30`. The TASK-212 Quit row proves a host-parsed
+widget tree renders and can be appended; the menu_quit mask proves host-owned input. What is **not** proven: building a
+valid page root/vtable and render context, attaching it to the Options root (the `OptionRoot` ScrollWindow and its
+`hidden::Item` tiles are script-filled), the focus list (the script's `setFocus`/page modules), the back transition and
+the restart-notice text drawing. That is the 2-3 slice module of §12.3; the same host text/insensitive/scan gate as
+14.2 is its first step. **C** for the functions; **U** for the page.
+
+**Candidate 3 - repurpose an existing page (Network):** the Options root has a reachable `Network` tile (page table
+`0x8EFA`; `NetRoot` at `0x8EFA`), so a data-only "Graphics" page could be the existing Network page with its tile/rows
+relabelled and its natives overridden. The v7 `NetRoot.ad` shows 10 network rows (`AutoConnect`, `ConnectIdx`,
+`UseProxy`, `ProxyAddr`, `ProxyPort`, `UseUPnP`, `UDPBindPortSetting`, `UDPBindPort`, `EntranceAddr`, `EntrancePort`)
+with `reflect`/`apply`/`sensitive` and `setNeedSave`; repurposing means hiding/overriding all of them and relabelling
+the tile, and it removes the Network page (likely unused in the recomp, but an owner decision). **H/U**; not
+implemented.
+
+**Decision for this slice:** no shell. The route with the least licence/toolchain risk is the host-native page using
+the game's widgets, but its first gate is the host text/insensitive injection, which is also the gate for the Screen
+rows. The smallest next step is the same for both: one headless proof that the host can set a value TextFace string and
+the insensitive state on the live Screen page; then the Resolution/Monitor rows and, with the clone/attach proof, the
+Graphics page shell.
+
+### 14.4 Graphics page content (ordered, restart rules, write-through)
+
+From §12.4 and §3: renderer `renderer` (GSdx/CoreGS 2.0, restart), render scale `render_scale` (`100/150/200`, restart),
+effects `effect_flares` (restart, shared by both renderers), `effect_road_sheen` (restart, CoreGS), `effect_targets`
+(restart, CoreGS), GSdx blending `blending` (restart), readbacks `hw_download_mode` (restart), frame rate `frame_rate`
+(30/60, restart, frame skipping only), performance HUD `performance_hud` (restart). Every row writes `game-changes.toml`
+only; the launcher merges (`game_changes` -> `set_by_user`/`set_gs`) and stays the only writer of `settings.toml`. A
+restart row must show "applies at next start": the game has no notification UI, so the row's own value/label text (or a
+static note row) carries it; the launcher can also show its message after the merge. No host value enters the save.
+
+### 14.5 Evidence
+
+- Diagnostic patch: `private/slice425-screen-labels/patch/gt4-data.patch` (container
+  `bd3f41d9b99c13763217211934a56165cb15f3c9f0a8cbceb5c0cc9903f7f415`, 77,986 bytes; report in the same folder).
+- Frames: `private/slice425-run/png/frame_02300.png` (Resolution/Monitor labels, values 0, Fullscreen Off),
+  `frame_02450.png` (Resolution focused, stale tooltip), `frame_02750.png` (Monitor focused). Log
+  `private/slice425-run/run.log` (`[data-patch] ... verified against the image`, no errors), state
+  `private/slice425-run/state.bin` (wide 1, screen_adjust_h 0, screen_adjust_v 0, project `"opti"`).
+- Route evidence: GTAdhocToolchain `Program.cs` commands and README (v5 compile + disassembler), OpenAdhoc LICENSE
+  (GPL-3.0), `gt4_data_patch.py` growth refusal, the `MRenderContext`/`MComposite`/`MTextFace`/`MWidget` natives above.
+
+
+## 15. Resumo para o dono (pt-BR) - Phase 1b
+
+- **A Phase 1 foi aceita por você** (teste com janela): a página Tela não tem HiVision, a linha Wide é **Fullscreen
+  Off/On** e a troca mudou a janela ao vivo. O `game-changes.toml` do kit registrou a mudança. Obrigado!
+- **Resolution / Monitor (linhas Vertical/Horizontal):** os rótulos já podem virar **Resolution** e **Monitor** por
+  patch de dados (provado numa captura headless: a página mostra Fullscreen Off, Resolution 0, Monitor 0). O problema
+  é o **valor**: o script da página reescreve o texto do slider com um **número** (`slider.index`) ao abrir e a cada
+  mudança; o controle nativo devolve um inteiro, não um texto. O widget em si aceita texto e tem o estado
+  "insensitive" (cinza/desabilitado) do próprio jogo, mas para mostrar o nome da resolução/monitor o host precisa
+  escrever no texto do widget **depois** do script (ou editar o script v5, que está bloqueado). Isso é o próximo passo
+  pequeno: provar a escrita de texto do host numa captura headless; depois as duas linhas com as listas do monitor e o
+  cinza quando Fullscreen está Off. **Não foi entregue uma lista falsa num slider numérico.**
+- **Menu Graphics:** a rota por script **v5** está bloqueada: a ferramenta GTAdhocToolchain é MIT e está só como
+  código-fonte (compila v5 e desmonta, mas não remonta o desmonte, não há o código-fonte v5 do projeto original e não
+  existe escritor do TOC do GT4.VOL; o patch de dados recusa crescimento). A rota de **página nativa com os widgets do
+  jogo** tem as funções do motor mapeadas (iniciar página, anexar widget, texto, insensitive), mas ainda não foi
+  provada; é o mesmo portão da escrita de texto. A terceira ideia, reaproveitar a página **Network** como Graphics, é
+  possível por dados mas mexe na página de rede e precisa da sua decisão. Nada disso foi inventado como pronto.
+- **Conteúdo do menu Graphics (quando a rota fechar):** renderizador, escala de render, flares, road sheen, small
+  effects, blending/readbacks, 30/60 FPS e HUD; tudo **vale no próximo início** (só Fullscreen é ao vivo); o jogo grava
+  `game-changes.toml`, o launcher valida e junta, e nada entra no save.
