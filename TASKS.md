@@ -4850,3 +4850,36 @@ and Render scale (restart notice); then the first effects row, flares (shared by
 implementation task is the HiVision removal (0.5-1 slice), then the panel (1.5-2 slices); the native repurpose
 phase is 2-3 more. The Spec II `GroupSpecII`/`SpecIISettingRoot` page is the publisher's own native settings page
 and the closest model for the native phase. No code, data, build or pin was changed by this study.
+
+**State (2026-11-09, TASK-213 Phase 1 - native row proof):** branch `task/213-native-settings` (from
+`task/213-settings-map` at `a3d7f54b`). The owner chose **all-native in-game rows** (no floating host panel) and asked
+for **more rows on the Options > Screen page or a new graphics page inside Options**; both are in the mapping
+sections 11-13. Implemented and proven headless on v2.00:
+
+- **HiVision removed** by the same-length data patch (`option.adc` `"NTSC"` -> `"PAL "` at `0x247FB`) and **`Wide`
+  relabelled Fullscreen** with literal `Off`/`On` labels and the stale tooltip off (`option.mproject`, no minify: 6
+  bytes shorter, padded; PS2ZIP 19,965 of 22,449 stored). The patch is private, built from the owner's disc
+  (`gt4_data_patch.py`, 2 ranges, 77,802 payload bytes, container `e83ecb23...`).
+- **The callback contract is Confirmed through the dispatch hook.** `MOption.wide_mode` `0x00180108` is intercepted
+  while the Options project is current (`[[0x00622F4C]+0x3A3BC] == "opti"`): the getter boxes the host value with
+  the game's own `func_002FE278` into the caller's `hValue` slot, the setter reads the `hInt` at `argv[0]`, stores the
+  host value and **skips the native**; the guest wide flag and the 44-byte 16:9 record are never written. Alt+Enter/F11
+  write the same feedback. `native/native_settings.*`, `scripts/native_settings_overlay.inc`, capsule
+  `private/slice424-native-settings-license-guard-runtime`, pin
+  `docs/inputs/slice424-native-settings-license-guard-runtime.json`.
+- **Feedback merge.** `GT4_SETTINGS_FEEDBACK` is passed by the launcher; the game writes
+  `version = 1` + `[changes] fullscreen = true|false` atomically; `gt4l-core::game_changes` validates it, merges on
+  game exit and at the next launcher start, deletes the file, and the launcher stays the only writer of
+  `settings.toml`.
+- **Headless evidence (kit `private/slice424-kit`, test build only):** run A (`GT4_FULLSCREEN=0`) shows Fullscreen
+  **Off** and changes it to On; run B (`GT4_FULLSCREEN=1`) shows **On** and changes it to Off; both write the file and
+  the log lines, and both states keep wide `1` / record `425 x 240`. Frames: page without HiVision, the popup
+  Off/On, the selected value. The live borderless window is the owner's windowed test.
+- **Tests:** `native_native_settings` fixture (page gate, setter, boxed getter, feedback, guest fields untouched);
+  Python `test_gt4_data_patch.py` (byte replacement, anchors, v2.00 anchor check); `cargo test --workspace`
+  799 passed / 9 ignored; CTest and Python numbers with the test build in the journal.
+- **Still open:** the owner's windowed test (row toggles the real window; Alt+Enter; launcher merge after the exit);
+  the first **new row** needs the engine focus traversal into a `has_script`-less `OptionMenu` proved (mapping 12.5);
+  a **new page** needs a v5 script round trip (OpenAdhoc/GTAdhocToolchain compiles v5, the retail round trip is not
+  proven) or the host-native page built from the game's widgets. Spec II gets only the HiVision byte patch
+  (`0x2A2E5`) when its build is next made; its callback is Phase 2.

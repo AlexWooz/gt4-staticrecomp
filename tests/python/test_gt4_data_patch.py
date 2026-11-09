@@ -56,6 +56,94 @@ class RawFileTest(unittest.TestCase):
                                     {'text_replacements': [{'old': 'a' * 32, 'new': 'b' * 33}], 'minify': False})
 
 
+class ByteReplacementTest(unittest.TestCase):
+    """TASK-213: the same-length byte edit of the `"NTSC"` literal in option.adc."""
+
+    @staticmethod
+    def record(size):
+        return type('Record', (), {'kind': 2, 'stored_size': size + 64, 'size': size})
+
+    def test_replaces_exactly_the_named_range(self):
+        payload = b'....NTSC....'
+        edit = {'byte_replacements': [{'offset': 4, 'length': 4, 'expect_hex': '4e545343', 'hex': '50414c20'}]}
+        replacement = patch.build_replacement(self.record(len(payload)), payload, edit)
+        self.assertEqual(replacement, b'....PAL ....')
+        self.assertEqual(len(replacement), len(payload))
+
+    def test_a_mismatched_anchor_is_refused(self):
+        payload = b'....NTSC....'
+        edit = {'byte_replacements': [{'offset': 4, 'length': 4, 'expect_hex': '4e54534d', 'hex': '50414c20'}]}
+        with self.assertRaises(ValueError):
+            patch.build_replacement(self.record(len(payload)), payload, edit)
+
+    def test_a_wrong_length_is_refused(self):
+        payload = b'....NTSC....'
+        edit = {'byte_replacements': [{'offset': 4, 'length': 4, 'hex': '50414c'}]}
+        with self.assertRaises(ValueError):
+            patch.build_replacement(self.record(len(payload)), payload, edit)
+
+    def test_a_range_outside_the_file_is_refused(self):
+        payload = b'....NTSC....'
+        edit = {'byte_replacements': [{'offset': 10, 'length': 4, 'hex': '50414c20'}]}
+        with self.assertRaises(ValueError):
+            patch.build_replacement(self.record(len(payload)), payload, edit)
+
+    def test_byte_and_text_edits_do_not_mix(self):
+        payload = b'....NTSC....'
+        edit = {'byte_replacements': [{'offset': 4, 'length': 4, 'hex': '50414c20'}],
+                'text_replacements': [{'old': 'x', 'new': 'y'}]}
+        with self.assertRaises(ValueError):
+            patch.build_replacement(self.record(len(payload)), payload, edit)
+
+    def test_a_grown_replacement_is_refused_at_the_stored_extent(self):
+        payload = b'....NTSC....'
+        replacement = patch.build_replacement(
+            self.record(len(payload)), payload,
+            {'byte_replacements': [{'offset': 4, 'length': 4, 'hex': '50414c20'}]})
+        encoded = patch.ps2zip(replacement)
+        record = type('Record', (), {'kind': 2, 'stored_size': len(encoded) - 1, 'size': len(replacement)})
+        with self.assertRaises(ValueError):
+            patch.encode_same_extent(record, replacement)
+
+
+class V200AnchorTest(unittest.TestCase):
+    """The real v2.00 decoded files, read-only, when the private study folder is present.
+
+    The private folder is not part of the repository; the test skips without it. It pins the anchor the private recipe
+    uses: the one `"NTSC"` literal at 0x247FB in option.adc, and the one label/choice key of each relabelled row in
+    option.mproject.
+    """
+
+    decoded = pathlib.Path(r'C:\Antigravity\gt4-staticrecomp\private\slice155-spec2-480p\retail_adc')
+
+    def test_the_ntsc_literal_is_unique_at_the_v200_offset(self):
+        path = self.decoded / 'projects_option_option.adc.bin'
+        if not path.exists():
+            self.skipTest('the private v2.00 decoded files are not present')
+        data = path.read_bytes()
+        self.assertEqual(len(data), 251715)
+        self.assertEqual(data.count(b'NTSC'), 1)
+        self.assertEqual(data.find(b'NTSC'), 0x247FB)
+        self.assertEqual(data[0x247FB:0x247FF], bytes.fromhex('4e545343'))
+
+    def test_the_screen_row_labels_are_unique_and_the_edit_does_not_grow_the_file(self):
+        path = self.decoded / 'projects_option_option.mproject.bin'
+        if not path.exists():
+            self.skipTest('the private v2.00 decoded files are not present')
+        text = path.read_text(encoding='utf-8')
+        self.assertEqual(len(text.encode('utf-8')), 681977)
+        anchors = ['key string {"LabelWide"}', 'key string {"Item4x3"}', 'key string {"Item16x9"}']
+        for anchor in anchors:
+            self.assertEqual(text.count(anchor), 1, anchor)
+        edited = text
+        edited = edited.replace('key string {"LabelWide"}', 'text string {"Fullscreen"}')
+        edited = edited.replace('key string {"Item4x3"}', 'text string {"Off"}')
+        edited = edited.replace('key string {"Item16x9"}', 'text string {"On"}')
+        self.assertLessEqual(len(edited.encode('utf-8')), len(text.encode('utf-8')))
+        # No minification: the replacement keeps the file's whitespace and pads only the shorter tail.
+        self.assertEqual(edited.count('\t'), text.count('\t'))
+
+
 class Ps2ZipTest(unittest.TestCase):
     def test_round_trip_through_the_catalogue_decoder(self):
         payload = b'Project { name string {"test"} }\n' * 100

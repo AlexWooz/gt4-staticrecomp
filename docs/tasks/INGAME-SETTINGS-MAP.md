@@ -3,6 +3,12 @@
 Read-only study, 2026-11-09. Branch `task/213-settings-map` (from `task/212b-spec2-quit` at `70af98d7`).
 No code, data, build, pin or test was changed for this document.
 
+> **Update (2026-11-09, TASK-213 Phase 1):** sections 11-13 were added on `task/213-native-settings` (from
+> `a3d7f54b`). They record the native implementation that shipped in the test build (HiVision removal, `Wide` ->
+> Fullscreen with the host callback and the `game-changes.toml` feedback) and the owner's page-extension plan (more
+> rows on the Screen page, or a new graphics page inside Options). The study sections 1-10 are unchanged and remain
+> the reference for the data and the live/restart rules.
+
 Labels: **C** = Confirmed (decoded data, code path or a run), **H** = High confidence, **Hy** = Hypothesis,
 **U** = Unknown.
 
@@ -792,3 +798,291 @@ Shared vs target-specific:
 - Primeiro conjunto: tirar a HiVision; painel com Tela cheia (ao vivo); Renderizador e Escala de render
   (aviso de "vale no próximo início"); depois o primeiro efeito, os flares (funciona nos dois renderizadores).
 - Nada disso grava valor de host no save do GT4: o save continua 480p/16:9 e abre num PS2 de verdade.
+
+## 11. Phase 1 as implemented: HiVision removed, Wide -> Fullscreen (2026-11-09)
+
+Branch `task/213-native-settings` (from `task/213-settings-map` at `a3d7f54b`). v2.00 only; Spec II is Phase 2.
+This section replaces the "host panel first" recommendation of section 6 for the native look: the owner chose
+**all-native in-game rows, no floating host panel** (2026-11-09).
+
+### 11.1 The two data edits (private, from the owner's disc)
+
+| Target | File | Edit | Anchor | Result |
+|---|---|---|---|---|
+| v2.00 | `projects/option/option.adc` | 4 bytes `4E 54 53 43` -> `50 41 4C 20` (`"NTSC"` -> `"PAL "`) | `0x247FB`, unique | `GetVideoSystem() == "NTSC"` is false, `Pane.HiVision.visible` stays `0` |
+| v2.00 | `projects/option/option.mproject` | `key string {"LabelWide"}` -> `text string {"Fullscreen"}`; `key string {"Item4x3"}` -> `text string {"Off"}`; `key string {"Item16x9"}` -> `text string {"On"}`; the Wide `OptionMenu` `tooltip digit {1}` -> `{0}` | each anchor unique; text edit | row label and both choices read from literal text, no `rtext.rt2` edit; the stale 4:3/16:9 tooltip is suppressed |
+
+- **No minification** (`"minify": false`): the patch keeps every byte of whitespace, so only the label bytes differ.
+  The edited decoded file is 681,971 bytes (6 shorter), padded with 6 newlines to exactly 681,977, and its PS2ZIP
+  payload compresses to **19,965** bytes against the 22,449-byte stored extent (headroom 2,484). **C** (builder
+  report; measured with `gt4_data_patch.ps2zip`).
+- The container has two ranges (77,986-byte container, 77,802 payload bytes), SHA-256
+  `e83ecb2390c9065ae7362f6752ad64d7b76c5baa2bdd93447f874ca95e19ed96`; the runtime prints
+  `[data-patch] ...: 2 range(s), 77802 payload bytes, verified against the image` before the first byte is used. **C**
+  (headless logs).
+- Why literal text and not `US/rtext.rt2`: the RT2 is another volume file (its values may be encrypted in RT05; GT4 is
+  RT04), and a key shared with another page would change everywhere. A literal `TextFace.text` is exactly what the
+  TASK-212 Quit widget proved. **C** (Quit row) / **H** (no other user of the keys).
+- The `text string {"Fullscreen"}` fits the 134-px label box in `hm_16` and matches the page's style; `align 3` keeps
+  the right alignment. The choices' `hm_16` labels `Off`/`On` are shorter than the old `4:3`/`16:9`. **C** (frames).
+
+### 11.2 The callback contract (v2.00, Confirmed on the headless page)
+
+`MOption.wide_mode` is one script native, `0x00180108`, registered as both the getter and the setter
+(`config/adhoc_methods.txt`; decomp `MOption__get_wide_mode`, unit `0x0017FCB0`). The script calls it through
+`hBuiltinMethod` virtual 14, i.e. a `jalr`, so the recomp's `ps2::dispatch` sees the whole call. **C**
+
+| Register / slot | Meaning |
+|---|---|
+| `a0` | the caller's `hValue` return slot (the hidden structure-return pointer) |
+| `a1` | the method context; the native ignores it |
+| `a2` | `argc`: `> 0` = set, `0` = get |
+| `a3` | `argv`: `argv[0]` = a guest `hInt` (the OptionMenu index), vtable `0x00674188`, value at `+0x10` |
+| return | for a get, the native boxes an `hInt` with `func_002FE278` (allocate 0x14-byte RefCounter, `hInt` ctor, write the slot, retain) and releases the old handle with `func_003285F8`; the result is not in `v0` |
+
+`native/native_settings.*` + `scripts/native_settings_overlay.inc` (capsule `slice424-native-settings-license-guard-runtime`):
+
+- **Dispatch:** `if (pc == 0x00180108 && on_wide_mode(...)) return;` - handled calls set `c.pc = ra` and return, so the
+  native body never runs; every other dispatch, and the same address in another project, is untouched.
+- **Page gate:** only while `[[0x00622F4C] + 0x3A3BC] == "opti"` (the menu state's next project id; `0x6974706F`). The
+  arcade TopRoot reads `option.wide_mode` for its 4:3/16:9 layout (`arcade/TopRoot.ad` in the OpenAdhoc v7 source, line
+  19); outside the Options project the call is passed through, so that menu keeps seeing the guest's `1`. **C** (RAM
+  state `options-screen3`: the word is `opti`; fixture: `gtmo` -> passthrough).
+- **Setter:** read `argv[0]` as an `hInt` (vtable guard; any other object is left to the native), accept only 0/1,
+  store the host value, write the feedback file, request the window change, and **do not call the native**. The guest
+  `option + 0x14` and the 44-byte record are never written.
+- **Getter:** box the host value (0 Off, 1 On) into `a0` with the game's own `func_002FE278`, after releasing a
+  non-null old handle with `0x003285F8`; the guest call runs through `ps2::call(func, depth + 1)` and the hook restores
+  `c.pc = ra` afterwards. `ScreenRoot.reflect` calls `Pane::Wide::OptionMenu.setIndex(context, option.wide_mode)`, so
+  the row shows the host value. **C** (run A: host 0 -> Off while the guest is 1; run B: host 1 -> On).
+- **Cancel reverts correctly:** `onInitialize` snapshots `sWide = option.wide_mode`, which is now the host value; Cancel
+  runs `applyOrg` and writes that snapshot back through the same setter, so a cancel restores the value the page opened
+  with (and writes the file again only when it differs). **H** (script source of the publisher's v7 twin; the v5 script
+  is not decompiled) - the page test did not press Cancel; it is part of the owner test.
+- **The live window:** `window.cpp` applies the pending value at the next VBlank with the same `set_fullscreen` path as
+  Alt+Enter/F11 (borderless fullscreen, `WM_SIZE` recreates the swapchain, the GS child follows with `CONTROL resize`).
+  Alt+Enter/F11 also writes the feedback file now, so the row and the keyboard stay in agreement. A headless run has no
+  window and only logs the request. **C** (code + log); the live window is the owner's test.
+- **Target table:** the addresses are in `native/game_target.hpp` (`option_wide_mode_callback`, `script_box_int`,
+  `script_release_handle`, `script_hint_vtable`, `option_project_word_offset`, `option_project_id`). Spec II leaves them
+  0, so the hook logs one `[target] ... disabled` line and the native runs; the Spec II derivation is Phase 2. **C**
+
+Risk of the guest-call getter: it runs the game's allocator and `hInt` ctor from inside a dispatch hook. `ps2::call`
+recurses into `dispatch` exactly as any guest call does and returns when the callee's translated body returns; the
+depth is the caller's + 1. If the boxer address had no translated entry, `ps2::has_code` refuses first and the native
+runs unchanged (no halt). **H** (design; every headless getter call exercised it - the page reflects the value on every
+open).
+
+### 11.3 The feedback file (launcher is still the only writer of `settings.toml`)
+
+- `GT4_SETTINGS_FEEDBACK=<config folder>\game-changes.toml` is passed by the launcher (`commands.rs::prepare_play`,
+  `extra`). The game writes, atomically (temporary file + `MoveFileEx` replace), exactly:
+  ```toml
+  version = 1
+
+  [changes]
+  fullscreen = true
+  ```
+  on every host change (the row or Alt+Enter/F11). The write is immediate, so a crash after the change loses nothing.
+  **C** (files `game-changes-a.toml`/`-b.toml`).
+- `gt4l-core::game_changes` (new module) validates: `version` must be 1; a normal id goes through
+  `settings::definition` + `Settings::set_by_user`; a GS id goes through `gs_table::row` + `Settings::set_gs`; a TOML
+  boolean is accepted for a toggle only; unknown ids, invalid values, a missing/newer version and a malformed file are
+  logged and dropped. The file is deleted after the merge either way, so it is never applied twice. **C** (14 unit
+  tests).
+- The merge runs **at game exit** (`commands.rs::play`'s exit watcher, after the card harvest) and **at the next
+  launcher start** (`state.rs`, after `config::load`, before the first Play), and `save_config` persists it. A
+  crash-left file is therefore merged exactly once. **C** (unit tests + code).
+- Values are the launcher's stored forms, not the env forms. Only Fullscreen exists in Phase 1; the same contract
+  carries the restart-only rows of section 12 unchanged.
+
+### 11.4 Acceptance evidence (v2.00, headless, 2026-11-09)
+
+| Check | Result |
+|---|---|
+| Page without HiVision | frame `run-a-frame_02300.png`: "Screen Settings", rows Fullscreen / Vertical Adjust / Horizontal Adjust, Cancel/OK; no HiVision row, no gap |
+| Wide label and choices | "Fullscreen" with `Off`/`On` in the popup (`run-a-frame_02450.png`), closed row shows the selected word |
+| Getter = host value | run A `GT4_FULLSCREEN=0` -> Off; run B `GT4_FULLSCREEN=1` -> On, before any change |
+| Setter = host value | run A Off -> On (`[native-settings] Wide row: fullscreen On`, `fullscreen = true`); run B On -> Off (`fullscreen = false`) |
+| Native setter skipped | run B state: wide flag `1`, and the 44-byte record equals the 16:9 preset at `0x622EC0` (425 x 240), not the 4:3 preset at `0x622E90`; had the native run for Off it would have written `0` and the 4:3 preset |
+| Feedback file | exact `version = 1` + `[changes] fullscreen = true|false`; no temporary file left |
+| Live window | not in a headless run (`[native-settings] fullscreen On requested; this run has no window`); owner's windowed test |
+| Save | the hook writes no option field; the card is a copy; the wide flag/record in both states are the game's own 16:9 |
+
+Labels: **C** for the page capture, the labels, both directions, the file and the untouched guest fields; **H** that the
+v5 script's Cancel path behaves like the v7 twin; **U** on the owner's window, the attract timer and the GS child resize.
+
+## 12. Extending the Screen page or adding a graphics page (owner clarification, 2026-11-09)
+
+The owner's goal is not only to repurpose the existing rows: **add options to Options > General > Screen carrying the
+launcher's graphics settings, or create a new graphics page inside Options**. This section is the plan; it also states
+which part is blocked and why. The floating host panel is **out** (owner decision); a host-native page built from the
+game's own widgets and reached from Options is the accepted fallback only if the script route is impossible.
+
+### 12.1 The page as it stands (and the "3 rows")
+
+What the owner calls "the 3 original rows" are the three **visible interactive rows** of the page: `Wide` (now
+Fullscreen), `Vertical` (-50..50), `Horizontal` (-50..50), each packed 32 px high in the `Pane` VBox. The page actually
+has a **fourth interactive row**, `HiVision` (3 choices), hidden by the script unless `GetVideoSystem() == "NTSC"`; with
+our patch it stays hidden. There are also the `Title` (20 px), the `Buttons` row (Cancel/OK, 34 px) and the page-level
+`ToolTip` (y 438). **C** (mproject lines 5812-6649; frames).
+
+```
+ScreenRoot (page, full 640x480)
+  bg0 + three ColorFaces
+  VBox "Pane" (160,130,320,150), packing 1, clip 0
+    FrameImageFace "bg" (2,2,320,150, 4R_* round frame)
+    Composite "Title"   (packing, 320x20)          TextFace key TitleScreen
+    Composite "Wide"    (packing, 0,20,320,32)      label 9,0,134,32; OptionMenu 150,4,160,24, has_script
+    Composite "Vertical"   (packing, 0,52,320,32)   label; SliderBar, range -50..50, popup
+    Composite "Horizontal" (packing, 0,84,320,32)   label; SliderBar, range -50..50, popup
+    Composite "HiVision" (packing, visible 0, 0,116,320,32)  3-choice OptionMenu, has_script
+    Composite "Buttons"  (packing, 0,116,320,34)    Cancel (40,1) / OK (160,1), can_focus
+  Composite "ToolTip" (0,438,640,42)  ToolTipFace
+```
+
+The VBox packs only visible children, so with HiVision hidden the heights add up exactly (20 + 32 + 32 + 32 + 34 = 150).
+`ROOT.setFocus(Pane::Wide::OptionMenu)` in `onInitialize` is the only focus instruction in the script; moving between
+rows is engine focus traversal inside the VBox (the publisher's v7 twin has no per-row key code either). **H** for
+traversal (the page works that way today; not instrumented); **C** for the tree and geometry.
+
+### 12.2 Adding rows to the Screen page (data-only, no script)
+
+The row list is the `Pane` widget's `children` array in `option.mproject`; the page table in `option.adc` lists **pages**,
+not rows, so a row needs no script and no page-table entry. The steps:
+
+1. `Pane children [7]` -> `[8]` (or more), and one `Composite` per row with `packing digit {1}` and a 32-px geometry.
+2. The label is a literal `TextFace` (`text string {"Render scale"}`, font `hm_16`, `align 3`), or a `key` if an unused
+   text-table key exists; a literal avoids the `rtext.rt2` file entirely (Quit and Fullscreen prove it).
+3. The widget: an `OptionMenu` with N `Composite` choices (each a `TextFace` literal; a `dot` `ImageFace` for the
+   selection), a `SliderBar` with `range`, or a static `TextFace` for a note. The row type decides the input: a 2-choice
+   row costs ~15 padded lines of mproject text (the Fullscreen row is the model).
+4. **`has_script` must be omitted** on a host row unless a script module exists: `has_script 1` makes the engine call
+   `Pane::<NewRow>::OptionMenu` and a missing module is a script error (same rule that rejected deleting HiVision).
+   Without it the widget still owns its index and popup drawing; the host reads the index from the widget object each
+   VBlank and writes the feedback file.
+5. **Focus:** the new child must be focusable and reachable by the VBox traversal. The existing row composites have no
+   `can_focus` themselves; their `OptionMenu`/`SliderBar` are focusable by type. A new `OptionMenu` must be proven
+   reachable (down/up from Wide) before any setting is wired; this is the first gate of the next slice. **U**
+6. **Layout:** the `Pane` is 150 px tall with the 4R_* frame image; two more 32-px rows need the `Pane` geometry and
+   `minimum_height` grown to 214, the `bg` `FrameImageFace` to `320x214`, and the `ToolTip` left at 438 (the page has
+   room: 130 + 214 = 344 < 438). No script constant refers to the height. **C** (geometry) / **H** (packing).
+7. **The stored-extent limit is not the blocker:** with `minify: true` the whole mproject (681,977 decoded, 22,449
+   stored) compresses to 14,168 bytes, and one extra OptionMenu row (1,102 minified bytes) adds ~103 compressed bytes -
+   8,178 bytes of headroom for the stored extent and 218 KB below the decoded size. The full data patch fits. **C**
+   (measured with the builder's code). Minification changes every byte but not the token stream; TASK-212 already
+   shipped a minified `arcade.mproject`.
+8. **Host side:** a poller finds the new row's widget by a unique anchor (name or geometry) once, reads its
+   `OptionMenu.index`/`SliderBar.index` field, debounces a change, applies the host value, writes
+   `game-changes.toml`, and re-renders. This is the same scan/cache pattern as `menu_quit`, but read-only and page-gated
+   (`"opti"` + the page's root vtable/geometry). It does not need to trap the pad: the engine moves the selection and
+   the script is not involved. **H** (field offsets to derive from the state; the OptionMenu index is the same object
+   the script reads, so its offset is discoverable by comparing two states).
+
+### 12.3 A new page inside Options (script route) and the v5 gate
+
+A **page** is not data: `OptionRoot.ad` builds `OptionPage(name, root, ...)` entries and the page list; opening one runs
+`start_page(context, Root)` and the page module's `onInitialize`/`reflect`/`apply`/`onCancel`; the `Screen` tile in the
+Options root is one of those page entries. So a new graphics page needs a script edit:
+
+- a new `GraphicsRoot.ad` (or an extra module) with the row modules and the callbacks;
+- a new `OptionPage` line in `OptionRoot.ad` and, if the tile list is a fixed layout, a new tile widget in
+  `option.mproject` (the page tiles are `hidden::Item` cards in the Options project, `OptionRoot` is a `ScrollWindow`);
+- a new page-table entry in the compiled `option.adc` (the name/root string pair) and the module names in the string
+  table.
+
+**The v5 toolchain.** The retail `option.adc` is Adhoc **v5** (magic `ADCH005`, 251,715 decoded / 55,353 stored); Spec II
+is v7. OpenAdhoc and GTAdhocToolchain 1.4.0 list GT4 as "Adhoc Version 7 (v5-7 compatible)" and the compiler takes
+`-v 5`, so a v5 **build** is supported by the toolchain. What is not proven is the **round trip**: decompile the retail
+v5 bytecode, add a page, rebuild, and keep the exact string/page-table offsets the game's loader expects, inside the
+55,353-byte stored extent (the same-length rule; a larger adc would need a new GT4.VOL TOC, which neither the builder nor
+the release has). The repository has no v5 decompiler in its toolchain and the publisher's v5 source for this disc is not
+public. Therefore: **script page extension is U, not scheduled**, and it must not be attempted by editing the adc
+bytecode in place (the page table is an offset table; a shifted string breaks every page). The honest next step for that
+route is a separate research task: a v5 adc reader/writer round trip on a scratch copy, with the file hash and size
+unchanged, before any script edit.
+
+**The accepted fallback (host-native page with the game's widgets).** If the v5 round trip fails, the page can be built
+at runtime from the game's own widgets, reached from Options, not a floating overlay:
+
+1. Ship the page as a hidden `Composite` template tree in `option.mproject` (data patch; the TextFaces/SliderBars are
+   the game's own, so it looks native), attached to the Options root or to a hidden template list (the Quit pattern).
+2. The host clones/attaches the template as a child of the Options page container when the player activates a trigger on
+   the Options root (a pad combo on that page, or an extra invisible tile), and removes it on close. The engine draws
+   the widgets; no GDI/font work.
+3. The host owns focus and input for the page (it can reuse the page's VBox for traversal by setting the focus to the
+   first row, or set the focus itself per press), and masks Cross/Circle while a host row is focused (the `menu_quit`
+   mask) so a missing script module is never dispatched.
+4. Values change by writing the widget's own `index` and forcing a redraw (a host value set on the widget), or by
+   drawing the value text from the host into the existing `TextFace` (set `text` and dirty the widget). The first is
+   preferred; it needs the index field and a redraw entry point. **U** (the redraw entry is not derived yet).
+5. Close returns to the Options root by re-attaching the original tree. **U** (the same attach/detach bookkeeping).
+
+Trade-off: the real GT4 look and the real Options entry, but the host owns the page's navigation, value drawing and the
+open trigger, and it is a new 2-3 slice module (tree clone, focus, input mask, redraw, close). The data-only rows of
+section 12.2 stay the cheaper path if the engine focus traversal reaches a `has_script`-less row; that is the first
+thing to prove, because it removes the host navigation entirely (the engine focuses the row, the host only polls it).
+
+### 12.4 First rows to add, live/restart and write-through
+
+Ordered by value and risk, reusing the section 3 table. Every row is **restart-only except Fullscreen**; the game writes
+only `game-changes.toml`, and the launcher merges it on exit/at the next start (section 11.3).
+
+| # | Row (launcher id) | Row type | Values | Consumer / restart | Notes |
+|---|---|---|---|---|---|
+| 1 | Fullscreen (`fullscreen`) | done | Off/On | live (`set_fullscreen`) | Phase 1, this branch |
+| 2 | Render scale (`render_scale`) | 2-4 choices (`100%`, `150%`, `200%`) | stored text `"100".."200"` | CoreGS `GT4_HW_SCALE`, GSdx `upscale_multiplier`; **restart** | the launcher resolves it against the output; a choice row matches the 2-4 `OptionMenu` cost |
+| 3 | Renderer (`renderer`) | 2 choices (`GSdx`, `CoreGS 2.0`) | `pcsx2` / `coregs20` | launcher start path (`GT4_RENDERER`); **restart** | refuse `coregs20` on a PC without Vulkan (the launcher is the authority; the check exists) |
+| 4 | Sun glare and light flares (`effect_flares`) | toggle | `true`/`false` | CoreGS `GT4_CORE2_PERF_FLARES`, GSdx `GT4_GS_HIDE_FLARES`; **restart** | shared by both renderers; the first effects row |
+| 5 | Road sheen (`effect_road_sheen`) | toggle | `true`/`false` | CoreGS `GT4_CORE2_PERF_ROAD_SHEEN`; **restart** | CoreGS only |
+| 6 | Small effects (`effect_targets`) | 2 choices (`Full`, `1x`) | `full`/`1x` | CoreGS `GT4_CORE2_EFFECTS_1X`; **restart** | CoreGS only |
+| 7 | Blending (`blending`) | 2 choices (`High`, `Minimum`) | `high`/`minimum` | gt4-gs INI `accurate_blending_unit`; **restart** | GSdx only |
+| 8 | Readbacks (`hw_download_mode`) | 2 choices (`Accurate`, `No readbacks`) | `accurate`/`no-readbacks` | gt4-gs INI `HWDownloadMode`; **restart** | GSdx only; the gt4-gs version check applies |
+
+- **Restart notice:** the game has no notification UI for a native row, and the owner rejected a host overlay. The
+  write-through file is the notice: the launcher already shows its own restart/notice messages; the merge logs
+  `settings from the game: <id> = <value>` and the launcher's home can say "some settings apply the next time you play"
+  (its own message, not the game's). A row label can also carry a short suffix (`Render scale*`) if the owner wants the
+  in-game hint; the asterisk explanation would be one more static `TextFace` row. **H** design; the owner decides.
+- A native row never writes the save's option struct; only `game-changes.toml` (host file) changes. The guest option
+  fields stay `1`/`1` as in Phase 1. **C** (Phase 1 states).
+
+### 12.5 What was implemented in this run and the smallest next step
+
+Implemented: section 11 (HiVision removal, Wide -> Fullscreen live host row, feedback merge). Not implemented: any extra
+row or page, because the first gate is not the file size (section 12.2 item 7 proves it fits) but the **engine focus
+traversal into a `has_script`-less row**: if the VBox does not hand focus to it, the row cannot be used without the
+host-owned navigation of 12.3, which is a different (bigger) slice.
+
+Smallest next step (one slice, read-only until the headless frame): add **one inert row** to `Pane` (literal label
+"Render scale", an `OptionMenu` without `has_script`, two literal choices), minify-patch the mproject, and answer three
+questions on a headless frame: (a) does Down from `Wide` reach the row and does the popup open/select; (b) which object
+field holds its index (compare two saves); (c) does the page still fit the `Pane` at 150/182 px. If (a) and (b) pass,
+the host poller + the first real setting (`render_scale`) follows; if (a) fails, the route is 12.3's host-native page
+(or a v5 script round trip), decided by the owner.
+
+## 13. Resumo para o dono (pt-BR) - Phase 1 e o plano de páginas
+
+- **HiVision saiu.** A página Options > General > Screen agora mostra só **Fullscreen**, **Vertical Adjust**,
+  **Horizontal Adjust** e Cancel/OK, sem buraco e sem a linha inútil de 3 escolhas. É um patch de dados do seu disco
+  (4 bytes da constante "NTSC" + os textos da linha), nada de script.
+- **A linha Wide virou Fullscreen (Off/On).** O jogo pergunta ao host o valor (Off com o jogo em janela, On em tela
+  cheia) e, quando você troca, o host guarda a escolha e muda a janela na hora - sem reiniciar. O campo do save e o
+  registro 16:9 **não** são tocados: o save continua igual (comprovado nos dois estados).
+- **O launcher fica sabendo.** O jogo grava um arquivo pequeno (`game-changes.toml`) e o launcher junta no
+  `settings.toml` ao fechar o jogo (e na próxima abertura, se o launcher tiver caído). Alt+Enter/F11 também grava.
+  Teste com janela fica com você.
+- **Mais opções na página (seu pedido).** O plano está na seção 12: dá para **acrescentar linhas** na página Screen com
+  um patch de dados (o arquivo comporta: sobra espaço de sobra depois de compactar; a linha nova usa os widgets do
+  próprio jogo). O que falta provar primeiro é se o **foco do jogo chega** numa linha nova sem script; é o próximo
+  passo pequeno (uma linha inerte e uma captura headless). Se não chegar, a alternativa é uma **página nativa montada
+  com os widgets do jogo**, aberta pelo menu Options (não é painel flutuante), com o host cuidando do foco/entrada -
+  mais trabalho (2-3 fatias).
+- **Uma página nova de verdade** (um item novo no menu Options) exige editar o **script Adhoc v5** do `option.adc`. A
+  ferramenta (OpenAdhoc/GTAdhocToolchain 1.4.0) compila v5, mas o **ciclo completo** (descompilar o arquivo original,
+  acrescentar a página e recompilar mantendo os mesmos offsets, dentro do tamanho original) não está provado neste
+  repositório; sem isso a página nova fica bloqueada e a rota acima (linhas na página existente / página montada pelo
+  host) é a que vale.
+- **Primeiras linhas sugeridas:** Render scale, Renderer, flares, road sheen, small effects, blending e readbacks -
+  todas **valem no próximo início** (só Fullscreen é ao vivo). O aviso de "vale no próximo início" fica com o launcher,
+  que já mostra esse tipo de aviso; o jogo não desenha notificação própria.

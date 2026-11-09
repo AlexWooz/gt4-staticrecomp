@@ -433,6 +433,12 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path, wheel: &Value) -> Resul
         return Err(messages::render("game.program_missing", language, &[("game", game.display_name)]));
     }
     let mut extra: Vec<(String, String)> = Vec::new();
+    // TASK-213 Phase 1: the game writes a change made in its own Options page (the native Fullscreen row) to this
+    // file; the launcher merges it on exit and at the next start and stays the only writer of settings.toml.
+    extra.push((
+        gt4l_core::game_changes::VARIABLE.into(),
+        gt4l_core::game_changes::path(state.user_dirs.config_dir()).display().to_string(),
+    ));
     let controls_path = state.user_dirs.controls_file();
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
@@ -542,6 +548,24 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path, wheel: &Value) -> Resul
     })
 }
 
+/// TASK-213 Phase 1: applies a change the game made in its own Options page (`game-changes.toml`) and stores it. The game
+/// is the only writer of that file; the launcher stays the only writer of `settings.toml`.
+fn merge_game_changes(shared: &Shared, dirs: &DataDirs) {
+    let mut state = lock(shared);
+    let path = gt4l_core::game_changes::path(state.user_dirs.config_dir());
+    let merge = gt4l_core::game_changes::merge_file(&path, &mut state.config.settings);
+    for warning in &merge.warnings {
+        state::log_warn(dirs, &format!("settings from the game: {warning}"));
+    }
+    if merge.is_empty() {
+        return;
+    }
+    for (id, value) in &merge.changes {
+        state::log(dirs, &format!("settings from the game: {id} = {value}"));
+    }
+    state.save_config();
+}
+
 /// Starts the game with the chosen settings. Returns once the process is running; the page hears
 /// about the end through the `game-state` event.
 #[tauri::command]
@@ -641,6 +665,8 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
             Ok(report) => state::log(&dirs, &format!("card harvested: {report:?}")),
             Err(error) => state::log_error(&dirs, &format!("card not harvested: {error}")),
         }
+        // TASK-213 Phase 1: the game writes a change made in its own Options page; merge it now (and delete the file).
+        merge_game_changes(&shared, &dirs);
         let log_path = running.log_path.clone();
         drop(running);
         lock(&shared).discord.on_game_end();

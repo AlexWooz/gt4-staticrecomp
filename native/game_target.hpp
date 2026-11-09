@@ -130,6 +130,16 @@ struct HookAddresses {
   std::uint32_t overlay_draw_end_return = 0;      // strobe overlay renderer: return label of the call after the draw
   std::uint32_t overlay_caller_slot = 0;          // the renderer's frame: sp + this = its caller's return address
   std::uint32_t monitor_overlay_call_return = 0;  // the race monitor's call of the renderer (left as the game draws it)
+
+  // TASK-213 Phase 1: the native Wide row as a host Fullscreen control (native/native_settings.hpp). The script's
+  // MOption.wide_mode callback is one entry for the getter and the setter (argc > 0 = set); the getter returns a boxed
+  // hInt through func_002FE278, and the Options project is recognised by the menu state's next-project id.
+  std::uint32_t option_wide_mode_callback = 0;  // 0x00180108: MOption.wide_mode get/set
+  std::uint32_t script_box_int = 0;             // func_002FE278: box a guest int into the caller's hValue slot
+  std::uint32_t script_release_handle = 0;      // func_003285F8: release a RefCounter handle
+  std::uint32_t script_hint_vtable = 0;         // hInt vtable (the OptionMenu index object)
+  std::uint32_t option_project_word_offset = 0; // owner + this = the next project's four-character id
+  std::uint32_t option_project_id = 0;          // the id that means the Options project ("opti")
 };
 
 struct Profile {
@@ -206,6 +216,12 @@ inline constexpr HookAddresses kV200Hooks = {
     /* overlay_draw_end_return */ 0x003EC248u,      // func_003EC0B0: jal 0x004A5400 at 0x003EC240, after the draw 0x00475CA0
     /* overlay_caller_slot */ 0x60u,                // func_003EC0B0: sd ra,0x60(sp)
     /* monitor_overlay_call_return */ 0x003DA294u,  // RaceMonitor render func_003DA150: jal 0x003EC0B0 at 0x003DA28C
+    /* option_wide_mode_callback */ 0x00180108u,   // MOption::get/set_wide_mode (adhoc_methods.txt, decomp unit_0017FCB0)
+    /* script_box_int */ 0x002FE278u,               // box an int: hInt in a RefCounter, then func_00309348 writes the slot
+    /* script_release_handle */ 0x003285F8u,        // RefCounter release (func_003285A8 is the retain)
+    /* script_hint_vtable */ 0x00674188u,           // gt4/hInt.h: hInt vtable
+    /* option_project_word_offset */ 0x3A3BCu,     // TASK-212: the menu state's next-project id ("arca" there)
+    /* option_project_id */ 0x6974706Fu,            // "opti": the Options project (RAM state options-screen3)
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of

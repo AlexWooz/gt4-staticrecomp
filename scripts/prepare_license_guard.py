@@ -51,9 +51,21 @@ FRAME_SKIP_OVERLAY_ANCHORS = {
     'helpers': ('before', 'void dispatch(Cpu &c, std::uint32_t, std::uint32_t depth) {\n'),
     'hook': ('after', '    if (pc == gt4::display_aspect::kRaceDisplayRender) [[unlikely]] gt4::display_aspect::on_race_display_render(g_ram, kRamSize, c.r[4].w[0]);\n'),
 }
+NATIVE_SETTINGS_OVERLAY_PATH = ROOT / 'scripts/native_settings_overlay.inc'
+# Anchors on the frame-skip output (TASK-213 Phase 1: the Wide row as a host Fullscreen control).
+NATIVE_SETTINGS_OVERLAY_ANCHORS = {
+    'includes': ('after', '#include "frame_skip.hpp"\n'),
+    'hook': ('after', '    if (gt4::frame_skip::g_enabled) [[unlikely]] {\n'
+                      '      if (gt4::frame_skip::on_dispatch(c, pc, g_ram, kRamSize)) {\n'
+                      '        c.pc = c.r[31].w[0];\n'
+                      '        return;\n'
+                      '      }\n'
+                      '    }\n'),
+}
 GUARD_PROFILE = 'task017-guard-v2'
 # v1 = slice212c (camera hook and race-view marker); v2 = slice217 (P2: the marker also runs the HUD canvas hook).
 ASPECT_PROFILE = 'task017-guard-v2+task080-aspect-v2'
+NATIVE_SETTINGS_PROFILE = 'task213-wide-fullscreen-v1'
 PREFIX = '// TASK-017 license guard capsule: MIT donor derivation; see native/THIRD_PARTY.md.\n'
 CAPSULE_FILES = ('cdvdfsv.cpp', 'dispatch.cpp', 'kernel.cpp')
 
@@ -73,6 +85,11 @@ def apply_frame_skip(source):
     return perf.apply_overlay(source, FRAME_SKIP_OVERLAY_PATH, FRAME_SKIP_OVERLAY_ANCHORS, 'frame skip')
 
 
+def apply_native_settings(source):
+    """TASK-213 Phase 1 wide_mode overlay on the frame skip output; checks that removing it restores the input."""
+    return perf.apply_overlay(source, NATIVE_SETTINGS_OVERLAY_PATH, NATIVE_SETTINGS_OVERLAY_ANCHORS, 'native settings')
+
+
 def read_pinned(donor, name, expected):
     data = (donor / name).read_bytes()
     if hashlib.sha256(data).hexdigest() != expected:
@@ -84,7 +101,8 @@ def overlay_sha256(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 
-def derive_sources(assets_root=None, display_aspect=False, frame_counters=False, frame_skip=False):
+def derive_sources(assets_root=None, display_aspect=False, frame_counters=False, frame_skip=False,
+                   native_settings=False):
     """Returns {capsule file name: derived text (LF)}."""
     donor = Path(assets_root or ROOT) / 'private/references/ps2-web-recomp/runtime/src'
     (dispatch_name, dispatch_sha), = DISPATCH_PIN.items()
@@ -95,6 +113,8 @@ def derive_sources(assets_root=None, display_aspect=False, frame_counters=False,
         dispatch = apply_display_aspect(dispatch)
     if frame_skip:
         dispatch = apply_frame_skip(dispatch)
+    if native_settings:
+        dispatch = apply_native_settings(dispatch)
     kernel = perf.apply_halt_dump(read_pinned(donor, halt_name, halt_sha))
     if frame_counters:
         kernel = perf.apply_kernel_frame_counters(kernel)
@@ -105,7 +125,8 @@ def derive_sources(assets_root=None, display_aspect=False, frame_counters=False,
     }
 
 
-def prepare(output, assets_root=None, display_aspect=False, frame_counters=False, frame_skip=False):
+def prepare(output, assets_root=None, display_aspect=False, frame_counters=False, frame_skip=False,
+            native_settings=False):
     output = Path(output).absolute()
     private = (Path(assets_root or ROOT) / 'private').resolve()
     if output != output.resolve() or output.parent != private:
@@ -114,7 +135,9 @@ def prepare(output, assets_root=None, display_aspect=False, frame_counters=False
         raise ValueError('Preserve existing output; choose a fresh license guard capsule')
     if frame_skip and not display_aspect:
         raise ValueError('The frame skip overlay anchors on the display aspect output')
-    sources = derive_sources(assets_root, display_aspect, frame_counters, frame_skip)
+    if native_settings and not frame_skip:
+        raise ValueError('The native settings overlay anchors on the frame skip output')
+    sources = derive_sources(assets_root, display_aspect, frame_counters, frame_skip, native_settings)
     output.mkdir()
     receipt = {
         'schema_version': 1,
@@ -133,6 +156,9 @@ def prepare(output, assets_root=None, display_aspect=False, frame_counters=False
         receipt['frame_counters_profile'] = 'task084-frame-counters-v1'
     if frame_skip:
         receipt['frame_skip_overlay_sha256'] = overlay_sha256(FRAME_SKIP_OVERLAY_PATH)
+    if native_settings:
+        receipt['native_settings_profile'] = NATIVE_SETTINGS_PROFILE
+        receipt['native_settings_overlay_sha256'] = overlay_sha256(NATIVE_SETTINGS_OVERLAY_PATH)
     for name in CAPSULE_FILES:
         path = output / name
         path.write_text(sources[name], encoding='utf-8', newline='\n')
@@ -150,7 +176,9 @@ if __name__ == '__main__':
     parser.add_argument('--frame-counters', action='store_true',
                         help='also apply the TASK-084 kernel counters (syscalls by number, thread switches)')
     parser.add_argument('--frame-skip', action='store_true', help='also apply the TASK-082 frame skip hook (needs --display-aspect)')
+    parser.add_argument('--native-settings', action='store_true',
+                        help='also apply the TASK-213 Phase 1 wide_mode hook (needs --frame-skip)')
     options = parser.parse_args()
     print(json.dumps(prepare(options.output, options.assets_root, options.display_aspect, options.frame_counters,
-                             options.frame_skip),
+                             options.frame_skip, options.native_settings),
                      indent=2))

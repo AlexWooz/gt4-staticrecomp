@@ -1,5 +1,41 @@
 # Current Status
 
+## TASK-213 Phase 1: native HiVision removal + Wide -> Fullscreen (2026-11-09, test build only)
+
+On `task/213-native-settings` (from `task/213-settings-map` at `a3d7f54b`). The owner chose **all-native in-game rows**
+(no floating host panel) and asked for more rows on the Screen page or a new graphics page inside Options (plan:
+`docs/tasks/INGAME-SETTINGS-MAP.md` sections 11-13).
+
+- **HiVision is gone** on v2.00: the same-length data patch of the unique `"NTSC"` literal in `option.adc`
+  (`0x247FB`) makes the script's NTSC compare fail, so the row stays hidden. The Screen page now shows only
+  Fullscreen, Vertical Adjust, Horizontal Adjust and Cancel/OK (headless frame).
+- **`Wide` is now Fullscreen (`Off`/`On`)**: literal `TextFace` labels in `option.mproject` (no `rtext.rt2` edit, no
+  minification, 6 bytes shorter and padded; PS2ZIP 19,965 of 22,449 stored). The callback `MOption.wide_mode`
+  `0x00180108` is intercepted in `ps2::dispatch` while the Options project is current: the getter returns the host
+  value as a boxed `hInt` through the game's own `func_002FE278`; the setter stores the host value, writes
+  `game-changes.toml` and **skips the native**, so the save's wide flag and 44-byte record stay 16:9. Alt+Enter/F11
+  writes the same file.
+- **Feedback merge:** `GT4_SETTINGS_FEEDBACK` is passed by the launcher; the new `gt4l-core::game_changes` validates
+  the file (version 1, known id, valid value; booleans only for toggles), merges on game exit and at the launcher's
+  next start, and deletes it. The launcher remains the only writer of `settings.toml`.
+- **Evidence (headless, v2.00):** run A (`GT4_FULLSCREEN=0`) opens the page with Fullscreen **Off** and changes it to
+  On; run B (`GT4_FULLSCREEN=1`) opens with **On** and changes it to Off. Both log the change, write
+  `version = 1` + `[changes] fullscreen = true|false`, and both end states keep wide `1` and a record identical to the
+  16:9 preset at `0x622EC0` (not the 4:3 one; the native setter did not run). The live borderless window is the owner's
+  windowed test.
+- **Build/kit (test only):** capsule `private/slice424-native-settings-license-guard-runtime` (pin
+  `docs/inputs/slice424-native-settings-license-guard-runtime.json`), `gt4vulkan.exe` SHA-256
+  `dd63f716fc27fa9ac262045075f50341ee0ffed8083e8206c4a2a53a612cf3de` (90,202,624 bytes), kit
+  `private/slice424-kit` (exe, patch, recipe/report, card copy, ELF, both states, both logs, the feedback files,
+  frames, README). No installer, no portable zip, no release.
+- **Tests:** new `native_native_settings` CTest fixture; `tests/python/test_gt4_data_patch.py` extended (byte
+  replacement, refusals, the v2.00 anchor); `cargo test --workspace` 799 passed, 9 ignored; CTest and the Python
+  suite run against this build (numbers in the journal).
+- **Not done:** the first extra row needs the engine focus traversal into a `has_script`-less `OptionMenu` proved
+  (mapping 12.5); a new page needs a v5 script round trip (toolchain compiles v5; the retail round trip is not
+  proven) or the host-native page built from the game's widgets. Spec II: only the HiVision byte patch when its build
+  is next made; its callback is Phase 2.
+
 ## TASK-213: mapping the launcher settings into GT4's own Options (2026-11-09, read-only study)
 
 On `task/213-settings-map` (from `task/212b-spec2-quit` at `70af98d7`). The mapping is

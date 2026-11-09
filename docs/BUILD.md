@@ -3423,3 +3423,37 @@ Retail/Spec II table: `docs/tasks/QUIT-GAME-ROW-RETAIL-SPEC2.md`.
   7), captures Cross and halts with `quit game` (exit 0). Kit and frame: `Y:\gt4recomp-scratch\slice423-spec2-kit`.
 - **Checks:** CTest 323/324 (one skipped; `native_menu_quit` and `native_menu_quit_spec2`), Python 813 OK
   (70 skipped). Test build only: no installer, release or upload.
+
+## TASK-213 Phase 1 native Wide -> Fullscreen (slice424, 2026-11-09, test build only)
+
+The v2.00 build with the native settings hook and the same-length data patch. Test build only: no installer, no portable
+zip, no release. The kit is `private/slice424-kit`.
+
+- **Capsule:** `private/tooling-venv/Scripts/python.exe scripts/prepare_license_guard.py
+  <assets>/private/slice424-native-settings-license-guard-runtime --assets-root <assets> --display-aspect
+  --frame-counters --frame-skip --native-settings` (the slice376 guard plus `scripts/native_settings_overlay.inc`, the
+  `MOption.wide_mode` `0x00180108` dispatch hook). Pin `docs/inputs/slice424-native-settings-license-guard-runtime.json`
+  (receipt SHA-256 `fe9c3587cf98568c814e48db845b97203180a0ce3569d6088d90e5520b6195d4`). Without `--native-settings` the
+  derivation is byte-identical to slice376. `native/CMakeLists.txt` accepts the new capsule by name and the fixture
+  `native_native_settings` pins the v2.00 contract.
+- **Configure:** the rc15 recipe inputs (aspect EE library slice217, port slice200, shaders slice153, VU1 slice397, VU0
+  slice394/160, memcard slice200, SPU2 slice396, USB slice409, IPU slice365) with
+  `-DGT4_PERF_RUNTIME_SOURCE=<assets>/private/slice422-data-runtime`, `-DGT4_LICENSE_GUARD_SOURCE=<assets>/private/slice424-native-settings-license-guard-runtime`,
+  `GT4_EE_PROFILE=aspect`, `GT4_SSE41=ON`, `GT4_RELEASE_DISTRIBUTION=OFF`. Build in a **worktree** `build/` folder
+  (the scripts `build/configure-424.cmd` and `build/build-424.cmd` of the task branch); the assets stay in the main
+  checkout. `rc.exe` from the Windows SDK x64 bin must be on `PATH`.
+- **Patch:** `gt4_data_patch.py --iso "<v2.00 ISO>" --recipe <private recipe>.json --output <fresh private dir>`. The
+  recipe (private, in the kit) has two `files`: `projects/option/option.adc` with the byte replacement at `0x247FB`
+  (`4E 54 53 43` -> `50 41 4C 20`) and `projects/option/option.mproject` with the four label/tooltip text replacements
+  and `"minify": false`. The report says kind 2, 55,353/251,715 and 22,449/681,977, one byte and four text
+  replacements; the container is 77,986 bytes.
+- **Run:** `GT4_DATA_PATCH=<patch> GT4_SETTINGS_FEEDBACK=<file> GT4_FULLSCREEN=0|1 gt4vulkan.exe <ELF> --ntsc --disc
+  "<ISO>" --frames 2800 --memcard <copy> --frames-dir <dir> --frame-every 50 --press ...`;
+  the exact sequences are in `private/slice424-kit/run-a.cmd` / `run-b.cmd`. Expected:
+  `[data-patch] ... verified against the image`, `[native-settings] Wide row: fullscreen On|Off ...`, the feedback line,
+  and `[ee] halted: frame limit reached` (exit 0).
+- **Checks:** CTest and the Python suite run against `build/slice424-native-settings-build`; `cargo test --workspace`
+  799 passed / 9 ignored; the new fixture `native_native_settings` and the extended
+  `tests/python/test_gt4_data_patch.py`.
+- **Known:** the introduced row writes only `game-changes.toml`; the guest wide flag and the save stay 16:9. The live
+  borderless window is the owner's test. Spec II is Phase 2.

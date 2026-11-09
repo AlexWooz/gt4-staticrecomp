@@ -8,6 +8,7 @@ pub mod controller;
 pub mod display;
 pub mod exit;
 pub mod guard;
+pub mod game_changes;
 pub mod games;
 pub mod games_layout;
 pub mod gpu;

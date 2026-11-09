@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "donor_revision": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "donor_sha256": {
+    "dispatch.cpp": "691c1d045b928ef789338f0954ec820fc0fd4e938cd2b2940743b3ad6005f995",
+    "kernel.cpp": "003c9e0a0e2c1cb61a6fd8ec846a4798c3027ed933b6825c6377112106f0168a",
+    "iop/cdvdfsv.cpp": "c313e10af0baaf63d9bd31040c168f38936c979c37fdce45afdf060d11560fbe"
+  },
+  "license_guard_profile": "task017-guard-v2+task080-aspect-v2",
+  "license_guard_overlay_sha256": "7765a1c79d5c4ef8846fd7b4d6a2c629453342bc552be78547c9be6fc5a6e79a",
+  "halt_dump_overlay_sha256": "519027e1b425fa99d93c401868b29611001440d3df3b2b090d00b37c03af659c",
+  "fsv_trace_overlay_sha256": "03579b77bb1ae26f040325157f7dcf91d32afd57e484b43b32bd1040dcbc59a0",
+  "source_sha256": {
+    "cdvdfsv.cpp": "0074d14f838d303314cdc7601450993134702cacd59bef9e288ec74e87ffad1d",
+    "dispatch.cpp": "00544d53cfb3ef5b95e31488348521b64c8a6f1f28c5862b9ae358ac994fbeea",
+    "kernel.cpp": "9384da59e72fb056d6b52363f8d26d7bbf4793e8c47481f41304d741f00e5754"
+  },
+  "display_aspect_overlay_sha256": "65992ad963a5b166cc960ab8f3366edafd048908769a79817651a18b50dde901",
+  "frame_counters_profile": "task084-frame-counters-v1",
+  "frame_skip_overlay_sha256": "a058dcceb2a8cbcb99d5b56e99fafe58e49dc05ee1d448b8cb7047a338371f35",
+  "native_settings_profile": "task213-wide-fullscreen-v1",
+  "native_settings_overlay_sha256": "5fd2a5e499ef4206f62fd2e924bb86583aab44e1e18f527cd8dbf33e309b9efb",
+  "receipt_sha256": "fe9c3587cf98568c814e48db845b97203180a0ce3569d6088d90e5520b6195d4",
+  "slice": "424",
+  "date": "2026-11-09",
+  "capsule": "private/slice424-native-settings-license-guard-runtime",
+  "derivation": "scripts/prepare_license_guard.py <assets>/private/slice424-native-settings-license-guard-runtime --assets-root <assets> --display-aspect --frame-counters --frame-skip --native-settings",
+  "purpose": "TASK-213 Phase 1 (test build only): the slice376 frame/render guard (license demo guard, race camera aspect, frame skip) plus the native settings hook (scripts/native_settings_overlay.inc): the dispatch of MOption.wide_mode (0x00180108) is turned into the host Fullscreen control (native/native_settings.hpp). The hook only acts while the Options project is current; every other dispatch is unchanged. kernel.cpp and cdvdfsv.cpp are byte-identical to slice376.",
+  "build_variable": "GT4_LICENSE_GUARD_SOURCE",
+  "supersedes": "none (test builds only; slice376 stays the release capsule until the owner approves the row)"
+}

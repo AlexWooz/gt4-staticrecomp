@@ -20,6 +20,7 @@
 #include "achievements.hpp"
 #include "input_recording.hpp"
 #include "menu_quit.hpp"
+#include "native_settings.hpp"
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
 #endif
@@ -348,6 +349,21 @@ void service_menu_quit(std::uint16_t buttons) {
   if (status.injected) ps2::set_pad_buttons(gt4::menu_quit::guest_buttons(status, buttons));
 }
 
+// TASK-213 Phase 1: the native Wide row (relabelled Fullscreen) stores the host value in the dispatch hook; the window
+// applies it here, through the same path as Alt+Enter/F11. A headless run has no window: the request is only logged.
+void set_fullscreen(bool enabled);
+
+void service_native_settings() {
+  bool on = false;
+  if (!gt4::native_settings::take_fullscreen_request(on)) return;
+  if (game_window) {
+    set_fullscreen(on);
+    std::fprintf(stderr, "[native-settings] window %s\n", on ? "fullscreen" : "windowed");
+  } else {
+    std::fprintf(stderr, "[native-settings] fullscreen %s requested; this run has no window\n", on ? "On" : "Off");
+  }
+}
+
 gt4::pacing::Counters pacing_counters() {
   gt4::pacing::Counters counters;
   if (frame_pacer)
@@ -451,6 +467,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
   if ((message == WM_SYSKEYDOWN && first == VK_RETURN && !repeat) ||
       (message == WM_KEYDOWN && first == VK_F11 && !repeat)) {
     set_fullscreen(!fullscreen_state.fullscreen());
+    // TASK-213 Phase 1: a change made with Alt+Enter/F11 is written back the same way as the in-game Fullscreen row.
+    gt4::native_settings::record_fullscreen(fullscreen_state.fullscreen(), "Alt+Enter/F11");
     return 0;
   }
   if (message == WM_DESTROY) {
@@ -722,6 +740,7 @@ void on_vblank() {
   }
   gt4::achievements::on_vblank(game_window, ps2::g_ram, ps2::kRamSize, ps2::g_spr, ps2::kScratchpadSize);
   service_menu_quit(last_pad_buttons);
+  service_native_settings();
   ps2::gs::present();
 }
 } // namespace
@@ -757,6 +776,14 @@ bool install_input_replay_without_window() {
     std::fprintf(stderr, "[input] GT4_INPUT_RECORD needs --window, game not started\n");
     return false;
   }
+  // TASK-213 Phase 1: a headless run has no window, but the native Fullscreen row still starts from GT4_FULLSCREEN so
+  // the launcher contract and the headless page test see the same value as a windowed start.
+  try {
+    gt4::native_settings::set_host_fullscreen(gt4::window_mode::parse_start_fullscreen(std::getenv("GT4_FULLSCREEN")));
+  } catch (const std::invalid_argument &error) {
+    std::fprintf(stderr, "[window] %s, game not started\n", error.what());
+    return false;
+  }
   if (std::getenv("GT4_INPUT_REPLAY") == nullptr) {
     // TASK-212: the native Quit Game row also works in headless runs (the --press schedule is the pad).
     ps2::g_options.on_vblank = [] {
@@ -765,6 +792,7 @@ bool install_input_replay_without_window() {
         note_frame_skip_vblank();
       }
       service_menu_quit(gt4::menu_quit::scheduled_buttons());
+      service_native_settings();
     };
     return true;
   }
@@ -773,6 +801,7 @@ bool install_input_replay_without_window() {
     const PadState pad = input_player->at(++input_vblank);
     apply_pad(pad);
     service_menu_quit(pad.buttons);
+    service_native_settings();
     note_frame_skip_vblank();
   };
   return true;
@@ -890,6 +919,8 @@ bool open_window(bool fullscreen) {
   // Start in borderless fullscreen on the window's monitor: the same path as Alt+Enter and F11.
   if (start_fullscreen)
     set_fullscreen(true);
+  // TASK-213 Phase 1: the native Fullscreen row returns this value until the player changes it in the game.
+  gt4::native_settings::set_host_fullscreen(fullscreen_state.fullscreen());
   RECT client{};
   if (GetClientRect(game_window, &client))
     gt4::display_aspect::set_window_client_size(static_cast<std::uint32_t>(client.right),

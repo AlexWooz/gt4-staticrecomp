@@ -221,6 +221,21 @@ impl AppState {
         for warning in &warnings {
             log(&dirs, &format!("settings: {warning}"));
         }
+        // TASK-213 Phase 1: a change the game wrote to `game-changes.toml` while the launcher was not watching (a crash
+        // before the exit merge) is applied at the next start; the file is deleted either way.
+        let game_changes =
+            gt4l_core::game_changes::merge_file(&gt4l_core::game_changes::path(user.config_dir()), &mut config.settings);
+        for warning in &game_changes.warnings {
+            log_warn(&dirs, &format!("settings from the game: {warning}"));
+        }
+        if !game_changes.is_empty() {
+            for (id, value) in &game_changes.changes {
+                log(&dirs, &format!("settings from the game: {id} = {value}"));
+            }
+            if let Err(error) = config::save(&user.config_file(), &config) {
+                log_error(&dirs, &format!("settings from the game not saved: {error}"));
+            }
+        }
         set_current_language(language_of_settings(&config.settings));
         // TASK-109: a release candidate build with no chosen update channel stays on Beta; any other build on Stable.
         gt4l_core::update::apply_channel_default(&mut config.settings, gt4l_core::launcher_release_version());
