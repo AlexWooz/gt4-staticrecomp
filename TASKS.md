@@ -1594,8 +1594,19 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   rc15 recipe (`build/coregs3-r8/ref` without hooks, `build/coregs3-r8/cand` with the hook library `b4c7ac04…` and
   `GT4_COREGS3=ON`). The 3x night gate passes again: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences,
   13/13 frames identical for `off` and `shadow`. The whole-file residual over the 291 printed pairs confirms the vertex
-  convention for the 41 on-screen draws (rms 0.2197 px after one constant per draw); the other 56 are off-screen vertices
-  with a 16-bit wrap of the 12.4 y (+4096 px), not a second transform. `draw_matrix` still needs the convention fix.
+  convention for the 41 on-screen draws (rms 0.2197 px after one constant per draw); of the other 56, 26 show the
+  expected 16-bit y wrap (+4085..+4122 px, one 4096 px period) and 30 have small per-draw offsets (0.5-11.7 px,
+  partially off-screen or fit bias). The screen path still used the old row reading at the end of this round; round 9
+  replaces it.
+- **Round 9 (2026-11-09, the vertex module).** `native/coregs3/coregs3_vertex.{hpp,cpp}` implements the measured
+  convention (four unscaled columns, clip space, projection only for `cw > 0`, explicit statuses; the 12.4 wrap only in
+  a diagnostics helper) and `coregs3_render.cpp` projects the screen path through it, clipping at the near plane and
+  the clip volume. The object path is unchanged (identical PNG hashes). New `native_coregs3_vertex` fixture covers the
+  three hand-checked pairs (< 0.3 px), the column convention, a synthetic off-screen vertex that must not wrap, and
+  behind-camera/non-finite rejections; CTest 3/3 and the Python unit controls 7/7 pass. Screen mode now draws 116/116
+  draws and 2,614 of 9,048 triangles (4,757 pixels, frame 0) and the picture is the car grid in perspective; the old
+  row reading puts 13 of the 41 on-screen draws behind the eye and leaves the other 28 at 1.9204 px rms. The 3x gate
+  still passes (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames).
 - Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the M4 live overlay seam (review work), M4 only
   after the 3x gate re-run, and the remaining G-IMAGE/G-PERF gates.
 

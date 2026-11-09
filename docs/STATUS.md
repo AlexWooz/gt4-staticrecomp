@@ -1,5 +1,20 @@
 # Current Status
 
+## TASK-090 round 9: the vertex module and the corrected screen renderer (2026-11-09, branch `task/090-coregs3`)
+
+`native/coregs3/coregs3_vertex.{hpp,cpp}` now implements the measured VU1 transform (the 0xC1 block as four unscaled
+columns, clip space, a `cw > 0` projection and explicit rejection statuses; the 16-bit 12.4 wrap exists only in a
+diagnostics helper). `coregs3_render.cpp` projects the screen path through it and clips triangles against the near
+plane and the clip volume; the object path (`--object`) keeps its old arithmetic and its PNG hashes are identical
+(`ca070835…` points, `b485c1b7…` flat). The old row reading fails the same 41 on-screen draws (13 behind the eye, the
+other 28 at 1.9204 px rms, worst 6.4869 px); the new screen render draws 116/116 draws, 12,146 vertices, 2,614 of
+9,048 triangles and 4,757 pixels for frame 0, and the picture is the car grid in perspective instead of scattered
+patches (`build/evidence/coregs3/r8/render-screen.png`). New `native_coregs3_vertex` fixture (hand-checked pairs < 0.3
+px, a synthetic off-screen vertex that must not wrap, behind-camera and non-finite rejections); CTest 3/3 and the
+Python `test_coregs3_units.py` 7/7 pass. The candidate `gt4vulkan` builds and the 3x gate still reports
+COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for
+`off` and `shadow`). No pin, release or launcher change; the live `present` seam is still not started.
+
 ## TASK-090 round 8: worktree on the O: SSD, both game builds, the 3x gate passes (2026-11-09, branch `task/090-coregs3`)
 
 The branch's worktree moved from `C:\Antigravity\gt4-wt-090-coregs3` to `O:\Antigavity\gt4-wt-090-coregs3` (exFAT USB
@@ -9,10 +24,11 @@ disappeared and no fresh configure could find it). Both game builds were configu
 (reference, no hooks) and `build/coregs3-r8/cand` (the hook EE library `b4c7ac04…` and `GT4_COREGS3=ON`).
 `coregs3-night-check.sh` at 3x: **8,997 VBlanks, 1,686 racing, clock 0, digest 0, state 0 words, 13/13 frames identical**
 for `off` and `shadow`; capture 3,060,788 bytes. The whole-file residual of the measured vertex transform was computed
-over all 291 printed pairs: the 41 on-screen draws match with **rms 0.2197 px** after one constant per draw; the other 56
-are off-screen vertices whose 12.4 y wrapped by one 16-bit step (**+4092..+4122 px** = 4096 px), not a second transform;
-draws 95, 111 and 115 stay degenerate. Consequence: the convention is confirmed for on-screen vertices and the renderer
-must clip in clip space. Details: [COREGS3-HOOKS](COREGS3-HOOKS.md) §10.2. Nothing tracked changed by the builds; no pin,
+over all 291 printed pairs: the 41 on-screen draws match with **rms 0.2197 px** after one constant per draw; of the
+other 56, 26 show the expected 16-bit y wrap (**+4085..+4122 px**, one 4096 px period) and 30 have small per-draw
+offsets (0.5-11.7 px; partially off-screen or fit bias); draws 95, 111 and 115 stay degenerate. The old row reading
+fails the same 41 draws (13 behind the eye, 1.9204 px rms on the other 28). Consequence: the convention is confirmed
+for on-screen vertices and the renderer must clip in clip space. Details: [COREGS3-HOOKS](COREGS3-HOOKS.md) §10.2. Nothing tracked changed by the builds; no pin,
 release or launcher change.
 
 ## TASK-090 round 7: build restored, the vertex transform measured (2026-11-09, branch `task/090-coregs3`)

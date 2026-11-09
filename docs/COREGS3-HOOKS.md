@@ -305,11 +305,15 @@ the negative OFX is the 16-bit value 27648 read signed). It is **inferred** from
 Two draws and three vertices were checked by hand. **Whole-file residual (2026-11-09, r8):** the formula was then
 recomputed over all 291 printed (draw, vertex) pairs of `gate-fits.txt`. The **41 draws that lie on screen** match the
 convention and the inferred offset; after removing one constant per draw, the residual is **rms 0.2197 px**. The other
-**56 draws are off-screen**: their tapped y is **+4092..+4122 px** away from the prediction, i.e. one 16-bit wrap of the
-12.4 coordinate (65536 units = 4096 px), not a second transform. Three of those (draws 95, 111 and 115) are degenerate
-(18-24 px centred rms) and stay unusable. The convention is therefore **H** for on-screen vertices; the wrap is expected
-16-bit arithmetic. The live renderer must clip in clip space (`cw`) and must never consume the wrapped 12.4 screen
-coordinate.
+**56 draws split in two**: **26 show the expected 16-bit wrap** (tapped y **+4085..+4122 px** away from the prediction,
+one 4096 px period at 12.4, i.e. 65536 units) and **30 have small per-draw offsets (0.5-11.7 px)**, which the three
+printed pairs per draw do not explain further (**Hypothesis**: partially off-screen vertices or fit bias). None is
+evidence of a second transform. Three draws (95, 111 and 115) are degenerate (18-24 px centred rms) and stay unusable.
+The old row reading fails the same 41 draws: 13 put `cw <= 0` behind the eye and the other 28 have **1.9204 px rms**
+(worst 6.4869 px), so the column reading is the measured one. The convention is therefore **H** for on-screen vertices;
+the wrap is expected 16-bit arithmetic. The live renderer must clip in clip space (`cw`) and must never consume the
+wrapped 12.4 screen coordinate. The module `native/coregs3/coregs3_vertex.{hpp,cpp}` implements it (round 9), and
+`coregs3_render.cpp` projects through it with near-plane clipping; the object path is unchanged.
 
 **Consequence for the existing code:** `native/coregs3/coregs3_render.cpp` `draw_matrix()` reads `vf24..vf27` as matrix
 **rows** and multiplies rows 0-2 by `cmd.value`. The capture shows the packet rows are exactly `vf * value` (e.g.
