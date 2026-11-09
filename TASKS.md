@@ -1575,6 +1575,20 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   confirms the EE-level interception, the shadow mode, VU1 as the oracle and the content-hash caches, and adds the GS
   rules and effect-chain traps they had to reproduce (alpha-test depth, untextured colour, blend rounding, `COLCLAMP`,
   fog, texture LOD, UV row, bloom history) to the Phase 1/2/4 acceptance lists. Prose only; no celosia source read.
+- **Round 7 (2026-11-09, stopped early by the owner: the stage moves to another machine).** The round restored the build
+  inputs and measured the vertex transform, then stopped before any live code. Restored: the instrumented units
+  (`build/coregs3-r7/units`, 328 files, 2 instrumented, receipt with the byte-exact removal proof); the hook EE library
+  `build/coregs3-r7/ee-build/ps2game.lib` (146,957,440 bytes, sha256 `b4c7ac04…`); the reference is the pinned slice299
+  flare library (`d322b0aa…`, unchanged); a minimal tools build (`build/coregs3-r7/tools`) with `gt4_coregs3_tap.exe` and
+  `gt4_coregs3_render.exe`. **The game build (`gt4vulkan`) was not configured and no gate ran this round.** New
+  measurement (**H**, night race VBlank 7398): the `0xC1` block is four **columns** `vf24..vf27` used unscaled (positions
+  in metres), the screen map is `((0.5 + 0.5·cx/cw)·W, (0.5 − 0.5·cy/cw)·H)`, and the VU1 adds an `XYOFFSET` of about
+  `(−2368, +1824) px`; three hand checks agree within 0.28 px and the gate's 97 printed fits are consistent. The existing
+  `coregs3_render.cpp` `draw_matrix()` (rows, scaled by `cmd.value`) is therefore known-wrong in screen mode and must be
+  changed. New tool flag: `gt4_coregs3_tap gate … --fits` (per-draw fitted map + the draw's matrix; output in
+  `build/coregs3-r7/gate-fits.txt`). The prepared `present` design (mode, frame ring, renderer insertion after
+  `ComposeFrameGpu`, attachments, counters) is written down in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §10 and is **not
+  implemented**. Resume recipe, exact commands and risks: same section.
 - Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the M4 live overlay seam (review work), M4 only
   after the 3x gate re-run, and the remaining G-IMAGE/G-PERF gates.
 

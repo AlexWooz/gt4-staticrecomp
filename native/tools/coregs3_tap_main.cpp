@@ -687,7 +687,7 @@ int command_fit_all(const char *tap_path, const char *capture_path, int frame_in
 // emission with its job (GIF records). The same model packets are posted again every frame, so the source record's VBlank
 // selects the frame; each shape item then matches the GIF record of the same vertex count, in order. Records that belong
 // to other passes in the same job are skipped, which is what makes a draw span several jobs or a job carry several draws.
-int command_gate(const char *tap_path, const char *capture_path, int frame_index, bool verbose) {
+int command_gate(const char *tap_path, const char *capture_path, int frame_index, bool verbose, bool print_fits) {
   std::vector<std::uint8_t> tap;
   std::vector<TapRecord> records;
   std::string error;
@@ -968,6 +968,7 @@ int command_gate(const char *tap_path, const char *capture_path, int frame_index
     double fit_sum = 0.0;
     double fit_worst = 0.0;
     bool solved = false;
+    std::vector<double> fitted_x, fitted_y;
     {
       std::vector<double> normal(16, 0.0), rhs_x(4, 0.0), rhs_y(4, 0.0), row_x(4, 0.0), row_y(4, 0.0);
       for (std::size_t k = 0; k < mesh.vertices.size(); ++k) {
@@ -983,6 +984,8 @@ int command_gate(const char *tap_path, const char *capture_path, int frame_index
       }
       std::vector<double> mx = normal, my = normal;
       if (solve(mx, rhs_x, row_x) && solve(my, rhs_y, row_y)) {
+        fitted_x = row_x;
+        fitted_y = row_y;
         for (std::size_t k = 0; k < mesh.vertices.size(); ++k) {
           const double p[4] = {mesh.vertices[k].position[0], mesh.vertices[k].position[1],
                                mesh.vertices[k].position[2], 1.0};
@@ -1013,6 +1016,31 @@ int command_gate(const char *tap_path, const char *capture_path, int frame_index
       ++totals.fit_ok;
       totals.fit_rms_sum += fit_rms;
       totals.fit_worst = std::max(totals.fit_worst, fit_worst);
+      // TASK-090 phase 1e: the fitted screen map beside the matrix the game uploaded for this draw. The vertex stage of the
+      // native renderer has to reproduce this map; printing both is how the convention is identified, not guessed.
+      if (print_fits) {
+        std::printf("draw %u rms %.4f px | x %.7g %.7g %.7g %.7g | y %.7g %.7g %.7g %.7g\n", draw.sequence, fit_rms,
+                    fitted_x[0], fitted_x[1], fitted_x[2], fitted_x[3], fitted_y[0], fitted_y[1], fitted_y[2],
+                    fitted_y[3]);
+        for (std::size_t k = 0; k < 3 && k < mesh.vertices.size(); ++k)
+          std::printf("  pair %zu object %.5f %.5f %.5f screen %.4f %.4f\n", k, mesh.vertices[k].position[0],
+                      mesh.vertices[k].position[1], mesh.vertices[k].position[2],
+                      static_cast<std::int16_t>(slice[k].x) / 16.0, static_cast<std::int16_t>(slice[k].y) / 16.0);
+        for (int row = 0; row < 4; ++row) {
+          const float *words = reinterpret_cast<const float *>(draw.vf[row]);
+          std::printf("  vf%u %.7g %.7g %.7g %.7g\n", 24u + static_cast<unsigned>(row), words[0], words[1], words[2],
+                      words[3]);
+        }
+        const float value = reinterpret_cast<const float *>(&draw.cmd_value)[0];
+        std::printf("  value %.9g\n", value);
+        if (draw.matrix_packet_valid) {
+          for (int row = 0; row < 8; ++row) {
+            const float *words = reinterpret_cast<const float *>(draw.matrix_packet[row]);
+            std::printf("  packet%u %.7g %.7g %.7g %.7g\n", static_cast<unsigned>(row), words[0], words[1], words[2],
+                        words[3]);
+          }
+        }
+      }
     }
     totals.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
     totals.strips += static_cast<std::uint32_t>(mesh.strip_lengths.size());
@@ -1112,7 +1140,10 @@ int main(int argc, char **argv) {
       return 2;
     }
     const bool verbose = argc > 5 && std::strcmp(argv[5], "--verbose") == 0;
-    return command_gate(argv[2], argv[3], std::atoi(argv[4]), verbose);
+    bool print_fits = false;
+    for (int argument = 5; argument < argc; ++argument)
+      if (std::strcmp(argv[argument], "--fits") == 0) print_fits = true;
+    return command_gate(argv[2], argv[3], std::atoi(argv[4]), verbose, print_fits);
   }
   if (command == "map") {
     if (argc < 5) {

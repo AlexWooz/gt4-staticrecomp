@@ -248,6 +248,138 @@ gt4_coregs3_render <capture> --list
 gt4_coregs3_render <capture> --frame 0 --out car.png --object --points
 # the strip-table gate (needs a tap window that covers the worker's lag: see §6)
 gt4_coregs3_tap gate <tap.gt4tap> <capture.gt4scene> 0 --verbose
+# the same gate with the measured screen map beside each draw's matrix (since 2026-11-09, see §10)
+gt4_coregs3_tap gate <tap.gt4tap> <capture.gt4scene> 0 --fits
 # milestone sheet (test tool, Pillow)
 python scripts/coregs3_bench/coregs3_sheet.py out.png --title "..." <ref.png> "CoreGS 2.0" <native.png> "native"
 ```
+
+## 10. Round of 2026-11-09 (r7): build restored, the vertex transform measured, and how to resume
+
+**The round was stopped early by the owner (the stage moves to another machine).** No live overlay code (`present` or
+`overlay`) was written, no game build (`gt4vulkan`) was configured and **no gate was run in this round**. What exists is
+the restored hook EE library, a small tools build and the measured vertex transform below. Nothing here changes `main`.
+
+### 10.1 What was restored (all under ignored `build/`)
+
+| Piece | Path | Result |
+|---|---|---|
+| Instrumented units | `build/coregs3-r7/units` | `scripts/coregs3_units.py` on the slice299 `generated` folder: 328 files, 2 instrumented, receipt `build/coregs3-r7/units.coregs3-units.json` (byte-exact removal proof) |
+| Hook EE library | `build/coregs3-r7/ee-build/ps2game.lib` | 146,957,440 bytes, sha256 `b4c7ac0479e06793a147b35144aacbe7c2dae8acb7649057de11f4cd5b696575`; built by `scripts/coregs2_bench/game/ee_configure.cmd coregs3-r7/ee-build <abs units>` + `ee_build.cmd` (clang-cl 22.1.3, `GT4_FAST_HEADERS=ON`, `/O2 /clang:-msse4.1`) |
+| Reference library | main checkout `private/slice299-ee-flare-producer/game-build/ps2game.lib` | 70,694,640 bytes, sha256 `d322b0aaa6a217ab8d0275d7447b8a838161d6fb3359478615c963acef616b3a`, equal to `docs/inputs/slice299-ee-libraries.json` (`profiles.flare.sha256`); no rebuild needed, same base as the hook library (hooks only) |
+| Tools build (not the game) | `build/coregs3-r7/tools` | minimal root configure (`build/coregs3-r7/configure-tools.cmd`: `GT4_EE_PROFILE=production`, slice151-vu1-aot-runtime, slice153-pacing-port/-shaders, slice151-vu1-gen-smoke, slice155-vu1-full-corpus, `GT4_HW_GS=OFF`); `build/coregs3-r7/build-tools.cmd` builds `gt4_coregs3_tap.exe` and `gt4_coregs3_render.exe` |
+
+`build/coregs3-r7/tools2` is a failed first configure (`CMake Error ... The C++ compiler ... is not able to compile a
+simple test program`, `RC Pass 1 ... rc ... no such file or directory`: the `VsDevCmd.bat` environment was not in effect
+for that `cmake` process); it is ignored and unused. The two `.cmd` files above are the working invocation form
+(`VsDevCmd.bat` then `cmake`).
+
+### 10.2 The VU1 vertex transform, measured (**H**, two draws)
+
+`gt4_coregs3_tap gate ... --fits` (new this round) prints, for every fitted draw, the fitted affine screen map, its
+first three (object position, tapped screen position) pairs, `vf24..vf27`, `cmd.value` and the eight captured
+`matrix_packet` rows. Full output: `build/coregs3-r7/gate-fits.txt` (97 draws printed; the gate itself reports
+**111 of 116 draws fitted, mean rms 0.9714 px, worst 37.3771 px** — unchanged from §8). Night race, VBlank 7398,
+`build/evidence/coregs3/r9/{cars.gt4tap,cars.gt4scene}`.
+
+**The convention that reproduces the tapped coordinates** (positions in metres, i.e. the raw 16-bit model values
+divided by 4096 as `build_mesh` already does; matrix taken **unscaled** from VU0):
+
+```
+columns: c0 = vf24, c1 = vf25, c2 = vf26, c3 = vf27      (each four floats, raw)
+clip    = c0 * x + c1 * y + c2 * z + c3 * 1              -> (cx, cy, cz, cw)
+screen  = ( (0.5 + 0.5 * cx / cw) * width, (0.5 - 0.5 * cy / cw) * height )
+```
+
+The VU1 then adds the drawing offset before the GS: the tapped 12.4 value is `screen * 16 + offset`, and the GS
+subtracts `XYOFFSET` again (`native/hw_gs/frontend/hw_front_end.cpp:621`).
+Measured on the captures, the offset is about **(-2368.0, +1824.0) px** (`OFX = -37888`, `OFY = 29184` in 12.4 units;
+the negative OFX is the 16-bit value 27648 read signed). It is **inferred** from the fits, not read from the register.
+
+| Check (draw, vertex) | predicted screen | tapped − offset | delta |
+|---|---|---|---|
+| draw 0, pair 0 | (358.50, 86.02) | (358.625, 86.000) | (0.13, 0.02) px |
+| draw 0, pair 1 | (358.81, 86.02) | (358.875, 86.063) | (0.07, 0.04) px |
+| draw 3, pair 0 | (359.50, 79.60) | (359.500, 79.875) | (0.00, 0.28) px |
+
+Two draws and three vertices were checked by hand; the rest of the 97 printed fits are consistent with the same map but
+were not recomputed. That is why the label is **H**, not **C**: the direct next measurement is to compute this formula
+over every printed fit and report the whole-frame residual, which was not run.
+
+**Consequence for the existing code:** `native/coregs3/coregs3_render.cpp` `draw_matrix()` reads `vf24..vf27` as matrix
+**rows** and multiplies rows 0-2 by `cmd.value`. The capture shows the packet rows are exactly `vf * value` (e.g.
+`packet1 = 0.000474434` = `vf24[0] 2.037678 * value 0.000232830644`), so the row reading is a different transform: it
+is why the offline renderer's screen mode was never validated. Every published M2/M4 picture used `--object`, which
+bypasses `draw_matrix`. **The offline tool's screen mode must be treated as wrong until it is changed to the convention
+above** (planned `coregs3_vertex` module, not written this round).
+
+### 10.3 The live design that was prepared (not implemented)
+
+- **Mode:** `GT4_COREGS3=present` (a fourth value beside `off|shadow|overlay`), debug only, never an acceptance mode.
+  `overlay` keeps refusing to start.
+- **Frame source:** the hooks already build one `FrameSnapshot` per VBlank; publish it to a ring with an O(1) vector
+  swap in `finish_frame()` and expose a "copy the last complete frame" reader. No guest write, no new guest cycle.
+- **Renderer:** a `CoreGS 3.0` module inside `native/hw_gs/` (the only place the `gt4_hw_*` Vulkan loader and the
+  `Backend::Impl` device/queue live), initialised from `Impl` but **not** touching CoreGS 2.0's targets. A graphics
+  pass into the composed display image (`R32_UINT`, integer output, no blending) with a `D32` depth image, a minimal
+  vertex shader using the measured convention (`gl_Position = vec4(cx, -cy, 1.0, cw)`, depth compare `GREATER`, so
+  depth is `1/cw`), no culling, vertex colour only. One draw call per captured draw, `vf24..vf27` in a push constant.
+- **Insertion point:** after `ComposeFrameGpu` returns a valid frame, in `Backend::end_frame`
+  (`native/hw_gs/hw_gs_backend.cpp:2074-2086`) for the window path and in `Backend::scanout`
+  (`:1949-1955`) for the headless dump path; submit on `Impl::queue` through `Impl::submit_to` with a private command
+  pool/fence, after the compose submission (same-queue order), and barrier the image `GENERAL`↔`COLOR_ATTACHMENT`.
+  No second instance, device, swapchain or window.
+- **Gate:** a headless 3x night run with `GT4_COREGS3=present` and `GT4_HW_DUMP_DIR`, counters for native draws and
+  fallbacks, G-LOGIC unchanged (race clock/digest/state), frame saved under `build/evidence/coregs3/r7/`.
+
+### 10.4 Resume recipe on another machine with the same `C:\Antigravity` layout
+
+1. Worktree: branch `task/090-coregs3` (this commit). The main checkout stays read-only owner data.
+2. Read-only inputs to have present in `C:\Antigravity\gt4-staticrecomp`: `private/slice299-ee-flare-producer`
+   (`generated` + `game-build`), `private/references/ps2-web-recomp` (donor `1b480879…`),
+   `private/slice151-vu1-aot-runtime`, `private/slice153-pacing-port`, `private/slice153-pacing-shaders`,
+   `private/slice151-vu1-gen-smoke`, `private/slice155-vu1-full-corpus`, `private/tooling-venv`,
+   `private/coregs2-bench` (cards and input recordings for `night-run.sh`), `private/tooling/sdl3-3.4.18`, and for the
+   rc15-style game build also `private/slice200-memcard-runtime`, `private/slice365-ipu-fast-runtime`,
+   `private/slice376-frame-render-license-guard-runtime`, `private/slice396-spu2-runtime`,
+   `private/slice409-usb-runtime` and the Vulkan SDK (`C:/VulkanSDK/1.4.341.1`, `glslangValidator.exe`). Nothing under
+   `build/` needs to travel: the units are regenerated and the libraries rebuilt.
+3. Rebuild the hook library (exact commands that worked):
+   ```
+   python scripts/coregs3_units.py <main>/private/slice299-ee-flare-producer/generated build/coregs3-r7/units
+   cmd /c scripts/coregs2_bench/game/ee_configure.cmd coregs3-r7/ee-build <abs>/build/coregs3-r7/units
+   cmd /c scripts/coregs2_bench/game/ee_build.cmd coregs3-r7/ee-build
+   sha256sum build/coregs3-r7/ee-build/ps2game.lib   # expect b4c7ac04…
+   ```
+4. Game build (the next step; **not done this round**). Follow the rc15 recipe
+   `scripts/coregs2_bench/game/configure.cmd <dir> v200` (it passes `GT4_HW_GS=ON`, the Vulkan SDK, the SDL3 root and
+   every runtime capsule) and add through `T134_ARGS`:
+   ```
+   -DGT4_EE_PROFILE=flare -DGT4_EE_LIBRARY=<abs>/build/coregs3-r7/ee-build/ps2game.lib
+   -DGT4_EE_LIBRARY_SHA256=b4c7ac0479e06793a147b35144aacbe7c2dae8acb7649057de11f4cd5b696575
+   -DGT4_COREGS3=ON
+   ```
+   then `cmake --build <build> --target gt4vulkan`. The reference build is the same line with the slice299 pinned
+   library and without `GT4_COREGS3` (it can also use `-DGT4_EE_PROFILE=flare` alone, since that profile selects the
+   pinned library). Note `configure.cmd` defaults still point at slice397-vu1-gen/slice262 runtime (rc15); the brief's
+   r7 line used slice151-vu1-aot-runtime + slice151-vu1-gen-smoke and both CMake and the pins accept them, but the game
+   build was not attempted, so the first configure must be watched for a port/runtime pin refusal.
+5. Gates to re-run before any new code (same commands as §8/§9):
+   ```
+   GT4_BENCH_OUT=<abs>/build/evidence/coregs3/r7 NAME=r7-check SCALE=3 EVERY=200 FROM=6500 FRAMES=9000 DUMP_AT=7400 \
+     bash scripts/coregs3_bench/coregs3-night-check.sh <ref exe> <cand exe>
+   gt4_coregs3_tap gate <tap> <capture> 0 --verbose
+   ```
+   The card is copied by the bench scripts; `private/manual-play/card.ps2` is never written by an agent.
+
+### 10.5 Risks and unknowns of this round
+
+- The transform is measured on **two draws** and checked by hand; the whole-frame residual and the offset constants are
+  **H**, not **C**. The offset may also change per pass if the game rewrites `XYOFFSET` mid-frame (it is a GS register,
+  so the same formula still holds but the constant is per pass).
+- `coregs3_render`'s `draw_matrix` is still the old (row) reading; screen-mode pictures from it are invalid.
+- The tool's `--fits` prints 97 of the 111 "fit ok" draws: 14 are singular fits on flat parts (a y-constant model makes
+  the normal equations singular) and are counted as ok without coefficients.
+- No game build and no gate ran this round, so the §8 numbers remain the last measured state and nothing here proves
+  they still hold on this machine.
+

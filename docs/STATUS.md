@@ -1,5 +1,30 @@
 # Current Status
 
+## TASK-090 round 7: build restored, the vertex transform measured (2026-11-09, branch `task/090-coregs3`)
+
+The round was **stopped early by the owner** (the stage moves to another machine). No live overlay code was written, the
+game build (`gt4vulkan`) was **not** configured and **no gate ran** in this round; the last measured gate numbers are the
+2026-11-06 ones below. What this round leaves:
+
+- **Build inputs restored** under the ignored `build/coregs3-r7/`: the instrumented units (328 files, 2 instrumented,
+  receipt `units.coregs3-units.json` with the byte-exact removal proof) and the hook EE library
+  (`ee-build/ps2game.lib`, 146,957,440 bytes, sha256 `b4c7ac04…`). The reference is the pinned slice299 flare library
+  (`d322b0aa…`, unchanged, same base with no hooks). A minimal tools build (`build/coregs3-r7/tools`) gives
+  `gt4_coregs3_tap.exe` and `gt4_coregs3_render.exe`.
+- **The VU1 vertex transform is identified (H, measured).** On the night-race tap (VBlank 7398) the `0xC1` block is four
+  **columns** `vf24..vf27` used **unscaled** (the model positions are metres, raw/4096, which cancels `cmd.value`), with
+  `clip = c0·x + c1·y + c2·z + c3` and `screen = ((0.5 + 0.5·cx/cw)·W, (0.5 − 0.5·cy/cw)·H)`; the VU1 then adds an
+  `XYOFFSET` of about `(−2368, +1824) px` that the GS subtracts. Three hand checks agree within 0.28 px and the gate's
+  97 printed per-draw fits are consistent. The existing `coregs3_render.cpp` `draw_matrix()` reads rows and scales by
+  `value`, so its screen mode is known-wrong and was never used for published pictures (they used `--object`).
+- **New tool flag** `gt4_coregs3_tap gate … --fits`: per-draw fitted affine map, the first (object, screen) pairs, `vf24..27`,
+  `cmd.value` and the eight matrix-packet rows. Output: `build/coregs3-r7/gate-fits.txt`; the gate line is unchanged
+  (116 of 116 draws gated, 111 fitted, mean 0.9714 px).
+- **Prepared design, not implemented:** `GT4_COREGS3=present`, the publish ring for the frame snapshot, a same-device
+  renderer inserted after `ComposeFrameGpu` in `Backend::end_frame`/`Backend::scanout` (R32_UINT colour, D32 depth,
+  `gl_Position = vec4(cx, -cy, 1.0, cw)`, no culling, vertex colour). Exact call sites, counters and the resume recipe
+  (paths, pinned private slices, CMake lines, gates) are in [COREGS3-HOOKS](COREGS3-HOOKS.md) §10.
+
 ## Celosia's finished native renderer compared with CoreGS 3.0 (2026-11-09, TASK-090)
 
 The SotC port `HenryKun55/celosia` (GPL-3.0) now reports 50 of 50 tracked features native, with no GS, VU1 or VIF on the

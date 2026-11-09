@@ -554,7 +554,14 @@ without a `private/` junction (AGENTS.md). Untainted agent.
 - The tap: GIF output between `draw_begin/end` markers, captured on the GS-worker side of the stream.
 - `coregs3_vertex_ref` (CPU) is the specification of the shader vertex stage:
   - clip = M × p, with M = the 0xC1 block;
-  - the GS screen mapping and the Z mapping: fit from tap data, then located in PGL state;
+  - **update 2026-11-09 (H, measured on the night-race tap):** the 0xC1 block is four **columns** `vf24..vf27`, used
+    **unscaled** (the uploaded packet rows are `vf * cmd.value`; the vertex positions are divided by 4096 by the model
+    decoder, which cancels `value`), and the screen map is
+    `((0.5 + 0.5*cx/cw)*width, (0.5 - 0.5*cy/cw)*height)`. The VU1 then adds `XYOFFSET` (measured about
+    `(-2368, +1824) px` on that frame); the GS subtracts it. Numerals and residual table:
+    [COREGS3-HOOKS](COREGS3-HOOKS.md) §10.2. `coregs3_render.cpp`'s `draw_matrix()` still reads rows and scales by
+    `value`, so its screen mode is known-wrong until changed;
+  - the GS Z mapping: fit from tap data, then located in PGL state;
   - fog from depth;
   - UV and Q;
   - lighting: start with an approximation, then derive the formula from the AOT C++ of the hot strip entries
@@ -582,7 +589,9 @@ without a `private/` junction (AGENTS.md). Untainted agent.
 - The car's reflection pass samples CoreGS 2.0's env-map target by GS address (borrowed; native env map is Phase 4). If
   the target is not found, the pass is skipped and counted.
 - A debug-only `GT4_COREGS3=present` draws the layer over the final image without depth. It gives an early live picture
-  before the seam lands and is never used for acceptance.
+  before the seam lands and is never used for acceptance. The prepared insertion points (not implemented): after
+  `ComposeFrameGpu` in `Backend::end_frame` and `Backend::scanout`, submitting on `Impl::queue`; details in
+  [COREGS3-HOOKS](COREGS3-HOOKS.md) §10.3.
 
 1f. **Tools and gates.** `coregs3-check.sh`, `coregs3_metrics.py`, `coregs3_sheet.py`, CTest fixtures, the
 `coregs3_capture` F8 category.
