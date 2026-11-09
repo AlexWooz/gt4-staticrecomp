@@ -33,6 +33,11 @@ Options:
               asynchronous FILEIO server (the one the donor selected for "IOPRP") must be selected there too. Adds
               sif.cpp to the capsule; a game that never asks for DNAS310.IMG behaves as the donor.
 
+  --data-patch TASK-212 (slice421): the GT4.VOL same-length data overlay (native/data_patch.*). Derives
+              runtime/src/disc.cpp with the sector-read rewrite and adds one install call after the disc opens in
+              system.cpp. Extends the --mtvu --gs-stream --frame-cost capsule. Without a patch file named by
+              GT4_DATA_PATCH at run time the game behaves exactly as the capsule without this option.
+
 Slices 156 and 158 used --gs-crt-override and --display-table-override. Both hooks were removed in slice164
 (the 480p switch is a host-side guest RAM write, native/race_display.*). Their capsules stay pinned in
 docs/inputs and are not re-derivable from this script.
@@ -90,6 +95,20 @@ SPEC2_IOP_ANCHORS = {
     'reboot': ('replace',
                '    if (path.find("IOPRP") != std::string::npos) g_fileio_async = true;\n'
                '    if (const auto space = path.find(\' \'); space != std::string::npos) read_loadfile_version(path.substr(space + 1));\n'),
+}
+# TASK-212 (slice421): the GT4.VOL same-length data overlay. disc.cpp gets the sector-read rewrite; system.cpp gets
+# one install call after the disc opens. Both anchors are single donor texts and the derivation checks its own reversal.
+DATA_PATCH_PIN = {'disc.cpp': 'fc2944cfd3ebd5650cca87ddd588c73d8491319d1192bf07df24bb6d32bba129'}
+DATA_PATCH_OVERLAY_PATH = ROOT / 'scripts/data_patch_overlay.inc'
+DATA_PATCH_DISC_ANCHORS = {
+    'includes': ('after', '#include "ps2/disc.hpp"\n'),
+    'read_tail': ('after', '    if (got < want) std::memset(static_cast<std::uint8_t *>(out) + got, 0, want - got);\n'),
+}
+DATA_PATCH_SYSTEM_ANCHORS = {
+    'system_includes': ('after', '#include "ps2/system.hpp"\n'),
+    'install': ('after',
+                '    if (!g_options.disc_path.empty() && !disc::open(g_options.disc_path))\n'
+                '        std::fprintf(stderr, "[ee] cannot open disc image %s\\n", g_options.disc_path.c_str());\n'),
 }
 OVERLAY_PATH = ROOT / 'scripts/vu1_aot_overlay.inc'
 VU0_OVERLAY_PATH = ROOT / 'scripts/vu0_aot_overlay.inc'
@@ -427,6 +446,30 @@ def apply_spec2_iop(source):
     return apply_overlay(source, SPEC2_IOP_OVERLAY_PATH, SPEC2_IOP_ANCHORS, 'Spec II IOP reboot')
 
 
+def apply_data_patch_sections(source, anchors, label):
+    """Applies a named subset of data_patch_overlay.inc; checks that removing the sections restores the input."""
+    text = DATA_PATCH_OVERLAY_PATH.read_text(encoding='utf-8').replace('\r\n', '\n')
+    all_anchors = {**DATA_PATCH_DISC_ANCHORS, **DATA_PATCH_SYSTEM_ANCHORS}
+    sections = overlay_sections(text, all_anchors)
+    result = source
+    edits = []
+    for name, (mode, anchor) in anchors.items():
+        if result.count(anchor) != 1:
+            raise ValueError(f'Expected one qualified {label} anchor: {name}')
+        section = sections[name]
+        replacement = anchor + section if mode == 'after' else section + anchor
+        result = result.replace(anchor, replacement)
+        edits.append((anchor, replacement))
+    inverse = result
+    for anchor, replacement in reversed(edits):
+        if inverse.count(replacement) != 1:
+            raise ValueError(f'Unexpected {label} reversal')
+        inverse = inverse.replace(replacement, anchor)
+    if inverse != source:
+        raise ValueError(f'{label} does not reverse to the input')
+    return result
+
+
 def apply_mtvu_measure(name, source):
     """Adds the TASK-011 step 0 counting hooks; checks that removing them restores the input."""
     result = source
@@ -597,7 +640,9 @@ def derive(name, source, *, split_vu=False, vu1_aot=False, vu0_aot=False, mtvu_m
 
 def prepare(output, assets_root=None, *, split_vu=False, vu1_aot=False, vu0_aot=False, mtvu_measure=False,
             mtvu=False, gs_stream=False, fsv_trace=False, halt_dump=False, frame_cost=False,
-            spec2_iop=False):
+            spec2_iop=False, data_patch=False):
+    if data_patch and not (mtvu and gs_stream and frame_cost):
+        raise ValueError('--data-patch extends the --mtvu --gs-stream --frame-cost capsule')
     if gs_stream:
         mtvu = True
     if frame_cost and not mtvu:
@@ -668,6 +713,19 @@ def prepare(output, assets_root=None, *, split_vu=False, vu1_aot=False, vu0_aot=
             text = data.decode('utf-8').replace('\r\n', '\n')
             spec2_sources[Path(name).name] = apply_spec2_iop(text)
     sources.update(spec2_sources)
+    data_patch_sources = {}
+    if data_patch:
+        # system.cpp already carries the MTVU/frame-cost patches; the install hook anchors on a donor line none of them
+        # touch. disc.cpp is a new capsule file with the sector-read rewrite.
+        for name, (donor_path, expected) in {'disc.cpp': ('disc.cpp', DATA_PATCH_PIN['disc.cpp'])}.items():
+            data = (donor / donor_path).read_bytes()
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise ValueError(f'Qualified donor source differs: {donor_path}')
+            text = data.decode('utf-8').replace('\r\n', '\n')
+            data_patch_sources[name] = apply_data_patch_sections(text, DATA_PATCH_DISC_ANCHORS, 'data patch disc')
+        sources['system.cpp'] = apply_data_patch_sections(sources['system.cpp'], DATA_PATCH_SYSTEM_ANCHORS,
+                                                          'data patch install')
+        sources.update(data_patch_sources)
     output.mkdir()
     receipt = {'donor_revision': '1b4808793a12c45125262fd2d5f50a9ec9f7c020',
                'donor_sha256': dict(PINS), 'source_sha256': {}}
@@ -684,6 +742,11 @@ def prepare(output, assets_root=None, *, split_vu=False, vu1_aot=False, vu0_aot=
         receipt['spec2_iop_profile'] = 'dnas310-reboot-v1'
         receipt['spec2_iop_overlay_sha256'] = hashlib.sha256(
             SPEC2_IOP_OVERLAY_PATH.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+    if data_patch:
+        receipt['donor_sha256'].update(DATA_PATCH_PIN)
+        receipt['data_patch_profile'] = 'same-length-sector-v1'
+        receipt['data_patch_overlay_sha256'] = hashlib.sha256(
+            DATA_PATCH_OVERLAY_PATH.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
     if split_vu:
         receipt['vu_scope_profile'] = 'unit_split_run_fast_only'
     if vu1_aot:
@@ -729,7 +792,10 @@ if __name__ == '__main__':
                         help='TASK-100 S7b: the Spec II IOP reboot rule (DNAS310.IMG selects the asynchronous FILEIO server)')
     parser.add_argument('--frame-cost', action='store_true',
                         help='TASK-084: also add the frame-cost instrumentation hooks (run loop, VIF1 chain, GIF walk)')
+    parser.add_argument('--data-patch', action='store_true',
+                        help='TASK-212: the GT4.VOL same-length data overlay (disc.cpp rewrite, install after disc open)')
     args = parser.parse_args()
     prepare(args.output, args.assets_root, split_vu=args.split_vu, vu1_aot=args.vu1_aot, vu0_aot=args.vu0_aot,
             mtvu_measure=args.mtvu_measure, mtvu=args.mtvu, gs_stream=args.gs_stream, fsv_trace=args.fsv_trace,
-            halt_dump=args.halt_dump, frame_cost=args.frame_cost, spec2_iop=args.spec2_iop)
+            halt_dump=args.halt_dump, frame_cost=args.frame_cost, spec2_iop=args.spec2_iop,
+            data_patch=args.data_patch)

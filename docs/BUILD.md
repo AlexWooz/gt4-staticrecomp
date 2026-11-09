@@ -3369,3 +3369,33 @@ GitHub draft only.
   `scripts/make_portable_zip.py --version 1.3.0-rc15`; output `private/release-130-rc15-out`.
 - **Checks:** CTest 318/318 on each game (q07 skipped), Python 802 (57 skipped), `gates6.sh` against the rc14 PGO builds
   (wrong=0).
+
+## TASK-212 native Quit Game row (slice421/422, 2026-11-09, test build only)
+
+The v2.00 build with the GT4.VOL data patch and the host row watcher. Test builds only: no installer, no release.
+
+- **Runtime capsule:** `private/tooling-venv/Scripts/python.exe scripts/prepare_perf_runtime.py
+  <assets>/private/slice422-data-runtime --assets-root <assets> --mtvu --gs-stream --frame-cost --data-patch`
+  (`disc.cpp` gets the sector-read rewrite, `system.cpp` the install call). Pin: `docs/inputs/slice422-data-runtime.json`.
+- **Configure:** the rc15 recipe inputs (production EE lib, port slice200, shaders slice153, VU1 slice397, VU0 slice394,
+  license guard slice376, memcard slice200, SPU2 slice396, USB slice409, IPU slice365), with
+  `-DGT4_PERF_RUNTIME_SOURCE=<assets>/private/slice422-data-runtime`, `GT4_EE_PROFILE=production`, `GT4_SSE41=ON`,
+  `GT4_RELEASE_DISTRIBUTION=OFF`. `rc.exe` from the Windows SDK x64 bin must be on `PATH`; configure outside a VS
+  developer shell.
+- **Patch builder:** `scripts/gt4_data_patch.py --iso "<v2.00 ISO>" --recipe <private recipe>.json --output <fresh
+  private dir>`. The recipe is the private edit spec (two anchors in `projects/arcade/arcade.mproject`: the hidden
+  `children [7]` -> `[8]` and the Credit row plus the `Quit` TextFace). The container is derived from the user's disc
+  and is never committed. See `docs/tasks/GT4-MENU-QUIT-SETTINGS-STUDY.md` section 9 for the widget.
+- **Run:** `GT4_DATA_PATCH=<patch dir>/gt4-data.patch gt4vulkan.exe <ELF copy> --ntsc --disc "<ISO>" --frames N
+  --memcard <copy>.ps2 --frames-dir <dir> --frame-every 50 --press ...`. The runtime verifies the original range
+  against the image and prints `[data-patch] ... verified against the image`.
+- **Reaching the arcade top menu headlessly:** a save whose `major_menu_project` is `gtmode` boots into GT mode. The
+  test card was taken to the menu with a runtime state saved at VBlank 11,900 and its RAM copy of the save string
+  patched `gtmode` -> `arcade` (same six bytes) before loading it; the card itself was not modified. With the patched
+  state, the menu appears at ~12,300. `menu_quit` appends the row and logs `Quit Game row appended: 7 rows, last
+  index 6`; seven `down` presses focus it and `cross` closes the run (`[menu-quit] Quit Game selected`, `[ee] stopped
+  ...: quit game`, exit 0).
+- **Checks:** CTest 64/64 (`native_menu_quit`, `native_data_patch` added); Python 810 (58 skipped,
+  `test_gt4_data_patch.py` added); `cargo test -p gt4l-core --lib` 294/294.
+- **Known:** the attract-demo timeout starts ~20 s after the menu appears with no input; any press resets it. Spec II
+  needs its own vtables/recipe.

@@ -152,6 +152,89 @@ the v5 script round trip (TASK-078 P1/P2); the first native row can use the empt
 | Free bridge native | `MSystem::SetDrawPerfMeter` `0x001AC238` (empty) | C |
 | Per-target hooks | `native/game_target.hpp` `HookAddresses` (v200 / spec2) | C |
 
+## 9. Implementation notes (TASK-212, 2026-11-09)
+
+The owner rejected the overlay-only quit for this item, so the native row was built. The route is a hybrid of (a) and
+(b): the **widget** is data (the `.mproject`), the **append** is host-side (no v5 script edit, no VOL TOC rewrite).
+
+### 9.1 The data patch (same-length GT4.VOL overlay)
+
+- `scripts/gt4_data_patch.py` decodes the target file with the reviewed RoFS reader (`scripts/gt4_volume.py`), applies
+  a text (or byte) edit, minifies the widget text outside string literals, re-encodes the PS2ZIP payload, pads it to
+  the **original stored extent** and refuses anything larger. No TOC write is needed because the stored length is
+  unchanged; the runtime never sees a different entry. **C** (offline round trip + in-game).
+- `native/data_patch.cpp` loads the container named by `GT4_DATA_PATCH` after the disc opens, verifies every original
+  range's SHA-256 against the user's image, and rewrites overlapping bytes in `disc::read`. The capsule replaces
+  `disc.cpp` and adds the install call in `system.cpp` (slice422-data-runtime). **C** (headless: 1 range, 13,646
+  bytes verified; the patched widget parsed and the hidden composite has eight children).
+- The padding after the DEFLATE stream is tolerated by the game's PS2ZIP reader. **C** in this build. The patch
+  container is derived from the user's own disc and is never committed.
+- The `.mproject` parser tolerates the extra child, the literal `text string {"Quit Game"}` and the minified text.
+  **C** (the menu loaded and rendered the row).
+
+The added widget (our own text; the anchors are the hidden composite's `children [N]` line and the Credit template,
+which the private recipe carries and which are not committed):
+
+```
+Composite {
+    name string {"Quit"}
+    geometry rectangle {0 0 320 24}
+    children [1] {
+        TextFace {
+            name string {"label"}
+            skew vector {-16 0}
+            font string {"hb_24"}
+            scale_x digit {0.9}
+            scale_y digit {0.9}
+            shadow digit {2}
+            text string {"Quit Game"}
+        }
+    }
+}
+```
+
+
+### 9.2 The row
+
+- `arcade.mproject`, TopRoot -> `hidden`: one extra `Composite` named `Quit`, geometry 320x24, one `TextFace` with
+  `font hb_24`, `skew {-16 0}`, `scale 0.9`, `shadow 2`, `text string {"Quit Game"}`; no script module
+  (`has_script` omitted). The hidden count becomes 8. **C** (parsed; the hidden composite was found with 8 children).
+- The script's `button_list` is a fixed list of widget references in the script heap, not an iteration over
+  `hidden.children`; adding the widget alone did **not** create a row (SelectBox stayed at 6). **C**.
+- `native/menu_quit.*` appends the parsed widget to the SelectBox in guest RAM after the script built the menu:
+  reparents it, links it after the last row, moves it to y = 6 + 24*rows, extends the child count and the visible
+  window (`+0xA0`, `+0xA8`, `+0xC4`), and removes it from `hidden`. The arcade project is gated by the menu-state
+  word `[[0x622F4C]+0x3A3BC] == "arca"`. **C** (headless frame: "Credits" then "Quit Game" as the last row).
+- The row is a real GT4 widget, drawn and scrolled by the game; it is last, after Credit, and uses the game's font.
+  **C** (frame `private/slice421-menu-study/new/frames/frame_12900.png`).
+
+### 9.3 The quit
+
+- While the last row is focused, `menu_quit` hides Cross/Circle from the guest (the row has no script module), and a
+  Cross rising edge posts `WM_CLOSE`; headless it calls `ps2::halt("quit game")`. **C** (headless: `menu-quit Quit
+  Game selected`, `halted: quit game`, exit 0; frame 12950).
+- Windowed close keeps the existing `WM_CLOSE` path: input recorder finish, `ps2::halt("window closed")`, card
+  `flush_cards_now()`, audio close, F8 flush. The row only exists on the arcade top menu, so no save can be in
+  progress. **C** by code path; owner controller test pending.
+- `exit.rs` now treats `window closed`, `quit game`, `Exit` and `program asked to run another executable` as normal
+  closes (exit 0 only). **C** (Rust tests).
+
+### 9.4 Limits and next steps
+
+- **Reaching the menu:** a save whose `major_menu_project` is `gtmode` boots straight into GT mode (the title menu is
+  skipped). The test card was taken to the arcade menu by patching the save copy in a runtime state (`gtmode` ->
+  `arcade`, same length) before the boot read it; the card itself was never modified. The row is present whenever the
+  game shows the arcade top menu. **C**.
+- **Attract timer:** the arcade TopRoot has `timeout_count_to_autodemo`; in the test the demo started ~20 s after the
+  menu appeared with no input. Any pad press resets it; the watcher does not hold it off while the row is focused.
+  **C/H** (observed; owner test).
+- **Spec II:** the publisher's client is Adhoc v7 with different widget vtables and its own `arcade.mproject`; the
+  same data-patch builder applies, but `menu_quit` needs the Spec II vtables and the SelectBox offsets checked, and a
+  Spec II recipe. Not done here. **U**.
+- **Launcher:** the patch must be built from the user's disc during "Preparing game files" and passed as
+  `GT4_DATA_PATCH`. This run ships the builder, the capsule and the test kit only. **C**.
+
+
 ## Resumo para o dono (pt-BR)
 
 - O menu principal do GT4 é o projeto `arcade` (`TopRoot`), e as linhas são copiadas em tempo de execução pelo

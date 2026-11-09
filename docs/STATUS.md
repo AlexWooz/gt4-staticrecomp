@@ -1,5 +1,36 @@
 # Current Status
 
+## TASK-212: the native Quit Game row in GT4's main menu (2026-11-09, test build only)
+
+On `task/212-quit-game` (from `task/212-menu-study` at 17f877a7). The owner asked for a real Quit Game row at the bottom
+of GT4's main menu, after Credit; the overlay-only route was rejected for this item. The row now exists as a real GT4
+widget: a same-length GT4.VOL data patch adds `hidden::Quit` to `projects/arcade/arcade.mproject` (text "Quit Game",
+the other rows' `hb_24` font/skew/shadow), and `native/menu_quit.*` appends the parsed widget to the arcade TopRoot
+SelectBox after the script built the menu, last, after Credit. No v5 script edit and no VOL TOC write were needed.
+
+- **Data overlay (new, TASK-078 P1's first half):** `scripts/gt4_data_patch.py` decodes a GT4.VOL file with the reviewed
+  RoFS reader, edits the text, minifies it outside strings, recompresses the PS2ZIP payload, pads it to the original
+  stored extent and refuses growth. `native/data_patch.cpp` (installed by the `slice422-data-runtime` capsule) verifies
+  every original range's SHA-256 against the user's image in `disc::read` and rewrites the overlapping bytes. The
+  container is derived from the user's own disc and never committed.
+- **Row:** the arcade script copies a fixed `button_list` (not `hidden.children`), so the widget alone gave no row
+  (SelectBox stayed at 6). The host appends it in guest RAM: reparent to the SelectBox, link after the last row, move it
+  to y = 6 + 24*rows, extend `+0xA0`/`+0xA8`/`+0xC4`, remove it from `hidden`. Headless frame: "Credits" then **"Quit
+  Game"** as the last row (`private/slice421-menu-study/new/frames/frame_12900.png`).
+- **Quit:** while the last row is focused the host hides Cross/Circle from the guest (the row has no script module); a
+  Cross rising edge posts `WM_CLOSE` (card/audio/F8 flush, `window closed`) or `ps2::halt("quit game")` headless.
+  `exit.rs` now treats `window closed`, `quit game`, `Exit` and `program asked to run another executable` as normal
+  quits. Headless evidence: `[menu-quit] Quit Game row appended: 7 rows, last index 6`, 7 x `down`, `cross` ->
+  `[menu-quit] Quit Game selected`, `[ee] stopped ...: quit game`, exit 0 (frame 12950).
+- **Reaching the menu:** a save whose `major_menu_project` is `gtmode` boots into GT mode. The headless test patched a
+  runtime state's RAM copy of that save string (`gtmode` -> `arcade`, same length) before the boot read it; the card
+  itself was never modified. The row is present whenever the game shows the arcade top menu.
+- **Tests:** CTest 64/64 (`native_menu_quit`, `native_data_patch` added); Python 810 OK (58 skipped;
+  `test_gt4_data_patch.py` added); `cargo test -p gt4l-core --lib` 294/294. Build `private/slice421-build/build`,
+  capsule `private/slice422-data-runtime`, pin `docs/inputs/slice422-data-runtime.json`. Test build only: no
+  installer, release or upload. Spec II needs its own vtables, offsets and mproject recipe; the attract-demo timeout
+  (~20 s with no input) stays as the owner-test risk.
+
 ## TASK-208 PGO: the rc16 distribution build, PGO + ThinLTO for both games (owner, 2026-11-08/09)
 
 On `task/208-rc16-pgo` (from `task/208-both-game-variants` at 8ccafcf8, no source change). The owner approved the complete

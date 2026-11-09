@@ -1,17 +1,22 @@
 //! Decides whether a game session ended normally, from its exit code and the `[ee] stopped` line.
 //!
-//! Mirrors `external_runtime_probe.summarize_exit` and the manual-session rule in `run_probe`:
-//! a normal close is exit code 0 with the reason `window closed`.
+//! Mirrors `external_runtime_probe.summarize_exit` and the manual-session rule in `run_probe`: a normal close is exit
+//! code 0 with one of the deliberate reasons below. `window closed` is the window's close; `quit game` is the native
+//! Quit Game row in a headless run; `Exit` and `program asked to run another executable` are the guest's own
+//! `Exit`/`LoadExecPS2` (GT4's `MSystem::Reboot`), which the recomp cannot honour in-process, so the runtime stops and
+//! the session is a deliberate quit, not a crash.
 use crate::language::Language;
 use crate::messages;
 
 
 const STOP_PREFIX: &str = "[ee] stopped after ";
 const CYCLES_MARKER: &str = " cycles: ";
+/// Reasons that mean the player or the game asked to end the session (TASK-212).
+const NORMAL_REASONS: [&str; 4] = ["window closed", "quit game", "Exit", "program asked to run another executable"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The player closed the window (exit code 0, `window closed`).
+    /// The player closed the window or the game's Quit Game/Exit path stopped the session (exit code 0).
     NormalClose,
     /// Anything else. `reason` is the text of the last `[ee] stopped` line, when there was one.
     Crashed { reason: Option<String>, exit_code: Option<i32> },
@@ -27,7 +32,8 @@ pub fn classify(log_text: &str, exit_code: Option<i32>) -> Outcome {
     // Exit code 0 with no shutdown line at all: the log was read before the game flushed it (owner, 2026-10-26: three
     // normal closes were reported as crashes). The caller retries the read, so a real crash, which exits non-zero or
     // prints a reason, is still a crash.
-    if exit_code == Some(0) && (reason.as_deref() == Some("window closed") || reason.is_none()) {
+    let normal = reason.as_deref().map_or(true, |text| NORMAL_REASONS.contains(&text));
+    if exit_code == Some(0) && normal {
         Outcome::NormalClose
     } else {
         Outcome::Crashed { reason, exit_code }
@@ -125,6 +131,19 @@ mod tests {
     fn window_closed_with_exit_zero_is_normal() {
         let log = "boot\n[ee] stopped after 1200 frames, 9000 cycles: window closed\n";
         assert_eq!(classify(log, Some(0)), Outcome::NormalClose);
+    }
+
+    #[test]
+    fn the_native_quit_row_and_guest_exit_paths_are_normal_quits() {
+        // TASK-212: the native Quit Game row closes the window (window closed) or, headless, halts with `quit game`.
+        // The guest's own Exit/LoadExecPS2 (GT4 `MSystem::Reboot`) cannot restart the recomp, so it is a deliberate
+        // quit too, not a crash.
+        for reason in ["quit game", "Exit", "program asked to run another executable"] {
+            let log = format!("boot\n[ee] stopped after 900 frames, 3000 cycles: {reason}\n");
+            assert_eq!(classify(&log, Some(0)), Outcome::NormalClose, "{reason}");
+        }
+        let log = "[ee] stopped after 900 frames, 3000 cycles: Exit\n";
+        assert!(matches!(classify(log, Some(1)), Outcome::Crashed { .. }), "a non-zero exit stays a crash");
     }
 
     #[test]

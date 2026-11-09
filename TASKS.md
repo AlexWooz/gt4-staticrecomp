@@ -4769,11 +4769,18 @@ overlay. The owner also wants a "Quit Game" item on GT4's main menu.
   the study or the first item, not the whole settings menu.
 - Tests: a fixture for the quit action/hook; the owner's controller test.
 
-**State (2026-11-09):** study done (`docs/tasks/GT4-MENU-QUIT-SETTINGS-STUDY.md`). The main menu is data + script,
-not an ELF table; a real Quit Game row needs the GT4.VOL overlay reader and a v5 script/widget edit (later).
-**rc17 ships the host-only route:** L3+R3+Start with a confirmation drawn by the achievements overlay, closing
-through the normal `WM_CLOSE` path (`window closed`, card/audio/F8 flush), plus the fix that classifies the guest
-`LoadExecPS2`/`Exit` as a normal quit instead of a crash.
+**State (2026-11-09, second entry):** the native row is implemented on `task/212-quit-game` (slice421/422), v2.00
+only: a same-length GT4.VOL data patch (`scripts/gt4_data_patch.py` + `native/data_patch.*`, sector reader in the
+`slice422-data-runtime` capsule) serves an `arcade.mproject` with a `hidden::Quit` row (text "Quit Game", the other
+rows' font/skew/shadow); `native/menu_quit.*` appends that parsed widget to the arcade TopRoot SelectBox after the
+script built the menu, so it is the last row after Credit, and captures Cross on it (the guest never sees the press)
+to close through the normal window path or `quit game` headless. `exit.rs` now classifies the guest
+`Exit`/`LoadExecPS2` and the deliberate `quit game` halt as normal quits. Proven headless with a frame of the last
+row and a Cross press that ends the run with exit 0 (`private/slice421-menu-study/new/frames/frame_12900.png` and
+`frame_12950.png`; build `private/slice421-build/build`, capsule `private/slice422-data-runtime`). The row appears
+whenever the arcade top menu is shown; a save whose `major_menu_project` is `gtmode` boots straight into GT mode
+(the test card was patched in a save state only, never on the card). Spec II needs its own vtables/mproject patch
+(next). The rc17 host combo remains the fallback for reaching a quit without the row.
 
 ### TASK-213: in-game settings parity with the launcher (owner, 2026-11-09; rc17 study, umbrella)
 

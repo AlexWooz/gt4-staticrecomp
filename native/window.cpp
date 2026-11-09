@@ -19,6 +19,7 @@
 #include "cursor_autohide.hpp"
 #include "achievements.hpp"
 #include "input_recording.hpp"
+#include "menu_quit.hpp"
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
 #endif
@@ -329,12 +330,22 @@ const std::uint64_t paced_from_vblank = [] {
   return text != nullptr ? std::strtoull(text, nullptr, 10) : 0ull;
 }();
 
+std::uint16_t last_pad_buttons = 0;
+
 void apply_pad(const PadState &pad) {
+  last_pad_buttons = pad.buttons;
   ps2::set_pad_buttons(pad.buttons);
   for (int axis = 0; axis < 4; ++axis)
     ps2::set_pad_axis(axis, pad.axes[axis]);
   for (int button = 0; button < 16; ++button)
     ps2::set_pad_pressure(button, pad.pressures[button]);
+}
+
+// TASK-212: the native Quit Game row. The watcher appends the parsed widget once, hides Cross from the guest while it
+// is focused, and closes on a Cross press. Runs after the pad was applied, before the guest reads it at the next slice.
+void service_menu_quit(std::uint16_t buttons) {
+  const gt4::menu_quit::Status status = gt4::menu_quit::tick(game_window, ps2::g_ram, ps2::kRamSize, buttons);
+  if (status.injected) ps2::set_pad_buttons(gt4::menu_quit::guest_buttons(status, buttons));
 }
 
 gt4::pacing::Counters pacing_counters() {
@@ -710,6 +721,7 @@ void on_vblank() {
       pacing_diagnostics.record_ratio(audio_output->resampler_ratio());
   }
   gt4::achievements::on_vblank(game_window, ps2::g_ram, ps2::kRamSize, ps2::g_spr, ps2::kScratchpadSize);
+  service_menu_quit(last_pad_buttons);
   ps2::gs::present();
 }
 } // namespace
@@ -746,17 +758,21 @@ bool install_input_replay_without_window() {
     return false;
   }
   if (std::getenv("GT4_INPUT_REPLAY") == nullptr) {
-    if (gt4::frame_skip::g_enabled) {
-      ps2::g_options.on_vblank = [] {
+    // TASK-212: the native Quit Game row also works in headless runs (the --press schedule is the pad).
+    ps2::g_options.on_vblank = [] {
+      if (gt4::frame_skip::g_enabled) {
         ++input_vblank;
         note_frame_skip_vblank();
-      };
-    }
+      }
+      service_menu_quit(gt4::menu_quit::scheduled_buttons());
+    };
     return true;
   }
   if (!open_input_files()) return false;
   ps2::g_options.on_vblank = [] {
-    apply_pad(input_player->at(++input_vblank));
+    const PadState pad = input_player->at(++input_vblank);
+    apply_pad(pad);
+    service_menu_quit(pad.buttons);
     note_frame_skip_vblank();
   };
   return true;
