@@ -4937,3 +4937,18 @@ The host text injection and the engine insensitive state are **proven** and the 
 - **Still open:** a two-monitor owner test (only one here; the Monitor row lists/paints but a change was not exercised);
   the replaced script strings are intentionally leaked (the engine cache) - a bounded few per visit; the restart notice
   is the launcher's; Spec II addresses are Phase 2.
+
+**State (2026-11-09, TASK-213 Phase 2a - host-native page route, design only):** the owner chose the host-native page
+with the game's own widgets reached from Options (no Adhoc v5/TOC, no Network repurpose). The engine's page transition
+is script-event-driven (`page_util.ad`: `start_page` pushes an `MFunctionEvent`; `context.transition.panOutIn`,
+`setCursor(CursorRoot)`, `context.startPage`, `flushKeyEvent`; back -> `finish`). The natives: `MRenderContext.startPage`
+`0x0022BC20`, `closePage` `0x0022FA08`/`0x0022BD98`, `getCurrentPage` `0x0022BE00`, `pushEvent` `0x0022B9F0`, `finish`
+`0x0022BEA0`. The state has one `mRenderContextPS2` at `0x01021FF0`, 26 `mRootWindow` page roots (ScreenRoot
+`0x00F77200`), and the Options root `mScrollWindow` `0x01FDA8A0`; the hidden `MonitorRoot` tree exists. **The gate:**
+`startPage`/`closePage` take **script hValue handles** for the context and page root (RefCounter conversion
+`func_0022AD20`/`func_0022FB50`/`func_00232BF0`), not the raw engine objects; the handle relation is not derived, so
+calling with the engine objects would be a guess. Focus, page stack, cursor and back are script state; a host page
+bypasses `onInitialize`/`reflect`/`apply` and must own focus/input/back. **Smallest next step:** find the context handle
+and a hidden page-root handle (the `MonitorRoot` root as the empty shell), call `startPage` in a dispatch hook and
+capture a headless frame; if it renders, prove back (`startPage(OptionRoot)`/`closePage`) and focus/input; otherwise
+report the gate. No page was implemented or faked in this slice.

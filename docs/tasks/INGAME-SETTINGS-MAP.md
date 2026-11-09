@@ -1343,3 +1343,70 @@ the insensitive state on the game's own slider rows, and ships the **Resolution*
 - **O save não muda:** os campos internos de ajuste de tela continuam 0; o valor do host fica só no arquivo do launcher.
 - **Teste com dois monitores** é o que falta para o seu caso de escolher o monitor; nesta máquina só há um. O resto
   (nomes, listas, cinza, não selecionável, arquivo de aviso) está provado em capturas headless.
+
+
+## 18. Phase 2a: host-native page, route and gate (2026-11-09, design; not proven)
+
+The owner chose the **host-native page with the game's own widgets, reached from Options** and excluded the Adhoc v5/TOC
+route and the Network-page repurpose. The target is an empty page with the game's row style, correct focus, input and
+back transition, reached from the Options root, then renderer/render-scale rows.
+
+**What the engine gives (Confirmed, code/data).**
+
+- The page transition is **script-event-driven**. `share/page_util.ad`'s `start_page(context, next_page)` pushes an
+  `MFunctionEvent(_start_page, context, next_page)`; `_start_page` runs `context.transition.panOutIn(context)`,
+  `setCursor(context, "load")` (the `CursorRoot` common page), `context.startPage(next_page)`, restores the cursor and
+  calls `context.flushKeyEvent()`. Back is `_start_page(context, nil)` -> transition out, `context.finish()`.
+- The natives behind it: `MRenderContext.startPage` `0x0022BC20`, `closePage` `0x0022FA08` (class method) /
+  `0x0022BD98` (script), `getCurrentPage` `0x0022BE00`, `pushPage` `0x0022BCE0`, `pushEvent` `0x0022B9F0`,
+  `finish` `0x0022BEA0`, `sync` `0x0022C138`; the script `root.setFocus(widget)` and `MComposite` child helpers
+  (`appendChild` `0x00205420`, `insertChild` `0x00205530`).
+- The live objects in the Screen state: one `mRenderContextPS2` at **`0x01021FF0`** (vtable `0x00663BE0`); 26
+  `mRootWindow` page roots (vtable `0x00665418`), including the ScreenRoot at **`0x00F77200`** (its `Pane` VBox is
+  `0x00F776C0`); the Options root is the `mScrollWindow` (vtable `0x006704A8`) at **`0x01FDA8A0`** (parent
+  `0x01FD08F0`), with the other two ScrollWindows at `0x00F3EC70`/`0x01FCDA30`. The hidden `MonitorRoot` tree (its
+  `TitleMonitor`/`monitor position`/`num of monitor` widgets) exists but is not in the v2.00 page list. The page list
+  and the page modules are script data in `option.adc`; `OptionRoot.ad`'s `options` array and the tiles are the list.
+- A page root is a real `mRootWindow`; the ScreenRoot page already proves the engine renders a root with the game's
+  widgets (that is how the current Screen page is drawn).
+
+**The gate (Unknown, not proven).** `startPage` and `closePage` are **script natives**: their arguments are script
+`hValue` handles for the context and the page root (`getCurrentPage` and `startPage` use the RefCounter handle
+conversion `func_0022AD20`/`func_0022FB50`/`func_00232BF0`), not the raw engine objects listed above. The handle/wrapper
+relation (which RefCounter object wraps `mRenderContextPS2` `0x01021FF0`, and which wraps a page root such as the hidden
+`MonitorRoot` `mRootWindow`) is **not derived**. Passing the engine objects directly would be a guess and can crash.
+The focus, the page stack, the cursor widget and the back transition are also script state (`MFunctionEvent`,
+`context.transition`, `root.setFocus`, `last_focus`); a host-started page bypasses `onInitialize`/`reflect`/`apply` and
+would have to own focus, input and back itself.
+
+**Smallest next step (one bounded experiment, no code shipped until it passes).**
+
+1. Find the **context handle**: scan RAM for a RefCounter/hValue object whose payload points at `0x01021FF0` (the
+   `mRenderContextPS2`), or read the handle the widget's `get_context` native (`0x00256730`) returns; confirm by
+   comparing the handle to the script's context (the page scripts receive it).
+2. Find the **page-root handle**: the same scan for the hidden `MonitorRoot` root (an `mRootWindow`, not in the page
+   list) or a host-built root; the existing hidden tree is the cheapest empty shell.
+3. Call `MRenderContext.startPage` (`0x0022BC20`) from a dispatch hook with the two handles (same convention as the
+   Wide row: a0 = return slot, a1 = context, a2 = 1, a3 = argv with the page root), or push the equivalent
+   `MFunctionEvent`; capture a headless frame. If the MonitorRoot tree renders, the page root/vtable and the attach are
+   proven; then `startPage(context, OptionRoot_handle)` (or `closePage`) for the back, and the host pad mask/focus for
+   input.
+4. If the handles cannot be derived or the call does not render, the route is blocked; the fallback (a host tree
+   attached inside the Options root with host focus/input, the Quit-row pattern) is **not a new page** and needs the
+   owner's decision; no floating overlay.
+
+No page was implemented or faked in this slice; the only Phase 2a work here is the route evidence and the gate. The
+Page 1c rows are complete and committed.
+
+## 19. Resumo para o dono (pt-BR) - Phase 2a
+
+- A página nativa com os widgets do jogo **ainda não foi provada**: o motor abre páginas por **eventos de script**
+  (`start_page` -> `context.startPage` com a transição, o cursor e o foco), e a chamada nativa precisa de **handles de
+  script** para o contexto e para a raiz da página. Os objetos do motor existem na RAM (contexto `0x01021FF0`, raízes
+  `mRootWindow`, a raiz do Options), mas a relação handle/objeto **não foi derivada**; chamar com os objetos crus seria
+  um chute e pode travar.
+- **Próximo passo pequeno:** achar o handle do contexto e o handle de uma raiz existente (a árvore escondida
+  `MonitorRoot` serve de página vazia), chamar `startPage` e capturar um frame headless. Se renderizar, a página existe;
+  depois vêm o foco, a entrada e o voltar. Se não, a rota está bloqueada e a alternativa (uma árvore do host dentro da
+  raiz do Options, sem sobreposição flutuante) precisa da sua decisão.
+- Nada foi falsificado: nenhuma página foi inventada neste passo.

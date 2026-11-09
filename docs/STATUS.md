@@ -1,5 +1,24 @@
 # Current Status
 
+## TASK-213 Phase 2a: host-native page route (2026-11-09, design; not proven)
+
+The owner chose a host-native page with the game's own widgets, reached from Options (no Adhoc v5/TOC, no Network
+repurpose). The engine's page transition is script-event-driven (`page_util.ad`'s `start_page` pushes an
+`MFunctionEvent`; `context.transition.panOutIn`, `setCursor(CursorRoot)`, `context.startPage`, `flushKeyEvent`; back ->
+`finish`). Natives: `MRenderContext.startPage` `0x0022BC20`, `closePage` `0x0022FA08`/`0x0022BD98`, `getCurrentPage`
+`0x0022BE00`, `pushEvent` `0x0022B9F0`, `finish` `0x0022BEA0`. The state has the live `mRenderContextPS2` at
+`0x01021FF0`, 26 `mRootWindow` page roots (ScreenRoot `0x00F77200`) and the Options root `mScrollWindow` `0x01FDA8A0`.
+
+- **Gate:** `startPage`/`closePage` take **script hValue handles** for the context and the page root (RefCounter
+  conversion `func_0022AD20`/`func_0022FB50`/`func_00232BF0`), not the raw engine objects; the handle relation is not
+  derived, so calling with the engine objects is a guess and can crash. Focus, the page stack, the cursor and the back
+  transition are script state; a host page bypasses `onInitialize`/`reflect`/`apply` and must own focus/input/back.
+- **Smallest next step:** find the context handle and a hidden page-root handle (the `MonitorRoot` `mRootWindow` as an
+  empty shell), call `startPage` in a dispatch hook, capture a headless frame; if it renders, prove back
+  (`startPage(OptionRoot)`/`closePage`) and focus/input; otherwise report the gate. No page was implemented or faked.
+- **Route evidence:** mapping §18; the Phase 1c rows are complete (kit `private/slice426-kit`, exe `5a91309a...`).
+
+
 ## TASK-213 Phase 1c: the Resolution and Monitor rows (2026-11-09, implemented, test build)
 
 On `task/213-native-settings` after Phase 1b. The owner accepted Phase 1. This slice proves the host text injection and
