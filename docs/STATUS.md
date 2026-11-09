@@ -1,5 +1,58 @@
 # Current Status
 
+## TASK-208 PGO: the rc16 distribution build, PGO + ThinLTO for both games (owner, 2026-11-08/09)
+
+On `task/208-rc16-pgo` (from `task/208-both-game-variants` at 8ccafcf8, no source change). The owner approved the complete
+rc16 build: **PGO + ThinLTO, both v2.00 and Spec II**, replacing the plain both-game test build's executables as what
+`v1.3.0-rc16` will ship. Builds `private/slice419-pgo-v200` and `-spec2`; pins `docs/inputs/slice419-pcsx2.json` and
+`slice419-spec2.json`; distribution `private/slice419-dist-130-rc16-pgo` (both games); journal 2026-11-09.
+
+- **Recipe (rc15's `pgo-all.sh`, adapted with one warm shader cache per training scale).**
+  `private/slice419-tools/pgo419.sh <v200|spec2> <out>`: the EE library from `private/slice419-units-*` with
+  `-fprofile-generate`, the game with `GT4_HW_PGO=generate`; a cache prepared with `--prepare-shaders --prepare-scale N`
+  for every training scale (TASK-204/206), so training draws the specialised pipelines of a shipped session instead of
+  recording and drawing uber; training with `LLVM_PROFILE_FILE` per scene; `llvm-profdata merge`; then the
+  `-fprofile-use` EE library and the game with `GT4_HW_PGO=use` and `GT4_HW_THINLTO=ON` from fresh build folders. The
+  profile is private and outside git.
+- **The EE units did not change.** `private/slice419-units-v200`/`-spec2` are copies of the rc15 folders
+  `slice413-units-v200`/`-spec2`, verified by inventory digest (`83387682...` 328 files; `7105d292...` 348 files, equal to
+  the rc15 receipts) and, one level up, the producer folders in the main checkout still carry the receipts' source digests
+  (`32feca3b...` and `e436aa0a...`): TASK-204/206/208 changed `native/`, not the translation.
+- **Training scenes.** Spec II: George V Paris 1x with `GT4_CORE2_PERFORMANCE=1` (196 pipelines, deferred 0), George V
+  Paris 2x (245, deferred 0), Spec II night race 2x (245, deferred 0). v2.00: night race 2x (245, deferred 0), Arcade 1x
+  (196, deferred 0). Profiles: v2.00 **19,965,280 bytes** `c3cbdb16...`, Spec II **22,493,104 bytes** `21ce33b9...`.
+- **Games.** v2.00 `gt4vulkan.exe` **94,676,992 bytes** `ef4bae93...`, EE library `ps2game.lib` **153,294,132 bytes**
+  `bcc183cb...`; Spec II `gt4vulkan-spec2.exe` **102,429,696 bytes** `a0bc1d39...`, EE library **173,151,140 bytes**
+  `3090cd22...` (rc15: 94,659,072 / 102,409,216 and 153,294,102 / 173,151,140). CMakeCache of both carries
+  `GT4_HW_PGO=use`, `GT4_HW_THINLTO=ON` and the merged profile; 203 build rules compile with `-fprofile-use` and
+  `-flto=thin`, 348 EE units with the profile, 348 with `-fprofile-generate` in the instrumented pass.
+- **4x gates, both games, PGO exe and the 644 list.** Spec II George V Paris B-Spec 2,400 VBlanks: deferred 75 keys /
+  2,645,167 uber batches; prepare at 4x 245 variants, 49 added, 0 failed; prepared **0 deferred, 0 deferral uber**, 245
+  pipelines recreated in 231.9 ms, **4 of 4 frames identical**, 178 residual startup uber; `gpu_busy` 5.28 -> 3.79
+  ms/VBlank, wall 7.97 -> 7.41. v2.00 night race 4x 11,500 VBlanks: deferred 97 keys / 3,287,021 uber; prepare 245 (49
+  added); prepared **0 deferred, 0 deferral uber** (184.9 ms), **9 of 9 identical**, 58 residual uber; `gpu_busy` 5.27 ->
+  3.94, wall 7.20 -> 6.61 (measured again with `GT4_HW_PROFILE_EVERY=60`).
+- **PGO against the plain rc16 test build (same scene, list and cache, headless).** Prepared Spec II 4x Paris: wall 8.44
+  -> **7.41 ms/VBlank** (-12%) with `gpu_busy` 3.78 -> 3.79 (unchanged): the gain is on the processor side. v2.00 4x
+  night: wall 7.36 -> **6.61 ms** (-10%), `gpu_busy` 4.15 -> 3.94.
+- **Identity against the rc15 PGO builds** (`slice413-dist-130-rc15`): Spec II three laps 1x, `state.bin` identical
+  (212,992 bytes), clock 0 differs, **24/35/35 frames identical**, IDENTITY-OK; Spec II 6x **12/12**; v2.00 night 3x
+  `state.bin` identical (131,072 bytes; 12,097 VBlanks both, 4,786 racing) and **10/10**; v2.00 Arcade 3x **14/14**;
+  VU1/VU0 0 interpreted and 0 mismatches (Spec II 24,096,768 / 3,973,120 calls, 236,448 / 39,731 verified; v2.00
+  36,249,600 / 5,615,616, 355,388 / 56,156 - the rc15 sample counts exactly); MTVU 8,032 frames 0 mismatches; `wrong=0`.
+- **Tests.** `hw_core2_*` **36 of 36** (127.0 s). Full CTest **320 passed, 1 known skip**
+  (`hw_replace_q07_pcsx2_dumps`), **0 failed of 321** on each PGO build (480.6 s v2.00, 511.9 s Spec II). Python **804 OK**
+  (57 environment skips) - a first run had one flaky failure in `test_standalone_start` (empty stdout) that passes alone
+  and in the repeated full run. Launcher `cargo test --workspace` **784 passed, 9 ignored, 0 failed** (a first run had one
+  flaky failure in the `flow_audit` copy-stays test, green alone and in the repeat; no launcher change).
+- **Distribution.** `private/slice419-dist-130-rc16-pgo`: `gt4.exe`, `gt4-spec2.exe`, the nine shaders, SDL3, the three
+  CRT DLLs, four licences and `MANIFEST.json` (19 named, 20 in the folder). Every file checked against the two new pins by
+  size and SHA-256 (wrong=0); `--portable-check` reports the installed shader folder complete (9 of 9, no build-time
+  fallback) for both; both boot headless from the folder to frame 1800 (v2.00 8,847,570,492 cycles, Spec II
+  8,847,383,449). No installer, no portable zip, no upload: the packaging step does that.
+- **Not done.** The owner's in-game test of this PGO build; the installer, the portable zip and the pre-release publish.
+  The plain `slice418-dist-130-rc16` kit stays as the test build it was.
+
 ## TASK-208: the mapped CoreGS 2.0 variants ship in both games (owner, 2026-11-07; implemented, both-game test build)
 
 On `task/208-both-game-variants` (from `task/206-rc16-package` at 52fea56e, with `task/205-variant-coverage` at 71452b90

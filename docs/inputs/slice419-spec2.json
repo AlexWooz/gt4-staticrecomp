@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "runtime_source_commit": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "slice": 419,
+  "date": "2026-11-08",
+  "branch": "task/208-rc16-pgo",
+  "commit": "8ccafcf8",
+  "baseline_commit": "8ccafcf8563b6a0bc07d1a89ee82e1c1b0bb0693",
+  "baseline": "origin/release/1.3.0-rc15",
+  "measurement_mode": "hw",
+  "profile": "performance",
+  "classification": "TASK-208 both-game rc16 build (Spec II): PGO + ThinLTO, GT4_TARGET=spec2 with the aspect-hooked Spec II EE library built by the PGO recipe (its own profile), the Spec II IOP runtime capsule (slice276) and the Spec II VU0 tables; CoreGS 2.0 with the same 644-key variant list. GT4_RELEASE_DISTRIBUTION=ON.",
+  "purpose": "TASK-208: the Spec II executable of the both-game rc16 PGO build, same source and same shipped 644-key variant list.",
+  "status": "TASK-208 both-game rc16 PGO build (PGO + ThinLTO); distribution private/slice419-dist-130-rc16-pgo (gt4-spec2.exe); the packaging step builds the installer, the portable zip and the GitHub pre-release",
+  "runtime": {
+    "path": "private/slice419-pgo-spec2/gt4vulkan-spec2.exe",
+    "size_bytes": 102429696,
+    "sha256": "a0bc1d3941456aefddc92bbbdcaa26b265c2370234c2630815720d688a45ef59"
+  },
+  "runtime_dependencies": [
+    {
+      "path": "private/slice153-pacing-shaders/upload.spv",
+      "size_bytes": 12336,
+      "sha256": "4e0ef1e4aaf00ad6c63e068b33886b56e4cb310df17904b0037e951c2070a72c"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/copy_read.spv",
+      "size_bytes": 7872,
+      "sha256": "b7ebe576bb96d554d225c11ce08a84f3b059cadebb71249bd29cd6b07c2dd1d6"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/copy_write.spv",
+      "size_bytes": 8892,
+      "sha256": "00a9f2b3bb3565d5a715a7ae4c78f839703dba1583c138428e4c70931e6cb23c"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/load_clut.spv",
+      "size_bytes": 10416,
+      "sha256": "a24f033fcf886084a3cf36c3c024b86893343761e6fa969b7e6366ba4f91cec9"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/display.spv",
+      "size_bytes": 9028,
+      "sha256": "d575ad4e572c7cc47ddb93d0f6980072d972f8048dfb08d544f0e4ec300ff6e2"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/raster.spv",
+      "size_bytes": 50520,
+      "sha256": "1d81e698dabc4102558e4df7b8f41d440c995d0a4f2c5286a2a974b8e4677f20"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/resolve.spv",
+      "size_bytes": 2320,
+      "sha256": "4e68027a902068135e8aef939363c72bb936f0d1bdba51090cd5c44f13be55d3"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/snapshot.spv",
+      "size_bytes": 2328,
+      "sha256": "bfcd7fd98d4999670f82de4cb824079bb021639a6d80dd08e82e2b04d3d0ffe7"
+    },
+    {
+      "path": "private/slice153-pacing-shaders/decode.spv",
+      "size_bytes": 13780,
+      "sha256": "df24d5e26904964d2dc1782aba006b125d5b1d4b54c735b0bdda7c03d0c38856"
+    }
+  ],
+  "shader_capsule": "private/slice153-pacing-shaders",
+  "port_capsule": "private/slice200-port",
+  "source_capsule": "private/slice276-spec2-iop-runtime",
+  "source_manifest": "slice276-spec2-iop-runtime.json",
+  "ee_library": {
+    "path": "private/slice419-pgo-spec2/ps2game.lib",
+    "size_bytes": 173151140,
+    "sha256": "3090cd22ff5dd8c9c4df746e1ea5b9f9a57b51d25e56ede00b0a4b021aa93ca0",
+    "profile": "spec2 (PGO + ThinLTO: the library is compiled with the merged profile of this target, the same one the game links)",
+    "generated_units": "the rc14 hook sites on the TASK-166 aspect units (private/slice419-units-spec2.camera360-units.json, output inventory 7105d292e6efa32b1d33519fde7412bb7bc4c2a88592d9f0211f7c11fb11e11f)",
+    "recipe": "private/slice419-tools/pgo419.sh: clang-cl 22.1.3, SSE4.1, the derived headers of scripts/prepare_fast_headers.py, -fprofile-generate then -fprofile-use with the merged per-target profile"
+  },
+  "sdl3_pin": "docs/inputs/slice210-sdl3.json",
+  "gpu_renderer": "CoreGS 2.0 (GT4_RENDERER=hw, GT4_HW_CORE=2), built in; gt4-gs is not part of this CoreGS 2.0 test build",
+  "release_distribution": "GT4_RELEASE_DISTRIBUTION=ON: the executable loads the nine compute shaders from <executable folder>\\shaders and fails with a clear message when the folder is missing",
+  "shader_cache": "GT4_HW_SHADER_CACHE is set by the launcher (data\\shader-cache); the launcher's --prepare-shaders --prepare-scale N compiles the shipped corpus and the recorded keys expanded over the session's CoreGS 2.0 scale (TASK-206), and a session whose scale does not match the stamp compiles nothing and records (TASK-204)",
+  "toolchain": {
+    "compiler": "clang-cl 22.1.3 (C:/Program Files/LLVM/bin/clang-cl.exe)",
+    "language": "C++20",
+    "build": "CMake/Ninja VS2022 x64 ABI Windows SDK",
+    "cmake": "4.3.1",
+    "ninja": "1.13.2",
+    "serial_builds": true
+  },
+  "build_recipe": "private/slice419-tools/pgo419.sh spec2 (the rc15 recipe with one warm shader cache per training scale): private/slice419-units-spec2 (the rc15 hooked units, inventory digest 7105d292...), -fprofile-generate EE library and GT4_HW_PGO=generate game, training on George V Paris at 1x with Performance Mode and at 2x and the Spec II night race at 2x, llvm-profdata merge, then the -fprofile-use EE library and the game with GT4_HW_PGO=use and GT4_HW_THINLTO=ON",
+  "distribution": "private/slice419-dist-130-rc16-pgo",
+  "owner_launch": {
+    "direct": "gt4.exe <reconstructed ELF> --ntsc --disc \"<v2.00 ISO>\" --memcard <copy>.ps2 (CoreGS 2.0, GT4_HW_SHADER_CACHE required for the TASK-204/TASK-206 behaviour); gt4-spec2.exe with the Spec II derived ELF and its disc for the second game"
+  },
+  "limits": [
+    "No in-game play test of this PGO build yet: the owner tests it in game (both games); the packaging step builds the installer and the portable zip.",
+    "The profile is private and stays outside git (it holds only hashes and counts, of code translated from the game).",
+    "The list is the TASK-205 mapping (644 keys, 100 new, 204 signatures) expanded at prepare time over the session's render scale (TASK-206); the 4x gates and the identity gates against the rc15 PGO builds are the headless evidence.",
+    "The kit carries no gt4-gs package: this is a CoreGS 2.0 build and the launcher downloads gt4-gs into its data folder when the PCSX2 GS renderer is selected (decision 0070).",
+    "The prepare is mandatory for specialised pipelines: a failed or skipped prepare leaves every variant on the uber pipeline (same pixels, more fragment cost) until the next Play's prepare.",
+    "A cache prepared for another render scale is refused on purpose (the scale is in the stamp): after changing the Render scale the first session draws with uber and records, and the next Play prepares at the new scale.",
+    "A quarantined variant stays on the uber pipeline on this card and driver (its pixels are the same); the way back is deleting the shader cache folder's quarantine.bin (the launcher's support log lists it)."
+  ],
+  "review": {
+    "status": "pending",
+    "note": "TASK-208 rc16 PGO build (2026-11-08). hw_core2_* and the full CTest run on both PGO builds, the 4x gates and the identity gates against the rc15 PGO builds are recorded in docs/STATUS.md and the journal. The owner's in-game test is pending."
+  },
+  "spec2_derived_elf": {
+    "path": "private/slice272-spec2-elf/SCUS_974.36",
+    "size_bytes": 6520944,
+    "sha256": "36f60b1a989b343e98ca55b1f07f051aa83a3fa1a4fcb4acb409adb148afc640"
+  },
+  "spec2_iop_runtime": {
+    "capsule": "private/slice276-spec2-iop-runtime"
+  },
+  "target": "spec2",
+  "frozen_game_library": {
+    "path": "private/slice419-pgo-spec2/ps2game.lib",
+    "size_bytes": 173151140,
+    "sha256": "3090cd22ff5dd8c9c4df746e1ea5b9f9a57b51d25e56ede00b0a4b021aa93ca0"
+  }
+}
