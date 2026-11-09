@@ -4769,7 +4769,11 @@ overlay. The owner also wants a "Quit Game" item on GT4's main menu.
   the study or the first item, not the whole settings menu.
 - Tests: a fixture for the quit action/hook; the owner's controller test.
 
-**State:** planned for rc17; study first.
+**State (2026-11-09):** study done (`docs/tasks/GT4-MENU-QUIT-SETTINGS-STUDY.md`). The main menu is data + script,
+not an ELF table; a real Quit Game row needs the GT4.VOL overlay reader and a v5 script/widget edit (later).
+**rc17 ships the host-only route:** L3+R3+Start with a confirmation drawn by the achievements overlay, closing
+through the normal `WM_CLOSE` path (`window closed`, card/audio/F8 flush), plus the fix that classifies the guest
+`LoadExecPS2`/`Exit` as a normal quit instead of a crash.
 
 ### TASK-213: in-game settings parity with the launcher (owner, 2026-11-09; rc17 study, umbrella)
 
@@ -4787,5 +4791,9 @@ launcher round-trips.
   finds them.
 - The study is read-only; no game code changed until the mapping is reviewed.
 
-**State:** planned for rc17; study first. The split-screen tasks TASK-209/210 live on `task/205-variant-coverage`
+**State (2026-11-09):** study done (`docs/tasks/GT4-MENU-QUIT-SETTINGS-STUDY.md`). **rc17 ships the overlay
+route:** Fullscreen (live) and then Renderer (next start, with a notice) through a `game-changes.toml` feedback file
+the launcher merges into `settings.toml`; the game-side Options already covers the game controls/audio, and a host
+row must never write the save's option struct. The native GT4 page waits for the GT4.VOL overlay reader and the v5
+script round trip (TASK-078 P1/P2). The split-screen tasks TASK-209/210 live on `task/205-variant-coverage`
 (459bdfda); merge their TASKS entry into the rc17 line before branching the release.

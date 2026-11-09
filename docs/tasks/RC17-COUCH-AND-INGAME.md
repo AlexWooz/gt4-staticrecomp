@@ -72,6 +72,22 @@ The umbrella starts with a read-only study of GT4's Options menu and the existin
 Start with a small, safe set; do not change physics, AI, timing, progression or saves. The long-term direction is
 the maximum of launcher functions in the game, but each row needs its own write-through and restart rule.
 
+## Study result (2026-11-09)
+
+The full study is in [GT4-MENU-QUIT-SETTINGS-STUDY.md](GT4-MENU-QUIT-SETTINGS-STUDY.md). The decisions:
+
+- The GT4 main menu is data + script (`arcade` project, `TopRoot`), not a fixed ELF table. A real **Quit Game**
+  row is feasible but needs the **GT4.VOL overlay reader** and a v5 script/widget edit (TASK-078 P1/P2); it is
+  not an rc17 change.
+- **TASK-212 rc17** is host-only: a controller combo (L3+R3+Start) with a confirmation drawn by the achievements
+  overlay, closing through the normal `WM_CLOSE` path (card/audio/F8 flush, `window closed`). Also classify the
+  guest `LoadExecPS2`/`Exit` as a normal quit, not a crash.
+- **TASK-213 rc17** is overlay-first: Fullscreen (live) and then Renderer (next start) through a
+  `game-changes.toml` feedback file the launcher merges into `settings.toml`. The native GT4 page waits for the
+  VOL reader and the v5 script round trip.
+- Spec II's extra menus are **data/script replacements inside GT4.VOL** (Adhoc v7), not executable code; the
+  plugin supplies behaviour only. They are not reusable for v2.00 (Adhoc v5); the approach is the reference.
+
 ## Acceptance and risks
 
 - TASK-211: from Steam, the game starts without the launcher window; the game closes and Steam returns; both
