@@ -4873,11 +4873,17 @@ sections 11-13. Implemented and proven headless on v2.00:
   `settings.toml`.
 - **Headless evidence (kit `private/slice424-kit`, test build only):** run A (`GT4_FULLSCREEN=0`) shows Fullscreen
   **Off** and changes it to On; run B (`GT4_FULLSCREEN=1`) shows **On** and changes it to Off; both write the file and
-  the log lines, and both states keep wide `1` / record `425 x 240`. Frames: page without HiVision, the popup
-  Off/On, the selected value. The live borderless window is the owner's windowed test.
-- **Tests:** `native_native_settings` fixture (page gate, setter, boxed getter, feedback, guest fields untouched);
-  Python `test_gt4_data_patch.py` (byte replacement, anchors, v2.00 anchor check); `cargo test --workspace`
-  799 passed / 9 ignored; CTest and Python numbers with the test build in the journal.
+  the log lines, and both states keep wide `1` / the 16:9 record preset. Frames:
+  `private/slice424-kit/frames/run-a-frame_02300.png` (page without HiVision, Fullscreen Off),
+  `run-a-frame_02450.png` (popup Off/On), `run-a-frame_02650.png` (On), `run-b-frame_02300.png` (On) and
+  `run-b-frame_02650.png` (Off); states `private/slice424-kit/state-a.bin` / `state-b.bin`; the patch is
+  `private/slice424-kit/gt4-data.patch` with `report.json` and `recipe.json`. Still the owner's: the windowed row
+  toggle (borderless on/off through `set_fullscreen`), Alt+Enter/F11, and the launcher merge after a normal close.
+- **Tests (re-run 2026-11-09, final build):** `native_native_settings` fixture (page gate, setter, boxed getter,
+  feedback, guest fields untouched); Python `test_gt4_data_patch.py` (byte replacement, anchors, v2.00 anchor check);
+  **CTest 324/324 (323 passed, 0 failed; `hw_replace_q07_pcsx2_dumps` the known skip), 475.34 s**;
+  **`cargo test --workspace` 799 passed / 0 failed / 9 ignored**; **Python 821 OK / 58 skipped, 40.76 s** with
+  `GT4_NATIVE_BUILD` at the test build.
 - **Still open:** the owner's windowed test (row toggles the real window; Alt+Enter; launcher merge after the exit);
   the first **new row** needs the engine focus traversal into a `has_script`-less `OptionMenu` proved (mapping 12.5);
   a **new page** needs a v5 script round trip (OpenAdhoc/GTAdhocToolchain compiles v5, the retail round trip is not

@@ -28,10 +28,15 @@ On `task/213-native-settings` (from `task/213-settings-map` at `a3d7f54b`). The 
   `dd63f716fc27fa9ac262045075f50341ee0ffed8083e8206c4a2a53a612cf3de` (90,202,624 bytes), kit
   `private/slice424-kit` (exe, patch, recipe/report, card copy, ELF, both states, both logs, the feedback files,
   frames, README). No installer, no portable zip, no release.
-- **Tests:** new `native_native_settings` CTest fixture; `tests/python/test_gt4_data_patch.py` extended (byte
-  replacement, refusals, the v2.00 anchor); `cargo test --workspace` 799 passed, 9 ignored; CTest and the Python
-  suite run against this build (numbers in the journal).
-- **Not done:** the first extra row needs the engine focus traversal into a `has_script`-less `OptionMenu` proved
+- **Tests (re-run 2026-11-09, this worktree, final build):** new `native_native_settings` CTest fixture;
+  `tests/python/test_gt4_data_patch.py` extended (byte replacement, refusals, the v2.00 anchor); **CTest 324/324,
+  323 passed, 0 failed, 475.34 s** (`hw_replace_q07_pcsx2_dumps` is the known skip); **`cargo test --workspace`
+  799 passed, 0 failed, 9 ignored**; **Python 821 tests OK, 58 skipped, 40.76 s** with `GT4_NATIVE_BUILD` at this
+  build. The same base worktree (`a3d7f54b`) measures 785 passed / 9 ignored; the 14 new `game_changes` tests make
+  the difference.
+- **Not done:** the owner's windowed/controller test (the row changes the borderless window live, Alt+Enter/F11, the
+  launcher merge after a normal close; kit README) is still the gate. The first extra row needs the engine focus
+  traversal into a `has_script`-less `OptionMenu` proved
   (mapping 12.5); a new page needs a v5 script round trip (toolchain compiles v5; the retail round trip is not
   proven) or the host-native page built from the game's widgets. Spec II: only the HiVision byte patch when its build
   is next made; its callback is Phase 2.
