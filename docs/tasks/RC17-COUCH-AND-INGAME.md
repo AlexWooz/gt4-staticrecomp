@@ -31,21 +31,44 @@ and returns when it ends. The direct path therefore:
 
 1. reads `--skip-launcher` and `--game=retail|spec2` before the window is shown;
 2. resolves the game (`retail` -> `gt4`, `spec2` -> `spec2`) and writes the same selected game the UI would;
-3. runs the ordinary Play path (checks, disc, card, texture folder, shader prepare, `game::start`) with no window;
+3. runs the ordinary Play path (checks, disc, card, texture folder, `game::start`) with no window;
 4. stays hidden while the game runs; if the game is already running, refuses and logs;
 5. exits when the game process ends, so Steam returns to Big Picture.
 
 If the game is not ready (no disc, no install, a check failure), the normal launcher window opens with the error, so
 the player can fix it. A missing `--game` falls back to the last played game and logs it; an unknown value is an error.
 
-Steam setup to document:
+Implementation (2026-11-09, branch `task/211-rc17-launcher-flags`):
 
-- Add `GT4Recomp.exe` as a non-Steam game.
-- Launch options: `--skip-launcher --game=retail` for GT4 v2.00, `--skip-launcher --game=spec2` for Spec II.
-- Exit: the in-game Quit Game (TASK-212) is the primary path; Big Picture's "Exit Game" remains the fallback; the
-  controller shortcut, if implemented, is the third.
-- The launcher still owns the disc, card, shader prepare and update checks; do not point Steam directly at
-  `gt4.exe`/`gt4-spec2.exe`.
+- `launcher/crates/gt4l-tauri/src/launch_flags.rs`: the parser (`--skip-launcher`, `--game=<id>` and `--game <id>`,
+  `retail`/`gt4`/`spec2`, case-insensitive values), the game resolution (command line, else the game played last, else
+  the launcher's start selection), the safe-mode restart arguments and the two messages.
+- `launcher/crates/gt4l-tauri/src/direct_launch.rs`: the hidden launch thread. It waits for the 1.2.0 large-data move,
+  selects the game as the page would (`commands::select_game_of`) and calls the shared Play path; a failure shows the
+  launcher window with the message; the game watcher exits the launcher (`app.exit(0)`) when the game ends.
+- `commands::start_play` is the Play path both the button and the direct launch use (`commands::play` is now a thin
+  wrapper), with `PlayMode::Windowed` (tray, page) or `PlayMode::Direct` (hidden, exit with the game).
+- `webview_guard`: the window stays hidden under `--skip-launcher` (`Guard::hidden_launch`), a failed direct launch
+  reveals it once the page is ready (`show_after_failed_launch`), and a safe-mode restart repeats the flags.
+- The shader prepare before Play (CoreGS 2.0 only) is skipped in a direct launch: its progress needs the window, and the
+  game compiles what it needs while it runs (TASK-204). The log records the decision.
+- Tests: parser and game-resolution unit tests (`launch_flags`), the hidden-window flag (`webview_guard`), and a flow
+  test that resolves `--game=retail`/`--game=spec2` against a synthetic install and runs the same Play checks headlessly
+  (`flow_audit::a_direct_launch_selects_its_game_and_runs_the_play_checks_headlessly`).
+- The Steam setup text is in `docs/launcher/LAUNCHER-PLAN.md` section 16.
+
+Steam setup (player steps, also in `docs/launcher/LAUNCHER-PLAN.md` section 16.4):
+
+1. Steam > Games > **Add a Non-Steam Game** > Browse > `GT4Recomp.exe`.
+2. Properties > **Launch Options**: `--skip-launcher --game=retail` (GT4 v2.00) or `--skip-launcher --game=spec2`
+   (Spec II). Both games can have their own entry.
+3. Start from Big Picture: the game starts with no launcher window, and Steam returns to the game list when the game
+   closes.
+4. Exit: the in-game Quit Game (TASK-212) is the primary path; Big Picture's "Exit Game" remains the fallback (it ends
+   the launcher, and the launcher's kill-on-close job ends the game); the controller shortcut, if implemented, is the
+   third.
+5. Never point Steam at `gt4.exe`/`gt4-spec2.exe`: the launcher still owns the disc image, the card, the renderer, the
+   shader prepare and the update checks.
 
 ## TASK-212: Quit Game in GT4's menu
 

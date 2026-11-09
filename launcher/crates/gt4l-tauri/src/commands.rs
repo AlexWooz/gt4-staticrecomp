@@ -542,11 +542,21 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path, wheel: &Value) -> Resul
     })
 }
 
-/// Starts the game with the chosen settings. Returns once the process is running; the page hears
-/// about the end through the `game-state` event.
-#[tauri::command]
-pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
-    let shared: Shared = shared.inner().clone();
+/// How a Play was started (TASK-211): the button, or a direct launch from a front end (`--skip-launcher`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayMode {
+    /// The Play button: the window hides to the tray and comes back when the game ends.
+    Windowed,
+    /// A direct launch: the window stays hidden, and the launcher ends with the game so the front end gets it back.
+    Direct,
+}
+
+/// The Play path the Play button and the direct launch share: the processor check, [`prepare_play`], the card, the
+/// textures, the pads, `game::start` and the thread that ends the session. Returns once the game process is running;
+/// the end arrives through the `game-state` event ([`PlayMode::Windowed`]) or with the launcher's exit
+/// ([`PlayMode::Direct`]). `program_dir` is the folder of `GT4Recomp.exe`.
+pub fn start_play(app: &AppHandle, shared: &Shared, program_dir: &Path, mode: PlayMode) -> Result<(), String> {
+    let shared: Shared = shared.clone();
     // TASK-081: the processor check before the game starts (`gt4l_core::system_check`). Vulkan is checked per run in
     // `prepare_play`, and only when Vulkan is the chosen Graphics API (TASK-108).
     let language = state::language_of(&lock(&shared));
@@ -558,7 +568,7 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     }
     // TASK-189: the wheels connected now, before the launcher closes its SDL handles for the game.
     let wheel_status = app.try_state::<pad_service::Handle>().map(|pads| pads.inner().wheel_status()).unwrap_or_default();
-    let inputs = prepare_play(&shared, &program_directory(), &wheel_status).inspect_err(|message| {
+    let inputs = prepare_play(&shared, program_dir, &wheel_status).inspect_err(|message| {
         lock(&shared).home_message = message.clone();
     })?;
     let PlayInputs { game, dirs, disc, elf, executable, settings, pcsx2, display, extra, graphics_notice, api } = inputs;
@@ -625,8 +635,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         "game-state",
         json!({ "running": true, "message": graphics_notice.clone().unwrap_or_default(), "notice": graphics_notice.is_some() }),
     );
-    crate::tray::handle(&app, crate::tray::Event::GameStarted);
+    crate::tray::handle(app, crate::tray::Event::GameStarted);
 
+    let app = app.clone();
     std::thread::spawn(move || {
         let outcome = game::wait_for_exit(&running);
         // GSdx failed and the player chose CoreGS 2.0 in the game's message (`use_coregs20_after_gsdx_failure`).
@@ -701,9 +712,24 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         if offer_logs {
             let _ = app.emit("logs-offer", json!({ "reason": message.clone() }));
         }
-        crate::tray::handle(&app, crate::tray::Event::GameEnded { message });
+        match mode {
+            PlayMode::Windowed => crate::tray::handle(&app, crate::tray::Event::GameEnded { message }),
+            PlayMode::Direct => {
+                // TASK-211: the launcher is the process Steam started; it ends with the game so Steam gets the process
+                // back (Big Picture returns to the game list).
+                state::log(&dirs, "direct launch: the game ended; the launcher closes");
+                app.exit(0);
+            }
+        }
     });
     Ok(())
+}
+
+/// Starts the game with the chosen settings. Returns once the process is running; the page hears
+/// about the end through the `game-state` event.
+#[tauri::command]
+pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
+    start_play(&app, shared.inner(), &program_directory(), PlayMode::Windowed)
 }
 
 /// Reads a finished session's log, waiting for the game's last line: the runtime writes `[ee] stopped after ...` while

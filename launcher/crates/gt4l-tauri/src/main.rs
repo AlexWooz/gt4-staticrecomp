@@ -5,11 +5,13 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
 mod commands;
+mod direct_launch;
 mod discord_presence;
 #[cfg(test)]
 mod contract;
 #[cfg(test)]
 mod flow_audit;
+mod launch_flags;
 mod model;
 mod pad_nav;
 mod pad_service;
@@ -28,6 +30,7 @@ mod wheel_service;
 #[cfg(feature = "visual-check")]
 mod visual;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -38,6 +41,9 @@ use gt4l_core::LAUNCHER_VERSION;
 fn main() {
     // TASK-091 (1.2.1 start-up timings): the time from this point to `ui_ready` is logged, with the steps before the window.
     let started = Instant::now();
+    // TASK-211: `--skip-launcher` (the couch launch from Steam) and `--game=retail|spec2`. Read here, before any window
+    // exists; a normal start without them behaves exactly as before.
+    let launch_arguments = launch_flags::parse(std::env::args_os().skip(1).map(|argument| argument.to_string_lossy().into_owned()));
     // A second launcher brings the first window forward instead of starting. A restart in safe mode (TASK-091) waits
     // for the launcher that is exiting instead.
     let restarted = webview_guard::restart_requested(std::env::args().skip(1));
@@ -95,6 +101,16 @@ fn main() {
         &format!("GT4Recomp {LAUNCHER_VERSION} ({} build) starting from {}", gt4l_core::build_kind::BUILD.label(), exe_dir.display()),
     );
     state::log(&dirs, &format!("start-up: data layout and relocation ready after {} ms", started.elapsed().as_millis()));
+    // TASK-211: the log says what the command line asked for. `--game` alone changes nothing: the window opens.
+    if launch_arguments.skip_launcher {
+        let game = launch_arguments
+            .game
+            .map(|game| format!("--game={}", game.id))
+            .unwrap_or_else(|| "no --game: the game played last, else the launcher's start selection".to_string());
+        state::log(&dirs, &format!("direct launch: --skip-launcher ({game}); the window stays hidden and the launcher ends with the game"));
+    } else if launch_arguments.game.is_some() || launch_arguments.game_problem.is_some() {
+        state::log(&dirs, "--game is used only with --skip-launcher; the launcher window opens as usual");
+    }
     for line in &startup.log {
         state::log(&dirs, line);
     }
@@ -126,6 +142,9 @@ fn main() {
         dirs: dirs.clone(),
         user_root,
         started,
+        // TASK-211: a direct launch keeps the window hidden; a normal start shows it on the first drawn screen.
+        hidden_launch: AtomicBool::new(launch_arguments.skip_launcher),
+        restart_arguments: launch_arguments.restart_arguments(),
     });
     let settings_started = Instant::now();
     let mut app_state = match state::AppState::load(dirs.clone(), startup.user.clone(), startup.layout.legacy.local.clone()) {
@@ -149,6 +168,10 @@ fn main() {
     let dirs_for_setup = dirs.clone();
     let shared_for_check = shared.clone();
     let guard_for_setup = guard.clone();
+    // TASK-211: set once the start-up file moves have finished; a direct launch waits for it, as Play and setup do.
+    let startup_moves_done = Arc::new(AtomicBool::new(false));
+    let startup_moves_for_setup = startup_moves_done.clone();
+    let direct_launch_for_setup = launch_arguments.clone();
     let mut context = tauri::generate_context!();
     if portable {
         // TASK-098: the web view keeps its profile in `data\launcher-webview`, not in %LOCALAPPDATA%, so a portable copy
@@ -178,6 +201,9 @@ fn main() {
                 let launch_state = state::lock(&launch_shared);
                 launch_state.write_standalone_files(&launch_state.config.settings);
                 drop(launch_state);
+                // TASK-211: a direct launch starts only after this point: the large data is in place and the files a
+                // direct start of the game reads are written.
+                startup_moves_for_setup.store(true, Ordering::SeqCst);
                 updates::check_on_launch(launch_app, launch_shared);
             });
             // TASK-091 (1.2.1): the old per-user install clean-up runs in the background, after the window exists.
@@ -206,6 +232,11 @@ fn main() {
                 // TASK-114 rc5: the Settings page, the saves and the log read this list; Play refreshes it.
                 gt4l_platform::gpu::store_gpus(cards);
             });
+            // TASK-211: the couch launch. The same Play path (`start_play`), no window, and the launcher ends with the
+            // game. It waits for the start-up file moves above, so it reads a folder that is no longer moving.
+            if direct_launch_for_setup.skip_launcher {
+                direct_launch::start(app.handle().clone(), direct_launch_for_setup, startup_moves_done);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

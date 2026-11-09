@@ -922,3 +922,76 @@ Registered in `src/main.rs`; the test `src/contract.rs` fails when this list and
 - Saves: `saves_list`, `saves_import`, `saves_activate({id})`, `saves_delete({id})`
 - Replays: `replays_list`, `replays_import`, `replays_delete({id})`
 - About: `about_info`, `open_log_folder`
+
+## 16. Steam and Big Picture: launch straight into a game (TASK-211, rc17)
+
+Owner request, 2026-11-09: a player wants the couch setup, adds GT4Recomp to Steam, starts it from Big Picture with a
+controller and comes back to Steam when the game closes, without the launcher window. See
+`docs/tasks/RC17-COUCH-AND-INGAME.md` (TASK-211); the in-game Quit Game and the in-game settings are TASK-212 and
+TASK-213.
+
+### 16.1 The command line
+
+`GT4Recomp.exe` reads two arguments before any window exists (`launcher/crates/gt4l-tauri/src/launch_flags.rs`):
+
+- `--skip-launcher`: the launcher runs its normal start-up with the window hidden. It writes the same settings, the same
+  logs and the same "game played last" state the page would, starts the game through the **same Play path** as the Play
+  button (`commands::start_play`, shared by both callers), stays alive while the game runs and **ends when the game
+  process ends**, so the front end gets the process back.
+- `--game=retail|spec2`: the game to start (`--game retail` works too; `gt4` is the alias of `retail`, and case does not
+  matter). `--game` without `--skip-launcher` changes nothing: the window opens as always.
+  - Without `--game`, a direct launch uses the game played last (`[game] selected` in `settings.toml`, the same value the
+    home screen shows) and says so in the log. Before any game was played it uses the launcher's start selection.
+  - A value that names no game, or `--game` with no value, is an error the launcher window shows
+    ("`{value}` is not a game of this launcher: use --game=retail or --game=spec2."), so a typo in the launch options is
+    never a silent exit.
+
+The flags are exact (`--skip-launcher`, not `--skip-launcher=1`). A safe-mode WebView2 restart (TASK-091) repeats them, so
+a page that has to draw again with GPU acceleration off still starts the game it was asked for.
+
+### 16.2 The hidden launch
+
+- The window is created but stays hidden: `ui_ready` marks the page ready without showing it. The page is still needed
+  (WebView2 is required, as for a normal start).
+- The direct launch waits for the 1.2.0 large-data move (Play and setup wait for the same point) and logs it if it takes
+  time; after 5 minutes it shows the launcher window with the "moving game files" message instead of starting.
+- It then resolves the game, selects it exactly as the home page does (`commands::select_game_of`), and calls the Play
+  path. The tray icon exists for the session, as it does during a normal Play (it is the launcher's own icon; the player
+  does not have to touch it).
+- While the game runs the launcher is a hidden process in the tray. Steam (or any front end) therefore sees the game
+  running for the whole session.
+- When the game ends: the session log and the card harvest finish, then the launcher calls `app.exit(0)`. It never leaves
+  a hidden launcher behind.
+- The shader prepare the Play button runs before Play (CoreGS 2.0 only) is skipped: it has its own progress window, and
+  the game compiles what it needs while it runs (TASK-204 records the variants too). The log says so.
+- The update check still runs in the background; an update offer waits for the next normal start of the launcher (the
+  page is hidden, so nothing is shown).
+
+### 16.3 Errors
+
+- The game is not ready (no disc, no install, a check fails, the writer or renderer is missing): the launcher window
+  opens with the usual message (the same `game-state` path a game that ends with a message uses), and the player can fix
+  it and press Play. The launcher then stays open after that Play, as it does today.
+- A game is already running: the launch is refused and logged; the process ends without showing anything (the player is
+  in a game already).
+- WebView2 missing: the native message of TASK-091, before any window, as for a normal start.
+- A second launcher (the single-instance lock) still wins: starting a game from Steam while the launcher is already open
+  does nothing (the running launcher is brought forward only when its window is visible). This is the existing rule, not
+  a TASK-211 change.
+
+### 16.4 Steam setup (to document for players)
+
+1. Steam > Games > **Add a Non-Steam Game** > Browse > `GT4Recomp.exe` (the launcher, never `gt4.exe` or
+   `gt4-spec2.exe`: the launcher owns the disc image, the memory card, the renderer, the shader prepare and the update
+   checks).
+2. Right-click the entry > Properties > **Launch Options**:
+   - Gran Turismo 4 v2.00: `--skip-launcher --game=retail`
+   - Gran Turismo 4 Spec II: `--skip-launcher --game=spec2`
+3. Start it from Big Picture. The game starts without the launcher window; Steam shows the game as running until it
+   closes and then returns to the game list.
+4. Exit the game:
+   - the in-game **Quit Game** (TASK-212) is the primary path once it lands;
+   - Big Picture's **Exit Game** (Xbox/PS button > the running game > Exit Game) is the fallback: it ends the launcher,
+     and the launcher's kill-on-close job then ends the game (the same rule the launcher has today);
+   - a controller shortcut, if TASK-212 adds one, is the third path.
+5. A second copy of the entry can point at the other game id, so both games appear in the library.

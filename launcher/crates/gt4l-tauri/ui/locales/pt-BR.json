@@ -507,6 +507,8 @@
   "rust.game.gpu_lost_switched": "O Direct3D 11 será usado a partir de agora.",
   "rust.game.running_blocks_move": "O Gran Turismo 4 está em execução",
   "rust.game.already_running_lock": "O Gran Turismo 4 já está em execução",
+  "rust.direct_launch.game_needs_value": "--game precisa de um jogo: use --game=retail ou --game=spec2.",
+  "rust.direct_launch.unknown_game": "{value} não é um jogo deste launcher: use --game=retail ou --game=spec2.",
   "rust.controls.newer_file": "O arquivo de controles foi gravado por um GT4Recomp mais novo e é mantido como está. Atualize o launcher para mudar os controles.",
   "rust.controls.could_not_save": "Não foi possível salvar o arquivo de controles: {error}",
   "rust.controls.defaults_restored": "Todos os controles voltaram à configuração original.",

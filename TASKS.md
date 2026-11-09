@@ -4751,7 +4751,31 @@ UI. A direct launch must therefore take the game on the command line.
 - Tests: argument parser unit tests, game-id mapping, a flow audit that resolves a fake game; the real game launch
   stays an owner test. Docs: `docs/launcher/LAUNCHER-PLAN.md` and `docs/tasks/RC17-COUCH-AND-INGAME.md`.
 
-**State:** planned for rc17; branch `task/211-rc17-launcher-flags`.
+**What was built (2026-11-09).**
+- `launch_flags.rs`: `--skip-launcher` (exact), `--game=<id>` and `--game <id>`; `retail`/`gt4` -> `gt4`, `spec2`, case
+  and spaces ignored; the last `--game` wins; an empty or missing value and an unknown id are errors. Without `--game`
+  a direct launch uses `config.selected_game`, then the launcher's start selection, and logs which. `--game` alone
+  changes nothing. A safe-mode restart repeats the flags.
+- `direct_launch.rs`: the hidden thread. It waits for the 1.2.0 large-data move (5 min cap, then the window with the
+  "moving game files" message), selects the game as the page would (`commands::select_game_of`), skips the CoreGS 2.0
+  shader prepare (its progress needs the window; TASK-204 covers it, the log says so), and calls the shared Play path.
+- `commands::start_play` is now the Play path of both callers (`commands::play` is a thin wrapper), with
+  `PlayMode::Windowed` (tray + page) and `PlayMode::Direct` (hidden, `app.exit(0)` after the game's log, card harvest
+  and messages are done). No second launch implementation.
+- `webview_guard`: `Guard::hidden_launch` keeps the window hidden in `ui_ready`; `show_after_failed_launch` reveals it
+  once the page is ready and puts the message on Home through `game-state`; a safe-mode restart repeats the direct
+  arguments.
+- Errors: a game that is not ready shows the launcher window with the existing message; a game already running is
+  refused and logged (process ends, nothing shown); a bad `--game` shows the window with the reason; WebView2 missing
+  keeps the TASK-091 native message.
+- Two new `rust.direct_launch.*` messages in en-US and pt-BR (920 keys each, same placeholders).
+- Tests: 11 parser/resolution unit tests, 1 hidden-window test, 1 flow test
+  (`flow_audit::a_direct_launch_selects_its_game_and_runs_the_play_checks_headlessly`, synthetic disc, no game started).
+  `cargo test --workspace` **797 passed, 0 failed, 9 ignored** (baseline 784/0/9).
+
+**State (2026-11-09):** implemented on branch `task/211-rc17-launcher-flags`, pushed; no PR, no release. The real
+from-Steam launch is the owner's test. Docs: `docs/launcher/LAUNCHER-PLAN.md` section 16 and
+`docs/tasks/RC17-COUCH-AND-INGAME.md`.
 
 ### TASK-212: in-game Quit Game and controller exit (owner, 2026-11-09; rc17 study + first implementation)
 

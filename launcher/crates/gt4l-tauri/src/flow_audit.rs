@@ -2209,3 +2209,58 @@ fn play_switches_the_virtual_wheel_from_what_is_connected() {
     assert!(log.contains("wheel: the device list was not ready: the stored on/off is kept for this Start"), "{log}");
     let _ = fs::remove_dir_all(root);
 }
+
+// Direct launch from a front end (TASK-211) ---------------------------------------------------------------------------
+
+/// TASK-211: a direct launch (`--skip-launcher`) resolves the game it was asked for, selects it as the page would and
+/// runs the same Play checks with no window. A game that is not installed stops with the launcher's own message, which
+/// the direct launch shows in the window instead of exiting silently. Nothing is started here.
+#[test]
+fn a_direct_launch_selects_its_game_and_runs_the_play_checks_headlessly() {
+    let (root, _dirs, _pins, shared) = new_install("direct-launch");
+    run_setup(&shared, &Recorder::default(), fake_renderer());
+    let program = stand_in_programs(&root, &["gt4.exe"]);
+    let stored = lock(&shared).config.selected_game.clone();
+    assert_eq!(stored.as_deref(), Some("gt4"), "the setup stored Gran Turismo 4 as the game played last");
+
+    // `--game=retail` is Gran Turismo 4 (`gt4` in folders, settings and logs).
+    let asked = crate::launch_flags::parse(["--skip-launcher", "--game=retail"]);
+    let fallback = lock(&shared).selected;
+    let (game, source) = crate::launch_flags::resolve_game(&asked, stored.as_deref(), fallback).expect("retail is a game");
+    assert_eq!((game.id, source), ("gt4", crate::launch_flags::GameSource::CommandLine));
+    commands::select_game_of(game.id.to_string(), &shared).expect("the direct launch selects its game as the page would");
+    assert_eq!(screen(&shared)["selected_game"], "gt4");
+    // The same Play path: every check before the renderer passed without a window (disc, program, settings, display).
+    let refusal = commands::prepare_play(&shared, &program, &json!({})).map(|_| ()).unwrap_err();
+    assert!(refusal.starts_with("GSdx could not run the game"), "{refusal}");
+
+    // `--game=spec2` with Spec II not installed here: the checks stop with the message the launcher window shows.
+    let asked = crate::launch_flags::parse(["--skip-launcher", "--game=spec2"]);
+    let (game, _) = crate::launch_flags::resolve_game(&asked, stored.as_deref(), fallback).expect("spec2 is a game");
+    assert_eq!(game.id, "spec2");
+    commands::select_game_of(game.id.to_string(), &shared).unwrap();
+    let message = commands::prepare_play(&shared, &program, &json!({})).map(|_| ()).unwrap_err();
+    assert_eq!(
+        message,
+        gt4l_core::messages::text("game.set_up_first", gt4l_core::language::Language::fallback()),
+        "the reason the launcher window shows"
+    );
+
+    // No `--game`: the game played last, and the launcher's start selection before any game was played.
+    let none = crate::launch_flags::parse(["--skip-launcher"]);
+    assert_eq!(
+        crate::launch_flags::resolve_game(&none, stored.as_deref(), fallback),
+        Ok((&gt4l_core::games::GT4, crate::launch_flags::GameSource::LastPlayed))
+    );
+    assert_eq!(
+        crate::launch_flags::resolve_game(&none, None, fallback),
+        Ok((fallback, crate::launch_flags::GameSource::StartSelection))
+    );
+
+    // A `--game` that names no game is an error the window shows; `--game` without `--skip-launcher` asks for nothing.
+    let broken = crate::launch_flags::parse(["--skip-launcher", "--game=gt5"]);
+    assert!(crate::launch_flags::resolve_game(&broken, stored.as_deref(), fallback).is_err());
+    let normal = crate::launch_flags::parse(["--game=gt5"]);
+    assert_eq!(normal.direct_game(), None, "a normal start keeps the launcher page and its own selection");
+    let _ = fs::remove_dir_all(root);
+}

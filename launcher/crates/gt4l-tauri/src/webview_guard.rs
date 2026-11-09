@@ -28,7 +28,7 @@ use gt4l_core::paths::DataDirs;
 use gt4l_platform::dialog::{self, Choice};
 use gt4l_platform::process::spawn_outside_job;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::state::{log, log_error, log_warn};
 
@@ -256,6 +256,24 @@ pub struct Guard {
     pub user_root: PathBuf,
     /// When the process started (for the "ui ready after N ms" log line, TASK-091 1.2.1).
     pub started: std::time::Instant,
+    /// TASK-211: a direct launch (`--skip-launcher`) keeps the window hidden. `ui_ready` does not show it; the direct
+    /// launch clears the flag when it has to show a failure. `false` for a normal start.
+    pub hidden_launch: AtomicBool,
+    /// TASK-211: the arguments a safe-mode restart repeats, so a direct launch is not lost when the page has to draw
+    /// again with WebView2 GPU acceleration off. Empty for a normal start.
+    pub restart_arguments: Vec<String>,
+}
+
+impl Guard {
+    /// TASK-211: the window may be shown from now on (the direct launch failed and the player has to see why).
+    pub fn reveal(&self) {
+        self.hidden_launch.store(false, Ordering::SeqCst);
+    }
+
+    /// TASK-211: the window stays hidden (a direct launch is in progress).
+    pub fn hidden(&self) -> bool {
+        self.hidden_launch.load(Ordering::SeqCst)
+    }
 }
 
 /// Why the web view could not show the launcher.
@@ -267,7 +285,8 @@ pub enum Problem {
     Missing,
 }
 
-/// The page's first screen has drawn: the window is shown and focused. Idempotent.
+/// The page's first screen has drawn: the window is shown and focused. Idempotent. A direct launch (TASK-211) keeps
+/// the window hidden: its game runs without the launcher page.
 #[tauri::command]
 pub fn ui_ready(app: AppHandle) -> Result<(), String> {
     let guard = app.state::<Arc<Guard>>().inner().clone();
@@ -277,9 +296,30 @@ pub fn ui_ready(app: AppHandle) -> Result<(), String> {
     }
     if guard.page.mark() {
         log(&guard.dirs, &format!("the launcher page drew its first screen; ui ready after {} ms", guard.started.elapsed().as_millis()));
+        if guard.hidden() {
+            // TASK-211: the page is ready for a later failure window; the window itself stays hidden.
+            log(&guard.dirs, "direct launch: the page is ready; the window stays hidden");
+        }
+    }
+    if guard.hidden() {
+        return Ok(());
     }
     show_main_window(&app);
     Ok(())
+}
+
+/// TASK-211: a direct launch that cannot start shows the launcher window with the reason, once the page is ready (an
+/// event sent before the page listens would be lost). The `game-state` event puts the sentence on Home, the same path a
+/// game that ends with a message uses.
+pub fn show_after_failed_launch(app: &AppHandle, message: &str) {
+    let guard = app.state::<Arc<Guard>>().inner().clone();
+    guard.reveal();
+    if !wait_for_ready(&guard.page, READY_TIMEOUT) {
+        log_warn(&guard.dirs, "the page did not draw within 12 s; the launcher window is shown without the message");
+    }
+    show_main_window(app);
+    log(&guard.dirs, &format!("the launcher window is shown: {message}"));
+    let _ = app.emit("game-state", json!({ "running": false, "message": message }));
 }
 
 /// The page writes a short line to the launcher log (the 1.3.0 intro: start, end, skipped). Capped at 200 characters.
@@ -333,7 +373,9 @@ fn restart_in_safe_mode(app: &AppHandle, guard: &Guard) {
         return;
     }
     log_warn(&guard.dirs, "the page did not draw in 12 s: restarting with WebView2 GPU acceleration off (safe mode)");
-    let started = std::env::current_exe().and_then(|exe| spawn_outside_job(Command::new(exe).arg(RESTART_ARGUMENT)));
+    // TASK-211: a direct launch repeats its own arguments too, so the restart still starts the game it was asked for.
+    let started = std::env::current_exe()
+        .and_then(|exe| spawn_outside_job(Command::new(exe).arg(RESTART_ARGUMENT).args(&guard.restart_arguments)));
     match started {
         Ok(_) => app.exit(0),
         Err(error) => {
@@ -464,5 +506,23 @@ mod tests {
         assert!(page.mark(), "the first mark is the first ready");
         assert!(!page.mark(), "ui_ready is idempotent");
         assert!(wait_for_ready(&page, Duration::from_millis(60)));
+    }
+
+    #[test]
+    fn a_direct_launch_keeps_the_window_hidden_until_it_is_revealed() {
+        let folder = scratch_folder("hidden-launch");
+        let guard = Guard {
+            page: PageReady::default(),
+            dirs: DataDirs::new(folder.join("data")),
+            user_root: folder.clone(),
+            started: std::time::Instant::now(),
+            hidden_launch: AtomicBool::new(true),
+            restart_arguments: vec!["--skip-launcher".to_string(), "--game=spec2".to_string()],
+        };
+        assert!(guard.hidden(), "a direct launch starts hidden");
+        assert_eq!(guard.restart_arguments, vec!["--skip-launcher", "--game=spec2"], "a safe-mode restart repeats them");
+        guard.reveal();
+        assert!(!guard.hidden(), "a failure shows the window, and ui_ready may show it too");
+        fs::remove_dir_all(&folder).unwrap();
     }
 }

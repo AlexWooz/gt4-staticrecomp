@@ -1,5 +1,18 @@
 # Current Status
 
+## TASK-211: launch straight into a game from Steam (`--skip-launcher`) (owner, 2026-11-09; rc17)
+
+On `task/211-rc17-launcher-flags` (from the published rc16 package at 7e069b4b). `GT4Recomp.exe` now takes
+`--skip-launcher` and `--game=retail|spec2`: the launcher starts its normal start-up hidden, runs the Play button's own
+path (`commands::start_play`, shared by both callers), stays alive while the game runs and exits when the game process
+ends, so Steam/Big Picture gets the process back. Without `--game` it uses the game played last and logs it; a game that
+is not ready (or a bad `--game`) opens the launcher window with the usual message, and a game already running is
+refused. The CoreGS 2.0 shader prepare of the Play button is skipped in the hidden path (its progress needs the window;
+the game compiles what it needs, TASK-204). Launcher only: no game build, no installer, no package. Steam setup
+documented in `docs/launcher/LAUNCHER-PLAN.md` section 16 and `docs/tasks/RC17-COUCH-AND-INGAME.md`; journal 2026-11-09.
+`cargo test --workspace` **797 passed, 0 failed, 9 ignored** (baseline 784). The real from-Steam launch is the owner's
+test; the in-game Quit (TASK-212) stays the primary exit.
+
 ## TASK-208 PGO: the rc16 distribution build, PGO + ThinLTO for both games (owner, 2026-11-08/09)
 
 On `task/208-rc16-pgo` (from `task/208-both-game-variants` at 8ccafcf8, no source change). The owner approved the complete
