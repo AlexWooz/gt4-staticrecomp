@@ -111,7 +111,7 @@ quotes are from `...\private\slice260-instrument-runtime\dmac.cpp`.
 
 | Project | What it does (source) | Lesson for GT4 |
 |---|---|---|
-| celosia, SotC PS2 port, GPL-3.0 (our prose study `private/research/celosia-study.md` §2.4; source never read) | Recompiled EE; renderer hooks `modelDisp`, camera, `gsReg`, texture requests by address; reads the game's own model/LOD/VIF/texture structures from guest RAM; content-hash GPU caches; `SOTC_NATIVE=2` draws natively without showing it for side-by-side checks; when native, GS raster is skipped but DMA chains are still walked for SIGNAL/FINISH/LABEL | Same level as our approach A; shadow mode first; open issues they list (brightness, bloom, shadows, near-plane clipping) are the ones to expect |
+| celosia, SotC PS2 port, GPL-3.0 (prose only: `private/research/celosia-study.md` and `docs/COREGS3-CELOSIA.md`; source never read) | Recompiled EE; renderer fed at `modelDisp` from the game's own model/LOD/material/VIF structures in RAM; content-hash GPU caches; **50 of 50 tracked features native by 2026-11-09**, no GS/VU1/VIF on the drawing path; `SOTC_NATIVE=2` draws natively without showing it; GS raster skipped but DMA chains walked for SIGNAL/FINISH/LABEL; all settings live | Same level as approach A; shadow mode first; the GS quirks and effect-chain traps they had to reproduce are our Phase 1/2/4 checklists (§3-§4 of the note) |
 | OpenGOAL, Jak and Daxter (opengoal.dev "porting tfrag") | First built slow renderers matching the PS2 exactly (XGKICK output to a "DirectRenderer" for debugging), then a fast PC renderer from game data structures with offline preprocessing; GPU does transform and clipping; "you can often leave out huge chunks of code" | Keep a faithful oracle (CoreGS 2.0 plus the VU1 tap), then replace; reduce draw calls |
 | RT64 / Zelda64Recomp (github.com/rt64/rt64 README) | Replays matched draw calls at a higher rate with interpolated, decomposed transforms | Draw identity across ticks is the key to above-60 presentation (Phase 6) |
 
@@ -127,7 +127,10 @@ quotes are from `...\private\slice260-instrument-runtime\dmac.cpp`.
 - reversed float depth with GEQUAL, destination-alpha emulation, two-phase AFAIL draws;
 - per-frame env map rendered natively at higher resolution;
 - draw merging, background pipeline warm-up, texture deduplication, dynamic resolution and MSAA on phones;
-- offscreen 3D target composited under the 2D layer.
+- offscreen 3D target composited under the 2D layer;
+- **the GS rules and effect-chain traps celosia had to reproduce** (alpha-test depth, untextured colour, blend
+  rounding, `COLCLAMP`, fog, texture LOD, UV row, bloom history): `docs/COREGS3-CELOSIA.md` §3-§4. Add them to the
+  Phase 1/2/4 acceptance lists.
 
 **Does not transfer:**
 - rewriting the game logic (GT4's logic stays the recompiled original: owner rule);
@@ -805,6 +808,8 @@ patterns exist.
 |---|---|---|---|
 | VU1 lighting/fog/texgen formulas per family are hard to re-derive | high | quality | VU1 tap gate; derive from AOT C++ of ~30 hot entries; allow approximations behind the image gate |
 | Mixed GS/native frames show order or depth seams | medium | quality | Inject at exact stream positions; GEQUAL with GS-equivalent Z; own3d as soon as a scene is covered |
+| GS state quirks not reproduced (alpha-test depth, untextured colour, blend rounding, `COLCLAMP`, texture LOD, UV row) | medium | quality | The checklist in `docs/COREGS3-CELOSIA.md` §3 applied to the PGL state table and the Phase 1/2 image gates |
+| Post effects approximated generically (bloom/glare shape, history feedback) | high | quality | Start Phase 4 from the game's own pass chain and parameters; a generic bloom is a rejected candidate (`docs/COREGS3-CELOSIA.md` §4) |
 | Effects that read the frame (tone, brightness, smoke grab, feedback blur) misbehave in overlay/replace | medium | quality | They run after the inject on the merged frame; native versions in Phase 4 |
 | Guest-visible side effects of skipping VU1 programs | low | logic | PATH1 identity of non-skipped programs; G-LOGIC per VBlank |
 | EE-consumed read-backs (photo, icons, loading picture) | known | logic | Always answered by CoreGS 2.0 (shadow at 1x if needed) |
@@ -842,3 +847,6 @@ patterns exist.
   facts only): local clones under `private/slice151-research/nenkai/`.
 - gt4-decomp (MIT, local clone `e0b70c4d6`; README progress paragraph: 29,551 of 30,962 functions matched, 95.4%):
   `private/slice151-research/gt4-decomp/README.md`.
+- celosia (GPL-3.0, prose only): https://github.com/HenryKun55/celosia, `README.md` and `docs/STATUS.md`,
+  `docs/native_port_plan.md`, `docs/native_port_log.md`, `docs/native_renderer_map.md`, `docs/known_issues.md`
+  (accessed 2026-11-09; no source read; see `docs/COREGS3-CELOSIA.md`).

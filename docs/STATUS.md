@@ -1,5 +1,13 @@
 # Current Status
 
+## Celosia's finished native renderer compared with CoreGS 3.0 (2026-11-09, TASK-090)
+
+The SotC port `HenryKun55/celosia` (GPL-3.0) now reports 50 of 50 tracked features native, with no GS, VU1 or VIF on the
+drawing path. A prose-only comparison is in `docs/COREGS3-CELOSIA.md`: it confirms the plan's EE-level interception, the
+shadow mode, VU1-as-oracle and content-hash caches, and records the GS rules and effect-chain traps celosia had to
+reproduce (alpha-test depth, untextured colour, blend rounding, `COLCLAMP`, fog, texture LOD, UV row, bloom history).
+Those go into the Phase 1/2/4 acceptance lists; no source was read and nothing ships.
+
 ## CoreGS 3.0 phase 1 started (2026-11-05, branch `task/090-coregs3`)
 
 **Update 2026-11-06: the strip table is decoded and the car pass is fully gated.** The `V1-8` channel at TOPS 0x40 is a

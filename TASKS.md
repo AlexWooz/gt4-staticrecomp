@@ -1570,6 +1570,11 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   vertices of every strip are structural, and inside a strip ADC is the VU1's own facing cull (580 of 4,745 in-strip
   triangles disagree with the sign test, 268 of them under a quarter of a pixel). M2 now uses a flat-shaded mode:
   all 116 draws (12,146 vertices, 8,034 of 9,048 triangles, 518,641 pixels) and one car body, with a new sheet.
+- **Celosia note (2026-11-09):** the finished SotC native port (their docs claim 50 of 50 features native, with no
+  GS/VU1/VIF on the drawing path) was compared against this plan in [COREGS3-CELOSIA](docs/COREGS3-CELOSIA.md). It
+  confirms the EE-level interception, the shadow mode, VU1 as the oracle and the content-hash caches, and adds the GS
+  rules and effect-chain traps they had to reproduce (alpha-test depth, untextured colour, blend rounding, `COLCLAMP`,
+  fog, texture LOD, UV row, bloom history) to the Phase 1/2/4 acceptance lists. Prose only; no celosia source read.
 - Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the M4 live overlay seam (review work), M4 only
   after the 3x gate re-run, and the remaining G-IMAGE/G-PERF gates.
 
