@@ -3457,3 +3457,33 @@ zip, no release. The kit is `private/slice424-kit`.
   `tests/python/test_gt4_data_patch.py`.
 - **Known:** the introduced row writes only `game-changes.toml`; the guest wide flag and the save stay 16:9. The live
   borderless window is the owner's test. Spec II is Phase 2.
+
+## TASK-213 Phase 1c test build (slice426, 2026-11-09, test only)
+
+The v2.00 build with the Screen rows: `native/screen_rows.cpp` (host text/insensitive service, the two
+`screen_adjust_v/h` hooks), the v2.00 addresses in `native/game_target.hpp`, the adjust/render hooks in
+`scripts/native_settings_overlay.inc`, and the data patch with the `Resolution`/`Monitor` labels, the slider ranges
+`0..31`/`0..7` and the tooltips off.
+
+- **Capsule:** `prepare_license_guard.py <assets>/private/slice426-screen-rows-license-guard-runtime --assets-root
+  <assets> --display-aspect --frame-counters --frame-skip --native-settings`; pin
+  `docs/inputs/slice426-screen-rows-license-guard-runtime.json`; receipt SHA-256
+  `7bb369a048764bb1d346f264243efde6846f54deec8be4e97db1a247244a5023`. `kernel.cpp`/`cdvdfsv.cpp` are byte-identical to
+  slice376/slice424.
+- **Configure:** the slice424 recipe with `-DGT4_LICENSE_GUARD_SOURCE=<assets>/private/slice426-screen-rows-license-guard-runtime`
+  (the existing `build/slice424-native-settings-build`, `GT4_PERF_RUNTIME_SOURCE=slice422-data-runtime`,
+  `GT4_EE_PROFILE=aspect`, `GT4_RELEASE_DISTRIBUTION=OFF`). The scripts are `build/configure-426.cmd` and
+  `build/build-424.cmd` of the task branch.
+- **Patch:** `gt4_data_patch.py --iso "<v2.00 ISO>" --recipe <private recipe>.json --output <fresh private dir>`; the
+  recipe has the Phase 1 edits plus the labels, ranges and tooltips (10 text replacements); container
+  `1818f9622d1f34eb15a09b12df1b4e42f8ef58f9aeb35d5f0cd92ecef2aa50f8`, 77,986 bytes.
+- **Run:** `GT4_DATA_PATCH=... GT4_SETTINGS_FEEDBACK=... GT4_FULLSCREEN=0|1 GT4_OUTPUT_SIZE=1920x1080 gt4vulkan.exe ...`;
+  the exact sequences are in `private/slice426-kit/run-off.cmd`/`run-on.cmd`. Expected:
+  `[screen-rows] resolution: 29 modes, current 1920x1080; monitors: 1 ...`, `prebuilt 29 mode names ...`,
+  `row active/greyed insensitive=...`, `resolution -> "1920x1200"`, the feedback line, exit 0.
+- **Kit:** `private/slice426-kit` (exe SHA-256 `5a91309a...`, 90,227,200 bytes; patch, recipe, report, both states,
+  both logs, the On feedback file, six frames, README). Test build only.
+- **Checks:** `native_native_settings` 1/1 (multi-key feedback writer added), `cargo test -p gt4l-core --lib` 310 passed
+  (the resolution/monitor merge tests), `test_gt4_data_patch.py` 16 OK; both headless runs exit 0. No full suite.
+- **Known:** one monitor on this machine (the Monitor row's change path is not exercised); the replaced script strings are
+  intentionally leaked (bounded, engine cache); the restart notice is the launcher's; Spec II is Phase 2.

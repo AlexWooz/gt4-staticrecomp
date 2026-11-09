@@ -224,6 +224,18 @@ int main(int argc, char **argv) {
     _putenv_s("GT4_SETTINGS_FEEDBACK", feedback.c_str());
   }
 
+  // write_feedback_changes: the Screen rows write resolution and monitor in one file (the value text is TOML as given).
+  {
+    const char *keys[2] = {"resolution", "monitor"};
+    const char *values[2] = {"\"1920x1080\"", "\"\\\\\\\\.\\\\DISPLAY1@1920x1080\""};
+    require(gt4::native_settings::write_feedback_changes(keys, values, 2, nullptr, 0), "write two changes");
+    std::ifstream file(feedback);
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    require(text.find("resolution = \"1920x1080\"") != std::string::npos, "the resolution line");
+    require(text.find("monitor = \"") != std::string::npos, "the monitor line");
+    require(!std::filesystem::exists(feedback + ".tmp"), "no temporary file after two changes");
+  }
+
   // record_fullscreen stores the value, requests it and writes the file.
   {
     require(gt4::native_settings::record_fullscreen(true, "fixture"), "record On");

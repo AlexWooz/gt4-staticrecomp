@@ -140,6 +140,26 @@ struct HookAddresses {
   std::uint32_t script_hint_vtable = 0;         // hInt vtable (the OptionMenu index object)
   std::uint32_t option_project_word_offset = 0; // owner + this = the next project's four-character id
   std::uint32_t option_project_id = 0;          // the id that means the Options project ("opti")
+
+  // TASK-213 Phase 1c: the Screen page's Resolution/Monitor rows (native/screen_rows.*). The two screen-adjust natives
+  // return boxed ints (same shape as wide_mode); the host paints the slider value TextFace (the localized text string)
+  // and the engine's insensitive bit, and enumerates the monitor modes/monitors on the host side.
+  std::uint32_t screen_adjust_v_callback = 0;   // 0x001802F0: MOption.screen_adjust_v get/set
+  std::uint32_t screen_adjust_h_callback = 0;   // 0x00180200: MOption.screen_adjust_h get/set
+  std::uint32_t screen_textface_vtable = 0;     // 0x00666370: mTextFace vtable (object vtable at +4)
+  std::uint32_t screen_slider_vtable = 0;       // 0x00671D98: mSliderBar vtable
+  std::uint32_t screen_pane_vtable = 0;         // 0x00672950: the Screen page's `Pane` VBox vtable
+  std::uint32_t screen_composite_vtable = 0;    // 0x00662EF8: mComposite vtable (the row composites)
+  std::uint32_t screen_text_object_offset = 0;  // textface + this = the mLocalizedText pointer
+  std::uint32_t screen_text_value_offset = 0;   // localized + this = the display String (dat pointer)
+  std::uint32_t screen_insensitive_offset = 0;  // widget + this = the state word holding the insensitive bit
+  std::uint32_t screen_insensitive_bit = 0;     // bit number of that word
+  std::uint32_t screen_text_assign = 0;         // 0x005C2630: basic_string::replace (builds/replaces a String)
+  std::uint32_t screen_heap_name = 0;           // 0x005C11A8: returns the string allocator's name holder
+  std::uint32_t screen_alloc = 0;               // 0x00326750: the engine allocator (size, align, name)
+  std::uint32_t screen_free = 0;                // 0x00326798: the engine free (ptr, size, align, name)
+  std::uint32_t screen_text_invalidate = 0;     // 0x00245270: invalidate the TextFace's cached layout
+  std::uint32_t screen_render_functor = 0;      // the main loop's render functor (the per-frame text service)
 };
 
 struct Profile {
@@ -222,6 +242,22 @@ inline constexpr HookAddresses kV200Hooks = {
     /* script_hint_vtable */ 0x00674188u,           // gt4/hInt.h: hInt vtable
     /* option_project_word_offset */ 0x3A3BCu,     // TASK-212: the menu state's next-project id ("arca" there)
     /* option_project_id */ 0x6974706Fu,            // "opti": the Options project (RAM state options-screen3)
+    /* screen_adjust_v_callback */ 0x001802F0u,    // MOption::get/set_screen_adjust_v (adhoc_methods.txt, decomp)
+    /* screen_adjust_h_callback */ 0x00180200u,    // MOption::get/set_screen_adjust_h
+    /* screen_textface_vtable */ 0x00666370u,      // gt4/mTextFace.h
+    /* screen_slider_vtable */ 0x00671D98u,        // gt4/mSliderBar.h
+    /* screen_pane_vtable */ 0x00672950u,          // the Screen `Pane` VBox (state 0xF776C0, geometry 160,130,320,150)
+    /* screen_composite_vtable */ 0x00662EF8u,     // the row composites (menu_quit)
+    /* screen_text_object_offset */ 0x104u,        // mTextFace::unk104 -> mLocalizedText
+    /* screen_text_value_offset */ 0xCu,           // mLocalizedText + 0xC = the display String (func_002B71D0)
+    /* screen_insensitive_offset */ 0x98u,         // mWidget::unk98 bit 3 = insensitive (func_002661D8 sets the low nibble's 8)
+    /* screen_insensitive_bit */ 3u,
+    /* screen_text_assign */ 0x005C2630u,          // basic_string::replace(pos, n1, s, n2)
+    /* screen_heap_name */ 0x005C11A8u,            // string allocator's name holder (first word = const char*)
+    /* screen_alloc */ 0x00326750u,                // engine allocator
+    /* screen_free */ 0x00326798u,                 // engine free
+    /* screen_text_invalidate */ 0x00245270u,      // clears the TextFace's cached layout
+    /* screen_render_functor */ 0x00100F50u,       // the main loop's render functor (frame_render_functor)
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of

@@ -1,5 +1,30 @@
 # Current Status
 
+## TASK-213 Phase 1c: the Resolution and Monitor rows (2026-11-09, implemented, test build)
+
+On `task/213-native-settings` after Phase 1b. The owner accepted Phase 1. This slice proves the host text injection and
+the engine's insensitive state on the game's own sliders and ships the **Resolution** and **Monitor** controls on
+Options > General > Screen.
+
+- **Text:** the slider's value TextFace display string is `mLocalizedText + 0xC`; the page script writes a number there
+  on open and after every change. The host builds one guest string per list entry once (engine `func_005C2630`) and
+  points the game's TextFace text at it at the render functor entry (memory pointer swap, no guest calls/frame). The
+  names persist over the script's repaint, no numeric flash. The earlier per-frame build crashed `0xC0000005` in
+  `ps2::kernel::handle_syscall` (allocator lock) and freed a cached string; the shipped design avoids both.
+- **Insensitive:** `mWidget + 0x98` **bit 3** (`func_002661D8`), not bit 13. Fullscreen Off greys the sliders (engine
+  `bgi` art) and the focus skips them (Down from Fullscreen goes to OK); Fullscreen On re-enables them.
+- **Rows:** `screen_adjust_v/h` hooked (host index; setter clamps/stores/writes `game-changes.toml`, native skipped;
+  guest fields and save stay 0). Lists: `EnumDisplaySettingsW` (29 modes here, current 1920x1080 from `GT4_OUTPUT_SIZE`)
+  and `EnumDisplayMonitors` (1 monitor here, `\\.\DISPLAY1` 3440x1440). Restart values (`resolution`, `monitor`), merged
+  by the launcher; the game shows no notice. Data patch: labels, ranges 0..31/0..7, tooltips off.
+- **Evidence:** `private/slice426-kit` - `off-2300-greyed-names.png`, `off-2500-focus-skips-to-ok.png` (greyed + not
+  selectable), `on-2300-active-names.png`, `on-2500-resolution-focused.png`, `on-2600-resolution-popup.png`,
+  `on-2650-resolution-changed.png` (1920x1200), `game-changes-on.toml` (`resolution = "1920x1200"`), states with
+  screen_adjust 0/0. Exe `5a91309a...`, patch `1818f962...`.
+- **Tests:** `native_native_settings` 1/1, `cargo test -p gt4l-core --lib` 310 passed, both headless runs exit 0.
+- **Open:** a two-monitor owner test (only one here); the replaced strings are intentionally leaked (bounded); restart
+  notice is the launcher's; Spec II is Phase 2. The `GT4_SCREEN_ROWS_TEXT`/`_INSENSITIVE` debug switches default on.
+
 ## TASK-213 Phase 1b: Screen rows + Graphics menu design (2026-11-09, design/evidence)
 
 On `task/213-native-settings` after Phase 1. **Owner accepted Phase 1** in the windowed kit test (no HiVision,

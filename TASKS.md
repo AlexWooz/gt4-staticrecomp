@@ -4911,3 +4911,29 @@ OpenAdhoc is GPL-3.0 and a reference only); the **host-native page** route has t
 data-only candidate that needs the owner's decision and removes that page. **No shell was implemented** (the host
 text/insensitive gate is its first step, shared with the Screen rows), and no game code changed in this slice. Page
 content/restart rules are in mapping §14.4.
+
+**State (2026-11-09, TASK-213 Phase 1c - Resolution/Monitor rows implemented):** branch `task/213-native-settings`.
+The host text injection and the engine insensitive state are **proven** and the two rows ship in a test build.
+
+- **Text injection:** the slider value TextFace's display string is `mLocalizedText + 0xC` (the key is +0x8); the script
+  `setupSlider` writes a number there on open/after every change. The host builds one guest `basic_string` per list
+  entry with the engine's `func_005C2630` when the page is first seen, then points the TextFace's text at it (reference
+  increment, memory only) at the render functor entry. The names persist over the script's repaint with no numeric
+  flash. A per-render-frame build crashed `0xC0000005` in `ps2::kernel::handle_syscall` (allocator lock) and freed a
+  string the render cache still used; the prebuilt-strings/pointer-swap design has no guest calls on the render frame.
+- **Insensitive:** `mWidget + 0x98`, **bit 3** (`func_002661D8`), not bit 13 (`func_00265D98` is another flag). The
+  SliderBar and its composite children get the bit while Fullscreen is Off: the engine's `bgi` greyed art is drawn and
+  the focus traversal skips the rows (Down from Fullscreen lands on OK). The row names stay visible.
+- **Rows and lists:** `MOption.screen_adjust_v` `0x001802F0` / `screen_adjust_h` `0x00180200` hooked (getter = host
+  index, setter = clamp/store/feedback/skip native). `EnumDisplaySettingsW` (29 modes here, current 1920x1080 from
+  `GT4_OUTPUT_SIZE`) and `EnumDisplayMonitors` (1 monitor here, `\\.\DISPLAY1` 3440x1440). Restart values
+  (`resolution = "WxH"`, `monitor = "<device>@<WxH>"`); the launcher merges `game-changes.toml`. Guest
+  `screen_adjust_v/h` stay 0 (states). Data patch: labels, ranges 0..31/0..7, tooltips off.
+- **Evidence:** kit `private/slice426-kit` (exe SHA-256 `5a91309a...`, patch `1818f962...`, states, logs, the six frames,
+  README): Off shows the greyed names and the focus skipping to OK; On focuses Resolution, opens the popup and changes
+  1920x1080 -> 1920x1200, writing `resolution = "1920x1200"`.
+- **Tests:** `native_native_settings` 1/1 (the multi-key feedback writer added), `cargo test -p gt4l-core --lib` 310
+  passed (the resolution/monitor merge tests), both headless runs exit 0.
+- **Still open:** a two-monitor owner test (only one here; the Monitor row lists/paints but a change was not exercised);
+  the replaced script strings are intentionally leaked (the engine cache) - a bounded few per visit; the restart notice
+  is the launcher's; Spec II addresses are Phase 2.

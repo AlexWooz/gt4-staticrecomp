@@ -72,6 +72,17 @@ bool on_wide_mode(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint3
 // GT4_SETTINGS_FEEDBACK; an unset or empty variable writes nothing and returns false with a short reason.
 bool write_feedback(bool fullscreen, char *error, std::size_t error_size);
 
+// Writes the feedback file atomically with one or more `[changes]` entries (the value text is emitted verbatim, so a
+// TOML boolean or a quoted string). Used by the Screen rows for `resolution`/`monitor`.
+bool write_feedback_changes(const char *const *keys, const char *const *values, std::size_t count, char *error,
+                            std::size_t error_size);
+
+// True while the game's next project is the Options project (the page-gating rule the Wide row uses).
+bool option_project_active(const std::uint8_t *ram, std::size_t size);
+
+// Reads argv[0] as a guest hInt (the OptionMenu/SliderBar index). False for another object or a bad pointer.
+bool read_hint_value(const std::uint8_t *ram, std::size_t size, std::uint32_t argv, std::int32_t &value);
+
 // Test seam: replaces the guest boxing call (func_002FE278) so the fixture can check the returned value without the
 // translated guest code. A null pointer restores the guest call.
 using BoxInt = bool (*)(ps2::Cpu &cpu, std::uint32_t slot, std::int32_t value, std::uint32_t depth);

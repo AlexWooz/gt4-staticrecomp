@@ -1231,3 +1231,115 @@ static note row) carries it; the launcher can also show its message after the me
 - **Conteúdo do menu Graphics (quando a rota fechar):** renderizador, escala de render, flares, road sheen, small
   effects, blending/readbacks, 30/60 FPS e HUD; tudo **vale no próximo início** (só Fullscreen é ao vivo); o jogo grava
   `game-changes.toml`, o launcher valida e junta, e nada entra no save.
+
+
+## 16. Phase 1c: host text and insensitive on the Screen rows (2026-11-09, implemented)
+
+Branch `task/213-native-settings`, after Phase 1b. The owner accepted Phase 1. This slice proves the text injection and
+the insensitive state on the game's own slider rows, and ships the **Resolution** and **Monitor** controls.
+
+### 16.1 What was built
+
+- **Data patch (private, `private/slice426-screen-rows`):** the Phase 1 edits, plus the `Vertical`/`Horizontal` labels
+  -> literal `Resolution`/`Monitor`, the two stale tooltips off, the Vertical slider range `-20..50` -> `0..31` and
+  Horizontal `-50..50` -> `0..7`. 10 text replacements and the `"NTSC"` byte edit; container
+  `1818f9622d1f34eb15a09b12df1b4e42f8ef58f9aeb35d5f0cd92ecef2aa50f8`, 77,986 bytes, no growth.
+- **`native/screen_rows.*`** (in the runtime, capsule `slice426-screen-rows-license-guard-runtime`, pin
+  `docs/inputs/slice426-screen-rows-license-guard-runtime.json`):
+  - two dispatch hooks for `MOption.screen_adjust_v` `0x001802F0` and `screen_adjust_h` `0x00180200`, same shape as
+    `wide_mode`: the getter boxes the host list index, the setter reads the slider `.index`, clamps it to the list, stores
+    it, writes `game-changes.toml` and **skips the native**;
+  - a per-frame service at the main loop render functor (`0x00100F50`), which paints the slider's value TextFace, the
+    popup pinch/min/max and sets the engine's insensitive state.
+- **Lists:** `EnumDisplaySettingsW` for the current monitor's modes (29 on the test machine, current 1920x1080 from
+  `GT4_OUTPUT_SIZE`), `EnumDisplayMonitors` for the monitors (1 here: `\\.\DISPLAY1`, desktop 3440x1440). The labels are
+  the mode `WxH` and the monitor `index: short name`; the feedback uses the launcher's stored forms
+  (`resolution = "WxH"`, `monitor = "<device>@<WxH>"`). Both are **restart** values (`GT4_OUTPUT_SIZE`/`GT4_MONITOR` are
+  read once); the launcher merges the feedback on exit/at the next start. The game shows no notice of its own.
+- **Greyed/not selectable:** the engine's insensitive state. Fullscreen Off: the sliders take the engine's greyed `bgi`
+  art (measured background 97,97,101 vs 131,131,137 active) and a Down press **skips both rows to the OK button**; the
+  page closes through the button (frame `off-2500-...`). Fullscreen On: Down focuses Resolution, the popup opens and the
+  value changes (`on-2500/2600/2650`), with `resolution = "1920x1200"` written to the feedback file.
+
+### 16.2 The text path (exact)
+
+- The slider's value is a normal `mTextFace` (vtable `0x00666370`). Its `+0x104` points to an `mLocalizedText`; **+0x8 is
+  the key** (what `get_key` returns) and **+0xC is the display String** (what `func_002B71D0`/`get_text` reads). The page
+  script's `setupSlider` writes a **number** into the +0xC string on open and after every change; the native
+  `screen_adjust_v/h` getter is an `hInt`.
+- **Proof of injection:** the host builds guest `basic_string`s with the engine's own `func_005C2630` (seeded from the
+  current text String) and points the TextFace's `+0xC` slot at them with a reference increment. The renderer reads the
+  slot at every draw, so the names appear. One string per list entry is built **once** when the page is first found
+  (29 mode names + 1 monitor name + `0`/list max), and the per-frame service is a **memory pointer swap only**.
+- **The failure that was fixed:** building a new string **on the render frame** (when the script had just repainted its
+  number) crashed with `0xC0000005` inside `ps2::kernel::handle_syscall` at the allocator lock; the old string was also
+  freed while the TextFace's render cache still pointed at it. The shipped design (prebuilt strings, no free of the
+  replaced script strings) has no guest calls on the render frame and does not crash (two runs, exit 0).
+- The popup `min`/`max` boxes show the list bounds (`0`/`28`); the pinch shows the current name; the row labels are the
+  data-patch literals. The old text strings are intentionally leaked (a handful per page visit) because the engine's
+  layout cache can still reference them; the prebuilt strings are held by the host cache.
+
+### 16.3 The insensitive path (exact)
+
+- `mWidget`'s state word at **+0x98**: **bit 3 (`0x8`)** is the insensitive flag (`func_002661D8` sets the low nibble's
+  8 and preserves bits 0-2). Bit 13 (`func_00265D98`) is a **different** flag; the first implementation used it and the
+  rows stayed selectable and un-greyed. The host sets/clears bit 3 on the SliderBar and, recursively, on its composite
+  children (the greyed `bgi` frame is a child). The engine's focus traversal skips the insensitive sliders.
+- Fullscreen Off/On drives the state through `native_settings::host_fullscreen()`; the row names stay visible while
+  greyed. The row label text itself stays black (the control is greyed); the value text is the same TextFace.
+
+### 16.4 Acceptance evidence (headless, v2.00)
+
+| Check | Evidence |
+|---|---|
+| Names on the rows | `private/slice426-kit/frames/off-2300-greyed-names.png` (Resolution 1920x1080, Monitor 1: DISPLAY1), `on-2300-active-names.png` |
+| Greyed, not selectable | `off-2500-focus-skips-to-ok.png` (Down from Fullscreen lands on OK); slider background 97 vs 131 active; log `row greyed insensitive=1` |
+| Active | `on-2500-resolution-focused.png` (Down focuses Resolution), `on-2600-resolution-popup.png`, `on-2650-resolution-changed.png` (1920x1200) |
+| Feedback | `game-changes-on.toml`: `version = 1`, `[changes] resolution = "1920x1200"`; no file in the Off run (no change) |
+| Save untouched | `state-off.bin`/`state-on.bin`: wide 1, `screen_adjust_h/v` **0**, `"opti"` |
+| Exit | both runs exit 0; no `[mem]` unmapped reads, no crash |
+
+### 16.5 Risks and unknowns
+
+- **One monitor on this machine:** the Monitor row lists and paints its single entry and the feedback code is the same as
+  Resolution, but a monitor change could not be exercised headless. A two-monitor owner test is the gate.
+- **String cache leak:** replaced strings are not freed (the engine's layout cache can reference them). A handful of
+  short strings per page visit; bounded by the session. A proper fix needs the cache invalidation path (the earlier
+  `func_00245270` call with the TextFace made the engine read a null localized pointer; the correct handle is not
+  derived).
+- **Prebuild timing:** the strings are built on the first render frame the page is seen; if that frame's guest context
+  ever holds the allocator lock, the build could still race. The two runs (Off/On) built 30 strings successfully at
+  frame 1663.
+- **Monitor label width:** long friendly names are replaced by the short device (`DISPLAY1`); the full name is not shown.
+- **Restart notice:** the game has no notice; the launcher's message is the only one. The row value changes immediately,
+  but the running game keeps its output size until the next start.
+- **Spec II:** the addresses (`screen_adjust_v/h`, vtable `0x00666370`, bit 3 at +0x98, the string helpers) are v2.00;
+  Spec II is Phase 2.
+- **The `GT4_SCREEN_ROWS_TEXT`/`GT4_SCREEN_ROWS_INSENSITIVE` debug switches** exist for the isolation runs; both default
+  on and are not sent by the launcher.
+- The slider range is 0..31 / 0..7; the list length can be smaller (the host clamps and paints the bounds). A mode count
+  above 32 or a monitor list above 8 would clamp; typical monitors are below both.
+
+### 16.6 Build/kit
+
+- Capsule `private/slice426-screen-rows-license-guard-runtime` (receipt `7bb369a...`), pin
+  `docs/inputs/slice426-screen-rows-license-guard-runtime.json`.
+- Test build in `build/slice424-native-settings-build` (the existing build dir; the capsule changed):
+  `gt4vulkan.exe` 90,227,200 bytes, SHA-256 `5a91309aee6ad31a2c2079e402cb4cb112fd4389e3f7872f1fae1f5da2835ffd`.
+- Kit `private/slice426-kit` (exe, SDL3, ELF, card, patch/recipe/report, both states/logs, the On feedback, the six
+  frames, README). Test only.
+- Targeted tests: `native_native_settings` 1/1 (the multi-key feedback writer added), `cargo test -p gt4l-core --lib`
+  310 passed / 0 failed (the two resolution/monitor merge tests), the two headless runs exit 0.
+
+## 17. Resumo para o dono (pt-BR) - Phase 1c
+
+- **Resolution e Monitor estão funcionando na página Tela.** As linhas mostram o nome da resolução atual
+  (ex.: **1920x1080**) e o monitor (ex.: **1: DISPLAY1**), com as listas tiradas do Windows (29 modos e 1 monitor nesta
+  máquina). O texto do jogo foi provado: o host escreve o nome no próprio campo do jogo e o script não consegue mais
+  deixar o número na tela.
+- **Fullscreen Off:** as duas linhas ficam **cinzas e não selecionáveis** (o cursor pula direto para OK); Fullscreen On:
+  elas voltam e podem ser mudadas com o controle. A troca grava o `game-changes.toml` e **vale no próximo início**
+  (o jogo não muda a janela na hora); o launcher junta no `settings.toml` ao fechar/abrir.
+- **O save não muda:** os campos internos de ajuste de tela continuam 0; o valor do host fica só no arquivo do launcher.
+- **Teste com dois monitores** é o que falta para o seu caso de escolher o monitor; nesta máquina só há um. O resto
+  (nomes, listas, cinza, não selecionável, arquivo de aviso) está provado em capturas headless.

@@ -65,7 +65,7 @@ NATIVE_SETTINGS_OVERLAY_ANCHORS = {
 GUARD_PROFILE = 'task017-guard-v2'
 # v1 = slice212c (camera hook and race-view marker); v2 = slice217 (P2: the marker also runs the HUD canvas hook).
 ASPECT_PROFILE = 'task017-guard-v2+task080-aspect-v2'
-NATIVE_SETTINGS_PROFILE = 'task213-wide-fullscreen-v1'
+NATIVE_SETTINGS_PROFILE = 'task213-screen-rows-v1'
 PREFIX = '// TASK-017 license guard capsule: MIT donor derivation; see native/THIRD_PARTY.md.\n'
 CAPSULE_FILES = ('cdvdfsv.cpp', 'dispatch.cpp', 'kernel.cpp')
 

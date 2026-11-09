@@ -282,6 +282,33 @@ mod tests {
     }
 
     #[test]
+    fn resolution_and_monitor_are_validated_and_stored() {
+        // The game writes TOML basic strings; the launcher stores the same text the Settings page does.
+        let (merge, settings) = apply(
+            "version = 1\n\n[changes]\nresolution = \"1920x1080\"\nmonitor = \"\\\\\\\\.\\\\DISPLAY1@1920x1080\"\n",
+        );
+        assert_eq!(settings.get("resolution"), "1920x1080");
+        assert_eq!(settings.get("monitor"), r"\\.\DISPLAY1@1920x1080");
+        assert!(settings.was_chosen("resolution"));
+        assert!(settings.was_chosen("monitor"));
+        assert_eq!(merge.changes.len(), 2);
+        assert!(merge.warnings.is_empty());
+    }
+
+    #[test]
+    fn bad_resolution_and_monitor_values_are_refused() {
+        let (merge, settings) = apply(
+            "version = 1\n\n[changes]\nresolution = \"abc\"\nmonitor = \"no-device-here\"\n",
+        );
+        assert!(merge.changes.is_empty());
+        assert_eq!(merge.warnings.len(), 2);
+        assert_eq!(settings.get("resolution"), crate::display::DESKTOP, "the default is unchanged");
+        assert_eq!(settings.get("monitor"), crate::display::PRIMARY);
+        assert!(!settings.was_chosen("resolution"));
+        assert!(!settings.was_chosen("monitor"));
+    }
+
+    #[test]
     fn the_feedback_path_is_beside_the_settings_file() {
         let path = path(Path::new("C:/config"));
         assert_eq!(path, Path::new("C:/config").join(FILE_NAME));

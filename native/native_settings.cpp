@@ -41,7 +41,7 @@ bool within(std::uint32_t at, std::uint32_t bytes, std::size_t size) {
   return at != 0 && at <= size && size - at >= bytes;
 }
 
-bool option_project_active(const Guest &guest, const std::uint8_t *ram, std::size_t size) {
+bool option_project_active_guest(const Guest &guest, const std::uint8_t *ram, std::size_t size) {
   if (!guest.owner_pointer || !guest.project_word || !guest.option_project) return false;
   const std::uint32_t owner = ld32(ram, size, guest.owner_pointer);
   if (!within(owner, guest.project_word + 4u, size)) return false;
@@ -145,7 +145,7 @@ bool on_wide_mode(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint3
     gt4::target::note_hook_unavailable("native settings (Wide -> Fullscreen)");
     return false;
   }
-  if (!ram || !option_project_active(g, ram, size)) return false;
+  if (!ram || !option_project_active_guest(g, ram, size)) return false;
   const std::uint32_t return_label = cpu.r[31].w[0];
   if (cpu.r[6].w[0] > 0) {
     // Setter: the script ran `option.wide_mode = Pane::Wide::OptionMenu.index`.
@@ -206,15 +206,29 @@ bool on_wide_mode(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint3
 }
 
 bool write_feedback(bool fullscreen, char *error, std::size_t error_size) {
+  const char *key = "fullscreen";
+  const char *value = fullscreen ? "true" : "false";
+  return write_feedback_changes(&key, &value, 1, error, error_size);
+}
+
+bool write_feedback_changes(const char *const *keys, const char *const *values, std::size_t count, char *error,
+                            std::size_t error_size) {
   const auto fail = [error, error_size](const char *text) {
     if (error && error_size > 0) std::snprintf(error, error_size, "%s", text);
     return false;
   };
   const char *path = std::getenv(kFeedbackVariable);
   if (path == nullptr || *path == '\0') return fail("GT4_SETTINGS_FEEDBACK is not set");
+  if (count == 0 || keys == nullptr || values == nullptr) return fail("no change to write");
   const std::string target(path);
   const std::string temporary = target + ".tmp";
-  const std::string text = std::string("version = 1\n\n[changes]\nfullscreen = ") + (fullscreen ? "true\n" : "false\n");
+  std::string text = "version = 1\n\n[changes]\n";
+  for (std::size_t i = 0; i < count; ++i) {
+    text += keys[i];
+    text += " = ";
+    text += values[i];
+    text += "\n";
+  }
   std::FILE *file = std::fopen(temporary.c_str(), "wb");
   if (!file) return fail("cannot create the temporary feedback file");
   const std::size_t written = std::fwrite(text.data(), 1, text.size(), file);
@@ -228,8 +242,18 @@ bool write_feedback(bool fullscreen, char *error, std::size_t error_size) {
     std::remove(temporary.c_str());
     return fail("cannot replace the feedback file");
   }
-  std::fprintf(stderr, "[native-settings] feedback %s: fullscreen = %s\n", target.c_str(), fullscreen ? "true" : "false");
+  std::fprintf(stderr, "[native-settings] feedback %s:", target.c_str());
+  for (std::size_t i = 0; i < count; ++i) std::fprintf(stderr, " %s = %s", keys[i], values[i]);
+  std::fprintf(stderr, "\n");
   return true;
+}
+
+bool option_project_active(const std::uint8_t *ram, std::size_t size) {
+  return ram != nullptr && option_project_active_guest(guest(), ram, size);
+}
+
+bool read_hint_value(const std::uint8_t *ram, std::size_t size, std::uint32_t argv, std::int32_t &value) {
+  return read_index(guest(), ram, size, argv, value);
 }
 
 void set_box_int_for_test(BoxInt fn) { g_box_int_for_test = fn; }

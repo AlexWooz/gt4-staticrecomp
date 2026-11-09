@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "donor_revision": "1b4808793a12c45125262fd2d5f50a9ec9f7c020",
+  "donor_sha256": {
+    "dispatch.cpp": "691c1d045b928ef789338f0954ec820fc0fd4e938cd2b2940743b3ad6005f995",
+    "kernel.cpp": "003c9e0a0e2c1cb61a6fd8ec846a4798c3027ed933b6825c6377112106f0168a",
+    "iop/cdvdfsv.cpp": "c313e10af0baaf63d9bd31040c168f38936c979c37fdce45afdf060d11560fbe"
+  },
+  "license_guard_profile": "task017-guard-v2+task080-aspect-v2",
+  "license_guard_overlay_sha256": "7765a1c79d5c4ef8846fd7b4d6a2c629453342bc552be78547c9be6fc5a6e79a",
+  "halt_dump_overlay_sha256": "519027e1b425fa99d93c401868b29611001440d3df3b2b090d00b37c03af659c",
+  "fsv_trace_overlay_sha256": "03579b77bb1ae26f040325157f7dcf91d32afd57e484b43b32bd1040dcbc59a0",
+  "source_sha256": {
+    "cdvdfsv.cpp": "0074d14f838d303314cdc7601450993134702cacd59bef9e288ec74e87ffad1d",
+    "dispatch.cpp": "8ed82f82e05238fee76b1673603a24e12eb9600b01ed85baac85e2880a999783",
+    "kernel.cpp": "9384da59e72fb056d6b52363f8d26d7bbf4793e8c47481f41304d741f00e5754"
+  },
+  "display_aspect_overlay_sha256": "65992ad963a5b166cc960ab8f3366edafd048908769a79817651a18b50dde901",
+  "frame_counters_profile": "task084-frame-counters-v1",
+  "frame_skip_overlay_sha256": "a058dcceb2a8cbcb99d5b56e99fafe58e49dc05ee1d448b8cb7047a338371f35",
+  "native_settings_profile": "task213-screen-rows-v1",
+  "native_settings_overlay_sha256": "f533770b3c0086d759c454fd961f33ee0ab01195cf94204fd31f953502f20747",
+  "receipt_sha256": "7bb369a048764bb1d346f264243efde6846f54deec8be4e97db1a247244a5023",
+  "slice": "426",
+  "date": "2026-11-09",
+  "capsule": "private/slice426-screen-rows-license-guard-runtime",
+  "derivation": "scripts/prepare_license_guard.py <assets>/private/slice426-screen-rows-license-guard-runtime --assets-root <assets> --display-aspect --frame-counters --frame-skip --native-settings",
+  "purpose": "TASK-213 Phase 1c (test build only): the slice424 guard plus the Screen rows hooks (native/screen_rows.*): the MOption.screen_adjust_v/h callbacks and the per-frame text/insensitive service at the main loop render functor. The value text is written into the game's own mTextFace localized string; the engine insensitive bit greys the row while Fullscreen is Off. Only the Options project is touched. kernel.cpp and cdvdfsv.cpp are byte-identical to slice376/slice424.",
+  "build_variable": "GT4_LICENSE_GUARD_SOURCE",
+  "supersedes": "slice424 for the Screen-rows test build only (slice424 stays the Phase 1 kit)"
+}
