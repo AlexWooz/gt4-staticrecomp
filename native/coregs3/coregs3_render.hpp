@@ -4,8 +4,9 @@
 // matrix the game composed, at the capture's own resolution, and nothing else. It is deliberately a CPU reference with a
 // documented list of what it does not do yet, so the live Vulkan renderer (step 1e) has a ground truth to match:
 //
-//   does     clip-space transform with the draw's 0xC1 matrix (rows 0-2 scaled by the shape's `value`), perspective
-//            divide, a top-left rasteriser, a w-buffer (nearer wins), Gouraud vertex colours and perspective-correct UVs
+//   does     the measured VU1 vertex transform (coregs3_vertex.hpp: the 0xC1 block as four unscaled columns), clip-space
+//            rejection and near-plane clipping of triangles, a perspective divide, a top-left rasteriser, a w-buffer
+//            (nearer wins), Gouraud vertex colours and perspective-correct UVs
 //   does not lighting, fog, texgen, textures, destination alpha, culling, the guard-band clip and back-face fill rules
 //            that the VU1 + GS pair applies. A picture from this tool is evidence of geometry and coverage, not of final
 //            fidelity.
@@ -17,6 +18,7 @@
 
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
+#include "coregs3_vertex.hpp"
 
 namespace gt4::coregs3 {
 
@@ -57,10 +59,13 @@ struct RenderStats {
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };
 
-// The composed matrix of one draw: `func_0049E548` scales VU0 vf24..vf26 by the shape's `value` and copies vf27 as the
-// fourth row, then uploads the four rows to VU1 qword 0xC1. The rows are stored row-major here.
+// The transform of one draw, in the measured convention (docs/COREGS3-HOOKS.md §10.2): four unscaled columns
+// (`columns`, c0..c3 = VU0 vf24..vf27) plus the equivalent row-major matrix used by the flat-shading normal rotation
+// and the `--ndc` diagnostic, where row[r][c] is component r of column c. `valid` is false when a column is not finite
+// or the matrix has no usable linear part.
 struct DrawMatrix {
   float row[4][4] = {};
+  VertexColumns columns;
   bool valid = false;
 };
 DrawMatrix draw_matrix(const CapturedDraw &draw);

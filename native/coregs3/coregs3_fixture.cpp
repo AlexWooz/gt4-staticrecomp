@@ -5,7 +5,7 @@
 //   - the bounded VIF decoder: an ordinary V3-16 UNPACK into the TOPS window, an absolute V4-8 UNPACK, STROW with a fill
 //     cycle, and the refusals (unknown opcode, payload overrun);
 //   - the channel rule: destination/format classification and the strip topology of a mesh;
-//   - the composed matrix of func_0049E548 (rows 0-2 scaled by `value`, row 3 not);
+//   - the measured draw transform (columns c0..c3 = vf24..vf27, used unscaled; docs/COREGS3-HOOKS.md §10.2);
 //   - a PNG file: signature, IHDR size, IEND.
 #include "coregs3_png.hpp"
 #include "coregs3_render.hpp"
@@ -253,15 +253,24 @@ void check_matrix() {
   draw.cmd_value = float_bits(0.5f);
   const DrawMatrix matrix = draw_matrix(draw);
   require(matrix.valid, "the matrix is valid");
-  require(matrix.row[0][0] == 1.0f && matrix.row[0][3] == 1.5f, "row 0 is scaled by the shape value");
-  require(matrix.row[1][1] == 2.0f, "row 1 is scaled by the shape value");
-  require(matrix.row[2][3] == -0.5f, "row 2 translation is scaled too");
-  require(matrix.row[3][3] == 1.0f, "row 3 is not scaled");
+  // The measured convention (docs/COREGS3-HOOKS.md §10.2): the 0xC1 block is four columns c0..c3 = vf24..vf27, used
+  // unscaled. The equivalent row-major form stores component r of every column in row r.
+  require(matrix.columns.column[0][0] == 2.0f && matrix.columns.column[0][3] == 3.0f, "c0 is vf24");
+  require(matrix.columns.column[1][1] == 4.0f && matrix.columns.column[1][3] == 0.0f, "c1 is vf25");
+  require(matrix.row[0][0] == 2.0f && matrix.row[0][3] == 0.0f, "row 0 is component 0 of every column");
+  require(matrix.row[1][1] == 4.0f, "row 1 is component 1");
+  require(matrix.row[2][2] == 5.0f && matrix.row[2][3] == 0.0f, "row 2 is component 2");
+  require(matrix.row[3][0] == 3.0f && matrix.row[3][2] == -1.0f && matrix.row[3][3] == 1.0f,
+          "row 3 is component 3");
 
+  // The shape's `value` scales the uploaded packet rows, never the VU0 columns: the metre positions already carry the
+  // 1/4096 that cancels it.
   CapturedDraw zero = draw;
   zero.cmd_value = 0;
-  const DrawMatrix raw = draw_matrix(zero);
-  require(raw.row[0][0] == 2.0f && raw.row[0][3] == 3.0f, "a zero value uploads the raw rows");
+  const DrawMatrix unscaled = draw_matrix(zero);
+  for (std::uint32_t row = 0; row < 4; ++row)
+    for (std::uint32_t lane = 0; lane < 4; ++lane)
+      require(unscaled.row[row][lane] == matrix.row[row][lane], "cmd.value does not scale the columns");
 }
 
 void check_mesh() {
@@ -335,8 +344,20 @@ void check_mesh() {
 void check_render_and_png() {
   std::vector<std::uint8_t> packets = make_packet();
   CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packets.size()));
-  draw.vf[0][0] = float_bits(4096.0f);
-  draw.vf[1][1] = float_bits(4096.0f);
+  // A valid measured-convention transform for the hand-authored triangle (-1,0), (1,0), (0,1): c0..c3 are the identity
+  // columns, so clip = (x, y, z, 1) and every vertex is in front of the camera.
+  draw.vf[0][0] = float_bits(1.0f);
+  draw.vf[0][1] = float_bits(0.0f);
+  draw.vf[0][2] = float_bits(0.0f);
+  draw.vf[0][3] = float_bits(0.0f);
+  draw.vf[1][0] = float_bits(0.0f);
+  draw.vf[1][1] = float_bits(1.0f);
+  draw.vf[1][2] = float_bits(0.0f);
+  draw.vf[1][3] = float_bits(0.0f);
+  draw.vf[2][0] = float_bits(0.0f);
+  draw.vf[2][1] = float_bits(0.0f);
+  draw.vf[2][2] = float_bits(1.0f);
+  draw.vf[2][3] = float_bits(0.0f);
   draw.vf[3][0] = float_bits(0.0f);
   draw.vf[3][1] = float_bits(0.0f);
   draw.vf[3][2] = float_bits(0.0f);

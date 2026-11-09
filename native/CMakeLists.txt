@@ -1076,13 +1076,19 @@ target_compile_options(shape_observer_fixture PRIVATE /W4)
 # an EE library built from the units scripts/coregs3_units.py instruments.
 add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
-    coregs3/coregs3_render.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp)
+    coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp
+    coregs3/coregs3_timeline.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 add_executable(coregs3_fixture coregs3/coregs3_fixture.cpp)
 target_link_libraries(coregs3_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_fixture PRIVATE /W4)
 add_test(NAME native_coregs3 COMMAND $<TARGET_FILE:coregs3_fixture>)
+# TASK-090: the measured VU1 vertex transform (docs/COREGS3-HOOKS.md §10.2), on hand-checked pairs and synthetic cases.
+add_executable(coregs3_vertex_fixture coregs3/coregs3_vertex_fixture.cpp)
+target_link_libraries(coregs3_vertex_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_vertex_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_vertex COMMAND $<TARGET_FILE:coregs3_vertex_fixture>)
 # TASK-090: the variable-FPS presentation timeline (frames, timestamps, object identity, pairing, alpha).
 add_executable(coregs3_timeline_fixture coregs3/coregs3_timeline_fixture.cpp)
 target_link_libraries(coregs3_timeline_fixture PRIVATE gt4_coregs3)
