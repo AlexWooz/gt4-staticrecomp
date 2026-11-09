@@ -1607,8 +1607,18 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   draws and 2,614 of 9,048 triangles (4,757 pixels, frame 0) and the picture is the car grid in perspective; the old
   row reading puts 13 of the 41 on-screen draws behind the eye and leaves the other 28 at 1.9204 px rms. The 3x gate
   still passes (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames).
-- Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the M4 live overlay seam (review work), M4 only
-  after the 3x gate re-run, and the remaining G-IMAGE/G-PERF gates.
+- **Round 10 (2026-11-09, M4 live present).** `GT4_COREGS3=present` publishes the complete captured frame through an
+  8-slot ring (`native/coregs3/coregs3_present.{hpp,cpp}`) and the HWR backend draws the captured car pass over the
+  composed image after `ComposeFrameGpu` in both the window and headless paths
+  (`native/hw_gs/coregs3/hw_coregs3_present.{hpp,cpp}`, shaders `coregs3_present.{vert,frag}`). The composed image has
+  no `COLOR_ATTACHMENT` usage on this device, so the fragment stage writes the packed R32_UINT word with an
+  `imageStore`; D32 depth, `GREATER` and `depthClamp` stay. Full 3x night run: 8,997 VBlanks / 1,686 racing, 13 passes,
+  1,377 draws, 338,934 vertices, 112,978 triangles, 0 refused, guest clock/digest/state identical; present vs reference
+  differs only in the car box (36,736 px, x 1064..1595 y 231..906). Independent short run (7,597 VBlanks) also 0
+  differences; off/shadow gate on the same binaries passes (13/13 frames). Validation shows no error from the new pass.
+  `off|shadow` untouched, `overlay` still refuses, `present` debug-only, nothing ships.
+- Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the G-IMAGE/G-PERF gates, and then the native
+  fidelity work (textures, fog, effects) on top of the live `present` seam.
 
 
 ### TASK-087 — GS readbacks without stalls

@@ -315,14 +315,37 @@ the wrap is expected 16-bit arithmetic. The live renderer must clip in clip spac
 wrapped 12.4 screen coordinate. The module `native/coregs3/coregs3_vertex.{hpp,cpp}` implements it (round 9), and
 `coregs3_render.cpp` projects through it with near-plane clipping; the object path is unchanged.
 
-**Consequence for the existing code:** `native/coregs3/coregs3_render.cpp` `draw_matrix()` reads `vf24..vf27` as matrix
-**rows** and multiplies rows 0-2 by `cmd.value`. The capture shows the packet rows are exactly `vf * value` (e.g.
-`packet1 = 0.000474434` = `vf24[0] 2.037678 * value 0.000232830644`), so the row reading is a different transform: it
-is why the offline renderer's screen mode was never validated. Every published M2/M4 picture used `--object`, which
-bypasses `draw_matrix`. **The offline tool's screen mode must be treated as wrong until it is changed to the convention
-above** (planned `coregs3_vertex` module, not written this round).
+**Consequence for the existing code (before round 9):** `native/coregs3/coregs3_render.cpp` `draw_matrix()` read
+`vf24..vf27` as matrix **rows** and multiplied rows 0-2 by `cmd.value`. The capture shows the packet rows are exactly
+`vf * value` (e.g. `packet1 = 0.000474434` = `vf24[0] 2.037678 * value 0.000232830644`), so the row reading is a
+different transform: it is why the offline renderer's screen mode was never validated, and every published M2/M4 picture
+used `--object`, which bypasses `draw_matrix`. Round 9 replaced it with the `coregs3_vertex` module (columns, clip space);
+the old screen-mode pictures are row-reading evidence only.
 
-### 10.3 The live design that was prepared (not implemented)
+### 10.3 The live design (implemented in round 10)
+
+**Implemented (2026-11-09, round 10).** `GT4_COREGS3=present` now has its frame ring in
+`native/coregs3/coregs3_present.{hpp,cpp}` (8 slots, O(1) vector swaps, a `try_lock` producer that drops instead of
+waiting, a claim-newest consumer, atomic counters) and its renderer in
+`native/hw_gs/coregs3/hw_coregs3_present.{hpp,cpp}` (private command pool/buffer/fence, shaders, pipeline, D32 depth
+image, host-visible vertex buffer, one triangle-list draw per captured draw with the raw `vf24..vf27` in a push
+constant). It is inserted after `ComposeFrameGpu` in `Backend::end_frame` and `Backend::scanout`, submitted on
+`Impl::queue` through `Impl::submit_to`; `overlay` still refuses to start, `off|shadow` stay untouched, and only
+`shadow` writes a capture file. Deviations from the prepared design: the composed display image is created by CoreGS 2.0
+without `COLOR_ATTACHMENT` usage on this device, so the fragment stage writes the packed R32_UINT word with an
+`imageStore` (storage image) instead of a colour attachment; the D32 depth attachment, the `GREATER` test and
+`depthClamp` remain, and the image barrier is `GENERAL`↔`GENERAL`. The layer refuses cleanly when the device lacks
+`depthClamp`, the D32 depth attachment or R32_UINT storage.
+
+**Evidence (2026-11-09, Avell A70, RTX 3060 Laptop, Vulkan 1.4.357).** Full 3x night run, 8,997 VBlanks / 1,686 racing:
+13 passes, 1,377 draws, 338,934 vertices, 112,978 triangles, 0 refused; the guest clock, digest and state are identical
+to the reference. The present frame at VBlank 7400 is `build/evidence/coregs3/r8/present-07400.png`; present against
+reference differs in 36,736 px in the car box only (x 1064..1595, y 231..906). A second independent run (7,597 VBlanks,
+286 racing) also reports 0 clock/digest/state differences. The off/shadow gate on the same binaries passes (8,997
+VBlanks, 1,686 racing, 0 differences, 13/13 frames). The validation smoke run reports no error or warning from the new
+pass; its only message is a pre-existing CoreGS 2.0 `VUID-VkSubpassDependency-srcSubpass-02243` at startup.
+
+The design bullets below are the round-7 plan, kept as the design record.
 
 - **Mode:** `GT4_COREGS3=present` (a fourth value beside `off|shadow|overlay`), debug only, never an acceptance mode.
   `overlay` keeps refusing to start.

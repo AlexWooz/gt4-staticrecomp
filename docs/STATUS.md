@@ -1,5 +1,26 @@
 # Current Status
 
+## TASK-090 round 10: the live present layer, M4 (2026-11-09, branch `task/090-coregs3`)
+
+`GT4_COREGS3=present` now publishes the complete captured frame through an 8-slot ring and the HWR backend draws the
+captured car pass over the composed image after `ComposeFrameGpu`, in the window and headless paths. New files:
+`native/coregs3/coregs3_present.{hpp,cpp}` (ring, O(1) buffer swaps, `try_lock` producer, counters) and
+`native/hw_gs/coregs3/hw_coregs3_present.{hpp,cpp}` (private command pool/buffer/fence, D32 depth, host-visible vertex
+buffer, one triangle-list draw per captured draw, raw `vf24..vf27` in a push constant) plus
+`native/hw_gs/shaders/coregs3_present.{vert,frag}`. The composed image has no `COLOR_ATTACHMENT` usage on this device, so
+the fragment stage writes the packed R32_UINT word with an `imageStore`; the D32 depth attachment, the `GREATER` test
+and `depthClamp` stay, with a `GENERAL`↔`GENERAL` barrier. `off|shadow` are untouched, `overlay` still refuses, only
+`shadow` writes a `.gt4scene`, and the layer refuses cleanly without the formats/feature.
+
+Evidence (Avell A70, RTX 3060 Laptop, Vulkan 1.4.357): full 3x night run, 8,997 VBlanks / 1,686 racing, present counters
+`13 passes, 1,377 draws, 338,934 vertices, 112,978 triangles, 0 refused`, guest clock/digest/state identical to the
+reference; the frame at VBlank 7400 is `build/evidence/coregs3/r8/present-07400.png`, and present against reference
+differs in 36,736 px in the car box only (x 1064..1595, y 231..906). A second independent run (7,597 VBlanks, 286
+racing) reports 0 clock/digest/state differences, and the off/shadow gate on the same binaries passes (8,997 VBlanks,
+1,686 racing, 0 differences, 13/13 frames). Validation: no error or warning from the new pass (one pre-existing CoreGS
+2.0 VUID at startup). CTest 3/3 and Python 7/7. No pin, release or launcher change; `present` stays debug-only and the
+faithful renderer remains the reference.
+
 ## TASK-090 round 9: the vertex module and the corrected screen renderer (2026-11-09, branch `task/090-coregs3`)
 
 `native/coregs3/coregs3_vertex.{hpp,cpp}` now implements the measured VU1 transform (the 0xC1 block as four unscaled
