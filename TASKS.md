@@ -4730,3 +4730,62 @@ Evidence in `build/evidence/t199/` (before and after screenshots).
 
 **State (2026-11-06):** done, branch `task/199-tooltip-layer`, pushed, no PR, no release. UI only
 (`launcher/crates/gt4l-tauri/ui`), so the same commit can be applied to the Android branch.
+
+### TASK-211: launch straight into a game from Steam (skip the launcher UI) (owner, 2026-11-09; rc17)
+
+**Why.** A player wants a couch setup: add GT4Recomp to Steam, launch it from Big Picture, and return to Steam when
+the game closes, without the launcher UI. The launcher currently always opens its window; the game is chosen in the
+UI. A direct launch must therefore take the game on the command line.
+
+**What.**
+- `--skip-launcher` starts the launcher hidden, runs the same Play path (disc, card, shader prepare, game start),
+  waits for the game process to end, then exits so Steam gets the process back. No UI and no tray interaction.
+- `--game=retail` and `--game=spec2` (aliases `gt4`/`spec2`) select the game, because the selection UI is skipped.
+  Without `--game`, use the last played game and log it; a missing/unknown value is a clear error.
+- If the selected game is not ready (no disc, no install), show the normal launcher window with the error instead of a
+  silent failure; if the game is already running, refuse and log.
+- Use the same Play code path as the button; no second implementation of the launch. Refactoring `commands::play` into
+  a headless core is acceptable.
+- Steam instructions: add `GT4Recomp.exe`, set launch options `--skip-launcher --game=spec2` (or `retail`), and use
+  Big Picture's "Exit Game" as the fallback; the in-game Quit (TASK-212) is the primary exit.
+- Tests: argument parser unit tests, game-id mapping, a flow audit that resolves a fake game; the real game launch
+  stays an owner test. Docs: `docs/launcher/LAUNCHER-PLAN.md` and `docs/tasks/RC17-COUCH-AND-INGAME.md`.
+
+**State:** planned for rc17; branch `task/211-rc17-launcher-flags`.
+
+### TASK-212: in-game Quit Game and controller exit (owner, 2026-11-09; rc17 study + first implementation)
+
+**Why.** The same couch player wants to close the game with the controller and return to Steam. The launcher can be
+controlled with a pad, but the game itself has no quit-to-desktop; the player should not need Alt+F4 or the Steam
+overlay. The owner also wants a "Quit Game" item on GT4's main menu.
+
+**What.**
+- Study GT4's main menu code (decomp/ELF) and the host exit path; find a safe hook for a "Quit Game" item or a
+  controller shortcut (for example L3+R3+Start) that closes the game to the desktop.
+- Prefer a menu item navigable with the pad, in the game's font and layout, with a confirmation step.
+- Game logic and progression untouched; the action is a host quit after the game saves/flushes.
+- If a menu item is not feasible, a controller shortcut with an on-screen confirmation is the fallback.
+- The study is read-only first; implementation only after the hook and the menu entry are understood. rc17 may ship
+  the study or the first item, not the whole settings menu.
+- Tests: a fixture for the quit action/hook; the owner's controller test.
+
+**State:** planned for rc17; study first.
+
+### TASK-213: in-game settings parity with the launcher (owner, 2026-11-09; rc17 study, umbrella)
+
+**Why.** The owner wants as many launcher functions as possible inside GT4's own menus: graphics (renderer,
+resolution, effects), controls (bindings, deadzone), audio, etc. This keeps the couch flow in the game and reduces
+launcher round-trips.
+
+**What.**
+- Study the game menu structures and the existing hooks; decide between extending GT4's Options menu and a native
+  overlay drawn over the game (the performance overlay/F8 style).
+- Map each launcher setting to an in-game option, with the same config write-through and the same restart rules.
+- Start with a small, safe set (for example renderer, resolution/scale, a few control options); never change
+  gameplay, physics, progression or saves.
+- The umbrella covers TASK-212 (Quit Game) and later graphics/control rows; split implementation tasks as the study
+  finds them.
+- The study is read-only; no game code changed until the mapping is reviewed.
+
+**State:** planned for rc17; study first. The split-screen tasks TASK-209/210 live on `task/205-variant-coverage`
+(459bdfda); merge their TASKS entry into the rc17 line before branching the release.
