@@ -3775,6 +3775,15 @@ the next prepare.
    4 of 4 / 9 of 9 identical, rc15 identity 24/35/35 + 10/10 + 14/14 + 12/12 frames with `state.bin` identical, VU and
    MTVU 0 mismatches, CTest 320/321 each, `hw_core2_*` 36 of 36, Python 804, launcher 784/9. Prepared 4x Paris: 8.44 ->
    7.41 ms/VBlank against the plain build, `gpu_busy` unchanged. STATUS top and journal 2026-11-09.
+6. **Packaged and published as the `v1.3.0-rc16` pre-release (2026-11-09).** Worktree `gt4-wt-208-rc16-pgo-package`,
+   branch `task/208-rc16-pgo-package`; the PGO distribution used unchanged (no game rebuilt, no new pin). Launchers
+   `-Label rc16` (installer 19,456,512 bytes `56bb6dd4...`, portable 19,418,112 `8dd5b6dd...`), installer
+   52,386,977 `1154374c...`, portable zip 81,522,954 `7b32e66e...`, `SHA256SUMS` 197 `b184d790...`; both payloads checked
+   file by file (56 comparisons, 0 differences) with both games and all 20 distribution files in each; the distribution
+   re-verified here (138 checks, 0 problems). The public release candidate keeps the PGO numbers (7.41 against 8.44
+   ms/VBlank, about 12%) and ships the same notes in both launcher languages. Published as a GitHub **pre-release, not
+   Latest** (id 438753811): https://github.com/moesuito/gt4-staticrecomp/releases/tag/v1.3.0-rc16. The old plain draft was
+   deleted; no PR, no manual tag, no gt4-gs change.
 
 **Gates (headless, this PC).**
 - **4x gate, Spec II** (George V Paris, B-Spec, 4x, the TASK-205/206 timeline, 2,400 VBlanks, dumps 4800/5400/6000/6600):

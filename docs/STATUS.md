@@ -49,9 +49,20 @@ rc16 build: **PGO + ThinLTO, both v2.00 and Spec II**, replacing the plain both-
   CRT DLLs, four licences and `MANIFEST.json` (19 named, 20 in the folder). Every file checked against the two new pins by
   size and SHA-256 (wrong=0); `--portable-check` reports the installed shader folder complete (9 of 9, no build-time
   fallback) for both; both boot headless from the folder to frame 1800 (v2.00 8,847,570,492 cycles, Spec II
-  8,847,383,449). No installer, no portable zip, no upload: the packaging step does that.
-- **Not done.** The owner's in-game test of this PGO build; the installer, the portable zip and the pre-release publish.
-  The plain `slice418-dist-130-rc16` kit stays as the test build it was.
+  8,847,383,449).
+- **Packaged and published as the pre-release `v1.3.0-rc16` (2026-11-09).** Worktree `gt4-wt-208-rc16-pgo-package`,
+  branch `task/208-rc16-pgo-package`; the distribution used unchanged (no game rebuilt). Re-verified here:
+  **138 checks, 0 problems** (file set, MANIFEST, both pins and pinned artifacts, nine shaders, SDL3, licences, CRT DLLs,
+  no build or user path). Launchers `-Label rc16` **19,456,512 bytes `56bb6dd4...`** (installer) and **19,418,112
+  `8dd5b6dd...`** (portable); `GT4Recomp-Setup-1.3.0-rc16.exe` **52,386,977 `1154374c...`**, `GT4Recomp-1.3.0-rc16-portable.zip`
+  **81,522,954 `7b32e66e...`**, `SHA256SUMS` **197 `b184d790...`**; both payloads extracted and checked file by file,
+  **56 comparisons, 0 differences**, both games in each. Launcher 784/9, focus 413/413 en-US and 420/420 pt-BR, nav-test
+  265/265, 918 locale keys, no JS error. Full and launcher notes made public (release-candidate warning; persistent PGO
+  bullets synced into the 1.3.0 launcher notes in both languages). The old plain draft was deleted; the PGO draft
+  **id 438753811** was **published as a pre-release, not Latest**:
+  https://github.com/moesuito/gt4-staticrecomp/releases/tag/v1.3.0-rc16.
+- **Not done.** The owner's in-game test of this PGO build. The plain `slice418-dist-130-rc16` kit stays as the test build
+  it was.
 
 ## TASK-208: the mapped CoreGS 2.0 variants ship in both games (owner, 2026-11-07; implemented, both-game test build)
 
