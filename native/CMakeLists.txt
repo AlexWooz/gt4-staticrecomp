@@ -479,6 +479,17 @@ target_compile_definitions(gt4_gs_stream_client PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(gt4_gs_stream_client PRIVATE /W4)
 # TASK-038: users of the client (window.cpp through ps2runtime_vulkan) see GT4_GS_STREAM_CLIENT.
 target_compile_definitions(gt4_gs_stream_client INTERFACE GT4_GS_STREAM_CLIENT)
+# TASK-090 CoreGS 3.0, phase 1: the scene snapshot, the bounded VIF decoder, the capture format, the measured vertex
+# transform, the offline car renderer and the live frame ring (native/coregs3/). Defined before the HWR backend so the
+# backend may read the ring in `GT4_COREGS3=present` (its own targets and resources are untouched). The hooks themselves
+# are only linked into the game when GT4_COREGS3 is ON, because they need an EE library built from the units
+# scripts/coregs3_units.py instruments.
+add_library(gt4_coregs3 STATIC
+    coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
+    coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp
+    coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp)
+target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
+target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
 # and lets the GS stream seam accept GT4_RENDERER=hw. In that mode the same hooks that feed gt4-gs.exe in pcsx2 mode
 # feed the in-process HWR backend (native/hw_gs/hw_gs_stream_sink.cpp); no GS process is started. With GT4_HW_GS=OFF
@@ -1071,15 +1082,7 @@ add_test(NAME native_wheel COMMAND $<TARGET_FILE:wheel_fixture>)
 add_executable(shape_observer_fixture shape_observer_fixture.cpp shape_observer.cpp)
 target_compile_options(shape_observer_fixture PRIVATE /W4)
 
-# TASK-090 CoreGS 3.0, phase 1: the scene snapshot, the bounded VIF decoder, the capture format and the offline car
-# renderer (native/coregs3/). The hooks themselves are only linked into the game when GT4_COREGS3 is ON, because they need
-# an EE library built from the units scripts/coregs3_units.py instruments.
-add_library(gt4_coregs3 STATIC
-    coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
-    coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp
-    coregs3/coregs3_timeline.cpp)
-target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
-target_compile_options(gt4_coregs3 PRIVATE /W4)
+# TASK-090 CoreGS 3.0 fixtures and tools. The library itself (gt4_coregs3) is defined before the HWR backend above.
 add_executable(coregs3_fixture coregs3/coregs3_fixture.cpp)
 target_link_libraries(coregs3_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_fixture PRIVATE /W4)

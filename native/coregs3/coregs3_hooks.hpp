@@ -18,9 +18,11 @@ struct Cpu;
 
 namespace gt4::coregs3 {
 
-// Reads GT4_COREGS3 (off|shadow|overlay), GT4_COREGS3_CAPTURE (a .gt4scene path) and GT4_COREGS3_CAPTURE_VBLANKS
-// (a-b, inclusive). Called once by the host before the guest starts. An unknown mode refuses the start, like
-// GT4_FORCE_480P does; `overlay` refuses until the live seam exists.
+// Reads GT4_COREGS3 (off|shadow|overlay|present), GT4_COREGS3_CAPTURE (a .gt4scene path; `shadow` only) and
+// GT4_COREGS3_CAPTURE_VBLANKS (a-b, inclusive). Called once by the host before the guest starts. An unknown mode refuses
+// the start, like GT4_FORCE_480P does; `overlay` refuses until the in-process seam exists. `present` is the debug-only
+// live layer of docs/COREGS3-HOOKS.md §10.3: it publishes the complete frame ring and the HWR backend draws it over the
+// composed image.
 void configure_from_environment();
 void shutdown();
 

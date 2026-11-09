@@ -6,8 +6,11 @@
 //     cycle, and the refusals (unknown opcode, payload overrun);
 //   - the channel rule: destination/format classification and the strip topology of a mesh;
 //   - the measured draw transform (columns c0..c3 = vf24..vf27, used unscaled; docs/COREGS3-HOOKS.md §10.2);
+//   - the live present ring: the newest published frame is claimed once, with the O(1) buffer swap
+//     (docs/COREGS3-HOOKS.md §10.3);
 //   - a PNG file: signature, IHDR size, IEND.
 #include "coregs3_png.hpp"
+#include "coregs3_present.hpp"
 #include "coregs3_render.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
@@ -401,8 +404,47 @@ void check_mode_switch() {
   require(parse_mode("off") == Mode::off, "off");
   require(parse_mode("shadow") == Mode::shadow, "shadow");
   require(parse_mode("overlay") == Mode::overlay, "overlay");
+  require(parse_mode("present") == Mode::present, "present");
   require(parse_mode("nonsense") == Mode::off, "an unknown mode parses to off and is refused by the host");
   require(std::strcmp(mode_name(Mode::shadow), "shadow") == 0, "the mode has a name");
+  require(std::strcmp(mode_name(Mode::present), "present") == 0, "the live debug mode has a name");
+}
+
+// The live `present` ring (docs/COREGS3-HOOKS.md §10.3): one complete frame is published per VBlank and the renderer
+// claims the newest one once; the swap moves the buffers, never copies them.
+void check_present_ring() {
+  present::set_active(true);
+  require(present::active(), "the present ring reports what was set");
+
+  FrameSnapshot first;
+  first.vblank = 41;
+  first.draw_count = 1;
+  first.draws.resize(1);
+  first.draws[0].sequence = 11;
+  present::publish(first);
+  FrameSnapshot second;
+  second.vblank = 42;
+  second.draw_count = 1;
+  second.draws.resize(1);
+  second.draws[0].sequence = 12;
+  present::publish(second);
+
+  FrameSnapshot claimed;
+  require(present::claim_latest(claimed), "a published frame is claimable");
+  require(claimed.vblank == 42, "the newest complete frame is the one claimed");
+  require(claimed.draws.size() == 1 && claimed.draws[0].sequence == 12, "the claimed frame keeps its draws");
+  require(!present::claim_latest(claimed), "a claimed frame is not returned twice");
+
+  // The claimed buffers travel back into the ring through the swap, so the next publish needs no allocation.
+  FrameSnapshot third;
+  third.vblank = 43;
+  third.draw_count = 0;
+  present::publish(third);
+  require(present::claim_latest(claimed), "a later frame is claimable");
+  require(claimed.vblank == 43, "the later frame replaces the claimed one");
+
+  present::set_active(false);
+  require(!present::active(), "the present active flag clears");
 }
 
 }  // namespace
@@ -410,6 +452,7 @@ void check_mode_switch() {
 int main() {
   try {
     check_mode_switch();
+    check_present_ring();
     check_capture_round_trip();
     check_vif_decoder();
     check_matrix();

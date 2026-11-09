@@ -145,6 +145,7 @@ Mode parse_mode(const char *text) noexcept {
   if (std::strcmp(text, "off") == 0) return Mode::off;
   if (std::strcmp(text, "shadow") == 0) return Mode::shadow;
   if (std::strcmp(text, "overlay") == 0) return Mode::overlay;
+  if (std::strcmp(text, "present") == 0) return Mode::present;
   return Mode::off;
 }
 
@@ -153,6 +154,7 @@ const char *mode_name(Mode mode) noexcept {
   case Mode::off: return "off";
   case Mode::shadow: return "shadow";
   case Mode::overlay: return "overlay";
+  case Mode::present: return "present";
   }
   return "off";
 }

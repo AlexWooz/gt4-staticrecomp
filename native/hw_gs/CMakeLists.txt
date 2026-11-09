@@ -109,9 +109,13 @@ target_link_libraries(hw_hud_fixture PRIVATE gt4_hw_hud)
 target_compile_options(hw_hud_fixture PRIVATE /W4)
 add_test(NAME hw_hud COMMAND hw_hud_fixture)
 
-add_library(gt4_hw_backend STATIC hw_gs_backend.cpp hw_gs_dispatch.cpp hud/hw_hud_layer.cpp)
+add_library(gt4_hw_backend STATIC hw_gs_backend.cpp hw_gs_dispatch.cpp hud/hw_hud_layer.cpp
+    coregs3/hw_coregs3_present.cpp)
 target_include_directories(gt4_hw_backend PRIVATE "${GT4_HW_VULKAN_SDK}/Include")
-target_link_libraries(gt4_hw_backend PUBLIC gt4_hw_hud gt4_hw_options gt4_pacing gt4_hw_writeback gt4_hw_vulkan_loader "${GT4_HW_VULKAN_SDK}/Lib/vulkan-1.lib")
+# TASK-090 M4: the live `present` layer reads the CoreGS 3.0 frame ring and rebuilds the captured meshes (gt4_coregs3,
+# pure C++ defined before this subdirectory); it never links the EE-side hooks.
+target_link_libraries(gt4_hw_backend PUBLIC gt4_hw_hud gt4_hw_options gt4_pacing gt4_hw_writeback gt4_hw_vulkan_loader
+    gt4_coregs3 "${GT4_HW_VULKAN_SDK}/Lib/vulkan-1.lib")
 target_compile_options(gt4_hw_backend PRIVATE /W4)
 target_compile_definitions(gt4_hw_backend PRIVATE _CRT_SECURE_NO_WARNINGS)
 

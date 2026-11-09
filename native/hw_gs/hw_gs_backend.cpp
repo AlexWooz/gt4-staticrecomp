@@ -17,6 +17,8 @@
 #include "hw_shared_present.hpp"
 
 #include "hw_gs_vulkan_loader.hpp" // Vulkan names renamed to gt4_hw_*; pointers loaded at run time
+#include "coregs3/hw_coregs3_present.hpp"
+#include "coregs3_present.hpp"
 #include "hud/hw_hud_layer.hpp"
 #include "writeback/hw_gs_vulkan_device_table.hpp"
 #include "writeback/hw_gs_present_scheduler.hpp"
@@ -427,6 +429,36 @@ struct Backend::Impl {
   // M4: GS front end, shadow local memory and the GPU write-back drawer (writeback/).
   std::unique_ptr<hwgs::writeback::Renderer> renderer;
 
+  // TASK-090 M4: the debug-only CoreGS 3.0 live `present` layer (docs/COREGS3-HOOKS.md §10.3). Null unless
+  // GT4_COREGS3=present and the device can run the pass; it touches only the composed display image it is handed.
+  std::unique_ptr<gt4::hw::coregs3::PresentLayer> coregs3_present;
+  std::uint64_t coregs3_overlay_flush = UINT64_MAX;  // stats.flushes of the frame that already carries the layer
+  bool depth_clamp_enabled = false;                  // VkPhysicalDeviceFeatures::depthClamp requested and enabled
+
+  // Draws the newest complete captured car pass over a composed display image, once per frame, on the rendering queue.
+  // A Vulkan failure disables the layer and never the game: `present` is a diagnostic, not the faithful path.
+  void overlay_coregs3(VkImage image, std::uint32_t width, std::uint32_t height) {
+    if (!coregs3_present || image == VK_NULL_HANDLE) return;
+    if (coregs3_overlay_flush == stats.flushes) return;  // the window path already drew it for this frame
+    coregs3_overlay_flush = stats.flushes;
+    const gt4::hw::coregs3::SubmitOverlay submit = [this](VkCommandBuffer command, VkFence fence, std::string &error) {
+      VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+      info.commandBufferCount = 1;
+      info.pCommandBuffers = &command;
+      const VkResult result = submit_to(queue, info, fence, QueueCaller::gs_thread);
+      if (result != VK_SUCCESS) {
+        error = std::string("vkQueueSubmit failed for the CoreGS 3.0 present pass: ") + vk_result_text(result);
+        return false;
+      }
+      return true;
+    };
+    std::string error;
+    if (!coregs3_present->render(reinterpret_cast<std::uint64_t>(image), width, height, submit, error)) {
+      std::fprintf(stderr, "[coregs3] present layer stopped: %s\n", error.c_str());
+      coregs3_present.reset();
+    }
+  }
+
   // M6 interface: the frame end composes into `frame`, the scheduler decides whether it reaches the
   // display, and `shownFrame` is what the display currently holds (a hold re-presents exactly this).
   hwgs::present::Scheduler scheduler;
@@ -463,6 +495,7 @@ struct Backend::Impl {
     frametime_close();
     hud_layer.reset();
     destroy_upload();
+    coregs3_present.reset();  // the live layer's images, pipeline and command pool go before the device
     renderer.reset();  // GPU drawer resources are released before the device
     destroy_swapchain();
     if (device) {
@@ -812,6 +845,10 @@ struct Backend::Impl {
     // (shaderStorageImageArrayDynamicIndexing) were used without being enabled. Enabled where the device has them; where
     // it does not, core 2 draws points as two triangles and runs the constant-index build of the kernel.
     vulkan_loader::enable_profile_features(profile, features2.features);
+    // TASK-090 M4: the live present pass writes depth = 1/cw from a constant clip z, so a vertex with 0 < cw < 1 must be
+    // depth-clamped instead of clipped away. Only requested in GT4_COREGS3=present; the layer refuses without it.
+    depth_clamp_enabled = gt4::coregs3::present::active() && supported.features.depthClamp == VK_TRUE;
+    if (depth_clamp_enabled) features2.features.depthClamp = VK_TRUE;
 
     // IN-345: pixel interlock lets the GPU path draw a batch of triangles in one draw (no barriers).
     // GT4_HW_INTERLOCK=0 leaves it off on a device that has it: the path of GPUs without it (most mobile GPUs), for
@@ -1811,6 +1848,22 @@ bool Backend::init(const Options &options, std::string &error) {
     s.shutdown();
     return false;
   }
+  // TASK-090 M4: the debug-only live layer. A device or format refusal disables it and is reported; the game runs on.
+  if (gt4::coregs3::present::active()) {
+    gt4::hw::coregs3::PresentConfig config;
+    config.instance = s.instance;
+    config.physical = s.physical;
+    config.device = s.device;
+    config.queue = s.queue;
+    config.queue_family = s.queue_family;
+    config.depth_clamp_enabled = s.depth_clamp_enabled;
+    s.coregs3_present = std::make_unique<gt4::hw::coregs3::PresentLayer>();
+    std::string present_error;
+    if (!s.coregs3_present->init(config, present_error)) {
+      std::fprintf(stderr, "[coregs3] live present refused: %s\n", present_error.c_str());
+      s.coregs3_present.reset();
+    }
+  }
   // Output stage options (13.4 GT4_HW_DEINTERLACE, 13.2 GT4_HW_ANTIBLUR).
   hwgs::writeback::OutputSettings output;
   switch (options.deinterlace.algorithm) {
@@ -1947,10 +2000,15 @@ bool Backend::scanout(ScanoutRequest &request) {
     // IN-372: the GPU presentation compose at the internal scale (progressive frames); other frames fall back to
     // the CPU presentation compose at 1x.
     hwgs::writeback::GpuFrame gpuFrame;
-    if (s.renderer->ComposeFrameGpu(gpuFrame) && s.renderer->ReadGpuFrame(gpuFrame, request.pixels)) {
-      request.width = gpuFrame.width;
-      request.height = gpuFrame.height;
-      return true;
+    if (s.renderer->ComposeFrameGpu(gpuFrame)) {
+      // TASK-090 M4: headless runs never reach end_frame, so the live present layer is drawn here, after the compose
+      // submission and before the readback (same queue, submission order).
+      s.overlay_coregs3(reinterpret_cast<VkImage>(gpuFrame.image), gpuFrame.width, gpuFrame.height);
+      if (s.renderer->ReadGpuFrame(gpuFrame, request.pixels)) {
+        request.width = gpuFrame.width;
+        request.height = gpuFrame.height;
+        return true;
+      }
     }
   }
   if (s.options.dump_source == DumpSource::scanout) {
@@ -2084,6 +2142,8 @@ bool Backend::end_frame(PresentPhase phase) {
     s.frameOnGpu = false;
     s.renderer->ComposeFrame(s.frame, hwgs::writeback::ComposeKind::Presentation);
   }
+  // TASK-090 M4: the debug-only live layer, after the compose submission and before the present copies the image.
+  if (s.frameOnGpu) s.overlay_coregs3(s.gpuImage, s.frame.width, s.frame.height);
   s.presentedVblank = s.stats.flushes;
   s.composeTotalUs += s.renderer->Timings().composeUs;
   ++s.composedFrames;

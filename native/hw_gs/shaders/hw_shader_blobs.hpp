@@ -98,6 +98,12 @@ extern const std::size_t core2_clut_target_word_count;
 extern const std::uint32_t core2_materialize_words[];
 extern const std::size_t core2_materialize_word_count;
 
+// TASK-090 M4: the CoreGS 3.0 live `present` layer (docs/COREGS3-HOOKS.md §10.3).
+extern const std::uint32_t coregs3_present_vertex_words[];
+extern const std::size_t coregs3_present_vertex_word_count;
+extern const std::uint32_t coregs3_present_fragment_words[];
+extern const std::size_t coregs3_present_fragment_word_count;
+
 // Exactness compute entry points (fixture only; never linked into the game).
 extern const std::uint32_t hw_blend_exact_words[];
 extern const std::size_t hw_blend_exact_word_count;

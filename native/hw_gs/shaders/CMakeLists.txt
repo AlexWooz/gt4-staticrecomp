@@ -126,6 +126,9 @@ hw_add_shader(core2_clut_target "${HW_SHADER_DIR}/core2_clut_target.comp" comp)
 hw_add_shader(core2_materialize "${HW_SHADER_DIR}/core2_materialize.comp" comp)
 hw_add_shader(hw_blend_exact "${HW_SHADER_DIR}/hw_blend_exact.comp" comp)
 hw_add_shader(hw_pixel_exact "${HW_SHADER_DIR}/hw_pixel_exact.comp" comp)
+# TASK-090 M4: the debug-only CoreGS 3.0 live `present` layer (docs/COREGS3-HOOKS.md §10.3).
+hw_add_shader(coregs3_present_vertex "${HW_SHADER_DIR}/coregs3_present.vert" vert)
+hw_add_shader(coregs3_present_fragment "${HW_SHADER_DIR}/coregs3_present.frag" frag)
 
 add_library(gt4_hw_shaders STATIC ${HW_SHADER_CPP_FILES})
 target_include_directories(gt4_hw_shaders PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -14,12 +14,14 @@
 // only counts completions (it is the fidelity control for "every started call returned", G-ROBUST).
 #include "coregs3_hooks.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "coregs3_present.hpp"
 #include "coregs3_tap.hpp"
 #include "mtvu_runtime.hpp"
 
@@ -208,11 +210,17 @@ void finish_frame() noexcept {
     g.counters.refused_frames += 1;
     return;
   }
-  if (!wanted) return;
   g.frame.index = g.frame_index;
   g.frame.vblank = g.frame_vblank;
   g.frame.overflow_flags = 0;
   g.frame.camera = g.camera;
+  // `present` (docs/COREGS3-HOOKS.md §10.3): publish the complete frame for the live renderer. It needs no capture file
+  // and never touches the guest; the O(1) swap keeps the buffers for the next VBlank. Only `shadow` writes the file.
+  if (g.mode == Mode::present) {
+    g.frame.index = static_cast<std::uint32_t>(g.counters.frames);
+    present::publish(g.frame);
+  }
+  if (!wanted) return;
   g.block.clear();
   if (!frame_block_bytes(g.frame, g.block)) {
     g.counters.refused_frames += 1;
@@ -260,13 +268,14 @@ void configure_from_environment() {
   const char *mode_text = std::getenv("GT4_COREGS3");
   g.mode = parse_mode(mode_text);
   if (mode_text != nullptr && *mode_text != '\0' && std::strcmp(mode_text, mode_name(g.mode)) != 0) {
-    std::fprintf(stderr, "[coregs3] GT4_COREGS3=%s is not off, shadow or overlay: refusing to start\n", mode_text);
+    std::fprintf(stderr, "[coregs3] GT4_COREGS3=%s is not off, shadow, overlay or present: refusing to start\n", mode_text);
     std::exit(2);
   }
   if (g.mode == Mode::overlay) {
     std::fprintf(stderr, "[coregs3] GT4_COREGS3=overlay: the live overlay seam is not in this build; use shadow\n");
     std::exit(2);
   }
+  present::set_active(g.mode == Mode::present);
   if (g.mode == Mode::off) return;
 
   std::atexit([] { shutdown(); });
@@ -298,6 +307,12 @@ void configure_from_environment() {
   const char *path = std::getenv("GT4_COREGS3_CAPTURE");
   if (const char *trace = std::getenv("GT4_COREGS3_TRACE_FRAMES"); trace != nullptr && *trace != '\0')
     g.trace_frames = static_cast<std::uint64_t>(std::strtoll(trace, nullptr, 10));
+  // Only `shadow` writes the .gt4scene capture: `present` reads the published ring and needs no file.
+  if (path != nullptr && *path != '\0' && g.mode != Mode::shadow) {
+    std::fprintf(stderr, "[coregs3] GT4_COREGS3_CAPTURE is ignored in mode %s; only shadow writes a capture\n",
+                 mode_name(g.mode));
+    path = nullptr;
+  }
   if (path != nullptr && *path != '\0') {
     if (const char *max_frames = std::getenv("GT4_COREGS3_CAPTURE_MAX_FRAMES"); max_frames != nullptr && *max_frames != '\0') {
       const long long value = std::strtoll(max_frames, nullptr, 10);
@@ -582,6 +597,25 @@ void print_report(std::FILE *out) noexcept {
     std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",
                  static_cast<unsigned long long>(tap.records), static_cast<unsigned long long>(tap.bytes),
                  static_cast<unsigned long long>(tap.refused));
+  // The live layer's own counters (docs/COREGS3-HOOKS.md §10.3): frames published to the ring and, in `present`, what
+  // the renderer drew over the composed image. Read from the report thread; every field is atomic.
+  const present::Counters &p = present::counters();
+  const auto load = [](const std::atomic<std::uint64_t> &value) { return value.load(std::memory_order_relaxed); };
+  if (load(p.published) != 0 || load(p.passes) != 0 || load(p.passes_refused) != 0)
+    std::fprintf(out,
+                 "[coregs3] present published %llu dropped %llu claims %llu empty %llu passes %llu refused_frames %llu "
+                 "draws %llu refused_draws %llu vertices %llu triangles %llu last_vblank %llu\n",
+                 static_cast<unsigned long long>(load(p.published)),
+                 static_cast<unsigned long long>(load(p.dropped_publish)),
+                 static_cast<unsigned long long>(load(p.claims)),
+                 static_cast<unsigned long long>(load(p.empty_claims)),
+                 static_cast<unsigned long long>(load(p.passes)),
+                 static_cast<unsigned long long>(load(p.passes_refused)),
+                 static_cast<unsigned long long>(load(p.draws)),
+                 static_cast<unsigned long long>(load(p.draws_refused)),
+                 static_cast<unsigned long long>(load(p.vertices)),
+                 static_cast<unsigned long long>(load(p.triangles)),
+                 static_cast<unsigned long long>(load(p.last_vblank)));
 }
 
 }  // namespace gt4::coregs3

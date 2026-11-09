@@ -32,9 +32,10 @@
 
 namespace gt4::coregs3 {
 
-// `GT4_COREGS3=off|shadow|overlay`. Phase 1 implements `off` and `shadow`; `overlay` refuses to start until the live
-// seam lands (the plan's level 1).
-enum class Mode : std::uint32_t { off = 0, shadow = 1, overlay = 2 };
+// `GT4_COREGS3=off|shadow|overlay|present`. `off` and `shadow` are the observe-only modes; `overlay` refuses to start
+// until the in-process seam lands (the plan's level 1); `present` is the debug-only live layer of docs/COREGS3-HOOKS.md
+// §10.3 that draws the captured car pass over the composed image after the compose, never an acceptance mode.
+enum class Mode : std::uint32_t { off = 0, shadow = 1, overlay = 2, present = 3 };
 
 Mode parse_mode(const char *text) noexcept;
 const char *mode_name(Mode mode) noexcept;
