@@ -1,5 +1,52 @@
 # Current Status
 
+## TASK-213: mapping the launcher settings into GT4's own Options (2026-11-09, read-only study)
+
+On `task/213-settings-map` (from `task/212b-spec2-quit` at `70af98d7`). The mapping is
+`docs/tasks/INGAME-SETTINGS-MAP.md`; no code, data, build, pin or test changed. It maps the Options pages of
+Retail v2.00 and Spec II to their decoded data and to the launcher's setting table, and gives the removal plan,
+the live/restart evidence, the implementation routes and the first safe set.
+
+- **The Screen row (Confirmed):** the 3-choice resolution row is `HiVision` (Normal / `Mode480p` / `Mode1080i`)
+  in `ScreenRoot` → `Pane` (v2.00 line 6339, Spec II line 7132); the aspect row is `Wide` (4:3 / 16:9, v2.00
+  line 5914, Spec II line 6713). Both are no-ops: `GT4_FORCE_480P=1` writes the race index 1 for 0/2 at every
+  VBlank, and `GT4_FORCE_WIDESCREEN=1` holds the wide flag and the 44-byte record. Menus stay 480i
+  (`func_00436740`).
+- **Removal (High confidence):** a 4-byte same-length byte patch of the unique `"NTSC"` literal in `option.adc`
+  (`0x247FB` v2.00, `0x2A2E5` Spec II, `4E 54 53 43` -> `50 41 4C 20`), through the TASK-212
+  `gt4_data_patch.py` + `native/data_patch.cpp` pipeline; the script never makes the row visible, as on a
+  non-NTSC console. No script edit, no VOL TOC write, no option field written. Deleting the `.mproject` node is
+  rejected for now (the script looks the widget up by path; 21 `HiVision` string hits; a missing widget is a
+  fatal script error). The runtime host-hide (clear the row's `visible`) is the fallback when the launcher patch
+  build is not in the release; its exact `visible` offset is Unknown.
+- **Settings table:** every launcher row is mapped to its consumer and read point. **Only Fullscreen is live**
+  (`set_fullscreen`, Alt+Enter/F11); renderer, render scale, resolution, monitor, vsync, graphics card,
+  presentation thread, FSR1, all three effect toggles, blending, readbacks, FXAA, CAS, textures, frame rate, HUD,
+  controller and trigger range are read at start or written to the session `gt4-gs.ini` and need the next start.
+  gt4-gs answers `CONTROL reload_config` "unsupported"; only the GS process cannot be restarted alone (the GS
+  state lives there). Frame rate 30/60 is frame skipping, not physics; menus stay 60. No launcher audio setting
+  exists; the game's `SoundRoot` is the only audio control.
+- **Routes:** the Quit-style data patch + host append does not transfer directly (the Options root and Screen
+  page have no `SelectBox`; the arcade main menu does). The native route repurposes `Wide` (2 choices),
+  `HiVision` (3) or the `Vertical`/`Horizontal` sliders (-50..50) and overrides `MOption.wide_mode`
+  `0x00180108` / `race_display_mode` `0x001805D0` / `screen_adjust_*` `0x00180200`/`0x001802F0` in
+  `ps2::dispatch` (swallow the guest write, return the host value, keep the save at 480p/16:9). The overlay panel
+  (the achievements-style layered window, both renderers) covers every row; the `game-changes.toml` feedback
+  file keeps the launcher the only writer of `settings.toml` and carries the restart notice. The hybrid is the
+  recommendation.
+- **First safe set:** remove `HiVision` (0.5-1 slice); host panel + feedback with Fullscreen live (1.5-2 slices);
+  Renderer and Render scale with the restart notice (+0.5); the first effects row, flares (+0.25, shared by both
+  renderers); then the native repurpose phase. The Spec II `GroupSpecII`/`SpecIISettingRoot` page (line 8999) is
+  the publisher's own native settings page and the closest model for that phase.
+- **Data anchors:** v2.00 `option.adc` 55,353 stored / 251,715 decoded, `option.mproject` 22,449 / 681,977; Spec
+  II 58,422 / 288,080 and an 804,881-byte raw mproject; TOC `0x10AC800` / `0x115B800`; option object
+  `0x622F4C+0x38CB0` / `0x664EDC+0x680`; race index `+0x16B0` / `+0x1718`; wide flag `+0x14`, record `+0x24`.
+  The full table is the document's section 9.
+- **Evidence for the host-hide:** `private/slice113-video/options-screen3/state.bin` is a `PS2STATE` v2 with
+  guest RAM at file offset 1460; the Screen page tree is in RAM (row `MComposite` vtable `0x00662EF8`, the
+  `{0,116,320,32}` geometry nine times, the `HiVision`/`LabelHiVision`/`Mode480p`/`Mode1080i` strings). The
+  visible field is not derived yet.
+
 ## TASK-212b: the native Quit Game row in Spec II, and the Retail/Spec II guide (2026-11-09, test build only)
 
 On `task/212b-spec2-quit` (from `task/212-quit-game` at `04a56edb`). The Spec II row uses the same data patch, widget

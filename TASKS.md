@@ -4823,3 +4823,30 @@ the launcher merges into `settings.toml`; the game-side Options already covers t
 row must never write the save's option struct. The native GT4 page waits for the GT4.VOL overlay reader and the v5
 script round trip (TASK-078 P1/P2). The split-screen tasks TASK-209/210 live on `task/205-variant-coverage`
 (459bdfda); merge their TASKS entry into the rc17 line before branching the release.
+
+**State (2026-11-09, TASK-213 mapping):** the full mapping is `docs/tasks/INGAME-SETTINGS-MAP.md`
+(branch `task/213-settings-map`, from `task/212b-spec2-quit` at `70af98d7`). It identifies the 3-choice row as
+`HiVision` (Normal / `Mode480p` / `Mode1080i`) and the aspect row as `Wide` (4:3 / 16:9) in both games; both are
+no-ops because `GT4_FORCE_480P=1` and `GT4_FORCE_WIDESCREEN=1` hold the option fields at every VBlank. **The
+removal is a 4-byte same-length patch** of the unique `"NTSC"` literal in `option.adc` (v2.00 `0x247FB`, Spec II
+`0x2A2E5`, both `4E 54 53 43` -> `50 41 4C 20`), through the TASK-212 `gt4_data_patch.py` +
+`native/data_patch.cpp` pipeline; no v5 script edit and no VOL TOC write. Deleting the `HiVision` node from
+`option.mproject` is rejected (the script looks it up by path; 21 string hits; missing widget is fatal); the
+runtime host-hide is the fallback when the launcher patch build is not in the release.
+
+**The settings table** maps every launcher row to its consumer, read point, restart rule, game-menu home, row
+type, write-through and test. The honest live/restart answer: **only Fullscreen is live** (`set_fullscreen`;
+Alt+Enter/F11 already proves it); renderer, render scale, resolution, monitor, vsync, effects, blending,
+readbacks, HUD and 30/60 FPS are read at start or written to the session `gt4-gs.ini`, and gt4-gs answers
+`reload_config` "unsupported"; 30/60 is frame skipping, the physics stay 60 Hz. **Routes:** (a) the Quit-style
+data patch + host append does not transfer directly, because the Options root and the Screen page have no
+`SelectBox` (the arcade main menu does); (b) the native route is repurposing `Wide`/`HiVision`/the two sliders with a `ps2::dispatch`
+override of `MOption.wide_mode` `0x00180108` / `race_display_mode` `0x001805D0` (swallow the guest write, return
+the host value, keep the save at 1/1); (c) the overlay panel over the game (achievements-style, both renderers)
+covers every row; (d) the `game-changes.toml` feedback file keeps the launcher the only writer of
+`settings.toml` (validate ids/values, merge on exit and at startup, never restart the game); (e) the hybrid is
+the first set. **First safe set:** remove `HiVision`; host panel + feedback with Fullscreen live; then Renderer
+and Render scale (restart notice); then the first effects row, flares (shared by both renderers). The next
+implementation task is the HiVision removal (0.5-1 slice), then the panel (1.5-2 slices); the native repurpose
+phase is 2-3 more. The Spec II `GroupSpecII`/`SpecIISettingRoot` page is the publisher's own native settings page
+and the closest model for the native phase. No code, data, build or pin was changed by this study.
