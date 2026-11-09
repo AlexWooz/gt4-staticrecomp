@@ -175,7 +175,7 @@ bytes (raw, kind 1). The game is one plain ELF (no `CORE.GT4`); the derived imag
 | Volume offset / absolute | `226,906,112` / `3,217,780,736` on the PT-BR ISO | C |
 | Patch container | 216,250 bytes, SHA-256 `6b20fde24ffde8c46936968f42cb26a20373cacb708d8eb88d43309def8ac857` | C |
 | Capsule | `private/slice423-spec2-data-runtime` (`disc.cpp`, `system.cpp`, `sif.cpp`), pin `docs/inputs/slice423-spec2-data-runtime.json` | C |
-| Kit | `Y:\gt4recomp-scratch\slice423-spec2-kit` (C: was full; build tree on Y:) | C |
+| Kit | `private/slice423-spec2-kit` (moved from the temporary Y: scratch; never build on Y:/Z:) | C |
 
 **What could not be shared:** the vtables, every SelectBox/row/hidden offset, the node wrapper, the index word
 (`+0xB8` vs `+0xBC`), the hidden count (11 vs 8), the scroll-tolerant row check, and the menu gate. The data-patch
@@ -204,10 +204,12 @@ Exit 0, frame 9,250 shows "Créditos da Mod" then **"Quit Game"** as the last ro
 (`quit-row.png` in the kit). The full boot (new card) finds a transient arcade TopRoot at `0xC66DF8` first, then the
 current one at `0xA95E68`; both are the arcade menu at different project loads, and the quit comes from the current one.
 
-**Build (plain, no PGO/ThinLTO; C: was full, so the tree is on Y:):**
+**Build (plain, no PGO/ThinLTO; build locally on C:).** The first Spec II run used a temporary Y: scratch because
+C: was full; the kit was moved to `private/slice423-spec2-kit` and the Y: scratch was removed. Do not use Y:/Z: for
+builds.
 
 ```
-cmake -S <worktree> -B Y:\gt4recomp-scratch\slice423-spec2-build\build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+cmake -S <worktree> -B <worktree>\private\slice423-spec2-build\build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
   -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang-cl.exe" -DGT4_TARGET=spec2 -DGT4_EE_PROFILE=spec2 ^
   -DGT4_ASSETS_ROOT=C:/Antigravity/gt4-staticrecomp -DGT4_PERF_RUNTIME_SOURCE=<assets>/private/slice423-spec2-data-runtime ^
   -DGT4_LICENSE_GUARD_SOURCE=<assets>/private/slice376-frame-render-license-guard-runtime ^
