@@ -1589,6 +1589,13 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   `build/coregs3-r7/gate-fits.txt`). The prepared `present` design (mode, frame ring, renderer insertion after
   `ComposeFrameGpu`, attachments, counters) is written down in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §10 and is **not
   implemented**. Resume recipe, exact commands and risks: same section.
+- **Round 8 (2026-11-09, the new machine).** Worktree moved to `O:\Antigavity\gt4-wt-090-coregs3` (exFAT USB SSD;
+  `git worktree repair`; old C: copy removed) and Ninja 1.13.2 installed. Both game builds configured and built from the
+  rc15 recipe (`build/coregs3-r8/ref` without hooks, `build/coregs3-r8/cand` with the hook library `b4c7ac04…` and
+  `GT4_COREGS3=ON`). The 3x night gate passes again: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences,
+  13/13 frames identical for `off` and `shadow`. The whole-file residual over the 291 printed pairs confirms the vertex
+  convention for the 41 on-screen draws (rms 0.2197 px after one constant per draw); the other 56 are off-screen vertices
+  with a 16-bit wrap of the 12.4 y (+4096 px), not a second transform. `draw_matrix` still needs the convention fix.
 - Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the M4 live overlay seam (review work), M4 only
   after the 3x gate re-run, and the remaining G-IMAGE/G-PERF gates.
 

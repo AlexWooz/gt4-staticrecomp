@@ -1,5 +1,20 @@
 # Current Status
 
+## TASK-090 round 8: worktree on the O: SSD, both game builds, the 3x gate passes (2026-11-09, branch `task/090-coregs3`)
+
+The branch's worktree moved from `C:\Antigravity\gt4-wt-090-coregs3` to `O:\Antigavity\gt4-wt-090-coregs3` (exFAT USB
+SSD; `git worktree repair`, old copy removed, about 0.8 GB freed on C:). Ninja 1.13.2 was installed (the WinGet shim had
+disappeared and no fresh configure could find it). Both game builds were configured and built from the rc15 recipe
+(slice397 VU1 gen, slice262 frame-cost runtime, slice394 VU0 gen, `GT4_EE_PROFILE=flare`): `build/coregs3-r8/ref`
+(reference, no hooks) and `build/coregs3-r8/cand` (the hook EE library `b4c7ac04…` and `GT4_COREGS3=ON`).
+`coregs3-night-check.sh` at 3x: **8,997 VBlanks, 1,686 racing, clock 0, digest 0, state 0 words, 13/13 frames identical**
+for `off` and `shadow`; capture 3,060,788 bytes. The whole-file residual of the measured vertex transform was computed
+over all 291 printed pairs: the 41 on-screen draws match with **rms 0.2197 px** after one constant per draw; the other 56
+are off-screen vertices whose 12.4 y wrapped by one 16-bit step (**+4092..+4122 px** = 4096 px), not a second transform;
+draws 95, 111 and 115 stay degenerate. Consequence: the convention is confirmed for on-screen vertices and the renderer
+must clip in clip space. Details: [COREGS3-HOOKS](COREGS3-HOOKS.md) §10.2. Nothing tracked changed by the builds; no pin,
+release or launcher change.
+
 ## TASK-090 round 7: build restored, the vertex transform measured (2026-11-09, branch `task/090-coregs3`)
 
 The round was **stopped early by the owner** (the stage moves to another machine). No live overlay code was written, the

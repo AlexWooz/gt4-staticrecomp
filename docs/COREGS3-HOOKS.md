@@ -274,7 +274,7 @@ simple test program`, `RC Pass 1 ... rc ... no such file or directory`: the `VsD
 for that `cmake` process); it is ignored and unused. The two `.cmd` files above are the working invocation form
 (`VsDevCmd.bat` then `cmake`).
 
-### 10.2 The VU1 vertex transform, measured (**H**, two draws)
+### 10.2 The VU1 vertex transform, measured (**H**, whole-file residual)
 
 `gt4_coregs3_tap gate ... --fits` (new this round) prints, for every fitted draw, the fitted affine screen map, its
 first three (object position, tapped screen position) pairs, `vf24..vf27`, `cmd.value` and the eight captured
@@ -302,9 +302,14 @@ the negative OFX is the 16-bit value 27648 read signed). It is **inferred** from
 | draw 0, pair 1 | (358.81, 86.02) | (358.875, 86.063) | (0.07, 0.04) px |
 | draw 3, pair 0 | (359.50, 79.60) | (359.500, 79.875) | (0.00, 0.28) px |
 
-Two draws and three vertices were checked by hand; the rest of the 97 printed fits are consistent with the same map but
-were not recomputed. That is why the label is **H**, not **C**: the direct next measurement is to compute this formula
-over every printed fit and report the whole-frame residual, which was not run.
+Two draws and three vertices were checked by hand. **Whole-file residual (2026-11-09, r8):** the formula was then
+recomputed over all 291 printed (draw, vertex) pairs of `gate-fits.txt`. The **41 draws that lie on screen** match the
+convention and the inferred offset; after removing one constant per draw, the residual is **rms 0.2197 px**. The other
+**56 draws are off-screen**: their tapped y is **+4092..+4122 px** away from the prediction, i.e. one 16-bit wrap of the
+12.4 coordinate (65536 units = 4096 px), not a second transform. Three of those (draws 95, 111 and 115) are degenerate
+(18-24 px centred rms) and stay unusable. The convention is therefore **H** for on-screen vertices; the wrap is expected
+16-bit arithmetic. The live renderer must clip in clip space (`cw`) and must never consume the wrapped 12.4 screen
+coordinate.
 
 **Consequence for the existing code:** `native/coregs3/coregs3_render.cpp` `draw_matrix()` reads `vf24..vf27` as matrix
 **rows** and multiplies rows 0-2 by `cmd.value`. The capture shows the packet rows are exactly `vf * value` (e.g.
