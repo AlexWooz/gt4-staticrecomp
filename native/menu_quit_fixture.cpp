@@ -72,6 +72,10 @@ std::vector<std::uint8_t> build() {
         i == 5 ? 0u : kRows + 0x400 * static_cast<std::uint32_t>(i + 1));
   }
   w32(data, kSelectBox + 4, kSelectBoxVtable);
+  wf32(data, kSelectBox + 0x34, -64.0f);
+  wf32(data, kSelectBox + 0x38, 16.0f);
+  wf32(data, kSelectBox + 0x3C, 460.0f);
+  wf32(data, kSelectBox + 0x40, 36.0f);
   w32(data, kSelectBox + 0xA0, 6);
   w32(data, kSelectBox + 0xA4, kRows);
   w32(data, kSelectBox + 0xA8, kRows + 0x400 * 5);

@@ -45,6 +45,8 @@ def pin(capsule_name, assets_root=None, base_manifest=DEFAULT_BASE, apply=True):
         'gs_stream_sources': receipt.get('gs_stream_sources'),
         'spec2_iop_profile': receipt.get('spec2_iop_profile'),
         'spec2_iop_overlay_sha256': receipt.get('spec2_iop_overlay_sha256'),
+        'data_patch_profile': receipt.get('data_patch_profile'),
+        'data_patch_overlay_sha256': receipt.get('data_patch_overlay_sha256'),
     }
     if receipt['source_sha256'] != manifest['source_sha256']:
         raise ValueError('capsule sources changed after the receipt was written')

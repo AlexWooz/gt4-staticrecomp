@@ -34,6 +34,28 @@ class TextReplacementTest(unittest.TestCase):
         self.assertEqual(patch.apply_text_replacements('a b', [{'old': 'b', 'new': 'c'}]), 'a c')
 
 
+class RawFileTest(unittest.TestCase):
+    """Spec II's arcade.mproject is a raw (kind 1) record; the text edit pads to the exact stored extent."""
+
+    def test_raw_text_edit_pads_to_the_original_extent(self):
+        payload = b'Project { name string {"test"} }\n'
+        record = type('Record', (), {'kind': 1, 'stored_size': len(payload) + 16, 'size': len(payload) + 16})
+        replacement = patch.build_replacement(record, payload, {'text_replacements': [], 'minify': False})
+        self.assertEqual(len(replacement), record.size)
+        self.assertTrue(replacement.startswith(payload))
+        self.assertEqual(replacement[len(payload):], b'\n' * 16)
+        container = patch.encode_same_extent(record, replacement)
+        self.assertEqual(container, replacement)
+        patch.verify_round_trip(record, container, replacement)
+
+    def test_raw_text_edit_growth_is_refused(self):
+        payload = b'a' * 32
+        record = type('Record', (), {'kind': 1, 'stored_size': 32, 'size': 32})
+        with self.assertRaises(ValueError):
+            patch.build_replacement(record, payload,
+                                    {'text_replacements': [{'old': 'a' * 32, 'new': 'b' * 33}], 'minify': False})
+
+
 class Ps2ZipTest(unittest.TestCase):
     def test_round_trip_through_the_catalogue_decoder(self):
         payload = b'Project { name string {"test"} }\n' * 100

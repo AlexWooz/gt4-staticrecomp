@@ -2,15 +2,16 @@
 
 // TASK-212 (slice421): the native Quit Game row.
 //
-// The row is a real GT4 widget: the `slice421` data patch adds a `hidden::Quit` child to the `arcade` TopRoot widget
-// tree (text "Quit Game", the same font and skew as the other rows), and this module appends that parsed widget to the
-// main menu's SelectBox in guest RAM after the script built the menu. It is appended last (after Credit) and removed
-// from the hidden template list, so the game renders and scrolls it like every other row. No guest code runs for the
-// row: while it is focused the host hides Cross from the guest and a Cross press closes the game through the normal
-// window path (card flush, audio close, F8 flush).
+// The row is a real GT4 widget: a same-length data patch (slice421 on v2.00, slice423 on Spec II) adds a `hidden::Quit`
+// child to the `arcade` TopRoot widget tree (text "Quit Game", the same font and skew as the other rows), and this
+// module appends that parsed widget to the main menu's SelectBox in guest RAM after the script built the menu. It is
+// appended last (after Credit) and removed from the hidden template list, so the game renders and scrolls it like every
+// other row. No guest code runs for the row: while it is focused the host hides Cross from the guest and a Cross press
+// closes the game through the normal window path (card flush, audio close, F8 flush).
 //
-// The addresses below are v2.00 retail vtables (docs/tasks/GT4-MENU-QUIT-SETTINGS-STUDY.md). A target without them
-// disables the feature with one log line.
+// The addresses live in one target profile inside menu_quit.cpp: v2.00 retail and Spec II. The v2.00 profile is gated
+// by the arcade menu-state word; Spec II has no reliable state word and is identified by the SelectBox vtable,
+// geometry and its StartScroll parent.
 
 #include <cstddef>
 #include <cstdint>

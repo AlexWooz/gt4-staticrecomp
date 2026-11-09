@@ -1,5 +1,43 @@
 # Current Status
 
+## TASK-212b: the native Quit Game row in Spec II, and the Retail/Spec II guide (2026-11-09, test build only)
+
+On `task/212b-spec2-quit` (from `task/212-quit-game` at `04a56edb`). The Spec II row uses the same data patch, widget
+and exit path as v2.00, with a target profile for the Spec II object model. The guide
+`docs/tasks/QUIT-GAME-ROW-RETAIL-SPEC2.md` is the repeatable recipe for both games.
+
+- **Spec II menu profile (Confirmed from a headless top-menu state):** SelectBox vtable `0x006D7118`, composite
+  `0x006C3EA0`, list node `0x006C3AD8`; geometry `+0x24` = `{-64,16,460,36}`, rows/first/last
+  `+0x90/+0x94/+0x98`, **index `+0xB8`**, visible end `+0xC0`; the SelectBox stores node bases and the row widget is
+  `node + 0x28`; row prev/next/parent `+0x18/+0x1C/+0x14`. Hidden composite node `0xEA83F0` (widget `+0x28`,
+  geometry `+0x24`, count `+0x20` = 11); patched Quit node `0xEA9DEC`. StartScroll `{160,332,320,68}` at
+  parent node `+0x28` / widget `+0x24` is the structural gate. No reliable Spec II `arca` word was found; the scan
+  runs every 15 VBlanks.
+- **Data patch:** the Spec II `projects/arcade/arcade.mproject` is a raw (kind 1) 216,146-byte record; tag
+  `hidden children [10]` -> `[11]`, the `Achievements` template block plus the `Quit` TextFace. The builder now
+  auto-detects the disc (`SCUS_973.28`/`SCUS_974.36`), reads the Spec II TOC at `0x115B800`, accepts its odd page
+  count only for Spec II, and writes a 216,250-byte container (SHA-256 `6b20fde2...`). The runtime prints
+  `[data-patch] 1 range(s), 216146 payload bytes, verified against the image`.
+- **Host:** `native/menu_quit.*` is one algorithm with a v2.00 and a Spec II profile (vtables, geometry, child list,
+  index word, node wrapper, hidden count, scan throttle). It appends the 11th hidden template after the last visible
+  row (8 rows, last index 7), masks Cross/Circle while it is focused, and posts `WM_CLOSE` (windowed) or
+  `ps2::halt("quit game")` (headless). `exit.rs` is unchanged from TASK-212.
+- **Headless evidence:** frame 9,250 shows "Créditos da Mod" then **"Quit Game"** as the last row
+  (`Y:\gt4recomp-scratch\slice423-spec2-kit\quit-row.png`); seven Down presses and Cross give
+  `[menu-quit] Quit Game selected; closing the game`, `[ee] halted: quit game`, exit 0. The from-state run and the
+  full boot both work; the full boot may find a transient arcade TopRoot (`0xC66DF8`) before the current one
+  (`0xA95E68`), both the same arcade menu at different project loads.
+- **Tests:** `native_menu_quit` (v2.00 layout, forced with `GT4_TARGET_FIXTURE_V200`) and
+  `native_menu_quit_spec2` (node layout); CTest 323/324 (one skipped), Python 813 OK / 70 skipped
+  (`GT4_NATIVE_BUILD` = the Spec II build). The `test_gt4_volume` odd-parity case and the raw-file case in
+  `test_gt4_data_patch` are new.
+- **Build/kit:** `Y:\gt4recomp-scratch\slice423-spec2-build` (plain, no PGO/ThinLTO; C: was full), capsule
+  `private/slice423-spec2-data-runtime` (`--mtvu --gs-stream --frame-cost --spec2-iop --data-patch`), pin
+  `docs/inputs/slice423-spec2-data-runtime.json`; kit `Y:\gt4recomp-scratch\slice423-spec2-kit` (exe SHA-256
+  `e589517e...`, patch, recipe, report, state, card copy, ELF, shaders, frame, log, README). Test build only: no
+  installer, release or upload. The owner's windowed controller test remains the gate; the attract-demo timer is the
+  known risk.
+
 ## TASK-212: the native Quit Game row in GT4's main menu (2026-11-09, test build only)
 
 On `task/212-quit-game` (from `task/212-menu-study` at 17f877a7). The owner asked for a real Quit Game row at the bottom

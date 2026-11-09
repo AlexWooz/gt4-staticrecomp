@@ -752,7 +752,9 @@ if(GT4_PERF_RUNTIME_SOURCE)
         list(APPEND perf_sources gif.cpp memory.cpp hw.cpp dmac.cpp)
     endif()
     # TASK-100 S7b: the Spec II capsule also carries the IOP reboot rule (donor runtime/src/iop/sif.cpp).
-    if(perf_relative MATCHES "${GT4_SPEC2_CAPSULE_RE}")
+    # TASK-212b: a Spec II data-patch capsule (slice423) carries both the Spec II IOP rule and the GT4.VOL overlay.
+    if(perf_relative MATCHES "${GT4_SPEC2_CAPSULE_RE}" OR
+       perf_relative MATCHES "^private/slice42[0-9]-spec2-[a-z0-9-]+-runtime$")
         list(APPEND perf_sources sif.cpp)
     endif()
     # TASK-212: the GT4.VOL same-length data overlay replaces the donor sector reader.
@@ -1022,7 +1024,16 @@ add_test(NAME native_spu2_envelope COMMAND spu2_envelope_fixture)
 add_executable(menu_quit_fixture menu_quit_fixture.cpp menu_quit.cpp)
 target_link_libraries(menu_quit_fixture PRIVATE ps2runtime_vulkan)
 target_compile_options(menu_quit_fixture PRIVATE /W4)
+# The v2.00 fixture rebuilds the v2.00 layout; it must keep using that profile in a Spec II build.
+target_compile_definitions(menu_quit_fixture PRIVATE GT4_TARGET_FIXTURE_V200)
 add_test(NAME native_menu_quit COMMAND menu_quit_fixture)
+# TASK-212b: the Spec II list-node layout (widget = node + 0x28, SelectBox rows at +0x90, hidden at +0x20).
+if(GT4_TARGET STREQUAL "spec2")
+    add_executable(menu_quit_spec2_fixture menu_quit_spec2_fixture.cpp menu_quit.cpp)
+    target_link_libraries(menu_quit_spec2_fixture PRIVATE ps2runtime_vulkan)
+    target_compile_options(menu_quit_spec2_fixture PRIVATE /W4)
+    add_test(NAME native_menu_quit_spec2 COMMAND menu_quit_spec2_fixture)
+endif()
 add_executable(data_patch_fixture data_patch_fixture.cpp)
 target_link_libraries(data_patch_fixture PRIVATE ps2runtime_vulkan)
 target_compile_options(data_patch_fixture PRIVATE /W4)

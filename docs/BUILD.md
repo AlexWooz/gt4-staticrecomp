@@ -3399,3 +3399,27 @@ The v2.00 build with the GT4.VOL data patch and the host row watcher. Test build
   `test_gt4_data_patch.py` added); `cargo test -p gt4l-core --lib` 294/294.
 - **Known:** the attract-demo timeout starts ~20 s after the menu appears with no input; any press resets it. Spec II
   needs its own vtables/recipe.
+
+## TASK-212b Spec II Quit Game row (slice423, 2026-11-09, test build only)
+
+The same data patch, widget and exit path as TASK-212, with a Spec II target profile. Full recipe and the
+Retail/Spec II table: `docs/tasks/QUIT-GAME-ROW-RETAIL-SPEC2.md`.
+
+- **Runtime capsule:** `private/tooling-venv/Scripts/python.exe scripts/prepare_perf_runtime.py
+  <assets>/private/slice423-spec2-data-runtime --assets-root <assets> --mtvu --gs-stream --frame-cost --spec2-iop
+  --data-patch`, then `scripts/pin_frame_cost_runtime.py slice423-spec2-data-runtime --assets-root <assets>`.
+  `native/CMakeLists.txt` accepts a `slice42x-spec2-*-runtime` capsule as both the frame-cost family and the Spec II
+  IOP carrier (`sif.cpp` + `disc.cpp`).
+- **Build:** `-DGT4_TARGET=spec2 -DGT4_EE_PROFILE=spec2`, `-DGT4_PERF_RUNTIME_SOURCE=<assets>/private/slice423-spec2-data-runtime`,
+  license guard slice376, port slice200, shaders slice153, VU1 slice397, VU0 slice394/slice390, IPU slice365, memcard
+  slice200, SPU2 slice396, USB slice409, `GT4_RELEASE_DISTRIBUTION=OFF`. The slice423 tree lives on
+  `Y:\gt4recomp-scratch\slice423-spec2-build` because C: was full; the executable is `gt4vulkan-spec2.exe`.
+- **Patch:** `scripts/gt4_data_patch.py --iso "<Spec II ISO>" --recipe <private recipe>.json --output <fresh dir>`
+  auto-detects Spec II; the volume TOC is at `0x115B800` and its pages carry an odd entry count. The record is raw
+  (216,146 bytes), so the replacement is padded to the same length.
+- **Run:** `GT4_DATA_PATCH=<dir>/gt4-data.patch gt4vulkan-spec2.exe SCUS_974.36 --ntsc --disc "<Spec II ISO>"
+  --frames 9500 --memcard <copy>.ps2 --load-state state-topmenu.bin --frames-dir <dir> --frame-every 50 --press
+  8700:down:2 ... --press 9250:cross:2`. The watcher logs the Spec II SelectBox, appends the row (8 rows, last index
+  7), captures Cross and halts with `quit game` (exit 0). Kit and frame: `Y:\gt4recomp-scratch\slice423-spec2-kit`.
+- **Checks:** CTest 323/324 (one skipped; `native_menu_quit` and `native_menu_quit_spec2`), Python 813 OK
+  (70 skipped). Test build only: no installer, release or upload.

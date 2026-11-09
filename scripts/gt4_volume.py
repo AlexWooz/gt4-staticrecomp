@@ -20,9 +20,14 @@ import pycdlib
 from gt4disc import DEFAULT_MANIFEST, fingerprint, validate_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
+# v2.00 (SCUS-97328, CORE.GT4): the reviewed slice119 layout.
 TOC_OFFSET = 17_483_776
 VOLUME_OFFSET = 216_840_192
 VOLUME_SIZE = 2_459_502_592
+# Spec II (SCUS-97436): the volume is larger and its TOC sits at page 0x22B7 (docs/SPEC2-PLAN.md, S7b). The GT4.VOL
+# extent itself comes from the disc (the PT-BR and base v1.10 discs differ in size); the boot ELF hash identifies it.
+SPEC2_TOC_OFFSET = 0x115B800
+SPEC2_BOOT_PATH = "/SCUS_974.36;1"
 PAGE_BYTES = 2048
 CATALOGUE_CAP = 2 * 1024 * 1024
 SELECTION_CAP = 8
@@ -152,7 +157,8 @@ def resolve_records(records: list[Record]) -> tuple[dict[str, Record], int]:
     return files, len(directories)
 
 
-def parse_catalogue(stored: bytes, volume_size: int) -> Catalogue:
+def parse_catalogue(stored: bytes, volume_size: int, toc_offset: int = TOC_OFFSET,
+                    count_parity: int | None = None) -> Catalogue:
     require(64 <= len(stored) <= CATALOGUE_CAP, "catalogue input cap/header")
     magic, version, stored_size, physical_pages, page_bytes, logical_pages = struct.unpack_from(
         "<IIIIHH", stored)
@@ -161,8 +167,8 @@ def parse_catalogue(stored: bytes, volume_size: int) -> Catalogue:
             "catalogue size/page size mismatch")
     require(logical_pages > 0 and logical_pages * PAGE_BYTES <= CATALOGUE_CAP,
             "catalogue output cap")
-    data_start = TOC_OFFSET + physical_pages * PAGE_BYTES
-    require(TOC_OFFSET + len(stored) <= data_start <= volume_size,
+    data_start = toc_offset + physical_pages * PAGE_BYTES
+    require(toc_offset + len(stored) <= data_start <= volume_size,
             "catalogue/data overlap or data outside volume")
     table_end = 64 + 4 * (logical_pages + 1)
     extent(64, table_end - 64, len(stored))
@@ -182,7 +188,8 @@ def parse_catalogue(stored: bytes, volume_size: int) -> Catalogue:
         require(kind in (0, 1), "unsupported page kind")
         require(all(link == -1 or 0 <= link < logical_pages
                     for link in (next_page, previous_page)), "page link out of range")
-        require(count % 2 == kind, "page entry count parity")
+        require(count % 2 == (kind if count_parity is None else count_parity),
+                "page entry count parity")
         entries = count // 2
         require(entries <= (PAGE_BYTES - 16) // 8, "page table exceeds page")
         table_start = PAGE_BYTES - entries * 8 - 4
@@ -254,6 +261,108 @@ def read_catalogue(stream) -> Catalogue:
     require(catalogue.decoded_sha256 == pin["catalogue"]["decoded_catalogue_sha256"],
             "decoded catalogue differs from reviewed slice119")
     return catalogue
+
+
+@dataclass(frozen=True)
+class DiscLayout:
+    """One game disc's GT4.VOL geometry. Offsets are absolute within the ISO stream."""
+    target: str
+    volume_offset: int
+    volume_size: int
+    toc_offset: int
+    count_parity: int | None = None  # None = the v2.00 rule (even leaf, odd index); 1 = every Spec II page is odd
+
+
+class OpenedVolume:
+    """An open ISO whose GT4.VOL was identified; records carry volume-relative offsets."""
+
+    def __init__(self, stream, layout: DiscLayout, catalogue_pin: dict | None):
+        self.stream = stream
+        self.layout = layout
+        self.catalogue_pin = catalogue_pin
+
+    def read(self, offset: int, size: int) -> bytes:
+        return read_at(self.stream, self.layout.volume_offset + offset, size,
+                       self.layout.volume_offset + self.layout.volume_size)
+
+    def read_catalogue(self) -> Catalogue:
+        layout = self.layout
+        header = self.read(layout.toc_offset, 64)
+        size = struct.unpack_from("<I", header, 8)[0]
+        require(64 <= size <= CATALOGUE_CAP, "catalogue input cap")
+        stored = self.read(layout.toc_offset, size)
+        if self.catalogue_pin is not None:
+            require(digest(stored) == self.catalogue_pin["catalogue_input_window_sha256"],
+                    "catalogue differs from its reviewed pin")
+        catalogue = parse_catalogue(stored, layout.volume_size, layout.toc_offset, layout.count_parity)
+        if self.catalogue_pin is not None:
+            require(catalogue.decoded_sha256 == self.catalogue_pin["decoded_catalogue_sha256"],
+                    "decoded catalogue differs from its reviewed pin")
+        return catalogue
+
+
+def detect_target(iso_path: Path) -> str:
+    """The boot executable names the target: CORE.GT4 for v2.00, SCUS_974.36 for Spec II."""
+    iso = pycdlib.PyCdlib()
+    try:
+        iso.open(str(iso_path))
+        with iso.open_file_from_iso(iso_path="/SYSTEM.CNF;1") as stream:
+            config = stream.read(4097)
+    finally:
+        iso.close()
+    require(b"BOOT2" in config, "SYSTEM.CNF has no BOOT2")
+    if b"SCUS_974.36" in config:
+        return "spec2"
+    if b"SCUS_973.28" in config:
+        return "v200"
+    raise ValueError("unknown GT4 disc target")
+
+
+@contextmanager
+def opened_volume(iso_path: Path, target: str | None = None):
+    """Open a v2.00 or Spec II ISO and describe its GT4.VOL without modifying anything.
+
+    v2.00 keeps the reviewed whole-disc pin. Spec II accepts any disc whose boot ELF is the pinned SCUS_974.36 image
+    (the PT-BR and base v1.10 volumes differ in size); the patch builder still embeds every original range hash, and the
+    runtime refuses an image that does not match.
+    """
+    target = target or detect_target(iso_path)
+    if target == "v200":
+        manifest = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+        validate_manifest(manifest)
+        pin = json.loads((ROOT / "docs/inputs/slice119-nenkai-assets.json").read_text(encoding="utf-8"))
+        with iso_path.open("rb") as stream:
+            require(fingerprint(stream) == manifest["disc"], "ISO does not match pinned disc")
+            stream.seek(0)
+            iso = pycdlib.PyCdlib()
+            try:
+                iso.open_fp(stream)
+                record = iso.get_record(iso_path="/GT4.VOL;1")
+                require(record.extent_location() * 2048 == VOLUME_OFFSET
+                        and record.data_length == VOLUME_SIZE, "unexpected GT4.VOL extent")
+                yield OpenedVolume(stream, DiscLayout("v200", VOLUME_OFFSET, VOLUME_SIZE, TOC_OFFSET),
+                                   pin["catalogue"])
+            finally:
+                iso.close()
+        return
+    if target != "spec2":
+        raise ValueError(f"unknown disc target: {target}")
+    elf_pin = json.loads((ROOT / "docs/inputs/spec2-elf.json").read_text(encoding="utf-8"))
+    expected = elf_pin["original"]["sha256"]
+    with iso_path.open("rb") as stream:
+        iso = pycdlib.PyCdlib()
+        try:
+            iso.open_fp(stream)
+            boot = iso.get_record(iso_path=SPEC2_BOOT_PATH)
+            require(boot.data_length == elf_pin["original"]["size_bytes"], "unexpected Spec II boot size")
+            with iso.open_file_from_iso(iso_path=SPEC2_BOOT_PATH) as handle:
+                require(digest(handle.read()) == expected, "Spec II boot ELF differs from the pinned image")
+            record = iso.get_record(iso_path="/GT4.VOL;1")
+            require(record.extent_location() > 0 and record.data_length > 0, "unexpected Spec II GT4.VOL extent")
+            yield OpenedVolume(stream, DiscLayout(
+                "spec2", record.extent_location() * 2048, record.data_length, SPEC2_TOC_OFFSET, 1), None)
+        finally:
+            iso.close()
 
 
 def selected_records(catalogue: Catalogue, names: list[str]) -> list[Record]:

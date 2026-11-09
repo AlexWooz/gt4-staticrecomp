@@ -80,6 +80,16 @@ class VolumeTests(unittest.TestCase):
             with self.subTest(kind=kind, count=count), self.assertRaises(ValueError):
                 volume.parse_catalogue(catalogue_bytes(bytes(page)), volume.TOC_OFFSET + 4096)
 
+    def test_spec2_odd_page_count_relaxes_only_the_parity(self):
+        # Spec II's RoFS 3.1 leaf/index pages carry an odd entry count (docs/SPEC2-PLAN.md, S7b).
+        page = bytearray(leaf_page())
+        struct.pack_into("<H", page, 2, 5)
+        data = catalogue_bytes(bytes(page))
+        with self.assertRaisesRegex(ValueError, "parity"):
+            volume.parse_catalogue(data, volume.TOC_OFFSET + 4096)
+        catalogue = volume.parse_catalogue(data, volume.TOC_OFFSET + 4096, count_parity=1)
+        self.assertEqual(catalogue.files["test"].size, 3)
+
     def test_file_extent_beyond_volume(self):
         with self.assertRaises(ValueError):
             volume.parse_catalogue(catalogue_bytes(), volume.TOC_OFFSET + 2048)

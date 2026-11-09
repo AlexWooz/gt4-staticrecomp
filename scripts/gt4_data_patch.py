@@ -93,9 +93,8 @@ def ps2zip(payload: bytes) -> bytes:
     return struct.pack("<II", gt4_volume.PS2ZIP_MAGIC, (-len(payload)) & 0xFFFFFFFF) + body
 
 
-def decode_record(stream, record) -> tuple[bytes, bytes]:
-    packed = gt4_volume.read_at(stream, gt4_volume.VOLUME_OFFSET + record.offset, record.stored_size,
-                                gt4_volume.VOLUME_OFFSET + gt4_volume.VOLUME_SIZE)
+def decode_record(volume, record) -> tuple[bytes, bytes]:
+    packed = volume.read(record.offset, record.stored_size)
     return packed, gt4_volume.decode_payload(packed, record.kind, record.size)
 
 
@@ -149,26 +148,27 @@ def verify_round_trip(record, container: bytes, decoded: bytes) -> None:
             raise ValueError("replacement PS2ZIP has an incomplete DEFLATE stream")
 
 
-def build(iso: Path, recipe: dict, output: Path) -> dict:
+def build(iso: Path, recipe: dict, output: Path, target: str | None = None) -> dict:
     entries, report_files = [], []
-    with gt4_volume.verified_volume(iso) as stream:
-        catalogue = gt4_volume.read_catalogue(stream)
+    with gt4_volume.opened_volume(iso, target) as volume:
+        catalogue = volume.read_catalogue()
+        layout = volume.layout
         for edit in recipe["files"]:
             name = edit["catalogue_path"]
             record = catalogue.files.get(name)
             if record is None:
                 raise ValueError(f"no such file in the volume catalogue: {name}")
-            packed, decoded = decode_record(stream, record)
+            packed, decoded = decode_record(volume, record)
             replacement_decoded = build_replacement(record, decoded, edit)
             container = encode_same_extent(record, replacement_decoded)
             verify_round_trip(record, container, replacement_decoded)
-            entries.append((gt4_volume.VOLUME_OFFSET + record.offset, container,
+            entries.append((volume.layout.volume_offset + record.offset, container,
                             hashlib.sha256(packed).digest(), hashlib.sha256(container).digest()))
             report_files.append({
                 "catalogue_path": name,
                 "kind": record.kind,
                 "volume_offset": record.offset,
-                "absolute_offset": gt4_volume.VOLUME_OFFSET + record.offset,
+                "absolute_offset": volume.layout.volume_offset + record.offset,
                 "stored_bytes": record.stored_size,
                 "decoded_bytes": record.size,
                 "original_stored_sha256": digest(packed),
@@ -193,6 +193,10 @@ def build(iso: Path, recipe: dict, output: Path) -> dict:
     report = {
         "classification": "Derived patch container; game data replacement is generated from the user's own disc",
         "container": "GT4DPAT1",
+        "disc_target": layout.target,
+        "volume_offset": layout.volume_offset,
+        "volume_size": layout.volume_size,
+        "toc_offset": layout.toc_offset,
         "container_sha256": digest(blob),
         "container_bytes": len(blob),
         "files": report_files,
@@ -206,9 +210,12 @@ def main() -> None:
     parser.add_argument("--iso", type=Path, required=True)
     parser.add_argument("--recipe", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--target", choices=("auto", "v200", "spec2"), default="auto",
+                        help="Disc layout; auto reads the boot path from SYSTEM.CNF")
     arguments = parser.parse_args()
     recipe = json.loads(arguments.recipe.read_text(encoding="utf-8"))
-    report = build(arguments.iso, recipe, arguments.output)
+    target = None if arguments.target == "auto" else arguments.target
+    report = build(arguments.iso, recipe, arguments.output, target)
     print(json.dumps(report, indent=2))
 
 

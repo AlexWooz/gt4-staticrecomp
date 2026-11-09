@@ -4782,6 +4782,25 @@ whenever the arcade top menu is shown; a save whose `major_menu_project` is `gtm
 (the test card was patched in a save state only, never on the card). Spec II needs its own vtables/mproject patch
 (next). The rc17 host combo remains the fallback for reaching a quit without the row.
 
+**State (2026-11-09, third entry, TASK-212b):** the Spec II row is implemented on `task/212b-spec2-quit` (from
+`task/212-quit-game` at `04a56edb`): the same widget/patch/exit path, with a Spec II target profile in
+`native/menu_quit.*` and a Spec II `arcade.mproject` recipe (raw kind 1, 216,146 bytes). Spec II values: SelectBox
+vtable `0x006D7118`, composite `0x006C3EA0`, list node `0x006C3AD8`; rows/first/last `+0x90/+0x94/+0x98`, index
+`+0xB8`, end `+0xC0`; widget = node `+0x28`; hidden node `0xEA83F0` (widget `+0x28`, count `+0x20` = 11); Quit node
+`0xEA9DEC`. No reliable `arca` word: the SelectBox is gated structurally (vtable + geometry + StartScroll
+`{160,332,320,68}` + row layout) and scanned every 15 VBlanks. Patch container 216,250 bytes, SHA-256
+`6b20fde2...`, verified against the PT-BR v1.10 disc; the TOC `0x115B800` pages carry an odd entry count (the
+Spec II layout relaxes only that parity). Headless: `[menu-quit] Quit Game row appended: 8 rows, last index 7`,
+seven Down presses + Cross -> `[menu-quit] Quit Game selected`, `[ee] halted: quit game`, exit 0; frame 9,250 shows
+"Créditos da Mod" then **"Quit Game"**. Tests: `native_menu_quit` and `native_menu_quit_spec2`, CTest 323/324 (one
+skipped), Python 813 OK / 70 skipped. Build `Y:\gt4recomp-scratch\slice423-spec2-build` (C: was full), capsule
+`private/slice423-spec2-data-runtime`, pin `docs/inputs/slice423-spec2-data-runtime.json`, kit
+`Y:\gt4recomp-scratch\slice423-spec2-kit`. Guide: `docs/tasks/QUIT-GAME-ROW-RETAIL-SPEC2.md`. Test build only; the
+owner's windowed controller test remains the gate. **Risk/unknown:** a full boot can find a transient arcade TopRoot
+(`0xC66DF8`) before the current one (`0xA95E68`); both are the arcade menu at different project loads, and the quit
+comes from the current one. A future Spec II build could add another arcade SelectBox; re-derive the profile then.
+
+
 ### TASK-213: in-game settings parity with the launcher (owner, 2026-11-09; rc17 study, umbrella)
 
 **Why.** The owner wants as many launcher functions as possible inside GT4's own menus: graphics (renderer,

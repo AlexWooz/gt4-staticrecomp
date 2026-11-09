@@ -230,9 +230,37 @@ Composite {
   **C/H** (observed; owner test).
 - **Spec II:** the publisher's client is Adhoc v7 with different widget vtables and its own `arcade.mproject`; the
   same data-patch builder applies, but `menu_quit` needs the Spec II vtables and the SelectBox offsets checked, and a
-  Spec II recipe. Not done here. **U**.
+  Spec II recipe. Done in TASK-212b, section 10. **C**.
 - **Launcher:** the patch must be built from the user's disc during "Preparing game files" and passed as
   `GT4_DATA_PATCH`. This run ships the builder, the capsule and the test kit only. **C**.
+
+## 10. TASK-212b: the Spec II row (2026-11-09)
+
+The same widget, patch builder and exit path, with a different object model. Full recipe:
+`docs/tasks/QUIT-GAME-ROW-RETAIL-SPEC2.md`. The Spec II arcade project is Adhoc **v7**; `arcade.mproject` is a raw
+(kind 1) 216,146-byte record, `arcade.adc` is 401,983 bytes. The volume TOC is at `0x115B800`; its pages carry an odd
+entry count (the pinned v2.00 reader's parity check is relaxed only for Spec II).
+
+- **Trees:** the Spec II engine wraps every widget in a 0x28-byte list node (`vtable 0x006C3AD8`); the SelectBox stores
+  node bases and the row widget is `node + 0x28`. The SelectBox is at `vtable 0x006D7118`, geometry `+0x24` =
+  `{-64,16,460,36}`, rows/first/last `+0x90`/`+0x94`/`+0x98`, **index `+0xB8`**, visible end `+0xC0`. The row
+  composite is `0x006C3EA0`; its prev/next/parent are `+0x18`/`+0x1C`/`+0x14`. The hidden composite node is at
+  `0xEA83F0` (widget `+0x28`, geometry `+0x24`, count `+0x20` = 11); the patched Quit node is `0xEA9DEC` (child pointer
+  `0xEA9DF0`). The StartScroll geometry `{160,332,320,68}` at parent node `+0x28`, widget `+0x24`, is the structural
+  gate. **C** from the headless top-menu state and the down-press index change.
+- **No `arca`:** no reliable Spec II menu-state word was located; the SelectBox is identified structurally, scanning
+  every 15 VBlanks. A full boot can find a transient arcade TopRoot (`0xC66DF8`) before the current one
+  (`0xA95E68`); both are the arcade menu at different project loads. **H**.
+- **Patch:** hidden `children [10]` -> `[11]`, the `Achievements` template block plus the `Quit` TextFace; 216,250-byte
+  container, SHA-256 `6b20fde2...`; `[data-patch] 1 range(s), 216146 payload bytes, verified against the image`. **C**.
+- **Run:** the host appends the 11th hidden template after the last visible row; 8 rows, last index 7; seven Down
+  presses, Cross -> `[menu-quit] Quit Game selected`, `[ee] halted: quit game`, exit 0. Frame 9,250 shows
+  "Créditos da Mod" then **"Quit Game"**. **C**.
+- **Tests:** `native_menu_quit` (v2.00 layout) and `native_menu_quit_spec2` (node layout); CTest 323/324 (one skipped),
+  Python 813 OK / 70 skipped. Build `Y:\gt4recomp-scratch\slice423-spec2-build` (C: was full), capsule
+  `private/slice423-spec2-data-runtime`, pin `docs/inputs/slice423-spec2-data-runtime.json`, kit
+  `Y:\gt4recomp-scratch\slice423-spec2-kit`. Test build only.
+
 
 
 ## Resumo para o dono (pt-BR)
@@ -249,6 +277,10 @@ Composite {
 - O Spec II não tem código de menu no executável: ele troca os arquivos de menu dentro do `GT4.VOL` (scripts e
   widgets maiores que os da base beta) e usa o plugin só para o comportamento. Serve de referência de
   abordagem, não de código; e não dá para reaproveitar os arquivos porque o v2.00 é Adhoc v5 e o Spec II é v7.
+- O TASK-212b fez a linha no Spec II também: mesmo widget e mesmo patch de dados, com os vtables e offsets do
+  Spec II (o SelectBox fica em `0x006D7118`, o índice em `+0xB8`, as linhas são nós de lista com o widget em
+  `+0x28`). Teste headless: 8 linhas, "Créditos da Mod" e **"Quit Game"** por último, Cross encerra com
+  `quit game` e saída 0. O guia completo está em `docs/tasks/QUIT-GAME-ROW-RETAIL-SPEC2.md`.
 - Para o TASK-213 a proposta é começar pelo overlay: Tela cheia ao vivo e depois Renderizador com aviso de "vale
   no próximo início", gravando num arquivo que o launcher junta no `settings.toml`; a página nativa do GT4 fica
   para depois do leitor do `GT4.VOL`.
