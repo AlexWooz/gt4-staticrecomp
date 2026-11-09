@@ -17,6 +17,10 @@ CoreGS 2.0), render scale, and the zip from **Settings > About > Export logs**. 
 
 ## The open set
 
+The repository has **35 open issues** on 2026-11-09. The table covers the **30 most recent**; the five older ones
+(#88 wheel/FFB, #92 split-screen 4:3, #97 low-end performance, #107 startup failure, #112 integrated-graphics slowdown)
+already have owner replies and sit in the wheel/aspect/performance backlog. No new reply is needed there.
+
 | # | Title (short) | Kind | Priority | Current state / next step |
 |---|---|---|---|---|
 | 222 | 30 fps menus and 1080i | request | P2 | 30 fps menus are not a supported path; the 1080i row is being removed because the recomp is fixed at 480p. Record and close as not planned, or keep open if the user reports a real menu slowdown with logs. |
