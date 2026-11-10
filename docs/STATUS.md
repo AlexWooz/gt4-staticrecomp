@@ -1,5 +1,23 @@
 # Current Status
 
+## 2026-11-10: CoreGS 3.0 parallel wave; owner fidelity directive
+
+The owner confirmed (Telegram) that CoreGS 3.0 does not need to match CoreGS 2.0/GSdx pixel for pixel; the goal is to
+get close and then iterate on lights, reflections and missing effects. The measured gates stay a compass, not a
+bit-exact acceptance gate (the AGENTS/TASK-090 wording already said so).
+
+Research results from the parallel wave:
+- All seven remaining VU1 families decoded and validated against the r13 tap (max 1 level where the item's own block is
+  captured); the light block is per item/material, so the v3 per-draw capture leaves some items unmatched.
+- Texture pipeline mapped: T4/T8/CT32, CT32/CSM1 palettes, no mipmaps; UV is s16/4096 with no V flip (the current
+  decoder and tap parser are wrong); the capture lacks pixels, palettes and per-pass GS state; an SLM snapshot is the
+  smallest unblock.
+- Fog and GS state measured: fog from PGL +0xFA0, 99.83% within ±1; FOGCOL only in the tap; AFAIL KEEP, DATE on the
+  env-map pass, truncating blends; reflections are a second env-map pass.
+
+In flight: `task/090-capture-complete` (per-item light block/selector, carried block, v4), `task/090-texture-uv`
+(UV/parser fix), G-IMAGE/G-PERF gate prototype. Details: journal 2026-11-10.
+
 ## TASK-090 round 13: the VU1 program selector and the family map (2026-11-09, branch `task/090-coregs3`)
 
 `.gt4scene` is **version 3**: each draw carries the ITOP and MSCAL words from the terminating tag of its REF chain (raw

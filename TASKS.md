@@ -1644,8 +1644,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   **0x0080** no block (11 / 1,351, unlit). **Draws 91/93 are the same body program**; their residual is data, not
   another program. The MSCAL word mixes families (shared stub) and is not the selector. Counters: 124,782 selectors,
   0 missing. Checks: CTest 4/4, Python 7/7, 3x off/shadow gate OK (capture v3, 3,415,692 B).
-- Next: the formulas for the four nine-qword programs and the three-qword/no-block programs (research), then the
-  G-IMAGE/G-PERF gates and the native fidelity work (textures, fog, effects) on top of the `present` seam.
+- **Rounds 14-16 (2026-11-10, research).** All seven remaining VU1 families decoded and validated against the r13 tap:
+  9-qword first-power 0x0B48/0x0290 and power-16 0x03D8/0x0418, 3-qword 0x1508, 6-qword Phong-style 0x0CA8 and
+  no-block 0x00B0; the light block is per item/material, so the v3 per-draw capture leaves some items unmatched (the
+  v4 capture task addresses it). Texture pipeline mapped: T4 163/169, T8 5, one CT32 env map; CT32/CSM1 palettes, no
+  mipmaps, MODULATE; UV is s16/4096 with no V flip (the current decoder and tap parser are wrong); the capture has no
+  pixels, palettes or per-pass GS state; the smallest unblock is a GS-side SLM snapshot. Fog/GS state measured: fog
+  from PGL +0xFA0 (99.83% within ±1), FOGCOL only in the tap, AFAIL KEEP, DATE on the env-map pass, truncating blends.
+  **Owner fidelity directive:** CoreGS 3.0 must get close to CoreGS 2.0/GSdx, not pixel-identical; iterate on lights,
+  reflections and missing effects (journal 2026-11-10).
+- Next: merge the per-item light block (v4) and the UV/parser fix, implement the remaining family formulas in the
+  renderers, then fog/textures/reflection and the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls
