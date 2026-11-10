@@ -264,6 +264,44 @@ Opera Paris, SS Route 5 and Tsukuba Wet need a recording (`build/bench-inputs-21
 Arcade press schedule on `private/slice110-menu-pilot/name-control4/card.ps2` (City Courses / wet track menu positions),
 each validated in 2-3 runs. George Paris Rally needs a GT Mode card with the rally event unlocked (no such card here).
 
+
+## S4 mapping: the four words are per sprite (not per vertex)
+
+`GT4_FLARE_TABLE_WORD=<0..3> GT4_FLARE_TABLE_WORD_VALUE=0` (the other three words 0xFF) on the night race 3x, VBlank
+9,600, against the all-0xFF frame:
+
+| Forced word | Pixels that change | Box | Max |
+|---|---|---|---|
+| 0 | 117 | x 934..960, y 239..262 | 224 |
+| 1 | 117 | x 908..936, y 240..269 | 192 |
+| 2 | 0 | - | 0 |
+| 3 | 0 | - | 0 |
+
+So the 16-byte window is **four lights**, and words 0 and 1 drive **two distinct flare sprites** (the two headlights of
+the car ahead); words 2 and 3 are spare in this frame. The factor is therefore **per sprite** (not per vertex), and the
+draw variant needs the **light index of each sprite**. The open mapping question before coding: whether the VU1 emits
+exactly one sprite per used light, in light order, within the job (then draw order = word index); the four payload
+positions (11,720 / 12,752 / 14,760 / 15,792) are consistent with one REF per light. Next step: count and order the
+job's flare draws (a marker + a per-job batch counter) and compare the forced-word frames with a per-draw-index
+modulation; if a light emits several sprites, the index must come from the VU1 program.
+
+## Tone-strip drop on license B-1: implemented, **no gain** (off by default)
+
+`GT4_CORE2_TONE_STRIP_DROP=1` keeps a pending tone-run copy-back strip pending across a CLUT load instead of flushing it
+(the renderer drops it whole). Measured on license B-1 1x, VBlanks 2,400-3,500, 4+4 interleaved:
+
+| | on (4 runs) | off (4 runs) |
+|---|---|---|
+| CLUT flushes/VBlank | **170** | 1,430 |
+| `tone_strip_kept`/VBlank | 1,260 | 0 |
+| GS worker | 8.07 (8.04/8.22/8.08/7.96) | 8.19 (8.28/8.08/8.30/8.11) |
+| wall | 8.91 (9.17/9.23/8.57/8.68) | 8.80 (8.97/8.71/8.83/8.68) |
+| frame p50 | 8.90 (9.49/9.85/7.61/7.78) | 7.94 (8.21/7.95/7.65/7.94) |
+
+The 1,260 flushes disappear but the time does not: the merged strip batch is still handed over once (and dropped there),
+so the front-end cost moves rather than disappears, and the frame is the same within noise (slightly worse on the two
+early pairs). Kept in the code behind the switch (default **off**) for TASK-171/168 to build on; no gain claimed.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

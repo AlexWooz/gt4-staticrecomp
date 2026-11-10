@@ -44,6 +44,9 @@ struct FrontEndOptions {
     // disjoint range leaves that palette unchanged, so the batch is exact without the flush. The CPU reference and the
     // writeback keep the conservative chapter 07.3 rule (false).
     bool clutLoadScope = false;
+    // TASK-215 (CORE2-LICENSE-TONE-AUDIT): asked for a pending batch before a CLUT load; true means it is a tone-run
+    // copy-back strip the renderer would drop anyway, so the load must not flush it. Set by CoreGS 2.0 only.
+    std::function<bool(const Batch&)> toneStrip;
 };
 
 enum class SyncKind : uint8_t { Signal, Finish, Label };
@@ -85,6 +88,8 @@ public:
     void SetLocalMemory(const uint8_t* localMemory);
     // IN-403: FrontEndOptions::cullUncovered, set by the renderer once it knows its internal scale.
     void SetCullUncovered(bool cull) { options_.cullUncovered = cull; }
+    // TASK-215: the renderer's drop test for a pending tone-run copy-back strip, asked before a CLUT-load flush.
+    void SetToneStripHook(std::function<bool(const Batch&)> hook) { options_.toneStrip = std::move(hook); }
 
     // Called just before a CLUT load reads the local memory image (after the batch flush of 07.3), with a
     // conservative block range covering the palette. A renderer that keeps drawn pixels outside the image
@@ -146,6 +151,8 @@ public:
     uint64_t ClutFlushesSameTexture() const { return clutFlushSameTexture_; }
     // TASK-215: CLUT loads that wrote no halfword the pending batch reads, so the batch was not flushed.
     uint64_t ClutFlushesAvoided() const { return clutFlushesAvoided_; }
+    // TASK-215: CLUT loads that did not end a pending tone-run copy-back strip (the renderer drops those whole).
+    uint64_t ToneStripLoadsKept() const { return toneStripLoadsKept_; }
     // TASK-168b: emitted batches the sink dropped on arrival (BatchSink::DropOnArrival).
     uint64_t BatchesDroppedOnArrival() const { return batchesDroppedOnArrival_; }
     const Batch& PendingBatch() const { return batch_; }
@@ -273,6 +280,7 @@ private:
     std::array<uint64_t, static_cast<size_t>(FlushReason::Count)> flushCounts_{};
     uint64_t clutFlushSameTexture_ = 0;
     uint64_t clutFlushesAvoided_ = 0;
+    uint64_t toneStripLoadsKept_ = 0;
     uint64_t batchesDroppedOnArrival_ = 0;  // TASK-168b
     uint64_t clutLoadsKept_ = 0;            // TASK-168
     uint64_t segmentedBatches_ = 0;

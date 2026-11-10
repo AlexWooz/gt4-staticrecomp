@@ -727,6 +727,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::array<std::uint64_t, static_cast<std::size_t>(FlushReason::Count)> lastFlushCounts_{};  // CPU survey R9
     std::uint64_t lastClutSameTexture_ = 0;
     std::uint64_t lastClutScopeAvoided_ = 0;
+    std::uint64_t lastToneStripKept_ = 0;
     std::uint64_t lastClutKept_ = 0, lastSegmentedBatches_ = 0, lastPaletteSegments_ = 0;  // TASK-168
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
@@ -950,6 +951,8 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
 
     Impl() : frontEnd_(Core2FrontEndOptions(), *this, *this, *this) {
         frontEnd_.SetLocalMemory(memory_.Local().bytes().data());
+        // TASK-215: a CLUT load under a pending tone-run copy-back strip keeps the batch (the renderer drops it whole).
+        frontEnd_.SetToneStripHook([this](const Batch &pending) { return IsToneStrip(pending); });
         // IN-485: remembered palettes (A/B).
         const char *clutMemo = std::getenv("GT4_CORE2_CLUT_MEMO");
         frontEnd_.MutableClut().SetDataMemo(clutMemo == nullptr || std::strcmp(clutMemo, "0") != 0);
@@ -4155,8 +4158,20 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // RewriteDepthClear leaves a textured batch). GT4_CORE2_TONE_EARLY_DROP=0 hands every batch over (A/B).
     const bool toneEarlyDrop_ = std::getenv("GT4_CORE2_TONE_EARLY_DROP") == nullptr ||
                                 std::strcmp(std::getenv("GT4_CORE2_TONE_EARLY_DROP"), "0") != 0;
-    bool DropOnArrival(const Batch &batch) override {
-        if (!toneEarlyDrop_ || !toneActive_ || failed_ || batch.paletteSegments.size() > 1u) return false;
+    // TASK-215 (CORE2-LICENSE-TONE-AUDIT): the front end asks this before a CLUT load. True when the pending batch is a
+    // tone-run copy-back strip, which DropOnArrival drops whole: the load must not flush it (1,260 loads per VBlank on
+    // license B-1, CLUT flushes 1,430 -> 170). Measured: no gain (4+4 interleaved: GS worker 8.07 against 8.19 ms, wall
+    // 8.91 against 8.80), because the merged batch is still handed over once and the front-end cost moves into it; off by
+    // default, GT4_CORE2_TONE_STRIP_DROP=1 selects it.
+    bool IsToneStrip(const Batch &batch) const {
+        static const bool on = [] {
+            const char *text = std::getenv("GT4_CORE2_TONE_STRIP_DROP");
+            return text != nullptr && std::strcmp(text, "0") != 0;
+        }();
+        return on && toneActive_ && !failed_ && frame::Fbmsk(batch.state.ctx.frame) == toneFbmsk_ && PossibleShuffle(batch);
+    }
+
+    bool DropOnArrival(const Batch &batch) override {        if (!toneEarlyDrop_ || !toneActive_ || failed_ || batch.paletteSegments.size() > 1u) return false;
         const std::uint32_t fbmsk = frame::Fbmsk(batch.state.ctx.frame);
         if (fbmsk != toneFbmsk_ || !PossibleShuffle(batch)) return false;
         ScopedUs batchTimer(clock_, &PhaseTimes::batch);
@@ -5616,20 +5631,23 @@ void Renderer::Flush() {
             const std::uint64_t segmented = s.frontEnd_.SegmentedBatches();
             const std::uint64_t segments = s.frontEnd_.PaletteSegmentsEmitted();
             const std::uint64_t avoided = s.frontEnd_.ClutFlushesAvoided();
+            const std::uint64_t stripKept = s.frontEnd_.ToneStripLoadsKept();
             const std::uint64_t newSegmented = segmented - s.lastSegmentedBatches_;
             std::fprintf(stderr,
                          "[core2] batch flushes/vblank%s clut_same_texture=%.1f clut_kept=%.1f segmented_batches=%.1f "
-                         "segments_per_segmented_batch=%.2f clut_scope_avoided=%.1f\n",
+                         "segments_per_segmented_batch=%.2f clut_scope_avoided=%.1f tone_strip_kept=%.1f\n",
                          reasons.c_str(), static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0,
                          static_cast<double>(kept - s.lastClutKept_) / 600.0, static_cast<double>(newSegmented) / 600.0,
                          newSegmented != 0 ? static_cast<double>(segments - s.lastPaletteSegments_) / static_cast<double>(newSegmented)
                                            : 0.0,
-                         static_cast<double>(avoided - s.lastClutScopeAvoided_) / 600.0);
+                         static_cast<double>(avoided - s.lastClutScopeAvoided_) / 600.0,
+                         static_cast<double>(stripKept - s.lastToneStripKept_) / 600.0);
             s.lastClutSameTexture_ = sameTexture;
             s.lastClutKept_ = kept;
             s.lastSegmentedBatches_ = segmented;
             s.lastPaletteSegments_ = segments;
             s.lastClutScopeAvoided_ = avoided;
+            s.lastToneStripKept_ = stripKept;
         }
         s.lastPrimitives_ = s.gpu_.Stats().primitives;
         s.lastFragments_ = s.gpu_.Stats().fragments;

@@ -806,11 +806,26 @@ private:
             // every byte of every texel. The game's own VU1 flare path then runs on one visibility value, so frames at
             // several values show whether the value only scales the flare's colour/alpha (the same pixels change and their
             // values follow the value) or whether it also moves or culls the sprites. The read itself still happens.
+            // TASK-215 P1/S4 (diagnostic, off by default): GT4_FLARE_TABLE_FORCE=<0..255> answers the read with that value
+            // in every byte of every texel; <word>:<value> sets only one of the first four words (the 16 bytes the flare
+            // job copies), the other three to 0xFF, so the sprite-to-word mapping can be measured.
+            static const int forcedWord = [] {
+              const char *text = std::getenv("GT4_FLARE_TABLE_WORD");
+              return text != nullptr ? std::atoi(text) : -1;
+            }();
+            static const int forcedWordValue = [] {
+              const char *text = std::getenv("GT4_FLARE_TABLE_WORD_VALUE");
+              return text != nullptr ? std::atoi(text) : 0xFF;
+            }();
             static const int forced = [] {
               const char *text = std::getenv("GT4_FLARE_TABLE_FORCE");
               return text != nullptr ? std::atoi(text) : -1;
             }();
             if (forced >= 0) std::memset(table.data(), forced & 0xFF, table.size());
+            if (forcedWord >= 0 && forcedWord < 4) {
+              std::memset(table.data(), 0xFF, 16);
+              std::memset(table.data() + 4 * forcedWord, forcedWordValue & 0xFF, 4);
+            }
             // TASK-215 S4: the words the VU1 job copies from the table (four payload windows of 16 bytes), for the
             // per-sprite modulation question.
             static const long dump = [] {

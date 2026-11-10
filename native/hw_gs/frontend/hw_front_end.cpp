@@ -375,10 +375,15 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
     bool keepAsSegment = false;
     uint32_t generationBefore = 0;
     const bool loaded = clut_.ProcessWrite(write, localMemory_, [&]() {
-        // Chapter 07.3 step 1: an indexed textured batch, or one that writes the
-        // CLUT source, renders with the old palette, so it is flushed first.
+        // TASK-215 (CORE2-LICENSE-TONE-AUDIT): a copy-back strip of a tone run is dropped whole by the renderer
+        // (ToneHook / DropOnArrival). Flushing it before every CLUT load costs a batch each time (about 1,000 per VBlank
+        // on license B-1) and gains nothing: keep it pending, and the next real flush hands the run over once, where the
+        // renderer drops it. The predicate is the renderer's own drop test, so the batch would have been discarded
+        // anyway; GT4_CORE2_TONE_STRIP_DROP=0 asks nothing (A/B).
+        const bool toneStrip = !batch_.Empty() && options_.toneStrip && options_.toneStrip(batch_);
+        if (toneStrip) ++toneStripLoadsKept_;
         bool flush = false;
-        if (!batch_.Empty()) {
+        if (!toneStrip && !batch_.Empty()) {
             const ContextRegs& snapCtx = batch_.state.ctx;
             if (Tme(batch_.state.effectivePrim) && IsIndexedPsm(tex0::Psm(snapCtx.tex0))) {
                 // TASK-215 (CORE2-PERF-AUDIT B): the load only changes this batch's palette when it writes a halfword
