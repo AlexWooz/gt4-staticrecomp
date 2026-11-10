@@ -292,6 +292,11 @@ void check_capture_round_trip() {
   frame.materials.push_back(material);
   frame.packets = make_packet();
   CapturedDraw draw = make_draw(static_cast<std::uint32_t>(frame.packets.size()));
+  // Format version 6: the 0x00A0 morph factor (the measured frame-0 value) and its evidence flags.
+  draw.morph_factor = 0xBF02070Cu;
+  draw.morph_factor_pgl = 0xBF02070Cu;
+  draw.morph_factor_valid = kMorphUploadSeen | kMorphPglRead | kMorphValuesAgree;
+  draw.morph_uploads = 3;
   frame.draws.push_back(draw);
   frame.draw_count = 1;
   frame.texture_count = 1;
@@ -355,6 +360,14 @@ void check_capture_round_trip() {
               read.pass_states[0].scissor == pass_state.scissor && read.pass_states[0].alpha == pass_state.alpha &&
               read.pass_states[0].test == pass_state.test,
           "the per-pass GS register shadow survives");
+  // Format version 6: the morph factor and its evidence flags survive, and the blend helper decodes the word.
+  require(read.draws[0].morph_factor == draw.morph_factor && read.draws[0].morph_factor_pgl == draw.morph_factor_pgl &&
+              read.draws[0].morph_factor_valid == draw.morph_factor_valid &&
+              read.draws[0].morph_uploads == draw.morph_uploads,
+          "the morph factor and its evidence survive");
+  const MorphBlend blend = morph_blend_of(read.draws[0]);
+  require(blend.valid && blend.bits == draw.morph_factor, "a captured upload yields a valid morph blend");
+  require(std::fabs(blend.factor - (-0.5079200267791748f)) < 1e-6f, "the morph factor decodes as the measured float");
 
   // A block whose item points outside the packet block must be refused, not read.
   FrameSnapshot broken = frame;
@@ -393,6 +406,31 @@ void check_capture_round_trip() {
   FrameSnapshot bad_environment = frame;
   bad_environment.environment.valid = 2;
   require(!frame_block_bytes(bad_environment, broken_block), "an environment validity flag above 1 is refused");
+  // Format version 6 bounds: the morph flags are a bit mask and the upload count cannot exceed the item table.
+  FrameSnapshot bad_morph_flags = frame;
+  bad_morph_flags.draws[0].morph_factor_valid = 0x80u;
+  require(!frame_block_bytes(bad_morph_flags, broken_block), "a morph flag outside the mask is refused");
+  FrameSnapshot bad_morph_uploads = frame;
+  bad_morph_uploads.draws[0].morph_uploads = kMaxItemsPerDraw + 1u;
+  require(!frame_block_bytes(bad_morph_uploads, broken_block), "a morph upload count above the item cap is refused");
+  // A factor without the upload evidence bit is not usable, and a non-finite word is not a factor.
+  CapturedDraw no_upload = draw;
+  no_upload.morph_factor_valid = kMorphPglRead;
+  require(!morph_blend_of(no_upload).valid, "a PGL-only morph word is evidence, not a factor");
+  CapturedDraw nan_factor = draw;
+  nan_factor.morph_factor = 0x7FC00000u;
+  require(!morph_blend_of(nan_factor).valid, "a non-finite morph word is refused");
+  // The reader applies the same flag check: the draw record's morph fields sit at block offset 8 + 36 (frame header) +
+  // 264 (camera) + 404 (environment) + 96 (one journal entry) + 44 (one texture) + 84 (one material) + 992 (within the
+  // draw record: the sum of every fixed field before morph_factor_valid).
+  const std::size_t morph_valid_at = 8u + 36u + 264u + 404u + 96u + 44u + 84u + 992u;
+  require(morph_valid_at + 4u <= block.size(), "the fixture knows the morph flag offset");
+  std::vector<std::uint8_t> bad_morph_read = block;
+  require(bad_morph_read[morph_valid_at] == static_cast<std::uint8_t>(draw.morph_factor_valid),
+          "the morph flag offset points at the serialized flag");
+  bad_morph_read[morph_valid_at] = 0x80u;
+  require(parse_frame_block(bad_morph_read.data(), bad_morph_read.size(), kSceneVersion, read, error) == 0,
+          "the reader refuses a morph flag outside the mask");
   // The reader refuses a corrupted journal count (the pass count sits after the 36-byte frame header, the 264-byte
   // camera record and the 404-byte environment record: block offset 8 + 704).
   std::vector<std::uint8_t> over_journal = block;
@@ -784,6 +822,61 @@ void chain_block(ChainImage &image, std::uint32_t address, const float (&block)[
     }
 }
 
+// Format version 6: the 0x00A0 morph factor upload. func_0049D1A0 writes a CNT(QWC 1) tag with the STMASK 0x3F3F3F3F
+// pair in tag words 2/3; its payload starts with the VIF UNPACK 0x7001C0F2 and carries the factor word next. The walker
+// records the word, counts the segments and refuses to read an unrelated CNT block's data as a command.
+void check_chain_morph_upload() {
+  const std::uint32_t factor = float_bits(-0.50792f);
+  std::vector<std::uint8_t> chain;
+  chain_tag(chain, 0x10000001u, 0u, 0x20000000u, 0x3F3F3F3Fu);  // the morph segment: STMASK + lane-3 mask
+  chain_tag(chain, 0x7001C0F2u, factor, 0x20000000u, 0x3F3F3F3Fu);  // UNPACK V1-32 TOPS+0xF2, NEW_DATA, STMASK
+  chain_tag(chain, 0x10000001u, 0u, 0x20000000u, 0x3F3F3F3Fu);  // a second segment, same value
+  chain_tag(chain, 0x7001C0F2u, factor, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(chain, 0x10000000u, 0u, 0x0400007Bu, 0x140003A8u);  // terminator
+  ChainImage image;
+  image.bytes = chain;
+  g_chain_image = &image;
+  CapturedDraw draw;
+  CarriedLight carried;
+  ChainWalkCounters counters;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(chain.size()), chain_read, &draw,
+                            carried, counters),
+          "the morph-factor chain walks");
+  require(counters.complete && counters.terminator, "the morph-factor chain is complete");
+  require(counters.morph_tags == 2 && counters.morph_value == factor && counters.morph_mismatch_values == 0,
+          "both morph segments carry the measured factor");
+  require(draw.morph_uploads == 2 && draw.morph_factor == factor,
+          "the draw records the morph factor and the segment count");
+
+  // A CNT tag without the STMASK pair is not the morph segment even if its payload happens to start with the command.
+  std::vector<std::uint8_t> no_mask;
+  chain_tag(no_mask, 0x10000001u, 0u, 0u, 0u);
+  chain_tag(no_mask, 0x7001C0F2u, factor, 0u, 0u);
+  chain_tag(no_mask, 0x10000000u, 0u, 0x0400007Bu, 0x140003A8u);
+  image.bytes = no_mask;
+  CapturedDraw no_mask_draw;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(no_mask.size()), chain_read,
+                            &no_mask_draw, carried, counters),
+          "the chain without the morph mask walks");
+  require(counters.morph_tags == 0 && no_mask_draw.morph_uploads == 0,
+          "a CNT block without the STMASK pair is not read as the morph upload");
+
+  // Two segments that disagree are counted; the first word stays the draw's value.
+  std::vector<std::uint8_t> differing;
+  chain_tag(differing, 0x10000001u, 0u, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(differing, 0x7001C0F2u, factor, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(differing, 0x10000001u, 0u, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(differing, 0x7001C0F2u, factor + 1u, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(differing, 0x10000000u, 0u, 0x0400007Bu, 0x140003A8u);
+  image.bytes = differing;
+  CapturedDraw differing_draw;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(differing.size()), chain_read,
+                            &differing_draw, carried, counters),
+          "the differing-value chain walks");
+  require(counters.morph_tags == 2 && counters.morph_mismatch_values == 1 && differing_draw.morph_factor == factor,
+          "a later segment with a different word is counted, the first value is kept");
+}
+
 // The first chain exercises every tag kind func_0049D328 writes: the 0xC1 matrix packet (CNT + 8 inline qwords), two
 // items, a six-qword light upload per item (REF, tag2 UNPACK into TOPS+0xC9), a 0xD9 block (CNT inline) and the
 // terminating tag. The two item blocks carry different values and different qword counts so an attachment mistake fails.
@@ -1120,6 +1213,7 @@ int main() {
     check_present_ring();
     check_capture_round_trip();
     check_chain_walk();
+    check_chain_morph_upload();
     check_vif_decoder();
     check_matrix();
     check_mesh();

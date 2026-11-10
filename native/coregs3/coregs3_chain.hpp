@@ -16,6 +16,10 @@
 //     (mode starts at 2, so the first two items; every item of the flag 1/4 re-preparing kinds); the items after it
 //     upload nothing and read the TOPS buffer written since the previous MSCAL;
 //   * per item, when `obj->bits & obj->bits2`: a CNT tag with the TOPS+0xD9 block inline (func_0049E5F8);
+//   * per item of the 0x00A0 morph shape, when the Cmd kind byte's bits 5..6 are 1 or 2 (format version 6): a CNT tag
+//     (QWC 1) with the STMASK 0x3F3F3F3F pair in tag words 2/3 whose payload starts with the VIF UNPACK 0x7001C0F2
+//     (V1-32 broadcast to TOPS+0xF2, masked to lane 3) and carries the PGL +0xC30 word next: the morph factor the VU1
+//     pre-pass reads. The walker records the first word and counts later segments with a different one.
 //   * the terminating CNT tag (0x10000000, QWC 0) whose tag words 2/3 are the LAST item's ITOP/MSCAL pair.
 //
 // VIF command order is the order of this chain: the light tag written between item i's REF tag and the tag that starts
@@ -78,6 +82,11 @@ struct ChainWalkCounters {
   std::uint32_t items_run_missing = 0;  // items whose run pair was absent or not ITOP+MSCAL
   std::uint32_t item_variants = 0;      // items whose ITOP (the real program selector) differs from the terminating one
   std::uint32_t item_mscal_variants = 0;  // items whose MSCAL stub immediate differs from the terminating one
+  // Format version 6: the 0x00A0 morph factor upload. `morph_tags` counts the VIF UNPACK 0x7001C0F2 segments; the first
+  // value is in `morph_value` and `morph_mismatch_values` counts later segments with a different word.
+  std::uint32_t morph_tags = 0;
+  std::uint32_t morph_value = 0;
+  std::uint32_t morph_mismatch_values = 0;
   bool complete = false;     // the walk parsed exactly from `begin` to `end`
   bool terminator = false;   // the terminating 0x10000000 tag was found at `end`
   bool item_mismatch = false;  // an item tag did not match the draw's item table in order

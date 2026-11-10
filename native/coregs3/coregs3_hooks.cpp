@@ -224,6 +224,10 @@ void account_chain(const CapturedDraw *draw, const ChainWalkCounters &walk) noex
     g.counters.program_selectors += 1;
   else
     g.counters.program_selectors_missing += 1;
+  // Format version 6: the morph factor upload segments this chain carried (the draw pointer may be null: the uploads of
+  // calls outside the stored passes are still counted, exactly like the light block).
+  g.counters.morph_uploads += walk.morph_tags;
+  g.counters.morph_value_mismatches += walk.morph_mismatch_values;
   if (draw->cmd_flag != 0) {
     if (draw->light_block_qwords != 0)
       g.counters.light_blocks += 1;
@@ -853,6 +857,30 @@ void after_shape_call(ps2::Cpu &cpu) noexcept {
   bool complete = false;
   if (have_cursor) complete = walk_packet_chain(pre_out, post_out, read_guest, draw, g.carried_light, walk);
   account_chain(draw, walk);
+  // Format version 6: the morph factor's context word, read directly as the cross-check of the chain upload. The source
+  // of the VIF UNPACK 0x7001C0F2 is PGL +0xC30 (func_0049D1A0 reads self->xc30); the chain value is what the VU1 gets.
+  if (draw != nullptr) {
+    std::uint32_t pgl_factor = 0;
+    if (read_u32(kPglContext + kMorphSource, pgl_factor)) {
+      draw->morph_factor_pgl = pgl_factor;
+      draw->morph_factor_valid |= kMorphPglRead;
+      g.counters.morph_reads += 1;
+    }
+    if (draw->morph_uploads != 0) {
+      draw->morph_factor_valid |= kMorphUploadSeen;
+      g.counters.morph_draws += 1;
+      if ((draw->morph_factor_valid & kMorphPglRead) != 0) {
+        if (draw->morph_factor == draw->morph_factor_pgl)
+          draw->morph_factor_valid |= kMorphValuesAgree;
+        else
+          g.counters.morph_mismatches += 1;
+      }
+    } else if ((draw->cmd_flag >> 5) == 1u || (draw->cmd_flag >> 5) == 2u) {
+      // The decomp's remit rule (func_0049D1A0 writes the segment for Cmd kind >> 5 = 1 or 2): a draw it asks for and
+      // the chain did not carry is a counted capture gap, never a guessed factor.
+      g.counters.morph_missing += 1;
+    }
+  }
   if (complete) {
     g.last_post_out = post_out;
   } else {
@@ -870,7 +898,8 @@ void print_report(std::FILE *out) noexcept {
                "max_frame %u passes %llu orphan_ends %llu lights %llu lights_missing %llu selectors %llu "
                "selectors_missing %llu light_items %llu light_carried %llu light_uncertain %llu light_none %llu "
                "program_items %llu program_items_missing %llu program_variants %llu program_mscal_variants %llu "
-               "chain_calls %llu chain_gaps %llu chain_incomplete %llu\n",
+               "chain_calls %llu chain_gaps %llu chain_incomplete %llu morph_uploads %llu morph_draws %llu "
+               "morph_reads %llu morph_mismatches %llu morph_value_mismatches %llu morph_missing %llu\n",
                mode_name(g.mode), static_cast<unsigned long long>(c.frames),
                static_cast<unsigned long long>(c.frames_written),
                static_cast<unsigned long long>(c.refused_frames), static_cast<unsigned long long>(c.calls),
@@ -893,7 +922,13 @@ void print_report(std::FILE *out) noexcept {
                static_cast<unsigned long long>(c.program_item_mscal_variants),
                static_cast<unsigned long long>(c.chain_calls),
                static_cast<unsigned long long>(c.chain_gaps),
-               static_cast<unsigned long long>(c.chain_incomplete));
+               static_cast<unsigned long long>(c.chain_incomplete),
+               static_cast<unsigned long long>(c.morph_uploads),
+               static_cast<unsigned long long>(c.morph_draws),
+               static_cast<unsigned long long>(c.morph_reads),
+               static_cast<unsigned long long>(c.morph_mismatches),
+               static_cast<unsigned long long>(c.morph_value_mismatches),
+               static_cast<unsigned long long>(c.morph_missing));
   // The VU1 data memory is double buffered (VIF BASE/OFFSET). The EE-side shadow VIF1 unit (it parses every submitted
   // VIF1 chain in dry-run mode) reports the registers that define the two 0xC9 locations, so the capture states the
   // parity context of its carried block rather than assuming OFFSET is zero.

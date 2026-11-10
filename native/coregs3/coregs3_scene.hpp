@@ -20,7 +20,8 @@
 //              pass journal (v5): u32 count, u32 reserved, CapturedPassState[count]
 //              textures [texture_count]:  u32 guest_address, u8 bytes[0x28]
 //              materials[material_count]: u32 guest_address, u8 bytes[0x50]
-//              draws    [draw_count]:    CapturedDraw (fixed size, see serialize_draw; v5 adds pass/call site/RA)
+//              draws    [draw_count]:    CapturedDraw (fixed size, see serialize_draw; v5 adds pass/call site/RA, v6 the
+//                                         four morph-factor words)
 //              packets  [packet_bytes]:  the VIF bytes of every item, in draw and item order, 16-byte aligned
 //
 // A reader that only needs the counters may skip a block by block_bytes. kCaptureTargetV200 is the only target the
@@ -48,6 +49,15 @@
 // gains its call site and the return address that called ModelSet2___render (evidence for the pass map), the frame gains
 // the scene environment block (the PGL context words the sun, fog tables, lights and reflection parameters live in) and a
 // bounded per-pass GS state journal (the PGL state shadow at each pass begin). Versions 1..4 are refused, not migrated.
+//
+// Format version 6 (2026-11-10) captures the 0x00A0 two-key morph factor. The course morph pre-pass reads a float at VU1
+// data memory TOPS+0xF2 lane 3 (`vf20 = 1 - s`, `vf21 = s`) and blends the position/UV/colour key arrays with it. The
+// value is uploaded by the shape builder itself: func_0049D1A0 emits, once per item before its MSCAL, a DMA CNT tag whose
+// payload word 0 is the VIF UNPACK `0x7001C0F2` (V1-32 broadcast, under STMASK 0x3F3F3F3F, so only lane 3 is written) and
+// whose payload word 1 is the PGL context word at +0xC30, the factor. `CapturedDraw::morph_factor` is that word (the value
+// the VU1 actually receives), `morph_uploads` counts the upload segments the chain walk found and `morph_factor_pgl` is
+// the same context word read directly at the K1 post hook (evidence/cross-check). `morph_factor_valid` is a bit mask of
+// how the two agree. Four words per draw; versions 1..5 are refused, not migrated.
 #pragma once
 
 #include <cstddef>
@@ -67,8 +77,25 @@ const char *mode_name(Mode mode) noexcept;
 
 inline constexpr std::uint32_t kSceneMagic = 0x53345447u;    // "GT4S"
 inline constexpr std::uint32_t kFrameMagic = 0x47334647u;    // "GF3G"
-inline constexpr std::uint32_t kSceneVersion = 5u;
+inline constexpr std::uint32_t kSceneVersion = 6u;
 inline constexpr std::uint32_t kCaptureTargetV200 = 0u;
+
+// Format version 6: the morph factor upload. `kMorphUploadCommand` is the raw VIF word func_0049D1A0 writes before each
+// item of the morph shape's draw (V1-32, TOPS-relative destination 0xF2, NUM 1, masked so only lane 3 lands); the word
+// after it is the factor, the PGL context's +0xC30 value. The chain walker recognises the command in the tag payload.
+inline constexpr std::uint32_t kMorphUploadCommand = 0x7001C0F2u;
+inline constexpr std::uint32_t kMorphDestination = 0xF2u;
+inline constexpr std::uint32_t kMorphSource = 0xC30u;
+
+// How CapturedDraw::morph_factor_valid is built (format version 6). Bit 0 is the one the renderer requires: the chain
+// upload was observed, so `morph_factor` is the word the VU1's 0xA0 pre-pass reads at TOPS+0xF2 lane 3. Bit 1 means the
+// PGL +0xC30 word was read at the K1 post hook, bit 2 means both words are equal. A draw with bit 1 only is evidence,
+// not a usable factor: the VU1 lane 3 could carry a stale block from an earlier run.
+enum MorphFactorFlags : std::uint32_t {
+  kMorphUploadSeen = 1u << 0,
+  kMorphPglRead = 1u << 1,
+  kMorphValuesAgree = 1u << 2,
+};
 
 // The pass a captured draw belongs to (format version 5). The order is the race order of func_0033EAB8 plus the direct
 // shape-call passes (docs/COREGS3-HOOKS.md §17): the car env map/sphere map first, then the sky, the far underlay, the
@@ -283,8 +310,29 @@ struct CapturedDraw {
   std::uint32_t program_dispatch = 0;  // (program_itop & 0x3FF) * 8: the entry the stub dispatches to
   std::uint32_t program_count = 0;     // PGL obj->count (+0x14) the MSCAL selector is derived from
   std::uint32_t program_valid = 0;     // 1 when the terminating tag carried both VIF words
+  // Format version 6: the 0x00A0 morph factor. `morph_factor` is the raw word the PGL chain's VIF UNPACK 0x7001C0F2
+  // uploads to TOPS+0xF2 lane 3 (the kMorphSource context word), in the order the segments appear; `morph_uploads` is how
+  // many segments the walk saw (func_0049D1A0 writes one per item of the morph draw) and a later segment that differs
+  // from the first is counted by the walker as a mismatch. `morph_factor_pgl` is PGL +0xC30 read at the post hook and
+  // `morph_factor_valid` is the MorphFactorFlags mask. When no upload was seen, the factor stays 0 and the shape decoder
+  // uses the first-key path it used before this version, counted as a substitution.
+  std::uint32_t morph_factor = 0;
+  std::uint32_t morph_factor_pgl = 0;
+  std::uint32_t morph_factor_valid = 0;
+  std::uint32_t morph_uploads = 0;
   CapturedItem items[kMaxItemsPerDraw] = {};
 };
+
+// The morph blend state of one draw (format version 6). `valid` is true only when the chain upload was observed, i.e.
+// `factor` is the value the VU1's 0x00A0 pre-pass reads at TOPS+0xF2 lane 3; `bits` is the raw 32-bit word (a float bit
+// pattern). A non-finite value is reported with `valid = false`, so a damaged capture falls back instead of poisoning the
+// mesh.
+struct MorphBlend {
+  bool valid = false;
+  float factor = 0.0f;
+  std::uint32_t bits = 0;
+};
+MorphBlend morph_blend_of(const struct CapturedDraw &draw) noexcept;
 
 struct CapturedTexture {
   std::uint32_t address = 0;
@@ -447,6 +495,17 @@ struct CaptureCounters {
   std::uint64_t pass_mismatched_ends = 0;  // pass_end calls that close a different pass than the open one
   std::uint64_t environment_frames = 0;    // frames whose scene environment block was copied
   std::uint64_t environment_read_failures = 0;
+  // Format version 6: the morph factor. `morph_uploads` counts TOPS+0xF2 upload segments in every walked chain (stored
+  // draw or not), `morph_draws` stored draws whose chain carried at least one, `morph_reads` draws whose PGL +0xC30 word
+  // was read, `morph_mismatches` draws whose upload value differs from the PGL word and `morph_value_mismatches` upload
+  // segments that disagree with the draw's first value. `morph_missing` counts stored draws whose Cmd kind asks for the
+  // upload (flag >> 5 is 1 or 2, the decomp rule) but whose chain carried none.
+  std::uint64_t morph_uploads = 0;
+  std::uint64_t morph_draws = 0;
+  std::uint64_t morph_reads = 0;
+  std::uint64_t morph_mismatches = 0;
+  std::uint64_t morph_value_mismatches = 0;
+  std::uint64_t morph_missing = 0;
   std::uint32_t largest_items = 0;    // largest item table seen in one draw (capacity evidence)
   std::uint32_t largest_draw_bytes = 0;   // largest packet total of one draw
   std::uint32_t largest_frame_bytes = 0;  // largest packet total of one frame

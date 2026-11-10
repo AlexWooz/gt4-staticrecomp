@@ -24,6 +24,18 @@ bool unpacks_to(std::uint32_t word, std::uint32_t destination) noexcept {
   return ((word >> 16) & 0xFFu) != 0;
 }
 
+// Format version 6: the 0x00A0 morph factor upload. func_0049D1A0 writes the VIF word `0x7001C0F2` at the start of a CNT
+// tag's payload: a V1-32 UNPACK (vn = vl = 0, bits 24..27 zero) to TOPS+0xF2, NUM 1, masked (bit 28) so only lane 3 is
+// written. The factor is the next VIF stream word. The check is the command, not the Cmd flag rule, so it records what the
+// VIF actually executes.
+bool is_morph_upload(std::uint32_t word) noexcept {
+  if (!is_unpack(word)) return false;
+  if (((word >> 15) & 1u) == 0) return false;
+  if ((word & 0x3FFu) != kMorphDestination) return false;
+  if (((word >> 16) & 0xFFu) != 1u) return false;
+  return (word & 0x0F000000u) == 0u;
+}
+
 // func_0049D328 writes word 2 as `0x04000000 | (obj->x + obj->y)` and word 3 as `0x14000000 | n`.
 bool is_itop(std::uint32_t word) noexcept { return ((word >> 24) & 0x7Fu) == 0x04u; }
 bool is_mscal(std::uint32_t word) noexcept { return ((word >> 24) & 0x7Fu) == 0x14u; }
@@ -151,6 +163,20 @@ bool walk_packet_chain(std::uint32_t begin, std::uint32_t end, GuestRead read, C
     const bool is_last = (end - position) == kTagBytes;
     const bool light_upload =
         unpacks_to(command, kLightDestination) && num == qwc && qwc != 0 && qwc <= kMaxLightBlockQwords;
+    // Format version 6: the morph factor segment is a CNT tag (QWC 1) whose payload starts with the UNPACK 0x7001C0F2 and
+    // carries the factor word after it. The VIF stream is word-granular, so this command sits in the payload, not the tag2
+    // pair the light block uses.
+    std::uint32_t morph_value = 0;
+    bool morph_upload = false;
+    // func_0049D1A0 writes the segment as CNT(QWC 1) with the STMASK 0x3F3F3F3F pair in tag words 2/3; requiring that
+    // pair keeps the payload scan from reading an unrelated block's data word as a command.
+    if (id == kDmaIdCnt && qwc >= 1 && tag[2] == 0x20000000u && tag[3] == 0x3F3F3F3Fu) {
+      std::uint32_t payload[4] = {};
+      if (read(position + kTagBytes, payload, sizeof payload) && is_morph_upload(payload[0])) {
+        morph_upload = true;
+        morph_value = payload[1];
+      }
+    }
 
     // The tag's VIFcode pair executes before the tag's own data. A MSCAL is a real VU1 run: it reads the buffer written
     // since the previous run (the slot of the current MSCAL parity) and flips the double buffer for the next one.
@@ -168,6 +194,17 @@ bool walk_packet_chain(std::uint32_t begin, std::uint32_t end, GuestRead read, C
         break;
       }
       if ((static_cast<std::uint64_t>(qwc) + 1u) * kTagBytes > end - position) break;
+      if (morph_upload) {
+        counters.morph_tags += 1;
+        if (counters.morph_tags == 1)
+          counters.morph_value = morph_value;
+        else if (morph_value != counters.morph_value)
+          counters.morph_mismatch_values += 1;
+        if (draw != nullptr) {
+          if (draw->morph_uploads == 0) draw->morph_factor = morph_value;
+          draw->morph_uploads += 1;
+        }
+      }
       if (light_upload) {
         const std::uint32_t source = position + kTagBytes;
         std::uint32_t block[kMaxLightBlockQwords][4] = {};

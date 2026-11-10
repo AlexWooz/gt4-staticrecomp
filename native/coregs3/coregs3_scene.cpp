@@ -4,6 +4,7 @@
 // one side that the other does not follow fails the round trip before a capture is ever trusted.
 #include "coregs3_scene.hpp"
 
+#include <cmath>
 #include <cstring>
 
 namespace gt4::coregs3 {
@@ -148,6 +149,11 @@ void put_draw(std::vector<std::uint8_t> &out, const CapturedDraw &draw) {
   put_u32(out, draw.program_uniform);
   put_u32(out, draw.call_site);
   put_u32(out, draw.caller_ra);
+  // Format version 6: the 0x00A0 morph factor and its evidence.
+  put_u32(out, draw.morph_factor);
+  put_u32(out, draw.morph_factor_pgl);
+  put_u32(out, draw.morph_factor_valid);
+  put_u32(out, draw.morph_uploads);
   // Only the items the draw declares: an empty item slot costs nothing on disk.
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
@@ -212,6 +218,13 @@ bool get_draw(Reader &in, std::uint32_t version, CapturedDraw &draw) {
   draw.call_site = in.u32();
   draw.caller_ra = in.u32();
   if (draw.call_site > kCallSiteTachometer) return false;
+  // Format version 6: the morph factor and its evidence.
+  draw.morph_factor = in.u32();
+  draw.morph_factor_pgl = in.u32();
+  draw.morph_factor_valid = in.u32();
+  draw.morph_uploads = in.u32();
+  if (draw.morph_factor_valid > (kMorphUploadSeen | kMorphPglRead | kMorphValuesAgree)) return false;
+  if (draw.morph_uploads > kMaxItemsPerDraw) return false;
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     CapturedItem &item = draw.items[index];
     item.address = in.u32();
@@ -317,7 +330,7 @@ bool parse_scene_header(const std::uint8_t *data, std::size_t available, SceneHe
     error = "unsupported .gt4scene version " + std::to_string(header.version) + " (this build writes and reads version " +
             std::to_string(kSceneVersion) +
             "; version 1 has no light block, version 2 no program selector, version 3 no per-item light state, version 4 "
-            "no pass tag/environment/journal; all older versions are refused)";
+            "no pass tag/environment/journal, version 5 no 0x00A0 morph factor; all older versions are refused)";
     return false;
   }
   if (header.target != kCaptureTargetV200) {
@@ -348,6 +361,9 @@ bool frame_block_bytes(const FrameSnapshot &frame, std::vector<std::uint8_t> &ou
     if (draw.item_count > kMaxItemsPerDraw) return false;
     if (draw.light_block_qwords > kMaxLightBlockQwords) return false;
     if (draw.program_valid > 1 || draw.chain_valid > 1 || draw.program_uniform > 1) return false;
+    // Format version 6: the morph flags are a bit mask and the upload count cannot exceed the item table.
+    if (draw.morph_factor_valid > (kMorphUploadSeen | kMorphPglRead | kMorphValuesAgree)) return false;
+    if (draw.morph_uploads > kMaxItemsPerDraw) return false;
     for (std::uint32_t index = 0; index < draw.item_count; ++index) {
       const CapturedItem &item = draw.items[index];
       if (item.texture_record != kNoRecord && item.texture_record >= frame.texture_count) return false;
@@ -489,10 +505,20 @@ std::size_t parse_frame_block(const std::uint8_t *data, std::size_t available, s
     if (!content.bytes(material.bytes, kMaterialRecordBytes)) break;
   }
   frame.draws.resize(frame.draw_count);
+  bool draws_ok = true;
   for (CapturedDraw &draw : frame.draws)
-    if (!get_draw(content, version, draw)) break;
+    if (!get_draw(content, version, draw)) {
+      draws_ok = false;
+      break;
+    }
   if (!content.ok) {
     error = "truncated frame records";
+    return 0;
+  }
+  if (!draws_ok) {
+    // get_draw refuses a field outside the format's bounds (a record index, an enum, a block length, a flag mask) even
+    // when every byte was present; the block is refused rather than read with the bad value.
+    error = "draw record outside the format bounds";
     return 0;
   }
   frame.packets.resize(packet_bytes);
@@ -512,6 +538,18 @@ std::size_t parse_frame_block(const std::uint8_t *data, std::size_t available, s
     }
   }
   return block_bytes;
+}
+
+MorphBlend morph_blend_of(const CapturedDraw &draw) noexcept {
+  MorphBlend blend;
+  if ((draw.morph_factor_valid & kMorphUploadSeen) == 0) return blend;
+  float factor = 0.0f;
+  std::memcpy(&factor, &draw.morph_factor, sizeof factor);
+  if (!std::isfinite(factor)) return blend;
+  blend.valid = true;
+  blend.factor = factor;
+  blend.bits = draw.morph_factor;
+  return blend;
 }
 
 }  // namespace gt4::coregs3
