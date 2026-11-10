@@ -4479,6 +4479,21 @@ the same day), 12x for the GPU stress, 3x/6x for the normal scene and identity. 
   SCISSOR, XYOFFSET, SCANMSK and DTHE apart; on the night race 3x SCISSOR+XYOFFSET are about 1 flush per VBlank and on
   the license 1x 4.7-12.0, so the audit's item A has a small ceiling here and was not built. IN-543 (reverted):
   Performance Mode without the self-copy from 8x, which this scene never takes.
-- Tests: CTest 304/304 (1 pre-existing skip), Python 795 OK / 62 skipped with `GT4_NATIVE_BUILD`. No PR, tag, release
-  or draft. Next: TASK-168 (several palettes in one batch) is still the largest known GS-worker lever, and the 12x GPU is
-  fill-bound (IN-438/IN-523).
+- Rebased on the owner's live line (2026-11-10, evening): origin/release/1.3.0-rc15 (86d53d9, 129 commits ahead of
+  main) merged into 	ask/215-coregs2-perf (c1a61c5), conflicts keeping both sides. rc15 already carries TASK-168
+  palette segments, TASK-174 present off the GS thread on one-queue devices, TASK-178 submit-after-wait (off by default)
+  and TASK-186 effect toggles.
+- Re-measured on the merged base, night race: GS worker 7.14 / 7.38 / 6.83 / 6.33 ms, wall 7.49 / 8.61 / 15.43 / 20.99,
+  frame p50 6.93 / 8.45 / 16.34 / 22.76, GPU busy 2.80 / 6.15 / 14.32 / 19.92 at 3x/6x/10x/12x. **10x is not GPU-bound**
+  (14.32 of 16.67, 2.4 ms of headroom). GPU waits 0.23 / 1.23 / 8.32 / 14.27 ms/VBlank, of which the **flare readback is
+  0.16 / 0.90 / 6.05 / 10.36** (73% at 10x/12x); before-write 0.06/0.22/0.69/1.00, keep 0.01/0.02/0.10/0.16, tone CLUT 0,
+  unattributed 0, submission slots 0.01/0.09/1.49/2.75; EE VBlank back-pressure (cadence) 2.35/3.14/9.99/15.86. IN-540
+  re-run on rc15: the batch stage 1.143 -> 0.879 ms at 3x, wall 8.088 -> 7.756; 6x 1.091 -> 0.849 / 8.674 -> 8.446;
+  frames identical (3x 2/2).
+- Flare gate **P1 passed** at the game level: with the table forced to 64/128/192/255 the flare contribution follows the
+  value linearly (per-channel ratio median 0.250/0.500/0.750 against 0.251/0.502/0.753), so S4's GPU modulation of the
+  flare's colour or alpha is valid and is the next implementation step. The per-frame flare gpu_wait reason and
+  lare_readbacks now exist (IN-546), and the tone-hook CLUT wait is attributed. CTest 319/320: only
+  python_native_contracts fails, on the launcher CLI mode lists of an unpinned dev build.
+- Next on this line: the GPU-side flare (the 6.05/10.36 ms wait), then the per-reason spikes the GTX 1660 logs show
+  (image creation, decodes, unattributed readbacks) and the texture-replacement churn test.

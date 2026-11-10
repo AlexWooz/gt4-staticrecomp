@@ -1,5 +1,15 @@
 # CoreGS 2.0 performance baseline (TASK-215, 2026-11-10)
 
+> **Base of the current numbers (2026-11-10, evening).** The tree is the merge of `origin/release/1.3.0-rc15`
+> (`f86d53d9`, the owner's live line; rc15 is 129 commits ahead of `origin/main` `59f27aa1`) into
+> `task/215-coregs2-perf` (`fc1a61c5`). rc15 already carries TASK-168 (palette segments), TASK-174 (presentation off the
+> GS thread on one-queue devices), TASK-178 (submit after a waited readback, off by default), TASK-179 (device profile) and
+> TASK-186 (separate effect toggles), so the audits' present, CLUT-flush and slot items are partly answered there.
+> **The numbers in the next section (measured on `main` 59f27aa1) are historical**; the current matrix and wait budget are
+> in §1b. IN-540's A/B was re-run on the rc15 base (§1c) and holds.
+
+## 1. Historical matrix (main 59f27aa1, plain build, before the rc15 merge)
+
 Measured on the owner's desktop only (the policy of 2026-11-10: no laptop numbers, the Avell is not a performance
 parameter). Every figure here comes from a run made for this page; older ledger numbers are quoted only where they are
 labelled as history.
@@ -14,6 +24,59 @@ labelled as history.
 - Timers: `GT4_MTVU_REPORT_EVERY=600 GT4_HW_PROFILE_EVERY=600` (the stage timers are off in a player's session).
 - Headless, unpaced: the wall per VBlank is how fast the whole emulator can go. Present and compose do not run.
 
+## 1b. Current matrix and wait budget (rc15 base `fc1a61c5`, plain build, shader cache warm)
+
+Night race, race window VBlanks 7,800-11,400 (means of the 600-VBlank reports; one run per scale, so ±1-3%):
+
+| ms per VBlank | 3x | 6x | 10x | 12x |
+|---|---|---|---|---|
+| GS worker CPU | 7.14 | 7.38 | 6.83 | 6.33 |
+| process CPU | 17.40 | 18.16 | 17.33 | 16.59 |
+| wall (headless) | 7.49 | 8.61 | 15.43 | 20.99 |
+| EE critical path | 7.13 | 8.61 | 16.74 | 23.21 |
+| frame p50 / p95 | 6.93 / 9.86 | 8.45 / 11.80 | 16.34 / 21.19 | 22.76 / 28.48 |
+| GPU busy | 2.80 | 6.15 | 14.32 | 19.92 |
+| GPU draw passes | 1.56 | 4.08 | 10.23 | 14.55 |
+
+The same runs, the **wait budget** (ms/VBlank; `[core2] gpu_wait ms/vblank by readback reason`, now with the flare split):
+
+| Wait | 3x | 6x | 10x | 12x |
+|---|---|---|---|---|
+| **flare table readback** (0.75 reads/VBlank) | 0.16 | 0.90 | **6.05** | **10.36** |
+| readback before a write (IN-508 remainder) | 0.06 | 0.22 | 0.69 | 1.00 |
+| keep (target ageing) | 0.01 | 0.02 | 0.10 | 0.16 |
+| tone-hook CLUT (attributed now) | 0.00 | 0.00 | 0.00 | 0.00 |
+| other / unattributed readback | 0.00 | 0.00 | 0.00 | 0.00 |
+| submission slots and fences (`not_readback`) | 0.01 | 0.09 | 1.49 | 2.75 |
+| GPU wait, total | 0.23 | 1.23 | 8.32 | 14.27 |
+| EE VBlank back-pressure (`vsync_wait_ms`, cadence) | 2.35 | 3.14 | 9.99 | 15.86 |
+| EE drain/read waits (`drain_wait_ms`) | 0.01 | 0.01 | 0.03 | 0.04 |
+
+**Reading:** at 10x the GPU is busy 14.3 of the 16.7 ms budget (2.4 ms of headroom) and the frame is 15.4-16.7 ms: the
+GPU is close to the limit but the **flare read is 6.05 ms of the 8.32 ms of GPU wait** and it is what stops the stream
+(73% of the wait). At 12x the GPU is over budget (19.9) and the flare wait is 10.36 ms. At 3x/6x the flare wait is
+0.16/0.90 ms and the slot waits are negligible. On this desktop the EE itself does not wait for the read (IN-522: the
+reads are "without the EE waiting"); the wait is the GS worker's and it stops the VU1/GS stream behind it.
+
+**10x is not GPU-bound yet** (14.3 busy against 16.67, 2.4 ms of headroom); it becomes GPU-bound at about 12x. Removing
+the flare wait would move the 10x frame from 16.3 to about 10.3-12 ms (the GPU's own 14.3 plus the rest), i.e. it would
+buy the headroom a weak machine needs to hold 60 FPS.
+
+### IN-540 on the rc15 base (re-run after the merge)
+
+Two executables from the same merged tree, only `core2_depth_alias.cpp` reverted for the control:
+
+| Night race, ms/VBlank | base | IN-540 | change |
+|---|---|---|---|
+| 3x, batch stage (2+2) | 1.143 | 0.879 | **-0.264 (-23%)** |
+| 3x, GS worker (2+2) | 7.777 | 7.410 | -0.37 |
+| 3x, wall (2+2) | 8.088 | 7.756 | -0.33 |
+| 6x, batch stage (1+1) | 1.091 | 0.849 | -0.24 |
+| 6x, wall (1+1) | 8.674 | 8.446 | -0.23 |
+
+Frames: 3x VBlanks 10,800 and 11,400 identical (2/2); the aliased-depth fixture 306/306; on the main base the full
+identity was night 3x 9/9, 12x 4/4, Arcade 14/14 with the same code.
+
 ## Recordings
 
 The reference scenes are driven by recordings (IN-520) so the same input can be replayed on CoreGS 2.0 and, black box,
@@ -27,7 +90,7 @@ press schedules of `night-run.sh` and `arcade-run.sh` (the pad state a press pro
   (the runs below use 16,000).
 - The license B-1 recording from the main checkout (`private/coregs2-bench/inputs/licenca-b1.txt`, v2.00, 3,514 VBlanks).
 
-## Matrix (faithful mode unless stated)
+## Historical matrix table (main 59f27aa1)
 
 Night race, race window VBlanks 7,800-11,400 (means of the 600-VBlank reports, `cpu_summary.py`). 3x: two runs (the
 pair below); 6x and 12x: one run each (single runs drift 1-3%, so the A/B sections use 2+2).

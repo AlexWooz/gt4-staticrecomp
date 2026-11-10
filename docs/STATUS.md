@@ -15,6 +15,18 @@ box on the same recording: CoreGS 2.0 is 9% faster wall at 3x (63.9 s against 70
 7.51 -> 7.33, wall 7.80 -> 7.64; 6x frame p50 -0.23; license 1x GS worker 9.03 -> 8.71. Frames identical (night 3x 9/9,
 12x 4/4, Arcade 14/14), the aliased-depth counters equal, fixture 306/306.
 
+**Rebased on the owner's live line (2026-11-10, evening):** merged origin/release/1.3.0-rc15 (86d53d9) into
+	ask/215-coregs2-perf (c1a61c5); rc15 already has TASK-168 palette segments, TASK-174 present off the GS thread on
+one-queue devices, TASK-178 submit-after-wait and TASK-186 effect toggles. Re-measured on the merged base, night race: GS
+worker 7.14 / 7.38 / 6.83 / 6.33 ms and wall 7.49 / 8.61 / 15.43 / 20.99 at 3x/6x/10x/12x; **10x is not GPU-bound**
+(14.32 of 16.67). GPU waits 0.23 / 1.23 / 8.32 / 14.27 ms per VBlank, of which the **flare readback is 0.16 / 0.90 /
+6.05 / 10.36** (73% at 10x and 12x); before-write 0.06-1.00, keep 0.01-0.16, tone CLUT 0, unattributed 0, slots
+0.01-2.75. IN-540 re-run on rc15: the batch stage 1.143 -> 0.879 ms at 3x, wall 8.088 -> 7.756, frames identical.
+**Flare gate P1 passed** at the game level (the flare contribution follows the visibility value linearly), so the S4
+GPU-side modulation is valid and is the next step. docs/tasks/COREGS2-PERF-BASELINE.md has the rc15 matrix and wait
+budget; the earlier main-based numbers are labelled historical. CTest 319/320 (only python_native_contracts, the
+launcher CLI lists of an unpinned dev build).
+
 **Measured and left out:** the CLUT-load scope (IN-541: exact, 62-72 of 283 flushes skipped, but the batch count does not
 fall, so no gain; `GT4_CORE2_CLUT_SCOPE=1`), the Performance-Mode self-copy gate (IN-543: this scene takes no
 self-copies). **Diagnostics kept (IN-542):** the flush-reason split shows SCISSOR+XYOFFSET at about 1 flush per VBlank on
