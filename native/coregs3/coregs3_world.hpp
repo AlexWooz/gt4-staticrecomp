@@ -1,26 +1,27 @@
-// TASK-090 CoreGS 3.0 track M1: the offline world pass's item selection rule.
+// TASK-090 CoreGS 3.0: the offline world pass's item selection rule.
 //
 // The selected picture is the sky (PassId 2), the far underlay (3) and the main-view course (5). Inside the course pass
-// only the main-view ITOP 0x80 items are drawn: the measured main view composites through the identity program at VU1
-// dispatch 0x0080 and its GS state carries XYOFFSET 0x6C08/0x7208. Every other outcome is an explicit, counted
-// exclusion: the unmeasured 0xB08/0xA0/0x1278 programs, any other dispatch, an item with no position channel, an item
-// with no tapped GS state, and the mirror/second-view items (0x7C08/0x7808 and 0x7C08/0x7C08). This unit keeps the rule
-// in one reviewable place so the tool and its fixture cannot drift; it never guesses an item into the picture.
+// the measured world families are drawn: the ITOP 0x0080 main view and, since the TASK-090 world-families round, the
+// 0xB08 nine-qword lighting family, the 0x00A0 two-key morph family and the 0x1278 body pre-pass family. Every item must
+// pass the shape decoder's family/channel rule (WorldShapeStatus) and its GS state must carry the main-view XYOFFSET
+// 0x6C08/0x7208. Every other outcome is an explicit, counted exclusion: another dispatch, an item whose shape rule
+// refuses it, an item with no position channel, an item with no tapped GS state, and the mirror/second-view items
+// (0x7C08/0x7808 and 0x7C08/0x7C08). This unit keeps the rule in one reviewable place so the tool and its fixture cannot
+// drift; it never guesses an item into the picture.
 #pragma once
 
 #include <cstdint>
 
 #include "coregs3_scene.hpp"
+#include "coregs3_shape.hpp"
 
 namespace gt4::coregs3 {
 
 enum class WorldExclusion : std::uint8_t {
   none = 0,
   not_world_pass,
-  itop_b08,
-  itop_a0,
-  itop_1278,
   itop_other,
+  shape_refused,
   no_position,
   no_state,
   mirror,
@@ -35,6 +36,11 @@ struct WorldItemInput {
   std::uint32_t dispatch = 0;      // (run_itop & 0x3FF) * 8; 0 when the run pair is invalid
   bool run_valid = false;
   bool has_position = false;       // the shape scan found a descriptor position array
+  // The item's measured world family and channel coverage (coregs3_shape.hpp, world_shape_status). An item whose
+  // family rule refuses it is excluded and counted; the status name is the refusal reason in the tool's report.
+  // morph_uv_first_key and morph_colour_first_key are accepted substitutions: the geometry is exact and the
+  // differing UV/colour key uses the first key, counted by the tool.
+  WorldShapeStatus shape_status = WorldShapeStatus::ok;
   bool state_known = false;        // the tap paired the item with a state record (TEST/ALPHA/FRAME/ZBUF/XYOFFSET)
   bool xyoffset_known = false;
   std::uint64_t xyoffset = 0;
