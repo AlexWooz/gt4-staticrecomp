@@ -5281,3 +5281,13 @@ The shipped path stays our MIT tools.
   raised by exactly the number of added entries. Next: read the callee of the `OptionPage.Group(...)` call (the
   class-object method) plus the `ARRAY_CONST_OLD` site to see the fill/cursor.
 - **No kit:** the block does not render yet; Misc fallback (TASK-213) covers UX. Tests 846 OK (77 skipped).
+**Phase 17 (2026-11-10, the Recomp settings block renders).**
+- **Rule found:** `options` is created by `ARRAY_CONST_OLD 33` at `0x9A0C` *after* the last page. Inserting the group
+  and page **after `Language` and before the array**, with the count raised to **35**, is accepted; inserting after the
+  array is what failed at 33 (ignored) and 35 (load crash `0x003199D4`).
+- **Block proof:** decoded 252,016, instructions 3394, statics 273, PS2ZIP 54,466 <= 55,353; Options scrolls to the end
+  and shows the **"Recomp settings" block header and tile at the bottom**, below Miscellaneous, footer `Recomp
+  settings`, cursor on the tile (`frames4/frame_02800.png`, `frame_03000.png`); no existing block/tile changed. The
+  label is the group name literal.
+- **Remaining:** Cross still stops at `0x0030B450` (root `RecRoot1` nil) - the Phase 14 `AppendItem`/`findPage` gate.
+- **No kit:** block renders, page does not open. Misc fallback (TASK-213) covers UX. Tests 846 OK (77 skipped).

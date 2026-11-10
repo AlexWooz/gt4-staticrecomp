@@ -1,5 +1,18 @@
 # Current Status
 
+## TASK-214 Phase 17: the Recomp settings block renders at the bottom of Options (2026-11-10)
+
+- **Rule found:** `options` is created by `ARRAY_CONST_OLD 33` at `0x9A0C` *after* the last page. The group and page
+  must be inserted **after `Language` and before the array**, with the count raised to **35**; inserting after the array
+  fails at 33 (ignored) and 35 (load crash `0x003199D4`).
+- **Block proof:** decoded 252,016, instructions 3394, statics 273, PS2ZIP 54,466 <= 55,353; Options scrolls to the end
+  and shows the **"Recomp settings" block header and its tile at the bottom**, below Miscellaneous, footer `Recomp
+  settings`, cursor on the tile (`frames4/frame_02800.png`, `frame_03000.png`); no existing block or tile changed. The
+  label is the group name literal, so no rtext entry is needed.
+- **Remaining:** Cross still stops at `missing code at 0x00000000 (ra 0x0030B450)` - the page root `RecRoot1` (slot 272)
+  is nil (Phase 14 gate: resolve `option.root` in `AppendItem` via `context.cursor_project.findPage(option.title)`).
+- **No kit:** block renders, page does not open yet; the Misc host-tree fallback (TASK-213) covers UX. Tests 846 OK.
+
 ## TASK-214 Phase 16: group entry shape and block template found (2026-11-10)
 
 - A group entry is `OptionPage("Group", "<GroupName>", nil)` (the first block also passes the `options` list,

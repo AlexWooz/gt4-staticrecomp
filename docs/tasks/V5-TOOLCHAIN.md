@@ -946,3 +946,41 @@ that call (the class-object method) and the `ARRAY_CONST_OLD` site together is t
 understood, inserting one group + one page before the `EXIT` and raising the count by exactly 2 is the change.
 
 Nothing existing was touched; the Misc host-tree fallback (TASK-213) covers the user-facing settings meanwhile.
+---
+
+# Phase 17 - the Recomp settings block renders at the bottom of Options (2026-11-10)
+
+## 54. The missing rule: insert **before** the options array is built
+
+The `options` array is created by `ARRAY_CONST_OLD 33` at `0x9A0C`, i.e. **after** the last page (`Language`,
+`0x99BC..0x9A06`). Inserting the group and page at the very end of the module (after the array) is what failed in
+Phase 15/16: at capacity 33 the entries are ignored, at 35 the load pass iterates slots that are not valid objects
+(`0x003199D4`).
+
+Inserting the same two constructions **right after the `Language` page, before `0x9A0B`**, with
+`ARRAY_CONST_OLD` raised to **35** (5 groups + 28 page entries + 1 group + 1 page), is accepted:
+
+```
+newgroupin: OptionPage(97) EVAL "Group" "Recomp settings" NIL CALL 3 EVAL   <- block entry
+            MODULE_DEFINE OptionProject::RecRoot1 NOP EXIT                  <- page module
+            STATIC_DEFINE RecRoot1, OptionPage(...) "Recomp settings" RecRoot1 NIL CALL 3 EVAL
+capacity:   0x9A0C 33 -> 35
+```
+
+- decoded 252,016 bytes, instructions 3394, statics 273, PS2ZIP **54,466 <= 55,353**;
+- run reaches Options and scrolls to the end: the **"Recomp settings" block header and its tile render at the bottom,
+  below Miscellaneous**, footer `Recomp settings`, cursor on the tile
+  (`private/slice438-toolchain-run/frames4/frame_02800.png` and `frame_03000.png`); every existing block and tile is
+  unchanged;
+- the block label is the group name passed to `OptionPage("Group", <name>, nil)` - using the literal
+  `"Recomp settings"` renders exactly that text (no rtext entry needed).
+
+## 55. What remains
+
+Cross on the tile still stops at `missing code at 0x00000000 (ra 0x0030B450)`: the page's `root` static (`RecRoot1`,
+slot 272) is nil, the Phase 14 gate. The block and the tile are now in place; the page opens as soon as the root is
+bound (proved with `MiscRoot` in Phase 7).
+
+Smallest next step unchanged: resolve `option.root` at construction (`AppendItem(context, option, ...)`, which has a
+live `context`, via `context.cursor_project.findPage(option.title)`), either as a data insertion inside that function
+(with jump relocation) or as the native equivalent. No kit was built: the block renders, the page does not open yet.
