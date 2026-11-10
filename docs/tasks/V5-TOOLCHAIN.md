@@ -863,3 +863,45 @@ frame, no relocation of the caller), or the native equivalent: fill `item.page`/
 
 No native kit was built: a harness at `open` cannot run before the tile dispatch, and the only useful hook is the
 construction site above. Nothing existing changed; the tile remains.
+---
+
+# Phase 15 - target moved to a new Options block (2026-11-10, owner 13:51)
+
+## 48. Where the blocks come from
+
+The Options screen blocks (General, Arcade Mode, Photo Mode, Controllers, Miscellaneous) are **not** layout nodes: the
+`.mproject` has no `General`/`Miscellaneous` strings and no block containers in the Options root. The blocks are drawn
+by the script from the page list, which is the `options` array created at the end of OptionRoot's module init as
+`ARRAY_CONST_OLD 33` (`0x9A0C`) = **5 groups + 28 page entries** (24 pages + 4 dummies). The group construction is
+`OptionPage.Group("<name>", nil)`; the block title comes from that name (rtext), not from the layout.
+
+## 49. Phase 4's `GroupRecomp` revisited
+
+Two probes:
+
+| probe | capacity | result |
+|---|---|---|
+| new group `GroupRecomp` + page, at the end | 33 (retail) | runs, **no block appears** |
+| new group + page, at the end | 35 (33 + group + page) | **crash at load**, frame 1727, `ra 0x003199D4` |
+
+The crash is the same class of failure as Phase 4: the load pass pops elements from `[object+0x2C]` (data `+0x14`,
+count `+0x20`) and dispatches virtual slots `+0x50` / `+0x90`; an element without the expected class calls null.
+
+## 50. Gate
+
+The block list is the runtime `options` array, and a group entry must be a **valid group object** with the block
+metadata the loader expects - not just a 3-argument `OptionPage.Group(name, nil)` appended at the end. The retail
+groups are created inside the compiled page-list sequence, between the previous block's pages and the next block's
+pages, and the array capacity matches that exact count.
+
+Smallest next steps:
+
+1. Read the load pass `0x00319980..0x00319A24`: it pops from two lists (`[s0+0x2C]` and the same object's other list)
+   and dispatches `+0x90`; that tells what a group entry must be.
+2. Read the `Group` static of the `OptionPage` class (the callee of the `OptionPage.Group(...)` call) to see what it
+   stores and returns; a group might need a title key/icon argument instead of the trailing `NIL`.
+3. Insert the group **inside** the compiled sequence (before the final `EXIT` of the page list but after the last page
+   of Misc), with the capacity raised to the exact new count, and check the block then renders.
+
+No kit was built: the block does not render yet and the data path is still open only through steps 1-3. The Misc
+fallback (TASK-213) covers the user-facing settings meanwhile; nothing existing was touched.

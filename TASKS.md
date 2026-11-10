@@ -5258,3 +5258,15 @@ The shipped path stays our MIT tools.
   (data insertion inside its own frame) or the native equivalent.
 - **No kit built:** a harness at `open` cannot run before the tile dispatch.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 15 (2026-11-10, target moved to a new Options block).**
+- Blocks are script-drawn from the `options` array (`ARRAY_CONST_OLD 33` at `0x9A0C` = 5 groups + 28 page entries);
+  the `.mproject` has no block nodes and no General/Miscellaneous strings. Group construction is
+  `OptionPage.Group("<name>", nil)`; the title comes from that name.
+- **Revisited:** new group + page at the end with capacity 33 runs but shows no block; with capacity 35 it crashes at
+  load (frame 1727, `ra 0x003199D4`) - the load pass pops elements from `[obj+0x2C]` and dispatches `+0x90`, and the
+  group entry is not a valid group object.
+- **Gate:** a block needs a real group object with the metadata the loader expects, created inside the compiled
+  page-list sequence with the exact capacity; not a 3-arg `Group(name, nil)` appended at the end.
+- **Next:** read `0x319980..0x319A24` (the two-list pop and `+0x90` dispatch) and the `OptionPage.Group` static; then
+  insert the group inside the sequence with the matching capacity.
+- **No kit:** the block does not render yet. Misc fallback (TASK-213) covers UX. Tests 846 OK (77 skipped).

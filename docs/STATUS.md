@@ -1,5 +1,20 @@
 # Current Status
 
+## TASK-214 Phase 15: target moved to a new Options block (2026-11-10, owner 13:51)
+
+- **Blocks are script-drawn:** the `.mproject` has no block nodes and no `General`/`Miscellaneous` strings; the blocks
+  come from the page list, the `options` array created as `ARRAY_CONST_OLD 33` at `0x9A0C` (5 groups + 28 page
+  entries). Group construction is `OptionPage.Group("<name>", nil)`; the title comes from that name.
+- **Revisited:** new group + page at the end with capacity 33 runs but shows **no block**; with capacity 35 it crashes
+  at load (frame 1727, `ra 0x003199D4`) - the load pass pops from `[obj+0x2C]` and dispatches `+0x90`, and the group
+  entry is not a valid group object.
+- **Gate:** a block needs a real group object with the loader's metadata, created inside the compiled page-list
+  sequence with the exact capacity - not a 3-arg `Group(name, nil)` appended at the end.
+- **Next:** read `0x319980..0x319A24` and the `OptionPage.Group` static; then insert the group inside the sequence
+  with the matching capacity.
+- **No kit yet** (block does not render); the Misc fallback (TASK-213) covers the user-facing settings. Nothing
+  existing was touched; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 14: `findPage` route tested, the binding must precede the page (2026-11-10)
 
 - `MRenderContext.getCursorProject` (`0x0022B438`) and `MProject.findPage` (`0x00229608`) would be exactly what a
