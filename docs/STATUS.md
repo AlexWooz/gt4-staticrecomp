@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-214 Phase 19: guard conditioned, `findPage` does not resolve the layout window (2026-11-10)
+
+- Guard now runs **only for the new page** and only with a live project:
+  `if (option.title == "Recomp settings" && context.getCursorProject() != nil) option.root =
+  context.getCursorProject().findPage("RecRoot1")` (34 instructions, all frame jumps relocated +34; `InsJumpIfNil`
+  inherits `InsLogicalBase` and was covered). The load pass no longer crashes and the **block renders**.
+- **Cross still stops at `missing code 0x00000000 (ra 0x0030B450)`** with `"RecRoot1"` and with `option.title`: either
+  `findPage` searches the page list (not the layout window tree) or `getCursorProject()` is nil during `AppendItem`.
+  Both leave `option.root` nil.
+- **Next:** a host hook logging `getCursorProject()`/`findPage` at that site, or a native hook that fills `item.page`
+  (or calls `exportRootWindow`) there - the guard is the exact insertion point and state.
+- **No kit** (page does not open); the Misc host-tree fallback (TASK-213) covers UX. Nothing existing changed; tests
+  846 OK (77 skipped).
+
 ## TASK-214 Phase 18: the AppendItem root guard, first attempt (2026-11-10)
 
 - Inserted a 29-instruction guard at the start of `AppendItem` (own frame, jump targets relocated by +29):

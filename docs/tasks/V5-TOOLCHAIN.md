@@ -1019,3 +1019,37 @@ page list build does not accept. Two candidate causes, both untested:
 The block renders (Phase 17). The page still does not open; no kit was built. The smallest next step is to complete
 the relocation (cover `InsJumpIfNil`/logical-optional) and only run the guard when the project is available (for
 example guard on `context.getCursorProject() != nil`), then re-test.
+---
+
+# Phase 19 - the guard conditioned, and what `findPage` does not do (2026-11-10)
+
+## 59. Fix applied
+
+The guard at the start of `AppendItem` now runs **only for the new page** and only when the project exists:
+
+```
+if (option.title == "Recomp settings" && context.getCursorProject() != nil)
+    option.root = context.getCursorProject().findPage("RecRoot1")
+```
+
+34 instructions, all jump targets in the frame relocated by +34 (`InsJumpIfNil` inherits `InsLogicalBase` and was
+already covered; `InsLogicalOptional` has no target). The load pass no longer crashes: the run reaches Options and the
+block renders.
+
+## 60. Result: `findPage` does not resolve the layout window
+
+Cross on the tile still stops at `missing code at 0x00000000 (ra 0x0030B450)`, with the argument `"RecRoot1"` and with
+`option.title`. So either `MProject.findPage` searches the **page list** (the `OptionPage` objects), not the layout
+window tree, or `getCursorProject()` returns nil at that point and the guard is skipped. Both leave `option.root` nil.
+
+## 61. Gate
+
+The data-visible lookup path is exhausted for the layout window. The remaining routes:
+
+1. **Native hook at the AppendItem site**: fill `item.page` (the `defineStatic("page", ...)` argument) with the
+   window object the loader exported, or call `exportRootWindow` there with the live project. The guard above is the
+   exact insertion point and the exact state (context, option).
+2. **Verify the state first**: log `context.getCursorProject()` and `findPage("RecRoot1")` from a host hook to know
+   which of the two is nil - that decides between "wrong lookup API" and "no project yet".
+
+The block renders, the tile is in place, the page does not open. No kit was built.

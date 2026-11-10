@@ -5301,3 +5301,13 @@ The shipped path stays our MIT tools.
 - **Block still renders** (Phase 17); page does not open; no kit built.
 - **Next:** complete the relocation and gate the guard on `getCursorProject() != nil`; re-test.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 19 (2026-11-10, guard conditioned; findPage does not resolve the layout window).**
+- Guard now runs only for the new page and only with a live project:
+  `if (option.title == "Recomp settings" && context.getCursorProject() != nil) option.root =
+  context.getCursorProject().findPage("RecRoot1")` (34 instructions, all frame jumps relocated +34). The load no longer
+  crashes and the block renders.
+- **Cross still stops at `0x0030B450`**: `findPage` does not resolve the layout window (it likely searches the page
+  list), or `getCursorProject()` is nil during `AppendItem`. Both leave `option.root` nil.
+- **Next:** a host hook that logs `getCursorProject()`/`findPage` at that site, or a native hook that fills
+  `item.page`/calls `exportRootWindow` there.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed; no kit.
