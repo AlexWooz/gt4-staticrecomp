@@ -302,6 +302,23 @@ The 1,260 flushes disappear but the time does not: the merged strip batch is sti
 so the front-end cost moves rather than disappears, and the frame is the same within noise (slightly worse on the two
 early pairs). Kept in the code behind the switch (default **off**) for TASK-171/168 to build on; no gain claimed.
 
+
+## S4 mapping, second measurement: one sprite per used light
+
+The forced-word frames (night race 3x, VBlank 9,600) give two **disjoint, single-sprite** boxes: word 0 -> x 934..960
+y 239..262 (117 px), word 1 -> x 908..936 y 240..269 (117 px), words 2/3 -> nothing. Because each word changes exactly one
+contiguous sprite and the two sets do not overlap, **each used light emits one sprite**; the four-word window is four
+lights with two in use. That answers the "one sprite per light" half of the mapping without the VU1 program.
+
+**What is still missing for S4 (the exact gate):** the **draw order inside the job** - which of the job's flare draws is
+light 0 and which is light 1. The four REF payload positions (11,720 / 12,752 / 14,760 / 15,792) suggest one REF per light
+in order, but it is unmeasured. Next step (0.5 d): mark the flare job at the sink (the patch already identifies the
+16-byte window at table offset 0), carry a one-bit marker to the renderer on the `MtvuJob` path, and print the job's
+batches in draw order with their draw rects; the rects can then be matched to the forced-word boxes (word 0 = the
+x934..960 sprite, word 1 = x908..936). With that order known, the variant is: REF qword 0xFF, the job's draw index selects
+table word 0..3, the draw samples the 64x8 target and multiplies the flare's colour or alpha (P1), with the target lookup
+and barrier ordering already in place. No per-vertex design is needed.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

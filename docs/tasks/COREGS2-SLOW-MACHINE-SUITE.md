@@ -176,6 +176,35 @@ the flare/TASK-171 work.
 **Limits:** the effective clock is an estimate (~3.4 GHz, Unknown exactly; benchmark proxy, warm/cool sensitive); the GPU
 was still under clocked, so 6x is compared against GPU-down; VRAM stock throughout; one run per point.
 
+
+## Pre-flare reference 10x/12x with the TASK-215e trace (2026-11-10, GPU restored by the owner)
+
+These replace the earlier stock 10x/12x for any A/B from now on, because the earlier runs predate the trace tooling. One
+run each, exe `A2A9CD8A...`, `GT4_CORE2_SPIKE_MS=0.01 GT4_CORE2_SPIKE_LINES=100000`, warm cache, VBlanks 7,800-11,400.
+
+| Point | wall mean / p50 / p99 | 1 % low | >16.7 / >20 (of 7) | per-VBlank mean / p99 / max | GPU busy mean (p50 / p99) | GPU wait | flare wait | before-write / keep | GS worker | EE critical |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **stock 10x** | 17.05 / 15.78 / 23.46 | 42.6 | **3 / 2** | 17.77 / 38.70 / 116.3 (VBlank 9763) | 15.79 (14.57 / 21.48) | 9.44 | **6.84** | 0.76 / 0.12 | 7.02 | 19.08 |
+| **stock 12x** | 23.38 / 21.95 / 31.67 | 31.6 | **7 / 5** | 24.35 / 56.70 / 169.6 (VBlank 9763) | 22.05 (20.59 / 29.59) | 15.60 | **11.25** | 1.10 / 0.17 | 7.56 | 25.43 |
+
+CSVs `build/evidence/stock-night-10x.csv` and `stock-night-12x.csv` (+ `-spikes.csv`, 3,601 rows, complete).
+
+**Drift note:** these are about 10-11 % slower than the earlier stock 10x (wall 15.43, GPU 14.32) and 12x (20.99, 19.92)
+on the same exe and commands. The machine condition differs (hours of load; the earlier runs came before the owner's
+underclock session), so the **fresh numbers are the A/B reference** and the old ones stay historical. With the fresh
+reference, stock 10x is already over the 60 FPS bar in 3 of 7 intervals and 12x in all 7; the flare wait is 6.84 ms (10x)
+and 11.25 ms (12x), still ~72 % of the GPU wait.
+
+## The two CPU-down spikes (from the spike CSVs)
+
+- **VBlank 9125, CPU-down 6x, wall 47.8 ms:** a **flare readback** (`readback=30.2 ms`, `gpu_wait=35.9`, `readbacks=1`
+  with no download/store/keep) into a GPU that was **busy 46.0 ms** at that VBlank (previous VBlanks 16.1-16.2) and
+  `created=7` images. Not texture churn; a one-VBlank GPU-side stall plus image creation, then the read waits for it.
+- **VBlank 2412, CPU-down license, wall 24.5 ms:** a **keep readback** (`readbacks=5 (keep 1)`, `readback=8.1`) with
+  `targets=8.1` and `gpu_busy=5.5`: target ageing/new-target work, not the flare.
+- Both are one-off GPU-side stalls, no exact fix attempted this round; they belong with the flare/TASK-171 pass and the
+  image-creation counter.
+
 ## Clock record (fill per configuration; Unknown until the owner reads them)
 
 | Configuration | CPU effective (MHz) | GPU core (MHz) | VRAM (MHz) | Temps | Date/session |
