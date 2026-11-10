@@ -790,3 +790,42 @@ there either a table entry (data) or the single export call (native) is the fix.
 
 Until then the page has a tile, a module and no bound root; the Arcade host-tree hub remains the accepted fallback and
 nothing existing was modified.
+---
+
+# Phase 13 - the parse chain is text-only; the binder is deeper (2026-11-10)
+
+## 42. The five functions, read
+
+| function | what it does | interning / export? |
+|---|---|---|
+| `func_002688E8` (`0x002688E8`) | copies a string handle into the widget (`+0x94`), refcount handling | no |
+| `func_00265D10` (`0x00265D10`) | sets bit `0x1000` in `widget+0x98` from `(reader line count != 0)` | no |
+| `func_0020FC58` (`0x0020FC58`) | skips a `{ ... }` block by brace depth | no |
+| `func_005A2F88` | string/allocator helper (not decompiled) | no |
+| `MWidgetReader__structor_0` (`0x00207590`) | string setup calls (`func_005C2560`, `func_0057F260`, `func_005C2630`, `func_005C11A8`) | no |
+
+None calls `func_003166B8` (intern), `func_00229608` (`findPage`) or `func_002296E8` (`exportRootWindow`). The chain
+`func_00269290 -> func_0024DB78 -> func_002688E8 -> func_00265D10` is the **text** path of one widget; the widget-type
+dispatch and the `has_script` -> `OptionProject::<name>` export live in code the decomp has not recovered.
+
+## 43. Route and harness scope (no subsystem started)
+
+- **Data: closed.** A `RootWindow` added to the project text is parsed and instantiated (tile proven) but never
+  exported to the page's root static.
+- **Native: needs a guest-call harness.** A usable path would have to: (a) obtain the live `MProject` object after the
+  project load, (b) build an `hString` for `"RecRoot1"` through the VM's string constructor, (c) call
+  `MProject.exportRootWindow` (registered method, `0x002296E8`) with the correct `this`/argv and release the handle.
+  That is a new native facility (guest call with a live script context), not a hook; per the owner's rule it was
+  **not started**.
+- **Everything else is proven:** page entry, module, static slot, PS2ZIP 54,469 / 55,353, ToC record, the tile in
+  Options > Miscellaneous, and the complete page-open path with an existing root (Miscellaneous Settings, 3,600
+  frames, exit 0).
+
+## 44. Exact chain for the next RE round
+
+`mProject__virtual_61` (`0x0022...`, constructs `MWidgetReader`) -> `MWidgetReader__structor_0` (`0x00207590`) ->
+`func_00269290` (`0x00269290`) -> `func_0024DB78` (`0x0024DB78`) -> `func_002688E8`/`func_00265D10`.
+The type dispatch is the branch inside `func_0024DB78` that reads the widget type line and selects a class; the
+`has_script` handling is in the same reader but further in, and it is what calls the export method (or fills a name
+table). Disassembling `func_0024DB78` in full (it is a small function followed by two helpers) and the widget-class
+factory it reaches is the next concrete step.

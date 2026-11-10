@@ -5234,3 +5234,16 @@ The shipped path stays our MIT tools.
 - **Next:** disassemble `func_002688E8`, `func_00265D10`, `func_0020FC58`, `func_005A2F88` and `MWidgetReader__structor_0`
   (`0x00207590`); the first that interns a type and reaches `findPage`/`exportRootWindow` is the binding site.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 13 (2026-11-10, parse chain is text-only).**
+- Read all five: `func_002688E8` (copies the widget's string handle), `func_00265D10` (sets bit 0x1000 at
+  `widget+0x98`), `func_0020FC58` (skips a `{...}` block), `func_005A2F88` (string/allocator helper, not decompiled)
+  and `MWidgetReader__structor_0` (`0x00207590`, string setup). **None** interns a type or reaches
+  `findPage`/`exportRootWindow`.
+- **Data closed.** The binder is deeper in unmatched native code. A native path needs a guest-call harness
+  (live `MProject`, `hString` for "RecRoot1", `exportRootWindow` with correct `this`/argv); per the owner's rule it was
+  **not started**.
+- **Proven:** page entry, module, static, PS2ZIP 54,469/55,353, ToC record, the tile in Options > Miscellaneous, and the
+  complete page-open path with an existing root (Miscellaneous Settings, 3,600 frames, exit 0).
+- **Next RE:** disassemble `func_0024DB78` in full and the widget-class factory it reaches; the `has_script` branch
+  that calls the export (or fills a name table) is the binding point.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.

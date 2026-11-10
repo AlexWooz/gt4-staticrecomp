@@ -1,5 +1,20 @@
 # Current Status
 
+## TASK-214 Phase 13: parse chain is text-only, binder is native (2026-11-10)
+
+- Read all five: `func_002688E8` (copies the widget's string handle), `func_00265D10` (sets bit `0x1000` at
+  `widget+0x98`), `func_0020FC58` (skips a `{...}` block), `func_005A2F88` (string/allocator helper) and
+  `MWidgetReader__structor_0` (`0x00207590`, string setup). **None** calls `func_003166B8` (intern) or
+  `findPage`/`exportRootWindow`.
+- **Data route closed.** The `has_script` -> `OptionProject::<name>` export is in unmatched native code. A native path
+  needs a guest-call harness (live `MProject`, `hString` for `RecRoot1`, `exportRootWindow` with `this`/argv); per the
+  owner's rule it was **not started** and no kit was built.
+- **Proven:** page entry, module, static slot, PS2ZIP 54,469/55,353, ToC record, the tile in Options > Miscellaneous,
+  and the complete page-open path with an existing root (Miscellaneous Settings, 3,600 frames, exit 0).
+- **Next RE:** disassemble `func_0024DB78` in full plus the widget-class factory it reaches; the `has_script` branch
+  that calls the export (or fills a name table) is the binding point.
+- **Nothing swapped:** every existing page unchanged; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 12: dispatch chain is string handling; stay at the gate (2026-11-10)
 
 - `func_0024DB78` (`0x24DB78..0x24DD34`) calls only string/reader helpers (`func_005C2560`, `func_0020EEA0`,
