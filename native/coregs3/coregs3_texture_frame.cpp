@@ -149,10 +149,28 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
   table.sequence.resize(frame.draws.size());
   for (std::size_t index = 0; index < frame.draws.size(); ++index) table.sequence[index] = frame.draws[index].sequence;
 
+  // TASK-090 pass textures: the SLM image each pass begin was captured with. Slot 0 is the caller's default image (the
+  // frame-end record); every supplied pass image gets its own slot, so a record or a tapped state decoded against one
+  // image is never reused for another pass (the payload cache below is keyed by the Format G content hash as well).
+  std::vector<const SlmImage *> image_slms{&slm};
+  std::uint32_t pass_slot[kPassCount] = {};
+  if (options.pass_slms != nullptr) {
+    for (std::uint32_t pass = 0; pass < kPassCount; ++pass) {
+      if (options.pass_slms->images[pass] == nullptr) continue;
+      pass_slot[pass] = static_cast<std::uint32_t>(image_slms.size());
+      image_slms.push_back(options.pass_slms->images[pass]);
+      counters.world_pass_slm_images += 1;
+    }
+  }
+  const auto is_world_pass = [](std::uint32_t pass) {
+    return pass == kPassSky || pass == kPassFarUnderlay || pass == kPassCourse;
+  };
+
   // ---- 1. The tapped vertex records of the jobs that posted this frame's item packets, with the state they ran under.
   std::vector<TapStream> streams;
   std::set<std::uint64_t> frame_jobs;
   std::map<std::uint32_t, std::vector<std::uint64_t>> address_jobs;
+  std::map<std::uint32_t, std::uint32_t> job_of_address;
   if (options.use_tap && tap_data != nullptr) {
     for (const TapFileRecord &record : tap_records)
       if (record.kind == kTapKindSource && record.vblank == frame.vblank)
@@ -163,6 +181,10 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
         if (found == address_jobs.end()) continue;
         for (std::uint64_t job : found->second) frame_jobs.insert(job);
       }
+      // TASK-090 pass textures: the job each item's packet address was posted as (the tap's source record). The first
+      // source record is the job the packet belongs to; the per-job SLM record is keyed by its low 32 bits.
+      for (const auto &[address, jobs] : address_jobs)
+        if (!jobs.empty()) job_of_address[address] = static_cast<std::uint32_t>(jobs.front() & 0xFFFFFFFFull);
     if (!frame_jobs.empty()) {
       TrackedState tracked;
       tracked.state = measured_sample_state();
@@ -251,18 +273,22 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
   // ---- 3. The Format G key cache (decode once per key per frame), the per-record sampling states and, for the world
   // passes, the per-tapped-state sampling states.
   std::vector<std::pair<TextureKey, std::uint32_t>> cache;  // key -> payload slot
-  std::vector<RecordTexture> record_texture(frame.textures.size());
+  // TASK-090 pass textures: the record decode cache is keyed by (image id, record index). The image id is the pass
+  // image's slot, or 0x40000000 | draw sequence for a per-draw overlay, whose content differs from every other image.
+  std::map<std::uint64_t, RecordTexture> record_texture;
   // One entry per distinct tapped state the world passes bind: the (TEX0, TEX1, CLAMP) sampling words plus the last
-  // TEX2 word when it is known. Two items with the same writes share one decoded sampler exactly as two records with
-  // the same Format G key share one payload.
+  // TEX2 word when it is known, plus the SLM image slot the pixels were decoded from (two passes can bind the same
+  // register words against different captured images). Two items with the same writes share one decoded sampler exactly
+  // as two records with the same Format G key share one payload.
   struct StateKey {
     std::uint64_t tex0 = 0;
     std::uint64_t tex1 = 0;
     std::uint64_t clamp = 0;
     std::uint64_t tex2 = 0;
+    std::uint32_t image = 0;
   };
   const auto same_state = [](const StateKey &a, const StateKey &b) {
-    return a.tex0 == b.tex0 && a.tex1 == b.tex1 && a.clamp == b.clamp && a.tex2 == b.tex2;
+    return a.tex0 == b.tex0 && a.tex1 == b.tex1 && a.clamp == b.clamp && a.tex2 == b.tex2 && a.image == b.image;
   };
   std::vector<std::pair<StateKey, const SampledTexture *>> state_cache;
 
@@ -329,16 +355,17 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     return sampler;
   };
 
-  const auto decode_record = [&](std::uint32_t record_index,
-                                 const CapturedTexture &record) -> const SampledTexture * {
-    RecordTexture &entry = record_texture[record_index];
+  const auto decode_record = [&](std::uint32_t record_index, const CapturedTexture &record, const SlmImage &image,
+                                 std::uint32_t image_id) -> const SampledTexture * {
+    const std::uint64_t key = (static_cast<std::uint64_t>(image_id) << 32) | record_index;
+    RecordTexture &entry = record_texture[key];
     if (entry.decoded) return entry.sampler;
     entry.decoded = true;
     DecodedTexture decoded;
     std::string decode_error;
     TextureDecodeOptions decode_options;
     decode_options.level0_mip_fallback = options.world_channels;
-    if (decode_texture(slm, record.bytes, sizeof record.bytes, decode_options, decoded, decode_error) !=
+    if (decode_texture(image, record.bytes, sizeof record.bytes, decode_options, decoded, decode_error) !=
         TextureStatus::ok) {
       counters.records_refused += 1;
       return nullptr;
@@ -354,15 +381,16 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
   // TASK-090 track textures: decode from the tapped GS state. The payload is shared with the record path by Format G
   // key; the sampler itself is per distinct state, because the filter/wrap fields come from the registers, not the
   // record. A refusal is counted and named, never substituted with the record.
-  const auto decode_state = [&](const TextureState &state) -> const SampledTexture * {
-    const StateKey key{state.tex0, state.tex1, state.clamp, state.tex2_known ? state.tex2 : 0u};
+  const auto decode_state = [&](const TextureState &state, const SlmImage &image,
+                                std::uint32_t image_id) -> const SampledTexture * {
+    const StateKey key{state.tex0, state.tex1, state.clamp, state.tex2_known ? state.tex2 : 0u, image_id};
     for (const auto &[cached_key, cached_sampler] : state_cache)
       if (same_state(cached_key, key)) return cached_sampler;
     DecodedTexture decoded;
     std::string decode_error;
     TextureDecodeOptions decode_options;
     decode_options.level0_mip_fallback = options.world_channels;
-    if (decode_texture_state(slm, state, decode_options, decoded, decode_error) != TextureStatus::ok) {
+    if (decode_texture_state(image, state, decode_options, decoded, decode_error) != TextureStatus::ok) {
       counters.world_state_refused += 1;
       if (counters.state_refusals.size() < 16) {
         char line[256];
@@ -385,8 +413,68 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
   };
 
   // ---- 4. Bind every item and attach its tapped state.
+  // TASK-090 pass textures: a world-pass item decodes against the image captured at its own pass begin; a pass with no
+  // image falls back to the default frame-end image and is counted. Non-world items (the car pass) always use the
+  // default image, exactly as before.
+  // 0: the pass/default image, 1: the draw's K1 record, 2: the draw's VU1 job record.
+  const auto note_world_image = [&](std::uint32_t pass_image, int overlay_kind) {
+    if (overlay_kind == 2) {
+      counters.world_job_slm += 1;
+      return;
+    }
+    if (overlay_kind == 1) {
+      counters.world_draw_slm += 1;
+      return;
+    }
+    if (options.pass_slms == nullptr) return;
+    if (pass_image != 0)
+      counters.world_pass_slm += 1;
+    else
+      counters.world_pass_slm_missing += 1;
+  };
+  if (options.draw_textures != nullptr && options.draw_textures->records != nullptr)
+    counters.world_draw_slm_records = options.draw_textures->records->size();
+  if (options.job_textures != nullptr && options.job_textures->records != nullptr)
+    counters.world_job_slm_records = options.job_textures->records->size();
+  // TASK-090 pass textures: the overlay image is the default image with one record's windows patched in. Only one
+  // overlay is applied at a time: switching records restores the previous windows from the default first, so one
+  // draw's content never leaks into another's decode.
+  SlmImage working;
+  bool working_ready = false;
+  const VramRecord *applied_overlay = nullptr;
+  const auto apply_overlay = [&](const VramRecord *overlay) -> const SlmImage * {
+    if (overlay == nullptr) return nullptr;
+    if (overlay == applied_overlay) return &working;
+    if (!working_ready) {
+      working = slm;
+      working_ready = true;
+    }
+    if (applied_overlay != nullptr) {
+      working.covered = slm.covered;
+      for (const vram::Window &window : applied_overlay->windows) {
+        const std::size_t offset = static_cast<std::size_t>(window.first_block) * vram::kBlockBytes;
+        std::memcpy(working.local.bytes().data() + offset, slm.local.bytes().data() + offset,
+                    static_cast<std::size_t>(window.block_count) * vram::kBlockBytes);
+      }
+    }
+    applied_overlay = nullptr;
+    if (!apply_vram_record(*overlay, working, error)) {
+      if (overlay->kind == vram::kRecordJobTexture)
+        counters.world_job_slm_refused += 1;
+      else
+        counters.world_draw_slm_refused += 1;
+      return nullptr;
+    }
+    applied_overlay = overlay;
+    if (overlay->kind != vram::kRecordJobTexture) counters.world_draw_slm_draws += 1;
+    return &working;
+  };
   for (std::size_t draw_index = 0; draw_index < frame.draws.size(); ++draw_index) {
     const CapturedDraw &draw = frame.draws[draw_index];
+    const std::uint32_t draw_image =
+        options.pass_slms != nullptr && is_world_pass(draw.pass) && draw.pass < kPassCount ? pass_slot[draw.pass] : 0;
+    const SlmImage *draw_slm = image_slms[draw_image];
+    const std::uint32_t draw_image_id = draw_image;
     std::vector<TextureBinding> &bindings = table.draws[draw_index];
     bindings.resize(draw.item_count);
     std::size_t cursor = 0;
@@ -401,6 +489,33 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
       binding.state = measured_sample_state();
       binding.texture_record = item.texture_record;
       counters.items_visited += 1;
+      // TASK-090 pass textures: the item's own VU1 job record first (the content its draw sampled), then its draw's K1
+      // record (evidence; it predates the frame's uploads), then the pass image and the default.
+      const VramRecord *item_overlay = nullptr;
+      if (is_world_pass(draw.pass) && options.job_textures != nullptr &&
+          options.job_textures->records != nullptr) {
+        const auto address = job_of_address.find(item.address);
+        if (address != job_of_address.end()) {
+          const auto found = options.job_textures->records->find(address->second);
+          if (found != options.job_textures->records->end()) item_overlay = found->second;
+        }
+      }
+      if (item_overlay == nullptr && is_world_pass(draw.pass) && options.draw_textures != nullptr &&
+          options.draw_textures->records != nullptr) {
+        const auto found = options.draw_textures->records->find(draw.sequence);
+        if (found != options.draw_textures->records->end()) item_overlay = found->second;
+      }
+      const SlmImage *item_slm = draw_slm;
+      std::uint32_t item_image_id = draw_image_id;
+      int overlay_kind = 0;
+      if (item_overlay != nullptr) {
+        if (const SlmImage *overlay_image = apply_overlay(item_overlay)) {
+          item_slm = overlay_image;
+          overlay_kind = item_overlay->kind == vram::kRecordJobTexture ? 2 : 1;
+          item_image_id = overlay_kind == 2 ? (0x80000000u | item_overlay->label)
+                                            : (0x40000000u | draw.sequence);
+        }
+      }
 
       // The item's tapped state, when the tap paired it. The pairing advances across the item list in order.
       std::size_t chosen = 0;
@@ -624,13 +739,14 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
         if (tapped == nullptr) counters.world_texture_pair_none += 1;
         const bool state_present = tapped != nullptr && tapped->any_register_known();
         if (tapped != nullptr && tapped->sampling_registers_known()) {
-          const SampledTexture *sampler = decode_state(*tapped);
+          const SampledTexture *sampler = decode_state(*tapped, *item_slm, item_image_id);
           if (sampler == nullptr) {
             counters.items_decode_refused += 1;
             counters.items_untextured += 1;
             continue;
           }
           binding.texture = sampler;
+          note_world_image(draw_image, overlay_kind);
           counters.world_state_decoded += 1;
           counters.items_textured += 1;
           continue;
@@ -651,13 +767,15 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           continue;
         }
         counters.world_record_fallback += 1;
-        const SampledTexture *sampler = decode_record(item.texture_record, frame.textures[item.texture_record]);
+        const SampledTexture *sampler =
+            decode_record(item.texture_record, frame.textures[item.texture_record], *item_slm, item_image_id);
         if (sampler == nullptr) {
           counters.items_decode_refused += 1;
           counters.items_untextured += 1;
           continue;
         }
         binding.texture = sampler;
+        note_world_image(draw_image, overlay_kind);
         counters.items_textured += 1;
         continue;
       }
@@ -680,7 +798,8 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           counters.items_untextured += 1;
           continue;
         }
-        const SampledTexture *sampler = decode_record(item.texture_record, frame.textures[item.texture_record]);
+        const SampledTexture *sampler =
+            decode_record(item.texture_record, frame.textures[item.texture_record], slm, 0u);
         if (sampler == nullptr) {
           counters.items_decode_refused += 1;
           counters.items_untextured += 1;
@@ -705,7 +824,7 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
         counters.items_untextured += 1;
         continue;
       }
-      const SampledTexture *sampler = decode_record(item.texture_record, frame.textures[item.texture_record]);
+      const SampledTexture *sampler = decode_record(item.texture_record, frame.textures[item.texture_record], slm, 0u);
       if (sampler == nullptr) {
         counters.items_decode_refused += 1;
         counters.items_untextured += 1;

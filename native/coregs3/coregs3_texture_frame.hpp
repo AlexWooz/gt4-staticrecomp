@@ -27,6 +27,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,21 @@ struct TextureFrameCounters {
   std::uint64_t world_texture_pair_tiebreak = 0;  // texture state from a tied stream that matched the item's record
   std::uint64_t world_texture_pair_ambiguous = 0; // a tie with no record-matching stream: the first stream was used
   std::uint64_t world_texture_pair_none = 0;      // no tapped stream: the record fallback
+  // TASK-090 pass textures: the world items decode against the SLM image captured at their own pass begin (sky, far
+  // underlay, course). `world_pass_slm_images` is the number of pass images the caller supplied, `world_pass_slm` the
+  // items bound against one, `world_pass_slm_missing` the world items whose pass had no image (they decode against the
+  // default frame-end image, the counted fallback).
+  std::uint64_t world_pass_slm_images = 0;
+  std::uint64_t world_pass_slm = 0;
+  std::uint64_t world_pass_slm_missing = 0;
+  // TASK-090 pass textures: the per-draw overlay (takes precedence over the pass image).
+  std::uint64_t world_draw_slm_records = 0;   // draw records the caller supplied for this frame
+  std::uint64_t world_draw_slm_draws = 0;     // captured draws with an overlay that was applied
+  std::uint64_t world_draw_slm = 0;           // items bound against their own draw's overlay
+  std::uint64_t world_draw_slm_refused = 0;   // draw records whose windows could not be applied
+  std::uint64_t world_job_slm_records = 0;    // job records the caller supplied for this frame
+  std::uint64_t world_job_slm = 0;            // items bound against their own job's overlay
+  std::uint64_t world_job_slm_refused = 0;    // job records whose windows could not be applied
   std::uint64_t world_tap_tex0_differs = 0;   // tapped TEX0 differs from the record's (CLD ignored)
   std::uint64_t world_tap_tex0_tbp_differs = 0;      // the texture page (TBP0) differs
   std::uint64_t world_tap_tex0_format_differs = 0;   // PSM/TBW/TW/TH/TCC/TFX differ
@@ -85,9 +101,41 @@ struct TextureFrameCounters {
   std::vector<std::string> state_refusals;    // the first few tapped-state refusals, in words (bounded)
 };
 
+// TASK-090 pass textures: the SLM image captured at each pass begin of one frame (the `.gt4vram` version 2 records of
+// kind kRecordPassBegin whose `vblank` is the frame's own). An entry may be null: the pass had no record, and its items
+// fall back to the table's default (frame-end) image with a counter.
+struct PassSlmImages {
+  const SlmImage *images[kPassCount] = {};
+};
+
+// TASK-090 pass textures: one per-draw texture-window record per captured draw (kind kRecordDrawTexture, the draw's
+// own VBlank). The table patches a draw's windows over the default frame-end image before it decodes that draw's items,
+// so an item samples the pixels its own draw sampled. The records stay owned by the caller.
+struct DrawTextureImages {
+  const std::map<std::uint32_t, const VramRecord *> *records = nullptr;  // CapturedDraw::sequence -> record
+};
+
+// TASK-090 pass textures: the per-VU1-job texture-window records of one frame (kind kRecordJobTexture). The tap's source
+// records give each item's packet address its job, so an item decodes against the pixels its own job sampled: the record
+// is copied on the GS worker right before the job executes, after its uploads and before its drawing. This takes
+// precedence over every other image.
+struct JobTextureImages {
+  const std::map<std::uint32_t, const VramRecord *> *records = nullptr;  // job id (low 32 bits) -> record
+};
+
 struct TextureFrameOptions {
   bool use_tap = false;       // false: every item keeps the measured default state and the counters say so
   bool texture_body = false;  // diagnostic only: let body/paint items through with the model UV (not the milestone)
+  // TASK-090 pass textures: when set, a world-pass item (sky/far underlay/course) decodes its pixels from its own pass's
+  // image instead of the frame-end default. Null keeps every item on the default image (the version 1 behaviour).
+  const PassSlmImages *pass_slms = nullptr;
+  // TASK-090 pass textures: when set, an item whose draw has a captured texture-window record decodes against the
+  // frame-end image patched with that draw's windows, which takes precedence over the pass image. Null keeps the
+  // pass-image behaviour.
+  const DrawTextureImages *draw_textures = nullptr;
+  // TASK-090 pass textures: the per-job records. They take precedence over the draw record and the pass image; an item
+  // with no job record falls back to the draw record, then to its pass image, then to the default image.
+  const JobTextureImages *job_textures = nullptr;
   // TASK-090 reflection milestone: bind each body/paint item as its measured environment-map reflection pass (the
   // pinned texgen S,T instead of the model UV), carrying the tapped PRIM 0x7C state and per-vertex fog. False keeps
   // the pre-reflection deferral (the body items stay on the lit colour).

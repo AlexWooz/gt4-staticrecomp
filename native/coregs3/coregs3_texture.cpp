@@ -401,7 +401,19 @@ bool parse_texture_record(const std::uint8_t *bytes, std::size_t size, TextureRe
 bool SlmImage::covers(std::uint32_t block) const {
   // The GS block address wraps at 16 KiB; a record range never does (parse/build refuse a wrapping range).
   block &= vram::kBlocksTotal - 1u;
-  return block >= first_block && block - first_block < block_count;
+  for (const vram::Window &window : covered)
+    if (block >= window.first_block && block - window.first_block < window.block_count) return true;
+  return false;
+}
+
+void SlmImage::cover(const vram::Window &window) {
+  for (vram::Window &existing : covered) {
+    if (existing.first_block == window.first_block) {
+      if (window.block_count > existing.block_count) existing.block_count = window.block_count;
+      return;
+    }
+  }
+  covered.push_back(window);
 }
 
 bool parse_vram_sidecar(const std::uint8_t *data, std::size_t size, std::vector<VramRecord> &records,
@@ -414,19 +426,24 @@ bool parse_vram_sidecar(const std::uint8_t *data, std::size_t size, std::vector<
   std::size_t at = 0;
   while (at < size) {
     vram::Header header;
-    if (!vram::decode_header(data + at, size - at, header, error)) return false;
+    vram::Window windows[vram::kMaxWindows] = {};
+    if (!vram::decode_header(data + at, size - at, header, windows, error)) return false;
     if (records.size() >= kMaxVramRecords) {
       error = "VRAM sidecar has more than the record bound";
       return false;
     }
     VramRecord record;
+    record.kind = header.kind;
+    record.pass = header.pass;
+    record.label = header.label;
     record.vblank = header.vblank;
-    record.first_block = header.first_block;
-    record.block_count = header.block_count;
-    record.bytes.assign(data + at + vram::kHeaderBytes,
-                        data + at + vram::kHeaderBytes + header.block_count * vram::kBlockBytes);
+    record.windows.assign(windows, windows + header.window_count);
+    const std::size_t table_bytes = header.version == vram::kLegacyVersion ? 0 : header.window_count * vram::kWindowBytes;
+    const std::size_t bytes_offset = at + header.header_bytes + table_bytes;
+    record.bytes.assign(data + bytes_offset,
+                        data + bytes_offset + static_cast<std::size_t>(header.block_count) * vram::kBlockBytes);
     records.push_back(std::move(record));
-    at += vram::kHeaderBytes + static_cast<std::size_t>(header.block_count) * vram::kBlockBytes;
+    at = bytes_offset + static_cast<std::size_t>(header.block_count) * vram::kBlockBytes;
   }
   if (records.empty()) {
     error = "VRAM sidecar holds no record";
@@ -441,22 +458,39 @@ bool read_vram_sidecar(const std::string &path, std::vector<VramRecord> &records
   return parse_vram_sidecar(data.data(), data.size(), records, error);
 }
 
-bool build_slm_image(const VramRecord &record, SlmImage &image, std::string &error) {
-  if (record.block_count == 0 || record.first_block >= vram::kBlocksTotal ||
-      record.block_count > vram::kBlocksTotal - record.first_block) {
-    error = "VRAM record block range is outside the 4 MiB image";
+bool apply_vram_record(const VramRecord &record, SlmImage &image, std::string &error) {
+  std::size_t offset = 0;
+  for (const vram::Window &window : record.windows) {
+    if (window.block_count == 0 || window.first_block >= vram::kBlocksTotal ||
+        window.block_count > vram::kBlocksTotal - window.first_block) {
+      error = "VRAM record block range is outside the 4 MiB image";
+      return false;
+    }
+    const std::size_t bytes = static_cast<std::size_t>(window.block_count) * vram::kBlockBytes;
+    if (offset + bytes > record.bytes.size()) {
+      error = "VRAM record bytes do not match its window table";
+      return false;
+    }
+    std::memcpy(image.local.bytes().data() + static_cast<std::size_t>(window.first_block) * vram::kBlockBytes,
+                record.bytes.data() + offset, bytes);
+    offset += bytes;
+    image.cover(window);
+  }
+  if (offset != record.bytes.size()) {
+    error = "VRAM record bytes do not match its window table";
     return false;
   }
-  if (record.bytes.size() != static_cast<std::size_t>(record.block_count) * vram::kBlockBytes) {
-    error = "VRAM record bytes do not match its block range";
-    return false;
-  }
-  image.first_block = record.first_block;
-  image.block_count = record.block_count;
-  std::fill(image.local.bytes().begin(), image.local.bytes().end(), 0u);
-  std::memcpy(image.local.bytes().data() + static_cast<std::size_t>(record.first_block) * vram::kBlockBytes,
-              record.bytes.data(), record.bytes.size());
   return true;
+}
+
+bool build_slm_image(const VramRecord &record, SlmImage &image, std::string &error) {
+  if (record.windows.empty()) {
+    error = "VRAM record has no window";
+    return false;
+  }
+  std::fill(image.local.bytes().begin(), image.local.bytes().end(), 0u);
+  image.covered.clear();
+  return apply_vram_record(record, image, error);
 }
 
 const char *texture_status_name(TextureStatus status) noexcept {

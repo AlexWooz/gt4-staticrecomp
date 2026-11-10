@@ -413,6 +413,7 @@ int main(int argc, char **argv) {
   const char *vram_path = nullptr;
   const char *tap_path = nullptr;
   const char *texture_mask_path = nullptr;
+  const char *dump_textures_dir = nullptr;
   const char *coverage_mask_path = nullptr;
   bool no_textured = false;
   bool texture_body = false;
@@ -434,6 +435,7 @@ int main(int argc, char **argv) {
     else if (argument == "--vram-vblank" && index + 1 < argc) vram_vblank = std::atoi(argv[++index]);
     else if (argument == "--tap" && index + 1 < argc) tap_path = argv[++index];
     else if (argument == "--texture-mask" && index + 1 < argc) texture_mask_path = argv[++index];
+    else if (argument == "--dump-textures" && index + 1 < argc) dump_textures_dir = argv[++index];
     else if (argument == "--reflection-mask" && index + 1 < argc) reflection_mask_path = argv[++index];
     else if (argument == "--mask" && index + 1 < argc) coverage_mask_path = argv[++index];
     else if (argument == "--no-textured") no_textured = true;
@@ -661,29 +663,60 @@ int main(int argc, char **argv) {
   FrameTextureTable texture_table;
   TextureFrameCounters texture_counters;
   std::string world_report;  // the TASK-090 track M1 selection/exclusion/fallback lines, printed and written to --report
+  std::uint64_t vblank_record_count = 0;  // the sidecar's record census, for the world report
+  std::uint64_t pass_record_count = 0;
+  std::uint64_t draw_record_count = 0;
+  std::uint64_t job_record_count = 0;
   if (vram_path != nullptr && !no_textured) {
     std::vector<VramRecord> vram_records;
     if (!read_vram_sidecar(vram_path, vram_records, error)) {
       std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
       return 1;
     }
+    // TASK-090 pass textures: a version 2 sidecar carries vblank records (kind 0, the version 1 semantic: record.vblank
+    // is the VSYNC that ended the capture frame, i.e. frame.vblank + 1) and pass-begin records (kind 1: record.vblank is
+    // the capture frame's own VBlank and record.pass its PassId). Version 1 files hold vblank records only and keep the
+    // old selection exactly.
+    for (const VramRecord &candidate : vram_records) {
+      if (candidate.kind == vram::kRecordPassBegin) ++pass_record_count;
+      else if (candidate.kind == vram::kRecordJobTexture) ++job_record_count;
+      else if (candidate.kind == vram::kRecordDrawTexture) ++draw_record_count;
+      else ++vblank_record_count;
+    }
     const VramRecord *vram_record = nullptr;
     if (vram_vblank >= 0) {
       for (const VramRecord &candidate : vram_records)
-        if (candidate.vblank == static_cast<std::uint64_t>(vram_vblank)) {
+        if (candidate.kind == vram::kRecordVblank && candidate.vblank == static_cast<std::uint64_t>(vram_vblank)) {
           vram_record = &candidate;
           break;
         }
       if (vram_record == nullptr) {
-        std::fprintf(stderr, "gt4_coregs3_render: no VRAM record at VBlank %d\n", vram_vblank);
+        std::fprintf(stderr, "gt4_coregs3_render: no vblank VRAM record at VBlank %d (the file has %llu vblank and %llu "
+                             "pass-begin records)\n",
+                     vram_vblank, static_cast<unsigned long long>(vblank_record_count),
+                     static_cast<unsigned long long>(pass_record_count));
         return 1;
       }
     } else {
       for (const VramRecord &candidate : vram_records)
-        if (candidate.vblank == selected.vblank + 1u) {
+        if (candidate.kind == vram::kRecordVblank && candidate.vblank == selected.vblank + 1u) {
           vram_record = &candidate;
           break;
         }
+      if (vram_record == nullptr && pass_record_count != 0) {
+        // A file that holds pass-begin records only: the frame's first pass image becomes the default image, printed and
+        // counted, never silent. The world path then still prefers each pass's own image.
+        for (const VramRecord &candidate : vram_records)
+          if (candidate.kind == vram::kRecordPassBegin && candidate.vblank == selected.vblank) {
+            vram_record = &candidate;
+            break;
+          }
+        if (vram_record != nullptr)
+          std::fprintf(stderr,
+                       "gt4_coregs3_render: no vblank VRAM record for frame vblank %llu; using its pass %u pass-begin "
+                       "record as the default image (counted)\n",
+                       static_cast<unsigned long long>(selected.vblank), vram_record->pass);
+      }
       if (vram_record == nullptr) {
         std::fprintf(stderr, "gt4_coregs3_render: no VRAM record at VBlank %llu for frame vblank %llu\n",
                      static_cast<unsigned long long>(selected.vblank + 1u),
@@ -696,6 +729,72 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
       return 1;
     }
+    // The world path's per-pass images: one SLM image per pass-begin record of the captured frame. `std::map` keeps the
+    // node addresses stable, so the PassSlmImages pointers stay valid after every insertion.
+    std::map<std::uint32_t, SlmImage> pass_image_store;
+    PassSlmImages pass_images;
+    std::uint64_t pass_images_out_of_range = 0, pass_images_refused = 0, pass_images_duplicate = 0;
+    // TASK-090 pass textures: the per-draw texture-window records of the captured frame. They take precedence over the
+    // pass images: the measured race frame uploads its world textures during the course pass, after its begin marker.
+    std::map<std::uint32_t, const VramRecord *> draw_records;
+    DrawTextureImages draw_images;
+    if (world) {
+      for (const VramRecord &candidate : vram_records) {
+        if (candidate.kind != vram::kRecordDrawTexture || candidate.vblank != selected.vblank) continue;
+        if (!draw_records.emplace(candidate.label, &candidate).second) {
+          std::fprintf(stderr, "gt4_coregs3_render: duplicate draw VRAM record for sequence %u; the first is kept\n",
+                       candidate.label);
+        }
+      }
+      draw_images.records = &draw_records;
+      if (!draw_records.empty())
+        std::fprintf(stderr, "gt4_coregs3_render: frame vblank %llu per-draw texture records: %zu\n",
+                     static_cast<unsigned long long>(selected.vblank), draw_records.size());
+    }
+    // TASK-090 pass textures: the per-VU1-job records, keyed by job id (unique across the run). The tap's source records
+    // map every item's packet address to its job, so an item decodes against the pixels its own job sampled.
+    std::map<std::uint32_t, const VramRecord *> job_records;
+    JobTextureImages job_images;
+    if (world) {
+      for (const VramRecord &candidate : vram_records) {
+        if (candidate.kind != vram::kRecordJobTexture) continue;
+        if (!job_records.emplace(candidate.label, &candidate).second) {
+          std::fprintf(stderr, "gt4_coregs3_render: duplicate job VRAM record for job %u; the first is kept\n",
+                       candidate.label);
+        }
+      }
+      job_images.records = &job_records;
+      if (!job_records.empty())
+        std::fprintf(stderr, "gt4_coregs3_render: per-job texture records in the sidecar: %zu\n", job_records.size());
+    }
+    if (world) {
+      for (const VramRecord &candidate : vram_records) {
+        if (candidate.kind != vram::kRecordPassBegin || candidate.vblank != selected.vblank) continue;
+        if (candidate.pass >= kPassCount) {
+          ++pass_images_out_of_range;
+          continue;
+        }
+        SlmImage image;
+        if (!build_slm_image(candidate, image, error)) {
+          ++pass_images_refused;
+          std::fprintf(stderr, "gt4_coregs3_render: pass %u VRAM record refused: %s\n", candidate.pass,
+                       error.c_str());
+          continue;
+        }
+        if (!pass_image_store.emplace(candidate.pass, std::move(image)).second) ++pass_images_duplicate;
+      }
+      for (auto &entry : pass_image_store) pass_images.images[entry.first] = &entry.second;
+      if (!pass_image_store.empty() || pass_record_count != 0) {
+        std::fprintf(stderr, "gt4_coregs3_render: frame vblank %llu pass-begin VRAM records:",
+                     static_cast<unsigned long long>(selected.vblank));
+        for (const auto &entry : pass_image_store)
+          std::fprintf(stderr, " pass %u", entry.first);
+        std::fprintf(stderr, " (%llu refused, %llu out of range, %llu duplicate records)\n",
+                     static_cast<unsigned long long>(pass_images_refused),
+                     static_cast<unsigned long long>(pass_images_out_of_range),
+                     static_cast<unsigned long long>(pass_images_duplicate));
+      }
+    }
     std::vector<std::uint8_t> tap_data;
     std::vector<TapFileRecord> tap_records;
     if (tap_path != nullptr && !read_tap_file(tap_path, tap_data, tap_records, error)) {
@@ -707,6 +806,9 @@ int main(int argc, char **argv) {
     texture_options.texture_body = texture_body;
     texture_options.reflections = !no_reflection;
     texture_options.world_channels = world;
+    if (world && !pass_image_store.empty()) texture_options.pass_slms = &pass_images;
+    if (world && !draw_records.empty()) texture_options.draw_textures = &draw_images;
+    if (world && !job_records.empty()) texture_options.job_textures = &job_images;
     if (!build_frame_texture_table(selected, slm, tap_path != nullptr ? tap_data.data() : nullptr, tap_records,
                                    texture_options, texture_table, texture_counters, error)) {
       std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
@@ -715,6 +817,20 @@ int main(int argc, char **argv) {
     options.textures = &texture_table;
     options.reflections = !no_reflection;
     textured = true;
+    // TASK-090 pass textures evidence: every bound sampler's decoded RGBA, one PNG per sampler, so the native decode can
+    // be compared with the CoreGS 2.0 reference dump of the same state.
+    if (dump_textures_dir != nullptr) {
+      std::uint32_t index = 0;
+      for (const SampledTexture &sampler : texture_table.textures) {
+        char name[512];
+        std::snprintf(name, sizeof name, "%s\\bound_%03u_tex0_%016llX_psm%02X_%ux%u.png", dump_textures_dir, index,
+                      static_cast<unsigned long long>(sampler.source_tex0), static_cast<unsigned>(sampler.psm),
+                      sampler.width, sampler.height);
+        write_png_rgba(name, sampler.width, sampler.height, sampler.rgba);
+        ++index;
+      }
+      std::fprintf(stderr, "gt4_coregs3_render: wrote %u bound textures to %s\n", index, dump_textures_dir);
+    }
   }
 #else
   if (vram_path != nullptr || world) {
@@ -915,6 +1031,39 @@ int main(int argc, char **argv) {
                   static_cast<unsigned long long>(texture_counters.world_texture_pair_tiebreak),
                   static_cast<unsigned long long>(texture_counters.world_texture_pair_ambiguous),
                   static_cast<unsigned long long>(texture_counters.world_texture_pair_none));
+    world_report += line;
+    world_report += "\n";
+    // TASK-090 pass textures: where each world item's pixels came from. A pass image is the SLM snapshot taken at that
+    // pass's K7 begin marker; the fallback is the frame-end (vblank) image the version 1 sidecar always had.
+    std::snprintf(line, sizeof line,
+                  "world pass SLM images: %llu supplied (scene vblank %llu, file records: vblank %llu, pass-begin %llu, "
+                  "draw %llu, job %llu); items bound on their pass image %llu, items whose pass had no image (frame-end "
+                  "fallback) %llu",
+                  static_cast<unsigned long long>(texture_counters.world_pass_slm_images),
+                  static_cast<unsigned long long>(selected.vblank),
+                  static_cast<unsigned long long>(vblank_record_count),
+                  static_cast<unsigned long long>(pass_record_count),
+                  static_cast<unsigned long long>(draw_record_count),
+                  static_cast<unsigned long long>(job_record_count),
+                  static_cast<unsigned long long>(texture_counters.world_pass_slm),
+                  static_cast<unsigned long long>(texture_counters.world_pass_slm_missing));
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world per-job SLM overlays: %llu records supplied, %llu refused; items bound on their own VU1 job's "
+                  "window snapshot %llu (this takes precedence over the draw record and the pass image)",
+                  static_cast<unsigned long long>(texture_counters.world_job_slm_records),
+                  static_cast<unsigned long long>(texture_counters.world_job_slm_refused),
+                  static_cast<unsigned long long>(texture_counters.world_job_slm));
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world per-draw SLM overlays: %llu records supplied, %llu draws applied, %llu refused; items bound on "
+                  "their own draw's window snapshot %llu",
+                  static_cast<unsigned long long>(texture_counters.world_draw_slm_records),
+                  static_cast<unsigned long long>(texture_counters.world_draw_slm_draws),
+                  static_cast<unsigned long long>(texture_counters.world_draw_slm_refused),
+                  static_cast<unsigned long long>(texture_counters.world_draw_slm));
     world_report += line;
     world_report += "\n";
     for (const std::string &refusal : texture_counters.state_refusals)

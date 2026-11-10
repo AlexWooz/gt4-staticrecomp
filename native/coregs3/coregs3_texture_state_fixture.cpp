@@ -102,8 +102,7 @@ TextureState make_state(const Fields &fields) {
 
 SlmImage full_slm() {
   SlmImage image;
-  image.first_block = 0;
-  image.block_count = vram::kBlocksTotal;
+  image.cover(vram::Window{0u, vram::kBlocksTotal});
   std::fill(image.local.bytes().begin(), image.local.bytes().end(), 0u);
   return image;
 }

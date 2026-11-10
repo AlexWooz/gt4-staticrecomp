@@ -242,14 +242,17 @@ std::vector<DecodeOne> decode_draw(const FrameSnapshot &frame, const SlmImage &s
 const VramRecord *pick_record(const std::vector<VramRecord> &records, const FrameSnapshot &frame, long long explicit_vblank,
                               std::string &error) {
   const std::uint64_t wanted = explicit_vblank >= 0 ? static_cast<std::uint64_t>(explicit_vblank) : frame.vblank + 1u;
+  // This tool decodes the car pass against the frame-end image; a version 2 sidecar's pass-begin records share the file
+  // but name a capture frame's VBlank, so they are never candidates here (the world tool selects them by pass).
   for (const VramRecord &record : records)
-    if (record.vblank == wanted) return &record;
+    if (record.kind == vram::kRecordVblank && record.vblank == wanted) return &record;
   std::string available;
   for (const VramRecord &record : records) {
     if (!available.empty()) available += ",";
     available += std::to_string(record.vblank);
+    if (record.kind == vram::kRecordPassBegin) available += "(pass)";
   }
-  error = "no VRAM record at VBlank " + std::to_string(wanted) + " (available " + available + ")";
+  error = "no vblank VRAM record at VBlank " + std::to_string(wanted) + " (available " + available + ")";
   return nullptr;
 }
 
@@ -424,10 +427,15 @@ int main(int argc, char **argv) {
       if (output != stdout) std::fclose(output);
       return 1;
     }
+    std::uint32_t firstBlock = 0, blockCount = 0;
+    if (!record->windows.empty()) {
+      firstBlock = record->windows[0].first_block;
+      blockCount = record->block_count();
+    }
     std::fprintf(output, "frame %u vblank %llu draws %u textures %u, VRAM record vblank %llu blocks 0x%04X+%u\n",
                  frame.index, static_cast<unsigned long long>(frame.vblank), frame.draw_count, frame.texture_count,
-                 static_cast<unsigned long long>(record->vblank), static_cast<unsigned>(record->first_block),
-                 static_cast<unsigned>(record->block_count));
+                 static_cast<unsigned long long>(record->vblank), static_cast<unsigned>(firstBlock),
+                 static_cast<unsigned>(blockCount));
     if (reference_folder != nullptr) {
       ReferenceIndex &index = references[0];
       if (!index.load(reference_folder, error)) {

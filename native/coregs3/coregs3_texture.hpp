@@ -27,6 +27,7 @@
 
 #include "hw_gs_replace/clut.hpp"
 #include "hw_gs_replace/gs_types.hpp"
+#include "coregs3_vram.hpp"
 #include "hw_gs_replace/keys.hpp"
 #include "hw_memory.hpp"
 
@@ -68,12 +69,24 @@ struct TextureRecord {
 // Parses a raw record. `size` must be at least the 0x28 bytes of the record.
 bool parse_texture_record(const std::uint8_t *bytes, std::size_t size, TextureRecord &record, std::string &error);
 
-// One `.gt4vram` record: the block range of the GS local memory image it carries.
+// One `.gt4vram` record: the GS local memory blocks it carries.
+// `kind`/`pass`/`label` come from a version 2 record (TASK-090 pass textures): a pass-begin record carries the capture
+// frame's own VBlank and its PassId, a draw record its `CapturedDraw::sequence` and the texture/palette windows; a
+// version 1 record is a vblank record (kind 0, pass 0, label 0, one window). `bytes` hold the windows concatenated in
+// `windows` order.
 struct VramRecord {
+  std::uint32_t kind = 0;   // gt4::coregs3::vram::RecordKind
+  std::uint32_t pass = 0;   // PassId for a pass-begin record
+  std::uint32_t label = 0;  // CapturedDraw::sequence for a draw record
   std::uint64_t vblank = 0;
-  std::uint32_t first_block = 0;
-  std::uint32_t block_count = 0;
-  std::vector<std::uint8_t> bytes;  // block_count * 256, block `first_block` first
+  std::vector<vram::Window> windows;
+  std::vector<std::uint8_t> bytes;  // sum(window.block_count) * 256, windows concatenated in order
+
+  std::uint32_t block_count() const noexcept {
+    std::uint32_t total = 0;
+    for (const vram::Window &window : windows) total += window.block_count;
+    return total;
+  }
 };
 
 // Reads and validates every GT4V record of a sidecar file (bounds: 4096 records / 512 MiB).
@@ -86,13 +99,18 @@ bool parse_vram_sidecar(const std::uint8_t *data, std::size_t size, std::vector<
 // that range is refused as truncated instead of decoding the zero fill.
 struct SlmImage {
   hwgs::memory::LocalMemory local;
-  std::uint32_t first_block = 0;
-  std::uint32_t block_count = 0;
+  // The blocks this image really holds (a VRAM record's windows). A decode that would read a block outside this set
+  // is refused as truncated instead of decoding the zero fill.
+  std::vector<vram::Window> covered;
   bool covers(std::uint32_t block) const;
+  void cover(const vram::Window &window);
 };
 
-// Builds the image of one sidecar record: zero-filled 4 MiB with the record's blocks copied into place.
+// Builds the image of one sidecar record: zero-filled 4 MiB with the record's windows copied into place.
 bool build_slm_image(const VramRecord &record, SlmImage &image, std::string &error);
+// TASK-090 pass textures: copies one draw record's windows over an existing image (the frame-end default), so the
+// patches carry the content that draw sampled. The copied windows are added to the image's covered set.
+bool apply_vram_record(const VramRecord &record, SlmImage &image, std::string &error);
 
 // Decode status. `ok` is the only success; every other value names exactly why the texture was not decoded.
 enum class TextureStatus : std::uint32_t {

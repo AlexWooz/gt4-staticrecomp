@@ -76,8 +76,7 @@ std::array<std::uint8_t, 0x28> make_record(const RecordFields &fields) {
 
 SlmImage full_slm() {
   SlmImage image;
-  image.first_block = 0;
-  image.block_count = vram::kBlocksTotal;
+  image.cover(vram::Window{0u, vram::kBlocksTotal});
   std::fill(image.local.bytes().begin(), image.local.bytes().end(), 0u);
   return image;
 }
@@ -382,8 +381,7 @@ void check_refusals() {
 
   // A sidecar range that does not cover the texture blocks is refused, not decoded from the zero fill.
   SlmImage cut;
-  cut.first_block = 0x4000;
-  cut.block_count = 32;
+  cut.cover(vram::Window{0x4000u, 32u});
   std::fill(cut.local.bytes().begin(), cut.local.bytes().end(), 0u);
   const auto valid = make_record(fields);
   require(decode_texture(cut, valid.data(), valid.size(), decoded, error) == TextureStatus::refused_truncated,
@@ -391,8 +389,7 @@ void check_refusals() {
 
   // ... and one that covers the palette but not the texture (the palette check runs after the texture check first).
   SlmImage palette_only;
-  palette_only.first_block = 0x2D00;
-  palette_only.block_count = 4;
+  palette_only.cover(vram::Window{0x2D00u, 4u});
   std::fill(palette_only.local.bytes().begin(), palette_only.local.bytes().end(), 0u);
   std::memcpy(palette_only.local.bytes().data() + 0x2D00 * vram::kBlockBytes,
               slm.local.bytes().data() + 0x2D00 * vram::kBlockBytes, 4u * vram::kBlockBytes);
@@ -411,9 +408,13 @@ void check_sidecar() {
     header.vblank = vblank;
     header.first_block = first;
     header.block_count = count;
+    header.window_count = 1;
     std::uint8_t encoded[vram::kHeaderBytes];
     vram::encode_header(encoded, header);
     file.insert(file.end(), encoded, encoded + vram::kHeaderBytes);
+    std::uint8_t window[vram::kWindowBytes];
+    vram::encode_window(window, vram::Window{first, count});
+    file.insert(file.end(), window, window + vram::kWindowBytes);
     file.insert(file.end(), blocks.begin(), blocks.end());
   }
   std::vector<VramRecord> records;
@@ -421,7 +422,11 @@ void check_sidecar() {
   require(parse_vram_sidecar(file.data(), file.size(), records, error), "sidecar parses");
   require(records.size() == 2, "sidecar record count");
   require(records[0].vblank == 7399 && records[1].vblank == 7400, "sidecar vblanks");
-  require(records[0].first_block == first && records[0].block_count == count, "sidecar block range");
+  require(records[0].kind == vram::kRecordVblank && records[0].pass == 0, "an encoded record is a vblank record");
+  require(records[0].windows.size() == 1 && records[0].windows[0].first_block == first &&
+              records[0].windows[0].block_count == count,
+          "sidecar block range");
+  require(records[0].block_count() == count, "sidecar block count");
   require(records[0].bytes == blocks, "sidecar bytes");
 
   SlmImage image;
@@ -443,10 +448,19 @@ void check_sidecar() {
   bad[0] ^= 0xFFu;
   expect_bad(bad, "bad magic refused");
   bad = file;
-  bad[4] = 2;
+  bad[4] = 3;  // version 3 does not exist
   expect_bad(bad, "unknown version refused");
   bad = file;
-  bad[28] = 1;
+  bad[28] = 4;  // record kind 4 is not a known kind
+  expect_bad(bad, "unknown record kind refused");
+  bad = file;
+  bad[36] = 1;  // a label on a non-draw record
+  expect_bad(bad, "label on a vblank record refused");
+  bad = file;
+  bad[40] = 0;  // window_count 0
+  expect_bad(bad, "empty window table refused");
+  bad = file;
+  bad[44] = 1;  // the version 2 reserved word
   expect_bad(bad, "nonzero reserved refused");
   bad = file;
   bad.resize(file.size() - 1);
@@ -454,6 +468,9 @@ void check_sidecar() {
   bad = file;
   bad.resize(16);
   expect_bad(bad, "truncated header refused");
+  bad = file;
+  bad.resize(32);
+  expect_bad(bad, "truncated version 2 header refused");
 }
 
 }  // namespace
