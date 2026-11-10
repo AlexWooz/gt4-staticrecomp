@@ -1185,3 +1185,39 @@ one-line hook. That is a new subsystem with its own tests, and it needs the buil
 
 Block renders (Phase 17); page does not open; no kit was built. Nothing existing changed. The exact addresses and the
 insertion point (`AppendItem`, `exportRootWindow` `0x002296E8`, static 272) stay recorded for that follow-up.
+---
+
+# Phase 24 - native route 1: exact scope (2026-11-10, disk freed to 7.9 GB)
+
+## 74. What `exportRootWindow` really does
+
+`MProject__exportRootWindow(ret, this, argc, argv)`:
+`obj = argv->obj; result = obj->vtbl[11]((char*)obj + delta); ret = (result != 0)`.
+
+It takes the **first argument as an object**, calls its virtual 11 (the string/name accessor) and returns a **bool**.
+The export itself is a side effect inside the object graph (the root window is bound to the script scope). It does not
+return the window, so the hook has to rely on that side effect, then the page's `RecRoot1` static resolves.
+
+## 75. Scope of the guest-call harness (four pieces)
+
+1. **Hook point**: after the `mProject` load, in the recompiled guest code (end of the tree walk
+   `mProject__virtual_63` or the loader return). Needs a guest-side hook + a build of the affected units.
+2. **Guest string**: allocate an `hString` for `"RecRoot1"` through the VM (allocator `func_00326750`, string ctor,
+   refcount) - the host cannot pass a C string to a script native.
+3. **Argument handle + return slot**: build the argv object (`Arg3` wrapper) and a 4-byte guest return buffer.
+4. **Verification**: after the call, confirm the page module's static 272 is non-nil (or that the script resolves
+   `RecRoot1`), then the usual headless proof.
+
+Nothing here exists in the runtime today (`ps2::dispatch` is guest->host only). Pieces 2-3 are the new engine
+facility; piece 1 is the build; piece 4 is the test.
+
+Disk is now 7.91 GB, so the build itself fits (2-3 GB). The blocker is the guest-call facility (pieces 2-3), which is a
+new subsystem with its own tests - not a hook. Per the owner's rule, it is reported before spending the budget.
+
+## 76. Alternative worth one data probe first
+
+The page's `open(context)` receives a **render context** at Cross time (retail `open` calls `context.pushEvent`), where
+`getCursorProject()` should be live. If the tile's Cross handler can be made to reach `open` without a nil dispatch,
+`start_page(context, context.getCursorProject().findPage("RecRoot1"))` inside `open` would be a pure-script binding.
+The handler currently needs `item.page` non-nil; giving the page an existing root (OptionRoot) makes the handler open
+*that* page, not ours - so the handler's contract would have to be understood first (its exact dispatch target).

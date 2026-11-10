@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-214 Phase 24: native route scope (2026-11-10, disk now 7.91 GB)
+
+- `exportRootWindow` takes the first argument object, calls its virtual 11 and returns a **bool**; the export is a side
+  effect (the window is bound to the script scope), so the hook must rely on it and then verify the page static.
+- **Guest-call harness scope:** (1) a guest-side hook after the `mProject` load + a build of the affected units;
+  (2) a guest `hString` allocation for `"RecRoot1"` (allocator + ctor + refcount); (3) the argv/return-slot handles;
+  (4) verification and the headless proof. Pieces 2-3 are a **new engine facility** - no host->guest call exists
+  (`ps2::dispatch` is guest->host only); the build itself fits in 7.91 GB.
+- **Reported before spending the budget**, per the owner's rule. No build started, no kit.
+- **State:** block renders; page does not open; nothing existing changed; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 23: native route gates - disk 3.48 GB and no guest-call facility (2026-11-10)
 
 - **Space gate:** `C:` has **3.48 GB free** (the brief assumed ~7.4 GB). The build (2-3 GB) plus the 90 MB executable

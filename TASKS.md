@@ -5343,3 +5343,11 @@ The shipped path stays our MIT tools.
   (`ps2::dispatch` only intercepts guest->host natives), so route 1 and route 2 are both a new **guest-call harness**,
   not a one-line hook.
 - **State:** block renders; page does not open; no kit; nothing existing changed. Tests 846 OK (77 skipped).
+**Phase 24 (2026-11-10, native route scope, disk 7.91 GB).**
+- `exportRootWindow` takes the first argument object, calls virtual 11 and returns a **bool**; the export is a side
+  effect, so the hook must rely on it and then check the page static.
+- **Scope of the guest-call harness:** (1) a guest-side hook after the mProject load + build; (2) a guest `hString`
+  allocation for "RecRoot1"; (3) the argv/return-slot handles; (4) verification + headless proof. Pieces 2-3 are a new
+  engine facility (no host->guest call exists); piece 1 is the build (2-3 GB, fits in 7.91 GB); piece 4 is the test.
+- **Reported before spending the budget** per the owner's rule. No build started, no kit.
+- **State:** block renders; page does not open; tests 846 OK (77 skipped).
