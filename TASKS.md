@@ -1705,8 +1705,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   smoke/dust/spray (P0; needs a v2.00 rally/drift), sky/lighting, wet-road reflection, env map, post chain. The tap is
   PATH1 only; the full-screen sheen/tone/crossfade/glare are PATH3 and need a hw GS-stream capture. Capture additions:
   K7 pass markers/pass ids in v5, scene environment block, per-pass GS state, hw GS-stream capture.
-- Next: fog/textures/reflection plus the capture extension (K7 pass markers, hw GS-stream) that unblocks the effects,
-  then the G-IMAGE/G-PERF gates; the per-item light state is now consumed by both renderers.
+- **HUD/2D study (2026-11-10).** The HUD is drawn at 60 Hz in `render_panel` (`RaceDisplay::render` 0x0039F498 and the
+  element `render_main` functions); the P2 hook rewrites the canvas to `l/r = 320 ∓ 240·R`. Elements, textures and fonts
+  measured: `display.gpb` 267,168 B (72 Tex1: 62 T4 + 10 T8, CT32 palettes, MODULATE, linear, no mips, region clamp),
+  `race.fnt` 184,960 B (8 descriptors, 8 T4 atlases, `hn_20R`/`GT4meter#1`). The capture/tap carry no 2D (PATH1 only),
+  so a native HUD needs `render_panel` markers, a bounded 2D batch recorder, the textures/fonts and per-pass GS state;
+  PATH2/PATH3 and TEST/ZBUF/SCISSOR are unmeasured. Options: keep CoreGS 2.0's 2D (fast/faithful; blend-test a
+  transparent layer), native HUD (4-6 weeks standard race), or mixed per-element (recommended). M1: speed plate +
+  digits native with G-HUD-VALUES/IMG/ASPECT; then replay, semantic elements and modes. Evidence: `build/analysis-hud/`.
+- Next: fog/textures/reflection plus the capture extension (K7 pass markers, hw GS-stream, `render_panel` 2D
+  recorder) that unblocks the effects and the HUD, then the G-IMAGE/G-PERF gates; the per-item light state is now
+  consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls

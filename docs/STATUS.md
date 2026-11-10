@@ -1,5 +1,21 @@
 # Current Status
 
+## 2026-11-10: HUD/2D study: elements, textures and the mixed path
+
+The HUD is drawn at 60 Hz in `render_panel` (`RaceDisplay::render` 0x0039F498 and the element `render_main` functions),
+after `render_world`/post and before `render_other`; the frame is 640x448, the HUD ortho 640x480 (4:3) or 853.33x480
+(16:9), and the P2 hook rewrites the canvas to `l/r = 320 ∓ 240·R`. The elements are measured (position/lap/time, speed,
+gear/ladder, fuel/tyres, tachometer, mini-map/race monitor, car icon, messages/countdown, command bar); the rear-view
+mirror is a second 3D view, not 2D. Textures: `display.gpb` 267,168 B decoded, 72 Tex1 (62 T4 + 10 T8, CT32 palettes,
+MODULATE, linear, no mips, region clamp); fonts: `race.fnt` 184,960 B with 8 descriptors and 8 T4 atlases (`hn_20R`,
+`GT4meter#1`). The capture (`.gt4scene` v4) and the tap carry no 2D: the tap is PATH1 only (strips and state, no
+sprites), so a native HUD needs `render_panel` markers, a bounded 2D batch recorder, the textures/fonts and per-pass GS
+state; the exact PATH2/PATH3 path and the TEST/ZBUF/SCISSOR are unmeasured. Options: keep CoreGS 2.0's 2D (fast and
+faithful; a truly transparent layer must be blend-tested against the 3D), native HUD (4-6 weeks for the standard race,
+more for modes/menus), or mixed per-element (recommended: one element native first, the rest on CoreGS 2.0). M1:
+capture the panel and draw one element natively (B-Spec speed plate + digits) with G-HUD-VALUES/IMG/ASPECT gates; then
+M2 replay, M3 semantic elements, M4 modes/monitor. Evidence: `build/analysis-hud/`.
+
 ## 2026-11-10: environment/effects study: priorities and the capture gap
 
 A tap census of the night race (VBlanks 7398-7406) separates 62 VU1 jobs per race frame: 14 pre-car (~64.1k vertices:
