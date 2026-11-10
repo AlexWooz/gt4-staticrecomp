@@ -1,5 +1,26 @@
 # Current Status
 
+## TASK-213 Phase 2a scriptless-root experiment: still rejected (2026-11-10, evidence; page not reachable)
+
+The recommended smallest experiment (`MonitorRoot` `has_script 1 -> 0`) is negative: the page still does not render and
+the guest frame loop stalls, so the page is **not reachable**. No Graphics shell or rows were added.
+
+- **Patch:** `private/slice433-scriptless` from the accepted `slice430` recipe with only the `MonitorRoot` `has_script
+  digit {1}` -> `{0}` (same length, unique, verified); container
+  `dc6dafbe20ca768e826cb48e9e5b3deeb7720c70362876bcc94dc06c990bb6cf`, decoded mproject replacement
+  `66553dd9215ce10c0638184ca400cf6f48cd40d3d1f5c52397178277a237b4f6`, 77,986 bytes.
+- **Result:** `startPage(context 0x0102AFB0, page 0x00FD8090)` at frame 2300 returns, but the current page stays
+  `0xD73610 -> 0xF77200` (ScreenRoot); the post-launch frame log shows only 2300 and the guest frame counter does not
+  advance; the frames after 2300 are the same Screen Settings page. The hidden root state `0x45045000` (bit 20 0) is
+  unchanged. A scriptless root alone is not accepted; the **`option.adc` page list** is required.
+- **Safety:** `--frames 2600`; the run exits 0 and does not hang.
+- **Next:** the fallback host tree inside the Options root (not floating): the Screen page Pane is the known focus path;
+  attach a host Composite/OptionMenu, mask Cross, re-append after the script rebuild; the smallest proof is one
+  Composite/TextFace on the Screen Pane. The launcher remains the only `settings.toml` writer; the save untouched.
+- **Probe:** exe `95887cb77277018a0a3232e916b6b2e7df224e95df2129144d011b90f8c0a529`; capsule `slice432-page-launch`,
+  receipt `cead3c642991531df3b0f6010ed532af56107ad22e2fa2af8d96c7302a3bdc66`; evidence `private/slice433-launch/run.log`,
+  `state.bin`, frames. The `slice430-kit` and the accepted Screen page are unchanged. Mapping section 24.
+
 ## TASK-213 Phase 2a probe: the hValue relation and the hidden-page gate (2026-11-10, evidence; page not reachable)
 
 The Phase 2a page is **not reachable**; no Graphics shell was added. The handle relation is resolved.

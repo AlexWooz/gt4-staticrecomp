@@ -1641,3 +1641,86 @@ the owner's decision.
   tile/scroll. O menor teste é pendurar um único `Composite`/`TextFace` na Pane da página Screen e capturar um frame.
 - O probe é um build de teste (cápsula `slice432`, exe `a54ed940...`), com as variáveis `GT4_PAGE_PROBE` e
   `GT4_PAGE_LAUNCH_FRAME`; sem elas o jogo normal não muda.
+
+## 24. Phase 2a scriptless-root experiment: still rejected, the page list is the gate (2026-11-10, evidence)
+
+The recommended smallest experiment was the `MonitorRoot` scriptless root. The result is negative: the page still does
+not render and the guest frame loop still stalls, so the page is **not reachable** and no Graphics shell was built.
+
+### 24.1 The data patch (same-length, verified)
+
+- Fresh private patch `private/slice433-scriptless` from the accepted `slice430` recipe, plus one text replacement:
+  `RootWindow { name string {"MonitorRoot"} has_script digit {1}` -> `... digit {0}`. The old/new strings are the same
+  length (69 bytes) and the replacement is unique; `minify: true` keeps the stored extent.
+- Container `dc6dafbe20ca768e826cb48e9e5b3deeb7720c70362876bcc94dc06c990bb6cf` (77,986 bytes); report
+  `projects/option/option.mproject` replacement stored SHA-256
+  `66553dd9215ce10c0638184ca400cf6f48cd40d3d1f5c52397178277a237b4f6`, 10 text replacements. The builder's
+  round-trip verification passed; the runtime log shows `[data-patch] ... verified against the image`.
+- The probe build is the same `slice432-page-launch` capsule; the only code change is the probe's post-launch frame
+  log (native/page_probe.cpp). Exe
+  `95887cb77277018a0a3232e916b6b2e7df224e95df2129144d011b90f8c0a529` (90,238,976 bytes).
+
+### 24.2 The result (stall)
+
+Run: `GT4_DATA_PATCH=slice433-scriptless/patch/gt4-data.patch GT4_PAGE_PROBE=1 GT4_PAGE_LAUNCH_FRAME=2300`, frames
+2600 (the frame limit is the safety: the run exits 0 after 2600 host frames even when the guest frame counter stops).
+Probe log:
+
+```
+[page-launch] MonitorRoot 0x00FD8090 (TitleMonitor 0x00FD89D0)
+[page-launch] frame 2300 MonitorRoot: context 0x0102AFB0, page 0x00FD8090
+[page-launch] startPage(MonitorRoot context 0x0102AFB0, page 0x00FD8090) returned
+[page-launch] after frame 2300
+[ee] stopped after 2600 frames ...: frame limit reached
+```
+
+- The post-launch frame log shows **only 2300**; no 2301+ line. The guest frame counter does not advance.
+- The saved state at 2500: context `0x0102AFB0` (vtable `0x00663BE0`), current page slot `0xD73610 -> 0xF77200`
+  (the ScreenRoot), hidden root `0xFD8090` state `0x45045000` (bit 20 = 0), unchanged.
+- The frames after 2300 are the same Screen Settings picture; no MonitorRoot frame.
+- **Exact call/state:** `MRenderContext.startPage(context=0x0102AFB0, page=0x00FD8090)` at frame 2300 returns, but the
+  context page list/current page is not updated and the update/render loop waits. The scriptless flag alone does not
+  make the hidden root an accepted page; the **`option.adc` page list/registration** is the blocker (the script was not
+  the only gate).
+- Evidence: `private/slice433-launch/run.log`, `state.bin`, `frames/` PNGs; the `slice430-kit` and the accepted Screen
+  page are untouched.
+
+### 24.3 Reachability decision: blocked
+
+The hidden `MonitorRoot` is a live `mRootWindow` tree, but `startPage` with it is not accepted even when scriptless; the
+page list (compiled `option.adc`, script) is required, or a host tree is needed. **No empty Graphics page, no rows, no
+floating panel was added.** The owner's Screen page and `private/slice430-kit` remain as accepted.
+
+### 24.4 The fallback: a host tree inside the Options root (not a floating panel)
+
+- **Route:** append a host `Composite`/`OptionMenu` to the Options root `mScrollWindow` content (state address
+  `0x01FDA8A0`) or, for the smallest proof, to the **Screen page's Pane** (a registered page; the Phase 1d OptionMenu
+  rows prove the VBox focus traversal). The Graphics menu is a real child of the page/scroll content.
+- **Attach/focus risk (exact):**
+  - the Options root is a `mScrollWindow` and its tile/scroll content can be rebuilt by the script on enter/leave; a
+    host child must be appended after the script update and re-appended every time;
+  - the Options root has no `SelectBox`; a host tile is reachable only as a child of the scrolled focus container, and
+    its Cross press must be masked from the script (the `menu_quit` pattern);
+  - the Screen page's Pane is the known focus path, but it is the Screen page, not a new page; a separate Graphics
+    page still needs a registered page root or an Options-root tile that calls the host page.
+- **Smallest proof:** append one game `TextFace`/`Composite` to the Screen page's Pane and capture a frame; then a
+  focusable `OptionMenu` row; then the Graphics rows (renderer/render scale, restart-only, writing only
+  `game-changes.toml`). The launcher stays the only `settings.toml` writer; the save stays untouched.
+- **Page registration alternative:** if a separate page is required, a page-table entry (compiled script) or a
+  registered page root whose content is replaced is needed; the hidden MonitorRoot alone is not enough. The Adhoc
+  v5/TOC route and the Network-page repurpose remain out.
+
+## 25. Resumo para o dono (pt-BR) - scriptless root
+
+- **Teste da raiz sem script:** troquei só `has_script 1 -> 0` na `MonitorRoot` (patch privado `slice433`, mesmo
+  tamanho, verificado). A chamada `startPage(contexto 0x0102AFB0, página 0x00FD8090)` no frame 2300 **continua
+  retornando sem abrir a página**: a página atual fica na ScreenRoot (`0xF77200`), o contador de frames do jogo para no
+  2300 e o frame seguinte é a mesma tela de Screen. O limite de 2600 frames encerra o run sem travar o processo.
+- **Decisão:** a página **não é alcançável** só com a raiz scriptless; falta o **registro na lista de páginas**
+  (`option.adc`, script). Não adicionei a página Graphics nem as linhas; nada foi falsificado. A página Screen aceita e
+  o kit `slice430` continuam iguais.
+- **Próximo passo:** a árvore do host **dentro da raiz do Options** (o `ScrollWindow`), sem sobreposição flutuante; o
+  caminho de foco conhecido é a Pane da página Screen. O menor teste é pendurar um único `Composite`/`TextFace` na Pane
+  da Screen e capturar um frame; depois uma linha `OptionMenu` focável e as linhas Graphics (renderer/render scale,
+  restart-only, só `game-changes.toml`). Os riscos são o script reconstruir o conteúdo do scroll e o foco do tile; a
+  Cross do tile precisa ser mascarada.

@@ -5003,3 +5003,24 @@ report the gate. No page was implemented or faked in this slice.
   `has_script 0` and an empty Pane) and the same `startPage` call; if it renders, the empty Graphics shell is a
   scriptless RootWindow with the game's widgets. Fallback: a host tree inside the Options root's `ScrollWindow`, with
   the scroll-content rebuild and focus risks; the smallest proof is one Composite/TextFace on the Screen page's Pane.
+
+**State (2026-11-10, TASK-213 Phase 2a scriptless-root experiment - still rejected):** branch
+`task/213-native-settings`. The page is **not reachable**; no Graphics shell/rows were added.
+
+- **Patch:** fresh `private/slice433-scriptless` from the accepted `slice430` recipe with only the `MonitorRoot`
+  `has_script digit {1}` -> `{0}` (same length, unique, verified); container
+  `dc6dafbe20ca768e826cb48e9e5b3deeb7720c70362876bcc94dc06c990bb6cf`; decoded mproject replacement
+  `66553dd9215ce10c0638184ca400cf6f48cd40d3d1f5c52397178277a237b4f6`; 77,986 bytes.
+- **Result:** the probe launch at frame 2300 (`startPage(context 0x0102AFB0, page 0x00FD8090)`) returns, but the
+  current page stays `0xD73610 -> 0xF77200` (ScreenRoot); the post-launch frame log shows only 2300 and the guest frame
+  counter does not advance; the frames after 2300 are the same Screen Settings page. The page root `0xFD8090` state
+  `0x45045000` (bit 20 0) is unchanged. A scriptless root alone is not accepted; the **`option.adc` page list** is
+  required.
+- **Safety:** the run uses `--frames 2600` and exits 0; the stall does not hang the process.
+- **Next:** the fallback host tree inside the Options root (not floating): the Screen page Pane is the known focus path;
+  attach a host Composite/OptionMenu, mask Cross, re-append after the script rebuild; the smallest proof is one
+  Composite/TextFace on the Screen Pane. The launcher remains the only `settings.toml` writer; the save untouched.
+- **Probe:** exe `95887cb77277018a0a3232e916b6b2e7df224e95df2129144d011b90f8c0a529`; capsule `slice432-page-launch`
+  (receipt `cead3c642991531df3b0f6010ed532af56107ad22e2fa2af8d96c7302a3bdc66`) and pin
+  `docs/inputs/slice432-page-launch-license-guard-runtime.json`; evidence `private/slice433-launch/run.log`,
+  `state.bin`, frames. The `slice430-kit` and the accepted Screen page are unchanged.

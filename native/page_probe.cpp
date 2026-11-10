@@ -165,6 +165,7 @@ void on_start_page(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size) {
 void on_render_frame(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth) {
   static bool hidden_done = false;
   static bool registered_done = false;
+  static bool launched = false;
   if (!hidden_done) {
     const char *value = std::getenv("GT4_PAGE_LAUNCH_FRAME");
     if (value && *value != '\0' && ps2::frame_count() == std::strtoull(value, nullptr, 10)) {
@@ -172,6 +173,18 @@ void on_render_frame(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::ui
       const std::uint32_t page = find_monitor_root(ram, size, title);
       std::fprintf(stderr, "[page-launch] MonitorRoot 0x%08X (TitleMonitor 0x%08X)\n", page, title);
       hidden_done = launch(cpu, ram, size, depth, page, "MonitorRoot");
+      launched = true;
+    }
+  }
+  if (launched) {
+    // A scriptless root may or may not advance; log the next guest frames so the evidence shows which.
+    static std::uint64_t last_frame = 0;
+    static int lines = 0;
+    const std::uint64_t frame = ps2::frame_count();
+    if (frame != last_frame && lines < 12) {
+      last_frame = frame;
+      ++lines;
+      std::fprintf(stderr, "[page-launch] after frame %llu\n", static_cast<unsigned long long>(frame));
     }
   }
   if (!registered_done) {

@@ -3552,3 +3552,26 @@ is env-gated: `GT4_PAGE_PROBE=1` logs the game's own startPage arguments; `GT4_P
   probe does not need a kit; it is a diagnostic build.
 - **Next:** the scriptless page root test (MonitorRoot `has_script 0` or a new `RootWindow` `has_script 0` with an
   empty Pane) and the same call; or the host tree inside the Options root. Mapping section 22.
+
+## TASK-213 Phase 2a scriptless-root experiment (slice433, 2026-11-10, test only)
+
+The probe build is the `slice432-page-launch` capsule with the `native/page_probe.cpp` post-launch frame log; the data
+patch is the accepted `slice430` recipe plus the `MonitorRoot` `has_script digit {1}` -> `{0}` (same length, unique).
+
+- **Data patch:** `private/slice433-scriptless`, recipe from `private/slice430-optionmenu`; container
+  `dc6dafbe20ca768e826cb48e9e5b3deeb7720c70362876bcc94dc06c990bb6cf` (77,986 bytes); decoded mproject replacement
+  `66553dd9215ce10c0638184ca400cf6f48cd40d3d1f5c52397178277a237b4f6`; 10 text replacements, minified; the builder
+  round trip and the runtime `[data-patch] ... verified against the image` passed.
+- **Probe build:** `build/configure-432.cmd` / `build/build-424.cmd`; exe
+  `95887cb77277018a0a3232e916b6b2e7df224e95df2129144d011b90f8c0a529` (90,238,976 bytes); capsule
+  `slice432-page-launch`, receipt `cead3c642991531df3b0f6010ed532af56107ad22e2fa2af8d96c7302a3bdc66`, pin
+  `docs/inputs/slice432-page-launch-license-guard-runtime.json`.
+- **Run:** `GT4_DATA_PATCH=<slice433>/patch/gt4-data.patch GT4_PAGE_PROBE=1 GT4_PAGE_LAUNCH_FRAME=2300
+  GT4_FULLSCREEN=1 GT4_OUTPUT_SIZE=1920x1080 gt4vulkan.exe ... --frames 2600` (the exact sequence in
+  `private/slice433-launch/run.cmd`). The launch at 2300 returns; the post-launch log shows only 2300; the state keeps
+  the ScreenRoot; the frames after 2300 are the same Screen Settings page. The `--frames 2600` limit ends the run with
+  exit 0; no hang.
+- **Evidence:** `private/slice433-launch/run.log`, `state.bin`, `frames/` PNGs. The page is not reachable; no Graphics
+  shell/rows. The `slice430-kit` and the accepted Screen page are unchanged.
+- **Next:** the host tree inside the Options root (not floating); the Screen page Pane is the known focus path; the
+  smallest proof is one Composite/TextFace on the Screen Pane, then a focusable OptionMenu row.
