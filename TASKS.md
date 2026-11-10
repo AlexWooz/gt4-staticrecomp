@@ -1766,9 +1766,20 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   Python 8/8, 3x gate OK. New EE library pin `7f3c833f…` built from the slice299 units with the K7 insertions (receipt in
   the capture worktree; a copy is in the main worktree's `build/090-capture-v5/ee-v5b`). The car-only build with the old
   library still works but has no K7 calls.
-- Next: the body reflection (in flight); the track M1 sky+road renderer using the v5 ALL_DRAWS capture; the effects/HUD
-  capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates. The per-item light state is now consumed
-  by both renderers.
+- **Course/sky decode study (2026-11-10).** The v5 ALL_DRAWS frame decodes as env_map 31/121/3,988, sky 1/16/940,
+  far_underlay 3/9/378, course 130/1,284/64,099, reflection 4/7/292, cars 116/335/12,146. Every item has a V3-32
+  descriptor at TOPS 0xC0 (lane0 `0x8000|count`, lane1 selector, lane2 `0x1412`) the decoder ignores; course channels
+  are V3-16/V3-32 positions + aux 0x01..0x3F, V2-16/32/8 UVs, V3-8/32 normals, V4-8 colours, strip tables, and a V4-8
+  colour at 0xA0 for the 0xA0 family. Current shape agreement: env_map 121/121, sky 16/16, reflection 7/7, cars 335/335,
+  far 3/9, course 1,069/1,284 (215 descriptor/strip-count mismatch, 70 no position at 0x00). Needed: descriptor-count
+  vertices, qword-array rule, int16/int32-16.16/float32 positions, aux chunks, V2-8 UV, colour at 0xA0, per-family
+  encoding. Programs: course 0x80 passthrough 1,212 items/3q identity; 15 0xB08; unmeasured 0xA0 (46) and 0x1278 (11).
+  Textures: PSMT4 950/40,470, PSMT8 332/19,408, CT32 CLUT; 1,262 MXL0 fit, 20 MXL1 mip; sky PSMT8 256x256; a v5
+  sidecar over 0x2BC0..0x3FFF is recommended. Blocker: the course transform (captured 0xC1 projects sky/far but not
+  the course; lead: pgl +0xFA0 projection x vf_k4 modelview). Plan: Step 0 transform, Step 1 shape, Step 2 pass
+  selection, Step 3 sky, Step 4 course, Step 5 metrics. Evidence: `build/analysis-course/`.
+- Next: the course-transform recovery (in flight), the body reflection (in flight), then the track M1 sky+road renderer;
+  the effects/HUD capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

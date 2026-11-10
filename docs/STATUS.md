@@ -1,5 +1,26 @@
 # Current Status
 
+## 2026-11-10: course/sky decode study: the map and the transform blocker
+
+The v5 ALL_DRAWS night capture (285 draws / 1,772 items / 81,843 vertices per frame) decodes as: env_map 31/121/3,988,
+sky 1/16/940, far_underlay 3/9/378, course 130/1,284/64,099, reflection 4/7/292, cars 116/335/12,146. Every item starts
+with a V3-32 descriptor at TOPS 0xC0 (lane0 `0x8000|vertex_count`, lane1 per-shape selector, lane2 `0x1412`) that the
+current decoder ignores; the course channels are V3-16 55,012 / V3-32 1,388 positions (plus aux qword chunks
+0x01..0x3F), V2-16/V2-32/V2-8 UVs, V3-8/32 normals, V4-8 colour, V3-8 strip tables, and a V4-8 colour at TOPS 0xA0 for
+the 0xA0 family. The current `coregs3_shape` agrees on env_map 121/121, sky 16/16, reflection 7/7, cars 335/335,
+far_underlay 3/9 and course only 1,069/1,284; 215 course items fail because the strip table covers the descriptor count
+but not the position-channel count, and 70 have no position channel at 0x00. Needed: descriptor-count vertices, the
+qword-array rule, int16/int32-16.16/float32 position families, aux chunks 0x01..0x3F, V2-8 UV, colour at 0xA0 and a
+per-family encoding selector. Programs: course road ITOP 0x80 passthrough (1,212 items, 3q identity); 15 0xB08;
+unmeasured 0xA0 (46, 6q) and 0x1278 (11, 6q); sky/far/reflection 0x80/0x1508 identity. Textures: course PSMT4
+950/40,470, PSMT8 332/19,408, CT32 CLUT; 1,262 records MXL0 (fit the decoder/sampler), 20 MXL1/MMIN2 (mip subset); sky
+PSMT8 256x256; the v5 capture has no sidecar, the existing sidecar covers 605/1,282 course TBP0, all sky/far and none of
+the reflection bases, so a v5 sidecar over 0x2BC0..0x3FFF is recommended. Environment/journal values captured. The
+course transform is the blocker: the captured 0xC1 projects sky/far exactly but not the course (w changes sign across a
+road patch); the lead is the pgl +0xFA0 projection x vf_k4 modelview composition (the course matrix c3 equals the
+projection applied to the camera translation). Plan: Step 0 recover the course transform; Step 1 extend the shape
+decoder; Step 2 pass selection; Step 3 sky; Step 4 course; Step 5 metrics. Evidence: `build/analysis-course/`.
+
 ## 2026-11-10: capture v5: pass tags, scene environment and the per-pass GS state journal (TASK-090)
 
 `.gt4scene` is **version 5**. The caller RA alone cannot name a pass (one RA carries the 130 course and 116 car draws
