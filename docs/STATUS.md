@@ -1,5 +1,14 @@
 # Current Status
 
+**State (2026-11-10, TASK-213 slice 2 - per-renderer Graphics rows):** branch `task/213-native-settings`. The Graphics
+list follows the renderer the process started with: GSdx shows GSdx blending/readbacks; CoreGS 2.0 shows Road sheen,
+Effect targets and Sharpening (FSR1); Flares, scale, frame rate, HUD and the other submenus are shared. The Renderer row
+stays restart-only and the visible set changes only after restart. Headless proof: `run-gsdx.log` (active GSdx) and
+`run-coregs-set.log` (active CoreGS 2.0 via the developer switch `GT4_RECOMP_ACTIVE_RENDERER=hw`, because the CoreGS
+backend does not load save states); frames in `private/slice444-kit` (exe `343cabf1...`, patch `371865ab...`).
+Renderer/scale feedback still written (`coregs20`, `125`). Live setters and the confirmation popup remain deferred; no
+existing page/function changed. Mapping section 34.
+
 **State (2026-11-10, TASK-213 slice 1 - complete hub rows):** branch `task/213-native-settings`. The Arcade hub now has the
 complete row list (38 hidden rows): Graphics (renderer/scale + flares/road sheen/targets/blending/readbacks/sharpening/
 frame rate/HUD), Controls, Display (fullscreen/resolution/monitor/vsync), Audio (game audio only), System. All rows are

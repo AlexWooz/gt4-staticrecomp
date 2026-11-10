@@ -66,6 +66,8 @@ bool g_active_valid = false;
 int g_shell_title = -1;
 int g_shell_last = 0;
 int g_renderer = 0;
+int g_active_renderer = 0;
+int g_graphics_last = 7;
 int g_scale = 2;
 bool g_renderer_changed = false;
 bool g_scale_changed = false;
@@ -303,13 +305,27 @@ void open_hub(std::uint8_t *ram, std::size_t size) {
   std::fprintf(stderr, "[recomp-menu] hub open: Graphics, Controls, Display, Audio, System\n");
 }
 
+void refresh_graphics(std::uint8_t *ram, std::size_t size, int index) {
+  // The visible set follows the renderer the process started with (g_active_renderer), not the pending selection:
+  // the Renderer row is restart-only, so the other renderer's rows stay hidden until the next start.
+  if (g_active_renderer == 0) {
+    // GSdx: shared rows + GSdx-only blending/readbacks.
+    set_list(ram, size, {kGraphicsTitle, renderer_row(), scale_row(), 14, 17, 18, 20, 21}, index);
+    g_graphics_last = 7;
+  } else {
+    // CoreGS 2.0: shared rows + CoreGS-only road sheen/targets/sharpening.
+    set_list(ram, size, {kGraphicsTitle, renderer_row(), scale_row(), 14, 15, 16, 19, 20, 21}, index);
+    g_graphics_last = 8;
+  }
+}
+
 void open_graphics(std::uint8_t *ram, std::size_t size) {
   g_hub = read_fields(ram, size, g_box);
-  set_list(ram, size, {kGraphicsTitle, renderer_row(), scale_row(),
-                      14, 15, 16, 17, 18, 19, 20, 21}, 1);
+  refresh_graphics(ram, size, 1);
   g_mode = Mode::graphics;
-  std::fprintf(stderr, "[recomp-menu] Graphics open: renderer %s, render scale %d%%\n",
-               g_renderer == 0 ? "GSdx" : "CoreGS 2.0", 50 + 25 * g_scale);
+  std::fprintf(stderr, "[recomp-menu] Graphics open: active %s, selected %s, render scale %d%%; %s rows\n",
+               g_active_renderer == 0 ? "GSdx" : "CoreGS 2.0", g_renderer == 0 ? "GSdx" : "CoreGS 2.0",
+               50 + 25 * g_scale, g_active_renderer == 0 ? "GSdx" : "CoreGS");
 }
 
 void open_controls(std::uint8_t *ram, std::size_t size) {
@@ -363,15 +379,16 @@ void back_hub(std::uint8_t *ram, std::size_t size) {
 
 void toggle_renderer(std::uint8_t *ram, std::size_t size) {
   g_renderer ^= 1;
-  set_list(ram, size, {kGraphicsTitle, renderer_row(), scale_row()}, 1);
+  refresh_graphics(ram, size, 1);
   g_renderer_changed = true;
   write_changes();
-  std::fprintf(stderr, "[recomp-menu] renderer -> %s\n", g_renderer == 0 ? "GSdx" : "CoreGS 2.0");
+  std::fprintf(stderr, "[recomp-menu] renderer -> %s (pending; active rows stay %s until restart)\n",
+               g_renderer == 0 ? "GSdx" : "CoreGS 2.0", g_active_renderer == 0 ? "GSdx" : "CoreGS 2.0");
 }
 
 void next_scale(std::uint8_t *ram, std::size_t size) {
   g_scale = (g_scale + 1) % 6;
-  set_list(ram, size, {kGraphicsTitle, renderer_row(), scale_row()}, 2);
+  refresh_graphics(ram, size, 2);
   char text[8];
   std::snprintf(text, sizeof text, "%d", 50 + 25 * g_scale);
   g_scale_changed = true;
@@ -419,13 +436,18 @@ void prepare(std::uint8_t *ram, std::size_t size) {
   // The launcher's renderer reaches the game as GT4_RENDERER (pcsx2 or hw); show the current one until the player
   // changes it. The render scale percentage is not passed to the game; the default 100% is shown until a change.
   if (const char *renderer = std::getenv("GT4_RENDERER")) g_renderer = std::strcmp(renderer, "hw") == 0 ? 1 : 0;
+  g_active_renderer = g_renderer;
+  // Developer/headless proof switch: the CoreGS 2.0 backend does not load save states, so the row set can be
+  // exercised while the donor renderer runs the state. It never changes the renderer, only the visible row set.
+  if (const char *forced = std::getenv("GT4_RECOMP_ACTIVE_RENDERER"))
+    g_active_renderer = std::strcmp(forced, "hw") == 0 ? 1 : 0;
   std::fprintf(stderr, "[recomp-menu] Recomp settings row appended: %u rows, index %u; hidden recomp 0x%08X\n",
                rows + 1, rows, hidden);
 }
 
 int g_last_index() {
   if (g_mode == Mode::hub) return 5;
-  if (g_mode == Mode::graphics) return 10;
+  if (g_mode == Mode::graphics) return g_graphics_last;
   return g_shell_last;
 }
 

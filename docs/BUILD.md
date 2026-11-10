@@ -3648,3 +3648,13 @@ Adhoc instruction enum as a reference only.
   standalone data popup; the only Yes/No tree is inside `LANPopup` (a page root). Reuse needs the script dialog call or a
   host-managed clone; deferred to the live-setters slice. No existing page/function changed.
 - Tests: no source test change (host mapping only); headless exit 0. Mapping section 32.
+
+## TASK-213 slice 2: per-renderer Graphics rows
+
+The Graphics list now filters by the renderer the process started with (`GT4_RENDERER` at prepare), not the pending
+selection. GSdx shows GSdx blending/readbacks; CoreGS 2.0 shows Road sheen, Effect targets and Sharpening (FSR1);
+Flares, Render scale, Frame rate, Performance HUD and the other submenus are shared. The Renderer row keeps the restart
+marker and the visible set changes only after a restart. Headless proof: `slice444-run-gsdx` (active GSdx) and
+`slice444-run-coregs-set` (`GT4_RECOMP_ACTIVE_RENDERER=hw` developer switch, because the in-process CoreGS backend does
+not load save states); logs and frames in `private/slice444-kit`. Renderer/scale feedback still written. No existing
+page/function changed; live setters/confirmation remain deferred.

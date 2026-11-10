@@ -2003,3 +2003,35 @@ six frames, README/run-hub.cmd). No existing page/function changed.
   o único Yes/No do mproject está dentro do `LANPopup` (página inteira). Para reaproveitar de verdade seria preciso
   chamar o diálogo do script ou clonar a árvore Yes/No do LANPopup com o host — fica para a fatia dos setters live.
 - Kit `private/slice443-kit` com README, comando e hashes; nenhuma página/função existente mudou.
+
+## 34. Slice 2: the Graphics list filters by the active renderer (2026-11-10)
+
+The Graphics list is no longer static: it follows the renderer the process **started with** (`GT4_RENDERER` at prepare),
+not the pending selection. The Renderer row remains restart-only; toggling it writes the feedback and keeps the active
+row set until the next start (the log says "active rows stay ... until restart").
+
+- **Shared rows:** Renderer, Render scale, Flares, Frame rate, Performance HUD, plus the other submenus
+  (Fullscreen/Resolution on the Screen page, Monitor, VSync, Controls, Audio, System).
+- **GSdx active:** GSdx blending and GSdx readbacks (gt4-gs INI rows). No road sheen/targets/sharpening.
+- **CoreGS 2.0 active:** Road sheen, Effect targets, Sharpening (FSR1). No GSdx blending/readbacks.
+- **Proof switch:** `GT4_RECOMP_ACTIVE_RENDERER=hw` forces the visible row set for headless proof only; it never changes
+  the renderer. It exists because the in-process CoreGS backend does not load save states, so the CoreGS list could not
+  otherwise be exercised from the arcade-menu state.
+- **Evidence:** `private/slice444-kit` (exe `343cabf1...`, patch `371865ab...`); `run-gsdx.log` shows
+  "active GSdx ... GSdx rows", `run-coregs-set.log` shows "active CoreGS 2.0 ... CoreGS rows"; frames
+  `graphics-gsdx-13100.png` and `graphics-coregs-13100.png`. Renderer/scale feedback still written
+  (`coregs20`, `125`). No existing page/function changed.
+- **Still deferred:** live setters and the confirmation popup (script `TryHiVision`/`openConfirmDialog`; only the
+  LANPopup Yes/No data tree exists). Rows are display-only with `(restart)` markers except Renderer/Render scale.
+
+## 35. Resumo para o dono (pt-BR) - linhas por renderer
+
+- A lista **Graphics** agora muda conforme o renderer **ativo no início do jogo**: com GSdx aparecem **GSdx blending** e
+  **GSdx readbacks**; com CoreGS 2.0 aparecem **Road sheen**, **Effect targets** e **Sharpening (FSR1)**. Flares,
+  Render scale, frame rate, HUD e as demais linhas são compartilhadas.
+- Trocar o Renderer grava o `game-changes.toml` e mostra o aviso de restart; a lista **só muda depois de reiniciar**,
+  como você pediu. Nada de fingir que a linha do outro renderer está ativa.
+- Prova headless: kit `private/slice444-kit` com os logs/frames dos dois conjuntos. O conjunto CoreGS foi provado com o
+  switch de desenvolvedor `GT4_RECOMP_ACTIVE_RENDERER=hw`, porque o backend CoreGS em processo não carrega save states
+  (o switch só muda a lista, não o renderer).
+- Confirmação e setters live continuam para as próximas fatias; nenhuma página/função existente mudou.
