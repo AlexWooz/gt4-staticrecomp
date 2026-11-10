@@ -166,6 +166,51 @@ The `[gs-ipc]` lines of the GSdx runs (our client's own numbers) show the transp
 | IN-542 flush-reason split (rule 2 into test/scissor/xyoffset/scanmsk/dthe) and `clut_scope_avoided` | night 3x: test 19-21, scissor 0.9-1.1, xyoffset 0.0, scanmsk 4.7-7.9; license 1x: test 8.0, xyoffset 4.7-12.0 | diagnostics |
 | IN-543 Performance Mode without the self-copy from 8x | no self-copies in this scene at 12x (`self_copies=0`), GPU identical | no (reverted) |
 
+
+### License B-1 on the rc15 base (the CPU-bound scene the streamer reports)
+
+VBlanks 2,400-3,500, 1x, one baseline run plus two with rc15's GT4_CORE2_PALETTE_SEGMENTS=1 (TASK-168, off by default):
+
+| ms/VBlank | rc15 base | segments on, run 1 | run 2 |
+|---|---|---|---|
+| GS worker | 8.25 | 8.48 | 8.21 |
+| wall | 9.55 | 8.99 | 8.71 |
+| EE critical path | 10.18 | 8.26 | 8.22 |
+| frame p50 / p95 | 10.26 / 12.58 | 8.13 / - | 7.81 / - |
+| gif_parse | 3.80 | - | - |
+| category batch | 0.61 | 0.61 | 0.59 |
+| GPU busy | 1.05 | - | - |
+
+The scene is the CLUT/primitive one: **1,430 CLUT-load flushes per VBlank** (1,010 with the same texture), 211 primitive
+and 170 texture flushes, GPU busy 1.05 of 16.7, 128-130 uploads and 3.5 MB swizzled per VBlank. clut_kept and
+segmented_batches stay 0 and 	one_refused is 1.67 M: the palette-segment path is refused while a tone run is active,
+so the two faster runs are **not** explained by segments merging batches (Hypothesis: another effect of the switch or
+machine drift; the GS worker is unchanged, the EE critical path falls). Needs its own A/B before any claim.
+
+### Scene matrix and what is missing locally
+
+| Scene the streamer reports | Local status |
+|---|---|
+| License B-1 (first license oval) | measured (above); recording private/coregs2-bench/inputs/licenca-b1.txt |
+| Night race (Hong Kong Reverse) | measured (matrix above); night215 recording |
+| Clubman Stage Route 5 (Arcade, day) | measured (Arcade 3x race in the main section) |
+| **Opera Paris** (night city) | **missing**: needs an Arcade press schedule selecting it (a new recording, 2-3 runs to validate) |
+| **SS Route 5** | **missing**: same |
+| **Tsukuba Wet** (wet) | **missing**: same, and the wet surface may need an unlocked car |
+| **George Paris Rally** | **missing**: needs a GT Mode card with the rally event unlocked (no such card in the tree) |
+| Showroom / menus | measured (Arcade 3x showroom) |
+
+### The streamer's GTX 1660 logs (historical, another machine, black box)
+
+rc14, Spec II, 3x (1920x1344), accurate, 15,423-file texture pack. Steady race state: GPU busy mean 6.82 ms (p99 14.78),
+GPU wait mean 0.65 (p99 5.21), 7.7 submits/VBlank, **128 uploads and 2.38 MB swizzled and 1,356 CLUT loads per VBlank**.
+Spikes (1,362, 1,258 race-like): wall mean 30.4, p99 89, max 127.8 ms; GPU wait mean 17.3, p99 75.4; **wall~wait
+correlation 0.856**; **created>0 in 96.4%**, decodes > 20 in 89.3%, 194 keep / 303 store / 199 download; unattributed
+readbacks p95 25. These are hypotheses for this tree, not local numbers: the steady state is not raster-bound on a
+GTX 1660; the stutters are readback / image-creation / texture-churn spikes. The next local checks are (1) a counter for
+images created while recording and a spike line beside it (the created>0 question), (2) the texture-replacement path
+on/off at 3x, (3) every readback reason attributed (done on rc15: 0 unattributed).
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two
