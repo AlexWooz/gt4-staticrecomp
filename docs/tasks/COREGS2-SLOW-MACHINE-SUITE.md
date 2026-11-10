@@ -132,6 +132,44 @@ only its means are comparable.
 
 Limit unchanged: **VRAM stayed stock**, so bandwidth-bound costs do not show; this is a core-clock + power-limit result.
 
+
+## CPU-down results (2026-11-10, no-reboot method; GPU still core -500 MHz / PL 70 % / VRAM stock)
+
+Configuration: `PERFBOOSTMODE=0` (boost disabled, AC) and `PROCTHROTTLEMAX=100` (AC) on the "Desempenho Máximo" scheme.
+Owner's clock proxy (fixed single-thread integer benchmark, same binary): stock **568-572 ms**, current **683-691 ms**,
++20 % time, about **-17 % effective clock**, estimated **~3.8 GHz** from the 4.6 GHz boost. Exact clock **Unknown** (no
+tree line, HWiNFO is GUI). GPU clocks unchanged; at 3x/6x/license that GPU configuration had no measurable effect (see
+above), but the 6x GPU busy is the GPU-down figure and its comparison is stated against GPU-down, not stock.
+
+One run per point, exe `A2A9CD8A...`, full per-VBlank trace. Restored after the runs: `PERFBOOSTMODE=2` (Aggressive),
+`PROCTHROTTLEMAX=100`, `SCHEME_CURRENT` re-activated; both AC values verified by `powercfg /query`
+(0x00000002 and 0x00000064). The owner's benchmark was not rerun here (binary path not given): the restore is verified by
+the plan values.
+
+| Point | wall mean / p50 / p99 (intervals) | 1 % low | >16.7 / >20 | per-VBlank mean / p99 / max | GPU busy | flare wait | before-write / keep | GS worker | EE critical | process |
+|---|---|---|---|---|---|---|---|---|---|---|
+| stock night 3x | 7.47 / 6.97 / 9.76 | 102.5 | 0 / 0 | - | 2.79 | 0.15 | 0.06 / 0.004 | 7.22 | 6.98 | 15.91 |
+| **CPU-down night 3x** | **9.91 / 9.37 / 13.08** | **76.5** | **0 / 0** | **9.39 / 14.10 / 17.9** | **2.80** | **0.11** | **0.05 / 0.004** | **9.44** | **9.47** | **22.89** |
+| GPU-down night 6x | 8.81 / 8.40 / 11.21 | 89.2 | 0 / 0 | - | 6.62 | 1.25 | 0.25 / 0.03 | 7.09 | 9.20 | 16.46 |
+| **CPU-down night 6x** | **10.52 / 9.51 / 13.06** | **76.6** | **0 / 0** | **10.10 / 17.20 / 47.8** | **6.66** | **0.80** | **0.22 / 0.02** | **9.12** | **10.23** | **22.82** |
+| stock license 1x | 8.83 / 8.83 / 9.26 | 108.0 | 0 / 0 | - | 0.94 | 0.00 | 0.00 / 0.00 | 8.23 | 7.91 | 21.33 |
+| **CPU-down license 1x** | **11.95 / 11.95 / 12.25** | **81.6** | **0 / 0** | **10.58 / 16.10 / 24.5** | **0.94** | **0.00** | **0.00 / 0.01** | **11.03** | **11.56** | **29.18** |
+
+CSVs: `build/evidence/cpudown-night-3x.csv`, `cpudown-night-6x.csv`, `cpudown-license-1x.csv`, each with a `-spikes.csv`
+(3,601 / 3,601 / 1,101 per-VBlank rows, trace complete).
+
+**What the CPU-down exposed:** the CPU-bound scenes scale with the CPU by more than the clock ratio: 3x wall mean
++32.7 % (7.47 -> 9.91), GS worker +30.8 %, process +43.9 %; license wall +35.3 % (8.83 -> 11.95), GS worker +34.0 %;
+6x against the *same GPU configuration* (GPU-down 8.81) wall +19.4 % with the GPU unchanged (6.66 against 6.62), so the
+6x change is CPU too. GPU busy and every wait reason stay flat at 3x/license, which is the signature of a CPU-only clock
+change. **60 FPS at 3x/6x/license still holds in the interval means (0 over 16.7)** but the single-VBlank tail reaches the
+budget: per-VBlank p99 14.10 (3x), **17.20 (6x)** and 16.10 ms (license), with 47.8 ms (VBlank 9125) and 24.5 ms
+(VBlank 2412) worst spikes - the first configuration in this suite where single frames cross 16.7 ms. Margins left:
+3x 6.8 ms, 6x 6.2 ms, license 4.7 ms (interval means).
+
+**Limits:** the effective clock is an estimate (~3.8 GHz, Unknown exactly); the GPU is still under clocked, so 6x is
+compared against GPU-down; VRAM stock throughout; one run per point.
+
 ## Clock record (fill per configuration; Unknown until the owner reads them)
 
 | Configuration | CPU effective (MHz) | GPU core (MHz) | VRAM (MHz) | Temps | Date/session |
