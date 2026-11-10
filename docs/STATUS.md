@@ -1,5 +1,18 @@
 # Current Status
 
+## TASK-214 Phase 26: guest harness readiness - one disassembly pass before the build (2026-11-10)
+
+- **Ready:** `hString__virtual_*` (`0x00314858`, `0x003149E0`, `0x00312448`, `0x00312458`), `hArray__structor_0..3`
+  (`0x002EF6A0`, `0x002EF6E8`, `0x002EF800`, `0x002EF8E8`), allocator `func_00326750`, interner `func_003166B8`.
+  Disk **7.90 GB** free, the build fits.
+- **Blocking ambiguity:** `exportRootWindow` reads `argv->obj`, calls its virtual 11 and returns a bool; the decomp does
+  not say whether that object is the **window** (hook at the creation site, pointer in a register) or a **string**
+  (hook at load end plus the guest `hString`). Retail never calls it and there is no direct `jal`, so the loader call
+  site is not located - the hook cannot be written yet.
+- **Recommendation:** one bounded disassembly pass on the `.mproject` loader around the `RootWindow` handling before
+  spending the build budget. No build started; no kit.
+- **Block renders**; page does not open; nothing existing changed; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 25: the Cross handler is native; placeholder probe (2026-11-10)
 
 - `ATTRIBUTE_PUSH: func` exists only in `AppendItem`; no script reads `page`/`func` for a tile, so the failing Cross

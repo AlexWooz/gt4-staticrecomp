@@ -1252,3 +1252,33 @@ recorded in Phase 24 (hook after the `mProject` load, guest `hString`, argv/retu
 accepted Misc host-tree fallback.
 
 Nothing existing changed. Block renders; page does not open; no kit.
+---
+
+# Phase 26 - guest harness: what is ready and what still blocks the build (2026-11-10)
+
+## 80. Ready pieces
+
+- VM string machinery is identifiable: `hString__virtual_*` (`0x00314858`, `0x003149E0`, `0x00312448`,
+  `0x00312458`), `hArray__structor_0..3` (`0x002EF6A0`, `0x002EF6E8`, `0x002EF800`, `0x002EF8E8`), the allocator
+  `func_00326750(size, align, name)` and the symbol interner `func_003166B8`.
+- Disk: **7.90 GB** free; the build fits with margin.
+
+## 81. What still blocks a build
+
+`MProject__exportRootWindow(ret, this, argc, argv)` reads `argv->obj`, calls its virtual 11 and returns a bool. The
+decomp does not say whether that object is the **window** (and the virtual binds it to the script scope by its own name)
+or a **string** (and the virtual resolves the window by name). The retail script never calls it, and it has no direct
+`jal` in the image, so the caller is not located.
+
+Without that answer the hook cannot be written: with a window object the hook has to run at the **creation site** of
+`RecRoot1` (pointer in a register); with a string it can run at the end of the load, but needs the guest `hString`
+constructor wired. Both variants need the same unknown: the loader function and its call conventions.
+
+## 82. Recommendation
+
+Before spending the build budget, one disassembly pass is needed on the `.mproject` loader around the `RootWindow`
+keyword handling to find (a) where the window object is created and (b) whether the export call receives the window or
+its name. That is a bounded task (the reader's parser functions are already identified: `func_00269290`,
+`func_0024DB78`, `func_002688E8`, `func_00265D10`), but it is a research step, not a build step.
+
+No build was started; no kit. Block renders; page does not open; nothing existing changed.

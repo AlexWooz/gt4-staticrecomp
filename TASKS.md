@@ -5360,3 +5360,12 @@ The shipped path stays our MIT tools.
 - **Conclusion:** the native handler needs a real `mRootWindow` bound to the page module - only the loader's export
   produces it. Remaining: the guest-call harness (Phase 24 scope) or the Misc fallback.
 - **Tests:** 846 OK (77 skipped). Block renders; page does not open; no kit.
+**Phase 26 (2026-11-10, guest harness readiness, disk 7.90 GB).**
+- Ready: `hString__virtual_*` (`0x00314858`, `0x003149E0`, `0x00312448`, `0x00312458`), `hArray__structor_0..3`
+  (`0x002EF6A0`, `0x002EF6E8`, `0x002EF800`, `0x002EF8E8`), allocator `func_00326750`, interner `func_003166B8`.
+- **Blocking ambiguity:** `exportRootWindow` reads `argv->obj` and calls its virtual 11; the decomp does not say whether
+  the object is the **window** (hook at its creation site) or a **string** (hook at load end + guest hString). Retail
+  never calls it and there is no direct `jal`, so the caller/loader site is not located.
+- **Recommendation:** one bounded disassembly pass on the `.mproject` loader (`RootWindow` handling) before any build.
+  No build started; no kit; block renders; page does not open.
+- **Tests:** 846 OK (77 skipped).
