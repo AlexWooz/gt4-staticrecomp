@@ -344,6 +344,10 @@ void check_refusals() {
   state.tex0 &= ~(7ull << 61);
   state.tex2 = tex0_word(Fields{0x2C00, 2, 0x13, 5, 4, 1, 0, fields.cbp, 0, 0, 0, 0});
   expect(state, TextureStatus::refused_state, "TEX2 CLD 0 refused");
+  // The conditional load controls (CLD 2..5) and the reserved 6/7 are outside the measured set.
+  state = make_state(fields);
+  state.tex0 = (state.tex0 & ~(7ull << 61)) | (2ull << 61);
+  expect(state, TextureStatus::refused_state, "TEX0 CLD 2 refused");
   // A T4 load class only fills group 0; a texture sampling another group is refused.
   Fields csa6 = fields;
   csa6.csa = 6;
