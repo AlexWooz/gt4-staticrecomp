@@ -92,6 +92,11 @@ void put_draw(std::vector<std::uint8_t> &out, const CapturedDraw &draw) {
   put_u32(out, draw.matrix_packet_valid);
   for (const auto &row : draw.matrix_packet)
     for (std::uint32_t word : row) put_u32(out, word);
+  put_u32(out, draw.light_block_qwords);
+  put_u32(out, draw.light_block_command);
+  put_u32(out, draw.light_block_source);
+  for (const auto &qword : draw.light_block)
+    for (std::uint32_t word : qword) put_u32(out, word);
   // Only the items the draw declares: an empty item slot costs nothing on disk.
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
@@ -125,6 +130,12 @@ bool get_draw(Reader &in, std::uint32_t version, CapturedDraw &draw) {
   draw.matrix_packet_valid = in.u32();
   for (auto &row : draw.matrix_packet)
     for (std::uint32_t &word : row) word = in.u32();
+  draw.light_block_qwords = in.u32();
+  if (draw.light_block_qwords > kMaxLightBlockQwords) return false;
+  draw.light_block_command = in.u32();
+  draw.light_block_source = in.u32();
+  for (auto &qword : draw.light_block)
+    for (std::uint32_t &word : qword) word = in.u32();
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     CapturedItem &item = draw.items[index];
     item.address = in.u32();
@@ -178,7 +189,10 @@ bool parse_scene_header(const std::uint8_t *data, std::size_t available, SceneHe
     return false;
   }
   if (header.version != kSceneVersion) {
-    error = "unsupported .gt4scene version " + std::to_string(header.version);
+    // Version 1 predates the per-draw light block, so its draw records are shorter (see the format note in the header).
+    // There is no migration path: the capture is a diagnostic artifact and is recaptured with a matching build.
+    error = "unsupported .gt4scene version " + std::to_string(header.version) + " (this build writes and reads version " +
+            std::to_string(kSceneVersion) + "; version 1 has no light block and is refused)";
     return false;
   }
   if (header.target != kCaptureTargetV200) {
@@ -198,6 +212,7 @@ bool frame_block_bytes(const FrameSnapshot &frame, std::vector<std::uint8_t> &ou
   if (frame.packets.size() > kMaxPacketBytesPerFrame) return false;
   for (const CapturedDraw &draw : frame.draws) {
     if (draw.item_count > kMaxItemsPerDraw) return false;
+    if (draw.light_block_qwords > kMaxLightBlockQwords) return false;
     for (std::uint32_t index = 0; index < draw.item_count; ++index) {
       const CapturedItem &item = draw.items[index];
       if (item.texture_record != kNoRecord && item.texture_record >= frame.texture_count) return false;

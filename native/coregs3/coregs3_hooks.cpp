@@ -35,6 +35,15 @@ constexpr std::uint32_t kRamLimit = 0x02000000u;
 constexpr std::uint32_t kScratchBase = 0x70000000u;
 constexpr std::uint32_t kScratchLimit = kScratchBase + 0x4000u;
 
+// The VIF UNPACK that fills the VU1 lighting block lands at TOPS qword 0xC9 (coregs3_scene.hpp, CapturedDraw).
+constexpr std::uint32_t kLightBlockQword = 0xC9u;
+// func_0049E548 writes the 0xC1 matrix packet as one DMA tag qword plus eight data qwords; func_0049D328 then writes one
+// 1-qword REF tag per item. So the first item's tag sits right after the matrix packet, and the shape's light tag right
+// after it (func_0049D1A0 copies the tag func_0049E698/func_0049EB90/func_0049F170 prepared into the same cursor).
+constexpr std::uint32_t kMatrixPacketBytes = 9u * 16u;
+constexpr std::uint32_t kDmaTagBytes = 16u;
+constexpr std::uint32_t kDmaIdRef = 3u;  // tag bits 28..30
+
 struct State {
   Mode mode = Mode::off;
   bool configured = false;
@@ -111,6 +120,59 @@ void copy_pgl_words(std::uint32_t (&words)[kPglWords]) noexcept {
 void copy_vf(const ps2::Cpu &cpu, std::uint32_t (&rows)[8][4]) noexcept {
   for (std::uint32_t row = 0; row < 8; ++row)
     for (std::uint32_t lane = 0; lane < 4; ++lane) rows[row][lane] = cpu.vu0.vf[24 + row].w[lane];
+}
+
+// Mirrors the matrix-upload condition of func_0049D328: `if (obj->flag) func_0049E480(obj);` clears obj->valid, then
+// `if (!obj->valid || obj->value != cmd->value)` calls func_0049E548. The PGL spans hold obj->flag in byte 0 and
+// obj->valid in byte 3 (both inside pgl[0], word +0x00) and obj->value at +0x20 (pgl[8]). Getting this wrong only makes
+// the light-tag position check fail, which is counted, never guessed around.
+bool matrix_packet_written(const CapturedDraw &draw) noexcept {
+  const std::uint32_t flags = draw.pgl[0];
+  const bool dirty = (flags & 0xFFu) != 0;
+  const bool valid = ((flags >> 24) & 0xFFu) != 0;
+  return dirty || !valid || draw.pgl[8] != draw.cmd_value;
+}
+
+// Reads back the light block the shape call uploaded to VU1 TOPS+0xC9 (CapturedDraw::light_block). The PGL output buffer
+// is guest state after the call: the shape's light tag is a DMA REF qword whose VIF word names the UNPACK and whose
+// address word points at the qwords on the shape's stack. Only the layout the game writes is read, at the exact
+// position, with the qword count and the UNPACK fields cross-checked; a draw that does not match is counted
+// (`light_blocks_missing`) rather than guessed. Draws without the light flag bit upload nothing, so nothing is expected.
+void capture_light_block(CapturedDraw &draw) noexcept {
+  if (draw.item_count == 0 || draw.cmd_flag == 0) return;
+  std::uint64_t at = g.pending_out;
+  if (matrix_packet_written(draw)) at += kMatrixPacketBytes;
+  std::uint32_t item_tag[4] = {};
+  if (!read_guest(static_cast<std::uint32_t>(at), item_tag, sizeof item_tag) ||
+      ((item_tag[0] >> 28) & 0x7u) != kDmaIdRef || item_tag[1] != draw.items[0].address) {
+    g.counters.light_blocks_missing += 1;
+    return;
+  }
+  std::uint32_t tag[4] = {};
+  if (!read_guest(static_cast<std::uint32_t>(at + kDmaTagBytes), tag, sizeof tag)) {
+    g.counters.light_blocks_missing += 1;
+    return;
+  }
+  const std::uint32_t qwords = tag[0] & 0xFFFFu;
+  const std::uint32_t command = tag[3];
+  const std::uint32_t opcode = (command >> 24) & 0x7Fu;
+  const std::uint32_t num = (command >> 16) & 0xFFu;
+  const bool tops = ((command >> 15) & 1u) != 0;
+  const std::uint32_t destination = command & 0x3FFu;
+  if (((tag[0] >> 28) & 0x7u) != kDmaIdRef || qwords == 0 || qwords > kMaxLightBlockQwords ||
+      (opcode & 0x60u) != 0x60u || !tops || destination != kLightBlockQword || num != qwords) {
+    g.counters.light_blocks_missing += 1;
+    return;
+  }
+  const std::uint32_t source = tag[1] & 0x0FFFFFFFu;
+  if (!read_guest(source, draw.light_block, qwords * 16u)) {
+    g.counters.light_blocks_missing += 1;
+    return;
+  }
+  draw.light_block_qwords = qwords;
+  draw.light_block_command = command;
+  draw.light_block_source = source;
+  g.counters.light_blocks += 1;
 }
 
 // func_0049CEA0 resolves the item's 9-bit texture and 7-bit material index into a record address. The indices travel in
@@ -571,6 +633,7 @@ void after_shape_call(ps2::Cpu &cpu) noexcept {
     CapturedDraw &draw = g.frame.draws[g.pending_draw];
     if (read_guest(g.pending_out, draw.matrix_packet, sizeof draw.matrix_packet))
       draw.matrix_packet_valid = 1;
+    capture_light_block(draw);
   }
   g.pending_draw = kNoRecord;
   g.pending_out = 0;
@@ -582,7 +645,7 @@ void print_report(std::FILE *out) noexcept {
   std::fprintf(out,
                "[coregs3] mode %s frames %llu written %llu refused %llu calls %llu captured %llu outside %llu packets %llu "
                "records %llu bytes %llu reads_failed %llu overflow 0x%llx vblank %llu max_items %u max_draw %u "
-               "max_frame %u passes %llu orphan_ends %llu\n",
+               "max_frame %u passes %llu orphan_ends %llu lights %llu lights_missing %llu\n",
                mode_name(g.mode), static_cast<unsigned long long>(c.frames),
                static_cast<unsigned long long>(c.frames_written),
                static_cast<unsigned long long>(c.refused_frames), static_cast<unsigned long long>(c.calls),
@@ -591,7 +654,8 @@ void print_report(std::FILE *out) noexcept {
                static_cast<unsigned long long>(c.bytes_written), static_cast<unsigned long long>(c.guest_read_failures),
                static_cast<unsigned long long>(c.overflow), static_cast<unsigned long long>(g.vblank), c.largest_items,
                c.largest_draw_bytes, c.largest_frame_bytes, static_cast<unsigned long long>(g.pass_count),
-               static_cast<unsigned long long>(g.orphan_pass_ends));
+               static_cast<unsigned long long>(g.orphan_pass_ends), static_cast<unsigned long long>(c.light_blocks),
+               static_cast<unsigned long long>(c.light_blocks_missing));
   const TapCounters &tap = tap_counters();
   if (tap.records != 0)
     std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",

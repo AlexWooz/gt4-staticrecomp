@@ -1,10 +1,11 @@
 // CTest native_coregs3: the TASK-090 phase 1 offline path, host only. No game data is read: every packet here is
 // hand-authored, which is what makes these fixtures publishable.
 //   - the `.gt4scene` frame block round trip, and the refusals (magic, version, truncated block, a packet range outside
-//     the block, an item count above the cap);
+//     the block, an item count above the cap, a light block above its cap);
 //   - the bounded VIF decoder: an ordinary V3-16 UNPACK into the TOPS window, an absolute V4-8 UNPACK, STROW with a fill
 //     cycle, and the refusals (unknown opcode, payload overrun);
-//   - the channel rule: destination/format classification and the strip topology of a mesh;
+//   - the channel rule: destination/format classification, the V3-8 normal channel at TOPS 0x40 (signed bytes and the raw
+//     V3-16 position) and the strip topology of a mesh;
 //   - the measured draw transform (columns c0..c3 = vf24..vf27, used unscaled; docs/COREGS3-HOOKS.md §10.2);
 //   - the live present ring: the newest published frame is claimed once, with the O(1) buffer swap
 //     (docs/COREGS3-HOOKS.md §10.3);
@@ -104,11 +105,37 @@ std::vector<std::uint8_t> make_packet() {
   return packet;
 }
 
+// A packet for the body/paint family channel set: V3-16 positions at TOPS qword 0 and a V3-8 normal channel at TOPS
+// qword 0x40. The normals are chosen to exercise sign extension (0x7F = 127, 0x80 = -128, 0xFF = -1).
+std::vector<std::uint8_t> make_normal_packet() {
+  std::vector<std::uint8_t> packet;
+  auto pad = [&packet] {
+    while (packet.size() % 4 != 0) packet.push_back(0);
+  };
+  put_u32(packet, unpack_word(2, 1, 3, 0x00, true));  // V3-16 positions, TOPS qword 0
+  const std::int16_t positions[3][3] = {{-4096, 0, 0}, {4096, 0, 0}, {0, 4096, 0}};
+  for (const auto &position : positions)
+    for (std::int16_t component : position) put_u16(packet, static_cast<std::uint16_t>(component));
+  pad();
+  put_u32(packet, unpack_word(2, 2, 3, 0x40, true));  // V3-8 normals, TOPS qword 0x40
+  const std::uint8_t normals[3][3] = {{127, 0, 0}, {0, 0x80, 0xFF}, {0, 0, 64}};
+  for (const auto &normal : normals)
+    for (std::uint8_t byte : normal) packet.push_back(byte);
+  while (packet.size() % 16 != 0) packet.push_back(0);  // the DMA REF QWC is whole qwords
+  return packet;
+}
+
 CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
   CapturedDraw draw;
   draw.sequence = 7;
   draw.shape = 0x00400000u;  // a guest address, never dereferenced by this fixture
   draw.cmd_value = float_bits(1.0f);
+  draw.light_block_qwords = 6;
+  draw.light_block_command = 0x6C06C0C9u;  // V4-32, six qwords at TOPS+0xC9 (the body/paint form)
+  draw.light_block_source = 0x00130000u;
+  for (std::uint32_t qword = 0; qword < draw.light_block_qwords; ++qword)
+    for (std::uint32_t lane = 0; lane < 4; ++lane)
+      draw.light_block[qword][lane] = float_bits(static_cast<float>(qword * 4 + lane));
   draw.vf[0][0] = float_bits(2.0f);
   draw.vf[0][1] = float_bits(0.0f);
   draw.vf[0][2] = float_bits(0.0f);
@@ -161,6 +188,12 @@ void check_capture_round_trip() {
   require(read.draws[0].shape == draw.shape && read.draws[0].cmd_value == draw.cmd_value, "the Cmd header survives");
   require(read.draws[0].items[0].event == draw.items[0].event, "the item event survives");
   require(read.draws[0].items[0].packet_bytes == draw.items[0].packet_bytes, "the packet length survives");
+  require(read.draws[0].light_block_qwords == draw.light_block_qwords &&
+              read.draws[0].light_block_command == draw.light_block_command &&
+              read.draws[0].light_block_source == draw.light_block_source,
+          "the light block header survives");
+  require(read.draws[0].light_block[5][3] == draw.light_block[5][3], "the light block qwords survive");
+  require(read.draws[0].light_block[6][0] == 0, "the unused light block qwords stay zero");
   require(read.packets == frame.packets, "the packet bytes survive");
   require(read.textures[0].address == texture.address && read.textures[0].bytes[0] == 0xAB, "the texture survives");
   require(read.materials[0].address == material.address && read.materials[0].bytes[7] == 0xCD, "the material survives");
@@ -171,6 +204,12 @@ void check_capture_round_trip() {
   broken.draws[0].items[0].packet_offset = static_cast<std::uint32_t>(broken.packets.size()) - 4;
   std::vector<std::uint8_t> broken_block;
   require(!frame_block_bytes(broken, broken_block), "an item range outside the packet block is refused");
+
+  // A light block above the format's cap must be refused by the writer, never truncated.
+  FrameSnapshot over_cap = frame;
+  over_cap.draws[0] = draw;
+  over_cap.draws[0].light_block_qwords = kMaxLightBlockQwords + 1u;
+  require(!frame_block_bytes(over_cap, broken_block), "a light block above the cap is refused");
 
   SceneHeader header;
   std::vector<std::uint8_t> file;
@@ -344,6 +383,41 @@ void check_mesh() {
           "a packet without positions is refused");
 }
 
+// The V3-8 normal channel at TOPS 0x40 and the raw V3-16 position, hand-authored: the signed bytes must sign-extend and
+// the raw position must be the exact halfword the VU1 converts, while position keeps the position_scale conversion.
+void check_mesh_normals() {
+  std::vector<std::uint8_t> packets = make_normal_packet();
+  CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packets.size()));
+  MeshOptions options;
+  Mesh mesh;
+  std::string error;
+  require(build_mesh(packets.data(), packets.size(), draw, options, mesh, error), "the normal mesh builds");
+  require(mesh.vertices.size() == 3, "three vertices with normals");
+  require(mesh.has_normals, "the mesh reports the normal channel");
+  require(mesh.vertices[0].has_normal && mesh.vertices[0].normal[0] == 127 && mesh.vertices[0].normal[1] == 0,
+          "the first normal keeps its positive bytes");
+  require(mesh.vertices[1].normal[1] == -128 && mesh.vertices[1].normal[2] == -1,
+          "the second normal sign-extends 0x80 and 0xFF");
+  require(mesh.vertices[2].normal[2] == 64, "the third normal keeps 64");
+  require(mesh.vertices[0].has_raw_position && mesh.vertices[0].raw_position[0] == -4096,
+          "the raw position is the signed halfword");
+  require(mesh.vertices[1].raw_position[0] == 4096 && mesh.vertices[2].raw_position[1] == 4096,
+          "the raw position lanes follow the packet");
+  require(mesh.vertices[0].position[0] == -1.0f && mesh.vertices[1].position[0] == 1.0f,
+          "position keeps the position_scale conversion");
+
+  // The channel scan must name the new role, and the option turns the channel off without touching the rest.
+  const ChannelScan scan = scan_channels(packets.data(), packets.size(), draw);
+  require(scan.channels.size() == 2 && scan.channels[1].role == ChannelRole::normals,
+          "the V3-8 channel at 0x40 scans as normals");
+  MeshOptions no_normals;
+  no_normals.decode_normals = false;
+  Mesh plain;
+  require(build_mesh(packets.data(), packets.size(), draw, no_normals, plain, error), "the mesh builds without normals");
+  require(!plain.has_normals && !plain.vertices[0].has_normal, "decode_normals=false skips the channel");
+  require(plain.vertices.size() == 3 && plain.vertices[0].position[0] == -1.0f, "the other channels are untouched");
+}
+
 void check_render_and_png() {
   std::vector<std::uint8_t> packets = make_packet();
   CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packets.size()));
@@ -457,6 +531,7 @@ int main() {
     check_vif_decoder();
     check_matrix();
     check_mesh();
+    check_mesh_normals();
     check_render_and_png();
   } catch (const std::exception &error) {
     std::fprintf(stderr, "coregs3 fixture: %s\n", error.what());

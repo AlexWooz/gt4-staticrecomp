@@ -17,6 +17,9 @@ ChannelRole classify(bool tops, std::uint32_t destination, ChannelFormat format)
   // The strip table sits at TOPS-relative qword 0x40 like the UVs, distinguished by its single 8-bit component. The
   // VU1 program writes it through STMASK 0x3F3F3F3F, so only lane 3 of each qword changes; see decode_strip_table.
   if (tops && destination == 0x40u && format == ChannelFormat::v1_8) return ChannelRole::strip_table;
+  // Three signed bytes at the same qword is the body/paint family's normal channel (measured; the VU1 lighting entry
+  // reads it at TOPS+0x40). It is not a UV; the UV formats are the multi-byte ones below.
+  if (tops && destination == 0x40u && format == ChannelFormat::v3_8) return ChannelRole::normals;
   if (tops && destination == 0x40u) {
     switch (format) {
     case ChannelFormat::v2_16:
@@ -42,11 +45,15 @@ float decode_bits(std::uint32_t raw) {
 
 struct ItemData {
   std::vector<float> positions;      // 3 floats per vertex
+  std::vector<std::int32_t> raw_positions;  // 3 signed 16-bit values per vertex, V3-16 channels only
+  std::vector<std::int8_t> normals;  // 3 signed bytes per vertex
   std::vector<std::uint8_t> colors;  // 4 bytes per vertex
   std::vector<float> uvs;            // 2 floats per vertex
   std::vector<std::uint8_t> strip_table;
   bool has_colors = false;
+  bool has_normals = false;
   bool has_uv = false;
+  bool raw16 = true;  // every position channel seen so far is V3-16
   std::uint32_t vertices() const { return static_cast<std::uint32_t>(positions.size() / 3); }
 };
 
@@ -57,6 +64,7 @@ const char *channel_role_name(ChannelRole role) noexcept {
   case ChannelRole::positions: return "positions";
   case ChannelRole::uv: return "uv";
   case ChannelRole::color: return "color";
+  case ChannelRole::normals: return "normals";
   case ChannelRole::strip_table: return "strip_table";
   case ChannelRole::auxiliary: return "auxiliary";
   default: return "unknown";
@@ -171,7 +179,21 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
           data.positions.push_back(floats ? decode_bits(vector.v[0]) : decode_signed16(vector.v[0]) * scale);
           data.positions.push_back(floats ? decode_bits(vector.v[1]) : decode_signed16(vector.v[1]) * scale);
           data.positions.push_back(floats ? decode_bits(vector.v[2]) : decode_signed16(vector.v[2]) * scale);
+          if (!floats) {
+            data.raw_positions.push_back(static_cast<std::int32_t>(static_cast<std::int16_t>(vector.v[0] & 0xFFFFu)));
+            data.raw_positions.push_back(static_cast<std::int32_t>(static_cast<std::int16_t>(vector.v[1] & 0xFFFFu)));
+            data.raw_positions.push_back(static_cast<std::int32_t>(static_cast<std::int16_t>(vector.v[2] & 0xFFFFu)));
+          } else {
+            data.raw16 = false;
+          }
         }
+        break;
+      case ChannelRole::normals:
+        if (!options.decode_normals) break;
+        data.has_normals = true;
+        for (const VifVector &vector : vectors)
+          for (std::uint32_t lane = 0; lane < 3; ++lane)
+            data.normals.push_back(static_cast<std::int8_t>(vector.v[lane] & 0xFFu));
         break;
       case ChannelRole::color:
         data.has_colors = true;
@@ -214,6 +236,15 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
     for (std::uint32_t index = 0; index < item.vertices(); ++index) {
       MeshVertex &vertex = mesh.vertices[base + index];
       vertex.position = {item.positions[index * 3 + 0], item.positions[index * 3 + 1], item.positions[index * 3 + 2]};
+      if (item.raw16 && (index + 1) * 3 <= item.raw_positions.size()) {
+        vertex.raw_position = {item.raw_positions[index * 3 + 0], item.raw_positions[index * 3 + 1],
+                               item.raw_positions[index * 3 + 2]};
+        vertex.has_raw_position = true;
+      }
+      if (item.has_normals && (index + 1) * 3 <= item.normals.size()) {
+        vertex.normal = {item.normals[index * 3 + 0], item.normals[index * 3 + 1], item.normals[index * 3 + 2]};
+        vertex.has_normal = true;
+      }
       if (item.has_colors && (index + 1) * 4 <= item.colors.size())
         for (std::uint32_t lane = 0; lane < 4; ++lane) vertex.color[lane] = item.colors[index * 4 + lane];
       if (item.has_uv && (index + 1) * 2 <= item.uvs.size()) {
@@ -222,6 +253,7 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
       }
     }
     mesh.has_colors = mesh.has_colors || item.has_colors;
+    mesh.has_normals = mesh.has_normals || item.has_normals;
     mesh.has_uv = mesh.has_uv || item.has_uv;
     if (!item.strip_table.empty()) mesh.has_strip_table = true;
     base += item.vertices();

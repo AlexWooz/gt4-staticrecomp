@@ -23,6 +23,12 @@
 //
 // A reader that only needs the counters may skip a block by block_bytes. kCaptureTargetV200 is the only target the
 // hooks currently produce; a capture from another target is refused rather than guessed.
+//
+// Format version 2 (2026-11-09) adds the per-draw VU1 light block (CapturedDraw::light_block): the qwords the shape call
+// uploads to TOPS+0xC9, which is what the VU1 lighting fragment consumes. The draw record grew by a fixed
+// kMaxLightBlockQwords*16 + 12 bytes, so a version 1 reader cannot walk a version 2 block. There is no migration: the
+// version check refuses a file it was not built for (recapture with a matching build), which is the format's rule for an
+// interpretation the reader does not know.
 #pragma once
 
 #include <cstddef>
@@ -42,8 +48,14 @@ const char *mode_name(Mode mode) noexcept;
 
 inline constexpr std::uint32_t kSceneMagic = 0x53345447u;    // "GT4S"
 inline constexpr std::uint32_t kFrameMagic = 0x47334647u;    // "GF3G"
-inline constexpr std::uint32_t kSceneVersion = 1u;
+inline constexpr std::uint32_t kSceneVersion = 2u;
 inline constexpr std::uint32_t kCaptureTargetV200 = 0u;
+
+// The VU1 light block of one shape call lands at TOPS qword 0xC9 through a VIF UNPACK whose payload is at most nine
+// qwords (six for the material/light form of func_0049EB90/func_0049F170, nine for func_0049E698). The capture reserves
+// sixteen qwords so an unfamiliar but valid UNPACK into 0xC9 is stored rather than truncated; a tag that claims more is
+// refused and counted.
+inline constexpr std::uint32_t kMaxLightBlockQwords = 16u;
 
 // Bounds. They are capacities, not formats: a frame that would exceed one is refused as a whole (the plan's
 // per-frame fallback) and counted, never truncated.
@@ -148,6 +160,15 @@ struct CapturedDraw {
   // not depend on knowing which VU0 register held what at the pre-call instant.
   std::uint32_t matrix_packet[8][4] = {};
   std::uint32_t matrix_packet_valid = 0;
+  // The light block the VU1 receives at TOPS+0xC9 for this draw, read back from the same PGL output packet buffer after
+  // the call: func_0049D328 writes a DMA REF tag there whose VIF UNPACK names the variant, and the tag's address word
+  // points at the qwords on the shape's stack. `light_block_qwords` is 0 when the draw carried no such upload (or when
+  // it could not be read); the qword count (6 or 9) *is* the variant. The body/paint family uses the six-qword form:
+  // 0xC9..0xCB = the 3x3 light matrix M, 0xCC = the light position LP, 0xCD = C3, 0xCE = C4.
+  std::uint32_t light_block[kMaxLightBlockQwords][4] = {};
+  std::uint32_t light_block_qwords = 0;
+  std::uint32_t light_block_command = 0;  // the tag's VIF UNPACK word, e.g. 0x6C06C0C9 or 0x6C09C0C9
+  std::uint32_t light_block_source = 0;   // guest address the tag's REF read the qwords from
   CapturedItem items[kMaxItemsPerDraw] = {};
 };
 
@@ -228,6 +249,8 @@ struct CaptureCounters {
   std::uint64_t bytes_written = 0;
   std::uint64_t item_packets = 0;     // items whose VIF packet was copied
   std::uint64_t records = 0;          // texture and material records copied (deduplicated)
+  std::uint64_t light_blocks = 0;     // draws whose TOPS+0xC9 light block was read back
+  std::uint64_t light_blocks_missing = 0;  // draws with a light flag bit whose block was absent or unreadable
   std::uint32_t largest_items = 0;    // largest item table seen in one draw (capacity evidence)
   std::uint32_t largest_draw_bytes = 0;   // largest packet total of one draw
   std::uint32_t largest_frame_bytes = 0;  // largest packet total of one frame

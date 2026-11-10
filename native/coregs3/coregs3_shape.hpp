@@ -21,7 +21,7 @@
 
 namespace gt4::coregs3 {
 
-enum class ChannelRole : std::uint8_t { unknown = 0, positions, uv, color, strip_table, auxiliary };
+enum class ChannelRole : std::uint8_t { unknown = 0, positions, uv, color, normals, strip_table, auxiliary };
 
 struct ShapeChannel {
   std::uint32_t item = 0;         // item index inside the draw
@@ -46,10 +46,17 @@ ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes,
 
 // The default role rule, written out because it is a Hypothesis and must be reviewable:
 //   positions    TOPS-relative qword 0x00, V3-16 or V3-32
+//   normals      TOPS-relative qword 0x40, V3-8 (the car body/paint family; measured on the night-race capture)
 //   uv           TOPS-relative qword 0x40, V2-16 or V2-32 (and V3-16/V3-32, whose third component is skipped)
 //   colour       TOPS-relative qword 0x80, V4-8
 //   strip_table  TOPS-relative qword 0x40, V1-8 (decoded by `decode_strip_table`)
 //   auxiliary    any other UNPACK (reported, not drawn)
+//
+// The V3-8 normal at 0x40 is the first channel of the lighting formula (coregs3_hooks.cpp's light block): the measured
+// VU1 lighting formula is `C3 + C4 * min(0, dot(N, U))` with N the unit normal, U = (P - LP)/|P - LP|, P the model
+// position after ITOF0 and C3/C4/LP from the light block at TOPS 0xC9..0xCE. MeshVertex keeps the raw signed bytes; the
+// formula's consumers divide by 127 (the model stores a unit normal scaled to the byte range) and use position as
+// position_scale converts it, or raw_position for the raw integer.
 //
 // The strip table was measured on the night-race capture (docs/COREGS3-HOOKS.md §6): its first byte is the strip
 // count; each following byte is three times the triangle count of one strip, so a strip has `byte / 3 + 2` vertices
@@ -67,7 +74,16 @@ bool decode_strip_table(const std::vector<std::uint8_t> &bytes, std::uint32_t ve
                         std::vector<std::uint32_t> &lengths, std::string &error);
 
 struct MeshVertex {
-  std::array<float, 3> position{};
+  std::array<float, 3> position{};  // model-space position after MeshOptions::position_scale
+  // The raw signed 16-bit model position, before position_scale. The VU1 lighting entry reads the position at TOPS+0x00
+  // through ITOF0, so this is the exact integer the formula starts from; it is filled for V3-16 position channels only
+  // (a V3-32 float channel sets has_raw_position = false).
+  std::array<std::int32_t, 3> raw_position{};
+  bool has_raw_position = false;
+  // The V3-8 normal channel at TOPS 0x40, sign-extended to int8 (the model value; a unit normal scaled to the byte
+  // range). has_normal is false when the item carried no such channel.
+  std::array<std::int8_t, 3> normal{};
+  bool has_normal = false;
   std::array<float, 2> uv{};
   std::array<std::uint8_t, 4> color{255, 255, 255, 255};
   bool has_uv = false;
@@ -79,6 +95,7 @@ struct Mesh {
   std::vector<std::uint32_t> strip_starts;   // first vertex of each strip (mesh order)
   std::vector<std::uint32_t> strip_lengths;  // vertices in each strip, same order
   bool has_colors = false;
+  bool has_normals = false;
   bool has_uv = false;
   bool has_strip_table = false;  // at least one item carried a strip table
   std::uint32_t triangles() const { return static_cast<std::uint32_t>(indices.size() / 3); }
@@ -91,6 +108,9 @@ struct MeshOptions {
   // Hypothesis). A caller that does not know the scale should leave it at the default and compare.
   float position_scale = 1.0f / 4096.0f;
   bool flip_v = true;  // GT4 model UVs are bottom-up; the reference reader flips V
+  // Decode the V3-8 normal channel at TOPS 0x40 into MeshVertex::normal (and Mesh::has_normals). On by default; a caller
+  // that only wants the original channels can turn it off and gets the same mesh as before this channel existed.
+  bool decode_normals = true;
   // `strip` is the proven reading (docs/COREGS3-HOOKS.md §6): the model's strip table says how many vertices each strip
   // has. `list` and `quad` are diagnostics kept for malformed or unfamiliar packets.
   Topology topology = Topology::strip;
