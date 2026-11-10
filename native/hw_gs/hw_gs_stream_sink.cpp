@@ -10,6 +10,9 @@
 
 #include "gs_stream/gs_stream_sink.hpp"
 
+#include "coregs3_gif.hpp"
+#include "coregs3_texwin.hpp"
+#include "coregs3_vram.hpp"
 #include "thread_placement.hpp"
 #include "hw_cpu_sampler.hpp"
 #include "hw_flare_table.hpp"
@@ -109,6 +112,7 @@ void maybe_dump(Backend &hw) {
 }
 
 void start_gs_worker();
+void install_vram_snapshots();
 
 // TASK-027 CPU survey: the cost of carrying the GS stream from the game (EE) thread to the GS worker, in TSC ticks
 // (converted with the QPC rate between two profile lines). Each counter has one writer: the producer counters are
@@ -161,6 +165,7 @@ bool start_backend(std::string &error) {
   g_backend = created;
   std::fprintf(stderr, "[hw] GT4_RENDERER=hw: HWR backend started in process, no GS process and no donor Vulkan renderer\n");
   start_gs_worker();
+  install_vram_snapshots();
   for (const std::string &line : describe_options(options)) std::fprintf(stderr, "[hw] %s\n", line.c_str());
   return true;
 }
@@ -174,6 +179,93 @@ Backend &backend() {
 }
 
 void gif_now(int path, const std::uint8_t *data, std::size_t bytes) { backend().gif_transfer(path, data, bytes); }
+
+// TASK-090 pass textures, diagnostic: GT4_COREGS3_STREAM_TRACE=<file> writes one line per PATH3 GIF packet that carries
+// an IMAGE transfer or a TRX register write, inside GT4_COREGS3_STREAM_TRACE_VBLANKS (default every VBlank). It answers
+// where the frame uploads its texture pixels relative to the draws; it is a capture-only switch, never on the normal
+// path (the file stays closed when the variable is unset).
+struct StreamTrace {
+  std::FILE *file = nullptr;
+  std::uint64_t first = 0, last = ~0ull;
+  std::uint64_t packets = 0, imagePackets = 0, lines = 0;
+  bool parsedOnce = false;
+};
+StreamTrace g_stream_trace;
+
+void close_stream_trace();
+
+void configure_stream_trace() {
+  g_stream_trace.parsedOnce = true;
+  const char *path = std::getenv("GT4_COREGS3_STREAM_TRACE");
+  if (path == nullptr || *path == '\0') return;
+  g_stream_trace.file = std::fopen(path, "wb");
+  if (g_stream_trace.file == nullptr) {
+    std::fprintf(stderr, "[coregs3] cannot open the stream trace %s\n", path);
+    return;
+  }
+  const char *range = std::getenv("GT4_COREGS3_STREAM_TRACE_VBLANKS");
+  if (range != nullptr && *range != '\0') {
+    char *end = nullptr;
+    const unsigned long long first = std::strtoull(range, &end, 10);
+    if (end != nullptr && *end == '-') {
+      const unsigned long long last = std::strtoull(end + 1, nullptr, 10);
+      g_stream_trace.first = first;
+      g_stream_trace.last = last == 0 ? ~0ull : last;
+    }
+  }
+  std::fprintf(stderr, "[coregs3] stream trace -> %s (VBlanks %llu-%llu)\n", path,
+               static_cast<unsigned long long>(g_stream_trace.first),
+               static_cast<unsigned long long>(g_stream_trace.last));
+  std::atexit(&close_stream_trace);
+}
+
+void trace_path3(const std::uint8_t *data, std::size_t bytes, std::uint64_t vblank, int path) {
+  if (!g_stream_trace.parsedOnce) configure_stream_trace();
+  if (g_stream_trace.file == nullptr || vblank < g_stream_trace.first || vblank > g_stream_trace.last) return;
+  g_stream_trace.packets += 1;
+  const gt4::coregs3::GifPacket packet = gt4::coregs3::parse_gif(data, bytes);
+  if (!packet.ok) return;
+  bool image = false;
+  std::uint64_t imageBytes = 0;
+  std::string trx;
+  for (const gt4::coregs3::GifTagSummary &tag : packet.tags) {
+    if (tag.format == gt4::coregs3::GifFormat::image) {
+      image = true;
+      imageBytes += static_cast<std::uint64_t>(tag.nloop) * 16u;
+    }
+  }
+  char line[512];
+  line[0] = '\0';
+  int used = 0;
+  for (const gt4::coregs3::GifRegisterWrite &write : packet.ad_writes) {
+    if (write.address < 0x50u || write.address > 0x54u) continue;
+    used += std::snprintf(line + used, sizeof line - static_cast<std::size_t>(used), " %s=%016llX",
+                          gt4::coregs3::gif_register_name(write.address),
+                          static_cast<unsigned long long>(write.data));
+    if (used > static_cast<int>(sizeof line) - 64) break;
+  }
+  if (image) g_stream_trace.imagePackets += 1;
+  if (g_stream_trace.lines >= 20000) return;  // diagnostic bound: the first 20k in-range packets
+  std::fprintf(g_stream_trace.file, "vblank %llu path %d bytes %zu tags %zu image %d image_bytes %llu formats",
+               static_cast<unsigned long long>(vblank), path, bytes, packet.tags.size(), image ? 1 : 0,
+               static_cast<unsigned long long>(imageBytes));
+  for (const gt4::coregs3::GifTagSummary &tag : packet.tags)
+    std::fprintf(g_stream_trace.file, " %u/%u/%u", static_cast<unsigned>(tag.format), tag.nloop, tag.nreg);
+  std::fprintf(g_stream_trace.file, "%s\n", line);
+  std::fflush(g_stream_trace.file);
+  g_stream_trace.lines += 1;
+}
+
+void close_stream_trace() {
+  if (g_stream_trace.file != nullptr) {
+    std::fprintf(stderr, "[coregs3] stream trace: %llu PATH3 packets, %llu with an IMAGE transfer, %llu lines\n",
+                 static_cast<unsigned long long>(g_stream_trace.packets),
+                 static_cast<unsigned long long>(g_stream_trace.imagePackets),
+                 static_cast<unsigned long long>(g_stream_trace.lines));
+    std::fclose(g_stream_trace.file);
+    g_stream_trace.file = nullptr;
+  }
+}
 
 bool g_display_page_changed = true;  // TASK-082, GS worker: a DISPFB write with a new value since the last VBlank
 gt4::hw::PresentSpacing g_one_queue_spacing{216};
@@ -554,7 +646,7 @@ void gif_reset_now() { backend().reset_gif_paths(); }
 // record that would cross the end). Waking is conditional: the EE rings the work bell after a push, which wakes the
 // worker only when it sleeps; the worker rings the progress bell only when what the EE waits for has happened (free
 // space, a VBlank done, the ring empty).
-enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36, MtvuJob = 37, SkippedRead = 38, FlareRead = 39 };
+enum class SinkRecord : std::uint16_t { Gif = 32, Privileged = 33, Vsync = 34, GsReset = 35, GifReset = 36, MtvuJob = 37, SkippedRead = 38, FlareRead = 39, PassMark = 40 };
 
 class StreamRing {
 public:
@@ -782,7 +874,10 @@ private:
       {
         std::lock_guard<std::mutex> backendLock(backendMutex_);
         switch (kind) {
-          case SinkRecord::Gif: gif_now(header.path, payload, header.bytes); break;
+          case SinkRecord::Gif:
+            trace_path3(payload, header.bytes, g_vsyncs, header.path);
+            gif_now(header.path, payload, header.bytes);
+            break;
           case SinkRecord::Privileged: {
             std::uint32_t address = 0;
             std::memcpy(&address, payload, sizeof address);
@@ -804,6 +899,23 @@ private:
             read_fifo_now(table.data(), FlareTableReads::kQwords);
             if (std::uint8_t *dest = flareReads_.next_dest()) std::memcpy(dest, table.data(), table.size());
             flareTicket = flareReads_.finish(table);
+            break;
+          }
+          case SinkRecord::PassMark: {  // TASK-090 pass textures: the K7/K1 marker at its stream position
+            std::uint32_t kind = 0, pass = 0, label = 0, windowCount = 0;
+            std::uint64_t vblank = 0;
+            std::memcpy(&kind, payload, sizeof kind);
+            std::memcpy(&pass, payload + 4, sizeof pass);
+            std::memcpy(&label, payload + 8, sizeof label);
+            std::memcpy(&windowCount, payload + 12, sizeof windowCount);
+            std::memcpy(&vblank, payload + 16, sizeof vblank);
+            gt4::coregs3::vram::Window windows[gt4::coregs3::vram::kMaxCaptureWindows] = {};
+            if (windowCount > gt4::coregs3::vram::kMaxCaptureWindows) windowCount = 0;
+            for (std::uint32_t index = 0; index < windowCount; ++index) {
+              std::memcpy(&windows[index].first_block, payload + 24 + index * 8, 4);
+              std::memcpy(&windows[index].block_count, payload + 28 + index * 8, 4);
+            }
+            backend().coregs3_snapshot(kind, pass, label, vblank, windows, windowCount);
             break;
           }
         }
@@ -832,6 +944,56 @@ private:
   // while sleeping. Returns the ticks spent waiting for the VU1 worker.
   std::uint64_t execute_mtvu_job(std::uint64_t job) {
     std::uint64_t waited = 0;
+    // TASK-090 pass textures: with a `.gt4vram` capture configured, the job's records are buffered so its texture pages
+    // can be copied *before* any of them executes. The captures are taken in the stream, on this thread, with the
+    // backend lock held; the cost exists only while GT4_COREGS3_VRAM is set.
+    if (gt4::coregs3::vram::snapshot_sink_installed()) {
+      jobBytes_.clear();
+      jobRecords_.clear();
+      for (;;) {
+        mtvu::RecordHeader record;
+        const std::uint8_t *bytes = nullptr;
+        if (!mtvuOutput_->try_peek(record, bytes)) {
+          const std::uint32_t seen = mtvuBell_->snapshot();
+          if (!mtvuOutput_->try_peek(record, bytes)) {
+            const std::uint64_t start = __rdtsc();
+            bool slept = false;
+            mtvuBell_->wait_changed(seen, slept);
+            waited += __rdtsc() - start;
+            if (slept) add(g_transport.mtvu_sleeps, 1);
+            continue;
+          }
+        }
+        const auto kind = static_cast<mtvu::RecordKind>(record.kind);
+        if (record.job != job || (kind != mtvu::RecordKind::Gif && kind != mtvu::RecordKind::JobDone)) {
+          std::fprintf(stderr, "[hw] IN-461: VU1 output record kind %u of job %llu while executing job %llu; stopping\n",
+                       static_cast<unsigned>(record.kind), static_cast<unsigned long long>(record.job),
+                       static_cast<unsigned long long>(job));
+          std::exit(EXIT_FAILURE);
+        }
+        if (kind == mtvu::RecordKind::JobDone) {
+          mtvuOutput_->release();
+          break;
+        }
+        BufferedRecord buffered;
+        buffered.path = record.path;
+        buffered.offset = jobBytes_.size();
+        buffered.bytes = record.bytes;
+        jobBytes_.insert(jobBytes_.end(), bytes, bytes + record.bytes);
+        jobRecords_.push_back(buffered);
+        mtvuOutput_->release();
+      }
+      SnapshotJobTextures(job);
+      for (const BufferedRecord &buffered : jobRecords_) {
+        {
+          std::lock_guard<std::mutex> backendLock(backendMutex_);
+          gif_now(buffered.path, jobBytes_.data() + buffered.offset, buffered.bytes);
+        }
+        add(g_transport.mtvu_records, 1);
+      }
+      add(g_transport.mtvu_jobs, 1);
+      return waited;
+    }
     for (;;) {
       mtvu::RecordHeader record;
       const std::uint8_t *bytes = nullptr;
@@ -867,6 +1029,34 @@ private:
     }
   }
 
+  // TASK-090 pass textures: copies the texture/palette pages the job's TEX0 writes bind, before the job executes. The
+  // job's records are XGKICK output (whole GIF packets, the tap parser's input); their A+D writes carry TEX0_1/2.
+  struct BufferedRecord {
+    std::uint8_t path = 0;
+    std::size_t offset = 0;
+    std::size_t bytes = 0;
+  };
+  void SnapshotJobTextures(std::uint64_t job) {
+    gt4::coregs3::vram::Window windows[gt4::coregs3::vram::kMaxCaptureWindows] = {};
+    std::uint32_t windowCount = 0;
+    for (const BufferedRecord &buffered : jobRecords_) {
+      const gt4::coregs3::GifPacket packet =
+          gt4::coregs3::parse_gif(jobBytes_.data() + buffered.offset, buffered.bytes);
+      if (!packet.ok) continue;
+      for (const gt4::coregs3::GifRegisterWrite &write : packet.ad_writes) {
+        if (write.address == 0x06u || write.address == 0x07u)
+          gt4::coregs3::texture_windows_from_tex0(write.data, windows, windowCount);
+      }
+    }
+    if (windowCount == 0) return;
+    std::lock_guard<std::mutex> backendLock(backendMutex_);
+    backend().coregs3_snapshot(gt4::coregs3::vram::kRecordJobTexture, 0, static_cast<std::uint32_t>(job), g_vsyncs,
+                               windows, windowCount);
+  }
+
+  std::vector<std::uint8_t> jobBytes_;
+  std::vector<BufferedRecord> jobRecords_;
+
   StreamRing ring_;
   mtvu::SpscByteRing *mtvuOutput_ = nullptr;  // IN-461: the VU1 worker's output ring (set by the EE, see post_mtvu_job)
   mtvu::Doorbell *mtvuBell_ = nullptr;
@@ -890,6 +1080,58 @@ void start_gs_worker() {
     g_worker->start();
     std::fprintf(stderr, "[hw] GS stream on its own worker thread (IN-363; GT4_HW_GS_THREAD=0 for the EE thread)\n");
   }
+}
+
+// TASK-090 pass textures: the EE's K7 pass markers and K1 draw markers reach the GS stream through this channel, so
+// the SLM snapshot lands in stream order. Installed only when a VRAM sidecar is configured, so a capture without one
+// pays nothing.
+void vram_snapshot(const gt4::coregs3::vram::SnapshotRequest &request) noexcept {
+  std::uint8_t payload[24 + gt4::coregs3::vram::kMaxCaptureWindows * 8] = {};
+  std::memcpy(payload, &request.kind, sizeof request.kind);
+  std::memcpy(payload + 4, &request.pass, sizeof request.pass);
+  std::memcpy(payload + 8, &request.label, sizeof request.label);
+  std::memcpy(payload + 12, &request.window_count, sizeof request.window_count);
+  std::memcpy(payload + 16, &request.vblank, sizeof request.vblank);
+  for (std::uint32_t index = 0; index < request.window_count && index < gt4::coregs3::vram::kMaxCaptureWindows;
+       ++index) {
+    std::memcpy(payload + 24 + index * 8, &request.windows[index].first_block, 4);
+    std::memcpy(payload + 28 + index * 8, &request.windows[index].block_count, 4);
+  }
+  if (!g_worker) {
+    // No GS worker thread: the EE is the GS stream's owner, so the snapshot is exact and synchronous.
+    backend().coregs3_snapshot(request.kind, request.pass, request.label, request.vblank, request.windows,
+                               request.window_count);
+    return;
+  }
+  g_worker->push(SinkRecord::PassMark, 0, 0, payload, 24 + request.window_count * 8);
+}
+
+void install_vram_snapshots() {
+  const char *path = std::getenv("GT4_COREGS3_VRAM");
+  if (path == nullptr || *path == '\0') return;
+  gt4::coregs3::vram::set_snapshot_sink(&vram_snapshot);
+  // Mirror the writer's filters on the EE side: a marker the writer would drop is never enqueued. The pass list is the
+  // same comma list the writer parses; an unparsable one leaves the filter off and the writer refuses the whole feature.
+  if (const char *passes = std::getenv("GT4_COREGS3_VRAM_PASSES"); passes != nullptr && *passes != '\0') {
+    std::uint64_t mask = 0;
+    bool ok = true;
+    for (const char *cursor = passes; *cursor != '\0' && ok;) {
+      char *end = nullptr;
+      const unsigned long value = std::strtoul(cursor, &end, 0);
+      if (end == cursor || value > gt4::coregs3::vram::kMaxPassId) {
+        ok = false;
+      } else {
+        mask |= 1ull << value;
+        cursor = end;
+        if (*cursor == ',') ++cursor;
+        else if (*cursor != '\0') ok = false;
+      }
+    }
+    if (ok) gt4::coregs3::vram::set_pass_mark_mask(mask, true);
+  }
+  if (const char *draws = std::getenv("GT4_COREGS3_VRAM_DRAWS"); draws != nullptr && std::strcmp(draws, "0") == 0)
+    gt4::coregs3::vram::set_draw_marks_enabled(false);
+  std::fprintf(stderr, "[coregs3] pass-begin, per-draw and per-job SLM snapshots: on (GS stream channel)\n");
 }
 
 void gif(int path, const std::uint8_t *data, std::uint32_t qwc) {

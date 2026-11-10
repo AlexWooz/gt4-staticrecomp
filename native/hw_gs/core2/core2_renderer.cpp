@@ -53,14 +53,29 @@ constexpr std::uint32_t kAllBlocks = memory::kBlocksTotal;
 constexpr std::uint32_t kAgeLimitFrames = 60;      // 6.2
 constexpr std::uint64_t kRecentUploadDraws = 500;  // 2.4b
 
-// TASK-090 CoreGS 3.0: the GS local memory sidecar of the captured car-pass frames (native/coregs3/coregs3_vram.hpp).
-// GT4_COREGS3_VRAM=<file> enables it; GT4_COREGS3_VRAM_VBLANKS=a-b selects the GS worker's guest VBlanks (defaulting to
-// GT4_COREGS3_CAPTURE_VBLANKS), GT4_COREGS3_VRAM_BLOCKS=a-b the block range (inclusive, base 0; default the measured
-// car range 0x2BC0..0x38FF) and GT4_COREGS3_VRAM_MAX_FRAMES the record bound (default 32). The block bytes are copied
-// once per VBlank on the GS worker and the file is written at shutdown, never on the guest's timeline (the capture's
+// TASK-090 CoreGS 3.0: the GS local memory sidecar of the captured frames (native/coregs3/coregs3_vram.hpp).
+// GT4_COREGS3_VRAM=<file> enables it; GT4_COREGS3_VRAM_VBLANKS=a-b selects the guest VBlanks (defaulting to
+// GT4_COREGS3_CAPTURE_VBLANKS), GT4_COREGS3_VRAM_BLOCKS=a-b the full-range block window (inclusive, base 0; default the
+// measured car range 0x2BC0..0x38FF), GT4_COREGS3_VRAM_PASSES=a,b,c the pass-begin markers to keep (default every
+// marker), GT4_COREGS3_VRAM_DRAWS=0 to leave the per-draw texture windows out (default on) and
+// GT4_COREGS3_VRAM_MAX_FRAMES the record bound (default 32; it bounds records, and a captured frame now holds one
+// vblank record plus one per pass marker plus one per draw). The block bytes are copied on the GS worker (or the EE
+// when the GS worker thread is off) and the file is written at shutdown, never on the guest's timeline (the capture's
 // rule, docs/COREGS3-HOOKS.md §7). It reads the CPU shadow memory only; it never writes guest memory and never touches
-// the renderer state. `vblank` is the worker's counter at the flush: the capture frame with `vblank == header.vblank - 1`
-// is the frame whose interval ended at that VSYNC (see docs/COREGS3-HOOKS.md §15).
+// the renderer state.
+//
+// Four record kinds (docs/COREGS3-HOOKS.md §15, §24):
+//   * the vblank record is the frame-end Flush sampled once per VBlank. Its `vblank` is the worker's counter at the
+//     flush: the capture frame with `vblank == header.vblank - 1` is the frame whose interval ended at that VSYNC. This
+//     is the version 1 record, kept as the counted fallback;
+//   * the pass-begin record is sampled when the GS stream reaches a K7 pass marker. Its `vblank` is the capture frame's
+//     own VBlank and `pass` the PassId. The measured race frame uploads its world textures during the course pass, so
+//     every pass-begin record still holds the previous content: it is kept as evidence and as a secondary fallback;
+//   * the draw record is sampled at the K1 pre-call marker of one captured draw; it also predates the frame's uploads
+//     in this scene and is kept as evidence and as a third fallback;
+//   * the job record (TASK-090's fix) is sampled on the GS worker right before a VU1 job executes: every command posted
+//     before the job, its texture uploads included, has run, and nothing of the job has. Its windows are the
+//     texture/palette blocks the job's TEX0 writes bind, which is the content the draw samples.
 class Coregs3VramDump {
 public:
     Coregs3VramDump() { Configure(); }
@@ -69,23 +84,186 @@ public:
     Coregs3VramDump &operator=(const Coregs3VramDump &) = delete;
 
     void MaybeDump(std::uint64_t vblank, const std::uint8_t *memory) {
-        if (!enabled_ || records_.size() >= maxFrames_ || vblank < firstVblank_ || vblank > lastVblank_ ||
+        if (!enabled_ || records_.size() >= maxRecords_ || vblank < firstVblank_ || vblank > lastVblank_ ||
             vblank == lastDumped_)
             return;
         lastDumped_ = vblank;
         Record record;
+        record.kind = gt4::coregs3::vram::kRecordVblank;
         record.vblank = vblank;
-        const std::size_t firstByte = static_cast<std::size_t>(firstBlock_) * gt4::coregs3::vram::kBlockBytes;
-        const std::size_t bytes = static_cast<std::size_t>(blockCount_) * gt4::coregs3::vram::kBlockBytes;
-        record.bytes.assign(memory + firstByte, memory + firstByte + bytes);
-        records_.push_back(std::move(record));
+        record.first_block = firstBlock_;
+        record.block_count = blockCount_;
+        Capture(record, memory);
+        ++vblankRecords_;
+    }
+
+    // TASK-090 pass textures: one pass-begin snapshot of the configured full range. Runs on the GS stream's owner (the
+    // GS worker, or the EE thread when the worker is off), in stream order at the K7 marker.
+    void MaybeMark(std::uint32_t pass, std::uint64_t vblank, const std::uint8_t *memory) {
+        if (!enabled_) return;
+        if (vblank < firstVblank_ || vblank > lastVblank_) {
+            ++marksOutsideRange_;
+            return;
+        }
+        if (!PassWanted(pass)) {
+            ++marksFiltered_;
+            return;
+        }
+        if (records_.size() >= maxRecords_) {
+            ++marksRefusedBound_;
+            return;
+        }
+        Record record;
+        record.kind = gt4::coregs3::vram::kRecordPassBegin;
+        record.vblank = vblank;
+        record.pass = pass;
+        record.first_block = firstBlock_;
+        record.block_count = blockCount_;
+        Capture(record, memory);
+        ++markRecords_;
+    }
+
+    // TASK-090 pass textures: one draw's texture/palette windows, copied in stream order at the draw's K1 marker.
+    void MaybeDrawTextures(std::uint32_t label, std::uint64_t vblank,
+                           const gt4::coregs3::vram::Window *windows, std::uint32_t window_count,
+                           const std::uint8_t *memory) {
+        if (!enabled_) return;
+        if (!drawWindows_) {
+            ++drawsFiltered_;
+            return;
+        }
+        if (vblank < firstVblank_ || vblank > lastVblank_) {
+            ++drawsOutsideRange_;
+            return;
+        }
+        if (window_count == 0 || window_count > gt4::coregs3::vram::kMaxCaptureWindows) {
+            ++drawsRefused_;
+            return;
+        }
+        if (records_.size() >= maxRecords_) {
+            ++drawsRefusedBound_;
+            return;
+        }
+        Record record;
+        record.kind = gt4::coregs3::vram::kRecordDrawTexture;
+        record.vblank = vblank;
+        record.label = label;
+        std::uint32_t first = gt4::coregs3::vram::kBlocksTotal;
+        for (std::uint32_t index = 0; index < window_count; ++index) {
+            gt4::coregs3::vram::Window window = windows[index];
+            if (window.block_count == 0 || window.first_block >= gt4::coregs3::vram::kBlocksTotal) continue;
+            if (window.block_count > gt4::coregs3::vram::kBlocksTotal - window.first_block)
+                window.block_count = gt4::coregs3::vram::kBlocksTotal - window.first_block;
+            record.windows.push_back(window);
+            if (window.first_block < first) first = window.first_block;
+            record.block_count += window.block_count;
+        }
+        if (record.windows.empty()) {
+            ++drawsRefused_;
+            return;
+        }
+        record.first_block = first;
+        Capture(record, memory);
+        ++drawRecords_;
+    }
+
+    // TASK-090 pass textures: one VU1 job's texture/palette windows, copied on the GS worker before the job executes.
+    // This is the record the offline world path binds: the job's uploads have landed and none of the job's own drawing
+    // has run, so the copy is the content the draw samples.
+    void MaybeJobTextures(std::uint32_t label, std::uint64_t vblank,
+                          const gt4::coregs3::vram::Window *windows, std::uint32_t window_count,
+                          const std::uint8_t *memory) {
+        if (!enabled_) return;
+        if (!jobWindows_) {
+            ++jobsFiltered_;
+            return;
+        }
+        // The job's vblank is the GS worker's counter, within one of the capture frame's own.
+        const std::uint64_t lastWithSlack = lastVblank_ == ~0ull ? lastVblank_ : lastVblank_ + 1u;
+        if (vblank + 1 < firstVblank_ || vblank > lastWithSlack) {
+            ++jobsOutsideRange_;
+            return;
+        }
+        if (window_count == 0 || window_count > gt4::coregs3::vram::kMaxCaptureWindows) {
+            ++jobsRefused_;
+            return;
+        }
+        if (records_.size() >= maxRecords_) {
+            ++jobsRefusedBound_;
+            return;
+        }
+        Record record;
+        record.kind = gt4::coregs3::vram::kRecordJobTexture;
+        record.vblank = vblank;
+        record.label = label;
+        std::uint32_t first = gt4::coregs3::vram::kBlocksTotal;
+        for (std::uint32_t index = 0; index < window_count; ++index) {
+            gt4::coregs3::vram::Window window = windows[index];
+            if (window.block_count == 0 || window.first_block >= gt4::coregs3::vram::kBlocksTotal) continue;
+            if (window.block_count > gt4::coregs3::vram::kBlocksTotal - window.first_block)
+                window.block_count = gt4::coregs3::vram::kBlocksTotal - window.first_block;
+            record.windows.push_back(window);
+            if (window.first_block < first) first = window.first_block;
+            record.block_count += window.block_count;
+        }
+        if (record.windows.empty()) {
+            ++jobsRefused_;
+            return;
+        }
+        record.first_block = first;
+        Capture(record, memory);
+        ++jobRecords_;
+    }
+
+    void Report() const {
+        if (!enabled_) return;
+        std::fprintf(stderr,
+                     "[coregs3] VRAM sidecar this run: %llu vblank records, %llu pass-begin records, %llu draw records, "
+                     "%llu job records; "
+                     "outside the VBlank range: %llu pass markers, %llu draws, %llu job vblanks; filtered: %llu pass "
+                     "markers, %llu draws, %llu jobs; refused by the %llu-record bound: %llu pass markers, %llu draws, "
+                     "%llu jobs; refused draws: %llu, refused jobs: %llu\n",
+                     static_cast<unsigned long long>(vblankRecords_), static_cast<unsigned long long>(markRecords_),
+                     static_cast<unsigned long long>(drawRecords_), static_cast<unsigned long long>(jobRecords_),
+                     static_cast<unsigned long long>(marksOutsideRange_), static_cast<unsigned long long>(drawsOutsideRange_),
+                     static_cast<unsigned long long>(jobsOutsideRange_), static_cast<unsigned long long>(marksFiltered_),
+                     static_cast<unsigned long long>(drawsFiltered_), static_cast<unsigned long long>(jobsFiltered_),
+                     static_cast<unsigned long long>(maxRecords_),
+                     static_cast<unsigned long long>(marksRefusedBound_),
+                     static_cast<unsigned long long>(drawsRefusedBound_),
+                     static_cast<unsigned long long>(jobsRefusedBound_),
+                     static_cast<unsigned long long>(drawsRefused_), static_cast<unsigned long long>(jobsRefused_));
     }
 
 private:
     struct Record {
+        std::uint32_t kind = gt4::coregs3::vram::kRecordVblank;
+        std::uint32_t pass = 0;
+        std::uint32_t label = 0;
         std::uint64_t vblank = 0;
+        std::uint32_t first_block = 0;
+        std::uint32_t block_count = 0;
+        std::vector<gt4::coregs3::vram::Window> windows;
         std::vector<std::uint8_t> bytes;
     };
+
+    void Capture(Record &record, const std::uint8_t *memory) {
+        if (record.windows.empty())
+            record.windows.push_back(gt4::coregs3::vram::Window{record.first_block, record.block_count});
+        record.bytes.clear();
+        record.bytes.reserve(static_cast<std::size_t>(record.block_count) * gt4::coregs3::vram::kBlockBytes);
+        for (const gt4::coregs3::vram::Window &window : record.windows) {
+            const std::size_t firstByte = static_cast<std::size_t>(window.first_block) * gt4::coregs3::vram::kBlockBytes;
+            const std::size_t bytes = static_cast<std::size_t>(window.block_count) * gt4::coregs3::vram::kBlockBytes;
+            record.bytes.insert(record.bytes.end(), memory + firstByte, memory + firstByte + bytes);
+        }
+        records_.push_back(std::move(record));
+    }
+
+    bool PassWanted(std::uint32_t pass) const {
+        if (!passFilter_) return true;  // no GT4_COREGS3_VRAM_PASSES: every marker is kept
+        return pass < 64u && (passMask_ & (1ull << pass)) != 0;
+    }
 
     static std::uint64_t ParseCount(const char *text, std::uint64_t fallback) {
         if (text == nullptr || *text == '\0') return fallback;
@@ -138,21 +316,49 @@ private:
             firstBlock_ = gt4::coregs3::vram::kCarFirstBlock;
             blockCount_ = gt4::coregs3::vram::kCarBlockCount;
         }
-        maxFrames_ = ParseCount(std::getenv("GT4_COREGS3_VRAM_MAX_FRAMES"), maxFrames_);
-        if (maxFrames_ == 0) maxFrames_ = 1;
+        const char *passes = std::getenv("GT4_COREGS3_VRAM_PASSES");
+        if (passes != nullptr && *passes != '\0') {
+            // A comma list of PassIds (docs/COREGS3-HOOKS.md §17.1: 2 sky, 3 far underlay, 5 course, 7 reflection ...).
+            const char *cursor = passes;
+            while (*cursor != '\0') {
+                char *end = nullptr;
+                const unsigned long value = std::strtoul(cursor, &end, 0);
+                if (end == cursor || value > gt4::coregs3::vram::kMaxPassId) {
+                    std::fprintf(stderr, "[coregs3] GT4_COREGS3_VRAM_PASSES=%s is not a PassId list; refused\n", passes);
+                    return;
+                }
+                passFilter_ = true;
+                passMask_ |= 1ull << value;
+                cursor = end;
+                if (*cursor == ',') ++cursor;
+                else if (*cursor != '\0') {
+                    std::fprintf(stderr, "[coregs3] GT4_COREGS3_VRAM_PASSES=%s is not a PassId list; refused\n", passes);
+                    return;
+                }
+            }
+        }
+        const char *draws = std::getenv("GT4_COREGS3_VRAM_DRAWS");
+        if (draws != nullptr && *draws != '\0' && std::strcmp(draws, "0") == 0) drawWindows_ = false;
+        const char *jobs = std::getenv("GT4_COREGS3_VRAM_JOBS");
+        if (jobs != nullptr && *jobs != '\0' && std::strcmp(jobs, "0") == 0) jobWindows_ = false;
+        maxRecords_ = ParseCount(std::getenv("GT4_COREGS3_VRAM_MAX_FRAMES"), maxRecords_);
+        if (maxRecords_ == 0) maxRecords_ = 1;
         enabled_ = true;
         std::fprintf(stderr,
-                     "[coregs3] VRAM sidecar: %s, VBlanks %llu-%llu, blocks 0x%04X..0x%04X (%u B/frame), at most %llu "
-                     "frames\n",
+                     "[coregs3] VRAM sidecar: %s, VBlanks %llu-%llu, blocks 0x%04X..0x%04X (%u B/record), at most %llu "
+                     "records, pass-begin markers %s, per-draw texture windows %s, per-job texture windows %s\n",
                      path_.c_str(), static_cast<unsigned long long>(firstVblank_),
                      static_cast<unsigned long long>(lastVblank_), static_cast<unsigned>(firstBlock_),
                      static_cast<unsigned>(firstBlock_ + blockCount_ - 1u),
-                     blockCount_ * gt4::coregs3::vram::kBlockBytes, static_cast<unsigned long long>(maxFrames_));
+                     blockCount_ * gt4::coregs3::vram::kBlockBytes, static_cast<unsigned long long>(maxRecords_),
+                     passFilter_ ? passes : "all", drawWindows_ ? "on" : "off", jobWindows_ ? "on" : "off");
     }
 
     void Write() {
-        if (!enabled_ || records_.empty() || written_) return;
+        if (!enabled_ || written_) return;
         written_ = true;
+        Report();
+        if (records_.empty()) return;
         std::FILE *file = std::fopen(path_.c_str(), "wb");
         if (file == nullptr) {
             std::fprintf(stderr, "[coregs3] cannot open VRAM sidecar %s\n", path_.c_str());
@@ -162,20 +368,34 @@ private:
         for (const Record &record : records_) {
             gt4::coregs3::vram::Header header;
             header.vblank = record.vblank;
-            header.first_block = firstBlock_;
-            header.block_count = blockCount_;
+            header.first_block = record.first_block;
+            header.block_count = record.block_count;
+            header.kind = record.kind;
+            header.pass = record.pass;
+            header.label = record.label;
+            header.window_count = static_cast<std::uint32_t>(record.windows.size());
             std::uint8_t encoded[gt4::coregs3::vram::kHeaderBytes];
             gt4::coregs3::vram::encode_header(encoded, header);
-            if (std::fwrite(encoded, 1, sizeof encoded, file) != sizeof encoded ||
-                std::fwrite(record.bytes.data(), 1, record.bytes.size(), file) != record.bytes.size()) {
+            bool ok = std::fwrite(encoded, 1, sizeof encoded, file) == sizeof encoded;
+            for (std::size_t index = 0; ok && index < record.windows.size(); ++index) {
+                std::uint8_t windowBytes[gt4::coregs3::vram::kWindowBytes];
+                gt4::coregs3::vram::encode_window(windowBytes, record.windows[index]);
+                ok = std::fwrite(windowBytes, 1, sizeof windowBytes, file) == sizeof windowBytes;
+            }
+            if (!ok || std::fwrite(record.bytes.data(), 1, record.bytes.size(), file) != record.bytes.size()) {
                 std::fprintf(stderr, "[coregs3] VRAM sidecar write failed\n");
                 break;
             }
-            bytes += sizeof encoded + record.bytes.size();
+            bytes += sizeof encoded + record.windows.size() * gt4::coregs3::vram::kWindowBytes + record.bytes.size();
         }
         std::fclose(file);
-        std::fprintf(stderr, "[coregs3] VRAM sidecar: %zu records, %llu bytes -> %s\n", records_.size(),
-                     static_cast<unsigned long long>(bytes), path_.c_str());
+        std::fprintf(stderr,
+                     "[coregs3] VRAM sidecar: %zu records (%llu vblank, %llu pass-begin, %llu draw, %llu job), %llu "
+                     "bytes -> %s\n",
+                     records_.size(), static_cast<unsigned long long>(vblankRecords_),
+                     static_cast<unsigned long long>(markRecords_), static_cast<unsigned long long>(drawRecords_),
+                     static_cast<unsigned long long>(jobRecords_), static_cast<unsigned long long>(bytes),
+                     path_.c_str());
     }
 
     bool enabled_ = false;
@@ -183,10 +403,29 @@ private:
     std::string path_;
     std::uint64_t firstVblank_ = 0;
     std::uint64_t lastVblank_ = ~0ull;
-    std::uint64_t maxFrames_ = 32;
+    std::uint64_t maxRecords_ = 32;
     std::uint64_t lastDumped_ = ~0ull;
     std::uint32_t firstBlock_ = gt4::coregs3::vram::kCarFirstBlock;
     std::uint32_t blockCount_ = gt4::coregs3::vram::kCarBlockCount;
+    bool passFilter_ = false;
+    bool drawWindows_ = true;
+    bool jobWindows_ = true;
+    std::uint64_t passMask_ = 0;
+    std::uint64_t vblankRecords_ = 0;
+    std::uint64_t markRecords_ = 0;
+    std::uint64_t drawRecords_ = 0;
+    std::uint64_t jobRecords_ = 0;
+    std::uint64_t marksOutsideRange_ = 0;
+    std::uint64_t marksFiltered_ = 0;
+    std::uint64_t marksRefusedBound_ = 0;
+    std::uint64_t drawsOutsideRange_ = 0;
+    std::uint64_t drawsFiltered_ = 0;
+    std::uint64_t drawsRefused_ = 0;
+    std::uint64_t drawsRefusedBound_ = 0;
+    std::uint64_t jobsOutsideRange_ = 0;
+    std::uint64_t jobsFiltered_ = 0;
+    std::uint64_t jobsRefused_ = 0;
+    std::uint64_t jobsRefusedBound_ = 0;
     std::vector<Record> records_;
 };
 
@@ -4629,6 +4868,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             // it (RGB as PPM, alpha as PGM) once, with its TEX0 and CLAMP; a mipmapped texture with its levels 1..MXL
             // right of level 0 (IN-428).
             static long long dumpTex = -2;
+            static long long dumpFromVblank = 0;
             static std::string dumpDir;
             if (dumpTex == -2) {
                 dumpTex = -1;
@@ -4638,8 +4878,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                         dumpDir = colon + 1;
                     }
                 }
+                if (const char *from = std::getenv("GT4_CORE2_DUMP_TEX_VBLANK")) dumpFromVblank = std::atoll(from);
             }
-            if (dumpTex >= 0 && static_cast<long long>(t.glmBp) == dumpTex) {
+            if (dumpTex >= 0 && static_cast<long long>(t.glmBp) == dumpTex &&
+                static_cast<long long>(vblanks_) >= dumpFromVblank) {
                 dumpTex = -1;
                 std::vector<std::uint32_t> words;
                 std::string error;
@@ -5648,6 +5890,21 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
         s.zeroRead_ = false;
     }
     return data.size();
+}
+
+void Renderer::Coregs3Snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
+                               const gt4::coregs3::vram::Window *windows, std::uint32_t window_count) {
+    Impl &s = *impl_;
+    // The GS stream's owner calls this at the marker's position, so the CPU shadow memory here is the content the
+    // marked pass or draw samples: every GS command the EE posted before the marker has executed, none posted after it.
+    const std::uint8_t *memory = s.memory_.Local().bytes().data();
+    if (kind == gt4::coregs3::vram::kRecordDrawTexture) {
+        coregs3_vram_dump().MaybeDrawTextures(label, vblank, windows, window_count, memory);
+    } else if (kind == gt4::coregs3::vram::kRecordJobTexture) {
+        coregs3_vram_dump().MaybeJobTextures(label, vblank, windows, window_count, memory);
+    } else {
+        coregs3_vram_dump().MaybeMark(pass, vblank, memory);
+    }
 }
 
 void Renderer::Flush() {

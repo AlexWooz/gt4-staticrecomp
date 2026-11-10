@@ -24,6 +24,8 @@
 #include "coregs3_chain.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_tap.hpp"
+#include "coregs3_texwin.hpp"
+#include "coregs3_vram.hpp"
 #include "mtvu_runtime.hpp"
 
 #include "ps2/memory.hpp"
@@ -485,9 +487,38 @@ void at_vblank(std::uint64_t vblank) noexcept {
   if (vblank != 0 && vblank % 600 == 0) print_report(stderr);
 }
 
+namespace {
+
+// The draw marker point: `pre` (the default) is before the shape call, `post` after it returns. The schedule of the
+// texture uploads decides which one sees a draw's own pixels; GT4_COREGS3_VRAM_DRAW_AT=post is the diagnostic.
+bool draw_mark_at_post() noexcept {
+  static const bool post = [] {
+    const char *value = std::getenv("GT4_COREGS3_VRAM_DRAW_AT");
+    return value != nullptr && std::strcmp(value, "post") == 0;
+  }();
+  return post;
+}
+
+// TASK-090 pass textures: the GS blocks a draw's texture records name (the shared rule is coregs3_texwin.hpp).
+void collect_draw_windows(const FrameSnapshot &frame, const CapturedDraw &draw, vram::Window *windows,
+                          std::uint32_t &count) noexcept {
+  for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+    const std::uint32_t slot = draw.items[index].texture_record;
+    if (slot == kNoRecord || slot >= frame.textures.size()) continue;
+    const std::uint8_t *bytes = frame.textures[slot].bytes;
+    texture_windows_from_tex0(vram::read_u64(bytes, 0), windows, count);
+  }
+}
+
+}  // namespace
+
 void pass_begin(ps2::Cpu &cpu, std::uint32_t pass) noexcept {
   if (g.mode == Mode::off) return;
   if (pass >= kPassCount) pass = kPassUnknown;
+  // TASK-090 pass textures: hand the marker to the GS stream in stream order, so the SLM snapshot at a pass begin is the
+  // content the pass's own draws sample, not a later frame-end state (docs/COREGS3-WORLD-MATERIALS.md). One atomic load
+  // when no VRAM capture is configured; the snapshot itself runs on the GS side.
+  vram::note_pass_begin(pass, g.vblank);
   // The scene environment is read through the RacePS2Base object in r17. Only the markers of func_0033EAB8 (sky and
   // later) run with that register; the env-map marker is in the earlier world setup and the panel marker in
   // RacePS2Base__render, where r17 holds other pointers, so neither touches the environment.
@@ -731,6 +762,14 @@ void before_shape_call(ps2::Cpu &cpu, std::uint32_t call_site) noexcept {
     g.counters.largest_frame_bytes = static_cast<std::uint32_t>(g.frame.packets.size());
   g.frame.draws.push_back(draw);
   g.frame.draw_count = static_cast<std::uint32_t>(g.frame.draws.size());
+  // TASK-090 pass textures: hand this draw's texture/palette blocks to the GS stream, so the copy lands after every GS
+  // command posted before the draw and before the draw's own packets. One atomic load unless a VRAM capture is set.
+  if (vram::snapshot_sink_installed() && vram::draw_marks_enabled() && !draw_mark_at_post()) {
+    vram::Window windows[vram::kMaxCaptureWindows] = {};
+    std::uint32_t window_count = 0;
+    collect_draw_windows(g.frame, draw, windows, window_count);
+    if (window_count != 0) vram::note_draw_textures(draw.sequence, g.vblank, windows, window_count);
+  }
   g.counters.captured += 1;
   g.counters.pass_draws[pass] += 1;
   g.counters.pass_items[pass] += count;
@@ -769,6 +808,14 @@ void after_shape_call(ps2::Cpu &cpu) noexcept {
     g.carried_light.gap_epoch += 1;  // an unseen writer may have flipped the TOPS parity
   }
   g.chain_seen = true;
+
+  // Diagnostic marker point (GT4_COREGS3_VRAM_DRAW_AT=post): the draw's texture blocks copied after the shape call.
+  if (draw != nullptr && vram::snapshot_sink_installed() && vram::draw_marks_enabled() && draw_mark_at_post()) {
+    vram::Window windows[vram::kMaxCaptureWindows] = {};
+    std::uint32_t window_count = 0;
+    collect_draw_windows(g.frame, *draw, windows, window_count);
+    if (window_count != 0) vram::note_draw_textures(draw->sequence, g.vblank, windows, window_count);
+  }
 
   ChainWalkCounters walk;
   bool complete = false;

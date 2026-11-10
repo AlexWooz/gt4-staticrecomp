@@ -1969,6 +1969,11 @@ void Backend::flush() {
   if (impl_->renderer) impl_->renderer->Flush();  // VBlank commit and batch flush (chapter 02.8)
 }
 
+void Backend::coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
+                               const gt4::coregs3::vram::Window *windows, std::uint32_t window_count) {
+  if (impl_->renderer) impl_->renderer->Coregs3Snapshot(kind, pass, label, vblank, windows, window_count);
+}
+
 void Backend::next_frame() { impl_->stats.frames++; }
 
 void Backend::set_display_field(bool odd) {

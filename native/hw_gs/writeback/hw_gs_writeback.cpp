@@ -3238,6 +3238,11 @@ std::size_t Renderer::ReadFifo(void* destination, std::size_t byteCount) {
     return data.size();
 }
 
+void Renderer::Coregs3Snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
+                               const gt4::coregs3::vram::Window *windows, std::uint32_t window_count) {
+    if (core2_) core2_->Coregs3Snapshot(kind, pass, label, vblank, windows, window_count);
+}
+
 void Renderer::Flush() {
     // Diagnostics (CORE2 bring-up): GT4_HW_SLM_DUMP=<vblank>:<file> writes GS memory, with every drawn target written
     // back, at that VBlank, so the two cores' memory can be compared in the game.

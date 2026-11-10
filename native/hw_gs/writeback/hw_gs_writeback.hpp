@@ -23,6 +23,7 @@
 #include "hw_gs_display.hpp"
 #include "hw_memory.hpp"
 #include "hw_gs_writeback_gpu.hpp"
+#include "../../coregs3/coregs3_vram.hpp"
 
 namespace hwgs::core2 {
 class Renderer;
@@ -287,6 +288,11 @@ public:
 
     // GIF packets for path 1..3 (16-byte qwords). Path 0 and bad sizes are rejected.
     bool GifTransfer(std::uint32_t path, const std::uint8_t *bytes, std::size_t byteCount);
+    // TASK-090 pass textures: the K7 pass-begin / K1 draw SLM snapshots, forwarded to the CoreGS 2.0 renderer in
+    // CoreGS 2.0's own terms; a no-op on the legacy CoreGS 1.1 path. Called in GS stream order
+    // (native/coregs3/coregs3_vram.hpp).
+    void Coregs3Snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
+                         const gt4::coregs3::vram::Window *windows, std::uint32_t window_count);
     bool GifBusy(std::uint32_t path) const;
     void GifReset(std::uint32_t pathMask);
 

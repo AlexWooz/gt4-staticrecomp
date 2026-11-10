@@ -489,7 +489,7 @@ add_library(gt4_coregs3 STATIC
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
     coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp
     coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp
-    coregs3/coregs3_world.cpp)
+    coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
@@ -1157,6 +1157,12 @@ if(GT4_HW_GS)
     target_link_libraries(coregs3_texture_state_fixture PRIVATE gt4_coregs3)
     target_compile_options(coregs3_texture_state_fixture PRIVATE /W4)
     add_test(NAME native_coregs3_texture_state COMMAND $<TARGET_FILE:coregs3_texture_state_fixture>)
+    # TASK-090 pass textures: the `.gt4vram` version 2 record format (kind/pass, the legacy v1 header, every malformed
+    # variant), the pass-mark channel, and the per-pass texture binding (two passes, the same record, different images).
+    add_executable(coregs3_pass_texture_fixture coregs3/coregs3_pass_texture_fixture.cpp)
+    target_link_libraries(coregs3_pass_texture_fixture PRIVATE gt4_coregs3)
+    target_compile_options(coregs3_pass_texture_fixture PRIVATE /W4)
+    add_test(NAME native_coregs3_pass_textures COMMAND $<TARGET_FILE:coregs3_pass_texture_fixture>)
 
     add_executable(gt4_coregs3_texture tools/coregs3_texture_main.cpp)
     target_link_libraries(gt4_coregs3_texture PRIVATE gt4_coregs3)

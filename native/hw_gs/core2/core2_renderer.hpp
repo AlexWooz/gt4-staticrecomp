@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "../../coregs3/coregs3_vram.hpp"
 #include "../writeback/hw_gs_writeback.hpp"
 
 namespace hwgs::core2 {
@@ -144,6 +145,11 @@ public:
     void ClearVram();
     std::size_t ReadFifo(void *destination, std::size_t byteCount);
     void Flush();
+    // TASK-090 pass textures: the observe-only SLM snapshots (native/coregs3/coregs3_vram.hpp): a K7 pass-begin
+    // full-range copy or a K1 draw's texture parts. Called in GS stream order by the GS worker (or synchronously on the
+    // EE when the GS worker thread is off); a no-op unless GT4_COREGS3_VRAM is set.
+    void Coregs3Snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
+                         const gt4::coregs3::vram::Window *windows, std::uint32_t window_count);
 
     bool ComposeFrameGpu(writeback::GpuFrame &out);
     bool ReadGpuFrame(const writeback::GpuFrame &frame, std::vector<std::uint32_t> &pixels);

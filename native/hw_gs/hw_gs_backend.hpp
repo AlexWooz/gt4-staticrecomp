@@ -8,6 +8,7 @@
 #pragma once
 
 #include "hw_gs_options.hpp"
+#include "../coregs3/coregs3_vram.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -200,6 +201,10 @@ public:
 
   void flush();       // submits recorded work, never waits
   void next_frame(); // headless frame boundary
+  // TASK-090 pass textures: the K7 pass-begin / K1 draw SLM snapshots, called in GS stream order
+  // (native/coregs3/coregs3_vram.hpp).
+  void coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
+                        const gt4::coregs3::vram::Window *windows, std::uint32_t window_count);
   // Field of the VBlank being closed (CSR.FIELD from the VSYNC record; chapters 12.4, 13.3, 13.4). Set before
   // present() and before a scanout dump so the field offset and the deinterlacer use this VBlank's field.
   void set_display_field(bool odd);
