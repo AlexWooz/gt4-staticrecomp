@@ -1282,3 +1282,33 @@ its name. That is a bounded task (the reader's parser functions are already iden
 `func_0024DB78`, `func_002688E8`, `func_00265D10`), but it is a research step, not a build step.
 
 No build was started; no kit. Block renders; page does not open; nothing existing changed.
+---
+
+# Phase 27 - bounded disassembly pass on the loader (2026-11-10)
+
+## 83. What was read
+
+- `mProject` vtable = `0x00664D50`. Slot 95 = `0x00229F88`; `mProject__virtual_63` walks the children and calls that
+  slot per child, and the function is a **serializer-like virtual** (buffer ctor `0x2117A0`, `0x213158`, `0x211408`,
+  `0x26B020`, `0x25A810`, `0x26A118`), not the script binding.
+- `MManager.loadProject` (`0x00211CE0`): `0x229270` (thunk to `0x204D00`), `0x211460`, two `jalr`s, `0x218E10`,
+  string helpers. `MManager.finishProject` (`0x00211F90`): `0x211460`, `0x219A88`, `0x211408`, buffer/string helpers.
+  Neither reaches `exportRootWindow` (`0x002296E8`) nor `findPage` (`0x00229608`).
+
+So the export call is **not** in the project lifecycle endpoints nor in the child walk. The parser chain
+(`func_00269290 -> func_0024DB78 -> func_002688E8`/`func_00265D10`) remains text handling.
+
+## 84. Remaining unknown (smallest next step)
+
+The widget-type factory: `RootWindow` is a **registered prototype**. The registry is `MManager.getPrototype`
+(`0x002119B0`) / `loadPrototype` (`0x00211B08`); the `has_script` property is set through the generic property setter of
+that prototype. That setter is the most likely place where the script module is instantiated and the root exported.
+
+Next pass: disassemble `0x002119B0`/`0x00211B08` to find the prototype table, then the `RootWindow` prototype's
+`has_script` setter, and check whether it calls `exportRootWindow` (or stores the window in a scope table).
+
+The build budget was **not** spent: no hook site was confirmed and the owner asked not to guess.
+
+## 85. State
+
+Block renders; page does not open; no kit. Nothing existing changed. Disk 7.90 GB.

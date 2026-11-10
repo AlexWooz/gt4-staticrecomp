@@ -5369,3 +5369,10 @@ The shipped path stays our MIT tools.
 - **Recommendation:** one bounded disassembly pass on the `.mproject` loader (`RootWindow` handling) before any build.
   No build started; no kit; block renders; page does not open.
 - **Tests:** 846 OK (77 skipped).
+**Phase 27 (2026-11-10, bounded loader pass; no build).**
+- `mProject` vtable `0x00664D50`, slot 95 = `0x00229F88` (serializer-like virtual called per child by
+  `mProject__virtual_63`) - not the binder. `MManager.loadProject` (`0x00211CE0`) and `finishProject` (`0x00211F90`)
+  do not reach `exportRootWindow`/`findPage`.
+- **Remaining unknown:** the prototype registry (`MManager.getPrototype 0x002119B0` / `loadPrototype 0x00211B08`) and the
+  `RootWindow` prototype's `has_script` setter - the likely place where the module is instantiated and the root exported.
+- **Build budget not spent** (no confirmed hook site). Block renders; page does not open; no kit; tests 846 OK.

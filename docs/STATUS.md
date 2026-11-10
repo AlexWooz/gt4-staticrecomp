@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-214 Phase 27: bounded loader pass, prototype registry is the next step (2026-11-10)
+
+- `mProject` vtable is `0x00664D50`; slot 95 = `0x00229F88`, a **serializer-like virtual** that
+  `mProject__virtual_63` calls per child - not the script binding.
+- `MManager.loadProject` (`0x00211CE0`) and `finishProject` (`0x00211F90`) call reader/buffer/string helpers and never
+  reach `exportRootWindow` (`0x002296E8`) or `findPage` (`0x00229608`). The parser chain is text handling.
+- **Remaining unknown:** the widget-type factory. `RootWindow` is a registered **prototype**
+  (`MManager.getPrototype 0x002119B0` / `loadPrototype 0x00211B08`); its `has_script` setter is the likely place where
+  the module is instantiated and the root exported. That is the next bounded pass.
+- **Build budget not spent** (no confirmed hook site). Block renders; page does not open; no kit; tests 846 OK.
+
 ## TASK-214 Phase 26: guest harness readiness - one disassembly pass before the build (2026-11-10)
 
 - **Ready:** `hString__virtual_*` (`0x00314858`, `0x003149E0`, `0x00312448`, `0x00312458`), `hArray__structor_0..3`
