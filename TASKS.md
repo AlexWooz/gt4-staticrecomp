@@ -3430,3 +3430,32 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+### TASK-216 - GSdx/PCSX2 pipeline study, the reference for every future GSdx question (2026-11-10)
+
+Owner (2026-11-10): a dedicated, persistent, *tainted* and read-only study agent maps how the PCSX2 GS (GSdx) and the ARMSX2
+fork we use as a black box on Android are built, so that CoreGS 2.0/3.0 design decisions are informed by a working hardware
+GS without ever bringing GPL code into our tree. The parallel TASK-215 (perf measurement and candidates, worktree
+`gt4-wt-215-coregs2-perf`) owns builds and numbers; this task owns prose only.
+
+- Deliverable: `docs/gsdx/GSdx-PIPELINE-STUDY.md` (and `docs/gsdx/README.md`). Frame pipeline and threading; the readback
+  inventory and the explicit "does GSdx overlap the next frame while waiting" answer; uploads, CLUTs, targets and caching;
+  present/vsync/pacing; where CoreGS 2.0 is wrong or weaker with our file:line; ranked opportunities with gates and proofs;
+  mobile/tile-GPU notes; the ledger cross-check and every unknown.
+- Method: read GSdx/PCSX2/ARMSX2 (`C:\Antigravity\gt4-private-armsx2gs`, `private/tooling/pcsx2-slice101-source`,
+  `private/slice189-pcsx2-ref`) and our code; no build, benchmark, game run, pin/test/data change, no code edit.
+- Licensing: GPL concepts only, no code or constants copied, file paths as evidence only. Decision 0070 (separate process on
+  PC) unchanged; the study informs the in-process MIT renderer and the Android line.
+- Headline findings (C unless stated): our desktop build is not slower than the GSdx reference (9.0% faster at 3x, 11.4% at
+  12x, wall, same recording, TASK-215 baseline); the owner's faster GSdx is the S23 Ultra, where our own numbers are 11.5 ms
+  of GPU at 1x *and* 2x with ~750 fragment barriers, 75 full barriers and 20 render passes per VBlank (per-pass and
+  per-barrier overhead, not fill); their default readback is synchronous like ours and they overlap the next frame only in the
+  `Asynchronous` download mode (a CPU shadow 3-4 frames old with per-page validity), which is the lateness the owner rejected
+  for normal mode (decision 0073); their one present trick we lack is pre-acquiring the next swapchain image on the
+  single-queue path.
+- Ledger cross-check: every proposal is checked against the ledger, the TASK-215b audit and the TASK-215 baseline, including
+  IN-540..543 and the switches already on `release/1.3.0-rc15` / `task/182-barrier-scope`
+  (`GT4_CORE2_WAIT_NEWEST_FENCE`, `GT4_HW_READBACK_SPIN`, `GT4_CORE2_SUBMIT_AFTER_WAIT`), so nothing already measured,
+  reverted or implemented is proposed again.
+- State (2026-11-10): study written and committed on `docs/gsdx-pipeline-study` (docs only, no PR; the orchestrator decides
+  where it lands). Note: 216 is the next free number in this file; the private/rc15 line numbers tasks up to TASK-203, so a
+  collision there is possible and this entry is the one to renumber.

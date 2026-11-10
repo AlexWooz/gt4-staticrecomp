@@ -1,5 +1,28 @@
 # Current Status
 
+## GSdx pipeline study, the reference for future GSdx questions (2026-11-10)
+
+Task TASK-216. A dedicated, tainted and read-only study agent mapped the PCSX2 GS (GSdx) and the ARMSX2 fork we use as a black
+box on Android, as concepts and architecture: `docs/gsdx/GSdx-PIPELINE-STUDY.md` (with `docs/gsdx/README.md`). Docs only; no
+build, benchmark, game run or code change, and no GPL code or constants in the tree (decision 0070 unchanged).
+
+- Their frame pipeline: 3 command buffers, 2 submissions in flight, and **one submit per frame at present time**; the only
+  mid-frame submit is a "kick" armed for 3 frames after a readback. Their default readback is synchronous and blocks the GS
+  thread, like ours; the `Asynchronous` download mode is the one that overlaps the next frame, at 3-4 frames of lateness with a
+  CPU shadow and per-page validity checks - the lateness the owner rejected for normal mode (decision 0073).
+- Where we are weaker: on **tilers**, by construction. The owner's S23 Ultra numbers (private `TASKS.md`, TASK-180) show
+  CoreGS 2.0 at 11.5 ms of GPU per VBlank at **both** 1x and 2x, with ~750 fragment barriers, 75 full barriers and 20 render
+  passes per VBlank: per-pass and per-barrier overhead, not fill. Their draws are attachment draws with one pass per run and
+  declared feedback reads; ours are storage-image read-modify-writes with barriers. TASK-182 is already the right response
+  (its step 3 measured `SUBMIT_EVERY=128` at +11.6% VBlanks/s and 32% fewer render passes on the S23 showroom).
+- Where we are **not** weaker: on the desktop, CoreGS 2.0 is 9.0% faster at 3x and 11.4% at 12x than the `gt4-gs.exe`
+  reference on the same recording, wall clock, transport included (C, `docs/tasks/COREGS2-PERF-BASELINE.md`).
+- Three small, faithful-neutral items came out of it: pre-acquiring the next swapchain image on the single-queue present path
+  (the one present trick they have and we do not); a per-device cache/age table instead of two classes; and a pending-readback
+  queue with per-page validity for the places where lateness is already accepted (photo mode, TASK-162). Everything else the
+  study checked against the ledger and the two audits was already tried, reverted or implemented; the document lists all of it
+  so nobody repeats it.
+
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader
