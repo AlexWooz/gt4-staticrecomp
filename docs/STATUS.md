@@ -1,5 +1,20 @@
 # Current Status
 
+## 2026-11-10: environment/effects study: priorities and the capture gap
+
+A tap census of the night race (VBlanks 7398-7406) separates 62 VU1 jobs per race frame: 14 pre-car (~64.1k vertices:
+sky, backdrop, course, billboards), 28 car (~12.2k) and 20 post-car (~7.2k: reflection, env map, alpha fills, effects);
+the non-car work is ~6x the car geometry. Measured GS targets: main frame FBP 210/FBW 10 CT32; wet-road/car reflection
+FBP 210/FBW 2 CT32 RGB-only ZMSK=1 (~2.4k vertices/frame); car env map FBP 350/FBW 4 CT32 256 px (~1.3k); sphere mapper
+FBP 394/FBW 2 128 px; display buffers FBP 0/140 CT16. The night race has 38 flare entries and an active GS flare table
+readback (708 replies by VBlank 7200, 0.63 ms CPU per read); no smoke/sparks at 7400 and no tone at night. Priorities:
+native flares via occlusion queries (P0, no readback), native smoke/dust/spray (P0; needs a v2.00 rally/drift
+recording), native sky/backdrop/lighting, native wet-road reflection, env map, post chain (brightness, tone, filter,
+motion blur, mirror, DOF). The tap is PATH1 only: the full-screen sheen, tone strips, crossfade and glare chain are EE
+immediate (PATH3) and need a hw GS-stream capture. The effects work is blocked on capture additions: K7 pass markers and
+pass ids in `.gt4scene` v5, the scene environment block, per-pass GS state and the hw GS-stream capture. Evidence:
+`build/analysis-particles/`.
+
 ## TASK-090 family lighting: every item's own VU1 program and block (2026-11-10)
 
 `coregs3_lighting` now implements the body program and the seven remaining measured per-item VU1 families, and both

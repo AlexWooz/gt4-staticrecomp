@@ -1697,8 +1697,16 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   pow8 636 with two tap-pairing outliers). Offline frame 0: 116/116 draws and 12,146/12,146 vertices lit, 0 fallback;
   draw 98 mixes 0x03D8 and 0x0B08 items; the `--no-programs` A/B changes 4,443 pixels, turning 272 white fallback
   pixels into shaded glass/lamp. CTest 6/6, Python 7/7, 3x gate OK, present guest identity 0 differences.
-- Next: fog/textures/reflection in the native pipeline and the G-IMAGE/G-PERF gates; the per-item light state is now
-  consumed by both renderers.
+- **Environment/effects study (2026-11-10).** Tap census: 62 VU1 jobs/frame, 14 pre-car (~64.1k vertices), 28 car
+  (~12.2k) and 20 post-car (~7.2k); non-car is ~6x the car geometry. Targets: main FBP210/FBW10 CT32; wet-road
+  reflection FBP210/FBW2 RGB-only ZMSK=1 (~2.4k vertices); env map FBP350/FBW4 256 px (~1.3k); sphere mapper FBP394/FBW2
+  128 px; display FBP0/140 CT16. Night: 38 flare entries, flare readback active (708 replies by VBlank 7200, 0.63 ms
+  CPU/read), no smoke/sparks at 7400, no tone. Priorities: native flares via occlusion (P0, no readback), native
+  smoke/dust/spray (P0; needs a v2.00 rally/drift), sky/lighting, wet-road reflection, env map, post chain. The tap is
+  PATH1 only; the full-screen sheen/tone/crossfade/glare are PATH3 and need a hw GS-stream capture. Capture additions:
+  K7 pass markers/pass ids in v5, scene environment block, per-pass GS state, hw GS-stream capture.
+- Next: fog/textures/reflection plus the capture extension (K7 pass markers, hw GS-stream) that unblocks the effects,
+  then the G-IMAGE/G-PERF gates; the per-item light state is now consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls
