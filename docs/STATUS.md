@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-214 Phase 12: dispatch chain is string handling; stay at the gate (2026-11-10)
+
+- `func_0024DB78` (`0x24DB78..0x24DD34`) calls only string/reader helpers (`func_005C2560`, `func_0020EEA0`,
+  `func_005A2F88`, `func_0020FC58`, `func_005C11A8`, `func_00326798`) and `jalr` slots - no `findPage`/
+  `exportRootWindow`, no interning. The chain `func_00269290 -> func_0024DB78 -> func_002688E8 -> func_00265D10` is
+  text handling, not the binder.
+- **Data route closed.** The native route needs a guest-call harness (`MProject` + `hString` + handle conversion); no
+  kit was built because no direct export call site was found to hook.
+- **Next:** disassemble `func_002688E8`, `func_00265D10`, `func_0020FC58`, `func_005A2F88` and
+  `MWidgetReader__structor_0` (`0x00207590`); the first that interns a type and reaches `findPage`/`exportRootWindow`
+  is the binding site.
+- **Proven:** page entry, module, static, PS2ZIP 54,469/55,353, ToC record, the tile in Options > Miscellaneous, and
+  the page-open path with an existing root (Misc page, 3,600 frames, exit 0). Nothing swapped; tests 846 OK.
+
 ## TASK-214 Phase 11: parser dispatch, data route closed (2026-11-10)
 
 - `func_00269290` (`0x00269290`, matched) is a generic line reader that dispatches widget types through

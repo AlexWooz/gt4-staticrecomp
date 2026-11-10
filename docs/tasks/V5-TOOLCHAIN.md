@@ -755,3 +755,38 @@ interned symbol, a single `exportRootWindow` call for `RecRoot1` (or a table ent
 list, that list is the insertion point.
 
 Until then: tile present, page root nil, accepted fallback unchanged, nothing existing modified.
+---
+
+# Phase 12 - the dispatch chain is string handling, not the binder (2026-11-10)
+
+## 39. `func_0024DB78` disassembled
+
+`func_0024DB78` runs `0x24DB78..0x24DD34` (a second helper follows to `0x24DE78`, a third to `0x24DF88`). Its calls
+are string/reader helpers only: `func_005C2560` (string clone), `func_0020EEA0`, `func_005A2F88`, `func_0020FC58`,
+`func_005C11A8` (allocator name), `func_00326798` (free), plus `jalr` through table slots - no call to
+`func_00229608`/`func_002296E8` (`findPage`/`exportRootWindow`) and no symbol-interning call (`func_003166B8`).
+
+So the chain `func_00269290 -> func_0024DB78 -> func_002688E8 -> func_00265D10` is text/string handling. The widget
+type dispatch and the `has_script` -> `OptionProject::<name>` export happen deeper, in code the decomp has not matched
+(the reader's parse-one-widget path is only partially recovered).
+
+## 40. Final route decision for TASK-214
+
+- **Data: closed.** A `RootWindow` added to `option.mproject` is parsed and instantiated (the tile proves it) but is
+  never exported to the page's root static, and no name -> value table is reachable from the title data.
+- **Native: needs a guest-call harness.** `MProject.exportRootWindow("RecRoot1")` must run with a live script VM
+  context (the `MProject` object, an `hString`, handle conversion). That is a new native facility, not a one-line
+  hook; no kit was built because no direct export call site was found to hook.
+- **Everything else is proven:** page entry, module, static slot, PS2ZIP (54,469 / 55,353), ToC record, the tile in
+  Options > Miscellaneous, and the full page-open path with an existing root (Misc page, 3,600 frames, exit 0).
+
+## 41. Smallest next step
+
+Find the reader's type-dispatch table (the function that maps an interned type symbol to a widget class and handles the
+`has_script` property). Candidates to disassemble next: `func_002688E8`, `func_00265D10`, `func_0020FC58`,
+`func_005A2F88` and the project load entry (`mProject__virtual_61` -> `MWidgetReader__structor_0` `0x00207590`). The
+first one that calls `func_003166B8` (intern) and then reaches `findPage`/`exportRootWindow` is the binding site; from
+there either a table entry (data) or the single export call (native) is the fix.
+
+Until then the page has a tile, a module and no bound root; the Arcade host-tree hub remains the accepted fallback and
+nothing existing was modified.

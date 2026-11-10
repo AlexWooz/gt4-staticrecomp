@@ -5222,3 +5222,15 @@ The shipped path stays our MIT tools.
 - **Next:** disassemble `func_0024DB78` and the symbol interning (`func_003166B8`) to find where a `has_script` widget
   is bound to `OptionProject::<name>`; that site decides between one `exportRootWindow` call and a compiled list entry.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 12 (2026-11-10, dispatch chain is string handling).**
+- `func_0024DB78` (`0x24DB78..0x24DD34`) calls only string/reader helpers (`func_005C2560`, `func_0020EEA0`,
+  `func_005A2F88`, `func_0020FC58`, `func_005C11A8`, `func_00326798`) and `jalr` slots - no `findPage`/
+  `exportRootWindow`, no interning (`func_003166B8`). The chain `func_00269290 -> func_0024DB78 -> func_002688E8 ->
+  func_00265D10` is text handling, not the binder.
+- **Data route closed**; the native route needs a guest-call harness (MProject + hString + handles). No kit was built
+  because no direct export call site was found to hook.
+- **Proven elsewhere:** page entry, module, static, PS2ZIP 54,469/55,353, ToC record, the tile, and the page-open path
+  with an existing root (Misc page, 3,600 frames, exit 0).
+- **Next:** disassemble `func_002688E8`, `func_00265D10`, `func_0020FC58`, `func_005A2F88` and `MWidgetReader__structor_0`
+  (`0x00207590`); the first that interns a type and reaches `findPage`/`exportRootWindow` is the binding site.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.
