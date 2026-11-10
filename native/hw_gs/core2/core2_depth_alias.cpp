@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 
+#include "core2_upload.hpp"
+
 namespace hwgs::core2 {
 namespace {
 
@@ -59,8 +61,17 @@ void Subtract(const PixelRect &rect, const PixelRect &keep, std::vector<PixelRec
     if (inside.x1 < rect.x1) out.push_back(PixelRect{inside.x1 + 1, inside.y0, rect.x1, inside.y1});
 }
 
-// The pixels of `block` outside every rectangle of `keep`, appended to `out`.
+// The pixels of `block` outside every rectangle of `keep`, appended to `out`. At most one `keep` rectangle is the
+// common case (the frame target's own sprites), and it is handled without building vectors per block (TASK-215).
 void AddOutside(const PixelRect &block, const std::vector<PixelRect> &keep, std::vector<PixelRect> &out) {
+    if (keep.empty()) {
+        out.push_back(block);
+        return;
+    }
+    if (keep.size() == 1u) {
+        Subtract(block, keep.front(), out);
+        return;
+    }
     std::vector<PixelRect> left{block}, next;
     for (const PixelRect &k : keep) {
         next.clear();
@@ -119,16 +130,21 @@ std::vector<PixelRect> DepthBlocksInColour(const BufferView &depth, const PixelR
     const PixelRect area = IntersectRects(written, PixelRect{0, 0, std::min(depthWidth, 2048) - 1, 2047});
     if (area.Empty()) return out;
     const std::int32_t side = static_cast<std::int32_t>(kBlockSide);
+    // TASK-215: one entry per 8 x 8 block of the area, reserved once (the fills cover whole targets: thousands of
+    // blocks), and the block of a pixel from the address tables (BlockOfPixel, equal to pixelSlot and proved so by the
+    // IN-456 fixture) instead of a full pixelSlot per block.
+    const std::int64_t blocks = static_cast<std::int64_t>((area.x1 - area.x0) / side + 1) *
+                                static_cast<std::int64_t>((area.y1 - area.y0) / side + 1);
+    if (blocks > 0) out.reserve(static_cast<std::size_t>(blocks));
+    const Ct32Cells &cells = Cells();
+    const std::uint32_t colourBase = colour.basePointer % memory::kBlocksTotal;
     for (std::int32_t by = (area.y0 + side - 1) / side; (by + 1) * side - 1 <= area.y1; ++by) {
         for (std::int32_t bx = (area.x0 + side - 1) / side; (bx + 1) * side - 1 <= area.x1; ++bx) {
-            const std::uint32_t block = memory::pixelSlot(depth, static_cast<std::uint32_t>(bx * side),
-                                                          static_cast<std::uint32_t>(by * side))
-                                            .byteOffset /
-                                        memory::kBlockBytes;
-            const std::uint32_t relative = (block + memory::kBlocksTotal - colour.basePointer % memory::kBlocksTotal) %
-                                           memory::kBlocksTotal;
+            const std::uint32_t block = BlockOfPixel(depth, static_cast<std::uint32_t>(bx * side),
+                                                     static_cast<std::uint32_t>(by * side));
+            const std::uint32_t relative = (block + memory::kBlocksTotal - colourBase) % memory::kBlocksTotal;
             const std::uint32_t page = relative / memory::kBlocksPerPage;
-            const std::uint32_t cell = Cells().cellOfBlock[relative % memory::kBlocksPerPage];
+            const std::uint32_t cell = cells.cellOfBlock[relative % memory::kBlocksPerPage];
             const std::uint64_t x = std::uint64_t{page % colour.bufferWidth} * 64u + (cell % 8u) * kBlockSide;
             const std::uint64_t y = std::uint64_t{page / colour.bufferWidth} * 32u + (cell / 8u) * kBlockSide;
             if (x + kBlockSide > colourWidth || y + kBlockSide > colourHeight) continue;

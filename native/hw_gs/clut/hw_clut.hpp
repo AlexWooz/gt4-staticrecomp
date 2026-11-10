@@ -8,6 +8,7 @@
 // when the two are merged both must agree (their tests cover the same tables).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -64,6 +65,26 @@ struct Tex0Write {
     uint32_t texclutCou = 0;     // TEXCLUT.COU (16-pixel units)
     uint32_t texclutCov = 0;     // TEXCLUT.COV
 };
+
+// TASK-215: the palette-source formats a load can decode (CT32, CT16, CT16S).
+bool IsValidPaletteFormat(uint32_t cpsm);
+
+// TASK-215 (CORE2-PERF-AUDIT B): the halfwords of the 512-halfword CLUT buffer that a load writes, and the halfwords an
+// indexed texture's palette reads, each as at most two [begin, end) ranges (no wrap; a wrapping range is split). Both
+// follow Copy (this file) and ClutUnit::Decode exactly, so a load that writes none of a pending batch's used halfwords
+// cannot change the palette that batch decodes, and the batch need not be flushed before the load.
+struct HalfwordRanges {
+    uint32_t begin[2] = {0, 0};
+    uint32_t end[2] = {0, 0};
+    bool empty() const { return begin[0] == end[0] && begin[1] == end[1]; }
+    template <typename Array, typename Value>
+    void Fill(Array& array, Value value) const {
+        for (int r = 0; r < 2; ++r) std::fill(array.begin() + begin[r], array.begin() + end[r], value);
+    }
+};
+HalfwordRanges ClutHalfwordsWritten(const Tex0Write& write);
+HalfwordRanges ClutHalfwordsUsed(uint32_t psm, uint32_t cpsm, uint32_t csa);
+bool ClutRangesIntersect(const HalfwordRanges& a, const HalfwordRanges& b);
 
 struct ClutDecision {
     bool load = false;

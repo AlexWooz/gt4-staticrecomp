@@ -3430,3 +3430,33 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+
+### TASK-215 - CoreGS 2.0 performance audit and optimization (branch `task/215-coregs2-perf`)
+
+Owner request (2026-11-10): CoreGS 2.0 is still heavy on some tracks and situations; a deep audit plus optimizations, with
+GSdx as the reference. Performance only: game logic, physics, timing, saves and every EE-visible read-back stay exact.
+Measurements on the local desktop only (Ryzen 7 5700X, RX 9060 XT; the Avell is not a performance parameter, policy of
+the same day), 12x for the GPU stress, 3x/6x for the normal scene and identity. The static half is TASK-215b
+(`docs/tasks/COREGS2-PERF-AUDIT.md`, another worktree); this task owns the builds, the numbers and the code.
+
+- Baseline (plain build, no PGO, shader cache warm, headless): night race 3x GS worker 7.47 ms/VBlank, wall 7.71, frame
+  p50 7.02, GPU busy 2.78; 6x 7.44 / 8.71 / 8.50 / 6.12; 12x 6.67 / 20.75 / 22.53 / 19.68, EE waits 13.75 ms at the flare
+  read (GPU-bound; draw passes 14.32). Performance Mode 12x: wall 15.85, GPU 15.53. License B-1 1x: GS worker 8.92,
+  1,430 CLUT-load flushes per VBlank; Arcade 3x race GS worker 7.52. Matrix, commands and the CPU sampler profile:
+  `docs/tasks/COREGS2-PERF-BASELINE.md`.
+- GSdx black box on the same recording (the night race's press schedule written as an input recording, so both renderers
+  do identical work): 11,500 VBlanks in 63.9 s against 70.2 s at 3x, 161.7 s against 182.4 s at 12x (CoreGS 2.0 9-11%
+  faster wall on this machine and scene); only the game's lines were read.
+- IN-540 (kept): the aliased depth fill uses `BlockOfPixel` instead of `pixelSlot` per block and allocates no vector
+  per block: the batch stage 1.129 -> 0.883 ms/VBlank at 3x (-22%), GS worker 7.51 -> 7.33, wall 7.74 -> 7.61; 6x wall
+  -0.19, frame p50 -0.23; license 1x GS worker 9.03 -> 8.71. Frames identical (3x 9/9, 12x 4/4, Arcade 14/14),
+  `depth_into_colour` counters equal, fixture 306/306.
+- IN-541 (measured, left off, `GT4_CORE2_CLUT_SCOPE=1`): a CLUT load keeps a pending indexed batch when it writes no
+  halfword that batch's palette reads. Exact, skips 62-72 of 283 flushes per night VBlank, but the batch count does not
+  fall (the next state change flushes a few primitives later): no gain. IN-542 (diagnostics): rule 2 reports TEST,
+  SCISSOR, XYOFFSET, SCANMSK and DTHE apart; on the night race 3x SCISSOR+XYOFFSET are about 1 flush per VBlank and on
+  the license 1x 4.7-12.0, so the audit's item A has a small ceiling here and was not built. IN-543 (reverted):
+  Performance Mode without the self-copy from 8x, which this scene never takes.
+- Tests: CTest 304/304 (1 pre-existing skip), Python 795 OK / 62 skipped with `GT4_NATIVE_BUILD`. No PR, tag, release
+  or draft. Next: TASK-168 (several palettes in one batch) is still the largest known GS-worker lever, and the 12x GPU is
+  fill-bound (IN-438/IN-523).

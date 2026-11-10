@@ -39,6 +39,11 @@ struct FrontEndOptions {
     // internal scale above 1 it covers samples between the centres (GT4's sub-pixel strip pieces, thin far-away
     // geometry), so a renderer at scale keeps it (the reference culls it only at 1x, Q-GSDX-COMPARISON 23).
     bool cullUncovered = true;
+    // TASK-215 (CORE2-PERF-AUDIT B, CoreGS 2.0 only): a CLUT load ends the pending indexed batch only when it writes a
+    // halfword the batch's palette reads (clut::ClutHalfwordsWritten against ClutHalfwordsUsed); a load that writes a
+    // disjoint range leaves that palette unchanged, so the batch is exact without the flush. The CPU reference and the
+    // writeback keep the conservative chapter 07.3 rule (false).
+    bool clutLoadScope = false;
 };
 
 enum class SyncKind : uint8_t { Signal, Finish, Label };
@@ -111,6 +116,8 @@ public:
     }
     // CLUT-load flushes whose batch had the same texture as the new TEX0 (CPU survey R9).
     uint64_t ClutFlushesSameTexture() const { return clutFlushSameTexture_; }
+    // TASK-215: CLUT loads that wrote no halfword the pending batch reads, so the batch was not flushed.
+    uint64_t ClutFlushesAvoided() const { return clutFlushesAvoided_; }
     const Batch& PendingBatch() const { return batch_; }
     bool TexflushPending() const { return texflushPending_; }
 
@@ -222,6 +229,7 @@ private:
 
     std::array<uint64_t, static_cast<size_t>(FlushReason::Count)> flushCounts_{};
     uint64_t clutFlushSameTexture_ = 0;
+    uint64_t clutFlushesAvoided_ = 0;
 };
 
 }  // namespace hwgs

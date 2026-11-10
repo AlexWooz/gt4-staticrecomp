@@ -1,5 +1,27 @@
 # Current Status
 
+## TASK-215: CoreGS 2.0 performance audit and optimization (2026-11-10)
+
+Branch `task/215-coregs2-perf`; every number on the local desktop only (Ryzen 7 5700X, RX 9060 XT; owner policy of the
+day, the Avell is not a performance parameter). Baseline on a plain build (no PGO), shader cache warm, headless: night
+race 3x GS worker 7.47 ms/VBlank, wall 7.71, frame p50 7.02, GPU busy 2.78; 6x 7.44 / 8.71 / 8.50 / 6.12; 12x 6.67 /
+20.75 / 22.53 / 19.68 (GPU-bound, draw passes 14.32, EE waits 13.75 ms at the flare read); Performance Mode 12x wall
+15.85. License B-1 1x: GS worker 8.92 with 1,430 CLUT-load flushes per VBlank; Arcade 3x race GS worker 7.52. GSdx black
+box on the same recording: CoreGS 2.0 is 9% faster wall at 3x (63.9 s against 70.2 s) and 11% at 12x (161.7 s against
+182.4 s) for the same 11,500 VBlanks.
+
+**Kept, IN-540:** the aliased depth fill (`DepthBlocksInColour`) takes the block from the address tables instead of a
+`pixelSlot` per block and allocates no vector per block: the batch stage 1.129 -> 0.883 ms/VBlank at 3x (-22%), GS worker
+7.51 -> 7.33, wall 7.74 -> 7.61; 6x frame p50 -0.23; license 1x GS worker 9.03 -> 8.71. Frames identical (night 3x 9/9,
+12x 4/4, Arcade 14/14), the aliased-depth counters equal, fixture 306/306.
+
+**Measured and left out:** the CLUT-load scope (IN-541: exact, 62-72 of 283 flushes skipped, but the batch count does not
+fall, so no gain; `GT4_CORE2_CLUT_SCOPE=1`), the Performance-Mode self-copy gate (IN-543: this scene takes no
+self-copies). **Diagnostics kept (IN-542):** the flush-reason split shows SCISSOR+XYOFFSET at about 1 flush per VBlank on
+the night race 3x and 4.7-12.0 on the license 1x, so the audit's "do not end a batch on SCISSOR/XYOFFSET" item has a
+small ceiling here. Details: `docs/tasks/COREGS2-PERF-BASELINE.md`, ledger IN-540..IN-543. CTest 304/304, Python 795 OK
+/ 62 skipped.
+
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader

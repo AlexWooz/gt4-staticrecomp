@@ -710,6 +710,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
     std::array<std::uint64_t, static_cast<std::size_t>(FlushReason::Count)> lastFlushCounts_{};  // CPU survey R9
     std::uint64_t lastClutSameTexture_ = 0;
+    std::uint64_t lastClutScopeAvoided_ = 0;
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
     // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
@@ -778,6 +779,13 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     static FrontEndOptions Core2FrontEndOptions() {
         FrontEndOptions options;
         options.vertexTrace = false;
+        // TASK-215 (CORE2-PERF-AUDIT B): a CLUT load may keep the pending batch when it writes no halfword the batch
+        // reads. Exact, but MEASURED NO GAIN on the night race (3x, 2+2: 7.41 vs 7.36 ms of GS worker, the same total
+        // batch count: the skipped load is almost always followed by another state change that flushes the batch a few
+        // primitives later) and on the license B-1 (1x: 54-69 of ~1,400 loads avoided, same batches). Off by default;
+        // GT4_CORE2_CLUT_SCOPE=1 selects it for a future TASK-168 experiment.
+        const char *scope = std::getenv("GT4_CORE2_CLUT_SCOPE");
+        options.clutLoadScope = scope != nullptr && std::strcmp(scope, "0") != 0;
         return options;
     }
 
@@ -882,32 +890,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // IN-457: the CLUT buffer halfwords a load writes (hw_glm_clut.comp, ClutUnit::Copy) are at most two ranges
     // [begin, end): PSMCT32 palette group g goes to buffer group g + CSA (groups past 15 are not loaded), its low halves
     // at 0..255 and its high halves at 256..511; PSMCT16 entry e goes to (16 * CSA + e) mod 512, so a range that wraps.
-    struct HalfwordRanges {
-        std::uint32_t begin[2] = {0, 0};
-        std::uint32_t end[2] = {0, 0};
-        bool empty() const { return begin[0] == end[0] && begin[1] == end[1]; }
-        template <typename Array, typename Value>
-        void Fill(Array &array, Value value) const {
-            for (int r = 0; r < 2; ++r) std::fill(array.begin() + begin[r], array.begin() + end[r], value);
-        }
-    };
-    static HalfwordRanges ClutHalfwordsWritten(const clut::Tex0Write &write) {
-        HalfwordRanges out;
-        const std::uint32_t count = (write.psm & 7u) == 3u ? 256u : 16u;
-        if (write.cpsm == 0) {
-            const std::uint32_t firstGroup = write.csa & 15u;
-            const std::uint32_t endGroup = std::min(16u, firstGroup + count / 16u);
-            out.begin[0] = 16u * firstGroup;
-            out.end[0] = 16u * endGroup;
-            out.begin[1] = 256u + 16u * firstGroup;
-            out.end[1] = 256u + 16u * endGroup;
-        } else {
-            const std::uint32_t start = (16u * write.csa) & 511u;
-            out.begin[0] = start;
-            out.end[0] = std::min(512u, start + count);
-            out.end[1] = start + count > 512u ? start + count - 512u : 0u;
-        }
-        return out;
+    // TASK-215: the ranges themselves live in clut:: (hw_clut.hpp), where the front end uses them for the load scope.
+    using HalfwordRanges = hwgs::clut::HalfwordRanges;
+    static HalfwordRanges ClutHalfwordsWrittenRanges(const clut::Tex0Write &write) {
+        return hwgs::clut::ClutHalfwordsWritten(write);
     }
 
     // The CLUT buffer halfwords an indexed texture's palette reads (hw_glm_decode.comp gpu_palette_entry).
@@ -941,7 +927,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     void OnClutLoaded(const clut::Tex0Write &write) {
         const bool fromTarget = clutFromTargetPending_;
         clutFromTargetPending_ = false;
-        const HalfwordRanges written = ClutHalfwordsWritten(write);
+        const HalfwordRanges written = ClutHalfwordsWrittenRanges(write);
         std::string error;
         if (fromTarget) {
             // An upload committed before the copy may have replaced the target: look again.
@@ -5279,9 +5265,11 @@ void Renderer::Flush() {
         }
         {
             // TASK-027 CPU survey R9: batches flushed per VBlank by reason (chapter 02.5 rules, CLUT loads, transfers).
-            static const char *const kReasonNames[] = {"prim",  "test",   "dimx",      "alpha",    "fog",
-                                                       "frame", "zbuf",   "texture",   "clut",     "transfer",
-                                                       "vblank", "autoflush", "capacity", "reset", "sync"};
+            // TASK-215: rule 2 reports its five changes apart (test/scissor/xyoffset/scanmsk/dthe), the audit's split.
+            static const char *const kReasonNames[] = {"prim",   "test",     "scissor",  "xyoffset",  "scanmsk",
+                                                       "dthe",   "dimx",     "alpha",    "fog",       "frame",
+                                                       "zbuf",   "texture",  "clut",     "transfer",  "vblank",
+                                                       "autoflush", "capacity", "reset", "sync"};
             static_assert(std::size(kReasonNames) == static_cast<std::size_t>(FlushReason::Count));
             std::string reasons;
             for (std::size_t r = 0; r < std::size(kReasonNames); ++r) {
@@ -5293,9 +5281,12 @@ void Renderer::Flush() {
                 s.lastFlushCounts_[r] = count;
             }
             const std::uint64_t sameTexture = s.frontEnd_.ClutFlushesSameTexture();
-            std::fprintf(stderr, "[core2] batch flushes/vblank%s clut_same_texture=%.1f\n", reasons.c_str(),
-                         static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0);
+            const std::uint64_t avoided = s.frontEnd_.ClutFlushesAvoided();
+            std::fprintf(stderr, "[core2] batch flushes/vblank%s clut_same_texture=%.1f clut_scope_avoided=%.1f\n",
+                         reasons.c_str(), static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0,
+                         static_cast<double>(avoided - s.lastClutScopeAvoided_) / 600.0);
             s.lastClutSameTexture_ = sameTexture;
+            s.lastClutScopeAvoided_ = avoided;
         }
         s.lastPrimitives_ = s.gpu_.Stats().primitives;
         s.lastFragments_ = s.gpu_.Stats().fragments;

@@ -12,7 +12,11 @@ namespace hwgs {
 // Why a batch was flushed (chapter 02.5, 02.6, 02.7, 02.8, 07.3).
 enum class FlushReason : uint8_t {
     PrimChanged,         // rule 1
-    TestOrScissor,       // rule 2 (TEST, SCISSOR, XYOFFSET, SCANMSK, DTHE)
+    TestChanged,         // rule 2: TEST
+    ScissorChanged,      // rule 2: SCISSOR (TASK-215: the split the audit asked for)
+    XyoffsetChanged,     // rule 2: XYOFFSET
+    ScanmskChanged,      // rule 2: SCANMSK
+    DtheChanged,         // rule 2: DTHE
     DitherDimx,          // rule 3
     AlphaBlend,          // rule 4 (ALPHA or PABE with ABE)
     FogColour,           // rule 5

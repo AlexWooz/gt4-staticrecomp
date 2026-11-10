@@ -124,6 +124,22 @@ wall time of the whole emulator.
 | owner | Test of 362 on the HD 620 laptop through the launcher (performance mode, 1x, day track) | F8, 48 s: 59.3 VBlanks/s, frame median 16.8 ms, p95 19.5, p99 21.1, max 25.3 (first test of the day: 41.5 VBlanks/s, median 24 ms) | 1x reached | 362 |
 | owner | Test of 299 (Arcade night race, B-Spec, 3x) | 60 FPS, frametime nearly flat; GPU 2113 MHz, 66%; fidelity perfect. Phase B closed for the beta | - | 299 |
 
+## TASK-215, desktop baseline and candidates (2026-11-10)
+
+Plain build (no PGO), RX 9060 XT, shader cache warm; the full matrix, commands and the GSdx black-box comparison are in
+`docs/tasks/COREGS2-PERF-BASELINE.md`. The audit's static short list is `docs/tasks/COREGS2-PERF-AUDIT.md` (TASK-215b).
+
+| Step | Change | Measured effect | Kept? | Candidate |
+|---|---|---|---|---|
+| IN-540 | A depth fill that aliases a colour target (`DepthBlocksInColour`): the block of a pixel from the address tables (`BlockOfPixel`, equal to `pixelSlot`) instead of a full `pixelSlot` per block; no `std::vector` per block (the one-`keep` and no-`keep` cases are subtracted in place); the output reserved | Night 3x, 4+4 interleaved: the batch stage 1.129 -> 0.883 ms/VBlank (-22%), GS worker 7.51 -> 7.33 (-2.4%), wall 7.74 -> 7.61; 6x 2+2: wall 8.749 -> 8.564, frame p50 8.599 -> 8.369; license B-1 1x 2+2: the batch stage 0.885 -> 0.638, GS worker 9.03 -> 8.71; 12x: GPU busy unchanged (19.69/19.71, GPU-bound). Frames identical (night 3x 9/9, 12x 4/4, Arcade 14/14) and the `depth_into_colour` counters equal (38,711 fills, 1,080.2 Mpx at VBlank 10,800); the aliased-depth fixture 306/306 | yes | 215a |
+| IN-541 | A CLUT load ends the pending indexed batch only when it writes a halfword the batch's palette reads (`clut::ClutHalfwordsWritten` against `ClutHalfwordsUsed`, at most two ranges each, exact: the new fixture proves no changed halfword is ever outside the ranges) | Night 3x: 62-72 of 283 CLUT flushes avoided per VBlank; license 1x: 53-69 of ~1,400. But the **total batch count does not move** (night 462.8 against 462.9; license ~1,925 against ~1,929): the skipped load is almost always the first change of a run, and the batch is flushed by the next texture/primitive change a few primitives later. A/B 2+2 night 3x, on against off: GS worker 7.407 against 7.363 ms (no gain), x_total 7.489 against 7.475 | **no** (kept behind `GT4_CORE2_CLUT_SCOPE=1`, off by default; the counter stays) | - |
+| IN-542 | Rule 2 of the flush rules reports its five changes apart (`test`, `scissor`, `xyoffset`, `scanmsk`, `dthe`), and the CLUT scope counter (`clut_scope_avoided`) is printed next to `clut_same_texture` | Night 3x: test 19-21, scissor 0.9-1.1, xyoffset 0.0, scanmsk 4.7-7.9 flushes/VBlank. License 1x: test 8.0, scissor 0.0-0.1, xyoffset 4.7-12.0. The audit's item A (SCISSOR/XYOFFSET do not end a batch) has a ceiling of about 13 flushes/VBlank on these two scenes (about 0.05 ms), so it was not built | diagnostics | - |
+| IN-543 | Performance Mode without the self-copy from 8x on | The v2.00 night race at 12x takes **no** self-copies (`self_texture=129,785` batches sample their own target, `self_copies=0`, `self_copy_mpx=0.0`: `frameUntouched` holds for them), so the gate changes nothing here: GPU busy 15.531 against 15.531 in Performance Mode. Unproven on the scene IN-463 measured (Spec II George V), so it was reverted | **no** | - |
+
+The 12x GPU cost was left alone: 19.68 ms busy with 14.32 ms of draw passes on this scene, fill-bound (IN-438/IN-523).
+GSdx, black box on the same recording: 3x 70.2 s against 63.9 s and 12x 182.4 s against 161.7 s for the same 11,500
+VBlanks (CoreGS 2.0 9-11% faster wall here).
+
 ## What we learned
 
 - **Measure before building.** The plan was wrong three times, and each time a measurement caught it:

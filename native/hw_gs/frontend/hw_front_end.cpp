@@ -376,7 +376,20 @@ void FrontEnd::OnTex0Write(uint32_t contextIndex) {
         if (!batch_.Empty()) {
             const ContextRegs& snapCtx = batch_.state.ctx;
             if (Tme(batch_.state.effectivePrim) && IsIndexedPsm(tex0::Psm(snapCtx.tex0))) {
-                flush = true;
+                // TASK-215 (CORE2-PERF-AUDIT B): the load only changes this batch's palette when it writes a halfword
+                // the palette reads. Both ranges are exact (clut::ClutHalfwordsWritten matches Copy, ClutHalfwordsUsed
+                // matches Decode), and an unreadable palette format keeps the conservative flush.
+                const uint32_t batchPsm = tex0::Psm(snapCtx.tex0), batchCpsm = tex0::Cpsm(snapCtx.tex0);
+                const bool scoped = options_.clutLoadScope && clut::IsValidPaletteFormat(write.cpsm) &&
+                                    clut::IsValidPaletteFormat(batchCpsm) &&
+                                    !clut::ClutRangesIntersect(clut::ClutHalfwordsWritten(write),
+                                                               clut::ClutHalfwordsUsed(batchPsm, batchCpsm,
+                                                                                       tex0::Csa(snapCtx.tex0)));
+                if (scoped) {
+                    ++clutFlushesAvoided_;
+                } else {
+                    flush = true;
+                }
             }
             if (BatchTouches(write.cbp, 4, false)) {
                 flush = true;
@@ -672,12 +685,22 @@ std::optional<FlushReason> FrontEnd::DecideFlush() const {
          (primDiff & MaskBits(3, 10)) != 0u)) {
         return FlushReason::PrimChanged;
     }
-    // Rule 2.
-    if (Dirty(liveCtx.test, snapCtx.test, kTestMask) ||
-        Dirty(liveCtx.scissor, snapCtx.scissor, kScissorMask) ||
-        Dirty(liveCtx.xyoffset, snapCtx.xyoffset, kXyoffsetMask) ||
-        Dirty(liveEnv.scanmsk, snapEnv.scanmsk, 0x3u) || Dirty(liveEnv.dthe, snapEnv.dthe, 1u)) {
-        return FlushReason::TestOrScissor;
+    // Rule 2. TASK-215: each change reports its own reason, so the `test=` line can be split (CORE2-PERF-AUDIT
+    // open question 1). The flush itself is the same.
+    if (Dirty(liveCtx.test, snapCtx.test, kTestMask)) {
+        return FlushReason::TestChanged;
+    }
+    if (Dirty(liveCtx.scissor, snapCtx.scissor, kScissorMask)) {
+        return FlushReason::ScissorChanged;
+    }
+    if (Dirty(liveCtx.xyoffset, snapCtx.xyoffset, kXyoffsetMask)) {
+        return FlushReason::XyoffsetChanged;
+    }
+    if (Dirty(liveEnv.scanmsk, snapEnv.scanmsk, 0x3u)) {
+        return FlushReason::ScanmskChanged;
+    }
+    if (Dirty(liveEnv.dthe, snapEnv.dthe, 1u)) {
+        return FlushReason::DtheChanged;
     }
     // Rule 3.
     if ((snapEnv.dthe & 1u) != 0u && Dirty(liveEnv.dimx, snapEnv.dimx, kAllBits)) {

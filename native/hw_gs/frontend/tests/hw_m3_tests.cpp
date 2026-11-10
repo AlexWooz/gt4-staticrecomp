@@ -592,13 +592,25 @@ void TestFlushRules() {
         }
     }
 
-    // Rule 2: TEST changed (ZTE on, ZTST GEQUAL).
+    // Rule 2: TEST changed (ZTE on, ZTST GEQUAL). TASK-215: rule 2 reports the five changes apart.
     {
         std::vector<Qword> change;
         AppendAd(change, {{reg::kTestOne, (uint64_t{1} << 16) | (uint64_t{2} << 17)}});
-        const FlushCase r = RunFlushCase(base, change, FlushReason::TestOrScissor);
+        const FlushCase r = RunFlushCase(base, change, FlushReason::TestChanged);
         CHECK_EQ(r.counted, 1u);
         CHECK_EQ(r.batches, 1u);
+    }
+
+    // Rule 2: SCISSOR changed, and XYOFFSET changed, keep their own reasons (the audit's split).
+    {
+        std::vector<Qword> change;
+        AppendAd(change, {{reg::kScissorOne, (uint64_t{40} << 16) | 0u}});
+        CHECK_EQ(RunFlushCase(base, change, FlushReason::ScissorChanged).counted, 1u);
+    }
+    {
+        std::vector<Qword> change;
+        AppendAd(change, {{reg::kXyoffsetOne, (uint64_t{16} << 32) | 16u}});
+        CHECK_EQ(RunFlushCase(base, change, FlushReason::XyoffsetChanged).counted, 1u);
     }
 
     // Rule 3: DIMX dirty while dithering.
@@ -1592,6 +1604,57 @@ void TestFastPaths() {
                 static_cast<unsigned long long>(fastVertices));
 }
 
+void TestClutLoadScope() {
+    // TASK-215 (CORE2-PERF-AUDIT B): the range test the CoreGS 2.0 front end uses to keep a batch across a CLUT load.
+    // Property, checked against the buffer itself: when ClutHalfwordsWritten and ClutHalfwordsUsed do not intersect, no
+    // halfword the palette reads changed, whatever the source format, CPSM, CSA, index width and CLD are.
+    CounterSet counters;
+    std::vector<uint8_t> memory(kLocalMemoryBytes);
+    uint64_t seed = 0x215u;
+    const auto next = [&] {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<uint32_t>(seed >> 33);
+    };
+    for (uint8_t& byte : memory) byte = static_cast<uint8_t>(next());
+    clut::ClutUnit unit(counters);
+    int loads = 0;
+    int avoidable = 0;
+    for (int step = 0; step < 4000; ++step) {
+        clut::Tex0Write load;
+        load.psm = (next() & 1u) ? 0x13u : 0x14u;  // 8-bit and 4-bit palette sources
+        load.cpsm = (next() % 3u) == 0u ? psm::kCt32 : ((next() & 1u) ? psm::kCt16 : psm::kCt16S);
+        load.cbp = next() % 4000u;
+        load.csm = next() % 8u == 0u ? 1u : 0u;
+        load.csa = next() & 31u;
+        load.cld = 1u;
+        load.texclutCbw = 1u + next() % 4u;
+        load.texclutCou = next() % 4u;
+        load.texclutCov = next() % 8u;
+        // The palette a pending batch would read, independent of the load's own fields.
+        const uint32_t texPsm = (next() & 1u) ? 0x13u : 0x14u;
+        const uint32_t texCpsm = (next() % 3u) == 0u ? psm::kCt32 : ((next() & 1u) ? psm::kCt16 : psm::kCt16S);
+        const uint32_t texCsa = next() & 31u;
+        const clut::HalfwordRanges used = clut::ClutHalfwordsUsed(texPsm, texCpsm, texCsa);
+        const std::array<uint16_t, 512> before = [&] {
+            std::array<uint16_t, 512> copy{};
+            std::copy(unit.Halfwords(), unit.Halfwords() + 512, copy.begin());
+            return copy;
+        }();
+        const bool loaded = unit.ProcessWrite(load, memory.data(), nullptr);
+        if (loaded) ++loads;
+        bool changedUsed = false;
+        for (int r = 0; r < 2; ++r) {
+            for (uint32_t i = used.begin[r]; i < used.end[r]; ++i) changedUsed = changedUsed || unit.Halfwords()[i] != before[i];
+        }
+        const bool intersect = clut::ClutRangesIntersect(clut::ClutHalfwordsWritten(load), used);
+        if (changedUsed) CHECK(intersect);  // the ranges never miss a halfword the load really changed
+        if (loaded && !intersect) ++avoidable;
+    }
+    CHECK(loads > 1000);
+    CHECK(avoidable > 100);
+    std::printf("hw_clut_load_scope: %d loads, %d writes no halfword of the sampled palette\n", loads, avoidable);
+}
+
 int main(int argc, char** argv) {
     const std::string name = argc > 1 ? argv[1] : "";
     struct Entry {
@@ -1608,6 +1671,7 @@ int main(int argc, char** argv) {
         {"hw_clut_load", [] { TestClutLoad(); }},
         {"hw_clut_snapshot", [] { TestClutSnapshot(); }},
         {"hw_clut_copy_free", [] { TestClutCopyFree(); }},
+        {"hw_clut_load_scope", [] { TestClutLoadScope(); }},
         {"hw_front_end_fast_paths", [] { TestFastPaths(); }},
         {"hw_block_ranges_overlap", [] { TestBlockRangesOverlap(); }},
         {"hw_transfers", [] { TestTransfers(); TestMipLevelTransferFlush(); }},

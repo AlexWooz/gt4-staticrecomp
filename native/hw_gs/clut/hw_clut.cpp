@@ -74,6 +74,59 @@ uint32_t ReadLittle(const uint8_t* bytes, uint32_t count) {
 
 }  // namespace
 
+bool IsValidPaletteFormat(uint32_t cpsm) { return IsCpsmValid(cpsm); }
+
+// TASK-215 (CORE2-PERF-AUDIT B): the exact halfword ranges Copy writes and Decode reads.
+HalfwordRanges ClutHalfwordsWritten(const Tex0Write& write) {
+    HalfwordRanges out;
+    const uint32_t count = (write.psm & 7u) == 3u ? 256u : 16u;
+    if (write.cpsm == psm::kCt32) {
+        const uint32_t firstGroup = write.csa & 15u;
+        const uint32_t endGroup = std::min(16u, firstGroup + count / 16u);
+        out.begin[0] = 16u * firstGroup;
+        out.end[0] = 16u * endGroup;
+        out.begin[1] = 256u + 16u * firstGroup;
+        out.end[1] = 256u + 16u * endGroup;
+    } else {
+        const uint32_t start = (16u * write.csa) & 511u;
+        out.begin[0] = start;
+        out.end[0] = std::min(512u, start + count);
+        out.end[1] = start + count > 512u ? start + count - 512u : 0u;
+    }
+    return out;
+}
+
+HalfwordRanges ClutHalfwordsUsed(uint32_t psm, uint32_t cpsm, uint32_t csa) {
+    HalfwordRanges out;
+    const uint32_t count = (psm & 7u) == 3u ? 256u : 16u;
+    if (cpsm == psm::kCt32) {
+        // Decode clamps every entry's group to 15, so an 8-bit palette starting at group g reads groups g..15.
+        const uint32_t firstGroup = csa & 15u;
+        const uint32_t endGroup = count == 256u ? 16u : std::min(16u, firstGroup + 1u);
+        out.begin[0] = 16u * firstGroup;
+        out.end[0] = 16u * endGroup;
+        out.begin[1] = 256u + 16u * firstGroup;
+        out.end[1] = 256u + 16u * endGroup;
+    } else {
+        const uint32_t start = (16u * csa) & 511u;
+        out.begin[0] = start;
+        out.end[0] = std::min(512u, start + count);
+        out.end[1] = start + count > 512u ? start + count - 512u : 0u;
+    }
+    return out;
+}
+
+bool ClutRangesIntersect(const HalfwordRanges& a, const HalfwordRanges& b) {
+    for (int i = 0; i < 2; ++i) {
+        if (a.begin[i] == a.end[i]) continue;
+        for (int j = 0; j < 2; ++j) {
+            if (b.begin[j] == b.end[j]) continue;
+            if (a.begin[i] < b.end[j] && b.begin[j] < a.end[i]) return true;
+        }
+    }
+    return false;
+}
+
 bool LocatePixel(uint32_t format, uint32_t bufferPointer, uint32_t bufferWidth,
                  uint32_t x, uint32_t y, PixelLocation& out) {
     uint32_t pageWidth = 0;
