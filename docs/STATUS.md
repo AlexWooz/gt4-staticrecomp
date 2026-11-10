@@ -1,5 +1,27 @@
 # Current Status
 
+## TASK-090 round 13: the VU1 program selector and the family map (2026-11-09, branch `task/090-coregs3`)
+
+`.gt4scene` is **version 3**: each draw carries the ITOP and MSCAL words from the terminating tag of its REF chain (raw
+words, the decoded MSCAL entry and ITOP dispatch, `obj->count` and a validity flag), read at the same K1 post hook;
+versions 1 and 2 are refused. Counters on a fresh capture: `selectors 124,782, selectors_missing 0`. The **ITOP
+dispatch** is the real program selector; the MSCAL word is a shared stub that mixes families. Frame 0 (VBlank 7398):
+
+- **0x1058** -> `vu1_19F8161FEF7AFDBA` -> 0x10A8 (`vu1_6CD954479A2A5D0E`, the 0x10A0 body): **body/paint, 6-qword,
+  27 draws / 3,918 vertices, all lit**;
+- **0x0B08 / 0x03D8 / 0x0418 / 0x0250** -> nine-qword families (glass/lamp, draw 98): 62 draws / 5,887 vertices, unlit;
+- **0x14D8** -> three-qword: 15 draws / 930 vertices, unlit;
+- **0x0080** -> no block: 11 draws / 1,351 vertices, unlit.
+
+**Draws 91/93 use the same body program (0x20B -> 0x1058 -> 0x10A8); their residual is a light-block/data effect, not a
+second program.** The offline renderer reports the same split: 27 draws / 3,918 vertices lit, 89 / 8,228 fallback.
+Selector vs Cmd flag is 1:1 in this frame (0xC2 -> 6q, 0xA1 -> 9q, 0x85 -> 3q, 0x01 -> 9q no light, 0xA4 -> 6q no
+colour, 0x80 -> none). Evidence: `build/evidence/coregs3/r13/` (`selectors.gt4scene` v3, 626,744 B; `selectors.gt4tap`,
+29,581,688 B); `build/analysis-lighting/selectors-r13.{txt,json}`. Checks: CTest 4/4, Python 7/7, 3x off/shadow gate
+COREGS3-NIGHT-CHECK-OK (capture v3, 3,415,692 B; the final rebuild after two comment-only edits is functionally
+identical). Device: Avell A70, RTX 3060 Laptop, Vulkan 1.4.357. Open: the four nine-qword programs and the three-qword/
+no-block programs still need their formulas (next research round); one scene only, other scenes may add entries.
+
 ## TASK-090 round 12: the VU1 lighting formula in both renderers (2026-11-09, branch `task/090-coregs3`)
 
 `native/coregs3/coregs3_lighting.{hpp,cpp}` now implements the measured body/paint VU1 lighting in the exact fragment

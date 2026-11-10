@@ -1637,8 +1637,15 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   vertices, guest clock/digest/state identical, shaded cars in `build/evidence/coregs3/r12/present-07400.png`; present
   vs reference differs only in the car box (36,707 px). CTest 4/4 (new `native_coregs3_lighting`), Python 7/7, the 3x
   off/shadow gate COREGS3-NIGHT-CHECK-OK (0 differences, 13/13 frames, capture 3,382,120 B).
-- Next: the G-IMAGE/G-PERF gates and the native fidelity work (textures, fog, effects) on top of the `present` seam;
-  the nine-/three-qword block variants and the 91/93 program selector stay open.
+- **Round 13 (2026-11-09, the program selector).** `.gt4scene` version 3 stores the per-draw ITOP/MSCAL words from the
+  terminating tag of the REF chain (raw, decoded entries, `obj->count`, validity; versions 1/2 refused). The ITOP
+  dispatch separates the families: **0x1058** body/paint (27 draws / 3,918 vertices, all lit); **0x0B08 / 0x03D8 /
+  0x0418 / 0x0250** nine-qword glass/lamp (62 draws / 5,887 vertices, unlit); **0x14D8** three-qword (15 / 930, unlit);
+  **0x0080** no block (11 / 1,351, unlit). **Draws 91/93 are the same body program**; their residual is data, not
+  another program. The MSCAL word mixes families (shared stub) and is not the selector. Counters: 124,782 selectors,
+  0 missing. Checks: CTest 4/4, Python 7/7, 3x off/shadow gate OK (capture v3, 3,415,692 B).
+- Next: the formulas for the four nine-qword programs and the three-qword/no-block programs (research), then the
+  G-IMAGE/G-PERF gates and the native fidelity work (textures, fog, effects) on top of the `present` seam.
 
 
 ### TASK-087 — GS readbacks without stalls

@@ -76,6 +76,19 @@ qwords (`0x6C06C0C9`, the body/paint form: `0xC9..0xCB` light matrix, `0xCC` lig
 migrated: captures are diagnostic and are recaptured with a matching build. The offline reader
 (`build/analysis-lighting/gt4io.py`) follows the same layout.
 
+Format **version 3** (2026-11-09) adds the per-draw VU1 program selector. `func_0049D328` writes one REF tag per item and
+a terminating tag after the loop; word 2 of each tag is a VIF ITOP (`0x04000000 | (obj->x + obj->y)`) and word 3 a VIF
+MSCAL (`0x14000000 | n`, `n` from `obj->count` at PGL+0x14 and the Cmd flag/bits). The first item's tag carries the
+initial STMASK, the tags written at the end of each iteration carry the next item's ITOP/MSCAL, and the terminating tag
+(the last qword before the post-call output cursor) carries the last item's pair. The record stores both raw words, the
+MSCAL immediate and its byte entry (`* 8`), the ITOP dispatch entry (`(itop & 0x3FF) * 8`), `obj->count` and a validity
+flag. `n` comes from `obj->count` (PGL+0x14) and the Cmd flag/bits. The MSCAL entry is a stub that sets the shared-code
+return address (vi15) and the 0xD9 block pointer (vi14) and dispatches to the ITOP entry; the ITOP operands (+0x18/+0x1C)
+are written inside the call by `func_0049D080` and its case helpers, so the ITOP entry is the real per-shape program and
+encodes the material/program variant (the pre-call `pgl[6]/pgl[7]` are the previous call's values and must not be read as
+this draw's ITOP). The six-qword body path, for example, is ITOP 0x20B -> entry 0x1058 -> shared prologue 0x1908 -> loop
+0x10A8, the 0x10A0 lighting fragment. Versions 1 and 2 are refused.
+
 Captures are derived from the user's own disc and stay under `build/evidence/` (ignored). Nothing is committed.
 
 ## 5. What the first captures show
@@ -479,3 +492,30 @@ COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames
 **Open.** The nine-qword and three-qword block variants are not decoded (the no-colour glass/lamp draws keep the
 `(255,255,255)` base fallback and are counted); the 91/93 sub-family (program selector) and per-item light uploads stay
 open from round 11.
+
+## 12. Round 13 (2026-11-09): the VU1 program selector and the family map
+
+`GT4_COREGS3` captures now carry the per-draw ITOP and MSCAL words from the terminating tag of the draw's REF chain
+(`CapturedDraw::program_*`, format version 3): the raw words, the MSCAL entry (`selector * 8`), the ITOP dispatch
+(`(itop & 0x3FF) * 8`), `obj->count` and a validity flag. The **ITOP dispatch** is the real program selector; the MSCAL
+word is a shared stub that sets the return address/0xD9 pointer and mixes families. Mapping for frame 0 (VBlank 7398),
+using the read-only AOT manifest:
+
+| ITOP dispatch | AOT entry (manifest) | chain | family | draws / vertices | block |
+|---|---|---|---|---|---|
+| 0x1058 | `vu1_19F8161FEF7AFDBA` | +0x10 via 0x1908 -> 0x10A8 (`vu1_6CD954479A2A5D0E`, the 0x10A0 body) | body/paint, 6-qword, lit | 27 / 3,918 | `0x6C06C0C9` |
+| 0x0B08 | `vu1_10F5C9EA39C2C7CA` | +8 via 0x1878 -> 0x0B48 (`vu1_53E3859092505B4A`) | nine-qword glass/lamp (draw 98) | 44 / 3,816 | `0x6C09C0C9` |
+| 0x03D8 | `vu1_752F5F48E391E2DD` | +8 via 0x1878 -> 0x0418 | nine-qword | 13 / 1,677 | 9q |
+| 0x0418 | `vu1_8BE019F2A79E69D1` | different structure (goto 0x04D0) | nine-qword, no light upload | 4 / 360 | 9q |
+| 0x0250 | `vu1_8D398BF1242BFD1A` | +8 via 0x1878 -> 0x0290 | nine-qword | 1 / 34 | 9q |
+| 0x0C68 | `vu1_971A2A1267F9D57A` | +8 via 0x1878 -> 0x0CA8 | 6-qword but no colour, unlit | 1 / 60 | 6q |
+| 0x14D8 | `vu1_ADAA0AA00ACD6D39` | +6 via 0x1810 -> 0x1508 | three-qword | 15 / 930 | `0x6C03C0C9` |
+| 0x0080 | `vu1_F63D32CA15346EEC` | +6 via 0x1810 -> 0x00B0 | no block | 11 / 1,351 | none |
+
+The 27 body draws are all lit; every other selector is unlit. **Draws 91/93 are the same body program** (ITOP 0x20B ->
+0x1058 -> 0x10A8); their residual is a light-block/data effect, not a second program. Draw 98 is ITOP 0x161 -> 0x0B08
+-> 0x0B48 (nine-qword, no colour). The MSCAL entry is only a stub (vi15/vi14) and mixes families (entry 0x1D40 covers
+39 nine-qword + 16 six-qword draws), so the ITOP dispatch, not the MSCAL entry, is the family selector. Selector vs Cmd
+flag is 1:1 in this frame (0xC2 -> 6q, 0xA1 -> 9q, 0x85 -> 3q, 0x01 -> 9q no light, 0xA4 -> 6q no colour, 0x80 ->
+none). Evidence: `build/evidence/coregs3/r13/`, `build/analysis-lighting/selectors-r13.{txt,json}`. Open: the four
+nine-qword programs and the three-qword/no-block programs still need their formulas; one scene only.
