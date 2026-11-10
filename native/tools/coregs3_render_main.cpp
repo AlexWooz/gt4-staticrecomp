@@ -157,7 +157,8 @@ void print_channel_scan(const FrameSnapshot &frame) {
   for (const CapturedDraw &draw : frame.draws) {
     if (shown++ >= 4) break;
     const DrawMatrix matrix = draw_matrix(draw);
-    std::printf("draw %u shape 0x%08X items %u value %08X\n", draw.sequence, draw.shape, draw.item_count,
+    std::printf("draw %u pass %s call %s caller %08X shape 0x%08X items %u value %08X\n", draw.sequence,
+                pass_name(draw.pass), call_site_name(draw.call_site), draw.caller_ra, draw.shape, draw.item_count,
                 draw.cmd_value);
     std::printf("  program mscal %08X sel %u entry 0x%04X | itop %08X dispatch 0x%04X | count %u valid %u; "
                 "light block %u qwords cmd %08X\n",
@@ -334,10 +335,35 @@ int main(int argc, char **argv) {
   if (list) {
     std::printf("capture %s: version %u target %u frames %zu\n", argv[1], header.version, header.target,
                 frames.size());
-    for (const FrameSnapshot &frame : frames)
-      std::printf("  frame %u vblank %llu draws %u textures %u materials %u packets %zu\n", frame.index,
-                  static_cast<unsigned long long>(frame.vblank), frame.draw_count, frame.texture_count,
-                  frame.material_count, frame.packets.size());
+    for (const FrameSnapshot &frame : frames) {
+      std::printf("  frame %u vblank %llu draws %u textures %u materials %u packets %zu environment %u journal %zu\n",
+                  frame.index, static_cast<unsigned long long>(frame.vblank), frame.draw_count, frame.texture_count,
+                  frame.material_count, frame.packets.size(), frame.environment.valid,
+                  frame.pass_states.size());
+      // Format version 5: the pass table and the per-pass GS state journal of this frame.
+      std::uint32_t counts[kPassCount] = {};
+      for (const CapturedDraw &draw : frame.draws)
+        if (draw.pass < kPassCount) counts[draw.pass] += 1;
+      for (std::uint32_t pass = 0; pass < kPassCount; ++pass)
+        if (counts[pass] != 0)
+          std::printf("    pass %-12s draws %u\n", pass_name(pass), counts[pass]);
+      for (const CapturedPassState &state : frame.pass_states)
+        std::printf("    journal %-12s vblank %llu draws %u items %u first %d | FOGCOL %016llX FRAME %016llX "
+                    "XYOFFSET %016llX ZBUF %016llX SCISSOR %016llX ALPHA %016llX TEST %016llX\n",
+                    pass_name(state.pass), static_cast<unsigned long long>(state.vblank), state.draw_count,
+                    state.item_count, state.first_draw == kNoRecord ? -1 : static_cast<int>(state.first_draw),
+                    static_cast<unsigned long long>(state.fogcol),
+                    static_cast<unsigned long long>(state.frame),
+                    static_cast<unsigned long long>(state.xyoffset),
+                    static_cast<unsigned long long>(state.zbuf),
+                    static_cast<unsigned long long>(state.scissor),
+                    static_cast<unsigned long long>(state.alpha),
+                    static_cast<unsigned long long>(state.test));
+      if (frame.environment.valid != 0)
+        std::printf("    environment sun/fog/lights %08X %08X %08X %08X ... reflection %08X ... lights %08X\n",
+                    frame.environment.words[0], frame.environment.words[1], frame.environment.words[2],
+                    frame.environment.words[3], frame.environment.words[84], frame.environment.words[98]);
+    }
     if (!frames.empty()) print_channel_scan(frames.back());
     return 0;
   }

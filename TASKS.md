@@ -1756,9 +1756,19 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   Reflection pass: PRIM 0x7C, additive `(Cs-0)*Ad+Cd`, FOGCOL black, vertex fog, TEX0 0x2BC0 CT32, TEX1 linear, CLAMP
   region, no depth write, GEQUAL, FBMSK; 73/83 DATE=1 DATM=0 (mask from the base paint T4 alpha), 9 DATE=0. Plan: M1
   offline body reflection, M2 live present, M3 native env map. Evidence: `build/analysis-texgen/`.
-- Next: the body reflection implementation (in flight) and the capture extension (ALL_DRAWS pass tag/K7, hw GS-stream,
-  `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates. The per-item light
-  state is now consumed by both renderers.
+- **Capture v5 (2026-11-10).** `.gt4scene` v5 names every draw's pass with 13 K7 begin/end markers in unit_008F plus
+  direct K1 sites for the env map/BillboardSet/tachometer shape calls (the caller RA alone cannot separate passes: one
+  RA carries the 130 course and 116 car draws); it adds the scene environment block (scene+0x9C0..0xB10, +0xC10..0xC48,
+  +0xC60) and a bounded per-pass GS state journal (FOGCOL/FRAME/XYOFFSET/ZBUF/SCISSOR/ALPHA/TEST, state at pass begin).
+  ALL_DRAWS night race: 285 draws/1,772 items/77,882 vertices per frame, 0 unknown; pass table env_map 31/121/3,988, sky
+  1/16/940, far_underlay 3/9/67, course 130/1,284/60,119, reflection 4/7/292, cars 116/335/12,476; environment static
+  (sun 0.7/0.45/0.1/0.8, fog 0.2/0.05/0.1, reflection 1/1/1/0.5, light 1.41); journal 18,086 entries; CTest 8/8,
+  Python 8/8, 3x gate OK. New EE library pin `7f3c833f…` built from the slice299 units with the K7 insertions (receipt in
+  the capture worktree; a copy is in the main worktree's `build/090-capture-v5/ee-v5b`). The car-only build with the old
+  library still works but has no K7 calls.
+- Next: the body reflection (in flight); the track M1 sky+road renderer using the v5 ALL_DRAWS capture; the effects/HUD
+  capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates. The per-item light state is now consumed
+  by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls

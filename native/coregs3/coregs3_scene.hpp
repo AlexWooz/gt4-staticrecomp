@@ -16,9 +16,11 @@
 //              u32 index, u32 reserved, u64 vblank,
 //              u32 draw_count, u32 texture_count, u32 material_count, u32 packet_bytes,
 //              camera: u32 valid, u32 camera, u32 pgl_block_k3[16], u32 pgl_block_k4[16], u32 vf_k4[32]
+//              environment (v5): u32 valid, u32 reserved, u32 words[99] (PGL/GS-independent scene block)
+//              pass journal (v5): u32 count, u32 reserved, CapturedPassState[count]
 //              textures [texture_count]:  u32 guest_address, u8 bytes[0x28]
 //              materials[material_count]: u32 guest_address, u8 bytes[0x50]
-//              draws    [draw_count]:    CapturedDraw (fixed size, see serialize_draw)
+//              draws    [draw_count]:    CapturedDraw (fixed size, see serialize_draw; v5 adds pass/call site/RA)
 //              packets  [packet_bytes]:  the VIF bytes of every item, in draw and item order, 16-byte aligned
 //
 // A reader that only needs the counters may skip a block by block_bytes. kCaptureTargetV200 is the only target the
@@ -41,7 +43,11 @@
 // (the TOPS+0xC9 content of its MSCAL parity, tracked in VIF command order), because the VU1 keeps the previous block
 // when a shape uploads nothing. It is also the first version whose program selector is per item: the measured capture
 // shows the ITOP word changes within some draws (a draw can mix programs), so `program_*` alone was a last-item view.
-// Versions 1..3 are refused, not migrated.
+//
+// Format version 5 (2026-11-10) names every pass: `CapturedDraw::pass` is a PassId instead of the hardcoded 1, the draw
+// gains its call site and the return address that called ModelSet2___render (evidence for the pass map), the frame gains
+// the scene environment block (the PGL context words the sun, fog tables, lights and reflection parameters live in) and a
+// bounded per-pass GS state journal (the PGL state shadow at each pass begin). Versions 1..4 are refused, not migrated.
 #pragma once
 
 #include <cstddef>
@@ -61,8 +67,45 @@ const char *mode_name(Mode mode) noexcept;
 
 inline constexpr std::uint32_t kSceneMagic = 0x53345447u;    // "GT4S"
 inline constexpr std::uint32_t kFrameMagic = 0x47334647u;    // "GF3G"
-inline constexpr std::uint32_t kSceneVersion = 4u;
+inline constexpr std::uint32_t kSceneVersion = 5u;
 inline constexpr std::uint32_t kCaptureTargetV200 = 0u;
+
+// The pass a captured draw belongs to (format version 5). The order is the race order of func_0033EAB8 plus the direct
+// shape-call passes (docs/COREGS3-HOOKS.md §17): the car env map/sphere map first, then the sky, the far underlay, the
+// 2D backdrop, the main course and its billboards, the wet-road reflection, the cars, render_after, the back mirror, the
+// flares, crowd/pitmen, particles, the post chain, the HUD panel and the optional concourse. `unknown` is a counted
+// fallback: a draw is never guessed into a pass.
+enum PassId : std::uint32_t {
+  kPassUnknown = 0,
+  kPassEnvMap = 1,       // car environment map / sphere map (direct pgluCallShape calls, func_0044E660/EB10)
+  kPassSky = 2,          // func_00396B80
+  kPassFarUnderlay = 3,  // func_00396D40
+  kPassBackdrop = 4,     // full-screen backdrop fill (PATH3 2D; no K1 draw today)
+  kPassCourse = 5,       // CourseData__render_course, its billboards and render_model calls
+  kPassBillboards = 6,   // a direct BillboardSet__render shape call outside any pass marker
+  kPassReflection = 7,   // RacePS2Base__render_reflection and its car/light sub-calls
+  kPassCars = 8,         // the K5 bracket of the main view (RacePS2Base__render_cars)
+  kPassRenderAfter = 9,  // RacePS2Base__render_after (CourseData__render_after)
+  kPassMirror = 10,      // RacePS2Base__render_back_mirror
+  kPassFlares = 11,      // func_003E5338
+  kPassCrowdPitmen = 12, // func_003B8848
+  kPassParticles = 13,   // func_003C2838
+  kPassPost = 14,        // the post chain (method +0x3E8)
+  kPassPanel = 15,       // HUD panel (render_panel, RaceDisplay::render and the tachometer shape call)
+  kPassConcourse = 16,   // RacePS2Base__render_concourse (method +0x3A0), off the race path
+  kPassCount = 17,
+};
+const char *pass_name(std::uint32_t pass) noexcept;
+
+// Where a stored shape call came from. The K1 site inside ModelSet2___render is by far the most common one; the direct
+// sites are the shape calls that do not pass through it (the car environment map, BillboardSet and the tachometer).
+enum CallSite : std::uint32_t {
+  kCallSiteModelSet2 = 0,  // 0x00455A5C in ModelSet2___render (unit_00D5)
+  kCallSiteBillboard = 1,  // 0x004507AC in BillboardSet__render (unit_00D4)
+  kCallSiteEnvMap = 2,     // 0x0044E920 / 0x0044EE24 in func_0044E660/func_0044EB10 (unit_00D3)
+  kCallSiteTachometer = 3, // 0x003EC4A0 in RaceOnboardTachometer__virtual_13 (unit_00BB)
+};
+const char *call_site_name(std::uint32_t site) noexcept;
 
 // The VU1 light block of one shape call lands at TOPS qword 0xC9 through a VIF UNPACK whose payload is at most nine
 // qwords (six for the material/light form of func_0049EB90/func_0049F170, nine for func_0049E698). The capture reserves
@@ -218,6 +261,11 @@ struct CapturedDraw {
   std::uint32_t chain_tags = 0;
   std::uint32_t chain_valid = 0;
   std::uint32_t program_uniform = 0;
+  // Format version 5: the call site that produced this draw and, for the ModelSet2 site, the return address saved by
+  // ModelSet2___render's caller (PGL-independent evidence for the pass map; the pass itself comes from the K7 markers,
+  // because the same model/course functions are called from several passes, as the exploration showed).
+  std::uint32_t call_site = 0;  // CallSite
+  std::uint32_t caller_ra = 0;
   // The VU1 program selector, read from the terminating tag of the draw's REF chain in the same PGL output buffer.
   // func_0049D328 writes word 3 of every tag as `0x14000000 | n` (VIF MSCAL) and word 2 as `0x04000000 | (x + y)` (VIF
   // ITOP); the terminating tag carries the last item's words. `n` comes from obj->count (PGL +0x14) and the Cmd
@@ -260,6 +308,58 @@ struct CameraSnapshot {
   std::uint32_t vf_k4[8][4] = {};
 };
 
+// The scene environment block of the PGL context (format version 5), copied once per frame at the first pass begin:
+// +0x9C0..0xB10 sun, the four fog tables and the eight lights; +0xC10..0xC48 the reflection parameters; +0xC60 the
+// light state. The words are raw guest values; interpreting them belongs to the renderer/reader.
+struct EnvSpan {
+  std::uint32_t offset;
+  std::uint32_t words;
+};
+inline constexpr EnvSpan kEnvSpans[] = {
+    {0x9C0u, 84u},
+    {0xC10u, 14u},
+    {0xC60u, 1u},
+};
+inline constexpr std::uint32_t kEnvWords = 99u;
+
+struct SceneEnvironment {
+  std::uint32_t valid = 0;  // 1 once the block was copied for this frame
+  std::uint32_t words[kEnvWords] = {};
+};
+
+// The PGL GS state shadow: the PGL context keeps the GS registers the game has set, and the shape builder emits them.
+// The offsets below are the register mirrors the tap confirmed (night race, 277 draws, exact 64-bit matches where the
+// draw itself does not rewrite the register): FOGCOL 0x138, FRAME 0x170, XYOFFSET 0x178, ZBUF 0x188, SCISSOR 0x190,
+// ALPHA 0x198, TEST 0x1A0, all relative to 0x70002000. The capture stores the raw register words at each pass begin;
+// interpretation (PSM/FBW, test modes, alpha factors) belongs to the reader.
+inline constexpr std::uint32_t kGsShadowFogCol = 0x138u;
+inline constexpr std::uint32_t kGsShadowFrame = 0x170u;
+inline constexpr std::uint32_t kGsShadowXYOffset = 0x178u;
+inline constexpr std::uint32_t kGsShadowZBuf = 0x188u;
+inline constexpr std::uint32_t kGsShadowScissor = 0x190u;
+inline constexpr std::uint32_t kGsShadowAlpha = 0x198u;
+inline constexpr std::uint32_t kGsShadowTest = 0x1A0u;
+
+// One pass of one frame: the GS register shadow at the pass begin and the draws stored while the pass was open. The
+// journal is bounded (kMaxPassStatesPerFrame); a frame that would exceed the bound is refused like any other overflow.
+struct CapturedPassState {
+  std::uint32_t pass = 0;         // PassId
+  std::uint32_t first_draw = kNoRecord;  // lowest captured draw sequence inside the pass, kNoRecord when empty
+  std::uint32_t draw_count = 0;   // captured draws while the pass was open
+  std::uint32_t item_count = 0;   // captured items while the pass was open
+  std::uint32_t flags = 0;        // reserved, 0
+  std::uint32_t reserved = 0;
+  std::uint64_t vblank = 0;       // guest VBlank of the pass begin
+  std::uint64_t fogcol = 0;       // kGsShadowFogCol
+  std::uint64_t frame = 0;        // kGsShadowFrame
+  std::uint64_t xyoffset = 0;     // kGsShadowXYOffset
+  std::uint64_t zbuf = 0;         // kGsShadowZBuf
+  std::uint64_t scissor = 0;      // kGsShadowScissor
+  std::uint64_t alpha = 0;        // kGsShadowAlpha
+  std::uint64_t test = 0;         // kGsShadowTest
+};
+inline constexpr std::uint32_t kMaxPassStatesPerFrame = 32u;
+
 struct FrameSnapshot {
   std::uint32_t index = 0;   // capture-local frame ordinal (0, 1, 2, ...)
   std::uint64_t vblank = 0;  // guest VBlank counter when the car pass began
@@ -268,6 +368,8 @@ struct FrameSnapshot {
   std::uint32_t material_count = 0;
   std::uint64_t overflow_flags = 0;  // one bit per refusal cause, see CaptureCounters
   CameraSnapshot camera;
+  SceneEnvironment environment;  // format version 5
+  std::vector<CapturedPassState> pass_states;  // format version 5, bounded by kMaxPassStatesPerFrame
   std::vector<CapturedDraw> draws;
   std::vector<CapturedTexture> textures;
   std::vector<CapturedMaterial> materials;
@@ -282,6 +384,7 @@ enum Overflow : std::uint64_t {
   kOverflowMaterials = 1ull << 3,
   kOverflowPackets = 1ull << 4,
   kOverflowGuestRead = 1ull << 5,
+  kOverflowPassStates = 1ull << 6,
 };
 
 // Serializes a whole frame block (see the file layout above). Returns false when the snapshot is inconsistent (a
@@ -332,6 +435,14 @@ struct CaptureCounters {
   std::uint64_t chain_calls = 0;           // PGL output chains walked (every hooked shape call, in or out of the pass)
   std::uint64_t chain_gaps = 0;            // chains whose pre-call cursor did not continue the previous post-call one
   std::uint64_t chain_incomplete = 0;      // chains that did not parse exactly to the post-call cursor
+  // Format version 5: the pass journal and the pass attribution.
+  std::uint64_t pass_states = 0;           // journal entries written
+  std::uint64_t pass_draws[kPassCount] = {};   // captured draws per PassId
+  std::uint64_t pass_items[kPassCount] = {};   // captured items per PassId
+  std::uint64_t pass_orphan_ends = 0;      // pass_end calls without an open pass
+  std::uint64_t pass_mismatched_ends = 0;  // pass_end calls that close a different pass than the open one
+  std::uint64_t environment_frames = 0;    // frames whose scene environment block was copied
+  std::uint64_t environment_read_failures = 0;
   std::uint32_t largest_items = 0;    // largest item table seen in one draw (capacity evidence)
   std::uint32_t largest_draw_bytes = 0;   // largest packet total of one draw
   std::uint32_t largest_frame_bytes = 0;  // largest packet total of one frame

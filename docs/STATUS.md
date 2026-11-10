@@ -1,5 +1,25 @@
 # Current Status
 
+## 2026-11-10: capture v5: pass tags, scene environment and the per-pass GS state journal (TASK-090)
+
+`.gt4scene` is **version 5**. The caller RA alone cannot name a pass (one RA carries the 130 course and 116 car draws
+through `CourseData__render_course_2`), so the capture adds 13 K7 begin/end markers in unit_008F plus direct K1 sites
+for the shape calls that bypass `ModelSet2___render` (env map x2, BillboardSet, tachometer); every draw carries a
+`PassId` (env_map, sky, far_underlay, backdrop, course, billboards, reflection, cars, render_after, mirror, flares,
+crowd_pitmen, particles, post, panel, concourse, unknown), `call_site` and `caller_ra`. The frame gains the scene
+environment block (`scene+0x9C0..0xB10` sun/four fog tables/eight lights, `+0xC10..0xC48` reflection, `+0xC60` lights)
+and a bounded per-pass journal of the PGL GS shadow (FOGCOL, FRAME, XYOFFSET, ZBUF, SCISSOR, ALPHA, TEST; state at the
+pass begin, max 32 entries/frame). Versions 1-4 are refused; the fixture round-trips v5 and refuses bad ids/counts.
+ALL_DRAWS night race (3x, VBlanks 7398-7402): 285 draws / 1,772 items / 77,882 vertices per frame with **0 unknown** —
+env_map 31/121/3,988, sky 1/16/940, far_underlay 3/9/67, course 130/1,284/60,119, reflection 4/7/292, cars
+116/335/12,476; 0 read failures, 0 journal refusals, 18,086 journal entries, 1,557 environment frames. Environment
+static: sun/ambient 0.7, 0.45, 0.1, 0.8; fog 0.2, 0.05, 0.1; reflection 1, 1, 1, 0.5; light 1.41. The journal matches the
+tap where the pass's own first draw does not rewrite the register (FOGCOL 15/15, SCISSOR 25/25, XYOFFSET 5/15; TEST
+176, ALPHA 244, FRAME 277 low-32 over the 277-draw shadow-offset correlation). CTest 8/8, Python 8/8, 3x off/shadow gate
+COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). The new EE library pin is
+`7f3c833f…` (built from the pinned slice299 units with the K7 insertions; a copy is in the main worktree's
+`build/090-capture-v5/ee-v5b`). Details: `docs/COREGS3-HOOKS.md` §17; evidence under `build/evidence/night-v5c-*`.
+
 ## 2026-11-10: body/paint texgen and reflection study: the formula is pinned
 
 A read-only study executed the real AOT 0x10A0 body fragment on captured body vertices (v4 capture frames 7398/7399,

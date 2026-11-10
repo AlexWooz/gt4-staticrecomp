@@ -13,6 +13,8 @@ namespace {
 static_assert(kPglSpans[0].words + kPglSpans[1].words + kPglSpans[2].words + kPglSpans[3].words + kPglSpans[4].words ==
                   kPglWords,
               "kPglWords must be the sum of the captured PGL spans");
+static_assert(kEnvSpans[0].words + kEnvSpans[1].words + kEnvSpans[2].words == kEnvWords,
+              "kEnvWords must be the sum of the scene environment spans");
 
 void put_u16(std::vector<std::uint8_t> &out, std::uint16_t value) {
   out.push_back(static_cast<std::uint8_t>(value & 0xFFu));
@@ -74,6 +76,43 @@ struct Reader {
   }
 };
 
+void put_pass_state(std::vector<std::uint8_t> &out, const CapturedPassState &state) {
+  put_u32(out, state.pass);
+  put_u32(out, state.first_draw);
+  put_u32(out, state.draw_count);
+  put_u32(out, state.item_count);
+  put_u32(out, state.flags);
+  put_u32(out, state.reserved);
+  put_u64(out, state.vblank);
+  put_u64(out, state.fogcol);
+  put_u64(out, state.frame);
+  put_u64(out, state.xyoffset);
+  put_u64(out, state.zbuf);
+  put_u64(out, state.scissor);
+  put_u64(out, state.alpha);
+  put_u64(out, state.test);
+}
+
+bool get_pass_state(Reader &in, CapturedPassState &state) {
+  state.pass = in.u32();
+  state.first_draw = in.u32();
+  state.draw_count = in.u32();
+  state.item_count = in.u32();
+  state.flags = in.u32();
+  state.reserved = in.u32();
+  state.vblank = in.u64();
+  state.fogcol = in.u64();
+  state.frame = in.u64();
+  state.xyoffset = in.u64();
+  state.zbuf = in.u64();
+  state.scissor = in.u64();
+  state.alpha = in.u64();
+  state.test = in.u64();
+  if (state.pass >= kPassCount) return false;
+  if (state.first_draw != kNoRecord && state.first_draw >= kMaxDrawsPerFrame) return false;
+  return in.ok;
+}
+
 void put_draw(std::vector<std::uint8_t> &out, const CapturedDraw &draw) {
   put_u32(out, draw.sequence);
   put_u32(out, draw.pass);
@@ -107,6 +146,8 @@ void put_draw(std::vector<std::uint8_t> &out, const CapturedDraw &draw) {
   put_u32(out, draw.chain_tags);
   put_u32(out, draw.chain_valid);
   put_u32(out, draw.program_uniform);
+  put_u32(out, draw.call_site);
+  put_u32(out, draw.caller_ra);
   // Only the items the draw declares: an empty item slot costs nothing on disk.
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
@@ -168,6 +209,9 @@ bool get_draw(Reader &in, std::uint32_t version, CapturedDraw &draw) {
   draw.chain_valid = in.u32();
   draw.program_uniform = in.u32();
   if (draw.chain_valid > 1 || draw.program_uniform > 1) return false;
+  draw.call_site = in.u32();
+  draw.caller_ra = in.u32();
+  if (draw.call_site > kCallSiteTachometer) return false;
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     CapturedItem &item = draw.items[index];
     item.address = in.u32();
@@ -214,6 +258,39 @@ const char *mode_name(Mode mode) noexcept {
   return "off";
 }
 
+const char *pass_name(std::uint32_t pass) noexcept {
+  switch (pass) {
+  case kPassUnknown: return "unknown";
+  case kPassEnvMap: return "env_map";
+  case kPassSky: return "sky";
+  case kPassFarUnderlay: return "far_underlay";
+  case kPassBackdrop: return "backdrop";
+  case kPassCourse: return "course";
+  case kPassBillboards: return "billboards";
+  case kPassReflection: return "reflection";
+  case kPassCars: return "cars";
+  case kPassRenderAfter: return "render_after";
+  case kPassMirror: return "mirror";
+  case kPassFlares: return "flares";
+  case kPassCrowdPitmen: return "crowd_pitmen";
+  case kPassParticles: return "particles";
+  case kPassPost: return "post";
+  case kPassPanel: return "panel";
+  case kPassConcourse: return "concourse";
+  default: return "unknown";
+  }
+}
+
+const char *call_site_name(std::uint32_t site) noexcept {
+  switch (site) {
+  case kCallSiteModelSet2: return "model_set2";
+  case kCallSiteBillboard: return "billboard";
+  case kCallSiteEnvMap: return "env_map";
+  case kCallSiteTachometer: return "tachometer";
+  default: return "unknown";
+  }
+}
+
 bool write_scene_header(std::vector<std::uint8_t> &output, const SceneHeader &header) {
   put_u32(output, kSceneMagic);
   put_u32(output, header.version);
@@ -233,13 +310,14 @@ bool parse_scene_header(const std::uint8_t *data, std::size_t available, SceneHe
     return false;
   }
   if (header.version != kSceneVersion) {
-    // Version 1 predates the per-draw light block, version 2 the per-draw VU1 program selector and version 3 the
-    // per-item light state, so their draw records are shorter (see the format note in the header). There is no
-    // migration path: the capture is a diagnostic artifact and is recaptured with a matching build.
+    // Version 1 predates the per-draw light block, version 2 the per-draw VU1 program selector, version 3 the per-item
+    // light state and version 4 the pass tag, the environment block and the pass journal, so their records are shorter
+    // (see the format note in the header). There is no migration path: the capture is a diagnostic artifact and is
+    // recaptured with a matching build.
     error = "unsupported .gt4scene version " + std::to_string(header.version) + " (this build writes and reads version " +
             std::to_string(kSceneVersion) +
-            "; version 1 has no light block, version 2 no program selector, version 3 no per-item light state; all "
-            "older versions are refused)";
+            "; version 1 has no light block, version 2 no program selector, version 3 no per-item light state, version 4 "
+            "no pass tag/environment/journal; all older versions are refused)";
     return false;
   }
   if (header.target != kCaptureTargetV200) {
@@ -257,7 +335,16 @@ bool frame_block_bytes(const FrameSnapshot &frame, std::vector<std::uint8_t> &ou
       frame.material_count > kMaxMaterialRecords)
     return false;
   if (frame.packets.size() > kMaxPacketBytesPerFrame) return false;
+  if (frame.environment.valid > 1) return false;
+  if (frame.pass_states.size() > kMaxPassStatesPerFrame) return false;
+  for (const CapturedPassState &state : frame.pass_states) {
+    if (state.pass >= kPassCount) return false;
+    if (state.first_draw != kNoRecord && state.first_draw >= kMaxDrawsPerFrame) return false;
+    if (state.first_draw == kNoRecord && state.draw_count != 0) return false;
+  }
   for (const CapturedDraw &draw : frame.draws) {
+    if (draw.pass >= kPassCount) return false;
+    if (draw.call_site > kCallSiteTachometer) return false;
     if (draw.item_count > kMaxItemsPerDraw) return false;
     if (draw.light_block_qwords > kMaxLightBlockQwords) return false;
     if (draw.program_valid > 1 || draw.chain_valid > 1 || draw.program_uniform > 1) return false;
@@ -293,6 +380,13 @@ bool frame_block_bytes(const FrameSnapshot &frame, std::vector<std::uint8_t> &ou
   for (std::uint32_t word : frame.camera.pgl_block_k4) put_u32(body, word);
   for (const auto &row : frame.camera.vf_k4)
     for (std::uint32_t word : row) put_u32(body, word);
+  // Format version 5: the scene environment block and the per-pass GS state journal.
+  put_u32(body, frame.environment.valid);
+  put_u32(body, 0u);
+  for (std::uint32_t word : frame.environment.words) put_u32(body, word);
+  put_u32(body, static_cast<std::uint32_t>(frame.pass_states.size()));
+  put_u32(body, 0u);
+  for (const CapturedPassState &state : frame.pass_states) put_pass_state(body, state);
   for (const CapturedTexture &texture : frame.textures) {
     put_u32(body, texture.address);
     put_bytes(body, texture.bytes, kTextureRecordBytes);
@@ -357,6 +451,31 @@ std::size_t parse_frame_block(const std::uint8_t *data, std::size_t available, s
     for (std::uint32_t &word : row) word = content.u32();
   if (!content.ok) {
     error = "truncated camera record";
+    return 0;
+  }
+  // Format version 5: the scene environment block and the pass journal.
+  frame.environment.valid = content.u32();
+  (void)content.u32();
+  if (frame.environment.valid > 1) {
+    error = "environment validity flag out of range";
+    return 0;
+  }
+  for (std::uint32_t &word : frame.environment.words) word = content.u32();
+  const std::uint32_t pass_state_count = content.u32();
+  (void)content.u32();
+  if (!content.ok) {
+    error = "truncated environment record";
+    return 0;
+  }
+  if (pass_state_count > kMaxPassStatesPerFrame) {
+    error = "pass journal exceeds the format bound";
+    return 0;
+  }
+  frame.pass_states.resize(pass_state_count);
+  for (CapturedPassState &state : frame.pass_states)
+    if (!get_pass_state(content, state)) break;
+  if (!content.ok) {
+    error = "truncated pass journal";
     return 0;
   }
   frame.textures.resize(frame.texture_count);

@@ -52,6 +52,10 @@ struct State {
   bool in_car_pass = false;
   bool frame_open = false;
   bool all_draws = false;
+  // Format version 5: the pass the markers currently name and the open journal entry (index into
+  // FrameSnapshot::pass_states), kNoRecord when no pass is open.
+  std::uint32_t current_pass = kPassUnknown;
+  std::uint32_t open_pass = kNoRecord;
   std::uint64_t pass_count = 0;
   std::uint64_t pass_job_first = 0, pass_job_last = 0;
   std::uint64_t orphan_pass_ends = 0;
@@ -103,6 +107,66 @@ bool read_u16(std::uint32_t address, std::uint16_t &value) noexcept {
 
 bool read_u8(std::uint32_t address, std::uint8_t &value) noexcept {
   return read_guest(address, &value, sizeof value);
+}
+
+bool read_u64(std::uint32_t address, std::uint64_t &value) noexcept {
+  return read_guest(address, &value, sizeof value);
+}
+
+// The scene object of func_0033EAB8: `course = *(*(*(self + 0x6C) + 0x80) + 4)`, `scene = *(course + 0x80)`. A zero
+// pointer anywhere means the object has no scene in this frame (menus); that is not a read failure.
+bool read_scene(std::uint32_t self, std::uint32_t &scene) noexcept {
+  std::uint32_t a = 0, b = 0, course = 0;
+  if (!read_u32(self + 0x6Cu, a)) return false;
+  if (a == 0) return false;
+  if (!read_u32(a + 0x80u, b)) {
+    g.counters.environment_read_failures += 1;
+    return false;
+  }
+  if (b == 0) return false;
+  if (!read_u32(b + 4u, course)) {
+    g.counters.environment_read_failures += 1;
+    return false;
+  }
+  if (course == 0) return false;
+  if (!read_u32(course + 0x80u, scene)) {
+    g.counters.environment_read_failures += 1;
+    return false;
+  }
+  return scene != 0;
+}
+
+// The scene environment block (format version 5), copied once per frame at the first world pass begin.
+void capture_environment(ps2::Cpu &cpu) noexcept {
+  if (g.frame.environment.valid != 0) return;
+  std::uint32_t scene = 0;
+  if (!read_scene(cpu.r[17].w[0], scene)) return;
+  std::uint32_t index = 0;
+  for (const EnvSpan &span : kEnvSpans) {
+    for (std::uint32_t word = 0; word < span.words; ++word) {
+      std::uint32_t value = 0;
+      if (!read_u32(scene + span.offset + word * 4u, value)) {
+        g.counters.environment_read_failures += 1;
+        return;
+      }
+      if (index < kEnvWords) g.frame.environment.words[index++] = value;
+    }
+  }
+  g.frame.environment.valid = 1;
+  g.counters.environment_frames += 1;
+}
+
+// The PGL GS state shadow at a pass begin (format version 5), all raw 64-bit register words.
+void capture_gs_shadow(CapturedPassState &state) noexcept {
+  bool ok = true;
+  ok &= read_u64(kPglContext + kGsShadowFogCol, state.fogcol);
+  ok &= read_u64(kPglContext + kGsShadowFrame, state.frame);
+  ok &= read_u64(kPglContext + kGsShadowXYOffset, state.xyoffset);
+  ok &= read_u64(kPglContext + kGsShadowZBuf, state.zbuf);
+  ok &= read_u64(kPglContext + kGsShadowScissor, state.scissor);
+  ok &= read_u64(kPglContext + kGsShadowAlpha, state.alpha);
+  ok &= read_u64(kPglContext + kGsShadowTest, state.test);
+  if (!ok) g.counters.guest_read_failures += 1;
 }
 
 // The PGL context object's sparse spans (coregs3_scene.hpp kPglSpans).
@@ -235,10 +299,14 @@ void reset_frame() noexcept {
   g.frame.textures.clear();
   g.frame.materials.clear();
   g.frame.packets.clear();
+  g.frame.pass_states.clear();
+  g.frame.environment = SceneEnvironment{};
   g.frame_overflow = false;
   g.frame_overflow_flags = 0;
   g.sequence = 0;
   g.pending = false;
+  g.current_pass = kPassUnknown;
+  g.open_pass = kNoRecord;
 }
 
 bool frame_is_in_capture_range(std::uint64_t vblank) noexcept {
@@ -417,8 +485,45 @@ void at_vblank(std::uint64_t vblank) noexcept {
   if (vblank != 0 && vblank % 600 == 0) print_report(stderr);
 }
 
-void car_pass_begin(ps2::Cpu &cpu) noexcept {
+void pass_begin(ps2::Cpu &cpu, std::uint32_t pass) noexcept {
+  if (g.mode == Mode::off) return;
+  if (pass >= kPassCount) pass = kPassUnknown;
+  // The scene environment is read through the RacePS2Base object in r17. Only the markers of func_0033EAB8 (sky and
+  // later) run with that register; the env-map marker is in the earlier world setup and the panel marker in
+  // RacePS2Base__render, where r17 holds other pointers, so neither touches the environment.
+  if (pass >= kPassSky && pass != kPassPanel) capture_environment(cpu);
+  if (g.current_pass != kPassUnknown) g.counters.pass_mismatched_ends += 1;  // nested marker: keep the outer one
+  g.current_pass = pass;
+  if (g.frame_overflow) return;
+  if (g.frame.pass_states.size() >= kMaxPassStatesPerFrame) {
+    mark_overflow(kOverflowPassStates);
+    return;
+  }
+  CapturedPassState state;
+  state.pass = pass;
+  state.vblank = g.vblank;
+  capture_gs_shadow(state);
+  g.frame.pass_states.push_back(state);
+  g.open_pass = static_cast<std::uint32_t>(g.frame.pass_states.size() - 1);
+  g.counters.pass_states += 1;
+}
+
+void pass_end(ps2::Cpu &cpu, std::uint32_t pass) noexcept {
   (void)cpu;
+  if (g.mode == Mode::off) return;
+  if (g.current_pass == kPassUnknown) {
+    g.counters.pass_orphan_ends += 1;
+    return;
+  }
+  if (g.current_pass != pass) {
+    g.counters.pass_mismatched_ends += 1;
+    return;  // do not close an entry a different marker opened
+  }
+  g.current_pass = kPassUnknown;
+  g.open_pass = kNoRecord;
+}
+
+void car_pass_begin(ps2::Cpu &cpu) noexcept {
   if (g.mode == Mode::off) return;
   // TASK-090: name the pass in the worker's job stream. Flushing here and at the end puts the pass's VIF packets in their
   // own jobs, so the tap's records of this pass can be selected exactly (no guessing from vertex counts).
@@ -426,6 +531,7 @@ void car_pass_begin(ps2::Cpu &cpu) noexcept {
   g.pass_job_first = gt4::mtvu::last_posted_job() + 1;
   g.in_car_pass = true;
   g.pass_count += 1;
+  pass_begin(cpu, kPassCars);
   if (g.trace_frames != 0 && g.trace_events < g.trace_frames) {
     std::uint32_t vtable = 0, target_380 = 0, target_3d8 = 0, target_3e0 = 0;
     read_u32(cpu.r[17].w[0] + 100u, vtable);
@@ -440,13 +546,13 @@ void car_pass_begin(ps2::Cpu &cpu) noexcept {
 }
 
 void car_pass_end(ps2::Cpu &cpu) noexcept {
-  (void)cpu;
   if (g.mode == Mode::off) return;
   if (!g.in_car_pass) {
     g.orphan_pass_ends += 1;
     return;
   }
   g.in_car_pass = false;
+  pass_end(cpu, kPassCars);
   gt4::mtvu::flush_vif_chain();
   g.pass_job_last = gt4::mtvu::last_posted_job();
   if (g.trace_frames != 0 && g.trace_events < g.trace_frames) {
@@ -473,7 +579,7 @@ void modelview_set(ps2::Cpu &cpu) noexcept {
   read_camera_call(cpu, g.camera);
 }
 
-void before_shape_call(ps2::Cpu &cpu) noexcept {
+void before_shape_call(ps2::Cpu &cpu, std::uint32_t call_site) noexcept {
   if (g.mode == Mode::off) return;
   g.counters.calls += 1;
   const bool store = g.in_car_pass || g.all_draws;
@@ -492,9 +598,22 @@ void before_shape_call(ps2::Cpu &cpu) noexcept {
     return;
   }
 
+  // Format version 5: the pass comes from the active K7 marker; the direct call sites that do not pass through
+  // ModelSet2___render carry their own pass. A call outside any marker stays `unknown` (counted, never guessed).
+  std::uint32_t pass = g.current_pass;
+  if (call_site == kCallSiteEnvMap)
+    pass = kPassEnvMap;
+  else if (call_site == kCallSiteTachometer)
+    pass = kPassPanel;
+  else if (call_site == kCallSiteBillboard && pass == kPassUnknown)
+    pass = kPassBillboards;
+  if (pass >= kPassCount) pass = kPassUnknown;
   CapturedDraw draw;
   draw.sequence = g.sequence++;
-  draw.pass = 1;  // cars
+  draw.pass = pass;
+  draw.call_site = call_site;
+  // The caller return address of ModelSet2___render: its frame saves ra at +168 (translated prologue L_00455708).
+  if (call_site == kCallSiteModelSet2) read_u32(cpu.r[29].w[0] + 168u, draw.caller_ra);
   draw.shape = cpu.r[4].w[0];
   if (draw.shape == 0) {
     g.counters.guest_read_failures += 1;
@@ -613,6 +732,14 @@ void before_shape_call(ps2::Cpu &cpu) noexcept {
   g.frame.draws.push_back(draw);
   g.frame.draw_count = static_cast<std::uint32_t>(g.frame.draws.size());
   g.counters.captured += 1;
+  g.counters.pass_draws[pass] += 1;
+  g.counters.pass_items[pass] += count;
+  if (g.open_pass != kNoRecord && g.open_pass < g.frame.pass_states.size()) {
+    CapturedPassState &state = g.frame.pass_states[g.open_pass];
+    if (state.first_draw == kNoRecord) state.first_draw = draw.sequence;
+    state.draw_count += 1;
+    state.item_count += count;
+  }
 }
 
 void after_shape_call(ps2::Cpu &cpu) noexcept {
@@ -697,6 +824,19 @@ void print_report(std::FILE *out) noexcept {
                vif_stat, (vif_stat >> 7) & 1u, ps2::vif::read(1, 0xA0u), ps2::vif::read(1, 0xB0u),
                ps2::vif::read(1, 0x90u), ps2::vif::read(1, 0xC0u), ps2::vif::read(1, 0xE0u), g.carried_light.runs,
                g.carried_light.gap_epoch);
+  std::fprintf(out,
+               "[coregs3] pass journal %llu environment_frames %llu environment_read_failures %llu pass_orphan_ends "
+               "%llu pass_mismatched_ends %llu\n",
+               static_cast<unsigned long long>(c.pass_states),
+               static_cast<unsigned long long>(c.environment_frames),
+               static_cast<unsigned long long>(c.environment_read_failures),
+               static_cast<unsigned long long>(c.pass_orphan_ends),
+               static_cast<unsigned long long>(c.pass_mismatched_ends));
+  for (std::uint32_t pass = 0; pass < kPassCount; ++pass)
+    if (c.pass_draws[pass] != 0 || c.pass_items[pass] != 0)
+      std::fprintf(out, "[coregs3] pass %s draws %llu items %llu\n", pass_name(pass),
+                   static_cast<unsigned long long>(c.pass_draws[pass]),
+                   static_cast<unsigned long long>(c.pass_items[pass]));
   const TapCounters &tap = tap_counters();
   if (tap.records != 0)
     std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",
