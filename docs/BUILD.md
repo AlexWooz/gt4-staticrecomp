@@ -3576,27 +3576,29 @@ patch is the accepted `slice430` recipe plus the `MonitorRoot` `has_script digit
 - **Next:** the host tree inside the Options root (not floating); the Screen page Pane is the known focus path; the
   smallest proof is one Composite/TextFace on the Screen Pane, then a focusable OptionMenu row.
 
-## TASK-213 Phase 2a Recomp settings build (patch slice434, kit slice435, 2026-11-10, test only)
+## TASK-213 Phase 2a Recomp settings build (patch slice436, kit slice436, 2026-11-10, test only)
 
 The v2.00 build with the Recomp settings hub on the arcade main menu: `native/recomp_menu.*` (the hidden `recomp`
 composite scan, the entry/Quit row append, the SelectBox row swap, the hub/Graphics/shells state and the feedback), the
 `service_menu_quit` hook (window and headless), the render-functor focus enforcement in `native/screen_rows.cpp`, and
 the combined data patch (accepted option patch + arcade Quit + hidden recomp rows).
 
-- **Data patch:** `private/slice434-recomp` (arcade + option; 3 ranges); container
-  `5f190db7b21d4938d2b9f71c162f96fc68e708580dc6154a7648c416366bc6c1` (91,712 bytes). The recipe is 4 arcade text
+- **Data patch:** `private/slice436-recomp-labels` (arcade + option; 3 ranges); container
+  `19eab22cecdaf72b6b1a9054e2f2a1a03783ef4152224110f11d7b7b9d84fa63` (91,712 bytes). The recipe is 4 arcade text
   replacements + the accepted option recipe (9 option replacements + the NTSC byte). The hidden `recomp` composite has
-  20 row templates (entry, hub, Graphics values, shell titles); TopRoot children 8 -> 9.
+  20 row templates (entry, hub, Graphics values, shell titles); TopRoot children 8 -> 9. The six scale rows read
+  `Render scale: 0.50x`..`2.00x` because `hb_24` has no percent glyph (a percent label drew as "125 0"); the stored
+  value stays the percentage.
 - **Build:** `build/configure-432.cmd` / `build/build-424.cmd`; the runtime capsule
   `slice432-page-launch-license-guard-runtime` (receipt `cead3c64...`, pin
   `docs/inputs/slice432-page-launch-license-guard-runtime.json`); exe
   `8a6f33cda6117cfceb6423c01278a60541698b5350d040268d48b3beacef8a43`, 90,249,728 bytes.
-- **Runs:** `private/slice435-run/run.cmd` (main menu -> hub -> Graphics -> Controls/Display; the graphics run) and
-  `private/slice435-shells/run.cmd` (hub -> Audio/System shells), both using the TASK-212 `state-arcade.bin` + card and
+- **Runs:** `private/slice436-run/run.cmd` (main menu -> hub -> Graphics -> Controls/Display; the graphics run) and
+  `private/slice436-shells/run.cmd` (hub -> Audio/System shells), both using the TASK-212 `state-arcade.bin` + card and
   the combined patch. Expected `[recomp-menu]` lines: the row appended (7 rows, index 6), Quit appended (8, 7), hub open,
   focus indices, Graphics open, renderer/render-scale feedback, back; shells rows 16/17/18/19. The kit's
   `run-graphics.cmd`/`run-shells.cmd` are the same commands with `%KIT%` paths.
-- **Evidence:** kit `private/slice435-kit` (exe, patch, recipe, report, state-arcade, states/logs, game-changes,
+- **Evidence:** kit `private/slice436-kit` (exe, patch, recipe, report, state-arcade, states/logs, game-changes,
   frames, README). `game-changes.toml` has both `renderer = "coregs20"` and `render_scale = "125"`; the states keep
   screen_adjust_v/h 0, wide 1, project `arca`. The accepted `slice430-kit` is unchanged.
 - **Checks:** `native_game_target` 1/1, `native_native_settings` 1/1, `native_display_aspect` 1/1; `cargo test -p

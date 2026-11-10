@@ -13,12 +13,12 @@ are unchanged.
   `Composite`/`TextFace` widgets from a hidden `recomp` composite; the host swaps the SelectBox list and owns the focus
   index and the Cross/Circle actions; the engine draws/focus/scrolls. Up/down, Cross enter, Circle back (Graphics -> hub
   -> main); the menu_quit watcher pauses while a host list is open; the render hook re-applies the host index.
-- **Graphics:** Renderer (GSdx/CoreGS 2.0) and Render scale (50..200%) with Cross; restart-only; only
+- **Graphics:** Renderer (GSdx/CoreGS 2.0) and Render scale (0.50x..2.00x; stored 50..200%) with Cross; restart-only; only
   `game-changes.toml` (`renderer = "coregs20"`, `render_scale = "125"`; both accumulated). The launcher is the only
   `settings.toml` writer; the save untouched (screen_adjust_v/h 0, wide 1, project `arca`).
 - **Shells:** Controls/Display/Audio/System open title-only shells in order; Circle back.
-- **Data patch:** `private/slice434-recomp` (arcade + accepted option patch); container
-  `5f190db7b21d4938d2b9f71c162f96fc68e708580dc6154a7648c416366bc6c1` (91,712 bytes). Kit `private/slice435-kit`
+- **Data patch:** `private/slice436-recomp-labels` (arcade + accepted option patch); container
+  `19eab22cecdaf72b6b1a9054e2f2a1a03783ef4152224110f11d7b7b9d84fa63` (91,712 bytes). Kit `private/slice436-kit`
   (exe `8a6f33cd...`, patch, states/logs/frames/README); the accepted `slice430-kit` unchanged.
 - **Tests:** `native_game_target` 1/1, `native_native_settings` 1/1, `native_display_aspect` 1/1; `cargo test -p
   gt4l-core --lib` 311 passed (new renderer/render-scale test); `test_license_guard.py` 21 OK;

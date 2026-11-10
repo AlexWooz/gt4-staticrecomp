@@ -1742,17 +1742,18 @@ accepted Screen page and `private/slice430-kit` are unchanged.
 
 ### 26.2 The host menu (game widgets, no floating panel)
 
-- The private data patch (`private/slice434-recomp`) combines the accepted option patch (`slice430`) with the arcade
+- The private data patch (`private/slice436-recomp-labels`) combines the accepted option patch (`slice430`) with the arcade
   Quit patch (`slice421`) and adds a hidden `recomp` composite with 20 row templates next to the hidden Quit
   composite. The TopRoot children count grows 8 -> 9; the composite is `visible 0`; the rows are the game's
   `Composite`/`TextFace` widgets (hb_24, skew, shadow) with literal labels. Container
-  `5f190db7b21d4938d2b9f71c162f96fc68e708580dc6154a7648c416366bc6c1` (91,712 bytes, 3 ranges).
+  `19eab22cecdaf72b6b1a9054e2f2a1a03783ef4152224110f11d7b7b9d84fa63` (91,712 bytes, 3 ranges).
 - The host (`native/recomp_menu.*`) scans the arcade `SelectBox` and the hidden `recomp` composite (child count 20),
   detaches the rows into a host array, appends the **Recomp settings** row (index 6, before Quit), and swaps the
   SelectBox row list on navigation:
   - hub: title row r14 "Recomp settings" + rows r1..r5 **Graphics, Controls, Display, Audio, System**;
   - Graphics: title r15 "Graphics" + the current renderer row (r6 GSdx / r7 CoreGS 2.0) + the current scale row
-    (r8..r13, 50%..200%);
+    (r8..r13, 0.50x..2.00x; stored 50..200%). The rows show the "x" form because the game font `hb_24` has no
+    percent glyph: a "125%" label drew as "125 0" in the first build;
   - shells: the title rows r16..r19 (Controls, Display, Audio, System).
   The engine draws the SelectBox, the rows and the focus; the host owns the list fields, the focus index, the Cross/
   Circle actions and the pad masking. The title rows are insensitive (bit 3) and start at index 0; the first selectable
@@ -1775,17 +1776,17 @@ accepted Screen page and `private/slice430-kit` are unchanged.
 
 | Check | Evidence |
 |---|---|
-| Entry row | `private/slice435-kit/frames/main-12950-recomp-settings-row.png` (Recomp settings above Quit Game) |
+| Entry row | `private/slice436-kit/frames/main-12950-recomp-settings-row.png` (Recomp settings above Quit Game) |
 | Hub | `hub-13100-graphics-controls.png`, `hub-13150-display-audio-system.png` (all five rows in order) |
 | Focus/up/down | the `[recomp-menu] focus index` lines (hub 1->2->1, Graphics 1->2) and the frames |
-| Graphics | `graphics-13200-gsdx-100.png`, `graphics-13400-coregs-125.png`; log `renderer = "coregs20"`, `render_scale = "125"` |
+| Graphics | `graphics-13200-gsdx-1.00x.png`, `graphics-13400-coregs-1.25x.png`; log `renderer = "coregs20"`, `render_scale = "125"` |
 | Back | `[recomp-menu] back to the hub` / `back to the main menu`; the frames after the Circles |
 | Shells | `controls-13600-shell.png`, `display-13800-shell.png`, `audio-13200-shell.png`, `system-13400-shell.png` |
 | Feedback | `game-changes.toml`: `renderer = "coregs20"`, `render_scale = "125"` |
 | Save untouched | `state-graphics.bin`/`state-shells.bin`: screen_adjust_v/h 0, wide 1, project `arca` |
 | Exit | both headless runs exit 0; no unmapped reads, no crash |
 
-- Kit `private/slice435-kit`: exe `8a6f33cd...` (90,249,728 bytes), patch `5f190db7...`, states/logs/frames/README;
+- Kit `private/slice436-kit`: exe `8a6f33cd...` (90,249,728 bytes), patch `19eab22c...`, states/logs/frames/README;
   test build only.
 - Tests: `native_game_target` 1/1, `native_native_settings` 1/1, `native_display_aspect` 1/1; `cargo test -p
   gt4l-core --lib` 311 passed (the new `renderer_and_render_scale_are_stored`); `test_license_guard.py` 21 OK;
@@ -1814,11 +1815,11 @@ accepted Screen page and `private/slice430-kit` are unchanged.
 - **Hub:** abre com o título **Recomp settings** e as linhas **Graphics, Controls, Display, Audio, System** na ordem
   que você aprovou. O foco sobe/desce, Cross entra, Circle volta (Graphics -> hub -> menu principal). O menu é o próprio
   SelectBox do jogo (desenho, foco e scroll); o host só troca a lista e trata os botões.
-- **Graphics:** Renderer (GSdx/CoreGS 2.0) e Render scale (50..200%) com Cross; os dois são **restart-only** e gravam
+- **Graphics:** Renderer (GSdx/CoreGS 2.0) e Render scale (0.50x..2.00x; gravado 50..200%) com Cross; os dois são **restart-only** e gravam
   só `game-changes.toml` (`renderer = "coregs20"`, `render_scale = "125"`); o launcher continua o único a escrever
   `settings.toml` e o save não muda.
 - **Controls/Display/Audio/System:** abrem telas de título vazias por enquanto, na ordem; voltam com Circle.
-- **Teste:** o kit `private/slice435-kit` tem o estado que entra no menu Arcade, o patch combinado e as capturas; o
+- **Teste:** o kit `private/slice436-kit` tem o estado que entra no menu Arcade, o patch combinado e as capturas; o
   README tem o comando. O renderer inicial vem de `GT4_RENDERER`; a escala inicial mostra 100% mesmo que o launcher
   esteja em outro passo (só o multiplicador interno chega ao jogo), então o valor só é gravado quando você muda.
 - **Limitações:** a linha Recomp só existe no menu principal do Arcade (não no menu GT Mode nem no Options); as telas
