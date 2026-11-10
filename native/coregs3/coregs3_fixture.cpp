@@ -186,6 +186,21 @@ void set_body_paint_block(CapturedDraw &draw) {
   draw.light_block_source = 0x00130000u;
   for (std::uint32_t qword = 0; qword < 6; ++qword)
     for (std::uint32_t lane = 0; lane < 4; ++lane) draw.light_block[qword][lane] = float_bits(block[qword][lane]);
+  // The renderers read the per-item state: the measured body/paint selector and the item's own block.
+  draw.program_itop = 0x0400020Bu;
+  draw.program_dispatch = 0x1058u;
+  if (draw.item_count != 0) {
+    CapturedItem &item = draw.items[0];
+    item.light_block_qwords = 6;
+    item.light_block_command = 0x6C06C0C9u;
+    item.light_block_source = 0x00130000u;
+    item.light_source = kLightItemUploaded;
+    for (std::uint32_t qword = 0; qword < 6; ++qword)
+      for (std::uint32_t lane = 0; lane < 4; ++lane) item.light_block[qword][lane] = float_bits(block[qword][lane]);
+    item.run_itop = 0x0400020Bu;
+    item.run_mscal = 0x140003A8u;
+    item.run_valid = 1;
+  }
 }
 
 CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
@@ -202,8 +217,8 @@ CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
   draw.program_tag = 0x140003A8u;     // VIF MSCAL, immediate 0x3A8
   draw.program_selector = 0x3A8u;
   draw.program_entry = 0x1D40u;       // selector * 8: the MSCAL entry stub in the VU1 image
-  draw.program_itop = 0x0400007Bu;    // VIF ITOP, immediate 0x7B (obj->x + obj->y)
-  draw.program_dispatch = 0x3D8u;     // ITOP * 8: the entry the stub dispatches to
+  draw.program_itop = 0x0400020Bu;    // VIF ITOP, immediate 0x20B: dispatch 0x1058, the body/paint program
+  draw.program_dispatch = 0x1058u;    // ITOP * 8: the entry the stub dispatches to
   draw.program_count = 881u;          // PGL obj->count (+0x14)
   draw.program_valid = 1;
   draw.chain_tags = 9;
@@ -641,7 +656,7 @@ void check_render_lighting() {
 
   // Without the block the same geometry keeps the base colour: the fallback is counted, never shaded with a guess.
   FrameSnapshot unlit = frame;
-  unlit.draws[0].light_block_qwords = 0;
+  unlit.draws[0].items[0].light_block_qwords = 0;
   require(render_frame(unlit, options, rgba, mask, stats, error), "the fallback frame renders");
   require(stats.draws_lit == 0 && stats.draws_fallback == 1, "the draw is a counted fallback");
   require(stats.vertices_lit == 0 && stats.vertices_fallback == 3, "the vertices keep the base colour");
@@ -650,7 +665,7 @@ void check_render_lighting() {
 
   // An unfamiliar block variant is refused the same way.
   FrameSnapshot unknown = frame;
-  unknown.draws[0].light_block_command = 0x6C09C0C9u;  // a nine-qword upload, not the measured six-qword form
+  unknown.draws[0].items[0].light_block_command = 0x6C09C0C9u;  // a nine-qword upload, not the six-qword form
   require(render_frame(unknown, options, rgba, mask, stats, error), "the unknown-variant frame renders");
   require(stats.draws_fallback == 1 && stats.vertices_fallback == 3, "an unknown block variant falls back");
   require(pixel(rgba, 16, 24) == base, "the unknown-variant pixel is the base colour");
@@ -922,6 +937,111 @@ void check_present_ring() {
 
 }  // namespace
 
+// The channels at TOPS 0x80 that the per-item lighting programs read: V3-8 normals (nine-qword/six-qword families),
+// V3-32 unit float normals (the direct 0x0418 program) and the V4-8 colour (body/three-qword/passthrough). The three
+// formats share a destination, so the classification must keep them distinct and must not steal the UV channels.
+void check_mesh_channels_80() {
+  MeshOptions options;
+  options.topology = Topology::list;  // these packets carry only the channels under test, no strip table
+  std::string error;
+
+  // V3-8 at 0x80: three signed bytes per vertex, expanded by the decoder one vector per qword.
+  {
+    std::vector<std::uint8_t> packet;
+    auto pad = [&packet] {
+      while (packet.size() % 4 != 0) packet.push_back(0);
+    };
+    put_u32(packet, unpack_word(2, 1, 3, 0x00, true));  // V3-16 positions
+    for (std::uint32_t vertex = 0; vertex < 3; ++vertex) {
+      put_u16(packet, static_cast<std::uint16_t>(vertex));
+      put_u16(packet, 0);
+      put_u16(packet, 0);
+    }
+    pad();
+    put_u32(packet, unpack_word(2, 2, 3, 0x80, true));  // V3-8 normals at 0x80
+    const std::int8_t normal[3][3] = {{73, -51, 89}, {127, 0, 0}, {-128, 1, -1}};
+    for (const auto &value : normal)
+      for (std::uint32_t lane = 0; lane < 3; ++lane) packet.push_back(static_cast<std::uint8_t>(value[lane]));
+    pad();
+    while (packet.size() % 16 != 0) packet.push_back(0);
+    CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packet.size()));
+    Mesh mesh;
+    require(build_mesh(packet.data(), packet.size(), draw, options, mesh, error), "the normals80 mesh builds");
+    require(mesh.has_normals80 && !mesh.has_colors && !mesh.has_normals, "normals80 is its own channel");
+    require(mesh.vertices[0].has_normal80 && mesh.vertices[0].normal80[0] == 73 && mesh.vertices[0].normal80[1] == -51 &&
+                mesh.vertices[0].normal80[2] == 89,
+            "the V3-8 bytes at 0x80 sign-extend");
+    require(mesh.vertices[2].normal80[0] == -128 && mesh.vertices[2].normal80[2] == -1,
+            "the second V3-8 normal sign-extends 0x80 and 0xFF");
+    require(mesh.vertices[0].item == 0, "the vertex names its original item");
+    const ChannelScan scan = scan_channels(packet.data(), packet.size(), draw);
+    require(scan.channels.size() == 2 && scan.channels[1].role == ChannelRole::normals80,
+            "the V3-8 channel at 0x80 scans as normals80");
+  }
+
+  // V4-8 at 0x80 stays the colour channel and does not become a normal.
+  {
+    std::vector<std::uint8_t> packet;
+    auto pad = [&packet] {
+      while (packet.size() % 4 != 0) packet.push_back(0);
+    };
+    put_u32(packet, unpack_word(2, 1, 3, 0x00, true));
+    for (std::uint32_t vertex = 0; vertex < 3; ++vertex) {
+      put_u16(packet, static_cast<std::uint16_t>(vertex));
+      put_u16(packet, 0);
+      put_u16(packet, 0);
+    }
+    pad();
+    put_u32(packet, unpack_word(3, 2, 3, 0x80, true));  // V4-8 colours at 0x80
+    const std::uint8_t colours[3][4] = {{10, 20, 30, 40}, {50, 60, 70, 80}, {90, 100, 110, 120}};
+    for (const auto &value : colours)
+      for (std::uint32_t lane = 0; lane < 4; ++lane) packet.push_back(value[lane]);
+    pad();
+    while (packet.size() % 16 != 0) packet.push_back(0);
+    CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packet.size()));
+    Mesh mesh;
+    require(build_mesh(packet.data(), packet.size(), draw, options, mesh, error), "the colour mesh builds");
+    require(mesh.has_colors && !mesh.has_normals80 && !mesh.has_normals80_float, "a V4-8 at 0x80 is a colour");
+    require(mesh.vertices[1].has_color && mesh.vertices[1].color[0] == 50 && mesh.vertices[1].color[3] == 80,
+            "the V4-8 colour keeps its lanes and alpha");
+    const ChannelScan scan = scan_channels(packet.data(), packet.size(), draw);
+    require(scan.channels[1].role == ChannelRole::color, "the V4-8 channel at 0x80 scans as colour");
+  }
+
+  // V3-32 at 0x80 is the direct 0x0418 program's unit float normal.
+  {
+    std::vector<std::uint8_t> packet;
+    auto pad = [&packet] {
+      while (packet.size() % 4 != 0) packet.push_back(0);
+    };
+    put_u32(packet, unpack_word(2, 0, 3, 0x00, true));  // V3-32 positions
+    for (std::uint32_t vertex = 0; vertex < 3; ++vertex) {
+      put_u32(packet, float_bits(static_cast<float>(vertex)));
+      put_u32(packet, 0);
+      put_u32(packet, 0);
+    }
+    pad();
+    put_u32(packet, unpack_word(2, 0, 3, 0x80, true));  // V3-32 normals at 0x80
+    const float normals[3][3] = {{0.5f, -0.25f, 1.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    for (const auto &value : normals)
+      for (std::uint32_t lane = 0; lane < 3; ++lane) put_u32(packet, float_bits(value[lane]));
+    pad();
+    while (packet.size() % 16 != 0) packet.push_back(0);
+    CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packet.size()));
+    Mesh mesh;
+    require(build_mesh(packet.data(), packet.size(), draw, options, mesh, error), "the float-normal mesh builds");
+    require(mesh.has_normals80_float && !mesh.has_normals80 && !mesh.has_colors,
+            "a V3-32 at 0x80 is a float normal");
+    require(!mesh.vertices[0].has_raw_position, "a V3-32 position has no raw 16-bit form");
+    require(mesh.vertices[0].has_normal80_float && mesh.vertices[0].normal80_float[0] == 0.5f &&
+                mesh.vertices[0].normal80_float[1] == -0.25f,
+            "the float normal passes through unchanged");
+    const ChannelScan scan = scan_channels(packet.data(), packet.size(), draw);
+    require(scan.channels[1].role == ChannelRole::normals80_float,
+            "the V3-32 channel at 0x80 scans as normals80_float");
+  }
+}
+
 int main() {
   try {
     check_mode_switch();
@@ -932,6 +1052,7 @@ int main() {
     check_matrix();
     check_mesh();
     check_mesh_normals();
+    check_mesh_channels_80();
     check_render_and_png();
     check_render_lighting();
   } catch (const std::exception &error) {

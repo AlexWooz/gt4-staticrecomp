@@ -1686,8 +1686,19 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   (p95 <=0.2 px). The camera needs a pose predictor (position + orientation + constant angular acceleration; 0.04-0.08 px
   on fast pans vs 0.56-0.75 px entrywise). Interpolation needs rigid slerp for wheels. One global mode; drop prediction
   on discontinuities. Straight B-Spec only; braking/cornering, human input, collisions and cuts unmeasured.
-- Next: merge the remaining-family lighting implementation (in flight), then fog/textures/reflection and the
-  G-IMAGE/G-PERF gates.
+- **Family lighting (2026-11-10).** `coregs3_lighting` implements all seven measured per-item VU1 programs and both
+  renderers shade every item with its own light block and ITOP selector from the v4 capture: body six-qword, nine-qword
+  first (0x0B08), **power-8 (0x0250)**, power-16 (0x03D8) and direct (0x0418), three-qword gain/clamp/bias (0x14D8),
+  six-qword Phong-style (0x0C68) and no-block pass-through (0x0080). Corrections to the research: 0x0250 is power-8; the
+  six-qword `t = R*q` is signed and the single max is after the weighted sum; its output uses `L.x`; the body normal
+  uses the microcode's 1/127. `MeshVertex::item` plus `normals80`/`normals80_float`/`has_color`; `shade_mesh_items` is
+  shared by the offline renderer and `present`; fallbacks are counted per family/status. Tap: matched items within 1
+  level and alpha exact (body 3,826, nine-first 2,507, pow16 2,416, direct 52, six 60, three 930, pass-through 1,351;
+  pow8 636 with two tap-pairing outliers). Offline frame 0: 116/116 draws and 12,146/12,146 vertices lit, 0 fallback;
+  draw 98 mixes 0x03D8 and 0x0B08 items; the `--no-programs` A/B changes 4,443 pixels, turning 272 white fallback
+  pixels into shaded glass/lamp. CTest 6/6, Python 7/7, 3x gate OK, present guest identity 0 differences.
+- Next: fog/textures/reflection in the native pipeline and the G-IMAGE/G-PERF gates; the per-item light state is now
+  consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls

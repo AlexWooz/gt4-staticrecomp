@@ -5,8 +5,14 @@
 //       This is the instrument that turns a capture into evidence about the shape layout.
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> [--width W --height H] [--background <png>]
-//                         [--no-depth] [--position-scale S] [--no-flip-y] [--report <file.txt>]
-//       renders one captured car pass natively and writes a PNG plus a short report.
+//                         [--no-depth] [--position-scale S] [--no-flip-y] [--report <file.txt>] [--no-programs]
+//       renders one captured car pass natively and writes a PNG plus a short report. --no-programs is the evidence A/B:
+//       it invalidates every item's run pair, so the renderer falls back to the base colours and the difference from the
+//       normal render is exactly what the measured per-item VU1 programs add.
+//
+//   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
+//       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
+//       status) for the tap validation scripts.
 //
 // A capture is derived from the user's own disc and is never committed: both the input and the PNG output live under
 // private/ or build/evidence/.
@@ -219,6 +225,7 @@ int main(int argc, char **argv) {
   bool list = false;
   bool ndc = false;
   bool counts = false;
+  bool no_programs = false;
   int only_draw = -1;
   float min_y = 0.0f;
   float max_edge = 0.0f;
@@ -226,15 +233,18 @@ int main(int argc, char **argv) {
   int frame_index = -1;
   const char *out = nullptr;
   const char *report = nullptr;
+  const char *shade_dump = nullptr;
   RenderOptions options;
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
     if (argument == "--list") list = true;
     else if (argument == "--counts") counts = true;
     else if (argument == "--ndc") ndc = true;
+    else if (argument == "--no-programs") no_programs = true;
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
     else if (argument == "--report" && index + 1 < argc) report = argv[++index];
+    else if (argument == "--shade-dump" && index + 1 < argc) shade_dump = argv[++index];
     else if (argument == "--width" && index + 1 < argc) options.width = static_cast<std::uint32_t>(std::atoi(argv[++index]));
     else if (argument == "--height" && index + 1 < argc) options.height = static_cast<std::uint32_t>(std::atoi(argv[++index]));
     else if (argument == "--position-scale" && index + 1 < argc) options.position_scale = static_cast<float>(std::atof(argv[++index]));
@@ -303,6 +313,60 @@ int main(int argc, char **argv) {
                   static_cast<unsigned long long>(frame.vblank), frame.draw_count, frame.texture_count,
                   frame.material_count, frame.packets.size());
     if (!frames.empty()) print_channel_scan(frames.back());
+    return 0;
+  }
+
+  if (no_programs && frame_index >= 0 && static_cast<std::size_t>(frame_index) < frames.size()) {
+    // Evidence A/B only: invalidate every item's run pair so the renderer keeps the base colours. The difference from
+    // the normal render is exactly what the per-item programs add to the picture.
+    for (CapturedDraw &draw : frames[frame_index].draws)
+      for (std::uint32_t item = 0; item < draw.item_count; ++item) draw.items[item].run_valid = 0;
+  }
+
+  if (shade_dump != nullptr) {
+    // Evidence mode: shade one frame's meshes with the per-item programs and write every vertex's predicted RGBA and
+    // outcome. The validation scripts pair these lines with the tapped GIF records of the same capture.
+    if (frame_index < 0 || static_cast<std::size_t>(frame_index) >= frames.size()) {
+      std::fprintf(stderr, "gt4_coregs3_render: --shade-dump needs a valid --frame\n");
+      return 2;
+    }
+    std::FILE *file = std::fopen(shade_dump, "w");
+    if (file == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", shade_dump);
+      return 1;
+    }
+    const FrameSnapshot &frame = frames[frame_index];
+    MeshOptions mesh_options;
+    mesh_options.position_scale = options.position_scale;
+    mesh_options.topology = options.topology;
+    mesh_options.max_edge = options.max_edge;
+    LightCounters total;
+    std::fprintf(file, "# draw item vertex r g b a program status\n");
+    for (const CapturedDraw &draw : frame.draws) {
+      Mesh mesh;
+      std::string mesh_error;
+      if (!build_mesh(frame.packets.data(), frame.packets.size(), draw, mesh_options, mesh, mesh_error)) {
+        std::fprintf(file, "draw %u refused %s\n", draw.sequence, mesh_error.c_str());
+        continue;
+      }
+      LightCounters counters;
+      std::vector<ShadedVertex> shades;
+      shade_mesh_items(draw, mesh, counters, &shades);
+      total.add(counters);
+      for (std::size_t vertex = 0; vertex < mesh.vertices.size(); ++vertex) {
+        const ShadedVertex &shade = shades[vertex];
+        std::fprintf(file, "%u %u %zu %u %u %u %u %s %s\n", draw.sequence, mesh.vertices[vertex].item, vertex,
+                     mesh.vertices[vertex].color[0], mesh.vertices[vertex].color[1], mesh.vertices[vertex].color[2],
+                     mesh.vertices[vertex].color[3], light_program_name(shade.program),
+                     light_status_name(shade.status));
+      }
+    }
+    std::fclose(file);
+    std::printf("shade dump %s: frame %u, %llu vertices lit, %llu fallback, %llu/%llu draws lit\n", shade_dump,
+                frame.index, static_cast<unsigned long long>(total.vertices_lit),
+                static_cast<unsigned long long>(total.vertices_fallback),
+                static_cast<unsigned long long>(total.draws_lit),
+                static_cast<unsigned long long>(total.draws_lit + total.draws_fallback));
     return 0;
   }
 
@@ -375,6 +439,32 @@ int main(int argc, char **argv) {
               static_cast<unsigned long long>(stats.covered_pixels));
   std::printf("lighting: %u draws lit, %u fallback; %u vertices lit, %u fallback\n", stats.draws_lit,
               stats.draws_fallback, stats.vertices_lit, stats.vertices_fallback);
+  const auto print_lighting = [&stats](std::FILE *file) {
+    for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {
+      const LightFamilyCounts &family = stats.lighting.family[program];
+      if (family.items == 0 && family.vertices_lit == 0 && family.vertices_fallback == 0) continue;
+      std::fprintf(file,
+                   "family %-20s items %llu lit %llu fallback %llu vertices_lit %llu vertices_fallback %llu "
+                   "draws_lit %llu draws_fallback %llu\n",
+                   light_program_name(static_cast<LightProgram>(program)),
+                   static_cast<unsigned long long>(family.items), static_cast<unsigned long long>(family.items_lit),
+                   static_cast<unsigned long long>(family.items_fallback),
+                   static_cast<unsigned long long>(family.vertices_lit),
+                   static_cast<unsigned long long>(family.vertices_fallback),
+                   static_cast<unsigned long long>(family.draws_lit),
+                   static_cast<unsigned long long>(family.draws_fallback));
+    }
+    for (std::uint32_t status = 0; status < kLightStatusCount; ++status)
+      if (stats.lighting.status[status] != 0)
+        std::fprintf(file, "status %-20s vertices %llu\n", light_status_name(static_cast<LightStatus>(status)),
+                     static_cast<unsigned long long>(stats.lighting.status[status]));
+    std::fprintf(file, "light_sources uploaded %llu carried %llu uncertain %llu none %llu\n",
+                 static_cast<unsigned long long>(stats.lighting.items_uploaded),
+                 static_cast<unsigned long long>(stats.lighting.items_carried),
+                 static_cast<unsigned long long>(stats.lighting.items_uncertain),
+                 static_cast<unsigned long long>(stats.lighting.items_none));
+  };
+  print_lighting(stdout);
   for (const std::string &refusal : stats.refusals) std::printf("  refused: %s\n", refusal.c_str());
 
   if (report != nullptr) {
@@ -389,6 +479,7 @@ int main(int argc, char **argv) {
                    stats.draws, stats.shapes_drawn, stats.shapes_refused, stats.vertices, stats.triangles,
                    stats.triangles_drawn, static_cast<unsigned long long>(stats.covered_pixels), stats.draws_lit,
                    stats.draws_fallback, stats.vertices_lit, stats.vertices_fallback);
+      print_lighting(file);
       for (const std::string &refusal : stats.refusals) std::fprintf(file, "refusal %s\n", refusal.c_str());
       std::fclose(file);
     }

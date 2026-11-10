@@ -29,6 +29,10 @@ ChannelRole classify(bool tops, std::uint32_t destination, ChannelFormat format)
     default: return ChannelRole::unknown;
     }
   }
+  // The remaining measured programs read their normal at TOPS 0x80: V3-8 for the nine-qword and six-qword no-colour
+  // families (converted by the 0x1878 prologue), V3-32 unit floats for the direct 0x0418 program (no prologue).
+  if (tops && destination == 0x80u && format == ChannelFormat::v3_8) return ChannelRole::normals80;
+  if (tops && destination == 0x80u && format == ChannelFormat::v3_32) return ChannelRole::normals80_float;
   if (tops && destination == 0x80u && format == ChannelFormat::v4_8) return ChannelRole::color;
   // An absolute V3-32 vector at qword 0 is a float position channel (the wheel and tyre shapes use it).
   if (!tops && destination == 0x00u && format == ChannelFormat::v3_32) return ChannelRole::positions;
@@ -44,14 +48,19 @@ float decode_bits(std::uint32_t raw) {
 }
 
 struct ItemData {
+  std::uint32_t item_index = 0;      // original draw item index
   std::vector<float> positions;      // 3 floats per vertex
   std::vector<std::int32_t> raw_positions;  // 3 signed 16-bit values per vertex, V3-16 channels only
   std::vector<std::int8_t> normals;  // 3 signed bytes per vertex
+  std::vector<std::int8_t> normals80;  // 3 signed bytes per vertex, V3-8 at TOPS 0x80
+  std::vector<float> normals80_float;  // 3 floats per vertex, V3-32 at TOPS 0x80
   std::vector<std::uint8_t> colors;  // 4 bytes per vertex
   std::vector<float> uvs;            // 2 floats per vertex
   std::vector<std::uint8_t> strip_table;
   bool has_colors = false;
   bool has_normals = false;
+  bool has_normals80 = false;
+  bool has_normals80_float = false;
   bool has_uv = false;
   bool raw16 = true;  // every position channel seen so far is V3-16
   std::uint32_t vertices() const { return static_cast<std::uint32_t>(positions.size() / 3); }
@@ -65,6 +74,8 @@ const char *channel_role_name(ChannelRole role) noexcept {
   case ChannelRole::uv: return "uv";
   case ChannelRole::color: return "color";
   case ChannelRole::normals: return "normals";
+  case ChannelRole::normals80: return "normals80";
+  case ChannelRole::normals80_float: return "normals80_float";
   case ChannelRole::strip_table: return "strip_table";
   case ChannelRole::auxiliary: return "auxiliary";
   default: return "unknown";
@@ -162,6 +173,7 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
       return false;
     }
     ItemData data;
+    data.item_index = index;
     for (const VifCommand &entry : packet.commands) {
       if (!entry.unpack) continue;
       const ChannelRole role = classify(entry.tops, entry.destination, entry.format);
@@ -194,6 +206,17 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
         for (const VifVector &vector : vectors)
           for (std::uint32_t lane = 0; lane < 3; ++lane)
             data.normals.push_back(static_cast<std::int8_t>(vector.v[lane] & 0xFFu));
+        break;
+      case ChannelRole::normals80:
+        data.has_normals80 = true;
+        for (const VifVector &vector : vectors)
+          for (std::uint32_t lane = 0; lane < 3; ++lane)
+            data.normals80.push_back(static_cast<std::int8_t>(vector.v[lane] & 0xFFu));
+        break;
+      case ChannelRole::normals80_float:
+        data.has_normals80_float = true;
+        for (const VifVector &vector : vectors)
+          for (std::uint32_t lane = 0; lane < 3; ++lane) data.normals80_float.push_back(decode_bits(vector.v[lane]));
         break;
       case ChannelRole::color:
         data.has_colors = true;
@@ -238,6 +261,7 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
   for (const ItemData &item : items) {
     for (std::uint32_t index = 0; index < item.vertices(); ++index) {
       MeshVertex &vertex = mesh.vertices[base + index];
+      vertex.item = item.item_index;
       vertex.position = {item.positions[index * 3 + 0], item.positions[index * 3 + 1], item.positions[index * 3 + 2]};
       if (item.raw16 && (index + 1) * 3 <= item.raw_positions.size()) {
         vertex.raw_position = {item.raw_positions[index * 3 + 0], item.raw_positions[index * 3 + 1],
@@ -248,8 +272,20 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
         vertex.normal = {item.normals[index * 3 + 0], item.normals[index * 3 + 1], item.normals[index * 3 + 2]};
         vertex.has_normal = true;
       }
-      if (item.has_colors && (index + 1) * 4 <= item.colors.size())
+      if (item.has_normals80 && (index + 1) * 3 <= item.normals80.size()) {
+        vertex.normal80 = {item.normals80[index * 3 + 0], item.normals80[index * 3 + 1],
+                           item.normals80[index * 3 + 2]};
+        vertex.has_normal80 = true;
+      }
+      if (item.has_normals80_float && (index + 1) * 3 <= item.normals80_float.size()) {
+        vertex.normal80_float = {item.normals80_float[index * 3 + 0], item.normals80_float[index * 3 + 1],
+                                 item.normals80_float[index * 3 + 2]};
+        vertex.has_normal80_float = true;
+      }
+      if (item.has_colors && (index + 1) * 4 <= item.colors.size()) {
         for (std::uint32_t lane = 0; lane < 4; ++lane) vertex.color[lane] = item.colors[index * 4 + lane];
+        vertex.has_color = true;
+      }
       if (item.has_uv && (index + 1) * 2 <= item.uvs.size()) {
         vertex.uv = {item.uvs[index * 2 + 0], item.uvs[index * 2 + 1]};
         vertex.has_uv = true;
@@ -257,6 +293,8 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
     }
     mesh.has_colors = mesh.has_colors || item.has_colors;
     mesh.has_normals = mesh.has_normals || item.has_normals;
+    mesh.has_normals80 = mesh.has_normals80 || item.has_normals80;
+    mesh.has_normals80_float = mesh.has_normals80_float || item.has_normals80_float;
     mesh.has_uv = mesh.has_uv || item.has_uv;
     if (!item.strip_table.empty()) mesh.has_strip_table = true;
     base += item.vertices();

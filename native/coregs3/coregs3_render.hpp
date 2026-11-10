@@ -5,9 +5,9 @@
 // documented list of what it does not do yet, so the live Vulkan renderer (step 1e) has a ground truth to match:
 //
 //   does     the measured VU1 vertex transform (coregs3_vertex.hpp: the 0xC1 block as four columns, its linear part
-//            scaled by the shape's `value` and by the position encoding's units), the
-//            measured VU1 diffuse lighting (coregs3_lighting.hpp: the per-draw TOPS+0xC9 block, the V3-8 normals and
-//            the V3-16 raw positions), clip-space rejection and near-plane clipping of triangles, a perspective divide,
+//            scaled by the shape's `value` and by the position encoding's units), the measured per-item VU1 lighting
+//            programs (coregs3_lighting.hpp: each item's own TOPS+0xC9 block and ITOP selector, selected by
+//            `MeshVertex::item`), clip-space rejection and near-plane clipping of triangles, a perspective divide,
 //            a top-left rasteriser, a w-buffer (nearer wins), Gouraud vertex colours and perspective-correct UVs
 //   does not fog, texgen, textures, destination alpha, culling, the guard-band clip and back-face fill rules that the
 //            VU1 + GS pair applies. A picture from this tool is evidence of geometry, coverage and diffuse lighting, not
@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "coregs3_lighting.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
 #include "coregs3_vertex.hpp"
@@ -57,13 +58,15 @@ struct RenderStats {
   std::uint32_t triangles = 0;
   std::uint32_t triangles_drawn = 0;
   std::uint32_t triangles_clipped = 0;
-  // The VU1 lighting outcome (coregs3_lighting.hpp). A vertex is lit when its draw carried the measured six-qword
-  // block, the mesh has normals and colours, and the vertex itself has a normal and a raw position. Every other
-  // vertex keeps the base-colour fallback and is counted here, so the tool can report coverage of the formula.
+  // The VU1 lighting outcome, summed over the frame. Each item is shaded with its own program and block
+  // (coregs3_lighting.hpp, shade_mesh_items); the flat-shading and object-space diagnostics keep the base colours and
+  // are counted as fallbacks. `lighting` carries the per-family and per-status detail; the scalar fields are the frame
+  // totals the tools have printed since round 12.
   std::uint32_t draws_lit = 0;        // draws with at least one lit vertex
   std::uint32_t draws_fallback = 0;   // draws left entirely on the base colour
   std::uint32_t vertices_lit = 0;
   std::uint32_t vertices_fallback = 0;
+  LightCounters lighting;
   std::uint64_t covered_pixels = 0;
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };

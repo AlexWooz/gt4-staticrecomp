@@ -724,6 +724,34 @@ void print_report(std::FILE *out) noexcept {
                  static_cast<unsigned long long>(load(p.vertices_unlit)),
                  static_cast<unsigned long long>(load(p.triangles)),
                  static_cast<unsigned long long>(load(p.last_vblank)));
+  // Per-family and per-status lighting detail of the live layer (coregs3_lighting.hpp programs). Cumulative since the
+  // process start; a draw may appear in more than one family because the capture mixes programs inside a draw.
+  for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {
+    const std::uint64_t items = load(p.family_items[program]);
+    if (items == 0) continue;
+    std::fprintf(out,
+                 "[coregs3] present family %s items %llu lit %llu fallback %llu vertices_lit %llu "
+                 "vertices_fallback %llu draws_lit %llu draws_fallback %llu\n",
+                 light_program_name(static_cast<LightProgram>(program)), static_cast<unsigned long long>(items),
+                 static_cast<unsigned long long>(load(p.family_items_lit[program])),
+                 static_cast<unsigned long long>(load(p.family_items_fallback[program])),
+                 static_cast<unsigned long long>(load(p.family_vertices_lit[program])),
+                 static_cast<unsigned long long>(load(p.family_vertices_fallback[program])),
+                 static_cast<unsigned long long>(load(p.family_draws_lit[program])),
+                 static_cast<unsigned long long>(load(p.family_draws_fallback[program])));
+  }
+  for (std::uint32_t status = 0; status < kLightStatusCount; ++status)
+    if (load(p.light_status[status]) != 0)
+      std::fprintf(out, "[coregs3] present status %s vertices %llu\n",
+                   light_status_name(static_cast<LightStatus>(status)),
+                   static_cast<unsigned long long>(load(p.light_status[status])));
+  if (load(p.items_uploaded) != 0 || load(p.items_carried) != 0 || load(p.items_uncertain) != 0 ||
+      load(p.items_none) != 0)
+    std::fprintf(out, "[coregs3] present light_sources uploaded %llu carried %llu uncertain %llu none %llu\n",
+                 static_cast<unsigned long long>(load(p.items_uploaded)),
+                 static_cast<unsigned long long>(load(p.items_carried)),
+                 static_cast<unsigned long long>(load(p.items_uncertain)),
+                 static_cast<unsigned long long>(load(p.items_none)));
 }
 
 }  // namespace gt4::coregs3

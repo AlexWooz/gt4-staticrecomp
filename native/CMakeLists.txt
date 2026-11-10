@@ -1098,6 +1098,12 @@ add_executable(coregs3_lighting_fixture coregs3/coregs3_lighting_fixture.cpp)
 target_link_libraries(coregs3_lighting_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_lighting_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_lighting COMMAND $<TARGET_FILE:coregs3_lighting_fixture>)
+# TASK-090: the seven measured per-item VU1 lighting programs (coregs3_lighting.hpp) on hand-authored data, with the
+# expected colours taken from the project's own AOT fragments (round 14 evidence).
+add_executable(coregs3_lighting_families_fixture coregs3/coregs3_lighting_families_fixture.cpp)
+target_link_libraries(coregs3_lighting_families_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_lighting_families_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_lighting_families COMMAND $<TARGET_FILE:coregs3_lighting_families_fixture>)
 # TASK-090: the variable-FPS presentation timeline (frames, timestamps, object identity, pairing, alpha).
 add_executable(coregs3_timeline_fixture coregs3/coregs3_timeline_fixture.cpp)
 target_link_libraries(coregs3_timeline_fixture PRIVATE gt4_coregs3)

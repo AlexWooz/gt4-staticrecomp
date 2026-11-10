@@ -21,7 +21,17 @@
 
 namespace gt4::coregs3 {
 
-enum class ChannelRole : std::uint8_t { unknown = 0, positions, uv, color, normals, strip_table, auxiliary };
+enum class ChannelRole : std::uint8_t {
+  unknown = 0,
+  positions,
+  uv,
+  color,
+  normals,       // V3-8 at TOPS 0x40: the body/paint family's normal channel
+  normals80,     // V3-8 at TOPS 0x80: the nine-qword and six-qword-no-colour normal channels
+  normals80_float,  // V3-32 at TOPS 0x80: the direct 0x0418 program's unit float normals
+  strip_table,
+  auxiliary,
+};
 
 struct ShapeChannel {
   std::uint32_t item = 0;         // item index inside the draw
@@ -47,10 +57,19 @@ ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes,
 // The default role rule, written out because it is a Hypothesis and must be reviewable:
 //   positions    TOPS-relative qword 0x00, V3-16 or V3-32
 //   normals      TOPS-relative qword 0x40, V3-8 (the car body/paint family; measured on the night-race capture)
+//   normals80    TOPS-relative qword 0x80, V3-8 (the nine-qword glass/lamp and six-qword no-colour families; the VU1
+//                prologue at 0x1878 converts it with ITOF0 * 1/127)
+//   normals80_float  TOPS-relative qword 0x80, V3-32 (the direct ITOP 0x0418 program, which has no prologue and reads
+//                unit float normals as they stand)
 //   uv           TOPS-relative qword 0x40, V2-16 or V2-32 (and V3-16/V3-32, whose third component is skipped)
 //   colour       TOPS-relative qword 0x80, V4-8
 //   strip_table  TOPS-relative qword 0x40, V1-8 (decoded by `decode_strip_table`)
 //   auxiliary    any other UNPACK (reported, not drawn)
+//
+// The V3-8 normal at 0x40 is the body/paint family's normal channel; the V3-8/V3-32 channels at 0x80 are the remaining
+// measured programs' normals (coregs3_lighting.hpp maps each item's ITOP dispatch to its program and inputs). The
+// destinations are distinct, so an item that carries both a colour and a normal at 0x80 fills both fields; the program
+// that runs it reads the one its microcode uses.
 //
 // The V3-8 normal at 0x40 is the first channel of the lighting formula (coregs3_hooks.cpp's light block): the measured
 // VU1 lighting formula is `C3 + C4 * min(0, dot(N, U))` with N the unit normal, U = (P - LP)/|P - LP|, P the model
@@ -84,19 +103,33 @@ bool decode_strip_table(const std::vector<std::uint8_t> &bytes, std::uint32_t ve
 
 struct MeshVertex {
   std::array<float, 3> position{};  // model-space position after MeshOptions::position_scale
-  // The raw signed 16-bit model position, before position_scale. The VU1 lighting entry reads the position at TOPS+0x00
-  // through ITOF0, so this is the exact integer the formula starts from; it is filled for V3-16 position channels only
+  // The original draw item index this vertex came from (CapturedDraw::items). The per-item lighting programs select
+  // their block and VU1 selector from this item (coregs3_lighting.hpp): a draw can mix programs, and the capture keeps
+  // the light state per item, not per draw.
+  std::uint32_t item = 0;
+  // The raw signed 16-bit model position, before position_scale. The VU1 lighting entries read the position at TOPS+0x00
+  // through ITOF0, so this is the exact integer the formulas start from; it is filled for V3-16 position channels only
   // (a V3-32 float channel sets has_raw_position = false).
   std::array<std::int32_t, 3> raw_position{};
   bool has_raw_position = false;
   // The V3-8 normal channel at TOPS 0x40, sign-extended to int8 (the model value; a unit normal scaled to the byte
-  // range). has_normal is false when the item carried no such channel.
+  // range). has_normal is false when the item carried no such channel. This is the body/paint family's normal.
   std::array<std::int8_t, 3> normal{};
   bool has_normal = false;
+  // The V3-8 normal channel at TOPS 0x80 (nine-qword and six-qword-no-colour families), sign-extended to int8; and the
+  // V3-32 unit float normal at the same destination (the direct 0x0418 program). At most one of the two is present in
+  // the measured packets. Consumers divide the V3-8 form by 127 and use the V3-32 form as it stands.
+  std::array<std::int8_t, 3> normal80{};
+  bool has_normal80 = false;
+  std::array<float, 3> normal80_float{};
+  bool has_normal80_float = false;
   // The model UV channel: for a 16-bit channel u,v = (int16)raw / 4096 (a signed fixed-point fraction, no V flip); for a
   // 32-bit channel the raw floats, unchanged. This is the u,v the VU1 multiplies by Q to form S,T.
   std::array<float, 2> uv{};
   std::array<std::uint8_t, 4> color{255, 255, 255, 255};
+  // True when the item carried a V4-8 colour at TOPS 0x80. The fallback keeps this colour; a program that reads it
+  // (body, three-qword, passthrough) refuses the vertex when the flag is false instead of shading the white default.
+  bool has_color = false;
   bool has_uv = false;
 };
 
@@ -107,6 +140,8 @@ struct Mesh {
   std::vector<std::uint32_t> strip_lengths;  // vertices in each strip, same order
   bool has_colors = false;
   bool has_normals = false;
+  bool has_normals80 = false;
+  bool has_normals80_float = false;
   bool has_uv = false;
   bool has_strip_table = false;  // at least one item carried a strip table
   std::uint32_t triangles() const { return static_cast<std::uint32_t>(indices.size() / 3); }
@@ -119,7 +154,8 @@ struct MeshOptions {
   // Hypothesis). A caller that does not know the scale should leave it at the default and compare.
   float position_scale = 1.0f / 4096.0f;
   // Decode the V3-8 normal channel at TOPS 0x40 into MeshVertex::normal (and Mesh::has_normals). On by default; a caller
-  // that only wants the original channels can turn it off and gets the same mesh as before this channel existed.
+  // that only wants the original channels can turn it off and gets the same mesh as before this channel existed. The
+  // 0x80 normal channels (normals80 / normals80_float) are always decoded: the per-item lighting programs read them.
   bool decode_normals = true;
   // `strip` is the proven reading (docs/COREGS3-HOOKS.md §6): the model's strip table says how many vertices each strip
   // has. `list` and `quad` are diagnostics kept for malformed or unfamiliar packets.

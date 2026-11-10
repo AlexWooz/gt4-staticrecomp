@@ -268,11 +268,10 @@ bool triangle_outside_clip_volume(const ClipPosition &a, const ClipPosition &b, 
   return false;
 }
 
-// Applies the measured VU1 diffuse lighting (coregs3_lighting.hpp) to a freshly built mesh, in place: a lit vertex's
-// colour becomes the RGBA the VU1 fragment would write. A draw keeps the base-colour fallback, and is counted, when it
-// has no measured light block, no normals or no colour channel; a vertex also falls back when it lacks the normal or the
-// raw position the formula needs. The flat-shading diagnostic keeps its fixed headlight and its base colours, so it is
-// never lit by this function.
+// Applies the measured per-item VU1 lighting to a freshly built mesh, in place. Every vertex is shaded with its own
+// item's program and block (coregs3_lighting.hpp, shade_mesh_items): the capture's light state and selector are per
+// item, and a draw can mix programs. The flat-shading diagnostic keeps its fixed headlight and its base colours, so it
+// is never lit by this function.
 void apply_lighting(const CapturedDraw &draw, Mesh &mesh, const RenderOptions &options, RenderStats &stats) {
   const std::uint32_t vertex_count = static_cast<std::uint32_t>(mesh.vertices.size());
   if (options.flat_shading) {
@@ -280,24 +279,13 @@ void apply_lighting(const CapturedDraw &draw, Mesh &mesh, const RenderOptions &o
     stats.vertices_fallback += vertex_count;
     return;
   }
-  LightBlock block;
-  if (decode_light_block(draw, block) != LightBlockStatus::ok || !mesh.has_normals || !mesh.has_colors) {
-    stats.draws_fallback += 1;
-    stats.vertices_fallback += vertex_count;
-    return;
-  }
-  std::uint32_t lit = 0;
-  for (MeshVertex &vertex : mesh.vertices) {
-    std::array<std::uint8_t, 4> rgba{};
-    if (shade_vertex(block, vertex, rgba)) {
-      vertex.color = rgba;
-      ++lit;
-    }
-  }
-  stats.vertices_lit += lit;
-  stats.vertices_fallback += vertex_count - lit;
-  if (lit != 0) stats.draws_lit += 1;
-  if (lit == 0) stats.draws_fallback += 1;
+  LightCounters counters;
+  shade_mesh_items(draw, mesh, counters, nullptr);
+  stats.lighting.add(counters);
+  stats.draws_lit += static_cast<std::uint32_t>(counters.draws_lit);
+  stats.draws_fallback += static_cast<std::uint32_t>(counters.draws_fallback);
+  stats.vertices_lit += static_cast<std::uint32_t>(counters.vertices_lit);
+  stats.vertices_fallback += static_cast<std::uint32_t>(counters.vertices_fallback);
 }
 
 // The screen path: the measured VU1 transform (coregs3_vertex.hpp) followed by clip-space rejection and near-plane

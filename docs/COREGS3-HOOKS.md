@@ -668,3 +668,107 @@ exact.
 | CTest | 4/4 passed (`native_coregs3`, `native_coregs3_vertex`, `native_coregs3_lighting`, `native_coregs3_timeline`) |
 | Python `test_coregs3_units.py` | 7/7 passed |
 | 3x off/shadow identity gate (main worktree reference exe) | **passes**: 8,997 VBlanks, 1,686 racing, clock/digest/state 0 differences and 13/13 frames identical for off and shadow (capture 4,451,628 B). One earlier run of the same gate showed the known 512-word state-dump double-buffer difference (0x10EC0..0x116BC) in the `off` run under concurrent machine load; it did not reproduce in a clean run |
+
+## 14. Round 18 (2026-11-10, branch `task/090-family-light`): the per-item lighting programs in both renderers
+
+The round 14 formulas are now implemented in `native/coregs3/coregs3_lighting.{hpp,cpp}` and both renderers shade every
+item with **its own** light block and ITOP selector from the version 4 capture. This closes the round 12/13 "every
+selector other than the body is unlit" state: a night frame now lights all 335 items of the car pass, including draw 98,
+whose items switch programs inside the draw (items 0..16 run 0x03D8, items 17..30 run 0x0B08).
+
+### 14.1 The programs and their exact formulas
+
+`LightProgram` names the body program and the seven measured families (plus `none`); the selector is the item's ITOP dispatch,
+`(CapturedItem::run_itop & 0x3FF) * 8`, and the block is the item's `light_block` qwords at TOPS 0xC9. The measured
+formulas, in the fragment's operation order and with its truncation:
+
+| ITOP dispatch | program | block | formula (per colour lane, alpha = lane 3) |
+|---|---|---|---|
+| 0x1058 | `body_paint` | six qwords 0x6C06C0C9 | the round 12 formula: `D = P - LP`, `t = min(D.N, 0)/abs(D)`, `out = FTOI0(B * (C3 + C4*t))` |
+| 0x0B08 | `nine_qword_first` | nine qwords 0x6C09C0C9 | `L_j = max(dot(M_j, N), 0)`, `out = FTOI0(clamp(C3 + C4*L0 + C5*L1 + C6*L2 + C7*L3, 0, C8))` |
+| 0x0250 | `nine_qword_pow8` | nine qwords | `out = FTOI0(clamp(C3 + C4*L0 + C5*L1 + C6*L2^8 + C7*L3^8, 0, C8))`, three squarings |
+| 0x03D8 | `nine_qword_pow16` | nine qwords | `out = FTOI0(clamp(C3 + C4*L0 + C5*L1 + C6*L2^16 + C7*L3^16, 0, C8))`, four squarings |
+| 0x0418 | `nine_qword_direct` | nine qwords | the same power-16 formula, V3-32 positions and V3-32 unit float normals (no prologue) |
+| 0x0C68 | `six_qword_no_colour` | six qwords 0x6C06C0C9 | `D = P - B`, `R = D - 2N(N.D)`, `q = RSQRT(abs(D)^2)`, `t = R*q`, `L = C9*t0 + CA*t1 + CB*t2`, `L = max(L, 0)`, `out = FTOI0(CD * L.x^8)`, alpha 128 |
+| 0x14D8 | `three_qword_gain` | three qwords 0x6C03C0C9 | `out = FTOI0(clamp(bias + gain * C, 0, clamp))` per lane, C the V4-8 colour after ITOF0 |
+| 0x0080 | `passthrough` | none | the V4-8 colour at TOPS+0x80, alpha included |
+
+The nine-qword matrix rows are qwords 0xC9..0xCB and direction j is `(q0[j], q1[j], q2[j])`; C3..C8 are qwords
+0xCC..0xD1. The V3-8 normal at 0x80 is converted by the 0x1878 prologue as `ITOF0(byte) * (1/127)`, the multiply the
+microcode performs; for sixteen int8 values this differs by one ulp from a division, and the body formula now uses the
+same multiply (it moved the matched body residual from max 2 / rms 0.188 to max 1 / rms 0.1696, the round 12 figure).
+
+Three corrections to the round 14 summary, each measured with the real AOT fragment through the probe harness:
+
+- **0x0250 is the power-8 variant, not first power.** With N = (127,127,115)/127 and C4..C7 = 10, first power gives
+  29, power-8 gives 24 and power-16 gives 22; the fragment writes 24 for dispatch 0x0250 (loop 0x0290). `nine_qword_pow8`
+  is therefore a separate program with three squarings. The round 13/14 table's "first-power" grouping was wrong.
+- **The six-qword `t` is signed.** The fragment clamps only after the weighted sum: with `t0 = -0.3085` and
+  `t1 = 0.9368` (measured with the harness), `C9 = 1`, `CA = 1` gives a scalar of 0.6283, not `t1`; the fragment's output
+  confirms the signed sum. Clamping each `R*q` component first would be wrong.
+- **The six-qword output uses `L.x` only.** The fragment broadcasts lane 0 of the clamped L before the three squarings;
+  a block whose L1/L2 are non-zero but L0 is zero stores zero. The per-lane coefficient multiply `CD * scalar` is kept.
+
+### 14.2 Channels and the per-item design
+
+`MeshVertex` names its original draw item (`item`), and the shape decoder gained three channels beside the body normal
+at 0x40 and the V4-8 colour at 0x80: `normals80` (V3-8 at 0x80), `normals80_float` (V3-32 at 0x80) and `has_color` (a
+V4-8 colour was present). The channel rule is unchanged otherwise: the UV channels at 0x40 and the strip table still
+classify exactly as before, and a V3-32 channel at 0x80 is the direct program's normal, not a UV. `shade_mesh_items`
+decodes one `ItemLightState` per item and shades each vertex with the program and block of its own item, which is what
+lets draw 98 mix two programs.
+
+Fallbacks are explicit and counted per family and per status: an invalid run pair or unmeasured selector
+(`no_program`), a missing block (`no_block`), a carried block after a chain discontinuity (`uncertain_block`), a qword
+count/command that is not the form the program reads (`block_variant`), a NaN/infinite qword (`block_not_finite`), a
+vertex without a channel the program reads (`missing_channel`) and zero-length/non-finite math (`invalid_math`). A
+carried block is accepted (it is the VU1's carried state; a known command must match, zero is accepted because the
+capture may not keep a carried tag word). `passthrough` reads no block, so its `light_source` does not gate it; the 5
+`carried_uncertain` items of frame 0 are exactly this case and are shaded from their colour.
+
+### 14.3 Evidence from the v4 capture and tap (`build/evidence/coregs3-r14/`, frame 0, VBlank 7398)
+
+`gt4_coregs3_render --shade-dump` writes the per-vertex predicted RGBA and status; `validate_final.py` pairs the items
+with the tap (the round 14 job/source rule) and compares. Items whose captured inputs reproduce the tap:
+
+| program | vertices | rms R/G/B | max R/G/B | within 1 | alpha exact |
+|---|---|---|---|---|---|
+| body_paint (matched; draws 91/93 excluded) | 3,826 | 0.1696 / 0.1696 / 0.1696 | 1 / 1 / 1 | 3,826 | 3,826 |
+| nine_qword_first | 2,507 | 0.1957 / 0.1635 / 0.1468 | 1 / 1 / 1 | 2,507 | 2,507 |
+| nine_qword_pow8 | 636 | 0.4590 / 0.1190 / 0.6729 | 1 / 1 / 2 | 634 | 636 |
+| nine_qword_pow16 (matched; draw 90 excluded) | 2,416 | 0.1678 / 0.1380 / 0.1037 | 1 / 1 / 1 | 2,416 | 2,416 |
+| nine_qword_direct (matched) | 52 | 0 / 0 / 0 | 0 / 0 / 0 | 52 | 52 |
+| six_qword_no_colour | 60 | 0.1291 / 0 / 0 | 1 / 0 / 0 | 60 | 60 |
+| three_qword_gain | 930 | 0 / 0 / 0 | 0 / 0 / 0 | 930 | 930 |
+| passthrough | 1,351 | 0 / 0 / 0 | 0 / 0 / 0 | 1,351 | 1,351 |
+
+The exceptions are the known round 12/14 ones, and they are data, not formula: draws 91/93 (184 vertices, max 18),
+draw 90's pow16 item (52 vertices, max 9) and the six direct items of draws 86/88/89/94 (308 vertices, max 17). Rerunning
+the real AOT fragment on the captured inputs of each exception reproduces **this module's** colour exactly (checked on
+93/1 and 90/0 against the fragment and on the two pow8 outliers), so the module is faithful to the fragment and the tap
+residual is the capture's input or the tap pairing. The two pow8 vertices with max 2 are tap-pairing outliers: the
+fragment with the captured normal and block writes the module's 88/72/58, not the tap's 89/72/60.
+
+### 14.4 Renderer evidence
+
+Offline (`gt4_coregs3_render <v4 capture> --frame 0`): 116/116 draws and 12,146/12,146 vertices lit, 0 fallback;
+body 80 items/3,918 vertices (27 draws), nine-first 112/2,507 (46), pow8 21/636 (6), pow16 62/2,384 (14), direct 8/360
+(4), six-no-colour 1/60 (1), three-qword 25/930 (15), passthrough 26/1,351 (11); light sources 177 uploaded, 153
+carried, 5 uncertain. Draw 98 alone: 1,226 vertices, 14 nine-first items + 17 pow16 items, one draw. Images
+`build/evidence/coregs3-r18/offline-frame0.png` (and `-frame1`, `draw98`, `draw0`). The evidence A/B
+`lighting-ab-frame0.png` renders the same frame with `--no-programs` (all items' run pairs invalidated): 4,443 pixels
+change and 272 pixels that were the `(255,255,255)` fallback become shaded. Draw 98 alone (`draw98-ab.png`) is stronger:
+its 1,831 covered pixels are all `(255,255,255)` in the fallback A/B and all become the shaded glass/lamp, so the
+previously white parts are lit by the new programs.
+
+The live `present` layer now calls the same `shade_mesh_items`; its F8 counters gained per-family and per-status lines
+and the lit/fallback vertex counts. The shader remains vertex-colour only.
+
+### 14.5 Gates
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | 6/6 passed (`native_coregs3`, `_vertex`, `_lighting`, `_lighting_families`, `_timeline`, `_texture`) |
+| Python `test_coregs3_units.py` | 7/7 passed |
+| 3x off/shadow identity gate (final candidate, main worktree reference exe) | **passes**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow; capture 4,451,628 B; `COREGS3-NIGHT-CHECK-OK` |
+| Present-mode guest identity run (`GT4_COREGS3=present`, same 3x night run) | **passes**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences; 13 passes, 1,377 draws, 338,934 vertices, 112,978 triangles, 0 refused; family vertices lit: body 48,512, first 27,043, pow8 24,208, pow16 16,640, direct 7,872, six 432, three 9,272, pass-through 11,547; 40 unlit draws / 9,282 unlit corners (120 `no_program` items, 3,962 vertices, kept on their base colour); light sources 2,150 uploaded / 1,856 carried / 33 uncertain / 0 none; the 13/13 dumped frames differ from the reference in the overlaid car pass |
