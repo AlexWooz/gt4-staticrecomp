@@ -1713,9 +1713,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   PATH2/PATH3 and TEST/ZBUF/SCISSOR are unmeasured. Options: keep CoreGS 2.0's 2D (fast/faithful; blend-test a
   transparent layer), native HUD (4-6 weeks standard race), or mixed per-element (recommended). M1: speed plate +
   digits native with G-HUD-VALUES/IMG/ASPECT; then replay, semantic elements and modes. Evidence: `build/analysis-hud/`.
-- Next: fog/textures/reflection plus the capture extension (K7 pass markers, hw GS-stream, `render_panel` 2D
-  recorder) that unblocks the effects and the HUD, then the G-IMAGE/G-PERF gates; the per-item light state is now
-  consumed by both renderers.
+- **Track/course study (2026-11-10).** `GT4_COREGS3_ALL_DRAWS` already stores every `pgluCallShape` call, not only cars;
+  for the track the gaps are the pass tag (`draw.pass` hardcoded 1) and the texture pixels/palettes (SLM in flight).
+  Race order mapped (env map, clear/lights, sky, backdrop, depth/backdrop fill, main course+billboards ~64.1k of 83.5k
+  vertices/frame, wet-road reflection, cars, render_after, mirror, flares/crowd/pitmen, post, HUD). Track formats PSMT4
+  45.5k/PSMT8 21.1k/PSMT32 2.9k, CT32 CLUT, a mip subset, TFX=0, alpha GREATER 32 with AFAIL RGB_ONLY for 2,680
+  vertices, blend ~11k, DATE on cars/env/reflection, per-pass XYOFFSET changes. Gaps: pass tag/K7, textures/SLM,
+  per-pass GS state, targets, PATH3/2D, CLUT animation, capacity. Plan: 3a capture, 3b sky+road offline, 3c categories,
+  3d reflections/env/mirror, 3e live.
+- Next: the texture decode in flight, then the offline textured renderer; the capture extension (ALL_DRAWS pass
+  tag/K7, hw GS-stream, `render_panel` 2D recorder) unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates.
+  The per-item light state is now consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls

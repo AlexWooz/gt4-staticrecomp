@@ -1,5 +1,20 @@
 # Current Status
 
+## 2026-11-10: track/course study: the ALL_DRAWS capture and the sky+road milestone
+
+The hook already has `GT4_COREGS3_ALL_DRAWS` (`native/coregs3/coregs3_hooks.cpp:357/479`), which stores every
+`pgluCallShape` call, not only the car pass; for the track the missing pieces are the pass tag (`draw.pass` is hardcoded
+to 1) and the texture pixels/palettes (the SLM snapshot in flight). The race order is mapped: car env map/sphere map;
+clear/camera/lights/fog; sky; far underlay/backdrop; depth clear; full-screen backdrop (GS 2D); main course + billboards
+(the bulk, ~64.1k of 83.5k vertices/frame); wet-road reflection; cars; render_after; back mirror; flares/crowd/pitmen;
+post chain; HUD. Track formats: PSMT4 45.5k vertices, PSMT8 21.1k, PSMT32 2.9k, CT32 CLUT; a mip/LOD subset (L=2 K=3935,
+MMIN=4, 1,260 vertices); TFX=0; alpha test GREATER 32 with AFAIL RGB_ONLY for 2,680 vertices (foliage two-phase);
+blend/ABE on ~11k; DATE on cars/env/reflection; per-pass XYOFFSET changes mid-frame. The same PGL/ITOP path selects the
+program; the track selectors are unknown until the ALL_DRAWS capture. Capture gaps: pass tag/K7 markers,
+textures/palettes (SLM), per-pass GS state, env/reflection targets, PATH3/2D (hw GS-stream), CLUT animation, capacity.
+Plan: 3a ALL_DRAWS + pass tag + SLM; 3b offline sky+road M1; 3c categories; 3d reflections/env/mirror; 3e live. Evidence:
+`build/analysis-track/`.
+
 ## 2026-11-10: HUD/2D study: elements, textures and the mixed path
 
 The HUD is drawn at 60 Hz in `render_panel` (`RaceDisplay::render` 0x0039F498 and the element `render_main` functions),
