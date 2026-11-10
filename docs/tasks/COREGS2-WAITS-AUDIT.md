@@ -132,9 +132,11 @@ The table is the complete inventory for the CoreGS 2.0 in-process path. "Blocks"
 | W16 | GS worker tone CLUT readback | `core2_renderer.cpp:1075-1089`, `3278-3337`; `core2_gpu.cpp:3994-4008` | GS worker; the tone pass | `ReadClut` `submit(true)`; `clut_reads`; per-reason `clut` not attributed; cost Unknown | H | yes: tone shader reads the GPU CLUT |
 | W17 | GS worker present (one queue) | `hw_gs_backend.cpp:1410-1467` | GS worker; the next frame | 11.42 ms showroom, 17.7/33 ms races at 60 Hz (IN-516); the second queue 0.01 ms | C | yes: second queue/present family/thread |
 | W18 | GS worker present (second queue) | `hw_gs_backend.cpp:1155-1237` | GS worker; the copy/present fences | `fences[slot]`/`draw_fences`; the display acquire is `timeout 0` and drops; the ledger 0.01 ms showroom | C/H | partially: frames/slots/fences |
+| W34 | GPU semaphore waits in the present | `hw_gs_backend.cpp:1211-1230`, `1313-1326` | GPU, not CPU | the second queue waits `acquire_semaphores`/`picture_ready`; the present waits `render_finished`; no CPU block | C | no: the GPU order |
 | W19 | Paced present / 30 fps | `hw_gs_backend.cpp:1254-1332`, `1297-1301` (`acquire_image(100000000)`), `1335-1380` | pacer thread/GS worker | `IN-525`; only frame skip; 30 fps last resort | C | no (the owner's choice) |
 | W20 | Frame-skip transition drain | `hw_gs_backend.cpp:1279-1283`, `1405` | GS worker; the pacer queue | only after frame skipping; not the strategy | C | no |
 | W21 | Resize/orientation `vkDeviceWaitIdle` | `hw_gs_backend.cpp:955-960`, `1727`; `1650` | GS worker/EE; the swapchain | one-time; not steady | C | no |
+| W35 | Window attach/resize drain | `hw_gs_stream_sink.cpp:937-939`; `hw_gs_backend.cpp:1727` | GS worker; the swapchain | one-time; the `drain` then `vkDeviceWaitIdle` | C | no (not steady) |
 | W22 | Pipeline/shader warm | `core2_gpu.cpp:2320-2392`; `1378`; `IN-437/489/507` | GS worker/driver; the first variants | 97 variants, 128 ms each on average, max 250 ms (IN-437); the prepare/cache removes from play | C/H | yes: prepare/cache |
 | W23 | Allocation (`vkAllocateMemory`, image growth) | `core2_gpu.cpp:512`, `546-599`, `616-699`, `728-733` | GS worker/driver | IN-424: race start 40-160 new images/VBlank, 60 VBlanks over 20 ms -> 2; IN-418 churn | C | yes: blocks/recycle (done) |
 | W24 | Texture replacement wait | `core2_replace.cpp:36-75`; `core2_renderer.cpp:3798` | GS worker; the batch | `GT4_HW_TEXTURES_WAIT_US` default 6000; 0.67 s over the Tokyo recording (IN-533) | C | yes: wait 0/late texture |
@@ -328,6 +330,27 @@ swapchain image count are a display/SurfaceFlinger question (3.6), not a rendere
   complete enough; the `IN-448` slot rings were reverted (no gain).
 - **The separate presentation queue** is the only multi-queue overlap in use; the one-queue present thread is the mobile
   extension (3.6).
+
+### 3.14 Risk and test for the waits outside the async top
+
+For the waits that are not in the section 4 list, the risk and the exact check are:
+
+| Waits | Risk of the change | Exact test / identity gate |
+|---|---|---|
+| W1/W2 pacer/audio | cadence/audio regression; the pacer is not a renderer wait | `[pacing]` interval histogram, audio underruns/queue, the frame sheet; the race clock |
+| W3/W4 EE→GS back-pressure | a deeper queue adds latency; a smaller ring stalls the EE | `[hw] transport` `vsync_wait_ms`/`drain_wait_ms`/`max_depth`; frames; the input latency |
+| W5 one-shot readback | the game may use the bytes immediately; a late icon/photo is visible | the icon/loading/photo scenes, `read_fifo_ms`/`drain_wait_ms`, frames |
+| W7/W8/W9/W10/W11/W26 MTVU/VU1 | the VBlank ordering and the VU1 state; a lost wake hangs | `[mtvu] EE wait`, `[hw] transport mtvu_wait_ms`, the MTVU/VU1 verify, frames |
+| W14/W15 before-write/keep | memory older than the targets; a later read sees stale pixels | `[core2] gpu_wait` `before write`/`keep`, `GT4_CORE2_PATCH_BLOCKS=0/1`, `GT4_CORE2_WHOLE_BLOCK_WRITES=0/1`, frames |
+| W16 tone CLUT | a palette decode mismatch; the colour filter changes | colour-filter frames identical, `clut_reads` 0, `GT4_CORE2_TONE_TRACE=1` |
+| W17/W18/W34 present | swapchain lifetime/queue-family misuse; a dropped frame | `[hw] presentation queue`, `[hw] profile present_us`, `presents_dropped`, frames; the validation layer |
+| W19/W20 frame skip/30 | a transition hitch; the owner's cadence | `[pacing]`, the frame sheet, the presentation intervals; not the strategy |
+| W21 resize `vkDeviceWaitIdle` | a one-time stall on resize/orientation | a resize/orientation log; not per-frame |
+| W22 pipeline warm | a first-play stall; a quarantined variant draws with the uber | `shaders.log`, first-run vs warm-cache frames; the picture is unchanged |
+| W23 allocation | a driver stall/memory pressure; the image blocks | `[core2] image_mb`/`texture_mb`, `GT4_CORE2_SPIKE_MS`, the race-start frames |
+| W24 replacement wait | a late texture for a frame; the `late` counter | `GT4_HW_TEXTURES_WAIT_US=0` A/B, `[core2] texture replacement late`, frames |
+| W25/W27 locks | contention/wake cost; no picture change | the CPU sampler, `[hw] transport` wakeups, frames |
+| W28/W29 barriers/passes | a tile flush; a picture change if moved | the GPU timestamps, `[core2] full_barriers`/`render_passes`; frames; IN-464/IN-420 already measured |
 
 ## 4. Prioritized async list (weak/mobile hardware)
 
