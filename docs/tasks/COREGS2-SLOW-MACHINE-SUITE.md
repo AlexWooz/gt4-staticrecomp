@@ -136,15 +136,19 @@ Limit unchanged: **VRAM stayed stock**, so bandwidth-bound costs do not show; th
 ## CPU-down results (2026-11-10, no-reboot method; GPU still core -500 MHz / PL 70 % / VRAM stock)
 
 Configuration: `PERFBOOSTMODE=0` (boost disabled, AC) and `PROCTHROTTLEMAX=100` (AC) on the "Desempenho Máximo" scheme.
-Owner's clock proxy (fixed single-thread integer benchmark, same binary): stock **568-572 ms**, current **683-691 ms**,
-+20 % time, about **-17 % effective clock**, estimated **~3.8 GHz** from the 4.6 GHz boost. Exact clock **Unknown** (no
-tree line, HWiNFO is GUI). GPU clocks unchanged; at 3x/6x/license that GPU configuration had no measurable effect (see
-above), but the 6x GPU busy is the GPU-down figure and its comparison is stated against GPU-down, not stock.
+Clock proxy (fixed single-thread integer benchmark, same binary): the owner's reference is **480 / 478 / 480 / 485 ms**,
+taken on a **cool** machine after the plan was restored (the earlier 568-572 ms baseline was taken warm, right after the
+performance runs, and is not the reference). Boost-off measured **683-691 ms**, i.e. **+42 % time, about -30 % effective
+clock**, estimated **~3.4 GHz** from a 4.8-5.0 GHz boost - the BIOS target, not the earlier ~3.8 GHz guess. The exact clock
+stays **Unknown** (the benchmark is the proxy; no tree line, HWiNFO is GUI). **Warm/cool caveat:** the single-thread
+benchmark moves with temperature, so only same-conditions pairs are comparable, and the game runs below were taken with the
+machine already loaded. GPU clocks unchanged at the time of the runs; at 3x/6x/license that GPU configuration had no
+measurable effect (see above), but the 6x GPU busy is the GPU-down figure and its comparison is stated against GPU-down,
+not stock.
 
 One run per point, exe `A2A9CD8A...`, full per-VBlank trace. Restored after the runs: `PERFBOOSTMODE=2` (Aggressive),
-`PROCTHROTTLEMAX=100`, `SCHEME_CURRENT` re-activated; both AC values verified by `powercfg /query`
-(0x00000002 and 0x00000064). The owner's benchmark was not rerun here (binary path not given): the restore is verified by
-the plan values.
+`PROCTHROTTLEMAX=100`, `SCHEME_CURRENT` re-activated; both AC values verified by `powercfg /query` (0x00000002 and
+0x00000064), and the owner's benchmark reads **480 ms** again on the cool machine after the restore.
 
 | Point | wall mean / p50 / p99 (intervals) | 1 % low | >16.7 / >20 | per-VBlank mean / p99 / max | GPU busy | flare wait | before-write / keep | GS worker | EE critical | process |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -158,25 +162,28 @@ the plan values.
 CSVs: `build/evidence/cpudown-night-3x.csv`, `cpudown-night-6x.csv`, `cpudown-license-1x.csv`, each with a `-spikes.csv`
 (3,601 / 3,601 / 1,101 per-VBlank rows, trace complete).
 
-**What the CPU-down exposed:** the CPU-bound scenes scale with the CPU by more than the clock ratio: 3x wall mean
-+32.7 % (7.47 -> 9.91), GS worker +30.8 %, process +43.9 %; license wall +35.3 % (8.83 -> 11.95), GS worker +34.0 %;
-6x against the *same GPU configuration* (GPU-down 8.81) wall +19.4 % with the GPU unchanged (6.66 against 6.62), so the
-6x change is CPU too. GPU busy and every wait reason stay flat at 3x/license, which is the signature of a CPU-only clock
-change. **60 FPS at 3x/6x/license still holds in the interval means (0 over 16.7)** but the single-VBlank tail reaches the
-budget: per-VBlank p99 14.10 (3x), **17.20 (6x)** and 16.10 ms (license), with 47.8 ms (VBlank 9125) and 24.5 ms
-(VBlank 2412) worst spikes - the first configuration in this suite where single frames cross 16.7 ms. Margins left:
-3x 6.8 ms, 6x 6.2 ms, license 4.7 ms (interval means).
+**What the CPU-down exposed:** the CPU-bound scenes scale with the CPU, consistent with a **4.8-5.0 -> ~3.4 GHz** drop
+(about -30 % clock, +42 % single-thread time): 3x wall mean +32.7 % (7.47 -> 9.91), GS worker +30.8 %, process +43.9 %;
+license wall +35.3 % (8.83 -> 11.95), GS worker +34.0 %; 6x against the *same GPU configuration* (GPU-down 8.81) wall
++19.4 % with the GPU unchanged (6.66 against 6.62), so the 6x change is CPU too. GPU busy and every wait reason stay flat
+at 3x/license, which is the signature of a CPU-only clock change. **60 FPS at 3x/6x/license still holds in the interval
+means (0 over 16.7)** but the single-VBlank tail reaches the budget: per-VBlank p99 14.10 (3x), **17.20 (6x)** and
+16.10 ms (license), with 47.8 ms (VBlank 9125) and 24.5 ms (VBlank 2412) worst spikes plus 17.9 ms (VBlank 8983) - the
+first configuration in this suite where single frames cross 16.7 ms. Margins left: 3x 6.8 ms, 6x 6.2 ms, license 4.7 ms
+(interval means). The two big spikes (VBlank 9125, 47.8 ms; VBlank 2412, 24.5 ms) should be read from the spike CSVs after
+the flare/TASK-171 work.
 
-**Limits:** the effective clock is an estimate (~3.8 GHz, Unknown exactly); the GPU is still under clocked, so 6x is
-compared against GPU-down; VRAM stock throughout; one run per point.
+**Limits:** the effective clock is an estimate (~3.4 GHz, Unknown exactly; benchmark proxy, warm/cool sensitive); the GPU
+was still under clocked, so 6x is compared against GPU-down; VRAM stock throughout; one run per point.
 
 ## Clock record (fill per configuration; Unknown until the owner reads them)
 
 | Configuration | CPU effective (MHz) | GPU core (MHz) | VRAM (MHz) | Temps | Date/session |
 |---|---|---|---|---|---|
-| stock | 3401 base, 4.4-4.6 boost (PBO), Unknown live | Unknown | Unknown | Unknown | 2026-11-10 |
-| GPU-down | stock | set by owner | set by owner | Unknown | - |
-| CPU-down | 3400 fixed | stock | stock | Unknown | - |
-| both | 3400 fixed | set | set | Unknown | - |
+| stock | 3401 base; boost 4.8-5.0 GHz per the 480 ms benchmark (was 568 ms warm), live value Unknown | Unknown | Unknown | Unknown | 2026-11-10 |
+| GPU-down | stock | core -500 MHz, PL 70 % (effective Unknown) | stock | Unknown | - |
+| CPU-down | boost off, max state 100 %: **~3.4 GHz estimated** from 683-691 ms against 480 ms (~-30 % clock); exact Unknown | stock (underclock applied, no effect at these points) | stock | Unknown | - |
+| both | ~3.4 GHz estimated | core -500 MHz, PL 70 % | stock | Unknown | - |
 
 The tree prints no clock or temperature line; any number here must come from a monitor the owner runs, or stay Unknown.
+The single-thread benchmark is temperature-sensitive: 568-572 ms warm after the perf runs, 480 ms cool after the restore.

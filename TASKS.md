@@ -4539,5 +4539,14 @@ the same day), 12x for the GPU stress, 3x/6x for the normal scene and identity. 
   flare's colour or alpha is valid and is the next implementation step. The per-frame flare gpu_wait reason and
   lare_readbacks now exist (IN-546), and the tone-hook CLUT wait is attributed. CTest 319/320: only
   python_native_contracts fails, on the launcher CLI mode lists of an unpinned dev build.
+- Slow-machine suite (owner clocks): **GPU-down** (core -500 MHz, PL 70 %, VRAM stock) leaves 3x and the license unchanged
+  (not GPU-bound), costs 6x +7.6 % GPU busy, and binds only at 10x (GPU busy 14.32 -> 15.78 of 16.7, wall 16.90, 3/7
+  intervals over budget, flare wait 6.05 -> 7.31). **CPU-down** (boost off, max state 100 %) moves the CPU-bound scenes:
+  3x wall +32.7 %, license +35.3 %, 6x +19.4 % against GPU-down with the GPU unchanged; interval means stay under 16.7
+  but the per-VBlank tail reaches it (p99 14.10 / 17.20 / 16.10, max 17.9 / 47.8 / 24.5 at VBlanks 8983 / 9125 / 2412).
+  Clock proxy corrected to the cool-machine reference (480 ms stock against 683-691 boost-off: +42 % time, about -30 %
+  clock, ~3.4 GHz estimated, exact Unknown); plan restored (PERFBOOSTMODE=2, PROCTHROTTLEMAX=100, benchmark 480 ms).
+  Details and CSVs: docs/tasks/COREGS2-SLOW-MACHINE-SUITE.md.
 - Next on this line: the GPU-side flare (the 6.05/10.36 ms wait), then the per-reason spikes the GTX 1660 logs show
-  (image creation, decodes, unattributed readbacks) and the texture-replacement churn test.
+  (image creation, decodes, unattributed readbacks), the texture-replacement churn test, and the two CPU-down spikes
+  (VBlank 9125 and 2412) from their spike CSVs.
