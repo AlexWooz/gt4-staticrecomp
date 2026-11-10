@@ -1,5 +1,46 @@
 # Current Status
 
+## TASK-215d: CoreGS 2.0 scene-generality and measurement audit, read-only (2026-11-10)
+
+The scene-generality companion is done on branch `docs/coregs2-perf-audit` (worktree
+`C:\Antigravity\gt4-wt-215-coregs2-audit`, from `origin/main` `59f27aa1`): `docs/tasks/COREGS2-SCENE-GENERALITY-AUDIT.md`.
+Owner direction (2026-11-10, 17:59, voice): CoreGS 2.0 is still far from the expected performance; a Ryzen 5 5600 + GTX
+1660 6 GB streamer runs GSdx at Full HD fine but CoreGS 2.0 at Full HD does not on some tracks; the license B-1 oval
+stutters on the weaker RTX 3060 machine but not the RX 9060 XT, with no night/flare; the George V work may be overfit;
+10x/12x is not the target (3x/Full HD and 6x/4K are). No build, benchmark, game run, code/data/pin/test change; no
+PCSX2/GSdx/ARMSX2 source; no owner data; no PR.
+
+- **Special-case finding:** there is **no track name, scene id or guest address used as a key or condition** in
+  `native/hw_gs`; comments mention scenes, the runtime branches do not. The George V/night work is mostly **game-mechanism**
+  (flare table, CLUT, readback-before-write, GLM pages, tone, depth clear/fill) or device (slots/present/cache) code. The
+  real overfit is (a) the **544-key shader-variant list** generated from the sessions that existed
+  (`core2_known_variants.inc`/`known_variants.py`; IN-507's own "not every state" note), (b) the empirical
+  **performance-mode thresholds/effect keys** (road sheen/alpha fills width ≥640/area 40%, effect targets ≤256, CPU
+  sprites ≤64×64, the flare 64×8/128-qword pattern), and (c) the **measurement emphasis** on George V/night/10x-12x.
+- **License finding:** the 9060 XT is GS worker **8.92 ms**, GPU **1.04 ms**, wall **10.01**, frame p50 **10.58**,
+  **1,430 CLUT flushes/VBlank (1,010 same texture)**, **gif_parse 3.93 ms** (owner/TASK-215 measurement); the RTX 3060
+  laptop is **GS 19-20 ms**, GPU 7-10 ms, 1,930 batches, 26-27k primitives (TASK-171). The 9060 XT's 8.92 < 16.7 (no
+  stutter); the laptop's 19-20 > 16.7 (stutter). The license is **CPU/GS-worker-bound** (front end/parse + CLUT/batches),
+  not rasterisation, not the flare (none); the p50 hides the tail and the p99 is missing.
+- **Settling measurement:** one license run on each machine, 1x, per-VBlank: the `[core2] exclusive` stages (`gif_parse`,
+  `batch_own`, `clut`, `draw`, `readback`, `targets`), `[core2] batch flushes`/`clut_same_texture`, `[core2] specialised ...
+  uber_batches`/compile, `[core2] gpu_wait` by reason, `[hw] transport`/`present_us`/`[mtvu] EE wait`, the p50/p95/**p99**,
+  the frames >16.7/>20 and the CPU sampler; add a per-VBlank CSV with a scene tag and the stage fields; `cpu_summary.py`
+  gains p99, 1% low, the counts and the stutter ratio.
+- **Measurement method:** 60 fps with p99 ≤16.7, 1% low ≥60, >16.7/>20 counts/ratio, stutter ratio, max, the shown
+  intervals; scene matrix (license B-1, George V night, night race, Arcade, rain/rally, showroom, photo, menus, both
+  games); resolution matrix (1x/2x mobile/weak, **3x Full HD and 6x 4K PC baseline**, 10x/12x diagnostic only); weak-GPU
+  proxies (RTX 3060 laptop, GTX 1660 6 GB/streamer, 9060 XT underclock, S23 later); 3 interleaved runs, 2,000-4,000
+  VBlanks, warm cache, clocks/thermal logged.
+- **Plan:** P0 the license per-VBlank measurement + the matrix; P1 license CPU (TASK-171 front end, TASK-168 palettes, the
+  CLUT-flush scope, the SCISSOR/XYOFFSET batching, the CPU-sprite/effect thresholds, the known-variant coverage); P2 weak
+  GPU 3x/Full HD (GTX 1660 proxy, slots/submit, pre-acquire/one-queue present, 6 GB VRAM, shader cache); P3 generality
+  (regenerate the variant list with the scene matrix, review the thresholds/performance defaults, add the scene matrix to
+  the gates); P4 night/6x flare; P5 12x last/diagnostic. TASK-168 (palettes) and TASK-162 (photo) are already planned;
+  TASK-182/184/186 are not in this worktree's `TASKS.md` (it ends at TASK-173), so their briefs must be read before
+  overlapping; the new items are the scene-generality matrix, the variant coverage, the CLUT-flush scope, the
+  SCISSOR/XYOFFSET batching, the GPU flare, the pre-acquire/one-queue present, the tone CLUT and the per-scene gates.
+
 ## TASK-215c: CoreGS 2.0 waits and async audit, read-only (2026-11-10)
 
 The waits-specific companion to TASK-215b is done on branch `docs/coregs2-perf-audit` (worktree
