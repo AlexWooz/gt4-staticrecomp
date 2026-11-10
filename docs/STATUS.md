@@ -1,5 +1,40 @@
 # Current Status
 
+## 2026-11-10: GS-stream capture study (TASK-090, branch `task/090-gs-stream-study`)
+
+Study, no code change. Design for the missing half of the CoreGS 3.0 capture: everything the EE sends to the GS
+directly (PATH3 immediate mode, PATH2 VIF1 direct) is outside every capture today, which is what blocks the post
+chain (brightness, colour filter, glare/bloom, crossfade, motion blur) and the HUD. The design is in
+[`docs/COREGS3-GSSTREAM-CAPTURE.md`](COREGS3-GSSTREAM-CAPTURE.md).
+
+- **Capture point (C for the call sites).** Every PATH2/PATH3 byte passes through exactly one EE-thread function in
+  production: `gt4::mtvu::gif_transfer` (`native/mtvu_runtime.cpp:728`, paths 3 and 2) or `gt4::mtvu::shadow_direct`
+  (`:761`, path 2 with the shadowed VIF1, the MTVU default). PATH1 is already in the tap at `worker_gif` (`:938`).
+  The recorder is observe-only: no file I/O, no allocation and no lock on the guest path; the file is written at
+  shutdown, the `.gt4scene`/`.gt4vram` rule.
+- **Content.** Raw packets with `vblank` (the tap's counter), `pass` (the K7 marker, `.gt4scene` v5), `sequence`,
+  `last_job` (`mtvu_runtime.cpp:678`, the exact merge point against the tap's PATH1 jobs) and `source_pc`/`ra`; the
+  seven v5 GS register words (FOGCOL 0x138, FRAME 0x170, XYOFFSET 0x178, ZBUF 0x188, SCISSOR 0x190, ALPHA 0x198,
+  TEST 0x1A0) plus CLAMP 0x1A8 and TEX1 0x1B8 at each pass begin; texture identity and pixels from the captured
+  upload packets, with `.gt4vram` as the fallback.
+- **Format.** A new sidecar **`.gt4gs` v1** (magic "GT4G", 48-byte record headers, bounded ring, per-frame refusal
+  counters), not a `.gt4scene` extension: the stream is megabytes per frame against a 0.8-4.5 MB scene block, has its
+  own producer and bounds, and follows the proven `.gt4vram`/`.gt4tap` sidecar pattern.
+- **Capacity (measured).** PATH3 1.24-2.91 MB/frame and PATH2 15-46 KB/frame in the F8 `[frame] gif bytes/frame`
+  lines of `private/manual-play/session-20261022-163408-808184/probe.log`; the plan's figure is 2.9 MB per 480p race
+  frame (`docs/COREGS3-PLAN.md:254`). A 64 MiB bound covers about 20 frames at the worst measured rate; an 8-frame
+  window is 10-24 MB.
+- **First milestone.** The offline world of the night race is 17% brighter than the reference (luma 31.204 vs 26.688,
+  PSNR 20.360 dB, SSIM 0.6138; `build/evidence-m1/world/world-metrics.json`), which is exactly the missing post chain.
+  M-POST-1: applying the captured `post` pass to the world must raise PSNR and move the luma ratio toward 1.0, with a
+  byte-identical `--no-post` A/B. The night race has no tone LUT (measured), so the milestone uses whatever
+  brightness/filter operations the capture actually contains; S0 measures that first.
+- **Phases.** S0 pass/byte census (read-only counters), S1 the `.gt4gs` v1 capture with the 3x identity gate, S2 the
+  post layer and M-POST-1, S3 the HUD layer, S4 the live `present` layer. Full brief for S1 in §5.4 of the study.
+- **Open questions.** Pass attribution at acceptance (the DMA kick vs the marker), the PATH3 upload/draw split, HUD
+  texture upload frequency, framebuffer-as-texture form, what `source_pc`/`ra` names, and the night window's exact
+  byte totals: all listed in §6 of the study, none changes the capture point or the format.
+
 ## 2026-11-10: track textures, the world binds the GS state (TASK-090, branch `task/090-track-textures`)
 
 The offline world now decodes each selected sky / far-underlay / course item from the GS state the VU1 tap emitted at

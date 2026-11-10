@@ -1810,6 +1810,22 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   the excluded 0xA0/0xB08/0x1278 layers and the post chain. CTest coregs3 11/11 (new `native_coregs3_texture_state`),
   Python 8/8, car render byte-identical, full build green, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
   `build/evidence-track-textures/`.
+- **GS-stream capture study (2026-11-10, branch `task/090-gs-stream-study`).** The PATH2/PATH3 half of the capture is
+  designed, not built: [COREGS3-GSSTREAM-CAPTURE](docs/COREGS3-GSSTREAM-CAPTURE.md). With MTVU on (the default) every
+  PATH2/PATH3 byte passes exactly one EE-thread function (`gt4::mtvu::gif_transfer`, `native/mtvu_runtime.cpp:728`;
+  `shadow_direct`, `:761`, for PATH2 with the shadowed VIF1), which is the recommended observe-only hook point
+  (PATH1 stays in the tap). The capture records the raw packet plus `vblank`, pass id (K7), `sequence`, `last_job`
+  (the merge point against the tap's jobs) and source `pc`/`ra`; the seven v5 GS register words plus CLAMP/TEX1 at
+  each pass begin; texture identity and pixels from the captured upload packets (`.gt4vram` fallback). Format: a new
+  sidecar `.gt4gs` v1 (magic "GT4G", 48-byte records, 64 MiB ring, 8 MiB/frame, refusal counters), not a `.gt4scene`
+  extension (megabytes per frame against a 0.8-4.5 MB scene block, own producer and bounds, the `.gt4vram`/`.gt4tap`
+  pattern). Capacity measured in the F8 per-path lines (PATH3 1.24-2.91 MB/frame, PATH2 15-46 KB/frame, PATH1
+  1.4-3.3 MB already tapped); an 8-frame window is 10-24 MB. First milestone M-POST-1 uses the measured M1 baseline
+  (world luma 31.204 vs reference 26.688, PSNR 20.360 dB): the captured `post` pass must raise PSNR and move the luma
+  ratio toward 1.0 with a byte-identical `--no-post` A/B; the night race has no tone LUT, so S0 measures which post
+  operations exist. Phases S0 (census counters), S1 (`.gt4gs` v1 + tool + fixture, 3x gate and byte control), S2
+  (offline post layer), S3 (HUD layer), S4 (live `present`); exact S1 brief in §5.4, open questions in §6. No code
+  change in this study.
 - Next: the track M1 sky+road renderer using the recovered transform; the effects/HUD capture additions (hw GS-stream,
   2D recorder); then the G-IMAGE/G-PERF gates.
 
