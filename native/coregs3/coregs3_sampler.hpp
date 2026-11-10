@@ -80,13 +80,15 @@ struct SampleState {
   std::uint32_t fbmsk = 0;  // FRAME.FBMSK
   std::uint32_t zmsk = 0;   // ZBUF.ZMSK
   std::uint32_t prim = 0;   // PRIM in force at the item's first tapped vertex
+  std::uint32_t fog_colour = 0;  // FOGCOL (R in bits 0-7, G 8-15, B 16-23); 0 = black, the measured reflection pass
 };
 
 // The measured car-pass default state, used when no tap is supplied or a state record never wrote the field:
 //   TEST  = ATE 1, ATST GREATER (6), AREF 32, AFAIL KEEP (0), DATE 0, DATM 1, ZTE 1, ZTST GEQUAL (2) = 0x0005820D;
 //   ALPHA = (Cs - Cd) * As + Cd, FIX 0 = 0x00000044 (the normal blend every measured car record carries);
-//   FRAME.FBMSK = 0 (write all lanes); ZBUF.ZMSK = 0 (write depth); PRIM = 0x7C (TME on, ABE off, the measured car
-//   PRIM). The flags stay false: a caller can tell a defaulted field from a measured one.
+//   FRAME.FBMSK = 0 (write all lanes); ZBUF.ZMSK = 0 (write depth); PRIM = 0x3C (TME and FGE on, ABE off: the measured
+//   base car draw's tag PRIM; the reflection pass's own 0x7C is attached from its tapped record); FOGCOL = black. The
+//   flags stay false: a caller can tell a defaulted field from a measured one.
 SampleState measured_sample_state() noexcept;
 
 // One item's binding in a frame's texture table. A null `texture` means "keep the lit/base colour" (the body's texgen
@@ -95,6 +97,12 @@ struct TextureBinding {
   const SampledTexture *texture = nullptr;
   SampleState state;
   std::uint32_t texture_record = 0xFFFFFFFFu;  // kNoRecord when the item has none
+  // TASK-090 reflection milestone: the item is a body/paint reflection pass. Its texture is the CT32 environment map
+  // sampled with the pinned texgen S,T (coregs3_reflection.hpp), and the state is the tapped PRIM 0x7C pass (additive
+  // blend, destination alpha test, no depth write). `vertex_fog` is the per-vertex fog the tapped reflection record
+  // carried, one byte per item vertex in mesh order; empty means the record carried no fog (a counted fallback).
+  bool reflection = false;
+  std::vector<std::uint8_t> vertex_fog;
 };
 
 // The frame's per-item bindings, one inner vector per captured draw (sized to item_count) keyed by the draw's sequence,
@@ -150,6 +158,9 @@ std::int32_t wrap_texel(std::int32_t texel, std::uint32_t log2_size, std::uint32
 // values are the deferred DATE and the unmeasured AFAIL modes.
 enum class AlphaTestResult : std::uint32_t { pass = 0, fail = 1, refused_date = 2, refused_fail_mode = 3 };
 AlphaTestResult alpha_test(std::uint64_t test, std::uint32_t fragment_alpha) noexcept;
+// The ATE/ATST/AREF/AFAIL part alone, for a caller that implements the destination alpha test (DATE) itself. The
+// reflection pass uses this: it evaluates DATE against the framebuffer alpha at the pixel.
+AlphaTestResult alpha_test_ignore_date(std::uint64_t test, std::uint32_t fragment_alpha) noexcept;
 const char *alpha_test_result_name(AlphaTestResult result) noexcept;
 
 // Blend families the car pass measured. `normal` = A Cs, B Cd, C As, D Cd; `additive` = A Cs, B 0, C Ad, D Cd.
@@ -192,7 +203,7 @@ BindingStatus check_binding(const TextureBinding &binding) noexcept;
 std::uint32_t frame_fbmsk(std::uint64_t frame_register) noexcept;
 // Decodes ZBUF.ZMSK from a ZBUF register write (bit 32).
 std::uint32_t zbuf_zmsk(std::uint64_t zbuf_register) noexcept;
-// True when PRIM.ABE (bit 0) enables blending.
+// True when PRIM.ABE (bit 6; native/hw_gs/frontend/hw_gs_types.hpp primbit::kAbe) enables blending.
 bool prim_blend_enabled(std::uint32_t prim) noexcept;
 // True when PRIM.TME (bit 4) enables texture mapping.
 bool prim_texture_enabled(std::uint32_t prim) noexcept;

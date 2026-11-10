@@ -233,7 +233,8 @@ void check_alpha_test_and_blends() {
   // 16-bit channel values stay 16-bit in the merge.
   require(frame_fbmsk(0xFF000000ull << 32) == 0xFF000000u, "FRAME.FBMSK is bits 32-63");
   require(zbuf_zmsk(1ull << 32) == 1u, "ZBUF.ZMSK is bit 32");
-  require(prim_blend_enabled(0x7Du) && !prim_blend_enabled(0x7Cu), "PRIM.ABE is bit 0");
+  require(prim_blend_enabled(0x7Cu) && !prim_blend_enabled(0x3Cu), "PRIM.ABE is bit 6 (the measured base 0x3C vs "
+                                                                  "reflection 0x7C tags)");
   require(prim_texture_enabled(0x7Cu) && !prim_texture_enabled(0x6Bu), "PRIM.TME is bit 4");
 }
 
@@ -387,7 +388,7 @@ void check_render_textured_quad() {
     RenderFixture fixture;
     fixture.table.payloads[0][8 + 3] = 64;  // texel (0,1) alpha
     fixture.table.textures[0].rgba = fixture.table.payloads[0].data();
-    fixture.table.draws[0][0].state.prim = 0x7Du;  // ABE on
+    fixture.table.draws[0][0].state.prim = 0x7Cu;  // ABE on (bit 6)
     fixture.render(true);
     require(fixture.pixel(16, 12) == std::array<std::uint8_t, 4>{12, 12, 141, 64},
             "the normal blend matches the GS integer form");
@@ -399,7 +400,7 @@ void check_render_textured_quad() {
     RenderFixture fixture;
     fixture.table.payloads[0][8 + 3] = 128;  // passes the alpha test; the additive factor is Ad = 255
     fixture.table.textures[0].rgba = fixture.table.payloads[0].data();
-    fixture.table.draws[0][0].state.prim = 0x7Du;
+    fixture.table.draws[0][0].state.prim = 0x7Cu;
     fixture.table.draws[0][0].state.alpha = 0ull | (2ull << 2) | (1ull << 4) | (1ull << 6);
     fixture.render(true);
     require(fixture.pixel(16, 12) == std::array<std::uint8_t, 4>{24, 24, 255, 128},

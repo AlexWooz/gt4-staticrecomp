@@ -1778,8 +1778,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   sidecar over 0x2BC0..0x3FFF is recommended. Blocker: the course transform (captured 0xC1 projects sky/far but not
   the course; lead: pgl +0xFA0 projection x vf_k4 modelview). Plan: Step 0 transform, Step 1 shape, Step 2 pass
   selection, Step 3 sky, Step 4 course, Step 5 metrics. Evidence: `build/analysis-course/`.
-- Next: the course-transform recovery (in flight), the body reflection (in flight), then the track M1 sky+road renderer;
-  the effects/HUD capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
+- **Body reflection (2026-11-10).** The offline renderer draws the body/paint reflection pass: every body/paint item
+  (80 items, 27 draws) samples its CT32 256x256 env map (TBP0 0x2BC0) at the pinned texgen S,T (`coregs3_reflection`),
+  with the tapped PRIM 0x7C state, MODULATE with the lit colour, fog toward FOGCOL black, alpha test, DATE/DATM against
+  the framebuffer alpha, GEQUAL depth with no write, additive `(Cs-0)*Ad+Cd`, FBMSK and COLCLAMP; `--no-reflection` A/B.
+  `coregs3_texture_frame` binds the reflection textures and tracks FOGCOL/PRIM from the tap; PRIM.ABE corrected to bit 6
+  (0x3C/0x7C). Evidence: 80 items reflected, 0 refused, 20,394 fragments (9,013 DATE-masked, 9,884 depth-rejected);
+  reflection mask SSIM 0.2504 -> 0.2611, pct_bad 90.7 -> 72.1%; near-car PSNR 24.218 -> 24.572, SSIM 0.6113 -> 0.6235,
+  pct_bad 61.7 -> 57.9, luma 1.089 -> 0.991. CTest 9/9, Python full suite 809 OK, 3x gate OK. Evidence:
+  `build/evidence/coregs3-refl/`.
+- Next: the course-transform recovery (in flight), then the track M1 sky+road renderer; the effects/HUD capture
+  additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

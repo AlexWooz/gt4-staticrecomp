@@ -1,5 +1,20 @@
 # Current Status
 
+## 2026-11-10: body/paint environment-map reflection in the offline renderer (TASK-090)
+
+The offline reference renderer now draws the body/paint reflection pass. Every body/paint item (80 items, 27 draws)
+samples its CT32 256x256 environment map (the item's own shape record, TBP0 0x2BC0) at the pinned texgen S,T
+(`coregs3_reflection`, float32), with the tapped PRIM 0x7C state, MODULATE with the lit colour, fog toward FOGCOL black,
+alpha test, DATE/DATM against the framebuffer alpha, GEQUAL depth with no write, additive `(Cs-0)*Ad+Cd`, FBMSK and
+COLCLAMP; `--no-reflection` is the A/B. `coregs3_texture_frame` binds the reflection textures and tracks FOGCOL/PRIM from
+the tap; PRIM.ABE was corrected to bit 6 (base 0x3C, reflection 0x7C). Evidence (night race frame 0, sidecar record 7402,
+3x): 80 items reflected, 0 refused, 20,394 fragments (9,013 DATE-masked, 9,884 depth-rejected, 108 DATE tests on the
+uncaptured background alpha); reflection mask SSIM 0.2504 -> 0.2611, pct_bad 90.724 -> 72.053%; near-car box PSNR
+24.218 -> 24.572 dB, SSIM 0.6113 -> 0.6235, pct_bad 61.656 -> 57.909%, luma 1.0894 -> 0.9908; the base paints now show
+through and are darker (base fog/lighting not implemented). CTest coregs3 9/9 (new `native_coregs3_reflection`), Python
+full suite 809 OK (63 skipped), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences,
+13/13 frames). Images: `build/evidence/coregs3-refl/` (`offline-reflected-frame0.png`, the unreflected A/B, crops).
+
 ## 2026-11-10: course/sky decode study: the map and the transform blocker
 
 The v5 ALL_DRAWS night capture (285 draws / 1,772 items / 81,843 vertices per frame) decodes as: env_map 31/121/3,988,

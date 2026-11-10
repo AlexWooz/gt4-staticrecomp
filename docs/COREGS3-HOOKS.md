@@ -1093,3 +1093,90 @@ The gate runs the plain-unit reference, `GT4_COREGS3=off` and `GT4_COREGS3=shado
 3x (`scripts/coregs3_bench/coregs3-night-check.sh`, reference `O:/Antigavity/gt4-wt-090-coregs3/build/coregs3-r8/ref/gt4vulkan.exe`).
 Result: **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences in both runs, 13/13
 frames identical for off and for shadow, capture 4,477,368 B (the car block only, as the gate does not set ALL_DRAWS).
+
+
+## 20. Round 20 (2026-11-10, branch `task/090-body-reflection`): the body/paint environment-map reflection
+
+### 20.1 What the pass is
+
+The body/paint item's only captured draw is the reflection pass (`program_dispatch` 0x1058, six-qword block, tag PRIM
+0x7C): the tap's record for the item carries TEX0 0x2BC0 (the CT32 256x256 environment map; the item's own 40-byte
+record) and the measured ALPHA additive (0,2,1,1), TEST DATE/DATM, ZBUF ZMSK=1 and ZTST GEQUAL state. The **base** pass
+that writes the destination alpha is a different captured draw: the nine-qword/three-qword items whose tapped vertices
+share the reflection item's positions (27 exact geometry pairs in frame 0, e.g. draw 4 -> 5, 6 -> 7, 10 -> 11/12). The
+reflection therefore reads the real framebuffer alpha our textured base path wrote; a DATE test on a pixel no captured
+draw wrote is counted as the missing-alpha fallback (108 pixels at 3x in frame 0).
+
+### 20.2 The formula (`native/coregs3/coregs3_reflection.{hpp,cpp}`)
+
+The round-18 pinned float32 texgen, with the item's own six-qword block (command 0x6C06C0C9), the raw V3-16 position and
+the V3-8 normal / 127:
+
+```
+D = P - LP;  c = (D.x*N.x + D.y*N.y) + D.z*N.z;  R = D - N*c - N*c
+V = (C9*R.x + CA*R.y) + CB*R.z;  W = V/|V| + (0,0,1);  q = 0.5/|W|
+S = 0.5 + W.x*q;  T = 0.5 - W.y*q
+```
+
+Refusals: `refused_block` (not the six-qword 0x6C06C0C9 form), `refused_position` (no V3-16 raw position),
+`refused_normal` (no V3-8 normal at TOPS 0x40), `refused_non_finite`, `refused_degenerate` (|V| or |W| zero). The
+fixture pins three hand-authored vertices against the real AOT fragment's TOPS+0x40 output (the harness values
+0.614925206/0.0710932612, 0.310672939/0.764279068, 0.6371454/0.38020727; our std::sqrt matches within the study's EFU
+rsqrt bound, < 5e-4).
+
+### 20.3 The renderer pass
+
+`RenderOptions::reflections` makes a body/paint item draw its triangles as the measured second pass instead of the
+opaque lit colour: the map is sampled with the measured sampler (linear/linear, region clamp 0..255), MODULATE's C is
+the round-18 lit vertex colour, the GS fog mixes toward FOGCOL black with the tapped per-vertex fog
+(`(f*c + (255-f)*fc)>>8`), the ATE/ATST/AREF test runs first, then the destination alpha test (DATE/DATM against the
+framebuffer alpha), the GEQUAL depth test, the additive blend `(((Cs-0)*Ad)>>7)+Cd` (COLCLAMP 1), FBMSK and ZBUF's no
+depth write. `--reflection-mask` writes the fragments the pass wrote. `--no-reflection` is the byte-for-byte A/B (the
+body items keep the lit colour). The two draws' float projections agree to ~1e-4 relative where the GS's 24-bit Z is
+identical, so the reflection's GEQUAL compare uses a 1e-3 relative window (the measured per-vertex depth difference of
+the exact pairs is 0).
+
+### 20.4 Correction: PRIM.ABE is bit 6
+
+The sampler's `prim_blend_enabled` read ABE as bit 0. The GS PRIM register and `native/hw_gs/frontend/hw_gs_types.hpp`
+`primbit::kAbe` say bit 6 (TME is bit 4). All measured car PRIMs are even (base 0x3C, reflection 0x7C), so the 0x3C/0x7C
+difference the reflection needs was invisible before. With the fix the measured default state is PRIM 0x3C and five
+items whose ALPHA equation is outside the normal/additive pairs are explicit counted blend refusals (they keep the lit
+colour).
+
+### 20.5 The table and the capture
+
+`build_frame_texture_table` with `TextureFrameOptions::reflections` binds body/paint items as the reflection map (no
+model UV), attaches the tapped state and the record's per-vertex fog, and tracks FOGCOL (register 0x3D) in the A+D walk.
+The tool gained `--no-reflection`, `--reflection-mask` and `--vram-vblank`. The capture is the night race at 3x with
+`GT4_COREGS3_CAPTURE_VBLANKS=7398-7399`, `GT4_COREGS3_TAP_VBLANKS=7398-7405` (the GIF records are emitted ~3 VBlanks
+after the posting) and `GT4_COREGS3_VRAM_VBLANKS=7398-7403`; the frame's environment map is the sidecar record 7402 (the
+map drawn in the frame the reflection is emitted in).
+
+### 20.6 Evidence (night race, frame 0 VBlank 7398, 3x, bench card)
+
+80 body/paint items reflected, **0 refused** (0 PSM/TFX/filter/mip/AFAIL/blend/ZTST, 0 missing ST, 0 missing tapped
+state, 0 missing fog). Raster: 20,394 reflection fragments (18,392 mask pixels), 9,013 DATE-masked, 9,884 depth-rejected,
+108 DATE tests on the uncaptured background alpha. Metrics against the CoreGS 2.0 VBlank-7400 reference:
+
+| Mask | Pixels | PSNR before -> after | SSIM before -> after | pct_bad before -> after |
+|---|---|---|---|---|
+| reflection mask | 18,392 | 18.115 -> 17.906 dB | 0.2504 -> 0.2611 | 90.724 -> 72.053% |
+| near-car box | 133,650 | 24.218 -> 24.572 dB | 0.6113 -> 0.6235 | 61.656 -> 57.909% |
+| car-pass coverage | 38,439 | 18.800 -> 18.888 dB | 0.2369 -> 0.2838 | 73.418 -> 58.867% |
+| full frame | 2,580,480 | 19.475 -> 19.477 dB | 0.5572 -> 0.5579 | 70.988 -> 70.771% |
+
+The near-car box's luma ratio moves from 1.0894 to 0.9908. The reflection is visible on the paint; the base paints now
+show through the additive pass and are darker than the reference because the base pass has no fog/lighting yet (the
+next fidelity item). Images: `build/evidence/coregs3-refl/` (`offline-reflected-frame0.png`, the A/B, the 3x frames,
+the masks, `metrics.txt`, the reports).
+
+### 20.7 Gates
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | **9/9 passed** (the eight of Â§16.5 plus the new `native_coregs3_reflection`) |
+| Python `tests/python/test_coregs3_units.py` | **7/7 passed** |
+| Fixture `coregs3_reflection_fixture` | **ok**: hand-authored formula cases pinned against the AOT fragment, every formula/binding refusal, the fog mix, and a two-draw render integration (DATE/DATM, additive blend, ZBUF no-write, FBMSK) |
+| Build | full `GT4_HW_GS` candidate builds clean |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,451,628 B |

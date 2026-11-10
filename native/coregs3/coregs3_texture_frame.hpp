@@ -38,7 +38,10 @@ struct TextureFrameCounters {
   std::uint64_t cache_hits = 0;        // records that shared an already decoded Format G key
   std::uint64_t items_textured = 0;
   std::uint64_t items_untextured = 0;
-  std::uint64_t items_texgen_deferred = 0;  // body/paint: its ST is texgen ST, not the model UV (milestone deferral)
+  std::uint64_t items_texgen_deferred = 0;  // body/paint: its ST is texgen ST, not the model UV (pre-reflection mode)
+  std::uint64_t items_reflected = 0;        // body/paint items bound as their environment-map reflection pass
+  std::uint64_t items_reflection_no_state = 0;  // body/paint items with no usable tapped reflection record
+  std::uint64_t reflection_fog_missing = 0;     // reflection records whose vertices carried no fog value
   std::uint64_t items_no_texture = 0;       // the item names no texture record
   std::uint64_t items_no_uv = 0;            // the item carries no model UV channel
   std::uint64_t items_decode_refused = 0;   // the texture record was refused by the decoder
@@ -53,6 +56,10 @@ struct TextureFrameCounters {
 struct TextureFrameOptions {
   bool use_tap = false;       // false: every item keeps the measured default state and the counters say so
   bool texture_body = false;  // diagnostic only: let body/paint items through with the model UV (not the milestone)
+  // TASK-090 reflection milestone: bind each body/paint item as its measured environment-map reflection pass (the
+  // pinned texgen S,T instead of the model UV), carrying the tapped PRIM 0x7C state and per-vertex fog. False keeps
+  // the pre-reflection deferral (the body items stay on the lit colour).
+  bool reflections = false;
 };
 
 // Builds the table for `frame` from the decoded sidecar image `slm` and (when options.use_tap) the tap file. `tap_data`

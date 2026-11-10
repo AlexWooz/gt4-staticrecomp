@@ -53,7 +53,10 @@ SampleState measured_sample_state() noexcept {
   state.alpha = 0ull | (1ull << 2) | (0ull << 4) | (1ull << 6);
   state.fbmsk = 0;
   state.zmsk = 0;
-  state.prim = 0x7Cu;  // TME on, ABE off
+  // The measured base car PRIM: type 4 strip, IIP, TME and FGE on, ABE off (the tap's PRIM 0x3C tag for the base draws;
+  // the reflection pass's 0x7C carries ABE on and is attached from its own tapped record).
+  state.prim = 0x3Cu;
+  state.fog_colour = 0;
   return state;
 }
 
@@ -156,8 +159,13 @@ SampleStatus sample_texture(const SampledTexture &texture, float u, float v,
 }
 
 AlphaTestResult alpha_test(std::uint64_t test, std::uint32_t fragment_alpha) noexcept {
-  // DATE (bit 14) is the destination alpha test: deferred, so its presence is a refusal rather than a silent pass.
+  // DATE (bit 14) is the destination alpha test: a caller that does not implement it refuses rather than silently
+  // passing. The reflection pass calls alpha_test_ignore_date and evaluates DATE itself.
   if (bits(test, 14, 14) != 0u) return AlphaTestResult::refused_date;
+  return alpha_test_ignore_date(test, fragment_alpha);
+}
+
+AlphaTestResult alpha_test_ignore_date(std::uint64_t test, std::uint32_t fragment_alpha) noexcept {
   if (bits(test, 0, 0) == 0u) return AlphaTestResult::pass;  // ATE off
   if (bits(test, 12, 13) != 0u) return AlphaTestResult::refused_fail_mode;  // only AFAIL KEEP is reproduced
   const std::uint32_t reference = bits(test, 4, 11);
@@ -267,7 +275,10 @@ const char *binding_status_name(BindingStatus status) noexcept {
 
 std::uint32_t frame_fbmsk(std::uint64_t frame_register) noexcept { return bits(frame_register, 32, 63); }
 std::uint32_t zbuf_zmsk(std::uint64_t zbuf_register) noexcept { return bits(zbuf_register, 32, 32); }
-bool prim_blend_enabled(std::uint32_t prim) noexcept { return (prim & 1u) != 0u; }
+// PRIM bits (native/hw_gs/frontend/hw_gs_types.hpp primbit): ABE is bit 6 and TME bit 4. The earlier reading used bit
+// 0 for ABE; every measured car PRIM (base 0x3C, reflection 0x7C) is even, so the mistake was invisible until the
+// additive reflection pass needed the difference between them.
+bool prim_blend_enabled(std::uint32_t prim) noexcept { return ((prim >> 6) & 1u) != 0u; }
 bool prim_texture_enabled(std::uint32_t prim) noexcept { return ((prim >> 4) & 1u) != 0u; }
 
 }  // namespace gt4::coregs3
