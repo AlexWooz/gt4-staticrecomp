@@ -291,7 +291,9 @@ P0/P1 prove the reader set and the linear use). Then:
    (a new specialised variant, `core2_gpu.cpp:1017-1060`, `hw_pixel_uber.frag`). The table target is found by the normal
    target lookup (`TextureTarget`, `core2_renderer.cpp:1913`); the draw already reads it earlier in the frame, and the
    barrier tracking must order that read (a `Use` on the table image at the draw).
-4. No READ_FIFO, no GS-worker wait, no VU1 wait for the table, same frame, exact light per slot.
+4. No GPU readback (the GS FIFO still needs the transfer consumed: a skipped read as in IN-441/IN-477 keeps its state
+   in step and the EE bytes are never read), no GS-worker wait, no VU1 wait for the table, same frame, exact light per
+   slot.
 
 **Precondition (must run first).** P1 of GS-READBACK-STUDY: run the VU1 flare entry through the AOT/interpreter
 differential harness with visibility 0..255 and prove the output changes only in RGBA/alpha, linearly. If the value also
