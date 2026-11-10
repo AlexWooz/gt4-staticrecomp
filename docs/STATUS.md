@@ -1,5 +1,45 @@
 # Current Status
 
+## 2026-11-10: world families, the 0xB08/0xA0/0x1278 course items (TASK-090, branch `task/090-world-families`)
+
+The offline world renderer now draws the 72 course items it used to exclude by VU1 program, with their measured
+per-item programs and channels. The mission target holds: the texture census's `unknown-program` is **73 -> 0** on the
+selected world items, and every remaining refusal/substitution is counted. Frame 0 (VBlank 7398, 3x): the course selects
+**130 draws / 1,263 items / 63,959 vertices** (0x80 1,192/61,173; 0xB08 15/888; 0xA0 45/1,374; 0x1278 11/524), plus sky
+16/940 and far underlay 9/378, **0 refused draws and 0 lighting fallbacks**. Picture against the same reference:
+**PSNR 20.36 -> 20.58 dB, SSIM 0.6138 -> 0.6221, pct_bad 77.22 -> 76.17%, mean |diff| 20.31 -> 19.64, luma 31.20 ->
+30.21 (reference 26.69), coverage 100%, car spill 1.61% unchanged**.
+
+- **Oracle (C).** The full-corpus AOT output (`private/slice155-vu1-full-gen`) contains the two entries the union corpus
+  lacked (0x00A0, 0x1278). A new test harness runs the real chain from each captured item's MSCAL stub through ITOP and
+  the shared output, and reproduces the tap RGBAQ exactly: 0xB08 888/888, 0x1278 524/524, sky 0x1508 940/940, 0xA0
+  1,358/1,380 (the 22 differing vertices are the uncaptured morph factor's colour blend). The C++ shading matches the
+  same AOT outputs exactly on every family (59,759/59,759 for 0x80, 2,045/2,045 for 0xB08, 1,380/1,380 for 0xA0,
+  524/524 for 0x1278, 940/940 for the sky).
+- **Programs (C).** 0x0B08 is the round-18 nine-qword first-power family (course block `0x6C09C0C9`, normal at 0x80).
+  0x1278 is a float/normal pre-pass into the body/paint output routine at 0x12C8: the body formula with the full MODE 2
+  lane as the position, the normal at 0x40 and the six-qword body block. 0x00A0 is a two-key morph pre-pass (positions
+  0x00/0x20, UVs 0x40/0x60, colours 0x80/0xA0, factor at 0xF2 lane 3) feeding the shared output; the factor is not
+  captured. 0x1508 (sky) is the three-qword gain/clamp/bias entry, the same formula as 0x14D8.
+- **Decoder and selection (C).** `coregs3_shape` gained `WorldShapeStatus`/`world_shape_status` and requires the
+  descriptor's 0x8000 flag and 0x1412 signature; `read_world_item` applies the same per-family rule the selection counts.
+  The morph items are accepted when the position keys are bit-identical (geometry factor-independent); differing UV keys
+  (35 items) and differing colour keys (10 items) use the first key and are counted substitutions. `coregs3_lighting`
+  maps 0x1508 to `three_qword_gain`, 0x00A0 to `morph_passthrough` and 0x1278 to `body_prepass`, and `shade_body` now
+  accepts the MODE 2 lane. `coregs3_world` accepts the three families when the shape rule passes; `shape-refused` is a
+  counted reason, and the mirror/no-position exclusions stay (15 mirror, 6 no-position, 0 other-itop, 0 shape-refused).
+- **Open (H).** The morph factor at 0xF2 is not in the capture, so 10/46 A0 items use the first-key colour (tap bound
+  at most 4 levels on 22/1,380 vertices) and all 46 use the first-key UV; the tap's S/T for these items is generated and
+  does not equal the captured UV arrays. The clean fix is a v6 capture field for the factor. The 0x1508 mapping is exact
+  for the sky; one env_map item with the same entry differs (outside the world selection, not investigated). The 11
+  0x1278 items are untextured (no UV channel), counted as before.
+- **Tests.** CTest coregs3 **11/11** (the lighting-families and track fixtures extended); Python
+  `test_coregs3_units.py` **8/8**; the car-only render (no `--world`) is **byte-identical to the base-commit executable**
+  built from `248ec453` on the same capture and command (SHA-256
+  `8d22a10ae0b038e531b5b2852ee1659a8396f727b27e4fd5e56fa5bd3c1a2b1f`, identical logs); full build green; the 3x
+  off/shadow identity gate is **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences,
+  13/13 frames identical for off and shadow; capture 4,477,368 B). Evidence: `build/evidence-world-families/`.
+
 ## 2026-11-10: world materials, the brightness is a texture-capture gap (TASK-090, branch `task/090-world-materials`)
 
 The offline world's +4.50 luma gap (26.69 reference -> 31.19 ours) and its chroma error are decomposed and pinned. The

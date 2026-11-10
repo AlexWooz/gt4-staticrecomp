@@ -235,6 +235,27 @@ void print_channel_scan(const FrameSnapshot &frame) {
 #ifdef GT4_COREGS3_TEXTURES
 namespace {
 
+// TASK-090 world families: the census bucket of a measured course world program.
+int world_family_index(std::uint32_t dispatch) {
+  switch (dispatch) {
+  case 0x0080u: return 0;
+  case 0x0B08u: return 1;
+  case 0x00A0u: return 2;
+  case 0x1278u: return 3;
+  default: return 4;
+  }
+}
+
+const char *world_family_label(int index) {
+  switch (index) {
+  case 0: return "itop_0x80";
+  case 1: return "itop_0xB08";
+  case 2: return "itop_0xA0";
+  case 3: return "itop_0x1278";
+  default: return "other";
+  }
+}
+
 // TASK-090 track M1: the selected world passes and every exclusion, counted. The frame copy keeps the capture's packets
 // and records; excluded items are disabled by clearing their packet range (build_mesh skips an item with no packet), so
 // the original item indices, the texture table keys and the strip tables stay valid.
@@ -244,14 +265,18 @@ struct WorldSelection {
   std::uint32_t underlay_draws = 0, underlay_items = 0, underlay_vertices = 0, underlay_no_position = 0;
   std::uint32_t course_draws = 0, course_items = 0, course_vertices = 0;
   std::uint32_t course_itop_other = 0;
-  std::uint32_t course_itop_b08 = 0;
-  std::uint32_t course_itop_a0 = 0;
-  std::uint32_t course_itop_1278 = 0;
   std::uint32_t course_mirror = 0;
   std::uint32_t course_no_state = 0;
   std::uint32_t course_no_position = 0;
+  std::uint32_t course_shape_refused = 0;
   std::uint32_t course_uv_unverified = 0;
+  std::uint32_t course_morph_uv_substituted = 0;      // 0xA0: first-key UV used (the UV keys differ)
+  std::uint32_t course_morph_colour_substituted = 0;  // 0xA0: first-key colour used (the colour keys differ)
   std::uint32_t course_draws_dropped = 0;
+  // The per-family census of the selected course items (the measured world programs) and the shape refusal reasons.
+  std::uint32_t family_items[5] = {};     // indexed by WorldFamilyIndex: 0x80, 0xB08, 0xA0, 0x1278, other
+  std::uint32_t family_vertices[5] = {};
+  std::map<std::string, std::uint32_t> shape_refusals;
 };
 
 bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &table, bool keep_sky,
@@ -279,6 +304,9 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
       input.run_valid = source.run_valid != 0;
       input.dispatch = input.run_valid ? (source.run_itop & 0x3FFu) * 8u : 0u;
       input.has_position = item < scan.items.size() && scan.items[item].has_position && source.packet_bytes != 0;
+      input.shape_status = source.packet_bytes != 0
+                               ? world_shape_status(frame.packets.data(), frame.packets.size(), source)
+                               : WorldShapeStatus::unsupported_program;
       const SampleState *state = bindings != nullptr && item < bindings->size() ? &(*bindings)[item].state : nullptr;
       if (state != nullptr) {
         input.state_known = state->from_tap;
@@ -291,10 +319,11 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
       const WorldExclusion exclusion = world_item_exclusion(input);
       if (exclusion != WorldExclusion::none) {
         switch (exclusion) {
-        case WorldExclusion::itop_b08: selection.course_itop_b08 += 1; break;
-        case WorldExclusion::itop_a0: selection.course_itop_a0 += 1; break;
-        case WorldExclusion::itop_1278: selection.course_itop_1278 += 1; break;
         case WorldExclusion::itop_other: selection.course_itop_other += 1; break;
+        case WorldExclusion::shape_refused:
+          selection.course_shape_refused += 1;
+          selection.shape_refusals[world_shape_status_name(input.shape_status)] += 1;
+          break;
         case WorldExclusion::mirror: selection.course_mirror += 1; break;
         case WorldExclusion::no_state: selection.course_no_state += 1; break;
         case WorldExclusion::no_position:
@@ -313,7 +342,13 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
       if (is_course) {
         selection.course_items += 1;
         selection.course_vertices += vertices;
+        const int family = world_family_index(input.dispatch);
+        selection.family_items[family] += 1;
+        selection.family_vertices[family] += vertices;
         if (state != nullptr && state->world_pass_default) selection.course_uv_unverified += 1;
+        if (input.shape_status == WorldShapeStatus::morph_uv_first_key) selection.course_morph_uv_substituted += 1;
+        if (input.shape_status == WorldShapeStatus::morph_colour_first_key)
+          selection.course_morph_colour_substituted += 1;
       } else if (is_sky) {
         selection.sky_items += 1;
         selection.sky_vertices += vertices;
@@ -533,6 +568,9 @@ int main(int argc, char **argv) {
     mesh_options.position_scale = options.position_scale;
     mesh_options.topology = options.topology;
     mesh_options.max_edge = options.max_edge;
+    // A --world shade dump decodes the same descriptor-driven layout the world renderer draws, so the validation
+    // script compares the per-item programs on the world meshes, not on a car-path misread.
+    mesh_options.world_channels = world;
     LightCounters total;
     std::fprintf(file, "# draw item vertex r g b a program status\n");
     for (const CapturedDraw &draw : frame.draws) {
@@ -818,16 +856,31 @@ int main(int argc, char **argv) {
                   selection.course_items, selection.course_vertices);
     world_report += line;
     world_report += "\n";
+    world_report += "world course families:";
+    for (int family = 0; family < 4; ++family) {
+      std::snprintf(line, sizeof line, " %s %u/%u", world_family_label(family), selection.family_items[family],
+                    selection.family_vertices[family]);
+      world_report += line;
+    }
+    world_report += " (items/vertices); 0xA0 first-key substitutions: UV " +
+                    std::to_string(selection.course_morph_uv_substituted) + ", colour " +
+                    std::to_string(selection.course_morph_colour_substituted) + "\n";
     std::snprintf(line, sizeof line,
-                  "world course exclusions: itop_0xB08 %u, itop_0xA0 %u, itop_0x1278 %u, other-itop %u, mirror %u, "
-                  "no-state %u, no-position %u, empty-draws %u; sky no-position %u; far_underlay no-position %u; "
-                  "selected with a neighbour/pass default state %u",
-                  selection.course_itop_b08, selection.course_itop_a0, selection.course_itop_1278,
-                  selection.course_itop_other, selection.course_mirror, selection.course_no_state,
-                  selection.course_no_position, selection.course_draws_dropped, selection.sky_no_position,
-                  selection.underlay_no_position, selection.course_uv_unverified);
+                  "world course exclusions: other-itop %u, shape-refused %u, mirror %u, no-state %u, no-position %u, "
+                  "empty-draws %u; sky no-position %u; far_underlay no-position %u; selected with a neighbour/pass "
+                  "default state %u",
+                  selection.course_itop_other, selection.course_shape_refused, selection.course_mirror,
+                  selection.course_no_state, selection.course_no_position, selection.course_draws_dropped,
+                  selection.sky_no_position, selection.underlay_no_position, selection.course_uv_unverified);
     world_report += line;
     world_report += "\n";
+    if (!selection.shape_refusals.empty()) {
+      world_report += "world course shape refusals:";
+      for (const auto &[reason, count] : selection.shape_refusals) {
+        world_report += " " + reason + " " + std::to_string(count);
+      }
+      world_report += "\n";
+    }
     std::snprintf(line, sizeof line,
                   "world selected texture bindings: textured %u, no-record %u, no-texture %u, refused-filter %u, "
                   "refused-afail %u, refused-other %u",

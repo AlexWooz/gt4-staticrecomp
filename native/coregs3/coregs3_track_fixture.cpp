@@ -231,9 +231,153 @@ CapturedDraw make_draw(std::uint32_t sequence, std::uint32_t pass, const std::ve
   return draw;
 }
 
+// TASK-090 world families: the measured world programs of the four course families, hand-authored packets. The
+// expected values are the AOT fragments' results on the captured items (the oracle census), reduced to small cases.
+std::uint32_t itop_word(std::uint32_t dispatch) { return 0x04000000u | (dispatch / 8u); }
+
+void set_program(CapturedDraw &draw, std::uint32_t dispatch) {
+  draw.items[0].run_valid = 1;
+  draw.items[0].run_itop = itop_word(dispatch);
+}
+
+// 0x00A0: a 32-vertex two-key morph item, the measured layout (the first key at 0x00/0x40/0x80 covers 32 qwords, so
+// the second key at 0x20/0x60/0xA0 tiles immediately after it and is bit-identical). `differ` changes one second-key
+// position so the rule must refuse the item.
+std::vector<std::uint8_t> make_morph_packet(bool differ, bool uv_differ = false, bool colour_differ = false) {
+  std::vector<std::uint8_t> packet;
+  put_u32(packet, unpack(2, 0, 1, 0xC0, true, false));
+  put_u32(packet, 0x8000u | 32u);
+  put_u32(packet, 0x301E4000u);
+  put_u32(packet, 0x1412u);
+  put_u32(packet, 0);
+  put_u32(packet, unpack(2, 0, 32, 0x00, true, true));  // V3-32 x32 first key
+  for (int index = 0; index < 32; ++index) {
+    put_u32(packet, float_bits(1.0f + static_cast<float>(index)));
+    put_u32(packet, float_bits(2.0f + static_cast<float>(index)));
+    put_u32(packet, float_bits(3.0f + static_cast<float>(index)));
+  }
+  put_u32(packet, unpack(2, 0, 32, 0x20, true, true));  // V3-32 x32 second key
+  for (int index = 0; index < 32; ++index) {
+    put_u32(packet, float_bits(1.0f + static_cast<float>(index) + (differ && index == 1 ? 0.5f : 0.0f)));
+    put_u32(packet, float_bits(2.0f + static_cast<float>(index)));
+    put_u32(packet, float_bits(3.0f + static_cast<float>(index)));
+  }
+  put_u32(packet, unpack(3, 2, 32, 0x80, true, true));  // V4-8 colour x32
+  for (int index = 0; index < 32; ++index) {
+    put_u8(packet, static_cast<std::uint8_t>(10 + index));
+    put_u8(packet, static_cast<std::uint8_t>(11 + index));
+    put_u8(packet, static_cast<std::uint8_t>(12 + index));
+    put_u8(packet, static_cast<std::uint8_t>(13 + index));
+  }
+  put_u32(packet, unpack(3, 2, 32, 0xA0, true, true));
+  for (int index = 0; index < 32; ++index) {
+    put_u8(packet, static_cast<std::uint8_t>(10 + index + (colour_differ && index == 1 ? 4 : 0)));
+    put_u8(packet, static_cast<std::uint8_t>(11 + index));
+    put_u8(packet, static_cast<std::uint8_t>(12 + index));
+    put_u8(packet, static_cast<std::uint8_t>(13 + index));
+  }
+  put_u32(packet, unpack(1, 0, 32, 0x40, true, true));  // V2-32 UV x32 first key, tiles into 0x60
+  for (int index = 0; index < 32; ++index) {
+    put_u32(packet, float_bits(0.25f + 0.01f * static_cast<float>(index)));
+    put_u32(packet, float_bits(0.5f + 0.01f * static_cast<float>(index)));
+  }
+  put_u32(packet, unpack(1, 0, 32, 0x60, true, true));  // V2-32 UV x32 second key
+  for (int index = 0; index < 32; ++index) {
+    put_u32(packet, float_bits(0.25f + 0.01f * static_cast<float>(index) + (uv_differ && index == 1 ? 0.5f : 0.0f)));
+    put_u32(packet, float_bits(0.5f + 0.01f * static_cast<float>(index)));
+  }
+  put_stmask(packet, 0x3F3F3F3Fu);
+  put_u32(packet, 0x10000000u | unpack(0, 2, 2, 0x40, true, true));  // strip table x2
+  put_u8(packet, 1);
+  put_u8(packet, 90);  // 3 * (32 - 2): one strip of 32 vertices
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  return packet;
+}
+
+// 0x0B08: V3-16 positions at 0x00, V3-8 normals at 0x80, V2-16 UVs at 0x40 and the strip table.
+std::vector<std::uint8_t> make_nine_world_packet(bool with_normal) {
+  std::vector<std::uint8_t> packet;
+  put_u32(packet, unpack(2, 0, 1, 0xC0, true, false));
+  put_u32(packet, 0x8000u | 3u);
+  put_u32(packet, 0x301E4000u);
+  put_u32(packet, 0x1412u);
+  put_u32(packet, 0);
+  put_u32(packet, unpack(2, 1, 3, 0x00, true, false));  // V3-16 x3
+  const std::uint16_t positions[3][3] = {{100, 200, 300}, {110, 220, 330}, {120, 240, 360}};
+  for (const auto &position : positions)
+    for (std::uint16_t value : position) put_u16(packet, value);
+  put_u16(packet, 0);  // payload padding to a whole 32-bit word
+  if (with_normal) {
+    put_u32(packet, unpack(2, 2, 3, 0x80, true, true));  // V3-8 x3
+    const std::uint8_t normals[3][3] = {{127, 0, 0}, {0, 127, 0}, {0, 0, 127}};
+    for (const auto &normal : normals)
+      for (std::uint8_t value : normal) put_u8(packet, value);
+    put_u8(packet, 0);
+    put_u8(packet, 0);
+    put_u8(packet, 0);
+  }
+  put_u32(packet, unpack(1, 1, 3, 0x40, true, false));  // V2-16 UV x3
+  for (int index = 0; index < 3; ++index) {
+    put_u16(packet, static_cast<std::uint16_t>(0x1000 + index));
+    put_u16(packet, static_cast<std::uint16_t>(0x2000 + index));
+  }
+  put_stmask(packet, 0x3F3F3F3Fu);
+  put_u32(packet, 0x10000000u | unpack(0, 2, 2, 0x40, true, true));
+  put_u8(packet, 1);
+  put_u8(packet, 3);
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  return packet;
+}
+
+// 0x1278: a MODE 2 position chain (STROW seed + V3-16 deltas) at 0x00, V3-8 normals at 0x40, V4-8 colour at 0x80.
+std::vector<std::uint8_t> make_body_prepass_packet() {
+  std::vector<std::uint8_t> packet;
+  put_u32(packet, unpack(2, 0, 1, 0xC0, true, false));
+  put_u32(packet, 0x8000u | 3u);
+  put_u32(packet, 0x301E4000u);
+  put_u32(packet, 0x1412u);
+  put_u32(packet, 0);
+  put_stmod(packet, 2);
+  put_strow(packet, 100u, 200u, 300u, 0);
+  put_u32(packet, unpack(2, 2, 1, 0x00, true, true));  // V3-8 seed commit, USN 1
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  put_u32(packet, unpack(2, 1, 2, 0x01, true, false));  // V3-16 deltas x2
+  put_u16(packet, 1);
+  put_u16(packet, 2);
+  put_u16(packet, 3);
+  put_u16(packet, 4);
+  put_u16(packet, 5);
+  put_u16(packet, 6);
+  put_stmod(packet, 0);  // the non-position channels run without the lane accumulation
+  put_u32(packet, unpack(2, 2, 3, 0x40, true, true));  // V3-8 normals at 0x40
+  const std::uint8_t normals[3][3] = {{127, 0, 0}, {0, 127, 0}, {0, 0, 127}};
+  for (const auto &normal : normals)
+    for (std::uint8_t value : normal) put_u8(packet, value);
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  const std::uint8_t body_colours[3][4] = {{50, 60, 70, 128}, {80, 90, 100, 128}, {110, 120, 130, 128}};
+  put_u32(packet, unpack(3, 2, 3, 0x80, true, true));  // V4-8 colour x3
+  for (const auto &colour : body_colours)
+    for (std::uint8_t value : colour) put_u8(packet, value);
+  put_stmask(packet, 0x3F3F3F3Fu);
+  put_u32(packet, 0x10000000u | unpack(0, 2, 2, 0x40, true, true));
+  put_u8(packet, 1);
+  put_u8(packet, 3);
+  put_u8(packet, 0);
+  put_u8(packet, 0);
+  return packet;
+}
+
 void check_world_shape() {
   const std::vector<std::uint8_t> packet = make_world_packet();
-  const CapturedDraw draw = make_draw(0, kPassCourse, packet, 0);
+  CapturedDraw draw = make_draw(0, kPassCourse, packet, 0);
+  set_program(draw, 0x0080u);
   MeshOptions options;
   options.world_channels = true;
   Mesh mesh;
@@ -271,7 +415,8 @@ void check_world_shape() {
 
   // The A0-family packet: V2-8 UV segments (the declared Hypothesis) and the colour at TOPS 0xA0.
   const std::vector<std::uint8_t> a0 = make_a0_packet();
-  const CapturedDraw a0_draw = make_draw(1, kPassCourse, a0, 0);
+  CapturedDraw a0_draw = make_draw(1, kPassCourse, a0, 0);
+  set_program(a0_draw, 0x0080u);
   Mesh a0_mesh;
   if (!build_mesh(a0.data(), a0.size(), a0_draw, options, a0_mesh, error))
     throw std::runtime_error("the A0-family packet builds: " + error);
@@ -289,6 +434,217 @@ void check_world_shape() {
   Mesh legacy_mesh;
   require(!build_mesh(packet.data(), packet.size(), draw, legacy, legacy_mesh, error),
           "the legacy car path does not guess the world layout");
+}
+
+// TASK-090 world families: the 0x00A0 morph, 0x0B08 nine-qword and 0x1278 body pre-pass layouts, their channel rules
+// and the lighting inputs they hand to coregs3_lighting. The expected colours are the formulas' AOT results on the
+// captured items (the oracle census: 0x0B08 888/888, 0x1278 524/524 and 0x00A0 1358/1380 vertices exact; the A0
+// remainder is the tap's zero-UV record-pairing ambiguity, not a formula difference).
+void check_world_morph_family() {
+  MeshOptions options;
+  options.world_channels = true;
+  Mesh mesh;
+  std::string error;
+
+  // 0x00A0: the two keys are equal, so the emitted geometry is the first key and the colour is the V4-8 at 0x80.
+  const std::vector<std::uint8_t> morph = make_morph_packet(false);
+  CapturedDraw morph_draw = make_draw(200, kPassCourse, morph, 0);
+  set_program(morph_draw, 0x00A0u);
+  require(world_shape_status(morph.data(), morph.size(), morph_draw.items[0]) == WorldShapeStatus::ok,
+          "the equal-key 0xA0 item passes the shape rule");
+  if (!build_mesh(morph.data(), morph.size(), morph_draw, options, mesh, error))
+    throw std::runtime_error("the 0xA0 morph packet builds: " + error);
+  require(mesh.vertices.size() == 32, "the 0xA0 item emits the descriptor's 32 vertices");
+  require(mesh.vertices[0].encoding == PositionEncoding::float_32, "the 0xA0 keys are V3-32 floats");
+  require(std::fabs(mesh.vertices[1].position[0] - 2.0f) < 1e-6f &&
+              std::fabs(mesh.vertices[31].position[2] - 34.0f) < 1e-6f,
+          "the 0xA0 geometry is the first key");
+  require(mesh.vertices[0].has_color && mesh.vertices[0].color[0] == 10 && mesh.vertices[2].color[2] == 14,
+          "the 0xA0 colour is the V4-8 at 0x80");
+  require(mesh.has_uv && std::fabs(mesh.vertices[0].uv[0] - 0.25f) < 1e-6f &&
+              std::fabs(mesh.vertices[31].uv[1] - 0.81f) < 1e-5f,
+          "the 0xA0 UV is the V2-32 at 0x40");
+  require(mesh.strip_lengths.size() == 1 && mesh.strip_lengths[0] == 32 && mesh.triangles() == 30,
+          "the 0xA0 strip table covers the 32 vertices");
+  ItemLightState morph_state;
+  morph_state.program = LightProgram::morph_passthrough;
+  std::array<std::uint8_t, 4> rgba{};
+  require(shade_item_vertex(morph_state, mesh.vertices[0], rgba) == LightStatus::ok &&
+              rgba == (std::array<std::uint8_t, 4>{10, 11, 12, 13}),
+          "the 0xA0 morph emits the post-morph colour unchanged");
+
+  // The captured A0 items have equal position/colour keys but differing UV keys: the accepted substitution uses the
+  // first-key UV and the item stays selected (geometry and colour are factor-independent).
+  const std::vector<std::uint8_t> uv_differ = make_morph_packet(false, true);
+  CapturedDraw uv_differ_draw = make_draw(208, kPassCourse, uv_differ, 0);
+  set_program(uv_differ_draw, 0x00A0u);
+  require(world_shape_status(uv_differ.data(), uv_differ.size(), uv_differ_draw.items[0]) ==
+              WorldShapeStatus::morph_uv_first_key,
+          "differing A0 UV keys are the counted first-key substitution");
+  if (!build_mesh(uv_differ.data(), uv_differ.size(), uv_differ_draw, options, mesh, error))
+    throw std::runtime_error("the A0 item with differing UV keys still builds: " + error);
+  require(std::fabs(mesh.vertices[0].uv[0] - 0.25f) < 1e-6f, "the A0 substitution uses the first-key UV");
+  WorldItemInput uv_item;
+  uv_item.pass = kPassCourse;
+  uv_item.run_valid = true;
+  uv_item.dispatch = 0x00A0u;
+  uv_item.has_position = true;
+  uv_item.shape_status = WorldShapeStatus::morph_uv_first_key;
+  uv_item.state_known = true;
+  uv_item.xyoffset_known = true;
+  uv_item.xyoffset = kMainViewXyOffset;
+  uv_item.test_known = true;
+  uv_item.test = 0x0005820Cull;
+  require(world_item_exclusion(uv_item) == WorldExclusion::none,
+          "the counted UV substitution keeps the A0 item selected");
+
+  // The 10 captured items with a differing colour key use the first-key colour and stay selected; the measured bound
+  // (tap comparison) is at most 4 levels on 1-3 vertices per item.
+  const std::vector<std::uint8_t> colour_differ = make_morph_packet(false, true, true);
+  CapturedDraw colour_differ_draw = make_draw(209, kPassCourse, colour_differ, 0);
+  set_program(colour_differ_draw, 0x00A0u);
+  require(world_shape_status(colour_differ.data(), colour_differ.size(), colour_differ_draw.items[0]) ==
+              WorldShapeStatus::morph_colour_first_key,
+          "differing A0 colour keys are the counted first-key colour substitution");
+  if (!build_mesh(colour_differ.data(), colour_differ.size(), colour_differ_draw, options, mesh, error))
+    throw std::runtime_error("the A0 item with differing colour keys still builds: " + error);
+  require(mesh.vertices[0].color[0] == 10 && mesh.vertices[1].color[0] == 11,
+          "the A0 colour substitution uses the first-key colour");
+  WorldItemInput colour_item = uv_item;
+  colour_item.shape_status = WorldShapeStatus::morph_colour_first_key;
+  require(world_item_exclusion(colour_item) == WorldExclusion::none,
+          "the counted colour substitution keeps the A0 item selected");
+
+  // A differ in the second position key is refused with the reason, never drawn on a guessed factor.
+  const std::vector<std::uint8_t> differ = make_morph_packet(true);
+  CapturedDraw differ_draw = make_draw(201, kPassCourse, differ, 0);
+  set_program(differ_draw, 0x00A0u);
+  require(world_shape_status(differ.data(), differ.size(), differ_draw.items[0]) ==
+              WorldShapeStatus::morph_keys_differ,
+          "an unequal 0xA0 second key is refused");
+  require(!build_mesh(differ.data(), differ.size(), differ_draw, options, mesh, error) &&
+              error.find("morph-keys-differ") != std::string::npos,
+          "build_mesh refuses the unequal 0xA0 keys with the measured reason");
+}
+
+// The 0x0B08 nine-qword lighting family.
+void check_world_nine_family() {
+  MeshOptions options;
+  options.world_channels = true;
+  Mesh mesh;
+  std::string error;
+  std::array<std::uint8_t, 4> rgba{};
+
+  // V3-16 positions, V3-8 normals at 0x80, V2-16 UVs and the nine-qword lighting formula.
+  const std::vector<std::uint8_t> nine = make_nine_world_packet(true);
+  CapturedDraw nine_draw = make_draw(202, kPassCourse, nine, 0);
+  set_program(nine_draw, 0x0B08u);
+  require(world_shape_status(nine.data(), nine.size(), nine_draw.items[0]) == WorldShapeStatus::ok,
+          "the 0xB08 item passes the shape rule");
+  if (!build_mesh(nine.data(), nine.size(), nine_draw, options, mesh, error))
+    throw std::runtime_error("the 0xB08 packet builds: " + error);
+  require(mesh.vertices.size() == 3 && mesh.vertices[0].has_raw_position &&
+              mesh.vertices[1].raw_position[0] == 110 && mesh.vertices[2].raw_position[2] == 360,
+          "the 0xB08 V3-16 positions are decoded");
+  require(mesh.has_normals80 && mesh.vertices[0].has_normal80 && mesh.vertices[2].normal80[2] == 127,
+          "the 0xB08 V3-8 normal at 0x80 is decoded");
+  require(mesh.has_uv && std::fabs(mesh.vertices[0].uv[0] - 1.0f) < 1e-6f, "the 0xB08 V2-16 UV is decoded");
+  ItemLightState nine_state;
+  nine_state.program = LightProgram::nine_qword_first;
+  nine_state.qword[0] = {1.0f, 0.0f, 0.0f, 0.0f};
+  nine_state.qword[1] = {0.0f, 1.0f, 0.0f, 0.0f};
+  nine_state.qword[2] = {0.0f, 0.0f, 1.0f, 0.0f};
+  nine_state.qword[3] = {0.0f, 0.0f, 0.0f, 0.0f};
+  for (std::uint32_t qword = 4; qword < 8; ++qword) nine_state.qword[qword] = {10.0f, 10.0f, 10.0f, 10.0f};
+  nine_state.qword[8] = {255.0f, 255.0f, 255.0f, 128.0f};
+  require(shade_item_vertex(nine_state, mesh.vertices[0], rgba) == LightStatus::ok &&
+              rgba == (std::array<std::uint8_t, 4>{10, 10, 10, 10}),
+          "the 0xB08 item is lit by the nine-qword first-power formula");
+
+  // A 0xB08 item without the normal at 0x80 is refused, not drawn with a guessed normal.
+  const std::vector<std::uint8_t> no_normal = make_nine_world_packet(false);
+  CapturedDraw no_normal_draw = make_draw(203, kPassCourse, no_normal, 0);
+  set_program(no_normal_draw, 0x0B08u);
+  require(world_shape_status(no_normal.data(), no_normal.size(), no_normal_draw.items[0]) ==
+              WorldShapeStatus::missing_normal80,
+          "the 0xB08 item without a normal is refused");
+  require(!build_mesh(no_normal.data(), no_normal.size(), no_normal_draw, options, mesh, error) &&
+              error.find("missing-normal-0x80") != std::string::npos,
+          "build_mesh refuses the 0xB08 item with the measured reason");
+}
+
+// The 0x1278 body/paint pre-pass family.
+void check_world_body_family() {
+  MeshOptions options;
+  options.world_channels = true;
+  Mesh mesh;
+  std::string error;
+  std::array<std::uint8_t, 4> rgba{};
+
+  // The MODE 2 lane is the body formula's position; the V3-8 normal at 0x40 and the colour at 0x80 are read.
+  const std::vector<std::uint8_t> body = make_body_prepass_packet();
+  CapturedDraw body_draw = make_draw(204, kPassCourse, body, 0);
+  set_program(body_draw, 0x1278u);
+  require(world_shape_status(body.data(), body.size(), body_draw.items[0]) == WorldShapeStatus::ok,
+          "the 0x1278 item passes the shape rule");
+  if (!build_mesh(body.data(), body.size(), body_draw, options, mesh, error))
+    throw std::runtime_error("the 0x1278 packet builds: " + error);
+  require(mesh.vertices.size() == 3 && mesh.vertices[0].encoding == PositionEncoding::integer_32 &&
+              mesh.vertices[0].has_lane_position,
+          "the 0x1278 position family is the int32 MODE 2 lane");
+  require(mesh.vertices[0].lane_position[0] == 100 && mesh.vertices[0].lane_position[1] == 200 &&
+              mesh.vertices[0].lane_position[2] == 300,
+          "the STROW seed is the first lane");
+  require(mesh.vertices[1].lane_position[0] == 101 && mesh.vertices[2].lane_position[0] == 105 &&
+              mesh.vertices[2].lane_position[2] == 309,
+          "the V3-16 deltas accumulate in the 32-bit lane");
+  require(!mesh.vertices[0].has_raw_position && mesh.has_normals && mesh.vertices[0].has_normal &&
+              mesh.vertices[0].normal[0] == 127,
+          "the 0x1278 normal at 0x40 is decoded");
+  require(mesh.has_colors && mesh.vertices[0].color[0] == 50 && mesh.vertices[2].color[0] == 110,
+          "the 0x1278 colour at 0x80 covers the count");
+  ItemLightState body_state;
+  body_state.program = LightProgram::body_prepass;
+  body_state.qword[0] = {1.0f, 0.0f, 0.0f, 0.0f};
+  body_state.qword[1] = {0.0f, 1.0f, 0.0f, 0.0f};
+  body_state.qword[2] = {0.0f, 0.0f, 1.0f, 0.0f};
+  body_state.qword[3] = {0.0f, 0.0f, 0.0f, 0.0f};  // LP
+  body_state.qword[4] = {0.5f, 0.5f, 0.5f, 0.5f};  // C3
+  body_state.qword[5] = {0.0f, 0.0f, 0.0f, 0.0f};  // C4
+  require(shade_item_vertex(body_state, mesh.vertices[0], rgba) == LightStatus::ok &&
+              rgba == (std::array<std::uint8_t, 4>{25, 30, 35, 64}),
+          "the 0x1278 item is lit by the body/paint formula on the lane position");
+}
+
+// The family map, the sky's 0x1508 entry and the malformed/unsupported refusals.
+void check_world_family_status() {
+  // The sky's 0x1508 entry maps to the three-qword gain/clamp/bias formula.
+  require(light_program_from_dispatch(0x1508u) == LightProgram::three_qword_gain,
+          "the sky's 0x1508 entry maps to the three-qword gain program");
+  require(light_program_from_dispatch(0x00A0u) == LightProgram::morph_passthrough &&
+              light_program_from_dispatch(0x1278u) == LightProgram::body_prepass &&
+              light_program_from_dispatch(0x0B08u) == LightProgram::nine_qword_first,
+          "the three course families map to their measured programs");
+  const std::vector<std::uint8_t> sky = make_world_packet();
+  CapturedDraw sky_draw = make_draw(205, kPassCourse, sky, 0);
+  set_program(sky_draw, 0x1508u);
+  require(world_shape_status(sky.data(), sky.size(), sky_draw.items[0]) == WorldShapeStatus::ok,
+          "the 0x1508 descriptor/position layout passes the shape rule");
+
+  // An item of another program and one with a malformed descriptor are refused before a draw is built.
+  const std::vector<std::uint8_t> morph = make_morph_packet(false);
+  CapturedDraw unsupported = make_draw(206, kPassCourse, morph, 0);
+  set_program(unsupported, 0x1234u);
+  require(world_shape_status(morph.data(), morph.size(), unsupported.items[0]) ==
+              WorldShapeStatus::unsupported_program,
+          "an unmeasured world program is refused");
+  std::vector<std::uint8_t> malformed = make_morph_packet(false);
+  malformed[5] &= 0x7Fu;  // clear lane0 bit 15 of the descriptor (0x8003 -> 0x0003), keeping 0x1412
+  CapturedDraw malformed_draw = make_draw(207, kPassCourse, malformed, 0);
+  set_program(malformed_draw, 0x00A0u);
+  require(world_shape_status(malformed.data(), malformed.size(), malformed_draw.items[0]) ==
+              WorldShapeStatus::no_descriptor,
+          "a 0xC0 vector without the descriptor flag is not a vertex count");
 }
 
 void check_world_matrix_source() {
@@ -365,15 +721,25 @@ void check_world_selection() {
   item.test = 0x0005820Cull;
   require(world_item_exclusion(item) == WorldExclusion::none, "the main-view ITOP 0x80 item is selected");
 
+  // TASK-090 world families: the measured course families are selected when their shape rule passes.
   WorldItemInput other = item;
   other.dispatch = 0x0B08u;
-  require(world_item_exclusion(other) == WorldExclusion::itop_b08, "the 0xB08 program is excluded");
+  require(world_item_exclusion(other) == WorldExclusion::none, "the 0xB08 nine-qword family is selected");
   other.dispatch = 0x00A0u;
-  require(world_item_exclusion(other) == WorldExclusion::itop_a0, "the 0xA0 program is excluded");
+  require(world_item_exclusion(other) == WorldExclusion::none, "the 0xA0 morph family is selected");
   other.dispatch = 0x1278u;
-  require(world_item_exclusion(other) == WorldExclusion::itop_1278, "the 0x1278 program is excluded");
+  require(world_item_exclusion(other) == WorldExclusion::none, "the 0x1278 body pre-pass family is selected");
   other.dispatch = 0x1508u;
-  require(world_item_exclusion(other) == WorldExclusion::itop_other, "another dispatch is excluded");
+  require(world_item_exclusion(other) == WorldExclusion::itop_other,
+          "the sky's dispatch is not a course family and is excluded in the course pass");
+  WorldItemInput refused = item;
+  refused.dispatch = 0x00A0u;
+  refused.shape_status = WorldShapeStatus::morph_keys_differ;
+  require(world_item_exclusion(refused) == WorldExclusion::shape_refused,
+          "an item whose shape rule refuses it is excluded and counted");
+  refused.has_position = false;
+  require(world_item_exclusion(refused) == WorldExclusion::no_position,
+          "a missing position keeps the no-position reason");
 
   WorldItemInput mirror = item;
   mirror.xyoffset = 0x0000780800007C08ull;
@@ -448,6 +814,7 @@ void check_world_render() {
   frame.packets = packet;
   const float scale = 1.0f / 8192.0f;
   for (CapturedDraw &draw : frame.draws) {
+    set_program(draw, 0x0080u);
     draw.cmd_value = 0.0f;
     draw.matrix_packet_valid = 1;
     draw.matrix_packet[0][0] = 0x10000008u;
@@ -482,6 +849,10 @@ int main() {
     check_vif_sign_rule();
     check_mode2_accumulation();
     check_world_shape();
+    check_world_morph_family();
+    check_world_nine_family();
+    check_world_body_family();
+    check_world_family_status();
     check_world_matrix_source();
     check_world_selection();
     check_world_render();

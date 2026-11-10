@@ -1844,8 +1844,29 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   measure the PATH3 post stream before adding any global transform. No `native/` source change; small `GT4_HW_GS` tools
   build only. Numbers, gates, evidence: [COREGS3-WORLD-MATERIALS](docs/COREGS3-WORLD-MATERIALS.md),
   `build/evidence/world-materials/`.
-- Next: the world-materials capture fix (per-pass texture/palette snapshot); the track M1 sky+road renderer using the
-  recovered transform; the effects/HUD capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
+
+- **World families: 0xB08, 0xA0 and 0x1278 course items in the world render (2026-11-10, branch
+  `task/090-world-families`).** The offline world now draws the 72 course items M1 excluded by VU1 program, with their
+  measured per-item programs/channels; the texture census's unknown-program is 73 -> 0. Oracle (full-corpus AOT chain on
+  the captured inputs vs the tap): 0xB08 15 items/888 vertices exact, 0x1278 11/524 exact, sky 0x1508 16/940 exact,
+  0xA0 46 items/1,380 vertices exact on the fragment's inputs and 1,358/1,380 against the tap. Programs (C): 0x0B08 =
+  the round-18 nine-qword first-power family (course block `0x6C09C0C9`, V3-8 normal at 0x80); 0x1278 = a float/normal
+  pre-pass into the body/paint output at 0x12C8 (body formula on the full MODE 2 lane, normal at 0x40, six-qword block);
+  0x00A0 = a two-key morph pre-pass (positions 0x00/0x20, UVs 0x40/0x60, colours 0x80/0xA0, factor at 0xF2) feeding the
+  shared output; 0x1508 (sky) = the three-qword gain/clamp/bias formula. `WorldShapeStatus`/`world_shape_status` pins the
+  per-family channel rules (descriptor 0x8000 flag + 0x1412 signature) in one place for the selection and `build_mesh`;
+  the morph items are accepted when the position keys are equal (geometry factor-independent), and the differing UV keys
+  (35 items) and colour keys (10 items) use the first key as counted substitutions. Frame 0: course 130 draws/1,263
+  items/63,959 vertices (0x80 1,192/61,173, 0xB08 15/888, 0xA0 45/1,374, 0x1278 11/524), sky 16/940, far 9/378, 0
+  refused draws and 0 lighting fallbacks; exclusions 15 mirror + 6 no-position, 0 other-itop/shape-refused. Picture:
+  PSNR 20.36 -> 20.58 dB, SSIM 0.6138 -> 0.6221, pct_bad 77.22 -> 76.17%, mean |diff| 20.31 -> 19.64, luma 31.20 ->
+  30.21, coverage 100%, spill 1.61%. Open: the 0xA0 morph factor is not captured (10 items first-key colour, tap bound
+  <= 4 levels on 22/1,380 vertices; all 46 first-key UV; a v6 capture field is the clean fix); one env_map 0x1508 item
+  differs outside the world selection. CTest coregs3 11/11, Python 8/8, car render byte-identical to the base-commit
+  executable (`8d22a10a...`), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences,
+  13/13 frames, capture 4,477,368 B). Evidence: `build/evidence-world-families/`.
+- Next: the per-pass texture/palette capture (the world brightness root cause); a v6 capture field for the
+  0xA0 morph factor; the effects/HUD capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

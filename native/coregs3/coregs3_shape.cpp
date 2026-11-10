@@ -105,6 +105,9 @@ bool read_descriptor(const VifPacket &packet, ChannelScan::ItemInfo &info) {
     if (entry.vectors < 1) continue;
     std::vector<VifVector> vectors;
     if (!read_vu_vectors(packet.packed.data(), entry.destination * 16u, 1, vectors)) return false;
+    // The measured descriptor: lane0 bit 15 (the GIF tag's EOP) marks the form, lane2 carries the 0x1412 signature. A
+    // V3-32 vector at 0xC0 without them is data, not a vertex count, and must not be read as one.
+    if ((vectors[0].v[0] & 0x8000u) == 0 || vectors[0].v[2] != 0x1412u) return false;
     info.has_descriptor = true;
     info.descriptor_vertices = vectors[0].v[0] & 0x7FFFu;
     info.descriptor_selector = vectors[0].v[1];
@@ -112,6 +115,138 @@ bool read_descriptor(const VifPacket &packet, ChannelScan::ItemInfo &info) {
     return true;
   }
   return false;
+}
+
+// TASK-090 world families: the channel facts of one decoded item packet. The five measured world programs and the
+// channels each reads are described in coregs3_shape.hpp (world_shape_status); this struct collects them in one scan.
+struct WorldFamilyFacts {
+  bool descriptor = false;
+  std::uint32_t count = 0;
+  bool seed = false;               // a V3-8 write at qword 0 (the STROW seed commit)
+  std::uint32_t positions_at_0 = 0;   // V3-16/V3-32 vectors at qword 0
+  std::uint32_t positions_at_20 = 0;  // the 0x00A0 second keyframe's position array
+  std::uint32_t positions_other = 0;  // continuation arrays at qword 0x01..0x3F other than 0x20
+  std::uint32_t uv_at_40 = 0;      // qword vectors the UV write at 0x40 covers
+  std::uint32_t uv_at_60 = 0;      // the 0x00A0 second keyframe's UV array
+  std::uint32_t colour80 = 0;
+  std::uint32_t colourA0 = 0;
+  std::uint32_t normal40 = 0;
+  std::uint32_t normal80 = 0;
+};
+
+WorldFamilyFacts world_family_facts(const VifPacket &packet) {
+  WorldFamilyFacts facts;
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops) continue;
+    if (entry.destination == 0xC0u && entry.format == ChannelFormat::v3_32) {
+      std::vector<VifVector> vectors;
+      if (read_vu_vectors(packet.packed.data(), 0xC0u * 16u, 1, vectors) && (vectors[0].v[0] & 0x8000u) != 0 &&
+          vectors[0].v[2] == 0x1412u) {
+        facts.descriptor = true;
+        facts.count = vectors[0].v[0] & 0x7FFFu;
+      }
+      continue;
+    }
+    if (entry.destination == 0x00u && entry.format == ChannelFormat::v3_8) {
+      facts.seed = true;
+      continue;
+    }
+    if (entry.destination < 0x40u && is_position_format(entry.format)) {
+      if (entry.destination == 0x00u)
+        facts.positions_at_0 += entry.vectors;
+      else if (entry.destination == 0x20u)
+        facts.positions_at_20 += entry.vectors;
+      else
+        facts.positions_other += entry.vectors;
+      continue;
+    }
+    if (entry.destination == 0x40u && entry.format == ChannelFormat::v3_8) {
+      facts.normal40 += entry.vectors;
+      continue;
+    }
+    if (entry.destination == 0x40u && is_uv_format(entry.format)) {
+      facts.uv_at_40 += entry.vectors;
+      continue;
+    }
+    if (entry.destination == 0x60u && is_uv_format(entry.format)) {
+      facts.uv_at_60 += entry.vectors;
+      continue;
+    }
+    if (entry.destination == 0x80u && entry.format == ChannelFormat::v3_8) {
+      facts.normal80 += entry.vectors;
+      continue;
+    }
+    if (entry.destination == 0x80u && entry.format == ChannelFormat::v4_8) {
+      facts.colour80 += entry.vectors;
+      continue;
+    }
+    if (entry.destination == 0xA0u && entry.format == ChannelFormat::v4_8) facts.colourA0 += entry.vectors;
+  }
+  return facts;
+}
+
+// Compares the first `lanes` 32-bit lanes of `count` qwords between two destinations. The 0xA0 UV arrays share their
+// destination with the masked V1-8 strip table, which overwrites lane 3 of the first qwords with the strip bytes; the
+// program's UV consumers read lanes 0/1 (S,T), so the UV comparison is lane-limited. Positions compare 3 lanes and the
+// V4-8 colour all 4 (each byte sits in one 32-bit lane after the UNPACK).
+bool qword_lanes_equal(const VifPacket &packet, std::uint32_t first, std::uint32_t second, std::uint32_t count,
+                       std::uint32_t lanes) {
+  if (first + count > kVuQwords || second + count > kVuQwords) return false;
+  for (std::uint32_t qword = 0; qword < count; ++qword) {
+    for (std::uint32_t lane = 0; lane < lanes; ++lane) {
+      std::uint32_t a = 0, b = 0;
+      std::memcpy(&a, packet.packed.data() + static_cast<std::size_t>(first + qword) * 16u + lane * 4u, 4);
+      std::memcpy(&b, packet.packed.data() + static_cast<std::size_t>(second + qword) * 16u + lane * 4u, 4);
+      if (a != b) return false;
+    }
+  }
+  return true;
+}
+
+// The family rule of world_shape_status, on an already decoded packet.
+WorldShapeStatus world_shape_status_packet(const VifPacket &packet, std::uint32_t dispatch) {
+  const WorldFamilyFacts facts = world_family_facts(packet);
+  const bool supported = dispatch == 0x0080u || dispatch == 0x00A0u || dispatch == 0x0B08u ||
+                         dispatch == 0x1278u || dispatch == 0x1508u;
+  if (!supported) return WorldShapeStatus::unsupported_program;
+  if (!facts.descriptor) return WorldShapeStatus::no_descriptor;
+  const std::uint32_t count = facts.count;
+  if (count == 0) return WorldShapeStatus::no_descriptor;
+  // The first key's position list: the STROW seed (if any) and the position arrays tiled from qword 0. For the
+  // non-morph families an aux array at 0x20 is part of that list; the morph family uses 0x20 as its second key instead.
+  const std::uint32_t first_positions =
+      (facts.seed ? 1u : 0u) + facts.positions_at_0 + facts.positions_at_20 + facts.positions_other;
+  if (dispatch == 0x00A0u) {
+    // The two-key morph: the first key at 0x00 and the second at 0x20 must both cover the output count. Their position
+    // lanes must be equal (the geometry is then independent of the factor at 0xF2, which is not captured); the colour
+    // and UV keys may differ and are counted substitutions.
+    if (facts.positions_at_0 < count || facts.positions_at_20 < count) return WorldShapeStatus::position_count;
+    if (facts.colour80 < count || facts.colourA0 < count) return WorldShapeStatus::missing_colour;
+    if (facts.uv_at_40 < count || facts.uv_at_60 < count) return WorldShapeStatus::position_count;
+    if (!qword_lanes_equal(packet, 0x00u, 0x20u, count, 3u)) return WorldShapeStatus::morph_keys_differ;
+    // The position keys are equal, so the geometry is independent of the morph factor. A differing colour or UV key
+    // means the program would blend it by the uncaptured factor; the first key is used and the substitution is counted.
+    if (!qword_lanes_equal(packet, 0x80u, 0xA0u, count, 4u)) return WorldShapeStatus::morph_colour_first_key;
+    if (!qword_lanes_equal(packet, 0x40u, 0x60u, count, 2u)) return WorldShapeStatus::morph_uv_first_key;
+    return WorldShapeStatus::ok;
+  }
+  if (first_positions == 0) return WorldShapeStatus::no_position;
+  if (dispatch == 0x0B08u) {
+    if (first_positions < count) return WorldShapeStatus::position_count;
+    if (facts.normal80 < count) return WorldShapeStatus::missing_normal80;
+    return WorldShapeStatus::ok;
+  }
+  if (dispatch == 0x1278u) {
+    if (first_positions < count) return WorldShapeStatus::position_count;
+    if (facts.normal40 < count) return WorldShapeStatus::missing_normal40;
+    if (facts.colour80 < count) return WorldShapeStatus::missing_colour;
+    return WorldShapeStatus::ok;
+  }
+  // The 0x0080 main view and the sky's 0x1508: the descriptor's position list is the drawn geometry. Their lighting
+  // program (pass-through / three-qword gain) reuses the V4-8 colour the shape may or may not carry; a missing colour
+  // is a counted per-vertex fallback in the lighting stage, not a shape refusal (the M1 baseline never filtered on it).
+  if (first_positions == 0) return WorldShapeStatus::no_position;
+  return WorldShapeStatus::ok;
 }
 
 // The measured position family of an item: MODE 2 anywhere in the position region means the lanes are 32-bit
@@ -214,10 +349,16 @@ bool read_world_uv(const VifPacket &packet, std::uint32_t count, std::vector<flo
 // memory from qword 0; after the packet ran, `count` vectors at qword 0 are the item's vertices. The family decides the
 // lane interpretation: MODE 2 lanes are the exact int32 accumulators (position = float(lane), lane_position = lane); a
 // V3-32 family is the float as stored; a V3-16 family is the signed halfword with the caller's position_scale.
-bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info, const MeshOptions &options,
-                     ItemData &data, std::string &error) {
+bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info, std::uint32_t dispatch,
+                     const MeshOptions &options, ItemData &data, std::string &error) {
   if (!info.has_position) {
     error = "no position channel";
+    return false;
+  }
+  const WorldShapeStatus status = world_shape_status_packet(packet, dispatch);
+  if (status != WorldShapeStatus::ok && status != WorldShapeStatus::morph_uv_first_key &&
+      status != WorldShapeStatus::morph_colour_first_key) {
+    error = world_shape_status_name(status);
     return false;
   }
   const std::uint32_t count = info.descriptor_vertices;
@@ -322,6 +463,34 @@ bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info,
 }
 
 }  // namespace
+
+const char *world_shape_status_name(WorldShapeStatus status) noexcept {
+  switch (status) {
+  case WorldShapeStatus::ok: return "ok";
+  case WorldShapeStatus::no_descriptor: return "no-descriptor";
+  case WorldShapeStatus::no_position: return "no-position";
+  case WorldShapeStatus::unsupported_program: return "unsupported-program";
+  case WorldShapeStatus::morph_keys_differ: return "morph-keys-differ";
+  case WorldShapeStatus::morph_uv_first_key: return "morph-uv-first-key";
+  case WorldShapeStatus::morph_colour_first_key: return "morph-colour-first-key";
+  case WorldShapeStatus::position_count: return "position-count";
+  case WorldShapeStatus::missing_normal40: return "missing-normal-0x40";
+  case WorldShapeStatus::missing_normal80: return "missing-normal-0x80";
+  case WorldShapeStatus::missing_colour: return "missing-colour";
+  }
+  return "unknown";
+}
+
+WorldShapeStatus world_shape_status(const std::uint8_t *packets, std::size_t packet_bytes,
+                                    const CapturedItem &item) {
+  if (item.packet_bytes == 0) return WorldShapeStatus::unsupported_program;
+  if (item.packet_offset > packet_bytes || item.packet_bytes > packet_bytes - item.packet_offset)
+    return WorldShapeStatus::unsupported_program;
+  const VifPacket packet = decode_packet(packets + item.packet_offset, item.packet_bytes);
+  if (!packet.ok) return WorldShapeStatus::unsupported_program;
+  const std::uint32_t dispatch = item.run_valid != 0 ? (item.run_itop & 0x3FFu) * 8u : 0u;
+  return world_shape_status_packet(packet, dispatch);
+}
 
 const char *channel_role_name(ChannelRole role) noexcept {
   switch (role) {
@@ -473,7 +642,8 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
     read_position_family(packet, info);
     if (options.world_channels && info.has_descriptor) {
       // The descriptor-driven world path (TASK-090 track M1): one contiguous vertex list at qword 0, count from lane 0.
-      if (!read_world_item(packet, info, options, data, error)) {
+      const std::uint32_t dispatch = item.run_valid != 0 ? (item.run_itop & 0x3FFu) * 8u : 0u;
+      if (!read_world_item(packet, info, dispatch, options, data, error)) {
         error = "item " + std::to_string(index) + ": " + error;
         return false;
       }

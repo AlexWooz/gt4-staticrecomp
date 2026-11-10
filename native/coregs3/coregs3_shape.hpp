@@ -50,6 +50,27 @@ struct ShapeChannel {
   ChannelRole role = ChannelRole::unknown;
 };
 
+// TASK-090 world families: what one item's packet carries for the world family its ITOP selector runs. The renderer
+// decodes only the five measured world programs (0x0080 main view, 0x00A0 two-key morph, 0x0B08 nine-qword lighting,
+// 0x1278 body pre-pass and the sky's 0x1508); an item of another program or with a channel the program reads missing is
+// refused and counted, never drawn on a guessed layout.
+enum class WorldShapeStatus : std::uint8_t {
+  ok = 0,
+  no_descriptor,      // no TOPS 0xC0 V3-32 descriptor with the measured 0x8000 flag and 0x1412 signature
+  no_position,        // no position qword written
+  unsupported_program,  // the item's ITOP selector is not one of the five measured world programs
+  morph_keys_differ,  // 0x00A0: the position keys differ (the geometry would need the uncaptured morph factor)
+  morph_uv_first_key, // 0x00A0: positions and colours are equal; the UV keys differ, so the first-key UV is used and
+                      // the substitution is counted (the emitted colour and geometry stay exact)
+  morph_colour_first_key,  // 0x00A0: positions are equal; the colour keys differ, so the first-key colour is used and
+                           // the substitution is counted (the measured tap bound: <= 4 levels on 1-3 vertices/item)
+  position_count,     // the position list does not cover the descriptor's vertex count
+  missing_normal40,   // 0x1278: no V3-8 normal at TOPS 0x40
+  missing_normal80,   // 0x0B08: no V3-8 normal at TOPS 0x80
+  missing_colour,     // no V4-8 colour at TOPS 0x80
+};
+const char *world_shape_status_name(WorldShapeStatus status) noexcept;
+
 struct ChannelScan {
   // One entry per draw item, in item order; `decoded` is false when the item has no packet or the packet was refused.
   struct ItemInfo {
@@ -224,5 +245,20 @@ struct MeshOptions {
 // them. Returns false with `error` when no position channel is found or a channel is inconsistent with the rule.
 bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const struct CapturedDraw &draw,
                 const MeshOptions &options, Mesh &mesh, std::string &error);
+
+// TASK-090 world families: the measured family and channel coverage of one item, used by the world item selection so a
+// refused item is counted before a draw is built. It decodes the item's packet and returns the first failed rule:
+//   * the descriptor must be the measured TOPS 0xC0 V3-32 form (lane0 bit 15 set, lane2 0x1412);
+//   * 0x0080/0x1508 need a position list; 0x0B08 needs the V3-8 normal at 0x80; 0x1278 needs the V3-8 normal at 0x40
+//     and the V4-8 colour at 0x80; 0x00A0 needs the colour at 0x80 and a second keyframe (positions at 0x20, UV at
+//     0x60, colour at 0xA0). The position keys must be bit-identical because the morph factor at 0xF2 is not captured;
+//     equal position keys make the geometry factor-independent. Differing UV keys are accepted as morph_uv_first_key
+//     and differing colour keys as morph_colour_first_key: the first key is used and the substitution is counted (the
+//     measured tap bound for the colour case is at most 4 levels on 1-3 vertices per item);
+//   * the position list must cover the descriptor count (the V3-8 seed commit at qword 0 counts as one vertex).
+// Any other ITOP selector is unsupported_program. The check is the same rule read_world_item applies, so the tool's
+// exclusion count and build_mesh cannot drift.
+WorldShapeStatus world_shape_status(const std::uint8_t *packets, std::size_t packet_bytes,
+                                    const struct CapturedItem &item);
 
 }  // namespace gt4::coregs3

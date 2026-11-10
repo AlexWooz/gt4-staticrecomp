@@ -1323,3 +1323,64 @@ the top-right grandstand and the gray PIT sign item, not missing textures.
 The remaining image gate (24 dB / 0.75 / 10%) stays a Hyp target for M2: this round removes the texture-state
 uncertainty, but it cannot add the excluded passes or change the shading without changing the selection the owner
 froze for M1.
+
+## 23. Round 24 (2026-11-10, branch `task/090-world-families`): the 0xB08/0xA0/0x1278 course programs
+
+The world selection used to exclude 72 course items by VU1 selector (0xB08 15, 0xA0 46, 0x1278 11). This round decodes
+them from the full-corpus AOT output (426 entries; the union corpus lacked 0x00A0 and 0x1278) and the v5 ALL_DRAWS
+capture, and brings them into the offline world render.
+
+### 23.1 The programs (C)
+
+- **0x0B08** is the round-18 nine-qword first-power family. The course item carries the same nine-qword block
+  (`0x6C09C0C9`), V3-16 positions at qword 0, the V3-8 normal at TOPS 0x80 and V2-16 UVs at 0x40. Formula unchanged.
+- **0x1278** is a pre-pass, not an output program: the AOT body (entry key `FE920756A7E31D4D`) converts the integer
+  position lanes and the V3-8 normal at 0x40 (times the microcode constant 1/127) to floats, then dispatches to the
+  body/paint output routine at 0x12C8. That routine reads the six-qword body block at 0xC9..0xCE, so the lighting
+  formula is round 12's body formula, with the position being the full STMOD 2 lane (the value ITOF0 converts), not the
+  low halfword. Measured: the chain reproduces the tap RGBAQ on 524/524 vertices of the 11 frame-0 items.
+- **0x00A0** is a two-key morph pre-pass (entry key `2C8C8E20B5ECB957`): it lerps positions at 0x00/0x20, UVs at
+  0x40/0x60 and colours at 0x80/0xA0 with the factor at TOPS+0xF2 lane 3 (`vf20 = 1 - s`, `vf21 = s`), writes the
+  result back and dispatches to the shared output at 0xB0. On the capture the position keys are bit-identical for every
+  item (230/230 over five frames), so the geometry is independent of the factor; the colour keys differ on 10/46
+  frame-0 items and the UV keys on all of them. The factor is not captured, so the decoder accepts the item on the
+  equal-position rule and uses the first key for the differing UV/colour arrays, counted as substitutions.
+- **0x1508** (sky) is the three-qword gain/clamp/bias entry: it computes `clamp(q2 + q0*C, 0, q1)` on the V4-8 at 0x80,
+  the same formula as 0x14D8. With the sky's identity block (gain 1, clamp 255/255/255/128, bias 0) it emits the input
+  colour with alpha clamped to 128; the AOT chain matches the tap on 940/940 sky vertices.
+
+### 23.2 Decoder, selection and lighting (C)
+
+- `WorldShapeStatus`/`world_shape_status` (coregs3_shape) checks the measured family layout per item: the 0xC0
+  descriptor must carry lane0 bit 15 and the 0x1412 signature; 0x0080/0x1508 need a position list; 0x0B08 the normal at
+  0x80; 0x1278 the normal at 0x40 and colour at 0x80; 0x00A0 the colour at 0x80 and the second keyframe (equal positions
+  accepted; equal UV/colour exact; differing UV/colour counted). `read_world_item` applies the same rule.
+- `coregs3_lighting` maps 0x1508 -> `three_qword_gain`, 0x00A0 -> `morph_passthrough` (no block), 0x1278 ->
+  `body_prepass` (six-qword block, body formula). `shade_body` accepts `MeshVertex::lane_position` when the vertex has
+  no raw halfword; the car path is unchanged.
+- `coregs3_world` accepts the three course families when the shape rule passes; `itop_b08/a0/1278` are no longer
+  exclusion reasons and `shape-refused` is a counted one. The mirror/no-state/no-position rules are unchanged.
+
+### 23.3 Evidence (frame 0, VBlank 7398, 3x)
+
+- **AOT vs tap RGBAQ:** 0xB08 15 items/888 vertices exact; 0x1278 11/524 exact; sky 0x1508 16/940 exact; 0xA0 46 items /
+  1,380 vertices exact on the fragment's inputs and 1,358/1,380 against the tap (the 22 vertices of the 10
+  colour-substituted items differ by at most 4 levels). The C++ shading equals the AOT output on every family.
+- **World selection:** course 130 draws/1,263 items/63,959 vertices (0x80 1,192/61,173; 0xB08 15/888; 0xA0 45/1,374;
+  0x1278 11/524), sky 16/940, far 9/378; 0 refused draws, 0 lighting fallbacks; exclusions 15 mirror (one 0xA0 mirror
+  item), 6 no-position, 0 other-itop/shape-refused/empty draws; 35 first-key UV + 10 first-key colour substitutions.
+  Texture census: unknown-program 0 (was 73).
+- **Picture:** PSNR 20.36 -> 20.58 dB, SSIM 0.6138 -> 0.6221, pct_bad 77.22 -> 76.17%, mean |diff| 20.31 -> 19.64, luma
+  31.20 -> 30.21 (reference 26.69), coverage 100%, car spill 1.61%.
+- **Checks:** CTest coregs3 11/11, Python 8/8, car-only render byte-identical to the base-commit executable
+  (`248ec453`), 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
+  frames, capture 4,477,368 B). Evidence: `build/evidence-world-families/`; harness and analysis scripts under its
+  `tools/` (ignored).
+
+### 23.4 Open (H)
+
+The 0xA0 morph factor at 0xF2 is the missing capture field; until a v6 capture stores it, the first-key UV (all items)
+and colour (10 items) are counted substitutions, and the tap's generated S/T for these items does not equal the
+captured UV arrays, so the sampled texture coordinate remains open. The 0x1508 mapping is exact for the sky; one
+env_map item with the same selector differs from the fragment (max 159) outside the world selection and is not
+investigated. The 11 0x1278 items carry no UV channel and stay untextured.

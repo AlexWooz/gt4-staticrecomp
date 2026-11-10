@@ -1,4 +1,4 @@
-// TASK-090 CoreGS 3.0 track M1: the world item selection rule. See coregs3_world.hpp.
+// TASK-090 CoreGS 3.0: the world item selection rule. See coregs3_world.hpp.
 #include "coregs3_world.hpp"
 
 namespace gt4::coregs3 {
@@ -7,10 +7,8 @@ const char *world_exclusion_name(WorldExclusion exclusion) noexcept {
   switch (exclusion) {
   case WorldExclusion::none: return "selected";
   case WorldExclusion::not_world_pass: return "not-world-pass";
-  case WorldExclusion::itop_b08: return "itop-0xB08";
-  case WorldExclusion::itop_a0: return "itop-0xA0";
-  case WorldExclusion::itop_1278: return "itop-0x1278";
   case WorldExclusion::itop_other: return "itop-other";
+  case WorldExclusion::shape_refused: return "shape-refused";
   case WorldExclusion::no_position: return "no-position";
   case WorldExclusion::no_state: return "no-state";
   case WorldExclusion::mirror: return "mirror-view";
@@ -27,13 +25,17 @@ WorldExclusion world_item_exclusion(const WorldItemInput &item) noexcept {
   }
   if (!item.run_valid) return WorldExclusion::itop_other;
   switch (item.dispatch) {
-  case 0x0B08u: return WorldExclusion::itop_b08;
-  case 0x00A0u: return WorldExclusion::itop_a0;
-  case 0x1278u: return WorldExclusion::itop_1278;
-  case 0x0080u: break;
+  case 0x0B08u:  // the nine-qword first-power glass/lamp family
+  case 0x00A0u:  // the two-key morph family
+  case 0x1278u:  // the float/normal pre-pass into the body/paint output
+  case 0x0080u:  // the main view
+    break;
   default: return WorldExclusion::itop_other;
   }
   if (!item.has_position) return WorldExclusion::no_position;
+  if (item.shape_status != WorldShapeStatus::ok && item.shape_status != WorldShapeStatus::morph_uv_first_key &&
+      item.shape_status != WorldShapeStatus::morph_colour_first_key)
+    return WorldExclusion::shape_refused;
   if (!item.state_known || !item.xyoffset_known) return WorldExclusion::no_state;
   if (item.xyoffset != kMainViewXyOffset) return WorldExclusion::mirror;
   if (item.test_zero) return WorldExclusion::no_state;

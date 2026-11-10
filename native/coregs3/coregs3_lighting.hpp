@@ -48,6 +48,28 @@
 //
 //   passthrough       ITOP 0x0080, no block: the V4-8 colour at TOPS+0x80 is emitted unchanged, alpha included.
 //
+// TASK-090 world families (course and sky, measured on the v5 ALL_DRAWS night capture):
+//
+//   three_qword_gain also covers ITOP 0x1508 (the sky's program). The AOT entry at 0x1508 reads the same three-qword
+//                     block at TOPS+0xC9..0xCB and computes clamp(q2 + q0*C, 0, q1) on the V4-8 colour at 0x80, exactly
+//                     the 0x14D8 formula; the sky's captured block is gain 1 / clamp 255,255,255,128 / bias 0, so the
+//                     emitted colour is the input colour with alpha clamped to 128. The full-corpus AOT fragment on the
+//                     captured sky items reproduces the tapped RGBAQ on 940/940 vertices exactly (oracle census).
+//
+//   morph_passthrough ITOP 0x00A0, the course's two-key morph pre-pass. The entry lerps two keyframe arrays with the
+//                     factor at TOPS+0xF2 lane 3 and hands the blended data to the shared output. The position keys are
+//                     bit-identical on every captured course item (230/230, five frames), so the geometry is
+//                     independent of the factor; the colour keys differ on 10/46 frame-0 items and the UV keys on all
+//                     of them. The factor is not captured, so the shape decoder uses the first key for those arrays and
+//                     counts the substitution; a differing position pair is refused. The program reads no light block.
+//
+//   body_prepass      ITOP 0x1278, the course's float/normal pre-pass. The entry converts the integer positions and the
+//                     V3-8 normals at TOPS+0x40 (times the microcode's 1/127) to floats and hands them to the body/paint
+//                     output routine at 0x12C8, which reads the same six-qword block at TOPS+0xC9..0xCE. The lighting
+//                     formula is therefore the body/paint formula, with the position being the full MODE 2 lane (the
+//                     value ITOF0 converts) rather than the raw 16-bit halfword. The AOT fragment reproduces the tapped
+//                     RGBAQ on 524/524 captured vertices exactly.
+//
 // Item-level fallbacks are explicit and counted, never guessed: an invalid run pair, an unmeasured selector, a missing
 // block (`light_source == none`), a block tracked after a chain discontinuity (`carried_uncertain`) and a block whose
 // qword count/command is not the form that program reads all reject the whole item and keep its base colour. A carried
@@ -126,8 +148,10 @@ enum class LightProgram : std::uint8_t {
   nine_qword_pow16,   // ITOP 0x03D8, nine-qword block, L2/L3 to the sixteenth power
   nine_qword_direct,  // ITOP 0x0418, nine-qword block, V3-32 positions and normals (no prologue)
   six_qword_no_colour,  // ITOP 0x0C68, six-qword block, Phong-style specular
-  three_qword_gain,   // ITOP 0x14D8, three-qword block, gain/clamp/bias on the V4-8 colour
+  three_qword_gain,   // ITOP 0x14D8 (and the sky's 0x1508), three-qword block, gain/clamp/bias on the V4-8 colour
   passthrough,        // ITOP 0x0080, no block: the V4-8 colour is emitted unchanged
+  morph_passthrough,  // ITOP 0x00A0, the two-key morph pre-pass; the post-morph (first-key) colour is emitted unchanged
+  body_prepass,       // ITOP 0x1278, the float/normal pre-pass into the body/paint output routine
   count,
 };
 inline constexpr std::uint32_t kLightProgramCount = static_cast<std::uint32_t>(LightProgram::count);
