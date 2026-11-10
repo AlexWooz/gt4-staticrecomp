@@ -5291,3 +5291,13 @@ The shipped path stays our MIT tools.
   label is the group name literal.
 - **Remaining:** Cross still stops at `0x0030B450` (root `RecRoot1` nil) - the Phase 14 `AppendItem`/`findPage` gate.
 - **No kit:** block renders, page does not open. Misc fallback (TASK-213) covers UX. Tests 846 OK (77 skipped).
+**Phase 18 (2026-11-10, AppendItem root guard).**
+- Implemented a 29-instruction guard at the start of `AppendItem` with jump relocation (+29): if `option.root` is nil,
+  set it from `context.getCursorProject().findPage(option.title)` (`cursor_project` as an attribute crashes at
+  `0x00307A54`; `getCursorProject` is a method).
+- **Result:** the run reaches the load pass and stops at `ra 0x003199D4` (frame 1743, classless element). Candidate
+  causes: incomplete jump relocation (`InsJumpIfNil`/logical-optional not shifted) or the cursor project not being set
+  at that point.
+- **Block still renders** (Phase 17); page does not open; no kit built.
+- **Next:** complete the relocation and gate the guard on `getCursorProject() != nil`; re-test.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.

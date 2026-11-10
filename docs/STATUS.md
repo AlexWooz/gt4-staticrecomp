@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-214 Phase 18: the AppendItem root guard, first attempt (2026-11-10)
+
+- Inserted a 29-instruction guard at the start of `AppendItem` (own frame, jump targets relocated by +29):
+  `if (option.root == nil) option.root = context.getCursorProject().findPage(option.title)`. The attribute form
+  `context.cursor_project` crashes at `0x00307A54`; `getCursorProject` is a method.
+- **Result:** the load pass stops at `ra 0x003199D4` (frame 1743, classless element). Candidates: incomplete jump
+  relocation (`InsJumpIfNil`/logical-optional not shifted) or the cursor project not set at that point.
+- **Block still renders** (Phase 17: "Recomp settings" at the bottom of Options); the page does not open; no kit built.
+- **Next:** complete the relocation, gate the guard on `getCursorProject() != nil`, re-test.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.
+
 ## TASK-214 Phase 17: the Recomp settings block renders at the bottom of Options (2026-11-10)
 
 - **Rule found:** `options` is created by `ARRAY_CONST_OLD 33` at `0x9A0C` *after* the last page. The group and page

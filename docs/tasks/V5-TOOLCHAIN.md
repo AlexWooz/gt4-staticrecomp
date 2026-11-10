@@ -984,3 +984,38 @@ bound (proved with `MiscRoot` in Phase 7).
 Smallest next step unchanged: resolve `option.root` at construction (`AppendItem(context, option, ...)`, which has a
 live `context`, via `context.cursor_project.findPage(option.title)`), either as a data insertion inside that function
 (with jump relocation) or as the native equivalent. No kit was built: the block renders, the page does not open yet.
+---
+
+# Phase 18 - the AppendItem root guard (2026-11-10)
+
+## 56. Implemented
+
+A guard was inserted at the start of `AppendItem` (its own frame, 29 instructions) and every jump target in that frame
+relocated by +29:
+
+```
+if (option.root == nil)
+    option.root = context.getCursorProject().findPage(option.title)
+item.defineStatic("page", option.root)
+```
+
+`context.cursor_project` (attribute form) crashes at `0x00307A54` - `getCursorProject` is a **method** in the registered
+list (`MRenderContext getCursorProject`), so the call is `context.getCursorProject()`.
+
+## 57. Result
+
+With the method form the run gets further but stops at the load pass again: `missing code at 0x00000000 (ra
+0x003199D4)` at frame 1743 (the classless-element pop), i.e. the guard changes `AppendItem`'s behaviour in a way the
+page list build does not accept. Two candidate causes, both untested:
+
+1. **Jump relocation incomplete.** Only `InsJump`, `InsJumpIfFalse`, `InsJumpIfTrue` and `InsLogicalBase` were shifted;
+   `InsJumpIfNil` and the logical-optional forms were not, so a branch inside `AppendItem` can land on the wrong
+   instruction.
+2. **`findPage` returns nil for the new title** and assigning nil back changes nothing, while the extra call itself
+   runs before the project's cursor is set at load.
+
+## 58. State
+
+The block renders (Phase 17). The page still does not open; no kit was built. The smallest next step is to complete
+the relocation (cover `InsJumpIfNil`/logical-optional) and only run the guard when the project is available (for
+example guard on `context.getCursorProject() != nil`), then re-test.
