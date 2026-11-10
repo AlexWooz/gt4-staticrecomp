@@ -1,5 +1,42 @@
 # Current Status
 
+## 2026-11-10: GS-stream S2, the PATH2 chain decoded; the wet-road composite explains 0 of the additive term (TASK-090, branch `task/090-gs-post-layer`)
+
+S2 of the GS-stream study is implemented and measured. `native/coregs3/coregs3_gsdecode.*` walks every `.gt4gs` record
+with the measured GIF semantics (PACKED, REGLIST, IMAGE split across capture records, A+D, the 12.4 screen wrap, sprite
+pairs) and classifies every packet or counts it with a named refusal; `gt4_coregs3_gs --census [--json]` prints the
+per-frame census, every full-screen batch and the recognised wet-road chain. The attribution is S1's phase relation:
+the stream stamped V belongs to scene frame V-1, so scene frame 0 (VBlank 7398) uses stream 7399.
+
+The chain is **PATH2, not PATH3**: seq 920 clears the frame alpha (FBP 210/FBW 10, FBMSK `0x00FFFFFF`, RGBA alpha 0);
+seq 934 is the colour composite (PRIM 0x15E sprite, TME+ABE, FRAME 210/10 CT32 FBMSK 0, TEX0 TBP0 **0x3140 (page 394)
+CT32 128x128 TCC 1 TFX 0**, TEX1 linear/linear, CLAMP region 0..127, ALPHA `0x58` `(Cs-0)*Ad+Cd`, TEST `0x3820C` ATE
+off/ZTST ALWAYS, ZBUF ZMSK 1, 20 strip sprites with RGBA (64,64,64,128)); seq 936/964 are full-screen `Cd*FIX/128`
+multiplies (FIX 127/255); seq 1094 presents page 210 into FBP 140 CT16. The composite samples the sphere-mapper source,
+not page 210; its pixels are the `.gt4vram` job record label 460559 (vblank 7399, windows `(0x3F80,64)+(0x3FC0,4)+
+(0x3140,256)`), captured before that job executes, and the frame-0 `.gt4scene` block is byte-identical to the
+pass-textures run (`0c139ab0a439f3bf...`).
+
+`coregs3_wet_composite.*` applies the captures to the world with the measured sampler, half-open sprites (a shared-edge
+double write was found and fixed) and the captured alpha clear before the first PassId 7 draw; `gt4_coregs3_render`
+gained `--gs`, `--no-wet-composite`, `--post-chain`, `--composite-world-alpha` and the composite masks. Measured at 3x:
+the reflection mask writes 188 fragments, **70 with non-zero alpha**; the composite covers 2,573,956 pixels with 0
+refusals and **changes 70 pixels**, all in the horizon band rows 151-154 / columns 1334-1368, **outside the compared
+clean mask**. Before and after are identical: **PSNR 22.3498, SSIM 0.65055, pct_bad 64.776%, mean |diff| 14.84, luma
+18.955, fit `0.6341*world + 14.668`** (page `0x36D0`: PSNR 25.169, luma 16.613, fit `0.2831*world + 19.307`). The
+additive gap is **7.733 luma** (7.397 on the road page); the composite explains **0.000%**. The A/B
+`--no-wet-composite` is byte-identical to the baseline (`AB769F0A92BA...`). The world-alpha diagnostic (skip the
+captured clear) changes 2.5M pixels and gives luma 144.98 / PSNR 6.45, inconsistent with the reference; the captured
+post multiplies give luma 34.62 / PSNR 20.40 / SSIM 0.6105 and overshoot. The residual therefore stays in the
+material/texture/lighting difference or in a post operation the stream does not carry at this scene (no tone/glare
+draw).
+
+Checks: CTest coregs3 **16/16** (new `native_coregs3_gsdecode` and `native_coregs3_wet_composite`), Python
+`test_coregs3_units.py` **14/14**, the car-only render **byte-identical** to the `aa5816ac` executable (PNG
+`B0E7082B...`, report `4F9F986A...`), and the 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686
+racing, 0 clock/digest/state differences, 13/13 frames). Method and limits: [COREGS3-HOOKS](COREGS3-HOOKS.md) §27;
+evidence `build/evidence-gs-post-layer/`.
+
 ## 2026-11-10: the 0x00A0 morph factor is captured and exact (TASK-090, branch `task/090-morph-v6`)
 
 The world-families round's open item is closed. The course morph pre-pass's blend factor (read by the VU1 at TOPS+0xF2

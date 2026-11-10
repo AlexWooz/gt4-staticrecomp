@@ -75,6 +75,10 @@ struct RenderOptions {
   // decoded texture alpha (0 in the CT32 palette) on items whose sampled colour the reference shows; this switch shows
   // what the pass draws without that state, and its use is counted in the report. It never runs in a normal render.
   bool world_ignore_alpha_test = false;
+  // TASK-090 S2: clear the framebuffer alpha to 0 immediately before the first reflection-pass (PassId 7) draw, which
+  // is the captured full-screen alpha clear of the wet-road chain (PATH2 seq 920). False keeps the world picture byte for
+  // byte; only the composite replay enables it.
+  bool clear_alpha_before_wet_reflection = false;
 };
 
 struct RenderStats {
@@ -168,6 +172,7 @@ struct RenderStats {
   std::uint64_t world_reflection_rgb_only = 0;    // fragments whose FRAME.FBMSK kept alpha and wrote RGB
   std::uint64_t world_reflection_depth_failed = 0;  // fragments the GEQUAL depth test rejected
   std::uint64_t world_reflection_sample_refused = 0;  // fragments whose texture sample was refused
+  std::uint64_t world_reflection_alpha_clear = 0;     // the captured alpha clear was applied before the pass (1)
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };
 

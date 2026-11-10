@@ -491,7 +491,8 @@ add_library(gt4_coregs3 STATIC
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
     coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp
     coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp
-    coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp coregs3/coregs3_gsstream_file.cpp)
+    coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp coregs3/coregs3_gsstream_file.cpp
+    coregs3/coregs3_gsdecode.cpp coregs3/coregs3_wet_composite.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
@@ -1153,6 +1154,20 @@ target_link_libraries(coregs3_gsstream_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_gsstream_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_gsstream COMMAND $<TARGET_FILE:coregs3_gsstream_fixture>
          "${CMAKE_CURRENT_BINARY_DIR}/coregs3_gsstream_work")
+# TASK-090 S2: the `.gt4gs` packet census (PACKED/REGLIST/IMAGE, A+D, sprite runs, the 12.4 screen map, the split
+# packet, the full-screen rule, the V -> V-1 attribution and the wet-composite signature recogniser). The writer source is
+# compiled in directly, as in the S1 fixture.
+add_executable(coregs3_gsdecode_fixture coregs3/coregs3_gsdecode_fixture.cpp coregs3/coregs3_gsstream.cpp)
+target_link_libraries(coregs3_gsdecode_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_gsdecode_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_gsdecode COMMAND $<TARGET_FILE:coregs3_gsdecode_fixture>
+         "${CMAKE_CURRENT_BINARY_DIR}/coregs3_gsdecode_work")
+# TASK-090 S2: the offline wet-road composite and post-multiply arithmetic on a hand-authored source, destination alpha
+# and sprite pair (MODULATE, Cs*Ad+Cd, As, half-open rectangles, the refusals).
+add_executable(coregs3_wet_composite_fixture coregs3/coregs3_wet_composite_fixture.cpp)
+target_link_libraries(coregs3_wet_composite_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_wet_composite_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_wet_composite COMMAND $<TARGET_FILE:coregs3_wet_composite_fixture>)
 # TASK-090 CoreGS 3.0: the native car-texture decoder (native/coregs3/coregs3_texture.cpp) needs the HWR memory, CLUT
 # and replacement libraries, so its fixture and offline tool exist only in a GT4_HW_GS build.
 if(GT4_HW_GS)
