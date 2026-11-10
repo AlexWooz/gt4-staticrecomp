@@ -98,7 +98,7 @@ The `[gs-ipc]` lines of the GSdx runs (our client's own numbers) show the transp
 
 | Candidate | Result | Kept |
 |---|---|---|
-| IN-540 depth-fill alias: the block of a pixel from the address tables, no vector per block, reserved output | `batch_own` 1.129 -> 0.883 ms (-22%), GS worker -0.18 at 3x, -0.33 on the license 1x; frames identical | **yes** |
+| IN-540 depth-fill alias: the block of a pixel from the address tables, no vector per block, reserved output | `batch_own` 1.129 -> 0.883 ms (-22%), GS worker -0.18 at 3x (wall 7.80 -> 7.64, 4+4), -0.33 on the license 1x; frames identical | **yes** |
 | IN-541 CLUT-load scope (skip a flush whose load cannot reach the batch's palette) | 54-72 loads (night) and 53-69 (license) per VBlank skipped, but the total batch count does not move: no gain | no (`GT4_CORE2_CLUT_SCOPE=1` only) |
 | IN-542 flush-reason split (rule 2 into test/scissor/xyoffset/scanmsk/dthe) and `clut_scope_avoided` | night 3x: test 19-21, scissor 0.9-1.1, xyoffset 0.0, scanmsk 4.7-7.9; license 1x: test 8.0, xyoffset 4.7-12.0 | diagnostics |
 | IN-543 Performance Mode without the self-copy from 8x | no self-copies in this scene at 12x (`self_copies=0`), GPU identical | no (reverted) |

@@ -3448,7 +3448,7 @@ the same day), 12x for the GPU stress, 3x/6x for the normal scene and identity. 
   do identical work): 11,500 VBlanks in 63.9 s against 70.2 s at 3x, 161.7 s against 182.4 s at 12x (CoreGS 2.0 9-11%
   faster wall on this machine and scene); only the game's lines were read.
 - IN-540 (kept): the aliased depth fill uses `BlockOfPixel` instead of `pixelSlot` per block and allocates no vector
-  per block: the batch stage 1.129 -> 0.883 ms/VBlank at 3x (-22%), GS worker 7.51 -> 7.33, wall 7.74 -> 7.61; 6x wall
+  per block: the batch stage 1.129 -> 0.883 ms/VBlank at 3x (-22%), GS worker 7.51 -> 7.33, wall 7.80 -> 7.64; 6x wall
   -0.19, frame p50 -0.23; license 1x GS worker 9.03 -> 8.71. Frames identical (3x 9/9, 12x 4/4, Arcade 14/14),
   `depth_into_colour` counters equal, fixture 306/306.
 - IN-541 (measured, left off, `GT4_CORE2_CLUT_SCOPE=1`): a CLUT load keeps a pending indexed batch when it writes no

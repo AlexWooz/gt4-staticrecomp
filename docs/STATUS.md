@@ -12,7 +12,7 @@ box on the same recording: CoreGS 2.0 is 9% faster wall at 3x (63.9 s against 70
 
 **Kept, IN-540:** the aliased depth fill (`DepthBlocksInColour`) takes the block from the address tables instead of a
 `pixelSlot` per block and allocates no vector per block: the batch stage 1.129 -> 0.883 ms/VBlank at 3x (-22%), GS worker
-7.51 -> 7.33, wall 7.74 -> 7.61; 6x frame p50 -0.23; license 1x GS worker 9.03 -> 8.71. Frames identical (night 3x 9/9,
+7.51 -> 7.33, wall 7.80 -> 7.64; 6x frame p50 -0.23; license 1x GS worker 9.03 -> 8.71. Frames identical (night 3x 9/9,
 12x 4/4, Arcade 14/14), the aliased-depth counters equal, fixture 306/306.
 
 **Measured and left out:** the CLUT-load scope (IN-541: exact, 62-72 of 283 flushes skipped, but the batch count does not
