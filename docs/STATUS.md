@@ -1,5 +1,41 @@
 # Current Status
 
+## 2026-11-10: body/paint environment-map reflection in the offline renderer (TASK-090)
+
+The offline reference renderer now draws the car body/paint reflection pass. Every body/paint item (80 of the frame's
+335 items, 27 draws) is bound as its measured second pass instead of the opaque lit colour: the CT32 environment map
+(the item's own 40-byte record, TBP0 0x2BC0, 256x256, decoded from 7398-7403 sidecar and sampled at the frame's map
+record) is sampled at the pinned texgen S,T, which `coregs3_reflection` computes in float32 from the item's six-qword
+block and the mesh vertex's raw V3-16 position and V3-8 normal. The pass applies the tapped PRIM 0x7C state: the
+destination alpha test (TEST.DATE/DATM against the alpha the base draws wrote), the additive ALPHA equation
+`(Cs-0)*Ad+Cd`, the GS fog toward FOGCOL black with the tapped per-vertex fog, ZBUF Z24 with no depth write, ZTST
+GEQUAL and FBMSK. The base draws of the reflection are separate captured items of the nine-qword/three-qword families
+sharing the geometry (27 body draws pair with the preceding base draws; the reflection reads the real framebuffer
+alpha, and a DATE test on a pixel no captured draw wrote is counted as the missing-alpha fallback).
+
+The PRIM.ABE bit was corrected in the sampler: it is bit 6 (`hw_gs` `primbit::kAbe`), not bit 0. Every measured car
+PRIM is even (base 0x3C, reflection 0x7C), so the earlier reading was invisible until the additive reflection needed
+the difference; the correction also makes the five items whose ALPHA equation is outside the measured normal/additive
+pairs explicit counted refusals instead of silently unblended. The measured default state is now PRIM 0x3C (the base
+draw) rather than 0x7C.
+
+Frame 0 (night race, capture VBlank 7398, 3x, sidecar record 7402 = the frame's map, reference at presented VBlank
+7400): 80 items reflected, **0 refused** (0 PSM/TFX/filter/mip/alpha-fail/blend/depth, 0 missing ST block, 0 missing
+tapped state, 0 missing fog), 20,394 reflection fragments written, 9,013 masked by DATE, 9,884 by the GEQUAL depth
+test, 108 DATE tests on the uncaptured background alpha (the only alpha-mask fallback). Metrics against the CoreGS 2.0
+reference: inside the 18,392-pixel reflection mask PSNR 18.115 -> 17.906 dB, SSIM 0.2504 -> 0.2611, pct_bad 90.724 ->
+72.053%; inside the near-car box (133,650 px) PSNR 24.218 -> 24.572 dB, SSIM 0.6113 -> 0.6235, pct_bad 61.656 ->
+57.909%, luma ratio 1.0894 -> 0.9908; the whole car-pass coverage mask improves SSIM 0.2369 -> 0.2838 and pct_bad
+73.418 -> 58.867%. The reflection is visible on the paint (the before/after crops show the environment added over the
+base). New `native_coregs3_reflection` fixture pins the formula against the real AOT fragment's output on hand-authored
+inputs, the formula/binding refusals, the fog mix and a two-draw render integration (DATE, additive blend, ZBUF no
+write, FBMSK). CTest coregs3 9/9, Python `test_coregs3_units.py` 7/7 (full suite 809 OK, 63 skipped), the 3x
+off/shadow identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13
+frames identical for off and shadow, capture 4,451,628 B), full build. Evidence: `build/evidence/coregs3-refl/` (`offline-reflected-frame0.png`, the `--no-reflection` A/B, the
+reflection/coverage masks, `metrics.txt`, the tool reports, the capture and sidecar). New deviation from reference:
+the base paints now show through the additive pass and are darker than the reference (no base-pass fog/lighting yet),
+which is the next fidelity item after the reflection.
+
 ## 2026-11-10: body/paint texgen and reflection study: the formula is pinned
 
 A read-only study executed the real AOT 0x10A0 body fragment on captured body vertices (v4 capture frames 7398/7399,

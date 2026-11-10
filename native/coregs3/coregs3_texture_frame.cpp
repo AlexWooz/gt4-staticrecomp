@@ -32,6 +32,9 @@ struct TapStream {
   std::uint32_t tbp0 = 0;
   std::uint32_t psm = 0;
   SampleState state;
+  // The per-vertex fog values of the tapped record (0..255), one per vertex, in emission order. Empty when no vertex
+  // of the record carried a fog value; the reflection pass then draws with fog 255 (no fog) and counts the fallback.
+  std::vector<std::uint8_t> fog;
 };
 
 std::uint32_t bits(std::uint64_t value, unsigned low, unsigned high) {
@@ -67,6 +70,9 @@ void apply_register(TrackedState &tracked, const GifRegisterWrite &write, Textur
     case 0x4Fu:  // ZBUF_2
       tracked.state.zmsk = zbuf_zmsk(write.data);
       tracked.state.zbuf_known = true;
+      break;
+    case 0x3Du:  // FOGCOL
+      tracked.state.fog_colour = static_cast<std::uint32_t>(write.data & 0xFFFFFFu);
       break;
     default: break;
   }
@@ -121,9 +127,22 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           stream.psm = tracked.psm;
           stream.state = tracked.state;
           stream.state.from_tap = true;
+          // The record's per-vertex fog (the GS fog lane of XYZF2). A record whose vertices carry no fog keeps an empty
+          // vector so the renderer can count the fallback instead of inventing values.
+          bool any_fog = false;
+          stream.fog.reserve(packet.vertices.size());
+          for (const GifVertex &vertex : packet.vertices) {
+            if (vertex.has_fog) any_fog = true;
+            stream.fog.push_back(vertex.has_fog ? vertex.fog : 255u);
+          }
+          if (!any_fog) {
+            stream.fog.clear();
+            counters.reflection_fog_missing += 1;
+          }
           if (!stream.state.prim_known) {
-            // PRIM is a GIF register write, not an A+D one: the parser carries it on every vertex.
-            stream.state.prim = packet.vertices.front().prim;
+            // PRIM is a GIFtag field as well as a register write: the GS applies the tag's PRIM for the transfer, and
+            // the car pass sets PRIM only through the tag (no PRIM register write appears in the captured stream).
+            stream.state.prim = !packet.tags.empty() ? packet.tags.front().prim : packet.vertices.front().prim;
             stream.state.prim_known = true;
           }
           streams.push_back(stream);
@@ -222,6 +241,8 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
       counters.items_visited += 1;
 
       // The item's tapped state, when the tap paired it. The pairing advances across the item list in order.
+      std::size_t chosen = 0;
+      bool matched = false;
       if (!streams.empty() && item.packet_bytes != 0 && counts[draw_index][index] != 0) {
         const bool has_record = item.texture_record != kNoRecord && item.texture_record < frame.textures.size();
         std::uint32_t item_tbp0 = 0;
@@ -231,8 +252,6 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           item_tbp0 = bits(tex0, 0, 13);
           item_psm = bits(tex0, 20, 25);
         }
-        std::size_t chosen = 0;
-        bool matched = false;
         std::uint32_t candidates = 0;
         for (std::size_t stream = cursor; stream < streams.size(); ++stream) {
           if (streams[stream].vertices != counts[draw_index][index]) continue;
@@ -265,9 +284,32 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
         continue;
       }
       const LightProgram program = light_program_of_item(item);
-      if (program == LightProgram::body_paint && !options.texture_body) {
-        // The body/paint family samples its CT32 environment map with VU1 texgen ST, not the model UV: this milestone
-        // keeps it on the lit colour and records the deferral instead of sampling the wrong coordinate.
+      if (program == LightProgram::body_paint && options.reflections) {
+        // The reflection milestone: the item's second pass samples its CT32 environment map with the pinned texgen S,T
+        // (computed by the renderer from the item's block and the mesh vertex). The TEX1/CLAMP state is the item's own
+        // 40-byte record (linear/linear, region clamp); TEST/ALPHA/FRAME/ZBUF/FOGCOL and the per-vertex fog are the
+        // tapped PRIM 0x7C record. Without a usable tapped record the item keeps the lit colour and is counted.
+        const bool usable_state = matched && streams[chosen].vertices == counts[draw_index][index];
+        if (!usable_state) {
+          counters.items_reflection_no_state += 1;
+          counters.items_untextured += 1;
+          continue;
+        }
+        const SampledTexture *sampler = decode_record(item.texture_record, frame.textures[item.texture_record]);
+        if (sampler == nullptr) {
+          counters.items_decode_refused += 1;
+          counters.items_untextured += 1;
+          continue;
+        }
+        binding.texture = sampler;
+        binding.reflection = true;
+        binding.vertex_fog = streams[chosen].fog;
+        counters.items_reflected += 1;
+        continue;
+      }
+      if (program == LightProgram::body_paint) {
+        // Pre-reflection mode: the body/paint family samples its environment map with VU1 texgen ST, not the model UV.
+        // It keeps the lit colour and records the deferral instead of sampling the wrong coordinate.
         counters.items_texgen_deferred += 1;
         counters.items_untextured += 1;
         continue;

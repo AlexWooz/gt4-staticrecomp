@@ -2,6 +2,7 @@
 #include "coregs3_render.hpp"
 
 #include "coregs3_lighting.hpp"
+#include "coregs3_reflection.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,11 +13,23 @@
 namespace gt4::coregs3 {
 namespace {
 
+// The GEQUAL depth window of the reflection pass. The base and reflection draws of one car part are two captured
+// shape calls; their float projections agree to a few 1e-4 relative units where the GS's 24-bit Z is identical, so an
+// exact float compare could reject a fragment the GS accepts. The relative window is ~30 GS Z LSBs at the measured
+// depth and far below the car's own depth separation.
+constexpr float kReflectionDepthTolerance = 1.0e-3f;
+
 struct ClipVertex {
   float x = 0, y = 0, w = 0;  // screen position and view depth (1/w is the perspective weight)
   float r = 1, g = 1, b = 1, a = 1;
   float u = 0, v = 0;   // model UV (perspective-correct interpolation; the VU1's Q cancels in S/Q)
   bool has_uv = false;
+  // The reflection pass's per-vertex attributes: the pinned texgen S,T (perspective-correct, like the model UV) and
+  // the tapped vertex fog (interpolated linearly, like the Gouraud colours). `has_reflection` is true when the renderer
+  // computed a coordinate for this vertex.
+  float rs = 0, rt = 0;
+  float fog = 255.0f;
+  bool has_reflection = false;
   bool valid = false;
 };
 
@@ -225,6 +238,141 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
   if (drew) stats.triangles_drawn += 1;
 }
 
+// One fragment of the measured body/paint reflection pass (round 20). It is deliberately a separate function from
+// rasterise_triangle: the pre-reflection picture keeps its exact arithmetic, and this pass carries the state the tap
+// measured for the PRIM 0x7C draw:
+//   * the environment map sampled at the pinned texgen S,T (perspective-correct, like the model UV) and MODULATE'd with
+//     the lit vertex colour (the round-18 lighting output);
+//   * the GS fog toward FOGCOL (black in the measured pass) with the tapped per-vertex fog;
+//   * the alpha test (ATE/ATST/AREF, AFAIL KEEP) before the destination alpha test (TEST.DATE/DATM against the
+//     framebuffer alpha the base draws wrote), then the GEQUAL depth test, exactly the GS pixel order;
+//   * the additive ALPHA equation `(Cs-0)*Ad+Cd` (COLCLAMP = 1), FBMSK, and ZBUF.ZMSK (the measured pass writes no
+//     depth); the fragment alpha As is what the pass writes to the alpha lane.
+void rasterise_reflection_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVertex &c,
+                                   const RenderOptions &options, const TextureBinding &binding,
+                                   std::vector<std::uint8_t> &rgba, std::vector<std::uint8_t> &mask,
+                                   std::vector<float> &depth, RenderStats &stats,
+                                   std::vector<std::uint8_t> *reflection_mask) {
+  const std::uint32_t width = options.width, height = options.height;
+  const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  if (area == 0.0f) return;
+  const int last_x = static_cast<int>(width) - 1;
+  const int last_y = static_cast<int>(height) - 1;
+  const int min_x = pixel_low(std::min({a.x, b.x, c.x}), last_x);
+  const int max_x = pixel_high(std::max({a.x, b.x, c.x}), last_x);
+  const int min_y = pixel_low(std::min({a.y, b.y, c.y}), last_y);
+  const int max_y = pixel_high(std::max({a.y, b.y, c.y}), last_y);
+  if (min_x > max_x || min_y > max_y) {
+    stats.triangles_clipped += 1;
+    return;
+  }
+  const SampleState &state = binding.state;
+  const bool date_enabled = (state.test & (1ull << 14)) != 0;
+  const bool date_expected = (state.test & (1ull << 15)) != 0;
+  const bool can_sample = binding.texture != nullptr && a.has_reflection && b.has_reflection && c.has_reflection;
+  const float inv_area = 1.0f / area;
+  bool drew = false;
+  for (int y = min_y; y <= max_y; ++y) {
+    for (int x = min_x; x <= max_x; ++x) {
+      const float px = static_cast<float>(x) + 0.5f;
+      const float py = static_cast<float>(y) + 0.5f;
+      const float w0 = ((b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x)) * inv_area;
+      const float w1 = ((c.x - b.x) * (py - b.y) - (c.y - b.y) * (px - b.x)) * inv_area;
+      const float w2 = ((a.x - c.x) * (py - c.y) - (a.y - c.y) * (px - c.x)) * inv_area;
+      if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
+      const float alpha = w1, beta = w2, gamma = w0;
+      const std::size_t pixel = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);
+      const float inv_w = alpha / a.w + beta / b.w + gamma / c.w;
+      if (!(inv_w > 0.0f)) continue;
+      const float depth_value = 1.0f / inv_w;
+      // The lit vertex colour is MODULATE's C (the round-18 lighting output, the measured reflection's RGBAQ input).
+      const float red = alpha * a.r + beta * b.r + gamma * c.r;
+      const float green = alpha * a.g + beta * b.g + gamma * c.g;
+      const float blue = alpha * a.b + beta * b.b + gamma * c.b;
+      const float vertex_alpha = alpha * a.a + beta * b.a + gamma * c.a;
+      const std::array<std::uint8_t, 4> fragment{clamp_level(red), clamp_level(green), clamp_level(blue),
+                                                 clamp_level(vertex_alpha)};
+      if (!can_sample) {
+        // A vertex with no coordinate: the pass writes nothing here, and the item is counted as a refusal by the
+        // caller before it reaches this function.
+        stats.reflection_sample_refused += 1;
+        continue;
+      }
+      const float s = (alpha * a.rs / a.w + beta * b.rs / b.w + gamma * c.rs / c.w) / inv_w;
+      const float t = (alpha * a.rt / a.w + beta * b.rt / b.w + gamma * c.rt / c.w) / inv_w;
+      std::array<std::uint8_t, 4> sampled;
+      if (sample_texture(*binding.texture, s, t, fragment, sampled) != SampleStatus::ok) {
+        stats.reflection_sample_refused += 1;
+        continue;
+      }
+      // Fog: the tapped per-vertex value, interpolated like the Gouraud colours, mixed toward FOGCOL (black measured).
+      const float fog = alpha * a.fog + beta * b.fog + gamma * c.fog;
+      const std::uint32_t fog_level =
+          fog <= 0.0f ? 0u : fog >= 255.0f ? 255u : static_cast<std::uint32_t>(fog + 0.5f);
+      if (!binding.vertex_fog.empty()) {
+        sampled = apply_vertex_fog(sampled, fog_level, state.fog_colour);
+      } else {
+        // No tapped fog for this item: the measured pass's FOGCOL black with fog 255 is the identity, so the colour is
+        // kept and the fallback is counted.
+        stats.reflection_fog_missing += 1;
+      }
+      // Alpha test before the destination alpha test, exactly the GS pixel order; AFAIL KEEP writes nothing.
+      const AlphaTestResult test = alpha_test_ignore_date(state.test, sampled[3]);
+      if (test == AlphaTestResult::fail) {
+        stats.reflection_alpha_failed += 1;
+        continue;
+      }
+      if (test != AlphaTestResult::pass) {
+        stats.reflection_sample_refused += 1;
+        continue;
+      }
+      // Destination alpha test: DATM selects the MSB the framebuffer must carry. A failure writes neither colour nor
+      // depth (the GS intersects the write enables). A pixel no captured draw has written carries the offline
+      // background's alpha where the real frame carries the track pass: that is counted, never silently assumed.
+      if (date_enabled) {
+        if (mask[pixel] == 0) stats.reflection_alpha_missing += 1;
+        const bool msb = (rgba[pixel * 4 + 3] & 0x80u) != 0;
+        if (msb != date_expected) {
+          stats.reflection_date_failed += 1;
+          continue;
+        }
+      }
+      // ZTST GEQUAL against the reversed Z: nearer or equal wins. The reflection is the same surface the base draw
+      // wrote, so the float projections can differ by a few 1e-4 relative units; the GS's 24-bit Z is identical there.
+      if (options.depth_test && !(depth_value <= depth[pixel] * (1.0f + kReflectionDepthTolerance))) {
+        stats.reflection_depth_failed += 1;
+        continue;
+      }
+      std::array<std::uint8_t, 4> result = sampled;
+      const BlendFamily family = blend_family(state.alpha);
+      if (prim_blend_enabled(state.prim) && family == BlendFamily::additive) {
+        const std::array<std::uint8_t, 4> destination{rgba[pixel * 4 + 0], rgba[pixel * 4 + 1],
+                                                      rgba[pixel * 4 + 2], rgba[pixel * 4 + 3]};
+        blend_fragment(decode_blend_equation(state.alpha), sampled, destination, result);
+        stats.reflection_blended_pixels += 1;
+      }
+      if (state.fbmsk != 0) {
+        for (std::uint32_t lane = 0; lane < 4; ++lane) {
+          const std::uint32_t keep = (state.fbmsk >> (8u * lane)) & 0xFFu;
+          result[lane] = static_cast<std::uint8_t>((rgba[pixel * 4 + lane] & keep) | (result[lane] & ~keep));
+        }
+        stats.reflection_fbmsk_pixels += 1;
+      }
+      for (std::uint32_t lane = 0; lane < 4; ++lane) rgba[pixel * 4 + lane] = result[lane];
+      if (state.zmsk != 0) {
+        stats.reflection_depth_masked_pixels += 1;
+      } else {
+        depth[pixel] = depth_value;
+      }
+      mask[pixel] = 1;
+      if (reflection_mask != nullptr) (*reflection_mask)[pixel] = 1;
+      stats.reflection_pixels += 1;
+      drew = true;
+    }
+  }
+  if (drew) stats.triangles_drawn += 1;
+}
+
 // Computes the flat-shading colour of one triangle from its model-space face normal and the draw's linear part. The
 // matrix is the row-major form of the uploaded 0xC1 block; its linear rows differ from a metre transform's by one
 // positive (or negative) uniform scale, which the normalisation below removes, so this is the same normal rotation as
@@ -295,6 +443,9 @@ struct ClipVertexIn {
   float r = 1, g = 1, b = 1, a = 1;
   float u = 0, v = 0;
   bool has_uv = false;
+  float rs = 0, rt = 0;  // reflection texgen S,T (perspective attribute, interpolated like the model UV)
+  float fog = 255.0f;    // reflection vertex fog (linear, like the Gouraud colours)
+  bool has_reflection = false;
 };
 
 // Cuts a triangle against clip.w >= kMinClipW (Sutherland-Hodgman on one plane). Returns 3 or 4 vertices, or 0 when
@@ -323,6 +474,10 @@ std::size_t clip_near_plane(const ClipVertexIn in[3], ClipVertexIn out[4]) noexc
       cut.u = current.u + (next.u - current.u) * t;
       cut.v = current.v + (next.v - current.v) * t;
       cut.has_uv = current.has_uv && next.has_uv;
+      cut.rs = current.rs + (next.rs - current.rs) * t;
+      cut.rt = current.rt + (next.rt - current.rt) * t;
+      cut.fog = current.fog + (next.fog - current.fog) * t;
+      cut.has_reflection = current.has_reflection && next.has_reflection;
       out[count++] = cut;
     }
   }
@@ -366,12 +521,23 @@ void apply_lighting(const CapturedDraw &draw, Mesh &mesh, const RenderOptions &o
   stats.vertices_fallback += static_cast<std::uint32_t>(counters.vertices_fallback);
 }
 
+// The per-vertex inputs of the reflection pass, computed once per mesh before rasterising: the pinned texgen S,T (the
+// MeshVertex position and normal through the item's own block) and the tapped vertex fog (indexed by the vertex's
+// position inside its item).
+struct ReflectionVertex {
+  float s = 0.0f;
+  float t = 0.0f;
+  float fog = 255.0f;
+  bool valid = false;
+};
+
 // The screen path: the measured VU1 transform (coregs3_vertex.hpp) followed by clip-space rejection and near-plane
 // clipping. No 12.4 wrapped coordinate exists anywhere in this path, so the rasteriser can only see a true projection.
-void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &options,
-                          const std::vector<TextureBinding> *bindings, std::vector<std::uint8_t> &rgba,
+void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const DrawMatrix &matrix,
+                          const RenderOptions &options, const std::vector<TextureBinding> *bindings,
+                          const std::vector<std::uint8_t> *reflection_items, std::vector<std::uint8_t> &rgba,
                           std::vector<std::uint8_t> &mask, std::vector<float> &depth, RenderStats &stats,
-                          std::vector<std::uint8_t> *textured_mask) {
+                          std::vector<std::uint8_t> *textured_mask, std::vector<std::uint8_t> *reflection_mask) {
   const float width = static_cast<float>(options.width);
   const float height = static_cast<float>(options.height);
   std::vector<ProjectionResult> projected(mesh.vertices.size());
@@ -407,6 +573,47 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
     }
     draw_points(mesh, points, options, rgba, mask, depth, stats);
     return;
+  }
+
+  // The reflection pass's per-vertex data: the pinned texgen S,T and the tapped fog. An item is reflected only when
+  // every one of its mesh vertices has a coordinate; a vertex outside the measured block/input form falls the whole
+  // item back to the lit colour and is counted once (never a per-pixel silent default).
+  std::vector<ReflectionVertex> reflection(mesh.vertices.size());
+  std::vector<std::uint8_t> reflected;
+  std::vector<std::uint32_t> first_vertex(draw.item_count, 0xFFFFFFFFu);
+  if (options.reflections && reflection_items != nullptr && bindings != nullptr) {
+    reflected = *reflection_items;
+    for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+      const std::uint32_t item = mesh.vertices[index].item;
+      if (item < first_vertex.size() && first_vertex[item] == 0xFFFFFFFFu)
+        first_vertex[item] = static_cast<std::uint32_t>(index);
+    }
+    for (std::uint32_t item = 0; item < reflected.size(); ++item) {
+      if (reflected[item] == 0) continue;
+      bool item_ok = true;
+      for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+        const MeshVertex &vertex = mesh.vertices[index];
+        if (vertex.item != item) continue;
+        ReflectionCoordinate coordinate;
+        if (reflection_st(item < draw.item_count ? draw.items[item] : CapturedItem{}, vertex, coordinate) !=
+            ReflectionStatus::ok) {
+          item_ok = false;
+          stats.reflection_refused_st += 1;
+          break;
+        }
+        ReflectionVertex &data = reflection[index];
+        data.s = coordinate.s;
+        data.t = coordinate.t;
+        data.valid = true;
+        const std::vector<std::uint8_t> &fog = (*bindings)[item].vertex_fog;
+        const std::uint32_t local = static_cast<std::uint32_t>(index) - first_vertex[item];
+        if (local < fog.size()) data.fog = static_cast<float>(fog[local]);
+      }
+      if (!item_ok) {
+        reflected[item] = 0;
+        stats.items_reflection_refused += 1;
+      }
+    }
   }
 
   for (std::size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
@@ -454,6 +661,25 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
     input[2].u = vc.uv[0];
     input[2].v = vc.uv[1];
     input[2].has_uv = vc.has_uv;
+    // The triangle's item decides whether this is the reflection pass; a mesh never mixes items inside a triangle.
+    const std::uint32_t item = va.item;
+    const bool reflection_pass =
+        reflected.size() > item && reflected[item] != 0 && reflection[ia].valid && reflection[ib].valid &&
+        reflection[ic].valid;
+    if (reflection_pass) {
+      input[0].rs = reflection[ia].s;
+      input[0].rt = reflection[ia].t;
+      input[0].fog = reflection[ia].fog;
+      input[0].has_reflection = true;
+      input[1].rs = reflection[ib].s;
+      input[1].rt = reflection[ib].t;
+      input[1].fog = reflection[ib].fog;
+      input[1].has_reflection = true;
+      input[2].rs = reflection[ic].s;
+      input[2].rt = reflection[ic].t;
+      input[2].fog = reflection[ic].fog;
+      input[2].has_reflection = true;
+    }
     ClipVertexIn polygon[4];
     const std::size_t count = clip_near_plane(input, polygon);
     if (count < 3) {
@@ -479,6 +705,10 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
       screen[corner].u = polygon[corner].u;
       screen[corner].v = polygon[corner].v;
       screen[corner].has_uv = polygon[corner].has_uv;
+      screen[corner].rs = polygon[corner].rs;
+      screen[corner].rt = polygon[corner].rt;
+      screen[corner].fog = polygon[corner].fog;
+      screen[corner].has_reflection = polygon[corner].has_reflection;
       screen[corner].valid = true;
     }
     if (!projectable) {
@@ -494,9 +724,14 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
       const std::uint32_t item = mesh.vertices[ia].item;
       if (item < bindings->size()) binding = &(*bindings)[item];
     }
-    for (std::size_t corner = 1; corner + 1 < count; ++corner)
-      rasterise_triangle(screen[0], screen[corner], screen[corner + 1], options, red, green, blue, binding, rgba, mask,
-                         depth, stats, textured_mask);
+    for (std::size_t corner = 1; corner + 1 < count; ++corner) {
+      if (reflection_pass && binding != nullptr)
+        rasterise_reflection_triangle(screen[0], screen[corner], screen[corner + 1], options, *binding, rgba, mask,
+                                      depth, stats, reflection_mask);
+      else
+        rasterise_triangle(screen[0], screen[corner], screen[corner + 1], options, red, green, blue, binding, rgba,
+                           mask, depth, stats, textured_mask);
+    }
   }
 }
 
@@ -530,13 +765,14 @@ DrawMatrix draw_matrix(const CapturedDraw &draw) {
 
 bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std::vector<std::uint8_t> &rgba,
                   std::vector<std::uint8_t> &mask, RenderStats &stats, std::string &error,
-                  std::vector<std::uint8_t> *textured_mask) {
+                  std::vector<std::uint8_t> *textured_mask, std::vector<std::uint8_t> *reflection_mask) {
   (void)error;
   const std::uint32_t width = options.width, height = options.height;
   if (width == 0 || height == 0) return false;
   rgba.assign(static_cast<std::size_t>(width) * height * 4u, 0);
   mask.assign(static_cast<std::size_t>(width) * height, 0);
   if (textured_mask != nullptr) textured_mask->assign(static_cast<std::size_t>(width) * height, 0);
+  if (reflection_mask != nullptr) reflection_mask->assign(static_cast<std::size_t>(width) * height, 0);
   for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index) {
     rgba[index * 4 + 0] = options.background[0];
     rgba[index * 4 + 1] = options.background[1];
@@ -635,16 +871,69 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
     // Resolve and statically validate the draw's texture bindings. A binding outside the measured subset keeps the lit
     // colour and is counted; the rasteriser only sees a binding whose texture it may sample.
     std::vector<TextureBinding> usable;
+    std::vector<std::uint8_t> reflection_items;
     const std::vector<TextureBinding> *bindings = nullptr;
     if (options.textures != nullptr) {
       const std::vector<TextureBinding> *source = options.textures->for_draw(draw.sequence);
       if (source != nullptr) {
         usable = *source;
+        reflection_items.assign(draw.item_count, 0u);
         std::vector<bool> present(draw.item_count, false);
         for (const MeshVertex &vertex : mesh.vertices)
           if (vertex.item < present.size()) present[vertex.item] = true;
         for (std::uint32_t item = 0; item < usable.size(); ++item) {
           if (!present[item]) continue;
+          // The body/paint reflection pass carries its own measured subset (coregs3_reflection.hpp): the destination
+          // alpha test and the additive equation are implemented there, so it is validated separately and never by
+          // check_binding (which refuses DATE).
+          if (options.reflections && usable[item].reflection) {
+            switch (check_reflection_binding(usable[item])) {
+              case ReflectionBindingStatus::ok:
+                reflection_items[item] = 1;
+                stats.items_reflected += 1;
+                break;
+              case ReflectionBindingStatus::no_texture:
+                stats.items_reflection_untextured += 1;
+                stats.items_untextured += 1;
+                break;
+              case ReflectionBindingStatus::refused_psm:
+                stats.reflection_refused_psm += 1;
+                stats.items_reflection_refused += 1;
+                stats.items_untextured += 1;
+                break;
+              case ReflectionBindingStatus::refused_tfx:
+                stats.reflection_refused_tfx += 1;
+                stats.items_reflection_refused += 1;
+                stats.items_untextured += 1;
+                break;
+              case ReflectionBindingStatus::refused_filter:
+                stats.reflection_refused_filter += 1;
+                stats.items_reflection_refused += 1;
+                stats.items_untextured += 1;
+                break;
+              case ReflectionBindingStatus::refused_mip:
+                stats.reflection_refused_mip += 1;
+                stats.items_reflection_refused += 1;
+                stats.items_untextured += 1;
+                break;
+              case ReflectionBindingStatus::refused_alpha_fail:
+                stats.reflection_refused_alpha_fail += 1;
+                stats.items_reflection_refused += 1;
+                stats.items_untextured += 1;
+                break;
+              case ReflectionBindingStatus::refused_blend:
+                stats.reflection_refused_blend += 1;
+                stats.items_reflection_refused += 1;
+                stats.items_untextured += 1;
+                break;
+              case ReflectionBindingStatus::refused_depth:
+                stats.reflection_refused_depth += 1;
+                stats.items_reflection_refused += 1;
+                stats.items_untextured += 1;
+                break;
+            }
+            continue;
+          }
           switch (check_binding(usable[item])) {
             case BindingStatus::ok: stats.items_textured += 1; break;
             case BindingStatus::no_texture: stats.items_untextured += 1; break;
@@ -688,7 +977,8 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
         bindings = &usable;
       }
     }
-    rasterise_clip_space(mesh, matrix, options, bindings, rgba, mask, depth, stats, textured_mask);
+    rasterise_clip_space(mesh, draw, matrix, options, bindings, reflection_items.empty() ? nullptr : &reflection_items,
+                         rgba, mask, depth, stats, textured_mask, reflection_mask);
   }
   for (std::uint8_t value : mask) stats.covered_pixels += value != 0 ? 1u : 0u;
   return true;

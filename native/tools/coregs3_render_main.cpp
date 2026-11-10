@@ -254,6 +254,9 @@ int main(int argc, char **argv) {
   const char *coverage_mask_path = nullptr;
   bool no_textured = false;
   bool texture_body = false;
+  bool no_reflection = false;
+  int vram_vblank = -1;
+  const char *reflection_mask_path = nullptr;
   RenderOptions options;
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -262,11 +265,14 @@ int main(int argc, char **argv) {
     else if (argument == "--ndc") ndc = true;
     else if (argument == "--no-programs") no_programs = true;
     else if (argument == "--vram" && index + 1 < argc) vram_path = argv[++index];
+    else if (argument == "--vram-vblank" && index + 1 < argc) vram_vblank = std::atoi(argv[++index]);
     else if (argument == "--tap" && index + 1 < argc) tap_path = argv[++index];
     else if (argument == "--texture-mask" && index + 1 < argc) texture_mask_path = argv[++index];
+    else if (argument == "--reflection-mask" && index + 1 < argc) reflection_mask_path = argv[++index];
     else if (argument == "--mask" && index + 1 < argc) coverage_mask_path = argv[++index];
     else if (argument == "--no-textured") no_textured = true;
     else if (argument == "--texture-body") texture_body = true;
+    else if (argument == "--no-reflection") no_reflection = true;
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
     else if (argument == "--report" && index + 1 < argc) report = argv[++index];
@@ -462,16 +468,28 @@ int main(int argc, char **argv) {
       return 1;
     }
     const VramRecord *vram_record = nullptr;
-    for (const VramRecord &candidate : vram_records)
-      if (candidate.vblank == selected.vblank + 1u) {
-        vram_record = &candidate;
-        break;
+    if (vram_vblank >= 0) {
+      for (const VramRecord &candidate : vram_records)
+        if (candidate.vblank == static_cast<std::uint64_t>(vram_vblank)) {
+          vram_record = &candidate;
+          break;
+        }
+      if (vram_record == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: no VRAM record at VBlank %d\n", vram_vblank);
+        return 1;
       }
-    if (vram_record == nullptr) {
-      std::fprintf(stderr, "gt4_coregs3_render: no VRAM record at VBlank %llu for frame vblank %llu\n",
-                   static_cast<unsigned long long>(selected.vblank + 1u),
-                   static_cast<unsigned long long>(selected.vblank));
-      return 1;
+    } else {
+      for (const VramRecord &candidate : vram_records)
+        if (candidate.vblank == selected.vblank + 1u) {
+          vram_record = &candidate;
+          break;
+        }
+      if (vram_record == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: no VRAM record at VBlank %llu for frame vblank %llu\n",
+                     static_cast<unsigned long long>(selected.vblank + 1u),
+                     static_cast<unsigned long long>(selected.vblank));
+        return 1;
+      }
     }
     SlmImage slm;
     if (!build_slm_image(*vram_record, slm, error)) {
@@ -487,12 +505,14 @@ int main(int argc, char **argv) {
     TextureFrameOptions texture_options;
     texture_options.use_tap = tap_path != nullptr;
     texture_options.texture_body = texture_body;
+    texture_options.reflections = !no_reflection;
     if (!build_frame_texture_table(selected, slm, tap_path != nullptr ? tap_data.data() : nullptr, tap_records,
                                    texture_options, texture_table, texture_counters, error)) {
       std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
       return 1;
     }
     options.textures = &texture_table;
+    options.reflections = !no_reflection;
     textured = true;
   }
 #else
@@ -503,8 +523,11 @@ int main(int argc, char **argv) {
 #endif
   std::vector<std::uint8_t> rgba, mask;
   std::vector<std::uint8_t> textured_mask;
+  std::vector<std::uint8_t> reflection_mask;
   RenderStats stats;
-  if (!render_frame(selected, options, rgba, mask, stats, error, texture_mask_path != nullptr ? &textured_mask : nullptr)) {
+  if (!render_frame(selected, options, rgba, mask, stats, error,
+                    texture_mask_path != nullptr ? &textured_mask : nullptr,
+                    reflection_mask_path != nullptr ? &reflection_mask : nullptr)) {
     std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
     return 1;
   }
@@ -546,12 +569,13 @@ int main(int argc, char **argv) {
   const auto print_textures = [&textured, &texture_counters, &stats](std::FILE *file) {
     if (!textured) return;
     std::fprintf(file,
-                 "textures items %llu textured %llu untextured %llu (texgen %llu, no-record %llu, no-uv %llu, "
-                 "decode-refused %llu, unknown-program %llu)\n",
+                 "textures items %llu textured %llu untextured %llu (texgen %llu, reflected %llu, no-record %llu, "
+                 "no-uv %llu, decode-refused %llu, unknown-program %llu)\n",
                  static_cast<unsigned long long>(texture_counters.items_visited),
                  static_cast<unsigned long long>(texture_counters.items_textured),
                  static_cast<unsigned long long>(texture_counters.items_untextured),
                  static_cast<unsigned long long>(texture_counters.items_texgen_deferred),
+                 static_cast<unsigned long long>(texture_counters.items_reflected),
                  static_cast<unsigned long long>(texture_counters.items_no_texture),
                  static_cast<unsigned long long>(texture_counters.items_no_uv),
                  static_cast<unsigned long long>(texture_counters.items_decode_refused),
@@ -586,6 +610,48 @@ int main(int argc, char **argv) {
     std::size_t masked = 0;
     for (std::uint8_t value : textured_mask) masked += value != 0 ? 1u : 0u;
     std::printf("texture mask %s: %zu pixels (geometric coverage of the textured draws)\n", texture_mask_path, masked);
+  }
+  const auto print_reflection = [&textured, &texture_counters, &stats](std::FILE *file) {
+    if (!textured) return;
+    std::fprintf(file,
+                 "reflection items reflected %llu, no-tapped-state %llu, refused %u (psm %u tfx %u filter %u mip %u "
+                 "afail %u blend %u depth %u), st-refused %u, untextured %u\n",
+                 static_cast<unsigned long long>(texture_counters.items_reflected),
+                 static_cast<unsigned long long>(texture_counters.items_reflection_no_state),
+                 stats.items_reflection_refused, stats.reflection_refused_psm, stats.reflection_refused_tfx,
+                 stats.reflection_refused_filter, stats.reflection_refused_mip, stats.reflection_refused_alpha_fail,
+                 stats.reflection_refused_blend, stats.reflection_refused_depth, stats.reflection_refused_st,
+                 stats.items_reflection_untextured);
+    std::fprintf(file,
+                 "reflection raster pixels %llu, date-failed %llu, alpha-failed %llu, depth-failed %llu, "
+                 "sample-refused %llu, alpha-missing %llu, fog-missing %llu, blended %llu, fbmsk %llu, "
+                 "depth-masked %llu\n",
+                 static_cast<unsigned long long>(stats.reflection_pixels),
+                 static_cast<unsigned long long>(stats.reflection_date_failed),
+                 static_cast<unsigned long long>(stats.reflection_alpha_failed),
+                 static_cast<unsigned long long>(stats.reflection_depth_failed),
+                 static_cast<unsigned long long>(stats.reflection_sample_refused),
+                 static_cast<unsigned long long>(stats.reflection_alpha_missing),
+                 static_cast<unsigned long long>(stats.reflection_fog_missing),
+                 static_cast<unsigned long long>(stats.reflection_blended_pixels),
+                 static_cast<unsigned long long>(stats.reflection_fbmsk_pixels),
+                 static_cast<unsigned long long>(stats.reflection_depth_masked_pixels));
+  };
+  print_reflection(stdout);
+  if (reflection_mask_path != nullptr) {
+    // The reflection pass's written-fragment mask, a binary PGM the metrics script reads.
+    if (std::FILE *mask_file = std::fopen(reflection_mask_path, "wb")) {
+      std::fprintf(mask_file, "P5\n%u %u\n255\n", options.width, options.height);
+      std::fwrite(reflection_mask.data(), 1, reflection_mask.size(), mask_file);
+      std::fclose(mask_file);
+      std::size_t masked = 0;
+      for (std::uint8_t value : reflection_mask) masked += value != 0 ? 1u : 0u;
+      std::printf("reflection mask %s: %zu pixels (fragments the reflection pass wrote)\n", reflection_mask_path,
+                  masked);
+    } else {
+      std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", reflection_mask_path);
+      return 1;
+    }
   }
 #else
   (void)textured;
@@ -633,6 +699,7 @@ int main(int argc, char **argv) {
       print_lighting(file);
 #ifdef GT4_COREGS3_TEXTURES
       print_textures(file);
+      print_reflection(file);
 #endif
       for (const std::string &refusal : stats.refusals) std::fprintf(file, "refusal %s\n", refusal.c_str());
       std::fclose(file);

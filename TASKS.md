@@ -1756,9 +1756,23 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   Reflection pass: PRIM 0x7C, additive `(Cs-0)*Ad+Cd`, FOGCOL black, vertex fog, TEX0 0x2BC0 CT32, TEX1 linear, CLAMP
   region, no depth write, GEQUAL, FBMSK; 73/83 DATE=1 DATM=0 (mask from the base paint T4 alpha), 9 DATE=0. Plan: M1
   offline body reflection, M2 live present, M3 native env map. Evidence: `build/analysis-texgen/`.
-- Next: the body reflection implementation (in flight) and the capture extension (ALL_DRAWS pass tag/K7, hw GS-stream,
-  `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates. The per-item light
-  state is now consumed by both renderers.
+- **Body/paint environment-map reflection, offline (2026-11-10, branch `task/090-body-reflection`).** The offline
+  renderer draws the body/paint item's measured second pass: the CT32 environment map (item record, TBP0 0x2BC0,
+  256x256, sidecar record 7402 = the frame's map) sampled at the pinned texgen S,T (`coregs3_reflection`, float32 from
+  the item's six-qword block and the raw V3-16 position / V3-8 normal), with the tapped PRIM 0x7C state: DATE/DATM
+  against the framebuffer alpha the base draws wrote (the base pass is the separate nine-qword/three-qword captured
+  items sharing the geometry; 27 exact pairs), additive `(Cs-0)*Ad+Cd`, GS fog toward FOGCOL black with the tapped
+  vertex fog, ZBUF no write, ZTST GEQUAL, FBMSK and COLCLAMP. 80 items reflected, 0 refused; 20,394 fragments at 3x,
+  108 DATE tests on the uncaptured background alpha (the only alpha-mask fallback). Metrics vs the CoreGS 2.0
+  VBlank-7400 reference: reflection mask (18,392 px) SSIM 0.2504 -> 0.2611, pct_bad 90.724 -> 72.053%; near-car box
+  PSNR 24.218 -> 24.572 dB, SSIM 0.6113 -> 0.6235, pct_bad 61.656 -> 57.909%, luma ratio 1.0894 -> 0.9908; coverage
+  mask SSIM 0.2369 -> 0.2838, pct_bad 73.418 -> 58.867%. PRIM.ABE corrected to bit 6 (`hw_gs` primbit), which also
+  turns five unmeasured ALPHA equations into counted refusals. New `native_coregs3_reflection` fixture, CTest coregs3
+  9/9, Python 7/7, 3x gate OK, full build. Evidence: `build/evidence/coregs3-refl/`. Deviation: the base paints now
+  show through and are darker than the reference (base-pass fog/lighting are the next fidelity item).
+- Next: the live `present` reflection (M2), the base-pass fog/lighting, and the capture extension (ALL_DRAWS pass tag/K7,
+  hw GS-stream, `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates. The
+  per-item light state is now consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls
