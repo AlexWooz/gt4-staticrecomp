@@ -1,5 +1,31 @@
 # Current Status
 
+## TASK-215: CoreGS 2.0 performance audit, read-only (2026-11-10)
+
+The static half (TASK-215b) is done on branch `docs/coregs2-perf-audit` (worktree `C:\Antigravity\gt4-wt-215-coregs2-audit`, from
+`origin/main` `59f27aa1`): `docs/tasks/COREGS2-PERF-AUDIT.md`. No build, benchmark, game run, code/data/pin/test change; the
+parallel TASK-215 agent owns the runs. Not PCSX2-tainted (no PCSX2, GSdx, `gt4recomp-gs`, `private/tooling/pcsx2-*`,
+`private/slice189-pcsx2-ref` or ARMSX2 source opened).
+
+- **Measured picture (C, from the existing ledger, CPU survey and game-code study):** at 1x the GS worker is the largest
+  renderer thread, 8.0 ms on George V Paris and 19-20 ms on the first license (1,930 batches, 26-27k primitives); the CLUT path
+  on George V 1x is 2.0 ms, 1.5 ms of it the 1,500-1,630 batch flushes a VBlank. At 6x the Avell's GPU is about 14 ms busy but
+  the GS worker waits 4.5-5.5 ms at the one 2 KiB flare-table download; the one-frame-late answer removes it, and the owner
+  rejected the lateness for normal mode (decision 0073). At 12x the GPU is the limit (about 20.6 ms busy, draw passes 14.7 ms).
+- **New opportunities, in order:** (1) stop ending a batch on SCISSOR/XYOFFSET changes (CoreGS 2.0 already records a
+  per-primitive scissor and the vertices carry XYOFFSET); (2) GPU-side flare modulation from the 64x8 target (GS-READBACK-STUDY
+  S4, never scheduled; same frame, faithful, ±1 LSB on flare pixels); (3) skip a CLUT-load flush when the loaded halfwords cannot
+  reach the pending batch's used halfwords; (4) extend the Performance Mode effect-target cap beyond 1x/width 256; (5) self-copy
+  off in Performance Mode at 12x (+1.3 ms GPU measured). TASK-168 (several palettes in one batch) and TASK-171 (per-primitive
+  front end for the license) stay the largest already planned items and are not repeated.
+- **Do not repeat:** IN-412/413, IN-421/436/438, IN-443/444/449, IN-448, IN-454/460, the 32/64/128 submission sweep,
+  the ROP/depth attachment (IN-523), IN-488, IN-505, the one-frame-late flare answer in normal mode, IN-537/539 and the
+  GSDX-PLAN G5/G6/P3 items; the audit lists each with its result.
+- **Open measurements for TASK-215:** the `test`/`clut`/`autoflush`/`capacity` flush split on the license, George V 1x and the
+  night race; the unaffected CLUT-load share; the VU1 flare-program check (P1); the final post-IN-522 GPU wait at 6x; the
+  sampled-only targets over 256; and the rain/rally/split-screen signatures. No number in the audit is a promise; the parallel
+  agent's measurement wins over a hypothesis there.
+
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader

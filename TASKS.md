@@ -3430,3 +3430,37 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+
+### TASK-215 — CoreGS 2.0 performance: where the time goes and what to try next (read-only audit; 2026-11-10)
+
+Owner request (2026-11-10): CoreGS 2.0 is still heavy on specific tracks and situations; find where to optimise next
+without repeating what the ledger already kept or reverted. Two halves: **TASK-215b**, this read-only static audit
+(`docs/tasks/COREGS2-PERF-AUDIT.md`), and **TASK-215**, the parallel agent that owns the builds, benchmarks and game
+runs. Branch `docs/coregs2-perf-audit`, worktree `C:\Antigravity\gt4-wt-215-coregs2-audit`, from `origin/main` `59f27aa1`.
+The audit is not PCSX2-tainted: no PCSX2, GSdx, `gt4recomp-gs`, `private/tooling/pcsx2-*`, `private/slice189-pcsx2-ref`
+or ARMSX2 source was opened; GSdx is a black box.
+
+- **Deliverable:** `docs/tasks/COREGS2-PERF-AUDIT.md` — where the time goes by stage from the existing ledger (C/H
+  labels); new opportunities with file/line, the cost they address, the exact A/B and acceptance test; track/situation
+  hypotheses; the do-not-repeat list with ledger IDs; a prioritized 3-7 item short list; open questions.
+- **The measured picture (C, from the ledger, the CPU survey and the game-code study):** at 1x the GS worker is the
+  largest renderer thread (8.0 ms on George V Paris; 19-20 ms on the first license at 1,930 batches); about
+  1,500-1,630 CLUT-load flushes per VBlank on George V 1x (2.0 ms of CLUT, 1.5 ms of it the flush). At 6x the GPU has
+  headroom (about 14 ms busy on the Avell) but the GS worker waits 4.5-5.5 ms at the game's one 2 KiB flare-table
+  download; the delayed answer removes it but the owner rejected the lateness for normal mode (decision 0073). At 12x
+  the GPU is the limit (about 20.6 ms busy, draw passes 14.7 ms).
+- **New items proposed, in order:** (1) stop ending a batch on SCISSOR and XYOFFSET changes — CoreGS 2.0 records a
+  per-primitive scissor and the vertices already carry XYOFFSET; (2) GPU-side flare modulation (GS-READBACK-STUDY S4,
+  never scheduled): replace the VU1 table read with a full-intensity placeholder and modulate the flare draws from the
+  64x8 target, same frame and faithful; (3) skip a CLUT-load flush when the loaded palette halfwords cannot reach the
+  pending batch's used halfwords; (4) extend the Performance Mode effect-target cap beyond 1x/width 256; (5) self-copy
+  off in Performance Mode at 12x (measured +1.3 ms of GPU busy). TASK-168 and TASK-171 remain the largest already
+  planned items; the audit does not repeat them.
+- **Acceptance of the audit:** every measured figure has a source (ledger IN-xxx, TASK-134 section 9, TASK-171, the CPU
+  survey or a code reference); new savings are labelled H/Hyp/Unknown until the named A/B runs; no build, benchmark,
+  game run, code/data/pin/test change; no PCSX2/GSdx/fork/ARMSX2 source; no owner data. The parallel agent's measurement
+  wins over a hypothesis here.
+- **State (2026-11-10):** audit done and committed on `docs/coregs2-perf-audit` (docs only). The parallel TASK-215 agent
+  owns the runs; the coordinator decides the PR. Open measurements are listed in section 6 of the audit: the flush-reason
+  split, the unaffected CLUT share, the VU1 flare-program check (P1), the final post-IN-522 GPU wait at 6x, the
+  sampled-only targets over 256, and the rain/rally/split-screen signatures.
