@@ -592,7 +592,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::uint64_t waitNs = 0;
         std::uint64_t readbacks = 0;
     };
-    std::array<ReasonWait, 5> reasonWaits_{{{"download"}, {"before write"}, {"keep"}, {"clut"}, {"other"}}};
+    std::array<ReasonWait, 6> reasonWaits_{{{"download"}, {"before write"}, {"keep"}, {"clut"}, {"flare"}, {"other"}}};
     ReasonWait &WaitOf(const char *reason) {
         for (ReasonWait &w : reasonWaits_) {
             if (std::strcmp(w.reason, reason) == 0) return w;
@@ -1064,10 +1064,16 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (!FlushClutMirror()) return false;
         std::uint16_t halfwords[512];
         std::string error;
+        // TASK-215: the copy is a full GPU wait; attribute it to the "clut" reason so the wait budget shows it (the audit
+        // found it unattributed: `ReadClut` calls submit(true) without going through Readback).
+        const std::uint64_t waitBefore = gpu_.Stats().waitNs;
         if (!gpu_.ReadClut(halfwords, error)) {
             Fail(error);
             return false;
         }
+        ReasonWait &reasonWait = WaitOf("clut");
+        reasonWait.waitNs += gpu_.Stats().waitNs - waitBefore;
+        reasonWait.readbacks++;
         frontEnd_.MutableClut().SetHalfwords(halfwords);
         clutSource_.fill(0);
         stats.clutReads++;
@@ -4961,7 +4967,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  "[core2] vblank=%llu targets created=%llu aged=%llu replaced=%llu grown=%llu textures targets=%llu "
                  "memory=%llu cache_hits=%llu decodes=%llu dirty=%llu dirty_px=%llu readbacks=%llu "
                  "readback_px=%llu tone_runs=%llu tone_skipped=%llu tone_alpha_only=%llu display targets=%llu "
-                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu forced_bilinear=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
+                 "memory=%llu indexed_readbacks=%llu direct_readbacks=%llu clut_readbacks=%llu download_readbacks=%llu flare_readbacks=%llu batched_readbacks=%llu dirty_merged=%llu forced_bilinear=%llu cpu_sprites=%llu live_targets=%llu target_slots=%llu decodes_first=%llu decodes_stale=%llu decodes_clash=%llu decodes_over=%llu clut_gpu_loads=%llu gpu_palettes=%llu clut_reads=%llu glm_writes=%llu textures_over_targets=%llu palette_rows=%llu palette_row_hits=%llu gpu batches=%llu draws=%llu submits=%llu "
                  "mip_draws=%llu trilinear=%llu mip_lcm=%llu mip_max_mxl=%llu mip_textures=%llu mip_levels=%llu waits=%llu recycled_images=%llu window_decodes=%llu window_mb=%.1f full_barriers=%llu barriers_skipped=%llu fragment_barriers=%llu render_passes=%llu draw_flushes=%llu image_mb=%.1f texture_mb=%.1f self_texture=%llu self_copies=%llu self_copy_mpx=%.1f\n",
                  (unsigned long long)vblanks, (unsigned long long)c.targetsCreated, (unsigned long long)c.targetsAged,
                  (unsigned long long)c.targetsReplaced, (unsigned long long)c.targetsGrown,
@@ -4973,6 +4979,7 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
                  (unsigned long long)c.displayFromTargets, (unsigned long long)c.displayFromMemory,
                  (unsigned long long)c.indexedFromTargetReadbacks, (unsigned long long)c.directFromTargetReadbacks,
                  (unsigned long long)c.clutReadbacks, (unsigned long long)c.downloadReadbacks,
+                 (unsigned long long)c.flareReadbacks,
                  (unsigned long long)c.batchedReadbacks, (unsigned long long)c.dirtyMerged,
                  (unsigned long long)c.forcedBilinearBatches,
                  (unsigned long long)c.cpuSpriteBatches, (unsigned long long)c.liveTargets,
@@ -5163,10 +5170,19 @@ std::size_t Renderer::ReadFifo(void *destination, std::size_t byteCount) {
                 s.stats.hiddenFlareTables++;
             } else if (!s.delayedDownloads_ || !s.AnswerDelayedDownload(view, rect)) {
                 const std::uint64_t before = s.stats.readbacks;
-                s.readbackReason_ = "download";
+                // TASK-215: GT4's one per-frame 2 KiB read of the 64x8 flare visibility table gets its own reason, so the
+                // wait budget separates the hard synchronous point from the other downloads (the audit's item 1).
+                const bool flareTable = *psm == Psm::Ct32 && setup.rrw == 64u && setup.rrh == 8u;
+                s.readbackReason_ = flareTable ? "flare" : "download";
                 s.Readback(SpanOfRect(view, rect), &view, &rect);
                 s.readbackReason_ = "other";
-                if (s.stats.readbacks != before) s.stats.downloadReadbacks++;
+                if (s.stats.readbacks != before) {
+                    if (flareTable) {
+                        s.stats.flareReadbacks++;
+                    } else {
+                        s.stats.downloadReadbacks++;
+                    }
+                }
             }
         } else {
             s.ReadbackAll();

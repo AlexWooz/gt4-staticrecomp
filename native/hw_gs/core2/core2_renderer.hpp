@@ -48,6 +48,7 @@ struct Core2Counters {
     std::uint64_t delayedDownloads = 0;        // IN-439: downloads answered with the previous same download's words
     std::uint64_t hiddenFlareTables = 0;       // IN-441: flare visibility tables answered as zeros        // IN-439: downloads answered with the previous same download's words
     std::uint64_t downloadReadbacks = 0;       // EE downloads (local-to-host transfers) that read back a target
+    std::uint64_t flareReadbacks = 0;          // TASK-215: the per-frame 64x8 flare visibility table among them
     std::uint64_t batchedReadbacks = 0;        // IN-429: target readbacks reduced together in one submission
     std::uint64_t textureBytes = 0;            // IN-431: 1x texels in the texture cache now
     std::uint64_t dirtyMerged = 0;

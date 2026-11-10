@@ -2821,8 +2821,9 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   if (!s.make_image(s.display, 640u * s.scale, 448u * s.scale, 1, error)) return false;
   s.queue_known_variants();  // IN-489
   s.ready = true;
-  std::fprintf(stderr, "[core2] ready: scale %u, shift %.3f, pixel interlock %s, max native side %u\n", s.scale,
-               static_cast<double>(s.shift), s.interlock ? "yes" : "no", MaxNativeSide());
+  std::fprintf(stderr, "[core2] ready: scale %u, shift %.3f, pixel interlock %s, max native side %u, slots %u, submit every %u\n",
+               s.scale, static_cast<double>(s.shift), s.interlock ? "yes" : "no", MaxNativeSide(), s.slotCount,
+               s.submitEvery);
   return true;
 }
 

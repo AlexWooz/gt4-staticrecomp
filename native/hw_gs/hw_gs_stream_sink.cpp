@@ -682,6 +682,15 @@ private:
           case SinkRecord::FlareRead: {  // IN-514, IN-522
             FlareTableReads::Table table;
             read_fifo_now(table.data(), FlareTableReads::kQwords);
+            // TASK-215 P1 (diagnostic, off by default): GT4_FLARE_TABLE_FORCE=<0..255> answers the read with that value in
+            // every byte of every texel. The game's own VU1 flare path then runs on one visibility value, so frames at
+            // several values show whether the value only scales the flare's colour/alpha (the same pixels change and their
+            // values follow the value) or whether it also moves or culls the sprites. The read itself still happens.
+            static const int forced = [] {
+              const char *text = std::getenv("GT4_FLARE_TABLE_FORCE");
+              return text != nullptr ? std::atoi(text) : -1;
+            }();
+            if (forced >= 0) std::memset(table.data(), forced & 0xFF, table.size());
             if (std::uint8_t *dest = flareReads_.next_dest()) std::memcpy(dest, table.data(), table.size());
             flareReads_.finish(table);
             break;
