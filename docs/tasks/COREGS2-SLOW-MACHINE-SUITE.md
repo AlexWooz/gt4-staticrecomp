@@ -110,6 +110,28 @@ Per-VBlank p99 (complete trace): 3x stock 11.10 -> GPU-down 10.80 ms; 6x 10.57 -
   memory-bandwidth-bound cost cannot show in this configuration; the interpretation is bounded to GPU core clock and power
   limit, and those may not have bound at 3x at all. A CPU-down point (3.4 GHz, BIOS) is the next configuration.
 
+
+## GPU-down 10x stress point (2026-11-10, same configuration: core -500 MHz, PL 70%, VRAM stock)
+
+Added because the 3x/6x points were CPU-bound even with the underclock. One run, exe `A2A9CD8A...`, full per-VBlank trace.
+
+| Point | wall p50 / p99 (intervals) | 1 % low | >16.7 / >20 | GPU busy mean (p50 / p99) | GPU wait | flare wait | before-write / keep | EE critical | GS worker |
+|---|---|---|---|---|---|---|---|---|---|
+| stock 10x (mean table, no trace) | 15.43 mean | - | - | 14.32 mean | 8.32 | 6.05 | 0.69 / 0.10 | 16.74 | 6.83 |
+| **GPU-down 10x** | **15.71 / 23.19** | **43.1** | **3 / 2 of 7** | **15.78 (14.55 / 21.47)** | **10.07** | **7.31** | **0.78 / 0.12** | **18.78** | **6.57** |
+
+Per-VBlank trace (3,601 rows, complete): wall mean 17.60, p99 40.00, max 117.6 ms (VBlank 9763), GS max 51.9. CSV
+`build/evidence/gpudown-night-10x.csv` (interval rows) and `gpudown-night-10x-spikes.csv` (per VBlank).
+
+**The underclock binds at 10x.** GPU busy 14.32 -> 15.78 ms (+10.2 %, p99 21.47), the frame mean 15.43 -> 16.90 ms, 3 of 7
+600-VBlank intervals over 16.7 ms and 2 over 20 (stock had none in its mean table), and the flare wait grows 6.05 -> 7.31 ms
+because the GPU takes longer to reach the read. 10x here is the GPU-bound proxy the 3x/6x points are not: the GPU is at
+the 16.7 ms edge (busy 15.78) and the frame is over it. **12x was not run** (the rule: 10x already over budget).
+Comparison gap to record: the stock 10x run predates the trace tooling, so its per-VBlank p99 and interval p99 are Unknown;
+only its means are comparable.
+
+Limit unchanged: **VRAM stayed stock**, so bandwidth-bound costs do not show; this is a core-clock + power-limit result.
+
 ## Clock record (fill per configuration; Unknown until the owner reads them)
 
 | Configuration | CPU effective (MHz) | GPU core (MHz) | VRAM (MHz) | Temps | Date/session |
