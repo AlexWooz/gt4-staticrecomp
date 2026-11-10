@@ -1748,9 +1748,22 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames) and the full build. Evidence:
   `build/evidence/coregs3-textured/` (`offline-textured-frame0.png`, the untextured A/B, the 3x frames and masks,
   `metrics.txt`).
-- Next: the capture extension (ALL_DRAWS pass tag/K7,
-  hw GS-stream, `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates.
-  The per-item light state is now consumed by both renderers.
+- **Capture extension v5 (2026-11-10, branch `task/090-capture-v5`).** `.gt4scene` version 5 names every draw's pass,
+  carries the scene environment block and adds a bounded per-pass GS state journal. The caller return address at K1 was
+  measured first and cannot separate the passes (one RA covers the 130 course draws **and** the 116 car draws), so the
+  mechanism is thirteen K7 begin/end markers in unit_008F plus direct K1 sites for the three shape calls that bypass
+  `ModelSet2___render` (car env map x2, BillboardSet, tachometer; the hook goes after the `a0` assignment). The pass ids
+  (17) and the caller RA are stored per draw; a draw outside a marker is `unknown` and counted. Environment: the scene
+  object's `+0x9C0..0xB10` (sun/fog/lights), `+0xC10..0xC48` (reflection) and `+0xC60` (lights), once per frame. Journal:
+  FOGCOL/FRAME/XYOFFSET/ZBUF/SCISSOR/ALPHA/TEST from the PGL GS shadow (`0x138/0x170/0x178/0x188/0x190/0x198/0x1A0`),
+  bounded at 32 entries/frame, observe-only. Night race, 3x, ALL_DRAWS VBlanks 7398-7402: 285 draws/frame (env_map 31,
+  sky 1, far_underlay 3, course 130, reflection 4, cars 116), 1,772 items, 77,882 submitted vertices, 0 unknown, 0 guest
+  read failures, 0 journal refusals; the car-only capture is still 116 draws / 335 items. Journal verification against
+  the tap: FOGCOL 15/15, SCISSOR 25/25, XYOFFSET 5/15 (the cars pass sets its own offset); the shadow offsets were
+  confirmed on 277 draws. CTest 8/8, Python 8/8, 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK. Evidence:
+  `build/evidence/night-v5c-all/`, `night-v5c-cars/`; format and method in `docs/COREGS3-HOOKS.md` section 17.
+- Next: the hw GS-stream and `render_panel` 2D batch recorder that unblocks the PATH3/2D track, effects and HUD; then the
+  G-IMAGE/G-PERF gates. The per-item light state is now consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls

@@ -33,11 +33,16 @@ void at_vblank(std::uint64_t vblank) noexcept;
 const CaptureCounters &counters() noexcept;
 void print_report(std::FILE *out) noexcept;
 
-// Entry points called by the translated units and by the host loop. `before`/`after` bracket the `jal 0x0049D308` of
-// ModelSet2___render at 0x00455A5C/0x00455A64; `car_pass_begin`/`end` are the block starts of L_0033EE28 and
-// L_0033EE54 in func_0033EAB8; `projection_set`/`modelview_set` are L_0033EBB4 and L_0033EBF4.
-void before_shape_call(ps2::Cpu &cpu) noexcept;
+// Entry points called by the translated units and by the host loop. `before`/`after` bracket the shape call at each
+// hooked site; `call_site` is the CallSite the call comes from (a compile-time constant in the inserted call).
+// `pass_begin`/`pass_end` bracket the high-level passes of func_0033EAB8 (the K7 markers) and of the panel dispatch;
+// `car_pass_begin`/`end` are the K5 block starts of L_0033EE28 and L_0033EE54 and set the `cars` pass (they also flush
+// the VIF chain so the tap's jobs of the pass are separable); `projection_set`/`modelview_set` are L_0033EBB4 and
+// L_0033EBF4.
+void before_shape_call(ps2::Cpu &cpu, std::uint32_t call_site) noexcept;
 void after_shape_call(ps2::Cpu &cpu) noexcept;
+void pass_begin(ps2::Cpu &cpu, std::uint32_t pass) noexcept;
+void pass_end(ps2::Cpu &cpu, std::uint32_t pass) noexcept;
 void car_pass_begin(ps2::Cpu &cpu) noexcept;
 void car_pass_end(ps2::Cpu &cpu) noexcept;
 void projection_set(ps2::Cpu &cpu) noexcept;

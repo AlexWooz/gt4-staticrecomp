@@ -224,6 +224,9 @@ CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
   draw.chain_tags = 9;
   draw.chain_valid = 1;
   draw.program_uniform = 1;
+  draw.pass = kPassCars;
+  draw.call_site = kCallSiteModelSet2;
+  draw.caller_ra = 0x004556A8u;
   draw.vf[0][0] = float_bits(2.0f);
   draw.vf[0][1] = float_bits(0.0f);
   draw.vf[0][2] = float_bits(0.0f);
@@ -261,6 +264,24 @@ void check_capture_round_trip() {
   frame.camera.valid = 7;
   frame.camera.camera = 0x00401234u;
   frame.camera.pgl_block_k3[0] = 0x3F800000u;
+  // Format version 5: the scene environment block and the per-pass GS state journal.
+  frame.environment.valid = 1;
+  frame.environment.words[0] = 0x41200000u;                 // a sun value
+  frame.environment.words[kEnvWords - 1] = 0x3F000000u;     // the last light word
+  CapturedPassState pass_state;
+  pass_state.pass = kPassCars;
+  pass_state.first_draw = 7;
+  pass_state.draw_count = 1;
+  pass_state.item_count = 1;
+  pass_state.vblank = 2450;
+  pass_state.fogcol = 0x000000000027272Aull;
+  pass_state.frame = 0xFF000000000A00D2ull;
+  pass_state.xyoffset = 0x00007C0800007C08ull;
+  pass_state.zbuf = 0x0000000101000000ull;
+  pass_state.scissor = 0x01BF0000027F0000ull;
+  pass_state.alpha = 0x0000000000000044ull;
+  pass_state.test = 0x000000000005820Cull;
+  frame.pass_states.push_back(pass_state);
   CapturedTexture texture;
   texture.address = 0x00110000u;
   texture.bytes[0] = 0xAB;
@@ -319,6 +340,21 @@ void check_capture_round_trip() {
   require(read.textures[0].address == texture.address && read.textures[0].bytes[0] == 0xAB, "the texture survives");
   require(read.materials[0].address == material.address && read.materials[0].bytes[7] == 0xCD, "the material survives");
   require(read.camera.valid == 7 && read.camera.camera == 0x00401234u, "the camera record survives");
+  require(read.draws[0].pass == kPassCars && read.draws[0].call_site == kCallSiteModelSet2 &&
+              read.draws[0].caller_ra == 0x004556A8u,
+          "the pass, call site and caller return address survive");
+  require(read.environment.valid == 1 && read.environment.words[0] == 0x41200000u &&
+              read.environment.words[kEnvWords - 1] == 0x3F000000u,
+          "the scene environment block survives");
+  require(read.pass_states.size() == 1 && read.pass_states[0].pass == kPassCars &&
+              read.pass_states[0].first_draw == 7 && read.pass_states[0].draw_count == 1 &&
+              read.pass_states[0].item_count == 1 && read.pass_states[0].vblank == 2450,
+          "the pass journal header survives");
+  require(read.pass_states[0].fogcol == pass_state.fogcol && read.pass_states[0].frame == pass_state.frame &&
+              read.pass_states[0].xyoffset == pass_state.xyoffset && read.pass_states[0].zbuf == pass_state.zbuf &&
+              read.pass_states[0].scissor == pass_state.scissor && read.pass_states[0].alpha == pass_state.alpha &&
+              read.pass_states[0].test == pass_state.test,
+          "the per-pass GS register shadow survives");
 
   // A block whose item points outside the packet block must be refused, not read.
   FrameSnapshot broken = frame;
@@ -336,6 +372,38 @@ void check_capture_round_trip() {
   over_item_cap.draws[0] = draw;
   over_item_cap.draws[0].items[0].light_block_qwords = kMaxLightBlockQwords + 1u;
   require(!frame_block_bytes(over_item_cap, broken_block), "a per-item light block above the cap is refused");
+  // Format version 5 bounds: a pass id outside the enum, a journal above its cap and an inconsistent journal entry
+  // are refused by the writer, never written.
+  FrameSnapshot bad_pass = frame;
+  bad_pass.draws[0].pass = kPassCount;
+  require(!frame_block_bytes(bad_pass, broken_block), "a pass id outside the enum is refused");
+  FrameSnapshot bad_site = frame;
+  bad_site.draws[0].call_site = kCallSiteTachometer + 1u;
+  require(!frame_block_bytes(bad_site, broken_block), "a call site outside the enum is refused");
+  FrameSnapshot bad_state_pass = frame;
+  bad_state_pass.pass_states[0].pass = kPassCount;
+  require(!frame_block_bytes(bad_state_pass, broken_block), "a journal pass id outside the enum is refused");
+  FrameSnapshot bad_state_entry = frame;
+  bad_state_entry.pass_states[0].first_draw = kNoRecord;
+  bad_state_entry.pass_states[0].draw_count = 1;
+  require(!frame_block_bytes(bad_state_entry, broken_block), "an empty journal entry with draws is refused");
+  FrameSnapshot over_states = frame;
+  over_states.pass_states.resize(kMaxPassStatesPerFrame + 1u, pass_state);
+  require(!frame_block_bytes(over_states, broken_block), "a pass journal above its cap is refused");
+  FrameSnapshot bad_environment = frame;
+  bad_environment.environment.valid = 2;
+  require(!frame_block_bytes(bad_environment, broken_block), "an environment validity flag above 1 is refused");
+  // The reader refuses a corrupted journal count (the pass count sits after the 36-byte frame header, the 264-byte
+  // camera record and the 404-byte environment record: block offset 8 + 704).
+  std::vector<std::uint8_t> over_journal = block;
+  const std::size_t journal_count_at = 8u + 36u + 264u + 404u;
+  require(journal_count_at + 4 <= over_journal.size(), "the fixture knows the journal count offset");
+  over_journal[journal_count_at + 0] = static_cast<std::uint8_t>(kMaxPassStatesPerFrame + 1u);
+  over_journal[journal_count_at + 1] = 0;
+  over_journal[journal_count_at + 2] = 0;
+  over_journal[journal_count_at + 3] = 0;
+  require(parse_frame_block(over_journal.data(), over_journal.size(), kSceneVersion, read, error) == 0,
+          "a journal count above the cap is refused by the reader");
 
   SceneHeader header;
   std::vector<std::uint8_t> file;

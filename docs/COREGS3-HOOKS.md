@@ -965,3 +965,131 @@ untextured path is unchanged (the pre-texture picture is the A/B). `gt4_coregs3_
 | Fixture `coregs3_sampler_fixture` | **ok**: hand-authored T4/T8/CT32 textures, MODULATE exact 8-bit, nearest/bilinear, the four wrap modes, the alpha test with KEEP and the DATE/AFAIL refusals, normal/additive blends, FBMSK and a textured quad through `render_frame` with an alpha-test-failed pixel, a blended pixel, FBMSK and ZMSK |
 | Build | full `GT4_HW_GS` candidate builds clean |
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,451,628 B |
+
+## 17. Round 21 (2026-11-10, branch `task/090-capture-v5`): the pass tag, the scene environment and the GS state journal (format v5)
+
+One problem: make `.gt4scene` version 5 name every captured draw's pass and carry the scene environment and a bounded
+per-pass GS state journal, with `GT4_COREGS3_ALL_DRAWS` tagging the whole race frame.
+
+### 17.1 The caller return address was measured first, and it cannot separate the passes
+
+K1 sits inside `ModelSet2___render`, whose prologue (translated `L_00455708`) saves its caller's `ra` at `sp + 168`. The
+hook reads that word per draw (`CapturedDraw::caller_ra`). On the night race (VBlank 7398, ALL_DRAWS, 282 ModelSet2
+draws) the whole frame comes from ten call sites:
+
+| caller RA | draws | what it is |
+|---|---|---|
+| `00396F74` | 130 | `CourseData__render_course_2` -> `ModelSet2___render` (main course **and the cars**) |
+| `004555F0` | 87 | `func_00455598` (sky, far underlay parts, nested model sets) |
+| `0044E610` | 25 | `func_0044E660` env map -> `ModelSet2__render` |
+| `00455344` | 9 | `func_00455300` |
+| `00455568` | 7 | `func_00455528` (far underlay **and** the env-map model set) |
+| `00452614` | 5 | `ModelSet2__render` caller in unit_00D4 |
+| `00452724` | 5 | `ModelSet2__render` caller in unit_00D4 |
+| `00452A58` | 5 | `ModelSet2__render` caller in unit_00D4 |
+| `003B114C` | 5 | unit_00AC |
+| `0039724C` | 4 | `func_003971F0` course model list |
+
+The same low-level functions are called from several passes: `CourseData__render_course` renders the main view **and**
+the back mirror, `func_00396B80` (sky) is also called by the reflection and the mirror, and the cars render through the
+same `CourseData__render_course_2` path as the course. A one-level RA therefore puts the 116 car draws in the same
+bucket as the 130 course draws (`00396F74`), which the existing K5 bracket already separates by time. **The RA cannot
+name a pass on its own**, so the least invasive complete mechanism is:
+
+* **K7 begin/end markers** around the pass calls of `func_0033EAB8` (env map, sky, far underlay, course, reflection,
+  flares, concourse, render_after, mirror, crowd/pitmen, particles, post) and around the HUD panel dispatch: thirteen
+  brackets in the already instrumented unit_008F;
+* **direct K1 sites** for the three shape calls that do not go through `ModelSet2___render`: the car env map
+  (`0x0044E920`, `0x0044EE24`), `BillboardSet__render` (`0x004507AC`) and the tachometer (`0x003EC4A0`). The direct call
+  statements assign `a0` inside the statement, so the hook is inserted after that assignment (`inside_after`), not
+  before the statement;
+* the caller RA is still stored in every draw as evidence, and every draw records its `call_site` enum.
+
+The pass ids follow the race order: `unknown`, `env_map`, `sky`, `far_underlay`, `backdrop` (PATH3 2D, no K1 draw today),
+`course`, `billboards` (a direct billboard call outside a marker), `reflection`, `cars`, `render_after`, `mirror`,
+`flares`, `crowd_pitmen`, `particles`, `post`, `panel`, `concourse`. A draw outside every marker and direct call site is
+`unknown` and is counted, never guessed; the whole 7,600-frame drive has many menu frames, which is why the run-level
+`unknown` counter is large while the captured race frames have **0 unknown**.
+
+### 17.2 Format version 5
+
+* `CapturedDraw` gains `call_site` (0 model set, 1 billboard, 2 env map, 3 tachometer) and `caller_ra`; `pass` is now a
+  `PassId` instead of the hardcoded 1.
+* `FrameSnapshot` gains the `SceneEnvironment` block and a bounded `pass_states` journal (32 entries).
+* Versions 1..4 are refused with an explicit message; there is no migration (captures are recaptured with a matching
+  build).
+
+### 17.3 The scene environment block
+
+The block is not in the PGL context at `0x70002000` (those offsets are zero in the race). It is the scene object of
+`func_0033EAB8`: `course = *(*(*(self + 0x6C) + 0x80) + 4)`, `scene = *(course + 0x80)`. The script reads
+`scene + 0x9C0..0xB10` (sun, four fog tables, eight lights; 84 words), `scene + 0xC10..0xC48` (reflection parameters,
+14 words) and `scene + 0xC60` (lights, one word), once per frame at the first world pass begin (sky or later). The
+decompiled `func_00398650` reads `scene + 0x9C0/0x9C4/0x9C8/0x9D4/0x9D8/0x9DC/0x9E0` for the sky/flare pass and
+`RacePS2Base__render_reflection` reads `scene + 0xC10..0xC28` and `+0xC40`, which fixes the base and the spans. The
+environment is not captured at the env-map or panel markers: those run in other functions where `r17` is not the
+RacePS2Base object.
+
+### 17.4 The per-pass GS state journal
+
+The PGL context keeps plain 64-bit GS register mirrors. The journal captures seven at each pass begin (raw words):
+
+| register | PGL offset | tap confirmation (277 draws, night race) |
+|---|---|---|
+| FOGCOL | `0x138` | exact in 220 of 253 draws whose first vertex state is readable |
+| FRAME | `0x170` | exact low 32 bits in 277 of 277, full 64 in 240 (the draw's own FBMSK write) |
+| XYOFFSET | `0x178` | exact in 162 of 277 |
+| ZBUF | `0x188` | exact in the draws that do not rewrite it (26 of 277; nearly every draw sets ZBUF) |
+| SCISSOR | `0x190` | exact in 251 of 253 |
+| ALPHA | `0x198` | exact in 244 of 277 |
+| TEST | `0x1A0` | exact in 176 of 277 |
+
+The same measurement found the neighbouring mirrors (`CLAMP` at `0x1A8`, `TEX1` at `0x1B8`, `TEX0` around `0x1B0/0x1C0`)
+which are not part of this journal. The journal is filled at the pass begin, so a register the pass's first draw rewrites
+shows the incoming value; the tap comparison is therefore reported as "where possible" (the register the draw did not
+rewrite). The pass journal is bounded at 32 entries per frame and observe-only, like the rest of the hooks.
+
+### 17.5 Evidence and gates (night race, 3x, bench card)
+
+`GT4_COREGS3_ALL_DRAWS=1`, VBlanks 7398-7402 (five race frames), tap 7398-7406. Each frame captured **285 draws / 1,772
+items / 77,882 submitted position vectors**, with **0 unknown**:
+
+| pass | draws | items | submitted vertices |
+|---|---|---|---|
+| env_map | 31 | 121 | 3,988 |
+| sky | 1 | 16 | 940 |
+| far_underlay | 3 | 9 | 67 |
+| course | 130 | 1,284 | 60,119 |
+| reflection | 4 | 7 | 292 |
+| cars | 116 | 335 | 12,476 |
+| unknown | 0 | 0 | 0 |
+
+The whole 7,600-frame drive (menus included) has 827,497 shape calls, 826,893 captured, **0 guest-read failures** and 0
+pass-journal refusals; the 30 frames the capture refused are the pre-existing packet-cap frames of the run (overflow
+`0x4`, none inside the capture window) and the capture wrote 5 of 5 requested frames (11,118,980 B). The pass journal
+has 18,086 entries, 1,557 frames with the environment block, 0 environment read failures and 0 orphan/mismatched pass
+ends. Without ALL_DRAWS the car block is unchanged: 116 draws / 335 items per frame, 0 refusals (capture 2,060,288 B).
+
+The seven journal registers are the PGL mirrors of section 17.4. A pass-level comparison against the tap (only registers
+the pass's own first draw did not rewrite) is exact: **FOGCOL 15/15, SCISSOR 25/25, XYOFFSET 5/15**; the 10 XYOFFSET
+differences are the cars pass, which sets the car-view offset (0x7C08/0x7C08) after the marker while the journal holds
+the incoming main-course offset (0x6C08/0x7208). FRAME, ZBUF, ALPHA and TEST are written by every pass's first draw, so
+the pass-begin journal cannot be compared at that vertex; their exact mirror position is the 277-draw correlation of
+section 17.4.
+
+The scene environment block is valid on every captured frame and identical across the five (static scene data):
+`scene+0x9C0` floats 0.7, 0.45, 0.1, 0.8 (sun/ambient), 0.2, 0.05, 0.1 (fog densities), 10, 86.05; the reflection words
+read 1, 1, 1, 0.5 and the light word 1.41.
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | **8/8 passed** (the scene fixture now round-trips v5: pass/call site/RA, environment, journal and the refusals) |
+| Python `tests/python/test_coregs3_units.py` | **8/8 passed** (the new pass-marker and `inside_after` controls) |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK** (see section 17.6) |
+
+### 17.6 The 3x identity gate
+
+The gate runs the plain-unit reference, `GT4_COREGS3=off` and `GT4_COREGS3=shadow` over the same 9,000-VBlank drive at
+3x (`scripts/coregs3_bench/coregs3-night-check.sh`, reference `O:/Antigavity/gt4-wt-090-coregs3/build/coregs3-r8/ref/gt4vulkan.exe`).
+Result: **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences in both runs, 13/13
+frames identical for off and for shadow, capture 4,477,368 B (the car block only, as the gate does not set ALL_DRAWS).

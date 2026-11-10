@@ -1,5 +1,22 @@
 # Current Status
 
+## 2026-11-10: capture extension v5: pass tags, environment and GS state journal (TASK-090)
+
+`.gt4scene` version 5 names every captured draw's pass and carries the scene environment and a bounded per-pass GS state
+journal. The caller return address at K1 was measured first and cannot separate the passes (the same RA carries the 130
+course draws and the 116 car draws), so the mechanism is 13 K7 begin/end markers in unit_008F plus direct K1 sites for the
+three shape calls that bypass `ModelSet2___render` (car env map, BillboardSet, tachometer; `inside_after` the `a0`
+assignment). Every draw stores its pass id, call site and caller RA; a draw outside every marker is `unknown` and counted.
+The environment is the scene object's `+0x9C0..0xB10` (sun/four fog tables/eight lights), `+0xC10..0xC48` (reflection) and
+`+0xC60` (lights), once per frame. The journal stores FOGCOL/FRAME/XYOFFSET/ZBUF/SCISSOR/ALPHA/TEST from the PGL GS
+shadow (`0x138/0x170/0x178/0x188/0x190/0x198/0x1A0`), bounded at 32 entries/frame and observe-only. Night race, 3x,
+ALL_DRAWS VBlanks 7398-7402: 285 draws / 1,772 items / 77,882 submitted vertices per frame (env_map 31, sky 1,
+far_underlay 3, course 130, reflection 4, cars 116), 0 unknown, 0 guest-read failures, 0 journal refusals; the car-only
+capture stays 116/335. Journal verification against the tap: FOGCOL 15/15, SCISSOR 25/25, XYOFFSET 5/15 (the cars pass
+sets its own offset); the seven offsets were confirmed on 277 draws. CTest 8/8, Python 8/8, 3x off/shadow identity gate
+COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,477,368 B).
+Details: `docs/COREGS3-HOOKS.md` section 17; evidence `build/evidence/night-v5c-all/` and `night-v5c-cars/`.
+
 ## 2026-11-10: car textures: the SLM sidecar and the native decode (TASK-090)
 
 The `.gt4scene` capture has the 40-byte PGLUtexture record of every item but no texture pixels. `GT4_COREGS3_VRAM` now
