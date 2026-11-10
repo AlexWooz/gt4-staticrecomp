@@ -65,8 +65,8 @@ at `aa5816ac`). The offline decoder/census (`native/coregs3/coregs3_gsdecode.{hp
 - **Gates:** CTest coregs3 **16/16** (new `native_coregs3_gsdecode` and `native_coregs3_wet_composite`), Python
   `test_coregs3_units.py` **14/14**, car-only render **byte-identical** to the `aa5816ac` executable (PNG
   `B0E7082B...`, report `4F9F986A...`), `--no-wet-composite` byte-identical to the world baseline, and the 3x off/shadow
-  identity gate against the `coregs3-r8/ref` executable is **COREGS3-NIGHT-CHECK-OK** (report in
-  `build/evidence-gs-post-layer/gate-night/`).
+  identity gate against the `coregs3-r8/ref` executable is **COREGS3-NIGHT-CHECK-OK** (serial runs and the checks in
+  `build/evidence-gs-post-layer/gate-control/gate-serial.log`).
 
 The S2 conclusion changes the study's first milestone: M-POST-1's "apply the captured post pass" cannot be met by the
 wet-road composite (it is 70 pixels at the horizon) or by the captured multiplies (they overshoot); the milestone's
