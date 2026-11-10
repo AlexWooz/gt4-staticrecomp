@@ -80,6 +80,36 @@ Spike CSVs: `build/evidence/stock-*-spikes.csv` (3,601 per-VBlank rows for the n
 Averages table (same window): night 3x GS worker 6.90, process 15.91, GPU busy 2.26, GPU wait 0.11 ms/VBlank; night 6x
 7.15 / 17.47 / 6.15 / 1.28; license 1x 8.23 / 21.33 / 0.94 / 0.03.
 
+
+## GPU-down results (2026-11-10, owner: core -500 MHz, Power Limit 70%, VRAM stock, driver 32.0.32015.7029)
+
+One run per point, exe `A2A9CD8A...` (unchanged), headless, full per-VBlank trace. Effective GPU core/VRAM clocks and
+temperatures are **Unknown**: the tree prints none and no monitor was read at run time.
+
+| Point | wall p50 / p99 (ms) | 1% low | >16.7 / >20 | GPU busy (mean / p99) | GPU wait | flare wait | before-write / keep | EE critical | GS worker | CSV |
+|---|---|---|---|---|---|---|---|---|---|---|
+| stock night 3x | 6.97 / 9.76 | 102.5 | 0 / 0 | 2.79 / 4.36 | 0.22 | 0.15 | 0.06 / 0.004 | 6.98 | 7.22 | `stock-night-3x.csv` |
+| **GPU-down night 3x** | **6.91 / 9.78** | **102.2** | **0 / 0** | **2.80 / 4.36** | **0.23** | **0.16** | **0.06 / 0.006** | **7.09** | **7.10** | `gpudown-night-3x.csv` |
+| stock night 6x | 8.54 / 10.57 | 94.6 | 0 / 0 | 6.15 / 8.57 | 1.28 | 0.95 | 0.22 / 0.02 | 8.85 | 7.15 | `stock-night-6x.csv` |
+| **GPU-down night 6x** | **8.40 / 11.21** | **89.2** | **0 / 0** | **6.62 / 9.40** | **1.67** | **1.25** | **0.25 / 0.03** | **9.20** | **7.09** | `gpudown-night-6x.csv` |
+| stock license 1x | 8.83 / 9.26 | 108.0 | 0 / 0 | 0.94 / 1.28 | 0.03 | 0.00 | 0.00 / 0.00 | 7.91 | 8.23 | `stock-license-1x.csv` |
+| **GPU-down license 1x** | **8.81 / 9.13** | **109.5** | **0 / 0** | **0.94 / 1.28** | **0.03** | **0.00** | **0.00 / 0.00** | **8.07** | **8.26** | `gpudown-license-1x.csv` |
+
+Per-VBlank p99 (complete trace): 3x stock 11.10 -> GPU-down 10.80 ms; 6x 10.57 -> 10.57 (interval p99 11.21); license
+9.26 -> 9.13. Spike CSVs beside each (`gpudown-*-spikes.csv`).
+
+**What the configuration exposed:**
+- **3x: not GPU-bound, and the underclock did not bite.** GPU busy 2.80 ms of 16.7 and the wait reasons are identical to
+  stock within 0.01 ms. The frame is the GS worker/EE (~7.1 ms). Hypothesis: at this load the card already ran below the
+  -500 MHz offset (the offset applies to the boost curve) and the 70% power limit did not bind, so the *effective* clock was
+  the same; the effective clock itself is Unknown.
+- **6x: still not GPU-bound, but the first clock-sensitive point.** GPU busy +7.6% (6.15 -> 6.62, max 9.40), flare wait
+  0.95 -> 1.25 ms, before-write +0.03, EE critical +0.35, wall +0.18 ms (p99 +0.64). ~10 ms of GPU headroom remains.
+- **License 1x: unchanged** (wall 8.81 against 8.83, GPU 0.94): CPU/GS-worker-bound, as expected.
+- **Limit:** **VRAM clock stayed stock** (the underclock was not possible on this card/driver), so a
+  memory-bandwidth-bound cost cannot show in this configuration; the interpretation is bounded to GPU core clock and power
+  limit, and those may not have bound at 3x at all. A CPU-down point (3.4 GHz, BIOS) is the next configuration.
+
 ## Clock record (fill per configuration; Unknown until the owner reads them)
 
 | Configuration | CPU effective (MHz) | GPU core (MHz) | VRAM (MHz) | Temps | Date/session |
