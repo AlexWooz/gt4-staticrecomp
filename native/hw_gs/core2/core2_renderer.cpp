@@ -41,6 +41,7 @@
 #include "hw_gs_replace/packs.hpp"
 #include "../cpuref/cpuref_draw.hpp"
 #include "../cpuref/cpuref_memory.hpp"
+#include "../../coregs3/coregs3_vram.hpp"
 
 namespace hwgs::core2 {
 namespace {
@@ -51,6 +52,148 @@ using memory::Psm;
 constexpr std::uint32_t kAllBlocks = memory::kBlocksTotal;
 constexpr std::uint32_t kAgeLimitFrames = 60;      // 6.2
 constexpr std::uint64_t kRecentUploadDraws = 500;  // 2.4b
+
+// TASK-090 CoreGS 3.0: the GS local memory sidecar of the captured car-pass frames (native/coregs3/coregs3_vram.hpp).
+// GT4_COREGS3_VRAM=<file> enables it; GT4_COREGS3_VRAM_VBLANKS=a-b selects the GS worker's guest VBlanks (defaulting to
+// GT4_COREGS3_CAPTURE_VBLANKS), GT4_COREGS3_VRAM_BLOCKS=a-b the block range (inclusive, base 0; default the measured
+// car range 0x2BC0..0x38FF) and GT4_COREGS3_VRAM_MAX_FRAMES the record bound (default 32). The block bytes are copied
+// once per VBlank on the GS worker and the file is written at shutdown, never on the guest's timeline (the capture's
+// rule, docs/COREGS3-HOOKS.md §7). It reads the CPU shadow memory only; it never writes guest memory and never touches
+// the renderer state. `vblank` is the worker's counter at the flush: the capture frame with `vblank == header.vblank - 1`
+// is the frame whose interval ended at that VSYNC (see docs/COREGS3-HOOKS.md §15).
+class Coregs3VramDump {
+public:
+    Coregs3VramDump() { Configure(); }
+    ~Coregs3VramDump() { Write(); }
+    Coregs3VramDump(const Coregs3VramDump &) = delete;
+    Coregs3VramDump &operator=(const Coregs3VramDump &) = delete;
+
+    void MaybeDump(std::uint64_t vblank, const std::uint8_t *memory) {
+        if (!enabled_ || records_.size() >= maxFrames_ || vblank < firstVblank_ || vblank > lastVblank_ ||
+            vblank == lastDumped_)
+            return;
+        lastDumped_ = vblank;
+        Record record;
+        record.vblank = vblank;
+        const std::size_t firstByte = static_cast<std::size_t>(firstBlock_) * gt4::coregs3::vram::kBlockBytes;
+        const std::size_t bytes = static_cast<std::size_t>(blockCount_) * gt4::coregs3::vram::kBlockBytes;
+        record.bytes.assign(memory + firstByte, memory + firstByte + bytes);
+        records_.push_back(std::move(record));
+    }
+
+private:
+    struct Record {
+        std::uint64_t vblank = 0;
+        std::vector<std::uint8_t> bytes;
+    };
+
+    static std::uint64_t ParseCount(const char *text, std::uint64_t fallback) {
+        if (text == nullptr || *text == '\0') return fallback;
+        char *end = nullptr;
+        const unsigned long long value = std::strtoull(text, &end, 0);
+        return end != nullptr && *end == '\0' ? static_cast<std::uint64_t>(value) : fallback;
+    }
+
+    void Configure() {
+        const char *path = std::getenv("GT4_COREGS3_VRAM");
+        if (path == nullptr || *path == '\0') return;
+        path_ = path;
+        firstVblank_ = 0;
+        lastVblank_ = ~0ull;
+        const char *range = std::getenv("GT4_COREGS3_VRAM_VBLANKS");
+        if (range == nullptr || *range == '\0') range = std::getenv("GT4_COREGS3_CAPTURE_VBLANKS");
+        if (range != nullptr && *range != '\0') {
+            char *end = nullptr;
+            const unsigned long long first = std::strtoull(range, &end, 10);
+            if (end != nullptr && *end == '-') {
+                const unsigned long long last = std::strtoull(end + 1, nullptr, 10);
+                if (last == 0 || last >= first) {
+                    firstVblank_ = first;
+                    lastVblank_ = last == 0 ? ~0ull : last;
+                } else {
+                    std::fprintf(stderr, "[coregs3] GT4_COREGS3_VRAM_VBLANKS=%s is not a-b; refused\n", range);
+                    return;
+                }
+            } else {
+                std::fprintf(stderr, "[coregs3] GT4_COREGS3_VRAM_VBLANKS=%s is not a-b; using every VBlank\n", range);
+            }
+        }
+        const char *blocks = std::getenv("GT4_COREGS3_VRAM_BLOCKS");
+        if (blocks != nullptr && *blocks != '\0') {
+            char *end = nullptr;
+            const unsigned long first = std::strtoul(blocks, &end, 0);
+            if (end == nullptr || *end != '-' || first >= gt4::coregs3::vram::kBlocksTotal) {
+                std::fprintf(stderr, "[coregs3] GT4_COREGS3_VRAM_BLOCKS=%s is not a-b; refused\n", blocks);
+                return;
+            }
+            const unsigned long last = std::strtoul(end + 1, nullptr, 0);
+            if (last < first || last >= gt4::coregs3::vram::kBlocksTotal) {
+                std::fprintf(stderr, "[coregs3] GT4_COREGS3_VRAM_BLOCKS=%s is not an ordered block range; refused\n",
+                             blocks);
+                return;
+            }
+            firstBlock_ = static_cast<std::uint32_t>(first);
+            blockCount_ = static_cast<std::uint32_t>(last - first + 1u);
+        } else {
+            firstBlock_ = gt4::coregs3::vram::kCarFirstBlock;
+            blockCount_ = gt4::coregs3::vram::kCarBlockCount;
+        }
+        maxFrames_ = ParseCount(std::getenv("GT4_COREGS3_VRAM_MAX_FRAMES"), maxFrames_);
+        if (maxFrames_ == 0) maxFrames_ = 1;
+        enabled_ = true;
+        std::fprintf(stderr,
+                     "[coregs3] VRAM sidecar: %s, VBlanks %llu-%llu, blocks 0x%04X..0x%04X (%u B/frame), at most %llu "
+                     "frames\n",
+                     path_.c_str(), static_cast<unsigned long long>(firstVblank_),
+                     static_cast<unsigned long long>(lastVblank_), static_cast<unsigned>(firstBlock_),
+                     static_cast<unsigned>(firstBlock_ + blockCount_ - 1u),
+                     blockCount_ * gt4::coregs3::vram::kBlockBytes, static_cast<unsigned long long>(maxFrames_));
+    }
+
+    void Write() {
+        if (!enabled_ || records_.empty() || written_) return;
+        written_ = true;
+        std::FILE *file = std::fopen(path_.c_str(), "wb");
+        if (file == nullptr) {
+            std::fprintf(stderr, "[coregs3] cannot open VRAM sidecar %s\n", path_.c_str());
+            return;
+        }
+        std::uint64_t bytes = 0;
+        for (const Record &record : records_) {
+            gt4::coregs3::vram::Header header;
+            header.vblank = record.vblank;
+            header.first_block = firstBlock_;
+            header.block_count = blockCount_;
+            std::uint8_t encoded[gt4::coregs3::vram::kHeaderBytes];
+            gt4::coregs3::vram::encode_header(encoded, header);
+            if (std::fwrite(encoded, 1, sizeof encoded, file) != sizeof encoded ||
+                std::fwrite(record.bytes.data(), 1, record.bytes.size(), file) != record.bytes.size()) {
+                std::fprintf(stderr, "[coregs3] VRAM sidecar write failed\n");
+                break;
+            }
+            bytes += sizeof encoded + record.bytes.size();
+        }
+        std::fclose(file);
+        std::fprintf(stderr, "[coregs3] VRAM sidecar: %zu records, %llu bytes -> %s\n", records_.size(),
+                     static_cast<unsigned long long>(bytes), path_.c_str());
+    }
+
+    bool enabled_ = false;
+    bool written_ = false;
+    std::string path_;
+    std::uint64_t firstVblank_ = 0;
+    std::uint64_t lastVblank_ = ~0ull;
+    std::uint64_t maxFrames_ = 32;
+    std::uint64_t lastDumped_ = ~0ull;
+    std::uint32_t firstBlock_ = gt4::coregs3::vram::kCarFirstBlock;
+    std::uint32_t blockCount_ = gt4::coregs3::vram::kCarBlockCount;
+    std::vector<Record> records_;
+};
+
+Coregs3VramDump &coregs3_vram_dump() {
+    static Coregs3VramDump dump;
+    return dump;
+}
 
 namespace priv {
 constexpr std::uint32_t kPage = 0x12000000u;
@@ -5514,6 +5657,8 @@ void Renderer::Flush() {
     s.frontEnd_.VBlank(&kEverything, 1);
     s.frontEnd_.FlushBatch(FlushReason::VBlank);
     ++s.vblanks_;
+    // TASK-090 CoreGS 3.0: the SLM sidecar of this VBlank (a no-op unless GT4_COREGS3_VRAM is set).
+    coregs3_vram_dump().MaybeDump(s.vblanks_, s.memory_.Local().bytes().data());
     if (s.displayRegs_.smode2 & 1u) {
         ++s.counters.vblanksInterlaced;
     } else {

@@ -1,5 +1,25 @@
 # Current Status
 
+## 2026-11-10: car textures: the SLM sidecar and the native decode (TASK-090)
+
+The `.gt4scene` capture has the 40-byte PGLUtexture record of every item but no texture pixels. `GT4_COREGS3_VRAM` now
+makes the CoreGS 2.0 GS worker copy a bounded SLM block range (default the measured car set, blocks 0x2BC0..0x38FF,
+868,352 B/frame) once per captured VBlank into a versioned `.gt4vram` sidecar written at shutdown, off the guest's
+timeline; record V covers capture frame V-1. `native/coregs3/coregs3_texture.{hpp,cpp}` (Vulkan-free, `gt4_coregs3` in
+`GT4_HW_GS` builds) parses TEX0/TEX1/CLAMP, locates the texels and CSM1 palette in a sidecar record, returns RGBA8 +
+width/height + Format G and Format P keys, and refuses unmeasured PSM/TW/TH, mipmaps, CSM2, CLD, palette formats, CSA
+and truncated ranges with an explicit status. It reuses the hw_gs memory/CLUT/replacement code, not a second decoder.
+Measured correction: TEX0.CSA selects a 16-entry group of the full 16x16 32-bit CSM1 palette bank at sampling time; the
+first model (hw_clut's CSA-shifted load) decoded draw 2 exactly but draw 3 with the wrong 16 entries, and the full-bank
+model reproduces both reference PNGs byte for byte. Evidence (night race, 3x, bench card): capture 819,808 B (frames
+7398/7399), sidecar 2,605,152 B (records 7398-7400), reference dump 1,481 PNGs; frame 0 decodes 204 per-draw textures
+with 0 refusals and 148 exact reference matches; draw 2 `5d6616a3…` and draw 3 `19b46aed…` are exact in both frames and
+their keys/RGBA are equal across VBlanks 7398/7399; T8 4 of 5 exact; the 256x256 CT32 env map decodes (no reference: it
+is a target). New fixture `native_coregs3_texture_decode` (synthetic 4 MiB SLM, T4/T8/CT32, CSA 0/6, key stability,
+refusals, sidecar round trip), CTest coregs3 7/7, Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. No renderer
+samples a texture yet; the UV convention, lighting and `.gt4scene` v4 are untouched. Details: `docs/COREGS3-HOOKS.md`
+§15.
+
 ## 2026-11-10: track/course study: the ALL_DRAWS capture and the sky+road milestone
 
 The hook already has `GT4_COREGS3_ALL_DRAWS` (`native/coregs3/coregs3_hooks.cpp:357/479`), which stores every

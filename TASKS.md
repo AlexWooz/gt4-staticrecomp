@@ -1721,8 +1721,16 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   vertices, blend ~11k, DATE on cars/env/reflection, per-pass XYOFFSET changes. Gaps: pass tag/K7, textures/SLM,
   per-pass GS state, targets, PATH3/2D, CLUT animation, capacity. Plan: 3a capture, 3b sky+road offline, 3c categories,
   3d reflections/env/mirror, 3e live.
-- Next: the texture decode in flight, then the offline textured renderer; the capture extension (ALL_DRAWS pass
-  tag/K7, hw GS-stream, `render_panel` 2D recorder) unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates.
+- **Car textures: SLM sidecar and native decode (2026-11-10).** `GT4_COREGS3_VRAM` makes the CoreGS 2.0 GS worker copy
+  a bounded SLM block range (default 0x2BC0..0x38FF, 868,352 B/frame) once per captured VBlank into a versioned
+  `.gt4vram` sidecar; record V covers capture frame V-1. `coregs3_texture` decodes T4/T8/CT32 from the sidecar (hw_gs
+  memory/CLUT/replacement, Format G/P keys) with explicit refusals. Measured palette correction: TEX0.CSA selects a
+  16-entry group of the full 16x16 CSM1 bank at sampling time; draw 2 (CSA 0) and draw 3 (CSA 6) reproduce the CoreGS
+  2.0 `GT4_HW_DUMP_TEXTURES` PNGs byte for byte; keys/RGBA stable across VBlanks 7398/7399. Frame 0: 204 per-draw
+  decodes, 0 refused, 148 exact reference matches; T8 4/5; the CT32 256x256 env map decodes natively (no reference).
+  CTest 7/7, Python 7/7, 3x gate OK. No renderer samples a texture yet.
+- Next: the offline textured renderer using the decoded textures, then the capture extension (ALL_DRAWS pass tag/K7,
+  hw GS-stream, `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates.
   The per-item light state is now consumed by both renderers.
 
 
