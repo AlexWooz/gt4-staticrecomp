@@ -5188,3 +5188,15 @@ The shipped path stays our MIT tools.
   compiled name list, add `RecRoot1` at its end like the capacity field; if it walks the text children, the missing
   name entry is the fix.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 9 (2026-11-10, project-tree binding located).**
+- `mProject` is an `mComposite` (project = widget tree root); `mProject__virtual_63` walks children
+  (`func_00206868`/`func_0025C300`, vtable slot 95) and `mProject__virtual_61` constructs `MWidgetReader`, the native
+  `.mproject` parser that owns `RootWindow` (`0x599436`), `has_script` (`0x59AD00`) and `.mproject` (`0x598B51`).
+  `findPage` (`0x229608`) and `exportRootWindow` (`0x2296E8`) sit in the same `.rodata` block and are registered
+  methods (no direct `jal`).
+- **Gate:** a runtime-added `RootWindow` is parsed and instantiated (the tile exists) but not **exported** to the
+  page's static; `option.root` is nil and Cross dispatches to 0. The export happens inside the native reader over the
+  project text it loaded at start.
+- **Next:** read the reader's `RootWindow`/`has_script` branch (the exact export site); if it is a name -> value
+  table, add `RecRoot1`; otherwise one native call to `exportRootWindow` for the new window at project load.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.

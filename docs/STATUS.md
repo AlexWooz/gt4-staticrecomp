@@ -1,5 +1,20 @@
 # Current Status
 
+## TASK-214 Phase 9: the root export is native (2026-11-10)
+
+- `mProject` is an `mComposite` (the project is the widget-tree root); `mProject__virtual_63` walks the children
+  (`func_00206868`/`func_0025C300`, vtable slot 95) and `mProject__virtual_61` constructs `MWidgetReader`, the native
+  `.mproject` parser that owns `RootWindow` (`0x599436`), `has_script` (`0x59AD00`) and `.mproject` (`0x598B51`).
+  `findPage` (`0x00229608`) and `exportRootWindow` (`0x002296E8`) are registered methods in the same `.rodata` block.
+- **Gate:** a runtime-added `RootWindow` is parsed and instantiated (the tile exists) but not **exported** to the
+  page's static; `option.root` is nil and Cross dispatches to 0 (`0x0030B450`). The export happens inside the native
+  reader over the project text loaded at start, so the data path cannot add it.
+- **Next:** read the reader's `RootWindow`/`has_script` branch (the export site); if it is a name -> value table, add
+  `RecRoot1`; otherwise one native `exportRootWindow` call for the new window at project load - a single call in the
+  existing walk, not a new subsystem.
+- **Proven:** with an existing root (`MiscRoot`) the page opens and the run completes (Phase 7, `frame_03400.png`).
+- **Nothing swapped:** the tile stays; every existing page unchanged; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 8: the root-binding natives located (2026-11-10)
 
 - **Found:** `MProject.findPage` `0x00229608` and `MProject.exportRootWindow` `0x002296E8` resolve a root window by

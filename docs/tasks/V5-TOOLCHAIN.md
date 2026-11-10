@@ -652,3 +652,35 @@ Next experiments:
 3. If it walks the text children, the failure is the name lookup; the fix is the missing table entry, not the window.
 
 Until then the page has a tile and a module but no bound root; the Arcade host-tree hub remains the fallback.
+---
+
+# Phase 9 - where the project binds roots (2026-11-10)
+
+## 31. The project is a widget tree; the reader is native
+
+- `mProject` is an `mComposite` subclass (`mProject__structor_1`: `mComposite__structor_1` + a `RefCounter`),
+  i.e. the project itself is the root of the widget tree.
+- `mProject__virtual_63` walks the tree: `func_00206868(self)` gives the first child, `func_0025C300(child)` the
+  next, and each child receives a vtable call (`vt[95]`). `mProject__virtual_64` does the same walk for the
+  destructor path.
+- `mProject__virtual_61` constructs `MWidgetReader` - the `.mproject` parser that owns the `RootWindow`/`has_script`
+  keywords (the `RootWindow` string at file offset `0x599436`, `has_script` at `0x59AD00`, `.mproject` at `0x598B51`).
+
+The binding natives live in the same `.rodata` block as those keywords: `MProject.findPage` (`0x00229608`),
+`MProject.exportRootWindow` (`0x002296E8`), `getDir` and the module path format `%s::%s`. They are registered methods
+(no direct `jal`): the reader exports each scriptable root through them.
+
+## 32. The gate, precisely
+
+A runtime-added `RootWindow` is parsed and instantiated (the tile exists) but **not exported** to the page's static:
+`option.root` is nil, so Cross dispatches to 0. Nothing in the data path can add the export: it happens inside the
+native reader when it walks the *compiled* project text it loaded at start.
+
+Smallest next steps, in order:
+
+1. Read `MWidgetReader`'s `RootWindow` branch (the function that references the `RootWindow` string) and see what it
+   does with `has_script`; that is the exact export site.
+2. If the export is a name -> value table inside the project, add `RecRoot1` there (data) or call
+   `exportRootWindow` once for the new window (one native hook at project load).
+3. Native patch shape: at `mProject` load completion, call `findPage("RecRoot1")`/`exportRootWindow` for the new
+   window, or extend the reader's name check. Both are a single call in the existing walk, not a new subsystem.
