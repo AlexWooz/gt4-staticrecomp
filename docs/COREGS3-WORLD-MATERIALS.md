@@ -231,3 +231,25 @@ python build/analysis/probe_color_pos.py night-m1.gt4scene night-m1.gt4tap
 - The reference renderer is CoreGS 2.0's own frame; the study assumes it is the fidelity target, as TASK-090 defines.
 - The 1x page correlation numbers are statistical over 4-138k-px classes; the 3x page-class numbers are the headline
   metrics.
+
+## Follow-up (2026-11-10, branch `task/090-pass-textures`): the texture capture implemented
+
+Design 1 of the fix list is implemented and measured; the full record is
+[docs/COREGS3-HOOKS.md](COREGS3-HOOKS.md) §24 and the journal entry of 2026-11-10.
+
+- **Design (b), replaying the tap, is refuted.** `.gt4tap` is PATH1 only: 80,135 records, 16,604 tags, **0 IMAGE tags
+  and 0 TRX writes**. The texture pixel uploads are not in it.
+- **The per-pass SLM record (this document's cheapest form) is too early.** Page `0x36D0` is byte-identical at every K7
+  pass begin of five captured frames and at frame end (`a191c894...`): the frame uploads its world textures during the
+  course pass. The K1 draw marker, pre and post, is also too early (draw 35 still holds the atlas).
+- **What works: a per-VU1-job snapshot on the GS worker**, taken after the job's records are parsed and before they
+  execute. `.gt4vram` version 2 record kind 3 carries the job id and the texture/palette windows; the tap's source
+  records map each item's address to its job, so the world table binds the pixels of the item's own draw.
+  Frame 0: 1,296 world items on 486 job records, 0 refused.
+- **Result:** PSNR 20.578 -> 22.35 dB, SSIM 0.62212 -> 0.65055, pct_bad 76.173 -> 64.8%, mean |diff| 19.6355 -> 14.84;
+  page `0x36D0` correlation -0.009 -> 0.111, ref/world 1.303 -> 1.445. The road now shows the reference's lane
+  markings and PIT sign; the linear fit `ref = 0.834*world + 12.8` names the residual as the additive wet-road
+  reflection (fix 3) and the post chain (fix 4).
+- **This study's gates are not reached** (page ratio 1.0 +/- 0.15 and correlation > 0.5, PSNR >= 24 dB, SSIM >= 0.75,
+  pct_bad <= 10%) and were not relaxed: fixes 3 and 4 bound the remaining picture, and the texture binding itself is
+  complete on the selected items.

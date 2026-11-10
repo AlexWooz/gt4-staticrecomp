@@ -782,6 +782,11 @@ the lighting are untouched and the `.gt4scene` format stays at version 4.
 
 ### 15.1 The `.gt4vram` sidecar (writer: CoreGS 2.0 `core2::Renderer::Flush`)
 
+> **Superseded for world textures by §24 (2026-11-10).** This section describes **version 1** (one frame-end snapshot per
+> VBlank). Version 2 keeps that record (kind 0) and adds pass-begin, K1-draw and per-VU1-job records, which is what the
+> offline world path uses; the environment table below still applies to the vblank record, and §24.2 lists the newer
+> variables.
+
 `GT4_COREGS3_VRAM=<file>` makes the GS worker copy a bounded SLM block range once per captured VBlank and write the
 file at shutdown (never on the guest's timeline, the rule of §7). It reads `memory_.Local()` — the same CPU shadow
 memory the CoreGS 2.0 texture dump hashes — and never writes guest memory or renderer state.
@@ -1384,3 +1389,88 @@ and colour (10 items) are counted substitutions, and the tap's generated S/T for
 captured UV arrays, so the sampled texture coordinate remains open. The 0x1508 mapping is exact for the sky; one
 env_map item with the same selector differs from the fragment (max 159) outside the world selection and is not
 investigated. The 11 0x1278 items carry no UV channel and stay untextured.
+
+## 24. Round 25 (2026-11-10, branch `task/090-pass-textures`): the per-job SLM snapshot and the world's own texture pixels
+
+The world-materials study (`docs/COREGS3-WORLD-MATERIALS.md`) measured that the frame-end `.gt4vram` snapshot is not the
+world-pass content: page `0x36D0`, 53.7% of the compared mask, is an advert atlas at frame end and at every pass begin,
+while the course draws sample road there. This round adds the capture that holds the pixels a draw's own VU1 job
+samples, and the offline binding that uses them.
+
+### 24.1 Why the round's first two designs fail (C, measured)
+
+- **The tap cannot replay uploads.** `.gt4tap` is PATH1 (XGKICK) only: 80,135 records / 16,604 tags over the M1
+  window, **0 IMAGE tags and 0 TRX writes**. The mission's option (b), replaying the tap's uploads over a VRAM base,
+  cannot exist. A capture-only stream trace (`GT4_COREGS3_STREAM_TRACE`) over every GIF path of one race frame found no
+  IMAGE descriptor either; PATH3 chunks can split a GIF packet, which that packet-level parser does not follow, so the
+  upload path is **Unknown** rather than absent.
+- **The K7 pass-begin snapshot is too early.** With the new v2 pass-begin record (`kRecordPassBegin`), page `0x36D0` is
+  byte-identical at every pass begin of all five captured frames and at frame end (sha256 `a191c894...`). The upload
+  happens inside the course pass.
+- **The K1 draw marker is too early.** A draw record (`kRecordDrawTexture`) copied at K1 pre and, in a diagnostic run
+  (`GT4_COREGS3_VRAM_DRAW_AT=post`), at the shape call's return, still holds the atlas for draw 35, the first course
+  draw that binds `0x36D0`. The upload is posted after the shape call and before the draw's VU1 job executes.
+
+### 24.2 The per-job snapshot (the fix)
+
+`hw_gs_stream_sink.cpp`'s GS worker executes every VU1 job (`SinkRecord::MtvuJob`, IN-461 direct intake). With a
+`.gt4vram` sidecar configured it now buffers the job's PATH1 GIF records, parses their A+D TEX0 writes and copies the
+textures' page runs and CSM1 palette banks **before executing any of them** (`SnapshotJobTextures`). At that stream
+position every GS command posted before the job, the draw's texture uploads included, has executed and nothing of the
+job has, so the copy is the content the draw samples. The per-record work is a `std::vector` append; the parse and the
+copy run on the GS worker, never on the EE, and the whole branch is off unless `GT4_COREGS3_VRAM` is set.
+
+The block rule is shared with the EE side in `coregs3/coregs3_texwin.hpp`: TBP0..TBP0 + pages (T4 128x128, T8 128x64,
+CT32 64x32 texels, 32 blocks per page, contiguous, pad pages included) plus four CSM1 palette blocks at CBP. The record
+carries the **job id**, which the tap's source records already pair with each item's packet address, so the offline
+table binds an item to the pixels of its own job with no new EE-side hook and no per-draw marker.
+
+The writer gained `MaybeJobTextures` and `GT4_COREGS3_VRAM_JOBS=0` (the A/B switch; the per-draw records have
+`GT4_COREGS3_VRAM_DRAWS=0`). `GT4_COREGS3_VRAM_MAX_FRAMES` bounds records, not frames (a captured frame holds one
+vblank record, one per kept pass marker and one per textured job).
+
+### 24.3 The sidecar format, version 2
+
+The header is 48 bytes: `magic`, `version`, `vblank`, `first_block`, `block_count`, `byte_count`, `record_kind`,
+`pass`, `label`, `window_count`, `reserved`; then `window_count` x `{u32 first_block, u32 block_count}`; then
+`block_count * 256` bytes, the windows concatenated. Kinds: `0` vblank (the version 1 semantic: the worker's counter at
+the flush, one ahead of the capture frame), `1` pass-begin (`vblank` = the capture frame's own, `pass` = PassId), `2` K1
+draw (`label` = CapturedDraw::sequence; evidence and secondary fallback) and `3` VU1 job (`label` = job id; the fix).
+Version 1 files still parse as one vblank window, and every version 1 path keeps working: the car render on the M1 v1
+sidecar is byte-identical to the `a7a9434d` executable (SHA-256 `392dd4ed...`).
+
+### 24.4 Capture recipe and evidence (night race, frame 0 = VBlank 7398)
+
+```
+GT4_BENCH_OUT=<wt>/build/evidence-pass-textures bash scripts/coregs2_bench/night-run.sh pt4 \
+  build/pass-textures/gt4vulkan.exe GT4_COREGS3=shadow \
+  GT4_COREGS3_CAPTURE=.../night-pt4.gt4scene GT4_COREGS3_CAPTURE_VBLANKS=7398-7402 GT4_COREGS3_ALL_DRAWS=1 \
+  GT4_COREGS3_TAP=.../night-pt4.gt4tap GT4_COREGS3_TAP_VBLANKS=7398-7406 \
+  GT4_COREGS3_VRAM=.../night-pt4.gt4vram GT4_COREGS3_VRAM_VBLANKS=7398-7403 \
+  GT4_COREGS3_VRAM_BLOCKS=0x2BC0-0x3FFF GT4_COREGS3_VRAM_PASSES=5 GT4_COREGS3_VRAM_DRAWS=0 \
+  GT4_COREGS3_VRAM_MAX_FRAMES=8192
+```
+
+Sidecar **498 records (6 vblank, 6 pass-begin, 486 job), 42,464,464 B**; counters: 1,530,243 draw markers filtered,
+406,633 job vblanks outside the range, 0 refused. The offline world render (`gt4_coregs3_render ... --world
+--dump-textures <dir>`) binds **1,296 world items on 486 job records, 0 refused, 0 on the pass image, 0 on the
+frame-end image**.
+
+### 24.5 Gates
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | **12/12 passed**, including the new `native_coregs3_pass_textures` (v2 record kinds, the legacy header, every malformed variant, the snapshot channel, the pass/draw/job binding, cache isolation) |
+| Python `tests/python/test_coregs3_units.py` | **8/8 passed** |
+| Car-only render vs the `a7a9434d` executable (M1 v1 sidecar) | **byte-identical**, SHA-256 `392dd4eda2fa6f99467dea149c843398c4751c253bfdf582a8a2b8ce6276759b`; our own v2-sidecar car render is the same image, so the v1 fallback and the v2 reader agree |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow |
+| World picture vs frame 07400 | PSNR 20.578 -> **22.35 dB**, SSIM 0.62212 -> **0.65055**, pct_bad 76.173 -> **64.8%**, mean abs 19.6355 -> **14.84**, luma 30.21 -> 18.96 (reference 26.69); page `0x36D0` correlation -0.009 -> **0.111**, ref/world 1.303 -> **1.445** |
+| The study's metric gates (page ratio 1.0 +/- 0.15 and correlation > 0.5; PSNR >= 24 dB, SSIM >= 0.75, pct_bad <= 10%) | **not reached**, and not relaxed: the residual is a nearly constant +12.8 luma on the road, the captured wet-road reflection pass (pass 7, additive; study fix 3) and the uncaptured post chain (fix 4), not the texture binding |
+
+### 24.6 Open
+
+- The uploader and the PATH3 packet(s) that stream the road into `0x36D0` are **Unknown**; the job snapshot captures
+  their result. A `.gt4gs` PATH3 sidecar with a stream-level parser (the gs-stream study's S1) would name them.
+- The 0xA0 morph UV first-key substitution still misplaces the sampled coordinate for its 46 items.
+- The per-draw (`kRecordDrawTexture`) and pass-begin paths stay in the format as evidence and fallbacks; they are
+  measured as too early for this scene and are not used by the world picture.

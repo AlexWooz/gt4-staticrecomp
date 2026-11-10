@@ -1865,8 +1865,25 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   differs outside the world selection. CTest coregs3 11/11, Python 8/8, car render byte-identical to the base-commit
   executable (`8d22a10a...`), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences,
   13/13 frames, capture 4,477,368 B). Evidence: `build/evidence-world-families/`.
-- Next: the per-pass texture/palette capture (the world brightness root cause); a v6 capture field for the
-  0xA0 morph factor; the effects/HUD capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
+- **Pass textures: the world binds the pixels its own draws sampled (2026-11-10, branch `task/090-pass-textures`).**
+  The world-materials study's root cause is fixed: `.gt4vram` version 2 (48-byte header, record kind 0 vblank / 1
+  pass-begin / 2 K1 draw / 3 VU1 job, window table) carries per-VU1-job snapshots taken on the GS worker right before
+  the job executes, after the draw's texture uploads and before any of its drawing. The tap has no uploads (0 IMAGE
+  tags, 0 TRX writes in 80,135 records), so a tap replay cannot exist (design b refuted, C); the pass-begin and K1-draw
+  markers both still hold the previous atlas (C, measured), which is why the marker is the job. The tap's source
+  records map each item's packet address to its job, so the offline table binds **1,296 world items on 486 job records,
+  0 refused**. Capture: 5 frames, sidecar 498 records / 42.5 MB (6 vblank, 6 pass-begin, 486 job). Picture: PSNR 20.578
+  -> **22.35 dB**, SSIM 0.62212 -> **0.65055**, pct_bad 76.173 -> **64.8%**, mean |diff| 19.6355 -> **14.84**, luma
+  30.21 -> 18.96; page `0x36D0` correlation -0.009 -> **0.111**, ref/world 1.303 -> **1.445**. The road now shows the
+  reference's lane markings and PIT sign, and a linear fit is `ref = 0.834*world + 12.8`: the residual is the captured
+  wet-road reflection pass (study fix 3) plus the uncaptured post chain (fix 4), so the study's metric gates (ratio
+  1.0 +/- 0.15, correlation > 0.5, PSNR >= 24 dB, SSIM >= 0.75, pct_bad <= 10%) are **not reached and not relaxed**.
+  The v1 sidecar path keeps working (car render byte-identical to the `a7a9434d` executable, `392dd4ed...`); CTest
+  coregs3 12/12 (new `native_coregs3_pass_textures`), Python 8/8, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
+  `build/evidence-pass-textures/`; design and format: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §24.
+- Next: draw the captured wet-road reflection pass (study fix 3) and measure the post chain (fix 4) to close the
+  remaining picture gap; a v6 capture field for the 0xA0 morph factor; a `.gt4gs` PATH3 stream capture to name the
+  texture uploader (still Unknown); the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

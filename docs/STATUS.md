@@ -1,5 +1,29 @@
 # Current Status
 
+## 2026-11-10: pass textures, the world binds the pixels its own draws sampled (TASK-090, branch `task/090-pass-textures`)
+
+The world-materials study's dominant cause is fixed. `.gt4vram` is now **version 2**: a 48-byte header with an explicit
+record kind (0 vblank, 1 pass-begin, 2 K1 draw, 3 VU1 job), the pass or job id and a window table of
+`{first_block, block_count}`. The kind that matters is the **per-VU1-job snapshot**, taken on the GS worker right before
+the job executes: at that stream position the draw's texture uploads have landed and none of its drawing has run. The
+tap's source records map each item's packet address to its job, so the offline world table binds every item to the pixels
+its own job sampled: **1,296 world items on 486 job records, 0 refused**. The tap itself has no uploads (80,135 records,
+0 IMAGE tags, 0 TRX writes), and both the pass-begin and K1-draw markers still show the previous atlas, so neither the
+tap replay nor those markers could work (both measured).
+
+Capture (night race, capture VBlanks 7398-7402, tap 7398-7406, world block range 0x2BC0-0x3FFF):
+**sidecar 498 records / 42,464,464 B (6 vblank, 6 pass-begin, 486 job), 0 refusals**. World frame 0 against the same
+CoreGS 2.0 3x reference: **PSNR 20.578 -> 22.35 dB, SSIM 0.62212 -> 0.65055, pct_bad 76.173 -> 64.8%, mean |diff|
+19.6355 -> 14.84, luma 30.21 -> 18.96 (reference 26.69)**; page `0x36D0` correlation **-0.009 -> 0.111**, ref/world
+1.303 -> 1.445. The road now shows the reference's lane markings and PIT sign; a linear fit is `ref = 0.834*world +
+12.8`, the captured wet-road reflection pass (study fix 3) plus the uncaptured post chain (fix 4). The study's metric
+gates (per-page ratio 1.0 +/- 0.15 and correlation > 0.5, world PSNR >= 24 dB, SSIM >= 0.75, pct_bad <= 10%) are **not
+reached and not relaxed**; the remaining gap is those two layers, not the texture binding. Checks: CTest coregs3 12/12
+(new `native_coregs3_pass_textures`), Python 8/8, the car render byte-identical to the `a7a9434d` executable on the v1
+sidecar (`392dd4ed...`) and to our own v2-sidecar car render, and the 3x off/shadow identity gate
+COREGS3-NIGHT-CHECK-OK. Design and format: [COREGS3-HOOKS](COREGS3-HOOKS.md) §24; evidence
+`build/evidence-pass-textures/`.
+
 ## 2026-11-10: world families, the 0xB08/0xA0/0x1278 course items (TASK-090, branch `task/090-world-families`)
 
 The offline world renderer now draws the 72 course items it used to exclude by VU1 program, with their measured
