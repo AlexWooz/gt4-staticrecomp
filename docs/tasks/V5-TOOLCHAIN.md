@@ -362,3 +362,71 @@ The fallback stays the accepted Arcade host-tree hub, which removes nothing.
 - The private toolchain is not part of the shipped code and must not become a build dependency; the shipped tools
   reproduce the same bytes.
 - Mid-list insertion is unsafe without instruction-index relocation; the shipped `add-page` only inserts at the end.
+---
+
+# Phase 3 - the tile gate: what the Options builder does with a 25th page (2026-11-10)
+
+Owner constraint restated: no existing page is retargeted, swapped or removed. LAN, 2 Player Battle/SplitBattle,
+Network and every other page stay. This phase only reads the tile path and probes it.
+
+## 15. The crash site (Confirmed by disassembly)
+
+`ra 0x00319ECC` is inside the function at `0x00319E68` (EE, reconstructed ELF). The relevant code:
+
+```
+00319E90  lw   $v1, 0x2c($s2)      ; v1 = container->list (an hArray-like: data +0x14, count +0x20)
+00319E94  lw   $v0, 0x20($v1)      ; count
+00319E98  lw   $s0, 0x14($v1)      ; data
+00319E9C  addiu $v0, $v0, -1       ; count - 1
+00319EA0  sll   $a1, $v0, 2
+00319EA4  sw    $v0, 0x20($v1)     ; store the decremented count (pop)
+00319EA8  jal   0x00323D08
+00319EAC  addu  $s0, $s0, $a1
+00319EB0  lw    $a1, ($s0)         ; a1 = element
+00319EB4  lw    $v1, 4($a1)        ; v1 = element->class
+00319EB8  addiu $v1, $v1, 0x50     ; the class method table at +0x50
+00319EBC  lh    $a0, ($v1)         ; 16-bit method offset
+00319EC0  lw    $v0, 4($v1)        ; function pointer
+00319EC4  jalr  $v0                ; <-- v0 = 0: "missing code at 0x00000000"
+00319EC8  addu  $a0, $a1, $a0
+```
+
+So the engine **pops an element from a list and dispatches a virtual method on it**; the element's class pointer
+(or its method slot) is invalid, so the call lands at 0. It is not a tile-geometry read: the failing object is a
+list element.
+
+## 16. Probes (all headless, same 3-range patch, same navigation)
+
+| probe | change | result |
+|---|---|---|
+| page at the end of the module initializer | `OptionPage("Recomp", RecRoot1, nil)` + `STATIC_DEFINE`, EXIT last | boots, Options renders, 2,600/3,200 frames, exit 0, **no tile** |
+| page after `Race` (GroupGeneral) | new page + static | crash at frame **1743**, `ra 0x00319ECC` |
+| page after `Language` (GroupMisc) | new page + static | crash at frame **1743**, same `ra` |
+| page after `Language`, existing root | label `Recomp`, root `MiscRoot`, no new static | crash, same `ra` |
+| page after `Language`, duplicate label | label `Misc`, root `MiscRoot` | crash, same `ra` |
+| **byte-identical copy of the `Language` block** after itself | 7 instructions copied verbatim | crash at frame **1747**, same `ra` |
+| 8 `NOP`s after `Language` (same instruction-count shift, no page) | control | **no crash**, 3,000 frames, exit 0 |
+
+The NOP control rules out instruction-index relocation: shifting the later root instructions by 8 is harmless. The
+verbatim copy of a retail block still crashes, so the block encoding, the label, the root and the static slot are
+**not** the cause. Any additional page placed inside a group breaks the same engine structure.
+
+## 17. The gate
+
+The Options page list/group structures are sized for the **24 compiled pages**: the 25th page inside a group is
+pushed into a list whose teardown dispatch (`0x00319ECC`) receives an element without a valid class. A page appended
+after every group is accepted at load but belongs to no group, so it gets no tile.
+
+The smallest next experiment (in order):
+
+1. **Find the size.** The `Group` construction is `OptionPage(97) EVAL STRING_CONST "Group" STRING_CONST
+   "GroupGeneral" NIL NIL CALL 4` - the two trailing `NIL`s are unqualified and one may be a capacity/count. Probe:
+   replace the last `NIL` of `GroupMisc` with `INT_CONST 4` (or 1) and add the page inside that group; if the crash
+   disappears the argument is the capacity and the tile count is script-declared.
+2. **Or find the engine constant.** `0x00319E68`'s caller and the list owner (`[s2+0x2C]`) identify where 24 comes
+   from; `state.bin` from a crashed run has the list count.
+3. **Layout path:** if the count comes from `option.mproject`, the ScrollWindow/group `children [N]` is the place to
+   add one slot (text edit, 8,137 bytes of slack available).
+
+Until one of those is proven, the visible page stays blocked; the accepted Arcade host-tree hub remains the
+fallback and nothing existing is touched.

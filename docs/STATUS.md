@@ -1,5 +1,23 @@
 # Current Status
 
+## TASK-214 Phase 3: the Options tile gate (2026-11-10, read + probes; page blocked, nothing swapped)
+
+The v5 page entry, module code, static, PS2ZIP and ToC work; the visible tile is the remaining gate.
+
+- **Crash site read (`0x00319ECC`)**: the function at `0x00319E68` pops an element from a list (data `+0x14`, count
+  `+0x20`), reads the element's class (`+4`), the method table (`+0x50`) and `jalr`s it. The element has no valid
+  class, so the call lands at 0. It is a list teardown dispatch, not a tile geometry read.
+- **Probes:** a page at the end of the module initializer loads and Options renders (2,600/3,200 frames, exit 0) but
+  gets no tile. A page inside a group crashes at frame 1743 with the same `ra` - with `RecRoot1` or `MiscRoot`, with
+  or without a new static, with a duplicate `Misc` label, and **also with a byte-identical copy of the retail
+  `Language` block**. Eight `NOP`s at the same position do not crash (3,000 frames), so instruction-index shifting is
+  not the cause and the block encoding is fine.
+- **Gate:** the page list/group structures are sized for the 24 compiled pages; the 25th page inside a group breaks
+  the teardown dispatch. Next experiments: the `Group` call's trailing `NIL` arguments as a capacity, the engine
+  constant behind `[s2+0x2C]`, or the layout `children [N]` (8,137 bytes of mproject slack available).
+- **Nothing swapped:** LAN, 2 Player Battle/SplitBattle, Network and every other page are unchanged. Tests 845 OK
+  (77 skipped). Evidence `private/slice438-toolchain-run/` (`option.probe-*.adc`, `run2.log`, frames).
+
 ## TASK-214 Phase 2: v5 reassembler, inserted page and the tile gate (2026-11-10, private toolchain authorized; no page tile yet)
 
 The owner authorized using GTAdhocToolchain for private use (recorded with the upstream AI policy in

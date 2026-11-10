@@ -5109,3 +5109,16 @@ The shipped path stays our MIT tools.
 - **Gate:** the Options root builds one tile per page per group; a visible page needs that tile entry (label/icon/
   geometry, builder at 0x00319ECC) or one more constructed tile. Entry, module, static, PS2ZIP and ToC are solved.
 - **Tests:** `test_adhoc_v5.py` 14 OK, `test_gt4_vol_toc.py` 10 OK, full suite 845 OK (77 skipped).
+**Phase 3 (2026-11-10, tile gate).** The Options tile path is read and probed; no existing page was touched.
+- **Crash site (`0x00319ECC`)**: a pop loop in `0x00319E68` - it takes an element from a list (`data +0x14`, count
+  `+0x20`), reads the element's class (`+4`), the method table (`+0x50`) and `jalr`s the entry. A null entry gives
+  `missing code at 0x00000000`. The failing object is a list element, not a geometry read.
+- **Probes:** page at the end = boots, Options renders, 2,600/3,200 frames, exit 0, no tile. Page inside a group
+  (after Race, after Language, with `RecRoot1`, with `MiscRoot`, with no new static, with a duplicate `Misc` label)
+  = crash at frame 1743, same `ra`. **A byte-identical copy of the retail `Language` block also crashes** (frame
+  1747). 8 `NOP`s at the same position do not crash (3,000 frames, exit 0), so instruction-index shifting is ruled
+  out and the block encoding is not the cause.
+- **Gate:** the page list/group structures are sized for the 24 compiled pages; a 25th page inside a group breaks
+  the teardown dispatch. Next: probe the `Group` call's trailing `NIL` arguments as a capacity, or find the engine
+  constant in `0x00319E68`/`[s2+0x2C]`, or the layout `children [N]` if it comes from `option.mproject`.
+- **Tests:** `test_adhoc_v5.py` 14 OK, `test_gt4_vol_toc.py` 10 OK, full suite 845 OK (77 skipped).
