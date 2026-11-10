@@ -1,5 +1,22 @@
 # Current Status
 
+## TASK-090 round 11: the per-draw VU1 light block captured (2026-11-09, branch `task/090-coregs3`)
+
+The `.gt4scene` format is **version 2**: each `CapturedDraw` now carries the VU1 light block read back at the existing K1
+post hook from the PGL output packet buffer (up to 16 qwords, the UNPACK word and source address; a version 1 file is
+refused, not migrated). The body/paint family uses the six-qword form `0x6C06C0C9`: `0xC9..0xCB` light matrix, `0xCC`
+light position, `0xCD` `(1,1,1,1)`, `0xCE` `(0.8,0.8,0.8,0)`. `coregs3_shape` now decodes the V3-8 normal at TOPS 0x40
+and the raw V3-16 position (`MeshVertex::normal`, `raw_position`), with a hand-authored fixture. Validation on a fresh 3x
+night capture (shadow + tap, VBlanks 7398-7399): with the captured block and the measured formula
+`f = C3 + C4 * min(0, N·U)`, `lit = trunc(base * f)`, the main body family reproduces the tapped RGBAQ on **3,822
+vertices with max 1 level and alpha exact** (both frames); the only exceptions are draws 91/93, a different sub-family.
+Captured vs fitted constants: C3 1.0 vs median 0.9846, C4 0.8 vs median 0.7941, LP direction within 1.15° (17-18
+draws); lanes `(C3,C3,C3,1)`/`(C4,C4,C4,0)` in 27/27 draws. Evidence: `build/evidence/coregs3/r11/` (`lights.gt4scene`
+v2, 620,248 B; `lights.gt4tap`, 29,524,984 B). Checks: CTest 3/3, Python 7/7, the 3x off/shadow gate
+COREGS3-NIGHT-CHECK-OK with the v2 shadow capture (3,382,120 B). Device: Avell A70, RTX 3060 Laptop, Vulkan 1.4.357.
+Open: the VU1 program selector for draws 91/93 (the item tag's word 3 / PGL+0x14), per-item light uploads and the
+dest-flag-0 carried-block case; the lighting formula is not in the renderers yet (next task).
+
 ## TASK-090 round 10: the live present layer, M4 (2026-11-09, branch `task/090-coregs3`)
 
 `GT4_COREGS3=present` now publishes the complete captured frame through an 8-slot ring and the HWR backend draws the

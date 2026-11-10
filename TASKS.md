@@ -1617,8 +1617,14 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   differs only in the car box (36,736 px, x 1064..1595 y 231..906). Independent short run (7,597 VBlanks) also 0
   differences; off/shadow gate on the same binaries passes (13/13 frames). Validation shows no error from the new pass.
   `off|shadow` untouched, `overlay` still refuses, `present` debug-only, nothing ships.
-- Next: the VU1 lighting (fit the tap's RGBAQ against the model normals), the G-IMAGE/G-PERF gates, and then the native
-  fidelity work (textures, fog, effects) on top of the live `present` seam.
+- **Round 11 (2026-11-09, the light block).** `.gt4scene` version 2 stores the per-draw VU1 light block read at K1 post
+  (`CapturedDraw::light_block`, UNPACK word and source; version 1 refused); `coregs3_shape` decodes the V3-8 normal at
+  TOPS 0x40 and the raw V3-16 position. With the captured block, the measured formula
+  `f = C3 + C4 * min(0, N·U)`, `lit = trunc(base * f)` reproduces the tap on **3,822 body-family vertices with max 1
+  level and alpha exact** (frames 7398/7399); captured C3 = 1.0 / C4 = 0.8 vs fitted 0.9846/0.7941; draws 91/93 are
+  another sub-family (program selector not captured yet). Checks: CTest 3/3, Python 7/7, 3x off/shadow gate OK.
+- Next: apply the lighting formula in the offline renderer and the live `present` shader, then the G-IMAGE/G-PERF gates
+  and the native fidelity work (textures, fog, effects) on top of the `present` seam.
 
 
 ### TASK-087 — GS readbacks without stalls

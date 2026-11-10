@@ -67,6 +67,15 @@ packet block with every item's VIF bytes. The draw record holds the `Cmd` header
 `event`, resolved record indices, packet offset/length), the sparse PGL spans, `vf24..vf31`, and the matrix packet read
 back after the call. `native/coregs3/coregs3_scene.hpp` is the authority; `coregs3_fixture.cpp` pins the round trip.
 
+Format **version 2** (2026-11-09) adds the per-draw VU1 light block: the qwords the shape call uploads to VU1
+`TOPS+0xC9` through a DMA REF tag (`func_0049D328` writes the tag into the PGL output packet buffer; its VIF UNPACK word
+names the variant and its address word points at the shape's stack). The record stores up to 16 qwords, the qword count
+(0 when the draw carried no such upload), the raw UNPACK command and the source address. The observed variants are six
+qwords (`0x6C06C0C9`, the body/paint form: `0xC9..0xCB` light matrix, `0xCC` light position, `0xCD` C3, `0xCE` C4), nine
+(`0x6C09C0C9`, `func_0049E698`) and three (`0x6C03C0C9`). A version 1 file has shorter draw records and is refused, not
+migrated: captures are diagnostic and are recaptured with a matching build. The offline reader
+(`build/analysis-lighting/gt4io.py`) follows the same layout.
+
 Captures are derived from the user's own disc and stay under `build/evidence/` (ignored). Nothing is committed.
 
 ## 5. What the first captures show
