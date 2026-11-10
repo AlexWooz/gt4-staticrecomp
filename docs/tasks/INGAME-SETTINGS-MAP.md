@@ -1233,7 +1233,7 @@ static note row) carries it; the launcher can also show its message after the me
   `game-changes.toml`, o launcher valida e junta, e nada entra no save.
 
 
-## 16. Phase 1c: host text and insensitive on the Screen rows (2026-11-09, implemented)
+## 16. Phase 1c: host text and insensitive on the Screen rows (2026-11-09, implemented; the slider rows were replaced by OptionMenus and Resolution became live in Phase 1d, section 20)
 
 Branch `task/213-native-settings`, after Phase 1b. The owner accepted Phase 1. This slice proves the text injection and
 the insensitive state on the game's own slider rows, and ships the **Resolution** and **Monitor** controls.
@@ -1410,3 +1410,131 @@ Page 1c rows are complete and committed.
   depois vêm o foco, a entrada e o voltar. Se não, a rota está bloqueada e a alternativa (uma árvore do host dentro da
   raiz do Options, sem sobreposição flutuante) precisa da sua decisão.
 - Nada foi falsificado: nenhuma página foi inventada neste passo.
+
+## 20. Phase 1d: the Screen rows as OptionMenus and a live Resolution (2026-11-10, implemented, test build)
+
+The owner tested the Phase 1c kit: the labels/values worked, but confirming Resolution changed only the row and the
+feedback file, never the screen; and the sliders were the wrong widget for both rows. This slice fixes both.
+
+### 20.1 Why the Phase 1c row did not change the screen (Confirmed)
+
+- The launcher's **Resolution** is an **output size** (`GT4_OUTPUT_SIZE`, read once at start in
+  `display_aspect.cpp:490` and `window.cpp`), not a display mode. In windowed mode it is the client area; in fullscreen
+  the borderless window always covers the monitor (`set_fullscreen` uses the monitor `rcMonitor`, not the output size),
+  so the monitor stayed at its desktop mode. The value only fed the aspect ratio and the launcher's internal GS scale
+  (`GT4_HW_SCALE`, fixed when the renderer is constructed).
+- The Phase 1c row wrote `game-changes.toml` and was restart-only; the kit launches `gt4vulkan.exe` directly, so no
+  launcher merged the file, and even through the launcher `GT4_OUTPUT_SIZE` is a start value. Hence the row value
+  changed while the screen did not.
+- The three candidate behaviours, decided from the code and the launcher's own model:
+  - **borderless window resize in fullscreen:** the window covers the monitor; shrinking it would reveal the desktop,
+    not change the screen. Not correct for fullscreen.
+  - **render-scale change:** changes the internal GS multiplier only; CoreGS 1.1 sets `GT4_HW_SCALE` at construction and
+    GSdx is a separate process with its INI read at start. Not live today, and not the row's stored meaning.
+  - **true display-mode change:** the only way the actual monitor resolution changes while fullscreen. Chosen.
+
+### 20.2 Implemented behaviour (windowed and fullscreen)
+
+- **Fullscreen:** `window.cpp::apply_display_mode` enumerates the current monitor's modes (`EnumDisplaySettingsW`,
+  preferring the current refresh rate), saves the original `DEVMODE` once, and calls
+  `ChangeDisplaySettingsExW(device, &mode, nullptr, CDS_FULLSCREEN, nullptr)`. The borderless window is then set to the
+  new `rcMonitor`; `WM_SIZE` rebuilds the swapchain and the GS child follows with its resize. The original desktop mode
+  is restored by `restore_display_mode` when fullscreen is left (Alt+Enter/F11 or the Fullscreen row), on `WM_DESTROY`
+  and in the cleanup path. A refused mode (`DISP_CHANGE_*`) is logged and the current mode is kept.
+- **Start:** a fullscreen start applies `GT4_OUTPUT_SIZE` to the monitor (so the Phase 1c kit's 1920x1080 row now
+  matches a real 1920x1080 screen). "Desktop resolution" is the current mode and is a no-op; an unsupported size is
+  logged and the desktop mode stays.
+- **Windowed:** `apply_output_size` computes the frame with `AdjustWindowRectEx` and calls `SetWindowPos` for the chosen
+  client area, centred on the current monitor. The row is greyed while Fullscreen is Off (the owner's rule), so this
+  path is implemented but not reachable from the page yet.
+- **Aspect:** `display_aspect::set_live_output_size` stores the chosen size; `current_ratio` prefers it over the start
+  `GT4_OUTPUT_SIZE` ratio (a fixed `GT4_DISPLAY_ASPECT` still wins). The next race camera and the HUD parameter block
+  use the new ratio; the menu page keeps its layout.
+- **Feedback:** the row still writes `resolution = "WxH"` and the launcher merges it; the guest save is untouched (the
+  hidden sliders' setters are skipped).
+
+### 20.3 The dropdown rows (data-only, no script)
+
+- The page script owns the stock `Vertical`/`Horizontal` `SliderBar` rows (`setupSlider` writes their numeric value and
+  popup), so the row type cannot be changed under the same module. The data-only route of section 12.2 was used:
+  - the ScreenRoot `Pane` stays `320x150`: the hidden stock sliders leave the pack and the two new rows replace them (20 + 3*32 + 34 = 150);
+  - `Vertical` and `Horizontal` get `visible digit {0}` (their script modules still exist and still run; the engine
+    skips them in the VBox packing and focus traversal);
+  - two new `Composite` rows with literal labels (`Resolution`, `Monitor`) and an `OptionMenu` each are inserted before
+    `HiVision`, with **no `has_script`** (the engine still owns the index, popup, focus and drawing; no script module is
+    called);
+  - the Resolution popup has the 29 modes of `\\.\DISPLAY1` as `Composite` choices with literal `TextFace`s (the first
+    is 1920x1080, the kit's start, so the closed row is right at page open); the Monitor popup has the connected
+    monitor(s), here `1: DISPLAY1`;
+  - the private patch is minified (`minify: true`), stored extent 22,449 bytes / decoded 681,977 bytes; container
+    `4d1068828fc9976e5e9bdaef732f22a0b47482373ea6d373c303b769d17f6344`, 77,986 bytes.
+- The engine's `mOptionMenu` keeps the selected index at **`+0xD8`**, the count at `+0xE0` and the popup-open flag at
+  **`+0xFC`** (`func_002C9098` sets `fc=1` when the popup opens, `func_002C93C0` clears it; `func_002C98F0` scrolls
+  the popup when the selected item leaves the window). The host reads these at the render functor `0x00100F50`, and
+  applies only on the closed transition (Cross confirm; Circle restores the pre-open index via `f100`, so nothing is
+  applied). The popup itself scrolls for the 29-item list (frame evidence below).
+- **No host text injection on these rows:** the engine's closed-label clone shares the localized text object with the
+  popup choice; a pointer swap to a host-built string crashed the engine (`no translated code at 0x00617D04`). The data
+  literals are the game's own text; the host text path from Phase 1c remains proven but is not needed here.
+- **Insensitive:** the host sets `mWidget +0x98` bit 3 on the two OptionMenus and their children while Fullscreen is
+  Off; the engine greys the `bgi` art and the focus traversal skips the rows (Down lands on OK).
+- **Controller path:** the engine's own focus traversal + `mOptionMenu` key handler; the host does not trap the pad. The
+  hidden sliders' `screen_adjust_v/h` natives still return 0 and skip the setter, so the guest fields and the save stay
+  0 (`state-on.bin`/`state-off.bin`: `screen_adjust_v/h` 0, wide 1, project `opti`).
+
+### 20.4 Evidence (headless, v2.00)
+
+| Check | Evidence |
+|---|---|
+| Initial row | `private/slice430-kit/frames/on-2300-initial-1920x1080.png` (Fullscreen On, Resolution 1920x1080, Monitor 1: DISPLAY1) |
+| Popup and confirm | `on-2800-popup-1280x720.png`, `on-2950-selected-1280x720.png`; log `resolution = "1280x720"` |
+| Long list scroll | `scroll-3500-popup-3024x1296.png`, `scroll-3600-selected-3024x1296.png`; log `resolution = "3024x1296"` |
+| Greyed + skip | `off-2300-greyed.png`, `off-2500-focus-ok.png` (Down lands on OK); log `greyed row insensitive=1` |
+| Save untouched | states: `screen_adjust_v/h` 0, wide 1, `opti` |
+| Exit | the three runs exit 0; no unmapped reads, no crash |
+
+- Tests: `native_native_settings` 1/1 (the output-request and window-present checks), `native_display_aspect` 1/1 (the
+  live output size overrides the start ratio), `cargo test -p gt4l-core --lib` 310 passed, `test_gt4_data_patch.py` 16
+  OK, `test_license_guard.py` 21 OK.
+- Kit `private/slice430-kit`: exe `d0a75027...` (90,234,880 bytes), patch `4d106882...`, states/logs/feedback/frames/
+  README. Test build only.
+
+### 20.5 Risks and unknowns
+
+- **The display-mode change is global and not testable headless.** It changes the desktop for every window; the game
+  restores the original on fullscreen Off/exit, but a crash or kill leaves the chosen mode. The owner's windowed test is
+  the gate; a refused mode is logged and the current mode is kept.
+- **Fixed mode list:** the patch lists `\\.\DISPLAY1`'s 29 modes at build time. A different monitor/driver or the agent's
+  remote `\\.\DISPLAY22` leaves stale names; the window enumerates the real monitor for the apply and refuses a mode it
+  does not support. A product build needs a per-machine list or a script setter for the OptionMenu text (the shared
+  text object makes a pointer swap unsafe).
+- **First closed-row value:** the engine fills the closed row from the first choice at page build; the patch orders
+  1920x1080 first (the kit start). A start at another resolution shows 1920x1080 until a choice is confirmed; fixed-data
+  limitation.
+- **Monitor is restart-only:** the row lists the connected monitors (1 here) and writes `monitor = "<device>@<WxH>"`;
+  moving a running window is not implemented.
+- **GS internal scale** stays at the start `GT4_HW_SCALE`; Resolution changes the output (window/display) size and the
+  aspect, not the internal multiplier. A lower mode supersamples, a higher one upscales.
+- **Aspect timing:** the new ratio applies at the next race camera init; the menu page keeps its layout.
+- **Fullscreen start changes the desktop mode** from `GT4_OUTPUT_SIZE` (the Phase 1c kit did not). This is the fix; the
+  normal exit restores it.
+- **Spec II** addresses remain Phase 2; this slice is v2.00 only.
+
+## 21. Resumo para o dono (pt-BR) - Phase 1d
+
+- **Por que a Resolution não mudava a tela:** o valor era só um "tamanho de saída" lido no início; em tela cheia a
+  janela cobre o monitor inteiro, então o monitor continuava no modo do Windows. O arquivo `game-changes.toml` só valia
+  no próximo início, e o kit abre o jogo direto (sem launcher para juntar).
+- **Agora, em tela cheia, a Resolution muda o monitor de verdade:** `ChangeDisplaySettingsExW` troca o modo do monitor e
+  a janela cobre o novo modo; o modo original é restaurado ao sair da tela cheia ou fechar o jogo. No início, o
+  `GT4_OUTPUT_SIZE` também é aplicado (o kit começa em 1920x1080; para começar nativo, use 3440x1440). Em janela, o
+  caminho redimensiona a janela, mas a linha continua cinza com Fullscreen Off (sua regra).
+- **As duas linhas agora são os menus suspensos do próprio jogo** (o mesmo widget da Fullscreen), com a lista de 29
+  modos e o monitor; a lista rola quando é longa. O controle funciona pelo foco do motor do jogo; o host só lê a escolha
+  quando o menu fecha e grava o `game-changes.toml`. O save não muda (os campos internos continuam 0).
+- **O que testar:** tela cheia, Options > General > Screen, abrir Resolution, escolher 3440x1440 e confirmar; o monitor
+  deve mudar na hora. Escolher 1920x1080 volta. Fechar o jogo restaura o desktop. Com Fullscreen Off as linhas ficam
+  cinzas e o cursor pula para OK.
+- **Riscos:** a troca de modo é global (se o jogo for morto à força, o desktop fica no modo escolhido); a lista de modos
+  é fixa para o monitor desta máquina; o monitor é só reinício; e a escala interna do GS continua a do início. O teste
+  na sua janela é o que falta para fechar.

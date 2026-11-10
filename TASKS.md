@@ -4952,3 +4952,32 @@ bypasses `onInitialize`/`reflect`/`apply` and must own focus/input/back. **Small
 and a hidden page-root handle (the `MonitorRoot` root as the empty shell), call `startPage` in a dispatch hook and
 capture a headless frame; if it renders, prove back (`startPage(OptionRoot)`/`closePage`) and focus/input; otherwise
 report the gate. No page was implemented or faked in this slice.
+
+**State (2026-11-10, TASK-213 Phase 1d - the Screen rows as OptionMenus, live Resolution):** branch
+`task/213-native-settings`. Test build only.
+
+- **Live Resolution:** the Phase 1c row only wrote the restart feedback; `GT4_OUTPUT_SIZE` is read once and fullscreen
+  covers the monitor, so the screen never changed. Now fullscreen selecting a mode calls
+  `ChangeDisplaySettingsExW(CDS_FULLSCREEN)` (the original `DEVMODE` saved and restored on fullscreen Off/exit), the
+  borderless window covers the new `rcMonitor`, `WM_SIZE` rebuilds the swapchain, and
+  `display_aspect::set_live_output_size` updates the projection/HUD ratio for the next race camera. A fullscreen start
+  also applies `GT4_OUTPUT_SIZE`; windowed resizes the client area (`AdjustWindowRectEx` + `SetWindowPos`), though the
+  row is greyed while Fullscreen Off (the owner's rule). The GS internal scale stays at the start `GT4_HW_SCALE`.
+- **Dropdowns:** the stock `Vertical`/`Horizontal` SliderBars are hidden and two scriptless `OptionMenu` rows
+  (`Resolution` 29 modes, `Monitor` 1) are added to the Screen page (Pane stays 150, no `has_script`). The engine owns
+  the closed row, popup, focus, controller and scrolling; the host reads the index `+0xD8`, count `+0xE0` and open flag
+  `+0xFC` at the render functor `0x00100F50`, applies on close, and writes `game-changes.toml`. The hidden sliders'
+  `screen_adjust_v/h` still return 0/skip, so the guest save stays 0. No host text injection on these rows (the shared
+  OptionMenu text object made a pointer swap crash at `0x00617D04`); the data patch's literals are the game's text.
+- **Data patch:** `private/slice430-optionmenu`, container `4d1068828fc9976e5e9bdaef732f22a0b47482373ea6d373c303b769d17f6344`
+  (77,986 bytes); recipe 9 text replacements, minified, stored extent 22,449 / decoded 681,977. The first Resolution
+  choice is 1920x1080 (the kit start) so the closed row is right at page open; the list scrolls (29 choices).
+- **Evidence:** kit `private/slice430-kit` - `on-2300-initial-1920x1080.png`, `on-2800-popup-1280x720.png`,
+  `on-2950-selected-1280x720.png`, `scroll-3500-popup-3024x1296.png`, `scroll-3600-selected-3024x1296.png`,
+  `off-2300-greyed.png`, `off-2500-focus-ok.png`; `game-changes-on.toml`/`game-changes-scroll.toml`; states with
+  `screen_adjust_v/h` 0, wide 1, `opti`; three headless runs exit 0. Exe `d0a75027...` (90,234,880 bytes).
+- **Tests:** `native_native_settings` 1/1 (output-request/window-present), `native_display_aspect` 1/1 (live ratio),
+  `cargo test -p gt4l-core --lib` 310 passed, `test_gt4_data_patch.py` 16 OK, `test_license_guard.py` 21 OK.
+- **Open:** the display-mode change is global and needs the owner's windowed/fullscreen test (a crash/kill leaves the
+  chosen mode); the mode list is fixed to `\\.\DISPLAY1` at build time; the Monitor row is restart-only; the first
+  closed-row value is fixed to 1920x1080 (start); Spec II is Phase 2.

@@ -148,6 +148,12 @@ struct HookAddresses {
   std::uint32_t screen_adjust_h_callback = 0;   // 0x00180200: MOption.screen_adjust_h get/set
   std::uint32_t screen_textface_vtable = 0;     // 0x00666370: mTextFace vtable (object vtable at +4)
   std::uint32_t screen_slider_vtable = 0;       // 0x00671D98: mSliderBar vtable
+  std::uint32_t screen_optionmenu_vtable = 0;   // 0x0066F5E8: mOptionMenu vtable (the Fullscreen row model)
+  std::uint32_t screen_menu_popup_offset = 0;   // optionmenu + this = the popup composite (mComposite)
+  std::uint32_t screen_menu_vbox_offset = 0;    // optionmenu + this = the popup's VBox (the choices)
+  std::uint32_t screen_menu_index_offset = 0;   // optionmenu + this = the selected index (MOptionMenu::get_index)
+  std::uint32_t screen_menu_count_offset = 0;   // optionmenu + this = the choice count (the list's end)
+  std::uint32_t screen_menu_open_offset = 0;    // optionmenu + this = 1 while the popup is open (func_002C9098)
   std::uint32_t screen_pane_vtable = 0;         // 0x00672950: the Screen page's `Pane` VBox vtable
   std::uint32_t screen_composite_vtable = 0;    // 0x00662EF8: mComposite vtable (the row composites)
   std::uint32_t screen_text_object_offset = 0;  // textface + this = the mLocalizedText pointer
@@ -244,8 +250,14 @@ inline constexpr HookAddresses kV200Hooks = {
     /* option_project_id */ 0x6974706Fu,            // "opti": the Options project (RAM state options-screen3)
     /* screen_adjust_v_callback */ 0x001802F0u,    // MOption::get/set_screen_adjust_v (adhoc_methods.txt, decomp)
     /* screen_adjust_h_callback */ 0x00180200u,    // MOption::get/set_screen_adjust_h
-    /* screen_textface_vtable */ 0x00666370u,      // gt4/mTextFace.h
+    /* screen_textface_vtable */ 0x00666370u,    // gt4/mTextFace.h
     /* screen_slider_vtable */ 0x00671D98u,        // gt4/mSliderBar.h
+    /* screen_optionmenu_vtable */ 0x0066F5E8u,    // gt4/mOptionMenu.h (the Fullscreen row)
+    /* screen_menu_popup_offset */ 0xC0u,           // mOptionMenu::onInitialize (popup, vbox, shadow)
+    /* screen_menu_vbox_offset */ 0xC4u,
+    /* screen_menu_index_offset */ 0xD8u,           // MOptionMenu::get_index reads the list at +0xD8
+    /* screen_menu_count_offset */ 0xE0u,           // func_0057CE60: +0xE0 - +0xDC
+    /* screen_menu_open_offset */ 0xFCu,            // func_002C9098 sets fc = 1; func_002C93C0 clears it
     /* screen_pane_vtable */ 0x00672950u,          // the Screen `Pane` VBox (state 0xF776C0, geometry 160,130,320,150)
     /* screen_composite_vtable */ 0x00662EF8u,     // the row composites (menu_quit)
     /* screen_text_object_offset */ 0x104u,        // mTextFace::unk104 -> mLocalizedText

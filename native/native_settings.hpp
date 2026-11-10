@@ -58,6 +58,16 @@ void set_host_fullscreen(bool on);
 // A change the window has not applied yet. take() returns false when there is none and clears the request.
 bool take_fullscreen_request(bool &on);
 
+// TASK-213 Phase 1d: a live output-size request from the Screen rows. The window applies it at the next VBlank
+// (windowed: the client area; fullscreen: the monitor's display mode). A headless run consumes nothing.
+void request_output_size(int width, int height);
+bool take_output_size_request(int &width, int &height);
+
+// True while a game window exists (window.cpp sets it after creation and clears it before cleanup). The Screen rows use
+// it to say whether a live apply is possible or the value only takes effect at the next start.
+void set_window_present(bool present);
+bool window_present();
+
 // Records a change (`source` names the trigger, e.g. "Wide row" or "Alt+Enter"): stores the host value, writes the
 // feedback file when GT4_SETTINGS_FEEDBACK is set, and logs one line. Returns false only when the file could not be
 // written (the host value is stored either way).

@@ -58,6 +58,14 @@ std::uint32_t renderer_client_width = 0, renderer_client_height = 0;
 std::uint64_t unchanged_size_messages = 0;
 std::uint64_t position_changes = 0;
 
+// TASK-213 Phase 1d: the live output size and the display mode it applies in fullscreen. The original mode is saved
+// before the first ChangeDisplaySettingsExW and restored when fullscreen is left, the window closes or the game exits.
+int output_width = 0, output_height = 0;
+bool display_mode_saved = false;
+bool display_mode_applied = false;
+DEVMODEW original_mode{};
+std::wstring display_device;
+
 // TASK-145 diagnostics: the module and offset of a code address, for the window watch's stack.
 std::string module_of_address(const void *address) {
   HMODULE module = nullptr;
@@ -353,14 +361,28 @@ void service_menu_quit(std::uint16_t buttons) {
 // applies it here, through the same path as Alt+Enter/F11. A headless run has no window: the request is only logged.
 void set_fullscreen(bool enabled);
 
+// TASK-213 Phase 1d: the Resolution row's live output size (windowed: the client area; fullscreen: the display mode).
+// Defined with the window helpers below; declared here for the VBlank service.
+bool apply_output_size(int width, int height);
+void restore_display_mode();
+
 void service_native_settings() {
   bool on = false;
-  if (!gt4::native_settings::take_fullscreen_request(on)) return;
-  if (game_window) {
-    set_fullscreen(on);
-    std::fprintf(stderr, "[native-settings] window %s\n", on ? "fullscreen" : "windowed");
-  } else {
-    std::fprintf(stderr, "[native-settings] fullscreen %s requested; this run has no window\n", on ? "On" : "Off");
+  if (gt4::native_settings::take_fullscreen_request(on)) {
+    if (game_window) {
+      set_fullscreen(on);
+      std::fprintf(stderr, "[native-settings] window %s\n", on ? "fullscreen" : "windowed");
+    } else {
+      std::fprintf(stderr, "[native-settings] fullscreen %s requested; this run has no window\n", on ? "On" : "Off");
+    }
+  }
+  int width = 0, height = 0;
+  if (gt4::native_settings::take_output_size_request(width, height)) {
+    if (game_window) {
+      apply_output_size(width, height);
+    } else {
+      std::fprintf(stderr, "[native-settings] output size %dx%d requested; this run has no window\n", width, height);
+    }
   }
 }
 
@@ -379,6 +401,109 @@ gt4::window_mode::Rect to_rect(const RECT &rect) {
   return {rect.left, rect.top, rect.right, rect.bottom};
 }
 
+// TASK-213 Phase 1d: the monitor's modes, the display mode change and the live output-size apply.
+//
+// In windowed mode "resolution" is the client area (the picture is scaled to it); in fullscreen the borderless window
+// always covers the monitor, so the only way the screen itself changes is the monitor's display mode. The original mode
+// is saved before the first change and restored when fullscreen is left or the game closes.
+bool find_display_mode(const wchar_t *device, int width, int height, DEVMODEW &mode) {
+  DEVMODEW current{};
+  current.dmSize = sizeof current;
+  const bool current_known = EnumDisplaySettingsW(device, ENUM_CURRENT_SETTINGS, &current) != FALSE;
+  DEVMODEW candidate{};
+  candidate.dmSize = sizeof candidate;
+  bool found = false;
+  int best_score = -1;
+  for (DWORD index = 0; index < 1024 && EnumDisplaySettingsW(device, index, &candidate); ++index) {
+    if (static_cast<int>(candidate.dmPelsWidth) != width || static_cast<int>(candidate.dmPelsHeight) != height) continue;
+    const bool same_refresh = current_known && candidate.dmDisplayFrequency == current.dmDisplayFrequency;
+    const int score = same_refresh ? 2 : 1;
+    if (score > best_score) {
+      mode = candidate;
+      best_score = score;
+      found = true;
+    }
+  }
+  return found;
+}
+
+bool apply_display_mode(int width, int height) {
+  if (!game_window || width <= 0 || height <= 0) return false;
+  MONITORINFOEXW info{};
+  info.cbSize = sizeof info;
+  if (!GetMonitorInfoW(MonitorFromWindow(game_window, MONITOR_DEFAULTTONEAREST), &info)) return false;
+  DEVMODEW current{};
+  current.dmSize = sizeof current;
+  if (!EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &current)) return false;
+  if (static_cast<int>(current.dmPelsWidth) == width && static_cast<int>(current.dmPelsHeight) == height) {
+    std::fprintf(stderr, "[window] display mode is already %dx%d on %ls\n", width, height, info.szDevice);
+    return true;
+  }
+  DEVMODEW mode{};
+  mode.dmSize = sizeof mode;
+  if (!find_display_mode(info.szDevice, width, height, mode)) {
+    std::fprintf(stderr, "[window] the monitor %ls has no %dx%d mode; keeping the current mode\n", info.szDevice, width,
+                 height);
+    return false;
+  }
+  if (!display_mode_saved) {
+    original_mode = current;
+    display_device = info.szDevice;
+    display_mode_saved = true;
+  }
+  const LONG result = ChangeDisplaySettingsExW(info.szDevice, &mode, nullptr, CDS_FULLSCREEN, nullptr);
+  if (result != DISP_CHANGE_SUCCESSFUL) {
+    std::fprintf(stderr, "[window] display mode %dx%d on %ls refused (%ld); keeping the current mode\n", width, height,
+                 info.szDevice, result);
+    return false;
+  }
+  display_mode_applied = true;
+  std::fprintf(stderr, "[window] display mode %dx%d at %u Hz on %ls\n", width, height,
+               static_cast<unsigned>(mode.dmDisplayFrequency), info.szDevice);
+  return true;
+}
+
+void restore_display_mode() {
+  if (!display_mode_applied || display_device.empty()) return;
+  const LONG result = ChangeDisplaySettingsExW(display_device.c_str(), &original_mode, nullptr, 0, nullptr);
+  std::fprintf(stderr, "[window] display mode restored on %ls (%ld)\n", display_device.c_str(), result);
+  display_mode_applied = false;
+  display_mode_saved = false;
+}
+
+bool apply_output_size(int width, int height) {
+  if (!game_window || width <= 0 || height <= 0) return false;
+  if (fullscreen_state.fullscreen()) {
+    if (!apply_display_mode(width, height)) {
+      std::fprintf(stderr, "[window] output size %dx%d: fullscreen keeps the current display mode\n", width, height);
+      return false;
+    }
+    MONITORINFO info{};
+    info.cbSize = sizeof info;
+    if (!GetMonitorInfoW(MonitorFromWindow(game_window, MONITOR_DEFAULTTONEAREST), &info)) return false;
+    SetWindowPos(game_window, HWND_TOP, info.rcMonitor.left, info.rcMonitor.top,
+                 info.rcMonitor.right - info.rcMonitor.left, info.rcMonitor.bottom - info.rcMonitor.top,
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE);
+  } else {
+    const auto style = static_cast<std::uint32_t>(GetWindowLongW(game_window, GWL_STYLE));
+    RECT frame{0, 0, 0, 0};
+    if (!AdjustWindowRectEx(&frame, style, FALSE, 0)) return false;
+    const int total_width = width + (frame.right - frame.left);
+    const int total_height = height + (frame.bottom - frame.top);
+    MONITORINFO info{};
+    info.cbSize = sizeof info;
+    if (!GetMonitorInfoW(MonitorFromWindow(game_window, MONITOR_DEFAULTTONEAREST), &info)) return false;
+    const auto box = gt4::window_mode::centred(to_rect(info.rcWork), total_width, total_height);
+    SetWindowPos(game_window, nullptr, box.left, box.top, total_width, total_height, SWP_NOZORDER | SWP_NOACTIVATE);
+  }
+  output_width = width;
+  output_height = height;
+  gt4::display_aspect::set_live_output_size(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+  std::fprintf(stderr, "[window] output size %dx%d applied (%s)\n", width, height,
+               fullscreen_state.fullscreen() ? "fullscreen display mode" : "window client area");
+  return true;
+}
+
 // Borderless fullscreen on the monitor that holds the window. The windowed frame
 // and style are kept by the toggle state and restored on the next toggle. The
 // swapchain follows the new client size through WM_SIZE.
@@ -388,13 +513,15 @@ void set_fullscreen(bool enabled) {
     RECT windowed{};
     if (!GetWindowRect(game_window, &windowed))
       return;
+    const auto style = static_cast<std::uint32_t>(GetWindowLongW(game_window, GWL_STYLE));
+    if (!fullscreen_state.enter(Placement{to_rect(windowed), style}))
+      return;
+    // TASK-213 Phase 1d: fullscreen runs at the chosen output size when the monitor has that mode.
+    if (output_width > 0 && output_height > 0) apply_display_mode(output_width, output_height);
     MONITORINFO monitor{};
     monitor.cbSize = sizeof monitor;
     if (!GetMonitorInfoW(MonitorFromWindow(game_window, MONITOR_DEFAULTTONEAREST),
                          &monitor))
-      return;
-    const auto style = static_cast<std::uint32_t>(GetWindowLongW(game_window, GWL_STYLE));
-    if (!fullscreen_state.enter(Placement{to_rect(windowed), style}))
       return;
     SetWindowLongW(game_window, GWL_STYLE,
                    static_cast<LONG>(gt4::window_mode::fullscreen_style(style)));
@@ -404,6 +531,8 @@ void set_fullscreen(bool enabled) {
                  SWP_FRAMECHANGED | SWP_NOACTIVATE);
     return;
   }
+  // TASK-213 Phase 1d: bring the desktop back before the saved windowed rectangle (it was recorded in the original mode).
+  restore_display_mode();
   Placement restored{};
   if (!fullscreen_state.leave(restored))
     return;
@@ -472,6 +601,9 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM first,
     return 0;
   }
   if (message == WM_DESTROY) {
+    // TASK-213 Phase 1d: the desktop mode is restored before the window disappears (idempotent with the cleanup path).
+    restore_display_mode();
+    gt4::native_settings::set_window_present(false);
     closing = true;
     PostQuitMessage(0);
     return 0;
@@ -839,6 +971,12 @@ bool open_window(bool fullscreen) {
   // exits).
   gt4::display_aspect::configured_setting();
   const gt4::display_aspect::OutputSize output = gt4::display_aspect::configured_output_size();
+  // TASK-213 Phase 1d: the output size is the live value the Resolution row changes; GT4_OUTPUT_SIZE is the start value.
+  if (output.known()) {
+    output_width = static_cast<int>(output.width);
+    output_height = static_cast<int>(output.height);
+    gt4::display_aspect::set_live_output_size(output.width, output.height);
+  }
   std::string monitor_device;
   try {
     monitor_device = gt4::window_mode::parse_monitor(std::getenv("GT4_MONITOR"));
@@ -907,6 +1045,7 @@ bool open_window(bool fullscreen) {
       window_class.hInstance, nullptr);
   if (!game_window)
     throw std::runtime_error("Cannot create native game window");
+  gt4::native_settings::set_window_present(true);
   // TASK-145: without this timer Windows takes the game window as not responding after 5 seconds without input, and
   // in fullscreen the desktop flashes every 6 seconds (window_heartbeat.hpp, decision 0076). Keep it.
   if (gt4::window_heartbeat::wanted(std::getenv("GT4_WINDOW_HEARTBEAT"))) {
@@ -970,6 +1109,8 @@ int run_window(const std::function<int()> &emulate) {
     wheel_controller = nullptr;
     controller = nullptr;
     surface_attached = false;
+    restore_display_mode();
+    gt4::native_settings::set_window_present(false);
     if (IsWindow(game_window))
       DestroyWindow(game_window);
     game_window = nullptr;

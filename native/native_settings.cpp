@@ -26,6 +26,11 @@ constexpr std::uint32_t kHintBytes = 0x14;
 
 std::atomic<bool> g_host_fullscreen{false};
 std::atomic<int> g_pending{-1};  // -1 none, 0 Off, 1 On
+// TASK-213 Phase 1d: a live output-size request from the Screen rows (the window consumes it at the next VBlank).
+std::atomic<int> g_output_width{0};
+std::atomic<int> g_output_height{0};
+std::atomic<bool> g_output_pending{false};
+std::atomic<bool> g_window_present{false};
 BoxInt g_box_int_for_test = nullptr;
 Guest g_guest_for_test;
 bool g_guest_for_test_set = false;
@@ -127,6 +132,24 @@ bool take_fullscreen_request(bool &on) {
   on = pending != 0;
   return true;
 }
+
+void request_output_size(int width, int height) {
+  if (width <= 0 || height <= 0) return;
+  g_output_width.store(width, std::memory_order_relaxed);
+  g_output_height.store(height, std::memory_order_relaxed);
+  g_output_pending.store(true, std::memory_order_relaxed);
+}
+
+bool take_output_size_request(int &width, int &height) {
+  if (!g_output_pending.exchange(false, std::memory_order_relaxed)) return false;
+  width = g_output_width.load(std::memory_order_relaxed);
+  height = g_output_height.load(std::memory_order_relaxed);
+  return width > 0 && height > 0;
+}
+
+void set_window_present(bool present) { g_window_present.store(present, std::memory_order_relaxed); }
+
+bool window_present() { return g_window_present.load(std::memory_order_relaxed); }
 
 bool record_fullscreen(bool on, const char *source) {
   set_host_fullscreen(on);

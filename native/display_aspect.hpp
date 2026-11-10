@@ -354,6 +354,11 @@ double configured_fov_extra();
 // Window thread: the game window's client size (WM_SIZE, fullscreen). 0 x 0 is ignored (minimized).
 void set_window_client_size(std::uint32_t width, std::uint32_t height);
 
+// TASK-213 Phase 1d: the live output size picked in the game (Resolution row). With GT4_DISPLAY_ASPECT=auto and a
+// known GT4_OUTPUT_SIZE, it replaces the start size's ratio for the next race camera and HUD block; a fixed
+// GT4_DISPLAY_ASPECT still wins. Zero sides are ignored.
+void set_live_output_size(std::uint32_t width, std::uint32_t height);
+
 // R now: the fixed or output-size ratio, or the client area ratio (16:9 before any window size is known). Snapped.
 double current_ratio();
 

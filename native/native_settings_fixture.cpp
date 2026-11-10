@@ -236,6 +236,23 @@ int main(int argc, char **argv) {
     require(!std::filesystem::exists(feedback + ".tmp"), "no temporary file after two changes");
   }
 
+  // TASK-213 Phase 1d: the live output-size request and the window-present flag.
+  {
+    int width = 0, height = 0;
+    require(!gt4::native_settings::take_output_size_request(width, height), "no output request initially");
+    gt4::native_settings::request_output_size(2560, 1440);
+    require(gt4::native_settings::take_output_size_request(width, height) && width == 2560 && height == 1440,
+            "the live output request carries the size");
+    require(!gt4::native_settings::take_output_size_request(width, height), "the request is consumed once");
+    gt4::native_settings::request_output_size(0, 720);
+    require(!gt4::native_settings::take_output_size_request(width, height), "a zero side is refused");
+    require(!gt4::native_settings::window_present(), "no window in the fixture");
+    gt4::native_settings::set_window_present(true);
+    require(gt4::native_settings::window_present(), "the window flag is set");
+    gt4::native_settings::set_window_present(false);
+    require(!gt4::native_settings::window_present(), "the window flag is cleared");
+  }
+
   // record_fullscreen stores the value, requests it and writes the file.
   {
     require(gt4::native_settings::record_fullscreen(true, "fixture"), "record On");

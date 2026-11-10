@@ -434,6 +434,10 @@ namespace {
 
 struct Runtime {
   std::atomic<std::uint32_t> client_width{0}, client_height{0};
+  // TASK-213 Phase 1d: the live output size picked on the Screen page (a display mode or a window client size). It
+  // overrides the start GT4_OUTPUT_SIZE ratio for the projection/HUD without a restart.
+  std::atomic<std::uint32_t> live_width{0}, live_height{0};
+  std::atomic<bool> live_output{false};
   double projection_ratio = kGameRatio;
   ScenePolicy policy;
   std::uint64_t vblank = 0;
@@ -524,8 +528,27 @@ void set_window_client_size(std::uint32_t width, std::uint32_t height) {
   r.client_height.store(height);
 }
 
+void set_live_output_size(std::uint32_t width, std::uint32_t height) {
+  if (width == 0 || height == 0)
+    return;
+  Runtime &r = runtime();
+  r.live_width.store(width);
+  r.live_height.store(height);
+  r.live_output.store(true);
+  std::fprintf(stderr, "[aspect] live output size %ux%u (ratio %s); the next race camera uses it\n", width, height,
+               describe_ratio(snap_ratio(static_cast<double>(width) / static_cast<double>(height))).c_str());
+}
+
 double current_ratio() {
   const Setting &setting = configured_setting();
+  if (setting.source == Source::output_size) {
+    const Runtime &r = runtime();
+    const std::uint32_t width = r.live_width.load();
+    const std::uint32_t height = r.live_height.load();
+    if (r.live_output.load() && width != 0 && height != 0)
+      return snap_ratio(static_cast<double>(width) / static_cast<double>(height));
+    return setting.ratio;
+  }
   if (setting.source != Source::automatic)
     return setting.ratio;
   const Runtime &r = runtime();

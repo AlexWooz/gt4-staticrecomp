@@ -1,5 +1,27 @@
 # Current Status
 
+## TASK-213 Phase 1d: OptionMenu rows and a live Resolution (2026-11-10, implemented, test build)
+
+On `task/213-native-settings` after Phase 1c/2a. The owner's Phase 1c test showed the row value changed but not the
+screen; this slice makes Resolution live and replaces both sliders with the game's own dropdowns.
+
+- **Live resolution:** fullscreen applies the monitor's display mode (`ChangeDisplaySettingsExW`, original mode saved
+  and restored on fullscreen Off/exit), the borderless window covers the new mode, `WM_SIZE` rebuilds the swapchain and
+  `display_aspect::set_live_output_size` updates the projection/HUD ratio; a fullscreen start applies
+  `GT4_OUTPUT_SIZE`; windowed resizes the client area (row greyed while Fullscreen Off). The GS internal scale stays at
+  the start `GT4_HW_SCALE`.
+- **Dropdowns:** two scriptless `OptionMenu` rows on the Screen page (Pane stays 150; the stock SliderBars hidden), 29
+  modes and 1 monitor; the engine owns focus/popup/scroll/controller; the host reads index `+0xD8`/open `+0xFC` and
+  applies on close. Save untouched (`screen_adjust_v/h` 0).
+- **Evidence:** `private/slice430-kit` (exe `d0a75027...`, patch `4d106882...`, seven frames, logs, states, feedback,
+  README). The live display change needs the owner's windowed/fullscreen test; the headless runs cannot change a real
+  display.
+- **Tests:** `native_native_settings` 1/1, `native_display_aspect` 1/1, `cargo test -p gt4l-core --lib` 310 passed,
+  `test_gt4_data_patch.py` 16 OK, `test_license_guard.py` 21 OK.
+
+Open: the display-mode change is global (crash/kill leaves the chosen mode); the mode list is fixed to `\\.\DISPLAY1`
+at build time; the Monitor row is restart-only; the first closed-row value is fixed to 1920x1080; Spec II is Phase 2.
+
 ## TASK-213 Phase 2a: host-native page route (2026-11-09, design; not proven)
 
 The owner chose a host-native page with the game's own widgets, reached from Options (no Adhoc v5/TOC, no Network

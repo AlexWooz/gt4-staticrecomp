@@ -1,4 +1,5 @@
-// TASK-213 Phase 1c: the Screen page's Resolution and Monitor rows. See native/screen_rows.hpp.
+// TASK-213 Phase 1d: the Screen page's Resolution and Monitor rows as the game's own OptionMenus.
+// See native/screen_rows.hpp.
 #include "screen_rows.hpp"
 
 #include "game_target.hpp"
@@ -34,21 +35,30 @@ struct MonitorEntry {
   bool primary = false;
 };
 
-struct RowRefs {
+// One popup choice: the game's TextFace and the text it currently shows.
+struct Choice {
+  std::uint32_t textface = 0;
+  std::string text;
+};
+
+struct MenuRow {
   std::uint32_t row = 0;
-  std::uint32_t slider = 0;
-  std::uint32_t value = 0;
-  std::uint32_t pinch = 0;
-  std::uint32_t min = 0;
-  std::uint32_t max = 0;
+  std::uint32_t menu = 0;
+  std::uint32_t popup = 0;
+  std::uint32_t vbox = 0;
+
+  std::vector<Choice> choices;
+  int confirmed = -1;   // the index the host last applied (or synced to); -1 until the first sync
+  bool was_open = false;
   bool insensitive_set = false;
   bool insensitive = false;
 };
 
 struct PageRefs {
   std::uint32_t pane = 0;
-  RowRefs resolution;
-  RowRefs monitor;
+
+  MenuRow resolution;
+  MenuRow monitor;
 };
 
 std::vector<Mode> g_modes;
@@ -95,6 +105,17 @@ std::uint32_t first_child(const std::uint8_t *ram, std::size_t size, std::uint32
 
 std::uint32_t next_sibling(const std::uint8_t *ram, std::size_t size, std::uint32_t child) {
   return u32(ram, size, child + 0x5C);
+}
+
+std::vector<std::uint32_t> children(const std::uint8_t *ram, std::size_t size, std::uint32_t base) {
+  std::vector<std::uint32_t> out;
+  std::uint32_t child = first_child(ram, size, base);
+  for (int i = 0; i < 128 && child; ++i) {
+    if (child < 0x100000 || child + 0x100 > size) break;
+    out.push_back(child);
+    child = next_sibling(ram, size, child);
+  }
+  return out;
 }
 
 std::string wide_to_utf8(const wchar_t *text) {
@@ -291,83 +312,18 @@ std::uint32_t call_guest(ps2::Cpu &cpu, std::uint32_t fn, std::uint32_t depth, s
   return result;
 }
 
-// One guest basic_string per list entry, built once when the page is first seen. The per-frame service only swaps the
-// TextFace's text pointer (memory, no guest calls): building a string on the render frame while the page script was
-// writing its number crashed in the allocator lock (0xC0000005 in kernel::handle_syscall), so no build ever runs there.
-struct Prebuilt {
-  bool ready = false;
-  std::uint32_t zero = 0;
-  std::uint32_t mode_max = 0;
-  std::uint32_t monitor_max = 0;
-  std::vector<std::uint32_t> modes;
-  std::vector<std::uint32_t> monitors;
-};
-
-Prebuilt g_prebuilt;
-
-std::uint32_t build_guest_string(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth,
-                                 std::uint32_t seed, const std::string &text) {
-  const auto &hooks = gt4::target::active().hooks;
-  if (!hooks.screen_text_assign || !hooks.screen_heap_name || !hooks.screen_alloc || !hooks.screen_free) return 0;
-  const std::uint32_t info = call_guest(cpu, hooks.screen_heap_name, depth, 0, nullptr);
-  if (!info) return 0;
-  const std::uint32_t name = u32(ram, size, info);
-  const std::uint32_t length = static_cast<std::uint32_t>(text.size());
-  const std::uint32_t buffer_bytes = length + 96;
-  const std::uint32_t args0[3] = {buffer_bytes, 4u, name};
-  const std::uint32_t buffer = call_guest(cpu, hooks.screen_alloc, depth, 3, args0);
-  if (!buffer || buffer + buffer_bytes > size) return 0;
-  std::memcpy(ram + buffer, text.data(), length);
-  ram[buffer + length] = 0;
-  const std::uint32_t scratch = (buffer + length + 16u + 3u) & ~3u;
-  w32(ram, size, scratch, seed);
-  if (seed) {
-    const std::uint32_t seed_rep = seed - 16;
-    if (seed >= 16 && seed_rep + 12 <= size)
-      w32(ram, size, seed_rep + 8, u32(ram, size, seed_rep + 8) + 1u);
-  }
-  const std::uint32_t args1[5] = {scratch, 0u, 0xFFFFFFFFu, buffer, length};
-  call_guest(cpu, hooks.screen_text_assign, depth, 5, args1);
-  const std::uint32_t fresh = u32(ram, size, scratch);
-  const std::uint32_t free_args[4] = {buffer, buffer_bytes, 4u, name};
-  call_guest(cpu, hooks.screen_free, depth, 4, free_args);
-  // The fresh string keeps the scratch's reference as this cache's own; it is never freed (a few hundred bytes per run).
-  return fresh;
-}
-
-void point_text(std::uint8_t *ram, std::size_t size, std::uint32_t textface, std::uint32_t dat, const char *what,
-                const std::string &text) {
-  if (!textface || !dat) return;
+std::string read_display_text(const std::uint8_t *ram, std::size_t size, std::uint32_t textface) {
   const std::uint32_t localized = u32(ram, size, textface + gt4::target::active().hooks.screen_text_object_offset);
-  if (!localized) return;
-  const std::uint32_t slot = localized + gt4::target::active().hooks.screen_text_value_offset;
-  if (u32(ram, size, slot) == dat) return;
-  const std::uint32_t rep = dat - 16;
-  if (rep + 12 > size) return;
-  w32(ram, size, rep + 8, u32(ram, size, rep + 8) + 1u);
-  w32(ram, size, slot, dat);
-  std::fprintf(stderr, "[screen-rows] %s -> \"%s\" (frame %llu)\n", what, text.c_str(),
-               static_cast<unsigned long long>(ps2::frame_count()));
-}
-
-void ensure_prebuilt(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth) {
-  if (g_prebuilt.ready) return;
-  if (g_modes.empty() && g_monitors.empty()) return;
-  const std::uint32_t localized =
-      u32(ram, size, g_page.resolution.value + gt4::target::active().hooks.screen_text_object_offset);
-  const std::uint32_t seed =
-      localized ? u32(ram, size, localized + gt4::target::active().hooks.screen_text_value_offset) : 0;
-  for (std::size_t i = 0; i < g_modes.size(); ++i) g_prebuilt.modes.push_back(build_guest_string(cpu, ram, size, depth, seed, mode_text(static_cast<int>(i))));
-  for (std::size_t i = 0; i < g_monitors.size(); ++i) g_prebuilt.monitors.push_back(build_guest_string(cpu, ram, size, depth, seed, monitor_text(static_cast<int>(i))));
-  g_prebuilt.zero = build_guest_string(cpu, ram, size, depth, seed, "0");
-  char bounds[16];
-  std::snprintf(bounds, sizeof bounds, "%d", g_modes.empty() ? 0 : static_cast<int>(g_modes.size()) - 1);
-  g_prebuilt.mode_max = build_guest_string(cpu, ram, size, depth, seed, bounds);
-  std::snprintf(bounds, sizeof bounds, "%d", g_monitors.empty() ? 0 : static_cast<int>(g_monitors.size()) - 1);
-  g_prebuilt.monitor_max = build_guest_string(cpu, ram, size, depth, seed, bounds);
-  g_prebuilt.ready = true;
-  std::fprintf(stderr, "[screen-rows] prebuilt %zu mode names, %zu monitor names (seed 0x%08X)\n",
-               g_prebuilt.modes.size(), g_prebuilt.monitors.size(), seed);
+  if (!localized) return {};
+  const std::uint32_t dat = u32(ram, size, localized + gt4::target::active().hooks.screen_text_value_offset);
+  if (!dat || dat < 16 || dat >= size) return {};
+  const std::uint32_t length = u32(ram, size, dat - 16);
+  if (length > 256 || dat + length > size) return {};
+  std::string out(reinterpret_cast<const char *>(ram + dat), length);
+  const std::size_t nul = out.find('\0');
+  if (nul != std::string::npos) out.resize(nul);
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
 }
 
 void apply_insensitive(std::uint8_t *ram, std::size_t size, std::uint32_t widget, bool on, int depth) {
@@ -386,64 +342,64 @@ void apply_insensitive(std::uint8_t *ram, std::size_t size, std::uint32_t widget
   }
   // Only real composites carry a child list at +0xA4; a leaf's +0xA4 is another field.
   if (vtable != hooks.screen_composite_vtable && vtable != hooks.screen_pane_vtable &&
-      vtable != hooks.screen_slider_vtable)
+      vtable != hooks.screen_slider_vtable && vtable != hooks.screen_optionmenu_vtable)
     return;
   std::uint32_t child = first_child(ram, size, widget);
-  for (int i = 0; i < 48 && child; ++i) {
+  for (int i = 0; i < 128 && child; ++i) {
     apply_insensitive(ram, size, child, on, depth + 1);
     child = next_sibling(ram, size, child);
   }
 }
 
-void set_row_insensitive(std::uint8_t *ram, std::size_t size, RowRefs &row, bool on) {
+void set_row_insensitive(std::uint8_t *ram, std::size_t size, MenuRow &row, bool on) {
   if (row.insensitive_set && row.insensitive == on) return;
-  apply_insensitive(ram, size, row.slider, on, 0);
+  apply_insensitive(ram, size, row.menu, on, 0);
   row.insensitive_set = true;
   row.insensitive = on;
-  std::fprintf(stderr, "[screen-rows] row %s insensitive=%d\n", on ? "greyed" : "active", on ? 1 : 0);
+  std::fprintf(stderr, "[screen-rows] %s row insensitive=%d\n", on ? "greyed" : "active", on ? 1 : 0);
 }
 
-bool page_valid(const std::uint8_t *ram, std::size_t size) {
+bool read_menu_choices(const std::uint8_t *ram, std::size_t size, MenuRow &row) {
   const auto &hooks = gt4::target::active().hooks;
-  return g_page.pane && object(ram, size, g_page.pane, hooks.screen_pane_vtable) &&
-         object(ram, size, g_page.resolution.slider, hooks.screen_slider_vtable) &&
-         object(ram, size, g_page.monitor.slider, hooks.screen_slider_vtable);
-}
-
-bool find_row(const std::uint8_t *ram, std::size_t size, std::uint32_t pane, float y, RowRefs &row) {
-  const auto &hooks = gt4::target::active().hooks;
-  for (std::uint32_t child = first_child(ram, size, pane); child; child = next_sibling(ram, size, child)) {
+  row.popup = u32(ram, size, row.menu + hooks.screen_menu_popup_offset);
+  row.vbox = u32(ram, size, row.menu + hooks.screen_menu_vbox_offset);
+  if (!row.vbox || row.vbox + 0x100 > size) return false;
+  row.choices.clear();
+  for (const std::uint32_t child : children(ram, size, row.vbox)) {
     if (!object(ram, size, child, hooks.screen_composite_vtable)) continue;
-    if (!geometry(ram, size, child + 0x34, 0.0f, y, 320.0f, 32.0f)) continue;
+    for (const std::uint32_t item : children(ram, size, child)) {
+      if (!object(ram, size, item, hooks.screen_textface_vtable)) continue;
+      std::string text = read_display_text(ram, size, item);
+      if (text.empty()) continue;
+      row.choices.push_back(Choice{item, text});
+      break;
+    }
+  }
+  return !row.choices.empty();
+}
+
+bool find_menu_row(const std::uint8_t *ram, std::size_t size, std::uint32_t pane, float y, MenuRow &row) {
+  const auto &hooks = gt4::target::active().hooks;
+  for (const std::uint32_t child : children(ram, size, pane)) {
+    if (!object(ram, size, child, hooks.screen_composite_vtable)) continue;
+    if (f32(ram, size, child + 0x34 + 4) != y) continue;
     row.row = child;
-    for (std::uint32_t item = first_child(ram, size, child); item; item = next_sibling(ram, size, item)) {
-      if (object(ram, size, item, hooks.screen_slider_vtable)) row.slider = item;
+    for (const std::uint32_t item : children(ram, size, child)) {
+      if (object(ram, size, item, hooks.screen_optionmenu_vtable)) row.menu = item;
     }
-    if (!row.slider) continue;
-    for (std::uint32_t item = first_child(ram, size, row.slider); item; item = next_sibling(ram, size, item)) {
-      if (!row.value && object(ram, size, item, hooks.screen_textface_vtable)) row.value = item;
-      if (!row.pinch && object(ram, size, item, hooks.screen_composite_vtable) &&
-          geometry(ram, size, item + 0x34, 14.0f, 0.0f, 132.0f, 24.0f)) {
-
-        for (std::uint32_t popup = first_child(ram, size, item); popup;
-             popup = next_sibling(ram, size, popup)) {
-          if (object(ram, size, popup, hooks.screen_textface_vtable)) {
-            if (!row.min) row.min = popup;
-            else if (!row.max) row.max = popup;
-
-          } else if (object(ram, size, popup, hooks.screen_composite_vtable)) {
-            for (std::uint32_t pinch = first_child(ram, size, popup); pinch;
-                 pinch = next_sibling(ram, size, pinch)) {
-              if (object(ram, size, pinch, hooks.screen_textface_vtable)) row.pinch = pinch;
-            }
-          }
-        }
-
-      }
-    }
-    return row.slider && row.value;
+    if (!row.menu) continue;
+    if (!read_menu_choices(ram, size, row)) continue;
+    return true;
   }
   return false;
+}
+
+bool pane_geometry(const std::uint8_t *ram, std::size_t size, std::uint32_t pane) {
+  // The patched page is 320 x 214 (three setting rows); the original 150 is accepted so a stock page is not mistaken
+  // for another page. The rows are found by their OptionMenu children, not by the height.
+  return f32(ram, size, pane + 0x34) == 160.0f && f32(ram, size, pane + 0x34 + 4) == 130.0f &&
+         f32(ram, size, pane + 0x34 + 8) == 320.0f &&
+         (f32(ram, size, pane + 0x34 + 12) == 214.0f || f32(ram, size, pane + 0x34 + 12) == 150.0f);
 }
 
 bool find_page(const std::uint8_t *ram, std::size_t size) {
@@ -451,67 +407,152 @@ bool find_page(const std::uint8_t *ram, std::size_t size) {
   for (std::uint32_t at = 0x100000; at + 0x100 < size; at += 4) {
     if (u32(ram, size, at) != hooks.screen_pane_vtable) continue;
     const std::uint32_t pane = at - 4;
-    if (!geometry(ram, size, pane + 0x34, 160.0f, 130.0f, 320.0f, 150.0f)) continue;
+    if (!pane_geometry(ram, size, pane)) continue;
     PageRefs page;
     page.pane = pane;
-    if (!find_row(ram, size, pane, 52.0f, page.resolution)) continue;
-    if (!find_row(ram, size, pane, 84.0f, page.monitor)) continue;
+    // The Wide/Fullscreen row is at y = 20; the two host rows are the OptionMenu rows below it.
+    if (!find_menu_row(ram, size, pane, 52.0f, page.resolution)) continue;
+    if (!find_menu_row(ram, size, pane, 84.0f, page.monitor)) continue;
     g_page = page;
-    std::fprintf(stderr, "[screen-rows] Screen page 0x%08X: resolution slider 0x%08X, monitor slider 0x%08X\n", pane,
-                 page.resolution.slider, page.monitor.slider);
+    std::fprintf(stderr,
+                 "[screen-rows] Screen page 0x%08X: resolution menu 0x%08X (%zu choices), monitor menu 0x%08X (%zu)\n",
+                 pane, page.resolution.menu, page.resolution.choices.size(), page.monitor.menu,
+                 page.monitor.choices.size());
     return true;
   }
   return false;
 }
 
-bool text_enabled() {
-  static const bool enabled = [] {
-    const char *value = std::getenv("GT4_SCREEN_ROWS_TEXT");
-    return value == nullptr || *value != '0';
-  }();
-  return enabled;
+bool page_valid(const std::uint8_t *ram, std::size_t size) {
+  const auto &hooks = gt4::target::active().hooks;
+  return g_page.pane && object(ram, size, g_page.pane, hooks.screen_pane_vtable) &&
+         object(ram, size, g_page.resolution.menu, hooks.screen_optionmenu_vtable) &&
+         object(ram, size, g_page.monitor.menu, hooks.screen_optionmenu_vtable);
 }
 
-bool insensitive_enabled() {
-  static const bool enabled = [] {
-    const char *value = std::getenv("GT4_SCREEN_ROWS_INSENSITIVE");
-    return value == nullptr || *value != '0';
-  }();
-  return enabled;
-}
 
-void service_row(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth, RowRefs &row, int which) {
-  if (!g_prebuilt.ready) ensure_prebuilt(cpu, ram, size, depth);
-  const std::string value = which == 0 ? mode_text(g_mode_index) : monitor_text(g_monitor_index);
-  const std::uint32_t value_dat =
-      which == 0
-          ? (g_prebuilt.modes.empty() ? 0 : g_prebuilt.modes[static_cast<std::size_t>(g_mode_index)])
-          : (g_prebuilt.monitors.empty() ? 0 : g_prebuilt.monitors[static_cast<std::size_t>(g_monitor_index)]);
-  const std::uint32_t max_dat = which == 0 ? g_prebuilt.mode_max : g_prebuilt.monitor_max;
-  if (text_enabled() && value_dat) {
-    point_text(ram, size, row.value, value_dat, which == 0 ? "resolution" : "monitor", value);
-    point_text(ram, size, row.pinch, value_dat, which == 0 ? "resolution popup" : "monitor popup", value);
-    point_text(ram, size, row.min, g_prebuilt.zero, "min", "0");
-    point_text(ram, size, row.max, max_dat, "max", "list max");
+void sync_resolution(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth, MenuRow &row) {
+  (void)cpu;
+  (void)depth;
+  const auto &hooks = gt4::target::active().hooks;
+  const std::string wanted = mode_text(g_mode_index);
+  int index = 0;
+  for (std::size_t i = 0; i < row.choices.size(); ++i) {
+    if (row.choices[i].text == wanted) {
+      index = static_cast<int>(i);
+      break;
+    }
   }
-  // The owner's rule: Resolution/Monitor are greyed and not selectable while Fullscreen is Off. The name stays visible.
-  if (insensitive_enabled()) set_row_insensitive(ram, size, row, !gt4::native_settings::host_fullscreen());
+  w32(ram, size, row.menu + hooks.screen_menu_index_offset, static_cast<std::uint32_t>(index));
+  row.confirmed = index;
+  std::fprintf(stderr, "[screen-rows] resolution menu synced to \"%s\" (index %d of %zu)\n", wanted.c_str(), index,
+               row.choices.size());
 }
 
-void write_row_feedback(int which, const char *source) {
-  if (which == 0 && g_modes.empty()) return;
-  if (which == 1 && g_monitors.empty()) return;
-  const char *key = which == 0 ? "resolution" : "monitor";
-  const std::string value = which == 0 ? mode_text(g_mode_index) : monitor_id(g_monitor_index);
+void sync_monitor(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth, MenuRow &row) {
+  (void)cpu;
+  (void)depth;
+  const auto &hooks = gt4::target::active().hooks;
+  const int index = std::clamp(g_monitor_index, 0, static_cast<int>(row.choices.size()) - 1);
+  w32(ram, size, row.menu + hooks.screen_menu_index_offset, static_cast<std::uint32_t>(index));
+  row.confirmed = index;
+  std::fprintf(stderr, "[screen-rows] monitor menu synced to \"%s\" (index %d of %zu)\n",
+               monitor_text(g_monitor_index).c_str(), index, row.choices.size());
+}
+
+void write_resolution_feedback(const std::string &value, const char *source) {
   const std::string quoted = toml_quote(value);
-  const char *keys[1] = {key};
+  const char *keys[1] = {"resolution"};
   const char *values[1] = {quoted.c_str()};
   char error[160] = {};
   if (gt4::native_settings::write_feedback_changes(keys, values, 1, error, sizeof error))
-    std::fprintf(stderr, "[screen-rows] %s: %s = %s (restart)\n", source, key, quoted.c_str());
+    std::fprintf(stderr, "[screen-rows] %s: resolution = %s\n", source, quoted.c_str());
   else
     std::fprintf(stderr, "[screen-rows] %s: feedback not written: %s\n", source, error);
 }
+
+void write_monitor_feedback(int index, const char *source) {
+  const std::string value = toml_quote(monitor_id(index));
+  const char *keys[1] = {"monitor"};
+  const char *values[1] = {value.c_str()};
+  char error[160] = {};
+  if (gt4::native_settings::write_feedback_changes(keys, values, 1, error, sizeof error))
+    std::fprintf(stderr, "[screen-rows] %s: monitor = %s (restart)\n", source, value.c_str());
+  else
+    std::fprintf(stderr, "[screen-rows] %s: feedback not written: %s\n", source, error);
+}
+
+void apply_resolution(const MenuRow &row, int index) {
+  if (index < 0 || index >= static_cast<int>(row.choices.size())) return;
+  const std::string &text = row.choices[static_cast<std::size_t>(index)].text;
+  int width = 0, height = 0;
+  if (std::sscanf(text.c_str(), "%dx%d", &width, &height) != 2 || width <= 0 || height <= 0) {
+    std::fprintf(stderr, "[screen-rows] resolution choice \"%s\" is not WxH; ignored\n", text.c_str());
+    return;
+  }
+  const int host_index = find_mode(width, height);
+  if (host_index >= 0) g_mode_index = host_index;
+  write_resolution_feedback(text, "dropdown");
+  if (gt4::native_settings::window_present()) {
+    gt4::native_settings::request_output_size(width, height);
+    std::fprintf(stderr, "[screen-rows] resolution %s -> live apply requested (mode list %s)\n", text.c_str(),
+                 host_index >= 0 ? "has it" : "does not list it");
+  } else {
+    std::fprintf(stderr, "[screen-rows] resolution %s: this run has no window; the value applies at the next start\n",
+                 text.c_str());
+  }
+}
+
+void apply_monitor(const MenuRow &row, int index) {
+  if (index < 0 || index >= static_cast<int>(row.choices.size())) return;
+  const int monitor = std::clamp(index, 0, static_cast<int>(g_monitors.size()) - 1);
+  g_monitor_index = monitor;
+  write_monitor_feedback(monitor, "dropdown");
+  std::fprintf(stderr, "[screen-rows] monitor %s: restart value (moving a running window is not implemented)\n",
+               monitor_text(monitor).c_str());
+}
+
+void service_row(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth, MenuRow &row, int which) {
+  const auto &hooks = gt4::target::active().hooks;
+  if (!row.menu || row.choices.empty()) return;
+  set_row_insensitive(ram, size, row, !gt4::native_settings::host_fullscreen());
+  const std::uint32_t raw = u32(ram, size, row.menu + hooks.screen_menu_index_offset);
+  const int index = std::clamp(static_cast<int>(raw), 0, static_cast<int>(row.choices.size()) - 1);
+  const bool open = u32(ram, size, row.menu + hooks.screen_menu_open_offset) != 0;
+  if (row.confirmed < 0) {
+    // First sight: show the current value from the host (and paint the monitor names once).
+    if (which == 0)
+      sync_resolution(cpu, ram, size, depth, row);
+    else
+      sync_monitor(cpu, ram, size, depth, row);
+    row.was_open = open;
+    return;
+  }
+  if (open) {
+    row.was_open = true;
+    return;
+  }
+  if (index != row.confirmed && !row.was_open) {
+    // The index moved with the popup closed (a programmatic change or a first sync); apply it like a confirm.
+    row.confirmed = index;
+    if (which == 0)
+      apply_resolution(row, index);
+    else
+      apply_monitor(row, index);
+    return;
+  }
+  if (row.was_open) {
+    row.was_open = false;
+    if (index != row.confirmed) {
+      row.confirmed = index;
+      if (which == 0)
+        apply_resolution(row, index);
+      else
+        apply_monitor(row, index);
+    }
+  }
+}
+
 
 } // namespace
 
@@ -525,26 +566,17 @@ void configure_from_environment() {
 }
 
 bool on_adjust(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth, int which) {
+  // The stock `Vertical`/`Horizontal` SliderBars are hidden by the data patch; the page script still calls their
+  // getters/setters in reflect/apply. The host must keep both out of the guest save: the getter returns 0 and the setter
+  // is skipped. The visible rows are the OptionMenus serviced in on_render_frame.
   const auto &hooks = gt4::target::active().hooks;
   const std::uint32_t entry = which == 0 ? hooks.screen_adjust_v_callback : hooks.screen_adjust_h_callback;
   if (!entry || !ram || !gt4::native_settings::option_project_active(ram, size)) return false;
-  if (!g_configured) configure_from_environment();
   const std::uint32_t return_label = cpu.r[31].w[0];
-  const int count = which == 0 ? static_cast<int>(g_modes.size()) : static_cast<int>(g_monitors.size());
-  if (count <= 0) return false;
-  int &index = which == 0 ? g_mode_index : g_monitor_index;
   if (cpu.r[6].w[0] > 0) {
-    std::int32_t raw = 0;
-    if (!gt4::native_settings::read_hint_value(ram, size, cpu.r[7].w[0], raw)) return false;
-    const int clamped = std::clamp(static_cast<int>(raw), 0, count - 1);
-    if (clamped != index) {
-      index = clamped;
-      write_row_feedback(which, "row");
-    }
     cpu.pc = return_label;
     return true;
   }
-  // Getter: box the host index into the caller's return slot.
   const std::uint32_t slot = cpu.r[4].w[0];
   if (!slot || slot + 4 > size) return false;
   if (!hooks.script_box_int || !ps2::has_code(hooks.script_box_int)) return false;
@@ -554,7 +586,7 @@ bool on_adjust(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t
     const std::uint32_t args[1] = {old};
     call_guest(cpu, hooks.script_release_handle, depth, 1, args);
   }
-  const std::uint32_t args[2] = {slot, static_cast<std::uint32_t>(index)};
+  const std::uint32_t args[2] = {slot, 0u};
   call_guest(cpu, hooks.script_box_int, depth, 2, args);
   cpu.pc = return_label;
   return true;
@@ -563,7 +595,6 @@ bool on_adjust(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t
 void on_render_frame(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth) {
   if (!ram || !gt4::native_settings::option_project_active(ram, size)) return;
   if (!g_configured) configure_from_environment();
-  if (g_modes.empty() && g_monitors.empty()) return;
   if (!page_valid(ram, size) && !find_page(ram, size)) return;
   service_row(cpu, ram, size, depth, g_page.resolution, 0);
   service_row(cpu, ram, size, depth, g_page.monitor, 1);
@@ -579,7 +610,6 @@ void reset_for_test() {
   g_wanted_monitor.clear();
   g_configured = false;
   g_page = PageRefs{};
-  g_prebuilt = Prebuilt{};
 }
 
 } // namespace gt4::screen_rows

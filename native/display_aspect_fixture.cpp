@@ -496,9 +496,28 @@ void test_overlay_canvas() {
   require(!overlay_text_active() && overlay_text_scale_x(bits_of(1.0f)) == bits_of(1.0f), "closed again: the game's value");
 }
 
+// TASK-213 Phase 1d: the live output size picked in the game overrides the start GT4_OUTPUT_SIZE ratio.
+void test_live_output_size() {
+  _putenv_s("GT4_OUTPUT_SIZE", "1920x1080");
+  _putenv_s("GT4_DISPLAY_ASPECT", "");
+  const Setting &setting = configured_setting();
+  require(setting.source == Source::output_size && setting.ratio == kGameRatio, "the live test starts at 1920x1080");
+  require(current_ratio() == kGameRatio, "16:9 before the live change");
+  set_live_output_size(1920, 1200);
+  require(near(current_ratio(), 1.6), "the live output size overrides the start ratio");
+  set_live_output_size(3440, 1440);
+  require(near(current_ratio(), 3440.0 / 1440.0), "the live ultrawide ratio");
+  set_live_output_size(0, 0);
+  require(near(current_ratio(), 3440.0 / 1440.0), "zero sides are ignored");
+  set_live_output_size(1920, 1080);
+  require(current_ratio() == kGameRatio, "back to 16:9");
+  _putenv_s("GT4_OUTPUT_SIZE", "");
+}
+
 int main() {
   test_parse();
   test_output_size();
+  test_live_output_size();
   test_fov_extra();
   test_ratios();
   test_projection_scale();

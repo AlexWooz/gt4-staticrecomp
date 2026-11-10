@@ -3487,3 +3487,38 @@ The v2.00 build with the Screen rows: `native/screen_rows.cpp` (host text/insens
   (the resolution/monitor merge tests), `test_gt4_data_patch.py` 16 OK; both headless runs exit 0. No full suite.
 - **Known:** one monitor on this machine (the Monitor row's change path is not exercised); the replaced script strings are
   intentionally leaked (bounded, engine cache); the restart notice is the launcher's; Spec II is Phase 2.
+
+## TASK-213 Phase 1d test build (slice430, 2026-11-10, test only)
+
+The v2.00 build with the Screen rows as the game's own OptionMenus and a live Resolution: `native/screen_rows.cpp`
+(the OptionMenu index/open/label service and the hidden-slider save guard), `native/window.cpp` (`apply_output_size`,
+`apply_display_mode`, `restore_display_mode`, the fullscreen-start apply), `native/display_aspect.*`
+(`set_live_output_size`), `native/native_settings.*` (the output request and the window-present flag). The capsule is
+the Phase 1c one (the hooks are unchanged).
+
+- **Capsule:** `private/slice426-screen-rows-license-guard-runtime`; pin
+  `docs/inputs/slice426-screen-rows-license-guard-runtime.json`; receipt
+  `7bb369a048764bb1d346f264243efde6846f54deec8be4e97db1a247244a5023`. `kernel.cpp`/`cdvdfsv.cpp` are byte-identical to
+  slice376/slice424.
+- **Configure/build:** the existing `build/slice424-native-settings-build` with `build/configure-426.cmd` (the slice426
+  capsule) and `build/build-424.cmd`. The final exe is 90,234,880 bytes, SHA-256
+  `d0a7502747d1ff8178672d6f0aa32955018c6cf9a49c43a55f72156525873a05`.
+- **Patch:** `gt4_data_patch.py --iso "<v2.00 ISO>" --recipe <slice430 recipe>.json --output <fresh private dir>`; the
+  recipe has the Phase 1 Fullscreen edits, the hidden stock sliders and the two new OptionMenu rows (the Pane stays
+  150, no `has_script`).
+  (9 text replacements, `minify: true`); container
+  `4d1068828fc9976e5e9bdaef732f22a0b47482373ea6d373c303b769d17f6344`, 77,986 bytes (stored extent 22,449 / decoded
+  681,977).
+- **Run:** `GT4_DATA_PATCH=... GT4_SETTINGS_FEEDBACK=... GT4_FULLSCREEN=0|1 GT4_OUTPUT_SIZE=1920x1080 gt4vulkan.exe ...`;
+  the exact sequences are in `private/slice430-kit/run-on.cmd`, `run-off.cmd` and `run-scroll.cmd`. Expected:
+  `[screen-rows] Screen page ... resolution menu ... (29 choices)`, `resolution menu synced to "1920x1080" (index 0 of
+  29)`, `row active/greyed insensitive=...`, `resolution = "1280x720"` (or `"3024x1296"`), exit 0. The live display mode
+  is only applied with a window (`--window`); the headless runs log the value for the next start.
+- **Kit:** `private/slice430-kit` (exe, patch, recipe, report, three states/logs, the two feedback files, seven PNG
+  frames, README, run scripts). Test build only.
+- **Checks:** `native_native_settings` 1/1 (the output-request/window-present checks), `native_display_aspect` 1/1 (the
+  live output ratio), `cargo test -p gt4l-core --lib` 310 passed, `test_gt4_data_patch.py` 16 OK, `test_license_guard.py`
+  21 OK; the three headless runs exit 0.
+- **Known:** the display-mode change is global and untested headless (a crash/kill leaves the chosen mode); the mode list
+  is fixed to `\\.\DISPLAY1` at build time; the Monitor row is restart-only; the first closed-row value is fixed to
+  1920x1080 (the kit start); the GS internal scale stays at the start `GT4_HW_SCALE`; Spec II is Phase 2.
