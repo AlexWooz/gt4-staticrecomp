@@ -1,5 +1,20 @@
 # Current Status
 
+## TASK-090 per-item capture: the light state, selector and carried block (2026-11-10)
+
+`.gt4scene` is **version 4**: the K1 post hook walks the whole PGL output chain (`native/coregs3/coregs3_chain.*`) and
+every item carries the VU1 light state its run reads at TOPS+0xC9 (16 qwords, the raw UNPACK word and source,
+`uploaded`/`carried`/`carried_uncertain`) and the ITOP/MSCAL pair that ran it; every draw carries
+`chain_tags`/`chain_valid`/`program_uniform`. Versions 1-3 are refused. Fresh 3x capture: 124,782 draws, 822,826
+chains walked with 0 incomplete; the per-draw light/selector counters are identical to r13. Measured: the light tag is
+copied for the first two items of a light draw (every item of the flag 1/4 re-preparing kinds), not once per shape
+(frame 0: 177 uploaded / 158 carried of 335 items); the ITOP changes inside 8 of 116 draws (draw 98: 0x7B items 0-16,
+0x161 items 17-30); the VU1 memory is double buffered (`ofst 435`), so the carried block is tracked per MSCAL parity in
+VIF order, with 179,944 carried items over the run and 3,305 uncertain. Checks: v3 field identity on 232 draws, CTest
+4/4, Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Open: the five uncertain carried items per frame; the
+renderers still consume the per-draw block (the per-item blocks are the next consumer). Details:
+`docs/COREGS3-HOOKS.md` §13.
+
 ## 2026-11-10: measured UV convention merged; the vertex scale finding
 
 `task/090-texture-uv` is merged (740bffce): `coregs3_shape` decodes a 16-bit UV channel as a signed fraction

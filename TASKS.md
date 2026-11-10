@@ -1662,8 +1662,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   coverage 95.49 -> 98.79% and cuts spill 31.2 -> 0.54%; `task/090-vertex-fix` is in flight. G-IMAGE 32 dB needs
   textures (vertex-colour ceiling 18.63 dB); the nine-qword family is the dominant visible surface. G-PERF needs
   instrumentation. A prediction study is in flight.
-- Next: merge the per-item light block (v4) and the vertex fix, implement the remaining family formulas in the
-  renderers, then fog/textures/reflection and the G-IMAGE/G-PERF gates.
+- **Per-item capture (2026-11-10).** `.gt4scene` version 4: the K1 post hook walks the whole PGL output chain
+  (`native/coregs3/coregs3_chain.*`) and stores per item the VU1 light state its run reads at TOPS+0xC9 (16 qwords, the
+  raw UNPACK word, the source, `uploaded`/`carried`/`carried_uncertain`) and the ITOP/MSCAL pair that ran it; per draw,
+  `chain_tags`/`chain_valid`/`program_uniform`. Versions 1-3 refused. Measured: the light tag is copied for the first
+  two items of a light draw (every item of the flag 1/4 re-preparing kinds), not once per shape (frame 0: 177 uploaded
+  + 158 carried of 335 items); the ITOP changes inside 8 of 116 draws (draw 98: 0x7B for items 0-16, 0x161 for 17-30);
+  the VU1 memory is double buffered (`ofst 435`), so the carried block is tracked per MSCAL parity in VIF order, with
+  179,944 carried items over the run and 3,305 uncertain. Per-draw counters identical to r13; v3 field identity on 232
+  draws; CTest 4/4, Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK.
+- Next: merge the vertex fix, implement the remaining family formulas with the per-item blocks, then
+  fog/textures/reflection and the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

@@ -519,3 +519,116 @@ The 27 body draws are all lit; every other selector is unlit. **Draws 91/93 are 
 flag is 1:1 in this frame (0xC2 -> 6q, 0xA1 -> 9q, 0x85 -> 3q, 0x01 -> 9q no light, 0xA4 -> 6q no colour, 0x80 ->
 none). Evidence: `build/evidence/coregs3/r13/`, `build/analysis-lighting/selectors-r13.{txt,json}`. Open: the four
 nine-qword programs and the three-qword/no-block programs still need their formulas; one scene only.
+
+## 13. Round 14 (2026-11-10): the per-item light state, the per-item selector and the carried block
+
+`.gt4scene` is **version 4**. Every draw keeps all version 3 fields; each item record adds the VU1 light state the item's
+microprogram run reads at TOPS+0xC9 (16 qwords reserved, the upload's raw UNPACK word and source, and where the block came
+from) and the ITOP/MSCAL pair that ran it; each draw adds the chain summary (`chain_tags`, `chain_valid`,
+`program_uniform`). The K1 post hook now walks the whole PGL output chain instead of reading fixed offsets. Versions 1..3
+are refused, not migrated.
+
+### 13.1 The PGL output chain and the VIF tag2 pipeline (C)
+
+`func_0049D328` writes one draw into the PGL output buffer (`obj->out`, PGL+0x1F8, scratchpad `0x70002000`) as a DMA1
+chain of 16-byte tag qwords. The donor's tag-transfer path (`private/references/ps2-web-recomp/runtime/src/dmac.cpp:173`:
+with TTE the last 8 bytes of every tag are forwarded to the VIF before the tag's data) is what makes tag words 2/3 the
+VIFcode pair the VU1 executes. The chain is, in order: the `0xC1` matrix packet (CNT, QWC 8, tag2 `0x6C08C0C1`, eight
+inline qwords) when `func_0049E548` ran; per item a REF tag to the model packet whose tag2 is STMASK+mask for item 0 and
+the previous item's ITOP/MSCAL pair otherwise; per item, conditionally, a REF tag whose tag2 is the UNPACK into
+TOPS+0xC9; per item, when `obj->bits & obj->bits2`, a CNT tag with the TOPS+0xD9 block inline (`func_0049E5F8`); and the
+terminating CNT tag (0x10000000, QWC 0) whose tag2 is the last item's ITOP/MSCAL pair. `native/coregs3/coregs3_chain.cpp`
+walks it with the caller's guest read function, so the CTest fixture drives hand-authored chains; `chain_valid` is 1 only
+when the walk parses exactly from the pre-call cursor to the post-call cursor.
+
+### 13.2 Per-item light blocks (C)
+
+The light tag is copied into the packet by `func_0049D1A0`, whose copy condition is
+`if (n != 0 && self->tag.w[0] != 0)` with `n` the per-draw mode that starts at 2 and decrements on every copy (its
+`case 1`/`case 4` branches reset it to 2 per item only when `Obj+0x48 & 7` is set, and then re-prepare the block on the
+shape stack). So a light-family draw uploads **its tag for the first two items** (and for every item of the re-preparing
+kinds), not once per shape and not for every item. Measured on frame 0 (VBlank 7398, 335 items): 177 items carry their own
+upload and 158 carry (153 carried + 5 uncertain):
+
+| family (per draw) | draws | items | items with their own upload |
+|---|---|---|---|
+| three-qword `0x6C03C0C9` | 15 | 25 | 22 |
+| six-qword `0x6C06C0C9` (body/paint) | 28 | 81 | 37 |
+| nine-qword `0x6C09C0C9` (glass/lamp) | 62 | 203 | 118 |
+| no block (cmd flag 0x80) | 11 | 26 | 0 |
+
+The body family's uploaded and carried items all agree in content, as expected: items 0 and 1 write the same tag into the
+two TOP buffers and later items read one of them. The nine-qword family is different: the re-preparing path
+(`flag & 0x1F` 1/4 with `Obj+0x48 & 7`) pushes a new block per item, and the captured blocks differ within a draw (12
+draws in frame 0, e.g. draw 14: qword 3 = `(16,16,16,256)` for item 0 and `(144,144,144,256)` for item 1); the captures
+keep the per-item value. The nine-qword sources also differ per item (13 draws), as the stack pointer moves.
+
+### 13.3 The per-item program selector (C, correcting round 13)
+
+Round 13 read the selector from the terminating tag (the last item's pair). The per-item capture shows that the pair is
+**not always uniform within a draw**:
+
+- the **ITOP** word (the real program selector) changes inside 8 of the 116 draws of frame 0: draw 98's first 17 items
+  run ITOP `0x400007B` (dispatch 0x3D8) and items 17..30 run `0x4000161` (dispatch 0x0B08); draws 29, 32, 51, 62, 65, 69
+  and 73 show the same switching. The ITOP operands are recomputed every iteration from `obj->x + obj->y`
+  (`func_0049D328`), so the switch means those operands changed inside the loop (the per-item callback/helpers; H);
+- the **MSCAL** word (a shared stub, round 13) differs per item far more often: the pre-loop `n--` of a matrix upload
+  and the per-item `n += 60` / `n -= 5` arithmetic of the 0xD9 block make the immediate vary (draw 0: item 0 `0x3A7`,
+  items 1/2 `0x3AD`; draw 10: four items `0x3AD` and the rest `0x3A8`). This is the stub, not the selector, but the
+  capture keeps it per item because a VU1-side consumer may need the exact `vi14`/return-address setup (43 draws in
+  frame 0).
+
+The capture therefore stores both words per item (`CapturedItem::run_itop/run_mscal`), with `run_valid`; the per-draw
+`program_*` stays the terminating tag for compatibility. `program_uniform` is 1 when every item's ITOP equals the
+terminating ITOP (the selector view: 108 of 116 draws in frame 0), and `program_item_mscal_variants` counts the stub
+differences separately. Over the whole 7,600-frame run: 383,588 items, 0 without a run pair, **52,362 with an ITOP
+different from their draw's last item** and **91,205 with a different MSCAL stub** — the per-item selector is real, not a
+formality.
+
+### 13.4 The carried block, and why the EE cannot snapshot the VU1 memory (C + H)
+
+The VU1 data memory is double buffered: VIF1 `BASE`/`OFFSET` select two windows and every MSCAL flips them
+(`private/slice262-frame-cost-runtime/vif.cpp:57`: `top = tops; dbf = !dbf; tops = base + (dbf ? ofst : 0)`), so a
+program run reads the `0xC9` block written since the previous MSCAL. The capture reports the shadow registers at the end
+of every interval; on this run `base 0`, **`ofst 435`**, so the two `0xC9` locations really differ and the parity matters.
+
+The EE side cannot read the block directly:
+
+- `ps2::Cpu` (`runtime/include/ps2/cpu.hpp:53`) holds EE registers, VU0 and COP0 only; the VU1 data memory is the global
+  `g_vu1_mem[16384]` (`runtime/src/hw.hpp:17`, `memory.cpp:19`) and the microprogram receives it as its data pointer
+  (`slice262-frame-cost-runtime/vu_micro.cpp:895`, `slice151-vu1-aot-runtime/vu_micro.cpp:878`).
+- With MTVU on (the default), the EE thread parses VIF1 in **shadow** mode: the shadow unpacks into `g_dry_run`
+  (`slice262-frame-cost-runtime/vif.cpp:33/160`) and posts the packet to the VU1 worker, which owns the real
+  `g_vu1_mem`. The EE copy is the wrong state and reading it would race the worker.
+- Even without MTVU, K1 post runs when `func_0049D328` returns: the draw has only been written to the PGL output buffer.
+  The DMA1 kick that makes VIF1 execute it happens later, so no snapshot at K1 post can contain this draw.
+
+The smallest alternative is a VU1-side hook inside `run_vu` (the single place a MSCAL flips TOP/OFFSET and starts a
+program): snapshot `g_vu1_mem[top + 0xC9]` there. That needs a new pinned runtime capsule (the perf runtime source is
+hash-pinned and this worktree carries no `private/`) plus a way to map the worker's runs to the captured items across its
+lag; it was **not** added in this round.
+
+Instead the capture tracks the state in VIF command order, which the DMA later executes in exactly the same order:
+`CarriedLight` keeps one slot per MSCAL parity (`runs & 1`), every observed TOPS+0xC9 upload refreshes its slot, and an
+item without an upload records the slot its own MSCAL reads. The labels are relative, so a constant unknown parity
+cancels; an unseen MSCAL (another call site of `func_0049D308`, which the pinned EE library does not instrument, or a
+chain the walker refuses) can shift the parity, which `gap_epoch` marks. A carried block is exact when its slot was
+uploaded after the last gap, or when both slots hold the same content; otherwise the item says `carried_uncertain`.
+
+Measured (frame 0): 158 carried items, 153 exact and **5 uncertain** (draws 25, 44, 61, 85 and 115: the tracked slot
+predates a cursor discontinuity and the two slots differ). A replay of the frame's items against the two-slot model
+predicts every one of the 158 carried blocks, so the values are consistent with the stream order; only the absolute parity
+of those five cannot be proven from the EE side. Over the whole run: **200,339 items with their own upload, 179,944
+carried (of which 3,305 uncertain), 0 with no state**; `chain_gaps` 214,244 (the PGL output buffer is flushed and rewound
+between passes) but `chain_incomplete` 0 and the car-pass chains are contiguous, which is why most carried items are
+exact.
+
+### 13.5 Gates in this round
+
+| Gate | Result |
+|---|---|
+| Fresh 3x night capture (`GT4_COREGS3=shadow` + tap, VBlanks 7398-7399, 7,600 frames) | per-draw counters identical to r13: lights 114,365 / missing 9,129; selectors 124,782 / missing 0; 0 read failures, 0 refusals, 0 incomplete chains; capture v4 819,792 B |
+| Version 3 field identity (`build/evidence/analysis-090/compare_v3_v4.py` on the r13 v3 capture) | **passes**: 232 draws identical on every version 3 field, per-draw light block qwords included |
+| CTest | 4/4 passed (`native_coregs3`, `native_coregs3_vertex`, `native_coregs3_lighting`, `native_coregs3_timeline`) |
+| Python `test_coregs3_units.py` | 7/7 passed |
+| 3x off/shadow identity gate (main worktree reference exe) | **passes**: 8,997 VBlanks, 1,686 racing, clock/digest/state 0 differences and 13/13 frames identical for off and shadow (capture 4,451,628 B). One earlier run of the same gate showed the known 512-word state-dump double-buffer difference (0x10EC0..0x116BC) in the `off` run under concurrent machine load; it did not reproduce in a clean run |

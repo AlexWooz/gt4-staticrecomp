@@ -33,6 +33,15 @@
 // Format version 3 (2026-11-09) adds the per-draw VU1 program selector (CapturedDraw::program_*): the ITOP and MSCAL
 // words the PGL writes in the terminating tag of the draw's REF chain, which name the microprogram entry the VU1 runs.
 // Seven words per draw; versions 1 and 2 are refused the same way.
+//
+// Format version 4 (2026-11-10) adds the per-item VU1 light state and program run pair (CapturedItem::light_*,
+// run_*) and the per-draw chain summary (chain_tags/chain_valid/program_uniform), and changes the pack of the draw
+// record: every item record grows by a fixed 16-qword block plus seven words. Version 4 is the first version whose
+// light state is complete for the items the VU1 runs without an upload: such an item records the tracked carried block
+// (the TOPS+0xC9 content of its MSCAL parity, tracked in VIF command order), because the VU1 keeps the previous block
+// when a shape uploads nothing. It is also the first version whose program selector is per item: the measured capture
+// shows the ITOP word changes within some draws (a draw can mix programs), so `program_*` alone was a last-item view.
+// Versions 1..3 are refused, not migrated.
 #pragma once
 
 #include <cstddef>
@@ -52,7 +61,7 @@ const char *mode_name(Mode mode) noexcept;
 
 inline constexpr std::uint32_t kSceneMagic = 0x53345447u;    // "GT4S"
 inline constexpr std::uint32_t kFrameMagic = 0x47334647u;    // "GF3G"
-inline constexpr std::uint32_t kSceneVersion = 3u;
+inline constexpr std::uint32_t kSceneVersion = 4u;
 inline constexpr std::uint32_t kCaptureTargetV200 = 0u;
 
 // The VU1 light block of one shape call lands at TOPS qword 0xC9 through a VIF UNPACK whose payload is at most nine
@@ -132,6 +141,14 @@ inline constexpr std::uint32_t kExternalMaterialArray = 0x0084AF64u;
 inline constexpr std::uint32_t kTextureCursor = 0x00624C7Cu;   // D_00624C7C, added to an external texture index
 inline constexpr std::uint32_t kMaterialCursor = 0x00624C80u;  // D_00624C80, added to an external material index
 
+// Where one item's VU1 light block came from (CapturedItem::light_source; format version 4).
+enum LightItemSource : std::uint32_t {
+  kLightItemNone = 0,              // no upload observed in the captured stream: the TOPS+0xC9 state is unknown
+  kLightItemUploaded = 1,          // this item's own light tag uploaded the block (the literal VU1 input)
+  kLightItemCarried = 2,           // no tag for this item: the tracked last upload before its MSCAL (VU1 carried state)
+  kLightItemCarriedUncertain = 3,  // carried, but a PGL output-cursor discontinuity followed the tracked upload
+};
+
 // One item of the Cmd: a DMA REF to the model's own VIF packet (`func_0049D328`: p->a = count|0x30000000,
 // p->b = addr), plus the texture/material indices of its `event`.
 struct CapturedItem {
@@ -142,6 +159,25 @@ struct CapturedItem {
   std::uint32_t material_record = kNoRecord;  // index into the frame's material table
   std::uint32_t packet_offset = 0;            // byte offset inside the frame's packet block
   std::uint32_t packet_bytes = 0;             // bytes copied (16-byte aligned; 0 when the item was not copied)
+  // The light block this item's VU1 microprogram run reads at TOPS+0xC9 (format version 4). `func_0049D328` writes a
+  // REF tag whose tag2 word is the UNPACK that uploads the block; `func_0049D1A0` copies it only while its per-draw
+  // counter is nonzero (mode starts at 2, so the first two items of a draw; every item of the Cmd kinds that re-prepare
+  // the block per item, `flag & 0x1F` 1 and 4 with Obj+0x48 flags bit 0). The other items upload nothing: the VU1 keeps
+  // the block of the last upload with the same TOPS/MSCAL parity, which the capture tracks across the command stream and
+  // records here with `light_source` = carried. A draw whose Cmd kind byte (`flag & 0x1F`) is 0 uploads nothing at all
+  // (func_0049D080 zeroes the tag at Obj+0x30 and no case helper sets it again). `light_block_qwords` is 0 when nothing
+  // is known (the VU1 data memory before the first observed upload is not read: see docs/COREGS3-HOOKS.md §13).
+  std::uint32_t light_block[kMaxLightBlockQwords][4] = {};
+  std::uint32_t light_block_qwords = 0;
+  std::uint32_t light_block_command = 0;  // the tag's raw UNPACK word, e.g. 0x6C06C0C9; 0 when carried/unknown
+  std::uint32_t light_block_source = 0;   // guest address the tag uploaded from; the tracked upload's source carried
+  std::uint32_t light_source = kLightItemNone;  // LightItemSource
+  // The ITOP/MSCAL pair that runs this item: the tag2 words (word 2 = VIF ITOP, word 3 = VIF MSCAL) of the tag that
+  // follows this item's REF tag (the next item's tag, or the terminating tag), raw. `run_valid` is 1 only when both
+  // words match the VIF forms. `program_*` of the draw carries the terminating pair for compatibility.
+  std::uint32_t run_itop = 0;
+  std::uint32_t run_mscal = 0;
+  std::uint32_t run_valid = 0;
 };
 
 // One `pgluCallShape` call of the car pass.
@@ -173,6 +209,15 @@ struct CapturedDraw {
   std::uint32_t light_block_qwords = 0;
   std::uint32_t light_block_command = 0;  // the tag's VIF UNPACK word, e.g. 0x6C06C0C9 or 0x6C09C0C9
   std::uint32_t light_block_source = 0;   // guest address the tag's REF read the qwords from
+  // Format version 4: the PGL output chain this draw wrote, walked at the K1 post hook. `chain_tags` is the number of
+  // tag qwords seen and `chain_valid` is 1 when the walk parsed exactly from the pre-call cursor to the post-call
+  // cursor. `program_uniform` is 1 when every item's run pair is valid and its **ITOP** word equals the terminating
+  // tag's ITOP (the real program selector, round 13): measured per-item evidence, which the capture shows is NOT always
+  // 1 (the operands are recomputed every iteration, so a draw can mix programs). The MSCAL stub immediate can also
+  // differ per item and is captured in CapturedItem::run_mscal.
+  std::uint32_t chain_tags = 0;
+  std::uint32_t chain_valid = 0;
+  std::uint32_t program_uniform = 0;
   // The VU1 program selector, read from the terminating tag of the draw's REF chain in the same PGL output buffer.
   // func_0049D328 writes word 3 of every tag as `0x14000000 | n` (VIF MSCAL) and word 2 as `0x04000000 | (x + y)` (VIF
   // ITOP); the terminating tag carries the last item's words. `n` comes from obj->count (PGL +0x14) and the Cmd
@@ -270,10 +315,23 @@ struct CaptureCounters {
   std::uint64_t bytes_written = 0;
   std::uint64_t item_packets = 0;     // items whose VIF packet was copied
   std::uint64_t records = 0;          // texture and material records copied (deduplicated)
-  std::uint64_t light_blocks = 0;     // draws whose TOPS+0xC9 light block was read back
-  std::uint64_t light_blocks_missing = 0;  // draws with a light flag bit whose block was absent or unreadable
+  std::uint64_t light_blocks = 0;     // draws whose per-draw TOPS+0xC9 light block was read back (first item's upload)
+  std::uint64_t light_blocks_missing = 0;  // draws with a nonzero Cmd flag whose first-item light tag was absent
+  std::uint64_t light_blocks_carried = 0;  // draws where no item uploaded a block (the carried state fills every item)
+  std::uint64_t light_blocks_none = 0;     // draws where no item has any known light state (nothing observed yet)
+  std::uint64_t light_items_uploaded = 0;  // items whose own light tag uploaded the block
+  std::uint64_t light_items_carried = 0;   // items filled from the tracked carried state
+  std::uint64_t light_items_uncertain = 0; // carried items whose tracked block followed a chain discontinuity
+  std::uint64_t light_items_none = 0;      // items with no known light state
   std::uint64_t program_selectors = 0;     // draws whose terminating-tag ITOP/MSCAL words were read back
   std::uint64_t program_selectors_missing = 0;  // draws whose terminating tag was absent or not ITOP+MSCAL
+  std::uint64_t program_items = 0;         // items whose own ITOP/MSCAL run pair was captured
+  std::uint64_t program_items_missing = 0; // items whose run pair was absent or not ITOP+MSCAL
+  std::uint64_t program_item_variants = 0; // items whose ITOP selector differs from the draw's terminating ITOP
+  std::uint64_t program_item_mscal_variants = 0;  // items whose MSCAL stub immediate differs from the terminating one
+  std::uint64_t chain_calls = 0;           // PGL output chains walked (every hooked shape call, in or out of the pass)
+  std::uint64_t chain_gaps = 0;            // chains whose pre-call cursor did not continue the previous post-call one
+  std::uint64_t chain_incomplete = 0;      // chains that did not parse exactly to the post-call cursor
   std::uint32_t largest_items = 0;    // largest item table seen in one draw (capacity evidence)
   std::uint32_t largest_draw_bytes = 0;   // largest packet total of one draw
   std::uint32_t largest_frame_bytes = 0;  // largest packet total of one frame
