@@ -471,20 +471,21 @@ struct PresentLayer::Impl {
   }
 
   // One captured draw -> one triangle-list draw call per measured position encoding. Positions are metres (build_mesh's
-  // scale), colours are the lit vertex colours from the measured VU1 block when the draw carries it
-  // (coregs3_lighting.hpp), and the push constant carries the draw's metre columns (coregs3_vertex.hpp: the linear part
-  // scaled by the shape's `value` and by the encoding's units, translation unscaled). Returns false when the frame as a
-  // whole cannot be drawn (capacity); a draw that fails to decode is counted in `refused` and left to the GS-drawn image
-  // underneath. `unlit_draws` counts the drawn draws with no measured block (or without the normals/colours the formula
-  // needs); `unlit_vertices` counts the uploaded vertices that kept their base colour.
-  bool build_frame(std::uint32_t &refused, std::uint32_t &unlit_draws, std::uint64_t &unlit_vertices) {
+  // scale) and colours are the per-item lit vertex colours (coregs3_lighting.hpp, shade_mesh_items): every item is
+  // shaded with its own program and its own TOPS+0xC9 block, and the push constant carries the draw's metre columns
+  // (coregs3_vertex.hpp: the linear part scaled by the shape's `value` and by the encoding's units, translation
+  // unscaled). Returns false when the frame as a whole cannot be drawn (capacity); a draw that fails to decode is
+  // counted in `refused` and left to the GS-drawn image underneath. `unlit_draws` counts the drawn draws with no lit
+  // vertex; `unlit_vertices` counts the uploaded triangle corners that kept their base colour. `lighting` accumulates
+  // the per-family and per-status detail the F8 report prints.
+  bool build_frame(std::uint32_t &refused, std::uint32_t &unlit_draws, std::uint64_t &unlit_vertices,
+                   gt4::coregs3::LightCounters &lighting) {
     vertices.clear();
     ranges.clear();
     refused = 0;
     unlit_draws = 0;
     unlit_vertices = 0;
-    std::vector<std::array<std::uint8_t, 4>> lit_colours;
-    std::vector<std::uint8_t> lit_mask;
+    std::vector<gt4::coregs3::ShadedVertex> shades;
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
       const gt4::coregs3::DrawMatrix matrix = gt4::coregs3::draw_matrix(draw);
       if (!matrix.valid) {
@@ -524,23 +525,12 @@ struct PresentLayer::Impl {
         ranges.clear();
         return false;
       }
-      // Shade every mesh vertex once; a draw without the measured block (or without the normals/colours the formula
-      // needs) keeps its base colour and is counted, never shaded with guessed constants.
-      gt4::coregs3::LightBlock block;
-      const bool lightable = gt4::coregs3::decode_light_block(draw, block) == gt4::coregs3::LightBlockStatus::ok &&
-                             mesh.has_normals && mesh.has_colors;
-      if (!lightable) ++unlit_draws;
-      lit_colours.resize(mesh.vertices.size());
-      lit_mask.assign(mesh.vertices.size(), 0);
-      for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
-        std::array<std::uint8_t, 4> rgba{};
-        if (lightable && gt4::coregs3::shade_vertex(block, mesh.vertices[index], rgba)) {
-          lit_colours[index] = rgba;
-          lit_mask[index] = 1;
-        } else {
-          lit_colours[index] = mesh.vertices[index].color;
-        }
-      }
+      // Shade every mesh vertex with its own item's program and block; an item whose selector or block cannot be used
+      // keeps its base colour and is counted, never shaded with guessed constants.
+      gt4::coregs3::LightCounters draw_lighting;
+      gt4::coregs3::shade_mesh_items(draw, mesh, draw_lighting, &shades);
+      lighting.add(draw_lighting);
+      if (draw_lighting.draws_fallback != 0) ++unlit_draws;
       // One range per position encoding: the push constant carries the metre columns, and the V3-16 and V3-32 sets
       // differ by 4096 raw units per metre (coregs3_vertex.hpp). Triangles of one encoding stay contiguous because each
       // item appends its own vertices in one channel, so a range boundary is exact.
@@ -572,11 +562,11 @@ struct PresentLayer::Impl {
           vertex.x = source.position[0];
           vertex.y = source.position[1];
           vertex.z = source.position[2];
-          vertex.red = lit_colours[source_index][0];
-          vertex.green = lit_colours[source_index][1];
-          vertex.blue = lit_colours[source_index][2];
+          vertex.red = source.color[0];
+          vertex.green = source.color[1];
+          vertex.blue = source.color[2];
           vertex.alpha = 255;  // the CPU reference writes an opaque layer (coregs3_render)
-          if (!lit_mask[source_index]) ++unlit_vertices;
+          if (shades[source_index].status != gt4::coregs3::LightStatus::ok) ++unlit_vertices;
           vertices.push_back(vertex);
           range.count += 1;
         }
@@ -597,7 +587,8 @@ struct PresentLayer::Impl {
     std::uint32_t refused = 0;
     std::uint32_t unlit_draws = 0;
     std::uint64_t unlit_vertices = 0;
-    if (frame.draw_count == 0 || !build_frame(refused, unlit_draws, unlit_vertices)) {
+    gt4::coregs3::LightCounters lighting;
+    if (frame.draw_count == 0 || !build_frame(refused, unlit_draws, unlit_vertices, lighting)) {
       gt4::coregs3::present::note_pass_refused(refused);
       return true;
     }
@@ -726,7 +717,7 @@ struct PresentLayer::Impl {
 
     const std::uint64_t vertex_count = static_cast<std::uint64_t>(vertices.size());
     gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused, unlit_draws,
-                                       vertex_count, unlit_vertices, vertex_count / 3u);
+                                       vertex_count, unlit_vertices, vertex_count / 3u, lighting);
     return true;
   }
 };

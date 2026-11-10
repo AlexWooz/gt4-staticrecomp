@@ -1,5 +1,39 @@
 # Current Status
 
+## TASK-090 round 18: every lighting family in both renderers (2026-11-10, branch `task/090-family-light`)
+
+`native/coregs3/coregs3_lighting.{hpp,cpp}` implements the body program and the seven measured per-item VU1 families and both renderers now
+shade every item with **its own** light block and ITOP selector from the version 4 capture. Measured formulas: the body
+six-qword formula (unchanged), the nine-qword first-power (0x0B08), **power-8 (0x0250)** and **power-16 / direct
+(0x03D8/0x0418)** families, the three-qword gain/clamp/bias (0x14D8), the six-qword no-colour Phong-style specular
+(0x0C68) and the no-block pass-through (0x0080). Three round-14 summary corrections: 0x0250 is power-8, not first
+power (the fragment gives 24 for N=(127,127,115)/127 with slopes 10, not 29); the six-qword `t = R*q` is signed (the
+single max is applied after the weighted sum); and its output uses `L.x` only (the fragment broadcasts lane 0 before
+the three squarings). The body normal now uses the microcode's 1/127 multiply (bit-different from /127 for sixteen
+int8 values), which restored the round 12 body residual (rms 0.1696, max 1).
+
+Per-item plumbing: `MeshVertex::item` names the original draw item; the shape decoder gained `normals80` (V3-8 at
+0x80), `normals80_float` (V3-32 at 0x80) and `has_color`; `shade_mesh_items` decodes one item state and shades each
+vertex, so draw 98's items 0..16 (0x03D8) and 17..30 (0x0B08) run different programs in one draw. Fallbacks are
+counted per family and per status (invalid/unmeasured selector, missing/uncertain/variant/non-finite block, missing
+channel, invalid math); a carried block is accepted by qword count with a known command checked, and pass-through
+ignores light_source because it reads no block. The offline renderer and the live `present` layer share the function;
+the present F8 report gained per-family and per-status lines. The present shader stays vertex-colour only.
+
+Evidence against the v4 capture and tap (frame 0, VBlank 7398): matched items reproduce the tap within 1 level and
+alpha exact for body 3,826 (rms 0.1696), nine-first 2,507 (rms 0.196), pow8 636 (max 2 on two tap-pairing outliers),
+pow16 2,416 (rms 0.168), direct 52 exact, six 60 (max 1), three 930 exact, pass-through 1,351 exact. The known round
+12/14 exception items (body draws 91/93, draw 90's pow16 item, six direct items of draws 86/88/89/94) rerun through the
+real AOT fragment reproduce this module's colour, so their residual is the capture/tap data, not the formula. Offline
+frame: 116/116 draws and 12,146/12,146 vertices lit, 0 fallback; the `--no-programs` A/B changes 4,443 pixels and
+turns 272 previously white `(255,255,255)` fallback pixels into shaded glass/lamp; draw 98 alone has all 1,831 of its
+covered pixels white in the fallback A/B and shaded with the programs. Images under `build/evidence/coregs3-r18/`
+(`offline-frame0.png`, `draw98.png`, `lighting-ab-frame0.png`, `draw98-ab.png`). Checks: CTest 6/6 (new
+`native_coregs3_lighting_families`), Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686
+racing, 0 differences, 13/13 frames, capture 4,451,628 B) and the present guest identity run (0 differences; 13
+passes, 1,377 draws, 338,934 vertices, per-family lit counts in the journal).
+Details: `docs/COREGS3-HOOKS.md` §14.
+
 ## TASK-090 per-item capture: the light state, selector and carried block (2026-11-10)
 
 `.gt4scene` is **version 4**: the K1 post hook walks the whole PGL output chain (`native/coregs3/coregs3_chain.*`) and

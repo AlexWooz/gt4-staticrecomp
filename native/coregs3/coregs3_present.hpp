@@ -10,9 +10,11 @@
 // hooks already build. This module is plain C++ so it can be linked into the game (gt4_coregs3) and into the renderer.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 
+#include "coregs3_lighting.hpp"
 #include "coregs3_scene.hpp"
 
 namespace gt4::coregs3::present {
@@ -52,11 +54,27 @@ struct Counters {
   std::atomic<std::uint64_t> vertices{0};        // vertices uploaded to the GPU for the drawn draws
   std::atomic<std::uint64_t> triangles{0};       // triangles in those draw calls
   std::atomic<std::uint64_t> last_vblank{0};     // guest VBlank of the last frame a pass ran for
+  // The per-item lighting outcome of every captured draw the pass shaded, summed over passes. The families are
+  // coregs3_lighting.hpp's LightProgram values; a draw can appear in more than one family (the capture mixes programs
+  // inside a draw). `light_status` counts mesh vertices by their outcome (ok plus the fallback reasons).
+  std::array<std::atomic<std::uint64_t>, kLightProgramCount> family_items{};
+  std::array<std::atomic<std::uint64_t>, kLightProgramCount> family_items_lit{};
+  std::array<std::atomic<std::uint64_t>, kLightProgramCount> family_items_fallback{};
+  std::array<std::atomic<std::uint64_t>, kLightProgramCount> family_vertices_lit{};
+  std::array<std::atomic<std::uint64_t>, kLightProgramCount> family_vertices_fallback{};
+  std::array<std::atomic<std::uint64_t>, kLightProgramCount> family_draws_lit{};
+  std::array<std::atomic<std::uint64_t>, kLightProgramCount> family_draws_fallback{};
+  std::array<std::atomic<std::uint64_t>, kLightStatusCount> light_status{};
+  std::atomic<std::uint64_t> items_uploaded{0};
+  std::atomic<std::uint64_t> items_carried{0};
+  std::atomic<std::uint64_t> items_uncertain{0};
+  std::atomic<std::uint64_t> items_none{0};
 };
 
 const Counters &counters() noexcept;
 void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_refused, std::uint32_t draws_unlit,
-                 std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles) noexcept;
+                 std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles,
+                 const LightCounters &lighting) noexcept;
 void note_pass_refused(std::uint32_t draws_refused) noexcept;
 
 }  // namespace gt4::coregs3::present

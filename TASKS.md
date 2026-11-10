@@ -1671,8 +1671,25 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   the VU1 memory is double buffered (`ofst 435`), so the carried block is tracked per MSCAL parity in VIF order, with
   179,944 carried items over the run and 3,305 uncertain. Per-draw counters identical to r13; v3 field identity on 232
   draws; CTest 4/4, Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK.
-- Next: merge the vertex fix, implement the remaining family formulas with the per-item blocks, then
-  fog/textures/reflection and the G-IMAGE/G-PERF gates.
+- **Round 18 (2026-11-10, the remaining families in both renderers).** `coregs3_lighting` now implements all seven
+  measured per-item VU1 programs and both renderers shade every item with **its own** block and ITOP selector from the
+  version 4 capture: body six-qword, nine-qword first (0x0B08), **power-8 (0x0250)**, power-16 (0x03D8) and direct
+  (0x0418), three-qword gain/clamp/bias (0x14D8), six-qword no-colour Phong-style (0x0C68) and no-block pass-through
+  (0x0080). Measured corrections to the research summary: 0x0250 is power-8, not first power (fragment: 24 vs 29); the
+  six-qword `t = R*q` is signed and one max is applied after the weighted sum; its output uses `L.x` only; the body
+  normal uses the microcode's 1/127 multiply (restores the round 12 body residual, rms 0.1696/max 1). Per-item design:
+  `MeshVertex::item` plus `normals80`/`normals80_float`/`has_color` channels; `shade_mesh_items` is shared by the
+  offline renderer and `present`, and the present F8 report gained per-family/per-status lines. Evidence: v4 capture +
+  tap, matched items within 1 level and alpha exact (body 3,826, nine-first 2,507, pow16 2,416, six 60, three 930,
+  pass-through 1,351, direct 52; pow8 636 with two tap-pairing outliers at max 2 where the fragment matches the
+  module); the known round 12/14 exceptions rerun through the real fragment reproduce the module's colour, so their
+  residual is the capture/tap data. Offline frame 0: 116/116 draws and 12,146/12,146 vertices lit, 0 fallback, draw 98
+  mixing 0x03D8 and 0x0B08 items; the `--no-programs` A/B turns 272 previously white fallback pixels into shaded
+  glass/lamp (4,443 pixels changed). CTest 6/6 (new `native_coregs3_lighting_families`), Python 7/7, 3x off/shadow gate
+  COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames) and the present guest identity run
+  (0 differences; 13 passes, 1,377 draws, 338,934 vertices); branch `task/090-family-light`.
+- Next: fog/textures/reflection in the native pipeline and the G-IMAGE/G-PERF gates; the per-item light state is now
+  consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls

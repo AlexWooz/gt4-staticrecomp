@@ -66,7 +66,8 @@ bool claim_latest(FrameSnapshot &frame) {
 }
 
 void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_refused, std::uint32_t draws_unlit,
-                 std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles) noexcept {
+                 std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles,
+                 const LightCounters &lighting) noexcept {
   g_counters.passes.fetch_add(1, std::memory_order_relaxed);
   g_counters.draws.fetch_add(draws, std::memory_order_relaxed);
   g_counters.draws_refused.fetch_add(draws_refused, std::memory_order_relaxed);
@@ -75,6 +76,22 @@ void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_
   g_counters.vertices_unlit.fetch_add(vertices_unlit, std::memory_order_relaxed);
   g_counters.triangles.fetch_add(triangles, std::memory_order_relaxed);
   g_counters.last_vblank.store(vblank, std::memory_order_relaxed);
+  for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {
+    const LightFamilyCounts &family = lighting.family[program];
+    g_counters.family_items[program].fetch_add(family.items, std::memory_order_relaxed);
+    g_counters.family_items_lit[program].fetch_add(family.items_lit, std::memory_order_relaxed);
+    g_counters.family_items_fallback[program].fetch_add(family.items_fallback, std::memory_order_relaxed);
+    g_counters.family_vertices_lit[program].fetch_add(family.vertices_lit, std::memory_order_relaxed);
+    g_counters.family_vertices_fallback[program].fetch_add(family.vertices_fallback, std::memory_order_relaxed);
+    g_counters.family_draws_lit[program].fetch_add(family.draws_lit, std::memory_order_relaxed);
+    g_counters.family_draws_fallback[program].fetch_add(family.draws_fallback, std::memory_order_relaxed);
+  }
+  for (std::uint32_t status = 0; status < kLightStatusCount; ++status)
+    g_counters.light_status[status].fetch_add(lighting.status[status], std::memory_order_relaxed);
+  g_counters.items_uploaded.fetch_add(lighting.items_uploaded, std::memory_order_relaxed);
+  g_counters.items_carried.fetch_add(lighting.items_carried, std::memory_order_relaxed);
+  g_counters.items_uncertain.fetch_add(lighting.items_uncertain, std::memory_order_relaxed);
+  g_counters.items_none.fetch_add(lighting.items_none, std::memory_order_relaxed);
 }
 
 void note_pass_refused(std::uint32_t draws_refused) noexcept {
