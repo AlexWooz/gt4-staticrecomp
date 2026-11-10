@@ -766,9 +766,12 @@ void check_world_selection() {
   sky.pass = kPassSky;
   sky.has_position = true;
   require(world_item_exclusion(sky) == WorldExclusion::none, "a sky item is selected without program filtering");
+  // TASK-090 wet reflection: the reflection pass is a world pass now; its own rule is covered by the wet-reflection
+  // fixture. Here a bare reflection item (no state, no program) must not be guessed into the picture.
   WorldItemInput reflection;
   reflection.pass = kPassReflection;
-  require(world_item_exclusion(reflection) == WorldExclusion::not_world_pass, "another pass is not selected");
+  require(world_item_exclusion(reflection) == WorldExclusion::itop_other,
+          "a reflection item without a measured run pair is excluded");
 }
 
 void check_world_render() {
