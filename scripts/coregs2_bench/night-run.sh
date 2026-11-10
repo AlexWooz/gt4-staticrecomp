@@ -10,6 +10,7 @@ source "$(dirname "$0")/common.sh"
 name=$1; exe=$2; shift 2
 OUT=$GT4_BENCH_OUT/night-$name
 mkdir -p "$OUT/frames"
+export GT4_BENCH_SCENE=$(record_scene "$OUT" night "$@")
 cp "$GT4_BENCH_CARD" "$OUT/card.ps2"
 P="600:down:10 700:cross:30 1100:cross:10 1400:cross:10 1950:down:8 2050:down:8 2150:cross:10 2350:cross:10 2600:triangle:10 2900:triangle:10 3200:down:8 3350:right:8 3500:cross:10 3620:down:8 3700:cross:10 3900:cross:10 4900:up:8 5050:right:8 5200:right:8 5500:down:8 5650:cross:10 5850:cross:10 6300:right:8 6450:cross:10"
 args=(); for p in $P; do args+=(--press "$p"); done

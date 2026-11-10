@@ -11,6 +11,7 @@ GT4_SPEC2_ISO=${GT4_SPEC2_ISO:-$GT4_ASSETS/Gran Turismo 4 Spec II v1.10 (PTBR).i
 scene=$1; name=$2; exe=$3; shift 3
 OUT=$GT4_BENCH_OUT/spec2-$scene-$name
 mkdir -p "$OUT/frames"
+export GT4_BENCH_SCENE=$(record_scene "$OUT" "spec2-$scene" "$@")
 cp "$GT4_ARCADE_CARD" "$OUT/card.ps2"
 boot="600:start:30 900:cross:30 1500:left:10 1600:cross:30 2200:right:10 2300:cross:30 6200:start:30 8000:start:30 9200:cross:30 10000:cross:30"
 case "$scene" in

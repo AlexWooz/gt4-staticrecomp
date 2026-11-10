@@ -10,6 +10,7 @@ source "$(dirname "$0")/common.sh"
 name=$1; exe=$2; shift 2
 OUT=$GT4_BENCH_OUT/arcade-$name
 mkdir -p "$OUT/frames"
+export GT4_BENCH_SCENE=$(record_scene "$OUT" ssr5-night "$@")
 cp "$GT4_ARCADE_CARD" "$OUT/card.ps2"
 P="600:start:30 900:cross:30 1500:cross:30 2300:down:10 2450:cross:10 3500:right:10 3700:right:10 3900:cross:10 4100:cross:10 6500:down:8 6650:cross:10 7400:cross:10 7600:cross:10 7800:cross:10 8700:cross:10 9200:cross:7000"
 args=(); for p in $P; do args+=(--press "$p"); done

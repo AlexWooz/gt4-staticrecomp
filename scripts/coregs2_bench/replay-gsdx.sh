@@ -14,6 +14,7 @@ if tasklist | grep -qi -E "gt4\.exe|gt4-spec2|gt4vulkan|gt4-gs"; then echo "a ga
 gs_exe=${GS_EXE:-$GT4_ASSETS/private/slice281-gt4gs-121/gt4-gs.exe}
 OUT=$GT4_BENCH_OUT/replay-$name-$run
 mkdir -p "$OUT/gs-frames"
+export GT4_BENCH_SCENE=$(record_scene "$OUT" "$name" "$@")
 cp "$REC_CARD" "$OUT/card.ps2"
 chmod u+w "$OUT/card.ps2"  # the cards in cards/ are read-only; the game writes its copy
 cat > "$OUT/gt4-gs.ini" <<EOF
