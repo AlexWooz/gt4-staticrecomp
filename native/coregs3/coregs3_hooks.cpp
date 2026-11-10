@@ -43,6 +43,13 @@ constexpr std::uint32_t kLightBlockQword = 0xC9u;
 constexpr std::uint32_t kMatrixPacketBytes = 9u * 16u;
 constexpr std::uint32_t kDmaTagBytes = 16u;
 constexpr std::uint32_t kDmaIdRef = 3u;  // tag bits 28..30
+// func_0049D328 writes tag word 2 as `0x04000000 | (x + y)` (VIF ITOP) and word 3 as `0x14000000 | n` (VIF MSCAL). Both
+// immediates are microprogram addresses in 8-byte units (private/slice151-vu1-aot-runtime/vif.cpp:
+// `run_vu(unit, imm * 8u)`); the MSCAL entry stub dispatches to the ITOP value (`vu::itop()`), which is the real
+// per-shape vertex program.
+constexpr std::uint32_t kVifItopOpcode = 0x04u;
+constexpr std::uint32_t kVifMscalOpcode = 0x14u;
+constexpr std::uint32_t kVifImmediateMask = 0x3FFu;  // ITOP is a 10-bit qword address (donor vif.cpp)
 
 struct State {
   Mode mode = Mode::off;
@@ -133,21 +140,54 @@ bool matrix_packet_written(const CapturedDraw &draw) noexcept {
   return dirty || !valid || draw.pgl[8] != draw.cmd_value;
 }
 
-// Reads back the light block the shape call uploaded to VU1 TOPS+0xC9 (CapturedDraw::light_block). The PGL output buffer
-// is guest state after the call: the shape's light tag is a DMA REF qword whose VIF word names the UNPACK and whose
-// address word points at the qwords on the shape's stack. Only the layout the game writes is read, at the exact
-// position, with the qword count and the UNPACK fields cross-checked; a draw that does not match is counted
-// (`light_blocks_missing`) rather than guessed. Draws without the light flag bit upload nothing, so nothing is expected.
-void capture_light_block(CapturedDraw &draw) noexcept {
-  if (draw.item_count == 0 || draw.cmd_flag == 0) return;
+// Reads back the per-draw packets the shape call wrote into the PGL output buffer:
+//   * the VU1 program selector (CapturedDraw::program_*). func_0049D328 writes one REF tag per item and a terminating
+//     tag after the loop. The first item's tag carries the initial setup words (STMASK 0x20000000 and its mask), and the
+//     tags the loop writes at the end of each iteration carry the ITOP and MSCAL for the next item; the terminating tag
+//     therefore carries the last item's ITOP/MSCAL pair, and it is the last qword before the post-call output cursor.
+//     All items share the pair (`n` is reset to obj->count every iteration);
+//   * the light block the shape call uploaded to VU1 TOPS+0xC9 (CapturedDraw::light_block), from the DMA REF tag that
+//     follows item 0's tag when the Cmd's flag byte is set (func_0049D1A0 copies the tag func_0049E698/func_0049EB90/
+//     func_0049F170 prepared). Its VIF word names the UNPACK and its address word points at the qwords on the shape's
+//     stack.
+// Both are read at the exact position the game writes, with the counts and VIF fields cross-checked; a draw that does
+// not match is counted (`program_selectors_missing` / `light_blocks_missing`) rather than guessed. Draws without the
+// light flag bit upload no block, so nothing is expected there.
+void capture_draw_packets(CapturedDraw &draw) noexcept {
+  if (draw.item_count == 0) {
+    g.counters.program_selectors_missing += 1;
+    if (draw.cmd_flag != 0) g.counters.light_blocks_missing += 1;
+    return;
+  }
   std::uint64_t at = g.pending_out;
   if (matrix_packet_written(draw)) at += kMatrixPacketBytes;
   std::uint32_t item_tag[4] = {};
   if (!read_guest(static_cast<std::uint32_t>(at), item_tag, sizeof item_tag) ||
       ((item_tag[0] >> 28) & 0x7u) != kDmaIdRef || item_tag[1] != draw.items[0].address) {
-    g.counters.light_blocks_missing += 1;
+    g.counters.program_selectors_missing += 1;
+    if (draw.cmd_flag != 0) g.counters.light_blocks_missing += 1;
     return;
   }
+  // The VU1 program selector: the terminating tag is the last qword func_0049D328 writes. Word 3 is the last item's VIF
+  // MSCAL `0x14000000 | n`; its entry stub sets the shared-code return address and dispatches to the VIF ITOP value in
+  // word 2 (`0x04000000 | (x + y)`), the real per-shape vertex program. Both are 8-byte-unit addresses.
+  std::uint32_t post_out = 0;
+  std::uint32_t final_tag[4] = {};
+  if (read_u32(kPglContext + kObjOut, post_out) && post_out >= kDmaTagBytes &&
+      read_guest(post_out - kDmaTagBytes, final_tag, sizeof final_tag) && final_tag[0] == 0x10000000u &&
+      ((final_tag[3] >> 24) & 0x7Fu) == kVifMscalOpcode && ((final_tag[2] >> 24) & 0x7Fu) == kVifItopOpcode) {
+    draw.program_tag = final_tag[3];
+    draw.program_selector = final_tag[3] & 0xFFFFu;
+    draw.program_entry = draw.program_selector * 8u;
+    draw.program_itop = final_tag[2];
+    draw.program_dispatch = (final_tag[2] & kVifImmediateMask) * 8u;
+    draw.program_count = draw.pgl[5];
+    draw.program_valid = 1;
+    g.counters.program_selectors += 1;
+  } else {
+    g.counters.program_selectors_missing += 1;
+  }
+  if (draw.cmd_flag == 0) return;
   std::uint32_t tag[4] = {};
   if (!read_guest(static_cast<std::uint32_t>(at + kDmaTagBytes), tag, sizeof tag)) {
     g.counters.light_blocks_missing += 1;
@@ -633,7 +673,7 @@ void after_shape_call(ps2::Cpu &cpu) noexcept {
     CapturedDraw &draw = g.frame.draws[g.pending_draw];
     if (read_guest(g.pending_out, draw.matrix_packet, sizeof draw.matrix_packet))
       draw.matrix_packet_valid = 1;
-    capture_light_block(draw);
+    capture_draw_packets(draw);
   }
   g.pending_draw = kNoRecord;
   g.pending_out = 0;
@@ -645,7 +685,8 @@ void print_report(std::FILE *out) noexcept {
   std::fprintf(out,
                "[coregs3] mode %s frames %llu written %llu refused %llu calls %llu captured %llu outside %llu packets %llu "
                "records %llu bytes %llu reads_failed %llu overflow 0x%llx vblank %llu max_items %u max_draw %u "
-               "max_frame %u passes %llu orphan_ends %llu lights %llu lights_missing %llu\n",
+               "max_frame %u passes %llu orphan_ends %llu lights %llu lights_missing %llu selectors %llu "
+               "selectors_missing %llu\n",
                mode_name(g.mode), static_cast<unsigned long long>(c.frames),
                static_cast<unsigned long long>(c.frames_written),
                static_cast<unsigned long long>(c.refused_frames), static_cast<unsigned long long>(c.calls),
@@ -655,7 +696,9 @@ void print_report(std::FILE *out) noexcept {
                static_cast<unsigned long long>(c.overflow), static_cast<unsigned long long>(g.vblank), c.largest_items,
                c.largest_draw_bytes, c.largest_frame_bytes, static_cast<unsigned long long>(g.pass_count),
                static_cast<unsigned long long>(g.orphan_pass_ends), static_cast<unsigned long long>(c.light_blocks),
-               static_cast<unsigned long long>(c.light_blocks_missing));
+               static_cast<unsigned long long>(c.light_blocks_missing),
+               static_cast<unsigned long long>(c.program_selectors),
+               static_cast<unsigned long long>(c.program_selectors_missing));
   const TapCounters &tap = tap_counters();
   if (tap.records != 0)
     std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",

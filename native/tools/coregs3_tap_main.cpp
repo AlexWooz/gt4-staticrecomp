@@ -1092,7 +1092,9 @@ int command_gate(const char *tap_path, const char *capture_path, int frame_index
     totals.crossing += crossing;
     ++totals.gated;
     if (verbose || crossing != 0)
-      std::printf("draw %u: %zu vertices, %zu strips, facing exceptions %u, drawn %s\n", draw.sequence,
+      std::printf("draw %u (mscal entry 0x%04X selector %u, itop dispatch 0x%04X): %zu vertices, %zu strips, facing "
+                  "exceptions %u, drawn %s\n",
+                  draw.sequence, draw.program_entry, draw.program_selector, draw.program_dispatch,
                   mesh.vertices.size(), mesh.strip_lengths.size(), exceptions,
                   crossing == 0 ? "inside the strips" : "CROSSES a strip break");
   }

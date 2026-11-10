@@ -133,6 +133,10 @@ void print_channel_scan(const FrameSnapshot &frame) {
     const DrawMatrix matrix = draw_matrix(draw);
     std::printf("draw %u shape 0x%08X items %u value %08X\n", draw.sequence, draw.shape, draw.item_count,
                 draw.cmd_value);
+    std::printf("  program mscal %08X sel %u entry 0x%04X | itop %08X dispatch 0x%04X | count %u valid %u; "
+                "light block %u qwords cmd %08X\n",
+                draw.program_tag, draw.program_selector, draw.program_entry, draw.program_itop, draw.program_dispatch,
+                draw.program_count, draw.program_valid, draw.light_block_qwords, draw.light_block_command);
     std::printf("  vf24 %08X %08X %08X %08X\n", draw.vf[0][0], draw.vf[0][1], draw.vf[0][2], draw.vf[0][3]);
     std::printf("  vf25 %08X %08X %08X %08X\n", draw.vf[1][0], draw.vf[1][1], draw.vf[1][2], draw.vf[1][3]);
     std::printf("  vf26 %08X %08X %08X %08X\n", draw.vf[2][0], draw.vf[2][1], draw.vf[2][2], draw.vf[2][3]);

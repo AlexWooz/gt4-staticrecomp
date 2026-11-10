@@ -29,6 +29,10 @@
 // kMaxLightBlockQwords*16 + 12 bytes, so a version 1 reader cannot walk a version 2 block. There is no migration: the
 // version check refuses a file it was not built for (recapture with a matching build), which is the format's rule for an
 // interpretation the reader does not know.
+//
+// Format version 3 (2026-11-09) adds the per-draw VU1 program selector (CapturedDraw::program_*): the ITOP and MSCAL
+// words the PGL writes in the terminating tag of the draw's REF chain, which name the microprogram entry the VU1 runs.
+// Seven words per draw; versions 1 and 2 are refused the same way.
 #pragma once
 
 #include <cstddef>
@@ -48,7 +52,7 @@ const char *mode_name(Mode mode) noexcept;
 
 inline constexpr std::uint32_t kSceneMagic = 0x53345447u;    // "GT4S"
 inline constexpr std::uint32_t kFrameMagic = 0x47334647u;    // "GF3G"
-inline constexpr std::uint32_t kSceneVersion = 2u;
+inline constexpr std::uint32_t kSceneVersion = 3u;
 inline constexpr std::uint32_t kCaptureTargetV200 = 0u;
 
 // The VU1 light block of one shape call lands at TOPS qword 0xC9 through a VIF UNPACK whose payload is at most nine
@@ -169,6 +173,23 @@ struct CapturedDraw {
   std::uint32_t light_block_qwords = 0;
   std::uint32_t light_block_command = 0;  // the tag's VIF UNPACK word, e.g. 0x6C06C0C9 or 0x6C09C0C9
   std::uint32_t light_block_source = 0;   // guest address the tag's REF read the qwords from
+  // The VU1 program selector, read from the terminating tag of the draw's REF chain in the same PGL output buffer.
+  // func_0049D328 writes word 3 of every tag as `0x14000000 | n` (VIF MSCAL) and word 2 as `0x04000000 | (x + y)` (VIF
+  // ITOP); the terminating tag carries the last item's words. `n` comes from obj->count (PGL +0x14) and the Cmd
+  // flag/bits: the MSCAL entry is a small stub that sets vi15 (the shared-code return address) and vi14 (the 0xD9 block
+  // pointer, or 0), then dispatches to ITOP * 8. The ITOP operands (+0x18/+0x1C) are written inside the call by
+  // func_0049D080 and its case helpers (func_0049F1F8/func_0049F0F0/...), so the ITOP entry is the real per-shape
+  // program and encodes the material/program variant; the capture's pre-call `pgl[6]/pgl[7]` are the previous call's
+  // values and must not be read as this draw's ITOP. Both VIF immediates are in 8-byte units, so the byte addresses in
+  // the 16 KiB VU1 image are `n * 8` and `ITOP * 8` (the AOT emitter's entry values). `program_count` is the MSCAL
+  // source.
+  std::uint32_t program_tag = 0;       // raw tag word 3, e.g. 0x140003A8
+  std::uint32_t program_selector = 0;  // the VIF MSCAL immediate (program_tag & 0xFFFF)
+  std::uint32_t program_entry = 0;     // program_selector * 8: the byte address of the MSCAL entry stub
+  std::uint32_t program_itop = 0;      // raw tag word 2, e.g. 0x0400007B: the VIF ITOP (obj->x + obj->y)
+  std::uint32_t program_dispatch = 0;  // (program_itop & 0x3FF) * 8: the entry the stub dispatches to
+  std::uint32_t program_count = 0;     // PGL obj->count (+0x14) the MSCAL selector is derived from
+  std::uint32_t program_valid = 0;     // 1 when the terminating tag carried both VIF words
   CapturedItem items[kMaxItemsPerDraw] = {};
 };
 
@@ -251,6 +272,8 @@ struct CaptureCounters {
   std::uint64_t records = 0;          // texture and material records copied (deduplicated)
   std::uint64_t light_blocks = 0;     // draws whose TOPS+0xC9 light block was read back
   std::uint64_t light_blocks_missing = 0;  // draws with a light flag bit whose block was absent or unreadable
+  std::uint64_t program_selectors = 0;     // draws whose terminating-tag ITOP/MSCAL words were read back
+  std::uint64_t program_selectors_missing = 0;  // draws whose terminating tag was absent or not ITOP+MSCAL
   std::uint32_t largest_items = 0;    // largest item table seen in one draw (capacity evidence)
   std::uint32_t largest_draw_bytes = 0;   // largest packet total of one draw
   std::uint32_t largest_frame_bytes = 0;  // largest packet total of one frame

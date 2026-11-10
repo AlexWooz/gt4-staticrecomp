@@ -1,7 +1,7 @@
 // CTest native_coregs3: the TASK-090 phase 1 offline path, host only. No game data is read: every packet here is
 // hand-authored, which is what makes these fixtures publishable.
-//   - the `.gt4scene` frame block round trip, and the refusals (magic, version, truncated block, a packet range outside
-//     the block, an item count above the cap, a light block above its cap);
+//   - the `.gt4scene` frame block round trip, and the refusals (magic, an older version, truncated block, a packet range
+//     outside the block, an item count above the cap, a light block above its cap);
 //   - the bounded VIF decoder: an ordinary V3-16 UNPACK into the TOPS window, an absolute V4-8 UNPACK, STROW with a fill
 //     cycle, and the refusals (unknown opcode, payload overrun);
 //   - the channel rule: destination/format classification, the V3-8 normal channel at TOPS 0x40 (signed bytes and the raw
@@ -191,6 +191,13 @@ CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
   for (std::uint32_t qword = 0; qword < draw.light_block_qwords; ++qword)
     for (std::uint32_t lane = 0; lane < 4; ++lane)
       draw.light_block[qword][lane] = float_bits(static_cast<float>(qword * 4 + lane));
+  draw.program_tag = 0x140003A8u;     // VIF MSCAL, immediate 0x3A8
+  draw.program_selector = 0x3A8u;
+  draw.program_entry = 0x1D40u;       // selector * 8: the MSCAL entry stub in the VU1 image
+  draw.program_itop = 0x0400007Bu;    // VIF ITOP, immediate 0x7B (obj->x + obj->y)
+  draw.program_dispatch = 0x3D8u;     // ITOP * 8: the entry the stub dispatches to
+  draw.program_count = 881u;          // PGL obj->count (+0x14)
+  draw.program_valid = 1;
   draw.vf[0][0] = float_bits(2.0f);
   draw.vf[0][1] = float_bits(0.0f);
   draw.vf[0][2] = float_bits(0.0f);
@@ -249,6 +256,14 @@ void check_capture_round_trip() {
           "the light block header survives");
   require(read.draws[0].light_block[5][3] == draw.light_block[5][3], "the light block qwords survive");
   require(read.draws[0].light_block[6][0] == 0, "the unused light block qwords stay zero");
+  require(read.draws[0].program_tag == draw.program_tag &&
+              read.draws[0].program_selector == draw.program_selector &&
+              read.draws[0].program_entry == draw.program_entry &&
+              read.draws[0].program_itop == draw.program_itop &&
+              read.draws[0].program_dispatch == draw.program_dispatch &&
+              read.draws[0].program_count == draw.program_count &&
+              read.draws[0].program_valid == draw.program_valid,
+          "the VU1 program selector survives");
   require(read.packets == frame.packets, "the packet bytes survive");
   require(read.textures[0].address == texture.address && read.textures[0].bytes[0] == 0xAB, "the texture survives");
   require(read.materials[0].address == material.address && read.materials[0].bytes[7] == 0xCD, "the material survives");
@@ -279,6 +294,11 @@ void check_capture_round_trip() {
   std::vector<std::uint8_t> bad_version = file;
   bad_version[4] = 9;
   require(!parse_scene_header(bad_version.data(), bad_version.size(), ignored, error), "an unknown version is refused");
+  // The immediately older version (version 2) has no program selector and must be refused, not misread.
+  std::vector<std::uint8_t> older_version = file;
+  older_version[4] = static_cast<std::uint8_t>(kSceneVersion - 1u);
+  require(!parse_scene_header(older_version.data(), older_version.size(), ignored, error),
+          "a capture from the previous format version is refused");
   const std::size_t truncated = block.size() / 2;
   require(parse_frame_block(block.data(), truncated, kSceneVersion, read, error) == 0,
           "a truncated block is refused");

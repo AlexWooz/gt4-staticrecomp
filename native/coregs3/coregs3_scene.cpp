@@ -97,6 +97,13 @@ void put_draw(std::vector<std::uint8_t> &out, const CapturedDraw &draw) {
   put_u32(out, draw.light_block_source);
   for (const auto &qword : draw.light_block)
     for (std::uint32_t word : qword) put_u32(out, word);
+  put_u32(out, draw.program_tag);
+  put_u32(out, draw.program_selector);
+  put_u32(out, draw.program_entry);
+  put_u32(out, draw.program_itop);
+  put_u32(out, draw.program_dispatch);
+  put_u32(out, draw.program_count);
+  put_u32(out, draw.program_valid);
   // Only the items the draw declares: an empty item slot costs nothing on disk.
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
@@ -136,6 +143,14 @@ bool get_draw(Reader &in, std::uint32_t version, CapturedDraw &draw) {
   draw.light_block_source = in.u32();
   for (auto &qword : draw.light_block)
     for (std::uint32_t &word : qword) word = in.u32();
+  draw.program_tag = in.u32();
+  draw.program_selector = in.u32();
+  draw.program_entry = in.u32();
+  draw.program_itop = in.u32();
+  draw.program_dispatch = in.u32();
+  draw.program_count = in.u32();
+  draw.program_valid = in.u32();
+  if (draw.program_valid > 1) return false;
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     CapturedItem &item = draw.items[index];
     item.address = in.u32();
@@ -189,10 +204,11 @@ bool parse_scene_header(const std::uint8_t *data, std::size_t available, SceneHe
     return false;
   }
   if (header.version != kSceneVersion) {
-    // Version 1 predates the per-draw light block, so its draw records are shorter (see the format note in the header).
-    // There is no migration path: the capture is a diagnostic artifact and is recaptured with a matching build.
+    // Version 1 predates the per-draw light block and version 2 the per-draw VU1 program selector, so their draw records
+    // are shorter (see the format note in the header). There is no migration path: the capture is a diagnostic artifact
+    // and is recaptured with a matching build.
     error = "unsupported .gt4scene version " + std::to_string(header.version) + " (this build writes and reads version " +
-            std::to_string(kSceneVersion) + "; version 1 has no light block and is refused)";
+            std::to_string(kSceneVersion) + "; version 1 has no light block, version 2 no program selector, both refused)";
     return false;
   }
   if (header.target != kCaptureTargetV200) {
@@ -213,6 +229,7 @@ bool frame_block_bytes(const FrameSnapshot &frame, std::vector<std::uint8_t> &ou
   for (const CapturedDraw &draw : frame.draws) {
     if (draw.item_count > kMaxItemsPerDraw) return false;
     if (draw.light_block_qwords > kMaxLightBlockQwords) return false;
+    if (draw.program_valid > 1) return false;
     for (std::uint32_t index = 0; index < draw.item_count; ++index) {
       const CapturedItem &item = draw.items[index];
       if (item.texture_record != kNoRecord && item.texture_record >= frame.texture_count) return false;
