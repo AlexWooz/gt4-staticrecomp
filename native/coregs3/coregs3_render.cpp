@@ -135,7 +135,8 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
                         float flat_r, float flat_g, float flat_b, const TextureBinding *binding,
                         std::vector<std::uint8_t> &rgba, std::vector<std::uint8_t> &mask, std::vector<float> &depth,
                         RenderStats &stats, std::vector<std::uint8_t> *textured_mask, bool world, bool apply_fog,
-                        bool write_depth) {
+                        bool write_depth, bool wet_reflection = false,
+                        std::vector<std::uint8_t> *wet_reflection_mask = nullptr) {
   const std::uint32_t width = options.width, height = options.height;
   const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
   if (area == 0.0f) return;
@@ -172,7 +173,10 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
       // The GS tests with GEQUAL against a reversed Z: a later primitive wins at equal depth, which is what keeps the
       // overlapping parts of one car from z-fighting in the offline picture. The sky pass writes no comparable depth
       // (its own projection's w is not the course's view depth), so it neither tests nor writes depth here.
-      if (options.depth_test && write_depth && !(depth_value <= depth[pixel])) continue;
+      if (options.depth_test && write_depth && !(depth_value <= depth[pixel])) {
+        if (wet_reflection) stats.world_reflection_depth_failed += 1;
+        continue;
+      }
       // The GS interpolates Gouraud colours linearly in screen space; perspective correction is only for the texture
       // coordinates (STQ).
       const float red = options.flat_shading ? flat_r : alpha * a.r + beta * b.r + gamma * c.r;
@@ -195,6 +199,7 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
           // A per-pixel refusal (a wrapped texel outside the decoded rectangle): keep the lit colour and count it. The
           // static state was validated before rasterising, so nothing else can reach this branch.
           stats.sample_refused_pixels += 1;
+          if (wet_reflection) stats.world_reflection_sample_refused += 1;
         } else {
           fragment = sampled;
           textured = true;
@@ -295,6 +300,13 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
           }
           depth_masked = state.zmsk != 0;
           if (depth_masked) stats.depth_masked_pixels += 1;
+          if (wet_reflection) {
+            // Name the FRAME.FBMSK form this fragment wrote under: the captured pass's main-view draws write destination
+            // alpha only (0x00FFFFFF), the sphere-mapper draws write RGB only (0xFF000000). Anything else stays counted
+            // in neither lane.
+            if (state.fbmsk == 0x00FFFFFFu) stats.world_reflection_alpha_only += 1;
+            else if (state.fbmsk == 0xFF000000u) stats.world_reflection_rgb_only += 1;
+          }
         }
       }
       if (write_depth && !depth_masked) depth[pixel] = depth_value;
@@ -308,6 +320,10 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
         for (std::uint32_t lane = 0; lane < 4; ++lane) rgba[pixel * 4 + lane] = fragment[lane];
       }
       mask[pixel] = 1;
+      if (wet_reflection) {
+        stats.world_reflection_pixels += 1;
+        if (wet_reflection_mask != nullptr) (*wet_reflection_mask)[pixel] = 1;
+      }
       drew = true;
     }
   }
@@ -864,8 +880,12 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
         const bool apply_fog =
             options.world_pass && !(options.world_sky_no_fog && draw.pass == kPassSky);
         const bool write_depth = !(options.world_pass && draw.pass == kPassSky);
+        // TASK-090 wet reflection: the reflection pass's main-view items are a normal world draw (their state's FBMSK,
+        // blend, fog and ZBUF apply); the flags only name the pass in the counters and the mask.
+        const bool wet_reflection = options.world_pass && draw.pass == kPassReflection;
         rasterise_triangle(screen[0], screen[corner], screen[corner + 1], options, red, green, blue, binding, rgba,
-                           mask, depth, stats, textured_mask, options.world_pass, apply_fog, write_depth);
+                           mask, depth, stats, textured_mask, options.world_pass, apply_fog, write_depth, wet_reflection,
+                           wet_reflection ? reflection_mask : nullptr);
       }
     }
   }
@@ -1086,6 +1106,13 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
     }
     stats.shapes_drawn += 1;
     stats.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
+    if (options.world_pass && draw.pass == kPassReflection) {
+      // TASK-090 wet reflection: the pass's own census, so the report can never confuse its fragments with the course's.
+      stats.world_reflection_draws += 1;
+      stats.world_reflection_vertices += static_cast<std::uint32_t>(mesh.vertices.size());
+      for (std::uint32_t item = 0; item < draw.item_count; ++item)
+        if (draw.items[item].packet_bytes != 0) stats.world_reflection_items += 1;
+    }
     apply_lighting(draw, mesh, options, stats);
     // Resolve and statically validate the draw's texture bindings. A binding outside the measured subset keeps the lit
     // colour and is counted; the rasteriser only sees a binding whose texture it may sample.
