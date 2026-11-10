@@ -20,6 +20,7 @@
 #include "achievements.hpp"
 #include "input_recording.hpp"
 #include "menu_quit.hpp"
+#include "recomp_menu.hpp"
 #include "native_settings.hpp"
 #ifdef GT4_GS_STREAM_CLIENT
 #include "gs_stream/gs_stream_client.hpp"
@@ -353,8 +354,17 @@ void apply_pad(const PadState &pad) {
 // TASK-212: the native Quit Game row. The watcher appends the parsed widget once, hides Cross from the guest while it
 // is focused, and closes on a Cross press. Runs after the pad was applied, before the guest reads it at the next slice.
 void service_menu_quit(std::uint16_t buttons) {
-  const gt4::menu_quit::Status status = gt4::menu_quit::tick(game_window, ps2::g_ram, ps2::kRamSize, buttons);
-  if (status.injected) ps2::set_pad_buttons(gt4::menu_quit::guest_buttons(status, buttons));
+  // TASK-213 Phase 2a: the Recomp settings row is appended before menu_quit appends Quit after it; the hub/submenus
+  // own the SelectBox while active, so the menu_quit watcher pauses (it cannot re-append Quit inside the host list).
+  gt4::recomp_menu::prepare(ps2::g_ram, ps2::kRamSize);
+  gt4::menu_quit::Status status;
+  if (!gt4::recomp_menu::host_menu_active())
+    status = gt4::menu_quit::tick(game_window, ps2::g_ram, ps2::kRamSize, buttons);
+  gt4::recomp_menu::tick(ps2::g_ram, ps2::kRamSize, buttons);
+  std::uint16_t guest = buttons;
+  if (status.injected) guest = gt4::menu_quit::guest_buttons(status, guest);
+  guest = gt4::recomp_menu::guest_buttons(guest);
+  if (guest != buttons) ps2::set_pad_buttons(guest);
 }
 
 // TASK-213 Phase 1: the native Wide row (relabelled Fullscreen) stores the host value in the dispatch hook; the window

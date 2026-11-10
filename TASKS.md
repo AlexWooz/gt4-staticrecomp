@@ -5024,3 +5024,29 @@ report the gate. No page was implemented or faked in this slice.
   (receipt `cead3c642991531df3b0f6010ed532af56107ad22e2fa2af8d96c7302a3bdc66`) and pin
   `docs/inputs/slice432-page-launch-license-guard-runtime.json`; evidence `private/slice433-launch/run.log`,
   `state.bin`, frames. The `slice430-kit` and the accepted Screen page are unchanged.
+
+**State (2026-11-10, TASK-213 Phase 2a - Recomp settings hub and Graphics submenu):** branch
+`task/213-native-settings`. The hub and the first submenu are reachable in a test build.
+
+- **Entry:** the **Recomp settings** row is appended to the **arcade main-menu SelectBox** through the Quit Game host-row
+  pipeline (index 6, before Quit at 7). The Options-root scroll and the Screen-page section were compared and rejected
+  (scroll rebuild/focus risk; not a separate menu). No page list, Adhoc v5/TOC, Network repurpose or floating panel.
+- **Hub:** title **Recomp settings** + **Graphics, Controls, Display, Audio, System** (owner's order). The rows are the
+  game's `Composite`/`TextFace` widgets from a hidden `recomp` composite; the host swaps the SelectBox row list and owns
+  the focus index and the Cross/Circle actions; the engine draws/focus/scrolls. Focus/up/down, Cross enter, Circle back
+  (Graphics -> hub -> main); the menu_quit watcher pauses while a host list is open. The render hook re-applies the host
+  index after the page update.
+- **Graphics:** Renderer (GSdx/CoreGS 2.0) and Render scale (50..200%) with Cross; restart-only; only
+  `game-changes.toml` (`renderer = "coregs20"`, `render_scale = "125"`; the host accumulates both keys). The launcher
+  remains the only `settings.toml` writer; the save untouched (screen_adjust_v/h 0, wide 1, project `arca`).
+- **Shells:** Controls/Display/Audio/System open title-only shells in order; Circle backs to the hub.
+- **Data patch:** `private/slice434-recomp` (arcade + accepted option patch; hidden recomp composite, 20 rows); container
+  `5f190db7b21d4938d2b9f71c162f96fc68e708580dc6154a7648c416366bc6c1` (91,712 bytes). Kit `private/slice435-kit`
+  (exe `8a6f33cd...`, patch, states/logs/frames/README); the accepted `slice430-kit` unchanged.
+- **Evidence:** main menu row, hub (all five), Graphics GSdx/100 -> CoreGS/125, Controls/Display/Audio/System shells,
+  `game-changes.toml` both keys, states with save fields 0; two headless runs exit 0. Mapping section 26.
+- **Tests:** `native_game_target` 1/1, `native_native_settings` 1/1, `native_display_aspect` 1/1; `cargo test -p
+  gt4l-core --lib` 311 passed (new `renderer_and_render_scale_are_stored`); `test_license_guard.py` 21 OK;
+  `test_gt4_data_patch.py` 16 OK.
+- **Open:** the initial render scale is 100% (the launcher sends only `GT4_HW_SCALE`); the Recomp row only exists in the
+  arcade main menu; the shells are title-only; Spec II not covered; the SelectBox layout is v2.00.

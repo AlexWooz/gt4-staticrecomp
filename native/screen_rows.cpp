@@ -4,6 +4,7 @@
 
 #include "game_target.hpp"
 #include "native_settings.hpp"
+#include "recomp_menu.hpp"
 #include "ps2/generated.hpp"
 #include "ps2/system.hpp"
 
@@ -593,7 +594,10 @@ bool on_adjust(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t
 }
 
 void on_render_frame(ps2::Cpu &cpu, std::uint8_t *ram, std::size_t size, std::uint32_t depth) {
-  if (!ram || !gt4::native_settings::option_project_active(ram, size)) return;
+  if (!ram) return;
+  // TASK-213 Phase 2a: keep the Recomp settings SelectBox focus through the page update (arcade main menu).
+  gt4::recomp_menu::on_render_frame(ram, size);
+  if (!gt4::native_settings::option_project_active(ram, size)) return;
   if (!g_configured) configure_from_environment();
   if (!page_valid(ram, size) && !find_page(ram, size)) return;
   service_row(cpu, ram, size, depth, g_page.resolution, 0);

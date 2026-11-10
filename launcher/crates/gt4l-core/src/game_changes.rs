@@ -296,6 +296,19 @@ mod tests {
     }
 
     #[test]
+    fn renderer_and_render_scale_are_stored() {
+        // The Graphics submenu writes the launcher's stored forms: renderer pcsx2/coregs20 and the scale percentage.
+        let (merge, settings) =
+            apply("version = 1\n\n[changes]\nrenderer = \"coregs20\"\nrender_scale = \"125\"\n");
+        assert_eq!(settings.get("renderer"), "coregs20");
+        assert_eq!(settings.get("render_scale"), "125");
+        assert!(settings.was_chosen("renderer"));
+        assert!(settings.was_chosen("render_scale"));
+        assert_eq!(merge.changes.len(), 2);
+        assert!(merge.warnings.is_empty());
+    }
+
+    #[test]
     fn bad_resolution_and_monitor_values_are_refused() {
         let (merge, settings) = apply(
             "version = 1\n\n[changes]\nresolution = \"abc\"\nmonitor = \"no-device-here\"\n",

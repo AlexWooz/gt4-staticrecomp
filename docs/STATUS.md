@@ -1,5 +1,31 @@
 # Current Status
 
+## TASK-213 Phase 2a: Recomp settings hub and Graphics submenu (2026-11-10, implemented, test build)
+
+The owner replaced the separate Graphics page with the **Recomp settings** menu (Graphics, Controls, Display, Audio,
+System). The hub and the Graphics submenu are reachable in a test build; the accepted Screen page and `slice430-kit`
+are unchanged.
+
+- **Entry:** a **Recomp settings** row appended to the **arcade main-menu SelectBox** through the Quit Game host-row
+  pipeline (index 6, before Quit at 7). The Options-root scroll and the Screen-page section were rejected (scroll
+  rebuild/focus risk; not a separate menu). No page list, Adhoc v5/TOC, Network repurpose or floating panel.
+- **Hub:** title **Recomp settings** + **Graphics, Controls, Display, Audio, System**. The rows are the game's
+  `Composite`/`TextFace` widgets from a hidden `recomp` composite; the host swaps the SelectBox list and owns the focus
+  index and the Cross/Circle actions; the engine draws/focus/scrolls. Up/down, Cross enter, Circle back (Graphics -> hub
+  -> main); the menu_quit watcher pauses while a host list is open; the render hook re-applies the host index.
+- **Graphics:** Renderer (GSdx/CoreGS 2.0) and Render scale (50..200%) with Cross; restart-only; only
+  `game-changes.toml` (`renderer = "coregs20"`, `render_scale = "125"`; both accumulated). The launcher is the only
+  `settings.toml` writer; the save untouched (screen_adjust_v/h 0, wide 1, project `arca`).
+- **Shells:** Controls/Display/Audio/System open title-only shells in order; Circle back.
+- **Data patch:** `private/slice434-recomp` (arcade + accepted option patch); container
+  `5f190db7b21d4938d2b9f71c162f96fc68e708580dc6154a7648c416366bc6c1` (91,712 bytes). Kit `private/slice435-kit`
+  (exe `8a6f33cd...`, patch, states/logs/frames/README); the accepted `slice430-kit` unchanged.
+- **Tests:** `native_game_target` 1/1, `native_native_settings` 1/1, `native_display_aspect` 1/1; `cargo test -p
+  gt4l-core --lib` 311 passed (new renderer/render-scale test); `test_license_guard.py` 21 OK;
+  `test_gt4_data_patch.py` 16 OK. Two headless runs exit 0.
+- **Open:** initial render scale 100% (the launcher sends only `GT4_HW_SCALE`); the Recomp row only in the arcade main
+  menu; the shells are title-only; Spec II not covered; the SelectBox layout is v2.00. Mapping section 26.
+
 ## TASK-213 Phase 2a scriptless-root experiment: still rejected (2026-11-10, evidence; page not reachable)
 
 The recommended smallest experiment (`MonitorRoot` `has_script 1 -> 0`) is negative: the page still does not render and

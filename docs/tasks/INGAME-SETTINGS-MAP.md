@@ -1724,3 +1724,102 @@ floating panel was added.** The owner's Screen page and `private/slice430-kit` r
   da Screen e capturar um frame; depois uma linha `OptionMenu` focável e as linhas Graphics (renderer/render scale,
   restart-only, só `game-changes.toml`). Os riscos são o script reconstruir o conteúdo do scroll e o foco do tile; a
   Cross do tile precisa ser mascarada.
+
+## 26. Phase 2a: the Recomp settings hub on the arcade main menu (2026-11-10, implemented, test build)
+
+The owner replaced the separate Graphics page with a new **Recomp settings** menu: **Graphics, Controls, Display, Audio,
+System**. The entry decision, the hub, the first submenu and the shells are implemented as a host row/menu on the
+game's own main-menu `SelectBox`; no page-list edit, no Adhoc v5/TOC, no Network repurpose, no floating panel. The
+accepted Screen page and `private/slice430-kit` are unchanged.
+
+### 26.1 The entry decision (evidence)
+
+| Candidate | Evidence | Decision |
+|---|---|---|
+| **Main-menu row via the Quit Game pipeline** | the hidden Quit template is appended to the arcade `SelectBox` (v2.00 vtable `0x00671898`, rows `+0xA0/+0xA4/+0xA8`, index `+0xBC`, end `+0xC4`) and the row is focused/activated (`private/slice421-kit`, TASK-212); the SelectBox owns drawing/focus/scroll | **chosen**: the Recomp settings row is appended before Quit (the host row pipeline is proven, the menu is a real game list) |
+| Tile/row in the Options root (`mScrollWindow`) | the script may rebuild the tile/scroll content on enter/leave; the Options root has no `SelectBox`; the host child must be re-appended and its Cross masked | not chosen: more attach/focus risk for the same goal |
+| Section inside the Screen page Pane | the VBox focus path is proven (Phase 1d rows), but it is the Screen page, not a new menu | not chosen: not a separate menu |
+
+### 26.2 The host menu (game widgets, no floating panel)
+
+- The private data patch (`private/slice434-recomp`) combines the accepted option patch (`slice430`) with the arcade
+  Quit patch (`slice421`) and adds a hidden `recomp` composite with 20 row templates next to the hidden Quit
+  composite. The TopRoot children count grows 8 -> 9; the composite is `visible 0`; the rows are the game's
+  `Composite`/`TextFace` widgets (hb_24, skew, shadow) with literal labels. Container
+  `5f190db7b21d4938d2b9f71c162f96fc68e708580dc6154a7648c416366bc6c1` (91,712 bytes, 3 ranges).
+- The host (`native/recomp_menu.*`) scans the arcade `SelectBox` and the hidden `recomp` composite (child count 20),
+  detaches the rows into a host array, appends the **Recomp settings** row (index 6, before Quit), and swaps the
+  SelectBox row list on navigation:
+  - hub: title row r14 "Recomp settings" + rows r1..r5 **Graphics, Controls, Display, Audio, System**;
+  - Graphics: title r15 "Graphics" + the current renderer row (r6 GSdx / r7 CoreGS 2.0) + the current scale row
+    (r8..r13, 50%..200%);
+  - shells: the title rows r16..r19 (Controls, Display, Audio, System).
+  The engine draws the SelectBox, the rows and the focus; the host owns the list fields, the focus index, the Cross/
+  Circle actions and the pad masking. The title rows are insensitive (bit 3) and start at index 0; the first selectable
+  row is index 1.
+- **Focus/up/down:** the host moves the focus index on the Up/Down edges in the host lists (the game's SelectBox
+  otherwise restores its own index); the render functor re-applies the index after the page update. **Cross** enters;
+  **Circle** backs (Graphics -> hub -> main menu). The `menu_quit` watcher pauses while a host list is open so it cannot
+  append Quit inside it. The main menu's own rows keep their normal behavior outside the Recomp/Quit rows.
+- **Graphics:** Cross on the Renderer row cycles GSdx/CoreGS 2.0; Cross on the Render scale row cycles 50/75/100/125/
+  150/200%. Both are restart-only and write only `game-changes.toml`:
+  `renderer = "pcsx2"` or `"coregs20"`, `render_scale = "125"`. The host accumulates the changed keys so both survive in
+  one file (the first version overwrote the file with the last change). The launcher is the only `settings.toml`
+  writer; the guest save stays untouched (states: screen_adjust_v/h 0, wide 1, project `arca`).
+- The initial renderer comes from `GT4_RENDERER` (`hw` = CoreGS 2.0, otherwise GSdx); the initial render scale shows
+  100% because the launcher passes the internal multiplier (`GT4_HW_SCALE`), not the percentage. The row writes a value
+  only when the player changes it. The renderer value is re-read from `GT4_RENDERER` when the menu tree reloads, so a
+  pending change made in the same session shows after the restart, not before it.
+
+### 26.3 Evidence (headless, v2.00)
+
+| Check | Evidence |
+|---|---|
+| Entry row | `private/slice435-kit/frames/main-12950-recomp-settings-row.png` (Recomp settings above Quit Game) |
+| Hub | `hub-13100-graphics-controls.png`, `hub-13150-display-audio-system.png` (all five rows in order) |
+| Focus/up/down | the `[recomp-menu] focus index` lines (hub 1->2->1, Graphics 1->2) and the frames |
+| Graphics | `graphics-13200-gsdx-100.png`, `graphics-13400-coregs-125.png`; log `renderer = "coregs20"`, `render_scale = "125"` |
+| Back | `[recomp-menu] back to the hub` / `back to the main menu`; the frames after the Circles |
+| Shells | `controls-13600-shell.png`, `display-13800-shell.png`, `audio-13200-shell.png`, `system-13400-shell.png` |
+| Feedback | `game-changes.toml`: `renderer = "coregs20"`, `render_scale = "125"` |
+| Save untouched | `state-graphics.bin`/`state-shells.bin`: screen_adjust_v/h 0, wide 1, project `arca` |
+| Exit | both headless runs exit 0; no unmapped reads, no crash |
+
+- Kit `private/slice435-kit`: exe `8a6f33cd...` (90,249,728 bytes), patch `5f190db7...`, states/logs/frames/README;
+  test build only.
+- Tests: `native_game_target` 1/1, `native_native_settings` 1/1, `native_display_aspect` 1/1; `cargo test -p
+  gt4l-core --lib` 311 passed (the new `renderer_and_render_scale_are_stored`); `test_license_guard.py` 21 OK;
+  `test_gt4_data_patch.py` 16 OK.
+
+### 26.4 Risks and limitations
+
+- **The host row swap depends on the v2.00 arcade `SelectBox` layout** and the hidden composite; a menu reload re-parses
+  the template and the host re-injects. The game's SelectBox update otherwise restores its own index; the render hook
+  re-applies the host index. The menu_quit pause prevents a Quit re-append inside a host list.
+- **The initial render scale is 100%** even if the launcher's stored scale is another step (only the internal
+  multiplier reaches the game); the renderer initial comes from `GT4_RENDERER`. The values are written only on change.
+- **The Recomp row is in the arcade main menu only** (the main menu whose last major menu is Arcade), not the GT Mode
+  menu or the Options root. The state-arcade shortcut or an arcade save is required for the owner test.
+- **The shells are title-only** (Controls, Display, Audio, System) by design; Display does not open the Screen page.
+- **The launcher remains the only `settings.toml` writer**; the game writes `game-changes.toml`; the save untouched.
+- **Spec II** is not covered by the v2.00 SelectBox profile/data patch.
+- The host row/menu uses the game's SelectBox; the `SelectBox` script's per-row modules are not used by the host rows,
+  but the engine's focus/scroll/draw are. The main menu's normal rows outside Recomp/Quit keep their script behavior.
+
+## 27. Resumo para o dono (pt-BR) - Recomp settings
+
+- **Entrada escolhida:** a linha **Recomp settings** foi anexada ao **menu principal do Arcade**, logo acima de Quit
+  Game, usando o mesmo caminho da linha Quit Game (o SelectBox do jogo). Não usei o menu Options (scroll) nem uma seção
+  na página Screen; não há página nova, Adhoc v5/TOC, Network ou painel flutuante.
+- **Hub:** abre com o título **Recomp settings** e as linhas **Graphics, Controls, Display, Audio, System** na ordem
+  que você aprovou. O foco sobe/desce, Cross entra, Circle volta (Graphics -> hub -> menu principal). O menu é o próprio
+  SelectBox do jogo (desenho, foco e scroll); o host só troca a lista e trata os botões.
+- **Graphics:** Renderer (GSdx/CoreGS 2.0) e Render scale (50..200%) com Cross; os dois são **restart-only** e gravam
+  só `game-changes.toml` (`renderer = "coregs20"`, `render_scale = "125"`); o launcher continua o único a escrever
+  `settings.toml` e o save não muda.
+- **Controls/Display/Audio/System:** abrem telas de título vazias por enquanto, na ordem; voltam com Circle.
+- **Teste:** o kit `private/slice435-kit` tem o estado que entra no menu Arcade, o patch combinado e as capturas; o
+  README tem o comando. O renderer inicial vem de `GT4_RENDERER`; a escala inicial mostra 100% mesmo que o launcher
+  esteja em outro passo (só o multiplicador interno chega ao jogo), então o valor só é gravado quando você muda.
+- **Limitações:** a linha Recomp só existe no menu principal do Arcade (não no menu GT Mode nem no Options); as telas
+  Controls/Display/Audio/System são vazias por enquanto; Spec II não coberto.
