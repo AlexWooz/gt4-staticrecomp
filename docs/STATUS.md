@@ -1,5 +1,33 @@
 # Current Status
 
+## TASK-214: the Adhoc v5 page table and the GT4.VOL ToC writer, Phase 1 (2026-11-10, tools + gate; no build)
+
+The owner wants the **Recomp settings** hub as a real page. This round built the tooling and measured the route
+instead of guessing. Nothing in the game, the accepted Screen page, the TASK-213 hub or `slice430-kit` changed.
+
+- **Third-party toolchain blocked (policy):** GTAdhocToolchain now carries
+  `SPDX-FileNotice: AI usage and consumption is prohibited` and an `AGENTS.md` that forbids AI reading, analysis,
+  modification and execution of the repository, commit history included. The clone was deleted unused; no
+  third-party code was built into anything. (The MIT license still permits general use; the author's request is what
+  we follow.)
+- **Own v5 tool:** `scripts/adhoc_v5.py` - page-table reader, byte-exact round trip, same-length in-place retarget
+  (`--page --name --root`), refuses any length change. `scripts/gt4_vol_toc.py` - RoFS catalogue reader and
+  leaf-extent writer with an allocation report.
+- **Page table (Confirmed):** `options` container + 24 pages in `0x8A40..0x99DD` (class ids 164..202, root string
+  repeated twice per entry) and four 16-byte `Dummy` zero-argument entries at `0x90AC`/`0x90FA`/`0x9148`/`0x9196`.
+  A Dummy cannot become a page same-length (no root field, no slack).
+- **Proof edit:** `LAN` root `LANPopup` -> `RecRoot1`: 14 bytes at `0x8E9D/0x8EA2/0x8EA7/0x8EAC`, decoded length
+  unchanged at 251,715, re-PS2ZIP 54,395 <= 55,353 stored -> **no ToC change needed**. A new scriptless
+  `RootWindow {"RecRoot1"}` fits `option.mproject` with 8,205 stored bytes spare.
+- **ToC:** real catalogue round trip byte-identical (365,622 bytes, 179 physical pages, 407 logical pages, 18,562
+  records). `option.adc` has 1,991 bytes of slack in its 28-page run; growing to 57,344 stored bytes re-emits a
+  365,617-byte ToC that still fits 366,592.
+- **Gates:** (A) the owner picks which page is traded for a same-length retarget; (B) an in-game/headless run must
+  prove a scriptless-root page renders and is listed in Options; (C) growth past +1,991 bytes needs free volume pages
+  or an ISO rebuild. Spec II (v7) is not mapped yet. Doc `docs/tasks/V5-TOOLCHAIN.md`.
+- **Tests:** `test_adhoc_v5.py` 10 OK, `test_gt4_vol_toc.py` 10 OK, full Python suite 841 OK (77 skipped). No ISO
+  copy (0 bytes), no ISO write, no build, no game window.
+
 ## TASK-213 Phase 2a: Recomp settings hub and Graphics submenu (2026-11-10, implemented, test build)
 
 The owner replaced the separate Graphics page with the **Recomp settings** menu (Graphics, Controls, Display, Audio,

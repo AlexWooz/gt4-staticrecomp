@@ -5050,3 +5050,41 @@ report the gate. No page was implemented or faked in this slice.
   `test_gt4_data_patch.py` 16 OK.
 - **Open:** the initial render scale is 100% (the launcher sends only `GT4_HW_SCALE`); the Recomp row only exists in the
   arcade main menu; the shells are title-only; Spec II not covered; the SelectBox layout is v2.00.
+
+### TASK-214: the Adhoc v5 page table and the GT4.VOL ToC writer (owner, 2026-11-10; research + tools)
+
+**Why.** The owner wants the **Recomp settings** hub as a real page like Options. Spec II did it on Adhoc v7 with a
+`SpecIISetting` page; our v2.00 is Adhoc v5 (`ADCH005`), and the page list lives in `option.adc`, not in the project
+data. The accepted fallback (host menu on the arcade main menu, TASK-213) is not a page. The owner asked for the v5
+toolchain and the GT4.VOL ToC writer so this route stops being a guess.
+
+**What.**
+- Get a v5 compiler/assembler or write one; decided by evidence, not by assumption.
+- Map the v5 page table and find the smallest edit that yields a **registered page** (Dummy repurpose, minimal script
+  rewrite, or same-size retarget), with exact bytes and lengths.
+- Write a GT4.VOL (RoFS) ToC writer that can replace `option.adc` (same size first; growth only if the allocation
+  allows) and prove it on a fixture, never on the owner's ISO.
+- No fake page, no floating panel; the accepted Screen page and the TASK-213 hub stay untouched.
+
+**Result (this round).**
+- **Third-party toolchain blocked by policy:** GTAdhocToolchain `a15f748` (2026-11-10) adds
+  `SPDX-FileNotice: AI usage and consumption is prohibited` plus an `AGENTS.md` that forbids AI reading, analysis and
+  execution of the repository, commit history included. The MIT license still allows general use; the author's
+  explicit request is what we follow. The clone was deleted unused and no third-party code was built, read or copied.
+- **Our own v5 tool:** `scripts/adhoc_v5.py` reads the page table, validates it and does same-length in-place
+  retargets, byte-exact round trip (10 synthetic checks incl. the retail file read-only).
+- **Page table mapped:** `options` container + 24 pages in `0x8A40..0x99DD`, class ids 164..202, root strings repeated
+  twice per entry; four `Dummy` zero-argument entries at `0x90AC`/`0x90FA`/`0x9148`/`0x9196` (16 bytes, no root, no
+  room). Proof edit: `LAN` root `LANPopup` -> `RecRoot1`, 14 bytes changed, decoded length unchanged (251,715),
+  re-PS2ZIP 54,395 <= 55,353 stored (no ToC change).
+- **ToC writer:** `scripts/gt4_vol_toc.py`; real catalogue round trip byte-identical (365,622 bytes, 179 physical
+  pages, 407 logical pages, 18,562 records). `option.adc` sits at data page 33842 with 1,991 bytes of slack inside its
+  28-page run, so a script may grow to 57,344 stored bytes without moving; the re-emitted ToC is 365,617 bytes and
+  still fits 366,592.
+- **Still open (gates):** (A) the owner picks the page to retarget - a same-length edit trades an existing page (LAN
+  used for the proof; Network excluded); (B) an in-game/headless run must prove that a page whose root is a new
+  scriptless `RootWindow` renders and appears in Options; (C) growth past +1,991 stored bytes needs free volume pages
+  or an ISO rebuild. Spec II (v7, `ADCH007`) is not mapped by this tool yet.
+- **Tests:** `test_adhoc_v5.py` 10 OK, `test_gt4_vol_toc.py` 10 OK, full Python suite 841 OK (77 skipped). No build,
+  no game window, no ISO write, no ISO copy (0 bytes). Evidence: `docs/tasks/V5-TOOLCHAIN.md`; private capsule
+  `private/slice437-option/`.
