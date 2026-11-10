@@ -1,5 +1,26 @@
 # Current Status
 
+## 2026-11-10: world materials, the brightness is a texture-capture gap (TASK-090, branch `task/090-world-materials`)
+
+The offline world's +4.50 luma gap (26.69 reference -> 31.19 ours) and its chroma error are decomposed and pinned. The
+vertex colour is right (UV-paired census 94.1% of 61,060 vertices exact; on the 928 position-verified items /
+45,651 vertices 99.74% exact, 3 items differing, alpha exact) and all selected items are MODULATE with TCC = 1, so the material path is not the
+arithmetic. The dominant texture page (`TBP0 0x36D0`, 53.7% of the compared mask, bound by course draws 35/37/42/44)
+decodes from the sidecar to an advert/2D-style atlas and correlates with the reference at **-0.009**; it contributes
+**+3.90 of the +4.50 luma gap (86.7%)**. Root cause: the `.gt4vram` sidecar is a single frame-end snapshot per VBlank
+(six records, page `0x36D0` byte-identical, sha256 `a191c894...`), and the frame streams different textures through the
+same page, so the snapshot cannot carry the world-pass content; the other pages' 3x ratios span 0.32..2.09 (content
+and palette). Fog is applied from the tap with CoreGS 2.0's own mix and moves **-0.51%** of the reference luma (no depth
+trend; the UV-vs-position pairing difference is worth ~0.09 levels). There is **no measurable global post transform**:
+per-page fits span -0.03..2.09 and the kerb page (`0x3CAE`, 38,763 px) matches at ratio 1.006 / PSNR 35.06, so a
+global 17% gain is excluded there; the uncaptured PATH3 post chain is not needed to explain the gap (below the
+material noise, Unknown). Fixes, ordered: (1) capture texture pixels and palettes at the world pass (per-pass SLM
+record; root cause), (2) position-verified per-item state pairing, (3) draw the captured wet-road reflection pass,
+(4) capture the PATH3 stream and measure the post chain before adding any global transform. Full numbers, gates and
+evidence: [COREGS3-WORLD-MATERIALS](docs/COREGS3-WORLD-MATERIALS.md); `build/evidence/world-materials/`. No `native/`
+source change; a small `GT4_HW_GS` tools build only; baseline reproduced exactly (PSNR 20.36, SSIM 0.6137, pct_bad
+77.19%, luma 26.69 -> 31.19).
+
 ## 2026-11-10: GS-stream capture study (TASK-090, branch `task/090-gs-stream-study`)
 
 Study, no code change. Design for the missing half of the CoreGS 3.0 capture: everything the EE sends to the GS

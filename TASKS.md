@@ -1826,8 +1826,26 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   operations exist. Phases S0 (census counters), S1 (`.gt4gs` v1 + tool + fixture, 3x gate and byte control), S2
   (offline post layer), S3 (HUD layer), S4 (live `present`); exact S1 brief in §5.4, open questions in §6. No code
   change in this study.
-- Next: the track M1 sky+road renderer using the recovered transform; the effects/HUD capture additions (hw GS-stream,
-  2D recorder); then the G-IMAGE/G-PERF gates.
+- **World materials: the brightness is a texture-capture gap (2026-11-10, branch `task/090-world-materials`).** A
+  read-only measurement study decomposed the M1 world's +4.50 luma gap and its chroma error. Vertex colour is right
+  (UV-paired census 94.1% of 61,060 vertices exact; on the 928 position-verified items / 45,651 vertices 99.74%
+  exact, 3 items differing, alpha exact) and all 1,218 selected items are MODULATE with TCC = 1. The dominant texture
+  page (`TBP0 0x36D0`, 53.7% of the compared mask,
+  bound by course draws 35/37/42/44) decodes from the sidecar to an advert/2D-style atlas and correlates with the
+  reference at **-0.009**; it contributes **+3.90 of the +4.50 luma gap (86.7%)**. Root cause: the `.gt4vram` sidecar
+  is one frame-end snapshot per VBlank (six records 7398..7403, page `0x36D0` byte-identical, sha256 `a191c894...`) and
+  the frame streams different textures through the same page, so the world-pass pixels/palettes are not captured; the
+  other pages' 3x ratios span 0.32..2.09 (content and palette). Fog is applied from the tap with CoreGS 2.0's mix and
+  moves **-0.51%** of the reference luma (no depth trend; the UV-vs-position pairing difference is worth ~0.09 levels).
+  There is **no measurable global post transform** (per-page fits -0.03..2.09; the kerb page `0x3CAE`, 38,763 px,
+  matches at ratio 1.006 / PSNR 35.06, excluding a global 17% gain); the PATH3 post chain is uncaptured and not needed
+  to explain the gap. Fixes, ordered: (1) capture texture pixels and palettes at the world pass (per-pass SLM record;
+  root cause), (2) position-verified state pairing, (3) draw the captured wet-road reflection pass, (4) capture and
+  measure the PATH3 post stream before adding any global transform. No `native/` source change; small `GT4_HW_GS` tools
+  build only. Numbers, gates, evidence: [COREGS3-WORLD-MATERIALS](docs/COREGS3-WORLD-MATERIALS.md),
+  `build/evidence/world-materials/`.
+- Next: the world-materials capture fix (per-pass texture/palette snapshot); the track M1 sky+road renderer using the
+  recovered transform; the effects/HUD capture additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls
