@@ -1,7 +1,8 @@
 // CTest native_coregs3_texture_state: TASK-090 track textures' decoder-from-state path on hand-authored GS memory.
 //
 // No game data: a synthetic 4 MiB local memory image, a synthetic CSM1 palette and T4/T8 texels written at the
-// documented chapter 01.3 / 07.4 positions. The fixture pins:
+// documented chapter 01.3 / 07.4 positions. The fixture has no record table at all: every case is the external-cursor
+// situation the world stream measures, where only the tapped state names the texture. It pins:
 //   * the record path and the state path agree byte for byte when the state carries the same TEX0 (CLD = 1);
 //   * the measured world stream shape: TEX0 with CLD = 0 plus a TEX2 palette load (CLD = 1, CSA = 0) gives the same
 //     image, and the TEX2 load class rule (T4 for a CSA-0 T4 texture, T8 for any other sampled group);
