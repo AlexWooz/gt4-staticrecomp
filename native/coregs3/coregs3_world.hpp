@@ -2,7 +2,9 @@
 //
 // The selected picture is the sky (PassId 2), the far underlay (3) and the main-view course (5). Inside the course pass
 // the measured world families are drawn: the ITOP 0x0080 main view and, since the TASK-090 world-families round, the
-// 0xB08 nine-qword lighting family, the 0x00A0 two-key morph family and the 0x1278 body pre-pass family. Every item must
+// 0xB08 nine-qword lighting family, the 0x00A0 two-key morph family and the 0x1278 body pre-pass family. Since format
+// version 6 the 0x00A0 items are blended with the draw's captured morph factor instead of substituted; an item without
+// the factor keeps the accepted first-key substitution the world-families round counted. Every item must
 // pass the shape decoder's family/channel rule (WorldShapeStatus) and its GS state must carry the main-view XYOFFSET
 // 0x6C08/0x7208. Since the TASK-090 wet-reflection round the captured reflection pass (PassId 7) is selected too: its
 // main-view items are the wet-road reflection-model quads (ITOP 0x0080, the same state rule); its mirror-view items

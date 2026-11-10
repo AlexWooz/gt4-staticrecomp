@@ -19,8 +19,8 @@
 //       A/B: the same frame with no texture table, byte-for-byte the pre-texture renderer.
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --vram <capture.gt4vram> --tap <capture.gt4tap>
-//                         --world [--no-sky] [--no-underlay] [--no-course] [--no-wet-reflection] [--mask <pgm>]
-//                         [--width W --height H]
+//                         --world [--no-sky] [--no-underlay] [--no-course] [--no-wet-reflection] [--no-morph]
+//                         [--mask <pgm>] [--width W --height H]
 //       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3), main-view
 //       course (5) and since the wet-reflection round the captured reflection pass's main-view items (7), counts every
 //       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the level-0
@@ -272,8 +272,14 @@ struct WorldSelection {
   std::uint32_t course_no_position = 0;
   std::uint32_t course_shape_refused = 0;
   std::uint32_t course_uv_unverified = 0;
-  std::uint32_t course_morph_uv_substituted = 0;      // 0xA0: first-key UV used (the UV keys differ)
-  std::uint32_t course_morph_colour_substituted = 0;  // 0xA0: first-key colour used (the colour keys differ)
+  std::uint32_t course_morph_uv_substituted = 0;      // 0xA0: first-key UV used (the UV keys differ, no factor)
+  std::uint32_t course_morph_colour_substituted = 0;  // 0xA0: first-key colour used (the colour keys differ, no factor)
+  // Format version 6: the 0xA0 items whose draw carried the morph factor, and which key pairs were blended with it.
+  std::uint32_t course_morph_factor_items = 0;
+  std::uint32_t course_morph_blended_uv = 0;
+  std::uint32_t course_morph_blended_colour = 0;
+  std::uint32_t course_morph_blended_position = 0;
+  std::map<std::uint32_t, std::uint32_t> course_morph_factors;  // raw factor word -> selected 0xA0 items
   std::uint32_t course_draws_dropped = 0;
   // TASK-090 wet reflection: the captured reflection pass (PassId 7). Its main-view items are selected (the wet-road
   // reflection-model quads); every other item is a counted exclusion by the same rule as the course.
@@ -318,8 +324,12 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
       input.run_valid = source.run_valid != 0;
       input.dispatch = input.run_valid ? (source.run_itop & 0x3FFu) * 8u : 0u;
       input.has_position = item < scan.items.size() && scan.items[item].has_position && source.packet_bytes != 0;
+      // Format version 6: the draw's captured 0x00A0 morph factor turns the key substitutions into blends.
+      const MorphBlend morph = morph_blend_of(draw);
+      MorphKeyFacts morph_keys;
       input.shape_status = source.packet_bytes != 0
-                               ? world_shape_status(frame.packets.data(), frame.packets.size(), source)
+                               ? world_shape_status(frame.packets.data(), frame.packets.size(), source, morph,
+                                                    &morph_keys)
                                : WorldShapeStatus::unsupported_program;
       const SampleState *state = bindings != nullptr && item < bindings->size() ? &(*bindings)[item].state : nullptr;
       if (state != nullptr) {
@@ -374,9 +384,20 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
         selection.family_items[family] += 1;
         selection.family_vertices[family] += vertices;
         if (state != nullptr && state->world_pass_default) selection.course_uv_unverified += 1;
-        if (input.shape_status == WorldShapeStatus::morph_uv_first_key) selection.course_morph_uv_substituted += 1;
-        if (input.shape_status == WorldShapeStatus::morph_colour_first_key)
-          selection.course_morph_colour_substituted += 1;
+        if (input.dispatch == 0x00A0u) {
+          if (morph.valid) {
+            selection.course_morph_factor_items += 1;
+            selection.course_morph_factors[morph.bits] += 1;
+            if (morph_keys.uv_keys_differ) selection.course_morph_blended_uv += 1;
+            if (morph_keys.colour_keys_differ) selection.course_morph_blended_colour += 1;
+            if (morph_keys.position_keys_differ) selection.course_morph_blended_position += 1;
+          } else {
+            if (input.shape_status == WorldShapeStatus::morph_uv_first_key)
+              selection.course_morph_uv_substituted += 1;
+            if (input.shape_status == WorldShapeStatus::morph_colour_first_key)
+              selection.course_morph_colour_substituted += 1;
+          }
+        }
       } else if (is_sky) {
         selection.sky_items += 1;
         selection.sky_vertices += vertices;
@@ -439,6 +460,7 @@ int main(int argc, char **argv) {
   bool ndc = false;
   bool counts = false;
   bool no_programs = false;
+  bool no_morph = false;
   int only_draw = -1;
   float min_y = 0.0f;
   float max_edge = 0.0f;
@@ -469,6 +491,7 @@ int main(int argc, char **argv) {
     else if (argument == "--counts") counts = true;
     else if (argument == "--ndc") ndc = true;
     else if (argument == "--no-programs") no_programs = true;
+    else if (argument == "--no-morph") no_morph = true;
     else if (argument == "--vram" && index + 1 < argc) vram_path = argv[++index];
     else if (argument == "--vram-vblank" && index + 1 < argc) vram_vblank = std::atoi(argv[++index]);
     else if (argument == "--tap" && index + 1 < argc) tap_path = argv[++index];
@@ -564,6 +587,23 @@ int main(int argc, char **argv) {
       for (std::uint32_t pass = 0; pass < kPassCount; ++pass)
         if (counts[pass] != 0)
           std::printf("    pass %-12s draws %u\n", pass_name(pass), counts[pass]);
+      // Format version 6: the 0x00A0 morph factor each draw's chain carried (the value the VU1 pre-pass read).
+      std::uint32_t morph_draws = 0, morph_uploads = 0, morph_printed = 0;
+      for (const CapturedDraw &draw : frame.draws) {
+        if (draw.morph_uploads == 0) continue;
+        morph_draws += 1;
+        morph_uploads += draw.morph_uploads;
+        if (morph_printed < 16) {
+          float factor = 0.0f;
+          std::memcpy(&factor, &draw.morph_factor, sizeof factor);
+          std::printf("    morph draw %u factor 0x%08X (%.6f) pgl 0x%08X flags 0x%X uploads %u\n", draw.sequence,
+                      draw.morph_factor, static_cast<double>(factor), draw.morph_factor_pgl,
+                      draw.morph_factor_valid, draw.morph_uploads);
+          morph_printed += 1;
+        }
+      }
+      if (morph_draws != 0)
+        std::printf("    morph draws %u uploads %u\n", morph_draws, morph_uploads);
       for (const CapturedPassState &state : frame.pass_states)
         std::printf("    journal %-12s vblank %llu draws %u items %u first %d | FOGCOL %016llX FRAME %016llX "
                     "XYOFFSET %016llX ZBUF %016llX SCISSOR %016llX ALPHA %016llX TEST %016llX\n",
@@ -590,6 +630,16 @@ int main(int argc, char **argv) {
     // the normal render is exactly what the per-item programs add to the picture.
     for (CapturedDraw &draw : frames[frame_index].draws)
       for (std::uint32_t item = 0; item < draw.item_count; ++item) draw.items[item].run_valid = 0;
+  }
+  if (no_morph && frame_index >= 0 && static_cast<std::size_t>(frame_index) < frames.size()) {
+    // Evidence A/B only (format version 6): drop the captured 0x00A0 factor, so the morph items fall back to the
+    // first-key substitution the world-families round used. The difference from the normal render is exactly the blend.
+    for (CapturedDraw &draw : frames[frame_index].draws) {
+      draw.morph_factor = 0;
+      draw.morph_factor_pgl = 0;
+      draw.morph_factor_valid = 0;
+      draw.morph_uploads = 0;
+    }
   }
 
   if (shade_dump != nullptr) {
@@ -1026,9 +1076,31 @@ int main(int argc, char **argv) {
                     selection.family_vertices[family]);
       world_report += line;
     }
-    world_report += " (items/vertices); 0xA0 first-key substitutions: UV " +
-                    std::to_string(selection.course_morph_uv_substituted) + ", colour " +
-                    std::to_string(selection.course_morph_colour_substituted) + "\n";
+    world_report += " (items/vertices)\n";
+    std::snprintf(line, sizeof line,
+                  "world 0xA0 morph: items with a captured factor %u, blended UV %u, blended colour %u, blended "
+                  "position %u; first-key substitutions without a factor: UV %u, colour %u; factors:",
+                  selection.course_morph_factor_items, selection.course_morph_blended_uv,
+                  selection.course_morph_blended_colour, selection.course_morph_blended_position,
+                  selection.course_morph_uv_substituted, selection.course_morph_colour_substituted);
+    world_report += line;
+    if (selection.course_morph_factors.empty()) {
+      world_report += " none\n";
+    } else {
+      std::uint32_t printed = 0;
+      for (const auto &[bits, count] : selection.course_morph_factors) {
+        if (printed == 8) {
+          world_report += " ...";
+          break;
+        }
+        float factor = 0.0f;
+        std::memcpy(&factor, &bits, sizeof factor);
+        std::snprintf(line, sizeof line, " 0x%08X(%.6f)x%u", bits, static_cast<double>(factor), count);
+        world_report += line;
+        printed += 1;
+      }
+      world_report += "\n";
+    }
     std::snprintf(line, sizeof line,
                   "world course exclusions: other-itop %u, shape-refused %u, mirror %u, no-state %u, no-position %u, "
                   "empty-draws %u; sky no-position %u; far_underlay no-position %u; selected with a neighbour/pass "

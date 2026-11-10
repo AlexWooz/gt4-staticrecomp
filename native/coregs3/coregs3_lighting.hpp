@@ -57,11 +57,14 @@
 //                     captured sky items reproduces the tapped RGBAQ on 940/940 vertices exactly (oracle census).
 //
 //   morph_passthrough ITOP 0x00A0, the course's two-key morph pre-pass. The entry lerps two keyframe arrays with the
-//                     factor at TOPS+0xF2 lane 3 and hands the blended data to the shared output. The position keys are
-//                     bit-identical on every captured course item (230/230, five frames), so the geometry is
-//                     independent of the factor; the colour keys differ on 10/46 frame-0 items and the UV keys on all
-//                     of them. The factor is not captured, so the shape decoder uses the first key for those arrays and
-//                     counts the substitution; a differing position pair is refused. The program reads no light block.
+//                     factor at TOPS+0xF2 lane 3 and hands the blended data to the shared output. The factor is captured
+//                     since `.gt4scene` version 6 (coregs3_scene.hpp): the PGL chain's VIF UNPACK 0x7001C0F2 writes the
+//                     PGL +0xC30 word into lane 3 before each item's MSCAL, and the shape decoder blends the key arrays
+//                     with the measured order (key1 * (1 - s) + key2 * s). The position keys are bit-identical on every
+//                     captured course item (230/230, five frames), so the geometry is factor-independent in the data;
+//                     the colour keys differ on 10/46 frame-0 items and the UV keys on all of them, and the tap's RGBAQ
+//                     bytes match the blended colour exactly (item 14/15/26/32: 30/30). The post-morph colour this
+//                     program emits is therefore the blended V4-8 at TOPS+0x80. The program reads no light block.
 //
 //   body_prepass      ITOP 0x1278, the course's float/normal pre-pass. The entry converts the integer positions and the
 //                     V3-8 normals at TOPS+0x40 (times the microcode's 1/127) to floats and hands them to the body/paint

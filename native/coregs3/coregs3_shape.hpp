@@ -17,13 +17,11 @@
 #include <string>
 #include <vector>
 
+#include "coregs3_scene.hpp"
 #include "coregs3_vif.hpp"
 #include "coregs3_vertex.hpp"
 
 namespace gt4::coregs3 {
-
-struct CapturedItem;
-struct CapturedDraw;
 
 enum class ChannelRole : std::uint8_t {
   unknown = 0,
@@ -68,8 +66,24 @@ enum class WorldShapeStatus : std::uint8_t {
   missing_normal40,   // 0x1278: no V3-8 normal at TOPS 0x40
   missing_normal80,   // 0x0B08: no V3-8 normal at TOPS 0x80
   missing_colour,     // no V4-8 colour at TOPS 0x80
+  // Format version 6: the morph factor is captured, so a differing key is blended instead of substituted. These refusals
+  // cover the forms the blend cannot read exactly: a non-float position key, a non-float UV key (the VU1 would multiply
+  // integer bits as floats) and a vertex count above 32, where the first key's array at 0x40 and the second key's at 0x60
+  // overlap in VU1 memory.
+  morph_position_format,  // 0x00A0 with the factor: the differing position keys are not V3-32 floats
+  morph_uv_format,        // 0x00A0 with the factor: the differing UV keys are not V2-32/V3-32 floats
+  morph_uv_region,        // 0x00A0 with differing UV keys and a vertex count above 32 (0x40..0x7F holds 64 qwords)
 };
 const char *world_shape_status_name(WorldShapeStatus status) noexcept;
+
+// The key relations the 0x00A0 rule measured, filled for the census: which of the three key pairs differ (lane-limited
+// comparisons: positions 3 lanes, UVs 2, colours 4). With a valid morph factor the differing arrays are blended; without
+// one the accepted substitutions use the first key.
+struct MorphKeyFacts {
+  bool position_keys_differ = false;
+  bool uv_keys_differ = false;
+  bool colour_keys_differ = false;
+};
 
 struct ChannelScan {
   // One entry per draw item, in item order; `decoded` is false when the item has no packet or the packet was refused.
@@ -148,10 +162,12 @@ bool decode_strip_table(const std::vector<std::uint8_t> &bytes, std::uint32_t ve
 
 // Reads up to `limit` model UV pairs from one item's first UV channel at TOPS qword 0x40 (the measured V2-16/V2-32/V3-16/
 // V3-32 forms, plus the V2-8 Hypothesis), for the tap's pairing. This is the same channel the item-state study uses to
-// match a captured item to its tapped GIF record (the tapped S/Q,T/Q equal these u,v). Returns false when the item has
-// no such channel or its packet is refused.
+// match a captured item to its tapped GIF record (the tapped S/Q,T/Q equal these u,v). Format version 6: when the item
+// runs the 0x00A0 morph program and `morph` is valid, the keys at 0x40/0x60 are blended with the measured order, because
+// the tap's S/T for those items is the post-morph UV, not the first key. Returns false when the item has no such channel
+// or its packet is refused.
 bool read_item_uv(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedItem &item, std::size_t limit,
-                  std::vector<std::array<float, 2>> &uvs);
+                  std::vector<std::array<float, 2>> &uvs, const MorphBlend &morph = {});
 
 struct MeshVertex {
   std::array<float, 3> position{};  // model-space position after MeshOptions::position_scale
@@ -251,14 +267,17 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const str
 //   * the descriptor must be the measured TOPS 0xC0 V3-32 form (lane0 bit 15 set, lane2 0x1412);
 //   * 0x0080/0x1508 need a position list; 0x0B08 needs the V3-8 normal at 0x80; 0x1278 needs the V3-8 normal at 0x40
 //     and the V4-8 colour at 0x80; 0x00A0 needs the colour at 0x80 and a second keyframe (positions at 0x20, UV at
-//     0x60, colour at 0xA0). The position keys must be bit-identical because the morph factor at 0xF2 is not captured;
-//     equal position keys make the geometry factor-independent. Differing UV keys are accepted as morph_uv_first_key
-//     and differing colour keys as morph_colour_first_key: the first key is used and the substitution is counted (the
-//     measured tap bound for the colour case is at most 4 levels on 1-3 vertices per item);
+//     0x60, colour at 0xA0);
+//   * 0x00A0 with a valid morph factor (format version 6) blends the differing key pairs and passes as ok; without one,
+//     a differing UV key is accepted as morph_uv_first_key and a differing colour key as morph_colour_first_key (the
+//     first key is used and the substitution is counted), and a differing position key is refused (morph_keys_differ).
+//     With a factor, a differing position key needs V3-32 floats and a differing UV key needs float segments in a count
+//     of at most 32 (the two arrays share qwords 0x40..0x7F); the other forms are refused, never guessed.
 //   * the position list must cover the descriptor count (the V3-8 seed commit at qword 0 counts as one vertex).
 // Any other ITOP selector is unsupported_program. The check is the same rule read_world_item applies, so the tool's
-// exclusion count and build_mesh cannot drift.
+// exclusion count and build_mesh cannot drift. `facts`, when not null, receives the measured key relations.
 WorldShapeStatus world_shape_status(const std::uint8_t *packets, std::size_t packet_bytes,
-                                    const struct CapturedItem &item);
+                                    const struct CapturedItem &item, const MorphBlend &morph = {},
+                                    MorphKeyFacts *facts = nullptr);
 
 }  // namespace gt4::coregs3

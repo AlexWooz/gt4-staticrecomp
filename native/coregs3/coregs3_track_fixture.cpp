@@ -240,6 +240,14 @@ void set_program(CapturedDraw &draw, std::uint32_t dispatch) {
   draw.items[0].run_itop = itop_word(dispatch);
 }
 
+// Format version 6: the captured 0x00A0 factor (the measured frame-0 word is -0.50792). A blend test uses -0.5 so the
+// expected values are exact in float.
+void set_morph(CapturedDraw &draw, float factor) {
+  std::memcpy(&draw.morph_factor, &factor, sizeof factor);
+  draw.morph_factor_valid = kMorphUploadSeen;
+  draw.morph_uploads = 1;
+}
+
 // 0x00A0: a 32-vertex two-key morph item, the measured layout (the first key at 0x00/0x40/0x80 covers 32 qwords, so
 // the second key at 0x20/0x60/0xA0 tiles immediately after it and is bit-identical). `differ` changes one second-key
 // position so the rule must refuse the item.
@@ -498,6 +506,22 @@ void check_world_morph_family() {
   require(world_item_exclusion(uv_item) == WorldExclusion::none,
           "the counted UV substitution keeps the A0 item selected");
 
+  // Format version 6: with the captured factor the same item is blended (ok) instead of substituted. The measured VU
+  // order is key1 * (1 - s) + key2 * s; with s = -0.5 vertex 1's differing U key (0.26/0.76) becomes 0.01 and the equal
+  // vertices keep their first-key value.
+  CapturedDraw uv_differ_blend = uv_differ_draw;
+  set_morph(uv_differ_blend, -0.5f);
+  MorphKeyFacts blend_keys;
+  require(world_shape_status(uv_differ.data(), uv_differ.size(), uv_differ_blend.items[0],
+                             morph_blend_of(uv_differ_blend), &blend_keys) == WorldShapeStatus::ok,
+          "a differing A0 UV key is blended, not refused, when the factor is captured");
+  require(blend_keys.uv_keys_differ && !blend_keys.colour_keys_differ && !blend_keys.position_keys_differ,
+          "the census names the differing UV key pair");
+  if (!build_mesh(uv_differ.data(), uv_differ.size(), uv_differ_blend, options, mesh, error))
+    throw std::runtime_error("the A0 item with a captured factor builds: " + error);
+  require(std::fabs(mesh.vertices[0].uv[0] - 0.25f) < 1e-6f && std::fabs(mesh.vertices[1].uv[0] - 0.01f) < 1e-6f,
+          "the A0 UV blend uses the measured operation order");
+
   // The 10 captured items with a differing colour key use the first-key colour and stay selected; the measured bound
   // (tap comparison) is at most 4 levels on 1-3 vertices per item.
   const std::vector<std::uint8_t> colour_differ = make_morph_packet(false, true, true);
@@ -515,16 +539,45 @@ void check_world_morph_family() {
   require(world_item_exclusion(colour_item) == WorldExclusion::none,
           "the counted colour substitution keeps the A0 item selected");
 
-  // A differ in the second position key is refused with the reason, never drawn on a guessed factor.
+  // Format version 6: the colour keys blend with the same factor. Vertex 1's R key is 11 (first) and 15 (second); with
+  // s = -0.5 the VU1 formula gives 11*1.5 + 15*(-0.5) = 9, which is the tapped RGBAQ byte the fragment emits.
+  CapturedDraw colour_differ_blend = colour_differ_draw;
+  set_morph(colour_differ_blend, -0.5f);
+  require(world_shape_status(colour_differ.data(), colour_differ.size(), colour_differ_blend.items[0],
+                             morph_blend_of(colour_differ_blend), &blend_keys) == WorldShapeStatus::ok,
+          "a differing A0 colour key is blended when the factor is captured");
+  require(blend_keys.colour_keys_differ, "the census names the differing colour key");
+  if (!build_mesh(colour_differ.data(), colour_differ.size(), colour_differ_blend, options, mesh, error))
+    throw std::runtime_error("the A0 item with differing colour keys and a factor builds: " + error);
+  require(mesh.vertices[0].color[0] == 10 && mesh.vertices[1].color[0] == 9,
+          "the A0 colour blend uses the measured operation order and truncation");
+
+  // A differ in the second position key is refused without a factor, never drawn on a guessed factor; with the captured
+  // factor the same key pair is blended (the measured keys are equal on every capture, so this is the general rule).
   const std::vector<std::uint8_t> differ = make_morph_packet(true);
   CapturedDraw differ_draw = make_draw(201, kPassCourse, differ, 0);
   set_program(differ_draw, 0x00A0u);
   require(world_shape_status(differ.data(), differ.size(), differ_draw.items[0]) ==
               WorldShapeStatus::morph_keys_differ,
-          "an unequal 0xA0 second key is refused");
+          "an unequal 0xA0 second key is refused without a factor");
   require(!build_mesh(differ.data(), differ.size(), differ_draw, options, mesh, error) &&
               error.find("morph-keys-differ") != std::string::npos,
           "build_mesh refuses the unequal 0xA0 keys with the measured reason");
+  CapturedDraw differ_blend = differ_draw;
+  set_morph(differ_blend, -0.5f);
+  require(world_shape_status(differ.data(), differ.size(), differ_blend.items[0], morph_blend_of(differ_blend),
+                             &blend_keys) == WorldShapeStatus::ok,
+          "the unequal A0 position key pair is blended when the factor is captured");
+  require(blend_keys.position_keys_differ, "the census names the differing position key pair");
+  if (!build_mesh(differ.data(), differ.size(), differ_blend, options, mesh, error))
+    throw std::runtime_error("the A0 item with unequal position keys and a factor builds: " + error);
+  require(std::fabs(mesh.vertices[1].position[0] - 1.75f) < 1e-6f,
+          "the A0 position blend uses key1 * (1 - s) + key2 * s");
+  // The new format refusals are named, so a tool report says exactly why an item was not blended.
+  require(std::strcmp(world_shape_status_name(WorldShapeStatus::morph_position_format), "morph-position-format") == 0 &&
+              std::strcmp(world_shape_status_name(WorldShapeStatus::morph_uv_format), "morph-uv-format") == 0 &&
+              std::strcmp(world_shape_status_name(WorldShapeStatus::morph_uv_region), "morph-uv-region") == 0,
+          "the morph format refusals have their measured names");
 }
 
 // The 0x0B08 nine-qword lighting family.

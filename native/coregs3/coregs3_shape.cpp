@@ -203,8 +203,43 @@ bool qword_lanes_equal(const VifPacket &packet, std::uint32_t first, std::uint32
   return true;
 }
 
+// True when every UV segment covering [first, first + count) tiles from `first` and is a 32-bit float form. The 0x00A0
+// blend multiplies the raw lanes with the morph factor as floats, so only these forms carry a coordinate the program
+// actually uses; an integer key would be blended as float bits and is refused instead.
+bool uv_region_all_float(const VifPacket &packet, std::uint32_t first, std::uint32_t count) {
+  if (count == 0 || first + count > kVuQwords) return false;
+  std::uint32_t cursor = first;
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.destination < first || entry.destination >= first + count) continue;
+    if (entry.format == ChannelFormat::v1_8) continue;
+    if (!is_uv_format(entry.format)) continue;
+    if (entry.destination != cursor) return false;
+    if (entry.format != ChannelFormat::v2_32 && entry.format != ChannelFormat::v3_32) return false;
+    cursor += entry.vectors;
+  }
+  return cursor >= first + count;
+}
+
+// True when every position array covering [first, first + count) tiles from `first` and is the V3-32 float form. The
+// STROW seed commit at qword 0 (V3-8) is not an array and is skipped; the 0x00A0 blend would read integer lanes as float
+// bits, so a differing key of any other form is refused.
+bool position_region_all_float(const VifPacket &packet, std::uint32_t first, std::uint32_t count) {
+  if (count == 0 || first + count > kVuQwords) return false;
+  std::uint32_t cursor = first;
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.destination < first || entry.destination >= first + count) continue;
+    if (entry.format == ChannelFormat::v3_8) continue;  // the STROW seed commit
+    if (!is_position_format(entry.format)) continue;
+    if (entry.destination != cursor) return false;
+    if (entry.format != ChannelFormat::v3_32) return false;
+    cursor += entry.vectors;
+  }
+  return cursor >= first + count;
+}
+
 // The family rule of world_shape_status, on an already decoded packet.
-WorldShapeStatus world_shape_status_packet(const VifPacket &packet, std::uint32_t dispatch) {
+WorldShapeStatus world_shape_status_packet(const VifPacket &packet, std::uint32_t dispatch, const MorphBlend &morph,
+                                           MorphKeyFacts *facts_out = nullptr) {
   const WorldFamilyFacts facts = world_family_facts(packet);
   const bool supported = dispatch == 0x0080u || dispatch == 0x00A0u || dispatch == 0x0B08u ||
                          dispatch == 0x1278u || dispatch == 0x1508u;
@@ -217,17 +252,35 @@ WorldShapeStatus world_shape_status_packet(const VifPacket &packet, std::uint32_
   const std::uint32_t first_positions =
       (facts.seed ? 1u : 0u) + facts.positions_at_0 + facts.positions_at_20 + facts.positions_other;
   if (dispatch == 0x00A0u) {
-    // The two-key morph: the first key at 0x00 and the second at 0x20 must both cover the output count. Their position
-    // lanes must be equal (the geometry is then independent of the factor at 0xF2, which is not captured); the colour
-    // and UV keys may differ and are counted substitutions.
+    // The two-key morph: the first key at 0x00 and the second at 0x20 must both cover the output count, and so must the
+    // colour keys at 0x80/0xA0 and the UV keys at 0x40/0x60.
     if (facts.positions_at_0 < count || facts.positions_at_20 < count) return WorldShapeStatus::position_count;
     if (facts.colour80 < count || facts.colourA0 < count) return WorldShapeStatus::missing_colour;
     if (facts.uv_at_40 < count || facts.uv_at_60 < count) return WorldShapeStatus::position_count;
-    if (!qword_lanes_equal(packet, 0x00u, 0x20u, count, 3u)) return WorldShapeStatus::morph_keys_differ;
-    // The position keys are equal, so the geometry is independent of the morph factor. A differing colour or UV key
-    // means the program would blend it by the uncaptured factor; the first key is used and the substitution is counted.
-    if (!qword_lanes_equal(packet, 0x80u, 0xA0u, count, 4u)) return WorldShapeStatus::morph_colour_first_key;
-    if (!qword_lanes_equal(packet, 0x40u, 0x60u, count, 2u)) return WorldShapeStatus::morph_uv_first_key;
+    // The two UV key arrays share qwords 0x40..0x7F: each is `count` qwords, so a count above 32 would run the second key
+    // into the colour/other region. The measured morph items are 6/28/30/32 vertices; a larger one is refused.
+    if (count > 0x20u) return WorldShapeStatus::morph_uv_region;
+    MorphKeyFacts keys;
+    keys.position_keys_differ = !qword_lanes_equal(packet, 0x00u, 0x20u, count, 3u);
+    keys.colour_keys_differ = !qword_lanes_equal(packet, 0x80u, 0xA0u, count, 4u);
+    keys.uv_keys_differ = !qword_lanes_equal(packet, 0x40u, 0x60u, count, 2u);
+    if (facts_out != nullptr) *facts_out = keys;
+    if (morph.valid) {
+      // Format version 6: the captured factor is applied with the measured VU1 order, so a differing key pair is blended
+      // rather than substituted. The blend multiplies the raw key lanes as floats; a form the VU1 program cannot be
+      // running (an integer position key or an integer UV key) is refused instead of read as float bits.
+      if (keys.position_keys_differ && !position_region_all_float(packet, 0x00u, count))
+        return WorldShapeStatus::morph_position_format;
+      if (keys.uv_keys_differ &&
+          (!uv_region_all_float(packet, 0x40u, count) || !uv_region_all_float(packet, 0x60u, count)))
+        return WorldShapeStatus::morph_uv_format;
+      return WorldShapeStatus::ok;
+    }
+    // Without a factor the accepted substitutions use the first key; a differing position key has no first-key reading
+    // that keeps the geometry exact, so it is refused.
+    if (keys.position_keys_differ) return WorldShapeStatus::morph_keys_differ;
+    if (keys.colour_keys_differ) return WorldShapeStatus::morph_colour_first_key;
+    if (keys.uv_keys_differ) return WorldShapeStatus::morph_uv_first_key;
     return WorldShapeStatus::ok;
   }
   if (first_positions == 0) return WorldShapeStatus::no_position;
@@ -275,16 +328,17 @@ struct UvSegment {
   std::uint32_t mode = 0;
 };
 
-// Reads the UV array of a world item. The measured items tile it contiguously from qword 0x40 to 0x40+count-1, mixing
-// V2-8/V2-16/V2-32 segments; each segment's own format and MODE decide the coordinate. The 16-bit convention is the
-// measured signed fixed-point / 4096 (no V flip), the 32-bit convention is the stored float. The 8-bit and the MODE 2
-// fixed-point forms are labeled Hypothesis in the report: the capture fits the 16/32-bit forms everywhere, and the few
-// V2-8 segments are decoded as signed /16 (the 8-bit counterpart of the 16-bit 1/4096 fraction) and counted.
-bool read_world_uv(const VifPacket &packet, std::uint32_t count, std::vector<float> &uvs,
-                   std::vector<std::uint8_t> &hypothesis) {
+// Reads one UV array of a world item, starting at `first` (0x40 for the first key, 0x60 for the 0x00A0 second key). The
+// measured items tile it contiguously from the first qword, mixing V2-8/V2-16/V2-32 segments; each segment's own format
+// and MODE decide the coordinate. The 16-bit convention is the measured signed fixed-point / 4096 (no V flip), the 32-bit
+// convention is the stored float. The 8-bit and the MODE 2 fixed-point forms are labeled Hypothesis in the report: the
+// capture fits the 16/32-bit forms everywhere, and the few V2-8 segments are decoded as signed /16 (the 8-bit counterpart
+// of the 16-bit 1/4096 fraction) and counted.
+bool read_world_uv_at(const VifPacket &packet, std::uint32_t first, std::uint32_t count, std::vector<float> &uvs,
+                      std::vector<std::uint8_t> &hypothesis) {
   std::vector<UvSegment> segments;
   for (const VifCommand &entry : packet.commands) {
-    if (!entry.unpack || !entry.tops || entry.destination < 0x40u || entry.destination >= 0x80u) continue;
+    if (!entry.unpack || !entry.tops || entry.destination < first || entry.destination >= first + count) continue;
     if (entry.format == ChannelFormat::v1_8) continue;  // the strip table shares qword 0x40
     if (!is_uv_format(entry.format)) continue;
     UvSegment segment;
@@ -295,21 +349,21 @@ bool read_world_uv(const VifPacket &packet, std::uint32_t count, std::vector<flo
     segments.push_back(segment);
   }
   if (segments.empty() || count == 0) return false;
-  // The measured rule: the segments tile from qword 0x40 in command order, with no gap and no overlap. A packet whose
-  // segments do not tile is refused (the item keeps its colour) instead of reading a guessed coordinate.
-  std::uint32_t cursor = 0x40u;
+  // The measured rule: the segments tile from the first qword in command order, with no gap and no overlap. A packet
+  // whose segments do not tile is refused (the item keeps its colour) instead of reading a guessed coordinate.
+  std::uint32_t cursor = first;
   for (const UvSegment &segment : segments) {
     if (segment.first != cursor) return false;
     cursor += segment.count;
   }
-  if (cursor < 0x40u + count) return false;
+  if (cursor < first + count) return false;
   // The UV region is qwords 0x40..0x7F (64 vectors); a descriptor count above that cannot be an all-UV list.
-  if (count > 0x40u) return false;
+  if (count > 0x40u || first + count > kVuQwords) return false;
   std::vector<VifVector> vectors;
-  if (!read_vu_vectors(packet.packed.data(), 0x40u * 16u, count, vectors)) return false;
+  if (!read_vu_vectors(packet.packed.data(), first * 16u, count, vectors)) return false;
   uvs.resize(static_cast<std::size_t>(count) * 2u);
   hypothesis.clear();
-  std::uint32_t qword = 0x40u;
+  std::uint32_t qword = first;
   std::size_t segment = 0;
   for (std::uint32_t vertex = 0; vertex < count; ++vertex) {
     while (segment < segments.size() && qword >= segments[segment].first + segments[segment].count) {
@@ -345,17 +399,34 @@ bool read_world_uv(const VifPacket &packet, std::uint32_t count, std::vector<flo
   return true;
 }
 
+bool read_world_uv(const VifPacket &packet, std::uint32_t count, std::vector<float> &uvs,
+                   std::vector<std::uint8_t> &hypothesis) {
+  return read_world_uv_at(packet, 0x40u, count, uvs, hypothesis);
+}
+
+// The 0x00A0 key blend, in the measured VU1 operation order: vf20 = (1,1,1,1) - (s,s,s,s) at the entry prologue, then
+// vmul key1 by vf20 lane 3 and vmadd key2 by vf21 lane 3 (the factor). The host float evaluates the same two operations
+// in the same order (the VU's own arithmetic is the donor's fin/fout model, which is the identity on these normal
+// values). The factor comes from the captured TOPS+0xF2 lane 3.
+float blend_morph(float key1, float key2, float one_minus, float factor) {
+  // Separate statements keep the two roundings the VU1 makes (vmuln then vmaddn's product, then the add) instead of
+  // letting the host compiler contract them into one fused multiply-add.
+  const float scaled = key1 * one_minus;
+  const float offset = key2 * factor;
+  return scaled + offset;
+}
+
 // Reads the descriptor-driven vertex list of a world item. The position arrays written at TOPS 0x00..0x3F tile the VU1
 // memory from qword 0; after the packet ran, `count` vectors at qword 0 are the item's vertices. The family decides the
 // lane interpretation: MODE 2 lanes are the exact int32 accumulators (position = float(lane), lane_position = lane); a
 // V3-32 family is the float as stored; a V3-16 family is the signed halfword with the caller's position_scale.
 bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info, std::uint32_t dispatch,
-                     const MeshOptions &options, ItemData &data, std::string &error) {
+                     const MorphBlend &morph, const MeshOptions &options, ItemData &data, std::string &error) {
   if (!info.has_position) {
     error = "no position channel";
     return false;
   }
-  const WorldShapeStatus status = world_shape_status_packet(packet, dispatch);
+  const WorldShapeStatus status = world_shape_status_packet(packet, dispatch, morph);
   if (status != WorldShapeStatus::ok && status != WorldShapeStatus::morph_uv_first_key &&
       status != WorldShapeStatus::morph_colour_first_key) {
     error = world_shape_status_name(status);
@@ -371,10 +442,25 @@ bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info,
     error = "position array outside the decoded VU image";
     return false;
   }
+  // Format version 6: the 0x00A0 pre-pass blends the position keys with the captured factor. The measured position keys
+  // are bit-equal (230/230 items over five frames), so the blend is the identity on every captured item; a differing
+  // pair is blended with the same operation order as the VU1 (key1 * (1 - s) + key2 * s).
+  const bool morph_positions_blended =
+      dispatch == 0x00A0u && morph.valid && !qword_lanes_equal(packet, 0x00u, 0x20u, count, 3u);
+  std::vector<VifVector> second_key;
+  if (morph_positions_blended) {
+    if (info.mode2_positions || info.first_position_format != ChannelFormat::v3_32 ||
+        !position_region_all_float(packet, 0x00u, count) || !position_region_all_float(packet, 0x20u, count) ||
+        !read_vu_vectors(packet.packed.data(), 0x20u * 16u, count, second_key)) {
+      error = "0xA0 position keys differ without the V3-32 float form";
+      return false;
+    }
+  }
   data.has_descriptor = true;
   data.descriptor_vertices = info.descriptor_vertices;
   data.descriptor_selector = info.descriptor_selector;
   data.descriptor_signature = info.descriptor_signature;
+  const float one_minus = 1.0f - morph.factor;
   if (info.mode2_positions) {
     data.encoding = PositionEncoding::integer_32;
     data.raw16 = false;
@@ -388,8 +474,15 @@ bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info,
   } else if (info.first_position_format == ChannelFormat::v3_32) {
     data.encoding = PositionEncoding::float_32;
     data.raw16 = false;
-    for (const VifVector &vector : vectors)
-      for (std::uint32_t lane = 0; lane < 3; ++lane) data.positions.push_back(decode_bits(vector.v[lane]));
+    for (std::uint32_t vertex = 0; vertex < count; ++vertex) {
+      for (std::uint32_t lane = 0; lane < 3; ++lane) {
+        const float first = decode_bits(vectors[vertex].v[lane]);
+        data.positions.push_back(morph_positions_blended
+                                     ? blend_morph(first, decode_bits(second_key[vertex].v[lane]), one_minus,
+                                                   morph.factor)
+                                     : first);
+      }
+    }
   } else {
     data.encoding = PositionEncoding::integer_16;
     for (const VifVector &vector : vectors) {
@@ -401,9 +494,25 @@ bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info,
     }
   }
 
-  // UVs: the item's UV array, read with the same vertex count when the segments tile.
+  // UVs: the item's UV array, read with the same vertex count when the segments tile. The 0x00A0 pre-pass blends the two
+  // float key arrays at 0x40/0x60 with the captured factor; without one (or with equal keys) the first key is used.
   std::vector<std::uint8_t> uv_hypothesis;
   data.has_uv = read_world_uv(packet, count, data.uvs, uv_hypothesis);
+  if (data.has_uv && dispatch == 0x00A0u && morph.valid && !qword_lanes_equal(packet, 0x40u, 0x60u, count, 2u)) {
+    std::vector<float> second_uvs;
+    std::vector<std::uint8_t> second_hypothesis;
+    if (!uv_region_all_float(packet, 0x40u, count) || !uv_region_all_float(packet, 0x60u, count) ||
+        !read_world_uv_at(packet, 0x60u, count, second_uvs, second_hypothesis)) {
+      error = "0xA0 UV keys differ without the float form";
+      return false;
+    }
+    for (std::uint32_t vertex = 0; vertex < count; ++vertex) {
+      data.uvs[vertex * 2 + 0] = blend_morph(data.uvs[vertex * 2 + 0], second_uvs[vertex * 2 + 0], one_minus,
+                                             morph.factor);
+      data.uvs[vertex * 2 + 1] = blend_morph(data.uvs[vertex * 2 + 1], second_uvs[vertex * 2 + 1], one_minus,
+                                             morph.factor);
+    }
+  }
 
   // Colours: the V4-8 array at TOPS 0x80 (the measured families) or the A0 family's array at TOPS 0xA0. The array is
   // contiguous from its first qword and covers the descriptor count (measured: 1,269/1,284 course items; the 15
@@ -419,6 +528,34 @@ bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info,
       data.has_colors = true;
       for (const VifVector &vector : vectors)
         for (std::uint32_t lane = 0; lane < 4; ++lane) data.colors.push_back(static_cast<std::uint8_t>(vector.v[lane] & 0xFFu));
+    }
+  }
+  // Format version 6: the 0x00A0 colour blend. The pre-pass converts each key byte with ITOF0, blends, and writes the
+  // FTOI0 result back to 0x80 (truncation toward zero, saturating like the VU). The tap pinned the order: item 14/15/26/32
+  // reproduce 30/30 RGBAQ bytes exactly with the measured factor and 28/30 (max 4 levels) with the first key.
+  if (data.has_colors && dispatch == 0x00A0u && morph.valid && !qword_lanes_equal(packet, 0x80u, 0xA0u, count, 4u) &&
+      count <= kVuQwords - 0xA0u) {
+    std::vector<VifVector> second_colours;
+    if (!read_vu_vectors(packet.packed.data(), 0xA0u * 16u, count, second_colours)) {
+      error = "0xA0 colour second key outside the decoded VU image";
+      return false;
+    }
+    for (std::uint32_t vertex = 0; vertex < count; ++vertex) {
+      for (std::uint32_t lane = 0; lane < 4; ++lane) {
+        const float first = static_cast<float>(data.colors[vertex * 4 + lane]);
+        const float second = static_cast<float>(second_colours[vertex].v[lane] & 0xFFu);
+        const float blended = blend_morph(first, second, one_minus, morph.factor);
+        // FTOI0 mode 0 truncates toward zero and saturates; the output routine then packs the lane's low byte into the
+        // RGBAQ register. A negative factor can push a key past 255, so the low byte is the exact emitted value.
+        std::int32_t value = 0;
+        if (blended >= 2147483648.0f)
+          value = 2147483647;
+        else if (blended < -2147483648.0f)
+          value = (-2147483647 - 1);
+        else
+          value = static_cast<std::int32_t>(blended);
+        data.colors[vertex * 4 + lane] = static_cast<std::uint8_t>(static_cast<std::uint32_t>(value) & 0xFFu);
+      }
     }
   }
 
@@ -477,19 +614,23 @@ const char *world_shape_status_name(WorldShapeStatus status) noexcept {
   case WorldShapeStatus::missing_normal40: return "missing-normal-0x40";
   case WorldShapeStatus::missing_normal80: return "missing-normal-0x80";
   case WorldShapeStatus::missing_colour: return "missing-colour";
+  case WorldShapeStatus::morph_position_format: return "morph-position-format";
+  case WorldShapeStatus::morph_uv_format: return "morph-uv-format";
+  case WorldShapeStatus::morph_uv_region: return "morph-uv-region";
   }
   return "unknown";
 }
 
-WorldShapeStatus world_shape_status(const std::uint8_t *packets, std::size_t packet_bytes,
-                                    const CapturedItem &item) {
+WorldShapeStatus world_shape_status(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedItem &item,
+                                    const MorphBlend &morph, MorphKeyFacts *facts) {
+  if (facts != nullptr) *facts = MorphKeyFacts{};
   if (item.packet_bytes == 0) return WorldShapeStatus::unsupported_program;
   if (item.packet_offset > packet_bytes || item.packet_bytes > packet_bytes - item.packet_offset)
     return WorldShapeStatus::unsupported_program;
   const VifPacket packet = decode_packet(packets + item.packet_offset, item.packet_bytes);
   if (!packet.ok) return WorldShapeStatus::unsupported_program;
   const std::uint32_t dispatch = item.run_valid != 0 ? (item.run_itop & 0x3FFu) * 8u : 0u;
-  return world_shape_status_packet(packet, dispatch);
+  return world_shape_status_packet(packet, dispatch, morph, facts);
 }
 
 const char *channel_role_name(ChannelRole role) noexcept {
@@ -548,18 +689,15 @@ bool decode_strip_table(const std::vector<std::uint8_t> &bytes, std::uint32_t ve
   return true;
 }
 
-bool read_item_uv(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedItem &item, std::size_t limit,
-                  std::vector<std::array<float, 2>> &uvs) {
+// One UV channel at `first` (0x40 or 0x60), decoded with its own format and vector count.
+bool read_uv_channel(const VifPacket &packet, std::uint32_t first, std::size_t limit,
+                     std::vector<std::array<float, 2>> &uvs) {
   uvs.clear();
-  if (item.packet_bytes == 0) return false;
-  if (item.packet_offset > packet_bytes || item.packet_bytes > packet_bytes - item.packet_offset) return false;
-  const VifPacket packet = decode_packet(packets + item.packet_offset, item.packet_bytes);
-  if (!packet.ok) return false;
   for (const VifCommand &entry : packet.commands) {
-    if (!entry.unpack || !entry.tops || entry.destination != 0x40u || !is_uv_format(entry.format)) continue;
+    if (!entry.unpack || !entry.tops || entry.destination != first || !is_uv_format(entry.format)) continue;
     std::vector<VifVector> vectors;
     const std::size_t count = std::min<std::size_t>(entry.vectors, limit);
-    if (!read_vu_vectors(packet.packed.data(), 0x40u * 16u, static_cast<std::uint32_t>(count), vectors)) return false;
+    if (!read_vu_vectors(packet.packed.data(), first * 16u, static_cast<std::uint32_t>(count), vectors)) return false;
     uvs.resize(count);
     for (std::size_t index = 0; index < count; ++index) {
       const bool floats = entry.format == ChannelFormat::v2_32 || entry.format == ChannelFormat::v3_32;
@@ -574,6 +712,35 @@ bool read_item_uv(const std::uint8_t *packets, std::size_t packet_bytes, const C
     return !uvs.empty();
   }
   return false;
+}
+
+bool read_item_uv(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedItem &item, std::size_t limit,
+                  std::vector<std::array<float, 2>> &uvs, const MorphBlend &morph) {
+  uvs.clear();
+  if (item.packet_bytes == 0) return false;
+  if (item.packet_offset > packet_bytes || item.packet_bytes > packet_bytes - item.packet_offset) return false;
+  const VifPacket packet = decode_packet(packets + item.packet_offset, item.packet_bytes);
+  if (!packet.ok) return false;
+  if (!read_uv_channel(packet, 0x40u, limit, uvs)) return false;
+  // Format version 6: the 0x00A0 tap record's S/Q,T/Q are the post-morph UV, so the pairing compares that array. Only
+  // the float key forms are blended (the VU1 multiplies the raw lanes as floats); an integer form keeps the first key,
+  // exactly the path a factor-less capture uses.
+  const std::uint32_t dispatch = item.run_valid != 0 ? (item.run_itop & 0x3FFu) * 8u : 0u;
+  std::uint32_t descriptor = 0;
+  std::memcpy(&descriptor, packet.packed.data() + 0xC0u * 16u, sizeof descriptor);
+  const std::uint32_t count = descriptor & 0x7FFFu;
+  if (dispatch == 0x00A0u && morph.valid && count != 0 && count <= 0x20u &&
+      uv_region_all_float(packet, 0x40u, count) && uv_region_all_float(packet, 0x60u, count)) {
+    std::vector<std::array<float, 2>> second;
+    if (read_uv_channel(packet, 0x60u, limit, second) && second.size() == uvs.size()) {
+      const float one_minus = 1.0f - morph.factor;
+      for (std::size_t index = 0; index < uvs.size(); ++index) {
+        uvs[index][0] = blend_morph(uvs[index][0], second[index][0], one_minus, morph.factor);
+        uvs[index][1] = blend_morph(uvs[index][1], second[index][1], one_minus, morph.factor);
+      }
+    }
+  }
+  return !uvs.empty();
 }
 
 ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedDraw &draw,
@@ -642,8 +809,9 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
     read_position_family(packet, info);
     if (options.world_channels && info.has_descriptor) {
       // The descriptor-driven world path (TASK-090 track M1): one contiguous vertex list at qword 0, count from lane 0.
+      // Format version 6: the draw's captured morph factor blends the 0x00A0 key arrays.
       const std::uint32_t dispatch = item.run_valid != 0 ? (item.run_itop & 0x3FFu) * 8u : 0u;
-      if (!read_world_item(packet, info, dispatch, options, data, error)) {
+      if (!read_world_item(packet, info, dispatch, morph_blend_of(draw), options, data, error)) {
         error = "item " + std::to_string(index) + ": " + error;
         return false;
       }

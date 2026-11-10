@@ -541,7 +541,8 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           // item-state study's rule): the record whose tapped S/Q,T/Q best equals the item's model UV at the same vertex
           // index. The streams are not consumed, because a tap record can belong to more than one captured item.
           std::vector<std::array<float, 2>> uvs;
-          read_item_uv(frame.packets.data(), frame.packets.size(), item, 16, uvs);
+          // Format version 6: a 0x00A0 item's tapped S/Q,T/Q is its post-morph UV, so the pairing compares the blend.
+          read_item_uv(frame.packets.data(), frame.packets.size(), item, 16, uvs, morph_blend_of(draw));
           double best_error = 1e30;
           std::size_t best_stream = 0;
           std::uint32_t best_candidates = 0;
