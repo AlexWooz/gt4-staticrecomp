@@ -4,9 +4,9 @@
 // The live `present` pass of CoreGS 3.0. Every captured draw of the newest published frame becomes one triangle-list draw
 // call with the draw's own vf24..vf27 columns in a push constant (the measured VU1 convention, coregs3_vertex.hpp), drawn
 // into the composed display image by a fragment-stage imageStore (the image has no COLOR_ATTACHMENT usage; see the
-// header) with a private D32 depth attachment and depth compare GREATER. Nothing here touches CoreGS 2.0's targets, its
-// command buffers, its command pool or the GS stream; the pass runs after the compose submission and waits before the
-// frame is presented or dumped.
+// header) with a private D32 depth attachment and depth compare GEQUAL (the GS's equal-depth rule). Nothing here touches
+// CoreGS 2.0's targets, its command buffers, its command pool or the GS stream; the pass runs after the compose
+// submission and waits before the frame is presented or dumped.
 
 // Vulkan create-info structs are initialised with sType only (pNext defaults to null by the spec). The device-entry
 // table redefines vkCmdClearColorImage, which the loader header already names; the backend's other translation units
@@ -19,12 +19,14 @@
 #include "../shaders/hw_shader_blobs.hpp"
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
 
+#include "coregs3_lighting.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_render.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -279,7 +281,10 @@ struct PresentLayer::Impl {
     VkPipelineDepthStencilStateCreateInfo depth_state{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth_state.depthTestEnable = VK_TRUE;
     depth_state.depthWriteEnable = VK_TRUE;
-    depth_state.depthCompareOp = VK_COMPARE_OP_GREATER;  // depth = 1/cw: the nearer vertex has the greater value
+    // depth = 1/cw: the nearer vertex has the greater value. The GS rule measured by the CPU reference is GEQUAL
+    // (coregs3_render.cpp: a later primitive wins at equal depth), which matters for the car's coincident body layers:
+    // with strict GREATER the earlier, untextured layer wins the tie and hides the lit body.
+    depth_state.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
     depth_state.depthBoundsTestEnable = VK_FALSE;
     depth_state.stencilTestEnable = VK_FALSE;
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -464,13 +469,20 @@ struct PresentLayer::Impl {
     return true;
   }
 
-  // One captured draw -> one triangle-list draw call. Positions are metres (build_mesh's scale), colours are the model's
-  // vertex colours (opaque), and the matrix columns travel raw. Returns false when the frame as a whole cannot be drawn
-  // (capacity); a draw that fails to decode is counted in `refused` and left to the GS-drawn image underneath.
-  bool build_frame(std::uint32_t &refused) {
+  // One captured draw -> one triangle-list draw call. Positions are metres (build_mesh's scale), colours are the lit
+  // vertex colours from the measured VU1 block when the draw carries it (coregs3_lighting.hpp), and the matrix columns
+  // travel raw. Returns false when the frame as a whole cannot be drawn (capacity); a draw that fails to decode is
+  // counted in `refused` and left to the GS-drawn image underneath. `unlit_draws` counts the drawn draws with no
+  // measured block (or without the normals/colours the formula needs); `unlit_vertices` counts the uploaded vertices
+  // that kept their base colour.
+  bool build_frame(std::uint32_t &refused, std::uint32_t &unlit_draws, std::uint64_t &unlit_vertices) {
     vertices.clear();
     ranges.clear();
     refused = 0;
+    unlit_draws = 0;
+    unlit_vertices = 0;
+    std::vector<std::array<std::uint8_t, 4>> lit_colours;
+    std::vector<std::uint8_t> lit_mask;
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
       const gt4::coregs3::DrawMatrix matrix = gt4::coregs3::draw_matrix(draw);
       if (!matrix.valid) {
@@ -495,21 +507,40 @@ struct PresentLayer::Impl {
         ranges.clear();
         return false;
       }
+      // Shade every mesh vertex once; a draw without the measured block (or without the normals/colours the formula
+      // needs) keeps its base colour and is counted, never shaded with guessed constants.
+      gt4::coregs3::LightBlock block;
+      const bool lightable = gt4::coregs3::decode_light_block(draw, block) == gt4::coregs3::LightBlockStatus::ok &&
+                             mesh.has_normals && mesh.has_colors;
+      if (!lightable) ++unlit_draws;
+      lit_colours.resize(mesh.vertices.size());
+      lit_mask.assign(mesh.vertices.size(), 0);
+      for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+        std::array<std::uint8_t, 4> rgba{};
+        if (lightable && gt4::coregs3::shade_vertex(block, mesh.vertices[index], rgba)) {
+          lit_colours[index] = rgba;
+          lit_mask[index] = 1;
+        } else {
+          lit_colours[index] = mesh.vertices[index].color;
+        }
+      }
       DrawRange range;
       range.first = static_cast<std::uint32_t>(vertices.size());
       range.count = static_cast<std::uint32_t>(triangles * 3u);
       std::memcpy(range.columns, draw.vf, sizeof range.columns);  // vf24..vf27, raw
       for (std::size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
         for (std::size_t corner = 0; corner < 3; ++corner) {
-          const gt4::coregs3::MeshVertex &source = mesh.vertices[mesh.indices[index + corner]];
+          const std::uint32_t source_index = mesh.indices[index + corner];
+          const gt4::coregs3::MeshVertex &source = mesh.vertices[source_index];
           PresentVertex vertex;
           vertex.x = source.position[0];
           vertex.y = source.position[1];
           vertex.z = source.position[2];
-          vertex.red = source.color[0];
-          vertex.green = source.color[1];
-          vertex.blue = source.color[2];
+          vertex.red = lit_colours[source_index][0];
+          vertex.green = lit_colours[source_index][1];
+          vertex.blue = lit_colours[source_index][2];
           vertex.alpha = 255;  // the CPU reference writes an opaque layer (coregs3_render)
+          if (!lit_mask[source_index]) ++unlit_vertices;
           vertices.push_back(vertex);
         }
       }
@@ -527,7 +558,9 @@ struct PresentLayer::Impl {
     if (width == 0 || height == 0) return true;  // nothing to draw into
     if (!gt4::coregs3::present::claim_latest(frame)) return true;  // no new complete frame
     std::uint32_t refused = 0;
-    if (frame.draw_count == 0 || !build_frame(refused)) {
+    std::uint32_t unlit_draws = 0;
+    std::uint64_t unlit_vertices = 0;
+    if (frame.draw_count == 0 || !build_frame(refused, unlit_draws, unlit_vertices)) {
       gt4::coregs3::present::note_pass_refused(refused);
       return true;
     }
@@ -655,8 +688,8 @@ struct PresentLayer::Impl {
     destroy_target_view();
 
     const std::uint64_t vertex_count = static_cast<std::uint64_t>(vertices.size());
-    gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused,
-                                       vertex_count, vertex_count / 3u);
+    gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused, unlit_draws,
+                                       vertex_count, unlit_vertices, vertex_count / 3u);
     return true;
   }
 };

@@ -65,12 +65,14 @@ bool claim_latest(FrameSnapshot &frame) {
   return true;
 }
 
-void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_refused, std::uint64_t vertices,
-                 std::uint64_t triangles) noexcept {
+void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_refused, std::uint32_t draws_unlit,
+                 std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles) noexcept {
   g_counters.passes.fetch_add(1, std::memory_order_relaxed);
   g_counters.draws.fetch_add(draws, std::memory_order_relaxed);
   g_counters.draws_refused.fetch_add(draws_refused, std::memory_order_relaxed);
+  g_counters.draws_unlit.fetch_add(draws_unlit, std::memory_order_relaxed);
   g_counters.vertices.fetch_add(vertices, std::memory_order_relaxed);
+  g_counters.vertices_unlit.fetch_add(vertices_unlit, std::memory_order_relaxed);
   g_counters.triangles.fetch_add(triangles, std::memory_order_relaxed);
   g_counters.last_vblank.store(vblank, std::memory_order_relaxed);
 }

@@ -7,6 +7,8 @@
 //   - the channel rule: destination/format classification, the V3-8 normal channel at TOPS 0x40 (signed bytes and the raw
 //     V3-16 position) and the strip topology of a mesh;
 //   - the measured draw transform (columns c0..c3 = vf24..vf27, used unscaled; docs/COREGS3-HOOKS.md §10.2);
+//   - the measured VU1 lighting in the offline renderer (coregs3_lighting.hpp): a body/paint draw is lit and a draw
+//     without the block, the normals or the colour channel keeps the base colour and is counted as a fallback;
 //   - the live present ring: the newest published frame is claimed once, with the O(1) buffer swap
 //     (docs/COREGS3-HOOKS.md §10.3);
 //   - a PNG file: signature, IHDR size, IEND.
@@ -17,6 +19,7 @@
 #include "coregs3_shape.hpp"
 #include "coregs3_vif.hpp"
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -123,6 +126,58 @@ std::vector<std::uint8_t> make_normal_packet() {
     for (std::uint8_t byte : normal) packet.push_back(byte);
   while (packet.size() % 16 != 0) packet.push_back(0);  // the DMA REF QWC is whole qwords
   return packet;
+}
+
+// The body/paint channel set with a colour channel: V3-16 positions at TOPS qword 0, V3-8 normals at TOPS qword 0x40,
+// V4-8 colours at TOPS qword 0x80 and the masked strip table at TOPS qword 0x40 (lane 3 only). The three positions put
+// the vertices at (-0.5, 0), (0.5, 0) and (0, 0.5) in model metres, inside a 64x48 viewport for the point check below.
+std::vector<std::uint8_t> make_lit_packet() {
+  std::vector<std::uint8_t> packet;
+  auto pad = [&packet] {
+    while (packet.size() % 4 != 0) packet.push_back(0);
+  };
+  put_u32(packet, unpack_word(2, 1, 3, 0x00, true));  // V3-16 positions, TOPS qword 0
+  const std::int16_t positions[3][3] = {{-2048, 0, 0}, {2048, 0, 0}, {0, 2048, 0}};
+  for (const auto &position : positions)
+    for (std::int16_t component : position) put_u16(packet, static_cast<std::uint16_t>(component));
+  pad();
+  put_u32(packet, unpack_word(2, 2, 3, 0x40, true));  // V3-8 normals, TOPS qword 0x40
+  const std::uint8_t normals[3][3] = {{0, 0, 127}, {0, 0, 127}, {0, 0, 127}};
+  for (const auto &normal : normals)
+    for (std::uint8_t byte : normal) packet.push_back(byte);
+  pad();
+  put_u32(packet, unpack_word(3, 2, 3, 0x80, true));  // V4-8 colours, TOPS qword 0x80
+  const std::uint8_t colours[3][4] = {{64, 128, 32, 255}, {64, 128, 32, 255}, {64, 128, 32, 255}};
+  for (const auto &colour : colours)
+    for (std::uint8_t byte : colour) packet.push_back(byte);
+  pad();
+  put_u32(packet, 0x20000000u);  // STMASK
+  put_u32(packet, 0x3F3F3F3Fu);
+  put_u32(packet, mask_unpack(unpack_word(0, 2, 2, 0x40, true)));
+  packet.push_back(1);  // one strip
+  packet.push_back(3);  // three times one triangle -> three vertices
+  pad();
+  return packet;
+}
+
+void set_identity_columns(CapturedDraw &draw) {
+  // The measured columns c0..c3 are the identity, so clip = (x, y, z, 1) in model metres.
+  for (std::uint32_t column = 0; column < 4; ++column)
+    for (std::uint32_t lane = 0; lane < 4; ++lane)
+      draw.vf[column][lane] = float_bits(column == lane ? 1.0f : 0.0f);
+}
+
+// The measured six-qword body/paint block, as the capture carries it: LP far away on +z, C3 = (1,1,1,1), C4 = (0.8)^3.
+void set_body_paint_block(CapturedDraw &draw) {
+  const float block[6][4] = {
+      {1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f},
+      {0.0f, 0.0f, 100000.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}, {0.8f, 0.8f, 0.8f, 0.0f},
+  };
+  draw.light_block_qwords = 6;
+  draw.light_block_command = 0x6C06C0C9u;
+  draw.light_block_source = 0x00130000u;
+  for (std::uint32_t qword = 0; qword < 6; ++qword)
+    for (std::uint32_t lane = 0; lane < 4; ++lane) draw.light_block[qword][lane] = float_bits(block[qword][lane]);
 }
 
 CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
@@ -423,22 +478,7 @@ void check_render_and_png() {
   CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packets.size()));
   // A valid measured-convention transform for the hand-authored triangle (-1,0), (1,0), (0,1): c0..c3 are the identity
   // columns, so clip = (x, y, z, 1) and every vertex is in front of the camera.
-  draw.vf[0][0] = float_bits(1.0f);
-  draw.vf[0][1] = float_bits(0.0f);
-  draw.vf[0][2] = float_bits(0.0f);
-  draw.vf[0][3] = float_bits(0.0f);
-  draw.vf[1][0] = float_bits(0.0f);
-  draw.vf[1][1] = float_bits(1.0f);
-  draw.vf[1][2] = float_bits(0.0f);
-  draw.vf[1][3] = float_bits(0.0f);
-  draw.vf[2][0] = float_bits(0.0f);
-  draw.vf[2][1] = float_bits(0.0f);
-  draw.vf[2][2] = float_bits(1.0f);
-  draw.vf[2][3] = float_bits(0.0f);
-  draw.vf[3][0] = float_bits(0.0f);
-  draw.vf[3][1] = float_bits(0.0f);
-  draw.vf[3][2] = float_bits(0.0f);
-  draw.vf[3][3] = float_bits(1.0f);
+  set_identity_columns(draw);
 
   FrameSnapshot frame;
   frame.draws.push_back(draw);
@@ -454,6 +494,9 @@ void check_render_and_png() {
   require(render_frame(frame, options, rgba, mask, stats, error), "the frame renders");
   require(stats.shapes_drawn == 1 && stats.triangles_drawn == 1, "one shape, one triangle drawn");
   require(stats.covered_pixels > 0, "the triangle covers pixels");
+  // This packet has no normal channel, so the draw keeps its base colour even though make_draw carries a light block.
+  require(stats.draws_lit == 0 && stats.draws_fallback == 1 && stats.vertices_lit == 0 && stats.vertices_fallback == 3,
+          "a draw without normals is a counted lighting fallback");
 
   const std::string path = "coregs3_fixture.png";
   require(write_png_rgba(path, options.width, options.height, rgba.data()), "the PNG is written");
@@ -470,6 +513,59 @@ void check_render_and_png() {
   require(header[12] == 'I' && header[13] == 'H' && header[14] == 'D' && header[15] == 'R', "IHDR type");
   require(size > 8 + 25, "the PNG has chunks");
   std::remove(path.c_str());
+}
+
+// The offline renderer applies the measured VU1 lighting when the draw carries the six-qword block and the mesh has
+// the normal and colour channels; otherwise the vertex keeps its base colour and both the draw and the vertex are
+// counted. Points are used so the pixel colour is one vertex's colour exactly, not a Gouraud interpolation.
+void check_render_lighting() {
+  std::vector<std::uint8_t> packets = make_lit_packet();
+  CapturedDraw draw = make_draw(static_cast<std::uint32_t>(packets.size()));
+  set_identity_columns(draw);
+  set_body_paint_block(draw);
+
+  FrameSnapshot frame;
+  frame.draws.push_back(draw);
+  frame.draw_count = 1;
+  frame.packets = packets;
+
+  RenderOptions options;
+  options.width = 64;
+  options.height = 48;
+  options.points = true;  // one pixel per vertex, so the check is the vertex colour itself
+  const auto pixel = [&options](const std::vector<std::uint8_t> &rgba, int x, int y) {
+    const std::size_t at = (static_cast<std::size_t>(y) * options.width + static_cast<std::size_t>(x)) * 4u;
+    return std::array<std::uint8_t, 4>{rgba[at + 0], rgba[at + 1], rgba[at + 2], rgba[at + 3]};
+  };
+  const std::array<std::uint8_t, 4> lit{12, 25, 6, 255};
+  const std::array<std::uint8_t, 4> base{64, 128, 32, 255};
+  std::vector<std::uint8_t> rgba, mask;
+  RenderStats stats;
+  std::string error;
+
+  require(render_frame(frame, options, rgba, mask, stats, error), "the lit frame renders");
+  require(stats.shapes_drawn == 1, "the lit shape is drawn");
+  require(stats.draws_lit == 1 && stats.draws_fallback == 0, "the draw was lit");
+  require(stats.vertices_lit == 3 && stats.vertices_fallback == 0, "all three vertices were lit");
+  require(pixel(rgba, 16, 24) == lit, "the first vertex carries the lit colour");
+  require(pixel(rgba, 48, 24) == lit, "the second vertex carries the lit colour");
+  require(pixel(rgba, 32, 12) == lit, "the third vertex carries the lit colour");
+
+  // Without the block the same geometry keeps the base colour: the fallback is counted, never shaded with a guess.
+  FrameSnapshot unlit = frame;
+  unlit.draws[0].light_block_qwords = 0;
+  require(render_frame(unlit, options, rgba, mask, stats, error), "the fallback frame renders");
+  require(stats.draws_lit == 0 && stats.draws_fallback == 1, "the draw is a counted fallback");
+  require(stats.vertices_lit == 0 && stats.vertices_fallback == 3, "the vertices keep the base colour");
+  require(pixel(rgba, 16, 24) == base && pixel(rgba, 48, 24) == base && pixel(rgba, 32, 12) == base,
+          "the fallback pixels are the base colour");
+
+  // An unfamiliar block variant is refused the same way.
+  FrameSnapshot unknown = frame;
+  unknown.draws[0].light_block_command = 0x6C09C0C9u;  // a nine-qword upload, not the measured six-qword form
+  require(render_frame(unknown, options, rgba, mask, stats, error), "the unknown-variant frame renders");
+  require(stats.draws_fallback == 1 && stats.vertices_fallback == 3, "an unknown block variant falls back");
+  require(pixel(rgba, 16, 24) == base, "the unknown-variant pixel is the base colour");
 }
 
 void check_mode_switch() {
@@ -533,6 +629,7 @@ int main() {
     check_mesh();
     check_mesh_normals();
     check_render_and_png();
+    check_render_lighting();
   } catch (const std::exception &error) {
     std::fprintf(stderr, "coregs3 fixture: %s\n", error.what());
     return 1;

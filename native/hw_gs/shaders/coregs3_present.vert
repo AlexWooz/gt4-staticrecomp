@@ -13,7 +13,7 @@
 //
 // The negated y is the measured screen map (screen y grows down as ndc_y decreases). With z = 1 and w = cw the hardware
 // keeps only cw > 0 (the near plane) and, with depth clamp enabled in the pipeline, clamps the resulting 1/cw depth into
-// [0, 1]; the fragment stage tests GREATER, so the nearer vertex wins exactly as coregs3_render's w-buffer does. The
+// [0, 1]; the fragment stage tests GEQUAL (the GS's equal-depth rule), so the nearer vertex wins exactly as coregs3_render's w-buffer does. The
 // 16-bit 12.4 wrapped screen coordinate of the GS never appears in this path.
 
 #version 450

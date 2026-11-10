@@ -486,8 +486,8 @@ target_compile_definitions(gt4_gs_stream_client INTERFACE GT4_GS_STREAM_CLIENT)
 # scripts/coregs3_units.py instruments.
 add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
-    coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_png.cpp coregs3/coregs3_gif.cpp
-    coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp)
+    coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
+    coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
@@ -1092,6 +1092,12 @@ add_executable(coregs3_vertex_fixture coregs3/coregs3_vertex_fixture.cpp)
 target_link_libraries(coregs3_vertex_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_vertex_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_vertex COMMAND $<TARGET_FILE:coregs3_vertex_fixture>)
+# TASK-090: the measured VU1 diffuse lighting formula (coregs3_lighting.hpp) on hand-authored normals and blocks, with
+# the truncation convention, the per-lane C3/C4, the matrix-M independence and the fallback statuses.
+add_executable(coregs3_lighting_fixture coregs3/coregs3_lighting_fixture.cpp)
+target_link_libraries(coregs3_lighting_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_lighting_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_lighting COMMAND $<TARGET_FILE:coregs3_lighting_fixture>)
 # TASK-090: the variable-FPS presentation timeline (frames, timestamps, object identity, pairing, alpha).
 add_executable(coregs3_timeline_fixture coregs3/coregs3_timeline_fixture.cpp)
 target_link_libraries(coregs3_timeline_fixture PRIVATE gt4_coregs3)

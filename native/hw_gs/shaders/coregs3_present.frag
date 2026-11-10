@@ -7,7 +7,7 @@
 // The pass has no colour attachment: the composed display image is a storage image of the CoreGS 2.0 device (its creation
 // does not request VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT on a discrete GPU), and this stage writes the packed word with an
 // imageStore, which is the "R32_UINT colour, no blending" of the design in its validation-clean form. early_fragment_tests
-// makes the D32 depth test (GREATER, depth = 1/cw) happen before the store, so an occluded fragment writes nothing.
+// makes the D32 depth test (GEQUAL, depth = 1/cw) happen before the store, so an occluded fragment writes nothing.
 // Vertex colour only, alpha forced opaque as the CPU reference (coregs3_render) does.
 
 #version 450

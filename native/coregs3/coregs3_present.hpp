@@ -44,14 +44,19 @@ struct Counters {
   std::atomic<std::uint64_t> passes_refused{0};  // frames refused before a pass (no draws, capacity, init failure)
   std::atomic<std::uint64_t> draws{0};           // draw calls issued (one per captured draw)
   std::atomic<std::uint64_t> draws_refused{0};   // captured draws skipped (no matrix, mesh decode, capacity)
+  // Draws still drawn but left on the base colour because the measured VU1 light block (or the normals/colours the
+  // formula needs) was absent; and the uploaded vertices that kept that base colour for the same reason. Every draw
+  // call is counted once in `draws`, so a lit draw is `draws - draws_unlit`.
+  std::atomic<std::uint64_t> draws_unlit{0};
+  std::atomic<std::uint64_t> vertices_unlit{0};
   std::atomic<std::uint64_t> vertices{0};        // vertices uploaded to the GPU for the drawn draws
   std::atomic<std::uint64_t> triangles{0};       // triangles in those draw calls
   std::atomic<std::uint64_t> last_vblank{0};     // guest VBlank of the last frame a pass ran for
 };
 
 const Counters &counters() noexcept;
-void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_refused, std::uint64_t vertices,
-                 std::uint64_t triangles) noexcept;
+void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_refused, std::uint32_t draws_unlit,
+                 std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles) noexcept;
 void note_pass_refused(std::uint32_t draws_refused) noexcept;
 
 }  // namespace gt4::coregs3::present

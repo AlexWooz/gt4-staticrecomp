@@ -343,8 +343,10 @@ int main(int argc, char **argv) {
   const FrameSnapshot &frame = selected;
   std::printf("frame %u vblank %llu: %u draws (%u drawn, %u refused), %u vertices, %u/%u triangles, %llu pixels\n",
               frame.index, static_cast<unsigned long long>(frame.vblank), stats.draws, stats.shapes_drawn,
-              stats.shapes_refused, stats.vertices, stats.triangles_drawn, stats.triangles, 
+              stats.shapes_refused, stats.vertices, stats.triangles_drawn, stats.triangles,
               static_cast<unsigned long long>(stats.covered_pixels));
+  std::printf("lighting: %u draws lit, %u fallback; %u vertices lit, %u fallback\n", stats.draws_lit,
+              stats.draws_fallback, stats.vertices_lit, stats.vertices_fallback);
   for (const std::string &refusal : stats.refusals) std::printf("  refused: %s\n", refusal.c_str());
 
   if (report != nullptr) {
@@ -354,9 +356,11 @@ int main(int argc, char **argv) {
                    static_cast<unsigned long long>(frame.vblank));
       std::fprintf(file, "image %ux%u\n", options.width, options.height);
       std::fprintf(file, "draws %u\ndrawn %u\nrefused %u\nvertices %u\ntriangles %u\ntriangles_drawn %u\n"
-                         "covered_pixels %llu\n",
+                         "covered_pixels %llu\ndraws_lit %u\ndraws_fallback %u\nvertices_lit %u\n"
+                         "vertices_fallback %u\n",
                    stats.draws, stats.shapes_drawn, stats.shapes_refused, stats.vertices, stats.triangles,
-                   stats.triangles_drawn, static_cast<unsigned long long>(stats.covered_pixels));
+                   stats.triangles_drawn, static_cast<unsigned long long>(stats.covered_pixels), stats.draws_lit,
+                   stats.draws_fallback, stats.vertices_lit, stats.vertices_fallback);
       for (const std::string &refusal : stats.refusals) std::fprintf(file, "refusal %s\n", refusal.c_str());
       std::fclose(file);
     }

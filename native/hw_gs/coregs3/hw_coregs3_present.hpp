@@ -9,7 +9,7 @@
 //
 // Colour has no attachment: the composed display image is created by core 2 without VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
 // on a discrete GPU, so the fragment stage writes the R32_UINT word with an imageStore (the same packed RGBA8 word
-// core2_compose.comp writes). A private D32 depth image and a GREATER test (depth = 1/cw) give the visibility order.
+// core2_compose.comp writes). A private D32 depth image and a GEQUAL test (depth = 1/cw, the GS's equal-depth rule) give the visibility order.
 // See docs/COREGS3-HOOKS.md §10.3 for the prepared design and the deviations recorded by this implementation.
 #pragma once
 

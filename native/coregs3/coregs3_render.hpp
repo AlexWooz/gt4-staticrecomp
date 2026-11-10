@@ -4,12 +4,13 @@
 // matrix the game composed, at the capture's own resolution, and nothing else. It is deliberately a CPU reference with a
 // documented list of what it does not do yet, so the live Vulkan renderer (step 1e) has a ground truth to match:
 //
-//   does     the measured VU1 vertex transform (coregs3_vertex.hpp: the 0xC1 block as four unscaled columns), clip-space
-//            rejection and near-plane clipping of triangles, a perspective divide, a top-left rasteriser, a w-buffer
-//            (nearer wins), Gouraud vertex colours and perspective-correct UVs
-//   does not lighting, fog, texgen, textures, destination alpha, culling, the guard-band clip and back-face fill rules
-//            that the VU1 + GS pair applies. A picture from this tool is evidence of geometry and coverage, not of final
-//            fidelity.
+//   does     the measured VU1 vertex transform (coregs3_vertex.hpp: the 0xC1 block as four unscaled columns), the
+//            measured VU1 diffuse lighting (coregs3_lighting.hpp: the per-draw TOPS+0xC9 block, the V3-8 normals and
+//            the V3-16 raw positions), clip-space rejection and near-plane clipping of triangles, a perspective divide,
+//            a top-left rasteriser, a w-buffer (nearer wins), Gouraud vertex colours and perspective-correct UVs
+//   does not fog, texgen, textures, destination alpha, culling, the guard-band clip and back-face fill rules that the
+//            VU1 + GS pair applies. A picture from this tool is evidence of geometry, coverage and diffuse lighting, not
+//            of final fidelity.
 #pragma once
 
 #include <cstdint>
@@ -34,7 +35,8 @@ struct RenderOptions {
   Topology topology = Topology::strip;
   float max_edge = 0.0f;
   // Flat-shaded diagnostic: one face normal per triangle, shaded by a fixed headlight in view space and the mean vertex
-  // colour. It shows the decoded surface without the VU1 lighting (not derived yet) and is what the M2 sheet uses.
+  // colour. It shows the decoded surface under a synthetic light and deliberately skips the measured VU1 lighting, so
+  // it is what the M2 sheet uses and stays independent of the per-draw block.
   bool flat_shading = false;
   std::array<float, 3> light_direction{0.35f, 0.45f, -0.82f};  // view space, towards the light
   // Object-space view: ignore the draw's captured matrix and frame the captured geometry with one generated camera
@@ -55,6 +57,13 @@ struct RenderStats {
   std::uint32_t triangles = 0;
   std::uint32_t triangles_drawn = 0;
   std::uint32_t triangles_clipped = 0;
+  // The VU1 lighting outcome (coregs3_lighting.hpp). A vertex is lit when its draw carried the measured six-qword
+  // block, the mesh has normals and colours, and the vertex itself has a normal and a raw position. Every other
+  // vertex keeps the base-colour fallback and is counted here, so the tool can report coverage of the formula.
+  std::uint32_t draws_lit = 0;        // draws with at least one lit vertex
+  std::uint32_t draws_fallback = 0;   // draws left entirely on the base colour
+  std::uint32_t vertices_lit = 0;
+  std::uint32_t vertices_fallback = 0;
   std::uint64_t covered_pixels = 0;
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };

@@ -1,6 +1,8 @@
 // TASK-090 CoreGS 3.0: the offline reference rasteriser. See coregs3_render.hpp for what it does and does not do.
 #include "coregs3_render.hpp"
 
+#include "coregs3_lighting.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -263,6 +265,38 @@ bool triangle_outside_clip_volume(const ClipPosition &a, const ClipPosition &b, 
   return false;
 }
 
+// Applies the measured VU1 diffuse lighting (coregs3_lighting.hpp) to a freshly built mesh, in place: a lit vertex's
+// colour becomes the RGBA the VU1 fragment would write. A draw keeps the base-colour fallback, and is counted, when it
+// has no measured light block, no normals or no colour channel; a vertex also falls back when it lacks the normal or the
+// raw position the formula needs. The flat-shading diagnostic keeps its fixed headlight and its base colours, so it is
+// never lit by this function.
+void apply_lighting(const CapturedDraw &draw, Mesh &mesh, const RenderOptions &options, RenderStats &stats) {
+  const std::uint32_t vertex_count = static_cast<std::uint32_t>(mesh.vertices.size());
+  if (options.flat_shading) {
+    stats.draws_fallback += 1;
+    stats.vertices_fallback += vertex_count;
+    return;
+  }
+  LightBlock block;
+  if (decode_light_block(draw, block) != LightBlockStatus::ok || !mesh.has_normals || !mesh.has_colors) {
+    stats.draws_fallback += 1;
+    stats.vertices_fallback += vertex_count;
+    return;
+  }
+  std::uint32_t lit = 0;
+  for (MeshVertex &vertex : mesh.vertices) {
+    std::array<std::uint8_t, 4> rgba{};
+    if (shade_vertex(block, vertex, rgba)) {
+      vertex.color = rgba;
+      ++lit;
+    }
+  }
+  stats.vertices_lit += lit;
+  stats.vertices_fallback += vertex_count - lit;
+  if (lit != 0) stats.draws_lit += 1;
+  if (lit == 0) stats.draws_fallback += 1;
+}
+
 // The screen path: the measured VU1 transform (coregs3_vertex.hpp) followed by clip-space rejection and near-plane
 // clipping. No 12.4 wrapped coordinate exists anywhere in this path, so the rasteriser can only see a true projection.
 void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &options,
@@ -426,6 +460,10 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
       }
       stats.shapes_drawn += 1;
       stats.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
+      // The object-space diagnostic framing does not use the captured draw's light block: it keeps the base colours
+      // and its own generated camera, so every vertex here is a counted fallback.
+      stats.draws_fallback += 1;
+      stats.vertices_fallback += static_cast<std::uint32_t>(mesh.vertices.size());
       for (const MeshVertex &vertex : mesh.vertices)
         for (std::uint32_t axis = 0; axis < 3; ++axis) {
           low[axis] = std::min(low[axis], vertex.position[axis]);
@@ -484,6 +522,7 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
     }
     stats.shapes_drawn += 1;
     stats.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
+    apply_lighting(draw, mesh, options, stats);
     rasterise_clip_space(mesh, matrix, options, rgba, mask, depth, stats);
   }
   for (std::uint8_t value : mask) stats.covered_pixels += value != 0 ? 1u : 0u;

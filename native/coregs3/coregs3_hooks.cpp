@@ -668,7 +668,8 @@ void print_report(std::FILE *out) noexcept {
   if (load(p.published) != 0 || load(p.passes) != 0 || load(p.passes_refused) != 0)
     std::fprintf(out,
                  "[coregs3] present published %llu dropped %llu claims %llu empty %llu passes %llu refused_frames %llu "
-                 "draws %llu refused_draws %llu vertices %llu triangles %llu last_vblank %llu\n",
+                 "draws %llu refused_draws %llu unlit_draws %llu vertices %llu unlit_vertices %llu triangles %llu "
+                 "last_vblank %llu\n",
                  static_cast<unsigned long long>(load(p.published)),
                  static_cast<unsigned long long>(load(p.dropped_publish)),
                  static_cast<unsigned long long>(load(p.claims)),
@@ -677,7 +678,9 @@ void print_report(std::FILE *out) noexcept {
                  static_cast<unsigned long long>(load(p.passes_refused)),
                  static_cast<unsigned long long>(load(p.draws)),
                  static_cast<unsigned long long>(load(p.draws_refused)),
+                 static_cast<unsigned long long>(load(p.draws_unlit)),
                  static_cast<unsigned long long>(load(p.vertices)),
+                 static_cast<unsigned long long>(load(p.vertices_unlit)),
                  static_cast<unsigned long long>(load(p.triangles)),
                  static_cast<unsigned long long>(load(p.last_vblank)));
 }
