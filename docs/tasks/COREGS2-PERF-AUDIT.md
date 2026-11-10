@@ -60,7 +60,7 @@ GPU (32 on an integrated one) with up to 16 submissions in flight (IN-426/IN-517
 | GPU busy | 3.86 | GPU is not the limit at 3x |
 
 **GS worker stages, 3x night race (C for each stage at its candidate; the sum is H because the stages come from
-different builds):** front end 1.14-1.48 ms (IN-467/IN-469), draw 1.14-1.20 (IN-446/IN-473), translate 0.57-0.65, texture
+different builds):** front end 1.14-1.48 ms (IN-467/IN-473), draw 1.14-1.20 (IN-446/IN-473), translate 0.57-0.65, texture
 0.36 (IN-453), swizzle 0.47 (IN-452), CLUT 0.26 (IN-457), upload 0.33 (IN-456), driver about 1.2 ms (IN-445), batch
 execution 4.0 ms of which 2.4 ms is forced by CLUT loads (IN-445's sampler, candidate 310).
 
