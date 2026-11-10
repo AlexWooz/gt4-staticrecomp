@@ -5376,3 +5376,13 @@ The shipped path stays our MIT tools.
 - **Remaining unknown:** the prototype registry (`MManager.getPrototype 0x002119B0` / `loadPrototype 0x00211B08`) and the
   `RootWindow` prototype's `has_script` setter - the likely place where the module is instantiated and the root exported.
 - **Build budget not spent** (no confirmed hook site). Block renders; page does not open; no kit; tests 846 OK.
+**Phase 28 (2026-11-10, final gate for TASK-214).**
+- `MManager.getPrototype` (`0x002119B0`) resolves a prototype instance (`func_00211460`, class virtual `+0x18`) and
+  `loadPrototype` (`0x00211B08`) instantiates it (`func_00255088`, list walk) - neither calls the export.
+- **Final unknown:** the site that writes a loaded `RootWindow` into the script scope (the name -> object binding),
+  which is not in the project lifecycle, the child walk, the prototype lookup, or reachable from the script at
+  tile-build time. Next RE pass (not started): the widget `has_script` property setter and its scope table.
+- **Delivered:** v5 reassembler, ToC writer, the **Recomp settings block + tile** at the bottom of Options, the page-open
+  path with an existing root (3,600 frames, exit 0), the 3-range patch and the headless harness. **Not delivered:** the
+  `RecRoot1` binding.
+- **Tests:** 846 OK (77 skipped). No build spent; no kit.

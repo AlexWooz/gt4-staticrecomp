@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-214 Phase 28: final gate - the root export site was not found (2026-11-10)
+
+- `MManager.getPrototype` (`0x002119B0`) resolves a prototype via `func_00211460` and the class virtual at `+0x18`;
+  `loadPrototype` (`0x00211B08`) instantiates via `func_00255088` and a list walk. **Neither calls the export.**
+- Combined with Phase 27 (vtable slot 95 = serialization; lifecycle endpoints never reach
+  `exportRootWindow`/`findPage`) and Phases 19-25 (no script-reachable handle at tile-build time), the site that writes a
+  loaded `RootWindow` into the script scope is **not** in any place this investigation could bound.
+- **Final unknown:** that binding site (the name -> object write). Next pass, not started per the owner's rule: the
+  widget `has_script` property setter and the scope table it writes to (a larger widget-class pass).
+- **Delivered:** v5 reassembler + ToC writer, the **Recomp settings block and tile at the bottom of Options**, the page
+  open path with an existing root (3,600 frames, exit 0), the 3-range patch, the headless harness. **Not delivered:** the
+  `RecRoot1` binding - the block stays visible and dormant; the Arcade hub remains the fallback.
+- **Tests:** 846 OK (77 skipped). No build spent; no kit.
+
 ## TASK-214 Phase 27: bounded loader pass, prototype registry is the next step (2026-11-10)
 
 - `mProject` vtable is `0x00664D50`; slot 95 = `0x00229F88`, a **serializer-like virtual** that

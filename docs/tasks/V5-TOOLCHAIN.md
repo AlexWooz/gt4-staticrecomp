@@ -1312,3 +1312,43 @@ The build budget was **not** spent: no hook site was confirmed and the owner ask
 ## 85. State
 
 Block renders; page does not open; no kit. Nothing existing changed. Disk 7.90 GB.
+---
+
+# Phase 28 - prototype registry pass, final gate for TASK-214 (2026-11-10)
+
+## 86. What was read
+
+- `MManager.getPrototype` (`0x002119B0`): takes (name, ?, count); when the count argument is 1 it builds a temporary
+  string handle (`func_00211460`), fetches the object's virtual at class offset `+0x18` and resolves the prototype from
+  the manager's list. It **returns the prototype instance** and does not touch the script scope.
+- `MManager.loadPrototype` (`0x00211B08`): builds a handle (`func_00255088`), walks the manager list with
+  `func_00211460`, and instantiates. Also no export call.
+
+Combined with Phase 27 (`mProject` vtable slot 95 is serialization; `loadProject`/`finishProject` never reach
+`exportRootWindow`/`findPage`) and Phase 19-25 (the script has no reachable handle at tile-build time), the export of a
+scripted root is **not** in any of the places this investigation could bound.
+
+## 87. Final gate
+
+**Unknown:** the exact site that writes a loaded `RootWindow` into the script scope (the name -> object binding that
+makes `RecRoot1` resolve in the page module). It is not the project lifecycle, not the child walk, not the prototype
+lookup, and not reachable from the script at tile-build time.
+
+**Next RE pass (not started, per the owner's rule):** the `has_script` property path - the generic property setter of
+the widget prototype (`mWidget` class attribute setter) - and the scope/table it writes to. That requires reading the
+widget class's property table, which is a larger reverse-engineering step than the bounded passes of this session.
+
+## 88. TASK-214 result
+
+Delivered and proven:
+
+- the v5 reassembler (`scripts/adhoc_v5.py`) with byte-identical round trips, page/group insertion and the capacity
+  field, plus the GT4.VOL ToC writer (`scripts/gt4_vol_toc.py`) with a byte-identical catalogue round trip;
+- the **Recomp settings block at the bottom of Options** (below Miscellaneous) with its tile, no existing block or page
+  changed, PS2ZIP inside the original extent, ToC record updated;
+- the full page-open path proven with an existing root (*Miscellaneous Settings*, 3,600 frames, exit 0);
+- the 3-range data patch (ToC + option.adc + option.mproject) and the headless harness around it.
+
+Not delivered: the **root binding** for the new `RecRoot1` page, which is the single remaining gate and needs the
+engine-side export site above or the guest-call harness. The block stays visible and dormant; the Arcade host-tree hub
+remains the working fallback.
