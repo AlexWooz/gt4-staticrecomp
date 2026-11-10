@@ -339,6 +339,10 @@ inline constexpr std::uint32_t kGsShadowZBuf = 0x188u;
 inline constexpr std::uint32_t kGsShadowScissor = 0x190u;
 inline constexpr std::uint32_t kGsShadowAlpha = 0x198u;
 inline constexpr std::uint32_t kGsShadowTest = 0x1A0u;
+// The neighbouring mirrors the 2D work needs and the v5 journal does not carry (docs/COREGS3-HOOKS.md §17.4): the
+// `.gt4gs` pass record stores them as raw words (TASK-090 S1).
+inline constexpr std::uint32_t kGsShadowClamp = 0x1A8u;
+inline constexpr std::uint32_t kGsShadowTex1 = 0x1B8u;
 
 // One pass of one frame: the GS register shadow at the pass begin and the draws stored while the pass was open. The
 // journal is bounded (kMaxPassStatesPerFrame); a frame that would exceed the bound is refused like any other overflow.

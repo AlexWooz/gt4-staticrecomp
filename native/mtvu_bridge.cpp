@@ -4,6 +4,7 @@
 
 #include "gs/gif.hpp"
 #include "gs/gs.hpp"
+#include "ps2/system.hpp"
 #include "vif.hpp"
 #include "vu_micro.hpp"
 
@@ -33,6 +34,10 @@ void render_gs(int path, const std::uint8_t *data, std::uint32_t qwc) { ps2::gif
 
 void apply_signal(std::uint32_t reg, std::uint64_t value) { ps2::gs::signal(reg, value); }
 
+// TASK-090 S1: the EE program counter and return address at the acceptance point, for the `.gt4gs` records' evidence
+// fields. Reading the guest registers is observe-only; the capture never writes them.
+GuestSite guest_site() { return GuestSite{ps2::g_cpu.pc, ps2::g_cpu.r[31].w[0]}; }
+
 std::uint64_t vif1_state_hash(bool worker_side) { return ps2::vif::verify_hash(worker_side); }
 
 #ifdef GT4_GS_STREAM_CLIENT
@@ -60,6 +65,7 @@ void start_with_donor(const Settings &settings) {
   donor.render_gs = render_gs;
   donor.vif1_state_hash = vif1_state_hash;
   donor.apply_signal = apply_signal;
+  donor.guest_site = &guest_site;
 #ifdef GT4_GS_STREAM_CLIENT
   // TASK-041: in pcsx2 mode privileged GS writes only feed the GS stream, which needs them in stream order with the
   // GIF output; the EE keeps its own CSR/IMR/SIGLBLID copy. GT4_MTVU_PRIV_ASYNC selects whether they wait.

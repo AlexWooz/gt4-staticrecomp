@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "coregs3_chain.hpp"
+#include "coregs3_gsstream.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_tap.hpp"
 #include "coregs3_texwin.hpp"
@@ -158,17 +159,32 @@ void capture_environment(ps2::Cpu &cpu) noexcept {
   g.counters.environment_frames += 1;
 }
 
-// The PGL GS state shadow at a pass begin (format version 5), all raw 64-bit register words.
-void capture_gs_shadow(CapturedPassState &state) noexcept {
+// The PGL GS register mirrors at a pass marker, in the `.gt4gs` pass-record order: the seven the v5 journal carries
+// (FOGCOL, FRAME, XYOFFSET, ZBUF, SCISSOR, ALPHA, TEST) plus CLAMP 0x1A8 and TEX1 0x1B8. All raw 64-bit words.
+bool read_gs_registers(std::uint64_t (&words)[kGsStreamPassRegisters]) noexcept {
   bool ok = true;
-  ok &= read_u64(kPglContext + kGsShadowFogCol, state.fogcol);
-  ok &= read_u64(kPglContext + kGsShadowFrame, state.frame);
-  ok &= read_u64(kPglContext + kGsShadowXYOffset, state.xyoffset);
-  ok &= read_u64(kPglContext + kGsShadowZBuf, state.zbuf);
-  ok &= read_u64(kPglContext + kGsShadowScissor, state.scissor);
-  ok &= read_u64(kPglContext + kGsShadowAlpha, state.alpha);
-  ok &= read_u64(kPglContext + kGsShadowTest, state.test);
-  if (!ok) g.counters.guest_read_failures += 1;
+  ok &= read_u64(kPglContext + kGsShadowFogCol, words[0]);
+  ok &= read_u64(kPglContext + kGsShadowFrame, words[1]);
+  ok &= read_u64(kPglContext + kGsShadowXYOffset, words[2]);
+  ok &= read_u64(kPglContext + kGsShadowZBuf, words[3]);
+  ok &= read_u64(kPglContext + kGsShadowScissor, words[4]);
+  ok &= read_u64(kPglContext + kGsShadowAlpha, words[5]);
+  ok &= read_u64(kPglContext + kGsShadowTest, words[6]);
+  ok &= read_u64(kPglContext + kGsShadowClamp, words[7]);
+  ok &= read_u64(kPglContext + kGsShadowTex1, words[8]);
+  return ok;
+}
+
+// The PGL GS state shadow at a pass begin (format version 5), the first seven words of the marker read. The `.gt4gs`
+// pass record carries all nine; both come from the same guest read, so the two files agree by construction.
+void capture_gs_shadow(CapturedPassState &state, const std::uint64_t (&words)[kGsStreamPassRegisters]) noexcept {
+  state.fogcol = words[0];
+  state.frame = words[1];
+  state.xyoffset = words[2];
+  state.zbuf = words[3];
+  state.scissor = words[4];
+  state.alpha = words[5];
+  state.test = words[6];
 }
 
 // The PGL context object's sparse spans (coregs3_scene.hpp kPglSpans).
@@ -426,6 +442,9 @@ void configure_from_environment() {
 
   g.all_draws = std::getenv("GT4_COREGS3_ALL_DRAWS") != nullptr;
   configure_tap_from_environment();
+  // TASK-090 S1: the `.gt4gs` PATH2/PATH3 stream is a separate sidecar with its own switch and bounds; it is configured
+  // only here, so the writer is one branch in builds without the hooks. `GT4_COREGS3=off` never reaches this point.
+  configure_gsstream_from_environment();
   const char *path = std::getenv("GT4_COREGS3_CAPTURE");
   if (const char *trace = std::getenv("GT4_COREGS3_TRACE_FRAMES"); trace != nullptr && *trace != '\0')
     g.trace_frames = static_cast<std::uint64_t>(std::strtoll(trace, nullptr, 10));
@@ -458,6 +477,8 @@ void configure_from_environment() {
 
 void shutdown() {
   tap_shutdown();
+  // TASK-090 S1: closes the open frame and writes the preallocated ring to the `.gt4gs` file, off the guest's timeline.
+  gsstream_shutdown();
   if (g.capture != nullptr) {
     for (const std::vector<std::uint8_t> &block : g.pending_blocks)
       if (std::fwrite(block.data(), 1, block.size(), g.capture) != block.size()) {
@@ -484,6 +505,7 @@ void at_vblank(std::uint64_t vblank) noexcept {
   g.frame_open = true;
   g.vblank = vblank;
   tap_at_vblank(vblank);
+  gsstream_frame(vblank);
   if (vblank != 0 && vblank % 600 == 0) print_report(stderr);
 }
 
@@ -525,6 +547,12 @@ void pass_begin(ps2::Cpu &cpu, std::uint32_t pass) noexcept {
   if (pass >= kPassSky && pass != kPassPanel) capture_environment(cpu);
   if (g.current_pass != kPassUnknown) g.counters.pass_mismatched_ends += 1;  // nested marker: keep the outer one
   g.current_pass = pass;
+  // TASK-090 S1: the `.gt4gs` pass record, from the same nine-word guest read the journal uses below for its first seven.
+  // It is written before the journal's overflow checks: the stream is a separate sidecar with its own bounds, and a scene
+  // frame the draw capture refuses must not take the stream's pass records with it.
+  std::uint64_t registers[kGsStreamPassRegisters] = {};
+  if (!read_gs_registers(registers)) g.counters.guest_read_failures += 1;
+  gsstream_pass_marker(pass, true, registers, gt4::mtvu::last_posted_job(), cpu.pc, cpu.r[31].w[0]);
   if (g.frame_overflow) return;
   if (g.frame.pass_states.size() >= kMaxPassStatesPerFrame) {
     mark_overflow(kOverflowPassStates);
@@ -533,14 +561,13 @@ void pass_begin(ps2::Cpu &cpu, std::uint32_t pass) noexcept {
   CapturedPassState state;
   state.pass = pass;
   state.vblank = g.vblank;
-  capture_gs_shadow(state);
+  capture_gs_shadow(state, registers);
   g.frame.pass_states.push_back(state);
   g.open_pass = static_cast<std::uint32_t>(g.frame.pass_states.size() - 1);
   g.counters.pass_states += 1;
 }
 
 void pass_end(ps2::Cpu &cpu, std::uint32_t pass) noexcept {
-  (void)cpu;
   if (g.mode == Mode::off) return;
   if (g.current_pass == kPassUnknown) {
     g.counters.pass_orphan_ends += 1;
@@ -550,6 +577,11 @@ void pass_end(ps2::Cpu &cpu, std::uint32_t pass) noexcept {
     g.counters.pass_mismatched_ends += 1;
     return;  // do not close an entry a different marker opened
   }
+  // TASK-090 S1: the `.gt4gs` pass_end record, from the nine-word guest read at this marker; the recorder closes only the
+  // pass its own begin opened, so the stream's attribution follows the journal's rule.
+  std::uint64_t registers[kGsStreamPassRegisters] = {};
+  if (!read_gs_registers(registers)) g.counters.guest_read_failures += 1;
+  gsstream_pass_marker(pass, false, registers, gt4::mtvu::last_posted_job(), cpu.pc, cpu.r[31].w[0]);
   g.current_pass = kPassUnknown;
   g.open_pass = kNoRecord;
 }
@@ -889,6 +921,15 @@ void print_report(std::FILE *out) noexcept {
     std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",
                  static_cast<unsigned long long>(tap.records), static_cast<unsigned long long>(tap.bytes),
                  static_cast<unsigned long long>(tap.refused));
+  // TASK-090 S1: the `.gt4gs` stream's counters and its per-pass census (the same shape as the scene pass journal's).
+  gsstream_print_report(out);
+  const GsStreamCounters &gs = gsstream_counters();
+  if (gs.active)
+    for (std::uint32_t pass = 0; pass < kPassCount; ++pass)
+      if (gs.pass_gif_records[pass] != 0 || gs.pass_gif_bytes[pass] != 0)
+        std::fprintf(out, "[coregs3] gsstream pass %s records %llu bytes %llu\n", pass_name(pass),
+                     static_cast<unsigned long long>(gs.pass_gif_records[pass]),
+                     static_cast<unsigned long long>(gs.pass_gif_bytes[pass]));
   // The live layer's own counters (docs/COREGS3-HOOKS.md §10.3): frames published to the ring and, in `present`, what
   // the renderer drew over the composed image. Read from the report thread; every field is atomic.
   const present::Counters &p = present::counters();

@@ -13,6 +13,7 @@
 #include "fov_adjust.hpp"
 #include "perf_clock.hpp"
 #include "perf_probe.hpp"
+#include "coregs3/coregs3_gsstream.hpp"
 #include "coregs3/coregs3_tap.hpp"
 
 #include <algorithm>
@@ -748,6 +749,15 @@ void gif_transfer(int path, const std::uint8_t *data, std::uint32_t qwc) {
   }
   apply_accepted_signals(r);
   if (qwc == 0) return;
+  // TASK-090 S1: every PATH3 (and any PATH2 that arrives on the EE) passes here exactly once with MTVU on, on the EE
+  // thread, at its program position. The stream recorder copies the packet into its preallocated ring; PATH1 is the VU1
+  // tap's (`worker_gif`) and is ignored. `last_posted_job()` is the merge point against the tap's PATH1 records.
+  if (path != 1 && gt4::coregs3::gsstream_active()) {
+    const GuestSite site = r.donor.guest_site != nullptr ? r.donor.guest_site() : GuestSite{};
+    gt4::coregs3::gsstream_packet(path, data, static_cast<std::size_t>(qwc) * 16, qwc,
+                                  counts.signal + counts.finish + counts.label != 0, last_posted_job(), site.pc,
+                                  site.ra);
+  }
   if (r.journal->can_execute_now()) {
     ++r.gs_renders;
     r.donor.render_gs(path, data, qwc);
@@ -768,6 +778,15 @@ void shadow_direct(int path, const std::uint8_t *data, std::uint32_t qwc) {
   r.ee_scanners[path].scan(data, qwc, counts, &r.signal_scratch);
   // The worker renders this packet later; its signals are applied here, at the packet's program position.
   apply_accepted_signals(r);
+  if (qwc == 0) return;
+  // TASK-090 S1: PATH2 with the shadowed VIF1 (the MTVU default) is accepted here and nowhere else; the worker's copy
+  // reaches `worker_gif`, which is a different function, so recording here does not double-count anything.
+  if (path != 1 && gt4::coregs3::gsstream_active()) {
+    const GuestSite site = r.donor.guest_site != nullptr ? r.donor.guest_site() : GuestSite{};
+    gt4::coregs3::gsstream_packet(path, data, static_cast<std::size_t>(qwc) * 16, qwc,
+                                  counts.signal + counts.finish + counts.label != 0, last_posted_job(), site.pc,
+                                  site.ra);
+  }
 }
 
 void gif_reset() {

@@ -93,6 +93,13 @@ void drain_download();
 // Donor operations. The worker callbacks run on the worker thread; render_gs runs on the EE thread.
 // Every callback starts null (1.2.2 bug, TASK-092): donor mode never sets post_vsync, and an uninitialised pointer
 // sent vblank_sync into the TASK-084 deferred path and a call through stack garbage at the first VBlank.
+// TASK-090 S1: the EE guest site (pc and return address) at the moment a packet is accepted, for the `.gt4gs` capture's
+// evidence fields. The bridge reads ps2::g_cpu, so this library stays free of donor headers; null in host controls.
+struct GuestSite {
+  std::uint32_t pc = 0;
+  std::uint32_t ra = 0;
+};
+
 struct Donor {
   void (*worker_vif_packet)(const std::uint8_t *data, std::uint32_t qwc) = nullptr;
   void (*worker_vif_write)(std::uint32_t reg, std::uint32_t value) = nullptr;
@@ -102,6 +109,8 @@ struct Donor {
   std::uint64_t (*vif1_state_hash)(bool worker_side) = nullptr;
   // gs::signal (SIGNAL/FINISH/LABEL), applied on the EE when a PATH2/PATH3 packet is accepted (docs section 12).
   void (*apply_signal)(std::uint32_t reg, std::uint64_t value) = nullptr;
+  // TASK-090 S1: the guest pc/ra of the transfer being accepted (EE thread; evidence only in `.gt4gs` records).
+  GuestSite (*guest_site)() = nullptr;
   // TASK-084 step 3 (pcsx2 mode only; null in donor mode): posts the VSYNC the client held at the guest VBlank.
   // Returns false when no VSYNC was held. Called from the journal drain, so the record lands after the frame's GIF
   // output in stream order.
