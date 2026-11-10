@@ -3434,8 +3434,9 @@ or excluded); then the launcher's save and resume flow. Effort is not measured. 
 ### TASK-215 — CoreGS 2.0 performance: where the time goes and what to try next (read-only audit; 2026-11-10)
 
 Owner request (2026-11-10): CoreGS 2.0 is still heavy on specific tracks and situations; find where to optimise next
-without repeating what the ledger already kept or reverted. Two halves: **TASK-215b**, this read-only static audit
-(`docs/tasks/COREGS2-PERF-AUDIT.md`), and **TASK-215**, the parallel agent that owns the builds, benchmarks and game
+without repeating what the ledger already kept or reverted. Three parts: **TASK-215b**, the read-only CPU/GPU audit
+(`docs/tasks/COREGS2-PERF-AUDIT.md`); **TASK-215c**, the read-only waits/async audit
+(`docs/tasks/COREGS2-WAITS-AUDIT.md`); and **TASK-215**, the parallel agent that owns the builds, benchmarks and game
 runs. Branch `docs/coregs2-perf-audit`, worktree `C:\Antigravity\gt4-wt-215-coregs2-audit`, from `origin/main` `59f27aa1`.
 The audit is not PCSX2-tainted: no PCSX2, GSdx, `gt4recomp-gs`, `private/tooling/pcsx2-*`, `private/slice189-pcsx2-ref`
 or ARMSX2 source was opened; GSdx is a black box.
@@ -3464,3 +3465,42 @@ or ARMSX2 source was opened; GSdx is a black box.
   owns the runs; the coordinator decides the PR. Open measurements are listed in section 6 of the audit: the flush-reason
   split, the unaffected CLUT share, the VU1 flare-program check (P1), the final post-IN-522 GPU wait at 6x, the
   sampled-only targets over 256, and the rain/rally/split-screen signatures.
+
+### TASK-215c — CoreGS 2.0 waits and async audit (read-only; 2026-11-10)
+
+Owner direction (2026-11-10, 17:21 and 17:26, voice): the CoreGS 2.0 bottleneck is **waits**, not rasterisation; the
+current PC hides it and the target is weaker hardware (Galaxy S23 Ultra class, tile GPU). The synchronous mode must
+become as asynchronous as possible: while the GPU waits for an EE readback (the flare visibility), it should start the
+next task/frame; when the answer arrives, finish that task, present, and resume; or parallelise inside the GPU. Never
+let waits block. Frame skipping is only for occasional 59/58 dips; 30 fps is the last resort. Normal mode keeps the
+**same-frame** flare; a one-frame-late readback only in Performance Mode or with the owner's explicit acceptance.
+
+- **Deliverable:** `docs/tasks/COREGS2-WAITS-AUDIT.md` — every wait class and call site in the CoreGS 2.0 in-process
+  path (EE/GS/VU1/GPU/present/pacing/audio/allocation/pipeline/locks), the measured/known cost with C/H/Hyp/Unknown
+  labels, the async/overlap design for each, the mobile/tile-GPU notes, the prioritized async list (7) and the open
+  questions. Branch `docs/coregs2-perf-audit`, worktree `C:\Antigravity\gt4-wt-215-coregs2-audit`, from `origin/main`
+  `59f27aa1`. Not PCSX2-tainted; no PCSX2/GSdx/fork/ARMSX2 source; GSdx is a black box.
+- **Pipeline finding:** the pipeline is half asynchronous — the EE is 2 VBlanks ahead (`kFramesAhead=2`), the GS worker
+  has 8/16 submissions in flight (32/64 batches each), and the second presentation queue decouples the display when the
+  graphics family has two queues — but the **flare readback is one hard synchronous point per race frame**: the GS worker
+  submits a full reduction and `vkWaitForFences` on every in-flight slot, the VU1 worker cannot produce the flare draws
+  until the bytes arrive, the rings fill, and the GPU finishes the work before the read and idles. Measured 4.5-5.5 ms
+  per VBlank at 6x, 1.3 ms at 1x (C, TASK-134 section 9). There is **no separate submission thread**; the GS worker
+  records and submits on one thread. The other waits: the one-queue present (`acquire_image(UINT64_MAX)` when the family
+  has one queue; 11.42 ms showroom / 17-33 ms races at 60 Hz, IN-516), the submission-slot fence (8 slots/32 batches
+  integrated; the code comment records waiting "on every heavy stretch"), the tone-hook CLUT readback (`Gpu::ReadClut`,
+  a full wait not attributed by the `gpu_wait` reason line), and the before-write/keep stores that remain after IN-508.
+- **Async list, in order:** (1) GPU-side flare modulation (S4; same-frame exact; removes the per-frame drain); (2)
+  one-queue present decoupling (present-capable family or presentation thread); (3) submission-ring depth/submit interval
+  on the target (`GT4_CORE2_SLOTS` 8/16/24, `SUBMIT_EVERY` 32/16/8); (4) tone CLUT decoded in the tone shader instead of
+  `ReadClut`; (5) before-write/keep on the GPU (GLM newest copy, TASK-162); (6) independent submission thread (known
+  0.3 ms); (7) mobile shader prepare/cache. The 12x fill ceiling is not a TASK-215c target.
+- **Acceptance:** every number has a source (ledger IN-xxx, TASK-134 section 9, the CPU/game-code study, the previous
+  audit or a code reference); the S23 Ultra queue families, wait split, interlock/async-compute support, thermal state and
+  the GSdx comparison are Unknown until measured; no build, benchmark, game run, code/data/pin/test change; no owner data;
+  no Avell target. The owner's decisions (no one-frame-late flare in normal mode, no frame-skip strategy, 30 fps last
+  resort) are recorded in the audit.
+- **State (2026-11-10):** waits audit done and committed on `docs/coregs2-perf-audit` (docs only). The parallel TASK-215
+  agent owns the target run; the first measurement is one instrumented 60 Hz race scene on the S23 Ultra with the existing
+  `[core2] gpu_wait by reason`, `[hw] transport`, `[hw] profile` (`present_us`), `[mtvu] EE wait` and `[core2] exclusive`
+  lines, plus the `[hw] presentation queue` line at init.

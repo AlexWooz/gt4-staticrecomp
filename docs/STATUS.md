@@ -1,5 +1,41 @@
 # Current Status
 
+## TASK-215c: CoreGS 2.0 waits and async audit, read-only (2026-11-10)
+
+The waits-specific companion to TASK-215b is done on branch `docs/coregs2-perf-audit` (worktree
+`C:\Antigravity\gt4-wt-215-coregs2-audit`, from `origin/main` `59f27aa1`): `docs/tasks/COREGS2-WAITS-AUDIT.md`. Owner
+direction (2026-11-10, voice): the bottleneck is **waits**, not rasterisation; the target is weak/mobile hardware (Galaxy
+S23 Ultra class, tile GPU); make the synchronous path as asynchronous as possible; frame skipping only for occasional
+59/58 dips; 30 fps last resort; normal mode keeps the same-frame flare. No build, benchmark, game run or code/data/pin/test
+change; not PCSX2-tainted (no PCSX2, GSdx, `gt4recomp-gs`, `private/tooling/pcsx2-*`, `private/slice189-pcsx2-ref` or
+ARMSX2 source opened).
+
+- **Pipeline finding:** the pipeline is half asynchronous — the EE is 2 VBlanks ahead (`kFramesAhead=2`), the GS worker
+  has 8/16 submissions in flight (32/64 batches each), and the second presentation queue decouples the display when the
+  graphics family has two queues — but the **flare readback is one hard synchronous point per race frame**: the GS worker
+  submits a full reduction and `vkWaitForFences` on every in-flight slot, the VU1 worker cannot produce the flare draws
+  until the bytes arrive, the rings fill, and the GPU finishes the work before the read and idles. Measured 4.5-5.5 ms per
+  VBlank at 6x, 1.3 ms at 1x (C, TASK-134 section 9). There is **no separate submission thread**; the GS worker records
+  and submits on one thread.
+- **Other waits mapped:** the one-queue present (`acquire_image(UINT64_MAX)` when the graphics family has one queue;
+  11.42 ms showroom / 17-33 ms races at 60 Hz, IN-516), the submission-slot fence (8 slots/32 batches integrated; the code
+  comment records waiting "on every heavy stretch"), the tone-hook CLUT readback (`Gpu::ReadClut`, a full wait not
+  attributed by the `gpu_wait` reason line), the before-write/keep stores that remain after IN-508, the MTVU/VU1
+  producer-consumer waits, the pacer/audio waits, locks, allocations and pipeline warm-up.
+- **Async list:** (1) GPU-side flare modulation (S4; same-frame exact; removes the per-frame drain); (2) one-queue present
+  decoupling (present-capable family or presentation thread); (3) submission-ring depth/submit interval on the target
+  (`GT4_CORE2_SLOTS` 8/16/24, `SUBMIT_EVERY` 32/16/8); (4) tone CLUT decoded in the tone shader instead of `ReadClut`;
+  (5) before-write/keep on the GPU (GLM newest copy, TASK-162); (6) independent submission thread (known 0.3 ms); (7)
+  mobile shader prepare/cache. The 12x fill ceiling is not a TASK-215c target.
+- **Mobile notes:** tile GPUs make readbacks resolves, barriers flush tiles, the storage-image/`GENERAL` path bypasses
+  tile-local fast paths and compression, async compute may not overlap, and one-queue present blocks the producer. These
+  are architecture facts, not source from another renderer; the S23 Ultra queue families, wait split, interlock and
+  async-compute support, thermal state and the GSdx comparison are **Unknown** until measured.
+- **Open measurements:** one instrumented 60 Hz race scene on the S23 Ultra with the existing `[core2] gpu_wait by
+  reason`, `[hw] transport`, `[hw] profile` (`present_us`), `[mtvu] EE wait`, `[core2] exclusive` and the `[hw]
+  presentation queue` lines; then the seven async items. The owner's decisions (no one-frame-late flare in normal mode,
+  no frame-skip strategy, 30 fps last resort) are recorded in the audit.
+
 ## TASK-215: CoreGS 2.0 performance audit, read-only (2026-11-10)
 
 The static half (TASK-215b) is done on branch `docs/coregs2-perf-audit` (worktree `C:\Antigravity\gt4-wt-215-coregs2-audit`, from
