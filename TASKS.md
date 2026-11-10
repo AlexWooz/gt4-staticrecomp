@@ -1713,6 +1713,18 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   PATH2/PATH3 and TEST/ZBUF/SCISSOR are unmeasured. Options: keep CoreGS 2.0's 2D (fast/faithful; blend-test a
   transparent layer), native HUD (4-6 weeks standard race), or mixed per-element (recommended). M1: speed plate +
   digits native with G-HUD-VALUES/IMG/ASPECT; then replay, semantic elements and modes. Evidence: `build/analysis-hud/`.
+- **Car textures: SLM sidecar and native decode (2026-11-10, branch `task/090-texture-decode`).** `GT4_COREGS3_VRAM`
+  makes the CoreGS 2.0 GS worker copy a bounded SLM block range once per captured VBlank (default the measured car range
+  0x2BC0..0x38FF, 868,352 B/frame) into a versioned `.gt4vram` sidecar written at shutdown; the GS-worker record `V`
+  covers the capture frame `V - 1`. `native/coregs3/coregs3_texture.{hpp,cpp}` decodes T4/T8/CT32 records natively from
+  it (hw_gs memory, CLUT and replacement code; Format G and Format P keys) and refuses every unmeasured state with a
+  status. Measured correction: TEX0.CSA selects a 16-entry group of the full 16x16 CSM1 32-bit palette bank at sampling
+  time; draw 2 (CSA 0) and draw 3 (CSA 6) reproduce the CoreGS 2.0 `GT4_HW_DUMP_TEXTURES` PNGs byte for byte, and the
+  two frames' keys/RGBA are identical across VBlanks 7398/7399. Frame 0: 204 per-draw texture decodes, 0 refused, 148
+  exact reference matches; T8 4/5 exact; the CT32 256x256 env map decodes but has no reference dump (a target, not a
+  memory texture). Fixture `native_coregs3_texture_decode` (synthetic 4 MiB SLM, T4/T8/CT32, CSA 0/6, key properties,
+  refusals, sidecar round trip), CTest coregs3 7/7, Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. No renderer
+  samples a texture yet. Details and evidence: docs/COREGS3-HOOKS.md §15.
 - Next: fog/textures/reflection plus the capture extension (K7 pass markers, hw GS-stream, `render_panel` 2D
   recorder) that unblocks the effects and the HUD, then the G-IMAGE/G-PERF gates; the per-item light state is now
   consumed by both renderers.

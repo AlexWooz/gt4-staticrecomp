@@ -772,3 +772,119 @@ and the lit/fallback vertex counts. The shader remains vertex-colour only.
 | Python `test_coregs3_units.py` | 7/7 passed |
 | 3x off/shadow identity gate (final candidate, main worktree reference exe) | **passes**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow; capture 4,451,628 B; `COREGS3-NIGHT-CHECK-OK` |
 | Present-mode guest identity run (`GT4_COREGS3=present`, same 3x night run) | **passes**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences; 13 passes, 1,377 draws, 338,934 vertices, 112,978 triangles, 0 refused; family vertices lit: body 48,512, first 27,043, pow8 24,208, pow16 16,640, direct 7,872, six 432, three 9,272, pass-through 11,547; 40 unlit draws / 9,282 unlit corners (120 `no_program` items, 3,962 vertices, kept on their base colour); light sources 2,150 uploaded / 1,856 carried / 33 uncertain / 0 none; the 13/13 dumped frames differ from the reference in the overlaid car pass |
+
+## 15. Round 19 (2026-11-10, branch `task/090-texture-decode`): the GS memory sidecar and the native car-texture decode
+
+The `.gt4scene` capture carries the 40-byte PGLUtexture record of every item but no texture pixels, and the VU1 tap is
+PATH1 only. This round makes the GS local memory (SLM) available to the offline tools and decodes the measured car
+textures natively from it. The round is texture evidence only: no renderer samples a texture yet, the UV convention and
+the lighting are untouched and the `.gt4scene` format stays at version 4.
+
+### 15.1 The `.gt4vram` sidecar (writer: CoreGS 2.0 `core2::Renderer::Flush`)
+
+`GT4_COREGS3_VRAM=<file>` makes the GS worker copy a bounded SLM block range once per captured VBlank and write the
+file at shutdown (never on the guest's timeline, the rule of §7). It reads `memory_.Local()` — the same CPU shadow
+memory the CoreGS 2.0 texture dump hashes — and never writes guest memory or renderer state.
+
+| Variable | Meaning |
+|---|---|
+| `GT4_COREGS3_VRAM` | sidecar path; unset disables the dump |
+| `GT4_COREGS3_VRAM_VBLANKS` | `a-b`, the GS worker's VBlank counter at the flush; defaults to `GT4_COREGS3_CAPTURE_VBLANKS` |
+| `GT4_COREGS3_VRAM_BLOCKS` | `a-b` GS blocks (inclusive, base 0); default the measured car range `0x2BC0..0x38FF` |
+| `GT4_COREGS3_VRAM_MAX_FRAMES` | record bound, default 32 |
+
+File layout (little endian), one or more records concatenated:
+
+```
+u32 magic 'G','T','4','V' (0x56345447)   u32 version 1
+u64 vblank                              u32 first_block   u32 block_count
+u32 byte_count (= block_count * 256)    u32 reserved (0; refused when nonzero)
+block_count * 256 bytes                 block `first_block` at offset 0
+```
+
+Sidecar alignment: the GS worker flushes after the VSYNC that ended the capture interval, so the record with
+`vblank = V` covers the capture frame whose `frame.vblank = V - 1`. The tools select the record by that rule
+(`gt4_coregs3_texture` does it automatically; `--vram-vblank` overrides it for diagnostics). The decoded evidence below
+uses a capture at VBlanks 7398-7399 and sidecar records at 7399 and 7400.
+
+### 15.2 The decoder (`native/coregs3/coregs3_texture.{hpp,cpp}`)
+
+Vulkan-free, built into `gt4_coregs3` only when `GT4_HW_GS=ON` because it reuses our own MIT pieces:
+`hwgs::memory::LocalMemory` (swizzle and pixel addressing), `hwgs::clut::ClutUnit::PeekLoad` and
+`hwgs::clut::DecodeHalfwords` (CSM1 palette), `hw_gs_replace` (`ClutBuffer`, direct-format expansion, Format G key) and
+the CoreGS 2.0 dump's RGBA loop. There is no second swizzle or palette decoder.
+
+`decode_texture(slm, record, out)` parses TEX0/TEX1/CLAMP, decodes the CLAMP region rectangle (the same rule as
+`DumpTexture`), checks that every texture and palette block is inside the sidecar, builds the CSM1 palette from CBP/CSA,
+returns RGBA8 + width/height + a `hw_gs_replace::FormatGKey` (payload hash, palette hash, hashed width/height), the
+Format P key/name of the reference dump, and a status. `refused_*` statuses: `refused_record` (short record),
+`refused_psm` (only T4/T8/CT32), `refused_size` (TW/TH > 10), `refused_state` (mipmaps, CSM2, CLD != 1, a non-CT32
+palette, CSA > 15), `refused_truncated` (the sidecar does not cover a block) and `refused_palette`. The Format G key
+excludes the base addresses: moving TBP0 with the same bytes keeps it, a payload byte breaks the payload hash and a
+palette byte breaks the palette hash (all three pinned by the fixture).
+
+**Measured correction: CSA selects a palette-bank group at sampling time.** The 32-bit CSM1 palette is the 16x16 bank
+at CBP; a 4-bit index reads the 16 entries of group CSA, not the bank's first group. The reference dump proves it: draw
+2 (CSA 0) matched with either reading, draw 3 (CSA 6) matched the CoreGS 2.0 dump byte for byte only when the decoder
+read bank group 6 (`19b46aeda67bdc9-a03e7dc7de2a8b02-00001554.png`). The decoder therefore loads the full bank unshifted
+with `PeekLoad` (the T8 profile, CSA 0) and lets `DecodeHalfwords` apply the record's CSA. `hw_clut`'s `ClutUnit`
+applies CSA at load time instead, which cancels out for an 8-bit index but makes a 4-bit index read the first group; that
+model is left untouched here (CoreGS 2.0 has its own gates) and is the reason the decoder does not call `PeekLoad` with
+the record's own T4 profile.
+
+### 15.3 Tool and fixtures
+
+`gt4_coregs3_texture <capture> --vram <sidecar> --frame N --out <folder> [--draw N ...] [--reference <TextureDumps>]
+[--psnr] [--report <file>]` decodes the selected draws and writes one PNG per unique texture record. With `--reference`
+it compares every image with the CoreGS 2.0 `GT4_HW_DUMP_TEXTURES` set by exact RGBA equality (and by PSNR against
+same-size candidates with `--psnr`). `--stability --draw N` decodes the draw in every captured frame and compares each
+record's key and RGBA across the frames.
+
+`coregs3_texture_decode_fixture` (`native_coregs3_texture_decode`) is the hand-authored control: a synthetic 4 MiB SLM,
+T4/T8/CT32 records with known texels and palettes (CSA 0 and 6, the T8 CSA clamp path), the key properties and every
+refusal, plus the sidecar header round trip and its malformed variants.
+
+### 15.4 Evidence (night race, 3x, headless, bench card)
+
+`night-run.sh td-shadow` (candidate, `GT4_COREGS3=shadow`) with `GT4_COREGS3_CAPTURE_VBLANKS=7398-7399` and
+`GT4_COREGS3_VRAM_VBLANKS=7398-7400`, 7,500 VBlanks: capture 819,808 B (2 frames, VBlanks 7398/7399, 116 draws, 169
+texture records, 39 material records, 182,480 packet bytes each), sidecar 2,605,152 B (3 records at VBlanks 7398, 7399
+and 7400; blocks 0x2BC0..0x38FF, 868,352 B each). The reference build (main worktree `coregs3-r8/ref`) ran the same
+night race with `GT4_HW_DUMP_TEXTURES=1`: 1,481 PNGs in `build/evidence/coregs3-td/TextureDumps/`.
+
+`gt4_coregs3_texture ... --frame 0` decoded the textures of all 116 draws: 204 per-draw decodes (a record used by two
+draws is decoded for each), **204 ok, 0 refused**, 148 matching a reference PNG by exact RGBA equality; draw 2 and
+draw 3 are exact:
+
+| Draw | Record | Format | TBP0 / CBP / CSA | Decode key (Format G payload/palette) | Reference |
+|---|---|---|---|---|---|
+| 2 | 0x01AB0E70 | T4 32x32 | 0x33A0 / 0x33A2 / 0 | `aaaa07528cd1c1ea` / `003013bc5012c5f0` | exact `5d6616a3c740d56a-3013bc5012c5f0-00001554.png` |
+| 3 | 0x01AAC070 | T4 32x32 | 0x3351 / 0x3348 / 6 | `34f6bba4ed22ef60` / `a03e7dc7de2a8b02` | exact `19b46aeda67bdc9-a03e7dc7de2a8b02-00001554.png` |
+
+Frame 1 (VBlank 7399) decodes the same two records to the same keys and the same two reference files. The stability
+mode compares every record of the draws across the two frames: **key and RGBA equal** for both
+(`aaaa07528cd1c1ea/003013bc5012c5f0` and `34f6bba4ed22ef60/a03e7dc7de2a8b02`). The five T8 records of the frame decode
+as 256-entry palettes; four match the reference exactly (draws 21, 40, 57, 81) and draw 114's has no reference name
+match. The one CT32 record (the 256x256 car env map, record 3 at 0x006DDD60, TBP0 0x2BC0, TW/TH 8/8) decodes natively
+(23,482 distinct RGBA values) but has no reference dump: `GT4_HW_DUMP_TEXTURES` captures memory textures only, and the
+env map is a drawn target, so the reference's cache does not dump it. The 2 same-payload names with a different palette
+and the 54 no-match records are reported, not hidden: the reference names by Format P, whose hash can include the upload
+extent and target-backed content, so a matching name is not expected for every record; the exact-equality count is the
+control that matters for the records that do match.
+
+Images and reports: `build/evidence/coregs3-td/textures/` (`v7398_d2_*`, `v7398_d3_*`, `v7398_d5_tex3_*CT32_256x256.png`,
+`report-frame0-all.txt`, `report-frame1.txt`, `stability-draw2-3.txt`); the reference set is
+`build/evidence/coregs3-td/TextureDumps/`.
+
+Gates: CTest `native_coregs3` family 7/7 (new `native_coregs3_texture_decode`), Python `test_coregs3_units.py` 7/7, and
+the 3x off/shadow identity gate with the main worktree reference exe (`COREGS3-NIGHT-CHECK-OK`; see §15.5).
+
+### 15.5 Gates
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | **7/7 passed** (`native_coregs3`, `_vertex`, `_lighting`, `_lighting_families`, `_timeline`, `_texture`, and the new `_texture_decode`) |
+| Python `tests/python/test_coregs3_units.py` | **7/7 passed** |
+| Fixture `coregs3_texture_decode_fixture` | **ok**: synthetic 4 MiB SLM, T4 CSA 0/6, T8 CSA 2, CT32 direct, the three key properties and all seven refusals, sidecar round trip and malformed variants |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,451,628 B |
+| Real decode against the CoreGS 2.0 reference | 204 per-draw texture decodes on frame 0, 0 refused, 148 exact RGBA matches; draws 2 and 3 exact; keys and RGBA stable across the two captured frames |

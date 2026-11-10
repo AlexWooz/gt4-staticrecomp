@@ -496,6 +496,11 @@ target_compile_options(gt4_coregs3 PRIVATE /W4)
 # (the default and every release build) the client still refuses any value other than donor or pcsx2.
 if(GT4_HW_GS)
     add_subdirectory(hw_gs)
+    # TASK-090 CoreGS 3.0: the native car-texture decoder (native/coregs3/coregs3_texture.cpp) reuses the HWR local
+    # memory, CLUT and replacement pieces. Those libraries exist only in a GT4_HW_GS build, so the unit joins
+    # gt4_coregs3 only here; the decoder's fixture and tool below are added under the same condition.
+    target_sources(gt4_coregs3 PRIVATE coregs3/coregs3_texture.cpp)
+    target_link_libraries(gt4_coregs3 PUBLIC gt4_hw_core hw_gs_replace)
     target_link_libraries(gt4_gs_stream_client PUBLIC gt4_hw_stream_sink)
     target_compile_definitions(gt4_gs_stream_client PRIVATE GT4_GS_STREAM_HW)
 endif()
@@ -1115,6 +1120,18 @@ add_executable(coregs3_texture_fixture coregs3/coregs3_texture_fixture.cpp)
 target_link_libraries(coregs3_texture_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_texture_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_texture COMMAND $<TARGET_FILE:coregs3_texture_fixture>)
+# TASK-090 CoreGS 3.0: the native car-texture decoder (native/coregs3/coregs3_texture.cpp) needs the HWR memory, CLUT
+# and replacement libraries, so its fixture and offline tool exist only in a GT4_HW_GS build.
+if(GT4_HW_GS)
+    add_executable(coregs3_texture_decode_fixture coregs3/coregs3_texture_decode_fixture.cpp)
+    target_link_libraries(coregs3_texture_decode_fixture PRIVATE gt4_coregs3)
+    target_compile_options(coregs3_texture_decode_fixture PRIVATE /W4)
+    add_test(NAME native_coregs3_texture_decode COMMAND $<TARGET_FILE:coregs3_texture_decode_fixture>)
+
+    add_executable(gt4_coregs3_texture tools/coregs3_texture_main.cpp)
+    target_link_libraries(gt4_coregs3_texture PRIVATE gt4_coregs3)
+    target_compile_options(gt4_coregs3_texture PRIVATE /W4)
+endif()
 # The offline milestone tool (docs/COREGS3-PLAN.md §4 step 1c): a capture in, a native PNG out.
 add_executable(gt4_coregs3_render tools/coregs3_render_main.cpp)
 target_link_libraries(gt4_coregs3_render PRIVATE gt4_coregs3)
