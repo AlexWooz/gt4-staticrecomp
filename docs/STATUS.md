@@ -1,5 +1,23 @@
 # Current Status
 
+## 2026-11-10: body/paint texgen and reflection study: the formula is pinned
+
+A read-only study executed the real AOT 0x10A0 body fragment on captured body vertices (v4 capture frames 7398/7399,
+six-qword block, raw V3-16 positions, V3-8 normals x 1/127) and pinned the texgen reflection formula: `D = P - LP`;
+`c = N·D`; `R = D - N*c - N*c`; `V = q9*R.x + q10*R.y + q11*R.z` (the block's 0xC9..0xCB columns); `W = V/|V| +
+(0,0,1)`; `n = 0.5/|W|`; `S = 0.5 + W.x*n`; `T = 0.5 - W.y*n`. The 0.5 addend/rsqrt numerator and the
+(0.5,0.5,0.5,1.5) vector are confirmed; the 1.5 lane is unused. Against the fragment: 4,010 vertices, rms 3.4e-4/3.5e-4,
+max 1.9e-3/2.1e-3. Against the tap, the 3,826 non-exception vertices give rms 4.6e-3/3.1e-3, max 0.234 (two
+carried-block items); the known capture/tap exceptions (draws 91/93, draw 52 items 3/9) stay counted. The env map is
+the drawn target FBP350/FBW4 (256x256 CT32), not a copy; the `.gt4vram` sidecar covers it (`0x2BC0..0x2FBF`), but the
+captured records 7398-7400 are byte-identical, so the frame's map needs records 7401/7402. The reflection pass is the
+second draw per item: PRIM 0x7C, ALPHA (0,2,1,1) additive `(Cs-0)*Ad+Cd`, FOGCOL black, vertex fog, TEX0 0x2BC0 CT32,
+TEX1 linear, CLAMP region 0..255, ZBUF no write, ZTST GEQUAL, FRAME FBMSK; 73/83 items DATE=1 DATM=0 (the DATE mask is
+the base paint T4 alpha 0/128), 9 DATE=0. Gaps: the env-map sidecar staleness, the env-map pass source at the main
+frame outside the captured range, GS state tap-only, reflection target contents not captured, the global VIF STMASK.
+Plan: M1 offline body reflection (sample the CT32 env map with the formula, additive/fog/DATE/ZMSK/FBMSK), M2 live
+present, M3 native env map. Evidence: `build/analysis-texgen/`.
+
 ## 2026-11-10: first textured offline car frame (TASK-090)
 
 The offline reference renderer now samples the decoded car textures. New `coregs3_sampler` implements the measured

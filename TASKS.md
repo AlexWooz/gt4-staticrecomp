@@ -1748,9 +1748,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames) and the full build. Evidence:
   `build/evidence/coregs3-textured/` (`offline-textured-frame0.png`, the untextured A/B, the 3x frames and masks,
   `metrics.txt`).
-- Next: the capture extension (ALL_DRAWS pass tag/K7,
-  hw GS-stream, `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates.
-  The per-item light state is now consumed by both renderers.
+- **Body texgen/reflection study (2026-11-10).** The real AOT 0x10A0 body fragment on captured vertices pins the
+  reflection texgen: `D = P - LP`, `c = N·D`, `R = D - N*c - N*c`, `V = q9*R.x + q10*R.y + q11*R.z` (block 0xC9..0xCB),
+  `W = V/|V| + (0,0,1)`, `n = 0.5/|W|`, `S = 0.5 + W.x*n`, `T = 0.5 - W.y*n`. Fragment residual 4,010 vertices rms
+  3.4e-4/3.5e-4; tap 3,826 non-exception vertices rms 4.6e-3/3.1e-3 (known exceptions counted). The env map is the
+  drawn target FBP350/FBW4 (256x256 CT32); the sidecar covers it but the captured records are stale (need 7401/7402).
+  Reflection pass: PRIM 0x7C, additive `(Cs-0)*Ad+Cd`, FOGCOL black, vertex fog, TEX0 0x2BC0 CT32, TEX1 linear, CLAMP
+  region, no depth write, GEQUAL, FBMSK; 73/83 DATE=1 DATM=0 (mask from the base paint T4 alpha), 9 DATE=0. Plan: M1
+  offline body reflection, M2 live present, M3 native env map. Evidence: `build/analysis-texgen/`.
+- Next: the body reflection implementation (in flight) and the capture extension (ALL_DRAWS pass tag/K7, hw GS-stream,
+  `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates. The per-item light
+  state is now consumed by both renderers.
 
 
 ### TASK-087 — GS readbacks without stalls
