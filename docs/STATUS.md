@@ -1,5 +1,20 @@
 # Current Status
 
+## 2026-11-10: measured UV convention merged; the vertex scale finding
+
+`task/090-texture-uv` is merged (740bffce): `coregs3_shape` decodes a 16-bit UV channel as a signed fraction
+`(int16)raw/4096` with no V flip (V2-32 floats pass through; V3 uses the first two components), and the PACKED GIF tap
+parser now decodes RGBAQ lanes, the ST-latch Q, UV V bits 32-45 and A+D register writes. New `native_coregs3_texture`
+fixture and `gt4_coregs3_tap uv` gate: r13 draws 2/3/4, 95 vertices, `|S/Q-u|` max 3.13e-8 and `|T/Q-v|` max 2.97e-8;
+CTest 5/5, Python 7/7, G-TAP unchanged, 3x gate OK.
+
+The gate research found a scale error in the vertex transform: the captured packet's linear columns are `vf24..26 *
+cmd.value` and the translation column `vf27` is unscaled; with metre positions the linear columns need `4096 *
+cmd.value`. Its prototype raises 1x coverage 95.49 -> 98.79% and cuts spill 31.2 -> 0.54%; the fix is in flight
+(`task/090-vertex-fix`). G-IMAGE at 32 dB is unreachable without textures (the vertex-colour ceiling is 18.63 dB); the
+nine-qword family is the dominant visible car surface. G-PERF needs instrumentation (`ee_cost_us` is dead, the GPU pass
+has no timestamps). A prediction study is measuring whether extrapolation is safe for the player's car and camera.
+
 ## 2026-11-10: CoreGS 3.0 parallel wave; owner fidelity directive
 
 The owner confirmed (Telegram) that CoreGS 3.0 does not need to match CoreGS 2.0/GSdx pixel for pixel; the goal is to

@@ -1653,7 +1653,16 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   from PGL +0xFA0 (99.83% within ±1), FOGCOL only in the tap, AFAIL KEEP, DATE on the env-map pass, truncating blends.
   **Owner fidelity directive:** CoreGS 3.0 must get close to CoreGS 2.0/GSdx, not pixel-identical; iterate on lights,
   reflections and missing effects (journal 2026-11-10).
-- Next: merge the per-item light block (v4) and the UV/parser fix, implement the remaining family formulas in the
+- **Round 17 (2026-11-10, UV/parser).** Merged `task/090-texture-uv` (740bffce): the 16-bit UV channel is a signed
+  fraction `(int16)raw/4096` with no V flip; the PACKED GIF tap parser decodes RGBAQ lanes, the ST-latch Q, UV V bits
+  32-45 and A+D register writes; new `native_coregs3_texture` fixture and `gt4_coregs3_tap uv` gate. r13 draws 2/3/4:
+  95 vertices, `|S/Q-u|` max 3.13e-8, `|T/Q-v|` max 2.97e-8; CTest 5/5, Python 7/7, G-TAP unchanged, 3x gate OK.
+- **Gate research and vertex scale (2026-11-10).** The captured linear columns are `vf24..26 * cmd.value`, the
+  translation `vf27` unscaled; with metre positions the linear columns need `4096 * cmd.value`. The prototype raises 1x
+  coverage 95.49 -> 98.79% and cuts spill 31.2 -> 0.54%; `task/090-vertex-fix` is in flight. G-IMAGE 32 dB needs
+  textures (vertex-colour ceiling 18.63 dB); the nine-qword family is the dominant visible surface. G-PERF needs
+  instrumentation. A prediction study is in flight.
+- Next: merge the per-item light block (v4) and the vertex fix, implement the remaining family formulas in the
   renderers, then fog/textures/reflection and the G-IMAGE/G-PERF gates.
 
 
