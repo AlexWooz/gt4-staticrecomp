@@ -127,7 +127,8 @@ wall time of the whole emulator.
 ## TASK-215, desktop baseline and candidates (2026-11-10)
 
 Plain build (no PGO), RX 9060 XT, shader cache warm; the full matrix, commands and the GSdx black-box comparison are in
-`docs/tasks/COREGS2-PERF-BASELINE.md`. The audit's static short list is `docs/tasks/COREGS2-PERF-AUDIT.md` (TASK-215b).
+`docs/tasks/COREGS2-PERF-BASELINE.md`. The static short list this round worked from is TASK-215b's audit (branch
+`docs/coregs2-perf-audit`, `docs/tasks/COREGS2-PERF-AUDIT.md` there).
 
 | Step | Change | Measured effect | Kept? | Candidate |
 |---|---|---|---|---|
