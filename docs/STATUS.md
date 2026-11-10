@@ -1,5 +1,20 @@
 # Current Status
 
+## TASK-214 Phase 4: group capacity experiments (2026-11-10; nothing swapped, tile still gated)
+
+- **`OptionPage` read:** the class at `0x7E9D` has `__init__(tt, rt, fc, pt)` setting title/root/func/path
+  (`path = pt != nil ? pt : tt`), no validation. Non-first groups call `OptionPage.Group("<name>", nil)`; pages take
+  an optional 4th `"JP/<icon>"` argument used by the tile builder (`image/option/<path>.png`).
+- **Experiments:** the group call's trailing `NIL` is not a capacity (4 on GroupMisc, 6 on GroupGeneral: still
+  crash); a `MODULE_DEFINE OptionProject::RecRoot1`, a 4th icon path, a duplicate label and a verbatim retail block
+  all still crash inside a group. A page (+module) at the end and a **new group** at the end both run 3,000 frames,
+  exit 0 - but add no tile/section.
+- **Gate:** the loader accepts the page, but the Options root takes no runtime-added page/group into its tile list, and
+  an in-group page breaks the load-time dispatch at `0x00319ECC`. Next: the `OptionPage.Group` static and its
+  `[obj+0x2C]` list (data `+0x14`, count `+0x20`), and the tile builder's page enumeration (compiled vs runtime).
+- **Nothing swapped:** LAN, 2 Player Battle/SplitBattle, Network and every other page unchanged. Tests 845 OK
+  (77 skipped).
+
 ## TASK-214 Phase 3: the Options tile gate (2026-11-10, read + probes; page blocked, nothing swapped)
 
 The v5 page entry, module code, static, PS2ZIP and ToC work; the visible tile is the remaining gate.

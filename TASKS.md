@@ -5122,3 +5122,16 @@ The shipped path stays our MIT tools.
   the teardown dispatch. Next: probe the `Group` call's trailing `NIL` arguments as a capacity, or find the engine
   constant in `0x00319E68`/`[s2+0x2C]`, or the layout `children [N]` if it comes from `option.mproject`.
 - **Tests:** `test_adhoc_v5.py` 14 OK, `test_gt4_vol_toc.py` 10 OK, full suite 845 OK (77 skipped).
+**Phase 4 (2026-11-10, capacity experiments).** Nothing existing was touched.
+- **`OptionPage` read:** `CLASS_DEFINE` at `0x7E9D`; `__init__(tt, rt, fc, pt)` sets title/root/func/path with
+  `path = pt != nil ? pt : tt` - no validation, so the constructor cannot return nil. Non-first groups call
+  `OptionPage.Group("<name>", nil)`; pages take an optional 4th argument `"JP/<icon>"`.
+- **Experiments:** group trailing `NIL` -> `INT_CONST 4` (GroupMisc) and `6` (GroupGeneral) still crash; a
+  `MODULE_DEFINE OptionProject::RecRoot1` + page in the group still crashes; a 4th path argument still crashes. A
+  page + module **at the end** runs 3,000 frames, exit 0, no tile; a **new group** + page at the end also runs clean
+  and adds no section.
+- **Gate:** the trailing `NIL` is not a capacity; the page is accepted by the loader but the Options root does not
+  take runtime-added pages/groups, and an in-group page breaks the load-time dispatch at `0x00319ECC`. Next targets:
+  the `OptionPage.Group` static and its `[obj+0x2C]` list (data `+0x14`, count `+0x20`), and the tile builder that
+  composes `image/option/<path>.png` (compiled list vs runtime list).
+- **Tests:** 845 OK (77 skipped). Evidence `private/slice438-toolchain-run/option.probe-*.adc`, `run2.log`.

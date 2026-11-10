@@ -430,3 +430,56 @@ The smallest next experiment (in order):
 
 Until one of those is proven, the visible page stays blocked; the accepted Arcade host-tree hub remains the
 fallback and nothing existing is touched.
+---
+
+# Phase 4 - the group capacity experiments (2026-11-10)
+
+Owner constraint unchanged: nothing existing is retargeted, swapped or removed.
+
+## 18. What `OptionPage` actually is (Confirmed from the disassembly)
+
+`CLASS_DEFINE: OptionPage extends Object` at `0x7E9D`, four attributes (`title`, `root`, `func`, `path`) and one
+method:
+
+```
+METHOD_DEFINE __init__(tt, rt, fc, pt)
+  title = tt
+  root  = rt
+  func  = fc
+  path  = pt != nil ? pt : tt        # the icon path defaults to the title
+```
+
+No validation, no nil return: the constructor cannot fail. Non-first groups call `OptionPage.Group("<Group>", nil)`
+(3 arguments); the first group also passes the `options` list (4 arguments). Pages are
+`OptionPage(label, root, nil[, "JP/<icon>"])` - the optional 4th argument is the icon path; a 3-argument page uses its
+title. The tile builder we found earlier composes `image/option/` + `path` + `.png`.
+
+## 19. Experiments
+
+| probe (page after `Language` unless stated) | result |
+|---|---|
+| trailing group argument `NIL` -> `INT_CONST 4` (`GroupMisc`) | crash at 1743, same `ra` |
+| trailing group argument `NIL` -> `INT_CONST 6` (`GroupGeneral`, page after `Race`) | crash at 1743, same `ra` |
+| `MODULE_DEFINE OptionProject::RecRoot1` + page in group | crash at 1743 |
+| 4th argument path `"JP/Misc"` + module + static | crash at 1743 |
+| `MODULE_DEFINE` + page **at the end** (no group) | **no crash**, 3,000 frames, exit 0, no tile |
+| new group `GroupRecomp` + page at the end | **no crash**, 3,000 frames, exit 0, **no new section** |
+
+So: the trailing `NIL` of the group call is not a capacity; the module, the icon path, the label, the root and the
+static are not the cause. Any page constructed **inside a group** crashes the load-time pass; a page (or a new group)
+at the end is accepted but ignored by the Options root.
+
+## 20. The gate, sharpened
+
+The page is accepted by the loader (module, static, counts and PS2ZIP all fine) but the Options root does not take
+runtime-added pages or groups into its tile list, and a page inserted in an existing group makes the load-time pass
+dispatch on an element without a class (`0x00319E68` -> `0x00319ECC`). The two concrete next targets:
+
+1. The `Group` static (`OptionPage.Group`) and the list it owns - `[object+0x2C]` in the crashing frame, an
+   `hArray`-like with data `+0x14` and count `+0x20`. Its allocation policy (fixed vs growing) decides whether a
+   runtime page can ever join.
+2. The Options root's tile builder (the function that composes `image/option/<path>.png` and clones the hidden
+   `Item`), i.e. how it enumerates pages. If it enumerates a **compiled list** rather than the runtime list, a visible
+   page needs one more constructed tile in that enumeration, not another page in the group.
+
+Neither is solved; the fallback remains the accepted Arcade host-tree hub and nothing existing changes.
