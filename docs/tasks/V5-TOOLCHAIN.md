@@ -620,3 +620,35 @@ Next experiments, smallest first:
 
 Until then the page has a tile and a module, but no bound root: the Arcade host-tree hub remains the working
 fallback and nothing existing changed.
+---
+
+# Phase 8 - the root-binding natives (2026-11-10)
+
+## 29. What was found
+
+The engine exposes two natives on the project object, next to the `RootWindow` string in `.rodata`:
+
+| native | address |
+|---|---|
+| `MProject.findPage` | `0x00229608` |
+| `MProject.exportRootWindow` | `0x002296E8` |
+
+The same block holds `getDir`, `%s::%s` (the module path format used for `OptionProject::<name>`) and `.mproject`.
+Neither native has a direct `jal` - both are registered script natives and are reached through the object model, so
+the loader that walks the `.mproject` roots is not identified yet.
+
+## 30. The binding gate
+
+A page's root argument is a static that the retail project resolves **by name** to the layout window; a runtime-added
+`RootWindow` (`RecRoot1`, static 272) stays nil even with `has_script 1`, the module `OptionProject::RecRoot1` present
+and the window at either end of `Project.children`. `option.root` is then nil and Cross dispatches to 0
+(`0x0030B450`). With an existing root (`MiscRoot`) the whole path works (Phase 7).
+
+Next experiments:
+
+1. Find the registration of `MProject.exportRootWindow`/`findPage` (`mProject__InitClass`) and the callers reached
+   through the vtable - that is the loader that binds a window to a script value.
+2. If the loader iterates a compiled name list, add `RecRoot1` at its end (same technique as the capacity field).
+3. If it walks the text children, the failure is the name lookup; the fix is the missing table entry, not the window.
+
+Until then the page has a tile and a module but no bound root; the Arcade host-tree hub remains the fallback.

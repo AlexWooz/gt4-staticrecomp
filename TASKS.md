@@ -5177,3 +5177,14 @@ The shipped path stays our MIT tools.
 - **Hub/Graphics:** the `RecRoot1` tree (title + Graphics/Controls/Display/Audio/System rows) is in the mproject and
   renders once the root is bound; the renderer/scale interaction is TASK-213 host work (game-changes.toml only).
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 8 (2026-11-10, root-binding natives located).**
+- **Found:** `MProject.findPage` `0x00229608` and `MProject.exportRootWindow` `0x002296E8` are the natives that
+  resolve a root window by name; `getDir`, `%s::%s` (the `OptionProject::<name>` module path) and `.mproject` sit in
+  the same `.rodata` block. Neither has a direct `jal` (both are registered natives reached through the object model),
+  so the loader that walks the `.mproject` roots is not identified yet.
+- **Gate unchanged:** the runtime-added `RecRoot1` static is nil, so `option.root` is nil and Cross dispatches to 0;
+  with `MiscRoot` the page opens and the run completes.
+- **Next:** read `mProject__InitClass` and the vtable callers of `exportRootWindow`/`findPage`; if the loader uses a
+  compiled name list, add `RecRoot1` at its end like the capacity field; if it walks the text children, the missing
+  name entry is the fix.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.

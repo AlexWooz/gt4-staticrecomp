@@ -1,5 +1,18 @@
 # Current Status
 
+## TASK-214 Phase 8: the root-binding natives located (2026-11-10)
+
+- **Found:** `MProject.findPage` `0x00229608` and `MProject.exportRootWindow` `0x002296E8` resolve a root window by
+  name; `getDir`, the module path format `%s::%s` (`OptionProject::<name>`) and `.mproject` sit in the same `.rodata`
+  block. Both are registered natives without a direct `jal`, so the loader that walks the `.mproject` roots is not
+  identified yet.
+- **Gate unchanged:** the runtime-added `RecRoot1` static stays nil, `option.root` is nil and Cross dispatches to 0
+  (`0x0030B450`); with `MiscRoot` the page opens and the run completes (Phase 7).
+- **Next:** read `mProject__InitClass` and the vtable callers of `exportRootWindow`/`findPage`; if the loader uses a
+  compiled name list, add `RecRoot1` at its end like the capacity field; if it walks the text children, the missing
+  name entry is the fix.
+- **Nothing swapped:** the tile stays, every existing page unchanged; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 7: `func` ruled out, the root binding is the gate (2026-11-10)
 
 - **Proven:** the page path works end to end with an existing root. Tile `Recomp settings` + root `MiscRoot`: Cross
