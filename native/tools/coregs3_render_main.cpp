@@ -102,10 +102,16 @@ void print_ndc_stats(const FrameSnapshot &frame) {
     float x_min = 1e30f, x_max = -1e30f, y_min = 1e30f, y_max = -1e30f;
     std::uint32_t front = 0;
     for (const MeshVertex &vertex : mesh.vertices) {
+      // The metre transform of the vertex's own position encoding; its row-major form is the measured 0xC1 map for
+      // that vertex (coregs3_vertex.hpp).
+      const VertexColumns &columns =
+          mesh_position_encoding(vertex) == PositionEncoding::integer_16 ? matrix.integer_positions
+                                                                        : matrix.float_positions;
+      const VertexRows rows = vertex_rows(columns);
       const float x = vertex.position[0], y = vertex.position[1], z = vertex.position[2];
-      const float cx = matrix.row[0][0] * x + matrix.row[0][1] * y + matrix.row[0][2] * z + matrix.row[0][3];
-      const float cy = matrix.row[1][0] * x + matrix.row[1][1] * y + matrix.row[1][2] * z + matrix.row[1][3];
-      const float cw = matrix.row[3][0] * x + matrix.row[3][1] * y + matrix.row[3][2] * z + matrix.row[3][3];
+      const float cx = rows[0][0] * x + rows[0][1] * y + rows[0][2] * z + rows[0][3];
+      const float cy = rows[1][0] * x + rows[1][1] * y + rows[1][2] * z + rows[1][3];
+      const float cw = rows[3][0] * x + rows[3][1] * y + rows[3][2] * z + rows[3][3];
       if (cw > 1e-6f) {
         ++front;
         const float nx = cx / cw, ny = cy / cw;

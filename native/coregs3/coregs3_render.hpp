@@ -4,7 +4,8 @@
 // matrix the game composed, at the capture's own resolution, and nothing else. It is deliberately a CPU reference with a
 // documented list of what it does not do yet, so the live Vulkan renderer (step 1e) has a ground truth to match:
 //
-//   does     the measured VU1 vertex transform (coregs3_vertex.hpp: the 0xC1 block as four unscaled columns), the
+//   does     the measured VU1 vertex transform (coregs3_vertex.hpp: the 0xC1 block as four columns, its linear part
+//            scaled by the shape's `value` and by the position encoding's units), the
 //            measured VU1 diffuse lighting (coregs3_lighting.hpp: the per-draw TOPS+0xC9 block, the V3-8 normals and
 //            the V3-16 raw positions), clip-space rejection and near-plane clipping of triangles, a perspective divide,
 //            a top-left rasteriser, a w-buffer (nearer wins), Gouraud vertex colours and perspective-correct UVs
@@ -67,13 +68,24 @@ struct RenderStats {
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };
 
-// The transform of one draw, in the measured convention (docs/COREGS3-HOOKS.md §10.2): four unscaled columns
-// (`columns`, c0..c3 = VU0 vf24..vf27) plus the equivalent row-major matrix used by the flat-shading normal rotation
-// and the `--ndc` diagnostic, where row[r][c] is component r of column c. `valid` is false when a column is not finite
-// or the matrix has no usable linear part.
+// The measured position encoding of a mesh vertex: a V3-16 channel keeps its raw signed 16-bit value
+// (MeshVertex::has_raw_position), a V3-32 channel stores the float as it stands (coregs3_vertex.hpp).
+PositionEncoding mesh_position_encoding(const MeshVertex &vertex) noexcept;
+
+// The transform of one draw, in the measured convention (docs/COREGS3-HOOKS.md §10.2):
+//   * `row` is the row-major form of the uploaded 0xC1 matrix: rows 0-2 hold the linear columns scaled by the shape's
+//     `value` (or unscaled when it is zero), row 3 the translation. The flat-shading normal rotation and the timeline
+//     use it (a uniform linear scale does not change a normalised normal);
+//   * `integer_positions` and `float_positions` are the column sets to multiply METRE positions with, one per measured
+//     model position encoding (coregs3_vertex.hpp). The screen renderer picks per vertex, because the VU1 multiplies a
+//     raw 16-bit integer for a V3-16 channel and the stored float for a V3-32 channel;
+//   * `upload` is the 0xC1 block exactly as the game uploads it, for diagnostics and the packet comparison.
+// `valid` is false when a column is not finite or the matrix has no usable linear part.
 struct DrawMatrix {
   float row[4][4] = {};
-  VertexColumns columns;
+  VertexColumns integer_positions;
+  VertexColumns float_positions;
+  VertexColumns upload;
   bool valid = false;
 };
 DrawMatrix draw_matrix(const CapturedDraw &draw);

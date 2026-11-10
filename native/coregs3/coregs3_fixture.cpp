@@ -9,7 +9,8 @@
 //     cycle, and the refusals (unknown opcode, payload overrun);
 //   - the channel rule: destination/format classification, the V3-8 normal channel at TOPS 0x40 (signed bytes and the raw
 //     V3-16 position) and the strip topology of a mesh;
-//   - the measured draw transform (columns c0..c3 = vf24..vf27, used unscaled; docs/COREGS3-HOOKS.md §10.2);
+//   - the measured draw transform (the 0xC1 columns c0..c3 = vf24..vf27 with the linear part scaled by the shape's
+//     `value` and by the position encoding's units; docs/COREGS3-HOOKS.md §10.2);
 //   - the measured VU1 lighting in the offline renderer (coregs3_lighting.hpp): a body/paint draw is lit and a draw
 //     without the block, the normals or the colour channel keeps the base colour and is counted as a fallback;
 //   - the live present ring: the newest published frame is claimed once, with the O(1) buffer swap
@@ -24,6 +25,7 @@
 #include "coregs3_vif.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -165,7 +167,9 @@ std::vector<std::uint8_t> make_lit_packet() {
 }
 
 void set_identity_columns(CapturedDraw &draw) {
-  // The measured columns c0..c3 are the identity, so clip = (x, y, z, 1) in model metres.
+  // The measured metre transform is the identity: vf24..vf27 are the identity and the shape `value` is 1/4096, so the
+  // V3-16 metre scale (value * 4096) is exactly 1 and clip = (x, y, z, 1).
+  draw.cmd_value = float_bits(1.0f / 4096.0f);
   for (std::uint32_t column = 0; column < 4; ++column)
     for (std::uint32_t lane = 0; lane < 4; ++lane)
       draw.vf[column][lane] = float_bits(column == lane ? 1.0f : 0.0f);
@@ -407,24 +411,51 @@ void check_matrix() {
   draw.cmd_value = float_bits(0.5f);
   const DrawMatrix matrix = draw_matrix(draw);
   require(matrix.valid, "the matrix is valid");
-  // The measured convention (docs/COREGS3-HOOKS.md §10.2): the 0xC1 block is four columns c0..c3 = vf24..vf27, used
-  // unscaled. The equivalent row-major form stores component r of every column in row r.
-  require(matrix.columns.column[0][0] == 2.0f && matrix.columns.column[0][3] == 3.0f, "c0 is vf24");
-  require(matrix.columns.column[1][1] == 4.0f && matrix.columns.column[1][3] == 0.0f, "c1 is vf25");
-  require(matrix.row[0][0] == 2.0f && matrix.row[0][3] == 0.0f, "row 0 is component 0 of every column");
-  require(matrix.row[1][1] == 4.0f, "row 1 is component 1");
-  require(matrix.row[2][2] == 5.0f && matrix.row[2][3] == 0.0f, "row 2 is component 2");
-  require(matrix.row[3][0] == 3.0f && matrix.row[3][2] == -1.0f && matrix.row[3][3] == 1.0f,
+  // The measured upload (docs/COREGS3-HOOKS.md §10.2): the 0xC1 block is four columns c0..c3 = vf24..vf27, and the
+  // guest scales the three linear columns (c0..c2, every lane) by the Cmd float `value`; the translation c3 is not
+  // scaled. The make_draw columns are c0 = (2,0,0,3), c1 = (0,4,0,0), c2 = (0,0,5,-1), c3 = (0,0,0,1).
+  require(matrix.upload.column[0][0] == 1.0f && matrix.upload.column[0][3] == 1.5f, "c0 is vf24 * value");
+  require(matrix.upload.column[1][1] == 2.0f && matrix.upload.column[1][3] == 0.0f, "c1 is vf25 * value");
+  require(matrix.upload.column[2][2] == 2.5f && matrix.upload.column[2][3] == -0.5f, "c2 is vf26 * value");
+  require(matrix.upload.column[3][3] == 1.0f, "c3 is vf27, never scaled");
+  // The row-major form of the upload stores component r of every column in row r. The timeline uses it as the object's
+  // 0xC1 matrix (coregs3_timeline.hpp).
+  require(matrix.row[0][0] == 1.0f && matrix.row[0][3] == 0.0f, "row 0 is component 0 of every column");
+  require(matrix.row[1][1] == 2.0f, "row 1 is component 1");
+  require(matrix.row[2][2] == 2.5f && matrix.row[2][3] == 0.0f, "row 2 is component 2");
+  require(matrix.row[3][0] == 1.5f && matrix.row[3][2] == -0.5f && matrix.row[3][3] == 1.0f,
           "row 3 is component 3");
+  // A V3-16 channel's metre transform multiplies the linear columns by 4096 raw units per metre; a V3-32 channel's
+  // stored float needs no such factor.
+  require(matrix.integer_positions.column[0][0] == 4096.0f && matrix.integer_positions.column[0][3] == 6144.0f,
+          "the V3-16 metre transform carries 4096 * value on c0");
+  require(matrix.integer_positions.column[2][2] == 10240.0f, "10240 = 5 * 0.5 * 4096");
+  require(matrix.integer_positions.column[3][3] == 1.0f, "the V3-16 translation stays vf27");
+  require(matrix.float_positions.column[0][0] == 1.0f && matrix.float_positions.column[0][3] == 1.5f,
+          "the V3-32 metre transform carries value only");
+  require(matrix.float_positions.column[2][2] == 2.5f, "the V3-32 metre transform of c2 is vf26 * value");
 
-  // The shape's `value` scales the uploaded packet rows, never the VU0 columns: the metre positions already carry the
-  // 1/4096 that cancels it.
-  CapturedDraw zero = draw;
+  // A shape `value` of zero is the guest upload's unscaled branch (func_0049E548): the rows are the raw vf block. The
+  // metre transform still converts the V3-16 units, so it is not the old unscaled reading either.
+  CapturedDraw zero = make_draw(0);
   zero.cmd_value = 0;
   const DrawMatrix unscaled = draw_matrix(zero);
-  for (std::uint32_t row = 0; row < 4; ++row)
-    for (std::uint32_t lane = 0; lane < 4; ++lane)
-      require(unscaled.row[row][lane] == matrix.row[row][lane], "cmd.value does not scale the columns");
+  require(unscaled.upload.column[0][0] == 2.0f && unscaled.upload.column[1][1] == 4.0f &&
+              unscaled.upload.column[2][2] == 5.0f && unscaled.upload.column[3][3] == 1.0f,
+          "value zero uploads vf24..vf27 unscaled");
+  require(unscaled.integer_positions.column[0][0] == 8192.0f, "the V3-16 metre transform still applies 4096");
+  require(unscaled.float_positions.column[0][0] == 2.0f, "the V3-32 metre transform is the upload");
+  require(unscaled.row[0][0] == 2.0f && unscaled.row[3][0] == 3.0f, "the timeline matrix is the unscaled upload");
+
+  // The control that fails under the old reading: projecting a metre position through the raw vf columns is not the
+  // measured transform. With value 0.5 the linear part differs by 2048 on a V3-16 channel.
+  const VertexColumns raw = vertex_columns_from_vu0_raw(draw.vf);
+  const ProjectionResult corrected = project_vertex(matrix.integer_positions, {1.0f, 2.0f, 0.5f}, 64.0f, 48.0f);
+  const ProjectionResult old = project_vertex(raw, {1.0f, 2.0f, 0.5f}, 64.0f, 48.0f);
+  require(corrected.status == ProjectionStatus::ok && old.status == ProjectionStatus::ok,
+          "both readings project this hand vertex");
+  require(std::fabs(corrected.screen.x - old.screen.x) > 1.0f || std::fabs(corrected.screen.y - old.screen.y) > 1.0f,
+          "the corrected transform is not the unscaled vf reading");
 }
 
 void check_mesh() {

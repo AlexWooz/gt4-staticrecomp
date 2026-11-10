@@ -2,7 +2,8 @@
 // Written from docs/COREGS3-HOOKS.md §10.3 and native/coregs3 (TASK-090 M4), clean room (decision 0070).
 //
 // The live `present` pass of CoreGS 3.0. Every captured draw of the newest published frame becomes one triangle-list draw
-// call with the draw's own vf24..vf27 columns in a push constant (the measured VU1 convention, coregs3_vertex.hpp), drawn
+// call per measured position encoding, with the draw's own metre-transform columns in a push constant (the measured VU1
+// convention, coregs3_vertex.hpp: linear columns scaled by the shape's `value` and the encoding's units), drawn
 // into the composed display image by a fragment-stage imageStore (the image has no COLOR_ATTACHMENT usage; see the
 // header) with a private D32 depth attachment and depth compare GEQUAL (the GS's equal-depth rule). Nothing here touches
 // CoreGS 2.0's targets, its command buffers, its command pool or the GS stream; the pass runs after the compose
@@ -53,11 +54,11 @@ struct PresentVertex {
 };
 static_assert(sizeof(PresentVertex) == 16, "the present vertex record must match the pipeline's 16-byte stride");
 
-// One captured draw's place in the shared vertex buffer, with the raw vf24..vf27 block the vertex stage consumes.
+// One captured draw's place in the shared vertex buffer, with the metre-transform columns the vertex stage consumes.
 struct DrawRange {
   std::uint32_t first = 0;   // first vertex (triangle list)
   std::uint32_t count = 0;   // vertices (a multiple of three)
-  float columns[16] = {};    // c0..c3 = vf24..vf27, raw bits, in column order
+  float columns[16] = {};    // c0..c3 of the metre transform for this range's position encoding, in column order
 };
 
 bool find_memory_type(const VkPhysicalDeviceMemoryProperties &properties, std::uint32_t bits,
@@ -469,12 +470,13 @@ struct PresentLayer::Impl {
     return true;
   }
 
-  // One captured draw -> one triangle-list draw call. Positions are metres (build_mesh's scale), colours are the lit
-  // vertex colours from the measured VU1 block when the draw carries it (coregs3_lighting.hpp), and the matrix columns
-  // travel raw. Returns false when the frame as a whole cannot be drawn (capacity); a draw that fails to decode is
-  // counted in `refused` and left to the GS-drawn image underneath. `unlit_draws` counts the drawn draws with no
-  // measured block (or without the normals/colours the formula needs); `unlit_vertices` counts the uploaded vertices
-  // that kept their base colour.
+  // One captured draw -> one triangle-list draw call per measured position encoding. Positions are metres (build_mesh's
+  // scale), colours are the lit vertex colours from the measured VU1 block when the draw carries it
+  // (coregs3_lighting.hpp), and the push constant carries the draw's metre columns (coregs3_vertex.hpp: the linear part
+  // scaled by the shape's `value` and by the encoding's units, translation unscaled). Returns false when the frame as a
+  // whole cannot be drawn (capacity); a draw that fails to decode is counted in `refused` and left to the GS-drawn image
+  // underneath. `unlit_draws` counts the drawn draws with no measured block (or without the normals/colours the formula
+  // needs); `unlit_vertices` counts the uploaded vertices that kept their base colour.
   bool build_frame(std::uint32_t &refused, std::uint32_t &unlit_draws, std::uint64_t &unlit_vertices) {
     vertices.clear();
     ranges.clear();
@@ -501,6 +503,21 @@ struct PresentLayer::Impl {
         ++refused;
         continue;
       }
+      // A triangle must ride one position encoding: its three corners were written by one item's position channel. A
+      // mesh that mixes encodings inside a triangle is not something the measured format produces, so refuse the draw
+      // instead of drawing it with a guessed matrix.
+      bool mixed_encoding = false;
+      for (std::size_t index = 0; index + 2 < mesh.indices.size() && !mixed_encoding; index += 3) {
+        const gt4::coregs3::PositionEncoding encoding =
+            gt4::coregs3::mesh_position_encoding(mesh.vertices[mesh.indices[index]]);
+        for (std::size_t corner = 1; corner < 3; ++corner)
+          if (gt4::coregs3::mesh_position_encoding(mesh.vertices[mesh.indices[index + corner]]) != encoding)
+            mixed_encoding = true;
+      }
+      if (mixed_encoding) {
+        ++refused;
+        continue;
+      }
       const std::uint64_t needed = static_cast<std::uint64_t>(vertices.size()) + triangles * 3u;
       if (needed > kMaxVerticesPerFrame) {
         vertices.clear();
@@ -524,11 +541,30 @@ struct PresentLayer::Impl {
           lit_colours[index] = mesh.vertices[index].color;
         }
       }
+      // One range per position encoding: the push constant carries the metre columns, and the V3-16 and V3-32 sets
+      // differ by 4096 raw units per metre (coregs3_vertex.hpp). Triangles of one encoding stay contiguous because each
+      // item appends its own vertices in one channel, so a range boundary is exact.
+      gt4::coregs3::PositionEncoding range_encoding = gt4::coregs3::PositionEncoding::integer_16;
+      bool have_range = false;
       DrawRange range;
-      range.first = static_cast<std::uint32_t>(vertices.size());
-      range.count = static_cast<std::uint32_t>(triangles * 3u);
-      std::memcpy(range.columns, draw.vf, sizeof range.columns);  // vf24..vf27, raw
+      const auto open_range = [&](gt4::coregs3::PositionEncoding encoding) {
+        const gt4::coregs3::VertexColumns &columns = encoding == gt4::coregs3::PositionEncoding::integer_16
+                                                         ? matrix.integer_positions
+                                                         : matrix.float_positions;
+        range = DrawRange{};
+        range.first = static_cast<std::uint32_t>(vertices.size());
+        range.count = 0;
+        range_encoding = encoding;
+        have_range = true;
+        std::memcpy(range.columns, &columns.column[0][0], sizeof range.columns);
+      };
       for (std::size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
+        const gt4::coregs3::PositionEncoding encoding =
+            gt4::coregs3::mesh_position_encoding(mesh.vertices[mesh.indices[index]]);
+        if (!have_range || encoding != range_encoding) {
+          if (have_range) ranges.push_back(range);
+          open_range(encoding);
+        }
         for (std::size_t corner = 0; corner < 3; ++corner) {
           const std::uint32_t source_index = mesh.indices[index + corner];
           const gt4::coregs3::MeshVertex &source = mesh.vertices[source_index];
@@ -542,9 +578,10 @@ struct PresentLayer::Impl {
           vertex.alpha = 255;  // the CPU reference writes an opaque layer (coregs3_render)
           if (!lit_mask[source_index]) ++unlit_vertices;
           vertices.push_back(vertex);
+          range.count += 1;
         }
       }
-      ranges.push_back(range);
+      if (have_range) ranges.push_back(range);
     }
     return !ranges.empty();
   }
