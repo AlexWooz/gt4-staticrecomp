@@ -1,5 +1,23 @@
 # Current Status
 
+## TASK-214 Phase 5: the Recomp settings tile is in Options (2026-11-10; page opens pending)
+
+- **Enumeration (Confirmed):** `OptionRoot.onInitialize` (`0xA047`) walks the runtime `options` array
+  (`options[i].title`, `AppendItem(...)`), skipping `Dummy`, non-US `JGR_port0/1` and single-language `Language`; the
+  tile icon is `image/option/<path>.png` from the page's 4th argument.
+- **The gate was the array capacity:** `options = ARRAY_CONST_OLD 33` at `0x9A0C` (5 groups + 28 page entries); a
+  34th page overflowed it and the load pass dispatched on a classless element (`0x00319ECC`). Raising it to 34 fixes
+  the crash.
+- **Tile proof (headless):** `Recomp settings` / `RecRoot1` / slot 272 / icon `JP/Misc`, inserted after `Language`
+  with `MODULE_DEFINE OptionProject::RecRoot1`, capacity 34: decoded 251,935 (+220), instructions 3375 -> 3388,
+  statics 272 -> 273, PS2ZIP 54,469 <= 55,353. Options shows **Miscellaneous: Misc, Units, Recomp settings**, footer
+  label and cursor on it (`private/slice438-toolchain-run/frames4/frame_03000.png`), run exit 0; no existing tile
+  changed. `scripts/adhoc_v5.py add-page` reproduces this file byte for byte.
+- **Next gate:** Cross on the tile stops at `missing code at 0x00000000 (ra 0x0030B450)`; the page module needs
+  `open(context)` -> `start_page(context, <Root>)`, `close(context)` -> `start_page(context, OptionRoot)`,
+  `reflect(context)` and `apply(context)` (retail `OptionProject::RaceRoot` is the template).
+- **Tests:** `test_adhoc_v5.py` 15 OK, `test_gt4_vol_toc.py` 10 OK.
+
 ## TASK-214 Phase 4: group capacity experiments (2026-11-10; nothing swapped, tile still gated)
 
 - **`OptionPage` read:** the class at `0x7E9D` has `__init__(tt, rt, fc, pt)` setting title/root/func/path

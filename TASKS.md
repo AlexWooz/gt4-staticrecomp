@@ -5135,3 +5135,20 @@ The shipped path stays our MIT tools.
   the `OptionPage.Group` static and its `[obj+0x2C]` list (data `+0x14`, count `+0x20`), and the tile builder that
   composes `image/option/<path>.png` (compiled list vs runtime list).
 - **Tests:** 845 OK (77 skipped). Evidence `private/slice438-toolchain-run/option.probe-*.adc`, `run2.log`.
+**Phase 5 (2026-11-10, tile achieved).** No existing page touched.
+- **Enumeration (Confirmed):** `OptionRoot.onInitialize` at `0xA047` walks the runtime `options` array
+  (`options[i].title`, `AppendItem(...)`), skipping `Dummy`, non-US `JGR_port0/1` and single-language `Language`; the
+  tile image is `image/option/<path>.png` from the page's 4th argument. `options` is `ARRAY_CONST_OLD 33` at
+  `0x9A0C` (5 groups + 28 page entries).
+- **Gate was capacity:** a 34th page overflowed the 33-slot array and produced the classless element at
+  `0x00319ECC`; raising the constant to 34 removes the crash.
+- **Tile proof (headless):** `Recomp settings` / `RecRoot1` / slot 272 / icon `JP/Misc` inserted after `Language`
+  with `MODULE_DEFINE OptionProject::RecRoot1` and capacity 34 - decoded 251,935 (+220), instructions 3375 -> 3388,
+  statics 272 -> 273, PS2ZIP 54,469 <= 55,353; Options shows **Miscellaneous: Misc, Units, Recomp settings** with the
+  footer label and the cursor on it (`frames4/frame_03000.png`), run exit 0. `scripts/adhoc_v5.py add-page` now
+  reproduces that exact file byte for byte.
+- **Next gate:** opening the page (Cross at frame 3100) stops at `missing code at 0x00000000 (ra 0x0030B450)` because
+  the module is empty; retail page modules define `open(context)` -> `start_page(context, <Root>)`,
+  `close(context)` -> `start_page(context, OptionRoot)`, `reflect(context)` and `apply(context)`. Those functions are
+  the next insertion (`OptionProject::RaceRoot` is the template).
+- **Tests:** `test_adhoc_v5.py` 15 OK, `test_gt4_vol_toc.py` 10 OK.

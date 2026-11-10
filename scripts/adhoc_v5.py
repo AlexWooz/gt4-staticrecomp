@@ -47,7 +47,7 @@ MAGIC_V7 = b"ADCH007\x00"
 V200_PAGE_REGION = (0x8A40, 0x99DD)
 TWO_ARG_TAG = b"\x24\x02\x00\x00\x00"
 EMPTY_ARG_TAG = 0x16
-IDENTIFIER = re.compile(rb"[A-Za-z][A-Za-z0-9_]*$")
+IDENTIFIER = re.compile(rb"[A-Za-z][A-Za-z0-9_ ]*$")
 
 
 class ScriptFormatError(ValueError):
@@ -292,6 +292,8 @@ OP_STATIC_DEFINE = 0x1C
 OP_STRING_CONST = 0x1D
 OP_VARIABLE_PUSH = 0x24
 OP_SET_STATE_OLD = 0x1B
+OP_NOP = 0x17
+OP_MODULE_DEFINE = 0x15
 # The module initializer ends with ``SET_STATE_OLD EXIT (0)`` (line, 0x1B, 0x00) and nothing after it.
 EXIT_TAIL = bytes([OP_SET_STATE_OLD, 0x00])
 INSTRUCTION_COUNT_OFFSET = 0x24
@@ -309,7 +311,17 @@ def _instruction(opcode: int, payload: bytes, line: int) -> bytes:
     return struct.pack("<I", line) + bytes([opcode]) + payload
 
 
-def page_block(name: str, root: str, static_index: int, line: int) -> bytes:
+def module_block(root: str, line: int) -> bytes:
+    """A script module for the page root: ``MODULE_DEFINE OptionProject::<root>`` plus an empty body."""
+    path = struct.pack("<I", 3) + _symbol("OptionProject") + _symbol(root) + _symbol(f"OptionProject::{root}")
+    return b"".join([
+        _instruction(OP_MODULE_DEFINE, path, line),
+        _instruction(OP_NOP, b"", line),
+        _instruction(OP_SET_STATE_OLD, b"\x00", line),
+    ])
+
+
+def page_block(name: str, root: str, static_index: int, line: int, path: str | None = None) -> bytes:
     """The nine instructions the retail module uses for one OptionPage (plus its static definition)."""
     require(0 <= static_index <= 0xFFFF, "static index is outside the format range")
     return b"".join([
@@ -324,29 +336,46 @@ def page_block(name: str, root: str, static_index: int, line: int) -> bytes:
                      + struct.pack("<I", static_index), line),
         _instruction(OP_EVAL, b"", line),
         _instruction(OP_NIL_CONST, b"", line),
-        _instruction(OP_CALL, struct.pack("<I", 3), line),
+        _instruction(OP_STRING_CONST, _symbol(path), line) if path is not None else b"",
+        _instruction(OP_CALL, struct.pack("<I", 3 if path is None else 4), line),
         _instruction(OP_EVAL, b"", line),
     ])
 
 
-def add_page(blob: bytes, *, name: str, root: str, static_index: int, line: int) -> bytes:
+def add_page(blob: bytes, *, name: str, root: str, static_index: int, line: int,
+             after_page: str | None = None, module: bool = False, path: str | None = None,
+             capacity_offset: int | None = None, capacity: int | None = None) -> bytes:
     """Append one page construction to a v5 module initializer.
 
-    The block goes **before** the final ``SET_STATE_OLD EXIT (0)`` so it runs, and after every existing
-    instruction so no jump target or instruction index moves. The header static count and instruction count are
-    bumped; nothing else changes.
+    ``after_page`` inserts right after that page's block (the page then belongs to the same group); without it the
+    block goes before the final ``SET_STATE_OLD EXIT (0)``. ``module`` adds the page's script module first.
+    ``capacity_offset``/``capacity`` raise the ``ARRAY_CONST_OLD`` capacity the Options tile list needs (33 -> 34 for
+    one more page); the retail value covers the five groups plus the 28 page entries.
     """
     image = ScriptImage(blob)
     require(len(blob) >= 0x28, "image is shorter than the v5 header")
-    require(blob[-2:] == EXIT_TAIL, "image does not end with SET_STATE_OLD EXIT (0)")
     instructions = struct.unpack_from("<I", blob, INSTRUCTION_COUNT_OFFSET)[0]
     statics = struct.unpack_from("<I", blob, STATIC_COUNT_OFFSET)[0]
-    block = page_block(name, root, static_index, line)
-    # The final instruction is u32 line, 0x1B, u8 state: insert before all six bytes.
-    insert_at = len(blob) - 6
+    block = (module_block(root, line) if module else b"") + page_block(name, root, static_index, line, path)
+    if after_page is not None:
+        matches = [page for page in image.pages(0, len(blob)) if page.name == after_page]
+        require(len(matches) == 1, f"expected one page named {after_page}, found {len(matches)}")
+        page = matches[0]
+        # The block is VARIABLE_PUSH, EVAL, STRING_CONST, VARIABLE_PUSH, EVAL, NIL, CALL 3, EVAL:
+        # after the repeated root string come the static index (4) and four more instructions.
+        insert_at = page.root_repeat_offset + 2 + len(page.root.encode("ascii")) + 4 + 5 + 5 + 9 + 5
+    else:
+        require(blob[-2:] == EXIT_TAIL, "image does not end with SET_STATE_OLD EXIT (0)")
+        insert_at = len(blob) - 6
     out = bytearray(blob[:insert_at] + block + blob[insert_at:])
-    struct.pack_into("<I", out, INSTRUCTION_COUNT_OFFSET, instructions + 9)
+    added = (3 if module else 0) + (9 if path is None else 10)
+    struct.pack_into("<I", out, INSTRUCTION_COUNT_OFFSET, instructions + added)
     struct.pack_into("<I", out, STATIC_COUNT_OFFSET, max(statics, static_index + 1))
+    if capacity_offset is not None:
+        require(capacity is not None, "capacity needs a value")
+        require(insert_at != capacity_offset, "capacity field overlaps the insertion point")
+        offset = capacity_offset + (len(block) if capacity_offset >= insert_at else 0)
+        struct.pack_into("<I", out, offset, capacity)
     return bytes(out)
 
 
@@ -400,6 +429,13 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument("--static-index", type=int, required=True,
                      help="free static slot for the root (v2.00: the header count is the next free slot)")
     add.add_argument("--line", type=int, default=204, help="source line recorded in the instructions")
+    add.add_argument("--after-page", help="insert right after this page's block (same group); default: module end")
+    add.add_argument("--module", action="store_true",
+                     help="prepend a MODULE_DEFINE OptionProject::<root> with an empty body")
+    add.add_argument("--path", help="optional icon path argument, for example JP/Misc")
+    add.add_argument("--capacity-offset", type=lambda text: int(text, 0),
+                     help="offset of the Options tile-list capacity field (v2.00: 0x9A0C)")
+    add.add_argument("--capacity", type=int, help="new capacity value (v2.00: 34 for one more page)")
     add.add_argument("--output", type=Path, required=True)
 
     args = parser.parse_args(argv)
@@ -423,10 +459,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "add-page":
         before = args.image.read_bytes()
         after = add_page(before, name=args.name, root=args.root,
-                         static_index=args.static_index, line=args.line)
-        require(len(after) == len(before) + len(page_block(args.name, args.root,
-                                                           args.static_index, args.line)),
-                "page insertion changed the length unexpectedly")
+                         static_index=args.static_index, line=args.line,
+                         after_page=args.after_page, module=args.module, path=args.path,
+                         capacity_offset=args.capacity_offset, capacity=args.capacity)
+        expected = len(before) + len(page_block(args.name, args.root, args.static_index, args.line,
+                                                args.path)) \
+            + (len(module_block(args.root, args.line)) if args.module else 0)
+        require(len(after) == expected, "page insertion changed the length unexpectedly")
         args.output.write_bytes(after)
         print(json.dumps({
             "input": str(args.image),

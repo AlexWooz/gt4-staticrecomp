@@ -483,3 +483,56 @@ dispatch on an element without a class (`0x00319E68` -> `0x00319ECC`). The two c
    page needs one more constructed tile in that enumeration, not another page in the group.
 
 Neither is solved; the fallback remains the accepted Arcade host-tree hub and nothing existing changes.
+---
+
+# Phase 5 - the tile enumeration and the capacity field (2026-11-10)
+
+## 21. Enumeration (Confirmed)
+
+The Options root tiles come from `FUNCTION_DEFINE - onInitialize(context)` at `0xA047` (OptionRoot's module). It
+walks **`options`**, a runtime array (`options[i].title`, `AppendItem(context, options[i], i, x, y)`), skips `Dummy`,
+`JGR_port0/1` outside the US and `Language` when only one language is available, and clones `hidden::Item` per entry
+(`image/option/<path>.png`).
+
+`options` is created at the end of the page list as `ARRAY_CONST_OLD 33` (offset `0x9A0C` in the retail file, line
+203). 33 = the five groups plus the 28 page entries (24 pages + 4 `Dummy`).
+
+## 22. The capacity was the gate (Confirmed)
+
+With the page inserted in `GroupMisc`, the 34th element overflowed the 33-slot array; the load-time pass then
+dispatched a virtual on a classless element (`0x00319ECC`). Raising the constant from 33 to 34 at `0x9A0C` removes the
+crash: the page loads, and the tile appears.
+
+```
+ARRAY_CONST_OLD payload at 0x9A0C: 33 -> 34
+```
+
+## 23. The tile (Confirmed, headless)
+
+Final build: page title `Recomp settings`, root `RecRoot1`, static slot 272, icon path `JP/Misc`, inserted after the
+`Language` page in `GroupMisc`, with `MODULE_DEFINE OptionProject::RecRoot1`, capacity 34.
+
+- decoded 251,935 bytes (+220), instructions 3375 -> 3388, statics 272 -> 273, PS2ZIP **54,469 <= 55,353**;
+- Options renders **Miscellaneous: Misc, Units, Recomp settings** with the cursor on it and the footer
+  `Recomp settings` (`private/slice438-toolchain-run/frames4/frame_03000.png`); every existing tile is unchanged;
+- the run reaches the frame limit (exit 0) with no crash.
+
+`scripts/adhoc_v5.py add-page` now reproduces this exact file byte for byte (same 251,935 bytes) with
+`--after-page Language --module --path JP/Misc --capacity-offset 0x9A0C --capacity 34`.
+
+## 24. Opening the page is the next gate (Confirmed)
+
+Cross on the tile at frame 3100 stops at `missing code at 0x00000000 (ra 0x0030B450)` - the same virtual-dispatch
+pattern (`lw v1,4(s1); addiu 0x50; lh a0; lw v0,4(v1); jalr v0`). The page module is empty, while every retail page
+module defines at least:
+
+| function | body (retail) |
+|---|---|
+| `open(context)` | `start_page(context, <Root>)` |
+| `close(context)` | `start_page(context, OptionRoot)` |
+| `reflect(context)` | fills the page widgets from the option object |
+| `apply(context)` | writes the option object back |
+
+`OptionProject::RaceRoot` shows the exact shape (line 2079+: `VARIABLE_PUSH start_page Static:2 ... CALL 2`). The next
+insertion is those functions in `OptionProject::RecRoot1` (same instruction technique, ~10 instructions each) plus the
+static wiring for `start_page` and the root object. Until then the tile exists but the page cannot open.

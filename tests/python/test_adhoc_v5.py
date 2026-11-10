@@ -178,6 +178,22 @@ class AddPageTest(unittest.TestCase):
         with self.assertRaises(adhoc_v5.ScriptFormatError):
             adhoc_v5.add_page(blob, name="Recomp", root="RecRoot1", static_index=272, line=204)
 
+    def test_module_path_and_capacity_are_emitted(self):
+        blob = self._image() + struct.pack("<I", 33)
+        # Insert after the Race page and raise a trailing capacity field from 33 to 34.
+        after = adhoc_v5.add_page(blob, name="Recomp settings", root="RecRoot1", static_index=272, line=204,
+                                  after_page="Race", module=True, path="JP/Misc",
+                                  capacity_offset=len(blob) - 4, capacity=34)
+        block = adhoc_v5.module_block("RecRoot1", 204) + adhoc_v5.page_block(
+            "Recomp settings", "RecRoot1", 272, 204, "JP/Misc")
+        self.assertEqual(len(after), len(blob) + len(block))
+        self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.INSTRUCTION_COUNT_OFFSET)[0],
+                         struct.unpack_from("<I", blob, adhoc_v5.INSTRUCTION_COUNT_OFFSET)[0] + 13)
+        self.assertIn(struct.pack("<I", 34), after)
+        self.assertIn(b"OptionProject::RecRoot1", after)
+        pages = adhoc_v5.scan_pages(after, 0, len(after))
+        self.assertIn("Recomp settings", [page.name for page in pages])
+
     def test_block_shape_matches_the_retail_page_encoding(self):
         block = adhoc_v5.page_block("Race", "RaceRoot", 98, 166)
         # STATIC_DEFINE (line + type + symbol) then the eight page instructions.
@@ -197,13 +213,16 @@ class RetailAddPageTest(unittest.TestCase):
 
     def test_retail_page_insertion(self):
         blob = Path(os.environ["GT4_OPTION_ADC"]).read_bytes()
-        after = adhoc_v5.add_page(blob, name="Recomp", root="RecRoot1", static_index=272, line=204)
-        self.assertEqual(len(after) - len(blob), 127)
-        self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.INSTRUCTION_COUNT_OFFSET)[0], 3384)
+        after = adhoc_v5.add_page(blob, name="Recomp settings", root="RecRoot1", static_index=272,
+                                  line=204, after_page="Language", module=True, path="JP/Misc",
+                                  capacity_offset=0x9A0C, capacity=34)
+        self.assertEqual(len(after) - len(blob), 220)
+        self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.INSTRUCTION_COUNT_OFFSET)[0], 3388)
         self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.STATIC_COUNT_OFFSET)[0], 273)
+        self.assertEqual(struct.unpack_from("<I", after, 0x9A0C + 220)[0], 34)
         pages = adhoc_v5.scan_pages(after, 0, len(after))
         names = [page.name for page in pages]
-        self.assertIn("Recomp", names)
+        self.assertIn("Recomp settings", names)
         self.assertNotIn("Recomp", [page.name for page in
                                     adhoc_v5.scan_pages(blob, *adhoc_v5.V200_PAGE_REGION)])
         # No existing page changed.
