@@ -163,7 +163,9 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     }
   }
   const auto is_world_pass = [](std::uint32_t pass) {
-    return pass == kPassSky || pass == kPassFarUnderlay || pass == kPassCourse;
+    // TASK-090 wet reflection: the reflection pass's 3D items bind their own VU1 job's pixels exactly like the world
+    // passes (the pass samples the wet-road mask and the reflection quads from VRAM pages 0x3F28/0x3F80).
+    return pass == kPassSky || pass == kPassFarUnderlay || pass == kPassCourse || pass == kPassReflection;
   };
 
   // ---- 1. The tapped vertex records of the jobs that posted this frame's item packets, with the state they ran under.
@@ -582,7 +584,8 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
             // record. With no such stream the first tied stream keeps the state and the tie is counted.
             texture_pick = best_stream;
             have_texture_pick = true;
-            const bool world_pass = draw.pass == kPassSky || draw.pass == kPassFarUnderlay || draw.pass == kPassCourse;
+            const bool world_pass = draw.pass == kPassSky || draw.pass == kPassFarUnderlay ||
+                                    draw.pass == kPassCourse || draw.pass == kPassReflection;
             if (world_pass && best_candidates > 1) {
               const auto sampling_tex0 = [](std::uint64_t tex0) { return tex0 & ~(7ull << 61); };
               const std::uint64_t record_tex0 =
@@ -676,7 +679,8 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
       // texture the capture's record table does not hold (the external cursor case).
       const bool world_pass_item =
           options.world_channels &&
-          (draw.pass == kPassSky || draw.pass == kPassFarUnderlay || draw.pass == kPassCourse);
+          (draw.pass == kPassSky || draw.pass == kPassFarUnderlay || draw.pass == kPassCourse ||
+           draw.pass == kPassReflection);
       const bool has_record = item.texture_record != kNoRecord && item.texture_record < frame.textures.size();
       if (world_pass_item) {
         // The record-vs-tap census: the tapped TEX0 (CLD ignored, because the world stream clears it and loads the

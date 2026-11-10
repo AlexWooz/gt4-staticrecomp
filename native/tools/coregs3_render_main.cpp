@@ -19,11 +19,13 @@
 //       A/B: the same frame with no texture table, byte-for-byte the pre-texture renderer.
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --vram <capture.gt4vram> --tap <capture.gt4tap>
-//                         --world [--no-sky] [--no-underlay] [--no-course] [--mask <pgm>] [--width W --height H]
-//       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3) and main-view
-//       course (5) draws/items, counts every exclusion, and renders them with the captured 0xC1 matrix (packet or
-//       carried), the tapped state and the level-0 mip/filter fallbacks. --no-sky/--no-underlay/--no-course are the
-//       evidence A/Bs; --world-no-alpha is a diagnostic that ignores the tapped ATE (never an acceptance mode).
+//                         --world [--no-sky] [--no-underlay] [--no-course] [--no-wet-reflection] [--mask <pgm>]
+//                         [--width W --height H]
+//       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3), main-view
+//       course (5) and since the wet-reflection round the captured reflection pass's main-view items (7), counts every
+//       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the level-0
+//       mip/filter fallbacks. --no-sky/--no-underlay/--no-course/--no-wet-reflection are the evidence A/Bs;
+//       --world-no-alpha is a diagnostic that ignores the tapped ATE (never an acceptance mode).
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
@@ -273,6 +275,15 @@ struct WorldSelection {
   std::uint32_t course_morph_uv_substituted = 0;      // 0xA0: first-key UV used (the UV keys differ)
   std::uint32_t course_morph_colour_substituted = 0;  // 0xA0: first-key colour used (the colour keys differ)
   std::uint32_t course_draws_dropped = 0;
+  // TASK-090 wet reflection: the captured reflection pass (PassId 7). Its main-view items are selected (the wet-road
+  // reflection-model quads); every other item is a counted exclusion by the same rule as the course.
+  std::uint32_t reflection_draws = 0, reflection_items = 0, reflection_vertices = 0;
+  std::uint32_t reflection_itop_other = 0;
+  std::uint32_t reflection_shape_refused = 0;
+  std::uint32_t reflection_no_state = 0;
+  std::uint32_t reflection_no_position = 0;
+  std::uint32_t reflection_mirror = 0;
+  std::uint32_t reflection_draws_dropped = 0;
   // The per-family census of the selected course items (the measured world programs) and the shape refusal reasons.
   std::uint32_t family_items[5] = {};     // indexed by WorldFamilyIndex: 0x80, 0xB08, 0xA0, 0x1278, other
   std::uint32_t family_vertices[5] = {};
@@ -280,7 +291,8 @@ struct WorldSelection {
 };
 
 bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &table, bool keep_sky,
-                           bool keep_underlay, bool keep_course, WorldSelection &selection, std::string &error) {
+                           bool keep_underlay, bool keep_course, bool keep_reflection, WorldSelection &selection,
+                           std::string &error) {
   selection = WorldSelection{};
   selection.frame = frame;
   selection.frame.draws.clear();
@@ -289,10 +301,12 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
     const bool is_sky = draw.pass == kPassSky;
     const bool is_underlay = draw.pass == kPassFarUnderlay;
     const bool is_course = draw.pass == kPassCourse;
-    if (!is_sky && !is_underlay && !is_course) continue;
+    const bool is_reflection = draw.pass == kPassReflection;
+    if (!is_sky && !is_underlay && !is_course && !is_reflection) continue;
     if (is_sky && !keep_sky) continue;
     if (is_underlay && !keep_underlay) continue;
     if (is_course && !keep_course) continue;
+    if (is_reflection && !keep_reflection) continue;
     CapturedDraw kept = draw;
     const ChannelScan scan = scan_channels(frame.packets.data(), frame.packets.size(), draw, true);
     const std::vector<TextureBinding> *bindings = table.for_draw(draw.sequence);
@@ -319,15 +333,29 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
       const WorldExclusion exclusion = world_item_exclusion(input);
       if (exclusion != WorldExclusion::none) {
         switch (exclusion) {
-        case WorldExclusion::itop_other: selection.course_itop_other += 1; break;
-        case WorldExclusion::shape_refused:
-          selection.course_shape_refused += 1;
-          selection.shape_refusals[world_shape_status_name(input.shape_status)] += 1;
+        case WorldExclusion::itop_other:
+          if (is_reflection) selection.reflection_itop_other += 1;
+          else selection.course_itop_other += 1;
           break;
-        case WorldExclusion::mirror: selection.course_mirror += 1; break;
-        case WorldExclusion::no_state: selection.course_no_state += 1; break;
+        case WorldExclusion::shape_refused:
+          if (is_reflection) {
+            selection.reflection_shape_refused += 1;
+          } else {
+            selection.course_shape_refused += 1;
+            selection.shape_refusals[world_shape_status_name(input.shape_status)] += 1;
+          }
+          break;
+        case WorldExclusion::mirror:
+          if (is_reflection) selection.reflection_mirror += 1;
+          else selection.course_mirror += 1;
+          break;
+        case WorldExclusion::no_state:
+          if (is_reflection) selection.reflection_no_state += 1;
+          else selection.course_no_state += 1;
+          break;
         case WorldExclusion::no_position:
-          if (is_course) selection.course_no_position += 1;
+          if (is_reflection) selection.reflection_no_position += 1;
+          else if (is_course) selection.course_no_position += 1;
           else if (is_sky) selection.sky_no_position += 1;
           else selection.underlay_no_position += 1;
           break;
@@ -352,6 +380,9 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
       } else if (is_sky) {
         selection.sky_items += 1;
         selection.sky_vertices += vertices;
+      } else if (is_reflection) {
+        selection.reflection_items += 1;
+        selection.reflection_vertices += vertices;
       } else {
         selection.underlay_items += 1;
         selection.underlay_vertices += vertices;
@@ -366,6 +397,12 @@ bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &
     } else if (is_sky) {
       if (kept_items == 0) continue;
       selection.sky_draws += 1;
+    } else if (is_reflection) {
+      if (kept_items == 0) {
+        selection.reflection_draws_dropped += 1;
+        continue;
+      }
+      selection.reflection_draws += 1;
     } else {
       if (kept_items == 0) continue;
       selection.underlay_draws += 1;
@@ -422,6 +459,7 @@ int main(int argc, char **argv) {
   bool world_keep_sky = true;
   bool world_keep_underlay = true;
   bool world_keep_course = true;
+  bool world_keep_reflection = true;
   int vram_vblank = -1;
   const char *reflection_mask_path = nullptr;
   RenderOptions options;
@@ -445,6 +483,7 @@ int main(int argc, char **argv) {
     else if (argument == "--no-sky") world_keep_sky = false;
     else if (argument == "--no-underlay") world_keep_underlay = false;
     else if (argument == "--no-course") world_keep_course = false;
+    else if (argument == "--no-wet-reflection") world_keep_reflection = false;
     else if (argument == "--world-no-alpha") options.world_ignore_alpha_test = true;
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
@@ -849,7 +888,7 @@ int main(int argc, char **argv) {
     }
     WorldSelection selection;
     if (!build_world_selection(selected, texture_table, world_keep_sky, world_keep_underlay, world_keep_course,
-                               selection, error)) {
+                               world_keep_reflection, selection, error)) {
       std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
       return 1;
     }
@@ -966,10 +1005,19 @@ int main(int argc, char **argv) {
     char line[512];
     std::snprintf(line, sizeof line,
                   "world selection: sky %u draws/%u items/%u vertices; far_underlay %u/%u/%u; course %u draws/%u "
-                  "items/%u vertices",
+                  "items/%u vertices; wet_reflection %u draws/%u items/%u vertices%s",
                   selection.sky_draws, selection.sky_items, selection.sky_vertices, selection.underlay_draws,
                   selection.underlay_items, selection.underlay_vertices, selection.course_draws,
-                  selection.course_items, selection.course_vertices);
+                  selection.course_items, selection.course_vertices, selection.reflection_draws,
+                  selection.reflection_items, selection.reflection_vertices,
+                  world_keep_reflection ? "" : " (pass off, A/B)");
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world wet-reflection exclusions: other-itop %u, shape-refused %u, mirror-view %u, no-state %u, "
+                  "no-position %u, empty-draws %u",
+                  selection.reflection_itop_other, selection.reflection_shape_refused, selection.reflection_mirror,
+                  selection.reflection_no_state, selection.reflection_no_position, selection.reflection_draws_dropped);
     world_report += line;
     world_report += "\n";
     world_report += "world course families:";
@@ -1241,6 +1289,19 @@ int main(int argc, char **argv) {
                   static_cast<unsigned long long>(stats.world_sky_depth_background),
                   static_cast<unsigned long long>(texture_counters.records_level0_fallback),
                   static_cast<unsigned long long>(texture_counters.records_filter_fallback));
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world wet-reflection raster: draws %u items %u vertices %u, fragments %llu (alpha-only FBMSK "
+                  "0x00FFFFFF %llu, RGB-only FBMSK 0xFF000000 %llu), depth-failed %llu, sample-refused %llu; the "
+                  "captured pass's main-view items write destination alpha in this frame (the colour composite is "
+                  "PATH3 and not captured)",
+                  stats.world_reflection_draws, stats.world_reflection_items, stats.world_reflection_vertices,
+                  static_cast<unsigned long long>(stats.world_reflection_pixels),
+                  static_cast<unsigned long long>(stats.world_reflection_alpha_only),
+                  static_cast<unsigned long long>(stats.world_reflection_rgb_only),
+                  static_cast<unsigned long long>(stats.world_reflection_depth_failed),
+                  static_cast<unsigned long long>(stats.world_reflection_sample_refused));
     world_report += line;
     world_report += "\n";
     world_report += options.world_ignore_alpha_test ? "world alpha test: ignored (diagnostic A/B)\n"

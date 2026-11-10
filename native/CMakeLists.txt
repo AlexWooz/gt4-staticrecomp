@@ -1172,6 +1172,13 @@ if(GT4_HW_GS)
     target_link_libraries(coregs3_pass_texture_fixture PRIVATE gt4_coregs3)
     target_compile_options(coregs3_pass_texture_fixture PRIVATE /W4)
     add_test(NAME native_coregs3_pass_textures COMMAND $<TARGET_FILE:coregs3_pass_texture_fixture>)
+    # TASK-090 wet reflection: the reflection pass's selection rule, its per-job-record + CLD = 0/TEX2 texture binding,
+    # and a render integration that pins the destination-alpha-only write (RGB unchanged), ZBUF's no-write and the
+    # counted depth rejection.
+    add_executable(coregs3_wet_reflection_fixture coregs3/coregs3_wet_reflection_fixture.cpp)
+    target_link_libraries(coregs3_wet_reflection_fixture PRIVATE gt4_coregs3)
+    target_compile_options(coregs3_wet_reflection_fixture PRIVATE /W4)
+    add_test(NAME native_coregs3_wet_reflection COMMAND $<TARGET_FILE:coregs3_wet_reflection_fixture>)
 
     add_executable(gt4_coregs3_texture tools/coregs3_texture_main.cpp)
     target_link_libraries(gt4_coregs3_texture PRIVATE gt4_coregs3)

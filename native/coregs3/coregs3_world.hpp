@@ -4,10 +4,13 @@
 // the measured world families are drawn: the ITOP 0x0080 main view and, since the TASK-090 world-families round, the
 // 0xB08 nine-qword lighting family, the 0x00A0 two-key morph family and the 0x1278 body pre-pass family. Every item must
 // pass the shape decoder's family/channel rule (WorldShapeStatus) and its GS state must carry the main-view XYOFFSET
-// 0x6C08/0x7208. Every other outcome is an explicit, counted exclusion: another dispatch, an item whose shape rule
-// refuses it, an item with no position channel, an item with no tapped GS state, and the mirror/second-view items
-// (0x7C08/0x7808 and 0x7C08/0x7C08). This unit keeps the rule in one reviewable place so the tool and its fixture cannot
-// drift; it never guesses an item into the picture.
+// 0x6C08/0x7208. Since the TASK-090 wet-reflection round the captured reflection pass (PassId 7) is selected too: its
+// main-view items are the wet-road reflection-model quads (ITOP 0x0080, the same state rule); its mirror-view items
+// (XYOFFSET 0x7C08/0x7C08) stay excluded because they belong to the reflection target's own coordinate system. Every
+// other outcome is an explicit, counted exclusion: another dispatch, an item whose shape rule refuses it, an item with
+// no position channel, an item with no tapped GS state, and the mirror/second-view items (0x7C08/0x7808 and
+// 0x7C08/0x7C08). This unit keeps the rule in one reviewable place so the tool and its fixture cannot drift; it never
+// guesses an item into the picture.
 #pragma once
 
 #include <cstdint>

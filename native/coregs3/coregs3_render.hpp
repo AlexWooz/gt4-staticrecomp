@@ -156,6 +156,18 @@ struct RenderStats {
   std::uint64_t world_afail_depth = 0;       // AFAIL ZBONLY wrote depth without colour
   std::uint64_t world_sky_depth_background = 0;  // sky draws drawn as the background (no depth test/write)
   std::uint64_t world_blended_pixels = 0;    // any tapped ABE equation applied
+  // TASK-090 wet reflection: the captured reflection pass's main-view items (the reflection-model quads). They write
+  // destination alpha only in this frame (FRAME.FBMSK 0x00FFFFFF); the counters name what was drawn and what the
+  // destination-alpha/colour masks allowed, so the pass's contribution can never be silently assumed. The mirror-view
+  // items (the sphere mapper's own target) are excluded by the selection and counted by the tool.
+  std::uint32_t world_reflection_draws = 0;
+  std::uint32_t world_reflection_items = 0;    // items with a non-empty packet in the selected reflection draws
+  std::uint32_t world_reflection_vertices = 0;
+  std::uint64_t world_reflection_pixels = 0;   // fragments the pass wrote (after the alpha and depth tests)
+  std::uint64_t world_reflection_alpha_only = 0;  // fragments whose FRAME.FBMSK kept RGB and wrote alpha
+  std::uint64_t world_reflection_rgb_only = 0;    // fragments whose FRAME.FBMSK kept alpha and wrote RGB
+  std::uint64_t world_reflection_depth_failed = 0;  // fragments the GEQUAL depth test rejected
+  std::uint64_t world_reflection_sample_refused = 0;  // fragments whose texture sample was refused
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };
 

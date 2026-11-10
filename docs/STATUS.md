@@ -1,5 +1,34 @@
 # Current Status
 
+## 2026-11-10: wet reflection, the captured pass is the destination-alpha mask (TASK-090, branch `task/090-wet-reflection`)
+
+The world-materials study's fix 3 is drawn and measured, and it is **not** the additive term's source. The captured
+`reflection` pass (PassId 7, 4 draws / 7 items / 292 vertices) is two different things: draws 165/166 are the
+reflection-model quads (T4 `0x3F28`, CLUT `0x3F70`, PRIM 0x3C, TEST `0x5820C`, GEQUAL, no depth write) drawn into the
+**main frame** (FBP page 210/FBW10) with **FRAME.FBMSK `0x00FFFFFF`, i.e. destination alpha only**; draws 167/168 are
+the sphere-mapper source drawn into **FBP page 394/FBW2 (128 px)** with `FBMSK 0xFF000000` at XYOFFSET `0x7C08/0x7C08`,
+outside the main view. `RacePS2Base__render_reflection` then blurs and composites the colour with full-screen PGL
+sprites (PATH3), which the PATH1 tap does not carry.
+
+The offline world renderer now selects the main-view reflection items (**2 draws / 5 items / 272 vertices**; the two
+mirror-view items counted), binds all five from the tapped TEX0/TEX1/CLAMP/TEX2 state against their own VU1 job's v2
+sidecar record (**0 refused**; the job windows (0x3F28, 32)+(0x3F70, 4) cover the sampled pages, and the extended
+capture range 0x2BC0-0x3FFF is the documented choice because the default car set 0x2BC0..0x38FF would not), and draws
+them through the world path's tapped blend/FBMSK/ZBUF/fog/alpha arithmetic. Measurement at 3x: **188 fragments, all
+alpha-only, 7,608 fragments depth-rejected, 0 RGB pixels changed and exactly 188 alpha pixels changed**. The picture's
+metrics are identical before and after: **PSNR 22.3498, SSIM 0.65055, pct_bad 64.776%, mean |diff| 14.84, luma 26.69 ->
+18.96, ref/world 1.408, corr +0.465; the whole-mask fit is `ref = 0.634*world + 14.67` in both runs** (page `0x36D0`
+ratio 1.445, corr +0.111, fit `0.283*world + 19.31` both; page `0x3EE1` ratio 1.678, corr +0.543, fit `1.283*world +
+11.08` both). The A/B (`--no-wet-reflection`) is **byte-identical** to the pass-textures `world-final.png`
+(`345f955a...`). The additive term therefore lives in the uncaptured PATH3 composite (and/or the post chain, fix 4),
+not in the captured pass; the study's metric gates stay **unreached and unrelaxed**. Checks: CTest coregs3 **13/13**
+(new `native_coregs3_wet_reflection`: the selection rule, the per-job + CLD 0/TEX2 palette binding with its
+missing-TEX2 refusal, and a render integration pinning the alpha-only write, unchanged RGB, ZBUF no-write and the
+counted depth rejection), Python `test_coregs3_units.py` **8/8**, the car-only render byte-identical to the `e529c319`
+executable (`392dd4ed...`, identical reports), and the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK. Design and
+the measured targets: [COREGS3-HOOKS](COREGS3-HOOKS.md) §25; evidence `build/evidence-wet-reflection/` (pass census,
+FRAME target map, sidecar coverage, before/after images, reflection mask, per-page fits, A/B, gate log).
+
 ## 2026-11-10: GS-stream capture S1, the `.gt4gs` PATH2/PATH3 sidecar (TASK-090, branch `task/090-gs-capture`)
 
 The first milestone of `docs/COREGS3-GSSTREAM-CAPTURE.md` is implemented and measured. A new **`.gt4gs` version 1**

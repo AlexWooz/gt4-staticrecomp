@@ -17,11 +17,30 @@ const char *world_exclusion_name(WorldExclusion exclusion) noexcept {
 }
 
 WorldExclusion world_item_exclusion(const WorldItemInput &item) noexcept {
-  if (item.pass != kPassSky && item.pass != kPassFarUnderlay && item.pass != kPassCourse)
+  if (item.pass != kPassSky && item.pass != kPassFarUnderlay && item.pass != kPassCourse &&
+      item.pass != kPassReflection)
     return WorldExclusion::not_world_pass;
-  if (item.pass != kPassCourse) {
+  if (item.pass == kPassSky || item.pass == kPassFarUnderlay) {
     // The sky and far-underlay draws are entirely in the picture; their items are not filtered by program.
     return item.has_position ? WorldExclusion::none : WorldExclusion::no_position;
+  }
+  if (item.pass == kPassReflection) {
+    // TASK-090 wet reflection: the captured pass's 3D items are the reflection-model quads the VU1 runs through the
+    // main-view passthrough program (ITOP 0x0080). The main-view items carry the main-view XYOFFSET and are drawn at
+    // their captured projection; the two mirror-view quads (XYOFFSET 0x7C08/0x7C08) belong to the reflection target's
+    // own coordinate system and would land in the wrong place in this picture, so they stay counted exclusions. Every
+    // item needs its tapped state (the pass writes destination alpha or RGB only through FRAME.FBMSK, and the state
+    // names which) and a non-zero TEST, exactly the course rule.
+    if (!item.run_valid || item.dispatch != 0x0080u) return WorldExclusion::itop_other;
+    if (!item.has_position) return WorldExclusion::no_position;
+    if (item.shape_status != WorldShapeStatus::ok && item.shape_status != WorldShapeStatus::morph_uv_first_key &&
+        item.shape_status != WorldShapeStatus::morph_colour_first_key)
+      return WorldExclusion::shape_refused;
+    if (!item.state_known || !item.xyoffset_known) return WorldExclusion::no_state;
+    if (item.xyoffset != kMainViewXyOffset) return WorldExclusion::mirror;
+    if (item.test_zero) return WorldExclusion::no_state;
+    if (!item.test_known || item.test == 0) return WorldExclusion::no_state;
+    return WorldExclusion::none;
   }
   if (!item.run_valid) return WorldExclusion::itop_other;
   switch (item.dispatch) {
