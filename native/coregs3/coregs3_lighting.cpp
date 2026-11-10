@@ -97,17 +97,28 @@ bool nine_sum(const ItemLightState &state, const std::array<float, 4> &direction
   return true;
 }
 
-// Body/paint: the round 12 formula, fed from the item's block qwords.
+// Body/paint: the round 12 formula, fed from the item's block qwords. The position is the integer the VU1 converts
+// with ITOF0: the raw signed halfword for a V3-16 channel, or the full 32-bit MODE 2 lane the course body pre-pass
+// (0x1278) converts (the carrier is MeshVertex::lane_position). Both are the same value when the lane fits in 16 bits.
 LightStatus shade_body(const ItemLightState &state, const MeshVertex &vertex,
                        std::array<std::uint8_t, 4> &rgba) noexcept {
-  if (!vertex.has_normal || !vertex.has_raw_position || !vertex.has_color) return LightStatus::missing_channel;
+  if (!vertex.has_normal || !vertex.has_color) return LightStatus::missing_channel;
+  std::array<std::int32_t, 3> position{};
+  if (vertex.has_lane_position) {
+    position = vertex.lane_position;
+  } else if (vertex.has_raw_position) {
+    position = vertex.raw_position;
+  } else {
+    return LightStatus::missing_channel;
+  }
   LightBlock block;
   for (std::uint32_t row = 0; row < 3; ++row)
     for (std::uint32_t lane = 0; lane < 4; ++lane) block.matrix[row][lane] = state.qword[row][lane];
   block.position = state.qword[3];
   block.c3 = state.qword[4];
   block.c4 = state.qword[5];
-  return shade_vertex(block, vertex, rgba) ? LightStatus::ok : LightStatus::invalid_math;
+  return shade_vertex(block, vertex.normal, position, vertex.color, rgba) ? LightStatus::ok
+                                                                          : LightStatus::invalid_math;
 }
 
 // nine_qword_first / pow8 / pow16 / direct.
@@ -274,6 +285,8 @@ const char *light_program_name(LightProgram program) noexcept {
   case LightProgram::six_qword_no_colour: return "six_qword_no_colour";
   case LightProgram::three_qword_gain: return "three_qword_gain";
   case LightProgram::passthrough: return "passthrough";
+  case LightProgram::morph_passthrough: return "morph_passthrough";
+  case LightProgram::body_prepass: return "body_prepass";
   default: return "unknown";
   }
 }
@@ -292,7 +305,10 @@ LightProgram light_program_from_dispatch(std::uint32_t dispatch) noexcept {
   case 0x0418u: return LightProgram::nine_qword_direct;
   case 0x0C68u: return LightProgram::six_qword_no_colour;
   case 0x14D8u: return LightProgram::three_qword_gain;
+  case 0x1508u: return LightProgram::three_qword_gain;  // the sky's entry: the same clamp(q2 + q0*C, 0, q1)
   case 0x0080u: return LightProgram::passthrough;
+  case 0x00A0u: return LightProgram::morph_passthrough;  // the course two-key morph pre-pass
+  case 0x1278u: return LightProgram::body_prepass;       // the course float/normal pre-pass into the body output
   default: return LightProgram::none;
   }
 }
@@ -321,8 +337,9 @@ LightStatus decode_item_light(const CapturedItem &item, ItemLightState &state) n
   const LightProgram program = light_program_from_dispatch(item_dispatch(item));
   state.program = program;
   if (program == LightProgram::none) return LightStatus::no_program;
-  // The passthrough program reads no block: it emits the V4-8 colour unchanged, so its light_source is irrelevant.
-  if (program == LightProgram::passthrough) return LightStatus::ok;
+  // The passthrough and morph programs read no block: they emit the (post-morph) V4-8 colour unchanged, so their
+  // light_source is irrelevant.
+  if (program == LightProgram::passthrough || program == LightProgram::morph_passthrough) return LightStatus::ok;
   if (item.light_source == kLightItemNone) return LightStatus::no_block;
   if (item.light_source == kLightItemCarriedUncertain) return LightStatus::uncertain_block;
   if (item.light_source != kLightItemUploaded && item.light_source != kLightItemCarried) return LightStatus::no_block;
@@ -330,6 +347,7 @@ LightStatus decode_item_light(const CapturedItem &item, ItemLightState &state) n
   std::uint32_t expected_command = 0;
   switch (program) {
   case LightProgram::body_paint:
+  case LightProgram::body_prepass:
   case LightProgram::six_qword_no_colour:
     expected_qwords = kBodyPaintLightBlockQwords;
     expected_command = kBodyPaintLightBlockCommand;
@@ -365,6 +383,7 @@ LightStatus shade_item_vertex(const ItemLightState &state, const MeshVertex &ver
                               std::array<std::uint8_t, 4> &rgba) noexcept {
   switch (state.program) {
   case LightProgram::body_paint: return shade_body(state, vertex, rgba);
+  case LightProgram::body_prepass: return shade_body(state, vertex, rgba);
   case LightProgram::nine_qword_first: return shade_nine(state, vertex, false, 1u, rgba);
   case LightProgram::nine_qword_pow8: return shade_nine(state, vertex, false, 8u, rgba);
   case LightProgram::nine_qword_pow16: return shade_nine(state, vertex, false, 16u, rgba);
@@ -372,6 +391,7 @@ LightStatus shade_item_vertex(const ItemLightState &state, const MeshVertex &ver
   case LightProgram::six_qword_no_colour: return shade_six(state, vertex, rgba);
   case LightProgram::three_qword_gain: return shade_three(state, vertex, rgba);
   case LightProgram::passthrough:
+  case LightProgram::morph_passthrough:
     if (!vertex.has_color) return LightStatus::missing_channel;
     rgba = vertex.color;
     return LightStatus::ok;

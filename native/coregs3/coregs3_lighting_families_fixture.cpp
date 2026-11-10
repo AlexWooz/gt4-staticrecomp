@@ -111,7 +111,13 @@ void check_program_selection() {
   require(light_program_from_dispatch(0x0418) == LightProgram::nine_qword_direct, "0x0418 is nine_qword_direct");
   require(light_program_from_dispatch(0x0C68) == LightProgram::six_qword_no_colour, "0x0C68 is six_qword_no_colour");
   require(light_program_from_dispatch(0x14D8) == LightProgram::three_qword_gain, "0x14D8 is three_qword_gain");
+  require(light_program_from_dispatch(0x1508) == LightProgram::three_qword_gain,
+          "0x1508 (the sky) is the same three-qword gain formula");
   require(light_program_from_dispatch(0x0080) == LightProgram::passthrough, "0x0080 is passthrough");
+  require(light_program_from_dispatch(0x00A0) == LightProgram::morph_passthrough,
+          "0x00A0 is the two-key morph pre-pass");
+  require(light_program_from_dispatch(0x1278) == LightProgram::body_prepass,
+          "0x1278 is the body/paint pre-pass");
   require(light_program_from_dispatch(0x1234) == LightProgram::none, "an unmeasured dispatch is none");
 
   CapturedItem item;
@@ -138,6 +144,8 @@ CapturedItem block_item(LightProgram program, std::uint32_t qwords, std::uint32_
   case LightProgram::six_qword_no_colour: item.run_itop = itop_word(0x0C68); break;
   case LightProgram::three_qword_gain: item.run_itop = itop_word(0x14D8); break;
   case LightProgram::passthrough: item.run_itop = itop_word(0x0080); break;
+  case LightProgram::morph_passthrough: item.run_itop = itop_word(0x00A0); break;
+  case LightProgram::body_prepass: item.run_itop = itop_word(0x1278); break;
   default: break;
   }
   item.light_block_qwords = qwords;
@@ -196,6 +204,19 @@ void check_decode_statuses() {
   require(decode_item_light(item, state) == LightStatus::ok, "passthrough ignores a missing block");
   item = block_item(LightProgram::passthrough, 9, 0, kLightItemCarriedUncertain);
   require(decode_item_light(item, state) == LightStatus::ok, "passthrough ignores an uncertain block");
+
+  // TASK-090 world families: the morph program reads no block; the body pre-pass reads the six-qword body form.
+  item = block_item(LightProgram::morph_passthrough, 0, 0, kLightItemNone);
+  require(decode_item_light(item, state) == LightStatus::ok && state.program == LightProgram::morph_passthrough,
+          "the morph program ignores a missing block");
+  item = block_item(LightProgram::morph_passthrough, 6, kBodyPaintLightBlockCommand, kLightItemCarriedUncertain);
+  require(decode_item_light(item, state) == LightStatus::ok, "the morph program ignores an uncertain block");
+  item = block_item(LightProgram::body_prepass, 6, kBodyPaintLightBlockCommand, kLightItemUploaded);
+  require(decode_item_light(item, state) == LightStatus::ok && state.program == LightProgram::body_prepass,
+          "the body pre-pass reads the six-qword body block");
+  item = block_item(LightProgram::body_prepass, 9, kNineQwordLightBlockCommand, kLightItemUploaded);
+  require(decode_item_light(item, state) == LightStatus::block_variant,
+          "the body pre-pass refuses the nine-qword form");
 }
 
 // ---- the formulas, from the AOT fragments --------------------------------------------------------------------------
@@ -318,6 +339,48 @@ void check_six_qword() {
   vertex.normal80 = {127, 0, 0};
   vertex.raw_position = {0, 0, 10};
   require(shade(state, vertex) == colour(0, 0, 0, 128), "six-qword uses L.x only");
+}
+
+void check_world_family_formulas() {
+  // The sky's 0x1508 entry is the same three-qword gain: an identity block emits the colour with alpha clamped to 128.
+  ItemLightState state;
+  state.program = LightProgram::three_qword_gain;
+  state.qword[0] = {1.0f, 1.0f, 1.0f, 1.0f};
+  state.qword[1] = {255.0f, 255.0f, 255.0f, 128.0f};
+  state.qword[2] = {0.0f, 0.0f, 0.0f, 0.0f};
+  MeshVertex vertex;
+  vertex.color = colour(200, 100, 50, 255);
+  vertex.has_color = true;
+  require(shade(state, vertex) == colour(200, 100, 50, 128), "the sky three-qword gain clamps alpha to 128");
+
+  // The 0x1278 body pre-pass uses the full MODE 2 lane as the body position. The block below makes the factor 0.5:
+  // N = +x, D = (100,200,300) - (0,0,0), so the cosine is positive and t is 0; output = base * C3 = 50 * 0.5 = 25.
+  ItemLightState body;
+  body.program = LightProgram::body_prepass;
+  body.qword[0] = {1.0f, 0.0f, 0.0f, 0.0f};
+  body.qword[1] = {0.0f, 1.0f, 0.0f, 0.0f};
+  body.qword[2] = {0.0f, 0.0f, 1.0f, 0.0f};
+  body.qword[3] = {0.0f, 0.0f, 0.0f, 0.0f};
+  body.qword[4] = {0.5f, 0.5f, 0.5f, 0.5f};
+  body.qword[5] = {0.0f, 0.0f, 0.0f, 0.0f};
+  MeshVertex lane;
+  lane.normal = {127, 0, 0};
+  lane.has_normal = true;
+  lane.lane_position = {100, 200, 300};
+  lane.has_lane_position = true;
+  lane.color = colour(50, 60, 70, 128);
+  lane.has_color = true;
+  require(shade(body, lane) == colour(25, 30, 35, 64), "the body pre-pass shades the full int32 lane position");
+  MeshVertex raw_only = lane;
+  raw_only.has_lane_position = false;
+  raw_only.raw_position = {100, 200, 300};
+  raw_only.has_raw_position = true;
+  require(shade(body, raw_only) == colour(25, 30, 35, 64), "the same position in the raw halfword gives the same colour");
+  MeshVertex no_position = lane;
+  no_position.has_lane_position = false;
+  std::array<std::uint8_t, 4> untouched = colour(1, 2, 3, 4);
+  require(shade_item_vertex(body, no_position, untouched) == LightStatus::missing_channel,
+          "the body pre-pass refuses a vertex without any position");
 }
 
 void check_passthrough() {
@@ -474,6 +537,7 @@ int main() {
     check_nine_powers();
     check_three_qword();
     check_six_qword();
+    check_world_family_formulas();
     check_passthrough();
     check_vertex_fallbacks();
     check_status_names();
