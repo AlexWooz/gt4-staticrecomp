@@ -905,3 +905,44 @@ Smallest next steps:
 
 No kit was built: the block does not render yet and the data path is still open only through steps 1-3. The Misc
 fallback (TASK-213) covers the user-facing settings meanwhile; nothing existing was touched.
+---
+
+# Phase 16 - the group entry and the block template (2026-11-10)
+
+## 51. A group entry is an OptionPage with the title "Group"
+
+The five block calls are `OptionPage(...)` constructions with the literal title `"Group"`:
+
+```
+VARIABLE_PUSH OptionPage(97) / EVAL / STRING_CONST "Group" / STRING_CONST "<GroupName>" / NIL / CALL 3 / EVAL
+```
+
+(the first block also passes the `options` list first, `CALL 4`). The block branch of `onInitialize` (line 249) is
+`if (options[i].title == "Group")`: it clones `hidden::Group` (`doCopy`), appends it to `ScrollWindow::clip::space`
+and sets `label.text = context.translate(...)`. The template **`hidden::Group` exists** in the Options root layout
+(the fourth child of `hidden`, line 295 of the decoded mproject), so no layout change is needed for the block chrome.
+
+## 52. The capacity/array question
+
+`options` is created at the end of the page list as `ARRAY_CONST_OLD 33` (`0x9A0C`) = 5 groups + 28 page entries
+(24 pages + 4 dummies). Two probes with a new group + page appended at the end:
+
+- capacity 33: runs, no block (the two extra entries exceed the built list);
+- capacity 35: crash at load, frame 1727, `ra 0x003199D4` (the pop/teardown dispatch).
+
+So the list is **sized and filled as a unit**: changing only the `ARRAY_CONST_OLD` count makes the builder iterate
+slots that are not valid group/page objects. The entries must be created inside the sequence the constructor appends
+to, not after it.
+
+## 53. Gate and next step
+
+A block needs: a group `OptionPage("Group", "<Name>", nil)` created **inside** the compiled sequence (so the `options`
+list holds it between the previous block's pages and the next block's), the existing `hidden::Group` template, and the
+`ARRAY_CONST_OLD` count matching the real number of entries (groups + pages).
+
+The smallest next step is to find what fills `options`: the first block call passes the list explicitly
+(`CALL 4`), later ones do not (`CALL 3`), so `OptionPage.Group` keeps a module-level cursor. Reading the callee of
+that call (the class-object method) and the `ARRAY_CONST_OLD` site together is the remaining piece; once the fill is
+understood, inserting one group + one page before the `EXIT` and raising the count by exactly 2 is the change.
+
+Nothing existing was touched; the Misc host-tree fallback (TASK-213) covers the user-facing settings meanwhile.

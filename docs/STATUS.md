@@ -1,5 +1,18 @@
 # Current Status
 
+## TASK-214 Phase 16: group entry shape and block template found (2026-11-10)
+
+- A group entry is `OptionPage("Group", "<GroupName>", nil)` (the first block also passes the `options` list,
+  `CALL 4`). `onInitialize` line 249 branches on `title == "Group"`, clones **`hidden::Group`** (present in the layout,
+  line 295) and sets `label.text = context.translate(...)` - no layout change needed for the block chrome.
+- **Capacity:** `options` is `ARRAY_CONST_OLD 33` (`0x9A0C`) = 5 groups + 28 page entries; appending a group+page at
+  the end shows nothing at 33 and crashes the load at 35 (`ra 0x003199D4`) because the builder iterates invalid slots.
+- **Gate:** the group must be created **inside** the compiled sequence the constructor appends to, with the count
+  raised by exactly the added entries. Next: read the callee of `OptionPage.Group(...)` and the `ARRAY_CONST_OLD` site
+  to see the fill/cursor.
+- **No kit yet** (block does not render); the Misc host-tree fallback (TASK-213) covers UX. Nothing existing touched;
+  tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 15: target moved to a new Options block (2026-11-10, owner 13:51)
 
 - **Blocks are script-drawn:** the `.mproject` has no block nodes and no `General`/`Miscellaneous` strings; the blocks

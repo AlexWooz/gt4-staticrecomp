@@ -5270,3 +5270,14 @@ The shipped path stays our MIT tools.
 - **Next:** read `0x319980..0x319A24` (the two-list pop and `+0x90` dispatch) and the `OptionPage.Group` static; then
   insert the group inside the sequence with the matching capacity.
 - **No kit:** the block does not render yet. Misc fallback (TASK-213) covers UX. Tests 846 OK (77 skipped).
+**Phase 16 (2026-11-10, group entry and block template).**
+- A group entry is `OptionPage("Group", "<GroupName>", nil)` (first block also passes the `options` list, `CALL 4`).
+  `onInitialize` line 249 branches on `title == "Group"`, clones **`hidden::Group`** (which exists in the layout,
+  line 295) and sets `label.text = context.translate(...)`. No layout change is needed for the block chrome.
+- **Capacity:** `options` is `ARRAY_CONST_OLD 33` (`0x9A0C`) = 5 groups + 28 page entries. Appending group+page at the
+  end with capacity 33 shows nothing; with 35 the load crashes (`ra 0x003199D4`) because the builder iterates slots
+  that are not valid group/page objects.
+- **Gate:** the group must be created **inside** the compiled sequence the constructor appends to, with the count
+  raised by exactly the number of added entries. Next: read the callee of the `OptionPage.Group(...)` call (the
+  class-object method) plus the `ARRAY_CONST_OLD` site to see the fill/cursor.
+- **No kit:** the block does not render yet; Misc fallback (TASK-213) covers UX. Tests 846 OK (77 skipped).
