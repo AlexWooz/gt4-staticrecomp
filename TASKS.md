@@ -1671,8 +1671,16 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   the VU1 memory is double buffered (`ofst 435`), so the carried block is tracked per MSCAL parity in VIF order, with
   179,944 carried items over the run and 3,305 uncertain. Per-draw counters identical to r13; v3 field identity on 232
   draws; CTest 4/4, Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK.
-- Next: merge the vertex fix, implement the remaining family formulas with the per-item blocks, then
-  fog/textures/reflection and the G-IMAGE/G-PERF gates.
+- **Vertex transform fix (2026-11-10).** Merged `task/090-vertex-fix` (dd01a4bd): the captured linear columns are
+  `vf24..26 * cmd.value` and the translation `vf27` is unscaled; `coregs3_vertex` now exposes raw, upload and
+  per-encoding metre transforms (`vu1_linear_upload_factor`, `metre_linear_scale`, `PositionEncoding`), with the
+  `cmd.value == 0` unscaled branch and the V3-16/V3-32 distinction. `draw_matrix`, the offline renderer and the live
+  present push constants use the per-encoding metre sets. The r13 render is bit-identical to the gate research's fixed
+  prototype: 1x coverage 99.26% (block) / 97.49% (3x px), spill 1.70% (3x px) / 5.00% (1x block); the 1x diagnostic is
+  98.79%/0.54%; median translation-centred residual 0.041 px and 102/115 draws within 0.5 px (was 58). CTest 5/5,
+  Python 7/7, combined 3x gate COREGS3-NIGHT-CHECK-OK.
+- Next: merge the remaining-family lighting implementation (in flight), then fog/textures/reflection and the
+  G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

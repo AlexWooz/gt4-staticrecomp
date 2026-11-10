@@ -1,5 +1,16 @@
 # Current Status
 
+## 2026-11-10: the vertex transform fix merged; the combined tree passes the 3x gate
+
+`task/090-vertex-fix` is merged (dd01a4bd). The captured linear columns are `vf24..26 * cmd.value` and the translation
+`vf27` is unscaled; `coregs3_vertex` now exposes the raw, upload and per-encoding metre transforms (V3-16 vs V3-32, plus
+the `cmd.value == 0` unscaled branch), and `draw_matrix`, the offline renderer and the live present push constants use the
+per-encoding metre sets. The r13 render is bit-identical to the gate research's fixed prototype: 1x coverage 99.26%
+(block) / 97.49% (3x px), spill 1.70% (3x px) / 5.00% (1x block); the 1x diagnostic is 98.79% / 0.54%; median
+translation-centred residual 0.041 px and 102/115 draws within 0.5 px (was 58). Combined with the per-item capture (v4)
+and the UV/parser fix: CTest 5/5, Python 7/7, and the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686
+racing, 0 differences, 13/13 frames; capture v4 4,451,628 B). The remaining-family lighting implementation is in flight.
+
 ## TASK-090 per-item capture: the light state, selector and carried block (2026-11-10)
 
 `.gt4scene` is **version 4**: the K1 post hook walks the whole PGL output chain (`native/coregs3/coregs3_chain.*`) and
