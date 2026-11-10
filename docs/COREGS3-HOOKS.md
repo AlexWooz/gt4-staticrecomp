@@ -888,3 +888,80 @@ the 3x off/shadow identity gate with the main worktree reference exe (`COREGS3-N
 | Fixture `coregs3_texture_decode_fixture` | **ok**: synthetic 4 MiB SLM, T4 CSA 0/6, T8 CSA 2, CT32 direct, the three key properties and all seven refusals, sidecar round trip and malformed variants |
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,451,628 B |
 | Real decode against the CoreGS 2.0 reference | 204 per-draw texture decodes on frame 0, 0 refused, 148 exact RGBA matches; draws 2 and 3 exact; keys and RGBA stable across the two captured frames |
+
+## 16. Round 20 (2026-11-10, branch `task/090-textured-render`): the first textured offline car frame
+
+The offline reference renderer now samples the decoded car textures (§15). The work is the first milestone of the
+texture direction in TASKS.md TASK-090; it does not touch the E1/EE hooks, the capture format or the lighting and
+vertex conventions.
+
+### 16.1 The sampler (`native/coregs3/coregs3_sampler.{hpp,cpp}`, always built)
+
+The measured car-pass subset, in GS terms and independent of the decoder:
+
+- formats T4, T8 and CT32 (the decoder supplies RGBA8, so the sampler never re-decodes);
+- MODULATE only: `rgb = min(255, (T * C) >> 7)`, `a = min(255, (Ta * Ca) >> 7)` when TCC = 1, else `a = Ca`;
+- level 0 only (TEX1.MXL must be 0); nearest or linear per record, and MMAG must equal MMIN because the LOD that would
+  choose between them is not computed (the night capture carries 156 linear/linear and 13 nearest/nearest records);
+- the four CLAMP wrap modes (REPEAT, CLAMP, REGION_CLAMP, REGION_REPEAT) with the chapter 01.1 formulas; the measured
+  car pass uses region clamp with the full-size region or repeat;
+- bilinear with the spec's 10.4 coordinate, `(u - 0.5)` floor base, 4-bit weights and a `>> 8` sum (the same arithmetic
+  as `native/hw_gs/pixel`);
+- alpha test: ATE with the eight ATST comparisons and AREF; only AFAIL KEEP is reproduced (a failing fragment writes no
+  colour and no depth). DATE and every other AFAIL are counted refusals;
+- blends: the measured normal `(Cs - Cd) * As + Cd` and additive `(Cs - 0) * Ad + Cd`, evaluated as the GS integer
+  `(((A - B) * C) >> 7) + D` and clamped (COLCLAMP = 1); another equation is refused;
+- FRAME.FBMSK lane merge and ZBUF.ZMSK (no depth write).
+
+A wrapped texel outside the decoded rectangle, a mixed filter pair, a mip level, another TFX and an unsupported PSM are
+named refusals; nothing is zero-filled or guessed.
+
+### 16.2 The frame table (`native/coregs3/coregs3_texture_frame.{hpp,cpp}`, `GT4_HW_GS` builds)
+
+The table joins a capture, its `.gt4vram` sidecar and an optional `.gt4tap`:
+
+- every texture record an item names is decoded once, and records sharing a Format G key share the decoded RGBA8
+  (frame 0: 167 records decoded, 10 cache hits, 0 refused);
+- each item binds a `SampledTexture` only when it carries a model UV channel; the body/paint family is deferred (its
+  CT32 256x256 environment map is sampled with VU1 texgen ST, a later task), and the reason for every untextured item
+  is counted (texgen, no record, no UV, decode refusal);
+- the per-item pixel state comes from the tap with the `uv` gate's proven pairing (§15.4): the frame's jobs are the
+  tap source records with `vblank == frame.vblank` (the PATH1 GIFs arrive about three VBlanks later), the A+D state is
+  tracked across the whole tap in emission order (TEST, ALPHA, FRAME, ZBUF; PRIM from the vertex), and each item takes
+  the next vertex record with its vertex count and TEX0 (TBP0, PSM). Frame 0: 327 of 335 items paired, 8 defaulted to
+  the measured state; 116 pairings had a later candidate with the same count and TEX0 (reported).
+
+`gt4_coregs3_tap` now reads the tap through the same `coregs3_tap_file` reader.
+
+### 16.3 The renderer and the tool
+
+`coregs3_render` gained the texture path: the model UV interpolates with 1/w (the VU1's Q cancels in S/Q), the fragment
+is sampled with the lit vertex colour as MODULATE's C, the alpha test runs before the depth test, then the depth test,
+the blend, FBMSK and the optional ZMSK depth mask. An optional output marks the textured draws' geometric coverage. The
+untextured path is unchanged (the pre-texture picture is the A/B). `gt4_coregs3_render` gained `--vram`, `--tap`,
+`--no-textured`, `--texture-body`, `--texture-mask` and `--mask`; it selects the sidecar record `V = frame.vblank + 1`
+(the measured alignment) and reports the decode, binding and raster counters.
+
+### 16.4 Evidence (frame 0, VBlank 7398, night race)
+
+- 335 items: 216 textured, 119 untextured (80 texgen, 36 no record, 3 no UV), 0 refused.
+- 1x: 7,196 textured fragment writes, 626 alpha-test failures, 1,563 FBMSK pixels, 596 ZMSK pixels, 0 blend pixels
+  (the car PRIM has ABE off in this frame); the textured draws cover 2,653 of the 4,278 covered pixels.
+- 3x: 64,325 textured fragment writes; the textured draws' mask is 23,823 px of the 38,446 covered px.
+- Against the CoreGS 2.0 VBlank-7400 reference (capture +2), inside the textured draws' mask:
+  PSNR 17.071 -> 17.612 dB, SSIM 0.2165 -> 0.2219, pct_bad 90.035% -> 88.381%. The 2,809 pixels the textures visibly
+  change go from 12.870 to 14.929 dB. Inside the whole car-pass coverage: PSNR 18.738 -> 19.227 dB. The remaining
+  difference is the pre-existing geometry/lighting gap of the CPU reference at the two-frame pairing (no fog, no
+  texgen); the texture decode itself is the byte-exact one of §15.4.
+- Images: `build/evidence/coregs3-textured/` (`offline-textured-frame0.png`, `offline-untextured-frame0.png`, the 3x
+  frames and masks, `metrics.txt`, the tool reports).
+
+### 16.5 Gates
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | **8/8 passed** (the seven of §15.5 plus the new `native_coregs3_sampler`) |
+| Python `tests/python/test_coregs3_units.py` | **7/7 passed** |
+| Fixture `coregs3_sampler_fixture` | **ok**: hand-authored T4/T8/CT32 textures, MODULATE exact 8-bit, nearest/bilinear, the four wrap modes, the alpha test with KEEP and the DATE/AFAIL refusals, normal/additive blends, FBMSK and a textured quad through `render_frame` with an alpha-test-failed pixel, a blended pixel, FBMSK and ZMSK |
+| Build | full `GT4_HW_GS` candidate builds clean |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,451,628 B |

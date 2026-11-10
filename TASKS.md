@@ -1729,7 +1729,26 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   2.0 `GT4_HW_DUMP_TEXTURES` PNGs byte for byte; keys/RGBA stable across VBlanks 7398/7399. Frame 0: 204 per-draw
   decodes, 0 refused, 148 exact reference matches; T8 4/5; the CT32 256x256 env map decodes natively (no reference).
   CTest 7/7, Python 7/7, 3x gate OK. No renderer samples a texture yet.
-- Next: the offline textured renderer using the decoded textures, then the capture extension (ALL_DRAWS pass tag/K7,
+- **First textured offline car frame (2026-11-10, branch `task/090-textured-render`).** The offline reference renderer
+  now samples the decoded car textures. New `coregs3_sampler` (the measured subset: T4/T8/CT32 RGBA8, MODULATE in the
+  GS 8-bit form, level 0, nearest/linear with MMAG == MMIN, the four wrap modes, alpha test with AFAIL KEEP, the
+  normal/additive blends, FBMSK and ZMSK; DATE and any other AFAIL are counted refusals). New
+  `coregs3_texture_frame` joins a capture, its `.gt4vram` sidecar and an optional `.gt4tap`: it decodes each record the
+  items use once and shares the decoded RGBA8 between records that produce the same Format G key, and attaches the tap's per-item TEST/ALPHA/FRAME/ZBUF/PRIM state by the proven `uv`
+  gate pairing (vertex count + TEX0, global A+D state in tap order). The body/paint family stays on the lit colour
+  because its CT32 environment map uses texgen ST (80 items deferred, counted). Frame 0 (VBlank 7398, night race):
+  335 items, 216 textured (T4/T8 records), 119 untextured (80 texgen, 36 no record, 3 no UV), 167 records decoded,
+  10 Format G cache hits, 0 refused; tap paired 327/335 items (8 defaulted). Raster: 7,196 textured fragment writes at
+  1x (64,325 at 3x), 626 alpha-test failures at 1x, 1,563 FBMSK pixels, 596 ZMSK pixels, 0 blend pixels (the car PRIM
+  has ABE off in this frame). 3x masked against the CoreGS 2.0 VBlank-7400 reference (textured draws' mask, 23,823
+  px): PSNR 17.071 -> 17.612 dB, SSIM 0.2165 -> 0.2219, pct_bad 90.035% -> 88.381%; the 2,809 pixels the textures
+  visibly change go from 12.870 to 14.929 dB. The low absolute values are the known geometry/lighting gap of the CPU
+  reference (2-frame pairing, no fog/texgen), not a texture decode issue; draw 2/3 sample their verified T4 records.
+- New `native_coregs3_sampler` fixture (8/8 CTest with the 7 existing), Python 7/7, the 3x off/shadow identity gate
+  COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames) and the full build. Evidence:
+  `build/evidence/coregs3-textured/` (`offline-textured-frame0.png`, the untextured A/B, the 3x frames and masks,
+  `metrics.txt`).
+- Next: the capture extension (ALL_DRAWS pass tag/K7,
   hw GS-stream, `render_panel` 2D recorder) that unblocks track, effects and HUD; then the G-IMAGE/G-PERF gates.
   The per-item light state is now consumed by both renderers.
 

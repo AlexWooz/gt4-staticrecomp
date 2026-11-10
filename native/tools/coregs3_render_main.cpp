@@ -10,6 +10,14 @@
 //       it invalidates every item's run pair, so the renderer falls back to the base colours and the difference from the
 //       normal render is exactly what the measured per-item VU1 programs add.
 //
+//   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --vram <capture.gt4vram> [--tap <capture.gt4tap>]
+//                         [--no-textured] [--texture-body] ...
+//       the first textured car frame (TASK-090 texture milestone): decodes the items' texture records from the GS
+//       local-memory sidecar (once per Format G key), takes each item's TEST/ALPHA/FRAME/ZBUF state from the tap when
+//       one is given, and samples the measured subset (coregs3_sampler.hpp). The body/paint family stays on the lit
+//       colour (its CT32 environment map is sampled with VU1 texgen ST, a later task). --no-textured is the untextured
+//       A/B: the same frame with no texture table, byte-for-byte the pre-texture renderer.
+//
 //   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
 //       status) for the tap validation scripts.
@@ -20,6 +28,12 @@
 #include "coregs3_render.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
+#ifdef GT4_COREGS3_TEXTURES
+#include "coregs3_tap_file.hpp"
+#include "coregs3_texture.hpp"
+#include "coregs3_texture_frame.hpp"
+#include "coregs3_vram.hpp"
+#endif
 
 #include <cmath>
 #include <cstdio>
@@ -234,6 +248,12 @@ int main(int argc, char **argv) {
   const char *out = nullptr;
   const char *report = nullptr;
   const char *shade_dump = nullptr;
+  const char *vram_path = nullptr;
+  const char *tap_path = nullptr;
+  const char *texture_mask_path = nullptr;
+  const char *coverage_mask_path = nullptr;
+  bool no_textured = false;
+  bool texture_body = false;
   RenderOptions options;
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -241,6 +261,12 @@ int main(int argc, char **argv) {
     else if (argument == "--counts") counts = true;
     else if (argument == "--ndc") ndc = true;
     else if (argument == "--no-programs") no_programs = true;
+    else if (argument == "--vram" && index + 1 < argc) vram_path = argv[++index];
+    else if (argument == "--tap" && index + 1 < argc) tap_path = argv[++index];
+    else if (argument == "--texture-mask" && index + 1 < argc) texture_mask_path = argv[++index];
+    else if (argument == "--mask" && index + 1 < argc) coverage_mask_path = argv[++index];
+    else if (argument == "--no-textured") no_textured = true;
+    else if (argument == "--texture-body") texture_body = true;
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
     else if (argument == "--report" && index + 1 < argc) report = argv[++index];
@@ -421,15 +447,92 @@ int main(int argc, char **argv) {
     selected.draws = std::move(kept);
     selected.draw_count = static_cast<std::uint32_t>(selected.draws.size());
   }
+  bool textured = false;  // the texture table was built and attached
+  if (tap_path != nullptr && vram_path == nullptr)
+    std::fprintf(stderr, "gt4_coregs3_render: --tap has no effect without --vram\n");
+#ifdef GT4_COREGS3_TEXTURES
+  // The texture milestone: join the capture with its VRAM sidecar and (optionally) the VU1 tap into the per-item
+  // texture table. The sidecar record whose `vblank` is V covers the capture frame with `frame.vblank == V - 1`.
+  FrameTextureTable texture_table;
+  TextureFrameCounters texture_counters;
+  if (vram_path != nullptr && !no_textured) {
+    std::vector<VramRecord> vram_records;
+    if (!read_vram_sidecar(vram_path, vram_records, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    const VramRecord *vram_record = nullptr;
+    for (const VramRecord &candidate : vram_records)
+      if (candidate.vblank == selected.vblank + 1u) {
+        vram_record = &candidate;
+        break;
+      }
+    if (vram_record == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: no VRAM record at VBlank %llu for frame vblank %llu\n",
+                   static_cast<unsigned long long>(selected.vblank + 1u),
+                   static_cast<unsigned long long>(selected.vblank));
+      return 1;
+    }
+    SlmImage slm;
+    if (!build_slm_image(*vram_record, slm, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    std::vector<std::uint8_t> tap_data;
+    std::vector<TapFileRecord> tap_records;
+    if (tap_path != nullptr && !read_tap_file(tap_path, tap_data, tap_records, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    TextureFrameOptions texture_options;
+    texture_options.use_tap = tap_path != nullptr;
+    texture_options.texture_body = texture_body;
+    if (!build_frame_texture_table(selected, slm, tap_path != nullptr ? tap_data.data() : nullptr, tap_records,
+                                   texture_options, texture_table, texture_counters, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    options.textures = &texture_table;
+    textured = true;
+  }
+#else
+  if (vram_path != nullptr) {
+    std::fprintf(stderr, "gt4_coregs3_render: this build has no texture decoder (configure with GT4_HW_GS=ON)\n");
+    return 1;
+  }
+#endif
   std::vector<std::uint8_t> rgba, mask;
+  std::vector<std::uint8_t> textured_mask;
   RenderStats stats;
-  if (!render_frame(selected, options, rgba, mask, stats, error)) {
+  if (!render_frame(selected, options, rgba, mask, stats, error, texture_mask_path != nullptr ? &textured_mask : nullptr)) {
     std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
     return 1;
   }
   if (!write_png_rgba(out, options.width, options.height, rgba.data())) {
     std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", out);
     return 1;
+  }
+  if (texture_mask_path != nullptr) {
+    // The textured draws' geometric coverage, as a binary PGM the metrics script reads.
+    std::FILE *mask_file = std::fopen(texture_mask_path, "wb");
+    if (mask_file == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", texture_mask_path);
+      return 1;
+    }
+    std::fprintf(mask_file, "P5\n%u %u\n255\n", options.width, options.height);
+    std::fwrite(textured_mask.data(), 1, textured_mask.size(), mask_file);
+    std::fclose(mask_file);
+  }
+  if (coverage_mask_path != nullptr) {
+    // The whole car pass's written coverage (the renderer's own mask), for the wider comparison.
+    std::FILE *mask_file = std::fopen(coverage_mask_path, "wb");
+    if (mask_file == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", coverage_mask_path);
+      return 1;
+    }
+    std::fprintf(mask_file, "P5\n%u %u\n255\n", options.width, options.height);
+    std::fwrite(mask.data(), 1, mask.size(), mask_file);
+    std::fclose(mask_file);
   }
 
   const FrameSnapshot &frame = selected;
@@ -439,6 +542,54 @@ int main(int argc, char **argv) {
               static_cast<unsigned long long>(stats.covered_pixels));
   std::printf("lighting: %u draws lit, %u fallback; %u vertices lit, %u fallback\n", stats.draws_lit,
               stats.draws_fallback, stats.vertices_lit, stats.vertices_fallback);
+#ifdef GT4_COREGS3_TEXTURES
+  const auto print_textures = [&textured, &texture_counters, &stats](std::FILE *file) {
+    if (!textured) return;
+    std::fprintf(file,
+                 "textures items %llu textured %llu untextured %llu (texgen %llu, no-record %llu, no-uv %llu, "
+                 "decode-refused %llu, unknown-program %llu)\n",
+                 static_cast<unsigned long long>(texture_counters.items_visited),
+                 static_cast<unsigned long long>(texture_counters.items_textured),
+                 static_cast<unsigned long long>(texture_counters.items_untextured),
+                 static_cast<unsigned long long>(texture_counters.items_texgen_deferred),
+                 static_cast<unsigned long long>(texture_counters.items_no_texture),
+                 static_cast<unsigned long long>(texture_counters.items_no_uv),
+                 static_cast<unsigned long long>(texture_counters.items_decode_refused),
+                 static_cast<unsigned long long>(texture_counters.items_program_unknown));
+    std::fprintf(file, "textures decode decoded %llu refused %llu cache-hits %llu\n",
+                 static_cast<unsigned long long>(texture_counters.records_decoded),
+                 static_cast<unsigned long long>(texture_counters.records_refused),
+                 static_cast<unsigned long long>(texture_counters.cache_hits));
+    std::fprintf(file, "textures tap paired %llu defaulted %llu ambiguous %llu records %llu state-writes %llu\n",
+                 static_cast<unsigned long long>(texture_counters.tap_items_paired),
+                 static_cast<unsigned long long>(texture_counters.tap_items_defaulted),
+                 static_cast<unsigned long long>(texture_counters.tap_items_ambiguous),
+                 static_cast<unsigned long long>(texture_counters.tap_records),
+                 static_cast<unsigned long long>(texture_counters.tap_state_writes));
+    std::fprintf(file,
+                 "textures raster items %u (untextured %u), pixels %llu, alpha-fail %llu, blended %llu (additive %llu), "
+                 "fbmsk %llu, depth-masked %llu, sample-refused %llu\n",
+                 stats.items_textured, stats.items_untextured, static_cast<unsigned long long>(stats.textured_pixels),
+                 static_cast<unsigned long long>(stats.alpha_test_failed),
+                 static_cast<unsigned long long>(stats.blended_pixels),
+                 static_cast<unsigned long long>(stats.additive_pixels),
+                 static_cast<unsigned long long>(stats.fbmsk_pixels),
+                 static_cast<unsigned long long>(stats.depth_masked_pixels),
+                 static_cast<unsigned long long>(stats.sample_refused_pixels));
+    std::fprintf(file,
+                 "textures refused-items tfx %u filter %u psm %u mip %u blend %u date %u afail %u\n",
+                 stats.items_refused_tfx, stats.items_refused_filter, stats.items_refused_psm, stats.items_refused_mip,
+                 stats.items_refused_blend, stats.items_refused_date, stats.items_refused_alpha_fail);
+  };
+  print_textures(stdout);
+  if (texture_mask_path != nullptr) {
+    std::size_t masked = 0;
+    for (std::uint8_t value : textured_mask) masked += value != 0 ? 1u : 0u;
+    std::printf("texture mask %s: %zu pixels (geometric coverage of the textured draws)\n", texture_mask_path, masked);
+  }
+#else
+  (void)textured;
+#endif
   const auto print_lighting = [&stats](std::FILE *file) {
     for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {
       const LightFamilyCounts &family = stats.lighting.family[program];
@@ -480,6 +631,9 @@ int main(int argc, char **argv) {
                    stats.triangles_drawn, static_cast<unsigned long long>(stats.covered_pixels), stats.draws_lit,
                    stats.draws_fallback, stats.vertices_lit, stats.vertices_fallback);
       print_lighting(file);
+#ifdef GT4_COREGS3_TEXTURES
+      print_textures(file);
+#endif
       for (const std::string &refusal : stats.refusals) std::fprintf(file, "refusal %s\n", refusal.c_str());
       std::fclose(file);
     }
