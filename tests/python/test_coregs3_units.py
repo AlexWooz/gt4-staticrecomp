@@ -2,8 +2,14 @@
 
 The real units are private translated code; these controls use synthetic units that only contain the anchors the script
 looks for, so the insertion rules, the refusals and the byte-exact removal proof are testable without any game data.
+
+The last class is the `.gt4gs` version 1 stream control (TASK-090 S1): it writes the documented format independently in
+Python and checks the `gt4_coregs3_gs` tool's parse (`--stats`, `--list`, `--dump-frame`) and its reader refusals.
 """
 import importlib.util
+import os
+import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -162,6 +168,131 @@ class InsertionTest(unittest.TestCase):
             self.assertTrue((Path(temporary) / 'instrumented.coregs3-units.json').is_file())
             with self.assertRaises(coregs3_units.UnitError):
                 coregs3_units.instrument(source, output)  # a fresh folder only
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# TASK-090 S1: the `.gt4gs` version 1 stream, written here from docs/COREGS3-GSSTREAM-CAPTURE.md §3.2 (an independent
+# implementation of the format), parsed by the built `gt4_coregs3_gs` tool. Needs GT4_NATIVE_BUILD with that tool;
+# skipped otherwise.
+
+def _gs_record(kind, path=0, flags=0, pass_id=0, sequence=0, vblank=0, last_job=0, pc=0, ra=0, qwc=0, payload=b''):
+    assert len(payload) % 16 == 0, 'a .gt4gs payload is a multiple of 16 bytes'
+    return struct.pack('<IHBBIIQQIIII', len(payload), kind, path, flags, pass_id, sequence, vblank, last_job, pc, ra,
+                       qwc, 0) + payload
+
+
+def _gs_stream():
+    """One frame (VBlank 7398) with two passes, a PATH3 packet in each and one PATH2 packet, plus frame totals."""
+    registers_sky = list(range(0x10, 0x19))
+    registers_course = list(range(0x20, 0x29))
+    frame_begin = struct.pack('<IIQQQ', 0, 0, 0, 0, 0)
+    frame_end = struct.pack('<IIQQQ', 0, 0, 16, 96, 0)
+    records = [
+        _gs_record(4, vblank=7398, payload=frame_begin),
+        _gs_record(2, pass_id=2, sequence=1, vblank=7398, last_job=7, payload=struct.pack('<9Q2I', *registers_sky, 0, 0)),
+        _gs_record(1, path=3, flags=1, pass_id=2, sequence=2, vblank=7398, last_job=7, pc=0x00100008, ra=0x0010000C,
+                   qwc=2, payload=bytes(range(32))),
+        _gs_record(1, path=2, pass_id=2, sequence=3, vblank=7398, last_job=8, pc=0x00100010, ra=0x00100014,
+                   qwc=1, payload=bytes(range(16))),
+        _gs_record(3, pass_id=2, vblank=7398, payload=struct.pack('<9Q2I', *registers_sky, 0, 0)),
+        _gs_record(2, pass_id=5, vblank=7398, last_job=9, payload=struct.pack('<9Q2I', *registers_course, 0, 0)),
+        _gs_record(1, path=3, pass_id=5, sequence=6, vblank=7398, last_job=9, qwc=4, payload=bytes(range(64))),
+        _gs_record(3, pass_id=5, vblank=7398, payload=struct.pack('<9Q2I', *registers_course, 0, 0)),
+        _gs_record(5, vblank=7398, payload=frame_end),
+    ]
+    header = struct.pack('<IIIIQQ', 0x47345447, 1, 0, 0, 7398, 0)
+    return header + b''.join(records)
+
+
+def _gs_tool():
+    build = os.environ.get('GT4_NATIVE_BUILD')
+    if not build:
+        return None
+    for name in ('gt4_coregs3_gs.exe', 'gt4_coregs3_gs'):
+        candidate = Path(build) / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+@unittest.skipUnless(_gs_tool(), 'GT4_NATIVE_BUILD does not contain gt4_coregs3_gs')
+class GsStreamToolTest(unittest.TestCase):
+    def write(self, folder, name, data):
+        path = Path(folder) / name
+        path.write_bytes(data)
+        return path
+
+    def run_tool(self, *arguments):
+        return subprocess.run([str(_gs_tool()), *map(str, arguments)], capture_output=True, text=True)
+
+    def test_stats_parses_the_documented_format(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write(temporary, 'stream.gt4gs', _gs_stream())
+            done = self.run_tool('--stats', path)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn('version 1 target 0', done.stdout)
+            self.assertIn('path2 16 in 1 records, path3 96 in 2 records', done.stdout)
+            self.assertIn('frames: opened 1 closed 1 refused 0', done.stdout)
+            self.assertIn('pass sky', done.stdout)
+            self.assertIn('pass course', done.stdout)
+
+    def test_list_prints_every_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write(temporary, 'stream.gt4gs', _gs_stream())
+            done = self.run_tool('--list', path)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn('pass_begin', done.stdout)
+            self.assertIn('path3', done.stdout)
+            self.assertIn('pc 00100008 ra 0010000C', done.stdout)
+            self.assertIn('signals', done.stdout)
+
+    def test_dump_frame_prints_registers_and_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write(temporary, 'stream.gt4gs', _gs_stream())
+            done = self.run_tool('--dump-frame', '0', path)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn('frame 0 vblank 7398', done.stdout)
+            self.assertIn('registers fogcol', done.stdout)
+            self.assertIn('frame_index 0 path2 16 path3 96', done.stdout)
+
+    def test_malformed_streams_are_refused(self):
+        good = _gs_stream()
+        cases = {
+            'bad magic': (b'\x00\x00\x00\x00' + good[4:], 'bad magic'),
+            'unknown version': (good[:4] + struct.pack('<I', 2) + good[8:], 'unsupported GS stream version 2'),
+            'header reserved': (good[:24] + struct.pack('<Q', 1) + good[32:], 'reserved word is nonzero'),
+            'trailing bytes': (good + b'\x00', 'trailing partial record'),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            for label, (data, expected) in cases.items():
+                with self.subTest(label):
+                    path = self.write(temporary, 'bad.gt4gs', data)
+                    done = self.run_tool('--stats', path)
+                    self.assertEqual(done.returncode, 1, done.stdout)
+                    self.assertIn(expected, done.stderr)
+
+    def test_a_record_over_the_end_is_refused(self):
+        good = bytearray(_gs_stream())
+        # The first record after the 32-byte header is the frame_begin (48-byte header + 32-byte payload). A multiple of
+        # 16 that runs past the file reaches the bounds check, not the alignment one.
+        struct.pack_into('<I', good, 32, 0x10000)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write(temporary, 'over.gt4gs', bytes(good))
+            done = self.run_tool('--stats', path)
+            self.assertEqual(done.returncode, 1)
+            self.assertIn('runs past the end', done.stderr)
+
+    def test_a_bad_pass_id_is_refused(self):
+        good = bytearray(_gs_stream())
+        # The first GIF record starts after the header, frame_begin, pass_begin: 32 + 48+32 + 48+80 = 240.
+        gif_at = 32 + (48 + 32) + (48 + 80)
+        self.assertEqual(struct.unpack_from('<H', good, gif_at + 4)[0], 1, 'the offset names a GIF record')
+        struct.pack_into('<I', good, gif_at + 8, 99)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write(temporary, 'badpass.gt4gs', bytes(good))
+            done = self.run_tool('--stats', path)
+            self.assertEqual(done.returncode, 1)
+            self.assertIn('outside the PassId table', done.stderr)
 
 
 if __name__ == '__main__':

@@ -462,7 +462,9 @@ target_link_libraries(mtvu_journal_fixture PRIVATE gt4_mtvu_journal)
 target_compile_options(mtvu_journal_fixture PRIVATE /W4)
 # TASK-011 step 2: worker runtime (EE shadow, worker dispatch, journal drain). Linked into the slice170 runtime only.
 # TASK-090: the VU1 tap lives with the worker that emits PATH1 (coregs3_tap.cpp); an unconfigured tap is one branch.
-add_library(gt4_mtvu_runtime STATIC mtvu_runtime.cpp coregs3/coregs3_tap.cpp)
+# TASK-090 S1: the `.gt4gs` PATH2/PATH3 recorder lives next to it (coregs3_gsstream.cpp), written from the same EE
+# acceptance points; the file is written at shutdown from a preallocated ring.
+add_library(gt4_mtvu_runtime STATIC mtvu_runtime.cpp coregs3/coregs3_tap.cpp coregs3/coregs3_gsstream.cpp)
 target_include_directories(gt4_mtvu_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_link_libraries(gt4_mtvu_runtime PUBLIC gt4_mtvu_journal gt4_mtvu_measure gt4_perf_probe gt4_quickfix)
 target_compile_options(gt4_mtvu_runtime PRIVATE /W4)
@@ -489,7 +491,7 @@ add_library(gt4_coregs3 STATIC
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
     coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp
     coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp
-    coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp)
+    coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp coregs3/coregs3_gsstream_file.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
@@ -1144,6 +1146,13 @@ add_executable(coregs3_track_fixture coregs3/coregs3_track_fixture.cpp)
 target_link_libraries(coregs3_track_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_track_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_track COMMAND $<TARGET_FILE:coregs3_track_fixture>)
+# TASK-090 S1: the `.gt4gs` version 1 writer and reader (round trip, every bound/refusal, the reader's malformed
+# variants). The writer source is compiled into the fixture directly because gt4_mtvu_runtime carries the donor worker.
+add_executable(coregs3_gsstream_fixture coregs3/coregs3_gsstream_fixture.cpp coregs3/coregs3_gsstream.cpp)
+target_link_libraries(coregs3_gsstream_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_gsstream_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_gsstream COMMAND $<TARGET_FILE:coregs3_gsstream_fixture>
+         "${CMAKE_CURRENT_BINARY_DIR}/coregs3_gsstream_work")
 # TASK-090 CoreGS 3.0: the native car-texture decoder (native/coregs3/coregs3_texture.cpp) needs the HWR memory, CLUT
 # and replacement libraries, so its fixture and offline tool exist only in a GT4_HW_GS build.
 if(GT4_HW_GS)
@@ -1176,6 +1185,10 @@ target_compile_options(gt4_coregs3_render PRIVATE /W4)
 add_executable(gt4_coregs3_tap tools/coregs3_tap_main.cpp)
 target_link_libraries(gt4_coregs3_tap PRIVATE gt4_coregs3)
 target_compile_options(gt4_coregs3_tap PRIVATE /W4)
+# TASK-090 S1: the `.gt4gs` PATH2/PATH3 stream tool (stats/list/dump-frame) and the G-PASS pass-record control.
+add_executable(gt4_coregs3_gs tools/coregs3_gs_main.cpp)
+target_link_libraries(gt4_coregs3_gs PRIVATE gt4_coregs3)
+target_compile_options(gt4_coregs3_gs PRIVATE /W4)
 option(GT4_COREGS3 "Link the CoreGS 3.0 observe-only capture hooks (needs an EE library from scripts/coregs3_units.py)" OFF)
 add_executable(perf_accounting_fixture perf_accounting_fixture.cpp)
 target_compile_options(perf_accounting_fixture PRIVATE /W4)
