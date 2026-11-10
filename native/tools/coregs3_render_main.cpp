@@ -137,6 +137,13 @@ void print_channel_scan(const FrameSnapshot &frame) {
                 "light block %u qwords cmd %08X\n",
                 draw.program_tag, draw.program_selector, draw.program_entry, draw.program_itop, draw.program_dispatch,
                 draw.program_count, draw.program_valid, draw.light_block_qwords, draw.light_block_command);
+    std::printf("  chain tags %u valid %u uniform %u\n", draw.chain_tags, draw.chain_valid, draw.program_uniform);
+    for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+      const CapturedItem &item = draw.items[index];
+      std::printf("    item %u source %u run %08X %08X valid %u | light %u qwords cmd %08X src %08X\n", index,
+                  item.light_source, item.run_itop, item.run_mscal, item.run_valid, item.light_block_qwords,
+                  item.light_block_command, item.light_block_source);
+    }
     std::printf("  vf24 %08X %08X %08X %08X\n", draw.vf[0][0], draw.vf[0][1], draw.vf[0][2], draw.vf[0][3]);
     std::printf("  vf25 %08X %08X %08X %08X\n", draw.vf[1][0], draw.vf[1][1], draw.vf[1][2], draw.vf[1][3]);
     std::printf("  vf26 %08X %08X %08X %08X\n", draw.vf[2][0], draw.vf[2][1], draw.vf[2][2], draw.vf[2][3]);
@@ -255,8 +262,19 @@ int main(int argc, char **argv) {
         Mesh mesh;
         std::string ignored;
         const bool ok = build_mesh(frame.packets.data(), frame.packets.size(), draw, mesh_options, mesh, ignored);
-        std::printf("  draw %u items %u value %08X %s %zu\n", draw.sequence, draw.item_count, draw.cmd_value,
-                    ok ? "vertices" : "refused", mesh.vertices.size());
+        std::uint32_t uploaded = 0, carried = 0, uncertain = 0, none = 0, runs = 0;
+        for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+          const CapturedItem &item = draw.items[index];
+          if (item.light_source == kLightItemUploaded) uploaded += 1;
+          else if (item.light_source == kLightItemCarried) carried += 1;
+          else if (item.light_source == kLightItemCarriedUncertain) uncertain += 1;
+          else none += 1;
+          if (item.run_valid != 0) runs += 1;
+        }
+        std::printf("  draw %u items %u value %08X %s %zu chain %u/%u uniform %u light uploaded %u carried %u "
+                    "uncertain %u none %u runs %u\n",
+                    draw.sequence, draw.item_count, draw.cmd_value, ok ? "vertices" : "refused", mesh.vertices.size(),
+                    draw.chain_tags, draw.chain_valid, draw.program_uniform, uploaded, carried, uncertain, none, runs);
       }
     }
     return 0;

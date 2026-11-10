@@ -1,5 +1,34 @@
 # Current Status
 
+## TASK-090 round 14: the per-item light state, the per-item selector and the carried block (2026-11-10, branch `task/090-capture-complete`)
+
+`.gt4scene` is **version 4**: the K1 post hook walks the whole PGL output chain (`native/coregs3/coregs3_chain.*`) and
+every item record carries the VU1 light state its microprogram run reads at TOPS+0xC9 (16 qwords, the raw UNPACK word and
+source, `uploaded`/`carried`/`carried_uncertain`) plus the ITOP/MSCAL pair that ran it; every draw carries
+`chain_tags`/`chain_valid`/`program_uniform`. Versions 1..3 are refused. Fresh 3x capture (7,600 frames): 124,782 draws
+captured, 822,826 chains walked with **0 incomplete**, lights 114,365 / missing 9,129 and selectors 124,782 / missing 0
+— the same per-draw counters as r13. Measured findings:
+
+- **The light tag is per item only conditionally:** `func_0049D1A0` copies it while its per-draw counter (starts at 2)
+  is nonzero, so the first two items of a light draw upload; the flag kind 1/4 paths that re-prepare per item upload
+  every item. Frame 0: 177 uploaded / 158 carried of 335 items; whole run 200,339 uploaded / 179,944 carried / 3,305
+  uncertain. The body family's items agree in content; the nine-qword family's differ (12 draws, intensity per item).
+- **The program selector is not always per draw:** the ITOP changes inside 8 of 116 draws in frame 0 (draw 98 runs
+  `0x7B` for items 0-16 and `0x161` for 17-30; draws 29/32/51/62/65/69/73 too); the MSCAL stub differs in 43 draws.
+  Whole run: 52,362 items with a different ITOP, 91,205 with a different MSCAL; 0 without a run pair.
+- **The carried block** cannot be read on the EE side: `ps2::Cpu` has no VU1 memory, `g_vu1_mem` lives on the MTVU
+  worker while the EE VIF1 shadow uses `g_dry_run`, and at K1 post the draw's commands are still only in the PGL output
+  buffer. The capture tracks two slots in VIF command order keyed by the MSCAL parity (the shadow reports `ofst 435`)
+  and marks a carried block uncertain when a buffer discontinuity followed it and the slots differ; a frame replay
+  predicts all 158 carried blocks of frame 0. The exact alternative (a `run_vu` hook in a new pinned capsule) is
+  documented, not implemented.
+
+Checks: version 3 field identity on all 232 draws, CTest 4/4, Python 7/7, 3x off/shadow identity gate
+COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames). Evidence:
+`build/evidence/coregs3-r14/` (v4 capture 819,808 B; tap 24,811,512 B), `build/evidence/analysis-090/`,
+`docs/COREGS3-HOOKS.md` §13. Open: the 5 uncertain carried items per frame; the renderers still consume the per-draw
+block.
+
 ## TASK-090 round 13: the VU1 program selector and the family map (2026-11-09, branch `task/090-coregs3`)
 
 `.gt4scene` is **version 3**: each draw carries the ITOP and MSCAL words from the terminating tag of its REF chain (raw

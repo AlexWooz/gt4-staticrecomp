@@ -1644,6 +1644,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   **0x0080** no block (11 / 1,351, unlit). **Draws 91/93 are the same body program**; their residual is data, not
   another program. The MSCAL word mixes families (shared stub) and is not the selector. Counters: 124,782 selectors,
   0 missing. Checks: CTest 4/4, Python 7/7, 3x off/shadow gate OK (capture v3, 3,415,692 B).
+- **Round 14 (2026-11-10, per-item capture; branch `task/090-capture-complete`).** `.gt4scene` version 4: the K1 post
+  hook walks the whole PGL output chain (`native/coregs3/coregs3_chain.*`) and stores, per item, the VU1 light state its
+  run reads at TOPS+0xC9 (16 qwords, the raw UNPACK word, the source, `uploaded`/`carried`/`carried_uncertain`) and the
+  ITOP/MSCAL pair that runs it; per draw, `chain_tags`/`chain_valid`/`program_uniform`. Measured: the light tag is copied
+  for the first two items of a light draw (and every item of the flag 1/4 re-preparing kinds), not once per shape — frame
+  0 has 177 uploaded + 158 carried of 335 items; and the selector is **not always per draw**: the ITOP changes inside 8
+  of 116 draws (draw 98: 0x7B for items 0-16, 0x161 for 17-30), the MSCAL stub more often. The VU1 data memory is double
+  buffered (`ofst 435`) and lives on the MTVU worker (`g_vu1_mem`; the EE shadow uses `g_dry_run`), so the carried block
+  is tracked per MSCAL parity in VIF command order; 179,944 carried items over the run, 3,305 labelled uncertain after a
+  buffer discontinuity. Counters otherwise identical to r13 (lights 114,365 / missing 9,129; selectors 124,782 / 0).
+  Version 3 field identity on 232 draws, CTest 4/4, Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK.
 - Next: the formulas for the four nine-qword programs and the three-qword/no-block programs (research), then the
   G-IMAGE/G-PERF gates and the native fidelity work (textures, fog, effects) on top of the `present` seam.
 

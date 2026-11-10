@@ -21,12 +21,14 @@
 #include <string>
 #include <vector>
 
+#include "coregs3_chain.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_tap.hpp"
 #include "mtvu_runtime.hpp"
 
 #include "ps2/memory.hpp"
 #include "ps2/system.hpp"
+#include "vif.hpp"  // ps2::vif::read: the EE-side shadow VIF1 state (BASE/OFFSET/TOPS/dbf) for the report
 
 namespace gt4::coregs3 {
 namespace {
@@ -34,22 +36,6 @@ namespace {
 constexpr std::uint32_t kRamLimit = 0x02000000u;
 constexpr std::uint32_t kScratchBase = 0x70000000u;
 constexpr std::uint32_t kScratchLimit = kScratchBase + 0x4000u;
-
-// The VIF UNPACK that fills the VU1 lighting block lands at TOPS qword 0xC9 (coregs3_scene.hpp, CapturedDraw).
-constexpr std::uint32_t kLightBlockQword = 0xC9u;
-// func_0049E548 writes the 0xC1 matrix packet as one DMA tag qword plus eight data qwords; func_0049D328 then writes one
-// 1-qword REF tag per item. So the first item's tag sits right after the matrix packet, and the shape's light tag right
-// after it (func_0049D1A0 copies the tag func_0049E698/func_0049EB90/func_0049F170 prepared into the same cursor).
-constexpr std::uint32_t kMatrixPacketBytes = 9u * 16u;
-constexpr std::uint32_t kDmaTagBytes = 16u;
-constexpr std::uint32_t kDmaIdRef = 3u;  // tag bits 28..30
-// func_0049D328 writes tag word 2 as `0x04000000 | (x + y)` (VIF ITOP) and word 3 as `0x14000000 | n` (VIF MSCAL). Both
-// immediates are microprogram addresses in 8-byte units (private/slice151-vu1-aot-runtime/vif.cpp:
-// `run_vu(unit, imm * 8u)`); the MSCAL entry stub dispatches to the ITOP value (`vu::itop()`), which is the real
-// per-shape vertex program.
-constexpr std::uint32_t kVifItopOpcode = 0x04u;
-constexpr std::uint32_t kVifMscalOpcode = 0x14u;
-constexpr std::uint32_t kVifImmediateMask = 0x3FFu;  // ITOP is a 10-bit qword address (donor vif.cpp)
 
 struct State {
   Mode mode = Mode::off;
@@ -76,6 +62,13 @@ struct State {
   std::uint32_t pending_sequence = 0;
   std::uint32_t pending_out = 0;   // PGL output cursor (context +0x1F8) at the pre-call point
   std::uint32_t pending_draw = kNoRecord;
+  // Format version 4: the last UNPACK to TOPS+0xC9 in VIF command order, tracked across every hooked shape call so a
+  // draw that uploads nothing records the block the VU1 actually keeps. `chain_seen`/`last_post_out` detect a PGL
+  // output-cursor discontinuity (another writer appended to or rewound the buffer), which makes the carried block
+  // uncertain until the next observed upload.
+  CarriedLight carried_light;
+  bool chain_seen = false;
+  std::uint32_t last_post_out = 0;
   bool frame_overflow = false;
   std::uint64_t frame_overflow_flags = 0;
   FrameSnapshot frame;
@@ -129,90 +122,44 @@ void copy_vf(const ps2::Cpu &cpu, std::uint32_t (&rows)[8][4]) noexcept {
     for (std::uint32_t lane = 0; lane < 4; ++lane) rows[row][lane] = cpu.vu0.vf[24 + row].w[lane];
 }
 
-// Mirrors the matrix-upload condition of func_0049D328: `if (obj->flag) func_0049E480(obj);` clears obj->valid, then
-// `if (!obj->valid || obj->value != cmd->value)` calls func_0049E548. The PGL spans hold obj->flag in byte 0 and
-// obj->valid in byte 3 (both inside pgl[0], word +0x00) and obj->value at +0x20 (pgl[8]). Getting this wrong only makes
-// the light-tag position check fail, which is counted, never guessed around.
-bool matrix_packet_written(const CapturedDraw &draw) noexcept {
-  const std::uint32_t flags = draw.pgl[0];
-  const bool dirty = (flags & 0xFFu) != 0;
-  const bool valid = ((flags >> 24) & 0xFFu) != 0;
-  return dirty || !valid || draw.pgl[8] != draw.cmd_value;
-}
-
-// Reads back the per-draw packets the shape call wrote into the PGL output buffer:
-//   * the VU1 program selector (CapturedDraw::program_*). func_0049D328 writes one REF tag per item and a terminating
-//     tag after the loop. The first item's tag carries the initial setup words (STMASK 0x20000000 and its mask), and the
-//     tags the loop writes at the end of each iteration carry the ITOP and MSCAL for the next item; the terminating tag
-//     therefore carries the last item's ITOP/MSCAL pair, and it is the last qword before the post-call output cursor.
-//     All items share the pair (`n` is reset to obj->count every iteration);
-//   * the light block the shape call uploaded to VU1 TOPS+0xC9 (CapturedDraw::light_block), from the DMA REF tag that
-//     follows item 0's tag when the Cmd's flag byte is set (func_0049D1A0 copies the tag func_0049E698/func_0049EB90/
-//     func_0049F170 prepared). Its VIF word names the UNPACK and its address word points at the qwords on the shape's
-//     stack.
-// Both are read at the exact position the game writes, with the counts and VIF fields cross-checked; a draw that does
-// not match is counted (`program_selectors_missing` / `light_blocks_missing`) rather than guessed. Draws without the
-// light flag bit upload no block, so nothing is expected there.
-void capture_draw_packets(CapturedDraw &draw) noexcept {
-  if (draw.item_count == 0) {
-    g.counters.program_selectors_missing += 1;
-    if (draw.cmd_flag != 0) g.counters.light_blocks_missing += 1;
-    return;
-  }
-  std::uint64_t at = g.pending_out;
-  if (matrix_packet_written(draw)) at += kMatrixPacketBytes;
-  std::uint32_t item_tag[4] = {};
-  if (!read_guest(static_cast<std::uint32_t>(at), item_tag, sizeof item_tag) ||
-      ((item_tag[0] >> 28) & 0x7u) != kDmaIdRef || item_tag[1] != draw.items[0].address) {
-    g.counters.program_selectors_missing += 1;
-    if (draw.cmd_flag != 0) g.counters.light_blocks_missing += 1;
-    return;
-  }
-  // The VU1 program selector: the terminating tag is the last qword func_0049D328 writes. Word 3 is the last item's VIF
-  // MSCAL `0x14000000 | n`; its entry stub sets the shared-code return address and dispatches to the VIF ITOP value in
-  // word 2 (`0x04000000 | (x + y)`), the real per-shape vertex program. Both are 8-byte-unit addresses.
-  std::uint32_t post_out = 0;
-  std::uint32_t final_tag[4] = {};
-  if (read_u32(kPglContext + kObjOut, post_out) && post_out >= kDmaTagBytes &&
-      read_guest(post_out - kDmaTagBytes, final_tag, sizeof final_tag) && final_tag[0] == 0x10000000u &&
-      ((final_tag[3] >> 24) & 0x7Fu) == kVifMscalOpcode && ((final_tag[2] >> 24) & 0x7Fu) == kVifItopOpcode) {
-    draw.program_tag = final_tag[3];
-    draw.program_selector = final_tag[3] & 0xFFFFu;
-    draw.program_entry = draw.program_selector * 8u;
-    draw.program_itop = final_tag[2];
-    draw.program_dispatch = (final_tag[2] & kVifImmediateMask) * 8u;
-    draw.program_count = draw.pgl[5];
-    draw.program_valid = 1;
+// Format version 4: the per-item light state and run pair come from walking the PGL output chain
+// (native/coregs3/coregs3_chain.cpp). The walker runs for every hooked shape call, in or out of the pass, because the
+// carried TOPS+0xC9 state is global to the VIF command stream. The per-draw counters keep the version 2/3 meaning:
+// `light_blocks` is the first item's upload, `light_blocks_missing` a draw with a nonzero Cmd flag and no such upload.
+void account_chain(const CapturedDraw *draw, const ChainWalkCounters &walk) noexcept {
+  g.counters.chain_calls += 1;
+  if (!walk.complete) g.counters.chain_incomplete += 1;
+  if (draw == nullptr) return;
+  g.counters.light_items_uploaded += walk.items_uploaded;
+  g.counters.light_items_carried += walk.items_carried;
+  g.counters.light_items_uncertain += walk.items_uncertain;
+  g.counters.light_items_none += walk.items_none;
+  g.counters.program_items += walk.items_run;
+  g.counters.program_items_missing += walk.items_run_missing;
+  g.counters.program_item_variants += walk.item_variants;
+  g.counters.program_item_mscal_variants += walk.item_mscal_variants;
+  if (draw->program_valid != 0)
     g.counters.program_selectors += 1;
-  } else {
+  else
     g.counters.program_selectors_missing += 1;
+  if (draw->cmd_flag != 0) {
+    if (draw->light_block_qwords != 0)
+      g.counters.light_blocks += 1;
+    else
+      g.counters.light_blocks_missing += 1;
   }
-  if (draw.cmd_flag == 0) return;
-  std::uint32_t tag[4] = {};
-  if (!read_guest(static_cast<std::uint32_t>(at + kDmaTagBytes), tag, sizeof tag)) {
-    g.counters.light_blocks_missing += 1;
-    return;
+  bool uploaded = false, known = false;
+  for (std::uint32_t index = 0; index < draw->item_count; ++index) {
+    const std::uint32_t source = draw->items[index].light_source;
+    if (source == kLightItemUploaded) uploaded = true;
+    if (source != kLightItemNone) known = true;
   }
-  const std::uint32_t qwords = tag[0] & 0xFFFFu;
-  const std::uint32_t command = tag[3];
-  const std::uint32_t opcode = (command >> 24) & 0x7Fu;
-  const std::uint32_t num = (command >> 16) & 0xFFu;
-  const bool tops = ((command >> 15) & 1u) != 0;
-  const std::uint32_t destination = command & 0x3FFu;
-  if (((tag[0] >> 28) & 0x7u) != kDmaIdRef || qwords == 0 || qwords > kMaxLightBlockQwords ||
-      (opcode & 0x60u) != 0x60u || !tops || destination != kLightBlockQword || num != qwords) {
-    g.counters.light_blocks_missing += 1;
-    return;
+  if (!uploaded) {
+    if (known)
+      g.counters.light_blocks_carried += 1;
+    else
+      g.counters.light_blocks_none += 1;
   }
-  const std::uint32_t source = tag[1] & 0x0FFFFFFFu;
-  if (!read_guest(source, draw.light_block, qwords * 16u)) {
-    g.counters.light_blocks_missing += 1;
-    return;
-  }
-  draw.light_block_qwords = qwords;
-  draw.light_block_command = command;
-  draw.light_block_source = source;
-  g.counters.light_blocks += 1;
 }
 
 // func_0049CEA0 resolves the item's 9-bit texture and 7-bit material index into a record address. The indices travel in
@@ -382,7 +329,10 @@ void configure_from_environment() {
 
   std::atexit([] { shutdown(); });
 
-  g.frame.draws.reserve(kMaxDrawsPerFrame);
+  // Format version 4 gives every item its own 16-qword light block, so a draw record is ~80 KB. The car pass measured
+  // ~116 draws per frame; reserve a realistic frame and let the vector grow geometrically if a scene exceeds it (the
+  // kMaxDrawsPerFrame cap is still enforced by before_shape_call, not by this reservation).
+  g.frame.draws.reserve(512);
   g.frame.textures.reserve(kMaxTextureRecords);
   g.frame.materials.reserve(kMaxMaterialRecords);
   g.frame.packets.reserve(1u << 20);
@@ -526,11 +476,17 @@ void modelview_set(ps2::Cpu &cpu) noexcept {
 void before_shape_call(ps2::Cpu &cpu) noexcept {
   if (g.mode == Mode::off) return;
   g.counters.calls += 1;
-  if (!g.in_car_pass && !g.all_draws) {
-    g.counters.outside_pass += 1;
-    return;
-  }
-  if (g.frame_overflow) return;  // one refusal per frame: keep counting, store nothing
+  const bool store = g.in_car_pass || g.all_draws;
+  if (!store) g.counters.outside_pass += 1;
+  // Every hooked call writes a PGL output chain, even outside the car pass. Its uploads are part of the VU1's carried
+  // TOPS+0xC9 state, so the post hook walks it whatever the pass (the draw pointer is null for an un-stored call).
+  std::uint32_t pre_out = 0;
+  if (!read_u32(kPglContext + kObjOut, pre_out)) pre_out = 0;  // kObjOut +0x1F8 is the PGL output cursor
+  g.pending = true;
+  g.pending_out = pre_out;
+  g.pending_draw = kNoRecord;
+  if (!store) return;
+  if (g.frame_overflow) return;  // one refusal per frame: keep counting, walk the chain, store nothing
   if (g.frame.draw_count >= kMaxDrawsPerFrame) {
     mark_overflow(kOverflowDraws);
     return;
@@ -568,9 +524,7 @@ void before_shape_call(ps2::Cpu &cpu) noexcept {
   copy_vf(cpu, draw.vf);
 
   const RecordTables tables = read_record_tables();
-  g.pending = true;
   g.pending_sequence = draw.sequence;
-  g.pending_out = draw.pgl[42];  // kPglSpans: 20 words at +0x00, then +0x1A0..; 0x1F8 is index 42
   g.pending_draw = g.frame.draw_count;
 
   std::uint32_t copied_bytes = 0;
@@ -666,17 +620,39 @@ void after_shape_call(ps2::Cpu &cpu) noexcept {
   if (g.mode == Mode::off) return;
   if (!g.pending) return;
   g.pending = false;
+  const std::uint32_t pre_out = g.pending_out;
+  const std::uint32_t draw_index = g.pending_draw;
+  g.pending_draw = kNoRecord;
+  g.pending_out = 0;
+
+  CapturedDraw *draw = nullptr;
+  if (draw_index != kNoRecord && draw_index < g.frame.draws.size()) draw = &g.frame.draws[draw_index];
   // func_0049D328 starts by writing the matrix packet at the PGL's output cursor (func_0049E548), so the eight qwords at
   // that address are what VU1 receives at 0xC1 for this draw. Reading them back after the call avoids guessing which
   // VU0 register held which row at the pre-call instant.
-  if (g.pending_draw < g.frame.draws.size() && g.pending_out != 0) {
-    CapturedDraw &draw = g.frame.draws[g.pending_draw];
-    if (read_guest(g.pending_out, draw.matrix_packet, sizeof draw.matrix_packet))
-      draw.matrix_packet_valid = 1;
-    capture_draw_packets(draw);
+  if (draw != nullptr && pre_out != 0 && read_guest(pre_out, draw->matrix_packet, sizeof draw->matrix_packet))
+    draw->matrix_packet_valid = 1;
+
+  std::uint32_t post_out = 0;
+  const bool have_cursor = pre_out != 0 && read_u32(kPglContext + kObjOut, post_out);
+  // A cursor discontinuity means another writer appended to or rewound the PGL output buffer after the last chain this
+  // capture walked, so an unseen TOPS+0xC9 upload may have followed the tracked block.
+  if (g.chain_seen && g.last_post_out != 0 && (!have_cursor || pre_out != g.last_post_out)) {
+    g.counters.chain_gaps += 1;
+    g.carried_light.gap_epoch += 1;  // an unseen writer may have flipped the TOPS parity
   }
-  g.pending_draw = kNoRecord;
-  g.pending_out = 0;
+  g.chain_seen = true;
+
+  ChainWalkCounters walk;
+  bool complete = false;
+  if (have_cursor) complete = walk_packet_chain(pre_out, post_out, read_guest, draw, g.carried_light, walk);
+  account_chain(draw, walk);
+  if (complete) {
+    g.last_post_out = post_out;
+  } else {
+    g.last_post_out = 0;
+    g.carried_light.gap_epoch += 1;  // unparsed commands may follow
+  }
 }
 
 void print_report(std::FILE *out) noexcept {
@@ -686,7 +662,9 @@ void print_report(std::FILE *out) noexcept {
                "[coregs3] mode %s frames %llu written %llu refused %llu calls %llu captured %llu outside %llu packets %llu "
                "records %llu bytes %llu reads_failed %llu overflow 0x%llx vblank %llu max_items %u max_draw %u "
                "max_frame %u passes %llu orphan_ends %llu lights %llu lights_missing %llu selectors %llu "
-               "selectors_missing %llu\n",
+               "selectors_missing %llu light_items %llu light_carried %llu light_uncertain %llu light_none %llu "
+               "program_items %llu program_items_missing %llu program_variants %llu program_mscal_variants %llu "
+               "chain_calls %llu chain_gaps %llu chain_incomplete %llu\n",
                mode_name(g.mode), static_cast<unsigned long long>(c.frames),
                static_cast<unsigned long long>(c.frames_written),
                static_cast<unsigned long long>(c.refused_frames), static_cast<unsigned long long>(c.calls),
@@ -698,7 +676,27 @@ void print_report(std::FILE *out) noexcept {
                static_cast<unsigned long long>(g.orphan_pass_ends), static_cast<unsigned long long>(c.light_blocks),
                static_cast<unsigned long long>(c.light_blocks_missing),
                static_cast<unsigned long long>(c.program_selectors),
-               static_cast<unsigned long long>(c.program_selectors_missing));
+               static_cast<unsigned long long>(c.program_selectors_missing),
+               static_cast<unsigned long long>(c.light_items_uploaded),
+               static_cast<unsigned long long>(c.light_items_carried),
+               static_cast<unsigned long long>(c.light_items_uncertain),
+               static_cast<unsigned long long>(c.light_items_none),
+               static_cast<unsigned long long>(c.program_items),
+               static_cast<unsigned long long>(c.program_items_missing),
+               static_cast<unsigned long long>(c.program_item_variants),
+               static_cast<unsigned long long>(c.program_item_mscal_variants),
+               static_cast<unsigned long long>(c.chain_calls),
+               static_cast<unsigned long long>(c.chain_gaps),
+               static_cast<unsigned long long>(c.chain_incomplete));
+  // The VU1 data memory is double buffered (VIF BASE/OFFSET). The EE-side shadow VIF1 unit (it parses every submitted
+  // VIF1 chain in dry-run mode) reports the registers that define the two 0xC9 locations, so the capture states the
+  // parity context of its carried block rather than assuming OFFSET is zero.
+  const std::uint32_t vif_stat = ps2::vif::read(1, 0x00u);
+  std::fprintf(out,
+               "[coregs3] vif1 shadow stat 0x%08X dbf %u base %u ofst %u itops %u tops %u top %u runs %u gap_epoch %u\n",
+               vif_stat, (vif_stat >> 7) & 1u, ps2::vif::read(1, 0xA0u), ps2::vif::read(1, 0xB0u),
+               ps2::vif::read(1, 0x90u), ps2::vif::read(1, 0xC0u), ps2::vif::read(1, 0xE0u), g.carried_light.runs,
+               g.carried_light.gap_epoch);
   const TapCounters &tap = tap_counters();
   if (tap.records != 0)
     std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",

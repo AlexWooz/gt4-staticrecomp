@@ -104,6 +104,9 @@ void put_draw(std::vector<std::uint8_t> &out, const CapturedDraw &draw) {
   put_u32(out, draw.program_dispatch);
   put_u32(out, draw.program_count);
   put_u32(out, draw.program_valid);
+  put_u32(out, draw.chain_tags);
+  put_u32(out, draw.chain_valid);
+  put_u32(out, draw.program_uniform);
   // Only the items the draw declares: an empty item slot costs nothing on disk.
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
@@ -114,6 +117,16 @@ void put_draw(std::vector<std::uint8_t> &out, const CapturedDraw &draw) {
     put_u32(out, item.material_record);
     put_u32(out, item.packet_offset);
     put_u32(out, item.packet_bytes);
+    // Format version 4: the per-item VU1 light state and the run pair.
+    put_u32(out, item.light_block_qwords);
+    put_u32(out, item.light_block_command);
+    put_u32(out, item.light_block_source);
+    put_u32(out, item.light_source);
+    put_u32(out, item.run_itop);
+    put_u32(out, item.run_mscal);
+    put_u32(out, item.run_valid);
+    for (const auto &qword : item.light_block)
+      for (std::uint32_t word : qword) put_u32(out, word);
   }
 }
 
@@ -151,6 +164,10 @@ bool get_draw(Reader &in, std::uint32_t version, CapturedDraw &draw) {
   draw.program_count = in.u32();
   draw.program_valid = in.u32();
   if (draw.program_valid > 1) return false;
+  draw.chain_tags = in.u32();
+  draw.chain_valid = in.u32();
+  draw.program_uniform = in.u32();
+  if (draw.chain_valid > 1 || draw.program_uniform > 1) return false;
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     CapturedItem &item = draw.items[index];
     item.address = in.u32();
@@ -160,6 +177,18 @@ bool get_draw(Reader &in, std::uint32_t version, CapturedDraw &draw) {
     item.material_record = in.u32();
     item.packet_offset = in.u32();
     item.packet_bytes = in.u32();
+    item.light_block_qwords = in.u32();
+    if (item.light_block_qwords > kMaxLightBlockQwords) return false;
+    item.light_block_command = in.u32();
+    item.light_block_source = in.u32();
+    item.light_source = in.u32();
+    if (item.light_source > kLightItemCarriedUncertain) return false;
+    item.run_itop = in.u32();
+    item.run_mscal = in.u32();
+    item.run_valid = in.u32();
+    if (item.run_valid > 1) return false;
+    for (auto &qword : item.light_block)
+      for (std::uint32_t &word : qword) word = in.u32();
   }
   return in.ok;
 }
@@ -204,11 +233,13 @@ bool parse_scene_header(const std::uint8_t *data, std::size_t available, SceneHe
     return false;
   }
   if (header.version != kSceneVersion) {
-    // Version 1 predates the per-draw light block and version 2 the per-draw VU1 program selector, so their draw records
-    // are shorter (see the format note in the header). There is no migration path: the capture is a diagnostic artifact
-    // and is recaptured with a matching build.
+    // Version 1 predates the per-draw light block, version 2 the per-draw VU1 program selector and version 3 the
+    // per-item light state, so their draw records are shorter (see the format note in the header). There is no
+    // migration path: the capture is a diagnostic artifact and is recaptured with a matching build.
     error = "unsupported .gt4scene version " + std::to_string(header.version) + " (this build writes and reads version " +
-            std::to_string(kSceneVersion) + "; version 1 has no light block, version 2 no program selector, both refused)";
+            std::to_string(kSceneVersion) +
+            "; version 1 has no light block, version 2 no program selector, version 3 no per-item light state; all "
+            "older versions are refused)";
     return false;
   }
   if (header.target != kCaptureTargetV200) {
@@ -229,11 +260,14 @@ bool frame_block_bytes(const FrameSnapshot &frame, std::vector<std::uint8_t> &ou
   for (const CapturedDraw &draw : frame.draws) {
     if (draw.item_count > kMaxItemsPerDraw) return false;
     if (draw.light_block_qwords > kMaxLightBlockQwords) return false;
-    if (draw.program_valid > 1) return false;
+    if (draw.program_valid > 1 || draw.chain_valid > 1 || draw.program_uniform > 1) return false;
     for (std::uint32_t index = 0; index < draw.item_count; ++index) {
       const CapturedItem &item = draw.items[index];
       if (item.texture_record != kNoRecord && item.texture_record >= frame.texture_count) return false;
       if (item.material_record != kNoRecord && item.material_record >= frame.material_count) return false;
+      if (item.light_block_qwords > kMaxLightBlockQwords) return false;
+      if (item.light_source > kLightItemCarriedUncertain) return false;
+      if (item.run_valid > 1) return false;
       if (item.packet_bytes == 0) continue;
       if (item.packet_bytes > kMaxPacketBytesPerDraw) return false;
       if (item.packet_offset > frame.packets.size() || item.packet_bytes > frame.packets.size() - item.packet_offset)

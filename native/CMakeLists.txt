@@ -485,7 +485,7 @@ target_compile_definitions(gt4_gs_stream_client INTERFACE GT4_GS_STREAM_CLIENT)
 # are only linked into the game when GT4_COREGS3 is ON, because they need an EE library built from the units
 # scripts/coregs3_units.py instruments.
 add_library(gt4_coregs3 STATIC
-    coregs3/coregs3_scene.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
+    coregs3/coregs3_scene.cpp coregs3/coregs3_chain.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
     coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")

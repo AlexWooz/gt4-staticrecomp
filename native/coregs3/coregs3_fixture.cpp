@@ -2,6 +2,9 @@
 // hand-authored, which is what makes these fixtures publishable.
 //   - the `.gt4scene` frame block round trip, and the refusals (magic, an older version, truncated block, a packet range
 //     outside the block, an item count above the cap, a light block above its cap);
+//   - the PGL output chain walker (format version 4): per-item light uploads, the carried block of a draw that uploads
+//     nothing, the uncertain carried block after a cursor discontinuity, the per-item run pairs against the terminating
+//     pair, and the refusals (a mismatched item tag, an unknown DMA tag id);
 //   - the bounded VIF decoder: an ordinary V3-16 UNPACK into the TOPS window, an absolute V4-8 UNPACK, STROW with a fill
 //     cycle, and the refusals (unknown opcode, payload overrun);
 //   - the channel rule: destination/format classification, the V3-8 normal channel at TOPS 0x40 (signed bytes and the raw
@@ -12,6 +15,7 @@
 //   - the live present ring: the newest published frame is claimed once, with the O(1) buffer swap
 //     (docs/COREGS3-HOOKS.md §10.3);
 //   - a PNG file: signature, IHDR size, IEND.
+#include "coregs3_chain.hpp"
 #include "coregs3_png.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_render.hpp"
@@ -198,6 +202,9 @@ CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
   draw.program_dispatch = 0x3D8u;     // ITOP * 8: the entry the stub dispatches to
   draw.program_count = 881u;          // PGL obj->count (+0x14)
   draw.program_valid = 1;
+  draw.chain_tags = 9;
+  draw.chain_valid = 1;
+  draw.program_uniform = 1;
   draw.vf[0][0] = float_bits(2.0f);
   draw.vf[0][1] = float_bits(0.0f);
   draw.vf[0][2] = float_bits(0.0f);
@@ -214,6 +221,17 @@ CapturedDraw make_draw(std::uint32_t item_packet_bytes) {
   draw.items[0].material_record = 0;
   draw.items[0].packet_offset = 0;
   draw.items[0].packet_bytes = item_packet_bytes;
+  // Format version 4: the per-item light state and run pair.
+  draw.items[0].light_block_qwords = draw.light_block_qwords;
+  draw.items[0].light_block_command = draw.light_block_command;
+  draw.items[0].light_block_source = draw.light_block_source;
+  draw.items[0].light_source = kLightItemUploaded;
+  for (std::uint32_t qword = 0; qword < draw.light_block_qwords; ++qword)
+    for (std::uint32_t lane = 0; lane < 4; ++lane)
+      draw.items[0].light_block[qword][lane] = draw.light_block[qword][lane];
+  draw.items[0].run_itop = draw.program_itop;
+  draw.items[0].run_mscal = draw.program_tag;
+  draw.items[0].run_valid = 1;
   return draw;
 }
 
@@ -264,6 +282,20 @@ void check_capture_round_trip() {
               read.draws[0].program_count == draw.program_count &&
               read.draws[0].program_valid == draw.program_valid,
           "the VU1 program selector survives");
+  require(read.draws[0].chain_tags == draw.chain_tags && read.draws[0].chain_valid == draw.chain_valid &&
+              read.draws[0].program_uniform == draw.program_uniform,
+          "the per-draw chain summary survives");
+  require(read.draws[0].items[0].light_block_qwords == draw.items[0].light_block_qwords &&
+              read.draws[0].items[0].light_block_command == draw.items[0].light_block_command &&
+              read.draws[0].items[0].light_block_source == draw.items[0].light_block_source &&
+              read.draws[0].items[0].light_source == draw.items[0].light_source,
+          "the per-item light header survives");
+  require(read.draws[0].items[0].light_block[5][3] == draw.items[0].light_block[5][3],
+          "the per-item light qwords survive");
+  require(read.draws[0].items[0].run_itop == draw.items[0].run_itop &&
+              read.draws[0].items[0].run_mscal == draw.items[0].run_mscal &&
+              read.draws[0].items[0].run_valid == draw.items[0].run_valid,
+          "the per-item run pair survives");
   require(read.packets == frame.packets, "the packet bytes survive");
   require(read.textures[0].address == texture.address && read.textures[0].bytes[0] == 0xAB, "the texture survives");
   require(read.materials[0].address == material.address && read.materials[0].bytes[7] == 0xCD, "the material survives");
@@ -280,6 +312,11 @@ void check_capture_round_trip() {
   over_cap.draws[0] = draw;
   over_cap.draws[0].light_block_qwords = kMaxLightBlockQwords + 1u;
   require(!frame_block_bytes(over_cap, broken_block), "a light block above the cap is refused");
+  // The same bound applies to the per-item block (format version 4).
+  FrameSnapshot over_item_cap = frame;
+  over_item_cap.draws[0] = draw;
+  over_item_cap.draws[0].items[0].light_block_qwords = kMaxLightBlockQwords + 1u;
+  require(!frame_block_bytes(over_item_cap, broken_block), "a per-item light block above the cap is refused");
 
   SceneHeader header;
   std::vector<std::uint8_t> file;
@@ -294,7 +331,7 @@ void check_capture_round_trip() {
   std::vector<std::uint8_t> bad_version = file;
   bad_version[4] = 9;
   require(!parse_scene_header(bad_version.data(), bad_version.size(), ignored, error), "an unknown version is refused");
-  // The immediately older version (version 2) has no program selector and must be refused, not misread.
+  // The immediately older version (version 3) has no per-item light state and must be refused, not misread.
   std::vector<std::uint8_t> older_version = file;
   older_version[4] = static_cast<std::uint8_t>(kSceneVersion - 1u);
   require(!parse_scene_header(older_version.data(), older_version.size(), ignored, error),
@@ -588,6 +625,221 @@ void check_render_lighting() {
   require(pixel(rgba, 16, 24) == base, "the unknown-variant pixel is the base colour");
 }
 
+// ---- the PGL output chain walker (format version 4) ---------------------------------------------------------------
+
+constexpr std::uint32_t kChainBase = 0x00100000u;
+constexpr std::uint32_t kChainModel0 = 0x00140000u;  // item packet addresses: matched, never read by the walker
+constexpr std::uint32_t kChainModel1 = 0x00141000u;
+constexpr std::uint32_t kChainBlock0 = kChainBase + 0x800u;            // six qwords
+constexpr std::uint32_t kChainBlock1 = kChainBlock0 + 6u * 16u;        // nine qwords
+
+struct ChainImage {
+  std::uint32_t base = kChainBase;
+  std::vector<std::uint8_t> bytes;
+};
+
+const ChainImage *g_chain_image = nullptr;
+
+bool chain_read(std::uint32_t address, void *destination, std::size_t bytes) noexcept {
+  if (g_chain_image == nullptr || address < g_chain_image->base) return false;
+  const std::size_t offset = address - g_chain_image->base;
+  if (offset > g_chain_image->bytes.size() || bytes > g_chain_image->bytes.size() - offset) return false;
+  std::memcpy(destination, g_chain_image->bytes.data() + offset, bytes);
+  return true;
+}
+
+void chain_tag(std::vector<std::uint8_t> &out, std::uint32_t word0, std::uint32_t word1, std::uint32_t word2,
+               std::uint32_t word3) {
+  put_u32(out, word0);
+  put_u32(out, word1);
+  put_u32(out, word2);
+  put_u32(out, word3);
+}
+
+void chain_block(ChainImage &image, std::uint32_t address, const float (&block)[9][4], std::uint32_t qwords) {
+  const std::size_t offset = address - image.base;
+  if (image.bytes.size() < offset + qwords * 16u) image.bytes.resize(offset + qwords * 16u);
+  for (std::uint32_t qword = 0; qword < qwords; ++qword)
+    for (std::uint32_t lane = 0; lane < 4; ++lane) {
+      const std::uint32_t value = float_bits(block[qword][lane]);
+      std::memcpy(image.bytes.data() + offset + qword * 16u + lane * 4u, &value, sizeof value);
+    }
+}
+
+// The first chain exercises every tag kind func_0049D328 writes: the 0xC1 matrix packet (CNT + 8 inline qwords), two
+// items, a six-qword light upload per item (REF, tag2 UNPACK into TOPS+0xC9), a 0xD9 block (CNT inline) and the
+// terminating tag. The two item blocks carry different values and different qword counts so an attachment mistake fails.
+void check_chain_walk() {
+  const float block6[9][4] = {{1.0f, 0.0f, 0.0f, 0.0f},  {0.0f, 1.0f, 0.0f, 0.0f},  {0.0f, 0.0f, 1.0f, 0.0f},
+                              {0.0f, 0.0f, 9.0f, 0.0f},  {1.0f, 1.0f, 1.0f, 1.0f},  {0.5f, 0.5f, 0.5f, 0.0f},
+                              {0.0f, 0.0f, 0.0f, 0.0f},  {0.0f, 0.0f, 0.0f, 0.0f},  {0.0f, 0.0f, 0.0f, 0.0f}};
+  const float block9[9][4] = {{2.0f, 0.0f, 0.0f, 0.0f},  {0.0f, 2.0f, 0.0f, 0.0f},  {0.0f, 0.0f, 2.0f, 0.0f},
+                              {0.0f, 0.0f, 8.0f, 0.0f},  {0.25f, 0.25f, 0.25f, 1.0f}, {0.75f, 0.75f, 0.75f, 0.0f},
+                              {3.0f, 0.0f, 0.0f, 0.0f},  {0.0f, 3.0f, 0.0f, 0.0f},  {0.0f, 0.0f, 3.0f, 0.0f}};
+
+  ChainImage image;
+  std::vector<std::uint8_t> chain;
+  chain_tag(chain, 0x10000008u, 0u, 0u, 0x6C08C0C1u);  // the 0xC1 matrix packet
+  for (int index = 0; index < 8; ++index) chain_tag(chain, 0u, 0u, 0u, 0u);
+  chain_tag(chain, 0x30000002u, kChainModel0, 0x20000000u, 0x3F3F3F3Fu);  // item 0: STMASK + mask
+  chain_tag(chain, 0x30000006u, kChainBlock0, 0u, 0x6C06C0C9u);          // item 0's six-qword light upload
+  chain_tag(chain, 0x10000003u, 0u, 0u, 0x6C00C0D9u);                    // the 0xD9 block (CNT, three inline)
+  chain_tag(chain, 0u, 0u, 0u, 0u);
+  chain_tag(chain, 0u, 0u, 0u, 0u);
+  chain_tag(chain, 0u, 0u, 0u, 0u);
+  chain_tag(chain, 0x30000002u, kChainModel1, 0x0400007Bu, 0x140003A8u);  // item 1 + the pair that runs item 0
+  chain_tag(chain, 0x30000009u, kChainBlock1, 0u, 0x6C09C0C9u);          // item 1's nine-qword light upload
+  chain_tag(chain, 0x10000000u, 0u, 0x0400007Bu, 0x140003A8u);            // terminator: the pair that runs item 1
+  image.bytes = chain;
+  chain_block(image, kChainBlock0, block6, 6);
+  chain_block(image, kChainBlock1, block9, 9);
+  g_chain_image = &image;
+
+  CapturedDraw draw;
+  draw.item_count = 2;
+  draw.items[0].address = kChainModel0;
+  draw.items[0].qwords = 2;
+  draw.items[1].address = kChainModel1;
+  draw.items[1].qwords = 2;
+  CarriedLight carried;
+  ChainWalkCounters counters;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(chain.size()), chain_read, &draw,
+                            carried, counters),
+          "the hand-authored chain walks");
+  require(counters.complete && counters.terminator && !counters.item_mismatch, "the chain is complete");
+  require(counters.tags == 7 && counters.item_tags == 2 && counters.light_tags == 2,
+          "every tag is classified (7 tag qwords, 2 items, 2 light uploads)");
+  require(draw.chain_valid == 1 && draw.chain_tags == 7, "the draw carries its chain summary");
+  require(counters.items_uploaded == 2 && counters.items_carried == 0 && counters.items_none == 0,
+          "both items carry their own upload");
+  require(draw.items[0].light_source == kLightItemUploaded && draw.items[0].light_block_qwords == 6 &&
+              draw.items[0].light_block_command == 0x6C06C0C9u && draw.items[0].light_block_source == kChainBlock0 &&
+              draw.items[0].light_block[0][0] == float_bits(1.0f) && draw.items[0].light_block[3][2] == float_bits(9.0f),
+          "item 0 gets its own six-qword block");
+  require(draw.items[1].light_source == kLightItemUploaded && draw.items[1].light_block_qwords == 9 &&
+              draw.items[1].light_block_command == 0x6C09C0C9u && draw.items[1].light_block_source == kChainBlock1 &&
+              draw.items[1].light_block[0][0] == float_bits(2.0f) && draw.items[1].light_block[8][2] == float_bits(3.0f),
+          "item 1 gets its own nine-qword block");
+  require(draw.items[0].run_valid == 1 && draw.items[0].run_itop == 0x0400007Bu &&
+              draw.items[0].run_mscal == 0x140003A8u && draw.items[1].run_itop == 0x0400007Bu &&
+              draw.items[1].run_mscal == 0x140003A8u,
+          "both run pairs are the tag2 pairs of the following tags");
+  require(draw.program_valid == 1 && draw.program_uniform == 1 && counters.items_run == 2 &&
+              counters.items_run_missing == 0 && counters.item_variants == 0,
+          "the per-item pairs match the terminating pair");
+  require(draw.light_block_qwords == 6 && draw.light_block[0][0] == float_bits(1.0f),
+          "the per-draw block keeps the first item's upload");
+  require(carried.runs == 2 && carried.gap_epoch == 0, "two MSCALs were executed and no parity gap was seen");
+  require(carried.slot[0].valid == 1 && carried.slot[0].qwords == 6 && carried.slot[0].command == 0x6C06C0C9u &&
+              carried.slot[0].block[0][0] == float_bits(1.0f),
+          "the first item's upload is slot 0 (the first MSCAL's buffer)");
+  require(carried.slot[1].valid == 1 && carried.slot[1].qwords == 9 && carried.slot[1].command == 0x6C09C0C9u &&
+              carried.slot[1].block[0][0] == float_bits(2.0f),
+          "the second item's upload is slot 1 (the double buffer's other half)");
+
+  // The MSCAL stub immediate can differ per item while the ITOP selector does not (measured: the decomp's per-item
+  // counter and 0xD9 arithmetic). The draw is still selector-uniform; the MSCAL difference is counted separately.
+  std::vector<std::uint8_t> stub;
+  chain_tag(stub, 0x30000001u, kChainModel0, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(stub, 0x30000001u, kChainModel1, 0x0400007Bu, 0x140003ADu);  // runs item 0 with MSCAL +5
+  chain_tag(stub, 0x10000000u, 0u, 0x0400007Bu, 0x140003A8u);            // runs item 1 with the terminating pair
+  image.bytes = stub;
+  CapturedDraw stub_draw;
+  stub_draw.item_count = 2;
+  stub_draw.items[0].address = kChainModel0;
+  stub_draw.items[0].qwords = 1;
+  stub_draw.items[1].address = kChainModel1;
+  stub_draw.items[1].qwords = 1;
+  ChainWalkCounters stub_counters;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(stub.size()), chain_read, &stub_draw,
+                            carried, stub_counters),
+          "the MSCAL-variant chain walks");
+  require(stub_counters.complete && stub_counters.items_run == 2, "both items ran");
+  require(stub_counters.item_variants == 0 && stub_counters.item_mscal_variants == 1,
+          "the ITOP is uniform while the MSCAL stub varies");
+  require(stub_draw.program_uniform == 1 && stub_draw.items[0].run_mscal == 0x140003ADu &&
+              stub_draw.items[1].run_mscal == 0x140003A8u,
+          "the per-item MSCAL words are kept and do not make the selector non-uniform");
+
+  // A draw that uploads nothing: a single item tag and the terminator, no light tag. Its MSCAL is run 4, so it reads
+  // slot 0: the six-qword block item 0 uploaded, not the most recent upload (the parity matters).
+  std::vector<std::uint8_t> silent;
+  chain_tag(silent, 0x30000001u, kChainModel0, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(silent, 0x10000000u, 0u, 0x0400007Bu, 0x140003A8u);
+  image.bytes = silent;
+  CapturedDraw carried_draw;
+  carried_draw.item_count = 1;
+  carried_draw.items[0].address = kChainModel0;
+  carried_draw.items[0].qwords = 1;
+  ChainWalkCounters carried_counters;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(silent.size()), chain_read,
+                            &carried_draw, carried, carried_counters),
+          "the no-upload chain walks");
+  require(carried_counters.complete && carried_counters.light_tags == 0, "no upload in the no-upload chain");
+  require(carried_draw.items[0].light_source == kLightItemCarried && carried_draw.items[0].light_block_qwords == 6 &&
+              carried_draw.items[0].light_block_command == 0x6C06C0C9u &&
+              carried_draw.items[0].light_block[0][0] == float_bits(1.0f),
+          "the no-upload item records the block of its own MSCAL parity");
+  require(carried_counters.items_carried == 1 && carried_counters.items_none == 0,
+          "the carried item is counted");
+  require(carried_draw.items[0].run_valid == 1 && carried_draw.program_uniform == 1,
+          "the no-upload item still carries its run pair");
+  require(carried.runs == 5, "the no-upload chain's MSCAL advanced the parity");
+
+  // The same chain after a parity gap: slot 0's block predates the gap and the two slots differ, so the item says so.
+  carried.gap_epoch += 1;
+  CapturedDraw uncertain_draw = carried_draw;
+  uncertain_draw.items[0] = CapturedItem{};
+  uncertain_draw.items[0].address = kChainModel0;
+  uncertain_draw.items[0].qwords = 1;
+  ChainWalkCounters uncertain_counters;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(silent.size()), chain_read,
+                            &uncertain_draw, carried, uncertain_counters),
+          "the uncertain chain walks");
+  require(uncertain_draw.items[0].light_source == kLightItemCarriedUncertain &&
+              uncertain_counters.items_uncertain == 1,
+          "an uncertain carried block is labelled");
+  carried.gap_epoch = 0;
+
+  // An item tag that does not match the draw's table: the chain is structurally complete but the per-item state is
+  // refused (light_source stays none, chain_valid is 0), never guessed.
+  std::vector<std::uint8_t> mismatched;
+  chain_tag(mismatched, 0x30000001u, kChainModel1, 0x20000000u, 0x3F3F3F3Fu);
+  chain_tag(mismatched, 0x10000000u, 0u, 0x0400007Bu, 0x140003A8u);
+  image.bytes = mismatched;
+  CapturedDraw wrong;
+  wrong.item_count = 1;
+  wrong.items[0].address = kChainModel0;
+  wrong.items[0].qwords = 1;
+  ChainWalkCounters wrong_counters;
+  require(walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(mismatched.size()), chain_read, &wrong,
+                            carried, wrong_counters),
+          "the mismatched chain still parses structurally");
+  require(wrong_counters.item_mismatch && wrong.chain_valid == 0 && wrong.items[0].light_source == kLightItemNone,
+          "a mismatched item is refused, not filled from the wrong tag");
+
+  // An unknown DMA tag id outside the PGL output chain refuses the walk.
+  std::vector<std::uint8_t> unknown;
+  chain_tag(unknown, 0x70000000u, 0u, 0u, 0u);
+  image.bytes = unknown;
+  ChainWalkCounters unknown_counters;
+  CapturedDraw ignored_draw;
+  ignored_draw.item_count = 0;
+  require(!walk_packet_chain(kChainBase, kChainBase + static_cast<std::uint32_t>(unknown.size()), chain_read,
+                             &ignored_draw, carried, unknown_counters),
+          "an unknown tag id refuses the walk");
+  require(unknown_counters.unknown_tags == 1 && !unknown_counters.complete, "the unknown tag is counted");
+
+  // func_0049D328 writes nothing when the Cmd or obj->count is zero: an empty chain is complete and carries no item.
+  ChainWalkCounters empty_counters;
+  CapturedDraw empty_draw;
+  require(walk_packet_chain(kChainBase, kChainBase, chain_read, &empty_draw, carried, empty_counters),
+          "an empty chain is complete");
+  require(empty_counters.complete && empty_counters.tags == 0 && empty_draw.chain_valid == 1,
+          "the empty chain has no tags");
+  g_chain_image = nullptr;
+}
+
 void check_mode_switch() {
   require(parse_mode(nullptr) == Mode::off, "unset is off");
   require(parse_mode("") == Mode::off, "empty is off");
@@ -644,6 +896,7 @@ int main() {
     check_mode_switch();
     check_present_ring();
     check_capture_round_trip();
+    check_chain_walk();
     check_vif_decoder();
     check_matrix();
     check_mesh();
