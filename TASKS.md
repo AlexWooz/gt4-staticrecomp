@@ -1623,8 +1623,22 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   `f = C3 + C4 * min(0, N·U)`, `lit = trunc(base * f)` reproduces the tap on **3,822 body-family vertices with max 1
   level and alpha exact** (frames 7398/7399); captured C3 = 1.0 / C4 = 0.8 vs fitted 0.9846/0.7941; draws 91/93 are
   another sub-family (program selector not captured yet). Checks: CTest 3/3, Python 7/7, 3x off/shadow gate OK.
-- Next: apply the lighting formula in the offline renderer and the live `present` shader, then the G-IMAGE/G-PERF gates
-  and the native fidelity work (textures, fog, effects) on top of the `present` seam.
+- **Round 12 (2026-11-09, the lighting formula in both renderers).** New
+  `native/coregs3/coregs3_lighting.{hpp,cpp}` implements the fragment's exact float32 order (`D = P - LP`,
+  `t = min(dot(N,D), 0)/|D|`, `factor = C3 + C4*t` per lane, `lit = FTOI0(base*factor)`, alpha lane 3). The matrix `M`
+  does not enter the colour (measured by varying it and by tracing entry 0x10A0; it feeds a separate output). Only the
+  six-qword `0x6C06C0C9` block is accepted; other variants/vertices without normal or raw position fall back and are
+  counted. The float32 module matches the real fragment on all 3,914 body-family rows and reproduces the round-11 tap
+  residual exactly (unambiguous 3,822 vertices, max 1, alpha exact). Offline renderer: shades the mesh, reports
+  lit/fallback draws and vertices; `--object`/`--flat` PNG hashes unchanged. Live present: per-vertex lit colour in
+  `build_frame`, new `draws_unlit`/`vertices_unlit` counters, and the depth compare corrected GREATER -> GEQUAL (the
+  GS's equal-depth rule; the car's coincident layers tie, and the later lit body must win). Evidence: 3x night present
+  run 8,997 VBlanks / 1,686 racing, 1,377 draws, 338,934 vertices, 112,978 triangles, 1,059 unlit draws / 231,918 unlit
+  vertices, guest clock/digest/state identical, shaded cars in `build/evidence/coregs3/r12/present-07400.png`; present
+  vs reference differs only in the car box (36,707 px). CTest 4/4 (new `native_coregs3_lighting`), Python 7/7, the 3x
+  off/shadow gate COREGS3-NIGHT-CHECK-OK (0 differences, 13/13 frames, capture 3,382,120 B).
+- Next: the G-IMAGE/G-PERF gates and the native fidelity work (textures, fog, effects) on top of the `present` seam;
+  the nine-/three-qword block variants and the 91/93 program selector stay open.
 
 
 ### TASK-087 — GS readbacks without stalls

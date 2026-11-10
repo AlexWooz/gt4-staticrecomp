@@ -342,9 +342,11 @@ constant). It is inserted after `ComposeFrameGpu` in `Backend::end_frame` and `B
 `Impl::queue` through `Impl::submit_to`; `overlay` still refuses to start, `off|shadow` stay untouched, and only
 `shadow` writes a capture file. Deviations from the prepared design: the composed display image is created by CoreGS 2.0
 without `COLOR_ATTACHMENT` usage on this device, so the fragment stage writes the packed R32_UINT word with an
-`imageStore` (storage image) instead of a colour attachment; the D32 depth attachment, the `GREATER` test and
+`imageStore` (storage image) instead of a colour attachment; the D32 depth attachment, the depth test and
 `depthClamp` remain, and the image barrier is `GENERAL`↔`GENERAL`. The layer refuses cleanly when the device lacks
-`depthClamp`, the D32 depth attachment or R32_UINT storage.
+`depthClamp`, the D32 depth attachment or R32_UINT storage. **Correction (round 12):** the compare is GEQUAL, not
+strict GREATER: the GS rule measured by the CPU reference lets a later primitive win an equal-depth tie, and the
+car's coincident body layers need that for the lit body to be visible (see §11).
 
 **Evidence (2026-11-09, Avell A70, RTX 3060 Laptop, Vulkan 1.4.357).** Full 3x night run, 8,997 VBlanks / 1,686 racing:
 13 passes, 1,377 draws, 338,934 vertices, 112,978 triangles, 0 refused; the guest clock, digest and state are identical
@@ -363,8 +365,9 @@ The design bullets below are the round-7 plan, kept as the design record.
 - **Renderer:** a `CoreGS 3.0` module inside `native/hw_gs/` (the only place the `gt4_hw_*` Vulkan loader and the
   `Backend::Impl` device/queue live), initialised from `Impl` but **not** touching CoreGS 2.0's targets. A graphics
   pass into the composed display image (`R32_UINT`, integer output, no blending) with a `D32` depth image, a minimal
-  vertex shader using the measured convention (`gl_Position = vec4(cx, -cy, 1.0, cw)`, depth compare `GREATER`, so
-  depth is `1/cw`), no culling, vertex colour only. One draw call per captured draw, `vf24..vf27` in a push constant.
+  vertex shader using the measured convention (`gl_Position = vec4(cx, -cy, 1.0, cw)`, depth compare GEQUAL on
+  `1/cw`, corrected in round 12), no culling, vertex colour only. One draw call per captured draw, `vf24..vf27` in
+  a push constant.
 - **Insertion point:** after `ComposeFrameGpu` returns a valid frame, in `Backend::end_frame`
   (`native/hw_gs/hw_gs_backend.cpp:2074-2086`) for the window path and in `Backend::scanout`
   (`:1949-1955`) for the headless dump path; submit on `Impl::queue` through `Impl::submit_to` with a private command
@@ -424,3 +427,55 @@ The design bullets below are the round-7 plan, kept as the design record.
 - No game build and no gate ran this round, so the §8 numbers remain the last measured state and nothing here proves
   they still hold on this machine.
 
+
+## 11. Round 12 (2026-11-09): the measured VU1 lighting formula in both renderers
+
+**The formula (C).** The body/paint VU1 fragment (microcode entry 0x10A0) reads the raw V3-16 model position `P` after
+ITOF0 (raw model units, no `position_scale`), the V3-8 normal bytes divided by 127 (`N`), the V4-8 base colour `B` and
+the six-qword block at TOPS+0xC9 (`0xC9..0xCB` matrix `M`, `0xCC` light position `LP`, `0xCD` `C3=(c3,c3,c3,1)`, `0xCE`
+`C4=(c4,c4,c4,0)`), and writes, in float32 and in this order:
+
+```
+D      = P - LP
+cos    = (D.x*N.x + D.y*N.y) + D.z*N.z        (lane 0, summed left to right)
+t      = min(cos, 0) * (1 / |D|)              (min first, then the reciprocal length)
+factor = C3 + C4 * t                          (per lane)
+lit    = FTOI0(B * factor)                    (truncate toward zero)
+alpha  = FTOI0(B.w * (C3.w + C4.w * t))       (the captured block gives exactly B.w)
+```
+
+`M` does **not** enter the lit colour: the fragment uses it to transform the reflected vector `D - 2*N*(D.N)` into a
+separate output (two floats written at TOPS+0x40). Driving the real fragment with a different `M` and every other input
+fixed leaves the colour unchanged; the float32 formula matches the fragment on all 3,914 body-family rows of the r11
+capture (RGB and alpha), and the tap residual is identical to round 11.
+
+**Module.** `native/coregs3/coregs3_lighting.{hpp,cpp}` holds `decode_light_block` and `shade_vertex`. Only the measured
+six-qword variant (`light_block_qwords == 6`, command `0x6C06C0C9`) is accepted; every other block (the nine-qword
+`0x6C09C0C9` form used by the glass/lamp parts, the three-qword `0x6C03C0C9` form, or no block) returns an explicit
+status and the caller falls back to the base colour and counts it. A vertex without `has_normal` or
+`has_raw_position`, a zero-length `P - LP`, or a non-finite value also falls back. The renderer clamps the FTOI0 result
+into the RGBA8 lane (the measured block never leaves `[0,255]`).
+
+**Offline renderer.** `coregs3_render.cpp` shades a mesh in place when the draw has the measured block and the mesh has
+normals and a colour channel; `RenderStats` reports `draws_lit`, `draws_fallback`, `vertices_lit` and
+`vertices_fallback`, printed by `gt4_coregs3_render`. The `--object` diagnostic path and `--flat` keep their previous
+behaviour (counted as fallbacks), so their PNG hashes are unchanged (`ca070835…` points, `b485c1b7…` flat).
+
+**Live present.** `hw_coregs3_present.cpp` shades each mesh vertex once in `build_frame` and stores the lit RGBA in the
+`PresentVertex` colour (the shader stays vertex-colour only). The present counters gained `draws_unlit` and
+`vertices_unlit`; the F8 report prints them. One correction was needed to make the lit body visible: the depth compare
+is **GEQUAL**, not strict GREATER, because the car's coincident body layers tie on depth and the GS lets the later
+primitive win (the same rule as `coregs3_render`'s w-buffer).
+
+**Evidence (r12, Avell A70, RTX 3060 Laptop, Vulkan 1.4.357).** Module against the tap, reusing the r11 pairing:
+3,914 body-family vertices, per-channel rms 0.2864, max 4 (all in the ambiguous draws 91/93); the 3,822 unambiguous
+vertices stay at rms 0.1696, max 1, alpha exact 3,822/3,822. Full 3x night present run: 8,997 VBlanks / 1,686 racing,
+13 passes, 1,377 draws, 338,934 vertices, 112,978 triangles, 0 refused, 1,059 unlit draws / 231,918 unlit vertices,
+guest clock/digest/state identical; frame `build/evidence/coregs3/r12/present-07400.png` (and `…-09000.png`) shows the
+shaded cars, present vs reference differs in the car box only (36,707 px). The 3x off/shadow gate is
+COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames, capture 3,382,120 B). CTest 4/4
+(the new `native_coregs3_lighting` plus the three existing) and Python 7/7.
+
+**Open.** The nine-qword and three-qword block variants are not decoded (the no-colour glass/lamp draws keep the
+`(255,255,255)` base fallback and are counted); the 91/93 sub-family (program selector) and per-item light uploads stay
+open from round 11.

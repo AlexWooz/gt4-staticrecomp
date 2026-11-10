@@ -1,5 +1,29 @@
 # Current Status
 
+## TASK-090 round 12: the VU1 lighting formula in both renderers (2026-11-09, branch `task/090-coregs3`)
+
+`native/coregs3/coregs3_lighting.{hpp,cpp}` now implements the measured body/paint VU1 lighting in the exact fragment
+operation order: `D = P - LP`, `cos = dot(N, D)` (raw model units, `N = bytes/127`), `t = min(cos,0)/|D|`,
+`factor = C3 + C4*t` per lane, `lit = FTOI0(base*factor)` (truncation toward zero), alpha from lane 3. The 3x3 matrix
+`M` does not enter the colour (the fragment uses it for a separate output; a varied `M` leaves the colour unchanged).
+Only the measured six-qword block (`0x6C06C0C9`) is accepted; the nine- and three-qword forms, absent blocks and
+vertices without a normal or raw position fall back to the base colour and are counted. The float32 module matches the
+real AOT fragment on all 3,914 body-family rows of the r11 capture; against the tap it reproduces round 11 exactly
+(unambiguous 3,822 vertices, rms 0.1696, max 1 level, alpha exact; draws 91/93 remain the ambiguous sub-family).
+
+The offline renderer shades the mesh when the draw carries the block and the mesh has normals and colour, and reports
+`draws_lit/draws_fallback/vertices_lit/vertices_fallback`; `--object` and `--flat` keep their old PNG hashes. The live
+`present` layer shades each vertex in `build_frame` and gained `draws_unlit`/`vertices_unlit` counters. The present
+depth compare was corrected from strict GREATER to **GEQUAL** because the car's coincident body layers tie on depth and
+the GS lets the later primitive win; without it the lit body stayed hidden under the earlier untextured layer.
+
+Evidence: full 3x night run, 8,997 VBlanks / 1,686 racing, 13 passes, 1,377 draws, 338,934 vertices, 112,978 triangles,
+0 refused, 1,059 unlit draws / 231,918 unlit vertices, guest clock/digest/state identical; the shaded-car frame is
+`build/evidence/coregs3/r12/present-07400.png` (and `present-09000.png`), present vs reference differs in the car box
+only (36,707 px). The 3x off/shadow gate is COREGS3-NIGHT-CHECK-OK (0 differences, 13/13 frames, capture 3,382,120 B);
+CTest 4/4 (new `native_coregs3_lighting`) and Python 7/7. Open: the nine-/three-qword block variants (the no-colour
+glass/lamp draws keep the white base fallback and are counted) and the 91/93 program selector.
+
 ## TASK-090 round 11: the per-draw VU1 light block captured (2026-11-09, branch `task/090-coregs3`)
 
 The `.gt4scene` format is **version 2**: each `CapturedDraw` now carries the VU1 light block read back at the existing K1
