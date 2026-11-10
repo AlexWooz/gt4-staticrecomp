@@ -1,5 +1,46 @@
 # Current Status
 
+## 2026-11-10: track textures, the world binds the GS state (TASK-090, branch `task/090-track-textures`)
+
+The offline world now decodes each selected sky / far-underlay / course item from the GS state the VU1 tap emitted at
+the draw (`TEX0`/`TEX1`/`CLAMP`/`TEX2`), not from the capture's 40-byte PGLUtexture record; the record stays the
+fallback only when the tap paired no state for the item. Measured on the M1 frame (VBlank 7398): **1,180 of the 1,215
+textured selected items bind the tapped state and 35 use the record fallback**; 22 items' records genuinely differ from
+the emitted TEX0 (18 texture pages, 2 formats, 22 palette states), and the tie-break pairing removes 210 false
+differences the old global UV match produced on repeated quad UVs. The image change is local: 3,579 pixels changed,
+2,364 closer to the reference vs 887 farther; world PSNR 20.36 -> 20.36 dB, SSIM 0.6138 -> 0.6137, pct_bad 77.22 ->
+77.19%, mean |diff| 20.31 -> 20.29, luma 31.20 -> 31.19.
+
+- **Decoder (C).** `decode_texture_state` takes the tapped TEX0/TEX1/CLAMP and the last TEX2 write and reuses the
+  record decoder's format/rectangle/palette/key rules. An indexed texture with TEX0.CLD = 0 needs a TEX2 write with
+  CLD = 1 at CSA 0 whose CBP/CPSM/CSM equal TEX0's, plus the measured load class: T4 when the VU1 loads only group 0
+  (so the texture must sample CSA 0), T8 (256 entries) otherwise; the sampling CSA is always TEX0's. Any other state is
+  a counted `refused_state` naming the register, never a guess. The record path keeps its old CLD = 1 rule.
+- **Binding (C).** The world passes bind the tapped state; the record fallback is the 35 items the tap did not pair.
+  The selection state (TEST/ALPHA/XYOFFSET) keeps the measured global UV pairing unchanged. Because repeated quad UVs
+  tie many streams, the texture state of a tie prefers the tied stream whose TEX0 matches the item's record (210
+  tie-breaks); 2 ties had no record-matching stream and keep the first (counted). The record-vs-tap census counts every
+  difference (TEX0 fields with CLD ignored, TEX1, CLAMP); TEX1 differs on 20 items (the mip records), CLAMP on 2.
+- **Road result (H).** The central road's records already equal the tapped TEX0, so its picture is unchanged and the
+  decoded pages are asphalt (textures 18/19/20 are grained dark asphalt, not atlas pages). The remaining
+  brightness/chroma difference against the reference is material/lighting (flat vertex shading and the tapped fog) and
+  the excluded program layers (0xA0/0xB08/0x1278, the post chain), not a wrong texture page. The pit-lane/left-area
+  items are the ones whose records differ; there the state binding is a small net improvement (2,364 vs 887 pixels).
+- **White/bright surfaces.** The bright surfaces over the reference are draw 35's pit-lane plane (texture 19 x a warm
+  vertex colour), the top-right grandstand (texture/material) and the PIT sign (a gray item overlaying the sign's
+  yellow face); the decoded pixels are correct texture content, so these are material/lighting and draw-layer issues,
+  not missing textures. Two selected items have no record at all (2 items) and keep the vertex colour.
+- **Evidence.** `build/evidence-track-textures/`: the before/after 3x world images and masks, the metrics JSONs, the
+  before/after report with the binding table, the road crop, the draw-alone renders and the gate. Baseline: the M1
+  executable (the same branch commit) reproduces the M1 `world-3x.png` byte for byte (SHA-256 equal), and this build's
+  car render matches it byte for byte as well.
+- **Tests.** CTest coregs3 **11/11** (the 10 existing plus `native_coregs3_texture_state`: TEX0/TEX1/CLAMP/TEX2,
+  CLD = 0 with the TEX2 load, the T4/T8 load classes, CSA, the refusals and the record-path agreement); Python
+  `tests/python/test_coregs3_units.py` **8/8**; the car render (no `--world`) is byte-identical to the M1 executable on
+  the same capture and command; full build green; the 3x off/shadow identity gate against the main worktree's reference
+  executable is **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames
+  identical for off and shadow; capture 4,477,368 B), `build/evidence-track-textures/gate-run.log`.
+
 ## 2026-11-10: track M1, the offline sky + road renderer (TASK-090, branch `task/090-track-m1`)
 
 The first offline world picture: the sky, the far underlay and the main-view course are decoded from a fresh v5

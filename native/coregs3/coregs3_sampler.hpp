@@ -57,6 +57,14 @@ struct SampledTexture {
   std::uint32_t x0 = 0, y0 = 0;         // its top-left in texture coordinates
   std::uint32_t cache_slot = 0;         // the frame cache slot the bytes came from (reporting only)
   const std::uint8_t *rgba = nullptr;   // width * height * 4
+  // TASK-090 track textures: where this sampler's state came from. `from_state` is true when the TEX0/TEX1/CLAMP fields
+  // are the register words the VU1 tap measured at the draw; false when the 40-byte PGLUtexture record was the source.
+  // `palette_via_tex2` marks an indexed texture whose palette bank was loaded by a TEX2 write (TEX0.CLD = 0).
+  bool from_state = false;
+  bool palette_via_tex2 = false;
+  std::uint64_t source_tex0 = 0;   // the TEX0/TEX1/CLAMP words the state fields were decoded from
+  std::uint64_t source_tex1 = 0;
+  std::uint64_t source_clamp = 0;
 };
 
 // The Format G content key fields (native/hw_gs/replace/include/hw_gs_replace/keys.hpp): the frame table decodes one

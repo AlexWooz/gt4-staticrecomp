@@ -41,6 +41,7 @@
 #include "coregs3_texture.hpp"
 #include "coregs3_texture_frame.hpp"
 #include "coregs3_vram.hpp"
+#include "hw_gs_registers.hpp"
 #endif
 
 #include <cmath>
@@ -707,6 +708,24 @@ int main(int argc, char **argv) {
     std::uint32_t probe_refused_afail = 0, probe_refused_other = 0;
     std::string probe_filter_detail;
     std::map<std::uint64_t, std::uint32_t> probe_test_hist;
+    // TASK-090 track textures: the binding table, one row per (pass, sampler state), and the selected-item census of the
+    // record-vs-tap differences. The sampler state the row prints is exactly what the renderer samples.
+    struct BindingRow {
+      std::uint32_t pass = 0;
+      const SampledTexture *texture = nullptr;
+      std::uint32_t items = 0;
+    };
+    std::vector<BindingRow> binding_rows;
+    const auto binding_row = [&](std::uint32_t pass, const SampledTexture *texture) -> BindingRow & {
+      for (BindingRow &row : binding_rows)
+        if (row.pass == pass && row.texture == texture) return row;
+      binding_rows.push_back(BindingRow{pass, texture, 0u});
+      return binding_rows.back();
+    };
+    std::uint32_t probe_state_bound = 0, probe_record_bound = 0;
+    std::uint32_t probe_tex0_differs = 0, probe_tex0_tbp = 0, probe_tex0_format = 0, probe_tex0_palette = 0;
+    std::uint32_t probe_tex1_differs = 0, probe_clamp_differs = 0, probe_state_record_absent = 0;
+    std::string probe_tex0_detail;
     for (const CapturedDraw &draw : selected.draws) {
       const std::vector<TextureBinding> *bindings = texture_table.for_draw(draw.sequence);
       for (std::uint32_t item = 0; item < draw.item_count; ++item) {
@@ -714,7 +733,59 @@ int main(int argc, char **argv) {
         const TextureBinding *binding = bindings != nullptr && item < bindings->size() ? &(*bindings)[item] : nullptr;
         if (binding == nullptr) {
           probe_no_texture += 1;
+          binding_row(draw.pass, nullptr).items += 1;
           continue;
+        }
+        const SampledTexture *sampler = binding->texture;
+        binding_row(draw.pass, sampler).items += 1;
+        if (sampler != nullptr) {
+          if (sampler->from_state) {
+            probe_state_bound += 1;
+            const std::uint32_t record = draw.items[item].texture_record;
+            if (record == kNoRecord || record >= selected.textures.size()) {
+              probe_state_record_absent += 1;
+            } else {
+              TextureRecord record_fields;
+              std::string parse_error;
+              if (parse_texture_record(selected.textures[record].bytes, sizeof selected.textures[record].bytes,
+                                       record_fields, parse_error)) {
+                const bool tbp_differs = hwgs::tex0::Tbp0(sampler->source_tex0) != record_fields.tbp0;
+                const bool format_differs =
+                    hwgs::tex0::Tbw(sampler->source_tex0) != record_fields.tbw ||
+                    hwgs::tex0::Psm(sampler->source_tex0) != record_fields.psm ||
+                    hwgs::tex0::Tw(sampler->source_tex0) != record_fields.tw ||
+                    hwgs::tex0::Th(sampler->source_tex0) != record_fields.th ||
+                    hwgs::tex0::Tcc(sampler->source_tex0) != record_fields.tcc ||
+                    hwgs::tex0::Tfx(sampler->source_tex0) != record_fields.tfx;
+                const bool palette_differs =
+                    hwgs::tex0::Cbp(sampler->source_tex0) != record_fields.cbp ||
+                    hwgs::tex0::Cpsm(sampler->source_tex0) != record_fields.cpsm ||
+                    hwgs::tex0::Csm(sampler->source_tex0) != record_fields.csm ||
+                    hwgs::tex0::Csa(sampler->source_tex0) != record_fields.csa;
+                if (tbp_differs || format_differs || palette_differs) {
+                  probe_tex0_differs += 1;
+                  if (tbp_differs) probe_tex0_tbp += 1;
+                  if (format_differs) probe_tex0_format += 1;
+                  if (palette_differs) probe_tex0_palette += 1;
+                  if (probe_tex0_detail.size() < 1600) {
+                    char detail[220];
+                    std::snprintf(detail, sizeof detail,
+                                  "draw %u item %u: record TEX0 %016llX tap TEX0 %016llX (%s%s%s); ",
+                                  draw.sequence, item,
+                                  static_cast<unsigned long long>(record_fields.tex0),
+                                  static_cast<unsigned long long>(sampler->source_tex0),
+                                  tbp_differs ? "tbp " : "", format_differs ? "format " : "",
+                                  palette_differs ? "palette" : "");
+                    probe_tex0_detail += detail;
+                  }
+                }
+                if (sampler->source_tex1 != record_fields.tex1) probe_tex1_differs += 1;
+                if (sampler->source_clamp != record_fields.clamp) probe_clamp_differs += 1;
+              }
+            }
+          } else {
+            probe_record_bound += 1;
+          }
         }
         probe_test_hist[binding->state.test & 0xFFFFFFFFu] += 1;
         switch (check_world_binding(*binding)) {
@@ -764,6 +835,55 @@ int main(int argc, char **argv) {
                   probe_refused_other);
     world_report += line;
     world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world texture binding source: tapped-state %u, record-fallback %u; record-vs-tap TEX0 differs %u "
+                  "(tbp %u, format %u, palette %u), TEX1 differs %u, CLAMP differs %u, tapped state with no record %u; "
+                  "frame differing items with an ambiguous UV pairing %llu",
+                  probe_state_bound, probe_record_bound, probe_tex0_differs, probe_tex0_tbp, probe_tex0_format,
+                  probe_tex0_palette, probe_tex1_differs, probe_clamp_differs, probe_state_record_absent,
+                  static_cast<unsigned long long>(texture_counters.world_tap_diff_ambiguous));
+    world_report += line;
+    world_report += "\n";
+    if (!probe_tex0_detail.empty()) {
+      world_report += "world record-vs-tap TEX0 differences: ";
+      world_report += probe_tex0_detail;
+      world_report += "\n";
+    }
+    std::snprintf(line, sizeof line,
+                  "world tapped-state decode counters (frame world passes): decoded %llu, refused %llu, record "
+                  "fallback %llu, palette via TEX2 %llu, level-0 mip fallbacks %llu, filter fallbacks %llu; texture "
+                  "pairing tie-breaks %llu, ambiguous ties %llu, no stream %llu",
+                  static_cast<unsigned long long>(texture_counters.world_state_decoded),
+                  static_cast<unsigned long long>(texture_counters.world_state_refused),
+                  static_cast<unsigned long long>(texture_counters.world_record_fallback),
+                  static_cast<unsigned long long>(texture_counters.world_state_palette_tex2),
+                  static_cast<unsigned long long>(texture_counters.records_level0_fallback),
+                  static_cast<unsigned long long>(texture_counters.records_filter_fallback),
+                  static_cast<unsigned long long>(texture_counters.world_texture_pair_tiebreak),
+                  static_cast<unsigned long long>(texture_counters.world_texture_pair_ambiguous),
+                  static_cast<unsigned long long>(texture_counters.world_texture_pair_none));
+    world_report += line;
+    world_report += "\n";
+    for (const std::string &refusal : texture_counters.state_refusals)
+      world_report += "  tapped state refused: " + refusal + "\n";
+    // The binding table: the state each selected item samples, grouped by pass and sampler state.
+    world_report += "world binding table:\n";
+    for (const BindingRow &row : binding_rows) {
+      if (row.texture == nullptr) {
+        std::snprintf(line, sizeof line, "  %-12s untextured items %u\n", pass_name(row.pass), row.items);
+        world_report += line;
+        continue;
+      }
+      const SampledTexture &sampler = *row.texture;
+      std::snprintf(line, sizeof line,
+                    "  %-12s %-6s TEX0 %016llX TEX1 %016llX CLAMP %016llX psm %02X %ux%u%s items %u\n",
+                    pass_name(row.pass), sampler.from_state ? "state" : "record",
+                    static_cast<unsigned long long>(sampler.source_tex0),
+                    static_cast<unsigned long long>(sampler.source_tex1),
+                    static_cast<unsigned long long>(sampler.source_clamp), sampler.psm, sampler.width,
+                    sampler.height, sampler.palette_via_tex2 ? " palette-TEX2" : "", row.items);
+      world_report += line;
+    }
     if (!probe_filter_detail.empty()) {
       world_report += "world refused-filter records: " + probe_filter_detail;
       world_report += "\n";
@@ -837,7 +957,7 @@ int main(int argc, char **argv) {
                  static_cast<unsigned long long>(texture_counters.items_no_uv),
                  static_cast<unsigned long long>(texture_counters.items_decode_refused),
                  static_cast<unsigned long long>(texture_counters.items_program_unknown));
-    std::fprintf(file, "textures decode decoded %llu refused %llu cache-hits %llu\n",
+    std::fprintf(file, "textures decode calls %llu run, refused %llu, payload cache-hits %llu\n",
                  static_cast<unsigned long long>(texture_counters.records_decoded),
                  static_cast<unsigned long long>(texture_counters.records_refused),
                  static_cast<unsigned long long>(texture_counters.cache_hits));
@@ -907,7 +1027,7 @@ int main(int argc, char **argv) {
     world_report += "\n";
     std::snprintf(line, sizeof line,
                   "world pixels: fog %llu missing %llu, date-failed %llu date-missing %llu, afail-written %llu "
-                  "afail-depth %llu, blended %llu, sky-background-depth %llu; texture mip level-0 fallbacks %llu, "
+                  "afail-depth %llu, blended %llu, sky-background-depth %llu; texture decode level-0 mip fallbacks %llu, "
                   "filter fallbacks %llu",
                   static_cast<unsigned long long>(stats.world_fog_pixels),
                   static_cast<unsigned long long>(stats.world_fog_missing),

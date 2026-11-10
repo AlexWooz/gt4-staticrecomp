@@ -1,8 +1,11 @@
-// TASK-090 CoreGS 3.0: the native decoder of the car-pass textures.
+// TASK-090 CoreGS 3.0: the native decoder of the car-pass and world-pass textures.
 //
 // The `.gt4scene` capture stores the 40-byte PGLUtexture record of every draw item (five little-endian qwords: TEX0,
 // TEX1, MIPTBP1, MIPTBP2, CLAMP) and the `.gt4vram` sidecar stores the GS local memory blocks. This unit joins the two:
 // it parses the record, locates the texels and the palette in the local memory, decodes RGBA8 and returns a content key.
+// TASK-090 track textures adds a second entry point, `decode_texture_state`, that takes the TEX0/TEX1/CLAMP/TEX2 words
+// the VU1 tap measured at the draw instead of the record: the world stream writes TEX0 with CLD = 0 and uploads the
+// palette bank through TEX2, which the record path does not model.
 //
 // It is Vulkan-free and reuses the MIT renderer pieces instead of a second decoder:
 //   * `hwgs::memory::LocalMemory` (native/hw_gs/memory) for the GS swizzle and pixel addressing;
@@ -111,6 +114,9 @@ struct DecodedTexture {
   // TASK-090 track M1: TEX1.MXL was above 0 and the caller allowed the level-0 fallback (the world pass). The bytes are
   // level 0 only; the flag is evidence for the report, never a silent substitution.
   bool level0_mip_fallback = false;
+  // TASK-090 track textures: the palette bank was loaded by the TEX2 write that precedes the draw (TEX0.CLD = 0), not by
+  // the TEX0 write itself. The decoded bytes are the same bank; the flag is evidence for the report.
+  bool palette_via_tex2 = false;
   std::uint32_t width = 0;   // decoded rectangle (the CLAMP region when it is present, else the full size)
   std::uint32_t height = 0;
   std::uint32_t x0 = 0;      // top-left of the decoded rectangle in texture coordinates
@@ -129,6 +135,27 @@ struct DecodedTexture {
   std::string format_p_name;
 };
 
+// TASK-090 track textures: the GS sampling state of one draw item, as the VU1 tap emitted it. The values are the
+// canonical 64-bit register writes in force at the item's first vertex: TEX0_1/2, TEX1_1/2 and CLAMP_1/2, plus the last
+// TEX2_1/2 write (the CLUT load descriptor; the world stream writes TEX0 with CLD = 0 and uploads the palette bank
+// through TEX2 with CLD = 1). A register the tap never wrote keeps its `*_known` flag false; the caller then falls back
+// to the item's 40-byte PGLUtexture record.
+struct TextureState {
+  std::uint64_t tex0 = 0;
+  std::uint64_t tex1 = 0;
+  std::uint64_t clamp = 0;
+  std::uint64_t tex2 = 0;
+  bool tex0_known = false;
+  bool tex1_known = false;
+  bool clamp_known = false;
+  bool tex2_known = false;
+
+  // True when the three sampling registers the decoder needs are present.
+  bool sampling_registers_known() const noexcept { return tex0_known && tex1_known && clamp_known; }
+  // True when the tap wrote any sampling register: a present but incomplete state is a refusal, not a record fallback.
+  bool any_register_known() const noexcept { return tex0_known || tex1_known || clamp_known || tex2_known; }
+};
+
 // Decodes one texture record against a local memory image. `record_bytes` is the 40-byte PGLUtexture record; `size` is
 // its available byte count (a shorter record is refused). Returns `out.status` (also returned).
 TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
@@ -142,5 +169,17 @@ struct TextureDecodeOptions {
 };
 TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
                              const TextureDecodeOptions &options, DecodedTexture &out, std::string &error);
+
+// TASK-090 track textures: decodes the item's texture from the GS state the tap measured, instead of from the 40-byte
+// record. The TEX0/TEX1/CLAMP fields replace the record's; the format, size, palette, rectangle and key rules are the
+// record decoder's, so the two paths cannot drift. For an indexed texture:
+//   * TEX0.CLD = 1 keeps the record path's measured rule (the TEX0 write loads the palette from CBP);
+//   * TEX0.CLD = 0 requires a TEX2 write with CLD = 1 (the measured world stream: the VU1 uploads the palette bank
+//     through TEX2 at CSA 0, with the 16-entry T4 load class when a T4 texture samples CSA 0 and the 256-entry T8 class
+//     otherwise), and TEX2's CBP/CPSM/CSM must equal TEX0's, so the bank the decoder reads is the bank the GS loaded.
+//     Anything else is an explicit `refused_state` naming the register that is outside the measured set, never a guess.
+// `state` must carry TEX0, TEX1 and CLAMP; an incomplete state is refused with the missing register named.
+TextureStatus decode_texture_state(const SlmImage &slm, const TextureState &state, const TextureDecodeOptions &options,
+                                   DecodedTexture &out, std::string &error);
 
 }  // namespace gt4::coregs3

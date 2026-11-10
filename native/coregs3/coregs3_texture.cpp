@@ -163,6 +163,203 @@ TextureStatus refuse(DecodedTexture &out, std::string &error, TextureStatus stat
   return status;
 }
 
+// The common decode body of the record path and the tapped-state path. `record` is the state to decode (the record's
+// own fields, or the TEX0/TEX1/CLAMP words the tap emitted); `tex2_state` is non-null on the state path and carries the
+// last TEX2 write, which is how an indexed texture with TEX0.CLD = 0 proves where its palette bank came from.
+TextureStatus decode_record_fields(const SlmImage &slm, const TextureRecord &record, const TextureDecodeOptions &options,
+                                   const TextureState *tex2_state, DecodedTexture &out, std::string &error) {
+  // The car pass measured 163 T4, 5 T8 and one CT32 record; nothing else is decoded here.
+  if (record.psm != static_cast<std::uint32_t>(hw_gs_replace::Psm::T4) &&
+      record.psm != static_cast<std::uint32_t>(hw_gs_replace::Psm::T8) &&
+      record.psm != static_cast<std::uint32_t>(hw_gs_replace::Psm::Ct32)) {
+    char detail[96];
+    std::snprintf(detail, sizeof detail, "PSM 0x%02X is not one of the measured T4/T8/CT32 formats",
+                  static_cast<unsigned>(record.psm));
+    return refuse(out, error, TextureStatus::refused_psm, detail);
+  }
+  if (record.tw > 10u || record.th > 10u) {
+    char detail[96];
+    std::snprintf(detail, sizeof detail, "TW %u / TH %u above the decoder's log2 bound of 10",
+                  static_cast<unsigned>(record.tw), static_cast<unsigned>(record.th));
+    return refuse(out, error, TextureStatus::refused_size, detail);
+  }
+  if (record.mxl != 0u) {
+    if (!options.level0_mip_fallback) {
+      char detail[96];
+      std::snprintf(detail, sizeof detail, "TEX1.MXL %u: mip levels are not decoded",
+                    static_cast<unsigned>(record.mxl));
+      return refuse(out, error, TextureStatus::refused_state, detail);
+    }
+    // The world pass's declared fallback: decode level 0 (the base rectangle) and record that the record asked for mips.
+    out.level0_mip_fallback = true;
+  }
+
+  const bool indexed = is_indexed(record.psm);
+  if (indexed) {
+    // All 169 measured records: CT32 palette, CSM1, CLD = 1, CSA 0/2/4/6. The tapped world stream instead writes TEX0
+    // with CLD = 0 and uploads the palette bank through TEX2 with CLD = 1 before it. The 40-byte record carries no TEXA
+    // and no TEXCLUT, so a palette state outside this set is refused instead of guessed.
+    if (record.cpsm != static_cast<std::uint32_t>(hw_gs_replace::Psm::Ct32)) {
+      char detail[96];
+      std::snprintf(detail, sizeof detail, "palette CPSM 0x%02X is not the measured CT32",
+                    static_cast<unsigned>(record.cpsm));
+      return refuse(out, error, TextureStatus::refused_state, detail);
+    }
+    if (record.csm != 0u) {
+      return refuse(out, error, TextureStatus::refused_state, "TEX0.CSM is not CSM1");
+    }
+    if (record.cld == 1u) {
+      // The TEX0 write itself loads the palette from CBP (the car-pass measured rule).
+    } else if (record.cld == 0u) {
+      if (tex2_state == nullptr) {
+        char detail[128];
+        std::snprintf(detail, sizeof detail,
+                      "TEX0.CLD 0 without a tapped TEX2 load: the record path cannot prove the palette bank");
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      if (!tex2_state->tex2_known) {
+        return refuse(out, error, TextureStatus::refused_state,
+                      "TEX0.CLD 0 and no TEX2 palette load precedes the draw");
+      }
+      const std::uint64_t tex2 = tex2_state->tex2;
+      const std::uint32_t tex2_cld = hwgs::tex0::Cld(tex2);
+      const std::uint32_t tex2_psm = hwgs::tex0::Psm(tex2);
+      const std::uint32_t tex2_cbp = hwgs::tex0::Cbp(tex2);
+      const std::uint32_t tex2_cpsm = hwgs::tex0::Cpsm(tex2);
+      const std::uint32_t tex2_csm = hwgs::tex0::Csm(tex2);
+      const std::uint32_t tex2_csa = hwgs::tex0::Csa(tex2);
+      char detail[128];
+      if (tex2_cld != 1u) {
+        std::snprintf(detail, sizeof detail, "TEX2.CLD %u is not the measured loading value 1",
+                      static_cast<unsigned>(tex2_cld));
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      if (tex2_csa != 0u) {
+        std::snprintf(detail, sizeof detail, "TEX2.CSA %u is not the measured 0 load offset",
+                      static_cast<unsigned>(tex2_csa));
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      // The VU1 picks the measured load class by the sampling CSA: a 16-entry T4 load when a T4 texture samples CSA 0
+      // (the only group sampled is group 0, whose 16 entries sit at the same positions as the T8 bank's first 16), and
+      // the full 256-entry T8 load for anything else. Any other class is outside the measured set.
+      const bool full_bank_load = tex2_psm == static_cast<std::uint32_t>(hw_gs_replace::Psm::T8);
+      const bool group_zero_load = tex2_psm == static_cast<std::uint32_t>(hw_gs_replace::Psm::T4);
+      if (!full_bank_load && !group_zero_load) {
+        std::snprintf(detail, sizeof detail, "TEX2.PSM 0x%02X is not the measured T4/T8 palette load class",
+                      static_cast<unsigned>(tex2_psm));
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      if (group_zero_load &&
+          (record.csa != 0u || record.psm != static_cast<std::uint32_t>(hw_gs_replace::Psm::T4))) {
+        std::snprintf(detail, sizeof detail,
+                      "TEX2.PSM T4 loads only the 16-entry group 0 of a T4 texture (PSM 0x%02X, CSA %u here)",
+                      static_cast<unsigned>(record.psm), static_cast<unsigned>(record.csa));
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      if (tex2_cbp != record.cbp) {
+        std::snprintf(detail, sizeof detail, "TEX2.CBP %u differs from TEX0.CBP %u",
+                      static_cast<unsigned>(tex2_cbp), static_cast<unsigned>(record.cbp));
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      if (tex2_cpsm != record.cpsm) {
+        std::snprintf(detail, sizeof detail, "TEX2.CPSM 0x%02X differs from TEX0.CPSM 0x%02X",
+                      static_cast<unsigned>(tex2_cpsm), static_cast<unsigned>(record.cpsm));
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      if (tex2_csm != record.csm) {
+        std::snprintf(detail, sizeof detail, "TEX2.CSM %u differs from TEX0.CSM %u",
+                      static_cast<unsigned>(tex2_csm), static_cast<unsigned>(record.csm));
+        return refuse(out, error, TextureStatus::refused_state, detail);
+      }
+      out.palette_via_tex2 = true;
+    } else {
+      char detail[128];
+      std::snprintf(detail, sizeof detail,
+                    "TEX0.CLD %u is not 0 (a TEX2 palette load) or 1 (the record's measured load)",
+                    static_cast<unsigned>(record.cld));
+      return refuse(out, error, TextureStatus::refused_state, detail);
+    }
+    if (record.csa > 15u) {
+      // hw_gs's two CT32 CSM1 readers disagree above 15 (one clamps, one masks); the measured set never does.
+      char detail[96];
+      std::snprintf(detail, sizeof detail, "CSA %u above 15 is outside the measured CSM1 palette set",
+                    static_cast<unsigned>(record.csa));
+      return refuse(out, error, TextureStatus::refused_state, detail);
+    }
+  }
+
+  // The decoded rectangle is the CLAMP region when the register defines one, else the full texture: the same rule the
+  // CoreGS 2.0 texture dump applies (core2_renderer.cpp, DumpTexture).
+  hw_gs_replace::TextureDescription desc;
+  desc.psm = hw_gs_replace::PsmFromCode(record.psm);
+  desc.texa = hw_gs_replace::TexaState{};
+  desc.wrapU = hw_gs_replace::WrapAxis{wrap_mode(record.wms), record.minu, record.maxu};
+  desc.wrapV = hw_gs_replace::WrapAxis{wrap_mode(record.wmt), record.minv, record.maxv};
+  desc.tw = record.tw;
+  desc.th = record.th;
+  desc.tbp = record.tbp0;
+  desc.tbw = record.tbw;
+  const hw_gs_replace::Region regionU = hw_gs_replace::ResolveRegion(desc.wrapU, desc.tw);
+  const hw_gs_replace::Region regionV = hw_gs_replace::ResolveRegion(desc.wrapV, desc.th);
+  out.x0 = regionU.present ? regionU.minimum : 0u;
+  out.y0 = regionV.present ? regionV.minimum : 0u;
+  out.width = regionU.present ? regionU.Size() : (1u << record.tw);
+  out.height = regionV.present ? regionV.Size() : (1u << record.th);
+
+  std::string coverage_error;
+  if (!texture_blocks_covered(slm, record, out.x0, out.y0, out.width, out.height, coverage_error)) {
+    return refuse(out, error, TextureStatus::refused_truncated, coverage_error);
+  }
+
+  // Palette (indexed formats only).
+  std::array<std::uint16_t, hwgs::clut::kClutHalfwords> halfwords{};
+  hw_gs_replace::ClutBuffer clut;
+  hwgs::clut::Palette decoded_palette;
+  std::vector<std::uint32_t> palette;
+  if (indexed) {
+    std::string palette_error;
+    if (!decode_palette(slm, record, halfwords.data(), decoded_palette, palette_error)) {
+      return refuse(out, error, TextureStatus::refused_palette, palette_error);
+    }
+    palette.assign(decoded_palette.entries, decoded_palette.entries + decoded_palette.count);
+    out.palette_entries = decoded_palette.count;
+    std::memcpy(clut.halfwords.data(), halfwords.data(), sizeof(clut.halfwords));
+    desc.clut = &clut;
+    desc.clutPsm = hw_gs_replace::Psm::Ct32;
+    desc.csa = record.csa;
+  }
+
+  // Content key over the same rectangle, using the shared Format G key code.
+  const SlmTexels source(slm.local);
+  out.key = hw_gs_replace::ComputeFormatGKey(source, desc);
+  out.format_p = hw_gs_replace::ComputeFormatPKeys(source, desc);
+  out.format_p_name = hw_gs_replace::FormatPDumpName(out.format_p.fullChain, hw_gs_replace::ImageExtension::Png);
+  if (out.key.width != out.width || out.key.height != out.height) {
+    return refuse(out, error, TextureStatus::refused_state, "Format G key rectangle does not match the decode rectangle");
+  }
+
+  // RGBA8 decode: the CoreGS 2.0 dump's loop over the same source, palette and direct expansion.
+  out.rgba.resize(static_cast<std::size_t>(out.width) * out.height * 4u);
+  for (std::uint32_t y = 0; y < out.height; ++y) {
+    for (std::uint32_t x = 0; x < out.width; ++x) {
+      const std::uint32_t stored = source.ReadPixel(desc.psm, record.tbp0, record.tbw, out.x0 + x, out.y0 + y);
+      const std::uint32_t word =
+          !palette.empty() ? palette[stored & (static_cast<std::uint32_t>(palette.size()) - 1u)]
+                           : hw_gs_replace::ExpandDirectTexel(desc.psm, stored, desc.texa);
+      std::memcpy(out.rgba.data() + (static_cast<std::size_t>(y) * out.width + x) * 4u, &word, 4u);
+    }
+  }
+
+  char detail[128];
+  std::snprintf(detail, sizeof detail, "%ux%u ok, key %016llx/%016llx", static_cast<unsigned>(out.width),
+                static_cast<unsigned>(out.height), static_cast<unsigned long long>(out.key.textureHash),
+                static_cast<unsigned long long>(out.key.paletteHash));
+  out.status = TextureStatus::ok;
+  out.detail = detail;
+  error.clear();
+  return TextureStatus::ok;
+}
+
 }  // namespace
 
 bool parse_texture_record(const std::uint8_t *bytes, std::size_t size, TextureRecord &record, std::string &error) {
@@ -286,132 +483,46 @@ TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_byt
   if (!parse_texture_record(record_bytes, size, out.record, error)) {
     return refuse(out, error, TextureStatus::refused_record, error);
   }
-  const TextureRecord &record = out.record;
+  return decode_record_fields(slm, out.record, options, nullptr, out, error);
+}
 
-  // The car pass measured 163 T4, 5 T8 and one CT32 record; nothing else is decoded here.
-  if (record.psm != static_cast<std::uint32_t>(hw_gs_replace::Psm::T4) &&
-      record.psm != static_cast<std::uint32_t>(hw_gs_replace::Psm::T8) &&
-      record.psm != static_cast<std::uint32_t>(hw_gs_replace::Psm::Ct32)) {
-    char detail[96];
-    std::snprintf(detail, sizeof detail, "PSM 0x%02X is not one of the measured T4/T8/CT32 formats",
-                  static_cast<unsigned>(record.psm));
-    return refuse(out, error, TextureStatus::refused_psm, detail);
-  }
-  if (record.tw > 10u || record.th > 10u) {
-    char detail[96];
-    std::snprintf(detail, sizeof detail, "TW %u / TH %u above the decoder's log2 bound of 10",
-                  static_cast<unsigned>(record.tw), static_cast<unsigned>(record.th));
-    return refuse(out, error, TextureStatus::refused_size, detail);
-  }
-  if (record.mxl != 0u) {
-    if (!options.level0_mip_fallback) {
-      char detail[96];
-      std::snprintf(detail, sizeof detail, "TEX1.MXL %u: mip levels are not decoded",
-                    static_cast<unsigned>(record.mxl));
-      return refuse(out, error, TextureStatus::refused_state, detail);
-    }
-    // The world pass's declared fallback: decode level 0 (the base rectangle) and record that the record asked for mips.
-    out.level0_mip_fallback = true;
-  }
+TextureStatus decode_texture_state(const SlmImage &slm, const TextureState &state, const TextureDecodeOptions &options,
+                                   DecodedTexture &out, std::string &error) {
+  out = DecodedTexture{};
+  // A tapped state missing one of the three sampling registers is an explicit refusal: half a state would make the
+  // sampler's fields a guess, and the caller counts the refusal instead of substituting the 40-byte record.
+  if (!state.tex0_known) return refuse(out, error, TextureStatus::refused_state, "the tapped state carries no TEX0 write");
+  if (!state.tex1_known) return refuse(out, error, TextureStatus::refused_state, "the tapped state carries no TEX1 write");
+  if (!state.clamp_known)
+    return refuse(out, error, TextureStatus::refused_state, "the tapped state carries no CLAMP write");
 
-  const bool indexed = is_indexed(record.psm);
-  if (indexed) {
-    // All 169 measured records: CT32 palette, CSM1, CLD = 1, CSA 0/2/4/6. The 40-byte record carries no TEXA and no
-    // TEXCLUT, so a palette state outside this set is refused instead of guessed.
-    if (record.cpsm != static_cast<std::uint32_t>(hw_gs_replace::Psm::Ct32)) {
-      char detail[96];
-      std::snprintf(detail, sizeof detail, "palette CPSM 0x%02X is not the measured CT32",
-                    static_cast<unsigned>(record.cpsm));
-      return refuse(out, error, TextureStatus::refused_state, detail);
-    }
-    if (record.csm != 0u) {
-      return refuse(out, error, TextureStatus::refused_state, "TEX0.CSM is not CSM1");
-    }
-    if (record.cld != 1u) {
-      char detail[96];
-      std::snprintf(detail, sizeof detail, "TEX0.CLD %u does not load the palette from CBP for this record",
-                    static_cast<unsigned>(record.cld));
-      return refuse(out, error, TextureStatus::refused_state, detail);
-    }
-    if (record.csa > 15u) {
-      // hw_gs's two CT32 CSM1 readers disagree above 15 (one clamps, one masks); the measured set never does.
-      char detail[96];
-      std::snprintf(detail, sizeof detail, "CSA %u above 15 is outside the measured CSM1 palette set",
-                    static_cast<unsigned>(record.csa));
-      return refuse(out, error, TextureStatus::refused_state, detail);
-    }
-  }
-
-  // The decoded rectangle is the CLAMP region when the register defines one, else the full texture: the same rule the
-  // CoreGS 2.0 texture dump applies (core2_renderer.cpp, DumpTexture).
-  hw_gs_replace::TextureDescription desc;
-  desc.psm = hw_gs_replace::PsmFromCode(record.psm);
-  desc.texa = hw_gs_replace::TexaState{};
-  desc.wrapU = hw_gs_replace::WrapAxis{wrap_mode(record.wms), record.minu, record.maxu};
-  desc.wrapV = hw_gs_replace::WrapAxis{wrap_mode(record.wmt), record.minv, record.maxv};
-  desc.tw = record.tw;
-  desc.th = record.th;
-  desc.tbp = record.tbp0;
-  desc.tbw = record.tbw;
-  const hw_gs_replace::Region regionU = hw_gs_replace::ResolveRegion(desc.wrapU, desc.tw);
-  const hw_gs_replace::Region regionV = hw_gs_replace::ResolveRegion(desc.wrapV, desc.th);
-  out.x0 = regionU.present ? regionU.minimum : 0u;
-  out.y0 = regionV.present ? regionV.minimum : 0u;
-  out.width = regionU.present ? regionU.Size() : (1u << record.tw);
-  out.height = regionV.present ? regionV.Size() : (1u << record.th);
-
-  std::string coverage_error;
-  if (!texture_blocks_covered(slm, record, out.x0, out.y0, out.width, out.height, coverage_error)) {
-    return refuse(out, error, TextureStatus::refused_truncated, coverage_error);
-  }
-
-  // Palette (indexed formats only).
-  std::array<std::uint16_t, hwgs::clut::kClutHalfwords> halfwords{};
-  hw_gs_replace::ClutBuffer clut;
-  hwgs::clut::Palette decoded_palette;
-  std::vector<std::uint32_t> palette;
-  if (indexed) {
-    std::string palette_error;
-    if (!decode_palette(slm, record, halfwords.data(), decoded_palette, palette_error)) {
-      return refuse(out, error, TextureStatus::refused_palette, palette_error);
-    }
-    palette.assign(decoded_palette.entries, decoded_palette.entries + decoded_palette.count);
-    out.palette_entries = decoded_palette.count;
-    std::memcpy(clut.halfwords.data(), halfwords.data(), sizeof(clut.halfwords));
-    desc.clut = &clut;
-    desc.clutPsm = hw_gs_replace::Psm::Ct32;
-    desc.csa = record.csa;
-  }
-
-  // Content key over the same rectangle, using the shared Format G key code.
-  const SlmTexels source(slm.local);
-  out.key = hw_gs_replace::ComputeFormatGKey(source, desc);
-  out.format_p = hw_gs_replace::ComputeFormatPKeys(source, desc);
-  out.format_p_name = hw_gs_replace::FormatPDumpName(out.format_p.fullChain, hw_gs_replace::ImageExtension::Png);
-  if (out.key.width != out.width || out.key.height != out.height) {
-    return refuse(out, error, TextureStatus::refused_state, "Format G key rectangle does not match the decode rectangle");
-  }
-
-  // RGBA8 decode: the CoreGS 2.0 dump's loop over the same source, palette and direct expansion.
-  out.rgba.resize(static_cast<std::size_t>(out.width) * out.height * 4u);
-  for (std::uint32_t y = 0; y < out.height; ++y) {
-    for (std::uint32_t x = 0; x < out.width; ++x) {
-      const std::uint32_t stored = source.ReadPixel(desc.psm, record.tbp0, record.tbw, out.x0 + x, out.y0 + y);
-      const std::uint32_t word =
-          !palette.empty() ? palette[stored & (static_cast<std::uint32_t>(palette.size()) - 1u)]
-                           : hw_gs_replace::ExpandDirectTexel(desc.psm, stored, desc.texa);
-      std::memcpy(out.rgba.data() + (static_cast<std::size_t>(y) * out.width + x) * 4u, &word, 4u);
-    }
-  }
-
-  char detail[128];
-  std::snprintf(detail, sizeof detail, "%ux%u ok, key %016llx/%016llx", static_cast<unsigned>(out.width),
-                static_cast<unsigned>(out.height), static_cast<unsigned long long>(out.key.textureHash),
-                static_cast<unsigned long long>(out.key.paletteHash));
-  out.status = TextureStatus::ok;
-  out.detail = detail;
-  error.clear();
-  return TextureStatus::ok;
+  TextureRecord &record = out.record;
+  record.tex0 = state.tex0;
+  record.tex1 = state.tex1;
+  record.clamp = state.clamp;
+  record.tbp0 = hwgs::tex0::Tbp0(record.tex0);
+  record.tbw = hwgs::tex0::Tbw(record.tex0);
+  record.psm = hwgs::tex0::Psm(record.tex0);
+  record.tw = hwgs::tex0::Tw(record.tex0);
+  record.th = hwgs::tex0::Th(record.tex0);
+  record.tcc = hwgs::tex0::Tcc(record.tex0);
+  record.tfx = hwgs::tex0::Tfx(record.tex0);
+  record.cbp = hwgs::tex0::Cbp(record.tex0);
+  record.cpsm = hwgs::tex0::Cpsm(record.tex0);
+  record.csm = hwgs::tex0::Csm(record.tex0);
+  record.csa = hwgs::tex0::Csa(record.tex0);
+  record.cld = hwgs::tex0::Cld(record.tex0);
+  record.lcm = hwgs::tex1::Lcm(record.tex1);
+  record.mxl = hwgs::tex1::Mxl(record.tex1);
+  record.mmag = hwgs::tex1::Mmag(record.tex1);
+  record.mmin = hwgs::tex1::Mmin(record.tex1);
+  record.wms = hwgs::clampreg::Wms(record.clamp);
+  record.wmt = hwgs::clampreg::Wmt(record.clamp);
+  record.minu = hwgs::clampreg::Minu(record.clamp);
+  record.maxu = hwgs::clampreg::Maxu(record.clamp);
+  record.minv = hwgs::clampreg::Minv(record.clamp);
+  record.maxv = hwgs::clampreg::Maxv(record.clamp);
+  return decode_record_fields(slm, record, options, &state, out, error);
 }
 
 }  // namespace gt4::coregs3

@@ -1151,6 +1151,12 @@ if(GT4_HW_GS)
     target_link_libraries(coregs3_texture_decode_fixture PRIVATE gt4_coregs3)
     target_compile_options(coregs3_texture_decode_fixture PRIVATE /W4)
     add_test(NAME native_coregs3_texture_decode COMMAND $<TARGET_FILE:coregs3_texture_decode_fixture>)
+    # TASK-090 track textures: the tapped-state decode path (TEX0/TEX1/CLAMP/TEX2, CLD 0 with the TEX2 palette load,
+    # the load classes, CSA, the explicit refusals and the record-path agreement).
+    add_executable(coregs3_texture_state_fixture coregs3/coregs3_texture_state_fixture.cpp)
+    target_link_libraries(coregs3_texture_state_fixture PRIVATE gt4_coregs3)
+    target_compile_options(coregs3_texture_state_fixture PRIVATE /W4)
+    add_test(NAME native_coregs3_texture_state COMMAND $<TARGET_FILE:coregs3_texture_state_fixture>)
 
     add_executable(gt4_coregs3_texture tools/coregs3_texture_main.cpp)
     target_link_libraries(gt4_coregs3_texture PRIVATE gt4_coregs3)

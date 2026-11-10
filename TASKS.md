@@ -1796,6 +1796,20 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   bad draws are duplicate tap records, carried matrices (83/84 packet 0.24 px), unmeasured 0xA0/0x1278 programs and the
   shape-decoder gaps. The ITOP 0x80 chain (0x1810/0x00B0/0x27A8) and loader stubs are mapped. Evidence:
   `build/analysis-coursetx/`. Next: track M1 (decoder fix + shape extension + sky+road offline).
+- **Track textures: the world binds the GS state (2026-11-10, branch `task/090-track-textures`).** The tap emits
+  `CLAMP, TEX2, TEX1, TEX0` before every texture change: the emitted TEX0 has CLD = 0 and the palette bank is loaded by
+  the TEX2 write (CLD = 1, CSA = 0, load class T4 for a CSA-0 texture and T8 otherwise); the 40-byte record carries
+  CLD = 1 and no TEX2. `decode_texture_state` now decodes from the tapped TEX0/TEX1/CLAMP/TEX2 with the record
+  decoder's rules (CLD = 0 needs the matching TEX2 load and load class; every other state is a counted refusal), and the
+  world passes bind it; the record is the fallback only when the tap paired no state. Measured on frame 0 (VBlank
+  7398): 1,180 tapped-state bindings and 35 record fallbacks of 1,215 textured selected items; 22 items' records
+  genuinely differ from the emitted TEX0 (18 texture pages), and a tie-break on the UV-tied streams (210 tie-breaks)
+  removes the false differences of the old global pairing. The image change is local (3,579 pixels, 2,364 closer to the
+  reference vs 887 farther; PSNR 20.36 -> 20.36 dB, SSIM 0.6138 -> 0.6137); the road already sampled the emitted
+  texture and its decoded pages are asphalt, so the remaining brightness/chroma difference is material/lighting plus
+  the excluded 0xA0/0xB08/0x1278 layers and the post chain. CTest coregs3 11/11 (new `native_coregs3_texture_state`),
+  Python 8/8, car render byte-identical, full build green, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
+  `build/evidence-track-textures/`.
 - Next: the track M1 sky+road renderer using the recovered transform; the effects/HUD capture additions (hw GS-stream,
   2D recorder); then the G-IMAGE/G-PERF gates.
 

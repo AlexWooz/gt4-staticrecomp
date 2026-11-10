@@ -1253,3 +1253,73 @@ luma 26.69 -> 31.20. The Hyp thresholds (24 dB / 0.75 / 10%) are missed: the cou
 capture's per-item texture record does not always equal the TEX0 the GS has in force at the draw (the external texture
 cursor), and some materials belong to the excluded programs or the EE post chain. M2 should resolve the external
 texture cursor per item before tightening the image gate.
+
+## 22. Round 23 (2026-11-10, branch `task/090-track-textures`): the world binds the GS state the VU1 emitted
+
+### 22.1 The per-item record is not the emitted state (C)
+
+The M1 lead is confirmed and sharpened. The tap emits, before every texture change, a vertex-less GIF record with
+`CLAMP`, `TEX2`, `TEX1` and `TEX0` in that order (measured on the course jobs: 675 TEX0, 675 TEX1, 675 CLAMP and 645
+TEX2 writes for frame 0). The emitted TEX0 has **CLD = 0**; the palette bank is uploaded by the preceding TEX2 with
+**CLD = 1, CSA = 0** and a load class the VU1 picks from the sampling CSA: **T4 (16 entries) when the texture samples
+CSA 0, T8 (256 entries) otherwise**. The 40-byte record carries the same texture with **CLD = 1** (there is no TEX2 in
+the record), so a decoder that trusts the record's CLD is reading a state the GS never had at the draw.
+
+The record is right for most items, but not all: with the tie-break pairing below, **22 of the 1,215 textured selected
+items** have a record TEX0 that differs from the emitted one (18 texture pages, 2 formats, 22 palette states; TEX1
+differs on 20, CLAMP on 2). Those are the external-cursor cases the M1 report named. The other differences the first
+census reported (46) were pairing artifacts: repeated quad UVs make several tapped streams tie exactly, and the old
+global best-UV rule picked the first, which can be a different item's texture. The texture-state pairing now prefers,
+among tied streams, the one whose TEX0 (CLD ignored) matches the item's record (210 tie-breaks); 2 ties had no
+record-matching stream and keep the first stream (counted). The selection state (TEST/ALPHA/XYOFFSET/test-zero) keeps
+the old global UV pairing unchanged, so the pass selection is identical to M1.
+
+### 22.2 The decoder-from-state path (C)
+
+`decode_texture_state` (coregs3_texture.{hpp,cpp}) builds the record fields from the tapped TEX0/TEX1/CLAMP and then
+runs the same decode body as the record path (format, size, CLAMP rectangle, palette, Format G/P keys), so the two
+cannot drift. For an indexed texture:
+
+- TEX0.CLD = 1 keeps the record path's measured rule (the TEX0 write loads the palette from CBP);
+- TEX0.CLD = 0 requires `TEX2` with CLD = 1, CSA = 0, CBP/CPSM/CSM equal to TEX0's, and the measured load class
+  (T4 with a sampling CSA of 0, or T8 for any CSA); the sampling CSA is TEX0's;
+- every other state is a counted `refused_state` naming the register (no TEX2, a different CBP/CPSM/CSM, a nonzero
+  TEX2 CSA, a T4 load with a nonzero sampling CSA, CLD 2..7);
+- the world path's level-0 mip fallback applies to the tapped TEX1 exactly as it did to the record.
+
+The record path is untouched: CLD must still be 1 and every old refusal keeps its meaning. A missing TEX0/TEX1/CLAMP
+in a tapped state is a counted refusal, never a record substitution; only a completely absent tap state falls back to
+the record (35 selected items).
+
+### 22.3 Measurements and evidence (C/H)
+
+Frame 0, VBlank 7398, 3x, against the r13 reference frame 07400. Selected world items: sky 1 draw/16 items, far
+underlay 3/9, course 123/1,192. Bindings: **1,180 tapped-state, 35 record fallback** of 1,215 textured (2 items have
+no record and keep the vertex colour). The change touches 3,579 pixels of the 1.78 M-pixel world mask; 2,364 of them
+move closer to the reference and 887 farther. World metrics: PSNR 20.36 -> 20.36 dB, SSIM 0.6138 -> 0.6137, pct_bad
+77.22 -> 77.19%, mean |diff| 20.31 -> 20.29, luma 26.69 -> 31.19 (reference 26.69). The baseline is exact: the M1
+`world-3x.png` is reproduced byte for byte by the M1 executable (the same branch commit).
+
+The road itself is unchanged by the binding because its records already equal the emitted TEX0; the decoded pages are
+asphalt, not atlas pages (textures 18/19/20 are grained dark asphalt with slab patches, verified by forcing the alpha
+lane opaque). The remaining difference against the reference is material/lighting (flat vertex shading and the tapped
+fog) plus the excluded program layers (0xA0 = draw 85's 46 black-texture items, 0xB08, 0x1278 and the EE post chain).
+The bright surfaces the M1 report flagged are the same class: draw 35's pit-lane plane (texture x warm vertex colour),
+the top-right grandstand and the gray PIT sign item, not missing textures.
+
+### 22.4 Checks (C)
+
+- CTest coregs3 11/11, including the new `native_coregs3_texture_state` (state/record byte agreement at CSA 0/2/4/6,
+  the CLD = 1 state, the TEX2 load classes, the T8 palette groups, TEX1/CLAMP from the state and every refusal).
+- Python `tests/python/test_coregs3_units.py` 8/8.
+- The car render (no `--world`) is byte-identical between the M1 executable and this build on the same capture and
+  command (PNG SHA-256 equal; the reports equal too), so the car path is untouched.
+- Full build green; the 3x off/shadow identity gate (`coregs3-night-check.sh`) against the main worktree's reference
+  executable passes: **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences and
+  13/13 frames identical for off and shadow (capture 4,477,368 B), `build/evidence-track-textures/gate-run.log`.
+- Evidence under `build/evidence-track-textures/`: the before/after images and masks, the metrics JSONs, the reports
+  with the per-state binding table and the record-vs-tap list, the road crop and the draw-alone renders.
+
+The remaining image gate (24 dB / 0.75 / 10%) stays a Hyp target for M2: this round removes the texture-state
+uncertainty, but it cannot add the excluded passes or change the shading without changing the selection the owner
+froze for M1.

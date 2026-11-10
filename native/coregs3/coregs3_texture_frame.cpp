@@ -14,6 +14,7 @@
 #include "coregs3_shape.hpp"
 #include "coregs3_tap.hpp"
 #include "coregs3_vram.hpp"
+#include "hw_gs_registers.hpp"
 
 namespace gt4::coregs3 {
 namespace {
@@ -22,18 +23,19 @@ namespace {
 // because it is the pairing key, not a pixel state.
 struct TrackedState {
   SampleState state;
-  std::uint32_t tbp0 = 0;
-  std::uint32_t psm = 0;
-  bool tex0_known = false;
+  // TASK-090 track textures: the actual texture registers the VU1 emitted, for the world passes' state binding.
+  TextureState texture;
 };
 
 // One tapped vertex record of a job that also carries the frame's draws.
 struct TapStream {
   std::uint32_t vertices = 0;
-  bool tex0_known = false;
+  bool tex0_known = false;  // the car pairing key: the last TEX0 write's TBP0/PSM
   std::uint32_t tbp0 = 0;
   std::uint32_t psm = 0;
   SampleState state;
+  // TASK-090 track textures: the full TEX0/TEX1/CLAMP/TEX2 state in force at the record's first vertex.
+  TextureState texture;
   // The per-vertex fog values of the tapped record (0..255), one per vertex, in emission order. Empty when no vertex
   // of the record carried a fog value; the reflection pass then draws with fog 255 (no fog) and counts the fallback.
   std::vector<std::uint8_t> fog;
@@ -57,9 +59,23 @@ void apply_register(TrackedState &tracked, const GifRegisterWrite &write, Textur
   switch (write.address) {
     case 0x06u:  // TEX0_1
     case 0x07u:  // TEX0_2
-      tracked.tbp0 = bits(write.data, 0, 13);
-      tracked.psm = bits(write.data, 20, 25);
-      tracked.tex0_known = true;
+      tracked.texture.tex0 = write.data;
+      tracked.texture.tex0_known = true;
+      break;
+    case 0x08u:  // CLAMP_1
+    case 0x09u:  // CLAMP_2
+      tracked.texture.clamp = write.data;
+      tracked.texture.clamp_known = true;
+      break;
+    case 0x14u:  // TEX1_1
+    case 0x15u:  // TEX1_2
+      tracked.texture.tex1 = write.data;
+      tracked.texture.tex1_known = true;
+      break;
+    case 0x16u:  // TEX2_1
+    case 0x17u:  // TEX2_2
+      tracked.texture.tex2 = write.data;
+      tracked.texture.tex2_known = true;
       break;
     case 0x42u:  // ALPHA_1
     case 0x43u:  // ALPHA_2
@@ -136,8 +152,8 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
   // ---- 1. The tapped vertex records of the jobs that posted this frame's item packets, with the state they ran under.
   std::vector<TapStream> streams;
   std::set<std::uint64_t> frame_jobs;
+  std::map<std::uint32_t, std::vector<std::uint64_t>> address_jobs;
   if (options.use_tap && tap_data != nullptr) {
-    std::map<std::uint32_t, std::vector<std::uint64_t>> address_jobs;
     for (const TapFileRecord &record : tap_records)
       if (record.kind == kTapKindSource && record.vblank == frame.vblank)
         address_jobs[record.address].push_back(record.job);
@@ -166,11 +182,12 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
             apply_register(at_first, packet.ad_writes[index], nullptr);
           TapStream stream;
           stream.vertices = static_cast<std::uint32_t>(packet.vertices.size());
-          stream.tex0_known = at_first.tex0_known;
-          stream.tbp0 = at_first.tbp0;
-          stream.psm = at_first.psm;
+          stream.tex0_known = at_first.texture.tex0_known;
+          stream.tbp0 = hwgs::tex0::Tbp0(at_first.texture.tex0);
+          stream.psm = hwgs::tex0::Psm(at_first.texture.tex0);
           stream.state = at_first.state;
           stream.state.from_tap = true;
+          stream.texture = at_first.texture;
           // The record's per-vertex fog (the GS fog lane of XYZF2). A record whose vertices carry no fog keeps an empty
           // vector so the renderer can count the fallback instead of inventing values.
           bool any_fog = false;
@@ -231,42 +248,43 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     }
   }
 
-  // ---- 3. The Format G key cache (decode once per key per frame) and the per-record sampling states.
+  // ---- 3. The Format G key cache (decode once per key per frame), the per-record sampling states and, for the world
+  // passes, the per-tapped-state sampling states.
   std::vector<std::pair<TextureKey, std::uint32_t>> cache;  // key -> payload slot
   std::vector<RecordTexture> record_texture(frame.textures.size());
+  // One entry per distinct tapped state the world passes bind: the (TEX0, TEX1, CLAMP) sampling words plus the last
+  // TEX2 word when it is known. Two items with the same writes share one decoded sampler exactly as two records with
+  // the same Format G key share one payload.
+  struct StateKey {
+    std::uint64_t tex0 = 0;
+    std::uint64_t tex1 = 0;
+    std::uint64_t clamp = 0;
+    std::uint64_t tex2 = 0;
+  };
+  const auto same_state = [](const StateKey &a, const StateKey &b) {
+    return a.tex0 == b.tex0 && a.tex1 == b.tex1 && a.clamp == b.clamp && a.tex2 == b.tex2;
+  };
+  std::vector<std::pair<StateKey, const SampledTexture *>> state_cache;
 
-  const auto decode_record = [&](std::uint32_t record_index,
-                                 const CapturedTexture &record) -> const SampledTexture * {
-    RecordTexture &entry = record_texture[record_index];
-    if (entry.decoded) return entry.sampler;
-    entry.decoded = true;
-    DecodedTexture decoded;
-    std::string decode_error;
-    TextureDecodeOptions decode_options;
-    decode_options.level0_mip_fallback = options.world_channels;
-    if (decode_texture(slm, record.bytes, sizeof record.bytes, decode_options, decoded, decode_error) !=
-        TextureStatus::ok) {
-      counters.records_refused += 1;
-      return nullptr;
-    }
-    counters.records_decoded += 1;
-    if (decoded.level0_mip_fallback) counters.records_level0_fallback += 1;
+  // Finds or creates the payload slot of a decoded texture (the Format G content key cache).
+  const auto payload_slot = [&](const DecodedTexture &decoded) -> std::uint32_t {
     const TextureKey key{decoded.key.textureHash, decoded.key.paletteHash, decoded.key.width, decoded.key.height};
-    std::uint32_t slot = 0;
-    bool cached = false;
     for (const auto &[cached_key, cached_slot] : cache) {
-      if (!(cached_key == key)) continue;
-      slot = cached_slot;
-      cached = true;
-      break;
+      if (cached_key == key) {
+        counters.cache_hits += 1;
+        return cached_slot;
+      }
     }
-    if (cached) {
-      counters.cache_hits += 1;
-    } else {
-      slot = static_cast<std::uint32_t>(table.payloads.size());
-      table.payloads.push_back(decoded.rgba);
-      cache.emplace_back(key, slot);
-    }
+    const std::uint32_t slot = static_cast<std::uint32_t>(table.payloads.size());
+    table.payloads.push_back(decoded.rgba);
+    cache.emplace_back(key, slot);
+    return slot;
+  };
+
+  // Builds the sampler the renderer reads from a decoded texture. The level-0 mip and filter fallbacks are the world
+  // path's declared substitution; the car path keeps its measured refusal.
+  const auto make_sampler = [&](const DecodedTexture &decoded, std::uint32_t slot, bool from_state,
+                                const TextureState *state) {
     SampledTexture sampler;
     sampler.psm = decoded.record.psm;
     sampler.tw = decoded.record.tw;
@@ -301,9 +319,69 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     sampler.y0 = decoded.y0;
     sampler.cache_slot = slot;
     sampler.rgba = table.payloads[slot].data();
-    table.textures.push_back(sampler);
+    sampler.from_state = from_state;
+    sampler.palette_via_tex2 = decoded.palette_via_tex2;
+    // The register words the sampler state was decoded from: the tapped writes on the state path, the record's own
+    // words on the fallback. The binding table prints them either way.
+    sampler.source_tex0 = state != nullptr ? state->tex0 : decoded.record.tex0;
+    sampler.source_tex1 = state != nullptr ? state->tex1 : decoded.record.tex1;
+    sampler.source_clamp = state != nullptr ? state->clamp : decoded.record.clamp;
+    return sampler;
+  };
+
+  const auto decode_record = [&](std::uint32_t record_index,
+                                 const CapturedTexture &record) -> const SampledTexture * {
+    RecordTexture &entry = record_texture[record_index];
+    if (entry.decoded) return entry.sampler;
+    entry.decoded = true;
+    DecodedTexture decoded;
+    std::string decode_error;
+    TextureDecodeOptions decode_options;
+    decode_options.level0_mip_fallback = options.world_channels;
+    if (decode_texture(slm, record.bytes, sizeof record.bytes, decode_options, decoded, decode_error) !=
+        TextureStatus::ok) {
+      counters.records_refused += 1;
+      return nullptr;
+    }
+    counters.records_decoded += 1;
+    if (decoded.level0_mip_fallback) counters.records_level0_fallback += 1;
+    const std::uint32_t slot = payload_slot(decoded);
+    table.textures.push_back(make_sampler(decoded, slot, false, nullptr));
     entry.sampler = &table.textures.back();
     return entry.sampler;
+  };
+
+  // TASK-090 track textures: decode from the tapped GS state. The payload is shared with the record path by Format G
+  // key; the sampler itself is per distinct state, because the filter/wrap fields come from the registers, not the
+  // record. A refusal is counted and named, never substituted with the record.
+  const auto decode_state = [&](const TextureState &state) -> const SampledTexture * {
+    const StateKey key{state.tex0, state.tex1, state.clamp, state.tex2_known ? state.tex2 : 0u};
+    for (const auto &[cached_key, cached_sampler] : state_cache)
+      if (same_state(cached_key, key)) return cached_sampler;
+    DecodedTexture decoded;
+    std::string decode_error;
+    TextureDecodeOptions decode_options;
+    decode_options.level0_mip_fallback = options.world_channels;
+    if (decode_texture_state(slm, state, decode_options, decoded, decode_error) != TextureStatus::ok) {
+      counters.world_state_refused += 1;
+      if (counters.state_refusals.size() < 16) {
+        char line[256];
+        std::snprintf(line, sizeof line, "TEX0 %016llX TEX1 %016llX CLAMP %016llX TEX2 %016llX: %s",
+                      static_cast<unsigned long long>(state.tex0), static_cast<unsigned long long>(state.tex1),
+                      static_cast<unsigned long long>(state.clamp),
+                      static_cast<unsigned long long>(state.tex2), decode_error.c_str());
+        counters.state_refusals.push_back(line);
+      }
+      return nullptr;
+    }
+    counters.records_decoded += 1;
+    if (decoded.level0_mip_fallback) counters.records_level0_fallback += 1;
+    if (decoded.palette_via_tex2) counters.world_state_palette_tex2 += 1;
+    const std::uint32_t slot = payload_slot(decoded);
+    table.textures.push_back(make_sampler(decoded, slot, true, &state));
+    const SampledTexture *result = &table.textures.back();
+    state_cache.emplace_back(key, result);
+    return result;
   };
 
   // ---- 4. Bind every item and attach its tapped state.
@@ -327,6 +405,11 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
       // The item's tapped state, when the tap paired it. The pairing advances across the item list in order.
       std::size_t chosen = 0;
       bool matched = false;
+      bool ambiguous_pick = false;  // the best UV match tied with another stream (a texture-binding risk)
+      // TASK-090 track textures: the stream the texture state is taken from. It is `chosen` unless the UV match tied:
+      // then the tied stream whose TEX0 matches the item's record is preferred, because a tie carries no other signal.
+      std::size_t texture_pick = 0;
+      bool have_texture_pick = false;
       if (!streams.empty() && item.packet_bytes != 0 && counts[draw_index][index] != 0) {
         const bool has_record = item.texture_record != kNoRecord && item.texture_record < frame.textures.size();
         std::uint32_t item_tbp0 = 0;
@@ -345,6 +428,7 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           double best_error = 1e30;
           std::size_t best_stream = 0;
           std::uint32_t best_candidates = 0;
+          std::vector<std::size_t> best_ties;
           for (std::size_t stream = 0; stream < streams.size(); ++stream) {
             if (streams[stream].vertices != counts[draw_index][index]) continue;
             double error = 0.0;
@@ -361,8 +445,11 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
               best_error = error;
               best_stream = stream;
               best_candidates = 1;
+              best_ties.clear();
+              best_ties.push_back(stream);
             } else if (error == best_error) {
               best_candidates += 1;
+              best_ties.push_back(stream);
             }
           }
           // The item-state study accepts the best UV match; the summed residual is only a tie-breaker. A best match with
@@ -372,8 +459,35 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
             binding.state = streams[best_stream].state;
             chosen = best_stream;
             matched = true;
+            ambiguous_pick = best_candidates > 1;
             counters.tap_items_paired += 1;
             if (best_candidates > 1) counters.tap_items_ambiguous += 1;
+            // TASK-090 track textures: the texture state of a tied UV match. Repeated quad UVs make several streams
+            // equally good; among them, prefer the one whose TEX0 (the load-control CLD bit ignored) equals the item's
+            // record. With no such stream the first tied stream keeps the state and the tie is counted.
+            texture_pick = best_stream;
+            have_texture_pick = true;
+            const bool world_pass = draw.pass == kPassSky || draw.pass == kPassFarUnderlay || draw.pass == kPassCourse;
+            if (world_pass && best_candidates > 1) {
+              const auto sampling_tex0 = [](std::uint64_t tex0) { return tex0 & ~(7ull << 61); };
+              const std::uint64_t record_tex0 =
+                  has_record ? vram::read_u64(frame.textures[item.texture_record].bytes, 0) : 0;
+              bool record_match = false;
+              if (has_record) {
+                for (const std::size_t candidate : best_ties) {
+                  if (!streams[candidate].texture.tex0_known) continue;
+                  if (sampling_tex0(streams[candidate].texture.tex0) == sampling_tex0(record_tex0)) {
+                    texture_pick = candidate;
+                    record_match = true;
+                    break;
+                  }
+                }
+              }
+              if (record_match)
+                counters.world_texture_pair_tiebreak += 1;
+              else
+                counters.world_texture_pair_ambiguous += 1;
+            }
             if (draw.pass == kPassCourse) {
               last_course_state = binding.state;
               have_last_course_state = true;
@@ -439,6 +553,113 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           }
           counters.tap_items_course_journal_state += 1;
         }
+      }
+
+      // TASK-090 track textures: the world passes (sky, far underlay, course) bind the GS state the tap measured, not
+      // the 40-byte record. The record stays the fallback only when the tap carried no state at all; a tapped state the
+      // decoder refuses stays a counted refusal (never a silent record substitution), and a tapped state can name a
+      // texture the capture's record table does not hold (the external cursor case).
+      const bool world_pass_item =
+          options.world_channels &&
+          (draw.pass == kPassSky || draw.pass == kPassFarUnderlay || draw.pass == kPassCourse);
+      const bool has_record = item.texture_record != kNoRecord && item.texture_record < frame.textures.size();
+      if (world_pass_item) {
+        // The record-vs-tap census: the tapped TEX0 (CLD ignored, because the world stream clears it and loads the
+        // palette through TEX2) and the tapped TEX1/CLAMP registers against the item's 40-byte record.
+        if (have_texture_pick) {
+          const TextureState &texture_state = streams[texture_pick].texture;
+          if (!has_record) {
+            counters.world_tap_record_absent += 1;
+          } else if (texture_state.tex0_known) {
+            TextureRecord record_fields;
+            std::string parse_error;
+            if (parse_texture_record(frame.textures[item.texture_record].bytes,
+                                     sizeof frame.textures[item.texture_record].bytes, record_fields, parse_error)) {
+              const bool page_differs = hwgs::tex0::Tbp0(texture_state.tex0) != record_fields.tbp0;
+              const bool format_differs =
+                  hwgs::tex0::Tbw(texture_state.tex0) != record_fields.tbw ||
+                  hwgs::tex0::Psm(texture_state.tex0) != record_fields.psm ||
+                  hwgs::tex0::Tw(texture_state.tex0) != record_fields.tw ||
+                  hwgs::tex0::Th(texture_state.tex0) != record_fields.th ||
+                  hwgs::tex0::Tcc(texture_state.tex0) != record_fields.tcc ||
+                  hwgs::tex0::Tfx(texture_state.tex0) != record_fields.tfx;
+              const bool palette_differs =
+                  hwgs::tex0::Cbp(texture_state.tex0) != record_fields.cbp ||
+                  hwgs::tex0::Cpsm(texture_state.tex0) != record_fields.cpsm ||
+                  hwgs::tex0::Csm(texture_state.tex0) != record_fields.csm ||
+                  hwgs::tex0::Csa(texture_state.tex0) != record_fields.csa;
+              if (page_differs || format_differs || palette_differs) {
+                counters.world_tap_tex0_differs += 1;
+                if (page_differs) counters.world_tap_tex0_tbp_differs += 1;
+                if (format_differs) counters.world_tap_tex0_format_differs += 1;
+                if (palette_differs) counters.world_tap_tex0_palette_differs += 1;
+                if (ambiguous_pick) counters.world_tap_diff_ambiguous += 1;
+              }
+              if (texture_state.tex1_known && texture_state.tex1 != record_fields.tex1) {
+                counters.world_tap_tex1_differs += 1;
+                if (ambiguous_pick) counters.world_tap_diff_ambiguous += 1;
+              }
+              if (texture_state.clamp_known && texture_state.clamp != record_fields.clamp) {
+                counters.world_tap_clamp_differs += 1;
+                if (ambiguous_pick) counters.world_tap_diff_ambiguous += 1;
+              }
+            }
+          }
+        }
+        // The world path's texture binding.
+        const LightProgram program = light_program_of_item(item);
+        if (program == LightProgram::body_paint) {
+          // The world passes never sample the body/paint texgen map; keep the measured deferral.
+          counters.items_texgen_deferred += 1;
+          counters.items_untextured += 1;
+          continue;
+        }
+        if (program == LightProgram::none) counters.items_program_unknown += 1;
+        if (!has_uv[draw_index][index]) {
+          counters.items_no_uv += 1;
+          counters.items_untextured += 1;
+          continue;
+        }
+        const TextureState *tapped = have_texture_pick ? &streams[texture_pick].texture : nullptr;
+        if (tapped == nullptr) counters.world_texture_pair_none += 1;
+        const bool state_present = tapped != nullptr && tapped->any_register_known();
+        if (tapped != nullptr && tapped->sampling_registers_known()) {
+          const SampledTexture *sampler = decode_state(*tapped);
+          if (sampler == nullptr) {
+            counters.items_decode_refused += 1;
+            counters.items_untextured += 1;
+            continue;
+          }
+          binding.texture = sampler;
+          counters.world_state_decoded += 1;
+          counters.items_textured += 1;
+          continue;
+        }
+        if (state_present) {
+          // A tapped state that is missing one of the sampling registers: counted refusal, never a record substitute.
+          counters.world_state_refused += 1;
+          if (counters.state_refusals.size() < 16)
+            counters.state_refusals.push_back("incomplete tapped texture state (TEX0/TEX1/CLAMP)");
+          counters.items_decode_refused += 1;
+          counters.items_untextured += 1;
+          continue;
+        }
+        // No tapped state: the 40-byte record fallback.
+        if (!has_record) {
+          counters.items_no_texture += 1;
+          counters.items_untextured += 1;
+          continue;
+        }
+        counters.world_record_fallback += 1;
+        const SampledTexture *sampler = decode_record(item.texture_record, frame.textures[item.texture_record]);
+        if (sampler == nullptr) {
+          counters.items_decode_refused += 1;
+          counters.items_untextured += 1;
+          continue;
+        }
+        binding.texture = sampler;
+        counters.items_textured += 1;
+        continue;
       }
 
       // The texture, if the item samples one.

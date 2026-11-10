@@ -2,13 +2,19 @@
 //
 // The `.gt4scene` capture names, per item, a 40-byte PGLUtexture record; the `.gt4vram` sidecar holds the GS local
 // memory the record points at; the `.gt4tap` tap holds the A+D state records the VU1 emitted for the draw (TEST, ALPHA,
-// FRAME, ZBUF, TEX0 and the PRIM in force). This unit joins the three into one `FrameTextureTable`:
+// FRAME, ZBUF, the PRIM in force and, for the world passes, the TEX0/TEX1/CLAMP/TEX2 writes). This unit joins them into
+// one `FrameTextureTable`:
 //
 //   * it decodes every texture record the frame's items use, once per record, and shares the decoded RGBA8 between
 //     records that produce the same Format G content key (the decoder has to run to compute the key, so the cache
 //     avoids the duplicate bytes and the duplicate sampler state, not the second decode pass);
 //   * it binds, per item, the SampledTexture the offline sampler reads, or no texture with a counted reason (no record,
-//     no model UV channel, a refused decode, or the body/paint texgen deferral of this milestone);   * it attaches the tap's per-item SampleState (TEST/ALPHA/FRAME/ZBUF/PRIM) by the proven pairing of the `uv` gate:
+//     no model UV channel, a refused decode, or the body/paint texgen deferral of this milestone);
+//   * TASK-090 track textures: for the world passes (sky, far underlay, course) it decodes the texture from the tapped
+//     TEX0/TEX1/CLAMP/TEX2 state at the item's draw, not from the 40-byte record; the record is the fallback only when
+//     the tap carried no state, and every refused state is counted. The texture state of a UV tie prefers the tied
+//     stream whose TEX0 matches the item's record (repeated quad UVs make the global UV search ambiguous for the page);
+//   * it attaches the tap's per-item SampleState (TEST/ALPHA/FRAME/ZBUF/PRIM) by the proven pairing of the `uv` gate:
 //     walk the tap records of the draw's jobs in emission order, keep the last A+D register writes as state, and give
 //     each item the next vertex record whose vertex count and TEX0 (TBP0, PSM) match. A field the tap never wrote, and
 //     the whole state when no tap is supplied, keeps the measured car-pass default and is counted.
@@ -33,11 +39,11 @@ namespace gt4::coregs3 {
 
 struct TextureFrameCounters {
   std::uint64_t items_visited = 0;
-  std::uint64_t records_decoded = 0;   // cache misses: records actually decoded
+  std::uint64_t records_decoded = 0;   // decode calls that actually ran (record- or state-path cache misses)
   std::uint64_t records_refused = 0;   // records the decoder refused
   std::uint64_t records_level0_fallback = 0;  // TEX1.MXL > 0 decoded as level 0 (the world path's declared fallback)
   std::uint64_t records_filter_fallback = 0;  // MMIN is a mip filter but only level 0 exists: nearest (MMIN & 1) is used
-  std::uint64_t cache_hits = 0;        // records that shared an already decoded Format G key
+  std::uint64_t cache_hits = 0;        // decodes that shared an already decoded Format G payload key
   std::uint64_t items_textured = 0;
   std::uint64_t items_untextured = 0;
   std::uint64_t items_texgen_deferred = 0;  // body/paint: its ST is texgen ST, not the model UV (pre-reflection mode)
@@ -55,6 +61,28 @@ struct TextureFrameCounters {
   std::uint64_t tap_items_ambiguous = 0;    // pairings with more than one candidate vertex record
   std::uint64_t tap_records = 0;            // tap records walked
   std::uint64_t tap_state_writes = 0;       // A+D writes applied to the tracked state
+  // TASK-090 track textures: the world passes (sky/far-underlay/course) bind the GS state the tap measured, not the
+  // 40-byte record. These count the decode source and the record-vs-tap differences over those items.
+  std::uint64_t world_state_decoded = 0;      // world items decoded from the tapped TEX0/TEX1/CLAMP(/TEX2) state
+  std::uint64_t world_state_refused = 0;      // world items whose tapped state the decoder refused (counted, untextured)
+  std::uint64_t world_record_fallback = 0;    // world items with no tapped state: decoded from the 40-byte record
+  std::uint64_t world_state_palette_tex2 = 0; // state decodes whose palette bank came from the TEX2 load (CLD = 0)
+  // The texture-state pairing counts. The world selection's per-item state keeps the measured global UV pairing; the
+  // texture state uses the same UV rule, but when several streams tie on the best UV residual (repeated quad UVs are
+  // common on the course) it prefers the tied stream whose TEX0 matches the item's record, because a tie carries no
+  // other measured signal. A tie with no record-matching stream keeps the first stream and is counted.
+  std::uint64_t world_texture_pair_tiebreak = 0;  // texture state from a tied stream that matched the item's record
+  std::uint64_t world_texture_pair_ambiguous = 0; // a tie with no record-matching stream: the first stream was used
+  std::uint64_t world_texture_pair_none = 0;      // no tapped stream: the record fallback
+  std::uint64_t world_tap_tex0_differs = 0;   // tapped TEX0 differs from the record's (CLD ignored)
+  std::uint64_t world_tap_tex0_tbp_differs = 0;      // the texture page (TBP0) differs
+  std::uint64_t world_tap_tex0_format_differs = 0;   // PSM/TBW/TW/TH/TCC/TFX differ
+  std::uint64_t world_tap_tex0_palette_differs = 0;  // CBP/CPSM/CSM/CSA differ
+  std::uint64_t world_tap_tex1_differs = 0;          // the tapped TEX1 register differs from the record's
+  std::uint64_t world_tap_clamp_differs = 0;         // the tapped CLAMP register differs from the record's
+  std::uint64_t world_tap_diff_ambiguous = 0;        // a differing item whose UV pairing had more than one candidate
+  std::uint64_t world_tap_record_absent = 0;  // a tapped state names a texture with no capture record (external cursor)
+  std::vector<std::string> state_refusals;    // the first few tapped-state refusals, in words (bounded)
 };
 
 struct TextureFrameOptions {
