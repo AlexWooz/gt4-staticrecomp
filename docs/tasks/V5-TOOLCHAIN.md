@@ -1085,3 +1085,40 @@ windows themselves are created earlier, by the project loader, but the script ha
 
 No kit was built: both options need a native build. The block renders, the page does not open yet, and the Misc
 host-tree fallback (TASK-213) covers the user-facing settings.
+---
+
+# Phase 21 - a script-reachable project handle (2026-11-10)
+
+## 65. New finding: class globals carry the live instances
+
+`config/adhoc_methods.txt` registers **class-level globals** besides the methods:
+
+| native | address |
+|---|---|
+| `MProject.global_0082E1E8` | `0x00229598` |
+| `MManager.global_0082B448` | `0x00211FC0` |
+| `MManager.getUpdateContext` | `0x00211EE8` |
+
+`MProject__global_0082E1E8` reads `func_00229540(buf)` and returns it as a script handle: it is the **global
+MProject instance** exposed to scripts. That is a handle the script can hold **without** a render context, so it can
+replace `context.getCursorProject()` in the Phase 19 guard.
+
+## 66. Next probe (data-only, no build)
+
+In the `AppendItem` guard, resolve the project through the class global instead of the context:
+
+```
+project = MProject.global_0082E1E8          # class global, live instance
+if (project != nil) option.root = project.findPage("RecRoot1")
+```
+
+The exact v5 access for a class global needs one empirical check (the symbol is interned like any other), but it is
+the only remaining data-only route: `findPage` on the live project, at tile-build time.
+
+If it resolves, the page opens with the existing module and no native build. If it does not, the fallback is the
+native hook at `mProject` load completion (one `exportRootWindow` call), which needs a build and the owner's windowed
+test.
+
+## 67. State
+
+Block renders (Phase 17); page does not open; no kit. Nothing existing changed.

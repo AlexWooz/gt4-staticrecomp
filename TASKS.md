@@ -5320,3 +5320,11 @@ The shipped path stays our MIT tools.
 - **Next (native, one call):** at `mProject` load completion, export/find `RecRoot1` once and store it in the page
   module's static 272; or at the tile Cross handler, substitute the window when `item.page` is nil.
 - **Tests:** 846 OK (77 skipped). Block renders; page does not open; no kit.
+**Phase 21 (2026-11-10, script-reachable project handle found).**
+- `config/adhoc_methods.txt` registers class **globals**: `MProject.global_0082E1E8` (`0x00229598`, the live MProject
+  instance), `MManager.global_0082B448` and `MManager.getUpdateContext`. `MProject__global_0082E1E8` returns the
+  instance as a script handle, so the script can hold the project **without** a render context.
+- **Next probe (data-only):** in the `AppendItem` guard, use `MProject.global_0082E1E8.findPage("RecRoot1")` instead of
+  `context.getCursorProject()`; if it resolves, the page opens with the existing module and no native build.
+- **Fallback:** the native hook at `mProject` load (one `exportRootWindow` call) - needs a build + owner test.
+- **Tests:** 846 OK (77 skipped). Block renders; page does not open; no kit.

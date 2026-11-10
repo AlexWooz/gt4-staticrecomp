@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-214 Phase 21: a script-reachable project handle found (2026-11-10)
+
+- `config/adhoc_methods.txt` registers class **globals**: `MProject.global_0082E1E8` (`0x00229598`, the live MProject
+  instance returned as a script handle), `MManager.global_0082B448` and `MManager.getUpdateContext`.
+- **Next probe (data-only, no build):** in the `AppendItem` guard use `MProject.global_0082E1E8.findPage("RecRoot1")`
+  instead of `context.getCursorProject()`; the global needs no render context. If it resolves, the page opens with the
+  existing module.
+- **Fallback:** the native hook at `mProject` load completion (one `exportRootWindow` call), needing a build and the
+  owner's windowed test.
+- **Block renders** (Phase 17); page does not open; no kit. Nothing existing changed; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 20: guard diagnostic, cursor project is nil at tile build (2026-11-10)
 
 - The two probes decide it without a build: without the nil check the load crashes at `0x003199D4` on a nil object;
