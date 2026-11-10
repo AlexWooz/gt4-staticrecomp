@@ -342,6 +342,37 @@ index. Then the variant is as planned (REF qword 0xFF, table word per light, the
 multiplies the flare's colour or alpha). No per-vertex design is needed, and the forced-word measurement already bounds the
 picture gate to the two sprites (117 px each).
 
+
+## Flare REF structure: one 1-qword packet per REF, no MSCAL in it (2026-11-10)
+
+`GT4_HW_FLARE_PATCH_TRACE=1` now prints the packet a flare REF lands in and the MSCALs in it. The night race 3x gives, for
+one frame's chain:
+
+```
+[mtvu] flare patch job=1008968 packet=8   qwc=1 at=0 mscals=0
+[mtvu] flare patch job=1008968 packet=18  qwc=1 at=0 mscals=0
+[mtvu] flare patch job=1008968 packet=36  qwc=1 at=0 mscals=0
+[mtvu] flare patch job=1008968 packet=46  qwc=1 at=0 mscals=0
+[mtvu] flare patch job=1008968 packet=86  qwc=1 at=0 mscals=0
+[mtvu] flare patch job=1008968 packet=96  qwc=1 at=0 mscals=0
+[mtvu] flare patch job=1008968 packet=114 qwc=1 at=0 mscals=0
+[mtvu] flare patch job=1008968 packet=124 qwc=1 at=0 mscals=0
+```
+
+So **each flare REF is its own one-qword VIF packet**, and that packet carries **no MSCAL**; the program that consumes it
+runs from a later packet. There are **eight** REF packets per frame, not four, so the four-table-word window is copied by
+more than one REF per light (two REFs per used light, or separate colour/occlusion uses).
+
+**Design that follows (per-invocation marker, still to implement):** in the worker's packet walk, remember the REF packet's
+order (0..7) and, when the next MSCAL packet arrives, post a `FlareLight{refIndex}` record into the output ring before
+replaying that packet; the sink sets the current light index from the record, and the renderer tags the batches that
+follow until the next marker. The **REF order to table word mapping is not 1:1** (8 REFs, 4 words) and must be measured:
+one run with `GT4_FLARE_TABLE_WORD=i` per word and the marker trace shows which REF index drives which word's sprite, or
+vice versa.
+
+**Status:** the structure is separable (good news), but the record + shader variant are not implemented this round; the
+CPU read and the 6.85 / 11.25 ms wait stand. No 0-readback claim.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

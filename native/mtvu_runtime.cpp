@@ -226,6 +226,8 @@ void rethrow_worker_error() {
 // IN-522, on the worker: the parts of this job's payload copied from a table the GS worker was going to write.
 void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t> &payload) {
   if (r.job_patches_posted.load(std::memory_order_acquire) == r.job_patches_applied) return;
+  // TASK-215 S4: the packet that carries a flare REF and the MSCALs it contains, for the invocation marker.
+  static const bool trace = std::getenv("GT4_HW_FLARE_PATCH_TRACE") != nullptr;
   for (;;) {
     Runtime::TablePatch patch;
     {
@@ -235,6 +237,36 @@ void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t
       r.job_patches.pop_front();
     }
     r.worker_end->wake_before_waiting();
+    if (trace && patch.table_offset == 0 && patch.bytes == 16) {
+      // Packet boundaries of the batch payload: header then per packet {u32 qwc, qwc*16 bytes}.
+      std::uint32_t packets = 0;
+      std::memcpy(&packets, payload.data(), 4);
+      std::size_t at = 4;
+      for (std::uint32_t index = 0; index < packets && at + 4 <= payload.size(); ++index) {
+        std::uint32_t qwc = 0;
+        std::memcpy(&qwc, payload.data() + at, 4);
+        const std::size_t body = at + 4;
+        const std::size_t bytes = static_cast<std::size_t>(qwc) * 16;
+        if (body + bytes > payload.size()) break;
+        if (patch.payload_offset >= body && patch.payload_offset < body + bytes) {
+          std::uint32_t mscals = 0;
+          std::uint32_t firstAddress = 0;
+          for (std::size_t q = body; q + 16 <= body + bytes; q += 16) {
+            const std::uint8_t code = payload[q];
+            if (code == 0x14 || code == 0x15) {  // MSCAL, MSCALF
+              if (mscals == 0) std::memcpy(&firstAddress, payload.data() + q, 4);
+              ++mscals;
+            }
+          }
+          std::fprintf(stderr,
+                       "[mtvu] flare patch job=%llu packet=%u qwc=%u at=%zu mscals=%u first=%08x\n",
+                       static_cast<unsigned long long>(job), index, qwc, patch.payload_offset - body, mscals,
+                       firstAddress);
+          break;
+        }
+        at = body + bytes;
+      }
+    }
     r.table_copy(patch.ticket, patch.table_offset, patch.bytes, payload.data() + patch.payload_offset);
     ++r.job_patches_applied;
   }
