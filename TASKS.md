@@ -1787,8 +1787,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   reflection mask SSIM 0.2504 -> 0.2611, pct_bad 90.7 -> 72.1%; near-car PSNR 24.218 -> 24.572, SSIM 0.6113 -> 0.6235,
   pct_bad 61.7 -> 57.9, luma 1.089 -> 0.991. CTest 9/9, Python full suite 809 OK, 3x gate OK. Evidence:
   `build/evidence/coregs3-refl/`.
-- Next: the course-transform recovery (in flight), then the track M1 sky+road renderer; the effects/HUD capture
-  additions (hw GS-stream, 2D recorder); then the G-IMAGE/G-PERF gates.
+- **Course transform recovered (2026-11-10).** The course uses the captured per-draw 0xC1 matrix exactly (linear columns
+  `vf24..26 * value`, translation `vf27`, screen map `(0.5 +/- 0.5*clip/w)*640x448`); the `+0xFA0` block is the
+  screen-map `m2`, not the projection. The apparent missing transform was a position-decode error: the course V3-16
+  channel is sign-extended 16-bit deltas accumulated in 32-bit lanes (VIF `MODE 2` + `STROW` seed), and ITOF0 applies to
+  the full lane; `coregs3_vif.cpp` stores the widened value unsigned. Fix: honor UNPACK USN (bit 14) and sign-extend
+  before accumulation. 470 items with item-median <=1 px cover 19,317 vertices, 99.99% within 1 px (median 0.218 px);
+  bad draws are duplicate tap records, carried matrices (83/84 packet 0.24 px), unmeasured 0xA0/0x1278 programs and the
+  shape-decoder gaps. The ITOP 0x80 chain (0x1810/0x00B0/0x27A8) and loader stubs are mapped. Evidence:
+  `build/analysis-coursetx/`. Next: track M1 (decoder fix + shape extension + sky+road offline).
+- Next: the track M1 sky+road renderer using the recovered transform; the effects/HUD capture additions (hw GS-stream,
+  2D recorder); then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

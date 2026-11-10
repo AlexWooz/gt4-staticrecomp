@@ -1,5 +1,23 @@
 # Current Status
 
+## 2026-11-10: the course transform is recovered; the position decode was wrong (TASK-090)
+
+The course uses the captured per-draw 0xC1 matrix **exactly**: the linear columns are `vf24..26 * value`, the translation
+is `vf27`, and the screen map is `(0.5 +/- 0.5*clip.x/w)*640x448`. The `+0xFA0` block is not the projection but the
+screen-map `m2` the VU1 return routine composes the clip-to-GS step from (`2048 + 320*cx/w`, `2048 - 224*cy/w`). The
+apparent "missing transform" was a **position-decode error**: the course V3-16 channel carries sign-extended 16-bit
+deltas accumulated in 32-bit lanes (VIF `MODE 2` plus an `STROW` seed equal to the first vertex), and the ITOP 0x80
+prologue applies `ITOF0` to the full 32-bit lane, not the low halfword. `native/coregs3/coregs3_vif.cpp` stores the
+widened value unsigned, which corrupts the delta chain; the fix is to honor the UNPACK USN bit (14) and sign-extend
+before the MODE/STROW accumulation. Validation: **470 course items with item-median <= 1 px cover 19,317 vertices, of
+which 99.99% are within 1 px (median 0.218 px)**. The bad draws are attributable, not transform errors: duplicate tap
+records, carried-matrix uploads (83/84 fits its captured `matrix_packet` at 0.24 px), the unmeasured 0xA0/0x1278
+programs, and the shape-decoder gaps (70 items without a position at TOPS 0x00, 255 with aux channels). Recipe: fix the
+VIF decoder, add a course position family (raw int32 lanes through the captured matrix; no s16/4096 metre conversion),
+and use the captured `matrix_packet` when the upload ran or the carried matrix otherwise; the ITOP 0x80 chain
+(0x1810/0x00B0/0x27A8) and the loader stubs are mapped. Labels C/H/U; evidence `build/analysis-coursetx/`. Next: the
+track M1 implementation (decoder fix + shape extension + sky+road offline).
+
 ## 2026-11-10: body/paint environment-map reflection in the offline renderer (TASK-090)
 
 The offline reference renderer now draws the body/paint reflection pass. Every body/paint item (80 items, 27 draws)
