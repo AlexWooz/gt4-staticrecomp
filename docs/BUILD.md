@@ -3632,3 +3632,19 @@ Adhoc instruction enum as a reference only.
   fit), or keep the Arcade hub (slice436-kit) while a v5 module is considered. Network vetoed; v5/TOC out. Mapping
   section 28.
 - No repository source, data, kit or accepted page changed; no tests were affected.
+
+## TASK-213 slice 1: complete Arcade hub rows (2026-11-10, test build)
+
+- **Data:** `private/slice443-recomp-full` (arcade + accepted option patch; 3 ranges); the hidden `recomp` composite has
+  38 rows (entry, hub, Graphics with renderer/scale and the effect/blending/readback/sharpening/frame-rate/HUD rows,
+  Controls, Display, Audio, System); container `371865ab74c00838583f460a0be8017cca912150b925c2e04485fd46eef66952`
+  (91,712 bytes). The mproject minify kept the stored extent (same 91,712-byte container as slice 436).
+- **Host:** `native/recomp_menu.cpp` maps the new indices; hub opens Graphics/Controls/Display/Audio/System; Circle backs;
+  Renderer/Render scale remain restart-only and write `game-changes.toml`; all other rows display-only with `(restart)`.
+- **Evidence:** exe `a4ace12386c38c9eaa1f6f9af233cb63aea3a7f44ad3ea579d90461b3a36c875` (90,250,240 bytes); headless run
+  exit 0, hub/Graphics/Controls/Display/Audio/System frames, feedback renderer `coregs20`, render_scale `125`; kit
+  `private/slice443-kit` (recipe/report, six frames, state, run.log, README/run-hub.cmd).
+- **Popup gate:** the 480p confirmation is script-driven (`TryHiVision`; `openConfirmDialog` from `share/dialog.ad`), no
+  standalone data popup; the only Yes/No tree is inside `LANPopup` (a page root). Reuse needs the script dialog call or a
+  host-managed clone; deferred to the live-setters slice. No existing page/function changed.
+- Tests: no source test change (host mapping only); headless exit 0. Mapping section 32.

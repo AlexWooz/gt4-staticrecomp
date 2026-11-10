@@ -1971,3 +1971,35 @@ untouched. Probes: `private/slice440-misc-row` (OptionMenu, crash), `slice440-mi
   host por cima da página (fora do Pane, para o script não ver), com a linha "Recomp settings" como aviso; ou derivar o
   ponteiro de foco para usar a linha com `can_focus`; ou um módulo v5 (fora por enquanto). O hub do Arcade e o
   `slice436-kit` continuam funcionando.
+
+## 32. TASK-213 slice 1: complete hub rows and the game's confirmation popup (2026-11-10)
+
+The Arcade hub now carries the complete row list (38 hidden rows, entry + 5 hub rows + 31 submenu rows). All rows are
+display-only in this slice: the only actions are the existing Renderer/Render scale (restart-only, `game-changes.toml`).
+Every architecture-bound row carries a visible `(restart)` marker; Fullscreen/Resolution point at the Screen page,
+which stays the live path. The submenus open and Circle backs to the hub then to the main menu; headless run exit 0,
+`renderer = "coregs20"` and `render_scale = "125"` written.
+
+The game's confirmation popup for the 480p/HiVision change is **script-driven**, not a reusable data widget:
+`TryHiVision` is a Screen-page script module string (`option.adc` 0x2549E), and the generic dialog is
+`openConfirmDialog` from `share/dialog.ad` (strings at `option.adc` 0x4C/0x5B9/0xB38D). The only Yes/No tree in
+`option.mproject` is `LANPopup` (a RootWindow page, children [6]); there is no standalone MessageWindow/Popup template.
+Reusing the game popup for a host row would need either calling the script dialog with callbacks (script VM) or cloning
+the LANPopup Yes/No tree and host-managing it (game widgets, not a floating panel). Neither lands in slice 1; the rows
+that need confirmation stay restart/display-only with the marker, and the live setters + confirmation are the next
+slice.
+
+Evidence: `private/slice443-kit` (exe `a4ace123...`, patch `371865ab...`, recipe/report, run.log, state, game-changes,
+six frames, README/run-hub.cmd). No existing page/function changed.
+
+## 33. Resumo para o dono (pt-BR) - hub completo e confirmação
+
+- O hub do Arcade agora lista **todas as linhas** (38 no total): Graphics com renderer/escala e as linhas de efeitos,
+  blending/readbacks, sharpening, frame rate e HUD; Display com fullscreen/resolução/monitor/vsync; Controls; Audio (só
+  o áudio do jogo); System. As linhas de arquitetura mostram **(restart)**.
+- Nesta fatia **nada novo é aplicado ao vivo**: só Renderer e Render scale continuam gravando `game-changes.toml`
+  (restart). As demais linhas são informativas por enquanto; Fullscreen/Resolution continuam na página Screen.
+- O popup de confirmação do 480p é **script** (`TryHiVision` e `openConfirmDialog`), não um widget de dados reutilizável;
+  o único Yes/No do mproject está dentro do `LANPopup` (página inteira). Para reaproveitar de verdade seria preciso
+  chamar o diálogo do script ou clonar a árvore Yes/No do LANPopup com o host — fica para a fatia dos setters live.
+- Kit `private/slice443-kit` com README, comando e hashes; nenhuma página/função existente mudou.

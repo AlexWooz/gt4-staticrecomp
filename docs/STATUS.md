@@ -1,5 +1,17 @@
 # Current Status
 
+**State (2026-11-10, TASK-213 slice 1 - complete hub rows):** branch `task/213-native-settings`. The Arcade hub now has the
+complete row list (38 hidden rows): Graphics (renderer/scale + flares/road sheen/targets/blending/readbacks/sharpening/
+frame rate/HUD), Controls, Display (fullscreen/resolution/monitor/vsync), Audio (game audio only), System. All rows are
+display-only with visible `(restart)` markers except the existing Renderer/Render scale actions; Fullscreen/Resolution
+point at the Screen page. Headless run exit 0, submenus open/back, `game-changes.toml` has `renderer = "coregs20"` and
+`render_scale = "125"`. Kit `private/slice443-kit` (exe `a4ace123...`, patch `371865ab...`, README/command/hashes).
+
+The game's 480p/HiVision confirmation is **script-driven** (`TryHiVision` in the Screen page module; `openConfirmDialog`
+from `share/dialog.ad`), with no standalone data popup; the only Yes/No tree is inside the `LANPopup` page root. Reusing
+it for a host row needs the script dialog call or a host-managed clone of the LANPopup Yes/No tree (game widgets, not a
+floating panel); deferred to the live-setters slice. No existing page/function changed. Mapping section 32.
+
 **State (2026-11-10, TASK-213 Phase 2a - Options > Miscellaneous probe):** branch `task/213-native-settings`, no source or
 data change; the Misc page cannot host a scriptless interactive OptionMenu row without breaking the page script.
 

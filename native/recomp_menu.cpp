@@ -27,17 +27,17 @@ constexpr std::uint32_t kParent = 0x14u;
 constexpr std::uint32_t kRowGeometry = 0x34u;
 constexpr std::uint32_t kState = 0x98u;
 constexpr std::uint32_t kInsensitiveBit = 3u;
-constexpr std::uint32_t kRecompCount = 20u;
+constexpr std::uint32_t kRecompCount = 38u;
 constexpr int kEntryRow = 0;
 constexpr int kHubRows[5] = {1, 2, 3, 4, 5};
 constexpr int kRendererRows[2] = {6, 7};
 constexpr int kScaleRows[6] = {8, 9, 10, 11, 12, 13};
-constexpr int kHubTitle = 14;
-constexpr int kGraphicsTitle = 15;
-constexpr int kControlsTitle = 16;
-constexpr int kDisplayTitle = 17;
-constexpr int kAudioTitle = 18;
-constexpr int kSystemTitle = 19;
+constexpr int kHubTitle = 32;
+constexpr int kGraphicsTitle = 33;
+constexpr int kControlsTitle = 34;
+constexpr int kDisplayTitle = 35;
+constexpr int kAudioTitle = 36;
+constexpr int kSystemTitle = 37;
 constexpr std::uint16_t kCross = 1u << 14;
 constexpr std::uint16_t kCircle = 1u << 13;
 constexpr std::uint16_t kUp = 1u << 4;
@@ -64,6 +64,7 @@ BoxFields g_hub{};
 BoxFields g_active{};
 bool g_active_valid = false;
 int g_shell_title = -1;
+int g_shell_last = 0;
 int g_renderer = 0;
 int g_scale = 2;
 bool g_renderer_changed = false;
@@ -304,18 +305,43 @@ void open_hub(std::uint8_t *ram, std::size_t size) {
 
 void open_graphics(std::uint8_t *ram, std::size_t size) {
   g_hub = read_fields(ram, size, g_box);
-  set_list(ram, size, {kGraphicsTitle, renderer_row(), scale_row()}, 1);
+  set_list(ram, size, {kGraphicsTitle, renderer_row(), scale_row(),
+                      14, 15, 16, 17, 18, 19, 20, 21}, 1);
   g_mode = Mode::graphics;
   std::fprintf(stderr, "[recomp-menu] Graphics open: renderer %s, render scale %d%%\n",
                g_renderer == 0 ? "GSdx" : "CoreGS 2.0", 50 + 25 * g_scale);
 }
 
-void open_shell(std::uint8_t *ram, std::size_t size, int title) {
+void open_controls(std::uint8_t *ram, std::size_t size) {
   g_hub = read_fields(ram, size, g_box);
-  g_shell_title = title;
-  set_list(ram, size, {title}, 0);
+  set_list(ram, size, {kControlsTitle, 22, 23, 24}, 1);
+  g_shell_last = 3;
   g_mode = Mode::shell;
-  std::fprintf(stderr, "[recomp-menu] shell open: row %d\n", title);
+  std::fprintf(stderr, "[recomp-menu] Controls open\n");
+}
+
+void open_display(std::uint8_t *ram, std::size_t size) {
+  g_hub = read_fields(ram, size, g_box);
+  set_list(ram, size, {kDisplayTitle, 25, 26, 27, 28}, 1);
+  g_shell_last = 4;
+  g_mode = Mode::shell;
+  std::fprintf(stderr, "[recomp-menu] Display open\n");
+}
+
+void open_audio(std::uint8_t *ram, std::size_t size) {
+  g_hub = read_fields(ram, size, g_box);
+  set_list(ram, size, {kAudioTitle, 29}, 1);
+  g_shell_last = 1;
+  g_mode = Mode::shell;
+  std::fprintf(stderr, "[recomp-menu] Audio open\n");
+}
+
+void open_system(std::uint8_t *ram, std::size_t size) {
+  g_hub = read_fields(ram, size, g_box);
+  set_list(ram, size, {kSystemTitle, 30, 31}, 1);
+  g_shell_last = 2;
+  g_mode = Mode::shell;
+  std::fprintf(stderr, "[recomp-menu] System open\n");
 }
 
 void back_main(std::uint8_t *ram, std::size_t size) {
@@ -397,6 +423,12 @@ void prepare(std::uint8_t *ram, std::size_t size) {
                rows + 1, rows, hidden);
 }
 
+int g_last_index() {
+  if (g_mode == Mode::hub) return 5;
+  if (g_mode == Mode::graphics) return 10;
+  return g_shell_last;
+}
+
 void tick(std::uint8_t *ram, std::size_t size, std::uint16_t buttons) {
   if (!g_ready || !object(ram, size, g_box, kSelectBoxVtable)) {
     g_previous_buttons = buttons;
@@ -417,7 +449,7 @@ void tick(std::uint8_t *ram, std::size_t size, std::uint16_t buttons) {
     int next = g_current_index;
     if (up) --next;
     if (down) ++next;
-    const int last = g_mode == Mode::hub ? 5 : (g_mode == Mode::graphics ? 2 : 0);
+    const int last = g_last_index();
     if (next < 0) next = 0;
     if (next > last) next = last;
     if (next != g_current_index) {
@@ -435,13 +467,13 @@ void tick(std::uint8_t *ram, std::size_t size, std::uint16_t buttons) {
           if (index == 1)
             open_graphics(ram, size);
           else if (index == 2)
-            open_shell(ram, size, kControlsTitle);
+            open_controls(ram, size);
           else if (index == 3)
-            open_shell(ram, size, kDisplayTitle);
+            open_display(ram, size);
           else if (index == 4)
-            open_shell(ram, size, kAudioTitle);
+            open_audio(ram, size);
           else
-            open_shell(ram, size, kSystemTitle);
+            open_system(ram, size);
         }
       }
     } else if (g_mode == Mode::graphics) {
