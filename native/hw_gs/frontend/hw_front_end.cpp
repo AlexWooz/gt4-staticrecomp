@@ -710,15 +710,32 @@ bool FrontEnd::ShouldDraw(const Candidate& candidate, PrimType type, uint32_t co
     if (!scissorWritten_) {
         return false;  // cull rectangle is "nothing" until SCISSOR is written
     }
+    // TASK-171: the scissor rectangle and its 12.4 cull bounds depend only on the SCISSOR register, so they are decoded
+    // once per register change instead of once per primitive (the license B-1 sends 26-27k primitives per VBlank and this
+    // function was 5.3% of the GS worker). Exact: the same four bit ranges and the same arithmetic as before.
     const uint64_t scissor = registers_.Context(contextIndex).scissor;
-    PixelRect scissorRect;
-    scissorRect.x0 = static_cast<int32_t>(BitRange(scissor, 0, 10));
-    scissorRect.x1 = static_cast<int32_t>(BitRange(scissor, 16, 26));
-    scissorRect.y0 = static_cast<int32_t>(BitRange(scissor, 32, 42));
-    scissorRect.y1 = static_cast<int32_t>(BitRange(scissor, 48, 58));
-    if (scissorRect.x1 < scissorRect.x0 || scissorRect.y1 < scissorRect.y0) {
+    static const bool scissorCache = [] {
+        const char *text = std::getenv("GT4_CORE2_SCISSOR_VIEW");
+        return text == nullptr || std::strcmp(text, "0") != 0;
+    }();
+    ScissorView& view = scissorView_[contextIndex & 1u];
+    if (!scissorCache || view.raw != scissor) {
+        view.raw = scissor;
+        view.rect.x0 = static_cast<int32_t>(BitRange(scissor, 0, 10));
+        view.rect.x1 = static_cast<int32_t>(BitRange(scissor, 16, 26));
+        view.rect.y0 = static_cast<int32_t>(BitRange(scissor, 32, 42));
+        view.rect.y1 = static_cast<int32_t>(BitRange(scissor, 48, 58));
+        view.usable = !(view.rect.x1 < view.rect.x0 || view.rect.y1 < view.rect.y0);
+        // Cull rectangle: scissor with half a pixel of slack (12.4 units).
+        view.cullX0 = view.rect.x0 * 16 - 8;
+        view.cullX1 = view.rect.x1 * 16 + 8;
+        view.cullY0 = view.rect.y0 * 16 - 8;
+        view.cullY1 = view.rect.y1 * 16 + 8;
+    }
+    if (!view.usable) {
         return false;
     }
+    const PixelRect& scissorRect = view.rect;
 
     int32_t minX = candidate.vertices[0].x4;
     int32_t maxX = minX;
@@ -743,12 +760,8 @@ bool FrontEnd::ShouldDraw(const Candidate& candidate, PrimType type, uint32_t co
         }
     }
 
-    // Cull rectangle: scissor with half a pixel of slack (12.4 units).
-    const int32_t cullX0 = scissorRect.x0 * 16 - 8;
-    const int32_t cullX1 = scissorRect.x1 * 16 + 8;
-    const int32_t cullY0 = scissorRect.y0 * 16 - 8;
-    const int32_t cullY1 = scissorRect.y1 * 16 + 8;
-    if (maxX < cullX0 || minX > cullX1 || maxY < cullY0 || minY > cullY1) {
+    // Cull rectangle: scissor with half a pixel of slack (12.4 units), decoded with the scissor view (TASK-171).
+    if (maxX < view.cullX0 || minX > view.cullX1 || maxY < view.cullY0 || minY > view.cullY1) {
         return false;
     }
 

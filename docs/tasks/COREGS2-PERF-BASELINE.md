@@ -373,6 +373,30 @@ vice versa.
 **Status:** the structure is separable (good news), but the record + shader variant are not implemented this round; the
 CPU read and the 6.85 / 11.25 ms wait stand. No 0-readback claim.
 
+
+## TASK-171: license front-end split and the first candidate (2026-11-10)
+
+**Measurement (no code change).** CPU sampler on license B-1, 1x, VBlanks 2,000-3,400 (line-table build); GS worker
+8.371 ms/VBlank sampled (sampler costs ~5%). Exclusive, per VBlank: `ShouldDraw` **0.445**, `Kick` **0.360**,
+`GifParser::Transfer` **0.266**, `ConsumeRegList` 0.157, `AppendPrimitive` **0.126**, `PixelRect::Empty` **0.114**,
+`EmitBatch` 0.096, `StripVertices` 0.085, `MakeVertex` 0.077, `TakeSnapshot` 0.079, `std::function` destruction 0.079,
+`std::vector<Vertex>::emplace_back` 0.081, `std::array<Vertex,8>::operator[]` 0.080, `BuildCandidate` 0.054,
+`VertexQueue::push_back` 0.046. The front end is about 1.3 ms of the 8.37; the GIF parser 0.42; the rest is batches,
+CLUT, uploads and draw recording. Per primitive (~26.5k/VBlank): `ShouldDraw` ~16.8 ns, `Kick` ~13.6 ns,
+`AppendPrimitive` ~4.8 ns. It scales with **primitives**, not packets.
+
+**Candidate 1 (kept, `GT4_CORE2_SCISSOR_VIEW=0` for A/B):** `ShouldDraw` decoded the SCISSOR register's four bit ranges
+and its 12.4 cull bounds on **every primitive**. They depend only on the register, so a two-entry (per context) view caches
+the decoded rectangle and cull bounds, recomputed on a register change. Exact: same ranges, same arithmetic. License B-1
+1x, 2+2 interleaved: `gif_parse` 3.898 -> 4.010 ms (-2.8%), GS worker 8.138 -> 8.275 (-1.7%), wall 8.665 -> 8.755 (-1.0%);
+frames identical (license 4/4 at VBlanks 2400-3600, night 3x 2/2 at 10800/11400); CTest 319/320 (the one failure is the
+pre-existing rc15 `test_gs_live`).
+
+**Next candidates, in order:** inline `PixelRect::Empty` (0.114 ms, out-of-line call in every cull), the `Kick` state
+decode (~13.6 ns/prim), `AppendPrimitive`'s vertex copies (0.126 + 0.081 emplace + 0.063 memcpy), and the GIF parser's
+per-qword walk (0.42 ms). Anything touching vertex-queue ownership or the batch record format is a design decision and is
+not started.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

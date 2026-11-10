@@ -179,6 +179,13 @@ private:
     void TakeSnapshot(uint32_t contextIndex);
     Vertex MakeVertex(const GifKick& kick, const ContextRegs& ctx) const;
     bool BuildCandidate(PrimType type, Candidate& candidate) const;
+    // TASK-171: the SCISSOR register decoded once per change (rectangle and its 12.4 cull bounds), not per primitive.
+    struct ScissorView {
+        uint64_t raw = ~uint64_t{0};
+        PixelRect rect;
+        int32_t cullX0 = 0, cullX1 = 0, cullY0 = 0, cullY1 = 0;
+        bool usable = false;
+    };
     bool ShouldDraw(const Candidate& candidate, PrimType type, uint32_t contextIndex,
                     PixelRect& rect) const;
     void AppendPrimitive(const Candidate& candidate, PrimType type, const PixelRect& rect);
@@ -281,6 +288,7 @@ private:
     uint64_t clutFlushSameTexture_ = 0;
     uint64_t clutFlushesAvoided_ = 0;
     uint64_t toneStripLoadsKept_ = 0;
+    mutable std::array<ScissorView, 2> scissorView_{};  // TASK-171: per context, decoded on a SCISSOR write
     uint64_t batchesDroppedOnArrival_ = 0;  // TASK-168b
     uint64_t clutLoadsKept_ = 0;            // TASK-168
     uint64_t segmentedBatches_ = 0;
