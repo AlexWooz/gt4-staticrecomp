@@ -1122,3 +1122,35 @@ test.
 ## 67. State
 
 Block renders (Phase 17); page does not open; no kit. Nothing existing changed.
+---
+
+# Phase 22 - the class-global probe (2026-11-10)
+
+## 68. Probe
+
+The Phase 19 guard was rebuilt with the class global instead of the render context:
+
+```
+if (option.title == "Recomp settings" && MProject.global_0082E1E8 != nil)
+    option.root = MProject.global_0082E1E8.findPage("RecRoot1")
+```
+
+(26 instructions inside `AppendItem`, jumps relocated +26; the global is emitted as a `VARIABLE_PUSH` with the path
+`[MProject, global_0082E1E8]`.)
+
+## 69. Result
+
+The load does not crash (so the global access itself is harmless), but Cross still stops at
+`missing code at 0x00000000 (ra 0x0030B450)`: `option.root` stays nil. Either the class-global reference resolves to
+nil through this path form, or `findPage` does not index the layout window tree.
+
+## 70. Conclusion
+
+The data-only route is exhausted: no script-side expression we found yields the `RecRoot1` layout window at tile-build
+time. The remaining route is the native one, in two shapes:
+
+1. **Post-load export** (contained): after `mProject` finishes loading, call `exportRootWindow`/`findPage("RecRoot1")`
+   once and store the window in the page module static 272.
+2. **Tile Cross substitution**: when the tile handler runs with `item.page == nil`, fill it from the project.
+
+Both need a build and the owner's windowed test. The block renders; the page does not open; no kit was built.

@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-214 Phase 22: class-global probe, data route exhausted (2026-11-10)
+
+- Guard rebuilt with `MProject.global_0082E1E8` (path `[MProject, global_0082E1E8]`) instead of the render context
+  (26 instructions in `AppendItem`, jumps relocated +26). The load does not crash, but Cross still stops at
+  `missing code 0x00000000 (ra 0x0030B450)`: `option.root` stays nil - the global path resolves to nil or `findPage`
+  does not index the layout window tree.
+- **Data-only route exhausted.** Remaining: the native post-load `exportRootWindow` into static 272, or a tile Cross
+  substitution when `item.page` is nil; both need a build and the owner's windowed test.
+- **Block renders** (Phase 17); page does not open; no kit. Nothing existing changed; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 21: a script-reachable project handle found (2026-11-10)
 
 - `config/adhoc_methods.txt` registers class **globals**: `MProject.global_0082E1E8` (`0x00229598`, the live MProject

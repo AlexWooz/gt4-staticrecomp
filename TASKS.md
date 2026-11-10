@@ -5328,3 +5328,10 @@ The shipped path stays our MIT tools.
   `context.getCursorProject()`; if it resolves, the page opens with the existing module and no native build.
 - **Fallback:** the native hook at `mProject` load (one `exportRootWindow` call) - needs a build + owner test.
 - **Tests:** 846 OK (77 skipped). Block renders; page does not open; no kit.
+**Phase 22 (2026-11-10, class-global probe).**
+- Guard rebuilt with `MProject.global_0082E1E8` (path `[MProject, global_0082E1E8]`) instead of the render context
+  (26 instructions, jumps +26). The load does not crash, but Cross still stops at `0x0030B450`: `option.root` stays
+  nil - the global path resolves to nil or `findPage` does not index layout windows.
+- **Data-only route exhausted.** Remaining: native post-load `exportRootWindow` into static 272, or tile Cross
+  substitution; both need a build + owner windowed test.
+- **Block renders**; page does not open; no kit. Nothing existing changed; tests 846 OK (77 skipped).
