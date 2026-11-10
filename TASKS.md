@@ -3434,10 +3434,11 @@ or excluded); then the launcher's save and resume flow. Effort is not measured. 
 ### TASK-215 — CoreGS 2.0 performance: where the time goes and what to try next (read-only audit; 2026-11-10)
 
 Owner request (2026-11-10): CoreGS 2.0 is still heavy on specific tracks and situations; find where to optimise next
-without repeating what the ledger already kept or reverted. Four parts: **TASK-215b**, the read-only CPU/GPU audit
+without repeating what the ledger already kept or reverted. Five parts: **TASK-215b**, the read-only CPU/GPU audit
 (`docs/tasks/COREGS2-PERF-AUDIT.md`); **TASK-215c**, the read-only waits/async audit
 (`docs/tasks/COREGS2-WAITS-AUDIT.md`); **TASK-215d**, the read-only scene-generality and measurement audit
-(`docs/tasks/COREGS2-SCENE-GENERALITY-AUDIT.md`); and **TASK-215**, the parallel agent that owns the builds, benchmarks
+(`docs/tasks/COREGS2-SCENE-GENERALITY-AUDIT.md`); **TASK-215f**, the read-only license tone/CLUT audit
+(`docs/tasks/COREGS2-LICENSE-TONE-AUDIT.md`); and **TASK-215**, the parallel agent that owns the builds, benchmarks
 and game runs. Branch `docs/coregs2-perf-audit`, worktree `C:\Antigravity\gt4-wt-215-coregs2-audit`, from `origin/main`
 `59f27aa1`.
 The audit is not PCSX2-tainted: no PCSX2, GSdx, `gt4recomp-gs`, `private/tooling/pcsx2-*`, `private/slice189-pcsx2-ref`
@@ -3552,3 +3553,50 @@ target; 3x/Full HD and 6x/4K are the realistic baselines.
 - **State (2026-11-10):** audit done and committed on `docs/coregs2-perf-audit` (docs only). No build, benchmark, game
   run, code/data/pin/test change; no PCSX2/GSdx/ARMSX2 source; no owner data; no PR. The parallel TASK-215 agent owns the
   runs; the first measurement is the license per-VBlank split on the RTX 3060 laptop and the 9060 XT.
+
+### TASK-215f — CoreGS 2.0 license B-1 tone/CLUT audit (read-only; 2026-11-10)
+
+Follow-up to TASK-215d after the perf agent's rc15 measurement: `GT4_CORE2_PALETTE_SEGMENTS=1` (TASK-168, off by default)
+gives **no real gain** on license B-1 (Test Course). The earlier 9.55 -> 8.99/8.71 was an outlier; 3 off runs
+8.675/8.705/9.550 against 2 on runs 8.705/8.990; `clut_kept=0`, `segmented_batches=0`, `tone_refused=1.67M` in both. The
+license stays CPU-bound: GS worker **8.08-8.25 ms**, GPU **1.05**, **1,430 CLUT flushes/VBlank (1,010 same texture)**,
+`gif_parse` **3.80**.
+
+- **Deliverable:** `docs/tasks/COREGS2-LICENSE-TONE-AUDIT.md` — why the tone hook refuses the segments, the license's
+  flush mechanism, the smallest exact design, the tone `ReadClut` path, the prioritized list and the open questions. The
+  TASK-168 segment path is in the TASK-215/rc15 worktree (`gt4-wt-215-coregs2-perf`, `d18542f2`) and was read read-only;
+  it is not in the docs branch.
+- **Refusal cause:** not a visibility/ordering impossibility. `ToneHook` can handle a segmented batch: `OnBatch` splits
+  it per segment (`core2_renderer.cpp:4170-4190`), and each split batch's tone uses its own segment palette
+  (`DecodeSegmentPalette(batch,0)`, `3530-3531`); the segment palettes are CPU copies and the segment rows are ordered
+  before the draw (`core2_gpu.cpp:3785-3809`). The refusal is TASK-168b's **measured performance veto**
+  (`PaletteSegmentBatchAllowed`, `821-825`): during a tone run, a T8 sprite batch (`ToneShape`, `870-873`) is the
+  copy-back strip that `ToneHook` skips whole (`3505-3512`); keeping/segmenting it and splitting it cost more than the
+  flush (+3-4% GS thread on George V, `815-820`). The license's **1,010 same-texture flushes are those strips**; the
+  filter refuses; `clut_kept=0`/`segmented_batches=0`; the segment A/B measured nothing. The `tone_refused=1.67M` in
+  **both** runs is **likely** the tone early-drop count (`DropOnArrival`, `4158-4167`), not the segment filter's
+  `paletteSegmentToneRefusals` (only installed with segments on, `995-999`); confirm the exact counter, the label
+  conflates them.
+- **Flush mechanism:** the 1,430 `clut` flushes are a **batch boundary from the CLUT load** (one palette per batch,
+  `hw_front_end.cpp:390-418`; `clutFlushSameTexture_` at `415-417`), not a texture-cache/CLUT-decode event; the 1,010
+  same texture are the T8 copy-back strips; the 211 `prim` and 170 `texture` are the other state flushes; `gif_parse`
+  3.80 is the per-primitive front end (TASK-171), not a flush reason.
+- **Smallest exact design for the 1,010:** a **front-end tone-strip drop**: before the CLUT-load `FlushBatch`, ask the
+  renderer whether the pending batch is a tone strip (the same `ToneHook` predicate: `toneActive_`, `toneFbmsk_`,
+  `PossibleShuffle`); if so, discard it without flushing; the **first** batch of the run still reaches the renderer
+  for the tone pass. Expected **Hyp 1-2 ms** GS worker (the 1,010 flushes + batch work; scaled from the TASK-134 CLUT
+  path), not enough alone for the RTX 3060's 19-20; exact (the strips are skipped today); frames identical; the
+  `GT4_CORE2_TONE_STRIP_DROP=0/1` A/B and `hw_core2_tone` strip fixture. The unchanged-palette merge (the CLUT-flush
+  scope, TASK-215b B) is exact but cannot cut the 1,010 (their palettes change); it cuts the other CLUT loads. The
+  segments under the tone stay off (the +3-4% measurement).
+- **Tone `ReadClut`:** **not on the license path.** `SyncClutToCpu` returns before `ReadClut` when
+  `GpuPaletteKey == 0` (`1257-1276`); the license's palettes are CPU loads, so `clut_reads`/the `clut` wait are 0. The
+  GPU-CLUT tone shader (read `s.clut` in `core2_tone.comp`) is a night/George V item (the `clut` wait reason, IN-546),
+  not the license.
+- **Prioritized list:** (1) the front-end tone-strip drop; (2) TASK-171 per-primitive front end (`gif_parse` 3.80);
+  (3) the CLUT-flush scope for the non-tone CLUT loads; (4) SCISSOR/XYOFFSET batching; (5) the tone GPU-CLUT shader for
+  night/George V; (6) keep `PALETTE_SEGMENTS` off; (7) the texture/prim per-primitive design; (8) the owner's decision
+  on the game-effect-specific tone-strip skip.
+- **State (2026-11-10):** audit done and committed on `docs/coregs2-perf-audit` (docs only). No build, benchmark, game
+  run, code/data/pin/test change; no PCSX2/GSdx/ARMSX2 source; no owner data; no PR. The first measurement is the
+  license `clut`/`batch`/`gif_parse` split and the front-end drop's A/B; the segment path stays off.

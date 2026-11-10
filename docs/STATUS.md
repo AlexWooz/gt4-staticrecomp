@@ -1,5 +1,44 @@
 # Current Status
 
+## TASK-215f: CoreGS 2.0 license B-1 tone/CLUT audit, read-only (2026-11-10)
+
+Follow-up to TASK-215d on branch `docs/coregs2-perf-audit` (worktree `C:\Antigravity\gt4-wt-215-coregs2-audit`, from
+`origin/main` `59f27aa1`): `docs/tasks/COREGS2-LICENSE-TONE-AUDIT.md`. The perf agent measured rc15's
+`GT4_CORE2_PALETTE_SEGMENTS=1` (TASK-168, off by default) on license B-1: the earlier 9.55 -> 8.99/8.71 was an outlier; 3
+off runs 8.675/8.705/9.550 against 2 on runs 8.705/8.990; `clut_kept=0`, `segmented_batches=0`, `tone_refused=1.67M` in
+both; the license is CPU-bound (GS 8.08-8.25, GPU 1.05, 1,430 CLUT flushes/1,010 same, `gif_parse` 3.80). The TASK-168
+segment path was read read-only in `gt4-wt-215-coregs2-perf` (`d18542f2`); it is not in this docs branch. No build,
+benchmark, game run, code/data/pin/test change; no PCSX2/GSdx/ARMSX2 source; no owner data; no PR.
+
+- **Refusal cause:** the tone hook's veto is a **measured performance heuristic**, not a visibility/ordering limit.
+  `ToneHook` can handle a segmented batch (`OnBatch` splits it per segment, `core2_renderer.cpp:4170-4190`; each split
+  batch's tone uses its own segment palette, `3530-3531`; the segment rows are ordered, `core2_gpu.cpp:3785-3809`). The
+  filter `PaletteSegmentBatchAllowed` (`821-825`) refuses a T8 sprite batch (`ToneShape`, `870-873`) during a tone run
+  because it is a copy-back strip that `ToneHook` skips whole (`3505-3512`); keeping/segmenting it cost more than the
+  flush (+3-4% GS thread on George V, `815-820`). The license's **1,010 same-texture flushes are those strips**; the
+  filter refuses; `clut_kept=0`/`segmented_batches=0`; the segment A/B measured nothing. The `tone_refused=1.67M` in both
+  is **likely** the tone early-drop count (`DropOnArrival`, `4158-4167`), not the segment filter's
+  `paletteSegmentToneRefusals` (only with segments on, `995-999`); confirm the exact counter, the label conflates them.
+- **Flush mechanism:** the 1,430 `clut` flushes are a **batch boundary from the CLUT load** (one palette per batch,
+  `hw_front_end.cpp:390-418`; `clutFlushSameTexture_` 1,010 at `415-417`), not a texture-cache/decode event; the 211
+  `prim` and 170 `texture` are the other state flushes; `gif_parse` 3.80 is the TASK-171 front end.
+- **Smallest exact design for the 1,010:** a **front-end tone-strip drop** — before the CLUT-load `FlushBatch`, ask the
+  renderer whether the pending batch is a tone strip (the same `ToneHook` predicate: `toneActive_`, `toneFbmsk_`,
+  `PossibleShuffle`); discard it without flushing; the first batch of the run still reaches the renderer for the tone
+  pass. **Hyp 1-2 ms** GS worker (the 1,010 flushes + batch work; scaled from the TASK-134 CLUT path), exact; the
+  `GT4_CORE2_TONE_STRIP_DROP=0/1` A/B and `hw_core2_tone` strip fixture. The unchanged-palette CLUT-flush scope
+  (TASK-215b B) is exact but cannot cut the 1,010 (their palettes change); it cuts the other CLUT loads. Keep
+  `PALETTE_SEGMENTS` off.
+- **Tone `ReadClut`:** not on the license path: `SyncClutToCpu` returns before `ReadClut` when `GpuPaletteKey == 0`
+  (`1257-1276`); the license's palettes are CPU loads, `clut_reads`/`clut` wait 0. The GPU-CLUT tone shader
+  (`core2_tone.comp` reading `s.clut`) is a night/George V item (IN-546), not the license.
+- **Prioritized:** (1) front-end tone-strip drop; (2) TASK-171 per-primitive front end; (3) CLUT-flush scope for the
+  non-tone loads; (4) SCISSOR/XYOFFSET batching; (5) the tone GPU-CLUT shader for night/George V; (6) keep
+  `PALETTE_SEGMENTS` off; (7) the texture/prim per-primitive design; (8) the owner's decision on the game-effect-specific
+  tone-strip skip.
+- **State:** audit done and committed on `docs/coregs2-perf-audit` (docs only). The first measurement is the license
+  `clut`/`batch`/`gif_parse` split and the front-end drop's A/B; the segment path stays off.
+
 ## TASK-215d: CoreGS 2.0 scene-generality and measurement audit, read-only (2026-11-10)
 
 The scene-generality companion is done on branch `docs/coregs2-perf-audit` (worktree
