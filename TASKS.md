@@ -5351,3 +5351,12 @@ The shipped path stays our MIT tools.
   engine facility (no host->guest call exists); piece 1 is the build (2-3 GB, fits in 7.91 GB); piece 4 is the test.
 - **Reported before spending the budget** per the owner's rule. No build started, no kit.
 - **State:** block renders; page does not open; tests 846 OK (77 skipped).
+**Phase 25 (2026-11-10, Cross handler is native; placeholder probe).**
+- The Cross handler is **native**: `ATTRIBUTE_PUSH: func` exists only in `AppendItem`, no script reads `page`/`func`
+  for a tile, so the failing dispatch at `0x0030B450` is the widget activation calling a nil function/page object.
+- **Placeholder probe:** `if (option.root == nil) option.root = OptionRoot` for our title only (24 instructions,
+  jumps +24) - still `0x0030B450`: static indices are per frame, and slot 14 is `OptionRoot`'s in `onInitialize`, not
+  in `AppendItem`, so the placeholder read nil.
+- **Conclusion:** the native handler needs a real `mRootWindow` bound to the page module - only the loader's export
+  produces it. Remaining: the guest-call harness (Phase 24 scope) or the Misc fallback.
+- **Tests:** 846 OK (77 skipped). Block renders; page does not open; no kit.

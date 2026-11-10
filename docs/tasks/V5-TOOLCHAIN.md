@@ -1221,3 +1221,34 @@ The page's `open(context)` receives a **render context** at Cross time (retail `
 `start_page(context, context.getCursorProject().findPage("RecRoot1"))` inside `open` would be a pure-script binding.
 The handler currently needs `item.page` non-nil; giving the page an existing root (OptionRoot) makes the handler open
 *that* page, not ours - so the handler's contract would have to be understood first (its exact dispatch target).
+---
+
+# Phase 25 - the Cross handler is native; the placeholder probe (2026-11-10)
+
+## 77. The handler is not script
+
+`ATTRIBUTE_PUSH: func` appears exactly once in the whole `option.adc` (inside `AppendItem`, line 215). No script
+function reads `page`/`func` for a tile, so the Cross dispatch that fails at `0x0030B450` is **native**: the widget
+activation calls the function object stored by `defineStatic("func", ...)` (or the page object) and a nil value lands
+in the VM's null dispatch.
+
+## 78. Placeholder probe
+
+Guard inserted for `option.title == "Recomp settings"` only:
+
+```
+if (option.root == nil) option.root = <OptionRoot static 14>
+```
+
+24 instructions, jumps relocated +24. Result: the run still stops at `0x0030B450` with the same signature. Static
+indices are **per frame**, and `14` is `OptionRoot`'s slot in `onInitialize`'s frame, not in `AppendItem`'s - so the
+placeholder read nil and the assignment was a no-op (or assigned nil).
+
+## 79. Conclusion
+
+The data/script route cannot inject a page object the native handler accepts: it needs a real `mRootWindow` bound to
+the page module, which only the loader's export produces. The remaining work is the guest-call harness with the scope
+recorded in Phase 24 (hook after the `mProject` load, guest `hString`, argv/return handles, verification) - or the
+accepted Misc host-tree fallback.
+
+Nothing existing changed. Block renders; page does not open; no kit.

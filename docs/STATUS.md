@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-214 Phase 25: the Cross handler is native; placeholder probe (2026-11-10)
+
+- `ATTRIBUTE_PUSH: func` exists only in `AppendItem`; no script reads `page`/`func` for a tile, so the failing Cross
+  dispatch at `0x0030B450` is **native** (widget activation on a nil function/page object).
+- **Placeholder probe:** `if (option.root == nil) option.root = OptionRoot` for our title only (24 instructions, jumps
+  +24) - still `0x0030B450`: static indices are per frame, and slot 14 is `OptionRoot`'s in `onInitialize`, not in
+  `AppendItem`, so the placeholder read nil.
+- **Conclusion:** the native handler needs a real `mRootWindow` bound to the page module, which only the loader's
+  export produces. Remaining: the guest-call harness (Phase 24 scope) or the accepted Misc fallback.
+- **Block renders**; page does not open; no kit. Nothing existing changed; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 24: native route scope (2026-11-10, disk now 7.91 GB)
 
 - `exportRootWindow` takes the first argument object, calls its virtual 11 and returns a **bool**; the export is a side
