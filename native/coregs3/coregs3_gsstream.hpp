@@ -156,7 +156,7 @@ struct GsStreamCounters {
   std::uint64_t refused_bytes = 0;
   std::uint64_t refused_frames = 0;      // frames closed with a refusal
   std::uint64_t skipped_outside_window = 0;    // packets whose VBlank is outside the capture window
-  std::uint64_t skipped_outside_frame = 0;     // packets and markers before the first in-range VBlank
+  std::uint64_t skipped_outside_frame = 0;     // packets and pass markers accepted while no capture frame is open
   std::uint64_t skipped_frames = 0;            // in-range VBlanks not opened because MAX_FRAMES was reached
   std::uint64_t signal_records = 0;            // GIF records flagged SIGNAL/FINISH/LABEL
   std::uint64_t unknown_pass_records = 0;      // GIF records accepted outside every pass marker
