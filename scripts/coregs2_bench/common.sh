@@ -14,6 +14,28 @@ GT4_BENCH_CARD=${GT4_BENCH_CARD:-$GT4_ASSETS/private/coregs2-bench/night-card.ps
 GT4_ARCADE_CARD=${GT4_ARCADE_CARD:-$GT4_ASSETS/private/slice110-menu-pilot/name-control4/card.ps2}
 GT4_BENCH_INPUTS=${GT4_BENCH_INPUTS:-$GT4_ASSETS/private/coregs2-bench/inputs}
 
+# Scene tag (TASK-215e). GT4_BENCH_SCENE names the scene for cpu_summary.py (night, license-b1, opera-paris, ssr5-night,
+# tsukuba-wet, george-paris-rally, spec2-night, spec2-day, spec2-george, ...). scene_tag reads it from the environment or
+# from a GT4_BENCH_SCENE=... argument of the run script (its [ENV=VAL ...] list) and falls back to the caller's default;
+# record_scene also writes it to <out>/scene.txt, so a summary months later does not guess the scene from VBlank ranges.
+scene_tag() {  # <default scene> [ENV=VAL ...]
+  local scene=${GT4_BENCH_SCENE:-$1}
+  shift
+  local argument
+  for argument in "$@"; do
+    case $argument in GT4_BENCH_SCENE=*) scene=${argument#GT4_BENCH_SCENE=} ;; esac
+  done
+  printf '%s\n' "$scene"
+}
+record_scene() {  # <out dir> <default scene> [ENV=VAL ...]: writes scene.txt and echoes the tag
+  local out=$1
+  shift
+  local scene
+  scene=$(scene_tag "$@")
+  printf '%s\n' "$scene" > "$out/scene.txt"
+  printf '%s\n' "$scene"
+}
+
 # KEEP="A-B C-D": a run that dumps every frame keeps only these windows of frame numbers (keep_frames.py). Takes the frames folder.
 start_keeping_frames() {
   keep_stop=""

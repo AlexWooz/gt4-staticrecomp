@@ -34,6 +34,40 @@ the night race 3x and 4.7-12.0 on the license 1x, so the audit's "do not end a b
 small ceiling here. Details: `docs/tasks/COREGS2-PERF-BASELINE.md`, ledger IN-540..IN-543. CTest 304/304, Python 795 OK
 / 62 skipped.
 
+## TASK-215e: the stutter-aware measurement tooling for the CoreGS 2.0 performance audit (owner, 2026-11-10)
+
+On `task/215e-measure` (from `origin/release/1.3.0-rc15` at f86d53d9). Pure Python tooling, tests and docs: no native
+build, no game run, no benchmark (the TASK-215 performance agent owns the machine), no renderer, game, launcher or pin
+change. The owner's complaint is stutter, so the tool now reports what averages hide.
+
+- **`scripts/coregs2_bench/cpu_summary.py`** keeps the TASK-027 averages table exactly as it was (`--table-only`; the
+  test compares the old and the new output byte for byte on the same log) and adds, per run: a `stutter` line (intervals
+  over 16.7 ms, worst interval and its VBlank, share over budget, 1% low); a `statistics` table with p50/p95/p99
+  (nearest rank, as `native/perf_probe.cpp`), 1% low (`1000/p99`), max and counts/ratios over 16.7 and 20 ms
+  (`--stats all` covers every old metric); the N worst intervals with the numbers that explain them; and a text
+  histogram. A run's `frametime.csv` (`GT4_HW_FRAMETIME_LOG`) adds real per-frame presented/shown intervals with the same
+  figures, and `[core2] spike` lines add a per-VBlank section (percentiles only when the trace covers >= 98% of the
+  window; otherwise the section says `no (censored)`).
+- **Per-VBlank CSV** (`--csv` or `GT4_BENCH_CSV`): one row per `[core2]` report interval with VBlank range, wall,
+  GS worker, process CPU, GS exclusive total, EE critical path, GPU busy and draw passes, `gpu_wait` and every reason the
+  log prints, readbacks per reason, submissions, uploads, CLUT loads, swizzle KiB, prims, fragments, batches, draws and
+  readbacks; `<name>-spikes.csv` beside it has one row per spike VBlank.
+- **Scene tag** (`GT4_BENCH_SCENE`, `--scene`, or the `scene.txt` that `night-run.sh`, `arcade-run.sh`, `spec2-run.sh`,
+  `replay-run.sh` and `replay-gsdx.sh` now write; default `night`), in the CSV and in every section header.
+- **Docs:** `scripts/coregs2_bench/README.md` (definitions, CSV columns, sources, gaps) and
+  `docs/tasks/COREGS2-MEASUREMENT.md` (definitions, acceptance bar proposal, scene/resolution matrix, weak-GPU and
+  slow-CPU proxies, and the log lines the renderer still has to print).
+- **Tests:** new `tests/python/test_cpu_summary.py`, 23 synthetic-log tests (no game, no build): hand-computed
+  distribution, old key set and byte-identical table, frozen CSV contract and values, scene precedence, extra renderer
+  reasons, window, no-data and missing-log cases, a cost-only log from another renderer, EE attribution by cumulative
+  `N VBlank samples`, censored and complete spike traces, and the per-frame figures. Full Python suite (tooling venv):
+  827 tests, 77 skipped, 1 failure that is pre-existing on the rc15 base and unrelated
+  (`test_gs_live.ConfigTests.test_bad_values_are_refused`: `GT4_GS_SCALE=1.5` is a valid fractional scale since
+  TASK-200, the test still lists it as invalid; the file is untouched by this task).
+- **State:** tooling and tests done and pushed; no PR, no release. The streamer's numbers (GPU busy 6.82 ms, 1,258 race
+  spikes, mean GPU wait 17.3 ms, p99 75 ms, 0.856 correlation) are evidence from that log, not a measurement of this
+  task; this task produces no benchmark numbers.
+
 ## TASK-198: the 1.3.0-rc15 release build with PGO and ThinLTO (owner, 2026-11-06)
 
 On `task/198-rc15-pgo` (from `release/1.3.0-rc15` at b9a55c72, TASK-194 merged). The owner approved rc15 and asked for the

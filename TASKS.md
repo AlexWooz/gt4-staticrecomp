@@ -4091,6 +4091,7 @@ owner's word (busy on 2026-11-04). Each task is built by a subagent in its own w
 | TASK-193 | Option rows change only through their arrows (label and value taps do nothing), 32 x 32 px arrows with a mouse and 44 x 44 px on touch, row labels never split a word (owner, 2026-11-06) | `task/193-option-arrows` | ✅ For the rc15 test build (UI only, cherry-pickable to the Android branch) |
 | TASK-194 | Force feedback like PCSX2 (no default spring, a spring stop stops the spring, per-side friction, no damper floor), the Centring spring row, the rc15 test build (owner, 2026-11-06) | `task/194-rc15-build` | ✅ For the rc15 test build (owner test pending) |
 | TASK-198 | The 1.3.0-rc15 release build with PGO and ThinLTO, the full release gates, launchers labelled rc15 and the installer and portable zip (owner, 2026-11-06) | `task/198-rc15-pgo` | ✅ Done: slice413 (PGO), gates6 wrong=0, CTest 318/319 each, Python 804, launcher 778; `private/release-130-rc15-pgo-out`; the orchestrator publishes |
+| TASK-215e | Stutter-aware measurement tooling for TASK-215: p50/p95/p99, 1% low, budgets over 16.7/20 ms, worst intervals, histogram, per-VBlank CSV with a scene tag, and the spike and frametime sources (2026-11-10) | `task/215e-measure` | ✅ Tooling and tests done; measures nothing itself |
 
 Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
 174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
@@ -4452,6 +4453,49 @@ Evidence in `build/evidence/t199/` (before and after screenshots).
 
 **State (2026-11-06):** done, branch `task/199-tooltip-layer`, pushed, no PR, no release. UI only
 (`launcher/crates/gt4l-tauri/ui`), so the same commit can be applied to the Android branch.
+
+### TASK-215e: stutter-aware measurement for the CoreGS 2.0 performance audit (owner, 2026-11-10)
+
+**Why.** The owner's complaint about CoreGS 2.0 is stutter, not the average: the streamer's rc14 log (GTX 1660 class)
+has a steady race GPU busy of 6.82 ms but 1,258 race spikes with a mean GPU wait of 17.3 ms, a p99 of 75 ms, and a 0.856
+correlation between frame wall and GPU wait. `cpu_summary.py` reported averages only (p50/p95 in a few places): no p99, no
+1% low, no counts of frames over 16.7/20 ms, no per-interval trace, no scene tag. The owner's controlled slow-CPU
+(3.4 GHz) and slow-GPU (underclocked RX 9060 XT) baselines were coming, so the tooling had to exist first. This is the
+tooling half of the CoreGS 2.0 performance audit (TASK-215); it measures nothing by itself and touches no native code.
+
+**What.** `scripts/coregs2_bench/cpu_summary.py` keeps the TASK-027 averages table exactly as it was (`--table-only`
+reproduces it; the compatibility test compares the old and new output byte for byte) and adds:
+
+- per run a `stutter` line: intervals over 16.7 ms, the worst interval and its VBlank, the share over budget, the 1% low;
+- `statistics`: p50/p95/p99 (nearest rank, as `native/perf_probe.cpp`), 1% low (`1000/p99`), max, counts and ratios over
+  16.7 and 20 ms for the stutter metrics (`--stats all`: every metric of the old table);
+- the N worst intervals with the numbers that explain them, and a text histogram;
+- `--csv <path>` (or `GT4_BENCH_CSV`): one row per `[core2]` report interval with VBlank range, wall, GS worker,
+  process CPU, GS exclusive total, EE critical path, GPU busy and draw passes, GPU wait and every wait reason the log
+  prints, readbacks per reason, submissions, uploads, CLUT loads, swizzle KiB, prims, fragments, batches, draws and
+  readbacks; plus `<name>-spikes.csv` with one row per `[core2] spike` VBlank when the log has them;
+- a `per frame` section from the run folder's `frametime.csv` (`GT4_HW_FRAMETIME_LOG`) with presented and shown frame
+  intervals, real p99/1% low/budget counts, and a per-frame stutter line;
+- scene tags (`GT4_BENCH_SCENE`, `--scene`, `scene.txt` written by `night-run.sh`, `arcade-run.sh`, `spec2-run.sh`,
+  `replay-run.sh` and `replay-gsdx.sh`; default `night`), recorded in the CSV and every section header. `common.sh` holds
+  `scene_tag`/`record_scene`.
+- `scripts/coregs2_bench/README.md` documents the definitions, the CSV columns, the sources (interval lines, spike
+  trace, frametime log) and the log lines the renderer still has to print; `docs/tasks/COREGS2-MEASUREMENT.md` holds the
+  definitions, the acceptance bar proposal, the scene/resolution matrix and the weak-GPU/slow-CPU proxies.
+
+The missing lines are documented instead of guessed: a per-VBlank trace without a threshold/cap, VBlank tags on the EE
+and presentation lines, one wait-reason set on rc15 (`flare` and tone CLUT have no reason of their own), GPU wait by
+reason per VBlank, dropped presentations per VBlank, and a frame-time source for headless runs.
+
+**Checks.** New `tests/python/test_cpu_summary.py`, 23 tests on synthetic logs (no game, no build): a hand-computed
+distribution (p50/p95/p99, 1% low, strict budget counts), the old key set and table (byte-identical to the pre-change
+tool on the same log), the frozen CSV contract (columns, values, counter deltas, extra renderer reasons, scene
+precedence), the window, the no-data and missing-log cases, a cost-only log from another renderer, EE attribution by the
+cumulative `N VBlank samples`, censored and complete spike traces, and the frametime per-frame figures. Full Python suite
+below. No native build, no game run, no benchmark: the TASK-215 performance agent owns the machine.
+
+**State (2026-11-10):** done on `task/215e-measure` (from `origin/release/1.3.0-rc15`, f86d53d9), pushed; no PR, no
+release. No renderer, game, launcher or pin change; benchmark numbers are the TASK-215 agent's to produce.
 
 ### TASK-215 - CoreGS 2.0 performance audit and optimization (branch `task/215-coregs2-perf`)
 

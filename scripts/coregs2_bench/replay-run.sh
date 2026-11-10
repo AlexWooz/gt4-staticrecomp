@@ -12,6 +12,7 @@ if [ -z "$last" ]; then echo "no finished recording at $recording"; exit 2; fi
 recording_setup "$name" || exit 2
 OUT=$GT4_BENCH_OUT/replay-$name-$run
 mkdir -p "$OUT/frames"
+export GT4_BENCH_SCENE=$(record_scene "$OUT" "$name" "$@")
 cp "$REC_CARD" "$OUT/card.ps2"
 chmod u+w "$OUT/card.ps2"  # the cards in cards/ are read-only; the game writes its copy
 extra=()

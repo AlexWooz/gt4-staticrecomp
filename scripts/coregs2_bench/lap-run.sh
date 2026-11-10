@@ -7,6 +7,7 @@ run=$1; shift
 recording=${RECORDING:-george-volta2}
 exe=${EXE:-$(cygpath -m "$GT4_BENCH_ROOT/build/spec2-core2-build/gt4vulkan-spec2.exe")}
 if tasklist | grep -qi -E "gt4\.exe|gt4-spec2|gt4vulkan"; then echo "a game is running: close it first"; exit 2; fi
+export GT4_BENCH_SCENE=${GT4_BENCH_SCENE:-$recording}
 WINDOW=1 PACED_FROM=${PACED_FROM:-1990} SCALE=${SCALE:-6} bash "$(dirname "$0")/replay-run.sh" "$recording" "$run" "$exe" GT4_FULLSCREEN=1 \
   GT4_HW_PROFILE_EVERY=600 GT4_CORE2_SPIKE_MS=0.01 GT4_CORE2_SPIKE_LINES=9000 "$@"
 out=$GT4_BENCH_OUT/replay-$recording-$run
