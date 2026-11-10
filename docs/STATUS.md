@@ -1,5 +1,43 @@
 # Current Status
 
+## 2026-11-10: the 0x00A0 morph factor is captured and exact (TASK-090, branch `task/090-morph-v6`)
+
+The world-families round's open item is closed. The course morph pre-pass's blend factor (read by the VU1 at TOPS+0xF2
+lane 3) is now captured, and the family's sampled coordinate and colour equal the tap on every vertex. It is the PGL
+context word +0xC30, which `func_0049D1A0` uploads once per item before its MSCAL through the VIF UNPACK `0x7001C0F2`
+(V1-32 broadcast under STMASK 0x3F3F3F3F, so only lane 3 is written). `.gt4scene` version 6 adds four draw words
+(factor, PGL cross-check, flags, upload count); the chain walker recognises the segment by the STMASK pair and the
+UNPACK, the hook reads PGL +0xC30 at the K1 post point, and versions 1..5 are refused with the missing field named.
+The capture counters over the whole 11,499-frame run: **121,130 upload segments, 5,311 draws, 1,640,303 PGL reads, 0
+value mismatches, 0 missing**. Frame 0 factor `0xBF022BBF` (-0.508480), ramping exactly -0.00056/frame.
+
+The measured semantics are the AOT fragment's: `vf20 = 1 - s`, then `key1 * (1 - s) + key2 * s` with two float32
+roundings, for the position keys (0x00/0x20, bit-equal on every captured item), the UV keys (0x40/0x60) and the colour
+keys (0x80/0xA0, ITOF0 before, FTOI0 mode 0 after, packed low byte). The shape decoder blends with that order; a
+non-float position/UV key and a count above 32 are named refusals. The world tapped-state pairing now compares the tap's
+`S/Q,T/Q` with the post-morph UV.
+
+Family vs the tap (230 items / 6,900 vertices over five frames; the tap VBlank runs one ahead, so the pair is the
+record whose per-vertex S/Q,T/Q imply the captured word): sampled coordinate exact **0 -> 6,900/6,900** (max error 0.511
+-> 5.9e-8) and tap RGBAQ exact **3,860 -> 6,900/6,900**; the real AOT fragment on all 46 frame-0 items matches the tap's
+S/Q,T/Q and RGBAQ on **1,380/1,380 vertices** (max 5.6e-8). The 6-vertex item (draw 85 item 45), the baseline's one "0xA0
+mirror" exclusion, pairs with its own job record (job 460537, XYOFFSET `0x0000720800006C08`, the main view) and is now
+selected: course **46 items/1,380 vertices** (was 45/1,374), mirror exclusions 14 (was 15). Picture on the pass-textures
+baseline capture converted byte for byte to v6 with the tap-measured factor (the isolated A/B on identical pixels):
+**PSNR 22.351969 -> 22.352105 dB, SSIM 0.650791 -> 0.650793, pct_bad 64.7744 -> 64.7747%, mean |diff| 14.837616 ->
+14.837543, luma 18.946214 -> 18.946598 (reference 26.688)**, 675 pixels differing (max 8 levels); the quoted
+pass-textures baseline is 22.349825 / 0.650555 / 14.839992 / 18.955046, and the base-commit executable differs from it
+by 698 pixels (max 79, the wet-reflection merge's binding tweaks). The morph family is a thin part of this picture, so
+the metrics move by +0.00014 dB; the value is the exact family and the corrected state of the 6-vertex item. The
+fresh v6 capture (the shipped path, no conversion or injection) renders byte-identical to the converted-baseline A/B
+in both modes (`1ec71d3b...` before, `3fe95093...` after), so the conversion and the injected tap-measured word are
+validated against a real captured factor. Checks:
+CTest coregs3 **14/14** (v6 round trip, malformed flags/upload cap/reader refusal, chain segments, shape blend and
+refusals), Python `test_coregs3_units.py` **14 ran, OK (6 skipped)**, car-only render **byte-identical** to the
+aa5816ac executable (SHA-256 `b0e7082b...`, the v5 M1 capture vs the same capture converted to v6 with zero morph
+fields), the 3x off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B). Format and semantics:
+[COREGS3-HOOKS](COREGS3-HOOKS.md) §27; evidence `build/evidence-morph-v6/`.
+
 ## 2026-11-10: wet reflection, the captured pass is the destination-alpha mask (TASK-090, branch `task/090-wet-reflection`)
 
 The world-materials study's fix 3 is drawn and measured, and it is **not** the additive term's source. The captured

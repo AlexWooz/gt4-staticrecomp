@@ -1917,9 +1917,29 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   tap). CTest coregs3 **13/13** (new `native_coregs3_wet_reflection`), Python 8/8, car render byte-identical to the
   `e529c319` executable (`392dd4ed...`), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
   `build/evidence-wet-reflection/`; design: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §25.
+- **Morph factor v6: the 0x00A0 family's blend captured and pinned (2026-11-10, branch `task/090-morph-v6`).** The
+  course morph pre-pass's factor at VU1 TOPS+0xF2 lane 3 is captured in `.gt4scene` version 6. It is the PGL context
+  word +0xC30, which `func_0049D1A0` uploads once per item before its MSCAL through the VIF UNPACK `0x7001C0F2`
+  (V1-32 broadcast, STMASK 0x3F3F3F3F -> lane 3); the chain walker records the segment's data word, the hook reads
+  PGL +0xC30 as a cross-check, and four draw words carry factor/PGL/flags/upload count. Versions 1..5 are refused with
+  the missing field named (the reader now also refuses out-of-bounds draw fields). The decoder blends the position, UV
+  and colour keys with the measured AOT order (`1 - s`, `key1 * (1 - s) + key2 * s`, two float32 roundings; colour
+  through ITOF0/FTOI0 mode 0 and the low byte), and the world tapped-state pairing compares the tap's S/Q,T/Q with the
+  post-morph UV. Capture counters over 11,499 frames: 121,130 upload segments, 5,311 draws, 1,640,303 PGL reads, **0
+  value mismatches, 0 missing**. Frame 0 factor `0xBF022BBF` (-0.508480, ramping -0.00056/frame). Family vs the tap
+  (230 items/6,900 vertices, five frames): sampled coordinate exact **0 -> 6,900/6,900** (max 0.511 -> 5.9e-8) and
+  tap RGBAQ exact **3,860 -> 6,900/6,900**; the real AOT fragment on all 46 frame-0 items matches the tap on
+  **1,380/1,380 vertices** (max 5.6e-8). The 6-vertex item (draw 85 item 45), the baseline's one "0xA0 mirror"
+  exclusion, pairs with its own job record (XYOFFSET `0x0000720800006C08`, the main view) and is now selected (course
+  45/1,374 -> 46/1,380 vertices; mirror 15 -> 14). Picture on the pass-textures baseline capture converted to v6 with
+  the tap-measured factor: **PSNR 22.351969 -> 22.352105 dB, SSIM 0.650791 -> 0.650793, pct_bad 64.7744 -> 64.7747%,
+  mean |diff| 14.837616 -> 14.837543, luma 18.946214 -> 18.946598**, 675 pixels differ (max 8); the fresh v6 capture (the shipped path) renders byte-identical to the
+  converted-baseline A/B in both modes (`1ec71d3b...` / `3fe95093...`). CTest coregs3
+  **14/14**, Python **14 ran/OK (6 skipped)**, car-only render **byte-identical** to the aa5816ac executable (SHA-256
+  `b0e7082b...`), 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames,
+  capture 4,496,552 B). Evidence: `build/evidence-morph-v6/`; format and semantics: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §27.
 - Next: decode the captured `.gt4gs` PATH2/PATH3 stream (S2) and draw the wet-road colour composite,
-  then measure the post chain; a v6 capture field for the 0xA0 morph factor; the effects/HUD capture
-  additions; then the G-IMAGE/G-PERF gates.
+  then measure the post chain; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

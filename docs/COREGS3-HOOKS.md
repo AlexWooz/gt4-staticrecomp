@@ -1667,3 +1667,159 @@ sprites (`func_004A6788`), i.e. PATH3/2D, which the `.gt4tap` (PATH1 only, 0 IMA
 - The sphere-mapper draws (167/168) target FBP page 394 (blocks 0x3140), not the main frame; their content is captured
   in the job record's windows and is not drawn in this picture.
 - The pass's own colour output does not exist in the capture; nothing was inferred from it.
+
+## 27. Round 27 (2026-11-10, branch `task/090-morph-v6`): the 0x00A0 morph factor, `.gt4scene` version 6
+
+The world-families round decoded the course's 0x00A0 two-key morph pre-pass but could not capture its blend factor: the
+program reads it at VU1 data memory TOPS+0xF2 lane 3 (`vf20 = 1 - s`, `vf21 = s`), and the v5 capture stored neither the
+value nor the upload. The decoder therefore used the first key on the differing UV arrays (all 46 frame-0 items) and
+colour arrays (10 items), counted as substitutions, and the tap's sampled coordinate for those items stayed open. This
+round captures the factor, pins its measured semantics against the real AOT fragment and the tap, and re-measures the
+family and the world picture.
+
+### 27.1 Where the factor lives (C)
+
+`func_0049D1A0` (the PGL item dispatcher, decomp in `private/slice151-research/gt4-decomp`) writes, once per item before
+its MSCAL, a DMA CNT tag whose VIF stream is:
+
+```
+CNT QWC 1  tag words: 0x10000001, 0, 0x20000000 (STMASK), 0x3F3F3F3F (mask: only lane 3 writes)
+payload qword:        0x7001C0F2 (UNPACK V1-32, TOPS-relative destination 0xF2, NUM 1, masked),
+                      self->xc30, 0x20000000 (STMASK), self->x40
+```
+
+The UNPACK is a single 32-bit broadcast (vn = vl = 0) masked to lane 3, so TOPS+0xF2 lane 3 receives the raw 32-bit word
+at PGL context +0xC30, which is a float bit pattern. The segment is emitted for `cmd->kind >> 5` = 1 or 2 (the Cmd flag's
+bits 5..6); the value does not change during the shape call, so it is one factor per draw. `CapturedDraw` carries it in
+format version 6; the chain walker recognises the segment by the STMASK pair, the UNPACK word, its format and the factor
+word that follows, i.e. by what the VIF actually executes, not by the EE rule. The hook also reads PGL +0xC30 directly at
+the K1 post point as a cross-check (`morph_factor_pgl`).
+
+### 27.2 Format version 6 (C)
+
+Four words per draw, after `caller_ra` and before the item table (the draw record's fixed part grows 984 -> 1000 bytes):
+
+| Word | Meaning |
+|---|---|
+| `morph_factor` | the raw word the chain uploaded to TOPS+0xF2 lane 3 (what the VU1 read) |
+| `morph_factor_pgl` | PGL +0xC30 read directly at the K1 post hook (evidence) |
+| `morph_factor_valid` | bit 0 upload seen, bit 1 PGL read, bit 2 the two words agree |
+| `morph_uploads` | upload segments the chain walk counted for the draw |
+
+A factor is usable only with bit 0: the VU1 lane 3 otherwise holds a carried/stale qword. A non-finite word is refused by
+`morph_blend_of`, so a damaged capture falls back instead of poisoning a mesh. The reader refuses versions 1..5 with the
+message that names the missing field (and now also refuses a draw record whose field is outside its bounds, a gap the
+previous reader only checked in the writer); the writer refuses the same bounds. `gt4_coregs3_render --list` prints the
+per-frame morph draws, the factor word and float, the PGL word, the flags and the segment count.
+
+### 27.3 Measured semantics (C)
+
+The AOT fragment `vu1_2C8C8E20B5ECB957` (entry 0xA0, full-corpus generation) computes, for every vertex:
+
+1. `vf20 = (1,1,1,1) - vf21` where `vf21 = mem[TOPS+0xF2]` (so `vf20[3] = 1 - s`);
+2. `out = key1 * vf20[3]`, then `out = out + key2 * vf21[3]`, lane by lane;
+3. positions (lanes 0..2 at 0x00/0x20), UVs (lanes 0/1 at 0x40/0x60) and colours (V4-8 bytes at 0x80/0xA0) use the same
+   two operations; the colour keys go through ITOF0 before the blend and the result through FTOI0 (mode 0: truncation
+   toward zero, saturating) before it is written back to 0x80;
+4. the shared output routine at 0xB0 then emits `S = u * Q`, `T = v * Q` from the blended UV array and packs the low byte
+   of each blended colour lane into RGBAQ, so the tap's `S/Q,T/Q` is the post-morph UV and its RGBAQ is the blended byte.
+
+The host implementation keeps the same order with separate float32 roundings (no fused multiply-add): `one_minus = 1 - s`
+once, then `key1 * one_minus + key2 * s` with each product rounded before the add. The colour path uses the same
+truncation and low-byte packing the VU1/GS use (a negative factor can push a key past 255; the emitted byte is lane & 0xFF).
+
+### 27.4 Capture and counters (C)
+
+`night-run.sh morph` with `GT4_COREGS3=shadow`, ALL_DRAWS, capture VBlanks 7398-7402, tap 7398-7406, the pt5 vram recipe.
+The v6 capture is 11,141,796 bytes (5 frames). Counters over the whole 11,499-frame run: **morph_uploads 121,130,
+morph_draws 5,311, morph_reads 1,640,303, morph_mismatches 0, morph_value_mismatches 0, morph_missing 0** — every draw
+whose chain carried the segment had the same word in the chain and in PGL +0xC30, every chain segment agreed, and no
+draw that the Cmd kind rule asks for was missing. Frame 0 (VBlank 7398): draw 85, factor word `0xBF022BBF`
+(-0.508480), 46 uploads, flags 0x7. The factor ramps by exactly -0.00056 per frame over the five captured frames
+(-0.508480, -0.509040, -0.509600, -0.510160, -0.510720), a linear race-clock animation.
+
+### 27.5 Family residuals against the tap (C)
+
+Method: every 0xA0 item of the five captured frames (230 items, 6,900 vertices) is paired with its tapped GIF record at
+the job's VBlank (the tap counter runs one ahead of the guest frame: every record's implied factor equals the capture
+word only at `vblank + 1`). The pair is accepted only when the record's per-vertex `S/Q,T/Q` imply the captured factor.
+The AOT fragment was run with the captured factor on the item's captured inputs (full-corpus generated code, the same
+harness as the world-families oracle); the tap's sampled coordinates and RGBAQ were compared before (first key) and after
+(blended):
+
+| Measure | Before (first key) | After (captured factor) |
+|---|---|---|
+| Sampled coordinate `S/Q,T/Q` exact (<= 5e-6) | **0 / 6,900** (max error 0.511) | **6,900 / 6,900** (max 5.9e-8) |
+| Tap RGBAQ exact | 3,860 / 6,900 (3,040 differ) | **6,900 / 6,900** (0 differ) |
+
+Every differing UV key pair is V2-32 at 0x40/0x60 and every differing colour pair V4-8 at 0x80/0xA0; the position keys are
+bit-equal on every item (0 differing). The real AOT fragment, run for all 46 frame-0 items with the captured factor,
+reproduces the tap's `S/Q,T/Q` and RGBAQ on **1,380/1,380 vertices** (max 5.6e-8), so the model and the generated code
+agree with the tap. The blend reproduces the tap's emitted coordinate and colour on every vertex of the family, so the
+sampled coordinate is no longer Unknown: it is `key1 * (1 - s) + key2 * s`.
+
+### 27.6 Decoder, pairing and render (C)
+
+- `coregs3_shape`: with a valid factor the 0x00A0 rule blends the differing key pairs and returns `ok`; without one it
+  keeps the counted first-key substitutions and the `morph_keys_differ` refusal. The blend reads the same arrays the VU1
+  reads; a non-float position key (`morph-position-format`), a non-float UV key (`morph-uv-format`) and a vertex count
+  above 32, where the two UV arrays would overlap past qword 0x7F (`morph-uv-region`), are refused and named.
+  `MorphKeyFacts` reports which key pairs differ for the tool's census.
+- `coregs3_texture_frame`: the world state pairing now compares the tap's `S/Q,T/Q` with the **post-morph** UV
+  (`read_item_uv` blends when the item runs 0x00A0 and the draw has the factor). The frame-0 result: the 6-vertex item
+  (draw 85 item 45) was the baseline's one "0xA0 mirror" exclusion; its own tap record (job 460537) runs under
+  XYOFFSET `0x0000720800006C08` (the main view), so the first-key pairing had attached the mirror state from another
+  stream. With the blended UV the item pairs with its own stream and is now selected: course **46 items / 1,380
+  vertices** (was 45/1,374), mirror exclusions 14 (was 15); the tapped-state census pairs 1,567 items (was 1,530) with
+  35 record fallbacks (was 72). The 46th item's state is not a guess: it is the XYOFFSET its own job's record ran under.
+- `coregs3_lighting`: the `morph_passthrough` program emits the blended V4-8 colour; no block is read.
+- The tool gained `--no-morph` (an evidence A/B that clears the factor so the morph items fall back to the first key) and
+  the world report prints the morph census: items with a factor, blended UV/colour/position counts, the factors and the
+  substitution counts.
+
+### 27.7 Picture (H)
+
+Two measurements on the same pixels:
+
+- **Isolated A/B on the baseline capture.** The pass-textures `night-pt5.gt4scene` (v5) was converted to v6 byte for byte
+  (only the 16-byte draw fields inserted; the conversion is verified field by field against the v5 file) with the factor
+  the pt5 tap measured for its frame 0 (`0xBF022BBF`, -0.508480; the same word the fresh run captured). `--no-morph` vs
+  the normal render against the same reference frame/mask: **PSNR 22.351969 -> 22.352105 dB, SSIM 0.650791 -> 0.650793,
+  pct_bad 64.7744 -> 64.7747%, mean |diff| 14.837616 -> 14.837543, luma 18.946214 -> 18.946598 (reference 26.688)**, with
+  675 pixels differing (max 8 levels). The pass-textures baseline is PSNR 22.349825 / SSIM 0.650555 / mean 14.839992 /
+  luma 18.955046; the base-commit executable differs from it by 698 pixels (max 79, the wet-reflection merge's binding
+  tweaks), which is why the same-executable A/B is the round's before/after.
+- **Fresh v6 capture.** The shipped path (the fresh v6 capture, frame 0, same recipe, no conversion or injection) renders
+  **byte-identical** to the converted-baseline A/B in both modes: `1ec71d3b...` before and `3fe95093...` after. The
+  conversion and the injected tap-measured word are therefore validated against a real captured factor, and the fresh
+  run's world content equals the baseline capture's.
+
+The morph family is a thin part of this picture: the 675 changed pixels are the road/rail items' texture sampling plus
+the one re-paired 6-vertex item, and the overall metrics move by +0.00014 dB because the sampled atlas content across the
+0.5-1.0 UV shift is similar. The value of the round is the exact family: the sampled coordinate and colour now equal the
+tap on all 6,900 vertices, and the item whose tapped state the UV gate could not name is now drawn with the state its own
+job ran under.
+
+### 27.8 Gates
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | **14/14 passed**, with the v6 round-trip and malformed fixtures (morph flag mask, upload cap, reader refusal, non-finite word), the chain morph-segment cases (two equal segments, a differing one counted, a CNT block without the STMASK pair not read) and the shape blend/refusal cases |
+| Python `tests/python/test_coregs3_units.py` | **14 ran, OK (6 skipped)**, the same suite as the base |
+| Car-only render vs the aa5816ac executable | **byte-identical**, SHA-256 `b0e7082b9d0feb52da00b54d5b634d4518795b94706522abd0498e5eb338f16e`; the aa5816ac tool read the v5 M1 capture and this build the same capture converted to v6 (zero morph fields), same command, identical reports but the capture path |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, `coregs3-r8/ref` reference exe) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,496,552 B |
+| 0xA0 family vs the tap | sampled coordinate **0 -> 6,900 / 6,900** exact; RGBAQ **3,860 -> 6,900 / 6,900** exact |
+
+### 27.9 Open (H)
+
+- The morph factor is captured per draw and the chain writes it once per item; no captured draw had a differing segment
+  (0 value mismatches over 11,499 frames), so the per-draw representation is measured, not assumed. A capture that sees
+  a differing segment would count it and keep the first word; the renderer would then be wrong for that item, and that
+  case has not been observed.
+- The factor's *source* (which game variable drives PGL +0xC30) is Unknown; only the context word, the VU1 upload and
+  the animation ramp are measured.
+- The 6-vertex item's state tie: the C++ pairing counts 2 ambiguous UV ties in the frame; item 45's own job record names
+  the main view, which is the stream the blended UV selects, but the tie counter does not prove which stream each of the
+  other ties should use. The picture difference from the tie is inside the 675-pixel A/B.
+- The 46th item's colour is blended (10 colour-differing items); its effect on the sampled texels is included in the
+  picture measurement above.
