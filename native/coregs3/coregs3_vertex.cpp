@@ -31,6 +31,21 @@ const char *projection_status_name(ProjectionStatus status) noexcept {
   }
 }
 
+const char *position_encoding_name(PositionEncoding encoding) noexcept {
+  switch (encoding) {
+  case PositionEncoding::integer_16: return "integer_16";
+  case PositionEncoding::float_32: return "float_32";
+  default: return "unknown";
+  }
+}
+
+VertexRows vertex_rows(const VertexColumns &columns) noexcept {
+  VertexRows rows;
+  for (std::size_t row = 0; row < 4; ++row)
+    for (std::size_t lane = 0; lane < 4; ++lane) rows[row][lane] = columns.column[lane][row];
+  return rows;
+}
+
 VertexColumns vertex_columns_from_raw(const std::array<std::array<std::uint32_t, 4>, 4> &raw_columns) noexcept {
   VertexColumns columns;
   for (std::size_t column = 0; column < 4; ++column)
@@ -38,12 +53,44 @@ VertexColumns vertex_columns_from_raw(const std::array<std::array<std::uint32_t,
   return columns;
 }
 
-VertexColumns vertex_columns_from_vu0(const std::uint32_t (&vu0_vf)[8][4]) noexcept {
+Float32 vu1_linear_upload_factor(Float32 cmd_value) noexcept {
+  // func_0049E548 branches on `scale != 0.0f`: the scaled branch stores vf24..vf26 * scale, the zero branch stores them
+  // unscaled. IEEE comparison makes -0.0 equal to zero, and NaN unequal (so a NaN value propagates into the columns and
+  // the draw is refused). Confirmed in docs/COREGS3-HOOKS.md §10.2 and in the captured packet rows.
+  return cmd_value != 0.0f ? cmd_value : 1.0f;
+}
+
+Float32 metre_linear_scale(Float32 cmd_value, PositionEncoding encoding) noexcept {
+  const Float32 units_per_metre =
+      encoding == PositionEncoding::integer_16 ? kModelPositionUnitsPerMetre : 1.0f;
+  return vu1_linear_upload_factor(cmd_value) * units_per_metre;
+}
+
+VertexColumns vertex_columns_from_vu0_raw(const std::uint32_t (&vu0_vf)[8][4]) noexcept {
   // The capture stores vf24..vf31; the 0xC1 block is the first four of them (vf24..vf27), in column order.
   std::array<std::array<std::uint32_t, 4>, 4> raw{};
   for (std::size_t column = 0; column < 4; ++column)
     for (std::size_t lane = 0; lane < 4; ++lane) raw[column][lane] = vu0_vf[column][lane];
   return vertex_columns_from_raw(raw);
+}
+
+VertexColumns vertex_columns_from_vu0_upload(const std::uint32_t (&vu0_vf)[8][4], Float32 cmd_value) noexcept {
+  VertexColumns columns = vertex_columns_from_vu0_raw(vu0_vf);
+  const Float32 factor = vu1_linear_upload_factor(cmd_value);
+  // Only the three linear columns are scaled; c3 = vf27 is the translation and the upload never scales it.
+  for (std::size_t column = 0; column < 3; ++column)
+    for (Float32 &value : columns.column[column]) value *= factor;
+  return columns;
+}
+
+VertexColumns vertex_columns_from_vu0_metres(const std::uint32_t (&vu0_vf)[8][4], Float32 cmd_value,
+                                            PositionEncoding encoding) noexcept {
+  VertexColumns columns = vertex_columns_from_vu0_raw(vu0_vf);
+  const Float32 scale = metre_linear_scale(cmd_value, encoding);
+  // Built from the raw block in one multiply, exactly like the upload: vf * (factor * units). c3 stays vf27.
+  for (std::size_t column = 0; column < 3; ++column)
+    for (Float32 &value : columns.column[column]) value *= scale;
+  return columns;
 }
 
 bool vertex_columns_finite(const VertexColumns &columns) noexcept {
@@ -54,8 +101,8 @@ bool vertex_columns_finite(const VertexColumns &columns) noexcept {
 }
 
 ClipPosition transform_model_position(const VertexColumns &columns, const ModelPosition &metres) noexcept {
-  // clip = c0*x + c1*y + c2*z + c3*1, componentwise. The columns are used unscaled: the model positions are already in
-  // metres (raw / 4096), which is the scale the shape's `value` would otherwise contribute.
+  // clip = c0*x + c1*y + c2*z + c3*1, componentwise. The columns carry every scale of the vertex stage (the shape's
+  // `value` and the position encoding's units, see vertex_columns_from_vu0_metres); this function adds none.
   ClipPosition clip;
   clip.x = columns.column[0][0] * metres[0] + columns.column[1][0] * metres[1] + columns.column[2][0] * metres[2] +
            columns.column[3][0];

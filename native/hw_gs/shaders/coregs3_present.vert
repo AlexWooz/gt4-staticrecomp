@@ -4,9 +4,11 @@
 // Written from the measured VU1 transform (native/coregs3/coregs3_vertex.hpp, docs/COREGS3-HOOKS.md §10.2), clean room
 // (decision 0070).
 //
-// The push constant carries the four raw columns of the draw's 0xC1 block (VU0 vf24..vf27, each four floats, unscaled),
-// exactly as the capture recorded them. The model position is in metres (the raw 16-bit model value / 4096, the scale
-// coregs3_shape already applies), so the shape's `value` cancels and no scaling happens here:
+// The push constant carries the draw's metre transform, already scaled on the CPU (native/coregs3/coregs3_vertex.hpp):
+// c0..c2 are VU0 vf24..vf26 multiplied by `4096 * cmd.value` for a V3-16 model channel (raw signed 16-bit units, 4096
+// per metre) or by `cmd.value` for a V3-32 channel (the stored float), and c3 is VU0 vf27 unscaled. The guest's upload
+// leaves the linear columns unscaled when `cmd.value` is exactly zero. The model position is in metres (the raw 16-bit
+// value / 4096, or the V3-32 float, the scale coregs3_shape applies), so no scaling happens here:
 //
 //   clip = c0 * x + c1 * y + c2 * z + c3 * 1                       -> (cx, cy, 1, cw)
 //   gl_Position = vec4(cx, -cy, 1.0, cw)
@@ -19,7 +21,7 @@
 #version 450
 
 layout(push_constant) uniform CoreGS3Transform {
-    vec4 columns[4];  // c0..c3 = VU0 vf24..vf27, raw
+    vec4 columns[4];  // c0..c3 of the metre transform (linear columns already scaled by 4096*value or value)
 } transform;
 
 layout(location = 0) in vec3 model_position;  // metres

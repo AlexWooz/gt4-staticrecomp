@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace gt4::coregs3 {
@@ -154,7 +155,9 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
 }
 
 // Computes the flat-shading colour of one triangle from its model-space face normal and the draw's linear part. The
-// matrix is the row-major form of the measured columns, so this is the same normal rotation as the first pictures.
+// matrix is the row-major form of the uploaded 0xC1 block; its linear rows differ from a metre transform's by one
+// positive (or negative) uniform scale, which the normalisation below removes, so this is the same normal rotation as
+// the measured transform.
 void flat_color(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &options, std::size_t first,
                 std::size_t second, std::size_t third, float &red, float &green, float &blue) {
   red = green = blue = 1.0f;
@@ -306,9 +309,14 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
   const float height = static_cast<float>(options.height);
   std::vector<ProjectionResult> projected(mesh.vertices.size());
   for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
-    const ModelPosition position = {mesh.vertices[index].position[0], mesh.vertices[index].position[1],
-                                    mesh.vertices[index].position[2]};
-    projected[index] = project_vertex(matrix.columns, position, width, height, options.flip_y);
+    const MeshVertex &vertex = mesh.vertices[index];
+    const ModelPosition position = {vertex.position[0], vertex.position[1], vertex.position[2]};
+    // The VU1 multiplies the raw 16-bit integer of a V3-16 channel and the stored float of a V3-32 channel; the metre
+    // column set for each encoding differs by kModelPositionUnitsPerMetre (coregs3_vertex.hpp).
+    const VertexColumns &columns =
+        mesh_position_encoding(vertex) == PositionEncoding::integer_16 ? matrix.integer_positions
+                                                                      : matrix.float_positions;
+    projected[index] = project_vertex(columns, position, width, height, options.flip_y);
   }
 
   if (options.points) {
@@ -405,19 +413,29 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
 
 }  // namespace
 
+PositionEncoding mesh_position_encoding(const MeshVertex &vertex) noexcept {
+  return vertex.has_raw_position ? PositionEncoding::integer_16 : PositionEncoding::float_32;
+}
+
 DrawMatrix draw_matrix(const CapturedDraw &draw) {
   DrawMatrix matrix;
-  matrix.columns = vertex_columns_from_vu0(draw.vf);
-  // The equivalent row-major form: row r holds component r of every column, i.e. matrix[r][c] = column[c][r]. The
-  // flat-shading normal rotation and the --ndc diagnostic use this form; the measured projection uses the columns
-  // directly. The columns are UNSCALED: the 0xC1 packet rows are vf * cmd.value, but the metre positions already
-  // carry the 1/4096 that cancels `value` (docs/COREGS3-HOOKS.md §10.2).
+  // The capture stores the Cmd's float `value` as raw bits; the guest upload scales the linear columns by it, and the
+  // metre transform also converts the position encoding's units (coregs3_vertex.hpp, docs/COREGS3-HOOKS.md §10.2).
+  Float32 cmd_value = 0.0f;
+  std::memcpy(&cmd_value, &draw.cmd_value, sizeof cmd_value);
+  matrix.upload = vertex_columns_from_vu0_upload(draw.vf, cmd_value);
+  matrix.integer_positions = vertex_columns_from_vu0_metres(draw.vf, cmd_value, PositionEncoding::integer_16);
+  matrix.float_positions = vertex_columns_from_vu0_metres(draw.vf, cmd_value, PositionEncoding::float_32);
+  // The row-major form is the uploaded 0xC1 matrix: rows 0-2 are the shape-scaled linear columns, row 3 the
+  // translation. The flat-shading normal rotation and the timeline use it.
+  const VertexRows rows = vertex_rows(matrix.upload);
   for (std::uint32_t row = 0; row < 4; ++row)
-    for (std::uint32_t lane = 0; lane < 4; ++lane) matrix.row[row][lane] = matrix.columns.column[lane][row];
+    for (std::uint32_t lane = 0; lane < 4; ++lane) matrix.row[row][lane] = rows[row][lane];
   const bool rows_used = matrix.row[0][0] != 0.0f || matrix.row[0][1] != 0.0f || matrix.row[1][0] != 0.0f ||
                          matrix.row[1][1] != 0.0f || matrix.row[2][0] != 0.0f || matrix.row[2][1] != 0.0f ||
                          matrix.row[3][3] != 0.0f;
-  matrix.valid = vertex_columns_finite(matrix.columns) && rows_used;
+  matrix.valid = vertex_columns_finite(matrix.upload) && vertex_columns_finite(matrix.integer_positions) &&
+                 vertex_columns_finite(matrix.float_positions) && rows_used;
   return matrix;
 }
 

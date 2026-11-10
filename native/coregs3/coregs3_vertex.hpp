@@ -1,16 +1,25 @@
 // TASK-090 CoreGS 3.0: the measured VU1 vertex transform, shared by the offline reference renderer (native/coregs3/
-// coregs3_render.cpp) and, when it lands, the live renderer. The measurement and its evidence are
-// docs/COREGS3-HOOKS.md §10.2; labels there follow docs/COREGS3-PLAN.md (H = High confidence).
+// coregs3_render.cpp) and the live `present` layer. The measurement and its evidence are docs/COREGS3-HOOKS.md §10.2;
+// labels there follow docs/COREGS3-PLAN.md (H = High confidence).
 //
 // The convention:
-//   * model positions are metres: the raw 16-bit model value divided by 4096, which is the scale build_mesh applies by
-//     default (coregs3_shape.hpp). The division cancels the shape's `cmd.value` in the uploaded packet rows;
 //   * the matrix the VU1 receives at qword 0xC1 is four COLUMNS, not rows: c0 = VU0 vf24, c1 = vf25, c2 = vf26 and
-//     c3 = vf27, each four raw floats, used UNSCALED. The packet rows the game uploads are `vf * cmd.value`; mixing
-//     that scale with the metre positions is the row reading that never validated on screen;
+//     c3 = vf27. The guest's upload (func_0049E548) scales the three LINEAR columns c0..c2 by the shape's Cmd float
+//     `value` (Cmd + 0x04); when `value` is exactly zero it stores them unscaled (the zero branch of the upload). The
+//     translation column c3 is never scaled. The captured packet rows are exactly `vf24..vf26 * value, vf27`;
+//   * model positions are metres: a V3-16 channel is a signed 16-bit value and build_mesh stores raw / 4096 (its
+//     default position_scale, coregs3_shape.hpp), while a V3-32 channel is a float and build_mesh stores it as it
+//     stands. The VU1 multiplies the raw integer for the first and the float for the second, so the metre transform
+//     carries `(value or 1) * 4096` for a V3-16 vertex and `(value or 1)` for a V3-32 vertex: the two column sets
+//     `vertex_columns_from_vu0_metres` builds. This is the only place a shape scale enters the vertex stage;
 //   * clip = c0 * x + c1 * y + c2 * z + c3 * 1, componentwise, i.e. clip[i] = sum(j) column[j][i] * model[j];
 //   * screen = ((0.5 + 0.5 * clip.x / clip.w) * width, (0.5 - 0.5 * clip.y / clip.w) * height). The captured night-race
 //     frames are 640x448; the formula itself is resolution independent.
+//
+// History: the previous revision of this module used vf24..vf27 unscaled with metre positions. That is wrong by
+// `(value or 1) * 4096` on the linear part; the correction and its measured effect are in docs/COREGS3-HOOKS.md
+// §10.2 (the linear columns of the body/paint family are scaled by about 0.954, and the wheel/part families by 0.25
+// and 0.625, so the old reading placed them by multiples of their true size).
 //
 // The 16-bit wrap trap: after the transform the VU1 adds the drawing offset and the GS stores each screen coordinate as
 // a 16-bit 12.4 fixed-point value, so a coordinate more than 4096 px outside the drawing window wraps modulo 65536
@@ -38,13 +47,33 @@ static_assert(std::numeric_limits<Float32>::is_iec559, "the vertex transform req
 // value before projecting, so the clip position stays the only source of screen coordinates.
 inline constexpr Float32 kMinClipW = 1e-6f;
 
-// The four columns of the 0xC1 matrix block, in order c0..c3 (= VU0 vf24..vf27). Each column is four raw floats, used
-// unscaled. Built from the capture by `vertex_columns_from_vu0`; a hand-written matrix can be assembled directly.
+// The model position unit of a V3-16 channel: its signed 16-bit values carry 4096 units per metre, the divisor build_mesh
+// applies by default (coregs3_shape.hpp).
+inline constexpr Float32 kModelPositionUnitsPerMetre = 4096.0f;
+
+// Which measured model position channel a mesh vertex came from. The two reach the VU1 in different units, so the same
+// uploaded matrix needs a different linear scale for each (see metre_linear_scale).
+enum class PositionEncoding : std::uint8_t {
+  integer_16 = 0,  // a V3-16 channel: signed 16-bit model units, stored by build_mesh as raw / 4096 metres
+  float_32 = 1,    // a V3-32 channel: the stored float, which build_mesh uses as it stands
+};
+const char *position_encoding_name(PositionEncoding encoding) noexcept;
+
+// The four columns of the 0xC1 matrix block, in order c0..c3 (= VU0 vf24..vf27), each four floats. Which scale the
+// columns carry depends on the constructor used: `vertex_columns_from_vu0_raw` leaves them exactly as VU0 holds them,
+// `vertex_columns_from_vu0_upload` applies the shape's `value`, and `vertex_columns_from_vu0_metres` is the set a
+// renderer uses with metre model positions (it applies `value` and the position encoding's unit conversion).
 struct VertexColumns {
   std::array<std::array<Float32, 4>, 4> column{};
 };
 
-// A model-space position in metres (the raw 16-bit model value / 4096).
+// Row-major form of a column set: rows[r][c] = columns.column[c][r]. This is the form of the uploaded 0xC1 matrix
+// (rows 0-2 hold the shape-scaled linear columns, row 3 the translation) and the form the flat-shading normal rotation
+// and the presentation timeline use.
+using VertexRows = std::array<std::array<Float32, 4>, 4>;
+VertexRows vertex_rows(const VertexColumns &columns) noexcept;
+
+// A model-space position in metres (a V3-16 raw value / 4096, or a V3-32 float as stored).
 using ModelPosition = std::array<Float32, 3>;
 
 // clip = (cx, cy, cz, cw), componentwise c0*x + c1*y + c2*z + c3*1.
@@ -76,12 +105,35 @@ struct ProjectionResult {
   ScreenPosition screen;  // valid only when status == ok
 };
 
-// Builds the four columns from four captured raw columns (c0..c3, each four little-endian float bit patterns). No
-// scaling is applied: the caller passes VU0 vf24..vf27 exactly as the capture recorded them.
+// Builds the four columns from four raw columns (c0..c3, each four little-endian float bit patterns). No scaling is
+// applied: the caller passes its matrix exactly as it wants it multiplied.
 VertexColumns vertex_columns_from_raw(const std::array<std::array<std::uint32_t, 4>, 4> &raw_columns) noexcept;
 
-// The same for a CapturedDraw: `vu0_vf[0..3]` are vf24..vf27 (coregs3_scene.hpp / docs/COREGS3-HOOKS.md §10.2).
-VertexColumns vertex_columns_from_vu0(const std::uint32_t (&vu0_vf)[8][4]) noexcept;
+// The factor the guest upload applies to the linear columns (func_0049E548): the Cmd float `value`, or 1 when it is
+// exactly zero (the zero branch stores vf24..vf26 unscaled). Confirmed in the decompiled upload function and in the
+// captured packet rows (docs/COREGS3-HOOKS.md §10.2). NaN propagates, so the draw is refused instead of guessed.
+Float32 vu1_linear_upload_factor(Float32 cmd_value) noexcept;
+
+// The linear scale from the RAW VU0 columns to the transform for METRE positions of one encoding:
+//   integer_16 -> vu1_linear_upload_factor(cmd_value) * kModelPositionUnitsPerMetre
+//   float_32   -> vu1_linear_upload_factor(cmd_value)
+// The translation column is never scaled. This is the single place where the shape scale and the position encoding
+// meet; no other module applies either.
+Float32 metre_linear_scale(Float32 cmd_value, PositionEncoding encoding) noexcept;
+
+// The raw VU0 vf24..vf27 block as the capture stores it (`vu0_vf[0..3]`), with NO upload scale: c0..c2 are the linear
+// columns before the shape's `value`, c3 is the translation column. This is not a draw transform; it exists for
+// diagnostics, fixtures and the raw-vs-packet comparison. A renderer uses the constructors below.
+VertexColumns vertex_columns_from_vu0_raw(const std::uint32_t (&vu0_vf)[8][4]) noexcept;
+
+// The 0xC1 matrix exactly as the game uploads it: c0..c2 = vf24..vf26 * vu1_linear_upload_factor(cmd_value), c3 = vf27.
+VertexColumns vertex_columns_from_vu0_upload(const std::uint32_t (&vu0_vf)[8][4], Float32 cmd_value) noexcept;
+
+// The columns to use with metre model positions of the given encoding:
+//   c0..c2 = vf24..vf26 * metre_linear_scale(cmd_value, encoding),  c3 = vf27.
+// A non-finite scale makes the linear columns non-finite, so the draw is refused rather than drawn with a guessed scale.
+VertexColumns vertex_columns_from_vu0_metres(const std::uint32_t (&vu0_vf)[8][4], Float32 cmd_value,
+                                            PositionEncoding encoding) noexcept;
 
 // True when every one of the sixteen column values is finite. A draw whose columns fail this is refused, not drawn.
 bool vertex_columns_finite(const VertexColumns &columns) noexcept;

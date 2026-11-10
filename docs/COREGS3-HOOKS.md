@@ -116,9 +116,11 @@ channels as well.
 
 The matrix: the eight qwords at the PGL output cursor, read back after the call, are exactly
 `tag, rows 0-2 × value, vf27, m2[0..3]` (**C**, the tag is `0x10000008`/`0x6C08C0C1`). Rows 0-2 are scaled by the shape's
-`value` (≈ 1/4096 per car) and row 3 (`vf27`) is **not** scaled: in the observed car frames it holds a world position
-(~`18.6, 86.1, 138.4`), not a projection row. The `+0xFA0` block is not a projection matrix in these frames either (it
-holds screen-centre-like 2D state), so its role stays **U**. The VU1 vertex formula (which register is the projection, and
+`value` (measured classes on VBlank 7398: 0.000232830644, 0.000152592547 and 6.10370189e-05, i.e. `4096 * value` =
+0.954, 0.625 and 0.250; a `value` of exactly zero takes the upload's unscaled branch) and row 3 (`vf27`) is **not**
+scaled: in the observed car frames it holds a world position (~`18.6, 86.1, 138.4`), not a projection row. The
+`+0xFA0` block is not a projection matrix in these frames either (it holds screen-centre-like 2D state), so its role
+stays **U**. The VU1 vertex formula (which register is the projection, and
 the exact clip mapping) is therefore still open: plan step 1d's tap is the instrument that will settle it.
 
 The positions themselves are right: a point-cloud render of the captured car geometry (offline, no guest involvement)
@@ -304,29 +306,42 @@ first three (object position, tapped screen position) pairs, `vf24..vf27`, `cmd.
 **111 of 116 draws fitted, mean rms 0.9714 px, worst 37.3771 px** — unchanged from §8). Night race, VBlank 7398,
 `build/evidence/coregs3/r9/{cars.gt4tap,cars.gt4scene}`.
 
-**The convention that reproduces the tapped coordinates** (positions in metres, i.e. the raw 16-bit model values
-divided by 4096 as `build_mesh` already does; matrix taken **unscaled** from VU0):
+**The convention that reproduces the tapped coordinates** (positions in metres: a V3-16 channel's raw 16-bit value
+divided by 4096 as `build_mesh` does, or a V3-32 channel's float as stored):
+
+The VU1 receives the draw's matrix as the eight qwords `func_0049E548` writes at `0xC1`:
+`tag, vf24*value, vf25*value, vf26*value, vf27, m2[0..3]`. The three linear columns are COLUMNS c0..c2 = VU0
+vf24..vf26 scaled by the shape's Cmd float `value` (`Cmd + 0x04`); when `value` is exactly zero the upload stores them
+unscaled (the function's zero branch, **C** in the decompiled `func_0049E548`). c3 = vf27 is the translation and is
+never scaled.
 
 ```
-columns: c0 = vf24, c1 = vf25, c2 = vf26, c3 = vf27      (each four floats, raw)
+columns: c0 = vf24 * s, c1 = vf25 * s, c2 = vf26 * s, c3 = vf27    (s = value, or 1 when value is exactly zero)
 clip    = c0 * x + c1 * y + c2 * z + c3 * 1              -> (cx, cy, cz, cw)
 screen  = ( (0.5 + 0.5 * cx / cw) * width, (0.5 - 0.5 * cy / cw) * height )
 ```
+
+The VU1 multiplies the raw signed 16-bit model value for a V3-16 position channel and the stored float for a V3-32
+channel. With `build_mesh`'s metre positions the linear columns therefore carry one more factor of 4096 for a V3-16
+vertex (raw units per metre) and none for a V3-32 vertex; `native/coregs3/coregs3_vertex.hpp` builds both sets
+(`vertex_columns_from_vu0_metres`), and this is the only place a shape scale enters the vertex stage.
 
 The VU1 then adds the drawing offset before the GS: the tapped 12.4 value is `screen * 16 + offset`, and the GS
 subtracts `XYOFFSET` again (`native/hw_gs/frontend/hw_front_end.cpp:621`).
 Measured on the captures, the offset is about **(-2368.0, +1824.0) px** (`OFX = -37888`, `OFY = 29184` in 12.4 units;
 the negative OFX is the 16-bit value 27648 read signed). It is **inferred** from the fits, not read from the register.
 
-| Check (draw, vertex) | predicted screen | tapped − offset | delta |
+| Check (draw, vertex) | predicted screen (corrected) | tapped − offset | delta |
 |---|---|---|---|
-| draw 0, pair 0 | (358.50, 86.02) | (358.625, 86.000) | (0.13, 0.02) px |
-| draw 0, pair 1 | (358.81, 86.02) | (358.875, 86.063) | (0.07, 0.04) px |
-| draw 3, pair 0 | (359.50, 79.60) | (359.500, 79.875) | (0.00, 0.28) px |
+| draw 0, pair 0 | (358.75, 85.93) | (358.625, 86.000) | (0.12, -0.07) px |
+| draw 0, pair 1 | (359.00, 85.99) | (358.875, 86.063) | (0.12, -0.07) px |
+| draw 3, pair 0 | (359.65, 79.84) | (359.500, 79.875) | (0.15, -0.04) px |
 
-Two draws and three vertices were checked by hand. **Whole-file residual (2026-11-09, r8):** the formula was then
-recomputed over all 291 printed (draw, vertex) pairs of `gate-fits.txt`. The **41 draws that lie on screen** match the
-convention and the inferred offset; after removing one constant per draw, the residual is **rms 0.2197 px**. The other
+The predictions are the fixture's own float32 arithmetic on the transcribed `gate-fits.txt` columns and values
+(`native/coregs3/coregs3_vertex_fixture.cpp`). Two draws and three vertices were checked by hand. **Whole-file residual
+(2026-11-09, r8):** the formula was then recomputed over all 291 printed (draw, vertex) pairs of `gate-fits.txt`, at
+that time with the linear columns UNSCALED (see the correction below). The **41 draws that lie on screen** matched the
+convention and the inferred offset; after removing one constant per draw, the residual was **rms 0.2197 px**. The other
 **56 draws split in two**: **26 show the expected 16-bit wrap** (tapped y **+4085..+4122 px** away from the prediction,
 one 4096 px period at 12.4, i.e. 65536 units) and **30 have small per-draw offsets (0.5-11.7 px)**, which the three
 printed pairs per draw do not explain further (**Hypothesis**: partially off-screen vertices or fit bias). None is
@@ -334,15 +349,36 @@ evidence of a second transform. Three draws (95, 111 and 115) are degenerate (18
 The old row reading fails the same 41 draws: 13 put `cw <= 0` behind the eye and the other 28 have **1.9204 px rms**
 (worst 6.4869 px), so the column reading is the measured one. The convention is therefore **H** for on-screen vertices;
 the wrap is expected 16-bit arithmetic. The live renderer must clip in clip space (`cw`) and must never consume the
-wrapped 12.4 screen coordinate. The module `native/coregs3/coregs3_vertex.{hpp,cpp}` implements it (round 9), and
-`coregs3_render.cpp` projects through it with near-plane clipping; the object path is unchanged.
+wrapped 12.4 screen coordinate. The module `native/coregs3/coregs3_vertex.{hpp,cpp}` implements it (round 9; the linear
+scale was corrected on 2026-11-10, below), and `coregs3_render.cpp` projects through it with near-plane clipping; the
+object path is unchanged.
+
+**Correction (2026-11-10, G-IMAGE/G-PERF round).** The round-9 reading above used the columns UNSCALED, which is wrong:
+the captured packet rows are `vf24..vf26 * value` (e.g. `packet1 = 0.000474434` = `vf24[0] 2.037678 * value
+0.000232830644`), so the linear part was missing a factor `4096 * value` for a V3-16 channel. The factor is not close to
+one for every family: the measured classes on VBlank 7398 are `4096 * value = 0.953674` (102 body/paint draws),
+`0.625019` (5) and `0.2500076` (5), plus 4 V3-32 float-position draws with `value = 0` (the upload's unscaled branch;
+their stored float needs no 4096 factor). Two mathematically equivalent readings exist: metre positions with the linear
+columns multiplied by `4096 * value` (chosen: it keeps the live shader's metre vertex input and is exactly the prototype
+that measured the fix), or the captured packet rows with raw 16-bit positions. The captured `matrix_packet` cannot be
+used as the general source: the PGL output buffer read back after the call holds this draw's upload for only 25 of 116
+draws (the buffer is recycled), while the pre-call VU0 block and `cmd.value` are always captured and the upload rule is
+known (**C** in `func_0049E548`).
+
+Measured effect on the r13 night race, VBlank 7398, frame 0 (`build/analysis-gates/`; the prototype scales vf24..vf26 by
+`4096 * value` before `render_frame`): whole-file, translation-centred per-draw residual median **0.489 -> 0.041 px**,
+and draws within 0.5 px **58/115 -> 102/115** (draw 115 has no on-screen vertex and is excluded); diagnostic 1x coverage
+of the GS car mask **95.49% -> 98.79%**, spill **31.2% -> 0.54%**; the refined 3x gate mask covers **99.26%** of the 1x
+blocks (**97.49%** of strict 3x pixels), with spill **1.70%** (3x px) and **5.00%** (1x blocks). The module and both
+renderers now use the corrected columns; the unscaled reading survives only in this history.
 
 **Consequence for the existing code (before round 9):** `native/coregs3/coregs3_render.cpp` `draw_matrix()` read
 `vf24..vf27` as matrix **rows** and multiplied rows 0-2 by `cmd.value`. The capture shows the packet rows are exactly
-`vf * value` (e.g. `packet1 = 0.000474434` = `vf24[0] 2.037678 * value 0.000232830644`), so the row reading is a
-different transform: it is why the offline renderer's screen mode was never validated, and every published M2/M4 picture
-used `--object`, which bypasses `draw_matrix`. Round 9 replaced it with the `coregs3_vertex` module (columns, clip space);
-the old screen-mode pictures are row-reading evidence only.
+`vf * value`, so the row reading is a different transform: it is why the offline renderer's screen mode was never
+validated, and every published M2/M4 picture used `--object`, which bypasses `draw_matrix`. Round 9 replaced it with the
+`coregs3_vertex` module (columns, clip space); the old screen-mode pictures are row-reading evidence only. Round 9 itself
+still used the linear columns unscaled; the packet relation quoted above is exactly the missing factor, corrected on
+2026-11-10.
 
 ### 10.3 The live design (implemented in round 10)
 
