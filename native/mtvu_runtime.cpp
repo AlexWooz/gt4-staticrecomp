@@ -10,6 +10,7 @@
 #include "race_widescreen.hpp"
 #include "display_aspect.hpp"
 #include "flare_limits.hpp"
+#include "hw_gs/hw_flare_job.hpp"
 #include "fov_adjust.hpp"
 #include "perf_clock.hpp"
 #include "perf_probe.hpp"
@@ -592,6 +593,14 @@ void note_table_copy(Runtime &r, const std::uint8_t *data, std::size_t bytes, st
 void post_table_patches(Runtime &r, std::uint64_t job, std::vector<Runtime::TablePatch> &patches) {
   if (patches.empty()) return;
   {
+    // TASK-215 S4: a patch of the 16-byte window at table offset 0 is the flare visibility REF; mark the job so the GS
+    // worker can tell its flare draws apart (diagnostic; the renderer prints the draw order for now).
+    for (const Runtime::TablePatch &patch : patches) {
+      if (patch.table_offset == 0 && patch.bytes == 16) {
+        gt4::hw::note_flare_job(job);
+        break;
+      }
+    }
     // TASK-215 S4: the shape of a flare-table REF, for the GPU-side modulation (which table texel the job uses).
     static const long trace = [] {
       const char *text = std::getenv("GT4_HW_FLARE_PATCH_TRACE");

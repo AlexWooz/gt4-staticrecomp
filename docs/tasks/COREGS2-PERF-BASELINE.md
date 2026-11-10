@@ -319,6 +319,29 @@ x934..960 sprite, word 1 = x908..936). With that order known, the variant is: RE
 table word 0..3, the draw samples the 64x8 target and multiplies the flare's colour or alpha (P1), with the target lookup
 and barrier ordering already in place. No per-vertex design is needed.
 
+
+## Cooled 10x reference check and the flare draw-order measurement
+
+**Cooled re-run (10+ minutes idle, same commands):** GPU busy **15.78** (p50 14.56 / p99 21.48), wall mean **17.04**
+(p50 15.82 / p99 23.45), flare **6.85**, unchanged from the warm fresh run (15.79 / 17.05 / 6.84) and still ~10 % above the
+earlier stock (14.32 / 15.43 / 6.05). Cooling changed nothing, so this is a **persistent GPU state**, not transient heat:
+either the Afterburner restore did not fully apply (core/PL) or the card sits in a different boost/driver state. Treat it
+as "stock but limited/warm": the flare A/B must be **interleaved in one session** (stock/flare/stock/flare), and absolute
+numbers carry that label. The earlier stock point stays historical.
+
+**Draw-order measurement (`GT4_CORE2_FLARE_TRACE`, marker in `hw_flare_job.hpp`, jobs flagged in
+`post_table_patches`):** the marked job is **not** a small per-light job. It carries **6 batches, 10 / 60 / 14 / 60 / 42 /
+62 primitives** (rects spanning the screen, e.g. 0,0..639,447 and 354,113..579,414), i.e. the whole VIF1 chain for the
+frame contains the table REF; the two flare sprites are 2 of ~258 primitives in it. The recorded S4 design assumed one
+job per light, so **a per-job or per-draw-index factor is not well defined**.
+
+**The exact gate (next, ~1 d):** mark at the **VU1 program invocation** level, not the job. In `walk_vif_batch` the worker
+can see the MSCAL (0x14) that follows each flare REF; it must post a `FlareLight{index}` record into the output ring
+before that invocation's PATH1 records, and the renderer tags the batches after it (until the next marker) with that light
+index. Then the variant is as planned (REF qword 0xFF, table word per light, the draw samples the 64x8 target and
+multiplies the flare's colour or alpha). No per-vertex design is needed, and the forced-word measurement already bounds the
+picture gate to the two sprites (117 px each).
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

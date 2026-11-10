@@ -28,6 +28,7 @@
 #include "core2_upload.hpp"
 #include "hw_batch.hpp"
 #include "hw_clut.hpp"
+#include "hw_flare_job.hpp"
 #include "hw_front_end.hpp"
 #include "hw_gs_display.hpp"
 #include "hw_gs_registers.hpp"
@@ -4289,6 +4290,29 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (t.paletteSegmentsUnsupported) {  // TASK-168: every memory texture of this core goes through the GLM
             Fail("TASK-168: a batch with palette segments reached a texture path with one palette");
             return;
+        }
+        // TASK-215 S4 diagnostic (GT4_CORE2_FLARE_TRACE=<n>): the flare job's batches in draw order with their rectangles,
+        // so the job's draw index can be matched to the table word (the forced-word frames give each word's sprite).
+        {
+            static const long trace = [] {
+                const char *text = std::getenv("GT4_CORE2_FLARE_TRACE");
+                return text != nullptr ? std::atol(text) : -1L;
+            }();
+            static long printed = 0;
+            static long index = 0;
+            const bool flare = gt4::hw::g_flare_job_active.load(std::memory_order_relaxed);
+            if (flare && trace > 0 && printed < trace) {
+                const PixelRect r = t.draws.empty()
+                                        ? PixelRect{}
+                                        : PixelRect{t.draws.front().x0, t.draws.front().y0, t.draws.front().x1,
+                                                    t.draws.front().y1};
+                std::fprintf(stderr,
+                             "[core2] flare batch index=%ld prims=%zu draws=%zu rect=%d,%d..%d,%d first=%d,%d..%d,%d\n",
+                             index, batch.prims.size(), t.draws.size(), t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1,
+                             r.x0, r.y0, r.x1, r.y1);
+                ++printed;
+            }
+            index = flare ? index + 1 : 0;
         }
         if (t.skippedTexture) {
             counters.batchesSkippedTexture++;

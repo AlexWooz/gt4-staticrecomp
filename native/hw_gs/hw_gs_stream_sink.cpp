@@ -13,6 +13,7 @@
 #include "thread_placement.hpp"
 #include "hw_cpu_sampler.hpp"
 #include "hw_flare_table.hpp"
+#include "hw_flare_job.hpp"
 #include "hw_present_spacing.hpp"
 #include "../pacing.hpp"
 #include "hw_gs_backend.hpp"
@@ -36,6 +37,8 @@
 #include <thread>
 #include <vector>
 
+// TASK-215 S4 diagnostic (hw_flare_job.hpp): the sink writes g_flare_job_active around a flare job's GIF records; the
+// renderer defines it (hw_flare_job.cpp is not needed: core2_renderer.cpp carries the definition).
 namespace gt4::hw {
 namespace {
 
@@ -870,6 +873,8 @@ private:
   // ring's bell while the VU1 worker has not published the next record; the backend lock is taken per record, never
   // while sleeping. Returns the ticks spent waiting for the VU1 worker.
   std::uint64_t execute_mtvu_job(std::uint64_t job) {
+    // TASK-215 S4 diagnostic: is this the job whose VIF packet copied the flare visibility table?
+    gt4::hw::g_flare_job_active.store(gt4::hw::is_flare_job(job), std::memory_order_relaxed);
     std::uint64_t waited = 0;
     for (;;) {
       mtvu::RecordHeader record;
@@ -895,6 +900,7 @@ private:
       if (kind == mtvu::RecordKind::JobDone) {
         mtvuOutput_->release();
         add(g_transport.mtvu_jobs, 1);
+        gt4::hw::g_flare_job_active.store(false, std::memory_order_relaxed);
         return waited;
       }
       {
