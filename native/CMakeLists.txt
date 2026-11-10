@@ -487,7 +487,8 @@ target_compile_definitions(gt4_gs_stream_client INTERFACE GT4_GS_STREAM_CLIENT)
 add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_chain.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
-    coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp)
+    coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp
+    coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
@@ -498,9 +499,11 @@ if(GT4_HW_GS)
     add_subdirectory(hw_gs)
     # TASK-090 CoreGS 3.0: the native car-texture decoder (native/coregs3/coregs3_texture.cpp) reuses the HWR local
     # memory, CLUT and replacement pieces. Those libraries exist only in a GT4_HW_GS build, so the unit joins
-    # gt4_coregs3 only here; the decoder's fixture and tool below are added under the same condition.
-    target_sources(gt4_coregs3 PRIVATE coregs3/coregs3_texture.cpp)
+    # gt4_coregs3 only here; the decoder's fixture and tool below are added under the same condition. The per-frame
+    # texture table (coregs3_texture_frame.cpp) calls the decoder and is guarded by the same condition and define.
+    target_sources(gt4_coregs3 PRIVATE coregs3/coregs3_texture.cpp coregs3/coregs3_texture_frame.cpp)
     target_link_libraries(gt4_coregs3 PUBLIC gt4_hw_core hw_gs_replace)
+    target_compile_definitions(gt4_coregs3 PUBLIC GT4_COREGS3_TEXTURES)
     target_link_libraries(gt4_gs_stream_client PUBLIC gt4_hw_stream_sink)
     target_compile_definitions(gt4_gs_stream_client PRIVATE GT4_GS_STREAM_HW)
 endif()
@@ -1120,6 +1123,13 @@ add_executable(coregs3_texture_fixture coregs3/coregs3_texture_fixture.cpp)
 target_link_libraries(coregs3_texture_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_texture_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_texture COMMAND $<TARGET_FILE:coregs3_texture_fixture>)
+# TASK-090 texture milestone: the measured car-pass sampler (coregs3_sampler.hpp) on hand-authored T4/T8/CT32 textures
+# and UVs (MODULATE exact 8-bit, linear/nearest, the four wrap modes, alpha test pass/fail with KEEP, normal/additive
+# blends, FBMSK) plus a render integration test with a hand-authored textured quad.
+add_executable(coregs3_sampler_fixture coregs3/coregs3_sampler_fixture.cpp)
+target_link_libraries(coregs3_sampler_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_sampler_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_sampler COMMAND $<TARGET_FILE:coregs3_sampler_fixture>)
 # TASK-090 CoreGS 3.0: the native car-texture decoder (native/coregs3/coregs3_texture.cpp) needs the HWR memory, CLUT
 # and replacement libraries, so its fixture and offline tool exist only in a GT4_HW_GS build.
 if(GT4_HW_GS)

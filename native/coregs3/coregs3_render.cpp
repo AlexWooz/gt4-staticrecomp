@@ -15,6 +15,8 @@ namespace {
 struct ClipVertex {
   float x = 0, y = 0, w = 0;  // screen position and view depth (1/w is the perspective weight)
   float r = 1, g = 1, b = 1, a = 1;
+  float u = 0, v = 0;   // model UV (perspective-correct interpolation; the VU1's Q cancels in S/Q)
+  bool has_uv = false;
   bool valid = false;
 };
 
@@ -38,6 +40,9 @@ ClipVertex project(const MeshVertex &vertex, const DrawMatrix &matrix, const Ren
   out.g = vertex.color[1] / 255.0f;
   out.b = vertex.color[2] / 255.0f;
   out.a = vertex.color[3] / 255.0f;
+  out.u = vertex.uv[0];
+  out.v = vertex.uv[1];
+  out.has_uv = vertex.has_uv;
   out.valid = std::isfinite(out.x) && std::isfinite(out.y);
   return out;
 }
@@ -102,8 +107,9 @@ void draw_points(const Mesh &mesh, const std::vector<ClipVertex> &projected, con
 }
 
 void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVertex &c, const RenderOptions &options,
-                        float flat_r, float flat_g, float flat_b, std::vector<std::uint8_t> &rgba,
-                        std::vector<std::uint8_t> &mask, std::vector<float> &depth, RenderStats &stats) {
+                        float flat_r, float flat_g, float flat_b, const TextureBinding *binding,
+                        std::vector<std::uint8_t> &rgba, std::vector<std::uint8_t> &mask, std::vector<float> &depth,
+                        RenderStats &stats, std::vector<std::uint8_t> *textured_mask) {
   const std::uint32_t width = options.width, height = options.height;
   const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
   if (area == 0.0f) return;
@@ -117,6 +123,8 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
     stats.triangles_clipped += 1;
     return;
   }
+  // The measured sampler path needs the model UV on every corner. An item whose channel has no UV keeps the lit colour.
+  const bool can_sample = binding != nullptr && binding->texture != nullptr && a.has_uv && b.has_uv && c.has_uv;
   bool drew = false;
   const float inv_area = 1.0f / area;
   for (int y = min_y; y <= max_y; ++y) {
@@ -129,24 +137,87 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
       // e0 (across A-B) weighs C, e1 (across B-C) weighs A, e2 (across C-A) weighs B.
       const float alpha = w1, beta = w2, gamma = w0;
+      const std::size_t pixel = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);
+      if (can_sample && textured_mask != nullptr) (*textured_mask)[pixel] = 1;
       // Perspective-correct view depth at the pixel.
       const float inv_w = alpha / a.w + beta / b.w + gamma / c.w;
       if (!(inv_w > 0.0f)) continue;
       const float depth_value = 1.0f / inv_w;
-      const std::size_t pixel = static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x);
       // The GS tests with GEQUAL against a reversed Z: a later primitive wins at equal depth, which is what keeps the
       // overlapping parts of one car from z-fighting in the offline picture.
       if (options.depth_test && !(depth_value <= depth[pixel])) continue;
       // The GS interpolates Gouraud colours linearly in screen space; perspective correction is only for the texture
-      // coordinates (STQ), which this reference does not use yet.
+      // coordinates (STQ).
       const float red = options.flat_shading ? flat_r : alpha * a.r + beta * b.r + gamma * c.r;
       const float green = options.flat_shading ? flat_g : alpha * a.g + beta * b.g + gamma * c.g;
       const float blue = options.flat_shading ? flat_b : alpha * a.b + beta * b.b + gamma * c.b;
-      depth[pixel] = depth_value;
-      rgba[pixel * 4 + 0] = clamp_level(red);
-      rgba[pixel * 4 + 1] = clamp_level(green);
-      rgba[pixel * 4 + 2] = clamp_level(blue);
-      rgba[pixel * 4 + 3] = 255;
+      // The vertex alpha feeds MODULATE (the GS texture function reads C's alpha). The untextured branch below still
+      // writes the opaque alpha the pre-texture picture always had.
+      const float vertex_alpha = options.flat_shading ? c.a : alpha * a.a + beta * b.a + gamma * c.a;
+      std::array<std::uint8_t, 4> fragment{clamp_level(red), clamp_level(green), clamp_level(blue),
+                                           clamp_level(vertex_alpha)};
+      bool textured = false;
+      bool depth_masked = false;
+      if (can_sample) {
+        const SampleState &state = binding->state;
+        // The model UV interpolates with 1/w like the view depth; the VU1's constant Q cancels in S/Q.
+        const float u = (alpha * a.u / a.w + beta * b.u / b.w + gamma * c.u / c.w) / inv_w;
+        const float v = (alpha * a.v / a.w + beta * b.v / b.w + gamma * c.v / c.w) / inv_w;
+        std::array<std::uint8_t, 4> sampled;
+        if (sample_texture(*binding->texture, u, v, fragment, sampled) != SampleStatus::ok) {
+          // A per-pixel refusal (a wrapped texel outside the decoded rectangle): keep the lit colour and count it. The
+          // static state was validated before rasterising, so nothing else can reach this branch.
+          stats.sample_refused_pixels += 1;
+        } else {
+          fragment = sampled;
+          textured = true;
+          stats.textured_pixels += 1;
+          // Alpha test before the depth test: AFAIL KEEP writes neither colour nor depth.
+          const AlphaTestResult test = alpha_test(state.test, fragment[3]);
+          if (test == AlphaTestResult::fail) {
+            stats.alpha_test_failed += 1;
+            continue;
+          }
+          if (test != AlphaTestResult::pass) {
+            stats.sample_refused_pixels += 1;
+            continue;
+          }
+          if (prim_blend_enabled(state.prim)) {
+            const BlendFamily family = blend_family(state.alpha);
+            if (family == BlendFamily::other) {
+              stats.sample_refused_pixels += 1;
+              continue;
+            }
+            const std::array<std::uint8_t, 4> destination{rgba[pixel * 4 + 0], rgba[pixel * 4 + 1],
+                                                          rgba[pixel * 4 + 2], rgba[pixel * 4 + 3]};
+            std::array<std::uint8_t, 4> blended;
+            blend_fragment(decode_blend_equation(state.alpha), fragment, destination, blended);
+            fragment = blended;
+            stats.blended_pixels += 1;
+            if (family == BlendFamily::additive) stats.additive_pixels += 1;
+          }
+          if (state.fbmsk != 0) {
+            for (std::uint32_t lane = 0; lane < 4; ++lane) {
+              const std::uint32_t keep = (state.fbmsk >> (8u * lane)) & 0xFFu;
+              fragment[lane] = static_cast<std::uint8_t>((rgba[pixel * 4 + lane] & keep) |
+                                                         (fragment[lane] & ~keep));
+            }
+            stats.fbmsk_pixels += 1;
+          }
+          depth_masked = state.zmsk != 0;
+          if (depth_masked) stats.depth_masked_pixels += 1;
+        }
+      }
+      if (!depth_masked) depth[pixel] = depth_value;
+      if (!textured) {
+        // The pre-texture picture: the lit/base colour with an opaque alpha, byte for byte as before this milestone.
+        rgba[pixel * 4 + 0] = clamp_level(red);
+        rgba[pixel * 4 + 1] = clamp_level(green);
+        rgba[pixel * 4 + 2] = clamp_level(blue);
+        rgba[pixel * 4 + 3] = 255;
+      } else {
+        for (std::uint32_t lane = 0; lane < 4; ++lane) rgba[pixel * 4 + lane] = fragment[lane];
+      }
       mask[pixel] = 1;
       drew = true;
     }
@@ -211,15 +282,19 @@ void rasterise_projected(const Mesh &mesh, const std::vector<ClipVertex> &projec
     float red = 1.0f, green = 1.0f, blue = 1.0f;
     flat_color(mesh, matrix, options, mesh.indices[index + 0], mesh.indices[index + 1], mesh.indices[index + 2], red,
                green, blue);
-    rasterise_triangle(a, b, c, options, red, green, blue, rgba, mask, depth, stats);
+    // The object-space diagnostic is a geometry view: it never samples the frame's texture table.
+    rasterise_triangle(a, b, c, options, red, green, blue, nullptr, rgba, mask, depth, stats, nullptr);
   }
 }
 
-// Clip-space vertex with the attributes the rasteriser interpolates across a clip. Only the near plane (w) and the
-// colours need to be kept: clipping creates new vertices along a model-space edge, where every attribute is linear.
+// Clip-space vertex with the attributes the rasteriser interpolates across a clip. Only the near plane (w), the
+// colours and the model UV need to be kept: clipping creates new vertices along a model-space edge, where every
+// attribute is linear.
 struct ClipVertexIn {
   ClipPosition clip;
   float r = 1, g = 1, b = 1, a = 1;
+  float u = 0, v = 0;
+  bool has_uv = false;
 };
 
 // Cuts a triangle against clip.w >= kMinClipW (Sutherland-Hodgman on one plane). Returns 3 or 4 vertices, or 0 when
@@ -245,6 +320,9 @@ std::size_t clip_near_plane(const ClipVertexIn in[3], ClipVertexIn out[4]) noexc
       cut.g = current.g + (next.g - current.g) * t;
       cut.b = current.b + (next.b - current.b) * t;
       cut.a = current.a + (next.a - current.a) * t;
+      cut.u = current.u + (next.u - current.u) * t;
+      cut.v = current.v + (next.v - current.v) * t;
+      cut.has_uv = current.has_uv && next.has_uv;
       out[count++] = cut;
     }
   }
@@ -291,8 +369,9 @@ void apply_lighting(const CapturedDraw &draw, Mesh &mesh, const RenderOptions &o
 // The screen path: the measured VU1 transform (coregs3_vertex.hpp) followed by clip-space rejection and near-plane
 // clipping. No 12.4 wrapped coordinate exists anywhere in this path, so the rasteriser can only see a true projection.
 void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const RenderOptions &options,
-                          std::vector<std::uint8_t> &rgba, std::vector<std::uint8_t> &mask,
-                          std::vector<float> &depth, RenderStats &stats) {
+                          const std::vector<TextureBinding> *bindings, std::vector<std::uint8_t> &rgba,
+                          std::vector<std::uint8_t> &mask, std::vector<float> &depth, RenderStats &stats,
+                          std::vector<std::uint8_t> *textured_mask) {
   const float width = static_cast<float>(options.width);
   const float height = static_cast<float>(options.height);
   std::vector<ProjectionResult> projected(mesh.vertices.size());
@@ -321,6 +400,9 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
       point.g = source.color[1] / 255.0f;
       point.b = source.color[2] / 255.0f;
       point.a = source.color[3] / 255.0f;
+      point.u = source.uv[0];
+      point.v = source.uv[1];
+      point.has_uv = source.has_uv;
       point.valid = true;
     }
     draw_points(mesh, points, options, rgba, mask, depth, stats);
@@ -355,14 +437,23 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
     input[0].g = va.color[1] / 255.0f;
     input[0].b = va.color[2] / 255.0f;
     input[0].a = va.color[3] / 255.0f;
+    input[0].u = va.uv[0];
+    input[0].v = va.uv[1];
+    input[0].has_uv = va.has_uv;
     input[1].r = vb.color[0] / 255.0f;
     input[1].g = vb.color[1] / 255.0f;
     input[1].b = vb.color[2] / 255.0f;
     input[1].a = vb.color[3] / 255.0f;
+    input[1].u = vb.uv[0];
+    input[1].v = vb.uv[1];
+    input[1].has_uv = vb.has_uv;
     input[2].r = vc.color[0] / 255.0f;
     input[2].g = vc.color[1] / 255.0f;
     input[2].b = vc.color[2] / 255.0f;
     input[2].a = vc.color[3] / 255.0f;
+    input[2].u = vc.uv[0];
+    input[2].v = vc.uv[1];
+    input[2].has_uv = vc.has_uv;
     ClipVertexIn polygon[4];
     const std::size_t count = clip_near_plane(input, polygon);
     if (count < 3) {
@@ -385,6 +476,9 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
       screen[corner].g = polygon[corner].g;
       screen[corner].b = polygon[corner].b;
       screen[corner].a = polygon[corner].a;
+      screen[corner].u = polygon[corner].u;
+      screen[corner].v = polygon[corner].v;
+      screen[corner].has_uv = polygon[corner].has_uv;
       screen[corner].valid = true;
     }
     if (!projectable) {
@@ -393,9 +487,16 @@ void rasterise_clip_space(const Mesh &mesh, const DrawMatrix &matrix, const Rend
     }
     float red = 1.0f, green = 1.0f, blue = 1.0f;
     flat_color(mesh, matrix, options, ia, ib, ic, red, green, blue);
+    // The item of the triangle's first vertex selects its texture binding. A mesh never mixes items inside a triangle
+    // (the strip tables partition per item), so one lookup is exact.
+    const TextureBinding *binding = nullptr;
+    if (bindings != nullptr) {
+      const std::uint32_t item = mesh.vertices[ia].item;
+      if (item < bindings->size()) binding = &(*bindings)[item];
+    }
     for (std::size_t corner = 1; corner + 1 < count; ++corner)
-      rasterise_triangle(screen[0], screen[corner], screen[corner + 1], options, red, green, blue, rgba, mask, depth,
-                         stats);
+      rasterise_triangle(screen[0], screen[corner], screen[corner + 1], options, red, green, blue, binding, rgba, mask,
+                         depth, stats, textured_mask);
   }
 }
 
@@ -428,12 +529,14 @@ DrawMatrix draw_matrix(const CapturedDraw &draw) {
 }
 
 bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std::vector<std::uint8_t> &rgba,
-                  std::vector<std::uint8_t> &mask, RenderStats &stats, std::string &error) {
+                  std::vector<std::uint8_t> &mask, RenderStats &stats, std::string &error,
+                  std::vector<std::uint8_t> *textured_mask) {
   (void)error;
   const std::uint32_t width = options.width, height = options.height;
   if (width == 0 || height == 0) return false;
   rgba.assign(static_cast<std::size_t>(width) * height * 4u, 0);
   mask.assign(static_cast<std::size_t>(width) * height, 0);
+  if (textured_mask != nullptr) textured_mask->assign(static_cast<std::size_t>(width) * height, 0);
   for (std::size_t index = 0; index < static_cast<std::size_t>(width) * height; ++index) {
     rgba[index * 4 + 0] = options.background[0];
     rgba[index * 4 + 1] = options.background[1];
@@ -509,7 +612,8 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
     return true;
   }
 
-  for (const CapturedDraw &draw : frame.draws) {
+  for (std::size_t draw_index = 0; draw_index < frame.draws.size(); ++draw_index) {
+    const CapturedDraw &draw = frame.draws[draw_index];
     stats.draws += 1;
     const DrawMatrix matrix = draw_matrix(draw);
     if (!matrix.valid) {
@@ -528,7 +632,63 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
     stats.shapes_drawn += 1;
     stats.vertices += static_cast<std::uint32_t>(mesh.vertices.size());
     apply_lighting(draw, mesh, options, stats);
-    rasterise_clip_space(mesh, matrix, options, rgba, mask, depth, stats);
+    // Resolve and statically validate the draw's texture bindings. A binding outside the measured subset keeps the lit
+    // colour and is counted; the rasteriser only sees a binding whose texture it may sample.
+    std::vector<TextureBinding> usable;
+    const std::vector<TextureBinding> *bindings = nullptr;
+    if (options.textures != nullptr) {
+      const std::vector<TextureBinding> *source = options.textures->for_draw(draw.sequence);
+      if (source != nullptr) {
+        usable = *source;
+        std::vector<bool> present(draw.item_count, false);
+        for (const MeshVertex &vertex : mesh.vertices)
+          if (vertex.item < present.size()) present[vertex.item] = true;
+        for (std::uint32_t item = 0; item < usable.size(); ++item) {
+          if (!present[item]) continue;
+          switch (check_binding(usable[item])) {
+            case BindingStatus::ok: stats.items_textured += 1; break;
+            case BindingStatus::no_texture: stats.items_untextured += 1; break;
+            case BindingStatus::refused_psm:
+              usable[item].texture = nullptr;
+              stats.items_refused_psm += 1;
+              stats.items_untextured += 1;
+              break;
+            case BindingStatus::refused_tfx:
+              usable[item].texture = nullptr;
+              stats.items_refused_tfx += 1;
+              stats.items_untextured += 1;
+              break;
+            case BindingStatus::refused_filter:
+              usable[item].texture = nullptr;
+              stats.items_refused_filter += 1;
+              stats.items_untextured += 1;
+              break;
+            case BindingStatus::refused_mip:
+              usable[item].texture = nullptr;
+              stats.items_refused_mip += 1;
+              stats.items_untextured += 1;
+              break;
+            case BindingStatus::refused_blend:
+              usable[item].texture = nullptr;
+              stats.items_refused_blend += 1;
+              stats.items_untextured += 1;
+              break;
+            case BindingStatus::refused_date:
+              usable[item].texture = nullptr;
+              stats.items_refused_date += 1;
+              stats.items_untextured += 1;
+              break;
+            case BindingStatus::refused_alpha_fail:
+              usable[item].texture = nullptr;
+              stats.items_refused_alpha_fail += 1;
+              stats.items_untextured += 1;
+              break;
+          }
+        }
+        bindings = &usable;
+      }
+    }
+    rasterise_clip_space(mesh, matrix, options, bindings, rgba, mask, depth, stats, textured_mask);
   }
   for (std::uint8_t value : mask) stats.covered_pixels += value != 0 ? 1u : 0u;
   return true;

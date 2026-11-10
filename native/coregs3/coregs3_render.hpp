@@ -8,10 +8,12 @@
 //            scaled by the shape's `value` and by the position encoding's units), the measured per-item VU1 lighting
 //            programs (coregs3_lighting.hpp: each item's own TOPS+0xC9 block and ITOP selector, selected by
 //            `MeshVertex::item`), clip-space rejection and near-plane clipping of triangles, a perspective divide,
-//            a top-left rasteriser, a w-buffer (nearer wins), Gouraud vertex colours and perspective-correct UVs
-//   does not fog, texgen, textures, destination alpha, culling, the guard-band clip and back-face fill rules that the
-//            VU1 + GS pair applies. A picture from this tool is evidence of geometry, coverage and diffuse lighting, not
-//            of final fidelity.
+//            a top-left rasteriser, a w-buffer (nearer wins), Gouraud vertex colours, perspective-correct model UVs and
+//            the measured car-pass texture subset (coregs3_sampler.hpp: T4/T8/CT32 decode output, MODULATE, level 0,
+//            linear/nearest, the four wrap modes, the alpha test with AFAIL KEEP, the normal/additive blends and FBMSK)
+//   does not fog, texgen (the body/paint CT32 reflection ST is deferred, counted), destination alpha (DATE), culling,
+//            the guard-band clip and back-face fill rules that the VU1 + GS pair applies. A picture from this tool is
+//            evidence of geometry, coverage, diffuse lighting and the sampled car textures, not of final fidelity.
 #pragma once
 
 #include <cstdint>
@@ -19,6 +21,7 @@
 #include <vector>
 
 #include "coregs3_lighting.hpp"
+#include "coregs3_sampler.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
 #include "coregs3_vertex.hpp"
@@ -48,6 +51,10 @@ struct RenderOptions {
   bool object_space = false;
   float object_yaw = 35.0f;
   float object_pitch = 20.0f;
+  // The per-frame texture table (coregs3_sampler.hpp, built by coregs3_texture_frame.hpp). Null keeps the pre-texture
+  // picture. Items whose binding has no texture (body/paint texgen deferral, no record, no model UV, a refused decode
+  // or a state outside the measured subset) keep the lit/base colour and are counted in the stats.
+  const FrameTextureTable *textures = nullptr;
 };
 
 struct RenderStats {
@@ -68,6 +75,24 @@ struct RenderStats {
   std::uint32_t vertices_fallback = 0;
   LightCounters lighting;
   std::uint64_t covered_pixels = 0;
+  // The texture path (screen mode with a FrameTextureTable). An item is textured only when its binding passes the static
+  // checks; every other outcome keeps the lit colour and lands in one of the counted fields, never a silent default.
+  std::uint32_t items_textured = 0;
+  std::uint32_t items_untextured = 0;
+  std::uint32_t items_refused_tfx = 0;
+  std::uint32_t items_refused_filter = 0;
+  std::uint32_t items_refused_psm = 0;
+  std::uint32_t items_refused_mip = 0;
+  std::uint32_t items_refused_blend = 0;
+  std::uint32_t items_refused_date = 0;
+  std::uint32_t items_refused_alpha_fail = 0;
+  std::uint64_t textured_pixels = 0;
+  std::uint64_t sample_refused_pixels = 0;  // a per-pixel region refusal: the lit colour is kept and counted
+  std::uint64_t alpha_test_failed = 0;
+  std::uint64_t blended_pixels = 0;
+  std::uint64_t additive_pixels = 0;
+  std::uint64_t fbmsk_pixels = 0;
+  std::uint64_t depth_masked_pixels = 0;  // ZBUF.ZMSK = 1: the fragment wrote colour but not depth
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };
 
@@ -94,7 +119,11 @@ struct DrawMatrix {
 DrawMatrix draw_matrix(const CapturedDraw &draw);
 
 // Renders every captured draw of the frame into an RGBA8 image (top-down rows) and a coverage mask (1 byte per pixel).
+// `textured_mask`, when not null, receives one byte per pixel: 1 where a triangle of an item with an active texture
+// binding covers the pixel (the textured draws' mask the texture milestone compares in). It is geometric coverage of
+// those draws, before their depth test, so both the textured and untextured pictures use the same mask.
 bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std::vector<std::uint8_t> &rgba,
-                  std::vector<std::uint8_t> &mask, RenderStats &stats, std::string &error);
+                  std::vector<std::uint8_t> &mask, RenderStats &stats, std::string &error,
+                  std::vector<std::uint8_t> *textured_mask = nullptr);
 
 }  // namespace gt4::coregs3

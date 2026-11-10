@@ -21,6 +21,7 @@
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
 #include "coregs3_tap.hpp"
+#include "coregs3_tap_file.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -50,60 +51,12 @@ bool read_file(const char *path, std::vector<std::uint8_t> &data) {
   return ok;
 }
 
-struct TapRecord {
-  std::uint64_t job = 0;
-  std::uint64_t vblank = 0;
-  std::size_t offset = 0;
-  std::uint32_t bytes = 0;
-  std::uint32_t kind = kTapKindGif;
-  std::uint32_t address = 0;  // kind == source: the VIF packet's guest address
-  std::uint32_t qwc = 0;
-};
+// The tap file parse lives in gt4_coregs3 so the offline renderer's texture table and this tool share one reader.
+using TapRecord = TapFileRecord;
 
 bool load_tap(const char *path, std::vector<std::uint8_t> &data, std::vector<TapRecord> &records,
               std::string &error) {
-  if (!read_file(path, data)) {
-    error = "cannot open " + std::string(path);
-    return false;
-  }
-  if (data.size() < 16) {
-    error = "tap file is shorter than its header";
-    return false;
-  }
-  auto u32 = [&](std::size_t at) {
-    return static_cast<std::uint32_t>(data[at]) | (static_cast<std::uint32_t>(data[at + 1]) << 8) |
-           (static_cast<std::uint32_t>(data[at + 2]) << 16) | (static_cast<std::uint32_t>(data[at + 3]) << 24);
-  };
-  if (u32(0) != kTapMagic) {
-    error = "not a .gt4tap file (bad magic)";
-    return false;
-  }
-  if (u32(4) != kTapVersion) {
-    error = "unsupported tap version";
-    return false;
-  }
-  std::size_t at = 16;
-  while (at + 24 <= data.size()) {
-    const std::uint32_t bytes = u32(at);
-    TapRecord record;
-    record.bytes = bytes;
-    record.offset = at + 24;
-    for (int index = 0; index < 8; ++index) record.job |= static_cast<std::uint64_t>(data[at + 8 + index]) << (8 * index);
-    for (int index = 0; index < 8; ++index)
-      record.vblank |= static_cast<std::uint64_t>(data[at + 16 + index]) << (8 * index);
-    record.kind = u32(at + 4);
-    if (record.kind == kTapKindSource && bytes >= 8) {
-      record.address = u32(record.offset);
-      record.qwc = u32(record.offset + 4);
-    }
-    if (bytes > data.size() - record.offset) {
-      error = "record runs past the end of the tap";
-      return false;
-    }
-    records.push_back(record);
-    at = record.offset + bytes;
-  }
-  return true;
+  return read_tap_file(path, data, records, error);
 }
 
 void command_stats(const char *path) {
