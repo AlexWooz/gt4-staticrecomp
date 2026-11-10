@@ -56,6 +56,10 @@ inline constexpr Float32 kModelPositionUnitsPerMetre = 4096.0f;
 enum class PositionEncoding : std::uint8_t {
   integer_16 = 0,  // a V3-16 channel: signed 16-bit model units, stored by build_mesh as raw / 4096 metres
   float_32 = 1,    // a V3-32 channel: the stored float, which build_mesh uses as it stands
+  // TASK-090 track M1: the course/far_underlay position family. The guest data is a STROW seed plus signed 8/16-bit
+  // deltas accumulated in 32-bit VU1 lanes; build_mesh stores the full int32 lane (as a float and exactly) and the world
+  // renderer multiplies it by the captured upload columns, with no /4096 conversion.
+  integer_32 = 2,
 };
 const char *position_encoding_name(PositionEncoding encoding) noexcept;
 

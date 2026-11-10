@@ -45,6 +45,9 @@ struct SampledTexture {
   std::uint32_t tcc = 1;  // TEX0.TCC: texture alpha participates in MODULATE
   std::uint32_t tfx = 0;  // TEX0.TFX: MODULATE is 0 and the only measured function
   std::uint32_t mxl = 0;  // TEX1.MXL: level 0 only, so this must be 0
+  // TASK-090 track M1: the record's TEX1.MXL was above 0 and the world table decoded level 0 as a declared fallback. The
+  // sampler still samples level 0 (mxl is stored as 0); the flag lets the report count the fallback.
+  bool level0_mip_fallback = false;
   std::uint32_t mmag = 0; // TEX1.MMAG: 0 nearest, 1 linear
   std::uint32_t mmin = 0; // TEX1.MMIN: 0 nearest, 1 linear
   std::uint32_t wms = 0;  // CLAMP.WMS/WMT: 0 repeat, 1 clamp, 2 region clamp, 3 region repeat
@@ -81,6 +84,20 @@ struct SampleState {
   std::uint32_t zmsk = 0;   // ZBUF.ZMSK
   std::uint32_t prim = 0;   // PRIM in force at the item's first tapped vertex
   std::uint32_t fog_colour = 0;  // FOGCOL (R in bits 0-7, G 8-15, B 16-23); 0 = black, the measured reflection pass
+  // TASK-090 track M1: XYOFFSET_1/2 (0x18/0x19) in force at the item's first tapped vertex, when the tap carried it.
+  // The main-view course items measure 0x6C08/0x7208; the mirror-view items 0x7C08/0x7808 and 0x7C08/0x7C08. The tool
+  // uses this to select the main view and to count the exclusions; the renderer never needs it (the clip-space path is
+  // resolution independent).
+  std::uint64_t xyoffset = 0;
+  bool xyoffset_known = false;
+  // TASK-090 track M1: the state was not paired to a tapped vertex record but taken from the course pass's journal
+  // (the pass-begin GS shadow captured at the K7 marker). It is measured pass state, not a per-item record; the tool
+  // counts it so a reader can tell a paired item from a pass-defaulted one.
+  bool world_pass_default = false;
+  // TASK-090 track M1: the item's paired tapped record carried TEST = 0 (ZTST NEVER in the GS), i.e. it draws nothing.
+  // The course journal TEST then replaces the field for the rest of the item; this flag keeps the zero-test exclusion
+  // visible to the selection rule.
+  bool world_test_zero = false;
 };
 
 // The measured car-pass default state, used when no tap is supplied or a state record never wrote the field:
@@ -161,6 +178,9 @@ AlphaTestResult alpha_test(std::uint64_t test, std::uint32_t fragment_alpha) noe
 // The ATE/ATST/AREF/AFAIL part alone, for a caller that implements the destination alpha test (DATE) itself. The
 // reflection pass uses this: it evaluates DATE against the framebuffer alpha at the pixel.
 AlphaTestResult alpha_test_ignore_date(std::uint64_t test, std::uint32_t fragment_alpha) noexcept;
+// TASK-090 track M1: the ATE/ATST/AREF comparison alone (AFAIL ignored), for a caller that implements all four AFAIL
+// write modes itself. Returns pass or fail only.
+AlphaTestResult alpha_test_ate_only(std::uint64_t test, std::uint32_t fragment_alpha) noexcept;
 const char *alpha_test_result_name(AlphaTestResult result) noexcept;
 
 // Blend families the car pass measured. `normal` = A Cs, B Cd, C As, D Cd; `additive` = A Cs, B 0, C Ad, D Cd.
@@ -198,6 +218,12 @@ enum class BindingStatus : std::uint32_t {
 };
 const char *binding_status_name(BindingStatus status) noexcept;
 BindingStatus check_binding(const TextureBinding &binding) noexcept;
+
+// TASK-090 track M1: the world path's static checks. It differs from check_binding in two measured ways: the destination
+// alpha test (DATE) is implemented by the world rasteriser, so a DATE state is accepted; and any ALPHA equation the
+// selector model can evaluate is accepted (the sky's tapped `(Cs-Cd)*As+Cs` is outside the car pass's normal/additive
+// families). The texture, TFX, filter and mip subset is the same.
+BindingStatus check_world_binding(const TextureBinding &binding) noexcept;
 
 // Decodes FRAME.FBMSK from a FRAME register write (bits 32-63), for the table builder and the tests.
 std::uint32_t frame_fbmsk(std::uint64_t frame_register) noexcept;

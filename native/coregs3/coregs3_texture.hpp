@@ -108,6 +108,9 @@ struct DecodedTexture {
   std::string detail;  // the refusal reason in words, or the decoded state for a success
 
   TextureRecord record;
+  // TASK-090 track M1: TEX1.MXL was above 0 and the caller allowed the level-0 fallback (the world pass). The bytes are
+  // level 0 only; the flag is evidence for the report, never a silent substitution.
+  bool level0_mip_fallback = false;
   std::uint32_t width = 0;   // decoded rectangle (the CLAMP region when it is present, else the full size)
   std::uint32_t height = 0;
   std::uint32_t x0 = 0;      // top-left of the decoded rectangle in texture coordinates
@@ -130,5 +133,14 @@ struct DecodedTexture {
 // its available byte count (a shorter record is refused). Returns `out.status` (also returned).
 TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
                              DecodedTexture &out, std::string &error);
+
+// The decode options. Only the world pass (TASK-090 track M1) sets `level0_mip_fallback`: a record with TEX1.MXL above
+// zero is decoded at level 0 and the fact is recorded in DecodedTexture::level0_mip_fallback. The default refuses it,
+// exactly as the car pass did.
+struct TextureDecodeOptions {
+  bool level0_mip_fallback = false;
+};
+TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
+                             const TextureDecodeOptions &options, DecodedTexture &out, std::string &error);
 
 }  // namespace gt4::coregs3

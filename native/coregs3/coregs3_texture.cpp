@@ -277,6 +277,11 @@ const char *texture_status_name(TextureStatus status) noexcept {
 
 TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
                              DecodedTexture &out, std::string &error) {
+  return decode_texture(slm, record_bytes, size, TextureDecodeOptions{}, out, error);
+}
+
+TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
+                             const TextureDecodeOptions &options, DecodedTexture &out, std::string &error) {
   out = DecodedTexture{};
   if (!parse_texture_record(record_bytes, size, out.record, error)) {
     return refuse(out, error, TextureStatus::refused_record, error);
@@ -299,9 +304,14 @@ TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_byt
     return refuse(out, error, TextureStatus::refused_size, detail);
   }
   if (record.mxl != 0u) {
-    char detail[96];
-    std::snprintf(detail, sizeof detail, "TEX1.MXL %u: mip levels are not decoded", static_cast<unsigned>(record.mxl));
-    return refuse(out, error, TextureStatus::refused_state, detail);
+    if (!options.level0_mip_fallback) {
+      char detail[96];
+      std::snprintf(detail, sizeof detail, "TEX1.MXL %u: mip levels are not decoded",
+                    static_cast<unsigned>(record.mxl));
+      return refuse(out, error, TextureStatus::refused_state, detail);
+    }
+    // The world pass's declared fallback: decode level 0 (the base rectangle) and record that the record asked for mips.
+    out.level0_mip_fallback = true;
   }
 
   const bool indexed = is_indexed(record.psm);

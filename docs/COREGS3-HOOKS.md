@@ -1180,3 +1180,76 @@ the masks, `metrics.txt`, the reports).
 | Fixture `coregs3_reflection_fixture` | **ok**: hand-authored formula cases pinned against the AOT fragment, every formula/binding refusal, the fog mix, and a two-draw render integration (DATE/DATM, additive blend, ZBUF no-write, FBMSK) |
 | Build | full `GT4_HW_GS` candidate builds clean |
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,451,628 B |
+
+## 21. Round 22 (2026-11-10, branch `task/090-track-m1`): the world shape layout, the matrix source and the sky+road M1
+
+### 21.1 The VIF UNPACK sign rule and the course lane accumulation
+
+The course's V3-16 position channel is a delta chain: a STROW seed (the first vertex) plus signed 8/16-bit deltas
+accumulated in the VU1's 32-bit lanes under STMOD 2, and the course program runs ITOF0 on the whole lane, not the low
+halfword. The decoder now honors UNPACK bit 14 (the measured USN rule: **0 sign-extends the 8/16-bit element into the
+32-bit lane, 1 keeps it zero-widened**, 32-bit elements unaffected) before the MODE/STROW addition, records each
+command's USN bit and executing STMOD, and the world position family reads the full int32 lane. Evidence: the final
+course-transform fit (`build/analysis-coursetx/out/verify_final2.txt`: 470 items, 19,317 vertices, 99.99% within 1 px)
+and the new `native_coregs3_track` fixture.
+
+### 21.2 The descriptor and the world shape layout (C/H)
+
+Every item starts with a TOPS 0xC0 V3-32 descriptor: lane0 `0x8000 | vertex_count`, lane1 the per-shape selector, lane2
+`0x1412`. The world item path reads `count` vectors from qword 0 after the packet ran, because the position arrays tile
+VU1 memory contiguously:
+
+- a V3-8 write at qword 0 commits the STROW seed (the first vertex);
+- V3-8/V3-16/V3-32 arrays at TOPS 0x01..0x3F continue the list (measured course split: 1,022 items one array, 145 with
+  aux arrays, 46 with a V3-32 position array, 6 with no position);
+- the UV array tiles from qword 0x40 with the same count (V2-16 signed /4096 and V2-32 floats were fitted against the
+  tapped S/Q,T/Q to <1e-4; V2-8 is decoded as signed /16, Hypothesis);
+- the colour array is V4-8 at 0x80, or at 0xA0 for the A0 family; the strip table is the masked V1-8 write at 0x40 and
+  its bytes live in lane 3.
+
+The car pass keeps its own per-channel path; the two are separate branches and the car frames are byte-identical before
+and after the change.
+
+### 21.3 The 0xC1 matrix source per draw (C)
+
+The guest upload runs when `!obj->valid || obj->value != cmd->value`, evaluated on the K1 pre-call snapshot: `valid` is
+byte 3 of `pgl[0]`, `value` is `pgl[8]` (PGL +0x20). When it ran, the captured `matrix_packet` qwords 1..4 are the upload
+columns (already scaled by `value`); otherwise the VU1 keeps the carried block, which is the captured `vf24..27 * value`
+for a draw that did not rewrite VU0 (flag byte 0), or the last uploaded packet for a draw that did. The world renderer
+counts each source; a non-finite matrix refuses the draw. Selected frame: packet 9, vu0 116, last-packet 2, missing 0.
+
+### 21.4 The world item selection (C)
+
+Sky (2) and far underlay (3) are drawn whole. The course (5) keeps the main-view ITOP 0x80 items with tapped XYOFFSET
+`0x6C08/0x7208`; the 0x7C08/0x7808 and 0x7C08/0x7C08 items are the mirror/second view and are excluded with the
+unmeasured 0xB08/0xA0/0x1278 programs, items without a position and items without a tapped state. Every exclusion is
+counted (`coregs3_world.hpp`). Measured on VBlank 7398: sky 1/16/940, far underlay 3/9/378, course 123/1,192/61,173;
+excluded 0xB08 15, 0xA0 46, 0x1278 11, mirror 14, no-position 6, 7 empty draws; 37 items use the draw's last paired
+state or the course pass journal and are counted.
+
+### 21.5 The world renderer state (H)
+
+- **Sky.** Its captured matrix, tapped ABE/DATE, no fog; it is drawn as the background (no depth test/write) because its
+  separate skybox w is not comparable with the course's view depth (the GS far-plane equivalent).
+- **Course TEST/ALPHA.** The tap re-emits duplicate records of the same geometry with different TEST states; an exact-UV
+  match can land on the alpha-tested duplicate (TEST `0x5820D`, ATE GREATER 32) while the pass runs `0x5800E` (ATE off).
+  With the CT32 palette's alpha 0 that rejects the road the reference shows. The K7 pass journal supplies the course
+  TEST (and the per-item PRIM/FBMSK/ZMSK/fog stay per item); the journal TEST restores the road and matches the
+  no-alpha-test A/B exactly.
+- **Mips/filters.** A world record with TEX1.MXL > 0 is decoded at level 0 and its mixed mip filter (MMIN 2/3 vs MMAG)
+  samples level 0 nearest, both counted; the car path keeps its refusal. (The two unique course records that carried the
+  mixed filter also carried MXL > 0, so the measured frame reports two level-0 fallbacks and zero separate filter
+  fallbacks.)
+- **AFAIL.** All four write modes are implemented for world fragments (KEEP, FBONLY, ZBONLY, RGBONLY).
+
+### 21.6 Evidence and limits (H)
+
+`build/evidence-m1/`: fresh v5 ALL_DRAWS capture (VBlanks 7398-7402, `.gt4vram` 0x2BC0..0x3FFF, tap 7398-7406), the 3x
+world image and mask, the sky-only image/mask (the skybox covers the whole viewport), `--no-sky`/`--no-course` A/Bs,
+`world-metrics.json`, texture dumps, and the byte-identical car regression. Measured against the r13 reference frame
+07400: PSNR 20.36 dB, SSIM 0.6138, pct_bad 77.22%, mean |diff| 20.31, coverage 100% of the scene area, car spill 1.61%,
+luma 26.69 -> 31.20. The Hyp thresholds (24 dB / 0.75 / 10%) are missed: the course surfaces dominate (no-course
+13.68 dB), the decoded texture pages look like atlases, and many surfaces are brighter than the night reference. The
+capture's per-item texture record does not always equal the TEX0 the GS has in force at the draw (the external texture
+cursor), and some materials belong to the excluded programs or the EE post chain. M2 should resolve the external
+texture cursor per item before tightening the image gate.

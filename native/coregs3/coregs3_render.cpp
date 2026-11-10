@@ -26,12 +26,24 @@ struct ClipVertex {
   bool has_uv = false;
   // The reflection pass's per-vertex attributes: the pinned texgen S,T (perspective-correct, like the model UV) and
   // the tapped vertex fog (interpolated linearly, like the Gouraud colours). `has_reflection` is true when the renderer
-  // computed a coordinate for this vertex.
+  // computed a coordinate for this vertex. The world path (TASK-090 track M1) reuses `fog`/`has_fog` for its tapped
+  // per-vertex fog.
   float rs = 0, rt = 0;
   float fog = 255.0f;
+  bool has_fog = false;
   bool has_reflection = false;
   bool valid = false;
 };
+
+float float_bits(std::uint32_t bits) {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof value);
+  return value;
+}
+
+// TASK-090 track M1: the world matrix source rule lives in coregs3_render.hpp (WorldMatrixTracker) so the fixture can
+// test it directly; the renderer only consumes it.
+
 
 // The object-space path keeps its own row-major camera: it never uses the captured matrix, so it does not go through
 // the measured VU1 convention. The arithmetic is unchanged from the first offline pictures.
@@ -122,7 +134,8 @@ void draw_points(const Mesh &mesh, const std::vector<ClipVertex> &projected, con
 void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVertex &c, const RenderOptions &options,
                         float flat_r, float flat_g, float flat_b, const TextureBinding *binding,
                         std::vector<std::uint8_t> &rgba, std::vector<std::uint8_t> &mask, std::vector<float> &depth,
-                        RenderStats &stats, std::vector<std::uint8_t> *textured_mask) {
+                        RenderStats &stats, std::vector<std::uint8_t> *textured_mask, bool world, bool apply_fog,
+                        bool write_depth) {
   const std::uint32_t width = options.width, height = options.height;
   const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
   if (area == 0.0f) return;
@@ -157,8 +170,9 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
       if (!(inv_w > 0.0f)) continue;
       const float depth_value = 1.0f / inv_w;
       // The GS tests with GEQUAL against a reversed Z: a later primitive wins at equal depth, which is what keeps the
-      // overlapping parts of one car from z-fighting in the offline picture.
-      if (options.depth_test && !(depth_value <= depth[pixel])) continue;
+      // overlapping parts of one car from z-fighting in the offline picture. The sky pass writes no comparable depth
+      // (its own projection's w is not the course's view depth), so it neither tests nor writes depth here.
+      if (options.depth_test && write_depth && !(depth_value <= depth[pixel])) continue;
       // The GS interpolates Gouraud colours linearly in screen space; perspective correction is only for the texture
       // coordinates (STQ).
       const float red = options.flat_shading ? flat_r : alpha * a.r + beta * b.r + gamma * c.r;
@@ -185,29 +199,91 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
           fragment = sampled;
           textured = true;
           stats.textured_pixels += 1;
-          // Alpha test before the depth test: AFAIL KEEP writes neither colour nor depth.
-          const AlphaTestResult test = alpha_test(state.test, fragment[3]);
+          // The world path (TASK-090 track M1) applies the tapped per-vertex fog toward FOGCOL before the alpha test,
+          // exactly the GS pixel order the reflection pass uses. The sky pass's measured state has no fog and is
+          // skipped by the caller; a fragment whose item carried no tapped fog is counted and left unfogged.
+          if (world && apply_fog) {
+            if (a.has_fog && b.has_fog && c.has_fog) {
+              const float fog = alpha * a.fog + beta * b.fog + gamma * c.fog;
+              const std::uint32_t fog_level =
+                  fog <= 0.0f ? 0u : fog >= 255.0f ? 255u : static_cast<std::uint32_t>(fog + 0.5f);
+              fragment = apply_vertex_fog(fragment, fog_level, state.fog_colour);
+              stats.world_fog_pixels += 1;
+            } else {
+              stats.world_fog_missing += 1;
+            }
+          }
+          // Alpha test before the destination alpha test and the depth test: AFAIL KEEP writes neither colour nor
+          // depth. The world path evaluates DATE itself, so it uses the ATE/ATST/AREF part alone.
+          const AlphaTestResult test = world
+                                           ? (options.world_ignore_alpha_test ? AlphaTestResult::pass
+                                                                              : alpha_test_ate_only(state.test, fragment[3]))
+                                           : alpha_test(state.test, fragment[3]);
           if (test == AlphaTestResult::fail) {
             stats.alpha_test_failed += 1;
+            if (world) {
+              // The measured AFAIL modes of the selected course items (TEST bits 12-13): 1 FBONLY writes colour and
+              // keeps depth, 2 ZBONLY writes depth and keeps colour, 3 RGBONLY writes RGB and keeps the old alpha. The
+              // fail path bypasses the depth test, exactly the GS test order (alpha test before the Z test). Counted.
+              const std::uint32_t afail = static_cast<std::uint32_t>((state.test >> 12) & 3u);
+              if (afail == 2) {
+                depth[pixel] = depth_value;
+                stats.world_afail_depth += 1;
+                continue;
+              }
+              if (afail == 1 || afail == 3) {
+                if (afail == 3) fragment[3] = rgba[pixel * 4 + 3];
+                for (std::uint32_t lane = 0; lane < 4; ++lane) rgba[pixel * 4 + lane] = fragment[lane];
+                mask[pixel] = 1;
+                stats.world_afail_written += 1;
+                drew = true;
+                continue;
+              }
+            }
             continue;
           }
           if (test != AlphaTestResult::pass) {
             stats.sample_refused_pixels += 1;
             continue;
           }
-          if (prim_blend_enabled(state.prim)) {
-            const BlendFamily family = blend_family(state.alpha);
-            if (family == BlendFamily::other) {
-              stats.sample_refused_pixels += 1;
-              continue;
+          if (world) {
+            // Destination alpha test (TEST.DATE/DATM), against the framebuffer alpha of the selected draws. A pixel no
+            // selected draw has written carries the offline background's alpha; that is counted, never assumed.
+            const std::uint64_t test_register = state.test;
+            if (((test_register >> 14) & 1u) != 0) {
+              if (mask[pixel] == 0) stats.world_date_missing += 1;
+              const bool expected = ((test_register >> 15) & 1u) != 0;
+              const bool msb = (rgba[pixel * 4 + 3] & 0x80u) != 0;
+              if (msb != expected) {
+                stats.world_date_failed += 1;
+                continue;
+              }
             }
-            const std::array<std::uint8_t, 4> destination{rgba[pixel * 4 + 0], rgba[pixel * 4 + 1],
-                                                          rgba[pixel * 4 + 2], rgba[pixel * 4 + 3]};
-            std::array<std::uint8_t, 4> blended;
-            blend_fragment(decode_blend_equation(state.alpha), fragment, destination, blended);
-            fragment = blended;
-            stats.blended_pixels += 1;
-            if (family == BlendFamily::additive) stats.additive_pixels += 1;
+          }
+          if (prim_blend_enabled(state.prim)) {
+            if (world) {
+              // The tapped ABE equation, evaluated as the GS does; the sky's (A Cs, B Cd, C As, D Cs) form is outside
+              // the car pass's normal/additive families but inside blend_fragment's selector model.
+              const std::array<std::uint8_t, 4> destination{rgba[pixel * 4 + 0], rgba[pixel * 4 + 1],
+                                                            rgba[pixel * 4 + 2], rgba[pixel * 4 + 3]};
+              std::array<std::uint8_t, 4> blended;
+              blend_fragment(decode_blend_equation(state.alpha), fragment, destination, blended);
+              fragment = blended;
+              stats.world_blended_pixels += 1;
+            } else {
+              const BlendFamily family = blend_family(state.alpha);
+              if (family == BlendFamily::other) {
+                stats.sample_refused_pixels += 1;
+                continue;
+              }
+              const std::array<std::uint8_t, 4> destination{rgba[pixel * 4 + 0], rgba[pixel * 4 + 1],
+                                                            rgba[pixel * 4 + 2], rgba[pixel * 4 + 3]};
+              std::array<std::uint8_t, 4> blended;
+              blend_fragment(decode_blend_equation(state.alpha), fragment, destination, blended);
+              fragment = blended;
+              stats.blended_pixels += 1;
+              if (family == BlendFamily::additive) stats.additive_pixels += 1;
+            }
           }
           if (state.fbmsk != 0) {
             for (std::uint32_t lane = 0; lane < 4; ++lane) {
@@ -221,7 +297,7 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
           if (depth_masked) stats.depth_masked_pixels += 1;
         }
       }
-      if (!depth_masked) depth[pixel] = depth_value;
+      if (write_depth && !depth_masked) depth[pixel] = depth_value;
       if (!textured) {
         // The pre-texture picture: the lit/base colour with an opaque alpha, byte for byte as before this milestone.
         rgba[pixel * 4 + 0] = clamp_level(red);
@@ -431,7 +507,8 @@ void rasterise_projected(const Mesh &mesh, const std::vector<ClipVertex> &projec
     flat_color(mesh, matrix, options, mesh.indices[index + 0], mesh.indices[index + 1], mesh.indices[index + 2], red,
                green, blue);
     // The object-space diagnostic is a geometry view: it never samples the frame's texture table.
-    rasterise_triangle(a, b, c, options, red, green, blue, nullptr, rgba, mask, depth, stats, nullptr);
+    rasterise_triangle(a, b, c, options, red, green, blue, nullptr, rgba, mask, depth, stats, nullptr, false, false,
+                       true);
   }
 }
 
@@ -444,7 +521,8 @@ struct ClipVertexIn {
   float u = 0, v = 0;
   bool has_uv = false;
   float rs = 0, rt = 0;  // reflection texgen S,T (perspective attribute, interpolated like the model UV)
-  float fog = 255.0f;    // reflection vertex fog (linear, like the Gouraud colours)
+  float fog = 255.0f;    // reflection/world vertex fog (linear, like the Gouraud colours)
+  bool has_fog = false;
   bool has_reflection = false;
 };
 
@@ -477,6 +555,7 @@ std::size_t clip_near_plane(const ClipVertexIn in[3], ClipVertexIn out[4]) noexc
       cut.rs = current.rs + (next.rs - current.rs) * t;
       cut.rt = current.rt + (next.rt - current.rt) * t;
       cut.fog = current.fog + (next.fog - current.fog) * t;
+      cut.has_fog = current.has_fog && next.has_fog;
       cut.has_reflection = current.has_reflection && next.has_reflection;
       out[count++] = cut;
     }
@@ -543,13 +622,37 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
   std::vector<ProjectionResult> projected(mesh.vertices.size());
   for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
     const MeshVertex &vertex = mesh.vertices[index];
-    const ModelPosition position = {vertex.position[0], vertex.position[1], vertex.position[2]};
-    // The VU1 multiplies the raw 16-bit integer of a V3-16 channel and the stored float of a V3-32 channel; the metre
-    // column set for each encoding differs by kModelPositionUnitsPerMetre (coregs3_vertex.hpp).
-    const VertexColumns &columns =
-        mesh_position_encoding(vertex) == PositionEncoding::integer_16 ? matrix.integer_positions
-                                                                      : matrix.float_positions;
-    projected[index] = project_vertex(columns, position, width, height, options.flip_y);
+    ModelPosition position = {vertex.position[0], vertex.position[1], vertex.position[2]};
+    const VertexColumns *columns = nullptr;
+    if (options.world_pass) {
+      // TASK-090 track M1: the world path multiplies the vertex's captured units by the captured upload columns. A
+      // MODE 2 family carries the full int32 lane (the exact value ITOF0 converts); a V3-16 family without MODE 2
+      // carries the raw signed halfword; a V3-32 family carries the stored float.
+      switch (vertex.encoding) {
+      case PositionEncoding::integer_32:
+        if (vertex.has_lane_position)
+          position = {static_cast<float>(vertex.lane_position[0]), static_cast<float>(vertex.lane_position[1]),
+                      static_cast<float>(vertex.lane_position[2])};
+        stats.world_vertices_integer_32 += 1;
+        break;
+      case PositionEncoding::integer_16:
+        if (vertex.has_raw_position)
+          position = {static_cast<float>(vertex.raw_position[0]), static_cast<float>(vertex.raw_position[1]),
+                      static_cast<float>(vertex.raw_position[2])};
+        stats.world_vertices_integer_16 += 1;
+        break;
+      case PositionEncoding::float_32:
+        stats.world_vertices_float_32 += 1;
+        break;
+      }
+      columns = &matrix.upload;
+    } else {
+      // The car path: the VU1 multiplies the raw 16-bit integer of a V3-16 channel and the stored float of a V3-32
+      // channel; the metre column set for each encoding differs by kModelPositionUnitsPerMetre (coregs3_vertex.hpp).
+      columns = mesh_position_encoding(vertex) == PositionEncoding::integer_16 ? &matrix.integer_positions
+                                                                             : &matrix.float_positions;
+    }
+    projected[index] = project_vertex(*columns, position, width, height, options.flip_y);
   }
 
   if (options.points) {
@@ -581,13 +684,29 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
   std::vector<ReflectionVertex> reflection(mesh.vertices.size());
   std::vector<std::uint8_t> reflected;
   std::vector<std::uint32_t> first_vertex(draw.item_count, 0xFFFFFFFFu);
-  if (options.reflections && reflection_items != nullptr && bindings != nullptr) {
-    reflected = *reflection_items;
+  for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+    const std::uint32_t item = mesh.vertices[index].item;
+    if (item < first_vertex.size() && first_vertex[item] == 0xFFFFFFFFu)
+      first_vertex[item] = static_cast<std::uint32_t>(index);
+  }
+  // TASK-090 track M1: the world path's tapped per-vertex fog, indexed by the vertex's position inside its item (the
+  // tapped record emits one fog byte per vertex in the same order as the mesh's vertex list).
+  std::vector<float> world_fog(mesh.vertices.size(), 255.0f);
+  std::vector<std::uint8_t> world_fog_known(mesh.vertices.size(), 0);
+  if (options.world_pass && bindings != nullptr) {
     for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
       const std::uint32_t item = mesh.vertices[index].item;
-      if (item < first_vertex.size() && first_vertex[item] == 0xFFFFFFFFu)
-        first_vertex[item] = static_cast<std::uint32_t>(index);
+      if (item >= bindings->size() || item >= first_vertex.size()) continue;
+      const std::vector<std::uint8_t> &fog = (*bindings)[item].vertex_fog;
+      const std::uint32_t local = static_cast<std::uint32_t>(index) - first_vertex[item];
+      if (local < fog.size()) {
+        world_fog[index] = static_cast<float>(fog[local]);
+        world_fog_known[index] = 1;
+      }
     }
+  }
+  if (options.reflections && reflection_items != nullptr && bindings != nullptr) {
+    reflected = *reflection_items;
     for (std::uint32_t item = 0; item < reflected.size(); ++item) {
       if (reflected[item] == 0) continue;
       bool item_ok = true;
@@ -680,6 +799,14 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
       input[2].fog = reflection[ic].fog;
       input[2].has_reflection = true;
     }
+    if (options.world_pass) {
+      input[0].fog = world_fog[ia];
+      input[0].has_fog = world_fog_known[ia] != 0;
+      input[1].fog = world_fog[ib];
+      input[1].has_fog = world_fog_known[ib] != 0;
+      input[2].fog = world_fog[ic];
+      input[2].has_fog = world_fog_known[ic] != 0;
+    }
     ClipVertexIn polygon[4];
     const std::size_t count = clip_near_plane(input, polygon);
     if (count < 3) {
@@ -708,6 +835,7 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
       screen[corner].rs = polygon[corner].rs;
       screen[corner].rt = polygon[corner].rt;
       screen[corner].fog = polygon[corner].fog;
+      screen[corner].has_fog = polygon[corner].has_fog;
       screen[corner].has_reflection = polygon[corner].has_reflection;
       screen[corner].valid = true;
     }
@@ -728,9 +856,17 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
       if (reflection_pass && binding != nullptr)
         rasterise_reflection_triangle(screen[0], screen[corner], screen[corner + 1], options, *binding, rgba, mask,
                                       depth, stats, reflection_mask);
-      else
+      else {
+        // The sky pass's measured record has no fog; every other world draw applies the tapped per-vertex fog. The sky's
+        // own projection w is not comparable with the course's view depth (a separate skybox matrix), so it is drawn as
+        // the background: it writes no depth and the course always tests against the cleared depth, exactly the GS's
+        // far-plane sky equivalent (H, recorded in the report).
+        const bool apply_fog =
+            options.world_pass && !(options.world_sky_no_fog && draw.pass == kPassSky);
+        const bool write_depth = !(options.world_pass && draw.pass == kPassSky);
         rasterise_triangle(screen[0], screen[corner], screen[corner + 1], options, red, green, blue, binding, rgba,
-                           mask, depth, stats, textured_mask);
+                           mask, depth, stats, textured_mask, options.world_pass, apply_fog, write_depth);
+      }
     }
   }
 }
@@ -739,6 +875,59 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
 
 PositionEncoding mesh_position_encoding(const MeshVertex &vertex) noexcept {
   return vertex.has_raw_position ? PositionEncoding::integer_16 : PositionEncoding::float_32;
+}
+
+const char *world_matrix_source_name(WorldMatrixSource source) noexcept {
+  switch (source) {
+  case WorldMatrixSource::packet: return "packet";
+  case WorldMatrixSource::vu0: return "vu0";
+  case WorldMatrixSource::last_packet: return "last_packet";
+  default: return "missing";
+  }
+}
+
+WorldMatrixSource world_matrix_columns(const CapturedDraw &draw, bool has_last, const VertexColumns &last,
+                                       VertexColumns &columns) noexcept {
+  const float cmd_value = float_bits(draw.cmd_value);
+  const float pgl_value = float_bits(draw.pgl[8]);
+  const std::uint32_t valid_byte = (draw.pgl[0] >> 24) & 0xFFu;
+  const std::uint32_t flag_byte = draw.pgl[0] & 0xFFu;
+  const bool uploaded = valid_byte == 0 || pgl_value != cmd_value;
+  WorldMatrixSource source = WorldMatrixSource::missing;
+  if (uploaded) {
+    if (draw.matrix_packet_valid != 0) {
+      std::array<std::array<std::uint32_t, 4>, 4> raw{};
+      for (std::size_t column = 0; column < 4; ++column)
+        for (std::size_t lane = 0; lane < 4; ++lane) raw[column][lane] = draw.matrix_packet[1 + column][lane];
+      columns = vertex_columns_from_raw(raw);
+      source = WorldMatrixSource::packet;
+    } else {
+      columns = vertex_columns_from_vu0_upload(draw.vf, cmd_value);
+      source = WorldMatrixSource::vu0;
+    }
+  } else if (flag_byte == 0) {
+    // The draw did not rewrite the VU0 matrix, so the captured pre-call vf24..27 block is the carried block the VU1
+    // reads (the measured course draws 36..82). No upload ran, so the columns carry `value`.
+    columns = vertex_columns_from_vu0_upload(draw.vf, cmd_value);
+    source = WorldMatrixSource::vu0;
+  } else if (has_last) {
+    columns = last;
+    source = WorldMatrixSource::last_packet;
+  } else {
+    columns = vertex_columns_from_vu0_upload(draw.vf, cmd_value);
+    source = WorldMatrixSource::vu0;
+  }
+  if (!vertex_columns_finite(columns)) source = WorldMatrixSource::missing;
+  return source;
+}
+
+WorldMatrixSource WorldMatrixTracker::for_draw(const CapturedDraw &draw, VertexColumns &columns) {
+  const WorldMatrixSource source = world_matrix_columns(draw, has_last_, last_, columns);
+  if (source == WorldMatrixSource::packet) {
+    last_ = columns;
+    has_last_ = true;
+  }
+  return source;
 }
 
 DrawMatrix draw_matrix(const CapturedDraw &draw) {
@@ -786,6 +975,8 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
   mesh_options.position_scale = options.position_scale;
   mesh_options.topology = options.topology;
   mesh_options.max_edge = options.max_edge;
+  mesh_options.world_channels = options.world_pass;
+  WorldMatrixTracker world_tracker;
 
   if (options.object_space) {
     // Object-space mode: build every mesh first, frame the union of their vertices, and draw with that one matrix.
@@ -851,7 +1042,35 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
   for (std::size_t draw_index = 0; draw_index < frame.draws.size(); ++draw_index) {
     const CapturedDraw &draw = frame.draws[draw_index];
     stats.draws += 1;
-    const DrawMatrix matrix = draw_matrix(draw);
+    DrawMatrix matrix = draw_matrix(draw);
+    if (options.world_pass) {
+      // TASK-090 track M1: the selected world draws use the captured upload rule, not the car path's carried-vf
+      // transform. The source of each draw's matrix is counted; a draw with no usable matrix is refused, never guessed.
+      VertexColumns columns;
+      const WorldMatrixSource source = world_tracker.for_draw(draw, columns);
+      switch (source) {
+      case WorldMatrixSource::packet: stats.world_matrices_packet += 1; break;
+      case WorldMatrixSource::vu0: stats.world_matrices_vu0 += 1; break;
+      case WorldMatrixSource::last_packet: stats.world_matrices_last_packet += 1; break;
+      default: stats.world_matrices_missing += 1; break;
+      }
+      if (source == WorldMatrixSource::missing) {
+        stats.shapes_refused += 1;
+        if (stats.refusals.size() < 32)
+          stats.refusals.push_back("draw " + std::to_string(draw.sequence) + ": no world matrix");
+        continue;
+      }
+      matrix = DrawMatrix{};
+      matrix.upload = columns;
+      matrix.integer_positions = columns;
+      matrix.float_positions = columns;
+      const VertexRows rows = vertex_rows(columns);
+      for (std::uint32_t row = 0; row < 4; ++row)
+        for (std::uint32_t lane = 0; lane < 4; ++lane) matrix.row[row][lane] = rows[row][lane];
+      matrix.valid = true;
+      stats.world_draws += 1;
+      if (draw.pass == kPassSky) stats.world_sky_depth_background += 1;
+    }
     if (!matrix.valid) {
       stats.shapes_refused += 1;
       if (stats.refusals.size() < 32) stats.refusals.push_back("draw " + std::to_string(draw.sequence) + ": no matrix");
@@ -883,6 +1102,59 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
           if (vertex.item < present.size()) present[vertex.item] = true;
         for (std::uint32_t item = 0; item < usable.size(); ++item) {
           if (!present[item]) continue;
+          if (options.world_pass) {
+            // The world path's checks: DATE is implemented by the rasteriser and any evaluable ALPHA equation is applied.
+            switch (check_world_binding(usable[item])) {
+              case BindingStatus::ok: stats.items_textured += 1; break;
+              case BindingStatus::no_texture:
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+              case BindingStatus::refused_psm:
+                usable[item].texture = nullptr;
+                stats.items_refused_psm += 1;
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+              case BindingStatus::refused_tfx:
+                usable[item].texture = nullptr;
+                stats.items_refused_tfx += 1;
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+              case BindingStatus::refused_filter:
+                usable[item].texture = nullptr;
+                stats.items_refused_filter += 1;
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+              case BindingStatus::refused_mip:
+                usable[item].texture = nullptr;
+                stats.items_refused_mip += 1;
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+              case BindingStatus::refused_blend:
+                usable[item].texture = nullptr;
+                stats.items_refused_blend += 1;
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+              case BindingStatus::refused_date:
+                usable[item].texture = nullptr;
+                stats.items_refused_date += 1;
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+              case BindingStatus::refused_alpha_fail:
+                usable[item].texture = nullptr;
+                stats.items_refused_alpha_fail += 1;
+                stats.items_untextured += 1;
+                stats.world_items_untextured += 1;
+                break;
+            }
+            continue;
+          }
           // The body/paint reflection pass carries its own measured subset (coregs3_reflection.hpp): the destination
           // alpha test and the additive equation are implemented there, so it is validated separately and never by
           // check_binding (which refuses DATE).

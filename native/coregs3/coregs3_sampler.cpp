@@ -167,7 +167,12 @@ AlphaTestResult alpha_test(std::uint64_t test, std::uint32_t fragment_alpha) noe
 
 AlphaTestResult alpha_test_ignore_date(std::uint64_t test, std::uint32_t fragment_alpha) noexcept {
   if (bits(test, 0, 0) == 0u) return AlphaTestResult::pass;  // ATE off
-  if (bits(test, 12, 13) != 0u) return AlphaTestResult::refused_fail_mode;  // only AFAIL KEEP is reproduced
+  if (bits(test, 12, 13) != 0u) return AlphaTestResult::refused_fail_mode;  // only AFAIL KEEP is reproduced here
+  return alpha_test_ate_only(test, fragment_alpha);
+}
+
+AlphaTestResult alpha_test_ate_only(std::uint64_t test, std::uint32_t fragment_alpha) noexcept {
+  if (bits(test, 0, 0) == 0u) return AlphaTestResult::pass;  // ATE off
   const std::uint32_t reference = bits(test, 4, 11);
   const std::uint32_t alpha = fragment_alpha & 0xFFu;
   switch (bits(test, 1, 3)) {
@@ -255,6 +260,18 @@ BindingStatus check_binding(const TextureBinding &binding) noexcept {
     return BindingStatus::refused_alpha_fail;
   if (prim_blend_enabled(binding.state.prim) && blend_family(binding.state.alpha) == BlendFamily::other)
     return BindingStatus::refused_blend;
+  return BindingStatus::ok;
+}
+
+BindingStatus check_world_binding(const TextureBinding &binding) noexcept {
+  if (binding.texture == nullptr) return BindingStatus::no_texture;
+  const SampledTexture &texture = *binding.texture;
+  if (texture.psm != 0x14u && texture.psm != 0x13u && texture.psm != 0x00u) return BindingStatus::refused_psm;
+  if (texture.tfx != 0u) return BindingStatus::refused_tfx;
+  if (texture.mxl != 0u) return BindingStatus::refused_mip;
+  if (texture.mmag != texture.mmin || texture.mmag > 1u) return BindingStatus::refused_filter;
+  // DATE is implemented by the world rasteriser (destination alpha test against the framebuffer alpha), and all four
+  // AFAIL modes are implemented there (KEEP, FBONLY, ZBONLY, RGBONLY), so neither refuses the binding.
   return BindingStatus::ok;
 }
 

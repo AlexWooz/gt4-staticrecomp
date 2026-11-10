@@ -18,6 +18,13 @@
 //       colour (its CT32 environment map is sampled with VU1 texgen ST, a later task). --no-textured is the untextured
 //       A/B: the same frame with no texture table, byte-for-byte the pre-texture renderer.
 //
+//   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --vram <capture.gt4vram> --tap <capture.gt4tap>
+//                         --world [--no-sky] [--no-underlay] [--no-course] [--mask <pgm>] [--width W --height H]
+//       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3) and main-view
+//       course (5) draws/items, counts every exclusion, and renders them with the captured 0xC1 matrix (packet or
+//       carried), the tapped state and the level-0 mip/filter fallbacks. --no-sky/--no-underlay/--no-course are the
+//       evidence A/Bs; --world-no-alpha is a diagnostic that ignores the tapped ATE (never an acceptance mode).
+//
 //   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
 //       status) for the tap validation scripts.
@@ -28,6 +35,7 @@
 #include "coregs3_render.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
+#include "coregs3_world.hpp"
 #ifdef GT4_COREGS3_TEXTURES
 #include "coregs3_tap_file.hpp"
 #include "coregs3_texture.hpp"
@@ -39,6 +47,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -222,6 +231,122 @@ void print_channel_scan(const FrameSnapshot &frame) {
 
 }  // namespace
 
+#ifdef GT4_COREGS3_TEXTURES
+namespace {
+
+// TASK-090 track M1: the selected world passes and every exclusion, counted. The frame copy keeps the capture's packets
+// and records; excluded items are disabled by clearing their packet range (build_mesh skips an item with no packet), so
+// the original item indices, the texture table keys and the strip tables stay valid.
+struct WorldSelection {
+  FrameSnapshot frame;
+  std::uint32_t sky_draws = 0, sky_items = 0, sky_vertices = 0, sky_no_position = 0;
+  std::uint32_t underlay_draws = 0, underlay_items = 0, underlay_vertices = 0, underlay_no_position = 0;
+  std::uint32_t course_draws = 0, course_items = 0, course_vertices = 0;
+  std::uint32_t course_itop_other = 0;
+  std::uint32_t course_itop_b08 = 0;
+  std::uint32_t course_itop_a0 = 0;
+  std::uint32_t course_itop_1278 = 0;
+  std::uint32_t course_mirror = 0;
+  std::uint32_t course_no_state = 0;
+  std::uint32_t course_no_position = 0;
+  std::uint32_t course_uv_unverified = 0;
+  std::uint32_t course_draws_dropped = 0;
+};
+
+bool build_world_selection(const FrameSnapshot &frame, const FrameTextureTable &table, bool keep_sky,
+                           bool keep_underlay, bool keep_course, WorldSelection &selection, std::string &error) {
+  selection = WorldSelection{};
+  selection.frame = frame;
+  selection.frame.draws.clear();
+  selection.frame.draw_count = 0;
+  for (const CapturedDraw &draw : frame.draws) {
+    const bool is_sky = draw.pass == kPassSky;
+    const bool is_underlay = draw.pass == kPassFarUnderlay;
+    const bool is_course = draw.pass == kPassCourse;
+    if (!is_sky && !is_underlay && !is_course) continue;
+    if (is_sky && !keep_sky) continue;
+    if (is_underlay && !keep_underlay) continue;
+    if (is_course && !keep_course) continue;
+    CapturedDraw kept = draw;
+    const ChannelScan scan = scan_channels(frame.packets.data(), frame.packets.size(), draw, true);
+    const std::vector<TextureBinding> *bindings = table.for_draw(draw.sequence);
+    std::uint32_t kept_items = 0;
+    for (std::uint32_t item = 0; item < draw.item_count; ++item) {
+      const CapturedItem &source = draw.items[item];
+      WorldItemInput input;
+      input.pass = draw.pass;
+      input.run_valid = source.run_valid != 0;
+      input.dispatch = input.run_valid ? (source.run_itop & 0x3FFu) * 8u : 0u;
+      input.has_position = item < scan.items.size() && scan.items[item].has_position && source.packet_bytes != 0;
+      const SampleState *state = bindings != nullptr && item < bindings->size() ? &(*bindings)[item].state : nullptr;
+      if (state != nullptr) {
+        input.state_known = state->from_tap;
+        input.xyoffset_known = state->xyoffset_known;
+        input.xyoffset = state->xyoffset;
+        input.test_known = state->test_known;
+        input.test = state->test;
+        input.test_zero = state->world_test_zero;
+      }
+      const WorldExclusion exclusion = world_item_exclusion(input);
+      if (exclusion != WorldExclusion::none) {
+        switch (exclusion) {
+        case WorldExclusion::itop_b08: selection.course_itop_b08 += 1; break;
+        case WorldExclusion::itop_a0: selection.course_itop_a0 += 1; break;
+        case WorldExclusion::itop_1278: selection.course_itop_1278 += 1; break;
+        case WorldExclusion::itop_other: selection.course_itop_other += 1; break;
+        case WorldExclusion::mirror: selection.course_mirror += 1; break;
+        case WorldExclusion::no_state: selection.course_no_state += 1; break;
+        case WorldExclusion::no_position:
+          if (is_course) selection.course_no_position += 1;
+          else if (is_sky) selection.sky_no_position += 1;
+          else selection.underlay_no_position += 1;
+          break;
+        default: break;
+        }
+        kept.items[item].packet_bytes = 0;
+        kept.items[item].qwords = 0;
+        continue;
+      }
+      kept_items += 1;
+      const std::uint32_t vertices = item < scan.items.size() ? scan.items[item].descriptor_vertices : 0;
+      if (is_course) {
+        selection.course_items += 1;
+        selection.course_vertices += vertices;
+        if (state != nullptr && state->world_pass_default) selection.course_uv_unverified += 1;
+      } else if (is_sky) {
+        selection.sky_items += 1;
+        selection.sky_vertices += vertices;
+      } else {
+        selection.underlay_items += 1;
+        selection.underlay_vertices += vertices;
+      }
+    }
+    if (is_course) {
+      if (kept_items == 0) {
+        selection.course_draws_dropped += 1;
+        continue;
+      }
+      selection.course_draws += 1;
+    } else if (is_sky) {
+      if (kept_items == 0) continue;
+      selection.sky_draws += 1;
+    } else {
+      if (kept_items == 0) continue;
+      selection.underlay_draws += 1;
+    }
+    selection.frame.draws.push_back(kept);
+    selection.frame.draw_count = static_cast<std::uint32_t>(selection.frame.draws.size());
+  }
+  if (selection.frame.draws.empty()) {
+    error = "the world selection is empty";
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+#endif
+
 int main(int argc, char **argv) {
   if (argc < 2) {
     std::fprintf(stderr,
@@ -256,6 +381,10 @@ int main(int argc, char **argv) {
   bool no_textured = false;
   bool texture_body = false;
   bool no_reflection = false;
+  bool world = false;
+  bool world_keep_sky = true;
+  bool world_keep_underlay = true;
+  bool world_keep_course = true;
   int vram_vblank = -1;
   const char *reflection_mask_path = nullptr;
   RenderOptions options;
@@ -274,6 +403,11 @@ int main(int argc, char **argv) {
     else if (argument == "--no-textured") no_textured = true;
     else if (argument == "--texture-body") texture_body = true;
     else if (argument == "--no-reflection") no_reflection = true;
+    else if (argument == "--world") world = true;
+    else if (argument == "--no-sky") world_keep_sky = false;
+    else if (argument == "--no-underlay") world_keep_underlay = false;
+    else if (argument == "--no-course") world_keep_course = false;
+    else if (argument == "--world-no-alpha") options.world_ignore_alpha_test = true;
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
     else if (argument == "--report" && index + 1 < argc) report = argv[++index];
@@ -487,6 +621,7 @@ int main(int argc, char **argv) {
   // texture table. The sidecar record whose `vblank` is V covers the capture frame with `frame.vblank == V - 1`.
   FrameTextureTable texture_table;
   TextureFrameCounters texture_counters;
+  std::string world_report;  // the TASK-090 track M1 selection/exclusion/fallback lines, printed and written to --report
   if (vram_path != nullptr && !no_textured) {
     std::vector<VramRecord> vram_records;
     if (!read_vram_sidecar(vram_path, vram_records, error)) {
@@ -532,6 +667,7 @@ int main(int argc, char **argv) {
     texture_options.use_tap = tap_path != nullptr;
     texture_options.texture_body = texture_body;
     texture_options.reflections = !no_reflection;
+    texture_options.world_channels = world;
     if (!build_frame_texture_table(selected, slm, tap_path != nullptr ? tap_data.data() : nullptr, tap_records,
                                    texture_options, texture_table, texture_counters, error)) {
       std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
@@ -542,9 +678,104 @@ int main(int argc, char **argv) {
     textured = true;
   }
 #else
-  if (vram_path != nullptr) {
+  if (vram_path != nullptr || world) {
     std::fprintf(stderr, "gt4_coregs3_render: this build has no texture decoder (configure with GT4_HW_GS=ON)\n");
     return 1;
+  }
+#endif
+#ifdef GT4_COREGS3_TEXTURES
+  if (world) {
+    // TASK-090 track M1: the offline sky+road picture. The selected frame keeps only the sky, far-underlay and main-view
+    // course draws; every exclusion is counted, and the tap is required because the item state (XYOFFSET, TEST, TEX0)
+    // is part of the selection and of the measured GS state.
+    if (!textured || tap_path == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: --world needs --vram and --tap\n");
+      return 1;
+    }
+    WorldSelection selection;
+    if (!build_world_selection(selected, texture_table, world_keep_sky, world_keep_underlay, world_keep_course,
+                               selection, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    selected = std::move(selection.frame);
+    options.world_pass = true;
+    options.reflections = false;
+    // Count the selected items' texture bindings by the same static check the renderer will run, so the fallback counts
+    // in the report name the outcome per selected item (the renderer's own counters are per rendered draw as well).
+    std::uint32_t probe_textured = 0, probe_no_texture = 0, probe_no_record = 0, probe_refused_filter = 0;
+    std::uint32_t probe_refused_afail = 0, probe_refused_other = 0;
+    std::string probe_filter_detail;
+    std::map<std::uint64_t, std::uint32_t> probe_test_hist;
+    for (const CapturedDraw &draw : selected.draws) {
+      const std::vector<TextureBinding> *bindings = texture_table.for_draw(draw.sequence);
+      for (std::uint32_t item = 0; item < draw.item_count; ++item) {
+        if (draw.items[item].packet_bytes == 0) continue;
+        const TextureBinding *binding = bindings != nullptr && item < bindings->size() ? &(*bindings)[item] : nullptr;
+        if (binding == nullptr) {
+          probe_no_texture += 1;
+          continue;
+        }
+        probe_test_hist[binding->state.test & 0xFFFFFFFFu] += 1;
+        switch (check_world_binding(*binding)) {
+        case BindingStatus::ok: probe_textured += 1; break;
+        case BindingStatus::no_texture:
+          probe_no_texture += 1;
+          if (draw.items[item].texture_record == kNoRecord) probe_no_record += 1;
+          break;
+        case BindingStatus::refused_filter:
+          probe_refused_filter += 1;
+          if (probe_filter_detail.size() < 300 && binding->texture != nullptr) {
+            char detail[120];
+            std::snprintf(detail, sizeof detail, "draw %u item %u record %u MMAG %u MMIN %u MXL %u; ", draw.sequence,
+                          item, binding->texture_record, binding->texture->mmag, binding->texture->mmin,
+                          binding->texture->mxl);
+            probe_filter_detail += detail;
+          }
+          break;
+        case BindingStatus::refused_alpha_fail: probe_refused_afail += 1; break;
+        default: probe_refused_other += 1; break;
+        }
+      }
+    }
+    char line[512];
+    std::snprintf(line, sizeof line,
+                  "world selection: sky %u draws/%u items/%u vertices; far_underlay %u/%u/%u; course %u draws/%u "
+                  "items/%u vertices",
+                  selection.sky_draws, selection.sky_items, selection.sky_vertices, selection.underlay_draws,
+                  selection.underlay_items, selection.underlay_vertices, selection.course_draws,
+                  selection.course_items, selection.course_vertices);
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world course exclusions: itop_0xB08 %u, itop_0xA0 %u, itop_0x1278 %u, other-itop %u, mirror %u, "
+                  "no-state %u, no-position %u, empty-draws %u; sky no-position %u; far_underlay no-position %u; "
+                  "selected with a neighbour/pass default state %u",
+                  selection.course_itop_b08, selection.course_itop_a0, selection.course_itop_1278,
+                  selection.course_itop_other, selection.course_mirror, selection.course_no_state,
+                  selection.course_no_position, selection.course_draws_dropped, selection.sky_no_position,
+                  selection.underlay_no_position, selection.course_uv_unverified);
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world selected texture bindings: textured %u, no-record %u, no-texture %u, refused-filter %u, "
+                  "refused-afail %u, refused-other %u",
+                  probe_textured, probe_no_record, probe_no_texture, probe_refused_filter, probe_refused_afail,
+                  probe_refused_other);
+    world_report += line;
+    world_report += "\n";
+    if (!probe_filter_detail.empty()) {
+      world_report += "world refused-filter records: " + probe_filter_detail;
+      world_report += "\n";
+    }
+    for (const auto &[test, count] : probe_test_hist) {
+      std::snprintf(line, sizeof line, "world selected TEST %08llX: %u items (ATE %llu, DATE %llu); ",
+                    static_cast<unsigned long long>(test), count,
+                    static_cast<unsigned long long>(test & 1ull),
+                    static_cast<unsigned long long>((test >> 14) & 1ull));
+      world_report += line;
+    }
+    world_report += "\n";
   }
 #endif
   std::vector<std::uint8_t> rgba, mask;
@@ -664,6 +895,36 @@ int main(int argc, char **argv) {
                  static_cast<unsigned long long>(stats.reflection_depth_masked_pixels));
   };
   print_reflection(stdout);
+  if (world) {
+    char line[512];
+    std::snprintf(line, sizeof line,
+                  "world draws %u, matrices packet %u vu0 %u last-packet %u missing %u; vertices int16 %u int32 %u "
+                  "float32 %u; untextured items %u",
+                  stats.world_draws, stats.world_matrices_packet, stats.world_matrices_vu0,
+                  stats.world_matrices_last_packet, stats.world_matrices_missing, stats.world_vertices_integer_16,
+                  stats.world_vertices_integer_32, stats.world_vertices_float_32, stats.world_items_untextured);
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world pixels: fog %llu missing %llu, date-failed %llu date-missing %llu, afail-written %llu "
+                  "afail-depth %llu, blended %llu, sky-background-depth %llu; texture mip level-0 fallbacks %llu, "
+                  "filter fallbacks %llu",
+                  static_cast<unsigned long long>(stats.world_fog_pixels),
+                  static_cast<unsigned long long>(stats.world_fog_missing),
+                  static_cast<unsigned long long>(stats.world_date_failed),
+                  static_cast<unsigned long long>(stats.world_date_missing),
+                  static_cast<unsigned long long>(stats.world_afail_written),
+                  static_cast<unsigned long long>(stats.world_afail_depth),
+                  static_cast<unsigned long long>(stats.world_blended_pixels),
+                  static_cast<unsigned long long>(stats.world_sky_depth_background),
+                  static_cast<unsigned long long>(texture_counters.records_level0_fallback),
+                  static_cast<unsigned long long>(texture_counters.records_filter_fallback));
+    world_report += line;
+    world_report += "\n";
+    world_report += options.world_ignore_alpha_test ? "world alpha test: ignored (diagnostic A/B)\n"
+                                                    : "world alpha test: tapped ATE/ATST/AREF\n";
+    std::printf("%s", world_report.c_str());
+  }
   if (reflection_mask_path != nullptr) {
     // The reflection pass's written-fragment mask, a binary PGM the metrics script reads.
     if (std::FILE *mask_file = std::fopen(reflection_mask_path, "wb")) {
@@ -726,6 +987,7 @@ int main(int argc, char **argv) {
 #ifdef GT4_COREGS3_TEXTURES
       print_textures(file);
       print_reflection(file);
+      if (!world_report.empty()) std::fprintf(file, "%s", world_report.c_str());
 #endif
       for (const std::string &refusal : stats.refusals) std::fprintf(file, "refusal %s\n", refusal.c_str());
       std::fclose(file);

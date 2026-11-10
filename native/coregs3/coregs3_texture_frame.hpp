@@ -35,6 +35,8 @@ struct TextureFrameCounters {
   std::uint64_t items_visited = 0;
   std::uint64_t records_decoded = 0;   // cache misses: records actually decoded
   std::uint64_t records_refused = 0;   // records the decoder refused
+  std::uint64_t records_level0_fallback = 0;  // TEX1.MXL > 0 decoded as level 0 (the world path's declared fallback)
+  std::uint64_t records_filter_fallback = 0;  // MMIN is a mip filter but only level 0 exists: nearest (MMIN & 1) is used
   std::uint64_t cache_hits = 0;        // records that shared an already decoded Format G key
   std::uint64_t items_textured = 0;
   std::uint64_t items_untextured = 0;
@@ -48,6 +50,8 @@ struct TextureFrameCounters {
   std::uint64_t items_program_unknown = 0;  // the item's VU1 program is not measured (it is still sampled)
   std::uint64_t tap_items_paired = 0;       // items that received a tapped state snapshot
   std::uint64_t tap_items_defaulted = 0;    // items with no matching tapped vertex record
+  std::uint64_t tap_items_uv_unverified = 0;  // world items with no exact-UV record: state taken from the pass journal
+  std::uint64_t tap_items_course_journal_state = 0;  // course items whose TEST/ALPHA came from the pass journal
   std::uint64_t tap_items_ambiguous = 0;    // pairings with more than one candidate vertex record
   std::uint64_t tap_records = 0;            // tap records walked
   std::uint64_t tap_state_writes = 0;       // A+D writes applied to the tracked state
@@ -60,6 +64,10 @@ struct TextureFrameOptions {
   // pinned texgen S,T instead of the model UV), carrying the tapped PRIM 0x7C state and per-vertex fog. False keeps
   // the pre-reflection deferral (the body items stay on the lit colour).
   bool reflections = false;
+  // TASK-090 track M1: the world path. The per-item vertex count is the TOPS 0xC0 descriptor count (the tool has already
+  // filtered the draws/items), V2-8 and the continuation UV arrays are accepted, and a record with TEX1.MXL > 0 is
+  // decoded at level 0 with a counted fallback. False keeps the car pass's measured rule exactly.
+  bool world_channels = false;
 };
 
 // Builds the table for `frame` from the decoded sidecar image `slm` and (when options.use_tap) the tap file. `tap_data`

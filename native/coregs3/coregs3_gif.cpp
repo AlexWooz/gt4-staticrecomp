@@ -108,6 +108,8 @@ GifPacket parse_gif(const std::uint8_t *bytes, std::size_t length) {
         vertex.prim = prim_known ? prim : 0;
         // A3=A+D (0xC/0xD) never draws; XYZ3's ADC bit is not a draw flag.
         if (register_id == 0xC || register_id == 0xD) vertex.adc = true;
+        if (packet.vertices.empty())
+          packet.ad_writes_at_first_vertex = static_cast<std::uint32_t>(packet.ad_writes.size());
         packet.vertices.push_back(vertex);
         break;
       }

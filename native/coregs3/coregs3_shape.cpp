@@ -3,17 +3,33 @@
 
 #include "coregs3_scene.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
 namespace gt4::coregs3 {
 namespace {
 
+bool is_position_format(ChannelFormat format) {
+  return format == ChannelFormat::v3_8 || format == ChannelFormat::v3_16 || format == ChannelFormat::v3_32;
+}
+
+bool is_uv_format(ChannelFormat format) {
+  return format == ChannelFormat::v2_8 || format == ChannelFormat::v2_16 || format == ChannelFormat::v2_32 ||
+         format == ChannelFormat::v3_16 || format == ChannelFormat::v3_32;
+}
+
 ChannelRole classify(bool tops, std::uint32_t destination, ChannelFormat format) {
+  // The descriptor every GT4 shape item carries at TOPS 0xC0 (format v3-32): lane0 = 0x8000 | vertex count, lane1 the
+  // per-shape selector, lane2 the 0x1412 signature. It is data, not geometry, and names the item's vertex count.
+  if (tops && destination == 0xC0u && format == ChannelFormat::v3_32) return ChannelRole::descriptor;
   if (tops && destination == 0x00u) {
     if (format == ChannelFormat::v3_16 || format == ChannelFormat::v3_32) return ChannelRole::positions;
     return ChannelRole::unknown;
   }
+  // The continuation arrays of the descriptor's vertex list: the measured course items tile qword 0..count-1 with
+  // V3-8/V3-16/V3-32 writes at TOPS 0x01..0x3F.
+  if (tops && destination < 0x40u && is_position_format(format)) return ChannelRole::position_aux;
   // The strip table sits at TOPS-relative qword 0x40 like the UVs, distinguished by its single 8-bit component. The
   // VU1 program writes it through STMASK 0x3F3F3F3F, so only lane 3 of each qword changes; see decode_strip_table.
   if (tops && destination == 0x40u && format == ChannelFormat::v1_8) return ChannelRole::strip_table;
@@ -22,6 +38,7 @@ ChannelRole classify(bool tops, std::uint32_t destination, ChannelFormat format)
   if (tops && destination == 0x40u && format == ChannelFormat::v3_8) return ChannelRole::normals;
   if (tops && destination == 0x40u) {
     switch (format) {
+    case ChannelFormat::v2_8:
     case ChannelFormat::v2_16:
     case ChannelFormat::v2_32:
     case ChannelFormat::v3_16:
@@ -29,18 +46,26 @@ ChannelRole classify(bool tops, std::uint32_t destination, ChannelFormat format)
     default: return ChannelRole::unknown;
     }
   }
+  // The continuation arrays of the UV list: the measured items tile the UVs across qword 0x40..0x7F with mixed forms.
+  if (tops && destination > 0x40u && destination < 0x80u && is_uv_format(format)) return ChannelRole::uv_aux;
   // The remaining measured programs read their normal at TOPS 0x80: V3-8 for the nine-qword and six-qword no-colour
   // families (converted by the 0x1878 prologue), V3-32 unit floats for the direct 0x0418 program (no prologue).
   if (tops && destination == 0x80u && format == ChannelFormat::v3_8) return ChannelRole::normals80;
   if (tops && destination == 0x80u && format == ChannelFormat::v3_32) return ChannelRole::normals80_float;
   if (tops && destination == 0x80u && format == ChannelFormat::v4_8) return ChannelRole::color;
+  // The A0 family stores its V4-8 colour at TOPS 0xA0 (measured; the dispatch-0xA0 program).
+  if (tops && destination == 0xA0u && format == ChannelFormat::v4_8) return ChannelRole::color;
   // An absolute V3-32 vector at qword 0 is a float position channel (the wheel and tyre shapes use it).
   if (!tops && destination == 0x00u && format == ChannelFormat::v3_32) return ChannelRole::positions;
   return ChannelRole::auxiliary;
 }
 
+std::int16_t as_s16(std::uint32_t raw) { return static_cast<std::int16_t>(raw & 0xFFFFu); }
+std::int8_t as_s8(std::uint32_t raw) { return static_cast<std::int8_t>(raw & 0xFFu); }
+std::int32_t as_s32(std::uint32_t raw) { return static_cast<std::int32_t>(raw); }
+
 // VIF 16-bit UNPACK stores the raw halfword; the model scale is applied by the caller's position_scale.
-float decode_signed16(std::uint32_t raw) { return static_cast<float>(static_cast<std::int16_t>(raw & 0xFFFFu)); }
+float decode_signed16(std::uint32_t raw) { return static_cast<float>(as_s16(raw)); }
 float decode_bits(std::uint32_t raw) {
   float value = 0.0f;
   std::memcpy(&value, &raw, sizeof value);
@@ -51,6 +76,7 @@ struct ItemData {
   std::uint32_t item_index = 0;      // original draw item index
   std::vector<float> positions;      // 3 floats per vertex
   std::vector<std::int32_t> raw_positions;  // 3 signed 16-bit values per vertex, V3-16 channels only
+  std::vector<std::int32_t> lane_positions;  // 3 full 32-bit lanes per vertex, MODE 2 position families
   std::vector<std::int8_t> normals;  // 3 signed bytes per vertex
   std::vector<std::int8_t> normals80;  // 3 signed bytes per vertex, V3-8 at TOPS 0x80
   std::vector<float> normals80_float;  // 3 floats per vertex, V3-32 at TOPS 0x80
@@ -63,15 +89,247 @@ struct ItemData {
   bool has_normals80_float = false;
   bool has_uv = false;
   bool raw16 = true;  // every position channel seen so far is V3-16
+  PositionEncoding encoding = PositionEncoding::integer_16;
+  bool has_descriptor = false;
+  std::uint32_t descriptor_vertices = 0;
+  std::uint32_t descriptor_selector = 0;
+  std::uint32_t descriptor_signature = 0;
   std::uint32_t vertices() const { return static_cast<std::uint32_t>(positions.size() / 3); }
 };
+
+// Reads the TOPS 0xC0 descriptor of one decoded packet, if present, and fills the item's measured shape facts. The
+// descriptor is a single V3-32 vector whose lanes are 0x8000|vertex_count, per-shape selector, 0x1412.
+bool read_descriptor(const VifPacket &packet, ChannelScan::ItemInfo &info) {
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.destination != 0xC0u || entry.format != ChannelFormat::v3_32) continue;
+    if (entry.vectors < 1) continue;
+    std::vector<VifVector> vectors;
+    if (!read_vu_vectors(packet.packed.data(), entry.destination * 16u, 1, vectors)) return false;
+    info.has_descriptor = true;
+    info.descriptor_vertices = vectors[0].v[0] & 0x7FFFu;
+    info.descriptor_selector = vectors[0].v[1];
+    info.descriptor_signature = vectors[0].v[2];
+    return true;
+  }
+  return false;
+}
+
+// The measured position family of an item: MODE 2 anywhere in the position region means the lanes are 32-bit
+// accumulators (the STROW seed + signed deltas); otherwise the first position UNPACK's element width decides between the
+// V3-32 float family and the V3-16 integer family. The result is a property of the packet, recorded in the item info.
+void read_position_family(const VifPacket &packet, ChannelScan::ItemInfo &info) {
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.destination >= 0x40u || !is_position_format(entry.format)) continue;
+    // The V3-8 write at qword 0 is the STROW seed commit, not a position array by itself: it stores the row (the first
+    // vertex) into qword 0, and a packet that carries only this write has no vertex list to draw.
+    if (entry.destination == 0 && entry.format == ChannelFormat::v3_8) continue;
+    if (!info.has_position) {
+      info.has_position = true;
+      info.first_position_format = entry.format;
+    }
+    if (entry.destination != 0) info.has_aux_position = true;
+    if (entry.mode == 2) info.mode2_positions = true;
+  }
+}
+
+// One UV array segment: a UNPACK at qword `first` with `count` vertices of `format`, executed with `mode`.
+struct UvSegment {
+  std::uint32_t first = 0;
+  std::uint32_t count = 0;
+  ChannelFormat format = ChannelFormat::unknown;
+  std::uint32_t mode = 0;
+};
+
+// Reads the UV array of a world item. The measured items tile it contiguously from qword 0x40 to 0x40+count-1, mixing
+// V2-8/V2-16/V2-32 segments; each segment's own format and MODE decide the coordinate. The 16-bit convention is the
+// measured signed fixed-point / 4096 (no V flip), the 32-bit convention is the stored float. The 8-bit and the MODE 2
+// fixed-point forms are labeled Hypothesis in the report: the capture fits the 16/32-bit forms everywhere, and the few
+// V2-8 segments are decoded as signed /16 (the 8-bit counterpart of the 16-bit 1/4096 fraction) and counted.
+bool read_world_uv(const VifPacket &packet, std::uint32_t count, std::vector<float> &uvs,
+                   std::vector<std::uint8_t> &hypothesis) {
+  std::vector<UvSegment> segments;
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.destination < 0x40u || entry.destination >= 0x80u) continue;
+    if (entry.format == ChannelFormat::v1_8) continue;  // the strip table shares qword 0x40
+    if (!is_uv_format(entry.format)) continue;
+    UvSegment segment;
+    segment.first = entry.destination;
+    segment.count = entry.vectors;
+    segment.format = entry.format;
+    segment.mode = entry.mode;
+    segments.push_back(segment);
+  }
+  if (segments.empty() || count == 0) return false;
+  // The measured rule: the segments tile from qword 0x40 in command order, with no gap and no overlap. A packet whose
+  // segments do not tile is refused (the item keeps its colour) instead of reading a guessed coordinate.
+  std::uint32_t cursor = 0x40u;
+  for (const UvSegment &segment : segments) {
+    if (segment.first != cursor) return false;
+    cursor += segment.count;
+  }
+  if (cursor < 0x40u + count) return false;
+  // The UV region is qwords 0x40..0x7F (64 vectors); a descriptor count above that cannot be an all-UV list.
+  if (count > 0x40u) return false;
+  std::vector<VifVector> vectors;
+  if (!read_vu_vectors(packet.packed.data(), 0x40u * 16u, count, vectors)) return false;
+  uvs.resize(static_cast<std::size_t>(count) * 2u);
+  hypothesis.clear();
+  std::uint32_t qword = 0x40u;
+  std::size_t segment = 0;
+  for (std::uint32_t vertex = 0; vertex < count; ++vertex) {
+    while (segment < segments.size() && qword >= segments[segment].first + segments[segment].count) {
+      qword = segments[segment].first + segments[segment].count;
+      ++segment;
+    }
+    if (segment >= segments.size()) return false;
+    const UvSegment &shape = segments[segment];
+    const VifVector &vector = vectors[vertex];
+    const bool floats = shape.format == ChannelFormat::v2_32 || shape.format == ChannelFormat::v3_32;
+    const bool bytes = shape.format == ChannelFormat::v2_8;
+    if (shape.mode == 2) {
+      // Hypothesis: a MODE 2 UV segment accumulates deltas in the 32-bit lanes; the fixed-point unit is taken as 4096
+      // (the 16-bit convention), and the use is counted so the report can list it.
+      uvs[vertex * 2 + 0] = static_cast<float>(as_s32(vector.v[0])) / 4096.0f;
+      uvs[vertex * 2 + 1] = static_cast<float>(as_s32(vector.v[1])) / 4096.0f;
+      hypothesis.push_back(1);
+    } else if (floats) {
+      uvs[vertex * 2 + 0] = decode_bits(vector.v[0]);
+      uvs[vertex * 2 + 1] = decode_bits(vector.v[1]);
+    } else if (bytes) {
+      // Hypothesis: signed 8-bit fixed point with 16 units per 1.0 (the size-scaled counterpart of the 16-bit 1/4096
+      // fraction). No capture fit isolates it; every sampled V2-8 item is counted.
+      uvs[vertex * 2 + 0] = static_cast<float>(as_s8(vector.v[0])) / 16.0f;
+      uvs[vertex * 2 + 1] = static_cast<float>(as_s8(vector.v[1])) / 16.0f;
+      hypothesis.push_back(1);
+    } else {
+      uvs[vertex * 2 + 0] = static_cast<float>(as_s16(vector.v[0])) / 4096.0f;
+      uvs[vertex * 2 + 1] = static_cast<float>(as_s16(vector.v[1])) / 4096.0f;
+    }
+    ++qword;
+  }
+  return true;
+}
+
+// Reads the descriptor-driven vertex list of a world item. The position arrays written at TOPS 0x00..0x3F tile the VU1
+// memory from qword 0; after the packet ran, `count` vectors at qword 0 are the item's vertices. The family decides the
+// lane interpretation: MODE 2 lanes are the exact int32 accumulators (position = float(lane), lane_position = lane); a
+// V3-32 family is the float as stored; a V3-16 family is the signed halfword with the caller's position_scale.
+bool read_world_item(const VifPacket &packet, const ChannelScan::ItemInfo &info, const MeshOptions &options,
+                     ItemData &data, std::string &error) {
+  if (!info.has_position) {
+    error = "no position channel";
+    return false;
+  }
+  const std::uint32_t count = info.descriptor_vertices;
+  if (count == 0 || count > kVuQwords) {
+    error = "descriptor vertex count " + std::to_string(count) + " outside the VU1 memory";
+    return false;
+  }
+  std::vector<VifVector> vectors;
+  if (!read_vu_vectors(packet.packed.data(), 0, count, vectors)) {
+    error = "position array outside the decoded VU image";
+    return false;
+  }
+  data.has_descriptor = true;
+  data.descriptor_vertices = info.descriptor_vertices;
+  data.descriptor_selector = info.descriptor_selector;
+  data.descriptor_signature = info.descriptor_signature;
+  if (info.mode2_positions) {
+    data.encoding = PositionEncoding::integer_32;
+    data.raw16 = false;
+    for (const VifVector &vector : vectors) {
+      for (std::uint32_t lane = 0; lane < 3; ++lane) {
+        const std::int32_t value = as_s32(vector.v[lane]);
+        data.lane_positions.push_back(value);
+        data.positions.push_back(static_cast<float>(value));
+      }
+    }
+  } else if (info.first_position_format == ChannelFormat::v3_32) {
+    data.encoding = PositionEncoding::float_32;
+    data.raw16 = false;
+    for (const VifVector &vector : vectors)
+      for (std::uint32_t lane = 0; lane < 3; ++lane) data.positions.push_back(decode_bits(vector.v[lane]));
+  } else {
+    data.encoding = PositionEncoding::integer_16;
+    for (const VifVector &vector : vectors) {
+      for (std::uint32_t lane = 0; lane < 3; ++lane) {
+        const std::int32_t raw = as_s16(vector.v[lane]);
+        data.positions.push_back(static_cast<float>(raw) * options.position_scale);
+        data.raw_positions.push_back(raw);
+      }
+    }
+  }
+
+  // UVs: the item's UV array, read with the same vertex count when the segments tile.
+  std::vector<std::uint8_t> uv_hypothesis;
+  data.has_uv = read_world_uv(packet, count, data.uvs, uv_hypothesis);
+
+  // Colours: the V4-8 array at TOPS 0x80 (the measured families) or the A0 family's array at TOPS 0xA0. The array is
+  // contiguous from its first qword and covers the descriptor count (measured: 1,269/1,284 course items; the 15
+  // without a colour at 0x80 belong to the excluded A0/other programs and are counted by the tool).
+  std::uint32_t color_start = 0xFFFFFFFFu;
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.format != ChannelFormat::v4_8) continue;
+    if (entry.destination != 0x80u && entry.destination != 0xA0u) continue;
+    if (color_start == 0xFFFFFFFFu || entry.destination < color_start) color_start = entry.destination;
+  }
+  if (color_start != 0xFFFFFFFFu && count <= kVuQwords - color_start) {
+    if (read_vu_vectors(packet.packed.data(), color_start * 16u, count, vectors)) {
+      data.has_colors = true;
+      for (const VifVector &vector : vectors)
+        for (std::uint32_t lane = 0; lane < 4; ++lane) data.colors.push_back(static_cast<std::uint8_t>(vector.v[lane] & 0xFFu));
+    }
+  }
+
+  // Normals: keep the car path's per-channel rule (it is the measured lighting input), decoded with each channel's own
+  // vector count. A world item's passthrough program does not read them; the fields are filled for completeness.
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack) continue;
+    const ChannelRole role = classify(entry.tops, entry.destination, entry.format);
+    if (role != ChannelRole::normals && role != ChannelRole::normals80 && role != ChannelRole::normals80_float)
+      continue;
+    const std::uint8_t *image = entry.tops ? packet.packed.data() : packet.window.data();
+    std::vector<VifVector> channel;
+    if (!read_vu_vectors(image, entry.destination * 16u, entry.vectors, channel)) continue;
+    if (role == ChannelRole::normals) {
+      data.has_normals = true;
+      for (const VifVector &vector : channel)
+        for (std::uint32_t lane = 0; lane < 3; ++lane)
+          data.normals.push_back(static_cast<std::int8_t>(vector.v[lane] & 0xFFu));
+    } else if (role == ChannelRole::normals80) {
+      data.has_normals80 = true;
+      for (const VifVector &vector : channel)
+        for (std::uint32_t lane = 0; lane < 3; ++lane)
+          data.normals80.push_back(static_cast<std::int8_t>(vector.v[lane] & 0xFFu));
+    } else {
+      data.has_normals80_float = true;
+      for (const VifVector &vector : channel)
+        for (std::uint32_t lane = 0; lane < 3; ++lane) data.normals80_float.push_back(decode_bits(vector.v[lane]));
+    }
+  }
+
+  // The strip table: as in the car path, the last V1-8 write at qword 0x40 wins and lane 3 carries the byte (the VU1
+  // program writes it with STMASK 0x3F3F3F3F).
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.destination != 0x40u || entry.format != ChannelFormat::v1_8) continue;
+    std::vector<VifVector> channel;
+    if (!read_vu_vectors(packet.packed.data(), entry.destination * 16u, entry.vectors, channel)) continue;
+    data.strip_table.clear();
+    for (const VifVector &vector : channel)
+      data.strip_table.push_back(static_cast<std::uint8_t>(vector.v[3] & 0xFFu));
+  }
+  return data.vertices() != 0;
+}
 
 }  // namespace
 
 const char *channel_role_name(ChannelRole role) noexcept {
   switch (role) {
+  case ChannelRole::descriptor: return "descriptor";
   case ChannelRole::positions: return "positions";
+  case ChannelRole::position_aux: return "position_aux";
   case ChannelRole::uv: return "uv";
+  case ChannelRole::uv_aux: return "uv_aux";
   case ChannelRole::color: return "color";
   case ChannelRole::normals: return "normals";
   case ChannelRole::normals80: return "normals80";
@@ -121,10 +379,41 @@ bool decode_strip_table(const std::vector<std::uint8_t> &bytes, std::uint32_t ve
   return true;
 }
 
-ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedDraw &draw) {
+bool read_item_uv(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedItem &item, std::size_t limit,
+                  std::vector<std::array<float, 2>> &uvs) {
+  uvs.clear();
+  if (item.packet_bytes == 0) return false;
+  if (item.packet_offset > packet_bytes || item.packet_bytes > packet_bytes - item.packet_offset) return false;
+  const VifPacket packet = decode_packet(packets + item.packet_offset, item.packet_bytes);
+  if (!packet.ok) return false;
+  for (const VifCommand &entry : packet.commands) {
+    if (!entry.unpack || !entry.tops || entry.destination != 0x40u || !is_uv_format(entry.format)) continue;
+    std::vector<VifVector> vectors;
+    const std::size_t count = std::min<std::size_t>(entry.vectors, limit);
+    if (!read_vu_vectors(packet.packed.data(), 0x40u * 16u, static_cast<std::uint32_t>(count), vectors)) return false;
+    uvs.resize(count);
+    for (std::size_t index = 0; index < count; ++index) {
+      const bool floats = entry.format == ChannelFormat::v2_32 || entry.format == ChannelFormat::v3_32;
+      if (entry.format == ChannelFormat::v2_8) {
+        uvs[index] = {static_cast<float>(as_s8(vectors[index].v[0])) / 16.0f,
+                      static_cast<float>(as_s8(vectors[index].v[1])) / 16.0f};
+      } else {
+        uvs[index] = {floats ? decode_bits(vectors[index].v[0]) : decode_signed16(vectors[index].v[0]) / 4096.0f,
+                      floats ? decode_bits(vectors[index].v[1]) : decode_signed16(vectors[index].v[1]) / 4096.0f};
+      }
+    }
+    return !uvs.empty();
+  }
+  return false;
+}
+
+ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedDraw &draw,
+                          bool world_channels) {
   ChannelScan scan;
+  scan.items.resize(draw.item_count);
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
+    ChannelScan::ItemInfo &info = scan.items[index];
     if (item.packet_bytes == 0) continue;
     if (item.packet_offset > packet_bytes || item.packet_bytes > packet_bytes - item.packet_offset) {
       scan.errors.push_back("item packet range outside the capture block");
@@ -137,17 +426,22 @@ ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes,
       continue;
     }
     scan.decoded += 1;
-    for (std::uint32_t command = 0; command < packet.commands.size(); ++command) {
-      const VifCommand &entry = packet.commands[command];
+    info.decoded = true;
+    read_descriptor(packet, info);
+    read_position_family(packet, info);
+    for (const VifCommand &entry : packet.commands) {
       if (!entry.unpack) continue;
+      const ChannelRole role = classify(entry.tops, entry.destination, entry.format);
+      if (role == ChannelRole::uv && (world_channels || entry.format != ChannelFormat::v2_8)) info.has_uv = true;
+      if (role == ChannelRole::uv_aux && world_channels) info.has_uv = true;
       ShapeChannel channel;
       channel.item = index;
-      channel.command = command;
+      channel.command = static_cast<std::uint32_t>(&entry - packet.commands.data());
       channel.tops = entry.tops;
       channel.destination = entry.destination;
       channel.format = entry.format;
       channel.vectors = entry.vectors;
-      channel.role = classify(entry.tops, entry.destination, entry.format);
+      channel.role = role;
       scan.channels.push_back(channel);
     }
   }
@@ -174,6 +468,19 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
     }
     ItemData data;
     data.item_index = index;
+    ChannelScan::ItemInfo info;
+    read_descriptor(packet, info);
+    read_position_family(packet, info);
+    if (options.world_channels && info.has_descriptor) {
+      // The descriptor-driven world path (TASK-090 track M1): one contiguous vertex list at qword 0, count from lane 0.
+      if (!read_world_item(packet, info, options, data, error)) {
+        error = "item " + std::to_string(index) + ": " + error;
+        return false;
+      }
+      items.push_back(std::move(data));
+      continue;
+    }
+    // The original car-pass path, unchanged: per-channel role decoding with the channels' own vector counts.
     for (const VifCommand &entry : packet.commands) {
       if (!entry.unpack) continue;
       const ChannelRole role = classify(entry.tops, entry.destination, entry.format);
@@ -192,9 +499,9 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
           data.positions.push_back(floats ? decode_bits(vector.v[1]) : decode_signed16(vector.v[1]) * scale);
           data.positions.push_back(floats ? decode_bits(vector.v[2]) : decode_signed16(vector.v[2]) * scale);
           if (!floats) {
-            data.raw_positions.push_back(static_cast<std::int32_t>(static_cast<std::int16_t>(vector.v[0] & 0xFFFFu)));
-            data.raw_positions.push_back(static_cast<std::int32_t>(static_cast<std::int16_t>(vector.v[1] & 0xFFFFu)));
-            data.raw_positions.push_back(static_cast<std::int32_t>(static_cast<std::int16_t>(vector.v[2] & 0xFFFFu)));
+            data.raw_positions.push_back(as_s16(vector.v[0]));
+            data.raw_positions.push_back(as_s16(vector.v[1]));
+            data.raw_positions.push_back(as_s16(vector.v[2]));
           } else {
             data.raw16 = false;
           }
@@ -225,10 +532,14 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
             data.colors.push_back(static_cast<std::uint8_t>(vector.v[lane] & 0xFFu));
         break;
       case ChannelRole::uv:
+        // The legacy (car) path never treated V2-8 at qword 0x40 as the model UV: the measured car frames and fixtures
+        // predate that format and must stay byte-identical. The world path reads V2-8 through read_world_uv instead.
+        if (entry.format == ChannelFormat::v2_8) break;
         data.has_uv = true;
         // Measured convention (coregs3_shape.hpp): a 16-bit channel is a signed fixed-point fraction divided by 4096,
         // with no V flip; a 32-bit channel is float UVs passed through unchanged. The first two components are the
-        // UVs; a V3 channel's third component is skipped.
+        // UVs; a V3 channel's third component is skipped. A V2-8 channel is the 8-bit counterpart (signed / 16), a
+        // Hypothesis used only by the world path's report; the car capture never selects one as its model UV.
         for (const VifVector &vector : vectors) {
           const bool floats = entry.format == ChannelFormat::v2_32 || entry.format == ChannelFormat::v3_32;
           data.uvs.push_back(floats ? decode_bits(vector.v[0]) : decode_signed16(vector.v[0]) / 4096.0f);
@@ -259,14 +570,26 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
   mesh.vertices.resize(vertex_count);
   std::uint32_t base = 0;
   for (const ItemData &item : items) {
+    if (item.has_descriptor && mesh.has_descriptor == false) {
+      mesh.has_descriptor = true;
+      mesh.descriptor_vertices = item.descriptor_vertices;
+      mesh.descriptor_selector = item.descriptor_selector;
+      mesh.descriptor_signature = item.descriptor_signature;
+    }
     for (std::uint32_t index = 0; index < item.vertices(); ++index) {
       MeshVertex &vertex = mesh.vertices[base + index];
       vertex.item = item.item_index;
+      vertex.encoding = item.encoding;
       vertex.position = {item.positions[index * 3 + 0], item.positions[index * 3 + 1], item.positions[index * 3 + 2]};
       if (item.raw16 && (index + 1) * 3 <= item.raw_positions.size()) {
         vertex.raw_position = {item.raw_positions[index * 3 + 0], item.raw_positions[index * 3 + 1],
                                item.raw_positions[index * 3 + 2]};
         vertex.has_raw_position = true;
+      }
+      if (item.encoding == PositionEncoding::integer_32 && (index + 1) * 3 <= item.lane_positions.size()) {
+        vertex.lane_position = {item.lane_positions[index * 3 + 0], item.lane_positions[index * 3 + 1],
+                                item.lane_positions[index * 3 + 2]};
+        vertex.has_lane_position = true;
       }
       if (item.has_normals && (index + 1) * 3 <= item.normals.size()) {
         vertex.normal = {item.normals[index * 3 + 0], item.normals[index * 3 + 1], item.normals[index * 3 + 2]};
