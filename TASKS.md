@@ -5088,3 +5088,24 @@ toolchain and the GT4.VOL ToC writer so this route stops being a guess.
 - **Tests:** `test_adhoc_v5.py` 10 OK, `test_gt4_vol_toc.py` 10 OK, full Python suite 841 OK (77 skipped). No build,
   no game window, no ISO write, no ISO copy (0 bytes). Evidence: `docs/tasks/V5-TOOLCHAIN.md`; private capsule
   `private/slice437-option/`.
+**Phase 2 (2026-11-10, owner authorized the private toolchain).** The owner authorized using GTAdhocToolchain for
+private use; the upstream AI policy and the authorization are recorded in `docs/tasks/V5-TOOLCHAIN.md` section 9.
+The shipped path stays our MIT tools.
+
+- **Toolchain:** GTAdhocToolchain **1.4.0** (`0e98a7d`), private clone + one local writer-order patch; read -> write
+  of the retail `option.adc` is **byte-identical** (251,715 bytes) - a genuine v5 reassembler.
+- **Format derived:** v5 header = source symbol, param count 0, static slot count 272, local count 142, instruction
+  count 3375; instruction = `u32 line | u8 opcode | payload`; a page = `VARIABLE_PUSH OptionPage(97) / EVAL /
+  STRING_CONST "<label>" / VARIABLE_PUSH <Root>(slot) / EVAL / NIL / CALL 3 / EVAL`, plus a `STATIC_DEFINE`. The
+  "class ids" in Phase 1 were source line numbers; the "trailers" were static slots.
+- **Shipped inserter:** `scripts/adhoc_v5.py add-page` (name/root/static index), inserts before the module EXIT and
+  bumps the two counts; its output is byte-identical to the toolchain writer's. +127 bytes for `Recomp`/`RecRoot1`
+  slot 272; PS2ZIP 54,443 <= 55,353.
+- **ToC:** the new size needs a record update; the data patch now serves three same-length ranges (ToC, option.adc,
+  option.mproject), ToC re-emitted 365,618 bytes padded to 365,622.
+- **Headless:** Options renders with the reassembled script, 2,600/3,200 frames, exit 0, no tile for the appended
+  page. Inserting the page inside a group (after Race or after Language) crashes at frame 1743 with `missing code at
+  0x00000000 (ra 0x00319ECC)` - the Options tile builder reaches the new page and dereferences a null tile entry.
+- **Gate:** the Options root builds one tile per page per group; a visible page needs that tile entry (label/icon/
+  geometry, builder at 0x00319ECC) or one more constructed tile. Entry, module, static, PS2ZIP and ToC are solved.
+- **Tests:** `test_adhoc_v5.py` 14 OK, `test_gt4_vol_toc.py` 10 OK, full suite 845 OK (77 skipped).

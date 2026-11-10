@@ -230,3 +230,135 @@ Our two modules and their tests are original MIT code written from the file byte
 read for them, no OpenAdhoc (GPL-3.0) code or Spec II script was copied, and the GTAdhocToolchain clone was deleted
 unused. Nothing derived from the disc is committed: the tools read a private copy at run time and the fixtures are
 synthetic.
+
+---
+
+# Phase 2 - the GTAdhocToolchain private build and a real inserted page (2026-11-10)
+
+Owner decision (2026-11-10 10:52): **use GTAdhocToolchain for private use**, even though its upstream `AGENTS.md`
+asks AI tools not to. The owner's rationale: it is a private local build tool, nothing from it is contributed,
+committed or distributed, and the MIT license permits the use. This document records the authorization and the
+author's request side by side; the shipped path remains our MIT `scripts/adhoc_v5.py` and `scripts/gt4_vol_toc.py`.
+No GTAdhocToolchain source, binary or derived file is in the repository.
+
+## 9. The private toolchain build (Confirmed)
+
+- Repo: https://github.com/Nenkai/GTAdhocToolchain, tag **1.4.0** = `0e98a7dcad818647c22662ee2e350ce4800d5def`
+  (the current `master` fails to compile at its own `PDTools` pin: `TextureSet3` has no
+  `TextureSetPlatformFormatType`).
+- Clone + submodules: `esprima-dotnet` `0e09beb`, `PDTools` `3356dfa`; `dotnet build GTAdhocToolchain.CLI -c Release`
+  with SDK 10.0.303 -> **0 errors, 220 warnings**, `adhoc.exe` 1.4.0.
+- One **local patch** in the private clone only: `GTAdhocToolchain.Core/AdhocCodeFrame.Write` wrote `LocalCount`
+  before `MaxStackSize` for v5-v7 while its own reader (and the game) read `MaxStackSize` first. With the order
+  swapped back, reading and writing the retail `option.adc` is **byte-identical** (251,715 bytes, SHA-256
+  `acd29dd0...484c`).
+
+So the toolchain is a genuine v5 **reassembler** for this file: `AdhocFile.ReadFromFile` -> `TopLevelFrame.Write`
+reproduces the publisher image exactly.
+
+## 10. The v5 module format (Confirmed against the retail file and the toolchain)
+
+Header (all little endian):
+
+```
+0x00  "ADCH005\0"                  magic + 3-digit version
+0x08  u16 len + source path        "_tmp_option.ad"
+0x18  u32 function parameter count (0 for the module frame)
+0x1C  u32 static slot count         272  (max static index 271 + 1)
+0x20  u32 local count               142
+0x24  u32 instruction count        3375
+0x28  first instruction
+```
+
+Instruction: `u32 line_number | u8 opcode | payload`. Opcodes used by a page (all verified byte for byte):
+
+| opcode | name | payload |
+|---|---|---|
+| 0x08 | EVAL | - |
+| 0x06 | CALL | u32 argument count |
+| 0x16 | NIL_CONST | - |
+| 0x1C | STATIC_DEFINE | symbol |
+| 0x1D | STRING_CONST | symbol |
+| 0x24 | VARIABLE_PUSH | u32 path count (2) + name symbol + namespace symbol + u32 storage index |
+| 0x1B | SET_STATE_OLD | u8 state (0 EXIT, 1 RETURN) |
+
+Symbol = `u16 length + ASCII`. The module initializer ends with `u32 line, 0x1B, 0x00` (EXIT) and nothing after it.
+A page is eight instructions:
+
+```
+VARIABLE_PUSH OptionPage.OptionPage Static:97     (the OptionPage class)
+EVAL
+STRING_CONST "<page label>"
+VARIABLE_PUSH <Root>.<Root> Static:<slot>         (the layout root object)
+EVAL
+NIL_CONST
+CALL 3
+EVAL
+```
+
+The retail page names/roots in section 2 are exactly the `STRING_CONST` + first `VARIABLE_PUSH` of these blocks;
+the "class id" column there was the **source line number** and the "trailer" is the **static slot**. The four
+`Dummy` entries are pages with no root argument (`STRING_CONST "Dummy"` + zero-argument construction).
+
+What insertion changes: the new block bytes, the header **instruction count** (+9) and the header **static slot
+count** (one new slot). No string table, no offsets, no relocation: operands use symbol names and static slots, and
+jump targets are instruction indices. Inserting **at the end of the module initializer** moves no existing index;
+inserting in the middle moves every later root instruction index (see section 12).
+
+## 11. The inserted page (proven at the file and loader level)
+
+`scripts/adhoc_v5.py add-page` builds the nine instructions (STATIC_DEFINE + the eight above), inserts them before
+the final EXIT and bumps both counts. Its output is **byte-identical** to the GTAdhocToolchain writer's output for
+the same page (checked: `option.shipped.adc == option.newpage.adc`, 251,842 bytes each).
+
+```
+page label "Recomp", root "RecRoot1", static slot 272, line 204
+decoded 251,715 -> 251,842 (+127)
+statics 272 -> 273, instructions 3375 -> 3384
+PS2ZIP 54,443 bytes <= 55,353 stored extent (910 spare)
+GTAdhocToolchain disassembles the result and shows the block at root instructions 3374..3382, EXIT at 3383
+```
+
+`option.mproject`: a new top-level `RootWindow {"RecRoot1"}` with `has_script 0`, a background, a `Pane` with a
+"Recomp settings" title and five label rows (Graphics, Controls, Display, Audio, System) minifies to 463,429 bytes
+and packs to 14,312 against the 22,449 stored extent (8,137 spare).
+
+## 12. Headless result (v2.00, `gt4vulkan.exe` TASK-213 build, private copy)
+
+The patch container carries **three same-length ranges** (the ToC itself, `option.adc`, `option.mproject`):
+`[data-patch] 3 range(s), 443424 payload bytes, verified against the image`. The ToC range is required because the
+new script's decoded size (251,842) and stored size (54,443) differ from the record; the writer re-emits a
+365,618-byte catalogue, padded to the original 365,622-byte range.
+
+- **End insertion (our build):** the game boots, opens **Options**, renders the full page list (General, Arcade
+  Mode, Photo Mode, Controllers, Miscellaneous) and runs 2,600/3,200 frames to the frame limit, **exit 0**. The
+  reassembled script with the extra page, static and counts is accepted by the loader. **No tile for the new page
+  appears** in the Options grid: placed after every group, the page is not attached to a group.
+- **Mid-list insertion (after Race in `GroupGeneral`, and after Language in `GroupMisc`):** the game reaches
+  Options and then stops at frame **1743** with `[ee] halted: missing code at 0x00000000 (ra 0x00319ECC)`. The same
+  address in both cases: the Options tile builder walks the group page list, reaches the new page, and dereferences
+  a null entry (a page with no tile definition). That is the **exact gate** for a visible page.
+
+Evidence: `private/slice438-toolchain-run/` (`run-end.log` 2,600 frames exit 0, `run-end-right.log` 3,200 frames,
+`run-after-race-crash.log` and the same crash after Language, `frames/`, `frames3/`, `state.bin`,
+`gt4-data.patch` sha256 `089ffc89...f88a1` for the after-Language build).
+
+## 13. Gate and next step
+
+The page **entry, module code, static, PS2ZIP and ToC** are solved. The remaining gate is the **Options root tile**:
+the script builds one tile per page inside each group (`0x00319ECC` is the failing call), and a page without a
+matching layout tile/icon entry crashes it. Next step: read that builder (`0x00319ECC` and its caller), find what it
+reads per page (label key, icon image, geometry) and whether an extra hidden `Item` in `option.mproject` plus one
+more page in the group is enough; otherwise the group's tile list is sized by the script and needs one more
+constructed tile, which is a further v5 code insertion at the end of the group (same instruction-level technique).
+The fallback stays the accepted Arcade host-tree hub, which removes nothing.
+
+## 14. Risks
+
+- The inserted static slot (272) is beyond the retail maximum (271) but inside the header count; the loader accepted
+  it, the layout binding to `RecRoot1` is **unproven** (the page never rendered far enough to test it).
+- The three-range data patch replaces the ToC; a real release would need the release-time builder to emit it, and the
+  launcher path only handles same-length files today.
+- The private toolchain is not part of the shipped code and must not become a build dependency; the shipped tools
+  reproduce the same bytes.
+- Mid-list insertion is unsafe without instruction-index relocation; the shipped `add-page` only inserts at the end.

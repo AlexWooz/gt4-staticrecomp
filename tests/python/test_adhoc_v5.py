@@ -146,5 +146,72 @@ class RetailImageTest(unittest.TestCase):
         self.assertEqual(image.roundtrip(), path.read_bytes())
 
 
+class AddPageTest(unittest.TestCase):
+    def _image(self) -> bytes:
+        body = page_entry("Race", 166, "RaceRoot", 98)
+        blob = image(body)
+        # Module initializer terminator: u32 line, SET_STATE_OLD(0x1B), EXIT(0).
+        return blob + struct.pack("<I", 4189) + bytes([adhoc_v5.OP_SET_STATE_OLD, 0])
+
+    def test_inserts_before_the_module_exit_and_bumps_both_counts(self):
+        blob = self._image()
+        before_instructions = struct.unpack_from("<I", blob, adhoc_v5.INSTRUCTION_COUNT_OFFSET)[0]
+        before_statics = struct.unpack_from("<I", blob, adhoc_v5.STATIC_COUNT_OFFSET)[0]
+        after = adhoc_v5.add_page(blob, name="Recomp", root="RecRoot1", static_index=272, line=204)
+        block = adhoc_v5.page_block("Recomp", "RecRoot1", 272, 204)
+        self.assertEqual(len(after), len(blob) + len(block))
+        self.assertEqual(after[-6:], blob[-6:])
+        self.assertEqual(after[len(blob) - 6:len(blob) - 6 + len(block)], block)
+        self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.INSTRUCTION_COUNT_OFFSET)[0],
+                         before_instructions + 9)
+        self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.STATIC_COUNT_OFFSET)[0], 273)
+        self.assertGreaterEqual(struct.unpack_from("<I", after, adhoc_v5.STATIC_COUNT_OFFSET)[0],
+                                before_statics)
+        pages = adhoc_v5.scan_pages(after, 0, len(after))
+        self.assertIn("Recomp", [page.name for page in pages])
+        new_page = [page for page in pages if page.name == "Recomp"][0]
+        self.assertEqual(new_page.root, "RecRoot1")
+        self.assertEqual(new_page.trailer, 272)
+
+    def test_refuses_an_image_without_the_module_exit(self):
+        blob = image(page_entry("Race", 166, "RaceRoot", 98))
+        with self.assertRaises(adhoc_v5.ScriptFormatError):
+            adhoc_v5.add_page(blob, name="Recomp", root="RecRoot1", static_index=272, line=204)
+
+    def test_block_shape_matches_the_retail_page_encoding(self):
+        block = adhoc_v5.page_block("Race", "RaceRoot", 98, 166)
+        # STATIC_DEFINE (line + type + symbol) then the eight page instructions.
+        define = struct.pack("<I", 166) + bytes([adhoc_v5.OP_STATIC_DEFINE]) + adhoc_v5._symbol("RaceRoot")
+        self.assertTrue(block.startswith(define))
+        rest = block[len(define):]
+        self.assertEqual(len(rest), 110)  # the retail Race block is 0x6E bytes
+        self.assertEqual(rest[:5], struct.pack("<I", 166) + bytes([adhoc_v5.OP_VARIABLE_PUSH]))
+        self.assertIn(adhoc_v5._symbol("Race"), rest)
+
+
+class RetailAddPageTest(unittest.TestCase):
+    def setUp(self):
+        path = os.environ.get("GT4_OPTION_ADC")
+        if not path or not Path(path).is_file():
+            self.skipTest("GT4_OPTION_ADC is not set to a decoded option.adc")
+
+    def test_retail_page_insertion(self):
+        blob = Path(os.environ["GT4_OPTION_ADC"]).read_bytes()
+        after = adhoc_v5.add_page(blob, name="Recomp", root="RecRoot1", static_index=272, line=204)
+        self.assertEqual(len(after) - len(blob), 127)
+        self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.INSTRUCTION_COUNT_OFFSET)[0], 3384)
+        self.assertEqual(struct.unpack_from("<I", after, adhoc_v5.STATIC_COUNT_OFFSET)[0], 273)
+        pages = adhoc_v5.scan_pages(after, 0, len(after))
+        names = [page.name for page in pages]
+        self.assertIn("Recomp", names)
+        self.assertNotIn("Recomp", [page.name for page in
+                                    adhoc_v5.scan_pages(blob, *adhoc_v5.V200_PAGE_REGION)])
+        # No existing page changed.
+        original = {page.name: page for page in adhoc_v5.scan_pages(blob, *adhoc_v5.V200_PAGE_REGION)}
+        for page in pages:
+            if page.name in original:
+                self.assertEqual(page.root, original[page.name].root)
+
+
 if __name__ == "__main__":
     unittest.main()

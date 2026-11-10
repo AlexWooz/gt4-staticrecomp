@@ -282,6 +282,74 @@ def changed_ranges(before: bytes, after: bytes) -> list[dict]:
     return ranges
 
 
+# --- v5 instruction encoding (derived from the retail file and cross-checked with the disassembly) -----------------
+#
+# Every instruction is ``u32 line_number | u8 type | payload``. The opcodes used by a page construction:
+OP_EVAL = 0x08
+OP_CALL = 0x06
+OP_NIL_CONST = 0x16
+OP_STATIC_DEFINE = 0x1C
+OP_STRING_CONST = 0x1D
+OP_VARIABLE_PUSH = 0x24
+OP_SET_STATE_OLD = 0x1B
+# The module initializer ends with ``SET_STATE_OLD EXIT (0)`` (line, 0x1B, 0x00) and nothing after it.
+EXIT_TAIL = bytes([OP_SET_STATE_OLD, 0x00])
+INSTRUCTION_COUNT_OFFSET = 0x24
+STATIC_COUNT_OFFSET = 0x1C
+
+
+def _symbol(text: str) -> bytes:
+    encoded = text.encode("ascii")
+    require(1 <= len(encoded) <= 0xFF, "symbol length is outside the format range")
+    return struct.pack("<H", len(encoded)) + encoded
+
+
+def _instruction(opcode: int, payload: bytes, line: int) -> bytes:
+    require(0 <= line <= 0xFFFFFFFF, "line number is outside the format range")
+    return struct.pack("<I", line) + bytes([opcode]) + payload
+
+
+def page_block(name: str, root: str, static_index: int, line: int) -> bytes:
+    """The nine instructions the retail module uses for one OptionPage (plus its static definition)."""
+    require(0 <= static_index <= 0xFFFF, "static index is outside the format range")
+    return b"".join([
+        _instruction(OP_STATIC_DEFINE, _symbol(root), line),
+        _instruction(OP_VARIABLE_PUSH,
+                     struct.pack("<I", 2) + _symbol("OptionPage") + _symbol("OptionPage")
+                     + struct.pack("<I", 97), line),
+        _instruction(OP_EVAL, b"", line),
+        _instruction(OP_STRING_CONST, _symbol(name), line),
+        _instruction(OP_VARIABLE_PUSH,
+                     struct.pack("<I", 2) + _symbol(root) + _symbol(root)
+                     + struct.pack("<I", static_index), line),
+        _instruction(OP_EVAL, b"", line),
+        _instruction(OP_NIL_CONST, b"", line),
+        _instruction(OP_CALL, struct.pack("<I", 3), line),
+        _instruction(OP_EVAL, b"", line),
+    ])
+
+
+def add_page(blob: bytes, *, name: str, root: str, static_index: int, line: int) -> bytes:
+    """Append one page construction to a v5 module initializer.
+
+    The block goes **before** the final ``SET_STATE_OLD EXIT (0)`` so it runs, and after every existing
+    instruction so no jump target or instruction index moves. The header static count and instruction count are
+    bumped; nothing else changes.
+    """
+    image = ScriptImage(blob)
+    require(len(blob) >= 0x28, "image is shorter than the v5 header")
+    require(blob[-2:] == EXIT_TAIL, "image does not end with SET_STATE_OLD EXIT (0)")
+    instructions = struct.unpack_from("<I", blob, INSTRUCTION_COUNT_OFFSET)[0]
+    statics = struct.unpack_from("<I", blob, STATIC_COUNT_OFFSET)[0]
+    block = page_block(name, root, static_index, line)
+    # The final instruction is u32 line, 0x1B, u8 state: insert before all six bytes.
+    insert_at = len(blob) - 6
+    out = bytearray(blob[:insert_at] + block + blob[insert_at:])
+    struct.pack_into("<I", out, INSTRUCTION_COUNT_OFFSET, instructions + 9)
+    struct.pack_into("<I", out, STATIC_COUNT_OFFSET, max(statics, static_index + 1))
+    return bytes(out)
+
+
 def summarise(image: ScriptImage, start: int, end: int) -> dict:
     pages = image.pages(start, end)
     dummies = image.dummies(start, end)
@@ -325,6 +393,15 @@ def main(argv: list[str] | None = None) -> int:
     roundtrip = commands.add_parser("roundtrip", help="prove that the image re-emits byte-identically")
     roundtrip.add_argument("image", type=Path)
 
+    add = commands.add_parser("add-page", help="append one OptionPage construction before the module exit")
+    add.add_argument("image", type=Path)
+    add.add_argument("--name", required=True, help="page label, for example Recomp")
+    add.add_argument("--root", required=True, help="new top-level RootWindow name, for example RecRoot1")
+    add.add_argument("--static-index", type=int, required=True,
+                     help="free static slot for the root (v2.00: the header count is the next free slot)")
+    add.add_argument("--line", type=int, default=204, help="source line recorded in the instructions")
+    add.add_argument("--output", type=Path, required=True)
+
     args = parser.parse_args(argv)
     start, end = args.region
 
@@ -341,6 +418,32 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "inspect":
         print(json.dumps(report, indent=2))
+        return 0
+
+    if args.command == "add-page":
+        before = args.image.read_bytes()
+        after = add_page(before, name=args.name, root=args.root,
+                         static_index=args.static_index, line=args.line)
+        require(len(after) == len(before) + len(page_block(args.name, args.root,
+                                                           args.static_index, args.line)),
+                "page insertion changed the length unexpectedly")
+        args.output.write_bytes(after)
+        print(json.dumps({
+            "input": str(args.image),
+            "output": str(args.output),
+            "decoded_bytes_before": len(before),
+            "decoded_bytes_after": len(after),
+            "sha256_before": digest(before),
+            "sha256_after": digest(after),
+            "instructions_before": struct.unpack_from("<I", before, INSTRUCTION_COUNT_OFFSET)[0],
+            "instructions_after": struct.unpack_from("<I", after, INSTRUCTION_COUNT_OFFSET)[0],
+            "statics_before": struct.unpack_from("<I", before, STATIC_COUNT_OFFSET)[0],
+            "statics_after": struct.unpack_from("<I", after, STATIC_COUNT_OFFSET)[0],
+            "page": {"name": args.name, "root": args.root, "static_index": args.static_index,
+                     "line": args.line},
+            "inserted_at": f"0x{len(before) - 6:X}",
+            "inserted_bytes": len(after) - len(before),
+        }, indent=2))
         return 0
 
     matches = [page for page in image.pages(start, end) if page.name == args.page]

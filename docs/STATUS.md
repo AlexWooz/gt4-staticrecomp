@@ -1,5 +1,32 @@
 # Current Status
 
+## TASK-214 Phase 2: v5 reassembler, inserted page and the tile gate (2026-11-10, private toolchain authorized; no page tile yet)
+
+The owner authorized using GTAdhocToolchain for private use (recorded with the upstream AI policy in
+`docs/tasks/V5-TOOLCHAIN.md` section 9); the shipped tools remain our MIT ones. No existing page was swapped.
+
+- **Toolchain:** GTAdhocToolchain **1.4.0** (`0e98a7d`) built with SDK 10.0.303, private clone with one local
+  writer-order patch; read -> write of the retail `option.adc` is **byte-identical** (251,715 bytes): a real v5
+  reassembler. Current `master` does not compile at its own `PDTools` pin.
+- **Format:** header = source symbol, param count, **static slot count 272**, local count 142, **instruction count
+  3375**; instruction = `u32 line | u8 opcode | payload`; a page is eight instructions (`VARIABLE_PUSH OptionPage 97`,
+  `EVAL`, `STRING_CONST label`, `VARIABLE_PUSH root slot`, `EVAL`, `NIL`, `CALL 3`, `EVAL`) plus a `STATIC_DEFINE`.
+  The Phase 1 "class ids" were source lines and the "trailers" static slots.
+- **Inserter:** `scripts/adhoc_v5.py add-page` inserts before the module EXIT and bumps both counts; its output equals
+  the toolchain writer's byte for byte. `Recomp`/`RecRoot1` slot 272: decoded +127 bytes, statics 272 -> 273,
+  instructions 3375 -> 3384, PS2ZIP 54,443 <= 55,353. The mproject `RootWindow` packs to 14,312 <= 22,449.
+- **Data patch:** three same-length ranges (GT4.VOL ToC, `option.adc`, `option.mproject`); the ToC writer updates the
+  record (packed 54,443, size 251,842) and its 365,618-byte output is padded into the original 365,622-byte range.
+- **Headless (v2.00, TASK-213 build, private copy):** Options renders with the reassembled script, 2,600/3,200 frames,
+  exit 0 - the loader accepts the extra page, static and counts. There is **no tile** for a page appended after every
+  group; placing it inside a group (after Race or after Language) crashes at frame 1743 with
+  `missing code at 0x00000000 (ra 0x00319ECC)`: the Options tile builder reaches the new page and dereferences a null
+  tile entry.
+- **Gate:** the Options root builds one tile per page inside each group. A visible page needs that tile (label, icon,
+  geometry; builder at 0x00319ECC) or one more constructed tile. Entry, module, static, PS2ZIP and ToC are solved.
+- **Tests:** `test_adhoc_v5.py` 14 OK, `test_gt4_vol_toc.py` 10 OK, full Python suite 845 OK (77 skipped). No ISO
+  copy (0 bytes), no ISO write, no game window; private capsule `private/slice438-toolchain-run/`.
+
 ## TASK-214: the Adhoc v5 page table and the GT4.VOL ToC writer, Phase 1 (2026-11-10, tools + gate; no build)
 
 The owner wants the **Recomp settings** hub as a real page. This round built the tooling and measured the route
