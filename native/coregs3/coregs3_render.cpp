@@ -1059,9 +1059,19 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
     return true;
   }
 
+  bool wet_alpha_cleared = false;
   for (std::size_t draw_index = 0; draw_index < frame.draws.size(); ++draw_index) {
     const CapturedDraw &draw = frame.draws[draw_index];
     stats.draws += 1;
+    if (options.world_pass && options.clear_alpha_before_wet_reflection && draw.pass == kPassReflection &&
+        !wet_alpha_cleared) {
+      // TASK-090 S2: the captured full-screen alpha clear that precedes the wet-road reflection mask. It is applied at
+      // the stream position the capture measured (after the course draws, before the pass 7 draws).
+      for (std::size_t pixel = 0; pixel < static_cast<std::size_t>(width) * height; ++pixel)
+        rgba[pixel * 4 + 3] = 0;
+      wet_alpha_cleared = true;
+      stats.world_reflection_alpha_clear += 1;
+    }
     DrawMatrix matrix = draw_matrix(draw);
     if (options.world_pass) {
       // TASK-090 track M1: the selected world draws use the captured upload rule, not the car path's carried-vf

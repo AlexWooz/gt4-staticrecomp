@@ -33,8 +33,11 @@
 //
 // A capture is derived from the user's own disc and is never committed: both the input and the PNG output live under
 // private/ or build/evidence/.
+#include "coregs3_gsdecode.hpp"
+#include "coregs3_gsstream_file.hpp"
 #include "coregs3_png.hpp"
 #include "coregs3_render.hpp"
+#include "coregs3_wet_composite.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
 #include "coregs3_world.hpp"
@@ -462,6 +465,12 @@ int main(int argc, char **argv) {
   bool world_keep_reflection = true;
   int vram_vblank = -1;
   const char *reflection_mask_path = nullptr;
+  const char *gs_path = nullptr;
+  const char *composite_mask_path = nullptr;
+  const char *composite_changed_path = nullptr;
+  bool wet_composite = true;
+  bool post_chain = false;
+  bool composite_world_alpha = false;
   RenderOptions options;
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -485,6 +494,12 @@ int main(int argc, char **argv) {
     else if (argument == "--no-course") world_keep_course = false;
     else if (argument == "--no-wet-reflection") world_keep_reflection = false;
     else if (argument == "--world-no-alpha") options.world_ignore_alpha_test = true;
+    else if (argument == "--gs" && index + 1 < argc) gs_path = argv[++index];
+    else if (argument == "--no-wet-composite") wet_composite = false;
+    else if (argument == "--post-chain") post_chain = true;
+    else if (argument == "--composite-world-alpha") composite_world_alpha = true;
+    else if (argument == "--composite-mask" && index + 1 < argc) composite_mask_path = argv[++index];
+    else if (argument == "--composite-changed" && index + 1 < argc) composite_changed_path = argv[++index];
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
     else if (argument == "--report" && index + 1 < argc) report = argv[++index];
@@ -702,6 +717,14 @@ int main(int argc, char **argv) {
   FrameTextureTable texture_table;
   TextureFrameCounters texture_counters;
   std::string world_report;  // the TASK-090 track M1 selection/exclusion/fallback lines, printed and written to --report
+  // TASK-090 S2: the captured wet-road composite chain, its sphere-mapper source page and the applied counters.
+  GsWetCompositeInfo wet_info;
+  std::vector<GsDecodeBatch> wet_batches;  // keeps the batches `wet_info` points into alive through the render
+  std::vector<std::uint8_t> wet_source;    // the CT32 page, 128 x 128 RGBA8
+  std::uint32_t wet_source_label = 0;
+  bool wet_ready = false;
+  WetCompositeStats wet_stats;
+  WetCompositeStats post_stats;
   std::uint64_t vblank_record_count = 0;  // the sidecar's record census, for the world report
   std::uint64_t pass_record_count = 0;
   std::uint64_t draw_record_count = 0;
@@ -895,6 +918,88 @@ int main(int argc, char **argv) {
     selected = std::move(selection.frame);
     options.world_pass = true;
     options.reflections = false;
+    if (gs_path != nullptr && wet_composite) {
+      // TASK-090 S2: the measured phase relation. The scene frame V (selected.vblank) built the GS stream stamped
+      // V + 1; the chain recogniser pins the exact four draws in that stream and refuses anything else.
+      std::vector<std::uint8_t> gs_data;
+      GsStreamFileHeader gs_header;
+      std::vector<GsStreamFileRecord> gs_records;
+      std::string gs_error;
+      if (!read_gs_stream_file(gs_path, gs_data, gs_header, gs_records, gs_error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: %s\n", gs_error.c_str());
+        return 1;
+      }
+      GsStreamCensus gs_census;
+      std::vector<GsDecodeImageUpload> gs_uploads;
+      if (!census_gs_stream(gs_data, gs_header, gs_records, gs_census, wet_batches, gs_uploads, gs_error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: %s\n", gs_error.c_str());
+        return 1;
+      }
+      if (!find_wet_composite(wet_batches, selected.vblank, wet_info)) {
+        std::fprintf(stderr, "gt4_coregs3_render: wet composite refused: %s\n", wet_info.refusal.c_str());
+        return 1;
+      }
+      std::vector<VramRecord> wet_records;
+      if (!read_vram_sidecar(vram_path, wet_records, gs_error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: %s\n", gs_error.c_str());
+        return 1;
+      }
+      // The sphere-mapper source page: the unique VU1-job snapshot at the stream's vblank (worker counter V + 1) whose
+      // window table covers blocks 0x3140..0x323F. It is captured before the job executes, exactly the content the
+      // composite draw samples (the job is posted after the composite in the same stream).
+      const VramRecord *source_record = nullptr;
+      std::uint32_t source_candidates = 0;
+      for (const VramRecord &record : wet_records) {
+        if (record.kind != vram::kRecordJobTexture || record.vblank != selected.vblank + 1) continue;
+        bool covers = false;
+        for (const vram::Window &window : record.windows)
+          if (window.first_block <= 0x3140u && 0x3140u + 256u <= window.first_block + window.block_count) covers = true;
+        if (!covers) continue;
+        source_candidates += 1;
+        source_record = &record;
+      }
+      if (source_candidates != 1) {
+        std::fprintf(stderr,
+                     "gt4_coregs3_render: wet composite refused: expected one sphere-mapper job record covering blocks "
+                     "0x3140..0x323F at vblank %llu, found %u\n",
+                     static_cast<unsigned long long>(selected.vblank + 1), source_candidates);
+        return 1;
+      }
+      std::size_t offset = 0;
+      bool copied = false;
+      for (const vram::Window &window : source_record->windows) {
+        const std::size_t bytes = static_cast<std::size_t>(window.block_count) * vram::kBlockBytes;
+        if (window.first_block <= 0x3140u && 0x3140u + 256u <= window.first_block + window.block_count) {
+          const std::size_t at = offset + static_cast<std::size_t>(0x3140u - window.first_block) * vram::kBlockBytes;
+          if (at + 65536u > source_record->bytes.size()) break;
+          wet_source.assign(source_record->bytes.begin() + static_cast<std::ptrdiff_t>(at),
+                            source_record->bytes.begin() + static_cast<std::ptrdiff_t>(at + 65536u));
+          copied = true;
+          break;
+        }
+        offset += bytes;
+      }
+      if (!copied) {
+        std::fprintf(stderr, "gt4_coregs3_render: wet composite refused: the sphere-mapper page is truncated\n");
+        return 1;
+      }
+      wet_source_label = source_record->label;
+      options.clear_alpha_before_wet_reflection = !composite_world_alpha;
+      wet_ready = true;
+      char line[512];
+      std::snprintf(line, sizeof line,
+                    "wet composite: alpha_clear seq %u, composite seq %u, post_darken seq %u, post_brighten seq %u; "
+                    "source job %u (vblank %llu, blocks 0x3140+256)%s",
+                    wet_info.alpha_clear->sequence, wet_info.composite->sequence,
+                    wet_info.post_darken != nullptr ? wet_info.post_darken->sequence : 0,
+                    wet_info.post_brighten != nullptr ? wet_info.post_brighten->sequence : 0, wet_source_label,
+                    static_cast<unsigned long long>(selected.vblank + 1),
+                    composite_world_alpha ? "; DIAGNOSTIC world alpha (the captured clear is skipped)" : "");
+      world_report += line;
+      world_report += "\n";
+    } else if (gs_path != nullptr) {
+      world_report += "wet composite disabled (--no-wet-composite A/B): the world picture is the baseline\n";
+    }
     // Count the selected items' texture bindings by the same static check the renderer will run, so the fallback counts
     // in the report name the outcome per selected item (the renderer's own counters are per rendered draw as well).
     std::uint32_t probe_textured = 0, probe_no_texture = 0, probe_no_record = 0, probe_refused_filter = 0;
@@ -1158,6 +1263,87 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
     return 1;
   }
+#ifdef GT4_COREGS3_TEXTURES
+  if (world && wet_ready) {
+    // TASK-090 S2: draw the captured composite over the world and count what it changes. The framebuffer alpha at this
+    // point is the captured alpha clear followed by the reflection pass's alpha-only draws (or the world alpha in the
+    // diagnostic mode), which is exactly the blend factor C = Ad the draw reads.
+    std::vector<std::uint8_t> before = rgba;
+    std::vector<std::uint8_t> covered, masked;
+    wet_stats = WetCompositeStats{};
+    if (!apply_wet_composite(*wet_info.composite, wet_source.data(), 128, 128, rgba, options.width, options.height,
+                             640, 448, wet_stats, error, &covered, &masked)) {
+      std::fprintf(stderr, "gt4_coregs3_render: wet composite refused: %s\n", error.c_str());
+      return 1;
+    }
+    char line[512];
+    std::snprintf(line, sizeof line,
+                  "wet composite raster: sprites %llu pixels %llu masked (Ad != 0) %llu changed %llu sampled %llu "
+                  "refused %llu alpha-written %llu added luma %.3f",
+                  static_cast<unsigned long long>(wet_stats.sprites),
+                  static_cast<unsigned long long>(wet_stats.pixels),
+                  static_cast<unsigned long long>(wet_stats.masked_pixels),
+                  static_cast<unsigned long long>(wet_stats.changed_pixels),
+                  static_cast<unsigned long long>(wet_stats.sampled_pixels),
+                  static_cast<unsigned long long>(wet_stats.refused_pixels),
+                  static_cast<unsigned long long>(wet_stats.alpha_written), wet_stats.added_luma);
+    world_report += line;
+    world_report += "\n";
+    if (post_chain) {
+      if (wet_info.post_darken == nullptr || wet_info.post_brighten == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: post chain refused: the captured darken/brighten pair is incomplete\n");
+        return 1;
+      }
+      post_stats = WetCompositeStats{};
+      if (!apply_full_screen_multiply(*wet_info.post_darken, rgba, options.width, options.height, 640, 448, post_stats,
+                                      error) ||
+          !apply_full_screen_multiply(*wet_info.post_brighten, rgba, options.width, options.height, 640, 448,
+                                      post_stats, error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: post chain refused: %s\n", error.c_str());
+        return 1;
+      }
+      std::snprintf(line, sizeof line, "wet post chain raster: multiplies %llu pixels %llu (FIX 127 then FIX 255)",
+                    static_cast<unsigned long long>(post_stats.sprites),
+                    static_cast<unsigned long long>(post_stats.pixels));
+      world_report += line;
+      world_report += "\n";
+    }
+    if (composite_mask_path != nullptr) {
+      std::FILE *mask_file = std::fopen(composite_mask_path, "wb");
+      if (mask_file == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", composite_mask_path);
+        return 1;
+      }
+      std::fprintf(mask_file, "P5\n%u %u\n255\n", options.width, options.height);
+      std::fwrite(masked.data(), 1, masked.size(), mask_file);
+      std::fclose(mask_file);
+      std::size_t count = 0;
+      for (std::uint8_t value : masked) count += value != 0 ? 1u : 0u;
+      std::printf("composite mask %s: %zu pixels (covered with Ad != 0)\n", composite_mask_path, count);
+    }
+    if (composite_changed_path != nullptr) {
+      std::vector<std::uint8_t> changed(static_cast<std::size_t>(options.width) * options.height, 0);
+      std::size_t count = 0;
+      for (std::size_t pixel = 0; pixel < changed.size(); ++pixel) {
+        if (before[pixel * 4 + 0] != rgba[pixel * 4 + 0] || before[pixel * 4 + 1] != rgba[pixel * 4 + 1] ||
+            before[pixel * 4 + 2] != rgba[pixel * 4 + 2]) {
+          changed[pixel] = 255;
+          count += 1;
+        }
+      }
+      std::FILE *mask_file = std::fopen(composite_changed_path, "wb");
+      if (mask_file == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", composite_changed_path);
+        return 1;
+      }
+      std::fprintf(mask_file, "P5\n%u %u\n255\n", options.width, options.height);
+      std::fwrite(changed.data(), 1, changed.size(), mask_file);
+      std::fclose(mask_file);
+      std::printf("composite changed mask %s: %zu pixels (RGB changed by the composite)\n", composite_changed_path,
+                  count);
+    }
+  }
+#endif
   if (!write_png_rgba(out, options.width, options.height, rgba.data())) {
     std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", out);
     return 1;
