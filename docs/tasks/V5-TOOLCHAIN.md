@@ -536,3 +536,52 @@ module defines at least:
 `OptionProject::RaceRoot` shows the exact shape (line 2079+: `VARIABLE_PUSH start_page Static:2 ... CALL 2`). The next
 insertion is those functions in `OptionProject::RecRoot1` (same instruction technique, ~10 instructions each) plus the
 static wiring for `start_page` and the root object. Until then the tile exists but the page cannot open.
+---
+
+# Phase 6 - the page lifecycle functions (2026-11-10)
+
+## 25. What was inserted
+
+Following `OptionProject::RaceRoot` (line 2079+), the private harness built `OptionProject::RecRoot1` with:
+
+| function | body |
+|---|---|
+| `open(context)` | `start_page(context, RecRoot1)` |
+| `close(context)` | `start_page(context, OptionRoot)` |
+| `reflect(context)` | `NOP`, `RETURN` |
+| `apply(context)` | `NOP`, `RETURN` |
+
+each as a `FUNCTION_DEFINE` frame (source `_tmp_option.ad`, one `context` parameter, `LocalCount 3`,
+`MaxStackSize 4`, `start_page` at static slot 2, the target root at slot 3), exactly the retail shape. The build:
+`252,456` decoded bytes, instructions 3392, statics 273, PS2ZIP **54,513 <= 55,353** (840 spare).
+
+## 26. Result and the exact gate
+
+Cross on the tile still stops at `missing code at 0x00000000 (ra 0x0030B450)`; the same address with and without
+`has_script 1` on the new `RootWindow`, and with the empty module. So the crash is not the module lookup.
+
+`AppendItem` (in `OptionRoot.onInitialize`) copies four statics into each tile item:
+
+```
+item.defineStatic("page",   option.root)
+item.defineStatic("func",   option.func)
+item.defineStatic("number", number)
+item.defineStatic("x", x)
+```
+
+`OptionPage.__init__` stores `func` as the **third constructor argument**, and every retail page passes `NIL` there.
+The tile's Cross handler dispatches `item.func`, so the engine must fill `func` from somewhere else - either the
+`OptionPage` factory resolves `OptionProject::<Root>.open` at construction time or the engine binds it when the root
+window has a script.
+
+Next experiments, smallest first:
+
+1. Pass a function object as the third argument instead of `NIL`. In v5 a function reference is a `VARIABLE_PUSH` of
+   a module member; emit `VARIABLE_PUSH OptionProject::RecRoot1::open` (path) and call `OptionPage(label, root, open)`.
+2. Find the native/`OptionPage` factory that fills `func` when it is nil: search the disassembly for the call that
+   turns `item.func` into a callable (the tile's Cross handler) and read how a nil func is resolved.
+3. If (2) shows a *compiled* table of page functions (one per page), the 25th entry is the same kind of insertion as
+   the capacity field.
+
+Nothing existing changed: the tile stays, LAN / 2 Player Battle / SplitBattle / Network and every other page are
+untouched, and the page does not open yet.

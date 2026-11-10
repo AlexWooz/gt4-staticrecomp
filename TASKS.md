@@ -5152,3 +5152,15 @@ The shipped path stays our MIT tools.
   `close(context)` -> `start_page(context, OptionRoot)`, `reflect(context)` and `apply(context)`. Those functions are
   the next insertion (`OptionProject::RaceRoot` is the template).
 - **Tests:** `test_adhoc_v5.py` 15 OK, `test_gt4_vol_toc.py` 10 OK.
+**Phase 6 (2026-11-10, page lifecycle functions).** Nothing existing touched.
+- **Inserted** (private harness, retail `OptionProject::RaceRoot` shape): `open(context)` -> `start_page(context,
+  RecRoot1)`, `close(context)` -> `start_page(context, OptionRoot)`, empty `reflect`/`apply`, each a
+  `FUNCTION_DEFINE` frame (source `_tmp_option.ad`, `context` parameter, `start_page` static 2, root static 3).
+  Build 252,456 decoded, 3392 instructions, 273 statics, PS2ZIP 54,513 <= 55,353.
+- **Gate:** Cross still stops at `missing code at 0x00000000 (ra 0x0030B450)`, with or without `has_script 1` on the
+  root window. `AppendItem` copies `option.func` into the tile's `func` static and `OptionPage.__init__` takes `func`
+  as the third argument; every retail page passes `NIL`, so the engine must fill it (factory or root-window script).
+- **Next experiments:** pass a function object as the third argument (`VARIABLE_PUSH ...::open`); or read the tile's
+  Cross handler and the `OptionPage` factory to see how a nil `func` is resolved; if it is a compiled per-page table,
+  add the 25th entry like the capacity field.
+- **Tests:** `test_adhoc_v5.py` 15 OK, `test_gt4_vol_toc.py` 10 OK, full suite 846 OK (77 skipped).

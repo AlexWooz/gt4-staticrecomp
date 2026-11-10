@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-214 Phase 6: page lifecycle functions inserted, page still does not open (2026-11-10)
+
+- **Inserted** (private harness, retail `OptionProject::RaceRoot` shape): `open(context)` -> `start_page(context,
+  RecRoot1)`, `close(context)` -> `start_page(context, OptionRoot)`, empty `reflect`/`apply`; build 252,456 decoded,
+  3392 instructions, 273 statics, PS2ZIP 54,513 <= 55,353.
+- **Gate:** Cross still stops at `missing code at 0x00000000 (ra 0x0030B450)`, with and without `has_script 1` on the
+  new root. `AppendItem` copies `option.func` into each tile's `func` static; `OptionPage.__init__` takes `func` as
+  the third argument and every retail page passes `NIL`, so the engine fills it elsewhere (factory or root script).
+- **Next:** pass a function object as the third argument (`VARIABLE_PUSH ...::open`), or read the tile's Cross handler
+  and the `OptionPage` factory to see how a nil `func` resolves; if it is a compiled per-page table, add the 25th
+  entry like the capacity field.
+- **Tile remains:** Options > Miscellaneous shows **Misc, Units, Recomp settings** (398, HUD, ... unchanged); no
+  existing page touched. Tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 5: the Recomp settings tile is in Options (2026-11-10; page opens pending)
 
 - **Enumeration (Confirmed):** `OptionRoot.onInitialize` (`0xA047`) walks the runtime `options` array
