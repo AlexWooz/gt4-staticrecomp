@@ -1679,6 +1679,13 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   prototype: 1x coverage 99.26% (block) / 97.49% (3x px), spill 1.70% (3x px) / 5.00% (1x block); the 1x diagnostic is
   98.79%/0.54%; median translation-centred residual 0.041 px and 102/115 draws within 0.5 px (was 58). CTest 5/5,
   Python 7/7, combined 3x gate COREGS3-NIGHT-CHECK-OK.
+- **Prediction study (2026-11-10).** Three 32-frame windows (B-Spec night race, static and moving cameras) measured
+  prediction vs the captured tick. Entrywise matrix extrapolation is exact for bodies/camera (<=0.05 px) but distorts
+  spinning wheels by 12-22.6 px at 1x (36-68 px at 3x); a rigid predictor (translation + quaternion angular velocity +
+  scale, entrywise fallback for rank-deficient draws) gives <=0.37 px for bodies and <=0.9 px for the worst wheel at 1x
+  (p95 <=0.2 px). The camera needs a pose predictor (position + orientation + constant angular acceleration; 0.04-0.08 px
+  on fast pans vs 0.56-0.75 px entrywise). Interpolation needs rigid slerp for wheels. One global mode; drop prediction
+  on discontinuities. Straight B-Spec only; braking/cornering, human input, collisions and cuts unmeasured.
 - Next: merge the remaining-family lighting implementation (in flight), then fog/textures/reflection and the
   G-IMAGE/G-PERF gates.
 

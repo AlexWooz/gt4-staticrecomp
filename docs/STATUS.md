@@ -1,5 +1,18 @@
 # Current Status
 
+## 2026-11-10: prediction study: rigid predictor and pose camera (TASK-090)
+
+A three-window capture study (32 frames each, B-Spec night race, static and moving cameras) measured prediction against
+the captured tick. Entrywise matrix extrapolation is exact for car bodies and the camera (<=0.05 px) but distorts
+spinning wheels by 12-22.6 px at 1x (36-68 px at 3x); a rigid predictor (translation + quaternion angular velocity +
+scale) with an entrywise fallback for rank-deficient draws gives a tick correction of <=0.37 px for bodies and <=0.9 px
+for the worst followed-car wheel (p95 <=0.2 px). The camera needs a pose-based predictor (position + orientation +
+constant angular acceleration): entrywise extrapolation shifts fast pans by 0.56-0.75 px, the pose model by 0.04-0.08 px.
+Interpolation also needs rigid slerp for wheels (entrywise wobbles 0.9-6.1 px at 120 Hz; rigid <=0.42 px). A player-only
+hybrid is not justified; one global mode with a discontinuity drop is enough. The study covers straight B-Spec running;
+braking/cornering, human input, collisions, camera cuts and course objects remain unmeasured. Evidence:
+`build/analysis-prediction/`.
+
 ## 2026-11-10: the vertex transform fix merged; the combined tree passes the 3x gate
 
 `task/090-vertex-fix` is merged (dd01a4bd). The captured linear columns are `vf24..26 * cmd.value` and the translation

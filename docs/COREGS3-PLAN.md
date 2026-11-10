@@ -335,6 +335,20 @@ instant and interpolates the two latest 60 Hz guest states; it never asks the gu
 because the game only computes at 60 Hz. Prediction/extrapolation is an optional later switch; interpolation's
 one-frame latency is the default.
 
+**Measured prediction (2026-11-10).** A three-window study (32 captured frames each; B-Spec night race, static and moving
+cameras) measured the tick correction a viewer would see if the prediction were replaced by the captured frame.
+Entrywise matrix extrapolation (the direct alpha>1 extension of `lerp_matrix`) is exact for car bodies and the camera
+(<=0.05 px) but distorts spinning wheels by 12-22.6 px at 1x (36-68 px at 3x) in every window, because a wheel spins
+0.8-1.3 rad per tick. A rigid predictor (linear world translation, quaternion constant angular velocity, linear scale)
+with an entrywise fallback for rank-deficient flat shell/reflection draws gives a tick correction of <=0.37 px for bodies
+and <=0.9 px for the worst followed-car wheel at 1x (2.7 px at 3x), p95 <=0.2 px. The camera must be predicted from its
+pose (position + orientation) with a constant angular acceleration term: entrywise V extrapolation shifts the image by
+0.56-0.75 px during a fast pan, the pose model by 0.04-0.08 px. Interpolation needs the same rigid treatment for wheels
+(entrywise lerp wobbles them by 0.9-6.1 px at 120 Hz; rigid slerp <=0.42 px). A player-car-only hybrid is not justified:
+the split is part-class and camera-driven, not car-class. Discontinuities (collisions, resets, camera cuts) must drop the
+prediction for that tick. The study covers straight near-constant-speed B-Spec running only; braking/cornering, human
+input, collisions, camera cuts and course/scenery objects are still unmeasured.
+
 **Contract.**
 
 1. **The guest stays the clock.** A guest frame is captured exactly as today (K1-K5, one snapshot per VBlank) and is
