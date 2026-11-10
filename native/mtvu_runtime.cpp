@@ -592,9 +592,20 @@ void note_table_copy(Runtime &r, const std::uint8_t *data, std::size_t bytes, st
 void post_table_patches(Runtime &r, std::uint64_t job, std::vector<Runtime::TablePatch> &patches) {
   if (patches.empty()) return;
   {
+    // TASK-215 S4: the shape of a flare-table REF, for the GPU-side modulation (which table texel the job uses).
+    static const long trace = [] {
+      const char *text = std::getenv("GT4_HW_FLARE_PATCH_TRACE");
+      return text != nullptr ? std::atol(text) : -1L;
+    }();
+    static long printed = 0;
     const std::lock_guard<std::mutex> lock(r.job_patches_mutex);
     for (Runtime::TablePatch &patch : patches) {
       patch.job = job;
+      if (trace > 0 && printed < trace) {
+        std::fprintf(stderr, "[mtvu] flare patch job=%llu payload=%zu table=%zu bytes=%zu\n",
+                     static_cast<unsigned long long>(job), patch.payload_offset, patch.table_offset, patch.bytes);
+        ++printed;
+      }
       r.job_patches.push_back(patch);
       if (patch.ticket != r.first_patched_ticket) {  // TASK-178 diagnostics
         r.first_patched_ticket = patch.ticket;

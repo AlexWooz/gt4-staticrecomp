@@ -211,6 +211,59 @@ GTX 1660; the stutters are readback / image-creation / texture-churn spikes. The
 images created while recording and a spike line beside it (the created>0 question), (2) the texture-replacement path
 on/off at 3x, (3) every readback reason attributed (done on rc15: 0 unattributed).
 
+
+## S4 gate: what the VU1 job actually takes from the flare table
+
+Measured with `GT4_HW_FLARE_PATCH_TRACE` and `GT4_FLARE_TABLE_DUMP` on the night race 3x:
+
+- The IN-522 patch record for a flare job is **16 bytes at table offset 0**, repeated at **four payload offsets** of the
+  job's VIF packet (11,720 / 12,752 / 14,760 / 15,792 in the sample frames). So each job copies the **first four words**
+  of the 64x8 table, four times.
+- Those four words are **not** one value replicated: over 1,400 reads the tuple is
+  `(ff0000fd, ff0000fd, ff0000fd, ff0000fd)` 90 times, `(ff0000fd, 11111111, 11111111, 11111111)` 67 times, and the four
+  words differ in **1,129 of 1,400** reads (RGBA `R = visibility`, `A = 0xff` in the quiet case).
+- Therefore a **single factor per job is not justified**: the four words are four lights' visibilities packed in one
+  16-byte window, and which sprite reads which word is decided by the VU1 program (or by the unpack lane at each of the
+  four payload positions). S4 needs that mapping before it can multiply each flare draw by the right word; applying word
+  0 to the whole job would be wrong whenever the four differ (81% of the reads).
+
+**Exact gate to finish S4 (1-2 d):** record the VU1 program that consumes the job (`PS2_VU_RECORD` on the night race, or
+a per-entry call histogram) and read its generated code to find (a) which VU1 memory word each of the four payload copies
+fills and (b) which sprite reads which of the four values; then pass that index to the draw variant. The rest is ready:
+the patch points are known, the table target lookup and barrier ordering exist, and the multiply is a single scalar on
+the flare's colour or alpha (P1). Until then the CPU read stays (faithful, same frame).
+
+## `GT4_CORE2_PALETTE_SEGMENTS` on the license: no gain (correction)
+
+Five 1x runs of license B-1, VBlanks 2,400-3,500 (the first measurement's 9.55 ms was machine drift, not the switch):
+
+| | off (3 runs) | on (2 runs) |
+|---|---|---|
+| wall | 8.675, 8.705, 9.550 (the outlier) | 8.705, 8.990 |
+| frame p50 | 7.93, 7.97, 10.26 | 7.81, 8.13 |
+| GS worker | 8.08, 8.11, 8.25 | 8.21, 8.48 |
+| `clut_kept` | 0 | 0 |
+| `segmented_batches` | 0 | 0 |
+| `tone_refused` | 1.67 M | 1.67 M |
+
+The segment path is **refused while a tone run is active**, so nothing merges; the on/off difference is run-to-run drift.
+Keep the switch **off** (rc15's default) and treat the license's 1,430 CLUT flushes as still open: TASK-168's segments
+need to work under the tone hook to help this scene.
+
+## `python_native_contracts`: one pre-existing rc15 test gap
+
+`tests/python` with `GT4_NATIVE_BUILD=build/perf-base`: 804 tests, **one failure**,
+`test_gs_live.ConfigTests.test_bad_values_are_refused` — it expects `GT4_GS_SCALE=1.5` to be refused, while rc15 accepts
+fractional scales (1.25x/1.5x/1.75x/2.5x). The branch touches no test or launcher file (`git diff
+origin/release/1.3.0-rc15..HEAD -- tests scripts docs/launcher` is empty), so this is rc15's stale test, not the merge.
+Reported here for its own fix; no test was weakened.
+
+## Scene schedules still to create
+
+Opera Paris, SS Route 5 and Tsukuba Wet need a recording (`build/bench-inputs-215/<name>.txt` + `.setup`) built from an
+Arcade press schedule on `private/slice110-menu-pilot/name-control4/card.ps2` (City Courses / wet track menu positions),
+each validated in 2-3 runs. George Paris Rally needs a GT Mode card with the rally event unlocked (no such card here).
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

@@ -811,6 +811,21 @@ private:
               return text != nullptr ? std::atoi(text) : -1;
             }();
             if (forced >= 0) std::memset(table.data(), forced & 0xFF, table.size());
+            // TASK-215 S4: the words the VU1 job copies from the table (four payload windows of 16 bytes), for the
+            // per-sprite modulation question.
+            static const long dump = [] {
+              const char *text = std::getenv("GT4_FLARE_TABLE_DUMP");
+              return text != nullptr ? std::atol(text) : -1L;
+            }();
+            static long dumped = 0;
+            if (dump > 0 && dumped < dump) {
+              std::fprintf(stderr, "[hw] flare table words: %08x %08x %08x %08x\n",
+                           *reinterpret_cast<const unsigned *>(table.data()),
+                           *reinterpret_cast<const unsigned *>(table.data() + 4),
+                           *reinterpret_cast<const unsigned *>(table.data() + 8),
+                           *reinterpret_cast<const unsigned *>(table.data() + 12));
+              ++dumped;
+            }
             if (std::uint8_t *dest = flareReads_.next_dest()) std::memcpy(dest, table.data(), table.size());
             flareTicket = flareReads_.finish(table);
             break;
