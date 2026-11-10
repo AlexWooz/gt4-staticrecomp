@@ -1,5 +1,29 @@
 # Current Status
 
+## 2026-11-10: GS-stream capture S1, the `.gt4gs` PATH2/PATH3 sidecar (TASK-090, branch `task/090-gs-capture`)
+
+The first milestone of `docs/COREGS3-GSSTREAM-CAPTURE.md` is implemented and measured. A new **`.gt4gs` version 1**
+sidecar records every **PATH2/PATH3** GIF transfer at the EE acceptance point (`gif_transfer` for PATH3,
+`shadow_direct` for PATH2, under MTVU) into a preallocated 64 MiB ring that is written once at shutdown: no file I/O,
+allocation or lock on the guest path, no rendering. Records carry VBlank, pass, acceptance sequence, `last_posted_job`
+(the merge point against the VU1 tap), `source_pc`/`ra`, the SIGNAL/FINISH/LABEL flag and the raw GIF bytes; pass
+records carry the seven v5 GS register words plus **CLAMP 0x1A8** and **TEX1 0x1B8**. The reader lives next to the tap
+reader, `gt4_coregs3_gs` offers `--stats | --list | --dump-frame N | --check-pass`, and a fixture plus a Python
+control pin the format and every refusal.
+
+Night race, 3x, VBlanks 7398-7405 with `.gt4scene`, `.gt4tap` and `.gt4gs`: capture **30,945,504 B / 4,979 records**
+(4,771 GIF, 192 pass, 16 frame), **8/8 frames**, **0 refusals**; PATH2 **145,536 B / 1,480 records**, PATH3
+**30,545,072 B / 3,291 records** (3.82 MB/frame; the largest record 491,520 B, the largest frame 3.66 MiB).
+**G-GS-CAP passes exactly** for both paths, 8/8 frames (the F8 line is `VBlank - 1`; the F8 hook is blind to PATH2
+under IN-461 direct GS intake, so the PATH2 control uses a `GT4_MTVU_DIRECT=0` run, whose `.gt4gs` is byte-identical),
+and **G-PASS passes 8/8** (pass id and 7/7 register words). CTest coregs3 **13/13**, Python **14/14**, and the 3x
+off/shadow identity gate is **COREGS3-NIGHT-CHECK-OK** (capture enabled in shadow). Measured answer to the study's open
+question 1 (**C**): the packet pass at acceptance is `unknown` on **4,771 of 4,771** records, because the frame's GS
+stream is kicked at the start of the VBlank interval and the K7 markers run afterwards; the packet `last_job` ranges
+are contiguous across frames, so a frame's stream is what the previous frame's passes built. S2/S3 must use that phase
+relation or a stream-level pass marker. Design, format, evidence and limits: [COREGS3-HOOKS](COREGS3-HOOKS.md) §25;
+files under `build/evidence-gs-capture/`.
+
 ## 2026-11-10: pass textures, the world binds the pixels its own draws sampled (TASK-090, branch `task/090-pass-textures`)
 
 The world-materials study's dominant cause is fixed. `.gt4vram` is now **version 2**: a 48-byte header with an explicit

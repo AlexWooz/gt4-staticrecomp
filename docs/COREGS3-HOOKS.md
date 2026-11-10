@@ -1474,3 +1474,119 @@ frame-end image**.
 - The 0xA0 morph UV first-key substitution still misplaces the sampled coordinate for its 46 items.
 - The per-draw (`kRecordDrawTexture`) and pass-begin paths stay in the format as evidence and fallbacks; they are
   measured as too early for this scene and are not used by the world picture.
+
+## 25. Round 26 (2026-11-10, branch `task/090-gs-capture`): the `.gt4gs` PATH2/PATH3 stream (TASK-090 S1)
+
+One problem: record every PATH2/PATH3 GIF transfer of the captured frames, with the pass and VBlank it belongs to, into a
+bounded `.gt4gs` sidecar, without rendering and without changing the guest. This is S1 of
+`docs/COREGS3-GSSTREAM-CAPTURE.md` (§3 format, §5.4 brief, §6 open questions); S2 (the offline post layer), S3 (the HUD
+layer) and S4 (the live layer) are not implemented.
+
+### 25.1 Where it records (C)
+
+The writer `native/coregs3/coregs3_gsstream.{hpp,cpp}` lives in `gt4_mtvu_runtime` next to the VU1 tap and is called from
+the two EE acceptance points of `native/mtvu_runtime.cpp`:
+
+- `gif_transfer()` after the packet is scanned and its signals applied, for paths 2 and 3 (with MTVU on, PATH3 always
+  arrives here; PATH2 arrives here only when VIF1 is not shadowed, which the default does not do);
+- `shadow_direct()` for path 2 with the shadowed VIF1 (the MTVU default): the donor `vif.cpp` calls `gif::scan_signals`
+  instead of `gif::transfer` when the unit is shadowed, so the packet is seen exactly once. The worker's later
+  PATH1/PATH2 emission is a different function (`worker_gif`) and is not recorded. PATH1 stays the VU1 tap's.
+
+The join fields are read at acceptance: `vblank` (the coregs3 VBlank the hooks stamp), `pass` (the recorder tracks the
+same K7 begin/end calls the v5 journal does), `sequence` (per-file acceptance order), `last_job`
+(`gt4::mtvu::last_posted_job()`, the merge point against the tap) and `source_pc`/`source_ra` (the guest site, read by
+the bridge's one-line `Donor::guest_site` callback so `gt4_mtvu_runtime` stays free of donor headers). The pass records
+carry the nine register words the v5 journal's `capture_gs_shadow` reads (the seven journal offsets plus CLAMP `0x1A8`
+and TEX1 `0x1B8`), from **the same guest read** the journal entry uses, so G-PASS holds by construction.
+
+The guest path is a memory copy into a preallocated ring: no file I/O, no allocation, no lock. The file is opened at
+configuration time (`GT4_COREGS3_GS`) and written once at shutdown, header first, exactly like the `.gt4scene` and
+`.gt4tap` sidecars. When the switch is off the recorder is one atomic load per packet and per marker.
+
+### 25.2 Format version 1
+
+32-byte header (`GT4G`, version 1, target 0, flags 0, first VBlank, reserved 0) and 48-byte record headers
+(`bytes, kind, path, flags, pass, sequence, vblank, last_job, source_pc, source_ra, qwc, reserved`), payloads a
+multiple of 16 bytes: kind 1 the GIF bytes, kinds 2/3 the nine GS register words plus a reserved word, kinds 4/5 the
+frame ordinal and its PATH2/PATH3 totals, kind 8 the refused byte/record counts and cause bits. Kinds 6 and 7 are
+reserved for later versions and refused by the v1 reader. The reader
+`native/coregs3/coregs3_gsstream_file.{hpp,cpp}` is in `gt4_coregs3` next to `coregs3_tap_file`; the fixture pins that
+the independent writer and reader agree.
+
+Bounds: `GT4_COREGS3_GS_MAX_BYTES` (64 MiB default, the whole file including the header), `_MAX_FRAME_BYTES` (8 MiB),
+`_MAX_RECORDS` (65,536), `_MAX_FRAMES` (8) and `_VBLANKS` (default `GT4_COREGS3_CAPTURE_VBLANKS`). A packet over the
+frame cap is dropped and the frame is marked with a kind 8 record and a refused `frame_end` (later frames are kept); a
+file over its byte or record cap stops recording and counts every dropped packet; a packet outside the VBlank window or
+after the frame cap is skipped, not refused. Nothing is truncated silently.
+
+### 25.3 Tools and controls
+
+- `gt4_coregs3_gs --stats | --list | --dump-frame N | --check-pass <gs> <scene>`: the totals and per-frame census, the
+  raw record list, one frame with its pass words and the first 64 payload bytes, and the G-PASS control (the first
+  `.gt4gs` pass record of every frame against the first `.gt4scene` v5 journal entry of the same VBlank).
+- `native_coregs3_gsstream` (new CTest): round trip, the four bounds, a malformed packet and every reader refusal
+  (bad magic, unknown version, nonzero reserved words, reserved/unknown kinds, a record over the end, a qwc mismatch, a
+  bad pass id, a trailing partial record).
+- `tests/python/test_coregs3_units.py` gains an independent Python writer of the documented format and checks the
+  tool's parse and refusals (`GT4_NATIVE_BUILD` must point at the build under test).
+- `scripts/coregs3_bench/gs_capture_f8_check.py`: G-GS-CAP, the capture's per-frame PATH2/PATH3 bytes and records
+  against the F8 `[frame] gif bytes/frame` lines, with the report offset measured rather than assumed.
+
+### 25.4 Capture and evidence (night race, 3x, VBlanks 7398-7405)
+
+Recipe (same as the v5 evidence; `build/evidence-gs-capture/` holds the files and logs):
+
+```
+GT4_BENCH_OUT=<evidence> SCALE=3 EVERY=100000 FROM=999999 FRAMES=7420 \
+bash scripts/coregs2_bench/night-run.sh gscap build/gs-capture/gt4vulkan.exe \
+  GT4_COREGS3=shadow GT4_COREGS3_ALL_DRAWS=1 \
+  GT4_COREGS3_CAPTURE=<evidence>/capture.gt4scene GT4_COREGS3_CAPTURE_VBLANKS=7398-7405 \
+  GT4_COREGS3_TAP=<evidence>/capture.gt4tap GT4_COREGS3_TAP_VBLANKS=7398-7406 \
+  GT4_COREGS3_GS=<evidence>/capture.gt4gs GT4_COREGS3_GS_VBLANKS=7398-7405 \
+  GT4_MTVU_REPORT_EVERY=1
+```
+
+The capture is **30,945,504 B**: 4,979 records (4,771 GIF, 192 pass = 96 begin + 96 end, 16 frame), 8/8 frames closed,
+0 refusals. PATH2 **1,480 records / 145,536 B** (18,192 B / 185 records per frame); PATH3 **3,291 records /
+30,545,072 B** (3,817,280 B / 407 records on frame 7398, 3,818,256 B / 412 on frames 7399-7405); the largest record is
+491,520 B (a single PATH3 packet, `pc` 004AB548) and the largest frame 3,836,448 B (3.66 MiB, under the 8 MiB cap);
+8 records carry the SIGNAL/FINISH/LABEL flag. The `.gt4scene` file of the same run is 17,783,196 B and the `.gt4tap` 28,558,088 B.
+
+Two runs were made, one with the default IN-461 direct GS intake and one with `GT4_MTVU_DIRECT=0`; their `.gt4gs` files
+are **byte-identical** (SHA-256 `df858513bd01855196e0ca00489f058ffd1d76ca3b1daab815f0b854cf6cd46a`), and so are their
+`.gt4scene` files, so the capture is independent of the transport mode and the guest stream is deterministic.
+
+### 25.5 The measured phase: the pass at acceptance is unknown (C)
+
+The study's open question 1 is answered, and the answer changes the layer model. In every captured frame **all GIF
+records precede all 24 pass records**: e.g. frame 7398 has 592 GIF records (sequences 1..592) and then the 12 pass
+begins/ends (sequences 593..616), frame 7399 597 GIF and then the markers, and so on. The frame's GS stream is kicked at
+the start of the VBlank interval (the previous display list), and the K7 markers of the same file frame run after it
+while the next frame's display list is built. Consequently the recorder stamps `pass = unknown` on **4,771 of 4,771**
+packets, and the per-pass census is one `unknown` row; the markers themselves all fire (12 passes x 8 frames, all
+named). The packet `last_job` ranges are contiguous across frames (frame 7398: 460336..460503, frame 7399:
+460504..460675, ..., frame 7405: 461536..461707) and the frame's markers report the next frame's first job (460504),
+so the marker job ids cannot separate the passes inside a frame either.
+
+Source-site histogram (evidence only, per record): `pc` 004AB6D8 (2,603), 004AB548 (2,040), 004ABA80 (128); `ra`
+00001000 (4,587), 004ABA80 (128), 004AB8C8 (56). The low `ra` values are the translated dispatch's return address, so
+the fields name the kick site, not the PGL builder: the study's hypothesis for question 5 is confirmed in form, but the
+site is the frame kick loop rather than a per-pass builder.
+
+What this means for S2/S3: the capture is complete and exact for bytes, order, VBlank and jobs, but a packet cannot be
+placed in a pass from the acceptance-time marker state. S2 must either use the phase relation (the packets stamped V
+are the stream built in frame V-1; the passes of V-1 are in the scene journal) or add a stream-level pass marker (the
+study's optional kind 6/7 records) before the post/HUD layers can be drawn in pass order.
+
+### 25.6 Gates
+
+| Gate | Result |
+|---|---|
+| CTest coregs3 (12 existing + new `native_coregs3_gsstream`) | **13/13 passed** |
+| Python `tests/python/test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **14/14 passed** (8 insertion + 6 stream controls) |
+| G-GS-CAP, default direct intake (PATH3; the F8 line does not see PATH2 in IN-461 mode) | **PASS**: 3,817,280..3,818,256 B and 407..412 records per frame match F8 8/8; window 30,545,072 B / 3,291 records exact |
+| G-GS-CAP, `GT4_MTVU_DIRECT=0` (PATH2 and PATH3) | **PASS**: PATH2 145,536 B / 1,480 records and PATH3 30,545,072 B / 3,291 records, 8/8 frames exact; the measured report offset is line = VBlank - 1 (the F8 reset phase relative to the capture's VBlank stamp; the script measures it instead of assuming it) |
+| G-PASS (first pass record per frame against the first v5 journal entry) | **8/8 frames MATCH**, pass id and 7/7 register words; CLAMP `0x000000440004000a`, TEX1 `0x0000000000000060` captured; the negative control (one corrupted FOGCOL byte) reports 6/7 and exits 1 |
+| Bounds in the window | 0 refused records/bytes, 0 frames without end, 8/8 frames closed; the fixture forces a frame-cap, file-cap, record-cap and malformed-packet refusal and each is counted |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, capture enabled in shadow) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow; the gate's shadow run also wrote the same 30,945,504 B `.gt4gs` (SHA-256 `df858513...`) |

@@ -2,13 +2,33 @@
 
 Date: 2026-11-10. Branch `task/090-gs-stream-study` (worktree `O:/Antigavity/gt4-wt-090-gs-stream`, based on
 `task/090-coregs3` at `248ec453`). Read-only study on `native/`: this document proposes a design and does not change
-code.
+code (S1 was implemented afterwards; see the status section below).
 
 Clean room: no PCSX2 source, no `gt4recomp-gs`, no `private/tooling/pcsx2-*` and no `private/slice189-pcsx2-ref` was
 opened. The references are CoreGS 2.0 (`native/hw_gs`), the donor runtime (MIT, `private/references/ps2-web-recomp`),
 the existing CoreGS 3.0 capture (`native/coregs3`) and the repository studies.
 
 Labels: **C** = Confirmed (read in code or measured), **H** = High confidence, **Hyp** = Hypothesis, **U** = Unknown.
+
+## Status (2026-11-10): S1 implemented and measured
+
+S1 landed on branch `task/090-gs-capture` (worktree `O:/Antigavity/gt4-wt-090-gs-capture`, from `task/090-coregs3` at
+`e529c319`). The `.gt4gs` v1 writer, reader, the `gt4_coregs3_gs` tool (`--stats`, `--list`, `--dump-frame`,
+`--check-pass`), the `native_coregs3_gsstream` fixture and the Python control exist, and the night race was captured 3x
+over VBlanks 7398-7405 with `.gt4scene`, `.gt4tap` and `.gt4gs`. Measured (method and limits in
+[COREGS3-HOOKS](COREGS3-HOOKS.md) §25):
+
+- capture **30,945,504 B**, 4,979 records (4,771 GIF, 192 pass, 16 frame), 8/8 frames closed, **0 refusals**;
+  PATH2 **145,536 B / 1,480 records**, PATH3 **30,545,072 B / 3,291 records** (3.82 MB/frame, 3.66 MiB largest frame);
+- **G-GS-CAP passes exactly** for both paths (8/8 frames; the F8 report line is `VBlank - 1`), and **G-PASS passes
+  8/8** frames with the pass id and 7/7 register words;
+- CTest coregs3 **13/13**, Python **14/14**, and the 3x off/shadow identity gate is **COREGS3-NIGHT-CHECK-OK** (the
+  capture writes only at shutdown);
+- open question 1 is answered (**C**): every PATH2/PATH3 packet is accepted **outside** every pass marker (`pass =
+  unknown`, 4,771/4,771), because the frame's GS stream is kicked at the start of the VBlank interval and the K7 markers
+  run afterwards; the packet `last_job` ranges are contiguous across frames, so a packet belongs to the stream the
+  previous frame's passes built. S2/S3 need that phase relation or a stream-level pass marker before drawing the post or
+  HUD layers in pass order.
 
 Evidence directories referenced below that live in other worktrees are named in full (`build/analysis-effects/`,
 `build/analysis-hud/`, `build/analysis-particles/` were produced in `O:/Antigavity/gt4-wt-090-coregs3` and
@@ -32,7 +52,8 @@ night race is **too bright** (luma 31.20 against the reference's 26.69, PSNR 20.
 world-metrics.json`), so a captured brightness/tone operation applied to it must move both numbers toward the
 reference.
 
-Nothing here is implemented yet. The plan is phased so that each step has a gate that can fail loudly.
+Nothing here was implemented by the study. The plan is phased so that each step has a gate that can fail loudly; S1 is
+now implemented and measured (status above, method in [COREGS3-HOOKS](COREGS3-HOOKS.md) §25).
 
 ---
 
@@ -422,7 +443,7 @@ the tone strips are confirmed (C, plan §6) — this is the first thing S0 measu
 | Phase | What is built | Owner sees | Gate | Effort (Hyp) | Risk |
 |---|---|---|---|---|---|
 | **S0 measurement** (read-only instrumentation) | counters only at the acceptance points: path, bytes, records, pass, `source_pc`/`ra` histogram; no file | nothing (a report) | the bytes match the F8 per-path counters; the pass census prints | 1-2 days | low |
-| **S1 capture** | `coregs3_gsstream` module, `.gt4gs` v1 writer, `gt4_coregs3_gs` tool, fixture, hooks in `mtvu_runtime.cpp` + `coregs3_hooks.cpp` | a capture file and its statistics | CTest green; **COREGS3-NIGHT-CHECK-OK** (3x off/shadow); byte control; 0 refusals in the 8-frame window | 4-6 days | medium |
+| **S1 capture** (done 2026-11-10) | `coregs3_gsstream` module, `.gt4gs` v1 writer, `gt4_coregs3_gs` tool, fixture, hooks in `mtvu_runtime.cpp` + `coregs3_hooks.cpp` | a capture file and its statistics | CTest green; **COREGS3-NIGHT-CHECK-OK** (3x off/shadow); byte control; 0 refusals in the 8-frame window | 4-6 days | medium |
 | **S2 post layer** | `gt4_coregs3_render --gs`; 2D primitive subset; post pass recognition; framebuffer-as-texture mapping | the first offline picture with the captured post chain | **M-POST-1** (§4.4) | 1-2 weeks | medium-high |
 | **S3 HUD layer** | panel pass replay, sprite/font textures from the captured uploads, HUD metric mask | the offline frame with the native world plus the captured HUD | G-HUD-1: HUD-rectangle PSNR over the measured baseline, per-element counters | 2-3 weeks | high (many elements) |
 | **S4 live** | the same operations in the `present` layer (`native/hw_gs/coregs3/`), optional switch | a live race with the native post chain | guest identity 0 differences; visual A/B against CoreGS 2.0 | 2-4 weeks | high |
@@ -511,6 +532,13 @@ ran).
 | 9 | Are privileged display writes (DISPFB/PMODE) needed for the post chain, or only for the final present? | decides whether a `kind 7` record is needed in v1 | S0: correlate the display-register writes with the pass markers | **U** |
 | 10 | Does the frame-history requirement (crossfade/motion blur) make a single-frame replay meaningless for those passes? | the first milestone may have to defer them | inspect the post packets for two-buffer reads | **U** |
 | 11 | 64 MiB ring on the target machines (bench PC fine; mobile later) | memory budget | measure on the laptop and the S23 when mobile starts | **U** |
+
+Answers after S1 (2026-11-10): **Q1 = C** (every packet is accepted outside every pass marker: `pass = unknown` on
+4,771/4,771 records, because the GS stream is kicked at the start of the interval and the K7 markers run afterwards);
+**Q5 = measured** (the source sites are the frame kick loop, `pc` 004AB6D8/004AB548/004ABA80, `ra` 0x1000 for 4,587 of
+4,771 records, not a per-pass builder); **Q6 = C** for the night race (PATH2 18,192 B / 185 records and PATH3 3.82 MB /
+407-412 records per frame; 30.9 MB for the 8-frame window). Q2, Q3, Q4 and Q7-Q10 stay open: the capture carries the
+uploads and the post-chain packets, but S1 does not decode them.
 
 Nothing above changes the recommended capture point or format; they change the **content** of the first milestone
 and the exact register set a pass record must carry.

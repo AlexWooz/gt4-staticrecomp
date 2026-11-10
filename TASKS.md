@@ -1881,9 +1881,27 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   The v1 sidecar path keeps working (car render byte-identical to the `a7a9434d` executable, `392dd4ed...`); CTest
   coregs3 12/12 (new `native_coregs3_pass_textures`), Python 8/8, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
   `build/evidence-pass-textures/`; design and format: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §24.
+- **GS-stream capture S1: the `.gt4gs` PATH2/PATH3 sidecar (2026-11-10, branch `task/090-gs-capture`).** The first
+  milestone of [COREGS3-GSSTREAM-CAPTURE](docs/COREGS3-GSSTREAM-CAPTURE.md) is implemented: the writer
+  `native/coregs3/coregs3_gsstream.{hpp,cpp}` lives in `gt4_mtvu_runtime` (preallocated 64 MiB ring, no file I/O,
+  allocation or lock on the guest path, the file written once at shutdown; bounds `GT4_COREGS3_GS_MAX_BYTES` (64 MiB),
+  `_MAX_FRAME_BYTES` (8 MiB), `_MAX_RECORDS` (65,536), `_MAX_FRAMES` (8), `_VBLANKS`), called from `gif_transfer`
+  (paths 2/3) and `shadow_direct` (path 2), with pass records from the same nine-word GS read as the v5 journal
+  (CLAMP 0x1A8 and TEX1 0x1B8 included). Reader `coregs3_gsstream_file.*` in `gt4_coregs3`, tool `gt4_coregs3_gs`
+  (`--stats | --list | --dump-frame N | --check-pass`), fixture `native_coregs3_gsstream` and a Python control in
+  `test_coregs3_units.py`. Night race, 3x, VBlanks 7398-7405 with `.gt4scene` + `.gt4tap` + `.gt4gs`: capture
+  **30,945,504 B / 4,979 records** (4,771 GIF, 192 pass, 16 frame), 8/8 frames closed, **0 refusals**, PATH2
+  **145,536 B / 1,480 records**, PATH3 **30,545,072 B / 3,291 records**. **G-GS-CAP passes** exactly for both paths
+  (8/8 frames; the F8 report line is `VBlank - 1`) and **G-PASS passes 8/8** (pass id and 7/7 register words). CTest
+  coregs3 13/13, Python 14/14, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Measured answer to the study's question 1
+  (**C**): the pass at acceptance is `unknown` on 4,771/4,771 packets, because the frame's GS stream is kicked before
+  its K7 markers; the packet `last_job` ranges are contiguous across frames (frame V's stream is what frame V-1's
+  passes built), which is the attribution S2/S3 must use (or a stream-level marker). Evidence:
+  `build/evidence-gs-capture/`; method: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §25.
 - Next: draw the captured wet-road reflection pass (study fix 3) and measure the post chain (fix 4) to close the
-  remaining picture gap; a v6 capture field for the 0xA0 morph factor; a `.gt4gs` PATH3 stream capture to name the
-  texture uploader (still Unknown); the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
+  remaining picture gap; a v6 capture field for the 0xA0 morph factor; decode the captured `.gt4gs` uploads and post
+  packets (S2, the offline post layer, and the answer to which packet streams `0x36D0`); the effects/HUD capture
+  additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls
