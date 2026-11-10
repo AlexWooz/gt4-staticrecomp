@@ -5335,3 +5335,11 @@ The shipped path stays our MIT tools.
 - **Data-only route exhausted.** Remaining: native post-load `exportRootWindow` into static 272, or tile Cross
   substitution; both need a build + owner windowed test.
 - **Block renders**; page does not open; no kit. Nothing existing changed; tests 846 OK (77 skipped).
+**Phase 23 (2026-11-10, native route gates).**
+- **Space gate:** C: has **3.48 GB free** (brief assumed ~7.4 GB); the build is 2-3 GB plus the 90 MB exe and the kit,
+  so it was **not started** - the owner asked to be told.
+- **API gate:** `exportRootWindow` is a guest method; calling it from the host needs the live `mProject` pointer, a
+  guest-allocated `hString`, handle conversions and a write into static 272. No host->guest call facility exists
+  (`ps2::dispatch` only intercepts guest->host natives), so route 1 and route 2 are both a new **guest-call harness**,
+  not a one-line hook.
+- **State:** block renders; page does not open; no kit; nothing existing changed. Tests 846 OK (77 skipped).

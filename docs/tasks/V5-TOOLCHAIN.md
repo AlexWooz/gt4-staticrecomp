@@ -1154,3 +1154,34 @@ time. The remaining route is the native one, in two shapes:
 2. **Tile Cross substitution**: when the tile handler runs with `item.page == nil`, fill it from the project.
 
 Both need a build and the owner's windowed test. The block renders; the page does not open; no kit was built.
+---
+
+# Phase 23 - the native route: space and API gate (2026-11-10)
+
+## 71. Disk check before any build (owner's own rule)
+
+`Get-PSDrive C` reports **3.48 GB free** (the brief assumed ~7.4 GB). The native build recipe allocates on the order
+of 2-3 GB (build tree + pinned library links + the 90 MB executable), and the kit adds the exe, the patch container
+and the frames. Starting the build now would leave under ~0.5 GB free on the system drive, so it was **not started**;
+this is the space gate the owner asked to be told about.
+
+## 72. The hook is not a one-liner
+
+`exportRootWindow` (`0x002296E8`) is a **guest** method: calling it from the host requires
+
+1. the live `mProject` object pointer (the loader's static, not yet located in guest state),
+2. a guest-allocated `hString` for `"RecRoot1"` through the VM string constructor (the host cannot pass a C string),
+3. the script VM handle conversions for the argument and the result,
+4. writing the result into the page module's static slot 272 of the loaded `option.adc` module.
+
+No such host→guest call facility exists in the runtime today (`ps2::dispatch` hooks intercept guest→host native calls,
+not host→guest calls). Route 2 (substitute `item.page` at the tile Cross handler) has the same shape: it also needs a
+guest call into the layout/window machinery.
+
+So the remaining work is a **guest-call harness** (allocate, call, convert, store), not a data patch and not a
+one-line hook. That is a new subsystem with its own tests, and it needs the build plus the owner's windowed test.
+
+## 73. State
+
+Block renders (Phase 17); page does not open; no kit was built. Nothing existing changed. The exact addresses and the
+insertion point (`AppendItem`, `exportRootWindow` `0x002296E8`, static 272) stay recorded for that follow-up.

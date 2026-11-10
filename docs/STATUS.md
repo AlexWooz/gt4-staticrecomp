@@ -1,5 +1,15 @@
 # Current Status
 
+## TASK-214 Phase 23: native route gates - disk 3.48 GB and no guest-call facility (2026-11-10)
+
+- **Space gate:** `C:` has **3.48 GB free** (the brief assumed ~7.4 GB). The build (2-3 GB) plus the 90 MB executable
+  and the kit would leave under ~0.5 GB, so it was **not started** - the owner asked to be told if it would not fit.
+- **API gate:** `exportRootWindow` (`0x002296E8`) is a **guest** method. A host call needs the live `mProject`
+  pointer, a guest-allocated `hString` for `"RecRoot1"`, handle conversions and a write into the page module's static
+  272. No host->guest call facility exists (`ps2::dispatch` only intercepts guest->host natives), so both route 1 and
+  route 2 are a new **guest-call harness**, not a one-line hook.
+- **State:** the block renders; the page does not open; no kit; nothing existing changed; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 22: class-global probe, data route exhausted (2026-11-10)
 
 - Guard rebuilt with `MProject.global_0082E1E8` (path `[MProject, global_0082E1E8]`) instead of the render context
