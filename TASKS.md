@@ -5311,3 +5311,12 @@ The shipped path stays our MIT tools.
 - **Next:** a host hook that logs `getCursorProject()`/`findPage` at that site, or a native hook that fills
   `item.page`/calls `exportRootWindow` there.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed; no kit.
+**Phase 20 (2026-11-10, guard diagnostic).**
+- The two probes already decide it: without the nil check the run crashes at load (`0x003199D4`) on a nil object; with
+  the check it does not crash, so `context.getCursorProject()` is a **valid method returning nil** during `AppendItem`.
+  The cursor project is set after the page builds its tiles; `findPage` was never reached.
+- **Data route exhausted.** The script has no handle to the layout windows at that point and the retail scripts never
+  resolve a root by name.
+- **Next (native, one call):** at `mProject` load completion, export/find `RecRoot1` once and store it in the page
+  module's static 272; or at the tile Cross handler, substitute the window when `item.page` is nil.
+- **Tests:** 846 OK (77 skipped). Block renders; page does not open; no kit.

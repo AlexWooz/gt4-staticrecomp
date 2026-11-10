@@ -1053,3 +1053,35 @@ The data-visible lookup path is exhausted for the layout window. The remaining r
    which of the two is nil - that decides between "wrong lookup API" and "no project yet".
 
 The block renders, the tile is in place, the page does not open. No kit was built.
+---
+
+# Phase 20 - the guard diagnostic without a build (2026-11-10)
+
+## 62. What the two probes already prove
+
+| probe | result | reading |
+|---|---|---|
+| guard without the cursor check (Phase 18) | crash at load, `ra 0x003199D4` | the call chain ran with a **nil** object and dispatched on it |
+| guard with `context.getCursorProject() != nil` (Phase 19) | **no crash**, root still nil | the call **succeeded and returned nil** (a missing method would crash in the comparison too) |
+
+So during `AppendItem`, `context.getCursorProject()` is a valid method that returns **nil**: the cursor project is not
+set yet when the Options page builds its tiles. `findPage` was never reached.
+
+## 63. Why
+
+`AppendItem` runs inside `OptionRoot.onInitialize`, which is called while the Options page is being initialised; the
+render context's *cursor project* is set by the page transition, after the page's widgets are built. The layout
+windows themselves are created earlier, by the project loader, but the script has no handle to them at this point.
+
+## 64. Options, in order of size
+
+1. **Native hook at project load**: after `mProject` finishes loading (the `mWidgetReader` walk ends), call
+   `exportRootWindow`/`findPage("RecRoot1")` once and store the window in the page module's static (slot 272). One
+   call, no behaviour change when the window is absent; needs a build and the owner's windowed test.
+2. **Native hook at the tile Cross**: substitute the window for `item.page` when it is nil, at the tile handler entry.
+   Same size, but the substitution then also covers any future page.
+3. **Script**: none left - the cursor project is nil where the page builds its tiles and the retail scripts never
+   resolve a root by name.
+
+No kit was built: both options need a native build. The block renders, the page does not open yet, and the Misc
+host-tree fallback (TASK-213) covers the user-facing settings.

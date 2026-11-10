@@ -1,5 +1,16 @@
 # Current Status
 
+## TASK-214 Phase 20: guard diagnostic, cursor project is nil at tile build (2026-11-10)
+
+- The two probes decide it without a build: without the nil check the load crashes at `0x003199D4` on a nil object;
+  with the check it does not crash, so `context.getCursorProject()` is a **valid method returning nil** during
+  `AppendItem`. The cursor project is set after the page builds its tiles, so `findPage` was never reached.
+- **Data route exhausted:** the script has no handle to the layout windows at that point and the retail scripts never
+  resolve a root by name.
+- **Next (native, one call):** at `mProject` load completion export/find `RecRoot1` once and store it in the page
+  module's static 272; or at the tile Cross handler substitute the window when `item.page` is nil.
+- **Block renders** (Phase 17); page does not open; no kit. Nothing existing changed; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 19: guard conditioned, `findPage` does not resolve the layout window (2026-11-10)
 
 - Guard now runs **only for the new page** and only with a live project:
