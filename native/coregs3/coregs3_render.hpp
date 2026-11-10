@@ -28,7 +28,6 @@ struct RenderOptions {
   std::uint32_t height = 480;
   std::array<std::uint8_t, 4> background{24, 24, 28, 255};
   std::array<std::uint8_t, 4> fallback_color{200, 200, 200, 255};  // used when the draw has no colour channel
-  bool flip_v = true;
   bool flip_y = true;
   bool depth_test = true;
   float position_scale = 1.0f / 4096.0f;

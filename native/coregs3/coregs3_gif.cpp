@@ -53,7 +53,8 @@ GifPacket parse_gif(const std::uint8_t *bytes, std::size_t length) {
   std::size_t at = 0;
   bool prim_known = false;
   std::uint32_t prim = 0;
-  GifVertex current;  // register state carried between tags
+  float q_latch = 1.0f;  // the GS Q latch; a tag with NLOOP > 0 resets it to 1.0
+  GifVertex current;     // register state carried between tags
   while (at + 16 <= length) {
     const Qword tag_qword{read_u64(bytes + at), read_u64(bytes + at + 8)};
     at += 16;
@@ -65,6 +66,7 @@ GifPacket parse_gif(const std::uint8_t *bytes, std::size_t length) {
     if (summary.nreg == 0) summary.nreg = 16;
     summary.registers = tag_qword.hi;
     packet.tags.push_back(summary);
+    if (summary.nloop != 0) q_latch = 1.0f;  // chapter 02.1: a tag that carries data resets Q
 
     auto read_register = [&](std::uint32_t register_id, const Qword &q) {
       switch (register_id) {
@@ -73,24 +75,26 @@ GifPacket parse_gif(const std::uint8_t *bytes, std::size_t length) {
         prim_known = true;
         ++packet.primitives_started;
         break;
-      case 0x1: {  // RGBAQ
+      case 0x1: {  // RGBAQ: one byte per 32-bit lane; Q is the ST latch, never a field of this qword
         GifVertex &vertex = current;
         vertex.r = static_cast<std::uint8_t>(bits(q.lo, 0, 7));
-        vertex.g = static_cast<std::uint8_t>(bits(q.lo, 8, 15));
-        vertex.b = static_cast<std::uint8_t>(bits(q.lo, 16, 23));
-        vertex.a = static_cast<std::uint8_t>(bits(q.lo, 24, 31));
-        vertex.q = as_float(bits(q.hi, 0, 31));
+        vertex.g = static_cast<std::uint8_t>(bits(q.lo, 32, 39));
+        vertex.b = static_cast<std::uint8_t>(bits(q.hi, 0, 7));
+        vertex.a = static_cast<std::uint8_t>(bits(q.hi, 32, 39));
+        vertex.q = q_latch;
         vertex.has_rgba = true;
         break;
       }
-      case 0x2:  // ST
+      case 0x2:  // STQ: S, T from the low qword; Q from the high qword and into the latch
         current.s = as_float(bits(q.lo, 0, 31));
-        current.t = as_float(bits(q.hi, 32, 63));
+        current.t = as_float(bits(q.lo, 32, 63));
+        q_latch = as_float(bits(q.hi, 0, 31));
+        current.q = q_latch;
         current.has_st = true;
         break;
-      case 0x3:  // UV
+      case 0x3:  // UV: U 0-13 and V 32-45 of the low qword, widened to the ST s/t fields
         current.s = static_cast<float>(bits(q.lo, 0, 13));
-        current.t = static_cast<float>(bits(q.lo, 16, 29));
+        current.t = static_cast<float>(bits(q.lo, 32, 45));
         current.has_st = true;
         break;
       case 0x4:   // XYZF2 (with fog, always draws)
@@ -100,16 +104,23 @@ GifPacket parse_gif(const std::uint8_t *bytes, std::size_t length) {
         GifVertex vertex = current;
         const bool with_fog = register_id == 0x4 || register_id == 0xC;
         decode_packed_xyz(q, with_fog, vertex);
+        vertex.q = q_latch;  // the GS Q is the latch the last ST (or a tag reset) left in force
         vertex.prim = prim_known ? prim : 0;
         // A3=A+D (0xC/0xD) never draws; XYZ3's ADC bit is not a draw flag.
         if (register_id == 0xC || register_id == 0xD) vertex.adc = true;
         packet.vertices.push_back(vertex);
         break;
       }
-      case 0xE:  // ADC
-        if (!packet.vertices.empty() && bits(q.lo, 0, 0) != 0) packet.vertices.back().adc = true;
+      case 0xE: {  // A+D: a register write, not an ADC flag
+        GifRegisterWrite write;
+        write.address = bits(q.hi, 0, 6);
+        write.data = q.lo;
+        packet.ad_writes.push_back(write);
         break;
-      default:  // TEX0/CLAMP/FOG/FOGCOL/... carry no vertex position: ignored by this parser
+      }
+      default:
+        // A direct TEX0/CLAMP/FOG descriptor carries no vertex and the tap analysis does not need it; GT4 sends these
+        // registers through A+D (case 0xE), which is recorded. Unknown descriptors are skipped, not guessed.
         break;
       }
     };
@@ -149,6 +160,69 @@ GifPacket parse_gif(const std::uint8_t *bytes, std::size_t length) {
   }
   packet.ok = true;
   return packet;
+}
+
+const char *gif_register_name(std::uint32_t address) noexcept {
+  switch (address) {
+  case 0x00: return "PRIM";
+  case 0x01: return "RGBAQ";
+  case 0x02: return "ST";
+  case 0x03: return "UV";
+  case 0x04: return "XYZF2";
+  case 0x05: return "XYZ2";
+  case 0x06: return "TEX0_1";
+  case 0x07: return "TEX0_2";
+  case 0x08: return "CLAMP_1";
+  case 0x09: return "CLAMP_2";
+  case 0x0A: return "FOG";
+  case 0x0C: return "XYZF3";
+  case 0x0D: return "XYZ3";
+  case 0x0E: return "A+D";
+  case 0x0F: return "NOP";
+  case 0x14: return "TEX1_1";
+  case 0x15: return "TEX1_2";
+  case 0x16: return "TEX2_1";
+  case 0x17: return "TEX2_2";
+  case 0x18: return "XYOFFSET_1";
+  case 0x19: return "XYOFFSET_2";
+  case 0x1A: return "PRMODECONT";
+  case 0x1B: return "PRMODE";
+  case 0x1C: return "TEXCLUT";
+  case 0x22: return "SCANMSK";
+  case 0x34: return "MIPTBP1_1";
+  case 0x35: return "MIPTBP1_2";
+  case 0x36: return "MIPTBP2_1";
+  case 0x37: return "MIPTBP2_2";
+  case 0x3B: return "TEXA";
+  case 0x3D: return "FOGCOL";
+  case 0x3F: return "TEXFLUSH";
+  case 0x40: return "SCISSOR_1";
+  case 0x41: return "SCISSOR_2";
+  case 0x42: return "ALPHA_1";
+  case 0x43: return "ALPHA_2";
+  case 0x44: return "DIMX";
+  case 0x45: return "DTHE";
+  case 0x46: return "COLCLAMP";
+  case 0x47: return "TEST_1";
+  case 0x48: return "TEST_2";
+  case 0x49: return "PABE";
+  case 0x4A: return "FBA_1";
+  case 0x4B: return "FBA_2";
+  case 0x4C: return "FRAME_1";
+  case 0x4D: return "FRAME_2";
+  case 0x4E: return "ZBUF_1";
+  case 0x4F: return "ZBUF_2";
+  case 0x50: return "BITBLTBUF";
+  case 0x51: return "TRXPOS";
+  case 0x52: return "TRXREG";
+  case 0x53: return "TRXDIR";
+  case 0x54: return "HWREG";
+  case 0x60: return "SIGNAL";
+  case 0x61: return "FINISH";
+  case 0x62: return "LABEL";
+  case 0x7F: return "NOP";
+  default: return "unknown";
+  }
 }
 
 }  // namespace gt4::coregs3

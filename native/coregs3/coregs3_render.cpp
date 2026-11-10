@@ -439,7 +439,6 @@ bool render_frame(const FrameSnapshot &frame, const RenderOptions &options, std:
   stats = RenderStats{};
   MeshOptions mesh_options;
   mesh_options.position_scale = options.position_scale;
-  mesh_options.flip_v = options.flip_v;
   mesh_options.topology = options.topology;
   mesh_options.max_edge = options.max_edge;
 

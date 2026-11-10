@@ -1103,6 +1103,12 @@ add_executable(coregs3_timeline_fixture coregs3/coregs3_timeline_fixture.cpp)
 target_link_libraries(coregs3_timeline_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_timeline_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_timeline COMMAND $<TARGET_FILE:coregs3_timeline_fixture>)
+# TASK-090 texture round 15: the measured model UV convention (signed 16-bit / 4096, no V flip) and the PACKED GIF
+# RGBAQ/ST/UV/A+D decode of the VU1 tap parser, on hand-authored packets.
+add_executable(coregs3_texture_fixture coregs3/coregs3_texture_fixture.cpp)
+target_link_libraries(coregs3_texture_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_texture_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_texture COMMAND $<TARGET_FILE:coregs3_texture_fixture>)
 # The offline milestone tool (docs/COREGS3-PLAN.md §4 step 1c): a capture in, a native PNG out.
 add_executable(gt4_coregs3_render tools/coregs3_render_main.cpp)
 target_link_libraries(gt4_coregs3_render PRIVATE gt4_coregs3)

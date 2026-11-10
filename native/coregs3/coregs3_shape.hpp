@@ -63,6 +63,15 @@ ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes,
 // and the strips partition the item's vertex array. A table whose first byte is 0 means "no breaks": one strip over
 // the whole item, which is the all-zero variant some shapes carry. The VU1 program writes the table at VU 0xC040
 // through a V1-8 UNPACK with STMASK 0x3F3F3F3F (lane 3 only), so the bytes live in lane 3 of consecutive qwords.
+//
+// The UV convention is measured (TASK-090 texture round 15, r13 selectors capture): a V2-16 channel carries a SIGNED
+// 16-bit fixed-point fraction, u = (int16)raw_u / 4096 and v = (int16)raw_v / 4096, with NO V flip; a V2-32 (or
+// V3-32) channel carries floats and passes them through unchanged. The VU1 program writes S = u * Q and T = v * Q, so
+// the GS samples S/Q,T/Q = u,v: over the 95 vertices of draws 2/3/4 of the r13 tap the residual |S/Q-u|, |T/Q-v| is at
+// most 3.2e-8. A V3-16/V3-32 channel uses the first two components and skips the third.
+//
+// MeshVertex::uv keeps those values exactly as the VU1 consumer sees them (u, v before the Q multiply): a renderer
+// forms S = u * Q with the vertex's own Q, it does not rescale or flip them again.
 const char *channel_role_name(ChannelRole role) noexcept;
 
 // The role rule's strip-table test, exposed so a diagnostic tool reports exactly what build_mesh treats as the table.
@@ -84,6 +93,8 @@ struct MeshVertex {
   // range). has_normal is false when the item carried no such channel.
   std::array<std::int8_t, 3> normal{};
   bool has_normal = false;
+  // The model UV channel: for a 16-bit channel u,v = (int16)raw / 4096 (a signed fixed-point fraction, no V flip); for a
+  // 32-bit channel the raw floats, unchanged. This is the u,v the VU1 multiplies by Q to form S,T.
   std::array<float, 2> uv{};
   std::array<std::uint8_t, 4> color{255, 255, 255, 255};
   bool has_uv = false;
@@ -107,7 +118,6 @@ struct MeshOptions {
   // The compressed 16-bit positions are divided by this (Nenkai's reader uses 4096; docs plan §4.2 calls it a
   // Hypothesis). A caller that does not know the scale should leave it at the default and compare.
   float position_scale = 1.0f / 4096.0f;
-  bool flip_v = true;  // GT4 model UVs are bottom-up; the reference reader flips V
   // Decode the V3-8 normal channel at TOPS 0x40 into MeshVertex::normal (and Mesh::has_normals). On by default; a caller
   // that only wants the original channels can turn it off and gets the same mesh as before this channel existed.
   bool decode_normals = true;

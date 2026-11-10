@@ -203,10 +203,13 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
         break;
       case ChannelRole::uv:
         data.has_uv = true;
+        // Measured convention (coregs3_shape.hpp): a 16-bit channel is a signed fixed-point fraction divided by 4096,
+        // with no V flip; a 32-bit channel is float UVs passed through unchanged. The first two components are the
+        // UVs; a V3 channel's third component is skipped.
         for (const VifVector &vector : vectors) {
-          data.uvs.push_back(static_cast<float>(static_cast<std::uint16_t>(vector.v[0] & 0xFFFFu)) / 65536.0f);
-          const float v = static_cast<float>(static_cast<std::uint16_t>(vector.v[1] & 0xFFFFu)) / 65536.0f;
-          data.uvs.push_back(options.flip_v ? 1.0f - v : v);
+          const bool floats = entry.format == ChannelFormat::v2_32 || entry.format == ChannelFormat::v3_32;
+          data.uvs.push_back(floats ? decode_bits(vector.v[0]) : decode_signed16(vector.v[0]) / 4096.0f);
+          data.uvs.push_back(floats ? decode_bits(vector.v[1]) : decode_signed16(vector.v[1]) / 4096.0f);
         }
         break;
       case ChannelRole::strip_table:

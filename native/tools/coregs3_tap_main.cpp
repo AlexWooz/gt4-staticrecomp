@@ -9,6 +9,11 @@
 //       residual in screen pixels and, for the projective fit, the matrix, so the convention can be identified against
 //       the captured 0xC1 block.
 //
+//   gt4_coregs3_tap uv <tap.gt4tap> <capture.gt4scene> <draw>
+//       the model-UV gate: pairs each shape item with its tapped vertex record by TEX0 and vertex count, then checks
+//       S/Q against the shape's u and T/Q against its v (the measured signed 16-bit / 4096 convention, no V flip). Exit
+//       code 1 when an item cannot be paired, has no UV channel, or a residual is above 1e-6.
+//
 // A capture and its tap come from the same run; records and draws are both in submission order, so record k of a frame
 // belongs to draw k of that frame until proven otherwise (the tool reports the vertex counts it had to match).
 #include "coregs3_gif.hpp"
@@ -200,6 +205,33 @@ std::vector<std::uint32_t> job_addresses(const std::vector<TapRecord> &records, 
   for (const TapRecord &record : records)
     if (record.kind == kTapKindSource && record.job == job) addresses.push_back(record.address);
   return addresses;
+}
+
+std::uint64_t read_u64_le(const std::uint8_t *bytes) {
+  std::uint64_t value = 0;
+  for (int index = 0; index < 8; ++index) value |= static_cast<std::uint64_t>(bytes[index]) << (8 * index);
+  return value;
+}
+
+std::uint32_t word_field(std::uint64_t word, unsigned low, unsigned high) {
+  const std::uint64_t mask = high - low == 63 ? ~0ull : ((1ull << (high - low + 1)) - 1ull);
+  return static_cast<std::uint32_t>((word >> low) & mask);
+}
+
+// The part of TEX0 that pairs a GIF vertex record with a draw item: TBP0 (bits 0-13) and PSM (bits 20-25). Both the
+// captured texture record's first qword and the A+D TEX0_1/TEX0_2 write carry the same GS register layout.
+struct Tex0Binding {
+  bool valid = false;
+  std::uint32_t tbp0 = 0;
+  std::uint32_t psm = 0;
+};
+
+Tex0Binding tex0_binding(std::uint64_t qword) {
+  Tex0Binding binding;
+  binding.valid = true;
+  binding.tbp0 = word_field(qword, 0, 13);
+  binding.psm = word_field(qword, 20, 25);
+  return binding;
 }
 
 int command_map(const char *tap_path, const char *capture_path, int frame_index) {
@@ -450,6 +482,214 @@ int command_fit(const char *tap_path, const char *capture_path, std::size_t reco
   return 0;
 }
 
+// The model-UV gate: compares the UV channel build_mesh decodes from the captured shape with the S/T/Q the VU1 actually
+// emitted for the same vertices. The pairing uses the same rule as the research check (verify-uv-strict.py): walk the
+// draw's tapped job in order, remember the last TEX0_1/TEX0_2 A+D write, and give each draw item the next vertex record
+// whose vertex count and TEX0 (TBP0, PSM) match. The comparison is |S/Q - u| and |T/Q - v| with u,v from build_mesh (the
+// signed 16-bit / 4096 convention, no V flip); the gate fails when an item cannot be paired, has no UV channel, or any
+// residual is above 1e-6.
+int command_uv(const char *tap_path, const char *capture_path, std::uint32_t draw_sequence) {
+  std::vector<std::uint8_t> tap;
+  std::vector<TapRecord> records;
+  std::string error;
+  if (!load_tap(tap_path, tap, records, error)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: %s\n", error.c_str());
+    return 1;
+  }
+  std::vector<std::uint8_t> capture_data;
+  if (!read_file(capture_path, capture_data)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: cannot open %s\n", capture_path);
+    return 1;
+  }
+  SceneHeader header;
+  if (!parse_scene_header(capture_data.data(), capture_data.size(), header, error)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: %s\n", error.c_str());
+    return 1;
+  }
+  FrameSnapshot frame;
+  bool found = false;
+  std::size_t at = 16;
+  while (at < capture_data.size()) {
+    FrameSnapshot candidate;
+    const std::size_t consumed =
+        parse_frame_block(capture_data.data() + at, capture_data.size() - at, header.version, candidate, error);
+    if (consumed == 0) break;
+    for (const CapturedDraw &draw : candidate.draws)
+      if (draw.sequence == draw_sequence) {
+        frame = std::move(candidate);
+        found = true;
+        break;
+      }
+    if (found) break;
+    at += consumed;
+  }
+  if (!found) {
+    std::fprintf(stderr, "gt4_coregs3_tap: draw %u is not in the capture\n", draw_sequence);
+    return 1;
+  }
+  const CapturedDraw *draw = nullptr;
+  for (const CapturedDraw &candidate : frame.draws)
+    if (candidate.sequence == draw_sequence) draw = &candidate;
+  if (draw == nullptr) return 1;
+
+  MeshOptions mesh_options;
+  Mesh mesh;
+  if (!build_mesh(frame.packets.data(), frame.packets.size(), *draw, mesh_options, mesh, error)) {
+    std::fprintf(stderr, "gt4_coregs3_tap: the draw does not decode: %s\n", error.c_str());
+    return 1;
+  }
+
+  // The jobs that carry this draw's VIF packets, from the tap's source records.
+  std::vector<std::uint64_t> jobs;
+  for (const CapturedItem &item : draw->items) {
+    if (item.packet_bytes == 0) continue;
+    for (const TapRecord &source : records)
+      if (source.kind == kTapKindSource && source.address == item.address &&
+          std::find(jobs.begin(), jobs.end(), source.job) == jobs.end())
+        jobs.push_back(source.job);
+  }
+  if (jobs.empty()) {
+    std::fprintf(stderr, "gt4_coregs3_tap: no tapped job carries draw %u's VIF packets\n", draw_sequence);
+    return 1;
+  }
+
+  // The tapped vertex records of those jobs, in tap order, each with the TEX0 the GS had bound when it started. A record
+  // with no vertices is a state record: its A+D TEX0 writes are what the next vertex record is bound with. This mirrors
+  // the research pairing; a state write inside a vertex record is not used (the parser keeps no interleaving order).
+  struct Stream {
+    Tex0Binding bound;
+    std::vector<GifVertex> vertices;
+  };
+  std::vector<Stream> streams;
+  Tex0Binding bound;
+  for (const TapRecord &record : records) {
+    if (record.kind != kTapKindGif) continue;
+    if (std::find(jobs.begin(), jobs.end(), record.job) == jobs.end()) continue;
+    const GifPacket packet = parse_gif(tap.data() + record.offset, record.bytes);
+    if (!packet.ok) {
+      std::fprintf(stderr, "gt4_coregs3_tap: a GIF record does not parse: %s\n", packet.error.c_str());
+      return 1;
+    }
+    if (packet.vertices.empty()) {
+      for (const GifRegisterWrite &write : packet.ad_writes)
+        if (write.address == 0x06u || write.address == 0x07u) bound = tex0_binding(write.data);
+      continue;
+    }
+    streams.push_back(Stream{bound, packet.vertices});
+  }
+
+  // Per item: its vertex count (the same role rule build_mesh uses, via scan_channels) and its TEX0 binding.
+  const ChannelScan scan = scan_channels(frame.packets.data(), frame.packets.size(), *draw);
+  if (!scan.errors.empty()) {
+    std::fprintf(stderr, "gt4_coregs3_tap: a shape packet does not decode: %s\n", scan.errors.front().c_str());
+    return 1;
+  }
+  std::vector<std::uint32_t> counts(draw->item_count, 0);
+  for (const ShapeChannel &channel : scan.channels)
+    if (channel.role == ChannelRole::positions && channel.item < counts.size()) counts[channel.item] += channel.vectors;
+
+  struct UvItem {
+    std::uint32_t item = 0;
+    std::uint32_t first = 0;   // first mesh vertex of the item
+    std::uint32_t count = 0;
+    bool has_texture = false;
+    Tex0Binding tex0;
+    bool mapped = false;
+    std::size_t stream = 0;
+  };
+  std::vector<UvItem> items;
+  std::uint32_t first_vertex = 0;
+  for (std::uint32_t index = 0; index < draw->item_count; ++index) {
+    const CapturedItem &captured = draw->items[index];
+    if (captured.packet_bytes == 0 || counts[index] == 0) continue;
+    UvItem item;
+    item.item = index;
+    item.first = first_vertex;
+    item.count = counts[index];
+    item.has_texture = captured.texture_record != kNoRecord && captured.texture_record < frame.textures.size();
+    if (item.has_texture)
+      item.tex0 = tex0_binding(read_u64_le(frame.textures[captured.texture_record].bytes));
+    first_vertex += item.count;
+    items.push_back(item);
+  }
+  if (first_vertex != mesh.vertices.size()) {
+    std::fprintf(stderr, "gt4_coregs3_tap: the item counts (%u) disagree with the mesh (%zu)\n", first_vertex,
+                 mesh.vertices.size());
+    return 1;
+  }
+
+  std::size_t cursor = 0;
+  bool mapped_all = true;
+  for (UvItem &item : items) {
+    for (std::size_t index = cursor; index < streams.size(); ++index) {
+      const Stream &stream = streams[index];
+      if (stream.vertices.size() != item.count) continue;
+      if (item.has_texture && (!stream.bound.valid || stream.bound.tbp0 != item.tex0.tbp0 ||
+                               stream.bound.psm != item.tex0.psm))
+        continue;
+      item.mapped = true;
+      item.stream = index;
+      cursor = index + 1;
+      break;
+    }
+    if (!item.mapped) {
+      mapped_all = false;
+      std::printf("  item %u (mesh %u..%u): no tapped record with %u vertices and TEX0 TBP0=0x%04X PSM=0x%02X\n",
+                  item.item, item.first, item.first + item.count - 1, item.count, item.tex0.tbp0, item.tex0.psm);
+    }
+  }
+
+  double sum_u = 0.0, sum_v = 0.0, worst_u = 0.0, worst_v = 0.0;
+  std::uint32_t compared = 0;
+  bool has_uv = true;
+  for (const UvItem &item : items) {
+    if (!item.mapped) continue;
+    const Stream &stream = streams[item.stream];
+    double item_worst_u = 0.0, item_worst_v = 0.0, item_sum_u = 0.0, item_sum_v = 0.0;
+    std::uint32_t item_compared = 0;
+    for (std::uint32_t index = 0; index < item.count; ++index) {
+      const MeshVertex &vertex = mesh.vertices[item.first + index];
+      const GifVertex &gif = stream.vertices[index];
+      if (!vertex.has_uv) {
+        has_uv = false;
+        continue;
+      }
+      const double q = gif.q;
+      if (q == 0.0 || !std::isfinite(q)) continue;
+      const double du = std::fabs(static_cast<double>(gif.s) / q - static_cast<double>(vertex.uv[0]));
+      const double dv = std::fabs(static_cast<double>(gif.t) / q - static_cast<double>(vertex.uv[1]));
+      item_worst_u = std::max(item_worst_u, du);
+      item_worst_v = std::max(item_worst_v, dv);
+      item_sum_u += du * du;
+      item_sum_v += dv * dv;
+      ++item_compared;
+    }
+    if (item_compared == 0) {
+      has_uv = false;
+      continue;
+    }
+    sum_u += item_sum_u;
+    sum_v += item_sum_v;
+    worst_u = std::max(worst_u, item_worst_u);
+    worst_v = std::max(worst_v, item_worst_v);
+    compared += item_compared;
+    const Tex0Binding &bound = streams[item.stream].bound;
+    std::printf("  item %u (mesh %u..%u): %u vertices, TEX0 TBP0=0x%04X PSM=0x%02X | |S/Q-u| rms %.3g max %.3g | "
+                "|T/Q-v| rms %.3g max %.3g\n",
+                item.item, item.first, item.first + item.count - 1, item_compared, bound.tbp0, bound.psm,
+                std::sqrt(item_sum_u / item_compared), item_worst_u, std::sqrt(item_sum_v / item_compared),
+                item_worst_v);
+  }
+  std::printf("draw %u: %zu mesh vertices, %u UV vertices compared", draw_sequence, mesh.vertices.size(), compared);
+  if (compared != 0) {
+    std::printf(" | |S/Q-u| rms %.3g max %.3g | |T/Q-v| rms %.3g max %.3g", std::sqrt(sum_u / compared), worst_u,
+                std::sqrt(sum_v / compared), worst_v);
+  }
+  std::printf("\n");
+  if (!mapped_all || !has_uv || compared == 0) return 1;
+  return worst_u <= 1e-6 && worst_v <= 1e-6 ? 0 : 1;
+}
+
 void command_dump(const char *path, std::size_t record_index) {
   std::vector<std::uint8_t> data;
   std::vector<TapRecord> records;
@@ -472,6 +712,9 @@ void command_dump(const char *path, std::size_t record_index) {
   for (const GifTagSummary &tag : packet.tags)
     std::printf("  tag prim 0x%X nloop %u nreg %u format %u regs %016llx\n", tag.prim, tag.nloop, tag.nreg,
                 static_cast<unsigned>(tag.format), static_cast<unsigned long long>(tag.registers));
+  for (const GifRegisterWrite &write : packet.ad_writes)
+    std::printf("  A+D %-11s addr 0x%02X data %016llx\n", gif_register_name(write.address), write.address,
+                static_cast<unsigned long long>(write.data));
   for (std::size_t index = 0; index < packet.vertices.size() && index < 12; ++index) {
     const GifVertex &vertex = packet.vertices[index];
     std::printf("  v%zu x %5d y %5d z %7u adc %d rgba %u,%u,%u,%u q %.3f st %.3f,%.3f\n", index,
@@ -1121,7 +1364,8 @@ int main(int argc, char **argv) {
                  "       gt4_coregs3_tap fit <tap.gt4tap> <capture.gt4scene> <record> --draw <seq> [--affine]\n"
                  "       gt4_coregs3_tap fit-all <tap.gt4tap> <capture.gt4scene> <frame>\n"
                  "       gt4_coregs3_tap gate <tap.gt4tap> <capture.gt4scene> <frame> [--verbose]\n"
-                 "       gt4_coregs3_tap map <tap.gt4tap> <capture.gt4scene> <frame>\n");
+                 "       gt4_coregs3_tap map <tap.gt4tap> <capture.gt4scene> <frame>\n"
+                 "       gt4_coregs3_tap uv <tap.gt4tap> <capture.gt4scene> <draw>\n");
     return 2;
   }
   const std::string command = argv[1];
@@ -1153,6 +1397,13 @@ int main(int argc, char **argv) {
       return 2;
     }
     return command_map(argv[2], argv[3], std::atoi(argv[4]));
+  }
+  if (command == "uv") {
+    if (argc < 5) {
+      std::fprintf(stderr, "gt4_coregs3_tap: uv needs a tap, a capture and a draw sequence\n");
+      return 2;
+    }
+    return command_uv(argv[2], argv[3], static_cast<std::uint32_t>(std::atoi(argv[4])));
   }
   if (command == "dump") {
     if (argc < 4) {
