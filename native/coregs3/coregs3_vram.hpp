@@ -2,7 +2,7 @@
 //
 // The `.gt4scene` capture holds the draw state (TEX0/TEX1/CLAMP of every texture record) but no texture pixels: the
 // textures live in GS local memory, which the EE hooks do not see. This sidecar is written by the GS worker
-// (coregs2/core2_renderer.cpp, Renderer::Flush and Renderer::Coregs3PassMark) next to a capture so the offline tools can
+// (coregs2/core2_renderer.cpp, Renderer::Flush and Renderer::Coregs3Snapshot) next to a capture so the offline tools can
 // decode the real textures.
 //
 // File layout (little endian), one or more records concatenated. Each record is self-describing, so a reader can skip
@@ -42,10 +42,10 @@
 //     job); `vblank` is the GS worker's VBlank counter during the job. The window table lists the texture and palette
 //     blocks the job's TEX0 writes bind, copied from the shadow memory.
 //
-// Why per-draw windows (docs/COREGS3-WORLD-MATERIALS.md and journal 2026-11-10): the frame-end v1 record and every
-// pass-begin record carry the last upload of the frame (page 0x36D0 is byte-identical in all of them), while the course
-// draws sample a different texture from that page. The upload happens inside the course pass, between the pass begin and
-// the draw, so only a per-draw snapshot has the draw's real content.
+// Why the per-job windows (docs/COREGS3-WORLD-MATERIALS.md and journal 2026-11-10): the frame-end v1 record and every
+// pass-begin record carry the last upload of the frame (page 0x36D0 is byte-identical in all of them), and the K1 draw
+// marker also predates the upload. Only the per-job snapshot, taken on the GS worker before the job executes, holds the
+// content the draw samples.
 //
 // Blocks are GS block addresses in 0..16383 and a record never wraps the end of the 4 MiB image.
 //

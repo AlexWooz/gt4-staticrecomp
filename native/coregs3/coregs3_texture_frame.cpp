@@ -413,9 +413,9 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
   };
 
   // ---- 4. Bind every item and attach its tapped state.
-  // TASK-090 pass textures: a world-pass item decodes against the image captured at its own pass begin; a pass with no
-  // image falls back to the default frame-end image and is counted. Non-world items (the car pass) always use the
-  // default image, exactly as before.
+  // TASK-090 pass textures: a world-pass item decodes against the pixels its own VU1 job sampled, falling back to its
+  // draw's K1 record, then its pass-begin image, then the frame-end default image, each step counted. Non-world items
+  // (the car pass) always use the default image, exactly as before.
   // 0: the pass/default image, 1: the draw's K1 record, 2: the draw's VU1 job record.
   const auto note_world_image = [&](std::uint32_t pass_image, int overlay_kind) {
     if (overlay_kind == 2) {
