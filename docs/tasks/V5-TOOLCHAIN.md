@@ -585,3 +585,38 @@ Next experiments, smallest first:
 
 Nothing existing changed: the tile stays, LAN / 2 Player Battle / SplitBattle / Network and every other page are
 untouched, and the page does not open yet.
+---
+
+# Phase 7 - `func` is not the gate; the root binding is (2026-11-10)
+
+## 27. What was proven
+
+| probe (tile `Recomp settings`, group Misc, capacity 34, Cross at 3100) | result |
+|---|---|
+| root `RecRoot1` + module with `open/close/reflect/apply` | crash at 3101, `missing code at 0x00000000 (ra 0x0030B450)` |
+| root `RecRoot1` + **empty** `open/close` | same crash - the failure is before `open` runs |
+| root `RecRoot1` + `has_script 1`, window first or last in `Project.children` | same crash |
+| **root `MiscRoot`** (existing, bound) + module `RecRoot1` unused | **page opens**: Options -> Cross -> *Miscellaneous Settings*, run continues to 3,600 frames, exit 0 (`frames4/frame_03400.png`) |
+
+So `item.func` is not the problem: retail pages also pass `NIL` as the third `OptionPage` argument, and the tile
+opens a page whose root is a bound layout object. The failing piece is the **root object**: with `RecRoot1` the
+page's root static is nil, so the Cross path dispatches on nothing.
+
+## 28. The gate
+
+The layout loader binds a `RootWindow` to the page module's root static **by name** (every retail root, e.g.
+`MiscRoot`, resolves; the hand-added `RecRoot1` does not, even with `has_script 1`, the module
+`OptionProject::RecRoot1` present, and the window first or last in `Project.children`). The loader keeps its own
+name -> object table from the compiled project, so a runtime-added window is not reachable through the data path.
+
+Next experiments, smallest first:
+
+1. Find the loader that instantiates the project roots and the module per `has_script` (search for the function that
+   reads the `.mproject` `name string` and builds `OptionProject::<name>`), and check whether it walks the text
+   children or a compiled name table.
+2. If it walks the text, the window is created but the *static lookup* fails: find how `VARIABLE_PUSH <Root> Static:N`
+   resolves a name (module table by name) and add the 25th entry there.
+3. If it is a compiled table, the smallest insertion is one more name in it - the same technique as the capacity field.
+
+Until then the page has a tile and a module, but no bound root: the Arcade host-tree hub remains the working
+fallback and nothing existing changed.

@@ -5164,3 +5164,16 @@ The shipped path stays our MIT tools.
   Cross handler and the `OptionPage` factory to see how a nil `func` is resolved; if it is a compiled per-page table,
   add the 25th entry like the capacity field.
 - **Tests:** `test_adhoc_v5.py` 15 OK, `test_gt4_vol_toc.py` 10 OK, full suite 846 OK (77 skipped).
+**Phase 7 (2026-11-10, func ruled out; root binding is the gate).**
+- **Proven:** the page machinery works end to end with an existing root. Tile `Recomp settings` + root `MiscRoot`:
+  Cross opens *Miscellaneous Settings*, run continues to 3,600 frames, exit 0 (`frames4/frame_03400.png`).
+- **Ruled out:** `func` is not the gate. Retail pages also pass `NIL` as the third `OptionPage` argument; with
+  `RecRoot1` the crash happens before `open` runs (empty `open/close` behaves identically) and does not change with
+  `has_script 1` or the window being first or last in `Project.children`.
+- **Gate:** the layout loader binds a `RootWindow` to the page root static by name; the runtime-added `RecRoot1` (slot
+  272) is not bound, so the page's root is nil and Cross dispatches on nothing (`0x0030B450`). Next: find the loader
+  that builds `OptionProject::<name>` per `has_script` and its name -> object table; if it walks the text children the
+  static lookup is the problem, if it is a compiled table add the 25th name like the capacity field.
+- **Hub/Graphics:** the `RecRoot1` tree (title + Graphics/Controls/Display/Audio/System rows) is in the mproject and
+  renders once the root is bound; the renderer/scale interaction is TASK-213 host work (game-changes.toml only).
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.

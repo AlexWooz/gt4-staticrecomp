@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-214 Phase 7: `func` ruled out, the root binding is the gate (2026-11-10)
+
+- **Proven:** the page path works end to end with an existing root. Tile `Recomp settings` + root `MiscRoot`: Cross
+  opens *Miscellaneous Settings*, the run continues to 3,600 frames, exit 0 (`frames4/frame_03400.png`).
+- **Ruled out:** `func` is not the gate (retail pages also pass `NIL`; empty `open/close` behaves identically; no
+  change with `has_script 1` or the window first/last in `Project.children`).
+- **Gate:** the layout loader binds a `RootWindow` to the page root static by name. The runtime-added `RecRoot1` (slot
+  272) is not bound, so `option.root` is nil and Cross dispatches on nothing (`0x0030B450`). Next: find the loader that
+  builds `OptionProject::<name>` per `has_script` and its name -> object table; if it is a compiled table, add the
+  25th name like the capacity field.
+- **Hub/Graphics:** the `RecRoot1` tree (title + the five rows) is in the mproject and renders once the root is bound;
+  renderer/scale interaction is TASK-213 host work (`game-changes.toml` only, launcher keeps `settings.toml`).
+- **Nothing swapped:** LAN, 2 Player Battle/SplitBattle, Network and every other page unchanged. Tests 846 OK.
+
 ## TASK-214 Phase 6: page lifecycle functions inserted, page still does not open (2026-11-10)
 
 - **Inserted** (private harness, retail `OptionProject::RaceRoot` shape): `open(context)` -> `start_page(context,
