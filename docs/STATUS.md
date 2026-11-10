@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-214 Phase 11: parser dispatch, data route closed (2026-11-10)
+
+- `func_00269290` (`0x00269290`, matched) is a generic line reader that dispatches widget types through
+  `func_0024DB78`; it does not compare `RootWindow` itself. `RootWindow` (`0x698436`), `has_script` (`0x69AD00`) and
+  `.mproject` (`0x698B51`) have **no addressable reference** in the image (three searches): the reader interns them and
+  dispatches by symbol id.
+- **Data route closed:** a runtime `RootWindow` is parsed and instantiated (the tile exists) but never exported to the
+  page static, so `option.root` stays nil.
+- **Native route is a guest-call harness, not a hook:** `exportRootWindow` must be called with a live script VM context
+  (`MProject` object, `hString`, handle conversion).
+- **Next:** disassemble `func_0024DB78` and the symbol interning (`func_003166B8`) to find where a `has_script` widget
+  binds to `OptionProject::<name>`; that site decides between one export call and a compiled list entry.
+- **Proven:** with `MiscRoot` the page opens and the run completes. Nothing swapped; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 10: reader search, data route exhausted (2026-11-10)
 
 - **Matched:** `MWidgetReader__structor_0` `0x00207590`, `MWidgetReader__structor_1` `0x00218C00` (parses one widget

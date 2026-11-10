@@ -5212,3 +5212,13 @@ The shipped path stays our MIT tools.
 - **Next:** disassemble `func_00269290` and follow the `RootWindow`/`has_script` comparisons to `vt[95]`/export; then
   either insert the table entry (data) or the single hook.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 11 (2026-11-10, parser dispatch).**
+- `func_00269290` (`0x00269290`, matched) is a generic line reader that calls `func_0024DB78` (widget type dispatch);
+  it does not compare `RootWindow` itself. `RootWindow`/`has_script`/`.mproject` have **no addressable reference** in
+  the image (three searches): they are interned at parse time and dispatched by symbol id.
+- **Data route exhausted.** A runtime `RootWindow` is instantiated (tile proven) but never exported to the page static.
+- **Native route is not a one-line hook:** calling `exportRootWindow` from the host means invoking guest code with a
+  live script VM context (MProject object, hString, handle conversion) - a guest-call harness, not a hook.
+- **Next:** disassemble `func_0024DB78` and the symbol interning (`func_003166B8`) to find where a `has_script` widget
+  is bound to `OptionProject::<name>`; that site decides between one `exportRootWindow` call and a compiled list entry.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.

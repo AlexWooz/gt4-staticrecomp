@@ -722,3 +722,36 @@ reader calls `vt[95]`/`exportRootWindow`. Two outcomes:
 
 Until one of them is done, the page has a tile and a module but no bound root; the accepted Arcade host-tree hub
 remains the fallback and nothing existing changes.
+---
+
+# Phase 11 - the parser dispatch (2026-11-10)
+
+## 36. `func_00269290` and `func_0024DB78`
+
+`func_00269290` (`0x00269290`, 30 lines, matched) is a generic line reader: it fills a 0x810-byte buffer, reads up to
+0x81 bytes, then calls `func_0024DB78(self, reader)` - the **widget type dispatch** - followed by
+`func_002688E8(*self->p, src)` and `func_00265D10(*self->p, reader.n)`. It does not compare `RootWindow` itself.
+
+The keyword names are **not addressable** in the image: `RootWindow` (`0x698436`), `has_script` (`0x69AD00`) and
+`.mproject` (`0x698B51`) have no `lui`/`addiu` or pointer reference anywhere (three independent searches). They are
+interned at parse time and looked up through the VM's symbol table, so the dispatch in `func_0024DB78` works on
+symbol ids, not string literals.
+
+## 37. Route decision (final for this round)
+
+- **Data: exhausted.** The export happens after the reader has interned the type and built the widget; a runtime
+  `RootWindow` is instantiated (the tile proves it) but never exported to the page static. Nothing in the title data
+  we can edit carries the name -> value table.
+- **Native: not a one-line hook.** Calling `MProject.exportRootWindow("RecRoot1")` from the host means invoking guest
+  code with a live script VM context (`MProject` object, `hString` argument, handle conversion) - a guest-call harness,
+  not a hook. The smallest *data-side* alternative would be a compiled name table, which we have not found and
+  cannot add without the reader's interned symbol ids.
+
+## 38. Exact next step
+
+Disassemble `func_0024DB78` (`0x0024DB78`) and the symbol interning (`func_003166B8`), and look for the moment the
+reader binds a `has_script` widget to `OptionProject::<name>`: if it calls `func_00306638`/`exportRootWindow` with the
+interned symbol, a single `exportRootWindow` call for `RecRoot1` (or a table entry) is the fix; if it walks a compiled
+list, that list is the insertion point.
+
+Until then: tile present, page root nil, accepted fallback unchanged, nothing existing modified.
