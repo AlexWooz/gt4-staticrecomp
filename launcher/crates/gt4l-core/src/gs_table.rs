@@ -79,6 +79,10 @@ pub struct Row {
     pub forced: bool,
     #[serde(default)]
     pub env: String,
+    /// A launcher-only row the Settings page still shows (TASK-186: the effect toggles, which reach the game as an
+    /// environment variable and are never written to the INI). `written = "never"` rows are otherwise hidden from the UI.
+    #[serde(default)]
+    pub offered: bool,
 }
 
 #[derive(Deserialize)]
@@ -145,6 +149,9 @@ fn check_row(row: &Row) -> Result<(), TableError> {
     if row.written == "never" && (!row.section.is_empty() || !row.key.is_empty()) {
         return refuse(format!("{name}: launcher-only row must have no INI section or key"));
     }
+    if row.offered && (row.written != "never" || row.env.is_empty()) {
+        return refuse(format!("{name}: an offered launcher-only row must be written = \"never\" with an env variable"));
+    }
     if row.written != "never" && row.status == "ok" && (row.section.is_empty() || row.key.is_empty()) {
         return refuse(format!("{name}: settable row needs an INI section and key"));
     }
@@ -205,7 +212,8 @@ pub fn default_value(id: &str) -> Option<String> {
 /// Checks a user value (from settings.toml or the UI) against the compiled-in table and returns its normalized text.
 pub fn check_user_value(id: &str, raw: &str) -> Result<String, String> {
     let row = row(id).ok_or_else(|| format!("unknown GS setting '{id}'"))?;
-    if matches!(row.written.as_str(), "never" | "launcher") || row.kind == "path" {
+    // TASK-186: an offered launcher-only row (the effect toggles) takes a user value; it simply never reaches the INI.
+    if (matches!(row.written.as_str(), "never" | "launcher") && !row.offered) || row.kind == "path" {
         return Err(format!("{id} is set by the launcher, not by a user setting"));
     }
     if row.page == MODS_PAGE {
@@ -223,7 +231,7 @@ pub fn offered() -> Vec<&'static Row> {
             row.page != MODS_PAGE
                 && row.page != "hidden"
                 && row.status == "ok"
-                && !matches!(row.written.as_str(), "never" | "launcher")
+                && (!matches!(row.written.as_str(), "never" | "launcher") || (row.offered && !row.env.is_empty()))
                 && (row.kind != "enum" || row.choices.iter().any(|choice| choice.status == "ok"))
         })
         .collect()
@@ -245,6 +253,19 @@ pub fn offered_choices(row: &Row) -> Vec<&str> {
         return vec![row.default.as_str()];
     }
     row.choices.iter().filter(|choice| choice.status == "ok").map(|choice| choice.name.as_str()).collect()
+}
+
+/// Readbacks values (`hw_download_mode`) that the gt4-gs the launcher runs accepts. The gt4-gs the launcher installs is
+/// at least `gs_release::RENDERER_MINIMUM` (1.2.1), and 1.2.1 embeds the allow-list of the TASK-091 settings table, whose
+/// `HWDownloadMode` had only Accurate (0) and NoReadbacks (2): any other value is ignored by gt4-gs with one warning line
+/// in the session log, so the launcher never offers one. The table keeps the five values of the row before TASK-091 (the
+/// Android GS accepts every one, and the allow-list file still lists them for a future gt4-gs build); widen this list, and
+/// the row's offered choices with it, when a gt4-gs build with the regenerated allow-list becomes the minimum.
+pub const GT4GS_HW_DOWNLOAD_MODES: &[&str] = &["accurate", "no-readbacks"];
+
+/// Whether the gt4-gs the launcher runs accepts a `hw_download_mode` value (see [`GT4GS_HW_DOWNLOAD_MODES`]).
+pub fn gt4gs_accepts_hw_download_mode(name: &str) -> bool {
+    GT4GS_HW_DOWNLOAD_MODES.contains(&name)
 }
 
 /// Checks one value of a row and returns its normalized text (enum name, bool, integer text, float text or path).
@@ -449,15 +470,17 @@ mod tests {
         assert_eq!(api.default, "auto");
         assert_eq!(api.page, "basic", "Graphics page");
         assert!(offered().iter().any(|offered| offered.id == "graphics_api"));
-        // TASK-103: three APIs, Vulkan first; no OpenGL (12) and no software renderer (13) yet. TASK-108: Automatic first.
+        // TASK-103: three APIs, Vulkan first; TASK-200: OpenGL (12) last, for older PCs, once gt4-gs 1.3.0 accepts it.
+        // No software renderer (13). TASK-108: Automatic first.
         let names: Vec<&str> = api.choices.iter().map(|choice| choice.name.as_str()).collect();
-        assert_eq!(names, ["auto", "vulkan", "d3d12", "d3d11"]);
+        assert_eq!(names, ["auto", "vulkan", "d3d12", "d3d11", "opengl"]);
         let inis: Vec<&str> = api.choices.iter().map(|choice| choice.ini.as_str()).collect();
-        assert_eq!(inis, ["14", "14", "15", "3"]);
+        assert_eq!(inis, ["14", "14", "15", "3", "12"]);
         assert_eq!(api.choices[0].label, "Automatic");
         assert_eq!(api.choices[1].label, "Vulkan");
         assert_eq!(api.choices[2].label, "Direct3D 12");
         assert_eq!(api.choices[3].label, "Direct3D 11");
+        assert_eq!(api.choices[4].label, "OpenGL");
         // The engine setting of the launcher is also called "renderer": the table row must not use that id.
         assert!(row("renderer").is_none(), "the table row is graphics_api");
         assert!(!offered().is_empty());
@@ -466,7 +489,7 @@ mod tests {
     #[test]
     fn each_graphics_api_choice_writes_its_renderer_number() {
         // auto writes 14 only if it was never resolved; the launcher resolves it before every write (gpu::plan).
-        for (choice, number) in [("auto", "14"), ("vulkan", "14"), ("d3d12", "15"), ("d3d11", "3")] {
+        for (choice, number) in [("auto", "14"), ("vulkan", "14"), ("d3d12", "15"), ("d3d11", "3"), ("opengl", "12")] {
             let mut settings = BTreeMap::new();
             settings.insert("graphics_api".to_string(), choice.to_string());
             let text = render_ini(&settings, &BTreeMap::new()).unwrap();
@@ -483,11 +506,10 @@ mod tests {
         assert!(text.contains("Renderer = 14
 "));
         // Unknown: refused by the table check, so the launcher keeps the default (config.rs warns and uses it).
-        assert!(check_user_value("graphics_api", "opengl").is_err());
         assert!(check_user_value("graphics_api", "software").is_err());
         assert!(check_user_value("graphics_api", "").is_err());
         let mut unknown = BTreeMap::new();
-        unknown.insert("graphics_api".to_string(), "opengl".to_string());
+        unknown.insert("graphics_api".to_string(), "software".to_string());
         assert!(render_ini(&unknown, &BTreeMap::new()).is_err(), "the writer never writes an unknown value");
     }
 
@@ -516,7 +538,13 @@ mod tests {
         assert!(check_user_value("graphics_api", "d3d12").is_ok());
         assert!(check_user_value("graphics_api", "vulkan").is_ok());
         assert!(check_user_value("filter", "nearest").is_ok());
-        assert!(check_user_value("graphics_api", "opengl").is_err(), "not a value of the table");
+        assert!(check_user_value("graphics_api", "opengl").is_ok(), "TASK-200: Renderer 12 is a table value");
+        // TASK-200: the fractional multipliers are INI values of the upscale row (gt4-gs 1.3.0 accepts them).
+        assert_eq!(check_user_value("upscale", "1.25").unwrap(), "1.25x");
+        assert_eq!(check_user_value("upscale", "2.5").unwrap(), "2.5x");
+        assert_eq!(check_user_value("upscale", "1.5").unwrap(), "1.5x");
+        assert_eq!(check_user_value("upscale", "1.75").unwrap(), "1.75x");
+        assert_eq!(check_user_value("upscale", "1").unwrap(), "480p");
         assert!(check_user_value("cache_folder", "C:/x").is_err(), "launcher rows are not user settings");
         assert!(check_user_value("vsync", "yes").is_err());
     }

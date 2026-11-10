@@ -185,7 +185,7 @@ fn walk_pages(shared: &Shared, card: &Path) -> Vec<String> {
 
 /// What Play would run, without running it.
 fn play_plan(shared: &Shared, program_dir: &Path) -> Result<launch::LaunchPlan, String> {
-    let inputs = commands::prepare_play(shared, program_dir)?;
+    let inputs = commands::prepare_play(shared, program_dir, &json!({}))?;
     let session = inputs.dirs.session("session-plan-only");
     let card = inputs.dirs.runtime_card();
     let launch_inputs = LaunchInputs {
@@ -903,10 +903,10 @@ fn two_games_install_side_by_side_and_never_mix() {
     // Each game plays with its own program, ELF, disc and card (checked up to the GSdx step, which a test has none of).
     let program = stand_in_programs(&root, &["gt4.exe"]);
     commands::select_game_of("spec2".into(), &second).unwrap();
-    let missing = commands::prepare_play(&second, &program).map(|_| ()).unwrap_err();
+    let missing = commands::prepare_play(&second, &program, &json!({})).map(|_| ()).unwrap_err();
     assert!(missing.contains("Gran Turismo 4 Spec II") && missing.contains("missing"), "{missing}");
     stand_in_programs(&root, &["gt4-spec2.exe"]);
-    let refusal = commands::prepare_play(&second, &program).map(|_| ()).unwrap_err();
+    let refusal = commands::prepare_play(&second, &program, &json!({})).map(|_| ()).unwrap_err();
     assert!(refusal.starts_with("GSdx could not run the game"), "reaches the shared GSdx check: {refusal}");
 
     // Saves are apart: an import into Spec II is not in Gran Turismo 4, and the page names the game it shows.
@@ -1118,7 +1118,7 @@ fn retroachievements_options_and_launch_environment() {
 
     // 6. Prepare play for GT4
     commands::select_game_of("gt4".to_string(), &shared).unwrap();
-    let play_gt4 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for GT4");
+    let play_gt4 = commands::prepare_play(&shared, &program, &json!({})).expect("prepare play succeeds for GT4");
     assert_eq!(play_gt4.game.id, "gt4");
 
     let extra_map: std::collections::HashMap<_, _> = play_gt4.extra.clone().into_iter().collect();
@@ -1134,7 +1134,7 @@ fn retroachievements_options_and_launch_environment() {
 
     // 7. Switch to Spec II and prepare play: verify RA is disabled, credentials and hash are NOT sent
     commands::select_game_of("spec2".to_string(), &shared).unwrap();
-    let play_spec2 = commands::prepare_play(&shared, &program).expect("prepare play succeeds for Spec II");
+    let play_spec2 = commands::prepare_play(&shared, &program, &json!({})).expect("prepare play succeeds for Spec II");
     assert_eq!(play_spec2.game.id, "spec2");
 
     let spec2_extra: std::collections::HashMap<_, _> = play_spec2.extra.clone().into_iter().collect();
@@ -1851,15 +1851,361 @@ fn play_names_the_first_start_keys_until_the_game_has_a_save() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A guard file as the renderer writes it (`GuardFileHeader` in core2_gpu.cpp) with 3-word keys.
+fn synthetic_guard_file(flags: u32, keys: &[[u32; 3]]) -> Vec<u8> {
+    let mut bytes = b"GT4GRD1\0".to_vec();
+    bytes.extend_from_slice(&0xA1B2_C3D4_E5F6_0718u64.to_le_bytes());
+    for value in [0x1002u32, 0x73df, 0x0003_0002, 3, flags, keys.len() as u32] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    for word in keys.iter().flatten() {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn the_log_bundle_lists_the_shader_guard_files_and_nothing_else_of_the_cache() {
+    // TASK-170b: quarantine.bin and compiling.bin of the shader cache become logs/shader-guard.txt (header fields, keys as hex);
+    // the binary files and the rest of the cache folder never go in.
+    let (root, dirs, _pins, shared) = new_install("bundle-shader-guard");
+    let cache = lock(&shared).texture_location().0.shader_cache.expect("a shader cache folder");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("quarantine.bin"), synthetic_guard_file(1, &[[0x11, 0x22, 0x33], [0xcafe, 0, 1]])).unwrap();
+    fs::write(cache.join("compiling.bin"), synthetic_guard_file(0, &[[7, 8, 9]])).unwrap();
+    fs::write(cache.join("variants.bin"), b"pipeline cache bytes").unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
+    let guard = entries.iter().find(|entry| entry.path == "logs/shader-guard.txt").expect("logs/shader-guard.txt in the bundle");
+    assert!(guard.text.contains("quarantine.bin") && guard.text.contains("compiling.bin"));
+    assert!(guard.text.contains("a1b2c3d4e5f60718") && guard.text.contains("vendor 1002, device 73df"));
+    assert!(guard.text.contains("00000011 00000022 00000033") && guard.text.contains("0000cafe 00000000 00000001"));
+    assert!(guard.text.contains("00000007 00000008 00000009"));
+    assert!(entries.iter().all(|entry| !gt4l_core::log_export::is_forbidden(&entry.path)), "listing is text, not a .bin");
+    assert!(entries.iter().all(|entry| !entry.text.contains("pipeline cache bytes")), "nothing else of the cache");
+    drop(dirs);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_log_bundle_names_a_damaged_guard_file_and_has_no_listing_without_files() {
+    let (root, _dirs, _pins, shared) = new_install("bundle-shader-guard-damaged");
+    let none = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
+    assert!(none.iter().all(|entry| entry.path != "logs/shader-guard.txt"));
+    let cache = lock(&shared).texture_location().0.shader_cache.expect("a shader cache folder");
+    fs::create_dir_all(&cache).unwrap();
+    let mut damaged = synthetic_guard_file(0, &[[1, 2, 3]]);
+    damaged.truncate(damaged.len() - 2);
+    fs::write(cache.join("quarantine.bin"), damaged).unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
+    let guard = entries.iter().find(|entry| entry.path == "logs/shader-guard.txt").expect("a damaged file is still named");
+    assert!(guard.text.contains("quarantine.bin") && guard.text.contains("damaged"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_log_bundle_system_report_has_the_machine_facts_and_no_personal_value() {
+    // The owner's system report: processor, memory, system, drivers, displays, storage, power and pads. A fact that cannot be
+    // read says "unknown" and never fails the bundle. `--nocapture` prints the report this machine makes.
+    let (root, _dirs, _pins, shared) = new_install("bundle-system-facts");
+    let pads = vec!["Xbox Wireless Controller".to_string()];
+    let entries = crate::log_bundle::collect(&lock(&shared), &pads).unwrap();
+    let system = entries.iter().find(|entry| entry.path == "system.txt").expect("system.txt in the bundle");
+    println!("{}", system.text);
+    for key in [
+        "cpu cores: ", "cpu features: ", "memory: ", "windows edition: ", "wine: ", "storage: ", "power: ", "controller 1: Xbox Wireless Controller",
+    ] {
+        assert!(system.text.lines().any(|line| line.starts_with(key)), "missing {key:?} in\n{}", system.text);
+    }
+    // The existing lines keep their meaning.
+    for key in ["launcher: GT4Recomp ", "install: ", "windows: ", "cpu: ", "chosen card: ", "selected game: "] {
+        assert!(system.text.lines().any(|line| line.starts_with(key)), "missing {key:?}");
+    }
+    // The storage line names the drive letter and nothing else of the path.
+    let storage = system.text.lines().find(|line| line.starts_with("storage: ")).unwrap();
+    assert!(!storage.contains('\\') && !storage.contains(root.to_string_lossy().as_ref()), "{storage}");
+    // No computer name and no user name.
+    if let Ok(computer) = std::env::var("COMPUTERNAME") {
+        assert!(!system.text.to_lowercase().contains(&computer.to_lowercase()), "the computer name is in the report");
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_pad_names_of_the_log_bundle_come_from_the_pad_status_without_serials() {
+    let status = serde_json::json!({
+        "pads": [
+            { "name": "Xbox Wireless Controller", "kind": "xbox", "key": "guid:serial-123", "active": true },
+            { "name": "  ", "kind": "x", "key": "k", "active": false },
+            { "name": "DualSense Wireless Controller", "kind": "ps5", "key": "guid2:serial-456", "active": false }
+        ]
+    });
+    let names = crate::log_bundle::controller_names(&status);
+    assert_eq!(names, vec!["Xbox Wireless Controller".to_string(), "DualSense Wireless Controller".to_string()]);
+    assert!(crate::log_bundle::controller_names(&serde_json::Value::Null).is_empty());
+}
+
 #[test]
 fn the_log_bundle_carries_the_shader_prepare_log() {
     // TASK-170: a compile that stops (a driver that ends the process) is named in logs/shaders.log; bug reports need it.
     let (root, dirs, _pins, shared) = new_install("bundle-shaders-log");
     fs::create_dir_all(dirs.logs()).unwrap();
     fs::write(dirs.logs().join("shaders.log"), "[core2] shader guard: 1 variants quarantined\n").unwrap();
-    let entries = crate::log_bundle::collect(&lock(&shared)).unwrap();
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
     let shaders = entries.iter().find(|entry| entry.path == "logs/shaders.log").expect("logs/shaders.log in the bundle");
     assert!(shaders.text.contains("shader guard"));
     assert!(entries.iter().all(|entry| !gt4l_core::log_export::is_forbidden(&entry.path)));
     let _ = fs::remove_dir_all(&root);
+}
+
+/// TASK-181: the Wheel page's command bodies in the page's order: no file at first; a family template for a G27 writes
+/// `wheel.toml` (and game.ini names it for a direct start); captured bindings, settings and a preset; the file reads back
+/// with the game's rules; the log bundle carries it with the wheel lines; the last session's force feedback is read.
+#[test]
+fn the_wheel_page_writes_a_dfp_file_the_game_reads() {
+    use crate::wheel_page;
+    const G27: &str = "030000006d0400009bc2000000000000";
+    let root = scratch("wheel-page");
+    let dirs = DataDirs::new(root.join("data"));
+    let pins = Pins::embedded().expect("embedded pins");
+    let shared = launch(&dirs, &pins);
+    let wheel_path = lock(&shared).wheel_path();
+    let first = wheel_page::get_wheel_config_of(&shared);
+    assert_eq!(first["file"]["state"], json!("missing"));
+    assert_eq!(first["config"]["enabled"], json!(false));
+    assert!(!wheel_path.exists(), "nothing is written before a change");
+
+    let status = json!({ "available": true, "devices": [{ "guid": G27, "name": "Logitech G27 Racing Wheel USB" }] });
+    let view = wheel_page::apply_wheel_preset_of("logitech_legacy".into(), false, Some(G27.into()), &shared, status.clone(), false).unwrap();
+    assert_eq!(view["config"]["device_guid"], json!(G27));
+    assert_eq!(view["config"]["device_name"], json!("Logitech G27 Racing Wheel USB"));
+    assert_eq!(view["config"]["preset"], json!("logitech_legacy"));
+    assert!(wheel_path.exists());
+    let game_ini = fs::read_to_string(lock(&shared).user_dirs.config_dir().join(launch::STANDALONE_CONFIG_FILE)).unwrap();
+    assert!(game_ini.contains(&format!("wheel_file={}", wheel_path.display())), "{game_ini}");
+
+    wheel_page::set_wheel_setting_of("wheel.enabled".into(), json!(true), &shared, status.clone(), false).unwrap();
+    wheel_page::assign_wheel_binding_of("throttle".into(), "axis:2".into(), Some("inverted".into()), false, &shared, status.clone(), false).unwrap();
+    wheel_page::assign_wheel_binding_of("brake".into(), "axis:3".into(), Some("inverted".into()), false, &shared, status.clone(), false).unwrap();
+    wheel_page::assign_wheel_binding_of("r2".into(), "btn:4".into(), None, false, &shared, status.clone(), false).unwrap();
+    let moved = wheel_page::assign_wheel_binding_of("cross".into(), "btn:4".into(), None, false, &shared, status.clone(), false).unwrap();
+    assert_eq!(moved["taken_from"], json!(["r2"]), "one wheel button presses one DFP button");
+    wheel_page::set_wheel_setting_of("ffb.strength".into(), json!(0.7), &shared, status.clone(), false).unwrap();
+    assert!(wheel_page::set_wheel_setting_of("steering.rotation_degrees".into(), json!(2000), &shared, status.clone(), false).is_err());
+    assert!(wheel_page::assign_wheel_binding_of("steering".into(), "btn:1".into(), None, false, &shared, status.clone(), false).is_err());
+
+    let text = fs::read_to_string(&wheel_path).unwrap();
+    let back = gt4l_core::wheel::WheelConfig::from_toml(&text).expect("the game reads the file");
+    assert!(back.enabled);
+    assert_eq!(back.buttons["cross"], vec!["btn:4"]);
+    assert_eq!(back.ffb.strength, 0.7);
+    assert!(text.contains("mode = \"dfp\"") && !text.contains("pedal_map_mode"), "{text}");
+
+    let presets = wheel_page::save_wheel_preset_of("Owner G27".into(), &shared).unwrap();
+    assert_eq!(presets[0]["name"], json!("Owner G27"));
+    wheel_page::reset_wheel_config_of(&shared, status.clone(), false).unwrap();
+    assert_eq!(gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).unwrap().enabled, false);
+    let restored = wheel_page::apply_wheel_preset_of("Owner G27".into(), true, None, &shared, status.clone(), false).unwrap();
+    assert_eq!(restored["config"]["buttons"]["cross"], json!(["btn:4"]));
+    assert_eq!(restored["config"]["enabled"], json!(false), "a preset keeps the wheel on or off as it was");
+
+    lock(&shared).wheel.enabled = true;
+    lock(&shared).wheel_facts = vec![gt4l_core::log_export::WheelFact {
+        name: "Logitech G27 Racing Wheel USB".into(),
+        vid_pid: "046D:C29B".into(),
+        sdl_type: "wheel".into(),
+        role: "wheel".into(),
+        haptic: "constant spring damper friction gain autocenter".into(),
+    }];
+    let entries = crate::log_bundle::collect(&lock(&shared), &[]).unwrap();
+    assert!(entries.iter().any(|entry| entry.path == "wheel.toml"));
+    let system = entries.iter().find(|entry| entry.path == "system.txt").unwrap();
+    assert!(system.text.contains("racing wheel: virtual Driving Force Pro on"), "{}", system.text);
+    assert!(system.text.contains("wheel 1: Logitech G27 Racing Wheel USB (046D:C29B, SDL type wheel"), "{}", system.text);
+
+    assert_eq!(wheel_page::get_wheel_session_check_of(&shared)["found"], json!(false));
+    let session = dirs.session("session-1");
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        session.join("game.log"),
+        "[wheel] wheel.toml found (enabled=true, preset=logitech_legacy)\n[wheel] force feedback summary: game force commands 10, effect updates sent 9, effects started 2, haptic device open, effects supported, game forces played 9, reached the wheel yes\n",
+    )
+    .unwrap();
+    let check = wheel_page::get_wheel_session_check_of(&shared);
+    assert_eq!((check["found"].clone(), check["received"].clone()), (json!(true), json!("yes")));
+    assert_eq!(check["session"], json!("session-1"));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// TASK-181: a `mode = "pad"` wheel.toml (the removed 1.2.x bridge, which the game refuses) is migrated when the launcher
+/// starts: written again as a Driving Force Pro file with its bindings.
+#[test]
+fn a_pad_mode_wheel_file_is_migrated_at_start() {
+    let root = scratch("wheel-migrate");
+    let dirs = DataDirs::new(root.join("data"));
+    let pins = Pins::embedded().expect("embedded pins");
+    let user = UserDirs::new(dirs.root().join("appdata-stand-in").join(USER_FOLDER_NAME), UserRootSource::Override);
+    let wheel_path = user.wheel_file();
+    fs::create_dir_all(wheel_path.parent().unwrap()).unwrap();
+    fs::write(
+        &wheel_path,
+        "[wheel]\nversion = 1\nenabled = true\nmode = \"pad\"\npedal_map_mode = \"both\"\n[steering]\neffective_degrees = 540\n[buttons]\nshift_up = [\"btn:12\"]\n",
+    )
+    .unwrap();
+    let shared = launch(&dirs, &pins);
+    let text = fs::read_to_string(&wheel_path).unwrap();
+    assert!(text.contains("mode = \"dfp\"") && !text.contains("\"pad\"") && !text.contains("effective_degrees"), "{text}");
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&text).expect("the game reads the migrated file");
+    assert!(config.enabled);
+    assert_eq!(config.buttons["r2"], vec!["btn:12"]);
+    assert_eq!(crate::wheel_page::get_wheel_config_of(&shared)["file"]["state"], json!("migrated"));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// TASK-181: a wheel.toml the game refuses is kept with one copy beside it (not one per launcher start); the page
+/// says why, and the first change replaces it with a valid file.
+#[test]
+fn a_refused_wheel_file_gets_one_copy_and_the_first_change_replaces_it() {
+    let root = scratch("wheel-refused");
+    let dirs = DataDirs::new(root.join("data"));
+    let pins = Pins::embedded().expect("embedded pins");
+    let user = UserDirs::new(dirs.root().join("appdata-stand-in").join(USER_FOLDER_NAME), UserRootSource::Override);
+    let wheel_path = user.wheel_file();
+    fs::create_dir_all(wheel_path.parent().unwrap()).unwrap();
+    fs::write(&wheel_path, "[wheel]\nversion = 1\nenabled = true\n[steering]\nrotation_degrees = 90\n").unwrap();
+    let copies = |folder: &Path| {
+        fs::read_dir(folder).unwrap().filter_map(|entry| entry.ok()).filter(|entry| entry.file_name().to_string_lossy().starts_with("wheel.toml.bak-invalid-")).count()
+    };
+    let shared = launch(&dirs, &pins);
+    let view = crate::wheel_page::get_wheel_config_of(&shared);
+    assert_eq!(view["file"]["state"], json!("refused"));
+    assert!(view["file"]["detail"].as_str().unwrap().contains("rotation_degrees"), "{}", view["file"]["detail"]);
+    assert_eq!(view["config"]["enabled"], json!(false), "the defaults (the wheel off) until a change");
+    drop(shared);
+    let shared = launch(&dirs, &pins);
+    assert_eq!(copies(wheel_path.parent().unwrap()), 1, "one copy, however many starts");
+    crate::wheel_page::set_wheel_setting_of("wheel.enabled".into(), json!(true), &shared, json!({ "devices": [] }), false).unwrap();
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads the new file");
+    assert!(config.enabled);
+    assert_eq!(crate::wheel_page::get_wheel_config_of(&shared)["file"]["state"], json!("loaded"));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// TASK-189: a wheel the launcher ships a preset for starts from it, and a wheel it does not know starts with nothing
+/// mapped (owner, 2026-11-06: no guessed controls). Both are checked the way the page reads them.
+#[test]
+fn a_g27_starts_from_the_shipped_preset_and_an_unknown_wheel_from_nothing() {
+    use crate::wheel_page;
+    const G27: &str = "030000006d0400009bc2000000000000";
+    const UNKNOWN: &str = "03000000341200007856000000000000";
+    let g27_status = json!({ "available": true, "primary": 1,
+        "devices": [{ "id": 1, "guid": G27, "name": "Logitech G27 Racing Wheel USB", "role": "wheel" }] });
+    let unknown_status = json!({ "available": true, "primary": 2,
+        "devices": [{ "id": 2, "guid": UNKNOWN, "name": "USB Racing Wheel", "role": "wheel" }] });
+
+    let root = scratch("wheel-preset");
+    let dirs = DataDirs::new(root.join("data"));
+    let pins = Pins::embedded().expect("embedded pins");
+    let shared = launch(&dirs, &pins);
+    assert!(!lock(&shared).wheel_path().exists());
+    let view = wheel_page::get_wheel_config_with(&shared, g27_status.clone(), false);
+    assert_eq!(view["file"]["state"], json!("loaded"), "the preset writes the file at once");
+    assert_eq!(view["applied_preset"], json!("Logitech G27"));
+    assert_eq!(view["config"]["preset"], json!("Logitech G27"));
+    assert_eq!(view["config"]["device_guid"], json!(G27));
+    assert_eq!(view["config"]["device_name"], json!("Logitech G27 Racing Wheel USB"));
+    assert_eq!(view["config"]["buttons"]["cross"], json!(["btn:17"]));
+    assert_eq!(view["config"]["buttons"]["r2"], json!(["btn:4"]));
+    assert_eq!(view["config"]["steering"]["source"], json!("axis:0"));
+    assert_eq!(view["config"]["enabled"], json!(false), "the preset never decides the wheel is on in the game");
+    let written = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(lock(&shared).wheel_path()).unwrap()).expect("the game reads the preset");
+    assert_eq!(written.preset, "Logitech G27");
+    assert!(written.validate().is_ok());
+    let log = fs::read_to_string(dirs.logs().join("launcher.log")).unwrap_or_default();
+    assert!(log.contains("wheel: preset Logitech G27 applied for Logitech G27 Racing Wheel USB"), "{log}");
+
+    // The player's own mapping is never replaced by the preset on the next read.
+    wheel_page::assign_wheel_binding_of("cross".into(), "btn:6".into(), None, false, &shared, g27_status.clone(), false).unwrap();
+    let again = wheel_page::get_wheel_config_with(&shared, g27_status.clone(), false);
+    assert_eq!(again["config"]["buttons"]["cross"], json!(["btn:6"]), "a saved mapping stays as the player left it");
+    assert_eq!(again["applied_preset"], json!(null), "nothing was applied the second time");
+
+    // Reset: everything unassigned and then the G27's own preset again, so a reset never leaves the wheel unusable.
+    let reset = wheel_page::reset_wheel_config_of(&shared, g27_status.clone(), false).unwrap();
+    assert_eq!(reset["config"]["buttons"]["cross"], json!(["btn:17"]), "reset goes back to the G27 preset");
+    assert_eq!(reset["config"]["throttle"]["source"], json!("axis:1"));
+    assert_eq!(reset["applied_preset"], json!("Logitech G27"));
+
+    // An unknown wheel: every control unassigned, nothing written.
+    let other_root = scratch("wheel-unknown");
+    let other_dirs = DataDirs::new(other_root.join("data"));
+    let other = launch(&other_dirs, &pins);
+    let view = wheel_page::get_wheel_config_with(&other, unknown_status, false);
+    assert_eq!(view["file"]["state"], json!("missing"));
+    assert_eq!(view["applied_preset"], json!(null));
+    assert_eq!(view["config"]["steering"]["source"], json!(""));
+    assert_eq!(view["config"]["throttle"]["source"], json!(""));
+    assert_eq!(view["config"]["buttons"]["cross"], json!([]));
+    assert!(!lock(&other).wheel_path().exists(), "nothing is written until the player maps something");
+    let reset = wheel_page::reset_wheel_config_of(&other, json!({ "available": true, "devices": [{ "id": 2, "guid": UNKNOWN, "name": "USB Racing Wheel", "role": "wheel" }] }), false).unwrap();
+    assert_eq!(reset["config"]["steering"]["source"], json!(""), "a reset of a wheel with no preset is still nothing");
+    assert_eq!(reset["applied_preset"], json!(null));
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(other_root);
+}
+
+/// TASK-189: Play plugs the virtual Driving Force Pro in exactly when a wheel is connected, and the on/off value a
+/// 1.3.0-rc15 file stored (the removed "Racing wheel in the game" switch) is dropped and derived instead.
+#[test]
+fn play_switches_the_virtual_wheel_from_what_is_connected() {
+    use crate::wheel_page;
+    const G27: &str = "030000006d0400009bc2000000000000";
+    let connected = json!({ "available": true, "primary": 1,
+        "devices": [{ "id": 1, "guid": G27, "name": "Logitech G27 Racing Wheel USB", "role": "wheel" }] });
+    let unplugged = json!({ "available": true, "primary": null, "devices": [] });
+    let unknown = json!({ "available": false, "error": "starting", "devices": [] });
+
+    let root = scratch("wheel-play");
+    let dirs = DataDirs::new(root.join("data"));
+    let pins = Pins::embedded().expect("embedded pins");
+    let shared = launch(&dirs, &pins);
+    let wheel_path = lock(&shared).wheel_path();
+
+    // No wheel, no file: nothing is written and the game gets no wheel file.
+    wheel_page::prepare_for_play(&mut lock(&shared), &unplugged);
+    assert!(!wheel_path.exists());
+
+    // A G27: its preset, and the virtual wheel in the game.
+    wheel_page::prepare_for_play(&mut lock(&shared), &connected);
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads it");
+    assert!(config.enabled, "a connected wheel is in the game");
+    assert_eq!(config.preset, "Logitech G27");
+
+    // Unplugged: the same file, the virtual wheel out. The stored on/off is not a player setting any more.
+    wheel_page::prepare_for_play(&mut lock(&shared), &unplugged);
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads it");
+    assert!(!config.enabled);
+
+    // A 1.3.0-rc15 file that stored the switch on, with no wheel connected: the value is dropped at the next Start.
+    let mut legacy = gt4l_core::wheel::WheelConfig::default();
+    legacy.enabled = true;
+    legacy.save_atomic(&wheel_path).unwrap();
+    lock(&shared).wheel = legacy;
+    wheel_page::prepare_for_play(&mut lock(&shared), &unplugged);
+    let config = gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).expect("the game reads it");
+    assert!(!config.enabled, "the old switch's value does not survive Play");
+
+    // And the other way: stored off, a wheel plugged in, the game gets the wheel.
+    lock(&shared).wheel.enabled = false;
+    wheel_page::prepare_for_play(&mut lock(&shared), &connected);
+    assert!(gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).unwrap().enabled);
+
+    // SDL3 without a device list decides nothing: the stored value is kept so a Start right at boot keeps the wheel.
+    wheel_page::prepare_for_play(&mut lock(&shared), &unknown);
+    assert!(gt4l_core::wheel::WheelConfig::from_toml(&fs::read_to_string(&wheel_path).unwrap()).unwrap().enabled);
+
+    let log = fs::read_to_string(dirs.logs().join("launcher.log")).unwrap_or_default();
+    assert!(log.contains("wheel: virtual Driving Force Pro on for this Start (Logitech G27 Racing Wheel USB connected)"), "{log}");
+    assert!(log.contains("wheel: virtual Driving Force Pro off for this Start (no wheel connected)"), "{log}");
+    assert!(log.contains("wheel: the device list was not ready: the stored on/off is kept for this Start"), "{log}");
+    let _ = fs::remove_dir_all(root);
 }

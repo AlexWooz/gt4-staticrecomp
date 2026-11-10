@@ -23,6 +23,7 @@
     { id: "general", key: "tab.general" },
     { id: "graphics", key: "tab.graphics" },
     { id: "controls", key: "tab.controls" },
+    { id: "wheel", key: "tab.wheel" },
     { id: "games", key: "tab.games" },
     { id: "saves", key: "tab.saves" },
     { id: "replays", key: "tab.replays" },
@@ -134,12 +135,16 @@
 
   var rowToFocusAfterRedraw = null;
 
-  // ctx = {table, content, refresh(focusId)}
+  // ctx = {table, content, refresh(focusId), commit?(id, value, keepDrawn)}. A page with its own file (the Wheel page,
+  // TASK-181) passes `commit` and writes its rows itself; everything else goes through set_setting.
   // A successful write updates the row model, then the table is read again: other rows may depend on this one
   // (visible_when, disabled), so the whole tab is drawn from the new table, with focus kept on the same row.
   // `keepDrawn`: the control already shows the value, and the tab is drawn again only if the change moved something else (a redraw
   // would cut the control's slide): ctx.selfDrawn lists the rows whose value on screen is newer than the last draw.
   function commit(ctx, id, value, keepDrawn) {
+    if (ctx.commit) {
+      return ctx.commit(id, value, keepDrawn);
+    }
     return call("set_setting", { id: id, value: value }).then(
       function () {
         model.applyChange(ctx.table, id, value);
@@ -332,7 +337,8 @@
 
   // The option control (owner, 2026-11-02), as the version switch on the home page: the value between two arrows, in an endless loop,
   // and the new value slides in from the side of the arrow used. It is one focus stop: left and right on the keyboard or the pad step
-  // it, A or a click on the value goes to the next one. Options that cannot be chosen are left out of the loop.
+  // it, A goes to the next one, and with a mouse or a finger only the arrows change it, left arrow back and right arrow forward
+  // (TASK-193, owner 2026-11-06). Options that cannot be chosen are left out of the loop.
   // spec = {id, label, options: [{value, text, disabled?}], current, disabled, onChange(value)}
   function optionSelector(spec) {
     var loop = spec.options.filter(function (option) {
@@ -413,6 +419,7 @@
         class: "selector-arrow",
         on: {
           click: function (event) {
+            // Only the arrow steps, and only in its own direction (TASK-193).
             event.stopPropagation();
             step(direction);
           }
@@ -421,7 +428,16 @@
     }
 
     var root = h("div", attributes, [arrow(-1), valueWindow, arrow(1)]);
-    root.addEventListener("click", function () { step(1); });
+    // TASK-193 (owner, 2026-11-06): a tap or a click on the row's label or value no longer changes the value; only the two
+    // arrows do (their hit areas are the invisible padding in css/app.css). The keyboard, the pad and assistive technology
+    // still step forward: nav.js activate() clicks the focused row, and that click has no click count, while a mouse, finger
+    // or pen click carries one.
+    root.addEventListener("click", function (event) {
+      if (!GT4.input.stepsFromActivation(event.detail)) {
+        return;
+      }
+      step(1);
+    });
     root.addEventListener("gt4-adjust", function (event) { step(event.detail.delta > 0 ? 1 : -1); });
     return root;
   }
@@ -641,9 +657,9 @@
     if (control.limited) {
       keyNodes.push(h("span", { class: "hint-text", text: GT4.t("settings.limited", { value: control.limited }) }));
     }
-    if (row.note) {
-      // A row that is shown but not available now (the launcher sends `note` only for such a row).
-      keyNodes.push(h("span", { class: "hint-text", text: row.note }));
+    if (row.note_key || row.note) {
+      // A row that is shown but not available now (the launcher sends a note only for such a row; `note_key` is translated).
+      keyNodes.push(h("span", { class: "hint-text", text: row.note_key && GT4.i18n.has(row.note_key) ? GT4.t(row.note_key) : row.note }));
     }
     return h("div", { class: "row" + (row.disabled ? " is-disabled" : ""), data: { row: row.id } }, [
       h("div", { class: "k" }, keyNodes),

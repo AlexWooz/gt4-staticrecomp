@@ -3,7 +3,8 @@
 //! The launcher only downloads a package and starts `gt4-gs.exe` in its own process. No GPL code is in the
 //! launcher (decision 0070). Flow of [`install_latest`]:
 //! 1. read the release list (`ReleaseSource::releases_json`); skip drafts and prereleases;
-//! 2. pick the highest stable version that is at least [`MINIMUM_VERSION`];
+//! 2. take the pinned release by tag ([`releases::RENDERER_PINNED`], which may be a pre-release), else the highest
+//!    stable version that is at least [`MINIMUM_VERSION`];
 //! 3. download `SHA256SUMS` and the package `gt4-gs-<version>-windows-x64.zip`; the package must match its sum;
 //! 4. unpack into a staging folder; `gt4-gs.exe` must exist and must match its line in `SHA256SUMS`;
 //! 5. rename the staging folder to `<gs root>\<version>\`, then point `current.txt` at it.
@@ -162,10 +163,25 @@ pub fn install_latest_reporting(
 ) -> Result<Outcome, String> {
     progress(Step::Listing);
     let releases = parse_releases(&source.releases_json()?, Stream::Renderer)?;
-    let release = releases::select_latest(&releases, MINIMUM_VERSION).ok_or_else(|| {
-        format!("no stable release of {RELEASE_REPOSITORY} at or above {}", MINIMUM_VERSION.text())
-    })?;
-    let version = release.version.expect("select_latest only returns versions");
+    // TASK-200: this launcher installs its pinned release (a pre-release, so no other launcher's picker takes it) when
+    // it is the newest available; a later stable release still wins, so the pin never holds the renderer back.
+    let pinned = releases::RENDERER_PINNED.and_then(|version| releases::select_pinned(&releases, version));
+    let latest = releases::select_latest(&releases, MINIMUM_VERSION);
+    let release = match (pinned, latest) {
+        (Some(pinned), Some(latest)) if latest.version > pinned.version => latest,
+        (Some(pinned), _) => pinned,
+        (None, Some(latest)) => latest,
+        (None, None) => {
+            return Err(match releases::RENDERER_PINNED {
+                Some(pinned) => format!(
+                    "gt4-gs {} is not available on {RELEASE_REPOSITORY} yet (the pinned release is a draft or unpublished)",
+                    pinned.text()
+                ),
+                None => format!("no stable release of {RELEASE_REPOSITORY} at or above {}", MINIMUM_VERSION.text()),
+            });
+        }
+    };
+    let version = release.version.expect("select_pinned and select_latest only return versions");
     let asset = |name: &str| {
         release
             .asset(name)
@@ -474,8 +490,8 @@ mod tests {
     }
 
     #[test]
-    fn the_minimum_is_1_2_1_with_the_real_asset_name() {
-        assert_eq!(MINIMUM_VERSION, Version(1, 2, 1));
-        assert_eq!(package_name(Version(1, 2, 0)), "gt4-gs-1.2.0-windows-x64.zip");
+    fn the_minimum_is_1_3_0_with_the_real_asset_name() {
+        assert_eq!(MINIMUM_VERSION, Version(1, 3, 0));
+        assert_eq!(package_name(Version(1, 3, 0)), "gt4-gs-1.3.0-windows-x64.zip");
     }
 }

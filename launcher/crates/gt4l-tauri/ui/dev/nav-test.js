@@ -79,6 +79,14 @@ function startNavTest(root) {
   expect("stick full up scrolls -18 px", root.GT4.input.stickScroll(-1), -18);
   expect("stick just past the deadzone scrolls a little", root.GT4.input.stickScroll(0.25) > 0 && root.GT4.input.stickScroll(0.25) < 2, true);
 
+  // A click from the keyboard, the pad or assistive technology has no click count; a mouse, finger or pen click has one.
+  // An option row only steps on the first kind (TASK-193).
+  expect("a keyboard or assistive click steps an option row", root.GT4.input.stepsFromActivation(0), true);
+  expect("a click with no count at all steps an option row", root.GT4.input.stepsFromActivation(undefined), true);
+  expect("a mouse click does not step an option row", root.GT4.input.stepsFromActivation(1), false);
+  expect("a finger tap does not step an option row", root.GT4.input.stepsFromActivation(1), false);
+  expect("a double click does not step an option row", root.GT4.input.stepsFromActivation(2), false);
+
   // Slider from a touch position: 7 px thumb inset is applied by the caller; here the track is plain.
   expect("touch at the left end gives min", root.GT4.input.valueFromPointer(0, 0, 100, 1, 12, 1), 1);
   expect("touch at the right end gives max", root.GT4.input.valueFromPointer(100, 0, 100, 1, 12, 1), 12);
@@ -316,6 +324,62 @@ function startNavTest(root) {
   same("L3 right is R3", padMove("l3", "right"), "r3");
   same("Triangle up is R1", padMove("triangle", "up"), "r1");
   same("Circle right leaves the drawing (the panel is next)", padMove("circle", "right"), null);
+
+  // TASK-181: the Wheel page's model (js/wheel-model.js), the game's own formulas.
+  var wm = root.GT4.wheelModel;
+  var G27 = "030000006d0400009bc2000000000000";
+  var AUX = "03000000b70e00003b18000000000000";
+  var wheel = { id: 5, guid: G27, axes: [6554, 32767, -32768, 0], pressed: [0, 4], hats: [3] };
+  var aux = { id: 9, guid: AUX, axes: [-32768, 30000], pressed: [2], hats: [] };
+  var live = [wheel, aux];
+  var steering = { source: "axis:0", rotation_degrees: 900, invert: false };
+  expect("a fifth of the travel is +90 degrees on a 900-degree wheel", Math.round(wm.steeringDegrees(steering, 6554)), 90);
+  expect("full right is +450 degrees at 900", wm.steeringDegrees(steering, 32767), 450);
+  expect("full left is -450 degrees at 900", wm.steeringDegrees(steering, -32768), -450);
+  expect("a 1080-degree wheel turns to 540", wm.steeringDegrees({ source: "axis:0", rotation_degrees: 1080, invert: false }, 32767), 540);
+  expect("invert reverses the angle", wm.steeringDegrees({ source: "axis:0", rotation_degrees: 900, invert: true }, 32767), -450);
+  expect("the live steering reads the primary device", Math.round(wm.steeringLive(steering, live, 5).degrees), 90);
+  expect("no primary device: the steering is not connected", wm.steeringLive(steering, live, null).connected, false);
+  expect("the angle text uses a sign and a real minus", wm.angleText(-90.4) + " " + wm.angleText(90.6) + " " + wm.angleText(0.2), "−90° +91° 0°");
+  var pedal = { source: "axis:2", mode: "inverted", deadzone: 0.02, saturation: 0.98, curve: "linear" };
+  expect("an inverted pedal at rest gives 0", wm.pedalByte(pedal, 32767), 0);
+  expect("an inverted pedal fully pressed gives 255", wm.pedalByte(pedal, -32768), 255);
+  expect("a pedal inside the dead zone gives 0", wm.pedalByte(pedal, 32767 - 600), 0);
+  expect("past the saturation the pedal is full", wm.pedalByte(pedal, -32000), 255);
+  expect("a pressed pedal is at least 1", wm.pedalByte(pedal, 32767 - 1400) >= 1, true);
+  expect("quadratic halves the middle", Math.abs(wm.pedalByte(Object.assign({}, pedal, { deadzone: 0, saturation: 1, curve: "quadratic" }), 0) - 64) <= 1, true);
+  expect("the live pedal on the wheel is full", wm.pedalLive(pedal, live, 5).output, 1);
+  expect("a dev: pedal reads its own device", wm.pedalLive({ source: "dev:" + AUX + ":axis:1", mode: "normal", deadzone: 0, saturation: 1, curve: "linear" }, live, 5).travel > 0.95, true);
+  expect("a digital pedal is full while pressed", wm.pedalLive({ source: "btn:4", mode: "inverted", deadzone: 0, saturation: 1, curve: "linear" }, live, 5).output, 1);
+  expect("an unbound pedal is not bound", wm.pedalLive({ source: "", mode: "inverted" }, live, 5).bound, false);
+  expect("a missing device leaves the pedal at 0", wm.pedalLive(pedal, live, null).output, 0);
+  expect("combined negative counts the lower half", wm.pedalTravel("combined_negative", -16384) > 0.49 && wm.pedalTravel("combined_negative", 100) === 0, true);
+  expect("a button source is pressed", wm.sourcePressed("btn:4", live, 5), true);
+  expect("a hat diagonal presses up and right", wm.sourcePressed("hat:0:up", live, 5) && wm.sourcePressed("hat:0:right", live, 5) && !wm.sourcePressed("hat:0:down", live, 5), true);
+  expect("axis+ passes the game's +16384", wm.sourcePressed("dev:" + AUX + ":axis:1+", live, 5), true);
+  expect("axis- needs below -16384", wm.sourcePressed("axis:2-", live, 5) && !wm.sourcePressed("axis:3-", live, 5), true);
+  expect("a plain axis on a button: above 0 or past 20000", wm.sourcePressed("axis:1", live, 5) && !wm.sourcePressed("axis:3", live, 5), true);
+  expect("a dev: source of a missing device is never pressed", wm.sourcePressed("dev:0300000000000000000000000000ffff:btn:0", live, 5), false);
+  expect("two devices with one GUID name none", wm.sourcePressed("dev:" + G27 + ":btn:0", [wheel, Object.assign({}, wheel, { id: 6 })], 5), false);
+  expect("the chips count buttons from 1", JSON.stringify(wm.describe("btn:0")), JSON.stringify({ kind: "button", number: 1, dir: "", sign: "", aux: false }));
+  expect("an axis threshold keeps its sign", wm.describe("axis:3-").sign + wm.describe("axis:3+").sign, "-+");
+  expect("a dev: source is marked as another device", wm.describe("dev:" + AUX + ":hat:0:left").aux, true);
+  expect("an invalid source has no description", wm.describe("axis:40"), null);
+  var config = { steering: steering, throttle: pedal, brake: { source: "" }, clutch: { source: "axis:1" }, handbrake: { source: "" },
+    buttons: { cross: ["btn:0"], r2: ["btn:4", "btn:12"], l2: [], dpad_up: ["hat:0:up"] } };
+  var down = wm.pressedSlots(config, live, 5);
+  expect("pressed slots follow the bindings (gear up is r2)", down.cross && down.r2 && down.dpad_up && !down.l2, true);
+  expect("the wizard has steering, three pedals and 16 buttons", wm.WIZARD.length, 21);
+  expect("the wizard asks left then right first", wm.WIZARD[0].phase + " " + wm.WIZARD[1].phase, "left right");
+  expect("gear up writes the r2 slot and gear down the l2 slot", wm.controlOfDfp("gear_up").slot + " " + wm.controlOfDfp("gear_down").slot, "r2 l2");
+  expect("the DFP's R2 and L2 are the r1 and l1 slots", wm.controlOfDfp("r2").slot + " " + wm.controlOfDfp("l2").slot, "r1 l1");
+  expect("bound count over the wizard's controls", JSON.stringify(wm.boundCount(config)), JSON.stringify({ bound: 6, total: 20 }));
+  expect("turning left read positive: the steering is inverted", wm.steeringInvert(30000, -30000), true);
+  expect("turning left read negative: the steering is not inverted", wm.steeringInvert(-30000, 30000), false);
+  expect("900 degrees gives no warning, 1080 does", !wm.rotationWarning(900) && wm.rotationWarning(1080), true);
+  expect("no session: unknown", wm.received(null).value + "/" + wm.received({ found: false }).reason, "unknown/no_session");
+  expect("a summary that reached the wheel: yes", wm.received({ found: true, received: "yes", reason: "summary" }).value, "yes");
+  expect("the main device is the one the game drives", wm.mainDevice({ primary: 9, devices: [{ id: 5, role: "other_wheel" }, { id: 9, role: "wheel" }] }).id, 9);
 
   function run() {
     var list = document.getElementById("results");

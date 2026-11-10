@@ -24,7 +24,12 @@ const DERIVED_TABLE_IDS: &[&str] = &["vsync", "mailbox", "upscale"];
 const RC_ONLY_ROWS: &[&str] = &["performance_report", "check_vu_code"];
 /// The renderer defines the graphics options (owner, 2026-10-30): the table rows are GSdx's, and of them only these exist
 /// under CoreGS 2.0 too (launch::coregs20_environment). `coregs_sharpening` (FSR1, where GSdx has CAS) exists only there.
-const CORE_GS_20_TABLE_ROWS: &[&str] = &["performance_mode", "texture_load", "fxaa"];
+/// TASK-186: `effect_flares` exists under both renderers (CoreGS 2.0 answers the table as zeros; the GSdx stream client
+/// does the same); `effect_road_sheen` is CoreGS-only and handled where its row is built.
+const CORE_GS_20_TABLE_ROWS: &[&str] = &["effect_flares", "texture_load", "fxaa"];
+/// GS table rows that exist under CoreGS 2.0 only (TASK-186: the road sheen's classifier is core 2's, and the small
+/// effect targets at 1x are core 2's own resolution choice).
+const CORE_GS_20_ONLY_TABLE_ROWS: &[&str] = &["effect_road_sheen", "effect_targets"];
 
 pub fn pcsx2_table_rows() -> Vec<&'static gs_table::Row> {
     gs_table::offered().into_iter().filter(|row| !DERIVED_TABLE_IDS.contains(&row.id.as_str())).collect()
@@ -61,15 +66,33 @@ fn fill_monitor_row(row: &mut Value, settings: &Settings, monitors: &[Monitor]) 
 }
 
 /// The Graphics API row (TASK-108): the Automatic choice says which API it resolves to for the card the run would use.
-fn fill_api_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice]) {
+fn fill_api_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice], opengl_ok: bool) {
     let plan = gt4l_core::gpu::plan(&settings.gs_value("graphics_api"), settings.get("graphics_card"), cards, Language::fallback());
     // TASK-118: no "Automatic" in the UI. The entry is dropped and, while the stored value is still automatic, the row
     // shows the API this start resolves to (Play then stores it).
     if let Some(values) = row["values"].as_array_mut() {
         values.retain(|value| value["value"] != gt4l_core::gpu::AUTOMATIC);
+        // TASK-200: OpenGL is for a gt4-gs 1.3.0 or newer; an older one refuses Renderer 12.
+        if !opengl_ok {
+            values.retain(|value| value["value"] != gt4l_core::gpu::OPENGL_API);
+        }
     }
-    if settings.gs_value("graphics_api") == gt4l_core::gpu::AUTOMATIC {
+    if settings.gs_value("graphics_api") == gt4l_core::gpu::AUTOMATIC
+        || (!opengl_ok && settings.gs_value("graphics_api") == gt4l_core::gpu::OPENGL_API)
+    {
         row["current"] = json!(plan.api);
+    }
+}
+
+/// The Presentation thread row (TASK-174). The one-queue path matters on a card with ONE graphics queue; on a card with two
+/// or more the game presents from its own thread already, so the row is shown but not available, with a note. With no
+/// queue count (no probe), the row works normally and the game decides by itself.
+fn fill_present_thread_row(row: &mut Value, settings: &Settings, cards: &[gt4l_core::gpu::GpuDevice]) {
+    let plan = gt4l_core::gpu::plan(&settings.gs_value("graphics_api"), settings.get("graphics_card"), cards, Language::fallback());
+    if gt4l_core::gpu::shared_queue_applies(plan.card.as_ref()) == Some(false) {
+        row["disabled"] = json!(true);
+        row["note_key"] = json!("settings.already_active");
+        row["note"] = json!("Already active on this card");
     }
 }
 
@@ -124,15 +147,16 @@ fn fill_resolution_row(row: &mut Value, settings: &Settings, monitors: &[Monitor
     }
 }
 
-/// The Render scale slider's readout per step: "100% · 4x · 2560x1792" for the output size the game would use now
-/// (1920 x 1080 when no monitor is known).
-fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], integrated_gpu: bool) {
+/// The Render scale slider's readout per step: "100% · 3x · 1920x1080" for the output size the game would use now
+/// (1920 x 1080 when no monitor is known). `caps` is the renderer's list: whole multipliers, or the fractional steps of
+/// gt4-gs 1.3.0 (TASK-200).
+fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monitor], caps: display::RendererCaps) {
     let output = display::resolve_target(monitors, settings.get("monitor"), settings.get("resolution"))
         .map(|target| target.output)
         .unwrap_or(display::FALLBACK_OUTPUT);
     let mut labels = serde_json::Map::new();
     for step in display::render_scale_steps() {
-        if let Ok(plan) = display::display_plan_on(output.width, output.height, step, display::PCSX2_GS_CAPS, integrated_gpu) {
+        if let Ok(plan) = display::display_plan(output.width, output.height, step, caps) {
             labels.insert(step.to_string(), json!(format!("{step}% \u{00B7} {}", display::describe_plan(&plan))));
         }
     }
@@ -141,19 +165,27 @@ fn fill_render_scale_row(row: &mut Value, settings: &Settings, monitors: &[Monit
 }
 
 /// The settings table with the connected monitors (TASK-080 addendum: Monitor, Resolution and Render scale).
-/// `integrated_gpu` is true when the game renders on an integrated GPU (issue #89): the Render scale readout then shows
-/// the untouched default at 1x.
+/// `fractional_scales` is true when the installed gt4-gs is 1.3.0 or newer (TASK-200): the Render scale then has the
+/// fractional steps for GSdx, and the Graphics API row lists OpenGL.
 pub fn settings_table_with_monitors(
     settings: &Settings,
     controls: &Controls,
     monitors: &[Monitor],
     cards: &[gt4l_core::gpu::GpuDevice],
-    integrated_gpu: bool,
+    fractional_scales: bool,
 ) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     // TASK-118: the release performance report and the VU code check are release-candidate settings; final builds do
     // not ship them, so their rows do not exist there either.
     let release_candidate = gt4l_core::LAUNCHER_VERSION.contains("-rc");
+    // TASK-200: the fractional steps are GSdx's (gt4-gs 1.3.0); CoreGS 2.0 keeps its whole-number list.
+    let caps = if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
+        display::CORE_GS_CAPS
+    } else if fractional_scales {
+        display::PCSX2_GS_FRACTIONAL_CAPS
+    } else {
+        display::PCSX2_GS_CAPS
+    };
     for definition in SETTINGS {
         if !release_candidate && RC_ONLY_ROWS.contains(&definition.id) {
             continue;
@@ -165,6 +197,7 @@ pub fn settings_table_with_monitors(
         if definition.id == "graphics_card"
             || definition.id == "coregs_sharpening"
             || definition.id == "frame_rate"
+            || definition.id == "present_thread"
             || definition.id == "controller"
         {
             continue;
@@ -181,7 +214,7 @@ pub fn settings_table_with_monitors(
         match definition.id {
             "monitor" => fill_monitor_row(&mut row, settings, monitors),
             "resolution" => fill_resolution_row(&mut row, settings, monitors),
-            "render_scale" => fill_render_scale_row(&mut row, settings, monitors, integrated_gpu),
+            "render_scale" => fill_render_scale_row(&mut row, settings, monitors, caps),
             "vsync" if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 => without_fast_vsync(&mut row),
             // TASK-135: CoreGS 2.0's own; GSdx has its overlay rows.
             "performance_hud" => row["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 }),
@@ -191,19 +224,26 @@ pub fn settings_table_with_monitors(
     }
     for row in pcsx2_table_rows() {
         let mut out = gs_row(row, settings);
-        if !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str()) {
+        if CORE_GS_20_ONLY_TABLE_ROWS.contains(&row.id.as_str()) {
+            // TASK-186: the road sheen belongs to CoreGS 2.0's classifier, so its row shows only under that renderer.
+            out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
+        } else if !CORE_GS_20_TABLE_ROWS.contains(&row.id.as_str()) {
             out["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::PCSX2_GS });
         }
-        // What Performance Mode does depends on the renderer.
-        if row.id == "performance_mode" && settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
-            out["help_key"] = json!("setting.performance_mode.help_coregs20");
-        }
-        if row.id == "performance_mode" {
+        // TASK-186: the frame rate and the presentation thread sit after the effect rows and the two GSdx-only settings of
+        // the old Performance Mode (they used to follow the Performance Mode row), under the renderer that has them.
+        if row.id == "hw_download_mode" {
             rows.push(out);
             if let Some(definition) = gt4l_core::settings::definition("frame_rate") {
                 let mut skip = launcher_row(definition, settings);
                 skip["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
                 rows.push(skip);
+            }
+            if let Some(definition) = gt4l_core::settings::definition("present_thread") {
+                let mut thread = launcher_row(definition, settings);
+                thread["visible_when"] = json!({ "id": "renderer", "equals": gt4l_core::settings::CORE_GS_20 });
+                fill_present_thread_row(&mut thread, settings, cards);
+                rows.push(thread);
             }
             continue;
         }
@@ -217,7 +257,7 @@ pub fn settings_table_with_monitors(
             continue;
         }
         if row.id == "graphics_api" {
-            fill_api_row(&mut out, settings, cards);
+            fill_api_row(&mut out, settings, cards, fractional_scales);
             rows.push(out);
             if let Some(definition) = gt4l_core::settings::definition("graphics_card") {
                 let mut card = launcher_row(definition, settings);
@@ -368,6 +408,11 @@ fn gs_row(row: &gs_table::Row, settings: &Settings) -> Value {
             Value::Array(
                 row.choices
                     .iter()
+                    // TASK-186: the gt4-gs the launcher runs accepts only Accurate and No readbacks; the other three values
+                    // of the row before TASK-091 come back when a gt4-gs build with the regenerated allow-list ships.
+                    .filter(|choice| {
+                        row.id != "hw_download_mode" || gs_table::gt4gs_accepts_hw_download_mode(&choice.name)
+                    })
                     .map(|choice| {
                         // The table's English label when it has one; the UI translates the value by key (TASK-102).
                         let label = if choice.label.is_empty() { choice.name.as_str() } else { choice.label.as_str() };
@@ -901,19 +946,51 @@ mod table_tests {
         assert_eq!(resolution["values"][0]["label"], "3440x1440 (desktop)");
         // The render scale readout follows the chosen output: 2560x1080 gives k = 4.
         let scale = row(&table, "render_scale");
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 4x \u{00B7} 2560x1792");
-        assert_eq!(scale["values"]["labels"]["50"], "50% \u{00B7} 2x \u{00B7} 1280x896");
-        assert_eq!(scale["values"]["labels"]["200"], "200% \u{00B7} 8x \u{00B7} 5120x3584");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 4x \u{00B7} 2560x1440");
+        assert_eq!(scale["values"]["labels"]["50"], "50% \u{00B7} 2x \u{00B7} 1280x720");
+        assert_eq!(scale["values"]["labels"]["200"], "200% \u{00B7} 8x \u{00B7} 5120x2880");
     }
 
     #[test]
-    fn an_integrated_gpu_reads_the_default_render_scale_at_1x() {
-        // Issue #89: the readout shows the plan the game gets; the slider is additive (TASK-118), so 150% from the
-        // integrated 1x baseline is 3x, not 5x.
+    fn the_render_scale_has_fractional_steps_only_with_a_new_enough_gt4gs() {
+        // TASK-200: GSdx with gt4-gs 1.3.0 or newer offers the fractional steps inside the same Render scale slider;
+        // CoreGS 2.0 and an older gt4-gs keep whole numbers. 1080p at 100% is 3x; 75% is 2.5x (fractional) or 2x.
         let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
         let scale = row(&table, "render_scale");
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 1x \u{00B7} 640x448");
-        assert_eq!(scale["values"]["labels"]["150"], "150% \u{00B7} 3x \u{00B7} 1920x1344");
+        assert_eq!(scale["control"], "slider");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1080");
+        assert_eq!(scale["values"]["labels"]["75"], "75% \u{00B7} 2.5x \u{00B7} 1600x900");
+        assert_eq!(scale["values"]["labels"]["50"], "50% \u{00B7} 1.5x \u{00B7} 960x540");
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false);
+        let scale = row(&table, "render_scale");
+        assert_eq!(scale["values"]["labels"]["75"], "75% \u{00B7} 2x \u{00B7} 1280x720");
+        let mut coregs = Settings::default();
+        coregs.set("renderer", gt4l_core::settings::CORE_GS_20).unwrap();
+        let table = settings_table_with_monitors(&coregs, &Controls::default(), &[], &[], true);
+        assert_eq!(row(&table, "render_scale")["values"]["labels"]["75"], "75% \u{00B7} 2x \u{00B7} 1280x720");
+    }
+
+    #[test]
+    fn opengl_is_offered_only_with_a_new_enough_gt4gs() {
+        // TASK-200: Renderer 12 is in the 1.3.0 allow-list only; Automatic never resolves to it (gpu::plan).
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
+        let values: Vec<&str> =
+            row(&table, "graphics_api")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["vulkan", "d3d12", "d3d11", "opengl"]);
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], false);
+        let values: Vec<&str> =
+            row(&table, "graphics_api")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["vulkan", "d3d12", "d3d11"]);
+    }
+
+    #[test]
+    fn the_render_scale_readout_is_the_16_9_label() {
+        // Owner (2026-11-06): 100% is the automatic 3x at 1080p (1920x1344 drawn, shown as 1920x1080); 150% is
+        // 4.5, which lands on 5x (an exact tie goes up).
+        let table = settings_table_with_monitors(&Settings::default(), &Controls::default(), &[], &[], true);
+        let scale = row(&table, "render_scale");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1080");
+        assert_eq!(scale["values"]["labels"]["150"], "150% \u{00B7} 5x \u{00B7} 3200x1800");
     }
 
     #[test]
@@ -926,26 +1003,88 @@ mod table_tests {
         assert_eq!((scale["values"]["min"].as_u64(), scale["values"]["max"].as_u64(), scale["values"]["step"].as_u64()),
                    (Some(50), Some(200), Some(25)));
         assert_eq!(scale["current"], 100);
-        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1344");
+        assert_eq!(scale["values"]["labels"]["100"], "100% \u{00B7} 3x \u{00B7} 1920x1080");
         assert!(scale.get("visible_when").is_none(), "shown under both renderers");
         assert_eq!(scale["group"], "graphics");
     }
 
+    /// TASK-186 (owner, 2026-11-06; the same split as TASK-180 test5 on Android): Performance Mode is no longer one row.
+    /// Each of its effects is its own toggle on the Graphics page, on by default (drawn as the original game); turning one
+    /// off is what earns its speed.
     #[test]
-    fn performance_mode_is_a_graphics_toggle_off_by_default() {
+    fn the_effect_toggles_are_on_by_default_and_performance_mode_is_gone() {
         let table = settings_table(&Settings::default(), &Controls::default());
-        let mode = row(&table, "performance_mode");
-        assert_eq!(mode["control"], "toggle");
-        assert_eq!(mode["page"], "basic", "the main Graphics section, not Advanced");
-        assert_eq!(mode["group"], Value::Null);
-        assert_eq!(mode["default"], json!(false));
-        assert_eq!(mode["current"], json!(false));
-        assert!(mode.get("disabled").is_none(), "a stored renderer never disables it");
-        assert!(mode.get("visible_when").is_none(), "shown under both renderers");
+        for id in ["effect_flares", "effect_road_sheen"] {
+            let toggle = row(&table, id);
+            assert_eq!(toggle["control"], "toggle", "{id}");
+            assert_eq!(toggle["page"], "basic", "{id}: the main Graphics section");
+            assert_eq!(toggle["group"], Value::Null, "{id}");
+            assert_eq!(toggle["default"], json!(true), "{id}: every effect is drawn by default");
+            assert_eq!(toggle["current"], json!(true), "{id}");
+            assert!(toggle.get("disabled").is_none(), "{id}: a stored renderer never disables it");
+        }
+        assert!(row(&table, "effect_flares").get("visible_when").is_none(), "the flares work under both renderers");
+        assert_eq!(
+            row(&table, "effect_road_sheen")["visible_when"]["equals"],
+            "coregs20",
+            "the road sheen is CoreGS 2.0's item"
+        );
+        assert!(!ids(&table).contains(&"performance_mode".to_string()), "the bundle row is gone");
+        for gsdx_only in ["blending", "hw_download_mode"] {
+            assert_eq!(row(&table, gsdx_only)["visible_when"]["equals"], "pcsx2", "{gsdx_only} is for GSdx");
+            assert_eq!(row(&table, gsdx_only)["page"], "basic", "{gsdx_only} sits on the Graphics page");
+        }
+        // TASK-186: the third item of the old bundle, a CoreGS 2.0 choice (full resolution by default).
+        let targets = row(&table, "effect_targets");
+        assert_eq!(targets["control"], "dropdown");
+        assert_eq!(targets["default"], "full");
+        assert_eq!(targets["current"], "full");
+        assert_eq!(targets["visible_when"]["equals"], "coregs20");
+        let values: Vec<&str> =
+            targets["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["full", "1x"]);
     }
 
     #[test]
-    fn frame_rate_is_a_coregs_choice_of_60_by_default_after_performance_mode() {
+    fn blending_offers_high_and_minimum_with_high_by_default() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let blending = row(&table, "blending");
+        assert_eq!(blending["control"], "dropdown");
+        assert_eq!(blending["default"], "high");
+        assert_eq!(blending["current"], "high", "the old Performance Mode's Minimum is not a default");
+        let values: Vec<&str> =
+            blending["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["high", "minimum"], "the preset's two values, High first");
+        let mut chosen = Settings::default();
+        chosen.set_gs("blending", "minimum").unwrap();
+        assert_eq!(row(&settings_table(&chosen, &Controls::default()), "blending")["current"], "minimum");
+    }
+
+    #[test]
+    fn readbacks_offer_only_the_values_the_installed_gt4gs_accepts() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let readbacks = row(&table, "hw_download_mode");
+        assert_eq!(readbacks["control"], "dropdown");
+        assert_eq!(readbacks["label"], "Readbacks");
+        assert_eq!(readbacks["default"], "accurate");
+        assert_eq!(readbacks["current"], "accurate", "TASK-186: Accurate again, and the player may change it");
+        let shown: Vec<(&str, &str)> = readbacks["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| (value["value"].as_str().unwrap(), value["label"].as_str().unwrap()))
+            .collect();
+        // TASK-186 follow-up: gt4-gs 1.2.1 embeds the TASK-091 allow-list, so the other three values are not offered (they
+        // would be ignored with a warning line).
+        assert_eq!(shown, vec![("accurate", "Accurate (default)"), ("no-readbacks", "No readbacks")]);
+        let mut chosen = Settings::default();
+        chosen.set_gs("hw_download_mode", "no-readbacks").unwrap();
+        assert_eq!(row(&settings_table(&chosen, &Controls::default()), "hw_download_mode")["current"], "no-readbacks");
+        assert!(chosen.set_gs("hw_download_mode", "unsynchronized").is_err(), "gt4-gs ignores it");
+    }
+
+    #[test]
+    fn frame_rate_is_a_coregs_choice_of_60_by_default_after_the_effect_toggles() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let skip = row(&table, "frame_rate");
         assert_eq!(skip["control"], "dropdown");
@@ -955,35 +1094,102 @@ mod table_tests {
         assert_eq!(skip["current"], "60");
         assert_eq!(skip["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
         let order = ids(&table);
-        let mode = order.iter().position(|id| id == "performance_mode").unwrap();
-        assert_eq!(order[mode + 1], "frame_rate");
+        let readbacks = order.iter().position(|id| id == "hw_download_mode").unwrap();
+        assert_eq!(order[readbacks + 1], "frame_rate", "the frame rate follows the effect toggles");
+    }
+
+    fn card_with_queues(name: &str, queues: Option<u32>) -> gt4l_core::gpu::GpuDevice {
+        let gpu = gt4l_core::gpu::VulkanGpu {
+            name: name.into(),
+            api: (1, 3),
+            integrated: false,
+            vendor_id: 0x1002,
+            device_id: 1,
+            luid: None,
+            driver_version: 0,
+            graphics_queues: queues,
+            driver: Default::default(),
+        };
+        gt4l_core::gpu::merge(&[gpu], &[]).remove(0)
     }
 
     #[test]
-    fn the_performance_hud_is_a_coregs_switch_in_advanced_off_by_default() {
+    fn the_presentation_thread_is_a_coregs_toggle_on_by_default_after_the_frame_rate() {
+        let table = settings_table(&Settings::default(), &Controls::default());
+        let thread = row(&table, "present_thread");
+        assert_eq!(thread["control"], "toggle");
+        assert_eq!(thread["page"], "basic");
+        assert_eq!(thread["default"], true);
+        assert_eq!(thread["current"], true);
+        assert_eq!(thread["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
+        assert!(thread.get("note_key").is_none());
+        let order = ids(&table);
+        let skip = order.iter().position(|id| id == "frame_rate").unwrap();
+        assert_eq!(order[skip + 1], "present_thread");
+    }
+
+    #[test]
+    fn the_presentation_thread_is_not_applicable_on_a_card_with_two_or_more_graphics_queues() {
+        let settings = Settings::default();
+        let table_for = |cards: &[gt4l_core::gpu::GpuDevice]| {
+            settings_table_with_monitors(&settings, &Controls::default(), &[], cards, false)
+        };
+        let one = table_for(&[card_with_queues("Steam Deck", Some(1))]);
+        assert_eq!(row(&one, "present_thread")["disabled"], false, "one queue: the row works");
+        assert!(row(&one, "present_thread").get("note_key").is_none());
+        let two = table_for(&[card_with_queues("Radeon", Some(2))]);
+        assert_eq!(row(&two, "present_thread")["disabled"], true);
+        assert_eq!(row(&two, "present_thread")["note_key"], "settings.already_active");
+        assert_eq!(row(&two, "present_thread")["current"], true, "the stored value is kept");
+        let unknown = table_for(&[card_with_queues("Radeon", None)]);
+        assert_eq!(row(&unknown, "present_thread")["disabled"], false, "unknown: the row works, the game decides");
+        let none = table_for(&[]);
+        assert_eq!(row(&none, "present_thread")["disabled"], false, "no probe: the row works");
+        // The card the game will use decides, not another one in the machine.
+        let mut chosen = Settings::default();
+        chosen.set("graphics_card", "Steam Deck").unwrap();
+        let cards = [card_with_queues("Radeon", Some(16)), card_with_queues("Steam Deck", Some(1))];
+        let table = settings_table_with_monitors(&chosen, &Controls::default(), &[], &cards, false);
+        assert_eq!(row(&table, "present_thread")["disabled"], false);
+    }
+
+    #[test]
+    fn the_performance_hud_is_a_coregs_choice_in_advanced_off_by_default() {
         let table = settings_table(&Settings::default(), &Controls::default());
         let hud = row(&table, "performance_hud");
-        assert_eq!(hud["control"], "toggle");
+        assert_eq!(hud["control"], "dropdown");
         assert_eq!(hud["page"], "advanced");
-        assert_eq!(hud["current"], false);
+        assert_eq!(hud["current"], "off");
+        assert_eq!(hud["default"], "off");
+        let values: Vec<&str> = hud["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap()).collect();
+        assert_eq!(values, ["off", "fps", "full"]);
         assert_eq!(hud["visible_when"]["equals"], gt4l_core::settings::CORE_GS_20);
     }
 
     #[test]
-    fn the_readback_row_is_gone_from_the_table() {
+    fn the_readback_row_is_a_gsdx_row_and_no_toggle_writes_the_fast_mode() {
         let table = settings_table(&Settings::default(), &Controls::default());
-        assert!(!ids(&table).contains(&"hw_download_mode".to_string()));
-        assert!(!pcsx2_table_rows().iter().any(|row| row.id == "hw_download_mode"));
-        assert!(!gs_table::rows().iter().any(|row| row.key == "HWDownloadMode" && row.id != "performance_mode"));
+        assert!(ids(&table).contains(&"hw_download_mode".to_string()), "TASK-186: Readbacks is a player row again");
+        assert!(pcsx2_table_rows().iter().any(|row| row.id == "hw_download_mode"));
+        let writers: Vec<&str> = gs_table::rows()
+            .iter()
+            .filter(|row| row.key == "HWDownloadMode")
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(writers, ["hw_download_mode"], "the effect toggles never write the download mode");
+        assert_eq!(row(&table, "hw_download_mode")["visible_when"]["equals"], "pcsx2", "GSdx only");
     }
 
     #[test]
-    fn the_toggle_maps_on_and_off_to_the_two_readback_choices() {
-        let row = pcsx2_table_rows().into_iter().find(|row| row.id == "performance_mode").unwrap();
-        assert_eq!(toggle_choices(row), Some(("accurate", "no-readbacks")));
-        assert_eq!(gs_value_text(row, &json!(true)).as_deref(), Some("no-readbacks"), "On");
-        assert_eq!(gs_value_text(row, &json!(false)).as_deref(), Some("accurate"), "Off");
-        assert_eq!(gs_value_text(row, &json!("accurate")), None, "a toggle takes true or false");
+    fn the_gsdx_settings_are_plain_choices_not_toggles() {
+        for id in ["blending", "hw_download_mode"] {
+            let table_row = pcsx2_table_rows().into_iter().find(|row| row.id == id).unwrap();
+            assert_eq!(toggle_choices(table_row), None, "{id} is a choice of its own");
+        }
+        let blending = pcsx2_table_rows().into_iter().find(|row| row.id == "blending").unwrap();
+        assert_eq!(gs_value_text(blending, &json!("minimum")).as_deref(), Some("minimum"));
+        let readbacks = pcsx2_table_rows().into_iter().find(|row| row.id == "hw_download_mode").unwrap();
+        assert_eq!(gs_value_text(readbacks, &json!("unsynchronized")).as_deref(), Some("unsynchronized"));
         let other = pcsx2_table_rows().into_iter().find(|row| row.id == "fxaa").unwrap();
         assert_eq!(toggle_choices(other), None);
     }
@@ -1009,11 +1215,14 @@ mod table_tests {
         for both in ["renderer", "render_scale", "graphics_card", "monitor", "resolution", "fullscreen", "vsync"] {
             assert!(row(&table, both).get("visible_when").is_none(), "{both} works under both renderers");
         }
-        assert!(row(&table, "performance_mode").get("help_key").is_none());
+        assert_eq!(row(&table, "effect_road_sheen")["visible_when"]["equals"], "coregs20", "the road sheen is CoreGS 2.0's");
         let mut chosen = Settings::default();
         chosen.set("renderer", "coregs20").unwrap();
         let under_coregs = settings_table(&chosen, &Controls::default());
-        assert_eq!(row(&under_coregs, "performance_mode")["help_key"], "setting.performance_mode.help_coregs20");
+        assert_eq!(
+            row(&under_coregs, "effect_road_sheen")["visible_when"]["equals"], "coregs20",
+            "the road sheen shows under the renderer it belongs to"
+        );
         let vsync_values = |table: &Value| -> Vec<String> {
             row(table, "vsync")["values"].as_array().unwrap().iter().map(|value| value["value"].as_str().unwrap().to_string()).collect()
         };
@@ -1050,7 +1259,8 @@ mod table_tests {
                 ("vulkan", "Vulkan"),
                 ("d3d12", "Direct3D 12"),
                 ("d3d11", "Direct3D 11"),
-            ]
+            ],
+            "an older gt4-gs keeps today's three APIs"
         );
         assert!(values.iter().all(|value| value["disabled"] == false));
         // The choice is stored and shown back (the engine row keeps its own id, `renderer`).
@@ -1058,7 +1268,9 @@ mod table_tests {
         chosen.set_gs("graphics_api", "d3d11").unwrap();
         let table = settings_table(&chosen, &Controls::default());
         assert_eq!(row(&table, "graphics_api")["current"], "d3d11");
-        assert!(chosen.set_gs("graphics_api", "opengl").is_err(), "OpenGL is not offered yet");
+        // TASK-200: OpenGL is a table value for gt4-gs 1.3.0 or newer; an older install keeps three APIs (the row is
+        // built by `opengl_is_offered_only_with_a_new_enough_gt4gs` above).
+        assert!(chosen.set_gs("graphics_api", "opengl").is_ok());
     }
 
     #[test]

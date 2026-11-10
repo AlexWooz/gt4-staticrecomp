@@ -110,6 +110,17 @@ const VSYNC_CHOICES: &[Choice] = &[
     Choice { value: "off", label: "Off", selectable: true },
 ];
 
+/// TASK-175: the performance HUD's three states. Earlier launchers stored a toggle (`on`/`off`): `on` is read as `full`
+/// ([`legacy_value`]).
+pub const HUD_FPS_ONLY: &str = "fps";
+pub const HUD_FULL: &str = "full";
+
+const HUD_CHOICES: &[Choice] = &[
+    Choice { value: "off", label: "Off", selectable: true },
+    Choice { value: HUD_FPS_ONLY, label: "FPS only", selectable: true },
+    Choice { value: HUD_FULL, label: "Full", selectable: true },
+];
+
 const VERIFY_CHOICES: &[Choice] = &[
     Choice { value: "off", label: "Off", selectable: true },
     Choice { value: "100", label: "Every 100th call", selectable: true },
@@ -179,7 +190,7 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Graphics,
         group: "Image",
         title: "Render scale",
-        info: "How sharp the picture is drawn. 100% draws it at least at your resolution (taken from the Resolution                setting on the Display page); 50% is faster and softer, 200% is sharper and needs a much faster GPU.                The number next to the slider is the resulting internal resolution.",
+        info: "How sharp the picture is drawn, as a percentage of the automatic scale for your resolution. 100% draws                the game at least at your resolution (taken from the Resolution setting on the Display page); below that                it is faster and softer, above it sharper and heavier on the graphics card. The number next to the slider                is the resulting internal resolution.",
         kind: Kind::Steps {
             min: crate::display::RENDER_SCALE_MIN,
             max: crate::display::RENDER_SCALE_MAX,
@@ -196,6 +207,16 @@ pub const SETTINGS: &[SettingDef] = &[
         info: "60 FPS is the default: in a race, when the PC cannot keep up, the frame rate drops instead of the game slowing down, with the same physics. The 30 FPS mode is for weaker PCs: races draw 30 frames per second. Both are experimental; menus stay at 60.",
         kind: Kind::Choice(FRAME_RATE_CHOICES),
         default: "60",
+        connected: true,
+    },
+    SettingDef {
+        id: "present_thread",
+        page: Page::Graphics,
+        group: "Performance",
+        title: "Presentation thread (one-queue GPUs)",
+        info: "For the Steam Deck and other GPUs that have a single queue for graphics work. The game shows finished frames from a separate thread, so it does not wait for the screen. On other graphics cards this changes nothing: they already do it.",
+        kind: TOGGLE,
+        default: "on",
         connected: true,
     },
     SettingDef {
@@ -264,9 +285,10 @@ pub const SETTINGS: &[SettingDef] = &[
         page: Page::Advanced,
         group: "Performance",
         title: "Performance HUD",
-        info: "Shows a panel in the corner while you play: frame rate, frame time with a live graph, and the game's use of the \
-               processor, the graphics card and memory.",
-        kind: TOGGLE,
+        info: "Shows a panel in the corner while you play. FPS only shows just the frame rate. Full shows the graphics card and \
+               processor names, the frame rate and frame time with a live graph, the game's use of the processor, the graphics \
+               card and memory, and the state of the performance report when that is on.",
+        kind: Kind::Choice(HUD_CHOICES),
         default: "off",
         connected: true,
     },
@@ -356,6 +378,16 @@ impl fmt::Display for SettingError {
 }
 
 impl std::error::Error for SettingError {}
+
+/// A value an earlier launcher stored for a setting that has since changed type, read as its current value (TASK-175: the
+/// performance HUD was a toggle; `on` meant the whole panel). Any other value is returned as it is.
+pub fn legacy_value<'a>(id: &str, value: &'a str) -> &'a str {
+    if id == "performance_hud" && value == "on" {
+        HUD_FULL
+    } else {
+        value
+    }
+}
 
 /// Checks one value against its definition. Choices must be selectable; toggles are `on`/`off`.
 pub fn validate(definition: &SettingDef, value: &str) -> Result<String, SettingError> {
@@ -455,7 +487,7 @@ impl Settings {
     /// Sets a validated value. Unknown ids and invalid values are refused and leave the state unchanged.
     pub fn set(&mut self, id: &str, value: &str) -> Result<(), SettingError> {
         let definition = definition(id).ok_or_else(|| SettingError::UnknownSetting(id.to_string()))?;
-        let value = validate(definition, value)?;
+        let value = validate(definition, legacy_value(id, value))?;
         self.values.insert(definition.id, value);
         Ok(())
     }
@@ -504,6 +536,11 @@ impl Settings {
         definition(id).map(|definition| definition.connected).unwrap_or(false)
     }
 
+    /// Whether a GS table toggle is on (TASK-186: the effect toggles read `[gs] effect_<name> = true`).
+    pub fn gs_is_on(&self, id: &str) -> bool {
+        self.gs_value(id) == "true"
+    }
+
     /// A PCSX2 GS table value (`gs_table`), or its table default when the user has not set it.
     pub fn gs_value(&self, id: &str) -> String {
         match self.gs.get(id) {
@@ -518,6 +555,15 @@ impl Settings {
             return Err(format!("{id} is set by the launcher: {reason}"));
         }
         let normalized = crate::gs_table::check_user_value(id, value)?;
+        // TASK-186: the gt4-gs the launcher runs ignores a Readbacks value it does not accept, so such a value is refused
+        // here (the config load then keeps the default and logs it) instead of being written into the INI for nothing.
+        if id == "hw_download_mode" && !crate::gs_table::gt4gs_accepts_hw_download_mode(&normalized) {
+            return Err(format!(
+                "gt4-gs {} accepts {} for {id}, not '{normalized}'",
+                crate::gs_release::MINIMUM_VERSION.text(),
+                crate::gs_table::GT4GS_HW_DOWNLOAD_MODES.join(", ")
+            ));
+        }
         self.gs.insert(id.to_string(), normalized);
         Ok(())
     }

@@ -33,6 +33,16 @@ std::vector<std::uint8_t> string_descriptor(const char *text) {
   return out;
 }
 
+// GT4_DFP_TEST_STEER=<percent of full travel>: the reported steering follows a triangle wave, one full period every 600
+// interrupt IN reports (about 6 s at the 100 reports per second the game polls), starting at full left. It lets a headless
+// run show what the game asks for while the wheel is off centre (TASK-192); 0 or unset turns it off.
+std::uint16_t swept_steering(std::uint64_t reports, int percent) {
+  const double phase = static_cast<double>(reports % 600u) / 600.0;
+  const double triangle = phase < 0.5 ? phase * 2.0 : 2.0 - phase * 2.0;  // 0 = full left, 1 = full right
+  const double offset = (triangle * 2.0 - 1.0) * (std::clamp(percent, 0, 100) / 100.0);
+  return static_cast<std::uint16_t>(std::lround(std::clamp(8191.5 + offset * 8191.0, 0.0, 16383.0)));
+}
+
 } // namespace
 
 bool trace_enabled() {
@@ -47,7 +57,7 @@ bool trace_enabled() {
 
 DfpBridge &DfpBridge::shared() {
   static DfpBridge bridge;
-  // GT4_DFP=1 plugs the virtual wheel in without a host wheel (headless tests); wheel.toml mode = "dfp" does it too.
+  // GT4_DFP=1 plugs the virtual wheel in without a host wheel (headless tests); an enabled wheel.toml does it too.
   static const bool forced = [] {
     const char *value = std::getenv("GT4_DFP");
     if (value && *value == '1')
@@ -115,7 +125,9 @@ void DfpBridge::set_enabled(bool value) {
 
 void DfpCommandDecoder::reset() {
   slots_ = {};
+  sequence_ = 0;
   forces_ = DfpForces{};
+  recompute();  // a USB reset leaves no force: no spring comes back (TASK-194)
 }
 
 bool DfpCommandDecoder::apply(const std::uint8_t *command, std::size_t length) {
@@ -152,6 +164,7 @@ bool DfpCommandDecoder::apply(const std::uint8_t *command, std::size_t length) {
         continue;
       slots_[slot].type = command[1];
       std::memcpy(slots_[slot].params.data(), command + 2, 5);
+      slots_[slot].order = ++sequence_;
       if (operation == 0x1)
         slots_[slot].active = true;
     }
@@ -166,15 +179,10 @@ bool DfpCommandDecoder::apply(const std::uint8_t *command, std::size_t length) {
       if (mask & (1u << slot))
         slots_[slot].active = false;
     break;
-  case 0x4:  // default spring on
-    forces_.autocenter = true;
-    break;
-  case 0x5:  // default spring off
-    forces_.autocenter = false;
-    break;
-  case 0xE:  // set default spring
-    forces_.autocenter_strength = std::max(classic(command[2]), classic(command[3])) * (command[4] / 255.0);
-    break;
+  case 0x4:  // default spring on: PCSX2 ignores it and plays no default spring, so it does nothing here either
+  case 0x5:  // default spring off: harmless, as with the "on" above
+  case 0xE:  // set default spring: there is no default spring to set
+    return true;
   case 0x8:  // normal mode
   case 0x9:  // LED
   case 0xB:  // raw mode
@@ -191,6 +199,17 @@ void DfpCommandDecoder::recompute() {
   DfpForces &f = forces_;
   f.constant = 0.0;
   f.spring = f.damper = f.friction = false;
+  f.spring_left = f.spring_right = f.spring_center = f.spring_deadband = 0.0;
+  f.spring_saturation = 0.0;
+  f.damper_left = f.damper_right = 0.0;
+  f.damper_saturation = 0.0;
+  f.friction_left = f.friction_right = 0.0;
+  f.friction_saturation = 0.0;
+  // Each condition effect is one host effect on the wheel, as in PCSX2, so the newest download or refresh wins when a
+  // second slot also carries the effect. The constant force still sums every active slot's contribution.
+  const DfpSlot *spring = nullptr;
+  const DfpSlot *damper = nullptr;
+  const DfpSlot *friction = nullptr;
   for (unsigned slot = 0; slot < 4; ++slot) {
     const DfpSlot &s = slots_[slot];
     if (!s.active)
@@ -206,43 +225,60 @@ void DfpCommandDecoder::recompute() {
       f.constant += (static_cast<double>(slot >= 2 ? p[1] : p[0]) - 128.0) / 127.0;
       break;
     case 0x01:  // spring
-    case 0x0B: {  // high-resolution spring
-      const bool hi = s.type == 0x0B;
+    case 0x0B:  // high-resolution spring
+    case 0x03:  // auto-centre as a slot force
+    case 0x0D:
+      if (!spring || s.order > spring->order)
+        spring = &s;
+      break;
+    case 0x02:  // damper
+    case 0x0C:  // high-resolution damper
+      if (!damper || s.order > damper->order)
+        damper = &s;
+      break;
+    case 0x0E:  // friction
+      if (!friction || s.order > friction->order)
+        friction = &s;
+      break;
+    default:  // periodic shapes, ramp: not reproduced
+      break;
+    }
+  }
+  if (spring) {
+    const auto &p = spring->params;
+    f.spring = true;
+    if (spring->type == 0x01 || spring->type == 0x0B) {
+      const bool hi = spring->type == 0x0B;
       const unsigned k1 = p[2] & 0x0Fu, k2 = p[2] >> 4;
-      f.spring = true;
       f.spring_left = signed_side(hi ? fine(k1) : classic(k1), p[3]);
       f.spring_right = signed_side(hi ? fine(k2) : classic(k2), p[3] >> 4);
       f.spring_center = ((p[0] + p[1]) / 2.0 - 127.5) / 127.5;
       f.spring_deadband = std::abs(static_cast<int>(p[1]) - static_cast<int>(p[0])) / 255.0 * 2.0;
       f.spring_saturation = p[4] / 255.0;
-      break;
-    }
-    case 0x02:  // damper
-    case 0x0C: {  // high-resolution damper
-      const bool hi = s.type == 0x0C;
-      f.damper = true;
-      f.damper_left = signed_side(hi ? fine(p[0]) : classic(p[0]), p[1]);
-      f.damper_right = signed_side(hi ? fine(p[2]) : classic(p[2]), p[3]);
-      f.damper_saturation = s.type == 0x0C ? p[4] / 255.0 : 1.0;
-      break;
-    }
-    case 0x03:  // auto-centre as a slot force
-    case 0x0D:
-      f.spring = true;
-      f.spring_left = f.spring_right =
-          (s.type == 0x0D ? std::max(fine(p[0]), fine(p[1])) : std::max(classic(p[0]), classic(p[1])));
+    } else {
+      f.spring_left = f.spring_right = (spring->type == 0x0D ? std::max(fine(p[0]), fine(p[1]))
+                                                            : std::max(classic(p[0]), classic(p[1])));
       f.spring_center = 0.0;
       f.spring_deadband = 0.0;
       f.spring_saturation = p[2] / 255.0;
-      break;
-    case 0x0E:  // friction
-      f.friction = true;
-      f.friction_coefficient = std::max(p[0], p[1]) / 255.0;
-      f.friction_saturation = p[2] / 255.0;
-      break;
-    default:  // periodic shapes, ramp: not reproduced
-      break;
     }
+  }
+  if (damper) {
+    const auto &p = damper->params;
+    const bool hi = damper->type == 0x0C;
+    f.damper = true;
+    f.damper_left = signed_side(hi ? fine(p[0]) : classic(p[0]), p[1]);
+    f.damper_right = signed_side(hi ? fine(p[2]) : classic(p[2]), p[3]);
+    f.damper_saturation = damper->type == 0x0C ? p[4] / 255.0 : 1.0;
+  }
+  if (friction) {
+    // The two coefficients are the bytes as given, one per side: GT4's "21 0E 80 FF 20" is 0.5 on the left, 1.0 on the
+    // right and a 0.125 clip, and the max of the two would double the left side (TASK-194).
+    const auto &p = friction->params;
+    f.friction = true;
+    f.friction_left = p[0] / 255.0;
+    f.friction_right = p[1] / 255.0;
+    f.friction_saturation = p[2] / 255.0;
   }
   f.constant = std::clamp(f.constant, -1.0, 1.0);
 }
@@ -325,6 +361,29 @@ std::array<std::uint8_t, 8> Dfp::encode_report(const DfpInput &input) {
 }
 
 Dfp::Dfp(DfpBridge &bridge) : bridge_(bridge) {}
+
+Dfp::~Dfp() { log_census(); }
+
+void Dfp::log_census() const {
+  if (commands_ == 0)
+    return;
+  std::fprintf(stderr, "[dfp] census: %llu force commands this session, %zu command types:\n",
+               static_cast<unsigned long long>(commands_), census_.size());
+  for (const auto &[key, value] : census_) {
+    std::fprintf(stderr, "[dfp]   %02X %02X x%llu latest", key >> 8, key & 0xFF,
+                 static_cast<unsigned long long>(value.first));
+    for (const std::uint8_t byte : value.second)
+      std::fprintf(stderr, " %02X", byte);
+    std::fprintf(stderr, "\n");
+  }
+  const DfpForces &f = decoder_.forces();
+  std::fprintf(stderr,
+               "[dfp]   last decoded: constant %.3f, spring %s %.2f/%.2f centre %.2f dead band %.2f saturation %.2f, "
+               "damper %s %.2f/%.2f saturation %.2f, friction %s %.2f/%.2f saturation %.2f, range %d\n",
+               f.constant, f.spring ? "on" : "off", f.spring_left, f.spring_right, f.spring_center, f.spring_deadband,
+               f.spring_saturation, f.damper ? "on" : "off", f.damper_left, f.damper_right, f.damper_saturation,
+               f.friction ? "on" : "off", f.friction_left, f.friction_right, f.friction_saturation, f.range_degrees);
+}
 
 void Dfp::reset() {
   address_ = pending_address_ = 0;
@@ -442,6 +501,14 @@ int Dfp::in(unsigned endpoint, std::span<std::uint8_t> buffer) {
     }();
     if (test_bit >= 0 && test_bit < 14 && (reports_ / 50) % 2 == 1)
       input.buttons |= static_cast<std::uint16_t>(1u << test_bit);
+    // Headless check (GT4_DFP_TEST_STEER=<percent>): turns the virtual wheel, so a bench sees the game's forces off centre.
+    static const int test_steer = [] {
+      const char *value = std::getenv("GT4_DFP_TEST_STEER");
+      return value && *value ? std::atoi(value) : 0;
+    }();
+    if (test_steer > 0)
+      input.steering = swept_steering(reports_, test_steer);
+    last_reported_ = input;
     const auto report = encode_report(input);
     const std::size_t count = std::min<std::size_t>(buffer.size(), report.size());
     std::copy_n(report.begin(), count, buffer.begin());
@@ -482,8 +549,8 @@ void Dfp::command(const std::uint8_t *data, std::size_t length) {
       using clock = std::chrono::steady_clock;
       static const clock::time_point start = clock::now();
       const double ms = std::chrono::duration<double, std::milli>(clock::now() - start).count();
-      std::fprintf(csv, "%.2f,%.4f,%u,%02X,%02X,%u\n", ms, decoder_.forces().constant, bridge_.input().steering, data[0],
-                   data[1], data[2]);
+      std::fprintf(csv, "%.2f,%.4f,%u,%02X,%02X,%u\n", ms, decoder_.forces().constant, last_reported_.steering,
+                   data[0], data[1], data[2]);
       if (commands_ % 200 == 0)
         std::fflush(csv);
     }

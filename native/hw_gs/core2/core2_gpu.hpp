@@ -39,6 +39,9 @@ struct DrawBatch {
     // IN-409: memoryTexture holds CLUT indices; their colours are row `paletteRow` of image `palettes` (-1: none).
     ImageId palettes = kNoImage;
     std::int32_t paletteRow = -1;
+    // TASK-168: every row of `palettes` the vertices name (GpuVertex::paletteRow - 1) when the batch has several palette
+    // segments, so the draw is ordered after their writes and before any rewrite of them; nullptr: `paletteRow` alone.
+    const std::vector<std::int32_t> *segmentPaletteRows = nullptr;
     // IN-428: the mip parameters of memoryTexture (0: level 0 only), packed as hw_pixel_uber.frag g_mip describes.
     std::uint32_t mipInfo = 0;
     bool forceLinear = false;  // IN-433: bilinear where the game asks for nearest (push word bit 31)
@@ -117,6 +120,16 @@ struct Core2GpuStats {
     std::uint64_t renderPasses = 0;      // B4: render pass begins (one after every compute or transfer break)
     std::uint64_t drawFlushes = 0;       // IN-420: groups of deferred draw batches recorded in one render pass
     std::uint64_t midFrameSubmissions = 0;  // IN-410: submissions after a number of draw batches
+    std::uint64_t points = 0;      // TASK-179: point primitives drawn
+    std::uint64_t pointQuads = 0;  // TASK-179: of those, drawn as two triangles (no largePoints)
+    // TASK-178 (GT4_CORE2_SUBMIT_AFTER_WAIT): the first mid-frame submission after a waited one, sent after K batches.
+    std::uint64_t afterWaitSubmissions = 0;
+    // TASK-178 diagnostics: waited submissions (each drains the whole queue), and what follows them until the next submission.
+    std::uint64_t drains = 0;
+    std::uint64_t drainIdleNs = 0;    // GPU idle (timestamps): the drained work's last command to the next submission's first
+    std::uint64_t drainIdles = 0;     // drains measured that way
+    std::uint64_t drainGapCpuNs = 0;  // CPU: the end of the fence wait to the next vkQueueSubmit
+    std::uint64_t drainGaps = 0;
 };
 
 // IN-408: a CLUT load (07.4) whose source is a drawn 32-bit colour target, done on the GPU.
@@ -154,12 +167,15 @@ public:
     // inside their compile; prepares one variant at a time after a parallel prepare died).
     struct ShaderGuardState {
       std::size_t quarantined = 0;
+      std::size_t suspects = 0;  // TASK-170c: keys that ended one run; compiled again, quarantined at a second end
       bool serial = false;
     };
     ShaderGuardState ShaderGuard() const;
     // IN-431: true on an integrated GPU (its images live in system memory shared with the game); the image budgets
     // are smaller there.
     bool Integrated() const;
+    // TASK-186: the road sheen effect is off (GT4_CORE2_PERF_ROAD_SHEEN=1), for the [core2] effects log line.
+    bool RoadSheenSkipped() const;
     std::uint32_t Scale() const;
     std::uint32_t MaxNativeSide() const;  // the largest native side an image can have at this scale
 
@@ -278,6 +294,9 @@ public:
                    std::string &error);
 
     bool Submit(bool wait, std::string &error);
+    // TASK-178: batches per mid-frame submission, and after a waited submission (0: the rule is off).
+    std::uint32_t SubmitEvery() const;
+    std::uint32_t SubmitAfterWait() const;
     const Core2GpuStats &Stats() const;
     // Diagnostics: cumulative full barriers as " label[/kind]=count" (the command that needed one and its hazard).
     std::string BarrierReport() const;

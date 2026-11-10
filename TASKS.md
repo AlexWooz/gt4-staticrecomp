@@ -1505,6 +1505,27 @@ is a measured, per-scene target, not a bit-exact gate. A faithful renderer stays
 3.0 is opt-in until it beats it. Game logic, physics, timing, saves and gameplay-relevant read-backs never change.
 Scope rule in AGENTS.md; roadmap in docs/COREGS2-ROADMAP.md; study `vu1-direct-gpu-study` (in progress).
 
+**Paused (owner, 2026-11-06), to resume later.** Phase 1 work is on branch `task/090-coregs3` at 4c3d3237 (pushed;
+worktree `C:\Antigravity\gt4-wt-090-coregs3`). The plan is `docs/COREGS3-PLAN.md`, and the state is in
+`docs/COREGS3-HOOKS.md` and in `build/evidence/coregs3/report.md` (ignored).
+
+Reached:
+- **M1:** observe-only hooks capture the race cars per frame.
+- **G-TAP:** the VU1 tap maps draws to records.
+- **Strip table decoded.** The `V1-8` channel at TOPS 0x40 is a strip-length list: a count, then 3 x the triangle count
+  of each strip. That reading needed two VIF decoder fixes (STMASK and the one-component broadcast).
+- **All 116 car draws of a night-race frame gated:** 1,549 strips, 12,146 vertices, 0 topology crossings.
+- **Flat-shaded M2 renders**, compared against CoreGS 2.0.
+- **The 3x identity gate passes:** clock, digest, state and 13/13 frames identical.
+
+Next, in order:
+1. Derive the VU1 lighting from the tap's RGBAQ.
+2. Textures.
+3. M4: the live overlay over CoreGS 2.0's frame, behind a switch that is off by default.
+4. The G-IMAGE and G-PERF gates.
+5. Settle the 5 ambiguous record matches.
+6. Write down the exact VU1 cull rule (580 facing exceptions, High confidence).
+
 ### TASK-087 — GS readbacks without stalls
 **Owner decision 2026-10-21: CoreGS 2.0 only.** gt4-gs (the PCSX2 GS fork) gets no more feature work; at most texture
 replacement is switched on (its implementation already exists) with a launcher option (TASK-048). So the gt4-gs steps
@@ -3116,7 +3137,7 @@ image is now named `Spec II 1.10 (PT-BR + CPSP)` in `docs/inputs/spec2-variants.
 bytes; `spec2_pins` test). The George V lap recording replayed on it (rc14a Spec II build) boots, races and finishes the lap
 with frames identical to the PT-BR image at VBlanks 3000-8000. The image itself stays outside git (`*.iso`).
 
-### TASK-168 — CoreGS 2.0: draw primitives with different palettes in one batch (planned, after 1.3.0)
+### TASK-168 — CoreGS 2.0: draw primitives with different palettes in one batch (rc15, with TASK-171; owner, 2026-11-04)
 
 Found by TASK-134's third round (2026-11-04, rc14a Spec II build, the George V lap): a CLUT load forces a batch flush before it
 (the batch would otherwise draw with the new palette). On that lap there are about 1,500-1,630 such flushes per VBlank, 1,013-1,020
@@ -3125,7 +3146,19 @@ batch through the renderer and the graphics driver; together they are the larges
 2.0 ms per VBlank on the desktop's plain build, 1.5 ms of it the flush). Idea: give each primitive the palette it was drawn with
 (a palette slot per draw or per vertex, palettes kept on the GPU) so a palette change no longer ends the batch, with palettes
 read from GPU targets (IN-417) kept exact. Large: the vertex format, the shaders, the CLUT upload path and the texture cache
-change, so it waits until after 1.3.0 and the owner's word. Gates: every identity gate, plus the owner's picture tests.
+change, so it waited until after 1.3.0 and the owner's word. **Owner, 2026-11-04: in rc15**, as the fix TASK-171's track map points
+at (the palette flushes are the largest batch cause on every track in the player's view). Gates: every identity gate, plus the
+owner's picture tests.
+
+- Done on `task/168-palettes-per-batch` (e655a630, 2026-11-04): a CLUT load that only changes the palette of the pending batch's
+  indexed texture starts a palette segment instead of a flush (each segment keeps a copy of its CLUT buffer; core 2 gives each
+  later segment's vertices their own palette row, `GpuVertex` bytes 30-31 as `R16_UINT`). Loads from drawn targets or after a
+  GPU palette, CSM2, palette or texture memory under the batch's buffers, possible auto-flushes and texture replacement still
+  flush. `GT4_CORE2_PALETTE_SEGMENTS=0` keeps the old rule. Design: `docs/hw-renderer-spec/TASK-168-PALETTE-SEGMENTS.md`
+  (its known limit: a target grown by later small batches does not take CPU-written memory, so a merged batch can match the
+  CPU reference where the flushes did not).
+- Checks: CTest 303/303 on both games (rerun by the coordinator); gates against the rc14 PGO builds and the A-Spec track-map A/B
+  in progress.
 
 ### TASK-170 — CoreGS 2.0: a shader compile that ends the process no longer stops every start (rc14, done)
 
@@ -3144,7 +3177,24 @@ AMD's RDNA1/2 driver; the parallel prepare (several compiles at once) may matter
 - Acceptance: CTest `hw_core2_shader_guard` (a simulated end inside the 4th compile → serial; a serial end inside the 2nd →
   exactly one quarantined, the rest compiled; the quarantine stays; a damaged file is ignored), with `hw_core2_prepare_shaders`,
   `hw_core2_shader_cache` and the specialised tests; flow audit test for the bundle; every identity gate unchanged.
-- State (2026-11-04): in rc14. Player retest pending (a quarantined variant only changes speed, never the picture).
+- State (2026-11-04): in rc14. Player retest (rc14, the same RX 6700 XT, driver 2.0.353; log bundle 2026-11-04 21:49):
+  the guard works, but slowly for the player: each Play ran a prepare that ended inside a compile ("the compile did not
+  finish"), then the game started anyway and ended (0xC0000005) about 11 s later compiling the same kind of variant; each end
+  quarantined one variant, and after 7 the prepare finished (299/299) and the game runs at 7x (an 18-minute session and later
+  ones). Scale is not the cause: a 7x session also ran once enough variants were quarantined. On that PC one specialised
+  pipeline takes up to 580-790 ms to compile (`compile_max_ms`). The player also uses a texture pack of about 100,000 files.
+- **rc15 follow-up:** (1) the launcher runs the prepare again by itself when it ends inside a compile (each run quarantines
+  the variant in flight), up to a bounded number of attempts with progress shown, and starts the game only when the prepare
+  finished or stopped making progress, so the player never sees the game end; (2) the prepare and the game log the
+  quarantined variants with their decoded fields, and the log bundle carries them, so the variants that end AMD's driver can
+  be identified (root cause); (3) asked: the player's `data\shader-cache\quarantine.bin`.
+- rc15 state (2026-11-04): (1) and (2) are **TASK-170b**, done on `task/170b-prepare-retry` (0e4e6d9e): the launcher repeats
+  the prepare up to 12 attempts while each one gets further (guard files changed or more variants done), `shaders.log` keeps
+  every attempt under a header, the window says "attempt N" (`shaders.retry`, both languages), and the log bundle gets
+  `logs/shader-guard.txt` (both files' headers and keys in hex). Reviewed: launcher 681 tests, focus checks 297/297 en-US and
+  304/304 pt-BR. (3) arrived: 7 quarantined keys with no field in common (an intermittent driver crash is suspected, not
+  confirmed). **TASK-170c** (planned, after TASK-168): quarantine a key only after it ended two runs, and make the launcher's
+  progress rule see that state (today it compares the files' key counts; it should compare their bytes).
 
 ### TASK-171 — CoreGS 2.0: per-primitive front end for big scenes (the first license; rc15)
 
@@ -3161,7 +3211,21 @@ laptop) while menus and races are fine: 77-138 late frames per 300 VBlanks in th
   path, the GIF packet parse; then batching (TASK-168) if the batch count is the cost.
 - Acceptance: every identity gate and the overlay check unchanged; the license replay faster on the laptop with the George V
   lap no slower; the owner's test on the laptop.
-- State (2026-11-04): planned for rc15 (owner).
+- **Track map (owner, 2026-11-04: map every track once instead of optimising track by track).** Spec II Arcade, all 52
+  tracks unlocked, headless on the desktop (counts are exact on any machine; times are the desktop at 1x, indicative only):
+  `private/task134-tools/t171-route.sh` (the menu route to any track), `t171-survey.sh` (one Single Race per track, Ford GT LM
+  Race Car Spec II, or the Focus Rally Car on dirt and snow; B-Spec where the track has it, else A-Spec with the throttle held;
+  [hw] counters every 60 VBlanks over 90 s of race), `t171_survey_table.py` (the table). Findings:
+  - B-Spec (TV cameras, no mirror) gives about 300-460 batches per VBlank; the player's view (A-Spec: HUD and rear-view mirror)
+    gives about 1,700-2,500 on every track measured (Paris George V 2,499 mean, 3,024 max; GS thread 7.4 ms at 1x on the
+    desktop). The first license is not special: it has the player's view (about 1,930).
+  - The largest flush reason in the player's view is a CLUT load: about 1,340-1,730 per VBlank (session averages), about 1,000
+    of them with the same texture (only the palette changes); texture changes about 160-290, PRIM class changes about 185.
+  - So the shared cause is batches, not primitives (GS time follows batches; about 3 us per batch in the player's view at 1x
+    on the desktop), and the largest share of the batches comes from palette changes: TASK-168.
+- State (2026-11-04): planned for rc15 (owner): TASK-168 is the main change; the track map is the before/after check of every
+  track at once (plus the laptop for the owner's real settings). The map itself is done (scripts `private/task134-tools/t171-*`,
+  survey folders `build/evidence/press-*`); the rc15 A/B reruns it with TASK-168 on and off.
 
 ### TASK-172 — An earlier Spec II release ("Gran Turismo 4 Spec 2.iso", owner, 2026-11-04)
 
@@ -3198,6 +3262,849 @@ IOP modules are the game's code; an image is Spec II 1.10 exactly when both matc
   the real PT-BR and PT-BR + CPSP images pass with `GT4_FULL_HASH=1`, the earlier release is refused with
   `GT4_SPEC2_EARLIER_ISO`); the launcher's tests; focus checks in both languages.
 - State (2026-11-04): done in rc14.
+
+### TASK-174 — CoreGS 2.0: presentation off the GS thread on a GPU with one queue (issue #204, Steam Deck; rc15)
+
+Issue #204 (a Steam Deck player, Proton): stutter in CoreGS 2.0. His log says `[hw] presentation queue: the rendering queue`:
+RADV gives the graphics family one queue, so IN-516's second queue is not there and the GS thread acquired the swapchain image
+(an unbounded wait) and presented itself, so the display's waits fell on it. The GS thread was also CPU-bound at about 12.8 ms
+per VBlank on the Deck (gif_parse 3.6, draw 3.2, translate 1.67), which TASK-168 helps.
+
+- Change (branch `task/174-single-queue-present`, 34516dfe, 02afc12d, dcbbe4d9): on a GPU whose graphics family has one queue
+  the GS thread draws the frame into the IN-516 picture and hands it to the presentation thread of TASK-082, which acquires,
+  copies and presents on the same queue; every queue call of both threads, the renderer's and write-back submissions included,
+  holds one lock (`hw_queue_lock.hpp`). Nothing on the GS thread waits for the display: a frame the presentation side cannot
+  take is not shown and counted. `present_paced` (second queue, frames left out) got the same slot rule: before, it could draw
+  over a picture whose copy had not run. Switches: `GT4_HW_PRESENT_SHARED_QUEUE=0` (old path), `GT4_HW_PRESENT_FORCE_ONE_QUEUE=1`
+  (a desktop runs the Deck path), `GT4_HW_PRESENT_SHARED_WAIT=<n>` (diagnostic). New `[hw] presentation` line. Design and
+  limits: `docs/PRESENTATION-ONE-QUEUE.md`.
+- Which GPUs: one graphics queue on RADV (Confirmed, #204 log) and maybe Intel (Hypothesis); AMD Windows (8 queues here) and
+  NVIDIA keep their own queue and are unaffected.
+- Checks: CTest 309/309 (rerun by the coordinator). Windowed desktop test (forced one queue, v2.00 night race 2x, 144 Hz,
+  indicative): the GS thread's presentation step 0.04 ms against about 0.5 ms (old and own-queue paths) in the race, every race
+  frame shown, frames left out, resize, minimise and fullscreen clean, 0 validation and thread-check errors; one 86 ms hitch in
+  one of two runs (a present blocked 73 ms under the queue lock, AMD Windows FIFO; the repeat run had none).
+- **Launcher option (owner, 2026-11-04; branch `task/174b-launcher-option`):** a Graphics row, on by default, with an (i) note;
+  the launcher reads the graphics family's queue count and shows the row as already active (disabled) on GPUs with two or more;
+  off passes `GT4_HW_PRESENT_SHARED_QUEUE=0`. The same branch makes `system.txt` richer (owner): CPU cores and SSE4.1/AVX2, RAM,
+  the Windows build and Wine/Proton, a readable GPU driver, refresh and scale, free disk space, power, controllers; no names or
+  serial numbers.
+- Still to test: the Deck player's `[hw] presentation` line with and without `GT4_HW_PRESENT_SHARED_QUEUE=0`; the laptop with
+  HD 620 when the owner frees it ("not now" on 2026-11-04).
+- State (2026-11-04): game side reviewed and tested on the desktop; launcher side in progress.
+- State (2026-11-05): TASK-174 (314b0236) and TASK-174b (c8d20c08) merged into `release/1.3.0-rc15` and in the rc15 test
+  build (the three pt-BR texts of the option, written as mojibake on the branch, repaired at a07f63ad). Still to test: the Deck
+  player's log.
+
+### TASK-175 — CoreGS 2.0 performance HUD: full names, the report state, two modes (owner, 2026-11-04; rc15)
+
+The owner's photo of the HUD on the RTX 3060 laptop: the GPU name is cut ("NVIDIA GeForce RTX 3.."). Asked:
+1. the GPU name never cut; the CPU model on its own line;
+2. the performance report's state: "Recording" during an F7 interval, "Saved" for a few seconds after F8, then "Idle"; the
+   line is not drawn when the report is off in the launcher;
+3. launcher choice Off / FPS only / Full (FPS only draws just the FPS; Full everything); an old "on" becomes Full.
+- Branch `task/175-performance-hud`; tests: HUD fixture (fit rule, CPU line, report state machine, FPS-only layout), launcher
+  mapping and compatibility, focus checks in both languages; the coordinator checks it in a game run.
+- State (2026-11-04): in progress.
+- State (2026-11-05): 2e2f87f3 merged into `release/1.3.0-rc15` and in the rc15 test build (beside TASK-174's
+  `hw_present_shared_queue` in `launch.rs` and `standalone.cpp`). The HUD's look in a game run is still to check.
+
+### TASK-176 — Experimental 120 FPS races with the simulation at 120 Hz (study; not in any rc; owner, 2026-11-04)
+
+The owner found a Japanese PCSX2 cheat page (Vyerq, "make the race screen 120 FPS, simplified", last updated 2024-09-10;
+the site is offline) and sent a research summary and an English copy of the page's code archive. They are kept as
+**references only** in `private/references/vyerq-gt4-patches-2026-11-04/` (git-ignored; third-party patches are never
+copied into the repository, AGENTS.md). The patch writes 64 bytes in v2.00 (two `byte,19` writes at 0x357F78 and 0x357FBC,
+62 `byte,8` writes from 0x10110C to 0x57B038) and 68 in the Online Public Beta (not checked against Spec II 1.10), and then
+runs PCSX2 at 200 % speed on a 120 Hz screen: the game is made to step its race at half the time per frame while the
+emulator doubles the frame rate.
+
+- Different from TASK-082 (`docs/NATIVE-VARIABLE-FPS-STUDY.md`: real frames with the 1/60 s simulation untouched) and from
+  TASK-045: here the race simulation itself steps at 120 Hz. That changes game logic (physics steps, AI, lap timers,
+  replays and ghosts are tied to 1/60 s steps), which the mission keeps out of the faithful build ("game logic never
+  changes"; physics timing changes belong to a separate project or fork). So this is an experimental branch only, never a
+  default, and any release use is the owner's decision.
+- Plan when the owner starts it:
+  1. Map every v2.00 location to its instruction, original bytes and function (gt4-decomp names): float 1/60 constants,
+     integer step counts or other values, and what each one drives.
+  2. Find the Spec II 1.10 equivalents from the code, not from the Public Beta offsets.
+  3. Design our own hook (no patch bytes copied): a switch for a 120 Hz race step plus the runtime's VBlank and pacing at
+     120 per second.
+  4. Measure against the 60 Hz baseline on the replayed laps: race clock, positions and speed at fixed real times, the
+     simulation state, AI, sound, replays and ghosts, menus.
+  5. Report what holds and what breaks.
+- State (2026-11-04): recorded, not scheduled; rc15 stays the focus (owner).
+
+### TASK-177 — Per-track renderer settings, only where a general optimisation is not enough (owner idea, 2026-11-04)
+
+Owner: an optimisation that helps one track may hurt another; if no general change fixes the heaviest tracks, read from game
+memory which track the race loaded and apply that track's own setting, starting with the worst ones (Motegi Road Course and
+Hong Kong at 6x on the Avell). Needs the address of the loaded course id (gt4-decomp names), a small scene hint from the EE
+side to the renderer, and a per-track table with its own identity checks. State: recorded; general optimisations first
+(TASK-168b palette segments, the per-frame download study).
+
+### TASK-178 — CoreGS 2.0: restart the GPU right after the per-frame flare read (rc15 optimisation; 2026-11-04)
+
+Study: `docs/hw-renderer-spec/STUDY-FRAME-DOWNLOAD-COST.md`. The per-frame download is GT4's light-flare visibility table
+(64x8 PSMCT32, 2 KiB; lamps, headlights and the sun), read at the end of the world pass. The copy is tiny; the cost is that
+the GS worker waits for the whole GPU queue, which grows with the scale, and the GPU then idles until the next submission.
+Ceiling of the whole wait: about 4.1 ms/VBlank in Hong Kong and 2.0 at Motegi (6x, Avell), but Hong Kong at 6x is also
+GPU-bound (about 15 ms of GPU work per VBlank). First step (O1, exact): submit once K batches after any waited submission
+(`GT4_CORE2_SUBMIT_AFTER_WAIT=K`, 0 = off), plus idle, I_cpu and reply-hash counters, and three traces (a GPU profile on a
+Motegi sun frame and on Hong Kong, the Motegi store-before-write readback, Hong Kong's readback targets). Branch
+`task/178-submit-after-wait`. Keep it only with a measured gain (at least 0.3 ms/VBlank on two scenes on the Avell).
+Result (2026-11-05, Avell, 18 runs at 6x): no gain. Wall per VBlank K0/K16: Hong Kong 16.68/16.69, Motegi 11.32/11.39,
+George V 18.86/19.03. GPU idle after a drain fell, but the GS worker rose. So the default stays off; the switch and the new
+counters stay. Next on the same branch: O3, exact. In Hong Kong the 4-pixel table read reduces whole old targets (640x224
+CT24 and 128x128 Z24, 99.9% of the downloaded pixels), so limit the reduction to the read's blocks. Traces in the study's
+section 9: GPU time is about 30% full-screen post/glare passes and 15% world geometry; Hong Kong dirty patches 18%;
+Motegi Performance mode has a 16x16 CT32 store into a drawn Z24 target every second VBlank (IN-539, off by default). TASK-168 found on the Avell: no gain as built (segments are split back for GT4's T8-over-target batches); the
+fix is TASK-168b (`task/168b-segments-fix`). Owner (2026-11-04): no hurry; keep optimising, change approach when one fails.
+In rc15 (2026-11-05): `task/178-submit-after-wait` at c73b3be8 only (K=0 by default, the counters kept); the branch's
+uncommitted O3 work is not in it.
+O3 result (2026-11-05, desktop RX 9060 XT, 6x/10x/12x, Spec II B-Spec Hong Kong and Motegi; study section 9.8): **dropped**.
+`GT4_CORE2_READ_BLOCKS_ONLY=1` cuts 98% of Hong Kong's downloaded pixels, but it is not exact. One Motegi flare reply in
+6,588 differs at 6x, and the final hash differs at 10x and 12x: GT4's flare chain draws overlapping 64x192 scratch windows
+at a new base each frame, and cut targets stay drawn. It also brings no gain. Wall per VBlank, off to on:
+- Hong Kong: 6x 10.95 to 11.96, 10x 17.79 to 19.10, 12x 26.53 to 24.97;
+- Motegi: flat at every scale.
+
+An exact O3 would need a deferred write-back layer in front of every GS memory reader and writer, for at most the CPU
+write-back of the extra pixels (0.30-0.33 ms/VBlank). It stays only on the task branch (80cf04c9, off by default, with the
+fixture, the per-download pixel counters and `GT4_HW_FLARE_REPLY_TRACE`) and is not merged anywhere. Next GPU step:
+TASK-182.
+
+### TASK-179 — Android stage A1 on Windows: Vulkan correctness gaps (owner, 2026-11-04; in parallel to rc15)
+
+From `docs/ANDROID-PORT-PLAN.md` section 2: features used without being enabled (`shaderStorageImageArrayDynamicIndexing`,
+`largePoints`, wide lines: query, enable or a same-pixel fallback), required formats core 2 never uses (no longer refuse a
+device), a rotation-safe present, host rings sized from the heaps and `VK_EXT_memory_budget` (today's sizes as the cap), and a
+start-up capability profile struct (today's integrated-GPU behaviour unchanged). Frames identical to rc14 (gates6), validation
+layer clean, CTest. Out of scope: Vulkan 1.1, precise/invariant interpolation, no-interlock tuning, D1, determinism items.
+Branch `task/179-vulkan-correctness`. State (2026-11-05): done (4a70b53d), merged into `release/1.3.0-rc15` with its
+rotation-safe present; the point-quad vertex stage now also carries TASK-168's palette row. Android target (owner, 2026-11-04): his S23 Ultra (Adreno 740),
+at least 2x in races, 3x if possible. Suggested next step after A1, cheapest first: build the renderer alone with its tests
+for arm64 Android and measure the no-interlock path on the S23 (owner: later, not now). Also on 2026-11-04: an Avell comparison of GSdx and CoreGS 2.0
+(normal and Performance) at 6x on Motegi Road Course and Hong Kong (owner).
+
+### TASK-180 — Android: the game boots in the Android Studio emulator (owner, 2026-11-04; Phase 4 started)
+
+Owner, 2026-11-04: focus first on opening and running the game in the PC's Android emulator; when there is an APK, upload
+it to GitHub as a private draft for him to test. Steps:
+1. The platform seam of the Linux plan (L0), Windows unchanged and identical.
+2. An NDK build of `libgt4.so` for x86_64 (the emulator) and arm64-v8a (phones, 16 KB pages) with `-ffp-contract=off`.
+3. A minimal Gradle app with an SDLActivity game Activity in its own process; for the first runs the disc and card come in by
+   `adb push`.
+4. Boot to the title screen at 1x with CoreGS 2.0, v2.00 first.
+Downloads approved by the owner: the emulator system image (Google, sdkmanager), SDL3 3.4.18 for Android (libsdl-org) and
+Gradle. Installed: SDK platforms 34/36/36.1, NDK 26.1, build-tools, emulator (no image or AVD before this). Branch
+`task/180-android-emulator`. State: in progress.
+
+**APK test1 (2026-11-05)** is the GitHub draft `v1.3.0-android-test1` (arm64, branch at 95056cd0; the release signing key
+is in `private/android-signing`, and every later APK must use the same key).
+
+**Owner's S23 Ultra test (Adreno 740, Android 17), from his log bundles:**
+- **Nordschleife race, Performance mode:** about 60 VBlanks/s at both 1x and 2x. GPU busy is about 11.5 ms/VBlank at both
+  scales, with draw passes about 9.5 ms. That is fixed per-pass and per-barrier overhead, not fill: per VBlank, about 750
+  fragment barriers, 75 full barriers and 20 render passes.
+- **Hitches:** 5% of frames skipped, audio underruns, and in-game pipeline compiles of 2.2 s per session (up to 44 ms each).
+- **Showroom:** 20, 46 and 36 VBlanks/s (normal, Performance 1x, Performance 2x).
+- **Normal mode:** readback waits of 1.4 to 4 ms/VBlank.
+- **FXAA plus FSR1 at 2x:** GPU 11.5 rises to 15.5 ms. Both filters run at 3088x1440.
+- **Swapchain:** every present reports suboptimal, because the identity pre-transform makes the compositor rotate.
+- **Launcher killed:** the launcher was killed twice ("dependency died": an open ExternalStorageProvider descriptor).
+- **Black screen:** after a round trip to Settings the screen stayed black while the game kept running.
+
+**Owner decisions (2026-11-05):**
+- Performance mode stays OFF by default on Android; make the normal mode lighter instead.
+- Snapdragon GSR is a later candidate to replace FSR1 on Android. Check its licence and A/B it against FSR1.
+
+**APK test2: done (2026-11-05 ~13:50).**
+- GitHub draft `v1.3.0-android-test2` (prerelease flag, never published), branch at 9113a9e7, same signing key.
+- APK sha256 `b7860ec8...`, versionCode 2, arm64, 16 KB aligned.
+- Includes the TASK-182 step 1 diagnostics.
+- Checked in the emulator: the lifecycle, Resume, the prepare card and the HUD.
+- Windows CTest 319/319.
+
+Its scope: merge rc15 (HUD); render scale 100% = native screen, with the slider below 50%; the
+HUD on Android with the SoC GPU, resolution, and GPU and CPU use; Export logs carries 10 sessions.
+
+The owner also asked for:
+- Back pauses the game and asks Close or Minimize; the launcher shows Resume while the game lives;
+- pause on background, and the surface and swapchain rebuilt on return (the black-screen fix);
+- the provider fix (`detachFd`);
+- the first-open shader prepare, as on Windows;
+- Play preselected on the home page;
+- F8 per-cluster thread residency and thermal status.
+
+**APK test3: done (2026-11-05 ~17:50; OpenCode DeepSeek, reviewed).**
+- GitHub draft `v1.3.0-android-test3`. Branch at d45e286d. APK sha256 `8a776323...`, versionCode 3, same key.
+- **Pad in game:** the input focus is re-read on resume. There is a fallback that reads the pad straight from Android key
+  and motion events when SDL opens no gamepad. game.log gets an `[input]` device block.
+- **Launcher:** the wheel page is hidden on Android, and the pad commands' Tauri state is managed.
+- **One app:** the game Activity runs in the launcher's task with no animation. A gate Activity sends the icon and recents
+  to the running game.
+- **Pause dialog:** centred and localised.
+- **Render scale:** the percentage comes from render height against screen height, with the old values migrated.
+- **Shader prepare card:** no button is focused.
+- **Version label:** fixed.
+- **Bench mode:** `GT4_BENCH_CARD` + `GT4_INPUT_REPLAY` via debug.env, using a copy of the card.
+- **Windows:** Play is preselected.
+- **Spec II:** not yet; it needs the regenerated hooked Spec II unit set (see the port plan).
+
+**APK test4 (in progress, DeepSeek):**
+- the TASK-182 exact savings ON on Android;
+- single-queue present;
+- UMA phase 1;
+- UMA phase 2 (present direct, with pre-rotation);
+- then Spec II.
+
+Later: ADPF and big cores, FXAA at internal resolution, a 1080p output option, Snapdragon GSR.
+
+**Owner's later logs (normal mode, 2x):**
+- The title screen runs at 29 fps.
+- In 480i menus, gpu_busy is 13.7-16.8 ms/VBlank with draw passes at 1-2 ms. This non-draw GPU time is target #1, split
+  under TASK-182.
+- In the normal race about half the frames are skipped: the per-frame readback serialises CPU and GPU.
+
+**Unified memory (owner idea, 2026-11-05).** On the S23 every memory type is device-local and host-visible (types 3-6:
+LVH/LVC/LVCH). So the Android path can drop the PC-style copies:
+- uploads written straight where the GPU reads (no staging copy);
+- readback results written by the GPU where the CPU reads them;
+- the GS-memory mirror shared between CPU and GPU.
+
+This saves CPU time and, on a SoC, memory bandwidth and heat. Measure each change against the copy path, behind a switch.
+Owner (2026-11-05): the same zero-copy path applies to PC integrated GPUs, which also share system RAM. One example is the
+notebook's HD 620, where CoreGS already detects an integrated GPU. Recorded as an idea only, not scheduled.
+
+### TASK-181 — Launcher Wheel page for the native DFP wheel (owner, 2026-11-05; with PR #205)
+
+PR #205 (WaimateWihongi, TASK-018) makes GT4 see a virtual Driving Force Pro on its USB port (option A of
+`docs/WHEEL-DFP-PLAN.md`), configured by a `wheel.toml`; it has no launcher UI. The owner wants, for the rc15 test build and
+his Logitech G27:
+- a launcher **Wheel** page: the detected wheel, mapping of its axes and buttons onto the DFP's controls with capture
+  ("press the button"), pedal calibration and dead zones, force feedback strength and a "test force" button, and a check that
+  the game's own force feedback really reaches the wheel;
+- **automatic mapping for known wheels** (not only the G27: Logitech, Thrustmaster, Fanatec, MOZA, Simagic, Turtle Beach, PXN
+  and others, from a researched VID:PID table, `docs/research/WHEEL-AUTOMAP-TABLE.md`); unknown wheels are mapped by hand;
+- a nice UI: the on-screen wheel **rotates with the physical wheel** at its real angle, and the accelerator, brake and clutch
+  show their real values;
+- the base is the launcher wheel UI of PR #101 by **JulioHeroZ** (merged via #109/#111, removed in 1.2.5 because it drove the
+  game through the normal pad); credit JulioHeroZ for it in the notes and the credits.
+PR #205 was reviewed (in scope, no GPL, the game identical without a wheel file: v2.00 night race and Arcade gates,
+CTest 302/303) and **merged into main on 2026-11-05 (a4a3a5b6, owner)**, with a thank-you comment. The fixes the review
+asked for are part of this task:
+- **High:** a `wheel.toml` without `mode` turns on the withdrawn 1.2.x pad bridge. Make `dfp` the default and remove pad mode,
+  keeping SDL enumeration, device ownership, sources and calibration. **Owner (2026-11-05): the native DFP path only; no pad
+  bridge. Any wheel goes through DFP: auto-mapped if known, mapped by hand if not. Any other mode stays off and is built only
+  if players ask.**
+- **High:** the USB capsule (`GT4_USB_RUNTIME_SOURCE`) must be pinned (`private/sliceNNN-usb-runtime` plus a `docs/inputs` pin) and
+  built into both games.
+- **Medium:** update only the force effects that changed (about 400 DirectInput calls per second today, on the emulation
+  thread); run `stop()` once on focus loss; add host-side DFP fixtures with a fake haptic sink; pin the donor hash in
+  `prepare_usb_runtime.py` and give `test_usb_runtime.py` a synthetic donor.
+- **Low:** the unused VID helpers (MOZA is 0x346E, not 0x1209), old comments, `-Wswitch` warnings.
+- **Launcher:** pass `GT4_WHEEL_FILE` at Play and in `game.ini`; validate the file on save, since the game refuses a bad
+  one; put `wheel.toml` in the log bundle; add wheels to `system.txt`; close the launcher's SDL and haptic handles before
+  Play.
+The research table (`docs/research/WHEEL-AUTOMAP-TABLE.md`, written beside the PR): VID:PIDs are well known (SDL's list
+of 71 wheels), but button and axis indices are mostly unpublished. So the auto-map uses family templates plus a short
+capture wizard, and saves the result as a shareable preset. The old UI lives at cbfd8b8: `ui/js/pages/wheel.js`,
+`gt4l-core/src/wheel.rs`, `gt4l-platform/src/sdl_wheels.rs` and the nine wheel commands. State (2026-11-05): done on
+`task/181-wheel-page` (a2374ee0), merged into `release/1.3.0-rc15` and in the rc15 test build (USB capsule slice409 in both
+games). Next: the owner's G27 test on that build (`docs/WHEEL-NATIVE-DFP.md`).
+
+### TASK-182 — CoreGS 2.0: scope GPU barriers and render passes (2026-11-05; desktop first, also for Android)
+
+**Why.** CoreGS issues about 660-680 FULL barriers (all commands to all commands) per VBlank on the desktop (George V, Hong
+Kong). On the S23's Adreno 740 (tile-based), the Nordschleife race costs about 11.5 ms of GPU time per VBlank at both 1x and
+2x: about 750 fragment barriers, 75 full barriers and 20 render passes per VBlank. On a tile-based GPU every pass end stores
+tile memory, and in-pass barriers can push the driver out of tile mode.
+
+**Target behaviour.** The GSdx oracle's prose report (`docs/hw-renderer-spec/ORACLE-GSDX-TONE-READBACK-FLUSH.md`, D2-D4)
+describes it:
+- the narrowest barrier per real hazard;
+- three paths for self-sampling draws;
+- one pass per run of draws to the same targets;
+- descriptors pushed only when they change.
+
+**Steps.**
+1. **Measure and classify** (no behaviour change; `docs/hw-renderer-spec/STUDY-BARRIER-SCOPE.md`):
+   - full barriers by command and hazard;
+   - fragment barriers by reason;
+   - render passes by end reason;
+   - descriptor writes per VBlank.
+
+   Scenes: Hong Kong and Motegi at 2x, 10x and 12x on the desktop. Output: a ranked list of exact changes.
+2. **Implement** one change at a time, each behind an A/B switch:
+   - exact: flare reply hashes, gates6 wrong=0, CTest;
+   - desktop A/B at 10x/12x (owner: the Avell is off-limits; desktop only);
+   - then on the S23 over USB.
+
+Clean room: implementation agents never open PCSX2 sources. Branch `task/182-barrier-scope` from `release/1.3.0-rc15`, in the
+`gt4-wt-178-download-wait` worktree.
+
+**Step 1 result (2026-11-05, 6f0e4f10, diagnostics only; flare hashes unchanged).** Counts per VBlank, identical at 2x, 10x and
+12x:
+- **Full barriers:** Hong Kong 566, Motegi 240.
+  - Target-image read-after-write: 40% / 51%.
+  - GPU CLUT buffer: 31% / 14%.
+  - GLM pages: 18% / 13%.
+- **Render passes:** 52 / 47; 65% end only for a `self copy`.
+- **Fragment barriers:** 33 / 28 with interlock; without it (the phone's path), 1,103 / 593, 95% of them "primitive may share
+  a pixel".
+- **Descriptor updates:** 800 / 337.
+- **480i menus:** 85-90% of `gpu_busy` is compose/deinterlace/present, not drawing.
+
+New switches:
+- `GT4_CORE2_BARRIER_TRACE=1`;
+- `GT4_CORE2_GPU_CATEGORIES=1`;
+- the CTest `hw_core2_sync_trace`.
+
+Ranked exact changes, R1 to R10, are in the study. The cheapest and biggest first is R1: draw the self copy inside the open
+pass.
+
+**Step 2a done (2026-11-05, 3b5f806e; OpenCode with DeepSeek V4.1 Flash at effort max, reviewed).** R1 is
+`GT4_CORE2_SELF_COPY_DRAW`, default off: the self copy is drawn inside the open pass. Per VBlank at 2x, off to on:
+
+| | Render passes | Full barriers | Fragment barriers |
+|---|---|---|---|
+| Hong Kong | 52.3 to 23.8 | 566 to 506 | 33 to 98 |
+| Motegi | 46.7 to 20.3 | 240 to 184 | 28 to 88 |
+
+- All copies take the new path on the desktop. The colour-attachment path (no interlock: the S23 and integrated GPUs)
+  always falls back, so there is no gain on the phone.
+- Flare hashes are identical (HK 2x/10x, Motegi 2x, Motegi with no interlock). CTest 319/320, 1 skipped.
+- Timing A/B is pending: on the desktop when no build runs, then a default decision.
+
+**Step 2b done (fe475db8/e7ebb20b, DeepSeek, reviewed):** R8, `GT4_CORE2_DEINT_FIELD_COMPOSE`, default off.
+- **Compose and deinterlace already run at the internal resolution, not the screen.** The S23's 43 ms at 6x comes from five
+  full-image passes per interlaced VBlank, 10.3 Mpx each.
+- **The change:** the display merge writes the field history directly, removing 2 full copies and 2 barriers per
+  interlaced VBlank.
+  - Desktop 10x menu: gpu_busy 7.43 to 6.79 ms.
+  - 480p races have no deinterlace and are unchanged.
+- **Gates:** bit-identical (fixture `hw_core2_post_field_compose`, menu and race dumps, flare hashes); CTest 320/321, 1
+  skipped.
+- **Agent deviation:** it amended and force-pushed its own task-branch commit, so the standing rules now forbid that.
+
+### Idea: experimental iOS and macOS port (owner, 2026-11-05; not scheduled)
+
+The owner wants an experimental iOS port for a friend's iPhone 17 Pro Max, built on the friend's MacBook Air M1.
+
+**Why Apple GPUs suit CoreGS:**
+- They are tile-based with unified memory, like Android phones.
+- Metal offers in-tile reads in raster order (programmable blending and raster order groups). That is the exact
+  no-barrier blending path the S23's Adreno driver lacks.
+
+**Notes:**
+- No JIT is needed: CoreGS is AOT, and iOS forbids JIT.
+- Tauri runs on iOS.
+- MoltenVK first, a native Metal path later.
+- Measure on a real device: the iOS simulator does not show real performance.
+- Mind the per-app memory limits and the signing.
+
+Not in the current phases (Phase 3 Linux, Phase 4 Android): it starts only on the owner's word.
+
+**Owner (2026-11-05):**
+- iOS comes after Android.
+- The friend builds on his own Mac, from his own disc.
+- So the port needs an end-to-end build from the player's own disc on macOS: the ELF reconstruction, the EE units, the
+  VU1 code and the game library. Today the translated game code comes from a pinned private library.
+
+### TASK-183: CoreGS 2.0 on unified memory (owner, 2026-11-05)
+
+**Scope:** Android, Apple Silicon, iOS and PC integrated GPUs. The study is
+`docs/hw-renderer-spec/STUDY-UNIFIED-MEMORY.md` (Opus planner, not PCSX2-tainted).
+
+**Findings:**
+- CoreGS's data streams already live in memory the GPU reads directly.
+- The real waste is the present chain: about 110 MB per frame at 3088x1440, from a copy, a black clear, a blit and the
+  second-queue copy.
+- On the phone the upload rings use cached memory.
+- CoreGS 2.0 has no host-read barrier before CPU readbacks (a latent spec bug).
+- UMA cannot shorten the normal-mode flare wait.
+
+**Plan, cheapest first (owner, 2026-11-05: quick big gains in each Android test build, complex work later):**
+1. Phase 0: A/B the existing switches (`GT4_HW_PRESENT_QUEUE=0`, `GT4_CORE2_CACHED_UPLOAD=0`,
+   `GT4_CORE2_SUBMIT_AFTER_WAIT=8`).
+2. Phase 1: memory-shape detection, counters and the host-read barrier. Exact.
+3. Phase 2: render the final picture straight into the swapchain image, together with pre-rotation (about 95-110 MB per
+   frame).
+4. Phases 3-6: placement and footprint, feeding the GPU around readbacks, a shared GS mirror, research.
+
+**Implementer:** OpenCode DeepSeek, for Android test4.
+
+**Step 2c done (8d25d4e4, DeepSeek, reviewed).**
+- **Rejected:** the per-native-pixel decision would change 0.49% of the missing-row pixels on a real menu frame, so it is
+  not exact and was not built.
+- **Built instead:** `GT4_CORE2_DEINT_SKIP_DECISION`, default off. It skips the motion tests that cannot change the word
+  (exact by construction).
+- **Desktop 10x menu:** deinterlace 5.09 to 3.10 ms (-39%); with field compose, -42%; gpu_busy -25%.
+- **Gates:** identity at 1x/2x/3x/10x (fixture, menu and race dumps, flare hashes); CTest 321/321 (1 skipped).
+- **Also fixed:** a latent core-1 push-constant size bug.
+
+**Step 3 done (cdc52868, 54d2a0f4, DeepSeek, reviewed):** cheap exact asynchrony from `STUDY-ASYNC-READBACK.md`.
+- `GT4_CORE2_WAIT_NEWEST_FENCE`, default on: a readback waits for the newest submission's fence only (exact on one
+  in-order queue); the older slots' bookkeeping moves to the slot's reuse.
+- `GT4_HW_READBACK_SPIN`, default off: a bounded poll before blocking. No gain on the desktop.
+- K rule device default: K 8 on tile-based and unified-memory GPUs, K 0 on discrete GPUs (the desktop A/B stayed under
+  the 0.3 ms bar). `game.log` names the K and its reason.
+- Gates: flare hashes identical in all 16 lines (K 8, newest fence, both; HK 2x/10x, Motegi 2x), gates6 wrong=0, CTest
+  321/321 (1 skipped), Python 802. Not measured on the phone yet.
+
+### TASK-184: cut the no-interlock path's barriers on tile GPUs (2026-11-05; branch `task/182-barrier-scope`)
+
+**Why.** On the S23 (Adreno 740, no interlock, no raster-order or tile-image extension) the colour-attachment path issues
+1,318-1,983 fragment barriers per VBlank at 2x, 98% of them "primitive may share a pixel"; at 2x the race runs at about
+28 fps, stall-bound.
+
+**Steps (DeepSeek, effort max; brief in the coordinator's scratchpad):**
+1. Log the device's raster-order, local-read, feedback-loop, tile-image and interlock capabilities at start-up.
+2. A raster-order attachment access path where a device offers it (`GT4_CORE2_RASTER_ORDER`); mocked-capability fixture.
+3. Exact, pixel-coverage overlap tests instead of bounding boxes, with batching between barriers
+   (`GT4_CORE2_TIGHT_OVERLAP`); fixture against brute-force coverage.
+4. Load and store ops of the colour-attachment passes (DONT_CARE, no transient depth store, clears as load ops).
+5. Why the GS thread's CPU time grows with the scale (28.6 ms per VBlank at 3x on the S23).
+
+**Gates:** flare hashes (also with `GT4_HW_INTERLOCK=0`), frame dumps off against on, CTest serial.
+
+**Paused (owner, 2026-11-06):** CoreGS 2.0 optimization work is paused while the focus is the mobile build with the
+GSdx-type renderer. The work in progress stays uncommitted in the `gt4-wt-178-download-wait` worktree, to resume later.
+
+**Owner (2026-11-05):** "implement all of it", cheapest first.
+- The exact switches go ON for Android in the next APK.
+- On Windows they stay off until the owner's in-game tests.
+
+### Idea: CoreGS 2.0 as a generic PS2 GS renderer (owner question, 2026-11-06; not scheduled)
+
+CoreGS 2.0 models the PS2 GS itself (GIF, privileged registers, local memory, texture and CLUT handling, readbacks), so
+most of it is game-independent.
+
+**What is GT4-specific today:**
+- **Recognised GT4 patterns:** some performance paths recognise them (the flare table, the road sheen, the tone strips,
+  deinterlace choices).
+- **Fidelity gates:** they cover only v2.00 and Spec II.
+- **Untested GS features:** other games use features GT4 never exercises, such as some blend, depth and channel-shuffle
+  cases and video formats. Those paths are probably incomplete (Hypothesis).
+
+**What making it generic would take:**
+1. Split a generic core from per-game profiles; GT4's shortcuts become the GT4 profile.
+2. Build a GS-dump corpus from other games, compared against a reference on final images only (clean room).
+3. Fill the missing features as they show up.
+
+CoreGS is MIT, so it could become a separate library. Porting another game also needs its own EE/VU/IOP work, which is
+the larger part per game.
+
+### TASK-192: the G27 slowly pulls back to the centre all the time (force feedback, rc15)
+
+**Why.** Owner (2026-11-06, Logitech G27, rc15 draft): "The force feedback works impeccably: kerbs, everything. But the
+steering is heavy and not natural. From the moment the game opens, the wheel keeps slowly coming back to the centre, all
+the time." He set GT4's own force feedback from Strong to Weak and the launcher's damping to 0% and the pull stayed.
+
+**What was measured** (headless rc15 v2.00 and Spec II, `GT4_DFP=1 GT4_DFP_TRACE=1`, `dfp-forces.csv` and the census, through
+the menus and the bench drives `licenca-b1` and `el-capitan`, plus a new headless steering sweep `GT4_DFP_TEST_STEER`):
+
+| Phase | Effects the game asks for |
+|---|---|
+| boot/configuration | `F3` stop all, `F4` default spring on twice, `F5` off (it stays off), `F8 03` 900 degrees |
+| menus | a high-resolution spring (type `0B`) on slot 1 or 2: coefficients k = 7 (7/15 = 0.47) on both sides, clip byte 0x80 (0.5), centred, no dead band — GT4's menu centring spring; stopped (`23 0B`) before a drive |
+| drive | no spring, no damper; friction on slot 1 (type `0E`, coefficient 0x80, clip 0x20 = 0.125); and type `08` on slot 0 about 100 times a second (the variable force), whose level follows the wheel angle: mean 0x2D at the left of the range, 0x80 at the centre, 0xCA at the right (a self-aligning torque delivered as a constant force) |
+
+**Cause.** GT4's own centring spring. Nothing in the decoder or the planner was wrong in kind: the spring is decoded with the
+coefficients, clip and centre the game sent. But the planner played it, so in every menu the wheel was slowly pulled to the
+centre, which is the pull the owner describes ("from the moment the game opens, all the time"). In a drive the same game
+sends its self-aligning force, which is the force feedback he says works well and is kept. The DFP's own default spring was
+already off (the game sends `F5`, and the device autocentre is disabled at open). The damping floor of 15% in the `wheel.toml`
+of his logged session is what made the pull feel slow and the steering heavy; the launcher screen at 11:46 shows 15% (his
+0% test came later).
+
+**Fix.**
+- `[ffb] centering_spring = "off" | "game"` in `wheel.toml`, **default `off`** (owner: "I think it has to be disabled"):
+  `off` neither plays the game's spring effects nor the DFP's default spring; `game` is the old behaviour. The racing force,
+  the damper and the friction are untouched, and GT4's Strong/Weak setting still scales every force it scaled before. The
+  key also accepts the 1.2.x amount or boolean (nonzero = `game`) and the "centring" spelling, so old files keep loading.
+- `[dfp] census` of the session's force commands at the end of every session in `game.log`, without the trace switch: each
+  command and effect-type pair with its count and latest bytes, plus the last decoded force set. The `[wheel] force feedback
+  summary` line now ends with `centering spring off|game`.
+- Headless check `GT4_DFP_TEST_STEER=<percent>`: turns the virtual wheel in a triangle wave, so a bench shows the game's
+  forces off centre. `dfp-forces.csv` now records the steering the game last saw (it used to record the host wheel's).
+
+**Tests.** CTest `native_usb_dfp` feeds the exact command bytes GT4 sends and checks the decoded spring, its stop, the
+friction and the racing force; `native_wheel` checks the plan with the setting off and on (nothing else changes), the key's
+tokens and spellings, the 1.2.x amount, the refusals, the round trip and the summary line. Full CTest serial and the Python
+suite on the v2.00 build.
+
+**Launcher row (follow-up, not in this task):** Settings > Wheel > Force feedback > *Centring spring* (Off, the default, or
+Game), written as `centering_spring = "off"|"game"`. `gt4l-core`'s `wheel.rs` must accept the key first: it refuses unknown
+`[ffb]` keys today, so a hand-edited file with the key makes the launcher refuse the file (the game still loads it).
+
+**Branch** `task/192-ffb-centering` from `release/1.3.0-rc15` at `3df155c4`. Not merged here.
+
+### TASK-203: export photo mode pictures through the game's own USB export (owner, 2026-11-07; recorded, not scheduled)
+
+A player suggestion (NewModelArmy, Discord, 2026-11-07), which the owner liked. GT4's photo mode can save pictures to
+a USB storage device, as JPEG files. In PCSX2 this needs a VHD image created and mounted in the emulator.
+
+GT4Recomp should make it easy:
+- **Emulated USB storage:** the game's USB export writes to an emulated USB mass-storage device, backed by a plain
+  folder on the PC, for example `user/photos/`. The JPEGs land there as the game writes them, with no disk image to
+  create or mount.
+- **Launcher:** an "Open photos folder" button, and the folder shown in the Saves/Replays area.
+- **Prerequisite:** photo mode must render well on CoreGS 2.0 first. It is still poor there, so this task waits for
+  that work. GSdx can be used to develop it.
+- **Builds on** TASK-018's emulated USB controller (the IOP USB stack). Map the game's USB storage driver path first,
+  read-only.
+- **Game logic never changes:** the JPEG bytes are the game's own; we only provide the device.
+
+### TASK-202: context-aware touch controls for racing on Android (owner, 2026-11-07; planned)
+
+The owner tested the basic PS2-style virtual pad on APK 103001508 and it works. He wants it kept for players who want
+it.
+
+The goal is a touch layout made for this game, not a PS2 pad layout, switching by context:
+- the menus;
+- the pre-race lobby;
+- a real race.
+
+It builds on TASK-077's context study (`docs/CONTEXT-INPUT-STUDY.md`) and the community PR
+[moesuito/gt4-staticrecomp#173](https://github.com/moesuito/gt4-staticrecomp/pull/173) (context-aware mapping, VBlank
+probe, transition filtering).
+
+- **In a race:**
+  - steering by an on-screen wheel or a slider, or buttons for players who prefer them;
+  - throttle and brake with levels: an analog amount from the touch position on the pedal area.
+- **In menus and the lobby:** the simple pad (D-pad, confirm, back, Start).
+- **Settings:** the layout and the steering type are chosen in the launcher's pad editor; the PS2 layout stays as an
+  option.
+- **Game logic never changes:** only the input that reaches the game's pad is mapped.
+
+### TASK-201: the (i) icons and row labels must never paint over an open info card (owner, 2026-11-06; planned, no build yet)
+
+The owner's photo of the Android launcher (APK 103001507, Graphics, the Dithering card open) shows the next row's
+label "Taxa de quadros" and its (i) icon drawn over the card. The mobile branch does not have TASK-199 (336630b4) yet.
+- **Android:** port TASK-199's top-layer cards to the mobile launcher.
+- **PC (rc15 has TASK-199):** check that no (i) icon, focus ring or row label paints over an open card. The info icons
+  may carry their own stacking order. Use `document.elementFromPoint` checks on the icon of the following row.
+- **Tests:** the TASK-199 focus checks extended to the next row's (i) icon, in both languages and at phone size.
+- Ship with the next launcher build (rc16 on PC, the next APK on Android).
+
+### TASK-200: GSdx on PC: fractional render scales and OpenGL, in gt4-gs 1.3.0 and rc15 (owner, 2026-11-06)
+
+**Status: done (2026-11-06), in rc15.** Launcher `task/200-gsdx-scales-opengl` (0311cc5a) merged into `task/198-rc15-pgo`;
+fork `task/200-fractional-scales-opengl` (a47553a3c) merged into `gt4gs/main` (4c980f21c) and tagged `gt4gs-v1.3.0`.
+gt4-gs 1.3.0 is a GitHub **draft pre-release** (the orchestrator publishes it together with rc15). The rc15 launchers,
+installer and zip in `private/release-130-rc15-pgo-out` carry it; the hashes are in STATUS and the journal.
+
+- **Review (owner, same day).** The separate "Resolution (GSdx)" list was rejected. The fractional values are finer
+  steps of the **existing Render scale**, which is always a percentage of the screen: 100% is the automatic multiplier
+  `k` and is never below the screen; a lower percentage scales `k` (on 4K, 50% is half of 6x = 3x). The multiplier is the
+  accepted value closest to `k x percentage / 100`, an exact tie going to the larger one. The TASK-105 integrated-GPU 1x
+  default (commit `4f76bb07`) was the only place where 100% was below the screen and is removed; the additive TASK-118
+  ladder (`92d6053e`) is replaced by this percentage. Labels show the 16:9 picture: width `640 x multiplier`, height
+  `floor(width x 9 / 16)` (2x = 1280x720, 2.5x = 1600x900, 1.25x = 800x450).
+- **Map.** The GS core already handles a fractional multiplier (a float; the Qt/ImGui lists once offered 1.25x to 3.5x,
+  removed in 2025 without touching the GS). gt4-gs refused it only in its allow-list, and the same allow-list refused
+  `Renderer = 12` although OpenGL is compiled in.
+- **Fork (gt4-gs 1.3.0):** the vendored allow-list takes 1.25, 1.5, 1.75 and 2.5 for `upscale_multiplier` and 12 for
+  `Renderer` (SHA256SUMS updated); it also keeps the pre-TASK-186 blending values 1/2/4/5 through an allow extension, so
+  an older launcher that runs it is unaffected. Version string `gt4gs 1.3.0`. Package `gt4-gs-1.3.0-windows-x64.zip`
+  `3995f036...` 13,024,001 bytes and source zip `e5e30ab5...` (GPLv3 6(d)) from `gt4gs/release-local.ps1 -Draft` (a
+  pre-release draft, ignored by every launcher's automatic picker). Headless replay with `upscale_multiplier = 2.5` on
+  Vulkan: exit 0, the driver line present, no "ignoring" line. OpenGL in a headless replay crashes inside the AMD OpenGL
+  driver (`atio6axx.dll`) at the PBuffer pixel format, so its runtime gate is the owner's in-game test with a window.
+- **Launcher (rc15):** the Render scale snap and write above; the four fractional steps and OpenGL only when the
+  installed gt4-gs is 1.3.0 or newer (`RENDERER_FRACTIONAL_MINIMUM`). `RENDERER_MINIMUM` and `RENDERER_PINNED` are 1.3.0:
+  the launcher installs the pinned pre-release by tag, verifies it against that release's `SHA256SUMS`, and a newer
+  stable still wins; an installed 1.2.1 goes to the 1.3.0 folder and 1.2.1 stays as the previous version for rollback.
+  OpenGL joins the Graphics API list after Direct3D 11; Automatic never resolves to it. Locales in both languages; table
+  and allow-list updated.
+- **Release files (rc15):** launchers `c802114a...` (installer build, 19,450,368 bytes) and `c0dc2ab6...` (portable,
+  19,395,584 bytes); installer `GT4Recomp-Setup-1.3.0-rc15.exe` `0d809f4f...` 52,379,244 bytes and zip
+  `GT4Recomp-1.3.0-rc15-portable.zip` `0bcd48ae...` 81,504,579 bytes in `private/release-130-rc15-pgo-out`, with
+  `SHA256SUMS`. 20 of 20 installer game files and 25 zip entries equal to their sources; both games equal to the slice413
+  pins.
+- **Tests:** `cargo test --workspace` 783 passed (9 ignored); focus checks 357/357 en-US and 364/364 pt-BR, nav-test
+  260/260, locale parity included. No real installer run: the agent session is not elevated and the installer requires
+  admin; its payload was checked file by file instead.
+
+The Android GSdx (ARMSX2) offers fractional render scales (1.25x, 1.5x, 1.75x, 2.5x). The PC GSdx (gt4-gs) should offer
+them too. The main reason for the gt4-gs rebuild is OpenGL, which is still missing from the launcher.
+- **Map first (a PCSX2-tainted agent, in prose):**
+  - does gt4-gs, built from the fork `moesuito/gt4recomp-gs`, already accept a fractional upscale multiplier?
+  - or does only the launcher limit it to whole numbers?
+  - what must change in the fork for each fractional value?
+- **New gt4-gs build:**
+  - from the fork, with the fractional scales, and OpenGL allowed (`Renderer = 12`; this takes over part 3 of
+    TASK-107);
+  - allow-list and SHA256SUMS in the fork;
+  - a new launcher pin.
+- **Launcher:**
+  - the fractional scales in the GSdx Resolution list, in both languages;
+  - the OpenGL entry in the Graphics API list (the "older PCs" group of TASK-103), with `docs/launcher/gs-settings.toml`;
+  - migration for stored values.
+- **Gates:**
+  - every scale and OpenGL draw the reference scenes (night race, replay, menus) with no crash;
+  - per scale, the final frames are compared with the nearest whole scale;
+  - no GPL code enters the game executable: gt4-gs stays a separate process (decision 0070).
+
+### TASK-196: 4:3 screens and the aspect rule taken from the display (owner, 2026-11-06; planned)
+
+Some players use 4:3 monitors (Discord, YouTube). This is not a new graphics option: the ratio follows the screen
+resolution.
+- **16:10 and other near-16:9 screens:** keep the 16:9 game picture with bars at the top and bottom, as today.
+- **4:3 screens (and anything closer to 4:3 than to 16:9):** the forced 16:9 mode and the widescreen corrections are
+  turned off automatically, and the game runs in its native 4:3.
+- **Logging and docs:** the launcher logs the decision, and the docs explain it.
+- **Gates:** the race clock and state stay identical; only the projection and HUD hooks switch.
+
+### TASK-197: native multi-monitor (triple screen) without Nvidia Surround or AMD Eyefinity (owner, 2026-11-06; planned)
+
+Triple screens already work when the driver joins the monitors into one wide display (Surround, Eyefinity).
+- **Native support:** the game renders one wide picture (for example 3 x 16:9 = 48:9, through the existing aspect
+  correction) and splits it into three blocks.
+- **Presentation:** each block goes to its own borderless full-screen window on its own monitor.
+- **Launcher:** the player maps which monitor is the left, centre and right one, and can reorder them.
+- **Bezels:** offer bezel compensation if cheap.
+- **Renderers:** CoreGS 2.0 first; check whether the GSdx (gt4-gs) path can do the same.
+- **Constraints:** game logic never changes; frame pacing stays on one clock.
+
+### TASK-195: Cloud saves and cloud replays through the player's own Google Drive (owner, 2026-11-06; planned)
+
+The owner's full specification, in Portuguese, is `docs/tasks/TASK-195-cloud-saves-replays.pt-BR.md`.
+
+**Summary:**
+- Opt-in sync of saves and replays to the player's own Google Drive app-data folder (`drive.appdata` scope, invisible in
+  My Drive). There is no project server, and offline play is fully preserved.
+- OAuth through Google's official flow; the launcher never sees the password.
+- Sync while playing, at each completed in-game save, at a safe point found in the real save path (not file watching).
+  It runs asynchronously, with retries.
+- Steam-Cloud-like conflict handling: never "newest wins" on divergence; both copies are kept and resolved on screen.
+  v2.00 and Spec II are never mixed.
+- Cloud replays can be turned on separately, with usage shown and selective cleanup. Public sharing is out of scope.
+- PC and Android, then other platforms. The maintainer sets up the Google Cloud project.
+
+Study the real save and replay paths before designing.
+
+### TASK-191: a small GT4Recomp website on Netlify (owner idea, 2026-11-06; planned)
+
+A simple project site, linked from the GitHub repository:
+- what GT4Recomp is, screenshots, requirements, the Discord, the Ko-fi;
+- a link to the GitHub repository.
+
+It hosts no download: every "Download" button points to the latest GitHub release page (`releases/latest`). It never
+offers or links the game itself. Deployed from the repository with `netlify.toml`, on the free tier. The same Netlify
+project can host TASK-190's profile-upload function, so the site and the function share one deployment. If the site is
+not wanted, the function still works on its own.
+
+### TASK-190: "Send my wheel profile" without an account (owner, 2026-11-06; planned)
+
+Players with a wheel we have no preset for can send us their finished mapping, so we can ship it as a built-in preset,
+like the owner's Logitech G27 preset in TASK-189. A preset is a small text file.
+
+**Plan:**
+- A "Send my profile" button on the Wheel page uploads only the preset TOML: the mapping, the wheel's name and its USB
+  vendor and product IDs. No personal data and no account.
+- The upload goes to a small Netlify function (free tier). The function:
+  - validates the file (schema, size limit) and rate-limits by client;
+  - opens a GitHub issue labelled `wheel-preset` with a bot token kept in Netlify's environment.
+- We review the issue and embed the good presets.
+- Both languages; the launcher shows what it sends before sending.
+
+### TASK-187: GT4Recomp consumes CoreGS from its own repository (owner, 2026-11-06; planned, after 1.3.0 final)
+
+CoreGS 2.0 is being extracted into the public MIT repository `moesuito/coregs`. It is a generic PS2 GS renderer, with
+GT4's shortcuts moved into an optional game profile.
+
+**Plan:**
+- GT4Recomp then uses `coregs` as a git submodule pinned to a commit, in place of the in-tree renderer.
+- Updating CoreGS is a submodule bump, gated by the usual identity checks: flare hashes, gates6 and CTest.
+- The GT4 profile lives in `coregs/profiles/gt4` or in GT4Recomp.
+- Renderer fixes made for GT4Recomp land in `coregs` first.
+
+The switch waits for 1.3.0 final, so rc15 is not put at risk.
+
+### TASK-185: Android on-screen virtual controller (owner, 2026-11-06; planned)
+
+**Why.** The Android build plays only with a physical controller (USB or Bluetooth); there is no touch control in the
+game.
+
+**Target behaviour:**
+- With no physical controller connected, an on-screen virtual controller appears over the game.
+- When a physical controller connects (Bluetooth, USB or any other), the virtual controller hides and is disabled.
+- When the last physical controller disconnects, it comes back.
+
+**Notes:**
+- It feeds the same pad input the physical controller feeds (DualShock 2 buttons and both sticks), with analog
+  pressure where the game reads it.
+- It must not cover the F7 report button or the camera cutout.
+- The layout must be usable while driving.
+- A setting may turn it off or force it on later.
+- Covers the "touch controls" part of TASK-022.
+- Applies to the public Android build and, through the upstream merge, to the mobile build.
+
+### TASK-186: Effect toggles instead of Performance Mode on PC (owner, 2026-11-06; in the rc15 test build)
+
+**Why.** The owner wants the Performance Mode split into individual switches on PC too (as TASK-180 did for Android), before
+the 1.3.0 final, so a slower PC turns off only what costs frames.
+
+**What.**
+- The old Performance Mode row is gone. Each thing it changed is its own Graphics row: *Sun glare and light flares* (both
+  renderers; the game answers the flare visibility table with zeros itself) and *Road sheen* (CoreGS 2.0 only), both on by
+  default, and *Small effects* (CoreGS 2.0: Full resolution, the default, or Lower, the preset's 1x for the small effect
+  pictures inside a scaled frame).
+- The two GSdx settings the preset also wrote are rows again: *Blending accuracy* (High or Minimum, written to
+  `accurate_blending_unit`) and *Readbacks* (Accurate by default, written to `HWDownloadMode`). The table keeps the five
+  values of the row before TASK-091, but the launcher offers only the two the installed gt4-gs accepts (Accurate and No
+  readbacks; a stored 1, 3 or 4 becomes Accurate with a log line). No effect toggle writes the readback mode any more.
+- Migration (settings schema 8 to 9): a stored `performance_mode = "no-readbacks"` becomes every effect off, small effects
+  Lower, blending Minimum and readbacks Accurate.
+- Games: slice411, plain (no PGO, no ThinLTO), both targets; launchers labelled rc15; installer and portable zip in
+  `private/release-130-rc15b-out`.
+- Gates: every effect on identical to the rc15 draft (frames, flare reply hashes, `gates6.sh` wrong=0); every effect off
+  identical to `GT4_CORE2_PERFORMANCE=1`; each toggle alone changes only its own effect with the race clock and the simulation
+  state identical; the new `hw_core2_effect_toggles` fixture for CoreGS 2.0 and the stream-client fixture for the GSdx path.
+- The same correction is commit `0ee1a707` on `task/180-android-emulator` (launcher and game.ini parts; the branch's schema 10).
+- **Open:** the Readbacks row widens back to the five values when a gt4-gs build with the regenerated allow-list becomes the
+  minimum (the launcher accepts gt4-gs >= 1.2.1 today).
+- State (2026-11-06): implemented on `task/186-effect-toggles-pc`; owner test with the G27 pending.
+
+### TASK-188: saves when the install and the save library are on different drives (issue #208; rc15)
+
+**Why.** A player on Windows 10 with Spec II (1.3.0-rc14, issue #208) could not delete a save: pressing Delete did nothing,
+deleting `%APPDATA%\GT4Recomp\games\spec2\Saves` by hand brought the save back at the next start, and New save failed with
+`data\games\spec2\runtime\card.ps2: ... (os error 17)`. `os error 17` is `ERROR_NOT_SAME_DEVICE`: the install (its `data`
+folder with the runtime card) is on `F:` and `%APPDATA%` (the save library and the card backups) is on `C:`, and the launcher
+moved the card between them with `fs::rename`, which Windows only allows inside one volume.
+
+**What.**
+- One helper for moves, `gt4l_core::moves::move_path`: a rename when both places are on one volume (unchanged, atomic, it still
+  replaces the target in one step, so the library's guarantees stay), and across volumes (`ERROR_NOT_SAME_DEVICE` 17 on Windows,
+  `EXDEV` 18 on Unix) a copy, checked file by file against its source (size and SHA-256), placed through a staging name on the
+  destination's volume, and only then the source removed. A failed check keeps the source and removes only the half copy.
+  `MoveOps` lets a test make the rename report another volume, which is how a two-drive PC is reproduced on CI's one volume.
+- Deleting the active save and New save park the runtime card through it, so the card really leaves the drive it lives on and
+  the next Play builds a card without that save. Deleting a save by hand in `%APPDATA%` no longer returns, because the stale
+  card on the other drive is no longer harvested.
+- The pre-1.0 save-library migration parks the old folders through the same helper (the old library and the data folder are on
+  different drives in the same layout).
+- Audit of every `fs::rename` in `launcher/crates` (51 sites, 45 in product code): the other sites are inside one folder
+  (temporary file to its target, `Active` to `Save NN` inside `Saves`, staging to `prepared` inside a game folder, a version
+  folder inside `gs`, the portable update's own folders) or already carry their own cross-volume path (`relocate`, `games_layout`,
+  and the installer build's own swaps). None of them can cross volumes in a supported layout, so none changed.
+- Tests: unit tests for the helper (same-volume rename never copies; a file and a folder across volumes; a truncated copy is
+  refused with the source kept; a missing destination folder; a replaced target), flow tests for delete, New save and harvest
+  with the runtime card and the library under different roots, a migration test that the park goes through the mover given and
+  keeps the data when it fails, and the existing save tests unchanged.
+- Games unchanged (slice411); launchers labelled rc15; installer and portable zip in `private/release-130-rc15c-out`.
+- State (2026-11-06): implemented on `task/188-cross-drive-saves`; owner test pending.
+### TASK-193: an option row changes only through its arrows (owner, 2026-11-06; for the rc15 test build)
+
+**Why.** The owner tapped the left arrow of a `< value >` row on his phone (the Android launcher shares this UI) and the row
+moved forward: the whole option control was one click target, so a tap that landed next to the small arrow stepped forward. His
+words: "tira essa hitbox da linha e coloca só da seta pra esquerda e da direita, sem a opção da linha".
+
+**What.**
+1. **Only the arrows change the value with a pointer** (every settings page and the Wheel page cards). A click or tap on the
+   row's label or on the value writes nothing; the left arrow steps back and the right arrow forward. The keyboard, the pad and
+   assistive technology keep their behaviour (Left/Right step, A/Enter still goes to the next value, the row still takes focus):
+   `GT4.input.stepsFromActivation(detail)` (`js/input-rules.js`) tells a click with no click count (0, what `nav.js`
+   `activate()` produces) from a pointer click (1 and up).
+2. **Bigger invisible hit areas, same look.** The drawn arrow stays a 24 x 24 px box (the hover ring now uses `::after` at the
+   same size) with a **32 x 32 px** hit area with a mouse and **44 x 44 px** with a finger (`--selector-arrow-hit`,
+   `44px` under `pointer: coarse`); negative margins take the padding back, so the glyph, the value and the layout do not move.
+   The two areas never reach the middle third of the value.
+3. **Label wrap (the TASK-189 nit).** `.row .k > span:first-child` states `overflow-wrap: normal` and `hyphens: manual` and never
+   gets a `min-width: 0` box; the label keeps its words whole and the control gives way (the Wheel panel's control may shrink,
+   its value ends with an ellipsis). The mid-word break did not reproduce on this checkout before the change; the rule is now
+   explicit and gated.
+
+**Tests.** `dev/focus-check.js`: 24 new checks (a click on a label or value changes nothing and writes nothing, each arrow steps
+its own way, 32 x 32 px with a mouse and 44 x 44 px on touch, no overlap with the value's middle, the glyph stays centred,
+Left/Right and A still step, a toggle row and a Wheel card row follow the same rule); they fail on the old handler (14 failures
+when it is restored). `dev/nav-test.js`: 5 new cases on `stepsFromActivation`. Results: focus checks **392/392** en-US and
+**399/399** pt-BR (368 and 375 before), nav-test **265/265**, no JS errors, locale keys unchanged, no Rust (no `cargo test`).
+Real pointer and touch hit-testing in headless Edge and screenshots at 1366x768 and 2400x1080: `build/evidence/t193/`.
+
+**Branch.** `task/193-option-arrows` (from `release/1.3.0-rc15` at eeefb1b9). The UI commit touches only
+`launcher/crates/gt4l-tauri/ui/`, so it can be cherry-picked onto the Android branch. Docs in a second commit.
+
+### TASK-189: Wheel page after the owner's G27 test (owner, 2026-11-06; in the rc15 test build)
+
+**Why.** The owner tested the rc15 draft with his Logitech G27: the wheel drawing and the buttons are right ("the wheel visual
+is impeccable, change nothing there"), the rest of the page is not. His list, and what was done:
+
+1. **Mapping took two clicks.** The page's capture popup is now opened by one action: a click on a control of the drawing, its
+   Map button in the panel, or A on the pad. It is named for the control, waits for the button, the axis or the pedal, offers
+   Clear in the same popup, and closes on Esc, B or Cancel; Y clears from the pad. A click on the empty drawing only selects.
+2. **No guessing.** A wheel with no preset starts with every control unassigned (`WheelConfig::unassigned`, `wheel::load` on a
+   missing or refused file, `reset_wheel_config`), and the `generic` family template no longer pre-fills axis 0 and the D-pad.
+   The game's own default parser (`WheelConfig::default`, `native/wheel.cpp`) is unchanged: it is the file format's fallback,
+   not the launcher's starting point.
+3. **A shipped G27 preset.** `crates/gt4l-core/assets/wheel-presets/logitech-g27.toml` is the owner's mapping, listed in
+   `wheel_identity::BUILTIN_PRESETS` by USB IDs (`046D:C29B`). `wheel_page::auto_apply_builtin` applies it when the launcher has
+   no `wheel.toml` and the detected device matches, at the page and at Play; the page says which preset was applied
+   (`applied_preset`). The table is the extension point for other wheels.
+4. **The "Your wheel" card is gone.** The name is in the badge, the 900-degree advice is the Rotation row's tooltip, and the
+   badge reads "Connected" without the USB ID. What remains of that block is compact and conditional: the wheel the game uses
+   when several are connected, and the mode warnings (compatibility mode and the like).
+5. **The force feedback card is tidy.** One compact result line under Test force ("played, effects: ..." in green, the refusal
+   in amber), and the "force feedback in the last game" row is only drawn when the game reported yes or no. Checked at
+   1366x768 and 1920x1080 (`build/evidence/t189/`).
+6. **No "Racing wheel in the game" switch.** `wheel_page::prepare_for_play` (called by `prepare_play`) plugs the virtual DFP in
+   exactly when the wheel status lists a wheel and leaves it out when none is, writes `wheel.toml` and logs the decision; with
+   SDL3 unavailable it keeps the stored value (a Start right at boot). The stored `[wheel] enabled` of a 1.3.0-rc15 file is no
+   longer a player setting: it is derived at Play, so the old key's value does not survive a Start.
+
+**Tests.** `cargo test --workspace`: all green except `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`,
+which fails only while a game process runs on the machine (`gt4vulkan.exe` was open; the log says "large data: not moved now
+(Gran Turismo 4 is running)"), unrelated to this task. New: the G27 preset (identity table and the shipped file's parsing),
+the unassigned start, `reset_template`, the shipped preset's auto-application and an unknown wheel's empty start (flow audit),
+`wheel_connected` and the per-Start on/off with the dropped stored value (flow audit). Focus checks en-US 368/368 and pt-BR
+375/375, nav-test 260/260, locale keys 913 in both languages. Screenshots: `build/evidence/t189/`.
+
+**Open.** The owner's test of the next rc15 build with the G27. GT4's own USB wheel code is untouched.
+
+### rc15 plan (owner, 2026-11-04): what 1.3.0-rc15 carries
+
+The owner gave rc15 two to three days; a plain test build first (no PGO), Telegram when it is ready; the Avell only on the
+owner's word (busy on 2026-11-04). Each task is built by a subagent in its own worktree and branch; the coordinator reviews
+(diff, tests, gates) and integrates on `release/1.3.0-rc15` (this branch, from `task/171-license-front-end`).
+
+| Task | What | Branch | State (2026-11-05) |
+|---|---|---|---|
+| TASK-171 | Track map of every Spec II track (A-Spec, B-Spec) headless on the desktop; batches/VBlank, flush reasons | `task/171-license-front-end` | ✅ Done: palette flushes are the largest batch cause in the player's view on every track |
+| PR #205 (TASK-018) | Native Driving Force Pro wheel (WaimateWihongi) | `main` a4a3a5b6 | ✅ Merged into rc15 (6288ac5a) |
+| TASK-168 / 168b | Several palettes in one batch (palette segments); tone-run early drop; one target walk per CLUT load | `task/168b-segments-fix` (1c9f8240) | ✅ In rc15 (dea88144). Segments no gain on GT4 (the ~1,000 loads/VBlank are tone-sequence copy-back strips); **owner (2026-11-05): segments off by default, code and switch kept**; the early drop and the single CLUT walk on (Avell, George V 1x: wall 12.55 against 12.94 ms/VBlank). Next: study drawing the tone strips as one GPU pass |
+| TASK-170b | The launcher runs the shader prepare again while each attempt gets further; `logs/shader-guard.txt` | `task/170b-prepare-retry` (0e4e6d9e) | ✅ In rc15 (892d82f5) |
+| TASK-170c | Quarantine a variant only after two crashes of the same key (`suspects.bin`); the launcher compares the guard files' bytes; 20 attempts | `task/170c-two-crash-quarantine` (965dc8e7) | ✅ In rc15 (48d63a64) |
+| TASK-174 | Presentation off the GS thread on one-queue GPUs (Steam Deck, issue #204) | `task/174-single-queue-present` (314b0236) | ✅ In rc15 (38a1d9ef); the Deck player's test pending |
+| TASK-174b | Launcher: the TASK-174 option with queue detection, and a richer `system.txt` | `task/174b-launcher-option` (c8d20c08) | ✅ In rc15 (a6a855a6; pt-BR mojibake repaired at a07f63ad) |
+| TASK-175 | Performance HUD: full names, report state, Off / FPS only / Full | `task/175-performance-hud` (2e2f87f3) | ✅ In rc15 (49acaf41); the HUD's look in a game run still to check |
+| TASK-179 | Android stage A1 on Windows: Vulkan correctness | `task/179-vulkan-correctness` (4a70b53d) | ✅ In rc15 (a2390b2d) |
+| TASK-178 | Submit after a waited readback (K=0 by default) and the flare-read counters | `task/178-submit-after-wait` (c73b3be8 only) | ✅ In rc15 (6f318594); O3 dropped (not exact on Motegi, no gain; 80cf04c9 stays on the branch only) |
+| TASK-181 | Launcher Wheel page and the DFP review fixes (DFP only, USB capsule slice409) | `task/181-wheel-page` (a2374ee0) | ✅ In rc15 (7c9041ad); the owner tested it on his G27 (2026-11-06: the drawing and the buttons are right) and asked for TASK-189 |
+| TASK-180 | Android emulator | `task/180-android-emulator` | Not in rc15 (owner) |
+| TASK-186 | Effect toggles instead of Performance Mode, both renderers (owner, 2026-11-06) | `task/186-effect-toggles-pc` | ✅ For the rc15 test build (owner test pending); `task/180-android-emulator` gets the same correction |
+| TASK-188 | Saves on a PC whose install and save library are on different drives (issue #208) | `task/188-cross-drive-saves` | ✅ For the rc15 test build (owner test pending) |
+| TASK-189 | Wheel page after the owner's G27 test: one-action mapping popup, no guessed mapping, the shipped G27 preset, no "Your wheel" card, a tidy force feedback card, no on/off switch (owner, 2026-11-06) | `task/189-wheel-page-polish` | ✅ For the rc15 test build (owner test pending) |
+| TASK-193 | Option rows change only through their arrows (label and value taps do nothing), 32 x 32 px arrows with a mouse and 44 x 44 px on touch, row labels never split a word (owner, 2026-11-06) | `task/193-option-arrows` | ✅ For the rc15 test build (UI only, cherry-pickable to the Android branch) |
+| TASK-194 | Force feedback like PCSX2 (no default spring, a spring stop stops the spring, per-side friction, no damper floor), the Centring spring row, the rc15 test build (owner, 2026-11-06) | `task/194-rc15-build` | ✅ For the rc15 test build (owner test pending) |
+| TASK-198 | The 1.3.0-rc15 release build with PGO and ThinLTO, the full release gates, launchers labelled rc15 and the installer and portable zip (owner, 2026-11-06) | `task/198-rc15-pgo` | ✅ Done: slice413 (PGO), gates6 wrong=0, CTest 318/319 each, Python 804, launcher 778; `private/release-130-rc15-pgo-out`; the orchestrator publishes |
+
+Then: merge the branches here (TASK-168 and TASK-174 both touch `core2_gpu.cpp` and `native/hw_gs/CMakeLists.txt`; TASK-170b,
+174b and 175 touch the launcher locales and settings), CTest, launcher tests and focus checks in both languages, the gates
+against the rc14 PGO builds (`private/task134-tools/gates6.sh`), the A-Spec track map before/after, the rc15 notes in both
+languages, plain test builds of both games and the launcher, install on the desktop, Telegram the owner. PGO and the GitHub
+draft and pre-release only on the owner's word.
+
+**Integration and test build (2026-11-05, morning; owner: a draft for his G27 test).** All the rows above merged here in
+order (main, 170b, 170c, 174, 174b, 175, 179, 168b, 178 at c73b3be8, 181), every feature kept (STATUS has the conflicts).
+Games slice410, plain (pins `docs/inputs/slice410-*.json`, exe `7060f8bf...` v2.00, `a4d84180...` Spec II, the slice407 EE
+libraries plus the USB capsule slice409). Gates against rc14 PGO (`gates6.sh`) wrong=0; CTest 318/318 on both; Python 802;
+launcher 750 tests, focus checks 357/357 and 364/364, nav-test 260/260; locale keys 909 in both. Uploaded as the GitHub
+**draft** `v1.3.0-rc15` (never published; pre-release only on the owner's word). Not done yet: the A-Spec track map
+before/after (TASK-168b's gain was measured on the Avell instead) and PGO.
 
 ### rc14 plan (owner, 2026-11-04): a test build first, PGO only on the owner's word
 
@@ -3430,6 +4337,121 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+
+### TASK-194: force feedback like PCSX2, the Centring spring row, and the rc15 test build (owner, 2026-11-06; for the rc15 test build)
+
+**Why.** The owner drives GT4 with a Logitech G27 and compares it with PCSX2, where the wheel does not pull itself to the
+centre in a race. TASK-192 had already turned GT4's menu spring off by default; this task removes the remaining differences
+between our force feedback and PCSX2's, gives the setting a launcher row, and produces the next rc15 test build for his G27.
+
+**What.**
+1. **No default spring.** The DFP "default spring on" command (`F4`) is accepted and ignored, as PCSX2 ignores it: no default
+   centring spring is ever decoded or played, `F5` and "set default spring" stay harmless, and a USB reset in the middle of a
+   session leaves no force behind, so it cannot bring one back. `DfpForces` no longer carries an `autocenter` field at all.
+2. **A spring stop stops the spring.** With `[ffb] centering_spring = "game"`, the plan says whether the game currently asks
+   for the spring; a spring stop (`23 0B`) makes it inactive and `DfpHapticPlayer` calls `SDL_StopHapticEffect` on the spring
+   instead of sending a zero-saturation spring. The decoder keeps each slot's effect type and the order of its last download,
+   so a spring downloaded on another slot replaces the old parameters (one host spring, as in PCSX2).
+3. **Per-side friction.** The two coefficient bytes are used separately: `21 0E 80 FF 20` is 0.5 on the left, 1.0 on the right
+   and a 0.125 clip, not the max of the two on both sides.
+4. **Damper floor 0 by default** (`FfbConfig::damper`, `FfbConfig` in `gt4l-core`), the shipped G27 preset `damper = 0.0`, and
+   the damper effect exists only when the game sends one or a floor is set. `centering_spring` stays `off` by default.
+5. **Launcher:** Settings > Wheel > Force feedback has *Centring spring* (Off, the default, or Follow the game) with its info
+   tooltip in en-US and pt-BR. `gt4l-core/src/wheel.rs` learns `ffb.centering_spring` (`"off"`/`"game"`, plus a 1.2.x amount
+   or boolean; both spellings), writes it in `to_toml` and keeps the round trip; `set_wheel_setting` accepts `"off"`/`"game"`
+   and a boolean. The damping row now starts at 0%.
+
+**Fixtures.** `native_usb_dfp` drives GT4's exact bytes (boot, the menu spring and its stop, friction, the racing force), the
+`F4`/`F5`/`0E` commands, a second slot's spring replacing the first, a stop for each slot, and a USB reset in the middle of a
+session (no spring after it). `native_wheel` covers the plan (no default spring, a spring stop is an inactive effect, the
+per-side friction coefficients, the damper floor at 0) and the player (created on first use, a spring stop calls
+`stop spring`, the same spring again needs no update). The launcher tests cover the key's parse, both spellings, the legacy
+amount, the refusals, the round trip and `set_wheel_setting` in both forms.
+
+**Build.** Games slice412, plain (no PGO, no ThinLTO), the slice407 EE libraries and the slice409 USB capsule, pins
+`docs/inputs/slice412-pcsx2.json` and `slice412-spec2.json`, distribution `private/slice412-dist-130-rc15d`. Launchers
+labelled rc15, installer and portable zip in `private/release-130-rc15d-out` with `SHA256SUMS`; contents checked against
+their sources. No gates6 (no physics or game logic changed). CTest 318 of 319 on each game (`hw_replace_q07_pcsx2_dumps`
+skipped, as in rc15), Python 804 (57 skipped), launcher 778 (9 ignored), focus checks 427/427 en-US and 434/434 pt-BR,
+nav-test 293/293, locale keys 917 in both, and a headless smoke boot of each game to its title screen.
+
+### TASK-198 — The 1.3.0-rc15 release build with PGO, ready to publish (owner, 2026-11-06; done)
+
+Branch `task/198-rc15-pgo` from `release/1.3.0-rc15` at b9a55c72 (TASK-194 merged), worktree
+`C:\Antigravity\gt4-wt-198-rc15-pgo`. The owner approved rc15 and asked for the optimised build ("com as otimizações"); the
+orchestrator publishes.
+
+1. **The recipe** is rc14's (`private/task134-tools/final14.sh`, `docs/BUILD.md`): `scripts/coregs2_bench/pgo-all.sh` per game
+   with `EE_GENERATED` set to the rc14 hooked units. The units were copied from the TASK-134 worktree and their inventory
+   digests checked against the slice407 receipts (`83387682...` v2.00, `7105d292...` Spec II), so the EE side is the same code
+   as rc14/rc15. The instrumented build trains on the three recorded Spec II runs (the George V Paris lap at 1x and 2x, the
+   Spec II night race) and the two v2.00 scenes (night race, Arcade) with a warm shader cache (300 variants prepared by the
+   rc15 test build first), merges the profile, then rebuilds the EE library and the game with `GT4_HW_PGO=use` and
+   `GT4_HW_THINLTO=ON`.
+2. **Games slice413** (`private/slice413-game`, `private/slice413-ee-v200`, `private/slice413-ee-spec2`, the two profiles) with
+   new pins `docs/inputs/slice413-pcsx2.json` (`gt4vulkan.exe` `049a8c6e...`, 94,659,072 bytes, library `1e782517...`) and
+   `slice413-spec2.json` (`gt4vulkan-spec2.exe` `f3b59ddc...`, 102,409,216 bytes, library `2d21b147...`), the USB capsule
+   `private/slice409-usb-runtime` and the rc15 wheel code.
+3. **Gates** against the rc14 PGO builds (`private/task134-tools/gates6.sh`, wrong=0): the three Spec II laps (24, 35 and 35
+   identical frames), the v2.00 night race (10 of 10, state identical), the Arcade path (14 of 14) and Spec II at 6x (12 of
+   12); VU1 236,448 and VU0 39,731 samples on Spec II, VU1 355,388 and VU0 56,156 on v2.00, MTVU 8,032 frames, 0 differences.
+4. **Tests:** CTest 318 of 319 on each game (`hw_replace_q07_pcsx2_dumps` skipped; 605.7 s and 584.4 s), Python 804 (57
+   skipped), launcher `cargo test --workspace` 778 (9 ignored), focus checks 413/413 en-US and 420/420 pt-BR, nav-test 265/265,
+   locale keys 917 in both, no JS errors; a headless smoke boot of each game to its title screen (frame 1800: v2.00 640x448,
+   64,490 colours, 21,405 primitives; Spec II 26,024 colours).
+5. **Release files:** launchers labelled rc15 (`private/slice413-launchers-rc15`, installer `cf758982...` 19,366,400 bytes,
+   portable `8505d2f2...` 19,378,176 bytes); distribution `private/slice413-dist-130-rc15` (19 files); installer
+   `GT4Recomp-Setup-1.3.0-rc15.exe` (`a7b06572...`, 52,374,302 bytes) and portable zip
+   `GT4Recomp-1.3.0-rc15-portable.zip` (`a851b60c...`, 81,496,120 bytes) in `private/release-130-rc15-pgo-out` with
+   `SHA256SUMS`; 24 of 24 installer payload files and 24 of 24 zip files equal to their sources (`PORTABLE.txt` generated).
+6. **Found and fixed:** the dev mock (`ui/dev/mock-data.js`) stored `ffb.centering_spring` as the page's `"game"`/`"off"`
+   token instead of the boolean `gt4l_core` keeps, so the two Centring spring focus checks failed on a truthy `"off"`; the mock
+   now normalises exactly like `WheelConfig::set_setting`.
+7. **Not done:** the GitHub release (the orchestrator's step); no in-game play test of this build (the owner's test of the
+   rc15 line is the confirmation).
+
+**TASK-199 follow-up (2026-11-06).** `origin/release/1.3.0-rc15` at 265487b5 (TASK-199's info cards in a top layer, the
+TASK-200 record) merged at 75828b9a; the TASKS, STATUS and journal conflicts keep both sides and the rc15 notes keep
+TASK-199's bullet in both languages, and the dev mock keeps the centring-spring fix. The games, the EE libraries and the
+pins are untouched: only the two launchers, the installer and the zip above were rebuilt, and the launcher checks re-ran
+(cargo 778, focus checks 413/413 and 420/420, nav-test 265/265, locale keys 917).
+
+### TASK-199: info cards (tooltips) draw above everything (owner, 2026-11-06; for the rc15 test build)
+
+**Why.** The owner sent a phone screenshot from Settings > Graphics: with the info card of "Reflexo do sol e flares das
+luzes" open, the next row's textures-folder line drew straight through the card, and the row's own value ("Ligado") sat
+over its right edge. "Verifica em todos os locais que pode ter isso e corrija, sem build nova só pra isso."
+
+**Cause.** `.enter-item` (the 180 ms fade and rise of a tab's rows, `settings.js enterAnimation`) keeps its final state
+(`animation-fill-mode: both`), so every row keeps a `transform: matrix(1, 0, 0, 1, 0, 0)`, and any transform makes the
+row its own stacking context. The card was a child of the row's "i" with `z-index: 20`, which only ordered it inside its
+own row: every row after it was painted later, over the card.
+
+**What.** The card is drawn in a top layer instead of inside the row. `ui.js` moves the open card into `.popover-layer`
+(a `position: fixed` container on the `body`, `z-index: 20`: above the page, under a dialog, the migration bar and the
+toast), places it from its "i" (right and 8 px up, as before; to the left near the right edge, up near the bottom) and
+keeps it inside the window through `resize` and `scroll`; the CSS caps its width and height to the viewport and lets it
+scroll inside. The card goes back under its "i" when it closes, so nothing else about the markup changes: `ui.js` keeps
+`.is-shown` in step with the two old CSS rules (`.info.is-open`, and focus in the keys or pad mode), and B, a second
+click, a tap outside and a tap on the card close it as before. One path covers every "i" of every page (Settings,
+Controls, Wheel, Achievements) and the cards of the header rows. A card left open while its row goes away (tab change) is
+removed. The card gained a soft shadow so it reads as floating over content.
+
+**Checks.** `dev/focus-check.js` grew `tipLayerChecks` (17 checks): the owner's row and the textures line under it are the
+first case, plus the first row, a middle row, the last row with the window scrolled to the end, the Controls and Wheel
+header cards, all with `document.elementFromPoint` at the centre and the four corners of the card and inside the window;
+the layer itself, a second click, a tap outside, a tap on the card, and keys/pad focus showing the card. Measured: 411 of
+413 en-US and 418 of 420 pt-BR (the two failures are the pre-existing Centring spring checks of TASK-194, identical on the
+branch before this change: 394/396 and 401/403), nav-test 265/265, launcher `cargo test --workspace` 714 passed, 9 ignored
+(one failure, `flow_audit::a_1_2_x_install_moves_into_games_gt4_at_the_first_start`, in the 1.2.x data migration and
+unrelated to the UI). The same `elementFromPoint` assertions were run over every page with an "i" (42 cards: General 5,
+Graphics 17, Controls 9, Wheel 8, Achievements 3; About, Games, Saves and Replays have none) and at 1366x768, 2400x1080,
+1080x2400 and 420x900, with the screenshots inspected as well: no card is covered and none leaves the window. A dialog
+(modal, z-index 30) still paints above a card, and opening one closes it through the pointerdown path.
+Evidence in `build/evidence/t199/` (before and after screenshots).
+
+**State (2026-11-06):** done, branch `task/199-tooltip-layer`, pushed, no PR, no release. UI only
+(`launcher/crates/gt4l-tauri/ui`), so the same commit can be applied to the Android branch.
 
 ### TASK-215 - CoreGS 2.0 performance audit and optimization (branch `task/215-coregs2-perf`)
 

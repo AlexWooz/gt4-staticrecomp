@@ -136,6 +136,9 @@ void note_deferred_table(const std::uint8_t *dest, std::size_t bytes, std::uint6
 using DeferredTableCopy = void (*)(std::uint64_t ticket, std::size_t offset, std::size_t bytes, std::uint8_t *out);
 void set_deferred_table_copy(DeferredTableCopy copy);
 std::uint64_t deferred_table_patches();  // VIF packets given fresh words so far
+// TASK-178 diagnostics (any thread): the first job given words of read `ticket`, 0 while none is known (the last 16 reads
+// with patches are kept).
+std::uint64_t deferred_table_first_job(std::uint64_t ticket);
 bool direct_gs_intake();  // VU1 jobs run on the worker and the GS worker reads their output itself
 // TASK-084 step 1: closes the pending VIF1 batch and posts it as one job. Called by the DMA chain end, a VIF1 stall,
 // and before any other journal or sync operation; a no-op when nothing is batched or GT4_MTVU_CHAIN=0.

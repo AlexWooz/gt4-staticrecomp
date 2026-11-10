@@ -101,6 +101,13 @@ struct Palette {
     uint8_t maxAlpha = 0;
 };
 
+// The CLUT buffer: 512 halfwords (1 KiB, chapter 07.1).
+constexpr size_t kClutHalfwords = 512;
+
+// Decodes the palette a draw sees (chapter 07.5) from a CLUT buffer image `halfwords` (kClutHalfwords entries): the
+// one the CLUT unit holds, or a copy taken earlier (TASK-168 palette segments). psm is the draw's format.
+Palette DecodeHalfwords(const uint16_t* halfwords, uint32_t psm, uint32_t cpsm, uint32_t csa, uint64_t texa);
+
 class ClutUnit {
 public:
     explicit ClutUnit(CounterSet& counters);

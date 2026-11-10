@@ -570,6 +570,10 @@ void ClutUnit::NoteBlocksWritten(uint32_t blockBegin, uint32_t blockCount) {
 }
 
 Palette ClutUnit::Decode(uint32_t format, uint32_t cpsm, uint32_t csa, uint64_t texa) const {
+    return DecodeHalfwords(halfwords_, format, cpsm, csa, texa);
+}
+
+Palette DecodeHalfwords(const uint16_t* halfwords, uint32_t format, uint32_t cpsm, uint32_t csa, uint64_t texa) {
     Palette palette;
     palette.count = (format & 7u) == 3u ? 256u : 16u;
     const TexaState state = TexaState::FromRegister(texa);
@@ -582,11 +586,11 @@ Palette ClutUnit::Decode(uint32_t format, uint32_t cpsm, uint32_t csa, uint64_t 
         if (cpsm == psm::kCt32) {
             const uint32_t group = std::min<uint32_t>((e >> 4) + csaGroup, 15u);
             const uint32_t index = 16u * group + (e & 15u);
-            value = static_cast<uint32_t>(halfwords_[index]) |
-                    (static_cast<uint32_t>(halfwords_[index + 256u]) << 16);
+            value = static_cast<uint32_t>(halfwords[index]) |
+                    (static_cast<uint32_t>(halfwords[index + 256u]) << 16);
         } else if (IsCt16Family(cpsm)) {
             const uint32_t index = (16u * csa + e) & 511u;
-            value = ExpandRgb16(halfwords_[index], state, true);
+            value = ExpandRgb16(halfwords[index], state, true);
         }
         palette.entries[e] = value;
         const uint8_t alpha = static_cast<uint8_t>(value >> 24);

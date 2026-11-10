@@ -25,6 +25,13 @@
 
 #version 450
 
+// TASK-179: indexing `history` with a push constant (load_history) needs shaderStorageImageArrayDynamicIndexing. A device
+// without it runs the build with -DHWR_CONSTANT_INDEXING=1, where every access names its image with a constant index;
+// the indices are the same (always below 4: every caller tests `< 4u` first), so the pixels are the same.
+#ifndef HWR_CONSTANT_INDEXING
+#define HWR_CONSTANT_INDEXING 0
+#endif
+
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0, r32ui) uniform uimage2D history[4];  // merge images of the last fields
@@ -59,7 +66,16 @@ uint pack_rgba(uvec4 c) {
 }
 
 uint load_history(uint index, ivec2 p) {
+#if HWR_CONSTANT_INDEXING
+    switch (index) {
+        case 0u: return imageLoad(history[0], p).x;
+        case 1u: return imageLoad(history[1], p).x;
+        case 2u: return imageLoad(history[2], p).x;
+        default: return imageLoad(history[3], p).x;
+    }
+#else
     return imageLoad(history[index], p).x;
+#endif
 }
 
 // IN-396: how far the largest R, G or B difference lies above the threshold, in 1/255000 units (difference * 1000 -

@@ -82,7 +82,7 @@ foreach(hw_writeback_test IN ITEMS hw_flat_provoking hw_sprite_corners hw_presen
         hw_gpu_equivalence_scissor hw_gpu_raster_blend hw_gpu_raster_pabe hw_gpu_raster_atest
         hw_gpu_raster_date hw_gpu_raster_frame hw_gpu_gouraud_report
         hw_gpu_writeback_aliased_depth hw_readback_pending_draw hw_replay_parity_double_buffer
-        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present hw_core2_interlaced_present hw_core2_cpu_sprites hw_core2_gpu_clut hw_core2_drawn_page_test hw_core2_width_grace hw_core2_glm_memo hw_core2_patch_bits hw_core2_patch_blocks hw_core2_over_target_memo hw_core2_mipmaps hw_core2_present_scale hw_core2_forced_bilinear hw_core2_specialised hw_core2_upload_memo hw_core2_depth_clear hw_core2_scanmsk hw_core2_display_memory hw_core2_shader_cache hw_core2_prepare_shaders hw_core2_shader_guard hw_core2_whole_clears hw_core2_rop hw_core2_road_sheen hw_core2_delayed_downloads hw_core2_compute_fills hw_core2_self_texture hw_core2_texture_replacement hw_core2_overlap_order
+        hw_presentation_field_phase hw_cache_equals_writeback hw_scale_exact hw_postfx_fxaa hw_scale_display_shadow hw_scale_fullscreen_passes hw_scale_interlaced_present hw_core2_interlaced_present hw_core2_cpu_sprites hw_core2_gpu_clut hw_core2_palette_segments hw_core2_tone_early_drop hw_core2_drawn_page_test hw_core2_width_grace hw_core2_glm_memo hw_core2_patch_bits hw_core2_patch_blocks hw_core2_over_target_memo hw_core2_mipmaps hw_core2_present_scale hw_core2_forced_bilinear hw_core2_specialised hw_core2_upload_memo hw_core2_depth_clear hw_core2_scanmsk hw_core2_display_memory hw_core2_shader_cache hw_core2_prepare_shaders hw_core2_shader_guard hw_core2_whole_clears hw_core2_rop hw_core2_road_sheen hw_core2_delayed_downloads hw_core2_compute_fills hw_core2_self_texture hw_core2_texture_replacement hw_core2_overlap_order hw_core2_point_quads hw_core2_effect_toggles
         hw_scale_target_extent
         hw_tone_hle_exact
         hw_glm_decode hw_glm_swizzle hw_glm_clut hw_glm_unswizzle hw_glm_upload_merge
@@ -153,6 +153,20 @@ add_test(NAME hw_present_latency COMMAND hw_present_latency_fixture)
 add_executable(hw_present_spacing_fixture hw_present_spacing_fixture.cpp)
 target_compile_options(hw_present_spacing_fixture PRIVATE /W4)
 add_test(NAME hw_present_spacing COMMAND hw_present_spacing_fixture)
+# TASK-174: the lock of a queue shared by the GS thread and the presentation thread, and a model of that presentation (CPU only).
+add_executable(hw_queue_lock_fixture hw_queue_lock_fixture.cpp)
+target_compile_options(hw_queue_lock_fixture PRIVATE /W4)
+add_test(NAME hw_queue_lock COMMAND hw_queue_lock_fixture)
+set_tests_properties(hw_queue_lock PROPERTIES RUN_SERIAL TRUE TIMEOUT 120
+    PASS_REGULAR_EXPRESSION "hw_queue_lock: all checks passed")
+# TASK-179: the device profile (CPU only).
+add_executable(hw_device_profile_fixture hw_device_profile_fixture.cpp)
+target_compile_options(hw_device_profile_fixture PRIVATE /W4)
+add_test(NAME hw_device_profile COMMAND hw_device_profile_fixture)
+# TASK-179: the swapchain pre-transform and its blit (CPU only).
+add_executable(hw_present_transform_fixture hw_present_transform_fixture.cpp)
+target_compile_options(hw_present_transform_fixture PRIVATE /W4)
+add_test(NAME hw_present_transform COMMAND hw_present_transform_fixture)
 
 add_executable(hw_gs_smoke hw_gs_smoke.cpp)
 target_include_directories(hw_gs_smoke PRIVATE "${GT4_HW_VULKAN_SDK}/Include")

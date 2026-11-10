@@ -114,6 +114,8 @@ impl std::fmt::Debug for LaunchPlan {
 pub struct Pcsx2Paths {
     /// `gt4-gs.exe` in the installed version folder.
     pub executable: PathBuf,
+    /// The installed gt4-gs version (TASK-200: the fractional scales and OpenGL need 1.3.0 or newer).
+    pub version: crate::version::Version,
     /// SHA-256 of that file (`GT4_GS_PROCESS_SHA256`, checked by the game).
     pub executable_sha256: String,
     /// `gt4-gs.ini` written for this session.
@@ -131,6 +133,7 @@ impl Pcsx2Paths {
     pub fn for_session(installed: &Installed, renderer_root: &Path, session_dir: &Path, textures: &Path) -> Pcsx2Paths {
         Pcsx2Paths {
             executable: installed.executable.clone(),
+            version: installed.version,
             executable_sha256: installed.executable_sha256.clone(),
             config: session_dir.join("gt4-gs.ini"),
             cache: renderer_root.join("cache"),
@@ -199,8 +202,8 @@ pub fn gsdx_unavailable_message_in(reason: &str, log_folder: &Path, language: La
 }
 
 /// The variables of a PCSX2 GS session: `GT4_RENDERER=pcsx2`, the process and its pin, the session INI, the
-/// folders, and the fixed 480p and 16:9 holds (see `add_common`). Readback is accurate unless the table row
-/// `performance_mode` (Performance Mode, TASK-091) is On; it is written into the INI, so no variable is needed.
+/// folders, and the fixed 480p and 16:9 holds (see `add_common`). The rows themselves (`HWDownloadMode`, blending) are
+/// written into the INI by the table writer; the flare toggle is the game-side answer, so it travels as a variable.
 pub fn pcsx2_environment(settings: &Settings, paths: &Pcsx2Paths) -> Vec<(String, String)> {
     let mut variables: BTreeMap<&'static str, String> = BTreeMap::new();
     variables.insert("GT4_RENDERER", "pcsx2".to_string());
@@ -208,6 +211,16 @@ pub fn pcsx2_environment(settings: &Settings, paths: &Pcsx2Paths) -> Vec<(String
     variables.insert("GT4_GS_PROCESS_SHA256", paths.executable_sha256.clone());
     variables.insert("GT4_GS_CONFIG", paths.config.display().to_string());
     variables.insert("PS2_GS", "gpu".to_string());
+    // TASK-186: Performance Mode is gone; the flare toggle drives the stream client's local zero answer (TASK-117) on
+    // this path. The local answer is enabled only when the flares are off, so the car icons and the loading picture keep
+    // draining accurately (the old Performance Mode's other readback setting is the player's own Readbacks row now). The
+    // road sheen is identified in CoreGS 2.0's batch classifier, which the external GS path does not run on the game side,
+    // so that item stays CoreGS-only and has no row here.
+    let flares = settings.gs_is_on("effect_flares");
+    variables.insert("GT4_GS_HIDE_FLARES", flag(!flares));
+    if !flares {
+        variables.insert("GT4_GS_READBACK_LOCAL", "1".to_string());
+    }
     add_common(&mut variables, settings);
     variables.into_iter().map(|(name, value)| (name.to_string(), value)).collect()
 }
@@ -218,23 +231,31 @@ pub fn uses_coregs20(settings: &Settings) -> bool {
 }
 
 /// The variables of a CoreGS 2.0 session (TASK-027). The renderer lives in the game executable, so no process, pin or
-/// INI goes with it. Scale: the session plan's multiplier, as GSdx gets it. Performance Mode (the same row as GSdx):
-/// flares hidden and the delayed downloads. Custom textures: the same Textures folder and the same row as GSdx. The card
+/// INI goes with it. Scale: the session plan's multiplier, as GSdx gets it. The effect toggles (TASK-186): each of the old
+/// Performance Mode's items is its own switch. Custom textures: the same Textures folder and the same row as GSdx. The card
 /// is passed by name; the game takes the best card when no card has that name, and `GT4_HW_ADAPTER` is left out when no
 /// card is known.
 pub fn coregs20_environment(
     settings: &Settings,
     display: Option<&DisplayTarget>,
-    integrated_gpu: bool,
     textures: &TextureLocation,
 ) -> Vec<(String, String)> {
     let mut variables: BTreeMap<&'static str, String> = BTreeMap::new();
     variables.insert("GT4_RENDERER", "hw".to_string());
     variables.insert("GT4_HW_CORE", "2".to_string());
-    variables.insert("GT4_HW_SCALE", session_plan(settings, display, integrated_gpu).multiplier.to_string());
-    if settings.gs_value("performance_mode") == "no-readbacks" {
-        variables.insert("GT4_CORE2_PERFORMANCE", "1".to_string());
-    }
+    variables.insert("GT4_HW_SCALE", display::multiplier_text(session_plan(settings, display, display::CORE_GS_CAPS).multiplier));
+    // TASK-186 (owner, 2026-11-06): Performance Mode is replaced by independent effect toggles. The renderer's switches name
+    // the effect they turn OFF (GT4_CORE2_PERF_<ITEM>=1); a toggle that is on sends 0, so the default of every effect is
+    // drawn as the original game. The road sheen is CoreGS-only (its classifier is core 2's). Blending accuracy and the
+    // Readbacks mode are GSdx rows: CoreGS 2.0 has neither setting.
+    variables.insert("GT4_CORE2_PERF_FLARES", flag(!settings.gs_is_on("effect_flares")));
+    variables.insert("GT4_CORE2_PERF_ROAD_SHEEN", flag(!settings.gs_is_on("effect_road_sheen")));
+    // The third item of the old bundle (IN-497): small effect targets at 1x; its exact default is the full resolution, so
+    // it is a choice and only "1x" turns it down.
+    variables.insert(
+        "GT4_CORE2_EFFECTS_1X",
+        if settings.gs_value("effect_targets") == "1x" { "1" } else { "0" }.to_string(),
+    );
     // TASK-082: one frame drawn in two, in a running race. The physics stay at 60 Hz.
     // TASK-146 (rc12, experimental): 60 FPS lets the framerate drop in a running race when the PC falls behind, leaving
     // frames out so the game keeps its full speed; with time to spare every frame is drawn.
@@ -243,9 +264,15 @@ pub fn coregs20_environment(
     } else {
         variables.insert("GT4_FRAME_SKIP", "1".to_string());
     }
-    // TASK-135: the performance HUD.
-    if settings.is_on("performance_hud") {
-        variables.insert("GT4_HW_HUD", "1".to_string());
+    // TASK-174: the one-queue presentation path is the game's default on a GPU with one graphics queue; only "off" is passed.
+    if !settings.is_on("present_thread") {
+        variables.insert("GT4_HW_PRESENT_SHARED_QUEUE", "0".to_string());
+    }
+    // TASK-135, TASK-175: the performance HUD. Full is GT4_HW_HUD=1, FPS only is GT4_HW_HUD=fps, Off sets nothing.
+    match settings.get("performance_hud") {
+        crate::settings::HUD_FULL => drop(variables.insert("GT4_HW_HUD", "1".to_string())),
+        crate::settings::HUD_FPS_ONLY => drop(variables.insert("GT4_HW_HUD", "fps".to_string())),
+        _ => {}
     }
     // No frametime.csv in the session folder any more (owner, 2026-11-03: not needed). GT4_HW_FRAMETIME_LOG=<csv> by hand
     // still writes it for a bench (scripts/coregs2_bench/frametime_plot.py).
@@ -327,23 +354,16 @@ pub fn display_environment(display: Option<&DisplayTarget>) -> Vec<(String, Stri
 }
 
 /// The render plan of a session (TASK-080 addendum): the output size of the display target (1920 x 1080 when none is
-/// known) and the Render scale, for the PCSX2 GS. `integrated_gpu` is true when the game renders on an integrated GPU
-/// (issue #89): the untouched default scale then plays at 1x. Never fails: an output the plan refuses falls back to
-/// 1920 x 1080.
-pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool) -> display::DisplayPlan {
+/// known) and the Render scale, for the renderer whose caps are given (`CORE_GS_CAPS`, or the gt4-gs caps of the
+/// installed version). Never fails: an output the plan refuses falls back to 1920 x 1080.
+pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, caps: display::RendererCaps) -> display::DisplayPlan {
     let scale = settings.get("render_scale").parse::<u32>().unwrap_or(display::RENDER_SCALE_DEFAULT);
     let output = display.map(|target| target.output).unwrap_or(display::FALLBACK_OUTPUT);
     let fallback = || {
-        display::display_plan(
-            display::FALLBACK_OUTPUT.width,
-            display::FALLBACK_OUTPUT.height,
-            display::RENDER_SCALE_DEFAULT,
-            display::PCSX2_GS_CAPS,
-        )
-        .expect("1920x1080 at 100% is a valid plan")
+        display::display_plan(display::FALLBACK_OUTPUT.width, display::FALLBACK_OUTPUT.height, display::RENDER_SCALE_DEFAULT, caps)
+            .expect("1920x1080 at 100% is a valid plan")
     };
-    display::display_plan_on(output.width, output.height, scale, display::PCSX2_GS_CAPS, integrated_gpu)
-        .unwrap_or_else(|_| fallback())
+    display::display_plan(output.width, output.height, scale, caps).unwrap_or_else(|_| fallback())
 }
 
 /// The gt4-gs.ini text of a session, rendered from the table (`gs_table::render_ini`, same rules as
@@ -351,23 +371,35 @@ pub fn session_plan(settings: &Settings, display: Option<&DisplayTarget>, integr
 /// fifo writes both true, mailbox writes mailbox false, immediate writes vsync false. `upscale_multiplier` comes from
 /// the session plan ([`session_plan`]); a stored `upscale` value is never used (there is no such setting). With no
 /// display known and Render scale 100% the plan gives 3x, the table default, so that INI is unchanged.
+/// TASK-200: the installed version decides the scale caps — gt4-gs 1.3.0 or newer takes the fractional Render scale
+/// steps and OpenGL (`graphics_api = opengl`); an older one gets whole multipliers and keeps the three APIs.
 pub fn gs_config_text(
     settings: &Settings,
     paths: &Pcsx2Paths,
     display: Option<&DisplayTarget>,
-    integrated_gpu: bool,
 ) -> Result<String, String> {
     let mut user: BTreeMap<String, String> = settings.gs_overrides().clone();
+    // TASK-186: the effect toggles are launcher-only rows (written = "never"): they reach the game as variables, never in
+    // this file, so they are dropped before the table's own refusal sees them.
+    user.retain(|id, _| gs_table::row(id).map(|row| row.written != "never").unwrap_or(true));
     // TASK-108: the Adapter (the chosen graphics card's name) is written by the launcher, not by the table: its row is
     // not settable from a value yet (status resolved). It is added below the table's render, in its section.
     let adapter = user.remove("adapter").filter(|name| !name.is_empty());
-    user.insert("upscale".to_string(), session_plan(settings, display, integrated_gpu).multiplier.to_string());
-    // TASK-118 (owner, 2026-10-26): Performance Mode is a preset. Blending accuracy is not a player row any more:
-    // Minimum with Performance Mode on, High otherwise (Minimum measured about 1.5 ms less per frame on the weak laptop).
+    // TASK-200: gt4-gs 1.3.0 accepts the fractional scales; 1.2.1 refuses them (its allow-list would ignore the line).
+    let extended = paths.version >= crate::releases::RENDERER_FRACTIONAL_MINIMUM;
+    let caps = if extended { display::PCSX2_GS_FRACTIONAL_CAPS } else { display::PCSX2_GS_CAPS };
     user.insert(
-        "blending".to_string(),
-        if settings.gs_value("performance_mode") == "no-readbacks" { "minimum" } else { "high" }.to_string(),
+        "upscale".to_string(),
+        display::multiplier_text(session_plan(settings, display, caps).multiplier),
     );
+    if !extended && user.get("graphics_api").is_some_and(|api| api == crate::gpu::OPENGL_API) {
+        // The table's Automatic value (Renderer 14, Vulkan): the launcher never leaves an unresolved Automatic in the
+        // file at Play, so this only happens after a downgrade to a gt4-gs that has no OpenGL in its allow-list.
+        user.insert("graphics_api".to_string(), crate::gpu::AUTOMATIC.to_string());
+    }
+    // TASK-186 (owner, 2026-11-06): Performance Mode is no longer a preset. Blending accuracy and the Readbacks mode are
+    // player rows of the table now (`blending`, `hw_download_mode`), written by the table writer like every other row; no
+    // effect toggle writes either, so an effect that is on is never broken.
     let present = match settings.get("vsync") {
         "fast" => "mailbox",
         "off" => "immediate",
@@ -441,6 +473,15 @@ pub fn standalone_config_text(settings: &Settings, display: Option<&DisplayTarge
     text
 }
 
+/// TASK-181: the `game.ini` line of the racing wheel file, `wheel_file=<path>` (the game sets `GT4_WHEEL_FILE` from it on
+/// a direct start). The launcher adds it only when `wheel.toml` exists; at Play it passes `GT4_WHEEL_FILE` itself.
+pub fn wheel_file_line(path: &std::path::Path) -> String {
+    format!("{STANDALONE_WHEEL_KEY}={}\n", path.display())
+}
+
+/// The `game.ini` key of [`wheel_file_line`].
+pub const STANDALONE_WHEEL_KEY: &str = "wheel_file";
+
 /// TASK-148: the `GT4_PAD` value of the chosen controller (`controller::PadChoice` text), `None` while none is stored.
 pub fn controller_environment(settings: &Settings) -> Option<String> {
     let value = settings.get("controller");
@@ -451,21 +492,26 @@ pub fn controller_environment(settings: &Settings) -> Option<String> {
 /// it and the game gets it as SDL_GAMECONTROLLERCONFIG_FILE: a mapping there makes a controller SDL3 does not know usable.
 pub const GAMEPAD_MAPPINGS_FILE: &str = "gamecontrollerdb.txt";
 
-/// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_performance`, `hw_textures`,
-/// `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`, `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its variable in [`coregs20_environment`], and
-/// `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps its `present_mode`).
-pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, integrated_gpu: bool, textures: &TextureLocation) -> String {
+/// The `game.ini` keys of a CoreGS 2.0 choice: `renderer=coregs20`, then `hw_scale`, `hw_effect_flares`,
+/// `hw_effect_road_sheen`, `hw_effect_targets`, `hw_textures`, `hw_frame_skip`, `hw_frame_skip_adaptive`, `hw_hud`,
+/// `hw_present_shared_queue` (written only when off), `hw_postfx`, `hw_sharpening` and `hw_adapter`, each standing for its
+/// variable in [`coregs20_environment`], and `hw_present_mode=fifo` over a stored "Fast" vsync (only here, so GSdx keeps
+/// its `present_mode`).
+pub fn coregs20_section(settings: &Settings, display: Option<&DisplayTarget>, textures: &TextureLocation) -> String {
     let mut text = String::from("renderer=coregs20\n");
     if settings.get("vsync") == "fast" {
         text.push_str("hw_present_mode=fifo\n");
     }
-    for (name, value) in coregs20_environment(settings, display, integrated_gpu, textures) {
+    for (name, value) in coregs20_environment(settings, display, textures) {
         let key = match name.as_str() {
             "GT4_HW_SCALE" => "hw_scale",
-            "GT4_CORE2_PERFORMANCE" => "hw_performance",
+            "GT4_CORE2_PERF_FLARES" => "hw_effect_flares",
+            "GT4_CORE2_PERF_ROAD_SHEEN" => "hw_effect_road_sheen",
+            "GT4_CORE2_EFFECTS_1X" => "hw_effect_targets",
             "GT4_FRAME_SKIP_FORCE" => "hw_frame_skip",
             "GT4_FRAME_SKIP" => "hw_frame_skip_adaptive",
             "GT4_HW_HUD" => "hw_hud",
+            "GT4_HW_PRESENT_SHARED_QUEUE" => "hw_present_shared_queue",
             "GT4_HW_TEXTURES" => "hw_textures",
             "GT4_HW_POSTFX" => "hw_postfx",
             "GT4_CORE2_FSR_SHARPNESS" => "hw_sharpening",
@@ -531,11 +577,10 @@ pub fn plan_coregs20_launch(
     inputs: &LaunchInputs<'_>,
     settings: &Settings,
     display: Option<&DisplayTarget>,
-    integrated_gpu: bool,
     textures: &TextureLocation,
     inherited_names: &[String],
 ) -> LaunchPlan {
-    let environment = coregs20_environment(settings, display, integrated_gpu, textures);
+    let environment = coregs20_environment(settings, display, textures);
     plan_with(inputs, with_display(environment, display), inherited_names)
 }
 

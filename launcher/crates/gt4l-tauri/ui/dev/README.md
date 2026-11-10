@@ -17,12 +17,14 @@ Scripts are classic (not modules) so the pages also open from `file://`.
 | `js/settings-model.js` | Pure settings row model: visibility, the row after a change, the Saves/Replays entry, the newest-read gate (`GT4.settingsModel`) |
 | `js/nav.js` | Keyboard, the pad's `pad-nav` and `pad-live` events (SDL3 in Rust), focus ring |
 | `js/controller-svg.js` | GT4Recomp's own DualShock 2 drawing (no Sony artwork): buttons, chips, live state, nearest-button pick |
+| `js/wheel-model.js` | Pure Wheel rules (TASK-181, `GT4.wheelModel`): the DFP controls and the `wheel.toml` slot each writes, the set-up wizard's steps, sources (parse, describe, pressed with the game's thresholds), the steering angle (position times half the lock-to-lock range), the pedal travel and the byte the game gets (`read_pedal`), bound counts, the "force feedback received" line |
+| `js/wheel-svg.js` | GT4Recomp's own racing wheel and pedals drawing (no vendor artwork): the wheel turns at its real angle, the pedals show the raw travel and the game's value, one focusable chip per control (`GT4.wheelSvg`) |
 | `js/controls-model.js` | Pure Controls rules: live state from the pad-live shape and keys, the fixed keyboard layout, trigger output, key names, conflicts, chip labels (`GT4.controlsModel`). The Gamepad-object helpers (`padLive`, `padSummary`) are for the dev mock only |
 | `js/i18n.js` | Translations (TASK-102): `GT4.t(key, params)`, the language rule (`GT4.i18n.resolve`), `setSetting`, `onChange`. The files are `locales/` |
 | `locales/index.json`, `locales/<tag>.json` | The languages (the Settings list) and their texts; en-US is the fallback. See `docs/TRANSLATING.md` |
 | `js/config.js` | Feature flags (`mods` off for release 1.0.0) |
 | `js/app.js` | Router (`#/setup`, `#/home`, `#/settings/<tab>`) and boot |
-| `js/pages/*.js` | Setup, Home, Settings shell and rows, Saves and Replays, Controls |
+| `js/pages/*.js` | Setup, Home, Settings shell and rows, Saves and Replays, Controls, Wheel (`wheel.js`, TASK-181) |
 | `assets/` | Fonts (Roboto, Roboto Condensed), `cover-front.png`, `logo-gt4.png` |
 | `dev/index.html` | Dev entry: same app with `dev/mock-data.js` (plain browser) |
 | `dev/mock-data.js` | Mock command layer; sample values only, not game data |
@@ -59,6 +61,20 @@ Arguments are the payload object shown. Errors are strings or Error objects; the
 | `assign_binding` | `{control, source, swap}` | the `get_controls` view plus `swapped_with` (the other button or null) and `unchanged`. `source` replaces the button's source of the same family (`xinput:` or `key:`). When another button has it, `swap: true` gives that button the previous source (or removes it there when there was none) and `swap: false` is refused. The file is written at once |
 | `reset_binding` | `{control}` | none; one button back to its built-in sources |
 | `reset_all_bindings` | none | the `get_controls` view; every button, trigger and stick setting back to the built-in mapping |
+| `get_wheel_config` | none | the Wheel view (TASK-181, `src/wheel_page.rs`): `{config, slots, families, pedal_modes, curves, file, status, presets, game_running, taken_from, applied_preset}`. `config` is `wheel.toml` (`gt4l_core::wheel::WheelConfig`: `version, enabled, device_guid, device_name, preset, steering{source, rotation_degrees, invert}, throttle/brake/handbrake/clutch{source, mode, deadzone, saturation, curve}, ffb{enabled, strength, damper, invert, centering_spring}, buttons{slot: [source]}`); `slots` the 16 `[buttons]` keys with the DFP control each presses (`r2` is gear up, the DFP's R1); `file` `{state: missing|loaded|migrated|refused|newer, detail, exists, locked}`; `status` the last `wheel-status` payload; `applied_preset` the shipped preset the launcher applied by itself (TASK-189: `"Logitech G27"`, or null) |
+| `set_wheel_setting` | `{key, value}` | the Wheel view. Keys: `wheel.device_guid` (and `wheel.enabled`, which the page no longer offers: Play sets it from the wheel connected, TASK-189), `wheel.device_name`, `wheel.preset`, `steering.rotation_degrees` (180..1080), `steering.invert`, `<pedal>.mode`, `<pedal>.deadzone` (0..0.45), `<pedal>.saturation` (0.20..1.0, a dead zone and a saturation move each other to stay 0.05 apart), `<pedal>.curve`, `ffb.enabled`, `ffb.strength` (0..2), `ffb.damper` (0..1), `ffb.invert`, `ffb.centering_spring` (`"off"` or `"game"`, TASK-194). The file is validated with the game's rules and written at once; a refused value keeps the file and returns the reason |
+| `apply_wheel_preset` | `{name, saved?, guid?}` | the Wheel view: a family template (`logitech_legacy`, `logitech_ps`...; `guid` makes that device the wheel the game drives) or, with `saved`, a named preset. The wheel stays on or off |
+| `assign_wheel_binding` | `{target, source, mode?, add?}` | the Wheel view plus `taken_from` (the slots that lost the source: one wheel control presses one DFP button). `target` is `steering`, a pedal or a `[buttons]` slot; `mode` the pedal mode the capture found; `add` keeps the slot's other sources (at most 3) |
+| `reset_wheel_binding` | `{target, clear}` | the Wheel view; `clear` unbinds, else the family template's value |
+| `reset_wheel_config` | none | the Wheel view; everything back to the game's defaults, the wheel off |
+| `capture_wheel_binding` | `{target, phase?, axis?}` | `{target, source, mode, rest, value, device_name, guid}`: the next control the player moves on the wheel or an auxiliary device (SDL3, in the pad service). Steering: an axis (`phase: right` with `axis` waits for that axis only); a pedal: an axis with its polarity from rest and pressed, or a button; a button: a new button, hat direction or axis past the game's threshold (`axis:N+`/`-`). The steering and pedal axes never count for a button; held controls never count; a device other than the wheel gets `dev:<guid>:`. Binds nothing. Refused while the game runs |
+| `cancel_wheel_capture` | none | none |
+| `test_wheel_ffb` | none | `{device_name, has_ffb, features: {constant, spring, damper, friction, gain, autocenter}, played, error}`: one haptic handle, opened for the test and closed right after; a constant pull one way, then the other (0.4 s each, a quarter of full force times the strength). Never SDL rumble. Refused while the game runs |
+| `wheel_watch` | `{on}` | the last `wheel-status` payload. `on: true` (the page renews it every 2 s) opens the Wheel page's devices and sends `wheel-live`; `false` closes them |
+| `get_wheel_session_check` | none | the newest game session's wheel lines (`gt4l_core::wheel_session`): `{found, session, modified, wheel_file, enabled, preset, refused, devices, ffb_device, no_ffb, dfp_configured, summary, received: yes|no|unknown, reason}` |
+| `list_wheel_presets` | none | `[{name, device_name, preset, problem}]` (`config\wheel-presets\<name>.toml`, the `wheel.toml` format) |
+| `save_wheel_preset` | `{name}` | the list; letters, digits, spaces and `- _ ( ) . +`, at most 48 characters |
+| `delete_wheel_preset` | `{name}` | the list (the page asks first) |
 | `saves_list` | none | `{items: [{id, name, modified, active}]}` |
 | `saves_import` | `{game}` | `{items, game, gameName, status, folder}` of the page's game, or `null` when the picker is cancelled. `game` is required: a save file does not say which game it is from (`gt4saves::game_of_save` finds no rule), so the page asks first and a call without it is refused |
 | `games_list` | none | `{selected, any_installed, games: [{id, name, installed, damaged, reason, selected, disc_name, folder, size_bytes, image_path, image_bytes}]}` (TASK-101) |
@@ -133,7 +149,10 @@ Pad events (from the Rust pad service, `src/pad_service.rs`, SDL3; read in `js/n
 | `pad-live` | `{sources, sticks}` | about 60 times a second while a pad is connected and the window is shown. `sources` maps each controls-file source (`xinput:A`, `xinput:LT`...) to its pressure 0..1; `sticks.left` and `sticks.right` are `{x, y}` in -1..1 with y positive down |
 | `pad-nav` | `{name}` | a press for navigation: `a b x y lb rb start` once, and `up down left right` with repeat (first press at once, after 420 ms, then every 110 ms while held; the left stick past half deflection counts as a direction) |
 
-The pad service does no SDL work while the window is hidden for a game (the tray hides it on Play).
+| `wheel-status` | `{available, error, game_running, watching, primary, configured, configured_connected, devices}` | TASK-181, on change: the wheels and auxiliary joysticks (gamepads belong to Controls). A device is `{id, guid, name, vid_pid, sdl_type, is_gamepad, role: wheel|other_wheel|auxiliary, axes, buttons, hats, haptic, features, family, family_name, model, matched_by, software, direct_drive, force_feedback, notes}` (counts and `haptic` are `null` until the live view opened the device, `features` until a force test ran); `primary` is the device the game drives (the configured GUID, else the first wheel) |
+| `wheel-live` | `{devices: [{id, guid, axes, pressed, hats}]}` | about 60 Hz while the Wheel page asks (`wheel_watch`) and the game is not running; `pressed` lists the buttons down |
+
+The pad service does no SDL work while the window is hidden for a game (the tray hides it on Play). TASK-181: Play first closes every SDL joystick, gamepad and haptic handle (SDL shuts down, `pad_service::Handle::release_for_game`) so the game owns the wheel and its force feedback; SDL starts again when the window shows, without any racing wheel while the game still runs.
 
 Other Tauri events from Rust (listened to in `js/app.js`, popup code in `js/updates.js`):
 
@@ -168,6 +187,8 @@ Focus moves spatially (nearest element in the pressed direction; sideways offset
 | Replays | none | Back | Import | Delete (confirm) | none | tabs | none |
 | Controls (on the drawing) | rebind the focused DS2 button | Back to the tab list | Reset all (asks first) | Reset this button | none | tabs | D-pad and stick move between DS2 buttons by position |
 | Rebind overlay | none | cancel (Esc too); every other pad button or key is the new binding | none | none | none | none | none (navigation is suspended) |
+| Wheel (on the chips) | bind the focused control (a capture) | Back to the tab list | Set up the wheel (the wizard) | Clear this control | none | tabs | D-pad and stick move between the chips by position |
+| Wheel wizard | none | skip the step (Esc too) | back a step (only when the wheel is not itself a gamepad) | stop (same) | none | none | none |
 | Conflict dialog | Swap (or Move) / Cancel | cancel | none | none | none | none | move between the two buttons |
 | Dialog (list, confirm) | activate | close | none | none | none | none | none |
 
@@ -179,6 +200,7 @@ Routing of the face and shoulder buttons lives in `GT4.input.padRoute` (`js/inpu
 ## Touch
 
 - Every target is at least 48 x 48 CSS px (the visuals stay small; the hit area is padded). `pointer: coarse` adds a little spacing.
+- An option row (`< value >`) changes only through its arrows with a finger or a mouse: 44 x 44 px per arrow on touch and 32 x 32 px with a mouse, drawn invisibly around the same 24 px glyph box. A tap or click on the row's label or on the value changes nothing (TASK-193); the pad and the keyboard keep left/right and A.
 - Nothing depends on hover. A help "i" opens on tap and closes on a second tap or a tap outside. Focus shows it for keys and pad only.
 - Sliders drag with touch (pointer events with capture; `touch-action: pan-y`). Dropdowns open as a list.
 - Long lists (settings, saves, replays) scroll with a finger and do not chain the scroll to the page.
@@ -212,6 +234,29 @@ Settings focus: moving the highlight over the tab list (up and down) only previe
 - **Saving.** Every change writes `controls.toml` at once (no Save). A refused change or a failed write keeps the old file and shows the reason. The info "i" says that this game build still uses the built-in mapping; the bindings apply from the next game build.
 Mouse use hides the focus ring. A pad or key press brings it back.
 
+## Wheel page
+
+TASK-181 (owner, 2026-11-05: the native Driving Force Pro path only). GT4 sees a virtual Logitech Driving Force Pro (DFP) on
+its USB port and runs its own wheel driver and force feedback; the page writes `wheel.toml` beside `controls.toml`
+(`gt4l_core::wheel`, validated with the game's parser rules before every write) and Play passes `GT4_WHEEL_FILE`. The base is
+the 1.2.5 launcher's wheel page by JulioHeroZ, with luanantony (commit cbfd8b8), without its DualShock 2 bridge.
+
+- **Drawing** (`js/wheel-svg.js`): the wheel turns at its real angle (position times half the rotation: a 900-degree wheel
+  reads up to 450 degrees each way) with the readout and a bar; the accelerator, brake, clutch and handbrake show the raw
+  travel (grey) and what the game gets (colour). Each control has a chip (the focus target); a pressed control lights its
+  chip and its button on the wheel; leader lines fade while the wheel is turned.
+- **Panel**: the wheel card (name, family and model, USB ID, SDL type, force feedback, the hints: Logitech compatibility mode,
+  Thrustmaster and G920 start-up modes, Fanatec console mode, "set 900 degrees in <software>", the wheel the game uses when
+  several are connected); the selected control (bind, clear; a pedal's direction, dead zone, saturation and curve with a
+  live meter; the steering's rotation with the not-900 warning, and reverse); force feedback (on, strength, damping, reverse,
+  Test force, "force feedback in the last game" from the newest session log); presets (save, load, delete, reset).
+- **Set up the wheel** (X): applies the family template (`gt4l_core::wheel_identity`: VID:PID, then name, then SDL type;
+  only Confirmed or High indices are pre-filled) and asks, one step at a time, steering left and right (the axis and its
+  direction), the accelerator, brake and clutch (axis and polarity), then every DFP button. B skips a step; the summary turns
+  the wheel on and offers a preset.
+- Settings that mean nothing for the DFP are not shown (no pedal routing onto the DualShock 2, no steering sensitivity,
+  linearity, dead zone or effective degrees, no centring spring, curb rumble or rumble).
+
 ## Mock data and browser preview
 
 The locale files load over HTTP (not `file://`): serve `ui/` with any static server and open `dev/index.html`, for example
@@ -223,8 +268,24 @@ GSdx missing (`?gsdx=missing|offline`): choosing GSdx in Settings opens the down
 
 Language (TASK-102): `?lang=pt-BR` or `?lang=en-US` sets the language (and the Settings value); `?os=pt-BR` sets only the OS language, so Auto follows it. Without either, Auto follows the browser. Query options: `?setup=done|needed|wrong|copying|preparing|renderer|failed|missing|offline` (default `done`), `&pick=spec` (the mock picker returns a refused Spec II image), `&running=1`, `&focus=play` (home only: focus the Play button, for screenshots), `&focus=content` (Settings: enter the tab).
 
+Wheel (dev only, TASK-181): `&wheel=g27|unknown|both|none` (a G27, an unknown wheel, both with separate pedals, or none),
+`&wheelcfg=fresh` (no `wheel.toml` yet: the controls are unassigned, and a G27 gets the shipped preset like the launcher does), `&wheelpreset=0` (the shipped preset off, for the unassigned case), `&wheelfile=migrated|refused|newer`, `&steer=90` (degrees), `&thr=0.6&brk=0.3&clu=0`
+(pedal travel), `&wbtn=0,4` (buttons down), `&what=1` (hat bits), `&wheelmove=1` (the wheel and pedals move by themselves),
+`&session=yes|no|unknown|off|none`, `&ffbtest=noffb`, `&capture=hold` (a capture waits), `&wizard=1&wizardstep=8` (the
+wizard open at a step), `&wheelselect=throttle`, `&wheelpanel=ffb` (the panel at force feedback), `&presets=1`. Example, the
+G27 at +90 degrees with the pedals pressed: `dev/index.html?lang=pt-BR&focus=content&steer=90&thr=0.6&brk=0.25#/settings/wheel`.
+
 Controls (dev only): `&pad=A,LB,DpadRight` (pressed XInput names of a still dev pad; the mock sends them as `pad-live` events, the same shape as the Rust service), `&lt=0.6&rt=0.2` (trigger values), `&lx=0.7&ly=-0.45&rx=&ry=` (stick axes, y down), `&pads=2` (a second pad), `&nopad=1` (no controller), `&select=circle`, `&mode=key` (Keyboard chips), `&remap=1` (a few changed buttons), `&locked=1` (read-only file), `&capture=hold` (the rebind overlay stays open, still countdown) or `&capture=conflict` (the capture returns LB, so the conflict dialog opens). Example, the live-input screenshot: `dev/index.html?focus=content&pad=A,LB,DpadRight,Start&lt=0.6&rt=0.15&lx=0.75&ly=-0.5&rx=-0.45&ry=0.7#/settings/controls`. Screenshots: headless Edge with `--force-prefers-reduced-motion` (`docs/launcher/shots/controls-v2-*.png`).
 
-`dev/nav-test.html` checks the spatial picker, the swipe, stick and slider rules, the face-button routing, the two focus levels and the settings row model in a browser. It also checks the Controls model (live state from the pad-live shape, swaps, keys and the fixed keyboard layout, trigger output, key names, conflicts, chip labels, pad summary) and spatial moves between DS2 buttons on the drawing's own layout. It should report every case passed (150 of 150 at the time of writing).
+`dev/nav-test.html` checks the spatial picker, the swipe, stick and slider rules, the face-button routing, the two focus levels and the settings row model in a browser. It also checks the Controls model (live state from the pad-live shape, swaps, keys and the fixed keyboard layout, trigger output, key names, conflicts, chip labels, pad summary) and spatial moves between DS2 buttons on the drawing's own layout. It also checks the Wheel model (TASK-181: the real angle, the pedal byte, pressed sources with the game's thresholds,
+`dev:` devices, the wizard's steps and slots). It also checks the pointer rule of an option row (TASK-193: a keyboard click
+steps, a mouse or finger click does not). It should report every case passed (265 of 265 at the time of writing).
 
-`dev/focus-check.html` runs the DOM-level checks on the same mock (headless Edge, `--virtual-time-budget=60000`): the sidebar highlight over every tab with arrow keys, entering and leaving each tab, the Saves and Replays entry, no Save hint, that no aspect or internal-resolution row is shown, that the Render scale readout follows a step and the chosen Resolution, that a changed resolution (Display section), toggle or slider shows its new value, the three sections of Graphics in order (no Display or Advanced tab, both routes fall back to Graphics, Monitor first, the D-pad walk from Display through Graphics to Reset to defaults), and the Controls page: entry on Cross, D-pad moves between DS2 buttons with the selection following, rebind and cancel (Esc), Enter not taken as the new key, the conflict dialog from a pad button (the mock answers RB; cancel, then Swap with the chips updated), live input from a still dev pad (Cross lit, L2 at 60%, the stick at its position, the pad name, no focus move), Y reset and X reset all. `body[data-focus-check]` is `pass` when all 100 checks pass. `&scenario=4k` only sets the state for the screenshot (Render scale at 200%; `docs/launcher/shots/graphics-4k-updated.png`); `docs/launcher/shots/display-monitor-resolution.png` is `dev/index.html?focus=content#/settings/graphics` (the Display section at the top of Graphics).
+`dev/focus-check.html` runs the DOM-level checks on the same mock (headless Edge, `--virtual-time-budget=60000`): the sidebar highlight over every tab with arrow keys, entering and leaving each tab, the Saves and Replays entry, no Save hint, that no aspect or internal-resolution row is shown, that the Render scale readout follows a step and the chosen Resolution, that a changed resolution (Display section), toggle or slider shows its new value, the three sections of Graphics in order (no Display or Advanced tab, both routes fall back to Graphics, Monitor first, the D-pad walk from Display through Graphics to Reset to defaults), and the Controls page: entry on Cross, D-pad moves between DS2 buttons with the selection following, rebind and cancel (Esc), Enter not taken as the new key, the conflict dialog from a pad button (the mock answers RB; cancel, then Swap with the chips updated), live input from a still dev pad (Cross lit, L2 at 60%, the stick at its position, the pad name, no focus move), Y reset and X reset all, and the Wheel page (TASK-181, TASK-189: entry on the steering chip, chip moves with the panel following, the
+wheel at +90 degrees and the accelerator at 60% from a still dev wheel, bind and cancel, one click on a chip opening the popup,
+Clear in the popup, clear and bind again, a pedal's dead zone step, the not-900 warning, Test force, "received", the whole
+wizard to its summary, a preset, no "Your wheel" card and no on/off switch, the shipped preset announced), and the pointer
+rule of the option rows (TASK-193: a click on the row's label or value changes nothing, the left arrow steps back and the
+right arrow forward, the arrows are 32 x 32 px with a mouse and 44 x 44 px on touch, the keyboard, the pad and A keep
+stepping; checked on Graphics and on a Wheel card). `body[data-focus-check]` is
+`pass` when every check passes (392 in en-US and 399 in pt-BR at the time of writing). `&scenario=4k` only sets the state for the screenshot (Render scale at 200%; `docs/launcher/shots/graphics-4k-updated.png`); `docs/launcher/shots/display-monitor-resolution.png` is `dev/index.html?focus=content#/settings/graphics` (the Display section at the top of Graphics).

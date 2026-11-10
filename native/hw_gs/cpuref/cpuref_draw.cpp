@@ -500,7 +500,8 @@ void DrawPoint(DrawContext& d, const Vertex& v, const PixelRect& rect) {
 // Builds the texture unit from TEX0, TEX1, CLAMP, TEXA and the palette (01.1, 07.5). Returns
 // false when the texture cannot be used: invalid format or an axis above 1024 texels without
 // a region mode (01.5, IN-307).
-bool BuildTexture(const BatchState& state, const clut::ClutUnit& clut, TextureUnit& out) {
+bool BuildTexture(const Batch& batch, const clut::ClutUnit& clut, TextureUnit& out) {
+    const BatchState& state = batch.state;
     const uint64_t tex0Register = state.ctx.tex0;
     const uint64_t tex1Register = state.ctx.tex1;
     const uint64_t clampRegister = state.ctx.clamp;
@@ -529,7 +530,8 @@ bool BuildTexture(const BatchState& state, const clut::ClutUnit& clut, TextureUn
     out.tfx = static_cast<pixel::Tfx>(tex0::Tfx(tex0Register) & 3u);
     out.texa = clut::TexaState::FromRegister(state.env.texa);
     if (out.cls == TexClass::Indexed) {
-        out.palette = clut.Decode(psmCode, tex0::Cpsm(tex0Register), tex0::Csa(tex0Register), state.env.texa);
+        // TASK-168: the first palette segment's (the CLUT unit's buffer for a batch without segments).
+        out.palette = DecodeSegmentPalette(batch, 0, clut);
     }
     return true;
 }
@@ -642,13 +644,25 @@ void DrawBatch(const Batch& batch, memory::LocalMemory& local, const clut::ClutU
     d.texture.enabled = tme;
     if (tme) {
         d.texture.fst = ((prim >> primbit::kFst) & 1u) != 0;
-        if (!BuildTexture(state, clut, d.texture)) {
+        if (!BuildTexture(batch, clut, d.texture)) {
             stats.primitivesSkippedTexture += batch.prims.size();
             return;
         }
     }
 
-    for (const PrimRecord& record : batch.prims) {
+    // TASK-168: each palette segment's primitives draw with that segment's palette.
+    const bool indexed = tme && d.texture.cls == TexClass::Indexed;
+    uint32_t segment = 0;
+    uint32_t segmentEnd = PaletteSegmentEndPrim(batch, 0);
+    for (uint32_t primIndex = 0; primIndex < batch.prims.size(); ++primIndex) {
+        const PrimRecord& record = batch.prims[primIndex];
+        if (primIndex >= segmentEnd && segment + 1u < PaletteSegmentCount(batch)) {
+            while (primIndex >= segmentEnd && segment + 1u < PaletteSegmentCount(batch)) {
+                ++segment;
+                segmentEnd = PaletteSegmentEndPrim(batch, segment);
+            }
+            if (indexed) d.texture.palette = DecodeSegmentPalette(batch, segment, clut);
+        }
         stats.primitives++;
         if (record.rect.Empty()) {
             continue;

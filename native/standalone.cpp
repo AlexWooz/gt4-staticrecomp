@@ -365,6 +365,8 @@ Config parse_config(std::string_view text) {
       valid = (value.size() == 1 && value[0] >= '1' && value[0] <= '9') || value == "10" || value == "11" || value == "12";
     } else if (key == "hw_performance") {
       valid = value == "1";
+    } else if (key == "hw_effect_flares" || key == "hw_effect_road_sheen" || key == "hw_effect_targets") {
+      valid = value == "0" || value == "1";  // TASK-186: the effect toggles (1 = drawn / 1x, the launcher's choice)
     } else if (key == "hw_frame_skip") {
       valid = value == "2";  // the 30 FPS mode: one frame drawn in two
     } else if (key == "hw_frame_skip_adaptive") {
@@ -376,7 +378,9 @@ Config parse_config(std::string_view text) {
     } else if (key == "trigger_full_range") {
       valid = value == "0" || value == "1";  // TASK-161: the full trigger range (absent = 0, the launcher's toggle)
     } else if (key == "hw_hud") {
-      valid = value == "1";  // TASK-135: the performance HUD
+      valid = value == "1" || value == "fps";  // TASK-135, TASK-175: the performance HUD, the full panel or the frame rate alone
+    } else if (key == "hw_present_shared_queue") {
+      valid = value == "0";  // TASK-174: the launcher writes it only when the one-queue presentation path is off
     } else if (key == "hw_postfx") {
       valid = value == "fxaa";
     } else if (key == "hw_present_mode") {
@@ -385,6 +389,8 @@ Config parse_config(std::string_view text) {
       valid = value == "0" || value == "0.2" || value == "2";
     } else if (key == "hw_textures" || key == "hw_adapter") {
       valid = !value.empty();  // a folder or a card name: any text the launcher wrote
+    } else if (key == "wheel_file") {
+      valid = !value.empty();  // TASK-181: the launcher's wheel.toml (the Wheel page), as GT4_WHEEL_FILE at Play
     } else {
       config.warnings.push_back("game.ini: unknown key '" + key + "' ignored");
       continue;
@@ -439,6 +445,7 @@ Environment config_environment(const Config &config) {  Environment out;
   if (const auto *value = get("camera_360")) out.emplace_back("GT4_CAMERA_360", *value);
   if (const auto *value = get("fov_adjust")) out.emplace_back("GT4_FOV_ADJUST", *value);
   if (const auto *value = get("trigger_full_range")) out.emplace_back("GT4_TRIGGER_FULL_RANGE", *value);
+  if (const auto *value = get("wheel_file")) out.emplace_back("GT4_WHEEL_FILE", *value);
   if (const auto *value = get("async_gs"); value && *value == "0") out.emplace_back("GT4_GS_SYNC", "1");
   if (const auto *value = get("performance_report"); value && *value == "1") out.emplace_back("GT4_PERF", "1");
   if (const auto *value = get("check_vu_code"); value && *value != "0") {
@@ -473,6 +480,9 @@ Environment coregs20_environment(const Config &config) {
   Environment out = {{"GT4_RENDERER", "hw"}, {"GT4_HW_CORE", "2"}};
   for (const auto &[key, name] : {std::pair<const char *, const char *>{"hw_scale", "GT4_HW_SCALE"},
                                   {"hw_performance", "GT4_CORE2_PERFORMANCE"},
+                                  {"hw_effect_flares", "GT4_CORE2_PERF_FLARES"},
+                                  {"hw_effect_road_sheen", "GT4_CORE2_PERF_ROAD_SHEEN"},
+                                  {"hw_effect_targets", "GT4_CORE2_EFFECTS_1X"},
                                   {"hw_frame_skip", "GT4_FRAME_SKIP_FORCE"},
                                   {"hw_frame_skip_adaptive", "GT4_FRAME_SKIP"},
                                   {"hw_hud", "GT4_HW_HUD"},
@@ -480,6 +490,7 @@ Environment coregs20_environment(const Config &config) {
                                   {"hw_postfx", "GT4_HW_POSTFX"},
                                   {"hw_sharpening", "GT4_CORE2_FSR_SHARPNESS"},
                                   {"hw_present_mode", "GT4_PRESENT_MODE"},
+                                  {"hw_present_shared_queue", "GT4_HW_PRESENT_SHARED_QUEUE"},
                                   {"hw_adapter", "GT4_HW_ADAPTER"}}) {
     const auto it = config.values.find(key);
     if (it != config.values.end()) out.emplace_back(name, it->second);

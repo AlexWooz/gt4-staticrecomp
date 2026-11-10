@@ -22,6 +22,8 @@ use gt4l_core::launch;
 use gt4l_core::games::{self, Game, GT4};
 use gt4l_core::paths::{self, DataDirs, UserDirs};
 use gt4l_core::textures::{self, TextureLocation};
+use gt4l_core::log_export::WheelFact;
+use gt4l_core::wheel::{self, LoadState, WheelConfig};
 use gt4l_disc::setup as disc_setup;
 use gt4l_disc::spec2 as disc_spec2;
 use gt4l_disc::{DiscGame, Pins, Spec2Pins};
@@ -81,6 +83,17 @@ pub struct AppState {
     /// True when the controls file was written by a newer launcher: it is kept as it is (never overwritten).
     pub controls_locked: bool,
     pub ra_revision: u64,
+    /// TASK-181: the racing wheel configuration (`wheel.toml`, the game's virtual Driving Force Pro).
+    pub wheel: WheelConfig,
+    /// What loading `wheel.toml` found at start (missing, read, migrated, refused, newer).
+    pub wheel_load: LoadState,
+    /// True when `wheel.toml` was written by a newer launcher: it is kept as it is (never overwritten).
+    pub wheel_locked: bool,
+    /// TASK-189: the shipped preset the launcher applied by itself (its name), so the page can say so plainly. Cleared by
+    /// a reset or by loading another preset.
+    pub wheel_applied_preset: Option<String>,
+    /// The connected wheels for `system.txt`, kept up to date by the pad service.
+    pub wheel_facts: Vec<WheelFact>,
     /// Discord Rich Presence manager for the current launcher session.
     pub discord: Arc<DiscordPresence>,
 }
@@ -236,6 +249,7 @@ impl AppState {
                 Controls::default()
             }
         };
+        let (wheel_config, wheel_load) = load_wheel(&dirs, &user.wheel_file());
         let mut libraries = BTreeMap::new();
         let mut library_notice = None;
         for game in games::GAMES {
@@ -277,6 +291,11 @@ impl AppState {
             replays_status: String::new(),
             controls_locked,
             ra_revision: 0,
+            wheel_locked: matches!(wheel_load, LoadState::Newer(_)),
+            wheel_applied_preset: None,
+            wheel: wheel_config,
+            wheel_load,
+            wheel_facts: Vec::new(),
             discord: Arc::new(DiscordPresence::new_default()),
         };
         // TASK-118: the RC settings must not survive into a final build: an RC install can leave the release report or
@@ -380,8 +399,12 @@ impl AppState {
         let game_ini = config_dir.join(launch::STANDALONE_CONFIG_FILE);
         let mut text = launch::standalone_config_text(settings, display.as_ref());
         if settings.get("renderer") == gt4l_core::settings::CORE_GS_20 {
-            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
-            text.push_str(&launch::coregs20_section(settings, display.as_ref(), integrated, &self.texture_location().0));
+            text.push_str(&launch::coregs20_section(settings, display.as_ref(), &self.texture_location().0));
+        }
+        // TASK-181: a direct start finds the racing wheel file through game.ini (only when the file exists).
+        let wheel_path = self.wheel_path();
+        if wheel_path.exists() {
+            text.push_str(&launch::wheel_file_line(&wheel_path));
         }
         if let Err(error) = fs::create_dir_all(&config_dir).and_then(|()| write_text_atomic(&game_ini, &text)) {
             log_error(&self.dirs, &format!("{} not written: {error}", game_ini.display()));
@@ -390,8 +413,7 @@ impl AppState {
         let renderer_root = self.dirs.renderer_root();
         if let Some(installed) = gs_release::installed(&renderer_root) {
             let paths = launch::Pcsx2Paths::for_session(&installed, &self.dirs.renderer_install_root(), &config_dir, &self.texture_location().0.folder);
-            let integrated = gt4l_platform::gpu::integrated_gpu_name(settings.get("graphics_card")).is_some();
-            match launch::gs_config_text(settings, &paths, display.as_ref(), integrated) {
+            match launch::gs_config_text(settings, &paths, display.as_ref()) {
                 Ok(text) => {
                     if let Err(error) = gs_table::write_ini_atomic(&paths.config, &text) {
                         log_error(&self.dirs, &format!("{} not written: {error}", paths.config.display()));
@@ -406,6 +428,16 @@ impl AppState {
     /// `controls_locked` is set and keeps the change only when the write succeeded.
     pub fn controls_path(&self) -> PathBuf {
         self.user_dirs.controls_file()
+    }
+
+    /// TASK-181: the racing wheel file, beside the controls file (the game looks there without `GT4_WHEEL_FILE`).
+    pub fn wheel_path(&self) -> PathBuf {
+        self.user_dirs.wheel_file()
+    }
+
+    /// TASK-181: the folder of the named wheel presets.
+    pub fn wheel_presets_dir(&self) -> PathBuf {
+        self.user_dirs.wheel_presets()
     }
 
     pub fn disc_path(&self) -> Option<&Path> {
@@ -425,6 +457,40 @@ fn controls_schema_is_newer(text: &str) -> bool {
         .ok()
         .and_then(|table| table.get("schema").and_then(|value| value.as_integer()))
         .is_some_and(|schema| schema > 1)
+}
+
+/// TASK-181: reads `wheel.toml` at start. A 1.2.x or `mode = "pad"` file is migrated and written again at once as a
+/// Driving Force Pro file (the game refuses `pad`); a file the game refuses gets a copy beside it and the defaults are
+/// used (the wheel off) until the player changes something; a newer file is kept as it is.
+fn load_wheel(dirs: &DataDirs, path: &Path) -> (WheelConfig, LoadState) {
+    let loaded = wheel::load(path);
+    match &loaded.state {
+        LoadState::Missing => {}
+        LoadState::Loaded => log(dirs, &format!("wheel: {} read (enabled {}, preset {})", path.display(), loaded.config.enabled, loaded.config.preset)),
+        LoadState::Migrated(why) => match loaded.config.save_atomic(path) {
+            Ok(()) => log(dirs, &format!("wheel: {} migrated to the Driving Force Pro file: {why}", path.display())),
+            Err(error) => log_error(dirs, &format!("wheel: {} not migrated ({why}): {error}", path.display())),
+        },
+        LoadState::Refused(error) => {
+            // One copy per content: a launcher started again before any change does not pile up copies.
+            let text = fs::read(path).unwrap_or_default();
+            let prefix = format!("{}.bak-invalid-", wheel::FILE_NAME);
+            let kept = path.parent().and_then(|folder| fs::read_dir(folder).ok()).into_iter().flatten().filter_map(|entry| entry.ok()).find(|entry| {
+                entry.file_name().to_string_lossy().starts_with(&prefix) && fs::read(entry.path()).is_ok_and(|other| other == text)
+            });
+            let copy = match kept {
+                Some(entry) => entry.path(),
+                None => {
+                    let copy = path.with_file_name(format!("{prefix}{}", unix_seconds()));
+                    let _ = fs::copy(path, &copy);
+                    copy
+                }
+            };
+            log_warn(dirs, &format!("wheel: {} is refused by the game ({error}); copy kept at {}; the wheel is off", path.display(), copy.display()));
+        }
+        LoadState::Newer(error) => log(dirs, &format!("wheel: {} is from a newer launcher and is kept ({error})", path.display())),
+    }
+    (loaded.config, loaded.state)
 }
 
 fn unix_seconds() -> u64 {

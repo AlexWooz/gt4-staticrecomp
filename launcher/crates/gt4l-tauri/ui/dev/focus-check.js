@@ -7,7 +7,8 @@
  *                       Display, Graphics and Advanced sections inside Graphics (no Display or Advanced tab; the
  *                       D-pad walks through all three), and the
  *                       Controls page (entry on the DS2, spatial moves, rebind and cancel, conflict and swap, live
- *                       input from a still dev pad, Y reset, X reset all)
+ *                       input from a still dev pad, Y reset, X reset all), and the Wheel page (TASK-181: entry, chips, the
+ *                       real-angle wheel and pedals, bind, clear, calibration, the force test, the wizard, presets)
  *   ?scenario=4k        only sets the state for docs/launcher/shots/graphics-4k-updated.png (4K chosen, row shown)
  *   ?scenario=advanced  only sets the state for docs/launcher/shots/graphics-advanced-section.png (pad focus on the
  *                       first Advanced row inside Graphics)
@@ -19,7 +20,7 @@
 (function (root) {
   "use strict";
   var GT4 = root.GT4;
-  var TABS = ["graphics", "controls", "games", "saves", "replays", "achievements", "about"];
+  var TABS = ["graphics", "controls", "wheel", "games", "saves", "replays", "achievements", "about"];
   var lines = [];
   var failures = 0;
 
@@ -123,6 +124,16 @@
     check("the window shows the title and the count", !!bar && document.querySelector(".modal h3").textContent === T("shaders.title") &&
       document.querySelector(".shader-count").textContent === T("shaders.count", { done: 50, total: 200 }), bar ? bar.style.width : "none");
     check("the bar follows the count", !!bar && bar.style.width === "25%", bar ? bar.style.width : "none");
+    // TASK-170b: a retry names its attempt under the count; the first attempt shows nothing there.
+    var retry = document.querySelector(".shader-retry");
+    check("the first attempt shows no retry line", !!retry && retry.textContent === "", retry ? retry.textContent : "missing");
+    GT4_MOCK.emit("shaders-progress", { done: 0, total: 150, attempt: 3 });
+    await wait(50);
+    check("a retry says its attempt number", !!retry && retry.textContent === T("shaders.retry", { attempt: 3 }) && retry.textContent.indexOf("3") >= 0 &&
+      retry.textContent.indexOf("{") < 0, retry ? retry.textContent : "missing");
+    check("the count restarts with the retry", document.querySelector(".shader-count").textContent === T("shaders.count", { done: 0, total: 150 }), document.querySelector(".shader-count").textContent);
+    GT4_MOCK.emit("shaders-progress", { done: 50, total: 200, attempt: 1 });
+    await wait(50);
     check("Cancel has the focus", document.activeElement && document.activeElement.textContent === T("common.cancel"), document.activeElement && document.activeElement.textContent);
     document.querySelector(".modal").__dialog.back();
     check("Back does not close it", !!document.querySelector(".shader-bar"), "closed");
@@ -325,8 +336,9 @@
     function lacks(list, ids) {
       return ids.every(function (id) { return list.indexOf(id) < 0; });
     }
-    var both = ["renderer", "render_scale", "monitor", "resolution", "fullscreen", "vsync", "fxaa", "performance_mode"];
-    var gsdxOnly = ["graphics_api", "cas_mode", "cas_sharpness", "perf_overlay"];
+    var both = ["renderer", "render_scale", "monitor", "resolution", "fullscreen", "vsync", "fxaa", "effect_flares"];
+    var gsdxOnly = ["graphics_api", "cas_mode", "cas_sharpness", "perf_overlay", "blending", "hw_download_mode"];
+    var coregsOnly = ["frame_rate", "coregs_sharpening", "effect_road_sheen", "effect_targets"];
     await setHash("#/settings/about");
     await setHash("#/settings/graphics");
     await wait(200);
@@ -336,15 +348,32 @@
         return switches.every(function (item) { return list.indexOf(menu) < list.indexOf(item); });
       });
     }
-    check("GSdx shows its Graphics menus above its switches", menusAbove(gsdx, ["renderer", "render_scale", "graphics_api", "cas_mode"], ["performance_mode", "fxaa"]), gsdx.join("|"));
-    check("GSdx shows its rows and no FSR1", holds(gsdx, both) && holds(gsdx, gsdxOnly) && lacks(gsdx, ["frame_rate", "coregs_sharpening"]), gsdx.join("|"));
+    check("GSdx shows its Graphics menus above its switches", menusAbove(gsdx, ["renderer", "render_scale", "graphics_api", "cas_mode"], ["effect_flares", "fxaa"]), gsdx.join("|"));
+    check("GSdx shows its rows and no FSR1", holds(gsdx, both) && holds(gsdx, gsdxOnly) && lacks(gsdx, coregsOnly), gsdx.join("|"));
     await GT4.backend.call("set_setting", { id: "renderer", value: "coregs20" });
     await setHash("#/settings/about");
     await setHash("#/settings/graphics");
     await wait(200);
     var coregs = shown();
-    check("CoreGS 2.0 shows its Graphics menus above its switches", menusAbove(coregs, ["renderer", "render_scale", "frame_rate", "coregs_sharpening"], ["performance_mode", "fxaa"]), coregs.join("|"));
-    check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, ["frame_rate", "coregs_sharpening"]) && lacks(coregs, gsdxOnly), coregs.join("|"));
+    check("CoreGS 2.0 shows its Graphics menus above its switches", menusAbove(coregs, ["renderer", "render_scale", "frame_rate", "coregs_sharpening"], ["effect_flares", "fxaa"]), coregs.join("|"));
+    check("CoreGS 2.0 shows FSR1 and no API, CAS or overlay", holds(coregs, both) && holds(coregs, coregsOnly) && lacks(coregs, gsdxOnly), coregs.join("|"));
+    // TASK-175: the Performance HUD is a three-way choice (Off, FPS only, Full), Off by default, in the Advanced section.
+    function hudNode() { return document.querySelector(".selector[data-setting=\"performance_hud\"]"); }
+    var hudWords = ["off", "fps", "full"].map(function (value) { return T("choice.performance_hud." + value); });
+    check("the Performance HUD choices are text in this language, all different", hudWords.every(function (word) { return word.indexOf("choice.") !== 0; }) &&
+      hudWords[0] !== hudWords[1] && hudWords[1] !== hudWords[2] && hudWords[0] !== hudWords[2], hudWords.join("|"));
+    check("the Performance HUD help is text in this language", T("setting.performance_hud.help").indexOf("setting.") !== 0, T("setting.performance_hud.help"));
+    check("CoreGS 2.0 shows the Performance HUD as a choice in Advanced, Off by default", !!hudNode() && !!hudNode().closest("[data-section=\"advanced\"]") &&
+      hudNode().getAttribute("aria-valuetext") === hudWords[0], hudNode() ? hudNode().getAttribute("aria-valuetext") : "no selector");
+    for (var hudStep = 1; hudStep <= 2; hudStep++) {
+      await GT4.backend.call("set_setting", { id: "performance_hud", value: ["off", "fps", "full"][hudStep] });
+      await setHash("#/settings/about");
+      await setHash("#/settings/graphics");
+      await wait(200);
+      check("the Performance HUD selector shows " + hudWords[hudStep], !!hudNode() && hudNode().getAttribute("aria-valuetext") === hudWords[hudStep],
+        hudNode() ? hudNode().getAttribute("aria-valuetext") : "no selector");
+    }
+    await GT4.backend.call("set_setting", { id: "performance_hud", value: "off" });
     await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
     await setHash("#/settings/about");
     await setHash("#/settings/graphics");
@@ -977,6 +1006,227 @@
     check("the focus stays on the renderer through the redraw", document.activeElement === drawn, "focus elsewhere");
     await wait(500);
     check("the rows that went out are gone after the animation", document.querySelectorAll(".row-departing").length === 0, "left behind");
+    await GT4.backend.call("set_setting", { id: "renderer", value: renderer });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+  }
+
+  // TASK-193 (owner, 2026-11-06): an option row changes only through its arrows with a mouse or a finger. A click on the
+  // row's label or on its value does nothing; the left arrow steps back and the right arrow forward. The keyboard and the
+  // pad keep stepping forward on A and left/right, and the arrows got a bigger invisible hit area.
+  function pointerClick(node) {
+    var box = node.getBoundingClientRect();
+    var where = {
+      bubbles: true, cancelable: true, detail: 1, view: root,
+      clientX: Math.round(box.left + box.width / 2), clientY: Math.round(box.top + box.height / 2)
+    };
+    node.dispatchEvent(new MouseEvent("mousedown", where));
+    node.dispatchEvent(new MouseEvent("mouseup", where));
+    node.dispatchEvent(new MouseEvent("click", where));
+  }
+
+  function rowNode(id) {
+    return document.querySelector(".row[data-row=\"" + id + "\"]");
+  }
+
+  // The hit area the stylesheet gives the arrows: the base rule and the (pointer: coarse) rule of css/app.css.
+  function arrowHitFromRules(coarse) {
+    var found = "";
+    function walk(rules) {
+      Array.prototype.forEach.call(rules || [], function (rule) {
+        if (rule.cssRules && rule.media) {
+          var matches = rule.media.mediaText.indexOf("pointer: coarse") >= 0;
+          if (matches === coarse) {
+            walk(rule.cssRules);
+          }
+          return;
+        }
+        if (!rule.selectorText || rule.selectorText.indexOf(".selector-arrow") < 0 || !rule.style) {
+          return;
+        }
+        var hit = rule.style.getPropertyValue("--selector-arrow-hit");
+        if (hit) {
+          found = hit.trim();
+        }
+      });
+    }
+    Array.prototype.forEach.call(document.styleSheets, function (sheet) {
+      try {
+        walk(sheet.cssRules);
+      } catch (err) {
+        // a stylesheet from another origin: nothing to read
+      }
+    });
+    return found;
+  }
+
+  async function optionPointerChecks() {
+    await setHash("#/settings/graphics");
+    await wait(300);
+    var vsync = selectorNode("vsync");
+    check("a dropdown row is on Graphics for the pointer checks", !!vsync, "no vsync row");
+    if (!vsync) {
+      return;
+    }
+    var first = selectorText("vsync");
+    var firstValue = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "vsync").current;
+    pointerClick(rowNode("vsync").querySelector(".k > span"));
+    await wait(200);
+    check("a click on the row's label does not change the value", selectorText("vsync") === first, selectorText("vsync") + " after the label click");
+    pointerClick(vsync.querySelector(".selector-value:not(.is-leaving)"));
+    await wait(200);
+    check("a click on the row's value does not change the value", selectorText("vsync") === first, selectorText("vsync") + " after the value click");
+    var tableAfterBody = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "vsync");
+    check("the row body click writes nothing", !!tableAfterBody && String(tableAfterBody.current) === String(firstValue), tableAfterBody ? String(tableAfterBody.current) : "no row");
+
+    var arrows = vsync.querySelectorAll(".selector-arrow");
+    pointerClick(arrows[0]);
+    await wait(200);
+    var back = selectorText("vsync");
+    check("the left arrow steps back", back !== first, back + " (was " + first + ")");
+    pointerClick(arrows[1]);
+    await wait(200);
+    check("the right arrow steps forward again", selectorText("vsync") === first, selectorText("vsync"));
+
+    // The hit area: 32 x 32 px with a mouse, 44 x 44 px with a finger, drawn on the same 24 px glyph box.
+    var leftBox = arrows[0].getBoundingClientRect();
+    var rightBox = arrows[1].getBoundingClientRect();
+    check("each arrow has a 32 x 32 px hit area with a mouse",
+      Math.round(leftBox.width) >= 32 && Math.round(leftBox.height) >= 32 && Math.round(rightBox.width) >= 32 && Math.round(rightBox.height) >= 32,
+      Math.round(leftBox.width) + "x" + Math.round(leftBox.height) + " and " + Math.round(rightBox.width) + "x" + Math.round(rightBox.height));
+    check("a finger gets a 44 x 44 px hit area (the coarse rule)", arrowHitFromRules(true) === "44px" && arrowHitFromRules(false) === "32px",
+      "coarse " + arrowHitFromRules(true) + ", fine " + arrowHitFromRules(false));
+    var windowBox = vsync.querySelector(".selector-window").getBoundingClientRect();
+    var middleLeft = windowBox.left + windowBox.width / 3;
+    var middleRight = windowBox.right - windowBox.width / 3;
+    var leftReach = leftBox.right > middleLeft && leftBox.right < middleRight;
+    var rightReach = rightBox.left > middleLeft && rightBox.left < middleRight;
+    check("the arrows do not reach the middle of the value", !leftReach && !rightReach,
+      "left reaches " + Math.round(leftBox.right - windowBox.left) + " of " + Math.round(windowBox.width) + ", right from " + Math.round(rightBox.left - windowBox.left));
+    var glyph = arrows[0].querySelector("svg").getBoundingClientRect();
+    check("the arrow glyph stays where it was: centred in the drawn 24 px box",
+      Math.abs((glyph.left + glyph.width / 2) - (vsync.getBoundingClientRect().left + 12)) < 0.6,
+      "glyph centre " + (glyph.left + glyph.width / 2) + ", box centre " + (vsync.getBoundingClientRect().left + 12));
+
+    // The keyboard and the pad keep their behaviour: left and right step, A goes forward.
+    vsync.focus({ preventScroll: true });
+    press("ArrowRight");
+    await wait(200);
+    check("right on a focused row still steps it", selectorText("vsync") !== first, selectorText("vsync"));
+    press("ArrowLeft");
+    await wait(200);
+    check("left on a focused row still steps it back", selectorText("vsync") === first, selectorText("vsync"));
+    GT4.nav.activate();
+    await wait(200);
+    check("A on a focused row still goes to the next value", selectorText("vsync") !== first, selectorText("vsync"));
+    pointerClick(arrows[0]);
+    await wait(200);
+    check("the arrow puts the value back after the pad step", selectorText("vsync") === first, selectorText("vsync"));
+
+    // A toggle row follows the same pointer rule.
+    var toggle = selectorNode("fxaa");
+    check("a toggle row is on Graphics for the pointer checks", !!toggle, "no fxaa row");
+    if (toggle) {
+      var toggleFirst = selectorText("fxaa");
+      pointerClick(rowNode("fxaa").querySelector(".k > span"));
+      await wait(200);
+      check("a click on a toggle row's label does not change it", selectorText("fxaa") === toggleFirst, selectorText("fxaa"));
+      pointerClick(rowNode("fxaa").querySelector(".selector-value:not(.is-leaving)"));
+      await wait(250);
+      check("a click on a toggle row's value does not change it", selectorText("fxaa") === toggleFirst, selectorText("fxaa"));
+      var toggleArrows = toggle.querySelectorAll(".selector-arrow");
+      pointerClick(toggleArrows[0]);
+      await wait(250);
+      check("a toggle row's left arrow steps it", selectorText("fxaa") !== toggleFirst, selectorText("fxaa"));
+      pointerClick(toggle.querySelectorAll(".selector-arrow")[1]);
+      await wait(250);
+      check("a toggle row's right arrow steps it back", selectorText("fxaa") === toggleFirst, selectorText("fxaa"));
+    }
+
+    // The Wheel page's own cards use the same control.
+    await setHash("#/settings/wheel");
+    await wait(400);
+    var wheelToggle = selectorNode("wheel-ffb-enabled");
+    check("the force feedback card has an option row", !!wheelToggle, "no wheel-ffb-enabled row");
+    if (wheelToggle) {
+      var wheelFirst = selectorText("wheel-ffb-enabled");
+      pointerClick(rowNode("wheel-ffb-enabled").querySelector(".k > span"));
+      await wait(250);
+      check("a click on a Wheel card's row label does not change it", selectorText("wheel-ffb-enabled") === wheelFirst, selectorText("wheel-ffb-enabled"));
+      pointerClick(wheelToggle.querySelector(".selector-value:not(.is-leaving)"));
+      await wait(250);
+      check("a click on a Wheel card's row value does not change it", selectorText("wheel-ffb-enabled") === wheelFirst, selectorText("wheel-ffb-enabled"));
+      pointerClick(wheelToggle.querySelectorAll(".selector-arrow")[0]);
+      await wait(300);
+      check("a Wheel card's row steps through its arrows", selectorText("wheel-ffb-enabled") !== wheelFirst, selectorText("wheel-ffb-enabled"));
+      pointerClick(selectorNode("wheel-ffb-enabled").querySelectorAll(".selector-arrow")[1]);
+      await wait(300);
+      check("a Wheel card's row steps back through its arrows", selectorText("wheel-ffb-enabled") === wheelFirst, selectorText("wheel-ffb-enabled"));
+    }
+    await setHash("#/settings/graphics");
+  }
+
+  // TASK-174: the Presentation thread row. CoreGS 2.0 only; works on a one-queue card (and when the queue count is unknown);
+  // shown but not available, with a note, on a card with two or more graphics queues.
+  async function presentThreadChecks() {
+    function shown() {
+      return Array.prototype.map.call(document.querySelectorAll("[data-row]"), function (node) { return node.getAttribute("data-row"); });
+    }
+    function valueOf(table) {
+      return GT4.settingsModel.findRow(table, "present_thread");
+    }
+    var renderer = GT4.settingsModel.findRow(await GT4.backend.call("get_settings_table"), "renderer").current;
+    await GT4.backend.call("set_setting", { id: "renderer", value: "pcsx2" });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    check("the Presentation thread row is not shown under GSdx", shown().indexOf("present_thread") < 0, shown().join("|"));
+    await GT4.backend.call("set_setting", { id: "renderer", value: "coregs20" });
+    await setHash("#/settings/general");
+    await setHash("#/settings/graphics");
+    await wait(200);
+    var order = shown();
+    check("the Presentation thread row is shown under CoreGS 2.0, after the frame rate", order.indexOf("frame_rate") >= 0 && order.indexOf("present_thread") > order.indexOf("frame_rate"), order.join("|"));
+    var node = document.querySelector("[data-row=\"present_thread\"]");
+    var label = node && node.querySelector(".k span");
+    check("the row's label is the translated one", !!label && label.textContent === T("setting.present_thread.label") && label.textContent.length > 10, label ? label.textContent : "no row");
+    var tip = node && node.querySelector(".tip");
+    check("the info text is the translated one and explains the single queue", !!tip && tip.textContent.indexOf(T("setting.present_thread.help")) >= 0 && T("setting.present_thread.help").length > 60,
+      tip ? tip.textContent.slice(0, 80) : "no tip");
+    check("the row is on by default and works (not disabled, no note)", selectorText("present_thread") === T("settings.on") && !node.classList.contains("is-disabled") && !node.querySelector(".hint-text"),
+      node ? node.className : "no row");
+    await stepSelector("present_thread", 1);
+    check("a step turns it off and the table holds the value", valueOf(await GT4.backend.call("get_settings_table")).current === false && selectorText("present_thread") === T("settings.off"),
+      String(selectorText("present_thread")));
+    await stepSelector("present_thread", -1);
+    check("a step back turns it on again", valueOf(await GT4.backend.call("get_settings_table")).current === true && selectorText("present_thread") === T("settings.on"), String(selectorText("present_thread")));
+
+    // A card with two or more graphics queues: the launcher sends the row disabled with a note key.
+    var real = GT4.backend.call;
+    GT4.backend.call = function (command, args) {
+      var result = real.call(GT4.backend, command, args);
+      if (command !== "get_settings_table") {
+        return result;
+      }
+      return result.then(function (table) {
+        var row = valueOf(table);
+        row.disabled = true;
+        row.note_key = "settings.already_active";
+        return table;
+      });
+    };
+    try {
+      await setHash("#/settings/general");
+      await setHash("#/settings/graphics");
+      await wait(250);
+      var off = document.querySelector("[data-row=\"present_thread\"]");
+      var hint = off && off.querySelector(".hint-text");
+      check("a two-queue card shows the row disabled", !!off && off.classList.contains("is-disabled") && off.querySelector(".selector[aria-disabled=\"true\"]") !== null, off ? off.className : "no row");
+      check("a two-queue card says it is already active, in this language", !!hint && hint.textContent === T("settings.already_active") && hint.textContent.length > 8, hint ? hint.textContent : "no note");
+      check("the disabled row keeps its info text", !!off && off.querySelector(".tip").textContent.indexOf(T("setting.present_thread.help")) >= 0, "no tip");
+    } finally {
+      GT4.backend.call = real;
+    }
     await GT4.backend.call("set_setting", { id: "renderer", value: renderer });
     await setHash("#/settings/general");
     await setHash("#/settings/graphics");
@@ -1701,6 +1951,426 @@
     }
   }
 
+  // TASK-181: the Wheel page (js/pages/wheel.js): entry on the steering chip, D-pad moves between the chips with the
+  // panel following, the real-angle wheel and the pedals from the live event, bind and cancel, clear and bind again, a
+  // pedal's dead zone, the 900-degree warning, the force test and "received", the set-up wizard from start to end,
+  // presets, and no raw locale key on the page.
+  function wheelFocused() {
+    var active = document.activeElement;
+    var item = active && active.closest ? active.closest(".wh-item") : null;
+    return item ? item.getAttribute("data-control") : null;
+  }
+
+  function wheelChipText(id) {
+    var item = document.querySelector(".wh-item[data-control=\"" + id + "\"] .chip-text");
+    return item ? item.textContent : null;
+  }
+
+  function wheelCardName() {
+    var name = document.querySelector(".wh-control .cx-name");
+    return name ? name.textContent : null;
+  }
+
+  async function wheelConfig() {
+    return (await GT4.backend.call("get_wheel_config")).config;
+  }
+
+  async function wheelFocus(id) {
+    var item = document.querySelector(".wh-item[data-control=\"" + id + "\"]");
+    if (item) {
+      item.focus();
+    }
+    await wait(120);
+  }
+
+  async function wheelChecks() {
+    // A still G27 for the live checks: +90 degrees (a fifth of the travel), the accelerator at 60%, button 1 down.
+    // The G27 layout of the shipped preset (TASK-189): axis 0 the wheel, 1 the accelerator, 2 the brake, 4 the clutch;
+    // button 17 (index 17) is Cross.
+    GT4.devWheelLive = function () {
+      return { devices: [{ id: 11, guid: "030000006d0400009bc2000000000000", axes: [6554, Math.round(32767 - 0.6 * 65535), 32767, 32767, 32767], pressed: [17], hats: [0] }] };
+    };
+    await setHash("#/settings/wheel");
+    await wait(500);
+    check("the Wheel preview with live input running keeps focus on the tab list", sideStepOk("wheel"), sideDetail());
+    press("ArrowRight");
+    await wait(250);
+    check("entering Wheel focuses the steering chip", wheelFocused() === "steering", "focus " + wheelFocused());
+    check("the Wheel footer offers Bind, Clear and Set up", footerText().indexOf(T("wheel.hint.bind")) >= 0 && footerText().indexOf(T("wheel.hint.clear")) >= 0 &&
+      footerText().indexOf(T("wheel.hint.setup")) >= 0, footerText());
+    check("the panel shows the steering with its rotation", wheelCardName() === T("wheel.steering") && !!document.querySelector("input[data-setting=\"wheel-rotation\"]"), wheelCardName());
+    check("the 'Your wheel' card is gone (TASK-189)", !document.querySelector(".wh-device") && !document.querySelector(".wh-device-name"), "still there");
+    check("the badge says Connected without the USB ID", (document.querySelector(".cx-status-sub") || {}).textContent === T("wheel.status_connected"),
+      (document.querySelector(".cx-status-sub") || {}).textContent);
+    check("the page says which preset was applied", (document.querySelector(".wh-preset-notice") || {}).textContent === T("wheel.preset_applied", { name: "Logitech G27" }),
+      (document.querySelector(".wh-preset-notice") || {}).textContent);
+    check("there is no 'Racing wheel in the game' switch", !document.querySelector("[data-setting=\"wheel-enabled\"]") && !document.querySelector(".wh-enabled"), "switch found");
+    var rotationTip = document.querySelector(".row[data-row=\"wheel-rotation\"] .info .tip");
+    check("the 900-degree advice is the Rotation row's tooltip", !!rotationTip && rotationTip.textContent.indexOf("900") >= 0, rotationTip ? rotationTip.textContent : "none");
+
+    // The wheel turns at its real angle and the pedals show what the game gets.
+    var turning = document.querySelector(".wheel-svg .wh-turning");
+    check("the drawn wheel turns to +90 degrees", !!turning && /^rotate\(90\.0\d 500 225\)$/.test(turning.getAttribute("transform") || ""), turning ? turning.getAttribute("transform") : "none");
+    check("the angle reads +90°", (document.querySelector(".wheel-svg .wh-angle") || {}).textContent === "+90°", (document.querySelector(".wheel-svg .wh-angle") || {}).textContent);
+    var throttleValue = document.querySelector(".wh-item[data-control=\"throttle\"] .wh-pedal-value");
+    check("the accelerator shows the game's 60%", !!throttleValue && throttleValue.textContent === "60%", throttleValue ? throttleValue.textContent : "none");
+    var crossChip = document.querySelector(".wh-item[data-control=\"cross\"]");
+    check("button 1 lights Cross", !!crossChip && crossChip.classList.contains("is-live"), "no is-live");
+    check("live input never moves focus", wheelFocused() === "steering", "focus " + wheelFocused());
+
+    // D-pad between the chips; the panel follows.
+    await wheelFocus("cross");
+    press("ArrowUp");
+    await wait(150);
+    check("D-pad up from Cross reaches Circle", wheelFocused() === "circle", "focus " + wheelFocused());
+    check("the panel follows the selection (Circle)", wheelCardName() === T("wheel.control.circle"), wheelCardName());
+    press("ArrowDown");
+    await wait(150);
+    press("ArrowDown");
+    await wait(150);
+    check("D-pad down from Cross reaches R3", wheelFocused() === "r3", "focus " + wheelFocused());
+
+    // Bind, then cancel with Esc (B on the pad goes through the same GT4.cancelCapture).
+    await wheelFocus("cross");
+    GT4.nav.activate();
+    await wait(200);
+    check("A on a chip opens the bind overlay", !!document.querySelector(".modal.is-capture") && GT4.capturing === true, "capturing " + GT4.capturing);
+    check("the overlay names the control", ((document.querySelector(".modal.is-capture h3") || {}).textContent || "").indexOf(T("wheel.control.cross")) >= 0, "title");
+    check("the overlay says which game action it sets", ((document.querySelector(".cx-capture .wh-prompt") || {}).textContent || "") ===
+      T("wheel.prompt.button", { control: T("wheel.control.cross") }) &&
+      ((document.querySelector(".cx-capture-foot") || {}).textContent || "") === T("wheel.map_hint"),
+      (document.querySelector(".cx-capture .wh-prompt") || {}).textContent);
+    check("the bind footer offers B Cancel and Y Clear", footerText() === "B" + T("common.cancel") + "|" + "Y" + T("wheel.hint.clear"), footerText());
+    press("Escape");
+    await wait(200);
+    check("Esc cancels the bind and closes the overlay", !document.querySelector(".modal.is-capture") && GT4.capturing === false, "capturing " + GT4.capturing);
+    check("after a cancel, focus is back on the chip", wheelFocused() === "cross", "focus " + wheelFocused());
+
+    // TASK-189: one click on a control of the drawing opens the same popup; its Clear removes the control.
+    var crossChipNode = document.querySelector(".wh-item[data-control=\"cross\"] .chip-text");
+    if (crossChipNode) {
+      var box = crossChipNode.getBoundingClientRect();
+      crossChipNode.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }));
+      await wait(250);
+    }
+    check("one click on a chip opens the capture popup", !!document.querySelector(".modal.is-capture") && GT4.capturing === true, "capturing " + GT4.capturing);
+    var clearInPopup = Array.prototype.filter.call(document.querySelectorAll(".modal.is-capture .modal-actions button"), function (button) {
+      return button.textContent === T("wheel.clear");
+    })[0];
+    check("the popup offers Clear", !!clearInPopup, "no Clear");
+    if (clearInPopup) {
+      clearInPopup.click();
+      await wait(300);
+    }
+    check("Clear in the popup unbinds the control", (await wheelConfig()).buttons.cross.length === 0 && !document.querySelector(".modal.is-capture"),
+      JSON.stringify((await wheelConfig()).buttons.cross));
+
+    // Y clears Cross; A binds it again (the mock answers button 1).
+    GT4.hooks.y();
+    await wait(300);
+    check("Y clears Cross", (await wheelConfig()).buttons.cross.length === 0 && wheelChipText("cross") === T("wheel.unbound"), wheelChipText("cross"));
+    GT4.nav.activate();
+    await wait(1200);
+    check("a capture binds Cross to button 1", JSON.stringify((await wheelConfig()).buttons.cross) === "[\"btn:0\"]" &&
+      wheelChipText("cross") === T("wheel.source.button", { n: 1 }), wheelChipText("cross"));
+
+    // A pedal: its calibration rows; the dead zone moves by one step.
+    await wheelFocus("throttle");
+    check("the accelerator's card has its direction, dead zone, saturation and curve", wheelCardName() === T("wheel.pedal.throttle") &&
+      !!document.querySelector("[data-setting=\"wheel-throttle-mode\"]") && !!document.querySelector("input[data-setting=\"wheel-throttle-deadzone\"]") &&
+      !!document.querySelector("input[data-setting=\"wheel-throttle-saturation\"]") && !!document.querySelector("[data-setting=\"wheel-throttle-curve\"]"), wheelCardName());
+    var deadzone = document.querySelector("input[data-setting=\"wheel-throttle-deadzone\"]");
+    if (deadzone) {
+      deadzone.focus();
+      press("ArrowRight");
+      await wait(400);
+    }
+    check("the dead zone moves by one step (2% to 3%)", (await wheelConfig()).throttle.deadzone === 0.03, String((await wheelConfig()).throttle.deadzone));
+    var focusedSetting = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("data-setting") : null;
+    check("the dead zone keeps the focus after the change", focusedSetting === "wheel-throttle-deadzone", "focus " + focusedSetting);
+
+    // The rotation: 900 has no warning; another value says so.
+    await wheelFocus("steering");
+    check("900 degrees shows no warning", (document.querySelector(".row[data-row=\"wheel-rotation\"]") || { textContent: "" }).textContent.indexOf(T("wheel.rotation_warning")) < 0, "warning");
+    var rotation = document.querySelector("input[data-setting=\"wheel-rotation\"]");
+    if (rotation) {
+      rotation.focus();
+      press("ArrowRight");
+      await wait(400);
+    }
+    check("910 degrees warns that the car steers differently", (await wheelConfig()).steering.rotation_degrees === 910 &&
+      (document.querySelector(".row[data-row=\"wheel-rotation\"]") || { textContent: "" }).textContent.indexOf(T("wheel.rotation_warning")) >= 0, "rotation");
+    await GT4.backend.call("set_wheel_setting", { key: "steering.rotation_degrees", value: 900 });
+
+    // Force feedback: the test plays and lists the effects; the last game's line says Received.
+    // TASK-194: the centring spring row (Off by default, Follow the game) and the damper floor at 0%.
+    check("the force feedback card has a centring spring row, Off by default",
+      !!document.querySelector("[data-setting=\"wheel-ffb-centering\"]") &&
+        selectorText("wheel-ffb-centering") === T("wheel.ffb.centering_off") && (await wheelConfig()).ffb.centering_spring === false,
+      document.querySelector("[data-setting=\"wheel-ffb-centering\"]") ? selectorText("wheel-ffb-centering") : "no row");
+    check("the damping starts at 0%", (await wheelConfig()).ffb.damper === 0, String((await wheelConfig()).ffb.damper));
+    if (document.querySelector("[data-setting=\"wheel-ffb-centering\"]")) {
+      await stepSelector("wheel-ffb-centering", 1);
+      check("the centring spring steps to Follow the game and is written", (await wheelConfig()).ffb.centering_spring === true &&
+        selectorText("wheel-ffb-centering") === T("wheel.ffb.centering_game"), JSON.stringify((await wheelConfig()).ffb));
+      await stepSelector("wheel-ffb-centering", -1);
+      check("and back to Off", (await wheelConfig()).ffb.centering_spring === false &&
+        selectorText("wheel-ffb-centering") === T("wheel.ffb.centering_off"), JSON.stringify((await wheelConfig()).ffb));
+    }
+    var test = document.querySelector(".wh-test");
+    check("the force test is enabled while the game is not running", !!test && !test.disabled, "disabled");
+    if (test) {
+      test.click();
+      await wait(1300);
+    }
+    check("the force test reports the effects it found", ((document.querySelector(".wh-test-result") || {}).textContent || "").indexOf(T("wheel.effect.constant")) >= 0, (document.querySelector(".wh-test-result") || {}).textContent);
+    check("the last game's force feedback reads Received", (document.querySelector(".wh-received-v") || {}).textContent === T("wheel.received.yes"), (document.querySelector(".wh-received-v") || {}).textContent);
+    check("the last game's line is shown when the game reported it", !!document.querySelector(".wh-received") && !document.querySelector(".wh-received").hidden, "hidden");
+    check("the force feedback result is one compact line", !!document.querySelector(".wh-test-result") &&
+      document.querySelector(".wh-test-result").className.indexOf("wh-test-result") === 0, document.querySelector(".wh-test-result") ? document.querySelector(".wh-test-result").className : "none");
+
+    // The wizard, from the intro to the summary: every step answered by the mock, the wheel turned on at the end.
+    await GT4.backend.call("set_wheel_setting", { key: "wheel.enabled", value: false });
+    await wheelFocus("steering");
+    GT4.hooks.x();
+    await wait(200);
+    var start = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) { return button.textContent === T("wheel.wizard.start"); })[0];
+    check("X opens the set-up wizard's intro", !!start, "no Start");
+    if (start) {
+      start.click();
+      await wait(300);
+    }
+    check("the wizard starts at step 1 of 21 with the steering", ((document.querySelector(".wh-step") || {}).textContent || "") === T("wheel.wizard.step", { n: 1, total: 21 }) &&
+      ((document.querySelector(".wh-prompt") || {}).textContent || "") === T("wheel.prompt.steer_left"), (document.querySelector(".wh-step") || {}).textContent);
+    check("the wizard footer offers B Skip", footerText().indexOf("B" + T("wheel.wizard.skip")) === 0, footerText());
+    for (var tries = 0; tries < 60 && document.querySelector(".modal.is-wizard"); tries++) {
+      await wait(500);
+    }
+    // The summary opens after the wheel is switched on (a command round trip), so it can come a moment after the wizard.
+    var finished = document.querySelector(".modal h3");
+    for (var waits = 0; waits < 20 && !(finished && finished.textContent === T("wheel.wizard.done_title")); waits++) {
+      await wait(150);
+      finished = document.querySelector(".modal h3");
+    }
+    check("the wizard ends with the summary", !!finished && finished.textContent === T("wheel.wizard.done_title"), finished ? finished.textContent : "none");
+    var after = await wheelConfig();
+    check("the wizard bound the steering, the pedals and the buttons", after.steering.source === "axis:0" && after.throttle.source === "axis:2" &&
+      after.brake.source === "axis:3" && after.clutch.source === "axis:1" && JSON.stringify(after.buttons.r2) === "[\"btn:4\"]" &&
+      JSON.stringify(after.buttons.dpad_left) === "[\"hat:0:left\"]", JSON.stringify(after.buttons));
+    check("turning left read negative: the steering is not reversed", after.steering.invert === false, String(after.steering.invert));
+    check("the wizard leaves the on/off to Play (no switch on the page)", after.enabled === false &&
+      !document.querySelector("[data-setting=\"wheel-enabled\"]"), String(after.enabled));
+    var done = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) { return button.textContent === T("wheel.wizard.done"); })[0];
+    if (done) {
+      done.click();
+      await wait(200);
+    }
+
+    // Presets: save one, see it in the list.
+    var saveButton = Array.prototype.filter.call(document.querySelectorAll(".wh-presets button"), function (button) { return button.textContent === T("wheel.presets.save"); })[0];
+    if (saveButton) {
+      saveButton.click();
+      await wait(200);
+    }
+    var nameInput = document.querySelector(".modal .modal-input");
+    check("Save as preset asks for a name with one filled in", !!nameInput && nameInput.value.length > 0, nameInput ? nameInput.value : "none");
+    var saveIt = Array.prototype.filter.call(document.querySelectorAll(".modal button"), function (button) { return button.textContent === T("wheel.presets.save_button"); })[0];
+    if (saveIt) {
+      saveIt.click();
+      await wait(300);
+    }
+    var presets = await GT4.backend.call("list_wheel_presets");
+    check("the preset is saved", presets.length === 1 && presets[0].name === (nameInput ? nameInput.value.trim() : ""), JSON.stringify(presets));
+
+    var rawKey = /wheel\.(?!toml)[a-z_]+/.exec(document.querySelector(".stage .content").textContent);
+    check("no raw locale key shows on the Wheel page", !rawKey, rawKey ? rawKey[0] : "");
+    await wheelFocus("steering");
+    press("Escape");
+    await wait(200);
+    check("B returns Wheel to the tab list", sideStepOk("wheel"), sideDetail());
+    delete GT4.devWheelLive;
+  }
+
+  // TASK-199 (owner, 2026-11-06: the next row's text showed through an open info card). A Settings row's entrance
+  // animation leaves a transform on the row, which makes every row its own stacking context: the card of a row could
+  // never paint above the rows after it. The card is now drawn in one layer on the body (.popover-layer, ui.js), so an
+  // open card is the top element at its centre and at its four corners, on any page, in either language and at any
+  // window size, and it never leaves the window.
+  function cardWrongPoints(tip) {
+    var box = tip.getBoundingClientRect();
+    var points = {
+      "the centre": [box.left + box.width / 2, box.top + box.height / 2],
+      "the top left": [box.left + 3, box.top + 3],
+      "the top right": [box.right - 3, box.top + 3],
+      "the bottom left": [box.left + 3, box.bottom - 3],
+      "the bottom right": [box.right - 3, box.bottom - 3]
+    };
+    var wrong = [];
+    Object.keys(points).forEach(function (name) {
+      var hit = document.elementFromPoint(points[name][0], points[name][1]);
+      if (!hit || !tip.contains(hit)) {
+        wrong.push(name + " is " + (hit ? (hit.className || hit.tagName) : "nothing"));
+      }
+    });
+    return wrong;
+  }
+
+  function cardInWindow(tip) {
+    var box = tip.getBoundingClientRect();
+    return box.left >= 0 && box.top >= 0 && box.right <= root.innerWidth && box.bottom <= root.innerHeight;
+  }
+
+  function shownCard() {
+    return document.querySelector(".popover-layer .tip.is-shown");
+  }
+
+  // Opens the card of one row's "i" with a click, and returns it. A row out of view is scrolled to the middle first; a
+  // row already in view keeps its place, so a row near the bottom edge is checked where it is.
+  async function openCard(rowId) {
+    var row = document.querySelector(".row[data-row=\"" + rowId + "\"]");
+    var info = row && row.querySelector(".info");
+    if (!info) {
+      return null;
+    }
+    var box = info.getBoundingClientRect();
+    if (box.top < 8 || box.bottom > root.innerHeight - 8) {
+      info.scrollIntoView({ block: "center" });
+      await wait(80);
+    }
+    info.click();
+    await wait(80);
+    return shownCard();
+  }
+
+  // Opens the card of an "i" that is not inside a settings row (the Controls and Wheel headers).
+  function openCardFrom(info) {
+    info.click();
+    return shownCard();
+  }
+
+  async function cardRowChecks(rowId, name) {
+    var tip = await openCard(rowId);
+    var wrong = tip ? cardWrongPoints(tip) : ["no card"];
+    check("the card of " + name + " is the top element at its centre and at its four corners", !!tip && wrong.length === 0, wrong.join("; "));
+    check("the card of " + name + " stays inside the window", !!tip && cardInWindow(tip),
+      tip ? JSON.stringify([Math.round(tip.getBoundingClientRect().left), Math.round(tip.getBoundingClientRect().top)]) : "no card");
+    var row = document.querySelector(".row[data-row=\"" + rowId + "\"]");
+    if (row) {
+      row.querySelector(".info").click();
+      await wait(60);
+    }
+  }
+
+  async function tipLayerChecks() {
+    await setHash("#/settings/graphics");
+    await wait(500);
+    var content = document.querySelector(".stage .content");
+
+    // The owner's own row: the card of Sun glare and light flares opens over the textures line that follows it.
+    var tip = await openCard("effect_flares");
+    check("an open info card is drawn in the layer on the body, not inside its row",
+      !!tip && !document.querySelector(".row .tip.is-shown"), tip ? tip.parentElement.className : "no card");
+    var wrong = tip ? cardWrongPoints(tip) : ["no card"];
+    check("the Sun glare and light flares card is the top element at its centre and at its four corners", !!tip && wrong.length === 0, wrong.join("; "));
+    var note = document.querySelector(".stage .content .note.textures-path");
+    var box = tip ? tip.getBoundingClientRect() : null;
+    var noteBox = note ? note.getBoundingClientRect() : null;
+    var overlaps = !!box && !!noteBox && box.left < noteBox.right && box.right > noteBox.left && box.top < noteBox.bottom && box.bottom > noteBox.top;
+    var overNote = null;
+    if (overlaps) {
+      var x = (Math.max(box.left, noteBox.left) + Math.min(box.right, noteBox.right)) / 2;
+      var y = (Math.max(box.top, noteBox.top) + Math.min(box.bottom, noteBox.bottom)) / 2;
+      overNote = document.elementFromPoint(x, y);
+    }
+    check("the textures line that follows the row draws under the card, not through it",
+      overlaps && !!overNote && tip.contains(overNote), (overNote ? (overNote.className || overNote.tagName) : "no overlap") + ", overlaps " + overlaps);
+    check("the card stays inside the window", !!tip && cardInWindow(tip), tip ? JSON.stringify([Math.round(box.left), Math.round(box.top), Math.round(box.width), Math.round(box.height)]) : "no card");
+    var flaresInfo = document.querySelector(".row[data-row=\"effect_flares\"] .info");
+
+    // A second click closes it, puts it back under its "i" and empties the layer.
+    if (flaresInfo) {
+      flaresInfo.click();
+      await wait(60);
+    }
+    check("a second click closes the card and puts it back under its i",
+      !shownCard() && !!flaresInfo && !!flaresInfo.querySelector(".tip") && flaresInfo.getAttribute("aria-expanded") === "false",
+      flaresInfo ? flaresInfo.getAttribute("aria-expanded") + " / " + shownCard() : "no i");
+
+    // A tap outside closes it.
+    await openCard("effect_flares");
+    content.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await wait(60);
+    check("a tap outside closes the card", !shownCard(), shownCard() ? "still open" : "");
+
+    // A tap on the card itself closes it, as it did before (the tap reached the button then).
+    var tapTip = await openCard("fxaa");
+    if (tapTip) {
+      var tapBox = tapTip.getBoundingClientRect();
+      var inCard = document.elementFromPoint(tapBox.left + tapBox.width / 2, tapBox.top + tapBox.height / 2);
+      if (inCard) {
+        inCard.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      }
+      await wait(60);
+    }
+    check("a tap on the card itself closes it", !!tapTip && !shownCard(), tapTip ? "still open" : "no card");
+
+    // One more row in the middle and the first row of the page.
+    await cardRowChecks("monitor", "Monitor");
+    await cardRowChecks("fxaa", "Anti-aliasing");
+
+    // The last row of the page, with the window scrolled to the end: the card slides up and stays inside the window.
+    content.scrollTop = content.scrollHeight;
+    await wait(120);
+    await cardRowChecks("launcher_gpu", "the last row");
+
+    // Keys and pad: the focused "i" shows its card, and a mouse press hides it again.
+    var monitorInfo = document.querySelector(".row[data-row=\"monitor\"] .info");
+    content.scrollTop = 0;
+    await wait(120);
+    if (document.activeElement && document.activeElement.blur) {
+      document.activeElement.blur();
+    }
+    press("ArrowDown");
+    await wait(60);
+    if (document.activeElement && document.activeElement.blur) {
+      document.activeElement.blur();
+    }
+    if (monitorInfo) {
+      monitorInfo.focus();
+      await wait(80);
+    }
+    var focusTip = shownCard();
+    var focusWrong = focusTip ? cardWrongPoints(focusTip) : ["no card"];
+    check("with a keyboard or a pad, the focused i shows its card on top", !!focusTip && focusWrong.length === 0, focusWrong.join("; "));
+    content.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await wait(80);
+    check("a mouse press hides the card again", !shownCard(), shownCard() ? "still open" : "");
+
+    // The same layer covers the header cards of the Controls and the Wheel pages.
+    await setHash("#/settings/controls");
+    await wait(400);
+    var controlsInfo = document.querySelector(".cx-head .info");
+    var controlsTip = controlsInfo ? openCardFrom(controlsInfo) : null;
+    check("the Controls page's card is the top element at its centre and at its four corners",
+      !!controlsTip && cardWrongPoints(controlsTip).length === 0, controlsTip ? cardWrongPoints(controlsTip).join("; ") : "no card");
+    if (controlsInfo) {
+      controlsInfo.click();
+      await wait(60);
+    }
+    await setHash("#/settings/wheel");
+    await wait(400);
+    var wheelInfo = document.querySelector(".cx-head .info");
+    var wheelTip = wheelInfo ? openCardFrom(wheelInfo) : null;
+    check("the Wheel page's card is the top element at its centre and at its four corners",
+      !!wheelTip && cardWrongPoints(wheelTip).length === 0, wheelTip ? cardWrongPoints(wheelTip).join("; ") : "no card");
+    if (wheelInfo) {
+      wheelInfo.click();
+      await wait(60);
+    }
+    await setHash("#/settings/general");
+    await wait(200);
+  }
+
   async function run() {
     await GT4.i18n.ready;
     await wait(300);
@@ -1732,11 +2402,19 @@
       await libraryActionChecks();
       await valueChecks();
       await rendererRowChecks();
+      await presentThreadChecks();
       await gsdxDialogChecks();
       await playOfferChecks();
       await firstStartHintChecks();
       await advancedSectionChecks();
       await controlsChecks();
+      await wheelChecks();
+      // The pointer rule of the option rows, after the wheel page's own checks (a wheel setting written here clears the
+      // mock's "preset applied by itself" notice those checks read).
+      await optionPointerChecks();
+      // TASK-199: an open info card draw above everything, on every page (after the Wheel checks, which leave the tab
+      // list and the settings state in their own shape).
+      await tipLayerChecks();
       await gamesChecks();
       await achievementsChecks();
       await shaderWindowChecks();

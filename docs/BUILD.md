@@ -3329,3 +3329,43 @@ translated units changed by `scripts/camera360_units.py <v200|spec2> <units> <fr
 and that removing its insertions gives the units back), then `scripts/coregs2_bench/game/ee_configure.cmd`/`ee_build.cmd` and
 `configure.cmd` with `GT4_EE_LIBRARY` as for TASK-134. The executable always has the host side (`native/camera_360_hook.cpp`);
 an EE library from the plain units leaves it unused. Recipe and checks: `docs/CAMERA-360.md`.
+
+## TASK-181: the USB capsule of the native Driving Force Pro wheel (slice409)
+
+The native wheel (TASK-018, PR #205 by WaimateWihongi; `docs/WHEEL-NATIVE-DFP.md`) needs the USB capsule: a derived
+`runtime/src/iop/hw.cpp` whose OHCI registers reach `native/usb_ohci.cpp` while the virtual DFP is plugged in. Without a wheel
+file the donor's register stub answers as before, so a build with the capsule runs the game unchanged (gates below).
+
+- **Capsule:** `scripts/prepare_usb_runtime.py C:/Antigravity/gt4-staticrecomp/private/slice409-usb-runtime --assets-root
+  C:/Antigravity/gt4-staticrecomp`. The script refuses a donor whose SHA-256 is not the pinned `b8b56b21...c836`, a new
+  folder outside `private/` or an existing one, and checks that removing its edits gives the donor back. Pin:
+  `docs/inputs/slice409-usb-runtime.json` (`hw.cpp` `7dd95c5b...30ee`, `runtime.json` `7dc8a3ba...4256`).
+- **Configure:** `-DGT4_USB_RUNTIME_SOURCE=C:/Antigravity/gt4-staticrecomp/private/slice409-usb-runtime` (CMake checks
+  `hw.cpp` against `runtime.json`). `scripts/coregs2_bench/game/configure.cmd` passes it for both games by default (`USBRT`
+  overrides it), so the rc builds of v2.00 and Spec II include the wheel.
+- **Game pins:** `scripts/pin_task134_build.py ... --usb-capsule private/slice409-usb-runtime` adds `usb_capsule` and
+  `usb_capsule_sha256` (the SHA-256 of `runtime.json`), as `--spu2-capsule` does.
+- **Checks:** CTest `native_usb_dfp` and `native_wheel`; Python `test_usb_runtime.py` (a synthetic donor, plus the pin and the
+  real donor when `private/` is present); `private/task134-tools/gates6.sh` with v2.00 and Spec II builds that include the
+  capsule, against the rc14 PGO builds.
+
+## 1.3.0-rc15 test build (slice410, 2026-11-05)
+
+Plain builds (no PGO, no ThinLTO) of both games from `release/1.3.0-rc15`, for the owner's racing wheel test; uploaded as a
+GitHub draft only.
+
+- **Configure:** the rc14 recipe values (`build/recipes/t134-spec2.CMakeCache.txt` and `t146-v200.CMakeCache.txt` of the TASK-134
+  worktree): the slice407 EE libraries (`build/t134-ee-*-rc14b`, `b7600c5d...` Spec II, `c4c4ef5e...` v2.00), port slice200,
+  shaders slice153, VU1 slice397, VU0 slice394 (v2.00 image slice160, Spec II image slice390), IPU slice365, license guard
+  slice376, memory card slice200, SPU2 slice396, runtime capsules slice262 (v2.00) and slice276 (Spec II), `GT4_SSE41=ON`,
+  `GT4_HW_THINLTO=OFF`, plus `GT4_USB_RUNTIME_SOURCE=private/slice409-usb-runtime` (TASK-181).
+- **Pins:** `scripts/pin_task134_build.py 410 --base 407 --target gt4|spec2 --exe private/slice410-game/<exe> --library
+  private/slice407-ee-<game>/ps2game.lib --usb-capsule private/slice409-usb-runtime` (the `branch` field then set to
+  `release/1.3.0-rc15`): `docs/inputs/slice410-pcsx2.json` (v2.00, `7060f8bf...`) and `slice410-spec2.json` (Spec II,
+  `a4d84180...`). Distribution `private/slice410-dist-130-rc15` (`scripts/make_distribution.py ... --second-exe`).
+- **Launcher and installer:** `launcher/tools/build-release.ps1 -Label rc15` (and `-Portable`), `CARGO_TARGET_DIR` in the
+  worktree's `build/`; copies in `private/slice410-launchers-rc15`; makensis `/DVERSION=1.3.0 /DLABEL=rc15` with SDL3
+  `private/tooling/sdl3-3.4.18/runtime/SDL3.dll` and `private/release-100-webview2/MicrosoftEdgeWebview2Setup.exe`;
+  `scripts/make_portable_zip.py --version 1.3.0-rc15`; output `private/release-130-rc15-out`.
+- **Checks:** CTest 318/318 on each game (q07 skipped), Python 802 (57 skipped), `gates6.sh` against the rc14 PGO builds
+  (wrong=0).

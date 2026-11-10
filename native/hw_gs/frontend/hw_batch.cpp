@@ -63,6 +63,59 @@ void Batch::Clear() {
     cls = PrimClass::Invalid;
     trace = VertexTrace{};
     reason = FlushReason::Count;
+    paletteSegments.clear();
+}
+
+uint32_t PaletteSegmentCount(const Batch& batch) {
+    return batch.paletteSegments.empty() ? 1u : static_cast<uint32_t>(batch.paletteSegments.size());
+}
+
+uint32_t PaletteSegmentEndPrim(const Batch& batch, uint32_t segment) {
+    if (segment + 1u < batch.paletteSegments.size()) {
+        return batch.paletteSegments[segment + 1u].firstPrim;
+    }
+    return static_cast<uint32_t>(batch.prims.size());
+}
+
+const uint16_t* PaletteSegmentClut(const Batch& batch, uint32_t segment, const clut::ClutUnit& live) {
+    if (batch.paletteSegments.empty()) {
+        return live.Halfwords();
+    }
+    return batch.paletteSegments[std::min<size_t>(segment, batch.paletteSegments.size() - 1u)].clut.data();
+}
+
+clut::Palette DecodeSegmentPalette(const Batch& batch, uint32_t segment, const clut::ClutUnit& live) {
+    const uint64_t tex0Register = batch.state.ctx.tex0;
+    return clut::DecodeHalfwords(PaletteSegmentClut(batch, segment, live), tex0::Psm(tex0Register),
+                                 tex0::Cpsm(tex0Register), tex0::Csa(tex0Register), batch.state.env.texa);
+}
+
+Batch PaletteSegmentBatch(const Batch& batch, uint32_t segment) {
+    Batch part;
+    part.state = batch.state;
+    part.cls = batch.cls;
+    part.reason = batch.reason;
+    part.trace = batch.trace;
+    const uint32_t firstPrim = batch.paletteSegments.empty() ? 0u : batch.paletteSegments[segment].firstPrim;
+    const uint32_t endPrim = PaletteSegmentEndPrim(batch, segment);
+    for (uint32_t index = firstPrim; index < endPrim; ++index) {
+        PrimRecord record = batch.prims[index];
+        const uint32_t source = record.first;
+        record.first = static_cast<uint32_t>(part.vertices.size());
+        for (uint32_t k = 0; k < record.count; ++k) {
+            part.vertices.push_back(batch.vertices[source + k]);
+        }
+        part.prims.push_back(record);
+        part.drawRect = UnionRects(part.drawRect, record.rect);
+    }
+    if (!batch.paletteSegments.empty()) {
+        PaletteSegment only = batch.paletteSegments[segment];
+        only.firstPrim = 0;
+        only.firstVertex = 0;
+        part.state.clutGeneration = only.clutGeneration;
+        part.paletteSegments.push_back(only);
+    }
+    return part;
 }
 
 int UnbiasedExponent(float value) {
@@ -96,6 +149,10 @@ uint32_t StMantissaBits(int exponentComponent, int exponentQ) {
 }
 
 bool ApplyStRounding(Batch& batch, bool constantZ) {
+    return ApplyStRoundingToPrims(batch, constantZ, 0u, static_cast<uint32_t>(batch.prims.size()));
+}
+
+bool ApplyStRoundingToPrims(Batch& batch, bool constantZ, uint32_t firstPrim, uint32_t endPrim) {
     const uint64_t prim = batch.state.effectivePrim;
     const bool textured = Bit(prim, primbit::kTme) != 0;
     const bool fst = Bit(prim, primbit::kFst) != 0;
@@ -105,7 +162,9 @@ bool ApplyStRounding(Batch& batch, bool constantZ) {
     if (!(batch.cls == PrimClass::Sprite || constantZ)) {
         return false;
     }
-    for (const PrimRecord& record : batch.prims) {
+    endPrim = std::min<uint32_t>(endPrim, static_cast<uint32_t>(batch.prims.size()));
+    for (uint32_t index = firstPrim; index < endPrim; ++index) {
+        const PrimRecord& record = batch.prims[index];
         for (uint32_t k = 0; k < record.count; ++k) {
             Vertex& vertex = batch.vertices[record.first + k];
             const int eQ = UnbiasedExponent(vertex.q);

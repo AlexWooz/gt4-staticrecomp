@@ -28,16 +28,33 @@ outside it is ignored with one warning line; gt4-gs never refuses to start becau
   k = ceil(max(W / 640, H / 448)) for the chosen output size W x H, times the **Render scale** (a launcher row, 50% to
   200% in steps of 25%, default 100%), rounded to a whole number (ties up) and clamped to 1..12. A stored `[gs] upscale`
   is dropped by settings schema 5 and refused by `Settings::set_gs`.
-- **What gt4-gs accepts for upscale:** `[EmuCore/GS] upscale_multiplier` takes the whole numbers 1 to 12 only (the
-  allow-list values `1|2|3|4|6|12|5|7|8|9|10|11`; no fractional multipliers, `ExtendedUpscalingMultipliers` is never
-  written). gt4-gs lowers a value above the GPU's limit (max texture size / 1280: 12x on 16384-texel GPUs, 6x on 8192)
-  with a notice; READY does not report that limit yet. Every value 1 to 12 is a choice of the row, so the allow-list
-  and gt4-gs are unchanged (no fork change).
+- **What gt4-gs accepts for upscale:** `[EmuCore/GS] upscale_multiplier` takes the whole numbers 1 to 12 and, since
+  gt4-gs 1.3.0 (TASK-200), the fractional scales 1.25, 1.5, 1.75 and 2.5 (the allow-list values
+  `1|2|3|4|6|12|1.25|1.5|1.75|2.5|5|7|8|9|10|11`; `ExtendedUpscalingMultipliers` is still never written). gt4-gs
+  lowers a value above the GPU's limit (max texture size / 1280: 12x on 16384-texel GPUs, 6x on 8192) with a notice;
+  READY does not report that limit yet. The launcher writes a fractional value only from the Render scale, and only to an
+  installed gt4-gs 1.3.0 or newer; an older gt4-gs gets whole multipliers (see the TASK-200 section below).
 - k per output: 1920x1080 3x, 1920x1200 3x, 1680x1050 3x, 2560x1080 4x, 2560x1440 4x, 3440x1440 6x, 3088x1440 5x,
   3840x2160 6x. Render scale 2560x1440: 50% 2x, 100% 4x, 200% 8x. The default INI (1920x1080 or no monitor known, 100%)
-  is unchanged: `upscale_multiplier = 3`.
+  is unchanged: `upscale_multiplier = 3`. With the percentages of the review, 2560x1440 at 75% is 3x and at 125% is 5x;
+  4K at 50% is 3x.
 - `aspect` stays forced 16:9 in the INI: the per-scene fill still comes only from protocol 1.3 `display_aspect`; the
   launcher has no aspect setting any more (always auto from the output size, decision 0071 addendum).
+
+**TASK-200 (owner, 2026-11-06): fractional scales and OpenGL for GSdx, in a new gt4-gs build.**
+
+- **Fractional scales.** The four values 1.25, 1.5, 1.75 and 2.5 join the `upscale` row as `offered = false` choices
+  (their INI values stay exact and use a dot, independent of the locale). The launcher writes them from the **Render
+  scale**: it is a percentage of the screen's automatic multiplier `k`, so 100% is exactly `k` (never below the screen);
+  the multiplier is `k x percentage / 100` snapped to the accepted value closest to it (an exact tie goes up), whole
+  numbers only up to gt4-gs 1.2.1 and with the four fractional values from 1.3.0 (`current.txt`). The owner rejected a
+  separate Resolution list on 2026-11-06; the Render scale is the only control. Labels show the 16:9 picture, width
+  `640 x multiplier` and height `floor(width x 9 / 16)`.
+- **OpenGL.** `graphics_api` gains `opengl` (`Renderer = 12`, after Direct3D 11). Automatic never resolves to it
+  (`gpu::plan` stays Vulkan or Direct3D 11), it is offered only with gt4-gs 1.3.0 or newer, and the INI writer falls
+  back to Automatic (Vulkan) for an older install after a downgrade.
+- **Version gate.** `gt4l_core::releases::RENDERER_FRACTIONAL_MINIMUM` is 1.3.0 (the next fork version: 1.2.1's
+  allow-list refuses both, so a new minor version is what the release gets). No release build was made (owner: rc16).
 
 ## What it is
 
@@ -117,15 +134,18 @@ this table. Only the renderer choice `coregs-1.1` remains.
 Shown under the "Advanced" heading at the bottom of the Graphics page (owner, 2026-10-21; before, a separate Advanced
 tab), followed by "Reset to defaults" (Y on the pad). Pre-configured to the GT4 ideal. Groups in order:
 
-- Renderer and presentation: `renderer` (Graphics API, Vulkan; D3D12 and D3D11 after the owner checks them), `adapter`
+- Renderer and presentation: `renderer` (Graphics API, Vulkan; D3D12, D3D11 and, since TASK-200, OpenGL for older PCs
+  once gt4-gs 1.3.0 is installed), `adapter`
   (empty, resolved), `vsync` (always set by `GT4_PRESENT_MODE`), `mailbox`, `linear_present` (present filter, Smooth),
   `integer_scaling` (off).
 - Display: `deinterlace` (Automatic, always; TASK-047), `disable_interlace_offset` (off), `antiblur` (on),
   `offsets` (off), `overscan` (off), `fmv_aspect` (off), `tv_shader` (None).
 - Filtering and accuracy: `filter` (texture filtering, PS2 bilinear), `trilinear` (Automatic), `anisotropic` (off, the
-  60 FPS budget), `mipmap` (hardware mipmapping on, `hw_mipmap`), `blending` (High, always), `dithering` (Unscaled),
-  `texture_preloading` (Full), `performance_mode` "Performance Mode" (a toggle, Off by default: Off = Accurate, always
-  written; On = NoReadbacks, GSdx only, TASK-091), `accurate_alpha_test` (off), `aa1` (off), `rov` (off, experimental).
+  60 FPS budget), `mipmap` (hardware mipmapping on, `hw_mipmap`), `blending` (High or Minimum, TASK-186: the old
+  Performance Mode's second GSdx setting as a row, GSdx only), `dithering` (Unscaled),
+  `texture_preloading` (Full), `hw_download_mode` "Readbacks" (Accurate by default, always written; the table keeps the
+  five values of the row before TASK-091, and the launcher offers the two gt4-gs 1.2.1 accepts, GSdx only, TASK-186),
+  `accurate_alpha_test` (off), `aa1` (off), `rov` (off, experimental).
 - Colour: `shade_boost` (off) and the four levels (50 each).
 - OSD: none since 2026-10-21. PCSX2's own OSD rows moved to HIDDEN (forced off); the performance overlay below is
   GT4Recomp's own.
@@ -314,11 +334,11 @@ citations.
 
 | Launcher row | INI key | Values (INI) | GT4 default |
 |---|---|---|---|
-| `renderer` | `Renderer` | Vulkan 14, D3D12 15, D3D11 3 (D3D resolved, not offered) | Vulkan 14 |
+| `renderer` | `Renderer` | Vulkan 14, D3D12 15, D3D11 3, OpenGL 12 (1.3.0) | Vulkan 14 |
 | `filter` | `filter` | Nearest 0, Forced 1, PS2 2, Forced but sprite excluded 3 | PS2 (2) |
 | `trilinear` | `TriFilter` | Automatic -1, Off 0, PS2 1, Forced 2 | Automatic |
 | `anisotropic` | `MaxAnisotropy` | 0, 2, 4, 8, 16 | 0 |
-| `blending` | `accurate_blending_unit` | Minimum 0 ... High 3 ... Maximum 5 | High (3) |
+| `blending` | `accurate_blending_unit` | High 3, Minimum 0 (TASK-186: the two values the preset used) | High (3) |
 | `dithering` | `dithering_ps2` | Off 0, Scaled 1, Unscaled 2, Force 32 bit 3 | Unscaled (2) |
 | `texture_preloading` | `texture_preloading` | None 0, Partial 1, Full 2 | Full |
 | `deinterlace` | `deinterlace_mode` | Automatic 0, Off 1, Weave, Bob, Blend, Adaptive (TFF/BFF) 2 to 9 | Automatic |
@@ -328,18 +348,27 @@ citations.
 | `tv_shader` | `TVShader` | None 0 ... Lottes CRT 5, 4xRGSS 6, NxAGSS 7 | None |
 | `shade_boost` | `ShadeBoost` | bool | off |
 | `shade_boost_*` | `ShadeBoost_Brightness`, `_Contrast`, `_Gamma`, `_Saturation` | 1 to 100 | 50 |
-| `performance_mode` | `HWDownloadMode` | toggle: Off = Accurate 0, On = NoReadbacks 2 (TASK-091) | Off, Accurate (0) |
+| `hw_download_mode` | `HWDownloadMode` | Accurate 0, EnabledForceFull 1, NoReadbacks 2, Unsynchronized 3, Disabled 4 (TASK-186) | Accurate (0) |
 | `osd_messages_pos`, `osd_performance_pos` | `OsdMessagesPos`, `OsdPerformancePos` | None 0, Top left 1 ... Bottom right 9 | Top left (1); Top right (3) |
 | `osd_scale` | `OsdScale` | 25 to 500 (percent) | 100 |
 | `adapter` | `Adapter` | empty or a name from `GSGetAdapterInfo` | empty |
 | `mipmap` | `hw_mipmap` | bool | on |
 
-Readback mapping (TASK-091, 1.2.1): the launcher row is Performance Mode (`performance_mode`). `--gs-readback`
-(`GT4_GS_READBACK`) is a shortcut for it: accurate = `HWDownloadMode` Enabled (0, written by default); no-readbacks =
-NoReadbacks (2). Unsynchronized (3) is no longer a table value. A shortcut and `--gs-setting performance_mode=...` for
-the same row conflict. The allow-list (`gs-settings-allowlist.json`) lists the values of the table, so gt4-gs now
-ignores `HWDownloadMode` 1, 3 and 4. The launcher stores the old readback key as Performance Mode On when it was not
-accurate (settings schema 5 to 6).
+Readback mapping (TASK-186, owner 2026-11-06): Readbacks is a player row again (`hw_download_mode`), with the five
+values of the row before TASK-091 and Accurate (0) by default. `--gs-readback` (`GT4_GS_READBACK`) is a shortcut for it,
+with the same five names; a shortcut and `--gs-setting hw_download_mode=...` for the same row conflict. The effect
+toggles never write the readback mode: turning the flares off answers the flare visibility table as zeros in our game
+code (`GT4_GS_HIDE_FLARES=1` with `GT4_GS_READBACK_LOCAL=1` on the GSdx path, `GT4_CORE2_PERF_FLARES=1` on CoreGS 2.0),
+so the car icons and the loading picture stay accurate. Blending accuracy is a row too (`blending`, High or Minimum), and
+the CoreGS 2.0 effect rows (`effect_flares`, `effect_road_sheen`, `effect_targets`) are launcher-only: they reach the game
+as `GT4_CORE2_PERF_FLARES`, `GT4_CORE2_PERF_ROAD_SHEEN` and `GT4_CORE2_EFFECTS_1X`, never in this file.
+**The allow-list limitation, and what the launcher does about it:** the gt4-gs 1.2.1 the launcher runs embeds the
+allow-list of the TASK-091 table, which listed only `HWDownloadMode` 0 and 2, so it ignores 1, 3 and 4 (one warning line
+in the session log). The table keeps all five values and `--gs-readback` still spells them, but the launcher offers only
+the two gt4-gs accepts (`gs_table::GT4GS_HW_DOWNLOAD_MODES`) and a stored 1, 3 or 4 becomes Accurate with a log line; the
+row widens again when a gt4-gs build with the regenerated allow-list becomes the minimum. The old Performance Mode choice
+itself migrates to every effect off, small effects at 1x, Minimum blending and Accurate readbacks (settings schema 8 to
+9).
 
 `UserHacks_*`: the names are recorded in the `user_hacks` row notes. Each name is a hidden per-key row for TASK-043.
 

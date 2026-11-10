@@ -28,11 +28,22 @@ pub const CHECKSUM_ASSET: &str = "SHA256SUMS";
 pub const MAX_NOTES_CHARS: usize = 6000;
 /// Lowest stable GT4Recomp version the launcher offers.
 pub const LAUNCHER_MINIMUM: Version = Version(1, 0, 0);
-/// Lowest stable gt4-gs version the launcher installs. 1.2.1 (TASK-093): gt4-gs reads the `Textures` folder itself, so
-/// the launcher stops making `replacements` and flattens an old one (`textures::flatten_replacements`). 1.2.0 (TASK-088)
-/// added the custom texture loading and the 2-row bottom crop. An older install is replaced at the next launch
-/// (`gs_release::needs_install`).
-pub const RENDERER_MINIMUM: Version = Version(1, 2, 1);
+/// Lowest stable gt4-gs version the launcher installs. 1.3.0 (TASK-200): the fractional render scales and OpenGL;
+/// 1.2.1 (TASK-093) read the `Textures` folder itself and 1.2.0 (TASK-088) added the custom texture loading. An older
+/// install is replaced at the next launch (`gs_release::needs_install`).
+pub const RENDERER_MINIMUM: Version = Version(1, 3, 0);
+
+/// The gt4-gs release this launcher installs even when GitHub marks it as a pre-release (TASK-200, owner 2026-11-06).
+/// 1.3.0 ships as a pre-release on purpose: every launcher's automatic picker ignores pre-releases, so 1.2.x and the
+/// earlier 1.3.0 release candidates stay on the gt4-gs they have, while this rc15 launcher installs the pinned tag by
+/// name. Its package is verified against the pinned release's `SHA256SUMS`, as any other install is. `None` when no pin
+/// applies (a launcher that follows the newest stable release only).
+pub const RENDERER_PINNED: Option<Version> = Some(Version(1, 3, 0));
+/// Lowest gt4-gs version whose allow-list accepts the fractional render scales (1.25, 1.5, 1.75 and 2.5) and OpenGL
+/// (`Renderer = 12`), TASK-200 (owner, 2026-11-06). gt4-gs 1.2.1 refuses both: the launcher offers them only to an
+/// installed 1.3.0 or newer and keeps the whole-number scales and the three APIs for older versions. Automatic never
+/// resolves to OpenGL.
+pub const RENDERER_FRACTIONAL_MINIMUM: Version = Version(1, 3, 0);
 /// Lowest GT4Recomp version the version picker lists (TASK-109): `1.3.0-rc5` is the first build that reads the
 /// multi-game data layout, settings schema 8 and the per-game save names, so an older one cannot read this data.
 pub const PICKER_MINIMUM: ReleaseVersion = ReleaseVersion::candidate(Version(1, 3, 0), 5);
@@ -207,6 +218,13 @@ pub fn select_latest(releases: &[Release], minimum: Version) -> Option<&Release>
         .filter(|(version, _)| *version >= minimum)
         .max_by_key(|(version, _)| *version)
         .map(|(_, release)| release)
+}
+
+/// The pinned release: the exact tag `gt4gs-v<version>`, not a draft, with that version. A pre-release is accepted on
+/// purpose (TASK-200): pre-releases are ignored by the automatic picker, so only a launcher that names the pin takes it.
+pub fn select_pinned(releases: &[Release], pinned: Version) -> Option<&Release> {
+    let tag = format!("gt4gs-v{}", pinned.text());
+    releases.iter().find(|release| !release.draft && release.version == Some(pinned) && release.tag == tag)
 }
 
 /// The release the launcher offers on a channel, newest by version, at or above `minimum`, never a draft. Stable: the
@@ -419,6 +437,23 @@ mod tests {
         ]"#;
         let releases = parse_releases(only_old, Stream::Renderer).unwrap();
         assert!(select_latest(&releases, RENDERER_MINIMUM).is_none(), "1.0.1 is below the minimum, 1.1.1 a prerelease");
+    }
+
+    #[test]
+    fn the_pinned_release_is_taken_by_exact_tag_and_never_from_a_draft() {
+        // TASK-200: 1.3.0 ships as a pre-release (the automatic picker ignores it); the pin names the exact tag. A draft
+        // with the same numbers is never installed.
+        let json = r#"[
+          {"tag_name":"gt4gs-v1.3.0","prerelease":true,"draft":false,"assets":[]},
+          {"tag_name":"gt4gs-v1.4.0","prerelease":false,"draft":true,"assets":[]},
+          {"tag_name":"gt4gs-v1.5.0","prerelease":false,"draft":false,"assets":[]}
+        ]"#;
+        let releases = parse_releases(json, Stream::Renderer).unwrap();
+        let pinned = select_pinned(&releases, Version(1, 3, 0)).unwrap();
+        assert!(pinned.prerelease, "the pin accepts the pre-release");
+        assert_eq!(pinned.version, Some(Version(1, 3, 0)));
+        assert!(select_pinned(&releases, Version(1, 4, 0)).is_none(), "a draft is never installed");
+        assert!(select_pinned(&releases, Version(1, 6, 0)).is_none(), "the tag must exist");
     }
 
     #[test]

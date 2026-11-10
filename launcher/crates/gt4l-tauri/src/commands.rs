@@ -17,12 +17,13 @@ use gt4l_core::gs_release;
 use gt4l_core::launch;
 use gt4l_core::paths::{self, DataDirs};
 use gt4l_core::settings;
+use gt4l_core::shader_prepare::{GaveUp, PrepareOutcome};
 use gt4l_core::{Settings, LAUNCHER_VERSION};
 use gt4l_disc::setup::{self as disc_setup, Installed};
 use gt4l_platform::game;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::model;
@@ -32,6 +33,7 @@ use crate::saves::{self, Item};
 use gt4saves::Library;
 use crate::state::{self, lock, AppState, SetupOutcome, Shared};
 use crate::webview_guard;
+use crate::wheel_page;
 
 /// `app_state()` (ui/dev/README.md):
 /// `{setup: {state, step, progress, bytes_done, bytes_total, renderer_step, disc_name, problem, note}, game_running,
@@ -254,10 +256,19 @@ pub fn get_settings_table_of(shared: &Shared) -> Result<Value, String> {
 
 pub fn get_settings_table_with_monitors(shared: &Shared, monitors: &[display_rules::Monitor]) -> Result<Value, String> {
     let state = lock(shared);
-    // TASK-114 rc5: one card list, read from the cache (no probe here), serves both the rows and the integrated check.
+    // TASK-114 rc5: one card list, read from the cache (no probe here), serves the rows and the graphics card choice.
     let cards = gt4l_platform::gpu::cached_gpus();
-    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(state.config.settings.get("graphics_card"), &cards).is_some();
-    let mut table = model::settings_table_with_monitors(&state.config.settings, &state.controls, monitors, &cards, integrated_gpu);
+    // TASK-200: the fractional scales and OpenGL exist only in gt4-gs 1.3.0 or newer (its allow-list). The version in use
+    // comes from `current.txt`, a cheap read; an install made without it keeps today's lists.
+    let fractional_scales = gt4l_core::textures::renderer_version_in_use(&state.dirs.renderer_root())
+        .is_some_and(|version| version >= gt4l_core::releases::RENDERER_FRACTIONAL_MINIMUM);
+    let mut table = model::settings_table_with_monitors(
+        &state.config.settings,
+        &state.controls,
+        monitors,
+        &cards,
+        fractional_scales,
+    );
     // TASK-091: the launcher's own row (Graphics > Advanced), not a game setting.
     let safe_mode = webview_guard::safe_mode_on(state.user_dirs.root());
     if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut) {
@@ -392,9 +403,10 @@ pub struct PlayInputs {
     pub api: String,
 }
 
-/// The checks of Play before anything starts. `program_dir` is the folder of `GT4Recomp.exe`.
-pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, String> {
-    let state = lock(shared);
+/// The checks of Play before anything starts. `program_dir` is the folder of `GT4Recomp.exe`. `wheel` is the pad
+/// service's last `wheel-status` payload: it decides whether the virtual Driving Force Pro is in the game (TASK-189).
+pub fn prepare_play(shared: &Shared, program_dir: &Path, wheel: &Value) -> Result<PlayInputs, String> {
+    let mut state = lock(shared);
     let language = state::language_of(&state);
     if state.game_child.is_some() {
         return Err(messages::text("game.already_running", language).into());
@@ -424,6 +436,14 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
     let controls_path = state.user_dirs.controls_file();
     if controls_path.exists() {
         extra.push(("GT4_CONTROLS_FILE".into(), controls_path.display().to_string()));
+    }
+    // TASK-181, TASK-189: the racing wheel file (the game's virtual Driving Force Pro). Play writes what the wheel
+    // detected now means (the shipped preset for it, and whether the virtual wheel is plugged in), then passes the file
+    // when it exists.
+    wheel_page::prepare_for_play(&mut state, wheel);
+    let wheel_path = state.wheel_path();
+    if wheel_path.exists() {
+        extra.push(("GT4_WHEEL_FILE".into(), wheel_path.display().to_string()));
     }
     // TASK-148: the controller chosen on the Controls page, and the player's SDL gamepad mappings when there are any.
     if let Some(choice) = launch::controller_environment(&state.config.settings) {
@@ -482,16 +502,22 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
             );
         }
     }
-    // Issue #89: on an integrated GPU the untouched default scale plays at 1x (the GPU the system check reports).
-    let integrated_gpu = gt4l_platform::gpu::integrated_gpu_name_of(settings.get("graphics_card"), &cards);
-    let plan = launch::session_plan(&settings, display.as_ref(), integrated_gpu.is_some());
+    // TASK-200: the fractional Render scale steps are GSdx's (gt4-gs 1.3.0 or newer); CoreGS 2.0 keeps whole numbers.
+    let caps = if coregs20 {
+        display_rules::CORE_GS_CAPS
+    } else if pcsx2.as_ref().is_some_and(|installed| installed.version >= gt4l_core::releases::RENDERER_FRACTIONAL_MINIMUM) {
+        display_rules::PCSX2_GS_FRACTIONAL_CAPS
+    } else {
+        display_rules::PCSX2_GS_CAPS
+    };
+    let plan = launch::session_plan(&settings, display.as_ref(), caps);
     state::log(
         &dirs,
         &format!(
             "display: {} output {} -> {}x internal {}x{} (k {}, render scale {}%, aspect {:.4}{})",
             display.as_ref().map(|target| target.device.as_str()).unwrap_or("unknown monitor"),
             display.as_ref().map(|target| target.output.text()).unwrap_or_else(|| "unknown".into()),
-            plan.multiplier,
+            display_rules::multiplier_text(plan.multiplier),
             plan.internal_width,
             plan.internal_height,
             plan.base_multiplier,
@@ -500,9 +526,6 @@ pub fn prepare_play(shared: &Shared, program_dir: &Path) -> Result<PlayInputs, S
             if plan.ultrawide_on { ", aspect path on" } else { "" }
         ),
     );
-    if let (true, Some(name)) = (plan.integrated_default, integrated_gpu.as_deref()) {
-        state::log(&dirs, &format!("display: integrated GPU {name}: default internal {}x", plan.multiplier));
-    }
     Ok(PlayInputs {
         display,
         game,
@@ -533,7 +556,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         state.home_message = problem.clone();
         return Err(problem);
     }
-    let inputs = prepare_play(&shared, &program_directory()).inspect_err(|message| {
+    // TASK-189: the wheels connected now, before the launcher closes its SDL handles for the game.
+    let wheel_status = app.try_state::<pad_service::Handle>().map(|pads| pads.inner().wheel_status()).unwrap_or_default();
+    let inputs = prepare_play(&shared, &program_directory(), &wheel_status).inspect_err(|message| {
         lock(&shared).home_message = message.clone();
     })?;
     let PlayInputs { game, dirs, disc, elf, executable, settings, pcsx2, display, extra, graphics_notice, api } = inputs;
@@ -551,7 +576,22 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
     if !textures.custom {
         paths::ensure_texture_folders(&textures.folder).map_err(|error| format!("texture folder: {error}"))?;
     }
-    let running = game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra)?;
+    // TASK-181: the launcher closes every SDL handle first (the wheel's and its force feedback): the game owns them.
+    let pads = app.try_state::<pad_service::Handle>().map(|pads| pads.inner().clone());
+    if let Some(pads) = &pads {
+        if !pads.release_for_game() {
+            state::log_warn(&dirs, "controller input: SDL3 did not confirm it closed its devices before the game started");
+        }
+    }
+    let running = match game::start(&dirs, &executable, &elf, &disc, &settings, pcsx2.as_ref(), display.as_ref(), &textures, &extra) {
+        Ok(running) => running,
+        Err(error) => {
+            if let Some(pads) = &pads {
+                pads.game_ended();
+            }
+            return Err(error);
+        }
+    };
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     {
         let mut state = lock(&shared);
@@ -605,6 +645,9 @@ pub fn play(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
         drop(running);
         lock(&shared).discord.on_game_end();
         lock(&shared).game_child = None;
+        if let Some(pads) = &pads {
+            pads.game_ended();
+        }
         let renderer_changed = gsdx_error.is_some() && {
             let stored = lock(&shared).config.settings.clone();
             let (_, graphics, _) = gt4l_platform::gpu::run_settings(&stored, state::current_language());
@@ -734,22 +777,38 @@ pub fn prepare_shaders(app: AppHandle, shared: State<'_, Shared>) -> Result<bool
     let monitors = gt4l_platform::display::monitors();
     let display = display_rules::resolve_target(&monitors, settings.get("monitor"), settings.get("resolution"));
     let mut worked = false;
-    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &mut |done, total| {
+    let cancelled = { lock(&shared).shaders_cancelled.clone() };
+    let result = game::prepare_shaders(&dirs, &executable, &settings, display.as_ref(), &textures, &slot, &cancelled, &mut |progress| {
         worked = true;
-        let _ = app.emit("shaders-progress", json!({ "done": done, "total": total }));
+        let _ = app.emit("shaders-progress", json!({ "done": progress.done, "total": progress.total, "attempt": progress.attempt }));
     });
     let state = lock(&shared);
     if state.shaders_cancelled.load(Ordering::SeqCst) {
         state::log(&state.dirs, &format!("shaders: compile of {} cancelled", game.display_name));
         return Ok(false);
     }
-    match result {
-        Ok(true) if worked => state::log(&state.dirs, "shaders: compiled"),
-        Ok(true) => {}
-        Ok(false) => state::log_error(&state.dirs, "shaders: the compile did not finish; the game compiles as it plays (logs\\shaders.log)"),
-        Err(message) => state::log_error(&state.dirs, &format!("shaders: {message}")),
-    }
+    log_prepare_outcome(&state.dirs, &result, worked);
     Ok(true)
+}
+
+/// What the log says about a prepare (TASK-170b): a finished one, a retried one, or the reason the game starts without it
+/// (it then compiles as it plays).
+fn log_prepare_outcome(dirs: &gt4l_core::paths::DataDirs, result: &Result<PrepareOutcome, String>, worked: bool) {
+    match result {
+        Ok(PrepareOutcome::Finished { attempts }) if *attempts > 1 => {
+            state::log(dirs, &format!("shaders: compiled after {attempts} attempts (logs\\shaders.log)"));
+        }
+        Ok(PrepareOutcome::Finished { .. }) if worked => state::log(dirs, "shaders: compiled"),
+        Ok(PrepareOutcome::Finished { .. }) | Ok(PrepareOutcome::Cancelled { .. }) => {}
+        Ok(PrepareOutcome::GaveUp { attempts, why }) => {
+            let reason = match why {
+                GaveUp::NoProgress => "the last attempt got no further",
+                GaveUp::LimitReached => "the attempt limit was reached",
+            };
+            state::log_error(dirs, &format!("shaders: the compile did not finish after {attempts} attempts, {reason}; the game compiles as it plays (logs\\shaders.log)"));
+        }
+        Ok(PrepareOutcome::Failed { message, .. }) | Err(message) => state::log_error(dirs, &format!("shaders: {message}")),
+    }
 }
 
 /// Cancel in the "Compiling shaders" window. What was compiled stays in the cache for the next Play.
@@ -1566,8 +1625,10 @@ pub fn open_latest_log(shared: State<'_, Shared>) -> Result<(), String> {
 /// `export_logs()`: writes the log bundle (TASK-111) into a folder the player picks (Desktop by default). Returns the zip's
 /// path, or `None` when the player cancels. Nothing is written before the folder is picked.
 #[tauri::command]
-pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Option<String>, String> {
+pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>, pads: State<'_, pad_service::Handle>) -> Result<Option<String>, String> {
     let shared = shared.inner().clone();
+    // The pads the launcher's gamepad service knows now, by name (no serial numbers).
+    let controllers = crate::log_bundle::controller_names(&pads.inner().status());
     tauri::async_runtime::spawn_blocking(move || {
         let (language, start) = {
             let state = lock(&shared);
@@ -1588,7 +1649,7 @@ pub async fn export_logs(app: AppHandle, shared: State<'_, Shared>) -> Result<Op
         let folder = picked.into_path().map_err(|error| error.to_string())?;
         let user = std::env::var("USERNAME").unwrap_or_default();
         let state = lock(&shared);
-        match crate::log_bundle::export(&state, &folder, &user) {
+        match crate::log_bundle::export(&state, &folder, &user, &controllers) {
             Ok(path) => {
                 state::log(&state.dirs, &format!("logs exported to {}", path.display()));
                 Ok(Some(path.display().to_string()))

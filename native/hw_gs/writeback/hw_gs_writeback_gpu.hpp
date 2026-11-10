@@ -14,6 +14,12 @@
 #include <string>
 #include <vector>
 
+#include "../hw_device_profile.hpp"
+
+namespace gt4::hw {
+class QueueLock;  // hw_queue_lock.hpp
+}
+
 namespace hwgs::gpu {
 
 // Vulkan handles owned by the caller (the HWR backend). Passed as void* to keep this header Vulkan-free.
@@ -28,6 +34,13 @@ struct VulkanHandles {
     // The device was created with independentBlend (IN-481: per-attachment write masks of the ROP path).
     bool independentBlend = false;
     bool dualSourceBlend = false;  // IN-482: dualSrcBlend
+    // TASK-174: set when the presentation thread shares `queue` (a device with one queue in its graphics family). Every
+    // vkQueueSubmit and vkDeviceWaitIdle on it then runs inside this lock (Vulkan external synchronization); null otherwise.
+    gt4::hw::QueueLock *queueLock = nullptr;
+    // TASK-179: the capability probe of the device (vulkan_loader::probe_device_profile), with what it was created with
+    // (largePoints, shaderStorageImageArrayDynamicIndexing). Not probed (`profile.probed` false): the renderers take the
+    // paths that need neither feature.
+    gt4::hw::DeviceProfile profile;
 };
 
 // Vertex record of chapter 03.3 (32 bytes). X and Y are 12.4 two's complement values.
@@ -42,9 +55,15 @@ struct GpuVertex {
     std::uint16_t u;
     std::uint16_t v;
     std::uint8_t fog;
-    std::uint8_t pad[3];
+    std::uint8_t pad;
+    // TASK-168 (core 2 only, not read by the old core's pipelines): the palette row of this vertex's primitive for an
+    // indexed memory texture, plus one; 0 = the batch's row (DrawBatch::paletteRow). A batch with several palette
+    // segments gives the vertices of its later segments their own rows.
+    std::uint16_t paletteRow;
 };
 static_assert(sizeof(GpuVertex) == 32, "GpuVertex must match the 32-byte record of chapter 03.3");
+static_assert(offsetof(GpuVertex, fog) == 28 && offsetof(GpuVertex, paletteRow) == 30,
+              "the vertex input of the pipelines reads F at byte 28 and the palette row at byte 30");
 
 enum class GpuTopology : std::uint8_t { Points, Lines, Triangles };
 

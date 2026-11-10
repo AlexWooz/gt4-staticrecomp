@@ -28,14 +28,19 @@ struct DfpInput {
   std::uint8_t brake = 0;
 };
 
-// One force slot as the game last set it.
+// One force slot as the game last set it. `order` is the order of the slot's last download or refresh, so an effect that
+// more than one slot can carry (the spring) follows the newest command, as the single host effect it becomes does.
 struct DfpSlot {
   bool active = false;
   std::uint8_t type = 0xFF;
   std::array<std::uint8_t, 5> params{};
+  std::uint64_t order = 0;
 };
 
 // Guest -> host: the forces the game asks for, in device-independent units.
+//
+// There is no default centring spring here (TASK-194): the DFP's "default spring on" command is accepted and ignored, as
+// PCSX2 ignores it, and nothing brings one back, not even a USB reset. GT4's own spring effects arrive as slot forces.
 struct DfpForces {
   double constant = 0.0;        // -1 .. +1 (positive = towards the right)
   bool spring = false;
@@ -49,10 +54,9 @@ struct DfpForces {
   double damper_right = 0.0;
   double damper_saturation = 1.0;
   bool friction = false;
-  double friction_coefficient = 0.0;
+  double friction_left = 0.0;   // the two coefficient bytes, each 0..1 (0x80/255 on the left, 1.0 on the right for GT4)
+  double friction_right = 0.0;
   double friction_saturation = 1.0;
-  bool autocenter = true;        // the device's default centring spring (on after reset)
-  double autocenter_strength = 0.5;
   int range_degrees = 200;       // a DFP starts in the compatible 200-degree mode
   std::uint64_t revision = 0;    // bumped on every change
 };
@@ -68,7 +72,8 @@ public:
   // True once the guest has configured the device (the game's driver found it).
   bool configured() const;
   void set_configured(bool value);
-  // The wheel is present on the host (GT4_DFP / wheel.toml mode = "dfp"); without it no device is plugged in.
+  // The virtual wheel is plugged in (wheel.toml enabled = true, or GT4_DFP=1); without it no device is plugged in and the
+  // USB capsule leaves the donor register stub answering.
   bool enabled() const;
   void set_enabled(bool value);
   // Called after every force change, outside the lock, on the thread that changed them (the emulation thread).
@@ -96,11 +101,14 @@ private:
   void recompute();
   std::array<DfpSlot, 4> slots_{};
   DfpForces forces_{};
+  std::uint64_t sequence_ = 0;
 };
 
 class Dfp final : public Device {
 public:
   explicit Dfp(DfpBridge &bridge);
+  // The census of the session's force commands goes to game.log here, without the trace switch (TASK-192).
+  ~Dfp() override;
   void reset() override;
   std::uint8_t address() const override { return address_; }
   int setup(std::span<const std::uint8_t, 8> packet) override;
@@ -115,6 +123,7 @@ public:
 
 private:
   void command(const std::uint8_t *data, std::size_t length);
+  void log_census() const;
 
   DfpBridge &bridge_;
   DfpCommandDecoder decoder_;
@@ -127,6 +136,7 @@ private:
   bool expect_report_data_ = false;
   std::uint64_t commands_ = 0;
   std::uint64_t reports_ = 0;
+  DfpInput last_reported_{};  // the input the last interrupt IN report carried (the steering the game last saw)
   std::map<unsigned, std::pair<std::uint64_t, std::array<std::uint8_t, 8>>> census_;
 };
 

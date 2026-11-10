@@ -65,6 +65,23 @@ struct Stats {
   std::uint32_t present_fill_millionths = 0;  // the fill target ratio x 1e6 (0 = the whole window)
   std::uint32_t present_downscale_levels = 0;  // IN-375: 2x2 box steps before the final blit (upscaled frames)
   std::uint32_t present_source_width = 0, present_source_height = 0;  // the presented frame (scaled size)
+
+  // TASK-174: how frames reach the display and what that costs the GS thread (session totals; docs/PRESENTATION-ONE-QUEUE.md).
+  const char *present_path = "";          // "rendering_queue", "own_queue" (IN-516) or "shared_queue" (TASK-174)
+  std::uint64_t present_requests = 0;     // presentations asked of the path; each ends as one of the four below
+  std::uint64_t presents_shown = 0;       // vkQueuePresentKHR returned VK_SUCCESS or VK_SUBOPTIMAL_KHR
+  std::uint64_t presents_not_shown = 0;   // the presentation side was behind: no free slot, picture or swapchain image in time
+  std::uint64_t presents_failed = 0;      // an acquire or present error (out of date, surface lost)
+  std::uint64_t presents_left_out = 0;    // left out by the display latency control (IN-521)
+  double gs_present_step_us = 0;          // GS thread: the whole presentation step
+  double gs_present_wait_us = 0;          // GS thread: inside its fence waits, acquire, queue submit and present calls there
+  double gs_queue_lock_wait_us = 0;       // GS thread: waiting for the shared queue's lock (all its submissions)
+  double gs_queue_lock_longest_wait_us = 0;  // GS thread: its longest single wait for that lock
+  std::uint64_t gs_queue_calls = 0;       // GS thread: queue calls under the shared queue's lock
+  double presenter_queue_lock_wait_us = 0;  // presentation thread: waiting for the shared queue's lock
+  double presenter_queue_call_us = 0;       // presentation thread: inside its submit and present calls on the shared queue
+  double presenter_queue_longest_call_us = 0;  // presentation thread: its longest single call there (what the GS thread may wait)
+  double presenter_display_wait_us = 0;  // presentation thread: waiting for the display (acquire, previous presentation shown)
 };
 
 // Renderer counters of chapter 12.7, flattened so the backend header stays free of the write-back
@@ -187,7 +204,9 @@ public:
   // present() and before a scanout dump so the field offset and the deinterlacer use this VBlank's field.
   void set_display_field(bool odd);
   void set_age_targets(bool age);  // TASK-082, core 2: off for a VBlank with no drawing on purpose
-  bool has_own_present_queue() const;  // TASK-082: a second queue of the family, so pictures can be shown from their own thread
+  // TASK-082, TASK-174: pictures are shown from their own thread (a second queue of the family, or the rendering queue shared with
+  // the presentation thread), so the frame spacing with frames left out happens there and not on the GS thread.
+  bool has_presentation_thread() const;
   void wait_idle();
 
   // Builds the display image as present would. M0: no image, returns false (black).

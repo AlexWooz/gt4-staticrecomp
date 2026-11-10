@@ -335,6 +335,10 @@ void check_config() {
   check(has(changed_environment, "GT4_FULLSCREEN", "0") && has(changed_environment, "GT4_PRESENT_MODE", "mailbox"), "windowed, mailbox");
   check(has(changed_environment, "GT4_GS_SYNC", "1") && has(changed_environment, "GT4_PERF", "1"), "synchronous GS and the report");
   check(has(changed_environment, "GT4_VU1_VERIFY", "100") && has(changed_environment, "GT4_VU0_VERIFY", "100"), "VU checks");
+  const sa::Config wheel = sa::parse_config("wheel_file=C:\\Users\\P\\AppData\\Roaming\\GT4Recomp\\wheel.toml\nwheel_file=\n");
+  check(has(sa::config_environment(wheel), "GT4_WHEEL_FILE", "C:\\Users\\P\\AppData\\Roaming\\GT4Recomp\\wheel.toml") &&
+            wheel.warnings.size() == 1,
+        "TASK-181: wheel_file becomes GT4_WHEEL_FILE; an empty value is refused");
 
   const sa::Config bad = sa::parse_config("fullscreen=yes\nmonitor=DISPLAY1\noutput_size=axb\npresent_mode=slow\nunknown=1\nno equals\n  # comment\n\n");
   check(bad.values.empty() && bad.warnings.size() == 6, "unknown keys, a line without = and refused values are dropped with a warning");
@@ -410,18 +414,28 @@ void check_resolve() {
   {
     World chosen = ready_world();
     sa::Inputs choice = inputs_for(*layout, nullptr);
-    choice.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_scale=4\nhw_performance=1\nhw_frame_skip=2\nhw_hud=1\nhw_textures=D:/T\nhw_adapter=Card\n");
+    choice.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_scale=4\nhw_effect_flares=0\nhw_effect_road_sheen=1\nhw_effect_targets=1\nhw_frame_skip=2\nhw_hud=1\nhw_present_shared_queue=0\nhw_textures=D:/T\nhw_adapter=Card\n");
     check(choice.config->warnings.empty(), "the launcher's CoreGS 2.0 keys are accepted");
-    check(!sa::parse_config("renderer=donor\nhw_scale=13\nhw_performance=0\n").warnings.empty(), "other values are refused");
+    check(!sa::parse_config("renderer=donor\nhw_scale=13\nhw_effect_flares=2\n").warnings.empty(), "other values are refused");
+    // TASK-174: the one-queue presentation key is accepted only as 0, the launcher's Presentation thread off.
+    check(!sa::parse_config("hw_present_shared_queue=1\n").warnings.empty(), "hw_present_shared_queue=1 is refused");
     check(!sa::renderer_needed(choice, chosen.access()), "CoreGS 2.0 needs no GSdx files");
     const sa::Resolved coregs = sa::resolve(choice, chosen.access());
     check(!coregs.needs_renderer && has(coregs.set, "GT4_RENDERER", "hw") && has(coregs.set, "GT4_HW_CORE", "2") &&
-              has(coregs.set, "GT4_HW_SCALE", "4") && has(coregs.set, "GT4_CORE2_PERFORMANCE", "1") && has(coregs.set, "GT4_FRAME_SKIP_FORCE", "2") &&
-              has(coregs.set, "GT4_HW_HUD", "1") && has(coregs.set, "GT4_HW_TEXTURES", "D:/T") && has(coregs.set, "GT4_HW_ADAPTER", "Card"),
+              has(coregs.set, "GT4_HW_SCALE", "4") && has(coregs.set, "GT4_CORE2_PERF_FLARES", "0") &&
+              has(coregs.set, "GT4_CORE2_PERF_ROAD_SHEEN", "1") && has(coregs.set, "GT4_CORE2_EFFECTS_1X", "1") &&
+              has(coregs.set, "GT4_FRAME_SKIP_FORCE", "2") &&
+              has(coregs.set, "GT4_HW_HUD", "1") && has(coregs.set, "GT4_HW_PRESENT_SHARED_QUEUE", "0") && has(coregs.set, "GT4_HW_TEXTURES", "D:/T") &&
+              has(coregs.set, "GT4_HW_ADAPTER", "Card"),
           "game.ini's CoreGS 2.0 keys become its variables");
     check(lacks(coregs.set, "PS2_GS") && lacks(coregs.set, "GT4_GS_PROCESS") && lacks(coregs.set, "GT4_GS_CONFIG"),
           "nothing of GSdx goes with it");
     check(has(coregs.set, "GT4_FORCE_480P", "1") && has(coregs.set, "GT4_FORCE_WIDESCREEN", "1"), "the fixed holds stay");
+    // TASK-175: the HUD's FPS only mode.
+    sa::Inputs fps_hud = inputs_for(*layout, nullptr);
+    fps_hud.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_hud=fps\n");
+    check(fps_hud.config->warnings.empty() && has(sa::resolve(fps_hud, chosen.access()).set, "GT4_HW_HUD", "fps"), "game.ini's hw_hud=fps becomes GT4_HW_HUD=fps");
+    check(!sa::parse_config("hw_hud=full\n").warnings.empty() && !sa::parse_config("hw_hud=0\n").warnings.empty(), "other HUD values are refused");
     // TASK-146: the 60 FPS mode's frame skipping when behind, and nothing else for it.
     sa::Inputs sixty = inputs_for(*layout, nullptr);
     sixty.config = sa::parse_config("version=1\nrenderer=coregs20\nhw_frame_skip_adaptive=1\n");
