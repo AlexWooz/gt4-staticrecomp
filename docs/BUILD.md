@@ -3607,3 +3607,28 @@ the combined data patch (accepted option patch + arcade Quit + hidden recomp row
 - **Known:** the initial render scale shows 100% (the launcher sends only `GT4_HW_SCALE`); the Recomp row is in the
   arcade main menu only; the Controls/Display/Audio/System shells are title-only; the SelectBox profile is v2.00;
   Spec II not covered.
+
+## TASK-213 Phase 2a Dummy page investigation (2026-11-10, offline probes only; no build shipped)
+
+The four `Dummy` entries in the v2.00 `option.adc` `GroupPhotoMode` page construction were inspected on the decoded
+file (`private/slice155-spec2-480p/retail_adc/projects_option_option.adc.bin`, ADCH005, 251,715 bytes) with the public
+Adhoc instruction enum as a reference only.
+
+- **Blocks:** `Album` at `0x9015` is 113 bytes (name 5, `AlbumRoot` x2 at 9); `Dummy` at `0x9086`, `0x90D4`, `0x9122`,
+  `0x9170` are 78 bytes each (name 5, one `0x16` nil in the root slot, no root strings). The four Dummies are contiguous;
+  the region is the compiled top-level page construction, not a `(name, root)` table. Decoded size fixed at 251,715 by
+  the patch round trip; a real page needs +35 bytes (root pair) and a 15-char label +10, so no same-length repurpose.
+- **Tile filter and probes:** Options root frame 2000 shows Photo Mode = Photo Lab only; same-length renames
+  (`Color` -> rtext "Picture Quality", `Zzzzz` -> name fallback) add a tile; Cross on the rootless page halts at
+  `0x00000000` (`private/slice437-rootless-open/run.log`). A SplitBattle page-entry rewrite to a new scriptless
+  `RecompPageR13` root (57-byte block, mproject root added, children 20 -> 21) shows the "Recomp settings" tile/tooltip
+  (`private/slice437-page-open/png/frame_02000.png`) but halts at `0x0031ABEC` on Cross: the page module is also needed.
+  A pointer-only Monitor page literal link changed nothing; the Monitor/Secret page objects at `0xBD5E`/`0xBED8` are not
+  listed.
+- **rtext:** six "2 Player Battle" occurrences; a same-length "Recomp settings" replacement is 27-35 compressed bytes over
+  the 13,526-byte stored extent in every single-offset and zero-padded build (`slice437-rtext-*`). The builder's zlib is
+  ~28 bytes worse than the original packer, so the label needs freed compression headroom or a better compressor.
+- **Decision:** repurpose a visible page with its module/root and host rows on its Pane (SplitBattle is the best label
+  fit), or keep the Arcade hub (slice436-kit) while a v5 module is considered. Network vetoed; v5/TOC out. Mapping
+  section 28.
+- No repository source, data, kit or accepted page changed; no tests were affected.

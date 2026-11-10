@@ -1,5 +1,30 @@
 # Current Status
 
+## TASK-213 Phase 2a: the Dummy page route is blocked (2026-11-10, investigation; no page shipped)
+
+The owner asked for a real Options-style **Recomp settings** page instead of the Arcade-main-menu host row, starting with
+the four `Dummy` page entries in `GroupPhotoMode`. The investigation shows those entries are **compiled Adhoc v5 code**,
+not a `(name, root)` table: each Dummy block is 78 bytes, constructs the page with a **nil root** and no root strings, is
+filtered out of the tile list by its name, and has no slack. A real page (Album, 113 bytes) is 35 bytes larger, and the
+decoded `option.adc` is fixed at 251,715 bytes, so a same-length repurpose is impossible.
+
+- **Tile filter:** the Options root shows Photo Mode = Photo Lab only (frame 2000). Renaming a Dummy same-length to
+  `Color`/`Zzzzz` adds a tile (rtext label or name fallback), but Cross on the rootless page halts the guest
+  (`no translated code at 0x00000000`).
+- **Visible-page probe:** repurposing **SplitBattle** to a new scriptless root and the name "Recomp settings" (same adc
+  block length, 57 bytes; `option.mproject` root `RecompPageR13`, children 20 -> 21) shows the **"Recomp settings" tile
+  and tooltip** in Arcade Mode, but Cross halts at `0x0031ABEC`: the page also needs its script module (H: the page name
+  is the module key). A pointer-only link of the existing Monitor page literal into the group changed nothing (the list
+  is code-driven).
+- **Label gate:** keeping the page name for its module means the label comes from `rtext.rt2`; a same-length
+  "2 Player Battle" (15) -> "Recomp settings" (15) relabel is 27-35 compressed bytes over the 13,526-byte stored extent
+  at all six occurrences, even zero-padded; the builder's zlib is ~28 bytes worse than the original packer.
+- **No page was faked or shipped; no visible page was repurposed silently.** The Arcade hub, `slice436-kit`, the accepted
+  Screen page and `slice430-kit` are untouched. Private probes are under `private/slice437-*`; mapping section 28.
+- **Owner decision needed:** (a) repurpose a visible page (SplitBattle is the best label fit) with its module/root and
+  attach the host Recomp rows to its Pane, or (b) keep the Arcade hub while a v5 module is considered. Network stays
+  vetoed; v5/TOC is out for now.
+
 ## TASK-213 Phase 2a: Recomp settings hub and Graphics submenu (2026-11-10, implemented, test build)
 
 The owner replaced the separate Graphics page with the **Recomp settings** menu (Graphics, Controls, Display, Audio,

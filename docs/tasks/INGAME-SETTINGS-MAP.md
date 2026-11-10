@@ -1824,3 +1824,106 @@ accepted Screen page and `private/slice430-kit` are unchanged.
   esteja em outro passo (só o multiplicador interno chega ao jogo), então o valor só é gravado quando você muda.
 - **Limitações:** a linha Recomp só existe no menu principal do Arcade (não no menu GT Mode nem no Options); as telas
   Controls/Display/Audio/System são vazias por enquanto; Spec II não coberto.
+
+## 28. Phase 2a: the four Dummy page entries are bytecode with a nil root (2026-11-10, investigation; no page shipped)
+
+The owner asked whether a `Dummy` entry in the v2.00 `option.adc` page table could be repurposed **same-length** to a real
+page (the hidden `MonitorRoot` or another empty root) and reached from the Options menu. The answer is **no**: the page
+list is not a table of `(name, root)` records but the compiled Adhoc **v5 top-level code frame** that constructs each
+page; the Dummy pages are constructed with a **nil** root and no root strings, and the four blocks have no slack.
+
+### 28.1 What the bytes are
+
+- `projects/option/option.adc` (v2.00) is `ADCH005`, 251,715 decoded bytes. The region `0x8A7C`-`0x99DD` is the top-level
+  frame's page-construction code, not a data table: `0x1D` is the v5/v7 `STRING_CONST` opcode and `0x16` is
+  `NIL_CONST` in the public Adhoc instruction enum (MIT reference `private/slice151-research/nenkai/GTAdhocToolchain`).
+  **H** (bytecode interpretation; the v5 opcode map is not disassembled in this repository).
+- Page blocks begin with the `OptionPage` class strings and a 78-113-byte body. Measured (decoded offsets, header-to-
+  header): `Album` at `0x9015` is 113 bytes with `STRING_CONST "Album"` (5) and the root pair
+  `"AlbumRoot"` x2 (9 each); `Dummy` at `0x9086`, `0x90D4`, `0x9122`, `0x9170` are **78 bytes each**, with
+  `STRING_CONST "Dummy"` (5) and a **single `0x16` nil in the root slot**, no root strings. The four Dummies are
+  back-to-back in `GroupPhotoMode`; `Album` + 4 Dummies = 425 bytes.
+- Any real page needs a root pair: the Album block is already **+35 bytes** over a Dummy; a `MonitorRoot` (11 chars)
+  pair is 4 bytes longer again. The decoded adc size is fixed at 251,715 by the patch builder's round trip
+  (`verify_round_trip`), so a same-length edit must find 35+ bytes inside the four 78-byte blocks; there is no slack
+  (no padding, no unused string) and the blocks are contiguous. Even the label alone ("Recomp settings", 15 chars vs
+  "Dummy", 5) needs 10 more bytes. **C** (measured bytes and builder rule).
+- The Dummy blocks are hidden by name: the Options root screenshot at frame 2000 shows **Photo Mode = Photo Lab only**
+  (`private/slice437-option-root/png/frame_02000.png`), and the script's tile code compares the title to the literal
+  `"Dummy"` (the string sits next to `title` and `==` in the frame at `0xA795`). Renaming a Dummy **same length** to
+  `Color` or `Zzzzz` makes a tile appear in Photo Mode: `Color` resolves to the existing rtext label
+  "Picture Quality", `Zzzzz` falls back to the page name (`private/slice437-root-rename/png/frame_02000.png`,
+  `private/slice437-root-unknown/png/frame_02000.png`). So the filter is name-based and the label is rtext(name) with a
+  name fallback. **C** (frames) / **H** (the compare site is bytecode).
+
+### 28.2 Activation needs a root and the page module
+
+- Pressing Cross on the renamed rootless Dummy halts the guest with `no translated code at 0x00000000 (ra 0x0030B450)`
+  (`private/slice437-rootless-open/run.log`): a page with a nil root cannot start.
+- Repurposing the visible **SplitBattle** page entry to the new root `RecompPageR13` (a scriptless `RootWindow` added to
+  `option.mproject`, `children [20] -> [21]`) and the name **"Recomp settings"** (the adc block rewrite keeps 57 bytes:
+  name 11 -> 15, roots 15 x2 -> 13 x2) produces the tile **"Recomp settings"** in Arcade Mode and the matching tooltip
+  (`private/slice437-page-open/png/frame_02000.png`), but Cross halts at `no translated code at 0x00000000
+  (ra 0x0031ABEC)` (`private/slice437-page-open/run.log`). The page entry alone is not enough: the engine also needs the
+  page's script module (the crash address differs from the nil-root crash), so the page **name is the module key** (H)
+  or the root must be a registered page root with its module. **C** (frames/logs) / **H** (module key).
+- A pointer-only link of the existing `Monitor` page literal (`OptionPage("Monitor", MonitorRoot)`, code at `0xBED8`)
+  into `GroupPhotoMode` (group head `0xB4 -> 0x178`, Monitor next `0x178 -> 0xB4`) changed nothing in the Options tile
+  list (`private/slice437-root-monitor/png/frame_02000.png`): the list is built by the page-construction code, not by a
+  group pointer. **C**.
+- The Monitor/Secret page objects exist in the adc code (Secret at `0xBD5E`, Monitor at `0xBED8`) but the v2.00 list
+  ends at Miscellaneous (Misc/Units) on screen; they are not appended (`private/slice437-root-scroll/png/frame_04100.png`).
+
+### 28.3 The visible-page label gate (rtext)
+
+Keeping the page name for its module means the tile label comes from `projects/option/US/rtext.rt2`; the SplitBattle
+value is "2 Player Battle" (15 chars), exactly the length of **"Recomp settings"** (15). A same-length byte relabel was
+built at each of the six occurrences; every build is **27-35 compressed bytes over the 13,526-byte stored extent**
+(13,553-13,561), even when the replacement is shorter and zero-padded. The builder's zlib is already ~28 bytes worse than
+the original packer on this file, so the rtext cannot be patched with the current builder without freeing compressed
+headroom first (a long unused string blanked, or a better compressor). **C** (six builds refused) / **H** (the
+compressor gap).
+
+### 28.4 The gate and the smallest next step
+
+**Gate:** the four Dummy entries are code, not data; each has a nil root and 78 bytes, and a real page needs 35+ more
+bytes (root pair) plus 10 more for the label, inside a fixed 251,715-byte decoded file with no slack; the Dummies are
+also filtered out of the tile list by name. Same-length repurposing is **not possible**. A name-only rename makes a tile
+but the page cannot start without its module; a root swap on a visible page starts neither.
+
+**Next step needs the owner's decision (no page was implemented, nothing was repurposed silently):**
+1. **Repurpose a visible page with its module and root** (SplitBattle is the best fit: its label is 15 chars), then
+   attach the Recomp rows to that page's Pane with the host (the accepted Screen-page row pattern) and hide/neutralise
+   the page's own widgets; the tile label needs the rtext headroom above or the page name fallback (which changes the
+   module key — not viable).
+2. **Keep the Arcade-main-menu hub** and the `slice436-kit` as the shipped fallback while a v5 module is considered;
+   v5/TOC is out for now.
+3. Network stays vetoed; no floating panel.
+
+Private evidence: `private/slice437-option-root` (Options root frames), `slice437-rename-dummy`, `slice437-rename-unknown`,
+`slice437-rootless-open`, `slice437-monitor-link`, `slice437-root-monitor`, `slice437-recomp-page-probe`,
+`slice437-page-open`, `slice437-root-scroll`, `slice437-rtext-relabel`, `slice437-rtext-single`, `slice437-rtext-short`.
+No repository source or data changed; the accepted Screen page, the Arcade hub and `slice430/436-kit` are untouched.
+
+## 29. Resumo para o dono (pt-BR) - páginas Dummy
+
+- **A resposta curta: não dá para reaproveitar uma página Dummy mantendo o mesmo tamanho.** As quatro entradas
+  `Dummy` do `option.adc` não são uma tabela de dados: são **código compilado** (Adhoc v5) que cria a página com
+  **raiz nula** (`nil`), sem os textos da raiz. Cada bloco tem 78 bytes; uma página real (Album) tem 113 bytes, e o
+  arquivo decodificado não pode crescer (251.715 bytes fixos). Faltam pelo menos ~35 bytes para a raiz e ~10 para o
+  nome, e não há espaço sobrando nos quatro blocos.
+- **As Dummies também ficam escondidas:** o menu Options mostra só "Photo Lab" em Photo Mode. Renomeando uma Dummy com
+  o mesmo tamanho, a linha aparece (testei "Color" e "Zzzzz"), então o filtro é pelo nome "Dummy". Mas apertar Cross
+  numa página sem raiz derruba o jogo (`no translated code at 0x00000000`).
+- **Testei a ideia mais próxima do que você quer:** troquei a página **2 Player Battle (SplitBattle)** por uma página
+  nova "Recomp settings" (mesmo tamanho no arquivo). A linha **"Recomp settings" aparece no menu Options**, com o
+  tooltip certo, mas ao abrir o jogo cai (`0x0031ABEC`): a página precisa também do **script/módulo** dela, que não
+  existe para a página nova. A lista também não é montada por um ponteiro de grupo (tentei ligar a página Monitor
+  existente e nada mudou).
+- **O rótulo:** manter o nome SplitBattle (para o módulo funcionar) e trocar só o texto exibido exigiria editar o
+  `rtext.rt2`; a troca de mesmo tamanho ("2 Player Battle" -> "Recomp settings") **não cabe** no espaço comprimido
+  (13.554 > 13.526 bytes) nem com o texto encurtado. Precisa liberar compressão ou um compressor melhor.
+- **O que eu preciso de você:** escolher se podemos **reaproveitar uma página visível** (a melhor é 2 Player Battle,
+  cujo rótulo tem exatamente 15 caracteres) mantendo o módulo/raiz dela e desenhando as linhas Recomp por cima com o
+  host, ou se seguramos o menu do Arcade como está. **Não escolhi nenhuma página sozinho e não ship nenhuma página.**
+  Network continua vetado; v5/TOC fora por enquanto. O kit `slice436-kit` e a página Screen aceita continuam intactos.

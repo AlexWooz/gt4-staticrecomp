@@ -5050,3 +5050,21 @@ report the gate. No page was implemented or faked in this slice.
   `test_gt4_data_patch.py` 16 OK.
 - **Open:** the initial render scale is 100% (the launcher sends only `GT4_HW_SCALE`); the Recomp row only exists in the
   arcade main menu; the shells are title-only; Spec II not covered; the SelectBox layout is v2.00.
+
+**State (2026-11-10, TASK-213 Phase 2a - Dummy page investigation):** branch `task/213-native-settings`, no source or
+data change; the Arcade hub and `slice436-kit` remain the fallback.
+
+- **Finding:** the four `Dummy` entries in `GroupPhotoMode` are compiled Adhoc v5 page-construction code, not table
+  records. Each block is 78 bytes; the name is `Dummy` (5) and the root slot is a single nil byte, with no root strings.
+  Album is 113 bytes (+35 for `AlbumRoot` x2), and the decoded `option.adc` is fixed at 251,715 bytes: no same-length
+  repurpose is possible (a MonitorRoot pair needs still more; a "Recomp settings" label needs +10).
+- **Filter:** Options shows Photo Mode = Photo Lab only; a same-length rename to `Color`/`Zzzzz` adds a tile (rtext or
+  name fallback); Cross on a rootless page halts at 0x00000000.
+- **Visible-page probe:** SplitBattle -> new scriptless root + name "Recomp settings" (57-byte block rewrite, mproject
+  root `RecompPageR13`, children 20 -> 21) shows the "Recomp settings" tile/tooltip, but Cross halts at 0x0031ABEC: the
+  page module is also required (H: name key). A pointer link of the Monitor page literal changed nothing.
+- **rtext gate:** same-length "2 Player Battle" -> "Recomp settings" is 27-35 compressed bytes over the 13,526-byte
+  stored extent at all six occurrences; the builder's zlib is ~28 bytes worse than the original packer.
+- **Decision:** repurpose a visible page (SplitBattle best fit) with its module/root and host rows on its Pane, or keep
+  the Arcade hub while a v5 module is considered. No page was shipped; private probes under `private/slice437-*`.
+- Mapping section 28. No tests changed (no source diff).
