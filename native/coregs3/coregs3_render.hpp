@@ -61,6 +61,20 @@ struct RenderOptions {
   // for byte: the body items are the lit colour. A reflection item whose binding is outside the measured subset keeps
   // the lit colour and is counted.
   bool reflections = false;
+  // TASK-090 track M1: the offline world renderer. The frame passed in has already been filtered to the selected
+  // sky/far_underlay/course draws and items (the tool counts every exclusion). Each draw uses the captured 0xC1 upload:
+  // the read-back matrix packet when the PGL pre-call valid/value rule says the upload ran, the carried VU0 block (or the
+  // last uploaded packet) otherwise. Vertices are multiplied in their captured integer/float units by the upload columns
+  // (no metre conversion); the tapped per-item state supplies TEST/ALPHA/FRAME/ZBUF/PRIM; the tapped per-vertex fog is
+  // applied toward FOGCOL except on the sky pass; DATE is evaluated against the framebuffer alpha; no culling.
+  bool world_pass = false;
+  // The sky pass's record carries the tapped fog lanes, but the measured sky has no fog (FOGCOL is applied by the later
+  // passes); the world path skips fog on kPassSky and counts nothing as missing.
+  bool world_sky_no_fog = true;
+  // Diagnostic A/B only: ignore the per-item alpha test (ATE). The measured course ATE (GREATER 32) rejects the road's
+  // decoded texture alpha (0 in the CT32 palette) on items whose sampled colour the reference shows; this switch shows
+  // what the pass draws without that state, and its use is counted in the report. It never runs in a normal render.
+  bool world_ignore_alpha_test = false;
 };
 
 struct RenderStats {
@@ -123,12 +137,57 @@ struct RenderStats {
   std::uint64_t reflection_blended_pixels = 0;  // additive blend applications
   std::uint64_t reflection_fbmsk_pixels = 0;
   std::uint64_t reflection_depth_masked_pixels = 0;  // ZBUF.ZMSK = 1: colour written, depth kept
+  // The TASK-090 track M1 world path (options.world_pass): the matrix source per draw, the position families of the
+  // vertices it projected, and the pixel outcomes of the tapped fog / destination alpha / blend state.
+  std::uint32_t world_draws = 0;
+  std::uint32_t world_matrices_packet = 0;   // the capture's matrix_packet read-back was used (upload ran)
+  std::uint32_t world_matrices_vu0 = 0;      // the carried VU0 vf24..27 block was used (no upload ran)
+  std::uint32_t world_matrices_last_packet = 0;  // the last uploaded packet was used (no upload but VU0 changed)
+  std::uint32_t world_matrices_missing = 0;  // no usable matrix: the draw is refused, never guessed
+  std::uint32_t world_vertices_integer_16 = 0;
+  std::uint32_t world_vertices_integer_32 = 0;
+  std::uint32_t world_vertices_float_32 = 0;
+  std::uint32_t world_items_untextured = 0;  // selected items that kept the vertex colour (counted by the tool too)
+  std::uint64_t world_fog_pixels = 0;        // fragments with the tapped per-vertex fog applied
+  std::uint64_t world_fog_missing = 0;       // fragments whose item carried no tapped fog (no fog applied)
+  std::uint64_t world_date_failed = 0;       // destination alpha test rejected the fragment
+  std::uint64_t world_date_missing = 0;      // DATE tested a pixel no selected draw had written
+  std::uint64_t world_afail_written = 0;     // AFAIL FBONLY/RGBONLY wrote colour without depth
+  std::uint64_t world_afail_depth = 0;       // AFAIL ZBONLY wrote depth without colour
+  std::uint64_t world_sky_depth_background = 0;  // sky draws drawn as the background (no depth test/write)
+  std::uint64_t world_blended_pixels = 0;    // any tapped ABE equation applied
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };
 
 // The measured position encoding of a mesh vertex: a V3-16 channel keeps its raw signed 16-bit value
 // (MeshVertex::has_raw_position), a V3-32 channel stores the float as it stands (coregs3_vertex.hpp).
 PositionEncoding mesh_position_encoding(const MeshVertex &vertex) noexcept;
+
+// TASK-090 track M1: the source of one world draw's 0xC1 matrix. The guest upload (func_0049E548) runs when
+// `!obj->valid || obj->value != cmd->value`, evaluated on the K1 pre-call snapshot: pgl[0] byte 3 is Obj.valid and
+// pgl[8] is Obj.value (PGL +0x20), compared as floats exactly as the guest does. When it ran, the capture's read-back
+// matrix_packet at the PGL output cursor holds this draw's upload (qwords 1..4 = c0..c3, already scaled by `value`);
+// otherwise the VU1 keeps the carried block. `packet` is the authoritative source when the upload ran; `vu0` is the
+// captured pre-call vf24..27 block scaled by `value`; `last_packet` is the last uploaded packet, used when the draw
+// rewrote VU0 but did not upload; `missing` means the columns were not finite and the draw must be refused.
+enum class WorldMatrixSource : std::uint8_t { packet, vu0, last_packet, missing };
+const char *world_matrix_source_name(WorldMatrixSource source) noexcept;
+
+// The per-frame carried state of the world matrix source. One tracker per frame, fed the draws in capture order.
+class WorldMatrixTracker {
+ public:
+  // Resolves one draw's columns. `columns` receives the 0xC1 block as four columns (coregs3_vertex.hpp).
+  WorldMatrixSource for_draw(const CapturedDraw &draw, VertexColumns &columns);
+
+ private:
+  bool has_last_ = false;
+  VertexColumns last_{};
+};
+
+// The low-level rule, for a caller that tracks the carried block itself. `has_last`/`last` are the previous uploaded
+// packet (if any); `columns` is written for every source except missing. This overload also updates nothing.
+WorldMatrixSource world_matrix_columns(const CapturedDraw &draw, bool has_last, const VertexColumns &last,
+                                       VertexColumns &columns) noexcept;
 
 // The transform of one draw, in the measured convention (docs/COREGS3-HOOKS.md §10.2):
 //   * `row` is the row-major form of the uploaded 0xC1 matrix: rows 0-2 hold the linear columns scaled by the shape's

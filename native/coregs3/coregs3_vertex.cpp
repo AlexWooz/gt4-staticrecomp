@@ -35,6 +35,7 @@ const char *position_encoding_name(PositionEncoding encoding) noexcept {
   switch (encoding) {
   case PositionEncoding::integer_16: return "integer_16";
   case PositionEncoding::float_32: return "float_32";
+  case PositionEncoding::integer_32: return "integer_32";
   default: return "unknown";
   }
 }
@@ -61,6 +62,8 @@ Float32 vu1_linear_upload_factor(Float32 cmd_value) noexcept {
 }
 
 Float32 metre_linear_scale(Float32 cmd_value, PositionEncoding encoding) noexcept {
+  // integer_16 carries the model's 4096-units-per-metre divisor; the raw-lane integer_32 family and the stored floats
+  // need no unit conversion (the world renderer multiplies the raw lane by the upload columns directly).
   const Float32 units_per_metre =
       encoding == PositionEncoding::integer_16 ? kModelPositionUnitsPerMetre : 1.0f;
   return vu1_linear_upload_factor(cmd_value) * units_per_metre;

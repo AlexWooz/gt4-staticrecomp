@@ -1,5 +1,61 @@
 # Current Status
 
+## 2026-11-10: track M1, the offline sky + road renderer (TASK-090, branch `task/090-track-m1`)
+
+The first offline world picture: the sky, the far underlay and the main-view course are decoded from a fresh v5
+ALL_DRAWS capture and rendered natively, with the measured transform and textures, against the CoreGS 2.0 reference.
+Measured: **PSNR 20.36 dB, SSIM 0.6138, pct_bad 77.22%, mean |diff| 20.31, coverage 100% of the scene area, car spill
+1.61%, luma 26.69 (reference) -> 31.20**. The Hyp thresholds (24 dB / 0.75 / 10%) are **not met**; the A/B isolates the
+course as the content (no-course 13.68 dB) and the remaining error is in surface shading/texture-page material (below).
+
+- **VIF decoder (C).** UNPACK bit 14 selects sign extension: 0 sign-extends the 8/16-bit element into the 32-bit
+  destination lane, 1 keeps it zero-widened (32-bit elements are unaffected). This is the measured rule that makes the
+  course delta chain fit (docs/STATUS 2026-11-10, 99.99% within 1 px). The decoder now records each UNPACK's USN bit and
+  the STMOD in force, applies the sign extension before the MODE 2/STROW addition, and the course position family reads
+  `ITOF0` of the whole int32 lane (not the low halfword).
+- **Shape decoder (C/H).** Every item carries a TOPS 0xC0 V3-32 descriptor: lane0 `0x8000|vertex_count`, lane1 the
+  per-shape selector, lane2 `0x1412`. The measured world items tile their position arrays from qword 0 to that count
+  (a V3-8 STROW seed commit at qword 0, then V3-8/V3-16/V3-32 continuation arrays at TOPS 0x01..0x3F), the UV array from
+  qword 0x40 (mixed V2-16/V2-32, plus V2-8 decoded as signed /16, Hypothesis), the colour from 0x80 or the A0 family's
+  0xA0, and the masked V1-8 strip table from lane 3. The car path is unchanged and byte-identical (see the regression).
+- **Matrix source (C).** The world draws use the guest upload rule evaluated on the K1 pre-call snapshot:
+  `uploaded = (!valid) || (obj.value != cmd.value)`, `valid = pgl[0] byte 3`, `value = pgl[8]` as floats. When it ran,
+  the captured `matrix_packet` qwords 1..4 are the upload columns; otherwise the carried `vf24..27 * value` block is used,
+  or the last uploaded packet for a draw that rewrote VU0 without uploading. The tool counts packet 9 / vu0 116 /
+  last-packet 2 / missing 0 for the selected frame.
+- **Pass selection (C).** Sky (PassId 2) and far underlay (3) are drawn whole; the course (5) keeps the main-view
+  ITOP 0x80 items whose tapped state carries XYOFFSET `0x6C08/0x7208`. Selected: sky 1 draw/16 items/940 vertices,
+  far underlay 3/9/378, course **123 draws/1,192 items/61,173 vertices**. Excluded and counted: 0xB08 15, 0xA0 46,
+  0x1278 11 items, other dispatch 0, mirror-view 14 (0x7C08/0x7808 and 0x7C08/0x7C08), no-state 0, no-position 6,
+  7 empty draws; 37 items whose exact-UV record could not be verified use the draw's last paired state or the course
+  pass journal and are counted.
+- **Renderer (H).** The sky uses its captured packet matrix, the tapped ABE/DATE state, no fog, and is drawn as the
+  background (its separate skybox w is not comparable with the course's view depth; it writes no depth, the GS far-plane
+  equivalent). The course applies the tapped per-vertex fog toward FOGCOL, the tapped ABE equation, the DATE test and all
+  four AFAIL write modes; the course TEST/ALPHA come from the K7 pass journal because the tap's duplicate records can
+  carry the alpha-tested variant (TEST 0x5820D, ATE GREATER 32) while the pass runs 0x5800E (ATE off); per-item
+  PRIM/FBMSK/ZMSK and the fog stay per item. Textures: 1,215 of 1,217 selected items bind a decoded texture; two
+  4-bit/8-bit records with TEX1.MXL > 0 are decoded level 0 and sample level 0 nearest, both counted; 2 items have no
+  texture record and keep the vertex colour.
+- **Evidence.** `build/evidence-m1/`: `capture/night-m1.gt4scene` + `.gt4tap` + `.gt4vram` (fresh v5 ALL_DRAWS, VBlanks
+  7398-7402, VRAM 0x2BC0..0x3FFF), `world/world-3x.png`, `world-mask-3x.pgm`, `sky-3x.png`/`sky-mask-3x.pgm` (the skybox
+  covers the whole viewport, 2,580,480/2,580,480 px), `no-sky-3x.png` and `no-course-3x.png` A/Bs,
+  `world-metrics.json` (and the A/B metrics), the texture dumps and `textures/`, the car regression (`old.png` vs
+  `new-final.png`, byte-identical), and `world/world-3x.txt` with every count. The no-sky image differs from the world by
+  3,565 pixels (the sky leaks behind the excluded course geometry); no-course falls to 13.68 dB / 0.5090.
+- **Tests.** CTest coregs3 10/10 (the 9 existing plus `native_coregs3_track`: VIF sign rule, MODE 2/STROW, descriptor/aux
+  shape, matrix source, selection, sky+course render); Python `tests/python/test_coregs3_units.py` 8/8.
+- **Why the thresholds miss (H).** The road surface now draws, but its texture page samples as an atlas pattern instead
+  of the reference's asphalt grain and many surfaces are brighter than the night reference: the per-item texture
+  records resolved by the capture do not always equal the TEX0 the GS has in force at the draw (the external texture
+  cursor), and some surface materials come from the excluded 0xA0/0xB08/0x1278 programs or the game's EE post chain.
+  The car pass is unaffected and byte-identical. Next: resolve the external texture cursor per item and add the
+  unmeasured programs before the M1 image gate can be tightened.
+- **Gate.** The full candidate build is green and the 3x off/shadow identity gate against the main worktree's reference
+  executable is **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames
+  identical for both off and shadow; capture 4,477,368 B, car block only). Evidence: `build/evidence-m1/gate/` and
+  `build/evidence-m1/gate-final/` (the rerun on the final build).
+
 ## 2026-11-10: the course transform is recovered; the position decode was wrong (TASK-090)
 
 The course uses the captured per-draw 0xC1 matrix **exactly**: the linear columns are `vf24..26 * value`, the translation

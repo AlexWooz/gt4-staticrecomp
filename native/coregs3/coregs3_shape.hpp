@@ -18,13 +18,20 @@
 #include <vector>
 
 #include "coregs3_vif.hpp"
+#include "coregs3_vertex.hpp"
 
 namespace gt4::coregs3 {
 
+struct CapturedItem;
+struct CapturedDraw;
+
 enum class ChannelRole : std::uint8_t {
   unknown = 0,
+  descriptor,    // TOPS 0xC0 V3-32: lane0 = 0x8000 | vertex count, lane1 = the per-shape selector, lane2 = 0x1412
   positions,
+  position_aux,  // TOPS 0x01..0x3F V3-8/V3-16/V3-32: the continuation arrays of the descriptor's vertex list
   uv,
+  uv_aux,        // TOPS 0x41..0x7F V2-8/V2-16/V2-32: the continuation arrays of the item's UV list
   color,
   normals,       // V3-8 at TOPS 0x40: the body/paint family's normal channel
   normals80,     // V3-8 at TOPS 0x80: the nine-qword and six-qword-no-colour normal channels
@@ -44,15 +51,32 @@ struct ShapeChannel {
 };
 
 struct ChannelScan {
+  // One entry per draw item, in item order; `decoded` is false when the item has no packet or the packet was refused.
+  struct ItemInfo {
+    bool decoded = false;
+    bool has_descriptor = false;
+    std::uint32_t descriptor_vertices = 0;
+    std::uint32_t descriptor_selector = 0;
+    std::uint32_t descriptor_signature = 0;
+    bool has_position = false;
+    bool has_aux_position = false;
+    bool mode2_positions = false;    // a position UNPACK executed with STMOD 2 (the 32-bit lane accumulation)
+    ChannelFormat first_position_format = ChannelFormat::unknown;
+    bool has_uv = false;
+    bool has_uv_aux = false;
+  };
   std::vector<ShapeChannel> channels;
+  std::vector<ItemInfo> items;
   std::uint32_t packets = 0;
   std::uint32_t decoded = 0;
   std::vector<std::string> errors;
 };
 
 // Classifies every UNPACK of every item packet of one draw. The classification is the default role rule; a channel it
-// cannot place stays `unknown` and is still reported.
-ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes, const struct CapturedDraw &draw);
+// cannot place stays `unknown` and is still reported. `world_channels` selects the world shape layout's UV rules (V2-8
+// and the continuation arrays at 0x41..0x7F count as UVs); the default false is the car pass's measured rule.
+ChannelScan scan_channels(const std::uint8_t *packets, std::size_t packet_bytes, const struct CapturedDraw &draw,
+                          bool world_channels = false);
 
 // The default role rule, written out because it is a Hypothesis and must be reviewable:
 //   positions    TOPS-relative qword 0x00, V3-16 or V3-32
@@ -101,6 +125,13 @@ bool classify_strip_table(bool tops, std::uint32_t destination, ChannelFormat fo
 bool decode_strip_table(const std::vector<std::uint8_t> &bytes, std::uint32_t vertices,
                         std::vector<std::uint32_t> &lengths, std::string &error);
 
+// Reads up to `limit` model UV pairs from one item's first UV channel at TOPS qword 0x40 (the measured V2-16/V2-32/V3-16/
+// V3-32 forms, plus the V2-8 Hypothesis), for the tap's pairing. This is the same channel the item-state study uses to
+// match a captured item to its tapped GIF record (the tapped S/Q,T/Q equal these u,v). Returns false when the item has
+// no such channel or its packet is refused.
+bool read_item_uv(const std::uint8_t *packets, std::size_t packet_bytes, const CapturedItem &item, std::size_t limit,
+                  std::vector<std::array<float, 2>> &uvs);
+
 struct MeshVertex {
   std::array<float, 3> position{};  // model-space position after MeshOptions::position_scale
   // The original draw item index this vertex came from (CapturedDraw::items). The per-item lighting programs select
@@ -112,6 +143,16 @@ struct MeshVertex {
   // (a V3-32 float channel sets has_raw_position = false).
   std::array<std::int32_t, 3> raw_position{};
   bool has_raw_position = false;
+  // TASK-090 track M1: the full 32-bit lane of a MODE 2 position channel (the course/far_underlay family). The guest
+  // model data is a delta chain: a STROW seed (the first vertex) plus signed 8/16-bit deltas accumulated in the 32-bit
+  // lanes; ITOF0 converts the full lane, so nothing is truncated to the low halfword. `position` holds the same value
+  // as a float and `lane_position` the exact integer, because the course matrix is only exact in the integer units.
+  std::array<std::int32_t, 3> lane_position{};
+  bool has_lane_position = false;
+  // Which measured model position family this vertex came from (coregs3_vertex.hpp). The world renderer multiplies the
+  // raw lane of an integer family and the stored float of float_32 by the captured upload columns; the car path uses
+  // the metre transform. Default integer_16 keeps every legacy (no descriptor) mesh byte-identical.
+  PositionEncoding encoding = PositionEncoding::integer_16;
   // The V3-8 normal channel at TOPS 0x40, sign-extended to int8 (the model value; a unit normal scaled to the byte
   // range). has_normal is false when the item carried no such channel. This is the body/paint family's normal.
   std::array<std::int8_t, 3> normal{};
@@ -144,6 +185,13 @@ struct Mesh {
   bool has_normals80_float = false;
   bool has_uv = false;
   bool has_strip_table = false;  // at least one item carried a strip table
+  // TASK-090 track M1: the item descriptor at TOPS 0xC0 (format v3-32). `descriptor_vertices` is lane0 & 0x7FFF and is
+  // the item's true vertex count (the position arrays tile the VU1 memory from qword 0 to that count); `selector` is
+  // lane1 (the per-shape selector) and `signature` lane2 (measured 0x1412). All three are informative, not guessed.
+  bool has_descriptor = false;
+  std::uint32_t descriptor_vertices = 0;
+  std::uint32_t descriptor_selector = 0;
+  std::uint32_t descriptor_signature = 0;
   std::uint32_t triangles() const { return static_cast<std::uint32_t>(indices.size() / 3); }
 };
 
@@ -163,6 +211,13 @@ struct MeshOptions {
   // Reject triangles with an edge longer than this (metres). With the strip table decoded the breaks are exact, so the
   // filter is off by default and only remains as a diagnostic for packets without a usable table. 0 disables it.
   float max_edge = 0.0f;
+  // TASK-090 track M1: decode the descriptor-driven world shape layout instead of the car pass's per-channel roles.
+  // When true, an item with the TOPS 0xC0 descriptor is read as `count` contiguous vectors from qword 0 (the position
+  // arrays at TOPS 0x01..0x3F tile the VU1 memory up to the descriptor count), the UV array is read from qword 0x40 with
+  // the same count, the colour array from 0x80 (or the A0 family), and the measured position family selects the lane
+  // interpretation (integer_16 / integer_32 / float_32). False keeps the original car-pass path byte for byte: the car
+  // fixtures and every car capture must decode exactly as before this task.
+  bool world_channels = false;
 };
 
 // Builds one mesh from the draw's item packets. Items are concatenated in item order, which is the order the game issues

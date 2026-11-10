@@ -61,6 +61,10 @@ struct GifPacket {
   std::vector<GifTagSummary> tags;
   std::vector<GifVertex> vertices;
   std::vector<GifRegisterWrite> ad_writes;  // descriptor 0xE writes, in transfer order (state changes only)
+  // TASK-090 track M1: the number of A+D writes that precede the first vertex in transfer order. The state a draw runs
+  // under is the one after those writes; a write that follows the vertices applies to the next draw. The tap-based
+  // per-item state uses this prefix, not the whole record.
+  std::uint32_t ad_writes_at_first_vertex = 0;
   std::uint32_t primitives_started = 0;     // PRIM kicks seen
   bool ok = false;
   std::string error;

@@ -488,7 +488,8 @@ add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_chain.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
     coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp
-    coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp)
+    coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp
+    coregs3/coregs3_world.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
@@ -1137,6 +1138,12 @@ add_executable(coregs3_reflection_fixture coregs3/coregs3_reflection_fixture.cpp
 target_link_libraries(coregs3_reflection_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_reflection_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_reflection COMMAND $<TARGET_FILE:coregs3_reflection_fixture>)
+# TASK-090 track M1: the VIF sign rule, the MODE 2/STROW delta chain, the descriptor/aux world shape layout, the world
+# matrix source rule, the world item selection and a small sky+course render, all on hand-authored data.
+add_executable(coregs3_track_fixture coregs3/coregs3_track_fixture.cpp)
+target_link_libraries(coregs3_track_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_track_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_track COMMAND $<TARGET_FILE:coregs3_track_fixture>)
 # TASK-090 CoreGS 3.0: the native car-texture decoder (native/coregs3/coregs3_texture.cpp) needs the HWR memory, CLUT
 # and replacement libraries, so its fixture and offline tool exist only in a GT4_HW_GS build.
 if(GT4_HW_GS)

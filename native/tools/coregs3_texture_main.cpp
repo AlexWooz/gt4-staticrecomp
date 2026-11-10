@@ -191,6 +191,10 @@ struct DecodeOne {
   std::string png;
 };
 
+// TASK-090 track M1 evidence: decode a TEX1.MXL > 0 record at level 0 (the world table's declared fallback) so the
+// course textures can be inspected and their alpha/palette checked.
+bool g_mip_level0_fallback = false;
+
 // Decodes every unique texture record a draw uses. A record shared by several items is decoded once. `draw_sequence` is
 // CapturedDraw::sequence, the tool's draw number.
 std::vector<DecodeOne> decode_draw(const FrameSnapshot &frame, const SlmImage &slm, std::uint32_t draw_sequence,
@@ -216,7 +220,9 @@ std::vector<DecodeOne> decode_draw(const FrameSnapshot &frame, const SlmImage &s
     one.record = captured_item.texture_record;
     one.address = record.address;
     std::string error;
-    decode_texture(slm, record.bytes, sizeof record.bytes, one.texture, error);
+    TextureDecodeOptions decode_options;
+    decode_options.level0_mip_fallback = g_mip_level0_fallback;
+    decode_texture(slm, record.bytes, sizeof record.bytes, decode_options, one.texture, error);
     if (write_png) {
       char name[128];
       std::snprintf(name, sizeof name, "v%llu_d%u_tex%u_%08x_%s_%ux%u.png",
@@ -310,6 +316,7 @@ int main(int argc, char **argv) {
     else if (argument == "--vram-vblank" && index + 1 < argc) explicit_vblank = std::atoll(argv[++index]);
     else if (argument == "--draw" && index + 1 < argc) draws.push_back(static_cast<std::uint32_t>(std::atoi(argv[++index])));
     else if (argument == "--stability") stability = true;
+    else if (argument == "--mip-fallback") g_mip_level0_fallback = true;
     else if (argument == "--psnr") psnr_enabled = true;
     else {
       std::fprintf(stderr, "gt4_coregs3_texture: unknown argument %s\n", argument.c_str());

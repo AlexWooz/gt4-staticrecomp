@@ -23,6 +23,18 @@
 
 namespace gt4::coregs3 {
 
+// The UNPACK sign rule, measured on the course capture (TASK-090 track M1): VIF command bit 14 (the UNPACK USN flag)
+// selects whether the source elements are sign-extended into the 32-bit destination lane. The course position UNPACKs
+// carry bit 14 = 0 and the tap only fits them when the 16-bit/8-bit deltas are sign-extended before the STMOD 2 (MODE 2,
+// 16.16 accumulation) addition; bit 14 = 1 keeps the zero-widened value (the sky's and reflection's V3-32 channels
+// carry it, and 32-bit formats are never widened anyway). This is the measured behavior, not an assumption about the
+// hardware name: docs/STATUS.md (2026-11-10, course transform recovered) records the fit (470 items, 99.99% within
+// 1 px) that pinned it. A 32-bit element is stored as it stands regardless of the flag.
+//
+// The VIF register state (STCYCL/STMOD/STMASK/STROW/STCOL) is command state inside each captured packet: every course
+// item packet sets its own STMOD/STROW before its position channels (measured), so a packet is decoded exactly as the
+// VU1 receives it without carrying register state from another packet.
+
 inline constexpr std::uint32_t kVuMemoryBytes = 0x4000u;
 inline constexpr std::uint32_t kVuQwords = kVuMemoryBytes / 16u;
 
@@ -53,6 +65,8 @@ struct VifCommand {
   bool unpack = false;
   bool tops = false;              // UNPACK imm bit 15: address is relative to the VIF1 double-buffer window
   bool masked = false;            // UNPACK bit 28: the STMASK register applies to this write
+  std::uint32_t usn = 0;          // UNPACK bit 14: 0 sign-extends the 8/16-bit elements, 1 keeps them zero-widened
+  std::uint32_t mode = 0;         // STMOD in force when this UNPACK executed: 0 normal, 1 SGN, 2 SGN+row accumulation
   std::uint32_t stmask = 0;       // the STMASK register in force when the command executed
   std::uint32_t destination = 0;  // qword address (0..1023) after the tops bit was removed
   ChannelFormat format = ChannelFormat::unknown;

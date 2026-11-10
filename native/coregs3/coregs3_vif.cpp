@@ -176,6 +176,8 @@ VifPacket decode_packet(const std::uint8_t *bytes, std::size_t size) {
       entry.unpack = true;
       entry.tops = (command >> 15) & 1u;
       entry.masked = ((command >> 28) & 1u) != 0;
+      entry.usn = (command >> 14) & 1u;
+      entry.mode = mode;
       entry.stmask = mask;
       entry.destination = (command & 0x3FFu) + (entry.tops ? tops : 0u);
       entry.destination %= kVuQwords;
@@ -213,14 +215,16 @@ VifPacket decode_packet(const std::uint8_t *bytes, std::size_t size) {
             value[3] = ((word >> 15) & 1u) << 7;
           } else {
             for (std::uint32_t component = 0; component < format_components; ++component) {
-              const std::uint32_t raw = read_element();
-              if (format_bits == 16u) {
-                value[component] = raw;  // the unpack stores the widened unsigned value; sign is applied by the VU
-              } else if (format_bits == 8u) {
-                value[component] = raw;
-              } else {
-                value[component] = raw;
+              std::uint32_t raw = read_element();
+              // The measured UNPACK sign rule (coregs3_vif.hpp): bit 14 = 0 sign-extends the 8/16-bit element into the
+              // 32-bit lane; bit 14 = 1 keeps it zero-widened. The widened lane is what STMOD 2 accumulates, so this
+              // must happen before the MODE/STROW addition below.
+              if (entry.usn == 0 && format_bits == 16u) {
+                raw = static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int16_t>(raw & 0xFFFFu)));
+              } else if (entry.usn == 0 && format_bits == 8u) {
+                raw = static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int8_t>(raw & 0xFFu)));
               }
+              value[component] = raw;
             }
             // The VIF broadcasts a one-component vector into all four VU lanes; two components duplicate into 2/3.
             if (format_components == 1) {

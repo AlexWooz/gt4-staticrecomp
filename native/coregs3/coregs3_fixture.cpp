@@ -444,7 +444,11 @@ void check_vif_decoder() {
 
   std::vector<VifVector> positions;
   require(read_vu_vectors(packet.packed.data(), 0, 3, positions), "the positions are readable");
-  require(positions[0].v[0] == 0x0000F000u, "the first x lane keeps the raw halfword -4096");
+  // TASK-090 track M1: the measured UNPACK sign rule. This packet's V3-16 command carries bit 14 = 0, so the 16-bit
+  // element is sign-extended into the 32-bit lane (the course delta chain needs it before the MODE 2 accumulation);
+  // bit 14 = 1 keeps the zero-widened value.
+  require(packet.commands[0].usn == 0, "the position UNPACK carries the measured sign-extension bit 14 = 0");
+  require(positions[0].v[0] == 0xFFFFF000u, "the first x lane is the sign-extended halfword -4096");
   require(positions[1].v[0] == 0x00001000u, "the second x lane keeps 4096");
   require(positions[2].v[1] == 0x00001000u, "the third y lane keeps 4096");
   // V3-16 writes three lanes; the fourth keeps what was there (zero for a fresh image).
