@@ -1927,3 +1927,47 @@ No repository source or data changed; the accepted Screen page, the Arcade hub a
   cujo rótulo tem exatamente 15 caracteres) mantendo o módulo/raiz dela e desenhando as linhas Recomp por cima com o
   host, ou se seguramos o menu do Arcade como está. **Não escolhi nenhuma página sozinho e não ship nenhuma página.**
   Network continua vetado; v5/TOC fora por enquanto. O kit `slice436-kit` e a página Screen aceita continuam intactos.
+
+## 30. Phase 2a: Options > Miscellaneous cannot host a scriptless OptionMenu row (2026-11-10, gate)
+
+The owner's fallback was a **Recomp settings** entry in **Options > Miscellaneous** (no new page/root binding, no existing
+page sacrificed). The Misc page is `MiscRoot` with a `VBox Pane` of **7 children** (bg, Title, OpeningMovie, AutoDemo,
+DemoMovieInterval, AutoSave, Buttons; 182 px tall). Two data-only probes were built on the retail `option.mproject`
+(host row only; the accepted Screen patch was tested separately):
+
+- **Label-only row (safe):** an 8th child `Composite "Recomp"` with a ColorFace and a literal `TextFace
+  "Recomp settings"`, Pane 182 -> 214 and bg 182 -> 214, loads and renders: the Misc page shows the row between
+  Autosave and Cancel/OK (`private/slice440-run-label-misc/png/frame_04500.png`), and a 5,000-frame run exits 0. **C**.
+- **OptionMenu row (blocked):** the same row with an `OptionMenu` of 16 choices (12 Graphics combos + Controls,
+  Display, Audio, System) loads the page data but the **Options root crashes at load**: `no translated code at
+  0x00000000 (ra 0x0026986C)` (`private/slice440-run/run.log`, `slice440-run-noscreen`, `slice440-misc-dup2`). The
+  Pane-height-only change is safe (`slice440-run-height`), and naming the row `OpeningMovie` (a module that exists) does
+  not help. The Misc page script initializes its Pane's OptionMenu children and a scriptless one calls a null module
+  (H; the crash is at project load, before the page is opened). **C** (logs) / **H** (cause).
+- So the interactive row cannot be added as a scriptless OptionMenu child of the Misc Pane without breaking the page
+  script. The static label row is safe but does not open anything.
+
+**Smallest alternatives (no page sacrificed, no fake page, no floating panel):**
+1. **Pad combo on the Misc page + host tree over the page**: the host shows a hidden `Composite` hub attached to
+   `MiscRoot` (not the Pane, so the page script's child init is untouched), owns focus/index/Cross/Circle, and the
+   label row is the visible hint. This is the closest to the owner's entry.
+2. **Focusable Composite row + host focus detection**: add `can_focus 1` to the label row (safe), and derive the
+   engine's focused-widget pointer so the host can open the hub on Cross; the focus field is not derived yet.
+3. **v5 module** for a real scripted Misc row (out for now).
+
+No repository source or data changed; the Arcade hub and `slice436-kit`, the accepted Screen page and `slice430-kit` are
+untouched. Probes: `private/slice440-misc-row` (OptionMenu, crash), `slice440-misc-row-noscreen`, `slice440-misc-height`
+(safe), `slice440-misc-dup2` (crash), `slice440-misc-label` (safe), `slice440-run*` logs/frames.
+
+## 31. Resumo para o dono (pt-BR) - Options > Miscellaneous
+
+- A linha **"Recomp settings"** cabe na página Miscellaneous como **texto** (sem controle): a página abre normal, com a
+  linha entre Autosave e Cancel/OK (frame 4500 do probe), e o save/páginas existentes não mudam.
+- Mas a mesma linha com um **OptionMenu** (para abrir o hub) **derruba o jogo ao entrar no Options**
+  (`no translated code at 0x00000000`, ra 0x0026986C): o script da página Miscellaneous inicializa os OptionMenus
+  filhos e um sem módulo chama função nula. Só a altura da página ou uma linha estática não quebram.
+- Ou seja: **a Misc não aceita a linha interativa sem script**. Não sacrifiquei nenhuma página e não inventei página.
+- Próximo passo menor: abrir o hub com um **comando no controle na página Misc** (ex.: Quadrado) desenhando a árvore do
+  host por cima da página (fora do Pane, para o script não ver), com a linha "Recomp settings" como aviso; ou derivar o
+  ponteiro de foco para usar a linha com `can_focus`; ou um módulo v5 (fora por enquanto). O hub do Arcade e o
+  `slice436-kit` continuam funcionando.

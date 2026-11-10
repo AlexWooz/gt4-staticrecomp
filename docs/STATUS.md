@@ -1,5 +1,19 @@
 # Current Status
 
+**State (2026-11-10, TASK-213 Phase 2a - Options > Miscellaneous probe):** branch `task/213-native-settings`, no source or
+data change; the Misc page cannot host a scriptless interactive OptionMenu row without breaking the page script.
+
+- **Label-only row safe:** an 8th `Composite "Recomp"` child with a literal "Recomp settings" label (Pane 182 -> 214)
+  loads and renders in Options > Miscellaneous (frame 4500, `private/slice440-run-label-misc`), 5,000-frame run exit 0.
+- **OptionMenu row blocked:** the same row with a 16-choice OptionMenu crashes the Options root at load:
+  `no translated code at 0x00000000 (ra 0x0026986C)` (`slice440-run`, `slice440-run-noscreen`, `slice440-misc-dup2`).
+  Height-only and label-only changes are safe; duplicating an existing row name does not help. The Misc script
+  initializes its Pane's OptionMenu children and a scriptless one calls a null module (H).
+- **Alternatives:** (a) pad combo on the Misc page + host tree over the page (attached to `MiscRoot`, not the Pane),
+  (b) focusable Composite row + host focus detection (focus field not derived), (c) v5 module (out). No page sacrificed;
+  the Arcade hub and `slice436-kit`, the accepted Screen page and `slice430-kit` remain untouched.
+- Probes `private/slice440-*`; mapping section 30. No tests affected (no source diff).
+
 ## TASK-213 Phase 2a: the Dummy page route is blocked (2026-11-10, investigation; no page shipped)
 
 The owner asked for a real Options-style **Recomp settings** page instead of the Arcade-main-menu host row, starting with
