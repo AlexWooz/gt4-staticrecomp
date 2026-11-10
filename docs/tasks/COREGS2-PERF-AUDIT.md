@@ -179,6 +179,8 @@ line 539, which is the reason the flush is currently correct.
 **Design.** Add a front-end option (CoreGS 2.0 only) that (a) removes SCISSOR and XYOFFSET from rule 2 and (b) makes
 `TranslateBatch` use `PrimRecord::rect` (with the existing IN-391/IN-397 slack) as the per-draw scissor instead of
 intersecting with the batch snapshot scissor. `out.scissor` and `out.rect` for the other renderers stay as they are.
+This relaxes the spec's chapter 02.5 rule 2 for CoreGS 2.0 only; record it in the implementation notes (the CPU
+reference and the writeback keep the conservative rule).
 The per-primitive rectangle is a valid scissor: a primitive cannot cover a pixel outside its own coverage box, and the
 box is already clipped to the live scissor.
 
@@ -247,10 +249,12 @@ different-texture flushes, i.e. a few hundred microseconds at 1x.
 
 **Effort / risk.** Small (about 1 day plus the counter); risk low. Exactness rests on the range helper, which is already
 proved against `LocatePixel` for all load shapes (IN-457 fixture) and against the GPU palette path (IN-408); the new
-test must cover a load that misses, a load that overlaps one range, a wrapping CT16 range, CSM2, and an 8-bit vs 4-bit
-texture. The pending batch's `t.palette` may change in **unused** entries, so the palette-row key can change and write a
-new 256-pixel row; that is a small extra, not a correctness problem. (Hashing only the used entries would remove it; a
-follow-up.)
+test must cover a load that misses, a load that overlaps one range, a load that writes only unused entries of the same
+texture, a wrapping CT16 range, CSM2, and an 8-bit vs 4-bit texture. Keep B on the palette-rows path (the default,
+IN-409): with `GT4_CORE2_PALETTE_ROWS=0` the texture decode key includes the unused palette entries, so the saved flush
+could cost a decode instead. With palette rows the pending batch's `t.palette` may change in **unused** entries, so the
+palette-row key can change and write a new 256-pixel row; that is a small extra, not a correctness problem. (Hashing
+only the used entries would remove it; a follow-up.)
 
 **A/B and acceptance.** `GT4_CORE2_CLUT_SCOPE=0/1`; counter `clut_flushes_avoided` next to
 `clut_same_texture`. Frames identical on the night race 3x/12x, George V 6x, the license and the showroom; CLUT fixtures
@@ -502,6 +506,10 @@ Also: **do not re-measure the same stage averages without a question.** The ledg
 the fragment shader is cheap on the desktop, the GPU gives less than expected, stutters are spikes (per-VBlank, not
 600-VBlank averages), and the frame is the EE/GS-worker critical path; look at the VBlank-by-VBlank line
 (`GT4_CORE2_SPIKE_MS`) and the change from one VBlank to the next.
+
+**The 12x ceiling is not a TASK-215 target.** The 12x draw passes are fill-bound by the 165 MB frame/depth targets (C,
+IN-438/IN-523), and the GPU plan's conclusion is that big GPU gains there need CoreGS 3.0. The only 12x items in this
+audit are D and F, both Performance Mode and both capped by the measured fill; do not start a 12x shader rewrite here.
 
 ## 5. Prioritized short list for TASK-215
 
