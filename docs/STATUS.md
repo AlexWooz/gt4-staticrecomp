@@ -1,5 +1,28 @@
 # Current Status
 
+## 2026-11-10: first textured offline car frame (TASK-090)
+
+The offline reference renderer now samples the decoded car textures. New `coregs3_sampler` implements the measured
+car-pass subset: T4/T8/CT32 RGBA8, MODULATE in the GS 8-bit form, level 0 only, nearest/linear with MMAG == MMIN, the
+four wrap modes, alpha test ATE/ATST with AFAIL KEEP, the normal/additive blends in the GS integer form, FBMSK and ZMSK;
+DATE and any other AFAIL are explicit counted refusals. New `coregs3_texture_frame` joins a capture, its `.gt4vram`
+sidecar and an optional `.gt4tap`: it decodes each record the items use once, shares the RGBA8 between records with the
+same Format G key, binds a texture per item when the item has a model UV, and attaches the tap's per-item
+TEST/ALPHA/FRAME/ZBUF/PRIM state by the proven `uv`-gate pairing (vertex count + TEX0, A+D state in tap order). The
+rasteriser interpolates the model UV with 1/w, samples, runs the alpha test before depth (AFAIL KEEP writes neither
+colour nor depth), then depth/blend/FBMSK/ZMSK. The body/paint family (80 items) keeps the lit colour because its CT32
+256x256 env map uses texgen ST (a later task). Frame 0 (VBlank 7398, night race): 335 items, 216 textured, 119
+untextured (80 texgen, 36 no record, 3 no UV), 167 records decoded, 10 Format G cache hits, 0 refused; the tap paired
+327/335 items. Raster at 1x: 7,196 textured writes (626 alpha failures, 1,563 FBMSK pixels, 596 ZMSK pixels, 0 blend
+pixels; the car PRIM has ABE off in this frame); 64,325 at 3x. Against the CoreGS 2.0 VBlank-7400 reference inside the
+textured draws' mask (23,823 px): PSNR 17.071 -> 17.612 dB, SSIM 0.2165 -> 0.2219, pct_bad 90.035% -> 88.381%; the
+2,809 pixels the textures visibly change go from 12.870 to 14.929 dB. The absolute gap is the known geometry/lighting
+difference of the CPU reference at the two-frame pairing (fog/texgen not implemented), not the texture decode. CTest
+coregs3 8/8 (new `native_coregs3_sampler`), Python 7/7, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686
+racing, 0 differences, 13/13 frames). Images: `build/evidence/coregs3-textured/`
+(`offline-textured-frame0.png`, the untextured A/B, the 3x frames and masks). The body texgen/env-map reflection study
+and the capture v5 pass attribution are in flight.
+
 ## 2026-11-10: car textures: the SLM sidecar and the native decode (TASK-090)
 
 The `.gt4scene` capture has the 40-byte PGLUtexture record of every item but no texture pixels. `GT4_COREGS3_VRAM` now
