@@ -1,5 +1,19 @@
 # Current Status
 
+## TASK-214 Phase 10: reader search, data route exhausted (2026-11-10)
+
+- **Matched:** `MWidgetReader__structor_0` `0x00207590`, `MWidgetReader__structor_1` `0x00218C00` (parses one widget
+  via `func_00269290` and registers it through `func_00306638`), `func_00269290` = the keyword parser (matched
+  source), `func_00306638` = generic member-add helper. The `RootWindow`/`has_script` branch is not matched, and no
+  pointer to the `RootWindow` string exists in the image (the reader builds and memcmps it).
+- **Data route exhausted:** the name -> value export is built at load by the reader; a text-added `RootWindow` is
+  parsed and instantiated (the tile proves it) but not exported, so the page root stays nil.
+- **Native route (smallest):** one `MProject.exportRootWindow("RecRoot1")` call after project load, inside the
+  existing `mProject__virtual_63` walk; no behaviour change when the window is absent.
+- **Next:** disassemble `func_00269290` (`0x00269290`) and follow the `RootWindow`/`has_script` comparisons to
+  `vt[95]`/`exportRootWindow`; then either insert the table entry (data) or the single hook.
+- **Proven:** with an existing root (`MiscRoot`) the page opens and the run completes. Nothing swapped; tests 846 OK.
+
 ## TASK-214 Phase 9: the root export is native (2026-11-10)
 
 - `mProject` is an `mComposite` (the project is the widget-tree root); `mProject__virtual_63` walks the children

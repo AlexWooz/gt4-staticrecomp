@@ -684,3 +684,41 @@ Smallest next steps, in order:
    `exportRootWindow` once for the new window (one native hook at project load).
 3. Native patch shape: at `mProject` load completion, call `findPage("RecRoot1")`/`exportRootWindow` for the new
    window, or extend the reader's name check. Both are a single call in the existing walk, not a new subsystem.
+---
+
+# Phase 10 - the reader search (2026-11-10)
+
+## 33. What the decomp has, and what it does not
+
+| symbol | address | meaning |
+|---|---|---|
+| `MWidgetReader__structor_0` | `0x00207590` | reader construction |
+| `MWidgetReader__structor_1` | `0x00218C00` | parse **one** widget (`func_00269290(reader, name)`) and register it (`func_00306638`) |
+| `func_00269290` | `0x00269290` | the token/keyword parser (matched under `src/ui/unit_00265D00`) |
+| `func_00306638` | `0x00306638` | builds a member name and inserts it (`func_003065F0`), the generic member-add helper |
+| `MProject.findPage` / `exportRootWindow` | `0x00229608` / `0x002296E8` | registered project methods |
+
+The `RootWindow`/`has_script` branch inside `func_00269290` is **not matched** in the decomp. There is also no
+pointer to the `RootWindow` string anywhere in the image (searched the whole file for `0x00698436`): the reader
+builds the keyword and compares it through `func_0057F260`/`memcmp`, so it cannot be found by a simple data search.
+
+## 34. Route decision
+
+- **Data route: exhausted.** The name -> value export table is not part of the title data we can edit; the reader
+  builds it at load from the project it parses. Adding a `RootWindow` to the text is parsed and instantiated (the tile
+  proves it) but not exported.
+- **Native route (smallest):** one call to `MProject.exportRootWindow("RecRoot1")` after the project load, inside the
+  existing walk (`mProject__virtual_63` already iterates every child and dispatches `vt[95]`). It changes nothing when
+  the window is absent and does not touch any existing page.
+
+## 35. Exact next step
+
+Disassemble `func_00269290` (`0x00269290`) and follow the `RootWindow`/`has_script` comparisons to the point where the
+reader calls `vt[95]`/`exportRootWindow`. Two outcomes:
+
+1. it stores into a **name -> value table** owned by the project -> insert `RecRoot1` there (data, same technique as
+   the capacity field);
+2. it calls the export method directly -> add the single hook at that call site for the new window.
+
+Until one of them is done, the page has a tile and a module but no bound root; the accepted Arcade host-tree hub
+remains the fallback and nothing existing changes.

@@ -5200,3 +5200,15 @@ The shipped path stays our MIT tools.
 - **Next:** read the reader's `RootWindow`/`has_script` branch (the exact export site); if it is a name -> value
   table, add `RecRoot1`; otherwise one native call to `exportRootWindow` for the new window at project load.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 10 (2026-11-10, reader search).**
+- **Matched:** `MWidgetReader__structor_0` `0x00207590`, `MWidgetReader__structor_1` `0x00218C00` (parses one widget
+  via `func_00269290` and registers it with `func_00306638`), `func_00269290` = the keyword parser (matched source),
+  `func_00306638` = generic member-add. The `RootWindow`/`has_script` branch itself is not matched, and no pointer to
+  the `RootWindow` string exists in the image (the reader builds and memcmps the keyword).
+- **Data route exhausted:** the name -> value export is built at load by the reader; a text-added `RootWindow` is
+  parsed and instantiated (tile proven) but not exported.
+- **Native route (smallest):** one `MProject.exportRootWindow("RecRoot1")` call after project load, inside the
+  existing `mProject__virtual_63` walk; no behaviour change when the window is absent.
+- **Next:** disassemble `func_00269290` and follow the `RootWindow`/`has_script` comparisons to `vt[95]`/export; then
+  either insert the table entry (data) or the single hook.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.
