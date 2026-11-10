@@ -1917,8 +1917,38 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   tap). CTest coregs3 **13/13** (new `native_coregs3_wet_reflection`), Python 8/8, car render byte-identical to the
   `e529c319` executable (`392dd4ed...`), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
   `build/evidence-wet-reflection/`; design: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §25.
-- Next: decode the captured `.gt4gs` PATH2/PATH3 stream (S2) and draw the wet-road colour composite,
-  then measure the post chain; a v6 capture field for the 0xA0 morph factor; the effects/HUD capture
+- **GS-stream S2: the `.gt4gs` census and the wet-road composite (2026-11-10, branch `task/090-gs-post-layer`).** S2 of
+  [COREGS3-GSSTREAM-CAPTURE](docs/COREGS3-GSSTREAM-CAPTURE.md) is implemented and measured. `coregs3_gsdecode.{hpp,cpp}`
+  (in `gt4_coregs3`, no GT4_HW_GS dependency) walks every record with the measured GIF semantics - PACKED, REGLIST
+  (NLOOP x NREG words, descriptor per word), IMAGE split across capture records, A+D writes, the 12.4 screen wrap, both
+  latching and drawing kicks, sprite pairs - and classifies every packet or counts it with a named refusal.
+  `gt4_coregs3_gs --census [--json]` prints the per-frame census, every full-screen batch and the recognised chain;
+  attribution is S1's phase relation (stream V is scene frame V-1). Night capture: **4,915 packets** (PACKED 2,637,
+  REGLIST 896, IMAGE 1,382, disabled 0; register-only 2,078, primitive 928, empty 527), **9,192 A+D writes**, 8,792
+  register writes, 936 PRIM kicks, **928 batches / 4,096 vertices**, **88 full-screen batches**, **1,382 uploads /
+  30,403,968 B**, **0 refused** of any kind, 1,382 split packets handled. The chain is **PATH2, not PATH3**: seq 920
+  clears the frame alpha, seq 934 composites the sphere-mapper page **0x3140 (page 394) CT32 128x128** with PRIM 0x15E,
+  FRAME 210/FBW 10 FBMSK 0, TEX1 linear/linear, CLAMP region 0..127 and ALPHA `0x58` `(Cs-0)*Ad+Cd`, seq 936/964 are
+  full-screen `Cd*FIX/128` multiplies (FIX 127/255), seq 1094 is the CT16 present. The source pixels are the
+  `.gt4vram` job record label 460559 (vblank 7399, windows `(0x3F80,64)+(0x3FC0,4)+(0x3140,256)`), captured before that
+  job executes; the frame-0 `.gt4scene` block is byte-identical to the pass-textures run (`0c139ab0a439f3bf...`).
+  `coregs3_wet_composite.{hpp,cpp}` draws the captures over the world (measured sampler, half-open sprites, the captured
+  alpha clear before the first PassId 7 draw), and `gt4_coregs3_render --gs` adds `--no-wet-composite`, `--post-chain`,
+  `--composite-world-alpha` and the masks. Measurement at 3x: the reflection mask writes 188 fragments, **70 with
+  non-zero alpha**; the composite covers 2,573,956 pixels with 0 refusals and **changes 70 pixels**, the horizon band
+  rows 151-154 / columns 1334-1368, **outside the compared clean mask**. Before == after: PSNR 22.3498, SSIM 0.65055,
+  pct_bad 64.776%, mean |diff| 14.84, luma 18.955, fit `0.6341*world + 14.668` (page `0x36D0`: PSNR 25.169, luma
+  16.613, fit `0.2831*world + 19.307`); the additive gap is **7.733 luma** (7.397 road page) and the composite explains
+  **0.000%**. The A/B `--no-wet-composite` is byte-identical to the baseline (`AB769F0A92BA...`); the world-alpha
+  diagnostic (skip the captured clear) gives luma 144.98 / PSNR 6.45, and the captured post multiplies give luma 34.62 /
+  PSNR 20.40 / SSIM 0.6105, both overshooting. The residual stays in the material/texture/lighting difference or in a
+  post op the stream does not carry at this scene. Checks: CTest coregs3 **16/16** (new `native_coregs3_gsdecode` and
+  `native_coregs3_wet_composite`), Python **14/14**, car-only render byte-identical to the `aa5816ac` executable
+  (`B0E7082B...`), A/B byte-identical, 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK**. Evidence:
+  `build/evidence-gs-post-layer/`; method: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §27.
+
+- Next: S3 (the HUD/panel layer) and the S2 residual (the material/texture/lighting gap or a post op the
+  PATH2/PATH3 stream does not carry); a v6 capture field for the 0xA0 morph factor; the effects/HUD capture
   additions; then the G-IMAGE/G-PERF gates.
 
 

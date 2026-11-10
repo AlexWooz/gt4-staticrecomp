@@ -1667,3 +1667,114 @@ sprites (`func_004A6788`), i.e. PATH3/2D, which the `.gt4tap` (PATH1 only, 0 IMA
 - The sphere-mapper draws (167/168) target FBP page 394 (blocks 0x3140), not the main frame; their content is captured
   in the job record's windows and is not drawn in this picture.
 - The pass's own colour output does not exist in the capture; nothing was inferred from it.
+
+## 27. Round 27 (2026-11-10, branch `task/090-gs-post-layer`): S2, the PATH2 stream decoded and the wet-road composite drawn
+
+One branch from `task/090-coregs3` at `aa5816ac` (worktree `O:/Antigavity/gt4-wt-090-gs-post-layer`). One problem: decode
+the S1 `.gt4gs` PATH2/PATH3 stream, identify the wet-road reflection colour composite, draw it faithfully over the
+offline world and measure how much of the additive term it explains. S1's S2 plan (`docs/COREGS3-GSSTREAM-CAPTURE.md`
+§4-§5) named PATH3; the measurement says the composite is **PATH2**, and the answer is that it explains **none** of the
+additive term.
+
+### 27.1 The decoder and census (C)
+
+`native/coregs3/coregs3_gsdecode.{hpp,cpp}` is in `gt4_coregs3` (no GT4_HW_GS dependency). It walks every capture
+record with the measured CoreGS 2.0 GIF semantics, written independently: PACKED (one descriptor per qword), REGLIST
+(NLOOP x NREG 64-bit words, two per qword, descriptor advancing per word - the first S2 look read NLOOP as a word count
+and shifted the whole stream), IMAGE (NLOOP qwords, split across capture records), A+D register writes with the canonical
+64-bit layout, and the 12.4 screen map `sx = ((x - XYOFFSET.OFX) & 0xFFFF) / 16` with the signed 12-bit range. A
+primitive batch is the vertex run of one tag under one PRIM, both latching (XYZF3/XYZ3) and drawing (XYZF2/XYZ2) kicks;
+a sprite is the pair. Every packet is classified (PACKED/REGLIST/IMAGE/disabled) and by content (register-only,
+primitive, empty); named refusal counters cover truncation, disabled format, unsupported REGLIST descriptors, IMAGE
+without BITBLTBUF/TRXREG, and vertices before any PRIM. The attribution is S1's phase relation (stream `V` is scene
+frame `V - 1`), reported as `capture_vblank` and `scene_frame`; no packet is placed by acceptance-time pass.
+
+`gt4_coregs3_gs --census [--json <out>]` prints the totals, the per-VBlank/per-scene-frame rows, every full-screen batch
+with its state, and the recognised chain per scene frame. Night capture, VBlanks 7398-7405:
+
+| Number | Value |
+|---|---|
+| records / GIF records | 4,979 / 4,771 (PATH2 1,480, PATH3 3,291) |
+| packets | 4,915 (PACKED 2,637, REGLIST 896, IMAGE 1,382, disabled 0) |
+| content | register-only 2,078, primitive 928, empty 527 |
+| register traffic | 9,192 A+D writes, 8,792 register writes, 936 PRIM kicks |
+| geometry | 928 batches / 4,096 vertices (2,048 drawing), 88 full-screen batches |
+| images | 1,382 uploads / 30,403,968 B; 1,382 packets split across records (handled) |
+| refusals | 0 truncated, 0 disabled, 0 unsupported REGLIST, 0 IMAGE without state, 0 vertices without PRIM |
+| per frame | 610/615 packets, 171-173 uploads, 11 full-screen batches |
+
+### 27.2 The chain, and the PATH3 correction (C)
+
+The PATH3 records are **only** image uploads and transfer registers; every draw is PATH2. The chain recogniser
+(`find_wet_composite`) pins the exact state signature in the stream stamped `V + 1` and refuses anything else. For scene
+frame 0 (VBlank 7398, stream 7399, records seq 920/934/936/964):
+
+| draw | state |
+|---|---|
+| seq 920 alpha clear | PRIM 0x006 sprite (TME/ABE off), FRAME FBP 210/FBW 10 CT32, FBMSK `0x00FFFFFF`, RGBA alpha 0, 20 full-screen strips |
+| seq 934 colour composite | PRIM 0x15E sprite (TME+ABE), FRAME FBP 210/FBW 10 CT32, FBMSK 0, TEX0 TBP0 **0x3140 (page 394) CT32 128x128, TCC 1, TFX 0**, TEX1 linear/linear MXL 0, CLAMP region 0..127, ALPHA `0x58` `(Cs-0)*Ad+Cd`, TEST `0x3820C` (ATE off, ZTST ALWAYS), ZBUF ZMSK 1, 20 strip sprites, vertex RGBA (64,64,64,128) |
+| seq 936 post darken | PRIM 0x04E sprite (TME off, ABE on), ALPHA `0xA9` `(Cd-0)*FIX+0`, FIX 127, full screen |
+| seq 964 post brighten | same, FIX 255, full screen |
+| seq 1094 present | PRIM 0x11E, TEX0 TBP0 0x1A40, FRAME FBP 140/FBW 10 CT16, full screen |
+
+The composite samples the **sphere-mapper source page 394**, not the main frame page 210: page 210 is the destination
+(its alpha is the mask) and the source is the 128x128 sphere-map target. The source pixels are the `.gt4vram` job
+record **label 460559, vblank 7399**, windows `(0x3F80,64)+(0x3FC0,4)+(0x3140,256)`; the record is taken on the GS
+worker **before** that job executes, and the job is posted after seq 934, so the captured page is exactly what the
+composite reads. The run's frame-0 `.gt4scene` block is byte-identical to the pass-textures `night-pt5` frame
+(`0c139ab0a439f3bf...`), so the sidecar belongs to the same frame.
+
+### 27.3 The offline composite (C)
+
+`native/coregs3/coregs3_wet_composite.{hpp,cpp}` applies the captures to the rendered world: sprite pairs are rasterised
+half-open (a shared edge writes once, the S2 boundary bug), the CT32 source is sampled through the measured
+`coregs3_sampler` (MODULATE with the vertex colour, linear/linear, region clamp), the blend is the measured
+`(Cs-0)*Ad+Cd`, the alpha lane is written as As, and a state outside the signature is a refusal. The renderer gained
+`--gs <capture.gt4gs>` (with the chain and source-page selection, refusing a missing or ambiguous draw), the A/B
+`--no-wet-composite` (the world baseline byte for byte), `--post-chain` (the two captured multiplies),
+`--composite-world-alpha` (a counted diagnostic that skips the alpha clear) and `--composite-mask` /
+`--composite-changed` PGMs. `coregs3_render` also gained the captured alpha clear at the stream position
+(`clear_alpha_before_wet_reflection`): the framebuffer alpha is zeroed immediately before the first PassId 7 draw, after
+the course.
+
+### 27.4 Measurement (C)
+
+Night race frame 0, 3x, the pass-textures world baseline, the reference `frame_07400`, the M1 clean mask (car mask
+dilated 2 px and the six HUD rectangles removed):
+
+| Quantity | Value |
+|---|---|
+| reflection mask | 188 fragments at 3x, 70 with non-zero alpha |
+| composite cover / samples / refusals | 2,573,956 / 2,573,956 / 0 |
+| composite changed pixels | **70**, rows 151-154, columns 1334-1368 (the horizon band) |
+| changed pixels inside the clean mask | **0** |
+| added luma on the 1,780,790 compared pixels | **0.000** |
+| before == after | PSNR 22.3498, SSIM 0.65055, pct_bad 64.776%, mean abs diff 14.84, luma 18.955, fit `0.6341*world + 14.668` |
+| page `0x36D0` before == after | PSNR 25.169, SSIM 0.64213, luma 16.613, fit `0.2831*world + 19.307` |
+| additive gap (whole mask / road page) | 7.733 / 7.397 luma; the composite explains **0.000%** |
+| A/B `--no-wet-composite` | byte-identical to the baseline, SHA-256 `AB769F0A92BA...` |
+| world-alpha diagnostic | 2,543,500 changed pixels, luma 144.98, PSNR 6.45, SSIM 0.212 (inconsistent with the reference) |
+| post chain (FIX 127 then 255) | luma 34.62 (reference 26.69), PSNR 20.40, SSIM 0.6105, fit `0.3733*world + 13.763` (overshoots) |
+
+The additive term is therefore **not** the captured wet-road composite and **not** the captured global post multiplies.
+The composite's mask is a 70-pixel horizon band outside the compared mask; a road-wide destination alpha is excluded by
+the explicit alpha clear and by the world-alpha diagnostic, which overshoots by an order of magnitude. The remaining
+7.733 luma stays in the material/texture/lighting difference the world-materials and pass-textures rounds bounded, or in
+a post operation the PATH2/PATH3 stream does not carry at this scene (no tone/glare draw; the 2x brighten is the only RGB
+post op).
+
+### 27.5 Checks
+
+| Gate | Result |
+|---|---|
+| CTest coregs3 | **16/16**, including `native_coregs3_gsdecode` (PACKED/REGLIST/IMAGE, the split packet, the 12.4 map, the full-screen rule, the chain recogniser and its refusal) and `native_coregs3_wet_composite` (MODULATE, Cs*Ad+Cd, As, half-open sprites, the multiply and the refusals) |
+| Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **14/14** |
+| Car-only render vs the `aa5816ac` executable (same scene/vram/tap/command) | **byte-identical**: PNG SHA-256 `B0E7082B...`, report `4F9F986A...`, both builds |
+| `--no-wet-composite` vs the world baseline | **byte-identical**, SHA-256 `AB769F0A92BA2247360B9939D9A21707D4174743202BC5C0340F0375F7388CFF` |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, reference `coregs3-r8/ref/gt4vulkan.exe`) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow |
+
+Evidence: `build/evidence-gs-post-layer/` (census text/JSON, world baseline/composite/A-B/diagnostic/post-chain images
+and reports, composite and changed masks, metrics JSON, gate logs). Limits: the destination alpha at the composite is a
+reconstruction of the captured clear plus the captured reflection pass against the offline depth (188 fragments); it is
+not a GS readback, and the real GS depth buffer could differ. The source page is captured, not inferred. The composite
+is drawn with the measured sampler/sprite rules; no other 2D primitive class is implemented (the HUD is S3).

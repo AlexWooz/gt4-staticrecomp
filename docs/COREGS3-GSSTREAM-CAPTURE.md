@@ -10,6 +10,70 @@ the existing CoreGS 3.0 capture (`native/coregs3`) and the repository studies.
 
 Labels: **C** = Confirmed (read in code or measured), **H** = High confidence, **Hyp** = Hypothesis, **U** = Unknown.
 
+## Status (2026-11-10): S2 implemented and measured; the wet-road composite explains 0 of the additive term
+
+S2 landed on branch `task/090-gs-post-layer` (worktree `O:/Antigavity/gt4-wt-090-gs-post-layer`, from `task/090-coregs3`
+at `aa5816ac`). The offline decoder/census (`native/coregs3/coregs3_gsdecode.{hpp,cpp}`, the tool's
+`gt4_coregs3_gs --census [--json]`, the `native_coregs3_gsdecode` fixture) and the wet-road composite
+(`coregs3_wet_composite.{hpp,cpp}`, `gt4_coregs3_render --gs`, `--no-wet-composite`, `--post-chain`,
+`--composite-world-alpha`, the `native_coregs3_wet_composite` fixture) are implemented and measured on the S1 capture.
+
+- **Attribution used (C):** the S1 phase relation, stream stamped `V` belongs to scene frame `V - 1`. For scene frame 0
+  (VBlank 7398) the chain is the stream stamped **7399** (records seq **920/934/936/964**); every other frame 7399-7404
+  has the identical chain. No packet is placed by acceptance-time pass (all `unknown`).
+- **Census (C):** 4,979 records, 4,771 GIF; **4,915 packets** (PACKED 2,637, REGLIST 896, IMAGE 1,382, disabled 0),
+  register-only 2,078, primitive 928, empty 527; **9,192 A+D writes**, 8,792 register writes, 936 PRIM kicks; 928 batches
+  (4,096 vertices, 2,048 drawing), **88 full-screen batches**; **1,382 IMAGE uploads / 30,403,968 B**; 1,382 packets
+  split across capture records, handled. Named refusals: **0** truncated, 0 disabled-format, 0 unsupported REGLIST
+  descriptor, 0 IMAGE without transfer state, 0 vertices without PRIM. Per frame: 610/615 packets, 171-173 uploads,
+  11 full-screen batches (the four chain draws plus seven classified others: the frame-sample depth stamp, env-map alpha
+  writes, small multiplies and the present blit).
+- **The composite is PATH2, not PATH3 (C, measured):** the PATH3 records are only IMAGE uploads and BITBLTBUF/TRXPOS/
+  TRXREG/TRXDIR packets; every draw in the capture is PATH2. The chain in stream 7399:
+  - alpha clear **seq 920**: PRIM 0x006 (sprite, TME/ABE off), FRAME FBP 210/FBW 10 CT32, FBMSK `0x00FFFFFF`, RGBA
+    alpha 0, 20 full-screen strip sprites;
+  - **seq 934, the colour composite**: PRIM 0x15E (sprite, TME+ABE), FRAME FBP 210/FBW 10 CT32, FBMSK 0, TEX0 TBP0
+    **0x3140 (page 394) CT32 128x128, TCC 1, TFX 0**, TEX1 MMAG/MMIN linear, MXL 0, CLAMP region 0..127, ALPHA `0x58`
+    `(Cs - 0)*Ad + Cd`, TEST `0x3820C` (ATE off, ZTST ALWAYS), ZBUF ZMSK 1, 40 vertices / 20 strip sprites with vertex
+    RGBA (64,64,64,128) and UVs 0..128.5 texels. It samples the **sphere-mapper source page 394**, not page 210; the
+    destination alpha is the mask the reflection pass wrote into page 210 after the clear;
+  - post **seq 936** FIX 127 and **seq 964** FIX 255: full-screen sprites, TME off, ABE on, ALPHA `(Cd - 0)*FIX + 0`
+    (`Cd*127/128`, `Cd*255/128`);
+  - present **seq 1094**: full-screen sample of page 210 into FBP 140/FBW 10 CT16 (the display buffer).
+  The source page is the `.gt4vram` job record **label 460559, vblank 7399**, windows `(0x3F80,64)+(0x3FC0,4)+
+  (0x3140,256)`, captured **before** that sphere-mapper job executes; the job is posted after seq 934, so this is the
+  content the composite reads (the frame-0 `.gt4scene` block is byte-identical between the S1 and pass-textures runs,
+  SHA-256 `0c139ab0a439f3bf...`).
+- **Measurement (C):** faithful reconstruction over the pass-textures world at 3x: the reflection mask writes 188
+  fragments, **70 with non-zero alpha**; the composite covers 2,573,956 pixels, samples all of them with **0 refusals**,
+  and **changes 70 pixels**, all in rows 151-154 / columns 1334-1368, i.e. the thin horizon band **outside the compared
+  clean mask** (the top HUD rectangle). Added luma over the 1,780,790 compared pixels: **0.000**. Before and after are
+  identical: **PSNR 22.3498, SSIM 0.65055, pct_bad 64.776%, mean |diff| 14.84, luma 18.955, fit
+  `ref = 0.6341*world + 14.668`**; page `0x36D0`: PSNR 25.169, SSIM 0.64213, luma 16.613, fit `0.2831*world + 19.307`.
+  The additive gap is **7.733 luma** (7.397 on the road page); the composite explains **0.000%** of it. The A/B
+  `--no-wet-composite` is byte-identical to the baseline (`AB769F0A92BA...`).
+- **The uncaptured destination alpha is not a free variable (C):** the diagnostic `--composite-world-alpha` (skip the
+  captured clear, use the world alpha as `Ad`) changes 2,543,500 pixels and gives luma **144.98**, PSNR **6.45**, SSIM
+  **0.212**, inconsistent with the reference; the captured alpha clear is therefore the right `Ad`, and a road-wide
+  mask of this form is excluded.
+- **The post chain does not explain the residual either (C):** applying the captured multiplies (FIX 127 then FIX 255)
+  gives luma **34.62** against the reference's 26.69, PSNR **20.40**, SSIM **0.6105**, fit `0.3733*world + 13.763`;
+  it overshoots every metric. The remaining 7.733 luma gap is therefore not the captured composite and not a simple
+  global post multiply; it stays in the material/texture/lighting difference (the pass-textures round's dominant page
+  cause) or in a post operation the stream does not carry at this scene (no tone/glare draw; the 2x brighten is the only
+  RGB post op and it overshoots).
+- **Gates:** CTest coregs3 **16/16** (new `native_coregs3_gsdecode` and `native_coregs3_wet_composite`), Python
+  `test_coregs3_units.py` **14/14**, car-only render **byte-identical** to the `aa5816ac` executable (PNG
+  `B0E7082B...`, report `4F9F986A...`), `--no-wet-composite` byte-identical to the world baseline, and the 3x off/shadow
+  identity gate against the `coregs3-r8/ref` executable is **COREGS3-NIGHT-CHECK-OK** (report in
+  `build/evidence-gs-post-layer/gate-night/`).
+
+The S2 conclusion changes the study's first milestone: M-POST-1's "apply the captured post pass" cannot be met by the
+wet-road composite (it is 70 pixels at the horizon) or by the captured multiplies (they overshoot); the milestone's
+`--no-post` A/B and its PSNR/luma targets stay open until the material/texture gap is addressed or a post op that the
+PATH2/PATH3 stream does not carry is found. Every number, the census JSON, the masks and the A/B images are under
+`build/evidence-gs-post-layer/`.
+
 ## Status (2026-11-10): S1 implemented and measured
 
 S1 landed on branch `task/090-gs-capture` (worktree `O:/Antigavity/gt4-wt-090-gs-capture`, from `task/090-coregs3` at
