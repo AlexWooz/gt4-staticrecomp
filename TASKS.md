@@ -1881,9 +1881,28 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   The v1 sidecar path keeps working (car render byte-identical to the `a7a9434d` executable, `392dd4ed...`); CTest
   coregs3 12/12 (new `native_coregs3_pass_textures`), Python 8/8, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
   `build/evidence-pass-textures/`; design and format: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §24.
-- Next: draw the captured wet-road reflection pass (study fix 3) and measure the post chain (fix 4) to close the
-  remaining picture gap; a v6 capture field for the 0xA0 morph factor; a `.gt4gs` PATH3 stream capture to name the
-  texture uploader (still Unknown); the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
+- **Wet reflection: the captured pass is the destination-alpha mask, not the colour (2026-11-10, branch
+  `task/090-wet-reflection`).** The study's fix 3 is measured and refuted as the additive term's source. The captured
+  PassId 7 (4 draws / 7 items / 292 vertices) is: draws 165/166, 5 items of the reflection-model quads sampling T4
+  `0x3F28` (CLUT `0x3F70`, CLD 0 + TEX2 group-0 palette load), PRIM 0x3C, TEST `0x5820C`, FRAME FBP page 210/FBW10
+  with **FBMSK `0x00FFFFFF` (destination alpha only)**, ZBUF ZMSK 1, FOGCOL `0x27272A`, main-view XYOFFSET; and draws
+  167/168, the sphere-mapper source into **FBP page 394/FBW2 (128 px) with FBMSK `0xFF000000` (RGB only)** at
+  XYOFFSET 0x7C08/0x7C08. The renderer now selects the main-view items (2 draws / 5 items / 272 vertices, the
+  mirror-view 2 counted), binds all 5 from the tapped TEX0/TEX1/CLAMP/TEX2 state against their own VU1 job record
+  (0 refused; the job windows (0x3F28, 32)+(0x3F70, 4) are captured), and draws them with the world path's tapped
+  blend/FBMSK/ZBUF/fog. Result: **188 fragments at 3x, all alpha-only, and 0 RGB pixels changed; the picture's metrics
+  are identical before and after** (PSNR 22.3498, SSIM 0.65055, pct_bad 64.776%, mean |diff| 14.84, luma 26.69 ->
+  18.96; whole-mask fit `ref = 0.634*world + 14.67` both; page `0x36D0` ratio 1.445, corr +0.111, fit `0.283*world +
+  19.31` both). The A/B (`--no-wet-reflection`) is byte-identical to the pass-textures `world-final.png`
+  (`345f955a...`). The additive term is therefore **not** the captured pass: `RacePS2Base__render_reflection` renders
+  the mask and the sphere source, then blurs and composites with full-screen PGL sprites (PATH3, absent from the PATH1
+  tap). CTest coregs3 **13/13** (new `native_coregs3_wet_reflection`), Python 8/8, car render byte-identical to the
+  `e529c319` executable (`392dd4ed...`), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK. Evidence:
+  `build/evidence-wet-reflection/`; design: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §25.
+- Next: capture the PATH2/PATH3 GS stream (`.gt4gs` v1, the GS-stream study's S1) and draw the wet-road colour
+  composite (blur + full-screen sprite) as the next layer; only after that measure the post chain (fix 4). A v6
+  capture field for the 0xA0 morph factor; a `.gt4gs` stream capture to name the texture uploader (still Unknown); the
+  effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

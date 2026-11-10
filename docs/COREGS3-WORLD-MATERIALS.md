@@ -253,3 +253,20 @@ Design 1 of the fix list is implemented and measured; the full record is
 - **This study's gates are not reached** (page ratio 1.0 +/- 0.15 and correlation > 0.5, PSNR >= 24 dB, SSIM >= 0.75,
   pct_bad <= 10%) and were not relaxed: fixes 3 and 4 bound the remaining picture, and the texture binding itself is
   complete on the selected items.
+
+## Follow-up (2026-11-10, branch `task/090-wet-reflection`): fix 3 measured — the captured pass is alpha-only
+
+The study's fix 3 expected the captured reflection pass (PassId 7) to be the additive wet-road layer. Drawn by the
+offline world renderer, it is not: of its 4 draws / 7 items / 292 vertices, the two main-view draws (5 items, 272
+vertices, T4 `0x3F28`/CLUT `0x3F70`, PRIM 0x3C, TEST `0x5820C`, ZBUF no-write, main-view XYOFFSET) write **destination
+alpha only** (FRAME.FBMSK `0x00FFFFFF`), and the other two (the sphere-mapper source into FBP page 394/FBW2 with
+`FBMSK 0xFF000000`, XYOFFSET `0x7C08/0x7C08`) do not touch the main frame. `RacePS2Base__render_reflection` blurs and
+composites the colour with full-screen PGL sprites, i.e. PATH3, which the PATH1 tap does not carry.
+
+Measured at 3x on the same frame: the pass writes 188 fragments, **all alpha-only; 0 RGB pixels change**, and the world
+metrics and linear fits are identical before and after (PSNR 22.3498, SSIM 0.65055, pct_bad 64.776%, mean |diff| 14.84,
+luma 18.96; whole-mask fit `ref = 0.634*world + 14.67`; page `0x36D0` fit `0.283*world + 19.31`); the `--no-wet-reflection`
+A/B is byte-identical to the pass-textures `world-final.png`. **The additive term is therefore not the captured pass**;
+it is the uncaptured PATH3 composite and/or the post chain. Fix 4 (the PATH3 `.gt4gs` capture) is the next step, and the
+metric gates (ratio 1.0 +/- 0.15, correlation > 0.5, PSNR >= 24, SSIM >= 0.75, pct_bad <= 10%) stay unrelaxed. Details:
+[COREGS3-HOOKS](COREGS3-HOOKS.md) §25; evidence `build/evidence-wet-reflection/`.

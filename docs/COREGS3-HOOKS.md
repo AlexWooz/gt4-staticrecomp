@@ -1474,3 +1474,80 @@ frame-end image**.
 - The 0xA0 morph UV first-key substitution still misplaces the sampled coordinate for its 46 items.
 - The per-draw (`kRecordDrawTexture`) and pass-begin paths stay in the format as evidence and fallbacks; they are
   measured as too early for this scene and are not used by the world picture.
+
+## 25. Round 26 (2026-11-10, branch `task/090-wet-reflection`): the captured reflection pass drawn and measured
+
+The world-materials study's fix 3 asked to draw the captured wet-road reflection pass (PassId 7, 4 draws / 7 items /
+292 vertices) before attributing the remaining road darkness to palettes. The pass is now drawn by the offline world
+renderer; the measurement says it is **not** the additive layer: its main-view items write destination alpha only, and
+its other two items render the sphere-mapper source into their own target. The colour composite is PATH3 and absent from
+the PATH1 tap.
+
+### 25.1 What the capture holds (C)
+
+Measured on `night-pt5` frame 0 (VBlank 7398), from the tap's A+D writes and the draws' state:
+
+| draw | items / vertices | FRAME target | FBMSK | PRIM | TEX0 | XYOFFSET |
+|---|---|---|---|---|---|---|
+| 165, 166 | 5 / 272 | FBP page 210 (blocks 0x1A40), FBW 10 = 640 px, CT32 | `0x00FFFFFF` (keep RGB, write alpha) | 0x3C (TME+FGE, ABE off) | T4 128x128 TBP0 `0x3F28`, CBP `0x3F70`, CLD 0 + TEX2 T4 group load | `0x6C08/0x7208` (main view) |
+| 167, 168 | 2 / 20 | FBP page 394 (blocks 0x3140), FBW 2 = 128 px, CT32 | `0xFF000000` (write RGB, keep alpha) | 0x7C (ABE on) | T8 128x128 TBP0 `0x3F80`, CBP `0x3FC0`, CLD 0 + TEX2 T8 load | `0x7C08/0x7C08` (sphere mapper) |
+
+Both pairs carry TEST `0x0005820C` (ATE off, DATE off, ZTST GEQUAL), ALPHA 0x44, ZBUF ZMSK 1, and a per-vertex fog
+(202..209 main view; 255 sphere); FOGCOL is `0x27272A` and `0x7F7F7F`. The main-view items' PRIM is 0x3C with ABE off,
+so the study's expected additive `(Cs-0)*Ad+Cd`/FOGCOL-black state is not this pass (that is the body/paint reflection,
+round 20). `RacePS2Base__render_reflection` (`0x003411D0`, decompiled) explains the sequence: it sets the framebuffer
+mask, renders the reflection models through `CourseData__render_model`, then blurs and composites with full-screen PGL
+sprites (`func_004A6788`), i.e. PATH3/2D, which the `.gt4tap` (PATH1 only, 0 IMAGE tags) does not carry.
+
+### 25.2 The renderer rule (`native/coregs3/coregs3_world.*`, `coregs3_render.*`)
+
+- **Selection.** PassId 7 is a world pass under the measured rule: ITOP 0x0080, a position channel, a shape-rule pass, a
+  tapped state with the main-view XYOFFSET `0x6C08/0x7208` and a non-zero TEST. The mirror-view (`0x7C08/0x7C08`)
+  items are `mirror` exclusions; every outcome is counted (`world wet-reflection exclusions: other-itop, shape-refused,
+  mirror-view, no-state, no-position, empty-draws`). The tool's `--no-wet-reflection` is the A/B.
+- **Texture binding.** `coregs3_texture_frame` treats PassId 7 as a world pass: each item decodes its
+  TEX0/TEX1/CLAMP/TEX2 state against its own VU1 job's `.gt4vram` v2 record (T4 `0x3F28`/CLUT `0x3F70`; TEX1.MXL 1 takes
+  the world path's counted level-0 fallback). Frame 0: **5 items from the tapped state on job 460387, 0 refused**.
+- **Fragments.** No new arithmetic: the world rasteriser already applies the tapped blend, the FRAME.FBMSK lane merge,
+  the ZBUF.ZMSK no-write, the tapped fog and the alpha/depth tests. New counters name the pass
+  (`world_reflection_{draws,items,vertices,pixels,alpha_only,rgb_only,depth_failed,sample_refused}`), and `--reflection-mask`
+  writes its written-fragment mask.
+- **Capture coverage.** The job windows (0x3F28, 32 blocks)+(0x3F70, 4), and for the sphere-mapper job (0x3F80, 64)+
+  (0x3FC0, 4)+(0x3140, 256), cover every sampled block; 0 refused. The default car range 0x2BC0..0x38FF does **not**
+  cover the reflection pages 0x3F28/0x3F80, so the pass-textures capture's extended `GT4_COREGS3_VRAM_BLOCKS=0x2BC0-0x3FFF`
+  is the documented choice; the per-job windows copy the bound blocks wherever they are. No recapture was needed and no
+  content was guessed.
+
+### 25.3 Measurement (frame 0, VBlank 7398, 3x, reference frame_07400)
+
+- Selection: wet_reflection **2 draws / 5 items / 272 vertices**; exclusions mirror-view 2, empty-draws 2 (the
+  sphere-mapper draws), 0 other.
+- Raster: **188 fragments, all FBMSK-alpha-only, 7,608 fragments depth-rejected, 0 sample refusals; 0 RGB pixels
+  changed** and exactly 188 alpha pixels.
+- Picture before == after: PSNR **22.3498 dB**, SSIM **0.65055**, pct_bad **64.776%**, mean |diff| **14.84**, luma
+  26.69 -> **18.96**, ref/world 1.408, corr +0.465; whole-mask fit **`ref = 0.634*world + 14.67`** both runs. Page
+  `0x36D0`: ratio 1.445, corr +0.111, fit `0.283*world + 19.31` both. Page `0x3EE1`: ratio 1.678, corr +0.543, fit
+  `1.283*world + 11.08` both. The A/B (`--no-wet-reflection`) is byte-identical to the pass-textures `world-final.png`.
+- The study's metric gates (PSNR >= 24, SSIM >= 0.75, pct_bad <= 10%) remain **unreached and unrelaxed**: the additive
+  term is in the uncaptured PATH3 composite (and/or the post chain), not in the captured pass. The pass's mask touches
+  188 of 1,780,790 compared pixels (0.011%) and 97 of 1,250,577 road-page pixels (0.008%); the luma gap is 2.93 inside
+  it and 7.88 outside, so a road-wide additive term cannot be this pass.
+
+### 25.4 Gates
+
+| Gate | Result |
+|---|---|
+| CTest `native_coregs3` family | **13/13 passed**, including the new `native_coregs3_wet_reflection` (selection rule; per-job + CLD 0/TEX2 binding and the missing-TEX2 refusal; render integration pinning the alpha-only write, unchanged RGB, ZBUF no-write and the counted depth rejection) |
+| Python `tests/python/test_coregs3_units.py` | **8/8 passed** |
+| Car-only render vs the `e529c319` executable (M1 v1 sidecar) | **byte-identical**, SHA-256 `392dd4eda2fa6f99467dea149c843398c4751c253bfdf582a8a2b8ce6276759b`, identical reports |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, main worktree reference exe) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow |
+| World A/B with the pass off | **byte-identical** to the pass-textures `world-final.png` (`345f955a...`) |
+| World picture with the pass on | identical metrics to the pass off (the pass is alpha-only); the additive term stays |
+
+### 25.5 Open
+
+- The wet-road colour composite (blur + full-screen sprite) is **PATH3** and needs the `.gt4gs` v1 capture (the
+  GS-stream study's S1) before it can be drawn; the additive term is bounded to it and/or the post chain.
+- The sphere-mapper draws (167/168) target FBP page 394 (blocks 0x3140), not the main frame; their content is captured
+  in the job record's windows and is not drawn in this picture.
+- The pass's own colour output does not exist in the capture; nothing was inferred from it.
