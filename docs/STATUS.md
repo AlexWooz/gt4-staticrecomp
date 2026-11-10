@@ -4,7 +4,9 @@
 
 The owner confirmed (Telegram) that CoreGS 3.0 does not need to match CoreGS 2.0/GSdx pixel for pixel; the goal is to
 get close and then iterate on lights, reflections and missing effects. The measured gates stay a compass, not a
-bit-exact acceptance gate (the AGENTS/TASK-090 wording already said so).
+bit-exact acceptance gate (the AGENTS/TASK-090 wording already said so). Owner clarification (2026-11-10): presentation
+is fully decoupled from the 60 Hz guest, with an arbitrary constant cadence (20/30/45/60/120/144/VRR), interpolation
+between the two latest guest states; CoreGS 2.0's frame skipping is not the model.
 
 Research results from the parallel wave:
 - All seven remaining VU1 families decoded and validated against the r13 tap (max 1 level where the item's own block is

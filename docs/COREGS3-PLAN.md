@@ -328,6 +328,13 @@ or after any capacity/decode failure in a frame, that frame falls back to CoreGS
 144 Hz or VRR. The game itself does not change. Physics, logic, timing, AI, saves and every EE-visible read-back stay at
 the guest's fixed 60 Hz and stay bit-exact; the per-VBlank simulation digest gate applies unchanged.
 
+**Owner clarification (2026-11-10).** The presentation rate is arbitrary and its cadence must be constant at the chosen
+rate: 20, 30, 45, 60, 120, 144 or VRR, independent of the guest VBlank. CoreGS 2.0's frame skipping is not the model: it
+repeats or skips guest frames and leaves the frame time uneven. The renderer samples the timeline at the presentation
+instant and interpolates the two latest 60 Hz guest states; it never asks the guest physics for an arbitrary instant,
+because the game only computes at 60 Hz. Prediction/extrapolation is an optional later switch; interpolation's
+one-frame latency is the default.
+
 **Contract.**
 
 1. **The guest stays the clock.** A guest frame is captured exactly as today (K1-K5, one snapshot per VBlank) and is
