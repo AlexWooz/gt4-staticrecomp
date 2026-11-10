@@ -1,5 +1,27 @@
 # Current Status
 
+## TASK-213 Phase 2a probe: the hValue relation and the hidden-page gate (2026-11-10, evidence; page not reachable)
+
+The Phase 2a page is **not reachable**; no Graphics shell was added. The handle relation is resolved.
+
+- **The handle is the raw engine object.** `MRenderContext.startPage` `0x0022BC20` takes `a1` = the address of a 4-byte
+  slot holding the raw `mRenderContextPS2` (vtable `0x00663BE0`) and `a3` = an argv array of raw `mRootWindow` pointers
+  (vtable `0x00665418`). `func_0022AD20`/`func_00232C78` are RTTI casts/refcounts; there is no wrapper. The probe log
+  shows the game's own calls (context `0xF681A0`, pages `0x01FC2A90`, `0x00F77200`).
+- **The hidden MonitorRoot is live but not a registered page.** `option.mproject` has `MonitorRoot` (`has_script 1`),
+  not in the `option.adc` page list; the probe state has the root `0x00FD8090` (Pane `0x00FD8550`, `TitleMonitor`
+  `0x00FD89D0`). `startPage(context 0x0102AFB0, page 0x00FD8090)` at frame 2300 returns, but the current page stays
+  `0x00F77200` and the guest frame counter stops at 2300; the frame after is the same Screen Settings page. The exact
+  failing call is the hidden page's initialization/page-list insert, not the handles.
+- **Next step:** a data-only **scriptless page root** (MonitorRoot `has_script 0` or a new `RootWindow` with
+  `has_script 0` and an empty Pane) and the same call; if it renders, the empty Graphics shell is a scriptless
+  RootWindow with the game's widgets. Fallback: a host tree inside the Options root `ScrollWindow`, with the
+  scroll-content rebuild/focus risks; the smallest proof is one Composite/TextFace on the Screen page's Pane.
+- **Evidence:** `private/slice432-launch/run.log`, `state.bin`, `png/frame_02300.png`/`frame_02500.png`; exe
+  `a54ed940f9bb02c4fbd37a1e1a3fff7cd46432f154e24729ce33e461fd1a7320`; capsule `slice432-page-launch`, receipt
+  `cead3c642991531df3b0f6010ed532af56107ad22e2fa2af8d96c7302a3bdc66`, pin
+  `docs/inputs/slice432-page-launch-license-guard-runtime.json`. Mapping section 22.
+
 ## TASK-213 Phase 1d: OptionMenu rows and a live Resolution (2026-11-10, implemented, test build)
 
 On `task/213-native-settings` after Phase 1c/2a. The owner's Phase 1c test showed the row value changed but not the

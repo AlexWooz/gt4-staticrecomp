@@ -3522,3 +3522,33 @@ the Phase 1c one (the hooks are unchanged).
 - **Known:** the display-mode change is global and untested headless (a crash/kill leaves the chosen mode); the mode list
   is fixed to `\\.\DISPLAY1` at build time; the Monitor row is restart-only; the first closed-row value is fixed to
   1920x1080 (the kit start); the GS internal scale stays at the start `GT4_HW_SCALE`; Spec II is Phase 2.
+
+## TASK-213 Phase 2a probe build (slice432, 2026-11-10, test only)
+
+The v2.00 probe build for the `MRenderContext.startPage` handle relation: `native/page_probe.*` (the dispatch hook at
+`0x0022BC20` and the render-functor launch), the `page_start_callback` target address, the two capsule pins. The probe
+is env-gated: `GT4_PAGE_PROBE=1` logs the game's own startPage arguments; `GT4_PAGE_LAUNCH_FRAME=<n>` calls
+`startPage` with the derived slots for the hidden MonitorRoot at frame n. Without them the game is unchanged.
+
+- **Capsules:** `private/slice431-page-probe-license-guard-runtime` (log-only; receipt
+  `dd4e32633a5d7489d6a77d6743a5c8b1f192b679aa323dd034d8443ada2e438a`, pin
+  `docs/inputs/slice431-page-probe-license-guard-runtime.json`) and the launch probe
+  `private/slice432-page-launch-license-guard-runtime` (receipt
+  `cead3c642991531df3b0f6010ed532af56107ad22e2fa2af8d96c7302a3bdc66`, pin
+  `docs/inputs/slice432-page-launch-license-guard-runtime.json`). Both use the slice426 guard plus
+  `--display-aspect --frame-counters --frame-skip --native-settings`; `kernel.cpp`/`cdvdfsv.cpp` are unchanged from
+  slice376/slice424/slice426.
+- **Configure/build:** `build/configure-432.cmd` (the slice430 recipe with
+  `-DGT4_LICENSE_GUARD_SOURCE=<assets>/private/slice432-page-launch-license-guard-runtime`) and
+  `build/build-424.cmd`; the existing `build/slice424-native-settings-build`. Exe
+  `a54ed940f9bb02c4fbd37a1e1a3fff7cd46432f154e24729ce33e461fd1a7320`, 90,238,976 bytes.
+- **Run:** `GT4_DATA_PATCH=<slice430 patch> GT4_PAGE_PROBE=1 GT4_PAGE_LAUNCH_FRAME=2300 GT4_FULLSCREEN=1
+  GT4_OUTPUT_SIZE=1920x1080 gt4vulkan.exe ...` (the exact sequence in `private/slice432-launch/run.cmd`). Expected
+  probe lines: the game's own startPage calls (context slot -> raw `mRenderContextPS2`, argv -> raw `mRootWindow`), then
+  `[page-launch] MonitorRoot 0x00FD8090 (TitleMonitor 0x00FD89D0)`, the launch, the return. The call returns but the
+  current page stays `0x00F77200`; the guest frame counter stops at 2300; the frame is still the Screen Settings page.
+  The page is not reachable; no Graphics rows.
+- **Evidence:** `private/slice432-launch/run.log`, `state.bin`, `png/frame_02300.png`, `png/frame_02500.png`. The
+  probe does not need a kit; it is a diagnostic build.
+- **Next:** the scriptless page root test (MonitorRoot `has_script 0` or a new `RootWindow` `has_script 0` with an
+  empty Pane) and the same call; or the host tree inside the Options root. Mapping section 22.

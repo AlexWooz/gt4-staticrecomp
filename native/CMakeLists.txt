@@ -325,6 +325,14 @@ if(GT4_LICENSE_GUARD_SOURCE)
         # TASK-213 Phase 1c: the slice424 guard plus the Screen rows hooks (native/screen_rows.*): the two
         # screen_adjust callbacks, the per-frame text/insensitive service at the render functor.
         set(guard_pin_path "${GT4_ROOT}/docs/inputs/slice426-screen-rows-license-guard-runtime.json")
+    elseif(guard_capsule STREQUAL "${GT4_PRIVATE_BASE}/private/slice431-page-probe-license-guard-runtime")
+        # TASK-213 Phase 2a: the slice426 guard plus the MRenderContext.startPage probe (native/page_probe.*), gated by
+        # GT4_PAGE_PROBE. The probe only observes the script handle arguments; the native still runs.
+        set(guard_pin_path "${GT4_ROOT}/docs/inputs/slice431-page-probe-license-guard-runtime.json")
+    elseif(guard_capsule STREQUAL "${GT4_PRIVATE_BASE}/private/slice432-page-launch-license-guard-runtime")
+        # TASK-213 Phase 2a: the startPage probe plus the render-functor launch (GT4_PAGE_LAUNCH_FRAME) for the hidden
+        # MonitorRoot page.
+        set(guard_pin_path "${GT4_ROOT}/docs/inputs/slice432-page-launch-license-guard-runtime.json")
     elseif(guard_relative MATCHES "${GT4_TASK084_GUARD_RE}")
         # TASK-084 (slice260..269) and TASK-100 S8b (slice277): the slice217 guard plus the kernel frame counters
         # (--frame-counters); its pin file carries the same name as the capsule.
@@ -357,7 +365,7 @@ if(GT4_LICENSE_GUARD_SOURCE)
     set(GT4_LICENSE_GUARD_ENABLED ON)
 endif()
 add_library(ps2runtime_vulkan STATIC ${RUNTIME_FILES} "${PORT}/gs.cpp" "${PORT}/gpu.cpp" native_vulkan.cpp
-    data_patch.cpp native_settings.cpp screen_rows.cpp)
+    data_patch.cpp native_settings.cpp screen_rows.cpp page_probe.cpp)
 # Pure pacing types (present mode names, rate control) shared by the host and the Vulkan adapter.
 add_library(gt4_pacing STATIC pacing.cpp)
 target_compile_options(gt4_pacing PRIVATE /W4)
@@ -803,7 +811,7 @@ if(GT4_PERF_RUNTIME_SOURCE)
         list(APPEND RUNTIME_FILES "${perf_source}/${source}")
     endforeach()
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${perf_manifest_path}")
-    set_property(TARGET ps2runtime_vulkan PROPERTY SOURCES "${RUNTIME_FILES};${PORT}/gs.cpp;${PORT}/gpu.cpp;native_vulkan.cpp;data_patch.cpp;native_settings.cpp;screen_rows.cpp")
+    set_property(TARGET ps2runtime_vulkan PROPERTY SOURCES "${RUNTIME_FILES};${PORT}/gs.cpp;${PORT}/gpu.cpp;native_vulkan.cpp;data_patch.cpp;native_settings.cpp;screen_rows.cpp;page_probe.cpp")
     target_compile_definitions(ps2runtime_vulkan PUBLIC GT4_PERF_PROBE)
     target_link_libraries(ps2runtime_vulkan PUBLIC gt4_perf_probe)
 endif()

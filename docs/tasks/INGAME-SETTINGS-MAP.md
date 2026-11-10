@@ -1374,7 +1374,7 @@ back transition, reached from the Options root, then renderer/render-scale rows.
 `hValue` handles for the context and the page root (`getCurrentPage` and `startPage` use the RefCounter handle
 conversion `func_0022AD20`/`func_0022FB50`/`func_00232BF0`), not the raw engine objects listed above. The handle/wrapper
 relation (which RefCounter object wraps `mRenderContextPS2` `0x01021FF0`, and which wraps a page root such as the hidden
-`MonitorRoot` `mRootWindow`) is **not derived**. Passing the engine objects directly would be a guess and can crash.
+`MonitorRoot` `mRootWindow`) is **not derived**. Passing the engine objects directly would be a guess and can crash. *Resolved in section 22: the "handle" is the raw engine object and the script passes the address of a slot that holds it; the probe call returns, but the hidden page is not a registered page and stalls the loop.*
 The focus, the page stack, the cursor widget and the back transition are also script state (`MFunctionEvent`,
 `context.transition`, `root.setFocus`, `last_focus`); a host-started page bypasses `onInitialize`/`reflect`/`apply` and
 would have to own focus, input and back itself.
@@ -1538,3 +1538,106 @@ feedback file, never the screen; and the sliders were the wrong widget for both 
 - **Riscos:** a troca de modo é global (se o jogo for morto à força, o desktop fica no modo escolhido); a lista de modos
   é fixa para o monitor desta máquina; o monitor é só reinício; e a escala interna do GS continua a do início. O teste
   na sua janela é o que falta para fechar.
+
+## 22. Phase 2a probe: the hValue relation and the hidden-page gate (2026-11-10, evidence; page not reachable)
+
+This section resolves the Phase 2a gate with a live dispatch probe. The probe is gated by `GT4_PAGE_PROBE` (log the
+game's own `startPage` arguments) and `GT4_PAGE_LAUNCH_FRAME` (call `startPage` with the derived handles for the hidden
+`MonitorRoot` at one frame). A normal run has neither variable set; the native and the game are unchanged.
+
+### 22.1 The handle relation (Confirmed)
+
+The Phase 2a report assumed the `startPage`/`closePage` arguments were script `hValue` wrappers and that the
+wrapper-to-object relation was unknown. The probe and the disassembly show the opposite: **the "handle" is the raw
+engine object itself**, and the script argument is the **address of a 4-byte slot holding that object pointer**.
+
+- `MRenderContext.startPage` `0x0022BC20` (disassembly):
+  - `a1` = the address of the context slot; `*a1` = the raw `mRenderContextPS2` object (vtable `0x00663BE0`).
+  - `a2` = argc (1); `a3` = the argv array of page-root pointers; `*a3` = the raw `mRootWindow` object
+    (vtable `0x00665418`).
+  - `0x22BC48 jal 0x22AD20` converts the context slot to the raw context (a gcc `__dynamic_cast` through
+    `GT4MC__FileGT4GameData__loadInstance` + `RefCounter` retain); `0x22BC80 jal 0x232C78` converts each page-root slot
+    to the raw `mRootWindow`; `0x22F890` is the raw `mRenderContext::startPage(context, page_root)`.
+- The raw method checks `func_00265F38(page_root)` (bit 20 of `mWidget+0x98`), calls the page root's vtable `+0x2D0`
+  initialization, and inserts the page root into the context's page list at `context+0x38`; the current page is
+  `*(context+0x38)` (`func_0022FB50`).
+- **Live evidence** (`private/slice432-launch/run.log`, probe build): the game's own startPage calls show the slots and
+  the raw objects: `a1=0x00E14C7C` with `*a1=0x00F681A0` (vtable `0x00663BE0`), `a3=0x00F0B464` with
+  `*a3=0x01FC2A90` (vtable `0x00665418`). The same page root appears in several calls; the context values are the live
+  `mRenderContextPS2`. There is no hidden wrapper object between the slot and the engine object.
+
+**Consequence:** a dispatch hook can call `startPage` by writing the raw context and page-root pointers into guest
+scratch slots and passing their addresses. This is what the probe does; it does not guess.
+
+### 22.2 The hidden MonitorRoot (live, but not a registered page)
+
+- The v2.00 `option.mproject` has a `MonitorRoot` `RootWindow` (`has_script digit {1}`, line 17310) with the
+  `TitleMonitor`, `num of monitor`, `monitor position` and `monitor type` widgets. The page is **not in the v2.00 page
+  list** (`option.adc`), but the project loader instantiates the root: in the probe state the hidden page root is
+  **`0x00FD8090`** (vtable `0x00665418`, Pane `0x00FD8550`, `TitleMonitor` TextFace `0x00FD89D0`).
+- Calling `startPage(context=0x0102AFB0, page=0x00FD8090)` at frame 2300 goes through the native and returns:
+  `[page-launch] startPage(MonitorRoot context 0x0102AFB0, page 0x00FD8090) returned`.
+- **It does not render the page.** The context's page-list slot stays `0x00D73610 -> 0x00F77200` (the ScreenRoot); the
+  guest frame counter **stops at 2300** (the frame tick log has no line after 2300; the frame files after 2300 are the
+  same Screen Settings picture). The hidden page root is live, but its page initialization/page-list insert is not
+  accepted; the not-registered `has_script 1` page leaves the update/render loop waiting. The page root's own state
+  (`0x45045000`, bit 20 = 0) passes the `func_00265F38` check, so the block is after the page root's `+0x2D0`
+  initialization / the page-list insert, not the handle conversion.
+- **Exact failing call:** `MRenderContext.startPage(0x0102AFB0, 0x00FD8090)` at frame 2300; the native returns without
+  changing `context+0x38`, and the guest frame loop does not advance. The page list/registration is the blocker, not the
+  hValue relation.
+
+Evidence: `private/slice432-launch/run.log` (the game's own startPage calls, the MonitorRoot launch, the return, the
+stop), `state.bin` (context `0x0102AFB0`, current page slot `0xD73610 -> 0xF77200`, MonitorRoot `0xFD8090` state
+`0x45045000`), `png/frame_02300.png` and `png/frame_02500.png` (the Screen Settings page before and after; no
+MonitorRoot frame). Probe build: capsule `private/slice432-page-launch-license-guard-runtime`, receipt
+`cead3c642991531df3b0f6010ed532af56107ad22e2fa2af8d96c7302a3bdc66`, pin
+`docs/inputs/slice432-page-launch-license-guard-runtime.json`; exe
+`a54ed940f9bb02c4fbd37a1e1a3fff7cd46432f154e24729ce33e461fd1a7320` (90,238,976 bytes). The earlier
+`slice431-page-probe` capsule (receipt `dd4e3263...`) is the log-only probe.
+
+### 22.3 The smallest next step
+
+1. **Scriptless page root (the recommended smallest test).** Patch `MonitorRoot`'s `has_script digit {1}` to `{0}` in a
+   fresh private data patch (or add a new `RootWindow` with `has_script 0` and an empty Pane), rebuild, find its raw
+   `mRootWindow` the same way (the `TitleMonitor` key / the new label), and call `startPage` with the same slots. If it
+   renders, the page route is proven for a scriptless page and the empty Graphics shell can be a **new scriptless
+   RootWindow** with the game's widgets. This is data-only and does not need the option page list. The page root must
+   still be instantiated by the project loader (the hidden MonitorRoot is; a new RootWindow should be checked).
+2. **Registered page root / host tree inside the Options root (fallback).** Use a registered page root whose script is
+   disabled or replace its children with the host Graphics tree; or inject a host tile into the Options root's scroll
+   content and handle its Cross press. The exact attach/focus risks:
+   - the Options root is a `mScrollWindow` (`0x01FDA8A0` in the state); its content is a tile grid and the script may
+     rebuild it when the Options root is entered/left, so a host child must be appended after the update and
+     re-appended every time;
+   - the Screen page's Pane VBox focus traversal reaches the host OptionMenu rows (Phase 1d proved it), but the Options
+     root has no `SelectBox`: a host tile is reachable only if it is a child of the scrolled focus container, and its
+     Cross press must be masked from the script (the `menu_quit` pattern);
+   - `startPage`/`closePage` is still needed for the page transition/back; a host tree inside the Options root avoids
+     the page list but not the scroll/focus rebuild.
+   The smallest proof for this route: append a **single game `TextFace`/`Composite`** to the Screen page's Pane (a
+   registered page, known focus) and capture a frame; then a focusable `OptionMenu` row, then a Cross handler. The
+   owner's "no floating panel" rule stays: the tree is a child of the real page/scroll content.
+
+The probe does not continue to the Graphics rows: the page is not reachable, and a host tree is a new design step for
+the owner's decision.
+
+## 23. Resumo para o dono (pt-BR) - Phase 2a
+
+- **A relação do handle foi descoberta:** o "handle" não é um objeto escondido; é o **próprio objeto do motor**
+  (`mRenderContextPS2` e `mRootWindow`). O script passa o **endereço de um slot de 4 bytes** com o ponteiro do objeto;
+  as funções `func_0022AD20`/`func_00232C78` são só o cast de RTTI e a contagem de referências. O probe mostrou isso
+  nas chamadas do próprio jogo (contexto `0xF681A0`, página `0x01FC2A90` etc.).
+- **A `MonitorRoot` existe viva, mas não é uma página registrada:** a raiz `0x00FD8090` está na RAM com o Pane e o
+  `TitleMonitor`, mas não está na lista de páginas do `option.adc` e tem `has_script 1`. Chamei
+  `startPage(contexto 0x0102AFB0, página 0x00FD8090)` no frame 2300: a chamada **retorna**, mas a página atual continua
+  a ScreenRoot (`0xF77200`) e o **contador de frames do jogo para no 2300**; o frame depois disso é a mesma tela de
+  Screen. Ou seja, a página não renderiza e a transição trava o loop. O ponto exato é a inicialização/registro da página,
+  não o handle.
+- **Próximo passo menor:** um teste **data-only** com a `MonitorRoot` sem script (`has_script 0`) ou uma nova
+  `RootWindow` scriptless vazia; se ela abrir com a mesma chamada, a página vazia do Graphics é uma `RootWindow`
+  scriptless com os widgets do jogo. Se não abrir, a alternativa é a árvore do host **dentro da raiz do Options**
+  (o `ScrollWindow`), sem sobreposição flutuante; os riscos são o conteúdo ser reconstruído pelo script e o foco do
+  tile/scroll. O menor teste é pendurar um único `Composite`/`TextFace` na Pane da página Screen e capturar um frame.
+- O probe é um build de teste (cápsula `slice432`, exe `a54ed940...`), com as variáveis `GT4_PAGE_PROBE` e
+  `GT4_PAGE_LAUNCH_FRAME`; sem elas o jogo normal não muda.

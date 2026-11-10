@@ -166,6 +166,7 @@ struct HookAddresses {
   std::uint32_t screen_free = 0;                // 0x00326798: the engine free (ptr, size, align, name)
   std::uint32_t screen_text_invalidate = 0;     // 0x00245270: invalidate the TextFace's cached layout
   std::uint32_t screen_render_functor = 0;      // the main loop's render functor (the per-frame text service)
+  std::uint32_t page_start_callback = 0;        // 0x0022BC20: MRenderContext.startPage script native (Phase 2a)
 };
 
 struct Profile {
@@ -270,6 +271,7 @@ inline constexpr HookAddresses kV200Hooks = {
     /* screen_free */ 0x00326798u,                 // engine free
     /* screen_text_invalidate */ 0x00245270u,      // clears the TextFace's cached layout
     /* screen_render_functor */ 0x00100F50u,       // the main loop's render functor (frame_render_functor)
+    /* page_start_callback */ 0x0022BC20u,        // MRenderContext.startPage (adhoc_methods.txt)
 };
 
 // Spec II (SCUS-97436, GT4 Online Public Beta lineage), filled by S8 (2026-10-23). The image is a different build of
