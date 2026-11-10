@@ -5247,3 +5247,14 @@ The shipped path stays our MIT tools.
 - **Next RE:** disassemble `func_0024DB78` in full and the widget-class factory it reaches; the `has_script` branch
   that calls the export (or fills a name table) is the binding point.
 - **Tests:** 846 OK (77 skipped). Nothing existing changed.
+**Phase 14 (2026-11-10, guest-call route tested in data first).**
+- `MRenderContext.getCursorProject` (`0x0022B438`) + `MProject.findPage` (`0x00229608`, resolves by name via
+  `func_00314920`/`func_00229B48`) would be exactly what a harness calls; tested from the script as
+  `context.cursor_project.findPage("RecRoot1")` inside `open`.
+- **Result: too late.** Cross still crashes at `0x0030B450` *before* `open` runs (proved with an empty `open`): the
+  failing dispatch is the tile handler on `item.page`, copied from `option.root` (nil) at construction.
+- **Real insertion point:** `AppendItem(context, option, ...)`, which has a live context and sets
+  `item.defineStatic("page", option.root)` - resolve a nil root there via `context.cursor_project.findPage(option.title)`
+  (data insertion inside its own frame) or the native equivalent.
+- **No kit built:** a harness at `open` cannot run before the tile dispatch.
+- **Tests:** 846 OK (77 skipped). Nothing existing changed.

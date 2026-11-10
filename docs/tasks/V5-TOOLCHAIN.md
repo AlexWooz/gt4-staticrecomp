@@ -829,3 +829,37 @@ The type dispatch is the branch inside `func_0024DB78` that reads the widget typ
 `has_script` handling is in the same reader but further in, and it is what calls the export method (or fills a name
 table). Disassembling `func_0024DB78` in full (it is a small function followed by two helpers) and the widget-class
 factory it reaches is the next concrete step.
+---
+
+# Phase 14 - the guest-call route tested in data first (2026-11-10, owner option A)
+
+## 45. The natives that could replace a harness
+
+`MRenderContext.getCursorProject` (`0x0022B438`) returns the live project, and `MProject.findPage`
+(`0x00229608`) resolves a page/root **by name** (decomp: `func_00314920` turns the string into a symbol, `func_00229B48`
+looks it up, the result is wrapped in a handle and written to the return register). So a script-side
+`context.cursor_project.findPage("RecRoot1")` is the same call a harness would make.
+
+## 46. Tested, and why it does not help
+
+`open(context)` was rebuilt as:
+
+```
+start_page(context, context.cursor_project.findPage("RecRoot1"))
+```
+
+The run still stops at `missing code at 0x00000000 (ra 0x0030B450)`, at Cross, **before** any `open` code runs (proved in
+Phase 6 with an empty `open`). The failing dispatch is the tile's own Cross handler on `item.page`, which `AppendItem`
+copied from `option.root` (nil) at construction time.
+
+So binding inside `open` is too late: the root must be valid when the page object is built.
+
+## 47. The real insertion point
+
+`AppendItem(context, option, number, x, y)` runs with a live `context` and sets
+`item.defineStatic("page", option.root)` and `item.defineStatic("func", option.func)`. That is where a resolved
+`context.cursor_project.findPage(option.title)` could replace a nil root - a data insertion inside AppendItem (its own
+frame, no relocation of the caller), or the native equivalent: fill `item.page`/the page static at that point.
+
+No native kit was built: a harness at `open` cannot run before the tile dispatch, and the only useful hook is the
+construction site above. Nothing existing changed; the tile remains.

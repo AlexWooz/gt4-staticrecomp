@@ -1,5 +1,21 @@
 # Current Status
 
+## TASK-214 Phase 14: `findPage` route tested, the binding must precede the page (2026-11-10)
+
+- `MRenderContext.getCursorProject` (`0x0022B438`) and `MProject.findPage` (`0x00229608`) would be exactly what a
+  guest harness calls; the same call was tested from the script (`context.cursor_project.findPage("RecRoot1")` inside
+  `open`).
+- **Too late:** Cross still stops at `missing code at 0x00000000 (ra 0x0030B450)` **before** `open` runs (proved with an
+  empty `open`). The failing dispatch is the tile's Cross handler on `item.page`, copied from `option.root` (nil) when
+  the page was built.
+- **Real insertion point:** `AppendItem(context, option, number, x, y)` runs with a live `context` and sets
+  `item.defineStatic("page", option.root)`; resolving a nil root there
+  (`context.cursor_project.findPage(option.title)`) is the data insertion, or the native equivalent.
+- **No kit built:** a harness at `open` cannot run before the tile dispatch, so the smallest hook is the construction
+  site above.
+- **Proven elsewhere:** page entry, module, static, PS2ZIP, ToC, the tile in Options > Miscellaneous, and the page-open
+  path with an existing root. Nothing swapped; tests 846 OK (77 skipped).
+
 ## TASK-214 Phase 13: parse chain is text-only, binder is native (2026-11-10)
 
 - Read all five: `func_002688E8` (copies the widget's string handle), `func_00265D10` (sets bit `0x1000` at
