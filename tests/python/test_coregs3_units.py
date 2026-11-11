@@ -351,5 +351,88 @@ class GsCompositeMetricsTest(unittest.TestCase):
             self.assertAlmostEqual(summary['raw dump']['reference_quantisation']['fraction_divisible_by_8'], 1.0)
 
 
+@unittest.skipUnless(_numpy_python(), 'no python with numpy/PIL/scipy for the texture census control')
+class GsTextureCensusTest(unittest.TestCase):
+    """TASK-090 texture mip: the palette/texel census must recover a known texel ratio and detect a palette gain.
+
+    The synthetic case is exact: the world stage is texel * vertex / 128, the reference is that world through the
+    captured chain (FIX 127, FIX 255 and the CT16 present with DIMX 0001044501100554), and the sample dump carries the
+    texel and vertex. A correct palette must come back at ratio 1.0 +/- 0.01; a 0.5x palette gain in the reference must
+    come back at 0.5, which is what makes the study's fix-3 gate a measurement and not a claim. The data is generated
+    with plain integer arithmetic, so only the script (run with a numpy interpreter) needs numpy.
+    """
+
+    DIMX = 0x0001044501100554
+
+    def _chain(self, world, phase):
+        value = max(0, min(255, (world * 127) >> 7))
+        value = max(0, min(255, (value * 255) >> 7))
+        field = (self.DIMX >> (4 * phase)) & 7
+        dither = field - 8 if field >= 4 else field
+        value = max(0, min(255, value + dither))
+        return ((value >> 3) & 0x1F) << 3
+
+    def _run(self, gain):
+        from PIL import Image
+        python = _numpy_python()
+        width, height = 32, 8
+        texel = [[0] * width for _ in range(height)]
+        world = [[0] * width for _ in range(height)]
+        reference = [[[0, 0, 0] for _ in range(width)] for _ in range(height)]
+        for y in range(height):
+            for x in range(width):
+                value = 8 + ((x + 3 * y) % 33)
+                texel[y][x] = value
+                world[y][x] = round(value * 200.0 / 128.0)
+                phase = ((y // 3) & 3) * 4 + ((x // 3) & 3)
+                sampled = round(world[y][x] * gain)
+                for channel in range(3):
+                    reference[y][x][channel] = self._chain(sampled, phase)
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            world_image = Image.new('RGB', (width, height))
+            world_image.putdata([(world[y][x],) * 3 for y in range(height) for x in range(width)])
+            world_image.save(folder / 'world.png')
+            ref_image = Image.new('RGB', (width, height))
+            ref_image.putdata([tuple(reference[y][x]) for y in range(height) for x in range(width)])
+            ref_image.save(folder / 'ref.ppm')
+            (folder / 'report.txt').write_text(
+                'chain stage seq 1094 present-ct16: sprites 20 pixels 1 written 1 changed 1; DTHE 1 '
+                'DIMX %08X COLCLAMP 1\n' % self.DIMX)
+            with open(folder / 'dump.bin', 'wb') as handle:
+                handle.write(struct.pack('<5I', 0x53345447, 1, width, height, 24))
+                for y in range(height):
+                    for x in range(width):
+                        row = bytearray(24)
+                        row[0] = 1  # textured, no fog
+                        for channel in range(4):
+                            row[3 + channel] = texel[y][x] if channel < 3 else 0xFF
+                            row[7 + channel] = 200 if channel < 3 else 0xFF
+                            row[11 + channel] = world[y][x] if channel < 3 else 0xFF
+                        row[15] = 0
+                        row[19] = 0xD0
+                        row[20] = 0x36  # page 0x36D0, the road page
+                        handle.write(row)
+            out = folder / 'census.json'
+            done = subprocess.run([python, str(ROOT / 'scripts' / 'coregs3_bench' / 'gs_texture_census.py'),
+                                   str(folder / 'dump.bin'), str(folder / 'ref.ppm'), str(folder / 'world.png'),
+                                   str(folder / 'report.txt'), '--json', str(out)],
+                                  capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            import json
+            return json.loads(out.read_text())['pages']['all']
+
+    def test_recovers_the_texel_ratio(self):
+        row = self._run(1.0)
+        self.assertAlmostEqual(row['texel_ratio'], 1.0, delta=0.01)
+        self.assertAlmostEqual(row['world_ratio'], 1.0, delta=0.01)
+        self.assertGreater(row['corr'], 0.99)
+
+    def test_detects_a_palette_gain(self):
+        row = self._run(0.5)
+        self.assertAlmostEqual(row['texel_ratio'], 0.5, delta=0.02)
+        self.assertAlmostEqual(row['world_ratio'], 0.5, delta=0.02)
+
+
 if __name__ == '__main__':
     unittest.main()
