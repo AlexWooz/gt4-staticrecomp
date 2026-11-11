@@ -129,6 +129,29 @@ performance, license guard, IPU, SPU2 or memory card capsule (VU microcode on th
   run with blind Cross presses reached course, bike, colour and rider equipment selection with no missing code.
 - [U] Speed, audio and the license tests have not been assessed; widescreen and HUD hooks are unmapped (4:3).
 
+## Release-style runtime, 16:9 hold and CoreGS 2.0 [C]
+
+2026-11-11, branch `task/tt-target`.
+
+- **16:9 hold (TASK-079) mapped** in `kTTHooks`: setter, preset copier, wide test and apply match v2.00 masked-identical
+  (0x003FD938, 0x003FFA40, 0x003FFA08, 0x003FFB00); presets 0x585720..0x5857B0; owner pointer 0x5857DC and global
+  0x579518 voted from the code that references the v2.00 words (43 and 11 sites). The option offset was confirmed in
+  guest RAM (owner 0x008274B0 + 0x680 holds the wide record). TT stores the game-data pointer once (v2.00 moves it once
+  at boot), so the hold settles through its 600-VBlank fallback, about 10 s after boot.
+- **Frame-cost runtime:** `scripts/prepare_perf_runtime.py --mtvu --gs-stream --frame-cost` reproduces the slice262
+  capsule exactly (7 sources and the receipt). TT pins it as `slice269-tt-frame-cost-runtime` with the slice191 port
+  (`pin_frame_cost_runtime.py --base-manifest docs/inputs/slice191-gs-stream-runtime.json`), because `slice200-port`'s
+  `main.cpp` was edited by hand and no script derives it; `prepare_external_vulkan.py --gs-stream-hooks` reproduces
+  the slice191 port exactly.
+- **VU1:** 47 snapshots recorded from TT (`PS2_VU_RECORD`) all equal the v2.00 decrypted blob; `vu1_image.py build`
+  gives the pinned slice155 image (`9e5bc860...`). Full table: 2,048 entries, 0 refused.
+- **VU0:** TT's upload routine (0x0046DE58, masked-identical to v2.00 `func_004A0398`) sends 0x920 bytes from 0x618580,
+  byte-identical to Spec II's VU0 (`d0c85d37...`; padded image `e5ea672f...`). 14 entries (TT's 11 VCALLMS targets are a
+  subset of the Spec II list), 0 refused.
+- **CoreGS 2.0** (`GT4_HW_GS=ON`, Vulkan SDK 1.4.341.1, launched with `GT4_RENDERER=hw GT4_HW_CORE=2`): every 480i menu
+  frame deinterlaced (`deinterlaced_frames` = presented frames), game fixes on, no visible regressions in owner play.
+- Headless menus, 1,200 frames: 290 fps (minimal) against 365 fps (release-style). Race speed is the owner's check.
+
 ## Unknowns
 
 - [U] IOP side: whether `IOPRP300.IMG` and `IRX/` match GT4's set. GT4's IOP modules were not compared.

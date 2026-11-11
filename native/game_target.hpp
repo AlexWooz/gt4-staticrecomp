@@ -311,9 +311,34 @@ inline constexpr HookAddresses kSpec2Hooks = {
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};
 inline constexpr Profile kSpec2{Id::spec2, "Spec II", 32u << 20, kSpec2Hooks};
 
-// Tourist Trophy (SCUS-97502), experimental third target (docs/TT-STUDY.md). Every hook is unmapped: TT shares most of the
-// GT4 engine, but none of its guest addresses match v2.00, so every hook stays disabled until its chain is mapped in TT.
-inline constexpr HookAddresses kTTHooks = {};
+// Tourist Trophy (SCUS-97502), experimental third target (docs/TT-STUDY.md). TT shares most of the GT4 engine, but none
+// of its guest addresses match v2.00, so a hook stays disabled (zero) until its chain is mapped in TT.
+//
+// TASK-079 16:9 hold, mapped 2026-11-11:
+//   setter 0x003FD938 (v2.00 func_00437110, masked-identical), preset copier 0x003FFA40 (func_00439108) with the four
+//   presets at 0x585720 / 0x585750 / 0x585780 / 0x5857B0, wide test 0x003FFA08 (func_004390D0), apply 0x003FFB00
+//   (func_004391C8): flag +0x14 and record +0x24 unchanged.
+//   owner pointer 0x5857DC and published global 0x579518: voted from the code that references the v2.00 words (43 and 11
+//   matching sites); RAM check at frame 690 (main menu): owner 0x008274B0, option = owner + 0x680 (the record there equals
+//   the wide preset, flag 1, global 1).
+//   video_system_offset stays 0 as in Spec II: the setter reads the video word through another base (0x13F0), and TT's
+//   NTSC and non-NTSC preset pairs are byte-identical (425 x 240 wide, 275 x 205 4:3), so either pair is correct.
+inline constexpr HookAddresses kTTHooks = {
+    /* widescreen_owner_pointer */ 0x5857DCu,
+    /* widescreen_option_offset */ 0x680u,
+    /* widescreen_flag_offset */ 0x14u,
+    /* widescreen_record_offset */ 0x24u,
+    /* widescreen_record_bytes */ 44u,
+    /* widescreen_record_width_offset */ 0xCu,
+    /* widescreen_record_height_offset */ 0x10u,
+    /* video_system_offset */ 0u,
+    /* video_system_ntsc */ 1u,
+    /* widescreen_global */ 0x579518u,
+    /* widescreen_preset_4_3 */ 0x585720u,
+    /* widescreen_preset_wide */ 0x585750u,
+    /* widescreen_preset_4_3_ntsc */ 0x585780u,
+    /* widescreen_preset_wide_ntsc */ 0x5857B0u,
+};
 inline constexpr Profile kTT{Id::tt, "Tourist Trophy", 32u << 20, kTTHooks};
 
 #if defined(GT4_TARGET_FIXTURE_V200)
