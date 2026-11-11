@@ -503,18 +503,21 @@ HwOutcome hw_process_pixel(HwPixelState s, HwFragment f, uint frame_old_stored, 
         // TASK-090 2D overlay split: one RGBA8 word, RGB premultiplied by the coverage (the blend ran against the
         // overlay's own zeroed pixels), alpha = the accumulated coverage the present composites over the 3D image.
         // The coverage of a blended fragment is its blend factor over the previous coverage; an unblended or FBA
-        // fragment covers the pixel. FBMSK is not mapped to the RGBA8 lanes and stays 0 for the measured HUD (counted
-        // by the caller when it is not).
-        int factor = blended ? hw_blend_factor(s.blend_c, source.a, destination_alpha, s.fix) : 128;
-        factor = clamp(factor, 0, 128);
-        int coverage = s.fba != 0u ? 255 : (blended ? (factor * 255 + old_coverage * (128 - factor) + 64) / 128 : 255);
-        coverage = clamp(coverage, 0, 255);
-        computed = (uint(result.r) & 0xFFu) | ((uint(result.g) & 0xFFu) << 8) | ((uint(result.b) & 0xFFu) << 16) |
-                   (uint(coverage) << 24);
-        merged = old_word;
-        if (e.rgb) merged = (merged & 0xFF000000u) | (computed & 0x00FFFFFFu);
-        if (e.alpha) merged = (merged & 0x00FFFFFFu) | (computed & 0xFF000000u);
-        if (e.rgb || e.alpha) {
+        // fragment covers the pixel. FBMSK: the GS frame's protected lanes keep the old word, so the mask maps onto
+        // the overlay word's RGB lanes; a draw that protects every RGB lane (a full-screen alpha-only write, which the
+        // night B-Spec panel does after the HUD) writes no visible colour and is dropped entirely: the overlay's alpha
+        // is the layer's coverage, not the GS alpha lane, and writing it would turn every untouched pixel into an
+        // opaque black layer over the world (the B-Spec black-3D finding).
+        const uint rgb_mask = 0x00FFFFFFu & ~s.fbmsk;
+        if ((e.rgb || e.alpha) && rgb_mask != 0u) {
+            int factor = blended ? hw_blend_factor(s.blend_c, source.a, destination_alpha, s.fix) : 128;
+            factor = clamp(factor, 0, 128);
+            int coverage = s.fba != 0u ? 255 : (blended ? (factor * 255 + old_coverage * (128 - factor) + 64) / 128 : 255);
+            coverage = clamp(coverage, 0, 255);
+            computed = (uint(result.r) & 0xFFu) | ((uint(result.g) & 0xFFu) << 8) |
+                       ((uint(result.b) & 0xFFu) << 16) | (uint(coverage) << 24);
+            merged = (old_word & ~rgb_mask) | (computed & rgb_mask);
+            merged = (merged & 0x00FFFFFFu) | (uint(coverage) << 24);
             o.frame_written = true;
             o.frame_stored = merged;
         }

@@ -139,10 +139,13 @@ struct Core2Counters {
     std::uint64_t splitLayoutChanges = 0;
     std::uint64_t splitUnavailableDraws = 0;  // display-target draws of a layout the split cannot cut (menus, both circuits)
     // The 2D draws the split approximates, each counted: a destination-alpha test reads the overlay's coverage instead of
-    // the 3D image's alpha, FBMSK is not mapped onto the RGBA8 coverage lanes, and a blend factored by destination alpha
-    // never sees the 3D destination. The measured A-Spec panel has none (docs/COREGS3-2D-SPLIT.md §6).
+    // the 3D image's alpha and a blend factored by destination alpha never sees the 3D destination. FBMSK is mapped onto
+    // the overlay's RGB lanes; a draw that protects every RGB lane (a full-screen alpha-only write, the night B-Spec
+    // panel does it after the HUD) has no visible content and is dropped and counted. The measured A-Spec panel has none
+    // (docs/COREGS3-2D-SPLIT.md §6, §8.7).
     std::uint64_t splitDateDraws = 0;
-    std::uint64_t splitFbmskDraws = 0;
+    std::uint64_t splitFbmskDraws = 0;       // redirected draws with an FBMSK mask (applied per RGB lane)
+    std::uint64_t splitAlphaOnlyDraws = 0;   // ... of which protect every RGB lane: dropped (no visible content)
     std::uint64_t splitDestAlphaDraws = 0;
 };
 

@@ -4870,6 +4870,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             namespace gf = gpu::gpufield;
             if (t.state.fields[gf::DateOn] != 0) stats.splitDateDraws++;
             if (t.state.fields[gf::Fbmsk] != 0) stats.splitFbmskDraws++;
+            if ((t.state.fields[gf::Fbmsk] & 0x00FFFFFFu) == 0x00FFFFFFu) stats.splitAlphaOnlyDraws++;
             if (t.state.fields[gf::BlendOn] != 0 && t.state.fields[gf::BlendC] == 1u) stats.splitDestAlphaDraws++;
         }
         {  // IN-442: an untextured sprite batch without blend, fog or DATE may be a constant fill (Gpu::Draw decides)
@@ -6285,16 +6286,16 @@ void PrintSplitStats(const Core2Counters &c, const Core2GpuStats &g) {
     std::fprintf(stderr,
                  "[coregs3] 2d split frames=%llu batches=%llu checkpoints=%llu replace3d=%llu refused_frames=%llu dropped_frames=%llu "
                  "refused_samples=%llu layout_changes=%llu unavailable_draws=%llu | overlay "
-                 "composes=%llu merges=%llu merge_px=%.2fM refusals=%llu | approximated date=%llu fbmsk=%llu "
-                 "dst_alpha=%llu\n",
+                 "composes=%llu merges=%llu merge_px=%.2fM refusals=%llu | fbmsk_masked=%llu alpha_only_skipped=%llu | "
+                 "approximated date=%llu dst_alpha=%llu\n",
                  (unsigned long long)c.splitFrames, (unsigned long long)c.splitBatches,
                  (unsigned long long)c.splitCheckpoints, (unsigned long long)c.splitReplace3dFrames,
                  (unsigned long long)c.splitRefusedFrames, (unsigned long long)c.splitDroppedFrames, (unsigned long long)c.splitRefusedSamples,
                  (unsigned long long)c.splitLayoutChanges, (unsigned long long)c.splitUnavailableDraws,
                  (unsigned long long)g.overlayComposes, (unsigned long long)g.overlayMerges,
                  static_cast<double>(g.overlayMergePixels) / 1.0e6, (unsigned long long)g.overlayRefusals,
-                 (unsigned long long)c.splitDateDraws, (unsigned long long)c.splitFbmskDraws,
-                 (unsigned long long)c.splitDestAlphaDraws);
+                 (unsigned long long)c.splitFbmskDraws, (unsigned long long)c.splitAlphaOnlyDraws,
+                 (unsigned long long)c.splitDateDraws, (unsigned long long)c.splitDestAlphaDraws);
 }
 
 }  // namespace
