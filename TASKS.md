@@ -2174,11 +2174,26 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), the 60 Hz
   frame-locked A/B gives world mask 2,533,610-2,538,072 px, mean 20.834, PSNR 16.108 dB, luma 28.759 / 27.216 /
   28.444, and the 120 Hz run draws both ticks per guest frame (12 world ticks, 15,336 draw calls, 0 refusals).
-- **2D overlay split (2026-11-11, design only).** The live world covers the base HUD; drawing the 2D after the 3D
-  needs a CoreGS 2.0 UI-layer change: a compose checkpoint at the first 2D draw (the panel marker already reaches
-  the GS stream) and a transparent overlay target composed alongside the frame, then a present full-screen
-  composite after the world/cars. The stream census must settle the post-chain/HUD ordering first. No code change;
-  design, constraints and gates: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md).
+- **2D overlay split (2026-11-11, branch `task/090-2d-split`, implemented).** The live world covered the base HUD;
+  drawing the 2D after the 3D needed a CoreGS 2.0 UI-layer change. The census settled the cut: the EE panel marker is
+  written after the HUD draws (it is too late) and DISPFB names the buffer being scanned out during the frame (the game
+  flips it after the VBlank), so the split arms on the stream's measured present blit (`full-screen-present-blit`) and
+  cuts at the next batch into its target. CoreGS 2.0 composes a 3D checkpoint there, redirects the rest of the frame
+  into a transparent overlay target (RGBA8 words, alpha = accumulated coverage; the ROP/fill paths bypassed; a batch
+  that samples the split framebuffer stays in the 3D target and is counted) and at VBlank composes the 2D layer next to
+  the checkpoint; `GT4_COREGS3=present` draws the world into the checkpoint (unchanged) and composites the 2D layer
+  premultiplied source-over before the presenter/dump reads the image, every host-clock tick included.
+  `GT4_COREGS3_2D_OVERLAY=0` is the A/B; the faithful modes never enable the split. A-Spec night race, 3x, VBlanks
+  7600-7608: 1,564 frames split, 66,571 batches (42.5/frame), 9 overlay composes + 9 composites (23.22 Mpx), 0 refused
+  samples, 0 refused frames, 0 approximated DATE/FBMSK/destination-alpha draws, 1 dropped frame (a held VBlank); the
+  overlay covers 11.67% of frame 7600. The image shows the world with the full A-Spec HUD over it (position/lap, timer,
+  Best/Last Lap, minimap, FULL THROTTLE, both gauges and needles, gear, speed, odometer, fuel/tyre, G-force, gear
+  indicator). Checks: CTest coregs3 21/21 (new `native_coregs3_2d_split`), Python 17/17, no-present-layer path
+  byte-identical to the 43039a19 tool (9/9 frames), overlay-off A/B within the tool's own cross-run nondeterminism
+  (same claimed frames), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
+  frames). Open: the split base is one stream frame newer than the faithful compose (a ping-pong of the pair across two
+  VBlanks would align it); HUD anchoring per aspect (TASK-214) and the VRR HUD remain. Design, mechanism and
+  measurements: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8.
 
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with

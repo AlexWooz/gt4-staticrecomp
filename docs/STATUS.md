@@ -1,5 +1,26 @@
 # Current Status
 
+## 2026-11-11: the 2D overlay split, implemented (TASK-090, branch `task/090-2d-split`)
+
+`GT4_COREGS3=present` now draws the world and the cars first and the game's 2D/HUD layer after them. CoreGS 2.0 cuts
+the frame at the stream's measured present blit (the census's `full-screen-present-blit`, not the EE panel marker, which
+is written after the HUD draws; not DISPFB, which names the buffer being scanned out during the frame): it composes the
+3D image as a checkpoint, redirects the rest of the frame into a transparent overlay target whose RGBA8 words carry the
+accumulated coverage, and at VBlank composes the 2D layer next to the checkpoint. The present draws the world into the
+checkpoint (unchanged) and composites the 2D layer premultiplied source-over before the presenter or the dump reads the
+image; every host-clock tick repeats it, so the HUD stays at the guest rate. `GT4_COREGS3_2D_OVERLAY=0` is the A/B; the
+faithful modes never enable the split. Measured on the A-Spec night race at 3x, VBlanks 7600-7608: 1,564 frames split,
+66,571 batches redirected, 9 overlay composes and 9 composites (23.22 Mpx), 0 refused samples, 0 refused frames, 0
+approximated draws, 1 dropped frame (a held VBlank); the overlay covers 11.67% of frame 7600. The frame shows the world
+with the full A-Spec HUD (position/lap, timer, Best/Last Lap, minimap, FULL THROTTLE, gauges and needles, gear, speed,
+odometer, fuel/tyre, G-force and gear indicator) over it, where the A/B shows the world covering it. Checks: CTest
+coregs3 21/21 (new `native_coregs3_2d_split`), Python 17/17, the CoreGS 2.0 path with no present layer byte-identical to
+the 43039a19 tool (9/9 frames), the overlay-off A/B within the tool's own cross-run nondeterminism (same claimed
+frames), and the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
+frames). Open: the split base is one stream frame newer than the faithful compose (the GS scanout register flips after
+the VBlank; a ping-pong of the pair would align it), HUD anchoring per aspect (TASK-214) and the VRR HUD. Design,
+mechanism and measurements: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8.
+
 ## 2026-11-11: the 2D overlay split, design (TASK-090, phase 4 follow-up)
 
 The live world covers the CoreGS 2.0 base HUD where its geometry projects because the base composes the 3D and the
