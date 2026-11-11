@@ -1546,3 +1546,36 @@ Maintainer launcher acceptance remains pending.
 Owner test: select CoreGS 1.1, restart the launcher with no gt4-gs package, launch a game and confirm
 there is no renderer download; switch back to PCSX2 and confirm its existing setup/update path.
 This changes package management, not rendering fidelity, performance or CoreGS 2.0 readiness.
+
+### TASK-104 — H-shifter and clutch in GT4 (study)
+
+Planned (owner request 2026-11-11, Telegram; off the CoreGS 3.0 critical path). Read-only study on branch
+`task/104-hshifter-study`, based on `main` `85718831`; no game code, build, pin, save or card changed.
+
+Result: [docs/H-SHIFTER-CLUTCH-STUDY.md](docs/H-SHIFTER-CLUTCH-STUDY.md).
+
+- **Front 1, gear linking.** GT4's input actions are sequential shift up/down and reverse; the ELF action table
+  has no H-gate action. The supported DFP wheel report (8 bytes: 14-bit steering, 14 buttons, hat, throttle,
+  brake) has no gate or clutch channel. Recommended approach: button emulation. A pure shift sequencer turns a
+  physical gate into one or more of the game's own shift-up/down presses, with the game's shift delay, rev
+  limiter, MT/AT and reverse rules unchanged. Pad path on main (R2/L2, Hypothesis until the owner test) and DFP
+  path on the rc15 wheel work (R1/L1). Direct gear writes are a mod: the player car pointer and the physics gear
+  field are not confirmed, and the replay recorder stores the control packet, not the gear, so a direct write
+  would not replay. Not recommended in the first version.
+- **Front 2, clutch.** No clutch input action and no clutch channel. The HUD has `setClutch(bool)` and the car
+  equipment list has a `CLUTCH` part, so a clutch indicator and possibly an automatic clutch exist, but the
+  matched decomp has no clutch physics symbol and the drivetrain physics is in unnamed clusters. An analog
+  clutch pedal can only be display-only (as the rc15 wheel work already does) or a drivetrain physics mod with
+  Unknown feasibility; a real clutch is not an input mapping.
+- **PoC plan (Front 1).** `native/shifter.{hpp,cpp}` pure sequencer; source map for the G27 gates; inject
+  R2/L2 into `PadState` on main or R1/L1 into `DfpInput.buttons` on the rc15 branch; headless scripted gate
+  sequence with the game's button word at `0x00622CE8`; frame-dump comparison of H-shifter versus the same
+  number of paddle presses; measure the shift delay and the minimum pulse; owner test on the G27 (gates, skips,
+  N, R, AT car, MT car, replay, clutch display-only).
+- **Effort.** About one week for the button-emulation front including tests and the owner session; 2-4 extra
+  days for a read-only gear probe if needed; 2-3 weeks for a direct-write mod (not recommended); a clutch
+  physics mod is a separate research project (Unknown).
+- **Numbering note.** The 1.3.0 line already uses TASK-104 for the launcher save import (rc6/rc15 branches). This
+  study was requested as TASK-104 on 2026-11-11; confirm the final number before scheduling.
+
+State: study done. Not scheduled; no implementation, build, pin, release or merge.
