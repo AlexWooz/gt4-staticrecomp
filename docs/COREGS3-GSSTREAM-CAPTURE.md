@@ -144,6 +144,11 @@ panel is **mixed**:
   SSIM 0.486 because the digits are missing. **G-HUD-VALUES is open** until the font atlas is captured; G-HUD-ASPECT is
   documented as one aspect only (the bench forces widescreen, 640x448 anamorphic). Evidence and commands:
   `build/evidence-hud-s3/`.
+- **The CT16 present's dither is an option (2026-11-11).** `gt4_coregs3_render --gs` takes `--dither 0|1` (and reads
+  `GT4_COREGS3_DITHER`): `1` reproduces the captured conversion (DTHE 1, DIMX `0x0001044501100554`, COLCLAMP, the
+  five-bit truncation and `<< 3`), `0` (the modern default) writes the modulated 8-bit colour with neither. The decoded
+  DTHE/DIMX/COLCLAMP are still printed in the chain report. A/B, crops and metrics: [COREGS3-HOOKS](COREGS3-HOOKS.md)
+  §32.
 - **Next.** Capture the font atlas (a boot/race-entry `.gt4gs` window, or the `race.fnt` decoder) and then extend to the
   remaining elements (position/lap/time, gear, fuel/tyres, tachometer, mini-map, car icon, messages/countdown, command
   bar), which the captures already carry as PATH2 sprite sets and whose background plates are the tap's other

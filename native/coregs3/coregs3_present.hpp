@@ -43,8 +43,9 @@ bool claim_latest(FrameSnapshot &frame);
 // another thread; every field is atomic with relaxed ordering, which is enough for diagnostics.
 // TASK-090 live world: one captured frame's world build, as the present layer measured it. The selection counts name
 // every exclusion the shared rule returned; the texture counts name where each item's pixels came from (its own job's
-// live record, the same material one or more frames older, or nothing) and every refusal. `fog_deferred`,
-// `blend_deferred`, `depth_defaulted` and `alpha_fail_defaulted` are the states this first live world simplifies.
+// live record, the same material one or more frames older, or nothing) and every refusal. `blend_deferred`,
+// `depth_defaulted` and `alpha_fail_defaulted` are the states this live world simplifies; `fog_items`/`fog_missing`
+// count the emitted per-vertex fog and its identity fallback, and `filter_linear` the GS bilinear items.
 struct WorldFrameCounters {
   std::uint32_t draws = 0;             // world draws that produced at least one range
   std::uint32_t items = 0;             // selected items
@@ -56,8 +57,14 @@ struct WorldFrameCounters {
   std::uint32_t texture_stale = 0;     // items bound to a record from an earlier frame (counted fallback)
   std::uint32_t texture_missing = 0;   // items with no live record for their address
   std::uint32_t texture_refused = 0;   // items whose decode or sampler state was refused
-  std::uint32_t texture_untextured = 0;  // items with no usable texture binding (they keep the vertex colour)
-  std::uint32_t filter_defaulted = 0;    // items whose filter is linear; the first live world samples nearest
+  std::uint32_t texture_untextured = 0;  // items skipped because no usable texture binding exists (the base stays)
+  std::uint32_t texture_no_record = 0;   // ... no 40-byte texture record
+  std::uint32_t texture_no_uv = 0;       // ... no model UV channel (the emitted UV pairing could not start)
+  std::uint32_t texture_texgen = 0;      // ... the body/paint texgen family (no model UV path)
+  std::uint32_t fog_items = 0;           // ranges whose PRIM.FGE applies the fog
+  std::uint32_t fog_missing = 0;         // vertices with no emitted fog value (the 255 identity is used)
+  std::uint32_t filter_linear = 0;       // items sampled with the GS bilinear
+  std::uint32_t filter_defaulted = 0;    // linear items sampled nearest because GT4_COREGS3_WORLD_FILTER=nearest
   std::uint32_t mip_defaulted = 0;       // textures decoded at level 0 with TEX1.MXL > 0 (the table's fallback)
   std::uint32_t refused_draws = 0;     // world draws refused (mesh decode, matrix)
   std::uint32_t excluded_itop = 0;
@@ -68,7 +75,6 @@ struct WorldFrameCounters {
   std::uint32_t skipped_reflection = 0;  // the reflection pass (PassId 7) is not drawn in this first live world
   std::uint32_t sky_skipped = 0;         // sky items not drawn (the GS base keeps the sky and the HUD)
   std::uint32_t far_skipped = 0;         // far-underlay items not drawn (the base keeps its background; GT4_COREGS3_WORLD_BACKGROUND=1 draws both)
-  std::uint32_t fog_deferred = 0;        // items whose PRIM enables fog (no per-vertex fog without the tap)
   std::uint32_t blend_deferred = 0;      // items whose PRIM enables blending (drawn opaque)
   std::uint32_t depth_defaulted = 0;     // items whose TEST is not ZTE + GEQUAL (drawn with the measured rule)
   std::uint32_t alpha_fail_defaulted = 0;  // items with AFAIL other than KEEP (discard on fail)
@@ -125,6 +131,12 @@ struct Counters {
   std::atomic<std::uint64_t> world_texture_missing{0};
   std::atomic<std::uint64_t> world_texture_refused{0};
   std::atomic<std::uint64_t> world_texture_untextured{0};
+  std::atomic<std::uint64_t> world_texture_no_record{0};
+  std::atomic<std::uint64_t> world_texture_no_uv{0};
+  std::atomic<std::uint64_t> world_texture_texgen{0};
+  std::atomic<std::uint64_t> world_fog_items{0};
+  std::atomic<std::uint64_t> world_fog_missing{0};
+  std::atomic<std::uint64_t> world_filter_linear{0};
   std::atomic<std::uint64_t> world_filter_defaulted{0};
   std::atomic<std::uint64_t> world_mip_defaulted{0};
   std::atomic<std::uint64_t> world_refused_draws{0};
@@ -136,7 +148,7 @@ struct Counters {
   std::atomic<std::uint64_t> world_skipped_reflection{0};
   std::atomic<std::uint64_t> world_sky_skipped{0};
   std::atomic<std::uint64_t> world_far_skipped{0};
-  std::atomic<std::uint64_t> world_fog_deferred{0};
+
   std::atomic<std::uint64_t> world_blend_deferred{0};
   std::atomic<std::uint64_t> world_depth_defaulted{0};
   std::atomic<std::uint64_t> world_alpha_fail_defaulted{0};

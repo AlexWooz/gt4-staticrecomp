@@ -30,12 +30,16 @@
 //       --sample-dump writes the per-pixel material record the texture census reads; --world-no-alpha is a diagnostic
 //       that ignores the tapped ATE (never an acceptance mode).
 //
+//   gt4_coregs3_render <capture.gt4scene> --frame N --world --vram ... --tap ... --fog-dump <file.txt>
+//       TASK-090 live world evidence: one line per selected world vertex (draw, item, local index, clip w, tapped fog),
+//       for fitting the tap-free fog formula and checking the emitted fog against the projection.
+//
 //   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
 //       status) for the tap validation scripts.
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --world --gs <capture.gt4gs> --tap <capture.gt4tap>
-//                         --vram <capture.gt4vram> --hud [--hud-element speed|tach|all] [--hud-mask <pgm>]
+//                         --vram <capture.gt4vram> [--dither 0|1] --hud [--hud-element speed|tach|all] [--hud-mask <pgm>]
 //                         [--hud-contrib-mask <pgm>] [--hud-font-atlas <gt4f>] [--hud-canvas 640x448]
 //                         [--hud-texture-dump <dir>] [--width 640 --height 448 | --width 1920 --height 1344]
 //       TASK-090 S3: the first native HUD layer. Draws the requested element (the measured night B-Spec speed plate and
@@ -46,11 +50,15 @@
 //       captured 640x448 scanout by default, --hud-canvas) and mapped to any output size; 1920x1344 is the 3x validation
 //       scale of the CoreGS 2.0 reference. --hud-contrib-mask writes the pixels the element contributes (fragment
 //       alpha > 0), the fair comparison mask.
+//       --dither 0|1 (or GT4_COREGS3_DITHER) selects the CT16 present conversion: 1 is the captured dither and five-bit
+//       truncation of the reference scanout; 0, the modern default, writes the modulated 8-bit colour (coregs3_dither.hpp).
+//       The option changes only the present stage; the world, the composite and the multiplies are the same image.
 //       --hud-census <csv> (with or without --hud) enumerates every PATH2 sprite of the panel range and every PATH1
 //       display-buffer draw of the stream, each with its captured state and the status of its texture decode.
 //
 // A capture is derived from the user's own disc and is never committed: both the input and the PNG output live under
 // private/ or build/evidence/.
+#include "coregs3_dither.hpp"
 #include "coregs3_gsdecode.hpp"
 #include "coregs3_gsstream_file.hpp"
 #include "coregs3_png.hpp"
@@ -515,6 +523,7 @@ int main(int argc, char **argv) {
   bool post_chain = true;  // TASK-090: the whole captured PATH2 full-screen chain is on by default with --gs
   const char *chain_dump_dir = nullptr;
   const char *sample_dump_path = nullptr;  // TASK-090 texture-mip: the per-pixel material record (world stage)
+  const char *fog_dump_path = nullptr;     // TASK-090 live world: one line per world vertex (draw, item, local, w, tapped fog)
   bool composite_world_alpha = false;
   bool hud = false;
   const char *hud_element_text = "speed";
@@ -528,6 +537,16 @@ int main(int argc, char **argv) {
   const char *hud_vram_file = nullptr;
   const char *hud_dump_page = nullptr;
   bool hud_vram_all_frames = false;
+  // TASK-090 dither option: the modern path defaults to no dither (coregs3_dither.hpp); GT4_COREGS3_DITHER=1 restores
+  // the captured CT16 scanout conversion, and --dither overrides the environment for a same-run A/B.
+  DitherMode dither_mode = kDefaultDitherMode;
+  {
+    std::string dither_error;
+    if (!dither_mode_from_environment(dither_mode, dither_error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", dither_error.c_str());
+      return 1;
+    }
+  }
   RenderOptions options;
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -558,8 +577,16 @@ int main(int argc, char **argv) {
     else if (argument == "--no-wet-composite") wet_composite = false;
     else if (argument == "--post-chain") post_chain = true;  // compatibility: the chain is the default now
     else if (argument == "--no-post-chain") post_chain = false;
+    else if (argument == "--dither" && index + 1 < argc) {
+      const char *text = argv[++index];
+      if (!parse_dither_mode(text, dither_mode)) {
+        std::fprintf(stderr, "gt4_coregs3_render: --dither %s is not 0 or 1\n", text);
+        return 1;
+      }
+    }
     else if (argument == "--chain-dump" && index + 1 < argc) chain_dump_dir = argv[++index];
     else if (argument == "--sample-dump" && index + 1 < argc) sample_dump_path = argv[++index];
+    else if (argument == "--fog-dump" && index + 1 < argc) fog_dump_path = argv[++index];
     else if (argument == "--composite-world-alpha") composite_world_alpha = true;
     else if (argument == "--composite-mask" && index + 1 < argc) composite_mask_path = argv[++index];
     else if (argument == "--composite-changed" && index + 1 < argc) composite_changed_path = argv[++index];
@@ -1026,6 +1053,53 @@ int main(int argc, char **argv) {
     selected = std::move(selection.frame);
     options.world_pass = true;
     options.reflections = false;
+    // TASK-090 live world fog: the tapped per-vertex fog against the vertex's clip w, for the tap-free formula fit. The
+    // mesh is the same world layout the renderer draws; the fog array is in the item's vertex order (the pairing
+    // required equal vertex counts).
+    if (fog_dump_path != nullptr) {
+      std::FILE *fog_file = std::fopen(fog_dump_path, "wb");
+      if (fog_file == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot open fog dump %s\n", fog_dump_path);
+        return 1;
+      }
+      MeshOptions fog_mesh_options;
+      fog_mesh_options.world_channels = true;
+      for (const CapturedDraw &draw : selected.draws) {
+        const std::vector<TextureBinding> *bindings = texture_table.for_draw(draw.sequence);
+        if (bindings == nullptr) continue;
+        const DrawMatrix matrix = draw_matrix(draw);
+        if (!matrix.valid) continue;
+        Mesh mesh;
+        std::string mesh_error;
+        if (!build_mesh(selected.packets.data(), selected.packets.size(), draw, fog_mesh_options, mesh, mesh_error))
+          continue;
+        std::vector<std::uint32_t> first_vertex(mesh.vertices.size(), 0xFFFFFFFFu);
+        for (std::uint32_t index = 0; index < mesh.vertices.size(); ++index)
+          if (first_vertex[mesh.vertices[index].item] == 0xFFFFFFFFu) first_vertex[mesh.vertices[index].item] = index;
+        for (std::uint32_t index = 0; index < mesh.vertices.size(); ++index) {
+          const MeshVertex &vertex = mesh.vertices[index];
+          if (vertex.item >= bindings->size() || (*bindings)[vertex.item].vertex_fog.empty()) continue;
+          const std::uint32_t local = index - first_vertex[vertex.item];
+          if (local >= (*bindings)[vertex.item].vertex_fog.size()) continue;
+          float position[3] = {vertex.position[0], vertex.position[1], vertex.position[2]};
+          if (vertex.has_lane_position) {
+            position[0] = static_cast<float>(vertex.lane_position[0]);
+            position[1] = static_cast<float>(vertex.lane_position[1]);
+            position[2] = static_cast<float>(vertex.lane_position[2]);
+          } else if (vertex.has_raw_position) {
+            position[0] = static_cast<float>(vertex.raw_position[0]);
+            position[1] = static_cast<float>(vertex.raw_position[1]);
+            position[2] = static_cast<float>(vertex.raw_position[2]);
+          }
+          const float w = matrix.upload.column[0][3] * position[0] + matrix.upload.column[1][3] * position[1] +
+                          matrix.upload.column[2][3] * position[2] + matrix.upload.column[3][3];
+          std::fprintf(fog_file, "%u %u %u %.6f %u\n", draw.sequence, vertex.item, local, w,
+                       static_cast<unsigned>((*bindings)[vertex.item].vertex_fog[local]));
+        }
+      }
+      std::fclose(fog_file);
+      std::fprintf(stderr, "gt4_coregs3_render: wrote the fog dump to %s\n", fog_dump_path);
+    }
     if (gs_path != nullptr && post_chain) {
       // TASK-090 post chain: the measured phase relation. The scene frame V (selected.vblank) built the GS stream
       // stamped V + 1; the chain recogniser classifies EVERY full-screen batch of that stream and pins the five draws
@@ -1584,22 +1658,23 @@ int main(int argc, char **argv) {
         }
         break;
       case GsChainOp::present_ct16:
-        if (!apply_present_ct16(batch, rgba, options.width, options.height, 640, 448, chain_display, stage_stats,
-                                error)) {
+        if (!apply_present_ct16(batch, rgba, options.width, options.height, 640, 448, dither_mode, chain_display,
+                                stage_stats, error)) {
           std::fprintf(stderr, "gt4_coregs3_render: present refused: %s\n", error.c_str());
           return 1;
         }
         have_display = true;
         std::snprintf(line, sizeof line,
                       "chain stage seq %u present-ct16: sprites %llu pixels %llu written %llu changed %llu; DTHE %llu "
-                      "DIMX %016llX COLCLAMP %llu",
+                      "DIMX %016llX COLCLAMP %llu; dither %s (GT4_COREGS3_DITHER=%s)",
                       batch.sequence, static_cast<unsigned long long>(stage_stats.sprites),
                       static_cast<unsigned long long>(stage_stats.pixels),
                       static_cast<unsigned long long>(stage_stats.written_pixels),
                       static_cast<unsigned long long>(stage_stats.changed_pixels),
                       static_cast<unsigned long long>(batch.state.dthe & 1u),
                       static_cast<unsigned long long>(batch.state.dimx),
-                      static_cast<unsigned long long>(batch.state.colclamp & 1u));
+                      static_cast<unsigned long long>(batch.state.colclamp & 1u), dither_mode_name(dither_mode),
+                      dither_mode == DitherMode::faithful ? "1" : "0");
         world_report += line;
         world_report += "\n";
         dump_stage("present-ct16", chain_display);

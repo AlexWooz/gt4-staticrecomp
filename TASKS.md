@@ -2193,7 +2193,42 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   (same claimed frames), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
   frames). Open: the split base is one stream frame newer than the faithful compose (a ping-pong of the pair across two
   VBlanks would align it); HUD anchoring per aspect (TASK-214) and the VRR HUD remain. Design, mechanism and
-  measurements: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8.
+  measurements: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8 and [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §34.
+  Integrated with `task/090-coregs3` at `9e1257a7` (the dither option and the picture round): all three rounds work
+  together; on the merged tree CTest coregs3 21/21, Python 18/18 on the module and 820/820 on the full suite, the
+  no-present-layer path byte-identical to the 43039a19 tool (9/9 frames), the split counters unchanged and the 3x
+  off/shadow gate COREGS3-NIGHT-CHECK-OK.
+
+- **Live world picture round (2026-11-11, branch `task/090-live-world`).** The live world now draws the captured course
+  with the **emitted per-vertex fog**, the **GS bilinear** and the **emitted per-item TEX0/TEX1/CLAMP state**, from an
+  in-memory tap built from the GS worker's job records (no `.gt4tap` file): the worker keeps every VU1 job's PATH1 GIF
+  records in emission order and the backend copies the frame-end GS local memory over blocks 0x2BC0..0x3FFF at the
+  VBlank flush; the world build synthesizes the tap view for its own packet addresses and pairs the emitted state, UVs
+  and fog. At VBlank 7400 the table bound **1,262 items from the emitted state** (offline 1,268), 41 record fallbacks,
+  **0 decode/state refusals**; the pre-round record path left 2,938 of the window's 5,112 items untextured (2,886
+  refused), the same window now has 52 (8 no-record, 44 no-UV) and 0 refusals, skipped by name leaving the base
+  pixel, never a bright vertex colour; the billboards now show their textures. Fog uses the GS integer mix toward FOGCOL
+  with a `noperspective` varying (a fit
+  study found the emitted fog is linear in clip w per item but its constants are not in the capture, so the emitted
+  record is the source); bilinear implements the GS four-tap arithmetic. Measured VBlanks 6600-7400: 3,853 items /
+  108,677 triangles / 749 atlas textures / 0 refusals, 3,688 fog items (13,776 vertices on the 255 identity), 3,769
+  bilinear items, 12 level-0 mip fallbacks, 475 blend-deferred (ABE still not reproduced). Frame-locked A/B at 7400:
+  world mask 2,505,741 px, mean |diff| 18.825, PSNR 17.346 dB, luma 24.687 / 27.423 / 28.628; fog vs no-fog 2,293,927 px
+  (mean 2.59, and fogged is closer to the reference: 18.83/17.35 vs 19.58/16.86); bilinear vs nearest 990,784 px (mean
+  3.17, bilinear closer: 18.83/17.35 vs 18.90/17.23). Switches `GT4_COREGS3_WORLD_FOG=0`, `GT4_COREGS3_WORLD_FILTER=nearest`.
+  Gates: CTest coregs3 **20/20**, Python **17/17**, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks,
+  1,686 racing, 0 differences, 13/13 frames), on a clean rebuild (object and executable rebuilt; executable SHA-256
+  b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design in
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §33.
+
+- **Dither integration into the live world (2026-11-11, branch `task/090-live-world`).** `origin/task/090-coregs3`
+  (`bd3e7147`, the dither round) merged as `51d972ab`; the present code merged without conflict and keeps the dither
+  parse/report (`GT4_COREGS3_DITHER`, default 0 in the modern path, pixels unchanged) beside the picture changes, and
+  the offline tool keeps `--dither` and `--fog-dump`. Docs: both entries kept; the picture HOOKS section renumbered
+  §33. Checks on the integrated build (`b3d7aa566d2cd8d4685e168c81423b1671c6d25aae8cbb4cc50553310833bec9`): CTest coregs3 **20/20**, Python
+  **18/18**, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames),
+  picture A/B at 7400 (world on/off mean 18.508, fog 2.599, bilinear 2.887, reference PSNR 17.339 dB). The cars'
+  grey/neutral look in the present is a pre-existing car-pass gap, not this round (journal; hooks §33.7).
 
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
@@ -2203,7 +2238,25 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   aspect in the game's own canvas (TASK-214, 16:9/21:9 anchors from TASK-079/080); VRR presentation and the
   HUD at the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
-
+- **Dither option (2026-11-11, branch `task/090-dither`, based on `a59ce9c9`).** The dotted pattern the owner saw is
+  the PS2's CT16 scanout conversion, pinned in three places: the offline present model (`apply_present_ct16`) applies
+  the captured **DTHE 1 / DIMX `0x0001044501100554`** entry (six negative and ten non-negative cells, mean -1.125), the
+  five-bit truncation and `<< 3`; the CoreGS 3.0 live fragment stages write 8-bit RGBA8 words and never dither; the
+  CoreGS 2.0 composed base applies its own faithful DTHE/DIMX dither at native 4x4 cells. New `GT4_COREGS3_DITHER=0|1`
+  (`--dither 0|1` on `gt4_coregs3_render` too), **default 0 in the modern path**: `1` reproduces the captured conversion
+  byte for byte, `0` writes the modulated 8-bit colour with neither the dither nor the five-bit truncation (both are
+  one scanout model; keeping the truncation alone would leave 32-level banding against 129 levels). A/B on the A-Spec
+  capture at 1920x1344: PSNR **33.46 dB**, mean |diff| **4.51**, max **11**, **95.9%** of pixels differ, mean signed
+  **-4.43**; a flat road crop (1824,1152,48,48) is a constant colour without the dither and a 12x12-cell pattern with
+  it, and against the CoreGS 2.0 reference frame 7600 the faithful model is **PSNR 20.67 / mean 21.48** versus
+  **19.22 / 26.22** for the off image. In `GT4_COREGS3=present` the live pass's own pixels are dither-free in both
+  states and the CoreGS 2.0 base keeps its dither until phase 4. `GT4_HW_DITHER=off` is parsed but does not reach the
+  CoreGS 2.0 decisions in this build (measured: 0 differing pixels; a pre-existing gap, recorded), so there is no live
+  switch for the base yet. Checks: CTest coregs3 **20/20** (per-pixel switch arithmetic and parser refusals), Python **18/18** (new
+  `DitherAbTest`), the faithful car / world / world+gs / HUD renders **byte-identical** to the `a59ce9c9` tool, the 3x
+  off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames on the
+  final binary), invalid values refused in both paths. Evidence `build/evidence-dither/`; method
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32, plan [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
 
 ### TASK-087 — GS readbacks without stalls
 **Owner decision 2026-10-21: CoreGS 2.0 only.** gt4-gs (the PCSX2 GS fork) gets no more feature work; at most texture

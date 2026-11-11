@@ -350,6 +350,12 @@ void note_world_frame(const WorldFrameCounters &counts) noexcept {
   add(c.world_texture_missing, counts.texture_missing);
   add(c.world_texture_refused, counts.texture_refused);
   add(c.world_texture_untextured, counts.texture_untextured);
+  add(c.world_texture_no_record, counts.texture_no_record);
+  add(c.world_texture_no_uv, counts.texture_no_uv);
+  add(c.world_texture_texgen, counts.texture_texgen);
+  add(c.world_fog_items, counts.fog_items);
+  add(c.world_fog_missing, counts.fog_missing);
+  add(c.world_filter_linear, counts.filter_linear);
   add(c.world_filter_defaulted, counts.filter_defaulted);
   add(c.world_mip_defaulted, counts.mip_defaulted);
   add(c.world_refused_draws, counts.refused_draws);
@@ -361,7 +367,6 @@ void note_world_frame(const WorldFrameCounters &counts) noexcept {
   add(c.world_skipped_reflection, counts.skipped_reflection);
   add(c.world_sky_skipped, counts.sky_skipped);
   add(c.world_far_skipped, counts.far_skipped);
-  add(c.world_fog_deferred, counts.fog_deferred);
   add(c.world_blend_deferred, counts.blend_deferred);
   add(c.world_depth_defaulted, counts.depth_defaulted);
   add(c.world_alpha_fail_defaulted, counts.alpha_fail_defaulted);

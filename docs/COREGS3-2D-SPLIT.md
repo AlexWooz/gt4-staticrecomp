@@ -1,7 +1,9 @@
 # CoreGS 3.0: the 2D overlay split (TASK-090 phase 4)
 
-Status: **implemented (2026-11-11)**, with one measured open item (the one-frame phase between the split base and the
-faithful compose, §8.4). The live world (`docs/COREGS3-HOOKS.md` §31) draws the captured course over the CoreGS 2.0
+Status: **implemented and integrated (2026-11-11)**, with one measured open item (the one-frame phase between the
+split base and the faithful compose, §8.4). The round is merged with the dither option and the picture round
+(`task/090-coregs3` at `9e1257a7`); the merged-tree checks are in §8.5, and [COREGS3-HOOKS](COREGS3-HOOKS.md) §34
+carries the round summary. The live world (`docs/COREGS3-HOOKS.md` §31) draws the captured course over the CoreGS 2.0
 composed image; the base's 2D/HUD layer is composed into that same image, so the world covered the HUD where its
 geometry projects. This document fixes the seam, the measured constraints and the work items for drawing the world
 (and cars) first and the 2D overlay after it, at the guest rate, without touching the faithful modes.
@@ -154,3 +156,16 @@ frame. Aligning the base with the faithful compose's one-frame latency needs the
 at the guest rate and every tick reuses the composed overlay; HUD anchoring per aspect (TASK-214) and the VRR HUD
 (`docs/COREGS3-PLAN.md` §5.5) remain.
 
+
+### 8.5 The merged tree (C)
+
+`task/090-coregs3` at `9e1257a7` (the dither option and the picture round) is merged into the split branch. The code
+merged without a manual conflict (the present layer's dither parse/report and picture round are preserved, and the
+backend's live-world tap base and the split's composite calls sit side by side); the two documentation conflicts
+(STATUS and the journal) keep every entry, and HOOKS §34 carries this round. On the merged tree (executable SHA-256
+`8b7d80a3...`): CTest coregs3 21/21, Python 18/18 on the test module and 820/820 on the full suite (63 skipped), the
+CoreGS 2.0 path with no present layer byte-identical to the 43039a19 tool (9/9 frames), the split counters unchanged
+(1,564 frames, 66,571 batches, 9 overlay composes + 9 composites, 0 refusals, 1 dropped frame), and the 3x off/shadow
+identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). The merged present frame
+shows the picture round's emitted textures (lit facade textures, the green traffic lights) and the split's full HUD on
+the same image.

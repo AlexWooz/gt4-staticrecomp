@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "coregs3_dither.hpp"
 #include "coregs3_gsdecode.hpp"
 
 namespace gt4::coregs3 {
@@ -81,11 +82,18 @@ bool apply_frame_sample(const GsDecodeBatch &draw, std::vector<std::uint8_t> &rg
                         WetCompositeStats &stats, std::string &error);
 
 // Applies the captured CT16 present blit: page 210 sampled 1:1 at its own position, MODULATE with the neutral vertex
-// colour (128,128,128,128), no blend, converted to the 5-bit CT16 display word with the captured DTHE/DIMX and
-// COLCLAMP, and expanded with << 3 into `display` (width x height x 4; alpha = the 1-bit CT16 alpha expanded with
-// << 7). `display` must not alias `rgba`. Only the measured signature (FBP 140 / FBW 10 / PSM 2) is accepted.
+// colour (128,128,128,128), no blend, and the CT16 conversion selected by `dither` into `display` (width x height x 4;
+// alpha = the 1-bit CT16 alpha expanded with << 7). `display` must not alias `rgba`. Only the measured signature
+// (FBP 140 / FBW 10 / PSM 2) is accepted.
+//   * `DitherMode::faithful`: the captured scanout model, exactly as the reference dump holds it - the DTHE/DIMX dither
+//     entry (when DTHE bit 0 is on) added per channel, COLCLAMP (clamp or keep the low 8 bits), the top five bits and
+//     << 3;
+//   * `DitherMode::off`: the modern path (the default, coregs3_dither.hpp) - the modulated 8-bit colour, clamped by the
+//     same COLCLAMP rule, with neither the dither nor the five-bit truncation. The MODULATE, the vertex colour, the
+//     alpha bit and the FBMSK-free full-screen write are unchanged, so the A/B isolates the scanout conversion.
 bool apply_present_ct16(const GsDecodeBatch &draw, const std::vector<std::uint8_t> &rgba, std::uint32_t width,
                         std::uint32_t height, std::uint32_t capture_width, std::uint32_t capture_height,
-                        std::vector<std::uint8_t> &display, WetCompositeStats &stats, std::string &error);
+                        DitherMode dither, std::vector<std::uint8_t> &display, WetCompositeStats &stats,
+                        std::string &error);
 
 }  // namespace gt4::coregs3
