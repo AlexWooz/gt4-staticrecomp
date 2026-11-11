@@ -1160,6 +1160,31 @@ void FrontEnd::FlushBatch(FlushReason reason) {
 // arrival (TASK-168b), else rounded, traced and handed to the sink. `batch` keeps (or gets back) vector storage for
 // reuse; the caller clears it.
 void FrontEnd::EmitBatch(Batch& batch, FlushReason reason) {
+    // TASK-215 per-batch merge potential (diagnostics only, no behaviour change): does this batch carry the same picture
+    // state, texture and target as the one just emitted? If so, a CLUT-load flush between them could have been merged
+    // instead of handed over twice. The texture's base, CLUT and indexed fields are the ones a merge must keep.
+    {
+        BatchSignature signature;
+        signature.prim = batch.state.effectivePrim;
+        signature.tex0 = batch.state.ctx.tex0 & (kTex0BaseMask | kTex0IndexedMask);
+        signature.frame = batch.state.ctx.frame;
+        signature.zbuf = batch.state.ctx.zbuf;
+        signature.test = batch.state.ctx.test;
+        signature.cls = static_cast<uint32_t>(batch.cls);
+        if (hasLastSignature_) {
+            ++mergePairs_;
+            if (signature == lastSignature_) {
+                ++mergeSame_;
+                if (lastReason_ == FlushReason::ClutLoad) {
+                    ++mergeSameAfterClut_;
+                    mergeNextPrims_ += batch.prims.size();
+                }
+            }
+        }
+        lastSignature_ = signature;
+        hasLastSignature_ = true;
+        lastReason_ = reason;
+    }
     const ContextRegs& ctx = batch.state.ctx;
     const bool textured = Tme(batch.state.effectivePrim);
     const bool discard = test::Zte(ctx.test) != 0u && test::Ztst(ctx.test) == kZtstNever;

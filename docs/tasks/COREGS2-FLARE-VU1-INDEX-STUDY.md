@@ -86,6 +86,28 @@ command word before the data, which `apply_table_patches` does not receive today
 **So: no VU1 patch was written this round.** Writing one without the addresses would be a guess against the guest's
 microcode; the FGE measurement (this section) is the durable result. Remaining price for steps 2-4: 3-4 days.
 
+## 6. Closed (2026-11-11): the four REF sites carry no address, and there is no stable LQ
+
+The 32 bytes before each REF payload were dumped (`GT4_HW_FLARE_PATCH_TRACE`, `before=` in the trace), whole run, night
+race 3x:
+
+- **one unique pattern for all four sites**: `00000001, 6e04c0cb, 00000000, 00000000, 00000000, 00000001, 00000000,
+  00000000`, and their 16 data bytes are identical to each other as well (`ff0000fd, ff0000fd, ...`). Nothing in the packet
+  says *which* window it is;
+- the 16 bytes sit at the **start** of their payload packet (`at=0`, `qwc=1`) with **no VIF command in front of them**, so
+  the payload there is not a command stream that carries a destination address - the four sites are distinguished only by
+  their position in the stream;
+- the bytes are **patched per frame** by the game (all zeros when the flare is hidden, `ff0000fd, ...` when visible), i.e.
+  they are the visibility values the VU1 program consumes as its own data/immediates, not a memory window an LQ reads;
+- the REF-to-invocation pairing **varies** (all four onto one MSCALF, packet 542, in one frame; 210/227/266/266 with
+  MSCALF in another), so there is no fixed block to patch either.
+
+**Verdict: the flare is closed.** A per-vertex F-byte emit needs the program to *write* the byte, and the program is
+re-uploaded every frame with these values inside it; with no address, no LQ and no stable site there is nothing to key a
+patch on. The only remaining exact route would be to replace the game's per-frame flare payload and the sprites it
+produces - a rewrite of the effect, not a marker - and that is not worth 5.77/9.85 ms, which only appear at the 10x/12x
+diagnostic points (3x/6x measure 0.15/0.95 ms). **Keep the readback; no further flare work.**
+
 **Price: 3-5 days**, broken down:
 
 | step | content | time |

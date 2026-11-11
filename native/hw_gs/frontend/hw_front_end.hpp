@@ -120,6 +120,13 @@ public:
     uint64_t ClutLoadsKept() const { return clutLoadsKept_; }
     uint64_t SegmentedBatches() const { return segmentedBatches_; }
     uint64_t PaletteSegmentsEmitted() const { return paletteSegmentsEmitted_; }
+    // TASK-215 per-batch merge potential (diagnostics only): pairs of consecutive emitted batches, how many of them have
+    // the same state/texture/target signature (i.e. could have been one batch), how many of those follow a CLUT-load
+    // flush, and the primitives of the batches that follow such a flush.
+    uint64_t MergePairs() const { return mergePairs_; }
+    uint64_t MergeSame() const { return mergeSame_; }
+    uint64_t MergeSameAfterClut() const { return mergeSameAfterClut_; }
+    uint64_t MergeNextPrims() const { return mergeNextPrims_; }
 
     // Feeds whole qwords to a GIF path (1..3).
     void GifTransfer(uint32_t path, const Qword* qwords, size_t count);
@@ -293,6 +300,16 @@ private:
     uint64_t clutLoadsKept_ = 0;            // TASK-168
     uint64_t segmentedBatches_ = 0;
     uint64_t paletteSegmentsEmitted_ = 0;
+    // TASK-215 per-batch merge potential: the state/texture/target signature of the last emitted batch.
+    struct BatchSignature {
+        uint64_t prim = 0, tex0 = 0, frame = 0, zbuf = 0, test = 0;
+        uint32_t cls = 0;
+        bool operator==(const BatchSignature&) const = default;
+    };
+    BatchSignature lastSignature_{};
+    bool hasLastSignature_ = false;
+    FlushReason lastReason_ = FlushReason::Count;
+    uint64_t mergePairs_ = 0, mergeSame_ = 0, mergeSameAfterClut_ = 0, mergeNextPrims_ = 0;
 };
 
 }  // namespace hwgs

@@ -315,15 +315,22 @@ void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t
           }
           const std::uint8_t *words = payload.data() + patch.payload_offset;
           if (trace) {
-            std::uint32_t command = 0;
-            if (patch.payload_offset >= 4) std::memcpy(&command, payload.data() + patch.payload_offset - 4, 4);
+            // The 32 bytes before the data hold the packet's tag(s): a REF/IMAGE tag carries the VU1 destination, which is
+            // what the emit patch needs (the data itself is the same four words for every REF).
+            std::uint32_t before[8] = {};
+            for (int w = 0; w < 8; ++w) {
+              const std::ptrdiff_t at = static_cast<std::ptrdiff_t>(patch.payload_offset) - 4 * (w + 1);
+              if (at >= 0) std::memcpy(&before[w], payload.data() + at, 4);
+            }
             std::fprintf(stderr,
-                         "[mtvu] flare patch job=%llu packet=%u qwc=%u at=%zu cmd=%08x mscals=%u first=%08x ref=%u words="
-                         "%08x,%08x,%08x,%08x next_packet=%d next_code=%02x next_addr=%08x\n",
-                         static_cast<unsigned long long>(job), index, qwc, patch.payload_offset - body, command, mscals,
+                         "[mtvu] flare patch job=%llu packet=%u qwc=%u at=%zu mscals=%u first=%08x ref=%u words="
+                         "%08x,%08x,%08x,%08x before=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x next_packet=%d "
+                         "next_code=%02x next_addr=%08x\n",
+                         static_cast<unsigned long long>(job), index, qwc, patch.payload_offset - body, mscals,
                          firstAddress, refIndex, *reinterpret_cast<const unsigned *>(words),
                          *reinterpret_cast<const unsigned *>(words + 4), *reinterpret_cast<const unsigned *>(words + 8),
-                         *reinterpret_cast<const unsigned *>(words + 12),
+                         *reinterpret_cast<const unsigned *>(words + 12), before[0], before[1], before[2], before[3],
+                         before[4], before[5], before[6], before[7],
                          nextPacket == 0xFFFFFFFFu ? -1 : static_cast<int>(nextPacket), nextCode, nextAddress);
           }
           if (hideIndex >= 0 && hidden(refIndex)) {

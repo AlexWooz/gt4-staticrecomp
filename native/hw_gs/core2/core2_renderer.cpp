@@ -733,6 +733,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     std::uint64_t lastClutScopeAvoided_ = 0;
     std::uint64_t lastToneStripKept_ = 0;
     std::uint64_t lastClutKept_ = 0, lastSegmentedBatches_ = 0, lastPaletteSegments_ = 0;  // TASK-168
+    std::uint64_t lastMergePairs_ = 0, lastMergeSame_ = 0, lastMergeAfterClut_ = 0, lastMergeNextPrims_ = 0;  // TASK-215
 
     // IN-409: indexed memory textures keep their CLUT indices (cached whatever the palette) and draws look the colour
     // up in a row of the palette image: one row per distinct palette (content hash for CPU palettes, the GPU loads
@@ -5689,17 +5690,30 @@ void Renderer::Flush() {
             const std::uint64_t segments = s.frontEnd_.PaletteSegmentsEmitted();
             const std::uint64_t avoided = s.frontEnd_.ClutFlushesAvoided();
             const std::uint64_t stripKept = s.frontEnd_.ToneStripLoadsKept();
+            const std::uint64_t mergePairs = s.frontEnd_.MergePairs();
+            const std::uint64_t mergeSame = s.frontEnd_.MergeSame();
+            const std::uint64_t mergeAfterClut = s.frontEnd_.MergeSameAfterClut();
+            const std::uint64_t mergeNextPrims = s.frontEnd_.MergeNextPrims();
             const std::uint64_t newSegmented = segmented - s.lastSegmentedBatches_;
             std::fprintf(stderr,
                          "[core2] batch flushes/vblank%s clut_same_texture=%.1f clut_kept=%.1f segmented_batches=%.1f "
-                         "segments_per_segmented_batch=%.2f clut_scope_avoided=%.1f tone_strip_kept=%.1f\n",
+                         "segments_per_segmented_batch=%.2f clut_scope_avoided=%.1f tone_strip_kept=%.1f "
+                         "merge_pairs=%.1f merge_same=%.1f merge_after_clut=%.1f merge_next_prims=%.1f\n",
                          reasons.c_str(), static_cast<double>(sameTexture - s.lastClutSameTexture_) / 600.0,
                          static_cast<double>(kept - s.lastClutKept_) / 600.0, static_cast<double>(newSegmented) / 600.0,
                          newSegmented != 0 ? static_cast<double>(segments - s.lastPaletteSegments_) / static_cast<double>(newSegmented)
                                            : 0.0,
                          static_cast<double>(avoided - s.lastClutScopeAvoided_) / 600.0,
-                         static_cast<double>(stripKept - s.lastToneStripKept_) / 600.0);
+                         static_cast<double>(stripKept - s.lastToneStripKept_) / 600.0,
+                         static_cast<double>(mergePairs - s.lastMergePairs_) / 600.0,
+                         static_cast<double>(mergeSame - s.lastMergeSame_) / 600.0,
+                         static_cast<double>(mergeAfterClut - s.lastMergeAfterClut_) / 600.0,
+                         static_cast<double>(mergeNextPrims - s.lastMergeNextPrims_) / 600.0);
             s.lastClutSameTexture_ = sameTexture;
+            s.lastMergePairs_ = mergePairs;
+            s.lastMergeSame_ = mergeSame;
+            s.lastMergeAfterClut_ = mergeAfterClut;
+            s.lastMergeNextPrims_ = mergeNextPrims;
             s.lastClutKept_ = kept;
             s.lastSegmentedBatches_ = segmented;
             s.lastPaletteSegments_ = segments;
