@@ -2044,6 +2044,7 @@ after the present luma **25.45**, PSNR **25.03 raw** / 24.92 +4, fit `0.1234*w +
 | CTest coregs3 | **16/16** (new cases: the eleven-batch chain order and counts, the unknown-batch exclusion, the order refusal, the missing-present refusal, DTHE/DIMX/TEX2/COLCLAMP and the per-vertex RGBA decode; the clear/frame-sample/present arithmetic, the CT16 conversion and dither, the 1:1 sampling and the refusals) |
 | Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **15/15** (new metrics control: the raw and +4 blocks, the raw baseline unchanged) |
 | `--no-post-chain` vs the pre-branch binary's world-only render (same scene/vram/tap/gs) | **byte-identical**: PNG `34BDEE072EFAA2CFA7C3198D0742A877234C4915F5D4AAB76EA4BFDF773C4E28`, mask `2858FB62...` |
+| The chain's composite stage vs the world-materials v2 `world-base.png` (composite on) | **byte-identical**: PNG `B52D0B35...` |
 | Car/all-draw render vs the pre-branch binary (640x480, same capture) | **byte-identical**: PNG `B0E7082B...`, report `63FADB34...` |
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, reference `coregs3-r8/ref/gt4vulkan.exe`) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical |
 
