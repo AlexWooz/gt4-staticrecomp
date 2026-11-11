@@ -32,7 +32,8 @@ add_library(gt4_hw_core STATIC
     pixel/hw_gs_pixel.cpp
     display/hw_gs_display.cpp
     core2/core2_upload.cpp
-    core2/core2_depth_alias.cpp)
+    core2/core2_depth_alias.cpp
+    core2/core2_2d_split.cpp)  # TASK-090 2D overlay split: the stream-side cut rule (no GPU dependency)
 target_include_directories(gt4_hw_core PUBLIC
     "${HW_GS_CORE_DIR}/cpuref" "${HW_GS_CORE_DIR}/memory" "${HW_GS_CORE_DIR}/clut"
     "${HW_GS_CORE_DIR}/frontend" "${HW_GS_CORE_DIR}/pixel" "${HW_GS_CORE_DIR}/display")
@@ -144,6 +145,12 @@ target_include_directories(hw_core2_depth_alias_fixture PRIVATE "${CMAKE_CURRENT
 target_link_libraries(hw_core2_depth_alias_fixture PRIVATE gt4_hw_core)
 target_compile_options(hw_core2_depth_alias_fixture PRIVATE /W4)
 add_test(NAME hw_core2_depth_alias COMMAND hw_core2_depth_alias_fixture)
+# TASK-090 2D overlay split: the stream-side cut rule (present blit, first 2D batch, redirects, refusals).
+add_executable(hw_core2_2d_split_fixture core2/core2_2d_split_fixture.cpp)
+target_include_directories(hw_core2_2d_split_fixture PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(hw_core2_2d_split_fixture PRIVATE gt4_hw_core)
+target_compile_options(hw_core2_2d_split_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_2d_split COMMAND hw_core2_2d_split_fixture)
 
 # IN-514: the deadline of the flare table read (CPU only).
 add_executable(hw_flare_table_fixture hw_flare_table_fixture.cpp)

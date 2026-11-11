@@ -1,10 +1,12 @@
-# CoreGS 3.0: the 2D overlay split (design, TASK-090 phase 4)
+# CoreGS 3.0: the 2D overlay split (TASK-090 phase 4)
 
-Status: **design only, blocked on a CoreGS 2.0 change**. The live world (`docs/COREGS3-HOOKS.md` §31) draws the
-captured course over the CoreGS 2.0 composed image; the base's 2D/HUD layer is composed into that same image, so the
-world covers the HUD where its geometry projects. This document fixes the seam, the measured constraints and the work
-items for drawing the world (and cars) first and the 2D overlay after it, at the guest rate, without touching the
-faithful modes.
+Status: **implemented and integrated (2026-11-11)**, with one measured open item (the one-frame phase between the
+split base and the faithful compose, §8.4). The round is merged with the dither option and the picture round
+(`task/090-coregs3` at `9e1257a7`); the merged-tree checks are in §8.5, and [COREGS3-HOOKS](COREGS3-HOOKS.md) §34
+carries the round summary. The live world (`docs/COREGS3-HOOKS.md` §31) draws the captured course over the CoreGS 2.0
+composed image; the base's 2D/HUD layer is composed into that same image, so the world covered the HUD where its
+geometry projects. This document fixes the seam, the measured constraints and the work items for drawing the world
+(and cars) first and the 2D overlay after it, at the guest rate, without touching the faithful modes.
 
 ## 1. What exists (C)
 
@@ -92,5 +94,78 @@ readback rules for the faithful path (the split is active only when the CoreGS 3
 ## 7. Decision
 
 The split needs the CoreGS 2.0 UI-layer change (§3): a compose checkpoint at the stream's 2D boundary and a transparent
-overlay target delivered with the frame. It is **not implemented in the live-world round**; this design, the stream
-census in §4 and the CoreGS 2.0 work item are the deliverables before the present composite.
+overlay target delivered with the frame. It was **not implemented in the live-world round**; this design, the stream
+census in §4 and the CoreGS 2.0 work item were the deliverables before the present composite. It is implemented in §8
+(branch `task/090-2d-split`).
+
+## 8. Implementation (2026-11-11, branch `task/090-2d-split`)
+
+### 8.1 The cut is the stream's present blit, not the panel marker (C)
+
+The A-Spec capture (VBlanks 7600-7607) settles §4's ordering: the EE's panel marker (`kPassPanel`, guest PC
+`0x0033DA84`) is written **after** the HUD draws in the stream (global records 1405-1406 and the HUD's PATH2 batches
+1304-1381 of the same frame), so the marker is too late. The display registers cannot name the target either: during the
+frame DISPFB still points at the buffer being scanned out, and the game writes the frame's own buffer only at the end of
+the frame (the flip the VBlank compose relies on; the gated runs print the one-frame relation once). The cut is
+therefore the measured present blit itself: `gt4_coregs3_gs --census` classifies it as `full-screen-present-blit` (seq
+2007, a full-screen unblended draw into the CT16 display buffer that samples the CT32 scene buffer). The rule
+(`native/hw_gs/core2/core2_2d_split.{hpp,cpp}`) arms on that draw and cuts at the next batch into the same target; it has
+no dependency on the guest's display registers.
+
+### 8.2 CoreGS 2.0: checkpoint and overlay target (C)
+
+At the first 2D batch, `core2_renderer.cpp` composes the 3D image as the checkpoint through the merge kernel
+(`core2_compose.comp`: the present target's rectangle over its 1:1 placement at the internal scale, one circuit, then the
+same present resampling) into the display image, and creates a transparent overlay target with the present target's view
+and size. Every later batch into that view draws into the overlay target through the storage path: the fragment stage's
+split branch (`hw_pixel_core.glsl`, `hw_pixel_uber.frag`, the new `GpuPixelState::SplitOverlay` field) writes an RGBA8
+word whose RGB is the blended colour with the destination read as the overlay's own pixels and whose alpha is the
+*accumulated coverage* (the blend factor over the previous coverage; 255 for an unblended or FBA write). The ROP and
+compute-fill paths stay off for these draws. At VBlank `core2_overlay_compose.comp` composes the overlay through the same
+circuit geometry into a second display image with the coverage in the alpha lane, and `GpuFrame` carries both images
+(`image` = the checkpoint, `overlay` = the 2D layer, same size). A batch in the 2D phase that samples the split
+framebuffer is drawn into the 3D target and counted (`RefuseSample`); the overlay target is dropped without a readback at
+the VBlank. The split is active only in `GT4_COREGS3=present` (`Backend::SetCoregs3Overlay`); `GT4_COREGS3_2D_OVERLAY=0`
+keeps the previous path as the A/B, and the faithful modes never set it.
+
+### 8.3 The present composite (C)
+
+`GT4_COREGS3=present` draws the world and the cars into the checkpoint image exactly as before (the present layer is
+unchanged), then `CompositeCoregs3Overlay` composites the 2D layer over it premultiplied source-over
+(`core2_overlay_merge.comp`: out = layer.rgb + image.rgb * (255 - coverage) / 255) before the presenter or the dump reads
+the image. Every host-clock tick runs the same composite after the present layer restores the checkpoint as its base, so
+the HUD stays at the guest rate under a variable presentation rate.
+
+### 8.4 Measured (C) and the open phase item (H)
+
+A-Spec night race, 3x, VBlanks 7600-7608, live world on, final executable SHA-256 `08daf60b...`: **1,564 frames split**
+(42.5 batches per frame), 1,564 checkpoints, **9 overlay composes and 9 composites (23.22 Mpx)**, `refused_samples=0`,
+`refused_frames=0`, `unavailable_draws=0`, `layout_changes=0`, and `approximated date=0 fbmsk=0 dst_alpha=0`; **1** frame
+was dropped because its VBlank compose never ran (a held present), counted as `dropped_frames=1`. The overlay layer of
+frame 7600 covers 301,208 of 2,580,480 pixels (11.67%). The split frame shows the world (the native course, cars, sky and
+buildings) with the whole A-Spec HUD over it: position/lap, the lap timer, Best/Last Lap, the minimap, FULL THROTTLE,
+both gauges with their needles, gear, digital speed, the trip odometer, the fuel/tyre widget, the G-force dot and the gear
+indicator; the A/B frame shows the world covering that HUD. The HUD regions differ from the overlay-off image by 52,856
+px (left), 79,822 px (right) and 192,498 px (bottom) at frame 7600.
+
+The open item: at the VBlank the GS scanout register still names the *other* CT16 buffer (the game flips DISPFB after the
+VBlank), so the faithful compose would show stream frame V-1 while the split base is stream frame V. The split image is
+the frame's own, newer one; the world the present draws is the claimed capture frame, which follows the same stream
+frame. Aligning the base with the faithful compose's one-frame latency needs the pair ping-ponged across two VBlanks
+(compose frame V's overlay, deliver frame V-1's pair). Measured, not yet implemented; no gate depends on it. The HUD stays
+at the guest rate and every tick reuses the composed overlay; HUD anchoring per aspect (TASK-214) and the VRR HUD
+(`docs/COREGS3-PLAN.md` §5.5) remain.
+
+
+### 8.5 The merged tree (C)
+
+`task/090-coregs3` at `9e1257a7` (the dither option and the picture round) is merged into the split branch. The code
+merged without a manual conflict (the present layer's dither parse/report and picture round are preserved, and the
+backend's live-world tap base and the split's composite calls sit side by side); the two documentation conflicts
+(STATUS and the journal) keep every entry, and HOOKS §34 carries this round. On the merged tree (executable SHA-256
+`8b7d80a3...`): CTest coregs3 21/21, Python 18/18 on the test module and 820/820 on the full suite (63 skipped), the
+CoreGS 2.0 path with no present layer byte-identical to the 43039a19 tool (9/9 frames), the split counters unchanged
+(1,564 frames, 66,571 batches, 9 overlay composes + 9 composites, 0 refusals, 1 dropped frame), and the 3x off/shadow
+identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). The merged present frame
+shows the picture round's emitted textures (lit facade textures, the green traffic lights) and the split's full HUD on
+the same image.

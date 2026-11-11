@@ -24,9 +24,10 @@
 //       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3), main-view
 //       course (5) and since the wet-reflection round the captured reflection pass's main-view items (7), counts every
 //       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the GS STQ
-//       interpolation (S, T and Q linearly in screen space); mip records stay on the counted level-0 fallback unless
-//       --mip enables the decoded MIPTBP chain and the explicit-LOD sampler. --no-sky/--no-underlay/--no-course/
-//       --no-wet-reflection are the evidence A/Bs; --no-mip restores the pre-round sampling model byte for byte;
+//       interpolation (S, T and Q linearly in screen space); mip records use the decoded MIPTBP chain and the
+//       explicit-LOD sampler by default (a level the sidecar does not carry stays a counted level-0 fallback), and
+//       --mip selects it explicitly. --no-sky/--no-underlay/--no-course/--no-wet-reflection are the evidence A/Bs;
+//       --no-mip restores the pre-round sampling model byte for byte;
 //       --sample-dump writes the per-pixel material record the texture census reads; --world-no-alpha is a diagnostic
 //       that ignores the tapped ATE (never an acceptance mode).
 //
@@ -41,6 +42,7 @@
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --world --gs <capture.gt4gs> --tap <capture.gt4tap>
 //                         --vram <capture.gt4vram> [--dither 0|1] --hud [--hud-element speed|tach|all] [--hud-mask <pgm>]
 //                         [--hud-contrib-mask <pgm>] [--hud-font-atlas <gt4f>] [--hud-canvas 640x448]
+//                         [--hud-aspect auto|16:9|21:9|3440x1440|R] [--hud-anchor-report <csv>]
 //                         [--hud-texture-dump <dir>] [--width 640 --height 448 | --width 1920 --height 1344]
 //       TASK-090 S3: the first native HUD layer. Draws the requested element (the measured night B-Spec speed plate and
 //       its digits, the A-Spec tachometer's dial and Gouraud needle, or every panel entry the raster supports) over the
@@ -49,7 +51,10 @@
 //       with no panel layer, byte for byte the pre-HUD renderer. The layer is authored in the game's own 2D canvas (the
 //       captured 640x448 scanout by default, --hud-canvas) and mapped to any output size; 1920x1344 is the 3x validation
 //       scale of the CoreGS 2.0 reference. --hud-contrib-mask writes the pixels the element contributes (fragment
-//       alpha > 0), the fair comparison mask.
+//       alpha > 0), the fair comparison mask. --hud-aspect selects the aspect-aware anchoring (TASK-214/TASK-080): the
+//       HUD canvas becomes 480*R wide and each element keeps its measured left/right/centre anchor, so a wider output
+//       repositions the edge elements instead of stretching the UI; at 16:9 the image is byte-identical to the captured
+//       mapping. --hud-anchor-report writes one CSV line per draw (anchor, captured box, translation, output box).
 //       --dither 0|1 (or GT4_COREGS3_DITHER) selects the CT16 present conversion: 1 is the captured dither and five-bit
 //       truncation of the reference scanout; 0, the modern default, writes the modulated 8-bit colour (coregs3_dither.hpp).
 //       The option changes only the present stage; the world, the composite and the multiplies are the same image.
@@ -108,6 +113,36 @@ float as_float(std::uint32_t bits) {
   float value = 0.0f;
   std::memcpy(&value, &bits, sizeof value);
   return value;
+}
+
+// TASK-214: the --hud-aspect value. `auto` is the output's own aspect (the exact W/H, so a 3440x1440 output is
+// 2.3889, not the nominal 21:9); `W:H`, `WxH` and `W/H` are exact ratios; a single positive number is the ratio itself.
+bool parse_hud_aspect(const char *text, std::uint32_t width, std::uint32_t height, double &aspect, std::string &error) {
+  error.clear();
+  if (text == nullptr) return false;
+  const std::string value(text);
+  if (value == "auto") {
+    if (width == 0 || height == 0) {
+      error = "--hud-aspect auto needs a non-zero --width/--height";
+      return false;
+    }
+    aspect = static_cast<double>(width) / static_cast<double>(height);
+    return true;
+  }
+  double w = 0.0, h = 0.0;
+  if ((std::sscanf(value.c_str(), "%lf:%lf", &w, &h) == 2 || std::sscanf(value.c_str(), "%lfx%lf", &w, &h) == 2 ||
+       std::sscanf(value.c_str(), "%lf/%lf", &w, &h) == 2) &&
+      std::isfinite(w) && std::isfinite(h) && w > 0.0 && h > 0.0) {
+    aspect = w / h;
+    return true;
+  }
+  double ratio = 0.0;
+  if (std::sscanf(value.c_str(), "%lf", &ratio) == 1 && std::isfinite(ratio) && ratio > 0.0) {
+    aspect = ratio;
+    return true;
+  }
+  error = "--hud-aspect wants auto, W:H, WxH, W/H or a positive ratio";
+  return false;
 }
 
 bool read_file(const char *path, std::vector<std::uint8_t> &data) {
@@ -532,6 +567,8 @@ int main(int argc, char **argv) {
   const char *hud_font_atlas_path = nullptr;
   const char *hud_vram_mode = "stream";
   const char *hud_canvas_text = nullptr;  // TASK-214: WxH 2D canvas of the captured element coordinates (default 640x448)
+  const char *hud_aspect_text = nullptr;  // TASK-214: target display aspect for the anchoring (auto|W:H|WxH|ratio)
+  const char *hud_anchor_report_path = nullptr;  // TASK-214: CSV of each draw's anchor and predicted output box
   const char *hud_census_path = nullptr;  // TASK-090 A-Spec: CSV of every panel draw with its texture status
   const char *hud_contrib_mask_path = nullptr;  // TASK-090 A-Spec: pixels the element contributes (fragment alpha > 0)
   const char *hud_vram_file = nullptr;
@@ -570,8 +607,8 @@ int main(int argc, char **argv) {
     else if (argument == "--no-underlay") world_keep_underlay = false;
     else if (argument == "--no-course") world_keep_course = false;
     else if (argument == "--no-wet-reflection") world_keep_reflection = false;
-    else if (argument == "--mip") options.world_mip = true;
-    else if (argument == "--no-mip") options.world_no_mip = true;
+    else if (argument == "--mip") { options.world_mip = true; options.world_no_mip = false; }
+    else if (argument == "--no-mip") { options.world_mip = false; options.world_no_mip = true; }
     else if (argument == "--world-no-alpha") options.world_ignore_alpha_test = true;
     else if (argument == "--gs" && index + 1 < argc) gs_path = argv[++index];
     else if (argument == "--no-wet-composite") wet_composite = false;
@@ -596,6 +633,8 @@ int main(int argc, char **argv) {
     else if (argument == "--hud-mask" && index + 1 < argc) hud_mask_path = argv[++index];
     else if (argument == "--hud-font-atlas" && index + 1 < argc) hud_font_atlas_path = argv[++index];
     else if (argument == "--hud-canvas" && index + 1 < argc) hud_canvas_text = argv[++index];
+    else if (argument == "--hud-aspect" && index + 1 < argc) hud_aspect_text = argv[++index];
+    else if (argument == "--hud-anchor-report" && index + 1 < argc) hud_anchor_report_path = argv[++index];
     else if (argument == "--hud-census" && index + 1 < argc) hud_census_path = argv[++index];
     else if (argument == "--hud-contrib-mask" && index + 1 < argc) hud_contrib_mask_path = argv[++index];
     else if (argument == "--hud-texture-dump" && index + 1 < argc) hud_texture_dump_dir = argv[++index];
@@ -2108,13 +2147,36 @@ int main(int argc, char **argv) {
       hud_options.canvas_width = canvas_width;
       hud_options.canvas_height = canvas_height;
     }
+    // TASK-214: the target display aspect. Absent = the captured mapping (the previous tool's behavior); `auto` is the
+    // output's exact W/H. The reference aspect is the captured game wide mode (16:9).
+    if (hud_aspect_text != nullptr) {
+      double target_aspect = 0.0;
+      std::string aspect_error;
+      if (!parse_hud_aspect(hud_aspect_text, options.width, options.height, target_aspect, aspect_error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: %s\n", aspect_error.c_str());
+        return 1;
+      }
+      hud_options.target_aspect = target_aspect;
+    }
+    const HudAspectLayout hud_layout = hud_aspect_layout(
+        static_cast<double>(hud_options.canvas_width), static_cast<double>(hud_options.canvas_height), options.width,
+        options.height, hud_options.target_aspect, hud_options.reference_aspect);
     {
-      char line[256];
-      std::snprintf(line, sizeof line,
-                    "HUD canvas: %ux%u -> %ux%u output (%.4fx %.4fx), TASK-214 parameterisation (captured canvas)\n",
-                    hud_options.canvas_width, hud_options.canvas_height, options.width, options.height,
-                    static_cast<double>(options.width) / hud_options.canvas_width,
-                    static_cast<double>(options.height) / hud_options.canvas_height);
+      char line[512];
+      if (hud_options.target_aspect > 0.0) {
+        std::snprintf(line, sizeof line,
+                      "HUD canvas: %ux%u -> %ux%u output, target aspect %.4f (captured reference %.4f), virtual canvas "
+                      "%.2fx%u units, scale %.4fx %.4fx, anchor dx centre %.2f right %.2f (TASK-214)\n",
+                      hud_options.canvas_width, hud_options.canvas_height, options.width, options.height,
+                      hud_options.target_aspect, hud_options.reference_aspect, hud_layout.virtual_width,
+                      hud_options.canvas_height, hud_layout.scale_x, hud_layout.scale_y,
+                      hud_layout.anchor_offset(HudAnchor::centre), hud_layout.anchor_offset(HudAnchor::right));
+      } else {
+        std::snprintf(line, sizeof line,
+                      "HUD canvas: %ux%u -> %ux%u output (%.4fx %.4fx), captured mapping (no --hud-aspect)\n",
+                      hud_options.canvas_width, hud_options.canvas_height, options.width, options.height,
+                      hud_layout.scale_x, hud_layout.scale_y);
+      }
       world_report += line;
     }
     HudDrawCounters hud_counters;
@@ -2128,6 +2190,17 @@ int main(int argc, char **argv) {
     }
     world_report += hud_source_line;
     world_report += hud_panel_report(panel, hud_counters, hud_textures);
+    if (hud_anchor_report_path != nullptr) {
+      std::FILE *report_file = std::fopen(hud_anchor_report_path, "wb");
+      if (report_file == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", hud_anchor_report_path);
+        return 1;
+      }
+      const std::string anchor_report = hud_anchor_report(panel, hud_layout);
+      std::fwrite(anchor_report.data(), 1, anchor_report.size(), report_file);
+      std::fclose(report_file);
+      std::printf("hud anchor report %s: %zu draws\n", hud_anchor_report_path, panel.draws.size());
+    }
     if (hud_contrib_mask_path != nullptr) {
       std::FILE *mask_file = std::fopen(hud_contrib_mask_path, "wb");
       if (mask_file == nullptr) {

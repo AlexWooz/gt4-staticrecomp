@@ -75,6 +75,11 @@ extern const std::uint32_t core2_patch_glm_words[];
 extern const std::size_t core2_patch_glm_word_count;
 extern const std::uint32_t core2_compose_words[];
 extern const std::size_t core2_compose_word_count;
+// TASK-090 2D overlay split: the overlay layer's compose and the present-side composite.
+extern const std::uint32_t core2_overlay_compose_words[];
+extern const std::size_t core2_overlay_compose_word_count;
+extern const std::uint32_t core2_overlay_merge_words[];
+extern const std::size_t core2_overlay_merge_word_count;
 extern const std::uint32_t core2_present_scale_words[];
 extern const std::size_t core2_present_scale_word_count;
 

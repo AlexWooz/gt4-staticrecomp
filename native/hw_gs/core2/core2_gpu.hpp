@@ -49,6 +49,10 @@ struct DrawBatch {
     // IN-442: an untextured sprite batch with no blend, fog or DATE: drawn by core2_fill.comp when its sprites turn out
     // to be one constant fragment over disjoint pixel rectangles (Gpu::Draw checks the geometry).
     bool constantFill = false;
+    // TASK-090 2D overlay split: the batch draws the 2D layer into the split overlay target. The fragment stage writes
+    // the overlay's RGBA8 word (RGB premultiplied, alpha = the accumulated coverage) instead of the GS frame format,
+    // and the batch bypasses the ROP and compute-fill paths (which write GS words).
+    bool splitOverlay = false;
     // Spec 8.8: `texture` is the colour or depth target this batch draws into and the sampled texels meet the drawn
     // pixels. The batch then samples a copy of native rectangle [copyX0, copyX1] x [copyY0, copyY1] (inclusive) of the
     // texture taken before the batch: the GPU runs the batch's fragments in parallel, so sampling the target itself
@@ -83,6 +87,11 @@ struct Core2GpuStats {
     std::uint64_t fillPixels = 0;       // IN-442: output pixels they covered
     std::uint64_t tones = 0;
     std::uint64_t composes = 0;
+    // TASK-090 2D overlay split: the 2D layer's compose and the present-side composite.
+    std::uint64_t overlayComposes = 0;
+    std::uint64_t overlayMerges = 0;
+    std::uint64_t overlayMergePixels = 0;
+    std::uint64_t overlayRefusals = 0;  // composites refused (no layer image, or a size mismatch)
     std::uint64_t deinterlaces = 0;
     std::uint64_t fxaaFrames = 0;
     std::uint64_t presentScales = 0;  // IN-432: frames resampled to the window rectangle
@@ -269,6 +278,16 @@ public:
     bool Compose(const std::uint32_t words[28], ImageId sourceA, ImageId sourceB, std::uint32_t outWidth,
                  std::uint32_t outHeight, std::string &error);
     std::uint64_t DisplayImage() const;  // VkImage
+    // TASK-090 2D overlay split: composes the split's 2D layer from the overlay target (the image of a target the
+    // renderer redirected) through the display circuit's geometry into the overlay image (RGBA8 words with the draw's
+    // coverage in the alpha lane). `p` holds outWidth, outHeight, outScale, readX, readY, readWidth, readHeight,
+    // placeX, placeY, placeWidth, placeHeight (core2_overlay_compose.comp). The result is OverlayImage().
+    bool ComposeOverlay(const std::uint32_t p[11], ImageId overlaySource, std::uint32_t outWidth,
+                        std::uint32_t outHeight, std::string &error);
+    std::uint64_t OverlayImage() const;  // VkImage (overlay display image); 0 before the first ComposeOverlay
+    // Diagnostics (GT4_COREGS3_2D_DUMP): the top-left width x height words of the overlay display image.
+    bool ReadOverlayImage(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &words,
+                          std::string &error);
     // 13.4 at scale (IN-405): deinterlaces the top-left step.width x step.height pixels of the display image in
     // place with the old core's kernel and step (hw_deinterlace_scaled.comp: the display image is first copied into
     // history entry `current`). The history images (four merge images, the woven image, the last adaptive output)
@@ -281,6 +300,15 @@ public:
     // `sharpness` > 0 (exp2(-stops)). The result is PresentImage().
     bool PresentScale(bool fromFxaa, std::uint32_t width, std::uint32_t height, std::uint32_t outWidth,
                       std::uint32_t outHeight, float sharpness, std::string &error);
+    // TASK-090 2D overlay split: the same resampling for the overlay image (width x height) into its own present
+    // image, so the 2D layer and the 3D image reach the present at the same size. OverlayPresentImage().
+    bool PresentScaleOverlay(std::uint32_t width, std::uint32_t height, std::uint32_t outWidth, std::uint32_t outHeight,
+                             float sharpness, std::string &error);
+    std::uint64_t OverlayPresentImage() const;  // VkImage (the resampled overlay); 0 when never scaled
+    // TASK-090 2D overlay split: composites the overlay layer (resampled when `overlayScaled`) over `target` (the
+    // display image the CoreGS 3.0 present drew the world into), premultiplied source-over. Submits, never waits.
+    bool CompositeOverlay(std::uint64_t target, std::uint32_t width, std::uint32_t height, bool overlayScaled,
+                          std::string &error);
     std::uint64_t PresentImage() const;  // VkImage
     std::uint64_t FxaaImage() const;  // VkImage
     // `fxaa`: read the FXAA image instead of the display image.

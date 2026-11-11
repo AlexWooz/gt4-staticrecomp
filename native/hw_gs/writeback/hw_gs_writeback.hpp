@@ -162,6 +162,10 @@ struct GpuFrame {
     std::uint64_t image = 0;  // the VkImage value (opaque here)
     bool fxaa = false;        // IN-376: `image` is the FXAA output (13.5) instead of the composed display image
     bool presentScaled = false;  // IN-432: `image` is resampled to the window rectangle (width x height)
+    // TASK-090 2D overlay split: `image` is the frame's 3D image (the checkpoint composed at the 2D boundary) and this
+    // is the 2D layer composed next to it (RGBA8 words, alpha = the accumulated coverage), same width x height. 0 when
+    // the frame was not split. The present draws the world into `image` and composites `overlay` over it.
+    std::uint64_t overlay = 0;
 };
 
 struct FrameOutput {
@@ -328,6 +332,13 @@ public:
     void SetPresentSize(std::uint32_t width, std::uint32_t height);
     // IN-433 (core 2): GT4_HW_FILTER forced bilinear: 0 as the game asks, 1 every textured draw, 2 all but sprites.
     void SetForcedBilinear(std::uint32_t mode);
+    // TASK-090 2D overlay split: the CoreGS 3.0 present layer asks core 2 to compose a 3D checkpoint at each frame's
+    // 2D boundary and deliver the 2D layer next to it (GpuFrame::overlay). A no-op for the faithful modes; the
+    // GT4_COREGS3_2D_OVERLAY=0 A/B keeps the split off.
+    void SetCoregs3Overlay(bool enabled);
+    // TASK-090 2D overlay split: composites the frame's 2D layer (GpuFrame::overlay) over the image the present layer
+    // drew the world into. False when the frame has no overlay or the composite cannot run (counted, never fatal).
+    bool CompositeCoregs3Overlay(const GpuFrame &frame);
     // Fixtures and checks: the pixels of a GPU frame (submits and waits).
     bool ReadGpuFrame(const GpuFrame &frame, std::vector<std::uint32_t> &pixels);
     FrameOutput Compose(ComposeKind kind = ComposeKind::Reference);

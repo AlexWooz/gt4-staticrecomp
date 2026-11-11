@@ -3824,6 +3824,15 @@ void Renderer::SetForcedBilinear(std::uint32_t mode) {
     if (core2_) core2_->SetForcedBilinear(mode);
 }
 
+void Renderer::SetCoregs3Overlay(bool enabled) {
+    if (core2_) core2_->SetCoregs3Overlay(enabled);
+}
+
+bool Renderer::CompositeCoregs3Overlay(const GpuFrame& frame) {
+    if (core2_) return core2_->CompositeCoregs3Overlay(frame);
+    return false;
+}
+
 bool Renderer::ReadGpuFrame(const GpuFrame& frame, std::vector<std::uint32_t>& pixels) {
     if (core2_) return core2_->ReadGpuFrame(frame, pixels);
     std::string error;

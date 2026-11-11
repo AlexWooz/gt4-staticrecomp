@@ -2110,6 +2110,22 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   controls). The per-page spread is still outside the study's +/-0.1 (world ratios 0.646..1.126 excluding the known
   content outliers, median 0.912), named per page in WORLD-MATERIALS-V2. Evidence `build/evidence-texture-mip/`.
 
+- **Mip recapture and switch default (2026-11-11, branch `task/090-mip-recapture`):** the night race recaptured with
+  the extended window rule (`texture_mip_windows`, levels 1..MXL, MTBA too) at 3x (`GT4_COREGS3=shadow`,
+  `ALL_DRAWS=1`, scene 7398-7402, VRAM 7398-7403, blocks 0x2BC0-0x3FFF): sidecar **498 records (6/6/486), 42,726,864
+  B**, +262,400 B of per-job mip windows. The road job (20 course items, TEX0 0006D1E5DD40B6D0, MXL 1/MMIN 4, MIPTBP1
+  003640036400B662) now carries both `(0x36D0, 32)` and `(0x3662, 32)`; its level-1 hash `2fcb2e50...` differs from
+  the frame-end atlas `3cf0989a...`, and decodes to **corr +0.5961 / PSNR 35.96 / mean |d| 3.22** versus the level-0 box
+  downscale (old atlas: -0.0329 / 28.69 / 8.10). **Fix 4 gate met:** the road high-pass correlation rises at every
+  sigma (0.0637 -> 0.1288, 0.1144 -> 0.2126, 0.1465 -> 0.2579, 0.1802 -> 0.2946), the world page ratio moves 1.489 ->
+  1.515 (**+0.026, inside +/-0.05**), page correlation 0.175 -> 0.250, page SSIM 0.64156 -> 0.68216, and the
+  world+post chain at the captured dither goes PSNR 20.78 -> 21.05, SSIM 0.58801 -> 0.65198, pct_bad 27.7 -> 23.6%,
+  mean |diff| 13.47 -> 12.40. `world_mip` now defaults on; `--no-mip` restores the pre-round model byte for byte
+  (world `34BDEE07...`, chain `BFA47B67...`, car `B0E7082B...`), and a level the sidecar does not cover stays a
+  counted fallback (pre-recapture sidecars must use `--no-mip`). Gates: CTest coregs3 **21/21**, Python **18/18**,
+  clean-rebuild 3x off/shadow **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13). Evidence
+  `build/evidence-mip-recapture/`.
+
 - **Crash race (2026-11-11, branch `task/090-crash-race`):** the host-clock crash lead is closed. The exit-139 fault at
   VBlank ~6783 is on the **GS worker**, inside CoreGS 2.0's containers (`ContentKey`'s `blockLists_` rehash in two runs,
   `TrimTexturePool`'s `texturePool_` walk in a third), each loading a node link of 0xFFFFFFFFFFFFFFFF; the host-clock
@@ -2174,11 +2190,30 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), the 60 Hz
   frame-locked A/B gives world mask 2,533,610-2,538,072 px, mean 20.834, PSNR 16.108 dB, luma 28.759 / 27.216 /
   28.444, and the 120 Hz run draws both ticks per guest frame (12 world ticks, 15,336 draw calls, 0 refusals).
-- **2D overlay split (2026-11-11, design only).** The live world covers the base HUD; drawing the 2D after the 3D
-  needs a CoreGS 2.0 UI-layer change: a compose checkpoint at the first 2D draw (the panel marker already reaches
-  the GS stream) and a transparent overlay target composed alongside the frame, then a present full-screen
-  composite after the world/cars. The stream census must settle the post-chain/HUD ordering first. No code change;
-  design, constraints and gates: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md).
+- **2D overlay split (2026-11-11, branch `task/090-2d-split`, implemented).** The live world covered the base HUD;
+  drawing the 2D after the 3D needed a CoreGS 2.0 UI-layer change. The census settled the cut: the EE panel marker is
+  written after the HUD draws (it is too late) and DISPFB names the buffer being scanned out during the frame (the game
+  flips it after the VBlank), so the split arms on the stream's measured present blit (`full-screen-present-blit`) and
+  cuts at the next batch into its target. CoreGS 2.0 composes a 3D checkpoint there, redirects the rest of the frame
+  into a transparent overlay target (RGBA8 words, alpha = accumulated coverage; the ROP/fill paths bypassed; a batch
+  that samples the split framebuffer stays in the 3D target and is counted) and at VBlank composes the 2D layer next to
+  the checkpoint; `GT4_COREGS3=present` draws the world into the checkpoint (unchanged) and composites the 2D layer
+  premultiplied source-over before the presenter/dump reads the image, every host-clock tick included.
+  `GT4_COREGS3_2D_OVERLAY=0` is the A/B; the faithful modes never enable the split. A-Spec night race, 3x, VBlanks
+  7600-7608: 1,564 frames split, 66,571 batches (42.5/frame), 9 overlay composes + 9 composites (23.22 Mpx), 0 refused
+  samples, 0 refused frames, 0 approximated DATE/FBMSK/destination-alpha draws, 1 dropped frame (a held VBlank); the
+  overlay covers 11.67% of frame 7600. The image shows the world with the full A-Spec HUD over it (position/lap, timer,
+  Best/Last Lap, minimap, FULL THROTTLE, both gauges and needles, gear, speed, odometer, fuel/tyre, G-force, gear
+  indicator). Checks: CTest coregs3 21/21 (new `native_coregs3_2d_split`), Python 17/17, no-present-layer path
+  byte-identical to the 43039a19 tool (9/9 frames), overlay-off A/B within the tool's own cross-run nondeterminism
+  (same claimed frames), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
+  frames). Open: the split base is one stream frame newer than the faithful compose (a ping-pong of the pair across two
+  VBlanks would align it); HUD anchoring per aspect (TASK-214) and the VRR HUD remain. Design, mechanism and
+  measurements: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8 and [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §34.
+  Integrated with `task/090-coregs3` at `9e1257a7` (the dither option and the picture round): all three rounds work
+  together; on the merged tree CTest coregs3 21/21, Python 18/18 on the module and 820/820 on the full suite, the
+  no-present-layer path byte-identical to the 43039a19 tool (9/9 frames), the split counters unchanged and the 3x
+  off/shadow gate COREGS3-NIGHT-CHECK-OK.
 
 - **Live world picture round (2026-11-11, branch `task/090-live-world`).** The live world now draws the captured course
   with the **emitted per-vertex fog**, the **GS bilinear** and the **emitted per-item TEX0/TEX1/CLAMP state**, from an
@@ -2219,14 +2254,29 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   chain off; off is the measured right operation), so the chain is opt-in and off by default; the default picture
   matches the recorded 17.346 dB. Checks: CTest coregs3 **20/20**, Python **18/18**, the 3x gate
   COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B) on the clean rebuild (`e0898dc0edb12601e92c179da84f8abdd8003aed684b10248576b08767155132`). Journal entry of 2026-11-11;
-  hooks §34.
+  hooks §36.
+- **HUD aspect anchoring (2026-11-11, branch `task/090-hud-aspect`, TASK-214).** The native HUD renderer is
+  aspect-aware. Every captured draw is expressed in the game's HUD canvas (480 units high, 480*R wide; TASK-080's
+  `l/r = 320 ∓ 240·R`) and gets a measured anchor: the position/lap block and the minimap left, the Best/Last Lap times
+  right, the central cluster (lap timer, message, both gauges, gear, digital speed, trip, G-force) centre.
+  `hud_classify_anchor` pins the A-Spec page rule (0x3C20..0x3C80 and 0x3B60..0x3C00 left; the race-font page 0x3000
+  split at x 500 into the centre timer/message and the right Best/Last) and falls back to the game's 96 px `wideOffset`
+  distance; `hud_aspect_layout` maps the canvas to the output and applies the anchor translation (left 0, centre half,
+  right all of the added width). At 16:9 the mapping is byte-identical to the previous tool; at 3440x1440 (2.3889:1,
+  passed as the exact output aspect) the position block/minimap stay at the left edge, the Best/Last block and the
+  B-Spec speed plate at the right, and the gauges keep their centre and their circular shape (the old captured stretch
+  elongated them). `gt4_coregs3_render --hud-aspect auto|W:H|WxH|R` and `--hud-anchor-report <csv>`; the six
+  captured-aspect renders (all/tach at 1x and 3x, speed at 1x/3x) and the world-only render are byte-identical to the
+  `34c6c2c2` tool, and the 16:9 1080p anchored render is byte-identical to the unanchored one. The live CoreGS 2.0
+  overlay still draws the game's own HUD at its forced 16:9; the native anchors apply when CoreGS 3.0 draws the HUD
+  itself (TASK-214). Evidence `build/evidence-hud-aspect/`; method [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §35.
 
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages
   0x3721/0x37B5/0x3E47); the remaining HUD elements (trip-odometer page 0x3D60, the fuel/tyre composite, the
-  Best/Last Lap labels of the pre-present overlay and the minimap palette-bank residual), the HUD anchored per
-  aspect in the game's own canvas (TASK-214, 16:9/21:9 anchors from TASK-079/080); VRR presentation and the
+  Best/Last Lap labels of the pre-present overlay and the minimap palette-bank residual); the native HUD's live
+  anchors (TASK-214; the CoreGS 2.0 overlay already draws the game's own 16:9 HUD); VRR presentation and the
   HUD at the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 - **Dither option (2026-11-11, branch `task/090-dither`, based on `a59ce9c9`).** The dotted pattern the owner saw is
@@ -4641,5 +4691,16 @@ Owner direction (2026-11-11, Telegram): the CoreGS 3.0 renderer must support any
 It is a native pipeline, not an upscale of the PS2 framebuffer: the output resolution is chosen natively (start at 1080p
 16:9, then 21:9 at 3440x1440; phones later), the game's own projection values (Width and Aspect, TASK-080 hooks) drive
 the 3D framing, and the HUD elements are anchored and repositioned per aspect and validated against the reference
-layouts. The integer 3x captures (1920x1344) are a validation scale only, not the shipping model. Planned: the playable
-demo comes first; then the output-resolution parameterisation, the 16:9 validation at 1080p, and the 21:9 HUD anchors.
+layouts. The integer 3x captures (1920x1344) are a validation scale only, not the shipping model.
+
+**Status (2026-11-11, TASK-090 HUD aspect round, branch `task/090-hud-aspect`).** The native HUD renderer
+(`native/coregs3/coregs3_hud.*`) is aspect-aware and validated: every captured draw is expressed in the game's HUD
+canvas (480 high, 480*R wide) and anchored left/centre/right by the measured A-Spec rule, `gt4_coregs3_render
+--hud-aspect auto|W:H|WxH|R` renders 16:9 at 1080p and the exact 3440x1440 aspect, and `--hud-anchor-report` measures
+each element. The 16:9 mapping is byte-identical to the captured layout; at 3440x1440 the UI keeps its design size
+(gauges stay circular) while the edge elements follow the screen edges. Evidence `build/evidence-hud-aspect/`, journal
+2026-11-11, [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §35. Open: the live native HUD (the CoreGS 2.0 overlay is the game's
+own HUD at its forced 16:9 and needs no anchoring today; the native anchors feed the phase-7 HUD, which tags elements
+from the game's display objects), the 21:9 ground truth (the capture is 16:9; the 3440x1440 boxes follow the rule and
+the measured elements, not a 21:9 reference frame), narrower aspects (the game's Vert+ HUD is not captured and is
+refused by name), and the live renderer's output-resolution parameterisation.

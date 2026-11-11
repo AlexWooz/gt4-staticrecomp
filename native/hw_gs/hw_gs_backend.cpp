@@ -475,6 +475,12 @@ struct Backend::Impl {
     }
   }
 
+  // TASK-090 2D overlay split: after the present layer drew the world and the cars into the frame's 3D image, composite
+  // the 2D layer the VBlank composed next to it (GpuFrame::overlay). A no-op for a frame that was not split.
+  void composite_coregs3_overlay() {
+    if (renderer) renderer->CompositeCoregs3Overlay(composedFrame);
+  }
+
   static std::int64_t steady_now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
@@ -513,6 +519,9 @@ struct Backend::Impl {
         break;
       }
       if (!drew) continue;  // nothing drawable for this instant: the base image is the picture
+      // TASK-090 2D overlay split: every tick starts from the 3D checkpoint image; the 2D layer is composited over the
+      // tick's world before the presenter copies it (the guest-rate HUD reused by every host-clock tick).
+      composite_coregs3_overlay();
       present_host_clock_picture(plan.ticks[index].show_ns);
       handed = true;
     }
@@ -540,6 +549,7 @@ struct Backend::Impl {
   hwgs::writeback::FrameOutput frame;
   hwgs::writeback::FrameOutput shownFrame;
   bool frameOnGpu = false;  // IN-364: `frame` is the renderer's display image (no pixels on the CPU)
+  hwgs::writeback::GpuFrame composedFrame;  // TASK-090: the last composed GPU frame (its 2D layer for the split)
   bool shownOnGpu = false;
   VkImage gpuImage = VK_NULL_HANDLE;
   std::uint64_t guestFrames = 0;
@@ -1986,6 +1996,10 @@ bool Backend::init(const Options &options, std::string &error) {
     if (!s.coregs3_present->init(config, present_error)) {
       std::fprintf(stderr, "[coregs3] live present refused: %s\n", present_error.c_str());
       s.coregs3_present.reset();
+    } else {
+      // TASK-090 2D overlay split: the present layer wants the frame's 3D image and its 2D layer separately. A no-op
+      // for every other mode (the faithful renderers never set it), and GT4_COREGS3_2D_OVERLAY=0 is the A/B.
+      s.renderer->SetCoregs3Overlay(true);
     }
   }
   // TASK-090 host clock: above 60 Hz the window presents each due presentation tick at the requested display rate. It
@@ -2189,6 +2203,8 @@ bool Backend::scanout(ScanoutRequest &request) {
       // TASK-090 M4: headless runs never reach end_frame, so the live present layer is drawn here, after the compose
       // submission and before the readback (same queue, submission order).
       s.overlay_coregs3(reinterpret_cast<VkImage>(gpuFrame.image), gpuFrame.width, gpuFrame.height);
+      // TASK-090 2D overlay split: composite the frame's 2D layer before the readback reads the image.
+      s.renderer->CompositeCoregs3Overlay(gpuFrame);
       if (s.renderer->ReadGpuFrame(gpuFrame, request.pixels)) {
         request.width = gpuFrame.width;
         request.height = gpuFrame.height;
@@ -2322,6 +2338,7 @@ bool Backend::end_frame(PresentPhase phase) {
   if (s.renderer->ComposeFrameGpu(gpuFrame)) {
     // IN-364: composed on the GPU; the present copies the display image (no CPU pixels, no upload).
     s.frameOnGpu = true;
+    s.composedFrame = gpuFrame;
     s.gpuImage = reinterpret_cast<VkImage>(gpuFrame.image);
     s.frame.valid = true;
     s.frame.width = gpuFrame.width;
@@ -2329,6 +2346,7 @@ bool Backend::end_frame(PresentPhase phase) {
     s.frame.pixels.clear();
   } else {
     s.frameOnGpu = false;
+    s.composedFrame = {};
     s.renderer->ComposeFrame(s.frame, hwgs::writeback::ComposeKind::Presentation);
   }
   // TASK-090 M4: the debug-only live layer, after the compose submission and before the present copies the image. The
@@ -2343,6 +2361,8 @@ bool Backend::end_frame(PresentPhase phase) {
       s.host_clock_presented = s.overlay_coregs3_host_clock(s.gpuImage, s.frame.width, s.frame.height);
     } else {
       s.overlay_coregs3(s.gpuImage, s.frame.width, s.frame.height);
+      // TASK-090 2D overlay split: the 2D layer over the image the world just drew into, before the presenter copies it.
+      s.composite_coregs3_overlay();
     }
   }
   s.presentedVblank = s.stats.flushes;

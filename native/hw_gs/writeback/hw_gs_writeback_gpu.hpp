@@ -83,7 +83,7 @@ struct GpuDraw {
 // Pixel-stage state, the uniform block of hw_pixel_uber.frag (std140, all 4-byte fields).
 // Field order must match PixelStateBlock in shaders/hw_pixel_uber.frag.
 struct GpuPixelState {
-    std::uint32_t fields[48] = {};
+    std::uint32_t fields[52] = {};
 };
 
 // Field indices of GpuPixelState (names follow the shader block).
@@ -94,9 +94,10 @@ enum : std::uint32_t {
     Ta0, Ta1, Aem, FogOn, FogR, FogG, FogB, TexFst, TexLinear, WrapS, WrapT, WrapMinS, WrapMaxS,
     WrapMinT, WrapMaxT, TexLog2W, TexLog2H, TexOriginX, TexOriginY,
     KeepTopByte,  // CORE2: a CT24 write keeps the stored top byte (shared 32/24 target)
+    SplitOverlay, // TASK-090 2D overlay split: the batch writes the overlay target's RGBA8 coverage word
     Count
 };
-static_assert(Count <= 48, "GpuPixelState has 48 fields");
+static_assert(Count <= 52, "GpuPixelState has 52 fields");
 } // namespace gpufield
 
 // One chunk of work. The frame and depth rectangles are inclusive and equal; words are the raw

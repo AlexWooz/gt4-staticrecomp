@@ -406,6 +406,19 @@ natively (start at 1080p 16:9; then 21:9 at 3440x1440), the game's own projectio
 drive the 3D framing, and the HUD elements are anchored and repositioned per aspect and validated. The integer 3x
 captures (1920x1344) are a validation scale only, not the shipping model.
 
+**What is implemented now (2026-11-11, TASK-214 HUD anchoring).** The native HUD renderer
+(`native/coregs3/coregs3_hud.*`) is aspect-aware: every captured draw is expressed in the game's HUD canvas (480 units
+high, 480*R wide, the TASK-080 rule l/r = 320 ∓ 240·R) and the measured per-element anchor is applied at the target
+display aspect. The position/lap block and the minimap keep their left-edge distance, the Best/Last Lap times their
+right-edge distance, and the central cluster (lap timer, message, both gauges, gear, digital speed, trip, G-force) its
+offset from the canvas centre. The UI is never stretched: at 16:9 the mapping is byte-identical to the captured layout,
+a wider output repositions the edge elements (the study's "HUD at screen edges" generalisation of `wideOffset`), and
+the vertical scale is the output height over the 480-unit canvas. `gt4_coregs3_render --hud-aspect auto|W:H|R`
+(`--hud-anchor-report <csv>`) validates 16:9 at 1080p and 3440x1440; `native_coregs3_hud` pins the rule, the 16:9
+identity, the named aspect refusals and the anchor report. The live CoreGS 2.0 2D overlay is still the game's own HUD
+at its forced 16:9 (it needs no anchoring); the native anchors feed the phase-7 native HUD and the 21:9+ validation.
+Evidence: `build/evidence-hud-aspect/` and the 2026-11-11 journal.
+
 **What is implemented now (2026-11-10).** The data structures and the identity: `native/coregs3/coregs3_timeline.{hpp,cpp}`
 (`GuestTime`, `ObjectKey`, `ObjectTransform`, `TimelineFrame`, `FrameRing` with pairing and unmatched counts,
 `lerp_matrix`, `interpolation_alpha`) and its fixture `native_coregs3_timeline`. The capture already carries the guest
@@ -783,7 +796,7 @@ in-memory tap: the emitted per-item TEX0/TEX1/CLAMP state and UVs bind the items
 per-vertex fog is applied with the GS mix, and linear items sample with the GS bilinear; the remaining untextured
 items are skipped by name. The captured post chain (the two full-screen multiplies and the CT16 present model) is
 implemented on the live pixels as an opt-in and measured off by default: it overshoots the reconstructed world's level
-(hooks §34). CLUT animation and the wet reflection remain the Phase-3 work.
+(hooks §36). CLUT animation and the wet reflection remain the Phase-3 work.
 
 
 ### Phase 4: "it rendered a race": the 3D frame is CoreGS 3.0's
