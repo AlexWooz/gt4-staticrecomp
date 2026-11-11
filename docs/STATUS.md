@@ -1,5 +1,35 @@
 # Current Status
 
+## 2026-11-11: the native HUD anchored per display aspect (TASK-090/TASK-214, branch `task/090-hud-aspect`)
+
+The native HUD renderer (`native/coregs3/coregs3_hud.*`) is aspect-aware. Every captured draw is expressed in the game's
+HUD canvas (480 units high, 480*R wide; TASK-080's `l/r = 320 ∓ 240·R`) and gets a measured anchor: the position/lap
+block and the minimap keep their left-edge distance, the Best/Last Lap times their right-edge distance, and the central
+cluster (lap timer, message, both gauges, gear, digital speed, trip, G-force) its offset from the canvas centre.
+`hud_classify_anchor` pins the A-Spec page rule (position/lap pages 0x3C20..0x3C80 and minimap pages 0x3B60..0x3C00
+left; the race-font page 0x3000 split at x 500 into the centre timer/message and the right Best/Last) and falls back to
+the game's own 96 px `wideOffset` distance; `hud_aspect_layout` maps the canvas and applies the anchor translation
+(left 0, centre half, right all of the added width). The UI is never stretched: at 16:9 the render is byte-identical to
+the captured layout, and at 3440x1440 (2.3889:1, passed as the exact output aspect) the gauges stay circular and the
+edge elements follow the screen edges (the previous captured stretch made them 33% wider and moved the whole HUD right).
+`gt4_coregs3_render --hud-aspect auto|W:H|WxH|R` and `--hud-anchor-report <csv>` render and measure 16:9 1080p and
+3440x1440; `native_coregs3_hud` pins the rule, the 16:9 identity, the named refusals (narrower than 16:9, above 6.0)
+and the report. Measured at 16:9 1080p, the predicted boxes equal the reference layout (position/lap 65.2..385.5 x
+46.0..192.3, Best/Last 1594.5..1788.0 x 102.5..251.9, tach 1044..1336.5 x 790.7..1015.7, speed plate 1651.5..1836.0 x
+910.0..973.0) and the contribution-mask pixels sit inside them; at 3440x1440 the same elements are at 87..514,
+3006..3264, 1832..2222 and 3082..3328 x, with the measured shift against the old stretch −30..−177 px (left block and
+tach), +149/+60 px (Best/Last) and +123/+39 px (speed plate). Checks: CTest coregs3 **21/21**, Python
+`test_coregs3_units.py` **18/18** and the full suite **820/820** (85 skipped), the six captured-aspect HUD renders and
+the world-only render **byte-identical** to the `34c6c2c2` tool (`bfd82e96...`, `06b9d0d0...`, `7e6205d6...`,
+`76812579...`, `bc633f8f...`, `d92452ee...`, `0b6ff0f0...`), the 16:9 1080p anchored render byte-identical to the
+unanchored one, and the 3x off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** on the clean rebuild (8,997 VBlanks,
+1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B; executable SHA-256 `19b0b8b3...`).
+The live CoreGS 2.0 2D overlay is still the game's own HUD at its forced 16:9 and needs no anchoring;
+the native anchors feed the phase-7 native HUD. Open: the 21:9 ground truth (the capture is 16:9; the 3440x1440 boxes
+follow the rule and the measured elements), the Vert+ HUD for narrower aspects (not captured, refused by name), and
+the live renderer's output-resolution parameterisation. Evidence `build/evidence-hud-aspect/`; method
+[COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §35; plan §5.5.
+
 ## 2026-11-11: the 2D overlay split, implemented (TASK-090, branch `task/090-2d-split`)
 
 `GT4_COREGS3=present` now draws the world and the cars first and the game's 2D/HUD layer after them. CoreGS 2.0 cuts

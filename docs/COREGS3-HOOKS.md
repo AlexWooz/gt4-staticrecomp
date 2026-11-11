@@ -2523,3 +2523,66 @@ Merged-tree executable SHA-256 `8b7d80a3...` (every edited source predates it; t
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, clean rebuild) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B |
 | Overlay A/B (`GT4_COREGS3_2D_OVERLAY=0`) | within the present tool's own cross-run nondeterminism, same claimed frames 7601-7607 |
 | Split counters (A-Spec, 3x, 7600-7608) | 1,564 frames, 66,571 batches, 9 overlay composes + 9 composites, 0 refused samples, 0 refused frames, 1 dropped frame |
+
+## 35. Round 33 (2026-11-11, branch `task/090-hud-aspect`): the native HUD anchored per display aspect (TASK-214)
+
+Continuation of §34 in a branch from `task/090-coregs3` at `34c6c2c2`. The offline native HUD drew the captured
+640x448 elements at their captured positions; this round makes it aspect-aware without stretching the UI. The measured
+elements and the reference layout are in the 2026-11-11 journal ("The native HUD anchored per display aspect").
+
+### 35.1 The rule (C)
+
+The TASK-080 HUD canvas is 480 units high and 480*R wide at display aspect R (`l/r = 320 ∓ 240·R`, the ultrawide study
+§3.3). The capture is the game's own wide 16:9 layout stored in the 640x448 scanout. Each element keeps its measured
+anchor when R changes: the position/lap block and the minimap their distance from the left edge, the Best/Last Lap
+times their distance from the right edge, and the central cluster (lap timer, message, gauges, gear, speed, trip,
+G-force) their offset from the centre. The element keeps its design size (vertical scale = output height / 480; the UI
+is never stretched), which is the "HUD at screen edges" generalisation of `wideOffset` the study recommends. At 16:9 the
+mapping reduces exactly to the captured one.
+
+### 35.2 Implementation (C)
+
+`native/coregs3/coregs3_hud.{hpp,cpp}`: `HudAnchor`, `hud_classify_anchor` (the A-Spec page zones: 0x3C20..0x3C80 and
+0x3B60..0x3C00 left; page 0x3000 split at x 500 into the centre timer/message and the right Best/Last; the geometric
+fallback at the game's 96 px wideOffset distance), `HudAspectLayout` (the virtual canvas, `scale_x = W/(480R)`,
+`scale_y = H/480` and the anchor translation) and the per-draw translation in `draw_hud_panel`, applied to the coverage
+box, the scissor and the UV/sample point (the ratio is unchanged). The `speed` element is right-anchored and the `tach`
+element centre-anchored by their measured positions; `all` uses the page/position rule. The tool gained
+`--hud-aspect auto|W:H|WxH|R` (`auto` = the exact output W/H) and `--hud-anchor-report <csv>`; the report carries the
+anchor, captured box, translation and predicted output box per draw. `native_coregs3_hud` pins the layout, the rule,
+the 16:9 byte identity, the refusals and the report.
+
+### 35.3 Measurements (C)
+
+A-Spec scene 7600 (stream 7601) and the S3 night capture, `--dither 1`. 16:9 at 1920x1080: the predicted boxes equal
+the reference layout (position/lap 65.2..385.5 x 46.0..192.3, Best/Last 1594.5..1788.0 x 102.5..251.9, timer
+892.5..1092.8 x 210.9..247.1, tach 1044..1336.5 x 790.7..1015.7, speed plate 1651.5..1836.0 x 910.0..973.0); the
+contribution-mask pixels lie inside them (inward deltas up to 7 px where the content sits inside its plate/quad).
+3440x1440 with its exact 2.3889:1 aspect (virtual canvas 860 units, scale 4 x 1440/448): position/lap 87..514,
+minimap 102..642, timer 1630..1897, Best/Last 3006..3264, tach 1832..2222, speed plate 3082..3328 x; against the old
+captured stretch the anchor shift is −30..−177 px for the left block and the tach, +149/+60 px for Best/Last and
++123/+39 px for the speed plate, and the old stretch's gauges are 33% wider (ellipses) where the anchored dials are
+circular. The nominal 21:9 ratio (2.3333) at the same output would stretch the UI by 2.4%; `auto` avoids it.
+
+### 35.4 Gates
+
+Candidate `gt4vulkan.exe` SHA-256 `19b0b8b3...` (the gt4vulkan object directory and executable deleted and rebuilt
+after the last edited source; the HUD change itself is in the offline tool and the library, which gt4vulkan links).
+
+| Gate | Result |
+|---|---|
+| CTest coregs3 | **21/21 passed** (the HUD fixture gained the anchor cases) |
+| Python `test_coregs3_units.py` / full suite | **18/18** / **820/820** (85 skipped) |
+| Captured-aspect HUD A/B vs the `34c6c2c2` tool | **7/7 images byte-identical** (all/tach 1x+3x, speed 1x+3x, world-only 3x) |
+| 16:9 anchored path vs the unanchored command | **byte-identical** at 1920x1080 and 1920x1344 |
+| Anchor images and measurements | `build/evidence-hud-aspect/` (16:9 1080p and 3440x1440 renders, masks, anchor CSV, crops, contact sheets, metrics JSON) |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, clean rebuild) | **COREGS3-NIGHT-CHECK-OK**: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences for off and shadow, 13/13 frames identical, capture 4,496,552 B |
+
+### 35.5 What the live path still needs (H)
+
+The live `GT4_COREGS3=present` layer composites the CoreGS 2.0 2D overlay, which is the game's own HUD at its forced
+16:9; it needs no anchoring and is unchanged. The native anchors matter when CoreGS 3.0 draws the HUD itself: the live
+native HUD must tag each element's anchor at construction from the game's display objects (the capture carries no object
+id, so the offline tool uses the measured page/position rule), then feed the same `HudAspectLayout` at the chosen output
+resolution. Narrower aspects need the game's Vert+ HUD, which the 16:9 capture does not contain (refused by name). A
+21:9 ground-truth capture would upgrade the 3440x1440 visual validation from High confidence to Confirmed.

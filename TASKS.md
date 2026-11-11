@@ -2230,12 +2230,28 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   picture A/B at 7400 (world on/off mean 18.508, fog 2.599, bilinear 2.887, reference PSNR 17.339 dB). The cars'
   grey/neutral look in the present is a pre-existing car-pass gap, not this round (journal; hooks §33.7).
 
+- **HUD aspect anchoring (2026-11-11, branch `task/090-hud-aspect`, TASK-214).** The native HUD renderer is
+  aspect-aware. Every captured draw is expressed in the game's HUD canvas (480 units high, 480*R wide; TASK-080's
+  `l/r = 320 ∓ 240·R`) and gets a measured anchor: the position/lap block and the minimap left, the Best/Last Lap times
+  right, the central cluster (lap timer, message, both gauges, gear, digital speed, trip, G-force) centre.
+  `hud_classify_anchor` pins the A-Spec page rule (0x3C20..0x3C80 and 0x3B60..0x3C00 left; the race-font page 0x3000
+  split at x 500 into the centre timer/message and the right Best/Last) and falls back to the game's 96 px `wideOffset`
+  distance; `hud_aspect_layout` maps the canvas to the output and applies the anchor translation (left 0, centre half,
+  right all of the added width). At 16:9 the mapping is byte-identical to the previous tool; at 3440x1440 (2.3889:1,
+  passed as the exact output aspect) the position block/minimap stay at the left edge, the Best/Last block and the
+  B-Spec speed plate at the right, and the gauges keep their centre and their circular shape (the old captured stretch
+  elongated them). `gt4_coregs3_render --hud-aspect auto|W:H|WxH|R` and `--hud-anchor-report <csv>`; the six
+  captured-aspect renders (all/tach at 1x and 3x, speed at 1x/3x) and the world-only render are byte-identical to the
+  `34c6c2c2` tool, and the 16:9 1080p anchored render is byte-identical to the unanchored one. The live CoreGS 2.0
+  overlay still draws the game's own HUD at its forced 16:9; the native anchors apply when CoreGS 3.0 draws the HUD
+  itself (TASK-214). Evidence `build/evidence-hud-aspect/`; method [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §35.
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages
   0x3721/0x37B5/0x3E47); the remaining HUD elements (trip-odometer page 0x3D60, the fuel/tyre composite, the
-  Best/Last Lap labels of the pre-present overlay and the minimap palette-bank residual), the HUD anchored per
-  aspect in the game's own canvas (TASK-214, 16:9/21:9 anchors from TASK-079/080); VRR presentation and the
+  Best/Last Lap labels of the pre-present overlay and the minimap palette-bank residual); the native HUD's live
+  anchors (TASK-214; the CoreGS 2.0 overlay already draws the game's own 16:9 HUD); VRR presentation and the
   HUD at the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 - **Dither option (2026-11-11, branch `task/090-dither`, based on `a59ce9c9`).** The dotted pattern the owner saw is
@@ -4650,5 +4666,16 @@ Owner direction (2026-11-11, Telegram): the CoreGS 3.0 renderer must support any
 It is a native pipeline, not an upscale of the PS2 framebuffer: the output resolution is chosen natively (start at 1080p
 16:9, then 21:9 at 3440x1440; phones later), the game's own projection values (Width and Aspect, TASK-080 hooks) drive
 the 3D framing, and the HUD elements are anchored and repositioned per aspect and validated against the reference
-layouts. The integer 3x captures (1920x1344) are a validation scale only, not the shipping model. Planned: the playable
-demo comes first; then the output-resolution parameterisation, the 16:9 validation at 1080p, and the 21:9 HUD anchors.
+layouts. The integer 3x captures (1920x1344) are a validation scale only, not the shipping model.
+
+**Status (2026-11-11, TASK-090 HUD aspect round, branch `task/090-hud-aspect`).** The native HUD renderer
+(`native/coregs3/coregs3_hud.*`) is aspect-aware and validated: every captured draw is expressed in the game's HUD
+canvas (480 high, 480*R wide) and anchored left/centre/right by the measured A-Spec rule, `gt4_coregs3_render
+--hud-aspect auto|W:H|WxH|R` renders 16:9 at 1080p and the exact 3440x1440 aspect, and `--hud-anchor-report` measures
+each element. The 16:9 mapping is byte-identical to the captured layout; at 3440x1440 the UI keeps its design size
+(gauges stay circular) while the edge elements follow the screen edges. Evidence `build/evidence-hud-aspect/`, journal
+2026-11-11, [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §35. Open: the live native HUD (the CoreGS 2.0 overlay is the game's
+own HUD at its forced 16:9 and needs no anchoring today; the native anchors feed the phase-7 HUD, which tags elements
+from the game's display objects), the 21:9 ground truth (the capture is 16:9; the 3440x1440 boxes follow the rule and
+the measured elements, not a 21:9 reference frame), narrower aspects (the game's Vert+ HUD is not captured and is
+refused by name), and the live renderer's output-resolution parameterisation.
