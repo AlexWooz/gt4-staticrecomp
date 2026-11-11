@@ -86,6 +86,32 @@ GT4 was rebuilt with `ee_producer.reconstruct_elf` and the pinned `usa-v2.00-nat
 - **VU0:** GT4's plain VU0 image (0xA80 bytes) matches TT's for its first 600 bytes (TT file
   0x519880), then differs in 1,323 of 2,688 bytes. It needs its own review, like Spec II's VU0.
 
+## EE translation experiment [C]
+
+2026-11-11, local and unpinned (`private/tt-ee-experiment/`). The toolchain was first checked by running the stock
+`tools/ee_producer/build.cmd` on GT4 v2.00: generated sources were identical to the frozen 328-file inventory and the
+327 objects matched `QUALIFIED_OBJECT_INVENTORY` after timestamp normalization.
+
+The donor translator (rebuilt from the pinned commit with clang-cl 23.1.2) was then run on the TT ELF above with no
+entry seeds: `eerecomp.exe TT.elf --out generated`.
+
+| | Tourist Trophy | GT4 v2.00 (same translator) |
+|---|---:|---:|
+| Code | 1,082,980 instructions (4,230 KiB) | 1,240,374 instructions (4,845 KiB) |
+| Functions | 14,499 | 14,660 |
+| Entries | 125,650 | 135,093 |
+| Units | 287 (+ `table.cpp`, `units.hpp`) | 326 |
+| `stop()` fallbacks (unsupported op or delay slot) | 0 | 0 |
+
+- All 287 units compile into `ps2game.lib` with the producer's CMake (`tools/ee_producer`, Release, no errors):
+  65,100,410 bytes, SHA-256 `d600778e212200b2b828074b38de2ae6d5873890f03dd976fc48d2313e403c65`. Not a pin: the
+  archive embeds paths and timestamps.
+- Missed entries, from `scripts/spec2_entry_seeds.py --allow-unpinned` in delta mode: 992 candidates for TT (979
+  fallthrough, 12 far `lui` pairs, 2 data words) against 1,076 for GT4 v2.00. The 12 far `lui` pairs are the class
+  behind Spec II's Options-menu halt; seeding them from the start is cheap.
+- [U] Nothing has run yet: booting needs a TT target in the native runtime (a library profile, a
+  `game_target.hpp` entry with hooks disabled, VU0 handling).
+
 ## Unknowns
 
 - [U] IOP side: whether `IOPRP300.IMG` and `IRX/` match GT4's set. GT4's IOP modules were not compared.
@@ -98,7 +124,8 @@ GT4 was rebuilt with `ee_producer.reconstruct_elf` and the pinned `usa-v2.00-nat
 
 1. A TT input path: a `CORE.TT` reader that reuses the beta decryptor, plus new pins in
    `docs/inputs/` (a disc manifest and a native ELF policy, never edits to existing pins).
-2. Its own EE translation and symbol map from the ELF above.
+2. Its own EE translation and symbol map from the ELF above (translation and library compile already work
+   locally; see the experiment section).
 3. A TT entry in `game_target.hpp`, starting with every hook disabled (the existing "no entry, log
    once" behaviour), then hooks mapped one by one. A masked-signature tool that maps GT4 hook
    addresses to TT candidates would cover most of them.
