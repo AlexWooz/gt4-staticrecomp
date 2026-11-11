@@ -697,6 +697,41 @@ void test_font_atlas_page() {
         "a white-alpha page without the atlas flag keeps the S3 constant-page refusal");
 }
 
+void test_panel_census() {
+  // TASK-090 HUD A-Spec: the census enumerates the panel range without an element selection, with the PATH1 plate of
+  // the tap and every PATH2 sprite, each carrying its captured state.
+  const std::uint64_t stream = 101;
+  std::vector<GsDecodeBatch> batches;
+  batches.push_back(present_blit(stream));
+  batches.push_back(panel_sprite(stream, 1102, 567.75f, 382.5f, 578.25f, 400.5f, 0x3A20u, 127, 38, 460653,
+                                 0x004C002D027F0000ull));
+  batches.push_back(panel_sprite(stream, 1096, 39.9f, 45.5f, 57.9f, 74.5f, 0x39A0u, 94, 127, 460645,
+                                 0x004C002D027F0000ull));
+  batches.push_back(panel_clear(stream));
+  std::vector<std::uint8_t> tap_data;
+  std::vector<TapFileRecord> tap_records;
+  build_tap(tap_data, tap_records);
+  HudCensus census;
+  std::string error;
+  check(build_hud_census(batches, tap_data, tap_records, stream, census, error), "the panel census builds");
+  check(census.path2_batches == 2u && census.path2_drawing == 2u, "the census counts the two panel sprites");
+  check(census.path1_display_draws == 1u && census.path1_axis_aligned == 1u, "the census counts the axis-aligned plate");
+  check(census.entries.size() == 3u, "the census has the two sprites and the plate");
+  if (census.entries.size() == 3u) {
+    check(!census.entries[0].path1 && census.entries[0].sequence == 1096u, "the lower-job sprite comes first");
+    check(census.entries[1].path1 && census.entries[1].axis_aligned && census.entries[1].state.tex0_psm() == 0x13u,
+          "the plate quad is the PATH1 entry, axis aligned, with its T8 state");
+    check(!census.entries[2].path1 && census.entries[2].sequence == 1102u &&
+              census.entries[2].state.tex0_tbp0() == 0x3A20u,
+          "the digit sprite carries its captured TEX0 page");
+  }
+  // No present blit: the census refuses with a named reason instead of guessing a range.
+  HudCensus missing;
+  std::vector<GsDecodeBatch> no_present(batches.begin() + 1, batches.end());
+  check(!build_hud_census(no_present, tap_data, tap_records, stream, missing, error),
+        "a census without the present blit is refused");
+}
+
 void test_names() {
   HudElement element;
   check(parse_hud_element("speed", element) && element == HudElement::speed, "the speed element parses");
@@ -711,6 +746,7 @@ int main() {
   test_stream_vram_and_texture();
   test_font_atlas_page();
   test_panel_selection_and_merge();
+  test_panel_census();
   test_raster_and_ct16();
   if (failures != 0) {
     std::fprintf(stderr, "%d HUD check(s) failed\n", failures);
