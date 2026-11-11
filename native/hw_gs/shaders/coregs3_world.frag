@@ -25,6 +25,13 @@ layout(early_fragment_tests) in;
 
 layout(set = 0, binding = 0, r32ui) uniform uimage2D display_image;
 layout(set = 0, binding = 1, rgba8) uniform readonly image2D world_atlas;
+// TASK-090 car round: the written-fragment counters shared with the car stage (word 0 reflection, word 1 world).
+layout(set = 0, binding = 2, std430) buffer FragmentCounters {
+    uint reflection_fragments;
+    uint world_fragments;
+    uint reflection_date_failed;
+    uint reflection_entered;
+} counters;
 
 layout(location = 0) in vec4 colour;
 layout(location = 1) in vec2 model_uv;
@@ -73,8 +80,10 @@ void main() {
         const uint tex0_lo = world.tex_words.x;
         const uint tex0_hi = world.tex_words.y;
         const uint tw = (tex0_lo >> 26) & 0xFu;
-        const uint th = (tex0_lo >> 30) & 0xFu;
-        const uint tcc = tex0_hi & 1u;
+        // TEX0.TH is bits 30..33 and TEX0.TCC bit 34: both straddle the 32-bit halves of the register word (TH bits
+        // 32..33 and TCC bit 34 live in tex0_hi bits 0..1 and 2), exactly like the GS layout and hw_gs_registers.hpp.
+        const uint th = ((tex0_lo >> 30) & 0x3u) | ((tex0_hi & 0x3u) << 2);
+        const uint tcc = (tex0_hi >> 2) & 1u;
         const uint clamp_lo = world.tex_words.z;
         const uint clamp_hi = world.tex_words.w;
         const uint wms = clamp_lo & 3u;
@@ -163,5 +172,6 @@ void main() {
         const uint old = imageLoad(display_image, ivec2(gl_FragCoord.xy)).x;
         word = (old & fbmsk) | (word & ~fbmsk);
     }
+    atomicAdd(counters.world_fragments, 1u);
     imageStore(display_image, ivec2(gl_FragCoord.xy), uvec4(word, 0u, 0u, 0u));
 }

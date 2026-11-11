@@ -42,11 +42,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -69,9 +72,11 @@ constexpr std::uint32_t kMaxWorldVertices = 1u << 19;  // 524,288 vertices = 12 
 constexpr VkDeviceSize kInitialWorldVertexBytes = 1u << 20;
 
 // The car fragment stage's extra flags (the world's kWorldFlag* values are shared): the measured ALPHA blend and the
-// destination-alpha test, plus the blend equation packed into flags bits 8..23.
+// destination-alpha test, plus the blend equation packed into flags bits 8..23 and the reflection-range fragment
+// counter at bit 24.
 constexpr std::uint32_t kCarFlagBlend = 1u << 6;
 constexpr std::uint32_t kCarFlagDate = 1u << 7;
+constexpr std::uint32_t kCarFlagCountReflection = 1u << 24;
 
 // The world push-constant flags (mirrored by the fragment shader's kFlag* constants).
 constexpr std::uint32_t kWorldFlagTextured = 1u << 0;
@@ -161,6 +166,10 @@ struct CarRange {
   bool date = false;
   bool depth_write = true;
   bool reflection = false;
+  // TASK-090 car round diagnostics: the captured draw and item this range came from, so GT4_COREGS3_CAR_DEBUG=<sequence>
+  // can dump one draw's state, projected geometry and coverage.
+  std::uint64_t sequence = 0;
+  std::uint32_t item = 0xFFFFFFFFu;
 };
 
 // One captured draw's place in the shared vertex buffer, with the metre-transform columns the vertex stage consumes.
@@ -281,6 +290,14 @@ struct PresentLayer::Impl {
   bool car_valid = false;
   std::uint64_t car_built_vblank = ~0ull;
   std::uint64_t car_uploaded_vblank = ~0ull;
+  // TASK-090 car round diagnostics: GT4_COREGS3_CAR_DEBUG=<captured draw sequence> prints one draw's per-item binding
+  // state at build time and dumps its ranges' projected coverage after the build. GT4_COREGS3_CAR_DEBUG_DUMP=<path>
+  // writes the projected pixel masks (the `<path>` all-ranges mask and `<path>.refl.pgm` reflection-only mask).
+  std::int64_t car_debug_sequence = -1;
+  std::string car_debug_dump;
+  bool car_debug_reported = false;
+  std::uint32_t car_atlas_refused = 0;  // items whose texture could not be placed in the frame atlas (car fallback)
+  std::uint32_t car_binding_refused = 0;  // items the offline car subset refuses (lit-colour prefetch, the same rule)
 
   // The car table cache of the newest claimed frame (built on its first presentation tick, under world_mutex).
   struct CarItemState {
@@ -328,8 +345,19 @@ struct PresentLayer::Impl {
   VkDeviceMemory atlas_staging_memory = VK_NULL_HANDLE;
   void *atlas_staging_mapped = nullptr;
   bool atlas_general = false;  // the atlas was transitioned to GENERAL and copied at least once
-  VkQueryPool query_pool = VK_NULL_HANDLE;
-  bool queries_enabled = false;
+  // TASK-090 car round: the exact written-fragment counters of the fragment stages (a storage buffer at binding 2,
+  // std430: word 0 = the car's reflection ranges, word 1 = the world, word 2 = reflection DATE failures, word 3 =
+  // reflection fragments that reached the stage). The GS/offline control counts fragments the passes actually wrote,
+  // after the alpha test, DATE and the depth test, so an occlusion query cannot supply it (it counts depth-passing
+  // samples and, on this driver, only the last begin/end span). The buffer is host-visible and coherent: draw_tick
+  // reads it after the fence and zeroes it for the next submission.
+  VkBuffer fragment_count_buffer = VK_NULL_HANDLE;
+  VkDeviceMemory fragment_count_memory = VK_NULL_HANDLE;
+  void *fragment_count_mapped = nullptr;
+  std::uint64_t last_reflection_written = 0;      // fragments the car reflection ranges wrote in the last tick
+  std::uint64_t last_world_written = 0;           // fragments the world ranges wrote in the last tick
+  std::uint64_t last_reflection_date_failed = 0;  // reflection fragments the DATE test discarded
+  std::uint64_t last_reflection_entered = 0;      // reflection fragments that reached the stage (passed depth)
 
   // The world build of the newest claimed frame. Written by note_guest_frame (the claim thread) and read by render; one
   // mutex covers both sides. The texture table is local to the build (the ranges hold copies of what they need).
@@ -344,8 +372,7 @@ struct PresentLayer::Impl {
   bool world_valid = false;
   bool world_pending = false;  // a claimed frame the world has not been built for yet
   std::uint64_t last_world_samples = 0;  // occlusion-query samples of the last tick's world draws
-  std::uint64_t last_reflection_samples = 0;  // and of the car table reflection items (query 1)
-  bool query_pending_read = false;            // last submission recorded query 0/1; read before the next reset
+  std::uint64_t last_reflection_samples = 0;  // fragments the car reflection ranges wrote (the fragment counter)
   std::uint32_t last_world_draw_calls = 0;
   // The empty base SLM image: the live world decodes only the windows a job's own record carries, so a texture page the
   // capture does not cover is refused by the decoder instead of reading stale bytes.
@@ -435,13 +462,23 @@ struct PresentLayer::Impl {
     if (world_sky_pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, world_sky_pipeline, nullptr);
     if (world_vertex_module != VK_NULL_HANDLE) gt4_hwd_vkDestroyShaderModule(device, world_vertex_module, nullptr);
     if (world_fragment_module != VK_NULL_HANDLE) gt4_hwd_vkDestroyShaderModule(device, world_fragment_module, nullptr);
-    if (query_pool != VK_NULL_HANDLE) gt4_hwd_vkDestroyQueryPool(device, query_pool, nullptr);
     world_pipeline = VK_NULL_HANDLE;
     world_sky_pipeline = VK_NULL_HANDLE;
     world_vertex_module = VK_NULL_HANDLE;
     world_fragment_module = VK_NULL_HANDLE;
-    query_pool = VK_NULL_HANDLE;
-    queries_enabled = false;
+  }
+
+  void destroy_fragment_counter() {
+    const VkDevice device = config.device;
+    if (device == VK_NULL_HANDLE) return;
+    if (fragment_count_mapped != nullptr) {
+      gt4_hwd_vkUnmapMemory(device, fragment_count_memory);
+      fragment_count_mapped = nullptr;
+    }
+    if (fragment_count_buffer != VK_NULL_HANDLE) gt4_hwd_vkDestroyBuffer(device, fragment_count_buffer, nullptr);
+    if (fragment_count_memory != VK_NULL_HANDLE) gt4_hwd_vkFreeMemory(device, fragment_count_memory, nullptr);
+    fragment_count_buffer = VK_NULL_HANDLE;
+    fragment_count_memory = VK_NULL_HANDLE;
   }
 
   void shutdown() {
@@ -450,6 +487,7 @@ struct PresentLayer::Impl {
     destroy_depth();
     destroy_base();
     destroy_world();
+    destroy_fragment_counter();
     destroy_vertex_buffer();
     if (pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, pipeline, nullptr);
     if (render_pass != VK_NULL_HANDLE) gt4_hwd_vkDestroyRenderPass(device, render_pass, nullptr);
@@ -493,7 +531,7 @@ struct PresentLayer::Impl {
       return false;
     }
 
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    VkDescriptorSetLayoutBinding bindings[3]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[0].descriptorCount = 1;
@@ -502,8 +540,12 @@ struct PresentLayer::Impl {
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].binding = 2;  // TASK-090 car round: the written-fragment counters (reflection, world)
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 2;
+    set_info.bindingCount = 3;
     set_info.pBindings = bindings;
     if (gt4_hwd_vkCreateDescriptorSetLayout(config.device, &set_info, nullptr, &set_layout) != VK_SUCCESS) {
       error = "vkCreateDescriptorSetLayout failed for the CoreGS 3.0 present layer";
@@ -683,13 +725,15 @@ struct PresentLayer::Impl {
       }
     }
 
-    VkDescriptorPoolSize pool_size{};
-    pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    pool_size.descriptorCount = 2;  // the display image and the world texture atlas
+    VkDescriptorPoolSize pool_sizes[2]{};
+    pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    pool_sizes[0].descriptorCount = 2;  // the display image and the world texture atlas
+    pool_sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pool_sizes[1].descriptorCount = 1;  // the written-fragment counters
     VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.maxSets = 1;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes = &pool_size;
+    pool_info.poolSizeCount = 2;
+    pool_info.pPoolSizes = pool_sizes;
     if (gt4_hwd_vkCreateDescriptorPool(config.device, &pool_info, nullptr, &descriptor_pool) != VK_SUCCESS) {
       error = "vkCreateDescriptorPool failed for the CoreGS 3.0 present layer";
       return false;
@@ -701,6 +745,54 @@ struct PresentLayer::Impl {
     if (gt4_hwd_vkAllocateDescriptorSets(config.device, &allocate, &descriptor_set) != VK_SUCCESS) {
       error = "vkAllocateDescriptorSets failed for the CoreGS 3.0 present layer";
       return false;
+    }
+    // The fragment counters: four host-visible coherent uint words the fragment stages atomically add to (word 0 the
+    // car's reflection ranges, word 1 the world, word 2 the reflection DATE failures, word 3 the reflection fragments
+    // entering the stage). draw_tick reads them after the fence and zeroes them for the next submission, so the F8
+    // report names fragments that were actually written, exactly like the offline controls.
+    {
+      VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+      buffer_info.size = 16;
+      buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      if (gt4_hwd_vkCreateBuffer(config.device, &buffer_info, nullptr, &fragment_count_buffer) != VK_SUCCESS) {
+        error = "vkCreateBuffer failed for the CoreGS 3.0 fragment counters";
+        return false;
+      }
+      VkMemoryRequirements requirements{};
+      gt4_hwd_vkGetBufferMemoryRequirements(config.device, fragment_count_buffer, &requirements);
+      VkPhysicalDeviceMemoryProperties memory{};
+      gt4_hwd_vkGetPhysicalDeviceMemoryProperties(config.physical, &memory);
+      std::uint32_t type = 0;
+      if (!find_memory_type(memory, requirements.memoryTypeBits,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, type)) {
+        error = "no host-visible coherent memory for the CoreGS 3.0 fragment counters";
+        return false;
+      }
+      VkMemoryAllocateInfo memory_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      memory_info.allocationSize = requirements.size;
+      memory_info.memoryTypeIndex = type;
+      if (gt4_hwd_vkAllocateMemory(config.device, &memory_info, nullptr, &fragment_count_memory) != VK_SUCCESS) {
+        error = "vkAllocateMemory failed for the CoreGS 3.0 fragment counters";
+        return false;
+      }
+      if (gt4_hwd_vkBindBufferMemory(config.device, fragment_count_buffer, fragment_count_memory, 0) != VK_SUCCESS) {
+        error = "vkBindBufferMemory failed for the CoreGS 3.0 fragment counters";
+        return false;
+      }
+      if (gt4_hwd_vkMapMemory(config.device, fragment_count_memory, 0, 16, 0, &fragment_count_mapped) != VK_SUCCESS) {
+        error = "vkMapMemory failed for the CoreGS 3.0 fragment counters";
+        return false;
+      }
+      std::memset(fragment_count_mapped, 0, 16);
+      VkDescriptorBufferInfo counter_info{fragment_count_buffer, 0, 16};
+      VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      write.dstSet = descriptor_set;
+      write.dstBinding = 2;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      write.pBufferInfo = &counter_info;
+      gt4_hwd_vkUpdateDescriptorSets(config.device, 1, &write, 0, nullptr);
     }
 
     VkCommandPoolCreateInfo command_pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -987,21 +1079,7 @@ struct PresentLayer::Impl {
     return true;
   }
 
-  // The occlusion query pool is created even when the world is off: the car pass round brackets its reflection draws
-  // with it (and the world uses query 0 when it runs), so it must not depend on the world pipeline's creation.
-  void create_query_pool() {
-    VkQueryPoolCreateInfo query_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
-    query_info.queryType = VK_QUERY_TYPE_OCCLUSION;
-    query_info.queryCount = 2;
-    if (gt4_hwd_vkCreateQueryPool(config.device, &query_info, nullptr, &query_pool) == VK_SUCCESS) {
-      queries_enabled = true;
-    } else {
-      std::fprintf(stderr, "[coregs3] live world: occlusion queries unavailable; the sample counter stays 0\n");
-    }
-  }
-
   bool create_world_objects(std::string &error) {
-    create_query_pool();
     if (!live_world_enabled) return true;
     if (!format_has(config.physical, kAtlasFormat, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
       error = "the device cannot use R8G8B8A8_UNORM as a storage image; the live world stays off";
@@ -1140,6 +1218,184 @@ struct PresentLayer::Impl {
     base_width = width;
     base_height = height;
     return true;
+  }
+
+  // TASK-090 car round diagnostics: projects and rasterises the ranges of one captured draw on the CPU with the same
+  // columns and the same (clip.x, -clip.y, 1, clip.w) vertex stage the pipelines use, so the debug mask is the geometry
+  // the GPU receives, independent of the depth test, DATE and the sampler. Writes `<path>` (every range of the draw) and
+  // `<path>.refl.pgm` (the reflection ranges only) and prints one line per range and the totals.
+  void dump_car_debug_mask(std::uint32_t width, std::uint32_t height, const std::string &path) {
+    if (width == 0 || height == 0) return;
+    std::vector<std::uint8_t> all_mask(static_cast<std::size_t>(width) * height, 0);
+    std::vector<std::uint8_t> refl_mask(all_mask.size(), 0);
+    std::uint64_t samples = 0, reflection_samples = 0, ranges = 0, reflection_ranges = 0;
+    for (const CarRange &range : car_ranges) {
+      if (car_debug_sequence != 0 && range.sequence != static_cast<std::uint64_t>(car_debug_sequence)) continue;
+      ++ranges;
+      if (range.reflection) ++reflection_ranges;
+      std::vector<std::uint8_t> &mask = range.reflection ? refl_mask : all_mask;
+      float uv_min[2] = {1.0e30f, 1.0e30f}, uv_max[2] = {-1.0e30f, -1.0e30f};
+      float fog_min = 1.0e30f, fog_max = -1.0e30f;
+      float w_min = 1.0e30f, w_max = -1.0e30f;
+      float scr_min[2] = {1.0e30f, 1.0e30f}, scr_max[2] = {-1.0e30f, -1.0e30f};
+      std::uint32_t samples_before = static_cast<std::uint32_t>(range.reflection ? reflection_samples : samples);
+      for (std::uint32_t corner = 0; corner + 2 < range.count; corner += 3) {
+        float sx[3], sy[3];
+        bool behind = false;
+        for (int k = 0; k < 3; ++k) {
+          const PresentVertex &vertex = vertices[range.first + corner + k];
+          const float p[3] = {vertex.x, vertex.y, vertex.z};
+          float clip[4];
+          for (int row = 0; row < 4; ++row) {
+            clip[row] = range.push.columns[0 * 4 + row] * p[0] + range.push.columns[1 * 4 + row] * p[1] +
+                        range.push.columns[2 * 4 + row] * p[2] + range.push.columns[3 * 4 + row];
+          }
+          uv_min[0] = std::min(uv_min[0], vertex.u);
+          uv_min[1] = std::min(uv_min[1], vertex.v);
+          uv_max[0] = std::max(uv_max[0], vertex.u);
+          uv_max[1] = std::max(uv_max[1], vertex.v);
+          fog_min = std::min(fog_min, vertex.fog);
+          fog_max = std::max(fog_max, vertex.fog);
+          w_min = std::min(w_min, clip[3]);
+          w_max = std::max(w_max, clip[3]);
+          if (!(clip[3] > 0.0f) || !std::isfinite(clip[3])) behind = true;
+          const float ndc_x = clip[0] / clip[3];
+          const float ndc_y = -clip[1] / clip[3];
+          sx[k] = (ndc_x * 0.5f + 0.5f) * static_cast<float>(width);
+          sy[k] = (ndc_y * 0.5f + 0.5f) * static_cast<float>(height);
+          scr_min[0] = std::min(scr_min[0], sx[k]);
+          scr_min[1] = std::min(scr_min[1], sy[k]);
+          scr_max[0] = std::max(scr_max[0], sx[k]);
+          scr_max[1] = std::max(scr_max[1], sy[k]);
+        }
+        if (behind) continue;
+        const float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sy[1] - sy[0]) * (sx[2] - sx[0]);
+        if (area == 0.0f) continue;
+        const float inv_area = 1.0f / area;
+        const int min_x = std::max(0, static_cast<int>(std::floor(std::min({sx[0], sx[1], sx[2]}))));
+        const int max_x = std::min(static_cast<int>(width) - 1, static_cast<int>(std::ceil(std::max({sx[0], sx[1], sx[2]}))));
+        const int min_y = std::max(0, static_cast<int>(std::floor(std::min({sy[0], sy[1], sy[2]}))));
+        const int max_y = std::min(static_cast<int>(height) - 1, static_cast<int>(std::ceil(std::max({sy[0], sy[1], sy[2]}))));
+        for (int y = min_y; y <= max_y; ++y) {
+          for (int x = min_x; x <= max_x; ++x) {
+            const float px = static_cast<float>(x) + 0.5f;
+            const float py = static_cast<float>(y) + 0.5f;
+            const float w0 = ((sx[1] - sx[0]) * (py - sy[0]) - (sy[1] - sy[0]) * (px - sx[0])) * inv_area;
+            const float w1 = ((sx[2] - sx[1]) * (py - sy[1]) - (sy[2] - sy[1]) * (px - sx[1])) * inv_area;
+            const float w2 = ((sx[0] - sx[2]) * (py - sy[2]) - (sy[0] - sy[2]) * (px - sx[2])) * inv_area;
+            if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
+            mask[static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)] = 1;
+            if (range.reflection) ++reflection_samples; else ++samples;
+          }
+        }
+      }
+      const std::uint32_t pixels = static_cast<std::uint32_t>(range.reflection ? reflection_samples : samples) -
+                                   samples_before;
+      std::fprintf(stderr,
+                   "[coregs3] car debug range %llu item %u first %u count %u refl %d tex %d blend %d date %d zwrite %d "
+                   "screen x %.1f..%.1f y %.1f..%.1f w %.3f..%.3f cov %u uv %.3f..%.3f / %.3f..%.3f fog %.0f..%.0f\n",
+                   static_cast<unsigned long long>(ranges), range.item, range.first, range.count,
+                   range.reflection ? 1 : 0, range.textured ? 1 : 0, range.blend ? 1 : 0, range.date ? 1 : 0,
+                   range.depth_write ? 1 : 0, static_cast<double>(scr_min[0]), static_cast<double>(scr_max[0]),
+                   static_cast<double>(scr_min[1]), static_cast<double>(scr_max[1]), static_cast<double>(w_min),
+                   static_cast<double>(w_max), pixels,
+                   static_cast<double>(uv_min[0]), static_cast<double>(uv_max[0]), static_cast<double>(uv_min[1]),
+                   static_cast<double>(uv_max[1]), static_cast<double>(fog_min), static_cast<double>(fog_max));
+    }
+    std::uint64_t all_pixels = 0, refl_pixels = 0;
+    for (std::size_t index = 0; index < all_mask.size(); ++index) {
+      all_pixels += all_mask[index] != 0;
+      refl_pixels += refl_mask[index] != 0;
+    }
+    std::fprintf(stderr,
+                 "[coregs3] car debug vblank %llu draw %lld: ranges %llu (reflection %llu) samples %llu (reflection %llu) mask "
+                 "pixels %llu (reflection %llu)\n",
+                 static_cast<unsigned long long>(frame.vblank), static_cast<long long>(car_debug_sequence), static_cast<unsigned long long>(ranges),
+                 static_cast<unsigned long long>(reflection_ranges), static_cast<unsigned long long>(samples),
+                 static_cast<unsigned long long>(reflection_samples), static_cast<unsigned long long>(all_pixels),
+                 static_cast<unsigned long long>(refl_pixels));
+    const auto write_pgm = [&](const std::string &file, const std::vector<std::uint8_t> &mask) {
+      std::FILE *out = std::fopen(file.c_str(), "wb");
+      if (out == nullptr) return;
+      std::fprintf(out, "P5\n%u %u\n255\n", width, height);
+      std::fwrite(mask.data(), 1, mask.size(), out);
+      std::fclose(out);
+    };
+    if (!path.empty()) {
+      write_pgm(path, all_mask);
+      write_pgm(path + ".refl.pgm", refl_mask);
+    }
+  }
+
+  // TASK-090 car round depth diagnostic: reconstructs the depth test of one captured draw on the CPU. The base depth
+  // is the max over every depth-writing range captured before the draw (depth = 1/cw, the GS GEQUAL rule), then each
+  // fragment of the draw's reflection ranges is tested against it. The count separates "the geometry does not reach the
+  // pixels" from "the depth test rejects it", the two explanations of a low fragment count.
+  void dump_car_debug_depth(std::uint32_t width, std::uint32_t height) {
+    if (width == 0 || height == 0 || car_debug_sequence <= 0) return;
+    const std::uint64_t debug = static_cast<std::uint64_t>(car_debug_sequence);
+    std::vector<float> base_depth(static_cast<std::size_t>(width) * height, 0.0f);
+    const auto project = [&](const CarRange &range, std::uint32_t corner_index, float &sx, float &sy, float &depth) {
+      const PresentVertex &vertex = vertices[range.first + corner_index];
+      const float p[3] = {vertex.x, vertex.y, vertex.z};
+      float clip[4];
+      for (int row = 0; row < 4; ++row)
+        clip[row] = range.push.columns[0 * 4 + row] * p[0] + range.push.columns[1 * 4 + row] * p[1] +
+                    range.push.columns[2 * 4 + row] * p[2] + range.push.columns[3 * 4 + row];
+      if (!(clip[3] > 0.0f) || !std::isfinite(clip[3])) return false;
+      sx = (clip[0] / clip[3] * 0.5f + 0.5f) * static_cast<float>(width);
+      sy = (-clip[1] / clip[3] * 0.5f + 0.5f) * static_cast<float>(height);
+      depth = clip[3] > 1.0f ? 1.0f / clip[3] : 1.0f;  // the pipeline's depth clamp
+      return true;
+    };
+    const auto rasterise = [&](const CarRange &range, auto &&fragment) {
+      for (std::uint32_t corner = 0; corner + 2 < range.count; corner += 3) {
+        float ax, ay, ad, bx, by, bd, cx, cy, cd;
+        if (!project(range, corner, ax, ay, ad) || !project(range, corner + 1, bx, by, bd) ||
+            !project(range, corner + 2, cx, cy, cd))
+          continue;
+        const float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (area == 0.0f) continue;
+        const float inv_area = 1.0f / area;
+        const int min_x = std::max(0, static_cast<int>(std::floor(std::min({ax, bx, cx}))));
+        const int max_x = std::min(static_cast<int>(width) - 1, static_cast<int>(std::ceil(std::max({ax, bx, cx}))));
+        const int min_y = std::max(0, static_cast<int>(std::floor(std::min({ay, by, cy}))));
+        const int max_y = std::min(static_cast<int>(height) - 1, static_cast<int>(std::ceil(std::max({ay, by, cy}))));
+        for (int y = min_y; y <= max_y; ++y) {
+          for (int x = min_x; x <= max_x; ++x) {
+            const float px = static_cast<float>(x) + 0.5f;
+            const float py = static_cast<float>(y) + 0.5f;
+            const float w0 = ((bx - ax) * (py - ay) - (by - ay) * (px - ax)) * inv_area;
+            const float w1 = ((cx - bx) * (py - by) - (cy - by) * (px - bx)) * inv_area;
+            const float w2 = ((ax - cx) * (py - cy) - (ay - cy) * (px - cx)) * inv_area;
+            if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
+            fragment(static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x), w0 * ad + w1 * bd + w2 * cd);
+          }
+        }
+      }
+    };
+    std::uint64_t base_fragments = 0;
+    for (const CarRange &range : car_ranges) {
+      if (range.sequence >= debug || !range.depth_write) continue;
+      rasterise(range, [&](std::size_t pixel, float depth) {
+        base_depth[pixel] = std::max(base_depth[pixel], depth);
+        ++base_fragments;
+      });
+    }
+    std::uint64_t tested = 0, passed = 0;
+    for (const CarRange &range : car_ranges) {
+      if (range.sequence != debug || !range.reflection) continue;
+      rasterise(range, [&](std::size_t pixel, float depth) {
+        ++tested;
+        if (depth >= base_depth[pixel]) ++passed;
+      });
+    }
+    std::fprintf(stderr,
+                 "[coregs3] car debug depth vblank %llu draw %lld: base fragments %llu reflection tested %llu depth "
+                 "passed %llu (%.1f%%)\n",
+                 static_cast<unsigned long long>(frame.vblank), static_cast<long long>(car_debug_sequence),
+                 static_cast<unsigned long long>(base_fragments), static_cast<unsigned long long>(tested),
+                 static_cast<unsigned long long>(passed), tested == 0 ? 0.0 : 100.0 * static_cast<double>(passed) / tested);
   }
 
   // The shared texture atlas of the frame: the car table and the world table pack their decoded textures into the same
@@ -1337,6 +1593,9 @@ struct PresentLayer::Impl {
     car_draws.clear();
     car_built_vblank = frame.vblank;
     car_textures_frame = car_textures;
+    car_debug_reported = false;
+    car_atlas_refused = 0;
+    car_binding_refused = 0;
     if (!car_textures) {
       car_pending = false;
       return;
@@ -1459,8 +1718,36 @@ struct PresentLayer::Impl {
         }
         item.depth_write = sample.zmsk == 0;
         item.reflection = binding.reflection;
+        if (binding.reflection) flags |= kCarFlagCountReflection;
         if (binding.reflection && !binding.vertex_fog.empty()) item.fog = &binding.vertex_fog;
-        if (binding.texture != nullptr) {
+        // The offline car rasteriser validates each item's binding before it samples (coregs3_sampler.hpp check_binding
+        // for the base items, coregs3_reflection.hpp check_reflection_binding for the reflection pass) and keeps the
+        // opaque lit-colour prefetch for an item outside the measured subset. The live path must refuse the same items;
+        // in the measured frame that is the five items carrying ALPHA 0x48, `(Cs-0)*As+Cd`, an equation the offline
+        // sampler refuses (the blend is neither the normal 0x44 nor the additive 0x58 form). Sampling them would write
+        // the texture unblended, which is what made the lamp bars and the far-car trim differ.
+        bool texture_usable = binding.texture != nullptr;
+        if (texture_usable) {
+          const bool accepted =
+              binding.reflection
+                  ? gt4::coregs3::check_reflection_binding(binding) == gt4::coregs3::ReflectionBindingStatus::ok
+                  : gt4::coregs3::check_binding(binding) == gt4::coregs3::BindingStatus::ok;
+          if (!accepted) {
+            texture_usable = false;
+            ++car_binding_refused;
+            if (static_cast<std::int64_t>(draw.sequence) == car_debug_sequence)
+              std::fprintf(stderr,
+                           "[coregs3] car debug vblank %llu draw %llu item %u: binding refused (%s); lit-colour "
+                           "prefetch\n",
+                           static_cast<unsigned long long>(frame.vblank),
+                           static_cast<unsigned long long>(draw.sequence), index,
+                           binding.reflection
+                               ? gt4::coregs3::reflection_binding_status_name(
+                                     gt4::coregs3::check_reflection_binding(binding))
+                               : gt4::coregs3::binding_status_name(gt4::coregs3::check_binding(binding)));
+          }
+        }
+        if (texture_usable) {
           const gt4::coregs3::SampledTexture &sampler = *binding.texture;
           const bool placed_before = atlas_placements.find(&sampler) != atlas_placements.end();
           AtlasPlacement placement;
@@ -1476,7 +1763,39 @@ struct PresentLayer::Impl {
             flags |= kWorldFlagTextured;
             if (sampler.mmag != 0 || sampler.mmin != 0) flags |= kWorldFlagLinear;
             item.textured = true;
+          } else {
+            ++car_atlas_refused;
           }
+          if (static_cast<std::int64_t>(draw.sequence) == car_debug_sequence)
+            std::fprintf(stderr,
+                         "[coregs3] car debug vblank %llu draw %llu item %u: tex0 %016llX psm %02X tw %u th %u %ux%u rect %u,%u "
+                         "clamp %016llX wms %u wmt %u region %u..%u / %u..%u mmag %u mmin %u tcc %u tbp0 0x%04X "
+                         "atlas %s %u,%u refl %d test %08llX alpha %08llX fbmsk %08X zmsk %u prim %02X fogcol %06X "
+                         "blend %d date %d zwrite %d\n",
+                         static_cast<unsigned long long>(frame.vblank), static_cast<unsigned long long>(draw.sequence), index,
+                         static_cast<unsigned long long>(sampler.source_tex0),
+                         static_cast<unsigned>(sampler.psm), static_cast<unsigned>(sampler.tw),
+                         static_cast<unsigned>(sampler.th), static_cast<unsigned>(sampler.width),
+                         static_cast<unsigned>(sampler.height), static_cast<unsigned>(sampler.x0),
+                         static_cast<unsigned>(sampler.y0),
+                         static_cast<unsigned long long>(sampler.source_clamp), static_cast<unsigned>(sampler.wms),
+                         static_cast<unsigned>(sampler.wmt), static_cast<unsigned>(sampler.minu),
+                         static_cast<unsigned>(sampler.maxu), static_cast<unsigned>(sampler.minv),
+                         static_cast<unsigned>(sampler.maxv), static_cast<unsigned>(sampler.mmag),
+                         static_cast<unsigned>(sampler.mmin), static_cast<unsigned>(sampler.tcc),
+                         static_cast<unsigned>(sampler.tbp0), item.textured ? (placed_before ? "shared" : "placed") : "FAILED",
+                         static_cast<unsigned>(placement.x), static_cast<unsigned>(placement.y),
+                         binding.reflection ? 1 : 0, static_cast<unsigned long long>(sample.test),
+                         static_cast<unsigned long long>(sample.alpha), sample.fbmsk, sample.zmsk,
+                         static_cast<unsigned>(sample.prim), sample.fog_colour, item.blend ? 1 : 0,
+                         item.date ? 1 : 0, item.depth_write ? 1 : 0);
+        } else if (static_cast<std::int64_t>(draw.sequence) == car_debug_sequence) {
+          std::fprintf(stderr, "[coregs3] car debug vblank %llu draw %llu item %u: no texture (binding %s) refl %d test %08llX "
+                               "alpha %08llX fbmsk %08X zmsk %u prim %02X\n",
+                       static_cast<unsigned long long>(frame.vblank), static_cast<unsigned long long>(draw.sequence), index,
+                       bindings == nullptr ? "missing" : "null", binding.reflection ? 1 : 0,
+                       static_cast<unsigned long long>(sample.test), static_cast<unsigned long long>(sample.alpha),
+                       sample.fbmsk, sample.zmsk, static_cast<unsigned>(sample.prim));
         }
         item.push.flags = flags;
       }
@@ -1603,6 +1922,8 @@ struct PresentLayer::Impl {
         current.date = item_state.date;
         current.depth_write = item_state.depth_write;
         current.reflection = item_state.reflection;
+        current.sequence = draw.sequence;
+        current.item = item;
         for (int column = 0; column < 4; ++column)
           for (int row = 0; row < 4; ++row) current.push.columns[column * 4 + row] = columns->column[column][row];
         range_encoding = encoding;
@@ -2239,8 +2560,10 @@ struct PresentLayer::Impl {
     }
     record_base_copy(reinterpret_cast<VkImage>(target), width, height, first_tick);
     // The atlas copy goes before the render pass: its last use in the previous tick was the fragment stage, and the
-    // barrier below hands it to the transfer stage and back to the fragment stage as a readable storage image.
-    if (upload_world && world_atlas_used_w != 0 && world_atlas_used_h != 0) {
+    // barrier below hands it to the transfer stage and back to the fragment stage as a readable storage image. Both the
+    // world and the car-only build pack into the same atlas, so either upload must reach the image: gating this on the
+    // world alone left the car-only A/B (GT4_COREGS3_LIVE_WORLD=0) sampling an image that was never copied.
+    if ((upload_world || upload_car_atlas) && world_atlas_used_w != 0 && world_atlas_used_h != 0) {
       VkImageMemoryBarrier to_transfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
       to_transfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
       to_transfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -2267,25 +2590,6 @@ struct PresentLayer::Impl {
                                   nullptr, 0, nullptr, 1, &to_shader);
       atlas_general = true;
     }
-    // The driver reports VK_NOT_READY for a query submitted in the same batch, so the results are read one frame
-    // later: the previous submission's fence was already waited on, and the pool is idle here.
-    if (queries_enabled && query_pending_read) {
-      std::uint64_t previous[1] = {0};
-      const VkResult previous_result =
-          gt4_hwd_vkGetQueryPoolResults(device, query_pool, 1, 1, sizeof previous, previous, sizeof(std::uint64_t),
-                                        VK_QUERY_RESULT_64_BIT);
-      if (previous_result == VK_SUCCESS) {
-        last_reflection_samples = previous[0];
-        gt4::coregs3::present::mutable_counters().car_reflection_fragments.store(last_reflection_samples,
-                                                                                 std::memory_order_relaxed);
-      } else if (present_debug) {
-        std::fprintf(stderr, "[coregs3] previous query readback failed: VkResult %d\n",
-                     static_cast<int>(previous_result));
-      }
-      query_pending_read = false;
-    }
-    if (queries_enabled) gt4_hwd_vkCmdResetQueryPool(command, query_pool, 0, 2);
-    query_pending_read = queries_enabled;
     VkClearValue clear{};
     clear.depthStencil = {0.0f, 0};
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -2305,7 +2609,6 @@ struct PresentLayer::Impl {
     // TASK-090 live world: the sky first (background: no depth test or write), then the far underlay and the course
     // (depth = 1/cw, GEQUAL like the car pass, so the world and the cars occlude each other correctly), then the cars.
     if (live_world_enabled && world_valid && !world_ranges.empty()) {
-      if (queries_enabled) gt4_hwd_vkCmdBeginQuery(command, query_pool, 0, VK_QUERY_CONTROL_PRECISE_BIT);
       const VkDeviceSize world_offset = 0;
       gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &world_vertex_buffer, &world_offset);
       gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, world_sky_pipeline);
@@ -2331,22 +2634,17 @@ struct PresentLayer::Impl {
       gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline);
       for (const WorldRange &range : world_ranges)
         if (!range.sky) draw_world_range(range);
-      if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 0);
     }
     const VkDeviceSize offset = 0;
     gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &vertex_buffer, &offset);
     if (car_textures_frame) {
       // TASK-090 car pass round: the textured path, one draw per per-item range; the depth-write selection is the
       // ZBUF.ZMSK rule (the reflection and the alpha-only glass/shadow items use the no-write pipeline). The reflection
-      // items are bracketed by query 2: one begin/end run per contiguous reflection group (the loop looks ahead).
+      // ranges' written fragments are counted by the fragment stage itself (kCarFlagCountReflection), which is the
+      // offline control's own definition.
       VkPipeline bound = VK_NULL_HANDLE;
-      bool reflection_query = false;
       for (std::size_t range_index = 0; range_index < car_ranges.size(); ++range_index) {
         const CarRange &range = car_ranges[range_index];
-        if (queries_enabled && range.reflection && !reflection_query) {
-          gt4_hwd_vkCmdBeginQuery(command, query_pool, 1, VK_QUERY_CONTROL_PRECISE_BIT);
-          reflection_query = true;
-        }
         const VkPipeline selected = range.depth_write ? car_pipeline : car_nodepth_pipeline;
         if (selected != bound) {
           gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, selected);
@@ -2357,11 +2655,6 @@ struct PresentLayer::Impl {
         gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof push, &push);
         gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
-        const bool next_reflection = range_index + 1 < car_ranges.size() && car_ranges[range_index + 1].reflection;
-        if (queries_enabled && reflection_query && !next_reflection) {
-          gt4_hwd_vkCmdEndQuery(command, query_pool, 1);
-          reflection_query = false;
-        }
       }
     } else {
       gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -2406,6 +2699,20 @@ struct PresentLayer::Impl {
       error = "vkWaitForFences failed after the CoreGS 3.0 present pass";
       return false;
     }
+    // The submission is complete: the fragment counters hold this tick's exact written-fragment counts. Read them for
+    // the F8 report and zero the words for the next recording; the host-visible coherent buffer needs no flush.
+    if (fragment_count_mapped != nullptr) {
+      const std::uint32_t *counts = static_cast<const std::uint32_t *>(fragment_count_mapped);
+      last_reflection_written = counts[0];
+      last_world_written = counts[1];
+      last_reflection_date_failed = counts[2];
+      last_reflection_entered = counts[3];
+      last_reflection_samples = last_reflection_written;
+      last_world_samples = last_world_written;
+      gt4::coregs3::present::mutable_counters().car_reflection_fragments.store(last_reflection_written,
+                                                                               std::memory_order_relaxed);
+      std::memset(fragment_count_mapped, 0, 16);
+    }
     if (present_debug && car_textures_frame) {
       std::size_t reflection_ranges = 0;
       std::uint64_t reflection_vertices = 0;
@@ -2415,11 +2722,14 @@ struct PresentLayer::Impl {
           reflection_vertices += range.count;
         }
       std::fprintf(stderr,
-                   "[coregs3] car draw: ranges %zu reflection ranges %zu reflection vertices %llu reflection samples "
-                   "%llu world samples %llu\n",
-                   car_ranges.size(), reflection_ranges, static_cast<unsigned long long>(reflection_vertices),
+                   "[coregs3] car draw vblank %llu: ranges %zu reflection ranges %zu reflection vertices %llu reflection "
+                   "samples %llu (entered %llu date failed %llu) world samples %llu atlas refused %u binding refused %u\n",
+                   static_cast<unsigned long long>(frame.vblank), car_ranges.size(), reflection_ranges,
+                   static_cast<unsigned long long>(reflection_vertices),
                    static_cast<unsigned long long>(last_reflection_samples),
-                   static_cast<unsigned long long>(last_world_samples));
+                   static_cast<unsigned long long>(last_reflection_entered),
+                   static_cast<unsigned long long>(last_reflection_date_failed),
+                   static_cast<unsigned long long>(last_world_samples), car_atlas_refused, car_binding_refused);
     }
     destroy_target_view();
     return true;
@@ -2478,6 +2788,14 @@ struct PresentLayer::Impl {
                                     lighting)
              : build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices,
                            lighting));
+    if (car_textures_frame && car_debug_sequence >= 0 && !car_debug_reported) {
+      // One debug dump per claimed frame's first tick: the same geometry the GPU receives, projected on the CPU.
+      car_debug_reported = true;
+      const std::string dump =
+          car_debug_dump.empty() ? std::string() : car_debug_dump + "." + std::to_string(frame.vblank);
+      dump_car_debug_mask(width, height, dump);
+      dump_car_debug_depth(width, height);
+    }
     if (!car_drawn) gt4::coregs3::present::note_pass_refused(refused);
     const bool world_drawn = live_world_enabled && world_valid && !world_ranges.empty();
     if (!car_drawn && !world_drawn) return true;
@@ -2605,6 +2923,17 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   if (const char *textures = std::getenv("GT4_COREGS3_CAR_TEXTURES");
       textures != nullptr && std::strcmp(textures, "0") == 0)
     s.car_textures = false;
+  if (const char *debug = std::getenv("GT4_COREGS3_CAR_DEBUG"); debug != nullptr && *debug != '\0') {
+    char *end = nullptr;
+    const long long sequence = std::strtoll(debug, &end, 0);
+    if (end == debug || *end != '\0' || sequence < 0) {
+      error = std::string("GT4_COREGS3_CAR_DEBUG=") + debug +
+              " is not a captured draw sequence (0 = every range)";
+      return false;
+    }
+    s.car_debug_sequence = sequence;
+  }
+  if (const char *dump = std::getenv("GT4_COREGS3_CAR_DEBUG_DUMP"); dump != nullptr) s.car_debug_dump = dump;
   s.present_debug = std::getenv("GT4_COREGS3_PRESENT_DEBUG") != nullptr;
   // TASK-090 dither option: an invalid value refuses the layer instead of being interpreted. The mode does not change
   // this pass's pixels (they are written as 8-bit RGBA8 words); it is one setting across the offline and live paths.

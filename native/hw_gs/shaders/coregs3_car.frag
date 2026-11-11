@@ -26,6 +26,15 @@ layout(early_fragment_tests) in;
 
 layout(set = 0, binding = 0, r32ui) uniform uimage2D display_image;
 layout(set = 0, binding = 1, rgba8) uniform readonly image2D world_atlas;
+// TASK-090 car round: the exact written-fragment counters. Word 0 counts the fragments the reflection ranges actually
+// wrote (after the alpha test, DATE and the depth test), the offline control's own definition; the world stage counts
+// word 1. The buffer is host-visible coherent and zeroed by the CPU before each recorded tick.
+layout(set = 0, binding = 2, std430) buffer FragmentCounters {
+    uint reflection_fragments;
+    uint world_fragments;
+    uint reflection_date_failed;
+    uint reflection_entered;
+} counters;
 
 layout(location = 0) in vec4 colour;
 layout(location = 1) in vec2 model_uv;
@@ -38,6 +47,7 @@ const uint kFlagAlphaFailDefaulted = 16u;
 const uint kFlagLinear = 32u;
 const uint kFlagBlend = 64u;   // PRIM.ABE with a measured ALPHA equation: read-modify-write the display word
 const uint kFlagDate = 128u;   // TEST.DATE/DATM: the destination alpha test
+const uint kFlagCountReflection = 16777216u;  // 1 << 24: this range is a body/paint reflection pass
 
 uint channel(float value) {
     return uint(clamp(value, 0.0, 1.0) * 255.0 + 0.5);
@@ -83,14 +93,18 @@ void main() {
     uvec4 vertex = uvec4(channel(colour.r), channel(colour.g), channel(colour.b), channel(colour.a));
     uvec4 result = vertex;
     const uint flags = world.state.w;
+    const bool reflection = (flags & kFlagCountReflection) != 0u;
+    if (reflection) atomicAdd(counters.reflection_entered, 1u);
     const bool textured = (flags & kFlagTextured) != 0u;
     bool sampled = false;
     if (textured) {
         const uint tex0_lo = world.tex_words.x;
         const uint tex0_hi = world.tex_words.y;
         const uint tw = (tex0_lo >> 26) & 0xFu;
-        const uint th = (tex0_lo >> 30) & 0xFu;
-        const uint tcc = tex0_hi & 1u;
+        // TEX0.TH is bits 30..33 and TEX0.TCC bit 34: both straddle the 32-bit halves of the register word (TH bits
+        // 32..33 and TCC bit 34 live in tex0_hi bits 0..1 and 2), exactly like the GS layout and hw_gs_registers.hpp.
+        const uint th = ((tex0_lo >> 30) & 0x3u) | ((tex0_hi & 0x3u) << 2);
+        const uint tcc = (tex0_hi >> 2) & 1u;
         const uint clamp_lo = world.tex_words.z;
         const uint clamp_hi = world.tex_words.w;
         const uint wms = clamp_lo & 3u;
@@ -174,7 +188,10 @@ void main() {
         old_read = true;
         const bool expected = ((world.state.x >> 15) & 1u) != 0u;
         const bool msb = (old_word & 0x80000000u) != 0u;
-        if (msb != expected) discard;
+        if (msb != expected) {
+            if (reflection) atomicAdd(counters.reflection_date_failed, 1u);
+            discard;
+        }
     }
     if (textured && (flags & kFlagBlend) != 0u) {
         if (!old_read) {
@@ -205,5 +222,6 @@ void main() {
         const uint fbmsk = world.state.z;
         if (fbmsk != 0u) word = (old_word & fbmsk) | (word & ~fbmsk);
     }
+    if ((flags & kFlagCountReflection) != 0u) atomicAdd(counters.reflection_fragments, 1u);
     imageStore(display_image, at, uvec4(word, 0u, 0u, 0u));
 }

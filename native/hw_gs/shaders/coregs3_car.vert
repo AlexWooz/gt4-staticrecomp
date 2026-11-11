@@ -33,10 +33,18 @@ layout(location = 0) out vec4 colour;
 layout(location = 1) out vec2 uv;
 layout(location = 2) noperspective out float fog;
 
+// TASK-090 car round: the reflection ranges carry the same relative depth tolerance the offline reference applies
+// (coregs3_render.cpp, kReflectionDepthTolerance = 1e-3): the reflection is the same surface the base draw wrote, and
+// the two float projections differ by a few 1e-4 relative units, so a strict GEQUAL rejects fragments the GS's 24-bit Z
+// would keep. Scaling clip z by (1 + 1e-3) passes exactly `w_reflection <= w_base * (1 + 1e-3)`, the offline rule.
+const uint kFlagReflection = 16777216u;  // push flags bit 24
+const float kReflectionDepthScale = 1.001;
+
 void main() {
     vec4 clip = car.columns[0] * model_position.x + car.columns[1] * model_position.y +
                 car.columns[2] * model_position.z + car.columns[3];
-    gl_Position = vec4(clip.x, -clip.y, 1.0, clip.w);
+    const float z = (car.state.w & kFlagReflection) != 0u ? kReflectionDepthScale : 1.0;
+    gl_Position = vec4(clip.x, -clip.y, z, clip.w);
     colour = vertex_colour;
     uv = model_uv;
     fog = vertex_fog;
