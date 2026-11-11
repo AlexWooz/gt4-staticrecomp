@@ -4502,3 +4502,11 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+
+### TASK-214 — CoreGS 3.0 native resolution and aspect (owner, 2026-11-11)
+Owner direction (2026-11-11, Telegram): the CoreGS 3.0 renderer must support any resolution and aspect ratio from birth.
+It is a native pipeline, not an upscale of the PS2 framebuffer: the output resolution is chosen natively (start at 1080p
+16:9, then 21:9 at 3440x1440; phones later), the game's own projection values (Width and Aspect, TASK-080 hooks) drive
+the 3D framing, and the HUD elements are anchored and repositioned per aspect and validated against the reference
+layouts. The integer 3x captures (1920x1344) are a validation scale only, not the shipping model. Planned: the playable
+demo comes first; then the output-resolution parameterisation, the 16:9 validation at 1080p, and the 21:9 HUD anchors.

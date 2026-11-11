@@ -400,6 +400,12 @@ presents on the display's real scanout instead of a fixed grid, and the **HUD sh
 rate later** (drawn at every presentation instant with the newest guest values, never interpolated). The guest-rate HUD
 above is the interim behavior until the VRR host clock and the HUD redraw exist.
 
+**Owner direction for native resolution and aspect (2026-11-11).** The renderer must support any resolution and aspect
+ratio from birth. It is a native pipeline, not an upscale of the PS2 framebuffer: the output resolution is chosen
+natively (start at 1080p 16:9; then 21:9 at 3440x1440), the game's own projection values (Width and Aspect, TASK-080)
+drive the 3D framing, and the HUD elements are anchored and repositioned per aspect and validated. The integer 3x
+captures (1920x1344) are a validation scale only, not the shipping model.
+
 **What is implemented now (2026-11-10).** The data structures and the identity: `native/coregs3/coregs3_timeline.{hpp,cpp}`
 (`GuestTime`, `ObjectKey`, `ObjectTransform`, `TimelineFrame`, `FrameRing` with pairing and unmatched counts,
 `lerp_matrix`, `interpolation_alpha`) and its fixture `native_coregs3_timeline`. The capture already carries the guest
