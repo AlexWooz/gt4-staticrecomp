@@ -4,6 +4,26 @@ Branch `task/090-world-materials-v2`, based on `task/090-coregs3` at `008a71c8` 
 study: no `native/` source change. Every number below was reproduced in this worktree with the branch's own tools
 (`gt4_coregs3_render`, `gt4_coregs3_gs`, `gt4_coregs3_tap`) built from `scripts/coregs2_bench/game/configure.cmd`.
 
+## Status (2026-11-11, branch `task/090-mip-recapture`): the recaptured chain carries the road's level 1; fix 4 gate met, mip on by default
+
+The follow-up recapture (worktree `O:/Antigavity/gt4-wt-090-mip-recapture`, based on `task/090-coregs3` at `34c6c2c2`)
+ran the night race with the extended capture rule (`texture_mip_windows`, levels 1..MXL, MTBA too), proved the level-1
+page is the road's mip chain and re-ran the A/B:
+
+- **Capture and page (C).** Sidecar 498 records (6 vblank, 6 pass-begin, 486 job), 42,726,864 B; the road job records
+  carry `(0x36D0, 32)` (level 0) and `(0x3662, 32)` (MIPTBP1 level 1, TBW 2) together, which no old job record did. The
+  job's level-1 hash `2fcb2e50...` differs from the frame-end record's `3cf0989a...` (the atlas is still re-uploaded
+  later). Decoded, the new level 1 against the road's level 0 box downscale: corr **+0.5961**, PSNR **35.96**, mean |d|
+  **3.22**; the old atlas page: **-0.0329 / 28.69 / 8.10**.
+- **Fix 4 gate met (C).** The road high-pass correlation rises at sigma 1.0/1.5/2.0/3.0 (0.0637 -> 0.1288, 0.1144 ->
+  0.2126, 0.1465 -> 0.2579, 0.1802 -> 0.2946) and the world page ratio moves 1.489 -> 1.515 (**+0.026, inside
+  +/-0.05**). The road page correlation rises 0.175 -> 0.250, its PSNR 25.23 -> 25.28 and SSIM 0.64156 -> 0.68216;
+  the world+post chain at the captured dither goes PSNR 20.78 -> 21.05, SSIM 0.58801 -> 0.65198, pct_bad 27.7 ->
+  23.6%, mean |d| 13.47 -> 12.40. Its page ratio moves 0.943 -> 1.003 (+0.059: the ratio lands at the reference level
+  but the movement is just past the +/-0.05 reading; the gate is stated on the world stage). The switch is now **on by
+  default**; `--no-mip` restores the pre-round model byte for byte. A pre-recapture sidecar still holds the atlas at
+  the level address, so old captures must be rendered with `--no-mip`.
+
 ## Status (2026-11-10, branch `task/090-post-chain`): fixes 1 and 2 applied; the post chain explains the level
 
 The follow-up round applied the study's fixes 1 and 2 (worktree `O:/Antigavity/gt4-wt-090-post-chain`, based on this
@@ -374,6 +394,11 @@ PATH1/PATH2 interleaving, which the two sidecars do not carry; this is the top o
    (0x3662) holds another texture's page at the job, so the correlation falls (0.100 -> 0.078) and the ratio moves to
    1.620. The path is off by default; the per-job capture window now includes the MIPTBP levels, so the next capture
    carries the chain.
+   **DONE (`task/090-mip-recapture`, C):** the recapture does carry the chain: the road job's `(0x3662, 32)` window
+   decodes to the road's level 1 (corr +0.5961 with the level-0 box downscale against -0.0329 for the old atlas page),
+   the road high-pass correlation rises at every filter definition and the world page ratio moves **+0.026**, inside
+   the +/-0.05 gate. The mip path is **on by default**; `--no-mip` is the byte-identical pre-round A/B, and a captured
+   level the sidecar does not cover stays a counted level-0 fallback.
 5. **Keep the verified input path as the control.** The page index identity (1.000), the vertex-colour identity and
    the blend arithmetic are already covered by the pass-textures/morph fixtures; add the road page's index-identity
    check as a regression.

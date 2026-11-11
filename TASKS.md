@@ -2110,6 +2110,22 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   controls). The per-page spread is still outside the study's +/-0.1 (world ratios 0.646..1.126 excluding the known
   content outliers, median 0.912), named per page in WORLD-MATERIALS-V2. Evidence `build/evidence-texture-mip/`.
 
+- **Mip recapture and switch default (2026-11-11, branch `task/090-mip-recapture`):** the night race recaptured with
+  the extended window rule (`texture_mip_windows`, levels 1..MXL, MTBA too) at 3x (`GT4_COREGS3=shadow`,
+  `ALL_DRAWS=1`, scene 7398-7402, VRAM 7398-7403, blocks 0x2BC0-0x3FFF): sidecar **498 records (6/6/486), 42,726,864
+  B**, +262,400 B of per-job mip windows. The road job (20 course items, TEX0 0006D1E5DD40B6D0, MXL 1/MMIN 4, MIPTBP1
+  003640036400B662) now carries both `(0x36D0, 32)` and `(0x3662, 32)`; its level-1 hash `2fcb2e50...` differs from
+  the frame-end atlas `3cf0989a...`, and decodes to **corr +0.5961 / PSNR 35.96 / mean |d| 3.22** versus the level-0 box
+  downscale (old atlas: -0.0329 / 28.69 / 8.10). **Fix 4 gate met:** the road high-pass correlation rises at every
+  sigma (0.0637 -> 0.1288, 0.1144 -> 0.2126, 0.1465 -> 0.2579, 0.1802 -> 0.2946), the world page ratio moves 1.489 ->
+  1.515 (**+0.026, inside +/-0.05**), page correlation 0.175 -> 0.250, page SSIM 0.64156 -> 0.68216, and the
+  world+post chain at the captured dither goes PSNR 20.78 -> 21.05, SSIM 0.58801 -> 0.65198, pct_bad 27.7 -> 23.6%,
+  mean |diff| 13.47 -> 12.40. `world_mip` now defaults on; `--no-mip` restores the pre-round model byte for byte
+  (world `34BDEE07...`, chain `BFA47B67...`, car `B0E7082B...`), and a level the sidecar does not cover stays a
+  counted fallback (pre-recapture sidecars must use `--no-mip`). Gates: CTest coregs3 **21/21**, Python **18/18**,
+  clean-rebuild 3x off/shadow **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13). Evidence
+  `build/evidence-mip-recapture/`.
+
 - **Crash race (2026-11-11, branch `task/090-crash-race`):** the host-clock crash lead is closed. The exit-139 fault at
   VBlank ~6783 is on the **GS worker**, inside CoreGS 2.0's containers (`ContentKey`'s `blockLists_` rehash in two runs,
   `TrimTexturePool`'s `texturePool_` walk in a third), each loading a node link of 0xFFFFFFFFFFFFFFFF; the host-clock

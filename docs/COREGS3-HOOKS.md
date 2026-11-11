@@ -1421,7 +1421,8 @@ job has, so the copy is the content the draw samples. The per-record work is a `
 copy run on the GS worker, never on the EE, and the whole branch is off unless `GT4_COREGS3_VRAM` is set.
 
 The block rule is shared with the EE side in `coregs3/coregs3_texwin.hpp`: TBP0..TBP0 + pages (T4 128x128, T8 128x64,
-CT32 64x32 texels, 32 blocks per page, contiguous, pad pages included) plus four CSM1 palette blocks at CBP. The record
+CT32 64x32 texels, 32 blocks per page, contiguous, pad pages included) plus four CSM1 palette blocks at CBP, plus the
+level-1..MXL runs the tap's TEX1.MXL and MIPTBP1/2 (or the MTBA layout) name, which the mip recapture added. The record
 carries the **job id**, which the tap's source records already pair with each item's packet address, so the offline
 table binds an item to the pixels of its own job with no new EE-side hook and no per-draw marker.
 
@@ -1467,7 +1468,23 @@ frame-end image**.
 | World picture vs frame 07400 | PSNR 20.578 -> **22.35 dB**, SSIM 0.62212 -> **0.65055**, pct_bad 76.173 -> **64.8%**, mean abs 19.6355 -> **14.84**, luma 30.21 -> 18.96 (reference 26.69); page `0x36D0` correlation -0.009 -> **0.111**, ref/world 1.303 -> **1.445** |
 | The study's metric gates (page ratio 1.0 +/- 0.15 and correlation > 0.5; PSNR >= 24 dB, SSIM >= 0.75, pct_bad <= 10%) | **not reached**, and not relaxed: the residual is a nearly constant +12.8 luma on the road, the captured wet-road reflection pass (pass 7, additive; study fix 3) and the uncaptured post chain (fix 4), not the texture binding |
 
-### 24.6 Open
+### 24.6 The texture mip recapture (2026-11-11, branch `task/090-mip-recapture`)
+
+The same recipe plus the mip windows, run on the extended `texture_windows_from_state` (TEX0 pages + palette + levels
+1..MXL) at 3x for scene VBlanks 7398-7402 and VRAM 7398-7403 (`GT4_COREGS3_VRAM_BLOCKS=0x2BC0-0x3FFF`,
+`VRAM_PASSES=5`, `VRAM_DRAWS=0`, `VRAM_MAX_FRAMES=8192`). Sidecar **498 records (6 vblank, 6 pass-begin, 486 job),
+42,726,864 B**, +262,400 B over the pass-textures file from the per-job mip windows. The road's job records (kind 3,
+labels 460177/460345/460513/..., one per VBlank) carry both `(0x36D0, 32)` (level 0) and `(0x3662, 32)` (MIPTBP1
+`003640036400B662`: level 1 TBP 0x3662, TBW 2), which no job record of the old sidecar did. The job's level-1 page
+hashes `2fcb2e50...` while the frame-end record still holds the car/palette atlas `3cf0989a...`: the game uploads the
+road's chain before the road job and overwrites the address later, so only the per-job snapshot sees the chain.
+Decoded, the new level 1 against the road's level 0 box downscale scores **corr +0.5961 / PSNR 35.96 / mean |d| 3.22**
+(the old atlas page: -0.0329 / 28.69 / 8.10). The A/B and the switch are in the journal 2026-11-11 and
+[COREGS3-WORLD-MATERIALS-V2](COREGS3-WORLD-MATERIALS-V2.md); the mip path is on by default and `--no-mip` restores the
+pre-round model byte for byte. A pre-recapture sidecar covers the level address with the later frame-end upload, so it
+must be rendered with `--no-mip`.
+
+### 24.7 Open
 
 - The uploader and the PATH3 packet(s) that stream the road into `0x36D0` are **Unknown**; the job snapshot captures
   their result. A `.gt4gs` PATH3 sidecar with a stream-level parser (the gs-stream study's S1) would name them.
