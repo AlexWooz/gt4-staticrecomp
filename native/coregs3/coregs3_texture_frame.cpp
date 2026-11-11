@@ -494,7 +494,19 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
       // TASK-090 pass textures: the item's own VU1 job record first (the content its draw sampled), then its draw's K1
       // record (evidence; it predates the frame's uploads), then the pass image and the default.
       const VramRecord *item_overlay = nullptr;
-      if (is_world_pass(draw.pass) && options.job_textures != nullptr &&
+      // TASK-090 live world: the item's own job's pixels, captured in memory before the job executed. The address is the
+      // key the live store links at job post time; a missing record is counted and falls through to the offline chain.
+      const bool live_world_item = is_world_pass(draw.pass) && options.live_job_textures != nullptr;
+      if (live_world_item) {
+        const auto found = options.live_job_textures->find(item.address);
+        if (found != options.live_job_textures->end()) {
+          item_overlay = found->second;
+          counters.world_live_job += 1;
+        } else {
+          counters.world_live_job_missing += 1;
+        }
+      }
+      if (item_overlay == nullptr && is_world_pass(draw.pass) && options.job_textures != nullptr &&
           options.job_textures->records != nullptr) {
         const auto address = job_of_address.find(item.address);
         if (address != job_of_address.end()) {
@@ -639,6 +651,19 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
         }
       } else if (!streams.empty()) {
         counters.tap_items_defaulted += 1;
+      }
+      if (options.world_channels && !options.use_tap) {
+        // TASK-090 live world: without a `.gt4tap` the world items' GS state is the pass journal's (the K7 pass-begin
+        // shadow): TEST, ALPHA, FRAME, ZBUF, XYOFFSET and FOGCOL are measured pass state, and the PRIM keeps the
+        // measured default 0x3C (TME+FGE on, ABE off). The course pass below re-applies the same journal TEST/ALPHA,
+        // preserving its zero-TEST rule; the sky and far-underlay passes get the journal state here as well, which is
+        // what puts their XYOFFSET in the selection rule. Every such item is counted.
+        const bool journal_pass = draw.pass == kPassSky || draw.pass == kPassFarUnderlay ||
+                                  draw.pass == kPassCourse || draw.pass == kPassReflection;
+        if (journal_pass) {
+          binding.state = world_pass_default_state(frame, draw.pass);
+          counters.world_pass_journal_state += 1;
+        }
       }
       if (options.world_channels && matched && binding.vertex_fog.empty())
         binding.vertex_fog = streams[chosen].fog;

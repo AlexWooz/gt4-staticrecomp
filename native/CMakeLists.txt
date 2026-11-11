@@ -493,7 +493,7 @@ add_library(gt4_coregs3 STATIC
     coregs3/coregs3_present.cpp
     coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp
     coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp coregs3/coregs3_gsstream_file.cpp
-    coregs3/coregs3_gsdecode.cpp coregs3/coregs3_wet_composite.cpp)
+    coregs3/coregs3_gsdecode.cpp coregs3/coregs3_wet_composite.cpp coregs3/coregs3_live_world.cpp)
 target_include_directories(gt4_coregs3 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/coregs3")
 target_compile_options(gt4_coregs3 PRIVATE /W4)
 # TASK-027 (CoreGS 2.0, development branch only): GT4_HW_GS=ON builds the HWR libraries, tools and tests (native/hw_gs)
@@ -1119,6 +1119,11 @@ target_link_libraries(coregs3_lighting_families_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_lighting_families_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_lighting_families COMMAND $<TARGET_FILE:coregs3_lighting_families_fixture>)
 # TASK-090: the variable-FPS presentation timeline (frames, timestamps, object identity, pairing, alpha).
+add_executable(coregs3_live_world_fixture coregs3/coregs3_live_world_fixture.cpp)
+target_link_libraries(coregs3_live_world_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_live_world_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_live_world COMMAND $<TARGET_FILE:coregs3_live_world_fixture>)
+
 add_executable(coregs3_timeline_fixture coregs3/coregs3_timeline_fixture.cpp)
 target_link_libraries(coregs3_timeline_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_timeline_fixture PRIVATE /W4)

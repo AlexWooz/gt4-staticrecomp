@@ -407,12 +407,123 @@ void check_pass_binding() {
           "no pass-image counters without pass images");
 }
 
+
+// TASK-090 live world: the same two world items, but the pixels come from the live per-job store (packet address ->
+// record, captured before the job executed) and the GS state comes from the frame's pass journal, because the live
+// path has no `.gt4tap`. The pixels must be the item's own job's, the journal's TEST/ALPHA/XYOFFSET must reach the
+// binding, and every live/missing item must be counted.
+void check_live_binding() {
+  FrameSnapshot frame;
+  frame.vblank = 7398;
+  CapturedTexture record{};
+  record.address = 0x01AB0000u;
+  const std::array<std::uint8_t, 40> bytes = make_t4_record();
+  std::memcpy(record.bytes, bytes.data(), bytes.size());
+  frame.textures.push_back(record);
+  const std::vector<std::uint8_t> packet = make_world_packet(4);
+  frame.packets = packet;
+  CapturedPassState sky_state;
+  sky_state.pass = kPassSky;
+  sky_state.vblank = frame.vblank;
+  sky_state.xyoffset = 0x0000720800006C08ull;
+  sky_state.test = 0x0003820Cull;
+  sky_state.alpha = 0x00000044ull;
+  sky_state.fogcol = 0x004F4F54ull;
+  CapturedPassState course_state;
+  course_state.pass = kPassCourse;
+  course_state.vblank = frame.vblank;
+  course_state.xyoffset = 0x0000720800006C08ull;
+  course_state.test = 0x0005800Eull;
+  course_state.alpha = 0x00000044ull;
+  course_state.fogcol = 0x0027272Aull;
+  frame.pass_states.push_back(sky_state);
+  frame.pass_states.push_back(course_state);
+  for (std::uint32_t pass : {static_cast<std::uint32_t>(kPassSky), static_cast<std::uint32_t>(kPassCourse)}) {
+    CapturedDraw draw;
+    draw.sequence = pass;
+    draw.pass = pass;
+    draw.item_count = 1;
+    draw.items[0].packet_offset = 0;
+    draw.items[0].packet_bytes = static_cast<std::uint32_t>(packet.size());
+    draw.items[0].qwords = static_cast<std::uint16_t>((packet.size() + 15u) / 16u);
+    draw.items[0].texture_record = 0;
+    draw.items[0].address = pass == kPassSky ? 0x00001000u : 0x00002000u;
+    frame.draws.push_back(draw);
+  }
+
+  // One live record per item, each from its own VU1 job and carrying a distinct palette word.
+  VramRecord sky_record;
+  sky_record.kind = vram::kRecordJobTexture;
+  sky_record.label = 7u;
+  sky_record.vblank = 7399;
+  sky_record.windows.push_back(vram::Window{0x36D0u, 36u});  // the T4 page run plus the palette bank at 0x36D2
+  sky_record.bytes.assign(36u * vram::kBlockBytes, 0u);
+  const SlmImage sky_image = make_image(0x55667788u);
+  std::memcpy(sky_record.bytes.data(), sky_image.local.bytes().data() + 0x36D0u * vram::kBlockBytes,
+              36u * vram::kBlockBytes);
+  VramRecord course_record;
+  course_record.kind = vram::kRecordJobTexture;
+  course_record.label = 8u;
+  course_record.vblank = 7399;
+  course_record.windows.push_back(vram::Window{0x36D0u, 36u});
+  course_record.bytes.assign(36u * vram::kBlockBytes, 0u);
+  const SlmImage course_image = make_image(0x11223344u);
+  std::memcpy(course_record.bytes.data(), course_image.local.bytes().data() + 0x36D0u * vram::kBlockBytes,
+              36u * vram::kBlockBytes);
+  std::map<std::uint32_t, const VramRecord *> live_map;
+  live_map[0x00001000u] = &sky_record;
+  live_map[0x00002000u] = &course_record;
+
+  // The base image is empty on purpose (no pass/frame image in the live path): every pixel must come from a job window.
+  SlmImage empty_base;
+  TextureFrameOptions options;
+  options.use_tap = false;
+  options.world_channels = true;
+  options.live_job_textures = &live_map;
+  FrameTextureTable table;
+  TextureFrameCounters counters;
+  std::string error;
+  require(build_frame_texture_table(frame, empty_base, nullptr, {}, options, table, counters, error),
+          "the live table builds");
+  const SampledTexture *sky = table.draws[0][0].texture;
+  const SampledTexture *course = table.draws[1][0].texture;
+  require(sky != nullptr && course != nullptr && sky != course, "each live item decodes its own job's pixels");
+  require(sky->rgba[0] == 0x88 && sky->rgba[1] == 0x77 && sky->rgba[2] == 0x66 && sky->rgba[3] == 0x55,
+          "the sky item sampled its own job's palette");
+  require(course->rgba[0] == 0x44 && course->rgba[1] == 0x33 && course->rgba[2] == 0x22 && course->rgba[3] == 0x11,
+          "the course item sampled its own job's palette");
+  require(counters.world_live_job == 2 && counters.world_live_job_missing == 0, "both live items counted");
+  require(counters.world_pass_journal_state == 2, "both world items took their GS state from the pass journal");
+  const SampleState &sky_state_out = table.draws[0][0].state;
+  const SampleState &course_state_out = table.draws[1][0].state;
+  require(sky_state_out.from_tap && sky_state_out.world_pass_default, "the sky state is journal state");
+  require(sky_state_out.test_known && sky_state_out.test == 0x0003820Cull, "the sky journal TEST reached the binding");
+  require(sky_state_out.xyoffset_known && sky_state_out.xyoffset == 0x0000720800006C08ull,
+          "the sky journal XYOFFSET reached the binding");
+  require(course_state_out.test_known && course_state_out.test == 0x0005800Eull,
+          "the course journal TEST reached the binding");
+  require(course_state_out.fog_colour == 0x0027272Aull, "the course journal FOGCOL reached the binding");
+  require(!sky_state_out.prim_known && sky_state_out.prim == 0x3Cu, "the PRIM keeps the measured default");
+
+  // An item whose address has no live record is counted and falls back to the base image (which covers nothing here, so
+  // it stays untextured): the honest outcome, never a stale pixel.
+  live_map.erase(0x00002000u);
+  FrameTextureTable missing_table;
+  TextureFrameCounters missing_counters;
+  require(build_frame_texture_table(frame, empty_base, nullptr, {}, options, missing_table, missing_counters, error),
+          "the missing-record table builds");
+  require(missing_counters.world_live_job == 1 && missing_counters.world_live_job_missing == 1,
+          "one live item and one missing item are counted");
+  require(missing_table.draws[1][0].texture == nullptr, "an item without a live record stays untextured");
+}
+
 }  // namespace
 
 int main() {
   try {
     check_record_format();
     check_pass_binding();
+    check_live_binding();
     std::printf("coregs3 pass texture fixture: OK\n");
     return 0;
   } catch (const std::exception &error) {

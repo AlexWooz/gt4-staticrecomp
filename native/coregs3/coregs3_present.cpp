@@ -266,6 +266,46 @@ void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_
   g_counters.items_none.fetch_add(lighting.items_none, std::memory_order_relaxed);
 }
 
+void note_world_frame(const WorldFrameCounters &counts) noexcept {
+  Counters &c = g_counters;
+  const auto add = [](std::atomic<std::uint64_t> &field, std::uint64_t value) {
+    if (value != 0) field.fetch_add(value, std::memory_order_relaxed);
+  };
+  c.world_frames.fetch_add(1, std::memory_order_relaxed);
+  add(c.world_draws, counts.draws);
+  add(c.world_items, counts.items);
+  add(c.world_vertices, counts.vertices);
+  add(c.world_triangles, counts.triangles);
+  add(c.world_atlas_textures, counts.atlas_textures);
+  add(c.world_atlas_refused, counts.atlas_refused);
+  add(c.world_texture_live, counts.texture_live);
+  add(c.world_texture_stale, counts.texture_stale);
+  add(c.world_texture_missing, counts.texture_missing);
+  add(c.world_texture_refused, counts.texture_refused);
+  add(c.world_texture_untextured, counts.texture_untextured);
+  add(c.world_filter_defaulted, counts.filter_defaulted);
+  add(c.world_mip_defaulted, counts.mip_defaulted);
+  add(c.world_refused_draws, counts.refused_draws);
+  add(c.world_excluded_itop, counts.excluded_itop);
+  add(c.world_excluded_shape, counts.excluded_shape);
+  add(c.world_excluded_no_state, counts.excluded_no_state);
+  add(c.world_excluded_mirror, counts.excluded_mirror);
+  add(c.world_excluded_no_position, counts.excluded_no_position);
+  add(c.world_skipped_reflection, counts.skipped_reflection);
+  add(c.world_sky_skipped, counts.sky_skipped);
+  add(c.world_far_skipped, counts.far_skipped);
+  add(c.world_fog_deferred, counts.fog_deferred);
+  add(c.world_blend_deferred, counts.blend_deferred);
+  add(c.world_depth_defaulted, counts.depth_defaulted);
+  add(c.world_alpha_fail_defaulted, counts.alpha_fail_defaulted);
+}
+
+void note_world_tick(std::uint32_t draw_calls, std::uint64_t samples) noexcept {
+  g_counters.world_ticks.fetch_add(1, std::memory_order_relaxed);
+  g_counters.world_draw_calls.fetch_add(draw_calls, std::memory_order_relaxed);
+  g_counters.world_samples.fetch_add(samples, std::memory_order_relaxed);
+}
+
 void note_pass_refused(std::uint32_t draws_refused) noexcept {
   g_counters.passes_refused.fetch_add(1, std::memory_order_relaxed);
   g_counters.draws_refused.fetch_add(draws_refused, std::memory_order_relaxed);

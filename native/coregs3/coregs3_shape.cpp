@@ -793,6 +793,7 @@ bool build_mesh(const std::uint8_t *packets, std::size_t packet_bytes, const Cap
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const CapturedItem &item = draw.items[index];
     if (item.packet_bytes == 0) continue;
+    if (options.item_mask != nullptr && options.item_mask[index] == 0) continue;
     if (item.packet_offset > packet_bytes || item.packet_bytes > packet_bytes - item.packet_offset) {
       error = "item packet range outside the capture block";
       return false;

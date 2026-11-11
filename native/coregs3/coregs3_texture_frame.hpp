@@ -72,6 +72,11 @@ struct TextureFrameCounters {
   // texture state uses the same UV rule, but when several streams tie on the best UV residual (repeated quad UVs are
   // common on the course) it prefers the tied stream whose TEX0 matches the item's record, because a tie carries no
   // other measured signal. A tie with no record-matching stream keeps the first stream and is counted.
+  // TASK-090 live world: the pass journal supplies the world items' TEST/ALPHA/FRAME/ZBUF/XYOFFSET/FOGCOL when no tap
+  // is recorded (GT4_COREGS3=present), and their pixels come from the live per-job store (no .gt4vram file).
+  std::uint64_t world_pass_journal_state = 0;  // world items whose state came from the K7 pass journal
+  std::uint64_t world_live_job = 0;            // world items decoded against their own job's live record
+  std::uint64_t world_live_job_missing = 0;    // world items with no live record for their packet address
   std::uint64_t world_texture_pair_tiebreak = 0;  // texture state from a tied stream that matched the item's record
   std::uint64_t world_texture_pair_ambiguous = 0; // a tie with no record-matching stream: the first stream was used
   std::uint64_t world_texture_pair_none = 0;      // no tapped stream: the record fallback
@@ -136,6 +141,10 @@ struct TextureFrameOptions {
   // TASK-090 pass textures: the per-job records. They take precedence over the draw record and the pass image; an item
   // with no job record falls back to the draw record, then to its pass image, then to the default image.
   const JobTextureImages *job_textures = nullptr;
+  // TASK-090 live world: packet guest address -> the texture record of the VU1 job the item's packet was posted as,
+  // captured live on the GS worker before the job executed (coregs3_live_world.hpp). Takes precedence over
+  // `job_textures` and the draw/pass images; null keeps the offline path exactly as it was.
+  const std::map<std::uint32_t, const VramRecord *> *live_job_textures = nullptr;
   // TASK-090 reflection milestone: bind each body/paint item as its measured environment-map reflection pass (the
   // pinned texgen S,T instead of the model UV), carrying the tapped PRIM 0x7C state and per-vertex fog. False keeps
   // the pre-reflection deferral (the body items stay on the lit colour).

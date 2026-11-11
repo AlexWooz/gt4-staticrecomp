@@ -40,6 +40,41 @@ bool claim_latest(FrameSnapshot &frame);
 
 // Counters. The producer updates published/dropped, the consumer the render figures, and the report reads them from
 // another thread; every field is atomic with relaxed ordering, which is enough for diagnostics.
+// TASK-090 live world: one captured frame's world build, as the present layer measured it. The selection counts name
+// every exclusion the shared rule returned; the texture counts name where each item's pixels came from (its own job's
+// live record, the same material one or more frames older, or nothing) and every refusal. `fog_deferred`,
+// `blend_deferred`, `depth_defaulted` and `alpha_fail_defaulted` are the states this first live world simplifies.
+struct WorldFrameCounters {
+  std::uint32_t draws = 0;             // world draws that produced at least one range
+  std::uint32_t items = 0;             // selected items
+  std::uint64_t vertices = 0;          // world vertices uploaded
+  std::uint64_t triangles = 0;         // triangles in the ranges
+  std::uint32_t atlas_textures = 0;    // unique textures packed into the atlas
+  std::uint32_t atlas_refused = 0;     // items whose texture did not fit the atlas
+  std::uint32_t texture_live = 0;      // items bound to their own job's live record
+  std::uint32_t texture_stale = 0;     // items bound to a record from an earlier frame (counted fallback)
+  std::uint32_t texture_missing = 0;   // items with no live record for their address
+  std::uint32_t texture_refused = 0;   // items whose decode or sampler state was refused
+  std::uint32_t texture_untextured = 0;  // items with no usable texture binding (they keep the vertex colour)
+  std::uint32_t filter_defaulted = 0;    // items whose filter is linear; the first live world samples nearest
+  std::uint32_t mip_defaulted = 0;       // textures decoded at level 0 with TEX1.MXL > 0 (the table's fallback)
+  std::uint32_t refused_draws = 0;     // world draws refused (mesh decode, matrix)
+  std::uint32_t excluded_itop = 0;
+  std::uint32_t excluded_shape = 0;
+  std::uint32_t excluded_no_state = 0;
+  std::uint32_t excluded_mirror = 0;
+  std::uint32_t excluded_no_position = 0;
+  std::uint32_t skipped_reflection = 0;  // the reflection pass (PassId 7) is not drawn in this first live world
+  std::uint32_t sky_skipped = 0;         // sky items not drawn (the GS base keeps the sky and the HUD)
+  std::uint32_t far_skipped = 0;         // far-underlay items not drawn (the base keeps its background; GT4_COREGS3_WORLD_BACKGROUND=1 draws both)
+  std::uint32_t fog_deferred = 0;        // items whose PRIM enables fog (no per-vertex fog without the tap)
+  std::uint32_t blend_deferred = 0;      // items whose PRIM enables blending (drawn opaque)
+  std::uint32_t depth_defaulted = 0;     // items whose TEST is not ZTE + GEQUAL (drawn with the measured rule)
+  std::uint32_t alpha_fail_defaulted = 0;  // items with AFAIL other than KEEP (discard on fail)
+};
+void note_world_frame(const WorldFrameCounters &counts) noexcept;
+void note_world_tick(std::uint32_t draw_calls, std::uint64_t samples) noexcept;
+
 struct Counters {
   std::atomic<std::uint64_t> published{0};       // frames moved into the ring
   std::atomic<std::uint64_t> dropped_publish{0}; // publish found the ring busy (the frame was not published)
@@ -72,6 +107,38 @@ struct Counters {
   std::atomic<std::uint64_t> items_carried{0};
   std::atomic<std::uint64_t> items_uncertain{0};
   std::atomic<std::uint64_t> items_none{0};
+  // TASK-090 live world, summed over the whole run: the frames built, the draw calls and occlusion samples of the
+  // ticks, and the selection/texture/simplification counts of WorldFrameCounters.
+  std::atomic<std::uint64_t> world_frames{0};
+  std::atomic<std::uint64_t> world_ticks{0};
+  std::atomic<std::uint64_t> world_draw_calls{0};
+  std::atomic<std::uint64_t> world_samples{0};
+  std::atomic<std::uint64_t> world_draws{0};
+  std::atomic<std::uint64_t> world_items{0};
+  std::atomic<std::uint64_t> world_vertices{0};
+  std::atomic<std::uint64_t> world_triangles{0};
+  std::atomic<std::uint64_t> world_atlas_textures{0};
+  std::atomic<std::uint64_t> world_atlas_refused{0};
+  std::atomic<std::uint64_t> world_texture_live{0};
+  std::atomic<std::uint64_t> world_texture_stale{0};
+  std::atomic<std::uint64_t> world_texture_missing{0};
+  std::atomic<std::uint64_t> world_texture_refused{0};
+  std::atomic<std::uint64_t> world_texture_untextured{0};
+  std::atomic<std::uint64_t> world_filter_defaulted{0};
+  std::atomic<std::uint64_t> world_mip_defaulted{0};
+  std::atomic<std::uint64_t> world_refused_draws{0};
+  std::atomic<std::uint64_t> world_excluded_itop{0};
+  std::atomic<std::uint64_t> world_excluded_shape{0};
+  std::atomic<std::uint64_t> world_excluded_no_state{0};
+  std::atomic<std::uint64_t> world_excluded_mirror{0};
+  std::atomic<std::uint64_t> world_excluded_no_position{0};
+  std::atomic<std::uint64_t> world_skipped_reflection{0};
+  std::atomic<std::uint64_t> world_sky_skipped{0};
+  std::atomic<std::uint64_t> world_far_skipped{0};
+  std::atomic<std::uint64_t> world_fog_deferred{0};
+  std::atomic<std::uint64_t> world_blend_deferred{0};
+  std::atomic<std::uint64_t> world_depth_defaulted{0};
+  std::atomic<std::uint64_t> world_alpha_fail_defaulted{0};
 };
 
 const Counters &counters() noexcept;

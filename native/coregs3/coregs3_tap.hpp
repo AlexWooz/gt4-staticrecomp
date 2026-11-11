@@ -50,4 +50,13 @@ struct TapCounters {
 };
 const TapCounters &tap_counters() noexcept;
 
+// TASK-090 live world: the VU1 job -> packet-address pairs the live world needs to bind an item to the pixels its own
+// job sampled. The tap file is written only when GT4_COREGS3_TAP is set and it arrives several VBlanks later, so the
+// live path takes the same pair at post time through a sink. The sink is installed by the hooks when
+// GT4_COREGS3=present and the live world is enabled; with no sink the entry point is one atomic load per posted job.
+using LiveJobSourceSink = void (*)(std::uint64_t job, std::uint32_t guest_address) noexcept;
+void set_live_job_source_sink(LiveJobSourceSink sink) noexcept;
+// Called by the MTVU runtime next to `tap_job_source`, whatever the tap switch says.
+void live_job_source(std::uint64_t job, std::uint32_t guest_address) noexcept;
+
 }  // namespace gt4::coregs3

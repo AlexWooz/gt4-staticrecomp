@@ -23,6 +23,7 @@
 
 #include "coregs3_chain.hpp"
 #include "coregs3_gsstream.hpp"
+#include "coregs3_live_world.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_tap.hpp"
 #include "coregs3_texwin.hpp"
@@ -55,6 +56,7 @@ struct State {
   bool in_car_pass = false;
   bool frame_open = false;
   bool all_draws = false;
+  bool world_draws = false;  // live world: store the car pass and the sky/far-underlay/course/reflection passes only
   // Format version 5: the pass the markers currently name and the open journal entry (index into
   // FrameSnapshot::pass_states), kNoRecord when no pass is open.
   std::uint32_t current_pass = kPassUnknown;
@@ -459,6 +461,20 @@ void configure_from_environment() {
   }
 
   g.all_draws = std::getenv("GT4_COREGS3_ALL_DRAWS") != nullptr;
+  // TASK-090 live world: in `present` the renderer draws the captured sky/far-underlay/course passes over the composed
+  // image, so the ring must carry them. The live world reads GT4_COREGS3_LIVE_WORLD (default on); its per-job texture
+  // store is fed by the sink the MTVU runtime forwards every posted item packet to (the same site as the tap's source
+  // record, available at post time instead of several VBlanks later). `shadow` and `off` never reach this branch.
+  if (g.mode == Mode::present) {
+    live_world::configure_from_environment();
+    if (live_world::active()) {
+      set_live_job_source_sink(&live_world::note_job_source);
+      g.world_draws = true;
+      std::fprintf(stderr, "[coregs3] live world: on (captured sky/far-underlay/course passes, per-job textures)\n");
+    } else {
+      std::fprintf(stderr, "[coregs3] live world: off (GT4_COREGS3_LIVE_WORLD=0): the car pass only\n");
+    }
+  }
   configure_tap_from_environment();
   // TASK-090 S1: the `.gt4gs` PATH2/PATH3 stream is a separate sidecar with its own switch and bounds; it is configured
   // only here, so the writer is one branch in builds without the hooks. `GT4_COREGS3=off` never reaches this point.
@@ -663,7 +679,22 @@ void modelview_set(ps2::Cpu &cpu) noexcept {
 void before_shape_call(ps2::Cpu &cpu, std::uint32_t call_site) noexcept {
   if (g.mode == Mode::off) return;
   g.counters.calls += 1;
-  const bool store = g.in_car_pass || g.all_draws;
+  // Format version 5: the pass comes from the active K7 marker; the direct call sites that do not pass through
+  // ModelSet2___render carry their own pass. A call outside any marker stays `unknown` (counted, never guessed).
+  std::uint32_t pass = g.current_pass;
+  if (call_site == kCallSiteEnvMap)
+    pass = kPassEnvMap;
+  else if (call_site == kCallSiteTachometer)
+    pass = kPassPanel;
+  else if (call_site == kCallSiteBillboard && pass == kPassUnknown)
+    pass = kPassBillboards;
+  if (pass >= kPassCount) pass = kPassUnknown;
+  // TASK-090 live world: `present` needs the car pass plus the world passes (sky, far underlay, course; the reflection
+  // pass joins when it is drawn), not every shape call of a menu: an unmarked call is one of ~26 per menu frame and a
+  // stored CapturedDraw is ~50 KB, so storing everything costs the guest thread without helping the picture.
+  const bool world_pass = pass == kPassSky || pass == kPassFarUnderlay || pass == kPassCourse ||
+                          pass == kPassReflection;
+  const bool store = g.in_car_pass || g.all_draws || (g.world_draws && world_pass);
   if (!store) g.counters.outside_pass += 1;
   // Every hooked call writes a PGL output chain, even outside the car pass. Its uploads are part of the VU1's carried
   // TOPS+0xC9 state, so the post hook walks it whatever the pass (the draw pointer is null for an un-stored call).
@@ -679,16 +710,6 @@ void before_shape_call(ps2::Cpu &cpu, std::uint32_t call_site) noexcept {
     return;
   }
 
-  // Format version 5: the pass comes from the active K7 marker; the direct call sites that do not pass through
-  // ModelSet2___render carry their own pass. A call outside any marker stays `unknown` (counted, never guessed).
-  std::uint32_t pass = g.current_pass;
-  if (call_site == kCallSiteEnvMap)
-    pass = kPassEnvMap;
-  else if (call_site == kCallSiteTachometer)
-    pass = kPassPanel;
-  else if (call_site == kCallSiteBillboard && pass == kPassUnknown)
-    pass = kPassBillboards;
-  if (pass >= kPassCount) pass = kPassUnknown;
   CapturedDraw draw;
   draw.sequence = g.sequence++;
   draw.pass = pass;
@@ -965,6 +986,21 @@ void print_report(std::FILE *out) noexcept {
       std::fprintf(out, "[coregs3] pass %s draws %llu items %llu\n", pass_name(pass),
                    static_cast<unsigned long long>(c.pass_draws[pass]),
                    static_cast<unsigned long long>(c.pass_items[pass]));
+  // TASK-090 live world: the in-memory per-job texture store. Every field is atomic; the report thread reads them.
+  const live_world::Counters &lw = live_world::counters();
+  if (lw.sources.load(std::memory_order_relaxed) != 0 || lw.job_records.load(std::memory_order_relaxed) != 0)
+    std::fprintf(out,
+                 "[coregs3] live world store sources %llu dropped_sources %llu records %llu unlinked %llu refused "
+                 "%llu pruned %llu bytes %llu lookups %llu missing %llu\n",
+                 static_cast<unsigned long long>(lw.sources.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.sources_dropped.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.job_records.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.jobs_unlinked.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.jobs_refused.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.records_pruned.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.bytes_held.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.lookups.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(lw.lookup_missing.load(std::memory_order_relaxed)));
   const TapCounters &tap = tap_counters();
   if (tap.records != 0)
     std::fprintf(out, "[coregs3] tap records %llu bytes %llu refused %llu\n",
@@ -1045,6 +1081,44 @@ void print_report(std::FILE *out) noexcept {
                  static_cast<unsigned long long>(load(p.vertices_unlit)),
                  static_cast<unsigned long long>(load(p.triangles)),
                  static_cast<unsigned long long>(load(p.last_vblank)));
+  if (load(p.world_frames) != 0)
+    std::fprintf(out,
+                 "[coregs3] live world frames %llu items %llu vertices %llu triangles %llu draws %llu ticks %llu "
+                 "draw_calls %llu samples %llu atlas_textures %llu atlas_refused %llu texture_live %llu "
+                 "texture_stale %llu texture_missing %llu texture_refused %llu refused_draws %llu excluded_itop %llu "
+                 "excluded_shape %llu excluded_no_state %llu excluded_mirror %llu excluded_no_position %llu "
+                 "skipped_reflection %llu sky_skipped %llu far_skipped %llu fog_deferred %llu blend_deferred %llu depth_defaulted %llu "
+                 "alpha_fail_defaulted %llu texture_untextured %llu filter_defaulted %llu mip_defaulted %llu\n",
+                 static_cast<unsigned long long>(load(p.world_frames)),
+                 static_cast<unsigned long long>(load(p.world_items)),
+                 static_cast<unsigned long long>(load(p.world_vertices)),
+                 static_cast<unsigned long long>(load(p.world_triangles)),
+                 static_cast<unsigned long long>(load(p.world_draws)),
+                 static_cast<unsigned long long>(load(p.world_ticks)),
+                 static_cast<unsigned long long>(load(p.world_draw_calls)),
+                 static_cast<unsigned long long>(load(p.world_samples)),
+                 static_cast<unsigned long long>(load(p.world_atlas_textures)),
+                 static_cast<unsigned long long>(load(p.world_atlas_refused)),
+                 static_cast<unsigned long long>(load(p.world_texture_live)),
+                 static_cast<unsigned long long>(load(p.world_texture_stale)),
+                 static_cast<unsigned long long>(load(p.world_texture_missing)),
+                 static_cast<unsigned long long>(load(p.world_texture_refused)),
+                 static_cast<unsigned long long>(load(p.world_refused_draws)),
+                 static_cast<unsigned long long>(load(p.world_excluded_itop)),
+                 static_cast<unsigned long long>(load(p.world_excluded_shape)),
+                 static_cast<unsigned long long>(load(p.world_excluded_no_state)),
+                 static_cast<unsigned long long>(load(p.world_excluded_mirror)),
+                 static_cast<unsigned long long>(load(p.world_excluded_no_position)),
+                 static_cast<unsigned long long>(load(p.world_skipped_reflection)),
+                 static_cast<unsigned long long>(load(p.world_sky_skipped)),
+                 static_cast<unsigned long long>(load(p.world_far_skipped)),
+                 static_cast<unsigned long long>(load(p.world_fog_deferred)),
+                 static_cast<unsigned long long>(load(p.world_blend_deferred)),
+                 static_cast<unsigned long long>(load(p.world_depth_defaulted)),
+                 static_cast<unsigned long long>(load(p.world_alpha_fail_defaulted)),
+                 static_cast<unsigned long long>(load(p.world_texture_untextured)),
+                 static_cast<unsigned long long>(load(p.world_filter_defaulted)),
+                 static_cast<unsigned long long>(load(p.world_mip_defaulted)));
   // Per-family and per-status lighting detail of the live layer (coregs3_lighting.hpp programs). Cumulative since the
   // process start; a draw may appear in more than one family because the capture mixes programs inside a draw.
   for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {

@@ -255,6 +255,10 @@ struct MeshOptions {
   // interpretation (integer_16 / integer_32 / float_32). False keeps the original car-pass path byte for byte: the car
   // fixtures and every car capture must decode exactly as before this task.
   bool world_channels = false;
+  // TASK-090 live world: an optional per-item mask (`draw.item_count` bytes, 1 = decode the item). The live selection
+  // excludes items by the tool's rule without copying the whole draw; a masked-out item is skipped exactly like one
+  // whose packet the tool zeroed. Null decodes every item, which keeps every existing caller byte-identical.
+  const std::uint8_t *item_mask = nullptr;
 };
 
 // Builds one mesh from the draw's item packets. Items are concatenated in item order, which is the order the game issues

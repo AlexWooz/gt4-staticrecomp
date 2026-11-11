@@ -646,6 +646,7 @@ void post_vif_packet(const std::uint8_t *data, std::uint32_t qwc) {
     note_table_copy(r, data, bytes, 0, r.batch_patches);
     post_table_patches(r, job, r.batch_patches);
     gt4::coregs3::tap_job_source(job, static_cast<std::uint32_t>(data - ps2::g_ram), qwc);
+    gt4::coregs3::live_job_source(job, static_cast<std::uint32_t>(data - ps2::g_ram));
     r.journal->post_job(RecordKind::VifPacket, job, data, bytes);
     r.journal->drain(false);
     rethrow_worker_error();
@@ -668,7 +669,10 @@ void flush_vif_chain() {
   gt4::perf::frame_counters().vif_jobs += 1;
   gt4::perf::frame_counters().vif_job_bytes += r.vif_batch.size();
   post_table_patches(r, job, r.batch_patches);
-  for (const std::uint32_t source : r.batch_sources) gt4::coregs3::tap_job_source(job, source, 0);
+  for (const std::uint32_t source : r.batch_sources) {
+    gt4::coregs3::tap_job_source(job, source, 0);
+    gt4::coregs3::live_job_source(job, source);
+  }
   r.batch_sources.clear();
   r.journal->post_job(RecordKind::VifBatch, job, r.vif_batch.payload(), r.vif_batch.size());
   r.vif_batch.reset();

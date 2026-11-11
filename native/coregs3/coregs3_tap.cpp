@@ -25,6 +25,7 @@ struct TapState {
 };
 
 TapState g_tap;
+std::atomic<LiveJobSourceSink> g_live_source_sink{nullptr};
 
 void put_u32(std::vector<std::uint8_t> &out, std::uint32_t value) {
   for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFFu));
@@ -128,6 +129,15 @@ void tap_job_source(std::uint64_t job, std::uint32_t guest_address, std::uint32_
 }
 
 void tap_at_vblank(std::uint64_t vblank) noexcept { g_tap.vblank.store(vblank, std::memory_order_relaxed); }
+
+void set_live_job_source_sink(LiveJobSourceSink sink) noexcept {
+  g_live_source_sink.store(sink, std::memory_order_release);
+}
+
+void live_job_source(std::uint64_t job, std::uint32_t guest_address) noexcept {
+  const LiveJobSourceSink sink = g_live_source_sink.load(std::memory_order_acquire);
+  if (sink != nullptr) sink(job, guest_address);
+}
 
 void tap_shutdown() {
   std::lock_guard<std::mutex> lock(g_tap.mutex);
