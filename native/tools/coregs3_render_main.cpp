@@ -33,7 +33,7 @@
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --world --gs <capture.gt4gs> --tap <capture.gt4tap>
 //                         --vram <capture.gt4vram> --hud [--hud-element speed] [--hud-mask <pgm>]
-//                         [--hud-texture-dump <dir>] --width 640 --height 448
+//                         [--hud-font-atlas <gt4f>] [--hud-texture-dump <dir>] --width 640 --height 448
 //       TASK-090 S3: the first native HUD layer. Draws the requested element (the measured B-Spec-style speed plate and
 //       its digits) over the world picture with the captured GS state (FRAME/SCISSOR/XYOFFSET/TEST/ALPHA/PRIM/TEX0/TEX1/
 //       CLAMP), the captured T4/T8 textures with their CT32 CSM1 palettes and the captured placement. --no-hud is the
@@ -509,6 +509,7 @@ int main(int argc, char **argv) {
   const char *hud_element_text = "speed";
   const char *hud_mask_path = nullptr;
   const char *hud_texture_dump_dir = nullptr;
+  const char *hud_font_atlas_path = nullptr;
   const char *hud_vram_mode = "stream";
   const char *hud_vram_file = nullptr;
   const char *hud_dump_page = nullptr;
@@ -549,6 +550,7 @@ int main(int argc, char **argv) {
     else if (argument == "--no-hud") hud = false;
     else if (argument == "--hud-element" && index + 1 < argc) hud_element_text = argv[++index];
     else if (argument == "--hud-mask" && index + 1 < argc) hud_mask_path = argv[++index];
+    else if (argument == "--hud-font-atlas" && index + 1 < argc) hud_font_atlas_path = argv[++index];
     else if (argument == "--hud-texture-dump" && index + 1 < argc) hud_texture_dump_dir = argv[++index];
     else if (argument == "--hud-vram" && index + 1 < argc) hud_vram_mode = argv[++index];
     else if (argument == "--hud-vram-file" && index + 1 < argc) hud_vram_file = argv[++index];
@@ -1726,7 +1728,61 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "gt4_coregs3_render: unknown --hud-vram %s (stream|sidecar)\n", hud_vram_mode);
       return 1;
     }
+    // TASK-090 HUD font: the captured stream carries the font page's palette bundle but not the glyph texels (the
+    // game uploads the page before the captured window). The atlas sidecar supplies the page's 8192 bytes; the apply
+    // preserves the frame's captured 16-entry CSM1 bank at the draw's CBP, so the palette stays the frame's own.
+    bool font_atlas_applied = false;
+    std::uint32_t applied_font_tbp0 = 0;
+    if (hud_font_atlas_path != nullptr) {
+      std::vector<std::uint8_t> atlas_data;
+      if (!read_file(hud_font_atlas_path, atlas_data)) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot read %s\n", hud_font_atlas_path);
+        return 1;
+      }
+      HudFontAtlas font_atlas;
+      if (!parse_hud_font_atlas(atlas_data, font_atlas, error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: font atlas refused: %s\n", error.c_str());
+        return 1;
+      }
+      std::uint32_t palette_cbp = 0;
+      bool have_palette = false;
+      bool tbp_mismatch = false;
+      for (const HudDraw &draw : panel.draws) {
+        if (draw.state.tex0_psm() != 0x14u) continue;
+        if (draw.state.tex0_tbp0() != font_atlas.tbp0) {
+          tbp_mismatch = true;
+          continue;
+        }
+        palette_cbp = draw.state.tex0_cbp();
+        have_palette = true;
+        break;
+      }
+      char line[512];
+      if (tbp_mismatch && !have_palette) {
+        std::snprintf(line, sizeof line,
+                      "HUD font atlas: %s refused: TBP0 0x%04X does not match the panel's T4 draws\n",
+                      hud_font_atlas_path, font_atlas.tbp0);
+        hud_source_line += line;
+      } else if (!have_palette) {
+        std::snprintf(line, sizeof line, "HUD font atlas: %s not applied: the panel has no T4 draw\n",
+                      hud_font_atlas_path);
+        hud_source_line += line;
+      } else if (!apply_hud_font_atlas(font_atlas, hud_slm, palette_cbp, error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: font atlas refused: %s\n", error.c_str());
+        return 1;
+      } else {
+        std::snprintf(line, sizeof line,
+                      "HUD font atlas: %s, T4 page 0x%04X (TBW %u, 128x64, CLAMP 0x%016llX), 32 blocks applied, "
+                      "palette bank 0x%04X preserved (64 bytes)\n",
+                      hud_font_atlas_path, font_atlas.tbp0, font_atlas.tbw,
+                      static_cast<unsigned long long>(font_atlas.clamp), palette_cbp);
+        hud_source_line += line;
+        font_atlas_applied = true;
+        applied_font_tbp0 = font_atlas.tbp0;
+      }
+    }
     HudTextureCache hud_textures(hud_slm);
+    if (font_atlas_applied) hud_textures.set_font_atlas_page(applied_font_tbp0);
     if (hud_dump_page != nullptr) {
       // Diagnostic: decode one page of the reconstructed local memory through the measured record decoder.
       unsigned tbp = 0, w = 128, h = 64, cbp = 0, psm = 0x14, tw = 7, th = 6, csa = 0;
