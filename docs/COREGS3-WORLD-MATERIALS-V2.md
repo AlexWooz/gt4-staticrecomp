@@ -4,6 +4,34 @@ Branch `task/090-world-materials-v2`, based on `task/090-coregs3` at `008a71c8` 
 study: no `native/` source change. Every number below was reproduced in this worktree with the branch's own tools
 (`gt4_coregs3_render`, `gt4_coregs3_gs`, `gt4_coregs3_tap`) built from `scripts/coregs2_bench/game/configure.cmd`.
 
+## Status (2026-11-10, branch `task/090-post-chain`): fixes 1 and 2 applied; the post chain explains the level
+
+The follow-up round applied the study's fixes 1 and 2 (worktree `O:/Antigavity/gt4-wt-090-post-chain`, based on this
+branch at `0a9a7e38`; method in [COREGS3-HOOKS](COREGS3-HOOKS.md) §29):
+
+- **Fix 1 done (C for the conversion, H for the bias).** The reference is CT16 (1.0000 of the clean-mask values are
+  divisible by 8, max 248 - reproduced). The present blit's captured **DTHE = 1, DIMX = 0x0001044501100554,
+  COLCLAMP = 1** are now decoded from the stream, and the offline present models the CT16 conversion with the captured
+  dither at native 3x cells (CoreGS 2.0's own rule). The metrics script reports the **raw** and the **+4-corrected**
+  reference in every run, in the text and the JSON; the raw baseline is unchanged.
+- **Fix 2 done (C).** The whole PATH2 full-screen chain is classified and applied in stream order: 11 full-screen
+  batches per frame, **11/11 accounted for, 0 unrecognised** (4 pre-world clears, the frame sample/depth clear, the
+  pre-reflection alpha clear, the composite, FIX 127, FIX 255, the CT16 present, the display alpha clear). The frame
+  sample is **not** a colour transform: FBMSK 0xFFFFFFFF masks every colour lane and ZBUF.ZMSK 0 with ZTST GEQUAL and
+  z=1 writes the depth buffer, i.e. it is the frame's depth clear (C).
+- **The chain explains the level (C):** world luma 18.95 -> 34.60 pre-present -> 29.85 after the CT16 present, against
+  the raw reference 26.69 and the +4-corrected 30.69. Ratio 1.409 raw (1.620 corrected) becomes **0.894 raw** (1.028
+  corrected); per-page median ratio **0.943** raw (0x2FC0 0.988, 0x3EE1 0.974, 0x37D0 0.968, 0x3E26 0.966,
+  0x36D0 0.943).
+- **The residual is structural, not a level (C for the numbers, H for the stage):** the pooled fit is now
+  `ref = 0.3727*present + 15.566` (corr 0.492); the correlated pages' slopes are 0.60-0.90, the road page's
+  correlation stays 0.099 with a nearly flat reference (`0.123*w + 20.87`), and the raw reference's darkest decile
+  (mean 4.09) maps to 16.56 (the pre-chain world was already 11.98). This points at fixes 3 and 4 (the material
+  palette/texel path and the mip/LOD path), **not** at the post chain: the two multiplies are real, captured, and
+  account for the level; the material path stays 10-40% too contrasty and lifts the black floor.
+
+The original study text follows unchanged; the "Fix list" entries 1 and 2 are marked done below.
+
 ## Question
 
 The offline world render is darker than the CoreGS 2.0 reference frame. Frame 0 (VBlank 7398, 3x, reference
@@ -222,6 +250,13 @@ The two candidates left, with their measurements:
 
 ### 9. Uncaptured PATH2 full-screen ops (context, H)
 
+**Update (branch `task/090-post-chain`): the chain is captured, decoded and applied; the list below is the study's
+original reading. The follow-up round measured the frame sample as the frame's depth clear (FBMSK 0xFFFFFFFF masks
+every colour lane; ZBUF.ZMSK 0 with z=1 writes the depth buffer), and applied the two multiplies and the CT16 present
+over the world image: the level is explained (ratio 0.894 raw / 1.028 corrected) and the residual is structural
+(fit 0.3727*present + 15.566, per-page slopes 0.60-0.90, the road correlation 0.099). See
+[COREGS3-HOOKS](COREGS3-HOOKS.md) §29.**
+
 The S2 census lists **11 full-screen batches per frame**; the S2 applied only two of them (the wet composite and the
 two multiplies, the latter diagnostically). The other full-screen ops in the stream (vblank 7399 = scene 7398) are:
 
@@ -243,7 +278,7 @@ PATH1/PATH2 interleaving, which the two sidecars do not carry; this is the top o
 | # | cause | measured effect | confidence |
 |---|---|---|---|
 | 1 | Fog blend toward FOGCOL at a per-pixel f | refuted as the mechanism: tapped F 247.8 mean (38.4% <255), per-channel f 0.57/0.66/0.73 with median spread 0.275, f anti-correlates with F (0.75 at F=255 vs 0.38 at F<230), >1 slopes within high-correlation pages; the whole-mask fit is a mixture of classes with slopes 0.31..1.57 | **C** (model refuted); the fit's numerical coincidence with a 0.63 blend is H |
-| 2 | Reference CT16 5-bit scanout | every reference value divisible by 8 (1.0000), max 248; dump ~4 levels dark; corrected reference luma 30.69, ratio **1.62** (R 1.64 / G 1.61 / B 1.59) | **C** for the quantisation and the direction; H for the exact +3.5..4.5 bias |
+| 2 | Reference CT16 5-bit scanout | every reference value divisible by 8 (1.0000), max 248; dump ~4 levels dark; corrected reference luma 30.69, ratio **1.62** (R 1.64 / G 1.61 / B 1.59); the present's DTHE = 1 / DIMX = 0x0001044501100554 / COLCLAMP = 1 are captured and modelled (`task/090-post-chain`) | **C** for the quantisation and the direction; H for the exact +3.5..4.5 bias; C for the captured dither |
 | 3 | Global material gain (~1.6x) | per-page corrected ratios 1.69 median, sigma 0.25; per-page affine RMSE 13.82 vs identity 18.83/20.80; the fogged and blended classes fit ref ~ 1.5*world; the input path is exact (indices 1.000, vertex colours 48/48, blend /128) | **C** that the residual is a per-material level difference in the material path; the *stage* is **H** |
 | 4 | Per-page content/colour (low correlation pages) | 0x36D0 corr 0.111, 0x37D0 0.161, 0x3D6A 0.162, 0x3BF6 -0.113 (page mean 0.94, content uncorrelated); high-correlation pages 0x3D36 0.908, 0x37B5 0.918, 0x3CAE 0.860 prove the pattern can match | C for the correlation spread; H for the cause (palette/CLUT vs LOD vs sampling) |
 | 5 | Texture index content (per-job binding) | identical to CoreGS 2.0's own dump, agreement 1.000 | **C** (not a cause) |
@@ -252,7 +287,7 @@ PATH1/PATH2 interleaving, which the two sidecars do not carry; this is the top o
 | 8 | Coverage: sky, underlay, car spill, HUD | course owns 99.996% of the mask (sky 70 px, underlay 0); car ring 2-6 px is 6,012 px with an 8.73 gap; HUD 29.4% of the frame is excluded | **C** (not a cause) |
 | 9 | S2 wet composite and frame-0 caveat | sphere source fully populated and identical at vblanks 7397-7404 (mean 109.13, 16,261/16,384 non-zero); composite changes 70/77/62/78/71 px on frames 0-4 (~0.001 luma), gated by destination alpha | **C** (not a cause) |
 | 10 | Captured post multiplies | both apply 1.976x; the diagnostic gives luma 34.62 (12.8% over the corrected reference) and fit 0.3733*w+13.763, worse than the baseline | **C** (not the whole cause); a partial/single application is H |
-| 11 | Uncapped PATH2 full-screen chain | 11 full-screen batches/frame; the frame sample's (128,77,0,128) modulation is the only unapplied colour transform; the order vs PATH1 is unknown | **H / Unknown** |
+| 11 | Uncapped PATH2 full-screen chain | 11 full-screen batches/frame, all classified and applied (`task/090-post-chain`): 4 pre-world clears, the frame sample = the depth clear (FBMSK 0xFFFFFFFF, ZBUF.ZMSK 0, no colour), the reflection alpha clear, the composite, FIX 127, FIX 255, the CT16 present (DTHE 1, DIMX 0x0001044501100554), the display alpha clear; the level ratio 1.409/1.620 becomes 0.894 raw / 1.028 corrected; the residual is structural (fit 0.3727w + 15.566, road corr 0.099) | **C** |
 | 12 | Palette/CLUT contents and LOD | palette at CBP 0x368F group 0 (CSA 0, CLD 0/TEX2 load), data present; reference implied texel mean 1.43x ours; 20 road items bind MXL 1/MMIN 4 and are sampled level 0 | **H** (named, not proven) |
 
 ## Fix list (ordered, with gates)
@@ -263,10 +298,19 @@ PATH1/PATH2 interleaving, which the two sidecars do not carry; this is the top o
    quantisation is proven (all values multiples of 8) and the bias range is stated. This is a *measurement* fix, not a
    renderer change, and it changes every future fidelity number (identity PSNR 22.63 -> 21.77 raw->corrected; per-page
    affine 25.32).
+   **DONE (`task/090-post-chain`, C/H):** the present's captured DTHE = 1 and DIMX = 0x0001044501100554 are decoded and
+   the offline present models the CT16 conversion with the captured dither; the metrics script reports `raw dump` and
+   `dump + 4 (CT16)` in the text and the JSON; the raw baseline is unchanged. The final stage is compared raw (both
+   sides CT16).
 2. **Model the whole PATH2 full-screen chain, not only the composite and the multiplies.** Apply the fills, the
    alpha clears, the frame sample with its (128,77,0,128) modulation and the present in the measured stream order, and
    measure each op's coverage and luma. Gate: every full-screen batch is applied or excluded with a reason; the A/B
    shows which op moves the mean; no op is left in "recognised but not applied".
+   **DONE (`task/090-post-chain`, C):** 11/11 full-screen batches classified and accounted for, 0 unrecognised; the
+   frame sample is the depth clear (writes no colour); the composite + FIX 127 + FIX 255 + the CT16 present are applied
+   in stream order. The level goes from ratio 1.409 raw (1.620 corrected) to 0.894 raw (1.028 corrected); per-page
+   median 0.943 raw. The residual is structural (fit 0.3727*present + 15.566, correlated-page slopes 0.60-0.90, road
+   corr 0.099, the raw reference's darkest decile 4.09 vs our 16.56), so fixes 3 and 4 are the remaining work.
 3. **Resolve the ~1.6x material gain at the fragment level.** Register the UV/strip reconstruction with the renderer
    (fix the Python triangle/UV reconstruction or add a per-pixel sample dump to the tool), then recover the reference's
    palette per texel index. Gate: the road's effective texel ratio is 1.0 +/- 0.1, the per-page corrected ratio spread

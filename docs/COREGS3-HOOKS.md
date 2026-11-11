@@ -1934,3 +1934,122 @@ and reports, composite and changed masks, metrics JSON, gate logs). Limits: the 
 reconstruction of the captured clear plus the captured reflection pass against the offline depth (188 fragments); it is
 not a GS readback, and the real GS depth buffer could differ. The source page is captured, not inferred. The composite
 is drawn with the measured sampler/sprite rules; no other 2D primitive class is implemented (the HUD is S3).
+
+## 29. Round 28 (2026-11-10, branch `task/090-post-chain`): the whole PATH2 full-screen chain, the CT16 present and the residual restated (TASK-090 post layer)
+
+One branch from `task/090-coregs3` at `0a9a7e38` (the S2 merge plus the world-materials v2 study). One problem: apply
+the **whole** captured PATH2 full-screen chain in stream order over the offline world frame, model the CT16 present
+that produces the reference scanout, and restate the image comparison against the raw and the CT16-corrected reference.
+These are the world-materials v2 study's fixes 1 and 2 ([COREGS3-WORLD-MATERIALS-V2](COREGS3-WORLD-MATERIALS-V2.md)).
+
+### 29.1 The chain census: eleven batches, every one applied or excluded with a reason (C)
+
+The decoder now carries TEX2, DTHE, DIMX and COLCLAMP and the per-vertex RGBAQ, and `find_post_chain`
+(`native/coregs3/coregs3_gsdecode.cpp`) classifies **every** full-screen batch of the attributed stream by exact state
+signature, in sequence order. Scene frame 0 (VBlank 7398, stream 7399): **11 full-screen batches, 0 unrecognised**,
+across every captured stream 7398-7405 (the same eleven every frame).
+
+| seq | op | target / state | measured effect |
+|---|---|---|---|
+| 672 | pre-world RGB clear | FBP 210/FBW 10/CT32, FBMSK 0, TEST 0x30000, RGBA (0,0,0,0), 10 strips | frame starts black, alpha 0; the world image is rendered into it, so it is accounted for, not re-applied |
+| 675 | pre-world alpha clear | same, FBMSK 0x00FFFFFF | alpha 0, RGB kept |
+| 678, 681 | pre-world TEST clear | same, FBMSK 0, TEST 0x32001 (ATE + ZTST GEQUAL) | two more black clears under the depth-tested signature |
+| 684 | **frame sample / depth clear** | PRIM 0x15E, page 210 CT32 1024x512 region-clamped 0..639 x 0..447, TEX1 nearest, vertex colour **(128,77,0,128)**, ALPHA 0x44 normal blend, TEST 0x3800F (ATE ALWAYS, ZTST GEQUAL), FRAME FBMSK **0xFFFFFFFF**, ZBUF **ZMSK 0** | **writes no colour**: every colour lane is masked; with ZMSK 0 and z=1 it writes the frame's depth buffer (the depth clear). 20 sprites, 2,573,956 sampled pixels, 0 colour pixels written. **It is not a colour grade.** |
+| 920 | reflection alpha clear | FBP 210, FBMSK 0x00FFFFFF, TEST 0 | applied inside the world render immediately before the PassId 7 draws (`clear_alpha_before_wet_reflection`); the world image's alpha is the reflection mask |
+| 934 | wet composite | page 394 sampled, ALPHA 0x58 `(Cs - 0) * Ad + Cd` | 20 sprites, 2,573,956 px covered, **70 px changed** (the horizon band, outside the compared mask), added luma 2654 |
+| 936 | post multiply FIX 127 | full-screen sprite, ALPHA 0xA9 `(Cd - 0) * FIX + 0` | 2,573,956 px written |
+| 964 | post multiply FIX 255 | same, FIX 255 | 2,573,956 px written |
+| 1094 | **CT16 present** | page 210 -> FBP **140**/FBW 10/**CT16**, vertex (128,128,128,128), TEST 0x3820C, FBMSK 0, ZBUF ZMSK 1 | the scanout image: DTHE **1**, DIMX **0x0001044501100554**, COLCLAMP **1**; 2,573,956 px written |
+| 1207 | display alpha clear | FBP 140 CT16, FBMSK 0x00FFFFFF, TEST 0 | writes only the display buffer's 1-bit alpha; 0 RGB px changed |
+
+The present target alternates between the two CT16 display buffers: streams 7399/7401/... write FBP 140, streams
+7400/7402/... write FBP 0. Reference `frame_07400` is the scanout at VBlank 7400, i.e. the display buffer presented in
+window 7399, which is the **FBP 140** present of stream 7399 (the V -> V-1 attribution).
+
+### 29.2 The frame sample is the depth clear, not a colour transform (C)
+
+The study read the frame sample's (128,77,0,128) vertex colour as a tint. The captured registers say otherwise:
+`FRAME = 0xFFFFFFFF000A00D2` (FBMSK all ones) masks every colour and alpha lane, so the modulated-and-blended colour is
+discarded; `ZBUF = 0x0000000001000046` has ZMSK 0, `TEST = 0x3800F` has ZTE 1/ZTST GEQUAL, and the 20 full-screen
+sprites carry z = 1. The draw writes the Z16 depth buffer at page 70 for the whole screen, i.e. it is the frame's depth
+clear; the world render's own initial depth represents the same state. It changes no colour pixel, so the (128,77,0)
+modulation is **not** part of the picture. (The two pre-world clears also write depth 0 under the same ZTE/GEQUAL state.)
+
+### 29.3 The CT16 present and the CT16 correction (C for the conversion, H for the bias)
+
+The present samples page 210 1:1 (TEX0 `0x0007140668029A40`: TBP0 0x1A40, CT32, TW 10, TH 9, TCC 1, TFX 0; TEX1 0 =
+nearest; CLAMP region 0..639 x 0..447), modulates by the neutral (128,128,128,128), writes no blend, converts to CT16
+with the captured DTHE/DIMX and COLCLAMP and expands `v5 << 3`. DIMX is sixteen signed 3-bit entries; with
+`GT4_HW_DITHER=native` (the reference run's option) CoreGS 2.0 divides the output pixel by the 3x scale before the 4x4
+phase (`native/hw_gs/shaders/core2_fill.comp`), which the offline present reproduces.
+
+The reference dump is that CT16 scanout: **1.0000** of its clean-mask values are divisible by 8 and its maximum is
+**248** (reproduced). The study's 3.5-4.5-level bias for the *pre-present* stages is therefore a measurement choice
+(+4 used, label H); the **final** stage is compared against the **raw** dump because both are the same CT16
+quantisation. `scripts/coregs3_bench/gs_composite_metrics.py` now reports both in every run (JSON: `raw dump` and
+`dump + 4 (CT16)`), so the raw baseline is never silently replaced.
+
+### 29.4 Offline application (C)
+
+`gt4_coregs3_render --gs <capture>` now applies the chain in stream order: the four pre-world clears and the depth
+clear are accounted for inside the world render (the renderer starts from the same black frame and its own depth); the
+reflection alpha clear is applied at its stream position by the world renderer; the composite, FIX 127, FIX 255 and the
+CT16 present are applied over the world image in sequence order. `--chain-dump <dir>` writes the image after every
+stage, the report prints a line per batch, and the tool's `--out` is the CT16 display buffer (the scanout image).
+`--no-post-chain` turns the whole chain off; `--no-wet-composite` skips only the composite. `gt4_coregs3_gs --census`
+prints the chain per scene frame and the present's DTHE/DIMX/TEX0 words, and the JSON carries every entry.
+
+### 29.5 Measurement (C for the numbers; the interpretation follows)
+
+Scene frame 0, 3x, the morph-v6 capture + the S1 `.gt4gs`, the pass-textures mask, the M1 clean mask (1,780,790 px),
+reference `frame_07400`. `--chain-dump` stages; per stage the whole mask and page `0x36D0`:
+
+| stage | luma | PSNR raw / +4 | SSIM raw / +4 | pct_bad raw / +4 | mean abs raw / +4 | fit raw / +4 (ref = a*world + b) |
+|---|---|---|---|---|---|---|
+| world (no chain) | 18.95 | 22.35 / 21.55 | 0.6508 / 0.6293 | 64.8% / 80.3% | 14.84 / 17.69 | 0.6354w + 14.649 / +18.649 |
+| + wet composite | 18.95 | 22.35 / 21.55 | 0.6508 / 0.6293 | 64.8% / 80.3% | 14.84 / 17.69 | 0.6354w + 14.649 / +18.649 |
+| + multiply FIX 127 | 17.94 | 22.19 / 21.34 | 0.6395 / 0.6113 | 70.3% / 83.2% | 15.48 / 18.48 | 0.6403w + 15.199 / +19.199 |
+| + multiply FIX 255 | 34.60 | 20.41 / 20.78 | 0.6108 / 0.6394 | 56.5% / 43.9% | 15.00 / 13.26 | 0.3744w + 13.734 / +17.734 |
+| + CT16 present (final) | **29.85** | **20.78 / 20.86** | **0.5880 / 0.5902** | **27.7% / 54.0%** | **13.47 / 13.75** | **0.3727w + 15.566 / +19.566** |
+
+Page `0x36D0` (955,413 px): world luma 16.61, PSNR 25.17 raw / 23.80 +4; after FIX 255 luma 30.22, PSNR 24.53 / 25.20;
+after the present luma **25.45**, PSNR **25.03 raw** / 24.92 +4, fit `0.1234*w + 20.870`.
+
+- **The chain explains the level.** The world/reference luma ratio is 1.409 raw (1.620 corrected); the final CT16
+  display is 29.85 against the raw reference's 26.69 (ratio **0.894**) and against the +4-corrected 30.69 (ratio
+  **1.028**). The pre-present frame (34.60) is 1.127x the +4-corrected reference. Per page (raw reference / present):
+  median **0.943**; 0x2FC0 0.988, 0x3EE1 0.974, 0x37D0 0.968, 0x3E26 0.966, 0x36D0 0.943; the outliers are 0x3E47
+  **0.689**, 0x37B5 **0.795** and 0x3BF6 **0.466** (the known content outlier).
+- **The residual is structural, not a level.** The pooled fit slope falls to **0.373** (corr 0.492): the reference's
+  content is now flatter than ours. Within the correlated pages the slopes are 0.60-0.90 (0x3D36 0.856 corr 0.908,
+  0x3E26 0.890 corr 0.731, 0x3DCE 0.744, 0x37B5 0.734, 0x2FC0 0.498), i.e. our contrast is 10-40% high. The road page
+  still does not register (corr **0.099**, fit `0.123*w + 20.87`): the reference's road is nearly flat where our
+  level-0 texture has detail, which is the study's **fix 4** (MXL 1/MMIN 4 sampled at level 0).
+- **The black floor is lifted before the chain.** Deciles of the raw reference: its darkest decile (mean 4.09) maps to
+  our present **16.56** (the pre-chain world was already 11.98 there); the mid deciles (23-32) map to 0.94-1.01; the
+  brightest decile (mean 70.36) maps to 66.49. The lift is therefore in the material/lighting path (fix 3), not the post
+  chain.
+- The CT16 quantisation costs the frame 4.75 luma (34.60 -> 29.85) through 5-bit truncation and the captured dither
+  (DIMX mean entry -1.125); the reference carries the same quantisation, which is why the final stage is compared raw.
+- PSNR/SSIM move slightly down while pct_bad and the mean absolute error improve because the chain reaches the level
+  but overdrives the contrast: saturated pixels rise from 0.68% (ours, pre-present) to the reference's 0.015%; the
+  MSE is dominated by the bright-end outliers, the mean/pct_bad by the now-correct level. The honest reading is that
+  the post chain is **not** the remaining picture gap; it fixes the level and leaves the material transfer curve, the
+  dark floor and the road's mip pattern to fixes 3 and 4.
+
+### 29.6 Checks
+
+| Gate | Result |
+|---|---|
+| CTest coregs3 | **16/16** (new cases: the eleven-batch chain order and counts, the unknown-batch exclusion, the order refusal, the missing-present refusal, DTHE/DIMX/TEX2/COLCLAMP and the per-vertex RGBA decode; the clear/frame-sample/present arithmetic, the CT16 conversion and dither, the 1:1 sampling and the refusals) |
+| Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **15/15** (new metrics control: the raw and +4 blocks, the raw baseline unchanged) |
+| `--no-post-chain` vs the pre-branch binary's world-only render (same scene/vram/tap/gs) | **byte-identical**: PNG `34BDEE072EFAA2CFA7C3198D0742A877234C4915F5D4AAB76EA4BFDF773C4E28`, mask `2858FB62...` |
+| Car/all-draw render vs the pre-branch binary (640x480, same capture) | **byte-identical**: PNG `B0E7082B...`, report `63FADB34...` |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, reference `coregs3-r8/ref/gt4vulkan.exe`) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical |
+
+Evidence: `build/evidence-post-chain/` (census text/JSON, the chain report, per-stage images and metrics against both
+references, the A/B and car hashes, the gate log). Limits: the V -> V-1 phase relation is S2's measurement (the
+reference's image grouping supports it: frame 0 matches reference 7400 better than frames 1-4, 22.35 vs 22.01-22.22 dB);
+the PATH1/PATH2 interleaving inside the stream is not in the sidecars, so the pre-world role of the clears and the depth
+clear is taken from their sequence position and state, not from per-packet job order; the colour replay does not model
+the depth buffer (the world render owns it); the per-page map mixes materials that write no depth (the ABE decals).

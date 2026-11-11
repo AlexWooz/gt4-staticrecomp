@@ -1985,8 +1985,25 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   stage of the ~1.6x gain (the uncaptured PATH2 full-screen chain, incl. the frame sample's (128,77,0,128) modulation;
   the palette/CLUT contents; the 20 road items binding MXL 1/MMIN 4 sampled at level 0). Study:
   [COREGS3-WORLD-MATERIALS-V2](docs/COREGS3-WORLD-MATERIALS-V2.md); evidence `build/evidence-v2/`.
-- Next: the S2 residual (the material/texture/lighting gap or a post op the PATH2/PATH3 stream does not
-  carry); S3 (the HUD/panel layer); the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
+- **Post chain: the whole PATH2 full-screen chain applied, the CT16 present modelled (2026-11-10, branch
+  `task/090-post-chain`, based on `0a9a7e38`).** Fixes 1 and 2 of the world-materials v2 study. The decoder now carries
+  TEX2, DTHE, DIMX, COLCLAMP and the per-vertex RGBAQ; `find_post_chain` classifies **every** full-screen batch of the
+  attributed stream: scene frame 0 (stream 7399) has **11/11 accounted for, 0 unrecognised** (4 pre-world clears, the
+  frame sample, the reflection alpha clear, the composite, FIX 127, FIX 255, the CT16 present, the display alpha
+  clear). The frame sample is the frame's **depth clear**, not a colour grade: FBMSK 0xFFFFFFFF masks every colour lane
+  and ZBUF.ZMSK 0 with ZTST GEQUAL and z=1 writes the depth buffer. The present is page 210 -> FBP 140/FBW 10 **CT16**
+  with the captured **DTHE 1, DIMX 0x0001044501100554, COLCLAMP 1**; the offline present reproduces the CT16
+  conversion with the native 3x dither cells, and the metrics script reports the **raw and +4-corrected** reference in
+  every run. The chain explains the level: world luma 18.95 -> 34.60 after FIX 127/255 -> **29.85** after the CT16
+  present, against the raw reference 26.69 (ratio **0.894**) and the +4-corrected 30.69 (1.028); per-page median
+  **0.943** raw. The residual is structural, not a level: pooled fit `0.3727*present + 15.566`, correlated-page slopes
+  0.60-0.90, road corr 0.099 (the reference's road is nearly flat), and the raw reference's darkest decile (4.09) maps
+  to 16.56 (pre-chain 11.98) - fixes 3 (palette/texel) and 4 (mip/LOD) remain. Checks: CTest coregs3 **16/16**, Python
+  **15/15**, `--no-post-chain` byte-identical to the pre-branch world-only render (`34BDEE07...`), car/all-draw render
+  byte-identical (`B0E7082B...`), 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK**. Evidence:
+  `build/evidence-post-chain/`; method: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §29.
+- Next: the material transfer-curve residual (fixes 3/4: the palette/texel inversion and the MXL 1/MMIN 4 mip path);
+  S3 (the HUD/panel layer); the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

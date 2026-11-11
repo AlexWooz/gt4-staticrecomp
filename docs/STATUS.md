@@ -1,5 +1,32 @@
 # Current Status
 
+## 2026-11-10: post chain, the whole PATH2 full-screen chain applied and the CT16 present modelled (TASK-090, branch `task/090-post-chain`)
+
+Fixes 1 and 2 of the world-materials v2 study, based on `task/090-coregs3` at `0a9a7e38`. The S2 decoder now carries
+TEX2, DTHE, DIMX, COLCLAMP and the per-vertex RGBAQ, and `find_post_chain` classifies **every** full-screen batch of the
+attributed stream by exact state signature: scene frame 0 (VBlank 7398, stream 7399) has **11 full-screen batches, 11/11
+accounted for, 0 unrecognised** - four pre-world clears, the frame sample, the pre-reflection alpha clear, the wet
+composite, FIX 127, FIX 255, the CT16 present and the display alpha clear. The **frame sample is the frame's depth
+clear, not a colour transform**: its (128,77,0,128) colour is masked by FBMSK 0xFFFFFFFF, while ZBUF.ZMSK 0 with ZTST
+GEQUAL and z=1 writes the depth buffer. The **present** is page 210 -> FBP 140/FBW 10 CT16 with the captured **DTHE 1,
+DIMX 0x0001044501100554, COLCLAMP 1**; the offline present reproduces the CT16 conversion with the native 3x dither
+cells, so the reference's own quantisation is modelled, and the metrics script now reports the **raw and +4-corrected**
+reference in every run (the raw baseline is unchanged). The composite, both multiplies and the present are applied over
+the world image in stream order; `--no-post-chain` is the A/B and the output is the scanout image. **The chain explains
+the level:** world luma 18.95 -> 34.60 after the multiplies -> **29.85** after the CT16 present, against the raw
+reference 26.69 (ratio **0.894**) and the +4-corrected 30.69 (1.028); per-page median **0.943** raw (0x2FC0 0.988,
+0x3EE1 0.974, 0x37D0 0.968, 0x3E26 0.966, 0x36D0 0.943). **The residual is structural, not a level:** the pooled fit is
+`ref = 0.3727*present + 15.566` (corr 0.492), the correlated pages' slopes are 0.60-0.90, the road page's correlation
+stays 0.099 with a nearly flat reference (`0.123*w + 20.87`), and the raw reference's darkest decile (mean 4.09) maps
+to 16.56 while the pre-chain world already mapped it to 11.98 - so the remaining gap is the material palette/texel path
+(fix 3) and the MXL 1/MMIN 4 mip path (fix 4), not a post op. Every full-screen batch is applied or excluded with a
+counted reason, and the present's operation is pinned by the captured registers (C). Checks: CTest coregs3 **16/16**,
+Python **15/15**, `--no-post-chain` **byte-identical** to the pre-branch world-only render (`34BDEE07...`), car/all-draw
+render **byte-identical** (`B0E7082B...`), 3x off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks,
+1,686 racing, 0 differences, 13/13 frames). Evidence: `build/evidence-post-chain/` (census text/JSON, chain report,
+per-stage images and metrics against both references, A/B and car hashes, gate log); method
+[COREGS3-HOOKS](COREGS3-HOOKS.md) §29; study status [COREGS3-WORLD-MATERIALS-V2](COREGS3-WORLD-MATERIALS-V2.md).
+
 ## 2026-11-10: world materials v2, the darkness is a per-material ~1.6x gain, not fog (TASK-090, branch `task/090-world-materials-v2`)
 
 Read-only measurement study of the remaining world darkness, based on `008a71c8`. The whole-mask affine
