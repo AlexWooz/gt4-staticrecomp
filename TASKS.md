@@ -2337,8 +2337,13 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   Query fix: the pool was created only when the world was on (every car-only run had no query); now created
   unconditionally, and query 1 is read alone one frame later (queries 0..2 together return VK_NOT_READY with the world
   off). Measured 1,042-1,260 reflection samples/frame against the offline 20,302 — the reflection content is the
-  remaining gap; the textured acceptance still fails (20.18 dB / 12.74 / 41.2% at the best base alignment (-11,-14),
-  26.45 dB on the study-style near-car mask), pending a capture-matching recording.
+  remaining gap; the textured acceptance still fails. Final round: the capture pose reproduces with
+  `GT4_COREGS3_PRESENT_MODE=nearest` (live frame 7397 vs offline frame 0 at VBlank 7398, shift (0,0), base calibration
+  38.67 dB / 0.47 / 3.9% on the study-style mask, above the study's 36.08 control); perdraw comparison localizes the gap
+  (most near-car draws 52.9 dB; draw 271 body 25.6 dB textured vs 33.2 dB base; reflection draws 272-274 24-32 dB); the
+  reflection count is 1,172-1,260 vs the offline 20,302 and is unchanged under depth-test/DATE experiments, so the
+  reflection geometry/coverage is the gap. Textured acceptance at the correct alignment 20.34 dB / 12.97 / 46.6% on the
+  near-car mask (target 28 / 3 / 10) — not met.
   Journal entry of 2026-11-11; hooks §38. The C: system volume was found full (0/510 GB); the build TEMP was redirected
   to O: and the owner should free space.
 

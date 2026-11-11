@@ -2748,3 +2748,10 @@ samples of the car-only runs; reading queries 0..2 right after the fence returns
 the world off, and the just-fenced results are not ready on this driver), so query 1 is read alone one frame later:
 1,042-1,260 reflection samples per frame against the offline 20,302. Split the world query read the same way before the
 flare work depends on it. Build `fedafd01a2ccc0282c9fecce7e94878b5666889409a18440517334f2c4ec7cdd`: CTest 21/21, Python 18/18, 3x gate COREGS3-NIGHT-CHECK-OK.
+Final car round: the capture pose reproduces with `GT4_COREGS3_PRESENT_MODE=nearest` (live frame 7397 vs the
+offline frame 0 at VBlank 7398, shift (0,0), base calibration 38.67 dB / 0.47 / 3.9% on the study-style mask, above
+the study's 36.08 control). Perdraw comparison: most near-car draws 52.9 dB; draw 271 (body) 25.6 dB textured vs
+33.2 dB base; reflection draws 272-274 24-32 dB. The reflection fragment count is 1,172-1,260 vs the offline 20,302
+and does not change when the nodepth pipeline's depth test or the DATE test is disabled: the reflection geometry/
+coverage is the gap, not the fragment state. Build `2759e44624b531261152c34d513b46bebb9100f7723399c833c66a206bac4c46`: CTest 21/21, Python 18/18, 3x gate
+COREGS3-NIGHT-CHECK-OK.

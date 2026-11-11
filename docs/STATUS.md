@@ -1,5 +1,24 @@
 # Current Status
 
+## 2026-11-11: the car-round capture pose reproduced and the content gap localized (TASK-090, branch
+`task/090-live-world`, merged `4e23cc4b`)
+
+The v6 ALL_DRAWS capture schedules every input by VBlank, so its run is reproducible; the missing piece was the
+present's interpolation. With `GT4_COREGS3_PRESENT_MODE=nearest` the live present shows the captured tick exactly and
+the base calibration lands at **live frame 7397 against the offline frame 0 (VBlank 7398), shift (0,0), 38.67 dB /
+0.47 / 3.9%** on the study-style near-car differing mask, above the study's 36.08 / 1.01 / 2.9% control. The
+per-draw comparison at that alignment shows most near-car draws matching at 52.9 dB (draws 254-262); the gap is
+concentrated in **draw 271** (the near-car body, 16,290 px): 25.6 dB / 7.08 / 28.2% textured against 33.2 dB / 1.27 /
+5.3% on the base path, so the textured body changes draw 271 for the worse, and the reflection draws 272-274 read
+24-32 dB. Draw 169 (alpha-only) reads 7.9 dB on both paths, a pre-existing base-path divergence.
+
+The reflection coverage is the other blocker: 1,172-1,260 fragments per frame against the offline 20,302, unchanged
+when the no-depth pipeline's depth test is disabled or when DATE is forced off for the reflection items, so neither
+discards them; the reflection ranges cover only about 1.2k px, i.e. the reflection geometry/coverage (vertex/UV
+emission and target sampling) is the gap. The textured acceptance at the correct alignment is **20.34 dB / 12.97 /
+46.6%** on the near-car mask (target 28 / 3 / 10) and remains **not met**. Gates on the final build (`2759e44624b531261152c34d513b46bebb9100f7723399c833c66a206bac4c46`):
+CTest coregs3 **21/21**, Python **18/18**, the 3x gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B).
+
 ## 2026-11-11: the car-round occlusion query readback fixed (TASK-090, branch `task/090-live-world`, merged
 `40faa459`; follow-up to the car implementation)
 
