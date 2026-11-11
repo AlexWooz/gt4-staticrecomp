@@ -639,7 +639,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         std::chrono::steady_clock::time_point at{};
         double gif = 0, upload = 0, texture = 0, readback = 0, translate = 0, draw = 0, targets = 0, clut = 0, patch = 0;
         double uploads = 0, swizzleBytes = 0;
-        std::uint64_t createdImages = 0, gpuNs = 0, fragments = 0, prims = 0;
+        std::uint64_t createdImages = 0, createdImagesMid = 0, gpuNs = 0, fragments = 0, prims = 0;
         std::uint64_t waitNs = 0, readbacks = 0, downloads = 0, stores = 0, keeps = 0, created = 0, allocated = 0,
                       decodes = 0, submits = 0, materializations = 0, dirty = 0;
     };
@@ -671,6 +671,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         m.created = stats.targetsCreated;
         m.allocated = gpu_.Stats().imagesAllocated + gpu_.Stats().imageBlocks;  // device allocations
         m.createdImages = gpu_.Stats().imagesCreated;
+        m.createdImagesMid = gpu_.Stats().imagesCreatedWhileRecording;
         m.gpuNs = gpu_.Stats().gpuNs;  // finished submissions: lags the VBlank by a submission or two
         m.fragments = gpu_.Stats().fragments;
         m.prims = gpu_.Stats().primitives;
@@ -691,7 +692,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 std::fprintf(stderr,
                              "[core2] spike vblank=%llu wall=%.1f gs=%.1f upload=%.1f (%.0f, %.0f KiB) texture=%.1f "
                              "readback=%.1f translate=%.1f draw=%.1f targets=%.1f clut=%.1f patch=%.1f gpu_wait=%.1f "
-                             "readbacks=%llu (download %llu, store %llu, keep %llu) created=%llu images=%llu allocated=%llu "
+                             "readbacks=%llu (download %llu, store %llu, keep %llu) created=%llu images=%llu mid=%llu allocated=%llu "
                              "decodes=%llu submits=%llu glm_writes=%llu dirty=%llu gpu_busy=%.1f fragments=%llu prims=%llu\n",
                              static_cast<unsigned long long>(vblanks_), wall, gs, (now.upload - b.upload) / 1000.0,
                              now.uploads - b.uploads, (now.swizzleBytes - b.swizzleBytes) / 1024.0,
@@ -705,6 +706,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                              static_cast<unsigned long long>(now.keeps - b.keeps),
                              static_cast<unsigned long long>(now.created - b.created),
                              static_cast<unsigned long long>(now.createdImages - b.createdImages),
+                             static_cast<unsigned long long>(now.createdImagesMid - b.createdImagesMid),
                              static_cast<unsigned long long>(now.allocated - b.allocated),
                              static_cast<unsigned long long>(now.decodes - b.decodes),
                              static_cast<unsigned long long>(now.submits - b.submits),
@@ -725,6 +727,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     DrainMark lastDrainMark_;
     std::uint64_t lastGpuNs_ = 0, lastTimedSubmissions_ = 0, lastDrawPassNs_ = 0;
     std::uint64_t lastPrimitives_ = 0, lastFragments_ = 0, lastCompute_ = 0;  // B4: pipeline statistics  // B4: GPU time at the last timing line
+    std::uint64_t lastImagesCreated_ = 0, lastImagesMidRecording_ = 0, lastDecodes_ = 0;  // TASK-215: churn at the last line
     std::array<std::uint64_t, static_cast<std::size_t>(FlushReason::Count)> lastFlushCounts_{};  // CPU survey R9
     std::uint64_t lastClutSameTexture_ = 0;
     std::uint64_t lastClutScopeAvoided_ = 0;
@@ -5609,7 +5612,8 @@ void Renderer::Flush() {
         std::fprintf(stderr,
                      "[core2] ms/vblank gif=%.2f batch=%.2f upload=%.2f (%.0f) written=%.2f clut=%.2f (%.0f) hook=%.2f glm_hook=%.2f translate=%.2f targets=%.2f texture=%.2f draw=%.2f readback=%.2f "
                      "patch=%.2f compose=%.2f flush=%.2f cpu_sprites=%.2f sprite_check=%.2f gpu_wait=%.2f glm=%.2f (%.0f calls, "
-                     "%.0f pages) swizzle=%.2f (%.0f KiB) gpu_busy=%.2f (%.1f submits) gpu_draw_passes=%.2f prims=%.0f fragments=%.0f compute=%.0f\n",
+                     "%.0f pages) swizzle=%.2f (%.0f KiB) gpu_busy=%.2f (%.1f submits) gpu_draw_passes=%.2f prims=%.0f fragments=%.0f compute=%.0f "
+                     "images=%.0f mid=%.0f decodes=%.0f\n",
                      p.gif / f, p.batch / f, p.upload / f, p.uploads / 600.0, p.written / f, p.clut / f, p.clutLoads / 600.0, p.hook / f, p.glmHook / f, p.translate / f, p.targets / f, p.texture / f, p.draw / f, p.readback / f,
                      p.patch / f, p.compose / f, p.flush / f, p.cpuSprites / f, p.spriteCheck / f,
                      static_cast<double>(s.gpu_.Stats().waitNs - s.lastWaitNs_) / 600.0e6, p.glm / f, p.glmCalls / 600.0,
@@ -5619,7 +5623,13 @@ void Renderer::Flush() {
                      static_cast<double>(s.gpu_.Stats().drawPassNs - s.lastDrawPassNs_) / 600.0e6,
                      static_cast<double>(s.gpu_.Stats().primitives - s.lastPrimitives_) / 600.0,
                      static_cast<double>(s.gpu_.Stats().fragments - s.lastFragments_) / 600.0,
-                     static_cast<double>(s.gpu_.Stats().computeInvocations - s.lastCompute_) / 600.0);
+                     static_cast<double>(s.gpu_.Stats().computeInvocations - s.lastCompute_) / 600.0,
+                     static_cast<double>(s.gpu_.Stats().imagesCreated - s.lastImagesCreated_) / 600.0,
+                     static_cast<double>(s.gpu_.Stats().imagesCreatedWhileRecording - s.lastImagesMidRecording_) / 600.0,
+                     static_cast<double>((s.stats.decodesFirst + s.stats.decodesKeyClash + s.stats.decodesStale +
+                                          s.stats.decodesOverTargets) -
+                                         s.lastDecodes_) /
+                         600.0);
         {
             // TASK-027 CPU survey: exclusive stage times (each minus the stages nested in it); gif_parse is the GIF
             // front end itself, vblank_own the VBlank work outside the stages it runs.
@@ -5683,6 +5693,9 @@ void Renderer::Flush() {
         s.lastPrimitives_ = s.gpu_.Stats().primitives;
         s.lastFragments_ = s.gpu_.Stats().fragments;
         s.lastCompute_ = s.gpu_.Stats().computeInvocations;
+        s.lastImagesCreated_ = s.gpu_.Stats().imagesCreated;
+        s.lastImagesMidRecording_ = s.gpu_.Stats().imagesCreatedWhileRecording;
+        s.lastDecodes_ = s.stats.decodesFirst + s.stats.decodesKeyClash + s.stats.decodesStale + s.stats.decodesOverTargets;
         s.lastDrawPassNs_ = s.gpu_.Stats().drawPassNs;
         s.lastGpuNs_ = s.gpu_.Stats().gpuNs;
         s.lastTimedSubmissions_ = s.gpu_.Stats().timedSubmissions;

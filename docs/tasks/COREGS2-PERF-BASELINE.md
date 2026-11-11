@@ -511,6 +511,90 @@ hook while a segment carries its own 1 KiB palette**; that is the palette/record
 Night 3x and Arcade were not run: the candidate was reverted on the license and the cost is per kept load (night has 475
 CLUT loads/VBlank against 1,553), so the only possible night result is a smaller regression.
 
+
+## Clean 10x/12x pre-flare reference (GPU reset confirmed, 2026-11-10)
+
+The owner confirmed the Afterburner restore finally applied (core offset 0, Power Limit 100%). Both stress points were
+re-run with the same trace tooling (`GT4_CORE2_SPIKE_MS=0.01`, `GT4_CORE2_SPIKE_LINES=100000`, warm shader cache, exe
+`F785F3AA...`), window VBlanks 7,800-11,400:
+
+| ms/VBlank | clean 10x | limited 10x | clean 12x | limited 12x |
+|---|---|---|---|---|
+| wall | **15.533** | 17.049 | **21.269** | 23.381 |
+| GS worker | 7.194 | 7.024 | 7.469 | 7.560 |
+| GPU busy | **14.267** | 15.793 | **19.980** | 22.046 |
+| GPU draw passes | 10.190 | 11.399 | 14.594 | 16.229 |
+| flare wait | **5.767** | 6.841 | **9.853** | 11.249 |
+| GPU wait (all) | 7.959 | 9.444 | 13.620 | 15.599 |
+| uploads / swizzled KiB | 145.6 / 3,609.9 | same | same | same |
+| CLUT loads | 422.3 | same | same | same |
+
+The clean point is at or below the historical true-stock 10x (GPU busy 14.32, wall 15.43, flare 6.05): GPU busy 14.267
+and flare wait 5.767 are better and the wall is +0.1 ms. The GPU is therefore genuinely back to stock, and the earlier
+**15.78 / 17.04 / 6.85** (10x) and **22.05 / 23.38 / 11.25** (12x) are the **limited state**: label them as such and do
+not use them as the pre-flare reference again. **The pre-flare reference is 10x GPU busy 14.267, wall 15.533, flare wait
+5.767; 12x 19.980 / 21.269 / 9.853** (`build/evidence/clean-night-10x.csv`, `clean-night-12x.csv`).
+
+## Image creation and texture churn (2026-11-10)
+
+New inert counters: images created while a command buffer was already recording (`imagesCreatedWhileRecording`), plus
+`images=` / `mid=` / `decodes=` on the per-VBlank line and in the per-VBlank spike CSV (`images`, `images_mid`); the
+interval CSV keeps its frozen column contract. Nothing in the renderer's behaviour changed.
+
+Full per-VBlank trace, window 7,800-11,400 (night) and 2,400-3,500 (license):
+
+| | night 3x | night 6x | license 1x |
+|---|---|---|---|
+| new images / VBlank | 0.776 | 0.783 | 0.560 |
+| ... created mid-recording | 0.766 | 0.773 | 0.552 |
+| VBlanks with a new image | 10.2 % | 10.7 % | 6.3 % |
+| VBlanks with a target created | **100 %** | **100 %** | 53.2 % |
+| texture decodes / VBlank | 50.1 | 50.1 | 10.0 |
+| guest uploads / VBlank | 145.6 | 145.6 | 134.5 |
+| uploaded KiB / VBlank | 3,585 | 3,585 | 1,311 |
+| swizzled KiB / VBlank | 3,610 | 3,610 | 1,253 |
+| CLUT loads / VBlank | 422.3 | 422.3 | 1,596.5 |
+
+Readings:
+
+- **Image creation is rare and steady** here: under one new image per VBlank (0.56-0.78), 98 % of them created
+  mid-recording, and only 6-10 % of VBlanks create one. No churn storm in the steady state on this machine.
+- **`created>0` is not discriminative**: `created` is the target counter and it is positive in **100 %** of the night
+  VBlanks (53 % on the license), so the streamer's "`created>0` in 96.4 % of spikes" only says that target creation is
+  ordinary per-VBlank work. The informative counters are `images`/`images_mid` and `decodes`.
+- **The per-VBlank texture churn is decodes + uploads**: 50 texture decodes and 145 guest uploads (3.6 MB) per VBlank on
+  the night race, 10 and 134.5 (1.3 MB) on the license.
+
+### Texture replacement path (no third-party pack locally)
+
+There is **no texture pack in the tree** (0 `.dds` files and no pack folder under `private/`; the streamer's 15,423-file
+pack is not on this machine). To price the path anyway, the scene's own textures were dumped
+(`GT4_HW_DUMP_TEXTURES=1` → `build/textpack-215`, **2,382 PNGs** in Format P names) and used as a self-pack
+(`GT4_HW_TEXTURES=<that folder>`). The round trip is **not pixel-identical** (7/7 captures differ, up to 700k pixels), so
+this pack cannot be an identity gate - a real pack changes art by design, and the dump→replace round trip also differs.
+It does price the path. Night 3x, window 9,600-11,400, 2+2 interleaved:
+
+| | off (2 runs) | on (2 runs) |
+|---|---|---|
+| wall | 7.450 / 7.410 | 7.492 / 7.423 |
+| GS worker | 7.050 / 7.018 | 7.110 / 7.005 |
+| GPU busy | 3.147 / 3.145 | 3.140 / 3.130 |
+| GPU draw passes | 1.616 / 1.615 | **1.827 / 1.825** |
+| texture decodes / VBlank | 61.25 | **0** |
+| new images / VBlank | 0.25 | **0** |
+
+**Path verdict:** no measurable CPU or wall change (+0.03 ms wall, +0.02 GS worker, inside noise) for 2,378 replaced
+textures (255 MB uploaded, 2.79 M batch hits, 0 failed loads, 2,604 late requests) while every per-VBlank texture decode
+disappears and the GPU draw passes cost +0.21 ms. Texture replacement is therefore **not a CPU cost centre** here; the
+streamer's spikes must come from the GPU side (readbacks and waits on a much slower card) or from the 15k-file pack's
+lookups, not from the replacement path itself.
+
+## Per-record design note (prepared, not implemented)
+
+`docs/tasks/COREGS2-PER-RECORD-DESIGN.md`: the `hw_batch`/writeback/CPU-reference contract, the 0.93 + 0.64 + 0.45 ms
+removable part of the license's 2.99 ms per-batch work (bound 0.5-1.0 ms, Hypothesis), the five risks, the identity
+gates and the smallest first step (vertex conversion only, one switch, ~1 day). Owner decision pending.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

@@ -218,7 +218,7 @@ SPIKE = re.compile(
     r'\[core2\] spike vblank=(\d+) wall=([\d.]+) gs=([\d.]+) upload=([\d.]+) \(([\d.]+), ([\d.]+) KiB\) '
     r'texture=([\d.]+) readback=([\d.]+) translate=([\d.]+) draw=([\d.]+) targets=([\d.]+) clut=([\d.]+) '
     r'patch=([\d.]+) gpu_wait=([\d.]+) readbacks=(\d+) \(download (\d+), store (\d+), keep (\d+)\) created=(\d+) '
-    r'images=(\d+) allocated=(\d+) decodes=(\d+) submits=(\d+) glm_writes=(\d+) dirty=(\d+) gpu_busy=([\d.]+) '
+    r'images=(\d+)(?: mid=(\d+))? allocated=(\d+) decodes=(\d+) submits=(\d+) glm_writes=(\d+) dirty=(\d+) gpu_busy=([\d.]+) '
     r'fragments=(\d+) prims=(\d+)')
 PERF_REPORT = re.compile(r'\[perf\] [A-Za-z0-9 _-]+: (\d+) VBlank samples')
 
@@ -358,9 +358,10 @@ def parse_spikes(text):
             'patch': float(values[12]), 'gpu_wait': float(values[13]),
             'readbacks': int(values[14]), 'readback_download': int(values[15]), 'readback_store': int(values[16]),
             'readback_keep': int(values[17]), 'created': int(values[18]), 'images': int(values[19]),
-            'allocated': int(values[20]), 'decodes': int(values[21]), 'submits': int(values[22]),
-            'glm_writes': int(values[23]), 'dirty': int(values[24]), 'gpu_busy': float(values[25]),
-            'fragments': int(values[26]), 'prims': int(values[27]),
+            'images_mid': int(values[20]) if values[20] is not None else None,
+            'allocated': int(values[21]), 'decodes': int(values[22]),
+            'submits': int(values[23]), 'glm_writes': int(values[24]), 'dirty': int(values[25]),
+            'gpu_busy': float(values[26]), 'fragments': int(values[27]), 'prims': int(values[28]),
         })
     return spikes
 
@@ -681,8 +682,8 @@ def write_csv(runs, path):
 
 SPIKE_FIELDS = ['run', 'scene', 'vblank', 'wall_ms', 'gs_ms', 'upload_ms', 'uploads', 'upload_kib', 'texture_ms',
                 'readback_ms', 'translate_ms', 'draw_ms', 'targets_ms', 'clut_ms', 'patch_ms', 'gpu_wait_ms',
-                'readbacks', 'readback_download', 'readback_store', 'readback_keep', 'created', 'images', 'allocated',
-                'decodes', 'submits', 'glm_writes', 'dirty', 'gpu_busy_ms', 'fragments', 'prims']
+                'readbacks', 'readback_download', 'readback_store', 'readback_keep', 'created', 'images', 'images_mid',
+                'allocated', 'decodes', 'submits', 'glm_writes', 'dirty', 'gpu_busy_ms', 'fragments', 'prims']
 
 
 def write_spike_csv(runs, path):
@@ -701,6 +702,7 @@ def write_spike_csv(runs, path):
                       'gpu_wait_ms': spike['gpu_wait'], 'readbacks': spike['readbacks'],
                       'readback_download': spike['readback_download'], 'readback_store': spike['readback_store'],
                       'readback_keep': spike['readback_keep'], 'created': spike['created'], 'images': spike['images'],
+                      'images_mid': spike['images_mid'] if spike['images_mid'] is not None else '',
                       'allocated': spike['allocated'], 'decodes': spike['decodes'], 'submits': spike['submits'],
                       'glm_writes': spike['glm_writes'], 'dirty': spike['dirty'], 'gpu_busy_ms': spike['gpu_busy'],
                       'fragments': spike['fragments'], 'prims': spike['prims']}

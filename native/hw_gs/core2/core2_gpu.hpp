@@ -70,6 +70,9 @@ struct Core2GpuStats {
     std::uint64_t sheensEarly = 0;        // IN-503
     std::uint64_t imagesCreated = 0;    // S1: new images (not taken over from finished ones)
     std::uint64_t imagesAllocated = 0;  // S1: images that needed a device allocation of their own
+    // TASK-215 churn: of the new images, the ones created while a command buffer was already recording (a texture or target
+    // that appeared mid-frame). The streamer's GTX 1660 spikes had this in 96% of them.
+    std::uint64_t imagesCreatedWhileRecording = 0;
     std::uint64_t imageBlocks = 0;      // S2: 64 MiB image memory blocks allocated
     std::uint64_t recycledImages = 0;  // B4: images taken over from finished ones instead of allocated
     std::uint64_t selfTextureBatches = 0;  // batches whose texture is the colour or depth image they draw into

@@ -704,6 +704,9 @@ struct Gpu::Impl {
 
   bool make_image(Image &out, std::uint32_t nativeWidth, std::uint32_t nativeHeight, std::uint32_t imageScale,
                   std::string &error) {
+    // TASK-215 churn: whether this creation happens with a command buffer already open (mid-frame), before
+    // clear_new_image starts or reuses one.
+    const bool wasRecording = recording;
     out = Image{};
     out.nativeWidth = std::max<std::uint32_t>(nativeWidth, 1u);
     out.nativeHeight = std::max<std::uint32_t>(nativeHeight, 1u);
@@ -783,6 +786,7 @@ struct Gpu::Impl {
     out.alive = true;
     stats.imageBytes += out.bytes;
     stats.imagesCreated++;
+    if (wasRecording) stats.imagesCreatedWhileRecording++;
     return clear_new_image(out, error);
   }
 
