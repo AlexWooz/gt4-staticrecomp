@@ -267,6 +267,26 @@ Arcade card (`spec2-run.sh`) and a recording (`build/bench-inputs-215/<name>.txt
 Ford GT George V Paris replay (Spec II, VBlanks 20,400-21,300) is the reference replay; the streamer's rc14 logs stay
 historical hypotheses only and nothing waits on them.
 
+**Blocked on the Spec II boot path (2026-11-11):** Spec II does not boot on this base here, so no schedule or baseline was
+produced.
+
+- Inputs exist: the Arcade card (`private/slice110-menu-pilot/name-control4/card.ps2`, 8,650,752 bytes, SHA-256
+  `BB10A96F...`), the derived ELF (`private/slice272-spec2-elf/SCUS_974.36`, 6,520,944 bytes, 2026-10-22) and the ISO
+  (`Gran Turismo 4 Spec II v1.10 (PTBR).iso`, 3,695,083,520 bytes).
+- Symptom, from both the canonical `spec2-run.sh` harness and a direct launch: the runtime prints its feature banners, then
+  loops on `[sys] unhandled syscall 0x83 from 0x005B740C`; **no VBlank is reached** (a 150 s capped probe wrote 1.96 GB of
+  that line and never passed VBlank 10,400; two earlier attempts spun for ~70 min at 100 % CPU).
+- The card is not the cause: identical loop with a valid 8.3 MB card and with a 0-byte one.
+- Not caused by this branch's renderer work: every change is an env-gated diagnostic or counter, none touches the EE or
+  IOP. **Root cause: Unknown** - the derived Spec II ELF predates rc15 and there is no local previous Spec II run to
+  compare against, so a stale derived ELF (or its IOP side) is the first hypothesis.
+- **Operational:** the C: drive was at 0.0 GB free (930 GB disk, 771 GB in the trees above). A full disk silently produced a
+  0-byte card and multi-GB logs; runs with frame dumps need >~2 GB. This worktree's reproducible frame dumps were deleted
+  (1.7 GB recovered); logs and CSVs stay.
+
+**To unblock:** re-derive the Spec II runtime pieces against the current base, then read the track-list positions from
+frames at VBlanks 10,600-13,000 (`EVERY=150`) and build the four schedules - not from guesses.
+
 
 ## S4 mapping: the four words are per sprite (not per vertex)
 
