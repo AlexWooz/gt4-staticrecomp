@@ -3533,6 +3533,10 @@ void Renderer::ComposeFrame(FrameOutput& out, ComposeKind kind) {
 
 void Renderer::SetBatchObserver(BatchObserver observer) { impl_->observer_ = std::move(observer); }
 
+const std::uint8_t* Renderer::Coregs3Slm() const {
+    return core2_ ? core2_->Coregs3Slm() : nullptr;
+}
+
 const std::uint8_t* Renderer::Slm() const {
     if (core2_) return core2_->Slm();
     impl_->WriteBackAll();  // a caller reading the shadow memory sees every draw (M7 coherence)

@@ -209,6 +209,10 @@ public:
   // (native/coregs3/coregs3_vram.hpp).
   void coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
                         const gt4::coregs3::vram::Window *windows, std::uint32_t window_count);
+  // TASK-090 live world: copies one VU1 job's texture/palette windows into the in-memory live store before the job
+  // executes (coregs3_live_world.hpp). Called on the GS worker; no-op unless the live world is active.
+  void coregs3_live_textures(std::uint64_t job, std::uint64_t vblank, const gt4::coregs3::vram::Window *windows,
+                             std::uint32_t window_count);
   // Field of the VBlank being closed (CSR.FIELD from the VSYNC record; chapters 12.4, 13.3, 13.4). Set before
   // present() and before a scanout dump so the field offset and the deinterlacer use this VBlank's field.
   void set_display_field(bool odd);

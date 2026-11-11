@@ -406,6 +406,8 @@ public:
 
     // CPU view of the SLM (4 MiB, GS layout). Resident draws are written back first.
     const std::uint8_t *Slm() const;
+    // TASK-090 live world: the core 2 shadow local memory the GS worker owns, no flush or readback.
+    const std::uint8_t *Coregs3Slm() const;
 
     const Counters &GetCounters() const;
     const gpu::GpuStats &GpuCounters() const;

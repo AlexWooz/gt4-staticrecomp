@@ -166,6 +166,9 @@ public:
 
     // The shadow memory after writing every target's drawn area back (a host read of the whole memory).
     const std::uint8_t *Slm();
+    // TASK-090 live world: the CPU shadow local memory as the GS stream's owner sees it, without the flush/readback the
+    // public Slm() performs. Only a caller on the stream-owning thread (the per-job snapshot) may use it.
+    const std::uint8_t *Coregs3Slm() const;
     const writeback::Counters &GetCounters() const;
     const Core2Counters &Core2Stats() const;
     bool Failed() const;

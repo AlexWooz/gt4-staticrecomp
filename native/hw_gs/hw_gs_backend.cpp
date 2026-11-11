@@ -19,6 +19,7 @@
 #include "hw_gs_vulkan_loader.hpp" // Vulkan names renamed to gt4_hw_*; pointers loaded at run time
 #include "coregs3/hw_coregs3_present.hpp"
 #include "coregs3_present.hpp"
+#include "coregs3_live_world.hpp"
 #include "hud/hw_hud_layer.hpp"
 #include "writeback/hw_gs_vulkan_device_table.hpp"
 #include "writeback/hw_gs_present_scheduler.hpp"
@@ -1981,6 +1982,14 @@ void Backend::flush() {
 void Backend::coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
                                const gt4::coregs3::vram::Window *windows, std::uint32_t window_count) {
   if (impl_->renderer) impl_->renderer->Coregs3Snapshot(kind, pass, label, vblank, windows, window_count);
+}
+
+void Backend::coregs3_live_textures(std::uint64_t job, std::uint64_t vblank,
+                                    const gt4::coregs3::vram::Window *windows, std::uint32_t window_count) {
+  // The GS worker owns the shadow local memory at this point (the copy runs before the job's records execute), so its
+  // view is current without a flush; `Slm()` never writes or submits work.
+  if (!impl_->renderer) return;
+  gt4::coregs3::live_world::note_job_textures(job, vblank, windows, window_count, impl_->renderer->Coregs3Slm());
 }
 
 void Backend::next_frame() { impl_->stats.frames++; }

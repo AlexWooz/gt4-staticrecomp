@@ -20,19 +20,27 @@
 #include "../shaders/hw_shader_blobs.hpp"
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
 
+#include "coregs3_live_world.hpp"
 #include "coregs3_lighting.hpp"
 #include "coregs3_presentation.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_render.hpp"
+#include "coregs3_sampler.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
+#include "coregs3_texture_frame.hpp"
 #include "coregs3_vertex.hpp"
+#include "coregs3_vram.hpp"
+#include "coregs3_world.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace gt4::hw::coregs3 {
@@ -42,6 +50,69 @@ constexpr VkFormat kTargetFormat = VK_FORMAT_R32_UINT;
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 constexpr std::uint32_t kMaxVerticesPerFrame = 1u << 20;  // 1,048,576 vertices = 16 MiB; a night frame uses ~12k
 constexpr VkDeviceSize kInitialVertexBytes = 1u << 20;
+
+// TASK-090 live world. The decoded textures are RGBA8 in one storage image; the world vertex stage reads the captured
+// 0xC1 columns from a 112-byte push constant and the fragment stage samples nearest at level 0, applies MODULATE, the
+// alpha test and FRAME.FBMSK (see shaders/coregs3_world.frag). Depth is 1/cw like the car pass, so both pipelines share
+// the private D32 image and the world occludes the car correctly (and the car occludes the world).
+constexpr VkFormat kAtlasFormat = VK_FORMAT_R8G8B8A8_UNORM;
+constexpr std::uint32_t kAtlasWidth = 2048;
+constexpr std::uint32_t kAtlasHeight = 2048;
+constexpr std::uint32_t kMaxWorldVertices = 1u << 19;  // 524,288 vertices = 12 MiB
+constexpr VkDeviceSize kInitialWorldVertexBytes = 1u << 20;
+
+// The world push-constant flags (mirrored by the fragment shader's kFlag* constants).
+constexpr std::uint32_t kWorldFlagTextured = 1u << 0;
+constexpr std::uint32_t kWorldFlagAlphaTest = 1u << 1;
+constexpr std::uint32_t kWorldFlagFogDeferred = 1u << 2;
+constexpr std::uint32_t kWorldFlagBlendDeferred = 1u << 3;
+constexpr std::uint32_t kWorldFlagAlphaFailDefaulted = 1u << 4;
+
+struct WorldVertex {
+  float x = 0.0f;  // captured model units (int32 lane, raw int16, or V3-32 float)
+  float y = 0.0f;
+  float z = 0.0f;
+  std::uint8_t red = 255;
+  std::uint8_t green = 255;
+  std::uint8_t blue = 255;
+  std::uint8_t alpha = 255;
+  float u = 0.0f;
+  float v = 0.0f;
+};
+static_assert(sizeof(WorldVertex) == 24, "the world vertex record must match the pipeline's 24-byte stride");
+
+// The layout the two world stages declare in shaders/coregs3_world_push.glsl (std140: vec4 columns, then three uvec4s).
+struct WorldPush {
+  float columns[16] = {};  // c0..c3, each four lanes, in column order (c0.x..w, c1.x..w, ...)
+  std::uint32_t tex0_lo = 0;
+  std::uint32_t tex0_hi = 0;
+  std::uint32_t clamp_lo = 0;
+  std::uint32_t clamp_hi = 0;
+  std::uint32_t atlas_origin = 0;  // x | y << 16
+  std::uint32_t atlas_rect = 0;    // x0 | y0 << 16 (the decoded rectangle's origin in texture coordinates)
+  std::uint32_t atlas_size = 0;    // width | height << 16
+  std::uint32_t atlas_unused = 0;
+  std::uint32_t test = 0;
+  std::uint32_t alpha = 0;
+  std::uint32_t fbmsk = 0;
+  std::uint32_t flags = 0;
+};
+static_assert(sizeof(WorldPush) == 112, "the world push constant must match coregs3_world_push.glsl");
+
+struct WorldRange {
+  std::uint32_t first = 0;  // first WorldVertex
+  std::uint32_t count = 0;  // vertices (a multiple of three)
+  bool sky = false;         // the sky pass: drawn as the background, no depth test or write
+  std::uint64_t object_id = 0;        // the timeline's object key, for the interpolated matrix of a tick
+  std::uint32_t object_instance = 0;
+  WorldPush push;
+};
+
+// Where one decoded texture sits in the atlas.
+struct AtlasPlacement {
+  std::uint32_t x = 0;
+  std::uint32_t y = 0;
+};
 
 // The vertex record of the pass: model position in metres and the model's vertex colour. 16 bytes, matching the two
 // vertex attributes the pipeline declares.
@@ -143,6 +214,48 @@ struct PresentLayer::Impl {
   void *vertex_mapped = nullptr;
   VkDeviceSize vertex_capacity = 0;
 
+  // TASK-090 live world: the second pipeline pair, its vertex buffer and the texture atlas.
+  bool live_world_enabled = false;
+  bool live_world_background = false;  // GT4_COREGS3_WORLD_BACKGROUND=1: draw the sky and far underlay too
+  bool present_debug = false;          // GT4_COREGS3_PRESENT_DEBUG=1: one line per render with the claimed frame
+
+  VkShaderModule world_vertex_module = VK_NULL_HANDLE;
+  VkShaderModule world_fragment_module = VK_NULL_HANDLE;
+  VkPipeline world_pipeline = VK_NULL_HANDLE;      // depth test GEQUAL, depth write
+  VkPipeline world_sky_pipeline = VK_NULL_HANDLE;  // the sky background: no depth test, no depth write
+  VkBuffer world_vertex_buffer = VK_NULL_HANDLE;
+  VkDeviceMemory world_vertex_memory = VK_NULL_HANDLE;
+  void *world_vertex_mapped = nullptr;
+  VkDeviceSize world_vertex_capacity = 0;
+  VkImage atlas_image = VK_NULL_HANDLE;
+  VkDeviceMemory atlas_memory = VK_NULL_HANDLE;
+  VkImageView atlas_view = VK_NULL_HANDLE;
+  VkBuffer atlas_staging = VK_NULL_HANDLE;
+  VkDeviceMemory atlas_staging_memory = VK_NULL_HANDLE;
+  void *atlas_staging_mapped = nullptr;
+  bool atlas_general = false;  // the atlas was transitioned to GENERAL and copied at least once
+  VkQueryPool query_pool = VK_NULL_HANDLE;
+  bool queries_enabled = false;
+
+  // The world build of the newest claimed frame. Written by note_guest_frame (the claim thread) and read by render; one
+  // mutex covers both sides. The texture table is local to the build (the ranges hold copies of what they need).
+  std::mutex world_mutex;
+  std::vector<WorldVertex> world_vertices;
+  std::vector<WorldRange> world_ranges;
+  std::vector<std::uint8_t> world_atlas_pixels;  // kAtlasWidth x kAtlasHeight x 4, only the used rows are meaningful
+  std::uint32_t world_atlas_used_w = 0;
+  std::uint32_t world_atlas_used_h = 0;
+  std::uint64_t world_built_vblank = ~0ull;
+  std::uint64_t world_uploaded_vblank = ~0ull;
+  bool world_valid = false;
+  bool world_pending = false;  // a claimed frame the world has not been built for yet
+  std::uint64_t last_world_samples = 0;  // occlusion-query samples of the last tick's world draws
+  std::uint64_t last_car_samples = 0;    // and of its car draws (diagnostic; not reported as a gate)
+  std::uint32_t last_world_draw_calls = 0;
+  // The empty base SLM image: the live world decodes only the windows a job's own record carries, so a texture page the
+  // capture does not cover is refused by the decoder instead of reading stale bytes.
+  gt4::coregs3::SlmImage world_base_slm;
+
   // Reused between frames: the claim swaps the ring's buffers into these vectors, and build_frame refills them.
   gt4::coregs3::FrameSnapshot frame;
   bool has_frame = false;  // at least one complete frame was claimed
@@ -185,11 +298,54 @@ struct PresentLayer::Impl {
     vertex_capacity = 0;
   }
 
+  // Releases the live world's Vulkan objects. The pipelines and shader modules go before the pipeline layout that owns
+  // them, which shutdown() destroys next.
+  void destroy_world() {
+    const VkDevice device = config.device;
+    if (device == VK_NULL_HANDLE) return;
+    if (atlas_staging_mapped != nullptr) {
+      gt4_hwd_vkUnmapMemory(device, atlas_staging_memory);
+      atlas_staging_mapped = nullptr;
+    }
+    if (atlas_staging != VK_NULL_HANDLE) gt4_hwd_vkDestroyBuffer(device, atlas_staging, nullptr);
+    if (atlas_staging_memory != VK_NULL_HANDLE) gt4_hwd_vkFreeMemory(device, atlas_staging_memory, nullptr);
+    if (atlas_view != VK_NULL_HANDLE) gt4_hwd_vkDestroyImageView(device, atlas_view, nullptr);
+    if (atlas_image != VK_NULL_HANDLE) gt4_hwd_vkDestroyImage(device, atlas_image, nullptr);
+    if (atlas_memory != VK_NULL_HANDLE) gt4_hwd_vkFreeMemory(device, atlas_memory, nullptr);
+    atlas_staging = VK_NULL_HANDLE;
+    atlas_staging_memory = VK_NULL_HANDLE;
+    atlas_view = VK_NULL_HANDLE;
+    atlas_image = VK_NULL_HANDLE;
+    atlas_memory = VK_NULL_HANDLE;
+    atlas_general = false;
+    if (world_vertex_mapped != nullptr) {
+      gt4_hwd_vkUnmapMemory(device, world_vertex_memory);
+      world_vertex_mapped = nullptr;
+    }
+    if (world_vertex_buffer != VK_NULL_HANDLE) gt4_hwd_vkDestroyBuffer(device, world_vertex_buffer, nullptr);
+    if (world_vertex_memory != VK_NULL_HANDLE) gt4_hwd_vkFreeMemory(device, world_vertex_memory, nullptr);
+    world_vertex_buffer = VK_NULL_HANDLE;
+    world_vertex_memory = VK_NULL_HANDLE;
+    world_vertex_capacity = 0;
+    if (world_pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, world_pipeline, nullptr);
+    if (world_sky_pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, world_sky_pipeline, nullptr);
+    if (world_vertex_module != VK_NULL_HANDLE) gt4_hwd_vkDestroyShaderModule(device, world_vertex_module, nullptr);
+    if (world_fragment_module != VK_NULL_HANDLE) gt4_hwd_vkDestroyShaderModule(device, world_fragment_module, nullptr);
+    if (query_pool != VK_NULL_HANDLE) gt4_hwd_vkDestroyQueryPool(device, query_pool, nullptr);
+    world_pipeline = VK_NULL_HANDLE;
+    world_sky_pipeline = VK_NULL_HANDLE;
+    world_vertex_module = VK_NULL_HANDLE;
+    world_fragment_module = VK_NULL_HANDLE;
+    query_pool = VK_NULL_HANDLE;
+    queries_enabled = false;
+  }
+
   void shutdown() {
     const VkDevice device = config.device;
     if (device == VK_NULL_HANDLE) return;
     destroy_depth();
     destroy_base();
+    destroy_world();
     destroy_vertex_buffer();
     if (pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, pipeline, nullptr);
     if (render_pass != VK_NULL_HANDLE) gt4_hwd_vkDestroyRenderPass(device, render_pass, nullptr);
@@ -233,23 +389,27 @@ struct PresentLayer::Impl {
       return false;
     }
 
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding = 1;  // TASK-090 live world: the decoded texture atlas
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 1;
-    set_info.pBindings = &binding;
+    set_info.bindingCount = 2;
+    set_info.pBindings = bindings;
     if (gt4_hwd_vkCreateDescriptorSetLayout(config.device, &set_info, nullptr, &set_layout) != VK_SUCCESS) {
       error = "vkCreateDescriptorSetLayout failed for the CoreGS 3.0 present layer";
       return false;
     }
 
     VkPushConstantRange push{};
-    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     push.offset = 0;
-    push.size = 16u * sizeof(float);  // vf24..vf27
+    push.size = sizeof(WorldPush);  // vf24..vf27 for the car stage; the world stage adds its item state
     VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &set_layout;
@@ -361,7 +521,7 @@ struct PresentLayer::Impl {
 
     VkDescriptorPoolSize pool_size{};
     pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    pool_size.descriptorCount = 1;
+    pool_size.descriptorCount = 2;  // the display image and the world texture atlas
     VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_info.maxSets = 1;
     pool_info.poolSizeCount = 1;
@@ -403,6 +563,7 @@ struct PresentLayer::Impl {
     }
 
     if (!create_vertex_buffer(kInitialVertexBytes, error)) return false;
+    if (!create_world_objects(error)) return false;
     initialised = true;
     return true;
   }
@@ -452,6 +613,253 @@ struct PresentLayer::Impl {
     const VkDeviceSize grown = std::max<VkDeviceSize>(bytes, vertex_capacity * 2u);
     return create_vertex_buffer(grown, error);
   }
+
+  // ---- TASK-090 live world resources ------------------------------------------------------------------------------
+
+  bool create_world_vertex_buffer(VkDeviceSize bytes, std::string &error) {
+    if (world_vertex_mapped != nullptr) {
+      gt4_hwd_vkUnmapMemory(config.device, world_vertex_memory);
+      world_vertex_mapped = nullptr;
+    }
+    if (world_vertex_buffer != VK_NULL_HANDLE) gt4_hwd_vkDestroyBuffer(config.device, world_vertex_buffer, nullptr);
+    if (world_vertex_memory != VK_NULL_HANDLE) gt4_hwd_vkFreeMemory(config.device, world_vertex_memory, nullptr);
+    world_vertex_buffer = VK_NULL_HANDLE;
+    world_vertex_memory = VK_NULL_HANDLE;
+    world_vertex_capacity = 0;
+    const VkDeviceSize size = std::max<VkDeviceSize>(bytes, kInitialWorldVertexBytes);
+    VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer_info.size = size;
+    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (gt4_hwd_vkCreateBuffer(config.device, &buffer_info, nullptr, &world_vertex_buffer) != VK_SUCCESS) {
+      error = "vkCreateBuffer failed for the CoreGS 3.0 world vertices";
+      return false;
+    }
+    VkMemoryRequirements requirements{};
+    gt4_hwd_vkGetBufferMemoryRequirements(config.device, world_vertex_buffer, &requirements);
+    VkPhysicalDeviceMemoryProperties memory{};
+    gt4_hwd_vkGetPhysicalDeviceMemoryProperties(config.physical, &memory);
+    std::uint32_t type = 0;
+    if (!find_memory_type(memory, requirements.memoryTypeBits,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, type)) {
+      error = "no host-visible coherent memory for the CoreGS 3.0 world vertices";
+      return false;
+    }
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = type;
+    if (gt4_hwd_vkAllocateMemory(config.device, &allocate, nullptr, &world_vertex_memory) != VK_SUCCESS) {
+      error = "vkAllocateMemory failed for the CoreGS 3.0 world vertices";
+      return false;
+    }
+    if (gt4_hwd_vkBindBufferMemory(config.device, world_vertex_buffer, world_vertex_memory, 0) != VK_SUCCESS) {
+      error = "vkBindBufferMemory failed for the CoreGS 3.0 world vertices";
+      return false;
+    }
+    if (gt4_hwd_vkMapMemory(config.device, world_vertex_memory, 0, size, 0, &world_vertex_mapped) != VK_SUCCESS) {
+      error = "vkMapMemory failed for the CoreGS 3.0 world vertices";
+      return false;
+    }
+    world_vertex_capacity = size;
+    return true;
+  }
+
+  bool ensure_world_vertex_buffer(VkDeviceSize bytes, std::string &error) {
+    if (world_vertex_capacity >= bytes) return true;
+    return create_world_vertex_buffer(std::max<VkDeviceSize>(bytes, world_vertex_capacity * 2u), error);
+  }
+
+  // One world pipeline: the same storage-image fragment as the car pass, with the world's 24-byte vertex and 112-byte
+  // push constant. `depth_test` is false only for the sky background (no depth test, no depth write).
+  bool make_world_pipeline(VkPipeline &pipeline, bool depth_test, std::string &error) {
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = world_vertex_module;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = world_fragment_module;
+    stages[1].pName = "main";
+
+    VkVertexInputBindingDescription vertex_binding{};
+    vertex_binding.binding = 0;
+    vertex_binding.stride = sizeof(WorldVertex);
+    vertex_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkVertexInputAttributeDescription attributes[3]{};
+    attributes[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};  // captured model position
+    attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UNORM, 12};    // V4-8 colour
+    attributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, 16};     // u, v
+    VkPipelineVertexInputStateCreateInfo vertex_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &vertex_binding;
+    vertex_input.vertexAttributeDescriptionCount = 3;
+    vertex_input.pVertexAttributeDescriptions = attributes;
+
+    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    raster.depthClampEnable = VK_TRUE;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth_state{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth_state.depthTestEnable = depth_test ? VK_TRUE : VK_FALSE;
+    depth_state.depthWriteEnable = depth_test ? VK_TRUE : VK_FALSE;
+    depth_state.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    depth_state.depthBoundsTestEnable = VK_FALSE;
+    depth_state.stencilTestEnable = VK_FALSE;
+    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    const VkDynamicState dynamic_states[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    VkGraphicsPipelineCreateInfo pipeline_info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = stages;
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &assembly;
+    pipeline_info.pViewportState = &viewport;
+    pipeline_info.pRasterizationState = &raster;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pDepthStencilState = &depth_state;
+    pipeline_info.pColorBlendState = &blend;
+    pipeline_info.pDynamicState = &dynamic;
+    pipeline_info.layout = pipeline_layout;
+    pipeline_info.renderPass = render_pass;
+    if (gt4_hwd_vkCreateGraphicsPipelines(config.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) !=
+        VK_SUCCESS) {
+      error = "vkCreateGraphicsPipelines failed for the CoreGS 3.0 world stage";
+      return false;
+    }
+    return true;
+  }
+
+  // The decoded-texture atlas: one storage image the world fragment stage samples with imageLoad.
+  bool create_atlas(std::string &error) {
+    VkImageCreateInfo image_info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = kAtlasFormat;
+    image_info.extent = {kAtlasWidth, kAtlasHeight, 1};
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (gt4_hwd_vkCreateImage(config.device, &image_info, nullptr, &atlas_image) != VK_SUCCESS) {
+      error = "vkCreateImage failed for the CoreGS 3.0 world atlas";
+      return false;
+    }
+    VkMemoryRequirements requirements{};
+    gt4_hwd_vkGetImageMemoryRequirements(config.device, atlas_image, &requirements);
+    VkPhysicalDeviceMemoryProperties memory{};
+    gt4_hwd_vkGetPhysicalDeviceMemoryProperties(config.physical, &memory);
+    std::uint32_t type = 0;
+    if (!find_memory_type(memory, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, type)) {
+      error = "no device-local memory for the CoreGS 3.0 world atlas";
+      return false;
+    }
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = type;
+    if (gt4_hwd_vkAllocateMemory(config.device, &allocate, nullptr, &atlas_memory) != VK_SUCCESS) {
+      error = "vkAllocateMemory failed for the CoreGS 3.0 world atlas";
+      return false;
+    }
+    if (gt4_hwd_vkBindImageMemory(config.device, atlas_image, atlas_memory, 0) != VK_SUCCESS) {
+      error = "vkBindImageMemory failed for the CoreGS 3.0 world atlas";
+      return false;
+    }
+    VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view_info.image = atlas_image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = kAtlasFormat;
+    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (gt4_hwd_vkCreateImageView(config.device, &view_info, nullptr, &atlas_view) != VK_SUCCESS) {
+      error = "vkCreateImageView failed for the CoreGS 3.0 world atlas";
+      return false;
+    }
+    const VkDeviceSize staging_bytes = static_cast<VkDeviceSize>(kAtlasWidth) * kAtlasHeight * 4u;
+    VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer_info.size = staging_bytes;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (gt4_hwd_vkCreateBuffer(config.device, &buffer_info, nullptr, &atlas_staging) != VK_SUCCESS) {
+      error = "vkCreateBuffer failed for the CoreGS 3.0 world atlas staging";
+      return false;
+    }
+    gt4_hwd_vkGetBufferMemoryRequirements(config.device, atlas_staging, &requirements);
+    if (!find_memory_type(memory, requirements.memoryTypeBits,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, type)) {
+      error = "no host-visible coherent memory for the CoreGS 3.0 world atlas staging";
+      return false;
+    }
+    VkMemoryAllocateInfo staging_allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    staging_allocate.allocationSize = requirements.size;
+    staging_allocate.memoryTypeIndex = type;
+    if (gt4_hwd_vkAllocateMemory(config.device, &staging_allocate, nullptr, &atlas_staging_memory) != VK_SUCCESS) {
+      error = "vkAllocateMemory failed for the CoreGS 3.0 world atlas staging";
+      return false;
+    }
+    if (gt4_hwd_vkBindBufferMemory(config.device, atlas_staging, atlas_staging_memory, 0) != VK_SUCCESS) {
+      error = "vkBindBufferMemory failed for the CoreGS 3.0 world atlas staging";
+      return false;
+    }
+    if (gt4_hwd_vkMapMemory(config.device, atlas_staging_memory, 0, staging_bytes, 0, &atlas_staging_mapped) !=
+        VK_SUCCESS) {
+      error = "vkMapMemory failed for the CoreGS 3.0 world atlas staging";
+      return false;
+    }
+    world_atlas_pixels.assign(static_cast<std::size_t>(kAtlasWidth) * kAtlasHeight * 4u, 0);
+    return true;
+  }
+
+  bool create_world_objects(std::string &error) {
+    if (!live_world_enabled) return true;
+    if (!format_has(config.physical, kAtlasFormat, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+      error = "the device cannot use R8G8B8A8_UNORM as a storage image; the live world stays off";
+      std::fprintf(stderr, "[coregs3] live world refused: %s\n", error.c_str());
+      live_world_enabled = false;
+      error.clear();
+      return true;  // the car layer keeps working without the world
+    }
+    if (!make_shader(hwgs::shaders::coregs3_world_vertex_words, hwgs::shaders::coregs3_world_vertex_word_count,
+                     world_vertex_module, error) ||
+        !make_shader(hwgs::shaders::coregs3_world_fragment_words, hwgs::shaders::coregs3_world_fragment_word_count,
+                     world_fragment_module, error)) {
+      return false;
+    }
+    if (!make_world_pipeline(world_pipeline, true, error) || !make_world_pipeline(world_sky_pipeline, false, error))
+      return false;
+    if (!create_world_vertex_buffer(kInitialWorldVertexBytes, error)) return false;
+    if (!create_atlas(error)) return false;
+    VkDescriptorImageInfo atlas_descriptor{VK_NULL_HANDLE, atlas_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = descriptor_set;
+    write.dstBinding = 1;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.pImageInfo = &atlas_descriptor;
+    gt4_hwd_vkUpdateDescriptorSets(config.device, 1, &write, 0, nullptr);
+    VkQueryPoolCreateInfo query_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    query_info.queryType = VK_QUERY_TYPE_OCCLUSION;
+    query_info.queryCount = 2;
+    if (gt4_hwd_vkCreateQueryPool(config.device, &query_info, nullptr, &query_pool) == VK_SUCCESS) {
+      queries_enabled = true;
+    } else {
+      std::fprintf(stderr, "[coregs3] live world: occlusion queries unavailable; the sample counter stays 0\n");
+    }
+    return true;
+  }
+
 
   bool ensure_depth(std::uint32_t width, std::uint32_t height, std::string &error) {
     if (depth_image != VK_NULL_HANDLE && depth_width == width && depth_height == height) return true;
@@ -584,6 +992,9 @@ struct PresentLayer::Impl {
     // Instance numbering exactly as timeline_frame numbers it: accepted draws (valid matrix) in draw order, per id.
     std::vector<std::pair<std::uint64_t, std::uint32_t>> instances;
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
+      // TASK-090 live world: with the world on, the snapshot also carries its passes (all_draws); this build is the car
+      // pass only. With the world off the snapshot is car-only and the filter is inert, so the A/B path is unchanged.
+      if (live_world_enabled && draw.pass != gt4::coregs3::kPassCars) continue;
       const gt4::coregs3::DrawMatrix matrix = gt4::coregs3::draw_matrix(draw);
       if (!matrix.valid) {
         ++refused;
@@ -702,6 +1113,322 @@ struct PresentLayer::Impl {
     return !ranges.empty();
   }
 
+  // TASK-090 live world: selects and builds the captured sky/far-underlay/course passes of the frame the claim just
+  // swapped in. The selection is the offline world path's shared rule (`coregs3::world_item_exclusion`); the per-item GS
+  // state is the K7 pass journal (no `.gt4tap` exists in the live path, so the table's journal branch supplies it), and
+  // the pixels come from the live per-job store (`coregs3_live_world.hpp`). Every exclusion, refusal and simplification
+  // is counted; nothing is guessed. Called on the claim thread with `world_mutex` held.
+  void build_world() {
+    world_valid = false;
+    world_vertices.clear();
+    world_ranges.clear();
+    world_atlas_used_w = 0;
+    world_atlas_used_h = 0;
+    world_built_vblank = frame.vblank;
+    gt4::coregs3::present::WorldFrameCounters counts;
+    const auto is_world_draw = [](std::uint32_t pass) {
+      return pass == gt4::coregs3::kPassSky || pass == gt4::coregs3::kPassFarUnderlay ||
+             pass == gt4::coregs3::kPassCourse;
+    };
+
+    // 1. The pixels. Each world item's packet address names the VU1 job it was posted as; the live store holds the
+    // texture/palette windows that job sampled, copied before it executed. The VramRecord copies own their bytes and
+    // live in a stable map, so the table's pointers stay valid for the build.
+    std::map<std::uint32_t, gt4::coregs3::VramRecord> live_records;
+    std::map<std::uint32_t, const gt4::coregs3::VramRecord *> live_map;
+    for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
+      if (!is_world_draw(draw.pass)) continue;
+      for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+        const gt4::coregs3::CapturedItem &item = draw.items[index];
+        if (item.packet_bytes == 0 || live_map.count(item.address) != 0) continue;
+        const std::shared_ptr<const gt4::coregs3::live_world::JobTexture> record =
+            gt4::coregs3::live_world::find(item.address);
+        if (record == nullptr) {
+          counts.texture_missing += 1;
+          continue;
+        }
+        // The measured phase: the worker's VBlank counter at a job is the capture frame's own + 1 (the tap's records
+        // carry the same relation). A record at or above that is this frame's; anything older is the same material
+        // uploaded into the same pages in an earlier frame, a counted fallback.
+        if (record->vblank >= frame.vblank + 1) {
+          counts.texture_live += 1;
+        } else {
+          counts.texture_stale += 1;
+        }
+        gt4::coregs3::VramRecord vram;
+        vram.kind = gt4::coregs3::vram::kRecordJobTexture;
+        vram.label = static_cast<std::uint32_t>(record->job);
+        vram.vblank = record->vblank;
+        vram.windows = record->windows;
+        vram.bytes = record->bytes;
+        live_records.emplace(item.address, std::move(vram));
+      }
+    }
+    for (const auto &entry : live_records) live_map.emplace(entry.first, &entry.second);
+
+    // 2. The per-frame texture table: record states for the items, the pass journal for the world items' GS state, and
+    // the live job record for their pixels. The base SLM is empty on purpose: a texture page no job window covers is
+    // refused by the decoder, never read from a stale copy.
+    gt4::coregs3::TextureFrameOptions texture_options;
+    texture_options.use_tap = false;
+    texture_options.world_channels = true;
+    texture_options.live_job_textures = &live_map;
+    gt4::coregs3::FrameTextureTable table;
+    gt4::coregs3::TextureFrameCounters texture_counters;
+    std::string table_error;
+    if (!gt4::coregs3::build_frame_texture_table(frame, world_base_slm, nullptr, {}, texture_options, table,
+                                                 texture_counters, table_error)) {
+      std::fprintf(stderr, "[coregs3] live world: texture table refused: %s\n", table_error.c_str());
+      counts.refused_draws += 1;
+      gt4::coregs3::present::note_world_frame(counts);
+      return;
+    }
+    counts.mip_defaulted += static_cast<std::uint32_t>(texture_counters.records_level0_fallback);
+
+    // 3. Select and build. Instance numbering is the timeline's exactly (accepted draws in draw order, per id), so the
+    // per-tick overrides find the same object.
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> instances;
+    std::map<const gt4::coregs3::SampledTexture *, AtlasPlacement> atlas;
+    std::uint32_t atlas_x = 0, atlas_y = 0, atlas_row_height = 0;
+    for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
+      const gt4::coregs3::DrawMatrix matrix = gt4::coregs3::draw_matrix(draw);
+      if (!matrix.valid) continue;
+      gt4::coregs3::ObjectKey key = gt4::coregs3::object_key(draw);
+      std::uint32_t instance = 0;
+      bool known = false;
+      for (auto &entry : instances)
+        if (entry.first == key.id) {
+          instance = entry.second;
+          entry.second += 1;
+          known = true;
+          break;
+        }
+      if (!known) instances.push_back({key.id, 1u});
+      key.instance = instance;
+      if (!is_world_draw(draw.pass)) {
+        // The reflection pass joins when its alpha-only contribution is drawn (the offline wet-reflection milestone);
+        // this first live world leaves it to the GS base and counts it.
+        if (draw.pass == gt4::coregs3::kPassReflection) counts.skipped_reflection += draw.item_count;
+        continue;
+      }
+      if (!live_world_background &&
+          (draw.pass == gt4::coregs3::kPassSky || draw.pass == gt4::coregs3::kPassFarUnderlay)) {
+        // The sky and the far underlay are the pass's own background layers: the sky is a skybox that covers the whole
+        // viewport and the far underlay a distant fill. Drawing either over the CoreGS 2.0 image would hide the GS sky,
+        // the HUD and every 2D layer the base already has, so the first live world keeps the base's background and draws
+        // only the course (`GT4_COREGS3_WORLD_BACKGROUND=1` restores both). The items are counted per pass.
+        for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+          if (draw.items[index].packet_bytes == 0) continue;
+          if (draw.pass == gt4::coregs3::kPassSky) ++counts.sky_skipped;
+          else ++counts.far_skipped;
+        }
+        continue;
+      }
+
+      const gt4::coregs3::ChannelScan scan =
+          gt4::coregs3::scan_channels(frame.packets.data(), frame.packets.size(), draw, true);
+      const std::vector<gt4::coregs3::TextureBinding> *bindings = table.for_draw(draw.sequence);
+      std::vector<std::uint8_t> item_mask(draw.item_count, 0);
+      std::uint32_t selected = 0;
+      for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+        const gt4::coregs3::CapturedItem &item = draw.items[index];
+        gt4::coregs3::WorldItemInput input;
+        input.pass = draw.pass;
+        input.run_valid = item.run_valid != 0;
+        input.dispatch = input.run_valid ? (item.run_itop & 0x3FFu) * 8u : 0u;
+        input.has_position = index < scan.items.size() && scan.items[index].has_position && item.packet_bytes != 0;
+        const gt4::coregs3::MorphBlend morph = gt4::coregs3::morph_blend_of(draw);
+        input.shape_status =
+            item.packet_bytes != 0
+                ? gt4::coregs3::world_shape_status(frame.packets.data(), frame.packets.size(), item, morph, nullptr)
+                : gt4::coregs3::WorldShapeStatus::unsupported_program;
+        const gt4::coregs3::SampleState *state =
+            bindings != nullptr && index < bindings->size() ? &(*bindings)[index].state : nullptr;
+        if (state != nullptr) {
+          input.state_known = state->from_tap;
+          input.xyoffset_known = state->xyoffset_known;
+          input.xyoffset = state->xyoffset;
+          input.test_known = state->test_known;
+          input.test = state->test;
+          input.test_zero = state->world_test_zero;
+        }
+        switch (gt4::coregs3::world_item_exclusion(input)) {
+        case gt4::coregs3::WorldExclusion::none: item_mask[index] = 1; ++selected; break;
+        case gt4::coregs3::WorldExclusion::itop_other: ++counts.excluded_itop; break;
+        case gt4::coregs3::WorldExclusion::shape_refused: ++counts.excluded_shape; break;
+        case gt4::coregs3::WorldExclusion::no_position: ++counts.excluded_no_position; break;
+        case gt4::coregs3::WorldExclusion::no_state: ++counts.excluded_no_state; break;
+        case gt4::coregs3::WorldExclusion::mirror: ++counts.excluded_mirror; break;
+        default: break;
+        }
+      }
+      if (selected == 0) continue;
+      gt4::coregs3::MeshOptions mesh_options;
+      mesh_options.world_channels = true;
+      mesh_options.item_mask = item_mask.data();
+      gt4::coregs3::Mesh mesh;
+      std::string mesh_error;
+      if (!gt4::coregs3::build_mesh(frame.packets.data(), frame.packets.size(), draw, mesh_options, mesh, mesh_error) ||
+          mesh.indices.empty()) {
+        ++counts.refused_draws;
+        continue;
+      }
+      ++counts.draws;
+      counts.items += selected;
+      counts.vertices += mesh.vertices.size();
+      counts.triangles += mesh.indices.size() / 3;
+
+      // One range per contiguous run of triangles of one item: each carries its item's GS state and texture binding.
+      WorldRange current;
+      bool have_range = false;
+      std::uint32_t current_item = 0xFFFFFFFFu;
+      const auto close_range = [&] {
+        if (!have_range) return;
+        if (current.count != 0) world_ranges.push_back(current);
+        have_range = false;
+      };
+      const auto open_range = [&](std::uint32_t item_index) {
+        WorldRange next;
+        next.sky = draw.pass == gt4::coregs3::kPassSky;
+        next.object_id = key.id;
+        next.object_instance = key.instance;
+        WorldPush &push = next.push;
+        for (int column = 0; column < 4; ++column)
+          for (int row = 0; row < 4; ++row) push.columns[column * 4 + row] = matrix.row[row][column];
+        const gt4::coregs3::TextureBinding *binding =
+            bindings != nullptr && item_index < bindings->size() ? &(*bindings)[item_index] : nullptr;
+        const gt4::coregs3::SampleState state =
+            binding != nullptr ? binding->state : gt4::coregs3::measured_sample_state();
+        push.test = static_cast<std::uint32_t>(state.test & 0xFFFFFFFFu);
+        push.alpha = static_cast<std::uint32_t>(state.alpha & 0xFFFFFFFFu);
+        push.fbmsk = state.fbmsk;
+        std::uint32_t flags = 0;
+        const bool alpha_test = (state.test & 1u) != 0;
+        const std::uint32_t afail = static_cast<std::uint32_t>((state.test >> 12) & 3u);
+        if (alpha_test) {
+          flags |= kWorldFlagAlphaTest;
+          if (afail != 0) {
+            flags |= kWorldFlagAlphaFailDefaulted;
+            ++counts.alpha_fail_defaulted;
+          }
+        }
+        if (((state.prim >> 5) & 1u) != 0) {
+          flags |= kWorldFlagFogDeferred;
+          ++counts.fog_deferred;
+        }
+        if (((state.prim >> 6) & 1u) != 0) {
+          flags |= kWorldFlagBlendDeferred;
+          ++counts.blend_deferred;
+        }
+        if (draw.pass != gt4::coregs3::kPassSky) {
+          // The world pipeline implements the measured course rule (ZTE on, ZTST GEQUAL). A pass or item whose journal
+          // TEST asks for another depth rule is drawn with that rule and counted, never silently assumed to match.
+          const std::uint32_t zte = (push.test >> 16) & 1u;
+          const std::uint32_t ztst = (push.test >> 17) & 3u;
+          if (zte == 0 || ztst != 2) ++counts.depth_defaulted;
+        }
+        if (binding != nullptr && binding->texture != nullptr &&
+            gt4::coregs3::check_world_binding(*binding) == gt4::coregs3::BindingStatus::ok) {
+          const gt4::coregs3::SampledTexture &sampler = *binding->texture;
+          auto found = atlas.find(&sampler);
+          if (found == atlas.end()) {
+            if (sampler.rgba == nullptr || sampler.width == 0 || sampler.height == 0 ||
+                sampler.width > kAtlasWidth || sampler.height > kAtlasHeight) {
+              ++counts.atlas_refused;
+            } else {
+              if (atlas_x + sampler.width > kAtlasWidth) {
+                atlas_x = 0;
+                atlas_y += atlas_row_height;
+                atlas_row_height = 0;
+              }
+              if (atlas_y + sampler.height > kAtlasHeight) {
+                ++counts.atlas_refused;
+              } else {
+                AtlasPlacement placement;
+                placement.x = atlas_x;
+                placement.y = atlas_y;
+                for (std::uint32_t row = 0; row < sampler.height; ++row)
+                  std::memcpy(world_atlas_pixels.data() +
+                                  (static_cast<std::size_t>(placement.y + row) * kAtlasWidth + placement.x) * 4u,
+                              sampler.rgba + static_cast<std::size_t>(row) * sampler.width * 4u,
+                              static_cast<std::size_t>(sampler.width) * 4u);
+                atlas_x += sampler.width;
+                atlas_row_height = std::max(atlas_row_height, sampler.height);
+                world_atlas_used_w = std::max(world_atlas_used_w, placement.x + sampler.width);
+                world_atlas_used_h = std::max(world_atlas_used_h, placement.y + sampler.height);
+                found = atlas.emplace(&sampler, placement).first;
+                ++counts.atlas_textures;
+              }
+            }
+          }
+          if (found != atlas.end()) {
+            const AtlasPlacement &placement = found->second;
+            push.tex0_lo = static_cast<std::uint32_t>(sampler.source_tex0 & 0xFFFFFFFFu);
+            push.tex0_hi = static_cast<std::uint32_t>(sampler.source_tex0 >> 32);
+            push.clamp_lo = static_cast<std::uint32_t>(sampler.source_clamp & 0xFFFFFFFFu);
+            push.clamp_hi = static_cast<std::uint32_t>(sampler.source_clamp >> 32);
+            push.atlas_origin = placement.x | (placement.y << 16);
+            push.atlas_rect = (sampler.x0 | (sampler.y0 << 16));
+            push.atlas_size = (sampler.width | (sampler.height << 16));
+            flags |= kWorldFlagTextured;
+            if (sampler.mmag != 0 || sampler.mmin != 0) ++counts.filter_defaulted;
+          }
+        } else if (binding != nullptr && binding->texture != nullptr) {
+          ++counts.texture_refused;
+        } else {
+          ++counts.texture_untextured;
+        }
+        push.flags = flags;
+        current = next;
+        have_range = true;
+      };
+
+      for (std::size_t triangle = 0; triangle + 2 < mesh.indices.size(); triangle += 3) {
+        const gt4::coregs3::MeshVertex &first = mesh.vertices[mesh.indices[triangle]];
+        if (!have_range || first.item != current_item) {
+          close_range();
+          current_item = first.item;
+          open_range(first.item);
+          current.first = static_cast<std::uint32_t>(world_vertices.size());
+        }
+        for (std::uint32_t corner = 0; corner < 3; ++corner) {
+          const gt4::coregs3::MeshVertex &source = mesh.vertices[mesh.indices[triangle + corner]];
+          WorldVertex vertex;
+          if (source.has_lane_position) {
+            vertex.x = static_cast<float>(source.lane_position[0]);
+            vertex.y = static_cast<float>(source.lane_position[1]);
+            vertex.z = static_cast<float>(source.lane_position[2]);
+          } else if (source.has_raw_position) {
+            vertex.x = static_cast<float>(source.raw_position[0]);
+            vertex.y = static_cast<float>(source.raw_position[1]);
+            vertex.z = static_cast<float>(source.raw_position[2]);
+          } else {
+            vertex.x = source.position[0];
+            vertex.y = source.position[1];
+            vertex.z = source.position[2];
+          }
+          vertex.red = source.color[0];
+          vertex.green = source.color[1];
+          vertex.blue = source.color[2];
+          vertex.alpha = source.color[3];
+          vertex.u = source.uv[0];
+          vertex.v = source.uv[1];
+          world_vertices.push_back(vertex);
+          current.count += 1;
+        }
+      }
+      close_range();
+    }
+    world_valid = !world_ranges.empty();
+    if (!world_valid && (counts.draws != 0 || counts.excluded_itop + counts.excluded_shape +
+                                              counts.excluded_no_state + counts.excluded_mirror +
+                                              counts.excluded_no_position != 0)) {
+      std::fprintf(stderr, "[coregs3] live world: no drawable world ranges in frame %llu (draws %u)\n",
+                   static_cast<unsigned long long>(frame.vblank), counts.draws);
+    }
+    gt4::coregs3::present::note_world_frame(counts);
+  }
+
   // Claims the newest complete captured frame and records it in the presentation timeline. Called once per guest
   // VBlank by the backend, whether or not a picture is drawn: the timeline must sample every 60 Hz guest state.
   bool note_guest_frame(std::string &error) {
@@ -712,6 +1439,12 @@ struct PresentLayer::Impl {
     if (!gt4::coregs3::present::claim_latest(frame)) return true;  // no new complete frame
     has_frame = true;
     gt4::coregs3::present::note_guest_frame(frame);
+    if (live_world_enabled) {
+      // The build itself is lazy (render() runs it when a tick is due), so a headless run that draws one frame in 200
+      // does not pay the world's CPU work on the other 199. The flag is set under the mutex that also guards the build.
+      const std::lock_guard<std::mutex> lock(world_mutex);
+      world_pending = true;
+    }
     return true;
   }
 
@@ -785,6 +1518,25 @@ struct PresentLayer::Impl {
     }
     std::memcpy(vertex_mapped, vertices.data(), static_cast<std::size_t>(vertex_bytes));  // coherent: no flush
 
+    // TASK-090 live world: a new frame's world data is uploaded once, before its first tick. The claim thread built it
+    // under `world_mutex` (render holds it for the whole tick loop), and the previous submission was waited for above.
+    const bool upload_world = live_world_enabled && world_valid && world_uploaded_vblank != world_built_vblank;
+    if (upload_world) {
+      const VkDeviceSize world_bytes = static_cast<VkDeviceSize>(world_vertices.size()) * sizeof(WorldVertex);
+      if (!ensure_world_vertex_buffer(world_bytes, error)) return false;
+      if (world_bytes != 0)
+        std::memcpy(world_vertex_mapped, world_vertices.data(), static_cast<std::size_t>(world_bytes));
+      // The atlas staging holds only the used top-left rectangle, row by row, which is the region copied to the image.
+      if (world_atlas_used_w != 0 && world_atlas_used_h != 0) {
+        std::uint8_t *mapped = static_cast<std::uint8_t *>(atlas_staging_mapped);
+        for (std::uint32_t row = 0; row < world_atlas_used_h; ++row)
+          std::memcpy(mapped + static_cast<std::size_t>(row) * world_atlas_used_w * 4u,
+                      world_atlas_pixels.data() + static_cast<std::size_t>(row) * kAtlasWidth * 4u,
+                      static_cast<std::size_t>(world_atlas_used_w) * 4u);
+      }
+      world_uploaded_vblank = world_built_vblank;
+    }
+
     VkImageView target_view = VK_NULL_HANDLE;
     VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view_info.image = reinterpret_cast<VkImage>(target);
@@ -821,6 +1573,36 @@ struct PresentLayer::Impl {
       return false;
     }
     record_base_copy(reinterpret_cast<VkImage>(target), width, height, first_tick);
+    // The atlas copy goes before the render pass: its last use in the previous tick was the fragment stage, and the
+    // barrier below hands it to the transfer stage and back to the fragment stage as a readable storage image.
+    if (upload_world && world_atlas_used_w != 0 && world_atlas_used_h != 0) {
+      VkImageMemoryBarrier to_transfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      to_transfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      to_transfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      to_transfer.oldLayout = atlas_general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
+      to_transfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      to_transfer.image = atlas_image;
+      to_transfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                  nullptr, 0, nullptr, 1, &to_transfer);
+      VkBufferImageCopy region{};
+      region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.imageExtent = {world_atlas_used_w, world_atlas_used_h, 1};
+      region.bufferRowLength = world_atlas_used_w;
+      gt4_hwd_vkCmdCopyBufferToImage(command, atlas_staging, atlas_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                     &region);
+      VkImageMemoryBarrier to_shader = to_transfer;
+      to_shader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      to_shader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      to_shader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      to_shader.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                                  nullptr, 0, nullptr, 1, &to_shader);
+      atlas_general = true;
+    }
+    if (queries_enabled) gt4_hwd_vkCmdResetQueryPool(command, query_pool, 0, 2);
     VkClearValue clear{};
     clear.depthStencil = {0.0f, 0};
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -834,9 +1616,41 @@ struct PresentLayer::Impl {
     gt4_hwd_vkCmdSetViewport(command, 0, 1, &viewport);
     VkRect2D scissor{{0, 0}, {width, height}};
     gt4_hwd_vkCmdSetScissor(command, 0, 1, &scissor);
-    gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     gt4_hwd_vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 0,
                                     nullptr);
+    last_world_draw_calls = 0;
+    // TASK-090 live world: the sky first (background: no depth test or write), then the far underlay and the course
+    // (depth = 1/cw, GEQUAL like the car pass, so the world and the cars occlude each other correctly), then the cars.
+    if (live_world_enabled && world_valid && !world_ranges.empty()) {
+      if (queries_enabled) gt4_hwd_vkCmdBeginQuery(command, query_pool, 0, 0);
+      const VkDeviceSize world_offset = 0;
+      gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &world_vertex_buffer, &world_offset);
+      gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, world_sky_pipeline);
+      const auto draw_world_range = [&](const WorldRange &range) {
+        WorldPush push = range.push;
+        // The presentation timeline's matrix for this object: at 60 Hz it is the captured one (byte-identical), between
+        // ticks it is the interpolated one, in the same row-major upload space draw_matrix.row produces.
+        for (const gt4::coregs3::DrawTransform &candidate : transforms) {
+          if (candidate.key.id != range.object_id || candidate.key.instance != range.object_instance) continue;
+          for (int column = 0; column < 4; ++column)
+            for (int row = 0; row < 4; ++row)
+              push.columns[column * 4 + row] = candidate.matrix[row * 4 + column];
+          break;
+        }
+        gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof push, &push);
+        gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
+        ++last_world_draw_calls;
+      };
+      for (const WorldRange &range : world_ranges)
+        if (range.sky) draw_world_range(range);
+      gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline);
+      for (const WorldRange &range : world_ranges)
+        if (!range.sky) draw_world_range(range);
+      if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 0);
+    }
+    if (queries_enabled) gt4_hwd_vkCmdBeginQuery(command, query_pool, 1, 0);
+    gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const VkDeviceSize offset = 0;
     gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &vertex_buffer, &offset);
     for (const DrawRange &range : ranges) {
@@ -844,6 +1658,7 @@ struct PresentLayer::Impl {
                                  range.columns);
       gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
     }
+    if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 1);
     gt4_hwd_vkCmdEndRenderPass(command);
     {
       // The next reader is the present copy, the dump readback (a transfer) or the next tick's restore copy.
@@ -875,6 +1690,16 @@ struct PresentLayer::Impl {
       error = "vkWaitForFences failed after the CoreGS 3.0 present pass";
       return false;
     }
+    last_world_samples = 0;
+    last_car_samples = 0;
+    if (queries_enabled) {
+      std::uint64_t results[2] = {0, 0};
+      if (gt4_hwd_vkGetQueryPoolResults(device, query_pool, 0, 2, sizeof results, results, sizeof(std::uint64_t),
+                                        VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+        last_world_samples = results[0];
+        last_car_samples = results[1];
+      }
+    }
     destroy_target_view();
     return true;
   }
@@ -897,9 +1722,21 @@ struct PresentLayer::Impl {
       first_tick = std::min(timeline.selected_tick, batch.count - 1u);
       tick_count = 1;
     }
+    if (present_debug)
+      std::fprintf(stderr, "[coregs3] present render frame %llu ticks %u first %llu\n",
+                   static_cast<unsigned long long>(frame.vblank), tick_count,
+                   static_cast<unsigned long long>(batch.first));
     if (!ensure_depth(width, height, error)) return false;
     if (!ensure_base_image(width, height, error)) return false;
     bool drew_any = false;
+    // The world build and the tick's draw share the built ranges, vertices and atlas; one mutex covers both sides. The
+    // build is lazy: a new claimed frame is built here, on the first tick that actually draws, never on the guest's
+    // VBlank path.
+    const std::lock_guard<std::mutex> world_lock(world_mutex);
+    if (live_world_enabled && world_pending) {
+      build_world();
+      world_pending = false;
+    }
     for (std::uint32_t tick = first_tick; tick < first_tick + tick_count; ++tick) {
       const std::uint64_t instant = batch.first + static_cast<std::uint64_t>(tick) * batch.step;
       gt4::coregs3::present::interpolated_transforms(instant, transforms, /*count=*/true);
@@ -907,14 +1744,17 @@ struct PresentLayer::Impl {
       std::uint32_t unlit_draws = 0;
       std::uint64_t unlit_vertices = 0;
       gt4::coregs3::LightCounters lighting;
-      if (frame.draw_count == 0 ||
-          !build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices, lighting)) {
-        gt4::coregs3::present::note_pass_refused(refused);
-        continue;
-      }
+      const bool car_drawn =
+          frame.draw_count != 0 &&
+          build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices, lighting);
+      if (!car_drawn) gt4::coregs3::present::note_pass_refused(refused);
+      const bool world_drawn = live_world_enabled && world_valid && !world_ranges.empty();
+      if (!car_drawn && !world_drawn) continue;
       if (!draw_tick(target, width, height, submit, !drew_any, error)) return false;
       drew_any = true;
       gt4::coregs3::present::note_draw_tick();
+      if (world_drawn)
+        gt4::coregs3::present::note_world_tick(last_world_draw_calls, last_world_samples);
       const std::uint64_t vertex_count = static_cast<std::uint64_t>(vertices.size());
       gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused, unlit_draws,
                                         vertex_count, unlit_vertices, vertex_count / 3u, lighting);
@@ -951,6 +1791,15 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
     error = "the device cannot use R32_UINT as a storage image";
     return false;
   }
+  // The live world's resources are created inside create_objects, so its switch must be known before that call: the
+  // store is configured by the hooks in `present`, and only an unusual build order needs the fallback parse here.
+  if (!gt4::coregs3::live_world::configured()) gt4::coregs3::live_world::configure_from_environment();
+  s.live_world_enabled = gt4::coregs3::live_world::active();
+  if (const char *background = std::getenv("GT4_COREGS3_WORLD_BACKGROUND");
+      background != nullptr && std::strcmp(background, "1") == 0)
+    s.live_world_background = true;
+  s.present_debug = std::getenv("GT4_COREGS3_PRESENT_DEBUG") != nullptr;
+
   std::vector<std::string> missing;
   if (!gt4::hw::vulkan_device::load_device_entry_points(config.instance, missing)) {
     error = "missing Vulkan entry points for the CoreGS 3.0 present layer:";
@@ -976,9 +1825,10 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   const gt4::coregs3::present::TimelineConfig &timeline = gt4::coregs3::present::timeline_config();
   std::fprintf(stderr,
                "[coregs3] present layer: R32_UINT storage image, D32 depth, depth clamp, vf24..vf27 push constant, "
-               "%u Hz %s%s\n",
+               "%u Hz %s%s, live world %s\n",
                timeline.hz, gt4::coregs3::presentation_mode_name(timeline.mode),
-               timeline.selected_tick == UINT32_MAX ? "" : " (diagnostic: one tick per frame)");
+               timeline.selected_tick == UINT32_MAX ? "" : " (diagnostic: one tick per frame)",
+               s.live_world_enabled ? "on" : "off");
   return true;
 }
 

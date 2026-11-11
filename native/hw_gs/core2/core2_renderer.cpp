@@ -6143,6 +6143,8 @@ const std::uint8_t *Renderer::Slm() {
     return impl_->memory_.Local().bytes().data();
 }
 
+const std::uint8_t *Renderer::Coregs3Slm() const { return impl_->memory_.Local().bytes().data(); }
+
 const writeback::Counters &Renderer::GetCounters() const { return impl_->counters; }
 const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.ropBatches = impl_->gpu_.Stats().ropBatches;

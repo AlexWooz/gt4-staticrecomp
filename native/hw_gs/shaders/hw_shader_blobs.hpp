@@ -103,6 +103,10 @@ extern const std::uint32_t coregs3_present_vertex_words[];
 extern const std::size_t coregs3_present_vertex_word_count;
 extern const std::uint32_t coregs3_present_fragment_words[];
 extern const std::size_t coregs3_present_fragment_word_count;
+extern const std::uint32_t coregs3_world_vertex_words[];
+extern const std::size_t coregs3_world_vertex_word_count;
+extern const std::uint32_t coregs3_world_fragment_words[];
+extern const std::size_t coregs3_world_fragment_word_count;
 
 // Exactness compute entry points (fixture only; never linked into the game).
 extern const std::uint32_t hw_blend_exact_words[];

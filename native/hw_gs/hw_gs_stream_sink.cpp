@@ -12,6 +12,7 @@
 
 #include "coregs3_gif.hpp"
 #include "coregs3_texwin.hpp"
+#include "coregs3_live_world.hpp"
 #include "coregs3_vram.hpp"
 #include "thread_placement.hpp"
 #include "hw_cpu_sampler.hpp"
@@ -951,7 +952,7 @@ private:
     // TASK-090 pass textures: with a `.gt4vram` capture configured, the job's records are buffered so its texture pages
     // can be copied *before* any of them executes. The captures are taken in the stream, on this thread, with the
     // backend lock held; the cost exists only while GT4_COREGS3_VRAM is set.
-    if (gt4::coregs3::vram::snapshot_sink_installed()) {
+    if (gt4::coregs3::vram::snapshot_sink_installed() || gt4::coregs3::live_world::active()) {
       jobBytes_.clear();
       jobRecords_.clear();
       for (;;) {
@@ -1054,8 +1055,11 @@ private:
     }
     if (windowCount == 0) return;
     std::lock_guard<std::mutex> backendLock(backendMutex_);
-    backend().coregs3_snapshot(gt4::coregs3::vram::kRecordJobTexture, 0, static_cast<std::uint32_t>(job), g_vsyncs,
-                               windows, windowCount);
+    // TASK-090 live world: the same snapshot, kept in memory for the live renderer instead of written at shutdown.
+    if (gt4::coregs3::live_world::active()) backend().coregs3_live_textures(job, g_vsyncs, windows, windowCount);
+    if (gt4::coregs3::vram::snapshot_sink_installed())
+      backend().coregs3_snapshot(gt4::coregs3::vram::kRecordJobTexture, 0, static_cast<std::uint32_t>(job), g_vsyncs,
+                                 windows, windowCount);
   }
 
   std::vector<std::uint8_t> jobBytes_;
