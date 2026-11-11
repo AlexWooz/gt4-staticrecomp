@@ -2180,6 +2180,27 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   composite after the world/cars. The stream census must settle the post-chain/HUD ordering first. No code change;
   design, constraints and gates: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md).
 
+- **Live world picture round (2026-11-11, branch `task/090-live-world`).** The live world now draws the captured course
+  with the **emitted per-vertex fog**, the **GS bilinear** and the **emitted per-item TEX0/TEX1/CLAMP state**, from an
+  in-memory tap built from the GS worker's job records (no `.gt4tap` file): the worker keeps every VU1 job's PATH1 GIF
+  records in emission order and the backend copies the frame-end GS local memory over blocks 0x2BC0..0x3FFF at the
+  VBlank flush; the world build synthesizes the tap view for its own packet addresses and pairs the emitted state, UVs
+  and fog. At VBlank 7400 the table bound **1,262 items from the emitted state** (offline 1,268), 41 record fallbacks,
+  **0 decode/state refusals**; the pre-round record path left 2,938 of the window's 5,112 items untextured (2,886
+  refused), the same window now has 52 (8 no-record, 44 no-UV) and 0 refusals, skipped by name leaving the base
+  pixel, never a bright vertex colour; the
+  billboards now show their textures. Fog uses the GS integer mix toward FOGCOL with a `noperspective` varying (a fit
+  study found the emitted fog is linear in clip w per item but its constants are not in the capture, so the emitted
+  record is the source); bilinear implements the GS four-tap arithmetic. Measured VBlanks 6600-7400: 3,853 items /
+  108,677 triangles / 988 atlas textures / 0 refusals, 4,920 fog items (12,756 vertices on the 255 identity), 4,980
+  bilinear items, 12 level-0 mip fallbacks, 600 blend-deferred (ABE still not reproduced). Frame-locked A/B at 7400:
+  world mask 2,505,741 px, mean |diff| 18.825, PSNR 17.346 dB, luma 24.687 / 27.423 / 28.628; fog vs no-fog 2,293,927 px
+  (mean 2.59, and fogged is closer to the reference: 18.83/17.35 vs 19.58/16.86); bilinear vs nearest 990,784 px (mean
+  3.17, bilinear closer: 18.83/17.35 vs 18.90/17.23). Switches `GT4_COREGS3_WORLD_FOG=0`, `GT4_COREGS3_WORLD_FILTER=nearest`.
+  Gates: CTest coregs3 **20/20**, Python **17/17**, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), on a clean rebuild (object and
+  executable rebuilt; executable SHA-256 b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design in
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32.
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages

@@ -767,9 +767,10 @@ cannot be explained after one derivation round.
 
 The first live step is in: the captured main-view course is drawn natively in the game window over the CoreGS 2.0
 image (hooks §30). The sky and far underlay are kept from the base by default (they are background layers that would
-hide it); `GT4_COREGS3_WORLD_BACKGROUND=1` draws them. Fog, billboards, CLUT animation, the wet reflection and the post
-chain remain the Phase-3 work; the course's item state is the pass journal's, not the tap's, until the tapped state is
-wired into the live path.
+hide it); `GT4_COREGS3_WORLD_BACKGROUND=1` draws them. The 2026-11-11 picture round (hooks §32) wires the live
+in-memory tap: the emitted per-item TEX0/TEX1/CLAMP state and UVs bind the items the record path refused, the emitted
+per-vertex fog is applied with the GS mix, and linear items sample with the GS bilinear; the remaining untextured
+items are skipped by name. CLUT animation, the wet reflection and the post chain remain the Phase-3 work.
 
 
 ### Phase 4: "it rendered a race": the 3D frame is CoreGS 3.0's

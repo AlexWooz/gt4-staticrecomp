@@ -2268,3 +2268,91 @@ world-mask measurements of §31.3.
   frames and the identity gate) is 3x, and the offline CPU renderer was validated at 3x; neither is used by the live
   path. The occlusion sample counter is a pixel count and is resolution dependent by definition.
 
+
+## 32. Round 31 (2026-11-11, branch `task/090-live-world`): the live tap, the emitted fog and the GS bilinear
+
+Continuation of §31 in the same worktree. The live world drew the captured course but deferred fog (all items), sampled
+everything nearest and dropped ~1,500 items on record-path refusals (bright vertex-colour billboards). This round
+restores the three gaps from the GS worker's own job records, with no capture file.
+
+### 32.1 The live in-memory tap (C)
+
+The GS worker already buffers each VU1 job's PATH1 GIF records to snapshot its texture windows. It now also copies the
+records into `coregs3_live_world` (`note_job_stream`, with a global emission sequence and the job id), and
+`build_tap_snapshot(frame.vblank, addresses, ...)` synthesizes the `.gt4tap` view for the world items' packet addresses:
+one source record per requested address (stamped with the captured frame, which is what the table's pairing filters on)
+plus the stored GIF records. Two measured details:
+
+- **The state-only records matter.** The VU1 emits the TEX0/TEX1/CLAMP writes in vertex-less records that may belong to
+  another job, so the snapshot keeps **every** stored record in emission order (the offline tap file's walk) while the
+  source records stay filtered to the world addresses. Filtering the GIF records to the items' own jobs left the
+  tracked state incomplete (`incomplete tapped texture state`, 708 refusals at VBlank 7400); the full walk reaches 0.
+- **The base image matters.** A carried texture can name a page the item's own job did not write; with the empty base
+  the decode refused it (`sidecar does not cover texture block 12891`). The backend's VBlank flush now copies the GS
+  local memory over the measured world range `0x2BC0..0x3FFF` into the store (`note_vram_base`) — the `.gt4vram` vblank
+  record's role; the job records take precedence and the base serves the carried pages.
+
+The table is built with `use_tap = true`; the pixels still come from the live per-job store. The emitted records are one
+guest frame old (the same lag as the textures), counted by `texture_stale`; the snapshot is bounded (64 MiB) and kept
+small by the address filter.
+
+### 32.2 Fog (C)
+
+The world vertex carries the emitted fog byte as a `noperspective` varying (the GS fog lane has no Q and is
+interpolated screen-linearly); the fragment applies the GS integer mix toward FOGCOL,
+`(f*c + (255-f)*fogcol) >> 8` with the alpha unchanged, before the alpha test and the FBMSK merge — the arithmetic of
+`coregs3::apply_vertex_fog`. A vertex without an emitted fog value keeps the 255 identity and is counted
+(`fog_missing`); the sky pass stays unfogged. `GT4_COREGS3_WORLD_FOG=0` is the A/B.
+
+A formula study on the tap (`gt4_coregs3_render --fog-dump`, one line per vertex: draw, item, local, clip w, tapped fog)
+found the emitted fog is **linear in the clip-space w per item/draw** (697 of 802 varying items fit within one level,
+median 0.09) but with per-item constants that are not in the captured packet, the light block or the pass journal: a
+global fit on the captured scene parameters (the 0.2/0.05/0.1 fog densities, the 10/86.05 floats) is 10-14 levels off.
+The emitted record is therefore the tap-free source; a guessed formula is not.
+
+### 32.3 GS bilinear (C)
+
+A linear item (TEX1 MMAG = MMIN = linear, the only mixed-free form the binding accepts) samples with the GS bilinear:
+`(u-0.5)` to a floor base, 4-bit weights, the four taps wrapped independently with the four CLAMP modes, sum >> 8, then
+MODULATE — the arithmetic of `coregs3::sample_texture`. The atlas holds the decoded RGBA8 at level 0;
+`GT4_COREGS3_WORLD_FILTER=nearest` is the A/B; `filter_linear` counts the items sampled bilinear.
+
+### 32.4 Untextured items (C)
+
+With the emitted state and the base, the record-path refusals (mip records, the external texture cursor) bind the pixels
+the draw actually sampled: at VBlank 7400 the table bound **1,262 items from the emitted state** (offline 1,268), 41
+record fallbacks and **0 decode/state refusals**; the pre-round record path left 2,938 of the window's 5,112 world
+items untextured (2,886 refused), the same window now has 52 (8 no-record, 44 no-UV) and 0 refusals. The remaining
+untextured items are skipped by name (`texture_no_record`, `texture_no_uv`, `texture_texgen`,
+`texture_refused`) and leave the CoreGS 2.0 base pixel — never a constant bright vertex colour. The billboards that were
+white blobs now show their textures in the present image.
+
+### 32.5 Measurements (VBlanks 6600-7400)
+
+VBlanks 6600-7400, 5 dumps: 3,853 items, 195,711 mesh vertices, 108,677 triangles, 328 draws, 3,825 draw calls, 988
+atlas textures, 0 atlas/draw refusals; fog applied to 4,920 ranges with 12,756 vertices on the 255 identity; 4,980
+bilinear items; 12 level-0 mip fallbacks; 600 blend-deferred items (ABE is still not reproduced). Frame-locked A/B at
+VBlank 7400 (on and off claim the same guest frame): world mask 2,505,741 px; against the r8 reference frame 07400 mean
+|diff| 18.825, PSNR 17.346 dB, luma 24.687 / 27.423 / 28.628 (world / base / reference) — the structural match improved
+over the pre-round (20.80 / 16.11 dB) while the absolute level is darker than the base, which carries the post chain the
+live world does not. Fog on vs `GT4_COREGS3_WORLD_FOG=0`: 2,293,927 px, mean 2.59; fogged is closer to the reference
+(18.83 / 17.35 vs 19.58 / 16.86). Bilinear vs `GT4_COREGS3_WORLD_FILTER=nearest`: 990,784 px, mean 3.17; bilinear is
+closer (18.83 / 17.35 vs 18.90 / 17.23). Present images: `build/evidence-live-world/night-fog-diag2/frames/frame_07400.ppm`
+(the billboards textured; the pre-round image at `build/evidence-live-world/night-liveworld-race-07400.png` has the white
+blobs).
+
+### 32.6 Gates
+
+| Gate | Result |
+|---|---|
+| CTest coregs3 (`native_coregs3_live_world`, the extended pass-texture fixture) | **20/20 passed** |
+| Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **17/17 passed** |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, clean rebuild SHA-256 `b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f`) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B |
+| Frame-locked A/B (on/off/nofog/nofilter, the same claimed frame) | the numbers of §32.5 |
+
+Two earlier runs of the same gate reported the 512-word race-object state difference in the reference run's
+dump (0 clock/digest differences, 13/13 frames identical); the candidate's off and shadow dumps were
+byte-identical to each other in every run and held the race object's float values, which a second reference
+run in another worktree reproduced exactly, while those outlier reference dumps held the 0xDD pattern at that
+offset. The reference dump there is not reproducible across runs; the clean rerun above (reference window with
+no other game process) is the valid one and the gate is unchanged.

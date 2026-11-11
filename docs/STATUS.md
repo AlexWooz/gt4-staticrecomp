@@ -1,5 +1,29 @@
 # Current Status
 
+## 2026-11-11: the live world picture round: the emitted fog, the GS bilinear and the tap state (TASK-090, branch `task/090-live-world`)
+
+The live world now draws the captured course with the **emitted per-vertex fog** toward FOGCOL, the **GS bilinear**, and
+the **emitted per-item TEX0/TEX1/CLAMP state**, all from an in-memory tap built from the GS worker's own job records
+(no `.gt4tap` file). The GS worker keeps every VU1 job's PATH1 GIF records (global emission order) and the backend
+copies the frame-end GS local memory over blocks 0x2BC0..0x3FFF at the VBlank flush; the world build synthesizes the
+tap view for its own packet addresses and passes it to `build_frame_texture_table` with `use_tap = true`, so the
+offline pairing attaches the emitted state, UVs and fog while the pixels come from the live job store. At VBlank 7400
+the table bound **1,262 items from the emitted state** (offline 1,268), 41 record fallbacks, **0 decode/state
+refusals**; the pre-round record path left 2,938 of the window's 5,112 world items untextured (2,886 refused),
+and the same window now has 52 untextured (8 no-record, 44 no-UV) and 0 refusals, skipped by name and leaving the
+CoreGS 2.0 base pixel instead of a bright vertex colour. The
+billboards that were white blobs now show their textures. The fog uses the emitted byte with the GS integer mix
+(`(f*c + (255-f)*fogcol) >> 8`), a `noperspective` varying; a formula study found the fog is linear in the clip-space w
+per item/draw but with per-item constants absent from the captured packets, so the emitted record (not a guessed
+formula) is the source. The A/B switches are `GT4_COREGS3_WORLD_FOG=0` and `GT4_COREGS3_WORLD_FILTER=nearest`.
+Measured VBlanks 6600-7400: 3,853 items / 108,677 triangles / 749 atlas textures / 0 refusals, 3,688 fog items with
+13,776 vertices on the 255 identity, 3,769 bilinear items, 12 level-0 mip fallbacks, 475 blend-deferred (ABE still not
+reproduced). Frame-locked A/B at VBlank 7400: world mask 2,505,741 px; mean |diff| 18.825, PSNR 17.346 dB, luma 24.687 /
+27.423 / 28.628 (world / base / reference); fog vs no-fog changes 2,293,927 px (mean 2.59) and is closer to the
+reference (18.83/17.35 vs 19.58/16.86); bilinear vs nearest changes 990,784 px (mean 3.17) and is closer (18.83/17.35 vs
+18.90/17.23). Checks: CTest coregs3 20/20, Python 17/17, the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,496,552 B), on a clean rebuild of the present object and the executable (executable SHA-256 b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design and measurements in
+[COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32.
+
 ## 2026-11-11: the 2D overlay split, design (TASK-090, phase 4 follow-up)
 
 The live world covers the CoreGS 2.0 base HUD where its geometry projects because the base composes the 3D and the
