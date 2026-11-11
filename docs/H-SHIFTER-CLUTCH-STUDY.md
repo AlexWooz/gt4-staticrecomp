@@ -185,6 +185,12 @@ The best static candidate for the gear-selection path is the group of functions 
   The caller is not in the matched decomp (it is a virtual call), and the source of the value is **Unknown**.
   `RaceSinglePlayer__updatePlay` (0x003D5FF8) updates the panel from several object getters, but the exact gear
   getter is not resolved.
+- Shift timer / rev limiter: no confirmed shift timer or rev-limiter function is in the matched decomp. The fields
+  `+0x26A`, `+0x268` and `+0x274` around `func_0037AD40` are the best candidates for a shift-in-progress flag and an
+  engagement value (**Hypothesis**). The garage helper `MCarGarage__getShiftLimit` reads `data[0xbe] * 100` from
+  the 0x600-byte car parameter block and formats it, which is a shift limit in RPM (**High confidence** from the
+  getter name and the x100 scaling; no address is recorded in `symbol_addrs.txt`). The runtime limiter that
+  enforces it is **Unknown**.
 
 A stable pointer chain to the car list is available for a later direct-write investigation:
 
