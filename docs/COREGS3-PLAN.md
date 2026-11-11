@@ -793,7 +793,7 @@ wired into the live path.
 
 Level 3 (CoreGS 3.0 owns the 3D frame) additionally needs the 2D overlay split: the base's HUD is composed before the
 world, so the live world covers it where it draws. The live world foundation (native output resolution and aspect
-included) is in place for that split.
+included) is in place for that split. Design and the blocking CoreGS 2.0 work: [COREGS3-2D-SPLIT](COREGS3-2D-SPLIT.md).
 
 ### Phase 5: other modes
 

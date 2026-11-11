@@ -2236,9 +2236,12 @@ follows:
   course pass includes the buildings, barriers and billboards behind the road. At claimed frame 7400 against the r8
   reference frame 07400: mean |diff| 20.80, PSNR 16.11 dB, luma world 28.78 / world-off 27.23 / reference 28.45 (the
   world brings the level closer and the structure remains the offline renderer's M1/M2 residual).
-- **Merged tree**: after merging `origin/task/090-coregs3` (host clock + crash fix + HUD A-Spec + texture/mip) the
-  frame-locked window claims the same frames and reproduces the mask and reference numbers above; at 120 Hz the
-  world draws both ticks of each guest frame (world ticks 12 over 6 dumped frames, 15,336 draw calls, 0 refusals).
+- **Merged tree**: after merging `origin/task/090-coregs3` (host clock + crash fix + HUD A-Spec + texture/mip) and
+  removing the one extra brace the resolution left in `render()` (`1b9c4953`), a clean rebuild (executable SHA-256
+  `78ef497f...`) reproduces the mask and reference numbers: the frame-locked window claims the same frames, world mask
+  2,533,610-2,538,072 px, mean |diff| 20.834, PSNR 16.108 dB, luma 28.759 / 27.216 / 28.444 (world / off / reference);
+  at 120 Hz the world draws both ticks of each guest frame (world ticks 12 over 6 dumped frames, 15,336 draw calls,
+  0 refusals).
 - **World-off vs base-present**: the same binary with `GT4_COREGS3_LIVE_WORLD=0` and the base executable differ by
   1,185-1,715 px per frame-locked dump, all inside the car box (x 1075-1607, y 232-862, max delta ~130): the base
   present layer's own cross-run car-overlay nondeterminism (two base runs in the same window differ by 663-1,363 px).

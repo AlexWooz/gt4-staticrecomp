@@ -1,5 +1,15 @@
 # Current Status
 
+## 2026-11-11: the 2D overlay split, design (TASK-090, phase 4 follow-up)
+
+The live world covers the CoreGS 2.0 base HUD where its geometry projects because the base composes the 3D and the
+2D layer into one image. The split is designed, not implemented: the panel marker already reaches the GS stream at
+its exact position (`kPassPanel` at guest PC `0x0033DA84`), but a 3D-only image and a 2D overlay need CoreGS 2.0 to
+compose a checkpoint at the first 2D draw and redirect the rest of the frame to a transparent overlay target; the
+present then draws the world/cars over the 3D checkpoint and composites the overlay at the guest rate. The stream
+census must settle the ordering of the post chain and the HUD draws before the cut. No code change was made; design,
+constraints and gates: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md).
+
 ## 2026-11-11: the live world, the captured course drawn in `GT4_COREGS3=present` (TASK-090, branch `task/090-live-world`)
 
 The debug-only `GT4_COREGS3=present` layer now draws the captured world with the cars: the main-view course is selected
@@ -29,9 +39,12 @@ the 2D overlay split (the world covers the base's HUD where it draws). Checks: C
 [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5. The round is merged with `task/090-coregs3` at `8547046b` (host
 clock, crash fix, HUD A-Spec, texture/mip): the world is built on a claimed frame's first presentation tick and
 drawn in `draw_presentation_tick`, so the host-clock `render_tick` per-tick presentation and the world coexist.
-Re-measured there: the frame-locked 60 Hz window claims the same frames and reproduces the mask/metrics above, and
-the 120 Hz presentation draws the world on both ticks of each guest frame (world ticks 12 over 6 dumped frames,
-draw calls 15,336) with 0 refusals; CTest coregs3 20/20 and Python 17/17 on the merged tree.
+The integration left one extra `}` in `render()`; it was removed in `1b9c4953` and everything below was re-run from a
+clean rebuild (object and executable deleted and rebuilt; executable SHA-256 `78ef497f...`). On the fixed tree the
+frame-locked 60 Hz window claims the same frames and gives world mask 2,533,610-2,538,072 px, mean |diff| 20.834,
+PSNR 16.108 dB, luma 28.759 / 27.216 / 28.444 (world / off / reference), and the 120 Hz presentation draws the world
+on both ticks of each guest frame (world ticks 12 over 6 dumped frames, draw calls 15,336) with 0 refusals; CTest
+coregs3 20/20 and Python 17/17.
 
 ## 2026-11-11: normal-race HUD census, tachometer and the fair 3x comparison (TASK-090, branch `task/090-hud-aspec`)
 
