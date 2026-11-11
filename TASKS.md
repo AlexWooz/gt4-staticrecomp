@@ -2271,6 +2271,15 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   overlay still draws the game's own HUD at its forced 16:9; the native anchors apply when CoreGS 3.0 draws the HUD
   itself (TASK-214). Evidence `build/evidence-hud-aspect/`; method [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §35.
 
+- **Integration: 2D split, HUD aspect, mip recapture and dither into the post-chain branch (2026-11-11, branch
+  `task/090-live-world`).** `origin/task/090-coregs3` merged as `a72dad9a`; the code merged without a content conflict
+  and the shared files carry both sides (the CoreGS 2.0 split with its per-tick overlay composite, and the present's
+  post chain, dither option and picture round). Docs: both entries kept; the post-chain HOOKS round renumbered §36 after
+  the incoming §34/§35. Checks on the integrated build (`887130b3798ddb12713e69fc9a6fa9d0137e332e2d63e45b2ab1e9ccc9c8eccf`): CTest coregs3 **21/21**,
+  Python **18/18**, the 3x gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), and
+  the split A/B on the A-Spec 3x scene (split on vs `GT4_COREGS3_2D_OVERLAY=0`: 1,564 frames split, 9 overlay composes,
+  0 refusals; the HUD over the world in the split image, the world covering it in the A/B).
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages

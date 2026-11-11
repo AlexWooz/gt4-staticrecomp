@@ -1,5 +1,23 @@
 # Current Status
 
+## 2026-11-11: the 2D overlay split, HUD aspect, mip recapture and dither integrated with the live post chain (TASK-090, branch `task/090-live-world`)
+
+`origin/task/090-coregs3` (the 2D overlay split `34c6c2c2`, the HUD aspect round, the mip recapture and the dither)
+merged into the post-chain branch as `a72dad9a`. The code merged without a content conflict: the split lives at the
+CoreGS 2.0 level (`core2_2d_split`, the overlay compose/merge shaders, the backend checkpoint/composite calls) while the
+present keeps the post chain (`GT4_COREGS3_POST` off by default, `GT4_COREGS3_DITHER`, the picture round); the backend,
+renderer, writeback and shader CMakeLists carry both sides, including `Coregs3FrameEnv`/`note_frame_env` at the VBlank
+flush and the per-tick/scanout overlay composite. Docs: both entries kept, and the post-chain HOOKS round renumbered §36
+after the incoming §34 (2D split) and §35 (HUD aspect). Checks on the integrated build (executable SHA-256 887130b3798ddb12713e69fc9a6fa9d0137e332e2d63e45b2ab1e9ccc9c8eccf):
+CTest coregs3 **21/21** (the new `native_coregs3_2d_split`), Python **18/18**, the 3x off/shadow identity gate
+**COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture
+4,496,552 B), and the split A/B on the A-Spec night race at 3x, VBlanks 7600-7608: the split run reports 1,564 frames
+split, 66,571 batches redirected, 1,564 checkpoints, 9 overlay composes and 9 merges (23.22 Mpx), 0 refused samples, 0
+layout changes and 1 dropped held VBlank; the split frames show the full A-Spec HUD over the world while
+`GT4_COREGS3_2D_OVERLAY=0` shows the world covering it (393k-414k px differ per frame, the left HUD region 20.2-24.9
+against 13.9-20.0 luma). Evidence `build/evidence-live-world/` (`aspec-present-split`, `aspec-present-off`,
+`split-7600-on.png`, `split-7600-off.png`).
+
 ## 2026-11-11: the captured post chain on the live pixels, measured and off by default (TASK-090, branch `task/090-live-world`)
 
 The live present now carries the captured post chain on the pixels it owns (the world and car fragments): the two
