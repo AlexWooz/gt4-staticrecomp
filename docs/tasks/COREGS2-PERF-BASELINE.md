@@ -465,6 +465,52 @@ where the license's 3.28 ms of `gif_parse` lives.
 `PaletteSegmentBatchAllowed` relaxed and a re-measure of the 4+4 that showed no gain with segments on; the segment path
 must keep the strip batches exact. That is the next step if the owner approves it.
 
+
+## Option 2, palette segments under the tone hook: measured and **reverted** (3x worse than the bar)
+
+**Contract review first (no code).** `PaletteSegmentAllowed` (front end) asks the renderer's `PaletteSegmentBatchAllowed`,
+which refuses while `toneActive_ && ToneShape(pending)` (textured T8 sprite: the batches `ToneHook` may take). `ToneHook`
+has exactly two decisions on such a batch: it skips it whole (a run is active with the same FBMSK; **no palette is read**),
+or it starts/restarts a run by decoding `DecodeSegmentPalette(batch, 0)` and applying the pass **before** the draw. A
+merged batch carries that same palette in segment 0 (the CLUT copy taken before the load, which is what the first flushed
+batch would have read from the live CLUT), and `OnBatch` routes any batch with several segments per segment
+(`RoutePaletteSegments`): `Split` when a segment has the shuffle shape, `WholeNoTone` (ending the run) when none has it -
+which is what `ToneHook` answers for each of the flushed batches. The CPU reference takes the same segment-0 palette
+(`cpuref_draw.cpp`), so the two references agree on the contract. **No case was found where the tone result could change**,
+so the stop condition did not apply and the candidate was built.
+
+**Implemented** behind `GT4_CORE2_PALETTE_SEGMENTS=1` + `GT4_CORE2_SEGMENTS_TONE=1` (both off by default), with a
+`tone_allowed` counter; `DropOnArrival` still refuses multi-segment batches, so a merged strip is never dropped early.
+
+License B-1 1x, **2+2 interleaved**, VBlanks 2,400-3,500 (`stA1`/`stB1`, `stpA21`/`stpB21`):
+
+| | tone segments on | refusal (rc15) | delta |
+|---|---|---|---|
+| GS worker | 8.795 (8.670 / 8.920) | 8.183 (8.100 / 8.265) | **+0.61** |
+| wall | 9.158 | 8.763 | +0.39 |
+| `gif_parse` | 4.498 | 3.940 | **+0.56** |
+| `clut` | 0.260 | 0.328 | -0.07 |
+| `batch_own` / `draw` | 0.615 / 0.965 | 0.598 / 1.005 | +0.02 / -0.04 |
+| frame p50 / p95 | 8.885 / 11.436 | 7.898 / 10.760 | +0.99 / +0.68 |
+| CLUT flushes/VBlank | **526** | 1,403 | -877 |
+| `clut_kept`/VBlank | 905 | 28 | |
+| `segmented_batches` / segments each | 153.5 / 6.72 | 28.2 / 1.00 | |
+| `splits` (whole run) | 228,620 | 0 | |
+| `tone_refused` | 0 | 1.67 M | |
+
+Identity: **license 4/4 frames identical** (VBlanks 2,400-3,600, the tone/colour-filter sheet included), so the review was
+right and the merge is exact. The candidate is nevertheless a **0.61 ms regression, 3x the 0.2 ms bar: reverted**, code
+removed (only the measured note stays in `PaletteSegmentBatchAllowed`).
+
+**Why it lost.** The 905 kept loads cost about 650 ns each end to end: a 1 KiB CLUT copy into a new `PaletteSegment`
+(1,030 segments/VBlank, with the vector of 1 KiB objects reallocating), and at the renderer 208 `splits`/VBlank, each a
+`PaletteSegmentBatch` with two fresh vectors and its own palette copy. The 877 flushes it replaced cost ~0.1 us each (the
+`GT4_CORE2_TONE_STRIP_DROP` measurement already said 1,260 flushes are worth 0.12 ms). This also repeats the TASK-168b
+desktop finding (+3-4% when the strips were kept as segments) and closes the lever: **segments cannot pay under the tone
+hook while a segment carries its own 1 KiB palette**; that is the palette/record representation, not a front-end hoist.
+Night 3x and Arcade were not run: the candidate was reverted on the license and the cost is per kept load (night has 475
+CLUT loads/VBlank against 1,553), so the only possible night result is a smaller regression.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two

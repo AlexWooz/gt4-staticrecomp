@@ -819,9 +819,15 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // ToneHook skips such batches whole and never reads their palettes, so a segment saves nothing downstream, while a kept
     // load cost the front end more than the flush it replaces (desktop A/B of the George V lap, 1x: GS thread +4% with the
     // strips merged and skipped at once, +3% when the hook refused them after the front end's memory checks, equal to
-    // segments off with this filter). The load ends the batch.
+    // segments off with this filter). The load ends the batch. TASK-171 option 2 (segments allowed under a tone run) was
+    // measured and rejected: identical frames, +0.6 ms on the license (see PaletteSegmentBatchAllowed's note).
     bool PaletteSegmentBatchAllowed(const Batch &pending) {
         if (!toneActive_ || !ToneShape(pending)) return true;
+        // TASK-171 option 2 (segments under a tone run) was implemented, measured and rejected: the merged batch's segment 0
+        // is the palette ToneHook reads (DecodeSegmentPalette(batch, 0), before the draw) and the frames came out identical
+        // (license 4/4), but the license got slower (GS worker +0.57/+0.66 ms over two pairs; CLUT flushes 1,403 -> 526 with
+        // 905 loads kept), because every kept load copies a 1 KiB CLUT buffer and every merged strip is split per segment
+        // (229k splits, 6.7 segments per batch). See docs/tasks/COREGS2-PERF-BASELINE.md.
         stats.paletteSegmentToneRefusals++;
         return false;
     }
@@ -5328,7 +5334,8 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     // TASK-168: batches drawn with several palette segments, their segments, and segmented batches split for a consumer
     // that takes one palette; TASK-168b: segmented T8 sprite batches drawn whole without the tone hook, and CLUT loads that
     // ended a T8 sprite batch because a tone run was going on (PaletteSegmentBatchAllowed).
-    std::fprintf(stderr, "[core2] palette segments batches=%llu segments=%llu splits=%llu whole_no_tone=%llu tone_refused=%llu\n",
+    std::fprintf(stderr,
+                 "[core2] palette segments batches=%llu segments=%llu splits=%llu whole_no_tone=%llu tone_refused=%llu\n",
                  (unsigned long long)c.paletteSegmentBatches, (unsigned long long)c.paletteSegmentsDrawn,
                  (unsigned long long)c.paletteSegmentSplits, (unsigned long long)c.paletteSegmentsWholeNoTone,
                  (unsigned long long)c.paletteSegmentToneRefusals);
