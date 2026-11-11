@@ -1,5 +1,22 @@
 # Current Status
 
+## 2026-11-11: the road mip chain recaptured; CoreGS 3.0's mip path is on by default (TASK-090, branch `task/090-mip-recapture`)
+
+The texture-mip round's mip path was off because the existing `.gt4vram` sidecars' level-1 address (MIPTBP1 TBP 0x3662)
+held another texture's page. The capture-side rule now includes levels 1..MXL (`texture_mip_windows`, MTBA too), so this
+round recaptured the night race and re-ran the A/B. The new sidecar (VBlanks 7398-7403, 498 records: 6 vblank, 6
+pass-begin, 486 job; 42,726,864 B) carries the road's level 1 in its job records: the new page hashes `2fcb2e50...`,
+distinct from the frame-end atlas `3cf0989a...`, and decodes to **corr +0.5961 / PSNR 35.96 / mean |d| 3.22** against
+the level-0 box downscale (the old atlas page: -0.0329 / 28.69 / 8.10). The road page correlation rises 0.175 -> 0.250
+and its SSIM 0.64156 -> 0.68216, the road high-pass correlation rises at sigma 1.0/1.5/2.0/3.0, and the page ratio moves
+1.489 -> 1.515 (**+0.026, inside the study's +/-0.05 gate**); the world+post chain at the captured dither goes PSNR
+20.78 -> 21.05, SSIM 0.58801 -> 0.65198, pct_bad 27.7 -> 23.6%, mean |diff| 13.47 -> 12.40. `world_mip` is on by
+default; `--no-mip` restores the pre-round model byte for byte (world `34BDEE07...`, chain `BFA47B67...`, car
+`B0E7082B...`). Gates: CTest coregs3 21/21, Python 18/18, clean-rebuild 3x off/shadow COREGS3-NIGHT-CHECK-OK (8,997
+VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames; final clean executable SHA-256
+`4c81a2c6...`). Evidence `build/evidence-mip-recapture/`;
+details in the journal and [COREGS3-WORLD-MATERIALS-V2](docs/COREGS3-WORLD-MATERIALS-V2.md).
+
 ## 2026-11-11: the 2D overlay split, implemented (TASK-090, branch `task/090-2d-split`)
 
 `GT4_COREGS3=present` now draws the world and the cars first and the game's 2D/HUD layer after them. CoreGS 2.0 cuts
