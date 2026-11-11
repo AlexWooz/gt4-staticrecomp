@@ -397,6 +397,50 @@ decode (~13.6 ns/prim), `AppendPrimitive`'s vertex copies (0.126 + 0.081 emplace
 per-qword walk (0.42 ms). Anything touching vertex-queue ownership or the batch record format is a design decision and is
 not started.
 
+
+## TASK-171 stage split (license B-1 1x and night 3x) and the remaining lever
+
+`[core2] ms/vblank` (inclusive) and `exclusive`, same runs as the candidate, GS worker 7.52 / 6.60 ms:
+
+| Stage | license 1x (exclusive) | night 3x (exclusive) | license count/VBlank |
+|---|---|---|---|
+| **gif_parse** | **3.28** (44 %) | **1.73** | 26.5k prims, ~1,553 CLUT loads |
+| batch_own | 0.64 | 0.79 | 1,930 batches |
+| draw (recording) | 0.93 | 1.32 | |
+| clut | 0.48 | 0.16 | 1,553 loads |
+| swizzle | 0.49 | 0.80 | 1,298 KiB / 3,597 KiB |
+| translate | 0.45 | 0.53 | |
+| cpu_sprites | 0.37 | 0.00 | |
+| texture | 0.19 | 0.28 | |
+| upload_own / written | 0.12 / 0.14 | 0.09 / 0.10 | 135 uploads |
+| readback / targets / patch / glm | 0.08 / 0.04 / 0.03 / 0.03 | 0.30 / 0.11 / 0.05 / 0.05 | |
+| sprite_check / flush / hook | 0.10 / 0.06 / 0.07 | 0.10 / 0.05 / 0.01 | |
+| GPU busy | 1.28 | 2.26 | |
+
+**The largest stage is the GIF front end (gif_parse 3.28 ms, 44 %)**, and it scales with primitives (26.5k), not packets.
+The sampler's inclusive split on the license: `Kick` **3.62** (43 %), of which `StripVertices` **2.48**, `DecodeRegisterXyz`
+**1.20**; `FlushBatch` **3.14** (`EmitBatch` 3.12, `OnBatch` 2.76, `Gpu::Draw` 0.96); `WriteRegister` **2.35**, of which
+`OnTex0Write` **2.26** / `ProcessWrite` 1.82 / the CLUT-load **flush lambda 1.59**; `ConsumeRegList` **2.06**;
+`ImageQwords` 0.75. Exclusive per-site: ShouldDraw 0.445, Kick 0.360, parser 0.266, ConsumeRegList 0.157,
+AppendPrimitive 0.126, PixelRect::Empty 0.114, EmitBatch 0.096, StripVertices 0.085, MakeVertex 0.077.
+
+**Why no new micro-candidate this round:** `PixelRect::Empty` is already an inline header method (the 0.114 is call
+*volume*, not an out-of-line call); `EffectivePrim` is ~6 instructions; `AppendPrimitive`'s copies are memcpy-bound
+(0.14 ms together); the parser walk is 0.266. None of them is above the ~0.1 ms noise of a 2+2 on this scene, so nothing
+was landed as a "win".
+
+**The remaining lever is a design decision (stop point):** the per-vertex path (`Kick` 3.62 with `StripVertices` 2.48 and
+`DecodeRegisterXyz` 1.20) and the **CLUT-load batch flush** (1.59 ms inside `OnTex0Write`, 1,553 loads/VBlank). Two options,
+each 2-3 days and each changing the front-end contract:
+1. **Batched strip decode into the batch's vertex array**: have `StripVertices` write vertices directly into the pending
+   batch (reserve + decode in a tight loop) instead of one `Kick` + `MakeVertex` + `AppendPrimitive` per vertex. Bound:
+   the per-vertex overhead minus the unavoidable decode (Hyp: 0.5-1.0 ms of the license's 8.4).
+2. **TASK-168 palette segments under the tone hook**: the 1,553 CLUT loads force 1,430 flushes (the tone-strip drop removed
+   the flushes but not the cost, because the merged batch is still handed over once; the segment path is refused while
+   `toneActive_`). Bound: up to the 1.59 ms flush cost if segments are allowed under tone (4+4 measured segments-off vs on
+   showed no gain so far, so this needs the tone-refusal removed and re-measured).
+Neither is a micro-hoist; both need the front-end/writeback contract reviewed.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two
