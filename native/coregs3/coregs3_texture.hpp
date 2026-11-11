@@ -102,8 +102,15 @@ struct SlmImage {
   // The blocks this image really holds (a VRAM record's windows). A decode that would read a block outside this set
   // is refused as truncated instead of decoding the zero fill.
   std::vector<vram::Window> covered;
+  // TASK-090 HUD A-Spec: the blocks filled by a T4/T8 host->local IMAGE upload of the captured stream, i.e. texel
+  // bytes the game itself sent inside the window (as opposed to a palette/CT32 upload or the zero fill of a page
+  // uploaded before the capture). A page covered here is real captured texel content, so a constant page is a
+  // legitimate solid texture, not the missing-font-atlas placeholder.
+  std::vector<vram::Window> texel_covered;
   bool covers(std::uint32_t block) const;
   void cover(const vram::Window &window);
+  bool covers_texels(std::uint32_t block) const;
+  void cover_texels(const vram::Window &window);
 };
 
 // Builds the image of one sidecar record: zero-filled 4 MiB with the record's windows copied into place.
