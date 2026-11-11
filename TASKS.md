@@ -2215,6 +2215,34 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   no-present-layer path byte-identical to the 43039a19 tool (9/9 frames), the split counters unchanged and the 3x
   off/shadow gate COREGS3-NIGHT-CHECK-OK.
 
+- **3D replace in the split (2026-11-11, branch `task/090-2d-split`).** The owner's photo showed ghosting: the present
+  drew the native world over the CoreGS 2.0 base, which still carried the game's 3D. With the split on and the live
+  world drawing, CoreGS 2.0 now composes the checkpoint as the display clear colour alone (the guest's 3D still runs;
+  it is not shown) and the present layer draws the native sky and far underlay before the course and the cars, so the
+  picture is native world + cars + the game HUD only. `GT4_COREGS3_REPLACE_3D=0` keeps the base's 3D for the A/B; an
+  explicit `GT4_COREGS3_WORLD_BACKGROUND=0` keeps the native sky/far off. Measured A-Spec, 3x, 7600-7608: 1,564/1,564
+  checkpoints replace the base 3D, counters otherwise unchanged (0 refused samples/frames, 1 dropped frame); old
+  default vs `REPLACE_3D=0` 15.6k-219.9k px (nondeterminism, the same envelope as two baseline runs), `REPLACE_3D=0`
+  vs the new default 932k-1.04M px; HUD
+  region unchanged. Faithful CoreGS 2.0 still byte-identical to the 43039a19 tool (9/9). CTest coregs3 21/21, Python
+  18/18 on the module and 820/820 on the full suite, 3x off/shadow gate COREGS3-NIGHT-CHECK-OK on the clean rebuild (`c70afbcb...`). Limits: the 2048x2048 atlas
+  is full with sky/far on (atlas_refused 2,679), so the sky/far use vertex colours (darker) and world-missing items
+  are absent; world-materials follow-ups. Details: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8.6 and
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §34.5.
+- **B-Spec split black-3D fix and the world-shading integration (2026-11-11, branch `task/090-2d-split`).** The
+  live-world round found the 2D split (default) blacked out the night B-Spec race (luma 2.291, HUD only; split off
+  22.377, A-Spec 28.02). Cause: after the present blit the B-Spec panel draws a full-screen unblended alpha-only
+  sprite into the display buffer (FBMSK 0x00FFFFFF) plus six small ones; the split's fragment stage ignored FBMSK and
+  wrote black RGB with coverage 255 into the RGBA8 overlay, covering the world. Fix: FBMSK maps onto the overlay's RGB
+  lanes and a fully RGB-protected draw is dropped (no visible content; the overlay alpha is coverage, not the GS alpha
+  lane); counters `fbmsk_masked` / `alpha_only_skipped`. Measured on the final merged executable (`624b2233...`, 3x):
+  B-Spec split on 24.50 luma, off 22.36, replace-off 24.17, counters 1,357 frames / 48,721 batches / 0 refusals /
+  fbmsk_masked 3,640 / alpha_only_skipped 909; A-Spec unchanged (1,564 frames, 66,571 batches, 0 refusals, 0/0).
+  `task/090-coregs3` at `fb59d776` (world shading + post chain + dither + picture round + HUD aspect + mip) is merged;
+  all switches coexist (split, 3D replace default on, post chain off by default). Faithful CoreGS 2.0 byte-identical
+  to the 43039a19 tool (9/9). CTest coregs3 21/21, Python 18/18 module and 820/820 full, 3x off/shadow gate
+  COREGS3-NIGHT-CHECK-OK. Details: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8.7 and
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §34.6.
 - **Live world picture round (2026-11-11, branch `task/090-live-world`).** The live world now draws the captured course
   with the **emitted per-vertex fog**, the **GS bilinear** and the **emitted per-item TEX0/TEX1/CLAMP state**, from an
   in-memory tap built from the GS worker's job records (no `.gt4tap` file): the worker keeps every VU1 job's PATH1 GIF

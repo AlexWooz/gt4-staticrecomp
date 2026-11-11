@@ -1998,8 +1998,9 @@ bool Backend::init(const Options &options, std::string &error) {
       s.coregs3_present.reset();
     } else {
       // TASK-090 2D overlay split: the present layer wants the frame's 3D image and its 2D layer separately. A no-op
-      // for every other mode (the faithful renderers never set it), and GT4_COREGS3_2D_OVERLAY=0 is the A/B.
-      s.renderer->SetCoregs3Overlay(true);
+      // for every other mode (the faithful renderers never set it), and GT4_COREGS3_2D_OVERLAY=0 is the A/B. The 3D
+      // replace decision is the present layer's (GT4_COREGS3_REPLACE_3D): with it, the checkpoint has no base 3D.
+      s.renderer->SetCoregs3Overlay(true, s.coregs3_present->replace_3d());
     }
   }
   // TASK-090 host clock: above 60 Hz the window presents each due presentation tick at the requested display rate. It

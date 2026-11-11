@@ -923,6 +923,10 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // into the checkpoint and composites the overlay over it.
     bool splitRequested_ = false;  // SetCoregs3Overlay: the present layer is active
     gt4::coregs3::split::Rule splitRule_;
+    // TASK-090 3D replace: from the present layer (GT4_COREGS3_REPLACE_3D, default on with the split and the live
+    // world). The checkpoint is then the display clear colour alone: the guest's 3D still runs and reaches the present
+    // target, but the split does not show it, so the present's native world is not drawn over a duplicated 3D image.
+    bool replace3d_ = false;
     bool splitFrameActive_ = false;      // this frame's 2D layer is being redirected
     std::uint64_t splitFrameVblank_ = 0;  // the vblanks_ the split belongs to
     std::size_t splitOverlayIndex_ = kNoTargetSlot;   // the overlay target slot
@@ -4866,6 +4870,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             namespace gf = gpu::gpufield;
             if (t.state.fields[gf::DateOn] != 0) stats.splitDateDraws++;
             if (t.state.fields[gf::Fbmsk] != 0) stats.splitFbmskDraws++;
+            if ((t.state.fields[gf::Fbmsk] & 0x00FFFFFFu) == 0x00FFFFFFu) stats.splitAlphaOnlyDraws++;
             if (t.state.fields[gf::BlendOn] != 0 && t.state.fields[gf::BlendC] == 1u) stats.splitDestAlphaDraws++;
         }
         {  // IN-442: an untextured sprite batch without blend, fog or DATE may be a constant fill (Gpu::Draw decides)
@@ -5772,13 +5777,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     // starts. Returns false, counted, when the compose cannot run.
     bool ComposeSplitCheckpoint(std::size_t presentIndex) {
         Target &present = targets_[presentIndex];
-        if (!ApplyDirty(present)) return false;
-        // Diagnostics: the present target's own image at the cut, before the checkpoint compose.
-        if (const char *dump = std::getenv("GT4_COREGS3_2D_DUMP"); dump != nullptr && DumpSplitLayerAt(vblanks_)) {
-            std::vector<std::uint32_t> pixels;
-            std::string dumpError;
-            if (gpu_.ReadImage(present.image, present.width * scale_, present.height * scale_, pixels, dumpError)) {
-                DumpSplitLayer(dump, "present", vblanks_, present.width * scale_, present.height * scale_, pixels);
+        // TASK-090 3D replace: the checkpoint is the display clear colour alone. The guest's 3D still runs and reaches
+        // this target (no guest change); the split simply does not show it, so the present's native world is not drawn
+        // over a second, misaligned copy of the game's 3D. GT4_COREGS3_REPLACE_3D=0 composes the target as before (A/B).
+        if (!replace3d_) {
+            if (!ApplyDirty(present)) return false;
+            // Diagnostics: the present target's own image at the cut, before the checkpoint compose.
+            if (const char *dump = std::getenv("GT4_COREGS3_2D_DUMP"); dump != nullptr && DumpSplitLayerAt(vblanks_)) {
+                std::vector<std::uint32_t> pixels;
+                std::string dumpError;
+                if (gpu_.ReadImage(present.image, present.width * scale_, present.height * scale_, pixels, dumpError)) {
+                    DumpSplitLayer(dump, "present", vblanks_, present.width * scale_, present.height * scale_, pixels);
+                }
             }
         }
         const std::int32_t rx0 = splitRule_.x0(), ry0 = splitRule_.y0();
@@ -5801,34 +5811,39 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // One circuit: there is no RC2 to merge with, so the displayed image is the circuit's own pixels (the merge
         // alpha over the background is the source alpha). Forcing MMOD off ignores the mid-frame PMODE value, which can
         // still be the previous frame's (the game writes the display registers at the end of the frame; the A-Spec race
-        // has MMOD = 1, ALP = 0 at the cut and MMOD = 0 at the VBlank).
+        // has MMOD = 1, ALP = 0 at the cut and MMOD = 0 at the VBlank). With 3D replace there is no circuit at all and
+        // every pixel is the background colour.
         words[5] = 0u;
-        std::uint32_t *w = &words[6];
-        w[0] = 1u;
-        const Psm psm = present.view.psm;
-        w[1] = psm == Psm::Ct24 ? 1u : psm == Psm::Ct16 ? 2u : 0u;
-        w[2] = scale_;
-        w[3] = static_cast<std::uint32_t>(rx0);
-        w[4] = static_cast<std::uint32_t>(ry0);
-        w[5] = readW;
-        w[6] = readH;
-        w[7] = 0;
-        w[8] = 0;
-        w[9] = readW;
-        words[26] = readH;
+        if (!replace3d_) {
+            std::uint32_t *w = &words[6];
+            w[0] = 1u;
+            const Psm psm = present.view.psm;
+            w[1] = psm == Psm::Ct24 ? 1u : psm == Psm::Ct16 ? 2u : 0u;
+            w[2] = scale_;
+            w[3] = static_cast<std::uint32_t>(rx0);
+            w[4] = static_cast<std::uint32_t>(ry0);
+            w[5] = readW;
+            w[6] = readH;
+            w[7] = 0;
+            w[8] = 0;
+            w[9] = readW;
+            words[26] = readH;
+        }
         std::string error;
         if (const char *dump = std::getenv("GT4_COREGS3_2D_DUMP"); dump != nullptr && DumpSplitLayerAt(vblanks_)) {
             std::fprintf(stderr,
                          "[core2] split-checkpoint vblank=%llu present bp=%u bw=%u psm=%02x img=%dx%d out=%ux%u "
-                         "bg=%08x alp=%u mmod=%u fmt=%u srcscale=%u read=%u,%u %ux%u place=%u,%u %ux%u\n",
+                         "bg=%08x alp=%u mmod=%u replace3d=%d\n",
                          static_cast<unsigned long long>(vblanks_), present.view.basePointer, present.view.bufferWidth,
                          static_cast<unsigned>(present.view.psm), present.width, present.height, outWidth, outHeight,
-                         words[3], words[4], words[5], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], words[26]);
+                         words[3], words[4], words[5], replace3d_ ? 1 : 0);
         }
-        if (!gpu_.Compose(words, present.image, kNoImage, outWidth, outHeight, error)) {
+        const ImageId source = replace3d_ ? kNoImage : present.image;
+        if (!gpu_.Compose(words, source, kNoImage, outWidth, outHeight, error)) {
             Fail(error);
             return false;
         }
+        if (replace3d_) stats.splitReplace3dFrames++;
         std::uint32_t presentWidth = presentWidth_, presentHeight = presentHeight_;
         if (const char *forced = std::getenv("GT4_CORE2_PRESENT_SIZE")) {
             unsigned w2 = 0, h2 = 0;
@@ -6269,18 +6284,18 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
 void PrintSplitStats(const Core2Counters &c, const Core2GpuStats &g) {
     if (c.splitFrames == 0 && c.splitRefusedFrames == 0 && c.splitUnavailableDraws == 0) return;
     std::fprintf(stderr,
-                 "[coregs3] 2d split frames=%llu batches=%llu checkpoints=%llu refused_frames=%llu dropped_frames=%llu "
+                 "[coregs3] 2d split frames=%llu batches=%llu checkpoints=%llu replace3d=%llu refused_frames=%llu dropped_frames=%llu "
                  "refused_samples=%llu layout_changes=%llu unavailable_draws=%llu | overlay "
-                 "composes=%llu merges=%llu merge_px=%.2fM refusals=%llu | approximated date=%llu fbmsk=%llu "
-                 "dst_alpha=%llu\n",
+                 "composes=%llu merges=%llu merge_px=%.2fM refusals=%llu | fbmsk_masked=%llu alpha_only_skipped=%llu | "
+                 "approximated date=%llu dst_alpha=%llu\n",
                  (unsigned long long)c.splitFrames, (unsigned long long)c.splitBatches,
-                 (unsigned long long)c.splitCheckpoints, (unsigned long long)c.splitRefusedFrames,
-                 (unsigned long long)c.splitDroppedFrames, (unsigned long long)c.splitRefusedSamples,
+                 (unsigned long long)c.splitCheckpoints, (unsigned long long)c.splitReplace3dFrames,
+                 (unsigned long long)c.splitRefusedFrames, (unsigned long long)c.splitDroppedFrames, (unsigned long long)c.splitRefusedSamples,
                  (unsigned long long)c.splitLayoutChanges, (unsigned long long)c.splitUnavailableDraws,
                  (unsigned long long)g.overlayComposes, (unsigned long long)g.overlayMerges,
                  static_cast<double>(g.overlayMergePixels) / 1.0e6, (unsigned long long)g.overlayRefusals,
-                 (unsigned long long)c.splitDateDraws, (unsigned long long)c.splitFbmskDraws,
-                 (unsigned long long)c.splitDestAlphaDraws);
+                 (unsigned long long)c.splitFbmskDraws, (unsigned long long)c.splitAlphaOnlyDraws,
+                 (unsigned long long)c.splitDateDraws, (unsigned long long)c.splitDestAlphaDraws);
 }
 
 }  // namespace
@@ -6723,15 +6738,18 @@ void Renderer::SetFxaa(bool enabled) { impl_->fxaa_ = enabled; }
 
 void Renderer::SetForcedBilinear(std::uint32_t mode) { impl_->forcedBilinear_ = mode; }
 
-void Renderer::SetCoregs3Overlay(bool enabled) {
+void Renderer::SetCoregs3Overlay(bool enabled, bool replace3d) {
     Impl &s = *impl_;
     // The A/B: GT4_COREGS3_2D_OVERLAY=0 keeps today's path (the world over the full composed image) byte for byte.
     const char *overlay = std::getenv("GT4_COREGS3_2D_OVERLAY");
     const bool allowed = overlay == nullptr || std::strcmp(overlay, "0") != 0;
     s.splitRequested_ = enabled && allowed;
+    // The present layer decides 3D replace (GT4_COREGS3_REPLACE_3D, default on with the split and the live world); it
+    // is meaningful only while the split asks for a checkpoint.
+    s.replace3d_ = s.splitRequested_ && replace3d;
     if (!s.splitRequested_) s.RetireSplitOverlay();
-    std::fprintf(stderr, "[core2] 2D overlay split %s%s\n", s.splitRequested_ ? "on" : "off",
-                 enabled && !allowed ? " (GT4_COREGS3_2D_OVERLAY=0)" : "");
+    std::fprintf(stderr, "[core2] 2D overlay split %s%s, base 3D replace %s\n", s.splitRequested_ ? "on" : "off",
+                 enabled && !allowed ? " (GT4_COREGS3_2D_OVERLAY=0)" : "", s.replace3d_ ? "on" : "off");
 }
 
 bool Renderer::CompositeCoregs3Overlay(const writeback::GpuFrame &frame) {

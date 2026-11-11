@@ -169,3 +169,56 @@ CoreGS 2.0 path with no present layer byte-identical to the 43039a19 tool (9/9 f
 identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). The merged present frame
 shows the picture round's emitted textures (lit facade textures, the green traffic lights) and the split's full HUD on
 the same image.
+
+### 8.6 The 3D replace: no duplicated 3D (C, owner report 2026-11-11 08:08)
+
+The owner's photo showed duplicated 3D (ghosting): the present draws the native world/cars over the checkpoint, which
+still contained the game's own 3D from the CoreGS 2.0 compose, so both copies were visible. With the split on and the
+live world drawing the course, CoreGS 2.0 now composes the checkpoint as the **display clear colour alone** (no circuit
+source; the guest's 3D still runs and reaches the present target, but the split does not show it), and the present
+layer draws the native sky and far underlay by default (`GT4_COREGS3_REPLACE_3D`, on; `0` keeps the base's 3D for the
+A/B). An explicit `GT4_COREGS3_WORLD_BACKGROUND=0` keeps the native sky/far off (the clear colour then shows). The 2D
+overlay redirect and composite are unchanged: the HUD is still composed from the overlay target exactly as in §8.2, so
+the picture is native world + cars + game HUD only.
+
+- Counters: `replace3d=` in the split line counts the checkpoints composed without the base 3D (1,564 of 1,564 split
+  frames on the A-Spec run); the split refusals/samples/drops are unchanged.
+- A/B: `GT4_COREGS3_REPLACE_3D=0` reproduces the pre-change picture. Measured at 3x, VBlanks 7600-7608, same claimed
+  frames: the old default vs replace-off differs by 15.6k-219.9k px (the present tool's own cross-run nondeterminism,
+  the same envelope as two baseline runs), and replace-off vs replace-on by 932k-1.04M px (the base 3D and the native sky). The HUD region is unchanged to within
+  the background behind it (bottom HUD box max delta 52).
+- The faithful CoreGS 2.0 path is untouched: with no present layer, the frames are byte-identical to the `43039a19`
+  tool (9/9). The round's clean rebuild is executable SHA-256 `c70afbcb...`.
+- Limits (H): the native world now has to cover everything the base's 3D provided. The 2048x2048 texture atlas is full
+  with the sky/far underlay on (`atlas_refused=2679`, `texture_untextured=2777` on the A-Spec frame), so the sky and
+  some far geometry fall back to vertex colours and the picture is darker than the reference; items the live world does
+  not draw at all (for example the big course banner the base 3D drew) are now absent. Those are world-materials
+  follow-ups, not duplication. The clear colour itself is the GS BGCOLOR (black on this scene); the native sky covers
+  it where its textures fit.
+
+### 8.7 The B-Spec black 3D: alpha-only FBMSK draws must not become a black layer (C)
+
+The live-world round found that with the split on (default) the **night B-Spec race** renders a black 3D image (frame
+luma 2.291, only the HUD), while `GT4_COREGS3_2D_OVERLAY=0` renders 22.377 and the A-Spec scene renders 28.02. The
+cause is in the B-Spec stream: after the present blit and the HUD sprites, the panel draws a **full-screen unblended
+alpha-only sprite into the display buffer** (PRIM 0x006, untextured, TEST 0, FRAME.FBMSK `0x00FFFFFF`, TBP0 0x3C00,
+extent 0..639 x 0..447) and six small alpha-only sprites (the map markers). On the GS these write only the CT16 alpha
+lane; RGB is protected by FBMSK. The split's fragment stage ignored FBMSK, wrote the draw's RGB (black) with coverage
+255 into the RGBA8 overlay, and the composite then covered the whole world with an opaque black layer. The elements
+drawn after it (the B-Spec top widget) survived, which is exactly the reported picture.
+
+The fix maps FBMSK onto the overlay word's RGB lanes (protected lanes keep the previous word) and drops a draw that
+protects every RGB lane entirely: the overlay's alpha is the layer's coverage, not the GS alpha lane, so an alpha-only
+write has no visible content and must not create coverage. Counters: `fbmsk_masked` (redirected draws with an FBMSK
+mask, applied per lane) and `alpha_only_skipped` (of those, fully RGB-protected and dropped). The A-Spec panel has none
+of either (0/0), so its picture and counters are unchanged.
+
+Measured with the merged, fixed executable on the night B-Spec race (3x, VBlanks 7398-7401): split on **24.50** luma
+(native world + HUD), split off 22.36, split with `GT4_COREGS3_REPLACE_3D=0` 24.17; the split counters over the run:
+1,357 frames, 48,721 batches, 1,357 checkpoints, 0 refused samples/frames, `fbmsk_masked=3640`, `alpha_only_skipped=909`.
+A-Spec stays as §8.6 (1,564 frames, 66,571 batches, 0 refusals, `fbmsk_masked=0`, `alpha_only_skipped=0`), and the
+faithful CoreGS 2.0 path is still byte-identical to the 43039a19 tool (9/9 frames). At frame 7400 the split image differs
+from the split-off image on 817,717 px (31.69%) and from the pre-fix black frame on 2,254,584 px (87.37%). The first merged-tree gate run reported the documented 512-word race-object state-dump artifact
+(off vs ref; the ref and shadow dumps byte-identical, the off dump holding the 0xDD pattern at word 17328, with 0
+clock/digest differences and 13/13 frames identical); a clean serial rerun reports COREGS3-NIGHT-CHECK-OK. The artifact
+is the one recorded in HOOKS §33.6.

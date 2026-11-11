@@ -232,6 +232,7 @@ struct PresentLayer::Impl {
   bool live_world_background = false;  // GT4_COREGS3_WORLD_BACKGROUND=1: draw the sky and far underlay too
   bool live_world_bilinear = true;     // GT4_COREGS3_WORLD_FILTER=nearest is the bilinear A/B
   bool live_world_fog = true;          // GT4_COREGS3_WORLD_FOG=0 is the fog A/B
+  bool replace3d = false;              // TASK-090 3D replace: the split checkpoint has no base 3D (see init)
   bool live_world_light = true;        // GT4_COREGS3_WORLD_LIGHT=0 keeps the decoded base colours (the shading A/B)
   bool present_debug = false;          // GT4_COREGS3_PRESENT_DEBUG=1: one line per render with the claimed frame
   // TASK-090 dither option (coregs3_dither.hpp): one setting across the offline chain and the live path. In `faithful`
@@ -2021,9 +2022,29 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   // store is configured by the hooks in `present`, and only an unusual build order needs the fallback parse here.
   if (!gt4::coregs3::live_world::configured()) gt4::coregs3::live_world::configure_from_environment();
   s.live_world_enabled = gt4::coregs3::live_world::active();
-  if (const char *background = std::getenv("GT4_COREGS3_WORLD_BACKGROUND");
-      background != nullptr && std::strcmp(background, "1") == 0)
-    s.live_world_background = true;
+  const char *background = std::getenv("GT4_COREGS3_WORLD_BACKGROUND");
+  if (background != nullptr && std::strcmp(background, "1") == 0) s.live_world_background = true;
+  // TASK-090 3D replace (docs/COREGS3-2D-SPLIT.md §8.6): with the 2D split on and the live world drawing the course,
+  // the checkpoint behind the present is composed without CoreGS 2.0's own 3D (the game's 3D still runs and is the
+  // present target's content, but the split does not show it), so the native sky and far underlay become the
+  // background and the picture has no duplicated 3D. GT4_COREGS3_REPLACE_3D=0 keeps the base's 3D for the A/B; an
+  // explicit GT4_COREGS3_WORLD_BACKGROUND=0 keeps the sky/far off (the base's clear colour then shows).
+  {
+    const char *replace = std::getenv("GT4_COREGS3_REPLACE_3D");
+    bool replace_wanted = true;
+    if (replace != nullptr) {
+      if (std::strcmp(replace, "0") == 0) {
+        replace_wanted = false;
+      } else if (std::strcmp(replace, "1") != 0) {
+        error = std::string("GT4_COREGS3_REPLACE_3D=") + replace + " is not 0 or 1";
+        return false;
+      }
+    }
+    const char *overlay = std::getenv("GT4_COREGS3_2D_OVERLAY");
+    const bool split = overlay == nullptr || std::strcmp(overlay, "0") != 0;
+    s.replace3d = replace_wanted && split && s.live_world_enabled;
+    if (s.replace3d && background == nullptr) s.live_world_background = true;
+  }
   if (const char *filter = std::getenv("GT4_COREGS3_WORLD_FILTER"); filter != nullptr && std::strcmp(filter, "nearest") == 0)
     s.live_world_bilinear = false;
   if (const char *fog = std::getenv("GT4_COREGS3_WORLD_FOG"); fog != nullptr && std::strcmp(fog, "0") == 0)
@@ -2044,7 +2065,7 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   // the layer with the value named, never interpreted.
   const auto parse_post_switch = [&error](const char *name, bool &value) -> bool {
     const char *text = std::getenv(name);
-    if (text == nullptr || *text == ' ') return true;  // the compiled default
+    if (text == nullptr || *text == '\0') return true;  // the compiled default
     if (std::strcmp(text, "1") == 0) {
       value = true;
       return true;
@@ -2087,13 +2108,17 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   std::fprintf(stderr,
                "[coregs3] present layer: R32_UINT storage image, D32 depth, depth clamp, vf24..vf27 push constant, "
                "%u Hz %s%s, live world %s, dither %s, post chain %s (FIX 127 %s, FIX 255 %s; the CoreGS 2.0 base "
-               "keeps its own CT16 dither until phase 4)\n",
+               "keeps its own CT16 dither until phase 4), 3D replace %s (base 3D %s, world background %s)\n",
                timeline.hz, gt4::coregs3::presentation_mode_name(timeline.mode),
                timeline.selected_tick == UINT32_MAX ? "" : " (diagnostic: one tick per frame)",
                s.live_world_enabled ? "on" : "off", gt4::coregs3::dither_mode_name(s.dither),
-               s.post_enabled ? "on" : "off", s.post_fix127 ? "on" : "off", s.post_fix255 ? "on" : "off");
+               s.post_enabled ? "on" : "off", s.post_fix127 ? "on" : "off", s.post_fix255 ? "on" : "off",
+               s.replace3d ? "on" : "off", s.replace3d ? "suppressed in the split checkpoint" : "kept (A/B)",
+               s.live_world_background ? "on" : "off");
   return true;
 }
+
+bool PresentLayer::replace_3d() const { return impl_->replace3d; }
 
 void PresentLayer::shutdown() { impl_->shutdown(); }
 

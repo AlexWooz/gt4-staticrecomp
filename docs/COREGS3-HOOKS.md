@@ -2541,6 +2541,27 @@ Merged-tree executable SHA-256 `8b7d80a3...` (every edited source predates it; t
 | Overlay A/B (`GT4_COREGS3_2D_OVERLAY=0`) | within the present tool's own cross-run nondeterminism, same claimed frames 7601-7607 |
 | Split counters (A-Spec, 3x, 7600-7608) | 1,564 frames, 66,571 batches, 9 overlay composes + 9 composites, 0 refused samples, 0 refused frames, 1 dropped frame |
 
+### 34.5 The 3D replace (C, owner report 2026-11-11 08:08)
+
+The owner's photo of the split frame showed duplicated 3D (ghosting): the present drew the native world and cars over
+the checkpoint, which still held the game's 3D from the CoreGS 2.0 compose, so both copies were visible. With the split
+on and the live world drawing, CoreGS 2.0 now composes the checkpoint as the display clear colour alone (no circuit;
+the guest's 3D still runs and reaches the present target, it is not shown) and the present layer draws the native sky
+and far underlay before the course and the cars. `GT4_COREGS3_REPLACE_3D=0` keeps the base's 3D for the A/B and an
+explicit `GT4_COREGS3_WORLD_BACKGROUND=0` keeps the native sky/far off; the present layer owns the decision and passes
+it to core 2 with `SetCoregs3Overlay(enabled, replace3d)`. The 2D overlay redirect and composite are unchanged.
+
+Measured (A-Spec, 3x, VBlanks 7600-7608, same claimed frames, clean rebuild `c70afbcb...`): `replace3d=1564` of 1,564
+split frames, counters otherwise unchanged (66,571 batches, 9 overlay composes + 9 composites, 0 refused samples, 0
+refused frames, 1 dropped frame). Old default vs `REPLACE_3D=0` 15.6k-219.9k px (the tool's cross-run nondeterminism, the same envelope as two
+baseline runs); `REPLACE_3D=0` vs the new default 932k-1.04M px; the HUD region unchanged (bottom HUD box max delta 52). The faithful
+CoreGS 2.0 path with no present layer is byte-identical to the 43039a19 tool (9/9 frames); CTest coregs3 21/21, Python
+18/18 on the module and 820/820 on the full suite (63 skipped). Limits: with the sky/far
+underlay on the 2048x2048 texture atlas is full (`atlas_refused=2679`, `texture_untextured=2777` on the frame), so the
+sky and some far geometry use vertex colours (darker than the reference) and items the world does not draw (the big
+course banner) are absent; world-materials follow-ups, not duplication. Before/after images:
+`build/evidence-2d-split/analysis/ghost-07600-*`.
+
 ## 35. Round 33 (2026-11-11, branch `task/090-hud-aspect`): the native HUD anchored per display aspect (TASK-214)
 
 Continuation of §34 in a branch from `task/090-coregs3` at `34c6c2c2`. The offline native HUD drew the captured
@@ -2667,3 +2688,32 @@ Split check: with the 2D split on, the night B-Spec scene's 3D image is black (f
 was validated on A-Spec only, and the finding is reported to the split owner. Checks: CTest coregs3 21/21, Python 18/18,
 the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`4c1cb1ee1e9f8cb1cc97d9e52d67a4c85a5884db981690a47f8760b555c4f7c7`). Evidence
 `build/evidence-live-world/` (`night-shade-*`, `shade-ab*.log`, `shade-frame-7399.png`).
+
+### 34.6 The B-Spec black 3D and the world-shading integration (C)
+
+The live-world round found the 2D split (default) blacked out the night B-Spec race: frame luma 2.291 with only the HUD,
+against 22.377 with `GT4_COREGS3_2D_OVERLAY=0`; the A-Spec scene rendered 28.02. Cause: after the present blit and the
+HUD, the B-Spec panel draws a **full-screen unblended alpha-only sprite into the display buffer** (PRIM 0x006,
+untextured, TEST 0, FRAME.FBMSK `0x00FFFFFF`, TBP0 `0x3C00`, extent 0..639 x 0..447) plus six small alpha-only sprites.
+On the GS these write only the CT16 alpha lane; the split's fragment stage ignored FBMSK and wrote the draw's black RGB
+with coverage 255 into the RGBA8 overlay, and the composite covered the world. Elements drawn after it survived, which
+is the reported picture. Fix: FBMSK maps onto the overlay word's RGB lanes, and a draw that protects every RGB lane is
+dropped entirely (no visible content; the overlay's alpha is the layer's coverage, not the GS alpha lane). Counters
+`fbmsk_masked` and `alpha_only_skipped`; the A-Spec panel has 0/0.
+
+Measured on the final merged executable `624b2233...` (3x): night B-Spec VBlanks 7398-7401 split on 24.50 luma (native
+world + HUD), split off 22.36, split with `REPLACE_3D=0` 24.17; counters over the run 1,357 frames, 48,721 batches,
+1,357 checkpoints, 0 refused samples/frames, `fbmsk_masked=3640`, `alpha_only_skipped=909`. A-Spec VBlanks 7600-7608
+unchanged: 1,564 frames, 66,571 batches, 0 refusals, 0/0, luma 26.59 vs 26.10 split off. The faithful CoreGS 2.0 path
+with no present layer is byte-identical to the 43039a19 tool (9/9 frames). `task/090-coregs3` at `fb59d776` (the world
+shading round on top of the post chain, dither, picture round, HUD aspect and mip recapture) is merged into the split
+branch; the 2D split, the 3D replace (default on with split+world), the post chain (off by default), the dither option,
+the picture round, the mip path, the HUD-aspect work and the per-item VU1 lighting coexist. The only code conflict was
+the present layer's init log line, which now reports all switches together; the documentation conflicts keep both
+sides' entries (this round's §34.6 follows the 3D replace's §34.5; §35-37 are the incoming rounds). CTest coregs3 21/21, Python 18/18 on the module and
+820/820 on the full suite (63 skipped), 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0
+differences, 13/13 frames). At frame 7400 the fixed split differs from the split-off image on 817,717 px (31.69%) and
+from the pre-fix black frame on 2,254,584 px (87.37%). The first merged-tree gate run reported the documented 512-word
+race-object state-dump artifact (off vs ref; the ref and shadow dumps byte-identical, the off dump holding the 0xDD
+pattern at word 17328, with 0 clock/digest differences and 13/13 frames identical); a clean serial rerun reports
+COREGS3-NIGHT-CHECK-OK. The artifact is the one recorded in §33.6.
