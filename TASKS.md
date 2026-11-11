@@ -2318,6 +2318,21 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   final binary), invalid values refused in both paths. Evidence `build/evidence-dither/`; method
   [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32, plan [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
 
+- **Car pass study: the live present binds only the pre-texture base path (2026-11-11, branch `task/090-car-study`,
+  study done; implementation open).** Read-only study of why the live `present` car is a grey silhouette. The live
+  `build_frame` (`native/hw_gs/coregs3/hw_coregs3_present.cpp:1016`) emits position + lit vertex colour only (no UV, no
+  car `FrameTextureTable`, no TEST/ALPHA/FRAME/ZBUF/PRIM, alpha forced 255, depth write on) and draws the body/paint
+  items opaque instead of the measured CT32 256x256 page **0x2BC0** reflection pass (texgen S,T, DATE, ALPHA 0x58,
+  PRIM 0x7C, ZMSK=1, fog to black). Measured on the branch build (filtered v6 capture `night-mip.gt4scene`, VBlank 7398):
+  the live near car equals the offline `--no-textured` path at **36.08 dB, mean |d| 1.01, 2.9% over 8** (eroded mask,
+  after the 2-VBlank alignment) and differs from the offline textured+reflection path at **20.12 dB / 18.23 / 66.2%**;
+  the offline path binds 219 textured items over 139 T4/T8 pages with CT32 CLUTs and 80 reflection items (20,302
+  fragments at 3x, 9,139 DATE-failed). First diverging items and the minimal fix (decouple the per-job texture store
+  from `GT4_COREGS3_LIVE_WORLD`, car texture table with per-item ranges, blend/destination-alpha/FBMSK, reflection
+  pass with a depth-write-off pipeline, `GT4_COREGS3_CAR_TEXTURES=0` A/B) are in
+  [COREGS3-CAR-PASS-STUDY](docs/COREGS3-CAR-PASS-STUDY.md); acceptance gates and evidence
+  `build/analysis-car/`. Journal 2026-11-11.
+
 ### TASK-087 — GS readbacks without stalls
 **Owner decision 2026-10-21: CoreGS 2.0 only.** gt4-gs (the PCSX2 GS fork) gets no more feature work; at most texture
 replacement is switched on (its implementation already exists) with a launcher option (TASK-048). So the gt4-gs steps
