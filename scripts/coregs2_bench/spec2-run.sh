@@ -56,9 +56,10 @@ case "$scene" in
   tsukuba-wet)  # Tsukuba Molhado (world circuits, index 3; the default quadrant, no down)
     P="$boot 10800:cross:30"
     for frame in 11200 11400 11600; do P="$P $frame:right:10"; done
-    # The world-circuits car list starts on the Ford Model T (not raciable in Single Race): two rights reach a normal
-    # car, then the crosses confirm it.
-    P="$P 13000:cross:30 13800:cross:30 14400:cross:30 15000:cross:30 15600:right:10 15800:right:10 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:2600"
+    # The World path reaches the car screens ~2,000 VBlanks earlier than the city path: the track cross at 13,000 lands
+    # on the manufacturer grid (~13,400), 14,400 enters the highlighted maker (Ford) and 14,800 moves off its first model
+    # (the Ford Model T Tourer '15, which Single Race refuses); 15,200 confirms the second model.
+    P="$P 13000:cross:30 14400:cross:30 14800:right:10 15200:cross:30 16200:cross:30 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:2600"
     ;;
   george-rally)  # George V Paris (the Paris rally track, city index 1; the reference replay's track)
     P="$boot 10600:down:10 10800:cross:30 11200:right:10"
