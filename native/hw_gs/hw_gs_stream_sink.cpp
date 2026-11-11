@@ -451,7 +451,8 @@ void print_presentation(std::FILE *output, const char *label, const Stats &now, 
   if (requests == 0) return;
   const double per = static_cast<double>(requests) * 1000.0;  // microsecond totals to milliseconds per presentation
   std::fprintf(output,
-               "[hw] presentation %s path=%s requests=%llu shown=%llu not_shown=%llu failed=%llu left_out=%llu gs_present_ms=%.3f "
+               "[hw] presentation %s path=%s requests=%llu shown=%llu not_shown=%llu failed=%llu left_out=%llu "
+               "host_clock_pictures=%llu host_clock_late=%llu host_clock_dropped=%llu gs_present_ms=%.3f "
                "gs_wait_ms=%.3f gs_lock_wait_ms=%.3f gs_lock_longest_ms=%.3f gs_queue_calls=%.2f presenter_lock_wait_ms=%.3f "
                "presenter_queue_ms=%.3f presenter_longest_ms=%.3f presenter_display_wait_ms=%.3f\n",
                label, now.present_path, static_cast<unsigned long long>(requests),
@@ -459,6 +460,9 @@ void print_presentation(std::FILE *output, const char *label, const Stats &now, 
                static_cast<unsigned long long>(now.presents_not_shown - was.presents_not_shown),
                static_cast<unsigned long long>(now.presents_failed - was.presents_failed),
                static_cast<unsigned long long>(now.presents_left_out - was.presents_left_out),
+               static_cast<unsigned long long>(now.host_clock_pictures - was.host_clock_pictures),
+               static_cast<unsigned long long>(now.host_clock_late - was.host_clock_late),
+               static_cast<unsigned long long>(now.host_clock_dropped - was.host_clock_dropped),
                (now.gs_present_step_us - was.gs_present_step_us) / per, (now.gs_present_wait_us - was.gs_present_wait_us) / per,
                (now.gs_queue_lock_wait_us - was.gs_queue_lock_wait_us) / per, now.gs_queue_lock_longest_wait_us / 1000.0,
                static_cast<double>(now.gs_queue_calls - was.gs_queue_calls) / static_cast<double>(requests),

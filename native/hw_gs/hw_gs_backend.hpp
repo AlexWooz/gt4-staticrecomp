@@ -74,6 +74,12 @@ struct Stats {
   std::uint64_t presents_not_shown = 0;   // the presentation side was behind: no free slot, picture or swapchain image in time
   std::uint64_t presents_failed = 0;      // an acquire or present error (out of date, surface lost)
   std::uint64_t presents_left_out = 0;    // left out by the display latency control (IN-521)
+  // TASK-090 host clock (GT4_COREGS3=present above 60 Hz): one picture per presentation tick handed to the display at
+  // its scheduled time, the ticks whose scheduled time had already passed when handed over, and the ticks the delivery
+  // path could not take (a picture slot still held or the presenter queue full).
+  std::uint64_t host_clock_pictures = 0;
+  std::uint64_t host_clock_late = 0;
+  std::uint64_t host_clock_dropped = 0;
   double gs_present_step_us = 0;          // GS thread: the whole presentation step
   double gs_present_wait_us = 0;          // GS thread: inside its fence waits, acquire, queue submit and present calls there
   double gs_queue_lock_wait_us = 0;       // GS thread: waiting for the shared queue's lock (all its submissions)

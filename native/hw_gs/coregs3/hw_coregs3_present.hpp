@@ -65,6 +65,14 @@ class PresentLayer {
   bool render(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
               std::string &error);
 
+  // Draws one tick of the batch `note_guest_frame` last made due (0-based). The first tick drawn after a guest frame
+  // saves the composed image as the base; every later one starts from that base, so the host clock can draw tick k,
+  // let the presenter copy it, and then draw tick k+1 without ghosts. `drew` reports whether a picture was drawn (a
+  // tick with no drawable captured object is counted and leaves `target` as it was). False with `error` on a Vulkan
+  // failure. The caller must not mix this with render() inside one guest frame.
+  bool render_tick(std::uint64_t target, std::uint32_t width, std::uint32_t height, std::uint32_t tick,
+                   const SubmitOverlay &submit, bool &drew, std::string &error);
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
