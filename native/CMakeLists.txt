@@ -505,7 +505,8 @@ if(GT4_HW_GS)
     # memory, CLUT and replacement pieces. Those libraries exist only in a GT4_HW_GS build, so the unit joins
     # gt4_coregs3 only here; the decoder's fixture and tool below are added under the same condition. The per-frame
     # texture table (coregs3_texture_frame.cpp) calls the decoder and is guarded by the same condition and define.
-    target_sources(gt4_coregs3 PRIVATE coregs3/coregs3_texture.cpp coregs3/coregs3_texture_frame.cpp)
+    target_sources(gt4_coregs3 PRIVATE coregs3/coregs3_texture.cpp coregs3/coregs3_texture_frame.cpp
+                   coregs3/coregs3_hud.cpp)
     target_link_libraries(gt4_coregs3 PUBLIC gt4_hw_core hw_gs_replace)
     target_compile_definitions(gt4_coregs3 PUBLIC GT4_COREGS3_TEXTURES)
     target_link_libraries(gt4_gs_stream_client PUBLIC gt4_hw_stream_sink)
@@ -1194,6 +1195,14 @@ if(GT4_HW_GS)
     target_link_libraries(coregs3_wet_reflection_fixture PRIVATE gt4_coregs3)
     target_compile_options(coregs3_wet_reflection_fixture PRIVATE /W4)
     add_test(NAME native_coregs3_wet_reflection COMMAND $<TARGET_FILE:coregs3_wet_reflection_fixture>)
+    # TASK-090 S3: the first native HUD layer. The stream's host->local uploads build the local memory, a T4 + CT32
+    # CSM1 texture decodes through the measured record path, the speed panel selects the PATH2 digits and the PATH1
+    # plate quad with the job-merged scissor, and the raster pins MODULATE, the normal blend, the CT16 model and the
+    # named refusals.
+    add_executable(coregs3_hud_fixture coregs3/coregs3_hud_fixture.cpp)
+    target_link_libraries(coregs3_hud_fixture PRIVATE gt4_coregs3)
+    target_compile_options(coregs3_hud_fixture PRIVATE /W4)
+    add_test(NAME native_coregs3_hud COMMAND $<TARGET_FILE:coregs3_hud_fixture>)
 
     add_executable(gt4_coregs3_texture tools/coregs3_texture_main.cpp)
     target_link_libraries(gt4_coregs3_texture PRIVATE gt4_coregs3)

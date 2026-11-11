@@ -31,6 +31,14 @@
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
 //       status) for the tap validation scripts.
 //
+//   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --world --gs <capture.gt4gs> --tap <capture.gt4tap>
+//                         --vram <capture.gt4vram> --hud [--hud-element speed] [--hud-mask <pgm>]
+//                         [--hud-texture-dump <dir>] --width 640 --height 448
+//       TASK-090 S3: the first native HUD layer. Draws the requested element (the measured B-Spec-style speed plate and
+//       its digits) over the world picture with the captured GS state (FRAME/SCISSOR/XYOFFSET/TEST/ALPHA/PRIM/TEX0/TEX1/
+//       CLAMP), the captured T4/T8 textures with their CT32 CSM1 palettes and the captured placement. --no-hud is the
+//       A/B: the world picture with no panel layer, byte for byte the pre-HUD renderer. The layer is native 640x448.
+//
 // A capture is derived from the user's own disc and is never committed: both the input and the PNG output live under
 // private/ or build/evidence/.
 #include "coregs3_gsdecode.hpp"
@@ -42,6 +50,7 @@
 #include "coregs3_shape.hpp"
 #include "coregs3_world.hpp"
 #ifdef GT4_COREGS3_TEXTURES
+#include "coregs3_hud.hpp"
 #include "coregs3_tap_file.hpp"
 #include "coregs3_texture.hpp"
 #include "coregs3_texture_frame.hpp"
@@ -55,6 +64,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -493,6 +503,14 @@ int main(int argc, char **argv) {
   bool wet_composite = true;
   bool post_chain = false;
   bool composite_world_alpha = false;
+  bool hud = false;
+  const char *hud_element_text = "speed";
+  const char *hud_mask_path = nullptr;
+  const char *hud_texture_dump_dir = nullptr;
+  const char *hud_vram_mode = "stream";
+  const char *hud_vram_file = nullptr;
+  const char *hud_dump_page = nullptr;
+  bool hud_vram_all_frames = false;
   RenderOptions options;
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -523,6 +541,15 @@ int main(int argc, char **argv) {
     else if (argument == "--composite-world-alpha") composite_world_alpha = true;
     else if (argument == "--composite-mask" && index + 1 < argc) composite_mask_path = argv[++index];
     else if (argument == "--composite-changed" && index + 1 < argc) composite_changed_path = argv[++index];
+    else if (argument == "--hud") hud = true;
+    else if (argument == "--no-hud") hud = false;
+    else if (argument == "--hud-element" && index + 1 < argc) hud_element_text = argv[++index];
+    else if (argument == "--hud-mask" && index + 1 < argc) hud_mask_path = argv[++index];
+    else if (argument == "--hud-texture-dump" && index + 1 < argc) hud_texture_dump_dir = argv[++index];
+    else if (argument == "--hud-vram" && index + 1 < argc) hud_vram_mode = argv[++index];
+    else if (argument == "--hud-vram-file" && index + 1 < argc) hud_vram_file = argv[++index];
+    else if (argument == "--hud-dump-page" && index + 1 < argc) hud_dump_page = argv[++index];
+    else if (argument == "--hud-vram-all-frames") hud_vram_all_frames = true;
     else if (argument == "--frame" && index + 1 < argc) frame_index = std::atoi(argv[++index]);
     else if (argument == "--out" && index + 1 < argc) out = argv[++index];
     else if (argument == "--report" && index + 1 < argc) report = argv[++index];
@@ -1414,6 +1441,225 @@ int main(int argc, char **argv) {
       std::printf("composite changed mask %s: %zu pixels (RGB changed by the composite)\n", composite_changed_path,
                   count);
     }
+  }
+#endif
+#ifdef GT4_COREGS3_TEXTURES
+  if (hud) {
+    // TASK-090 S3: the first native HUD layer over the world frame. The element is selected from the attributed GS
+    // stream (scene frame V -> stream V + 1), the plate from the tap, and both are drawn with the captured state and
+    // the captured textures at the native 640x448 scanout.
+    if (gs_path == nullptr || tap_path == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: --hud needs --gs and --tap\n");
+      return 1;
+    }
+    if (options.width != 640 || options.height != 448) {
+      std::fprintf(stderr, "gt4_coregs3_render: --hud renders at the native 640x448 scanout (--width 640 --height 448)\n");
+      return 1;
+    }
+    HudElement element;
+    if (!parse_hud_element(hud_element_text, element)) {
+      std::fprintf(stderr, "gt4_coregs3_render: unknown --hud-element %s\n", hud_element_text);
+      return 1;
+    }
+    std::vector<std::uint8_t> gs_data;
+    GsStreamFileHeader gs_header;
+    std::vector<GsStreamFileRecord> gs_records;
+    if (!read_gs_stream_file(gs_path, gs_data, gs_header, gs_records, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    GsStreamCensus hud_census;
+    std::vector<GsDecodeBatch> hud_batches;
+    std::vector<GsDecodeImageUpload> hud_uploads;
+    if (!census_gs_stream(gs_data, gs_header, gs_records, hud_census, hud_batches, hud_uploads, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    std::vector<std::uint8_t> tap_data;
+    std::vector<TapFileRecord> tap_records;
+    if (!read_tap_file(tap_path, tap_data, tap_records, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+      return 1;
+    }
+    HudPanel panel;
+    if (!build_hud_panel(hud_batches, tap_data, tap_records, selected.vblank, element, panel, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: HUD panel refused: %s\n", error.c_str());
+      return 1;
+    }
+    SlmImage hud_slm;
+    std::string hud_source_line;
+    std::string hud_mode(hud_vram_mode);
+    const char *hud_sidecar_path = hud_vram_file != nullptr ? hud_vram_file : vram_path;
+    if (hud_mode == "merged" && hud_sidecar_path == nullptr) hud_mode = "stream";  // no sidecar: the stream alone
+    if (hud_mode == "stream" || hud_mode == "merged") {
+      // The preferred source: the stream's own PATH3 IMAGE uploads of the panel's frame. The captured bytes are the
+      // pixels the draws sample, with no cross-run assumption. `merged` seeds the image with the run's own sidecar
+      // record so a page the stream does not re-upload (the font atlas) keeps its captured content.
+      SlmImage sidecar_image;
+      bool have_sidecar = false;
+      if (hud_mode == "merged") {
+        std::vector<VramRecord> hud_vram_records;
+        if (!read_vram_sidecar(hud_sidecar_path, hud_vram_records, error)) {
+          std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+          return 1;
+        }
+        const VramRecord *base_record = nullptr;
+        for (const VramRecord &record : hud_vram_records) {
+          if (record.kind != vram::kRecordVblank) continue;
+          if (vram_vblank >= 0 && record.vblank != static_cast<std::uint64_t>(vram_vblank)) continue;
+          base_record = &record;
+          break;
+        }
+        if (base_record != nullptr) {
+          if (!build_slm_image(*base_record, sidecar_image, error)) {
+            std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+            return 1;
+          }
+          have_sidecar = true;
+        }
+      }
+      HudUploadCounters upload_counters;
+      if (!build_hud_stream_vram(hud_uploads, panel.stream_vblank, hud_vram_all_frames, hud_slm, upload_counters,
+                                 error, have_sidecar ? &sidecar_image : nullptr)) {
+        std::fprintf(stderr, "gt4_coregs3_render: HUD refused: %s\n", error.c_str());
+        return 1;
+      }
+      char line[512];
+      std::snprintf(line, sizeof line,
+                    "HUD VRAM source: %s, stream %llu uploads, %llu applied, %llu bytes, %llu refused%s\n",
+                    have_sidecar ? "sidecar frame record + stream uploads" : "stream",
+                    static_cast<unsigned long long>(panel.stream_vblank),
+                    static_cast<unsigned long long>(upload_counters.applied),
+                    static_cast<unsigned long long>(upload_counters.bytes),
+                    static_cast<unsigned long long>(upload_counters.refused),
+                    hud_vram_all_frames ? " (all captured streams up to it)" : "");
+      hud_source_line = line;
+      for (const auto &entry : upload_counters.reasons) {
+        std::snprintf(line, sizeof line, "HUD upload refusal: %s x %llu\n", entry.first.c_str(),
+                      static_cast<unsigned long long>(entry.second));
+        hud_source_line += line;
+      }
+    } else if (hud_mode == "sidecar") {
+      if (hud_sidecar_path == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: --hud-vram sidecar needs --vram or --hud-vram-file\n");
+        return 1;
+      }
+      std::vector<VramRecord> hud_vram_records;
+      if (!read_vram_sidecar(hud_sidecar_path, hud_vram_records, error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+        return 1;
+      }
+      // The frame-end (`vblank`) record whose worker counter is the stream's VBlank holds the textures the stream's
+      // panel draws sample. A different record is a counted fallback (the HUD pages are static across the run).
+      const VramRecord *hud_record = nullptr;
+      std::uint64_t fallback_distance = 0;
+      for (const VramRecord &record : hud_vram_records) {
+        if (record.kind != vram::kRecordVblank) continue;
+        if (vram_vblank >= 0) {
+          if (record.vblank == static_cast<std::uint64_t>(vram_vblank)) {
+            hud_record = &record;
+            fallback_distance = 0;
+          }
+          continue;
+        }
+        if (record.vblank == panel.stream_vblank) {
+          hud_record = &record;
+          fallback_distance = 0;
+          break;
+        }
+        const std::uint64_t distance = record.vblank > panel.stream_vblank ? record.vblank - panel.stream_vblank
+                                                                           : panel.stream_vblank - record.vblank;
+        if (hud_record == nullptr || distance < fallback_distance) {
+          hud_record = &record;
+          fallback_distance = distance;
+        }
+      }
+      if (hud_record == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: HUD refused: the VRAM sidecar has no vblank record\n");
+        return 1;
+      }
+      if (!build_slm_image(*hud_record, hud_slm, error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
+        return 1;
+      }
+      char line[512];
+      std::snprintf(line, sizeof line, "HUD VRAM source: sidecar vblank record %llu (stream %llu)%s\n",
+                    static_cast<unsigned long long>(hud_record->vblank),
+                    static_cast<unsigned long long>(panel.stream_vblank),
+                    fallback_distance == 0 ? "" : " - counted fallback: no record at the stream's VBlank");
+      hud_source_line = line;
+    } else {
+      std::fprintf(stderr, "gt4_coregs3_render: unknown --hud-vram %s (stream|sidecar)\n", hud_vram_mode);
+      return 1;
+    }
+    HudTextureCache hud_textures(hud_slm);
+    if (hud_dump_page != nullptr) {
+      // Diagnostic: decode one page of the reconstructed local memory through the measured record decoder.
+      unsigned tbp = 0, w = 128, h = 64, cbp = 0, psm = 0x14, tw = 7, th = 6, csa = 0;
+      if (std::sscanf(hud_dump_page, "%x:%x:%x:%u:%u:%u:%u:%u", &tbp, &psm, &cbp, &w, &h, &tw, &th, &csa) < 5) {
+        std::fprintf(stderr, "gt4_coregs3_render: --hud-dump-page wants tbp:psm:cbp:width:height[:tw:th:csa]\n");
+        return 1;
+      }
+      HudDrawState state;
+      state.tex0 = tbp | (2ull << 14) | (static_cast<std::uint64_t>(psm) << 20) |
+                   (static_cast<std::uint64_t>(tw) << 26) | (static_cast<std::uint64_t>(th) << 30) | (1ull << 34) |
+                   (static_cast<std::uint64_t>(cbp) << 37) | (static_cast<std::uint64_t>(csa) << 56);
+      state.tex1 = 0x60;
+      state.clamp = 2ull | (2ull << 2) | (static_cast<std::uint64_t>(w - 1) << 14) |
+                    (static_cast<std::uint64_t>(h - 1) << 34);
+      std::string dump_error;
+      const HudTexture &texture = hud_textures.get(state, dump_error);
+      if (texture.status == HudTextureStatus::ok) {
+        write_png_rgba("hud-page.png", texture.width, texture.height, texture.rgba.data());
+        std::printf("hud page %s: %ux%u at (%u,%u) -> hud-page.png\n", hud_dump_page, texture.width, texture.height,
+                    texture.x0, texture.y0);
+      } else {
+        std::printf("hud page %s refused: %s\n", hud_dump_page, dump_error.c_str());
+      }
+    }
+    HudDrawOptions hud_options;
+    HudDrawCounters hud_counters;
+    std::vector<std::uint8_t> hud_mask;
+    if (!draw_hud_panel(panel, hud_textures, rgba, options.width, options.height, hud_options,
+                        hud_mask_path != nullptr ? &hud_mask : nullptr, hud_counters, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: HUD raster refused: %s\n", error.c_str());
+      return 1;
+    }
+    world_report += hud_source_line;
+    world_report += hud_panel_report(panel, hud_counters, hud_textures);
+    if (hud_mask_path != nullptr) {
+      std::FILE *mask_file = std::fopen(hud_mask_path, "wb");
+      if (mask_file == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", hud_mask_path);
+        return 1;
+      }
+      std::fprintf(mask_file, "P5\n%u %u\n255\n", options.width, options.height);
+      std::fwrite(hud_mask.data(), 1, hud_mask.size(), mask_file);
+      std::fclose(mask_file);
+      std::printf("hud mask %s: %zu pixels (the element's written fragments)\n", hud_mask_path,
+                  static_cast<std::size_t>(hud_counters.masked_pixels));
+    }
+    if (hud_texture_dump_dir != nullptr) {      std::uint32_t texture_index = 0;
+      std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>, std::string> written;
+      for (const HudDraw &draw : panel.draws) {
+        std::string texture_error;
+        const HudTexture &texture = hud_textures.get(draw.state, texture_error);
+        if (texture.status != HudTextureStatus::ok) continue;
+        const auto key = std::make_tuple(texture.tex0, texture.tex1, texture.clamp);
+        if (written.find(key) != written.end()) continue;
+        char name[512];
+        std::snprintf(name, sizeof name, "%s/hud-texture-%02u-tbp%04X-%ux%u.png", hud_texture_dump_dir, texture_index++,
+                      static_cast<unsigned>(texture.tex0 & 0x3FFFu), texture.width, texture.height);
+        write_png_rgba(name, texture.width, texture.height, texture.rgba.data());
+        written.emplace(key, name);
+        std::printf("hud texture %s: TEX0 %016llX TEX1 %016llX CLAMP %016llX, %ux%u at (%u,%u)\n", name,
+                    static_cast<unsigned long long>(texture.tex0),
+                    static_cast<unsigned long long>(texture.tex1),
+                    static_cast<unsigned long long>(texture.clamp), texture.width, texture.height, texture.x0,
+                    texture.y0);
+      }
+    }
+    if (!world) std::printf("%s", world_report.c_str());
   }
 #endif
   if (!write_png_rgba(out, options.width, options.height, rgba.data())) {

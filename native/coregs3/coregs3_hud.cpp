@@ -1,0 +1,796 @@
+// TASK-090 CoreGS 3.0, phase S3: the first native HUD/2D layer. See coregs3_hud.hpp for the measured contract.
+#include "coregs3_hud.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <span>
+#include <tuple>
+
+#include "coregs3_gif.hpp"
+#include "coregs3_sampler.hpp"
+
+namespace gt4::coregs3 {
+namespace {
+
+// ---- Small helpers ----
+
+std::uint64_t bits(std::uint64_t value, unsigned low, unsigned high) {
+  return (value >> low) & ((std::uint64_t{1} << (high - low + 1u)) - 1u);
+}
+
+// The measured 12.4 wrap rule of the S2 walker and the tap: dx = (x - ofx) & 0xFFFF, sx = dx / 16, then the signed
+// 12-bit range.
+float screen_coordinate(std::uint32_t raw, std::uint32_t offset) {
+  const std::uint32_t delta = (raw - offset) & 0xFFFFu;
+  float value = static_cast<float>(delta) / 16.0f;
+  if (value > 2047.9375f) value -= 4096.0f;
+  return value;
+}
+
+std::uint32_t prim_type(std::uint32_t prim) noexcept { return prim & 7u; }
+bool prim_tme(std::uint32_t prim) noexcept { return ((prim >> 4) & 1u) != 0u; }
+bool prim_abe(std::uint32_t prim) noexcept { return ((prim >> 6) & 1u) != 0u; }
+
+// Half-open sprite/strip coverage by pixel centres, the CoreGS 2.0 rule: the first pixel centre inside the box and the
+// last one before its exclusive end, with the box in 12.4 units (`(n + 15) >> 4` and `(n - 1) >> 4`).
+void cover_axis(float minimum, float maximum, std::int32_t &first, std::int32_t &last) {
+  const std::int32_t min4 = static_cast<std::int32_t>(std::lround(static_cast<double>(minimum) * 16.0));
+  const std::int32_t max4 = static_cast<std::int32_t>(std::lround(static_cast<double>(maximum) * 16.0));
+  first = (min4 + 15) >> 4;
+  last = (max4 - 1) >> 4;
+}
+
+std::uint8_t ct16_store(std::uint8_t value) noexcept { return static_cast<std::uint8_t>((value >> 3) << 3); }
+
+// The scissor rectangle of a canonical SCISSOR word.
+struct ScissorRect {
+  std::int32_t x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+  bool empty() const noexcept { return x1 < x0 || y1 < y0; }
+  bool contains(float min_x, float max_x, float min_y, float max_y) const noexcept {
+    return min_x >= static_cast<float>(x0) && max_x <= static_cast<float>(x1) + 1.0f &&
+           min_y >= static_cast<float>(y0) && max_y <= static_cast<float>(y1) + 1.0f;
+  }
+};
+ScissorRect scissor_rect(std::uint64_t scissor) {
+  ScissorRect rect;
+  rect.x0 = static_cast<std::int32_t>(bits(scissor, 0, 10));
+  rect.x1 = static_cast<std::int32_t>(bits(scissor, 16, 26));
+  rect.y0 = static_cast<std::int32_t>(bits(scissor, 32, 42));
+  rect.y1 = static_cast<std::int32_t>(bits(scissor, 48, 58));
+  return rect;
+}
+
+// The tap's register file, tracked in execution order. Only the registers the HUD uses are kept.
+struct TapState {
+  std::uint64_t prim = 0;
+  std::uint64_t frame = 0;
+  std::uint64_t zbuf = 0;
+  std::uint64_t test = 0;
+  std::uint64_t alpha = 0;
+  std::uint64_t scissor = 0;
+  std::uint64_t xyoffset = 0;
+  std::uint64_t tex0 = 0;
+  std::uint64_t tex1 = 0;
+  std::uint64_t clamp = 0;
+  bool frame_known = false;
+};
+
+void apply_tap_register(TapState &state, std::uint32_t address, std::uint64_t data) {
+  switch (address & 0x7Fu) {
+    case 0x00: state.prim = data & 0x7FFu; break;
+    case 0x06:
+    case 0x07: state.tex0 = data; break;
+    case 0x08:
+    case 0x09: state.clamp = data; break;
+    case 0x14:
+    case 0x15: state.tex1 = data; break;
+    case 0x18:
+    case 0x19: state.xyoffset = data; break;
+    case 0x40:
+    case 0x41: state.scissor = data; break;
+    case 0x42:
+    case 0x43: state.alpha = data; break;
+    case 0x47:
+    case 0x48: state.test = data; break;
+    case 0x4C:
+    case 0x4D:
+      state.frame = data;
+      state.frame_known = true;
+      break;
+    case 0x4E:
+    case 0x4F: state.zbuf = data; break;
+    default: break;
+  }
+}
+
+// The measured speed-element placement and state. The HUD atlas pages rotate through VRAM between frames (the same
+// element lands at TBP0 0x3A00 in stream 7398 and 0x3A20 in streams 7399..7405), so the selection uses the element's
+// measured CLAMP regions and screen placement instead of one page number. The plate is the only T8 region of the HUD
+// (0..81 x 0..25); the digits are the T4 glyphs of the font atlas (0..127 x 0..38) inside the plate's rectangle.
+constexpr std::uint32_t kHudFirstTbp0 = 0x3800u;
+constexpr std::uint32_t kHudLastTbp0 = 0x3EFFu;
+
+HudDrawState from_decode_state(const GsDecodeState &state) {
+  HudDrawState out;
+  out.prim = state.prim_value();
+  out.frame = state.frame;
+  out.zbuf = state.zbuf;
+  out.test = state.test;
+  out.alpha = state.alpha;
+  out.scissor = state.scissor;
+  out.xyoffset = state.xyoffset;
+  out.tex0 = state.tex0;
+  out.tex1 = state.tex1;
+  out.clamp = state.clamp;
+  out.rgba = static_cast<std::uint32_t>(state.rgba & 0xFFFFFFFFu);
+  return out;
+}
+
+// Selects the panel's PATH2 sprites for the element. Returns true when the batch is one of the element's sprites.
+bool panel_path2_matches(const GsDecodeBatch &batch, HudElement element) {
+  if (element != HudElement::speed) return false;
+  if (batch.path != 2 || !prim_tme(batch.state.prim_value()) || prim_type(batch.state.prim_value()) != 6) return false;
+  if (batch.state.frame_psm() != 2u) return false;
+  const std::uint32_t tbp0 = batch.state.tex0_tbp0();
+  if (tbp0 < kHudFirstTbp0 || tbp0 > kHudLastTbp0 || batch.state.tex0_psm() != 0x14u) return false;
+  if (batch.state.clamp_maxu() != 127u || batch.state.clamp_maxv() != 38u) return false;
+  // The measured placement: both digits lie inside the plate's rectangle (x 567.75..588.0, y 382.5..400.5).
+  return batch.min_x >= 560.0f && batch.max_x <= 595.0f && batch.min_y >= 378.0f && batch.max_y <= 404.0f;
+}
+
+bool panel_path1_matches_speed(const TapState &state, const GifPacket &packet) {
+  if (!state.frame_known || ((state.frame >> 24) & 0x3Fu) != 2u) return false;  // the display buffer is CT16
+  const std::uint32_t fbp = static_cast<std::uint32_t>(state.frame & 0x1FFu);
+  if (fbp != 0u && fbp != 140u) return false;
+  if (state.tex0 == 0u) return false;
+  const std::uint32_t tbp0 = static_cast<std::uint32_t>(state.tex0 & 0x3FFFu);
+  const std::uint32_t psm = static_cast<std::uint32_t>((state.tex0 >> 20) & 0x3Fu);
+  if (tbp0 < kHudFirstTbp0 || tbp0 > kHudLastTbp0 || psm != 0x13u) return false;
+  if (packet.vertices.size() < 4u) return false;
+  const std::uint32_t maxu = static_cast<std::uint32_t>((state.clamp >> 14) & 0x3FFu);
+  const std::uint32_t maxv = static_cast<std::uint32_t>((state.clamp >> 34) & 0x3FFu);
+  if (maxu != 81u || maxv != 25u) return false;  // the measured `remote_speed_kmph` region
+  return true;
+}
+
+}  // namespace
+
+bool parse_hud_element(const std::string &name, HudElement &element) {
+  if (name == "speed") {
+    element = HudElement::speed;
+    return true;
+  }
+  return false;
+}
+
+const char *hud_element_name(HudElement element) noexcept {
+  switch (element) {
+    case HudElement::speed: return "speed";
+  }
+  return "unknown";
+}
+
+const char *hud_texture_status_name(HudTextureStatus status) noexcept {
+  switch (status) {
+    case HudTextureStatus::ok: return "ok";
+    case HudTextureStatus::refused_format: return "refused_format";
+    case HudTextureStatus::refused_state: return "refused_state";
+    case HudTextureStatus::refused_decode: return "refused_decode";
+  }
+  return "unknown";
+}
+
+bool build_hud_stream_vram(const std::vector<GsDecodeImageUpload> &uploads, std::uint64_t stream_vblank,
+                           bool include_previous, SlmImage &slm, HudUploadCounters &counters, std::string &error,
+                           const SlmImage *base) {
+  slm = SlmImage{};
+  if (base != nullptr) {
+    slm.local = base->local;
+    slm.covered = base->covered;
+    counters.reasons["base image supplied (the sidecar's frame record)"] += 0;
+  }
+  error.clear();
+  for (const GsDecodeImageUpload &upload : uploads) {
+    if (upload.vblank > stream_vblank) continue;
+    if (!include_previous && upload.vblank != stream_vblank) continue;
+    counters.uploads += 1;
+    if (upload.trxdir != 0u) {
+      counters.refused += 1;
+      counters.reasons["IMAGE transfer is not host->local"] += 1;
+      continue;
+    }
+    if (!upload.has_transfer_state) {
+      counters.refused += 1;
+      counters.reasons["IMAGE without BITBLTBUF/TRXREG"] += 1;
+      continue;
+    }
+    if (upload.dpsm != 0u && upload.dpsm != 0x13u && upload.dpsm != 0x14u) {
+      counters.refused += 1;
+      counters.reasons["upload format outside CT32/T8/T4"] += 1;
+      continue;
+    }
+    if (upload.rrw == 0u || upload.rrh == 0u) {
+      counters.refused += 1;
+      counters.reasons["upload with an empty TRXREG rectangle"] += 1;
+      continue;
+    }
+    const auto psm = static_cast<hwgs::memory::Psm>(upload.dpsm);
+    const std::size_t expected = hwgs::memory::hostBytesFor(psm, upload.rrw, upload.rrh);
+    if (upload.data.size() < expected) {
+      counters.refused += 1;
+      counters.reasons["upload payload shorter than its TRXREG rectangle"] += 1;
+      continue;
+    }
+    const hwgs::memory::BufferView destination{upload.dbp, upload.dbw, psm};
+    const hwgs::memory::TransferRect rect{upload.dsax, upload.dsay, upload.rrw, upload.rrh};
+    hwgs::memory::hostToLocal(slm.local, destination, rect, std::span<const std::uint8_t>(upload.data.data(), expected));
+    // Cover the destination pages the upload wrote, so the texture decoder can tell a captured block from the zero fill.
+    const hwgs::memory::PsmInfo &info = hwgs::memory::psmInfo(psm);
+    const std::uint32_t per_row = std::max<std::uint32_t>(1u, upload.dbw * 64u / info.pageWidth);
+    const std::uint32_t last_x = (upload.dsax + upload.rrw - 1u) & 0x7FFu;
+    const std::uint32_t last_y = (upload.dsay + upload.rrh - 1u) & 0x7FFu;
+    for (std::uint32_t page_y = 0; page_y <= last_y / info.pageHeight; ++page_y)
+      for (std::uint32_t page_x = upload.dsax / info.pageWidth; page_x <= last_x / info.pageWidth; ++page_x)
+        slm.cover(vram::Window{upload.dbp + 32u * (page_y * per_row + page_x), 32u});
+    counters.applied += 1;
+    counters.bytes += expected;
+  }
+  if (counters.applied == 0) {
+    error = "the selected stream carries no host->local upload";
+    return false;
+  }
+  return true;
+}
+
+const HudTexture &HudTextureCache::get(const HudDrawState &state, std::string &error) {
+  const std::uint64_t key_tex0 = state.tex0 & ~(std::uint64_t{7} << 61);  // CLD is not part of the content key
+  const auto key = std::make_tuple(key_tex0, state.tex1, state.clamp);
+  const auto cached = cache_.find(key);
+  if (cached != cache_.end()) {
+    cache_hits_ += 1;
+    if (cached->second.status != HudTextureStatus::ok) error = cached->second.detail;
+    return cached->second;
+  }
+  HudTexture texture;
+  texture.tex0 = key_tex0;
+  texture.tex1 = state.tex1;
+  texture.clamp = state.clamp;
+  const std::uint32_t psm = state.tex0_psm();
+  if (psm != 0x14u && psm != 0x13u) {
+    char detail[96];
+    std::snprintf(detail, sizeof detail, "PSM 0x%02X is not the measured T4/T8 HUD format", static_cast<unsigned>(psm));
+    texture.status = HudTextureStatus::refused_format;
+    texture.detail = detail;
+    refusals_ += 1;
+    reasons_[texture.detail] += 1;
+    error = texture.detail;
+    return cache_.emplace(key, std::move(texture)).first->second;
+  }
+  // The synthesized PGLUtexture record: the captured TEX0/TEX1/CLAMP. CLD is forced to 1 because the captured state
+  // loads the palette bank through the TEX2 write that precedes the draw, and the sidecar holds the bank at CBP; the
+  // record path reads exactly that bank. The four MIPTBP words are zero (MXL 0).
+  std::uint8_t record[40] = {};
+  // CLD is bits 61-63; the state loads the palette through the TEX2 write, so the synthesized record asks the record
+  // path for that bank (CLD = 1) and the sidecar supplies its bytes.
+  const std::uint64_t tex0 = (state.tex0 & ~(std::uint64_t{7} << 61)) | (std::uint64_t{1} << 61);
+  std::memcpy(record + 0, &tex0, 8);
+  std::memcpy(record + 8, &state.tex1, 8);
+  std::memcpy(record + 32, &state.clamp, 8);
+  DecodedTexture decoded;
+  std::string decode_error;
+  const TextureStatus status = decode_texture(slm_, record, sizeof record, TextureDecodeOptions{}, decoded,
+                                              decode_error);
+  if (status != TextureStatus::ok) {
+    texture.status = status == TextureStatus::refused_psm ? HudTextureStatus::refused_format
+                                                          : HudTextureStatus::refused_decode;
+    texture.detail = texture_status_name(status) + std::string(": ") + decode_error;
+    refusals_ += 1;
+    reasons_[decode_error] += 1;
+    error = texture.detail;
+    return cache_.emplace(key, std::move(texture)).first->second;
+  }
+  texture.status = HudTextureStatus::ok;
+  texture.detail = decoded.detail;
+  texture.width = decoded.width;
+  texture.height = decoded.height;
+  texture.x0 = decoded.x0;
+  texture.y0 = decoded.y0;
+  texture.rgba = decoded.rgba;
+  // A constant page cannot be a glyph atlas (the measured HUD fonts carry many indices). The captures prove the
+  // point: the font atlas page is uploaded before the capture window, so a stream-only image holds it as zero fill and
+  // the palette maps every index to one entry. The draw is refused with this named reason, never drawn as a solid box.
+  bool constant = !texture.rgba.empty();
+  for (std::size_t pixel = 1; constant && pixel * 4u + 2u < texture.rgba.size(); ++pixel)
+    for (std::size_t lane = 0; lane < 3u; ++lane)
+      if (texture.rgba[pixel * 4u + lane] != texture.rgba[lane]) constant = false;
+  if (constant) {
+    texture.status = HudTextureStatus::refused_state;
+    texture.detail = "texture page holds a constant value (the font atlas is uploaded before the captured window)";
+    refusals_ += 1;
+    reasons_[texture.detail] += 1;
+    error = texture.detail;
+    return cache_.emplace(key, std::move(texture)).first->second;
+  }
+  decodes_ += 1;
+  return cache_.emplace(key, std::move(texture)).first->second;
+}
+
+bool build_hud_panel(const std::vector<GsDecodeBatch> &batches, const std::vector<std::uint8_t> &tap_data,
+                     const std::vector<TapFileRecord> &tap_records, std::uint64_t scene_vblank, HudElement element,
+                     HudPanel &panel, std::string &error) {
+  panel = HudPanel{};
+  panel.scene_vblank = scene_vblank;
+  panel.stream_vblank = scene_vblank + 1u;
+  panel.element = element;
+  HudPanelCounters &counters = panel.counters;
+
+  // ---- PATH2: the panel range of the attributed stream ----
+  // The present blit is the measured full-screen CT16 sample of the world page; the panel sprites follow it and stop at
+  // the next full-screen batch (the trailing colour clear). Every sprite in between belongs to the panel.
+  std::size_t present = batches.size();
+  for (std::size_t index = 0; index < batches.size(); ++index) {
+    const GsDecodeBatch &batch = batches[index];
+    if (batch.vblank != panel.stream_vblank) continue;
+    if (!batch.full_screen || batch.path != 2) continue;
+    if (!prim_tme(batch.state.prim_value()) || batch.state.frame_psm() != 2u) continue;
+    if (batch.state.tex0_tbp0() != 0x1A40u) continue;
+    present = index;
+    break;
+  }
+  if (present == batches.size()) {
+    counters.refusals += 1;
+    counters.count("no present blit in the attributed stream");
+    error = "the attributed stream has no measured present blit";
+    return false;
+  }
+
+  // The merged SCISSOR timeline: the tap's writes in execution order, consumed by job id. This is the measured fix for
+  // the stale PATH2-only scissor (the plate's VU1 job restores the full-screen rectangle before the digits draw).
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> tap_scissors;  // (job, SCISSOR word)
+  {
+    TapState state;
+    for (const TapFileRecord &record : tap_records) {
+      if (record.kind != 1u) continue;
+      if (record.offset + record.bytes > tap_data.size()) continue;
+      const GifPacket packet = parse_gif(tap_data.data() + record.offset, record.bytes);
+      if (!packet.ok) continue;
+      for (const GifRegisterWrite &write : packet.ad_writes) {
+        apply_tap_register(state, write.address, write.data);
+        if ((write.address & 0x7Fu) == 0x40u || (write.address & 0x7Fu) == 0x41u)
+          tap_scissors.emplace_back(record.job, write.data);
+      }
+    }
+  }
+  const auto effective_scissor = [&](std::uint64_t job, std::uint64_t stream_scissor) {
+    std::uint64_t scissor = stream_scissor;
+    for (const auto &entry : tap_scissors) {
+      if (entry.first <= job) scissor = entry.second;
+    }
+    return scissor;
+  };
+
+  std::uint64_t first_job = UINT64_MAX;
+  std::uint64_t last_job = 0;
+  for (const GsDecodeBatch &batch : batches) {
+    if (batch.vblank != panel.stream_vblank) continue;
+    first_job = std::min(first_job, batch.last_job);
+    last_job = std::max(last_job, batch.last_job);
+  }
+  if (first_job == UINT64_MAX) first_job = 0;
+
+  for (std::size_t index = present + 1; index < batches.size(); ++index) {
+    const GsDecodeBatch &batch = batches[index];
+    if (batch.vblank != panel.stream_vblank) break;
+    if (batch.full_screen) break;  // the trailing clear ends the panel
+    counters.path2_batches += 1;
+    if (!panel_path2_matches(batch, element)) {
+      counters.path2_other += 1;
+      continue;
+    }
+    HudDraw draw;
+    draw.path1 = false;
+    draw.job = batch.last_job;
+    draw.sequence = batch.sequence;
+    draw.state = from_decode_state(batch.state);
+    draw.state.scissor = effective_scissor(batch.last_job, batch.state.scissor);
+    draw.vertices = std::min<std::uint32_t>(2u, static_cast<std::uint32_t>(batch.verts.size()));
+    if (draw.vertices < 2u) {
+      counters.refusals += 1;
+      counters.count("speed sprite with fewer than two vertices");
+      continue;
+    }
+    if (!(batch.verts[0].x <= batch.verts[1].x) || !(batch.verts[0].y <= batch.verts[1].y)) {
+      // The measured sprites are top-left/bottom-right pairs; a reversed pair would need the GS's own corner selection.
+      counters.refusals += 1;
+      counters.count("speed sprite is not a top-left/bottom-right pair");
+      continue;
+    }
+    for (std::uint32_t v = 0; v < draw.vertices; ++v) {
+      const GsDecodeVertex &source = batch.verts[v];
+      if (!source.has_uv) {
+        counters.refusals += 1;
+        counters.count("speed sprite without a UV");
+        draw.vertices = 0;
+        break;
+      }
+      draw.verts[v].x = source.x;
+      draw.verts[v].y = source.y;
+      draw.verts[v].u = source.u;
+      draw.verts[v].v = source.v;
+      draw.verts[v].rgba = draw.state.rgba;
+      draw.verts[v].drawing = source.drawing;
+    }
+    if (draw.vertices == 0) continue;
+    draw.min_x = std::min(draw.verts[0].x, draw.verts[1].x);
+    draw.max_x = std::max(draw.verts[0].x, draw.verts[1].x);
+    draw.min_y = std::min(draw.verts[0].y, draw.verts[1].y);
+    draw.max_y = std::max(draw.verts[0].y, draw.verts[1].y);
+    // Evidence of the merge: the PATH2-only scissor would have culled this sprite.
+    const ScissorRect stream_scissor = scissor_rect(batch.state.scissor);
+    if (!stream_scissor.contains(draw.min_x, draw.max_x, draw.min_y, draw.max_y) &&
+        scissor_rect(draw.state.scissor).contains(draw.min_x, draw.max_x, draw.min_y, draw.max_y))
+      counters.path2_stream_scissor_culled += 1;
+    char line[256];
+    std::snprintf(line, sizeof line,
+                  "path2 seq %u job %llu sprite x %.2f..%.2f y %.2f..%.2f uv %.2f..%.2f x %.2f..%.2f tbp0 0x%04X",
+                  draw.sequence, static_cast<unsigned long long>(draw.job), draw.min_x, draw.max_x, draw.min_y,
+                  draw.max_y, draw.verts[0].u, draw.verts[1].u, draw.verts[0].v, draw.verts[1].v,
+                  draw.state.tex0_tbp0());
+    panel.summary += line;
+    panel.summary += "\n";
+    panel.draws.push_back(draw);
+    counters.path2_selected += 1;
+  }
+
+  // ---- PATH1: the element plate draws of the tap, in the stream's job range ----
+  if (tap_records.empty()) {
+    counters.refusals += 1;
+    counters.count("no tap: the element plate is PATH1 and cannot be drawn");
+  } else {
+    TapState state;
+    std::uint32_t record_ordinal = 0;
+    for (const TapFileRecord &record : tap_records) {
+      if (record.kind != 1u) continue;
+      ++record_ordinal;
+      if (record.offset + record.bytes > tap_data.size()) {
+        counters.refusals += 1;
+        counters.count("tap record runs past the file");
+        continue;
+      }
+      const GifPacket packet = parse_gif(tap_data.data() + record.offset, record.bytes);
+      if (!packet.ok) {
+        counters.refusals += 1;
+        counters.count("tap packet parser refused a record");
+        continue;
+      }
+      for (const GifRegisterWrite &write : packet.ad_writes) apply_tap_register(state, write.address, write.data);
+      if (packet.vertices.empty()) continue;
+      if (!state.frame_known || ((state.frame >> 24) & 0x3Fu) != 2u) continue;
+      const std::uint32_t fbp = static_cast<std::uint32_t>(state.frame & 0x1FFu);
+      if (fbp != 0u && fbp != 140u) continue;
+      counters.path1_draws += 1;
+      if (record.job < first_job || record.job > last_job) {
+        counters.path1_other += 1;
+        continue;
+      }
+      if (!panel_path1_matches_speed(state, packet)) {
+        counters.path1_other += 1;
+        continue;
+      }
+      if (element != HudElement::speed) continue;
+      HudDraw draw;
+      draw.path1 = true;
+      draw.job = record.job;
+      draw.sequence = record_ordinal;
+      draw.state.prim = packet.tags.empty() ? packet.vertices[0].prim
+                                            : (packet.tags[0].prim != 0u ? packet.tags[0].prim
+                                                                          : packet.vertices[0].prim);
+      draw.state.frame = state.frame;
+      draw.state.zbuf = state.zbuf;
+      draw.state.test = state.test;
+      draw.state.alpha = state.alpha;
+      draw.state.scissor = state.scissor;
+      draw.state.xyoffset = state.xyoffset;
+      draw.state.tex0 = state.tex0;
+      draw.state.tex1 = state.tex1;
+      draw.state.clamp = state.clamp;
+      draw.normalized_uv = true;
+      draw.triangle_strip = true;
+      draw.vertices = 4;
+      std::uint32_t offset_x = static_cast<std::uint32_t>(state.xyoffset & 0xFFFFu);
+      std::uint32_t offset_y = static_cast<std::uint32_t>((state.xyoffset >> 32) & 0xFFFFu);
+      float min_u = 1e9f, max_u = -1e9f, min_v = 1e9f, max_v = -1e9f;
+      for (std::uint32_t v = 0; v < 4u; ++v) {
+        const GifVertex &source = packet.vertices[v];
+        draw.verts[v].x = screen_coordinate(source.x, offset_x);
+        draw.verts[v].y = screen_coordinate(source.y, offset_y);
+        draw.verts[v].u = source.s;
+        draw.verts[v].v = source.t;
+        draw.verts[v].rgba = source.r | (static_cast<std::uint32_t>(source.g) << 8) |
+                             (static_cast<std::uint32_t>(source.b) << 16) |
+                             (static_cast<std::uint32_t>(source.a) << 24);
+        draw.verts[v].drawing = !source.adc;
+        min_u = std::min(min_u, source.s);
+        max_u = std::max(max_u, source.s);
+        min_v = std::min(min_v, source.t);
+        max_v = std::max(max_v, source.t);
+      }
+      // The measured quad is axis aligned and maps ST monotonically. Anything else is refused, never guessed.
+      const bool axis_aligned = (draw.verts[0].y == draw.verts[1].y) && (draw.verts[2].y == draw.verts[3].y) &&
+                                (draw.verts[0].x == draw.verts[2].x) && (draw.verts[1].x == draw.verts[3].x);
+      if (!axis_aligned || max_u - min_u <= 0.0f || max_v - min_v <= 0.0f) {
+        counters.refusals += 1;
+        counters.count("plate quad is not the measured axis-aligned ST map");
+        counters.path1_other += 1;
+        continue;
+      }
+      draw.state.rgba = draw.verts[0].rgba;  // PRIM.FST: the flat colour of the first vertex
+      draw.min_x = std::min(std::min(draw.verts[0].x, draw.verts[1].x), std::min(draw.verts[2].x, draw.verts[3].x));
+      draw.max_x = std::max(std::max(draw.verts[0].x, draw.verts[1].x), std::max(draw.verts[2].x, draw.verts[3].x));
+      draw.min_y = std::min(std::min(draw.verts[0].y, draw.verts[1].y), std::min(draw.verts[2].y, draw.verts[3].y));
+      draw.max_y = std::max(std::max(draw.verts[0].y, draw.verts[1].y), std::max(draw.verts[2].y, draw.verts[3].y));
+      if (draw.min_x < 545.0f || draw.max_x > 620.0f || draw.min_y < 375.0f || draw.max_y > 406.0f) {
+        counters.path1_other += 1;
+        continue;
+      }
+      char line[256];
+      std::snprintf(line, sizeof line,
+                    "path1 job %llu plate x %.2f..%.2f y %.2f..%.2f st %.3f..%.3f x %.3f..%.3f tbp0 0x%04X",
+                    static_cast<unsigned long long>(draw.job), draw.min_x, draw.max_x, draw.min_y, draw.max_y, min_u,
+                    max_u, min_v, max_v, draw.state.tex0_tbp0());
+      panel.summary += line;
+      panel.summary += "\n";
+      panel.draws.push_back(draw);
+      counters.path1_selected += 1;
+      counters.plate_quads += 1;
+    }
+  }
+
+  // The executed order: a VU1 job posted before a PATH2 packet runs before it, so a PATH1 draw sorts before a PATH2
+  // draw with the same (or a larger) job id.
+  std::stable_sort(panel.draws.begin(), panel.draws.end(), [](const HudDraw &left, const HudDraw &right) {
+    if (left.job != right.job) return left.job < right.job;
+    return left.path1 && !right.path1;
+  });
+
+  if (panel.draws.empty()) {
+    counters.refusals += 1;
+    counters.count("no element draw selected");
+    error = "no draw of the requested element was selected";
+    return false;
+  }
+  return true;
+}
+
+std::uint8_t ct16_expand(std::uint8_t value8) noexcept { return static_cast<std::uint8_t>(value8 & 0xF8u); }
+
+bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vector<std::uint8_t> &rgba,
+                    std::uint32_t width, std::uint32_t height, const HudDrawOptions &options,
+                    std::vector<std::uint8_t> *mask, HudDrawCounters &counters, std::string &error) {
+  if (width == 0 || height == 0 || rgba.size() < static_cast<std::size_t>(width) * height * 4u) {
+    error = "HUD target is smaller than its stated size";
+    return false;
+  }
+  if (mask != nullptr) mask->assign(static_cast<std::size_t>(width) * height, 0);
+  for (const HudDraw &draw : panel.draws) {
+    counters.draws += 1;
+    const HudDrawState &state = draw.state;
+    if (!prim_tme(state.prim)) {
+      counters.refused += 1;
+      counters.reasons["untextured HUD draw"] += 1;
+      continue;
+    }
+    std::string texture_error;
+    const HudTexture &texture = textures.get(state, texture_error);
+    if (texture.status != HudTextureStatus::ok) {
+      counters.refused += 1;
+      counters.reasons[texture_error] += 1;
+      continue;
+    }
+    // The sampler's measured subset: MODULATE, MXL 0, matching filters, region clamp.
+    if (state.tex0_tfx() != 0u || state.tex1_mxl() != 0u || state.tex1_mmag() != state.tex1_mmin()) {
+      counters.refused += 1;
+      counters.reasons["sampler state outside the measured subset"] += 1;
+      continue;
+    }
+    SampledTexture sampled;
+    sampled.psm = state.tex0_psm();
+    sampled.tw = state.tex0_tw();
+    sampled.th = state.tex0_th();
+    sampled.tcc = state.tex0_tcc();
+    sampled.tfx = state.tex0_tfx();
+    sampled.mxl = state.tex1_mxl();
+    sampled.mmag = state.tex1_mmag() != 0u ? 1u : 0u;
+    sampled.mmin = state.tex1_mmin() == 0u ? 0u : (state.tex1_mmin() == 1u ? 1u : 2u);
+    if (sampled.mmin > 1u) {
+      counters.refused += 1;
+      counters.reasons["sampler minification filter outside the measured subset"] += 1;
+      continue;
+    }
+    sampled.wms = state.clamp_wms();
+    sampled.wmt = state.clamp_wmt();
+    sampled.minu = state.clamp_minu();
+    sampled.maxu = state.clamp_maxu();
+    sampled.minv = state.clamp_minv();
+    sampled.maxv = state.clamp_maxv();
+    sampled.width = texture.width;
+    sampled.height = texture.height;
+    sampled.x0 = texture.x0;
+    sampled.y0 = texture.y0;
+    sampled.rgba = texture.rgba.data();
+
+    std::int32_t first_x = 0, last_x = 0, first_y = 0, last_y = 0;
+    cover_axis(draw.min_x, draw.max_x, first_x, last_x);
+    cover_axis(draw.min_y, draw.max_y, first_y, last_y);
+    const ScissorRect scissor = scissor_rect(state.scissor);
+    if (!scissor.empty()) {
+      first_x = std::max(first_x, scissor.x0);
+      last_x = std::min(last_x, scissor.x1);
+      first_y = std::max(first_y, scissor.y0);
+      last_y = std::min(last_y, scissor.y1);
+    }
+    first_x = std::max(first_x, 0);
+    first_y = std::max(first_y, 0);
+    last_x = std::min(last_x, static_cast<std::int32_t>(width) - 1);
+    last_y = std::min(last_y, static_cast<std::int32_t>(height) - 1);
+    if (last_x < first_x || last_y < first_y) {
+      counters.refused += 1;
+      counters.reasons["element draw outside the scissor or the target"] += 1;
+      continue;
+    }
+    // The draw's two measured corners: UV interpolation runs between vertex 0 and vertex 1 (sprites) or across the
+    // plate quad's min/max corners (the axis-aligned strip).
+    float u_x0 = draw.verts[0].x, u_x1 = draw.verts[1].x, u_u0 = draw.verts[0].u, u_u1 = draw.verts[1].u;
+    float u_y0 = draw.verts[0].y, u_y1 = draw.verts[1].y, u_v0 = draw.verts[0].v, u_v1 = draw.verts[1].v;
+    if (draw.path1) {
+      u_x0 = draw.min_x;
+      u_x1 = draw.max_x;
+      u_y0 = draw.min_y;
+      u_y1 = draw.max_y;
+      u_u0 = draw.verts[0].u;
+      u_u1 = draw.verts[1].u;
+      u_v0 = draw.verts[0].v;
+      u_v1 = draw.verts[2].v;
+    }
+    if (u_x1 == u_x0 || u_y1 == u_y0) {
+      counters.refused += 1;
+      counters.reasons["degenerate HUD rectangle"] += 1;
+      continue;
+    }
+    const BlendEquation equation = decode_blend_equation(state.alpha);
+    const bool blend = prim_abe(state.prim);
+    if (blend && blend_family(state.alpha) == BlendFamily::other) {
+      counters.refused += 1;
+      counters.reasons["ALPHA equation outside the measured normal family"] += 1;
+      continue;
+    }
+    std::array<std::uint8_t, 4> vertex = {static_cast<std::uint8_t>(state.rgba & 0xFFu),
+                                          static_cast<std::uint8_t>((state.rgba >> 8) & 0xFFu),
+                                          static_cast<std::uint8_t>((state.rgba >> 16) & 0xFFu),
+                                          static_cast<std::uint8_t>((state.rgba >> 24) & 0xFFu)};
+    if (draw.path1) {
+      const std::uint32_t flat = draw.verts[0].rgba;
+      vertex = {static_cast<std::uint8_t>(flat & 0xFFu), static_cast<std::uint8_t>((flat >> 8) & 0xFFu),
+                static_cast<std::uint8_t>((flat >> 16) & 0xFFu), static_cast<std::uint8_t>((flat >> 24) & 0xFFu)};
+    }
+    for (std::int32_t py = first_y; py <= last_y; ++py) {
+      for (std::int32_t px = first_x; px <= last_x; ++px) {
+        const float fx = static_cast<float>(px) + 0.5f;
+        const float fy = static_cast<float>(py) + 0.5f;
+        float u = u_u0 + (fx - u_x0) / (u_x1 - u_x0) * (u_u1 - u_u0);
+        float v = u_v0 + (fy - u_y0) / (u_y1 - u_y0) * (u_v1 - u_v0);
+        if (draw.path1) {
+          // The plate's UVs are normalized ST. The measured corners: vertex 0 top-left, vertex 1 top-right,
+          // vertex 2 bottom-left.
+          u = u_u0 + (fx - u_x0) / (u_x1 - u_x0) * (draw.verts[1].u - draw.verts[0].u);
+          v = u_v0 + (fy - u_y0) / (u_y1 - u_y0) * (draw.verts[2].v - draw.verts[0].v);
+        }
+        std::array<std::uint8_t, 4> fragment{};
+        if (sample_texture(sampled, u, v, vertex, fragment) != SampleStatus::ok) {
+          counters.refused += 1;
+          counters.reasons["texture sample refused"] += 1;
+          continue;
+        }
+        counters.sampled += 1;
+        const AlphaTestResult tested = alpha_test_ate_only(state.test, fragment[3]);
+        if (tested == AlphaTestResult::fail) {
+          counters.alpha_test_failed += 1;
+          continue;
+        }
+        if (tested != AlphaTestResult::pass) {
+          counters.refused += 1;
+          counters.reasons[std::string("alpha test: ") + alpha_test_result_name(tested)] += 1;
+          continue;
+        }
+        std::uint8_t *destination = rgba.data() + (static_cast<std::size_t>(py) * width + px) * 4u;
+        std::array<std::uint8_t, 4> cd = {destination[0], destination[1], destination[2], destination[3]};
+        if (options.ct16) {
+          cd[0] = ct16_expand(cd[0]);
+          cd[1] = ct16_expand(cd[1]);
+          cd[2] = ct16_expand(cd[2]);
+        }
+        std::array<std::uint8_t, 4> out = fragment;
+        if (blend) {
+          blend_fragment(equation, fragment, cd, out);
+          counters.blended += 1;
+        }
+        if (options.ct16) {
+          out[0] = ct16_store(out[0]);
+          out[1] = ct16_store(out[1]);
+          out[2] = ct16_store(out[2]);
+        }
+        out[3] = 255;
+        destination[0] = out[0];
+        destination[1] = out[1];
+        destination[2] = out[2];
+        destination[3] = out[3];
+        counters.pixels += 1;
+        if (mask != nullptr) (*mask)[static_cast<std::size_t>(py) * width + px] = 255;
+      }
+    }
+  }
+  if (mask != nullptr) {
+    for (std::uint8_t value : *mask) counters.masked_pixels += value != 0 ? 1u : 0u;
+  }
+  return true;
+}
+
+std::string hud_panel_report(const HudPanel &panel, const HudDrawCounters &draws, const HudTextureCache &textures) {
+  char line[1024];
+  std::string text;
+  std::snprintf(line, sizeof line,
+                "HUD panel: element %s, scene frame %llu (stream %llu), draws %zu (PATH2 %llu, PATH1 %llu)\n",
+                hud_element_name(panel.element), static_cast<unsigned long long>(panel.scene_vblank),
+                static_cast<unsigned long long>(panel.stream_vblank), panel.draws.size(),
+                static_cast<unsigned long long>(panel.counters.path2_selected),
+                static_cast<unsigned long long>(panel.counters.path1_selected));
+  text += line;
+  std::snprintf(line, sizeof line,
+                "HUD selection: path2 batches %llu selected %llu other %llu stream-scissor-culled %llu; "
+                "path1 draws %llu selected %llu other %llu; refusals %llu\n",
+                static_cast<unsigned long long>(panel.counters.path2_batches),
+                static_cast<unsigned long long>(panel.counters.path2_selected),
+                static_cast<unsigned long long>(panel.counters.path2_other),
+                static_cast<unsigned long long>(panel.counters.path2_stream_scissor_culled),
+                static_cast<unsigned long long>(panel.counters.path1_draws),
+                static_cast<unsigned long long>(panel.counters.path1_selected),
+                static_cast<unsigned long long>(panel.counters.path1_other),
+                static_cast<unsigned long long>(panel.counters.refusals));
+  text += line;
+  std::snprintf(line, sizeof line,
+                "HUD textures: decodes %llu cache hits %llu refusals %llu; raster draws %llu pixels %llu masked %llu "
+                "sampled %llu blended %llu alpha-fail %llu refused %llu\n",
+                static_cast<unsigned long long>(textures.decodes()),
+                static_cast<unsigned long long>(textures.cache_hits()),
+                static_cast<unsigned long long>(textures.refusals()),
+                static_cast<unsigned long long>(draws.draws), static_cast<unsigned long long>(draws.pixels),
+                static_cast<unsigned long long>(draws.masked_pixels),
+                static_cast<unsigned long long>(draws.sampled), static_cast<unsigned long long>(draws.blended),
+                static_cast<unsigned long long>(draws.alpha_test_failed),
+                static_cast<unsigned long long>(draws.refused));
+  text += line;
+  for (const auto &entry : panel.counters.reasons) {
+    std::snprintf(line, sizeof line, "HUD selection refusal: %s x %llu\n", entry.first.c_str(),
+                  static_cast<unsigned long long>(entry.second));
+    text += line;
+  }
+  for (const auto &entry : draws.reasons) {
+    std::snprintf(line, sizeof line, "HUD raster refusal: %s x %llu\n", entry.first.c_str(),
+                  static_cast<unsigned long long>(entry.second));
+    text += line;
+  }
+  for (const auto &entry : textures.reasons()) {
+    std::snprintf(line, sizeof line, "HUD texture refusal: %s x %llu\n", entry.first.c_str(),
+                  static_cast<unsigned long long>(entry.second));
+    text += line;
+  }
+  if (!panel.summary.empty()) {
+    text += panel.summary;
+  }
+  return text;
+}
+
+}  // namespace gt4::coregs3
