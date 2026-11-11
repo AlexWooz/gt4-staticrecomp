@@ -3820,8 +3820,8 @@ void Renderer::SetForcedBilinear(std::uint32_t mode) {
     if (core2_) core2_->SetForcedBilinear(mode);
 }
 
-void Renderer::SetCoregs3Overlay(bool enabled) {
-    if (core2_) core2_->SetCoregs3Overlay(enabled);
+void Renderer::SetCoregs3Overlay(bool enabled, bool replace3d) {
+    if (core2_) core2_->SetCoregs3Overlay(enabled, replace3d);
 }
 
 bool Renderer::CompositeCoregs3Overlay(const GpuFrame& frame) {

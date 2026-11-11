@@ -78,6 +78,12 @@ class PresentLayer {
   bool render_tick(std::uint64_t target, std::uint32_t width, std::uint32_t height, std::uint32_t tick,
                    const SubmitOverlay &submit, bool &drew, std::string &error);
 
+  // TASK-090 3D replace: true when this layer draws the native world over a checkpoint CoreGS 2.0 must leave without
+  // its own 3D (GT4_COREGS3_REPLACE_3D, default on with the split and the live world; `0` keeps the base's 3D for the
+  // A/B). The backend passes it to core 2 when it enables the split; false means the checkpoint keeps the composed
+  // CoreGS 2.0 image as before.
+  bool replace_3d() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

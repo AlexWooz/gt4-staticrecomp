@@ -334,7 +334,7 @@ public:
     // TASK-090 2D overlay split: the CoreGS 3.0 present layer asks core 2 to compose a 3D checkpoint at each frame's
     // 2D boundary and deliver the 2D layer next to it (GpuFrame::overlay). A no-op for the faithful modes; the
     // GT4_COREGS3_2D_OVERLAY=0 A/B keeps the split off.
-    void SetCoregs3Overlay(bool enabled);
+    void SetCoregs3Overlay(bool enabled, bool replace3d);
     // TASK-090 2D overlay split: composites the frame's 2D layer (GpuFrame::overlay) over the image the present layer
     // drew the world into. False when the frame has no overlay or the composite cannot run (counted, never fatal).
     bool CompositeCoregs3Overlay(const GpuFrame &frame);

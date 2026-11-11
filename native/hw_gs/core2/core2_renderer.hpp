@@ -131,6 +131,9 @@ struct Core2Counters {
     std::uint64_t splitCheckpoints = 0;
     std::uint64_t splitRefusedFrames = 0;
     std::uint64_t splitDroppedFrames = 0;  // split frames whose VBlank compose never ran (held present): no overlay delivered
+    // TASK-090 3D replace: split checkpoints composed as the display clear colour alone (the base 3D is not shown;
+    // the guest's 3D still runs). GT4_COREGS3_REPLACE_3D=0 keeps the old checkpoint (A/B).
+    std::uint64_t splitReplace3dFrames = 0;
     std::uint64_t splitRefusedSamples = 0;
     std::uint64_t splitLayoutChanges = 0;
     std::uint64_t splitUnavailableDraws = 0;  // display-target draws of a layout the split cannot cut (menus, both circuits)
@@ -183,7 +186,7 @@ public:
     // TASK-090 2D overlay split: the CoreGS 3.0 present layer asks for the frame's 3D image and its 2D layer as two
     // images (docs/COREGS3-2D-SPLIT.md). False/enabled only from the present path; GT4_COREGS3_2D_OVERLAY=0 is the A/B
     // and leaves the faithful behavior byte for byte.
-    void SetCoregs3Overlay(bool enabled);
+    void SetCoregs3Overlay(bool enabled, bool replace3d);
     // Composites the frame's 2D layer (GpuFrame::overlay) over the image the present drew into. False (counted) when
     // the frame has no overlay or the composite cannot run.
     bool CompositeCoregs3Overlay(const writeback::GpuFrame &frame);
