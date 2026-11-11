@@ -2333,7 +2333,12 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   readback returns 0 for every car query and the world query, so the +/-5% gate is unmeasured. Aligned comparison still
   fails (18-20 dB textured; base control 24 dB on the offline ctex mask at (-12,-16) vs the study's 36 dB on its run).
   Checks: CTest coregs3 **21/21**, Python **18/18**, the 3x gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0
-  clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`d4c0ea0e4e077d9bf7b2c0345c77cf4533633337197e032febbd269f37257764`).
+  clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`fedafd01a2ccc0282c9fecce7e94878b5666889409a18440517334f2c4ec7cdd`).
+  Query fix: the pool was created only when the world was on (every car-only run had no query); now created
+  unconditionally, and query 1 is read alone one frame later (queries 0..2 together return VK_NOT_READY with the world
+  off). Measured 1,042-1,260 reflection samples/frame against the offline 20,302 — the reflection content is the
+  remaining gap; the textured acceptance still fails (20.18 dB / 12.74 / 41.2% at the best base alignment (-11,-14),
+  26.45 dB on the study-style near-car mask), pending a capture-matching recording.
   Journal entry of 2026-11-11; hooks §38. The C: system volume was found full (0/510 GB); the build TEMP was redirected
   to O: and the owner should free space.
 

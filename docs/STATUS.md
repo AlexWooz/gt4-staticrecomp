@@ -1,5 +1,27 @@
 # Current Status
 
+## 2026-11-11: the car-round occlusion query readback fixed (TASK-090, branch `task/090-live-world`, merged
+`40faa459`; follow-up to the car implementation)
+
+The zero car/world query samples had two causes. First, the query pool was created inside `create_world_objects`
+**after** its `if (!live_world_enabled) return true`, so the car-only runs (the world off) never created a pool and
+never recorded a query. The pool is now created by `create_query_pool()` before that early return. Second, with the
+pool present, `vkGetQueryPoolResults` of queries 0..2 returned `VK_NOT_READY`: query 0 (the world query) is never
+begun when the world is off, and on this driver a query from the submission just fenced is not ready when read right
+after the fence. The reflection query (index 1) is now read alone, one frame later, before the next reset; the world
+query still needs the same split read before the flare work relies on it. The reflection query now measures **1,042-
+1,260 samples per frame** against the offline control's **20,302 written fragments**, so the reflection content is far
+from complete; that gap, not the query, is the next item.
+
+Acceptance on this build (car-only present, split off, night race 3x): the per-frame car table still matches the
+offline frame-0 control exactly (116 draws, 335 items, **219 textured / 80 reflected / 36 no-record / 0 refused**); the
+base calibration on the study-style near-car mask finds (-11,-14) at **26.45 dB** (the study's own run reached 36 dB on
+its mask) and the textured live against the offline textured+reflection render gives **20.18 dB / 12.74 / 41.2%**
+there, so the gate is **not met**; the pose/timing residual and the reflection content are the blockers. A dedicated
+capture-matching recording (same boot/menu/race script as the v6 ALL_DRAWS capture, verified by the base calibration
+reaching 31-36 dB before judging the textured content) is needed. Gates: CTest coregs3 **21/21**, Python **18/18**, the
+3x gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`fedafd01a2ccc0282c9fecce7e94878b5666889409a18440517334f2c4ec7cdd`).
+
 Follow-up (same day, merged `40faa459`): the per-frame car table at VBlanks 7398-7400 now reports **draws 116, items
 335, unique 334, textured 219, reflected 80, no-record 36, refused 0**, exactly the offline frame-0 control; the earlier
 146/54/24 averages divided the cumulative counters of four frames (878/323/144). The same build prints the per-frame

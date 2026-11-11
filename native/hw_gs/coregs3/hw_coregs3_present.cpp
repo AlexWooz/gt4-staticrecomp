@@ -345,6 +345,7 @@ struct PresentLayer::Impl {
   bool world_pending = false;  // a claimed frame the world has not been built for yet
   std::uint64_t last_world_samples = 0;  // occlusion-query samples of the last tick's world draws
   std::uint64_t last_reflection_samples = 0;  // and of the car table reflection items (query 1)
+  bool query_pending_read = false;            // last submission recorded query 0/1; read before the next reset
   std::uint32_t last_world_draw_calls = 0;
   // The empty base SLM image: the live world decodes only the windows a job's own record carries, so a texture page the
   // capture does not cover is refused by the decoder instead of reading stale bytes.
@@ -986,7 +987,21 @@ struct PresentLayer::Impl {
     return true;
   }
 
+  // The occlusion query pool is created even when the world is off: the car pass round brackets its reflection draws
+  // with it (and the world uses query 0 when it runs), so it must not depend on the world pipeline's creation.
+  void create_query_pool() {
+    VkQueryPoolCreateInfo query_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    query_info.queryType = VK_QUERY_TYPE_OCCLUSION;
+    query_info.queryCount = 2;
+    if (gt4_hwd_vkCreateQueryPool(config.device, &query_info, nullptr, &query_pool) == VK_SUCCESS) {
+      queries_enabled = true;
+    } else {
+      std::fprintf(stderr, "[coregs3] live world: occlusion queries unavailable; the sample counter stays 0\n");
+    }
+  }
+
   bool create_world_objects(std::string &error) {
+    create_query_pool();
     if (!live_world_enabled) return true;
     if (!format_has(config.physical, kAtlasFormat, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
       error = "the device cannot use R8G8B8A8_UNORM as a storage image; the live world stays off";
@@ -1013,14 +1028,6 @@ struct PresentLayer::Impl {
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     write.pImageInfo = &atlas_descriptor;
     gt4_hwd_vkUpdateDescriptorSets(config.device, 1, &write, 0, nullptr);
-    VkQueryPoolCreateInfo query_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
-    query_info.queryType = VK_QUERY_TYPE_OCCLUSION;
-    query_info.queryCount = 2;
-    if (gt4_hwd_vkCreateQueryPool(config.device, &query_info, nullptr, &query_pool) == VK_SUCCESS) {
-      queries_enabled = true;
-    } else {
-      std::fprintf(stderr, "[coregs3] live world: occlusion queries unavailable; the sample counter stays 0\n");
-    }
     return true;
   }
 
@@ -2260,7 +2267,25 @@ struct PresentLayer::Impl {
                                   nullptr, 0, nullptr, 1, &to_shader);
       atlas_general = true;
     }
+    // The driver reports VK_NOT_READY for a query submitted in the same batch, so the results are read one frame
+    // later: the previous submission's fence was already waited on, and the pool is idle here.
+    if (queries_enabled && query_pending_read) {
+      std::uint64_t previous[1] = {0};
+      const VkResult previous_result =
+          gt4_hwd_vkGetQueryPoolResults(device, query_pool, 1, 1, sizeof previous, previous, sizeof(std::uint64_t),
+                                        VK_QUERY_RESULT_64_BIT);
+      if (previous_result == VK_SUCCESS) {
+        last_reflection_samples = previous[0];
+        gt4::coregs3::present::mutable_counters().car_reflection_fragments.store(last_reflection_samples,
+                                                                                 std::memory_order_relaxed);
+      } else if (present_debug) {
+        std::fprintf(stderr, "[coregs3] previous query readback failed: VkResult %d\n",
+                     static_cast<int>(previous_result));
+      }
+      query_pending_read = false;
+    }
     if (queries_enabled) gt4_hwd_vkCmdResetQueryPool(command, query_pool, 0, 2);
+    query_pending_read = queries_enabled;
     VkClearValue clear{};
     clear.depthStencil = {0.0f, 0};
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -2380,18 +2405,6 @@ struct PresentLayer::Impl {
       destroy_target_view();
       error = "vkWaitForFences failed after the CoreGS 3.0 present pass";
       return false;
-    }
-    last_world_samples = 0;
-    last_reflection_samples = 0;
-    if (queries_enabled) {
-      std::uint64_t results[2] = {0, 0};
-      if (gt4_hwd_vkGetQueryPoolResults(device, query_pool, 0, 2, sizeof results, results, sizeof(std::uint64_t),
-                                        VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
-        last_world_samples = results[0];
-        last_reflection_samples = results[1];
-        gt4::coregs3::present::mutable_counters().car_reflection_fragments.store(last_reflection_samples,
-                                                                                 std::memory_order_relaxed);
-      }
     }
     if (present_debug && car_textures_frame) {
       std::size_t reflection_ranges = 0;

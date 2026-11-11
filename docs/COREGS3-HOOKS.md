@@ -2743,3 +2743,8 @@ textured / 80 reflected / 36 no-record / 0 refused at VBlanks 7398-7400; the F8 
 (precise) now brackets the reflection groups (80 ranges, 8,460 vertices per frame), but the occlusion-query readback
 returns 0 for every car query (and the world query), so the fragment gate is unmeasured; the query plumbing needs its
 own fix. Build `d4c0ea0e4e077d9bf7b2c0345c77cf4533633337197e032febbd269f37257764`: CTest 21/21, Python 18/18, 3x gate COREGS3-NIGHT-CHECK-OK.
+Second follow-up: the query pool is created unconditionally (`create_query_pool`), which fixed the all-zero
+samples of the car-only runs; reading queries 0..2 right after the fence returns VK_NOT_READY (query 0 is unbegun with
+the world off, and the just-fenced results are not ready on this driver), so query 1 is read alone one frame later:
+1,042-1,260 reflection samples per frame against the offline 20,302. Split the world query read the same way before the
+flare work depends on it. Build `fedafd01a2ccc0282c9fecce7e94878b5666889409a18440517334f2c4ec7cdd`: CTest 21/21, Python 18/18, 3x gate COREGS3-NIGHT-CHECK-OK.
