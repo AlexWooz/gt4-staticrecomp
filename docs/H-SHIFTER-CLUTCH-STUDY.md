@@ -1,9 +1,9 @@
-# H-shifter and clutch in GT4: feasibility study (TASK-104)
+# H-shifter and clutch in GT4: feasibility study (TASK-215)
 
 Date: 2026-11-11. Author: research agent. Read-only study: no game code, build, pin, save or card was changed.
 Scope: owner request of 2026-11-11 (Telegram). Two fronts: (1) map each physical H-shifter position (1-6, R, and
 N) to the game's gear, and (2) find out whether GT4 has a clutch concept that an analog clutch pedal could drive.
-This is a study for TASK-104; it does not implement anything.
+This is a study for TASK-215; it does not implement anything.
 
 Labels: **Confirmed** (read in the ELF, the decomp at identical addresses, our code, or measured), **High
 confidence** (strong code or document evidence, not yet tested in game), **Hypothesis** (plausible, untested),
@@ -484,8 +484,7 @@ Therefore a clutch pedal can be:
      or a future mod.)
    - What should an AT car do? (Ignore with a log; or a forced-MT mod, not recommended now.)
    - Is the clutch pedal acceptable as display-only for this release?
-   - Confirm the task number: the 1.3.0 line already uses TASK-104 for the launcher save import. This study was
-     requested as TASK-104 on 2026-11-11; the final number should be confirmed before scheduling.
+   - The study number is TASK-215; the 1.3.0 line already uses TASK-104 for the launcher save import.
 
 ---
 

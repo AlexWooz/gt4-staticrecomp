@@ -1,6 +1,6 @@
 # Current Status
 
-## TASK-104 H-shifter and clutch study (2026-11-11, branch `task/104-hshifter-study`, read-only)
+## TASK-215 H-shifter and clutch study (2026-11-11, branch `task/104-hshifter-study`, read-only)
 
 Study only; no game code, build, pin, save or card changed. GT4's input actions are sequential shift up/down and
 reverse gear; the ELF action table has no clutch action and no H-gate action, and the supported DFP wheel report
@@ -11,7 +11,7 @@ at `0x006211E8` and a gear field at `+0x180` (player ownership and the physics g
 front 1: button emulation (pad R2/L2 on main, DFP R1/L1 on the rc15 wheel work) with a pure shift sequencer and
 the game's own timing; direct gear writes are a mod with high physics/replay risk. Front 2: no clutch input exists;
 a real clutch would be a drivetrain physics mod with Unknown feasibility, so keep the pedal display-only. Details:
-[H-SHIFTER-CLUTCH-STUDY](H-SHIFTER-CLUTCH-STUDY.md), journal 2026-11-11. The 1.3.0 line already uses TASK-104 for
+[H-SHIFTER-CLUTCH-STUDY](H-SHIFTER-CLUTCH-STUDY.md), journal 2026-11-11. Numbered TASK-215 because the 1.3.0 line already uses TASK-104 for
 the launcher save import; the number needs confirmation before scheduling.
 
 ## Release 1.2.3 published (2026-10-22, hotfix: TASK-092, 093, 094, 096)

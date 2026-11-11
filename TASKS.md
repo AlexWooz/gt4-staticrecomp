@@ -1547,7 +1547,7 @@ Owner test: select CoreGS 1.1, restart the launcher with no gt4-gs package, laun
 there is no renderer download; switch back to PCSX2 and confirm its existing setup/update path.
 This changes package management, not rendering fidelity, performance or CoreGS 2.0 readiness.
 
-### TASK-104 — H-shifter and clutch in GT4 (study)
+### TASK-215 — H-shifter and clutch in GT4 (study)
 
 Planned (owner request 2026-11-11, Telegram; off the CoreGS 3.0 critical path). Read-only study on branch
 `task/104-hshifter-study`, based on `main` `85718831`; no game code, build, pin, save or card changed.
@@ -1575,7 +1575,7 @@ Result: [docs/H-SHIFTER-CLUTCH-STUDY.md](docs/H-SHIFTER-CLUTCH-STUDY.md).
 - **Effort.** About one week for the button-emulation front including tests and the owner session; 2-4 extra
   days for a read-only gear probe if needed; 2-3 weeks for a direct-write mod (not recommended); a clutch
   physics mod is a separate research project (Unknown).
-- **Numbering note.** The 1.3.0 line already uses TASK-104 for the launcher save import (rc6/rc15 branches). This
-  study was requested as TASK-104 on 2026-11-11; confirm the final number before scheduling.
+- **Numbering note.** This study is TASK-215; the 1.3.0 line already uses TASK-104 for the launcher save import
+  (rc6/rc15 branches), so TASK-104 was not available.
 
 State: study done. Not scheduled; no implementation, build, pin, release or merge.
