@@ -1,5 +1,29 @@
 # Current Status
 
+## 2026-11-11: the CoreGS 3.0 host presentation clock: the window presents at the display rate (TASK-090, branch `task/090-host-clock`)
+
+The windowed `GT4_COREGS3=present` backend now presents at `GT4_COREGS3_PRESENT_HZ` (120/144 Hz) instead of once per
+guest VBlank, with the guest and the HUD still at 60 Hz. `native/coregs3/coregs3_host_clock.{hpp,cpp}` (new, fixture
+`native_coregs3_host_clock`) places each VBlank's due instants on a display grid: the first takes the next slot at or
+after the batch's arrival, the following ones one display period later, keeping the grid's phase when a slot passes with
+no new tick (counted late); an instant more than one guest frame behind its batch's newest tick is stale and never drawn;
+a replayed batch is never scheduled twice; capacity keeps the newest instants. The schedule re-anchors per batch, so a
+guest slower than 60 Hz does not drift. `present::note_guest_frame` computes the plan every VBlank and the F8 report
+prints plans/ticks/late/stale/skipped/duplicates. Above 60 Hz the backend draws one picture per tick
+(`PresentLayer::render_tick`, the composed base saved before the first drawn tick and restored before later ones),
+copies each into a picture slot on the rendering queue and hands it to the presentation thread with an exact show time;
+the normal once-per-VBlank slot is skipped. `GT4_COREGS3_HOST_CLOCK=0` is the A/B switch; a single-rendering-queue
+device logs the refusal and keeps the guest-rate present. Measured: 1x windowed at 120 Hz handed 368 pictures with 0
+dropped and a presented-tick median of 8.336 ms (98% of the last 199 within 7.9-8.8 ms); headless 60 vs 120 Hz runs are
+identical in guest clock, digest and the 64 KiB state (6,997 VBlanks, 0 differences) with exact 60/30-tick cadence
+histograms. Checks: CTest coregs3 19/19 (new `native_coregs3_host_clock`), Python 15/15 (6 skipped), the 3x off/shadow
+gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), and the offline car and world
+renders byte-identical to the pre-change tool. The removed whole-run counter pass was **reproduced serially**: it dies
+with an access violation in recompiled guest code at the race start (frame 6783, guest PC 0x00482674), so the old
+concurrent-gate attribution is superseded; the delivered host clock path does not fault on those VBlanks. Open: the
+owner's windowed test at 1x for smooth display-rate motion, and the exact emulator read behind the guest crash. Evidence
+`build/evidence-host-clock/`.
+
 ## 2026-11-10: the live CoreGS 3.0 presentation timeline (TASK-090, branch `task/090-live-timeline`)
 
 `GT4_COREGS3=present` now presents the captured car pass at a constant requested rate (20/30/45/60/120/144 Hz, default

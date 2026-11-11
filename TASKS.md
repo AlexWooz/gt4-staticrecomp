@@ -2049,9 +2049,27 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   the open lead on the removed whole-run counter pass. Evidence `build/evidence-live-timeline/`; design in
   [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
 
+- **Host presentation clock (2026-11-11, branch `task/090-host-clock`):** the windowed `GT4_COREGS3=present` backend
+  presents at the requested display rate (120/144 Hz) instead of once per guest VBlank. New
+  `native/coregs3/coregs3_host_clock.{hpp,cpp}` (fixture `native_coregs3_host_clock`) places each VBlank's due instants
+  on a display grid: next slot at or after the batch's arrival, then one display period apart; empty slots are counted
+  late, instants more than one guest frame behind the newest tick are stale, a replayed batch is never scheduled twice,
+  capacity keeps the newest; the schedule re-anchors per batch (a guest slower than 60 Hz does not drift).
+  `present::note_guest_frame` computes the plan every VBlank and the F8 report prints it. Above 60 Hz the backend draws
+  one picture per tick (`PresentLayer::render_tick`, base save/restore between ticks), copies each into a picture slot on
+  the rendering queue and hands it to the presentation thread at its exact show time; the once-per-VBlank slot is
+  skipped. `GT4_COREGS3_HOST_CLOCK=0` is the A/B switch; the guest and the HUD stay at 60 Hz. Measured: 1x windowed at
+  120 Hz, 368 pictures, 0 dropped, presented-tick median 8.336 ms (98% of the last 199 within 7.9-8.8 ms); headless 60
+  vs 120 Hz identical in guest clock/digest/state (6,997 VBlanks, 0 differences) and exact 60/30-tick cadence. Checks:
+  CTest coregs3 **19/19**, Python **15/15** (6 skipped), 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks,
+  1,686 racing, 0 differences, 13/13 frames), offline car/world A/B byte-identical. The removed whole-run counter pass
+  was **reproduced serially**: exit 139, `0xC0000005` in recompiled guest code at frame 6783 (`gen::unit_00E0`, guest PC
+  0x00482674), so the old concurrent-gate attribution is superseded; the delivered host clock path does not fault on
+  those VBlanks. Owner window test at 1x pending. Evidence `build/evidence-host-clock/`.
+
 - Next: the material transfer-curve residual (fixes 3/4: palette/texel inversion and the MXL 1/MMIN 4 mip
-  path); capture the font atlas and the remaining HUD elements; a host clock that presents at the display rate
-  (VRR/120/144) and the live-timeline open lead (the removed whole-run counter pass); the effects/HUD capture
+  path); capture the font atlas and the remaining HUD elements; the owner's 1x window test of the host presentation
+  clock and the exact emulator read behind the reproduced guest crash at the race start; the effects/HUD capture
   additions; then the G-IMAGE/G-PERF gates.
 
 

@@ -421,10 +421,23 @@ mean/min/max and the 8-tick histogram) and the pairing/interpolation counters (p
 only_newer, only_older, interpolated, entrywise, nearest, predicted, dropped_discontinuity). The guest path and the HUD
 stay at 60 Hz.
 
-The windowed host still presents once per guest VBlank, so a windowed session stays at the guest rate; a host clock
-running at the display rate (VRR / 120 / 144 Hz) is the next step, and the layer already draws every due tick when it is
-handed an image. Measurements, gates and the image evidence: `docs/journal/2026-11-10.md` and
-`build/evidence-live-timeline/`.
+The windowed host presents at the display rate (TASK-090 host-clock round, 2026-11-10).
+`native/coregs3/coregs3_host_clock.{hpp,cpp}` places the due instants of each VBlank on the display grid: the first takes
+the next slot at or after the batch's arrival, the following ones one display period later; a slot that passes with no
+new tick stays empty and is counted late, an instant more than one guest frame behind its batch's newest tick is stale
+and never drawn, and no instant is scheduled twice or backwards. `present::note_guest_frame` computes that plan every
+VBlank and the F8 report prints it (plans, ticks, late, stale, skipped, duplicates). Above 60 Hz the backend asks the
+layer for one picture per tick (`render_tick`; the composed base is saved before the first drawn tick and restored before
+every later one), copies each picture into a picture slot on the rendering queue and hands it to the presentation
+thread with its show time (`hw_gs_backend.cpp`); the normal once-per-VBlank slot is skipped when a picture was handed.
+The guest and the HUD stay at 60 Hz; `GT4_COREGS3_HOST_CLOCK=0` keeps the old behavior (A/B). It needs the picture
+presentation path (own or shared queue); a device on the single rendering-queue path logs the refusal and presents once
+per VBlank. Validated: headless 60 vs 120 Hz runs are identical in guest clock, digest and the 64 KiB state (6,997
+VBlanks, 0 differences) and the presentation clock's intervals are exactly 60 and 30 ticks; a 120 Hz windowed run drew
+375 ticks / 16,538 car draws and handed 305 pictures through the presentation thread (the 3x scene is guest-bound on
+the test machine, so the host clock is bounded by the available images there). The owner's windowed test at 1x is the
+remaining acceptance for smooth display-rate motion. Measurements and gates: `docs/journal/2026-11-10.md`,
+`build/evidence-host-clock/`.
 
 ---
 
