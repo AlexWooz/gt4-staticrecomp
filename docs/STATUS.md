@@ -11,8 +11,8 @@ offline pairing attaches the emitted state, UVs and fog while the pixels come fr
 the table bound **1,262 items from the emitted state** (offline 1,268), 41 record fallbacks, **0 decode/state
 refusals**; the pre-round record path left 2,938 of the window's 5,112 world items untextured (2,886 refused),
 and the same window now has 52 untextured (8 no-record, 44 no-UV) and 0 refusals, skipped by name and leaving the
-CoreGS 2.0 base pixel instead of a bright vertex colour. The
-billboards that were white blobs now show their textures. The fog uses the emitted byte with the GS integer mix
+CoreGS 2.0 base pixel instead of a bright vertex colour. The billboards that were white blobs now show their
+textures. The fog uses the emitted byte with the GS integer mix
 (`(f*c + (255-f)*fogcol) >> 8`), a `noperspective` varying; a formula study found the fog is linear in the clip-space w
 per item/draw but with per-item constants absent from the captured packets, so the emitted record (not a guessed
 formula) is the source. The A/B switches are `GT4_COREGS3_WORLD_FOG=0` and `GT4_COREGS3_WORLD_FILTER=nearest`.
@@ -21,7 +21,11 @@ Measured VBlanks 6600-7400: 3,853 items / 108,677 triangles / 749 atlas textures
 reproduced). Frame-locked A/B at VBlank 7400: world mask 2,505,741 px; mean |diff| 18.825, PSNR 17.346 dB, luma 24.687 /
 27.423 / 28.628 (world / base / reference); fog vs no-fog changes 2,293,927 px (mean 2.59) and is closer to the
 reference (18.83/17.35 vs 19.58/16.86); bilinear vs nearest changes 990,784 px (mean 3.17) and is closer (18.83/17.35 vs
-18.90/17.23). Checks: CTest coregs3 20/20, Python 17/17, the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture 4,496,552 B), on a clean rebuild of the present object and the executable (executable SHA-256 b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design and measurements in
+18.90/17.23). Checks: CTest coregs3 20/20, Python 17/17, the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK
+(8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical for off and shadow, capture
+4,496,552 B), on a clean rebuild of the present object and the executable (executable SHA-256
+b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design
+and measurements in
 [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32.
 
 ## 2026-11-11: the 2D overlay split, design (TASK-090, phase 4 follow-up)

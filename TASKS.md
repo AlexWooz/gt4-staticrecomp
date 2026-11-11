@@ -2188,17 +2188,18 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   and fog. At VBlank 7400 the table bound **1,262 items from the emitted state** (offline 1,268), 41 record fallbacks,
   **0 decode/state refusals**; the pre-round record path left 2,938 of the window's 5,112 items untextured (2,886
   refused), the same window now has 52 (8 no-record, 44 no-UV) and 0 refusals, skipped by name leaving the base
-  pixel, never a bright vertex colour; the
-  billboards now show their textures. Fog uses the GS integer mix toward FOGCOL with a `noperspective` varying (a fit
+  pixel, never a bright vertex colour; the billboards now show their textures. Fog uses the GS integer mix toward FOGCOL
+  with a `noperspective` varying (a fit
   study found the emitted fog is linear in clip w per item but its constants are not in the capture, so the emitted
   record is the source); bilinear implements the GS four-tap arithmetic. Measured VBlanks 6600-7400: 3,853 items /
-  108,677 triangles / 988 atlas textures / 0 refusals, 4,920 fog items (12,756 vertices on the 255 identity), 4,980
-  bilinear items, 12 level-0 mip fallbacks, 600 blend-deferred (ABE still not reproduced). Frame-locked A/B at 7400:
+  108,677 triangles / 749 atlas textures / 0 refusals, 3,688 fog items (13,776 vertices on the 255 identity), 3,769
+  bilinear items, 12 level-0 mip fallbacks, 475 blend-deferred (ABE still not reproduced). Frame-locked A/B at 7400:
   world mask 2,505,741 px, mean |diff| 18.825, PSNR 17.346 dB, luma 24.687 / 27.423 / 28.628; fog vs no-fog 2,293,927 px
   (mean 2.59, and fogged is closer to the reference: 18.83/17.35 vs 19.58/16.86); bilinear vs nearest 990,784 px (mean
   3.17, bilinear closer: 18.83/17.35 vs 18.90/17.23). Switches `GT4_COREGS3_WORLD_FOG=0`, `GT4_COREGS3_WORLD_FILTER=nearest`.
-  Gates: CTest coregs3 **20/20**, Python **17/17**, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), on a clean rebuild (object and
-  executable rebuilt; executable SHA-256 b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design in
+  Gates: CTest coregs3 **20/20**, Python **17/17**, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks,
+  1,686 racing, 0 differences, 13/13 frames), on a clean rebuild (object and executable rebuilt; executable SHA-256
+  b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design in
   [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32.
 
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the

@@ -2329,9 +2329,9 @@ white blobs now show their textures in the present image.
 
 ### 32.5 Measurements (VBlanks 6600-7400)
 
-VBlanks 6600-7400, 5 dumps: 3,853 items, 195,711 mesh vertices, 108,677 triangles, 328 draws, 3,825 draw calls, 988
-atlas textures, 0 atlas/draw refusals; fog applied to 4,920 ranges with 12,756 vertices on the 255 identity; 4,980
-bilinear items; 12 level-0 mip fallbacks; 600 blend-deferred items (ABE is still not reproduced). Frame-locked A/B at
+VBlanks 6600-7400, 5 dumps: 3,853 items, 195,711 mesh vertices, 108,677 triangles, 328 draws, 3,825 draw calls, 749
+atlas textures, 0 atlas/draw refusals; fog applied to 3,688 ranges with 13,776 vertices on the 255 identity; 3,769
+bilinear items; 12 level-0 mip fallbacks; 475 blend-deferred items (ABE is still not reproduced). Frame-locked A/B at
 VBlank 7400 (on and off claim the same guest frame): world mask 2,505,741 px; against the r8 reference frame 07400 mean
 |diff| 18.825, PSNR 17.346 dB, luma 24.687 / 27.423 / 28.628 (world / base / reference) — the structural match improved
 over the pre-round (20.80 / 16.11 dB) while the absolute level is darker than the base, which carries the post chain the
