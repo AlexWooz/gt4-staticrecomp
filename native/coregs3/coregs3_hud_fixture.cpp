@@ -8,10 +8,12 @@
 //     before the digits;
 //   * the raster applies MODULATE, the normal ALPHA blend and the display buffer's CT16 model, and fills the mask;
 //   * every refusal is named and counted (no tap, no plate, an unmeasured texture format, an untextured draw).
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -458,6 +460,144 @@ void test_raster_and_ct16() {
   check(counters.blended == 4, "the blend is counted");
 }
 
+void test_font_atlas_page() {
+  // The GT4F sidecar: the measured GT4meter T4 page (128x128, 8192 bytes) plus its measured geometry. The page content
+  // here is hand-authored: index 0 everywhere, index 1 in the top-left 4x4 texels (so the decoded page is not constant).
+  constexpr std::uint32_t tbp0 = 0x3A20u, cbp = 0x3A27u;
+  std::vector<std::uint8_t> linear(128 * 128 / 2, 0);
+  for (int y = 0; y < 4; ++y)
+    for (int x = 0; x < 4; ++x) {
+      const std::size_t index = static_cast<std::size_t>(y) * 128u + static_cast<std::size_t>(x);
+      if ((index & 1u) == 0) linear[index / 2] |= 1;
+      else linear[index / 2] |= 0x10;
+    }
+  hwgs::memory::LocalMemory page_memory;
+  hwgs::memory::hostToLocal(page_memory, hwgs::memory::BufferView{0, 2, hwgs::memory::Psm::T4},
+                            hwgs::memory::TransferRect{0, 0, 128, 128}, std::span<const std::uint8_t>(linear));
+  std::vector<std::uint8_t> page(page_memory.bytes().begin(), page_memory.bytes().begin() + 8192);
+
+  std::vector<std::uint8_t> file;
+  put_u32(file, 0x46345447u);  // 'GT4F'
+  put_u32(file, 1u);
+  put_u32(file, tbp0);
+  put_u32(file, 2u);  // TBW
+  put_u32(file, 7u);  // TW
+  put_u32(file, 6u);  // TH
+  put_u64(file, 0x00000098001FC00Aull);  // CLAMP 0..127 x 0..38
+  put_u32(file, 8192u);
+  put_u32(file, 0u);
+  file.insert(file.end(), page.begin(), page.end());
+  HudFontAtlas atlas;
+  std::string error;
+  check(parse_hud_font_atlas(file, atlas, error), "the measured GT4F font atlas parses");
+  check(atlas.tbp0 == tbp0 && atlas.tw == 7u && atlas.th == 6u && atlas.page.size() == 8192u,
+        "the atlas carries the measured page and geometry");
+  // Every field outside the measured geometry is refused by name.
+  HudFontAtlas scratch;
+  std::vector<std::uint8_t> bad = file;
+  bad[0] = 0;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("bad magic") != std::string::npos,
+        "a bad GT4F magic is refused");
+  bad = file;
+  bad[4] = 2;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("version") != std::string::npos,
+        "an unknown GT4F version is refused");
+  bad = file;
+  bad[36] = 1;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("reserved") != std::string::npos,
+        "a nonzero reserved word is refused");
+  bad = file;
+  bad[16] = 6;  // TW 6
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("geometry") != std::string::npos,
+        "a page geometry that is not the measured 128x64 is refused");
+  bad = file;
+  bad[26] = 0;  // CLAMP maxu bits 16..23: 127 becomes 3
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("CLAMP") != std::string::npos,
+        "a CLAMP region outside the measured 0..127 x 0..38 is refused");
+  bad = file;
+  bad[33] = 0;  // page_bytes 0x2000 -> 0x0000
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("page size") != std::string::npos,
+        "a page size other than 8192 is refused");
+  bad = file;
+  bad.resize(file.size() - 4);
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("truncated") != std::string::npos,
+        "a truncated page is refused");
+  bad = file;
+  bad[8] = 0xF0;  // TBP0 0x3FF0: the 32-block page would run past the 4 MiB image
+  bad[9] = 0x3F;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("outside the 4 MiB image") != std::string::npos,
+        "a page outside the local memory is refused");
+
+  // Apply: the palette bank the draw samples (the 64 bytes at CBP) is preserved across the page write, and the page's
+  // blocks become covered.
+  SlmImage slm;
+  std::vector<std::uint8_t> palette_bank(64);
+  for (std::size_t index = 0; index < palette_bank.size(); ++index)
+    palette_bank[index] = static_cast<std::uint8_t>(index * 3u + 1u);
+  std::copy(palette_bank.begin(), palette_bank.end(),
+            slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(cbp) * 256u));
+  check(apply_hud_font_atlas(atlas, slm, cbp, error), "the font atlas applies to the local memory");
+  std::vector<std::uint8_t> expected_page = page;
+  std::copy(palette_bank.begin(), palette_bank.end(),
+            expected_page.begin() + static_cast<std::ptrdiff_t>((static_cast<std::size_t>(cbp - tbp0)) * 256u));
+  check(std::equal(expected_page.begin(), expected_page.end(),
+                   slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(tbp0) * 256u)),
+        "the page bytes land at the atlas TBP0 (the preserved bank excepted)");
+  check(std::equal(palette_bank.begin(), palette_bank.end(),
+                   slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(cbp) * 256u)),
+        "the 16-entry CSM1 palette bank is preserved across the page write");
+  check(slm.covers(tbp0) && slm.covers(tbp0 + 31u) && !slm.covers(tbp0 + 32u),
+        "the atlas covers exactly its 32 blocks");
+  HudFontAtlas out_of_range = atlas;
+  out_of_range.tbp0 = 0x3FF0u;
+  SlmImage other;
+  check(!apply_hud_font_atlas(out_of_range, other, cbp, error) &&
+            error.find("outside the 4 MiB image") != std::string::npos,
+        "an atlas page outside the image is refused on apply");
+
+  // The applied page decodes through the same T4 record path the digits use; the 4x4 index-1 block reads the palette
+  // bank at CBP, so the decoded page is not the constant-page refusal.
+  // The hand palette mirrors the measured GT4meter bank: white RGB with the alpha carrying the glyph coverage.
+  std::vector<std::uint8_t> palette(16 * 16 * 4, 0);
+  for (int entry = 0; entry < 256; ++entry) {
+    const int x = (entry & 7) + 8 * ((entry >> 4) & 1);
+    const int y = 2 * (entry >> 5) + ((entry >> 3) & 1);
+    std::uint8_t *pixel = palette.data() + (static_cast<std::size_t>(y) * 16 + x) * 4u;
+    pixel[0] = 255;
+    pixel[1] = 255;
+    pixel[2] = 255;
+    pixel[3] = static_cast<std::uint8_t>(entry == 0 ? 0 : 128);
+  }
+  SlmImage decoded_slm;
+  std::copy(page.begin(), page.end(),
+            decoded_slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(tbp0) * 256u));
+  hwgs::memory::hostToLocal(decoded_slm.local, hwgs::memory::BufferView{cbp, 1, hwgs::memory::Psm::Ct32},
+                            hwgs::memory::TransferRect{0, 0, 16, 16}, std::span<const std::uint8_t>(palette));
+  decoded_slm.cover(vram::Window{tbp0, 32u});
+  decoded_slm.cover(vram::Window{cbp, 4u});
+  HudDrawState state;
+  state.tex0 = tbp0 | (2ull << 14) | (0x14ull << 20) | (7ull << 26) | (6ull << 30) | (1ull << 34) |
+               (static_cast<std::uint64_t>(cbp) << 37);
+  state.tex1 = 0x60;
+  state.clamp = 0x00000098001FC00Aull;
+  HudTextureCache cache(decoded_slm);
+  cache.set_font_atlas_page(tbp0);
+  const HudTexture &texture = cache.get(state, error);
+  check(texture.status == HudTextureStatus::ok, "the applied T4 font page decodes through the record path");
+  if (texture.status == HudTextureStatus::ok) {
+    check(texture.width == 128 && texture.height == 39, "the decoded font page is the measured 128x39 region");
+    const std::uint8_t *texel = texture.rgba.data();
+    check(texel[0] == 255 && texel[1] == 255 && texel[2] == 255 && texel[3] == 128,
+          "the index-1 glyph texel samples the preserved palette bank");
+  }
+  check(cache.refusals() == 0, "the applied font page is not refused");
+  // Without the atlas flag (the stream-only A/B), the same white-alpha page keeps the S3 RGB-constant refusal.
+  HudTextureCache stream_only(decoded_slm);
+  const HudTexture &refused_again = stream_only.get(state, error);
+  check(refused_again.status == HudTextureStatus::refused_state,
+        "a white-alpha page without the atlas flag keeps the S3 constant-page refusal");
+}
+
 void test_names() {
   HudElement element;
   check(parse_hud_element("speed", element) && element == HudElement::speed, "the speed element parses");
@@ -470,6 +610,7 @@ void test_names() {
 int main() {
   test_names();
   test_stream_vram_and_texture();
+  test_font_atlas_page();
   test_panel_selection_and_merge();
   test_raster_and_ct16();
   if (failures != 0) {

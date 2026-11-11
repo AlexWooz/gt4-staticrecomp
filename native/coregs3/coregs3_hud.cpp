@@ -245,6 +245,104 @@ bool build_hud_stream_vram(const std::vector<GsDecodeImageUpload> &uploads, std:
   return true;
 }
 
+// ---- The font atlas page ----
+
+namespace {
+
+// The measured GT4meter atlas: T4, TBW 2, TW 7 (128 texels), TH 6 (64 rows), CLAMP 0..127 x 0..38, page 32 blocks.
+constexpr std::uint32_t kFontAtlasMagic = 0x46345447u;  // "GT4F" in file order
+constexpr std::uint32_t kFontAtlasVersion = 1u;
+constexpr std::uint32_t kFontAtlasPageBytes = 8192u;
+constexpr std::uint32_t kFontAtlasPageBlocks = 32u;
+constexpr std::size_t kFontAtlasHeaderBytes = 40u;
+constexpr std::uint32_t kFontAtlasTbw = 2u;
+constexpr std::uint32_t kFontAtlasTw = 7u;
+constexpr std::uint32_t kFontAtlasTh = 6u;
+// The CSM1 T4 load class: a 16-entry bank is one 64-byte group at CBP.
+constexpr std::size_t kFontAtlasBankBytes = 64u;
+
+}  // namespace
+
+bool parse_hud_font_atlas(const std::vector<std::uint8_t> &bytes, HudFontAtlas &atlas, std::string &error) {
+  atlas = HudFontAtlas{};
+  error.clear();
+  if (bytes.size() < kFontAtlasHeaderBytes) {
+    error = "font atlas is shorter than its 40-byte header";
+    return false;
+  }
+  if (vram::read_u32(bytes.data(), 0) != kFontAtlasMagic) {
+    error = "not a GT4F font atlas (bad magic)";
+    return false;
+  }
+  const std::uint32_t version = vram::read_u32(bytes.data(), 4);
+  if (version != kFontAtlasVersion) {
+    error = "unsupported GT4F version " + std::to_string(version);
+    return false;
+  }
+  atlas.tbp0 = vram::read_u32(bytes.data(), 8);
+  atlas.tbw = vram::read_u32(bytes.data(), 12);
+  atlas.tw = vram::read_u32(bytes.data(), 16);
+  atlas.th = vram::read_u32(bytes.data(), 20);
+  atlas.clamp = vram::read_u64(bytes.data(), 24);
+  const std::uint32_t page_bytes = vram::read_u32(bytes.data(), 32);
+  const std::uint32_t reserved = vram::read_u32(bytes.data(), 36);
+  if (reserved != 0u) {
+    error = "GT4F reserved word is not zero";
+    return false;
+  }
+  if (atlas.tbw != kFontAtlasTbw || atlas.tw != kFontAtlasTw || atlas.th != kFontAtlasTh) {
+    error = "font atlas geometry is not the measured T4 128x64 (TBW 2, TW 7, TH 6)";
+    return false;
+  }
+  if (bits(atlas.clamp, 14, 23) != 127u || bits(atlas.clamp, 34, 43) != 38u) {
+    error = "font atlas CLAMP is not the measured 0..127 x 0..38 region";
+    return false;
+  }
+  if (page_bytes != kFontAtlasPageBytes) {
+    error = "font atlas page size is not 8192 bytes";
+    return false;
+  }
+  if (bytes.size() < kFontAtlasHeaderBytes + kFontAtlasPageBytes) {
+    error = "font atlas is truncated before its 8192-byte page";
+    return false;
+  }
+  if (atlas.tbp0 > vram::kBlocksTotal - kFontAtlasPageBlocks) {
+    error = "font atlas TBP0 lies outside the 4 MiB image";
+    return false;
+  }
+  atlas.page.assign(bytes.begin() + kFontAtlasHeaderBytes,
+                    bytes.begin() + kFontAtlasHeaderBytes + kFontAtlasPageBytes);
+  return true;
+}
+
+bool apply_hud_font_atlas(const HudFontAtlas &atlas, SlmImage &slm, std::uint32_t palette_cbp, std::string &error) {
+  error.clear();
+  if (atlas.page.size() != kFontAtlasPageBytes) {
+    error = "font atlas page is not 8192 bytes";
+    return false;
+  }
+  if (atlas.tbp0 >= vram::kBlocksTotal || atlas.tbp0 + kFontAtlasPageBlocks > vram::kBlocksTotal) {
+    error = "font atlas TBP0 lies outside the 4 MiB image";
+    return false;
+  }
+  if (palette_cbp >= vram::kBlocksTotal) {
+    error = "font atlas palette CBP lies outside the 4 MiB image";
+    return false;
+  }
+  const std::span<std::uint8_t> memory = slm.local.bytes();
+  const std::size_t page_offset = static_cast<std::size_t>(atlas.tbp0) * vram::kBlockBytes;
+  const std::size_t bank_offset = static_cast<std::size_t>(palette_cbp) * vram::kBlockBytes;
+  // The 16-entry CSM1 bank a T4 draw with CSA 0 samples is the 64 bytes at CBP; the page write would replace it with
+  // the atlas's unused rows 48..63. Preserve the frame's captured bank across the page write.
+  std::array<std::uint8_t, kFontAtlasBankBytes> bank{};
+  std::copy_n(memory.begin() + static_cast<std::ptrdiff_t>(bank_offset), kFontAtlasBankBytes, bank.begin());
+  std::copy(atlas.page.begin(), atlas.page.end(), memory.begin() + static_cast<std::ptrdiff_t>(page_offset));
+  std::copy(bank.begin(), bank.end(), memory.begin() + static_cast<std::ptrdiff_t>(bank_offset));
+  // The page's 32 blocks are now real content (the decoder refuses blocks outside the covered set).
+  slm.cover(vram::Window{atlas.tbp0, kFontAtlasPageBlocks});
+  return true;
+}
+
 const HudTexture &HudTextureCache::get(const HudDrawState &state, std::string &error) {
   const std::uint64_t key_tex0 = state.tex0 & ~(std::uint64_t{7} << 61);  // CLD is not part of the content key
   const auto key = std::make_tuple(key_tex0, state.tex1, state.clamp);
@@ -300,11 +398,15 @@ const HudTexture &HudTextureCache::get(const HudDrawState &state, std::string &e
   texture.y0 = decoded.y0;
   texture.rgba = decoded.rgba;
   // A constant page cannot be a glyph atlas (the measured HUD fonts carry many indices). The captures prove the
-  // point: the font atlas page is uploaded before the capture window, so a stream-only image holds it as zero fill and
-  // the palette maps every index to one entry. The draw is refused with this named reason, never drawn as a solid box.
+  // point: the font atlas page is uploaded before the capture window, so a stream-only image holds it as zero fill or
+  // the palette bundle's bytes as indices and the palette maps every index to one RGB. The draw is refused with this
+  // named reason, never drawn as a solid box. A page supplied by a font atlas sidecar is judged on RGBA: the measured
+  // GT4meter palette is white with 11 alpha levels, so the real glyph page is constant in RGB and not in alpha.
+  const bool font_page = has_font_atlas_page_ && state.tex0_tbp0() == font_atlas_page_;
+  const std::size_t lanes = font_page ? 4u : 3u;
   bool constant = !texture.rgba.empty();
-  for (std::size_t pixel = 1; constant && pixel * 4u + 2u < texture.rgba.size(); ++pixel)
-    for (std::size_t lane = 0; lane < 3u; ++lane)
+  for (std::size_t pixel = 1; constant && pixel * 4u + (lanes - 1u) < texture.rgba.size(); ++pixel)
+    for (std::size_t lane = 0; lane < lanes; ++lane)
       if (texture.rgba[pixel * 4u + lane] != texture.rgba[lane]) constant = false;
   if (constant) {
     texture.status = HudTextureStatus::refused_state;
@@ -435,10 +537,11 @@ bool build_hud_panel(const std::vector<GsDecodeBatch> &batches, const std::vecto
       counters.path2_stream_scissor_culled += 1;
     char line[256];
     std::snprintf(line, sizeof line,
-                  "path2 seq %u job %llu sprite x %.2f..%.2f y %.2f..%.2f uv %.2f..%.2f x %.2f..%.2f tbp0 0x%04X",
+                  "path2 seq %u job %llu sprite x %.2f..%.2f y %.2f..%.2f uv %.2f..%.2f x %.2f..%.2f tbp0 0x%04X "
+                  "rgba 0x%08X",
                   draw.sequence, static_cast<unsigned long long>(draw.job), draw.min_x, draw.max_x, draw.min_y,
                   draw.max_y, draw.verts[0].u, draw.verts[1].u, draw.verts[0].v, draw.verts[1].v,
-                  draw.state.tex0_tbp0());
+                  draw.state.tex0_tbp0(), draw.state.rgba);
     panel.summary += line;
     panel.summary += "\n";
     panel.draws.push_back(draw);
@@ -678,8 +781,10 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
     }
     for (std::int32_t py = first_y; py <= last_y; ++py) {
       for (std::int32_t px = first_x; px <= last_x; ++px) {
-        const float fx = static_cast<float>(px) + 0.5f;
-        const float fy = static_cast<float>(py) + 0.5f;
+        // The CoreGS 2.0 coverage rule places each covered pixel at its integer centre (`ceil(min) .. ceil(max) - 1`),
+        // so the interpolation parameter is taken at (px, py), exactly the coordinates the coverage rule rounds to.
+        const float fx = static_cast<float>(px);
+        const float fy = static_cast<float>(py);
         float u = u_u0 + (fx - u_x0) / (u_x1 - u_x0) * (u_u1 - u_u0);
         float v = u_v0 + (fy - u_y0) / (u_y1 - u_y0) * (u_v1 - u_v0);
         if (draw.path1) {
@@ -688,8 +793,16 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
           u = u_u0 + (fx - u_x0) / (u_x1 - u_x0) * (draw.verts[1].u - draw.verts[0].u);
           v = u_v0 + (fy - u_y0) / (u_y1 - u_y0) * (draw.verts[2].v - draw.verts[0].v);
         }
+        // PATH2 sprites carry texel UVs (the measured digit cells are 91..105 x 1..19); the sampler takes normalized
+        // ST like the GS, so a non-normalized draw is divided by its texture size. PATH1 plates already carry ST.
+        float sample_u = u;
+        float sample_v = v;
+        if (!draw.normalized_uv) {
+          sample_u = u / static_cast<float>(1u << sampled.tw);
+          sample_v = v / static_cast<float>(1u << sampled.th);
+        }
         std::array<std::uint8_t, 4> fragment{};
-        if (sample_texture(sampled, u, v, vertex, fragment) != SampleStatus::ok) {
+        if (sample_texture(sampled, sample_u, sample_v, vertex, fragment) != SampleStatus::ok) {
           counters.refused += 1;
           counters.reasons["texture sample refused"] += 1;
           continue;

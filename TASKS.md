@@ -2067,10 +2067,28 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   0x00482674), so the old concurrent-gate attribution is superseded; the delivered host clock path does not fault on
   those VBlanks. Owner window test at 1x pending. Evidence `build/evidence-host-clock/`.
 
-- Next: the material transfer-curve residual (fixes 3/4: palette/texel inversion and the MXL 1/MMIN 4 mip
-  path); capture the font atlas and the remaining HUD elements; the owner's 1x window test of the host presentation
-  clock and the exact emulator read behind the reproduced guest crash at the race start; the effects/HUD capture
-  additions; then the G-IMAGE/G-PERF gates.
+- **HUD font atlas (2026-11-11, branch `task/090-hud-font`):** the S3 speed digits render. `coregs3_hud` gains the
+  GT4F font atlas sidecar (`parse_hud_font_atlas`/`apply_hud_font_atlas`: the 8,192-byte GT4meter T4 page at TBP0
+  0x3A20, 32 blocks, the frame's captured 16-entry CSM1 bank at CBP 0x3A27 preserved) and `gt4_coregs3_render
+  --hud-font-atlas <gt4f>`; the constant-page refusal is RGBA for an atlas page and stays RGB for every other page (the
+  no-atlas A/B still refuses). Source: `race.fnt`'s GT4meter Tex1 block matches the frame's T4/CLAMP geometry, palette
+  transfer offsets (tbp 0/8/C/E = the frame's 0x3A20/0x3A28/0x3A2C/0x3A2E) and the captured white-alpha bank; the texels
+  are the CoreGS 2.0 reference decode (Format G key `bf0800b76cfeb19a-855d33f8da421ba0`, 128x39) because the font
+  file's per-glyph bitmap encoding is not decoded and the wider race-entry (6460-6467, 6500-6515) and green-flag
+  (7290-7305) captures do not upload the page. Two S3 raster errors fixed: PATH2 texel UVs normalized to ST before
+  sampling (the digits sampled texel 0 with alpha 0) and the interpolation parameter at the integer pixel centre (the
+  CoreGS 2.0 `ceil(min)..ceil(max)-1` rule; the plate background PSNR moved 28.58 -> 30.34). Measured at 1x against
+  frame 07400: element **PSNR 31.45 / SSIM 0.785 / mean 4.52** (was 13.35 / 0.486 / 23.37), digit rect **PSNR 34.15 /
+  SSIM 0.781 / mean 2.72, 210/418 exact, max 24**, the reference's own digits at the same cells, positions and shapes
+  ("68"). **G-HUD-VALUES closes.** CTest coregs3 **18/18**, Python **15/15**, world `--no-hud` byte-identical to the
+  5b82c832 executable, 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
+  frames). Evidence: `build/evidence-hud-font/`. Open: the font file's glyph bitmap payload decode; the gear ladder,
+  total time and clock (the gear page 0x3C80 is uploaded but sampled by no draw in this frame).
+
+- Next: the live world present (in progress); the material transfer-curve residual (fixes 3/4: palette/texel
+  inversion and the MXL 1/MMIN 4 mip path); the remaining HUD elements (gear ladder, total time, clock) whose
+  pages are not sampled in the captured frame; VRR presentation and the HUD at the variable rate; the
+  effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

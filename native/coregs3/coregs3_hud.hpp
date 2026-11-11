@@ -168,6 +168,43 @@ bool build_hud_stream_vram(const std::vector<GsDecodeImageUpload> &uploads, std:
                            bool include_previous, SlmImage &slm, HudUploadCounters &counters, std::string &error,
                            const SlmImage *base = nullptr);
 
+// ---- The font atlas page ----
+//
+// The race panel's digits sample the GT4meter font atlas: a T4 page (128 texels wide, 64 rows, TBW 2) at TBP0 0x3A20
+// whose glyph texels the game uploads before the captured race window. The captured stream carries only the page's
+// palette bundle (the four CT32 transfers at CBP), so a stream-only local memory holds the page as zero fill and the
+// texture decoder refuses the digits as a constant page.
+//
+// `HudFontAtlas` carries the 8192-byte T4 page (128x128 texels, 32 blocks) exactly as GS local memory holds it: the
+// glyph texels of the game's own font. The measured source is the reference renderer's decoded texture for the same
+// frame (Format G key bf0800b76cfeb19a-855d33f8da421ba0), whose palette alpha values are exactly the frame's captured
+// CSM1 bank; the page is built from that decoded texture with the GS T4 layout (build/evidence-hud-font/ in the HUD
+// font task). The file format is little endian:
+//
+//   u32 magic 'GT4F' (0x46345447), u32 version 1,
+//   u32 tbp0, u32 tbw, u32 tw, u32 th, u64 clamp,
+//   u32 page_bytes (8192), u32 reserved (0), then page_bytes bytes.
+//
+// The page and the palette share the page's blocks (the digit draw reads its 16-entry bank at CBP 0x3A27 = the page's
+// unused rows 48..63). `apply_hud_font_atlas` therefore saves and restores the 64 bytes of the 16-entry CSM1 bank the
+// draw samples (`palette_cbp`), so applying the atlas never replaces the frame's captured palette with page bytes.
+struct HudFontAtlas {
+  std::uint32_t tbp0 = 0;
+  std::uint32_t tbw = 0;
+  std::uint32_t tw = 0;
+  std::uint32_t th = 0;
+  std::uint64_t clamp = 0;
+  std::vector<std::uint8_t> page;  // 8192 bytes: the 128x128 T4 page as GS local memory holds it
+};
+
+// Parses the sidecar. Every field outside the measured GT4meter geometry is refused by name: magic, version, reserved,
+// TBW 2, TW 7, TH 6, page size 8192 and the 0..127 x 0..38 CLAMP region.
+bool parse_hud_font_atlas(const std::vector<std::uint8_t> &bytes, HudFontAtlas &atlas, std::string &error);
+
+// Writes the page into `slm` at its TBP0, covers its 32 blocks and preserves the 16-entry (64-byte) CSM1 palette bank
+// at `palette_cbp` for a T4 draw with CSA 0. A page that does not fit the 4 MiB image is refused.
+bool apply_hud_font_atlas(const HudFontAtlas &atlas, SlmImage &slm, std::uint32_t palette_cbp, std::string &error);
+
 enum class HudTextureStatus : std::uint32_t {
   ok = 0,
   refused_format = 1,   // PSM is not T4/T8
@@ -190,6 +227,13 @@ const char *hud_texture_status_name(HudTextureStatus status) noexcept;
 class HudTextureCache {
  public:
   explicit HudTextureCache(const SlmImage &slm) : slm_(slm) {}
+  // Marks the TBP0 of a page supplied by a font atlas sidecar. Only that page may be RGB-constant with varying alpha:
+  // the measured GT4meter palette is white, so its glyphs differ only in the alpha lane. Every other page keeps the S3
+  // constant check (RGB): a stream-only font page holds the palette bundle's bytes as indices, all of them white.
+  void set_font_atlas_page(std::uint32_t tbp0) noexcept {
+    font_atlas_page_ = tbp0;
+    has_font_atlas_page_ = true;
+  }
   const HudTexture &get(const HudDrawState &state, std::string &error);
   std::uint64_t decodes() const noexcept { return decodes_; }
   std::uint64_t cache_hits() const noexcept { return cache_hits_; }
@@ -200,6 +244,8 @@ class HudTextureCache {
   const SlmImage &slm_;
   std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>, HudTexture> cache_;
   std::uint64_t decodes_ = 0, cache_hits_ = 0, refusals_ = 0;
+  std::uint32_t font_atlas_page_ = 0;
+  bool has_font_atlas_page_ = false;
   std::map<std::string, std::uint64_t> reasons_;
 };
 
