@@ -371,6 +371,37 @@ inline constexpr HookAddresses kTTHooks = {
     /* license_crc_table */ 0x6191A0u,
     /* license_manager_add */ 0x1A24u,
     /* license_body_shift */ 0u,
+    /* shape_call_pc */ 0u,
+    /* shape_target_pc */ 0u,
+    /* shape_return_pc */ 0u,
+    // TASK-082 frame skipping, mapped 2026-11-11 (docs/TT-STUDY.md):
+    //   functors: TT's main loop 0x00100FE8 (v2.00 func_001016E8, masked-identical) and its three functors, paired by the
+    //   vtable slot each calls (+0x60 update, +0x68 render, +0x88 idle; the same addresses as Spec II);
+    //   display pages: the flip's words, 4 bytes before the bases v2.00 builds at 0x618588 / 0x618604 (TT 0x5795B0 /
+    //   0x57962C, 5 and 2 matching sites), 0x7C apart as in v2.00 and Spec II;
+    //   race: a headless Arcade race (Laguna Seca) RAM at frames 3500 / 3560: the clock word grew by exactly 3000 (60 steps
+    //   of 50) at 0x019AFED0 = DynamicsConductor 0x0198C570 + 0x23960 (Spec II's offset; 13 code sites build 0x3960); the
+    //   race object 0x01978970 holds it at +0x70 and its vtable 0x005CB218 at +0x64. Its update/render/idle virtuals
+    //   (0x00100C00 / 0x00100CC8 / 0x002CF7C8) are those of the four license race classes (0x005D1AB0..0x005D4748, the
+    //   classes whose +0x510 slot is the demo-input virtual). That family has an early group 0x005A4860..0x005AD978 and the
+    //   race cluster 0x005C7D60..0x005D58C0, the same shape as v2.00 (early 0x659A28.., race 0x676C48..0x685168 inside
+    //   0x676000..0x686000); the range is the race cluster, page-rounded, and leaves out the other object holding the
+    //   DynamicsConductor (vtable 0x005D9E00). Flare offsets (0xE60, 0x1848, 0xA34) as Spec II (11, 9 and 10 sites).
+    //   render_world is a diagnostic only and stays unmapped.
+    /* frame_update_functor */ 0x001007D8u,
+    /* frame_render_functor */ 0x00100848u,
+    /* frame_idle_functor */ 0x001008B8u,
+    /* frame_display_page */ 0x005795ACu,
+    /* frame_display_page_second */ 0x00579628u,
+    /* frame_race_vtable_first */ 0x005C7000u,
+    /* frame_race_vtable_last */ 0x005D6000u,
+    /* frame_race_dynamics_offset */ 0x70u,
+    /* frame_dynamics_clock_offset */ 0x23960u,
+    /* frame_dynamics_bytes */ 0x24000u,
+    /* frame_race_flare_offset */ 0xE60u,
+    /* frame_flare_track_count_offset */ 0x1848u,
+    /* frame_flare_car_count_offset */ 0xA34u,
+    /* frame_render_world */ 0u,
 };
 inline constexpr Profile kTT{Id::tt, "Tourist Trophy", 32u << 20, kTTHooks};
 

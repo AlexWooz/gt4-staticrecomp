@@ -74,7 +74,17 @@ int main() {
   }
 
   // Hooks that are still unmapped stay disabled.
-  check(!target::available(h.camera_yaw_call_return) && !target::available(h.frame_update_functor) &&
+  // Frame skipping (TASK-082): functors, the flip's page words and the race cluster of vtables.
+  check(h.frame_update_functor == 0x001007D8u && h.frame_render_functor == 0x00100848u && h.frame_idle_functor == 0x001008B8u,
+        "frame functors");
+  check(h.frame_display_page == 0x005795ACu && h.frame_display_page_second == h.frame_display_page + 0x7Cu, "frame pages");
+  check(h.frame_race_vtable_first <= 0x005CB218u && 0x005CB218u <= h.frame_race_vtable_last &&
+            h.frame_race_vtable_first <= 0x005D1AB0u && 0x005D4748u <= h.frame_race_vtable_last,
+        "the Arcade and license race classes are in the race range");
+  check(!(h.frame_race_vtable_first <= 0x005D9E00u && 0x005D9E00u <= h.frame_race_vtable_last),
+        "the other DynamicsConductor holder is outside the race range");
+  check(h.frame_dynamics_clock_offset == 0x23960u && h.frame_dynamics_clock_offset < h.frame_dynamics_bytes, "race clock");
+  check(!target::available(h.camera_yaw_call_return) && !target::available(h.frame_render_world) &&
             !target::available(h.race_display_render) && !target::available(h.fov_projection_call_return),
         "unmapped hooks disabled");
 
