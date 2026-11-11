@@ -187,6 +187,282 @@ bool apply_full_screen_multiply(const GsDecodeBatch &draw, std::vector<std::uint
                               rgba[pixel * 4 + lane] = static_cast<std::uint8_t>(values[lane]);
                             rgba[pixel * 4 + 3] = alpha;
                             stats.pixels += 1;
+                            stats.written_pixels += 1;
+                            stats.alpha_written += 1;
+                          });
+  }
+  return true;
+}
+
+std::int32_t gs_dither_entry(std::uint64_t dimx, std::uint32_t x, std::uint32_t y, std::uint32_t scale) noexcept {
+  if (scale == 0) scale = 1;
+  const std::uint32_t sx = x / scale;
+  const std::uint32_t sy = y / scale;
+  const std::uint32_t entry = 4u * (sy & 3u) + (sx & 3u);
+  const std::uint32_t field = static_cast<std::uint32_t>((dimx >> (4u * entry)) & 7u);
+  return field >= 4u ? static_cast<std::int32_t>(field) - 8 : static_cast<std::int32_t>(field);
+}
+
+std::uint8_t ct16_channel(std::int32_t value, bool clamp_enabled) noexcept {
+  if (clamp_enabled) {
+    if (value < 0) value = 0;
+    if (value > 255) value = 255;
+  } else {
+    value &= 0xFF;
+  }
+  return static_cast<std::uint8_t>(((value >> 3) & 0x1F) << 3);
+}
+
+namespace {
+
+std::uint32_t low_rgba(const GsDecodeState &state) { return static_cast<std::uint32_t>(state.rgba & 0xFFFFFFFFu); }
+
+std::array<std::uint8_t, 4> rgba_bytes(std::uint32_t rgba) {
+  return {static_cast<std::uint8_t>(rgba & 0xFFu), static_cast<std::uint8_t>((rgba >> 8) & 0xFFu),
+          static_cast<std::uint8_t>((rgba >> 16) & 0xFFu), static_cast<std::uint8_t>((rgba >> 24) & 0xFFu)};
+}
+
+// The measured full-screen draws carry one constant RGBAQ across every vertex. A run that varies is refused.
+bool constant_vertex_colour(const GsDecodeBatch &draw, std::array<std::uint8_t, 4> &colour, std::string &error) {
+  if (draw.verts.empty()) {
+    error = "the draw has no vertices";
+    return false;
+  }
+  const std::uint32_t first = draw.verts.front().rgba;
+  for (const GsDecodeVertex &vertex : draw.verts) {
+    if (vertex.rgba != first) {
+      error = "the draw's vertex colours are not constant; the measured full-screen signature does not cover it";
+      return false;
+    }
+  }
+  colour = rgba_bytes(first);
+  return true;
+}
+
+// The measured full-screen draws are made of contiguous strips: each sprite pair covers one strip, and the union of
+// the batch covers the captured 640x448 screen. The clears verify the geometry; the frame sample and the present also
+// verify that the UV rectangle spans the screen 1:1 (the page and the offline image share the grid at the 3x scale, so
+// the source texel of an output pixel is the same pixel).
+bool batch_covers_capture_screen(const GsDecodeBatch &draw, std::uint32_t capture_width,
+                                 std::uint32_t capture_height, bool textured, std::string &error) {
+  if (draw.min_x > 0.5f || draw.min_y > 0.5f || draw.max_x < static_cast<float>(capture_width) - 0.5f ||
+      draw.max_y < static_cast<float>(capture_height) - 0.5f) {
+    error = "the draw's vertex extent does not cover the captured screen";
+    return false;
+  }
+  if (!textured) return true;
+  float min_u = 1e30f, max_u = -1e30f, min_v = 1e30f, max_v = -1e30f;
+  for (const GsDecodeVertex &vertex : draw.verts) {
+    if (!vertex.has_uv) {
+      error = "the draw's vertices carry no UV; the measured full-screen sample needs one";
+      return false;
+    }
+    min_u = std::min(min_u, vertex.u);
+    max_u = std::max(max_u, vertex.u);
+    min_v = std::min(min_v, vertex.v);
+    max_v = std::max(max_v, vertex.v);
+  }
+  if (min_u < -0.5f || min_v < -0.5f || max_u > static_cast<float>(capture_width) + 0.5f ||
+      max_v > static_cast<float>(capture_height) + 0.5f || min_u > 0.5f || min_v > 0.5f ||
+      max_u < static_cast<float>(capture_width) - 0.5f || max_v < static_cast<float>(capture_height) - 0.5f) {
+    error = "the draw's UV rectangle does not span the captured screen 1:1";
+    return false;
+  }
+  return true;
+}
+
+std::int32_t scaled_product(std::int32_t texel, std::int32_t colour) {
+  const std::int32_t value = (texel * colour) >> 7;
+  return value > 255 ? 255 : value;
+}
+
+std::uint8_t fbmsk_lane(std::uint32_t fbmsk, std::uint32_t lane) {
+  return static_cast<std::uint8_t>((fbmsk >> (8u * lane)) & 0xFFu);
+}
+
+}  // namespace
+
+bool apply_full_screen_clear(const GsDecodeBatch &draw, std::vector<std::uint8_t> &rgba, std::uint32_t width,
+                             std::uint32_t height, std::uint32_t capture_width, std::uint32_t capture_height,
+                             WetCompositeStats &stats, std::string &error) {
+  const GsDecodeState &state = draw.state;
+  if (rgba.size() != static_cast<std::size_t>(width) * height * 4u || width == 0 || height == 0) {
+    error = "the clear destination has the wrong size";
+    return false;
+  }
+  if (state.prim_type() != 6 || state.prim_tme() != 0 || state.prim_abe() || state.test_ate() != 0) {
+    error = "the draw is not a measured full-screen clear (sprite, TME/ABE/ATE off)";
+    return false;
+  }
+  std::array<std::uint8_t, 4> colour{};
+  if (!constant_vertex_colour(draw, colour, error)) return false;
+  if (!batch_covers_capture_screen(draw, capture_width, capture_height, false, error)) return false;
+  const std::uint32_t fbmsk = state.frame_fbmsk();
+  for (std::size_t index = 0; index + 1 < draw.verts.size(); index += 2) {
+    const GsDecodeVertex &latch = draw.verts[index];
+    const GsDecodeVertex &corner = draw.verts[index + 1];
+    if (!is_sprite_pair(latch, corner)) {
+      error = "the clear vertex run is not a sequence of latch/draw sprite pairs";
+      return false;
+    }
+    stats.sprites += 1;
+    for_each_sprite_pixel(latch, corner, width, height, capture_width, capture_height,
+                          [&](std::size_t pixel, float, float) {
+                            bool changed = false;
+                            bool written = false;
+                            for (std::uint32_t lane = 0; lane < 4; ++lane) {
+                              const std::uint8_t mask = fbmsk_lane(fbmsk, lane);
+                              const std::uint8_t merged =
+                                  static_cast<std::uint8_t>((rgba[pixel * 4 + lane] & mask) | (colour[lane] & ~mask));
+                              if (merged != rgba[pixel * 4 + lane]) changed = true;
+                              if (mask != 0xFFu) written = true;
+                              rgba[pixel * 4 + lane] = merged;
+                            }
+                            stats.pixels += 1;
+                            stats.changed_pixels += changed ? 1u : 0u;
+                            stats.written_pixels += written ? 1u : 0u;
+                            stats.alpha_written += fbmsk_lane(fbmsk, 3) != 0xFFu ? 1u : 0u;
+                          });
+  }
+  return true;
+}
+
+bool apply_frame_sample(const GsDecodeBatch &draw, std::vector<std::uint8_t> &rgba, std::uint32_t width,
+                        std::uint32_t height, std::uint32_t capture_width, std::uint32_t capture_height,
+                        WetCompositeStats &stats, std::string &error) {
+  const GsDecodeState &state = draw.state;
+  if (rgba.size() != static_cast<std::size_t>(width) * height * 4u || width == 0 || height == 0) {
+    error = "the frame sample destination has the wrong size";
+    return false;
+  }
+  if (state.prim_type() != 6 || state.prim_tme() != 1 || !state.prim_abe() || state.tex0_tbp0() != 0x1A40u ||
+      state.tex0_psm() != 0 || state.tex0_tfx() != 0 || state.frame_fbp() != 210 || state.zbuf_zmsk() != 0) {
+    error = "the draw is not the measured full-screen frame sample (page 210, TME+ABE, TFX 0)";
+    return false;
+  }
+  const BlendEquation equation = decode_blend_equation(state.alpha);
+  if (equation.a != 0 || equation.b != 1 || equation.c != 0 || equation.d != 1) {
+    error = "the frame sample's ALPHA equation is not the normal blend (Cs - Cd) * As + Cd";
+    return false;
+  }
+  std::array<std::uint8_t, 4> vertex{};
+  if (!constant_vertex_colour(draw, vertex, error)) return false;
+  if (!batch_covers_capture_screen(draw, capture_width, capture_height, true, error)) return false;
+  const std::uint32_t fbmsk = state.frame_fbmsk();
+  const std::vector<std::uint8_t> source = rgba;  // the sampled frame is the image as it stood before the draw
+  for (std::size_t index = 0; index + 1 < draw.verts.size(); index += 2) {
+    const GsDecodeVertex &latch = draw.verts[index];
+    const GsDecodeVertex &corner = draw.verts[index + 1];
+    if (!is_sprite_pair(latch, corner)) {
+      error = "the frame sample vertex run is not a sequence of latch/draw sprite pairs";
+      return false;
+    }
+    stats.sprites += 1;
+    for_each_sprite_pixel(latch, corner, width, height, capture_width, capture_height,
+                          [&](std::size_t pixel, float, float) {
+                            // The page is the offline image itself: at the 3x scale the present/sample is 1:1, so the
+                            // source texel of an output pixel is the same pixel (the page and the draw share the
+                            // grid). The captured UV rectangle is verified to cover the screen, not used to remap.
+                            const std::size_t at = pixel;
+                            std::array<std::uint8_t, 4> sampled{};
+                            for (std::uint32_t lane = 0; lane < 3; ++lane)
+                              sampled[lane] = static_cast<std::uint8_t>(
+                                  scaled_product(source[at * 4 + lane], vertex[lane]));
+                            sampled[3] = state.tex0_tcc() != 0
+                                             ? static_cast<std::uint8_t>(scaled_product(source[at * 4 + 3], vertex[3]))
+                                             : vertex[3];
+                            std::array<std::uint8_t, 4> destination{rgba[pixel * 4 + 0], rgba[pixel * 4 + 1],
+                                                                   rgba[pixel * 4 + 2], rgba[pixel * 4 + 3]};
+                            std::array<std::uint8_t, 4> blended{};
+                            blend_fragment(equation, sampled, destination, blended);
+                            const double old_luma =
+                                destination[0] * 0.299 + destination[1] * 0.587 + destination[2] * 0.114;
+                            const double new_luma = blended[0] * 0.299 + blended[1] * 0.587 + blended[2] * 0.114;
+                            stats.added_luma += new_luma - old_luma;
+                            bool changed = false;
+                            bool written = false;
+                            for (std::uint32_t lane = 0; lane < 4; ++lane) {
+                              const std::uint8_t mask = fbmsk_lane(fbmsk, lane);
+                              const std::uint8_t merged = static_cast<std::uint8_t>(
+                                  (rgba[pixel * 4 + lane] & mask) | (blended[lane] & ~mask));
+                              if (merged != rgba[pixel * 4 + lane]) changed = true;
+                              if (mask != 0xFFu) written = true;
+                              rgba[pixel * 4 + lane] = merged;
+                            }
+                            stats.pixels += 1;
+                            stats.sampled_pixels += 1;
+                            stats.changed_pixels += changed ? 1u : 0u;
+                            stats.written_pixels += written ? 1u : 0u;
+                            stats.alpha_written += fbmsk_lane(fbmsk, 3) != 0xFFu ? 1u : 0u;
+                          });
+  }
+  return true;
+}
+
+bool apply_present_ct16(const GsDecodeBatch &draw, const std::vector<std::uint8_t> &rgba, std::uint32_t width,
+                        std::uint32_t height, std::uint32_t capture_width, std::uint32_t capture_height,
+                        std::vector<std::uint8_t> &display, WetCompositeStats &stats, std::string &error) {
+  const GsDecodeState &state = draw.state;
+  if (rgba.size() != static_cast<std::size_t>(width) * height * 4u || width == 0 || height == 0) {
+    error = "the present source has the wrong size";
+    return false;
+  }
+  const bool display_target =
+      (state.frame_fbp() == 140 || state.frame_fbp() == 0) && state.frame_fbw() == 10 && state.frame_psm() == 2;
+  if (state.prim_type() != 6 || state.prim_tme() != 1 || state.prim_abe() || state.tex0_tbp0() != 0x1A40u ||
+      state.tex0_psm() != 0 || state.tex0_tfx() != 0 || !display_target || state.frame_fbmsk() != 0) {
+    error = "the draw is not the measured CT16 present (page 210 -> a CT16 display buffer, FBW 10, no blend)";
+    return false;
+  }
+  if (state.test_ate() != 0) {
+    error = "the present carries an alpha test; the measured draw has none";
+    return false;
+  }
+  std::array<std::uint8_t, 4> vertex{};
+  if (!constant_vertex_colour(draw, vertex, error)) return false;
+  if (!batch_covers_capture_screen(draw, capture_width, capture_height, true, error)) return false;
+  display.assign(static_cast<std::size_t>(width) * height * 4u, 0);
+  const std::uint32_t scale_x = capture_width != 0 ? width / capture_width : 1;
+  const std::uint32_t scale_y = capture_height != 0 ? height / capture_height : 1;
+  const std::uint32_t scale = std::max(scale_x, scale_y);
+  const bool clamp_enabled = state.colclamp != 0;
+  const bool dither = state.dthe_on();
+  for (std::size_t index = 0; index + 1 < draw.verts.size(); index += 2) {
+    const GsDecodeVertex &latch = draw.verts[index];
+    const GsDecodeVertex &corner = draw.verts[index + 1];
+    if (!is_sprite_pair(latch, corner)) {
+      error = "the present vertex run is not a sequence of latch/draw sprite pairs";
+      return false;
+    }
+    stats.sprites += 1;
+    for_each_sprite_pixel(latch, corner, width, height, capture_width, capture_height,
+                          [&](std::size_t pixel, float, float) {
+                            // The page being presented is the offline image itself (1:1 at the 3x scale).
+                            const std::size_t at = pixel;
+                            const std::uint32_t out_x = static_cast<std::uint32_t>(pixel % width);
+                            const std::uint32_t out_y = static_cast<std::uint32_t>(pixel / width);
+                            const std::int32_t dither_value =
+                                dither ? gs_dither_entry(state.dimx, out_x, out_y, scale) : 0;
+                            std::array<std::uint8_t, 3> rgb{};
+                            for (std::uint32_t lane = 0; lane < 3; ++lane) {
+                              const std::int32_t modulated = scaled_product(rgba[at * 4 + lane], vertex[lane]);
+                              rgb[lane] = ct16_channel(modulated + dither_value, clamp_enabled);
+                            }
+                            const std::int32_t alpha_source =
+                                state.tex0_tcc() != 0 ? scaled_product(rgba[at * 4 + 3], vertex[3]) : vertex[3];
+                            const bool alpha_bit = (alpha_source & 0x80) != 0;
+                            bool changed = false;
+                            for (std::uint32_t lane = 0; lane < 3; ++lane) {
+                              if (display[pixel * 4 + lane] != rgb[lane]) changed = true;
+                              display[pixel * 4 + lane] = rgb[lane];
+                            }
+                            const std::uint8_t alpha = alpha_bit ? 0xFFu : 0x00u;
+                            if (display[pixel * 4 + 3] != alpha) changed = true;
+                            display[pixel * 4 + 3] = alpha;
+                            stats.pixels += 1;
+                            stats.sampled_pixels += 1;
+                            stats.changed_pixels += changed ? 1u : 0u;
+                            stats.written_pixels += 1;
                             stats.alpha_written += 1;
                           });
   }
