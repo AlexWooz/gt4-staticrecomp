@@ -136,15 +136,15 @@ the HUD stays at the guest rate under a variable presentation rate.
 
 ### 8.4 Measured (C) and the open phase item (H)
 
-A-Spec night race, 3x, VBlanks 7600-7608, live world on, final executable SHA-256 `92ae0355...`: **1,564 frames split**
+A-Spec night race, 3x, VBlanks 7600-7608, live world on, final executable SHA-256 `08daf60b...`: **1,564 frames split**
 (42.5 batches per frame), 1,564 checkpoints, **9 overlay composes and 9 composites (23.22 Mpx)**, `refused_samples=0`,
 `refused_frames=0`, `unavailable_draws=0`, `layout_changes=0`, and `approximated date=0 fbmsk=0 dst_alpha=0`; **1** frame
 was dropped because its VBlank compose never ran (a held present), counted as `dropped_frames=1`. The overlay layer of
 frame 7600 covers 301,208 of 2,580,480 pixels (11.67%). The split frame shows the world (the native course, cars, sky and
 buildings) with the whole A-Spec HUD over it: position/lap, the lap timer, Best/Last Lap, the minimap, FULL THROTTLE,
 both gauges with their needles, gear, digital speed, the trip odometer, the fuel/tyre widget, the G-force dot and the gear
-indicator; the A/B frame shows the world covering that HUD. The HUD regions differ from the overlay-off image by 52,843
-px (left), 79,820 px (right) and 192,633 px (bottom) at frame 7600.
+indicator; the A/B frame shows the world covering that HUD. The HUD regions differ from the overlay-off image by 52,856
+px (left), 79,822 px (right) and 192,498 px (bottom) at frame 7600.
 
 The open item: at the VBlank the GS scanout register still names the *other* CT16 buffer (the game flips DISPFB after the
 VBlank), so the faithful compose would show stream frame V-1 while the split base is stream frame V. The split image is
