@@ -1,5 +1,36 @@
 # Current Status
 
+## 2026-11-11: the car pass paint, atlas and reflection depth fixed; the textured acceptance met (TASK-090, branch `task/090-live-world`)
+
+Three live-side bugs were found and fixed on top of the localized draw-271/reflection gap. First, the car-only present
+(`GT4_COREGS3_LIVE_WORLD=0`, the A/B and acceptance configuration) never copied the decoded texture atlas to the GPU:
+`draw_tick` filled the staging buffer but gated `vkCmdCopyBufferToImage` on the world upload, so both fragment stages
+sampled an image that had never been written. Second, the car and world fragment shaders decoded TEX0.TH from the low
+32 bits and TCC from `tex0_hi & 1`; TH is bits 30..33 and TCC bit 34, so TH's high two bits and TCC live in the high
+word (the CT32 environment map was sampled as TH 0 instead of 8, 64x64 T4 textures as TH 2 instead of 6). Third, the
+offline car rasteriser refuses a binding whose PRIM.ABE ALPHA equation is outside its measured normal/additive forms
+(five items per frame carry 0x48 `(Cs-0)*As+Cd`) and keeps the opaque lit-colour prefetch; the live path sampled them
+unblended. All three are fixed, the TEX0 decode in both shaders now matches `hw_gs_registers.hpp`, and the live table
+applies the offline `check_binding`/`check_reflection_binding` rule (5 refusals per frame).
+
+The reflection "1.2k fragments" blocker was a measurement artifact: on this driver an occlusion query is overwritten by
+later begin/end spans, so the count was the last reflection draw's 1,251 px. It is replaced by a fragment-stage SSBO
+counter (written fragments, world fragments, DATE failures, entered fragments), read after the fence. The CPU
+projection proves the geometry: draw 102 (offline 271) covers 15,251 px against the offline perdraw mask's 15,192, and
+the 80 reflection ranges rasterise 39,291 samples, exactly the offline 39,291. The offline's 1e-3 relative reflection
+depth tolerance is now reproduced in the car vertex stage (clip z scaled by 1.001 for the reflection ranges).
+
+Acceptance on the clean rebuild (`98d12fcbe33ed4d55b48bee37ffae7bb3be0ec9e5dc4519d4a0fcff3732c531c`), VBlank 7398
+against the offline frame 0, shift (0,0), near-car mask 28,536 px: base calibration **39.52 dB / 0.33 / 1.8%**;
+textured **30.70 dB / 2.13 / 7.3%** (target 28 / 3 / 10) - **met**. Draw 271: 28.24 / 3.38 / 11.8 textured against
+38.39 / 0.39 / 1.8 base. Counters per frame: 116 draws, 335 items, **219 textured / 80 reflected / 36 no-record / 0
+refused**. Reflection fragments written 17,820-19,202 against the offline 20,302 (87.8-94.6%): the +/-5% gate is still
+open because the live DATE reads the CoreGS 2.0 composed image's alpha under the car while the offline reads its own
+car-only background alpha. `GT4_COREGS3_CAR_TEXTURES=0` keeps the unchanged legacy path. Gates on the clean rebuild: CTest coregs3 **21/21**, Python **18/18**, the 3x identity gate
+**COREGS3-NIGHT-CHECK-OK** (`off` and `shadow` against the reference: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state
+differences; 13/13 frames identical for both; capture 4,496,552 B). Evidence `build/evidence-car-debug/`; journal 2026-11-11;
+[COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §38.
+
 ## 2026-11-11: the car-round capture pose reproduced and the content gap localized (TASK-090, branch
 `task/090-live-world`, merged `4e23cc4b`)
 

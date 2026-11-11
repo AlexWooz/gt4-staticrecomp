@@ -2755,3 +2755,49 @@ the study's 36.08 control). Perdraw comparison: most near-car draws 52.9 dB; dra
 and does not change when the nodepth pipeline's depth test or the DATE test is disabled: the reflection geometry/
 coverage is the gap, not the fragment state. Build `2759e44624b531261152c34d513b46bebb9100f7723399c833c66a206bac4c46`: CTest 21/21, Python 18/18, 3x gate
 COREGS3-NIGHT-CHECK-OK.
+
+### 38.8 Third follow-up (2026-11-11): the atlas copy, the TEX0 halves, the refused blends and the depth tolerance
+
+Four root causes of the dark draw-271 body and the reflection count, all measured on the car-only present
+(`GT4_COREGS3_LIVE_WORLD=0`, `GT4_COREGS3_PRESENT_MODE=nearest`, VBlank 7398):
+
+1. **The car-only atlas was never copied.** `draw_tick` filled the atlas staging buffer for the car and the world, but
+   the `vkCmdCopyBufferToImage` was gated on `upload_world`, so in the car-only A/B the fragment stages sampled an
+   image that had never been written. The copy now runs when either upload is pending
+   (`upload_world || upload_car_atlas`).
+2. **TEX0.TH and TEX0.TCC straddle the register word halves.** `coregs3_car.frag`/`coregs3_world.frag` read
+   `th = (tex0_lo >> 30) & 0xF` and `tcc = tex0_hi & 1`; the GS layout (`hw_gs_registers.hpp`) has TH in bits 30..33
+   and TCC in bit 34, so TH's high two bits and TCC live in the high word: `th = ((lo >> 30) & 3) | ((hi & 3) << 2)`,
+   `tcc = (hi >> 2) & 1`. The CT32 environment map (TH 8) had been sampled as TH 0 (a 16-row band) and 64x64 T4
+   textures (TH 6) as TH 2. The world stage had the same bug.
+3. **The offline binding refusal was not mirrored.** The offline car rasteriser validates each binding with
+   `check_binding` (`coregs3_sampler.hpp`) / `check_reflection_binding` and keeps the opaque lit-colour prefetch for an
+   item outside the measured subset; five items per frame carry ALPHA 0x48 `(Cs-0)*As+Cd`, which is neither the normal
+   0x44 nor the additive 0x58 form. `build_car_table` now applies the same rule (`binding refused 5` per frame), which
+   fixed the lamp bars (draw 253) and the far-car trim.
+4. **The reflection depth tolerance.** The offline reflection pass tests `w_reflection <= w_base * (1 + 1e-3)`
+   (`kReflectionDepthTolerance`), because the reflection is the same surface the base draw wrote and the two float
+   projections differ by a few 1e-4 relative units. The live strict GEQUAL rejected about 6,000 fragments;
+   `coregs3_car.vert` now scales clip z by 1.001 for the reflection ranges (push flags bit 24), which is algebraically
+   the offline rule.
+
+**The fragment counter replaces the occlusion query.** On this driver an occlusion query is overwritten by later
+begin/end spans instead of accumulating, so the 1,172-1,260 reflection samples were the *last* reflection draw's
+1,251 px (draw 282). The pass now uses a host-visible coherent storage buffer at descriptor binding 2 (std430: word 0
+reflection written, word 1 world written, word 2 reflection DATE failures, word 3 reflection fragments entering the
+stage), incremented by the fragment stages and read after the fence in `draw_tick`, then zeroed for the next submission.
+This is the offline report's "written fragments" definition. The `GT4_COREGS3_CAR_DEBUG=<sequence>` diagnostic
+(`0` = all ranges) prints every item's TEX0/atlas/state, projects the ranges on the CPU into the same clip/screen space
+the pipelines use, writes the all-ranges and reflection PGM masks (`GT4_COREGS3_CAR_DEBUG_DUMP=<path>`) and
+reconstructs the depth test of one draw (`car debug depth`).
+
+Measured (clean rebuild `98d12fcb`): draw 102 (offline 271) projects 15,251 px (bbox 1442..1602 / 727..854) against
+the offline perdraw d271 mask's 15,192 px (1443..1601 / 728..856), 15,035 px overlap; the 80 reflection ranges
+rasterise 39,291 samples, exactly the offline 39,291. Near-car acceptance (28,536 px): base calibration 39.52 dB /
+0.33 / 1.8%, textured **30.70 dB / 2.13 / 7.3%** (target 28 / 3 / 10), so the textured gate is met; draw 271 28.24 /
+3.38 / 11.8 textured. Reflection fragments written 17,820-19,202 against the offline 20,302 (87.8-94.6%): the
+geometry and the depth outcomes match, the residual is the DATE destination-alpha environment (the live image carries
+the CoreGS 2.0 composed alpha under the car, the offline its car-only background alpha 255). Evidence
+`build/evidence-car-debug/`; journal 2026-11-11.
+
+Gates on the clean rebuild: CTest coregs3 **21/21**, Python **18/18**, the 3x identity gate **COREGS3-NIGHT-CHECK-OK** (`off` and `shadow` against the reference: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences; 13/13 frames identical for both; capture 4,496,552 B).

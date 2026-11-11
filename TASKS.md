@@ -2347,6 +2347,35 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   Journal entry of 2026-11-11; hooks §38. The C: system volume was found full (0/510 GB); the build TEMP was redirected
   to O: and the owner should free space.
 
+- **Car pass round, third follow-up: the paint, the atlas and the reflection depth (2026-11-11, branch
+  `task/090-live-world`).** Three live-side bugs fixed on top of the localized gap. (1) The car-only present never
+  copied the decoded texture atlas: `draw_tick` gated `vkCmdCopyBufferToImage` on the world upload, so with
+  `GT4_COREGS3_LIVE_WORLD=0` both fragment stages sampled an image never written; the copy now runs when either the
+  world or the car table uploads. (2) `coregs3_car.frag`/`coregs3_world.frag` decoded TEX0.TH from the low 32 bits and
+  TCC from `tex0_hi & 1`; TH (bits 30..33) and TCC (bit 34) straddle the word boundary, so the CT32 environment map
+  was sampled as TH 0 instead of 8 and 64x64 T4 textures as TH 2 instead of 6; both shaders now decode exactly as
+  `hw_gs_registers.hpp`. (3) The offline rasteriser refuses bindings outside its measured subset and keeps the opaque
+  lit-colour prefetch; the live path now applies `check_binding`/`check_reflection_binding` (5 refusals/frame, the
+  ALPHA 0x48 `(Cs-0)*As+Cd` items). Draw 271's 17 body_paint items now match the offline state item for item (CT32
+  0x2BC0, TW/TH 8/8, test 0x5400C, ALPHA 0x58, ZMSK 1, atlas placement). The reflection "coverage" blocker was a
+  measurement artifact: the occlusion query is overwritten by later begin/end spans on this driver, so 1,172-1,260 was
+  the last reflection draw's 1,251 px; it is replaced by a fragment-stage SSBO counter (written/world/DATE/entered,
+  read after the fence). The CPU projection proves the reflection geometry: draw 102 (offline 271) 15,251 px against
+  the offline perdraw mask's 15,192, 15,035 overlap, and 39,291 rasterised samples = the offline 39,291 exactly. The
+  offline's 1e-3 reflection depth tolerance is reproduced in the car vertex stage (clip z x 1.001 for reflection
+  ranges). Measured on the clean rebuild (`98d12fcbe33ed4d55b48bee37ffae7bb3be0ec9e5dc4519d4a0fcff3732c531c`),
+  VBlank 7398 against the offline frame 0 at shift (0,0), near-car mask 28,536 px: base calibration **39.52 / 0.33 /
+  1.8%**, textured **30.70 dB / 2.13 / 7.3%** (target 28 / 3 / 10) - **met**; draw 271 28.24 / 3.38 / 11.8 textured
+  against 38.39 / 0.39 / 1.8 base. Counters 116 draws / 335 items, **219 textured / 80 reflected / 36 no-record / 0
+  refused**. Reflection written fragments 17,820-19,202 against the offline 20,302 (87.8-94.6%): the +/-5% gate is
+  still open, the residual being the DATE destination-alpha environment (the live image carries the CoreGS 2.0
+  composed alpha under the car, the offline its car-only background alpha). `GT4_COREGS3_CAR_TEXTURES=0` keeps the
+  unchanged legacy path (the present scanout varies 900-914 px between separate runs of the same binary, so a
+  cross-run image hash is not an oracle; on/off differs by 20,001 px). Gates on that clean rebuild: CTest coregs3
+  **21/21**, Python **18/18**, the 3x identity gate **COREGS3-NIGHT-CHECK-OK** (`off` and `shadow` against the
+  reference: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames identical, capture
+  4,496,552 B). Evidence `build/evidence-car-debug/`; journal 2026-11-11; [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §38.
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages
