@@ -1,5 +1,33 @@
 # Current Status
 
+## 2026-11-11: HUD font atlas; the speed digits render "68" and G-HUD-VALUES closes (TASK-090, branch `task/090-hud-font`)
+
+The S3 speed digits now draw. `native/coregs3/coregs3_hud` gains the **GT4F font atlas sidecar**
+(`parse_hud_font_atlas`/`apply_hud_font_atlas`): the 8,192-byte GT4meter T4 page (TBP0 0x3A20, 128x64, TBW 2, CLAMP
+0..127 x 0..38) is written at its TBP0 (32 blocks) and the 64 bytes of the draw's 16-entry CSM1 bank at CBP 0x3A27 are
+preserved across the write; the constant-page refusal is judged on RGBA only for a page the atlas supplied (the
+GT4meter palette is white with 11 alpha levels) and every other page keeps the S3 RGB check, so the no-atlas A/B still
+refuses. `gt4_coregs3_render --hud-font-atlas <gt4f>` applies it. The source is the game's own texture: `race.fnt`'s
+GT4meter Tex1 block has the frame's exact T4/CLAMP geometry and the same four palette transfers at the same tbp offsets
+as the frame's seq 1012-1018 uploads, its glyph records carry the reference atlas cells, and the frame's captured CSM1
+bank is white with the same alpha levels; the texels themselves come from the CoreGS 2.0 reference decode of the same
+texture (Format G key `bf0800b76cfeb19a-855d33f8da421ba0`) because the font file's per-glyph bitmap encoding is not
+decoded and wider race-entry/green-flag captures (6460-6467, 6500-6515, 7290-7305) do not carry the upload. Two S3
+raster errors were fixed: PATH2 texel UVs are normalized to ST before sampling (the digits had sampled texel 0 with
+alpha 0), and the interpolation parameter is taken at the integer pixel centre (the CoreGS 2.0 `ceil(min)..ceil(max)-1`
+rule). Measured at 1x against frame 07400: the element mask is **PSNR 31.45 / SSIM 0.785 / mean |diff| 4.52 (was
+13.35 / 0.486 / 23.37)** and the digit rect **PSNR 34.15 / SSIM 0.781 / mean 2.72, 210/418 pixels exact, max 24**, with
+the reference's own digits at the same cells, positions and shapes ("68", cells 91..105 and 61..75 of the atlas rows
+'6' and '8'; the reference's 1x samples remain exactly the CT16 5-bit values `<< 3`). G-HUD-VALUES **closes**. G-HUD-IMG
+and G-HUD-ASPECT keep their S3 status (one aspect, the bench's 640x448 anamorphic). Checks: CTest coregs3 **18/18**
+(the HUD fixture adds the GT4F parse/apply/refusals, the bank preservation, the applied-page decode and the no-flag S3
+refusal), Python `test_coregs3_units.py` **15/15**, the world `--no-hud` render **byte-identical** to the 5b82c832
+executable (PNG `F0BE02BD...`, report `EBDE2871...`), and the 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** against the
+r8 reference (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames). Open: the gear ladder, total
+time and clock (the gear page 0x3C80 is uploaded but sampled by no draw in this frame; no other draw samples the
+GT4meter page) and the font file's glyph bitmap payload decode. Evidence: `build/evidence-hud-font/` (font source proof,
+GT4F file and hash, digit A/B sheet, metrics JSON, wider-capture scans, gate logs).
+
 ## 2026-11-10: the live CoreGS 3.0 presentation timeline (TASK-090, branch `task/090-live-timeline`)
 
 `GT4_COREGS3=present` now presents the captured car pass at a constant requested rate (20/30/45/60/120/144 Hz, default

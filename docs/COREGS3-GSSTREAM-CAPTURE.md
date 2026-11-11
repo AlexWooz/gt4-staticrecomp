@@ -10,6 +10,40 @@ the existing CoreGS 3.0 capture (`native/coregs3`) and the repository studies.
 
 Labels: **C** = Confirmed (read in code or measured), **H** = High confidence, **Hyp** = Hypothesis, **U** = Unknown.
 
+## Status (2026-11-11): S3 font atlas; the speed digits render and G-HUD-VALUES closes
+
+The S3 speed digits now draw. Branch `task/090-hud-font` (worktree `O:/Antigavity/gt4-wt-090-hud-font`, from
+`task/090-coregs3` at `5b82c832`).
+
+- **The capture carries the palette bundle, not the glyphs (C).** In stream 7399 the digit page's four uploads
+  (seq 1012/1014/1016/1018 at DBP 0x3A20/0x3A28/0x3A2C/0x3A2E, 32x16 + 16x16 + 16x8 + 8x8 CT32) are the GT4meter
+  font's palette bundle; the 128x64 T4 glyph texels are not uploaded in the window. Wider windows were measured and do
+  not carry them either: 6460-6467 and 6500-6515 (race entry) upload the display.gpb per-frame set, 7290-7305 (green
+  flag) uploads the 184x180 mini-map T4 (decoded: the track outline) at 0x3A20, and an empty 32x32 T4 at 0x3780; no
+  128x64 T4 at 0x3A20. The page is uploaded before the race, at boot or GT Mode entry.
+- **The font proves the source (C).** `race.fnt`'s GT4meter Tex1 block (file 0x1E600) has the draw's exact T4 geometry
+  (TBW 2, TW 7, TH 6, TCC 1, CLAMP 0..127 x 0..38) and the same four palette transfers at the same tbp offsets as the
+  frame's uploads; its glyph records' cells are the reference atlas positions and the stream's two digit cells (UV
+  91..105 and 61..75) are the glyphs '6' and '8'. The font file's per-glyph bitmap encoding is not decoded (the 20-byte
+  records' 8-bit strip pointers and 0x55-terminated rows do not reproduce the atlas under the forms tried).
+- **The texels are the reference decode (C).** The CoreGS 2.0 `GT4_HW_DUMP_TEXTURES` image with Format G key
+  `bf0800b76cfeb19a-855d33f8da421ba0` (GT4meter, 128x39) holds white RGB with exactly the frame's captured CSM1 bank
+  alpha levels; its indices are recovered and laid out as the 128x128 T4 page in GS local memory (round trip verified).
+  The new GT4F sidecar (`gt4meter.gt4f`, 8,232 B, sha256 `A2129152...`) carries the page.
+- **Renderer (C).** `native/coregs3/coregs3_hud` gains `parse_hud_font_atlas`/`apply_hud_font_atlas` (the page's 32
+  blocks plus the draw's 64-byte CSM1 bank at CBP preserved) and `gt4_coregs3_render --hud-font-atlas`. The constant-page
+  refusal is RGBA for an atlas page and stays RGB otherwise (the no-atlas A/B still refuses the stream-only page). Two
+  S3 raster errors were fixed: PATH2 texel UVs are normalized to ST before sampling, and the interpolation parameter is
+  taken at the integer pixel centre (the CoreGS 2.0 `ceil(min)..ceil(max)-1` rule).
+- **Measurement (C).** 1x against frame 07400: the element mask is **PSNR 31.45 / SSIM 0.785 / mean |diff| 4.52**
+  (was 13.35 / 0.486 / 23.37) and the digit rect **PSNR 34.15 / SSIM 0.781 / mean 2.72, 210/418 pixels exact, max 24**;
+  the reference's digits are at the same cells, positions and shapes ("68"). The no-atlas A/B keeps the S3 refusal; the
+  no-HUD A/B is byte-identical to the 5b82c832 tool. CTest coregs3 **18/18**, Python **15/15**, the 3x off/shadow gate
+  **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). **G-HUD-VALUES closes.**
+- **Next.** The remaining elements: the gear page 0x3C80 (264x59 T8) is uploaded but sampled by no draw in this frame,
+  and no other draw samples the GT4meter page, so the gear ladder, total time and clock need a frame that draws them (or
+  their pages captured). The font file's glyph bitmap payload decode stays open. Evidence: `build/evidence-hud-font/`.
+
 ## Status (2026-11-10): S3 implemented and measured; the speed plate is drawn, the digit atlas is outside the capture window
 
 S3 landed on branch `task/090-hud-s3` (worktree `O:/Antigavity/gt4-wt-090-hud-s3`, from `task/090-coregs3` at
