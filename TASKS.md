@@ -2200,7 +2200,7 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   Gates: CTest coregs3 **20/20**, Python **17/17**, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks,
   1,686 racing, 0 differences, 13/13 frames), on a clean rebuild (object and executable rebuilt; executable SHA-256
   b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design in
-  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32.
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §33.
 
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
@@ -2210,7 +2210,25 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   aspect in the game's own canvas (TASK-214, 16:9/21:9 anchors from TASK-079/080); VRR presentation and the
   HUD at the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
-
+- **Dither option (2026-11-11, branch `task/090-dither`, based on `a59ce9c9`).** The dotted pattern the owner saw is
+  the PS2's CT16 scanout conversion, pinned in three places: the offline present model (`apply_present_ct16`) applies
+  the captured **DTHE 1 / DIMX `0x0001044501100554`** entry (six negative and ten non-negative cells, mean -1.125), the
+  five-bit truncation and `<< 3`; the CoreGS 3.0 live fragment stages write 8-bit RGBA8 words and never dither; the
+  CoreGS 2.0 composed base applies its own faithful DTHE/DIMX dither at native 4x4 cells. New `GT4_COREGS3_DITHER=0|1`
+  (`--dither 0|1` on `gt4_coregs3_render` too), **default 0 in the modern path**: `1` reproduces the captured conversion
+  byte for byte, `0` writes the modulated 8-bit colour with neither the dither nor the five-bit truncation (both are
+  one scanout model; keeping the truncation alone would leave 32-level banding against 129 levels). A/B on the A-Spec
+  capture at 1920x1344: PSNR **33.46 dB**, mean |diff| **4.51**, max **11**, **95.9%** of pixels differ, mean signed
+  **-4.43**; a flat road crop (1824,1152,48,48) is a constant colour without the dither and a 12x12-cell pattern with
+  it, and against the CoreGS 2.0 reference frame 7600 the faithful model is **PSNR 20.67 / mean 21.48** versus
+  **19.22 / 26.22** for the off image. In `GT4_COREGS3=present` the live pass's own pixels are dither-free in both
+  states and the CoreGS 2.0 base keeps its dither until phase 4. `GT4_HW_DITHER=off` is parsed but does not reach the
+  CoreGS 2.0 decisions in this build (measured: 0 differing pixels; a pre-existing gap, recorded), so there is no live
+  switch for the base yet. Checks: CTest coregs3 **20/20** (per-pixel switch arithmetic and parser refusals), Python **18/18** (new
+  `DitherAbTest`), the faithful car / world / world+gs / HUD renders **byte-identical** to the `a59ce9c9` tool, the 3x
+  off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames on the
+  final binary), invalid values refused in both paths. Evidence `build/evidence-dither/`; method
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32, plan [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
 
 ### TASK-087 — GS readbacks without stalls
 **Owner decision 2026-10-21: CoreGS 2.0 only.** gt4-gs (the PCSX2 GS fork) gets no more feature work; at most texture

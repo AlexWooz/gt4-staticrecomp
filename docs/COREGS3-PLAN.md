@@ -450,6 +450,17 @@ the test machine, so the host clock is bounded by the available images there). T
 remaining acceptance for smooth display-rate motion. Measurements and gates: `docs/journal/2026-11-10.md`,
 `build/evidence-host-clock/`.
 
+**The CT16 dither option (2026-11-11).** The dotted pattern across the picture is the PS2's CT16 scanout conversion:
+the captured present has DTHE 1 and DIMX 0x0001044501100554, and the reference dump is the rendered image truncated to
+five bits (with the dither added) and expanded with `<< 3`. The offline present model applies it; the CoreGS 3.0
+fragment stages write 8-bit words and never dither. `GT4_COREGS3_DITHER=0|1` selects the conversion in the CoreGS 3.0
+path: `1` reproduces the captured dither and five-bit truncation exactly, `0` (the modern default) writes the modulated
+8-bit colour with neither; the faithful renderers (GSdx, CoreGS 2.0, CoreGS 3.0 with `1`) keep it. In
+`GT4_COREGS3=present` the image under the CoreGS 3.0 pass is CoreGS 2.0's composed CT16 output, whose own dither stays
+until CoreGS 3.0 owns the 3D frame (phase 4). The existing `GT4_HW_DITHER=off` option is parsed but does not reach the
+CoreGS 2.0 decisions in this build (measured: 0 differing pixels), so there is no switch for the base today; phase 4
+retires it by owning the 3D frame. A/B and crops: [COREGS3-HOOKS](COREGS3-HOOKS.md) §32.
+
 **The live world (2026-11-11).** The `GT4_COREGS3=present` layer draws the captured world as well as the cars: the
 main-view course (and, with `GT4_COREGS3_WORLD_BACKGROUND=1`, the sky and far underlay) is selected with the offline
 world rule, its pixels come from an in-memory per-VU1-job store (`coregs3_live_world`, the `.gt4vram` record taken
@@ -767,7 +778,7 @@ cannot be explained after one derivation round.
 
 The first live step is in: the captured main-view course is drawn natively in the game window over the CoreGS 2.0
 image (hooks §30). The sky and far underlay are kept from the base by default (they are background layers that would
-hide it); `GT4_COREGS3_WORLD_BACKGROUND=1` draws them. The 2026-11-11 picture round (hooks §32) wires the live
+hide it); `GT4_COREGS3_WORLD_BACKGROUND=1` draws them. The 2026-11-11 picture round (hooks §33) wires the live
 in-memory tap: the emitted per-item TEX0/TEX1/CLAMP state and UVs bind the items the record path refused, the emitted
 per-vertex fog is applied with the GS mix, and linear items sample with the GS bilinear; the remaining untextured
 items are skipped by name. CLUT animation, the wet reflection and the post chain remain the Phase-3 work.
@@ -795,6 +806,10 @@ items are skipped by name. CLUT animation, the wet reflection and the post chain
 Level 3 (CoreGS 3.0 owns the 3D frame) additionally needs the 2D overlay split: the base's HUD is composed before the
 world, so the live world covers it where it draws. The live world foundation (native output resolution and aspect
 included) is in place for that split. Design and the blocking CoreGS 2.0 work: [COREGS3-2D-SPLIT](COREGS3-2D-SPLIT.md).
+The same phase removes the last CT16 dither from the picture: the CoreGS 2.0
+composed base that the live pass draws over keeps its own dither, which `GT4_COREGS3_DITHER` does not reach; when
+CoreGS 3.0 owns the frame, the 3D output is the modern (undithered) one and only the faithful renderers keep the
+scanout conversion.
 
 ### Phase 5: other modes
 
@@ -805,6 +820,14 @@ included) is in place for that split. Design and the blocking CoreGS 2.0 work: [
 - **Effort:** 8-14 agent-weeks. **Risk:** medium.
 
 ### Phase 6: modern features (what the native pipeline unlocks)
+
+**Owner remaster vision (2026-11-11).** CoreGS 3.0 should also open a remaster path (opt-in, after the
+foundation): use the showroom/photo-mode car models in races (higher detail than the race LODs, if the data and the
+VU1 programs allow), rework effects and shaders, extend lighting, and eventually a **deferred renderer with several
+dynamic lights** (car headlights among them). The per-vertex normals and material data the decoder already reads are
+the G-buffer foundation; the faithful modes stay the reference, the remaster is a separate opt-in profile. Study the
+showroom model/LOD assets and the G-buffer feasibility before scheduling.
+
 
 - **Scope:**
   - present above 60 Hz with per-draw interpolation between ticks (TASK-045): draw identity = (shape, model, instance,

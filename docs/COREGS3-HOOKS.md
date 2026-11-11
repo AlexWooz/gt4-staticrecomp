@@ -2269,13 +2269,120 @@ world-mask measurements of §31.3.
   path. The occlusion sample counter is a pixel count and is resolution dependent by definition.
 
 
-## 32. Round 31 (2026-11-11, branch `task/090-live-world`): the live tap, the emitted fog and the GS bilinear
+## 32. Round 31 (2026-11-11, branch `task/090-dither`): where the CT16 dither is, and the `GT4_COREGS3_DITHER` option
+
+One branch from `task/090-coregs3` at `a59ce9c9` (worktree `O:/Antigavity/gt4-wt-090-dither`). The owner saw a dotted
+pattern across the CoreGS 3.0 picture and confirmed it is the PS2's CT16 dither (2026-11-11 02:31); the modern path must
+be able to remove it, while the faithful modes keep it. This round pins each source with evidence, adds the switch to
+the offline and live CoreGS 3.0 paths, and measures the A/B. Clean room: no PCSX2 source, fork or dump was opened.
+
+### 32.1 Where the dither is (C)
+
+Three different things write the picture, and only two of them dither:
+
+- **The offline CT16 present model** (`native/coregs3/coregs3_wet_composite.cpp`, `apply_present_ct16`). The captured
+  PATH2 present is page 210 -> FBP 140/FBW 10 CT16 with **DTHE 1, DIMX `0x0001044501100554`, COLCLAMP 1** (the same
+  registers as the night race, §29). Per channel it computes `(source * 128) >> 7` (MODULATE with the neutral vertex
+  colour), adds the DIMX entry of the pixel's 4x4 cell - selected by `(x / 3) & 3, (y / 3) & 3` at the 3x validation
+  scale, so the cells are 12x12 output pixels - clamps (COLCLAMP), truncates to five bits and expands with `<< 3`.
+  Decoded, the DIMX matrix is `[-4 -3 -3 0] / [0 +1 +1 0] / [-3 -4 -4 0] / [+1 0 0 0]`: **six negative and ten
+  non-negative entries, mean -1.125**. With the five-bit truncation the model is **4.4-4.8 levels darker** than the
+  8-bit image on average (measured in 32.3). This is the dotted pattern.
+- **The CoreGS 3.0 live present** (`native/hw_gs/coregs3/hw_coregs3_present.cpp`, its `coregs3_present.frag` and
+  `coregs3_world.frag`). Both fragment stages write a packed 8-bit RGBA8 word (`level()` = round to 0..255) and never
+  apply a dither or a five-bit truncation. Its pixels are dither-free today, in both switch states.
+- **The CoreGS 2.0 composed base.** In `GT4_COREGS3=present` the image the CoreGS 3.0 pass draws over is CoreGS 2.0's
+  composed CT16 output; CoreGS 2.0 applies its own DTHE/DIMX dither in `hw_process_pixel`
+  (`native/hw_gs/shaders/hw_pixel_core.glsl`, `s.dither` from the FRAME/DTHE decision) at native 4x4 cells, which at 3x
+  are the same 12x12 output blocks. That is faithful CoreGS 2.0 output and this round does not change it.
+
+### 32.2 The switch (C)
+
+`GT4_COREGS3_DITHER=0|1` (`native/coregs3/coregs3_dither.hpp`, one parser for both paths; absent or empty = the modern
+default `0`; only `0` and `1` are accepted, anything else is refused with the value named). `gt4_coregs3_render` reads it
+and also accepts `--dither 0|1` as a same-run override of the environment (the A/B instrument).
+
+- `1` (faithful): `apply_present_ct16` reproduces the captured CT16 scanout conversion exactly - the DTHE/DIMX entry
+  (when DTHE bit 0 is on), COLCLAMP, the five-bit truncation and `<< 3`.
+- `0` (the modern default): the same MODULATE, vertex colour, alpha bit and full-screen write, but the channel is
+  written as the modulated 8-bit value with COLCLAMP only. Both the dither and the five-bit truncation are skipped:
+  they are one scanout model, and keeping the truncation without its dither would leave the 32-level banding the dither
+  exists to hide (measured: 32 levels against 129 on the frame, 32.3).
+- The live present parses and reports the mode in its init line, but its pixels do not change: it already writes 8-bit
+  words. The base dither is CoreGS 2.0's and stays until CoreGS 3.0 owns the 3D frame (phase 4); the switch covers what
+  the CoreGS 3.0 path controls.
+
+### 32.3 The A/B (C)
+
+Same A-Spec capture (scene frame 0 = VBlank 7600, world + the whole post chain, no HUD), same `gt4_coregs3_render`
+command, `GT4_COREGS3_DITHER=1` against `=0`:
+
+| measure (whole frame) | value |
+| --- | --- |
+| pixels | 2,580,480 |
+| PSNR (1 vs 0) | **33.46 dB** |
+| mean \|diff\| / max \|diff\| | **4.51 / 11** |
+| differing pixels | **2,473,548 (95.9%)** |
+| mean signed (1 minus 0) | **-4.43** (the CT16 model is darker) |
+| values divisible by 8 | faithful **100.0%** (32 levels) / off **5.4%** (129 levels) |
+
+- **The dot pattern isolated.** A flat road area at (1824,1152) 48x48 is a constant 63/53/41 in the off image; the
+  faithful image is the 12x12-cell pattern of 56/64 (R) and the reference is its own 12x12 quantised pattern. On that
+  crop: PSNR 33.08, mean |diff| 4.96, max 9, **100% of pixels differ**, mean signed -4.83; faithful 5 levels (all
+  divisible by 8), off 3 (none). Against the CoreGS 2.0 reference frame 7600 on the same crop, faithful is **PSNR
+  20.67 / mean 21.48** and off **19.22 / 26.22**: the faithful model is closer to the reference, and the absolute level
+  gap is the known S2 material residual, not the dither.
+- **Within-cell structure** (mean absolute deviation from each 12x12 cell's mean on the road crop): reference **4.11**,
+  faithful **2.94**, off **1.04**. The faithful image recreates the reference's dot structure; the off image is smooth.
+- Crops and the amplified difference image (`flat-crop-dither1.png`, `flat-crop-dither0.png`,
+  `flat-crop-diff.png`, a x6 zoom and a three-up sheet) are in `build/evidence-dither/`, with the JSON metrics
+  (`ab-full.json`, `ab-flat-crop.json`, `metrics-ref-vs-dither{0,1}-flat.json`).
+
+### 32.4 The live path (C)
+
+`GT4_COREGS3=present` at 3x, night race, six dumped frames 6600-7600, with three present runs (`GT4_COREGS3_DITHER=1`,
+`=0`, and a same-config `=0` control) and a plain CoreGS 2.0 run (`GT4_COREGS3=off`):
+
+- **The switch does not change the CoreGS 3.0 pixels.** present1 against present0 differs on **0.27-2.40%** of the
+  pixels (mean |diff| 0.01-0.68, max 61-240), and the same-config control present0 against present0b differs on
+  **0.25-2.30%** (mean 0.01-0.69, max 26-255): the difference is the live path's known cross-run overlay
+  nondeterminism (§31.4), not the switch. On a sky block the live world draws (624,160,48,48 at 3x), present0,
+  present1 and present0b are identical to three decimals (mean 23.197/21.671/15.781, **15.9%** of values divisible by
+  8, 28 levels): the pass writes 8-bit words in both states.
+- **The base is the faithful CT16 image.** In the `off` run the same block is **100%** divisible by 8 with 2 levels
+  (a flat CT16 area; the whole frame is CoreGS 2.0's composed scanout). The base's own dither therefore stays under the
+  CoreGS 3.0 pass until phase 4, exactly as the owner's decision records; the switch does not reach it.
+- **`GT4_HW_DITHER=off` does not remove the base dither in this build.** `Options.dither` is parsed in
+  `native/hw_gs/hw_gs_options.cpp`, but nothing assigns it to `decide::Options::dither_enabled` (which keeps its `true`
+  default); the measured `off` against `off + GT4_HW_DITHER=off` comparison is **0 differing pixels** on every frame.
+  That is a pre-existing CoreGS 2.0 option gap, not part of this round, and the phase-4 work does not depend on it.
+- **An invalid value is refused.** `GT4_COREGS3_DITHER=2` with `GT4_COREGS3=present` logs
+  `[coregs3] live present refused: GT4_COREGS3_DITHER=2 is not 0 or 1 (...)`, and the game keeps running without the
+  overlay (exit 0, 697 frames). Evidence: `build/evidence-dither/live-analysis.txt`, `live-block-*.png`,
+  `live-off-sky-zoom4.png`, `live-present0-sky-zoom4.png`.
+
+### 32.5 Checks
+
+- **CTest coregs3 20/20**, including `native_coregs3_wet_composite` with the new per-pixel switch test (every channel
+  of both modes against the CT16 arithmetic, the DIMX sign mix, the alpha lane) and the parser test (absent/empty =
+  default off, `0`/`1`, and `2`/`on`/padded values refused). Python `test_coregs3_units.py` **18/18** (new
+  `DitherAbTest`: the A/B script's metrics, crops and the size refusal).
+- **The faithful value is byte-identical to the `a59ce9c9` tool** built from the base commit before the change
+  (executable SHA-256 `c1f00751...`): world+gs `0B6FF0F0...`, car `1325882D...`, world `D84BAC90...`, HUD all
+  `8169B899...` (PNG SHA-256, same command, `GT4_COREGS3_DITHER=1`).
+- **The 3x off/shadow identity gate passes on the final binary** (SHA-256 `404aab46...`, built 2026-11-11 02:55):
+  `off` and `shadow` against the `coregs3-r8/ref` executable: 8,997 VBlanks, 1,686 racing, 0 clock/digest/state
+  differences, 13/13 frames identical, capture 4,496,552 B, **COREGS3-NIGHT-CHECK-OK**.
+- The offline tool refuses `GT4_COREGS3_DITHER=2` and `--dither 2` with the value named, and `--dither 0` overrides
+  `GT4_COREGS3_DITHER=1` to the off hash `853A1BEA...`.
+
+## 33. Round 31 (2026-11-11, branch `task/090-live-world`): the live tap, the emitted fog and the GS bilinear
 
 Continuation of §31 in the same worktree. The live world drew the captured course but deferred fog (all items), sampled
 everything nearest and dropped ~1,500 items on record-path refusals (bright vertex-colour billboards). This round
 restores the three gaps from the GS worker's own job records, with no capture file.
 
-### 32.1 The live in-memory tap (C)
+### 33.1 The live in-memory tap (C)
 
 The GS worker already buffers each VU1 job's PATH1 GIF records to snapshot its texture windows. It now also copies the
 records into `coregs3_live_world` (`note_job_stream`, with a global emission sequence and the job id), and
@@ -2296,7 +2403,7 @@ The table is built with `use_tap = true`; the pixels still come from the live pe
 guest frame old (the same lag as the textures), counted by `texture_stale`; the snapshot is bounded (64 MiB) and kept
 small by the address filter.
 
-### 32.2 Fog (C)
+### 33.2 Fog (C)
 
 The world vertex carries the emitted fog byte as a `noperspective` varying (the GS fog lane has no Q and is
 interpolated screen-linearly); the fragment applies the GS integer mix toward FOGCOL,
@@ -2310,14 +2417,14 @@ median 0.09) but with per-item constants that are not in the captured packet, th
 global fit on the captured scene parameters (the 0.2/0.05/0.1 fog densities, the 10/86.05 floats) is 10-14 levels off.
 The emitted record is therefore the tap-free source; a guessed formula is not.
 
-### 32.3 GS bilinear (C)
+### 33.3 GS bilinear (C)
 
 A linear item (TEX1 MMAG = MMIN = linear, the only mixed-free form the binding accepts) samples with the GS bilinear:
 `(u-0.5)` to a floor base, 4-bit weights, the four taps wrapped independently with the four CLAMP modes, sum >> 8, then
 MODULATE — the arithmetic of `coregs3::sample_texture`. The atlas holds the decoded RGBA8 at level 0;
 `GT4_COREGS3_WORLD_FILTER=nearest` is the A/B; `filter_linear` counts the items sampled bilinear.
 
-### 32.4 Untextured items (C)
+### 33.4 Untextured items (C)
 
 With the emitted state and the base, the record-path refusals (mip records, the external texture cursor) bind the pixels
 the draw actually sampled: at VBlank 7400 the table bound **1,262 items from the emitted state** (offline 1,268), 41
@@ -2327,7 +2434,7 @@ untextured items are skipped by name (`texture_no_record`, `texture_no_uv`, `tex
 `texture_refused`) and leave the CoreGS 2.0 base pixel — never a constant bright vertex colour. The billboards that were
 white blobs now show their textures in the present image.
 
-### 32.5 Measurements (VBlanks 6600-7400)
+### 33.5 Measurements (VBlanks 6600-7400)
 
 VBlanks 6600-7400, 5 dumps: 3,853 items, 195,711 mesh vertices, 108,677 triangles, 328 draws, 3,825 draw calls, 749
 atlas textures, 0 atlas/draw refusals; fog applied to 3,688 ranges with 13,776 vertices on the 255 identity; 3,769
@@ -2341,14 +2448,14 @@ closer (18.83 / 17.35 vs 18.90 / 17.23). Present images: `build/evidence-live-wo
 (the billboards textured; the pre-round image at `build/evidence-live-world/night-liveworld-race-07400.png` has the white
 blobs).
 
-### 32.6 Gates
+### 33.6 Gates
 
 | Gate | Result |
 |---|---|
 | CTest coregs3 (`native_coregs3_live_world`, the extended pass-texture fixture) | **20/20 passed** |
 | Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **17/17 passed** |
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, clean rebuild SHA-256 `b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f`) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B |
-| Frame-locked A/B (on/off/nofog/nofilter, the same claimed frame) | the numbers of §32.5 |
+| Frame-locked A/B (on/off/nofog/nofilter, the same claimed frame) | the numbers of §33.5 |
 
 Two earlier runs of the same gate reported the 512-word race-object state difference in the reference run's
 dump (0 clock/digest differences, 13/13 frames identical); the candidate's off and shadow dumps were

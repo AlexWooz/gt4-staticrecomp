@@ -7,6 +7,11 @@
 // window, and it never touches CoreGS 2.0's targets or resources beyond writing the already composed display image it
 // is handed. `GT4_COREGS3=present` is the only thing that activates it; the faithful renderer stays the reference.
 //
+// Dither: the fragment stage writes full 8-bit RGBA8 words, so it never applies the PS2's CT16 dither in either state of
+// `GT4_COREGS3_DITHER` (coregs3_dither.hpp, default off in the modern path). The mode is parsed and reported here so one
+// setting covers the offline post chain and the live path; the composed image the pass draws over is CoreGS 2.0's, and
+// its CT16 dither stays until CoreGS 3.0 owns the 3D frame (phase 4).
+//
 // Colour has no attachment: the composed display image is created by core 2 without VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
 // on a discrete GPU, so the fragment stage writes the R32_UINT word with an imageStore (the same packed RGBA8 word
 // core2_compose.comp writes). A private D32 depth image and a GEQUAL test (depth = 1/cw, the GS's equal-depth rule) give the visibility order.

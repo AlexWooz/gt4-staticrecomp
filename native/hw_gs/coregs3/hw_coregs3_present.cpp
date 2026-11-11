@@ -8,6 +8,10 @@
 // header) with a private D32 depth attachment and depth compare GEQUAL (the GS's equal-depth rule). Nothing here touches
 // CoreGS 2.0's targets, its command buffers, its command pool or the GS stream; the pass runs after the compose
 // submission and waits before the frame is presented or dumped.
+//
+// Dither: the fragment stage writes 8-bit RGBA8 words (coregs3_present.frag), so this pass never applies the PS2's CT16
+// dither and `GT4_COREGS3_DITHER` does not change its pixels. The base image is CoreGS 2.0's composed CT16 output and
+// keeps its own dither until CoreGS 3.0 owns the 3D frame (phase 4).
 
 // Vulkan create-info structs are initialised with sType only (pNext defaults to null by the spec). The device-entry
 // table redefines vkCmdClearColorImage, which the loader header already names; the backend's other translation units
@@ -20,6 +24,7 @@
 #include "../shaders/hw_shader_blobs.hpp"
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
 
+#include "coregs3_dither.hpp"
 #include "coregs3_live_world.hpp"
 #include "coregs3_lighting.hpp"
 #include "coregs3_presentation.hpp"
@@ -224,6 +229,10 @@ struct PresentLayer::Impl {
   bool live_world_bilinear = true;     // GT4_COREGS3_WORLD_FILTER=nearest is the bilinear A/B
   bool live_world_fog = true;          // GT4_COREGS3_WORLD_FOG=0 is the fog A/B
   bool present_debug = false;          // GT4_COREGS3_PRESENT_DEBUG=1: one line per render with the claimed frame
+  // TASK-090 dither option (coregs3_dither.hpp): parsed and reported here so one setting covers the offline chain and
+  // the live path. This pass writes full 8-bit RGBA8 words and never applies the CT16 dither in either mode; the
+  // composed image it draws over is CoreGS 2.0's, whose own CT16 dither stays until CoreGS 3.0 owns the 3D frame.
+  gt4::coregs3::DitherMode dither = gt4::coregs3::kDefaultDitherMode;
 
   VkShaderModule world_vertex_module = VK_NULL_HANDLE;
   VkShaderModule world_fragment_module = VK_NULL_HANDLE;
@@ -1961,6 +1970,15 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   if (const char *fog = std::getenv("GT4_COREGS3_WORLD_FOG"); fog != nullptr && std::strcmp(fog, "0") == 0)
     s.live_world_fog = false;
   s.present_debug = std::getenv("GT4_COREGS3_PRESENT_DEBUG") != nullptr;
+  // TASK-090 dither option: an invalid value refuses the layer instead of being interpreted. The mode does not change
+  // this pass's pixels (they are written as 8-bit RGBA8 words); it is one setting across the offline and live paths.
+  {
+    std::string dither_error;
+    if (!gt4::coregs3::dither_mode_from_environment(s.dither, dither_error)) {
+      error = dither_error;
+      return false;
+    }
+  }
 
   std::vector<std::string> missing;
   if (!gt4::hw::vulkan_device::load_device_entry_points(config.instance, missing)) {
@@ -1987,10 +2005,11 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   const gt4::coregs3::present::TimelineConfig &timeline = gt4::coregs3::present::timeline_config();
   std::fprintf(stderr,
                "[coregs3] present layer: R32_UINT storage image, D32 depth, depth clamp, vf24..vf27 push constant, "
-               "%u Hz %s%s, live world %s\n",
+               "%u Hz %s%s, live world %s, dither %s (this pass writes 8-bit words; the CoreGS 2.0 base keeps its CT16 "
+               "dither until phase 4)\n",
                timeline.hz, gt4::coregs3::presentation_mode_name(timeline.mode),
                timeline.selected_tick == UINT32_MAX ? "" : " (diagnostic: one tick per frame)",
-               s.live_world_enabled ? "on" : "off");
+               s.live_world_enabled ? "on" : "off", gt4::coregs3::dither_mode_name(s.dither));
   return true;
 }
 
