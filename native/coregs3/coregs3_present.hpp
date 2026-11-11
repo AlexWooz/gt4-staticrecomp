@@ -139,9 +139,9 @@ PresentationClock::Due due_ticks() noexcept;
 
 // The transforms of the newest frame's objects at one presentation instant, ready for the present layer. Objects of
 // the newest frame only: the newest frame's draw list is the image's reference (an object that disappeared from it is
-// counted `only_older` and not drawn). `count` adds the outcome to `timeline_counters()`: the timeline counts every
-// instant once in `note_guest_frame` (so the counters describe the whole timeline, not only the frames a headless run
-// dumps), and the layer's own draw pass passes false. Not noexcept: allocates.
+// counted `only_older` and not drawn). `count` adds the outcome to `timeline_counters()`; the live layer passes true,
+// so the counters describe the ticks it presents (in a headless evidence run, the dumped frames). Not noexcept:
+// allocates.
 void interpolated_transforms(std::uint64_t instant_ticks, std::vector<DrawTransform> &out, bool count);
 
 }  // namespace gt4::coregs3::present

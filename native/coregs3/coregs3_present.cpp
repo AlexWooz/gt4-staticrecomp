@@ -38,7 +38,6 @@ struct TimelineState {
   PresentationClock clock{60};
   PresentationClock::Due batch;
   InterpolationLimits limits;
-  std::vector<DrawTransform> dry_transforms;  // the per-instant counter pass, discarded
 };
 TimelineState &timeline_state() {
   static TimelineState state;
@@ -154,12 +153,6 @@ void note_guest_frame(const FrameSnapshot &frame) {
     if (state.batch.count > 1)
       for (std::uint32_t index = 1; index < state.batch.count; ++index) add_interval(state.batch.step);
     g_interval_last.store(state.batch.first + (state.batch.count - 1) * state.batch.step, std::memory_order_relaxed);
-    // Count the pairing and interpolation outcome of every instant, not only of the ticks the host draws: the
-    // headless evidence run dumps a handful of frames, but the counters describe the whole presentation timeline.
-    for (std::uint32_t index = 0; index < state.batch.count; ++index) {
-      const std::uint64_t instant = state.batch.first + static_cast<std::uint64_t>(index) * state.batch.step;
-      interpolated_transforms(instant, state.dry_transforms, true);
-    }
   }
 }
 

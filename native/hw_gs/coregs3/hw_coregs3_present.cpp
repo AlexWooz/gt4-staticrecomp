@@ -902,7 +902,7 @@ struct PresentLayer::Impl {
     bool drew_any = false;
     for (std::uint32_t tick = first_tick; tick < first_tick + tick_count; ++tick) {
       const std::uint64_t instant = batch.first + static_cast<std::uint64_t>(tick) * batch.step;
-      gt4::coregs3::present::interpolated_transforms(instant, transforms, /*count=*/false);
+      gt4::coregs3::present::interpolated_transforms(instant, transforms, /*count=*/true);
       std::uint32_t refused = 0;
       std::uint32_t unlit_draws = 0;
       std::uint64_t unlit_vertices = 0;
