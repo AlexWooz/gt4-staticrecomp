@@ -1002,6 +1002,16 @@ void print_report(std::FILE *out) noexcept {
                  intervals != 0 ? static_cast<double>(load(t.interval_sum)) / static_cast<double>(intervals) : 0.0,
                  static_cast<unsigned long long>(load(t.interval_min)),
                  static_cast<unsigned long long>(load(t.interval_max)));
+  if (timeline.hz > 60)
+    std::fprintf(out,
+                 "[coregs3] present host clock plans=%llu ticks=%llu late=%llu stale=%llu skipped=%llu "
+                 "duplicates=%llu\n",
+                 static_cast<unsigned long long>(load(t.host_plans)),
+                 static_cast<unsigned long long>(load(t.host_ticks)),
+                 static_cast<unsigned long long>(load(t.host_late)),
+                 static_cast<unsigned long long>(load(t.host_stale)),
+                 static_cast<unsigned long long>(load(t.host_skipped)),
+                 static_cast<unsigned long long>(load(t.host_duplicates)));
   if (timeline.hz != 0 &&
       load(t.pairs) + load(t.pairs_refused) + load(t.paired) + load(t.only_newer) + load(t.only_older) +
               load(t.interpolated) + load(t.entrywise) + load(t.nearest) + load(t.dropped_discontinuity) !=

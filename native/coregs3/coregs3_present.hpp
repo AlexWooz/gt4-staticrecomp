@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <string>
 
+#include "coregs3_host_clock.hpp"
 #include "coregs3_lighting.hpp"
 #include "coregs3_presentation.hpp"
 #include "coregs3_scene.hpp"
@@ -125,6 +126,14 @@ struct TimelineCounters {
   std::atomic<std::uint64_t> interval_min{0};
   std::atomic<std::uint64_t> interval_max{0};
   std::array<std::atomic<std::uint64_t>, 32> interval_hist{};
+  // TASK-090 host clock (coregs3_host_clock.hpp): the due instants it scheduled on the display grid and the ones it
+  // dropped, accumulated by note_guest_frame. `host_ticks` counts the instants handed to the window presenter.
+  std::atomic<std::uint64_t> host_plans{0};
+  std::atomic<std::uint64_t> host_ticks{0};
+  std::atomic<std::uint64_t> host_late{0};
+  std::atomic<std::uint64_t> host_stale{0};
+  std::atomic<std::uint64_t> host_skipped{0};
+  std::atomic<std::uint64_t> host_duplicates{0};
 };
 const TimelineCounters &timeline_counters() noexcept;
 void note_draw_tick() noexcept;  // the layer drew one presentation tick
@@ -136,6 +145,15 @@ void note_guest_frame(const FrameSnapshot &frame);
 
 // The instants the latest guest frame made due (a fixed grid in guest ticks; see PresentationClock).
 PresentationClock::Due due_ticks() noexcept;
+
+// TASK-090 host clock: the presentation times of the latest due batch, scheduled for a window that presents at the
+// requested rate (coregs3_host_clock.hpp). Empty unless the rate is above the guest's 60 Hz; the backend uses it only
+// when it can present more than one picture per guest frame. `host_clock_enabled` is the timeline's decision (a
+// configured rate above 60 Hz), not whether a window is attached.
+bool host_clock_enabled() noexcept;
+const HostPresentationClock::Plan &host_clock_plan() noexcept;
+// A VBlank with no new captured frame: the previous batch must not be drawn or presented again.
+void clear_host_clock_plan() noexcept;
 
 // The transforms of the newest frame's objects at one presentation instant, ready for the present layer. Objects of
 // the newest frame only: the newest frame's draw list is the image's reference (an object that disappeared from it is
