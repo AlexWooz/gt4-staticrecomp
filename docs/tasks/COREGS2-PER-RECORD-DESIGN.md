@@ -74,12 +74,12 @@ not a win.
   `hw_core2_tone_early_drop`, `hw_core2_texture_replacement`, the 22 `m3_hw_*` and `hw_cpuref_replay` green.
 - `GT4_CORE2_RECORDS=0` reproduces today's output byte for byte (the reference path stays reachable and tested).
 
-## 7. Smallest first step (if approved)
+## 7. Smallest first step (if approved) - **stopped and corrected, see section 8**
 
 **Only the vertex conversion, one switch, no grouping change.** `FrontEnd::AppendPrimitive` writes the
-`gpu::GpuVertex` values it can already compute into a renderer-provided arena, and `TranslateBatch` skips its per-vertex
-conversion when the batch carries them (`GT4_CORE2_RECORDS=1`). Culling, `drawRect`/`trace`, draw grouping, tone
-routing, segments and the CPU reference are untouched; the reference path stays the default until the gates pass.
+`gpu::GpuVertex` values into a renderer-provided arena, and `TranslateBatch` skips its per-vertex conversion when the
+batch carries them (`GT4_CORE2_RECORDS=1`). Culling, `drawRect`/`trace`, draw grouping, tone routing, segments and the
+CPU reference are untouched; the reference path stays the default until the gates pass.
 
 - Expected: most of `translate` (0.45) - Hypothesis 0.2-0.4 ms.
 - Then, only if that lands exactly: the draw assembly inside `draw` (0.93) is the second step and carries risk 1.
@@ -89,7 +89,36 @@ routing, segments and the CPU reference are untouched; the reference path stays 
 work on the GPU path. The clean reference below prices the flare side: 10x GPU busy 14.27 / flare wait 5.77, 12x
 19.98 / 9.85 ms.
 
-## 8. What is *not* in this design
+## 8. Correction (2026-11-11): the vertex conversion is **not** the prize - measured
+
+The section 7 step was priced **before** implementing it, with a work-injection diagnostic on license B-1 1x
+(`GT4_CORE2_GV_DOUBLE=1`: one extra `ToGpuVertex` pass per emitted GPU vertex, result kept), 2+2 interleaved:
+
+| | normal | one extra conversion pass |
+|---|---|---|
+| `translate` (ordinary 32-byte arena store) | 0.460 / 0.460 | **0.460 / 0.450** |
+| `translate` (forced volatile store) | 0.540 / 0.535 | 0.770 / 0.755 |
+| GS worker | 8.305 / 8.400 | 8.435 / 8.270 |
+| wall | 8.730 / 9.165 | 9.655 / 8.830 |
+
+The pack plus an ordinary store is **below the noise floor**; the +0.22 ms of the volatile variant is the forced uncached
+writes, not the pack. This agrees with the CPU sampler: the whole inlined body of `writeback::Translate` is
+**0.135 ms/VBlank** (0.405 inclusive), so whatever the conversion costs lives inside 0.135 - under the 0.2 ms bar.
+
+Consequences:
+
+- "Move the conversion into the front end" cannot win: it re-adds the same pack **plus** a 32-byte store, and the removal
+  saves at most a fraction of 0.135 ms.
+- **Sections 4 and 7 are corrected**: the per-record lever is not the vertex conversion. What is left is `draw` 0.93 (GPU
+  command recording, which a record does not remove), `batch_own` 0.64, `clut` 0.48, `swizzle` 0.49; a record could touch
+  part of `batch_own` and the draw assembly. Corrected bound **0.15-0.3 ms** (Hypothesis) - at or under the bar.
+  **Recommendation: do not spend the 2-3 days; treat the lever as closed.**
+- **Exact contract point where the step stops:** `Batch::vertices` is `std::vector<Vertex>`, and its int32 `x4`/`y4`,
+  float `q`/`s`/`t` and `u`/`v` are read by the CPU reference, `TextureFootprint`, `PossibleShuffle*` and the front end's
+  cull/trace. `gpu::GpuVertex` is the GPU's 32-byte record with `x`/`y` truncated to the low 16 bits. Replacing `Vertex`
+  by the record is the full design of section 3, not an isolated step - so the step was stopped here, not implemented.
+
+## 9. What is *not* in this design
 
 - No change to the batch record for the palette segments (the 1 KiB per-segment copy stays; it is the reason TASK-171
   option 2 was reverted, and changing it is a separate decision with its own gates).

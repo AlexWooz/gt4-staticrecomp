@@ -595,6 +595,39 @@ lookups, not from the replacement path itself.
 removable part of the license's 2.99 ms per-batch work (bound 0.5-1.0 ms, Hypothesis), the five risks, the identity
 gates and the smallest first step (vertex conversion only, one switch, ~1 day). Owner decision pending.
 
+
+## Per-record step, vertex conversion: **stopped before implementing** (measured ~0)
+
+The smallest per-record step (write the batch's vertices in GPU record form in the front end) was priced first, because
+`ToGpuVertex` turned out to be a **pure function of `Vertex`** (`hw_gs_writeback.cpp`: 12 field copies, no register or
+palette state), so the front end cannot precompute anything the renderer would otherwise have to compute - the step
+**moves** the conversion and adds a store.
+
+Work-injection diagnostic (`GT4_CORE2_GV_DOUBLE=1`, one extra `ToGpuVertex` pass per emitted GPU vertex, result kept),
+license B-1 1x, 2+2 interleaved:
+
+| | normal | one extra pass |
+|---|---|---|
+| `translate` (ordinary 32-byte arena store) | 0.460 / 0.460 | **0.460 / 0.450** |
+| `translate` (forced volatile store) | 0.540 / 0.535 | 0.770 / 0.755 |
+| GS worker | 8.305 / 8.400 | 8.435 / 8.270 |
+| wall | 8.730 / 9.165 | 9.655 / 8.830 |
+
+The pack plus an ordinary store is below the noise floor; the volatile variant's +0.22 ms is the forced uncached writes,
+not the pack. The CPU sampler agrees: the whole inlined body of `writeback::Translate` is **0.135 ms/VBlank** (0.405
+inclusive), so the conversion cannot reach the 0.2 ms bar. The diagnostic was removed; the tree is unchanged.
+
+**Exact contract point (why the step cannot be isolated):** `Batch::vertices` is `std::vector<Vertex>` and its int32
+`x4`/`y4`, float `q`/`s`/`t` and `u`/`v` are read by the CPU reference, `TextureFootprint`, `PossibleShuffle*` and the
+front end's cull/trace; `gpu::GpuVertex` is the GPU's 32-byte record with `x`/`y` truncated to the low 16 bits. Making
+the record *replace* `Vertex` is the full per-record design, not a step.
+
+**Corrected bound for that full design: 0.15-0.3 ms** (was 0.5-1.0): the conversion was the assumption behind the old
+figure and it is ~0. What remains is `draw` 0.93 (GPU command recording, which a record does not remove), `batch_own`
+0.64, `clut` 0.48, `swizzle` 0.49. Recommendation: **do not spend the 2-3 days**; the lever is effectively closed.
+Identity while measuring: license 4/4 and night 2/2 frames identical across the builds; CTest 319/320 (only the
+pre-existing rc15 `python_native_contracts`).
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two
