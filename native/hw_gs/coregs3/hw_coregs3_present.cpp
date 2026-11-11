@@ -64,9 +64,10 @@ constexpr VkDeviceSize kInitialWorldVertexBytes = 1u << 20;
 // The world push-constant flags (mirrored by the fragment shader's kFlag* constants).
 constexpr std::uint32_t kWorldFlagTextured = 1u << 0;
 constexpr std::uint32_t kWorldFlagAlphaTest = 1u << 1;
-constexpr std::uint32_t kWorldFlagFogDeferred = 1u << 2;
+constexpr std::uint32_t kWorldFlagFog = 1u << 2;  // the item's PRIM.FGE: apply the per-vertex fog toward FOGCOL
 constexpr std::uint32_t kWorldFlagBlendDeferred = 1u << 3;
 constexpr std::uint32_t kWorldFlagAlphaFailDefaulted = 1u << 4;
+constexpr std::uint32_t kWorldFlagLinear = 1u << 5;  // the item's TEX1 filter is linear: GS bilinear sampling
 
 struct WorldVertex {
   float x = 0.0f;  // captured model units (int32 lane, raw int16, or V3-32 float)
@@ -78,8 +79,11 @@ struct WorldVertex {
   std::uint8_t alpha = 255;
   float u = 0.0f;
   float v = 0.0f;
+  // The emitted per-vertex fog (0..255), interpolated screen-linearly like the GS fog lane. 255 is the no-fog identity
+  // in the GS mix ((255*c + 0*fogcol) >> 8), used for an item whose tap record carried no fog.
+  float fog = 255.0f;
 };
-static_assert(sizeof(WorldVertex) == 24, "the world vertex record must match the pipeline's 24-byte stride");
+static_assert(sizeof(WorldVertex) == 28, "the world vertex record must match the pipeline's 28-byte stride");
 
 // The layout the two world stages declare in shaders/coregs3_world_push.glsl (std140: vec4 columns, then three uvec4s).
 struct WorldPush {
@@ -91,7 +95,7 @@ struct WorldPush {
   std::uint32_t atlas_origin = 0;  // x | y << 16
   std::uint32_t atlas_rect = 0;    // x0 | y0 << 16 (the decoded rectangle's origin in texture coordinates)
   std::uint32_t atlas_size = 0;    // width | height << 16
-  std::uint32_t atlas_unused = 0;
+  std::uint32_t fog_colour = 0;  // FOGCOL (R in bits 0-7, G 8-15, B 16-23) from the tapped/pass-journal state
   std::uint32_t test = 0;
   std::uint32_t alpha = 0;
   std::uint32_t fbmsk = 0;
@@ -217,6 +221,8 @@ struct PresentLayer::Impl {
   // TASK-090 live world: the second pipeline pair, its vertex buffer and the texture atlas.
   bool live_world_enabled = false;
   bool live_world_background = false;  // GT4_COREGS3_WORLD_BACKGROUND=1: draw the sky and far underlay too
+  bool live_world_bilinear = true;     // GT4_COREGS3_WORLD_FILTER=nearest is the bilinear A/B
+  bool live_world_fog = true;          // GT4_COREGS3_WORLD_FOG=0 is the fog A/B
   bool present_debug = false;          // GT4_COREGS3_PRESENT_DEBUG=1: one line per render with the claimed frame
 
   VkShaderModule world_vertex_module = VK_NULL_HANDLE;
@@ -687,14 +693,15 @@ struct PresentLayer::Impl {
     vertex_binding.binding = 0;
     vertex_binding.stride = sizeof(WorldVertex);
     vertex_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    VkVertexInputAttributeDescription attributes[3]{};
+    VkVertexInputAttributeDescription attributes[4]{};
     attributes[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};  // captured model position
     attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UNORM, 12};    // V4-8 colour
     attributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, 16};     // u, v
+    attributes[3] = {3, 0, VK_FORMAT_R32_SFLOAT, 24};        // emitted per-vertex fog (0..255)
     VkPipelineVertexInputStateCreateInfo vertex_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vertex_input.vertexBindingDescriptionCount = 1;
     vertex_input.pVertexBindingDescriptions = &vertex_binding;
-    vertex_input.vertexAttributeDescriptionCount = 3;
+    vertex_input.vertexAttributeDescriptionCount = 4;
     vertex_input.pVertexAttributeDescriptions = attributes;
 
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -1137,6 +1144,7 @@ struct PresentLayer::Impl {
     // live in a stable map, so the table's pointers stay valid for the build.
     std::map<std::uint32_t, gt4::coregs3::VramRecord> live_records;
     std::map<std::uint32_t, const gt4::coregs3::VramRecord *> live_map;
+    std::vector<std::uint32_t> world_addresses;  // the addresses the tap snapshot needs (deduplicated below)
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
       if (!is_world_draw(draw.pass)) continue;
       for (std::uint32_t index = 0; index < draw.item_count; ++index) {
@@ -1163,28 +1171,85 @@ struct PresentLayer::Impl {
         vram.windows = record->windows;
         vram.bytes = record->bytes;
         live_records.emplace(item.address, std::move(vram));
+        world_addresses.push_back(item.address);
       }
     }
     for (const auto &entry : live_records) live_map.emplace(entry.first, &entry.second);
 
-    // 2. The per-frame texture table: record states for the items, the pass journal for the world items' GS state, and
-    // the live job record for their pixels. The base SLM is empty on purpose: a texture page no job window covers is
-    // refused by the decoder, never read from a stale copy.
+    // 2. The per-frame texture table: the emitted (live tap) or record state for the items, the pass journal for the
+    // world items' GS state, and the live job record for their pixels. The base image is the frame-end GS local memory
+    // over the measured world range (the `.gt4vram` vblank record's role offline): a page no job window covers decodes
+    // from it, never from a zero fill. Without a base yet the table refuses those decodes and counts them.
+    {
+      std::vector<std::uint8_t> base_bytes;
+      std::uint32_t base_first = 0, base_blocks = 0;
+      std::uint64_t base_vblank = 0;
+      auto bytes = world_base_slm.local.bytes();
+      std::fill(bytes.begin(), bytes.end(), 0);
+      world_base_slm.covered.clear();
+      if (gt4::coregs3::live_world::copy_vram_base(base_bytes, base_first, base_blocks, base_vblank)) {
+        const std::size_t at = static_cast<std::size_t>(base_first) * gt4::coregs3::vram::kBlockBytes;
+        if (at + base_bytes.size() <= bytes.size()) {
+          std::memcpy(bytes.data() + at, base_bytes.data(), base_bytes.size());
+          world_base_slm.cover(gt4::coregs3::vram::Window{base_first, base_blocks});
+        }
+      }
+      if (present_debug)
+        std::fprintf(stderr, "[coregs3] world base: blocks 0x%04X..0x%04X vblank %llu\n", base_first,
+                     base_blocks == 0 ? 0u : base_first + base_blocks - 1u,
+                     static_cast<unsigned long long>(base_vblank));
+    }
     gt4::coregs3::TextureFrameOptions texture_options;
-    texture_options.use_tap = false;
     texture_options.world_channels = true;
     texture_options.live_job_textures = &live_map;
+    // TASK-090 live world: the job records captured on the GS worker are the same PATH1 bytes the `.gt4tap` file holds.
+    // Synthesizing their record view lets the offline pairing attach the emitted per-item TEX0/TEX1/CLAMP state, the
+    // emitted UVs and the per-vertex fog without a capture file; the pixels still come from the live job store. When no
+    // record is available the table uses the 40-byte record path and counts the refusals.
+    std::vector<std::uint8_t> tap_data;
+    std::vector<gt4::coregs3::TapFileRecord> tap_records;
+    std::sort(world_addresses.begin(), world_addresses.end());
+    world_addresses.erase(std::unique(world_addresses.begin(), world_addresses.end()), world_addresses.end());
+    const bool live_tap =
+        gt4::coregs3::live_world::build_tap_snapshot(frame.vblank, world_addresses, tap_data, tap_records);
+    texture_options.use_tap = live_tap;
     gt4::coregs3::FrameTextureTable table;
     gt4::coregs3::TextureFrameCounters texture_counters;
     std::string table_error;
-    if (!gt4::coregs3::build_frame_texture_table(frame, world_base_slm, nullptr, {}, texture_options, table,
-                                                 texture_counters, table_error)) {
+    if (!gt4::coregs3::build_frame_texture_table(frame, world_base_slm, live_tap ? tap_data.data() : nullptr,
+                                                 tap_records, texture_options, table, texture_counters, table_error)) {
       std::fprintf(stderr, "[coregs3] live world: texture table refused: %s\n", table_error.c_str());
       counts.refused_draws += 1;
       gt4::coregs3::present::note_world_frame(counts);
       return;
     }
     counts.mip_defaulted += static_cast<std::uint32_t>(texture_counters.records_level0_fallback);
+    if (present_debug)
+      std::fprintf(stderr,
+                   "[coregs3] world table: tap %d textured %llu no_record %llu no_uv %llu decode_refused %llu "
+                   "state %llu record_fallback %llu live_job %llu live_missing %llu paired %llu defaulted %llu "
+                   "mip %llu\n",
+                   live_tap ? 1 : 0, static_cast<unsigned long long>(texture_counters.items_textured),
+                   static_cast<unsigned long long>(texture_counters.items_no_texture),
+                   static_cast<unsigned long long>(texture_counters.items_no_uv),
+                   static_cast<unsigned long long>(texture_counters.items_decode_refused),
+                   static_cast<unsigned long long>(texture_counters.world_state_decoded),
+                   static_cast<unsigned long long>(texture_counters.world_record_fallback),
+                   static_cast<unsigned long long>(texture_counters.world_live_job),
+                   static_cast<unsigned long long>(texture_counters.world_live_job_missing),
+                   static_cast<unsigned long long>(texture_counters.tap_items_paired),
+                   static_cast<unsigned long long>(texture_counters.tap_items_defaulted),
+                   static_cast<unsigned long long>(texture_counters.records_level0_fallback));
+    if (present_debug) {
+      const gt4::coregs3::live_world::Counters &lw = gt4::coregs3::live_world::counters();
+      std::fprintf(stderr, "[coregs3] world tap: snapshot jobs %llu records %llu refused %llu; state_refused %llu\n",
+                   static_cast<unsigned long long>(lw.snapshot_jobs.load(std::memory_order_relaxed)),
+                   static_cast<unsigned long long>(lw.snapshot_vertices.load(std::memory_order_relaxed)),
+                   static_cast<unsigned long long>(lw.snapshot_refused.load(std::memory_order_relaxed)),
+                   static_cast<unsigned long long>(texture_counters.world_state_refused));
+      for (std::size_t index = 0; index < texture_counters.state_refusals.size() && index < 4; ++index)
+        std::fprintf(stderr, "[coregs3] world tap refusal: %s\n", texture_counters.state_refusals[index].c_str());
+    }
 
     // 3. Select and build. Instance numbering is the timeline's exactly (accepted draws in draw order, per id), so the
     // per-tick overrides find the same object.
@@ -1279,16 +1344,26 @@ struct PresentLayer::Impl {
       counts.vertices += mesh.vertices.size();
       counts.triangles += mesh.indices.size() / 3;
 
-      // One range per contiguous run of triangles of one item: each carries its item's GS state and texture binding.
+      // One range per contiguous run of triangles of one item: each carries its item's GS state, texture binding and
+      // emitted per-vertex fog. An item without a usable texture binding is skipped (the CoreGS 2.0 base already holds
+      // the faithful pixels there) and counted by reason, never drawn with a constant bright vertex colour.
+      std::vector<std::uint32_t> first_vertex(mesh.vertices.size(), 0xFFFFFFFFu);
+      for (std::uint32_t index = 0; index < mesh.vertices.size(); ++index)
+        if (first_vertex[mesh.vertices[index].item] == 0xFFFFFFFFu) first_vertex[mesh.vertices[index].item] = index;
       WorldRange current;
       bool have_range = false;
       std::uint32_t current_item = 0xFFFFFFFFu;
+      std::uint32_t skipped_item = 0xFFFFFFFFu;
+      const std::vector<std::uint8_t> *current_fog = nullptr;
+      std::uint32_t current_first = 0;
+      bool current_fog_on = false;
       const auto close_range = [&] {
         if (!have_range) return;
         if (current.count != 0) world_ranges.push_back(current);
         have_range = false;
       };
-      const auto open_range = [&](std::uint32_t item_index) {
+      // Fills `next` with the item's state and texture; false when the item has no usable binding (counted by reason).
+      const auto open_range = [&](std::uint32_t item_index, bool item_has_uv) -> bool {
         WorldRange next;
         next.sky = draw.pass == gt4::coregs3::kPassSky;
         next.object_id = key.id;
@@ -1303,6 +1378,7 @@ struct PresentLayer::Impl {
         push.test = static_cast<std::uint32_t>(state.test & 0xFFFFFFFFu);
         push.alpha = static_cast<std::uint32_t>(state.alpha & 0xFFFFFFFFu);
         push.fbmsk = state.fbmsk;
+        push.fog_colour = state.fog_colour & 0xFFFFFFu;
         std::uint32_t flags = 0;
         const bool alpha_test = (state.test & 1u) != 0;
         const std::uint32_t afail = static_cast<std::uint32_t>((state.test >> 12) & 3u);
@@ -1313,10 +1389,10 @@ struct PresentLayer::Impl {
             ++counts.alpha_fail_defaulted;
           }
         }
-        if (((state.prim >> 5) & 1u) != 0) {
-          flags |= kWorldFlagFogDeferred;
-          ++counts.fog_deferred;
-        }
+        // Fog: the emitted per-vertex fog toward FOGCOL when the item's PRIM.FGE is on. The sky pass's measured state
+        // has no fog; it is drawn only with GT4_COREGS3_WORLD_BACKGROUND and stays unfogged then (the offline rule).
+        if (live_world_fog && ((state.prim >> 5) & 1u) != 0 && draw.pass != gt4::coregs3::kPassSky)
+          flags |= kWorldFlagFog;
         if (((state.prim >> 6) & 1u) != 0) {
           flags |= kWorldFlagBlendDeferred;
           ++counts.blend_deferred;
@@ -1328,6 +1404,7 @@ struct PresentLayer::Impl {
           const std::uint32_t ztst = (push.test >> 17) & 3u;
           if (zte == 0 || ztst != 2) ++counts.depth_defaulted;
         }
+        bool textured = false;
         if (binding != nullptr && binding->texture != nullptr &&
             gt4::coregs3::check_world_binding(*binding) == gt4::coregs3::BindingStatus::ok) {
           const gt4::coregs3::SampledTexture &sampler = *binding->texture;
@@ -1372,25 +1449,63 @@ struct PresentLayer::Impl {
             push.atlas_rect = (sampler.x0 | (sampler.y0 << 16));
             push.atlas_size = (sampler.width | (sampler.height << 16));
             flags |= kWorldFlagTextured;
-            if (sampler.mmag != 0 || sampler.mmin != 0) ++counts.filter_defaulted;
+            textured = true;
+            if (sampler.mmag != 0 || sampler.mmin != 0) {
+              if (live_world_bilinear) {
+                flags |= kWorldFlagLinear;
+                ++counts.filter_linear;
+              } else {
+                ++counts.filter_defaulted;  // the A/B forces nearest
+              }
+            }
           }
-        } else if (binding != nullptr && binding->texture != nullptr) {
-          ++counts.texture_refused;
-        } else {
+        }
+        if (!textured) {
+          // Name the reason and leave the pixel to the CoreGS 2.0 base: a missing binding never becomes a bright
+          // constant colour.
           ++counts.texture_untextured;
+          if (binding != nullptr && binding->texture != nullptr) {
+            ++counts.texture_refused;
+          } else if (item_index < draw.item_count &&
+                     draw.items[item_index].texture_record == gt4::coregs3::kNoRecord) {
+            ++counts.texture_no_record;
+          } else if (!item_has_uv) {
+            ++counts.texture_no_uv;
+          } else if (gt4::coregs3::light_program_of_item(draw.items[item_index]) ==
+                     gt4::coregs3::LightProgram::body_paint) {
+            ++counts.texture_texgen;
+          } else {
+            ++counts.texture_refused;
+          }
+          return false;
         }
         push.flags = flags;
         current = next;
         have_range = true;
+        return true;
       };
 
       for (std::size_t triangle = 0; triangle + 2 < mesh.indices.size(); triangle += 3) {
         const gt4::coregs3::MeshVertex &first = mesh.vertices[mesh.indices[triangle]];
+        if (!have_range && first.item == skipped_item) continue;
         if (!have_range || first.item != current_item) {
           close_range();
           current_item = first.item;
-          open_range(first.item);
+          const gt4::coregs3::TextureBinding *binding =
+              bindings != nullptr && first.item < bindings->size() ? &(*bindings)[first.item] : nullptr;
+          const bool item_has_uv =
+              first_vertex[first.item] < mesh.vertices.size() && mesh.vertices[first_vertex[first.item]].has_uv;
+          if (!open_range(first.item, item_has_uv)) {
+            skipped_item = first.item;
+            current_fog = nullptr;
+            continue;
+          }
+          skipped_item = 0xFFFFFFFFu;
+          current_fog = binding != nullptr && !binding->vertex_fog.empty() ? &binding->vertex_fog : nullptr;
+          current_first = first_vertex[first.item];
+          current_fog_on = (current.push.flags & kWorldFlagFog) != 0;
           current.first = static_cast<std::uint32_t>(world_vertices.size());
+          if (current_fog_on && current_fog != nullptr) ++counts.fog_items;
         }
         for (std::uint32_t corner = 0; corner < 3; ++corner) {
           const gt4::coregs3::MeshVertex &source = mesh.vertices[mesh.indices[triangle + corner]];
@@ -1414,6 +1529,14 @@ struct PresentLayer::Impl {
           vertex.alpha = source.color[3];
           vertex.u = source.uv[0];
           vertex.v = source.uv[1];
+          if (current_fog_on) {
+            const std::uint32_t local = static_cast<std::uint32_t>(mesh.indices[triangle + corner]) - current_first;
+            if (current_fog != nullptr && local < current_fog->size()) {
+              vertex.fog = static_cast<float>((*current_fog)[local]);
+            } else {
+              ++counts.fog_missing;  // the 255 identity keeps the colour; counted, never guessed
+            }
+          }
           world_vertices.push_back(vertex);
           current.count += 1;
         }
@@ -1833,6 +1956,10 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   if (const char *background = std::getenv("GT4_COREGS3_WORLD_BACKGROUND");
       background != nullptr && std::strcmp(background, "1") == 0)
     s.live_world_background = true;
+  if (const char *filter = std::getenv("GT4_COREGS3_WORLD_FILTER"); filter != nullptr && std::strcmp(filter, "nearest") == 0)
+    s.live_world_bilinear = false;
+  if (const char *fog = std::getenv("GT4_COREGS3_WORLD_FOG"); fog != nullptr && std::strcmp(fog, "0") == 0)
+    s.live_world_fog = false;
   s.present_debug = std::getenv("GT4_COREGS3_PRESENT_DEBUG") != nullptr;
 
   std::vector<std::string> missing;

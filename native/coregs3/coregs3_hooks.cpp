@@ -1100,8 +1100,10 @@ void print_report(std::FILE *out) noexcept {
                  "draw_calls %llu samples %llu atlas_textures %llu atlas_refused %llu texture_live %llu "
                  "texture_stale %llu texture_missing %llu texture_refused %llu refused_draws %llu excluded_itop %llu "
                  "excluded_shape %llu excluded_no_state %llu excluded_mirror %llu excluded_no_position %llu "
-                 "skipped_reflection %llu sky_skipped %llu far_skipped %llu fog_deferred %llu blend_deferred %llu depth_defaulted %llu "
-                 "alpha_fail_defaulted %llu texture_untextured %llu filter_defaulted %llu mip_defaulted %llu\n",
+                 "skipped_reflection %llu sky_skipped %llu far_skipped %llu fog_items %llu fog_missing %llu "
+                 "blend_deferred %llu depth_defaulted %llu alpha_fail_defaulted %llu texture_untextured %llu "
+                 "texture_no_record %llu texture_no_uv %llu texture_texgen %llu filter_linear %llu filter_defaulted %llu "
+                 "mip_defaulted %llu\n",
                  static_cast<unsigned long long>(load(p.world_frames)),
                  static_cast<unsigned long long>(load(p.world_items)),
                  static_cast<unsigned long long>(load(p.world_vertices)),
@@ -1125,11 +1127,16 @@ void print_report(std::FILE *out) noexcept {
                  static_cast<unsigned long long>(load(p.world_skipped_reflection)),
                  static_cast<unsigned long long>(load(p.world_sky_skipped)),
                  static_cast<unsigned long long>(load(p.world_far_skipped)),
-                 static_cast<unsigned long long>(load(p.world_fog_deferred)),
+                 static_cast<unsigned long long>(load(p.world_fog_items)),
+                 static_cast<unsigned long long>(load(p.world_fog_missing)),
                  static_cast<unsigned long long>(load(p.world_blend_deferred)),
                  static_cast<unsigned long long>(load(p.world_depth_defaulted)),
                  static_cast<unsigned long long>(load(p.world_alpha_fail_defaulted)),
                  static_cast<unsigned long long>(load(p.world_texture_untextured)),
+                 static_cast<unsigned long long>(load(p.world_texture_no_record)),
+                 static_cast<unsigned long long>(load(p.world_texture_no_uv)),
+                 static_cast<unsigned long long>(load(p.world_texture_texgen)),
+                 static_cast<unsigned long long>(load(p.world_filter_linear)),
                  static_cast<unsigned long long>(load(p.world_filter_defaulted)),
                  static_cast<unsigned long long>(load(p.world_mip_defaulted)));
   // Per-family and per-status lighting detail of the live layer (coregs3_lighting.hpp programs). Cumulative since the

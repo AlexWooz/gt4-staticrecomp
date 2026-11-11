@@ -1072,10 +1072,25 @@ private:
         }
       }
     }
-    if (windowCount == 0) return;
+    // TASK-090 live world: keep the job's PATH1 records for the in-memory tap snapshot (the emitted per-item
+    // TEX0/TEX1/CLAMP state, the UVs and the per-vertex fog). A job with no texture window is still published when it
+    // has records, so its fog and state reach the world build.
+    const bool live_world = gt4::coregs3::live_world::active();
+    if (live_world) {
+      std::vector<std::uint32_t> offsets;
+      std::vector<std::uint32_t> sizes;
+      for (const BufferedRecord &buffered : jobRecords_) {
+        if (buffered.path != 1) continue;
+        offsets.push_back(static_cast<std::uint32_t>(buffered.offset));
+        sizes.push_back(static_cast<std::uint32_t>(buffered.bytes));
+      }
+      gt4::coregs3::live_world::note_job_stream(job, g_vsyncs, jobBytes_.data(), offsets.data(), sizes.data(),
+                                                static_cast<std::uint32_t>(offsets.size()));
+    }
+    if (windowCount == 0 && !live_world) return;
     std::lock_guard<std::mutex> backendLock(backendMutex_);
     // TASK-090 live world: the same snapshot, kept in memory for the live renderer instead of written at shutdown.
-    if (gt4::coregs3::live_world::active()) backend().coregs3_live_textures(job, g_vsyncs, windows, windowCount);
+    if (live_world) backend().coregs3_live_textures(job, g_vsyncs, windows, windowCount);
     if (gt4::coregs3::vram::snapshot_sink_installed())
       backend().coregs3_snapshot(gt4::coregs3::vram::kRecordJobTexture, 0, static_cast<std::uint32_t>(job), g_vsyncs,
                                  windows, windowCount);

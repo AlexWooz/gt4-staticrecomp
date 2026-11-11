@@ -30,6 +30,10 @@
 //       --sample-dump writes the per-pixel material record the texture census reads; --world-no-alpha is a diagnostic
 //       that ignores the tapped ATE (never an acceptance mode).
 //
+//   gt4_coregs3_render <capture.gt4scene> --frame N --world --vram ... --tap ... --fog-dump <file.txt>
+//       TASK-090 live world evidence: one line per selected world vertex (draw, item, local index, clip w, tapped fog),
+//       for fitting the tap-free fog formula and checking the emitted fog against the projection.
+//
 //   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
 //       status) for the tap validation scripts.
@@ -515,6 +519,7 @@ int main(int argc, char **argv) {
   bool post_chain = true;  // TASK-090: the whole captured PATH2 full-screen chain is on by default with --gs
   const char *chain_dump_dir = nullptr;
   const char *sample_dump_path = nullptr;  // TASK-090 texture-mip: the per-pixel material record (world stage)
+  const char *fog_dump_path = nullptr;     // TASK-090 live world: one line per world vertex (draw, item, local, w, tapped fog)
   bool composite_world_alpha = false;
   bool hud = false;
   const char *hud_element_text = "speed";
@@ -560,6 +565,7 @@ int main(int argc, char **argv) {
     else if (argument == "--no-post-chain") post_chain = false;
     else if (argument == "--chain-dump" && index + 1 < argc) chain_dump_dir = argv[++index];
     else if (argument == "--sample-dump" && index + 1 < argc) sample_dump_path = argv[++index];
+    else if (argument == "--fog-dump" && index + 1 < argc) fog_dump_path = argv[++index];
     else if (argument == "--composite-world-alpha") composite_world_alpha = true;
     else if (argument == "--composite-mask" && index + 1 < argc) composite_mask_path = argv[++index];
     else if (argument == "--composite-changed" && index + 1 < argc) composite_changed_path = argv[++index];
@@ -1026,6 +1032,53 @@ int main(int argc, char **argv) {
     selected = std::move(selection.frame);
     options.world_pass = true;
     options.reflections = false;
+    // TASK-090 live world fog: the tapped per-vertex fog against the vertex's clip w, for the tap-free formula fit. The
+    // mesh is the same world layout the renderer draws; the fog array is in the item's vertex order (the pairing
+    // required equal vertex counts).
+    if (fog_dump_path != nullptr) {
+      std::FILE *fog_file = std::fopen(fog_dump_path, "wb");
+      if (fog_file == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot open fog dump %s\n", fog_dump_path);
+        return 1;
+      }
+      MeshOptions fog_mesh_options;
+      fog_mesh_options.world_channels = true;
+      for (const CapturedDraw &draw : selected.draws) {
+        const std::vector<TextureBinding> *bindings = texture_table.for_draw(draw.sequence);
+        if (bindings == nullptr) continue;
+        const DrawMatrix matrix = draw_matrix(draw);
+        if (!matrix.valid) continue;
+        Mesh mesh;
+        std::string mesh_error;
+        if (!build_mesh(selected.packets.data(), selected.packets.size(), draw, fog_mesh_options, mesh, mesh_error))
+          continue;
+        std::vector<std::uint32_t> first_vertex(mesh.vertices.size(), 0xFFFFFFFFu);
+        for (std::uint32_t index = 0; index < mesh.vertices.size(); ++index)
+          if (first_vertex[mesh.vertices[index].item] == 0xFFFFFFFFu) first_vertex[mesh.vertices[index].item] = index;
+        for (std::uint32_t index = 0; index < mesh.vertices.size(); ++index) {
+          const MeshVertex &vertex = mesh.vertices[index];
+          if (vertex.item >= bindings->size() || (*bindings)[vertex.item].vertex_fog.empty()) continue;
+          const std::uint32_t local = index - first_vertex[vertex.item];
+          if (local >= (*bindings)[vertex.item].vertex_fog.size()) continue;
+          float position[3] = {vertex.position[0], vertex.position[1], vertex.position[2]};
+          if (vertex.has_lane_position) {
+            position[0] = static_cast<float>(vertex.lane_position[0]);
+            position[1] = static_cast<float>(vertex.lane_position[1]);
+            position[2] = static_cast<float>(vertex.lane_position[2]);
+          } else if (vertex.has_raw_position) {
+            position[0] = static_cast<float>(vertex.raw_position[0]);
+            position[1] = static_cast<float>(vertex.raw_position[1]);
+            position[2] = static_cast<float>(vertex.raw_position[2]);
+          }
+          const float w = matrix.upload.column[0][3] * position[0] + matrix.upload.column[1][3] * position[1] +
+                          matrix.upload.column[2][3] * position[2] + matrix.upload.column[3][3];
+          std::fprintf(fog_file, "%u %u %u %.6f %u\n", draw.sequence, vertex.item, local, w,
+                       static_cast<unsigned>((*bindings)[vertex.item].vertex_fog[local]));
+        }
+      }
+      std::fclose(fog_file);
+      std::fprintf(stderr, "gt4_coregs3_render: wrote the fog dump to %s\n", fog_dump_path);
+    }
     if (gs_path != nullptr && post_chain) {
       // TASK-090 post chain: the measured phase relation. The scene frame V (selected.vblank) built the GS stream
       // stamped V + 1; the chain recogniser classifies EVERY full-screen batch of that stream and pins the five draws

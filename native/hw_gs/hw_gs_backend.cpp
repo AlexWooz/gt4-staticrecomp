@@ -2114,6 +2114,12 @@ const std::uint8_t *Backend::map_vram(std::uint32_t offset, std::uint32_t size) 
 void Backend::flush() {
   impl_->stats.flushes++;
   if (impl_->renderer) impl_->renderer->Flush();  // VBlank commit and batch flush (chapter 02.8)
+  // TASK-090 live world: the frame-end GS local-memory base over the measured world range, the same role the `.gt4vram`
+  // vblank record plays offline. The per-job records take precedence; a page no job window covers falls back to this
+  // image (computed after the flush, so the shadow is current). Only in the live world mode.
+  if (impl_->renderer && gt4::coregs3::live_world::active()) {
+    gt4::coregs3::live_world::note_vram_base(impl_->stats.flushes, 0x2BC0u, 0x1440u, impl_->renderer->Coregs3Slm());
+  }
 }
 
 void Backend::coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,
