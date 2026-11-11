@@ -2211,6 +2211,16 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   picture A/B at 7400 (world on/off mean 18.508, fog 2.599, bilinear 2.887, reference PSNR 17.339 dB). The cars'
   grey/neutral look in the present is a pre-existing car-pass gap, not this round (journal; hooks §33.7).
 
+- **Captured post chain on the live pixels (2026-11-11, branch `task/090-live-world`).** The present's world and car
+  fragments now carry the captured chain (`hw_coregs3_post.hpp`, `coregs3_post.glsl`): the two full-screen multiplies
+  (`GT4_COREGS3_POST=1`), the faithful CT16 present model (`GT4_COREGS3_DITHER=1`) with the DIMX/DTHE/COLCLAMP and the
+  native display size noted at the VBlank flush, and the F8 counters. The A/B measured the captured multiplies
+  overshooting the reconstructed world (luma 44.40 against the reference's 28.54, PSNR 14.60 against 17.36 with the
+  chain off; off is the measured right operation), so the chain is opt-in and off by default; the default picture
+  matches the recorded 17.346 dB. Checks: CTest coregs3 **20/20**, Python **18/18**, the 3x gate
+  COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B) on the clean rebuild (`e0898dc0edb12601e92c179da84f8abdd8003aed684b10248576b08767155132`). Journal entry of 2026-11-11;
+  hooks §34.
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages

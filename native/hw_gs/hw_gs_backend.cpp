@@ -2120,6 +2120,23 @@ void Backend::flush() {
   if (impl_->renderer && gt4::coregs3::live_world::active()) {
     gt4::coregs3::live_world::note_vram_base(impl_->stats.flushes, 0x2BC0u, 0x1440u, impl_->renderer->Coregs3Slm());
   }
+  // TASK-090 live post chain: the GS dither registers and the native display size, so the final present can apply the
+  // captured chain's CT16 model to the pixels it owns. Noted whenever the CoreGS 3.0 present layer is attached (the
+  // car-only path needs it too), on the stream-owning thread; a frame with no valid display is noted as invalid, never
+  // guessed.
+  if (impl_->renderer && impl_->coregs3_present) {
+    gt4::hw::coregs3::FrameEnvState env;
+    gt4::coregs3::live_world::FrameEnv state;
+    if (impl_->renderer->Coregs3FrameEnv(env)) {
+      state.dimx = env.dimx;
+      state.dthe = env.dthe;
+      state.colclamp = env.colclamp;
+      state.native_width = env.native_width;
+      state.native_height = env.native_height;
+      state.valid = true;
+    }
+    gt4::coregs3::live_world::note_frame_env(state);
+  }
 }
 
 void Backend::coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,

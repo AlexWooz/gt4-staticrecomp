@@ -781,7 +781,9 @@ image (hooks §30). The sky and far underlay are kept from the base by default (
 hide it); `GT4_COREGS3_WORLD_BACKGROUND=1` draws them. The 2026-11-11 picture round (hooks §33) wires the live
 in-memory tap: the emitted per-item TEX0/TEX1/CLAMP state and UVs bind the items the record path refused, the emitted
 per-vertex fog is applied with the GS mix, and linear items sample with the GS bilinear; the remaining untextured
-items are skipped by name. CLUT animation, the wet reflection and the post chain remain the Phase-3 work.
+items are skipped by name. The captured post chain (the two full-screen multiplies and the CT16 present model) is
+implemented on the live pixels as an opt-in and measured off by default: it overshoots the reconstructed world's level
+(hooks §34). CLUT animation and the wet reflection remain the Phase-3 work.
 
 
 ### Phase 4: "it rendered a race": the 3D frame is CoreGS 3.0's

@@ -25,6 +25,7 @@
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
 
 #include "coregs3_dither.hpp"
+#include "hw_coregs3_post.hpp"
 #include "coregs3_live_world.hpp"
 #include "coregs3_lighting.hpp"
 #include "coregs3_presentation.hpp"
@@ -105,8 +106,11 @@ struct WorldPush {
   std::uint32_t alpha = 0;
   std::uint32_t fbmsk = 0;
   std::uint32_t flags = 0;
+  // The captured post chain's packed word (hw_coregs3_post.hpp): output/native sizes, flags, DIMX. Both the world and
+  // the car fragment stages read it, so both pipelines push the whole struct.
+  std::uint32_t post[4] = {};
 };
-static_assert(sizeof(WorldPush) == 112, "the world push constant must match coregs3_world_push.glsl");
+static_assert(sizeof(WorldPush) == 128, "the world push constant must match coregs3_world_push.glsl and coregs3_post.glsl");
 
 struct WorldRange {
   std::uint32_t first = 0;  // first WorldVertex
@@ -229,10 +233,21 @@ struct PresentLayer::Impl {
   bool live_world_bilinear = true;     // GT4_COREGS3_WORLD_FILTER=nearest is the bilinear A/B
   bool live_world_fog = true;          // GT4_COREGS3_WORLD_FOG=0 is the fog A/B
   bool present_debug = false;          // GT4_COREGS3_PRESENT_DEBUG=1: one line per render with the claimed frame
-  // TASK-090 dither option (coregs3_dither.hpp): parsed and reported here so one setting covers the offline chain and
-  // the live path. This pass writes full 8-bit RGBA8 words and never applies the CT16 dither in either mode; the
-  // composed image it draws over is CoreGS 2.0's, whose own CT16 dither stays until CoreGS 3.0 owns the 3D frame.
+  // TASK-090 dither option (coregs3_dither.hpp): one setting across the offline chain and the live path. In `faithful`
+  // the fragment stages apply the captured CT16 present model to the pixels they write (the dither round's model); in
+  // `off` they keep the modulated 8-bit colour. The CoreGS 2.0 composed base keeps its own CT16 dither either way.
   gt4::coregs3::DitherMode dither = gt4::coregs3::kDefaultDitherMode;
+  // TASK-090 live post chain (hw_coregs3_post.hpp): the two captured multiplies and the CT16 model on the pixels this
+  // pass owns. The chain is opt-in: the 2026-11-11 A/B measured the captured multiplies (FIX 127 then 255) against the
+  // reference and they overshoot the live world's level (luma 44.40 against 28.54; PSNR 14.60 dB against 17.36 dB with
+  // the chain off), because the reconstructed world's colours are not at the game's pre-post framebuffer level. The
+  // multiplies have separate measurement switches and an invalid value refuses the layer like the dither option does.
+  bool post_enabled = false;   // GT4_COREGS3_POST=1: the captured multiplies (off by default, the measured right operation)
+  bool post_fix127 = true;     // GT4_COREGS3_POST_FIX127=0
+  bool post_fix255 = true;     // GT4_COREGS3_POST_FIX255=0
+  bool post_faithful = false;  // the effective faithful mode: the switch is 1 and a frame environment was noted
+  bool post_env_missing_frame = false;  // this frame asked for faithful with no noted dither environment
+  std::uint32_t post_words[4] = {0u, 0u, 0u, 0u};  // the packed push word the fragment stages read
 
   VkShaderModule world_vertex_module = VK_NULL_HANDLE;
   VkShaderModule world_fragment_module = VK_NULL_HANDLE;
@@ -1552,6 +1567,9 @@ struct PresentLayer::Impl {
       }
       close_range();
     }
+    counts.post_items = post_enabled ? counts.items : 0;
+    counts.post_faithful = (post_enabled && post_faithful) ? counts.items : 0;
+    counts.post_env_missing = post_env_missing_frame ? 1u : 0u;
     world_valid = !world_ranges.empty();
     if (!world_valid && (counts.draws != 0 || counts.excluded_itop + counts.excluded_shape +
                                               counts.excluded_no_state + counts.excluded_mirror +
@@ -1775,6 +1793,7 @@ struct PresentLayer::Impl {
               push.columns[column * 4 + row] = candidate.matrix[row * 4 + column];
           break;
         }
+        for (int word = 0; word < 4; ++word) push.post[word] = post_words[word];
         gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof push, &push);
         gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
@@ -1792,8 +1811,12 @@ struct PresentLayer::Impl {
     const VkDeviceSize offset = 0;
     gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &vertex_buffer, &offset);
     for (const DrawRange &range : ranges) {
-      gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof range.columns,
-                                 range.columns);
+      // The car fragment stage reads the post word too, so the push covers the whole struct for both stages.
+      WorldPush push{};
+      for (int column = 0; column < 16; ++column) push.columns[column] = range.columns[column];
+      for (int word = 0; word < 4; ++word) push.post[word] = post_words[word];
+      gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                 0, sizeof push, &push);
       gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
     }
     if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 1);
@@ -1846,10 +1869,33 @@ struct PresentLayer::Impl {
   // nothing drawable is counted and leaves `target` as it was; the caller then decides whether to present it. The first
   // drawn tick of a guest frame saves the composed image as the base (draw_tick's `first_tick`), so drawing tick k,
   // handing its image to the presenter and then drawing tick k+1 does not leave ghosts.
+  // TASK-090 live post chain: packs the frame's push word. The faithful CT16 model needs the noted dither registers and
+  // the native display size; without them the mode falls back to the modern 8-bit output and the frame is counted.
+  void update_post_words(std::uint32_t width, std::uint32_t height) {
+    const gt4::coregs3::live_world::FrameEnv env = gt4::coregs3::live_world::frame_env();
+    const bool faithful_requested = dither == gt4::coregs3::DitherMode::faithful;
+    post_faithful = faithful_requested && env.valid;
+    post_env_missing_frame = faithful_requested && !env.valid;
+    gt4::hw::coregs3::PostParameters parameters;
+    parameters.enabled = post_enabled;
+    parameters.fix127 = post_fix127;
+    parameters.fix255 = post_fix255;
+    parameters.faithful = post_faithful;
+    parameters.dthe = env.dthe != 0;
+    parameters.colclamp = env.colclamp != 0;
+    parameters.dimx = env.dimx;
+    parameters.native_width = env.native_width;
+    parameters.native_height = env.native_height;
+    parameters.output_width = width;
+    parameters.output_height = height;
+    gt4::hw::coregs3::build_post_words(parameters, post_words);
+  }
+
   bool draw_presentation_tick(std::uint32_t tick, const gt4::coregs3::PresentationClock::Due &batch, std::uint64_t target,
                               std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit, bool &drew,
                               std::string &error) {
     drew = false;
+    update_post_words(width, height);
     // TASK-090 live world: the world build of a newly claimed frame happens on its first presentation tick, and the
     // built ranges/vertices/atlas are used by every tick of that frame; one mutex covers the build and the draw. The
     // host clock calls this once per tick, so a tick handed to the presenter and the next one see the same world.
@@ -1979,6 +2025,26 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
       return false;
     }
   }
+  // TASK-090 live post chain: unset or `1` keeps the operation, `0` turns it off for the A/B, anything else refuses
+  // the layer with the value named, never interpreted.
+  const auto parse_post_switch = [&error](const char *name, bool &value) -> bool {
+    const char *text = std::getenv(name);
+    if (text == nullptr || *text == ' ') return true;  // the compiled default
+    if (std::strcmp(text, "1") == 0) {
+      value = true;
+      return true;
+    }
+    if (std::strcmp(text, "0") == 0) {
+      value = false;
+      return true;
+    }
+    error = std::string(name) + "=" + text + " is not 0 or 1";
+    return false;
+  };
+  if (!parse_post_switch("GT4_COREGS3_POST", s.post_enabled) ||
+      !parse_post_switch("GT4_COREGS3_POST_FIX127", s.post_fix127) ||
+      !parse_post_switch("GT4_COREGS3_POST_FIX255", s.post_fix255))
+    return false;
 
   std::vector<std::string> missing;
   if (!gt4::hw::vulkan_device::load_device_entry_points(config.instance, missing)) {
@@ -2005,11 +2071,12 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
   const gt4::coregs3::present::TimelineConfig &timeline = gt4::coregs3::present::timeline_config();
   std::fprintf(stderr,
                "[coregs3] present layer: R32_UINT storage image, D32 depth, depth clamp, vf24..vf27 push constant, "
-               "%u Hz %s%s, live world %s, dither %s (this pass writes 8-bit words; the CoreGS 2.0 base keeps its CT16 "
-               "dither until phase 4)\n",
+               "%u Hz %s%s, live world %s, dither %s, post chain %s (FIX 127 %s, FIX 255 %s; the CoreGS 2.0 base "
+               "keeps its own CT16 dither until phase 4)\n",
                timeline.hz, gt4::coregs3::presentation_mode_name(timeline.mode),
                timeline.selected_tick == UINT32_MAX ? "" : " (diagnostic: one tick per frame)",
-               s.live_world_enabled ? "on" : "off", gt4::coregs3::dither_mode_name(s.dither));
+               s.live_world_enabled ? "on" : "off", gt4::coregs3::dither_mode_name(s.dither),
+               s.post_enabled ? "on" : "off", s.post_fix127 ? "on" : "off", s.post_fix255 ? "on" : "off");
   return true;
 }
 

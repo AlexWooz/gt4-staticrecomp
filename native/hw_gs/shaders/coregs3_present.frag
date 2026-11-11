@@ -12,6 +12,11 @@
 
 #version 450
 
+#extension GL_GOOGLE_include_directive : require
+// The same push-constant block the world stages use, for the captured post chain word the CPU packs.
+#include "coregs3_world_push.glsl"
+#include "coregs3_post.glsl"
+
 layout(early_fragment_tests) in;
 
 layout(set = 0, binding = 0, r32ui) uniform writeonly uimage2D display_image;
@@ -27,6 +32,8 @@ void main() {
     uint red = level(colour.r);
     uint green = level(colour.g);
     uint blue = level(colour.b);
-    uint word = red | (green << 8) | (blue << 16) | (255u << 24);
+    // The captured post chain, the same epilogue as the world stage (coregs3_post.glsl).
+    const uvec4 post = post_epilogue(uvec4(red, green, blue, 255u), world.post);
+    uint word = post.x | (post.y << 8) | (post.z << 16) | (255u << 24);
     imageStore(display_image, ivec2(gl_FragCoord.xy), uvec4(word, 0u, 0u, 0u));
 }

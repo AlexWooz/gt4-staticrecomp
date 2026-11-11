@@ -2473,3 +2473,40 @@ px before the round. r8's present drew a white blob and r12's grey with white pa
 reproduction has been a present gap since the early rounds. Follow-up: the car pass's paint/CLUT reproduction and the
 world/car depth interaction; crops under `build/evidence-live-world/` (`car-crops.png`, `car-history.png`,
 `car-r8-r12-r13.png`, `car-on-off-diff.png`, `car-merged-on-off.png`).
+
+## 34. Round 32 (2026-11-11, branch `task/090-live-world`): the captured post chain on the live pixels
+
+The live present draws after CoreGS 2.0's compose, so its fragments skipped the game's post operations. This round
+implements them on the pixels the pass owns and measures whether they are the missing level. Design:
+
+- `hw_coregs3_post.hpp` packs one push word: output size (post.x), native size and flags (post.y bits 0-10 / 11-21 /
+  22-27), DIMX low and high (post.z/post.w). `coregs3_post.glsl` has the epilogue both fragment stages call:
+  `post_multiply` (`(c*FIX)>>7`, clamp, the offline `apply_full_screen_multiply`), `post_dither_entry` (the native 4x4
+  cell at any output size; `gs_dither_entry`'s signed -4..3), `post_ct16_channel` (COLCLAMP, five bits, `<< 3`) and
+  `post_epilogue`. The multiplies follow `GT4_COREGS3_POST`, the CT16 model `GT4_COREGS3_DITHER`, orthogonally.
+- The frame environment is read from the renderer's front end and display layout at the VBlank flush
+  (`Renderer::Coregs3FrameEnv`, `live_world::note_frame_env`) and consumed by the present's `update_post_words`; a
+  faithful request with no environment is counted (`post_env_missing`) and falls back to the 8-bit output.
+- The car fragment stage includes the same push block and epilogue, so the car pass and the world stay consistent.
+
+Measured A/B (frame-locked 7396..7401, the r8 reference 07400, world mask 2,529,817 px):
+
+| variant | luma | mean abs | PSNR | changed px vs chain-off |
+|---|---|---|---|---|
+| chain off (default) | 24.58 | 18.69 | 17.36 dB | 0 |
+| FIX 127 only | 23.59 | 18.95 | 17.37 dB | 2,450,168 |
+| FIX 255 only | 46.28 | 28.27 | 14.51 dB | 2,439,812 |
+| both, 8-bit | 44.40 | 27.05 | 14.60 dB | 2,450,718 |
+| both + CT16 faithful | 40.44 | 24.86 | 14.86 dB | 2,443,991 |
+
+The reference luma on the mask is 28.54. HUD-free crops (reference / base / chain-off / both): road 29.59 / 28.08 /
+24.21 / 45.31; left wall 26.68 / 25.30 / 33.11 / 50.86; right wall 19.79 / 19.12 / 14.72 / 26.78. The base matches the
+reference (0.95-0.97x) while the reconstructed world is 0.74-1.24x depending on the surface, so the captured 2x brighten
+overshoots; the offline chain overshoots too (luma 34.62 against 26.69, and its CT16 truncation brings the final to
+29.85). **The measured right operation is the chain off by default**; `GT4_COREGS3_POST=1` exposes it with
+`GT4_COREGS3_POST_FIX127=0` / `_FIX255=0` for the individual multiplies, and the default image reproduces the recorded
+picture (24.578 / 18.758 / 17.346 dB). The remaining level difference is the material/lighting residual, not a missing
+post op; no base-side application is needed (the base already carries the chain). Checks: CTest coregs3 20/20 (the new
+live-post arithmetic in `native_coregs3_wet_composite`), Python 18/18, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK
+(8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B) on the clean rebuild (`e0898dc0edb12601e92c179da84f8abdd8003aed684b10248576b08767155132`). Evidence `build/evidence-live-world/` (`night-post-*`,
+`post-ab.json`, `post_metrics.py`, `post_ab.sh`).

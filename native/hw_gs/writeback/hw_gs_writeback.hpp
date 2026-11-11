@@ -24,6 +24,7 @@
 #include "hw_memory.hpp"
 #include "hw_gs_writeback_gpu.hpp"
 #include "../../coregs3/coregs3_vram.hpp"
+#include "../coregs3/hw_coregs3_post.hpp"
 
 namespace hwgs::core2 {
 class Renderer;
@@ -408,6 +409,9 @@ public:
     const std::uint8_t *Slm() const;
     // TASK-090 live world: the core 2 shadow local memory the GS worker owns, no flush or readback.
     const std::uint8_t *Coregs3Slm() const;
+    // TASK-090 live post chain: the GS dither registers and the native display size at this point (see
+    // coregs3/hw_coregs3_post.hpp). Only a caller on the stream-owning thread (the backend VBlank flush) may use it.
+    bool Coregs3FrameEnv(gt4::hw::coregs3::FrameEnvState &state) const;
 
     const Counters &GetCounters() const;
     const gpu::GpuStats &GpuCounters() const;

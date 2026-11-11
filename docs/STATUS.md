@@ -1,5 +1,28 @@
 # Current Status
 
+## 2026-11-11: the captured post chain on the live pixels, measured and off by default (TASK-090, branch `task/090-live-world`)
+
+The live present now carries the captured post chain on the pixels it owns (the world and car fragments): the two
+full-screen multiplies `(Cd * FIX) >> 7` with FIX 127 then FIX 255 and the captured clamp, the packed push word, and the
+faithful CT16 present model (the captured DTHE/DIMX dither at the native 4x4 cell mapped from any output size, COLCLAMP,
+five bits and `<< 3`). The multiplies follow `GT4_COREGS3_POST=1` and the CT16 model `GT4_COREGS3_DITHER=1`, orthogonally.
+The frame environment (DIMX/DTHE/COLCLAMP and the native display size) is noted at the VBlank flush from the GS registers
+and the display layout (`Coregs3FrameEnv`); a faithful request without it is counted and falls back to the 8-bit output.
+The A/B against the r8 reference frame 07400 measures the captured multiplies **overshooting** the live world: world luma
+**44.40** against the reference's **28.54**, mean 27.05, **PSNR 14.60 dB**, against luma 24.58, mean 18.69, **PSNR
+17.36 dB with the chain off**; FIX 255 alone 46.28 / 14.51 dB; both with the faithful CT16 40.44 / 14.86 dB; FIX 127
+alone 23.59 / 17.37 dB. The cause is measured: the reconstructed world's colours are not at the game's pre-post level
+(the offline chain overshoots too, luma 34.62 against 26.69, and only its CT16 truncation brings it to 29.85), and
+per surface the live world is already 0.74x (right wall) to 1.24x (left wall) of the reference where the base is 0.95-0.97x.
+The right operation by measurement is the chain **off by default**; `GT4_COREGS3_POST=1` exposes the full chain and
+`GT4_COREGS3_POST_FIX127=0` / `GT4_COREGS3_POST_FIX255=0` the individual multiplies. The default build reproduces the
+recorded picture (luma 24.578, mean 18.758, PSNR 17.346 dB). Checks: CTest coregs3 20/20 (the new live-post word and
+epilogue checks against the offline arithmetic), Python 18/18, the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK
+(8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), on a clean rebuild
+(executable SHA-256 e0898dc0edb12601e92c179da84f8abdd8003aed684b10248576b08767155132). Evidence
+`build/evidence-live-world/`;
+design and tables in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §34.
+
 ## 2026-11-11: the dither integration into the live world (TASK-090, branch `task/090-live-world`)
 
 The dither option from `task/090-coregs3` (`bd3e7147`) is merged into the picture round (merge `51d972ab`). The live
