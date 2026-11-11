@@ -2169,10 +2169,17 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). Evidence
   `build/evidence-live-world/`; design in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §31. Merged with the host clock
   (`origin/task/090-coregs3` `8547046b`): the world draws on every presentation tick through
-  `draw_presentation_tick`; on the merged tree CTest coregs3 **20/20**, Python **17/17**, the 3x off/shadow gate
-  **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), the 60 Hz frame-locked A/B
-  reproduces the mask/metrics and the 120 Hz run draws both ticks per guest frame (12 world ticks, 15,336 draw
-  calls, 0 refusals).
+  `draw_presentation_tick`. The resolution left one extra brace in `render()`, removed in `1b9c4953`; the gates were
+  re-run from a clean rebuild (executable SHA-256 `78ef497f...`): CTest coregs3 **20/20**, Python **17/17**, the 3x
+  off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), the 60 Hz
+  frame-locked A/B gives world mask 2,533,610-2,538,072 px, mean 20.834, PSNR 16.108 dB, luma 28.759 / 27.216 /
+  28.444, and the 120 Hz run draws both ticks per guest frame (12 world ticks, 15,336 draw calls, 0 refusals).
+- **2D overlay split (2026-11-11, design only).** The live world covers the base HUD; drawing the 2D after the 3D
+  needs a CoreGS 2.0 UI-layer change: a compose checkpoint at the first 2D draw (the panel marker already reaches
+  the GS stream) and a transparent overlay target composed alongside the frame, then a present full-screen
+  composite after the world/cars. The stream census must settle the post-chain/HUD ordering first. No code change;
+  design, constraints and gates: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md).
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages
