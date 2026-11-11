@@ -238,3 +238,55 @@ GPU-recording or per-record contracts. **Kept: the diagnostics only** (`PrimsCul
 price every future kick/record candidate for free. The next contained attempt should bundle the rect inlining with a
 second exact micro-win (the queue-window candidate build, `pixelSlot`/`BlockOfPixel` inlining) to clear 0.5 together,
 or take the per-record design as its own round.
+
+## 8. Bundle round: two exact front-end items kept (-0.33 license, -0.23 Opera), `BlockOfPixel` reverted
+
+Owner's instruction after IN-557: bundle the exact micro-wins, add the parser candidate the prim bill points at, and
+measure on **Opera 3x** (GS-bound: 6.44 of 6.60) as well as the license (EE-bound). Gate: **combined GS stage >= 0.5 ms on
+Opera 3x**, no regression on license/night, frames byte-identical; if the bundle does not clear 0.5, revert the items that
+do not add up and report the exact total.
+
+| item | what it does | license 1x (2+2, GS stage total) | Opera 3x (2 pairs, window 20,400-21,600) | kept |
+|---|---|---|---|---|
+| **Candidate window** | `FrontEnd::Candidate` names the queue's own vertices (3 pointers) instead of copying up to 96 bytes per drawing primitive (~41k/VBlank); the queue is not advanced until after the cull and the append, so the pointers stay valid | **gif_parse 3.31/3.45 -> 3.09/3.26 (-0.21)** | **gif_parse 3.41/3.41 -> 3.23/3.18 (-0.21)** | **yes** |
+| **Rect inlining** | `IntersectRects`/`UnionRects`/`RectsOverlap` in `hw_batch.hpp` (they were per-primitive cross-TU calls) | translate 0.46/0.47 -> 0.42/0.43 | **translate 0.70/0.69 -> 0.60/0.60 (-0.095)** | **yes** |
+| `BlockOfPixel` inline | the block-of-pixel table read inlined into the renderer's block loops | (in the first bundle) | **draw 1.43/1.43 -> 1.51/1.60/1.66, swizzle +0.1: the total went +0.09** | **no, reverted** |
+| `pixelSlot` inline | not contained: it needs the memory module's runtime in-page tables and `psmInfo` in the header | - | - | no (report) |
+| **Bundle (the two kept items)** | | **GS stages 8.01/8.04 -> 7.52/7.87 (-0.49/-0.17, mean -0.33)** | **8.96-9.00 -> 8.75-8.76 (-0.21/-0.24)** | **kept (below the 0.5 target)** |
+
+- **`BlockOfPixel` did not add up** and is the round's one revert: with it the Opera total was 9.13 against a base median
+  of 9.04 (four pairs: 8.79/8.93/9.34/9.72 against 9.02/9.03/9.05/9.41), with `draw` 1.44 -> 1.56 and `swizzle` 0.97 -> 1.04,
+  while `gif_parse` still improved. Inlining that ~30-line table walk into `Translate`'s `WriteSpan` path bloats the
+  translation/draw code enough to cost more than it saves on this scene. Removed; the two front-end items alone give the
+  numbers above, with `draw`/`swizzle` back to base (1.45/1.46 against 1.43; 0.94/0.97 against 0.94/0.96).
+- **The 0.5 target was not reached** (-0.33 license, -0.23 Opera). Both items are exact and consistent on both scenes and
+  above the 0.2 per-candidate bar as a unit; the report states the measured total rather than claiming the gate.
+- **A bug found and fixed in the Candidate change:** `AppendPrimitive` dereferenced all three pointers while a point names
+  one and a line or sprite two. It crashed the first bundle build (exit 139); the fix copies only `count` vertices, which
+  is what the old code effectively did.
+- **Identity (frames byte-identical, `frame_diff.py`):** license B-1 1x 2/2, night race 3x 5/5, Opera 3x 3/3. CTest 319/320
+  (the pre-existing rc15 `python_native_contracts`) and Python 827 with that same failure; the front-end fixtures
+  (`m3_hw_front_end_*`) pass, which is the semantic gate for the Candidate change.
+- **Machine noise, for the record:** the license window is EE-bound (wall 8.99-10.48 across runs of the *same* binary,
+  while the GS stage stays 7.5-8.1), and Opera's interval totals swing 8.96-9.41 at 20,400-21,600 between runs of the same
+  binary. The A/B is therefore judged on the GS stage total with interleaved pairs, never on a single stage or on wall.
+
+## 9. ADC markers: the exact fast skip already exists (measured, no new code)
+
+The bill now splits the vertices (`VerticesDecoded`, added last in the enum): license 1x, **84,094 vertices/VBlank of which
+51,282 are decoded (61 %) and 32,812 (39 %) are counted without decoding**. The skip is IN-467's run rule in
+`StripVertices`: of a run of non-drawing strip kicks only the first goes through `Kick` (the flush decision), the middle
+ones are counted (they can only pair with other non-drawing vertices, so no primitive they touch can draw) and the last two
+stay for the next kick; `Kick`'s IN-366 fast path then does no candidate build, no cull and no append for a marker. What
+remains per decoded vertex is `MakeVertex` (needed: the vertex is part of a later triangle) and the queue push, and per
+drawing kick the cull and the append. There is no further exact skip to add without the fused-kernel/record design, so
+this item is **measured and closed** (the do-not-retry list already carries the batched strip decode, TASK-171 option 1:
+-0.15, reverted).
+
+## 10. Per-record design (index-at-kick + no CPU translate): not started
+
+The bundle/ADC rounds did not clear 0.5, but the remaining per-record work is still a single contract change: `Batch::prims`
+and `GpuVertex`/`BatchTranslation` feed the writeback, the CPU reference (oracle), the shuffle/segment helpers, the
+depth-clear rewrite, the overlap classifier and the fixtures (IN-552: 0.15-0.3 ms for the vertex half, 2-3 days total). It
+needs its own round with the CPU reference as the oracle and the full identity matrix; this round stopped at the same
+contract point and did not start it.

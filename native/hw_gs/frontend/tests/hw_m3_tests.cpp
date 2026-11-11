@@ -1614,6 +1614,10 @@ void TestFastPaths() {
         CHECK(fast.log == slow.log);
         CHECK_EQ(fast.batches.emitted.size(), slow.batches.emitted.size());
         for (size_t c = 0; c < CounterSet::kCount; ++c) {
+            // TASK-215: VerticesDecoded is the fast path's own diagnostic (how many vertices it decoded); the reference
+            // path below decodes every vertex by design (IN-467's run skip is a fast-path optimisation), so the two
+            // legitimately differ there and only there.
+            if (static_cast<Counter>(c) == Counter::VerticesDecoded) continue;
             CHECK_EQ(fast.fe.Counters().Get(static_cast<Counter>(c)), slow.fe.Counters().Get(static_cast<Counter>(c)));
         }
         fastVertices += fast.fe.FastStripVertices();

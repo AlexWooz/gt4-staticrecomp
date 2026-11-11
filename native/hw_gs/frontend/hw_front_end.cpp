@@ -565,6 +565,7 @@ void FrontEnd::Kick(const GifKick& kick) {
     const uint32_t contextIndex = static_cast<uint32_t>((prim >> primbit::kCtxt) & 1u);
     queue_.push_back(MakeVertex(kick, registers_.Context(contextIndex)));
     counters_.Add(Counter::Vertices);
+    counters_.Add(Counter::VerticesDecoded);  // TASK-215: of the counted vertices, the ones decoded here (diagnostics)
 
     if (!batch_.Empty()) {
         // Chapter 02.5: the decision is taken on every drawing kick; a
@@ -661,30 +662,30 @@ bool FrontEnd::BuildCandidate(PrimType type, Candidate& candidate) const {
         case PrimType::Point:
             if (n < 1) return false;
             candidate.count = 1;
-            candidate.vertices[0] = queue_[n - 1];
+            candidate.vertices[0] = &queue_[n - 1];
             return true;
         case PrimType::Line:
         case PrimType::LineStrip:
         case PrimType::Sprite:
             if (n < 2) return false;
             candidate.count = 2;
-            candidate.vertices[0] = queue_[n - 2];
-            candidate.vertices[1] = queue_[n - 1];
+            candidate.vertices[0] = &queue_[n - 2];
+            candidate.vertices[1] = &queue_[n - 1];
             return true;
         case PrimType::Triangle:
         case PrimType::TriangleStrip:
             if (n < 3) return false;
             candidate.count = 3;
-            candidate.vertices[0] = queue_[n - 3];
-            candidate.vertices[1] = queue_[n - 2];
-            candidate.vertices[2] = queue_[n - 1];
+            candidate.vertices[0] = &queue_[n - 3];
+            candidate.vertices[1] = &queue_[n - 2];
+            candidate.vertices[2] = &queue_[n - 1];
             return true;
         case PrimType::TriangleFan:
             if (n < 3) return false;
             candidate.count = 3;
-            candidate.vertices[0] = queue_[0];
-            candidate.vertices[1] = queue_[n - 2];
-            candidate.vertices[2] = queue_[n - 1];
+            candidate.vertices[0] = &queue_[0];
+            candidate.vertices[1] = &queue_[n - 2];
+            candidate.vertices[2] = &queue_[n - 1];
             return true;
         default:
             return false;
@@ -738,23 +739,23 @@ bool FrontEnd::ShouldDraw(const Candidate& candidate, PrimType type, uint32_t co
     }
     const PixelRect& scissorRect = view.rect;
 
-    int32_t minX = candidate.vertices[0].x4;
+    int32_t minX = candidate.vertices[0]->x4;
     int32_t maxX = minX;
-    int32_t minY = candidate.vertices[0].y4;
+    int32_t minY = candidate.vertices[0]->y4;
     int32_t maxY = minY;
     for (uint32_t k = 1; k < candidate.count; ++k) {
-        minX = std::min(minX, candidate.vertices[k].x4);
-        maxX = std::max(maxX, candidate.vertices[k].x4);
-        minY = std::min(minY, candidate.vertices[k].y4);
-        maxY = std::max(maxY, candidate.vertices[k].y4);
+        minX = std::min(minX, candidate.vertices[k]->x4);
+        maxX = std::max(maxX, candidate.vertices[k]->x4);
+        minY = std::min(minY, candidate.vertices[k]->y4);
+        maxY = std::max(maxY, candidate.vertices[k]->y4);
     }
 
     const PrimClass cls = ClassOfType(static_cast<uint32_t>(type));
     if (cls == PrimClass::Triangle) {
         for (uint32_t i = 0; i < candidate.count; ++i) {
             for (uint32_t j = i + 1u; j < candidate.count; ++j) {
-                if (candidate.vertices[i].x4 == candidate.vertices[j].x4 &&
-                    candidate.vertices[i].y4 == candidate.vertices[j].y4) {
+                if (candidate.vertices[i]->x4 == candidate.vertices[j]->x4 &&
+                    candidate.vertices[i]->y4 == candidate.vertices[j]->y4) {
                     return false;  // degenerate triangle
                 }
             }
@@ -768,8 +769,8 @@ bool FrontEnd::ShouldDraw(const Candidate& candidate, PrimType type, uint32_t co
 
     PixelRect raw;
     if (cls == PrimClass::Point) {
-        const int32_t px = (candidate.vertices[0].x4 + 8) >> 4;  // nearest pixel (Hypothesis, V-01-6)
-        const int32_t py = (candidate.vertices[0].y4 + 8) >> 4;
+        const int32_t px = (candidate.vertices[0]->x4 + 8) >> 4;  // nearest pixel (Hypothesis, V-01-6)
+        const int32_t py = (candidate.vertices[0]->y4 + 8) >> 4;
         raw = PixelRect{px, py, px, py};
     } else if (cls == PrimClass::Line) {
         raw = PixelRect{minX >> 4, minY >> 4, maxX >> 4, maxY >> 4};
@@ -814,7 +815,11 @@ void FrontEnd::AppendPrimitive(const Candidate& candidate, PrimType type, const 
     record.count = candidate.count;
     record.rect = rect;
 
-    Vertex vertices[3] = {candidate.vertices[0], candidate.vertices[1], candidate.vertices[2]};
+    // TASK-215: only `count` pointers are valid (a point names one, a line or sprite two), so copy only those.
+    Vertex vertices[3];
+    for (uint32_t k = 0; k < candidate.count; ++k) {
+        vertices[k] = *candidate.vertices[k];
+    }
     // Sprites with FST = 0 take the first vertex's Q from the second.
     if (type == PrimType::Sprite && !Fst(batch_.state.effectivePrim)) {
         vertices[0].q = vertices[1].q;
@@ -998,7 +1003,7 @@ FrontEnd::TexelRect FrontEnd::ComputeTexelRect(const Candidate& candidate) const
     int32_t minV = minU;
     int32_t maxV = maxU;
     for (uint32_t k = 0; k < candidate.count; ++k) {
-        const Vertex& vertex = candidate.vertices[k];
+        const Vertex& vertex = *candidate.vertices[k];
         int32_t u = 0;
         int32_t v = 0;
         if (fst) {

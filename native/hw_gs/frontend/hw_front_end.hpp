@@ -173,8 +173,12 @@ public:
     void StripVertices(const StripVertex* vertices, size_t count) override;
 
 private:
+    // TASK-215 (GS worker round): the candidate names the queue's own vertices instead of copying up to three of them
+    // (96 bytes per drawing primitive, ~41k per VBlank on the license). The queue is not advanced until after the
+    // candidate has been culled and appended, so the pointers stay valid for the whole call. Exact: the same vertices,
+    // the same order.
     struct Candidate {
-        Vertex vertices[3];
+        const Vertex* vertices[3] = {nullptr, nullptr, nullptr};
         uint32_t count = 0;
     };
 

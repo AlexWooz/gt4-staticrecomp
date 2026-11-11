@@ -33,6 +33,25 @@ contract (the CPU shadow is authoritative; IN-548's 1 KiB copy at +0.61 ms price
 GPU-recording contract (it records commands and reads back), and no-CPU-translate at the per-record contract. Nothing
 reached the relaxed 0.2 ms gate; the diagnostics are the kept result.
 
+**Bundle round (2026-11-11, IN-558):** two exact front-end items were bundled and kept, measured on the license **and on
+Opera 3x** (the GS-bound scene, where a GS win can show). **Candidate window:** `FrontEnd::Candidate` now names the queue's
+own vertices (3 pointers) instead of copying up to 96 bytes per drawing primitive (~41k/VBlank), with the queue not
+advanced until after the cull and the append - `gif_parse` **3.31/3.45 -> 3.09/3.26 on the license (-0.21)** and
+**3.41/3.41 -> 3.23/3.18 on Opera (-0.21)**. **Rect inlining:** `IntersectRects`/`UnionRects`/`RectsOverlap` in
+`hw_batch.hpp` (per-primitive cross-TU calls) - `translate` 0.46/0.47 -> 0.42/0.43 (license) and **0.70/0.69 -> 0.60/0.60
+(Opera, -0.095)**. **The bundle: GS stage total 8.01/8.04 -> 7.52/7.87 (license, mean -0.33) and 8.96-9.00 -> 8.75-8.76
+(Opera, -0.21/-0.24)** - above the 0.2 per-candidate bar on both scenes, **below the 0.5 target**, which the report states
+rather than claiming the gate. Frames byte-identical (license 2/2, night 3x 5/5, Opera 3/3) and the front-end fixtures pass.
+**`BlockOfPixel` inlining was reverted: it did not add up** (with it Opera totalled 9.13 against a 9.04 base median over four
+pairs, `draw` 1.44 -> 1.56, `swizzle` 0.97 -> 1.04 - inlining that table walk into `Translate`'s `WriteSpan` path bloats the
+translation/draw code). `pixelSlot` inlining is not contained (the memory module's runtime tables and `psmInfo` would have to
+move into the header). **ADC markers: measured, no new code** - `VerticesDecoded` shows 84,094 vertices/VBlank of which
+**51,282 decoded (61 %) and 32,812 (39 %) counted without decoding** by IN-467's run rule, and `Kick`'s IN-366 fast path
+already does no candidate/cull/append for a marker; the rest are the run boundaries and the drawing kicks, which must be
+decoded for a later triangle. A Candidate crash (points/lines dereferenced a null third pointer) was found and fixed before
+the measurement. The per-record design was not started (same contract point; 2-3 days, its own round). Tests 319/320 and
+Python 827 with the known failure.
+
 **Close-out (2026-11-11):** the consolidated report is `docs/tasks/COREGS2-TASK215-SUMMARY.md` (kept, reverted/closed with
 numbers, the 3x scene matrix, the remaining lever, the owner's options). State: kept IN-540 (aliased depth fill) and
 IN-547 (scissor view, `GT4_CORE2_SCISSOR_VIEW`), both exact; reverted the palette segments under the tone hook (+0.61 ms);

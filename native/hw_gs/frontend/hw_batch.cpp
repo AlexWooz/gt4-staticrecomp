@@ -28,33 +28,6 @@ uint64_t Bit(uint64_t value, unsigned index) { return (value >> index) & 1u; }
 
 }  // namespace
 
-PixelRect IntersectRects(const PixelRect& a, const PixelRect& b) {
-    PixelRect out;
-    out.x0 = std::max(a.x0, b.x0);
-    out.y0 = std::max(a.y0, b.y0);
-    out.x1 = std::min(a.x1, b.x1);
-    out.y1 = std::min(a.y1, b.y1);
-    return out;
-}
-
-PixelRect UnionRects(const PixelRect& a, const PixelRect& b) {
-    if (a.Empty()) {
-        return b;
-    }
-    if (b.Empty()) {
-        return a;
-    }
-    PixelRect out;
-    out.x0 = std::min(a.x0, b.x0);
-    out.y0 = std::min(a.y0, b.y0);
-    out.x1 = std::max(a.x1, b.x1);
-    out.y1 = std::max(a.y1, b.y1);
-    return out;
-}
-
-bool RectsOverlap(const PixelRect& a, const PixelRect& b) {
-    return !IntersectRects(a, b).Empty();
-}
 
 void Batch::Clear() {
     vertices.clear();

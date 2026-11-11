@@ -35,9 +35,37 @@ struct PixelRect {
     bool Empty() const { return x0 > x1 || y0 > y1; }
 };
 
-PixelRect IntersectRects(const PixelRect& a, const PixelRect& b);
-PixelRect UnionRects(const PixelRect& a, const PixelRect& b);
-bool RectsOverlap(const PixelRect& a, const PixelRect& b);
+// TASK-215 (GS worker round): these three are called per drawing primitive from the front end (the cull's
+// `IntersectRects`, `AppendPrimitive`'s `UnionRects`, and `RectsOverlap`), 41k times per VBlank on the license; their
+// definitions live here so the caller's cull and append loops inline them (they were cross-TU calls). Exact: the bodies
+// are unchanged.
+inline PixelRect IntersectRects(const PixelRect& a, const PixelRect& b) {
+    PixelRect out;
+    out.x0 = std::max(a.x0, b.x0);
+    out.y0 = std::max(a.y0, b.y0);
+    out.x1 = std::min(a.x1, b.x1);
+    out.y1 = std::min(a.y1, b.y1);
+    return out;
+}
+
+inline PixelRect UnionRects(const PixelRect& a, const PixelRect& b) {
+    if (a.Empty()) {
+        return b;
+    }
+    if (b.Empty()) {
+        return a;
+    }
+    PixelRect out;
+    out.x0 = std::min(a.x0, b.x0);
+    out.y0 = std::min(a.y0, b.y0);
+    out.x1 = std::max(a.x1, b.x1);
+    out.y1 = std::max(a.y1, b.y1);
+    return out;
+}
+
+inline bool RectsOverlap(const PixelRect& a, const PixelRect& b) {
+    return !IntersectRects(a, b).Empty();
+}
 
 struct PrimRecord {
     PrimType type = PrimType::Point;

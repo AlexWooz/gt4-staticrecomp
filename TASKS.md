@@ -4532,6 +4532,24 @@ is authoritative for the CPU reference, the CLUT loads, the upload memo's diff a
 so a worker needs a second command-buffer recorder - IN-556's failure mode); and no-CPU-translate (a new vertex format plus
 a shader conversion with the CPU reference as oracle). Combined total of kept measured gains: 0. Ledger IN-557.
 
+**Bundle round (2026-11-11):** two exact front-end items are kept, measured on the license **and Opera 3x**. **Candidate
+window:** `FrontEnd::Candidate` names the queue's own vertices (3 pointers) instead of copying up to 96 bytes per drawing
+primitive (~41k/VBlank; the queue is not advanced until after the cull and the append, so the pointers stay valid) -
+`gif_parse` **3.31/3.45 -> 3.09/3.26 (license, -0.21)** and **3.41/3.41 -> 3.23/3.18 (Opera, -0.21)**. **Rect inlining:**
+`IntersectRects`/`UnionRects`/`RectsOverlap` into `hw_batch.hpp` (they were per-primitive cross-TU calls) - `translate`
+0.46/0.47 -> 0.42/0.43 (license) and **0.70/0.69 -> 0.60/0.60 (Opera, -0.095)**. **Bundle total: GS stages 8.01/8.04 ->
+7.52/7.87 (license, mean -0.33) and 8.96-9.00 -> 8.75-8.76 (Opera, -0.21/-0.24)** - above the 0.2 per-candidate bar on both
+scenes, **below the 0.5 target** (reported as measured, not claimed). Frames byte-identical: license 2/2, night 3x 5/5,
+Opera 3/3; the front-end fixtures (`m3_hw_front_end_*`) pass. **`BlockOfPixel` inlining reverted - it did not add up:** with
+it Opera totalled 9.13 against a 9.04 base median over four pairs (`draw` 1.44 -> 1.56, `swizzle` 0.97 -> 1.04); inlining
+that table walk into `Translate`'s `WriteSpan` path bloats the translation/draw code. `pixelSlot` inlining is not contained
+(the memory module's runtime in-page tables and `psmInfo` would have to move to the header). **ADC markers: measured, no new
+code** - `VerticesDecoded` (added last) shows 84,094 vertices/VBlank of which **51,282 decoded (61 %) and 32,812 (39 %)
+counted without decoding** by IN-467's run rule; `Kick`'s IN-366 fast path already skips the candidate/cull/append for a
+marker, and the rest must be decoded because they are the run boundary or a later triangle's vertex. A `Candidate` crash
+(a point/line dereferenced a null third pointer) was found and fixed before the measurement. The per-record design was not
+started (same contract; its own round). Tests 319/320 and Python 827 with the known failure. Ledger IN-558.
+
 **Previous state (2026-11-11, close-out): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
 Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
 the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook
