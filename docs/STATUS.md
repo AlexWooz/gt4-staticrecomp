@@ -2,6 +2,16 @@
 
 ## TASK-215: CoreGS 2.0 performance audit and optimization (2026-11-10)
 
+**Close-out (2026-11-11):** the consolidated report is `docs/tasks/COREGS2-TASK215-SUMMARY.md` (kept, reverted/closed with
+numbers, the 3x scene matrix, the remaining lever, the owner's options). State: kept IN-540 (aliased depth fill) and
+IN-547 (scissor view, `GT4_CORE2_SCISSOR_VIEW`), both exact; reverted the palette segments under the tone hook (+0.61 ms);
+closed the per-record conversion (~0), the per-batch flush merge (~0.1 ms, below the bar) and the flare readback (path 2
+has no exact same-frame form; path 1 has no stable LQ/address - the REF payload is the game's per-frame visibility data).
+Four Spec II Arcade scenes (Opera Paris, S.S. Route 5, Tsukuba Wet, George V rally) have validated schedules and 3x
+baselines; George V reference is 20,400-21,300 in-race. Remaining CPU lever: the ~2.85 ms of real per-draw work
+(~500 batches x ~5.7 us), a draw-level question, 2-3 days, uncertain. Tests 319/320 (pre-existing rc15
+`python_native_contracts`). Recommended: a test kit of the kept changes, then integrate.
+
 Branch `task/215-coregs2-perf`; every number on the local desktop only (Ryzen 7 5700X, RX 9060 XT; owner policy of the
 day, the Avell is not a performance parameter). Baseline on a plain build (no PGO), shader cache warm, headless: night
 race 3x GS worker 7.47 ms/VBlank, wall 7.71, frame p50 7.02, GPU busy 2.78; 6x 7.44 / 8.71 / 8.50 / 6.12; 12x 6.67 /

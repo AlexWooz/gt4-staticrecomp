@@ -4499,6 +4499,15 @@ release. No renderer, game, launcher or pin change; benchmark numbers are the TA
 
 ### TASK-215 - CoreGS 2.0 performance audit and optimization (branch `task/215-coregs2-perf`)
 
+**State (2026-11-11): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
+Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
+the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook
+(+0.61 ms). Closed with numbers: per-record vertex conversion (~0), per-batch flush merge (~0.1 ms, below the bar), flare
+readback (no exact same-frame form; no stable LQ/address). Four Spec II Arcade scenes scheduled and baselined at 3x
+(Opera Paris, S.S. Route 5, Tsukuba Wet, George V rally; George V reference 20,400-21,300 in-race). Remaining lever: the
+~2.85 ms of real per-draw work (~500 batches x ~5.7 us), a 2-3 day draw-level question (H, uncertain). Tests 319/320.
+Ledger IN-540..IN-555.
+
 Owner request (2026-11-10): CoreGS 2.0 is still heavy on some tracks and situations; a deep audit plus optimizations, with
 GSdx as the reference. Performance only: game logic, physics, timing, saves and every EE-visible read-back stay exact.
 Measurements on the local desktop only (Ryzen 7 5700X, RX 9060 XT; the Avell is not a performance parameter, policy of
