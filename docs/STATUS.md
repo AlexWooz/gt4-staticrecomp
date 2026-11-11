@@ -1,5 +1,31 @@
 # Current Status
 
+## 2026-11-10: world materials v2, the darkness is a per-material ~1.6x gain, not fog (TASK-090, branch `task/090-world-materials-v2`)
+
+Read-only measurement study of the remaining world darkness, based on `008a71c8`. The whole-mask affine
+`ref = 0.6341*world + 14.668` is a **pooling artifact, not fog**: the compared mask is the course pass **99.996%**
+(1,783,523 of 1,783,590 clean px; sky 70 px, far underlay 0), the tapped fog is near-neutral (mean F **247.8**, 38.4%
+<255), the per-pixel FOGCOL-blend factor solved from the reference is inconsistent per channel (**R 0.572 / G 0.658 /
+B 0.733**, median spread 0.275) and anti-correlates with F (0.752 at F=255 vs 0.383 at F<230); within-class fits give
+slopes 0.31..1.57, so no single blend or transform fits the mask. The reference frame is a **CT16 5-bit scanout**:
+**every** value on the mask is divisible by 8 and the maximum is 248 = 31 << 3, so the dump is ~4 levels darker per
+channel than the framebuffer it came from. Corrected (+4), the reference is **1.62x** brighter than our world (luma
+30.69 vs 18.95; per-channel R 1.64 / G 1.61 / B 1.59, a neutral gain), and the residual is per-material (per-page
+ratios **1.69 median**, sigma 0.25; 1.5-1.9x on almost every course page; page 0x3BF6 is the one mean outlier at
+0.94). The input path is verified exact: page 0x36D0's PSMT4 index pattern is identical to CoreGS 2.0's own dump
+(agreement **1.000**, same 16-bin histogram), the road vertex colours equal the tap **48/48, 38/38, 64/64**, the
+palette address/bank are the measured ones (CBP 0x368F, CT32, CSM1, CSA 0, TEX2 load) and the blend is
+`((a-b)*factor)>>7` (alpha 0x80 = 1.0). The S2 frame-0 caveat is **refuted**: the sphere-mapper source page 394 is fully
+populated and identical at every captured vblank (labels 460223..461419, vblanks 7397-7404; mean byte 109.13, 16,261 of
+16,384 non-zero), and the composite changes **70/77/62/78/71 px** on frames 0-4 (~0.001 luma mean) because it is gated
+by the reflection pass's destination alpha, not a black source. The captured post multiplies still overshoot (luma
+34.62 vs the corrected reference 30.69). Open, named with numbers: the stage of the ~1.6x gain (the uncaptured PATH2
+full-screen chain - 11 batches/frame, including the frame sample's (128,77,0,128) modulation -, the palette/CLUT
+contents, or the 20 road items binding MXL 1/MMIN 4 sampled at level 0). Baseline reproduced with the current tools:
+PSNR 22.3521, SSIM 0.650793, pct_bad 64.7747%, mean |diff| 14.8375, luma 26.6882 -> 18.9466. Study:
+[COREGS3-WORLD-MATERIALS-V2](COREGS3-WORLD-MATERIALS-V2.md); evidence `build/evidence-v2/` (gitignored). No source
+change, no pins, no gate relaxed.
+
 ## 2026-11-10: GS-stream S2, the PATH2 chain decoded; the wet-road composite explains 0 of the additive term (TASK-090, branch `task/090-gs-post-layer`)
 
 S2 of the GS-stream study is implemented and measured. `native/coregs3/coregs3_gsdecode.*` walks every `.gt4gs` record

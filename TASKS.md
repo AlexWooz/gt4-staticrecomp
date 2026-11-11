@@ -1968,6 +1968,23 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   `native_coregs3_wet_composite`), Python **14/14**, car-only render byte-identical to the `aa5816ac` executable
   (`B0E7082B...`), A/B byte-identical, 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK**. Evidence:
   `build/evidence-gs-post-layer/`; method: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §27.
+- **World materials v2 study (2026-11-10, branch `task/090-world-materials-v2`, based on `008a71c8`).** Read-only
+  measurement study of the remaining darkness. The whole-mask affine `ref = 0.6341*world + 14.668` is a **pooling
+  artifact, not fog**: the compared mask is the course pass (**99.996%**; sky 70 px, far underlay 0, car ring 2-6 px
+  6,012 px), the tapped fog is near-neutral (mean F 247.8, 38.4% <255), the per-pixel FOGCOL-blend factor solved from
+  the reference is inconsistent per channel (**R 0.572 / G 0.658 / B 0.733**, median spread 0.275) and anti-correlates
+  with F (0.752 at F=255 vs 0.383 at F<230); within-class fits give slopes 0.31..1.57. The reference frame is a
+  **CT16 5-bit scanout** (every value divisible by 8, max 248): the dump is ~4 levels dark, and corrected it is
+  **1.62x** brighter than our world (R 1.64 / G 1.61 / B 1.59, neutral), per-material ratios **1.69 median** (sigma
+  0.25). The input path is verified exact (page `0x36D0`'s index pattern identical to CoreGS 2.0's own dump,
+  agreement **1.000**; road vertex colours **48/48, 38/38, 64/64** exact vs the tap; blend is `((a-b)*factor)>>7`,
+  alpha 0x80 = 1.0), so the residual sits in a per-material colour stage, not indices/vertex colour/fog/coverage. The
+  S2 frame-0 caveat is **refuted**: page 394 is fully populated and identical at vblanks 7397-7404 (mean byte 109.13,
+  16,261/16,384 non-zero) and the composite changes **70/77/62/78/71 px** on frames 0-4, gated by the reflection
+  pass's destination alpha; the captured post multiplies still overshoot (luma 34.62 vs corrected 30.69). Open: the
+  stage of the ~1.6x gain (the uncaptured PATH2 full-screen chain, incl. the frame sample's (128,77,0,128) modulation;
+  the palette/CLUT contents; the 20 road items binding MXL 1/MMIN 4 sampled at level 0). Study:
+  [COREGS3-WORLD-MATERIALS-V2](docs/COREGS3-WORLD-MATERIALS-V2.md); evidence `build/evidence-v2/`.
 - Next: the S2 residual (the material/texture/lighting gap or a post op the PATH2/PATH3 stream does not
   carry); S3 (the HUD/panel layer); the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
