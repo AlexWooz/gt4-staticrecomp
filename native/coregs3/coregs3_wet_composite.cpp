@@ -215,6 +215,20 @@ std::uint8_t ct16_channel(std::int32_t value, bool clamp_enabled) noexcept {
 
 namespace {
 
+// One presented channel, selected by the GT4_CORGS3_DITHER mode (coregs3_dither.hpp). `faithful` is the captured CT16
+// scanout conversion (dither entry already added to `value`); `off` keeps the modulated 8-bit colour and applies only
+// COLCLAMP, because the dither and the five-bit truncation are the scanout model the modern path removes.
+std::uint8_t present_channel(std::int32_t value, bool clamp_enabled, DitherMode dither) noexcept {
+  if (dither == DitherMode::faithful) return ct16_channel(value, clamp_enabled);
+  if (clamp_enabled) {
+    if (value < 0) value = 0;
+    if (value > 255) value = 255;
+  } else {
+    value &= 0xFF;
+  }
+  return static_cast<std::uint8_t>(value);
+}
+
 std::uint32_t low_rgba(const GsDecodeState &state) { return static_cast<std::uint32_t>(state.rgba & 0xFFFFFFFFu); }
 
 std::array<std::uint8_t, 4> rgba_bytes(std::uint32_t rgba) {
@@ -401,7 +415,8 @@ bool apply_frame_sample(const GsDecodeBatch &draw, std::vector<std::uint8_t> &rg
 
 bool apply_present_ct16(const GsDecodeBatch &draw, const std::vector<std::uint8_t> &rgba, std::uint32_t width,
                         std::uint32_t height, std::uint32_t capture_width, std::uint32_t capture_height,
-                        std::vector<std::uint8_t> &display, WetCompositeStats &stats, std::string &error) {
+                        DitherMode dither, std::vector<std::uint8_t> &display, WetCompositeStats &stats,
+                        std::string &error) {
   const GsDecodeState &state = draw.state;
   if (rgba.size() != static_cast<std::size_t>(width) * height * 4u || width == 0 || height == 0) {
     error = "the present source has the wrong size";
@@ -426,7 +441,7 @@ bool apply_present_ct16(const GsDecodeBatch &draw, const std::vector<std::uint8_
   const std::uint32_t scale_y = capture_height != 0 ? height / capture_height : 1;
   const std::uint32_t scale = std::max(scale_x, scale_y);
   const bool clamp_enabled = state.colclamp != 0;
-  const bool dither = state.dthe_on();
+  const bool dither_on = dither == DitherMode::faithful && state.dthe_on();
   for (std::size_t index = 0; index + 1 < draw.verts.size(); index += 2) {
     const GsDecodeVertex &latch = draw.verts[index];
     const GsDecodeVertex &corner = draw.verts[index + 1];
@@ -442,11 +457,11 @@ bool apply_present_ct16(const GsDecodeBatch &draw, const std::vector<std::uint8_
                             const std::uint32_t out_x = static_cast<std::uint32_t>(pixel % width);
                             const std::uint32_t out_y = static_cast<std::uint32_t>(pixel / width);
                             const std::int32_t dither_value =
-                                dither ? gs_dither_entry(state.dimx, out_x, out_y, scale) : 0;
+                                dither_on ? gs_dither_entry(state.dimx, out_x, out_y, scale) : 0;
                             std::array<std::uint8_t, 3> rgb{};
                             for (std::uint32_t lane = 0; lane < 3; ++lane) {
                               const std::int32_t modulated = scaled_product(rgba[at * 4 + lane], vertex[lane]);
-                              rgb[lane] = ct16_channel(modulated + dither_value, clamp_enabled);
+                              rgb[lane] = present_channel(modulated + dither_value, clamp_enabled, dither);
                             }
                             const std::int32_t alpha_source =
                                 state.tex0_tcc() != 0 ? scaled_product(rgba[at * 4 + 3], vertex[3]) : vertex[3];

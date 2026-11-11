@@ -35,7 +35,7 @@
 //       status) for the tap validation scripts.
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --world --gs <capture.gt4gs> --tap <capture.gt4tap>
-//                         --vram <capture.gt4vram> --hud [--hud-element speed|tach|all] [--hud-mask <pgm>]
+//                         --vram <capture.gt4vram> [--dither 0|1] --hud [--hud-element speed|tach|all] [--hud-mask <pgm>]
 //                         [--hud-contrib-mask <pgm>] [--hud-font-atlas <gt4f>] [--hud-canvas 640x448]
 //                         [--hud-texture-dump <dir>] [--width 640 --height 448 | --width 1920 --height 1344]
 //       TASK-090 S3: the first native HUD layer. Draws the requested element (the measured night B-Spec speed plate and
@@ -46,11 +46,15 @@
 //       captured 640x448 scanout by default, --hud-canvas) and mapped to any output size; 1920x1344 is the 3x validation
 //       scale of the CoreGS 2.0 reference. --hud-contrib-mask writes the pixels the element contributes (fragment
 //       alpha > 0), the fair comparison mask.
+//       --dither 0|1 (or GT4_COREGS3_DITHER) selects the CT16 present conversion: 1 is the captured dither and five-bit
+//       truncation of the reference scanout; 0, the modern default, writes the modulated 8-bit colour (coregs3_dither.hpp).
+//       The option changes only the present stage; the world, the composite and the multiplies are the same image.
 //       --hud-census <csv> (with or without --hud) enumerates every PATH2 sprite of the panel range and every PATH1
 //       display-buffer draw of the stream, each with its captured state and the status of its texture decode.
 //
 // A capture is derived from the user's own disc and is never committed: both the input and the PNG output live under
 // private/ or build/evidence/.
+#include "coregs3_dither.hpp"
 #include "coregs3_gsdecode.hpp"
 #include "coregs3_gsstream_file.hpp"
 #include "coregs3_png.hpp"
@@ -528,6 +532,16 @@ int main(int argc, char **argv) {
   const char *hud_vram_file = nullptr;
   const char *hud_dump_page = nullptr;
   bool hud_vram_all_frames = false;
+  // TASK-090 dither option: the modern path defaults to no dither (coregs3_dither.hpp); GT4_COREGS3_DITHER=1 restores
+  // the captured CT16 scanout conversion, and --dither overrides the environment for a same-run A/B.
+  DitherMode dither_mode = kDefaultDitherMode;
+  {
+    std::string dither_error;
+    if (!dither_mode_from_environment(dither_mode, dither_error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: %s\n", dither_error.c_str());
+      return 1;
+    }
+  }
   RenderOptions options;
   for (int index = 2; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -558,6 +572,13 @@ int main(int argc, char **argv) {
     else if (argument == "--no-wet-composite") wet_composite = false;
     else if (argument == "--post-chain") post_chain = true;  // compatibility: the chain is the default now
     else if (argument == "--no-post-chain") post_chain = false;
+    else if (argument == "--dither" && index + 1 < argc) {
+      const char *text = argv[++index];
+      if (!parse_dither_mode(text, dither_mode)) {
+        std::fprintf(stderr, "gt4_coregs3_render: --dither %s is not 0 or 1\n", text);
+        return 1;
+      }
+    }
     else if (argument == "--chain-dump" && index + 1 < argc) chain_dump_dir = argv[++index];
     else if (argument == "--sample-dump" && index + 1 < argc) sample_dump_path = argv[++index];
     else if (argument == "--composite-world-alpha") composite_world_alpha = true;
@@ -1584,22 +1605,23 @@ int main(int argc, char **argv) {
         }
         break;
       case GsChainOp::present_ct16:
-        if (!apply_present_ct16(batch, rgba, options.width, options.height, 640, 448, chain_display, stage_stats,
-                                error)) {
+        if (!apply_present_ct16(batch, rgba, options.width, options.height, 640, 448, dither_mode, chain_display,
+                                stage_stats, error)) {
           std::fprintf(stderr, "gt4_coregs3_render: present refused: %s\n", error.c_str());
           return 1;
         }
         have_display = true;
         std::snprintf(line, sizeof line,
                       "chain stage seq %u present-ct16: sprites %llu pixels %llu written %llu changed %llu; DTHE %llu "
-                      "DIMX %016llX COLCLAMP %llu",
+                      "DIMX %016llX COLCLAMP %llu; dither %s (GT4_COREGS3_DITHER=%s)",
                       batch.sequence, static_cast<unsigned long long>(stage_stats.sprites),
                       static_cast<unsigned long long>(stage_stats.pixels),
                       static_cast<unsigned long long>(stage_stats.written_pixels),
                       static_cast<unsigned long long>(stage_stats.changed_pixels),
                       static_cast<unsigned long long>(batch.state.dthe & 1u),
                       static_cast<unsigned long long>(batch.state.dimx),
-                      static_cast<unsigned long long>(batch.state.colclamp & 1u));
+                      static_cast<unsigned long long>(batch.state.colclamp & 1u), dither_mode_name(dither_mode),
+                      dither_mode == DitherMode::faithful ? "1" : "0");
         world_report += line;
         world_report += "\n";
         dump_stage("present-ct16", chain_display);

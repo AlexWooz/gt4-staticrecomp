@@ -7,6 +7,8 @@ The last class is the `.gt4gs` version 1 stream control (TASK-090 S1): it writes
 Python and checks the `gt4_coregs3_gs` tool's parse (`--stats`, `--list`, `--dump-frame`) and its reader refusals.
 """
 import importlib.util
+import json
+import math
 import os
 import struct
 import subprocess
@@ -432,6 +434,65 @@ class GsTextureCensusTest(unittest.TestCase):
         row = self._run(0.5)
         self.assertAlmostEqual(row['texel_ratio'], 0.5, delta=0.02)
         self.assertAlmostEqual(row['world_ratio'], 0.5, delta=0.02)
+
+
+class DitherAbTest(unittest.TestCase):
+    """TASK-090 dither option: the A/B metrics script on a hand-authored pair.
+
+    The synthetic pair is exact: a constant (16,16,16) image and a checkerboard that adds 8 to half of its pixels. The
+    four-by-four crop therefore has 16 differing pixels, a max difference of 8, a mean |diff| of 4 and an MSE of 32;
+    the faithful image keeps two levels (both divisible by 8, the CT16 five-bit expansion) while the off image has one.
+    """
+
+    def test_the_switch_ab_reports_the_dither(self):
+        from PIL import Image
+        python = sys.executable
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            width = height = 8
+            faithful = Image.new('RGB', (width, height), (16, 16, 16))
+            off = Image.new('RGB', (width, height), (16, 16, 16))
+            faithful_pixels = faithful.load()
+            for y in range(height):
+                for x in range(width):
+                    if (x + y) % 2:
+                        faithful_pixels[x, y] = (24, 24, 24)
+            faithful.save(folder / 'faithful.png')
+            off.save(folder / 'off.png')
+            out = folder / 'ab.json'
+            done = subprocess.run(
+                [python, str(ROOT / 'scripts' / 'coregs3_bench' / 'dither_ab.py'), str(folder / 'faithful.png'),
+                 str(folder / 'off.png'), '--crop', '0,0,4,4', '--json', str(out),
+                 '--crop-faithful', str(folder / 'crop-faithful.png'), '--crop-off', str(folder / 'crop-off.png'),
+                 '--diff', str(folder / 'diff.png')],
+                capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            summary = json.loads(out.read_text())
+            compare = summary['compare']
+            self.assertEqual(compare['pixels'], 16)
+            self.assertAlmostEqual(compare['mean_abs'], 4.0, places=6)
+            self.assertEqual(compare['max_abs'], 8)
+            self.assertAlmostEqual(compare['mse'], 32.0, places=6)
+            self.assertAlmostEqual(compare['psnr'], 10.0 * math.log10(255.0 * 255.0 / 32.0), places=4)
+            self.assertEqual(compare['differing_pixels'], 8)
+            self.assertAlmostEqual(compare['differing_fraction'], 0.5, places=6)
+            self.assertAlmostEqual(compare['mean_signed'], 4.0, places=6)
+            self.assertEqual(summary['crop'], [0, 0, 4, 4])
+            self.assertAlmostEqual(summary['faithful_quantisation']['fraction_divisible_by_8'], 1.0, places=6)
+            self.assertAlmostEqual(summary['off_quantisation']['fraction_divisible_by_8'], 1.0, places=6)
+            self.assertEqual(summary['faithful_quantisation']['distinct_levels'], 2)
+            self.assertEqual(summary['off_quantisation']['distinct_levels'], 1)
+            self.assertTrue((folder / 'crop-faithful.png').exists())
+            self.assertTrue((folder / 'crop-off.png').exists())
+            self.assertTrue((folder / 'diff.png').exists())
+            # A pair of different sizes is refused by name, never truncated or resampled.
+            Image.new('RGB', (4, 4)).save(folder / 'small.png')
+            done = subprocess.run(
+                [python, str(ROOT / 'scripts' / 'coregs3_bench' / 'dither_ab.py'), str(folder / 'faithful.png'),
+                 str(folder / 'small.png')],
+                capture_output=True, text=True)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn('differ in size', done.stderr)
 
 
 if __name__ == '__main__':

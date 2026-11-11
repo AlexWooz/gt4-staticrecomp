@@ -326,7 +326,8 @@ void test_present() {
   std::vector<std::uint8_t> display;
   WetCompositeStats stats;
   std::string error;
-  check(apply_present_ct16(batch, rgba, 2, 2, 2, 2, display, stats, error), "the CT16 present applies");
+  check(apply_present_ct16(batch, rgba, 2, 2, 2, 2, DitherMode::faithful, display, stats, error),
+        "the CT16 present applies");
   check(display.size() == rgba.size(), "the present writes the display image");
   check(stats.pixels == 4 && stats.written_pixels == 4, "every screen pixel is presented");
   check(display[0] == 0 && display[1] == 0 && display[2] == 248, "7/0/255 -> 0/0/248 (five bits, then << 3)");
@@ -338,7 +339,8 @@ void test_present() {
   batch.state.dimx = 0x4ull;  // entry (0,0) = -4, other cells 0
   std::vector<std::uint8_t> dithered;
   WetCompositeStats dither_stats;
-  check(apply_present_ct16(batch, rgba, 2, 2, 2, 2, dithered, dither_stats, error), "the dithered present applies");
+  check(apply_present_ct16(batch, rgba, 2, 2, 2, 2, DitherMode::faithful, dithered, dither_stats, error),
+        "the dithered present applies");
   check(dithered[0] == 0 && dithered[1] == 0 && dithered[2] == 248,
         "the -4 entry shifts the (0,0) native cell (7/0/255 -> 0/0/248)");
   check(dithered[4] == 8 && dithered[5] == 240 && dithered[6] == 128,
@@ -346,8 +348,133 @@ void test_present() {
   // A blend-carrying state is refused, never defaulted.
   batch.state.prim = 0x15E;
   std::vector<std::uint8_t> refused_display;
-  check(!apply_present_ct16(batch, rgba, 2, 2, 2, 2, refused_display, stats, error),
+  check(!apply_present_ct16(batch, rgba, 2, 2, 2, 2, DitherMode::faithful, refused_display, stats, error),
         "a blended present is refused");
+}
+
+// A measured present batch covering `size` x `size` at 1:1 (output scale 1), with the captured DIMX of the reference
+// scene (0x0001044501100554) and DTHE on, so the two GT4_COREGS3_DITHER modes can be compared pixel by pixel.
+GsDecodeBatch present_batch(std::uint32_t size) {
+  GsDecodeBatch batch;
+  batch.state.prim = 0x11E;  // sprite, TME, no ABE
+  batch.state.rgba = 0x3F80000080808080ull;  // (128,128,128,128), neutral
+  batch.state.tex0 = 0x0007140668029A40ull;  // TBP0 0x1A40, CT32, TW 10, TH 9, TCC 1, TFX 0
+  batch.state.tex1 = 0;
+  batch.state.clamp = 0x000006FC009FC00Aull;
+  batch.state.frame = 0x00000000020A008Cull;  // FBP 140, FBW 10, PSM 2 (CT16)
+  batch.state.alpha = 0x44;
+  batch.state.test = 0x3820C;
+  batch.state.zbuf = 1ull << 32;
+  batch.state.colclamp = 1;
+  batch.state.dthe = 1;
+  batch.state.dimx = 0x0001044501100554ull;  // the captured present's DIMX
+  batch.verts.resize(2);
+  batch.verts[0].drawing = false;
+  batch.verts[1].drawing = true;
+  batch.verts[0].rgba = batch.verts[1].rgba = 0x80808080u;
+  batch.verts[0].x = 0.0f;
+  batch.verts[0].y = 0.0f;
+  batch.verts[1].x = static_cast<float>(size);
+  batch.verts[1].y = static_cast<float>(size);
+  batch.verts[0].u = 0.0f;
+  batch.verts[0].v = 0.0f;
+  batch.verts[1].u = static_cast<float>(size);
+  batch.verts[1].v = static_cast<float>(size);
+  batch.verts[0].has_uv = batch.verts[1].has_uv = true;
+  batch.min_x = 0.0f;
+  batch.min_y = 0.0f;
+  batch.max_x = static_cast<float>(size);
+  batch.max_y = static_cast<float>(size);
+  return batch;
+}
+
+// TASK-090 dither option: the same present with DitherMode::faithful and DitherMode::off. The faithful image is the
+// captured CT16 scanout conversion (DIMX entry + five-bit truncation + << 3); the off image is the modulated 8-bit
+// colour. Every channel of every pixel is checked against the arithmetic, the two images must differ (the switch does
+// something), and the alpha lane and the pixel counts must be identical.
+void test_present_dither_switch() {
+  constexpr std::uint32_t size = 4;
+  GsDecodeBatch batch = present_batch(size);
+  const std::uint64_t dimx = 0x0001044501100554ull;
+  std::vector<std::uint8_t> rgba(static_cast<std::size_t>(size) * size * 4u, 0);
+  for (std::uint32_t y = 0; y < size; ++y) {
+    for (std::uint32_t x = 0; x < size; ++x) {
+      const std::size_t pixel = static_cast<std::size_t>(y) * size + x;
+      rgba[pixel * 4 + 0] = static_cast<std::uint8_t>(4 + 8 * ((x + 2 * y) % 4));
+      rgba[pixel * 4 + 1] = static_cast<std::uint8_t>(251 - 8 * ((x + y) % 4));
+      rgba[pixel * 4 + 2] = static_cast<std::uint8_t>(8 * ((x + y) % 5));
+      rgba[pixel * 4 + 3] = 255;
+    }
+  }
+  std::vector<std::uint8_t> faithful;
+  std::vector<std::uint8_t> off;
+  WetCompositeStats faithful_stats;
+  WetCompositeStats off_stats;
+  std::string error;
+  check(apply_present_ct16(batch, rgba, size, size, size, size, DitherMode::faithful, faithful, faithful_stats,
+                           error),
+        "the faithful (GT4_COREGS3_DITHER=1) present applies");
+  check(apply_present_ct16(batch, rgba, size, size, size, size, DitherMode::off, off, off_stats, error),
+        "the no-dither (GT4_COREGS3_DITHER=0) present applies");
+  check(faithful.size() == off.size() && faithful.size() == rgba.size(), "both modes write the same image size");
+  check(faithful_stats.pixels == size * size && off_stats.pixels == size * size, "both modes present every pixel");
+  check(faithful_stats.changed_pixels == off_stats.changed_pixels,
+        "the switch does not change the present's changed-pixel count");
+  std::size_t differing_lanes = 0;
+  int max_difference = 0;
+  bool arithmetic_ok = true;
+  bool alpha_ok = true;
+  for (std::uint32_t y = 0; y < size; ++y) {
+    for (std::uint32_t x = 0; x < size; ++x) {
+      const std::size_t pixel = static_cast<std::size_t>(y) * size + x;
+      const std::int32_t entry = gs_dither_entry(dimx, x, y, 1);
+      for (std::uint32_t lane = 0; lane < 3; ++lane) {
+        // The vertex colour is neutral, so MODULATE is the source value itself: (v * 128) >> 7 == v.
+        const std::int32_t value = rgba[pixel * 4 + lane];
+        const std::uint8_t expected_faithful = ct16_channel(value + entry, true);
+        const std::uint8_t expected_off = static_cast<std::uint8_t>(value);
+        if (faithful[pixel * 4 + lane] != expected_faithful || off[pixel * 4 + lane] != expected_off) {
+          if (arithmetic_ok)  // record the first mismatch, then keep checking the rest
+            std::fprintf(stderr,
+                         "dither switch: x %u y %u lane %u: faithful %u (expected %u), off %u (expected %u)\n", x, y,
+                         lane, faithful[pixel * 4 + lane], expected_faithful, off[pixel * 4 + lane], expected_off);
+          arithmetic_ok = false;
+        }
+        const int difference = std::abs(static_cast<int>(faithful[pixel * 4 + lane]) - expected_off);
+        if (difference != 0) ++differing_lanes;
+        if (difference > max_difference) max_difference = difference;
+      }
+      if (faithful[pixel * 4 + 3] != off[pixel * 4 + 3]) alpha_ok = false;
+    }
+  }
+  check(arithmetic_ok, "every channel matches its mode's arithmetic (CT16 conversion vs the 8-bit colour)");
+  check(differing_lanes != 0, "the dither changes pixels: the A/B is not an empty difference");
+  check(max_difference >= 4, "the dither moves a channel by at least four levels on this image");
+  check(alpha_ok, "the CT16 alpha bit is identical in both modes");
+  // The captured DIMX really is mixed: it must carry both negative and non-negative entries, otherwise the test's
+  // arithmetic would be a constant shift.
+  bool has_negative = false;
+  bool has_non_negative = false;
+  for (std::uint32_t y = 0; y < size; ++y)
+    for (std::uint32_t x = 0; x < size; ++x) {
+      const std::int32_t entry = gs_dither_entry(dimx, x, y, 1);
+      if (entry < 0) has_negative = true;
+      if (entry >= 0) has_non_negative = true;
+    }
+  check(has_negative && has_non_negative, "the captured DIMX carries both signs across the 4x4 cell");
+}
+
+void test_dither_mode_parsing() {
+  DitherMode mode = DitherMode::faithful;
+  check(kDefaultDitherMode == DitherMode::off, "the modern CoreGS 3.0 path defaults to no dither");
+  check(parse_dither_mode(nullptr, mode) && mode == DitherMode::off,
+        "an absent GT4_COREGS3_DITHER selects the modern default");
+  check(parse_dither_mode("", mode) && mode == DitherMode::off, "an empty GT4_COREGS3_DITHER selects the default");
+  check(parse_dither_mode("0", mode) && mode == DitherMode::off, "0 selects no dither");
+  check(parse_dither_mode("1", mode) && mode == DitherMode::faithful, "1 selects the captured CT16 model");
+  check(!parse_dither_mode("2", mode), "2 is refused, not interpreted");
+  check(!parse_dither_mode("on", mode), "on is refused, not interpreted");
+  check(!parse_dither_mode(" 1", mode), "a padded value is refused, not trimmed");
 }
 
 }  // namespace
@@ -359,6 +486,8 @@ int main() {
   test_clear();
   test_frame_sample();
   test_present();
+  test_present_dither_switch();
+  test_dither_mode_parsing();
   if (failures != 0) {
     std::fprintf(stderr, "coregs3_wet_composite: %d failure(s)\n", failures);
     return 1;
