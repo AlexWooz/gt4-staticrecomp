@@ -335,3 +335,40 @@ The contract as specified (index-at-kick + no CPU translate) has **~0.07 ms of a
 0.2 ms gate, and the remaining per-primitive cost is inherent to per-primitive scissors. Stopped at the contract point with
 the measurement rather than building the 2-3 day change; the only route left is the run-as-one-draw renderer contract
 described above. Nothing kept this round (the in-place conversion slice was reverted, -0.02).
+
+## 12. Run-as-one-draw renderer contract: already in place at the batch level; the rest is ~0.08 ms (measured)
+
+Owner's round after the per-record stop. Expected ~0.25 ms. Two counters settle it before any renderer change:
+
+| counter (license 1x, new diagnostics) | value | meaning |
+|---|---|---|
+| `[hw] counters gpu_draws` | 24,607,091 over 3,514 VBlanks = **7,001 GpuDraw records/VBlank** | the translated draw records |
+| `[core2] draw ring commands` | **273.8 commands/VBlank** | `VkCmdDraw` recorded per batch (`stats.commands`) |
+| `[core2] draw ring vtx_kb` | **888 KiB/VBlank** | bytes copied into the vertex ring |
+
+**The one-union-scissor, one-draw-per-run shape already exists**: on the interlock GPU (`pixel interlock yes` in every log)
+`Gpu::Draw` takes the `allTriangles` path and emits **one command per triangle batch** covering `first..end` of the batch's
+converted vertices, with the scissor set to the batch's union rectangle (`scissorOf(x0,y0,x1,y1)` over the batch's draws) -
+that is 7,001 records collapsing to ~274 commands, about one per drawn batch (204/VBlank). The per-primitive scissor is
+already gone on the normal path, and the exactness question the round flagged (a tracked target area widened where a run
+contains culled primitives) is answered by the existing code plus every identity run: it *is* the batch union, and frames
+have stayed byte-identical across license, night, Opera and the Spec II scenes.
+
+What a strip topology could still add is **sharing a strip's vertices in the converted list** (today each primitive carries
+its own 3 expanded `GpuVertex`; a strip of N primitives is N+2 raw vertices). Sprites are 183/VBlank (6 vertices each); the
+rest of the 888 KiB is triangle expansion, mostly strips, so the saving is at most ~2/3 of the ring traffic (~590 KiB/VBlank
+of memcpy, ~0.03-0.06 ms at 10-20 GB/s) plus ~0.02 ms of `ToGpuVertex` construction - **~0.08 ms in total, below the 0.2
+gate**, and it needs a new topology, a second pipeline (the general and the interlock variants), the fill/disjoint guards and
+a run builder in `TranslateBatch` (2-3 days of the same size as this round).
+
+**Verdict: not built.** The renderer already draws a batch as one command with a union scissor; the remaining strip-vertex
+sharing is measured at ~0.08 ms. The two diagnostics (`vertexBytes`, `commands`, and the `[core2] draw ring` line) are kept:
+they price this question for free and show that the per-command work is ~274/VBlank, i.e. the remaining `draw` cost
+(0.98 ms) is the **per-batch start** (204 batches x ~4.8 us: the vertex-ring memcpy, the uniform, the descriptor set lookup,
+`touch`/access sets, the deferred record), the same "per-batch start" the ledger's IN-554 design note identified. That is the
+remaining bill, and it is a per-batch design question, not a per-record or per-run one.
+
+Also prepared this round (the round's second deliverable, no execution): `docs/tasks/COREGS2-AVELL-RETEST.md`, the Avell
+(i7 + RTX 3060 Laptop, 3440x1440 144 Hz) retest kit - the GPU cap levels L0-L3, the 144 Hz vs 60 Hz present matrix P0-P3,
+the four Spec II scenes plus the license and night 6x, the kept items and the ledger's GPU-bound negatives to re-check,
+p99/1 %/CSV metrics, identity gates and the exact commands. The agent never runs on the Avell.

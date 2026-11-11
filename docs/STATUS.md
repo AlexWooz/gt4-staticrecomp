@@ -66,6 +66,21 @@ one draw (one union scissor per run, a strip topology) - a renderer contract (ne
 paths, and the target `drawn`/`valid`/`lastDraw` bookkeeping widened to the run union where a run has culled primitives),
 2-3 days, its own round and identity matrix.
 
+**Run-as-one-draw round (2026-11-11, IN-560): already in place at the batch level; the rest is ~0.08 ms, measured, not
+built.** New inert counters (`Core2GpuStats::vertexBytes`/`commands` and a `[core2] draw ring` line) settle it on license
+B-1 1x: **7,001 GpuDraw records/VBlank collapse into 273.8 commands/VBlank** (about one per drawn batch, 204/VBlank) with
+**888 KiB/VBlank** copied into the vertex ring. `Gpu::Draw`'s `allTriangles` path already emits one command per triangle batch
+over `first..end` with the **batch union scissor** (`scissorOf` over the batch's draws), so the one-union-scissor,
+one-draw-per-run shape already exists; the tracked target area is already the batch union (`t.rect`) and frames are
+byte-identical on license, night, Opera and the four Spec II scenes. The only remaining part - sharing a strip's vertices
+instead of expanding 3 per primitive - is at most ~2/3 of the 888 KiB (~0.03-0.06 ms) plus ~0.02 ms of conversion, **~0.08 ms,
+below the 0.2 gate**, and needs a new topology, two pipelines, the fill/disjoint guards and a `TranslateBatch` run builder.
+Not built: the remaining `draw` cost (0.98 ms) is the **per-batch start** (204 batches x ~4.8 us), the per-batch question of
+IN-554, not a per-record or per-run one. Also prepared: `docs/tasks/COREGS2-AVELL-RETEST.md`, the Avell (i7 + RTX 3060
+Laptop, 3440x1440 144 Hz) retest kit - GPU cap levels L0-L3, the 144 Hz vs 60 Hz present matrix P0-P3, the four Spec II
+scenes + license + night 6x, the kept items and the ledger's GPU-bound negatives, p99/1 %/CSV, identity gates and the exact
+commands. The agent never runs on the Avell.
+
 **Close-out (2026-11-11):** the consolidated report is `docs/tasks/COREGS2-TASK215-SUMMARY.md` (kept, reverted/closed with
 numbers, the 3x scene matrix, the remaining lever, the owner's options). State: kept IN-540 (aliased depth fill) and
 IN-547 (scissor view, `GT4_CORE2_SCISSOR_VIEW`), both exact; reverted the palette segments under the tone hook (+0.61 ms);

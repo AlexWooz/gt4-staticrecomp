@@ -3265,6 +3265,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   }
   if (!s.begin_recording(error)) return false;
   const VkDeviceSize vertexBytes = batch.vertices->size() * sizeof(gpu::GpuVertex);
+  s.stats.vertexBytes += vertexBytes;
   VkDeviceSize vertexOffset = 0, uniformOffset = 0;
   const VkDeviceSize uniformAlign = std::max<VkDeviceSize>(s.limits.minUniformBufferOffsetAlignment, 16);
   if (!s.ring(s.vertices, vertexBytes, sizeof(gpu::GpuVertex), vertexOffset, error)) return false;
@@ -3783,6 +3784,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     }
   }
   record.commandCount = static_cast<std::uint32_t>(s.deferredCommands.size()) - record.firstCommand;
+  s.stats.commands += record.commandCount;
 
   // IN-419: the batch reads its textures (one palette row) and reads and writes its frame and depth.
   const Impl::Use textureUse = paletted ? Impl::Use(texture, static_cast<std::uint32_t>(batch.paletteRow)) : Impl::Use(texture);

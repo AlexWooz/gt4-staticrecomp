@@ -79,6 +79,9 @@ struct Core2GpuStats {
     std::uint64_t selfCopies = 0;          // spec 8.8: of those, batches that sampled a copy taken before them
     std::uint64_t selfCopyPixels = 0;      // output pixels those copies moved
     std::uint64_t draws = 0;
+    // TASK-215 (run-draw round): the bytes copied into the vertex ring, and the commands a batch collapsed into.
+    std::uint64_t vertexBytes = 0;
+    std::uint64_t commands = 0;
     std::uint64_t patches = 0;
     std::uint64_t reductions = 0;
     std::uint64_t laterReductions = 0;  // IN-439: reductions taken later (performance mode's delayed downloads)

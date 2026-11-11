@@ -5657,6 +5657,16 @@ void Renderer::Flush() {
             const std::uint64_t vertices = front.Get(Counter::Vertices);
             const std::uint64_t decoded = front.Get(Counter::VerticesDecoded);
             const std::uint64_t culled = front.Get(Counter::PrimsCulled);
+            // TASK-215 (run-draw round): the vertex ring traffic and the commands per VBlank, which price whether a strip
+            // topology (sharing a strip's vertices instead of expanding 3 per primitive) could still gain anything.
+            static std::uint64_t lastVertexBytes = 0, lastCommands = 0;
+            const std::uint64_t vertexBytes = s.gpu_.Stats().vertexBytes;
+            const std::uint64_t commands = s.gpu_.Stats().commands;
+            std::fprintf(stderr, "[core2] draw ring vtx_kb=%.0f/vblank commands=%.1f/vblank\n",
+                         static_cast<double>(vertexBytes - lastVertexBytes) / 600.0 / 1024.0,
+                         static_cast<double>(commands - lastCommands) / 600.0);
+            lastVertexBytes = vertexBytes;
+            lastCommands = commands;
             std::fprintf(stderr,
                          "[core2] front-end prims/vblank emitted=%.1f skipped=%.1f (culled=%.1f) vertices=%.1f "
                          "(decoded=%.1f) culled_share_of_drawing=%.1f%%\n",

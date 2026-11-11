@@ -4564,6 +4564,22 @@ union scissor per run, a strip topology) - a renderer contract (new `GpuTopology
 target `drawn`/`valid`/`lastDraw` bookkeeping widened to the run union where a run has culled primitives), 2-3 days, its own
 round and identity matrix. Ledger IN-559; no code kept, no test change.
 
+**Run-as-one-draw round (2026-11-11, IN-560): already in place at the batch level; the rest is ~0.08 ms, measured, not
+built.** New inert counters (`Core2GpuStats::vertexBytes`/`commands` plus a `[core2] draw ring` line) settle it on license
+B-1 1x: **7,001 GpuDraw records/VBlank collapse into 273.8 commands/VBlank** (about one per drawn batch) with **888 KiB/VBlank**
+of vertex-ring traffic. `Gpu::Draw`'s `allTriangles` path already emits one command per triangle batch over `first..end` with
+the **batch union scissor**, so the one-union-scissor, one-draw-per-run shape the round asked for already exists; the tracked
+area is already the batch union (`t.rect`) and frames are byte-identical on license, night, Opera and the four Spec II
+scenes, so the exactness question is answered by the existing code. The only remaining part - sharing a strip's vertices
+instead of expanding 3 per primitive - is at most ~2/3 of the 888 KiB (~0.03-0.06 ms) plus ~0.02 ms of `ToGpuVertex`,
+**~0.08 ms, below the 0.2 gate**, and needs a new topology, two pipelines (general + interlock), the fill/disjoint guards and a
+`TranslateBatch` run builder. Not built. The remaining `draw` cost (0.98 ms) is the **per-batch start** (204 batches x
+~4.8 us: vertex-ring memcpy, uniform, descriptor-set lookup, `touch`/access sets, deferred record), the per-batch question of
+IN-554, not a per-record or per-run one. Also prepared: `docs/tasks/COREGS2-AVELL-RETEST.md` (the Avell retest kit: GPU cap
+levels L0-L3, the 3440x1440 144 Hz vs 60 Hz present matrix P0-P3, the four Spec II scenes + license + night 6x, the kept
+items and the ledger's GPU-bound negatives, p99/1 %/CSV metrics, identity gates, exact commands); the agent never runs on the
+Avell.
+
 **Previous state (2026-11-11, close-out): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
 Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
 the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook
