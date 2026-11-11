@@ -805,6 +805,14 @@ included) is in place for that split.
 
 ### Phase 6: modern features (what the native pipeline unlocks)
 
+**Owner remaster vision (2026-11-11).** CoreGS 3.0 should also open a remaster path (opt-in, after the
+foundation): use the showroom/photo-mode car models in races (higher detail than the race LODs, if the data and the
+VU1 programs allow), rework effects and shaders, extend lighting, and eventually a **deferred renderer with several
+dynamic lights** (car headlights among them). The per-vertex normals and material data the decoder already reads are
+the G-buffer foundation; the faithful modes stay the reference, the remaster is a separate opt-in profile. Study the
+showroom model/LOD assets and the G-buffer feasibility before scheduling.
+
+
 - **Scope:**
   - present above 60 Hz with per-draw interpolation between ticks (TASK-045): draw identity = (shape, model, instance,
     ordinal); match rate ≥ 95% in races; decomposed transforms (RT64 lesson);
