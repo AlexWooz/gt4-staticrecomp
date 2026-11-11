@@ -31,7 +31,7 @@
 
 namespace gt4::target {
 
-enum class Id { v200, spec2 };
+enum class Id { v200, spec2, tt };
 
 // A guest address that can never match a real PC (32-bit, word aligned, below 0x08000000) or a real return address.
 inline constexpr std::uint32_t kNeverMatch = 0xFFFFFFFFu;
@@ -311,13 +311,24 @@ inline constexpr HookAddresses kSpec2Hooks = {
 inline constexpr Profile kV200{Id::v200, "v2.00", 32u << 20, kV200Hooks};
 inline constexpr Profile kSpec2{Id::spec2, "Spec II", 32u << 20, kSpec2Hooks};
 
-#if defined(GT4_TARGET_SPEC2) && !defined(GT4_TARGET_FIXTURE_V200)
+// Tourist Trophy (SCUS-97502), experimental third target (docs/TT-STUDY.md). Every hook is unmapped: TT shares most of the
+// GT4 engine, but none of its guest addresses match v2.00, so every hook stays disabled until its chain is mapped in TT.
+inline constexpr HookAddresses kTTHooks = {};
+inline constexpr Profile kTT{Id::tt, "Tourist Trophy", 32u << 20, kTTHooks};
+
+#if defined(GT4_TARGET_FIXTURE_V200)
+inline constexpr Id kActiveId = Id::v200;
+#elif defined(GT4_TARGET_SPEC2)
 inline constexpr Id kActiveId = Id::spec2;
+#elif defined(GT4_TARGET_TT)
+inline constexpr Id kActiveId = Id::tt;
 #else
 inline constexpr Id kActiveId = Id::v200;
 #endif
 
-constexpr const Profile &active() { return kActiveId == Id::spec2 ? kSpec2 : kV200; }
+constexpr const Profile &active() {
+  return kActiveId == Id::spec2 ? kSpec2 : kActiveId == Id::tt ? kTT : kV200;
+}
 
 // Guest address for a hook, or kNeverMatch when the active target does not have it. constexpr so the overlays keep
 // their compile-time comparisons.

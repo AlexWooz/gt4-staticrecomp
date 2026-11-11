@@ -112,6 +112,23 @@ entry seeds: `eerecomp.exe TT.elf --out generated`.
 - [U] Nothing has run yet: booting needs a TT target in the native runtime (a library profile, a
   `game_target.hpp` entry with hooks disabled, VU0 handling).
 
+## First boot and race [C]
+
+2026-11-11, branch `task/tt-target`. `GT4_TARGET=tt` adds a hookless target (`kTTHooks = {}`; every host hook
+disables itself and logs once) and requires its own library through `GT4_EE_LIBRARY`/`GT4_EE_LIBRARY_SHA256`.
+Minimal local configuration: the default port from `scripts/prepare_external_vulkan.py` (its `gpu.cpp`, `gpu.hpp` and
+stream-hooked `gs.cpp` match the release pins), the pinned slice153 shaders, Khronos Vulkan headers, SDL3 3.4.18, and no
+performance, license guard, IPU, SPU2 or memory card capsule (VU microcode on the interpreter).
+
+- The plain library boots TT: SCEA logo, the memory card prompt, the "Welcome to Tourist Trophy World" name entry. The IOP
+  reboot with TT's own `IOPRP300.IMG`, its IRX set from disc, the IPU, VU1 and pad input all work without TT-specific code.
+- Opening Options halted with `missing code at 0x00202FB0 (ra 0x002C20C8)`: one of the 12 far `lui` pair seeds above,
+  the same class as the Spec II Options halt.
+- Re-translating with all 992 seeds (`--entries`, 0 rejected) gives 15,641 functions, 1,112,246 instructions (4,344 KiB)
+  in 287 units. With that library a player reached the main menu, opened Options and finished an Arcade race; a headless
+  run with blind Cross presses reached course, bike, colour and rider equipment selection with no missing code.
+- [U] Speed, audio and the license tests have not been assessed; widescreen and HUD hooks are unmapped (4:3).
+
 ## Unknowns
 
 - [U] IOP side: whether `IOPRP300.IMG` and `IRX/` match GT4's set. GT4's IOP modules were not compared.

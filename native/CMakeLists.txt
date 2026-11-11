@@ -11,13 +11,16 @@ add_compile_definitions(GT4_MTVU_RUNTIME)
 set(GT4_EE_PROFILE "production" CACHE STRING "Pinned EE library profile")
 set_property(CACHE GT4_EE_PROFILE PROPERTY STRINGS production baseline recovered observation coverage aspect flare)
 # TASK-100 S3: the game target whose guest addresses the host hooks use (native/game_target.hpp). v200 is the release
-# target; spec2 is the second target of decision 0072 and has no hooks until S8 fills its table.
+# target; spec2 is the second target of decision 0072 and has no hooks until S8 fills its table. tt (Tourist Trophy,
+# SCUS-97502; docs/TT-STUDY.md) is an experimental third target with no hooks yet.
 set(GT4_TARGET "v200" CACHE STRING "Game target for the host hooks and the guest image")
-set_property(CACHE GT4_TARGET PROPERTY STRINGS v200 spec2)
+set_property(CACHE GT4_TARGET PROPERTY STRINGS v200 spec2 tt)
 if(GT4_TARGET STREQUAL "spec2")
     add_compile_definitions(GT4_TARGET_SPEC2)
+elseif(GT4_TARGET STREQUAL "tt")
+    add_compile_definitions(GT4_TARGET_TT)
 elseif(NOT GT4_TARGET STREQUAL "v200")
-    message(FATAL_ERROR "Unknown GT4_TARGET '${GT4_TARGET}'; expected v200 or spec2")
+    message(FATAL_ERROR "Unknown GT4_TARGET '${GT4_TARGET}'; expected v200, spec2 or tt")
 endif()
 set(GT4_SHAPE_RUNTIME_SOURCE "" CACHE PATH "Verified experimental runtime overlay capsule")
 set(GT4_PERF_RUNTIME_SOURCE "" CACHE PATH "Verified performance-only runtime capsule")
@@ -177,6 +180,11 @@ if(GT4_TARGET STREQUAL "spec2" AND NOT GT4_EE_PROFILE STREQUAL "spec2")
 endif()
 if(NOT GT4_TARGET STREQUAL "spec2" AND GT4_EE_PROFILE STREQUAL "spec2")
     message(FATAL_ERROR "GT4_EE_PROFILE=spec2 is only valid with -DGT4_TARGET=spec2")
+endif()
+# The TT target has no pinned library profile yet: it links its own translated library through GT4_EE_LIBRARY (path and
+# hash together), never the v2.00 one.
+if(GT4_TARGET STREQUAL "tt" AND NOT GT4_EE_LIBRARY)
+    message(FATAL_ERROR "GT4_TARGET=tt needs -DGT4_EE_LIBRARY and -DGT4_EE_LIBRARY_SHA256 (its own translated library)")
 endif()
 # TASK-134: the same translated units, built with this executable's compiler, SSE4.1 and a profile. Same check as the pinned
 # libraries: the configure takes the path and its hash together. docs/inputs/sliceNNN-*.json record the hash of a release.
@@ -362,8 +370,8 @@ add_library(gt4_quickfix STATIC frame_skip.cpp window_mode.cpp race_display.cpp 
 target_compile_options(gt4_quickfix PRIVATE /W4)
 # TASK-100 S7b: the v2.00 hook fixtures assert the v2.00 guest chains, but gt4_quickfix carries the active target's table
 # (Spec II in a Spec II build). A Spec II build therefore compiles a second copy of the three hook modules pinned to
-# v2.00 for the fixtures only; the game keeps the target table.
-if(GT4_TARGET STREQUAL "spec2")
+# v2.00 for the fixtures only; the game keeps the target table. The same holds for any other non-v2.00 target (tt).
+if(NOT GT4_TARGET STREQUAL "v200")
     add_library(gt4_quickfix_v200_fixture STATIC race_display.cpp race_widescreen.cpp display_aspect.cpp flare_limits.cpp camera_360.cpp
         fov_adjust.cpp trigger_range.cpp)
     target_compile_definitions(gt4_quickfix_v200_fixture PUBLIC GT4_TARGET_FIXTURE_V200)
@@ -938,6 +946,20 @@ if(GT4_TARGET STREQUAL "spec2")
     target_compile_options(gt4_achievements_v200_fixture PRIVATE /W4)
     set(GT4_ACHIEVEMENTS_FIXTURE_LIB gt4_achievements_v200_fixture)
     set(GT4_ACHIEVEMENTS_SPEC2_LIB gt4_achievements)
+elseif(GT4_TARGET STREQUAL "tt")
+    # TT: gt4_achievements carries the TT target (RA disabled), so both fixtures get their own pinned copies.
+    add_library(gt4_achievements_v200_fixture STATIC achievements.cpp achievements_overlay.cpp achievements_http.cpp)
+    target_include_directories(gt4_achievements_v200_fixture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(gt4_achievements_v200_fixture PUBLIC GT4_TARGET_FIXTURE_V200)
+    target_link_libraries(gt4_achievements_v200_fixture PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32 bcrypt)
+    target_compile_options(gt4_achievements_v200_fixture PRIVATE /W4)
+    add_library(gt4_achievements_spec2_fixture STATIC achievements.cpp achievements_overlay.cpp achievements_http.cpp)
+    target_include_directories(gt4_achievements_spec2_fixture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(gt4_achievements_spec2_fixture PUBLIC GT4_TARGET_SPEC2)
+    target_link_libraries(gt4_achievements_spec2_fixture PUBLIC gt4_rcheevos winhttp gdiplus gdi32 user32 bcrypt)
+    target_compile_options(gt4_achievements_spec2_fixture PRIVATE /W4)
+    set(GT4_ACHIEVEMENTS_FIXTURE_LIB gt4_achievements_v200_fixture)
+    set(GT4_ACHIEVEMENTS_SPEC2_LIB gt4_achievements_spec2_fixture)
 else()
     add_library(gt4_achievements_spec2_fixture STATIC achievements.cpp achievements_overlay.cpp achievements_http.cpp)
     target_include_directories(gt4_achievements_spec2_fixture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -971,6 +993,8 @@ target_sources(gt4vulkan PRIVATE display_aspect_hook.cpp)
 if(GT4_TARGET STREQUAL "spec2")
     # TASK-100 S4: the second target links its own library, so it gets its own executable and never replaces v2.00.
     set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-spec2)
+elseif(GT4_TARGET STREQUAL "tt")
+    set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-tt)
 endif()
 target_include_directories(gt4vulkan PRIVATE "${PORT}")
 target_compile_definitions(gt4vulkan PRIVATE PS2_WINDOW)
