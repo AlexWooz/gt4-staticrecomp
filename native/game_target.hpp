@@ -338,6 +338,35 @@ inline constexpr HookAddresses kTTHooks = {
     /* widescreen_preset_wide */ 0x585750u,
     /* widescreen_preset_4_3_ntsc */ 0x585780u,
     /* widescreen_preset_wide_ntsc */ 0x5857B0u,
+    /* race_display_index_offset */ 0u,
+    /* race_display_index_normal */ 0u,
+    /* race_display_index_480p */ 0u,
+    /* race_display_index_1080i */ 0u,
+    /* init_monitor */ 0u,
+    /* camera_call_return */ 0u,
+    /* race_display_render */ 0u,
+    /* display_request_state */ 0u,
+    /* display_request_pending_offset */ 0u,
+    /* display_request_mode_offset */ 0u,
+    /* display_request_row_offset */ 0u,
+    /* hud_parameter_block */ 0u,
+    /* hud_parameter_words */ 0u,
+    /* hud_matrix_offset */ 0u,
+    // TASK-017 license demo guard, mapped 2026-11-11 (docs/TT-STUDY.md): the cipher 0x004A4228 is v2.00 func_00579E00
+    // (masked-identical; FT 0x597DC0, T8 0x6190A0); its wrapper 0x0042F7B0 has three callers: the two "license/%s" loaders
+    // 0x0010B6D0 (call 0x0010B75C) and 0x0010B860 (call 0x0010B8EC), and the card path 0x0042F710. Each loader then calls
+    // vtbl +0x510 / +0x1C8 (as Spec II) with a1 = buffer + header offset (0x0050F578 is `addu v0,a0,a1`), returning to
+    // 0x0010B810 / 0x0010B9A0. The demo-input virtuals 0x00386D90 / 0x00386DD0 (v2.00 0x003EAD18 / 0x003EAD58,
+    // masked-identical) add 0x1A24 and call Manager::load 0x002E8BD8 (v2.00 0x00346BB8, masked-identical). Standard
+    // CRC-32 table at 0x6191A0. No body shift: TT's files keep the stream at body + 0x1A24 (license_guard.hpp).
+    /* license_load_demo_inputs */ 0x386D90u,
+    /* license_loader_entry */ 0x10B6D0u,
+    /* license_loader_return */ 0x10B810u,
+    /* license_replay_loader_entry */ 0x10B860u,
+    /* license_replay_loader_return */ 0x10B9A0u,
+    /* license_crc_table */ 0x6191A0u,
+    /* license_manager_add */ 0x1A24u,
+    /* license_body_shift */ 0u,
 };
 inline constexpr Profile kTT{Id::tt, "Tourist Trophy", 32u << 20, kTTHooks};
 

@@ -56,7 +56,16 @@ constexpr std::uint32_t loader_for_return(std::uint32_t return_address) noexcept
 inline constexpr std::uint32_t kHeaderBytes = 16u;
 inline constexpr std::uint32_t kExpectedBodyOffset = 0x40u;
 inline constexpr std::uint32_t kMaxBodySize = 0x00100000u;    // license demos are 8-36 KiB; refuse anything absurd
-inline constexpr std::uint32_t kManagerOffset = 0x1AA4u;       // record count n (Manager stream) in the decrypted body
+// Record count n (Manager stream) in the decrypted body. The GT4 demo files (v2.00 and the GT4-format files Spec II
+// loads) keep it at 0x1AA4. Tourist Trophy's own demo files are read by a loader that hands the virtual the header's
+// body start (no shift) and a virtual that adds 0x1A24, so TT keeps the stream at body + 0x1A24 (Confirmed: the exactly
+// decrypted license 1 demo passes the game CRC and has n = 0 and one Recorder ending at the body end there;
+// docs/TT-STUDY.md).
+// Keyed on the active target (not on a build macro), so fixtures pinned to v2.00 or Spec II in a TT build keep 0x1AA4.
+inline constexpr std::uint32_t kGt4ManagerOffset = 0x1AA4u;
+inline constexpr std::uint32_t kTTManagerOffset = 0x1A24u;
+inline constexpr std::uint32_t kManagerOffset =
+    ::gt4::target::active().id == ::gt4::target::Id::tt ? kTTManagerOffset : kGt4ManagerOffset;
 inline constexpr std::uint32_t kSkipCount = 0xFFFFFFFFu;       // n < 0: Manager::load copies no records
 
 // The loader computes buffer + header offset; the demo-input virtual may receive that pointer shifted by kBodyShift.

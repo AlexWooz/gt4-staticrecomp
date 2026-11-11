@@ -152,6 +152,36 @@ performance, license guard, IPU, SPU2 or memory card capsule (VU microcode on th
   frame deinterlaced (`deinterlaced_frames` = presented frames), game fixes on, no visible regressions in owner play.
 - Headless menus, 1,200 frames: 290 fps (minimal) against 365 fps (release-style). Race speed is the owner's check.
 
+## License demos: guard and exact decrypt [C]
+
+2026-11-11, branch `task/tt-target`.
+
+- **Same cipher, Spec II-shaped loaders.** TT's cipher 0x004A4228 is v2.00 `func_00579E00` (masked-identical; FT at
+  0x597DC0 and T8 at 0x6190A0 match the oracle formulas). Its wrapper 0x0042F7B0 has three callers: the two
+  `license/%s` loaders 0x0010B6D0 / 0x0010B860 and the card path 0x0042F710. The loaders call vtable +0x510 / +0x1C8 (as
+  Spec II) with a1 = buffer + header offset, returning to 0x0010B810 / 0x0010B9A0. The demo-input virtuals 0x00386D90 /
+  0x00386DD0 add 0x1A24; `Manager::load` 0x002E8BD8 is masked-identical to v2.00.
+- **Symptom without a fix:** starting License 1 crashed (`missing code at 0x00000000`, ra 0: a stack wiped by the
+  record copy, the TASK-017 failure).
+- **Guard (TASK-017) mapped for TT.** `kManagerOffset` is per target (TT 0x1A24, no body shift; v2.00 and Spec II keep
+  0x1AA4). The guard capsule `slice269-tt-license-guard-runtime` is byte-identical to the release's slice376 derivation;
+  only TT's table changes what it guards. With it, License 1 stopped crashing (`count=0x7F7F7F7F ... -> skipped`) but the
+  demo did not play and the rider spawned off the course, as under PCSX2 without a patched disc: the demo file carries
+  the license setup as well as the inputs.
+- **Exact decrypt.** `native/tt_license_decrypt.*` ports the oracle's CRC-confirmed beam search (chop or chop + 1 ulp per
+  div.s, the measured priors, saturation step <= 400, accepted only when the game's own check passes).
+  `scripts/tt_license_units.py` adds one host call at TT's cipher entry (as `camera360_units.py` does for the camera);
+  the call decrypts from the cipher text the game passes, sets v0 = 1 and returns, or leaves the game's code to run
+  (guard behind it). `GT4_TT_LICENSE_EXACT=0` turns it off. GT4's units, capsules and pins are untouched.
+- **Result (owner, License 1):** `exact (CRC confirmed, saturation step 241, 78 div.s one ulp up, ~850 ms)`; the guard
+  then reports `crc=ok layout=ok count=0x00000000` at body + 0x1A24 (confirming TT's offset). The demo plays and the
+  owner's own run starts on the course.
+- Checks: `native_tt_license_decrypt` (six synthetic files encrypted with hardware-like ulp choices are recovered byte
+  for byte; a wrong key is refused), `native_tt_hooks`, and the v2.00 `native_license_guard` fixture now compiles the
+  guard itself, so it tests the v2.00 rule in any target's build.
+- [U] Other licenses: GT4 recovered 528 of 592 files with this search; a TT file without a confirmed chain falls back to
+  the guard (no crash, no demo).
+
 ## Unknowns
 
 - [U] IOP side: whether `IOPRP300.IMG` and `IRX/` match GT4's set. GT4's IOP modules were not compared.

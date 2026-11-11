@@ -418,9 +418,24 @@ target_include_directories(gt4_license_guard PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}
 if(GT4_LICENSE_GUARD_ENABLED)
     target_link_libraries(ps2runtime_vulkan PUBLIC gt4_license_guard)
 endif()
-add_executable(license_guard_fixture license_guard_fixture.cpp)
-target_link_libraries(license_guard_fixture PRIVATE gt4_license_guard)
+# The fixture compiles the guard itself: it is pinned to v2.00 below (GT4_TARGET_FIXTURE_V200), and gt4_license_guard is
+# built for the active target, whose Manager offset differs in a Tourist Trophy build.
+add_executable(license_guard_fixture license_guard_fixture.cpp license_guard.cpp)
 target_compile_options(license_guard_fixture PRIVATE /W4)
+# Tourist Trophy (GT4_TARGET=tt): the TT hook table and the guard rule at TT's own Manager offset.
+if(GT4_TARGET STREQUAL "tt")
+    add_executable(tt_hooks_fixture tt_hooks_fixture.cpp license_guard.cpp)
+    target_compile_options(tt_hooks_fixture PRIVATE /W4)
+    add_test(NAME native_tt_hooks COMMAND $<TARGET_FILE:tt_hooks_fixture>)
+    # TT license demos: exact, CRC-confirmed host decrypt (scripts/tt_license_units.py adds the call to TT's cipher).
+    add_library(gt4_tt_license STATIC tt_license_decrypt.cpp)
+    target_compile_options(gt4_tt_license PRIVATE /W4)
+    target_include_directories(gt4_tt_license PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_executable(tt_license_decrypt_fixture tt_license_decrypt_fixture.cpp)
+    target_link_libraries(tt_license_decrypt_fixture PRIVATE gt4_tt_license)
+    target_compile_options(tt_license_decrypt_fixture PRIVATE /W4)
+    add_test(NAME native_tt_license_decrypt COMMAND $<TARGET_FILE:tt_license_decrypt_fixture>)
+endif()
 # Sane data kept, insane count with CRC fail guarded, CRC pass kept.
 add_test(NAME native_license_guard COMMAND $<TARGET_FILE:license_guard_fixture>)
 # TASK-100 S3: the per-target guest-hook table (v2.00 values and the disabled Spec II default).
@@ -995,6 +1010,10 @@ if(GT4_TARGET STREQUAL "spec2")
     set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-spec2)
 elseif(GT4_TARGET STREQUAL "tt")
     set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-tt)
+    # The host side of the call scripts/tt_license_units.py adds to TT's license cipher; a TT library built from the plain
+    # units leaves it unused.
+    target_sources(gt4vulkan PRIVATE tt_license_decrypt_hook.cpp)
+    target_link_libraries(gt4vulkan PRIVATE gt4_tt_license)
 endif()
 target_include_directories(gt4vulkan PRIVATE "${PORT}")
 target_compile_definitions(gt4vulkan PRIVATE PS2_WINDOW)
