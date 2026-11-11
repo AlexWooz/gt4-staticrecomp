@@ -1,5 +1,30 @@
 # Current Status
 
+## 2026-11-10: world texture transfer/mip fixes 3 and 4 (TASK-090, branch `task/090-texture-mip`)
+
+The world-materials v2 fixes 3 and 4 are measured and the content half of fix 3 is fixed. A new per-pixel material
+dump (`gt4_coregs3_render --sample-dump`, 24 B/px) and a census script (`scripts/coregs3_bench/gs_texture_census.py`)
+invert the captured chain (FIX 127, FIX 255, the CT16 present with `DIMX 0x0001044501100554`) on the reference and
+undo the per-pixel MODULATE and fog: the whole-mask texel ratio is **1.019** and the road's **0.917** (the study's
+1.0 +/- 0.1 gate met), so the study's 1.43x is the post chain, not the palette; the road's CSM1 group 0 palette at
+CBP 0x368F (CSA 0, TEX2 T8 load, CT32 entries) is shown equal at the level. The palette-vs-content split found the
+real content defect: the GS interpolates S, T and Q linearly in screen space and divides (chapter 01.5), and the tapped
+Q is not the 1/w weight (`|Q*w|` spread up to **92.4x** over 23,576 triangles), so the perspective-correct UV form
+sampled different texels; the GS STQ coordinate raises the road correlation **0.111 -> 0.175**, its fit slope 0.286 ->
+**0.578**, its chain PSNR 25.03 -> **25.90**, and the chain whole-mask PSNR 20.78 -> **20.95**, pct_bad 27.7 ->
+**27.0%**, mean |diff| 13.47 -> **12.95**. The mip path is implemented and measured (tapped MIPTBP1/2, levels 1..MXL,
+the GS explicit LOD `K/16 - log2|Q|*2^L` with LOD -12.35..23.21, MMIN 2..5 filters): 99.5% of the road's 1.24M
+fragments select level 1, but the captured level-1 address (MIPTBP1 TBP 0x3662) holds **another texture's page** at the
+job, so `--mip` lowers the road's high-pass correlation 0.100 -> 0.078 and moves the page ratio 1.489 -> 1.620
+(outside +/-0.05); the path is off by default and the per-job capture window now includes the MIPTBP levels
+(`texture_mip_windows`, MTBA too), so the next `.gt4vram` carries the chain. Gates: `--no-mip` world and chain renders
+**byte-identical** to the pre-round tool (`34BDEE07...` / `BFA47B67...`), car-only render byte-identical
+(`B0E7082B...`, report `63FADB34...`), 3x off/shadow **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0
+differences, 13/13 frames), CTest coregs3 **18/18**, Python **17/17**. The per-page spread gate (+/-0.1) is still not
+met (0.646..1.126, median 0.912; the low pages 0x3721/0x37B5/0x3E47 are a named per-material level residual), and the
+study's headline gates (PSNR >= 24, SSIM >= 0.75, pct_bad <= 10%) remain unmet at 20.95 dB / 0.590 / 27.0%. Evidence
+`build/evidence-texture-mip/`; study updated in [COREGS3-WORLD-MATERIALS-V2](COREGS3-WORLD-MATERIALS-V2.md).
+
 ## 2026-11-10: the live CoreGS 3.0 presentation timeline (TASK-090, branch `task/090-live-timeline`)
 
 `GT4_COREGS3=present` now presents the captured car pass at a constant requested rate (20/30/45/60/120/144 Hz, default
