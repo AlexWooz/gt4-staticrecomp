@@ -35,6 +35,7 @@ struct Store {
   std::uint32_t base_blocks = 0;
   std::uint64_t base_vblank = 0;
   bool base_valid = false;
+  FrameEnv frame_env;
   Counters counters;
 };
 
@@ -329,6 +330,18 @@ std::shared_ptr<const JobTexture> find(std::uint32_t guest_address) noexcept {
     return nullptr;
   }
   return found->second;
+}
+
+void note_frame_env(const FrameEnv &env) noexcept {
+  Store &s = store();
+  const std::lock_guard<std::mutex> lock(s.mutex);
+  s.frame_env = env;
+}
+
+FrameEnv frame_env() noexcept {
+  Store &s = store();
+  const std::lock_guard<std::mutex> lock(s.mutex);
+  return s.frame_env;
 }
 
 const Counters &counters() noexcept { return store().counters; }

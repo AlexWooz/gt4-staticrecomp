@@ -111,6 +111,21 @@ bool build_tap_snapshot(std::uint64_t frame_vblank, const std::vector<std::uint3
 // record alive even when it is pruned from the store while the renderer still uses it.
 std::shared_ptr<const JobTexture> find(std::uint32_t guest_address) noexcept;
 
+// The GS dither/frame state at the VBlank flush, for the captured post chain of the live present: DIMX, DTHE, COLCLAMP
+// and the native display size the CT16 dither cell is defined over. The faithful CT16 model needs all four; the modern
+// path (GT4_COREGS3_DITHER=0) ignores them. Noted by the backend flush from the renderer's register file and display
+// layout (the stream-owning thread), read by the present layer's frame build.
+struct FrameEnv {
+  std::uint64_t dimx = 0;
+  std::uint32_t dthe = 0;
+  std::uint32_t colclamp = 1;
+  std::uint32_t native_width = 0;
+  std::uint32_t native_height = 0;
+  bool valid = false;
+};
+void note_frame_env(const FrameEnv &env) noexcept;
+FrameEnv frame_env() noexcept;
+
 struct Counters {
   std::atomic<std::uint64_t> sources = 0;         // pending source entries recorded
   std::atomic<std::uint64_t> sources_dropped{0}; // pending entries forgotten at the bound (their job never executed)

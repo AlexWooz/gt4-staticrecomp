@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "../hw_gs/coregs3/hw_coregs3_post.hpp"
 #include "coregs3_wet_composite.hpp"
 
 namespace {
@@ -464,6 +465,58 @@ void test_present_dither_switch() {
   check(has_negative && has_non_negative, "the captured DIMX carries both signs across the 4x4 cell");
 }
 
+// TASK-090 live post chain: the packed push word and the epilogue helpers must be the offline chain's arithmetic, so
+// the live pixels get exactly the operands the captured ops wrote.
+void test_live_post_words() {
+  gt4::hw::coregs3::PostParameters parameters;
+  parameters.output_width = 1920;
+  parameters.output_height = 1344;
+  parameters.native_width = 640;
+  parameters.native_height = 448;
+  parameters.dimx = 0x0001044501100554ull;
+  parameters.faithful = true;
+  parameters.dthe = true;
+  parameters.colclamp = true;
+  std::uint32_t words[4] = {};
+  gt4::hw::coregs3::build_post_words(parameters, words);
+  check((words[0] & 0xFFFFu) == 1920 && (words[0] >> 16) == 1344, "the output size packs into post.x");
+  check((words[1] & 0x7FFu) == 640 && ((words[1] >> 11) & 0x7FFu) == 448, "the native size packs into post.y");
+  const std::uint32_t flags = words[1] >> 22;
+  check((flags & 63u) == 63u, "every enabled operation has its flag (chain, faithful, DTHE, clamp, FIX 127, FIX 255)");
+  check(words[2] == 0x01100554u && words[3] == 0x00010445u, "the DIMX halves pack low then high");
+  // A disabled operation clears its flag only.
+  parameters.fix255 = false;
+  parameters.dimx = 0;
+  gt4::hw::coregs3::build_post_words(parameters, words);
+  check(((words[1] >> 22) & 32u) == 0 && ((words[1] >> 22) & 16u) != 0, "the FIX 255 switch clears its own flag");
+  parameters.dimx = 0x0001044501100554ull;
+  // The live dither entry must equal the offline gs_dither_entry at the 3x validation scale.
+  for (std::uint32_t y = 0; y < 12; ++y) {
+    for (std::uint32_t x = 0; x < 12; ++x) {
+      const int live = gt4::hw::coregs3::dither_entry(parameters.dimx, x, y, 1920, 1344, 640, 448);
+      const int offline = gs_dither_entry(parameters.dimx, x, y, 3);
+      check(live == offline, "the live dither entry matches gs_dither_entry at 3x");
+    }
+  }
+  // The CT16 channel and both multiplies must reproduce the offline arithmetic for every input.
+  for (int value = -8; value <= 263; ++value) {
+    for (bool clamp_enabled : {true, false}) {
+      check(gt4::hw::coregs3::ct16_channel(value, clamp_enabled) == ct16_channel(value, clamp_enabled),
+            "the live CT16 channel matches the offline model");
+    }
+  }
+  for (int value = 0; value < 256; ++value) {
+    const std::uint32_t fix127 = (static_cast<std::uint32_t>(value) * 127u) >> 7u;
+    const std::uint32_t fix255 = (static_cast<std::uint32_t>(value) * 255u) >> 7u;
+    check(gt4::hw::coregs3::post_multiply(static_cast<std::uint8_t>(value), 127) ==
+              static_cast<std::uint8_t>(fix127 > 255u ? 255u : fix127),
+          "the FIX 127 multiply matches apply_full_screen_multiply");
+    check(gt4::hw::coregs3::post_multiply(static_cast<std::uint8_t>(value), 255) ==
+              static_cast<std::uint8_t>(fix255 > 255u ? 255u : fix255),
+          "the FIX 255 multiply matches apply_full_screen_multiply");
+  }
+}
+
 void test_dither_mode_parsing() {
   DitherMode mode = DitherMode::faithful;
   check(kDefaultDitherMode == DitherMode::off, "the modern CoreGS 3.0 path defaults to no dither");
@@ -488,6 +541,7 @@ int main() {
   test_present();
   test_present_dither_switch();
   test_dither_mode_parsing();
+  test_live_post_words();
   if (failures != 0) {
     std::fprintf(stderr, "coregs3_wet_composite: %d failure(s)\n", failures);
     return 1;

@@ -1103,7 +1103,8 @@ void print_report(std::FILE *out) noexcept {
                  "skipped_reflection %llu sky_skipped %llu far_skipped %llu fog_items %llu fog_missing %llu "
                  "blend_deferred %llu depth_defaulted %llu alpha_fail_defaulted %llu texture_untextured %llu "
                  "texture_no_record %llu texture_no_uv %llu texture_texgen %llu filter_linear %llu filter_defaulted %llu "
-                 "mip_defaulted %llu\n",
+                 "mip_defaulted %llu post_items %llu post_faithful %llu post_env_missing %llu light_draws_lit %llu "
+                 "light_draws_fallback %llu light_vertices_lit %llu light_vertices_fallback %llu\n",
                  static_cast<unsigned long long>(load(p.world_frames)),
                  static_cast<unsigned long long>(load(p.world_items)),
                  static_cast<unsigned long long>(load(p.world_vertices)),
@@ -1138,7 +1139,14 @@ void print_report(std::FILE *out) noexcept {
                  static_cast<unsigned long long>(load(p.world_texture_texgen)),
                  static_cast<unsigned long long>(load(p.world_filter_linear)),
                  static_cast<unsigned long long>(load(p.world_filter_defaulted)),
-                 static_cast<unsigned long long>(load(p.world_mip_defaulted)));
+                 static_cast<unsigned long long>(load(p.world_mip_defaulted)),
+                 static_cast<unsigned long long>(load(p.world_post_items)),
+                 static_cast<unsigned long long>(load(p.world_post_faithful)),
+                 static_cast<unsigned long long>(load(p.world_post_env_missing)),
+                 static_cast<unsigned long long>(load(p.world_light_draws_lit)),
+                 static_cast<unsigned long long>(load(p.world_light_draws_fallback)),
+                 static_cast<unsigned long long>(load(p.world_light_vertices_lit)),
+                 static_cast<unsigned long long>(load(p.world_light_vertices_fallback)));
   // Per-family and per-status lighting detail of the live layer (coregs3_lighting.hpp programs). Cumulative since the
   // process start; a draw may appear in more than one family because the capture mixes programs inside a draw.
   for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {

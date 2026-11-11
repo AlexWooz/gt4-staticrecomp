@@ -403,6 +403,18 @@ void test_panel_selection_and_merge() {
   check(panel.counters.path2_other == 1, "the other element is counted, not drawn");
   check(panel.counters.path1_selected == 1 && panel.counters.plate_quads == 1, "one plate quad selected");
   check(panel.counters.refusals == 0, "no refusal in the measured set");
+  check(panel.draws[0].anchor == HudAnchor::right && panel.draws[1].anchor == HudAnchor::right,
+        "the measured B-Spec speed plate and digits are right-anchored");
+  check(panel.counters.anchor_right == 2 && panel.counters.anchor_left == 0 && panel.counters.anchor_centre == 0,
+        "the anchor census counts the two right-anchored speed draws");
+
+  // The census-driven `all` selection classifies each element: the synthetic left digit is left-anchored and the
+  // bottom-right plate is right-anchored.
+  HudPanel all;
+  check(build_hud_panel(batches, tap_data, tap_records, scene, HudElement::all, all, error),
+        "the all-element panel builds from the synthetic stream and tap");
+  check(all.counters.anchor_left == 1 && all.counters.anchor_right == 2 && all.counters.anchor_centre == 0,
+        "the all panel anchors the left digit left and the two bottom-right speed draws right");
 
   // A missing tap refuses the plate with its named reason.
   HudPanel without;
@@ -732,6 +744,215 @@ void test_panel_census() {
         "a census without the present blit is refused");
 }
 
+// TASK-214/TASK-080: the aspect layout and the measured element anchor rule.
+void test_aspect_layout_and_anchor_rule() {
+  // 16:9 at the 3x validation scale: the captured mapping (scale 3 x 3) and no anchor translation. This is the identity
+  // the existing HUD A/Bs require.
+  const HudAspectLayout reference = hud_aspect_layout(640.0, 448.0, 1920, 1344, kHudReferenceAspect);
+  check(reference.anchored, "the 16:9 target aspect is an anchored layout");
+  check(std::abs(reference.virtual_width - 640.0) < 1e-9, "the 16:9 virtual canvas is the captured 640-wide canvas");
+  check(std::abs(reference.scale_x - 3.0) < 1e-9 && std::abs(reference.scale_y - 3.0) < 1e-9,
+        "the 3x validation scale maps 640x448 to 1920x1344");
+  check(reference.anchor_offset(HudAnchor::left) == 0.0 && reference.anchor_offset(HudAnchor::centre) == 0.0 &&
+            reference.anchor_offset(HudAnchor::right) == 0.0,
+        "the 16:9 render has no anchor translation");
+
+  // 1080p 16:9: a square-pixel 16:9 output. The vertical scale is the output height over the 480-unit HUD canvas.
+  const HudAspectLayout hd = hud_aspect_layout(640.0, 448.0, 1920, 1080, kHudReferenceAspect);
+  check(std::abs(hd.scale_x - 3.0) < 1e-9 && std::abs(hd.scale_y - 1080.0 / 448.0) < 1e-9,
+        "1080p 16:9 keeps the captured layout (x 3, y 1080/448)");
+
+  // 3440x1440 is 2.3889:1, not the nominal 21:9. The exact output aspect widens the canvas to 860 captured units and
+  // keeps the UI's square design: scale_x 4, scale_y 1440/448, right anchor translation 220, centre 110.
+  const double ultrawide_aspect = 3440.0 / 1440.0;
+  const HudAspectLayout ultrawide = hud_aspect_layout(640.0, 448.0, 3440, 1440, ultrawide_aspect);
+  check(std::abs(ultrawide.virtual_width - 860.0) < 1e-9, "3440x1440 widens the HUD canvas to 860 units");
+  check(std::abs(ultrawide.scale_x - 4.0) < 1e-9 && std::abs(ultrawide.scale_y - 1440.0 / 448.0) < 1e-9,
+        "the ultrawide output maps the canvas with x 4 and y 1440/448");
+  check(ultrawide.anchor_offset(HudAnchor::left) == 0.0 && std::abs(ultrawide.anchor_offset(HudAnchor::centre) - 110.0) < 1e-9 &&
+            std::abs(ultrawide.anchor_offset(HudAnchor::right) - 220.0) < 1e-9,
+        "the edge/centre anchors translate by 0/110/220 captured units");
+  // The nominal 21:9 value at the 3440x1440 output would stretch the UI by 2.4%: the rule is parameterised by the exact
+  // output aspect, and the tool's `auto` mode passes that.
+  const HudAspectLayout nominal = hud_aspect_layout(640.0, 448.0, 3440, 1440, 21.0 / 9.0);
+  check(std::abs(nominal.virtual_width - 840.0) < 1e-9 && nominal.scale_x > ultrawide.scale_x + 0.09,
+        "the nominal 21:9 ratio is 840 canvas units; a 3440x1440 output must pass its exact aspect");
+
+  // No target aspect: the captured mapping of the previous tool (byte identity).
+  const HudAspectLayout captured = hud_aspect_layout(640.0, 448.0, 1920, 1344, 0.0);
+  check(!captured.anchored && std::abs(captured.scale_x - 3.0) < 1e-9 && std::abs(captured.scale_y - 3.0) < 1e-9,
+        "without a target aspect the mapping is the captured canvas stretch");
+
+  // The measured A-Spec element rule (1x census boxes of scene 7600).
+  check(hud_classify_anchor(0x3C20u, 33.8f, 65.2f, 640.0) == HudAnchor::left, "the position plate is left-anchored");
+  check(hud_classify_anchor(0x3C40u, 39.9f, 57.9f, 640.0) == HudAnchor::left, "the position digits are left-anchored");
+  check(hud_classify_anchor(0x3B80u, 25.5f, 160.5f, 640.0) == HudAnchor::left, "the minimap outline is left-anchored");
+  check(hud_classify_anchor(0x3B60u, 102.6f, 119.1f, 640.0) == HudAnchor::left,
+        "the minimap sign icon stays with its block (the page rule, not the 96 px margin)");
+  check(hud_classify_anchor(0x3000u, 531.5f, 596.0f, 640.0) == HudAnchor::right, "the Best/Last times are right-anchored");
+  check(hud_classify_anchor(0x3000u, 297.5f, 364.0f, 640.0) == HudAnchor::centre, "the lap timer is centre-anchored");
+  check(hud_classify_anchor(0x3000u, 260.5f, 378.2f, 640.0) == HudAnchor::centre, "FULL THROTTLE is centre-anchored");
+  check(hud_classify_anchor(0x3DE0u, 348.0f, 445.5f, 640.0) == HudAnchor::centre, "the tachometer dial is centre-anchored");
+  check(hud_classify_anchor(0x3DA0u, 193.5f, 291.0f, 640.0) == HudAnchor::centre,
+        "the speedometer dial is centre-anchored");
+  // The geometric fallback for an unclassified page: the game's wideOffset distance bounds the edge block.
+  check(hud_classify_anchor(0x3999u, 550.5f, 612.0f, 640.0) == HudAnchor::right, "a measured right plate falls back right");
+  check(hud_classify_anchor(0x3999u, 21.8f, 129.0f, 640.0) == HudAnchor::left, "a measured left block falls back left");
+  check(hud_classify_anchor(0x3999u, 200.0f, 400.0f, 640.0) == HudAnchor::centre, "a central draw falls back centre");
+  check(std::string(hud_anchor_name(HudAnchor::left)) == "left" &&
+            std::string(hud_anchor_name(HudAnchor::centre)) == "centre" &&
+            std::string(hud_anchor_name(HudAnchor::right)) == "right",
+        "the anchor names round-trip");
+}
+
+// The anchored raster on a synthetic panel: three 2x2 sprites at the left edge, the centre and the right edge, drawn at
+// 640x448 (the captured mapping) and at 3440x1440 (the ultrawide anchoring). The covered pixel ranges are the exact
+// half-open rule the renderer uses.
+void test_aspect_raster() {
+  // A 4x4 T4 page with a 16-entry CSM1 palette (the same hand-authored texture the S3 raster test uses): every sampled
+  // texel is index 1 with RGBA (200, 100, 50, 128).
+  std::vector<std::uint8_t> texels(4 * 4 / 2, 0x11);
+  texels[7] = 0x21;
+  std::vector<std::uint8_t> palette(16 * 16 * 4, 0);
+  palette[4 + 0] = 200;
+  palette[4 + 1] = 100;
+  palette[4 + 2] = 50;
+  palette[4 + 3] = 128;
+  std::vector<GsDecodeImageUpload> uploads;
+  GsDecodeImageUpload texture_upload;
+  texture_upload.vblank = 1;
+  texture_upload.has_transfer_state = true;
+  texture_upload.dbp = 0x0100;
+  texture_upload.dbw = 1;
+  texture_upload.dpsm = 0x14;
+  texture_upload.rrw = 4;
+  texture_upload.rrh = 4;
+  texture_upload.data = texels;
+  uploads.push_back(texture_upload);
+  GsDecodeImageUpload palette_upload = texture_upload;
+  palette_upload.dbp = 0x0110;
+  palette_upload.dpsm = 0x00;
+  palette_upload.rrw = 16;
+  palette_upload.rrh = 16;
+  palette_upload.data = palette;
+  uploads.push_back(palette_upload);
+  SlmImage slm;
+  HudUploadCounters upload_counters;
+  std::string error;
+  check(build_hud_stream_vram(uploads, 1, false, slm, upload_counters, error), "the anchor texture uploads build");
+  HudTextureCache cache(slm);
+
+  HudDrawState state;
+  state.prim = 0x15E;
+  state.frame = 0x020A008Cu;
+  state.tex0 = 0x0100ull | (1ull << 14) | (0x14ull << 20) | (2ull << 26) | (2ull << 30) | (1ull << 34) |
+               (0x0110ull << 37);
+  state.tex1 = 0;
+  state.clamp = 2ull | (2ull << 2) | (3ull << 14) | (3ull << 34);
+  state.alpha = 0x44;
+  // A synthetic scissor beyond the canvas on every side: the anchor test isolates the mapping from the measured
+  // full-screen scissor's own edge convention (the captured panel uses 0..639 x 0..447; no element touches its edge).
+  state.scissor = (2047ull << 16) | (2047ull << 48);
+  const auto sprite = [&](float x0, float x1, HudAnchor anchor) {
+    HudDraw draw;
+    draw.state = state;
+    draw.verts[0] = HudVertex{x0, 10.0f, 0.0f, 0.0f, 0xFF808080u, false};
+    draw.verts[1] = HudVertex{x1, 12.0f, 2.0f, 2.0f, 0xFF808080u, true};
+    draw.vertices = 2;
+    draw.min_x = x0;
+    draw.max_x = x1;
+    draw.min_y = 10.0f;
+    draw.max_y = 12.0f;
+    draw.anchor = anchor;
+    return draw;
+  };
+  HudPanel panel;
+  panel.draws.push_back(sprite(0.0f, 2.0f, HudAnchor::left));
+  panel.draws.push_back(sprite(319.0f, 321.0f, HudAnchor::centre));
+  panel.draws.push_back(sprite(638.0f, 640.0f, HudAnchor::right));
+
+  // The captured mapping at 640x448: left pixels 0..1, centre 319..320, right 638..639 (the half-open coverage rule).
+  std::vector<std::uint8_t> base(640 * 448 * 4, 32);
+  std::vector<std::uint8_t> base_mask;
+  HudDrawCounters base_counters;
+  HudDrawOptions captured;
+  check(draw_hud_panel(panel, cache, base, 640, 448, captured, &base_mask, base_counters, error),
+        "the anchor panel rasters at 640x448");
+  check(base_mask[10 * 640 + 0] == 255 && base_mask[10 * 640 + 1] == 255 && base_mask[10 * 640 + 2] == 0,
+        "the left sprite covers pixels 0..1 of the captured canvas");
+  check(base_mask[10 * 640 + 319] == 255 && base_mask[10 * 640 + 320] == 255, "the centre sprite stays at 319..320");
+  check(base_mask[10 * 640 + 638] == 255 && base_mask[10 * 640 + 639] == 255, "the right sprite reaches pixel 639");
+
+  // The same panel at 3440x1440 with its exact aspect: left stays at the left edge, the centre moves by half of the
+  // added width (110 captured units = 440 output pixels), the right edge stays at the right edge.
+  std::vector<std::uint8_t> ultrawide_image(3440 * 1440 * 4, 32);
+  std::vector<std::uint8_t> ultrawide_mask;
+  HudDrawCounters ultrawide_counters;
+  HudDrawOptions options;
+  options.target_aspect = 3440.0 / 1440.0;
+  check(draw_hud_panel(panel, cache, ultrawide_image, 3440, 1440, options, &ultrawide_mask, ultrawide_counters,
+                       error),
+        "the anchor panel rasters at 3440x1440");
+  // x 2..9 (the [0,2) canvas box at scale 4), y 34..39 (the [10,12) box at 1440/448).
+  check(ultrawide_mask[34 * 3440 + 2] == 255 && ultrawide_mask[34 * 3440 + 9] == 255,
+        "the left sprite covers the left-edge output pixels 2..9");
+  check(ultrawide_mask[34 * 3440 + 1] == 0 && ultrawide_mask[34 * 3440 + 10] == 0,
+        "the left sprite does not cover the pixels outside its canvas box");
+  check(ultrawide_mask[34 * 3440 + 1718] == 255 && ultrawide_mask[34 * 3440 + 1725] == 255,
+        "the centre sprite covers 1718..1725, centred on 1720");
+  check(ultrawide_mask[34 * 3440 + 1717] == 0 && ultrawide_mask[34 * 3440 + 1726] == 0,
+        "the centre sprite is not stretched");
+  check(ultrawide_mask[34 * 3440 + 3434] == 255 && ultrawide_mask[34 * 3440 + 3439] == 255,
+        "the right sprite reaches the last output column");
+  check(ultrawide_mask[34 * 3440 + 3433] == 0, "the right sprite does not start before its anchored box");
+  // The left and centre boxes cover 8x6 output pixels each; the right box ends exactly at the canvas edge, so its last
+  // two sample columns lie beyond the output (6x6 pixels are written).
+  check(ultrawide_counters.pixels == 2 * 8 * 6 + 6 * 6, "the three 2x2 canvas boxes cover 8x6, 8x6 and 6x6 pixels at x4");
+
+  // The 16:9 target aspect is byte-identical to the captured mapping, including at 1920x1344 (anamorphic output).
+  std::vector<std::uint8_t> reference(1920 * 1344 * 4, 32);
+  std::vector<std::uint8_t> reference_mask;
+  HudDrawCounters reference_counters;
+  HudDrawOptions reference_options;
+  reference_options.target_aspect = kHudReferenceAspect;
+  check(draw_hud_panel(panel, cache, reference, 1920, 1344, reference_options, &reference_mask, reference_counters,
+                       error),
+        "the 16:9 anchored panel rasters at 1920x1344");
+  std::vector<std::uint8_t> plain(1920 * 1344 * 4, 32);
+  std::vector<std::uint8_t> plain_mask;
+  HudDrawCounters plain_counters;
+  HudDrawOptions plain_options;
+  check(draw_hud_panel(panel, cache, plain, 1920, 1344, plain_options, &plain_mask, plain_counters, error),
+        "the captured panel rasters at 1920x1344");
+  check(reference == plain && reference_mask == plain_mask,
+        "the 16:9 target aspect is byte-identical to the captured mapping");
+
+  // The aspect range refusals are named, never silently clamped.
+  std::vector<std::uint8_t> narrow(640 * 448 * 4, 32);
+  HudDrawCounters narrow_counters;
+  HudDrawOptions narrow_options;
+  narrow_options.target_aspect = 4.0 / 3.0;
+  check(!draw_hud_panel(panel, cache, narrow, 640, 448, narrow_options, nullptr, narrow_counters, error) &&
+            error.find("narrower than the captured 16:9") != std::string::npos,
+        "a target aspect narrower than 16:9 is refused by name");
+  HudDrawOptions too_wide = narrow_options;
+  too_wide.target_aspect = 7.0;
+  check(!draw_hud_panel(panel, cache, narrow, 640, 448, too_wide, nullptr, narrow_counters, error) &&
+            error.find("6.0") != std::string::npos,
+        "a target aspect above 6.0 is refused by name");
+
+  // The anchor report is the measurement instrument: a header plus one line per draw with its anchor and output box.
+  const HudAspectLayout ultrawide_layout =
+      hud_aspect_layout(640.0, 448.0, 3440, 1440, options.target_aspect);
+  const std::string report = hud_anchor_report(panel, ultrawide_layout);
+  check(report.rfind("index,path,sequence,job,anchor,tbp0,", 0u) == 0u, "the anchor report has its documented header");
+  check(report.find(",left,0x0100,") != std::string::npos && report.find(",centre,0x0100,") != std::string::npos &&
+            report.find(",right,0x0100,") != std::string::npos,
+        "the anchor report names each draw's anchor class");
+  check(report.find(",220.000,3432.000,3440.000,") != std::string::npos,
+        "the right draw's output box carries the 220-unit translation at scale 4");
+}
+
 void test_names() {
   HudElement element;
   check(parse_hud_element("speed", element) && element == HudElement::speed, "the speed element parses");
@@ -748,6 +969,8 @@ int main() {
   test_panel_selection_and_merge();
   test_panel_census();
   test_raster_and_ct16();
+  test_aspect_layout_and_anchor_rule();
+  test_aspect_raster();
   if (failures != 0) {
     std::fprintf(stderr, "%d HUD check(s) failed\n", failures);
     return 1;

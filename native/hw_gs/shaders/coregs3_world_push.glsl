@@ -11,10 +11,13 @@
 //   atlas      origin (x | y << 16), decoded rectangle origin (x0 | y0 << 16), size (w | h << 16), FOGCOL (24-bit).
 //   state      TEST, ALPHA, FRAME.FBMSK and the flags below (the alpha test and the two deferred effects are named so a
 //              reader can tell an implemented state from a simplified one).
+//   post       the captured post chain's packed word (hw_coregs3_post.hpp): output/native sizes, flags and DIMX; the
+//              world and the car fragment stages both read it through coregs3_post.glsl.
 
 layout(push_constant) uniform CoreGS3WorldPush {
     vec4 columns[4];
     uvec4 tex_words;
     uvec4 atlas;
     uvec4 state;
+    uvec4 post;
 } world;

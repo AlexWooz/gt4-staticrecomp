@@ -6770,6 +6770,23 @@ const std::uint8_t *Renderer::Slm() {
 
 const std::uint8_t *Renderer::Coregs3Slm() const { return impl_->memory_.Local().bytes().data(); }
 
+bool Renderer::Coregs3FrameEnv(gt4::hw::coregs3::FrameEnvState &state) const {
+    const auto &env = impl_->frontEnd_.Registers().Env();
+    state.dimx = env.dimx;
+    state.dthe = static_cast<std::uint32_t>(env.dthe & 1u);
+    state.colclamp = static_cast<std::uint32_t>(env.colclamp & 1u);
+    // The layout of 13.2 for the current registers; the previous DBY values are only read for the change flags, so a
+    // copy keeps this query side-effect free.
+    auto previous = impl_->previousDby_;
+    const display::DisplayLayout layout = display::compute_layout(impl_->displayRegs_, previous);
+    const display::CircuitRect *rect = nullptr;
+    for (const display::CircuitRect &circuit : layout.circuits)
+        if (circuit.enabled) { rect = &circuit; break; }
+    state.native_width = rect != nullptr ? rect->display_width : 0;
+    state.native_height = rect != nullptr ? rect->display_height : 0;
+    return rect != nullptr;
+}
+
 const writeback::Counters &Renderer::GetCounters() const { return impl_->counters; }
 const Core2Counters &Renderer::Core2Stats() const {
     impl_->stats.ropBatches = impl_->gpu_.Stats().ropBatches;

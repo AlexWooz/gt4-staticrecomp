@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "../../coregs3/coregs3_vram.hpp"
+#include "../coregs3/hw_coregs3_post.hpp"
 #include "../writeback/hw_gs_writeback.hpp"
 
 namespace hwgs::core2 {
@@ -196,6 +197,9 @@ public:
     // TASK-090 live world: the CPU shadow local memory as the GS stream's owner sees it, without the flush/readback the
     // public Slm() performs. Only a caller on the stream-owning thread (the per-job snapshot) may use it.
     const std::uint8_t *Coregs3Slm() const;
+    // TASK-090 live post chain: the GS dither registers and the native display size at this point, for the faithful CT16
+    // model of the live present. Only a caller on the stream-owning thread (the backend's VBlank flush) may use it.
+    bool Coregs3FrameEnv(gt4::hw::coregs3::FrameEnvState &state) const;
     const writeback::Counters &GetCounters() const;
     const Core2Counters &Core2Stats() const;
     bool Failed() const;

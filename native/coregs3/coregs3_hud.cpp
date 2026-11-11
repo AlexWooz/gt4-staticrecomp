@@ -204,6 +204,69 @@ const char *hud_texture_status_name(HudTextureStatus status) noexcept {
   return "unknown";
 }
 
+// ---- TASK-214/TASK-080: aspect-aware anchoring ----
+
+const char *hud_anchor_name(HudAnchor anchor) noexcept {
+  switch (anchor) {
+    case HudAnchor::centre: return "centre";
+    case HudAnchor::left: return "left";
+    case HudAnchor::right: return "right";
+  }
+  return "unknown";
+}
+
+double HudAspectLayout::anchor_offset(HudAnchor anchor) const noexcept {
+  if (!anchored) return 0.0;
+  const double added = virtual_width - reference_width;
+  switch (anchor) {
+    case HudAnchor::left: return 0.0;
+    case HudAnchor::centre: return added * 0.5;
+    case HudAnchor::right: return added;
+  }
+  return 0.0;
+}
+
+HudAspectLayout hud_aspect_layout(double canvas_width, double canvas_height, std::uint32_t output_width,
+                                  std::uint32_t output_height, double target_aspect, double reference_aspect) {
+  HudAspectLayout layout;
+  layout.reference_width = canvas_width;
+  layout.reference_aspect = reference_aspect;
+  layout.target_aspect = target_aspect;
+  layout.anchored = std::isfinite(target_aspect) && target_aspect > 0.0 && std::isfinite(reference_aspect) &&
+                    reference_aspect > 0.0;
+  layout.virtual_width = layout.anchored ? canvas_width * (target_aspect / reference_aspect) : canvas_width;
+  if (layout.virtual_width <= 0.0) layout.virtual_width = canvas_width;
+  layout.scale_x = static_cast<double>(output_width) / layout.virtual_width;
+  layout.scale_y = static_cast<double>(output_height) / canvas_height;
+  return layout;
+}
+
+HudAnchor hud_classify_anchor(std::uint32_t tbp0, float min_x, float max_x, double canvas_width,
+                              float edge_margin) {
+  // The measured A-Spec (scene 7600) page zones, in the game's own wide 16:9 layout: the position/lap block (pages
+  // 0x3C20/0x3C40/0x3C60/0x3C80 at x 21.8..129) and the minimap (0x3B60/0x3B80/0x3C00 at x 25.5..160.5) are the left
+  // block. The race-font page 0x3000 carries the centre lap timer (x 297.5..364) and FULL THROTTLE (x 260.5..378.2)
+  // as well as the right-hand Best/Last Lap times (x 531.5..596); the measured split is x 500.
+  switch (tbp0) {
+    case 0x3B60u:
+    case 0x3B80u:
+    case 0x3C00u:
+    case 0x3C20u:
+    case 0x3C40u:
+    case 0x3C60u:
+    case 0x3C80u: return HudAnchor::left;
+    default: break;
+  }
+  if (tbp0 == 0x3000u) return min_x >= 500.0f ? HudAnchor::right : HudAnchor::centre;
+  // The geometric fallback (an element on a page the census did not classify): the game's own wideOffset distance is
+  // the boundary between the edge block and the central cluster.
+  const double left_margin = static_cast<double>(min_x);
+  const double right_margin = canvas_width - static_cast<double>(max_x);
+  if (left_margin <= static_cast<double>(edge_margin) && left_margin <= right_margin) return HudAnchor::left;
+  if (right_margin <= static_cast<double>(edge_margin) && right_margin < left_margin) return HudAnchor::right;
+  return HudAnchor::centre;
+}
+
 bool build_hud_stream_vram(const std::vector<GsDecodeImageUpload> &uploads, std::uint64_t stream_vblank,
                            bool include_previous, SlmImage &slm, HudUploadCounters &counters, std::string &error,
                            const SlmImage *base) {
@@ -571,6 +634,11 @@ bool build_hud_panel(const std::vector<GsDecodeBatch> &batches, const std::vecto
     draw.max_x = std::max(draw.verts[0].x, draw.verts[1].x);
     draw.min_y = std::min(draw.verts[0].y, draw.verts[1].y);
     draw.max_y = std::max(draw.verts[0].y, draw.verts[1].y);
+    // TASK-214: the night B-Spec speed element is the bottom-right plate and digits; the census-driven `all` mode uses
+    // the measured page/position rule. The central cluster (the `tach` element) is centre-anchored.
+    draw.anchor = element == HudElement::speed
+                      ? HudAnchor::right
+                      : hud_classify_anchor(draw.state.tex0_tbp0(), draw.min_x, draw.max_x, 640.0);
     // Evidence of the merge: the PATH2-only scissor would have culled this sprite.
     const ScissorRect stream_scissor = scissor_rect(batch.state.scissor);
     if (!stream_scissor.contains(draw.min_x, draw.max_x, draw.min_y, draw.max_y) &&
@@ -690,6 +758,9 @@ bool build_hud_panel(const std::vector<GsDecodeBatch> &batches, const std::vecto
           draw.min_y = std::min(draw.min_y, draw.verts[v].y);
           draw.max_y = std::max(draw.max_y, draw.verts[v].y);
         }
+        draw.anchor = element == HudElement::tach
+                          ? HudAnchor::centre
+                          : hud_classify_anchor(draw.state.tex0_tbp0(), draw.min_x, draw.max_x, 640.0);
         const bool textured = prim_tme(draw.state.prim) && draw.state.tex0 != 0u;
         const bool quad = vertices == 4u && (draw.verts[0].y == draw.verts[1].y) &&
                           (draw.verts[2].y == draw.verts[3].y) && (draw.verts[0].x == draw.verts[2].x) &&
@@ -767,6 +838,8 @@ bool build_hud_panel(const std::vector<GsDecodeBatch> &batches, const std::vecto
       draw.max_x = std::max(std::max(draw.verts[0].x, draw.verts[1].x), std::max(draw.verts[2].x, draw.verts[3].x));
       draw.min_y = std::min(std::min(draw.verts[0].y, draw.verts[1].y), std::min(draw.verts[2].y, draw.verts[3].y));
       draw.max_y = std::max(std::max(draw.verts[0].y, draw.verts[1].y), std::max(draw.verts[2].y, draw.verts[3].y));
+      // TASK-214: the night B-Spec speed plate is the measured bottom-right element.
+      draw.anchor = HudAnchor::right;
       if (draw.min_x < 545.0f || draw.max_x > 620.0f || draw.min_y < 375.0f || draw.max_y > 406.0f) {
         counters.path1_other += 1;
         continue;
@@ -845,6 +918,14 @@ bool build_hud_panel(const std::vector<GsDecodeBatch> &batches, const std::vecto
     if (left.job != right.job) return left.job < right.job;
     return left.path1 && !right.path1;
   });
+  // TASK-214: the anchor census of the selected panel (reported and asserted by the fixture).
+  for (const HudDraw &draw : panel.draws) {
+    switch (draw.anchor) {
+      case HudAnchor::left: counters.anchor_left += 1; break;
+      case HudAnchor::centre: counters.anchor_centre += 1; break;
+      case HudAnchor::right: counters.anchor_right += 1; break;
+    }
+  }
 
   if (panel.draws.empty()) {
     counters.refusals += 1;
@@ -1042,10 +1123,32 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
     error = "HUD canvas is empty";
     return false;
   }
-  // The canvas-to-output mapping (TASK-214): a target pixel centre maps to `(p + 0.5) * canvas / target - 0.5`. At the
-  // measured 640x448 output the mapping is the identity, so the S3 coverage rule below reproduces the measured pixels.
-  const double scale_x = static_cast<double>(width) / static_cast<double>(options.canvas_width);
-  const double scale_y = static_cast<double>(height) / static_cast<double>(options.canvas_height);
+  // TASK-214: the aspect-aware canvas-to-output mapping. With no target aspect the mapping is the captured one (a target
+  // pixel centre maps to `(p + 0.5) * canvas / target - 0.5`), so the S3 coverage rule below reproduces the measured
+  // pixels byte for byte. A target aspect widens the HUD canvas to 480*R units and shifts each element by its measured
+  // anchor; at 16:9 the shift is zero and the mapping is identical to the captured one.
+  const double reference_aspect = std::isfinite(options.reference_aspect) && options.reference_aspect > 0.0
+                                      ? options.reference_aspect
+                                      : kHudReferenceAspect;
+  if (options.target_aspect > 0.0) {
+    if (!std::isfinite(options.target_aspect)) {
+      error = "HUD target aspect is not a finite number";
+      return false;
+    }
+    if (options.target_aspect < reference_aspect - 1e-6) {
+      error = "HUD target aspect is narrower than the captured 16:9 layout (the game's Vert+ HUD is not captured)";
+      return false;
+    }
+    if (options.target_aspect > 6.0) {
+      error = "HUD target aspect is above the supported 6.0 maximum";
+      return false;
+    }
+  }
+  const HudAspectLayout layout = hud_aspect_layout(static_cast<double>(options.canvas_width),
+                                                   static_cast<double>(options.canvas_height), width, height,
+                                                   options.target_aspect, reference_aspect);
+  const double scale_x = layout.scale_x;
+  const double scale_y = layout.scale_y;
   // The first/last target pixel whose canvas centre lies in the half-open draw box or the inclusive scissor rectangle.
   const auto first_covered = [](double minimum, double scale) {
     return static_cast<std::int32_t>(std::ceil((minimum + 0.5) * scale - 0.5));
@@ -1093,6 +1196,8 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
   for (const HudDraw &draw : panel.draws) {
     counters.draws += 1;
     const HudDrawState &state = draw.state;
+    // TASK-214: the element's horizontal anchor translation in captured-canvas units (0 at the captured 16:9 aspect).
+    const double anchor_dx = layout.anchor_offset(draw.anchor);
     if (draw.untextured_strip) {
       const BlendEquation equation = decode_blend_equation(state.alpha);
       const bool blend = prim_abe(state.prim);
@@ -1104,14 +1209,14 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
         counters.reasons["ALPHA equation outside the measured normal/FIX families"] += 1;
         continue;
       }
-      std::int32_t first_x = first_covered(draw.min_x, scale_x);
-      std::int32_t last_x = last_covered(draw.max_x, scale_x);
+      std::int32_t first_x = first_covered(draw.min_x + anchor_dx, scale_x);
+      std::int32_t last_x = last_covered(draw.max_x + anchor_dx, scale_x);
       std::int32_t first_y = first_covered(draw.min_y, scale_y);
       std::int32_t last_y = last_covered(draw.max_y, scale_y);
       const ScissorRect scissor = scissor_rect(state.scissor);
       if (!scissor.empty()) {
-        first_x = std::max(first_x, first_covered(static_cast<double>(scissor.x0), scale_x));
-        last_x = std::min(last_x, last_inside_scissor(static_cast<double>(scissor.x1), scale_x));
+        first_x = std::max(first_x, first_covered(static_cast<double>(scissor.x0) + anchor_dx, scale_x));
+        last_x = std::min(last_x, last_inside_scissor(static_cast<double>(scissor.x1) + anchor_dx, scale_x));
         first_y = std::max(first_y, first_covered(static_cast<double>(scissor.y0), scale_y));
         last_y = std::min(last_y, last_inside_scissor(static_cast<double>(scissor.y1), scale_y));
       }
@@ -1155,7 +1260,7 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
         const std::array<std::int64_t, 2> a = points[ia], b = points[ib], c = points[ic];
         for (std::int32_t py = first_y; py <= last_y; ++py) {
           for (std::int32_t px = first_x; px <= last_x; ++px) {
-            const double canvas_x = (static_cast<double>(px) + 0.5) / scale_x - 0.5;
+            const double canvas_x = (static_cast<double>(px) + 0.5) / scale_x - 0.5 - anchor_dx;
             const double canvas_y = (static_cast<double>(py) + 0.5) / scale_y - 0.5;
             const std::int64_t sample_x = std::llround(canvas_x * 16.0);
             const std::int64_t sample_y = std::llround(canvas_y * 16.0);
@@ -1238,14 +1343,14 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
     sampled.y0 = texture.y0;
     sampled.rgba = texture.rgba.data();
 
-    std::int32_t first_x = first_covered(draw.min_x, scale_x);
-    std::int32_t last_x = last_covered(draw.max_x, scale_x);
+    std::int32_t first_x = first_covered(draw.min_x + anchor_dx, scale_x);
+    std::int32_t last_x = last_covered(draw.max_x + anchor_dx, scale_x);
     std::int32_t first_y = first_covered(draw.min_y, scale_y);
     std::int32_t last_y = last_covered(draw.max_y, scale_y);
     const ScissorRect scissor = scissor_rect(state.scissor);
     if (!scissor.empty()) {
-      first_x = std::max(first_x, first_covered(static_cast<double>(scissor.x0), scale_x));
-      last_x = std::min(last_x, last_inside_scissor(static_cast<double>(scissor.x1), scale_x));
+      first_x = std::max(first_x, first_covered(static_cast<double>(scissor.x0) + anchor_dx, scale_x));
+      last_x = std::min(last_x, last_inside_scissor(static_cast<double>(scissor.x1) + anchor_dx, scale_x));
       first_y = std::max(first_y, first_covered(static_cast<double>(scissor.y0), scale_y));
       last_y = std::min(last_y, last_inside_scissor(static_cast<double>(scissor.y1), scale_y));
     }
@@ -1298,7 +1403,7 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
         // The CoreGS 2.0 coverage rule places each covered pixel at its integer centre of the 2D canvas
         // (`ceil(min) .. ceil(max) - 1`); the target pixel's canvas centre is the interpolation point, so a 3x output
         // samples at 1/3-pixel steps and the UVs and texel filters match the reference's 3x internal raster.
-        const float fx = static_cast<float>((static_cast<double>(px) + 0.5) / scale_x - 0.5);
+        const float fx = static_cast<float>((static_cast<double>(px) + 0.5) / scale_x - 0.5 - anchor_dx);
         const float fy = static_cast<float>((static_cast<double>(py) + 0.5) / scale_y - 0.5);
         float u = u_u0 + (fx - u_x0) / (u_x1 - u_x0) * (u_u1 - u_u0);
         float v = u_v0 + (fy - u_y0) / (u_y1 - u_y0) * (u_v1 - u_v0);
@@ -1368,6 +1473,27 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
   return true;
 }
 
+std::string hud_anchor_report(const HudPanel &panel, const HudAspectLayout &layout) {
+  std::string text =
+      "index,path,sequence,job,anchor,tbp0,min_x,max_x,min_y,max_y,anchor_dx,out_x0,out_x1,out_y0,out_y1\n";
+  char line[512];
+  std::uint32_t index = 0;
+  for (const HudDraw &draw : panel.draws) {
+    const double dx = layout.anchor_offset(draw.anchor);
+    std::snprintf(line, sizeof line, "%u,%s,%u,%llu,%s,0x%04X,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                  index, draw.path1 ? "path1" : "path2", draw.sequence,
+                  static_cast<unsigned long long>(draw.job), hud_anchor_name(draw.anchor), draw.state.tex0_tbp0(),
+                  draw.min_x, draw.max_x, draw.min_y, draw.max_y, dx,
+                  (static_cast<double>(draw.min_x) + dx) * layout.scale_x,
+                  (static_cast<double>(draw.max_x) + dx) * layout.scale_x,
+                  static_cast<double>(draw.min_y) * layout.scale_y,
+                  static_cast<double>(draw.max_y) * layout.scale_y);
+    text += line;
+    index += 1;
+  }
+  return text;
+}
+
 std::string hud_panel_report(const HudPanel &panel, const HudDrawCounters &draws, const HudTextureCache &textures) {
   char line[1024];
   std::string text;
@@ -1390,6 +1516,11 @@ std::string hud_panel_report(const HudPanel &panel, const HudDrawCounters &draws
                 static_cast<unsigned long long>(panel.counters.path1_other),
                 static_cast<unsigned long long>(panel.counters.path1_needles),
                 static_cast<unsigned long long>(panel.counters.refusals));
+  text += line;
+  std::snprintf(line, sizeof line, "HUD anchors: left %llu centre %llu right %llu (TASK-214 element rule)\n",
+                static_cast<unsigned long long>(panel.counters.anchor_left),
+                static_cast<unsigned long long>(panel.counters.anchor_centre),
+                static_cast<unsigned long long>(panel.counters.anchor_right));
   text += line;
   std::snprintf(line, sizeof line,
                 "HUD textures: decodes %llu cache hits %llu refusals %llu; raster draws %llu pixels %llu masked %llu "

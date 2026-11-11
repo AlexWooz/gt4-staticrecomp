@@ -38,7 +38,8 @@ string(REGEX MATCH "Glslang Version: [^\n]*" GT4_HW_GLSLANG_VERSION_LINE "${GT4_
 message(STATUS "HWR shaders: ${GT4_HW_GLSLANG_VERSION_LINE} (pin ${GT4_HW_GLSLANG_SHA256})")
 
 set(HW_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-set(HW_SHADER_INCLUDES "${HW_SHADER_DIR}/hw_pixel_core.glsl" "${HW_SHADER_DIR}/hw_glm_common.glsl")
+set(HW_SHADER_INCLUDES "${HW_SHADER_DIR}/hw_pixel_core.glsl" "${HW_SHADER_DIR}/hw_glm_common.glsl"
+    "${HW_SHADER_DIR}/coregs3_world_push.glsl" "${HW_SHADER_DIR}/coregs3_post.glsl")
 set(HW_EMBED_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake")
 
 # hw_add_shader(<symbol> <source> <vert|frag|comp> [DEFINES <macro=value>...])

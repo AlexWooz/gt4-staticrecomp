@@ -48,6 +48,63 @@ enum class HudElement : std::uint32_t { speed = 0, tach = 1, all = 2 };
 bool parse_hud_element(const std::string &name, HudElement &element);
 const char *hud_element_name(HudElement element) noexcept;
 
+// ---- TASK-214/TASK-080: aspect-aware HUD anchoring ----
+//
+// The capture is the game's own wide (16:9) HUD stored in the 640x448 scanout. The TASK-080 HUD-canvas parameterisation
+// (docs/ULTRAWIDE-NATIVE-STUDY.md sections 3.3 and 5.3) is l/r = 320 -/+ 240*R for display aspect R, i.e. a canvas 480
+// units high and 480*R wide mapped into the captured frame. The measured element layout is:
+//   * edge elements: the position/lap block and the minimap at the left, the Best/Last Lap times at the right, all
+//     within the game's own wideOffset distance (96 px of the captured canvas, `RaceDisplayUtil::wideOffset`);
+//   * the central cluster (lap timer, message, both gauges, gear, digital speed, trip, G-force) at fixed coordinates
+//     around the canvas centre.
+// The anchoring keeps the current game layout at 16:9 and, at a wider output, keeps each element at the same design
+// size (it never stretches the UI): a left element keeps its distance from the left canvas edge, a right element its
+// distance from the right edge, and a centre element its offset from the canvas centre. For the edge elements this is
+// the study's "HUD at screen edges" generalisation of wideOffset ("96 + 240*(R - 16/9)" in 4:3 coordinates): the
+// measured 16:9 margin is preserved for any R (the pnach's fixed 96 px would leave the HUD as a centred 16:9 block).
+// The vertical scale is the output height over the 480-unit canvas.
+enum class HudAnchor : std::uint32_t { centre = 0, left = 1, right = 2 };
+const char *hud_anchor_name(HudAnchor anchor) noexcept;
+
+// The display aspect of the captured layout (the game's wide mode) and the game's own wideOffset distance, in captured
+// canvas pixels, that bounds the measured edge elements.
+inline constexpr double kHudReferenceAspect = 16.0 / 9.0;
+inline constexpr float kHudEdgeAnchorMargin = 96.0f;
+
+// The measured element rule for one panel draw. The A-Spec census (scene 7600) pins the page zones: the position/lap
+// pages 0x3C20/0x3C40/0x3C60/0x3C80 (captured x 21.8..129) and the minimap pages 0x3B60/0x3B80/0x3C00 (x 25.5..160.5)
+// are the left block; the race-font page 0x3000 carries the centre lap timer (x 297.5..364) and FULL THROTTLE
+// (x 260.5..378.2) as well as the right-hand Best/Last Lap times (x 531.5..596), split at x 500. Every other page
+// falls back to the geometric rule: an element whose nearer edge distance is within `edge_margin` (the game's own
+// wideOffset distance) is edge-anchored, otherwise centre.
+HudAnchor hud_classify_anchor(std::uint32_t tbp0, float min_x, float max_x, double canvas_width,
+                              float edge_margin = kHudEdgeAnchorMargin);
+
+// The canvas-to-output mapping of one render. `virtual_width` is the target HUD canvas width in captured-canvas units
+// (canvas_width at the reference aspect, wider for a wider target); `scale_x`/`scale_y` map canvas units to output
+// pixels (they differ only when the output is an anamorphic framebuffer such as the 3x 1920x1344 validation scale).
+struct HudAspectLayout {
+  bool anchored = false;        // false: the captured mapping (no target aspect)
+  double reference_width = 640.0;
+  double virtual_width = 640.0;
+  double scale_x = 1.0;
+  double scale_y = 1.0;
+  double target_aspect = 0.0;
+  double reference_aspect = kHudReferenceAspect;
+
+  // The horizontal translation of an anchored element in captured-canvas units: left 0, centre half of the added
+  // width, right the whole added width. It is 0 at the reference aspect, so the 16:9 render is unchanged.
+  double anchor_offset(HudAnchor anchor) const noexcept;
+};
+
+// Pure mapping constructor. `target_aspect <= 0` (or not finite) selects the captured mapping
+// (`scale_x = output_width / canvas_width`, `scale_y = output_height / canvas_height`, the pre-TASK-214 rule), so a
+// render without an aspect option is byte-identical to the previous tool. A positive target aspect maps the HUD canvas
+// 480*R wide to the output; `draw_hud_panel` refuses a target narrower than the captured 16:9 layout or above 6.0.
+HudAspectLayout hud_aspect_layout(double canvas_width, double canvas_height, std::uint32_t output_width,
+                                  std::uint32_t output_height, double target_aspect,
+                                  double reference_aspect = kHudReferenceAspect);
+
 // The register subset a HUD draw uses, in the canonical 64-bit layouts (GsDecodeState for PATH2, the tap's A+D words
 // for PATH1).
 struct HudDrawState {
@@ -113,6 +170,9 @@ struct HudDraw {
   HudDrawState state;
   std::uint32_t vertices = 0;
   HudVertex verts[8];
+  // TASK-214: the aspect anchor of the element this draw belongs to (see hud_classify_anchor and the element policy in
+  // build_hud_panel). It has no effect at the captured 16:9 aspect.
+  HudAnchor anchor = HudAnchor::centre;
   bool normalized_uv = false;  // PATH1 plates carry ST, PATH2 sprites texel UV
   bool triangle_strip = false;  // PATH1: an axis-aligned 4-vertex tri-strip quad
   // TASK-090 HUD A-Spec: an untextured Gouraud triangle strip (the tachometer/speedometer needles). The vertex
@@ -133,6 +193,9 @@ struct HudPanelCounters {
   std::uint64_t path1_other = 0;
   std::uint64_t path1_needles = 0;           // untextured triangle-strip gauge needles selected
   std::uint64_t plate_quads = 0;
+  std::uint64_t anchor_left = 0;             // TASK-214: selected draws by anchor class
+  std::uint64_t anchor_centre = 0;
+  std::uint64_t anchor_right = 0;
   std::uint64_t refusals = 0;
   std::map<std::string, std::uint64_t> reasons;  // every named refusal/counter
 
@@ -305,6 +368,13 @@ struct HudDrawOptions {
   // only this mapping, never the captured draw geometry.
   std::uint32_t canvas_width = 640;
   std::uint32_t canvas_height = 448;
+  // TASK-214 aspect anchoring. `target_aspect <= 0` is the captured mapping (no anchoring; byte-identical to the
+  // previous tool). A positive value is the display aspect of the output: the HUD canvas becomes 480*R wide and each
+  // draw keeps its measured edge/centre anchor (hud_classify_anchor). A 16:9 value reproduces the captured layout for
+  // any output size, including the anamorphic 1920x1344 validation scale. Values narrower than the captured 16:9
+  // layout (the game's Vert+ HUD is not captured) or above 6.0 are refused with a named error.
+  double target_aspect = 0.0;
+  double reference_aspect = kHudReferenceAspect;
 };
 
 struct HudDrawCounters {
@@ -329,6 +399,12 @@ bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vecto
 
 // The measured reference expansion of a CT16 scanout value (5 bits stored, the reference's `<< 3`).
 std::uint8_t ct16_expand(std::uint8_t value8) noexcept;
+
+// TASK-214: one CSV line per selected draw with its anchor, captured box (canvas pixels), horizontal anchor
+// translation and predicted output box (continuous pixel edges, `(captured + dx) * scale`). It is the measurement
+// instrument of the anchoring: the evidence script unions the draws of each element and compares the result with the
+// rendered image and the reference layout.
+std::string hud_anchor_report(const HudPanel &panel, const HudAspectLayout &layout);
 
 // Human-readable panel report (selection, counters, refusals).
 std::string hud_panel_report(const HudPanel &panel, const HudDrawCounters &draws, const HudTextureCache &textures);

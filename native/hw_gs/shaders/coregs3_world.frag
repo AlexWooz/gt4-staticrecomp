@@ -19,6 +19,7 @@
 
 #extension GL_GOOGLE_include_directive : require
 #include "coregs3_world_push.glsl"
+#include "coregs3_post.glsl"
 
 layout(early_fragment_tests) in;
 
@@ -154,6 +155,8 @@ void main() {
         else pass = alpha != aref;             // NOTEQUAL
         if (!pass) discard;
     }
+    // The captured post chain on this fragment (coregs3_post.glsl): the two multiplies and the CT16 model.
+    result = post_epilogue(result, world.post);
     uint word = result.x | (result.y << 8) | (result.z << 16) | (result.w << 24);
     const uint fbmsk = world.state.z;
     if (fbmsk != 0u) {

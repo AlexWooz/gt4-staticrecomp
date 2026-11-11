@@ -10,9 +10,11 @@
 //   * the offline post chain (`gt4_coregs3_render`, coregs3_wet_composite.hpp `apply_present_ct16`): `faithful`
 //     reproduces the captured CT16 conversion exactly (dither when DTHE is on, five-bit truncation and << 3); `off`
 //     writes the modulated 8-bit colour, with no dither and no five-bit truncation;
-//   * the live present layer (native/hw_gs/coregs3/hw_coregs3_present.cpp): its fragment stage writes full 8-bit
-//     RGBA8 words and never dithered in either mode, so the switch changes nothing in the pixels the CoreGS 3.0 pass
-//     writes; the mode is parsed and reported there so one setting covers both paths.
+//   * the live present layer (native/hw_gs/coregs3/hw_coregs3_present.cpp): its fragment stages apply the same CT16
+//     present model to the pixels they own (coregs3_post.glsl) with the DIMX/DTHE/COLCLAMP and the native display size
+//     noted from the GS registers at the VBlank flush. With the captured post multiplies (GT4_COREGS3_POST=1) that is
+//     the full captured chain; without them it is the pure present conversion. The measured modern default keeps both
+//     off, since the captured multiplies overshoot the reconstructed world's level (docs/COREGS3-HOOKS.md §34).
 // The CoreGS 2.0 composed base keeps its own CT16 dither in `GT4_COREGS3=present` until CoreGS 3.0 owns the 3D frame
 // (phase 4); that dither is CoreGS 2.0's faithful output and is not changed by this switch.
 //

@@ -171,8 +171,9 @@ struct TextureFrameOptions {
   // filtered the draws/items), V2-8 and the continuation UV arrays are accepted, and a record with TEX1.MXL > 0 is
   // decoded at level 0 with a counted fallback. False keeps the car pass's measured rule exactly.
   bool world_channels = false;
-  // TASK-090 texture mip: decode levels 1..MXL and attach the explicit per-vertex LOD. Off by default (the captured
-  // levels are not the road's chain yet); --mip turns it on for the measurement and the future capture.
+  // TASK-090 texture mip: decode levels 1..MXL and attach the explicit per-vertex LOD. The world tool enables it by
+  // default (the recaptured sidecar carries the road's chain); a caller that leaves it false keeps the counted level-0
+  // fallback, so the pre-recapture behaviour stays available without a code path change.
   bool world_mip = false;
 };
 
