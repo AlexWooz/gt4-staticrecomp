@@ -1,5 +1,25 @@
 # Current Status
 
+## 2026-11-10: the live CoreGS 3.0 presentation timeline (TASK-090, branch `task/090-live-timeline`)
+
+`GT4_COREGS3=present` now presents the captured car pass at a constant requested rate (20/30/45/60/120/144 Hz, default
+60) instead of once per guest VBlank. `native/coregs3/coregs3_presentation.{hpp,cpp}` adds the presentation clock (one
+tick = 1/3600 s, a guest VBlank = 60 ticks, so every rate divides the grid exactly) and the measured rigid interpolation
+of the two latest 60 Hz guest states (world translation lerp, quaternion slerp, uniform-scale lerp, the entrywise
+fallback for rank-deficient draws, the camera from its pose, a cut/teleport drop to the newest frame).
+`GT4_COREGS3_PRESENT_MODE=interpolate|nearest` and the diagnostic `GT4_COREGS3_PRESENT_TICK` complete the controls;
+above 60 Hz the layer saves the composed image in a private R32_UINT scratch and restores it before every later tick.
+The guest path and the HUD rate are untouched. Measured: the presentation clock is an exact grid at every rate (60 Hz:
+8,999 instants, 60-tick intervals, min = max; 120 Hz: 30 ticks; 144: 25; 45: 80; 30: 120; 20: 180; skipped 0); the
+60 Hz guest clock, per-VBlank digest and the 64 KiB state are identical to the reference on 8,997 VBlanks (1,686
+racing); the 120 Hz interpolated midpoint image differs from the exact captured tick in the car overlay only (94,013 px,
+3.64% of the frame at VBlank 6600; the track, base and HUD are identical); the car-only, textured car and world offline renders are byte-identical between the
+pre-change and final tools. Checks: CTest coregs3 17/17 (new `native_coregs3_presentation`), Python `test_coregs3_units`
+14/14, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames).
+Open: the windowed host still presents once per guest VBlank (a host clock at the display rate is the next step); a
+per-VBlank background counter pass was removed after present-mode crashes on a machine shared with another agent's
+gate (lead). Evidence `build/evidence-live-timeline/`.
+
 ## 2026-11-10: GS-stream S2, the PATH2 chain decoded; the wet-road composite explains 0 of the additive term (TASK-090, branch `task/090-gs-post-layer`)
 
 S2 of the GS-stream study is implemented and measured. `native/coregs3/coregs3_gsdecode.*` walks every `.gt4gs` record

@@ -1970,6 +1970,23 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   `build/evidence-gs-post-layer/`; method: [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §27.
 - Next: the S2 residual (the material/texture/lighting gap or a post op the PATH2/PATH3 stream does not
   carry); S3 (the HUD/panel layer); the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
+- **Live presentation timeline (2026-11-10, branch `task/090-live-timeline`):** `native/coregs3/coregs3_presentation.*`
+  adds the presentation clock (one tick = 1/3600 s, a guest VBlank = 60 ticks, so 20/30/45/60/120/144 Hz all divide the
+  grid exactly) and the measured rigid interpolation of the two latest 60 Hz guest states (world translation lerp,
+  quaternion slerp, uniform-scale lerp, the entrywise fallback for rank-deficient draws, the camera from its pose, a
+  cut/teleport drop to the newest frame; prediction still off). The live `GT4_COREGS3=present` layer records every
+  captured frame with its timestamp and camera, draws every due tick at `GT4_COREGS3_PRESENT_HZ` (default 60;
+  `GT4_COREGS3_PRESENT_MODE=interpolate|nearest`) and restores the composed base between the ticks of one guest frame
+  above 60 Hz, feeding each object's interpolated matrix to the vertex stage; alpha 0/1 returns the captured matrices
+  bit for bit. Measured: exact grid at every rate (skipped 0) and 0 clock/digest/state differences against the
+  reference (8,997 VBlanks at 60 Hz; 6,997 at 120 Hz with a matching state offset); the interpolated 120 Hz midpoint
+  differs from the exact captured tick in the car overlay only (94,013 px, 3.64% at VBlank 6600; the track, base and
+  HUD identical) with 232 rigid + 7 entrywise objects per instant and 0 unmatched; CTest coregs3 **17/17** (new
+  `native_coregs3_presentation`), Python **14/14**, the car-only, textured car and world renders byte-identical to the
+  pre-change tool, 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
+  frames). Next: a host clock that presents at the display rate (VRR/120/144 in a window), the prediction switch, and
+  the open lead on the removed whole-run counter pass. Evidence `build/evidence-live-timeline/`; design in
+  [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
 
 
 ### TASK-087 — GS readbacks without stalls
