@@ -320,9 +320,11 @@ confirms at 15,200; the frame at VBlank 21,000 shows position 2, lap 1/2, 0'23.6
 | George V reference replay (`spec2-george`) | 20,400-21,300 | 11.975 | 11.680 | 3.425 | 13.557 | 13.491 |
 
 The first four are **CPU/GS-worker bound** at 3x (GPU busy 1.7-3.4 ms of 16.7), i.e. the same shape as the license and the
-night race: these scenes belong to the streamer's CPU-bound complaint, not to a GPU one. The reference replay's window
-still includes pre-race frames (EE critical 13.56): its race-start VBlank needs refining before it is used as a clean
-reference.
+night race: these scenes belong to the streamer's CPU-bound complaint, not to a GPU one. **George V window corrected
+(2026-11-11):** 20,400-21,300 is **in-race**, not pre-race - the interval table of `spec2-george-base-george` shows
+20,401-21,000 at wall 13.95 with **1,028 batches/VBlank** against 597 before it, and `spec2-run.sh` documents the race
+start near 20,300. The EE critical 13.56 is the rally's own load (one car, the heaviest track), so the reference window
+stands as recorded.
 
 
 ## S4 mapping: the four words are per sprite (not per vertex)

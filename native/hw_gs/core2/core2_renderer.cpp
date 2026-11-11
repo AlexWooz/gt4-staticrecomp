@@ -4325,10 +4325,14 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                 if (perDraw) {
                     for (std::size_t d = 0; d < t.draws.size(); ++d) {
                         const gpu::GpuDraw &draw = t.draws[d];
+                        const unsigned vertexFog =
+                            draw.first < t.vertices.size() ? static_cast<unsigned>(t.vertices[draw.first].fog) : 0u;
                         std::fprintf(stderr,
-                                     "[core2] flare draw batch=%ld draw=%zu topo=%u count=%u rect=%d,%d..%d,%d\n",
+                                     "[core2] flare draw batch=%ld draw=%zu topo=%u count=%u rect=%d,%d..%d,%d "
+                                     "fge=%u fog=%u\n",
                                      index, d, static_cast<unsigned>(draw.topology), draw.count, draw.x0, draw.y0,
-                                     draw.x1, draw.y1);
+                                     draw.x1, draw.y1,
+                                     static_cast<unsigned>(t.state.fields[gpu::gpufield::FogOn]), vertexFog);
                     }
                 }
                 ++printed;

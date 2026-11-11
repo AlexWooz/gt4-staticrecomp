@@ -56,6 +56,36 @@ it must be proven by the identity gate on a scene where the marker is absent.
 (a) the FGE/fog measurement of section 2 and (b) the VU1 emit patch of section 3. It does **not** need a new record, a new
 descriptor, a push-word change or a pipeline layout change; the draw variant only reads the F byte it already receives.
 
+### 5a. Step 1 measured (2026-11-11): **the carrier holds**
+
+`GT4_CORE2_FLARE_TRACE_DRAWS` now prints each draw's `fge=` (PRIM.FGE from the translated state) and `fog=` (the F byte of
+the draw's first `GpuVertex`). Night race 3x, VBlank 9,600, the last flare job:
+
+- **680 small draws (<= 13 px)**, and **`fge = 0` on every one of them**;
+- their F bytes are already populated and vary per draw (201, 202, 205, 206, 209, 210, 214, 215) - the game writes fog
+  values even with fog disabled, so the byte is live and ignored by `hw_pixel_core.glsl:262-271`.
+
+So the pixel pipeline cannot see a change there, and the renderer already receives the byte.
+
+### 5b. Step 2 blocker, reported instead of a half-wired patch
+
+The "extract the four REF window addresses from the packet UNPACK words" step did not resolve as planned, and the
+structure is not stable enough to patch blind:
+
+- the word before the 16 data bytes is **`cmd=00000001`**, not a VIF UNPACK command, so the window's VU address is not in
+  the payload around the REF (`apply_table_patches` trace, 2026-11-11);
+- the REF-to-invocation pairing **changes between frames**: at VBlank 9,600 the four REFs went to one MSCALF (packet 542),
+  while in the same run at a later frame they went to **210 / 227 / 266 / 266** with `next_code=15` (MSCALF). So the
+  program consumes the windows at different points per frame, and "the block after the marker" is not a fixed location.
+
+What that means for the patch: it must be written against the *program's own read of each window* (an LQ from the window
+address) rather than against the invocation boundary. Finding those reads needs the VU addresses, which the payload does not
+carry in the form the trace can see - the next attempt has to decode them from the VIF chain in `walk_vif_batch` (the REF
+command word before the data, which `apply_table_patches` does not receive today).
+
+**So: no VU1 patch was written this round.** Writing one without the addresses would be a guess against the guest's
+microcode; the FGE measurement (this section) is the durable result. Remaining price for steps 2-4: 3-4 days.
+
 **Price: 3-5 days**, broken down:
 
 | step | content | time |

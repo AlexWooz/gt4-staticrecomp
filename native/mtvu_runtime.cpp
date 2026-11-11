@@ -315,10 +315,12 @@ void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t
           }
           const std::uint8_t *words = payload.data() + patch.payload_offset;
           if (trace) {
+            std::uint32_t command = 0;
+            if (patch.payload_offset >= 4) std::memcpy(&command, payload.data() + patch.payload_offset - 4, 4);
             std::fprintf(stderr,
-                         "[mtvu] flare patch job=%llu packet=%u qwc=%u at=%zu mscals=%u first=%08x ref=%u words="
+                         "[mtvu] flare patch job=%llu packet=%u qwc=%u at=%zu cmd=%08x mscals=%u first=%08x ref=%u words="
                          "%08x,%08x,%08x,%08x next_packet=%d next_code=%02x next_addr=%08x\n",
-                         static_cast<unsigned long long>(job), index, qwc, patch.payload_offset - body, mscals,
+                         static_cast<unsigned long long>(job), index, qwc, patch.payload_offset - body, command, mscals,
                          firstAddress, refIndex, *reinterpret_cast<const unsigned *>(words),
                          *reinterpret_cast<const unsigned *>(words + 4), *reinterpret_cast<const unsigned *>(words + 8),
                          *reinterpret_cast<const unsigned *>(words + 12),
