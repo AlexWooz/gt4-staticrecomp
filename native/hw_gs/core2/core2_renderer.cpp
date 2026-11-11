@@ -4319,6 +4319,18 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                              "[core2] flare batch index=%ld prims=%zu draws=%zu rect=%d,%d..%d,%d first=%d,%d..%d,%d\n",
                              index, batch.prims.size(), t.draws.size(), t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1,
                              r.x0, r.y0, r.x1, r.y1);
+                // TASK-215 S4: every draw of the flare job in order (the invocation draws its sprites in program
+                // order, so the small ones can be matched to the REF windows and the table words).
+                static const bool perDraw = std::getenv("GT4_CORE2_FLARE_TRACE_DRAWS") != nullptr;
+                if (perDraw) {
+                    for (std::size_t d = 0; d < t.draws.size(); ++d) {
+                        const gpu::GpuDraw &draw = t.draws[d];
+                        std::fprintf(stderr,
+                                     "[core2] flare draw batch=%ld draw=%zu topo=%u count=%u rect=%d,%d..%d,%d\n",
+                                     index, d, static_cast<unsigned>(draw.topology), draw.count, draw.x0, draw.y0,
+                                     draw.x1, draw.y1);
+                    }
+                }
                 ++printed;
             }
             index = flare ? index + 1 : 0;

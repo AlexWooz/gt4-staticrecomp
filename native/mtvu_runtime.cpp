@@ -228,6 +228,40 @@ void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t
   if (r.job_patches_posted.load(std::memory_order_acquire) == r.job_patches_applied) return;
   // TASK-215 S4: the packet that carries a flare REF and the MSCALs it contains, for the invocation marker.
   static const bool trace = std::getenv("GT4_HW_FLARE_PATCH_TRACE") != nullptr;
+  // TASK-215 S4 (diagnostic only, no default behaviour): GT4_FLARE_REF_HIDE=<n> zeroes the 16 bytes of the n-th flare REF
+  // packet of the job (0..3+, in packet order), in the VU1's view only and after the table copy, so the game's own
+  // readback keeps the real values. The sprite that disappears is the one that REF feeds: the REF -> table word -> sprite
+  // mapping.
+  static const int hideIndex = [] {
+    const char *text = std::getenv("GT4_FLARE_REF_HIDE");
+    return text != nullptr ? std::atoi(text) : -1;
+  }();
+  // GT4_FLARE_REF_HIDE may also be a comma list ("0,1"), to hide a whole light's REFs at once.
+  static const std::string hideList = [] {
+    const char *text = std::getenv("GT4_FLARE_REF_HIDE");
+    return text != nullptr ? std::string(text) : std::string{};
+  }();
+  const auto hidden = [&](std::uint32_t ref) {
+    if (hideIndex >= 0 && static_cast<int>(ref) == hideIndex) return true;
+    if (hideList.find(',') == std::string::npos) return false;
+    std::size_t at = 0;
+    while (at < hideList.size()) {
+      const std::size_t comma = hideList.find(',', at);
+      const std::string token = hideList.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+      if (!token.empty() && static_cast<std::uint32_t>(std::atoi(token.c_str())) == ref) return true;
+      if (comma == std::string::npos) break;
+      at = comma + 1;
+    }
+    return false;
+  };
+  static std::uint64_t tagJob = ~std::uint64_t{0};
+  static std::uint32_t refIndex = 0;
+  if (job != tagJob) {
+    tagJob = job;
+    refIndex = 0;
+  }
+  std::ptrdiff_t tagAt = -1;
+  std::uint8_t tagValue = 0;
   for (;;) {
     Runtime::TablePatch patch;
     {
@@ -237,7 +271,7 @@ void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t
       r.job_patches.pop_front();
     }
     r.worker_end->wake_before_waiting();
-    if (trace && patch.table_offset == 0 && patch.bytes == 16) {
+    if ((trace || hideIndex >= 0) && patch.table_offset == 0 && patch.bytes == 16) {
       // Packet boundaries of the batch payload: header then per packet {u32 qwc, qwc*16 bytes}.
       std::uint32_t packets = 0;
       std::memcpy(&packets, payload.data(), 4);
@@ -258,16 +292,57 @@ void apply_table_patches(Runtime &r, std::uint64_t job, std::vector<std::uint8_t
               ++mscals;
             }
           }
-          std::fprintf(stderr,
-                       "[mtvu] flare patch job=%llu packet=%u qwc=%u at=%zu mscals=%u first=%08x\n",
-                       static_cast<unsigned long long>(job), index, qwc, patch.payload_offset - body, mscals,
-                       firstAddress);
+          // The invocation that consumes this REF: the next packet in the job that carries an MSCAL, since a REF packet
+          // itself carries none (measured 2026-11-10). Printed with the REF's four table words for the mapping.
+          std::uint32_t nextPacket = 0xFFFFFFFFu, nextCode = 0, nextAddress = 0;
+          std::size_t walk = body + bytes;
+          for (std::uint32_t later = index + 1; later < packets && walk + 4 <= payload.size(); ++later) {
+            std::uint32_t qwc2 = 0;
+            std::memcpy(&qwc2, payload.data() + walk, 4);
+            const std::size_t body2 = walk + 4, bytes2 = static_cast<std::size_t>(qwc2) * 16;
+            if (body2 + bytes2 > payload.size()) break;
+            for (std::size_t q = body2; q + 16 <= body2 + bytes2; q += 16) {
+              const std::uint8_t code = payload[q];
+              if (code == 0x14 || code == 0x15) {
+                nextPacket = later;
+                nextCode = code;
+                std::memcpy(&nextAddress, payload.data() + q, 4);
+                break;
+              }
+            }
+            if (nextPacket != 0xFFFFFFFFu) break;
+            walk = body2 + bytes2;
+          }
+          const std::uint8_t *words = payload.data() + patch.payload_offset;
+          if (trace) {
+            std::fprintf(stderr,
+                         "[mtvu] flare patch job=%llu packet=%u qwc=%u at=%zu mscals=%u first=%08x ref=%u words="
+                         "%08x,%08x,%08x,%08x next_packet=%d next_code=%02x next_addr=%08x\n",
+                         static_cast<unsigned long long>(job), index, qwc, patch.payload_offset - body, mscals,
+                         firstAddress, refIndex, *reinterpret_cast<const unsigned *>(words),
+                         *reinterpret_cast<const unsigned *>(words + 4), *reinterpret_cast<const unsigned *>(words + 8),
+                         *reinterpret_cast<const unsigned *>(words + 12),
+                         nextPacket == 0xFFFFFFFFu ? -1 : static_cast<int>(nextPacket), nextCode, nextAddress);
+          }
+          if (hideIndex >= 0 && hidden(refIndex)) {
+            tagAt = patch.payload_offset;
+            tagValue = 0;
+            std::fprintf(stderr, "[mtvu] flare ref hide job=%llu ref=%u packet=%u next_packet=%d\n",
+                         static_cast<unsigned long long>(job), refIndex, index,
+                         nextPacket == 0xFFFFFFFFu ? -1 : static_cast<int>(nextPacket));
+          }
+          ++refIndex;
           break;
         }
         at = body + bytes;
       }
     }
     r.table_copy(patch.ticket, patch.table_offset, patch.bytes, payload.data() + patch.payload_offset);
+    if (tagAt >= 0) {
+      // The VU1's view only: the table copy above keeps the game's real bytes, so its own readback is unchanged.
+      std::memset(payload.data() + tagAt, tagValue, 16);
+      tagAt = -1;
+    }
     ++r.job_patches_applied;
   }
 }

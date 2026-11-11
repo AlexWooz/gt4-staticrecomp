@@ -628,6 +628,35 @@ figure and it is ~0. What remains is `draw` 0.93 (GPU command recording, which a
 Identity while measuring: license 4/4 and night 2/2 frames identical across the builds; CTest 319/320 (only the
 pre-existing rc15 `python_native_contracts`).
 
+
+## Flare REF -> table word -> sprite mapping: **proven**, and the per-invocation marker does not carry a light (2026-11-11)
+
+Night race 3x, VBlank 9,600, diagnostics only (`GT4_HW_FLARE_PATCH_TRACE`, `GT4_FLARE_REF_HIDE`, new
+`GT4_CORE2_FLARE_TRACE_DRAWS`). Details in `docs/tasks/COREGS2-FLARE-REF-MAPPING.md`.
+
+| REF index | table word | cluster (3x frame) | part |
+|---|---|---|---|
+| 0 | 0 | x 934..960, y 239..262 | outer mesh |
+| 1 | 0 | x 943..951, y 248..258 | inner mesh |
+| 2 | 1 | x 908..936, y 240..269 | outer mesh |
+| 3 | 1 | x 916..925, y 248..258 | inner mesh |
+
+- Hiding the REF pair {0,1} removes the same pixels as zeroing table word 0 (118 against 117 px, 3 px only in one and 2
+  in the other); {2,3} matches word 1 the same way (2 / 1 px). The cross-pair controls are disjoint (114-116 px). So **two
+  REFs per light, one table word per light**, the first REF of the pair the outer mesh and the second the inner.
+- **The REF count is dynamic**: over 1,892 jobs, 2 REFs in 163, 4 in 932, 6 in 89, 8 in 708 - always even (1 to 4 visible
+  lights). No fixed 8-slot table.
+- **All the frame's REFs are consumed by one MSCALF** (packet 542 of the job; each REF's `next_packet` is the same), and
+  each REF writes the same 16 bytes to a different VU1 window, so the light index lives in the window address, not in the
+  draw stream. The flare is a **mesh of ~250 tiny triangles** per batch, and the two lights' meshes **interleave in draw
+  order** (~14-draw groups alternating between the x~312 and x~306 clusters).
+
+**Step 2 stopped before any shader code**, as instructed: a `FlareLight{index}` marker before the invocation's PATH1
+records would tag both lights' draws with one index, and the draw order cannot separate them. The two ways forward are a
+VU1 program patch that carries the light index into a vertex field, or - because P1 shows the VU1 already applies the
+visibility from these REF windows - attacking the **EE readback wait** (5.77 ms at 10x, 9.85 at 12x) directly instead of
+adding a GPU multiply. Default path verified identical (night 3x frame at VBlank 9,600: 1/1); CTest 319/320.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two
