@@ -1,5 +1,31 @@
 # Current Status
 
+## 2026-11-11: the car pass textures and reflection, first implementation (TASK-090, branch `task/090-live-world`)
+
+Following `docs/COREGS3-CAR-PASS-STUDY.md` the live present now builds a per-frame **car texture table** and binds it: the
+per-job texture store and VRAM base are decoupled from `GT4_COREGS3_LIVE_WORLD` (the store is on in `present`, the world
+draw keeps its own switch), `build_car_table` collects the car items' live job records, synthesizes the tap snapshot and
+calls `build_frame_texture_table` with `world_channels = false` and `reflections = true`; `build_frame_textured` emits
+per-item ranges carrying TEX0/CLAMP/atlas rectangle/UV (the texgen S,T for the body/paint items)/fog and the measured
+TEST/ALPHA/FBMSK state. A new `coregs3_car` fragment stage samples the atlas (MODULATE, TCC, GS bilinear), applies the
+per-vertex fog, the alpha test, the destination-alpha test, the 8-bit ALPHA blend (a read-modify-write of the display
+word, COLCLAMP, alpha lane = As), FBMSK and the post chain; a second pipeline with no depth write draws the ZBUF.ZMSK=1
+items (the reflection and the alpha-only glass/shadow draws). `GT4_COREGS3_CAR_TEXTURES=0` keeps the legacy lit-colour
+path (its code is unchanged) and is the A/B. The F8 report gains `car textures: textured/reflection/no_record/refused/
+atlas` counters; the tables' live controls are 219/80/36/0 per frame.
+
+Measured status (honest): the car visibly gains its paint/glass/red content and the level matches the offline textured
+path (near-car mask mean RGB live 9.7/8.1/8.3, red-dominant 11.4%, against the offline 9.5/9.3/8.4 and 6.5%, legacy live
+20.5/20.1/19.6 and 2.2%); the switch changes 26,877 of 52,900 px in the player box (mean 9.26 levels). The aligned
+acceptance gate is **not met yet**: live textured against the offline textured+reflection render gives PSNR 19.0-19.7 dB,
+mean |d| 12.7-14.8 and pct_bad 37.6-45.8% (the study's baseline was 20.12 dB / 18.23 / 66.2%, target 28 dB / 3 / 10%),
+while the legacy-path control against the offline base reaches 31.4 dB / 1.97 / 5.9% on the same alignment, so the
+remaining gap is in the textured content (texture sampling/reflection detail), not the harness. The GPU reflection
+fragment count is not yet instrumented (no third occlusion query), so the +/-5% fragment gate is unmeasured. Checks:
+CTest coregs3 21/21, Python 18/18, the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean
+rebuild (executable SHA-256 330e3dff7048e1bba794b2f24a8276637554b518a3fe45877cb65fd2f3b6a51d). Evidence `build/evidence-live-world/` (`night-night-car-*`, `car-ab.log`,
+`car-player-ab.png`, `car-on-box.png`, `ctex-aligned-box.png`).
+
 ## 2026-11-11: the B-Spec split black-3D fix and the world-shading integration (TASK-090, branch `task/090-2d-split`)
 
 The live-world round found the 2D split blacked out the night B-Spec race (frame luma 2.291 with only the HUD; 22.377

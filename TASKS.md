@@ -2318,6 +2318,20 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   3x gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`4c1cb1ee1e9f8cb1cc97d9e52d67a4c85a5884db981690a47f8760b555c4f7c7`). Journal entry of
   2026-11-11; hooks §37.
 
+- **Car pass textures and reflection, first implementation (2026-11-11, branch `task/090-live-world`).** Following
+  `docs/COREGS3-CAR-PASS-STUDY.md`: the live store is decoupled from the world switch, `build_car_table` binds the car
+  items' live job textures + reflection (``build_frame_texture_table``, `world_channels=false`, `reflections=true`),
+  ``build_frame_textured`` emits per-item state/UV/fog ranges, and ``coregs3_car.vert/.frag`` sample the atlas with the
+  alpha test, DATE, the 8-bit ALPHA blend, FBMSK and the post chain; a no-depth-write pipeline draws ZMSK=1 items.
+  ``GT4_COREGS3_CAR_TEXTURES=0`` keeps the legacy path (code unchanged). Measured: the car changes (26,877/52,900 px,
+  mean 9.26) and matches the offline textured level (near-car mean 9.7/8.1/8.3 vs 9.5/9.3/8.4), but the aligned
+  acceptance gate is **not met** (PSNR 19.0-19.7, mean 12.7-14.8, pct_bad 37.6-45.8% vs 28 / 3 / 10%; the legacy control
+  reaches 31.4 / 1.97 / 5.9% against the offline base). Counters 878/323/144/0 over the run (per frame ~146/54/24; the
+  control 219/80/36); the reflection fragment count is not yet instrumented. Checks: CTest coregs3 **21/21**, Python
+  **18/18**, the 3x gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`330e3dff7048e1bba794b2f24a8276637554b518a3fe45877cb65fd2f3b6a51d`).
+  Journal entry of 2026-11-11; hooks §38. The C: system volume was found full (0/510 GB); the build TEMP was redirected
+  to O: and the owner should free space.
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages

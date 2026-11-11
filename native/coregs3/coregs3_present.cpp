@@ -102,6 +102,7 @@ void add_counts(const InterpolationCounters &counts) noexcept {
 void set_active(bool active) noexcept { g_active.store(active, std::memory_order_relaxed); }
 bool active() noexcept { return g_active.load(std::memory_order_relaxed); }
 const Counters &counters() noexcept { return g_counters; }
+Counters &mutable_counters() noexcept { return g_counters; }
 const TimelineCounters &timeline_counters() noexcept { return g_timeline_counters; }
 
 bool timeline_config_from_environment(TimelineConfig &config, std::string &error) noexcept {

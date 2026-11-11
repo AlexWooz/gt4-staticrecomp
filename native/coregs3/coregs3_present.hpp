@@ -157,6 +157,13 @@ struct Counters {
   std::atomic<std::uint64_t> world_light_draws_fallback{0};
   std::atomic<std::uint64_t> world_light_vertices_lit{0};
   std::atomic<std::uint64_t> world_light_vertices_fallback{0};
+  // TASK-090 car pass round: the textured car table's item counts (the offline frame-0 control is 219 textured / 80
+  // reflected / 36 no-record / 0 refused) and the atlas textures it packed.
+  std::atomic<std::uint64_t> car_textured_items{0};
+  std::atomic<std::uint64_t> car_reflection_items{0};
+  std::atomic<std::uint64_t> car_no_record_items{0};
+  std::atomic<std::uint64_t> car_refused_items{0};
+  std::atomic<std::uint64_t> car_atlas_textures{0};
   std::atomic<std::uint64_t> world_refused_draws{0};
   std::atomic<std::uint64_t> world_excluded_itop{0};
   std::atomic<std::uint64_t> world_excluded_shape{0};
@@ -173,6 +180,9 @@ struct Counters {
 };
 
 const Counters &counters() noexcept;
+// The present layer's own accumulation path (the car table counts its item outcomes into the same atomics the F8 report
+// reads); a reader only ever needs the const view.
+Counters &mutable_counters() noexcept;
 void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_refused, std::uint32_t draws_unlit,
                  std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles,
                  const LightCounters &lighting) noexcept;

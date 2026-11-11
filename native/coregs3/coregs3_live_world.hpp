@@ -72,8 +72,11 @@ struct JobTexture {
 // hooks only in `GT4_COREGS3=present`, so a shadow run never starts the per-job capture.
 void configure_from_environment() noexcept;
 bool configured() noexcept;
-bool active() noexcept;
-void set_active(bool active) noexcept;  // tests and unusual build orders
+bool active() noexcept;  // the store is on in the present path (the car pass needs it too)
+// The world draw switch: GT4_COREGS3_LIVE_WORLD (default 1). Independent of the store, so the car pass keeps its live
+// texture records in the car-only A/B (GT4_COREGS3_LIVE_WORLD=0).
+bool world_enabled() noexcept;
+void set_active(bool active) noexcept;  // tests and unusual build orders (sets the store and the world switch)
 
 // The sink the MTVU runtime forwards posted item packets to (see coregs3_tap.hpp's live source sink).
 void note_job_source(std::uint64_t job, std::uint32_t guest_address) noexcept;

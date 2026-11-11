@@ -134,6 +134,8 @@ hw_add_shader(hw_pixel_exact "${HW_SHADER_DIR}/hw_pixel_exact.comp" comp)
 # TASK-090 M4: the debug-only CoreGS 3.0 live `present` layer (docs/COREGS3-HOOKS.md §10.3).
 hw_add_shader(coregs3_present_vertex "${HW_SHADER_DIR}/coregs3_present.vert" vert)
 hw_add_shader(coregs3_present_fragment "${HW_SHADER_DIR}/coregs3_present.frag" frag)
+hw_add_shader(coregs3_car_vertex "${HW_SHADER_DIR}/coregs3_car.vert" vert)
+hw_add_shader(coregs3_car_fragment "${HW_SHADER_DIR}/coregs3_car.frag" frag)
 # TASK-090 live world: the captured sky/far-underlay/course passes with their textures and pass-journal state.
 hw_add_shader(coregs3_world_vertex "${HW_SHADER_DIR}/coregs3_world.vert" vert)
 hw_add_shader(coregs3_world_fragment "${HW_SHADER_DIR}/coregs3_world.frag" frag)

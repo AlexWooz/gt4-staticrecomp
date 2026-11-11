@@ -28,6 +28,7 @@
 #include "hw_coregs3_post.hpp"
 #include "coregs3_live_world.hpp"
 #include "coregs3_lighting.hpp"
+#include "coregs3_reflection.hpp"
 #include "coregs3_presentation.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_render.hpp"
@@ -66,6 +67,11 @@ constexpr std::uint32_t kAtlasWidth = 2048;
 constexpr std::uint32_t kAtlasHeight = 2048;
 constexpr std::uint32_t kMaxWorldVertices = 1u << 19;  // 524,288 vertices = 12 MiB
 constexpr VkDeviceSize kInitialWorldVertexBytes = 1u << 20;
+
+// The car fragment stage's extra flags (the world's kWorldFlag* values are shared): the measured ALPHA blend and the
+// destination-alpha test, plus the blend equation packed into flags bits 8..23.
+constexpr std::uint32_t kCarFlagBlend = 1u << 6;
+constexpr std::uint32_t kCarFlagDate = 1u << 7;
 
 // The world push-constant flags (mirrored by the fragment shader's kFlag* constants).
 constexpr std::uint32_t kWorldFlagTextured = 1u << 0;
@@ -127,8 +133,9 @@ struct AtlasPlacement {
   std::uint32_t y = 0;
 };
 
-// The vertex record of the pass: model position in metres and the model's vertex colour. 16 bytes, matching the two
-// vertex attributes the pipeline declares.
+// The vertex record of the pass: model position in metres, the lit V4-8 colour, the model UV (10.4 units, or the
+// reflection texgen S,T in texel units) and the emitted per-vertex fog byte. 28 bytes: the legacy pipeline reads the
+// first 16, the textured car stage all four attributes.
 struct PresentVertex {
   float x = 0.0f;
   float y = 0.0f;
@@ -137,8 +144,24 @@ struct PresentVertex {
   std::uint8_t green = 255;
   std::uint8_t blue = 255;
   std::uint8_t alpha = 255;
+  float u = 0.0f;
+  float v = 0.0f;
+  float fog = 255.0f;
 };
-static_assert(sizeof(PresentVertex) == 16, "the present vertex record must match the pipeline's 16-byte stride");
+static_assert(sizeof(PresentVertex) == 28, "the present vertex record must match the pipeline's 28-byte stride");
+
+// One captured car item's range in the textured path: its GS state and texture (the world push layout) plus the flags
+// the car fragment stage implements (the measured blend, the destination-alpha test) and the depth-write rule.
+struct CarRange {
+  std::uint32_t first = 0;
+  std::uint32_t count = 0;
+  WorldPush push;         // columns, TEX0/CLAMP, atlas rectangle, TEST/ALPHA/FBMSK/FOGCOL, flags + blend equation
+  bool textured = false;
+  bool blend = false;
+  bool date = false;
+  bool depth_write = true;
+  bool reflection = false;
+};
 
 // One captured draw's place in the shared vertex buffer, with the metre-transform columns the vertex stage consumes.
 struct DrawRange {
@@ -250,7 +273,46 @@ struct PresentLayer::Impl {
   bool post_faithful = false;  // the effective faithful mode: the switch is 1 and a frame environment was noted
   bool post_env_missing_frame = false;  // this frame asked for faithful with no noted dither environment
   std::uint32_t post_words[4] = {0u, 0u, 0u, 0u};  // the packed push word the fragment stages read
+  // TASK-090 car pass round: the textured + reflection car path. GT4_COREGS3_CAR_TEXTURES=0 keeps the legacy path (lit
+  // vertex colour only) byte for byte and is the A/B.
+  bool car_textures = true;
+  bool car_textures_frame = false;  // the switch in force for the claimed frame (the A/B path was built)
+  bool car_pending = false;         // a claimed frame the car table has not been built for yet
+  bool car_valid = false;
+  std::uint64_t car_built_vblank = ~0ull;
+  std::uint64_t car_uploaded_vblank = ~0ull;
 
+  // The car table cache of the newest claimed frame (built on its first presentation tick, under world_mutex).
+  struct CarItemState {
+    WorldPush push;  // state/texture/flags (columns are filled per tick)
+    bool textured = false;
+    bool blend = false;
+    bool date = false;
+    bool depth_write = true;
+    bool reflection = false;
+    const std::vector<std::uint8_t> *fog = nullptr;  // the reflection item's per-vertex fog, mesh order
+  };
+  struct CarDrawState {
+    std::uint64_t sequence = 0;
+    std::vector<CarItemState> items;
+  };
+  gt4::coregs3::FrameTextureTable car_table;
+  std::vector<CarDrawState> car_draws;
+  std::vector<std::uint8_t> car_tap_data;
+  std::vector<gt4::coregs3::TapFileRecord> car_tap_records;
+  std::map<std::uint32_t, gt4::coregs3::VramRecord> car_live_records;
+  std::map<std::uint32_t, const gt4::coregs3::VramRecord *> car_live_map;
+  std::vector<CarRange> car_ranges;
+  // The shared texture atlas placements of the frame (the car and the world pack into the same image).
+  std::map<const gt4::coregs3::SampledTexture *, AtlasPlacement> atlas_placements;
+  std::uint32_t atlas_x = 0;
+  std::uint32_t atlas_y = 0;
+  std::uint32_t atlas_row_height = 0;
+
+  VkShaderModule car_vertex_module = VK_NULL_HANDLE;
+  VkShaderModule car_fragment_module = VK_NULL_HANDLE;
+  VkPipeline car_pipeline = VK_NULL_HANDLE;        // textured car: depth test GEQUAL, depth write
+  VkPipeline car_nodepth_pipeline = VK_NULL_HANDLE;  // ZBUF.ZMSK=1 items (reflection, alpha-only glass/shadow)
   VkShaderModule world_vertex_module = VK_NULL_HANDLE;
   VkShaderModule world_fragment_module = VK_NULL_HANDLE;
   VkPipeline world_pipeline = VK_NULL_HANDLE;      // depth test GEQUAL, depth write
@@ -360,6 +422,14 @@ struct PresentLayer::Impl {
     world_vertex_buffer = VK_NULL_HANDLE;
     world_vertex_memory = VK_NULL_HANDLE;
     world_vertex_capacity = 0;
+    if (car_pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, car_pipeline, nullptr);
+    if (car_nodepth_pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, car_nodepth_pipeline, nullptr);
+    if (car_vertex_module != VK_NULL_HANDLE) gt4_hwd_vkDestroyShaderModule(device, car_vertex_module, nullptr);
+    if (car_fragment_module != VK_NULL_HANDLE) gt4_hwd_vkDestroyShaderModule(device, car_fragment_module, nullptr);
+    car_pipeline = VK_NULL_HANDLE;
+    car_nodepth_pipeline = VK_NULL_HANDLE;
+    car_vertex_module = VK_NULL_HANDLE;
+    car_fragment_module = VK_NULL_HANDLE;
     if (world_pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, world_pipeline, nullptr);
     if (world_sky_pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, world_sky_pipeline, nullptr);
     if (world_vertex_module != VK_NULL_HANDLE) gt4_hwd_vkDestroyShaderModule(device, world_vertex_module, nullptr);
@@ -550,6 +620,66 @@ struct PresentLayer::Impl {
         VK_SUCCESS) {
       error = "vkCreateGraphicsPipelines failed for the CoreGS 3.0 present layer";
       return false;
+    }
+
+    // TASK-090 car pass round: the textured car stage (position, lit colour, model UV, fog) with the per-item state and
+    // the measured blend/DATE, and the depth-write-off variant for ZBUF.ZMSK=1 items (the reflection and the alpha-only
+    // glass/shadow draws). The legacy pipeline above stays for GT4_COREGS3_CAR_TEXTURES=0 (the byte-identical A/B).
+    if (!make_shader(hwgs::shaders::coregs3_car_vertex_words, hwgs::shaders::coregs3_car_vertex_word_count,
+                     car_vertex_module, error) ||
+        !make_shader(hwgs::shaders::coregs3_car_fragment_words, hwgs::shaders::coregs3_car_fragment_word_count,
+                     car_fragment_module, error))
+      return false;
+    {
+      VkPipelineShaderStageCreateInfo car_stages[2]{};
+      car_stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      car_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+      car_stages[0].module = car_vertex_module;
+      car_stages[0].pName = "main";
+      car_stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+      car_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+      car_stages[1].module = car_fragment_module;
+      car_stages[1].pName = "main";
+      VkVertexInputBindingDescription car_binding{};
+      car_binding.binding = 0;
+      car_binding.stride = sizeof(PresentVertex);
+      car_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+      VkVertexInputAttributeDescription car_attributes[4]{};
+      car_attributes[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0};
+      car_attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UNORM, 12};
+      car_attributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, 16};
+      car_attributes[3] = {3, 0, VK_FORMAT_R32_SFLOAT, 24};
+      VkPipelineVertexInputStateCreateInfo car_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+      car_input.vertexBindingDescriptionCount = 1;
+      car_input.pVertexBindingDescriptions = &car_binding;
+      car_input.vertexAttributeDescriptionCount = 4;
+      car_input.pVertexAttributeDescriptions = car_attributes;
+      for (int pass = 0; pass < 2; ++pass) {
+        VkPipelineDepthStencilStateCreateInfo car_depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        car_depth.depthTestEnable = VK_TRUE;
+        car_depth.depthWriteEnable = pass == 0 ? VK_TRUE : VK_FALSE;
+        car_depth.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+        car_depth.depthBoundsTestEnable = VK_FALSE;
+        car_depth.stencilTestEnable = VK_FALSE;
+        VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        info.stageCount = 2;
+        info.pStages = car_stages;
+        info.pVertexInputState = &car_input;
+        info.pInputAssemblyState = &assembly;
+        info.pViewportState = &viewport;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &multisample;
+        info.pDepthStencilState = &car_depth;
+        info.pColorBlendState = &blend;
+        info.pDynamicState = &dynamic;
+        info.layout = pipeline_layout;
+        info.renderPass = render_pass;
+        VkPipeline &target = pass == 0 ? car_pipeline : car_nodepth_pipeline;
+        if (gt4_hwd_vkCreateGraphicsPipelines(config.device, VK_NULL_HANDLE, 1, &info, nullptr, &target) != VK_SUCCESS) {
+          error = "vkCreateGraphicsPipelines failed for the CoreGS 3.0 textured car stage";
+          return false;
+        }
+      }
     }
 
     VkDescriptorPoolSize pool_size{};
@@ -1005,6 +1135,49 @@ struct PresentLayer::Impl {
     return true;
   }
 
+  // The shared texture atlas of the frame: the car table and the world table pack their decoded textures into the same
+  // image, which both pipelines bind. Reset once per claimed frame by the first build.
+  void reset_atlas() {
+    atlas_placements.clear();
+    atlas_x = 0;
+    atlas_y = 0;
+    atlas_row_height = 0;
+    world_atlas_used_w = 0;
+    world_atlas_used_h = 0;
+  }
+
+  // Packs one decoded texture into the atlas (the world build's measured shelf packing) and returns its placement, or
+  // false when it does not fit (the caller counts the refusal; the item keeps the base colour).
+  bool pack_atlas_texture(const gt4::coregs3::SampledTexture &sampler, AtlasPlacement &placement) {
+    auto found = atlas_placements.find(&sampler);
+    if (found != atlas_placements.end()) {
+      placement = found->second;
+      return true;
+    }
+    if (sampler.rgba == nullptr || sampler.width == 0 || sampler.height == 0 || sampler.width > kAtlasWidth ||
+        sampler.height > kAtlasHeight)
+      return false;
+    if (atlas_x + sampler.width > kAtlasWidth) {
+      atlas_x = 0;
+      atlas_y += atlas_row_height;
+      atlas_row_height = 0;
+    }
+    if (atlas_y + sampler.height > kAtlasHeight) return false;
+    placement.x = atlas_x;
+    placement.y = atlas_y;
+    for (std::uint32_t row = 0; row < sampler.height; ++row)
+      std::memcpy(world_atlas_pixels.data() +
+                      (static_cast<std::size_t>(placement.y + row) * kAtlasWidth + placement.x) * 4u,
+                  sampler.rgba + static_cast<std::size_t>(row) * sampler.width * 4u,
+                  static_cast<std::size_t>(sampler.width) * 4u);
+    atlas_x += sampler.width;
+    atlas_row_height = std::max(atlas_row_height, sampler.height);
+    world_atlas_used_w = std::max(world_atlas_used_w, placement.x + sampler.width);
+    world_atlas_used_h = std::max(world_atlas_used_h, placement.y + sampler.height);
+    atlas_placements.emplace(&sampler, placement);
+    return true;
+  }
+
   // One captured draw -> one triangle-list draw call per measured position encoding. Positions are metres (build_mesh's
   // scale) and colours are the per-item lit vertex colours (coregs3_lighting.hpp, shade_mesh_items): every item is
   // shaded with its own program and its own TOPS+0xC9 block, and the push constant carries the draw's metre columns
@@ -1147,6 +1320,327 @@ struct PresentLayer::Impl {
     return !ranges.empty();
   }
 
+
+  // TASK-090 car pass round: the per-frame car texture table and per-item state. Built once per claimed frame on its first
+  // presentation tick, under world_mutex, from the same live job records the world uses (the store is on in `present`).
+  // The table binds the car items' T4/T8 textures and the body/paint CT32 environment-map reflection, exactly as the
+  // offline car path does (use_tap, reflections, world_channels = false). The atlas is shared with the world build.
+  void build_car_table() {
+    car_valid = false;
+    car_draws.clear();
+    car_built_vblank = frame.vblank;
+    car_textures_frame = car_textures;
+    if (!car_textures) {
+      car_pending = false;
+      return;
+    }
+    reset_atlas();
+    {
+      std::vector<std::uint8_t> base_bytes;
+      std::uint32_t base_first = 0, base_blocks = 0;
+      std::uint64_t base_vblank = 0;
+      auto bytes = world_base_slm.local.bytes();
+      std::fill(bytes.begin(), bytes.end(), 0);
+      world_base_slm.covered.clear();
+      if (gt4::coregs3::live_world::copy_vram_base(base_bytes, base_first, base_blocks, base_vblank)) {
+        const std::size_t at = static_cast<std::size_t>(base_first) * gt4::coregs3::vram::kBlockBytes;
+        if (at + base_bytes.size() <= bytes.size()) {
+          std::memcpy(bytes.data() + at, base_bytes.data(), base_bytes.size());
+          world_base_slm.cover(gt4::coregs3::vram::Window{base_first, base_blocks});
+        }
+      }
+    }
+    car_live_records.clear();
+    car_live_map.clear();
+    std::vector<std::uint32_t> addresses;
+    for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
+      if (draw.pass != gt4::coregs3::kPassCars) continue;
+      for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+        const gt4::coregs3::CapturedItem &item = draw.items[index];
+        if (item.packet_bytes == 0 || car_live_map.count(item.address) != 0) continue;
+        const std::shared_ptr<const gt4::coregs3::live_world::JobTexture> record =
+            gt4::coregs3::live_world::find(item.address);
+        if (record == nullptr) continue;
+        gt4::coregs3::VramRecord vram;
+        vram.kind = gt4::coregs3::vram::kRecordJobTexture;
+        vram.label = static_cast<std::uint32_t>(record->job);
+        vram.vblank = record->vblank;
+        vram.windows = record->windows;
+        vram.bytes = record->bytes;
+        car_live_records.emplace(item.address, std::move(vram));
+        addresses.push_back(item.address);
+      }
+    }
+    for (const auto &entry : car_live_records) car_live_map.emplace(entry.first, &entry.second);
+    std::sort(addresses.begin(), addresses.end());
+    addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
+    car_tap_data.clear();
+    car_tap_records.clear();
+    const bool live_tap =
+        gt4::coregs3::live_world::build_tap_snapshot(frame.vblank, addresses, car_tap_data, car_tap_records);
+    gt4::coregs3::TextureFrameOptions options;
+    options.use_tap = live_tap;
+    options.live_job_textures = &car_live_map;
+    options.reflections = true;
+    options.world_channels = false;
+    car_table = gt4::coregs3::FrameTextureTable{};
+    gt4::coregs3::TextureFrameCounters texture_counters;
+    std::string table_error;
+    if (!gt4::coregs3::build_frame_texture_table(frame, world_base_slm, live_tap ? car_tap_data.data() : nullptr,
+                                                 car_tap_records, options, car_table, texture_counters, table_error)) {
+      std::fprintf(stderr, "[coregs3] car table refused: %s\n", table_error.c_str());
+      car_pending = false;
+      return;
+    }
+    {
+      gt4::coregs3::present::Counters &counters_out = gt4::coregs3::present::mutable_counters();
+      counters_out.car_textured_items.fetch_add(texture_counters.items_textured, std::memory_order_relaxed);
+      counters_out.car_reflection_items.fetch_add(texture_counters.items_reflected, std::memory_order_relaxed);
+      counters_out.car_no_record_items.fetch_add(texture_counters.items_no_texture, std::memory_order_relaxed);
+      counters_out.car_refused_items.fetch_add(texture_counters.records_refused, std::memory_order_relaxed);
+    }
+    car_draws.reserve(frame.draws.size());
+    for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
+      if (draw.pass != gt4::coregs3::kPassCars) continue;
+      CarDrawState state;
+      state.sequence = draw.sequence;
+      state.items.resize(draw.item_count);
+      const std::vector<gt4::coregs3::TextureBinding> *bindings = car_table.for_draw(draw.sequence);
+      for (std::uint32_t index = 0; index < draw.item_count; ++index) {
+        CarItemState &item = state.items[index];
+        if (bindings == nullptr || index >= bindings->size()) continue;
+        const gt4::coregs3::TextureBinding &binding = (*bindings)[index];
+        const gt4::coregs3::SampleState &sample = binding.state;
+        item.push.test = static_cast<std::uint32_t>(sample.test & 0xFFFFFFFFu);
+        item.push.alpha = static_cast<std::uint32_t>(sample.alpha & 0xFFFFFFFFu);
+        item.push.fbmsk = sample.fbmsk;
+        item.push.fog_colour = sample.fog_colour & 0xFFFFFFu;
+        std::uint32_t flags = 0;
+        if ((sample.test & 1u) != 0) flags |= kWorldFlagAlphaTest;
+        if ((sample.prim & (1u << 5)) != 0) flags |= kWorldFlagFog;
+        const bool abe = (sample.prim & (1u << 6)) != 0;
+        const gt4::coregs3::BlendEquation equation = gt4::coregs3::decode_blend_equation(sample.alpha);
+        const bool measured_blend = gt4::coregs3::blend_family(sample.alpha) != gt4::coregs3::BlendFamily::other;
+        if (abe && measured_blend) {
+          flags |= kCarFlagBlend;
+          const std::uint32_t packed = (equation.a & 3u) | ((equation.b & 3u) << 2) | ((equation.c & 3u) << 4) |
+                                       ((equation.d & 3u) << 6) | ((equation.fix & 0xFFu) << 8);
+          flags |= packed << 8u;
+          item.blend = true;
+        }
+        if (((sample.test >> 14) & 1u) != 0) {
+          flags |= kCarFlagDate;
+          item.date = true;
+        }
+        item.depth_write = sample.zmsk == 0;
+        item.reflection = binding.reflection;
+        if (binding.reflection && !binding.vertex_fog.empty()) item.fog = &binding.vertex_fog;
+        if (binding.texture != nullptr) {
+          const gt4::coregs3::SampledTexture &sampler = *binding.texture;
+          const bool placed_before = atlas_placements.find(&sampler) != atlas_placements.end();
+          AtlasPlacement placement;
+          if (pack_atlas_texture(sampler, placement)) {
+            if (!placed_before) ++gt4::coregs3::present::mutable_counters().car_atlas_textures;
+            item.push.tex0_lo = static_cast<std::uint32_t>(sampler.source_tex0 & 0xFFFFFFFFu);
+            item.push.tex0_hi = static_cast<std::uint32_t>(sampler.source_tex0 >> 32);
+            item.push.clamp_lo = static_cast<std::uint32_t>(sampler.source_clamp & 0xFFFFFFFFu);
+            item.push.clamp_hi = static_cast<std::uint32_t>(sampler.source_clamp >> 32);
+            item.push.atlas_origin = placement.x | (placement.y << 16);
+            item.push.atlas_rect = (sampler.x0 | (sampler.y0 << 16));
+            item.push.atlas_size = (sampler.width | (sampler.height << 16));
+            flags |= kWorldFlagTextured;
+            if (sampler.mmag != 0 || sampler.mmin != 0) flags |= kWorldFlagLinear;
+            item.textured = true;
+          }
+        }
+        item.push.flags = flags;
+      }
+      car_draws.push_back(std::move(state));
+    }
+    car_valid = !car_draws.empty();
+    car_pending = false;
+  }
+
+  // TASK-090 car pass round: the textured car path. Same draw list and lit colours as build_frame, but every triangle is
+  // emitted per item with the item's TEX0/CLAMP/atlas rectangle/UV/fog and its measured state, and the body/paint
+  // reflection items carry their texgen S,T instead of the model UV. A reflection item whose texgen coordinate cannot be
+  // computed is skipped and counted, never drawn with a guessed one.
+  bool build_frame_textured(const std::vector<gt4::coregs3::DrawTransform> *overrides, std::uint32_t &refused,
+                            std::uint32_t &unlit_draws, std::uint64_t &unlit_vertices,
+                            gt4::coregs3::LightCounters &lighting) {
+    vertices.clear();
+    car_ranges.clear();
+    refused = 0;
+    unlit_draws = 0;
+    unlit_vertices = 0;
+    if (!car_valid) return false;
+    std::vector<gt4::coregs3::ShadedVertex> shades;
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> instances;
+    std::size_t draw_index = 0;
+    for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
+      if (draw.pass != gt4::coregs3::kPassCars) continue;
+      if (draw_index >= car_draws.size() || car_draws[draw_index].sequence != draw.sequence) {
+        ++draw_index;
+        continue;
+      }
+      const CarDrawState &car_state = car_draws[draw_index++];
+      const gt4::coregs3::DrawMatrix matrix = gt4::coregs3::draw_matrix(draw);
+      if (!matrix.valid) {
+        ++refused;
+        continue;
+      }
+      gt4::coregs3::ObjectKey key = gt4::coregs3::object_key(draw);
+      std::uint32_t instance = 0;
+      bool known = false;
+      for (auto &entry : instances)
+        if (entry.first == key.id) {
+          instance = entry.second;
+          entry.second += 1;
+          known = true;
+          break;
+        }
+      if (!known) instances.push_back({key.id, 1u});
+      key.instance = instance;
+      const gt4::coregs3::DrawTransform *override = nullptr;
+      if (overrides != nullptr)
+        for (const gt4::coregs3::DrawTransform &candidate : *overrides)
+          if (candidate.key.id == key.id && candidate.key.instance == key.instance) {
+            override = &candidate;
+            break;
+          }
+      const bool blend_override =
+          override != nullptr && override->source != gt4::coregs3::TransformSource::captured_newer;
+      if (blend_override && !finite_rows(override->matrix)) {
+        ++refused;
+        continue;
+      }
+      gt4::coregs3::Mesh mesh;
+      std::string mesh_error;
+      if (!gt4::coregs3::build_mesh(frame.packets.data(), frame.packets.size(), draw, gt4::coregs3::MeshOptions{},
+                                    mesh, mesh_error) ||
+          mesh.indices.empty()) {
+        ++refused;
+        continue;
+      }
+      gt4::coregs3::LightCounters draw_lighting;
+      gt4::coregs3::shade_mesh_items(draw, mesh, draw_lighting, &shades);
+      lighting.add(draw_lighting);
+      if (draw_lighting.draws_fallback != 0) ++unlit_draws;
+      std::vector<std::uint32_t> first_vertex(mesh.vertices.size(), 0xFFFFFFFFu);
+      for (std::uint32_t index = 0; index < mesh.vertices.size(); ++index)
+        if (first_vertex[mesh.vertices[index].item] == 0xFFFFFFFFu)
+          first_vertex[mesh.vertices[index].item] = index;
+      std::uint32_t uv_item = 0xFFFFFFFFu;
+      std::vector<float> item_uv;
+      bool item_uv_ok = false;
+      const auto reflection_uv = [&](std::uint32_t item) -> const std::vector<float> * {
+        if (uv_item == item) return item_uv_ok ? &item_uv : nullptr;
+        uv_item = item;
+        item_uv.clear();
+        item_uv_ok = true;
+        const std::uint32_t first = first_vertex[item];
+        std::uint32_t count = 0;
+        for (std::uint32_t index = first; index < mesh.vertices.size() && mesh.vertices[index].item == item; ++index)
+          ++count;
+        item_uv.resize(static_cast<std::size_t>(count) * 2u, 0.0f);
+        for (std::uint32_t index = 0; index < count; ++index) {
+          gt4::coregs3::ReflectionCoordinate coordinate;
+          if (gt4::coregs3::reflection_st(draw.items[item], mesh.vertices[first + index], coordinate) !=
+              gt4::coregs3::ReflectionStatus::ok) {
+            item_uv_ok = false;
+            break;
+          }
+          item_uv[index * 2u] = coordinate.s;
+          item_uv[index * 2u + 1u] = coordinate.t;
+        }
+        return item_uv_ok ? &item_uv : nullptr;
+      };
+      CarRange current;
+      bool have_range = false;
+      gt4::coregs3::PositionEncoding range_encoding = gt4::coregs3::PositionEncoding::integer_16;
+      std::uint32_t current_item = 0xFFFFFFFFu;
+      const auto open_range = [&](std::uint32_t item, gt4::coregs3::PositionEncoding encoding) {
+        const CarItemState &item_state = car_state.items[item];
+        gt4::coregs3::VertexColumns built;
+        const gt4::coregs3::VertexColumns *columns = encoding == gt4::coregs3::PositionEncoding::integer_16
+                                                         ? &matrix.integer_positions
+                                                         : &matrix.float_positions;
+        if (blend_override) {
+          built = columns_from_upload_rows(override->matrix, encoding);
+          columns = &built;
+        }
+        current = CarRange{};
+        current.first = static_cast<std::uint32_t>(vertices.size());
+        current.count = 0;
+        current.push = item_state.push;
+        current.textured = item_state.textured;
+        current.blend = item_state.blend;
+        current.date = item_state.date;
+        current.depth_write = item_state.depth_write;
+        current.reflection = item_state.reflection;
+        for (int column = 0; column < 4; ++column)
+          for (int row = 0; row < 4; ++row) current.push.columns[column * 4 + row] = columns->column[column][row];
+        range_encoding = encoding;
+        have_range = true;
+      };
+      for (std::size_t triangle = 0; triangle + 2 < mesh.indices.size(); triangle += 3) {
+        const std::uint32_t first_index = mesh.indices[triangle];
+        const gt4::coregs3::MeshVertex &first = mesh.vertices[first_index];
+        const std::uint32_t item = first.item;
+        if (item >= car_state.items.size()) continue;
+        const CarItemState &item_state = car_state.items[item];
+        const gt4::coregs3::PositionEncoding encoding = gt4::coregs3::mesh_position_encoding(first);
+        if (item != current_item) {
+          if (have_range) car_ranges.push_back(current);
+          have_range = false;
+          current_item = item;
+        }
+        const std::vector<float> *uvs = nullptr;
+        if (item_state.reflection) {
+          uvs = reflection_uv(item);
+          if (uvs == nullptr) {
+            have_range = false;
+            ++refused;
+            continue;
+          }
+        }
+        if (!have_range || encoding != range_encoding) {
+          if (have_range) car_ranges.push_back(current);
+          open_range(item, encoding);
+        }
+        const std::uint32_t first_item_vertex = first_vertex[item];
+        for (std::uint32_t corner = 0; corner < 3; ++corner) {
+          const std::uint32_t source_index = mesh.indices[triangle + corner];
+          const gt4::coregs3::MeshVertex &source = mesh.vertices[source_index];
+          PresentVertex vertex;
+          vertex.x = source.position[0];
+          vertex.y = source.position[1];
+          vertex.z = source.position[2];
+          vertex.red = source.color[0];
+          vertex.green = source.color[1];
+          vertex.blue = source.color[2];
+          vertex.alpha = source.color[3];
+          if (uvs != nullptr) {
+            const std::uint32_t local = source_index - first_item_vertex;
+            vertex.u = local * 2u < uvs->size() ? (*uvs)[local * 2u] : 0.0f;
+            vertex.v = local * 2u + 1u < uvs->size() ? (*uvs)[local * 2u + 1u] : 0.0f;
+            vertex.fog = 255.0f;
+            if (item_state.fog != nullptr && local < item_state.fog->size()) vertex.fog = (*item_state.fog)[local];
+          } else {
+            vertex.u = source.uv[0];
+            vertex.v = source.uv[1];
+            vertex.fog = 255.0f;
+          }
+          if (shades[source_index].status != gt4::coregs3::LightStatus::ok) ++unlit_vertices;
+          vertices.push_back(vertex);
+          current.count += 1;
+        }
+      }
+      if (have_range) car_ranges.push_back(current);
+    }
+    return !car_ranges.empty();
+  }
+
   // TASK-090 live world: selects and builds the captured sky/far-underlay/course passes of the frame the claim just
   // swapped in. The selection is the offline world path's shared rule (`coregs3::world_item_exclusion`); the per-item GS
   // state is the K7 pass journal (no `.gt4tap` exists in the live path, so the table's journal branch supplies it), and
@@ -1156,8 +1650,7 @@ struct PresentLayer::Impl {
     world_valid = false;
     world_vertices.clear();
     world_ranges.clear();
-    world_atlas_used_w = 0;
-    world_atlas_used_h = 0;
+    if (!car_textures_frame) reset_atlas();
     world_built_vblank = frame.vblank;
     gt4::coregs3::present::WorldFrameCounters counts;
     const auto is_world_draw = [](std::uint32_t pass) {
@@ -1280,8 +1773,6 @@ struct PresentLayer::Impl {
     // 3. Select and build. Instance numbering is the timeline's exactly (accepted draws in draw order, per id), so the
     // per-tick overrides find the same object.
     std::vector<std::pair<std::uint64_t, std::uint32_t>> instances;
-    std::map<const gt4::coregs3::SampledTexture *, AtlasPlacement> atlas;
-    std::uint32_t atlas_x = 0, atlas_y = 0, atlas_row_height = 0;
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
       const gt4::coregs3::DrawMatrix matrix = gt4::coregs3::draw_matrix(draw);
       if (!matrix.valid) continue;
@@ -1446,39 +1937,13 @@ struct PresentLayer::Impl {
         if (binding != nullptr && binding->texture != nullptr &&
             gt4::coregs3::check_world_binding(*binding) == gt4::coregs3::BindingStatus::ok) {
           const gt4::coregs3::SampledTexture &sampler = *binding->texture;
-          auto found = atlas.find(&sampler);
-          if (found == atlas.end()) {
-            if (sampler.rgba == nullptr || sampler.width == 0 || sampler.height == 0 ||
-                sampler.width > kAtlasWidth || sampler.height > kAtlasHeight) {
-              ++counts.atlas_refused;
-            } else {
-              if (atlas_x + sampler.width > kAtlasWidth) {
-                atlas_x = 0;
-                atlas_y += atlas_row_height;
-                atlas_row_height = 0;
-              }
-              if (atlas_y + sampler.height > kAtlasHeight) {
-                ++counts.atlas_refused;
-              } else {
-                AtlasPlacement placement;
-                placement.x = atlas_x;
-                placement.y = atlas_y;
-                for (std::uint32_t row = 0; row < sampler.height; ++row)
-                  std::memcpy(world_atlas_pixels.data() +
-                                  (static_cast<std::size_t>(placement.y + row) * kAtlasWidth + placement.x) * 4u,
-                              sampler.rgba + static_cast<std::size_t>(row) * sampler.width * 4u,
-                              static_cast<std::size_t>(sampler.width) * 4u);
-                atlas_x += sampler.width;
-                atlas_row_height = std::max(atlas_row_height, sampler.height);
-                world_atlas_used_w = std::max(world_atlas_used_w, placement.x + sampler.width);
-                world_atlas_used_h = std::max(world_atlas_used_h, placement.y + sampler.height);
-                found = atlas.emplace(&sampler, placement).first;
-                ++counts.atlas_textures;
-              }
-            }
-          }
-          if (found != atlas.end()) {
-            const AtlasPlacement &placement = found->second;
+          const bool placed_before = atlas_placements.find(&sampler) != atlas_placements.end();
+          AtlasPlacement placement;
+          const bool placed = pack_atlas_texture(sampler, placement);
+          if (!placed) {
+            ++counts.atlas_refused;
+          } else {
+            if (!placed_before) ++counts.atlas_textures;
             push.tex0_lo = static_cast<std::uint32_t>(sampler.source_tex0 & 0xFFFFFFFFu);
             push.tex0_hi = static_cast<std::uint32_t>(sampler.source_tex0 >> 32);
             push.clamp_lo = static_cast<std::uint32_t>(sampler.source_clamp & 0xFFFFFFFFu);
@@ -1609,6 +2074,7 @@ struct PresentLayer::Impl {
     has_frame = true;
     frame_drew_any = false;
     gt4::coregs3::present::note_guest_frame(frame);
+    if (car_textures) car_pending = true;
     if (live_world_enabled) {
       // The build itself is lazy (render() runs it when a tick is due), so a headless run that draws one frame in 200
       // does not pay the world's CPU work on the other 199. The flag is set under the mutex that also guards the build.
@@ -1691,11 +2157,14 @@ struct PresentLayer::Impl {
     // TASK-090 live world: a new frame's world data is uploaded once, before its first tick. The claim thread built it
     // under `world_mutex` (render holds it for the whole tick loop), and the previous submission was waited for above.
     const bool upload_world = live_world_enabled && world_valid && world_uploaded_vblank != world_built_vblank;
+    const bool upload_car_atlas = car_textures_frame && car_built_vblank != car_uploaded_vblank;
     if (upload_world) {
       const VkDeviceSize world_bytes = static_cast<VkDeviceSize>(world_vertices.size()) * sizeof(WorldVertex);
       if (!ensure_world_vertex_buffer(world_bytes, error)) return false;
       if (world_bytes != 0)
         std::memcpy(world_vertex_mapped, world_vertices.data(), static_cast<std::size_t>(world_bytes));
+    }
+    if (upload_world || upload_car_atlas) {
       // The atlas staging holds only the used top-left rectangle, row by row, which is the region copied to the image.
       if (world_atlas_used_w != 0 && world_atlas_used_h != 0) {
         std::uint8_t *mapped = static_cast<std::uint8_t *>(atlas_staging_mapped);
@@ -1705,6 +2174,7 @@ struct PresentLayer::Impl {
                       static_cast<std::size_t>(world_atlas_used_w) * 4u);
       }
       world_uploaded_vblank = world_built_vblank;
+      car_uploaded_vblank = car_built_vblank;
     }
 
     VkImageView target_view = VK_NULL_HANDLE;
@@ -1821,17 +2291,35 @@ struct PresentLayer::Impl {
       if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 0);
     }
     if (queries_enabled) gt4_hwd_vkCmdBeginQuery(command, query_pool, 1, 0);
-    gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const VkDeviceSize offset = 0;
     gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &vertex_buffer, &offset);
-    for (const DrawRange &range : ranges) {
-      // The car fragment stage reads the post word too, so the push covers the whole struct for both stages.
-      WorldPush push{};
-      for (int column = 0; column < 16; ++column) push.columns[column] = range.columns[column];
-      for (int word = 0; word < 4; ++word) push.post[word] = post_words[word];
-      gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                 0, sizeof push, &push);
-      gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
+    if (car_textures_frame) {
+      // TASK-090 car pass round: the textured path, one draw per per-item range; the depth-write selection is the
+      // ZBUF.ZMSK rule (the reflection and the alpha-only glass/shadow items use the no-write pipeline).
+      VkPipeline bound = VK_NULL_HANDLE;
+      for (const CarRange &range : car_ranges) {
+        const VkPipeline selected = range.depth_write ? car_pipeline : car_nodepth_pipeline;
+        if (selected != bound) {
+          gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, selected);
+          bound = selected;
+        }
+        WorldPush push = range.push;
+        for (int word = 0; word < 4; ++word) push.post[word] = post_words[word];
+        gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof push, &push);
+        gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
+      }
+    } else {
+      gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+      for (const DrawRange &range : ranges) {
+        // The car fragment stage reads the post word too, so the push covers the whole struct for both stages.
+        WorldPush push{};
+        for (int column = 0; column < 16; ++column) push.columns[column] = range.columns[column];
+        for (int word = 0; word < 4; ++word) push.post[word] = post_words[word];
+        gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof push, &push);
+        gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
+      }
     }
     if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 1);
     gt4_hwd_vkCmdEndRenderPass(command);
@@ -1914,6 +2402,7 @@ struct PresentLayer::Impl {
     // built ranges/vertices/atlas are used by every tick of that frame; one mutex covers the build and the draw. The
     // host clock calls this once per tick, so a tick handed to the presenter and the next one see the same world.
     const std::lock_guard<std::mutex> world_lock(world_mutex);
+    if (car_textures && car_pending) build_car_table();
     if (live_world_enabled && world_pending) {
       build_world();
       world_pending = false;
@@ -1926,7 +2415,11 @@ struct PresentLayer::Impl {
     gt4::coregs3::LightCounters lighting;
     const bool car_drawn =
         frame.draw_count != 0 &&
-        build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices, lighting);
+        (car_textures_frame
+             ? build_frame_textured(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices,
+                                    lighting)
+             : build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices,
+                           lighting));
     if (!car_drawn) gt4::coregs3::present::note_pass_refused(refused);
     const bool world_drawn = live_world_enabled && world_valid && !world_ranges.empty();
     if (!car_drawn && !world_drawn) return true;
@@ -2051,6 +2544,9 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
     s.live_world_fog = false;
   if (const char *light = std::getenv("GT4_COREGS3_WORLD_LIGHT"); light != nullptr && std::strcmp(light, "0") == 0)
     s.live_world_light = false;
+  if (const char *textures = std::getenv("GT4_COREGS3_CAR_TEXTURES");
+      textures != nullptr && std::strcmp(textures, "0") == 0)
+    s.car_textures = false;
   s.present_debug = std::getenv("GT4_COREGS3_PRESENT_DEBUG") != nullptr;
   // TASK-090 dither option: an invalid value refuses the layer instead of being interpreted. The mode does not change
   // this pass's pixels (they are written as 8-bit RGBA8 words); it is one setting across the offline and live paths.
