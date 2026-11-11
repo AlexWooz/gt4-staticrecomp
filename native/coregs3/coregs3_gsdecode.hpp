@@ -149,7 +149,9 @@ struct GsDecodeBatch {
   bool full_screen = false;  // the measured S2 rule: width >= 600 and height >= 400 px
 };
 
-// One IMAGE upload: the transfer registers in force plus the payload size the capture carries.
+// One IMAGE upload: the transfer registers in force plus the payload size the capture carries. `data` is the payload
+// the capture delivered for a host->local transfer (the S3 texture source); it is empty for a direction that carries
+// no host data or when the packet was split and the capture did not deliver it.
 struct GsDecodeImageUpload {
   std::uint64_t vblank = 0;
   std::uint32_t sequence = 0;
@@ -161,6 +163,7 @@ struct GsDecodeImageUpload {
   std::uint32_t dsax = 0, dsay = 0, rrw = 0, rrh = 0;
   std::uint32_t trxdir = 0;  // 0 host->local, 1 local->host, 2 local->local, 3 none
   bool has_transfer_state = false;  // BITBLTBUF/TRXREG were written before the IMAGE tag
+  std::vector<std::uint8_t> data;   // host->local payload, in capture order
 };
 
 // The per-frame census row. `scene_frame = capture_vblank - 1` is the S1 phase relation (see the file comment).

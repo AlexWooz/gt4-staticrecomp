@@ -10,6 +10,53 @@ the existing CoreGS 3.0 capture (`native/coregs3`) and the repository studies.
 
 Labels: **C** = Confirmed (read in code or measured), **H** = High confidence, **Hyp** = Hypothesis, **U** = Unknown.
 
+## Status (2026-11-10): S3 implemented and measured; the speed plate is drawn, the digit atlas is outside the capture window
+
+S3 landed on branch `task/090-hud-s3` (worktree `O:/Antigavity/gt4-wt-090-hud-s3`, from `task/090-coregs3` at
+`008a71c8`). The first native HUD/2D layer is `native/coregs3/coregs3_hud.{hpp,cpp}` plus the `native_coregs3_hud`
+fixture and the `gt4_coregs3_render --hud` options. The measured element is the speed element of the race panel, and the
+panel is **mixed**:
+
+- **PATH2 (the `.gt4gs` stream):** the two digit sprites of scene frame 7398 (stream 7399) at seq 1102/1103, PRIM
+  0x15E (sprite, TME+ABE), TEX0 TBP0 0x3A20 T4 128x64, CBP 0x3A27, CLAMP 0..127 x 0..38, TEX1 0x60 (linear/linear,
+  MXL 0), ALPHA 0x44 (normal), at x 567.75..578.25 and 577.5..588.0, y 382.5..400.5, UV cells (91..105, 1..19) and
+  (61..75, 1..19).
+- **PATH1 (the `.gt4tap`):** the plate, job 460652, a 4-vertex tri-strip with ST 0..0.641 x 0..0.812 at
+  x 550.5..612.0, y 377.5..403.625, T8 TBP0 0x3A00 CBP 0x3A08 CLAMP 0..81 x 0..25, FRAME 0x020A008C (CT16 display
+  buffer), PRIM 0x05C (tri-strip, TME+ABE), ALPHA 0x44, TEST 0x3840C (ATE off, ZTST always).
+- **The merged register file (C, measured).** The PATH2-only walker sees SCISSOR 0..639 x 45..76 at the digit draws
+  (the position element's write, seq 1095); under that rectangle the digits are culled. The real GS order also carries
+  the plate's VU1 job (job 460652 < the digits' last_job 460653), which writes SCISSOR 0..639 x 0..447; merging the tap
+  writes by job id restores the full-screen rectangle. The panel builder counts the sprites the PATH2-only state would
+  have culled (**2** on this frame). The same merge explains why the digits are visible in the CoreGS 2.0 reference.
+- **Textures (C, captured).** The frame's own PATH3 IMAGE uploads reconstruct the GS local memory: **173 uploads,
+  3,800,552 B, 0 refused** (host->local, BITBLTBUF/TRXPOS/TRXREG, T4/T8/CT32, the split packets handled). The plate page
+  0x3A00 is uploaded by seq 1007 (T8 88x26, 2288 B) and its CT32 16x16 palette by seq 1009; the decoded texture is the
+  exact `remote_speed_kmph` plate (the "km/h" text is readable), matching the disc entry's TEX0/CLAMP. The gear page
+  0x3C80 decodes to "1 2 3 4 5 [car icon] P". **The digit glyph atlas page (T4 128x64 at 0x3A20) is not uploaded
+  inside the window**: its per-frame uploads are the CT32 palette banks (0x3A20 32x16, 0x3A28 16x16, 0x3A2C 16x8,
+  0x3A2E 8x8) and the small element atlases, not the font texels, which were uploaded before the capture began. The
+  run's own `.gt4vram` sidecar (one vblank record at the previous rotation, worker VBlank 7398) and the cross-run
+  pass-textures sidecar do not match the 7399 rotation; the font is not recoverable from the captured bytes. The
+  stream-only image holds the page as zero fill, so the raster refuses the two digit draws by name ("texture page holds
+  a constant value (the font atlas is uploaded before the captured window)") and counts them; no solid box is drawn.
+- **Raster (C).** Sprite/strip coverage by pixel centres (the CoreGS 2.0 rule), MODULATE (`Ct*Cv >> 7`), the ALPHA
+  normal blend `(Cs-Cd)*As+Cd`, TEST ATE, and the CT16 display-buffer model: the destination is read as its 5-bit value
+  shifted left by 3 and the result stored the same way (the reference frame's centre samples are exactly the CT16 5-bit
+  values `<< 3`, verified on frame 07400).
+- **Gates.** CTest coregs3 **17/17** (new `native_coregs3_hud`), Python **14/14**; the world `--no-hud` render is
+  **byte-identical** to the `008a71c8` executable on the same capture/command (PNG and report SHA-256 equal); the 3x
+  off/shadow gate is **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). At 1x
+  against frame 07400 the plate mask is 1586 px at bbox [551,378..611,403]; the plate background (excluding the digit
+  and km/h rects) is **PSNR 28.58, mean |diff| 6.37, luma 11.87 vs 6.11**; the full element mask is PSNR 13.35 /
+  SSIM 0.486 because the digits are missing. **G-HUD-VALUES is open** until the font atlas is captured; G-HUD-ASPECT is
+  documented as one aspect only (the bench forces widescreen, 640x448 anamorphic). Evidence and commands:
+  `build/evidence-hud-s3/`.
+- **Next.** Capture the font atlas (a boot/race-entry `.gt4gs` window, or the `race.fnt` decoder) and then extend to the
+  remaining elements (position/lap/time, gear, fuel/tyres, tachometer, mini-map, car icon, messages/countdown, command
+  bar), which the captures already carry as PATH2 sprite sets and whose background plates are the tap's other
+  display-buffer tri-strips (140 PATH1 draws per frame in the window).
+
 ## Status (2026-11-10): S2 implemented and measured; the wet-road composite explains 0 of the additive term
 
 S2 landed on branch `task/090-gs-post-layer` (worktree `O:/Antigavity/gt4-wt-090-gs-post-layer`, from `task/090-coregs3`

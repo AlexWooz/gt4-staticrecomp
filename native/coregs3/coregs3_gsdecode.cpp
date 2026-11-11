@@ -70,12 +70,14 @@ struct Pending {
   std::uint32_t remaining = 0;
   std::uint32_t descriptor = 0;
   std::uint64_t start_vblank = 0;
+  std::uint64_t start_job = 0;  // the last VU1 job posted when the tag was accepted (the merge order of S3)
   std::uint32_t start_sequence = 0;
   std::uint32_t start_record = 0;
   std::uint32_t start_frame = 0;
   std::uint8_t path = 0;
   std::uint64_t tag_begin_offset = 0;
   std::uint64_t image_bytes = 0;
+  std::vector<std::uint8_t> image_data;  // the host->local payload the capture delivered (S3 texture source)
   // Per-packet content flags.
   bool wrote_register = false;
   bool kicked_vertices = false;
@@ -163,6 +165,7 @@ void begin_batch(PathWalker &walker, const GsDecodeState &state) {
   walker.batch = GsDecodeBatch{};
   walker.batch.vblank = pending.start_vblank;
   walker.batch.sequence = pending.start_sequence;
+  walker.batch.last_job = pending.start_job;
   walker.batch.path = pending.path;
   walker.batch.state = state;
   walker.batch_open = true;
@@ -474,13 +477,14 @@ void finish_packet(CensusWriter &writer, PathWalker &walker) {
       upload.spsm = static_cast<std::uint32_t>((walker.bitbltbuf >> 24) & 0x3Fu);
       upload.dsax = static_cast<std::uint32_t>((walker.trxpos >> 32) & 0x7FFu);
       upload.dsay = static_cast<std::uint32_t>((walker.trxpos >> 48) & 0x7FFu);
-      upload.rrw = static_cast<std::uint32_t>(walker.trxreg & 0xFFFu) + 1u;
-      upload.rrh = static_cast<std::uint32_t>((walker.trxreg >> 16) & 0xFFFu) + 1u;
+      upload.rrw = static_cast<std::uint32_t>(walker.trxreg & 0xFFFu);
+      upload.rrh = static_cast<std::uint32_t>((walker.trxreg >> 32) & 0xFFFu);
       upload.trxdir = static_cast<std::uint32_t>(walker.trxdir & 3u);
     } else {
       writer.census.image_without_transfer_state += 1;
     }
     upload.bytes = pending.image_bytes;
+    upload.data = std::move(pending.image_data);
     writer.census.image_uploads += 1;
     writer.census.image_bytes += upload.bytes;
     row.image_uploads += 1;
@@ -504,6 +508,7 @@ void feed_record(CensusWriter &writer, PathWalker &walker, const std::uint8_t *p
       pending.tag = decode_tag(lo, hi);
       pending.start_vblank = record.vblank;
       pending.start_sequence = record.sequence;
+      pending.start_job = record.last_job;
       pending.start_record = static_cast<std::uint32_t>(record.sequence);
       pending.path = record.path;
       pending.tag_begin_offset = at - 16;
@@ -539,8 +544,11 @@ void feed_record(CensusWriter &writer, PathWalker &walker, const std::uint8_t *p
       const std::uint32_t take = std::min(pending.remaining, available);
       if (take != 0) {
         pending.image_counted = true;
-        // The upload entry is created at the end of the packet; keep a running byte count on the pending state.
+        // The upload entry is created at the end of the packet; keep a running byte count on the pending state and, for
+        // a host->local transfer, the payload itself (S3 reconstructs the GS local memory from it).
         pending.image_bytes += take * 16ull;
+        if ((walker.trxdir & 3u) == 0u)
+          pending.image_data.insert(pending.image_data.end(), payload + at, payload + at + take * 16u);
         at += take * 16u;
         pending.remaining -= take;
       }
@@ -955,21 +963,24 @@ const char *gs_batch_class_name(const GsDecodeBatch &batch) noexcept {
 
 std::string gs_batch_state_line(const GsDecodeBatch &batch) {
   const GsDecodeState &state = batch.state;
-  char line[512];
+  char line[768];
   std::snprintf(line, sizeof line,
                 "path %u vblank %llu seq %u prim %03X tme %u abe %u tbp0 %04X psm %02X tw %u th %u tcc %u tfx %u "
-                "t1 %016llX frame fbp %u fbw %u psm "
-                "%u fbmsk %08X rgba %08X test %016llX alpha %016llX zbuf %016llX clamp %016llX xyoff %016llX extent "
-                "%.1f..%.1f x %.1f..%.1f verts %u",
+                "tex0 %016llX tex1 %016llX rgba %08X frame fbp %u fbw %u psm %u fbmsk %08X test %016llX "
+                "alpha %016llX zbuf %016llX clamp %016llX scissor %016llX xyoff %016llX "
+                "extent %.1f..%.1f x %.1f..%.1f verts %u",
                 static_cast<unsigned>(batch.path), static_cast<unsigned long long>(batch.vblank), batch.sequence,
                 state.prim_value(), state.prim_tme(), state.prim_abe(), state.tex0_tbp0(), state.tex0_psm(),
                 state.tex0_tw(), state.tex0_th(), state.tex0_tcc(), state.tex0_tfx(),
-                static_cast<unsigned long long>(state.tex1), state.frame_fbp(), state.frame_fbw(), state.frame_psm(),
-                state.frame_fbmsk(),
-                static_cast<std::uint32_t>(state.rgba & 0xFFFFFFFFu), static_cast<unsigned long long>(state.test), static_cast<unsigned long long>(state.alpha),
+                static_cast<unsigned long long>(state.tex0),
+                static_cast<unsigned long long>(state.tex1),
+                static_cast<std::uint32_t>(state.rgba & 0xFFFFFFFFu),
+                state.frame_fbp(), state.frame_fbw(), state.frame_psm(), state.frame_fbmsk(),
+                static_cast<unsigned long long>(state.test),
+                static_cast<unsigned long long>(state.alpha),
                 static_cast<unsigned long long>(state.zbuf), static_cast<unsigned long long>(state.clamp),
-                static_cast<unsigned long long>(state.xyoffset), batch.min_x, batch.max_x, batch.min_y, batch.max_y,
-                batch.vertices);
+                static_cast<unsigned long long>(state.scissor), static_cast<unsigned long long>(state.xyoffset),
+                batch.min_x, batch.max_x, batch.min_y, batch.max_y, batch.vertices);
   return line;
 }
 

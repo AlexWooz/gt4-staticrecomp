@@ -20,6 +20,11 @@
 //       full-screen batches with their pinned state, and the measured wet-road composite chain (alpha clear, additive
 //       composite, post multiplies) attributed to scene frame V from the stream stamped V + 1 (the S1 phase relation).
 //       Named refusals are printed; every packet is classified or counted with a reason.
+//
+//   gt4_coregs3_gs --batches <file.gt4gs> [--vblank N] [--vertices]
+//       TASK-090 S3: every decoded batch (one line, the register file at its first vertex) and every IMAGE upload, for
+//       one capture frame or all of them. --vertices adds the screen position and texel coordinate of each vertex. This
+//       is the instrument that separates the panel's sprites from the post chain.
 #include "coregs3_gsdecode.hpp"
 #include "coregs3_gsstream.hpp"
 #include "coregs3_gsstream_file.hpp"
@@ -646,6 +651,49 @@ void command_census(const char *path, const char *json_path) {
   std::printf("census JSON written to %s\n", json_path);
 }
 
+// TASK-090 S3: the decoded batch list. `vblank` selects one capture frame (0 = every frame); `with_vertices` adds one
+// line per decoded vertex with its screen position and texel coordinate. This is the instrument that separates the
+// panel's sprites from the post chain: each line carries the register file in force at the batch's first vertex.
+void command_batches(const char *path, std::uint64_t vblank, bool with_vertices) {
+  std::vector<std::uint8_t> data;
+  GsStreamFileHeader header;
+  std::vector<GsStreamFileRecord> records;
+  if (!load_stream(path, data, header, records)) std::exit(1);
+  GsStreamCensus census;
+  std::vector<GsDecodeBatch> batches;
+  std::vector<GsDecodeImageUpload> uploads;
+  std::string error;
+  if (!census_gs_stream(data, header, records, census, batches, uploads, error)) {
+    std::fprintf(stderr, "gt4_coregs3_gs: %s\n", error.c_str());
+    std::exit(1);
+  }
+  std::uint64_t listed = 0;
+  for (const GsDecodeBatch &batch : batches) {
+    if (vblank != 0 && batch.vblank != vblank) continue;
+    ++listed;
+    std::printf("%-28s %s\n", gs_batch_class_name(batch), gs_batch_state_line(batch).c_str());
+    if (!with_vertices) continue;
+    for (std::uint32_t index = 0; index < batch.verts.size(); ++index) {
+      const GsDecodeVertex &vertex = batch.verts[index];
+      std::printf("    v%u %s x %.2f y %.2f z %u fog %u uv %s %.2f %.2f\n", index,
+                  vertex.drawing ? "draw " : "latch", vertex.x, vertex.y, vertex.z, vertex.fog,
+                  vertex.has_uv ? "yes" : "no ", vertex.u, vertex.v);
+    }
+  }
+  // The IMAGE uploads of the same frame, so a batch's TEX0 page can be traced to the upload that filled it.
+  std::uint64_t uploads_listed = 0;
+  for (const GsDecodeImageUpload &upload : uploads) {
+    if (vblank != 0 && upload.vblank != vblank) continue;
+    ++uploads_listed;
+    std::printf("upload path %u vblank %llu seq %u dbp %04X dbw %u dpsm %02X sbp %04X %ux%u dir %u bytes %llu qwords %u\n",
+                static_cast<unsigned>(upload.path), static_cast<unsigned long long>(upload.vblank), upload.sequence,
+                upload.dbp, upload.dbw, upload.dpsm, upload.sbp, upload.rrw, upload.rrh, upload.trxdir,
+                static_cast<unsigned long long>(upload.bytes), upload.qwords);
+  }
+  std::printf("batches %llu, uploads %llu\n", static_cast<unsigned long long>(listed),
+              static_cast<unsigned long long>(uploads_listed));
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -654,7 +702,8 @@ int main(int argc, char **argv) {
                  "usage: gt4_coregs3_gs --stats <file.gt4gs>\n"
                  "       gt4_coregs3_gs --list <file.gt4gs>\n"
                  "       gt4_coregs3_gs --dump-frame <index> <file.gt4gs>\n"
-                 "       gt4_coregs3_gs --check-pass <file.gt4gs> <capture.gt4scene>\n");
+                 "       gt4_coregs3_gs --check-pass <file.gt4gs> <capture.gt4scene>\n"
+                 "       gt4_coregs3_gs --batches <file.gt4gs> [--vblank N] [--vertices]\n");
     return 2;
   }
   const std::string command = argv[1];
@@ -679,6 +728,14 @@ int main(int argc, char **argv) {
       return 2;
     }
     command_check_pass(argv[2], argv[3]);
+  } else if (command == "--batches") {
+    std::uint64_t vblank = 0;
+    bool with_vertices = false;
+    for (int index = 3; index < argc; ++index) {
+      if (std::string(argv[index]) == "--vblank" && index + 1 < argc) vblank = std::strtoull(argv[++index], nullptr, 10);
+      else if (std::string(argv[index]) == "--vertices") with_vertices = true;
+    }
+    command_batches(argv[2], vblank, with_vertices);
   } else {
     std::fprintf(stderr, "gt4_coregs3_gs: unknown command %s\n", command.c_str());
     return 2;
