@@ -1,5 +1,25 @@
 # Current Status
 
+## 2026-11-11: the world shading round: the measured per-item VU1 lighting in the live world (TASK-090, branch `task/090-live-world`)
+
+The live world now shades every vertex with the offline renderer's measured per-item VU1 programs: `build_world` calls
+`coregs3_lighting.hpp`'s `shade_mesh_items` per captured draw (the item's own selector, light block and carried state,
+the same call `coregs3_render.cpp` makes through `apply_lighting`), so the fragment stage MODULATEs by the game's lit
+colour instead of the decoded base colour. `GT4_COREGS3_WORLD_LIGHT=0` keeps the base colours and is the A/B; an item
+whose selector or block cannot be used keeps its base colour and is counted, never shaded with guessed constants. The
+F8 world line gains `light_draws_lit` / `light_draws_fallback` / `light_vertices_lit` / `light_vertices_fallback`. At
+VBlank 7399 every world draw and vertex is lit (520/520 draws, 256,196/256,196 vertices, 0 fallbacks). A/B against the
+r8 reference frame 07400 over the 2,504,546-px world mask: base colours luma 24.671 / mean 18.847 / **PSNR 17.336 dB**;
+lit luma 22.860 / mean 17.333 / **PSNR 18.546 dB** (+1.21 dB), 94,269 px changed, 64,009 closer to the reference against
+32,005 farther; the left-wall crop 12.57 -> 18.13 dB, the road 25.23 -> 25.28, the right wall 22.16 -> 22.15, the HUD
+area 14.80 -> 14.83 and the centre buildings 16.16 -> 16.19; the CoreGS 2.0 base is 27.429 / 3.836 / 30.145. The car pass
+is untouched. Finding from the split check: with the 2D split on (default) the **night B-Spec scene renders a black 3D
+image** (frame luma 2.291, only the overlay HUD; split off 22.377) while the A-Spec scene renders (28.02); the incoming
+split code was validated on A-Spec only, so this round's night A/B runs with `GT4_COREGS3_2D_OVERLAY=0` and the finding
+goes to the split owner. Checks: CTest coregs3 21/21, Python 18/18, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK
+(8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (executable SHA-256 4c1cb1ee1e9f8cb1cc97d9e52d67a4c85a5884db981690a47f8760b555c4f7c7). Evidence `build/evidence-live-world/`
+(`night-shade-*`, `shade-ab*.log`, `shade-frame-7399.png`).
+
 ## 2026-11-11: the 2D overlay split, HUD aspect, mip recapture and dither integrated with the live post chain (TASK-090, branch `task/090-live-world`)
 
 `origin/task/090-coregs3` (the 2D overlay split `34c6c2c2`, the HUD aspect round, the mip recapture and the dither)

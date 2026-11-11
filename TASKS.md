@@ -2280,6 +2280,16 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   the split A/B on the A-Spec 3x scene (split on vs `GT4_COREGS3_2D_OVERLAY=0`: 1,564 frames split, 9 overlay composes,
   0 refusals; the HUD over the world in the split image, the world covering it in the A/B).
 
+- **Live world shading round (2026-11-11, branch `task/090-live-world`).** `build_world` now applies the offline
+  renderer's measured per-item VU1 lighting (`shade_mesh_items`, the item's selector/light block/carried state) to every
+  world vertex; `GT4_COREGS3_WORLD_LIGHT=0` keeps the base colours (the A/B) and the F8 world line gains the four light
+  counters. Night A/B (VBlank 7399 against the r8 reference 07400, world mask): PSNR 17.336 -> **18.546 dB**, mean 18.847
+  -> 17.333, left wall 12.57 -> 18.13 dB; 520/520 draws and 256,196/256,196 vertices lit, 0 fallbacks; the car pass is
+  untouched. Split finding: the night B-Spec scene's 3D is black with the 2D split on (A-Spec renders; split off
+  renders), pre-existing in the incoming split code and reported. Checks: CTest coregs3 **21/21**, Python **18/18**, the
+  3x gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`4c1cb1ee1e9f8cb1cc97d9e52d67a4c85a5884db981690a47f8760b555c4f7c7`). Journal entry of
+  2026-11-11; hooks §37.
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages

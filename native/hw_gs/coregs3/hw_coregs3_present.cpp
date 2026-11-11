@@ -232,6 +232,7 @@ struct PresentLayer::Impl {
   bool live_world_background = false;  // GT4_COREGS3_WORLD_BACKGROUND=1: draw the sky and far underlay too
   bool live_world_bilinear = true;     // GT4_COREGS3_WORLD_FILTER=nearest is the bilinear A/B
   bool live_world_fog = true;          // GT4_COREGS3_WORLD_FOG=0 is the fog A/B
+  bool live_world_light = true;        // GT4_COREGS3_WORLD_LIGHT=0 keeps the decoded base colours (the shading A/B)
   bool present_debug = false;          // GT4_COREGS3_PRESENT_DEBUG=1: one line per render with the claimed frame
   // TASK-090 dither option (coregs3_dither.hpp): one setting across the offline chain and the live path. In `faithful`
   // the fragment stages apply the captured CT16 present model to the pixels they write (the dither round's model); in
@@ -1363,6 +1364,18 @@ struct PresentLayer::Impl {
         ++counts.refused_draws;
         continue;
       }
+      // TASK-090 world shading: the offline renderer's measured per-item VU1 lighting (coregs3_lighting.hpp,
+      // shade_mesh_items) applied to the world's vertices, each item with its own program, light block and selector.
+      // An item whose selector or block cannot be used keeps its decoded base colour and is counted, never shaded with
+      // guessed constants. GT4_COREGS3_WORLD_LIGHT=0 keeps the base colours and is the A/B.
+      gt4::coregs3::LightCounters draw_lighting;
+      if (live_world_light) {
+        gt4::coregs3::shade_mesh_items(draw, mesh, draw_lighting, nullptr);
+        counts.light_draws_lit += static_cast<std::uint32_t>(draw_lighting.draws_lit);
+        counts.light_draws_fallback += static_cast<std::uint32_t>(draw_lighting.draws_fallback);
+        counts.light_vertices_lit += draw_lighting.vertices_lit;
+        counts.light_vertices_fallback += draw_lighting.vertices_fallback;
+      }
       ++counts.draws;
       counts.items += selected;
       counts.vertices += mesh.vertices.size();
@@ -2015,6 +2028,8 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
     s.live_world_bilinear = false;
   if (const char *fog = std::getenv("GT4_COREGS3_WORLD_FOG"); fog != nullptr && std::strcmp(fog, "0") == 0)
     s.live_world_fog = false;
+  if (const char *light = std::getenv("GT4_COREGS3_WORLD_LIGHT"); light != nullptr && std::strcmp(light, "0") == 0)
+    s.live_world_light = false;
   s.present_debug = std::getenv("GT4_COREGS3_PRESENT_DEBUG") != nullptr;
   // TASK-090 dither option: an invalid value refuses the layer instead of being interpreted. The mode does not change
   // this pass's pixels (they are written as 8-bit RGBA8 words); it is one setting across the offline and live paths.

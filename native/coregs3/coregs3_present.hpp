@@ -83,6 +83,12 @@ struct WorldFrameCounters {
   std::uint32_t post_items = 0;
   std::uint32_t post_faithful = 0;
   std::uint32_t post_env_missing = 0;
+  // TASK-090 world shading (coregs3_lighting.hpp, shade_mesh_items): the measured per-item VU1 programs applied to the
+  // world's vertices. Fallback vertices keep the decoded base colour; the counters name them.
+  std::uint32_t light_draws_lit = 0;
+  std::uint32_t light_draws_fallback = 0;
+  std::uint64_t light_vertices_lit = 0;
+  std::uint64_t light_vertices_fallback = 0;
 };
 void note_world_frame(const WorldFrameCounters &counts) noexcept;
 void note_world_tick(std::uint32_t draw_calls, std::uint64_t samples) noexcept;
@@ -147,6 +153,10 @@ struct Counters {
   std::atomic<std::uint64_t> world_post_items{0};
   std::atomic<std::uint64_t> world_post_faithful{0};
   std::atomic<std::uint64_t> world_post_env_missing{0};
+  std::atomic<std::uint64_t> world_light_draws_lit{0};
+  std::atomic<std::uint64_t> world_light_draws_fallback{0};
+  std::atomic<std::uint64_t> world_light_vertices_lit{0};
+  std::atomic<std::uint64_t> world_light_vertices_fallback{0};
   std::atomic<std::uint64_t> world_refused_draws{0};
   std::atomic<std::uint64_t> world_excluded_itop{0};
   std::atomic<std::uint64_t> world_excluded_shape{0};

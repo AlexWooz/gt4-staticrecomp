@@ -361,6 +361,10 @@ void note_world_frame(const WorldFrameCounters &counts) noexcept {
   add(c.world_post_items, counts.post_items);
   add(c.world_post_faithful, counts.post_faithful);
   add(c.world_post_env_missing, counts.post_env_missing);
+  add(c.world_light_draws_lit, counts.light_draws_lit);
+  add(c.world_light_draws_fallback, counts.light_draws_fallback);
+  add(c.world_light_vertices_lit, counts.light_vertices_lit);
+  add(c.world_light_vertices_fallback, counts.light_vertices_fallback);
   add(c.world_refused_draws, counts.refused_draws);
   add(c.world_excluded_itop, counts.excluded_itop);
   add(c.world_excluded_shape, counts.excluded_shape);

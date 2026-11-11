@@ -2640,3 +2640,30 @@ post op; no base-side application is needed (the base already carries the chain)
 live-post arithmetic in `native_coregs3_wet_composite`), Python 18/18, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK
 (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B) on the clean rebuild (`e0898dc0edb12601e92c179da84f8abdd8003aed684b10248576b08767155132`). Evidence `build/evidence-live-world/` (`night-post-*`,
 `post-ab.json`, `post_metrics.py`, `post_ab.sh`).
+
+## 37. Round 35 (2026-11-11, branch `task/090-live-world`): the live world's per-item VU1 lighting
+
+`build_world` took the capture's decoded base colour (`MeshVertex::color`) and never ran the measured VU1 lighting
+programs; the offline renderer shades every draw with `coregs3_lighting.hpp`'s `shade_mesh_items` (round 13/14 formulas,
+the item's own ITOP selector and TOPS+0xC9 block). The live build now makes the same call after `build_mesh`, before the
+range loop, and the fragment stage MODULATEs by the lit colour. `GT4_COREGS3_WORLD_LIGHT=0` keeps the base colours (the
+A/B); fallback items keep the base colour and are counted. The F8 world line gains `light_draws_lit`,
+`light_draws_fallback`, `light_vertices_lit`, `light_vertices_fallback`.
+
+Measured (night race, 3x, VBlank 7399 against the r8 reference 07400, the 2,504,546-px world mask):
+
+| variant | luma | mean abs | PSNR | changed px vs base colours |
+|---|---|---|---|---|
+| base colours (A/B) | 24.67 | 18.85 | 17.34 dB | 0 |
+| lit (default) | 22.86 | 17.33 | 18.55 dB | 94,269 (64,009 closer / 32,005 farther) |
+| CoreGS 2.0 base | 27.43 | 3.84 | 30.15 dB | — |
+
+Crops (base colours -> lit): left wall 12.57 -> 18.13 dB, road 25.23 -> 25.28, right wall 22.16 -> 22.15, HUD area
+14.80 -> 14.83, centre buildings 16.16 -> 16.19. All 520 draws / 256,196 vertices were lit on the frame, 0 fallbacks.
+The car pass is untouched.
+
+Split check: with the 2D split on, the night B-Spec scene's 3D image is black (frame luma 2.291, only the HUD) while
+`GT4_COREGS3_2D_OVERLAY=0` renders 22.377 and the A-Spec scene renders 28.02 with the split on; the incoming split code
+was validated on A-Spec only, and the finding is reported to the split owner. Checks: CTest coregs3 21/21, Python 18/18,
+the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`4c1cb1ee1e9f8cb1cc97d9e52d67a4c85a5884db981690a47f8760b555c4f7c7`). Evidence
+`build/evidence-live-world/` (`night-shade-*`, `shade-ab*.log`, `shade-frame-7399.png`).
