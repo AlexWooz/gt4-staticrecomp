@@ -2793,7 +2793,7 @@ reconstructs the depth test of one draw (`car debug depth`).
 
 Measured (clean rebuild `98d12fcb`): draw 102 (offline 271) projects 15,251 px (bbox 1442..1602 / 727..854) against
 the offline perdraw d271 mask's 15,192 px (1443..1601 / 728..856), 15,035 px overlap; the 80 reflection ranges
-rasterise 39,291 samples, exactly the offline 39,291. Near-car acceptance (28,536 px): base calibration 39.52 dB /
+rasterise 39,291 samples, exactly the offline 39,291. Near-car acceptance (the union of the perdraw masks of draws 250-282 mapped x3 horizontally and 1344/480 vertically, 28,536 px): base calibration 39.52 dB /
 0.33 / 1.8%, textured **30.70 dB / 2.13 / 7.3%** (target 28 / 3 / 10), so the textured gate is met; draw 271 28.24 /
 3.38 / 11.8 textured. Reflection fragments written 17,820-19,202 against the offline 20,302 (87.8-94.6%): the
 geometry and the depth outcomes match, the residual is the DATE destination-alpha environment (the live image carries

@@ -21,7 +21,7 @@ the 80 reflection ranges rasterise 39,291 samples, exactly the offline 39,291. T
 depth tolerance is now reproduced in the car vertex stage (clip z scaled by 1.001 for the reflection ranges).
 
 Acceptance on the clean rebuild (`98d12fcbe33ed4d55b48bee37ffae7bb3be0ec9e5dc4519d4a0fcff3732c531c`), VBlank 7398
-against the offline frame 0, shift (0,0), near-car mask 28,536 px: base calibration **39.52 dB / 0.33 / 1.8%**;
+against the offline frame 0, shift (0,0), near-car mask (the union of the perdraw masks of draws 250-282, x3 / 1344/480 mapping, 28,536 px): base calibration **39.52 dB / 0.33 / 1.8%**;
 textured **30.70 dB / 2.13 / 7.3%** (target 28 / 3 / 10) - **met**. Draw 271: 28.24 / 3.38 / 11.8 textured against
 38.39 / 0.39 / 1.8 base. Counters per frame: 116 draws, 335 items, **219 textured / 80 reflected / 36 no-record / 0
 refused**. Reflection fragments written 17,820-19,202 against the offline 20,302 (87.8-94.6%): the +/-5% gate is still
