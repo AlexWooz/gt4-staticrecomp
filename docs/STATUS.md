@@ -1,5 +1,41 @@
 # Current Status
 
+## 2026-11-10: GS-stream S3, the first native HUD layer; the speed plate is drawn, the digit atlas is outside the capture window (TASK-090, branch `task/090-hud-s3`)
+
+S3 implements the first native HUD/2D layer for the measured speed element. The panel is **mixed**: the speed digits
+are PATH2 sprites of the `.gt4gs` stream (scene frame 7398 -> stream 7399, seq 1102/1103: PRIM 0x15E sprite, TME+ABE,
+TEX0 TBP0 0x3A20 T4 128x64 CBP 0x3A27 CLAMP 0..127 x 0..38, TEX1 linear/linear, ALPHA 0x44, at x 567.75..578.25 and
+577.5..588.0, y 382.5..400.5), while the plate is a **VU1 PATH1** draw of the `.gt4tap` (job 460652, a 4-vertex
+tri-strip, T8 TBP0 0x3A00 CBP 0x3A08 CLAMP 0..81 x 0..25, ST 0..0.641 x 0..0.812, x 550.5..612.0, y 377.5..403.625).
+`native/coregs3/coregs3_hud.{hpp,cpp}` (new, `native_coregs3_hud` fixture) selects both; merges the tap's SCISSOR
+writes by job id (the PATH2-only register file carries the position element's stale 0..639 x 45..76, which would cull
+the digits; the plate's lower job id restores 0..639 x 0..447; **2 sprites counted**); orders the plate before the
+digits; samples T4/T8 with the CT32 CSM1 palette; and rasterises with MODULATE, the normal `(Cs-Cd)*As+Cd` blend and
+the display buffer's CT16 model (the reference frame's centre samples are exactly the CT16 5-bit values `<< 3`,
+measured). Textures come from the frame's own PATH3 IMAGE uploads: **173 uploads / 3,800,552 B, 0 refused** reconstruct
+the HUD pages. The plate page (T8 88x26 + CT32 16x16 palette, the frame's seq 1007/1009) decodes to the exact
+`remote_speed_kmph` plate with "km/h", and the gear page 0x3C80 decodes to "1 2 3 4 5 [car icon] P" — two independent
+proofs of the stream source. **The digit glyph atlas is not captured:** page 0x3A20's per-frame uploads are only the
+CT32 palette banks and small atlases; the T4 128x64 font page was uploaded before the window, and neither the run's own
+`.gt4vram` (one vblank record at the previous rotation) nor the cross-run pass-textures sidecar matches the 7399
+rotation. The stream-only image holds the page as zero fill, so the two digit draws are **refused by name** ("texture
+page holds a constant value (the font atlas is uploaded before the captured window)"), counted, never drawn as a solid
+box.
+
+`gt4_coregs3_render` gained `--hud`, `--hud-element speed`, `--no-hud`, `--hud-mask`, `--hud-vram stream|sidecar|
+merged`, `--hud-vram-file`, `--hud-vram-all-frames`, `--hud-texture-dump` and the diagnostic `--hud-dump-page`.
+**Gates:** (1) CTest coregs3 **17/17** (new `native_coregs3_hud`), Python `test_coregs3_units.py` **14/14**;
+(2) the world `--no-hud` render is **byte-identical** to the `008a71c8` executable on the same capture/command
+(PNG `5896f1a6...` and report `6ed717c3...` equal); (3) the 3x off/shadow identity gate is
+**COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames off and
+shadow); (4) G-HUD-IMG at 1x against frame 07400: the plate mask is **1586 px** at bbox [551,378..611,403]; the plate
+background (excluding the digit and km/h rects) is **PSNR 28.58, mean |diff| 6.37, luma 11.87 vs 6.11**; the full
+element mask is PSNR 13.35 / SSIM 0.486 because the digits are missing; the HUD changes exactly the 1586 mask pixels
+(A/B). G-HUD-VALUES is **OPEN**: the captured glyph-cell selection is measured, but the atlas pixels are outside the
+window. G-HUD-ASPECT: one aspect only (the bench forces widescreen, 640x448 anamorphic); documented. Every refusal and
+fallback is counted and printed. Evidence: `build/evidence-hud-s3/` (a same-run v6 capture with `.gt4scene`, `.gt4tap`,
+`.gt4gs` and `.gt4vram`; census; plate/gear texture dumps; metrics JSON; gate logs).
+
 ## 2026-11-10: GS-stream S2, the PATH2 chain decoded; the wet-road composite explains 0 of the additive term (TASK-090, branch `task/090-gs-post-layer`)
 
 S2 of the GS-stream study is implemented and measured. `native/coregs3/coregs3_gsdecode.*` walks every `.gt4gs` record
