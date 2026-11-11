@@ -4597,6 +4597,21 @@ one-submit-per-frame is the streaming design, so it is also priced and not start
 construction (0.09/0.15) and access adds (0.03/0.06), both sub-bar alone. Identity: the shipped path is unchanged (probe
 off), license 2/2 frames identical against the previous build; the only kept code is the probe. Ledger IN-561.
 
+**Descriptor-ring round (2026-11-11, IN-562): priced out by a corrected probe, not built.** Before implementing the
+descriptor-lifetime ring, the probe's `set` bucket was split (it also held the self-copy and the IN-442 fill eligibility
+check) and a miss was split into `vkAllocateDescriptorSets` and `vkUpdateDescriptorSets`. License 1x (`draw` 0.96, 274 drawn
+batches/VBlank): **set 0.13** (miss 78 %; of a miss **alloc 0.01**, **update 0.08**, key+lookup ~0.04), **prefill 0.09**,
+submit 0.23, command 0.09, vertex 0.04, access 0.04. Opera 3x (`draw` 1.40, 472 drawn): **set 0.24** (miss 79 %; **alloc
+0.01**, **update 0.11**, lookup ~0.12), submit 0.45, command 0.14, vertex 0.07, access 0.06, prefill 0.02; its second window
+interval (309 drawn): set 0.16 (alloc 0.01, update 0.11), submit 0.24. **The ring would save only the allocation
+(0.01-0.02 ms)**; the cost is the per-batch `vkUpdateDescriptorSets` because **78-80 % of drawn batches bind a different
+(texture, texels) image pair**, so no cache can reuse a set. Both far below the 0.2 gate: stopped before implementing, no
+layout change was needed. The upstream cause is the texture/image identity churn (a different decoded texture per batch) -
+a texture-cache question (IN-409/453/550), not a descriptor one; a future round must make consecutive batches reuse the same
+decoded image, or use a push-descriptor set rewritten per batch without an update call. Kept: the corrected probe (prefill +
+alloc/update split), inert unless set; the shipped path is unchanged and license 2/2 frames are identical against the
+previous build.
+
 **Previous state (2026-11-11, close-out): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
 Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
 the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook

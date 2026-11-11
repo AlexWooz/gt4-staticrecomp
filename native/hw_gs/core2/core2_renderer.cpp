@@ -5671,16 +5671,17 @@ void Renderer::Flush() {
             // Ticks are converted with the renderer's own TSC calibration (MicrosecondsPerTick).
             static std::uint64_t lastProbeBatches = 0, lastProbeVertex = 0, lastProbeUniform = 0, lastProbeSet = 0;
             static std::uint64_t lastProbeSetup = 0, lastProbeCommand = 0, lastProbeRecord = 0;
-            static std::uint64_t lastProbeSetMiss = 0, lastProbeAccess = 0, lastProbeDeferred = 0, lastProbeSubmit = 0;
+            static std::uint64_t lastProbeSetMiss = 0, lastProbeAccess = 0, lastProbeDeferred = 0, lastProbeSubmit = 0; static std::uint64_t lastProbeSetAlloc = 0, lastProbeSetUpdate = 0, lastProbePrefill = 0;
             const Core2GpuStats &gpuNow = s.gpu_.Stats();
             if (gpuNow.probeBatches != lastProbeBatches) {
                 const double perTick = MicrosecondsPerTick();
                 const double f6 = 600.0 * 1000.0;
                 std::fprintf(stderr,
-                             "[core2] batch start ms/vblank vertex=%.2f uniform=%.2f set=%.2f (miss=%.2f, %.0f%%) "
-                             "setup=%.2f command=%.2f access=%.2f deferred=%.2f submit=%.2f drawn=%.0f/vblank\n",
+                             "[core2] batch start ms/vblank vertex=%.2f uniform=%.2f prefill=%.2f set=%.2f (miss=%.2f, %.0f%%) "
+                             "setup=%.2f command=%.2f access=%.2f deferred=%.2f submit=%.2f drawn=%.0f/vblank (miss alloc=%.2f update=%.2f)\n",
                              static_cast<double>(gpuNow.probeVertexTicks - lastProbeVertex) * perTick / f6,
                              static_cast<double>(gpuNow.probeUniformTicks - lastProbeUniform) * perTick / f6,
+                             static_cast<double>(gpuNow.probePrefillTicks - lastProbePrefill) * perTick / f6,
                              static_cast<double>(gpuNow.probeSetTicks - lastProbeSet) * perTick / f6,
                              static_cast<double>(gpuNow.probeSetMissTicks - lastProbeSetMiss) * perTick / f6,
                              100.0 * static_cast<double>(gpuNow.probeSetMissTicks - lastProbeSetMiss) /
@@ -5690,7 +5691,9 @@ void Renderer::Flush() {
                              static_cast<double>(gpuNow.probeAccessTicks - lastProbeAccess) * perTick / f6,
                              static_cast<double>(gpuNow.probeDeferredTicks - lastProbeDeferred) * perTick / f6,
                              static_cast<double>(gpuNow.probeSubmitTicks - lastProbeSubmit) * perTick / f6,
-                             static_cast<double>(gpuNow.probeBatches - lastProbeBatches) / 600.0);
+                             static_cast<double>(gpuNow.probeBatches - lastProbeBatches) / 600.0,
+                             static_cast<double>(gpuNow.probeSetAllocTicks - lastProbeSetAlloc) * perTick / f6,
+                             static_cast<double>(gpuNow.probeSetUpdateTicks - lastProbeSetUpdate) * perTick / f6);
                 lastProbeBatches = gpuNow.probeBatches;
                 lastProbeVertex = gpuNow.probeVertexTicks;
                 lastProbeUniform = gpuNow.probeUniformTicks;
@@ -5701,6 +5704,9 @@ void Renderer::Flush() {
                 lastProbeAccess = gpuNow.probeAccessTicks;
                 lastProbeDeferred = gpuNow.probeDeferredTicks;
                 lastProbeSubmit = gpuNow.probeSubmitTicks;
+                lastProbeSetAlloc = gpuNow.probeSetAllocTicks;
+                lastProbePrefill = gpuNow.probePrefillTicks;
+                lastProbeSetUpdate = gpuNow.probeSetUpdateTicks;
             }
             std::fprintf(stderr,
                          "[core2] front-end prims/vblank emitted=%.1f skipped=%.1f (culled=%.1f) vertices=%.1f "

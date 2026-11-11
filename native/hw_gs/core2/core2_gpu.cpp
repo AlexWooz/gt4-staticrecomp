@@ -3516,6 +3516,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     }
   }
 
+  const std::uint64_t probePrep = s.batchProbe ? __rdtsc() : 0;
   VkDescriptorSet set = VK_NULL_HANDLE;
   const DrawSetKey setKey{frame->serial, depth->serial, texels->serial, texture->serial};
   if (auto cached = s.drawSets.find(setKey); cached != s.drawSets.end()) {
@@ -3523,6 +3524,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   } else {
       const std::uint64_t probeMissStart = s.batchProbe ? __rdtsc() : 0;
       if (!s.allocate_set(s.drawSetLayout, set, error)) return false;
+      const std::uint64_t probeAlloc = s.batchProbe ? __rdtsc() : 0;
       s.drawSets[setKey] = set;
       VkDescriptorBufferInfo uniformInfo{s.uniforms.buffer, 0, kPixelStateBytes};
       VkDescriptorImageInfo imageInfo[5] = {{VK_NULL_HANDLE, frame->view, VK_IMAGE_LAYOUT_GENERAL},
@@ -3546,7 +3548,10 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
       }
       gt4_hwd_vkUpdateDescriptorSets(s.device, 6, writes, 0, nullptr);
       if (s.batchProbe) {
-        s.stats.probeSetMissTicks += __rdtsc() - probeMissStart;
+        const std::uint64_t probeEnd = __rdtsc();
+        s.stats.probeSetMissTicks += probeEnd - probeMissStart;
+        s.stats.probeSetAllocTicks += probeAlloc - probeMissStart;
+        s.stats.probeSetUpdateTicks += probeEnd - probeAlloc;
         s.stats.probeSetMisses++;
       }
   }
@@ -3856,7 +3861,8 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     const std::uint64_t probeRecord = __rdtsc();
     s.stats.probeVertexTicks += probeVertex - probeStart;
     s.stats.probeUniformTicks += probeUniform - probeVertex;
-    s.stats.probeSetTicks += probeSet - probeUniform;
+    s.stats.probePrefillTicks += probePrep - probeUniform;
+    s.stats.probeSetTicks += probeSet - probePrep;
     s.stats.probeSetupTicks += probeSetup - probeSet;
     s.stats.probeCommandTicks += probeCommand - probeSetup;
     // The access adds and the deferred push are timed in the branch above (the recording path has no deferred push).

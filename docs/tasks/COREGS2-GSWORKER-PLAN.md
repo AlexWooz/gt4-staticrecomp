@@ -416,3 +416,41 @@ needs the streaming/readback design, so it is also priced and not started.
 **What is left for a contained round:** the command construction (0.09/0.15) and the access-set adds (0.03/0.06) - both
 below the 0.2 gate on their own - and the per-batch *count* (274-472/VBlank), which is a front-end batching question the
 per-batch design note (IN-554) already priced at ~0.1 ms for the mergeable side.
+
+## 14. Descriptor-lifetime ring: priced out by the corrected probe (0.01-0.02 ms of allocation)
+
+Owner's round after IN-561: the descriptor-lifetime ring (2-3 days, expected most of 0.22-0.26 ms). Before implementing it,
+the probe's section boundaries were corrected: the earlier `set` bucket also contained the self-copy and the constant-fill
+eligibility check (IN-442). A new `prefill` stamp separates them, and two more split a miss into `vkAllocateDescriptorSets`
+and `vkUpdateDescriptorSets`. Corrected numbers:
+
+| section (ms/VBlank) | license 1x, `draw` 0.96, 274 drawn | Opera 3x, `draw` 1.40, 472 drawn | Opera, second window interval (309 drawn) |
+|---|---|---|---|
+| submit | 0.23 | 0.45 | 0.24 |
+| **descriptor set** | **0.13** (miss 0.10 = **78 %**) | **0.24** (miss 0.19 = 79 %) | **0.16** (miss 0.13 = 80 %) |
+| - of a miss: `vkAllocateDescriptorSets` | **0.01** | **0.01** | **0.01** |
+| - of a miss: `vkUpdateDescriptorSets` | **0.08** | **0.11** | **0.11** |
+| - the key + map lookup | ~0.04 | ~0.12 | ~0.04 |
+| prefill (self-copy + the fill eligibility check) | 0.09 | 0.02 | 0.01 |
+| command construction | 0.09 | 0.14 | 0.09 |
+| vertex ring + memcpy | 0.04 | 0.07 | 0.04 |
+| access adds | 0.04 | 0.06 | 0.04 |
+| setup / uniform / deferred | 0.02 / 0.01 / 0.01 | 0.04 / 0.01 / 0.01 | 0.03 / 0.01 / 0.01 |
+
+**The ring is priced out: `vkAllocateDescriptorSets` is 0.01-0.02 ms/VBlank**, i.e. 2-5 % of what the round expected. The
+cost is the per-batch `vkUpdateDescriptorSets` (0.08-0.11) because **78-80 % of drawn batches bind a different
+(texture, texels) image pair** - a cache cannot reuse a set whose views differ - plus the map lookup (~0.04 on the license,
+~0.12 in the first Opera interval where the table is bigger). No descriptor-lifetime change can remove either: the ring
+would save the allocation (0.01-0.02) and a direct-mapped cache could save part of the lookup (~0.03), both far below the
+0.2 ms gate. **Stopped before implementing it, with the measurement.** (No layout change was needed, so nothing to price
+there.)
+
+**The churn is the real finding, and it is upstream:** 78-80 % of drawn batches bind a *different* texels/texture view. That
+is the texture/image identity churn (each batch's decoded texture is a different image), which is the texture cache's
+question (IN-409/IN-453/IN-550 territory), not the descriptor path's. A future round that wants the 0.10-0.16 should make
+consecutive batches reuse the same decoded image (so the key repeats and both the update and the lookup collapse), or move
+the texture binding to a *push descriptor* set rewritten per batch without an update call. Both need their own design.
+
+**Kept:** the corrected probe (`GT4_CORE2_BATCH_START_PROBE`, now with `prefill` and the alloc/update split) and the
+`[core2] batch start` line - inert unless the env is set, and the numbers above are its output. Identity: the shipped path
+is unchanged (license 2/2 frames identical against the previous build).

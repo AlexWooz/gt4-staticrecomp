@@ -87,9 +87,12 @@ struct Core2GpuStats {
     std::uint64_t probeBatches = 0;
     std::uint64_t probeVertexTicks = 0;   // the vertex ring reservation and its memcpy
     std::uint64_t probeUniformTicks = 0;  // the uniform ring, the state fields and their memcpy
+    std::uint64_t probePrefillTicks = 0;  // the self-copy and the constant-fill eligibility check
     std::uint64_t probeSetTicks = 0;      // the descriptor-set key and its lookup
     std::uint64_t probeSetMissTicks = 0;  // of those, the batches that allocated and wrote a new set
     std::uint64_t probeSetMisses = 0;
+    std::uint64_t probeSetAllocTicks = 0;  // of a miss, vkAllocateDescriptorSets alone
+    std::uint64_t probeSetUpdateTicks = 0;  // of a miss, vkUpdateDescriptorSets alone
     std::uint64_t probeSetupTicks = 0;    // the self-copy, the fill check, the record fields and the labelling
     std::uint64_t probeCommandTicks = 0;  // the per-draw command construction
     std::uint64_t probeAccessTicks = 0;   // the read/write access-set adds
