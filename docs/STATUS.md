@@ -1,5 +1,32 @@
 # Current Status
 
+## 2026-11-11: the CT16 dither pinned and removable in the CoreGS 3.0 path (TASK-090, branch `task/090-dither`)
+
+The dotted pattern is the PS2's CT16 scanout conversion, not the native renderer. It is pinned in three places: the
+offline present model (`apply_present_ct16`) applies the captured **DTHE 1 / DIMX `0x0001044501100554`** entry (six
+negative and ten non-negative cells, mean -1.125) per 12x12 output cell at 3x, then the five-bit truncation and `<< 3`;
+the CoreGS 3.0 live fragment stages write 8-bit RGBA8 words and never dither; the CoreGS 2.0 composed base applies its
+own faithful DTHE/DIMX dither. New `GT4_COREGS3_DITHER=0|1` (`--dither 0|1` on `gt4_coregs3_render` too), **default 0 in
+the modern path**: `1` reproduces the captured CT16 conversion byte for byte, `0` writes the modulated 8-bit colour with
+neither the dither nor the five-bit truncation (both are one scanout model; keeping the truncation alone would leave
+32-level banding against 129 levels). Offline A/B on the A-Spec capture at 1920x1344: PSNR **33.46 dB**, mean |diff|
+**4.51**, max **11**, **95.9%** of pixels differ, mean signed **-4.43**; a flat road crop (1824,1152,48,48) is a
+constant colour without the dither and a 12x12-cell pattern with it, and against the CoreGS 2.0 reference frame 7600 the
+faithful model is **PSNR 20.67 / mean 21.48** versus **19.22 / 26.22** for the off image; the within-cell deviation on
+the road is reference **4.11**, faithful **2.94**, off **1.04**. Live (`GT4_COREGS3=present`, night race, 3x): the
+switch does not change the CoreGS 3.0 pixels (present1 vs present0 differs 0.27-2.40% of the pixels, the same-config
+control 0.25-2.30%, so it is the known cross-run overlay noise; a sky block the live world draws is identical across
+three present runs at 8-bit values, 15.9% divisible by 8, against the base's 100% CT16), and the CoreGS 2.0 base keeps
+its dither until phase 4. `GT4_HW_DITHER=off` does not remove the base dither today: the option is parsed but never
+assigned to `decide::Options::dither_enabled`, and the measured off/base0 difference is 0 pixels (a pre-existing
+CoreGS 2.0 gap, recorded, not part of this round). Checks: CTest coregs3 **20/20** (per-pixel switch arithmetic and
+parser refusals), Python **18/18** (new `DitherAbTest`), the faithful car / world / world+gs / HUD renders
+**byte-identical** to the `a59ce9c9` tool (`1325882D...` / `D84BAC90...` / `0B6FF0F0...` / `8169B899...`), the 3x
+off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** on the final binary (`404aab46...`: 8,997 VBlanks, 1,686 racing, 0
+clock/digest/state differences, 13/13 frames), and invalid values refused in both paths. Evidence
+`build/evidence-dither/`; method [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §32 and [COREGS3-PLAN](docs/COREGS3-PLAN.md)
+§5.5.
+
 ## 2026-11-11: the live world, the captured course drawn in `GT4_COREGS3=present` (TASK-090, branch `task/090-live-world`)
 
 The debug-only `GT4_COREGS3=present` layer now draws the captured world with the cars: the main-view course is selected

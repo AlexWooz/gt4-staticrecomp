@@ -450,6 +450,17 @@ the test machine, so the host clock is bounded by the available images there). T
 remaining acceptance for smooth display-rate motion. Measurements and gates: `docs/journal/2026-11-10.md`,
 `build/evidence-host-clock/`.
 
+**The CT16 dither option (2026-11-11).** The dotted pattern across the picture is the PS2's CT16 scanout conversion:
+the captured present has DTHE 1 and DIMX 0x0001044501100554, and the reference dump is the rendered image truncated to
+five bits (with the dither added) and expanded with `<< 3`. The offline present model applies it; the CoreGS 3.0
+fragment stages write 8-bit words and never dither. `GT4_COREGS3_DITHER=0|1` selects the conversion in the CoreGS 3.0
+path: `1` reproduces the captured dither and five-bit truncation exactly, `0` (the modern default) writes the modulated
+8-bit colour with neither; the faithful renderers (GSdx, CoreGS 2.0, CoreGS 3.0 with `1`) keep it. In
+`GT4_COREGS3=present` the image under the CoreGS 3.0 pass is CoreGS 2.0's composed CT16 output, whose own dither stays
+until CoreGS 3.0 owns the 3D frame (phase 4). The existing `GT4_HW_DITHER=off` option is parsed but does not reach the
+CoreGS 2.0 decisions in this build (measured: 0 differing pixels), so there is no switch for the base today; phase 4
+retires it by owning the 3D frame. A/B and crops: [COREGS3-HOOKS](COREGS3-HOOKS.md) §32.
+
 **The live world (2026-11-11).** The `GT4_COREGS3=present` layer draws the captured world as well as the cars: the
 main-view course (and, with `GT4_COREGS3_WORLD_BACKGROUND=1`, the sky and far underlay) is selected with the offline
 world rule, its pixels come from an in-memory per-VU1-job store (`coregs3_live_world`, the `.gt4vram` record taken
@@ -793,7 +804,10 @@ wired into the live path.
 
 Level 3 (CoreGS 3.0 owns the 3D frame) additionally needs the 2D overlay split: the base's HUD is composed before the
 world, so the live world covers it where it draws. The live world foundation (native output resolution and aspect
-included) is in place for that split.
+included) is in place for that split. The same phase removes the last CT16 dither from the picture: the CoreGS 2.0
+composed base that the live pass draws over keeps its own dither, which `GT4_COREGS3_DITHER` does not reach; when
+CoreGS 3.0 owns the frame, the 3D output is the modern (undithered) one and only the faithful renderers keep the
+scanout conversion.
 
 ### Phase 5: other modes
 
