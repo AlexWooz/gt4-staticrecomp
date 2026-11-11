@@ -1,5 +1,28 @@
 # Current Status
 
+## 2026-11-11: the car pass study — the live present binds only the pre-texture base path (TASK-090, branch `task/090-car-study`)
+
+Read-only study (no native source changed; tools under `build/`, document
+[COREGS3-CAR-PASS-STUDY](docs/COREGS3-CAR-PASS-STUDY.md)). The live `present` car is a grey silhouette because
+`Impl::build_frame` (`native/hw_gs/coregs3/hw_coregs3_present.cpp:1016`) emits position + lit vertex colour only: no UV,
+no `FrameTextureTable` for the car items, no TEST/ALPHA/FRAME/ZBUF/PRIM state (alpha forced 255, one depth-write
+pipeline), and the body/paint items are drawn opaque instead of as the measured CT32 256x256 page **0x2BC0** reflection
+pass (texgen S,T, DATE, ALPHA 0x58 additive, PRIM 0x7C, ZMSK=1, fog to black). Measured on the branch build from the
+filtered v6 capture `night-mip.gt4scene` (VBlank 7398, 116 car draws, 219 items textured over 139 T4/T8 pages with CT32
+CLUTs, 80 reflection items), after the 2-VBlank alignment: the live near car equals the offline `--no-textured` path
+(**PSNR 36.08 dB, mean |d| 1.01, 2.9% pixels over 8** on the eroded mask) and differs from the offline
+textured+reflection path (**20.12 dB / 18.23 / 66.2%**). The near-car means are live [27.5, 26.9, 25.8] (red 2.8%),
+offline base [26.8, 26.2, 25.3] (2.5%), offline textured+reflection [12.5, 12.2, 10.5] (4.6%) and the CoreGS 2.0
+reference [24.2, 20.2, 19.5] (8.2%). First divergence in capture order: draw 169 item 1 (alpha-only FBMSK + PRIM 0x6C +
+ZMSK 1 vs the live opaque depth write), draw 171 item 0 (first texture binding), draw 172 item 0 (first visible
+textured fragment) and draw 174 item 0 (first body/paint reflection); near car: draw 267 item 0 (first body texture)
+and draw 271 item 0 (first body reflection). The fix proposal reuses the live world's machinery: decouple the per-job
+texture store/VRAM base from `GT4_COREGS3_LIVE_WORLD`, build the car `FrameTextureTable` (live job records + tap
+snapshot) with per-item ranges, add the measured blend/destination-alpha/FBMSK states and the reflection pass with
+`reflection_st` and a depth-write-off pipeline, and add `GT4_COREGS3_CAR_TEXTURES=0` as the byte-identical A/B.
+Acceptance: aligned live vs offline textured+reflection PSNR >= 28 dB / mean |d| <= 3 / pct_bad <= 10%, the state
+counters 219/80/36/0 and the reflection fragments within +/-5% of 20,302, the identity gate and CTest/Python unchanged.
+
 ## 2026-11-11: the 2D overlay split, HUD aspect, mip recapture and dither integrated with the live post chain (TASK-090, branch `task/090-live-world`)
 
 `origin/task/090-coregs3` (the 2D overlay split `34c6c2c2`, the HUD aspect round, the mip recapture and the dither)
