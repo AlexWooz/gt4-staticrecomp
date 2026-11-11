@@ -4550,6 +4550,20 @@ marker, and the rest must be decoded because they are the run boundary or a late
 (a point/line dereferenced a null third pointer) was found and fixed before the measurement. The per-record design was not
 started (same contract; its own round). Tests 319/320 and Python 827 with the known failure. Ledger IN-558.
 
+**Per-record contract round (2026-11-11, IN-559): priced by measurement, stopped, nothing built.** The exact CPU side of
+"no CPU translate" is `TranslateBatch`'s per-primitive body; its contained slice (convert straight into the output slots, no
+`Vertex` temporaries, no temporary array, the IN-212 de-index as a 4-byte lane copy) measured **`translate` 0.41/0.41 ->
+0.39/0.39 (-0.02)** on license 1x, 2+2 against the kept bundle, everything else inside its noise band - **1.2 ns of the
+23 ns per primitive**, so the compiler already collapses the copies and moving the conversion to the shader buys ~0.02 ms,
+not 0.2-0.4; reverted as sub-bar. **Index-at-kick** can only remove the `PrimRecord` write+read (20 B per primitive at
+17,039/VBlank) and the derivable `record.rect`, **~0.05-0.07 ms**; the rest of the per-primitive body is the two
+`ToClip`/`Intersect` pairs for the 1x and the scaled scissor (IN-391/IN-397), the `GpuDraw` fields, the union and the
+counters, which every primitive needs because its coverage differs from its neighbours'. **Total addressable headroom
+~0.07 ms, below the 0.2 gate**: stopped at the contract point. The only remaining form is drawing a *run* as one draw (one
+union scissor per run, a strip topology) - a renderer contract (new `GpuTopology`, the fill/disjoint/shuffle paths, and the
+target `drawn`/`valid`/`lastDraw` bookkeeping widened to the run union where a run has culled primitives), 2-3 days, its own
+round and identity matrix. Ledger IN-559; no code kept, no test change.
+
 **Previous state (2026-11-11, close-out): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
 Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
 the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook

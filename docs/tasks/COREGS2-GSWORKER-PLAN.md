@@ -283,10 +283,55 @@ drawing kick the cull and the append. There is no further exact skip to add with
 this item is **measured and closed** (the do-not-retry list already carries the batched strip decode, TASK-171 option 1:
 -0.15, reverted).
 
-## 10. Per-record design (index-at-kick + no CPU translate): not started
+## 11. Per-record contract (index-at-kick + no CPU translate): priced by measurement, stopped
 
-The bundle/ADC rounds did not clear 0.5, but the remaining per-record work is still a single contract change: `Batch::prims`
-and `GpuVertex`/`BatchTranslation` feed the writeback, the CPU reference (oracle), the shuffle/segment helpers, the
-depth-clear rewrite, the overlap classifier and the fixtures (IN-552: 0.15-0.3 ms for the vertex half, 2-3 days total). It
-needs its own round with the CPU reference as the oracle and the full identity matrix; this round stopped at the same
-contract point and did not start it.
+Owner's next round after the bundle: the per-record contract as one change, 2-3 days, gated at **>= 0.2 ms GS stage** on
+license 1x or Opera 3x, the CPU reference as oracle, `GT4_CORE2_RECORDS=1` off by default until the gate.
+
+### The two halves, priced before building them
+
+**No CPU translate (shader converts the raw words): measured at 0.02 ms - dead.** The contract's CPU side is exactly what
+`TranslateBatch` does per primitive: copy the primitive's `Vertex`es into temporaries, convert each with `ToGpuVertex`,
+insert the converted records, and build the `GpuDraw`. The exact, contained slice of that (convert straight into the
+output slots, no `Vertex` temporaries, no temporary array, the de-index as a 4-byte lane copy) was built and measured on
+license B-1 1x, 2+2 interleaved against the kept bundle: **`translate` 0.41/0.41 -> 0.39/0.39 (-0.02)**, with every other
+stage inside its noise band (GS total 7.44/7.64 vs 7.94/7.69 - the drift dominates). So the compiler already collapses the
+copies and the conversion: **1.2 ns per primitive of the 23 ns the per-primitive body costs.** Moving the conversion into
+the vertex shader would remove ~0.02 ms, not the 0.2-0.4 the GSdx study hypothesised for its own code shape, and it would
+need the vertex format, the pipeline input state, the shader and the CPU fill/disjoint paths changed (the fill path reads
+the *converted* list for its geometry). Reverted as sub-bar.
+
+**Index-at-kick (no per-primitive `PrimRecord`): 0.05-0.07 ms, dead.** What the record costs is the `PrimRecord` write and
+read: 20 bytes written per primitive (17,039/VBlank) plus the `UnionRects` that also maintains `batch_.drawRect` (which the
+front end needs for autoflush and the depth-clear rewrite, so it stays). The `record.rect` itself is derivable from the
+primitive's vertices (the coverage box is a pure function of them, as `ShouldDraw` shows), so it could be dropped - that is
+the whole saving: ~16 bytes and 1-2 ns per primitive, **~0.05 ms**, plus ~0.02 for the `prims.push_back`. The *rest* of the
+per-primitive work is `TranslateBatch`'s body (23 ns/primitive): the two `ToClip`/`Intersect` pairs for the 1x and the
+scaled scissor (IN-391/IN-397 exactness), the `GpuDraw` fields, the union and the counters. **A record cannot remove that**:
+every primitive needs its own scissor because its coverage differs from its neighbours', so a draw per primitive is the
+exact shape.
+
+### What a real merge would take (the only remaining form of the idea)
+
+To stop paying per-primitive scissors you must draw a *run* as one draw: one scissor per run (the union of its primitives'
+coverage, which is exactly the coverage box of the run's vertex span, as shown above), one `GpuDraw` with a strip topology.
+That is a **renderer** contract, not a vertex/record one:
+
+- `GpuTopology` has Points/Lines/Triangles only; a strip needs a new topology (or index expansion) in
+  `core2_gpu.cpp`'s pipeline selection and `record_draw`.
+- The CPU paths that read the per-draw geometry (`CarryDepthFillIntoColour`, the constant-fill/compute-fill path, the
+  disjoint-group interlock, `PossibleShuffle`) assume the converted list and the per-draw rect; they would read the run's
+  span and rect instead.
+- The target bookkeeping (`frameTarget->drawn`/`valid`, `lastDraw`) would move from per-primitive rects to the run's
+  union, which is *wider* where a run has culled primitives (the cull drops primitives inside a run), so the tracked area,
+  the ageing and the readback decisions change - an exactness question of its own, not a mechanical change.
+- Bound: the per-primitive `TranslateBatch` body (23 ns x 17k = 0.39 ms) minus the run-level cost (a few hundred runs) plus
+  the wider-rect bookkeeping risk. It is the only path to 0.2-0.4 ms here, and it is its own 2-3 day round with the identity
+  matrix, not a slice of this one.
+
+### Verdict
+
+The contract as specified (index-at-kick + no CPU translate) has **~0.07 ms of addressable headroom, measured**, below the
+0.2 ms gate, and the remaining per-primitive cost is inherent to per-primitive scissors. Stopped at the contract point with
+the measurement rather than building the 2-3 day change; the only route left is the run-as-one-draw renderer contract
+described above. Nothing kept this round (the in-place conversion slice was reverted, -0.02).

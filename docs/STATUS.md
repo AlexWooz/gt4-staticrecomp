@@ -52,6 +52,20 @@ decoded for a later triangle. A Candidate crash (points/lines dereferenced a nul
 the measurement. The per-record design was not started (same contract point; 2-3 days, its own round). Tests 319/320 and
 Python 827 with the known failure.
 
+**Per-record contract round (2026-11-11, IN-559): priced by measurement, stopped, nothing built.** The exact CPU side of
+"no CPU translate" is `TranslateBatch`'s per-primitive body; its contained slice (convert straight into the output slots, no
+`Vertex` temporaries, no temporary array, the IN-212 de-index as a 4-byte lane copy) measured **`translate` 0.41/0.41 ->
+0.39/0.39 (-0.02)** on license 1x, 2+2 against the kept bundle, everything else inside its noise band - **1.2 ns of the
+23 ns per primitive**, so the compiler already collapses the copies and moving the conversion into the vertex shader buys
+~0.02 ms, not 0.2-0.4; reverted as sub-bar. **Index-at-kick** can only remove the `PrimRecord` write+read (20 B per
+primitive at 17,039/VBlank) and the derivable `record.rect`, **~0.05-0.07 ms**; the rest of the per-primitive body is the
+two `ToClip`/`Intersect` pairs for the 1x and the scaled scissor (IN-391/IN-397), the `GpuDraw` fields, the union and the
+counters, which every primitive needs because its coverage differs from its neighbours'. **Total addressable headroom
+~0.07 ms, below the 0.2 gate**: stopped at the contract point, nothing built. The only remaining form is drawing a *run* as
+one draw (one union scissor per run, a strip topology) - a renderer contract (new `GpuTopology`, the fill/disjoint/shuffle
+paths, and the target `drawn`/`valid`/`lastDraw` bookkeeping widened to the run union where a run has culled primitives),
+2-3 days, its own round and identity matrix.
+
 **Close-out (2026-11-11):** the consolidated report is `docs/tasks/COREGS2-TASK215-SUMMARY.md` (kept, reverted/closed with
 numbers, the 3x scene matrix, the remaining lever, the owner's options). State: kept IN-540 (aliased depth fill) and
 IN-547 (scissor view, `GT4_CORE2_SCISSOR_VIEW`), both exact; reverted the palette segments under the tone hook (+0.61 ms);
