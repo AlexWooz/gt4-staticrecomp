@@ -53,6 +53,7 @@ struct GsDecodeState {
   std::uint64_t uv = 0;         // U 0-15, V 16-31 (12.4 texel units in the register layout)
   std::uint64_t tex0 = 0;
   std::uint64_t tex1 = 0;
+  std::uint64_t tex2 = 0;       // TASK-090 post chain: CBP 0-13, CPSM 14-17, CSM 18, CSA 19-23, CLD 24-25
   std::uint64_t clamp = 0;
   std::uint64_t fog = 0;
   std::uint64_t fogcol = 0;
@@ -63,6 +64,11 @@ struct GsDecodeState {
   std::uint64_t scissor = 0;
   std::uint64_t xyoffset = 0;
   std::uint64_t pabe = 0;
+  // TASK-090 post chain: the captured dither state. DIMX holds sixteen 4-bit fields; bits 0-2 of each field are the
+  // signed entry (-4..3) in the GS/CoreGS 2.0 convention (native/hw_gs/pixel/hw_gs_pixel.hpp). DTHE bit 0 enables it.
+  std::uint64_t dimx = 0;
+  std::uint64_t dthe = 0;
+  std::uint64_t colclamp = 0;  // COLCLAMP: 1 clamps the blended/dithered colour to 0..255, 0 keeps the low 8 bits
 
   std::uint32_t prim_value() const noexcept { return static_cast<std::uint32_t>(prim & 0x7FFu); }
   std::uint32_t prim_type() const noexcept { return prim_value() & 7u; }
@@ -98,6 +104,12 @@ struct GsDecodeState {
   std::uint32_t alpha_fix() const noexcept { return static_cast<std::uint32_t>((alpha >> 32) & 0xFFu); }
   std::uint32_t xyoffset_ofx() const noexcept { return static_cast<std::uint32_t>(xyoffset & 0xFFFFu); }
   std::uint32_t xyoffset_ofy() const noexcept { return static_cast<std::uint32_t>((xyoffset >> 32) & 0xFFFFu); }
+  std::uint32_t tex2_cbp() const noexcept { return static_cast<std::uint32_t>(tex2 & 0x3FFFu); }
+  std::uint32_t tex2_cpsm() const noexcept { return static_cast<std::uint32_t>((tex2 >> 14) & 0xFu); }
+  std::uint32_t tex2_csm() const noexcept { return static_cast<std::uint32_t>((tex2 >> 18) & 1u); }
+  std::uint32_t tex2_csa() const noexcept { return static_cast<std::uint32_t>((tex2 >> 19) & 0x1Fu); }
+  std::uint32_t tex2_cld() const noexcept { return static_cast<std::uint32_t>((tex2 >> 24) & 3u); }
+  bool dthe_on() const noexcept { return (dthe & 1u) != 0u; }
 };
 
 // One vertex of a decoded primitive batch. Both the latching kicks (XYZF3/XYZ3) and the drawing kicks (XYZF2/XYZ2) are
@@ -113,6 +125,10 @@ struct GsDecodeVertex {
   float u = 0.0f;  // texel coordinates (12.4 raw / 16) when the register state carried a UV at the kick
   float v = 0.0f;
   bool has_uv = false;
+  // TASK-090 post chain: the RGBAQ in force at the kick (R 0-7, G 8-15, B 16-23, A 24-31). A full-screen sprite's
+  // colour is per vertex, so the frame sample's (128,77,0,128) and the present's (128,128,128,128) are pinned per kick,
+  // not only on the first vertex of the run.
+  std::uint32_t rgba = 0;
 };
 
 // One primitive batch: the vertex run of one tag under one PRIM. `state` is the register file at the FIRST vertex of the
@@ -221,6 +237,67 @@ struct GsWetCompositeInfo {
 // Finds the chain in `batches` for scene frame `scene_vblank` using the V -> V+1 phase relation.
 bool find_wet_composite(const std::vector<GsDecodeBatch> &batches, std::uint64_t scene_vblank,
                         GsWetCompositeInfo &info);
+
+// TASK-090 post chain: the WHOLE captured PATH2 full-screen chain of one attributed scene frame, in stream order.
+//
+// The measured stream (every captured frame) carries eleven full-screen batches around the frame's PATH1 world draws:
+//
+//   before the world draws   the frame's black RGB+alpha clear and alpha-only clear, two black clears with TEST
+//                            0x32001, and the full-screen frame sample of page 210 with vertex colour (128,77,0,128)
+//                            and FRAME.FBMSK 0xFFFFFFFF (it writes no lane and no depth: a render-target read);
+//   after the world draws    the pre-reflection alpha clear (applied by the world renderer immediately before the
+//                            PassId 7 draws), the wet-road composite, the FIX 127 and FIX 255 multiplies, the CT16
+//                            present blit to the display buffer FBP 140, and the display buffer's alpha-only clear.
+//
+// The classification is by exact captured state signature; a full-screen batch outside every signature is counted as
+// `unknown` with a named note and never applied. The census must account for every full-screen batch of the stream.
+enum class GsChainOp : std::uint32_t {
+  pre_world_clear_rgb = 0,     // full-screen black fill, FBMSK 0, TEST 0x30000
+  pre_world_clear_alpha,       // full-screen alpha-only clear, FBMSK 0x00FFFFFF, TEST 0x30000
+  pre_world_clear_test,        // full-screen black fill, FBMSK 0, TEST 0x32001 (a second, depth-tested clear)
+  frame_sample,                // page-210 sample with (128,77,0,128); colour masked, the frame's depth clear
+  reflection_alpha_clear,      // alpha-only clear immediately before the reflection pass's PATH1 draws
+  wet_composite,               // the sphere-mapper colour composite (Cs - 0) * Ad + Cd
+  post_multiply,               // Cd * FIX / 128, FIX 127 or 255
+  present_ct16,                // page 210 -> display buffer FBP 140, CT16 (the scanout image)
+  display_alpha_clear,         // alpha-only clear of the display buffer after the present
+  unknown,                     // a full-screen batch outside every measured signature: counted, never applied
+  kChainOpCount
+};
+
+const char *gs_chain_op_name(GsChainOp op) noexcept;
+
+struct GsChainEntry {
+  const GsDecodeBatch *batch = nullptr;
+  GsChainOp op = GsChainOp::unknown;
+  // The measured stream position relative to the frame's PATH1 world draws. `false` means the batch executes before
+  // the world draws (the world image is rendered into the frame it leaves) or is the pre-reflection clear the world
+  // renderer already applies; `true` means it executes over the finished world image.
+  bool after_world = false;
+  std::string note;  // the measured signature summary or the named exclusion reason
+};
+
+struct GsPostChainInfo {
+  bool found = false;
+  std::string refusal;  // named reason when found is false
+  std::uint64_t scene_vblank = 0;
+  std::uint64_t stream_vblank = 0;
+  std::vector<GsChainEntry> entries;  // every full-screen batch of the stream, in sequence order
+  std::uint64_t counts[static_cast<std::size_t>(GsChainOp::kChainOpCount)] = {};
+  std::uint64_t full_screen_batches = 0;
+  std::uint64_t unrecognised_full_screen = 0;
+  // The recognised draws the renderer replays (all non-null when found).
+  const GsDecodeBatch *alpha_clear = nullptr;     // the pre-reflection clear (applied by the world renderer)
+  const GsDecodeBatch *composite = nullptr;       // the wet-road colour composite
+  const GsDecodeBatch *post_darken = nullptr;     // FIX 127
+  const GsDecodeBatch *post_brighten = nullptr;   // FIX 255
+  const GsDecodeBatch *present = nullptr;         // the CT16 present blit
+};
+
+// Classifies every full-screen batch of the stream stamped `scene_vblank + 1` in sequence order and pins the five chain
+// draws. Returns false with a named refusal when one of the required draws is missing or not unique. An unrecognised
+// full-screen batch does not refuse the chain (it may be an unrelated effect); it is counted and excluded.
+bool find_post_chain(const std::vector<GsDecodeBatch> &batches, std::uint64_t scene_vblank, GsPostChainInfo &info);
 
 // Human-readable name of a packet class and a frame census line, for the tool and the evidence.
 const char *gs_batch_class_name(const GsDecodeBatch &batch) noexcept;

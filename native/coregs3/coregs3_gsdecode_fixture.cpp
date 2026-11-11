@@ -247,6 +247,217 @@ void test_wet_composite_recognition() {
   check(!refused.refusal.empty(), "the refusal carries a named reason");
 }
 
+// ---- TASK-090 post chain: the DTHE/DIMX/TEX2 decode, the per-vertex RGBA and the full-chain census -----------------
+
+// Sets up the exact measured state of one chain op. The values are the ones the night capture carries (S2 census and
+// the post-chain study); each call pins one signature.
+GsDecodeBatch chain_batch(GsChainOp op, std::uint32_t sequence) {
+  GsDecodeBatch batch;
+  batch.vblank = 101;
+  batch.sequence = sequence;
+  batch.path = 2;
+  batch.vertices = 20;
+  batch.drawing_vertices = 10;
+  batch.full_screen = true;
+  batch.min_x = -0.5f;
+  batch.max_x = 639.5f;
+  batch.min_y = -0.5f;
+  batch.max_y = 447.5f;
+  GsDecodeState &state = batch.state;
+  state.xyoffset = 0x0000720800006C08ull;
+  state.zbuf = 0x0000000001000046ull;  // ZMSK 0: the frame clears and the frame sample write depth
+  state.alpha = 0x0000008000000044ull;
+  state.colclamp = 1;
+  switch (op) {
+  case GsChainOp::pre_world_clear_rgb:
+    state.prim = 0x006;
+    state.frame = 0x00000000000A00D2ull;
+    state.test = 0x30000;
+    state.rgba = 0x3F80000000000000ull;
+    break;
+  case GsChainOp::pre_world_clear_alpha:
+    state.prim = 0x006;
+    state.frame = 0x00FFFFFF000A00D2ull;
+    state.test = 0x30000;
+    state.rgba = 0x3F80000000000000ull;
+    break;
+  case GsChainOp::pre_world_clear_test:
+    state.prim = 0x006;
+    state.frame = 0x00000000000A00D2ull;
+    state.test = 0x32001;
+    state.rgba = 0x3F80000000000000ull;
+    break;
+  case GsChainOp::frame_sample:
+    state.prim = 0x15E;
+    state.frame = 0xFFFFFFFF000A00D2ull;
+    state.test = 0x3800F;
+    state.rgba = 0x3F80000080004D80ull;  // (128,77,0,128)
+    state.tex0 = 0x0006300668029A40ull;  // TBP0 0x1A40, CT32, TW 10, TH 9, TCC 1
+    state.tex1 = 0;
+    state.clamp = 0x000006FC009FC00Aull;  // region 0..639 x 0..447
+    state.zbuf = 0x0000000001000046ull;   // ZMSK 0: the draw writes z = 1 (the depth clear)
+    break;
+  case GsChainOp::reflection_alpha_clear:
+    state.prim = 0x006;
+    state.frame = 0x00FFFFFF000A00D2ull;
+    state.test = 0;
+    state.rgba = 0x3F80000000000000ull;
+    break;
+  case GsChainOp::wet_composite:
+    state.prim = 0x15E;
+    state.frame = 0x00000000000A00D2ull;
+    state.test = 0x3820C;
+    state.rgba = 0x3F80000040404040ull;  // (64,64,64,128)
+    state.tex0 = 0x3140ull | (2ull << 14) | (7ull << 26) | (7ull << 30) | (1ull << 34);
+    state.tex1 = 0x60;
+    state.clamp = 0x000001FC001FC00Aull;
+    state.alpha = 0x58;
+    state.zbuf = 0x0000000101000046ull;  // ZMSK 1
+    break;
+  case GsChainOp::post_multiply:
+    state.prim = 0x04E;
+    state.frame = 0x00000000000A00D2ull;
+    state.test = 0x3820C;
+    state.alpha = (0x7Full << 32) | 0xA9ull;
+    break;
+  case GsChainOp::present_ct16:
+    state.prim = 0x11E;
+    state.frame = 0x00000000020A008Cull;  // FBP 140, FBW 10, PSM 2 (CT16)
+    state.test = 0x3820C;
+    state.rgba = 0x3F80000080808080ull;  // (128,128,128,128)
+    state.tex0 = 0x0007140668029A40ull;
+    state.tex1 = 0;
+    state.clamp = 0x000006FC009FC00Aull;
+    state.dthe = 1;
+    state.dimx = 0x76543210ABCDEF01ull;
+    state.zbuf = 0x0000000101000046ull;  // ZMSK 1
+    break;
+  case GsChainOp::display_alpha_clear:
+    state.prim = 0x006;
+    state.frame = 0x00FFFFFF020A008Cull;
+    state.test = 0;
+    state.rgba = 0x3F80000000000000ull;
+    break;
+  default:
+    break;
+  }
+  return batch;
+}
+
+void test_post_chain_recognition() {
+  std::vector<GsDecodeBatch> batches;
+  batches.push_back(chain_batch(GsChainOp::pre_world_clear_rgb, 672));
+  batches.push_back(chain_batch(GsChainOp::pre_world_clear_alpha, 675));
+  batches.push_back(chain_batch(GsChainOp::pre_world_clear_test, 678));
+  batches.push_back(chain_batch(GsChainOp::pre_world_clear_test, 681));
+  batches.push_back(chain_batch(GsChainOp::frame_sample, 684));
+  batches.push_back(chain_batch(GsChainOp::reflection_alpha_clear, 920));
+  batches.push_back(chain_batch(GsChainOp::wet_composite, 934));
+  GsDecodeBatch darken = chain_batch(GsChainOp::post_multiply, 936);
+  darken.state.alpha = (0x7Full << 32) | 0xA9ull;
+  batches.push_back(darken);
+  GsDecodeBatch brighten = chain_batch(GsChainOp::post_multiply, 964);
+  brighten.state.alpha = (0xFFull << 32) | 0xA9ull;
+  batches.push_back(brighten);
+  batches.push_back(chain_batch(GsChainOp::present_ct16, 1094));
+  batches.push_back(chain_batch(GsChainOp::display_alpha_clear, 1207));
+  // One unrelated full-screen batch: counted as unknown, excluded, and it must not refuse the chain.
+  GsDecodeBatch odd = chain_batch(GsChainOp::pre_world_clear_rgb, 700);
+  odd.state.test = 0x1234;
+  odd.sequence = 1210;
+  batches.push_back(odd);
+  GsPostChainInfo info;
+  const bool chain_found = find_post_chain(batches, 100, info);
+  check(chain_found, "the eleven-batch chain is recognised");
+  check(info.found && info.stream_vblank == 101 && info.scene_vblank == 100, "the chain uses the V+1 stream");
+  check(info.full_screen_batches == 12, "every full-screen batch is counted");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::pre_world_clear_rgb)] == 1, "one RGB frame clear");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::pre_world_clear_alpha)] == 1, "one alpha frame clear");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::pre_world_clear_test)] == 2, "two TEST clears");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::frame_sample)] == 1, "one frame sample");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::reflection_alpha_clear)] == 1, "one reflection alpha clear");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::wet_composite)] == 1, "one wet composite");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::post_multiply)] == 2, "two multiplies");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::present_ct16)] == 1, "one CT16 present");
+  check(info.counts[static_cast<std::size_t>(GsChainOp::display_alpha_clear)] == 1, "one display alpha clear");
+  check(info.unrecognised_full_screen == 1 &&
+            info.counts[static_cast<std::size_t>(GsChainOp::unknown)] == 1,
+        "the unrelated full-screen batch is counted as unknown");
+  check(info.alpha_clear == &batches[5] && info.composite == &batches[6] && info.post_darken == &batches[7] &&
+            info.post_brighten == &batches[8] && info.present == &batches[9],
+        "the recogniser pins the five chain draws");
+  check(!info.entries[4].after_world && info.entries[4].op == GsChainOp::frame_sample,
+        "the frame sample sits before the world draws");
+  check(info.entries[5].after_world == false && info.entries[5].op == GsChainOp::reflection_alpha_clear,
+        "the pre-reflection clear is applied inside the world render");
+  check(info.entries[6].after_world && info.entries[7].after_world && info.entries[8].after_world &&
+            info.entries[9].after_world,
+        "the composite, multiplies and present execute over the world image");
+  // The present's captured dither state is decoded, not guessed.
+  check(batches[9].state.dthe_on() && batches[9].state.dimx == 0x76543210ABCDEF01ull && batches[9].state.colclamp == 1,
+        "the present carries DTHE, DIMX and COLCLAMP");
+  // Missing present: a named refusal.
+  std::vector<GsDecodeBatch> no_present(batches.begin(), batches.begin() + 9);
+  GsPostChainInfo refused;
+  check(!find_post_chain(no_present, 100, refused), "a chain without the present is refused");
+  check(!refused.refusal.empty(), "the present refusal carries a named reason");
+  // Wrong order: the present before the multiplies.
+  std::vector<GsDecodeBatch> reordered;
+  reordered.push_back(batches[0]);
+  reordered.push_back(batches[5]);
+  reordered.push_back(batches[6]);
+  reordered.push_back(batches[9]);
+  reordered.push_back(batches[7]);
+  reordered.push_back(batches[8]);
+  GsPostChainInfo order_refused;
+  check(!find_post_chain(reordered, 100, order_refused), "a chain out of the measured order is refused");
+}
+
+void test_dither_and_vertex_colour_decode(const std::string &dir) {
+  const std::string path = dir + "/dither.gt4gs";
+  std::vector<std::vector<std::uint8_t>> records;
+  {
+    // A+D DTHE/DIMX/TEX2/COLCLAMP writes.
+    std::vector<std::uint8_t> record;
+    put_tag(record, 4, true, false, 0, 0, 1, 0xE);
+    put_ad(record, 0x45, 0x1);
+    put_ad(record, 0x44, 0x0123456789ABCDEFull);
+    put_ad(record, 0x16, 0x0000000000001234ull);  // TEX2: CBP 0x1234, CLD 0
+    put_ad(record, 0x46, 0x1);
+    records.push_back(record);
+  }
+  {
+    // REGLIST sprite [RGBAQ, XYZF3, RGBAQ, XYZF2]: the two kicks carry different colours.
+    std::vector<std::uint8_t> record;
+    put_tag(record, 1, true, false, 0, 1, 4, 0x41C1);  // descriptors 1, 12, 1, 4
+    put(record, 0x3F800000801E140Aull, 0x0000000000000000ull);  // RGBA (10,20,30,128), Q; XYZF3 (0,0)
+    put(record, 0x3F800000403C3228ull, 0x0000000000000000ull);  // RGBA (40,50,60,64), Q; XYZF2 (0,0)
+    records.push_back(record);
+  }
+  write_file(path, records, 100);
+  GsStreamCensus census;
+  std::vector<GsDecodeBatch> batches;
+  std::vector<GsDecodeImageUpload> uploads;
+  if (!load_and_census(path, census, batches, uploads)) return;
+  check(batches.size() == 1, "one sprite batch");
+  if (!batches.empty()) {
+    const GsDecodeBatch &batch = batches[0];
+    check(batch.state.dthe_on(), "DTHE bit 0 is decoded from the stream");
+    check(batch.state.dimx == 0x0123456789ABCDEFull, "DIMX is decoded from the stream");
+    check(batch.state.tex2_cbp() == 0x1234, "TEX2 CBP is decoded from the stream");
+    check(batch.state.colclamp == 1, "COLCLAMP is decoded from the stream");
+    check(batch.verts.size() == 2, "two kicked vertices");
+    check(batch.verts[0].rgba == 0x801E140Aull, "the latch vertex carries its own RGBAQ (10,20,30,128)");
+    check(batch.verts[1].rgba == 0x403C3228ull, "the draw vertex carries its own RGBAQ (40,50,60,64)");
+  }
+  // DTHE bit 0 decides, not bit 1.
+  GsDecodeState state;
+  state.dthe = 0x2;
+  check(!state.dthe_on(), "DTHE bit 0 decides the dither, not bit 1");
+  state.dthe = 1;
+  check(state.dthe_on(), "DTHE bit 0 enables the dither");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -256,6 +467,8 @@ int main(int argc, char **argv) {
   test_stream_census(dir);
   test_full_screen(dir);
   test_wet_composite_recognition();
+  test_post_chain_recognition();
+  test_dither_and_vertex_colour_decode(dir);
   if (failures != 0) {
     std::fprintf(stderr, "coregs3_gsdecode: %d failure(s)\n", failures);
     return 1;

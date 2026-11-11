@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 
@@ -183,6 +184,7 @@ void add_vertex(PathWalker &walker, std::uint32_t raw_x, std::uint32_t raw_y, st
   vertex.fog = static_cast<std::uint8_t>(fog);
   vertex.has_fog = has_fog;
   vertex.drawing = drawing;
+  vertex.rgba = static_cast<std::uint32_t>(walker.state.rgba & 0xFFFFFFFFu);
   if (walker.uv_known) {
     vertex.u = walker.last_u;
     vertex.v = walker.last_v;
@@ -230,6 +232,8 @@ void write_register(CensusWriter &writer, PathWalker &walker, std::uint32_t addr
   case 0x0A: state.fog = data; break;
   case 0x14:
   case 0x15: state.tex1 = data; break;
+  case 0x16:
+  case 0x17: state.tex2 = data; break;
   case 0x18:
   case 0x19: state.xyoffset = data; break;
   case 0x3D: state.fogcol = data; break;
@@ -238,8 +242,9 @@ void write_register(CensusWriter &writer, PathWalker &walker, std::uint32_t addr
   case 0x41: state.scissor = data; break;
   case 0x42:
   case 0x43: state.alpha = data; break;
-  case 0x45: break;  // DTHE
-  case 0x46: break;  // COLCLAMP
+  case 0x44: state.dimx = data; break;
+  case 0x45: state.dthe = data; break;
+  case 0x46: state.colclamp = data; break;
   case 0x47:
   case 0x48: state.test = data; break;
   case 0x49: state.pabe = data; break;
@@ -709,6 +714,226 @@ bool find_wet_composite(const std::vector<GsDecodeBatch> &batches, std::uint64_t
   return true;
 }
 
+namespace {
+
+// The measured wet-composite signature (S2), shared by the chain classifier and the S2 recogniser.
+bool is_wet_composite_batch(const GsDecodeBatch &batch) {
+  const GsDecodeState &state = batch.state;
+  return batch.path == 2 && state.prim_type() == 6 && state.prim_tme() == 1 && state.prim_abe() &&
+         state.frame_fbp() == 210 && state.frame_fbw() == 10 && state.frame_psm() == 0 && state.frame_fbmsk() == 0 &&
+         state.tex0_tbp0() == 0x3140u && state.tex0_psm() == 0 && state.tex0_tw() == 7 && state.tex0_th() == 7 &&
+         state.tex0_tcc() == 1 && state.tex0_tfx() == 0 && state.tex1_mmag() == 1 && state.tex1_mmin() == 1 &&
+         state.tex1_mxl() == 0 && state.clamp_wms() == 2 && state.clamp_wmt() == 2 && state.clamp_minu() == 0 &&
+         state.clamp_maxu() == 127 && state.clamp_minv() == 0 && state.clamp_maxv() == 127 &&
+         state.alpha_a() == 0 && state.alpha_b() == 2 && state.alpha_c() == 1 && state.alpha_d() == 1 &&
+         state.test_ate() == 0 && state.zbuf_zmsk() == 1;
+}
+
+bool is_full_screen_multiply_batch(const GsDecodeBatch &batch) {
+  const GsDecodeState &state = batch.state;
+  return batch.path == 2 && state.prim_type() == 6 && state.prim_tme() == 0 && state.prim_abe() &&
+         state.frame_fbp() == 210 && state.frame_fbw() == 10 && state.frame_psm() == 0 && state.frame_fbmsk() == 0 &&
+         state.alpha_a() == 1 && state.alpha_b() == 2 && state.alpha_c() == 2 && state.alpha_d() == 2;
+}
+
+// The full-screen sample of page 210 that opens the measured stream. It samples the framebuffer itself 1:1 with the
+// vertex colour (128,77,0,128), but FRAME.FBMSK = 0xFFFFFFFF masks every colour lane; ZBUF.ZMSK = 0 with ZTST GEQUAL
+// and z = 1 writes the frame's depth buffer. It is the frame's depth clear, not a colour grade.
+bool is_frame_sample_batch(const GsDecodeBatch &batch) {
+  const GsDecodeState &state = batch.state;
+  const bool colour = (state.rgba & 0xFFFFFFFFu) == 0x80004D80u;  // R 128, G 77, B 0, A 128
+  return batch.path == 2 && state.prim_type() == 6 && state.prim_tme() == 1 && state.prim_abe() && colour &&
+         state.frame_fbp() == 210 && state.frame_fbw() == 10 && state.frame_psm() == 0 &&
+         state.frame_fbmsk() == 0xFFFFFFFFu && state.tex0_tbp0() == 0x1A40u && state.tex0_psm() == 0 &&
+         state.tex0_tw() == 10 && state.tex0_th() == 9 && state.tex0_tcc() == 1 && state.tex0_tfx() == 0 &&
+         state.tex1_mmag() == 0 && state.tex1_mmin() == 0 && state.tex1_mxl() == 0 && state.clamp_wms() == 2 &&
+         state.clamp_wmt() == 2 && state.clamp_minu() == 0 && state.clamp_maxu() == 639 &&
+         state.clamp_minv() == 0 && state.clamp_maxv() == 447 && state.alpha_a() == 0 && state.alpha_b() == 1 &&
+         state.alpha_c() == 0 && state.alpha_d() == 1 && state.test_ate() == 1 && state.zbuf_zmsk() == 0;
+}
+
+// The CT16 present blit: page 210 sampled 1:1 with the neutral vertex colour (128,128,128,128), no blend, into one of
+// the two CT16 display buffers (FBP 140 or FBP 0, FBW 10, PSM 2). This is the operation that produces the scanout image
+// the reference dump holds; its DTHE/DIMX state is the captured dither.
+bool is_present_batch(const GsDecodeBatch &batch) {
+  const GsDecodeState &state = batch.state;
+  const bool colour = (state.rgba & 0xFFFFFFFFu) == 0x80808080u;  // R 128, G 128, B 128, A 128
+  const bool display_target = (state.frame_fbp() == 140 || state.frame_fbp() == 0) && state.frame_fbw() == 10 &&
+                              state.frame_psm() == 2;
+  return batch.path == 2 && state.prim_type() == 6 && state.prim_tme() == 1 && !state.prim_abe() && colour &&
+         display_target && state.frame_fbmsk() == 0 &&
+         state.tex0_tbp0() == 0x1A40u && state.tex0_psm() == 0 && state.tex0_tw() == 10 && state.tex0_th() == 9 &&
+         state.tex0_tcc() == 1 && state.tex0_tfx() == 0 && state.tex1_mmag() == 0 && state.tex1_mmin() == 0 &&
+         state.tex1_mxl() == 0 && state.clamp_wms() == 2 && state.clamp_wmt() == 2 && state.clamp_minu() == 0 &&
+         state.clamp_maxu() == 639 && state.clamp_minv() == 0 && state.clamp_maxv() == 447 &&
+         state.alpha_a() == 0 && state.alpha_b() == 1 && state.alpha_c() == 0 && state.alpha_d() == 1 &&
+         state.test_ate() == 0 && state.zbuf_zmsk() == 1;
+}
+
+// A full-screen clear of one target: PRIM sprite, TME and ABE off, the black + alpha 0 vertex colour, and the given
+// target/FBMSK/TEST signature. The pre-world clears and the two alpha-only clears share this shape; the target and the
+// TEST distinguish them.
+bool is_clear_batch(const GsDecodeBatch &batch, std::uint32_t fbp, std::uint32_t fbw, std::uint32_t psm,
+                    std::uint32_t fbmsk, std::uint64_t test) {
+  const GsDecodeState &state = batch.state;
+  return batch.path == 2 && state.prim_type() == 6 && state.prim_tme() == 0 && !state.prim_abe() &&
+         state.frame_fbp() == fbp && state.frame_fbw() == fbw && state.frame_psm() == psm &&
+         state.frame_fbmsk() == fbmsk && (state.rgba & 0xFFFFFFFFu) == 0 && state.test == test;
+}
+
+}  // namespace
+
+const char *gs_chain_op_name(GsChainOp op) noexcept {
+  switch (op) {
+  case GsChainOp::pre_world_clear_rgb: return "pre-world-clear-rgb";
+  case GsChainOp::pre_world_clear_alpha: return "pre-world-clear-alpha";
+  case GsChainOp::pre_world_clear_test: return "pre-world-clear-test";
+  case GsChainOp::frame_sample: return "frame-sample";
+  case GsChainOp::reflection_alpha_clear: return "reflection-alpha-clear";
+  case GsChainOp::wet_composite: return "wet-composite";
+  case GsChainOp::post_multiply: return "post-multiply";
+  case GsChainOp::present_ct16: return "present-ct16";
+  case GsChainOp::display_alpha_clear: return "display-alpha-clear";
+  case GsChainOp::unknown: return "unknown";
+  case GsChainOp::kChainOpCount: break;
+  }
+  return "unknown";
+}
+
+bool find_post_chain(const std::vector<GsDecodeBatch> &batches, std::uint64_t scene_vblank,
+                     GsPostChainInfo &info) {
+  info = GsPostChainInfo{};
+  info.scene_vblank = scene_vblank;
+  info.stream_vblank = scene_vblank + 1;
+  std::vector<const GsDecodeBatch *> multiplies;
+  std::uint64_t previous_sequence = 0;
+  for (const GsDecodeBatch &batch : batches) {
+    if (batch.vblank != info.stream_vblank) continue;
+    if (!batch.full_screen || batch.drawing_vertices < 2) continue;
+    if (batch.sequence < previous_sequence) {
+      info.refusal = "the decoded batches are not in stream order";
+      return false;
+    }
+    previous_sequence = batch.sequence;
+    info.full_screen_batches += 1;
+    GsChainEntry entry;
+    entry.batch = &batch;
+    const GsDecodeState &state = batch.state;
+    if (is_frame_sample_batch(batch)) {
+      entry.op = GsChainOp::frame_sample;
+      entry.after_world = false;
+      entry.note = "full-screen page-210 sample with vertex colour (128,77,0,128): FBMSK 0xFFFFFFFF masks every colour "
+                   "lane while ZBUF.ZMSK 0 with ZTST GEQUAL writes z=1 over the depth buffer (the frame's depth clear); "
+                   "it changes no colour and its depth is the world render's initial depth";
+    } else if (is_wet_composite_batch(batch)) {
+      entry.op = GsChainOp::wet_composite;
+      entry.after_world = true;
+      entry.note = "sphere-mapper composite (TBP0 0x3140), ALPHA 0x58 (Cs - 0) * Ad + Cd";
+      if (info.composite != nullptr) {
+        info.refusal = "more than one full-screen wet composite in the attributed stream";
+        return false;
+      }
+      info.composite = &batch;
+    } else if (is_full_screen_multiply_batch(batch)) {
+      entry.op = GsChainOp::post_multiply;
+      entry.after_world = true;
+      char note[160];
+      std::snprintf(note, sizeof note, "Cd * FIX %u / 128 full-screen multiply (ALPHA 0xA9)", state.alpha_fix());
+      entry.note = note;
+      multiplies.push_back(&batch);
+    } else if (is_present_batch(batch)) {
+      entry.op = GsChainOp::present_ct16;
+      entry.after_world = true;
+      char note[200];
+      std::snprintf(note, sizeof note,
+                    "page 210 -> FBP %u/FBW 10 CT16 present, vertex colour (128,128,128,128); DTHE %llu DIMX %016llX",
+                    state.frame_fbp(), static_cast<unsigned long long>(state.dthe_on()),
+                    static_cast<unsigned long long>(state.dimx));
+      entry.note = note;
+      if (info.present != nullptr) {
+        info.refusal = "more than one full-screen CT16 present (FBP 140) in the attributed stream";
+        return false;
+      }
+      info.present = &batch;
+    } else if (is_clear_batch(batch, 140, 10, 2, 0x00FFFFFFu, 0) ||
+               is_clear_batch(batch, 0, 10, 2, 0x00FFFFFFu, 0)) {
+      entry.op = GsChainOp::display_alpha_clear;
+      entry.after_world = true;
+      entry.note = "alpha-only clear of the CT16 display buffer after the present; FBMSK 0x00FFFFFF keeps every RGB "
+                   "bit, so the scanout RGB is unchanged";
+      if (info.present != nullptr && batch.state.frame_fbp() != info.present->state.frame_fbp()) {
+        info.refusal = "the display alpha clear and the present target different CT16 display buffers";
+        return false;
+      }
+    } else if (is_clear_batch(batch, 210, 10, 0, 0x00FFFFFFu, 0)) {
+      entry.op = GsChainOp::reflection_alpha_clear;
+      entry.after_world = false;
+      entry.note = "alpha-only clear immediately before the PassId 7 reflection draws; the world renderer applies it "
+                   "at that position (clear_alpha_before_wet_reflection)";
+      if (info.alpha_clear != nullptr) {
+        info.refusal = "more than one pre-reflection alpha clear in the attributed stream";
+        return false;
+      }
+      info.alpha_clear = &batch;
+    } else if (is_clear_batch(batch, 210, 10, 0, 0, 0x30000u)) {
+      entry.op = GsChainOp::pre_world_clear_rgb;
+      entry.after_world = false;
+      entry.note = "frame clear: black RGB + alpha 0 (FBMSK 0), before the frame's PATH1 draws";
+    } else if (is_clear_batch(batch, 210, 10, 0, 0x00FFFFFFu, 0x30000u)) {
+      entry.op = GsChainOp::pre_world_clear_alpha;
+      entry.after_world = false;
+      entry.note = "frame alpha-only clear (FBMSK 0x00FFFFFF), before the frame's PATH1 draws";
+    } else if (is_clear_batch(batch, 210, 10, 0, 0, 0x32001u)) {
+      entry.op = GsChainOp::pre_world_clear_test;
+      entry.after_world = false;
+      entry.note = "black frame clear under TEST 0x32001 (ATE + ZTST GEQUAL), before the frame's PATH1 draws";
+    } else {
+      entry.op = GsChainOp::unknown;
+      entry.after_world = false;
+      entry.note = "unrecognised full-screen batch: " + gs_batch_state_line(batch);
+      info.unrecognised_full_screen += 1;
+    }
+    info.counts[static_cast<std::size_t>(entry.op)] += 1;
+    info.entries.push_back(std::move(entry));
+  }
+  if (info.composite == nullptr) {
+    info.refusal = "no full-screen wet composite (FBP 210, TBP0 0x3140, blend Cs*Ad+Cd) in the attributed stream";
+    return false;
+  }
+  if (info.alpha_clear == nullptr) {
+    info.refusal = "no pre-reflection alpha clear (FBP 210, FBMSK 0x00FFFFFF, TEST 0) in the attributed stream";
+    return false;
+  }
+  if (multiplies.size() < 2) {
+    info.refusal = "the captured post chain does not carry both multiplies (FIX 127 and FIX 255)";
+    return false;
+  }
+  // The measured order: alpha clear, composite, FIX 127, FIX 255, present. Pin it; a different order is a refusal.
+  for (const GsDecodeBatch *batch : multiplies) {
+    if (batch->sequence < info.composite->sequence) continue;
+    if (batch->state.alpha_fix() == 127 && info.post_darken == nullptr) info.post_darken = batch;
+    if (batch->state.alpha_fix() == 255 && info.post_brighten == nullptr) info.post_brighten = batch;
+  }
+  if (info.post_darken == nullptr || info.post_brighten == nullptr) {
+    info.refusal = "the captured post chain is missing a FIX 127 or FIX 255 multiply after the composite";
+    return false;
+  }
+  if (info.present == nullptr) {
+    info.refusal = "no full-screen CT16 present (FBP 140) in the attributed stream";
+    return false;
+  }
+  if (!(info.alpha_clear->sequence < info.composite->sequence &&
+        info.composite->sequence < info.post_darken->sequence &&
+        info.post_darken->sequence < info.post_brighten->sequence &&
+        info.post_brighten->sequence < info.present->sequence)) {
+    info.refusal = "the chain draws are not in the measured stream order (alpha clear, composite, FIX 127, FIX 255, "
+                   "present)";
+    return false;
+  }
+  info.found = true;
+  return true;
+}
+
 const char *gs_batch_class_name(const GsDecodeBatch &batch) noexcept {
   const GsDecodeState &state = batch.state;
   if (!batch.full_screen) return "batch";
@@ -732,13 +957,16 @@ std::string gs_batch_state_line(const GsDecodeBatch &batch) {
   const GsDecodeState &state = batch.state;
   char line[512];
   std::snprintf(line, sizeof line,
-                "path %u vblank %llu seq %u prim %03X tme %u abe %u tbp0 %04X psm %02X frame fbp %u fbw %u psm "
-                "%u fbmsk %08X test %016llX alpha %016llX zbuf %016llX clamp %016llX xyoff %016llX extent "
+                "path %u vblank %llu seq %u prim %03X tme %u abe %u tbp0 %04X psm %02X tw %u th %u tcc %u tfx %u "
+                "t1 %016llX frame fbp %u fbw %u psm "
+                "%u fbmsk %08X rgba %08X test %016llX alpha %016llX zbuf %016llX clamp %016llX xyoff %016llX extent "
                 "%.1f..%.1f x %.1f..%.1f verts %u",
                 static_cast<unsigned>(batch.path), static_cast<unsigned long long>(batch.vblank), batch.sequence,
                 state.prim_value(), state.prim_tme(), state.prim_abe(), state.tex0_tbp0(), state.tex0_psm(),
-                state.frame_fbp(), state.frame_fbw(), state.frame_psm(), state.frame_fbmsk(),
-                static_cast<unsigned long long>(state.test), static_cast<unsigned long long>(state.alpha),
+                state.tex0_tw(), state.tex0_th(), state.tex0_tcc(), state.tex0_tfx(),
+                static_cast<unsigned long long>(state.tex1), state.frame_fbp(), state.frame_fbw(), state.frame_psm(),
+                state.frame_fbmsk(),
+                static_cast<std::uint32_t>(state.rgba & 0xFFFFFFFFu), static_cast<unsigned long long>(state.test), static_cast<unsigned long long>(state.alpha),
                 static_cast<unsigned long long>(state.zbuf), static_cast<unsigned long long>(state.clamp),
                 static_cast<unsigned long long>(state.xyoffset), batch.min_x, batch.max_x, batch.min_y, batch.max_y,
                 batch.vertices);
