@@ -4499,7 +4499,22 @@ release. No renderer, game, launcher or pin change; benchmark numbers are the TA
 
 ### TASK-215 - CoreGS 2.0 performance audit and optimization (branch `task/215-coregs2-perf`)
 
-**State (2026-11-11): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
+**State (2026-11-11, GS worker round): the two-stage pipeline prototype was implemented, measured and reverted
+(IN-556).** Plan: `docs/tasks/COREGS2-GSWORKER-PLAN.md` (the stage split, the candidates, the GSdx study's record-ring
+existence proof, the do-not-retry list). Prototype (`GT4_CORE2_GS_PIPELINE=1`, front end on the GS worker + a 128-item
+SPSC ring of self-contained batches/CLUT snapshots + a render thread) **ran and rendered** but cost **5.4x** the serial
+path on the license (wall 39-44 against 10.2; GS stages 47.7-53.1 against 8.8-9.9), because (a) the exact readback before
+a CLUT load is a synchronous producer stall - **1,967-2,051 drains and 18.7-21.0 ms of drain wait per VBlank** - and (b)
+the renderer's dirty-page/block-identity bookkeeping assumes one thread, so the consumer's untimed work doubles
+(`batch_own` 1.14 -> 4.11, `targets` 0.04 -> 2.50). The switch-off path stayed exact. The next attempt at this lever needs
+**memory-version ownership** (GS memory/CLUT/dirty pages versioned per record or segment, readbacks as queued tasks with
+completion tickets) and one owner for the cache/version state: the 3-5 day design round the option was priced at, not a
+prototype. Phase 2/3 candidates were not attempted this round: each is individually bounded below the 0.5 ms gate
+(texture 0.19-0.39, swizzle 0.51-0.72, clut 0.16-0.59 with the 1 KiB copy measured at +0.61 in IN-548; the draw recorder
+~102 ns/draw per the GSdx study; the batched kick measured below the bar in TASK-171). Tests unchanged (319/320, the
+pre-existing rc15 `python_native_contracts`). Ledger IN-556.
+
+**Previous state (2026-11-11, close-out): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
 Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
 the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook
 (+0.61 ms). Closed with numbers: per-record vertex conversion (~0), per-batch flush merge (~0.1 ms, below the bar), flare

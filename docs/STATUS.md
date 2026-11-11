@@ -2,6 +2,23 @@
 
 ## TASK-215: CoreGS 2.0 performance audit and optimization (2026-11-10)
 
+**GS worker round (2026-11-11):** the aggressive round on the measured bottleneck (the GS worker, 89-98 % of the frame in
+every scene) is planned in `docs/tasks/COREGS2-GSWORKER-PLAN.md` and its Phase 1 (the two-stage pipeline) **measured and
+reverted** (IN-556). The prototype (`GT4_CORE2_GS_PIPELINE=1`, default off: GIF front end on the GS worker, a 128-item SPSC
+ring of self-contained batches with in-order CLUT snapshots, a render thread, a drawn-block readback shadow, drains only
+at uploads/VBlank/EE) ran and rendered, but on the license B-1 1x it cost **5.4x** the serial path (wall 39.1-44.3 against
+10.18-10.23; GS stages 47.7-53.1 against 8.82-9.90) for two measured, structural reasons: the exact readback before a CLUT
+load is a synchronous producer stall (**1,967-2,051 drains and 18.7-21.0 ms of drain wait per VBlank**; the license's
+palettes live under the frame buffer, so the shadow cannot skip them) and the renderer's dirty-page/block-identity
+bookkeeping assumes one thread (the consumer's `batch_own` 1.14 -> 4.11 and `targets` 0.04 -> 2.50 while
+`draw`/`translate`/`texture`/`clut` stay flat). The switch-off path stayed exact. The lever therefore needs
+**memory-version ownership** (GS memory/CLUT/dirty pages versioned per record or segment, readbacks as queued tasks with
+completion tickets) and one owner for the cache state - the 3-5 day design round the option was priced at, not a
+one-session prototype. The GSdx read-only study (`docs/gsdx/GS-THREAD-CPU-COST.md`) is the existence proof for the record
+ring and adds two GSdx-shaped candidates recorded but not attempted (fused kick with the cull folded in and
+index-at-kick 0.5-1.0 ms Hyp; no CPU translate 0.2-0.4 ms Hyp). Phase 2/3 were not attempted: every remaining candidate is
+individually below the 0.5 ms gate. Tests unchanged (319/320, the pre-existing rc15 `python_native_contracts`).
+
 **Close-out (2026-11-11):** the consolidated report is `docs/tasks/COREGS2-TASK215-SUMMARY.md` (kept, reverted/closed with
 numbers, the 3x scene matrix, the remaining lever, the owner's options). State: kept IN-540 (aliased depth fill) and
 IN-547 (scissor view, `GT4_CORE2_SCISSOR_VIEW`), both exact; reverted the palette segments under the tone hook (+0.61 ms);
