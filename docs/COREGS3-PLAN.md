@@ -395,6 +395,11 @@ from the newest frame, not interpolated: interpolating a digital readout invents
 needs a smoother-looking HUD, it can be drawn twice with the same numbers, which is exactly what the guest-rate layer
 already does when the display refreshes faster.
 
+**Owner direction for VRR (2026-11-11).** The target presentation model is VRR, like a modern game: the renderer
+presents on the display's real scanout instead of a fixed grid, and the **HUD should also be brought to the variable
+rate later** (drawn at every presentation instant with the newest guest values, never interpolated). The guest-rate HUD
+above is the interim behavior until the VRR host clock and the HUD redraw exist.
+
 **What is implemented now (2026-11-10).** The data structures and the identity: `native/coregs3/coregs3_timeline.{hpp,cpp}`
 (`GuestTime`, `ObjectKey`, `ObjectTransform`, `TimelineFrame`, `FrameRing` with pairing and unmatched counts,
 `lerp_matrix`, `interpolation_alpha`) and its fixture `native_coregs3_timeline`. The capture already carries the guest
