@@ -1909,7 +1909,7 @@ int main(int argc, char **argv) {
                      "%s,%u,%llu,%03X,%u,%u,%u,%u,%04X,%02X,%u,%u,%u,%u,%04X,%016llX,%u,%u,%u,%u,"
                      "%016llX,%016llX,%016llX,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%s,%s\n",
                      entry.path1 ? "path1" : "path2", entry.sequence,
-                     static_cast<unsigned long long>(entry.job), state.prim, state.tex0 ? 1u : 0u,
+                     static_cast<unsigned long long>(entry.job), state.prim, (state.prim >> 4) & 1u,
                      (state.prim >> 6) & 1u, state.frame_fbp(), state.frame_psm(), state.tex0_tbp0(), state.tex0_psm(),
                      state.tex0_tw(), state.tex0_th(), state.tex0_tcc(), state.tex0_tfx(), state.tex0_cbp(),
                      static_cast<unsigned long long>(state.clamp), state.clamp_minu(), state.clamp_maxu(),
