@@ -58,9 +58,12 @@ map (v1 `page-fog-map.npz`, 99.9% of the mask has a tapped fog):
 | model RMSE (0-255 RGB) | identity 19.45, luma affine 0.6354*w+14.649 17.52, per-pixel FOGCOL blend 10.05, best constant f=0.645 17.26 |
 | depth quintiles (tapped fog map) | ref/world ratio 1.337, 1.292, 1.473, 1.577, 1.394; mean F 254.7, 254.8, 254.8, 248.8, 226.0; f median 0.720, 0.790, 0.714, 0.682, 0.583. The gap rises with depth but the fog is not the shaper (the strongest-fog quintile has the *smallest* gap) |
 
-The per-pixel blend fits better than the global affine (RMSE 10.05 vs 17.52) because it is a two-parameter per-pixel
-family; it is not the GS fog: the GS applies one F(Q) per pixel and ours already does, and the solved factor disagrees
-per channel and runs the wrong way against F. **Numerically the whole-mask fit happens to look like a blend toward
+The renderer applies the **tapped** per-vertex F (the VU1's own F(Q) formula is not re-derived offline); what is
+checked here is therefore the applied F values, the FOGCOL (`0x27272A` from the tapped state/pass journal, 93.5% of
+the mask) and the mix `(F*C + (255-F)*FOGCOL) >> 8`, which is the GS's and CoreGS 2.0's own. The per-pixel blend fits
+better than the global affine (RMSE 10.05 vs 17.52) because it is a two-parameter per-pixel family; it is not the GS
+fog: the GS applies one F per pixel and ours already does, and the solved factor disagrees per channel and runs the
+wrong way against F. **Numerically the whole-mask fit happens to look like a blend toward
 0x27272A; mechanistically it is a mixture.**
 
 ### 2. The whole-mask fit is a pooling artifact (C)
@@ -157,6 +160,10 @@ explain why the composite changed only 70 px. Measured in the `.gt4vram` v2 side
   writes (`ALPHA 0x58 = (Cs-0)*Ad+Cd`): the reflection pass writes 188 alpha fragments, 70 with non-zero alpha, on every
   frame. The small effect is the measured alpha mask, not a missing source.
 - Therefore the wet composite cannot explain the frame-07400 gap, on frame 0 or on any later frame of the capture.
+- Phase and reference limits: scene frame V uses stream V+1 (S2's measured relation), so frames 0-4 use streams
+  7399-7403 (the `.gt4scene` holds frames 7398-7402; the `.gt4gs` holds streams 7398-7405). The reference frame set is
+  sparse - `frame_06600.ppm` .. `frame_09000.ppm` every 200 VBlanks - so there is **no reference frame for 7399-7404**;
+  on those frames only the composite's own contribution (comp vs no-comp) can be measured, not a PSNR.
 
 ### 7. The captured post multiplies still overshoot (C, S2 re-checked)
 
