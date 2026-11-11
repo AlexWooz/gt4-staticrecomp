@@ -107,6 +107,7 @@ void main() {
     s.blend_d = c.blend_d;
     s.fix = c.fix;
     s.colclamp = c.colclamp;
+    s.split_overlay = 0u;  // TASK-090: the exact/fill paths are never the split overlay
 
     ivec4 frag = ivec4(int(c.fr), int(c.fg), int(c.fb), int(c.fa));
     ivec4 shaded = hw_shade_fragment(c.tex_on != 0u, c.tfx, c.tcc != 0u, c.texel_kind, c.texel_raw,

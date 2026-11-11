@@ -123,6 +123,23 @@ struct Core2Counters {
     std::uint64_t drawnPagesMissed = 0;        // IN-508: stores left out because the write shares no page with the drawn area
     std::uint64_t uploadChecks = 0;            // GT4_CORE2_UPLOAD_CHECK: fast uploads compared with the generic path
     std::uint64_t uploadCheckMismatches = 0;   // ... of which differed (also printed per upload)
+    // TASK-090 2D overlay split (CoreGS 3.0 present only; docs/COREGS3-2D-SPLIT.md): frames whose 2D layer was split
+    // from the 3D image, 2D batches redirected into the overlay target, checkpoints composed, frames and batches
+    // refused (no present blit, another layout, a batch sampling the split framebuffer), and the present composite.
+    std::uint64_t splitFrames = 0;
+    std::uint64_t splitBatches = 0;
+    std::uint64_t splitCheckpoints = 0;
+    std::uint64_t splitRefusedFrames = 0;
+    std::uint64_t splitDroppedFrames = 0;  // split frames whose VBlank compose never ran (held present): no overlay delivered
+    std::uint64_t splitRefusedSamples = 0;
+    std::uint64_t splitLayoutChanges = 0;
+    std::uint64_t splitUnavailableDraws = 0;  // display-target draws of a layout the split cannot cut (menus, both circuits)
+    // The 2D draws the split approximates, each counted: a destination-alpha test reads the overlay's coverage instead of
+    // the 3D image's alpha, FBMSK is not mapped onto the RGBA8 coverage lanes, and a blend factored by destination alpha
+    // never sees the 3D destination. The measured A-Spec panel has none (docs/COREGS3-2D-SPLIT.md §6).
+    std::uint64_t splitDateDraws = 0;
+    std::uint64_t splitFbmskDraws = 0;
+    std::uint64_t splitDestAlphaDraws = 0;
 };
 
 class Renderer {
@@ -163,6 +180,13 @@ public:
     void SetPresentSize(std::uint32_t width, std::uint32_t height);
     // IN-433: 0 textures filtered as the game asks, 1 bilinear on every textured draw, 2 on all but sprites.
     void SetForcedBilinear(std::uint32_t mode);
+    // TASK-090 2D overlay split: the CoreGS 3.0 present layer asks for the frame's 3D image and its 2D layer as two
+    // images (docs/COREGS3-2D-SPLIT.md). False/enabled only from the present path; GT4_COREGS3_2D_OVERLAY=0 is the A/B
+    // and leaves the faithful behavior byte for byte.
+    void SetCoregs3Overlay(bool enabled);
+    // Composites the frame's 2D layer (GpuFrame::overlay) over the image the present drew into. False (counted) when
+    // the frame has no overlay or the composite cannot run.
+    bool CompositeCoregs3Overlay(const writeback::GpuFrame &frame);
 
     // The shadow memory after writing every target's drawn area back (a host read of the whole memory).
     const std::uint8_t *Slm();

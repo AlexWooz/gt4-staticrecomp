@@ -70,6 +70,7 @@ void main() {
     s.blend_d = fields[F_BLEND_D];
     s.fix = fields[F_FIX];
     s.colclamp = fields[F_COLCLAMP];
+    s.split_overlay = 0u;  // TASK-090: the exact/fill paths are never the split overlay
 
     HwFragment f;
     const bool fine = (pc.flags & 2u) != 0u;

@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: MIT
+//
+// CORE2 2D overlay compose (TASK-090 2D overlay split, docs/COREGS3-2D-SPLIT.md §3). Copyright (c) 2026 GT4Recomp
+// contributors.
+//
+// Composes the split's 2D layer from the overlay target into a display-sized RGBA8 image, through the same circuit
+// geometry as core2_compose.comp: the overlay target holds one RGBA8 word per native pixel (R low byte, alpha = the
+// accumulated coverage the draw wrote), the display circuit's read rectangle is stretched over its placement at the
+// output scale, and every output pixel outside the placement is transparent so the present's composite leaves the 3D
+// image untouched there. The alpha is the coverage, not a GS alpha: the present composites it over the 3D image.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1, r32ui) uniform readonly uimage2D overlay_source;
+layout(set = 0, binding = 2, r32ui) uniform writeonly uimage2D overlay_display;
+
+// The display circuit's geometry, all placements in output pixels.
+layout(push_constant) uniform OverlayParameters {
+    uint out_width;
+    uint out_height;
+    uint out_scale;
+    int read_x;
+    int read_y;
+    uint read_width;
+    uint read_height;
+    int place_x;
+    int place_y;
+    uint place_width;
+    uint place_height;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.out_width) || p.y >= int(pc.out_height)) {
+        return;
+    }
+    const bool inside = p.x >= pc.place_x && p.y >= pc.place_y &&
+                        p.x < pc.place_x + int(pc.place_width) && p.y < pc.place_y + int(pc.place_height);
+    if (!inside || pc.read_width == 0u || pc.read_height == 0u || pc.place_width == 0u || pc.place_height == 0u) {
+        imageStore(overlay_display, p, uvec4(0u));
+        return;
+    }
+    // The output pixel's position in the read rectangle, in scaled source pixels (core2_compose.comp's formula).
+    uint span_x = pc.read_width * pc.out_scale;
+    uint span_y = pc.read_height * pc.out_scale;
+    uint sx = min(uint(p.x - pc.place_x) * span_x / pc.place_width, span_x - 1u);
+    uint sy = min(uint(p.y - pc.place_y) * span_y / pc.place_height, span_y - 1u);
+    ivec2 at = ivec2(pc.read_x * int(pc.out_scale) + int(sx), pc.read_y * int(pc.out_scale) + int(sy));
+    at = clamp(at, ivec2(0), imageSize(overlay_source) - ivec2(1));
+    imageStore(overlay_display, p, imageLoad(overlay_source, at));
+}

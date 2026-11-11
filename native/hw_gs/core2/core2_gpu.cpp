@@ -339,6 +339,13 @@ struct Gpu::Impl {
   Image atlas;
   std::uint32_t atlasShelfX = 0, atlasShelfY = 0, atlasShelfHeight = 0;
   Image display;
+  // TASK-090 2D overlay split: the 2D layer composed from the overlay target (RGBA8 words with the draw's coverage) and
+  // its presentation-resampled copy, next to the display image the present draws the world into.
+  Image overlayDisplay;
+  Image overlayPresentA, overlayPresentB, overlayPresentOut;
+  // TASK-090 2D overlay split: the view of the composite's target image (created per composite, destroyed once its
+  // submission is complete).
+  VkImageView mergeView = VK_NULL_HANDLE;
   // IN-405: deinterlace (hw_deinterlace_scaled.comp: 0 history[4], 4 woven, 5 previous output, 6 output) and FXAA
   // (hw_postfx_fxaa.comp: 0 source, 1 output), each with its own set layout; the images follow the display size.
   Image deinterlaceHistory[gpu::kGpuDeinterlaceHistory];
@@ -357,6 +364,8 @@ struct Gpu::Impl {
 
   VkDescriptorSetLayout drawSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout drawLayout = VK_NULL_HANDLE;
+  VkPipeline overlayComposePipeline = VK_NULL_HANDLE, overlayMergePipeline = VK_NULL_HANDLE;
+  VkShaderModule overlayComposeModule = VK_NULL_HANDLE, overlayMergeModule = VK_NULL_HANDLE;
   VkRenderPass renderPass = VK_NULL_HANDLE;
   VkFramebuffer framebuffer = VK_NULL_HANDLE;
   std::uint32_t framebufferWidth = 0, framebufferHeight = 0;
@@ -2451,6 +2460,85 @@ struct Gpu::Impl {
     gt4_hwd_vkCmdDispatch(cmd, (width + 7u) / 8u, (height + 7u) / 8u, 1);
     after_op();
   }
+
+  // IN-432 as a reusable step (TASK-090 2D overlay split: the 2D layer is resampled with the same kernel and settings
+  // as the frame it is composited over). `source` (width x height) into `out` (outWidth x outHeight) through the two
+  // scratch images, with the RCAS pass last. Submits nothing: the caller's recording carries it.
+  bool present_scale_into(Image &source, Image &scratchA, Image &scratchB, Image &out, std::uint32_t width,
+                          std::uint32_t height, std::uint32_t outWidth, std::uint32_t outHeight, float sharpness,
+                          std::string &error) {
+    if (width == 0 || height == 0 || width > source.width || height > source.height || outWidth == 0 ||
+        outHeight == 0 || outWidth > limits.maxImageDimension2D || outHeight > limits.maxImageDimension2D) {
+      error = "CORE2 presentation resampling outside the display image";
+      return false;
+    }
+    if (!begin_recording(error)) return false;
+    flush_draws();
+    end_render_pass();
+    full_barrier();  // a rare pass: ordered at once
+    // One pass: `from` (fromWidth x fromHeight) into `to` (toWidth x toHeight, made to that size).
+    auto pass = [&](std::uint32_t mode, Image &from, std::uint32_t fromWidth, std::uint32_t fromHeight, Image &to,
+                    std::uint32_t toWidth, std::uint32_t toHeight) -> bool {
+      bool fresh = false;
+      if (!post_image(to, toWidth, toHeight, fresh, error)) return false;
+      VkDescriptorSet set = VK_NULL_HANDLE;
+      if (!allocate_set(presentSetLayout, set, error)) return false;
+      const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, from.view, VK_IMAGE_LAYOUT_GENERAL},
+                                               {VK_NULL_HANDLE, to.view, VK_IMAGE_LAYOUT_GENERAL}};
+      VkWriteDescriptorSet writes[2]{};
+      for (std::uint32_t i = 0; i < 2; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[i].pImageInfo = &images[i];
+      }
+      gt4_hwd_vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+      gt4_hwd_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, presentPipeline);
+      gt4_hwd_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, presentLayout, 0, 1, &set, 0, nullptr);
+      const std::uint32_t push[6] = {fromWidth, fromHeight, toWidth, toHeight, mode, FloatBits(sharpness)};
+      gt4_hwd_vkCmdPushConstants(cmd, presentLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
+      gt4_hwd_vkCmdDispatch(cmd, (toWidth + 7) / 8, (toHeight + 7) / 8, 1);
+      full_barrier();
+      return true;
+    };
+    constexpr std::uint32_t kHorizontal = 0, kVertical = 1, kEasu = 2, kRcas = 3;
+    const bool rcas = sharpness > 0.0f;
+    Image *current = &source;
+    std::uint32_t cw = width, ch = height;
+    // The image a resampling pass writes: the output when nothing follows, otherwise the other scratch image.
+    auto next = [&](bool last) -> Image & {
+      if (last) return out;
+      return current == &scratchA ? scratchB : scratchA;
+    };
+    if (outWidth >= width && outHeight >= height && (outWidth != width || outHeight != height)) {
+      Image &to = next(!rcas);
+      if (!pass(kEasu, *current, cw, ch, to, outWidth, outHeight)) return false;
+      current = &to;
+      cw = outWidth;
+      ch = outHeight;
+    } else {
+      if (outWidth != width) {
+        Image &to = next(!rcas && outHeight == height);
+        if (!pass(kHorizontal, *current, cw, ch, to, outWidth, ch)) return false;
+        current = &to;
+        cw = outWidth;
+      }
+      if (outHeight != height) {
+        Image &to = next(!rcas);
+        if (!pass(kVertical, *current, cw, ch, to, cw, outHeight)) return false;
+        current = &to;
+        ch = outHeight;
+      }
+    }
+    if (rcas || current == &source) {
+      // RCAS (or, at the same size without sharpening, a plain copy through RCAS with no lobe).
+      if (!pass(kRcas, *current, cw, ch, out, cw, ch)) return false;
+    }
+    stats.presentScales++;
+    return true;
+  }
 };
 
 Gpu::Gpu() : impl_(std::make_unique<Impl>()) {}
@@ -2470,6 +2558,7 @@ Gpu::~Gpu() {
   if (s.pipelineCache) gt4_hwd_vkDestroyPipelineCache(s.device, s.pipelineCache, nullptr);
   std::string ignored;
   s.submit(true, ignored);
+  if (s.mergeView != VK_NULL_HANDLE) gt4_hwd_vkDestroyImageView(s.device, s.mergeView, nullptr);
   for (VkPipeline pipeline : s.specAll) gt4_hwd_vkDestroyPipeline(s.device, pipeline, nullptr);
   for (Image &image : s.images) s.release(image);
   for (Image &image : s.doomed) s.release(image);
@@ -2484,6 +2573,10 @@ Gpu::~Gpu() {
   s.release(s.presentA);
   s.release(s.presentB);
   s.release(s.presentOut);
+  s.release(s.overlayDisplay);
+  s.release(s.overlayPresentA);
+  s.release(s.overlayPresentB);
+  s.release(s.overlayPresentOut);
   if (s.timestamps) gt4_hwd_vkDestroyQueryPool(s.device, s.timestamps, nullptr);
   if (s.statistics) gt4_hwd_vkDestroyQueryPool(s.device, s.statistics, nullptr);
   for (Impl::MemoryBlock &block : s.imageBlocks) gt4_hwd_vkFreeMemory(s.device, block.memory, nullptr);
@@ -2894,12 +2987,22 @@ bool Gpu::Init(const gpu::VulkanHandles &handles, std::uint32_t scale, float shi
   s.reduceModule = s.make_module(hwgs::shaders::core2_reduce_words, hwgs::shaders::core2_reduce_word_count, error);
   s.toneModule = s.make_module(hwgs::shaders::core2_tone_words, hwgs::shaders::core2_tone_word_count, error);
   s.composeModule = s.make_module(hwgs::shaders::core2_compose_words, hwgs::shaders::core2_compose_word_count, error);
-  if (!s.patchModule || !s.reduceModule || !s.toneModule || !s.composeModule) return false;
+  s.overlayComposeModule =
+      s.make_module(hwgs::shaders::core2_overlay_compose_words, hwgs::shaders::core2_overlay_compose_word_count, error);
+  s.overlayMergeModule =
+      s.make_module(hwgs::shaders::core2_overlay_merge_words, hwgs::shaders::core2_overlay_merge_word_count, error);
+  if (!s.patchModule || !s.reduceModule || !s.toneModule || !s.composeModule || !s.overlayComposeModule ||
+      !s.overlayMergeModule)
+    return false;
   s.patchPipeline = s.make_compute(s.patchModule, error);
   s.reducePipeline = s.make_compute(s.reduceModule, error);
   s.tonePipeline = s.make_compute(s.toneModule, error);
   s.composePipeline = s.make_compute(s.composeModule, error);
-  if (!s.patchPipeline || !s.reducePipeline || !s.tonePipeline || !s.composePipeline) return false;
+  s.overlayComposePipeline = s.make_compute(s.overlayComposeModule, error);
+  s.overlayMergePipeline = s.make_compute(s.overlayMergeModule, error);
+  if (!s.patchPipeline || !s.reducePipeline || !s.tonePipeline || !s.composePipeline || !s.overlayComposePipeline ||
+      !s.overlayMergePipeline)
+    return false;
   s.fillModule = s.make_module(hwgs::shaders::core2_fill_words, hwgs::shaders::core2_fill_word_count, error);
   if (!s.fillModule) return false;
   s.fillPipeline = s.make_compute(s.fillModule, error);
@@ -3271,6 +3374,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     state.fields[gpu::gpufield::Ta0] = batch.logicalX | (batch.logicalY << 16);
   }
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
+  state.fields[gpu::gpufield::SplitOverlay] = batch.splitOverlay ? 1u : 0u;  // TASK-090 2D overlay split
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
 
   // Spec 8.8: the texture is the target this batch draws into and the batch samples where it draws. Its sampled
@@ -3319,7 +3423,9 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
                                      ((batch.scanmsk & 3u) << 20);                    // IN-530: SCANMSK
   VkPipeline ropPipeline = VK_NULL_HANDLE;
   std::uint32_t ropWord = 0;
-  if (s.ropOn && (batch.scanmsk & 2u) == 0 && frame->width <= s.framebufferWidth && frame->height <= s.framebufferHeight) {
+  // TASK-090 2D overlay split: an overlay draw writes RGBA8 coverage words through the storage path; the ROP and
+  // compute-fill paths pack GS frame words and stay off for it.
+  if (s.ropOn && !batch.splitOverlay && (batch.scanmsk & 2u) == 0 && frame->width <= s.framebufferWidth && frame->height <= s.framebufferHeight) {
     bool triangles = true;
     for (const gpu::GpuDraw &draw : *batch.draws) triangles = triangles && draw.topology == gpu::GpuTopology::Triangles;
     ropWord = triangles ? Impl::rop_word(state.fields, s.ropBlend && s.dualSourceBlend) : 0u;
@@ -3333,7 +3439,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     ropPipeline = s.rop_pipeline(state.fields, pushTexScale, ropWord);
   }
 
-  if (batch.constantFill && s.computeFills && s.fillPipeline && (!(ropPipeline && s.ropFills) || s.clearWhole)) {
+  if (batch.constantFill && !batch.splitOverlay && s.computeFills && s.fillPipeline && (!(ropPipeline && s.ropFills) || s.clearWhole)) {
     const std::vector<gpu::GpuVertex> &verts = *batch.vertices;
     const gpu::GpuVertex &v0 = verts[batch.draws->front().first];
     const std::uint32_t sc = frame->scale;
@@ -4530,6 +4636,121 @@ std::uint64_t Gpu::DisplayImage() const {
   return reinterpret_cast<std::uint64_t>(impl_->display.image);
 }
 
+bool Gpu::ComposeOverlay(const std::uint32_t p[11], ImageId overlaySource, std::uint32_t outWidth,
+                         std::uint32_t outHeight, std::string &error) {
+  Impl &s = *impl_;
+  const Image *source = s.image_of(overlaySource);
+  if (!source) {
+    error = "CORE2 overlay compose of a target that does not exist";
+    return false;
+  }
+  if (outWidth == 0 || outHeight == 0) {
+    error = "CORE2 overlay compose of an empty display";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  if (s.overlayDisplay.width != outWidth || s.overlayDisplay.height != outHeight) {
+    s.doom(s.overlayDisplay);
+    if (!s.make_image(s.overlayDisplay, outWidth, outHeight, 1, error)) return false;
+  }
+  s.outside_pass();
+  s.touch("overlay compose", {source}, {&s.overlayDisplay}, 0, 0);
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!s.compute_set(s.staging.buffer, 0, 16, source->view, s.overlayDisplay.view, s.atlas.view, set, error)) {
+    return false;
+  }
+  s.dispatch(s.overlayComposePipeline, set, p, 11, outWidth, outHeight);
+  s.stats.overlayComposes++;
+  return true;
+}
+
+std::uint64_t Gpu::OverlayImage() const {
+  return reinterpret_cast<std::uint64_t>(impl_->overlayDisplay.image);
+}
+
+bool Gpu::ReadOverlayImage(std::uint32_t width, std::uint32_t height, std::vector<std::uint32_t> &words,
+                           std::string &error) {
+  Impl &s = *impl_;
+  const Image &image = s.overlayDisplay;
+  if (!image.alive) {
+    error = "CORE2 reads an overlay image that was never composed";
+    return false;
+  }
+  width = std::min(width, image.width);
+  height = std::min(height, image.height);
+  const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
+  if (bytes == 0 || bytes > s.readbackBytes) {
+    error = "CORE2 overlay read outside the readback buffer";
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  s.flush_draws();
+  s.end_render_pass();
+  s.full_barrier();
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.imageExtent = {width, height, 1};
+  gt4_hwd_vkCmdCopyImageToBuffer(s.cmd, image.image, VK_IMAGE_LAYOUT_GENERAL, s.readback.buffer, 1, &region);
+  s.full_barrier();
+  if (!s.submit(true, error)) return false;
+  words.resize(static_cast<std::size_t>(width) * height);
+  std::memcpy(words.data(), s.readback.mapped, static_cast<std::size_t>(bytes));
+  return true;
+}
+
+bool Gpu::PresentScaleOverlay(std::uint32_t width, std::uint32_t height, std::uint32_t outWidth,
+                              std::uint32_t outHeight, float sharpness, std::string &error) {
+  Impl &s = *impl_;
+  return s.present_scale_into(s.overlayDisplay, s.overlayPresentA, s.overlayPresentB, s.overlayPresentOut, width,
+                              height, outWidth, outHeight, sharpness, error);
+}
+
+std::uint64_t Gpu::OverlayPresentImage() const {
+  return reinterpret_cast<std::uint64_t>(impl_->overlayPresentOut.image);
+}
+
+bool Gpu::CompositeOverlay(std::uint64_t target, std::uint32_t width, std::uint32_t height, bool overlayScaled,
+                           std::string &error) {
+  Impl &s = *impl_;
+  const VkImage image = reinterpret_cast<VkImage>(target);
+  Image &layer = overlayScaled ? s.overlayPresentOut : s.overlayDisplay;
+  // The previous composite's view may still be read by its submission: wait for it before destroying the view (one
+  // frame in flight, never more).
+  if (s.mergeView != VK_NULL_HANDLE) {
+    if (!s.submit(true, error)) return false;
+    gt4_hwd_vkDestroyImageView(s.device, s.mergeView, nullptr);
+    s.mergeView = VK_NULL_HANDLE;
+  }
+  if (image == VK_NULL_HANDLE || !layer.alive || width == 0 || height == 0 || width > layer.width ||
+      height > layer.height) {
+    s.stats.overlayRefusals++;
+    return false;
+  }
+  if (!s.begin_recording(error)) return false;
+  VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  view_info.image = image;
+  view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  view_info.format = VK_FORMAT_R32_UINT;
+  view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  if (!check(gt4_hwd_vkCreateImageView(s.device, &view_info, nullptr, &s.mergeView), "vkCreateImageView", error)) {
+    s.mergeView = VK_NULL_HANDLE;
+    return false;
+  }
+  s.outside_pass();
+  s.full_barrier();  // the display image was written by the present layer's own submission
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  // Binding 1 is the read-only 2D layer, binding 2 the image the present drew into (read and written).
+  if (!s.compute_set(s.staging.buffer, 0, 16, layer.view, s.mergeView, s.atlas.view, set, error)) return false;
+  const std::uint32_t push[2] = {width, height};
+  s.dispatch(s.overlayMergePipeline, set, push, 2, width, height);
+  s.full_barrier();
+  s.stats.overlayMerges++;
+  s.stats.overlayMergePixels += static_cast<std::uint64_t>(width) * height;
+  // Waited: the presenter (the swapchain copy, the dump readback or the next presentation tick) reads the image right
+  // after this call, and its command buffer is recorded on the CPU after the wait, so the picture is complete.
+  return s.submit(true, error);
+}
+
 bool Gpu::Deinterlace(const gpu::GpuDrawer::DeinterlaceStep &step, std::string &error) {
   Impl &s = *impl_;
   if (step.width == 0 || step.height == 0 || step.width > s.display.width || step.height > s.display.height ||
@@ -4642,78 +4863,8 @@ std::uint64_t Gpu::FxaaImage() const { return reinterpret_cast<std::uint64_t>(im
 bool Gpu::PresentScale(bool fromFxaa, std::uint32_t width, std::uint32_t height, std::uint32_t outWidth,
                        std::uint32_t outHeight, float sharpness, std::string &error) {
   Impl &s = *impl_;
-  Image &source = fromFxaa ? s.fxaa : s.display;
-  if (width == 0 || height == 0 || width > source.width || height > source.height || outWidth == 0 ||
-      outHeight == 0 || outWidth > s.limits.maxImageDimension2D || outHeight > s.limits.maxImageDimension2D) {
-    error = "CORE2 presentation resampling outside the display image";
-    return false;
-  }
-  if (!s.begin_recording(error)) return false;
-  s.flush_draws();
-  s.end_render_pass();
-  s.full_barrier();  // a rare pass: ordered at once
-  // One pass: `from` (fromWidth x fromHeight) into `to` (toWidth x toHeight, made to that size).
-  auto pass = [&](std::uint32_t mode, Image &from, std::uint32_t fromWidth, std::uint32_t fromHeight, Image &to,
-                  std::uint32_t toWidth, std::uint32_t toHeight) -> bool {
-    bool fresh = false;
-    if (!s.post_image(to, toWidth, toHeight, fresh, error)) return false;
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (!s.allocate_set(s.presentSetLayout, set, error)) return false;
-    const VkDescriptorImageInfo images[2] = {{VK_NULL_HANDLE, from.view, VK_IMAGE_LAYOUT_GENERAL},
-                                             {VK_NULL_HANDLE, to.view, VK_IMAGE_LAYOUT_GENERAL}};
-    VkWriteDescriptorSet writes[2]{};
-    for (std::uint32_t i = 0; i < 2; ++i) {
-      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[i].dstSet = set;
-      writes[i].dstBinding = i;
-      writes[i].descriptorCount = 1;
-      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-      writes[i].pImageInfo = &images[i];
-    }
-    gt4_hwd_vkUpdateDescriptorSets(s.device, 2, writes, 0, nullptr);
-    gt4_hwd_vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.presentPipeline);
-    gt4_hwd_vkCmdBindDescriptorSets(s.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.presentLayout, 0, 1, &set, 0, nullptr);
-    const std::uint32_t push[6] = {fromWidth, fromHeight, toWidth, toHeight, mode, FloatBits(sharpness)};
-    gt4_hwd_vkCmdPushConstants(s.cmd, s.presentLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), push);
-    gt4_hwd_vkCmdDispatch(s.cmd, (toWidth + 7) / 8, (toHeight + 7) / 8, 1);
-    s.full_barrier();
-    return true;
-  };
-  constexpr std::uint32_t kHorizontal = 0, kVertical = 1, kEasu = 2, kRcas = 3;
-  const bool rcas = sharpness > 0.0f;
-  Image *current = &source;
-  std::uint32_t cw = width, ch = height;
-  // The image a resampling pass writes: the output when nothing follows, otherwise the other scratch image.
-  auto next = [&](bool last) -> Image & {
-    if (last) return s.presentOut;
-    return current == &s.presentA ? s.presentB : s.presentA;
-  };
-  if (outWidth >= width && outHeight >= height && (outWidth != width || outHeight != height)) {
-    Image &to = next(!rcas);
-    if (!pass(kEasu, *current, cw, ch, to, outWidth, outHeight)) return false;
-    current = &to;
-    cw = outWidth;
-    ch = outHeight;
-  } else {
-    if (outWidth != width) {
-      Image &to = next(!rcas && outHeight == height);
-      if (!pass(kHorizontal, *current, cw, ch, to, outWidth, ch)) return false;
-      current = &to;
-      cw = outWidth;
-    }
-    if (outHeight != height) {
-      Image &to = next(!rcas);
-      if (!pass(kVertical, *current, cw, ch, to, cw, outHeight)) return false;
-      current = &to;
-      ch = outHeight;
-    }
-  }
-  if (rcas || current == &source) {
-    // RCAS (or, at the same size without sharpening, a plain copy through RCAS with no lobe).
-    if (!pass(kRcas, *current, cw, ch, s.presentOut, cw, ch)) return false;
-  }
-  s.stats.presentScales++;
-  return true;
+  return s.present_scale_into(fromFxaa ? s.fxaa : s.display, s.presentA, s.presentB, s.presentOut, width, height,
+                              outWidth, outHeight, sharpness, error);
 }
 
 std::uint64_t Gpu::PresentImage() const { return reinterpret_cast<std::uint64_t>(impl_->presentOut.image); }

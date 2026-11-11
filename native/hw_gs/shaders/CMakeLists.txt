@@ -117,6 +117,10 @@ hw_add_shader(core2_reduce "${HW_SHADER_DIR}/core2_reduce.comp" comp)
 hw_add_shader(core2_tone "${HW_SHADER_DIR}/core2_tone.comp" comp)
 hw_add_shader(core2_patch_glm "${HW_SHADER_DIR}/core2_patch_glm.comp" comp)
 hw_add_shader(core2_compose "${HW_SHADER_DIR}/core2_compose.comp" comp)
+# TASK-090 2D overlay split: the overlay target's RGBA8 layer composed through the display circuit's geometry, and the
+# composite of that layer over the CoreGS 3.0 present image.
+hw_add_shader(core2_overlay_compose "${HW_SHADER_DIR}/core2_overlay_compose.comp" comp)
+hw_add_shader(core2_overlay_merge "${HW_SHADER_DIR}/core2_overlay_merge.comp" comp)
 hw_add_shader(core2_present_scale "${HW_SHADER_DIR}/core2_present_scale.comp" comp)
 # TASK-135: the performance HUD's panel.
 hw_add_shader(hw_hud_vertex "${HW_SHADER_DIR}/hw_hud.vert" vert)

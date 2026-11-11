@@ -96,6 +96,9 @@ layout(std140, set = 0, binding = 0) uniform PixelStateBlock {
     // CORE2: 1 when the frame image is shared by the 32- and 24-bit views of the same memory (one target per
     // memory, CORE2-SPEC 1.3), so a CT24 write keeps the stored top byte as GS memory does. 0 in the old core.
     uint keep_top_byte;
+    // TASK-090 2D overlay split: 1 when this batch draws the 2D layer into the split overlay target (RGBA8 words,
+    // alpha = accumulated coverage; see hw_pixel_core.glsl). 0 for every faithful draw.
+    uint split_overlay;
 } state;
 
 // IN-437: specialised pipelines. A pipeline may give any of the draw-state fields that choose the code paths
@@ -595,6 +598,7 @@ void main() {
     s.blend_d = ST_BLEND_D;
     s.fix = state.fix;
     s.colclamp = ST_COLCLAMP;
+    s.split_overlay = state.split_overlay;
 
     // Colour and fog: truncation of the interpolated 0..255 values (IN-304). The 0.001 tolerance
     // absorbs float interpolation noise on exact integer vertices (IN-500).
@@ -682,7 +686,8 @@ void main() {
     // word replaces every lane hw_pack_frame_word keeps, and a word that is not read is never written back, so 0
     // stands in for it. In a specialised pipeline (IN-437) both conditions are constants but FBMSK.
     const bool depth_read = s.ztest != 0u && (s.ztst != HW_DEPTH_ALWAYS || (s.zmsk == 0u && s.zformat != 0u));
-    const bool frame_read = s.blend_on != 0u || s.date_on != 0u || (s.fbmsk & hw_valid_mask(s.format)) != 0u ||
+    const bool frame_read = s.blend_on != 0u || s.date_on != 0u || s.split_overlay != 0u ||
+                            (s.fbmsk & hw_valid_mask(s.format)) != 0u ||
                             (s.ate != 0u && s.afail == HW_ALPHA_FAIL_RGB_ONLY && s.format == HW_FORMAT_CT32) ||
                             (ST_KEEP_TOP_BYTE != 0u && s.format == HW_FORMAT_CT24);
 #if HWR_INTERLOCK
@@ -713,7 +718,7 @@ void main() {
 #endif
 #else
     if (o.frame_written) {
-        if (ST_KEEP_TOP_BYTE != 0u && ST_FORMAT == HW_FORMAT_CT24) {
+        if (ST_KEEP_TOP_BYTE != 0u && ST_FORMAT == HW_FORMAT_CT24 && state.split_overlay == 0u) {
             o.frame_stored = (o.frame_stored & 0x00FFFFFFu) | (frame_old & 0xFF000000u);
         }
         imageStore(hw_frame, pixel, uvec4(o.frame_stored));

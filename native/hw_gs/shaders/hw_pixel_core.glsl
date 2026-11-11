@@ -78,6 +78,10 @@ struct HwPixelState {
     uint blend_d;
     uint fix;
     uint colclamp;
+    // TASK-090 2D overlay split: 1 when this batch draws the 2D layer into the split overlay target. The target then
+    // stores RGBA8 words (R low byte, A = the accumulated coverage) instead of the GS frame format's packed word, and
+    // the destination read is the overlay's own RGBA8 word. 0 for every faithful draw (the same pixels as before).
+    uint split_overlay;
 };
 
 struct HwFragment {
@@ -448,7 +452,11 @@ HwOutcome hw_process_pixel(HwPixelState s, HwFragment f, uint frame_old_stored, 
     o.depth_stored = depth_old_stored;
 
     uint format = s.format;
-    uint old_word = hw_unpack_frame_word(format, frame_old_stored);
+    // TASK-090 2D overlay split: the overlay target's words are RGBA8 (R low byte, alpha the accumulated coverage),
+    // not the GS frame format, so the destination is read and written as one.
+    const bool split = s.split_overlay != 0u;
+    uint old_word = split ? frame_old_stored : hw_unpack_frame_word(format, frame_old_stored);
+    const int old_coverage = split ? int((old_word >> 24) & 0xFFu) : 0;
 
     HwWrite e = hw_alpha_test_write(s.ate, s.atst, s.afail, int(s.aref), f.colour.a, format);
     e = hw_write_and(e, hw_date_write(s.date_on, s.datm, format, old_word));
@@ -467,9 +475,12 @@ HwOutcome hw_process_pixel(HwPixelState s, HwFragment f, uint frame_old_stored, 
 
     ivec4 source = f.colour;
     ivec4 result = source;
-    if (s.blend_on != 0u && !(s.pabe != 0u && (source.a & 0x80) == 0)) {
+    const bool blended = s.blend_on != 0u && !(s.pabe != 0u && (source.a & 0x80) == 0);
+    // The blend's destination alpha: the GS frame's alpha lane, or the overlay's accumulated coverage (PS2 0..128).
+    const int destination_alpha = split ? min(128, (old_coverage + 1) >> 1) : hw_destination_alpha(format, old_word);
+    if (blended) {
         ivec4 destination = hw_frame_word_to_colour(old_word);
-        result = hw_blend_unclamped(s, source, destination, source.a, hw_destination_alpha(format, old_word));
+        result = hw_blend_unclamped(s, source, destination, source.a, destination_alpha);
     }
 
     if (format == HW_FORMAT_CT16 && s.dither != 0u) {
@@ -486,11 +497,34 @@ HwOutcome hw_process_pixel(HwPixelState s, HwFragment f, uint frame_old_stored, 
     if (s.fba != 0u) {
         result.a |= 0x80;
     }
-    uint computed = hw_colour_to_frame_word(format, result);
-    uint merged = hw_merge_frame_word(format, old_word, computed, s.fbmsk, e);
-    if (e.rgb || e.alpha) {
-        o.frame_written = true;
-        o.frame_stored = hw_pack_frame_word(format, merged);
+    uint computed = 0u;
+    uint merged = 0u;
+    if (split) {
+        // TASK-090 2D overlay split: one RGBA8 word, RGB premultiplied by the coverage (the blend ran against the
+        // overlay's own zeroed pixels), alpha = the accumulated coverage the present composites over the 3D image.
+        // The coverage of a blended fragment is its blend factor over the previous coverage; an unblended or FBA
+        // fragment covers the pixel. FBMSK is not mapped to the RGBA8 lanes and stays 0 for the measured HUD (counted
+        // by the caller when it is not).
+        int factor = blended ? hw_blend_factor(s.blend_c, source.a, destination_alpha, s.fix) : 128;
+        factor = clamp(factor, 0, 128);
+        int coverage = s.fba != 0u ? 255 : (blended ? (factor * 255 + old_coverage * (128 - factor) + 64) / 128 : 255);
+        coverage = clamp(coverage, 0, 255);
+        computed = (uint(result.r) & 0xFFu) | ((uint(result.g) & 0xFFu) << 8) | ((uint(result.b) & 0xFFu) << 16) |
+                   (uint(coverage) << 24);
+        merged = old_word;
+        if (e.rgb) merged = (merged & 0xFF000000u) | (computed & 0x00FFFFFFu);
+        if (e.alpha) merged = (merged & 0x00FFFFFFu) | (computed & 0xFF000000u);
+        if (e.rgb || e.alpha) {
+            o.frame_written = true;
+            o.frame_stored = merged;
+        }
+    } else {
+        computed = hw_colour_to_frame_word(format, result);
+        merged = hw_merge_frame_word(format, old_word, computed, s.fbmsk, e);
+        if (e.rgb || e.alpha) {
+            o.frame_written = true;
+            o.frame_stored = hw_pack_frame_word(format, merged);
+        }
     }
     if (e.depth) {
         o.depth_written = true;

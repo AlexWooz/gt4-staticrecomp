@@ -9,6 +9,7 @@
 #include <map>
 #include <bit>
 #include <chrono>
+#include <climits>
 #include <intrin.h>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 #include "core2_gpu.hpp"
 #include "core2_replace.hpp"
 #include "core2_upload.hpp"
+#include "core2_2d_split.hpp"
 #include "hw_batch.hpp"
 #include "hw_clut.hpp"
 #include "hw_front_end.hpp"
@@ -752,7 +754,50 @@ std::uint64_t KeyHash(const writeback::TextureKey &k) {
     return hash;
 }
 
+// TASK-090 2D overlay split diagnostics (GT4_COREGS3_2D_DUMP=<folder>): a composed image as a PPM (RGB bytes of each
+// RGBA8 word), named by layer and VBlank. Diagnostic only: it submits, waits and writes a file.
+void DumpSplitLayer(const char *folder, const char *layer, std::uint64_t vblank, std::uint32_t width,
+                    std::uint32_t height, const std::vector<std::uint32_t> &words) {
+    if (folder == nullptr || *folder == '\0' || width == 0 || height == 0) return;
+    char path[1024];
+    std::snprintf(path, sizeof path, "%s\\%s_%llu.ppm", folder, layer, static_cast<unsigned long long>(vblank));
+    std::FILE *file = std::fopen(path, "wb");
+    if (file == nullptr) return;
+    std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+    for (std::uint32_t word : words) {
+        const unsigned char pixel[3] = {static_cast<unsigned char>(word), static_cast<unsigned char>(word >> 8),
+                                        static_cast<unsigned char>(word >> 16)};
+        std::fwrite(pixel, 1, 3, file);
+    }
+    std::fclose(file);
+    // The alpha lane (the split overlay's coverage) next to it, as a PGM.
+    std::snprintf(path, sizeof path, "%s\\%s_alpha_%llu.pgm", folder, layer, static_cast<unsigned long long>(vblank));
+    file = std::fopen(path, "wb");
+    if (file == nullptr) return;
+    std::fprintf(file, "P5\n%u %u\n255\n", width, height);
+    for (std::uint32_t word : words) {
+        const unsigned char alpha = static_cast<unsigned char>(word >> 24);
+        std::fwrite(&alpha, 1, 1, file);
+    }
+    std::fclose(file);
+}
+
 int RowFieldOfDisplayField(bool csrFieldOdd) { return csrFieldOdd ? 0 : 1; }
+
+// TASK-090 2D overlay split diagnostics: whether a layer dump is taken at `vblank` (GT4_COREGS3_2D_DUMP_AT=<a>-<b>,
+// default every VBlank). A dump is 7.7 MB at 3x, so a whole session needs a window.
+bool DumpSplitLayerAt(std::uint64_t vblank) {
+    static const std::pair<long long, long long> range = [] {
+        std::pair<long long, long long> parsed{0, LLONG_MAX};
+        if (const char *text = std::getenv("GT4_COREGS3_2D_DUMP_AT")) {
+            char *end = nullptr;
+            parsed.first = parsed.second = std::strtoll(text, &end, 10);
+            if (end && *end == '-') parsed.second = std::strtoll(end + 1, nullptr, 10);
+        }
+        return parsed;
+    }();
+    return static_cast<long long>(vblank) >= range.first && static_cast<long long>(vblank) <= range.second;
+}
 
 // CPU time of CORE2's stages (microseconds, summed between two [core2] lines).
 struct PhaseTimes {
@@ -870,6 +915,26 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
     const float rcasSharpness_ = std::getenv("GT4_CORE2_FSR_SHARPNESS") != nullptr
                                      ? std::exp2(-std::max(0.0f, static_cast<float>(std::atof(std::getenv("GT4_CORE2_FSR_SHARPNESS")))))
                                      : 0.0f;
+    static constexpr std::size_t kNoTargetSlot = static_cast<std::size_t>(-1);
+    // TASK-090 2D overlay split (docs/COREGS3-2D-SPLIT.md): only the CoreGS 3.0 present asks for it
+    // (Backend::SetCoregs3Overlay, GT4_COREGS3_2D_OVERLAY=0 is the A/B), and it never runs in a faithful mode. At the
+    // frame's 2D boundary (the first batch into the display target after its present blit) the 3D image is composed as
+    // a checkpoint and the rest of the frame draws into a transparent overlay target; the present draws the world
+    // into the checkpoint and composites the overlay over it.
+    bool splitRequested_ = false;  // SetCoregs3Overlay: the present layer is active
+    gt4::coregs3::split::Rule splitRule_;
+    bool splitFrameActive_ = false;      // this frame's 2D layer is being redirected
+    std::uint64_t splitFrameVblank_ = 0;  // the vblanks_ the split belongs to
+    std::size_t splitOverlayIndex_ = kNoTargetSlot;   // the overlay target slot
+    std::size_t splitDisplayIndex_ = kNoTargetSlot;   // the 3D target the present blit wrote
+    bool splitCheckpoint_ = false;                // the checkpoint compose produced this frame's 3D image
+    // The display circuit's geometry at the cut, for the overlay compose (all placements in output pixels).
+    std::uint32_t splitOutWidth_ = 0, splitOutHeight_ = 0, splitOutScale_ = 1;
+    std::uint32_t splitReadX_ = 0, splitReadY_ = 0, splitReadWidth_ = 0, splitReadHeight_ = 0;
+    std::int32_t splitPlaceX_ = 0, splitPlaceY_ = 0;
+    std::uint32_t splitPlaceWidth_ = 0, splitPlaceHeight_ = 0;
+    bool splitPresentScaled_ = false;
+    std::uint32_t splitPresentWidth_ = 0, splitPresentHeight_ = 0;
     // IN-405: the GPU deinterlace history (the old core's rules, IN-381/IN-386/IN-396): which of the four merge images
     // holds which field, by age.
     struct DeinterlaceHistory {
@@ -1368,12 +1433,21 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         }
     }
 
+    // TASK-090 2D overlay split: the frame's overlay target is not a source of GS content (it holds RGBA8 coverage
+    // words); a texture or palette read of those pages stays on the 3D target.
+    bool IsSplitOverlayTarget(const Target &t) const {
+        return splitFrameActive_ && splitFrameVblank_ == vblanks_ && splitOverlayIndex_ != kNoTargetSlot &&
+               splitOverlayIndex_ < targets_.size() && &t == &targets_[splitOverlayIndex_];
+    }
+
     // IN-408: the drawn target a CSM1 palette over `span` must be read from on the GPU: exactly one drawn target
     // overlaps it and it is a 32-bit colour target; nullptr otherwise (the readback path).
     Target *ClutSourceTarget(const BlockSpan &span) {
         Target *found = nullptr;
         for (Target &t : targets_) {
-            if (!t.alive || t.drawn.Empty() || !SpansOverlap(TargetSpan(t, t.drawn), span)) continue;
+            if (!t.alive || IsSplitOverlayTarget(t) || t.drawn.Empty() || !SpansOverlap(TargetSpan(t, t.drawn), span)) {
+                continue;
+            }
             if (found || t.cls != FormatClass::Colour32) return nullptr;
             found = &t;
         }
@@ -2451,8 +2525,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
                                                  ? 1u
                                                  : 2u;
 
-    // 2.1, 2.2, 2.4: the target a draw writes (`view` from FRAME or ZBUF).
-    Target *DrawTarget(const BufferView &view, const PixelRect &rect) {
+    // 2.1, 2.2, 2.4: the target a draw writes (`view` from FRAME or ZBUF). `skip` leaves one slot out (TASK-090: the
+    // split's overlay target is not a candidate for a batch that must stay in the 3D target).
+    Target *DrawTarget(const BufferView &view, const PixelRect &rect, std::size_t skip = kNoTargetSlot) {
         const FormatClass cls = ClassOf(view.psm);
         if (cls == FormatClass::None) return nullptr;
         // 2.1: the target of this base, class and width. One of another width is discarded when it is old (not drawn
@@ -2460,7 +2535,9 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         // as 640 and as 128 pixels wide in the same frame).
         Target *found = nullptr;
         for (Target &t : targets_) {
-            if (!t.alive || t.cls != cls || t.view.basePointer != view.basePointer) continue;
+            if (!t.alive || (skip != kNoTargetSlot && &t == &targets_[skip]) || t.cls != cls ||
+                t.view.basePointer != view.basePointer)
+                continue;
             if (t.view.bufferWidth != view.bufferWidth) {
                 if (vblanks_ > t.lastDrawVblank + widthGraceVblanks_) {
                     KeepGpuReadContent(t);
@@ -2487,7 +2564,7 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         if (cls != FormatClass::Colour32 && cls != FormatClass::Colour16) return nullptr;
         Target *found = nullptr;
         for (Target &t : targets_) {
-            if (!t.alive || t.cls != cls || t.view.basePointer != view.basePointer ||
+            if (!t.alive || IsSplitOverlayTarget(t) || t.cls != cls || t.view.basePointer != view.basePointer ||
                 t.view.bufferWidth != view.bufferWidth) {
                 continue;
             }
@@ -4746,7 +4823,17 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
             }
         }
         ScopedUs targetsTimer(clock_, &PhaseTimes::targets);
-        Target *frameTarget = DrawTarget(t.frameView, t.rect);
+        // TASK-090 2D overlay split: where this batch belongs. Activation composes the checkpoint and creates the
+        // overlay target before the batch is drawn; Redirect sends it (and every 2D batch after it) into the overlay;
+        // RefuseSample leaves a framebuffer-sampling 2D batch in the 3D target, counted.
+        const gt4::coregs3::split::Action splitAction = ObserveSplit(batch, t);
+        const bool splitRedirect = splitAction == gt4::coregs3::split::Action::Activate ||
+                                   splitAction == gt4::coregs3::split::Action::Redirect;
+        const std::size_t splitSkip =
+            splitFrameActive_ && splitFrameVblank_ == vblanks_ ? splitOverlayIndex_ : kNoTargetSlot;
+        Target *frameTarget = splitRedirect && splitOverlayIndex_ != kNoTargetSlot
+                                  ? &targets_[splitOverlayIndex_]
+                                  : DrawTarget(t.frameView, t.rect, splitSkip);
         if (!frameTarget) {
             counters.batchesEmpty++;
             return;
@@ -4755,7 +4842,11 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         Target *depthTarget = depthUsed ? DrawTarget(t.zView, t.rect) : nullptr;
         frameTarget = &targets_[frameIndex];  // DrawTarget may have grown the table
         if (depthUsed && !depthTarget) return;
-        if (!ApplyDirty(*frameTarget) || (depthTarget && !ApplyDirty(*depthTarget))) return;
+        if (splitRedirect && splitOverlayIndex_ != kNoTargetSlot) frameTarget = &targets_[splitOverlayIndex_];
+        // The overlay target starts transparent and holds only the 2D draws: an upload into the display buffer's pages
+        // is not overlay content and is never patched into its RGBA8 words.
+        if (!splitRedirect && !ApplyDirty(*frameTarget)) return;
+        if (depthTarget && !ApplyDirty(*depthTarget)) return;
         Target *textureTarget = textureTarget_ >= 0 ? &targets_[static_cast<std::size_t>(textureTarget_)] : nullptr;
         if (textureTarget && textureTarget->alive && !ApplyDirty(*textureTarget)) return;
 
@@ -4768,11 +4859,21 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         draw.vertices = &t.vertices;
         draw.draws = &t.draws;
         draw.forceLinear = forcedBilinear_ == 1 || (forcedBilinear_ == 2 && batch.cls != PrimClass::Sprite);
+        // TASK-090 2D overlay split: this batch writes the overlay target's RGBA8 coverage word through the storage
+        // path (never the ROP or compute-fill paths, which pack GS frame words).
+        draw.splitOverlay = splitRedirect;
+        if (splitRedirect) {
+            namespace gf = gpu::gpufield;
+            if (t.state.fields[gf::DateOn] != 0) stats.splitDateDraws++;
+            if (t.state.fields[gf::Fbmsk] != 0) stats.splitFbmskDraws++;
+            if (t.state.fields[gf::BlendOn] != 0 && t.state.fields[gf::BlendC] == 1u) stats.splitDestAlphaDraws++;
+        }
         {  // IN-442: an untextured sprite batch without blend, fog or DATE may be a constant fill (Gpu::Draw decides)
             namespace gf = gpu::gpufield;
             const auto &fields = t.state.fields;
-            draw.constantFill = !t.hasTexture && batch.cls == PrimClass::Sprite && fields[gf::BlendOn] == 0 &&
-                                fields[gf::FogOn] == 0 && fields[gf::DateOn] == 0 && (batch.state.env.scanmsk & 2u) == 0;
+            draw.constantFill = !splitRedirect && !t.hasTexture && batch.cls == PrimClass::Sprite &&
+                                fields[gf::BlendOn] == 0 && fields[gf::FogOn] == 0 && fields[gf::DateOn] == 0 &&
+                                (batch.state.env.scanmsk & 2u) == 0;
         }
         draw.scanmsk = static_cast<std::uint32_t>(batch.state.env.scanmsk);
         if (draw.forceLinear && t.hasTexture) stats.forcedBilinearBatches++;
@@ -5477,9 +5578,457 @@ struct Renderer::Impl final : public BatchSink, public SyncSink, public Transfer
         return true;
     }
 
+    // ---- TASK-090 2D overlay split (docs/COREGS3-2D-SPLIT.md) ------------------------------------------------
+
+    // Whether the frame's display layout can be split: one enabled circuit on a progressive frame, no FXAA (a post
+    // pass over the final image). The target itself comes from the stream's present blit, never from DISPFB: during the
+    // frame the display registers still name the buffer being scanned out and flip to the frame's own buffer only at
+    // the end of the frame.
+    bool SplitLayoutUsable() const {
+        if (!splitRequested_ || failed_ || fxaa_) return false;
+        const display::PmodeFields pmode = display::decode_pmode(displayRegs_.pmode);
+        if (pmode.en1 == pmode.en2) return false;  // none, or both (split screen)
+        const display::VideoMode mode = display::detect_video_mode(displayRegs_.smode1, displayRegs_.smode2);
+        if (mode == display::VideoMode::None) return false;
+        return !display::interlaced_flag(mode, displayRegs_.smode2) &&
+               !display::really_interlaced(mode, displayRegs_.syncv);
+    }
+
+    static gt4::coregs3::split::View SplitView(const BufferView &view) {
+        gt4::coregs3::split::View out;
+        out.baseBlock = view.basePointer;
+        out.bufferWidth = view.bufferWidth;
+        out.psm = static_cast<std::uint32_t>(view.psm);
+        out.valid = true;
+        return out;
+    }
+
+    // The view a batch samples, from its TEX0 (a memory texture or a target alike): the refusal is about the GS
+    // memory the framebuffer occupies, not about how the sample resolves on this core.
+    static gt4::coregs3::split::View SplitTextureView(const Batch &batch) {
+        gt4::coregs3::split::View out;
+        const auto psm = memory::decodePsm(tex0::Psm(batch.state.ctx.tex0));
+        if (!psm) return out;
+        out.baseBlock = tex0::Tbp0(batch.state.ctx.tex0);
+        out.bufferWidth = tex0::Tbw(batch.state.ctx.tex0);
+        out.psm = static_cast<std::uint32_t>(*psm);
+        out.valid = true;
+        return out;
+    }
+
+    // The frame's present blit, classified from the measured signature (gt4_coregs3_gs --census prints it as
+    // full-screen-present-blit): a full-screen unblended draw into a CT16 colour target that samples another colour
+    // target. The rectangle it covers is the display buffer's read rectangle.
+    static bool SplitPresentCandidate(const Batch &batch, const writeback::BatchTranslation &t,
+                                      gt4::coregs3::split::PresentCandidate &out) {
+        out = gt4::coregs3::split::PresentCandidate{};
+        if (!t.hasTexture || t.frameView.psm != memory::Psm::Ct16) return false;
+        if (t.rect.Empty() || t.rect.x0 > 0 || t.rect.y0 > 0) return false;
+        const std::int32_t targetWidth =
+            static_cast<std::int32_t>(std::max<std::uint32_t>(t.frameView.bufferWidth, 1u) * 64u) - 1;
+        if (t.rect.x1 < targetWidth) return false;
+        namespace gf = gpu::gpufield;
+        if (t.state.fields[gf::BlendOn] != 0) return false;  // a conversion overwrites the display buffer
+        const gt4::coregs3::split::View texture = SplitTextureView(batch);
+        if (!texture.valid || texture.baseBlock == t.frameView.basePointer) return false;
+        out.view = SplitView(t.frameView);
+        out.x0 = t.rect.x0;
+        out.y0 = t.rect.y0;
+        out.x1 = t.rect.x1;
+        out.y1 = t.rect.y1;
+        out.valid = true;
+        return true;
+    }
+
+    // Looks at one translated batch and returns what the renderer must do with it. On Activate the checkpoint is
+    // composed and the overlay target created; a failure leaves the frame faithful (the rest is not redirected).
+    gt4::coregs3::split::Action ObserveSplit(const Batch &batch, const writeback::BatchTranslation &t) {
+        if (!splitRequested_ || failed_) return gt4::coregs3::split::Action::None;
+        if (!splitRule_.active() && !splitRule_.armed()) {
+            // Diagnostics (GT4_COREGS3_2D_SPLIT_TRACE): the first three batches of each traced frame, with their views.
+            static const std::pair<long long, long long> firstTrace = [] {
+                std::pair<long long, long long> range{-1, -1};
+                if (const char *text = std::getenv("GT4_COREGS3_2D_SPLIT_TRACE")) {
+                    char *end = nullptr;
+                    range.first = range.second = std::strtoll(text, &end, 10);
+                    if (end && *end == '-') range.second = std::strtoll(end + 1, nullptr, 10);
+                }
+                return range;
+            }();
+            static std::uint64_t firstVblank = ~0ull;
+            static int firstCount = 0;
+            if (firstTrace.first >= 0 && static_cast<long long>(vblanks_) >= firstTrace.first &&
+                static_cast<long long>(vblanks_) <= firstTrace.second) {
+                if (firstVblank != vblanks_) {
+                    firstVblank = vblanks_;
+                    firstCount = 0;
+                }
+                if (firstCount < 3) {
+                    ++firstCount;
+                    const gt4::coregs3::split::View frame = SplitView(t.frameView);
+                    std::fprintf(stderr,
+                                 "[core2] split-first vblank=%llu frame=%u/%u/%02x tex=%u/%u/%02x rect=%d,%d,%d,%d "
+                                 "usable=%d\n",
+                                 static_cast<unsigned long long>(vblanks_), frame.baseBlock, frame.bufferWidth,
+                                 frame.psm, SplitTextureView(batch).baseBlock, SplitTextureView(batch).bufferWidth,
+                                 SplitTextureView(batch).psm, t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1,
+                                 SplitLayoutUsable() ? 1 : 0);
+                }
+            }
+            gt4::coregs3::split::PresentCandidate present;
+            if (!SplitPresentCandidate(batch, t, present)) return gt4::coregs3::split::Action::None;
+            if (!SplitLayoutUsable()) {
+                // A layout the split cannot cut (menus, split screen, FXAA): the present blit and everything after it
+                // stay faithful and are counted, never silently split.
+                stats.splitUnavailableDraws++;
+                return gt4::coregs3::split::Action::None;
+            }
+            gt4::coregs3::split::Batch seen;
+            seen.frame = present.view;
+            if (const char *traceText = std::getenv("GT4_COREGS3_2D_SPLIT_TRACE")) {
+                char *end = nullptr;
+                const long long first = std::strtoll(traceText, &end, 10);
+                long long last = first;
+                if (end && *end == '-') last = std::strtoll(end + 1, nullptr, 10);
+                if (static_cast<long long>(vblanks_) >= first && static_cast<long long>(vblanks_) <= last) {
+                    std::fprintf(stderr,
+                                 "[core2] split-trace vblank=%llu present candidate frame=%u/%u/%02x tex=%u/%u/%02x "
+                                 "rect=%d,%d,%d,%d\n",
+                                 static_cast<unsigned long long>(vblanks_), present.view.baseBlock,
+                                 present.view.bufferWidth, present.view.psm, SplitTextureView(batch).baseBlock,
+                                 SplitTextureView(batch).bufferWidth, SplitTextureView(batch).psm, present.x0,
+                                 present.y0, present.x1, present.y1);
+                }
+            }
+            return splitRule_.Observe(vblanks_, seen, present);  // PresentBlit
+        }
+        gt4::coregs3::split::Batch seen;
+        seen.frame = SplitView(t.frameView);
+        if (t.hasTexture) seen.texture = SplitTextureView(batch);
+        if (t.rect.Empty()) return gt4::coregs3::split::Action::None;
+        seen.x0 = t.rect.x0;
+        seen.y0 = t.rect.y0;
+        seen.x1 = t.rect.x1;
+        seen.y1 = t.rect.y1;
+        // Diagnostics (GT4_COREGS3_2D_SPLIT_TRACE=<first>-<last VBlank>): the batches into the armed split target and
+        // the first batthes of each traced frame, with their views.
+        static const std::pair<long long, long long> splitTrace = [] {
+            std::pair<long long, long long> range{-1, -1};
+            if (const char *text = std::getenv("GT4_COREGS3_2D_SPLIT_TRACE")) {
+                char *end = nullptr;
+                range.first = range.second = std::strtoll(text, &end, 10);
+                if (end && *end == '-') range.second = std::strtoll(end + 1, nullptr, 10);
+            }
+            return range;
+        }();
+        static std::uint64_t traceVblank = ~0ull;
+        static int traceCount = 0;
+        if (splitTrace.first >= 0 && static_cast<long long>(vblanks_) >= splitTrace.first &&
+            static_cast<long long>(vblanks_) <= splitTrace.second) {
+            if (traceVblank != vblanks_) {
+                traceVblank = vblanks_;
+                traceCount = 0;
+            }
+            const bool intoArmed = SameView(seen.frame, splitRule_.view());
+            if (traceCount < 8 && (intoArmed || traceCount == 0)) {
+                ++traceCount;
+                std::fprintf(stderr,
+                             "[core2] split-trace vblank=%llu armed=%d view=%u/%u/%02x frame=%u/%u/%02x tex=%u/%u/%02x "
+                             "rect=%d,%d,%d,%d into_armed=%d\n",
+                             static_cast<unsigned long long>(vblanks_), splitRule_.armed() ? 1 : 0,
+                             splitRule_.view().baseBlock, splitRule_.view().bufferWidth, splitRule_.view().psm,
+                             seen.frame.baseBlock, seen.frame.bufferWidth, seen.frame.psm, seen.texture.baseBlock,
+                             seen.texture.bufferWidth, seen.texture.psm, t.rect.x0, t.rect.y0, t.rect.x1, t.rect.y1,
+                             intoArmed ? 1 : 0);
+            }
+        }
+        const gt4::coregs3::split::Action action =
+            splitRule_.Observe(vblanks_, seen, gt4::coregs3::split::PresentCandidate{});
+        if (action == gt4::coregs3::split::Action::Activate && !ActivateSplit()) {
+            return gt4::coregs3::split::Action::None;
+        }
+        return action;
+    }
+
+    // The target of the split view the present blit wrote: the newest colour target with that base, width and format,
+    // the overlay target excepted.
+    std::size_t SplitTargetIndex(const gt4::coregs3::split::View &view) const {
+        std::size_t found = kNoTargetSlot;
+        for (std::size_t index = 0; index < targets_.size(); ++index) {
+            const Target &c = targets_[index];
+            if (!c.alive || IsSplitOverlayTarget(c) || IsDepthClass(c.cls) || c.view.basePointer != view.baseBlock ||
+                c.view.bufferWidth != view.bufferWidth ||
+                static_cast<std::uint32_t>(c.view.psm) != view.psm) {
+                continue;
+            }
+            if (found == kNoTargetSlot || c.lastDraw > targets_[found].lastDraw) found = index;
+        }
+        return found;
+    }
+
+    // Composes this frame's 3D image (the checkpoint) from the present target through the same merge kernel the VBlank
+    // compose runs for the display circuit: one circuit reading the present blit's rectangle over its 1:1 placement at
+    // the internal scale, then the same present resampling. No deinterlace and no FXAA: refused before the split
+    // starts. Returns false, counted, when the compose cannot run.
+    bool ComposeSplitCheckpoint(std::size_t presentIndex) {
+        Target &present = targets_[presentIndex];
+        if (!ApplyDirty(present)) return false;
+        // Diagnostics: the present target's own image at the cut, before the checkpoint compose.
+        if (const char *dump = std::getenv("GT4_COREGS3_2D_DUMP"); dump != nullptr && DumpSplitLayerAt(vblanks_)) {
+            std::vector<std::uint32_t> pixels;
+            std::string dumpError;
+            if (gpu_.ReadImage(present.image, present.width * scale_, present.height * scale_, pixels, dumpError)) {
+                DumpSplitLayer(dump, "present", vblanks_, present.width * scale_, present.height * scale_, pixels);
+            }
+        }
+        const std::int32_t rx0 = splitRule_.x0(), ry0 = splitRule_.y0();
+        const std::int32_t rx1 = splitRule_.x1(), ry1 = splitRule_.y1();
+        if (rx1 < rx0 || ry1 < ry0) return false;
+        if (!Grow(present, static_cast<std::uint32_t>(rx1 + 1), static_cast<std::uint32_t>(ry1 + 1))) return false;
+        const std::uint32_t readW = static_cast<std::uint32_t>(rx1 - rx0 + 1);
+        const std::uint32_t readH = static_cast<std::uint32_t>(ry1 - ry0 + 1);
+        const std::uint32_t outWidth = readW * scale_;
+        const std::uint32_t outHeight = readH * scale_;
+        if (outWidth == 0 || outHeight == 0) return false;
+        const display::PmodeFields pmode = display::decode_pmode(displayRegs_.pmode);
+        std::uint32_t words[28] = {};
+        words[0] = outWidth;
+        words[1] = outHeight;
+        words[2] = scale_;
+        words[3] = std::uint32_t{background_[0]} | (std::uint32_t{background_[1]} << 8) |
+                   (std::uint32_t{background_[2]} << 16) | (std::min<std::uint32_t>(pmode.alp, 255u) << 24);
+        words[4] = std::min<std::uint32_t>(pmode.alp, 255u);
+        // One circuit: there is no RC2 to merge with, so the displayed image is the circuit's own pixels (the merge
+        // alpha over the background is the source alpha). Forcing MMOD off ignores the mid-frame PMODE value, which can
+        // still be the previous frame's (the game writes the display registers at the end of the frame; the A-Spec race
+        // has MMOD = 1, ALP = 0 at the cut and MMOD = 0 at the VBlank).
+        words[5] = 0u;
+        std::uint32_t *w = &words[6];
+        w[0] = 1u;
+        const Psm psm = present.view.psm;
+        w[1] = psm == Psm::Ct24 ? 1u : psm == Psm::Ct16 ? 2u : 0u;
+        w[2] = scale_;
+        w[3] = static_cast<std::uint32_t>(rx0);
+        w[4] = static_cast<std::uint32_t>(ry0);
+        w[5] = readW;
+        w[6] = readH;
+        w[7] = 0;
+        w[8] = 0;
+        w[9] = readW;
+        words[26] = readH;
+        std::string error;
+        if (const char *dump = std::getenv("GT4_COREGS3_2D_DUMP"); dump != nullptr && DumpSplitLayerAt(vblanks_)) {
+            std::fprintf(stderr,
+                         "[core2] split-checkpoint vblank=%llu present bp=%u bw=%u psm=%02x img=%dx%d out=%ux%u "
+                         "bg=%08x alp=%u mmod=%u fmt=%u srcscale=%u read=%u,%u %ux%u place=%u,%u %ux%u\n",
+                         static_cast<unsigned long long>(vblanks_), present.view.basePointer, present.view.bufferWidth,
+                         static_cast<unsigned>(present.view.psm), present.width, present.height, outWidth, outHeight,
+                         words[3], words[4], words[5], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], words[26]);
+        }
+        if (!gpu_.Compose(words, present.image, kNoImage, outWidth, outHeight, error)) {
+            Fail(error);
+            return false;
+        }
+        std::uint32_t presentWidth = presentWidth_, presentHeight = presentHeight_;
+        if (const char *forced = std::getenv("GT4_CORE2_PRESENT_SIZE")) {
+            unsigned w2 = 0, h2 = 0;
+            if (std::sscanf(forced, "%ux%u", &w2, &h2) == 2) {
+                presentWidth = w2;
+                presentHeight = h2;
+            }
+        }
+        const bool presentScaled = presentResample_ && !(performance_ && gpu_.Integrated()) && presentWidth != 0 &&
+                                   presentHeight != 0 &&
+                                   (presentWidth != outWidth || presentHeight != outHeight || rcasSharpness_ > 0.0f);
+        if (presentScaled &&
+            !gpu_.PresentScale(false, outWidth, outHeight, presentWidth, presentHeight, rcasSharpness_, error)) {
+            Fail(error);
+            return false;
+        }
+        if (!gpu_.Submit(false, error)) {
+            Fail(error);
+            return false;
+        }
+        splitOutWidth_ = outWidth;
+        splitOutHeight_ = outHeight;
+        splitOutScale_ = scale_;
+        splitReadX_ = static_cast<std::uint32_t>(rx0);
+        splitReadY_ = static_cast<std::uint32_t>(ry0);
+        splitReadWidth_ = readW;
+        splitReadHeight_ = readH;
+        splitPlaceX_ = 0;
+        splitPlaceY_ = 0;
+        splitPlaceWidth_ = outWidth;
+        splitPlaceHeight_ = outHeight;
+        splitPresentScaled_ = presentScaled;
+        splitPresentWidth_ = presentWidth;
+        splitPresentHeight_ = presentHeight;
+        splitCheckpoint_ = true;
+        stats.splitCheckpoints++;
+        // Diagnostics: the checkpoint image (frame_3d before the world is drawn into it).
+        if (const char *dump = std::getenv("GT4_COREGS3_2D_DUMP"); dump != nullptr && DumpSplitLayerAt(vblanks_)) {
+            std::vector<std::uint32_t> pixels;
+            std::string dumpError;
+            if (gpu_.ReadDisplay(outWidth, outHeight, pixels, dumpError, false, false)) {
+                DumpSplitLayer(dump, "checkpoint", vblanks_, outWidth, outHeight, pixels);
+            }
+        }
+        return true;
+    }
+
+    // The first 2D batch: compose the checkpoint from the present target and create the transparent overlay target the
+    // rest of the frame draws into. A failure refuses the split for this frame (counted) and leaves it faithful.
+    bool ActivateSplit() {
+        // A frame that was never composed (a headless run with no dump, a held VBlank) must not leave its overlay
+        // target behind when the next frame splits.
+        if (splitFrameActive_) RetireSplitOverlay();
+        const gt4::coregs3::split::View &view = splitRule_.view();
+        const std::size_t presentIndex = SplitTargetIndex(view);
+        if (presentIndex == kNoTargetSlot || !ComposeSplitCheckpoint(presentIndex)) {
+            std::fprintf(stderr,
+                         "[core2] 2D overlay split: the first 2D batch at vblank %llu has no present target or no 3D "
+                         "checkpoint; the frame stays faithful\n",
+                         static_cast<unsigned long long>(vblanks_));
+            splitRule_.Refuse();
+            stats.splitRefusedFrames++;
+            return false;
+        }
+        const std::uint32_t width = targets_[presentIndex].width;
+        const std::uint32_t height = targets_[presentIndex].height;
+        const BufferView overlayView{view.baseBlock, view.bufferWidth, targets_[presentIndex].view.psm};
+        Target *overlay = CreateTarget(overlayView, ClassOf(overlayView.psm),
+                                       PixelRect{splitRule_.x0(), splitRule_.y0(), splitRule_.x1(), splitRule_.y1()});
+        if (!overlay || !Grow(*overlay, width, height)) {
+            if (overlay) DestroyTarget(*overlay);
+            splitRule_.Refuse();
+            stats.splitRefusedFrames++;
+            return false;
+        }
+        splitOverlayIndex_ = static_cast<std::size_t>(overlay - targets_.data());
+        splitDisplayIndex_ = presentIndex;
+        splitFrameActive_ = true;
+        splitFrameVblank_ = vblanks_;
+        stats.splitFrames++;
+        return true;
+    }
+
+    // Destroys the frame's overlay target and forgets the split. Its pixels are not GS memory content (the 2D layer is
+    // composed into the overlay image), so it is dropped without a readback.
+    void RetireSplitOverlay() {
+        if (splitOverlayIndex_ != kNoTargetSlot && splitOverlayIndex_ < targets_.size()) {
+            DestroyTarget(targets_[splitOverlayIndex_]);
+        }
+        splitOverlayIndex_ = kNoTargetSlot;
+        splitDisplayIndex_ = kNoTargetSlot;
+        splitFrameActive_ = false;
+        splitCheckpoint_ = false;
+    }
+
+    // The VBlank's split compose: the 2D layer through the overlay compose and its present resampling, delivered next
+    // to the checkpoint image the present draws the world into.
+    bool ComposeSplitFrame(writeback::GpuFrame &out, std::string &error) {
+        const Target *overlay = splitOverlayIndex_ < targets_.size() ? &targets_[splitOverlayIndex_] : nullptr;
+        if (!splitFrameActive_ || splitFrameVblank_ + 1 != vblanks_ || !splitCheckpoint_ || overlay == nullptr ||
+            !overlay->alive) {
+            return false;
+        }
+        // The checkpoint was composed from the present target as a single circuit over the whole frame. The display
+        // registers are advanced here with the real DBY history (the faithful ComposeGpu would have done it), so the
+        // split path keeps the same history; its circuit may still name the buffer being scanned out (the game flips
+        // DISPFB after the VBlank), which is reported once and does not change the delivered image.
+        const display::DisplayLayout layout = display::compute_layout(displayRegs_, previousDby_);
+        const display::PmodeFields pmode = display::decode_pmode(displayRegs_.pmode);
+        std::array<bool, 2> available{};
+        for (std::size_t i = 0; i < 2; ++i) {
+            const display::CircuitRect &c = layout.circuits[i];
+            available[i] = c.enabled && c.read_width != 0 && c.read_height != 0;
+        }
+        const display::MergePlan plan = display::plan_merge(pmode, layout.circuits[0], layout.circuits[1],
+                                                            available[0], available[1]);
+        static bool phaseReported = false;
+        if (!phaseReported && layout.valid && plan.outcome == display::MergeOutcome::Composite &&
+            plan.use_rc1 != plan.use_rc2) {
+            const display::CircuitRect &shown = plan.use_rc1 ? layout.circuits[0] : layout.circuits[1];
+            const auto shownPsm = memory::decodePsm(shown.psm);
+            if (!shownPsm || memory::blockOfPage(shown.fbp) != splitRule_.view().baseBlock ||
+                shown.fbw != splitRule_.view().bufferWidth ||
+                static_cast<std::uint32_t>(*shownPsm) != splitRule_.view().psm) {
+                std::fprintf(stderr,
+                             "[core2] 2D overlay split: the VBlank display circuit shows buffer %u/%u/%02x, the split "
+                             "composed %u/%u/%02x (the GS scanout is one stream frame behind; the present shows the "
+                             "split image)\n",
+                             shown.fbp, shown.fbw, static_cast<unsigned>(shown.psm), splitRule_.view().baseBlock,
+                             splitRule_.view().bufferWidth, splitRule_.view().psm);
+                phaseReported = true;
+            }
+        }
+        std::uint32_t push[11] = {splitOutWidth_, splitOutHeight_, splitOutScale_, splitReadX_, splitReadY_,
+                                  splitReadWidth_, splitReadHeight_, static_cast<std::uint32_t>(splitPlaceX_),
+                                  static_cast<std::uint32_t>(splitPlaceY_), splitPlaceWidth_, splitPlaceHeight_};
+        if (!gpu_.ComposeOverlay(push, overlay->image, splitOutWidth_, splitOutHeight_, error)) return false;
+        if (splitPresentScaled_ &&
+            !gpu_.PresentScaleOverlay(splitOutWidth_, splitOutHeight_, splitPresentWidth_, splitPresentHeight_,
+                                      rcasSharpness_, error)) {
+            return false;
+        }
+        if (!gpu_.Submit(false, error)) return false;
+        out = writeback::GpuFrame{};
+        out.valid = true;
+        out.width = splitPresentScaled_ ? splitPresentWidth_ : splitOutWidth_;
+        out.height = splitPresentScaled_ ? splitPresentHeight_ : splitOutHeight_;
+        out.image = splitPresentScaled_ ? gpu_.PresentImage() : gpu_.DisplayImage();
+        out.presentScaled = splitPresentScaled_;
+        out.overlay = splitPresentScaled_ ? gpu_.OverlayPresentImage() : gpu_.OverlayImage();
+        // Diagnostics: the composed 2D layer (RGBA8 words; alpha is the coverage).
+        if (const char *dump = std::getenv("GT4_COREGS3_2D_DUMP"); dump != nullptr && DumpSplitLayerAt(vblanks_)) {
+            std::vector<std::uint32_t> pixels;
+            std::string dumpError;
+            if (gpu_.ReadOverlayImage(out.width, out.height, pixels, dumpError)) {
+                DumpSplitLayer(dump, "overlay", vblanks_, out.width, out.height, pixels);
+            }
+        }
+        return true;
+    }
+
     bool ComposeGpu(writeback::GpuFrame &out) {
         out = writeback::GpuFrame{};
         if (failed_ || !gpu_.Ready()) return false;
+        // TASK-090 2D overlay split: this frame's 3D image was composed at the 2D boundary (the checkpoint); the VBlank
+        // composes the 2D layer next to it and delivers both. The checkpoint is not this VBlank's compose.
+        if (splitFrameActive_ && splitFrameVblank_ + 1 == vblanks_ && splitCheckpoint_) {
+            std::string splitError;
+            if (ComposeSplitFrame(out, splitError)) {
+                counters.presentationFrames++;
+                counters.gpuComposedFrames++;
+                counters.scaledComposedFrames++;
+                composedVblank_ = vblanks_;
+                lastFrame_ = out;
+                RetireSplitOverlay();
+                return true;
+            }
+            std::fprintf(stderr, "[core2] 2D overlay split: the VBlank compose refused the frame (%s); presenting the 3D image only\n",
+                         splitError.empty() ? "no overlay target" : splitError.c_str());
+            stats.splitRefusedFrames++;
+            RetireSplitOverlay();
+            // The display image holds the checkpoint (the 3D image without the 2D layer): present it alone rather than
+            // composing the overlay target as if it were the scene.
+            if (gpu_.Ready()) {
+                std::string error;
+                if (!gpu_.Submit(false, error)) {
+                    Fail(error);
+                    return false;
+                }
+                out.valid = true;
+                out.width = splitPresentScaled_ ? splitPresentWidth_ : splitOutWidth_;
+                out.height = splitPresentScaled_ ? splitPresentHeight_ : splitOutHeight_;
+                out.image = splitPresentScaled_ ? gpu_.PresentImage() : gpu_.DisplayImage();
+                out.presentScaled = splitPresentScaled_;
+                composedVblank_ = vblanks_;
+                lastFrame_ = out;
+                return true;
+            }
+            return false;
+        }
         if (composedVblank_ == vblanks_ && lastFrame_.valid) {
             out = lastFrame_;  // already composed (and deinterlaced) this VBlank
             return true;
@@ -5715,11 +6264,31 @@ void PrintCore2Stats(const Core2Counters &c, const Core2GpuStats &g, std::uint64
     std::fprintf(stderr, "[core2] points=%llu point_quads=%llu\n", (unsigned long long)g.points, (unsigned long long)g.pointQuads);
 }
 
+// TASK-090 2D overlay split: the session's split counters, printed with the F8/report line and at exit (the backend is
+// never destroyed, so the final totals would otherwise be lost on a run shorter than the 600-VBlank report).
+void PrintSplitStats(const Core2Counters &c, const Core2GpuStats &g) {
+    if (c.splitFrames == 0 && c.splitRefusedFrames == 0 && c.splitUnavailableDraws == 0) return;
+    std::fprintf(stderr,
+                 "[coregs3] 2d split frames=%llu batches=%llu checkpoints=%llu refused_frames=%llu dropped_frames=%llu "
+                 "refused_samples=%llu layout_changes=%llu unavailable_draws=%llu | overlay "
+                 "composes=%llu merges=%llu merge_px=%.2fM refusals=%llu | approximated date=%llu fbmsk=%llu "
+                 "dst_alpha=%llu\n",
+                 (unsigned long long)c.splitFrames, (unsigned long long)c.splitBatches,
+                 (unsigned long long)c.splitCheckpoints, (unsigned long long)c.splitRefusedFrames,
+                 (unsigned long long)c.splitDroppedFrames, (unsigned long long)c.splitRefusedSamples,
+                 (unsigned long long)c.splitLayoutChanges, (unsigned long long)c.splitUnavailableDraws,
+                 (unsigned long long)g.overlayComposes, (unsigned long long)g.overlayMerges,
+                 static_cast<double>(g.overlayMergePixels) / 1.0e6, (unsigned long long)g.overlayRefusals,
+                 (unsigned long long)c.splitDateDraws, (unsigned long long)c.splitFbmskDraws,
+                 (unsigned long long)c.splitDestAlphaDraws);
+}
+
 }  // namespace
 
 Renderer::Renderer() : impl_(std::make_unique<Impl>()) {}
 Renderer::~Renderer() {
     PrintCore2Stats(impl_->stats, impl_->gpu_.Stats(), impl_->vblanks_, impl_->gpu_.BarrierReport(), impl_->frontEnd_.Clut());
+    PrintSplitStats(impl_->stats, impl_->gpu_.Stats());
 }
 
 void Renderer::SetScale(std::uint32_t scale, float shift) {
@@ -5753,6 +6322,14 @@ bool Renderer::Init(const gpu::VulkanHandles &handles, std::string &error) {
     std::fprintf(stderr, "[core2] texture cache budget %llu MiB (%s GPU)\n",
                  static_cast<unsigned long long>(impl_->textureBudget_ >> 20),
                  impl_->gpu_.Integrated() ? "integrated" : "discrete");
+    // TASK-090 2D overlay split: the backend is never destroyed, so the session's split totals are printed at exit
+    // (stderr, after the game's own shutdown). The renderer lives as long as the process.
+    static std::atomic<const void *> splitOwner{nullptr};
+    splitOwner.store(impl_.get(), std::memory_order_release);
+    std::atexit([] {
+        const auto *s = static_cast<const Impl *>(splitOwner.load(std::memory_order_acquire));
+        if (s != nullptr) PrintSplitStats(s->stats, s->gpu_.Stats());
+    });
     return true;
 }
 
@@ -5914,6 +6491,19 @@ void Renderer::Flush() {
     s.frontEnd_.VBlank(&kEverything, 1);
     s.frontEnd_.FlushBatch(FlushReason::VBlank);
     ++s.vblanks_;
+    // TASK-090 2D overlay split: the frame that just ended keeps its split for the compose that follows this VBlank
+    // (engaged by vblanks_ + 1); a split left over from an earlier frame — no compose ran for it — is dropped here.
+    if (s.splitFrameActive_ && s.splitFrameVblank_ + 1 != s.vblanks_) {
+        s.RetireSplitOverlay();
+        s.stats.splitDroppedFrames++;
+    }
+    {
+        gt4::coregs3::split::Counters taken;
+        s.splitRule_.TakeCounters(taken);
+        s.stats.splitBatches += taken.redirected;
+        s.stats.splitRefusedSamples += taken.refusedSamples;
+        s.stats.splitLayoutChanges += taken.layoutChanges;
+    }
     // TASK-090 CoreGS 3.0: the SLM sidecar of this VBlank (a no-op unless GT4_COREGS3_VRAM is set).
     coregs3_vram_dump().MaybeDump(s.vblanks_, s.memory_.Local().bytes().data());
     if (s.displayRegs_.smode2 & 1u) {
@@ -5943,6 +6533,7 @@ void Renderer::Flush() {
         for (const Target &t : s.targets_) s.stats.liveTargets += t.alive ? 1u : 0u;
         s.stats.targetSlots = s.targets_.size();
         PrintCore2Stats(s.stats, s.gpu_.Stats(), s.vblanks_, s.gpu_.BarrierReport(), s.frontEnd_.Clut());
+        PrintSplitStats(s.stats, s.gpu_.Stats());
         if (s.d1Stats_) s.PrintD1Classes();
         const PhaseTimes &p = s.times_;
         const double f = 600.0 * 1000.0;  // microseconds over 600 VBlanks -> milliseconds per VBlank
@@ -6131,6 +6722,23 @@ void Renderer::SetOutputSettings(const writeback::OutputSettings &settings) {
 void Renderer::SetFxaa(bool enabled) { impl_->fxaa_ = enabled; }
 
 void Renderer::SetForcedBilinear(std::uint32_t mode) { impl_->forcedBilinear_ = mode; }
+
+void Renderer::SetCoregs3Overlay(bool enabled) {
+    Impl &s = *impl_;
+    // The A/B: GT4_COREGS3_2D_OVERLAY=0 keeps today's path (the world over the full composed image) byte for byte.
+    const char *overlay = std::getenv("GT4_COREGS3_2D_OVERLAY");
+    const bool allowed = overlay == nullptr || std::strcmp(overlay, "0") != 0;
+    s.splitRequested_ = enabled && allowed;
+    if (!s.splitRequested_) s.RetireSplitOverlay();
+    std::fprintf(stderr, "[core2] 2D overlay split %s%s\n", s.splitRequested_ ? "on" : "off",
+                 enabled && !allowed ? " (GT4_COREGS3_2D_OVERLAY=0)" : "");
+}
+
+bool Renderer::CompositeCoregs3Overlay(const writeback::GpuFrame &frame) {
+    Impl &s = *impl_;
+    if (!frame.valid || frame.overlay == 0 || s.failed_ || !s.gpu_.Ready()) return false;
+    return s.gpu_.CompositeOverlay(frame.image, frame.width, frame.height, frame.presentScaled, s.failure_);
+}
 
 void Renderer::SetPresentSize(std::uint32_t width, std::uint32_t height) {
     impl_->presentWidth_ = width;

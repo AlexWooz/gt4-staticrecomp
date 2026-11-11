@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MIT
+//
+// CORE2 2D overlay composite (TASK-090 2D overlay split, docs/COREGS3-2D-SPLIT.md §5). Copyright (c) 2026 GT4Recomp
+// contributors.
+//
+// Composites the frame's 2D layer over the image the CoreGS 3.0 present just drew the world and the cars into. The
+// overlay word is RGB premultiplied by the coverage and alpha = the accumulated coverage (hw_pixel_core.glsl, the split
+// branch): out = overlay.rgb + target.rgb * (255 - coverage) / 255, which is the GS source-over result the faithful path
+// would have written into the same pixels, with the new world under it. A pixel the 2D pass did not touch has
+// coverage 0 and keeps the target exactly.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1, r32ui) uniform readonly uimage2D overlay_layer;
+layout(set = 0, binding = 2, r32ui) uniform uimage2D target_image;
+
+layout(push_constant) uniform MergeParameters {
+    uint width;
+    uint height;
+} pc;
+
+uint blend_channel(uint over, uint below, uint keep) {
+    return min(255u, over + (below * keep + 127u) / 255u);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.width) || p.y >= int(pc.height)) {
+        return;
+    }
+    uint over = imageLoad(overlay_layer, p).x;
+    uint below = imageLoad(target_image, p).x;
+    uint coverage = (over >> 24) & 0xFFu;
+    if (coverage == 0u) {
+        return;  // nothing of the 2D layer here: the 3D image stays byte for byte
+    }
+    uint keep = 255u - coverage;
+    uint red = blend_channel(over & 0xFFu, below & 0xFFu, keep);
+    uint green = blend_channel((over >> 8) & 0xFFu, (below >> 8) & 0xFFu, keep);
+    uint blue = blend_channel((over >> 16) & 0xFFu, (below >> 16) & 0xFFu, keep);
+    imageStore(target_image, p, uvec4(red | (green << 8) | (blue << 16) | 0xFF000000u, 0u, 0u, 0u));
+}
