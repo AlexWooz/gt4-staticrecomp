@@ -1,5 +1,33 @@
 # Current Status
 
+## 2026-11-11: the live world, the captured course drawn in `GT4_COREGS3=present` (TASK-090, branch `task/090-live-world`)
+
+The debug-only `GT4_COREGS3=present` layer now draws the captured world with the cars: the main-view course is selected
+with the offline world rule, its pixels come from an in-memory per-VU1-job texture store (the `.gt4vram` job record
+taken on the GS worker before the job executes, so the road samples the pixels its own draws sampled), and its GS state
+is the K7 pass journal's TEST/ALPHA/FRAME/ZBUF/XYOFFSET (the live path has no tap). The present layer adds a world
+pipeline pair (captured-unit vertices in clip space, a 112-byte push constant, one R8G8B8A8 texture atlas, nearest
+level-0 MODULATE, the alpha test, FRAME.FBMSK, depth GEQUAL shared with the car pass) and draws the world before the
+cars at the presentation instant's interpolated matrices. The sky and far underlay stay off by default (background
+layers that would hide the CoreGS 2.0 image and its HUD; `GT4_COREGS3_WORLD_BACKGROUND=1` restores them). Measured on
+the night race, 3x validation scale, VBlanks 6600-7400: 3,853 items / 195,711 vertices / 108,677 triangles, 5,131 draw
+calls over 6 ticks, 338 atlas textures, **0 atlas and draw refusals**, every texture from the previous guest frame's job
+record (3,972 stale, 0 live, 0 missing — the worker executes a frame's jobs after the VBlank that claims it), 1,510
+items without a usable texture binding keep the vertex colour, 3,853 items carry deferred PRIM fog, 2,287 linear records
+are sampled nearest and 4 took the level-0 mip fallback; the guest clock and per-VBlank digest are identical on 7,497
+VBlanks and the 64 KiB state is identical, and the car-pass counters are unchanged (542 draws / 143,163 vertices). The
+frame-locked A/B (on and off claim the same guest frames) gives a 98.5-98.7% world mask whose pixels are the course pass
+including the buildings and billboards; against the r8 reference frame 07400 the world's mask is mean |diff| 20.80,
+PSNR 16.11 dB, luma 28.78 vs the base's 27.23 and the reference's 28.45. The world-off path is within the base present
+layer's own cross-run car-overlay noise (off vs base 1,185-1,715 px, base vs base 663-1,363 px, same car box), and its
+guest state/clock/digest and counters are identical. **Resolution/aspect:** the live path draws in clip space through
+the composed image's viewport and has no 640x448 or integer-scale assumption, so 1080p 16:9 and 3440x1440 need no path
+change; the 3x is the evidence harness (reference frames and the identity gate), not the live model. Deliberately
+deferred: fog, blending, bilinear filtering, the reflection pass, the post chain, effects, the tapped texture state and
+the 2D overlay split (the world covers the base's HUD where it draws). Checks: CTest coregs3 19/19, Python 15/15, the 3x off/shadow identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames).. Evidence
+`build/evidence-live-world/`; design and measurements in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §30 and
+[COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
+
 ## 2026-11-10: the live CoreGS 3.0 presentation timeline (TASK-090, branch `task/090-live-timeline`)
 
 `GT4_COREGS3=present` now presents the captured car pass at a constant requested rate (20/30/45/60/120/144 Hz, default

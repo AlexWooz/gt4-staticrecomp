@@ -2049,6 +2049,28 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   the open lead on the removed whole-run counter pass. Evidence `build/evidence-live-timeline/`; design in
   [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
 
+- **Live world (2026-11-11, branch `task/090-live-world`).** `GT4_COREGS3=present` now draws the captured course over
+  the CoreGS 2.0 image with the cars. `coregs3_live_world` keeps each VU1 job's texture/palette windows in memory (the
+  MTVU post site reports the item address, the GS worker copies the windows from its shadow before the job executes, no
+  flush/readback), `build_frame_texture_table` binds an item to its own job's pixels and to the K7 pass journal's
+  TEST/ALPHA/FRAME/ZBUF/XYOFFSET when no tap exists (PRIM measured default 0x3C), and the present layer adds a world
+  pipeline pair (24-byte captured-unit vertices, 112-byte push constant, R8G8B8A8 atlas, nearest level-0 MODULATE,
+  alpha test, FBMSK, depth GEQUAL shared with the cars) drawing the world before the cars at the presentation instant's
+  matrices. Night race, 3x validation scale, VBlanks 6600-7400: 3,853 items / 195,711 vertices / 108,677 triangles /
+  5,131 draw calls / 338 atlas textures, **0 atlas and draw refusals**; textures are the previous frame's job records
+  (3,972 stale, 0 live, 0 missing), 1,510 items untextured, 3,853 fog-deferred, 2,287 nearest-filtered, 4 level-0 mip
+  fallbacks; sky 80 / far 26 / reflection 61 items skipped by design. Guest clock and per-VBlank digest identical on
+  7,497 VBlanks and the 64 KiB state identical; car-pass counters unchanged (542 draws / 143,163 vertices). The
+  frame-locked A/B (on/off claim the same guest frames) gives a 98.5-98.7% world mask (the course includes the
+  buildings/billboards): mean |diff| 20.80, PSNR 16.11 dB vs the r8 reference 07400, luma 28.78 / 27.23 / 28.45. The
+  world-off path is inside the base present layer's own cross-run car-overlay noise (off vs base 1,185-1,715 px;
+  base vs base 663-1,363 px, same box) with identical counters and guest state. Resolution/aspect: the live path draws
+  in clip space through the composed image's viewport, with no 640x448 or integer-scale assumption (1080p 16:9 and
+  21:9 need no path change); the 3x is the evidence harness only. CTest coregs3 **19/19**, Python **15/15**, 3x
+  off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). Next: the 2D overlay split (the HUD is covered where the world draws), fog and
+  blending, bilinear filtering, the tapped texture state, the reflection pass and the post chain. Evidence
+  `build/evidence-live-world/`; design in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §30.
+
 - Next: the material transfer-curve residual (fixes 3/4: palette/texel inversion and the MXL 1/MMIN 4 mip
   path); capture the font atlas and the remaining HUD elements; a host clock that presents at the display rate
   (VRR/120/144) and the live-timeline open lead (the removed whole-run counter pass); the effects/HUD capture

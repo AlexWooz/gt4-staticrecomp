@@ -2054,3 +2054,110 @@ reference's image grouping supports it: frame 0 matches reference 7400 better th
 the PATH1/PATH2 interleaving inside the stream is not in the sidecars, so the pre-world role of the clears and the depth
 clear is taken from their sequence position and state, not from per-packet job order; the colour replay does not model
 the depth buffer (the world render owns it); the per-page map mixes materials that write no depth (the ABE decals).
+
+## 30. Round 29 (2026-11-11, branch `task/090-live-world`): the captured course drawn in the live present
+
+One branch from `task/090-coregs3` at `5b82c832` (worktree `O:/Antigavity/gt4-wt-090-live-world`). The offline world
+renderer selects the sky, far underlay, main-view course and reflection passes, decodes their textures and applies the
+GS state to a CPU picture. This round draws that world **live**: `GT4_COREGS3=present` now composes the captured world
+passes over the CoreGS 2.0 display image before the car pass, with the presentation timeline's matrices, while the
+guest stays bit-exact.
+
+### 30.1 What the live path needs that the offline tool had from files (C)
+
+The offline world picture reads three sidecars: the `.gt4scene` frame (draws, items, packets, pass journal), the
+`.gt4tap` (per-item TEX0/TEX1/CLAMP and TEST/ALPHA/FRAME/ZBUF at the draw) and the per-job `.gt4vram` record (the pixels
+the draw samples). The live path has the frame in memory (the hook ring) and none of the files. It gets the other two as
+follows:
+
+- **The frame.** In `present` the hooks stored only the car pass. They now store the car pass plus the passes the world
+  selection names (`g.world_draws`: sky, far underlay, course, reflection) and nothing else; `GT4_COREGS3_ALL_DRAWS=1`
+  still stores every hooked call. A menu frame's ~26 unmarked shape calls are no longer copied (a `CapturedDraw` is
+  ~50 KB), which was the guest-thread cost of the naive all-draws choice. The pass journal and environment were already
+  captured in every mode.
+- **The pixels.** `native/coregs3/coregs3_live_world.{hpp,cpp}` is the in-memory version of the `.gt4vram` job record.
+  At job post the MTVU runtime reports `(job, packet guest address)` through the tap module's live sink
+  (`set_live_job_source_sink`/`live_job_source`, `coregs3_tap.*`); on the GS worker, immediately before a job's records
+  execute, the sink copies the texture/palette windows that job's TEX0 writes bind from the worker-owned shadow local
+  memory. `Renderer::Coregs3Slm()` (new) exposes that memory **without** the flush/readback of the public `Slm()`: the
+  first implementation used `Slm()` and every VU1 job triggered a batch flush and readback, which made the present run
+  unusable; the no-flush view is the same one `Coregs3Snapshot` uses. Every address the job was posted for receives a
+  shared immutable record; records live for eight guest frames (4,096 records / 96 MiB bounds; the pending-source FIFO
+  drops executed jobs), and `find(address)` returns the newest. The measured phase: the worker executes a capture
+  frame's jobs after the VBlank that claims the frame, so the store is always one guest frame behind and the world
+  samples the same pages' previous upload; the caller counts that as `texture_stale` (it is 100% of the lookups on the
+  night race, 0 live, 0 missing).
+- **The state.** With no tap, `build_frame_texture_table` gives every world item the K7 pass journal's TEST/ALPHA/
+  FRAME/ZBUF/XYOFFSET/FOGCOL (`world_pass_default_state`, the same helper the offline tap-fallback path used) and keeps
+  the measured default PRIM 0x3C (TME/FGE on, ABE off). A new `TextureFrameOptions::live_job_textures` maps a packet
+  address to its job's record; the table tries it before the tap/job/draw/pass images, counts
+  `world_live_job`/`world_live_job_missing`, and the base SLM is left empty on purpose so a texture page no job window
+  covers is refused instead of read from a stale copy.
+
+### 30.2 The live world pass (`native/hw_gs/coregs3/hw_coregs3_present.*`, C)
+
+- **Selection.** The build reuses `coregs3::world_item_exclusion` and `world_shape_status` on the captured frame, with
+  an item mask (`MeshOptions::item_mask`, new) so an excluded item is skipped without copying the draw. Meshes are built
+  with the descriptor-driven world layout; triangles are grouped per item into one draw range each.
+- **Vertex stage.** A 24-byte world vertex (captured-unit position: the STMOD 2 int32 lane, a raw V3-16 halfword or a
+  V3-32 float; V4-8 colour; u,v) and a 112-byte push constant: the captured 0xC1 columns, the raw TEX0/CLAMP words, the
+  atlas rect and TEST/ALPHA/FBMSK/flags. `clip = c0*x + c1*y + c2*z + c3`, `gl_Position = (cx, -cy, 1, cw)`: the same
+  clip-space convention as the car pass, so the output resolution is only the viewport (no 640x448, no integer scale).
+- **Fragment stage.** The item's texture is sampled from one R8G8B8A8 storage atlas (2048x2048, the used rectangle
+  uploaded with a staging buffer; a full atlas is refused and counted): nearest at level 0 with the measured 10.4
+  coordinate and the four CLAMP wrap modes; MODULATE with the 8-bit integer product and TCC; the alpha test
+  (ATE/ATST/AREF, AFAIL KEEP -> discard); the FRAME.FBMSK lane merge. No colour attachment: the composed display image
+  is written with an imageStore like the car pass.
+- **Depth and order.** The world is drawn first in the same private D32 buffer, depth = 1/cw with GEQUAL, so the world
+  and the cars occlude each other; the sky (when drawn) uses a second pipeline with depth test and write off, as the
+  offline background rule. The presentation timeline's per-object matrix replaces the captured columns on ticks between
+  two frames (alpha 0/1 returns the captured matrix).
+- **Counters.** `present::WorldFrameCounters` (items, vertices, triangles, atlas, texture live/stale/missing/refused,
+  exclusions, sketches) feeds the F8 report; two occlusion queries per tick count the samples that passed the depth
+  test for the world and for the cars.
+- **Switches.** `GT4_COREGS3_LIVE_WORLD=0` is the A/B (the world path is not built; the snapshot is car-only, exactly
+  the pre-round path). `GT4_COREGS3_WORLD_BACKGROUND=1` adds the sky and far underlay (they are background layers that
+  cover the whole viewport and hide the base's HUD; the default keeps them off). `GT4_COREGS3_PRESENT_DEBUG=1` prints
+  the claimed frame of each drawn tick (the frame-locked evidence instrument).
+
+### 30.3 Measurements (night race, 3x validation scale)
+
+- **Selection and drawing** (VBlanks 6600-7400, 5 builds): 3,853 items, 195,711 mesh vertices, 108,677 triangles,
+  5,131 draw calls over 6 ticks, 338 atlas textures, 0 atlas refusals, 0 refused draws; exclusions 1 itop-other,
+  12 no-position, 0 shape/no-state/mirror; skipped by design: sky 80 items, far underlay 26, reflection 61.
+- **Textures**: 3,972 lookups, all stale by one guest frame, 0 missing, 0 refused; 1,510 items untextured (no
+  UV/program/record) keep their vertex colour; 2,287 linear records are sampled nearest; 4 records took the level-0
+  mip fallback. 3,853 items carry PRIM fog (deferred) and 0 blend.
+- **Guest identity**: on/off/base runs produce the same race clock and per-VBlank digest on all 7,497 common VBlanks
+  (0 differences) and the same 64 KiB state at VBlank 7400; the car-pass counters are identical (5 passes, 542 draws,
+  143,163 vertices, 47,721 triangles, 16 unlit draws).
+- **Frame-locked A/B** (`EVERY=1` dumps 7396-7400, the claimed frame printed): on and off claim the same sequence
+  (7397, 7398, 7399, 7400, 7400, 7400). The world mask is 2,533,418-2,536,075 px (98.5-98.7% of 1920x1344) because the
+  course pass includes the buildings, barriers and billboards behind the road. At claimed frame 7400 against the r8
+  reference frame 07400: mean |diff| 20.80, PSNR 16.11 dB, luma world 28.78 / world-off 27.23 / reference 28.45 (the
+  world brings the level closer and the structure remains the offline renderer's M1/M2 residual).
+- **World-off vs base-present**: the same binary with `GT4_COREGS3_LIVE_WORLD=0` and the base executable differ by
+  1,185-1,715 px per frame-locked dump, all inside the car box (x 1075-1607, y 232-862, max delta ~130): the base
+  present layer's own cross-run car-overlay nondeterminism (two base runs in the same window differ by 663-1,363 px).
+  The guest state, clock, digest and car-pass counters are identical; no world pixel exists in the off path.
+- **Checks**: CTest coregs3 **19/19** (new `native_coregs3_live_world`; `native_coregs3_pass_textures` extended with the
+live binding, journal state and missing-record cases), Python `test_coregs3_units.py` **15/15**, the 3x
+off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state
+differences, 13/13 frames identical for off and shadow, capture 4,496,552 B), and the frame-locked A/B and
+world-mask measurements of §30.3..
+
+### 30.4 What is deliberately simplified, and what still assumes 3x
+
+- The sky and far underlay are not drawn by default (they are full-viewport background layers that would hide the
+  CoreGS 2.0 base and its HUD); the course is the first live pass. `GT4_COREGS3_WORLD_BACKGROUND=1` restores both.
+- The per-item GS state is the pass journal's, not the tap's: the 22 external-cursor items whose record TEX0 differs
+  from the emitted one bind the record page; the 0xA0 morph items use the record path's first-key/decoded UVs.
+- Fog, blending, bilinear filtering, the reflection pass, the post chain, effects and the HUD are later. 1,510 items
+  have no usable texture binding and keep the vertex colour (the bright billboards are this class); 2,287 linear
+  textures are sampled nearest.
+- The HUD: the base's 2D layer is composed before the world, so the world covers it where the world draws. Splitting
+  the 2D overlay to draw after the 3D is the next milestone.
+- Resolution/aspect: the live path itself has no 640x448 or 3x assumption; it draws in clip space into the composed
+  image's viewport, so 1080p 16:9 and 3440x1440 work without a path change. The **evidence harness** (the r8 reference
+  frames and the identity gate) is 3x, and the offline CPU renderer was validated at 3x; neither is used by the live
+  path. The occlusion sample counter is a pixel count and is resolution dependent by definition.

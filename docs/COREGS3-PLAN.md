@@ -426,6 +426,19 @@ running at the display rate (VRR / 120 / 144 Hz) is the next step, and the layer
 handed an image. Measurements, gates and the image evidence: `docs/journal/2026-11-10.md` and
 `build/evidence-live-timeline/`.
 
+**The live world (2026-11-11).** The `GT4_COREGS3=present` layer draws the captured world as well as the cars: the
+main-view course (and, with `GT4_COREGS3_WORLD_BACKGROUND=1`, the sky and far underlay) is selected with the offline
+world rule, its pixels come from an in-memory per-VU1-job store (`coregs3_live_world`, the `.gt4vram` record taken
+before the job executes), its GS state from the K7 pass journal (TEST/ALPHA/FRAME/ZBUF/XYOFFSET; measured default
+PRIM), and it is drawn in clip space through the composed image's viewport, so the live path has no 640x448 or
+integer-scale assumption and 1080p 16:9 / 3440x1440 use the same code. The world is drawn before the cars under one
+depth buffer at the presentation instant's interpolated matrices; the guest stays at 60 Hz and the identity gate
+reports 0 clock/digest/state differences. First measured picture (night race 6600-7400): 3,853 items / 108,677
+triangles / 338 textures, 0 refusals, every texture one guest frame stale (the worker executes a frame's jobs after the
+VBlank that claims it), fog/blending/filtering/reflection/post chain deferred, and the HUD covered where the world
+draws — the 2D overlay split is the next step. The frame-locked A/B is in docs/COREGS3-HOOKS.md §30.
+
+
 ---
 
 ## 6. Effects inventory and native restoration
@@ -726,6 +739,15 @@ cannot be explained after one derivation round.
   courses).
 - **Who:** mostly DeepSeek once Phase 1/2 patterns exist.
 
+### Phase 3 status (2026-11-11)
+
+The first live step is in: the captured main-view course is drawn natively in the game window over the CoreGS 2.0
+image (hooks §30). The sky and far underlay are kept from the base by default (they are background layers that would
+hide it); `GT4_COREGS3_WORLD_BACKGROUND=1` draws them. Fog, billboards, CLUT animation, the wet reflection and the post
+chain remain the Phase-3 work; the course's item state is the pass journal's, not the tap's, until the tapped state is
+wired into the live path.
+
+
 ### Phase 4: "it rendered a race": the 3D frame is CoreGS 3.0's
 
 - **Scope:**
@@ -742,6 +764,12 @@ cannot be explained after one derivation round.
 - **Effort:** 12-20 agent-weeks. **Risk:** high (many effects, 2D composition order, the frame-reading passes).
 - **Who:** each effect is a closed brief with its own gate (DeepSeek); the layer split and the shadow-GS policy are
   review work.
+
+### Phase 4 note (2026-11-11)
+
+Level 3 (CoreGS 3.0 owns the 3D frame) additionally needs the 2D overlay split: the base's HUD is composed before the
+world, so the live world covers it where it draws. The live world foundation (native output resolution and aspect
+included) is in place for that split.
 
 ### Phase 5: other modes
 
