@@ -1002,7 +1002,10 @@ void print_report(std::FILE *out) noexcept {
                  intervals != 0 ? static_cast<double>(load(t.interval_sum)) / static_cast<double>(intervals) : 0.0,
                  static_cast<unsigned long long>(load(t.interval_min)),
                  static_cast<unsigned long long>(load(t.interval_max)));
-  if (timeline.hz != 0 && load(t.interpolated) + load(t.entrywise) + load(t.pairs_refused) != 0)
+  if (timeline.hz != 0 &&
+      load(t.pairs) + load(t.pairs_refused) + load(t.paired) + load(t.only_newer) + load(t.only_older) +
+              load(t.interpolated) + load(t.entrywise) + load(t.nearest) + load(t.dropped_discontinuity) !=
+          0)
     std::fprintf(out,
                  "[coregs3] present interpolate pairs=%llu pairs_refused=%llu paired=%llu only_newer=%llu "
                  "only_older=%llu interpolated=%llu entrywise=%llu nearest=%llu predicted=%llu "
