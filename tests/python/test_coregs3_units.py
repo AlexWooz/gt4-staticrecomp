@@ -295,5 +295,61 @@ class GsStreamToolTest(unittest.TestCase):
             self.assertIn('outside the PassId table', done.stderr)
 
 
+def _numpy_python():
+    """A python that can run scripts/coregs3_bench/gs_composite_metrics.py (numpy, PIL, scipy).
+
+    The suite runs under the tooling venv, which has PIL but no numpy; the metrics control therefore runs the script with
+    the first interpreter that reports numpy, and skips when there is none (never a false pass).
+    """
+    import shutil
+    for candidate in (sys.executable, shutil.which('python'), shutil.which('python3')):
+        if not candidate:
+            continue
+        probe = subprocess.run([candidate, '-c', 'import numpy, PIL, scipy'], capture_output=True)
+        if probe.returncode == 0:
+            return candidate
+    return None
+
+
+@unittest.skipUnless(_numpy_python(), 'no python with numpy/PIL/scipy for the metrics control')
+class GsCompositeMetricsTest(unittest.TestCase):
+    def test_reports_raw_and_ct16_corrected_reference(self):
+        """TASK-090 post chain: the metrics script must report both the raw and the +4-corrected reference.
+
+        Synthetic images: a constant reference (72,72,72) and a constant world (64,64,64) on a band of the clean
+        mask. The raw block must show ref luma 248/3 = 72.0 and world 64.0; the corrected block must show 76.0 (the +4
+        bias) with the same world luma, so a run can never silently replace the baseline with the correction.
+        """
+        from PIL import Image, ImageDraw
+        python = _numpy_python()
+        width, height = 1920, 1344
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            Image.new('RGB', (width, height), (72, 72, 72)).save(folder / 'ref.ppm')
+            Image.new('RGB', (width, height), (64, 64, 64)).save(folder / 'world.png')
+            mask = Image.new('L', (width, height), 0)
+            ImageDraw.Draw(mask).rectangle([600, 300, 1500, 900], fill=255)  # a band outside the HUD rectangles
+            mask.save(folder / 'mask.pgm')
+            Image.new('L', (width, height), 0).save(folder / 'car.pgm')
+            out = folder / 'metrics.json'
+            done = subprocess.run([python, str(ROOT / 'scripts' / 'coregs3_bench' / 'gs_composite_metrics.py'),
+                                   str(folder / 'ref.ppm'), str(folder / 'world.png'), str(folder / 'mask.pgm'),
+                                   str(folder / 'car.pgm'), '--json', str(out)], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            import json
+            summary = json.loads(out.read_text())
+            self.assertIn('raw dump', summary)
+            self.assertIn('dump + 4 (CT16)', summary)
+            raw = summary['raw dump']['all']
+            corrected = summary['dump + 4 (CT16)']['all']
+            self.assertAlmostEqual(raw['luma_ref'], 72.0, places=3)
+            self.assertAlmostEqual(raw['luma_world'], 64.0, places=3)
+            self.assertAlmostEqual(corrected['luma_ref'], 76.0, places=3)
+            self.assertAlmostEqual(corrected['luma_world'], 64.0, places=3)
+            self.assertEqual(summary['raw dump']['ref_bias'], 0.0)
+            self.assertEqual(summary['dump + 4 (CT16)']['ref_bias'], 4.0)
+            self.assertAlmostEqual(summary['raw dump']['reference_quantisation']['fraction_divisible_by_8'], 1.0)
+
+
 if __name__ == '__main__':
     unittest.main()

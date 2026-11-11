@@ -471,23 +471,36 @@ void command_census(const char *path, const char *json_path) {
     }
   }
   // The measured chain, per attributed scene frame (the stream stamped V + 1 belongs to frame V).
-  std::vector<GsWetCompositeInfo> chains;
+  std::vector<GsPostChainInfo> chains;
   for (const auto &entry : census.frames) {
     const std::uint64_t capture_vblank = entry.second.capture_vblank;
     if (capture_vblank == 0) continue;
-    GsWetCompositeInfo info;
-    const bool found = find_wet_composite(batches, capture_vblank - 1, info);
+    GsPostChainInfo info;
+    const bool found = find_post_chain(batches, capture_vblank - 1, info);
     chains.push_back(info);
     if (found) {
-      std::printf("scene %llu (stream %llu): wet composite FOUND alpha_clear seq %u, composite seq %u, "
-                  "post_darken seq %u, post_brighten seq %u; unrecognised full-screen %llu\n",
+      std::printf("scene %llu (stream %llu): post chain FOUND across %llu full-screen batches, unrecognised %llu; "
+                  "alpha_clear seq %u, composite seq %u, FIX 127 seq %u, FIX 255 seq %u, present seq %u\n",
                   static_cast<unsigned long long>(info.scene_vblank),
-                  static_cast<unsigned long long>(info.stream_vblank), info.alpha_clear->sequence,
-                  info.composite->sequence, info.post_darken != nullptr ? info.post_darken->sequence : 0,
-                  info.post_brighten != nullptr ? info.post_brighten->sequence : 0,
-                  static_cast<unsigned long long>(info.unrecognised_full_screen));
+                  static_cast<unsigned long long>(info.stream_vblank),
+                  static_cast<unsigned long long>(info.full_screen_batches),
+                  static_cast<unsigned long long>(info.unrecognised_full_screen), info.alpha_clear->sequence,
+                  info.composite->sequence, info.post_darken->sequence, info.post_brighten->sequence,
+                  info.present->sequence);
+      for (const GsChainEntry &chain_entry : info.entries) {
+        std::printf("  chain seq %u %-22s %-12s %s\n", chain_entry.batch->sequence,
+                    gs_chain_op_name(chain_entry.op), chain_entry.after_world ? "after-world" : "before-world",
+                    chain_entry.note.c_str());
+      }
+      std::printf("  present state: DTHE %llu DIMX %016llX COLCLAMP %llu; TEX0 %016llX TEX1 %016llX CLAMP %016llX\n",
+                  static_cast<unsigned long long>(info.present->state.dthe & 1u),
+                  static_cast<unsigned long long>(info.present->state.dimx),
+                  static_cast<unsigned long long>(info.present->state.colclamp & 1u),
+                  static_cast<unsigned long long>(info.present->state.tex0),
+                  static_cast<unsigned long long>(info.present->state.tex1),
+                  static_cast<unsigned long long>(info.present->state.clamp));
     } else {
-      std::printf("scene %llu (stream %llu): wet composite REFUSED: %s\n",
+      std::printf("scene %llu (stream %llu): post chain REFUSED: %s\n",
                   static_cast<unsigned long long>(info.scene_vblank),
                   static_cast<unsigned long long>(info.stream_vblank), info.refusal.c_str());
     }
@@ -595,20 +608,37 @@ void command_census(const char *path, const char *json_path) {
                  batch.vertices, batch.drawing_vertices, batch.min_x, batch.max_x, batch.min_y, batch.max_y);
     first = false;
   }
-  std::fprintf(file, "],\"composite\":[");
+  std::fprintf(file, "],\"post_chain\":[");
   first = true;
-  for (const GsWetCompositeInfo &info : chains) {
+  for (const GsPostChainInfo &info : chains) {
     std::fprintf(file, "%s{\"scene_vblank\":%llu,\"stream_vblank\":%llu,\"found\":%s,\"refusal\":",
                  first ? "" : ",", static_cast<unsigned long long>(info.scene_vblank),
                  static_cast<unsigned long long>(info.stream_vblank), info.found ? "true" : "false");
     json_string(file, info.refusal);
-    std::fprintf(file, ",\"alpha_clear_sequence\":%u,\"composite_sequence\":%u,\"post_darken_sequence\":%u,"
-                       "\"post_brighten_sequence\":%u,\"unrecognised_full_screen\":%llu}",
+    std::fprintf(file, ",\"full_screen_batches\":%llu,\"unrecognised_full_screen\":%llu,"
+                       "\"alpha_clear_sequence\":%u,\"composite_sequence\":%u,\"post_darken_sequence\":%u,"
+                       "\"post_brighten_sequence\":%u,\"present_sequence\":%u,\"present_dthe\":%llu,"
+                       "\"present_dimx\":%llu,\"present_colclamp\":%llu,\"entries\":[",
+                 static_cast<unsigned long long>(info.full_screen_batches),
+                 static_cast<unsigned long long>(info.unrecognised_full_screen),
                  info.alpha_clear != nullptr ? info.alpha_clear->sequence : 0,
                  info.composite != nullptr ? info.composite->sequence : 0,
                  info.post_darken != nullptr ? info.post_darken->sequence : 0,
                  info.post_brighten != nullptr ? info.post_brighten->sequence : 0,
-                 static_cast<unsigned long long>(info.unrecognised_full_screen));
+                 info.present != nullptr ? info.present->sequence : 0,
+                 static_cast<unsigned long long>(info.present != nullptr ? (info.present->state.dthe & 1u) : 0),
+                 static_cast<unsigned long long>(info.present != nullptr ? info.present->state.dimx : 0),
+                 static_cast<unsigned long long>(info.present != nullptr ? (info.present->state.colclamp & 1u) : 0));
+    bool first_entry = true;
+    for (const GsChainEntry &entry : info.entries) {
+      std::fprintf(file, "%s{\"sequence\":%u,\"op\":", first_entry ? "" : ",", entry.batch->sequence);
+      json_string(file, gs_chain_op_name(entry.op));
+      std::fprintf(file, ",\"after_world\":%s,\"snapshot\":", entry.after_world ? "true" : "false");
+      json_string(file, entry.note);
+      std::fprintf(file, "}");
+      first_entry = false;
+    }
+    std::fprintf(file, "]}");
     first = false;
   }
   std::fprintf(file, "]}\n");

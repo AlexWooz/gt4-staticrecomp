@@ -79,6 +79,24 @@ def stats(name, sel, ref, world, lr, lw):
     return out
 
 
+def reference_variants(ref, bias):
+    """The raw reference dump and the CT16-corrected one.
+
+    The reference frame is a CT16 5-bit scanout: 100% of its values are divisible by 8 and the maximum is 248, so the
+    dump is systematically dark by the truncation+dither bias (3.5..4.5 levels; the study uses +4). The correction is a
+    *measurement* choice, never a change of the raw baseline: every run reports both.
+    """
+    raw = np.clip(ref, 0, 255)
+    corrected = np.clip(ref + bias, 0, 255)
+    return [('raw dump', raw, 0.0), (f'dump + {bias:g} (CT16)', corrected, float(bias))]
+
+
+def quantisation_stats(ref, clean):
+    values = ref[clean]
+    divisible = float((np.mod(values, 8) == 0).mean()) if values.size else float('nan')
+    return dict(fraction_divisible_by_8=divisible, max_value=float(values.max()) if values.size else float('nan'))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('ref')
@@ -88,6 +106,9 @@ def main():
     parser.add_argument('--composite-mask', default=None)
     parser.add_argument('--pages', default=None)
     parser.add_argument('--json', default=None)
+    parser.add_argument('--ref-bias', type=float, default=4.0,
+                        help='the CT16 correction added to the reference (default +4)')
+    parser.add_argument('--only-raw', action='store_true', help='report the raw reference only (the historical output)')
     args = parser.parse_args()
 
     ref = rgb(args.ref)
@@ -97,28 +118,32 @@ def main():
     for x0, y0, x1, y1 in HUD_RECTS:
         hud[y0:y1, x0:x1] = True
     clean = clean & ~np.repeat(np.repeat(hud, 3, 0), 3, 1)
-    lr, lw = luma(ref), luma(world)
-    summary = dict(all=stats('all', clean, ref, world, lr, lw))
-    if args.pages:
-        data = np.load(args.pages)
-        page = np.repeat(np.repeat(data['page'], 3, 0), 3, 1)
-        summary['page36'] = stats('page 0x36D0', clean & (page == 0x36D0), ref, world, lr, lw)
-    if args.composite_mask:
-        composite = mask(args.composite_mask)
-        inside = composite & clean
-        if inside.any():
-            before = luma(world)
-            # The mask PGM stores the destination alpha the composite read (0..255); the added luma is not recoverable
-            # from it alone, so the mask's area and the luma of the world inside it are reported here and the added luma
-            # is printed by the renderer's report (wet composite raster line).
-            summary['composite_mask'] = dict(name='composite mask', pixels=int(composite.sum()),
-                                             pixels_inside_clean=int(inside.sum()),
-                                             area_fraction_of_clean=float(inside.sum() / max(1, int(clean.sum()))),
-                                             luma_world_inside=float(before[inside].mean()),
-                                             luma_ref_inside=float(lr[inside].mean()))
-            print(f'composite mask    px {int(composite.sum())} (inside the clean mask {int(inside.sum())}, '
-                  f'{100.0 * inside.sum() / max(1, int(clean.sum())):.4f}%): world luma '
-                  f'{summary["composite_mask"]["luma_world_inside"]:.2f}, ref {summary["composite_mask"]["luma_ref_inside"]:.2f}')
+    lw = luma(world)
+    variants = [('raw dump', np.clip(ref, 0, 255), 0.0)] if args.only_raw else reference_variants(ref, args.ref_bias)
+    summary = {}
+    for label, reference, bias in variants:
+        lr = luma(reference)
+        block = {'reference': label, 'ref_bias': bias,
+                 'reference_quantisation': quantisation_stats(reference, clean),
+                 'all': stats(f'all [{label}]', clean, reference, world, lr, lw)}
+        if args.pages:
+            data = np.load(args.pages)
+            page = np.repeat(np.repeat(data['page'], 3, 0), 3, 1)
+            block['page36'] = stats(f'page 0x36D0 [{label}]', clean & (page == 0x36D0), reference, world, lr, lw)
+        summary[label] = block
+        if args.composite_mask:
+            composite = mask(args.composite_mask)
+            inside = composite & clean
+            if inside.any():
+                block['composite_mask'] = dict(name='composite mask', pixels=int(composite.sum()),
+                                               pixels_inside_clean=int(inside.sum()),
+                                               area_fraction_of_clean=float(inside.sum() / max(1, int(clean.sum()))),
+                                               luma_world_inside=float(lw[inside].mean()),
+                                               luma_ref_inside=float(lr[inside].mean()))
+                print(f'composite mask    px {int(composite.sum())} (inside the clean mask {int(inside.sum())}, '
+                      f'{100.0 * inside.sum() / max(1, int(clean.sum())):.4f}%): world luma '
+                      f'{block["composite_mask"]["luma_world_inside"]:.2f}, '
+                      f'ref {block["composite_mask"]["luma_ref_inside"]:.2f}')
     if args.json:
         with open(args.json, 'w') as handle:
             json.dump(summary, handle, indent=2)
