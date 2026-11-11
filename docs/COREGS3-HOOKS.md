@@ -2055,7 +2055,103 @@ the PATH1/PATH2 interleaving inside the stream is not in the sidecars, so the pr
 clear is taken from their sequence position and state, not from per-packet job order; the colour replay does not model
 the depth buffer (the world render owns it); the per-page map mixes materials that write no depth (the ABE decals).
 
-## 30. Round 29 (2026-11-11, branch `task/090-live-world`): the captured course drawn in the live present
+## 30. Round 29 (2026-11-11, branch `task/090-crash-race`): the dry-pass crash is a host heap overflow in the timeline pairing, not guest code
+
+The host-clock round left one open lead: the removed per-VBlank counter pass, restored behind `GT4_COREGS3_DRY_PASS=1`,
+died with an access violation at VBlank ~6783, and the round read the crash as a guest/emulator timing race in
+recompiled guest code (`gen::unit_00E0`, guest PC 0x00482674). This round reproduces it, captures the faulting thread
+and address, and closes it with a host bug in the CoreGS 3.0 presentation timeline. No guest code, guest memory
+semantics or renderer gate changed.
+
+### 30.1 The first attribution was a reporting error (C)
+
+The host-clock handler printed the live guest register file (`ps2::g_cpu`) and the guest stack on any process fault.
+Guest recompiled code runs only on the EE thread; the fault was on the **GS worker** (`GsWorker::run`). The guest PC it
+reported (0x00482674, and 0x00455A64 in a traced run of this round) is simply what the EE thread was executing at that
+instant, and the guest stack it walked was the EE thread's. The new diagnostic (`GT4_CRASH_DUMP=1`,
+`native/crash_dump.{hpp,cpp}`) prints the faulting thread id and role, the exception record (code, access type,
+faulting address), the host backtrace as PE offsets, and only then the guest state as context. Every reproduced run
+reports `thread=worker`.
+
+### 30.2 The fault (C)
+
+Three serial dry-pass runs put the fault inside CoreGS 2.0's standard containers on the GS worker, always loading a node
+link of `0xFFFFFFFFFFFFFFFF`:
+
+| Run | Faulting chain |
+|---|---|
+| `build/evidence-crash-race/dry-pass-crash-1` | worker, `mov rax,[rax]` with rax = -1, in an `unordered_map<u64, ...>` rehash (PDB: core2 renderer inline chain) |
+| `build/evidence-crash-race/dry-pass-crash-2` | `GsWorker::run → execute_mtvu_job → gif_now → core2::Renderer::GifTransfer → FrontEnd::GifTransfer → GifParser::Transfer → StripVertices → Kick → FlushBatch → EmitBatch → OnBatch → ProcessBatch → MemoryTexture → ContentKey → blockLists_.try_emplace` (rehash) |
+| `build/evidence-crash-race/dry-noblockver` (`GT4_CORE2_BLOCK_VERSIONS=0`) | `GsWorker::run → vsync_now → hw.flush → core2::Renderer::Flush → TrimTexturePool`, walking `texturePool_` |
+
+A pointer that reads as -1 inside a container's node list is already-corrupted heap, not the container's own logic: the
+renderer runs solely on the GS worker under `backendMutex_`, so the finding is a corrupting write elsewhere.
+
+### 30.3 The corrupting write: the timeline pairing bookkeeping (C)
+
+`interpolate_frame` (`native/coregs3/coregs3_presentation.cpp`) pairs the older and the newer frame by object key. Its
+`used` vector marks the matched objects of the **newer** frame and is indexed with `newer_index`, but it was sized by
+`older.objects.size()`. A match at a newer index at or past the older list's length reads `used[newer_index]` and writes
+`used[newer_index] = 1` past the end of the allocation. The draw list grows between claimed frames at the race start,
+which is exactly where the dry pass (two interpolations per VBlank at 120 Hz, each on the GS worker) reaches the bad
+index. ASan on the fixture (`coregs3_presentation_fixture`, `check_growing_draw_list`): **heap-buffer-overflow READ of
+size 1 at coregs3_presentation.cpp:540, 0 bytes after the 2-byte region allocated at line 534**; the same check with the
+size fixed prints `coregs3 presentation fixture: ok` with no ASan report. Build the ASan control with `/OPT:NOICF`: the
+linker's identical-COMDAT folding merges string literals and template instantiations, and ASan's global metadata then
+disagrees with the merged object (a `strtoul` read past a literal appears, an artifact that disappears with NOICF).
+
+The fix sizes `used` by `newer.objects.size()` (the list it indexes) and is host-only: the pairing for a growing list
+now yields the defined result (objects previously skipped by an out-of-bounds read are matched), it does not touch guest
+memory, the simulation digest or the guest clock, and at 60 Hz every instant still draws the captured matrix exactly.
+The fixture pins the semantics for older `{A, B}` / newer `{new, A, B}` (matches at newer indices 1 and 2) and for an
+empty older frame.
+
+### 30.4 Why the dry pass made it fatal (H)
+
+At 120 Hz the dry pass interpolates every due instant on the GS worker, so the OOB fired on every VBlank for thousands
+of frames; each pass damaged a small allocation, and the first container operation to touch a damaged block died with
+the -1 read. The delivered 120/144 Hz window path calls the same `interpolated_transforms` once per drawn tick, so it
+carried the same latent overflow; the host-clock window runs did not fail, but their heap layout and claim timing
+differ. The fix covers both.
+
+### 30.5 Reproduction and controls
+
+- `GT4_COREGS3_DRY_PASS=1` restores the removed per-instant counter pass (`native/coregs3/coregs3_present.cpp`),
+  diagnostic only; it runs on the GS worker inside `vsync_now`, exactly where the removed code ran.
+- Runs of 9000 frames, 3x night race, headless, 120 Hz present, serial on a quiet machine. A run without the dry pass
+  completes (`control-no-dry-pass`, 7500 frames, exit 0).
+- Pre-fix ASan: the fixture report is `build/evidence-crash-race/asan/fixture-prefix-niocf.txt`; the game under ASan with the
+  dry pass needs the CRT artifacts above silenced and did not reach the race-start window before an unrelated process
+  exit, so the fixture is the ASan control (`asan-game-prefix/log.txt` records that limit).
+- Post-fix acceptance: `GT4_COREGS3_DRY_PASS=1`, 9000 frames, two runs on the acceptance binary
+  (sha256 `9ECE760F448D0DC8A29B996DF18E3A3840B534692092CE7C910D24E0CF59EB00`): `acceptance-9000-run2b` and
+  `acceptance-9000-run3`, both exit 0 with 8,999 frames and 8,999 published snapshots; the third run in
+  `acceptance-9000-run1b` (same solution and game code, before the crash handler's filter change) also passed; the
+  final rebuild after comment-only edits (sha256 `64EA9B2B3A34FFEDBF60A73FAF2984EEF964DE20556F1195B1BE36559336CA2A`)
+  completes once more (`acceptance-9000-run4`).
+- Guest identity of the dry pass: two 7,500-frame dump-at-7400 runs, one with the dry pass and one without, compare the
+  skip table (vblank, rendered, clock, gate, digest, race) and the 128 KiB state dump (131,072 bytes): 7,497 rows identical, 0 clock/digest differences, 0 differing words
+  (`DRY-PASS-IDENTITY-OK`).
+- The first acceptance attempt (`acceptance-9000-run1`) ended at frame 4683 with exit 127 and no dump; its rerun
+  completed, so the attempt is recorded as an invalid run, not as a second failure mode.
+
+### 30.6 Gates
+
+| Gate | Result |
+|---|---|
+| `GT4_COREGS3_DRY_PASS=1` 3x night, 9000 frames, serial | **two runs exit 0** on the acceptance binary (`run2b`, `run3`), a third (`run1b`) on the same game code, and one on the final rebuild (`run4`) |
+| Dry pass vs reference, guest clock/digest/state | `DRY-PASS-IDENTITY-OK` (see 30.5) |
+| CTest coregs3 | **19/19** (new `check_growing_draw_list`) |
+| Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **15/15** |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, reference `coregs3-r8/ref/gt4vulkan.exe`) | `COREGS3-NIGHT-CHECK-OK` |
+| ASan fixture, pre-fix | heap-buffer-overflow at `coregs3_presentation.cpp:540` |
+| ASan fixture, post-fix (`/OPT:NOICF`) | clean: `coregs3 presentation fixture: ok`, exit 0, no report |
+
+Evidence: `build/evidence-crash-race/`. Limits: the exact byte-level path from the overflow to the -1 node link is not
+traced (the crash-site signature and the ASan proof are the evidence); the ASan game run did not reach the race-start
+window; the fix corrects this overflow, not every heap bug in the renderer.
+
+## 31. Round 30 (2026-11-11, branch `task/090-live-world`): the captured course drawn in the live present
 
 One branch from `task/090-coregs3` at `5b82c832` (worktree `O:/Antigavity/gt4-wt-090-live-world`). The offline world
 renderer selects the sky, far underlay, main-view course and reflection passes, decodes their textures and applies the
@@ -2063,7 +2159,7 @@ GS state to a CPU picture. This round draws that world **live**: `GT4_COREGS3=pr
 passes over the CoreGS 2.0 display image before the car pass, with the presentation timeline's matrices, while the
 guest stays bit-exact.
 
-### 30.1 What the live path needs that the offline tool had from files (C)
+### 31.1 What the live path needs that the offline tool had from files (C)
 
 The offline world picture reads three sidecars: the `.gt4scene` frame (draws, items, packets, pass journal), the
 `.gt4tap` (per-item TEX0/TEX1/CLAMP and TEST/ALPHA/FRAME/ZBUF at the draw) and the per-job `.gt4vram` record (the pixels
@@ -2094,7 +2190,7 @@ follows:
   `world_live_job`/`world_live_job_missing`, and the base SLM is left empty on purpose so a texture page no job window
   covers is refused instead of read from a stale copy.
 
-### 30.2 The live world pass (`native/hw_gs/coregs3/hw_coregs3_present.*`, C)
+### 31.2 The live world pass (`native/hw_gs/coregs3/hw_coregs3_present.*`, C)
 
 - **Selection.** The build reuses `coregs3::world_item_exclusion` and `world_shape_status` on the captured frame, with
   an item mask (`MeshOptions::item_mask`, new) so an excluded item is skipped without copying the draw. Meshes are built
@@ -2112,6 +2208,10 @@ follows:
   and the cars occlude each other; the sky (when drawn) uses a second pipeline with depth test and write off, as the
   offline background rule. The presentation timeline's per-object matrix replaces the captured columns on ticks between
   two frames (alpha 0/1 returns the captured matrix).
+- **Per-tick scheduling.** The world is built lazily on a claimed frame's first presentation tick and drawn in
+  `draw_presentation_tick`, the per-tick function the host-clock round introduced: `render_tick` (one picture per
+  display tick, base save/restore between ticks) and the whole-batch `render()` both go through it, so the world
+  follows the host clock without a second scheduling path. The build and the draw share one mutex.
 - **Counters.** `present::WorldFrameCounters` (items, vertices, triangles, atlas, texture live/stale/missing/refused,
   exclusions, sketches) feeds the F8 report; two occlusion queries per tick count the samples that passed the depth
   test for the world and for the cars.
@@ -2120,7 +2220,7 @@ follows:
   cover the whole viewport and hide the base's HUD; the default keeps them off). `GT4_COREGS3_PRESENT_DEBUG=1` prints
   the claimed frame of each drawn tick (the frame-locked evidence instrument).
 
-### 30.3 Measurements (night race, 3x validation scale)
+### 31.3 Measurements (night race, 3x validation scale)
 
 - **Selection and drawing** (VBlanks 6600-7400, 5 builds): 3,853 items, 195,711 mesh vertices, 108,677 triangles,
   5,131 draw calls over 6 ticks, 338 atlas textures, 0 atlas refusals, 0 refused draws; exclusions 1 itop-other,
@@ -2136,17 +2236,20 @@ follows:
   course pass includes the buildings, barriers and billboards behind the road. At claimed frame 7400 against the r8
   reference frame 07400: mean |diff| 20.80, PSNR 16.11 dB, luma world 28.78 / world-off 27.23 / reference 28.45 (the
   world brings the level closer and the structure remains the offline renderer's M1/M2 residual).
+- **Merged tree**: after merging `origin/task/090-coregs3` (host clock + crash fix + HUD A-Spec + texture/mip) the
+  frame-locked window claims the same frames and reproduces the mask and reference numbers above; at 120 Hz the
+  world draws both ticks of each guest frame (world ticks 12 over 6 dumped frames, 15,336 draw calls, 0 refusals).
 - **World-off vs base-present**: the same binary with `GT4_COREGS3_LIVE_WORLD=0` and the base executable differ by
   1,185-1,715 px per frame-locked dump, all inside the car box (x 1075-1607, y 232-862, max delta ~130): the base
   present layer's own cross-run car-overlay nondeterminism (two base runs in the same window differ by 663-1,363 px).
   The guest state, clock, digest and car-pass counters are identical; no world pixel exists in the off path.
-- **Checks**: CTest coregs3 **19/19** (new `native_coregs3_live_world`; `native_coregs3_pass_textures` extended with the
-live binding, journal state and missing-record cases), Python `test_coregs3_units.py` **15/15**, the 3x
+- **Checks**: CTest coregs3 **20/20** (new `native_coregs3_live_world`; `native_coregs3_pass_textures` extended with the
+live binding, journal state and missing-record cases), Python `test_coregs3_units.py` **17/17**, the 3x
 off/shadow identity gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 clock/digest/state
 differences, 13/13 frames identical for off and shadow, capture 4,496,552 B), and the frame-locked A/B and
-world-mask measurements of §30.3..
+world-mask measurements of §31.3.
 
-### 30.4 What is deliberately simplified, and what still assumes 3x
+### 31.4 What is deliberately simplified, and what still assumes 3x
 
 - The sky and far underlay are not drawn by default (they are full-viewport background layers that would hide the
   CoreGS 2.0 base and its HUD); the course is the first live pass. `GT4_COREGS3_WORLD_BACKGROUND=1` restores both.
@@ -2161,3 +2264,4 @@ world-mask measurements of §30.3..
   image's viewport, so 1080p 16:9 and 3440x1440 work without a path change. The **evidence harness** (the r8 reference
   frames and the identity gate) is 3x, and the offline CPU renderer was validated at 3x; neither is used by the live
   path. The occlusion sample counter is a pixel count and is resolution dependent by definition.
+

@@ -450,6 +450,13 @@ void command_census(const char *path, const char *json_path) {
               static_cast<unsigned long long>(census.image_without_transfer_state),
               static_cast<unsigned long long>(census.vertices_without_prim),
               static_cast<unsigned long long>(census.split_packets));
+  // TASK-090 texture mip: the A+D address census names whether the mip base-pointer registers travel through PATH2/3.
+  std::printf("A+D addresses:");
+  for (std::uint32_t address = 0; address < census.ad_address_hist.size(); ++address) {
+    if (census.ad_address_hist[address] == 0) continue;
+    std::printf(" %02X=%llu", address, static_cast<unsigned long long>(census.ad_address_hist[address]));
+  }
+  std::printf("\n");
   // Per-frame rows in capture VBlank order, with the full-screen batches of each.
   for (const auto &entry : census.frames) {
     const GsFrameCensus &row = entry.second;

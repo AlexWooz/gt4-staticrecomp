@@ -452,7 +452,8 @@ void print_presentation(std::FILE *output, const char *label, const Stats &now, 
   if (requests == 0) return;
   const double per = static_cast<double>(requests) * 1000.0;  // microsecond totals to milliseconds per presentation
   std::fprintf(output,
-               "[hw] presentation %s path=%s requests=%llu shown=%llu not_shown=%llu failed=%llu left_out=%llu gs_present_ms=%.3f "
+               "[hw] presentation %s path=%s requests=%llu shown=%llu not_shown=%llu failed=%llu left_out=%llu "
+               "host_clock_pictures=%llu host_clock_late=%llu host_clock_dropped=%llu gs_present_ms=%.3f "
                "gs_wait_ms=%.3f gs_lock_wait_ms=%.3f gs_lock_longest_ms=%.3f gs_queue_calls=%.2f presenter_lock_wait_ms=%.3f "
                "presenter_queue_ms=%.3f presenter_longest_ms=%.3f presenter_display_wait_ms=%.3f\n",
                label, now.present_path, static_cast<unsigned long long>(requests),
@@ -460,6 +461,9 @@ void print_presentation(std::FILE *output, const char *label, const Stats &now, 
                static_cast<unsigned long long>(now.presents_not_shown - was.presents_not_shown),
                static_cast<unsigned long long>(now.presents_failed - was.presents_failed),
                static_cast<unsigned long long>(now.presents_left_out - was.presents_left_out),
+               static_cast<unsigned long long>(now.host_clock_pictures - was.host_clock_pictures),
+               static_cast<unsigned long long>(now.host_clock_late - was.host_clock_late),
+               static_cast<unsigned long long>(now.host_clock_dropped - was.host_clock_dropped),
                (now.gs_present_step_us - was.gs_present_step_us) / per, (now.gs_present_wait_us - was.gs_present_wait_us) / per,
                (now.gs_queue_lock_wait_us - was.gs_queue_lock_wait_us) / per, now.gs_queue_lock_longest_wait_us / 1000.0,
                static_cast<double>(now.gs_queue_calls - was.gs_queue_calls) / static_cast<double>(requests),
@@ -1036,6 +1040,9 @@ private:
 
   // TASK-090 pass textures: copies the texture/palette pages the job's TEX0 writes bind, before the job executes. The
   // job's records are XGKICK output (whole GIF packets, the tap parser's input); their A+D writes carry TEX0_1/2.
+  // TASK-090 texture mip: TEX1 (MXL) and MIPTBP1/2 are tracked in transfer order, so a draw that samples a mip chain
+  // also captures the levels it reads; without them the offline decode falls back to whatever later upload sits at the
+  // level address (the measured road case: another texture's page).
   struct BufferedRecord {
     std::uint8_t path = 0;
     std::size_t offset = 0;
@@ -1044,13 +1051,25 @@ private:
   void SnapshotJobTextures(std::uint64_t job) {
     gt4::coregs3::vram::Window windows[gt4::coregs3::vram::kMaxCaptureWindows] = {};
     std::uint32_t windowCount = 0;
+    std::uint64_t tex1 = 0, miptbp1 = 0, miptbp2 = 0;
     for (const BufferedRecord &buffered : jobRecords_) {
       const gt4::coregs3::GifPacket packet =
           gt4::coregs3::parse_gif(jobBytes_.data() + buffered.offset, buffered.bytes);
       if (!packet.ok) continue;
       for (const gt4::coregs3::GifRegisterWrite &write : packet.ad_writes) {
-        if (write.address == 0x06u || write.address == 0x07u)
-          gt4::coregs3::texture_windows_from_tex0(write.data, windows, windowCount);
+        switch (write.address) {
+          case 0x06u:
+          case 0x07u:
+            gt4::coregs3::texture_windows_from_state(write.data, tex1, miptbp1, miptbp2, windows, windowCount);
+            break;
+          case 0x14u:
+          case 0x15u: tex1 = write.data; break;
+          case 0x34u:
+          case 0x35u: miptbp1 = write.data; break;
+          case 0x36u:
+          case 0x37u: miptbp2 = write.data; break;
+          default: break;
+        }
       }
     }
     if (windowCount == 0) return;

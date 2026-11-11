@@ -490,7 +490,7 @@ add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_chain.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
     coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_presentation.cpp
-    coregs3/coregs3_present.cpp
+    coregs3/coregs3_host_clock.cpp coregs3/coregs3_present.cpp
     coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp
     coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp coregs3/coregs3_gsstream_file.cpp
     coregs3/coregs3_gsdecode.cpp coregs3/coregs3_wet_composite.cpp coregs3/coregs3_live_world.cpp)
@@ -508,7 +508,7 @@ if(GT4_HW_GS)
     # texture table (coregs3_texture_frame.cpp) calls the decoder and is guarded by the same condition and define.
     target_sources(gt4_coregs3 PRIVATE coregs3/coregs3_texture.cpp coregs3/coregs3_texture_frame.cpp
                    coregs3/coregs3_hud.cpp)
-    target_link_libraries(gt4_coregs3 PUBLIC gt4_hw_core hw_gs_replace)
+    target_link_libraries(gt4_coregs3 PUBLIC gt4_hw_core hw_gs_replace hw_gs_lod)
     target_compile_definitions(gt4_coregs3 PUBLIC GT4_COREGS3_TEXTURES)
     target_link_libraries(gt4_gs_stream_client PUBLIC gt4_hw_stream_sink)
     target_compile_definitions(gt4_gs_stream_client PRIVATE GT4_GS_STREAM_HW)
@@ -989,7 +989,8 @@ endif()
 # unchanged with `main` renamed, and game_main.cpp calls it: with an ELF argument exactly as before, without one (a double click)
 # after the standalone rules of standalone.cpp built the command line and environment the launcher would have passed.
 set_source_files_properties("${PORT}/main.cpp" PROPERTIES COMPILE_DEFINITIONS "main=gt4_donor_main")
-add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.cpp ${GT4VULKAN_RESOURCES})
+add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.cpp crash_dump.cpp
+               ${GT4VULKAN_RESOURCES})
 # TASK-159: the host side of the call that scripts/camera360_units.py adds to the translated chase camera. An EE library built
 # from those units needs it; one built from the plain units leaves it unused.
 target_sources(gt4vulkan PRIVATE camera_360_hook.cpp fov_adjust_hook.cpp)
@@ -1134,6 +1135,12 @@ add_executable(coregs3_presentation_fixture coregs3/coregs3_presentation_fixture
 target_link_libraries(coregs3_presentation_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_presentation_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_presentation COMMAND $<TARGET_FILE:coregs3_presentation_fixture>)
+# TASK-090: the host presentation clock (native/coregs3/coregs3_host_clock.hpp): display period, due ticks, stale,
+# skipped and late ticks, no instant twice, no backwards show time.
+add_executable(coregs3_host_clock_fixture coregs3/coregs3_host_clock_fixture.cpp)
+target_link_libraries(coregs3_host_clock_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_host_clock_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_host_clock COMMAND $<TARGET_FILE:coregs3_host_clock_fixture>)
 # TASK-090 texture round 15: the measured model UV convention (signed 16-bit / 4096, no V flip) and the PACKED GIF
 # RGBAQ/ST/UV/A+D decode of the VU1 tap parser, on hand-authored packets.
 add_executable(coregs3_texture_fixture coregs3/coregs3_texture_fixture.cpp)

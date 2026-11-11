@@ -531,7 +531,10 @@ void interpolate_frame(const TimelineFrame &older, const CameraFrame &older_came
   }
 
   // Pair the two frames by the timeline's stable identity, in the older frame's order, without collapsing instances.
-  std::vector<char> used(older.objects.size(), 0);
+  // `used` marks the matched objects of the NEWER frame and is indexed by newer_index below, so it is sized by the newer
+  // list: sized by the older one, a match at a newer index at or past the older length reads and writes past the end
+  // (the TASK-090 crash-race heap overflow; a growing draw list at the race start triggered it).
+  std::vector<char> used(newer.objects.size(), 0);
   std::vector<const ObjectTransform *> matched(newer.objects.size(), nullptr);
   std::uint64_t paired = 0;
   for (std::size_t older_index = 0; older_index < older.objects.size(); ++older_index) {

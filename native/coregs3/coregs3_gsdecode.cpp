@@ -762,7 +762,8 @@ bool is_frame_sample_batch(const GsDecodeBatch &batch) {
 
 // The CT16 present blit: page 210 sampled 1:1 with the neutral vertex colour (128,128,128,128), no blend, into one of
 // the two CT16 display buffers (FBP 140 or FBP 0, FBW 10, PSM 2). This is the operation that produces the scanout image
-// the reference dump holds; its DTHE/DIMX state is the captured dither.
+// the reference dump holds; its DTHE/DIMX state is the captured dither. The measured ALPHA register is 0x44 in the
+// night B-Spec stream and 0x48 in the A-Spec race (B = zero instead of Cd); with ABE off both copy the sampled texel.
 bool is_present_batch(const GsDecodeBatch &batch) {
   const GsDecodeState &state = batch.state;
   const bool colour = (state.rgba & 0xFFFFFFFFu) == 0x80808080u;  // R 128, G 128, B 128, A 128
@@ -774,8 +775,8 @@ bool is_present_batch(const GsDecodeBatch &batch) {
          state.tex0_tcc() == 1 && state.tex0_tfx() == 0 && state.tex1_mmag() == 0 && state.tex1_mmin() == 0 &&
          state.tex1_mxl() == 0 && state.clamp_wms() == 2 && state.clamp_wmt() == 2 && state.clamp_minu() == 0 &&
          state.clamp_maxu() == 639 && state.clamp_minv() == 0 && state.clamp_maxv() == 447 &&
-         state.alpha_a() == 0 && state.alpha_b() == 1 && state.alpha_c() == 0 && state.alpha_d() == 1 &&
-         state.test_ate() == 0 && state.zbuf_zmsk() == 1;
+         state.alpha_a() == 0 && (state.alpha_b() == 1 || state.alpha_b() == 2) && state.alpha_c() == 0 &&
+         state.alpha_d() == 1 && state.test_ate() == 0 && state.zbuf_zmsk() == 1;
 }
 
 // A full-screen clear of one target: PRIM sprite, TME and ABE off, the black + alpha 0 vertex colour, and the given

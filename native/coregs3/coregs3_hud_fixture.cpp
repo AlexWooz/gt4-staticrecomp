@@ -8,10 +8,12 @@
 //     before the digits;
 //   * the raster applies MODULATE, the normal ALPHA blend and the display buffer's CT16 model, and fills the mask;
 //   * every refusal is named and counted (no tap, no plate, an unmeasured texture format, an untextured draw).
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -313,8 +315,9 @@ void test_stream_vram_and_texture() {
   const HudTexture &refused = cache.get(direct, error);
   check(refused.status == HudTextureStatus::refused_format, "a CT32 HUD texture is refused as unmeasured");
   check(cache.refusals() == 1, "the refusal is counted");
-  // A constant page (the font atlas uploaded before the captured window) is refused, never drawn as a solid box.
-  std::vector<std::uint8_t> empty_page(8 * 8 / 2, 0x00);
+  // A constant page the stream did NOT upload as texels (here the page bytes arrive through a CT32 transfer, the shape
+  // of the night B-Spec font's palette bundle) keeps the S3 refusal, never drawn as a solid box.
+  std::vector<std::uint8_t> empty_page(16 * 16 * 4, 0x00);
   std::vector<std::uint8_t> white_palette(16 * 16 * 4, 0xFF);
   std::vector<GsDecodeImageUpload> empty_uploads;
   GsDecodeImageUpload empty_upload;
@@ -322,9 +325,9 @@ void test_stream_vram_and_texture() {
   empty_upload.has_transfer_state = true;
   empty_upload.dbp = 0x0120;
   empty_upload.dbw = 1;
-  empty_upload.dpsm = 0x14;
-  empty_upload.rrw = 8;
-  empty_upload.rrh = 8;
+  empty_upload.dpsm = 0x00;  // CT32: covers the blocks but is not a T4/T8 texel upload
+  empty_upload.rrw = 16;
+  empty_upload.rrh = 16;
   empty_upload.data = empty_page;
   empty_uploads.push_back(empty_upload);
   GsDecodeImageUpload empty_palette = empty_upload;
@@ -344,9 +347,31 @@ void test_stream_vram_and_texture() {
   empty_state.clamp = 2ull | (2ull << 2) | (7ull << 14) | (7ull << 34);
   HudTextureCache empty_cache(empty_slm);
   const HudTexture &constant = empty_cache.get(empty_state, error);
-  check(constant.status == HudTextureStatus::refused_state, "a constant page is refused");
+  check(constant.status == HudTextureStatus::refused_state, "a constant page without a texel upload is refused");
   check(error.find("font atlas is uploaded before the captured window") != std::string::npos,
         "the constant-page refusal names the measured reason");
+
+  // TASK-090 HUD A-Spec: the same constant page sent as a T4 texel upload is real captured content (the A-Spec gear
+  // box and map dot are solid pages), so it decodes as a legitimate solid texture instead of the S3 refusal.
+  std::vector<std::uint8_t> t4_page(8 * 8 / 2, 0x00);
+  std::vector<GsDecodeImageUpload> texel_uploads;
+  GsDecodeImageUpload texel_upload = empty_upload;
+  texel_upload.dpsm = 0x14;
+  texel_upload.rrw = 8;
+  texel_upload.rrh = 8;
+  texel_upload.data = t4_page;
+  texel_uploads.push_back(texel_upload);
+  GsDecodeImageUpload texel_palette = empty_palette;
+  texel_palette.dbp = 0x0130;
+  texel_uploads.push_back(texel_palette);
+  SlmImage texel_slm;
+  HudUploadCounters texel_counters;
+  check(build_hud_stream_vram(texel_uploads, 101, false, texel_slm, texel_counters, error),
+        "the T4 constant page uploads build");
+  HudTextureCache texel_cache(texel_slm);
+  const HudTexture &solid = texel_cache.get(empty_state, error);
+  check(solid.status == HudTextureStatus::ok, "a constant page with a captured T4 texel upload decodes");
+  check(texel_cache.refusals() == 0, "the texel-sourced constant page is not counted as a refusal");
 }
 
 void test_panel_selection_and_merge() {
@@ -416,6 +441,9 @@ void test_raster_and_ct16() {
   std::vector<std::uint8_t> mask;
   HudDrawCounters counters;
   std::string error;
+  HudDrawOptions identity;  // the fixture target is also the 2D canvas: the measured 1x rule
+  identity.canvas_width = 16;
+  identity.canvas_height = 16;
   // A 4x4 T4 page: every texel is index 1 except host texel (3,3) = index 2 (byte 7's high nibble), so the decoded
   // page is not the measured "constant page" refusal; the sprite's nearest samples read texels 0..1, all index 1.
   std::vector<std::uint8_t> texels(4 * 4 / 2, 0x11);
@@ -446,7 +474,7 @@ void test_raster_and_ct16() {
   HudUploadCounters upload_counters;
   check(build_hud_stream_vram(uploads, 1, false, slm, upload_counters, error), "the raster texture uploads build");
   HudTextureCache cache(slm);
-  check(draw_hud_panel(panel, cache, rgba, 16, 16, HudDrawOptions{}, &mask, counters, error), "the panel rasters");
+  check(draw_hud_panel(panel, cache, rgba, 16, 16, identity, &mask, counters, error), "the panel rasters");
   check(counters.pixels == 4 && counters.masked_pixels == 4, "the 2x2 sprite writes four pixels");
   check(counters.refused == 0, "no raster refusal in the measured set");
   // MODULATE with vertex 128: 200*128>>7 = 200, 100, 50; alpha 128*128>>7 = 128. The destination is CT16-expanded 32,
@@ -456,6 +484,252 @@ void test_raster_and_ct16() {
         "the blended pixel is the measured normal blend in the CT16 display buffer");
   check(mask[10 * 16 + 10] == 255, "the mask marks the written pixel");
   check(counters.blended == 4, "the blend is counted");
+
+  // TASK-214: the same 2x2 canvas sprite rendered at a 3x output. Each target pixel centre maps back to the canvas, so
+  // the box [10,12) x [10,12) covers target pixels 31..36 on both axes (36 pixels), and the first covered pixel is the
+  // one whose centre lands exactly on the canvas 10.0.
+  std::vector<std::uint8_t> scaled(48 * 48 * 4, 32);
+  std::vector<std::uint8_t> scaled_mask;
+  HudDrawCounters scaled_counters;
+  HudDrawOptions three_x;
+  three_x.canvas_width = 16;
+  three_x.canvas_height = 16;
+  check(draw_hud_panel(panel, cache, scaled, 48, 48, three_x, &scaled_mask, scaled_counters, error),
+        "the panel rasters at the 3x output");
+  check(scaled_counters.pixels == 36 && scaled_counters.masked_pixels == 36,
+        "the 3x output covers 6x6 target pixels of the 2x2 canvas box");
+  check(scaled_mask[31 * 48 + 31] == 255 && scaled_mask[36 * 48 + 36] == 255,
+        "the 3x coverage starts at the target pixel whose centre is the canvas corner 10.0");
+  check(scaled_mask[30 * 48 + 31] == 0 && scaled_mask[37 * 48 + 37] == 0,
+        "the 3x coverage is half-open: the pixels outside the canvas box are not written");
+
+  // TASK-090 HUD A-Spec: the untextured Gouraud triangle strip (a gauge needle). A 4-vertex strip covering the 8x8
+  // canvas box 4..12 must write exactly 64 pixels (the shared diagonal edge once) and interpolate the vertex colours.
+  HudDraw needle;
+  needle.state.prim = 0x44;  // tri-strip, ABE on, TME off
+  needle.state.alpha = 0x44;  // (Cs - Cd) * As + Cd
+  needle.state.test = 0;     // ATE off (the measured needle state)
+  needle.state.scissor = 0x01BF0000027F0000ull;
+  needle.untextured_strip = true;
+  needle.vertices = 4;
+  needle.verts[0] = HudVertex{4.0f, 4.0f, 0.0f, 0.0f, 0x800000C8u, true};   // R 200, A 128
+  needle.verts[1] = HudVertex{12.0f, 4.0f, 0.0f, 0.0f, 0x800000C8u, true};
+  needle.verts[2] = HudVertex{4.0f, 12.0f, 0.0f, 0.0f, 0x80004040u, true};  // R 64
+  needle.verts[3] = HudVertex{12.0f, 12.0f, 0.0f, 0.0f, 0x80004040u, true};
+  needle.min_x = 4.0f;
+  needle.max_x = 12.0f;
+  needle.min_y = 4.0f;
+  needle.max_y = 12.0f;
+  HudPanel needle_panel;
+  needle_panel.draws.push_back(needle);
+  std::vector<std::uint8_t> needle_target(16 * 16 * 4, 32);
+  std::vector<std::uint8_t> needle_mask;
+  HudDrawCounters needle_counters;
+  check(draw_hud_panel(needle_panel, cache, needle_target, 16, 16, identity, &needle_mask, needle_counters, error),
+        "the untextured needle strip rasters");
+  check(needle_counters.pixels == 64 && needle_counters.masked_pixels == 64,
+        "the 8x8 needle quad writes 64 pixels with its shared edge once");
+  check(needle_counters.refused == 0, "no needle raster refusal");
+  // The strip runs from R 200 at the top to R 64 at the bottom; the normal blend over the 32 destination writes
+  // (R - 32) * 128 / 128 + 32 = R, and the CT16 store keeps 5 bits: 200 at the top row and 64 at the bottom row.
+  const std::uint8_t *needle_top = needle_target.data() + (4 * 16 + 4) * 4u;
+  const std::uint8_t *needle_bottom = needle_target.data() + (11 * 16 + 4) * 4u;
+  // The top row sits on the R 200 vertices; (11,11) has the barycentric weights 1/8 (TR 200), 3/4 (BR 64), 1/8 (BL 64)
+  // = 81, stored as the CT16 5-bit value 80.
+  check(needle_top[0] == 200 && needle_bottom[0] == 80, "the strip interpolates the vertex colours and blends once");
+  check(needle_mask[4 * 16 + 4] == 255 && needle_mask[11 * 16 + 11] == 255, "the strip mask marks the covered pixels");
+
+  // The measured needle ALPHA 0x64 = (Cs-Cd)*FIX+Cd with FIX 21/128 must blend instead of being refused: at the top
+  // vertex, (200-32)*21>>7 + 32 = 59, stored as the CT16 value 56.
+  HudDraw fix_needle = needle;
+  fix_needle.state.alpha = 0x0000001500000064ull;
+  HudPanel fix_panel;
+  fix_panel.draws.push_back(fix_needle);
+  std::vector<std::uint8_t> fix_target(16 * 16 * 4, 32);
+  HudDrawCounters fix_counters;
+  check(draw_hud_panel(fix_panel, cache, fix_target, 16, 16, identity, nullptr, fix_counters, error),
+        "the FIX-family needle strip rasters");
+  check(fix_counters.pixels == 64 && fix_counters.refused == 0, "the FIX-family strip writes the 8x8 quad");
+  check(fix_target[(4 * 16 + 4) * 4u] == 56, "the FIX-family strip blends (Cs-Cd)*FIX+Cd");
+}
+
+void test_font_atlas_page() {
+  // The GT4F sidecar: the measured GT4meter T4 page (128x128, 8192 bytes) plus its measured geometry. The page content
+  // here is hand-authored: index 0 everywhere, index 1 in the top-left 4x4 texels (so the decoded page is not constant).
+  constexpr std::uint32_t tbp0 = 0x3A20u, cbp = 0x3A27u;
+  std::vector<std::uint8_t> linear(128 * 128 / 2, 0);
+  for (int y = 0; y < 4; ++y)
+    for (int x = 0; x < 4; ++x) {
+      const std::size_t index = static_cast<std::size_t>(y) * 128u + static_cast<std::size_t>(x);
+      if ((index & 1u) == 0) linear[index / 2] |= 1;
+      else linear[index / 2] |= 0x10;
+    }
+  hwgs::memory::LocalMemory page_memory;
+  hwgs::memory::hostToLocal(page_memory, hwgs::memory::BufferView{0, 2, hwgs::memory::Psm::T4},
+                            hwgs::memory::TransferRect{0, 0, 128, 128}, std::span<const std::uint8_t>(linear));
+  std::vector<std::uint8_t> page(page_memory.bytes().begin(), page_memory.bytes().begin() + 8192);
+
+  std::vector<std::uint8_t> file;
+  put_u32(file, 0x46345447u);  // 'GT4F'
+  put_u32(file, 1u);
+  put_u32(file, tbp0);
+  put_u32(file, 2u);  // TBW
+  put_u32(file, 7u);  // TW
+  put_u32(file, 6u);  // TH
+  put_u64(file, 0x00000098001FC00Aull);  // CLAMP 0..127 x 0..38
+  put_u32(file, 8192u);
+  put_u32(file, 0u);
+  file.insert(file.end(), page.begin(), page.end());
+  HudFontAtlas atlas;
+  std::string error;
+  check(parse_hud_font_atlas(file, atlas, error), "the measured GT4F font atlas parses");
+  check(atlas.tbp0 == tbp0 && atlas.tw == 7u && atlas.th == 6u && atlas.page.size() == 8192u,
+        "the atlas carries the measured page and geometry");
+  // Every field outside the measured geometry is refused by name.
+  HudFontAtlas scratch;
+  std::vector<std::uint8_t> bad = file;
+  bad[0] = 0;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("bad magic") != std::string::npos,
+        "a bad GT4F magic is refused");
+  bad = file;
+  bad[4] = 2;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("version") != std::string::npos,
+        "an unknown GT4F version is refused");
+  bad = file;
+  bad[36] = 1;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("reserved") != std::string::npos,
+        "a nonzero reserved word is refused");
+  bad = file;
+  bad[16] = 6;  // TW 6
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("geometry") != std::string::npos,
+        "a page geometry that is not the measured 128x64 is refused");
+  bad = file;
+  bad[26] = 0;  // CLAMP maxu bits 16..23: 127 becomes 3
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("CLAMP") != std::string::npos,
+        "a CLAMP region outside the measured 0..127 x 0..38 is refused");
+  bad = file;
+  bad[33] = 0;  // page_bytes 0x2000 -> 0x0000
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("page size") != std::string::npos,
+        "a page size other than 8192 is refused");
+  bad = file;
+  bad.resize(file.size() - 4);
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("truncated") != std::string::npos,
+        "a truncated page is refused");
+  bad = file;
+  bad[8] = 0xF0;  // TBP0 0x3FF0: the 32-block page would run past the 4 MiB image
+  bad[9] = 0x3F;
+  check(!parse_hud_font_atlas(bad, scratch, error) && error.find("outside the 4 MiB image") != std::string::npos,
+        "a page outside the local memory is refused");
+
+  // Apply: the palette bank the draw samples (the 64 bytes at CBP) is preserved across the page write, and the page's
+  // blocks become covered.
+  SlmImage slm;
+  std::vector<std::uint8_t> palette_bank(64);
+  for (std::size_t index = 0; index < palette_bank.size(); ++index)
+    palette_bank[index] = static_cast<std::uint8_t>(index * 3u + 1u);
+  std::copy(palette_bank.begin(), palette_bank.end(),
+            slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(cbp) * 256u));
+  check(apply_hud_font_atlas(atlas, slm, atlas.tbp0, cbp, error), "the font atlas applies to the local memory");
+  std::vector<std::uint8_t> expected_page = page;
+  std::copy(palette_bank.begin(), palette_bank.end(),
+            expected_page.begin() + static_cast<std::ptrdiff_t>((static_cast<std::size_t>(cbp - tbp0)) * 256u));
+  check(std::equal(expected_page.begin(), expected_page.end(),
+                   slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(tbp0) * 256u)),
+        "the page bytes land at the atlas TBP0 (the preserved bank excepted)");
+  check(std::equal(palette_bank.begin(), palette_bank.end(),
+                   slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(cbp) * 256u)),
+        "the 16-entry CSM1 palette bank is preserved across the page write");
+  check(slm.covers(tbp0) && slm.covers(tbp0 + 31u) && !slm.covers(tbp0 + 32u),
+        "the atlas covers exactly its 32 blocks");
+  // The GT4meter page rotates through VRAM: the A-Spec digits sample it at another page than the sidecar's TBP0.
+  SlmImage rotated;
+  check(apply_hud_font_atlas(atlas, rotated, tbp0 + 0x40u, cbp, error),
+        "the atlas applies at a rotated page (the A-Spec TBP0 rule)");
+  check(rotated.covers(tbp0 + 0x40u) && rotated.covers_texels(tbp0 + 0x40u) && !rotated.covers(tbp0),
+        "the rotated page is covered as texel content and the original page is untouched");
+  HudFontAtlas out_of_range = atlas;
+  out_of_range.tbp0 = 0x3FF0u;
+  SlmImage other;
+  check(!apply_hud_font_atlas(out_of_range, other, out_of_range.tbp0, cbp, error) &&
+            error.find("outside the 4 MiB image") != std::string::npos,
+        "an atlas page outside the image is refused on apply");
+
+  // The applied page decodes through the same T4 record path the digits use; the 4x4 index-1 block reads the palette
+  // bank at CBP, so the decoded page is not the constant-page refusal.
+  // The hand palette mirrors the measured GT4meter bank: white RGB with the alpha carrying the glyph coverage.
+  std::vector<std::uint8_t> palette(16 * 16 * 4, 0);
+  for (int entry = 0; entry < 256; ++entry) {
+    const int x = (entry & 7) + 8 * ((entry >> 4) & 1);
+    const int y = 2 * (entry >> 5) + ((entry >> 3) & 1);
+    std::uint8_t *pixel = palette.data() + (static_cast<std::size_t>(y) * 16 + x) * 4u;
+    pixel[0] = 255;
+    pixel[1] = 255;
+    pixel[2] = 255;
+    pixel[3] = static_cast<std::uint8_t>(entry == 0 ? 0 : 128);
+  }
+  SlmImage decoded_slm;
+  std::copy(page.begin(), page.end(),
+            decoded_slm.local.bytes().begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(tbp0) * 256u));
+  hwgs::memory::hostToLocal(decoded_slm.local, hwgs::memory::BufferView{cbp, 1, hwgs::memory::Psm::Ct32},
+                            hwgs::memory::TransferRect{0, 0, 16, 16}, std::span<const std::uint8_t>(palette));
+  decoded_slm.cover(vram::Window{tbp0, 32u});
+  decoded_slm.cover(vram::Window{cbp, 4u});
+  HudDrawState state;
+  state.tex0 = tbp0 | (2ull << 14) | (0x14ull << 20) | (7ull << 26) | (6ull << 30) | (1ull << 34) |
+               (static_cast<std::uint64_t>(cbp) << 37);
+  state.tex1 = 0x60;
+  state.clamp = 0x00000098001FC00Aull;
+  HudTextureCache cache(decoded_slm);
+  cache.set_font_atlas_page(tbp0);
+  const HudTexture &texture = cache.get(state, error);
+  check(texture.status == HudTextureStatus::ok, "the applied T4 font page decodes through the record path");
+  if (texture.status == HudTextureStatus::ok) {
+    check(texture.width == 128 && texture.height == 39, "the decoded font page is the measured 128x39 region");
+    const std::uint8_t *texel = texture.rgba.data();
+    check(texel[0] == 255 && texel[1] == 255 && texel[2] == 255 && texel[3] == 128,
+          "the index-1 glyph texel samples the preserved palette bank");
+  }
+  check(cache.refusals() == 0, "the applied font page is not refused");
+  // Without the atlas flag (the stream-only A/B), the same white-alpha page keeps the S3 RGB-constant refusal.
+  HudTextureCache stream_only(decoded_slm);
+  const HudTexture &refused_again = stream_only.get(state, error);
+  check(refused_again.status == HudTextureStatus::refused_state,
+        "a white-alpha page without the atlas flag keeps the S3 constant-page refusal");
+}
+
+void test_panel_census() {
+  // TASK-090 HUD A-Spec: the census enumerates the panel range without an element selection, with the PATH1 plate of
+  // the tap and every PATH2 sprite, each carrying its captured state.
+  const std::uint64_t stream = 101;
+  std::vector<GsDecodeBatch> batches;
+  batches.push_back(present_blit(stream));
+  batches.push_back(panel_sprite(stream, 1102, 567.75f, 382.5f, 578.25f, 400.5f, 0x3A20u, 127, 38, 460653,
+                                 0x004C002D027F0000ull));
+  batches.push_back(panel_sprite(stream, 1096, 39.9f, 45.5f, 57.9f, 74.5f, 0x39A0u, 94, 127, 460645,
+                                 0x004C002D027F0000ull));
+  batches.push_back(panel_clear(stream));
+  std::vector<std::uint8_t> tap_data;
+  std::vector<TapFileRecord> tap_records;
+  build_tap(tap_data, tap_records);
+  HudCensus census;
+  std::string error;
+  check(build_hud_census(batches, tap_data, tap_records, stream, census, error), "the panel census builds");
+  check(census.path2_batches == 2u && census.path2_drawing == 2u, "the census counts the two panel sprites");
+  check(census.path1_display_draws == 1u && census.path1_axis_aligned == 1u, "the census counts the axis-aligned plate");
+  check(census.entries.size() == 3u, "the census has the two sprites and the plate");
+  if (census.entries.size() == 3u) {
+    check(!census.entries[0].path1 && census.entries[0].sequence == 1096u, "the lower-job sprite comes first");
+    check(census.entries[1].path1 && census.entries[1].axis_aligned && census.entries[1].state.tex0_psm() == 0x13u,
+          "the plate quad is the PATH1 entry, axis aligned, with its T8 state");
+    check(!census.entries[2].path1 && census.entries[2].sequence == 1102u &&
+              census.entries[2].state.tex0_tbp0() == 0x3A20u,
+          "the digit sprite carries its captured TEX0 page");
+  }
+  // No present blit: the census refuses with a named reason instead of guessing a range.
+  HudCensus missing;
+  std::vector<GsDecodeBatch> no_present(batches.begin() + 1, batches.end());
+  check(!build_hud_census(no_present, tap_data, tap_records, stream, missing, error),
+        "a census without the present blit is refused");
 }
 
 void test_names() {
@@ -470,7 +744,9 @@ void test_names() {
 int main() {
   test_names();
   test_stream_vram_and_texture();
+  test_font_atlas_page();
   test_panel_selection_and_merge();
+  test_panel_census();
   test_raster_and_ct16();
   if (failures != 0) {
     std::fprintf(stderr, "%d HUD check(s) failed\n", failures);

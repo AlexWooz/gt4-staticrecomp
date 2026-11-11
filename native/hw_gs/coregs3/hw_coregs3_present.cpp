@@ -258,7 +258,8 @@ struct PresentLayer::Impl {
 
   // Reused between frames: the claim swaps the ring's buffers into these vectors, and build_frame refills them.
   gt4::coregs3::FrameSnapshot frame;
-  bool has_frame = false;  // at least one complete frame was claimed
+  bool has_frame = false;      // at least one complete frame was claimed
+  bool frame_drew_any = false;  // a tick of this guest frame already saved the composed base image
   std::vector<PresentVertex> vertices;
   std::vector<DrawRange> ranges;
   std::vector<gt4::coregs3::DrawTransform> transforms;  // the presentation instant's per-object matrices
@@ -1436,8 +1437,13 @@ struct PresentLayer::Impl {
       error = "the CoreGS 3.0 present layer is not initialised";
       return false;
     }
-    if (!gt4::coregs3::present::claim_latest(frame)) return true;  // no new complete frame
+    if (!gt4::coregs3::present::claim_latest(frame)) {
+      // No new complete frame: the previous batch must not be drawn (or presented) again.
+      gt4::coregs3::present::clear_host_clock_plan();
+      return true;
+    }
     has_frame = true;
+    frame_drew_any = false;
     gt4::coregs3::present::note_guest_frame(frame);
     if (live_world_enabled) {
       // The build itself is lazy (render() runs it when a tick is due), so a headless run that draws one frame in 200
@@ -1704,6 +1710,45 @@ struct PresentLayer::Impl {
     return true;
   }
 
+  // One presentation tick of `batch`: interpolates the instant, builds its mesh and draws it over `target`. A tick with
+  // nothing drawable is counted and leaves `target` as it was; the caller then decides whether to present it. The first
+  // drawn tick of a guest frame saves the composed image as the base (draw_tick's `first_tick`), so drawing tick k,
+  // handing its image to the presenter and then drawing tick k+1 does not leave ghosts.
+  bool draw_presentation_tick(std::uint32_t tick, const gt4::coregs3::PresentationClock::Due &batch, std::uint64_t target,
+                              std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit, bool &drew,
+                              std::string &error) {
+    drew = false;
+    // TASK-090 live world: the world build of a newly claimed frame happens on its first presentation tick, and the
+    // built ranges/vertices/atlas are used by every tick of that frame; one mutex covers the build and the draw. The
+    // host clock calls this once per tick, so a tick handed to the presenter and the next one see the same world.
+    const std::lock_guard<std::mutex> world_lock(world_mutex);
+    if (live_world_enabled && world_pending) {
+      build_world();
+      world_pending = false;
+    }
+    const std::uint64_t instant = batch.first + static_cast<std::uint64_t>(tick) * batch.step;
+    gt4::coregs3::present::interpolated_transforms(instant, transforms, /*count=*/true);
+    std::uint32_t refused = 0;
+    std::uint32_t unlit_draws = 0;
+    std::uint64_t unlit_vertices = 0;
+    gt4::coregs3::LightCounters lighting;
+    const bool car_drawn =
+        frame.draw_count != 0 &&
+        build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices, lighting);
+    if (!car_drawn) gt4::coregs3::present::note_pass_refused(refused);
+    const bool world_drawn = live_world_enabled && world_valid && !world_ranges.empty();
+    if (!car_drawn && !world_drawn) return true;
+    if (!draw_tick(target, width, height, submit, !frame_drew_any, error)) return false;
+    frame_drew_any = true;
+    drew = true;
+    gt4::coregs3::present::note_draw_tick();
+    if (world_drawn) gt4::coregs3::present::note_world_tick(last_world_draw_calls, last_world_samples);
+    const std::uint64_t vertex_count = static_cast<std::uint64_t>(vertices.size());
+    gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused, unlit_draws,
+                                      vertex_count, unlit_vertices, vertex_count / 3u, lighting);
+    return true;
+  }
+
   bool render(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
               std::string &error) {
     if (!initialised) {
@@ -1728,38 +1773,29 @@ struct PresentLayer::Impl {
                    static_cast<unsigned long long>(batch.first));
     if (!ensure_depth(width, height, error)) return false;
     if (!ensure_base_image(width, height, error)) return false;
-    bool drew_any = false;
-    // The world build and the tick's draw share the built ranges, vertices and atlas; one mutex covers both sides. The
-    // build is lazy: a new claimed frame is built here, on the first tick that actually draws, never on the guest's
-    // VBlank path.
-    const std::lock_guard<std::mutex> world_lock(world_mutex);
-    if (live_world_enabled && world_pending) {
-      build_world();
-      world_pending = false;
-    }
+    frame_drew_any = false;  // a whole-batch render draws one guest frame
     for (std::uint32_t tick = first_tick; tick < first_tick + tick_count; ++tick) {
-      const std::uint64_t instant = batch.first + static_cast<std::uint64_t>(tick) * batch.step;
-      gt4::coregs3::present::interpolated_transforms(instant, transforms, /*count=*/true);
-      std::uint32_t refused = 0;
-      std::uint32_t unlit_draws = 0;
-      std::uint64_t unlit_vertices = 0;
-      gt4::coregs3::LightCounters lighting;
-      const bool car_drawn =
-          frame.draw_count != 0 &&
-          build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices, lighting);
-      if (!car_drawn) gt4::coregs3::present::note_pass_refused(refused);
-      const bool world_drawn = live_world_enabled && world_valid && !world_ranges.empty();
-      if (!car_drawn && !world_drawn) continue;
-      if (!draw_tick(target, width, height, submit, !drew_any, error)) return false;
-      drew_any = true;
-      gt4::coregs3::present::note_draw_tick();
-      if (world_drawn)
-        gt4::coregs3::present::note_world_tick(last_world_draw_calls, last_world_samples);
-      const std::uint64_t vertex_count = static_cast<std::uint64_t>(vertices.size());
-      gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused, unlit_draws,
-                                        vertex_count, unlit_vertices, vertex_count / 3u, lighting);
+      bool drew = false;
+      if (!draw_presentation_tick(tick, batch, target, width, height, submit, drew, error)) return false;
+    }
     }
     return true;
+  }
+
+  bool render_tick(std::uint64_t target, std::uint32_t width, std::uint32_t height, std::uint32_t tick,
+                   const SubmitOverlay &submit, bool &drew, std::string &error) {
+    drew = false;
+    if (!initialised) {
+      error = "the CoreGS 3.0 present layer is not initialised";
+      return false;
+    }
+    if (width == 0 || height == 0) return true;  // nothing to draw into
+    if (!has_frame) return true;                 // no captured frame yet
+    const gt4::coregs3::PresentationClock::Due batch = gt4::coregs3::present::due_ticks();
+    if (tick >= batch.count) return true;  // not a tick of the batch last noted
+    if (!ensure_depth(width, height, error)) return false;
+    if (!ensure_base_image(width, height, error)) return false;
+    return draw_presentation_tick(tick, batch, target, width, height, submit, drew, error);
   }
 };
 
@@ -1839,6 +1875,11 @@ bool PresentLayer::note_guest_frame(std::string &error) { return impl_->note_gue
 bool PresentLayer::render(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
                           std::string &error) {
   return impl_->render(target, width, height, submit, error);
+}
+
+bool PresentLayer::render_tick(std::uint64_t target, std::uint32_t width, std::uint32_t height, std::uint32_t tick,
+                               const SubmitOverlay &submit, bool &drew, std::string &error) {
+  return impl_->render_tick(target, width, height, tick, submit, drew, error);
 }
 
 }  // namespace gt4::hw::coregs3

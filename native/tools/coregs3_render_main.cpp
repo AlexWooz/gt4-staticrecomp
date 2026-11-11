@@ -23,21 +23,31 @@
 //                         [--mask <pgm>] [--width W --height H]
 //       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3), main-view
 //       course (5) and since the wet-reflection round the captured reflection pass's main-view items (7), counts every
-//       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the level-0
-//       mip/filter fallbacks. --no-sky/--no-underlay/--no-course/--no-wet-reflection are the evidence A/Bs;
-//       --world-no-alpha is a diagnostic that ignores the tapped ATE (never an acceptance mode).
+//       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the GS STQ
+//       interpolation (S, T and Q linearly in screen space); mip records stay on the counted level-0 fallback unless
+//       --mip enables the decoded MIPTBP chain and the explicit-LOD sampler. --no-sky/--no-underlay/--no-course/
+//       --no-wet-reflection are the evidence A/Bs; --no-mip restores the pre-round sampling model byte for byte;
+//       --sample-dump writes the per-pixel material record the texture census reads; --world-no-alpha is a diagnostic
+//       that ignores the tapped ATE (never an acceptance mode).
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
 //       status) for the tap validation scripts.
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --out <file.png> --world --gs <capture.gt4gs> --tap <capture.gt4tap>
-//                         --vram <capture.gt4vram> --hud [--hud-element speed] [--hud-mask <pgm>]
-//                         [--hud-texture-dump <dir>] --width 640 --height 448
-//       TASK-090 S3: the first native HUD layer. Draws the requested element (the measured B-Spec-style speed plate and
-//       its digits) over the world picture with the captured GS state (FRAME/SCISSOR/XYOFFSET/TEST/ALPHA/PRIM/TEX0/TEX1/
-//       CLAMP), the captured T4/T8 textures with their CT32 CSM1 palettes and the captured placement. --no-hud is the
-//       A/B: the world picture with no panel layer, byte for byte the pre-HUD renderer. The layer is native 640x448.
+//                         --vram <capture.gt4vram> --hud [--hud-element speed|tach|all] [--hud-mask <pgm>]
+//                         [--hud-contrib-mask <pgm>] [--hud-font-atlas <gt4f>] [--hud-canvas 640x448]
+//                         [--hud-texture-dump <dir>] [--width 640 --height 448 | --width 1920 --height 1344]
+//       TASK-090 S3: the first native HUD layer. Draws the requested element (the measured night B-Spec speed plate and
+//       its digits, the A-Spec tachometer's dial and Gouraud needle, or every panel entry the raster supports) over the
+//       world picture with the captured GS state (FRAME/SCISSOR/XYOFFSET/TEST/ALPHA/PRIM/TEX0/TEX1/CLAMP), the captured
+//       T4/T8 textures with their CT32 CSM1 palettes and the captured placement. --no-hud is the A/B: the world picture
+//       with no panel layer, byte for byte the pre-HUD renderer. The layer is authored in the game's own 2D canvas (the
+//       captured 640x448 scanout by default, --hud-canvas) and mapped to any output size; 1920x1344 is the 3x validation
+//       scale of the CoreGS 2.0 reference. --hud-contrib-mask writes the pixels the element contributes (fragment
+//       alpha > 0), the fair comparison mask.
+//       --hud-census <csv> (with or without --hud) enumerates every PATH2 sprite of the panel range and every PATH1
+//       display-buffer draw of the stream, each with its captured state and the status of its texture decode.
 //
 // A capture is derived from the user's own disc and is never committed: both the input and the PNG output live under
 // private/ or build/evidence/.
@@ -504,12 +514,17 @@ int main(int argc, char **argv) {
   bool wet_composite = true;
   bool post_chain = true;  // TASK-090: the whole captured PATH2 full-screen chain is on by default with --gs
   const char *chain_dump_dir = nullptr;
+  const char *sample_dump_path = nullptr;  // TASK-090 texture-mip: the per-pixel material record (world stage)
   bool composite_world_alpha = false;
   bool hud = false;
   const char *hud_element_text = "speed";
   const char *hud_mask_path = nullptr;
   const char *hud_texture_dump_dir = nullptr;
+  const char *hud_font_atlas_path = nullptr;
   const char *hud_vram_mode = "stream";
+  const char *hud_canvas_text = nullptr;  // TASK-214: WxH 2D canvas of the captured element coordinates (default 640x448)
+  const char *hud_census_path = nullptr;  // TASK-090 A-Spec: CSV of every panel draw with its texture status
+  const char *hud_contrib_mask_path = nullptr;  // TASK-090 A-Spec: pixels the element contributes (fragment alpha > 0)
   const char *hud_vram_file = nullptr;
   const char *hud_dump_page = nullptr;
   bool hud_vram_all_frames = false;
@@ -536,12 +551,15 @@ int main(int argc, char **argv) {
     else if (argument == "--no-underlay") world_keep_underlay = false;
     else if (argument == "--no-course") world_keep_course = false;
     else if (argument == "--no-wet-reflection") world_keep_reflection = false;
+    else if (argument == "--mip") options.world_mip = true;
+    else if (argument == "--no-mip") options.world_no_mip = true;
     else if (argument == "--world-no-alpha") options.world_ignore_alpha_test = true;
     else if (argument == "--gs" && index + 1 < argc) gs_path = argv[++index];
     else if (argument == "--no-wet-composite") wet_composite = false;
     else if (argument == "--post-chain") post_chain = true;  // compatibility: the chain is the default now
     else if (argument == "--no-post-chain") post_chain = false;
     else if (argument == "--chain-dump" && index + 1 < argc) chain_dump_dir = argv[++index];
+    else if (argument == "--sample-dump" && index + 1 < argc) sample_dump_path = argv[++index];
     else if (argument == "--composite-world-alpha") composite_world_alpha = true;
     else if (argument == "--composite-mask" && index + 1 < argc) composite_mask_path = argv[++index];
     else if (argument == "--composite-changed" && index + 1 < argc) composite_changed_path = argv[++index];
@@ -549,6 +567,10 @@ int main(int argc, char **argv) {
     else if (argument == "--no-hud") hud = false;
     else if (argument == "--hud-element" && index + 1 < argc) hud_element_text = argv[++index];
     else if (argument == "--hud-mask" && index + 1 < argc) hud_mask_path = argv[++index];
+    else if (argument == "--hud-font-atlas" && index + 1 < argc) hud_font_atlas_path = argv[++index];
+    else if (argument == "--hud-canvas" && index + 1 < argc) hud_canvas_text = argv[++index];
+    else if (argument == "--hud-census" && index + 1 < argc) hud_census_path = argv[++index];
+    else if (argument == "--hud-contrib-mask" && index + 1 < argc) hud_contrib_mask_path = argv[++index];
     else if (argument == "--hud-texture-dump" && index + 1 < argc) hud_texture_dump_dir = argv[++index];
     else if (argument == "--hud-vram" && index + 1 < argc) hud_vram_mode = argv[++index];
     else if (argument == "--hud-vram-file" && index + 1 < argc) hud_vram_file = argv[++index];
@@ -947,6 +969,7 @@ int main(int argc, char **argv) {
     texture_options.texture_body = texture_body;
     texture_options.reflections = !no_reflection;
     texture_options.world_channels = world;
+    texture_options.world_mip = options.world_mip;
     if (world && !pass_image_store.empty()) texture_options.pass_slms = &pass_images;
     if (world && !draw_records.empty()) texture_options.draw_textures = &draw_images;
     if (world && !job_records.empty()) texture_options.job_textures = &job_images;
@@ -968,6 +991,12 @@ int main(int argc, char **argv) {
                       static_cast<unsigned long long>(sampler.source_tex0), static_cast<unsigned>(sampler.psm),
                       sampler.width, sampler.height);
         write_png_rgba(name, sampler.width, sampler.height, sampler.rgba);
+        // TASK-090 texture mip: the decoded levels too, so the sampled chain is evidence, not a claim.
+        for (const SampledTexture::MipLevel &mip : sampler.mip_levels) {
+          std::snprintf(name, sizeof name, "%s\\bound_%03u_mip%u_%ux%u.png", dump_textures_dir, index, mip.level,
+                        mip.width, mip.height);
+          write_png_rgba(name, mip.width, mip.height, mip.rgba.data());
+        }
         ++index;
       }
       std::fprintf(stderr, "gt4_coregs3_render: wrote %u bound textures to %s\n", index, dump_textures_dir);
@@ -1335,6 +1364,26 @@ int main(int argc, char **argv) {
                   static_cast<unsigned long long>(texture_counters.world_draw_slm));
     world_report += line;
     world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world texture mip: decoded chains %llu, level-0 fallbacks %llu, levels missing %llu; chain registers "
+                  "from the tap %llu, from the item record %llu; items with an explicit LOD %llu, mip items without a "
+                  "tapped Q %llu; LOD over %llu vertices %.3f..%.3f (mean %.3f), tapped Q %.6f..%.6f",
+                  static_cast<unsigned long long>(texture_counters.records_mip_chains),
+                  static_cast<unsigned long long>(texture_counters.records_level0_fallback),
+                  static_cast<unsigned long long>(texture_counters.records_mip_levels_missing),
+                  static_cast<unsigned long long>(texture_counters.world_mip_registers_from_tap),
+                  static_cast<unsigned long long>(texture_counters.world_mip_registers_from_record),
+                  static_cast<unsigned long long>(texture_counters.world_mip_lod_items),
+                  static_cast<unsigned long long>(texture_counters.world_mip_lod_missing),
+                  static_cast<unsigned long long>(texture_counters.world_mip_lod_vertices),
+                  texture_counters.world_mip_lod_min, texture_counters.world_mip_lod_max,
+                  texture_counters.world_mip_lod_vertices != 0
+                      ? texture_counters.world_mip_lod_sum /
+                            static_cast<double>(texture_counters.world_mip_lod_vertices)
+                      : 0.0,
+                  texture_counters.world_mip_q_min, texture_counters.world_mip_q_max);
+    world_report += line;
+    world_report += "\n";
     for (const std::string &refusal : texture_counters.state_refusals)
       world_report += "  tapped state refused: " + refusal + "\n";
     // The binding table: the state each selected item samples, grouped by pass and sampler state.
@@ -1346,13 +1395,22 @@ int main(int argc, char **argv) {
         continue;
       }
       const SampledTexture &sampler = *row.texture;
+      char mip[192] = "";
+      if (sampler.mip_ready) {
+        std::snprintf(mip, sizeof mip, " mip chain %s MXL %u MMAG %u MMIN %u L %u K %d MIPTBP1 %016llX MIPTBP2 %016llX",
+                      sampler.miptbp_from_state ? "tap" : "record", sampler.mxl, sampler.mmag, sampler.mmin,
+                      sampler.lod_l, sampler.lod_k_raw, static_cast<unsigned long long>(sampler.miptbp1),
+                      static_cast<unsigned long long>(sampler.miptbp2));
+      } else if (sampler.level0_mip_fallback) {
+        std::snprintf(mip, sizeof mip, " mip level-0 fallback");
+      }
       std::snprintf(line, sizeof line,
-                    "  %-12s %-6s TEX0 %016llX TEX1 %016llX CLAMP %016llX psm %02X %ux%u%s items %u\n",
+                    "  %-12s %-6s TEX0 %016llX TEX1 %016llX CLAMP %016llX psm %02X %ux%u%s%s items %u\n",
                     pass_name(row.pass), sampler.from_state ? "state" : "record",
                     static_cast<unsigned long long>(sampler.source_tex0),
                     static_cast<unsigned long long>(sampler.source_tex1),
                     static_cast<unsigned long long>(sampler.source_clamp), sampler.psm, sampler.width,
-                    sampler.height, sampler.palette_via_tex2 ? " palette-TEX2" : "", row.items);
+                    sampler.height, sampler.palette_via_tex2 ? " palette-TEX2" : "", mip, row.items);
       world_report += line;
     }
     if (!probe_filter_detail.empty()) {
@@ -1372,12 +1430,46 @@ int main(int argc, char **argv) {
   std::vector<std::uint8_t> rgba, mask;
   std::vector<std::uint8_t> textured_mask;
   std::vector<std::uint8_t> reflection_mask;
+  TextureSampleDump sample_dump;  // TASK-090 texture-mip: filled only with --sample-dump
+  if (sample_dump_path != nullptr && world) {
+    sample_dump.reset(options.width, options.height);
+    options.sample_dump = &sample_dump;
+  }
   RenderStats stats;
   if (!render_frame(selected, options, rgba, mask, stats, error,
                     texture_mask_path != nullptr ? &textured_mask : nullptr,
                     reflection_mask_path != nullptr ? &reflection_mask : nullptr)) {
     std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
     return 1;
+  }
+  if (sample_dump_path != nullptr && world) {
+    // TASK-090 texture-mip: the fixed 24-byte record the census script reads. Header: magic 'GT4S', version 1, width,
+    // height, stride; then flags, level, reserved, texel[4], vertex[4], fragment[4], fog, fog_colour[3], page, pad[2].
+    std::FILE *dump_file = std::fopen(sample_dump_path, "wb");
+    if (dump_file == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", sample_dump_path);
+      return 1;
+    }
+    const std::uint32_t header[5] = {0x53345447u, 1u, options.width, options.height, 24u};
+    std::fwrite(header, sizeof header, 1, dump_file);
+    std::uint8_t row[24] = {};
+    for (const TextureSampleDump::Pixel &pixel : sample_dump.pixels) {
+      row[0] = pixel.flags;
+      row[1] = pixel.level;
+      row[2] = 0;
+      std::memcpy(row + 3, pixel.texel, 4u);
+      std::memcpy(row + 7, pixel.vertex, 4u);
+      std::memcpy(row + 11, pixel.fragment, 4u);
+      row[15] = pixel.fog;
+      std::memcpy(row + 16, pixel.fog_colour, 3u);
+      row[19] = static_cast<std::uint8_t>(pixel.page & 0xFFu);
+      row[20] = static_cast<std::uint8_t>(pixel.page >> 8);
+      row[21] = row[22] = row[23] = 0;
+      std::fwrite(row, sizeof row, 1, dump_file);
+    }
+    std::fclose(dump_file);
+    std::fprintf(stderr, "gt4_coregs3_render: wrote sample dump %s (%ux%u, 24 B/px)\n", sample_dump_path,
+                 options.width, options.height);
   }
 #ifdef GT4_COREGS3_TEXTURES
   if (world && chain_ready) {
@@ -1578,22 +1670,24 @@ int main(int argc, char **argv) {
   }
 #endif
 #ifdef GT4_COREGS3_TEXTURES
-  if (hud) {
+  if (hud || hud_census_path != nullptr) {
     // TASK-090 S3: the first native HUD layer over the world frame. The element is selected from the attributed GS
     // stream (scene frame V -> stream V + 1), the plate from the tap, and both are drawn with the captured state and
-    // the captured textures at the native 640x448 scanout.
+    // the captured textures at the native 640x448 scanout. --hud-census instead enumerates the whole panel pass.
     if (gs_path == nullptr || tap_path == nullptr) {
-      std::fprintf(stderr, "gt4_coregs3_render: --hud needs --gs and --tap\n");
+      std::fprintf(stderr, "gt4_coregs3_render: --hud/--hud-census need --gs and --tap\n");
       return 1;
     }
-    if (options.width != 640 || options.height != 448) {
-      std::fprintf(stderr, "gt4_coregs3_render: --hud renders at the native 640x448 scanout (--width 640 --height 448)\n");
+    if (options.width == 0 || options.height == 0) {
+      std::fprintf(stderr, "gt4_coregs3_render: --hud needs a non-zero target size\n");
       return 1;
     }
-    HudElement element;
-    if (!parse_hud_element(hud_element_text, element)) {
-      std::fprintf(stderr, "gt4_coregs3_render: unknown --hud-element %s\n", hud_element_text);
-      return 1;
+    HudElement element = HudElement::speed;
+    if (hud) {
+      if (!parse_hud_element(hud_element_text, element)) {
+        std::fprintf(stderr, "gt4_coregs3_render: unknown --hud-element %s\n", hud_element_text);
+        return 1;
+      }
     }
     std::vector<std::uint8_t> gs_data;
     GsStreamFileHeader gs_header;
@@ -1616,10 +1710,7 @@ int main(int argc, char **argv) {
       return 1;
     }
     HudPanel panel;
-    if (!build_hud_panel(hud_batches, tap_data, tap_records, selected.vblank, element, panel, error)) {
-      std::fprintf(stderr, "gt4_coregs3_render: HUD panel refused: %s\n", error.c_str());
-      return 1;
-    }
+    const std::uint64_t hud_stream_vblank = selected.vblank + 1u;
     SlmImage hud_slm;
     std::string hud_source_line;
     std::string hud_mode(hud_vram_mode);
@@ -1653,7 +1744,7 @@ int main(int argc, char **argv) {
         }
       }
       HudUploadCounters upload_counters;
-      if (!build_hud_stream_vram(hud_uploads, panel.stream_vblank, hud_vram_all_frames, hud_slm, upload_counters,
+      if (!build_hud_stream_vram(hud_uploads, hud_stream_vblank, hud_vram_all_frames, hud_slm, upload_counters,
                                  error, have_sidecar ? &sidecar_image : nullptr)) {
         std::fprintf(stderr, "gt4_coregs3_render: HUD refused: %s\n", error.c_str());
         return 1;
@@ -1662,7 +1753,7 @@ int main(int argc, char **argv) {
       std::snprintf(line, sizeof line,
                     "HUD VRAM source: %s, stream %llu uploads, %llu applied, %llu bytes, %llu refused%s\n",
                     have_sidecar ? "sidecar frame record + stream uploads" : "stream",
-                    static_cast<unsigned long long>(panel.stream_vblank),
+                    static_cast<unsigned long long>(hud_stream_vblank),
                     static_cast<unsigned long long>(upload_counters.applied),
                     static_cast<unsigned long long>(upload_counters.bytes),
                     static_cast<unsigned long long>(upload_counters.refused),
@@ -1696,13 +1787,13 @@ int main(int argc, char **argv) {
           }
           continue;
         }
-        if (record.vblank == panel.stream_vblank) {
+        if (record.vblank == hud_stream_vblank) {
           hud_record = &record;
           fallback_distance = 0;
           break;
         }
-        const std::uint64_t distance = record.vblank > panel.stream_vblank ? record.vblank - panel.stream_vblank
-                                                                           : panel.stream_vblank - record.vblank;
+        const std::uint64_t distance = record.vblank > hud_stream_vblank ? record.vblank - hud_stream_vblank
+                                                                           : hud_stream_vblank - record.vblank;
         if (hud_record == nullptr || distance < fallback_distance) {
           hud_record = &record;
           fallback_distance = distance;
@@ -1719,14 +1810,194 @@ int main(int argc, char **argv) {
       char line[512];
       std::snprintf(line, sizeof line, "HUD VRAM source: sidecar vblank record %llu (stream %llu)%s\n",
                     static_cast<unsigned long long>(hud_record->vblank),
-                    static_cast<unsigned long long>(panel.stream_vblank),
+                    static_cast<unsigned long long>(hud_stream_vblank),
                     fallback_distance == 0 ? "" : " - counted fallback: no record at the stream's VBlank");
       hud_source_line = line;
     } else {
       std::fprintf(stderr, "gt4_coregs3_render: unknown --hud-vram %s (stream|sidecar)\n", hud_vram_mode);
       return 1;
     }
+    // TASK-090 HUD A-Spec: the panel census enumerates every PATH2 sprite and every PATH1 display-buffer draw of the
+    // attributed stream, decoding each entry's texture through the same HudTextureCache the renderer uses. It does not
+    // require an element selection, so it reports the whole normal-race HUD.
+    if (hud_census_path != nullptr) {
+      HudCensus census;
+      if (!build_hud_census(hud_batches, tap_data, tap_records, hud_stream_vblank, census, error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: HUD census refused: %s\n", error.c_str());
+        return 1;
+      }
+      std::vector<std::uint32_t> census_font_pages;
+      if (hud_font_atlas_path != nullptr) {
+        std::vector<std::uint8_t> atlas_data;
+        if (!read_file(hud_font_atlas_path, atlas_data)) {
+          std::fprintf(stderr, "gt4_coregs3_render: cannot read %s\n", hud_font_atlas_path);
+          return 1;
+        }
+        HudFontAtlas font_atlas;
+        if (!parse_hud_font_atlas(atlas_data, font_atlas, error)) {
+          std::fprintf(stderr, "gt4_coregs3_render: font atlas refused: %s\n", error.c_str());
+          return 1;
+        }
+        // The GT4meter page rotates through VRAM between scenes/runs: apply the atlas at every T4 page the census
+        // draws sample with the measured 0..127 x 0..38 region, preserving each page's own captured palette bank.
+        std::map<std::uint32_t, std::uint32_t> pages;
+        for (const HudCensusEntry &entry : census.entries) {
+          const HudDrawState &state = entry.state;
+          // The measured GT4meter geometry (T4, TBW 2, TW 7, TH 6) sampled inside its 0..127 x 0..38 region: the
+          // gear/speed digits (0..127 x 0..38) and the trip digits (0..127 x 0..11) both live on that page.
+          if (state.tex0_psm() != 0x14u || state.tex0_tbw() != 2u || state.tex0_tw() != 7u || state.tex0_th() != 6u)
+            continue;
+          if (state.clamp_minu() != 0u || state.clamp_minv() != 0u || state.clamp_maxu() > 127u ||
+              state.clamp_maxv() > 38u)
+            continue;
+          pages.emplace(state.tex0_tbp0(), state.tex0_cbp());
+        }
+        for (const auto &page : pages) {
+          if (!apply_hud_font_atlas(font_atlas, hud_slm, page.first, page.second, error)) {
+            std::fprintf(stderr, "gt4_coregs3_render: font atlas refused: %s\n", error.c_str());
+            return 1;
+          }
+          census_font_pages.push_back(page.first);
+          std::printf("HUD census font atlas: GT4meter page applied at 0x%04X (palette bank 0x%04X preserved)\n",
+                      page.first, page.second);
+        }
+      }
+      HudTextureCache census_textures(hud_slm);
+      for (std::uint32_t page : census_font_pages) census_textures.set_font_atlas_page(page);
+      std::FILE *csv = std::fopen(hud_census_path, "wb");
+      if (csv == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", hud_census_path);
+        return 1;
+      }
+      std::fprintf(csv,
+                   "path,sequence,job,prim,tme,abe,fbp,fpsm,tbp0,psm,tw,th,tcc,tfx,cbp,clamp,minu,maxu,minv,maxv,"
+                   "alpha,test,zbuf,min_x,max_x,min_y,max_y,vertices,axis,drawing,texture_status,texture_detail\n");
+      std::map<std::string, std::uint64_t> status_counts;
+      std::map<std::uint32_t, std::uint64_t> page_counts;
+      std::map<std::uint32_t, std::string> page_status;
+      std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>, std::string> dumped;
+      for (const HudCensusEntry &entry : census.entries) {
+        const HudDrawState &state = entry.state;
+        std::string texture_status = "untextured";
+        std::string texture_detail;
+        const bool textured = ((state.prim >> 4) & 1u) != 0u && state.tex0 != 0u;
+        if (textured) {
+          std::string texture_error;
+          const HudTexture &texture = census_textures.get(state, texture_error);
+          texture_status = hud_texture_status_name(texture.status);
+          if (texture.status != HudTextureStatus::ok) texture_detail = texture_error;
+          page_counts[state.tex0_tbp0()] += 1;
+          page_status[state.tex0_tbp0()] = texture_status;
+          if (hud_texture_dump_dir != nullptr && texture.status == HudTextureStatus::ok) {
+            const auto key = std::make_tuple(texture.tex0, texture.tex1, texture.clamp);
+            if (dumped.find(key) == dumped.end()) {
+              char name[512];
+              std::snprintf(name, sizeof name, "%s/census-texture-%02zu-tbp%04X-%ux%u.png", hud_texture_dump_dir,
+                            dumped.size(), static_cast<unsigned>(state.tex0_tbp0()), texture.width, texture.height);
+              write_png_rgba(name, texture.width, texture.height, texture.rgba.data());
+              dumped.emplace(key, name);
+              std::printf("census texture %s: TEX0 %016llX TEX1 %016llX CLAMP %016llX, %ux%u at (%u,%u)\n", name,
+                          static_cast<unsigned long long>(texture.tex0),
+                          static_cast<unsigned long long>(texture.tex1),
+                          static_cast<unsigned long long>(texture.clamp), texture.width, texture.height, texture.x0,
+                          texture.y0);
+            }
+          }
+        }
+        status_counts[texture_status] += 1;
+        std::fprintf(csv,
+                     "%s,%u,%llu,%03X,%u,%u,%u,%u,%04X,%02X,%u,%u,%u,%u,%04X,%016llX,%u,%u,%u,%u,"
+                     "%016llX,%016llX,%016llX,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%s,%s\n",
+                     entry.path1 ? "path1" : "path2", entry.sequence,
+                     static_cast<unsigned long long>(entry.job), state.prim, (state.prim >> 4) & 1u,
+                     (state.prim >> 6) & 1u, state.frame_fbp(), state.frame_psm(), state.tex0_tbp0(), state.tex0_psm(),
+                     state.tex0_tw(), state.tex0_th(), state.tex0_tcc(), state.tex0_tfx(), state.tex0_cbp(),
+                     static_cast<unsigned long long>(state.clamp), state.clamp_minu(), state.clamp_maxu(),
+                     state.clamp_minv(), state.clamp_maxv(), static_cast<unsigned long long>(state.alpha),
+                     static_cast<unsigned long long>(state.test), static_cast<unsigned long long>(state.zbuf),
+                     entry.min_x, entry.max_x, entry.min_y, entry.max_y,
+                     entry.vertices, entry.axis_aligned ? 1u : 0u, entry.drawing ? 1u : 0u, texture_status.c_str(),
+                     texture_detail.c_str());
+      }
+      std::fclose(csv);
+      std::printf("HUD census %s: stream %llu, PATH2 panel batches %llu (drawing %llu), PATH1 display draws %llu "
+                  "(axis-aligned %llu), entries %zu\n",
+                  hud_census_path, static_cast<unsigned long long>(census.stream_vblank),
+                  static_cast<unsigned long long>(census.path2_batches),
+                  static_cast<unsigned long long>(census.path2_drawing),
+                  static_cast<unsigned long long>(census.path1_display_draws),
+                  static_cast<unsigned long long>(census.path1_axis_aligned), census.entries.size());
+      for (const auto &entry : status_counts) {
+        std::printf("HUD census texture status: %s x %llu\n", entry.first.c_str(),
+                    static_cast<unsigned long long>(entry.second));
+      }
+      for (const auto &entry : page_counts) {
+        std::printf("HUD census page: tbp0 0x%04X x %llu, %s\n", entry.first,
+                    static_cast<unsigned long long>(entry.second), page_status[entry.first].c_str());
+      }
+      for (const auto &entry : census.reasons) {
+        std::printf("HUD census note: %s x %llu\n", entry.first.c_str(),
+                    static_cast<unsigned long long>(entry.second));
+      }
+      std::printf("HUD census textures: decode calls %llu, refusals %llu\n",
+                  static_cast<unsigned long long>(census_textures.decodes()),
+                  static_cast<unsigned long long>(census_textures.refusals()));
+    }
+    if (hud) {
+    if (!build_hud_panel(hud_batches, tap_data, tap_records, selected.vblank, element, panel, error)) {
+      std::fprintf(stderr, "gt4_coregs3_render: HUD panel refused: %s\n", error.c_str());
+      return 1;
+    }
+    // TASK-090 HUD font: the captured stream carries the font page's palette bundle but not the glyph texels (the
+    // game uploads the page before the captured window). The atlas sidecar supplies the page's 8192 bytes; the apply
+    // preserves the frame's captured 16-entry CSM1 bank at the draw's CBP, so the palette stays the frame's own.
+    std::vector<std::uint32_t> applied_font_tbp0;
+    if (hud_font_atlas_path != nullptr) {
+      std::vector<std::uint8_t> atlas_data;
+      if (!read_file(hud_font_atlas_path, atlas_data)) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot read %s\n", hud_font_atlas_path);
+        return 1;
+      }
+      HudFontAtlas font_atlas;
+      if (!parse_hud_font_atlas(atlas_data, font_atlas, error)) {
+        std::fprintf(stderr, "gt4_coregs3_render: font atlas refused: %s\n", error.c_str());
+        return 1;
+      }
+      // The GT4meter page rotates through VRAM (the night capture's digits sample it at 0x3A20, the A-Spec gear/speed
+      // and trip digits at 0x3E40/0x3D60): apply the atlas at every T4 page of the panel that uses the measured
+      // 0..127 x 0..38 region, preserving each page's own captured palette bank.
+      std::map<std::uint32_t, std::uint32_t> pages;  // tbp0 -> palette CBP
+      for (const HudDraw &draw : panel.draws) {
+        const HudDrawState &state = draw.state;
+        if (state.tex0_psm() != 0x14u || state.tex0_tbw() != 2u || state.tex0_tw() != 7u || state.tex0_th() != 6u)
+          continue;
+        if (state.clamp_minu() != 0u || state.clamp_minv() != 0u || state.clamp_maxu() > 127u ||
+            state.clamp_maxv() > 38u)
+          continue;
+        pages.emplace(state.tex0_tbp0(), state.tex0_cbp());
+      }
+      char line[512];
+      if (pages.empty()) {
+        std::snprintf(line, sizeof line, "HUD font atlas: %s not applied: the panel has no T4 GT4meter draw\n",
+                      hud_font_atlas_path);
+        hud_source_line += line;
+      }
+      for (const auto &page : pages) {
+        if (!apply_hud_font_atlas(font_atlas, hud_slm, page.first, page.second, error)) {
+          std::fprintf(stderr, "gt4_coregs3_render: font atlas refused: %s\n", error.c_str());
+          return 1;
+        }
+        std::snprintf(line, sizeof line,
+                      "HUD font atlas: %s, T4 page 0x%04X (TBW %u, 128x64, CLAMP 0x%016llX), 32 blocks applied, "
+                      "palette bank 0x%04X preserved (64 bytes)\n",
+                      hud_font_atlas_path, page.first, font_atlas.tbw,
+                      static_cast<unsigned long long>(font_atlas.clamp), page.second);
+        hud_source_line += line;
+        applied_font_tbp0.push_back(page.first);
+      }
+    }
     HudTextureCache hud_textures(hud_slm);
+    for (std::uint32_t page : applied_font_tbp0) hud_textures.set_font_atlas_page(page);
     if (hud_dump_page != nullptr) {
       // Diagnostic: decode one page of the reconstructed local memory through the measured record decoder.
       unsigned tbp = 0, w = 128, h = 64, cbp = 0, psm = 0x14, tw = 7, th = 6, csa = 0;
@@ -1752,15 +2023,50 @@ int main(int argc, char **argv) {
       }
     }
     HudDrawOptions hud_options;
+    if (hud_canvas_text != nullptr) {
+      unsigned canvas_width = 0, canvas_height = 0;
+      if (std::sscanf(hud_canvas_text, "%ux%u", &canvas_width, &canvas_height) != 2 || canvas_width == 0 ||
+          canvas_height == 0) {
+        std::fprintf(stderr, "gt4_coregs3_render: --hud-canvas wants WxH (for example 640x448)\n");
+        return 1;
+      }
+      hud_options.canvas_width = canvas_width;
+      hud_options.canvas_height = canvas_height;
+    }
+    {
+      char line[256];
+      std::snprintf(line, sizeof line,
+                    "HUD canvas: %ux%u -> %ux%u output (%.4fx %.4fx), TASK-214 parameterisation (captured canvas)\n",
+                    hud_options.canvas_width, hud_options.canvas_height, options.width, options.height,
+                    static_cast<double>(options.width) / hud_options.canvas_width,
+                    static_cast<double>(options.height) / hud_options.canvas_height);
+      world_report += line;
+    }
     HudDrawCounters hud_counters;
     std::vector<std::uint8_t> hud_mask;
+    std::vector<std::uint8_t> hud_contrib_mask;
     if (!draw_hud_panel(panel, hud_textures, rgba, options.width, options.height, hud_options,
-                        hud_mask_path != nullptr ? &hud_mask : nullptr, hud_counters, error)) {
+                        hud_mask_path != nullptr ? &hud_mask : nullptr, hud_counters, error,
+                        hud_contrib_mask_path != nullptr ? &hud_contrib_mask : nullptr)) {
       std::fprintf(stderr, "gt4_coregs3_render: HUD raster refused: %s\n", error.c_str());
       return 1;
     }
     world_report += hud_source_line;
     world_report += hud_panel_report(panel, hud_counters, hud_textures);
+    if (hud_contrib_mask_path != nullptr) {
+      std::FILE *mask_file = std::fopen(hud_contrib_mask_path, "wb");
+      if (mask_file == nullptr) {
+        std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", hud_contrib_mask_path);
+        return 1;
+      }
+      std::size_t contributing = 0;
+      for (std::uint8_t value : hud_contrib_mask) contributing += value != 0 ? 1u : 0u;
+      std::fprintf(mask_file, "P5\n%u %u\n255\n", options.width, options.height);
+      std::fwrite(hud_contrib_mask.data(), 1, hud_contrib_mask.size(), mask_file);
+      std::fclose(mask_file);
+      std::printf("hud contribution mask %s: %zu pixels (the element's alpha > 0 fragments)\n",
+                  hud_contrib_mask_path, contributing);
+    }
     if (hud_mask_path != nullptr) {
       std::FILE *mask_file = std::fopen(hud_mask_path, "wb");
       if (mask_file == nullptr) {
@@ -1793,6 +2099,7 @@ int main(int argc, char **argv) {
                     texture.y0);
       }
     }
+    }  // if (hud)
     if (!world) std::printf("%s", world_report.c_str());
   }
 #endif
@@ -1916,7 +2223,8 @@ int main(int argc, char **argv) {
     std::snprintf(line, sizeof line,
                   "world pixels: fog %llu missing %llu, date-failed %llu date-missing %llu, afail-written %llu "
                   "afail-depth %llu, blended %llu, sky-background-depth %llu; texture decode level-0 mip fallbacks %llu, "
-                  "filter fallbacks %llu",
+                  "filter fallbacks %llu; mip-chain fragments %llu (levels 0..7 %llu %llu %llu %llu %llu %llu %llu %llu), "
+                  "mip-ready fragments without a tapped LOD %llu",
                   static_cast<unsigned long long>(stats.world_fog_pixels),
                   static_cast<unsigned long long>(stats.world_fog_missing),
                   static_cast<unsigned long long>(stats.world_date_failed),
@@ -1926,7 +2234,24 @@ int main(int argc, char **argv) {
                   static_cast<unsigned long long>(stats.world_blended_pixels),
                   static_cast<unsigned long long>(stats.world_sky_depth_background),
                   static_cast<unsigned long long>(texture_counters.records_level0_fallback),
-                  static_cast<unsigned long long>(texture_counters.records_filter_fallback));
+                  static_cast<unsigned long long>(texture_counters.records_filter_fallback),
+                  static_cast<unsigned long long>(stats.world_mip_pixels),
+                  static_cast<unsigned long long>(stats.world_mip_levels[0]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[1]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[2]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[3]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[4]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[5]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[6]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[7]),
+                  static_cast<unsigned long long>(stats.world_mip_missing_lod));
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world UV perspective: Q*w over %llu triangles %.4f..%.4f (1.0 means the tapped Q is the 1/w weight "
+                  "the perspective-correct interpolation assumes)",
+                  static_cast<unsigned long long>(stats.world_qw_triangles), stats.world_qw_ratio_min,
+                  stats.world_qw_ratio_max);
     world_report += line;
     world_report += "\n";
     std::snprintf(line, sizeof line,

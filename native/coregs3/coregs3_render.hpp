@@ -16,6 +16,7 @@
 //            evidence of geometry, coverage, diffuse lighting and the sampled car textures, not of final fidelity.
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -27,6 +28,32 @@
 #include "coregs3_vertex.hpp"
 
 namespace gt4::coregs3 {
+
+// TASK-090 texture-mip: the per-pixel material record the palette/texel census reads. The world rasteriser fills one
+// entry for every fragment it writes with a texture: the palette-applied texel before MODULATE, the interpolated vertex
+// colour, the fragment after MODULATE and fog (before the alpha test, blend and FBMSK), the fog level and colour and the
+// texture page. Flags 0 means no textured fragment wrote the pixel.
+struct TextureSampleDump {
+  struct Pixel {
+    std::uint8_t flags = 0;    // bit0 textured, bit1 fog applied, bit2 the mip path sampled it
+    std::uint8_t level = 0;    // the sampled mip level
+    std::uint8_t texel[4] = {};
+    std::uint8_t vertex[4] = {};
+    std::uint8_t fragment[4] = {};
+    std::uint8_t fog = 255;
+    std::uint8_t fog_colour[3] = {};
+    std::uint16_t page = 0;    // TEX0.TBP0 of the binding
+    std::uint8_t reserved = 0;
+  };
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::vector<Pixel> pixels;
+  void reset(std::uint32_t width_value, std::uint32_t height_value) {
+    width = width_value;
+    height = height_value;
+    pixels.assign(static_cast<std::size_t>(width) * height, Pixel{});
+  }
+};
 
 struct RenderOptions {
   std::uint32_t width = 640;
@@ -79,6 +106,16 @@ struct RenderOptions {
   // is the captured full-screen alpha clear of the wet-road chain (PATH2 seq 920). False keeps the world picture byte for
   // byte; only the composite replay enables it.
   bool clear_alpha_before_wet_reflection = false;
+  // TASK-090 texture-mip: when not null, the world rasteriser records the material path of every textured fragment it
+  // writes (see TextureSampleDump). The tool's --sample-dump option allocates it; rendering is otherwise unaffected.
+  TextureSampleDump *sample_dump = nullptr;
+  // TASK-090 texture-mip: --mip enables the decoded chain and the explicit-LOD sampler. Off by default because the
+  // existing captures do not carry the levels the road asks for (the MIPTBP address holds another texture page at the
+  // job), so the level-0 fallback is the faithful picture; the A/B is --mip against the default.
+  bool world_mip = false;
+  // TASK-090 texture-mip A/B: --no-mip restores the pre-round sampling model (the perspective-correct UV and the
+  // level-0 nearest fallback), byte for byte, so the feature's off state is proven identical.
+  bool world_no_mip = false;
 };
 
 struct RenderStats {
@@ -160,6 +197,18 @@ struct RenderStats {
   std::uint64_t world_afail_depth = 0;       // AFAIL ZBONLY wrote depth without colour
   std::uint64_t world_sky_depth_background = 0;  // sky draws drawn as the background (no depth test/write)
   std::uint64_t world_blended_pixels = 0;    // any tapped ABE equation applied
+  // TASK-090 texture mip: fragments sampled through the explicit-LOD mip path, the level histogram, the item base levels
+  // and the mip-ready fragments that had no tapped LOD (kept on the level-0 subset and counted).
+  std::uint64_t world_mip_pixels = 0;
+  std::uint64_t world_mip_missing_lod = 0;
+  std::uint64_t world_mip_levels[8] = {};
+  std::uint64_t world_mip_base_levels[8] = {};
+  // TASK-090 texture mip diagnostic: whether the tapped Q is the perspective weight the UV interpolation assumes
+  // (Q * clip.w constant across a triangle). `world_qw_triangles` counts the triangles checked; the min/max are the
+  // smallest and largest |Q*w| ratio inside a triangle over all of them.
+  std::uint64_t world_qw_triangles = 0;
+  double world_qw_ratio_min = 1.0e30;
+  double world_qw_ratio_max = -1.0e30;
   // TASK-090 wet reflection: the captured reflection pass's main-view items (the reflection-model quads). They write
   // destination alpha only in this frame (FRAME.FBMSK 0x00FFFFFF); the counters name what was drawn and what the
   // destination-alpha/colour masks allowed, so the pass's contribution can never be silently assumed. The mirror-view
@@ -175,6 +224,20 @@ struct RenderStats {
   std::uint64_t world_reflection_alpha_clear = 0;     // the captured alpha clear was applied before the pass (1)
   std::vector<std::string> refusals;  // one line per refused shape (deduplicated message + count in the tool)
 };
+
+// TASK-090 texture mip: the GS's texture coordinate at one pixel. The GS interpolates S, T and Q linearly in screen space
+// (chapter 01.5) and divides (S/Q, T/Q); `u`/`v` are the per-vertex S/Q the VU1 emitted (the model UV), so S = u*Q. The
+// perspective-correct form lerp(u/w)/lerp(1/w) is equivalent only when Q is the 1/w weight, which the captured road
+// stream is not (measured Q*w spread up to 92x inside a triangle). Returns false when the interpolated Q is zero or
+// non-finite; the caller keeps its own fallback then.
+inline bool stq_texture_coordinate(float alpha, float beta, float gamma, const float q[3], const float u[3],
+                                   const float v[3], float &out_u, float &out_v) noexcept {
+  const float q_pixel = alpha * q[0] + beta * q[1] + gamma * q[2];
+  if (!(std::fabs(q_pixel) > 1.0e-12f) || !std::isfinite(q_pixel)) return false;
+  out_u = (alpha * u[0] * q[0] + beta * u[1] * q[1] + gamma * u[2] * q[2]) / q_pixel;
+  out_v = (alpha * v[0] * q[0] + beta * v[1] * q[1] + gamma * v[2] * q[2]) / q_pixel;
+  return std::isfinite(out_u) && std::isfinite(out_v);
+}
 
 // The measured position encoding of a mesh vertex: a V3-16 channel keeps its raw signed 16-bit value
 // (MeshVertex::has_raw_position), a V3-32 channel stores the float as it stands (coregs3_vertex.hpp).

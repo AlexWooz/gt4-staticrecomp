@@ -2049,6 +2049,105 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   the open lead on the removed whole-run counter pass. Evidence `build/evidence-live-timeline/`; design in
   [COREGS3-PLAN](docs/COREGS3-PLAN.md) §5.5.
 
+- **Host presentation clock (2026-11-11, branch `task/090-host-clock`):** the windowed `GT4_COREGS3=present` backend
+  presents at the requested display rate (120/144 Hz) instead of once per guest VBlank. New
+  `native/coregs3/coregs3_host_clock.{hpp,cpp}` (fixture `native_coregs3_host_clock`) places each VBlank's due instants
+  on a display grid: next slot at or after the batch's arrival, then one display period apart; empty slots are counted
+  late, instants more than one guest frame behind the newest tick are stale, a replayed batch is never scheduled twice,
+  capacity keeps the newest; the schedule re-anchors per batch (a guest slower than 60 Hz does not drift).
+  `present::note_guest_frame` computes the plan every VBlank and the F8 report prints it. Above 60 Hz the backend draws
+  one picture per tick (`PresentLayer::render_tick`, base save/restore between ticks), copies each into a picture slot on
+  the rendering queue and hands it to the presentation thread at its exact show time; the once-per-VBlank slot is
+  skipped. `GT4_COREGS3_HOST_CLOCK=0` is the A/B switch; the guest and the HUD stay at 60 Hz. Measured: 1x windowed at
+  120 Hz, 368 pictures, 0 dropped, presented-tick median 8.336 ms (98% of the last 199 within 7.9-8.8 ms); headless 60
+  vs 120 Hz identical in guest clock/digest/state (6,997 VBlanks, 0 differences) and exact 60/30-tick cadence. Checks:
+  CTest coregs3 **19/19**, Python **15/15** (6 skipped), 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks,
+  1,686 racing, 0 differences, 13/13 frames), offline car/world A/B byte-identical. The removed whole-run counter pass
+  was **reproduced serially**: exit 139, `0xC0000005` in recompiled guest code at frame 6783 (`gen::unit_00E0`, guest PC
+  0x00482674), so the old concurrent-gate attribution is superseded; the delivered host clock path does not fault on
+  those VBlanks. Owner window test at 1x pending. Evidence `build/evidence-host-clock/`.
+
+- **HUD font atlas (2026-11-11, branch `task/090-hud-font`):** the S3 speed digits render. `coregs3_hud` gains the
+  GT4F font atlas sidecar (`parse_hud_font_atlas`/`apply_hud_font_atlas`: the 8,192-byte GT4meter T4 page at TBP0
+  0x3A20, 32 blocks, the frame's captured 16-entry CSM1 bank at CBP 0x3A27 preserved) and `gt4_coregs3_render
+  --hud-font-atlas <gt4f>`; the constant-page refusal is RGBA for an atlas page and stays RGB for every other page (the
+  no-atlas A/B still refuses). Source: `race.fnt`'s GT4meter Tex1 block matches the frame's T4/CLAMP geometry, palette
+  transfer offsets (tbp 0/8/C/E = the frame's 0x3A20/0x3A28/0x3A2C/0x3A2E) and the captured white-alpha bank; the texels
+  are the CoreGS 2.0 reference decode (Format G key `bf0800b76cfeb19a-855d33f8da421ba0`, 128x39) because the font
+  file's per-glyph bitmap encoding is not decoded and the wider race-entry (6460-6467, 6500-6515) and green-flag
+  (7290-7305) captures do not upload the page. Two S3 raster errors fixed: PATH2 texel UVs normalized to ST before
+  sampling (the digits sampled texel 0 with alpha 0) and the interpolation parameter at the integer pixel centre (the
+  CoreGS 2.0 `ceil(min)..ceil(max)-1` rule; the plate background PSNR moved 28.58 -> 30.34). Measured at 1x against
+  frame 07400: element **PSNR 31.45 / SSIM 0.785 / mean 4.52** (was 13.35 / 0.486 / 23.37), digit rect **PSNR 34.15 /
+  SSIM 0.781 / mean 2.72, 210/418 exact, max 24**, the reference's own digits at the same cells, positions and shapes
+  ("68"). **G-HUD-VALUES closes.** CTest coregs3 **18/18**, Python **15/15**, world `--no-hud` byte-identical to the
+  5b82c832 executable, 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13
+  frames). Evidence: `build/evidence-hud-font/`. Open: the font file's glyph bitmap payload decode; the gear ladder,
+  total time and clock (the gear page 0x3C80 is uploaded but sampled by no draw in this frame).
+
+- **World texture transfer/mip fixes (2026-11-10, branch `task/090-texture-mip`):** the world-materials-v2 fixes 3
+  and 4. (a) **Palette/texel:** with the captured post chain (FIX 127, FIX 255, the CT16 present with
+  `DIMX 0x0001044501100554`) inverted from the reference through the renderer's own per-pixel sample dump
+  (`--sample-dump`, 24 B/px), the whole-mask texel ratio is **1.019** and the road's **0.917** (the study's 1.0 +/-
+  0.1 gate met); the CLUT group selection (CBP 0x368F, CSA 0, TEX2 T8 load, CSM1 CT32) and the 8-bit CT32 entries
+  reproduce the reference-implied texel level, so the study's 1.43x was the post chain, not the palette. (b) The
+  palette-vs-content split found the content defect: the GS interpolates S, T and Q linearly in screen space and
+  divides (chapter 01.5), and the tapped Q is **not** the 1/w weight (measured `Q*w` spread 1.0000..92.36 over 23,576
+  triangles), so the perspective-correct UV form sampled different texels. The GS STQ coordinate
+  (`stq_texture_coordinate`) raised the road correlation **0.111 -> 0.175**, its fit slope **0.2857 -> 0.5778**, its
+  PSNR 25.17 -> **25.23** (world) and 25.03 -> **25.90** (chain), and the chain whole-mask PSNR 20.78 -> **20.95**,
+  pct_bad 27.7 -> **27.0%**, mean |diff| 13.47 -> **12.95**. (c) The mip path is implemented and measured (tapped
+  MIPTBP1/2, levels 1..MXL decoded from the image, the GS explicit LOD `K/16 - log2|Q|*2^L`, MMIN 2..5
+  nearest/linear/trilinear): 25 items (20 road, 5 reflection) carry an explicit LOD (LOD -12.35..23.21 over 1,260
+  vertices, Q -1.42..0.209) and 1.24M road fragments select level 1, but the captured level-1 address (MIPTBP1 TBP
+  0x3662, TBW 2) holds **another texture's page** at the job (the car/palette atlas), so `--mip` lowers the road's
+  high-pass correlation 0.100 -> 0.078 and moves the page ratio 1.489 -> 1.620 (outside the +/-0.05 gate). The path is
+  off by default; the capture-side window rule now includes levels 1..MXL (`texture_mip_windows`, MTBA too), so the
+  next `.gt4vram` carries the chain. Gates: no-mip world and chain renders **byte-identical** to the pre-round tool
+  (`34BDEE07...` / `BFA47B67...`), car-only render byte-identical (`B0E7082B...`, report `63FADB34...`), 3x
+  off/shadow **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13), CTest coregs3 **18/18**
+  (new mip cases in `native_coregs3_sampler` and `native_coregs3_texture_state`), Python **17/17** (new census
+  controls). The per-page spread is still outside the study's +/-0.1 (world ratios 0.646..1.126 excluding the known
+  content outliers, median 0.912), named per page in WORLD-MATERIALS-V2. Evidence `build/evidence-texture-mip/`.
+
+- **Crash race (2026-11-11, branch `task/090-crash-race`):** the host-clock crash lead is closed. The exit-139 fault at
+  VBlank ~6783 is on the **GS worker**, inside CoreGS 2.0's containers (`ContentKey`'s `blockLists_` rehash in two runs,
+  `TrimTexturePool`'s `texturePool_` walk in a third), each loading a node link of 0xFFFFFFFFFFFFFFFF; the host-clock
+  round misread it as recompiled guest code because its handler printed the live EE registers and guest stack. The
+  corrupting write is `interpolate_frame`'s pairing bookkeeping: `used` is sized by the older frame's object count and
+  indexed with newer indices, so a growing draw list at the race start reads and writes past it (ASan:
+  heap-buffer-overflow at `coregs3_presentation.cpp:540`, 0 bytes after the 2-byte allocation at 534). The fix sizes it
+  by the newer list; the fixture gains `check_growing_draw_list`. Host only, no guest change. `GT4_COREGS3_DRY_PASS=1`
+  (the removed per-instant pass) and `GT4_CRASH_DUMP=1` (faulting-thread/host-address dump, `native/crash_dump.*`) stay
+  as diagnostics. Acceptance: the 9000-frame 3x dry-pass night run completes twice on the acceptance binary
+  (`9ECE760F...`) and once on the final rebuild (`64EA9B2B...`), the dry-pass guest clock/digest/128 KiB state are identical to a reference run, the 3x off/shadow gate
+  **COREGS3-NIGHT-CHECK-OK**, CTest coregs3 **19/19**, Python **15/15**. Evidence `build/evidence-crash-race/`; method:
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §30.
+
+- **HUD A-Spec round (2026-11-11, branch `task/090-hud-aspec`):** the normal-race HUD census and the tachometer.
+  `scripts/coregs2_bench/aspec-run.sh` starts the reference night race in A-Spec (the press list without the Director's
+  Mode step; the only v2.00 A-Spec bench available) and scene frames 7600-7607 were captured at 3x with
+  `.gt4scene`/`.gt4tap`/`.gt4gs` (32,453,920 B, 8/8 frames, 0 refused) and the v2 `.gt4vram` (56,995,408 B; the S3
+  64-record bound was too small and was raised). `gt4_coregs3_render --hud-census` enumerates the panel pass: 55 PATH2
+  sprites + 42 PATH1 display-buffer draws; position/lap 7, lap/time 24, minimap 8, message 12, gear 2, digital speed 3,
+  **tachometer 9** (dial 0x3DE0 130x100 + 8 untextured needle strips), **speedometer 8** (0x3DA0 + 7 strips), gauge
+  background 1 and the G-force bar 9 decode; the **trip odometer** (page 0x3D60 uploaded only as its CT32 palette) and
+  the **fuel/tyre widget** (off-screen page 499, composite outside the panel) are refused by name. The tachometer is
+  implemented: `--hud-element tach` selects the right 130x100 T4 dial and the needle strips of its VU1 job, with a new
+  untextured Gouraud triangle-strip raster (1/16 subpixel, top-left rule, interpolated RGBA, `(Cs-Cd)*FIX+Cd` FIX 21,
+  ATE/CT16). New texture rules: a constant page uploaded by the stream as T4/T8 texels is real content
+  (`SlmImage::texel_covered`, the gear box and map dot), and the GT4F atlas applies at rotated pages
+  (`apply_hud_font_atlas(..., target_tbp0, ...)`; the A-Spec digits sample the GT4meter page at 0x3E40). The HUD raster
+  maps the captured 640x448 canvas to any output (TASK-214), so `--hud-element all` at 1920x1344 is a true 3x render:
+  on the alpha>0 contribution mask the tach is 1x PSNR 22.01 / SSIM 0.787 / mean 11.39 (851 px), 3x 19.22 / 0.644 /
+  15.55 (7,800 px); the full HUD is 1x 20.59 / 0.712 / 11.87 (30,671 px), 3x 17.31 / 0.635 / 18.29 (276,604 px), with
+  the dial/needle positions and needle angle matching. Gates: CTest coregs3 **19/19**, Python **17/17**, the night
+  speed element and both `--no-hud` renders **byte-identical** to `4345bcbd` (`425D66A6...`/`9D273FBB...`/
+  `F506F179...`), 3x off/shadow **COREGS3-NIGHT-CHECK-OK**. Residuals: world brightness behind the translucent HUD
+  (S2 material gap), trip-odometer page, fuel/tyre composite, Best/Last Lap labels in the pre-present overlay, minimap
+  palette-bank magenta bands, 1x texture pages at 3x. Evidence `build/evidence-hud-aspec/`.
+
+
 - **Live world (2026-11-11, branch `task/090-live-world`).** `GT4_COREGS3=present` now draws the captured course over
   the CoreGS 2.0 image with the cars. `coregs3_live_world` keeps each VU1 job's texture/palette windows in memory (the
   MTVU post site reports the item address, the GS worker copies the windows from its shadow before the job executes, no
@@ -2066,15 +2165,22 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   world-off path is inside the base present layer's own cross-run car-overlay noise (off vs base 1,185-1,715 px;
   base vs base 663-1,363 px, same box) with identical counters and guest state. Resolution/aspect: the live path draws
   in clip space through the composed image's viewport, with no 640x448 or integer-scale assumption (1080p 16:9 and
-  21:9 need no path change); the 3x is the evidence harness only. CTest coregs3 **19/19**, Python **15/15**, 3x
-  off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). Next: the 2D overlay split (the HUD is covered where the world draws), fog and
-  blending, bilinear filtering, the tapped texture state, the reflection pass and the post chain. Evidence
-  `build/evidence-live-world/`; design in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §30.
+  21:9 need no path change); the 3x is the evidence harness only. CTest coregs3 **20/20**, Python **17/17**, 3x
+  off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). Evidence
+  `build/evidence-live-world/`; design in [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §31. Merged with the host clock
+  (`origin/task/090-coregs3` `8547046b`): the world draws on every presentation tick through
+  `draw_presentation_tick`; on the merged tree CTest coregs3 **20/20**, Python **17/17**, the 3x off/shadow gate
+  **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames), the 60 Hz frame-locked A/B
+  reproduces the mask/metrics and the 120 Hz run draws both ticks per guest frame (12 world ticks, 15,336 draw
+  calls, 0 refusals).
+- Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
+  tapped texture state, the reflection pass and the post chain); a recapture with
+  the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages
+  0x3721/0x37B5/0x3E47); the remaining HUD elements (trip-odometer page 0x3D60, the fuel/tyre composite, the
+  Best/Last Lap labels of the pre-present overlay and the minimap palette-bank residual), the HUD anchored per
+  aspect in the game's own canvas (TASK-214, 16:9/21:9 anchors from TASK-079/080); VRR presentation and the
+  HUD at the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
-- Next: the material transfer-curve residual (fixes 3/4: palette/texel inversion and the MXL 1/MMIN 4 mip
-  path); capture the font atlas and the remaining HUD elements; a host clock that presents at the display rate
-  (VRR/120/144) and the live-timeline open lead (the removed whole-run counter pass); the effects/HUD capture
-  additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls
@@ -4463,3 +4569,11 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+
+### TASK-214 — CoreGS 3.0 native resolution and aspect (owner, 2026-11-11)
+Owner direction (2026-11-11, Telegram): the CoreGS 3.0 renderer must support any resolution and aspect ratio from birth.
+It is a native pipeline, not an upscale of the PS2 framebuffer: the output resolution is chosen natively (start at 1080p
+16:9, then 21:9 at 3440x1440; phones later), the game's own projection values (Width and Aspect, TASK-080 hooks) drive
+the 3D framing, and the HUD elements are anchored and repositioned per aspect and validated against the reference
+layouts. The integer 3x captures (1920x1344) are a validation scale only, not the shipping model. Planned: the playable
+demo comes first; then the output-resolution parameterisation, the 16:9 validation at 1080p, and the 21:9 HUD anchors.

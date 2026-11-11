@@ -10,6 +10,7 @@
 
 #include "camera_360.hpp"
 #include "controls.hpp"
+#include "crash_dump.hpp"
 #ifdef GT4_COREGS3_HOOKS
 #include "coregs3/coregs3_hooks.hpp"
 #endif
@@ -295,6 +296,9 @@ int main(int argc, char **argv) {
 #ifdef GT4_HW_SHADER_PREPARE
   if (argc == 2 && std::string(argv[1]) == "--prepare-shaders") return gt4::hw::prepare_shaders_main();
 #endif
+  // TASK-090 crash-race diagnostic: GT4_CRASH_DUMP=1 dumps the host context, the guest EE register file and the guest
+  // memory around the fault before the default handler ends the process. Nothing happens when the switch is unset.
+  gt4::crash_dump::install_from_environment();
 #ifdef GT4_GS_STREAM_CLIENT
   // TASK-116 step 0 (P0 gate): the guest RAM window that turns a READ_FIFO host pointer into an EE address in the
   // GT4_GS_READBACK_LOG lines (native/gs_stream/gs_readback_probe.hpp). Nothing happens when the switch is unset.

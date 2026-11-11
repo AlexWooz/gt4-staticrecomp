@@ -435,6 +435,12 @@ struct Backend::Impl {
   std::unique_ptr<gt4::hw::coregs3::PresentLayer> coregs3_present;
   std::uint64_t coregs3_overlay_flush = UINT64_MAX;  // stats.flushes of the frame that already carries the layer
   bool depth_clamp_enabled = false;                  // VkPhysicalDeviceFeatures::depthClamp requested and enabled
+  // TASK-090 host clock: the window presents each due presentation tick at the display's rate instead of once per guest
+  // VBlank. It needs the picture presentation path (a second queue or the shared queue) so a scheduled picture can be
+  // shown later without blocking the GS thread; GT4_COREGS3_HOST_CLOCK=0 turns it off (A/B).
+  bool coregs3_host_clock = false;
+  bool host_clock_presented = false;  // end_frame presented this VBlank's ticks; present() must not add a normal slot
+  static constexpr std::size_t kHostClockQueueLimit = 6;  // pictures handed to the presenter and not shown yet
 
   // Draws the newest complete captured car pass over a composed display image, once per frame, on the rendering queue.
   // A Vulkan failure disables the layer and never the game: `present` is a diagnostic, not the faithful path.
@@ -467,6 +473,63 @@ struct Backend::Impl {
       std::fprintf(stderr, "[coregs3] present layer stopped: %s\n", error.c_str());
       coregs3_present.reset();
     }
+  }
+
+  static std::int64_t steady_now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  }
+
+  // TASK-090 host clock: draws each due presentation tick over `image` and hands its picture to the presenter at the
+  // tick's scheduled host time (coregs3_host_clock.hpp), one display period apart. Every tick starts from the composed
+  // image saved before the first one, so the interpolated cars of one tick never appear in the next. Returns true when
+  // this VBlank's presentation was handled here (at least one picture handed over), false when there was nothing to
+  // present and the caller should fall back to the normal once-per-VBlank present.
+  bool overlay_coregs3_host_clock(VkImage image, std::uint32_t width, std::uint32_t height) {
+    if (!coregs3_present || image == VK_NULL_HANDLE) return false;
+    if (coregs3_overlay_flush == stats.flushes) return true;  // this frame already carries the layer
+    const gt4::coregs3::HostPresentationClock::Plan &plan = gt4::coregs3::present::host_clock_plan();
+    if (plan.count == 0) return false;
+    coregs3_overlay_flush = stats.flushes;
+    const gt4::hw::coregs3::SubmitOverlay submit = [this](VkCommandBuffer command, VkFence fence, std::string &error) {
+      VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+      info.commandBufferCount = 1;
+      info.pCommandBuffers = &command;
+      const VkResult result = submit_to(queue, info, fence, QueueCaller::gs_thread);
+      if (result != VK_SUCCESS) {
+        error = std::string("vkQueueSubmit failed for the CoreGS 3.0 present pass: ") + vk_result_text(result);
+        return false;
+      }
+      return true;
+    };
+    bool handed = false;
+    for (std::uint32_t index = 0; index < plan.count; ++index) {
+      bool drew = false;
+      std::string error;
+      if (!coregs3_present->render_tick(reinterpret_cast<std::uint64_t>(image), width, height, plan.ticks[index].index,
+                                        submit, drew, error)) {
+        std::fprintf(stderr, "[coregs3] present layer stopped: %s\n", error.c_str());
+        coregs3_present.reset();
+        break;
+      }
+      if (!drew) continue;  // nothing drawable for this instant: the base image is the picture
+      present_host_clock_picture(plan.ticks[index].show_ns);
+      handed = true;
+    }
+    return handed;
+  }
+
+  // One host-clock presentation: the image currently in the renderer's display surface (drawn by overlay_coregs3_host_clock
+  // just before this call) is drawn into a picture slot on the rendering queue and handed to the presentation thread,
+  // which shows it at `show_ns`. Nothing waits for the display on the GS thread.
+  void present_host_clock_picture(std::int64_t show_ns) {
+    if (!swapchain || !renderer) return;
+    ++present_requests;
+    const std::int64_t show_us = show_ns / 1000;
+    if (show_us <= steady_now_us()) stats.host_clock_late++;
+    const auto step_start = std::chrono::steady_clock::now();
+    present_host_clock_path(frameOnGpu && frame.valid ? &frame : nullptr, show_us);
+    gs_present_step_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - step_start).count();
   }
 
   // M6 interface: the frame end composes into `frame`, the scheduler decides whether it reaches the
@@ -1433,6 +1496,8 @@ struct Backend::Impl {
     std::uint32_t slot;
     std::chrono::steady_clock::time_point arrival;
     bool spaced;
+    // TASK-090 host clock: the exact steady-clock time to show it, in microseconds since the epoch (0: use `spaced`).
+    std::int64_t show_us = 0;
   };
   std::thread pacer_thread;
   std::mutex pacer_mutex;
@@ -1488,12 +1553,14 @@ struct Backend::Impl {
         pacer_queue.pop_front();
         pacer_busy = true;
         finished_slot = picture.slot;
-        if (picture.spaced) {
+        if (picture.show_us != 0) {
+          whenUs = picture.show_us;
+        } else if (picture.spaced) {
           whenUs = pacer_spacing.place(std::chrono::duration_cast<std::chrono::microseconds>(picture.arrival.time_since_epoch()).count(),
                                        !pacer_queue.empty());
         }
       }
-      if (picture.spaced) {
+      if (picture.spaced || picture.show_us != 0) {
         const auto when = std::chrono::steady_clock::time_point(std::chrono::microseconds(whenUs));
         // The system's sleep is too coarse for this: the last stretch spins.
         std::this_thread::sleep_until(when - std::chrono::milliseconds(2));
@@ -1609,7 +1676,17 @@ struct Backend::Impl {
   void hand_over(std::uint32_t slot, bool spaced) {
     {
       const std::lock_guard<std::mutex> lock(pacer_mutex);
-      pacer_queue.push_back(PacedPicture{slot, std::chrono::steady_clock::now(), spaced});
+      pacer_queue.push_back(PacedPicture{slot, std::chrono::steady_clock::now(), spaced, 0});
+      pacer_slots_held |= 1u << slot;
+    }
+    pacer_changed.notify_all();
+  }
+
+  // TASK-090 host clock: the drawn picture of `slot` goes to the presentation thread, to be shown at `show_us`.
+  void hand_over_at(std::uint32_t slot, std::int64_t show_us) {
+    {
+      const std::lock_guard<std::mutex> lock(pacer_mutex);
+      pacer_queue.push_back(PacedPicture{slot, std::chrono::steady_clock::now(), false, show_us});
       pacer_slots_held |= 1u << slot;
     }
     pacer_changed.notify_all();
@@ -1679,6 +1756,43 @@ struct Backend::Impl {
     draw_picture(slot, frame);
     ++submissions;
     hand_over(slot, spaced);
+    report_presents_dropped();
+    if (frame == nullptr) stats.black_presents++;
+  }
+
+  // TASK-090 host clock, on the GS thread: draws `frame`'s picture into a slot of the rendering queue and hands it to
+  // the presentation thread for an exact show time. The presenter shows at most kHostClockQueueLimit pictures; when it is
+  // behind, or the slot's previous picture is still with it, this tick is not shown and counted. Nothing waits for the
+  // display here, so the guest VBlank path keeps its cost.
+  void present_host_clock_path(const hwgs::writeback::FrameOutput *frame, std::int64_t show_us) {
+    if (!pacer_thread.joinable()) pacer_thread = std::thread([this] { pacer_worker(); });
+    // Any slot whose picture the presentation thread already finished is usable; the round-robin start spreads the
+    // pictures of one guest frame over the slots instead of always taking the first free one.
+    std::uint32_t slot = kNoSlot;
+    {
+      const std::lock_guard<std::mutex> lock(pacer_mutex);
+      const gt4::hw::PresenterLoad load{pacer_queue.size(), pacer_busy, pacer_slots_held};
+      const std::size_t on_the_way = load.queued + (load.busy ? 1u : 0u);
+      if (on_the_way < kHostClockQueueLimit) {
+        for (std::uint32_t attempt = 0; attempt < frame_slots; ++attempt) {
+          const std::uint32_t candidate = static_cast<std::uint32_t>((submissions + attempt) % frame_slots);
+          if (((load.slots_held >> candidate) & 1u) != 0) continue;
+          if (gs_waits([&] { return vkWaitForFences(device, 1, &fences[candidate], VK_TRUE, 0); }) != VK_SUCCESS)
+            continue;
+          slot = candidate;
+          break;
+        }
+      }
+      if (slot == kNoSlot) {
+        ++presents_dropped;
+        ++stats.host_clock_dropped;
+        return;
+      }
+    }
+    draw_picture(slot, frame);
+    ++submissions;
+    hand_over_at(slot, show_us);
+    ++stats.host_clock_pictures;
     report_presents_dropped();
     if (frame == nullptr) stats.black_presents++;
   }
@@ -1872,6 +1986,29 @@ bool Backend::init(const Options &options, std::string &error) {
     if (!s.coregs3_present->init(config, present_error)) {
       std::fprintf(stderr, "[coregs3] live present refused: %s\n", present_error.c_str());
       s.coregs3_present.reset();
+    }
+  }
+  // TASK-090 host clock: above 60 Hz the window presents each due presentation tick at the requested display rate. It
+  // needs the pictures path (the presentation thread shows a picture at its scheduled time); GT4_COREGS3_HOST_CLOCK=0 is
+  // the A/B switch that keeps the once-per-guest-VBlank present.
+  if (s.coregs3_present) {
+    const char *host_clock_text = std::getenv("GT4_COREGS3_HOST_CLOCK");
+    const bool host_clock_disabled = host_clock_text != nullptr && std::strcmp(host_clock_text, "0") == 0;
+    const gt4::coregs3::present::TimelineConfig &timeline = gt4::coregs3::present::timeline_config();
+    s.coregs3_host_clock = gt4::coregs3::present::host_clock_enabled() && !host_clock_disabled &&
+                           timeline.selected_tick == UINT32_MAX && s.uses_pictures();
+    if (timeline.hz > 60) {
+      if (s.coregs3_host_clock) {
+        std::fprintf(stderr,
+                     "[coregs3] host clock: on, %u Hz presentation (%zu pictures in flight, one guest frame of lag)\n",
+                     timeline.hz, Impl::kHostClockQueueLimit);
+      } else {
+        std::fprintf(stderr, "[coregs3] host clock: off (%s); the window presents once per guest VBlank\n",
+                     host_clock_disabled ? "GT4_COREGS3_HOST_CLOCK=0"
+                                         : (timeline.selected_tick != UINT32_MAX
+                                                ? "GT4_COREGS3_PRESENT_TICK diagnostic"
+                                                : "the presentation path has no picture queues"));
+      }
     }
   }
   // Output stage options (13.4 GT4_HW_DEINTERLACE, 13.2 GT4_HW_ANTIBLUR).
@@ -2106,8 +2243,12 @@ void Backend::resize_window(std::uint32_t width, std::uint32_t height) {
 }
 
 void Backend::present(PresentPhase phase) {
-  // One guest VBlank on the default policy: the frame end and one present slot (chapter 12.5 parity).
-  if (end_frame(phase)) present_slot();
+  // One guest VBlank on the default policy: the frame end and one present slot (chapter 12.5 parity). Above 60 Hz the
+  // CoreGS 3.0 host clock hands every due presentation tick to the presenter in end_frame, each at its own display
+  // period; the scheduler slot would then show the last picture again out of schedule, so it is skipped.
+  if (end_frame(phase)) {
+    if (!impl_->host_clock_presented) present_slot();
+  }
 }
 
 bool Backend::end_frame(PresentPhase phase) {
@@ -2167,8 +2308,20 @@ bool Backend::end_frame(PresentPhase phase) {
     s.frameOnGpu = false;
     s.renderer->ComposeFrame(s.frame, hwgs::writeback::ComposeKind::Presentation);
   }
-  // TASK-090 M4: the debug-only live layer, after the compose submission and before the present copies the image.
-  if (s.frameOnGpu) s.overlay_coregs3(s.gpuImage, s.frame.width, s.frame.height);
+  // TASK-090 M4: the debug-only live layer, after the compose submission and before the present copies the image. The
+  // host clock (above 60 Hz) draws and hands over one picture per due presentation tick; below it, the whole batch is
+  // drawn and the normal once-per-VBlank present shows its newest tick.
+  s.host_clock_presented = false;
+  if (s.frameOnGpu) {
+    if (s.coregs3_host_clock) {
+      // The presenter's copies read the renderer's display image (record_frame's GPU path), which the draw_tick calls
+      // here update for every presentation tick.
+      s.shownOnGpu = true;
+      s.host_clock_presented = s.overlay_coregs3_host_clock(s.gpuImage, s.frame.width, s.frame.height);
+    } else {
+      s.overlay_coregs3(s.gpuImage, s.frame.width, s.frame.height);
+    }
+  }
   s.presentedVblank = s.stats.flushes;
   s.composeTotalUs += s.renderer->Timings().composeUs;
   ++s.composedFrames;

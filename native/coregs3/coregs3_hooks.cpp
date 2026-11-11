@@ -555,14 +555,17 @@ bool draw_mark_at_post() noexcept {
   return post;
 }
 
-// TASK-090 pass textures: the GS blocks a draw's texture records name (the shared rule is coregs3_texwin.hpp).
+// TASK-090 pass textures: the GS blocks a draw's texture records name (the shared rule is coregs3_texwin.hpp). TASK-090
+// texture mip: a record with TEX1.MXL > 0 also names its mip levels through MIPTBP1/MIPTBP2, and the snapshot must carry
+// them or the offline decoder samples whatever later upload sits at the level address.
 void collect_draw_windows(const FrameSnapshot &frame, const CapturedDraw &draw, vram::Window *windows,
                           std::uint32_t &count) noexcept {
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const std::uint32_t slot = draw.items[index].texture_record;
     if (slot == kNoRecord || slot >= frame.textures.size()) continue;
     const std::uint8_t *bytes = frame.textures[slot].bytes;
-    texture_windows_from_tex0(vram::read_u64(bytes, 0), windows, count);
+    texture_windows_from_state(vram::read_u64(bytes, 0), vram::read_u64(bytes, 8), vram::read_u64(bytes, 16),
+                               vram::read_u64(bytes, 24), windows, count);
   }
 }
 
@@ -1038,6 +1041,16 @@ void print_report(std::FILE *out) noexcept {
                  intervals != 0 ? static_cast<double>(load(t.interval_sum)) / static_cast<double>(intervals) : 0.0,
                  static_cast<unsigned long long>(load(t.interval_min)),
                  static_cast<unsigned long long>(load(t.interval_max)));
+  if (timeline.hz > 60)
+    std::fprintf(out,
+                 "[coregs3] present host clock plans=%llu ticks=%llu late=%llu stale=%llu skipped=%llu "
+                 "duplicates=%llu\n",
+                 static_cast<unsigned long long>(load(t.host_plans)),
+                 static_cast<unsigned long long>(load(t.host_ticks)),
+                 static_cast<unsigned long long>(load(t.host_late)),
+                 static_cast<unsigned long long>(load(t.host_stale)),
+                 static_cast<unsigned long long>(load(t.host_skipped)),
+                 static_cast<unsigned long long>(load(t.host_duplicates)));
   if (timeline.hz != 0 &&
       load(t.pairs) + load(t.pairs_refused) + load(t.paired) + load(t.only_newer) + load(t.only_older) +
               load(t.interpolated) + load(t.entrywise) + load(t.nearest) + load(t.dropped_discontinuity) !=

@@ -396,6 +396,13 @@ void test_post_chain_recognition() {
   // The present's captured dither state is decoded, not guessed.
   check(batches[9].state.dthe_on() && batches[9].state.dimx == 0x76543210ABCDEF01ull && batches[9].state.colclamp == 1,
         "the present carries DTHE, DIMX and COLCLAMP");
+  // TASK-090 HUD A-Spec: the normal race's present carries ALPHA 0x48 (B = zero instead of Cd); with ABE off it is the
+  // same copy and the chain must still find it.
+  std::vector<GsDecodeBatch> aspec = batches;
+  aspec[9].state.alpha = 0x0000000000000048ull;
+  GsPostChainInfo aspec_info;
+  check(find_post_chain(aspec, 100, aspec_info) && aspec_info.present == &aspec[9],
+        "the A-Spec ALPHA 0x48 present is recognised");
   // Missing present: a named refusal.
   std::vector<GsDecodeBatch> no_present(batches.begin(), batches.begin() + 9);
   GsPostChainInfo refused;

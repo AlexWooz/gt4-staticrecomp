@@ -10,6 +10,98 @@ the existing CoreGS 3.0 capture (`native/coregs3`) and the repository studies.
 
 Labels: **C** = Confirmed (read in code or measured), **H** = High confidence, **Hyp** = Hypothesis, **U** = Unknown.
 
+## Status (2026-11-11): S3 A-Spec round; the normal-race HUD census, the tachometer and the fair 3x comparison
+
+Branch `task/090-hud-aspec` (worktree `O:/Antigavity/gt4-wt-090-hud-aspec`, from `task/090-coregs3` at `4345bcbd`).
+
+- **The A-Spec scene (C).** The night race started without B-Spec: the new `scripts/coregs2_bench/aspec-run.sh` is
+  `night-run.sh`'s press list without the `6300:right` step that selects the Director's Mode icon, so `6450:cross`
+  starts the normal A-Spec race (5 AI cars, Hong Kong Reverse, the full normal HUD). It is the only v2.00 A-Spec bench
+  available: the Arcade bench's card is no longer in the main checkout and the Spec II recordings need the Spec II build
+  and EE library, which this round does not pin. Capture window scene frames 7600-7607, 3x, `GT4_COREGS3=shadow`, with
+  `.gt4scene` 18,676,752 B, `.gt4tap` 40,686,448 B, `.gt4gs` **32,453,920 B** (5,632 records, 8/8 frames closed, 0
+  refused; PATH2 22,480 B and PATH3 3,998,480 B per frame) and the v2 `.gt4vram` 56,995,408 B (vblank records
+  7600-7608 plus 68-69 per-job records per VBlank, blocks 0x2BC0..0x3FFF, max 2,048 records). The S3 recipe's
+  64-record bound is too small for this scene: the first sidecar held 64 job records and no vblank record, and the
+  renderer refused it (named). The 3x reference frames are a separate CoreGS 2.0 run of the same VBlanks (`EVERY=1
+  FROM=7600`), 1920x1344.
+- **Census (C).** `gt4_coregs3_gs --census/--batches` plus the new `gt4_coregs3_render --hud-census <csv>`: 5,568
+  packets, 1,512 IMAGE uploads / 31,843,200 B, 960 batches, 80 full-screen, 0 refusals. The panel range (present blit
+  to the last stream batch job) holds **55 PATH2 sprites and 42 PATH1 display-buffer draws**: position/lap 7 draws,
+  lap/time 24, minimap 8 (0x3B80 180x180 outline, six 0x3C00 car markers, the 0x3B60 sign), message 12, gear 2,
+  digital speed 3, **tachometer 9** (dial 0x3DE0 + 8 untextured needle strips), **speedometer 8** (0x3DA0 + 7 strips),
+  gauge background 1 (0x3CA0), G-force bar 9 (0x3F60 + markers + the 0x2FE0/0x3FC0/0x3FA1 pieces), all decode. Refused
+  by name: **trip odometer 6** (page 0x3D60 is a 128x16 T4 page the stream uploads only as its CT32 palette), **fuel/
+  tyres 5** (PATH2 draws into the off-screen page 499, FBP 499; the composite is not in the captured panel), the 0x3E60
+  CT32 plate (refused_format). Three unclassified: the 0x3D81 centre cap, a 0x3E40 piece at y 309..327, the 0x3E60
+  plate. The Best/Last Lap **labels** are not in the panel: it carries their dashed time values; the labels belong to
+  the pre-present 2D overlay.
+- **The tachometer (C, implemented).** The right gauge is a 130x100 T4 dial (0x3DE0, TEX0 TW 8 TH 7, CLAMP 0..129 x
+  0..99) at x 348..445.5, y 328..421.3, job 530190; its needle is eight 6-vertex untextured triangle strips of that
+  job: PRIM 0x4C (tri-strip, IIP, TME off, ABE), ALPHA 0x64 = `(Cs-Cd)*FIX+Cd` with FIX 21/128, vertex RGBA
+  (200/64, 0, 0, 128), the two ADC lead-in vertices. `HudElement::tach` selects the right 130x100 dial by geometry and
+  position plus the strips of its job, and the new untextured Gouraud strip raster covers pixel centres on the GS 1/16
+  subpixel grid with the top-left fill rule (the shared edge is written once), interpolates the vertex colours and
+  applies the measured FIX blend, ATE and the CT16 destination model.
+- **Texture rules added (C).** A constant page is accepted when the captured stream uploaded it as T4/T8 texels
+  (`SlmImage::texel_covered`): the A-Spec gear box, map dot and the 0x3FC0/0x2FE0 pieces are solid pages uploaded per
+  frame, while the night B-Spec GT4meter page (palette transfers only) keeps the S3 constant-page refusal. The GT4F
+  atlas now applies at any page the panel samples (`apply_hud_font_atlas(..., target_tbp0, ...)`, preserving that
+  page's CBP bank), so the A-Spec gear and digital speed digits decode from the same GT4meter page at 0x3E40; the trip
+  digits' different 0x3D60 page stays refused.
+- **Fair 3x comparison (C, owner follow-up 2026-11-11 00:50).** The HUD raster maps the captured 640x448 2D canvas to
+  any output (TASK-214: each target pixel centre maps back to a canvas coordinate before coverage/scissor/UV), so
+  1920x1344 is a true 3x render, not an upscale. `--hud-element all` draws every supported panel entry (50 PATH2
+  sprites + 41 PATH1 plates/needles). On the contribution mask (fragments with alpha > 0, `--hud-contrib-mask`):
+  tach 1x PSNR **22.01** / SSIM **0.787** / mean |diff| **11.39** over 851 px, 3x **19.22 / 0.644 / 15.55** over 7,800
+  px; all 1x **20.59 / 0.712 / 11.87** over 30,671 px, 3x **17.31 / 0.635 / 18.29** over 276,604 px. The dial and
+  needle positions and the needle angle match the reference; the residual is the world behind the translucent HUD (the
+  native world is brighter, the S2 material gap) and the 1x texture page sampled at 3x. Element sheets (position/lap,
+  times, minimap, gauges, tach, gear/speed, full frame) at 3x side by side with the reference.
+- **Gates.** CTest coregs3 **19/19** (new: texel-sourced constant page, rotated atlas page, 3x canvas mapping, Gouraud
+  strip and FIX blend, A-Spec ALPHA 0x48 present), Python **17/17**; the night speed element, the world and the
+  world+gs `--no-hud` renders are **byte-identical** to the `4345bcbd` tool (SHA-256 `425D66A6...`, `9D273FBB...`,
+  `F506F179...`); the 3x off/shadow gate is **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences,
+  13/13 frames). Evidence: `build/evidence-hud-aspec/`.
+- **Residuals (named).** Trip odometer page not captured; fuel/tyre composite outside the panel; Best/Last Lap labels
+  in the pre-present overlay; the minimap page shows magenta bands where the reference is dark (a palette-bank residual
+  of the map's marker colours); the dial background is translucent, so the brighter native world shows through; the 1x
+  texture pages limit the 3x detail (a native-resolution ship model is TASK-214).
+
+## Status (2026-11-11): S3 font atlas; the speed digits render and G-HUD-VALUES closes
+
+The S3 speed digits now draw. Branch `task/090-hud-font` (worktree `O:/Antigavity/gt4-wt-090-hud-font`, from
+`task/090-coregs3` at `5b82c832`).
+
+- **The capture carries the palette bundle, not the glyphs (C).** In stream 7399 the digit page's four uploads
+  (seq 1012/1014/1016/1018 at DBP 0x3A20/0x3A28/0x3A2C/0x3A2E, 32x16 + 16x16 + 16x8 + 8x8 CT32) are the GT4meter
+  font's palette bundle; the 128x64 T4 glyph texels are not uploaded in the window. Wider windows were measured and do
+  not carry them either: 6460-6467 and 6500-6515 (race entry) upload the display.gpb per-frame set, 7290-7305 (green
+  flag) uploads the 184x180 mini-map T4 (decoded: the track outline) at 0x3A20, and an empty 32x32 T4 at 0x3780; no
+  128x64 T4 at 0x3A20. The page is uploaded before the race, at boot or GT Mode entry.
+- **The font proves the source (C).** `race.fnt`'s GT4meter Tex1 block (file 0x1E600) has the draw's exact T4 geometry
+  (TBW 2, TW 7, TH 6, TCC 1, CLAMP 0..127 x 0..38) and the same four palette transfers at the same tbp offsets as the
+  frame's uploads; its glyph records' cells are the reference atlas positions and the stream's two digit cells (UV
+  91..105 and 61..75) are the glyphs '6' and '8'. The font file's per-glyph bitmap encoding is not decoded (the 20-byte
+  records' 8-bit strip pointers and 0x55-terminated rows do not reproduce the atlas under the forms tried).
+- **The texels are the reference decode (C).** The CoreGS 2.0 `GT4_HW_DUMP_TEXTURES` image with Format G key
+  `bf0800b76cfeb19a-855d33f8da421ba0` (GT4meter, 128x39) holds white RGB with exactly the frame's captured CSM1 bank
+  alpha levels; its indices are recovered and laid out as the 128x128 T4 page in GS local memory (round trip verified).
+  The new GT4F sidecar (`gt4meter.gt4f`, 8,232 B, sha256 `A2129152...`) carries the page.
+- **Renderer (C).** `native/coregs3/coregs3_hud` gains `parse_hud_font_atlas`/`apply_hud_font_atlas` (the page's 32
+  blocks plus the draw's 64-byte CSM1 bank at CBP preserved) and `gt4_coregs3_render --hud-font-atlas`. The constant-page
+  refusal is RGBA for an atlas page and stays RGB otherwise (the no-atlas A/B still refuses the stream-only page). Two
+  S3 raster errors were fixed: PATH2 texel UVs are normalized to ST before sampling, and the interpolation parameter is
+  taken at the integer pixel centre (the CoreGS 2.0 `ceil(min)..ceil(max)-1` rule).
+- **Measurement (C).** 1x against frame 07400: the element mask is **PSNR 31.45 / SSIM 0.785 / mean |diff| 4.52**
+  (was 13.35 / 0.486 / 23.37) and the digit rect **PSNR 34.15 / SSIM 0.781 / mean 2.72, 210/418 pixels exact, max 24**;
+  the reference's digits are at the same cells, positions and shapes ("68"). The no-atlas A/B keeps the S3 refusal; the
+  no-HUD A/B is byte-identical to the 5b82c832 tool. CTest coregs3 **18/18**, Python **15/15**, the 3x off/shadow gate
+  **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). **G-HUD-VALUES closes.**
+- **Next.** The remaining elements: the gear page 0x3C80 (264x59 T8) is uploaded but sampled by no draw in this frame,
+  and no other draw samples the GT4meter page, so the gear ladder, total time and clock need a frame that draws them (or
+  their pages captured). The font file's glyph bitmap payload decode stays open. Evidence: `build/evidence-hud-font/`.
+
 ## Status (2026-11-10): S3 implemented and measured; the speed plate is drawn, the digit atlas is outside the capture window
 
 S3 landed on branch `task/090-hud-s3` (worktree `O:/Antigavity/gt4-wt-090-hud-s3`, from `task/090-coregs3` at

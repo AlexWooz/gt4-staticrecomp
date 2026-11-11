@@ -44,6 +44,24 @@ struct TextureFrameCounters {
   std::uint64_t records_refused = 0;   // records the decoder refused
   std::uint64_t records_level0_fallback = 0;  // TEX1.MXL > 0 decoded as level 0 (the world path's declared fallback)
   std::uint64_t records_filter_fallback = 0;  // MMIN is a mip filter but only level 0 exists: nearest (MMIN & 1) is used
+  // TASK-090 texture mip: the MXL > 0 decode outcomes. `records_mip_chains` counts decoded complete chains,
+  // `records_mip_levels_missing` the records whose MIPTBP levels the image did not cover (level-0 fallback), and the two
+  // register counters name whether the chain addresses came from the tap's MIPTBP writes or the item's 40-byte record.
+  std::uint64_t records_mip_chains = 0;
+  std::uint64_t records_mip_levels_missing = 0;
+  std::uint64_t world_mip_registers_from_tap = 0;
+  std::uint64_t world_mip_registers_from_record = 0;
+  // The explicit LOD attachment over the selected items: items whose chain and tapped Q produced a per-vertex LOD, and
+  // mip-ready items that had no tapped Q (level-0 fallback at sample time).
+  std::uint64_t world_mip_lod_items = 0;
+  std::uint64_t world_mip_lod_missing = 0;
+  // The measured LOD/Q range over the attached vertices (the report prints it; the census uses it to explain a level).
+  double world_mip_lod_min = 1.0e30;
+  double world_mip_lod_max = -1.0e30;
+  double world_mip_lod_sum = 0.0;
+  double world_mip_q_min = 1.0e30;
+  double world_mip_q_max = -1.0e30;
+  std::uint64_t world_mip_lod_vertices = 0;
   std::uint64_t cache_hits = 0;        // decodes that shared an already decoded Format G payload key
   std::uint64_t items_textured = 0;
   std::uint64_t items_untextured = 0;
@@ -153,6 +171,9 @@ struct TextureFrameOptions {
   // filtered the draws/items), V2-8 and the continuation UV arrays are accepted, and a record with TEX1.MXL > 0 is
   // decoded at level 0 with a counted fallback. False keeps the car pass's measured rule exactly.
   bool world_channels = false;
+  // TASK-090 texture mip: decode levels 1..MXL and attach the explicit per-vertex LOD. Off by default (the captured
+  // levels are not the road's chain yet); --mip turns it on for the measurement and the future capture.
+  bool world_mip = false;
 };
 
 // Builds the table for `frame` from the decoded sidecar image `slm` and (when options.use_tap) the tap file. `tap_data`

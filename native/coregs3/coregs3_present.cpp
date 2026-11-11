@@ -3,6 +3,7 @@
 #include "coregs3_present.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -38,7 +39,27 @@ struct TimelineState {
   PresentationClock clock{60};
   PresentationClock::Due batch;
   InterpolationLimits limits;
+  HostPresentationClock host_clock{60};
+  HostPresentationClock::Plan host_plan;
+  // TASK-090 crash-race diagnostic: the per-instant counter pass (removed by commit 6fc9f75b), restored behind
+  // GT4_COREGS3_DRY_PASS=1 so the crash it exposes can be reproduced and measured.
+  std::vector<DrawTransform> dry_transforms;
 };
+
+// TASK-090 crash-race diagnostic: the removed per-VBlank counter pass, opt-in. It runs the interpolation of every due
+// presentation instant on the GS worker (no drawing) and is what reproduces the exit-139 fault at VBlank ~6783.
+bool dry_pass_enabled() noexcept {
+  static const bool enabled = [] {
+    const char *value = std::getenv("GT4_COREGS3_DRY_PASS");
+    return value != nullptr && *value != '\0' && std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
+}
+
+std::int64_t steady_now_ns() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 TimelineState &timeline_state() {
   static TimelineState state;
   return state;
@@ -123,6 +144,8 @@ void set_timeline_config(const TimelineConfig &config) noexcept {
   state.ring.clear();
   state.cameras.clear();
   state.batch = PresentationClock::Due{};
+  state.host_clock = HostPresentationClock(config.hz);
+  state.host_plan = HostPresentationClock::Plan{};
 }
 
 const TimelineConfig &timeline_config() noexcept { return timeline_state().config; }
@@ -133,6 +156,18 @@ void note_guest_frame(const FrameSnapshot &frame) {
   if (!state.configured) return;
   const GuestTime time{frame.vblank, guest_ticks(frame.vblank)};
   TimelineFrame timeline = timeline_frame(frame, time);
+  // Diagnostic (GT4_COREGS3_PRESENT_TRACE=<first vblank>): what the claimed frame carries. A windowed run and a
+  // headless run of the same capture must claim the same kind of frame; this prints the first few after the vblank.
+  if (const char *trace = std::getenv("GT4_COREGS3_PRESENT_TRACE")) {
+    static std::uint64_t traced = 0;
+    const std::uint64_t first = std::strtoull(trace, nullptr, 10);
+    if (frame.vblank >= first && traced < 30) {
+      std::fprintf(stderr, "[coregs3] claim vblank=%llu draws=%u objects=%zu packets=%zu camera=%u\n",
+                   static_cast<unsigned long long>(frame.vblank), frame.draw_count, timeline.objects.size(),
+                   frame.packets.size(), frame.camera.valid);
+      traced += 1;
+    }
+  }
   state.ring.push(timeline);
   while (state.cameras.size() >= state.ring.capacity()) state.cameras.erase(state.cameras.begin());
   state.cameras.push_back(camera_frame(frame.camera));
@@ -154,9 +189,41 @@ void note_guest_frame(const FrameSnapshot &frame) {
       for (std::uint32_t index = 1; index < state.batch.count; ++index) add_interval(state.batch.step);
     g_interval_last.store(state.batch.first + (state.batch.count - 1) * state.batch.step, std::memory_order_relaxed);
   }
+  // TASK-090 crash-race diagnostic: the per-instant counter pass of commit 6fc9f75b, opt-in. See dry_pass_enabled.
+  if (dry_pass_enabled()) {
+    for (std::uint32_t index = 0; index < state.batch.count; ++index) {
+      const std::uint64_t instant = state.batch.first + static_cast<std::uint64_t>(index) * state.batch.step;
+      interpolated_transforms(instant, state.dry_transforms, true);
+    }
+  }
+  // TASK-090 host clock: the host presentation times of this batch on the display grid (coregs3_host_clock.hpp; a
+  // window presenting at the requested rate uses them, a headless run only reports the counters).
+  state.host_plan = HostPresentationClock::Plan{};
+  if (state.config.hz > 60) {
+    state.host_plan = state.host_clock.plan(state.batch, steady_now_ns(), HostPresentationClock::kMaxTicks);
+    TimelineCounters &c = g_timeline_counters;
+    const auto add = [](std::atomic<std::uint64_t> &field, std::uint64_t value) {
+      if (value != 0) field.fetch_add(value, std::memory_order_relaxed);
+    };
+    add(c.host_plans, 1);
+    add(c.host_ticks, state.host_plan.count);
+    add(c.host_late, state.host_plan.late);
+    add(c.host_stale, state.host_plan.stale);
+    add(c.host_skipped, state.host_plan.skipped);
+    add(c.host_duplicates, state.host_plan.duplicates);
+  }
 }
 
 PresentationClock::Due due_ticks() noexcept { return timeline_state().batch; }
+
+bool host_clock_enabled() noexcept {
+  const TimelineState &state = timeline_state();
+  return state.configured && state.config.hz > 60;
+}
+
+const HostPresentationClock::Plan &host_clock_plan() noexcept { return timeline_state().host_plan; }
+
+void clear_host_clock_plan() noexcept { timeline_state().host_plan = HostPresentationClock::Plan{}; }
 
 void note_draw_tick() noexcept { g_timeline_counters.draw_ticks.fetch_add(1, std::memory_order_relaxed); }
 
