@@ -2096,9 +2096,9 @@ renderer runs solely on the GS worker under `backendMutex_`, so the finding is a
 which is exactly where the dry pass (two interpolations per VBlank at 120 Hz, each on the GS worker) reaches the bad
 index. ASan on the fixture (`coregs3_presentation_fixture`, `check_growing_draw_list`): **heap-buffer-overflow READ of
 size 1 at coregs3_presentation.cpp:540, 0 bytes after the 2-byte region allocated at line 534**; the same check with the
-size fixed reports no pairing error. The only remaining ASan report in the fixture is the MSVC `strtoul` reading one
-byte past a string literal's terminator in `parse_presentation_hz` (CRT behavior, unrelated) — recorded here so a future
-ASan session does not mistake it for this bug.
+size fixed prints `coregs3 presentation fixture: ok` with no ASan report. Build the ASan control with `/OPT:NOICF`: the
+linker's identical-COMDAT folding merges string literals and template instantiations, and ASan's global metadata then
+disagrees with the merged object (a `strtoul` read past a literal appears, an artifact that disappears with NOICF).
 
 The fix sizes `used` by `newer.objects.size()` (the list it indexes) and is host-only: the pairing for a growing list
 now yields the defined result (objects previously skipped by an out-of-bounds read are matched), it does not touch guest
@@ -2145,7 +2145,7 @@ differ. The fix covers both.
 | Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **15/15** |
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, reference `coregs3-r8/ref/gt4vulkan.exe`) | `COREGS3-NIGHT-CHECK-OK` |
 | ASan fixture, pre-fix | heap-buffer-overflow at `coregs3_presentation.cpp:540` |
-| ASan fixture, post-fix | the pairing check is clean; only the CRT `strtoul` report remains |
+| ASan fixture, post-fix (`/OPT:NOICF`) | clean: `coregs3 presentation fixture: ok`, exit 0, no report |
 
 Evidence: `build/evidence-crash-race/`. Limits: the exact byte-level path from the overflow to the -1 node link is not
 traced (the crash-site signature and the ASan proof are the evidence); the ASan game run did not reach the race-start
