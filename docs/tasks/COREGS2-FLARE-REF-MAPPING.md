@@ -76,9 +76,83 @@ one index**, and the draw order cannot separate them. The Step-2 design as writt
    flares) and check what the game does with the answer - that is a different, smaller change than a shader variant, and
    it must be priced before anyone writes shader code.
 
-## 4. Status
+## 4. Path 2 priced: attack the EE readback round trip (2026-11-11, docs only, no code)
 
-Step 1 is delivered (the table above). **Step 2 was not started**, per the instruction to stop when the mapping does not
+**Question.** Can the 5.77 / 9.85 ms `flare` wait at 10x / 12x be removed without the per-light GPU modulation of path
+1, by making the 2 KiB read cheaper or unnecessary?
+
+**Answer: no exact same-frame mechanism exists.** The read's data is a **GPU occlusion result**, and the EE makes no
+decision from it, so there is nothing to replace it with on the CPU without changing the answer.
+
+### 4.1 What the read is for
+
+- **C** - the 2 KiB (128 qword) read is a GS local-to-host transfer of a 64x8 CT32 rectangle, answered by
+  `Backend::read_transfer_fifo` (`native/hw_gs/hw_gs_backend.cpp:1901`) → `Renderer::ReadFifo`
+  (`native/hw_gs/core2/core2_renderer.cpp:5525`) → `Readback` (`:2844-2908`) → `Gpu::Reduce` (`core2_gpu.cpp`, reduce
+  compute pass) → `submit(true)`.
+- **C** - the table's content is produced by the **GS**: each light's depth-tested square is reduced by rasterisation to
+  one visibility texel (owner-confirmed finding, `decisions/gs-readback-plan.md`: "The GS reduces each light's
+  depth-tested square to one visibility pixel in a 64x8 table. The 2 KiB table is copied back into memory. A DMA REF tag
+  `0x30000001` points VU1 at it, and VU1 scales the flare sprite in the same frame. **The EE never reads the pixels.**").
+- **H** - the EE's only use of the bytes is transport: it hands them to the VU1 through the REF windows, which the VIF
+  patch already short-circuits (`apply_table_patches`, `native/mtvu_runtime.cpp:227`, IN-522, and the deferred read at
+  `hw_gs_stream_sink.cpp:1045-1050`).
+- **Unknown** - whether any EE code reads the table for a second purpose. The decomp tree at
+  `private/slice151-research/gt4-decomp` has no libgraph read path (only `pgluTexImage.cpp` mentions the layouts), and no
+  run has traced a consumer. This does not block path 2: the read must be exact regardless of who consumes it.
+
+### 4.2 The existing zero/hidden machinery cannot be reused in normal mode
+
+- **C** - hidden flares (`hideFlares_`, `core2_renderer.cpp:589-593`; `GT4_GS_HIDE_FLARES`, `GT4_CORE2_PERF_FLARES`,
+  `GT4_CORE2_PERFORMANCE`) set `zeroRead_` at `:5540-5542`, **skip** the readback there and zero the bytes at
+  `:5570-5574`; `flare_table_answered_at_once()` (`hw_gs_stream_sink.cpp:978-996`, IN-477) answers zeros **before** the GS
+  worker reaches the read, so the EE never waits (10-16 ms per VBlank saved on the i5-7200U, per its comment).
+- **C** - the normal-mode "answer late" path (`read_flare_table`, `hw_gs_stream_sink.cpp:1045-1064`, IN-514) returns the
+  last finished table past a deadline; the owner already rejected that class of answer for normal mode (decision 0073;
+  `gotchas/flare-readback-one-frame-lag.md`: a lamp hidden by a wall keeps its flare for one frame).
+- **Therefore the stop condition in the brief applies**: every way to avoid the wait while keeping the value is either
+  hidden (zeros) or one frame late (the previous reply), and both are rejected. Path 2 is priced here, not implemented.
+
+### 4.3 Why the wait cannot be narrowed instead
+
+- **C** - `Gpu::Reduce` appends its command buffer after `flush_draws()`/`full_barrier()` and calls `submit(true)`
+  (`core2_gpu.cpp`); `submit` submits on the single queue and waits its fence. A Vulkan fence signals only after **all
+  earlier submissions on that queue**, so waiting on the reduce waits for the frame's draws - that is the 5.77 ms at 10x.
+- **C** - `Readback` only walks targets whose `drawn` area overlaps the read span (`core2_renderer.cpp:2844-2868`), so no
+  redundant reduction is being done: the wait is the occlusion result itself.
+- **H** - a fence limited to the submission that produced the table would not help: the table's squares are depth-tested
+  against the scene depth, so they are drawn after the depth writes; at 10x that is most of the frame's GPU work.
+- **C** - the only same-frame way to keep the value without the round trip is for the GPU to consume it: that is path 1
+  (the shader samples the 64x8 target), and it needs the per-draw light index that the VU1 does not currently carry
+  (section 2).
+
+### 4.4 Picture gate (for whichever route is chosen)
+
+Night 3x and 6x, Arcade, and the 10x/12x stress points; forced-word cross-check at three VBlanks (words 0/1 hidden, the
+all-visible reference) to prove the shader reads the same texel the CPU path would; flare pixels within 1 LSB, every other
+pixel byte-identical; `flare_readbacks` = 0 for the GPU route. **Risk:** the table is an occlusion result sampled late in
+the frame; any sampling point that differs from the reduce changes the frame the visibility belongs to (the accepted
+one-frame artefact of Performance mode is exactly that error made visible).
+
+### 4.5 Cost/benefit
+
+| route | wait removed at 10x / 12x | wait removed at 3x / 6x | effort | exact |
+|---|---|---|---|---|
+| path 2 as specified (cheaper read) | **0** - no mechanism | 0 | 0 d (does not exist) | n/a |
+| path 2 variants (zeros, previous frame) | 5.77 / 9.85 | 0.15 / 0.95 | < 0.5 d | **no** (decision 0073) |
+| **path 1** (VU1 light index + shader) | 5.77 / 9.85 | 0.15 / 0.95 | 3-5 d, needs the microcode study | yes, with the gate |
+
+**Recommendation:** do **not** spend on path 2; it has no exact implementation. The only exact same-frame route to the
+5.77 / 9.85 ms is path 1, and its first step is a **microcode study of the flare loop** (find a free vertex field the VU1
+can write, or an XGKICK marker per light) - not a patch, and not a shader, until that mapping exists. If the owner prefers
+not to touch VU1 code, the honest alternative is to keep the readback: 0.15 / 0.95 ms at 3x / 6x is the price of exact
+flare occlusion, and it only becomes 5.77 / 9.85 ms at 10x / 12x, which are diagnostic points.
+
+## 5. Status
+
+Step 1 is delivered (the table above) and **path 2 is priced (section 4): it has no exact same-frame mechanism**, because
+the table is a GPU occlusion result and the read must drain the frame's draws; zeros and one-frame-late answers are
+decision 0073's rejected trade-off. **Step 2 was not started**, per the instruction to stop when the mapping does not
 carry the design: the REF → word mapping is proven, but the per-invocation marker cannot attribute a draw to a light, so
 the shader variant has no source for its word index. The diagnostics stay in the tree, off by default
 (`GT4_FLARE_REF_HIDE`, `GT4_CORE2_FLARE_TRACE_DRAWS`), and the default path was verified byte-identical

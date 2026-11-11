@@ -194,10 +194,11 @@ machine drift; the GS worker is unchanged, the EE critical path falls). Needs it
 | License B-1 (first license oval) | measured (above); recording private/coregs2-bench/inputs/licenca-b1.txt |
 | Night race (Hong Kong Reverse) | measured (matrix above); night215 recording |
 | Clubman Stage Route 5 (Arcade, day) | measured (Arcade 3x race in the main section) |
-| **Opera Paris** (night city) | **missing**: needs an Arcade press schedule selecting it (a new recording, 2-3 runs to validate) |
-| **SS Route 5** | **missing**: same |
-| **Tsukuba Wet** (wet) | **missing**: same, and the wet surface may need an unlocked car |
-| **George Paris Rally** | **missing**: needs a GT Mode card with the rally event unlocked (no such card in the tree) |
+| **Opera Paris** (night city) | **available in Spec II Arcade Mode** (owner, 2026-11-11: Arcade is fully unlocked; no GT Mode card). Schedule + baseline below. |
+| **SS Route 5** | **available in Spec II Arcade Mode**; schedule + baseline below. |
+| **Tsukuba Wet** (wet) | **available in Spec II Arcade Mode**; schedule + baseline below. |
+| **George Paris Rally** | **available in Spec II Arcade Mode** (owner, 2026-11-11: Rally is in Arcade; no GT Mode card is needed); schedule + baseline below. |
+| **George V Paris** (reference replay) | the Spec II replay, window VBlanks 20,400-21,300 (`spec2-run.sh george`). |
 | Showroom / menus | measured (Arcade 3x showroom) |
 
 ### The streamer's GTX 1660 logs (historical, another machine, black box)
@@ -260,9 +261,11 @@ Reported here for its own fix; no test was weakened.
 
 ## Scene schedules still to create
 
-Opera Paris, SS Route 5 and Tsukuba Wet need a recording (`build/bench-inputs-215/<name>.txt` + `.setup`) built from an
-Arcade press schedule on `private/slice110-menu-pilot/name-control4/card.ps2` (City Courses / wet track menu positions),
-each validated in 2-3 runs. George Paris Rally needs a GT Mode card with the rally event unlocked (no such card here).
+Opera Paris, SS Route 5, Tsukuba Wet and George Paris Rally are **available in Spec II Arcade Mode** (owner, 2026-11-11:
+Arcade is fully unlocked and Rally is in Arcade; no GT Mode card is needed). Each gets a Spec II press schedule on the
+Arcade card (`spec2-run.sh`) and a recording (`build/bench-inputs-215/<name>.txt` + `.setup`), validated in 2-3 runs. The
+Ford GT George V Paris replay (Spec II, VBlanks 20,400-21,300) is the reference replay; the streamer's rc14 logs stay
+historical hypotheses only and nothing waits on them.
 
 
 ## S4 mapping: the four words are per sprite (not per vertex)
