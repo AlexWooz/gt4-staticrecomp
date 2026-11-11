@@ -23,6 +23,19 @@ build, benchmark, game run or code change, and no GPL code or constants in the t
   study checked against the ledger and the two audits was already tried, reverted or implemented; the document lists all of it
   so nobody repeats it.
 
+**Second question (2026-11-11): the GS worker is now the measured bottleneck** (89-98 % of the frame in every scene, busy not
+waiting, TASK-215 `docs/tasks/COREGS2-PIPELINE-SPLIT.md`), so the owner asked how their GS thread spends its CPU. New page
+`docs/gsdx/GS-THREAD-CPU-COST.md`: on Vulkan their GS is **two threads** (MTGS parse + a back draw thread); the per-vertex
+path is a fused two-pass SIMD kick that writes vertices and indices in one run with the cull inside it; there is **no CPU
+vertex translate stage** (the vertex shader converts the guest's 12.4 words); a frame is **one command buffer** submitted at
+present, with a per-draw state vector that re-applies nothing when the state word is unchanged. Their per-draw validation
+(`Draw()`/`DrawPrims`) is heavier than ours in code and their scene work per draw is the same, so no measurement supports
+"their GS thread is lighter on the same CPU": the desktop black-box run has the game stalling 4.263 ms/frame on their GS
+process, and our renderer is 9.0 %/11.4 % faster at 3x/12x. The measured weak-device cause remains the GPU side (11.5 ms of
+GPU at both 1x and 2x on the S23, per-pass and per-barrier). Adoptable, each with a bound and a gate: the front-end/draw split
+(1.5-3 ms, H, already TASK-215's option a), a batched strip decode and kick (0.5-1.0 ms, Hyp), removing the CPU translate stage
+(0.2-0.4 ms), index-at-kick instead of per-primitive records, and on Android the ring memory type and the submit cadence.
+
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader

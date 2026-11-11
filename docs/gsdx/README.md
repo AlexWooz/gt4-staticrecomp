@@ -22,6 +22,11 @@ without ever bringing GPL code into our tree.
   and the explicit "does it overlap the next frame while waiting" answer, uploads/CLUTs/targets/caching, present and vsync,
   where CoreGS 2.0 is weaker (our file:line), ranked opportunities with gates and proofs, mobile/tile-GPU notes, the full
   ledger cross-check (what was deliberately not proposed) and every unknown.
+- [`GS-THREAD-CPU-COST.md`](GS-THREAD-CPU-COST.md) - the GS thread's own CPU: parse and fused vertex kick, draw buffering,
+  per-draw validation and state caching, the one-command-buffer-per-frame strategy; what they do not do per draw/batch that
+  we do; our per-stage numbers (license 1,930 batches / 9,197 draws / 1,553 CLUT loads / 145 uploads per VBlank); the adopted
+  concepts for an MIT front end + draw recorder + texture worker, each with a bound and a gate; and why no measurement says
+  their GS thread is lighter on the same CPU.
 
 ## The short answers, for when you only have a minute
 

@@ -3459,3 +3459,15 @@ GS without ever bringing GPL code into our tree. The parallel TASK-215 (perf mea
 - State (2026-11-10): study written and committed on `docs/gsdx-pipeline-study` (docs only, no PR; the orchestrator decides
   where it lands). Note: 216 is the next free number in this file; the private/rc15 line numbers tasks up to TASK-203, so a
   collision there is possible and this entry is the one to renumber.
+- Second round (2026-11-11): the GS worker is now the measured bottleneck (89-98 % of the frame, busy not waiting, TASK-215
+  `docs/tasks/COREGS2-PIPELINE-SPLIT.md`), so the owner asked how the PCSX2/ARMSX2 GS thread spends its CPU and why it is
+  lighter. `docs/gsdx/GS-THREAD-CPU-COST.md` (plus a pointer from the study and the README) maps it: on Vulkan their GS is
+  two threads (MTGS parse + a back draw thread), the per-vertex path is a fused two-pass SIMD kick that writes vertices and
+  indices in one run with the cull inside it, there is no CPU vertex translate stage (the vertex shader converts the guest's
+  12.4 words), and a frame is one command buffer submitted at present with a per-draw state vector that re-applies nothing
+  when unchanged. Their per-draw validation (`Draw()`/`DrawPrims`) is heavier than ours in code and their scene work per draw
+  is the same, so no measurement supports "their GS thread is lighter on the same CPU" (the desktop black-box run has the game
+  stalling 4.263 ms/frame on their GS process, and our renderer is 9.0 %/11.4 % faster at 3x/12x). Adoptable, each with a
+  bound and a gate: the front-end/draw split (TASK-215's own 1.5-3 ms, H), a batched strip decode and kick (0.5-1.0 ms, Hyp;
+  their kernel is the model), removing the CPU translate stage (0.2-0.4 ms), index-at-kick instead of per-primitive records,
+  and (Android) the ring memory type and the submit cadence. Read-only: no build, run or code change.

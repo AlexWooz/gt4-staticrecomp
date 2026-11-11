@@ -15,6 +15,8 @@ the in-process CoreGS 2.0/3.0 design and the Android line, never a GPL embedding
   baseline page, or the owner's S23 log bundle as transcribed in the private `TASKS.md`; each is labelled with its source.
 - Companion pages: `docs/hw-renderer-spec/CORE2-PERF-LEDGER.md`, `docs/tasks/COREGS2-PERF-AUDIT.md`,
   `docs/tasks/COREGS2-PERF-BASELINE.md`, `docs/GS-READBACK-STUDY.md`, `docs/GSDX-PLAN.md` (C.7), `docs/GS-SETTINGS.md`.
+  The GS thread's own CPU structure and cost (parse, kick, draw, state caching, what an MIT front end can adopt) is
+  [`GS-THREAD-CPU-COST.md`](GS-THREAD-CPU-COST.md).
 
 ---
 
@@ -409,7 +411,8 @@ George V Paris 1x: 1,500-1,630 CLUT-load flushes per VBlank, 2.0 ms of the CLUT 
 CLUT model binds a different palette texture per draw instead of ending the batch, so the same scene would not pay a
 per-palette flush at all (C for their mechanism, Hyp for the size of the difference on our scenes). This is TASK-168's
 territory, and their model is evidence that "several palettes in one batch" is the right shape: bind the palette, keep the
-run.
+run. The full per-stage CPU comparison and the adoptable front-end concepts are in
+[`GS-THREAD-CPU-COST.md`](GS-THREAD-CPU-COST.md).
 
 ### 5.8 Where we are ahead (do not regress these)
 
