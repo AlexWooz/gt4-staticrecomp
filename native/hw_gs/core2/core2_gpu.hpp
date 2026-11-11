@@ -82,6 +82,19 @@ struct Core2GpuStats {
     // TASK-215 (run-draw round): the bytes copied into the vertex ring, and the commands a batch collapsed into.
     std::uint64_t vertexBytes = 0;
     std::uint64_t commands = 0;
+    // TASK-215 (per-batch start round, GT4_CORE2_BATCH_START_PROBE): TSC ticks per section of Gpu::Draw, and the drawn
+    // batches counted. Inert unless the probe is set.
+    std::uint64_t probeBatches = 0;
+    std::uint64_t probeVertexTicks = 0;   // the vertex ring reservation and its memcpy
+    std::uint64_t probeUniformTicks = 0;  // the uniform ring, the state fields and their memcpy
+    std::uint64_t probeSetTicks = 0;      // the descriptor-set key and its lookup
+    std::uint64_t probeSetMissTicks = 0;  // of those, the batches that allocated and wrote a new set
+    std::uint64_t probeSetMisses = 0;
+    std::uint64_t probeSetupTicks = 0;    // the self-copy, the fill check, the record fields and the labelling
+    std::uint64_t probeCommandTicks = 0;  // the per-draw command construction
+    std::uint64_t probeAccessTicks = 0;   // the read/write access-set adds
+    std::uint64_t probeDeferredTicks = 0;  // the deferred record's push
+    std::uint64_t probeSubmitTicks = 0;    // the mid-frame submission and the counter update
     std::uint64_t patches = 0;
     std::uint64_t reductions = 0;
     std::uint64_t laterReductions = 0;  // IN-439: reductions taken later (performance mode's delayed downloads)

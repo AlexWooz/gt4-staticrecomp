@@ -372,3 +372,47 @@ Also prepared this round (the round's second deliverable, no execution): `docs/t
 (i7 + RTX 3060 Laptop, 3440x1440 144 Hz) retest kit - the GPU cap levels L0-L3, the 144 Hz vs 60 Hz present matrix P0-P3,
 the four Spec II scenes plus the license and night 6x, the kept items and the ledger's GPU-bound negatives to re-check,
 p99/1 %/CSV metrics, identity gates and the exact commands. The agent never runs on the Avell.
+
+## 13. Per-batch start round: the breakdown measured; the descriptor-set path needs a lifetime contract (stopped)
+
+Owner's next round: price the per-batch start (`draw` 0.98 ms at 204-274 drawn batches, ~4.8 us/batch) and take the biggest
+exact contained win, behind `GT4_CORE2_BATCH_START`. A probe inside `Gpu::Draw`
+(`GT4_CORE2_BATCH_START_PROBE=1`, TSC per section, printed as `[core2] batch start`) measured it; the probe is kept
+(inert unless the env is set), the cache attempt was reverted.
+
+| section | license 1x, `draw` 0.96-1.03, 274 drawn/VBlank | Opera 3x, `draw` 1.41, 472 drawn/VBlank |
+|---|---|---|
+| **submit** (mid-frame `vkQueueSubmit` every 64 batches + the deferred batches' command recording) | **0.24-0.26** | **0.45** |
+| **descriptor set** (key + lookup, and the allocate+update on a miss) | **0.22-0.23** (miss 0.10, **46-47 %**) | **0.26** (miss 0.19, **74 %**) |
+| command construction (per-draw records) | 0.09 | 0.15 |
+| vertex ring + memcpy (888 KiB/VBlank license) | 0.04 | 0.07 |
+| access-set adds | 0.03-0.04 | 0.06 |
+| setup (self-copy, fill check, record fields) | 0.02 | 0.03 |
+| uniform ring + memcpy | 0.01 | 0.01 |
+| deferred record push | 0.01 | 0.01 |
+| (probed sum against `draw`) | 0.68 of 0.96 | 1.04 of 1.41 |
+
+Two findings, both measured:
+
+1. **The vertex-ring memcpy is not the cost** (0.04/0.07): the 888 KiB/VBlank move at ~22 GB/s. The orchestrator's guess was
+   the wrong component; the bookkeeping is.
+2. **The descriptor-set path is an unbounded-map churn problem, not a locality one.** A *contained* attempt (the set keyed by
+   the bound `VkImageView` instead of the image serial, plus a last-key cache) measured **exactly the same** cost and the
+   same miss share (0.23 -> 0.23, 46 %) and was reverted: the churn is real (each batch's texture view differs), so no cache
+   of any size can avoid the `vkAllocateDescriptorSets`+`vkUpdateDescriptorSets` per batch. On Opera 74 % of batches take
+   that path. What makes it *slow* rather than just frequent is that `drawSets` is a `std::unordered_map` keyed by serials
+   that grows by one entry per new (frame, depth, texels, texture) tuple all run - ~1 M entries over a 3,500-VBlank license -
+   so even the 54 % hits are cold-cache lookups (~0.9 us each).
+
+**Stopped at the contract point, as instructed.** The fix is a **descriptor-lifetime contract**: a ring of descriptor sets
+keyed by submission slot, written per batch (or push descriptors where the driver allows), so no set is ever allocated per
+key and no set is rewritten while a submitted command buffer references it. That is a renderer contract change beyond a
+contained switch - it needs the in-flight window (`submitEvery` 64, 16 slots), the defer/replay path and the recycling
+interaction analysed - so it is priced and not started (2-3 days, the same class as the pipeline round). The other large
+component, `submit` (0.24-0.45), is the submission cadence + the deferred batches' command recording; the cadence sweep
+(32/64/128) is on the do-not-retry list and "one command buffer per frame, submitted at present" is the GSdx shape that
+needs the streaming/readback design, so it is also priced and not started.
+
+**What is left for a contained round:** the command construction (0.09/0.15) and the access-set adds (0.03/0.06) - both
+below the 0.2 gate on their own - and the per-batch *count* (274-472/VBlank), which is a front-end batching question the
+per-batch design note (IN-554) already priced at ~0.1 ms for the mergeable side.

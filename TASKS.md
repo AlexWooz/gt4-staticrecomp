@@ -4580,6 +4580,23 @@ levels L0-L3, the 3440x1440 144 Hz vs 60 Hz present matrix P0-P3, the four Spec 
 items and the ledger's GPU-bound negatives, p99/1 %/CSV metrics, identity gates, exact commands); the agent never runs on the
 Avell.
 
+**Per-batch start round (2026-11-11, IN-561): the breakdown measured; the descriptor-set path needs a lifetime contract,
+stopped.** A new probe inside `Gpu::Draw` (`GT4_CORE2_BATCH_START_PROBE=1`, TSC per section, `[core2] batch start` line,
+kept and inert) measured the per-batch start. License 1x (`draw` 0.96-1.03, 274 drawn batches/VBlank): **submit 0.24-0.26**,
+**descriptor set 0.22-0.23 (miss 0.10, 46-47 %)**, command construction 0.09, vertex ring+memcpy 0.04 (888 KiB/VBlank at
+~22 GB/s - **not** the cost), access adds 0.03-0.04, setup 0.02, uniform 0.01, deferred push 0.01. Opera 3x (`draw` 1.41,
+472 drawn/VBlank): **submit 0.45**, **set 0.26 (miss 0.19, 74 %)**, command 0.15, vertex 0.07, access 0.06. A contained
+attempt (the set keyed by the bound `VkImageView` plus a last-key cache, `GT4_CORE2_BATCH_START`) measured **exactly the
+same** (0.23 -> 0.23, 46 % misses) and was reverted: the churn is real (each batch's texture view differs) and `drawSets`
+grows by one entry per new (frame, depth, texels, texture) tuple all run (~1M entries over 3,500 VBlanks), so even the hits
+are cold-cache lookups (~0.9 us). **Stopped at the contract point** (as the round instructed): the fix is a
+descriptor-lifetime ring keyed by submission slot (or push descriptors) - no set allocated per key, none rewritten in flight
+- a renderer contract change (2-3 days: the in-flight window, the defer/replay path and recycling). `submit` (0.24-0.45) is
+the submission cadence plus the deferred batches' command recording; the 32/64/128 sweep is on the do-not-retry list and
+one-submit-per-frame is the streaming design, so it is also priced and not started. Contained leftovers: command
+construction (0.09/0.15) and access adds (0.03/0.06), both sub-bar alone. Identity: the shipped path is unchanged (probe
+off), license 2/2 frames identical against the previous build; the only kept code is the probe. Ledger IN-561.
+
 **Previous state (2026-11-11, close-out): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
 Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
 the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook

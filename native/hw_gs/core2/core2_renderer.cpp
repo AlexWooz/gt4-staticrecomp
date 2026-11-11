@@ -5667,6 +5667,41 @@ void Renderer::Flush() {
                          static_cast<double>(commands - lastCommands) / 600.0);
             lastVertexBytes = vertexBytes;
             lastCommands = commands;
+            // TASK-215 (per-batch start round): the Gpu::Draw section breakdown, when GT4_CORE2_BATCH_START_PROBE is set.
+            // Ticks are converted with the renderer's own TSC calibration (MicrosecondsPerTick).
+            static std::uint64_t lastProbeBatches = 0, lastProbeVertex = 0, lastProbeUniform = 0, lastProbeSet = 0;
+            static std::uint64_t lastProbeSetup = 0, lastProbeCommand = 0, lastProbeRecord = 0;
+            static std::uint64_t lastProbeSetMiss = 0, lastProbeAccess = 0, lastProbeDeferred = 0, lastProbeSubmit = 0;
+            const Core2GpuStats &gpuNow = s.gpu_.Stats();
+            if (gpuNow.probeBatches != lastProbeBatches) {
+                const double perTick = MicrosecondsPerTick();
+                const double f6 = 600.0 * 1000.0;
+                std::fprintf(stderr,
+                             "[core2] batch start ms/vblank vertex=%.2f uniform=%.2f set=%.2f (miss=%.2f, %.0f%%) "
+                             "setup=%.2f command=%.2f access=%.2f deferred=%.2f submit=%.2f drawn=%.0f/vblank\n",
+                             static_cast<double>(gpuNow.probeVertexTicks - lastProbeVertex) * perTick / f6,
+                             static_cast<double>(gpuNow.probeUniformTicks - lastProbeUniform) * perTick / f6,
+                             static_cast<double>(gpuNow.probeSetTicks - lastProbeSet) * perTick / f6,
+                             static_cast<double>(gpuNow.probeSetMissTicks - lastProbeSetMiss) * perTick / f6,
+                             100.0 * static_cast<double>(gpuNow.probeSetMissTicks - lastProbeSetMiss) /
+                                 static_cast<double>(std::max<std::uint64_t>(1, gpuNow.probeSetTicks - lastProbeSet)),
+                             static_cast<double>(gpuNow.probeSetupTicks - lastProbeSetup) * perTick / f6,
+                             static_cast<double>(gpuNow.probeCommandTicks - lastProbeCommand) * perTick / f6,
+                             static_cast<double>(gpuNow.probeAccessTicks - lastProbeAccess) * perTick / f6,
+                             static_cast<double>(gpuNow.probeDeferredTicks - lastProbeDeferred) * perTick / f6,
+                             static_cast<double>(gpuNow.probeSubmitTicks - lastProbeSubmit) * perTick / f6,
+                             static_cast<double>(gpuNow.probeBatches - lastProbeBatches) / 600.0);
+                lastProbeBatches = gpuNow.probeBatches;
+                lastProbeVertex = gpuNow.probeVertexTicks;
+                lastProbeUniform = gpuNow.probeUniformTicks;
+                lastProbeSet = gpuNow.probeSetTicks;
+                lastProbeSetup = gpuNow.probeSetupTicks;
+                lastProbeCommand = gpuNow.probeCommandTicks;
+                lastProbeSetMiss = gpuNow.probeSetMissTicks;
+                lastProbeAccess = gpuNow.probeAccessTicks;
+                lastProbeDeferred = gpuNow.probeDeferredTicks;
+                lastProbeSubmit = gpuNow.probeSubmitTicks;
+            }
             std::fprintf(stderr,
                          "[core2] front-end prims/vblank emitted=%.1f skipped=%.1f (culled=%.1f) vertices=%.1f "
                          "(decoded=%.1f) culled_share_of_drawing=%.1f%%\n",

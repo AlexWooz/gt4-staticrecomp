@@ -81,6 +81,19 @@ Laptop, 3440x1440 144 Hz) retest kit - GPU cap levels L0-L3, the 144 Hz vs 60 Hz
 scenes + license + night 6x, the kept items and the ledger's GPU-bound negatives, p99/1 %/CSV, identity gates and the exact
 commands. The agent never runs on the Avell.
 
+**Per-batch start round (2026-11-11, IN-561): the breakdown measured, the descriptor-set path needs a lifetime contract,
+stopped.** A new probe inside `Gpu::Draw` (`GT4_CORE2_BATCH_START_PROBE=1`, TSC per section, `[core2] batch start`; kept,
+inert) priced the per-batch start. License 1x (`draw` 0.96-1.03, 274 drawn/VBlank): **submit 0.24-0.26**, **descriptor set
+0.22-0.23 (miss 0.10, 46-47 %)**, command construction 0.09, vertex ring+memcpy 0.04 (888 KiB/VBlank at ~22 GB/s, **not** the
+cost), access adds 0.03-0.04, setup 0.02, uniform 0.01, deferred push 0.01. Opera 3x (`draw` 1.41, 472 drawn/VBlank):
+**submit 0.45**, **set 0.26 (miss 0.19, 74 %)**, command 0.15, vertex 0.07, access 0.06. A contained attempt (the set keyed
+by the bound `VkImageView` plus a last-key cache) measured **exactly the same** and was reverted: the churn is real (each
+batch's texture view differs) and `drawSets` grows by one entry per new key all run (~1M over 3,500 VBlanks), so even hits
+are cold-cache lookups. **Stopped at the contract point**: the fix is a descriptor-lifetime ring keyed by submission slot
+(or push descriptors), 2-3 days; `submit` (0.24-0.45) is the submission cadence plus the deferred batches' command
+recording, whose sweep is on the do-not-retry list and whose one-submit-per-frame form is the streaming design. Contained
+leftovers (command construction 0.09/0.15, access adds 0.03/0.06) are sub-bar alone.
+
 **Close-out (2026-11-11):** the consolidated report is `docs/tasks/COREGS2-TASK215-SUMMARY.md` (kept, reverted/closed with
 numbers, the 3x scene matrix, the remaining lever, the owner's options). State: kept IN-540 (aliased depth fill) and
 IN-547 (scissor view, `GT4_CORE2_SCISSOR_VIEW`), both exact; reverted the palette segments under the tone hook (+0.61 ms);

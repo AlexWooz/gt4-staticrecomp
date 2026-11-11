@@ -18,6 +18,8 @@
 #include <windows.h>
 #endif
 
+#include <intrin.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1996,6 +1998,8 @@ struct Gpu::Impl {
   };
   bool deferDraws = lazyBarriers && (std::getenv("GT4_CORE2_DEFER_DRAWS") == nullptr ||
                                      std::strcmp(std::getenv("GT4_CORE2_DEFER_DRAWS"), "0") != 0);
+  // TASK-215 (per-batch start round): time each section of Gpu::Draw (GT4_CORE2_BATCH_START_PROBE=1). Diagnostics only.
+  const bool batchProbe = std::getenv("GT4_CORE2_BATCH_START_PROBE") != nullptr;
   std::vector<DeferredDraw> deferred;
   std::vector<DeferredCommand> deferredCommands;
   // IN-466, IN-471: the shapes of the per-primitive commands since the last wait (Gpu::Draw), at most kDisjointGroupMax
@@ -3264,6 +3268,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     s.stats.selfTextureBatches++;
   }
   if (!s.begin_recording(error)) return false;
+  const std::uint64_t probeStart = s.batchProbe ? __rdtsc() : 0;
   const VkDeviceSize vertexBytes = batch.vertices->size() * sizeof(gpu::GpuVertex);
   s.stats.vertexBytes += vertexBytes;
   VkDeviceSize vertexOffset = 0, uniformOffset = 0;
@@ -3273,6 +3278,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   if (!s.recording && !s.begin_recording(error)) return false;  // a ring may have submitted
   std::memcpy(static_cast<std::uint8_t *>(s.vertices.mapped) + vertexOffset, batch.vertices->data(),
               static_cast<std::size_t>(vertexBytes));
+  const std::uint64_t probeVertex = s.batchProbe ? __rdtsc() : 0;
   gpu::GpuPixelState state = batch.state;
   state.fields[gpu::gpufield::TexOriginX] = batch.mipInfo;  // IN-428: the mip parameters (0 without mips)
   state.fields[gpu::gpufield::TexOriginY] = paletted ? static_cast<std::uint32_t>(batch.paletteRow) : 0u;
@@ -3285,6 +3291,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   }
   state.fields[gpu::gpufield::KeepTopByte] = 1u;
   std::memcpy(static_cast<std::uint8_t *>(s.uniforms.mapped) + uniformOffset, state.fields, sizeof state.fields);
+  const std::uint64_t probeUniform = s.batchProbe ? __rdtsc() : 0;
 
   // Spec 8.8: the texture is the target this batch draws into and the batch samples where it draws. Its sampled
   // rectangle is copied first (after the draws that wrote it) and the batch samples the copy.
@@ -3514,30 +3521,36 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   if (auto cached = s.drawSets.find(setKey); cached != s.drawSets.end()) {
     set = cached->second;
   } else {
-    if (!s.allocate_set(s.drawSetLayout, set, error)) return false;
-    s.drawSets[setKey] = set;
-    VkDescriptorBufferInfo uniformInfo{s.uniforms.buffer, 0, kPixelStateBytes};
-    VkDescriptorImageInfo imageInfo[5] = {{VK_NULL_HANDLE, frame->view, VK_IMAGE_LAYOUT_GENERAL},
-                                          {VK_NULL_HANDLE, depth->view, VK_IMAGE_LAYOUT_GENERAL},
-                                          {VK_NULL_HANDLE, texels->view, VK_IMAGE_LAYOUT_GENERAL},
-                                          {VK_NULL_HANDLE, texture->view, VK_IMAGE_LAYOUT_GENERAL},
-                                          {VK_NULL_HANDLE, depth->view, VK_IMAGE_LAYOUT_GENERAL}};  // IN-451
-    VkWriteDescriptorSet writes[6]{};
-    for (std::uint32_t i = 0; i < 6; ++i) {
-      writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      writes[i].dstSet = set;
-      writes[i].dstBinding = i;
-      writes[i].descriptorCount = 1;
-      if (i == 0) {
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        writes[i].pBufferInfo = &uniformInfo;
-      } else {
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[i].pImageInfo = &imageInfo[i - 1];
+      const std::uint64_t probeMissStart = s.batchProbe ? __rdtsc() : 0;
+      if (!s.allocate_set(s.drawSetLayout, set, error)) return false;
+      s.drawSets[setKey] = set;
+      VkDescriptorBufferInfo uniformInfo{s.uniforms.buffer, 0, kPixelStateBytes};
+      VkDescriptorImageInfo imageInfo[5] = {{VK_NULL_HANDLE, frame->view, VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, depth->view, VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, texels->view, VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, texture->view, VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, depth->view, VK_IMAGE_LAYOUT_GENERAL}};  // IN-451
+      VkWriteDescriptorSet writes[6]{};
+      for (std::uint32_t i = 0; i < 6; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        if (i == 0) {
+          writes[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+          writes[i].pBufferInfo = &uniformInfo;
+        } else {
+          writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+          writes[i].pImageInfo = &imageInfo[i - 1];
+        }
       }
-    }
-    gt4_hwd_vkUpdateDescriptorSets(s.device, 6, writes, 0, nullptr);
+      gt4_hwd_vkUpdateDescriptorSets(s.device, 6, writes, 0, nullptr);
+      if (s.batchProbe) {
+        s.stats.probeSetMissTicks += __rdtsc() - probeMissStart;
+        s.stats.probeSetMisses++;
+      }
   }
+  const std::uint64_t probeSet = s.batchProbe ? __rdtsc() : 0;
 
   const std::uint32_t sc = frame->scale;
   Impl::DeferredDraw record;
@@ -3617,6 +3630,7 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     x1 = own ? draw.scaledX1 : draw.x1;
     y1 = own ? draw.scaledY1 : draw.y1;
   };
+  const std::uint64_t probeSetup = s.batchProbe ? __rdtsc() : 0;
   record.firstCommand = static_cast<std::uint32_t>(s.deferredCommands.size());
   const std::uint32_t vertexCount = static_cast<std::uint32_t>(batch.vertices->size());
   if (ropPipeline) {
@@ -3785,20 +3799,30 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
   }
   record.commandCount = static_cast<std::uint32_t>(s.deferredCommands.size()) - record.firstCommand;
   s.stats.commands += record.commandCount;
+  const std::uint64_t probeCommand = s.batchProbe ? __rdtsc() : 0;
 
   // IN-419: the batch reads its textures (one palette row) and reads and writes its frame and depth.
+  std::uint64_t probeDeferredAtEnd = 0;  // TASK-215 probe: when the deferred push ended (0: the recording path)
   const Impl::Use textureUse = paletted ? Impl::Use(texture, static_cast<std::uint32_t>(batch.paletteRow)) : Impl::Use(texture);
   // TASK-168: and the palette rows of its later palette segments (every row its vertices name).
   static const std::vector<std::int32_t> kNoSegmentRows;
   const std::vector<std::int32_t> &segmentRows = paletted && batch.segmentPaletteRows ? *batch.segmentPaletteRows : kNoSegmentRows;
   if (s.deferDraws) {
     // IN-420: recorded with the next render pass.
+    const std::uint64_t probeAccessStart = s.batchProbe ? __rdtsc() : 0;
     for (const Impl::Use &use : {Impl::Use(texels), textureUse, Impl::Use(frame), Impl::Use(depth)}) {
       s.drawReads.add(use.serial, use.region);
     }
     for (const std::int32_t row : segmentRows) s.drawReads.add(texture->serial, static_cast<std::uint32_t>(row));
     for (const Impl::Use &use : {Impl::Use(frame), Impl::Use(depth)}) s.drawWrites.add(use.serial, use.region);
+    const std::uint64_t probeAccess = s.batchProbe ? __rdtsc() : 0;
     s.deferred.push_back(record);
+    if (s.batchProbe) {
+      const std::uint64_t probeDeferred = __rdtsc();
+      s.stats.probeAccessTicks += probeAccess - probeAccessStart;
+      s.stats.probeDeferredTicks += probeDeferred - probeAccess;
+      probeDeferredAtEnd = probeDeferred;
+    }
   } else {
     bool first = false;
     if (!s.renderPassOpen) {
@@ -3827,6 +3851,17 @@ bool Gpu::Draw(const DrawBatch &batch, std::string &error) {
     if (!s.submit(false, error)) return false;
     s.stats.midFrameSubmissions++;
     if (afterWait) s.stats.afterWaitSubmissions++;
+  }
+  if (s.batchProbe) {
+    const std::uint64_t probeRecord = __rdtsc();
+    s.stats.probeVertexTicks += probeVertex - probeStart;
+    s.stats.probeUniformTicks += probeUniform - probeVertex;
+    s.stats.probeSetTicks += probeSet - probeUniform;
+    s.stats.probeSetupTicks += probeSetup - probeSet;
+    s.stats.probeCommandTicks += probeCommand - probeSetup;
+    // The access adds and the deferred push are timed in the branch above (the recording path has no deferred push).
+    s.stats.probeSubmitTicks += probeRecord - (probeDeferredAtEnd != 0 ? probeDeferredAtEnd : probeCommand);
+    s.stats.probeBatches += 1;
   }
   return true;
 }
