@@ -2523,3 +2523,24 @@ Merged-tree executable SHA-256 `8b7d80a3...` (every edited source predates it; t
 | 3x off/shadow identity gate (`coregs3-night-check.sh`, clean rebuild) | **COREGS3-NIGHT-CHECK-OK**, 8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B |
 | Overlay A/B (`GT4_COREGS3_2D_OVERLAY=0`) | within the present tool's own cross-run nondeterminism, same claimed frames 7601-7607 |
 | Split counters (A-Spec, 3x, 7600-7608) | 1,564 frames, 66,571 batches, 9 overlay composes + 9 composites, 0 refused samples, 0 refused frames, 1 dropped frame |
+
+### 34.5 The 3D replace (C, owner report 2026-11-11 08:08)
+
+The owner's photo of the split frame showed duplicated 3D (ghosting): the present drew the native world and cars over
+the checkpoint, which still held the game's 3D from the CoreGS 2.0 compose, so both copies were visible. With the split
+on and the live world drawing, CoreGS 2.0 now composes the checkpoint as the display clear colour alone (no circuit;
+the guest's 3D still runs and reaches the present target, it is not shown) and the present layer draws the native sky
+and far underlay before the course and the cars. `GT4_COREGS3_REPLACE_3D=0` keeps the base's 3D for the A/B and an
+explicit `GT4_COREGS3_WORLD_BACKGROUND=0` keeps the native sky/far off; the present layer owns the decision and passes
+it to core 2 with `SetCoregs3Overlay(enabled, replace3d)`. The 2D overlay redirect and composite are unchanged.
+
+Measured (A-Spec, 3x, VBlanks 7600-7608, same claimed frames, clean rebuild `c70afbcb...`): `replace3d=1564` of 1,564
+split frames, counters otherwise unchanged (66,571 batches, 9 overlay composes + 9 composites, 0 refused samples, 0
+refused frames, 1 dropped frame). Old default vs `REPLACE_3D=0` 15.6k-219.9k px (the tool's cross-run nondeterminism, the same envelope as two
+baseline runs); `REPLACE_3D=0` vs the new default 932k-1.04M px; the HUD region unchanged (bottom HUD box max delta 52). The faithful
+CoreGS 2.0 path with no present layer is byte-identical to the 43039a19 tool (9/9 frames); CTest coregs3 21/21, Python
+18/18 on the module and 820/820 on the full suite (63 skipped). Limits: with the sky/far
+underlay on the 2048x2048 texture atlas is full (`atlas_refused=2679`, `texture_untextured=2777` on the frame), so the
+sky and some far geometry use vertex colours (darker than the reference) and items the world does not draw (the big
+course banner) are absent; world-materials follow-ups, not duplication. Before/after images:
+`build/evidence-2d-split/analysis/ghost-07600-*`.

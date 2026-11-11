@@ -169,3 +169,29 @@ CoreGS 2.0 path with no present layer byte-identical to the 43039a19 tool (9/9 f
 identity gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). The merged present frame
 shows the picture round's emitted textures (lit facade textures, the green traffic lights) and the split's full HUD on
 the same image.
+
+### 8.6 The 3D replace: no duplicated 3D (C, owner report 2026-11-11 08:08)
+
+The owner's photo showed duplicated 3D (ghosting): the present draws the native world/cars over the checkpoint, which
+still contained the game's own 3D from the CoreGS 2.0 compose, so both copies were visible. With the split on and the
+live world drawing the course, CoreGS 2.0 now composes the checkpoint as the **display clear colour alone** (no circuit
+source; the guest's 3D still runs and reaches the present target, but the split does not show it), and the present
+layer draws the native sky and far underlay by default (`GT4_COREGS3_REPLACE_3D`, on; `0` keeps the base's 3D for the
+A/B). An explicit `GT4_COREGS3_WORLD_BACKGROUND=0` keeps the native sky/far off (the clear colour then shows). The 2D
+overlay redirect and composite are unchanged: the HUD is still composed from the overlay target exactly as in §8.2, so
+the picture is native world + cars + game HUD only.
+
+- Counters: `replace3d=` in the split line counts the checkpoints composed without the base 3D (1,564 of 1,564 split
+  frames on the A-Spec run); the split refusals/samples/drops are unchanged.
+- A/B: `GT4_COREGS3_REPLACE_3D=0` reproduces the pre-change picture. Measured at 3x, VBlanks 7600-7608, same claimed
+  frames: the old default vs replace-off differs by 15.6k-219.9k px (the present tool's own cross-run nondeterminism,
+  the same envelope as two baseline runs), and replace-off vs replace-on by 932k-1.04M px (the base 3D and the native sky). The HUD region is unchanged to within
+  the background behind it (bottom HUD box max delta 52).
+- The faithful CoreGS 2.0 path is untouched: with no present layer, the frames are byte-identical to the `43039a19`
+  tool (9/9). The round's clean rebuild is executable SHA-256 `c70afbcb...`.
+- Limits (H): the native world now has to cover everything the base's 3D provided. The 2048x2048 texture atlas is full
+  with the sky/far underlay on (`atlas_refused=2679`, `texture_untextured=2777` on the A-Spec frame), so the sky and
+  some far geometry fall back to vertex colours and the picture is darker than the reference; items the live world does
+  not draw at all (for example the big course banner the base 3D drew) are now absent. Those are world-materials
+  follow-ups, not duplication. The clear colour itself is the GS BGCOLOR (black on this scene); the native sky covers
+  it where its textures fit.

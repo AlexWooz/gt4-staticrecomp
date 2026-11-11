@@ -1,5 +1,24 @@
 # Current Status
 
+## 2026-11-11: the 3D replace, the split no longer duplicates the game's 3D (TASK-090, branch `task/090-2d-split`)
+
+The owner's photo showed ghosting: the present drew the native world over the CoreGS 2.0 base, which still contained
+the game's 3D. With the split on and the live world drawing, CoreGS 2.0 now composes the checkpoint as the display
+clear colour alone (the guest's 3D still runs and reaches the present target, it is just not shown) and the present
+layer draws the native sky and far underlay before the course and the cars, so the picture is native world + cars +
+the game HUD with no duplicated 3D. `GT4_COREGS3_REPLACE_3D=0` keeps the base's 3D for the A/B; an explicit
+`GT4_COREGS3_WORLD_BACKGROUND=0` keeps the native sky/far off. Measured A-Spec, 3x, VBlanks 7600-7608, same claimed
+frames: 1,564 of 1,564 split checkpoints replace the base 3D, the split counters otherwise unchanged (66,571 batches,
+9 overlay composes + 9 composites, 0 refused samples/frames, 1 dropped frame); the old default vs `REPLACE_3D=0`
+differs 15.6k-219.9k px (the present tool's own cross-run nondeterminism, the same envelope as two baseline runs),
+`REPLACE_3D=0` vs the new default 932k-1.04M px; the HUD region is unchanged behind it. The faithful CoreGS 2.0 path is still byte-identical to the
+`43039a19` tool (9/9 frames). Checks on the clean rebuild (executable SHA-256 `c70afbcb...`): CTest coregs3 21/21,
+Python 18/18 on the coregs3 module and 820/820 on the full suite (63 skipped), and the 3x off/shadow gate
+COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames). Limits: with
+the sky/far underlay on the 2048x2048 texture atlas is full (`atlas_refused` 2,679), so the sky and some far geometry
+use vertex colours and the picture is darker than the reference, and items the live world does not draw (the big
+course banner) are absent — world-materials follow-ups. Details: [COREGS3-2D-SPLIT](docs/COREGS3-2D-SPLIT.md) §8.6.
+
 ## 2026-11-11: the 2D overlay split, implemented (TASK-090, branch `task/090-2d-split`)
 
 `GT4_COREGS3=present` now draws the world and the cars first and the game's 2D/HUD layer after them. CoreGS 2.0 cuts
