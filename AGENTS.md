@@ -137,6 +137,11 @@ github.com/Kaezzey/gt4-staticrecomp is read-only.
 - One variable per candidate build; keep A/B switches (`GT4_PACING=audio`,
   `GT4_GS_SYNC=1`, `--vu1-interpret-only`, `--vu1-verify N`). Attack whatever the
   F8 report shows as the largest cost.
+- **Clean build caches after every task** (owner, 2026-11-11): after a task is merged or a
+  worktree is finished, delete its compiled build directories (CMake caches, objects,
+  binaries) in every worktree and never let them accumulate. Keep the pinned artifacts the
+  gates need (the v5 EE library, the reference executable), the docs and the `evidence-*`
+  files; check free space before a build round.
 - Work is organized in `TASKS.md` (TASK-001, TASK-002, ...). Keep it current:
   states, branch, acceptance, and new tasks appended in order.
 - **Task lifecycle:** each task gets its own branch from `main`
