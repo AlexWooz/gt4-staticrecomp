@@ -24,9 +24,10 @@
 //       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3), main-view
 //       course (5) and since the wet-reflection round the captured reflection pass's main-view items (7), counts every
 //       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the GS STQ
-//       interpolation (S, T and Q linearly in screen space); mip records stay on the counted level-0 fallback unless
-//       --mip enables the decoded MIPTBP chain and the explicit-LOD sampler. --no-sky/--no-underlay/--no-course/
-//       --no-wet-reflection are the evidence A/Bs; --no-mip restores the pre-round sampling model byte for byte;
+//       interpolation (S, T and Q linearly in screen space); mip records use the decoded MIPTBP chain and the
+//       explicit-LOD sampler by default (a level the sidecar does not carry stays a counted level-0 fallback), and
+//       --mip selects it explicitly. --no-sky/--no-underlay/--no-course/--no-wet-reflection are the evidence A/Bs;
+//       --no-mip restores the pre-round sampling model byte for byte;
 //       --sample-dump writes the per-pixel material record the texture census reads; --world-no-alpha is a diagnostic
 //       that ignores the tapped ATE (never an acceptance mode).
 //
@@ -570,8 +571,8 @@ int main(int argc, char **argv) {
     else if (argument == "--no-underlay") world_keep_underlay = false;
     else if (argument == "--no-course") world_keep_course = false;
     else if (argument == "--no-wet-reflection") world_keep_reflection = false;
-    else if (argument == "--mip") options.world_mip = true;
-    else if (argument == "--no-mip") options.world_no_mip = true;
+    else if (argument == "--mip") { options.world_mip = true; options.world_no_mip = false; }
+    else if (argument == "--no-mip") { options.world_mip = false; options.world_no_mip = true; }
     else if (argument == "--world-no-alpha") options.world_ignore_alpha_test = true;
     else if (argument == "--gs" && index + 1 < argc) gs_path = argv[++index];
     else if (argument == "--no-wet-composite") wet_composite = false;

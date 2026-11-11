@@ -109,10 +109,12 @@ struct RenderOptions {
   // TASK-090 texture-mip: when not null, the world rasteriser records the material path of every textured fragment it
   // writes (see TextureSampleDump). The tool's --sample-dump option allocates it; rendering is otherwise unaffected.
   TextureSampleDump *sample_dump = nullptr;
-  // TASK-090 texture-mip: --mip enables the decoded chain and the explicit-LOD sampler. Off by default because the
-  // existing captures do not carry the levels the road asks for (the MIPTBP address holds another texture page at the
-  // job), so the level-0 fallback is the faithful picture; the A/B is --mip against the default.
-  bool world_mip = false;
+  // TASK-090 texture-mip: the decoded MIPTBP chain and the explicit-LOD sampler are the default world sampling model.
+  // The recaptured `.gt4vram` (VBlanks 7398-7403, per-job windows that include levels 1..MXL) carries the road's level 1
+  // at 0x3662, and the study gate is met: the road high-pass correlation rises and the page ratio moves +0.026/+0.015
+  // (within +/-0.05). A sidecar that does not carry a level keeps the counted level-0 fallback per record, never a
+  // silent level pick. --no-mip restores the pre-round model.
+  bool world_mip = true;
   // TASK-090 texture-mip A/B: --no-mip restores the pre-round sampling model (the perspective-correct UV and the
   // level-0 nearest fallback), byte for byte, so the feature's off state is proven identical.
   bool world_no_mip = false;
