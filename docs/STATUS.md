@@ -1,5 +1,29 @@
 # Current Status
 
+## TASK-215 H-shifter, direct gear and clutch mod study, deep follow-up (2026-11-11, branch `task/215-hshifter-deep`, read-only)
+
+Owner directive: modify the game, not just remap buttons; add a real clutch pedal path and apply gears directly,
+with R, N, 1..6 as gate positions. The real drivetrain is now mapped. The live gear is `Automobile + 0x624` (0 = R,
+1..count forward; no neutral value, neutral is clutch open), the clutch state is `Automobile + 0x626` (0 open,
+1 engaged, 2/3 slipping) and the engagement float is `Automobile + 0x618`; all are fields of the drivetrain block
+at `Automobile + 0x104`. The HUD reads the same bytes from `RaceDisplay::update` (`0x0039DBB8`) through the player
+car chain `RaceDisplay + 4 -> organization + 0x60 -> Cars + 8 -> item + 0x18`. The first study's `func_0037AD40`
+gear path was the onboard camera (`CameraSys::CameraOnBoard`, vtable `0x0067A5D8`), and its HUD caller was
+`RaceDisplay` slots 10/11/13/14, not gear/clutch; both are corrected. GT4 does have an automatic clutch state
+machine and a torque gate on the gearbox force path, so a mod can cut torque and drive the states; continuous slip
+torque would need a deeper force patch. Direct gear application is feasible by writing the gear byte with the
+clutch open and clearing the shift step/delay, or by a one-instruction patch table that injects the host clutch
+state, target gear and HUD R/N character through the existing `0x7F00` host block (TASK-080 pattern; candidate
+words in the study, not built). R and N both use gear 0 with the clutch open/closed; the HUD gear-0 character can be
+host-selected (`R`/`N`) with one patch. Replays store the control packet, not the gear/clutch, so the mod must be
+disabled in replay, ghost and autodemo; saves are unaffected if car data is never written. Owner decision 0073
+(2026-11-11) makes gameplay mods in scope and shipped in the same bundle, opt-in and off by default; the base game
+and the faithful modes keep exact physics, timing, AI, saves and gameplay read-backs. The implementation can use a
+separate derivative ELF/library profile inside that bundle. Details:
+[H-SHIFTER-CLUTCH-MOD-STUDY](H-SHIFTER-CLUTCH-MOD-STUDY.md); the faithful button-emulation front stays in
+[H-SHIFTER-CLUTCH-STUDY](H-SHIFTER-CLUTCH-STUDY.md). PoC estimate 4-6 weeks, medium risk; next step is a read-only
+live probe (player index, gearbox type, VBlank ordering, N glyph) and the owner's scope decision.
+
 ## TASK-215 H-shifter and clutch study (2026-11-11, branch `task/104-hshifter-study`, read-only)
 
 Study only; no game code, build, pin, save or card changed. GT4's input actions are sequential shift up/down and

@@ -5,6 +5,13 @@ Scope: owner request of 2026-11-11 (Telegram). Two fronts: (1) map each physical
 N) to the game's gear, and (2) find out whether GT4 has a clutch concept that an analog clutch pedal could drive.
 This is a study for TASK-215; it does not implement anything.
 
+**Deep follow-up (2026-11-11):** [H-SHIFTER-CLUTCH-MOD-STUDY.md](H-SHIFTER-CLUTCH-MOD-STUDY.md) corrects this study
+and maps the real drivetrain. The group around `func_0037AD40` / the 12-entry table at `0x006211E8` is the onboard
+camera (`CameraSys::CameraOnBoard`, vtable `0x0067A5D8`), not the gearbox; the HUD setters are called from
+`RaceDisplay::update` (`0x0039DBB8`), not `RaceSinglePlayer::updatePlay`. The live gear is `Automobile + 0x624`, the
+clutch state is `Automobile + 0x626` and the clutch engagement is `Automobile + 0x618`. Sections 1.4, 1.5 and 2.2
+below are superseded by the follow-up for those points.
+
 Labels: **Confirmed** (read in the ELF, the decomp at identical addresses, our code, or measured), **High
 confidence** (strong code or document evidence, not yet tested in game), **Hypothesis** (plausible, untested),
 **Unknown** (not established).
@@ -156,6 +163,10 @@ The line does not mean an H-shifter cannot be used at all: it can drive the game
 
 ### 1.4 Gear state fields: what is known and what is not
 
+**Correction (2026-11-11):** this group is `CameraSys::CameraOnBoard`, not the gearbox; see
+[H-SHIFTER-CLUTCH-MOD-STUDY.md](H-SHIFTER-CLUTCH-MOD-STUDY.md) section 1.1. The real gear field is
+`Automobile + 0x624`, mapped in that document. The text below is kept as the history of the first study.
+
 The best static candidate for the gear-selection path is the group of functions around `func_0037AD40`
 (0x0037AD40), in the unnamed physics cluster:
 
@@ -207,6 +218,12 @@ A stable pointer chain to the car list is available for a later direct-write inv
   direct-write proof of concept could find the object without a code hook.
 
 ### 1.5 The clutch concept
+
+**Correction (2026-11-11):** GT4 does model an automatic clutch. The live state is `Automobile + 0x626` (0 open,
+1 engaged, 2/3 slipping) and the engagement float is `Automobile + 0x618`; the HUD reads `+0x626 == 1` through
+`func_00343BE0`. The torque gate and state machine are mapped in
+[H-SHIFTER-CLUTCH-MOD-STUDY.md](H-SHIFTER-CLUTCH-MOD-STUDY.md) sections 2.6 and 4. The text below is kept as the
+history of the first study.
 
 The display layer definitely has a clutch concept:
 
@@ -281,6 +298,12 @@ Why this is the right first approach:
 - It is small: a pure sequencer plus a source map, both testable without the game.
 
 ### 2.2 Approach B: direct gear write (mod)
+
+**Correction (2026-11-11):** the player car pointer chain and the physics gear field are now identified
+(`RaceDisplay + 4 -> RaceOrganization + 0x60 -> Cars + 8 -> CarRecord + 0x18 -> Automobile`; gear at
+`Automobile + 0x624`). The direct-write design, the clutch state and the opt-in mod plan are in
+[H-SHIFTER-CLUTCH-MOD-STUDY.md](H-SHIFTER-CLUTCH-MOD-STUDY.md) sections 2, 3 and 5. The text below is kept as the
+history of the first study.
 
 Write the gear state in guest memory instead of pressing buttons:
 
@@ -467,6 +490,10 @@ Therefore a clutch pedal can be:
 ---
 
 ## 4. Recommendation
+
+**Update (2026-11-11):** the owner opened the gameplay-mod front; the "do not implement a clutch" recommendation
+below is superseded by [H-SHIFTER-CLUTCH-MOD-STUDY.md](H-SHIFTER-CLUTCH-MOD-STUDY.md), which maps the real clutch
+and specifies the opt-in direct-gear/clutch mod. The button-emulation front remains the faithful feature.
 
 1. **Implement Front 1 with button emulation first.** Start on the pad path (main) because it needs no wheel HLE:
    the sequencer ORs R2/L2 into `PadState`; the game's own gear logic does the rest. Then port the same sequencer

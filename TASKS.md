@@ -1579,3 +1579,34 @@ Result: [docs/H-SHIFTER-CLUTCH-STUDY.md](docs/H-SHIFTER-CLUTCH-STUDY.md).
   (rc6/rc15 branches), so TASK-104 was not available.
 
 State: study done. Not scheduled; no implementation, build, pin, release or merge.
+
+**Deep follow-up (2026-11-11, branch `task/215-hshifter-deep`).** Owner directive: modify the game (not button
+remapping): improve/add the clutch, add an analog clutch pedal input, apply gears directly, and treat reverse as a
+gate position R, N, 1..6 (downshifting past 1 goes through N then R). Read-only on source; no game code, build, pin,
+save or card changed. Result: [docs/H-SHIFTER-CLUTCH-MOD-STUDY.md](docs/H-SHIFTER-CLUTCH-MOD-STUDY.md).
+
+- **Corrections.** The first study's `func_0037AD40` / `0x006211E8` / `+0x180` gear path is the onboard camera
+  (`CameraSys::CameraOnBoard`, vtable `0x0067A5D8`, RTTI `Q29CameraSys13CameraOnBoard`). The HUD setters are called
+  from `RaceDisplay::update` (`0x0039DBB8`), not `RaceSinglePlayer::updatePlay`.
+- **Real drivetrain.** Gear `Automobile + 0x624` (0 = R, 1..count forward; no neutral value; neutral is clutch
+  open); clutch state `+0x626` (0 open, 1 engaged, 2/3 slipping); engagement `+0x618`; drivetrain block at
+  `+0x104`. Player chain: `RaceDisplay + 4 -> organization + 0x60 -> Cars + 8 -> item + 0x18`, index
+  `RaceDisplay + 0x2E`. Per-tick: control `0x00349418` -> DynamicsConductor loop `0x0034DB10` -> drivetrain tick
+  `0x003535B0` -> engine force `0x0036D818`; HUD later.
+- **Clutch.** GT4 has an automatic clutch state machine (`func_00350FB8`, type-3 `func_00351178`, rpm sync
+  `func_003519B8`) and a torque gate on `+0x626` (`0x0036D870`); no player clutch input. The mod can drive the
+  states and cut torque; continuous slip torque needs a deeper force patch.
+- **Direct gear and R/N.** Write the gear with the clutch open and clear the shift step/delay; a one-instruction
+  patch table through the `0x7F00` host block (TASK-080 pattern) injects clutch state, target gear and the HUD R/N
+  character (`0x003A6F54`). R and N both use gear 0 with the clutch open/closed; the game's reverse lock
+  (0.2778 m/s) and rpm clamp stay in charge. Candidate patch words are in the study; not built or tested.
+- **Replays/saves and boundary.** Recorder stores the control packet, not gear/clutch; disable the mod in replay,
+  ghost and autodemo. Never write car data; saves unaffected. Owner decision 0073 makes gameplay mods in scope and
+  shipped in the same bundle, opt-in and off by default; the base game and the faithful modes keep exact physics,
+  timing, AI, saves and gameplay read-backs. The implementation can use a separate derivative ELF/library profile
+  inside that bundle; the button-emulation front remains the faithful feature.
+- **PoC plan.** Read-only live probe (player index, gearbox type, VBlank ordering, N glyph), gate/clutch state
+  machine, patch table and host block, G27 input, owner test. Estimate 4-6 weeks, medium risk. Next: owner decision
+  on the mod scope and analog-feel expectation; no implementation started.
+
+State: deep study done on `task/215-hshifter-deep`; not scheduled, no implementation, build, pin, release or merge.
