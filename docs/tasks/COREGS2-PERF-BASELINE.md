@@ -441,6 +441,30 @@ each 2-3 days and each changing the front-end contract:
    showed no gain so far, so this needs the tone-refusal removed and re-measured).
 Neither is a micro-hoist; both need the front-end/writeback contract reviewed.
 
+
+## Option 1, batched strip decode: measured and **reverted** (below the bar)
+
+Implemented behind `GT4_CORE2_BATCH_STRIP` (a three-slot window, direct primitive append, no queue push/erase/candidate
+copy per vertex; exact vertex order, winding, rect/cull, counters and capacity flush, with the queue tail rebuilt at the
+end; the old path unchanged behind the switch). License B-1 1x, 2+2 interleaved:
+
+| | batched (2) | old path (2) | delta |
+|---|---|---|---|
+| GS worker | 8.175 (8.240 / 8.110) | 8.323 (8.205 / 8.440) | **-0.15** (pairs -0.03 and +0.33: noise) |
+| wall | 8.693 | 8.828 | -0.14 |
+| `gif_parse` | 3.898 | 3.923 | -0.03 (noise) |
+| frame p50 / p95 | mixed | mixed | - |
+
+**Below the 0.2 ms bar and inconsistent between pairs: reverted**, the code removed (the tree is back to the scissor-hoist
+state). Lesson: the strip fast path already skips the ADC runs (IN-467), and what remains per drawing vertex is the state
+check and `ShouldDraw`, which a window cannot skip without changing the cull/state semantics; the queue round-trip is not
+where the license's 3.28 ms of `gif_parse` lives.
+
+**Remaining lever: Option 2** - TASK-168 palette segments under the tone hook (the 1.59 ms CLUT-load flush inside
+`OnTex0Write`, 1,430 flushes of 1,553 loads per VBlank on the license). It needs the tone refusal in
+`PaletteSegmentBatchAllowed` relaxed and a re-measure of the 4+4 that showed no gain with segments on; the segment path
+must keep the strip batches exact. That is the next step if the owner approves it.
+
 ## Method and limits
 
 - One variable per candidate, 2+2 interleaved pairs on one executable where possible (the depth-fill candidate used two
