@@ -520,10 +520,14 @@ void interpolate_frame(const TimelineFrame &older, const CameraFrame &older_came
         pair_state = PairState::refused_camera;
       }
     }
-    if (pair_state == PairState::usable)
-      counters.pairs += 1;
-    else
-      counters.pairs_refused += 1;
+    // A frame with no car-pass draw (a menu, the title screen) has nothing to pair and no camera call to judge; counting
+    // it as a refused pair would drown the race's pairing rate, so only instants with objects are accounted here.
+    if (!newer.objects.empty() || !older.objects.empty()) {
+      if (pair_state == PairState::usable)
+        counters.pairs += 1;
+      else
+        counters.pairs_refused += 1;
+    }
   }
 
   // Pair the two frames by the timeline's stable identity, in the older frame's order, without collapsing instances.
