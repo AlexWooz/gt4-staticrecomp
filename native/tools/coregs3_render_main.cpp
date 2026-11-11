@@ -23,9 +23,12 @@
 //                         [--mask <pgm>] [--width W --height H]
 //       TASK-090 track M1: the offline sky + road picture. Selects the sky (PassId 2), far-underlay (3), main-view
 //       course (5) and since the wet-reflection round the captured reflection pass's main-view items (7), counts every
-//       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the level-0
-//       mip/filter fallbacks. --no-sky/--no-underlay/--no-course/--no-wet-reflection are the evidence A/Bs;
-//       --world-no-alpha is a diagnostic that ignores the tapped ATE (never an acceptance mode).
+//       exclusion, and renders them with the captured 0xC1 matrix (packet or carried), the tapped state and the GS STQ
+//       interpolation (S, T and Q linearly in screen space); mip records stay on the counted level-0 fallback unless
+//       --mip enables the decoded MIPTBP chain and the explicit-LOD sampler. --no-sky/--no-underlay/--no-course/
+//       --no-wet-reflection are the evidence A/Bs; --no-mip restores the pre-round sampling model byte for byte;
+//       --sample-dump writes the per-pixel material record the texture census reads; --world-no-alpha is a diagnostic
+//       that ignores the tapped ATE (never an acceptance mode).
 //
 //   gt4_coregs3_render <capture.gt4scene> --frame N --shade-dump <file.txt>
 //       shades every item with its own program and writes one line per mesh vertex (draw, item, vertex, RGBA, program,
@@ -504,6 +507,7 @@ int main(int argc, char **argv) {
   bool wet_composite = true;
   bool post_chain = true;  // TASK-090: the whole captured PATH2 full-screen chain is on by default with --gs
   const char *chain_dump_dir = nullptr;
+  const char *sample_dump_path = nullptr;  // TASK-090 texture-mip: the per-pixel material record (world stage)
   bool composite_world_alpha = false;
   bool hud = false;
   const char *hud_element_text = "speed";
@@ -536,12 +540,15 @@ int main(int argc, char **argv) {
     else if (argument == "--no-underlay") world_keep_underlay = false;
     else if (argument == "--no-course") world_keep_course = false;
     else if (argument == "--no-wet-reflection") world_keep_reflection = false;
+    else if (argument == "--mip") options.world_mip = true;
+    else if (argument == "--no-mip") options.world_no_mip = true;
     else if (argument == "--world-no-alpha") options.world_ignore_alpha_test = true;
     else if (argument == "--gs" && index + 1 < argc) gs_path = argv[++index];
     else if (argument == "--no-wet-composite") wet_composite = false;
     else if (argument == "--post-chain") post_chain = true;  // compatibility: the chain is the default now
     else if (argument == "--no-post-chain") post_chain = false;
     else if (argument == "--chain-dump" && index + 1 < argc) chain_dump_dir = argv[++index];
+    else if (argument == "--sample-dump" && index + 1 < argc) sample_dump_path = argv[++index];
     else if (argument == "--composite-world-alpha") composite_world_alpha = true;
     else if (argument == "--composite-mask" && index + 1 < argc) composite_mask_path = argv[++index];
     else if (argument == "--composite-changed" && index + 1 < argc) composite_changed_path = argv[++index];
@@ -947,6 +954,7 @@ int main(int argc, char **argv) {
     texture_options.texture_body = texture_body;
     texture_options.reflections = !no_reflection;
     texture_options.world_channels = world;
+    texture_options.world_mip = options.world_mip;
     if (world && !pass_image_store.empty()) texture_options.pass_slms = &pass_images;
     if (world && !draw_records.empty()) texture_options.draw_textures = &draw_images;
     if (world && !job_records.empty()) texture_options.job_textures = &job_images;
@@ -968,6 +976,12 @@ int main(int argc, char **argv) {
                       static_cast<unsigned long long>(sampler.source_tex0), static_cast<unsigned>(sampler.psm),
                       sampler.width, sampler.height);
         write_png_rgba(name, sampler.width, sampler.height, sampler.rgba);
+        // TASK-090 texture mip: the decoded levels too, so the sampled chain is evidence, not a claim.
+        for (const SampledTexture::MipLevel &mip : sampler.mip_levels) {
+          std::snprintf(name, sizeof name, "%s\\bound_%03u_mip%u_%ux%u.png", dump_textures_dir, index, mip.level,
+                        mip.width, mip.height);
+          write_png_rgba(name, mip.width, mip.height, mip.rgba.data());
+        }
         ++index;
       }
       std::fprintf(stderr, "gt4_coregs3_render: wrote %u bound textures to %s\n", index, dump_textures_dir);
@@ -1335,6 +1349,26 @@ int main(int argc, char **argv) {
                   static_cast<unsigned long long>(texture_counters.world_draw_slm));
     world_report += line;
     world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world texture mip: decoded chains %llu, level-0 fallbacks %llu, levels missing %llu; chain registers "
+                  "from the tap %llu, from the item record %llu; items with an explicit LOD %llu, mip items without a "
+                  "tapped Q %llu; LOD over %llu vertices %.3f..%.3f (mean %.3f), tapped Q %.6f..%.6f",
+                  static_cast<unsigned long long>(texture_counters.records_mip_chains),
+                  static_cast<unsigned long long>(texture_counters.records_level0_fallback),
+                  static_cast<unsigned long long>(texture_counters.records_mip_levels_missing),
+                  static_cast<unsigned long long>(texture_counters.world_mip_registers_from_tap),
+                  static_cast<unsigned long long>(texture_counters.world_mip_registers_from_record),
+                  static_cast<unsigned long long>(texture_counters.world_mip_lod_items),
+                  static_cast<unsigned long long>(texture_counters.world_mip_lod_missing),
+                  static_cast<unsigned long long>(texture_counters.world_mip_lod_vertices),
+                  texture_counters.world_mip_lod_min, texture_counters.world_mip_lod_max,
+                  texture_counters.world_mip_lod_vertices != 0
+                      ? texture_counters.world_mip_lod_sum /
+                            static_cast<double>(texture_counters.world_mip_lod_vertices)
+                      : 0.0,
+                  texture_counters.world_mip_q_min, texture_counters.world_mip_q_max);
+    world_report += line;
+    world_report += "\n";
     for (const std::string &refusal : texture_counters.state_refusals)
       world_report += "  tapped state refused: " + refusal + "\n";
     // The binding table: the state each selected item samples, grouped by pass and sampler state.
@@ -1346,13 +1380,22 @@ int main(int argc, char **argv) {
         continue;
       }
       const SampledTexture &sampler = *row.texture;
+      char mip[192] = "";
+      if (sampler.mip_ready) {
+        std::snprintf(mip, sizeof mip, " mip chain %s MXL %u MMAG %u MMIN %u L %u K %d MIPTBP1 %016llX MIPTBP2 %016llX",
+                      sampler.miptbp_from_state ? "tap" : "record", sampler.mxl, sampler.mmag, sampler.mmin,
+                      sampler.lod_l, sampler.lod_k_raw, static_cast<unsigned long long>(sampler.miptbp1),
+                      static_cast<unsigned long long>(sampler.miptbp2));
+      } else if (sampler.level0_mip_fallback) {
+        std::snprintf(mip, sizeof mip, " mip level-0 fallback");
+      }
       std::snprintf(line, sizeof line,
-                    "  %-12s %-6s TEX0 %016llX TEX1 %016llX CLAMP %016llX psm %02X %ux%u%s items %u\n",
+                    "  %-12s %-6s TEX0 %016llX TEX1 %016llX CLAMP %016llX psm %02X %ux%u%s%s items %u\n",
                     pass_name(row.pass), sampler.from_state ? "state" : "record",
                     static_cast<unsigned long long>(sampler.source_tex0),
                     static_cast<unsigned long long>(sampler.source_tex1),
                     static_cast<unsigned long long>(sampler.source_clamp), sampler.psm, sampler.width,
-                    sampler.height, sampler.palette_via_tex2 ? " palette-TEX2" : "", row.items);
+                    sampler.height, sampler.palette_via_tex2 ? " palette-TEX2" : "", mip, row.items);
       world_report += line;
     }
     if (!probe_filter_detail.empty()) {
@@ -1372,12 +1415,46 @@ int main(int argc, char **argv) {
   std::vector<std::uint8_t> rgba, mask;
   std::vector<std::uint8_t> textured_mask;
   std::vector<std::uint8_t> reflection_mask;
+  TextureSampleDump sample_dump;  // TASK-090 texture-mip: filled only with --sample-dump
+  if (sample_dump_path != nullptr && world) {
+    sample_dump.reset(options.width, options.height);
+    options.sample_dump = &sample_dump;
+  }
   RenderStats stats;
   if (!render_frame(selected, options, rgba, mask, stats, error,
                     texture_mask_path != nullptr ? &textured_mask : nullptr,
                     reflection_mask_path != nullptr ? &reflection_mask : nullptr)) {
     std::fprintf(stderr, "gt4_coregs3_render: %s\n", error.c_str());
     return 1;
+  }
+  if (sample_dump_path != nullptr && world) {
+    // TASK-090 texture-mip: the fixed 24-byte record the census script reads. Header: magic 'GT4S', version 1, width,
+    // height, stride; then flags, level, reserved, texel[4], vertex[4], fragment[4], fog, fog_colour[3], page, pad[2].
+    std::FILE *dump_file = std::fopen(sample_dump_path, "wb");
+    if (dump_file == nullptr) {
+      std::fprintf(stderr, "gt4_coregs3_render: cannot write %s\n", sample_dump_path);
+      return 1;
+    }
+    const std::uint32_t header[5] = {0x53345447u, 1u, options.width, options.height, 24u};
+    std::fwrite(header, sizeof header, 1, dump_file);
+    std::uint8_t row[24] = {};
+    for (const TextureSampleDump::Pixel &pixel : sample_dump.pixels) {
+      row[0] = pixel.flags;
+      row[1] = pixel.level;
+      row[2] = 0;
+      std::memcpy(row + 3, pixel.texel, 4u);
+      std::memcpy(row + 7, pixel.vertex, 4u);
+      std::memcpy(row + 11, pixel.fragment, 4u);
+      row[15] = pixel.fog;
+      std::memcpy(row + 16, pixel.fog_colour, 3u);
+      row[19] = static_cast<std::uint8_t>(pixel.page & 0xFFu);
+      row[20] = static_cast<std::uint8_t>(pixel.page >> 8);
+      row[21] = row[22] = row[23] = 0;
+      std::fwrite(row, sizeof row, 1, dump_file);
+    }
+    std::fclose(dump_file);
+    std::fprintf(stderr, "gt4_coregs3_render: wrote sample dump %s (%ux%u, 24 B/px)\n", sample_dump_path,
+                 options.width, options.height);
   }
 #ifdef GT4_COREGS3_TEXTURES
   if (world && chain_ready) {
@@ -1916,7 +1993,8 @@ int main(int argc, char **argv) {
     std::snprintf(line, sizeof line,
                   "world pixels: fog %llu missing %llu, date-failed %llu date-missing %llu, afail-written %llu "
                   "afail-depth %llu, blended %llu, sky-background-depth %llu; texture decode level-0 mip fallbacks %llu, "
-                  "filter fallbacks %llu",
+                  "filter fallbacks %llu; mip-chain fragments %llu (levels 0..7 %llu %llu %llu %llu %llu %llu %llu %llu), "
+                  "mip-ready fragments without a tapped LOD %llu",
                   static_cast<unsigned long long>(stats.world_fog_pixels),
                   static_cast<unsigned long long>(stats.world_fog_missing),
                   static_cast<unsigned long long>(stats.world_date_failed),
@@ -1926,7 +2004,24 @@ int main(int argc, char **argv) {
                   static_cast<unsigned long long>(stats.world_blended_pixels),
                   static_cast<unsigned long long>(stats.world_sky_depth_background),
                   static_cast<unsigned long long>(texture_counters.records_level0_fallback),
-                  static_cast<unsigned long long>(texture_counters.records_filter_fallback));
+                  static_cast<unsigned long long>(texture_counters.records_filter_fallback),
+                  static_cast<unsigned long long>(stats.world_mip_pixels),
+                  static_cast<unsigned long long>(stats.world_mip_levels[0]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[1]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[2]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[3]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[4]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[5]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[6]),
+                  static_cast<unsigned long long>(stats.world_mip_levels[7]),
+                  static_cast<unsigned long long>(stats.world_mip_missing_lod));
+    world_report += line;
+    world_report += "\n";
+    std::snprintf(line, sizeof line,
+                  "world UV perspective: Q*w over %llu triangles %.4f..%.4f (1.0 means the tapped Q is the 1/w weight "
+                  "the perspective-correct interpolation assumes)",
+                  static_cast<unsigned long long>(stats.world_qw_triangles), stats.world_qw_ratio_min,
+                  stats.world_qw_ratio_max);
     world_report += line;
     world_report += "\n";
     std::snprintf(line, sizeof line,

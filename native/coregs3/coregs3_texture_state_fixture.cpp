@@ -294,6 +294,75 @@ void check_tex1_and_clamp_from_state() {
   require(mip.record.mxl == 1 && mip.record.mmag == 1 && mip.record.mmin == 1, "TEX1 fields come from the state");
 }
 
+void seed_t4_at(hwgs::memory::LocalMemory &local, std::uint32_t tbp, std::uint32_t tw, std::uint32_t th,
+                std::uint32_t salt) {
+  const hwgs::memory::BufferView view{tbp, 2, hwgs::memory::Psm::T4};
+  for (std::uint32_t y = 0; y < (1u << th); ++y)
+    for (std::uint32_t x = 0; x < (1u << tw); ++x) local.writePixel(view, x, y, (x + 2u * y + salt) & 15u);
+}
+
+// TASK-090 texture mip: a state with TEX1.MXL = 1 and a tapped MIPTBP1 decodes level 1 from its own TBP, the record path
+// decodes the same chain from the 40-byte record's MIPTBP1, a missing level turns the whole chain off (counted fallback)
+// and the tapped words win over the record's when both are present.
+void check_mip_chain_from_state() {
+  SlmImage slm = full_slm();
+  Fields fields = base_fields();
+  fields.mxl = 1;
+  fields.mmin = 4;
+  seed_palette(slm.local, fields.cbp);
+  seed_t4(slm.local, fields);
+  const std::uint32_t level1_tbp = 0x2C20;
+  seed_t4_at(slm.local, level1_tbp, fields.tw - 1, fields.th - 1, 0u);
+  const std::uint64_t miptbp1 = static_cast<std::uint64_t>(level1_tbp) | (2ull << 14);
+  TextureState state = make_state(fields);
+  state.miptbp1 = miptbp1;
+  state.miptbp1_known = true;
+  DecodedTexture decoded;
+  std::string error;
+  TextureDecodeOptions options;
+  options.decode_mip_levels = true;
+  require(decode_texture_state(slm, state, options, decoded, error) == TextureStatus::ok, "mip state decodes");
+  require(decoded.mip_levels.size() == 1, "one mip level decoded");
+  require(decoded.level0_mip_fallback == false && decoded.mip_levels_missing == 0, "a complete chain is not a fallback");
+  require(decoded.miptbp_from_state, "the chain registers came from the tapped state");
+  const DecodedTexture::MipLevel &level = decoded.mip_levels.front();
+  require(level.level == 1 && level.width == 16 && level.height == 8, "level 1 is the halved size");
+  require(level.rgba.size() == 16u * 8u * 4u, "level 1 bytes");
+  for (std::uint32_t y = 0; y < 8u; ++y) {
+    for (std::uint32_t x = 0; x < 16u; ++x) {
+      const std::uint32_t index = (x + 2u * y) & 15u;
+      const std::uint8_t *texel = level.rgba.data() + (static_cast<std::size_t>(y) * 16u + x) * 4u;
+      require(texel[0] == index && texel[1] == index && texel[2] == 0x80u && texel[3] == 0x80u,
+              "level 1 texels use the same palette");
+    }
+  }
+  // The record path: the same MIPTBP1 in the 40-byte record, no state.
+  auto record = make_record(fields);
+  for (int index = 0; index < 8; ++index)
+    record[16 + index] = static_cast<std::uint8_t>((miptbp1 >> (8 * index)) & 0xFFu);
+  DecodedTexture from_record;
+  require(decode_texture(slm, record.data(), record.size(), options, from_record, error) == TextureStatus::ok,
+          "record path decodes the chain");
+  require(from_record.mip_levels.size() == 1 && !from_record.miptbp_from_state, "record chain from the record words");
+  require(from_record.mip_levels.front().rgba == level.rgba, "record and state decode the same level 1");
+  // A chain whose level blocks the image does not cover is dropped and counted: the image holds the base run and the
+  // palette only, so the level at 0x2C20 is truncated.
+  SlmImage partial;
+  partial.cover(vram::Window{0x2C00u, 32u});
+  partial.cover(vram::Window{0x2D00u, 4u});
+  std::fill(partial.local.bytes().begin(), partial.local.bytes().end(), 0u);
+  seed_palette(partial.local, fields.cbp);
+  seed_t4(partial.local, fields);
+  TextureState uncovered = state;
+  uncovered.miptbp1 = 0x2C20ull | (2ull << 14);  // a level the partial image does not cover
+  uncovered.miptbp1_known = true;
+  DecodedTexture missing;
+  require(decode_texture_state(partial, uncovered, options, missing, error) == TextureStatus::ok,
+          "a chain the image does not cover still decodes level 0");
+  require(missing.mip_levels.empty() && missing.level0_mip_fallback && missing.mip_levels_missing == 1,
+          "the missing level is counted, never sampled");
+}
+
 void check_refusals() {
   SlmImage slm = full_slm();
   Fields fields = base_fields();
@@ -394,6 +463,7 @@ int main() {
     check_state_matches_record();
     check_t8_state();
     check_tex1_and_clamp_from_state();
+    check_mip_chain_from_state();
     check_refusals();
   } catch (const std::exception &error) {
     std::fprintf(stderr, "coregs3 texture state fixture: %s\n", error.what());

@@ -40,6 +40,75 @@ bool fetch_texel(const SampledTexture &texture, std::int32_t x, std::int32_t y, 
   return true;
 }
 
+// Level-0-free fetch for the mip chain: level 0 is the base rectangle above, level n the decoded MipLevel.
+bool fetch_texel_level(const SampledTexture &texture, std::uint32_t level, std::int32_t x, std::int32_t y,
+                       std::uint8_t out[4]) noexcept {
+  if (level == 0u) return fetch_texel(texture, x, y, out);
+  if (x < 0 || y < 0) return false;
+  const std::uint32_t ux = static_cast<std::uint32_t>(x);
+  const std::uint32_t uy = static_cast<std::uint32_t>(y);
+  for (const SampledTexture::MipLevel &mip : texture.mip_levels) {
+    if (mip.level != level) continue;
+    if (ux >= mip.width || uy >= mip.height) return false;
+    const std::size_t index = (static_cast<std::size_t>(uy) * mip.width + ux) * 4u;
+    std::memcpy(out, mip.rgba.data() + index, 4u);
+    return true;
+  }
+  return false;
+}
+
+// The log2 size of a mip level, floored at 0 (a level never exceeds 1 texel per axis).
+std::uint32_t level_log2(std::uint32_t base_log2, std::uint32_t level) noexcept {
+  return level >= base_log2 ? 0u : base_log2 - level;
+}
+
+// Samples one level with nearest or bilinear inside it. The wrap/clamp region scales with the level (chapter 03.6:
+// clamp bounds and coordinates are halved once per level), so a REGION_CLAMP 0..127 at level 1 clamps to 0..63.
+bool sample_level(const SampledTexture &texture, std::uint32_t level, float u, float v, bool linear,
+                  std::uint8_t out[4]) noexcept {
+  const std::uint32_t log2_w = level_log2(texture.tw, level);
+  const std::uint32_t log2_h = level_log2(texture.th, level);
+  const std::uint32_t minu = texture.minu >> level;
+  const std::uint32_t maxu = texture.maxu >> level;
+  const std::uint32_t minv = texture.minv >> level;
+  const std::uint32_t maxv = texture.maxv >> level;
+  const std::int32_t s = texel_coordinate_10_4(u, log2_w);
+  const std::int32_t t = texel_coordinate_10_4(v, log2_h);
+  if (!linear) {
+    const std::int32_t x = wrap_texel(s >> 4, log2_w, texture.wms, minu, maxu);
+    const std::int32_t y = wrap_texel(t >> 4, log2_h, texture.wmt, minv, maxv);
+    return fetch_texel_level(texture, level, x, y, out);
+  }
+  const std::int32_t ss = s - 8;
+  const std::int32_t st = t - 8;
+  const std::int32_t base_x = ss >> 4;
+  const std::int32_t base_y = st >> 4;
+  const std::int32_t fx = ss & 15;
+  const std::int32_t fy = st & 15;
+  std::uint8_t c00[4], c10[4], c01[4], c11[4];
+  if (!fetch_texel_level(texture, level, wrap_texel(base_x, log2_w, texture.wms, minu, maxu),
+                         wrap_texel(base_y, log2_h, texture.wmt, minv, maxv), c00) ||
+      !fetch_texel_level(texture, level, wrap_texel(base_x + 1, log2_w, texture.wms, minu, maxu),
+                         wrap_texel(base_y, log2_h, texture.wmt, minv, maxv), c10) ||
+      !fetch_texel_level(texture, level, wrap_texel(base_x, log2_w, texture.wms, minu, maxu),
+                         wrap_texel(base_y + 1, log2_h, texture.wmt, minv, maxv), c01) ||
+      !fetch_texel_level(texture, level, wrap_texel(base_x + 1, log2_w, texture.wms, minu, maxu),
+                         wrap_texel(base_y + 1, log2_h, texture.wmt, minv, maxv), c11))
+    return false;
+  const std::int32_t w00 = (16 - fx) * (16 - fy);
+  const std::int32_t w10 = fx * (16 - fy);
+  const std::int32_t w01 = (16 - fx) * fy;
+  const std::int32_t w11 = fx * fy;
+  for (std::uint32_t lane = 0; lane < 4; ++lane) {
+    const std::int32_t mixed = (static_cast<std::int32_t>(c00[lane]) * w00 +
+                                static_cast<std::int32_t>(c10[lane]) * w10 +
+                                static_cast<std::int32_t>(c01[lane]) * w01 +
+                                static_cast<std::int32_t>(c11[lane]) * w11) >> 8;
+    out[lane] = static_cast<std::uint8_t>(clamp_channel(mixed));
+  }
+  return true;
+}
+
 std::uint8_t texel_channel(const std::uint8_t rgba[4], std::uint32_t lane) { return rgba[lane]; }
 
 }  // namespace
@@ -96,7 +165,8 @@ std::int32_t wrap_texel(std::int32_t texel, std::uint32_t log2_size, std::uint32
 }
 
 SampleStatus sample_texture(const SampledTexture &texture, float u, float v,
-                            const std::array<std::uint8_t, 4> &vertex, std::array<std::uint8_t, 4> &out) noexcept {
+                            const std::array<std::uint8_t, 4> &vertex, std::array<std::uint8_t, 4> &out,
+                            std::array<std::uint8_t, 4> *texel_out) noexcept {
   if (texture.psm != 0x14u && texture.psm != 0x13u && texture.psm != 0x00u) return SampleStatus::refused_psm;
   if (texture.tfx != 0u) return SampleStatus::refused_tfx;
   if (texture.mxl != 0u) return SampleStatus::refused_mip;
@@ -150,6 +220,67 @@ SampleStatus sample_texture(const SampledTexture &texture, float u, float v,
   }
 
   // MODULATE with the 8-bit integer product. TCC = 0 keeps the vertex alpha.
+  if (texel_out != nullptr) std::memcpy(texel_out->data(), texel, 4u);
+  out[0] = static_cast<std::uint8_t>(scaled_product(texel_channel(texel, 0), vertex[0]));
+  out[1] = static_cast<std::uint8_t>(scaled_product(texel_channel(texel, 1), vertex[1]));
+  out[2] = static_cast<std::uint8_t>(scaled_product(texel_channel(texel, 2), vertex[2]));
+  out[3] = texture.tcc != 0u ? static_cast<std::uint8_t>(scaled_product(texel_channel(texel, 3), vertex[3]))
+                             : vertex[3];
+  return SampleStatus::ok;
+}
+
+SampleStatus sample_texture_lod(const SampledTexture &texture, float u, float v, float lod, std::uint32_t base_level,
+                                const std::array<std::uint8_t, 4> &vertex, std::array<std::uint8_t, 4> &out,
+                                std::array<std::uint8_t, 4> *texel_out, std::uint32_t *level_out) noexcept {
+  // The static checks are the level-0 subset's; a mip texture keeps its real MMAG/MMIN and is accepted here.
+  if (texture.psm != 0x14u && texture.psm != 0x13u && texture.psm != 0x00u) return SampleStatus::refused_psm;
+  if (texture.tfx != 0u) return SampleStatus::refused_tfx;
+  if (texture.width == 0 || texture.height == 0 || texture.rgba == nullptr) return SampleStatus::refused_region;
+  if (texture.tw > 10u || texture.th > 10u) return SampleStatus::refused_region;
+  if (!texture.mip_ready) return sample_texture(texture, u, v, vertex, out, texel_out);
+  const std::uint32_t mxl = std::min<std::uint32_t>(texture.mxl, 6u);
+  if (mxl == 0u || texture.mip_levels.empty()) return SampleStatus::refused_mip;
+  // The explicit LOD is the GS formula's value (chapter 01.5) and the sampler clamps it at 0 (chapter 03.6); the upper
+  // bound keeps a Q that fell to zero (an infinite LOD) inside the integer conversion below.
+  const float relative = lod > 0.0f ? std::min(lod, 1.0e6f) : 0.0f;
+  const std::uint32_t base = std::min<std::uint32_t>(base_level, mxl);
+  std::uint8_t texel[4] = {0, 0, 0, 0};
+  if (relative <= 0.0f) {
+    // Level = base level with the magnification filter.
+    if (!sample_level(texture, base, u, v, texture.mmag != 0u, texel)) return SampleStatus::refused_region;
+    if (level_out != nullptr) *level_out = base;
+  } else if (texture.mmin < 2u) {
+    // A mip-ready texture with a non-mip minification filter: the filter alone at the base level.
+    if (!sample_level(texture, base, u, v, texture.mmin != 0u, texel)) return SampleStatus::refused_region;
+    if (level_out != nullptr) *level_out = base;
+  } else if (texture.mmin == 2u || texture.mmin == 4u) {
+    // Mip nearest: one level, round half up, clamped to [0, MXL]; nearest or linear inside it.
+    const std::uint32_t level =
+        std::min<std::uint32_t>(base + static_cast<std::uint32_t>(std::floor(relative + 0.5f)), mxl);
+    if (!sample_level(texture, level, u, v, texture.mmin == 4u, texel)) return SampleStatus::refused_region;
+    if (level_out != nullptr) *level_out = level;
+  } else if (texture.mmin == 3u || texture.mmin == 5u) {
+    // Mip linear: the two neighbouring levels, weighted by the fractional LOD; nearest (3) or linear (5) inside each.
+    const std::uint32_t lower = std::min<std::uint32_t>(base + static_cast<std::uint32_t>(std::floor(relative)), mxl);
+    const std::uint32_t upper = std::min<std::uint32_t>(lower + 1u, mxl);
+    const float fraction = relative - std::floor(relative);
+    std::uint8_t low[4], high[4];
+    if (!sample_level(texture, lower, u, v, texture.mmin == 5u, low)) return SampleStatus::refused_region;
+    if (lower == upper || fraction <= 0.0f) {
+      std::memcpy(texel, low, 4u);
+    } else {
+      if (!sample_level(texture, upper, u, v, texture.mmin == 5u, high)) return SampleStatus::refused_region;
+      const std::int32_t weight = static_cast<std::int32_t>(fraction * 256.0f + 0.5f);
+      for (std::uint32_t lane = 0; lane < 4; ++lane)
+        texel[lane] = static_cast<std::uint8_t>(
+            clamp_channel((static_cast<std::int32_t>(low[lane]) * (256 - weight) +
+                           static_cast<std::int32_t>(high[lane]) * weight) >> 8));
+    }
+    if (level_out != nullptr) *level_out = lower;
+  } else {
+    return SampleStatus::refused_filter;
+  }
+  if (texel_out != nullptr) std::memcpy(texel_out->data(), texel, 4u);
   out[0] = static_cast<std::uint8_t>(scaled_product(texel_channel(texel, 0), vertex[0]));
   out[1] = static_cast<std::uint8_t>(scaled_product(texel_channel(texel, 1), vertex[1]));
   out[2] = static_cast<std::uint8_t>(scaled_product(texel_channel(texel, 2), vertex[2]));
@@ -268,8 +399,15 @@ BindingStatus check_world_binding(const TextureBinding &binding) noexcept {
   const SampledTexture &texture = *binding.texture;
   if (texture.psm != 0x14u && texture.psm != 0x13u && texture.psm != 0x00u) return BindingStatus::refused_psm;
   if (texture.tfx != 0u) return BindingStatus::refused_tfx;
-  if (texture.mxl != 0u) return BindingStatus::refused_mip;
-  if (texture.mmag != texture.mmin || texture.mmag > 1u) return BindingStatus::refused_filter;
+  if (texture.mip_ready) {
+    // TASK-090 texture mip: a complete chain keeps the record's real MMAG/MMIN (the mip filters are 2..5, so the two
+    // fields legitimately differ) and the sampler selects the level from the explicit LOD.
+    if (texture.mmag > 1u || texture.mmin > 5u) return BindingStatus::refused_filter;
+    if (texture.mmin >= 2u && texture.mip_levels.empty()) return BindingStatus::refused_mip;
+  } else {
+    if (texture.mxl != 0u) return BindingStatus::refused_mip;
+    if (texture.mmag != texture.mmin || texture.mmag > 1u) return BindingStatus::refused_filter;
+  }
   // DATE is implemented by the world rasteriser (destination alpha test against the framebuffer alpha), and all four
   // AFAIL modes are implemented there (KEEP, FBONLY, ZBONLY, RGBONLY), so neither refuses the binding.
   return BindingStatus::ok;
