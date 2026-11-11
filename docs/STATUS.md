@@ -1,5 +1,28 @@
 # Current Status
 
+## 2026-11-11: the dry-pass crash was a host heap overflow in the CoreGS 3.0 timeline pairing (TASK-090 crash race, branch `task/090-crash-race`)
+
+The host-clock round's crash lead is closed with a different conclusion. `GT4_COREGS3_DRY_PASS=1` (the removed
+per-VBlank counter pass restored as a diagnostic) reproduces the exit-139 fault at VBlank ~6778-6783, but it is not
+recompiled guest code: the first handler printed the live EE register file and guest stack on any process fault, so a
+**GS worker** fault was reported as a guest PC. A vectored handler that prints the faulting thread, the exception record
+and the host backtrace (`GT4_CRASH_DUMP=1`, `native/crash_dump.cpp`) puts the fault on `GsWorker::run`, inside CoreGS 2.0's
+`unordered_map` internals (`ContentKey`'s `blockLists_` rehash in two runs, `TrimTexturePool`'s `texturePool_` walk in a
+third), each loading a node link of 0xFFFFFFFFFFFFFFFF, the signature of an already-corrupted heap. The corrupting write
+is in `interpolate_frame` (`native/coregs3/coregs3_presentation.cpp`): the pairing bookkeeping `used` is sized by the
+**older** frame's object count and indexed with **newer** indices, so a growing draw list at the race start reads and
+writes past the vector (ASan: heap-buffer-overflow at `coregs3_presentation.cpp:540`, 0 bytes after the 2-byte allocation
+at line 534). The fix sizes it by the newer list; the fixture gains the growing-list and empty-older cases. Host only, no
+guest change. The dry pass runs two interpolations per VBlank at 120 Hz, which is why it made the latent overflow fatal;
+the delivered 120/144 Hz window path calls the same function per drawn tick and was equally exposed. Acceptance: the
+9000-frame 3x dry-pass night run completes twice on the acceptance binary (`9ECE760F...`, `acceptance-9000-run2b`/`-run3`,
+8,999 published frames each) and once more on the final rebuild after comment-only edits (`64EA9B2B...`,
+`acceptance-9000-run4`), the dry-pass guest clock/digest/128 KiB state are identical to a reference run over 7,497 VBlanks
+(`DRY-PASS-IDENTITY-OK`), the 3x off/shadow gate **COREGS3-NIGHT-CHECK-OK**, CTest coregs3 **19/19**, Python **15/15**.
+Evidence `build/evidence-crash-race/`; method [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §30. Remaining risk: the fix covers
+this overflow, not every heap bug; the ASan game run did not reach the race-start window (the fixture is the ASan
+control).
+
 ## 2026-11-11: the CoreGS 3.0 host presentation clock: the window presents at the display rate (TASK-090, branch `task/090-host-clock`)
 
 The windowed `GT4_COREGS3=present` backend now presents at `GT4_COREGS3_PRESENT_HZ` (120/144 Hz) instead of once per

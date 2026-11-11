@@ -2067,10 +2067,23 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   0x00482674), so the old concurrent-gate attribution is superseded; the delivered host clock path does not fault on
   those VBlanks. Owner window test at 1x pending. Evidence `build/evidence-host-clock/`.
 
+- **Crash race (2026-11-11, branch `task/090-crash-race`):** the host-clock crash lead is closed. The exit-139 fault at
+  VBlank ~6783 is on the **GS worker**, inside CoreGS 2.0's containers (`ContentKey`'s `blockLists_` rehash in two runs,
+  `TrimTexturePool`'s `texturePool_` walk in a third), each loading a node link of 0xFFFFFFFFFFFFFFFF; the host-clock
+  round misread it as recompiled guest code because its handler printed the live EE registers and guest stack. The
+  corrupting write is `interpolate_frame`'s pairing bookkeeping: `used` is sized by the older frame's object count and
+  indexed with newer indices, so a growing draw list at the race start reads and writes past it (ASan:
+  heap-buffer-overflow at `coregs3_presentation.cpp:540`, 0 bytes after the 2-byte allocation at 534). The fix sizes it
+  by the newer list; the fixture gains `check_growing_draw_list`. Host only, no guest change. `GT4_COREGS3_DRY_PASS=1`
+  (the removed per-instant pass) and `GT4_CRASH_DUMP=1` (faulting-thread/host-address dump, `native/crash_dump.*`) stay
+  as diagnostics. Acceptance: the 9000-frame 3x dry-pass night run completes twice on the acceptance binary
+  (`9ECE760F...`) and once on the final rebuild (`64EA9B2B...`), the dry-pass guest clock/digest/128 KiB state are identical to a reference run, the 3x off/shadow gate
+  **COREGS3-NIGHT-CHECK-OK**, CTest coregs3 **19/19**, Python **15/15**. Evidence `build/evidence-crash-race/`; method:
+  [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §30.
+
 - Next: the material transfer-curve residual (fixes 3/4: palette/texel inversion and the MXL 1/MMIN 4 mip
   path); capture the font atlas and the remaining HUD elements; the owner's 1x window test of the host presentation
-  clock and the exact emulator read behind the reproduced guest crash at the race start; the effects/HUD capture
-  additions; then the G-IMAGE/G-PERF gates.
+  clock; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

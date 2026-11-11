@@ -2054,3 +2054,99 @@ reference's image grouping supports it: frame 0 matches reference 7400 better th
 the PATH1/PATH2 interleaving inside the stream is not in the sidecars, so the pre-world role of the clears and the depth
 clear is taken from their sequence position and state, not from per-packet job order; the colour replay does not model
 the depth buffer (the world render owns it); the per-page map mixes materials that write no depth (the ABE decals).
+
+## 30. Round 29 (2026-11-11, branch `task/090-crash-race`): the dry-pass crash is a host heap overflow in the timeline pairing, not guest code
+
+The host-clock round left one open lead: the removed per-VBlank counter pass, restored behind `GT4_COREGS3_DRY_PASS=1`,
+died with an access violation at VBlank ~6783, and the round read the crash as a guest/emulator timing race in
+recompiled guest code (`gen::unit_00E0`, guest PC 0x00482674). This round reproduces it, captures the faulting thread
+and address, and closes it with a host bug in the CoreGS 3.0 presentation timeline. No guest code, guest memory
+semantics or renderer gate changed.
+
+### 30.1 The first attribution was a reporting error (C)
+
+The host-clock handler printed the live guest register file (`ps2::g_cpu`) and the guest stack on any process fault.
+Guest recompiled code runs only on the EE thread; the fault was on the **GS worker** (`GsWorker::run`). The guest PC it
+reported (0x00482674, and 0x00455A64 in a traced run of this round) is simply what the EE thread was executing at that
+instant, and the guest stack it walked was the EE thread's. The new diagnostic (`GT4_CRASH_DUMP=1`,
+`native/crash_dump.{hpp,cpp}`) prints the faulting thread id and role, the exception record (code, access type,
+faulting address), the host backtrace as PE offsets, and only then the guest state as context. Every reproduced run
+reports `thread=worker`.
+
+### 30.2 The fault (C)
+
+Three serial dry-pass runs put the fault inside CoreGS 2.0's standard containers on the GS worker, always loading a node
+link of `0xFFFFFFFFFFFFFFFF`:
+
+| Run | Faulting chain |
+|---|---|
+| `build/evidence-crash-race/dry-pass-crash-1` | worker, `mov rax,[rax]` with rax = -1, in an `unordered_map<u64, ...>` rehash (PDB: core2 renderer inline chain) |
+| `build/evidence-crash-race/dry-pass-crash-2` | `GsWorker::run → execute_mtvu_job → gif_now → core2::Renderer::GifTransfer → FrontEnd::GifTransfer → GifParser::Transfer → StripVertices → Kick → FlushBatch → EmitBatch → OnBatch → ProcessBatch → MemoryTexture → ContentKey → blockLists_.try_emplace` (rehash) |
+| `build/evidence-crash-race/dry-noblockver` (`GT4_CORE2_BLOCK_VERSIONS=0`) | `GsWorker::run → vsync_now → hw.flush → core2::Renderer::Flush → TrimTexturePool`, walking `texturePool_` |
+
+A pointer that reads as -1 inside a container's node list is already-corrupted heap, not the container's own logic: the
+renderer runs solely on the GS worker under `backendMutex_`, so the finding is a corrupting write elsewhere.
+
+### 30.3 The corrupting write: the timeline pairing bookkeeping (C)
+
+`interpolate_frame` (`native/coregs3/coregs3_presentation.cpp`) pairs the older and the newer frame by object key. Its
+`used` vector marks the matched objects of the **newer** frame and is indexed with `newer_index`, but it was sized by
+`older.objects.size()`. A match at a newer index at or past the older list's length reads `used[newer_index]` and writes
+`used[newer_index] = 1` past the end of the allocation. The draw list grows between claimed frames at the race start,
+which is exactly where the dry pass (two interpolations per VBlank at 120 Hz, each on the GS worker) reaches the bad
+index. ASan on the fixture (`coregs3_presentation_fixture`, `check_growing_draw_list`): **heap-buffer-overflow READ of
+size 1 at coregs3_presentation.cpp:540, 0 bytes after the 2-byte region allocated at line 534**; the same check with the
+size fixed reports no pairing error. The only remaining ASan report in the fixture is the MSVC `strtoul` reading one
+byte past a string literal's terminator in `parse_presentation_hz` (CRT behavior, unrelated) — recorded here so a future
+ASan session does not mistake it for this bug.
+
+The fix sizes `used` by `newer.objects.size()` (the list it indexes) and is host-only: the pairing for a growing list
+now yields the defined result (objects previously skipped by an out-of-bounds read are matched), it does not touch guest
+memory, the simulation digest or the guest clock, and at 60 Hz every instant still draws the captured matrix exactly.
+The fixture pins the semantics for older `{A, B}` / newer `{new, A, B}` (matches at newer indices 1 and 2) and for an
+empty older frame.
+
+### 30.4 Why the dry pass made it fatal (H)
+
+At 120 Hz the dry pass interpolates every due instant on the GS worker, so the OOB fired on every VBlank for thousands
+of frames; each pass damaged a small allocation, and the first container operation to touch a damaged block died with
+the -1 read. The delivered 120/144 Hz window path calls the same `interpolated_transforms` once per drawn tick, so it
+carried the same latent overflow; the host-clock window runs did not fail, but their heap layout and claim timing
+differ. The fix covers both.
+
+### 30.5 Reproduction and controls
+
+- `GT4_COREGS3_DRY_PASS=1` restores the removed per-instant counter pass (`native/coregs3/coregs3_present.cpp`),
+  diagnostic only; it runs on the GS worker inside `vsync_now`, exactly where the removed code ran.
+- Runs of 9000 frames, 3x night race, headless, 120 Hz present, serial on a quiet machine. A run without the dry pass
+  completes (`control-no-dry-pass`, 7500 frames, exit 0).
+- Pre-fix ASan: the fixture report is `build/evidence-crash-race/asan/fixture-prefix.txt`; the game under ASan with the
+  dry pass needs the CRT artifacts above silenced and did not reach the race-start window before an unrelated process
+  exit, so the fixture is the ASan control (`asan-game-prefix/log.txt` records that limit).
+- Post-fix acceptance: `GT4_COREGS3_DRY_PASS=1`, 9000 frames, two runs on the acceptance binary
+  (sha256 `9ECE760F448D0DC8A29B996DF18E3A3840B534692092CE7C910D24E0CF59EB00`): `acceptance-9000-run2b` and
+  `acceptance-9000-run3`, both exit 0 with 8,999 frames and 8,999 published snapshots; the third run in
+  `acceptance-9000-run1b` (same solution and game code, before the crash handler's filter change) also passed; the
+  final rebuild after comment-only edits (sha256 `64EA9B2B3A34FFEDBF60A73FAF2984EEF964DE20556F1195B1BE36559336CA2A`)
+  completes once more (`acceptance-9000-run4`).
+- Guest identity of the dry pass: two 7,500-frame dump-at-7400 runs, one with the dry pass and one without, compare the
+  skip table (vblank, rendered, clock, gate, digest, race) and the 128 KiB state dump (131,072 bytes): 7,497 rows identical, 0 clock/digest differences, 0 differing words
+  (`DRY-PASS-IDENTITY-OK`).
+- The first acceptance attempt (`acceptance-9000-run1`) ended at frame 4683 with exit 127 and no dump; its rerun
+  completed, so the attempt is recorded as an invalid run, not as a second failure mode.
+
+### 30.6 Gates
+
+| Gate | Result |
+|---|---|
+| `GT4_COREGS3_DRY_PASS=1` 3x night, 9000 frames, serial | **two runs exit 0** on the acceptance binary (`run2b`, `run3`), a third (`run1b`) on the same game code, and one on the final rebuild (`run4`) |
+| Dry pass vs reference, guest clock/digest/state | `DRY-PASS-IDENTITY-OK` (see 30.5) |
+| CTest coregs3 | **19/19** (new `check_growing_draw_list`) |
+| Python `test_coregs3_units.py` with `GT4_NATIVE_BUILD` | **15/15** |
+| 3x off/shadow identity gate (`coregs3-night-check.sh`, reference `coregs3-r8/ref/gt4vulkan.exe`) | `COREGS3-NIGHT-CHECK-OK` |
+| ASan fixture, pre-fix | heap-buffer-overflow at `coregs3_presentation.cpp:540` |
+| ASan fixture, post-fix | the pairing check is clean; only the CRT `strtoul` report remains |
+
+Evidence: `build/evidence-crash-race/`. Limits: the exact byte-level path from the overflow to the -1 node link is not
+traced (the crash-site signature and the ASan proof are the evidence); the ASan game run did not reach the race-start
+window; the fix corrects this overflow, not every heap bug in the renderer.
