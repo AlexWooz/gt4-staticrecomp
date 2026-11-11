@@ -4514,6 +4514,24 @@ prototype. Phase 2/3 candidates were not attempted this round: each is individua
 ~102 ns/draw per the GSdx study; the batched kick measured below the bar in TASK-171). Tests unchanged (319/320, the
 pre-existing rc15 `python_native_contracts`). Ledger IN-556.
 
+**Pivot round (2026-11-11):** the GSdx-shaped contained candidates were measured, and each stops at its contract. Kept: a
+diagnostic only - `PrimsCulled` (added last in the enum) and the `[core2] front-end prims/vblank` line, which price every
+future kick/record candidate for free: on the license 84,094-131,524 vertices and 15,698-17,039 emitted primitives per
+VBlank, with **41.1-63.2 % of the drawing primitives culled** (11,883-29,082 per VBlank). Measured and reverted: the
+run-level band cull (`GT4_CORE2_BAND_CULL`: a triangle-strip run's band against `ShouldDraw`'s own cull rectangle through a
+shared `ScissorViewFor`) skipped **83.8 primitives per VBlank of the 11,883 culled (0.7 %, ~0.003 ms)** because GT4's strips
+are long and nearly always partly visible and the culls are per-primitive (coverage box, degenerate triangles); and the
+exact rect inlining (`IntersectRects`/`UnionRects`/`RectsOverlap` into `hw_batch.hpp`, which were cross-TU calls made per
+drawing primitive) measured **-0.13 ms on the GS stage total in both 2+2 pairs** (7.84/7.80 -> 7.68/7.68, `gif_parse`
+3.31/3.30 -> 3.24/3.21, `translate` 0.45 -> 0.41) with **wall unchanged** (10.44/10.34 -> 10.40/10.34, this window is
+EE-bound), i.e. below the relaxed 0.2 ms gate. Stopped at contracts, no code: index-at-kick (the per-record contract:
+`Batch::prims` feeds `TranslateBatch`, `cpuref::DrawBatch`, the shuffle/segment helpers, `RewriteDepthClear`,
+`ClassifyOverlap` and the fixtures; IN-552's full design is 0.15-0.3 ms); the GPU compute swizzle (the CPU GS-memory shadow
+is authoritative for the CPU reference, the CLUT loads, the upload memo's diff and `ReadFifo`; IN-548's 1 KiB copy at
++0.61 ms for ~900 copies prices the copy-back); the texture worker (the decode path records GPU commands and can read back,
+so a worker needs a second command-buffer recorder - IN-556's failure mode); and no-CPU-translate (a new vertex format plus
+a shader conversion with the CPU reference as oracle). Combined total of kept measured gains: 0. Ledger IN-557.
+
 **Previous state (2026-11-11, close-out): closed for this round, consolidated in `docs/tasks/COREGS2-TASK215-SUMMARY.md`.**
 Kept: IN-540 aliased depth fill (batch stage -22 %), IN-547 scissor view (`GT4_CORE2_SCISSOR_VIEW`, `gif_parse` -2.8 %),
 the TASK-215e measurement tooling, and the off-by-default diagnostics. Reverted: palette segments under the tone hook

@@ -62,6 +62,10 @@ enum class Counter : uint8_t {
     TransferCommits,
     TransferOverlapFlushes,
     Vertices,
+    // TASK-215 (GS worker round): of PrimsSkipped, the drawing kicks the cull rejected (ShouldDraw). The rest are the
+    // non-drawing strip kicks (the ADC markers), so this is the drawing population the cull decides. Diagnostics only;
+    // added last so no existing counter changes value.
+    PrimsCulled,
     Count,
 };
 

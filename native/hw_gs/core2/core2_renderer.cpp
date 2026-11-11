@@ -5648,6 +5648,30 @@ void Renderer::Flush() {
                                          s.lastDecodes_) /
                          600.0);
         {
+            // TASK-215 (GS worker round): the front end's primitive bill per VBlank: how many primitives the cull keeps
+            // (emitted) and how many it drops (skipped), which bounds any run-level cull. Diagnostics only.
+            const CounterSet &front = s.frontEnd_.Counters();
+            static std::uint64_t lastEmitted = 0, lastSkipped = 0, lastVertices = 0, lastCulled = 0;
+            const std::uint64_t emitted = front.Get(Counter::PrimsEmitted);
+            const std::uint64_t skipped = front.Get(Counter::PrimsSkipped);
+            const std::uint64_t vertices = front.Get(Counter::Vertices);
+            const std::uint64_t culled = front.Get(Counter::PrimsCulled);
+            std::fprintf(stderr,
+                         "[core2] front-end prims/vblank emitted=%.1f skipped=%.1f (culled=%.1f) vertices=%.1f "
+                         "culled_share_of_drawing=%.1f%%\n",
+                         static_cast<double>(emitted - lastEmitted) / 600.0,
+                         static_cast<double>(skipped - lastSkipped) / 600.0,
+                         static_cast<double>(culled - lastCulled) / 600.0,
+                         static_cast<double>(vertices - lastVertices) / 600.0,
+                         static_cast<double>(culled - lastCulled) * 100.0 /
+                             static_cast<double>(std::max<std::uint64_t>(1, (culled - lastCulled) + (emitted - lastEmitted))));
+
+            lastEmitted = emitted;
+            lastSkipped = skipped;
+            lastVertices = vertices;
+            lastCulled = culled;
+        }
+        {
             // TASK-027 CPU survey: exclusive stage times (each minus the stages nested in it); gif_parse is the GIF
             // front end itself, vblank_own the VBlank work outside the stages it runs.
             const PhaseTimes &x = s.clock_.exclusive;

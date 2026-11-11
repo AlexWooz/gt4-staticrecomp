@@ -630,6 +630,7 @@ void FrontEnd::Kick(const GifKick& kick) {
         }
     } else {
         counters_.Add(Counter::PrimsSkipped);
+        if (kick.drawing) counters_.Add(Counter::PrimsCulled);  // TASK-215: of the skipped, the cull's share (diagnostics)
     }
     AdvanceQueue(type);
 }

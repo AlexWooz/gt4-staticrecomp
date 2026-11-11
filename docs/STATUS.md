@@ -19,6 +19,20 @@ ring and adds two GSdx-shaped candidates recorded but not attempted (fused kick 
 index-at-kick 0.5-1.0 ms Hyp; no CPU translate 0.2-0.4 ms Hyp). Phase 2/3 were not attempted: every remaining candidate is
 individually below the 0.5 ms gate. Tests unchanged (319/320, the pre-existing rc15 `python_native_contracts`).
 
+**Pivot round (2026-11-11, IN-557):** the contained GSdx-shaped candidates were each measured or stopped at their
+contract, keeping the diagnostics only. A new `PrimsCulled` counter and the `[core2] front-end prims/vblank` line show the
+bill: 84-132k vertices and 15.7-17.0k emitted primitives per VBlank, with **41-63 % of the drawing primitives culled**. The
+run-level band cull (`GT4_CORE2_BAND_CULL`, a strip run's band against `ShouldDraw`'s own cull rectangle) skipped only
+**83.8 primitives per VBlank of 11,883 culled (0.7 %, ~0.003 ms)** - GT4's strips are long and nearly always partly
+visible - and was reverted. Batching alone was already -0.15 (TASK-171, reverted); index-at-kick stops at the per-record
+contract (`Batch::prims` feeds the writeback, the CPU reference, the shuffle/segment helpers and the fixtures; IN-552's
+full design is 0.15-0.3 ms). An exact rect-inlining change (`IntersectRects`/`UnionRects`/`RectsOverlap` moved into the
+header, per-primitive cross-TU calls) measured **-0.13 ms on the GS stages in both 2+2 pairs** with wall unchanged (this
+window is EE-bound) - sub-bar, reverted, the first item to bundle. The GPU compute swizzle stops at the data-ownership
+contract (the CPU shadow is authoritative; IN-548's 1 KiB copy at +0.61 ms prices the copy-back), the texture worker at the
+GPU-recording contract (it records commands and reads back), and no-CPU-translate at the per-record contract. Nothing
+reached the relaxed 0.2 ms gate; the diagnostics are the kept result.
+
 **Close-out (2026-11-11):** the consolidated report is `docs/tasks/COREGS2-TASK215-SUMMARY.md` (kept, reverted/closed with
 numbers, the 3x scene matrix, the remaining lever, the owner's options). State: kept IN-540 (aliased depth fill) and
 IN-547 (scissor view, `GT4_CORE2_SCISSOR_VIEW`), both exact; reverted the palette segments under the tone hook (+0.61 ms);

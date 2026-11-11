@@ -155,3 +155,86 @@ pages versioned per record or per segment, so a readback is a queued task with a
 stall) and **one owner for the cache/version state**. That is the 3-5 day design round the option was priced at. For the
 next attempt, measure `drains/VBlank`, the drain wait and the consumer's `batch_own`/`targets` inflation first: they are
 the three numbers that decide the design.
+
+## 7. Pivot round: the contained candidates, each measured or stopped at its contract
+
+The owner's pivot after IN-556: the GSdx study's contained wins, gate relaxed to **>= 0.2 ms** per candidate on the
+license or Opera (2+2 interleaved, judged on wall/GS worker) with a **combined total >= 0.5 ms**. All numbers below are
+license B-1 1x, last 600 VBlanks, on `build/perf-base` built from `a3a26e39` plus this round, 2+2 interleaved where an
+A/B exists.
+
+### The front-end primitive bill (new diagnostics, kept)
+
+`[core2] front-end prims/vblank emitted=... skipped=... (culled=...) vertices=... culled_share_of_drawing=...` and the
+`PrimsCulled` counter (added last, so no existing counter changes value). Per VBlank on the license, three intervals:
+
+| interval | vertices | prims emitted | prims skipped | of those culled | culled share of drawing |
+|---|---|---|---|---|---|
+| 1 | 109,530 | 15,698 | 82,574 | 24,516 | 61.0 % |
+| 2 | 131,524 | 16,923 | 101,244 | 29,082 | 63.2 % |
+| 3 | 84,094 | 17,039 | 55,635 | 11,883 | 41.1 % |
+
+So **41-63 % of the drawing primitives are rejected by the cull**, and ~80 % of all primitives are non-drawing strip
+kicks (the ADC markers). The bill is what any kick/record candidate has to attack; the diagnostics cost nothing
+(two neutral runs: wall 9.92 / 9.27, stage total 8.45 / 7.89, inside the earlier range).
+
+### 1. Fused kick + cull folded + index-at-kick
+
+- **The cull folded into a strip run: implemented, measured, reverted.** A triangle-strip run's band (`StripVertices`'
+  vertices plus the queue's, in 12.4 units) tested against `ShouldDraw`'s own cull rectangle, shared through a
+  `ScissorViewFor` helper so the constants are the same; a clear band let every drawing kick of the run count as culled
+  without a candidate build, a `ShouldDraw` call or an append (`GT4_CORE2_BAND_CULL`, with a `PrimsBandCulled` counter).
+  Result: **83.8 primitives skipped per VBlank of the 11,883 culled (0.7 %)**, i.e. ~0.003 ms - below the bar. The culls
+  are per-primitive (coverage box, degenerate triangles), not whole off-screen strips: GT4's strips are long and nearly
+  always partly visible. The code was reverted; the counters stayed.
+- **Batching alone** was measured before the round (TASK-171 option 1, `GT4_CORE2_BATCH_STRIP`): **-0.15 ms**, inconsistent
+  between pairs, reverted. Not repeated: its lesson stands (the queue round-trip is not where `gif_parse` lives).
+- **Index-at-kick (the record removal): stopped at the contract.** `Batch::prims` (`PrimRecord{type, first, count, rect}`)
+  is read by `writeback::TranslateBatch` (draw grouping and the per-draw scissor), `cpuref::DrawBatch` (the CPU reference,
+  the oracle), `PossibleShuffle`/`PossibleShuffleSegment`, the `PaletteSegment*` helpers, `RewriteDepthClear`,
+  `ClassifyOverlap`/`BuildSpriteDrawList`/`ComputeVertexTrace`, and `hw_m3_tests` asserts on it. Replacing it with an index
+  buffer built at kick time is the full per-record design (IN-552 priced the vertex-conversion half at ~0 and the whole
+  design at **0.15-0.3 ms**), which is exactly the contract point the round said to stop at. `GpuDraw` (9,197/VBlank) is
+  the other half of the same contract. **No code.**
+- **Related exact micro-win, measured and reverted as sub-bar:** `IntersectRects`/`UnionRects`/`RectsOverlap` moved inline
+  into `hw_batch.hpp` (they were cross-TU calls made per drawing primitive: ~41k/VBlank). 2+2 interleaved:
+  **GS stage total 7.84/7.80 -> 7.68/7.68 (-0.13, both pairs)**, `gif_parse` 3.31/3.30 -> 3.24/3.21, `translate`
+  0.45 -> 0.41; **wall unchanged** (10.44/10.34 -> 10.40/10.34), because this window of the license is EE-bound. -0.13 is
+  real and consistent but below the 0.2 gate as a standalone candidate, so it was reverted; it is the first item to
+  bundle if a future round needs the last 0.1 ms.
+
+### 2. GPU compute swizzle
+
+**Stopped at the data-ownership contract.** The CPU swizzle (`FastHostToLocal` -> `StoreRun`, 0.59-0.65 ms) writes the
+swizzled texels into the CPU GS-memory shadow, and that shadow is authoritative for the CPU reference, the CLUT loads,
+the upload memo's diff (IN-450/IN-453 block identities) and `ReadFifo`. A compute pass can only write GPU memory (the GLM);
+making the GLM authoritative for uploads is the "GLM owns GS memory" design (the same class of change as the pipeline's
+memory-version ownership), and copying the result back to the CPU shadow costs what the swizzle costs: IN-548 measured a
+1 KiB palette copy at **+0.61 ms for ~900 copies** (~0.68 us per KiB, ~1.5 GB/s effective for scattered runs), and the
+license moves 1.2-1.3 MiB per VBlank. No contained version reaches 0.2 ms.
+
+### 3. Texture worker only
+
+**Stopped at the GPU-recording contract.** The texture path is not CPU-only: `MemoryTexture` calls `Gpu::DecodeTexture`
+/`DecodeTextureGpuClut`/`PaletteRowFromGpuClut` (command recording into the one command buffer) and `CreateImage`/
+`UploadImage`, and `fromGlm` can call `Readback` (submit + wait). A worker therefore needs a second command-buffer recorder
+and a submission serializer - the exact thread-safety problem that made IN-556 fail, and its CPU part (texture 0.22-0.25 +
+swizzle 0.59-0.65) is only a copy-vs-compute trade on top. Not attempted: it is not contained, and the round's rule is not
+to repeat the pipeline's coupling.
+
+### 4. No CPU translate
+
+**Stopped at the per-record contract.** `writeback::Translate` converts every `Vertex` (int32 x4/y4, float q/s/t) into
+`GpuVertex` (int16 x/y, resolved UV), and `GpuVertex`/`BatchTranslation` are read by the draw path, the CPU reference, the
+self-copy/fill/prim-id diagnostics and the fixtures. Leaving the raw 12.4 words for the shader means a new vertex format
+and a shader-side conversion, with the CPU reference as the oracle - the full per-record design (IN-552: 0.15-0.3 ms,
+2-3 days) - so it is out of a contained round.
+
+### Verdict of the pivot round
+
+Nothing reached the 0.2 ms gate: the one candidate that could be built quickly (the run cull) fired on 0.7 % of the culls
+(~0.003 ms), the one exact micro-win measured (-0.13) is sub-bar, and the other three stop at data-ownership,
+GPU-recording or per-record contracts. **Kept: the diagnostics only** (`PrimsCulled` + the front-end prim line), which
+price every future kick/record candidate for free. The next contained attempt should bundle the rect inlining with a
+second exact micro-win (the queue-window candidate build, `pixelSlot`/`BlockOfPixel` inlining) to clear 0.5 together,
+or take the per-record design as its own round.
