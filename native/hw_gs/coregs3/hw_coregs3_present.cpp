@@ -1778,7 +1778,6 @@ struct PresentLayer::Impl {
       bool drew = false;
       if (!draw_presentation_tick(tick, batch, target, width, height, submit, drew, error)) return false;
     }
-    }
     return true;
   }
 
