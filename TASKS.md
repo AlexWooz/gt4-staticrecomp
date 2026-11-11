@@ -2202,6 +2202,15 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   b3ee396aece4e31f17af945f1f2301d31c5295c9344cee4cc009c94db018340f). Evidence `build/evidence-live-world/`; design in
   [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §33.
 
+- **Dither integration into the live world (2026-11-11, branch `task/090-live-world`).** `origin/task/090-coregs3`
+  (`bd3e7147`, the dither round) merged as `51d972ab`; the present code merged without conflict and keeps the dither
+  parse/report (`GT4_COREGS3_DITHER`, default 0 in the modern path, pixels unchanged) beside the picture changes, and
+  the offline tool keeps `--dither` and `--fog-dump`. Docs: both entries kept; the picture HOOKS section renumbered
+  §33. Checks on the integrated build (`b3d7aa566d2cd8d4685e168c81423b1671c6d25aae8cbb4cc50553310833bec9`): CTest coregs3 **20/20**, Python
+  **18/18**, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames),
+  picture A/B at 7400 (world on/off mean 18.508, fog 2.599, bilinear 2.887, reference PSNR 17.339 dB). The cars'
+  grey/neutral look in the present is a pre-existing car-pass gap, not this round (journal; hooks §33.7).
+
 - Next: the live world remaining effects (the 2D overlay split, fog/blending, bilinear filtering, the
   tapped texture state, the reflection pass and the post chain); a recapture with
   the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages

@@ -2463,3 +2463,13 @@ byte-identical to each other in every run and held the race object's float value
 run in another worktree reproduced exactly, while those outlier reference dumps held the 0xDD pattern at that
 offset. The reference dump there is not reproducible across runs; the clean rerun above (reference window with
 no other game process) is the valid one and the gate is unchanged.
+
+### 33.7 Cars in the present (finding)
+
+The live present's car pass draws the cars with a neutral grey body; the r8 reference frame 07400 shows the player's
+red Mégane with lit taillights. This is not the picture round: the world-off A/B (car pass only) and the pre-picture
+merged executable show the same grey car, and the car-region world-on/off difference is 27,818 px now against 26,560
+px before the round. r8's present drew a white blob and r12's grey with white patches, so the paint/texture
+reproduction has been a present gap since the early rounds. Follow-up: the car pass's paint/CLUT reproduction and the
+world/car depth interaction; crops under `build/evidence-live-world/` (`car-crops.png`, `car-history.png`,
+`car-r8-r12-r13.png`, `car-on-off-diff.png`, `car-merged-on-off.png`).

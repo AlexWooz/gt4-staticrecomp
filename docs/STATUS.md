@@ -1,5 +1,19 @@
 # Current Status
 
+## 2026-11-11: the dither integration into the live world (TASK-090, branch `task/090-live-world`)
+
+The dither option from `task/090-coregs3` (`bd3e7147`) is merged into the picture round (merge `51d972ab`). The live
+present parses and reports `GT4_COREGS3_DITHER` (default 0 in the modern path); the mode does not change the pass's
+pixels because it writes 8-bit RGBA8 words, and the CoreGS 2.0 base keeps its CT16 dither until phase 4 owns the frame.
+The offline tool keeps both `--dither` and the picture round's `--fog-dump`. The present code merged without a conflict;
+the three doc conflicts keep both entries, and the picture round's HOOKS section, which had also claimed §32, is
+renumbered §33 with its references updated in STATUS, PLAN and TASKS. Checks on the integrated build (executable
+SHA-256 b3d7aa566d2cd8d4685e168c81423b1671c6d25aae8cbb4cc50553310833bec9): CTest coregs3 20/20, Python 18/18 (the dither A/B test), the 3x off/shadow identity gate
+COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture
+4,496,552 B), and the picture A/B at VBlank 7400: world on/off 2,504,704 px mean 18.508, fog on/off 2,293,896 px mean
+2.599, bilinear/nearest 975,309 px mean 2.887; against the r8 reference mean |diff| 18.831, PSNR 17.339 dB, luma
+24.654 / 28.630. Evidence `build/evidence-live-world/`; the car finding is in the journal and HOOKS §33.7.
+
 ## 2026-11-11: the live world picture round: the emitted fog, the GS bilinear and the tap state (TASK-090, branch `task/090-live-world`)
 
 The live world now draws the captured course with the **emitted per-vertex fog** toward FOGCOL, the **GS bilinear**, and
