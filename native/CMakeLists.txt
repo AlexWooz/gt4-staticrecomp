@@ -489,7 +489,8 @@ target_compile_definitions(gt4_gs_stream_client INTERFACE GT4_GS_STREAM_CLIENT)
 add_library(gt4_coregs3 STATIC
     coregs3/coregs3_scene.cpp coregs3/coregs3_chain.cpp coregs3/coregs3_vif.cpp coregs3/coregs3_shape.cpp
     coregs3/coregs3_render.cpp coregs3/coregs3_vertex.cpp coregs3/coregs3_lighting.cpp coregs3/coregs3_png.cpp
-    coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_present.cpp
+    coregs3/coregs3_gif.cpp coregs3/coregs3_timeline.cpp coregs3/coregs3_presentation.cpp
+    coregs3/coregs3_present.cpp
     coregs3/coregs3_sampler.cpp coregs3/coregs3_tap_file.cpp coregs3/coregs3_reflection.cpp
     coregs3/coregs3_vram.cpp coregs3/coregs3_world.cpp coregs3/coregs3_gsstream_file.cpp
     coregs3/coregs3_gsdecode.cpp coregs3/coregs3_wet_composite.cpp)
@@ -1122,6 +1123,12 @@ add_executable(coregs3_timeline_fixture coregs3/coregs3_timeline_fixture.cpp)
 target_link_libraries(coregs3_timeline_fixture PRIVATE gt4_coregs3)
 target_compile_options(coregs3_timeline_fixture PRIVATE /W4)
 add_test(NAME native_coregs3_timeline COMMAND $<TARGET_FILE:coregs3_timeline_fixture>)
+# TASK-090: the live presentation clock, the rigid interpolation rules and their fallbacks
+# (native/coregs3/coregs3_presentation.hpp), on hand-authored cameras/objects with known mid-interval answers.
+add_executable(coregs3_presentation_fixture coregs3/coregs3_presentation_fixture.cpp)
+target_link_libraries(coregs3_presentation_fixture PRIVATE gt4_coregs3)
+target_compile_options(coregs3_presentation_fixture PRIVATE /W4)
+add_test(NAME native_coregs3_presentation COMMAND $<TARGET_FILE:coregs3_presentation_fixture>)
 # TASK-090 texture round 15: the measured model UV convention (signed 16-bit / 4096, no V flip) and the PACKED GIF
 # RGBAQ/ST/UV/A+D decode of the VU1 tap parser, on hand-authored packets.
 add_executable(coregs3_texture_fixture coregs3/coregs3_texture_fixture.cpp)

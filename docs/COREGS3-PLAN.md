@@ -395,11 +395,36 @@ from the newest frame, not interpolated: interpolating a digital readout invents
 needs a smoother-looking HUD, it can be drawn twice with the same numbers, which is exactly what the guest-rate layer
 already does when the display refreshes faster.
 
-**What phase 1 implements now.** The data structures and the identity: `native/coregs3/coregs3_timeline.{hpp,cpp}`
+**What is implemented now (2026-11-10).** The data structures and the identity: `native/coregs3/coregs3_timeline.{hpp,cpp}`
 (`GuestTime`, `ObjectKey`, `ObjectTransform`, `TimelineFrame`, `FrameRing` with pairing and unmatched counts,
 `lerp_matrix`, `interpolation_alpha`) and its fixture `native_coregs3_timeline`. The capture already carries the guest
-timestamp (`vblank`) and everything the key hashes, so no capture-format change was needed. The interpolated presentation
-itself lands with the live renderer (step 1e), where the same structures are filled from the published ring.
+timestamp (`vblank`) and everything the key hashes, so no capture-format change was needed.
+
+The live integration lives in `native/coregs3/coregs3_presentation.{hpp,cpp}` and the debug-only
+`GT4_COREGS3=present` layer. One presentation tick is 1/3600 s and a guest VBlank is 60 ticks, so every supported rate
+(20/30/45/60/120/144 Hz) divides the grid exactly and alpha is exact. The clock snaps its origin to the first captured
+frame, marks every grid instant up to the newest guest frame due, and keeps at most eight on a stall (the loss is
+counted). Each instant pairs the two latest frames by the timeline's stable object key and interpolates the measured
+rigid model: world translation lerp, quaternion slerp, uniform-scale lerp, composed with the camera pose (projection
+lerp, view from a position lerp and an orientation slerp). A rank-deficient world matrix (the flat shell/reflection
+draws) falls back to the entrywise lerp of the captured matrices; a camera cut, a teleport or a pair spanning more than
+two guest frames drops to the newest captured frame instead of blending across the discontinuity. Alpha 0/1 returns the
+captured matrices bit for bit, so a 60 Hz presentation (every instant on a frame timestamp) draws exactly what the old
+layer drew. Prediction is not implemented (its counter stays 0).
+
+The layer presents the due ticks at `GT4_COREGS3_PRESENT_HZ` (default 60) with
+`GT4_COREGS3_PRESENT_MODE=interpolate|nearest`; above 60 Hz it saves the composed CoreGS 2.0 image in a private
+R32_UINT scratch image before the first tick and restores it before every later tick, so a tick's interpolated cars
+never leave ghosts of the previous tick. The diagnostic `GT4_COREGS3_PRESENT_TICK` draws one chosen tick of each guest
+frame for image evidence. The F8 report prints the clock (rate, instants, skipped, drawn ticks, interval
+mean/min/max and the 8-tick histogram) and the pairing/interpolation counters (pairs, pairs_refused, paired,
+only_newer, only_older, interpolated, entrywise, nearest, predicted, dropped_discontinuity). The guest path and the HUD
+stay at 60 Hz.
+
+The windowed host still presents once per guest VBlank, so a windowed session stays at the guest rate; a host clock
+running at the display rate (VRR / 120 / 144 Hz) is the next step, and the layer already draws every due tick when it is
+handed an image. Measurements, gates and the image evidence: `docs/journal/2026-11-10.md` and
+`build/evidence-live-timeline/`.
 
 ---
 

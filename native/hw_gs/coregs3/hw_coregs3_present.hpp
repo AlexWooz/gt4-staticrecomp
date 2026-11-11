@@ -21,7 +21,6 @@
 #include "hw_gs_vulkan_loader.hpp"  // VkInstance/VkDevice/... and the gt4_hw_* names (backend-internal header)
 
 namespace gt4::hw::coregs3 {
-
 // Everything the layer borrows from Backend::Impl. No ownership passes.
 struct PresentConfig {
   VkInstance instance = VK_NULL_HANDLE;
@@ -51,9 +50,18 @@ class PresentLayer {
   bool init(const PresentConfig &config, std::string &error);
   void shutdown();
 
-  // Draws the newest complete frame from gt4::coregs3::present over `target` (a VkImage in VK_IMAGE_LAYOUT_GENERAL,
-  // VK_FORMAT_R32_UINT, width x height), then waits for the submission. False with `error` on a Vulkan failure; the
-  // caller disables the layer. True also when there was no new frame or nothing drawable (counted, never an error).
+  // Takes the newest complete captured guest frame from the ring and records it in the presentation timeline
+  // (gt4::coregs3::present::note_guest_frame: timestamp, camera, presentation clock). Called once per guest VBlank,
+  // whether or not the frame is drawn, so the timeline samples every 60 Hz guest state. True when there was no new
+  // frame (the previous one stays the reference); false with `error` on a hard failure.
+  bool note_guest_frame(std::string &error);
+
+  // Draws the presentation ticks that became due with the frame last noted over `target` (a VkImage in
+  // VK_IMAGE_LAYOUT_GENERAL, VK_FORMAT_R32_UINT, width x height), then waits for the submission. At a rate above the
+  // guest's 60 Hz several ticks are due per guest frame; each tick starts from the composed image saved before the
+  // first one, so a tick's interpolated cars never leave ghosts of the previous tick. False with `error` on a Vulkan
+  // failure; the caller disables the layer. True also when there was no new frame, no due tick or nothing drawable
+  // (counted, never an error).
   bool render(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
               std::string &error);
 

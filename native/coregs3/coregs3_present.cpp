@@ -1,6 +1,10 @@
 // TASK-090 CoreGS 3.0: the live frame ring of the debug-only `GT4_COREGS3=present` mode. See coregs3_present.hpp.
+#define _CRT_SECURE_NO_WARNINGS
 #include "coregs3_present.hpp"
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <utility>
 
@@ -24,11 +28,179 @@ Ring g_ring;
 std::atomic<bool> g_active{false};
 Counters g_counters;
 
+// The presentation timeline's consumer state. One writer: the GS thread that claims frames and draws the layer; the
+// producer only touches `g_ring`. The F8 report reads the atomics in g_timeline_counters from another thread.
+struct TimelineState {
+  TimelineConfig config;
+  bool configured = false;
+  FrameRing ring{8};
+  std::vector<CameraFrame> cameras;  // aligned with `ring`, oldest first
+  PresentationClock clock{60};
+  PresentationClock::Due batch;
+  InterpolationLimits limits;
+};
+TimelineState &timeline_state() {
+  static TimelineState state;
+  return state;
+}
+TimelineCounters g_timeline_counters;
+std::atomic<std::uint64_t> g_interval_last{0};  // last presentation instant, for the frame-time histogram
+std::atomic<bool> g_have_interval_last{false};
+
+void add_interval(std::uint64_t interval_ticks) noexcept {
+  TimelineCounters &c = g_timeline_counters;
+  c.interval_count.fetch_add(1, std::memory_order_relaxed);
+  c.interval_sum.fetch_add(interval_ticks, std::memory_order_relaxed);
+  const auto min = c.interval_min.load(std::memory_order_relaxed);
+  if (min == 0 || interval_ticks < min) c.interval_min.store(interval_ticks, std::memory_order_relaxed);
+  const auto max = c.interval_max.load(std::memory_order_relaxed);
+  if (interval_ticks > max) c.interval_max.store(interval_ticks, std::memory_order_relaxed);
+  const std::size_t bucket = std::min<std::size_t>(interval_ticks / 8u, c.interval_hist.size() - 1);
+  c.interval_hist[bucket].fetch_add(1, std::memory_order_relaxed);
+}
+
+void add_counts(const InterpolationCounters &counts) noexcept {
+  TimelineCounters &c = g_timeline_counters;
+  const auto add = [](std::atomic<std::uint64_t> &field, std::uint64_t value) {
+    if (value != 0) field.fetch_add(value, std::memory_order_relaxed);
+  };
+  add(c.pairs, counts.pairs);
+  add(c.pairs_refused, counts.pairs_refused);
+  add(c.paired, counts.paired);
+  add(c.only_newer, counts.only_newer);
+  add(c.only_older, counts.only_older);
+  add(c.interpolated, counts.interpolated);
+  add(c.entrywise, counts.entrywise);
+  add(c.nearest, counts.nearest);
+  add(c.predicted, counts.predicted);
+  add(c.dropped_discontinuity, counts.dropped_discontinuity);
+}
+
 }  // namespace
 
 void set_active(bool active) noexcept { g_active.store(active, std::memory_order_relaxed); }
 bool active() noexcept { return g_active.load(std::memory_order_relaxed); }
 const Counters &counters() noexcept { return g_counters; }
+const TimelineCounters &timeline_counters() noexcept { return g_timeline_counters; }
+
+bool timeline_config_from_environment(TimelineConfig &config, std::string &error) noexcept {
+  config = TimelineConfig{};
+  const char *hz_text = std::getenv("GT4_COREGS3_PRESENT_HZ");
+  if (hz_text == nullptr || *hz_text == '\0') {
+    config.hz = 60;
+  } else {
+    config.hz = parse_presentation_hz(hz_text);
+    if (config.hz == 0) {
+      error = std::string("GT4_COREGS3_PRESENT_HZ=") + hz_text + " is not a supported presentation rate (" +
+              presentation_rate_list() + ")";
+      return false;
+    }
+  }
+  const char *mode_text = std::getenv("GT4_COREGS3_PRESENT_MODE");
+  if (!parse_presentation_mode(mode_text, config.mode)) {
+    error = std::string("GT4_COREGS3_PRESENT_MODE=") + mode_text + " is not interpolate or nearest";
+    return false;
+  }
+  config.selected_tick = UINT32_MAX;
+  if (const char *tick_text = std::getenv("GT4_COREGS3_PRESENT_TICK"); tick_text != nullptr && *tick_text != '\0') {
+    char *end = nullptr;
+    const long value = std::strtol(tick_text, &end, 10);
+    if (end == nullptr || *end != '\0' || value < 0 || value > 64) {
+      error = std::string("GT4_COREGS3_PRESENT_TICK=") + tick_text +
+              " is not a tick index between 0 and 64 (unset draws every due tick)";
+      return false;
+    }
+    config.selected_tick = static_cast<std::uint32_t>(value);
+  }
+  return true;
+}
+
+void set_timeline_config(const TimelineConfig &config) noexcept {
+  TimelineState &state = timeline_state();
+  state.config = config;
+  state.configured = config.hz != 0;
+  state.clock = PresentationClock(config.hz);
+  state.ring.clear();
+  state.cameras.clear();
+  state.batch = PresentationClock::Due{};
+}
+
+const TimelineConfig &timeline_config() noexcept { return timeline_state().config; }
+bool timeline_configured() noexcept { return timeline_state().configured; }
+
+void note_guest_frame(const FrameSnapshot &frame) {
+  TimelineState &state = timeline_state();
+  if (!state.configured) return;
+  const GuestTime time{frame.vblank, guest_ticks(frame.vblank)};
+  TimelineFrame timeline = timeline_frame(frame, time);
+  state.ring.push(timeline);
+  while (state.cameras.size() >= state.ring.capacity()) state.cameras.erase(state.cameras.begin());
+  state.cameras.push_back(camera_frame(frame.camera));
+  state.batch = state.clock.observe(time.ticks);
+  g_timeline_counters.frames.fetch_add(1, std::memory_order_relaxed);
+  g_timeline_counters.instants.fetch_add(state.batch.count, std::memory_order_relaxed);
+  if (state.batch.skipped != 0) g_timeline_counters.skipped.fetch_add(state.batch.skipped, std::memory_order_relaxed);
+  // The frame-time histogram: consecutive presentation instants, in guest ticks. The first instant of a batch is one
+  // step after the previous batch's last instant unless the clock had to skip (then the gap shows in this histogram and
+  // in `skipped`).
+  if (state.batch.count != 0) {
+    if (g_have_interval_last.load(std::memory_order_relaxed)) {
+      const std::uint64_t previous = g_interval_last.load(std::memory_order_relaxed);
+      if (state.batch.first > previous) add_interval(state.batch.first - previous);
+    } else {
+      g_have_interval_last.store(true, std::memory_order_relaxed);
+    }
+    if (state.batch.count > 1)
+      for (std::uint32_t index = 1; index < state.batch.count; ++index) add_interval(state.batch.step);
+    g_interval_last.store(state.batch.first + (state.batch.count - 1) * state.batch.step, std::memory_order_relaxed);
+  }
+}
+
+PresentationClock::Due due_ticks() noexcept { return timeline_state().batch; }
+
+void note_draw_tick() noexcept { g_timeline_counters.draw_ticks.fetch_add(1, std::memory_order_relaxed); }
+
+void interpolated_transforms(std::uint64_t instant_ticks, std::vector<DrawTransform> &out, bool count) {
+  TimelineState &state = timeline_state();
+  InterpolationCounters counts;
+  out.clear();
+  if (!state.configured || state.ring.size() == 0) return;
+  const TimelineFrame &newer = state.ring.at(0);
+  const CameraFrame &newer_camera = state.cameras.back();
+  counts.instants = 1;
+  if (state.ring.size() == 1) {
+    // No pair yet: present the newest frame exactly.
+    out.reserve(newer.objects.size());
+    for (const ObjectTransform &object : newer.objects) {
+      DrawTransform draw;
+      draw.key = object.key;
+      draw.source = TransformSource::captured_newer;
+      std::memcpy(draw.matrix, object.matrix, sizeof draw.matrix);
+      out.push_back(draw);
+    }
+    counts.nearest += newer.objects.size();
+    if (count) add_counts(counts);
+    return;
+  }
+  const TimelineFrame &older = state.ring.at(1);
+  const CameraFrame &older_camera = state.cameras[state.cameras.size() - 2];
+  float alpha = 1.0f;
+  if (state.config.mode == PresentationMode::nearest) {
+    if (instant_ticks <= older.time.ticks) {
+      alpha = 0.0f;
+    } else if (instant_ticks >= newer.time.ticks) {
+      alpha = 1.0f;
+    } else {
+      const std::uint64_t to_older = instant_ticks - older.time.ticks;
+      const std::uint64_t to_newer = newer.time.ticks - instant_ticks;
+      alpha = to_older < to_newer ? 0.0f : 1.0f;  // a tie repeats the newer captured frame
+    }
+  } else if (!interpolation_alpha(older.time, newer.time, instant_ticks, alpha)) {
+    alpha = 1.0f;  // an unordered pair: never blend, present the newest frame as captured
+  }
+  interpolate_frame(older, older_camera, newer, newer_camera, alpha, state.limits, out, counts);
+  if (count) add_counts(counts);
+}
 
 void publish(FrameSnapshot &frame) noexcept {
   // A frame the hooks refused (a capacity or read failure) never reaches this call: the ring always carries a complete

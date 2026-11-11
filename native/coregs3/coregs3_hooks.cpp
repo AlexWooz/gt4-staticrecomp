@@ -415,6 +415,20 @@ void configure_from_environment() {
     std::exit(2);
   }
   present::set_active(g.mode == Mode::present);
+  if (g.mode == Mode::present) {
+    // TASK-090 live timeline: the presentation rate and mode. An unusable value stops the start here, like an unknown
+    // GT4_COREGS3, so a run never silently presents at a rate the owner did not ask for.
+    present::TimelineConfig timeline;
+    std::string timeline_error;
+    if (!present::timeline_config_from_environment(timeline, timeline_error)) {
+      std::fprintf(stderr, "[coregs3] %s: refusing to start\n", timeline_error.c_str());
+      std::exit(2);
+    }
+    present::set_timeline_config(timeline);
+    std::fprintf(stderr, "[coregs3] present timeline: %u Hz, mode %s%s\n", timeline.hz,
+                 presentation_mode_name(timeline.mode),
+                 timeline.selected_tick == UINT32_MAX ? "" : ", diagnostic single-tick image");
+  }
   if (g.mode == Mode::off) return;
 
   std::atexit([] { shutdown(); });
@@ -969,6 +983,50 @@ void print_report(std::FILE *out) noexcept {
   // the renderer drew over the composed image. Read from the report thread; every field is atomic.
   const present::Counters &p = present::counters();
   const auto load = [](const std::atomic<std::uint64_t> &value) { return value.load(std::memory_order_relaxed); };
+  // TASK-090 live timeline: the requested rate, the pairing/interpolation outcome and the frame-time histogram of the
+  // presentation clock. `mean`/`min`/`max` are the interval between consecutive presentation instants, in guest ticks
+  // (3600 per second), so 30 ticks = 120 Hz and 60 ticks = 60 Hz.
+  const present::TimelineConfig &timeline = present::timeline_config();
+  const present::TimelineCounters &t = present::timeline_counters();
+  const std::uint64_t intervals = load(t.interval_count);
+  if (timeline.hz != 0 && (load(t.frames) != 0 || load(t.instants) != 0))
+    std::fprintf(out,
+                 "[coregs3] present timeline hz=%u mode=%s frames=%llu instants=%llu skipped=%llu draw_ticks=%llu "
+                 "intervals=%llu interval_ticks_mean=%.3f min=%llu max=%llu\n",
+                 timeline.hz, presentation_mode_name(timeline.mode),
+                 static_cast<unsigned long long>(load(t.frames)),
+                 static_cast<unsigned long long>(load(t.instants)),
+                 static_cast<unsigned long long>(load(t.skipped)),
+                 static_cast<unsigned long long>(load(t.draw_ticks)),
+                 static_cast<unsigned long long>(intervals),
+                 intervals != 0 ? static_cast<double>(load(t.interval_sum)) / static_cast<double>(intervals) : 0.0,
+                 static_cast<unsigned long long>(load(t.interval_min)),
+                 static_cast<unsigned long long>(load(t.interval_max)));
+  if (timeline.hz != 0 &&
+      load(t.pairs) + load(t.pairs_refused) + load(t.paired) + load(t.only_newer) + load(t.only_older) +
+              load(t.interpolated) + load(t.entrywise) + load(t.nearest) + load(t.dropped_discontinuity) !=
+          0)
+    std::fprintf(out,
+                 "[coregs3] present interpolate pairs=%llu pairs_refused=%llu paired=%llu only_newer=%llu "
+                 "only_older=%llu interpolated=%llu entrywise=%llu nearest=%llu predicted=%llu "
+                 "dropped_discontinuity=%llu\n",
+                 static_cast<unsigned long long>(load(t.pairs)),
+                 static_cast<unsigned long long>(load(t.pairs_refused)),
+                 static_cast<unsigned long long>(load(t.paired)),
+                 static_cast<unsigned long long>(load(t.only_newer)),
+                 static_cast<unsigned long long>(load(t.only_older)),
+                 static_cast<unsigned long long>(load(t.interpolated)),
+                 static_cast<unsigned long long>(load(t.entrywise)),
+                 static_cast<unsigned long long>(load(t.nearest)),
+                 static_cast<unsigned long long>(load(t.predicted)),
+                 static_cast<unsigned long long>(load(t.dropped_discontinuity)));
+  if (timeline.hz != 0)
+    for (std::size_t bucket = 0; bucket < t.interval_hist.size(); ++bucket)
+      if (load(t.interval_hist[bucket]) != 0)
+        std::fprintf(out, "[coregs3] present timeline interval %llu..%llu ticks: %llu\n",
+                     static_cast<unsigned long long>(bucket * 8),
+                     static_cast<unsigned long long>(bucket == t.interval_hist.size() - 1 ? 0 : bucket * 8 + 7),
+                     static_cast<unsigned long long>(load(t.interval_hist[bucket])));
   if (load(p.published) != 0 || load(p.passes) != 0 || load(p.passes_refused) != 0)
     std::fprintf(out,
                  "[coregs3] present published %llu dropped %llu claims %llu empty %llu passes %llu refused_frames %llu "
